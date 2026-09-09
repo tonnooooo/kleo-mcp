@@ -1,0 +1,40 @@
+/**
+ * Gatto MCP server — Cloudflare Worker configuration.
+ * Replace the placeholder ids after running:
+ *   npx wrangler kv namespace create OAUTH_KV
+ *   npx wrangler d1 create gatto-db
+ *   npx wrangler r2 bucket create gatto-renders
+ * Secrets (npx wrangler secret put NAME): INTERNAL_SECRET, INVITE_CODES, VAST_API_KEY, RESEND_API_KEY
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gatto-mcp",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-02",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "observability": { "enabled": true },
+  "kv_namespaces": [
+    { "binding": "OAUTH_KV", "id": "00000000000000000000000000000000" }
+  ],
+  "d1_databases": [
+    { "binding": "DB", "database_name": "gatto-db", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations" }
+  ],
+  "r2_buckets": [
+    { "binding": "RENDERS", "bucket_name": "gatto-renders" }
+  ],
+  "triggers": { "crons": ["* * * * *"] },
+  "vars": {
+    "PUBLIC_URL": "http://localhost:8787",
+    "RENDER_BACKEND": "mock",
+    "MAX_CONCURRENT_GPUS": "5",
+    "MAX_JOBS_PER_USER": "2",
+    "JOB_TIMEOUT_MIN": "120",
+    "FREE_CREDITS": "3",
+    "RESULT_TTL_DAYS": "7",
+    "VAST_GPU_NAME": "RTX 4090",
+    "VAST_MAX_DPH": "0.60",
+    "VAST_DISK_GB": "80",
+    "VAST_IMAGE": "docker.io/REPLACE_ME/gatto-worker:latest"
+  },
+  "dev": { "port": 8787 }
+}

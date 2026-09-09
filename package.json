@@ -1,0 +1,26 @@
+{
+  "name": "gatto-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Gatto: a remote MCP server that renders YouTube videos and Shorts on ephemeral GPUs",
+  "scripts": {
+    "dev": "wrangler dev --test-scheduled",
+    "deploy": "wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply gatto-db --local",
+    "db:migrate": "wrangler d1 migrations apply gatto-db --remote",
+    "typecheck": "tsc --noEmit",
+    "test:smoke": "node test/smoke.mjs"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "^0.10.3",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260908.1",
+    "@modelcontextprotocol/client": "^2.0.0",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.130.0"
+  }
+}
