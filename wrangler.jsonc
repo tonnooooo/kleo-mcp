@@ -25,7 +25,7 @@
   "triggers": { "crons": ["* * * * *"] },
   "vars": {
     "PUBLIC_URL": "https://kleo-mcp.plural-juice.workers.dev",
-    "RENDER_BACKEND": "mock",
+    "RENDER_BACKEND": "vast",
     "AI_MODEL": "@cf/meta/llama-4-scout-17b-16e-instruct",
     "MAX_CONCURRENT_GPUS": "5",
     "MAX_JOBS_PER_USER": "2",

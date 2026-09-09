@@ -45,7 +45,9 @@ async function main() {
   const call = async (name, args) => { const r = await client.callTool({ name, arguments: args }); return r.structuredContent ?? JSON.parse(r.content[0].text); };
 
   step("create_video → the orchestrator rents a GPU on the next tick");
-  const job = await call("kleo_create_video", { template: "did-you-know", prompt: "Three surprising facts about octopuses, fast and cheerful", duration_s: 20, format: "9:16" });
+  const spec = { template: process.env.TEMPLATE ?? "did-you-know", prompt: process.env.PROMPT ?? "Three surprising facts about octopuses, fast and cheerful", duration_s: parseInt(process.env.DURATION ?? "20", 10), format: process.env.FORMAT ?? "9:16", language: process.env.LANGUAGE ?? "en" };
+  console.log("  spec:", JSON.stringify(spec));
+  const job = await call("kleo_create_video", spec);
   jobId = job.job_id; assert(jobId, "no job id");
   console.log("  job", jobId);
 
@@ -69,7 +71,8 @@ async function main() {
   const probe = execSync(`ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate,duration -of csv=p=0 /tmp/claude-1000/vast-e2e.mp4`, { encoding: "utf8" }).trim();
   console.log("  video.mp4", buf.length, "bytes ·", probe, "· total", Math.round((Date.now() - t0) / 6000) / 10, "min");
   const [w, h, fps] = probe.split(",");
-  assert(w === "2160" && h === "3840" && fps === "60/1", "unexpected geometry " + probe);
+  const portrait = (process.env.FORMAT ?? "9:16") === "9:16";
+  assert((portrait ? w === "2160" && h === "3840" : w === "1920" && h === "1080") && fps === "60/1", "unexpected geometry " + probe);
   console.log("\n\x1b[32mPASS\x1b[0m real GPU render on Vast.ai");
 }
 main().catch(async (e) => {
