@@ -21,6 +21,23 @@ Dopo il claim l'indirizzo può cambiare (il sottodominio `plural-juice` è dell'
 
 Codici invito attivi: `KLEO-BETA` (condiviso, 50 usi, 3 crediti) e `CRISTIANO-1`.
 
+
+## 0b. Test reale su GPU (9 settembre, 11:00 UTC): superato
+
+Con la tua chiave Vast.ai ho fatto un giro completo dal server locale, esposto con un tunnel temporaneo, senza toccare la produzione:
+
+| Passo | Quando | Nota |
+|---|---|---|
+| job creato via MCP | 0 s | template `did-you-know`, 20 s, 9:16 |
+| GPU noleggiata | 2 s | RTX 4090, Norvegia, 0,56 $/h, 832 Mbps, istanza 50376761 |
+| worker avviato nell'istanza | 2 min 31 s | immagine pubblica `nvidia/cuda`, ffmpeg installato al boot, script scaricato dal repo pubblico |
+| render + upload | 3 min 0 s | MP4 2160×3840, 60 fps, 20 s, 637 KB (segnaposto ffmpeg) |
+| job `done`, istanza autodistrutta | 3 min 12 s | 0 istanze rimaste; credito Vast: 5,15 → 5,06 $ |
+
+Cosa vuol dire: il contratto tra orchestratore, Vast.ai e worker funziona davvero. Resta da sostituire il render segnaposto con la tua pipeline (ComfyUI, Wan o LTX, SeedVR2, RIFE) dentro `render()` in `worker/kleo_worker.py`.
+
+La chiave Vast è in `.secrets.local` (fuori da git) e andrà come secret Cloudflare appena wrangler è collegato. In produzione consiglio di restare su `RENDER_BACKEND=mock` finché la pipeline vera non è dentro il worker: il mock è gratis e istantaneo e mostra il giro completo a chi prova; il passaggio a `vast` è una variabile.
+
 ## 1. La decisione: tutto su Cloudflare, nessuna macchina virtuale, zero euro
 
 Hai chiesto se Oracle Always Free a 0 € è una buona scelta. **No, non per un servizio che deve stare in piedi.** Ho verificato lo stato a settembre 2026:
