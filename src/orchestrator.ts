@@ -83,6 +83,13 @@ async function tickInner(env: Env, stats: Stats) {
         stats.failed++;
         continue;
       }
+      // A worker that never reports (image pull stuck, boot failure) must not hold a paid GPU for the whole timeout.
+      const startTimeoutMin = int(env.START_TIMEOUT_MIN, 15);
+      if (job.state === "starting" && job.started_at && minutesSince(job.started_at) > startTimeoutMin) {
+        await failJob(env, job, `worker never started within ${startTimeoutMin} min (image pull or boot problem)`, true);
+        stats.failed++;
+        continue;
+      }
       const backend = backendFor(env, job.backend);
       if (backend.poll && job.state !== "finishing") {
         const st = await backend.poll(env, job);

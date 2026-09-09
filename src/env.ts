@@ -17,6 +17,7 @@ export interface Env {
   MAX_CONCURRENT_GPUS: string;
   MAX_JOBS_PER_USER: string;
   JOB_TIMEOUT_MIN: string;
+  START_TIMEOUT_MIN?: string; // minutes a GPU may stay silent after rental before it is destroyed and the job requeued
   FREE_CREDITS: string;
   RESULT_TTL_DAYS: string;
   MOCK_TOTAL_SECONDS?: string;
