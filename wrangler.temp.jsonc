@@ -8,6 +8,6 @@
   "observability": { "enabled": true },
   "kv_namespaces": [ { "binding": "OAUTH_KV" } ],
   "d1_databases": [ { "binding": "DB", "database_name": "kleo-db" } ],
-  "triggers": { "crons": ["* * * * *"] },
+  // no cron on temporary accounts: the orchestrator also runs on every MCP call (see src/index.ts)
   "vars": { "RENDER_BACKEND": "mock", "MAX_CONCURRENT_GPUS": "5", "MAX_JOBS_PER_USER": "2", "JOB_TIMEOUT_MIN": "120", "FREE_CREDITS": "3", "RESULT_TTL_DAYS": "7", "MOCK_TOTAL_SECONDS": "60", "PUBLIC_URL": "" }
 }

@@ -1,6 +1,25 @@
 # Kleo: messa online, passo per passo
 
-*Per te, in italiano. Aggiornato al 9 settembre 2026.*
+*Per te, in italiano. Aggiornato al 9 settembre 2026, sera.*
+
+## 0. Stato adesso
+
+| Cosa | Indirizzo | Come |
+|---|---|---|
+| Sito | https://tonnooooo.github.io/kleo-site/ | GitHub Pages, repo pubblico `kleo-site`, permanente |
+| Server MCP | https://kleo-mcp.plural-juice.workers.dev/mcp | Cloudflare Workers, **account temporaneo**: resta vivo 60 minuti dal deploy, poi sparisce se non viene reclamato |
+| Claim (rendilo permanente) | il link `dash.cloudflare.com/claim-preview?claimToken=…` che ti ho dato in chat | apri, accedi con Google (crea l'account se non c'è), conferma: Worker, database e KV passano nel tuo account per sempre |
+
+Se il link è scaduto: dimmi "rilancia" e rifaccio il deploy temporaneo in un minuto, con un nuovo link. Il comando è:
+
+```bash
+cd kleo-mcp && npx wrangler deploy --temporary --config wrangler.temp.jsonc \
+  --var "INTERNAL_SECRET:$(grep INTERNAL_SECRET .secrets.local | cut -d= -f2)" --var "INVITE_CODES:KLEO-BETA,CRISTIANO-1"
+```
+
+Dopo il claim l'indirizzo può cambiare (il sottodominio `plural-juice` è dell'account temporaneo): aggiorno `config.json` nel sito e il sito mostra il nuovo indirizzo da solo. Sull'account temporaneo mancano R2 (i file dei render simulati stanno in KV) e il cron (l'orchestratore gira a ogni chiamata MCP): dopo il claim, con `npx wrangler login`, aggiungo il bucket R2 e il cron in due minuti.
+
+Codici invito attivi: `KLEO-BETA` (condiviso, 50 usi, 3 crediti) e `CRISTIANO-1`.
 
 ## 1. La decisione: tutto su Cloudflare, nessuna macchina virtuale, zero euro
 
@@ -18,7 +37,7 @@ Se un giorno servirà una macchina, la scelta è Hetzner (6 € al mese, affidab
 | Cosa | Dove | Stato |
 |---|---|---|
 | Sito in inglese | repository GitHub `kleo-site`, GitHub Pages | online |
-| Server MCP | repository GitHub privato `kleo-mcp` (questa cartella) | testato in locale, pronto per il deploy |
+| Server MCP | repository GitHub privato `kleo-mcp` (questa cartella) | online su Cloudflare (account temporaneo), test end-to-end superato anche contro l'indirizzo pubblico |
 | Worker GPU per Vast.ai | `worker/kleo_worker.py` + `worker/Dockerfile` | pronto, con pipeline segnaposto (ffmpeg) da sostituire con la tua |
 | Test end-to-end | `npm run test:smoke` | passa: login OAuth, 6 strumenti, coda, render simulato, download firmato, annullamento con rimborso |
 
