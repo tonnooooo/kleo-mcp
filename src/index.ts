@@ -1,6 +1,6 @@
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import type { Env, AuthProps } from "./env";
-import { getUser, touchUser } from "./db";
+import { getUser, touchUser, audit } from "./db";
 import { mcpHandlerFor } from "./mcp";
 import { handleAuthorize } from "./auth";
 import { handleInternal, handleDevPlan } from "./internal";
@@ -67,5 +67,15 @@ const provider = new OAuthProvider<Env>({
 
 export default {
   fetch: (request: Request, env: Env, ctx: ExecutionContext) => provider.fetch(request, env, ctx),
-  scheduled: (_controller: ScheduledController, env: Env, ctx: ExecutionContext) => { ctx.waitUntil(ensureSchema(env).then(() => tick(env, { plan: true }))); },
+  scheduled: (_controller: ScheduledController, env: Env, ctx: ExecutionContext) => {
+    ctx.waitUntil((async () => {
+      try {
+        await ensureSchema(env);
+        const stats = await tick(env, { plan: true });
+        await audit(env, null, null, "cron.tick", stats);
+      } catch (e) {
+        try { await audit(env, null, null, "cron.error", String(e).slice(0, 300)); } catch { /* ignore */ }
+      }
+    })());
+  },
 } satisfies ExportedHandler<Env>;
