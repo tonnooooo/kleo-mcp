@@ -14,7 +14,7 @@
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "observability": { "enabled": true },
   "kv_namespaces": [
-    { "binding": "OAUTH_KV", "id": "00000000000000000000000000000000" }
+    { "binding": "OAUTH_KV", "id": "5e3ad54946764fa781fcd17c0a735bff" }
   ],
   "d1_databases": [
     { "binding": "DB", "database_name": "kleo-db", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations" }

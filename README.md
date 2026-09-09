@@ -20,6 +20,7 @@ npm install
 npm run db:migrate:local
 npm run dev                # http://localhost:8787  (RENDER_BACKEND=mock: simulated renders, no GPU)
 npm run test:smoke         # full OAuth + MCP + render + download flow against a local dev server
+node test/worker-e2e.mjs   # runs the worker image (podman) against a local server with RENDER_BACKEND=manual: real ffmpeg render, upload, done
 ```
 
 Connect Claude Code to the local server: `claude mcp add --transport http kleo-local http://localhost:8787/mcp`, then `/mcp` → Kleo → Authenticate (invite code `KLEO-BETA` in dev).

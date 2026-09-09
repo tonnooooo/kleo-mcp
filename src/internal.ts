@@ -37,6 +37,11 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
     return json({ job_id: job.id, template: job.template, prompt: job.prompt, params: JSON.parse(job.params), state: job.state,
       files: { video: FILE_NAMES.video.name, subtitles: FILE_NAMES.subtitles.name, thumbnail: FILE_NAMES.thumbnail.name }, part_size_bytes: 50 * 1024 * 1024 });
   }
+  if (rest === "selfdestruct" && request.method === "POST") { // allowed in any state: it is the worker's last call
+    try { await backendFor(env, job.backend).destroy(env, job); } catch (e) { await audit(env, job.user_id, job.id, "backend.destroy.error", String(e)); }
+    await audit(env, job.user_id, job.id, "worker.selfdestruct", { at: nowIso(), state: job.state });
+    return json({ ok: true });
+  }
   if (!["queued", "starting", "rendering", "finishing"].includes(job.state)) return json({ error: `job is ${job.state}` }, 409);
 
   if (rest === "progress" && request.method === "POST") {
@@ -91,11 +96,6 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
   if (rest === "failed" && request.method === "POST") {
     const b = (await request.json().catch(() => ({}))) as { error?: string; retry?: boolean };
     await failJob(env, job, `worker: ${b.error ?? "unknown error"}`, b.retry !== false);
-    return json({ ok: true });
-  }
-  if (rest === "selfdestruct" && request.method === "POST") {
-    try { await backendFor(env, job.backend).destroy(env, job); } catch (e) { await audit(env, job.user_id, job.id, "backend.destroy.error", String(e)); }
-    await audit(env, job.user_id, job.id, "worker.selfdestruct", { at: nowIso() });
     return json({ ok: true });
   }
   return json({ error: "not found" }, 404);
