@@ -35,10 +35,10 @@ async function main() {
   const client = new Client({ name: "e2e", version: "0" });
   await client.connect(new StreamableHTTPClientTransport(new URL(`${BASE}/mcp`), { requestInit: { headers: { authorization: `Bearer ${tok.access_token}` } } }));
   const call = async (name, args) => { const r = await client.callTool({ name, arguments: args }); return r.structuredContent ?? JSON.parse(r.content[0].text); };
-  const job = await call("create_video", { template: "did-you-know", prompt: "Three facts about octopuses", duration_s: 20, format: "9:16" });
+  const job = await call("kleo_create_video", { template: "did-you-know", prompt: "Three facts about octopuses", duration_s: 20, format: "9:16" });
   assert(job.job_id, "no job");
   // the manual backend marks it "starting" on the next tick (any MCP POST triggers one)
-  await call("get_job", { job_id: job.job_id });
+  await call("kleo_get_job", { job_id: job.job_id });
 
   step("read the per-job worker secret from local D1");
   const out = execSync(`npx wrangler d1 execute kleo-db --local --json --command "SELECT worker_secret, state FROM jobs WHERE id='${job.job_id}'"`, { encoding: "utf8" });
@@ -53,9 +53,9 @@ async function main() {
   console.log(`  worker finished in ${Math.round((Date.now() - t0) / 1000)} s`);
 
   step("job is done and the file is a real MP4 with the requested geometry");
-  const view = await call("get_job", { job_id: job.job_id });
+  const view = await call("kleo_get_job", { job_id: job.job_id });
   assert(view.state === "done", "job not done: " + JSON.stringify(view));
-  const res = await call("get_result", { job_id: job.job_id });
+  const res = await call("kleo_get_result", { job_id: job.job_id });
   assert(res.video_url && res.subtitles_url && res.thumbnail_url, "missing links: " + JSON.stringify(res));
   const buf = Buffer.from(await (await fetch(res.video_url)).arrayBuffer());
   fs.writeFileSync("/tmp/claude-1000/e2e.mp4", buf);

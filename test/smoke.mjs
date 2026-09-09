@@ -72,24 +72,24 @@ async function main() {
   await client.connect(transport);
   const tools = (await client.listTools()).tools.map((t) => t.name).sort();
   console.log("  tools:", tools.join(", "));
-  for (const n of ["list_templates", "create_video", "get_job", "get_result", "generate_thumbnail", "cancel_job"]) assert(tools.includes(n), `missing tool ${n}`);
+  for (const n of ["kleo_list_templates", "kleo_create_video", "kleo_get_job", "kleo_get_result", "kleo_generate_thumbnail", "kleo_cancel_job"]) assert(tools.includes(n), `missing tool ${n}`);
 
   const call = async (name, args) => { const r = await client.callTool({ name, arguments: args }); return { r, data: r.structuredContent ?? (() => { try { return JSON.parse(r.content?.[0]?.text ?? ""); } catch { return null; } })() }; };
 
-  step("list_templates");
-  const lt = await call("list_templates", {});
+  step("kleo_list_templates");
+  const lt = await call("kleo_list_templates", {});
   assert(lt.data?.templates?.length === 10, "expected 10 templates");
   assert(lt.data.credits_available === 3, `expected 3 trial credits, got ${lt.data.credits_available}`);
 
   step("create_video (viral-short)");
-  const cv = await call("create_video", { template: "viral-short", prompt: "Pirates find an island that is missing from every map", duration_s: 45, format: "9:16", language: "en" });
+  const cv = await call("kleo_create_video", { template: "viral-short", prompt: "Pirates find an island that is missing from every map", duration_s: 45, format: "9:16", language: "en" });
   assert(!cv.r.isError, "create_video errored: " + cv.r.content?.[0]?.text);
   const jobId = cv.data.job_id;
   assert(jobId?.startsWith("gt_"), "no job id");
   console.log("  job", jobId, "eta", cv.data.eta_min, "min");
 
   step("validation: bad duration is refused without charging");
-  const bad = await call("create_video", { template: "viral-short", prompt: "This should fail because it is far too long for a short", duration_s: 600, format: "9:16" });
+  const bad = await call("kleo_create_video", { template: "viral-short", prompt: "This should fail because it is far too long for a short", duration_s: 600, format: "9:16" });
   assert(bad.r.isError, "expected an error for out-of-range duration");
 
   step("orchestrator ticks (cron) until the mock render finishes");
@@ -97,14 +97,14 @@ async function main() {
   for (let i = 0; i < (process.env.KLEO_URL ? 60 : 40); i++) {
     if (!process.env.KLEO_URL) { const t = await fetch(`${BASE}/__scheduled?cron=*+*+*+*+*`); assert(t.ok, "scheduled trigger failed: " + t.status); }
     await new Promise((r) => setTimeout(r, process.env.KLEO_URL ? 4000 : 1000));
-    view = (await call("get_job", { job_id: jobId })).data;
+    view = (await call("kleo_get_job", { job_id: jobId })).data;
     process.stdout.write(`  ${view.state} ${view.percent}% ${view.track ?? ""}\n`);
     if (view.state === "done" || view.state === "failed") break;
   }
   assert(view.state === "done", "job did not finish: " + JSON.stringify(view));
 
   step("get_result and download");
-  const gr = await call("get_result", { job_id: jobId });
+  const gr = await call("kleo_get_result", { job_id: jobId });
   assert(gr.data.video_url, "no video_url: " + JSON.stringify(gr.data));
   const dl = await fetch(gr.data.video_url);
   const buf = Buffer.from(await dl.arrayBuffer());
@@ -114,15 +114,15 @@ async function main() {
   assert(tampered.status === 403, "tampered link should be refused");
 
   step("second job then cancel → refund");
-  const cv2 = await call("create_video", { template: "did-you-know", prompt: "Five surprising facts about octopuses in thirty seconds", duration_s: 30 });
+  const cv2 = await call("kleo_create_video", { template: "did-you-know", prompt: "Five surprising facts about octopuses in thirty seconds", duration_s: 30 });
   assert(!cv2.r.isError, "second create failed: " + cv2.r.content?.[0]?.text);
-  const cj = await call("cancel_job", { job_id: cv2.data.job_id });
+  const cj = await call("kleo_cancel_job", { job_id: cv2.data.job_id });
   assert(cj.data.state === "cancelled" && cj.data.refunded === 1, "cancel/refund failed: " + JSON.stringify(cj.data));
-  const lt2 = await call("list_templates", {});
+  const lt2 = await call("kleo_list_templates", {});
   assert(lt2.data.credits_available === 2, `expected 2 credits left, got ${lt2.data.credits_available}`);
 
   step("recent jobs listing");
-  const list = (await call("get_job", {})).data;
+  const list = (await call("kleo_get_job", {})).data;
   assert(list.jobs?.length === 2, "expected 2 jobs in history");
 
   await client.close();

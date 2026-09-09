@@ -14,25 +14,25 @@ La tua azienda quindi non vende un'app: vende un indirizzo. Tutta l'interfaccia 
 2. Il client si registra come applicazione presso Kleo (in automatico, standard OAuth 2.1) e apre nel browser la **pagina di accesso di Kleo**. Cristiano entra (Google, oppure un codice invito nella beta) e acconsente.
 3. Kleo rilascia un token. Da quel momento ogni richiesta del client porta quel token e Kleo sa che è Cristiano, quanti crediti ha, quanti job ha in corso.
 4. Il client chiama `tools/list` e mostra al modello i sei strumenti con le loro descrizioni.
-5. Cristiano scrive "fammi uno Short sui pirati". Il modello capisce che serve `create_video`, compila i parametri e il client manda `tools/call`. Kleo risponde in meno di un secondo con un `job_id`. Il modello lo dice a Cristiano: "avviato, ci vogliono circa 25 minuti".
-6. Venti minuti dopo Cristiano chiede "a che punto è?". Il modello chiama `get_job`, legge "82%, finitura 4K", e lo riferisce. Quando è pronto, `get_result` restituisce i link. Se Cristiano ha lasciato un'email, riceve anche un avviso.
+5. Cristiano scrive "fammi uno Short sui pirati". Il modello capisce che serve `kleo_create_video`, compila i parametri e il client manda `tools/call`. Kleo risponde in meno di un secondo con un `job_id`. Il modello lo dice a Cristiano: "avviato, ci vogliono circa 25 minuti".
+6. Venti minuti dopo Cristiano chiede "a che punto è?". Il modello chiama `kleo_get_job`, legge "82%, finitura 4K", e lo riferisce. Quando è pronto, `kleo_get_result` restituisce i link. Se Cristiano ha lasciato un'email, riceve anche un avviso.
 
 Tutto questo funziona uguale in Claude, ChatGPT, Grok e Cursor, perché lo standard è lo stesso. Cambia solo dove si incolla l'indirizzo.
 
 ## 3. Perché le chiamate devono essere brevi
 
-Un tool MCP ha lo stesso tempo di una pagina web: i client aspettano al massimo qualche decina di secondi. Un render dura 25 minuti. La regola è quindi: **nessuno strumento fa aspettare la chat**. `create_video` mette il lavoro in coda e torna subito; il lavoro vero lo fa l'orchestratore in un altro processo. Lo standard MCP (revisione 2026-07-28) prevede anche l'estensione **Tasks**: la chiamata può restituire un "task" e il client lo interroga da solo. La useremo quando i client la supportano; `get_job` resta comunque, perché funziona ovunque.
+Un tool MCP ha lo stesso tempo di una pagina web: i client aspettano al massimo qualche decina di secondi. Un render dura 25 minuti. La regola è quindi: **nessuno strumento fa aspettare la chat**. `kleo_create_video` mette il lavoro in coda e torna subito; il lavoro vero lo fa l'orchestratore in un altro processo. Lo standard MCP (revisione 2026-07-28) prevede anche l'estensione **Tasks**: la chiamata può restituire un "task" e il client lo interroga da solo. La useremo quando i client la supportano; `kleo_get_job` resta comunque, perché funziona ovunque.
 
 ## 4. I sei strumenti, con le descrizioni che legge il modello
 
 Le descrizioni sono il manuale del modello: se sono scritte bene, il modello sceglie lo strumento giusto e compila i parametri giusti senza che l'utente sappia nulla di tecnico.
 
 ```jsonc
-// list_templates — "List the video templates Kleo can render. Call this before create_video
+// kleo_list_templates — "List the video templates Kleo can render. Call this before kleo_create_video
 //                   when the user hasn't named a template, and pick the best match."
 { } // nessun parametro
 
-// create_video — "Start rendering a video. Returns immediately with a job_id; rendering takes
+// kleo_create_video — "Start rendering a video. Returns immediately with a job_id; rendering takes
 //                 15–70 minutes. Tell the user the estimate and offer to check progress later."
 {
   "template":   { "type": "string", "enum": ["story-documentary","top-10","viral-short","reddit-story",
@@ -41,24 +41,24 @@ Le descrizioni sono il manuale del modello: se sono scritte bene, il modello sce
   "duration_s": { "type": "integer", "minimum": 15, "maximum": 900 },
   "format":     { "type": "string", "enum": ["16:9","9:16"] },
   "language":   { "type": "string", "enum": ["en","it"], "default": "en" },
-  "voice":      { "type": "string", "description": "Optional voice id from list_templates; default per template." },
+  "voice":      { "type": "string", "description": "Optional voice id from kleo_list_templates; default per template." },
   "notify_email": { "type": "string", "format": "email", "description": "Optional. Email the download link when done." }
 }
 // → { "job_id": "gt_7f3k", "eta_min": 25, "credits_used": 1 }
 
-// get_job — "Check a render job. Returns state (queued|rendering|done|failed|cancelled), current
+// kleo_get_job — "Check a render job. Returns state (queued|rendering|done|failed|cancelled), current
 //            track, percent and ETA. Call when the user asks for progress."
 { "job_id": { "type": "string" } }
 // → { "state": "rendering", "track": "finishing", "percent": 82, "eta_min": 4 }
 
-// get_result — "Get download links for a finished job (mp4, srt, thumbnail). Links expire in 7 days."
+// kleo_get_result — "Get download links for a finished job (mp4, srt, thumbnail). Links expire in 7 days."
 { "job_id": { "type": "string" } }
 // → { "mp4_url": "...", "srt_url": "...", "thumb_url": "...", "expires_at": "2026-09-16T10:00:00Z" }
 
-// generate_thumbnail — "Generate three thumbnail options from a finished job or from a text prompt."
+// kleo_generate_thumbnail — "Generate three thumbnail options from a finished job or from a text prompt."
 { "job_id": { "type": "string" }, "prompt": { "type": "string" } } // uno dei due
 
-// cancel_job — "Cancel a queued or running job. Unused credits are refunded."
+// kleo_cancel_job — "Cancel a queued or running job. Unused credits are refunded."
 { "job_id": { "type": "string" } }
 ```
 
@@ -113,8 +113,8 @@ Requisito comune a tutti: l'indirizzo deve essere **HTTPS pubblico**. In locale 
 
 ## 8. Cosa vede l'utente, in pratica
 
-- In Claude: dopo il collegamento, nel menu strumenti compare "Kleo" con l'interruttore. Le chiamate compaiono come schede "kleo · create_video" con i parametri, esattamente come nel mockup del sito.
-- In ChatGPT: chiede conferma prima di ogni chiamata che modifica qualcosa (create_video, cancel_job); le letture (get_job) passano senza conferma se lo strumento è marcato "read-only".
+- In Claude: dopo il collegamento, nel menu strumenti compare "Kleo" con l'interruttore. Le chiamate compaiono come schede "kleo · kleo_create_video" con i parametri, esattamente come nel mockup del sito.
+- In ChatGPT: chiede conferma prima di ogni chiamata che modifica qualcosa (kleo_create_video, kleo_cancel_job); le letture (kleo_get_job) passano senza conferma se lo strumento è marcato "read-only".
 - In Cursor e Claude Code: il modello può anche scaricare il file con `curl` nella cartella del progetto, perché ha un terminale.
 
 ## 9. Quando cambiamo nome

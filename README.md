@@ -5,7 +5,7 @@ A remote [Model Context Protocol](https://modelcontextprotocol.io) server that r
 Runs entirely on Cloudflare (Workers + KV + D1 + R2 + Cron), free plan.
 
 ```
-client (Claude…) ──OAuth 2.1──▶ /mcp  tools: list_templates · create_video · get_job · get_result · generate_thumbnail · cancel_job
+client (Claude…) ──OAuth 2.1──▶ /mcp  tools: kleo_list_templates · kleo_create_video · kleo_get_job · kleo_get_result · kleo_generate_thumbnail · kleo_cancel_job
                                 │
                      D1 (users, credits, jobs)   KV (OAuth)   R2 (renders, 7-day links)
                                 │  cron every minute: start queued jobs, watch running ones, purge expired files

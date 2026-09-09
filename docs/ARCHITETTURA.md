@@ -15,12 +15,12 @@ Il progetto è fattibile e l'architettura che hai in mente è quella giusta: un 
 ### Correzione 1: la chiamata MCP non può durare 30 minuti
 Un tool MCP deve rispondere in secondi. Claude, ChatGPT e Grok chiudono la richiesta molto prima di 25 minuti. Il pattern corretto è asincrono:
 
-- `create_video` mette il lavoro in coda e risponde subito con un `job_id`.
-- `get_job` risponde con stato, percentuale, tempo stimato. L'assistente lo chiama quando l'utente chiede "a che punto è?".
-- `get_result` risponde con i link di download.
+- `kleo_create_video` mette il lavoro in coda e risponde subito con un `job_id`.
+- `kleo_get_job` risponde con stato, percentuale, tempo stimato. L'assistente lo chiama quando l'utente chiede "a che punto è?".
+- `kleo_get_result` risponde con i link di download.
 - In più, notifica via email o Telegram quando è pronto, così l'utente non deve tenere la chat aperta.
 
-Lo standard MCP (revisione 2026-07-28) ha anche l'estensione ufficiale **Tasks**: `tools/call` può restituire un handle e il client fa `tasks/get`. Usala quando i client la supportano, ma tieni sempre `get_job` come via di riserva.
+Lo standard MCP (revisione 2026-07-28) ha anche l'estensione ufficiale **Tasks**: `tools/call` può restituire un handle e il client fa `tasks/get`. Usala quando i client la supportano, ma tieni sempre `kleo_get_job` come via di riserva.
 
 ### Correzione 2: il video non "arriva sul computer di Cristiano"
 Un server MCP non può spingere un file da 500 MB dentro la chat. Il risultato è un **link firmato** a un file su storage (valido per esempio 7 giorni). Cristiano clicca e scarica. In Claude Code o Cursor, l'assistente può anche lanciare `curl` e scaricare nella cartella del progetto, ma è sempre un link.
@@ -37,7 +37,7 @@ Un server MCP non può spingere un file da 500 MB dentro la chat. Il risultato �
 
 ```
 Cristiano ──(chat)──▶ Claude / ChatGPT / Grok
-                         │  tools/call create_video
+                         │  tools/call kleo_create_video
                          ▼
               ┌──────────────────────┐
               │  VM piccola (Hetzner) │  Caddy (HTTPS) + server MCP (FastMCP)
@@ -51,7 +51,7 @@ Cristiano ──(chat)──▶ Claude / ChatGPT / Grok
               │  RTX 4090 / 5090      │   3. upload MP4+SRT+JPG su R2, ping alla VM
               └──────────┬───────────┘   4. vastai destroy instance
                          ▼
-              Cloudflare R2 ──(link firmato, 7 gg)──▶ get_result ──▶ chat di Cristiano
+              Cloudflare R2 ──(link firmato, 7 gg)──▶ kleo_get_result ──▶ chat di Cristiano
 ```
 
 Il sito pubblico non ha bisogno della VM: è statico, sta gratis su **Cloudflare Pages** (`kleo.ai`), mentre la VM serve solo `mcp.kleo.ai`. Se preferisci tutto in un posto, Caddy sulla VM serve anche il sito senza problemi.
@@ -95,13 +95,13 @@ Nota sui modelli: LTX-2.5 (agosto 2026, pesi aperti) genera già 4K con audio da
 ## 6. Strumenti MCP (schema proposto)
 
 ```
-list_templates()                      -> [{id, nome, formato, durata_min, durata_max, parametri}]
-create_video(template, prompt, durata_s, formato, lingua, voce?, stile?, notifica?)
+kleo_list_templates()                      -> [{id, nome, formato, durata_min, durata_max, parametri}]
+kleo_create_video(template, prompt, durata_s, formato, lingua, voce?, stile?, notifica?)
                                       -> {job_id, stima_min, crediti_usati}
-get_job(job_id)                       -> {stato, traccia, percentuale, eta_min}
-get_result(job_id)                    -> {mp4_url, srt_url, thumb_url, scade_il}
-generate_thumbnail(job_id | prompt)   -> {job_id}
-cancel_job(job_id)                    -> {stato, crediti_restituiti}
+kleo_get_job(job_id)                       -> {stato, traccia, percentuale, eta_min}
+kleo_get_result(job_id)                    -> {mp4_url, srt_url, thumb_url, scade_il}
+kleo_generate_thumbnail(job_id | prompt)   -> {job_id}
+kleo_cancel_job(job_id)                    -> {stato, crediti_restituiti}
 ```
 
 Regole di sicurezza da mettere dal primo giorno:

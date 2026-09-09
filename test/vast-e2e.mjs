@@ -45,7 +45,7 @@ async function main() {
   const call = async (name, args) => { const r = await client.callTool({ name, arguments: args }); return r.structuredContent ?? JSON.parse(r.content[0].text); };
 
   step("create_video → the orchestrator rents a GPU on the next tick");
-  const job = await call("create_video", { template: "did-you-know", prompt: "Three surprising facts about octopuses, fast and cheerful", duration_s: 20, format: "9:16" });
+  const job = await call("kleo_create_video", { template: "did-you-know", prompt: "Three surprising facts about octopuses, fast and cheerful", duration_s: 20, format: "9:16" });
   jobId = job.job_id; assert(jobId, "no job id");
   console.log("  job", jobId);
 
@@ -53,7 +53,7 @@ async function main() {
   const audit = () => { try { const out = execSync(`npx wrangler d1 execute kleo-db --local --json --command "SELECT at,event,detail FROM audit WHERE job_id='${jobId}' ORDER BY id"`, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }); return JSON.parse(out.slice(out.indexOf("[")))[0].results; } catch { return []; } };
   let seen = 0;
   while ((Date.now() - t0) / 60000 < MAX_MIN) {
-    view = await call("get_job", { job_id: jobId });
+    view = await call("kleo_get_job", { job_id: jobId });
     const line = `${view.state} ${view.percent}% ${view.track ?? ""}`;
     if (line !== lastLine) { console.log(`  ${Math.round((Date.now() - t0) / 1000)}s  ${line}`); lastLine = line; }
     const rows = audit(); for (const r of rows.slice(seen)) console.log(`     · ${r.at.slice(11, 19)} ${r.event} ${(r.detail ?? "").slice(0, 160)}`); seen = rows.length;
@@ -63,7 +63,7 @@ async function main() {
   assert(view.state === "done", `job ended as ${view.state}: ${view.error ?? ""}`);
 
   step("download + verify");
-  const res = await call("get_result", { job_id: jobId });
+  const res = await call("kleo_get_result", { job_id: jobId });
   const buf = Buffer.from(await (await fetch(res.video_url)).arrayBuffer());
   fs.writeFileSync("/tmp/claude-1000/vast-e2e.mp4", buf);
   const probe = execSync(`ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate,duration -of csv=p=0 /tmp/claude-1000/vast-e2e.mp4`, { encoding: "utf8" }).trim();
@@ -74,6 +74,6 @@ async function main() {
 }
 main().catch(async (e) => {
   console.error("\n\x1b[31mFAIL\x1b[0m", e.message);
-  if (client && jobId) { try { const r = await client.callTool({ name: "cancel_job", arguments: { job_id: jobId } }); console.log("  cancelled:", r.content?.[0]?.text); } catch {} }
+  if (client && jobId) { try { const r = await client.callTool({ name: "kleo_cancel_job", arguments: { job_id: jobId } }); console.log("  cancelled:", r.content?.[0]?.text); } catch {} }
   process.exitCode = 1;
 }).finally(async () => { await sweep("after"); try { await client?.close(); } catch {} process.exit(); });
