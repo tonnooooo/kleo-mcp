@@ -92,6 +92,7 @@ export const vastBackend: RenderBackend = {
             KLEO_JOB_ID: job.id,
             KLEO_SECRET: job.worker_secret,
             KLEO_SELF_DESTRUCT_MIN: String(Math.max(10, timeoutMin - 5)),
+            KLEO_DPH: String(offer.dph_total),
           },
         };
         const r = await vast<{ success: boolean; new_contract?: number; msg?: string; error?: string }>(env, "PUT", `/asks/${offer.id}/`, body);

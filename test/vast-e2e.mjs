@@ -67,7 +67,7 @@ async function main() {
   const buf = Buffer.from(await (await fetch(res.video_url)).arrayBuffer());
   fs.writeFileSync("/tmp/claude-1000/vast-e2e.mp4", buf);
   const probe = execSync(`ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate,duration -of csv=p=0 /tmp/claude-1000/vast-e2e.mp4`, { encoding: "utf8" }).trim();
-  console.log("  video.mp4", buf.length, "bytes ·", probe, "· total", Math.round((Date.now() - t0) / 60), "min");
+  console.log("  video.mp4", buf.length, "bytes ·", probe, "· total", Math.round((Date.now() - t0) / 6000) / 10, "min");
   const [w, h, fps] = probe.split(",");
   assert(w === "2160" && h === "3840" && fps === "60/1", "unexpected geometry " + probe);
   console.log("\n\x1b[32mPASS\x1b[0m real GPU render on Vast.ai");

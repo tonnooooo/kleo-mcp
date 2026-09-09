@@ -99,9 +99,11 @@ export async function failJob(env: Env, job: Job, reason: string, retry: boolean
 export async function finishJob(env: Env, job: Job, costUsd: number | null): Promise<void> {
   const finished = nowIso();
   const expires = addDays(finished, int(env.RESULT_TTL_DAYS, 7));
-  await updateJob(env, job.id, { state: "done", percent: 100, track: null, eta_min: 0, finished_at: finished, expires_at: expires, cost_usd: costUsd, error: null });
-  try { await backendFor(env, job.backend).destroy(env, job); } catch (e) { await audit(env, job.user_id, job.id, "backend.destroy.error", String(e)); }
-  await audit(env, job.user_id, job.id, "job.done", { cost_usd: costUsd });
+  let cost = costUsd;
+  try { const est = await backendFor(env, job.backend).destroy(env, job); if (cost == null && typeof est === "number") cost = est; }
+  catch (e) { await audit(env, job.user_id, job.id, "backend.destroy.error", String(e)); }
+  await updateJob(env, job.id, { state: "done", percent: 100, track: null, eta_min: 0, finished_at: finished, expires_at: expires, cost_usd: cost, error: null });
+  await audit(env, job.user_id, job.id, "job.done", { cost_usd: cost });
   const fresh = (await getJob(env, job.id))!;
   try { await notifyDone(env, fresh, await resultLinks(env, env.PUBLIC_URL, fresh)); } catch (e) { await audit(env, job.user_id, job.id, "notify.error", String(e)); }
 }
