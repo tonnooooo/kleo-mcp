@@ -1,5 +1,5 @@
 /**
- * End-to-end smoke test against a local `wrangler dev` (or GATTO_URL if set):
+ * End-to-end smoke test against a local `wrangler dev` (or KLEO_URL if set):
  *  DCR → PKCE authorize (invite login) → token → MCP tools/list → create_video → cron ticks → get_job → get_result → download → cancel.
  * Run: npm run test:smoke
  */
@@ -7,8 +7,9 @@ import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 
-const BASE = process.env.GATTO_URL ?? "http://127.0.0.1:8787";
-const INVITE = process.env.GATTO_INVITE ?? "GATTO-BETA";
+const PORT = process.env.SMOKE_PORT ?? "8799";
+const BASE = process.env.KLEO_URL ?? `http://127.0.0.1:${PORT}`;
+const INVITE = process.env.KLEO_INVITE ?? "KLEO-BETA";
 const EMAIL = `smoke-${Date.now()}@example.com`;
 let dev;
 const b64url = (b) => Buffer.from(b).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -25,9 +26,9 @@ async function waitHealthy(ms = 60000) {
 }
 
 async function main() {
-  if (!process.env.GATTO_URL) {
+  if (!process.env.KLEO_URL) {
     step("starting wrangler dev");
-    dev = spawn("npx", ["wrangler", "dev", "--test-scheduled", "--port", "8787", "--ip", "127.0.0.1", "--var", "MOCK_TOTAL_SECONDS:12"], { stdio: ["ignore", "pipe", "pipe"] });
+    dev = spawn("npx", ["wrangler", "dev", "--test-scheduled", "--port", PORT, "--ip", "127.0.0.1", "--var", "MOCK_TOTAL_SECONDS:12"], { stdio: ["ignore", "pipe", "pipe"], detached: true });
     dev.stdout.on("data", (d) => process.env.SMOKE_VERBOSE && process.stdout.write(d));
     dev.stderr.on("data", (d) => process.env.SMOKE_VERBOSE && process.stderr.write(d));
   }
@@ -93,10 +94,9 @@ async function main() {
 
   step("orchestrator ticks (cron) until the mock render finishes");
   let view;
-  for (let i = 0; i < 40; i++) {
-    const t = await fetch(`${BASE}/__scheduled?cron=*+*+*+*+*`);
-    assert(t.ok, "scheduled trigger failed: " + t.status);
-    await new Promise((r) => setTimeout(r, 1000));
+  for (let i = 0; i < (process.env.KLEO_URL ? 60 : 40); i++) {
+    if (!process.env.KLEO_URL) { const t = await fetch(`${BASE}/__scheduled?cron=*+*+*+*+*`); assert(t.ok, "scheduled trigger failed: " + t.status); }
+    await new Promise((r) => setTimeout(r, process.env.KLEO_URL ? 4000 : 1000));
     view = (await call("get_job", { job_id: jobId })).data;
     process.stdout.write(`  ${view.state} ${view.percent}% ${view.track ?? ""}\n`);
     if (view.state === "done" || view.state === "failed") break;
@@ -129,4 +129,7 @@ async function main() {
   console.log("\n\x1b[32mPASS\x1b[0m all smoke checks");
 }
 
-main().then(() => { dev?.kill("SIGTERM"); process.exit(0); }).catch((e) => { console.error("\n\x1b[31mFAIL\x1b[0m", e.message); dev?.kill("SIGTERM"); process.exit(1); });
+function stopDev() { if (!dev) return; try { process.kill(-dev.pid, "SIGTERM"); } catch {} try { dev.kill("SIGTERM"); } catch {} }
+main().then(() => { stopDev(); process.exit(0); }).catch((e) => { console.error("\n\x1b[31mFAIL\x1b[0m", e.message); stopDev(); process.exit(1); });
+process.on("SIGTERM", () => { stopDev(); process.exit(143); });
+process.on("SIGINT", () => { stopDev(); process.exit(130); });

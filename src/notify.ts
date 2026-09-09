@@ -6,7 +6,7 @@ export async function notifyDone(env: Env, job: Job, links: Record<string, strin
   if (!job.notify_email || !env.RESEND_API_KEY) return;
   const lines = Object.entries(links).map(([k, v]) => `${k.replace("_url", "")}: ${v}`).join("\n");
   const body = {
-    from: env.NOTIFY_FROM ?? "Gatto <noreply@example.com>",
+    from: env.NOTIFY_FROM ?? "Kleo <noreply@example.com>",
     to: [job.notify_email],
     subject: `Your video is ready (${job.id})`,
     text: `Your ${job.template} video is rendered.\n\n${lines}\n\nLinks expire on ${job.expires_at}.`,

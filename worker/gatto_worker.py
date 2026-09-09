@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """
-Gatto GPU worker — runs INSIDE the ephemeral Vast.ai instance, one job per instance.
+Kleo GPU worker — runs INSIDE the ephemeral Vast.ai instance, one job per instance.
 
-It talks only to the Gatto API (GATTO_API) with the per-job secret (GATTO_SECRET):
+It talks only to the Kleo API (KLEO_API) with the per-job secret (KLEO_SECRET):
   1. fetch the job spec              GET  /internal/jobs/{id}
   2. report progress                 POST /internal/jobs/{id}/progress
   3. render (see render() below)     <-- plug your ComfyUI / Wan / LTX / ffmpeg pipeline here
   4. upload the outputs              PUT  /internal/jobs/{id}/files/{name}  (multipart for big files)
   5. mark done / failed              POST /internal/jobs/{id}/done | /failed
   6. destroy this very instance      DELETE https://console.vast.ai/api/v0/instances/$CONTAINER_ID/  (CONTAINER_API_KEY)
-A watchdog timer (GATTO_SELF_DESTRUCT_MIN) destroys the instance even if the render hangs.
+A watchdog timer (KLEO_SELF_DESTRUCT_MIN) destroys the instance even if the render hangs.
 Standard library only, so it runs in any image with python3 and ffmpeg.
 """
 import json, os, sys, time, threading, subprocess, tempfile, urllib.request, urllib.error, traceback
 
-API = os.environ.get("GATTO_API", "").rstrip("/")
-JOB = os.environ.get("GATTO_JOB_ID", "")
-SECRET = os.environ.get("GATTO_SECRET", "")
-SELF_DESTRUCT_MIN = int(os.environ.get("GATTO_SELF_DESTRUCT_MIN", "110"))
+API = os.environ.get("KLEO_API", "").rstrip("/")
+JOB = os.environ.get("KLEO_JOB_ID", "")
+SECRET = os.environ.get("KLEO_SECRET", "")
+SELF_DESTRUCT_MIN = int(os.environ.get("KLEO_SELF_DESTRUCT_MIN", "110"))
 PART = 50 * 1024 * 1024
 
 
@@ -140,20 +140,20 @@ def render(job, out_dir):
 
 def main():
     if not (API and JOB and SECRET):
-        log("missing GATTO_API / GATTO_JOB_ID / GATTO_SECRET"); sys.exit(2)
+        log("missing KLEO_API / KLEO_JOB_ID / KLEO_SECRET"); sys.exit(2)
     watchdog()
     started = time.time()
     try:
         job = api("GET", f"/internal/jobs/{JOB}")
         log("job", JOB, job["template"], job["params"])
         progress("script", 1, message="worker started")
-        out_dir = tempfile.mkdtemp(prefix="gatto-")
+        out_dir = tempfile.mkdtemp(prefix="kleo-")
         files = render(job, out_dir)
         for name, path in files.items():
             progress("finishing", 97, message=f"uploading {name}")
             upload(path, name)
         cost = None
-        dph = os.environ.get("GATTO_DPH")                      # optional: orchestrator can pass the hourly price
+        dph = os.environ.get("KLEO_DPH")                      # optional: orchestrator can pass the hourly price
         if dph:
             cost = round(float(dph) * (time.time() - started) / 3600, 4)
         api("POST", f"/internal/jobs/{JOB}/done", {"cost_usd": cost})

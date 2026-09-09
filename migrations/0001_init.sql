@@ -1,4 +1,4 @@
--- Gatto MCP: initial schema (D1 / SQLite)
+-- Kleo MCP: initial schema (D1 / SQLite)
 CREATE TABLE users (
   id            TEXT PRIMARY KEY,
   email         TEXT NOT NULL UNIQUE,
@@ -65,5 +65,5 @@ CREATE TABLE audit (
 );
 
 -- Seed: one shared beta code (50 uses, 3 credits each). Add personal codes with:
---   npx wrangler d1 execute gatto-db --remote --command "INSERT INTO invites (code,credits,max_uses,note) VALUES ('CRISTIANO-1',5,1,'Cristiano')"
-INSERT INTO invites (code, credits, max_uses, note) VALUES ('GATTO-BETA', 3, 50, 'shared beta code');
+--   npx wrangler d1 execute kleo-db --remote --command "INSERT INTO invites (code,credits,max_uses,note) VALUES ('CRISTIANO-1',5,1,'Cristiano')"
+INSERT INTO invites (code, credits, max_uses, note) VALUES ('KLEO-BETA', 3, 50, 'shared beta code');

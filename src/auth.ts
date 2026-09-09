@@ -85,7 +85,7 @@ async function parseOrError(request: Request, env: Env): Promise<AuthRequest | R
 function page(o: { clientName: string; oauthQuery: string; error?: string; email?: string; invite?: string }): string {
   const client = escapeHtml(o.clientName || "your assistant");
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Connect to Gatto</title>
+<title>Connect to Kleo</title>
 <style>
 :root{color-scheme:dark;--bg:#0F1216;--bg2:#151920;--line:#262C36;--ink:#ECEAE4;--mute:#838B99;--amber:#F3B53F;--amber-ink:#1A1200;--rose:#F58B8B}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 "Instrument Sans","Helvetica Neue",Arial,sans-serif;display:grid;place-items:center;min-height:100vh;padding:24px}
@@ -100,13 +100,13 @@ button{width:100%;padding:13px;border-radius:10px;border:0;background:var(--ambe
 .err{background:rgba(245,139,139,.12);border:1px solid var(--rose);color:var(--ink);padding:10px 12px;border-radius:8px;font-size:.9rem;margin-bottom:12px}
 .foot{margin-top:16px;font-size:.8rem;color:var(--mute)}
 </style></head><body><form class="card" method="post" action="/authorize">
-<div class="brand"><svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><path d="M5 12 L5 3 L13 10 Z" fill="#F3B53F"/><path d="M27 12 L27 3 L19 10 Z" fill="#F3B53F"/><rect x="4" y="9" width="24" height="20" rx="5" fill="#F3B53F"/><path d="M4 14h24v3.5H4z" fill="#1A1200" opacity=".85"/><circle cx="12" cy="23" r="1.6" fill="#1A1200"/><circle cx="20" cy="23" r="1.6" fill="#1A1200"/></svg>Gatto <span>MCP</span></div>
-<h1>Connect ${client} to Gatto</h1>
+<div class="brand"><svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="7" width="26" height="22" rx="5" fill="#F3B53F"/><path d="M3 12h26v4H3z" fill="#1A1200" opacity=".85"/><path d="M7 12l3.5 4M13 12l3.5 4M19 12l3.5 4" stroke="#F3B53F" stroke-width="1.6"/><path d="M10 19v8M10 23l6-4M10 23l6 4" stroke="#1A1200" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>Kleo <span>MCP</span></div>
+<h1>Connect ${client} to Kleo</h1>
 <p>${client} wants to create videos on your behalf. Sign in with the email and invite code you received.</p>
 ${o.error ? `<div class="err" role="alert">${escapeHtml(o.error)}</div>` : ""}
 <input type="hidden" name="oauth_query" value="${escapeHtml(o.oauthQuery)}">
 <label for="email">Email</label><input id="email" name="email" type="email" required autocomplete="email" value="${escapeHtml(o.email ?? "")}" placeholder="you@example.com">
-<label for="invite">Invite code</label><input id="invite" name="invite" type="text" required autocomplete="off" value="${escapeHtml(o.invite ?? "")}" placeholder="GATTO-XXXX" style="text-transform:uppercase">
+<label for="invite">Invite code</label><input id="invite" name="invite" type="text" required autocomplete="off" value="${escapeHtml(o.invite ?? "")}" placeholder="KLEO-XXXX" style="text-transform:uppercase">
 <label class="chk" style="text-transform:none;letter-spacing:0"><input type="checkbox" name="consent" value="yes" required> Allow ${client} to start renders, check progress and download my videos.</label>
 <button type="submit">Connect</button>
 <div class="foot">Renders cost credits from your account. You can revoke this access any time from ${client}'s connector settings.</div>

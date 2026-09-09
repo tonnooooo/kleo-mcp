@@ -1,14 +1,14 @@
 {
-  "name": "gatto-mcp",
+  "name": "kleo-mcp",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Gatto: a remote MCP server that renders YouTube videos and Shorts on ephemeral GPUs",
+  "description": "Kleo: a remote MCP server that renders YouTube videos and Shorts on ephemeral GPUs",
   "scripts": {
     "dev": "wrangler dev --test-scheduled",
     "deploy": "wrangler deploy",
-    "db:migrate:local": "wrangler d1 migrations apply gatto-db --local",
-    "db:migrate": "wrangler d1 migrations apply gatto-db --remote",
+    "db:migrate:local": "wrangler d1 migrations apply kleo-db --local",
+    "db:migrate": "wrangler d1 migrations apply kleo-db --remote",
     "typecheck": "tsc --noEmit",
     "test:smoke": "node test/smoke.mjs"
   },

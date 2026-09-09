@@ -71,15 +71,15 @@ export const vastBackend: RenderBackend = {
           client_id: "me",
           image: env.VAST_IMAGE,
           disk: int(env.VAST_DISK_GB, 80),
-          label: `gatto-${job.id}`,
+          label: `kleo-${job.id}`,
           runtype: "ssh",
           cancel_unavail: true,
-          onstart: "env >> /etc/environment; cd /opt/gatto && nohup python3 gatto_worker.py >> /var/log/gatto.log 2>&1 &",
+          onstart: "env >> /etc/environment; cd /opt/kleo && nohup python3 kleo_worker.py >> /var/log/kleo.log 2>&1 &",
           env: {
-            GATTO_API: env.PUBLIC_URL,
-            GATTO_JOB_ID: job.id,
-            GATTO_SECRET: job.worker_secret,
-            GATTO_SELF_DESTRUCT_MIN: String(Math.max(10, timeoutMin - 5)),
+            KLEO_API: env.PUBLIC_URL,
+            KLEO_JOB_ID: job.id,
+            KLEO_SECRET: job.worker_secret,
+            KLEO_SELF_DESTRUCT_MIN: String(Math.max(10, timeoutMin - 5)),
           },
         };
         const r = await vast<{ success: boolean; new_contract?: number; msg?: string; error?: string }>(env, "PUT", `/asks/${offer.id}/`, body);

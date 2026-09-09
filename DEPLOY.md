@@ -1,4 +1,4 @@
-# Gatto: messa online, passo per passo
+# Kleo: messa online, passo per passo
 
 *Per te, in italiano. Aggiornato al 9 settembre 2026.*
 
@@ -17,9 +17,9 @@ Se un giorno servirà una macchina, la scelta è Hetzner (6 € al mese, affidab
 
 | Cosa | Dove | Stato |
 |---|---|---|
-| Sito in inglese | repository GitHub `gatto-site`, GitHub Pages | online |
-| Server MCP | repository GitHub privato `gatto-mcp` (questa cartella) | testato in locale, pronto per il deploy |
-| Worker GPU per Vast.ai | `worker/gatto_worker.py` + `worker/Dockerfile` | pronto, con pipeline segnaposto (ffmpeg) da sostituire con la tua |
+| Sito in inglese | repository GitHub `kleo-site`, GitHub Pages | online |
+| Server MCP | repository GitHub privato `kleo-mcp` (questa cartella) | testato in locale, pronto per il deploy |
+| Worker GPU per Vast.ai | `worker/kleo_worker.py` + `worker/Dockerfile` | pronto, con pipeline segnaposto (ffmpeg) da sostituire con la tua |
 | Test end-to-end | `npm run test:smoke` | passa: login OAuth, 6 strumenti, coda, render simulato, download firmato, annullamento con rimborso |
 
 ## 3. Cosa devi fare tu (dieci minuti)
@@ -27,33 +27,33 @@ Se un giorno servirà una macchina, la scelta è Hetzner (6 € al mese, affidab
 Non creo account e non gestisco password: è una regola fissa, anche se me lo chiedi. Tutto resta sotto i tuoi account Google e GitHub, e non c'è nessuna password mia da darti.
 
 1. **Account Cloudflare.** Vai su `https://dash.cloudflare.com/sign-up` e scegli **Sign in with Google** con il tuo account solito: crea l'account senza carta. Piano Free.
-2. **Autorizzami a fare il deploy.** Nel terminale del tuo computer, dentro la cartella `gatto-mcp`:
+2. **Autorizzami a fare il deploy.** Nel terminale del tuo computer, dentro la cartella `kleo-mcp`:
    ```bash
    npx wrangler login
    ```
    Si apre il browser, clicchi **Allow**. Da quel momento posso creare le risorse e pubblicare dal tuo computer, senza che nessuna chiave passi in chat. Alternativa: crea un API token (My Profile → API Tokens → Create Token → modello "Edit Cloudflare Workers", aggiungendo D1, KV e R2) e impostalo come variabile `CLOUDFLARE_API_TOKEN` prima di lanciarmi.
-3. **Dominio (facoltativo, quando vuoi).** Senza dominio il server risponde su `https://gatto-mcp.<tuo-account>.workers.dev/mcp`, che funziona già con Claude, ChatGPT e Grok. Con un dominio: aggiungilo a Cloudflare, il server va su `mcp.tuodominio` e il sito su `tuodominio`.
+3. **Dominio (facoltativo, quando vuoi).** Senza dominio il server risponde su `https://kleo-mcp.<tuo-account>.workers.dev/mcp`, che funziona già con Claude, ChatGPT e Grok. Con un dominio: aggiungilo a Cloudflare, il server va su `mcp.tuodominio` e il sito su `tuodominio`.
 
 ## 4. Cosa faccio io appena hai fatto il login (cinque minuti)
 
 ```bash
 npx wrangler kv namespace create OAUTH_KV      # id → wrangler.jsonc
-npx wrangler d1 create gatto-db                 # id → wrangler.jsonc
-npx wrangler r2 bucket create gatto-renders
+npx wrangler d1 create kleo-db                 # id → wrangler.jsonc
+npx wrangler r2 bucket create kleo-renders
 npm run db:migrate
 openssl rand -hex 32 | npx wrangler secret put INTERNAL_SECRET
-echo "GATTO-BETA,CRISTIANO-1" | npx wrangler secret put INVITE_CODES
+echo "KLEO-BETA,CRISTIANO-1" | npx wrangler secret put INVITE_CODES
 # PUBLIC_URL in wrangler.jsonc → l'URL workers.dev (o il dominio)
 npm run deploy
 ```
 
 Poi ti do l'indirizzo. Lo incolli in Claude (Impostazioni → Connettori → Aggiungi connettore personalizzato), fai l'accesso con la tua email e il codice invito, e chiedi il primo video. In modalità `mock` il render finisce in un minuto e il link scarica un MP4 di prova: serve a vedere tutto il giro funzionare da dentro Claude prima di accendere le GPU.
 
-I segreti generati (INTERNAL_SECRET, codici invito) li salvo in `gatto-mcp/.secrets.local`, file escluso da git, così li hai tu. Le chiavi Cloudflare non le vedo mai: vivono nel login di wrangler sul tuo computer.
+I segreti generati (INTERNAL_SECRET, codici invito) li salvo in `kleo-mcp/.secrets.local`, file escluso da git, così li hai tu. Le chiavi Cloudflare non le vedo mai: vivono nel login di wrangler sul tuo computer.
 
 ## 5. Accendere le GPU vere (Vast.ai)
 
-1. Nel file `worker/gatto_worker.py` la funzione `render()` è un segnaposto che produce un MP4 con ffmpeg alla risoluzione giusta. Ci mettiamo la tua procedura di oggi (ComfyUI, Wan o LTX, SeedVR2, RIFE). Il contratto col server non cambia: `progress()`, poi i tre file, poi `done`.
+1. Nel file `worker/kleo_worker.py` la funzione `render()` è un segnaposto che produce un MP4 con ffmpeg alla risoluzione giusta. Ci mettiamo la tua procedura di oggi (ComfyUI, Wan o LTX, SeedVR2, RIFE). Il contratto col server non cambia: `progress()`, poi i tre file, poi `done`.
 2. Costruiamo l'immagine (`podman build`, ce l'hai già) e la pubblichiamo su Docker Hub con il tuo account; il nome finisce in `VAST_IMAGE`.
 3. La tua chiave Vast.ai va messa come secret: `npx wrangler secret put VAST_API_KEY` (la incolli tu nel terminale, non in chat). Consiglio una chiave con permesso "Instance management only".
 4. `RENDER_BACKEND` da `mock` a `vast`, deploy. Il primo job reale: uno Short con il template `viral-short`.
@@ -63,17 +63,17 @@ Protezioni già attive: massimo 5 GPU accese in totale e 2 job per utente; ogni 
 ## 6. Provare in locale, senza account
 
 ```bash
-cd gatto-mcp
+cd kleo-mcp
 npm install
 npm run db:migrate:local
 npm run dev                 # http://localhost:8787
 npm run test:smoke          # l'intero giro, in 40 secondi
 ```
 
-Da Claude Code sul tuo computer: `claude mcp add --transport http gatto-local http://localhost:8787/mcp`, poi `/mcp` → Gatto → Authenticate, email qualsiasi e codice `GATTO-BETA`.
+Da Claude Code sul tuo computer: `claude mcp add --transport http kleo-local http://localhost:8787/mcp`, poi `/mcp` → Kleo → Authenticate, email qualsiasi e codice `KLEO-BETA`.
 
 Per provare da Claude.ai, ChatGPT o Grok serve un indirizzo HTTPS pubblico: o il deploy su Cloudflare (punto 4) o, per un test di un'ora, un tunnel temporaneo `cloudflared tunnel --url http://localhost:8787` che dà un URL `trycloudflare.com` senza account.
 
 ## 7. Se cambiamo nome
 
-Nel server: `name` in `wrangler.jsonc` e in `src/mcp.ts` (è il nome che i client mostrano), il titolo della pagina di login in `src/auth.ts`, i nomi delle risorse (`gatto-db`, `gatto-renders`) se vuoi. Nel sito: cerca e sostituisci "Gatto"/"gatto" e il dominio nei tre snippet. Nei repository: rinominali da GitHub, i link vecchi vengono reindirizzati.
+Nel server: `name` in `wrangler.jsonc` e in `src/mcp.ts` (è il nome che i client mostrano), il titolo della pagina di login in `src/auth.ts`, i nomi delle risorse (`kleo-db`, `kleo-renders`) se vuoi. Nel sito: cerca e sostituisci "Kleo"/"kleo" e il dominio nei tre snippet. Nei repository: rinominali da GitHub, i link vecchi vengono reindirizzati.

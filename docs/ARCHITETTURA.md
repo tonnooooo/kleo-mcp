@@ -1,10 +1,10 @@
-# Gatto — fattibilità e architettura
+# Kleo — fattibilità e architettura
 
-*Bozza del 9 settembre 2026, aggiornata la sera stessa con la decisione finale. "Gatto" è un nome provvisorio. Prezzi verificati alla data, fonti in fondo.*
+*Bozza del 9 settembre 2026, aggiornata la sera stessa con la decisione finale. "Kleo" è un nome provvisorio. Prezzi verificati alla data, fonti in fondo.*
 
 ## 0. Decisione presa (9 settembre, sera)
 
-**Server MCP su Cloudflare Workers, nessuna macchina virtuale, sito su GitHub Pages.** Costo fisso: 0 €. Motivi: un solo account da creare, HTTPS e OAuth già gestiti, nessun server da tenere aggiornato, e Oracle Always Free si è rivelato inadatto (quota dimezzata a giugno 2026, capacità spesso assente, istanze inattive spente, registrazione con carta che fallisce spesso). Il piano con la VM resta valido come alternativa (Hetzner, 6 €/mese), non Oracle. Il server è scritto e testato: vedi la cartella `gatto-mcp` e `DEPLOY.md`.
+**Server MCP su Cloudflare Workers, nessuna macchina virtuale, sito su GitHub Pages.** Costo fisso: 0 €. Motivi: un solo account da creare, HTTPS e OAuth già gestiti, nessun server da tenere aggiornato, e Oracle Always Free si è rivelato inadatto (quota dimezzata a giugno 2026, capacità spesso assente, istanze inattive spente, registrazione con carta che fallisce spesso). Il piano con la VM resta valido come alternativa (Hetzner, 6 €/mese), non Oracle. Il server è scritto e testato: vedi la cartella `kleo-mcp` e `DEPLOY.md`.
 
 Le sezioni che seguono sono l'analisi originale: restano valide, con la sostituzione "VM Hetzner" → "Cloudflare Worker + D1 + R2 + KV + cron".
 
@@ -46,7 +46,7 @@ Cristiano ──(chat)──▶ Claude / ChatGPT / Grok
               └──────────┬───────────┘
                          │ orchestratore: prende il job in coda
                          ▼
-              ┌──────────────────────┐   1. vastai create instance (template Gatto)
+              ┌──────────────────────┐   1. vastai create instance (template Kleo)
               │  GPU effimera Vast.ai │   2. avvio: scarica modelli da R2, render
               │  RTX 4090 / 5090      │   3. upload MP4+SRT+JPG su R2, ping alla VM
               └──────────┬───────────┘   4. vastai destroy instance
@@ -54,7 +54,7 @@ Cristiano ──(chat)──▶ Claude / ChatGPT / Grok
               Cloudflare R2 ──(link firmato, 7 gg)──▶ get_result ──▶ chat di Cristiano
 ```
 
-Il sito pubblico non ha bisogno della VM: è statico, sta gratis su **Cloudflare Pages** (`gatto.ai`), mentre la VM serve solo `mcp.gatto.ai`. Se preferisci tutto in un posto, Caddy sulla VM serve anche il sito senza problemi.
+Il sito pubblico non ha bisogno della VM: è statico, sta gratis su **Cloudflare Pages** (`kleo.ai`), mentre la VM serve solo `mcp.kleo.ai`. Se preferisci tutto in un posto, Caddy sulla VM serve anche il sito senza problemi.
 
 ## 3. Tre livelli di infrastruttura, dal più semplice al più economico
 

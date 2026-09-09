@@ -1,0 +1,13 @@
+/** Temporary-account deploy (no Cloudflare login): no R2, resources provisioned on deploy. */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "kleo-mcp",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-02",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "observability": { "enabled": true },
+  "kv_namespaces": [ { "binding": "OAUTH_KV" } ],
+  "d1_databases": [ { "binding": "DB", "database_name": "kleo-db" } ],
+  "triggers": { "crons": ["* * * * *"] },
+  "vars": { "RENDER_BACKEND": "mock", "MAX_CONCURRENT_GPUS": "5", "MAX_JOBS_PER_USER": "2", "JOB_TIMEOUT_MIN": "120", "FREE_CREDITS": "3", "RESULT_TTL_DAYS": "7", "MOCK_TOTAL_SECONDS": "60", "PUBLIC_URL": "" }
+}

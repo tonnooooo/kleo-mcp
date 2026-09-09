@@ -5,12 +5,23 @@ import { int, nowIso, minutesSince, secondsSince, addDays, base64ToBytes } from 
 import { TINY_MP4_B64 } from "./assets";
 import { resultLinks, FILE_NAMES } from "./jobs";
 import { notifyDone } from "./notify";
+import { putFile, deleteFile } from "./storage";
+import { acquireLock, releaseLock } from "./schema";
 
 const MAX_ATTEMPTS = 3;
 
 /** Runs every minute (cron) and also on demand in dev via /__scheduled. Every step is idempotent. */
-export async function tick(env: Env): Promise<{ started: number; advanced: number; failed: number; purged: number }> {
+export async function tick(env: Env): Promise<{ started: number; advanced: number; failed: number; purged: number; skipped?: boolean }> {
   const stats = { started: 0, advanced: 0, failed: 0, purged: 0 };
+  if (!(await acquireLock(env, "tick", 50))) return { ...stats, skipped: true };
+  try {
+    return await tickInner(env, stats);
+  } finally {
+    await releaseLock(env, "tick");
+  }
+}
+
+async function tickInner(env: Env, stats: { started: number; advanced: number; failed: number; purged: number }) {
   const timeoutMin = int(env.JOB_TIMEOUT_MIN, 120);
 
   for (const job of await activeJobs(env)) {
@@ -63,7 +74,7 @@ export async function tick(env: Env): Promise<{ started: number; advanced: numbe
   }
 
   for (const job of await expiredJobs(env)) {
-    for (const f of await listFiles(env, job.id)) await env.RENDERS.delete(f.key);
+    for (const f of await listFiles(env, job.id)) await deleteFile(env, f.key);
     await deleteFiles(env, job.id);
     await updateJob(env, job.id, { purged_at: nowIso() });
     stats.purged++;
@@ -123,13 +134,13 @@ async function advanceMock(env: Env, job: Job): Promise<void> {
     { name: "thumbnail.svg", type: "image/svg+xml", body: mockThumb(job.template, job.prompt) },
   ];
   for (const f of files) {
-    const obj = await env.RENDERS.put(prefix + f.name, f.body as any, { httpMetadata: { contentType: f.type } });
-    await setFile(env, { job_id: job.id, name: f.name, key: prefix + f.name, size: obj?.size ?? 0, content_type: f.type });
+    const size = await putFile(env, prefix + f.name, f.body, f.type);
+    await setFile(env, { job_id: job.id, name: f.name, key: prefix + f.name, size, content_type: f.type });
   }
   await finishJob(env, job, 0);
 }
 
 function mockThumb(template: string, prompt: string): string {
   const esc = (s: string) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c] as string);
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" width="1280" height="720"><rect width="1280" height="720" fill="#0F1216"/><rect x="60" y="60" width="1160" height="600" rx="24" fill="none" stroke="#F3B53F" stroke-width="6" stroke-dasharray="18 12"/><text x="640" y="330" font-family="Helvetica,Arial,sans-serif" font-size="64" font-weight="700" fill="#ECEAE4" text-anchor="middle">${esc(template)}</text><text x="640" y="410" font-family="Helvetica,Arial,sans-serif" font-size="30" fill="#B9BEC8" text-anchor="middle">${esc(prompt.slice(0, 70))}</text><text x="640" y="600" font-family="monospace" font-size="24" fill="#F3B53F" text-anchor="middle">mock render · Gatto</text></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" width="1280" height="720"><rect width="1280" height="720" fill="#0F1216"/><rect x="60" y="60" width="1160" height="600" rx="24" fill="none" stroke="#F3B53F" stroke-width="6" stroke-dasharray="18 12"/><text x="640" y="330" font-family="Helvetica,Arial,sans-serif" font-size="64" font-weight="700" fill="#ECEAE4" text-anchor="middle">${esc(template)}</text><text x="640" y="410" font-family="Helvetica,Arial,sans-serif" font-size="30" fill="#B9BEC8" text-anchor="middle">${esc(prompt.slice(0, 70))}</text><text x="640" y="600" font-family="monospace" font-size="24" fill="#F3B53F" text-anchor="middle">mock render · Kleo</text></svg>`;
 }

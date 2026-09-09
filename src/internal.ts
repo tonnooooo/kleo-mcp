@@ -4,13 +4,14 @@ import { json, safeEqual, nowIso } from "./util";
 import { finishJob, failJob, trackFor } from "./orchestrator";
 import { backendFor } from "./backends";
 import { FILE_NAMES } from "./jobs";
+import { putFile } from "./storage";
 
 const ALLOWED_FILES = new Set([FILE_NAMES.video.name, FILE_NAMES.subtitles.name, FILE_NAMES.thumbnail.name, "thumbnail.svg", "log.txt"]);
 const TYPES: Record<string, string> = { mp4: "video/mp4", srt: "application/x-subrip", jpg: "image/jpeg", svg: "image/svg+xml", txt: "text/plain" };
 
 /**
  * Worker-facing API. Only the GPU worker of a given job calls these, authenticated with the
- * per-job secret it received as GATTO_SECRET:  Authorization: Bearer <worker_secret>
+ * per-job secret it received as KLEO_SECRET:  Authorization: Bearer <worker_secret>
  *
  *   GET  /internal/jobs/:id                                   job spec for the worker
  *   POST /internal/jobs/:id/progress   {track, percent, eta_min?, message?}
@@ -56,20 +57,23 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
     const record = (size: number) => setFile(env, { job_id: job.id, name, key, size, content_type: ctype });
 
     if (!f[2] && f[0] === `files/${name}` && request.method === "PUT") {
-      const obj = await env.RENDERS.put(key, request.body, { httpMetadata: { contentType: ctype } });
-      await record(obj?.size ?? 0);
-      return json({ ok: true, size: obj?.size ?? 0 });
+      const size = await putFile(env, key, request.body ?? new ArrayBuffer(0), ctype);
+      await record(size);
+      return json({ ok: true, size });
     }
     if (f[0].endsWith("/uploads") && request.method === "POST") {
+      if (!env.RENDERS) return json({ error: "multipart uploads need an R2 bucket; use a single PUT (max 20 MB) on this deployment" }, 501);
       const mpu = await env.RENDERS.createMultipartUpload(key, { httpMetadata: { contentType: ctype } });
       return json({ uploadId: mpu.uploadId, key });
     }
     if (f[3]?.startsWith("parts/") && request.method === "PUT") {
+      if (!env.RENDERS) return json({ error: "no R2 bucket" }, 501);
       const mpu = env.RENDERS.resumeMultipartUpload(key, f[2]!);
       const part = await mpu.uploadPart(parseInt(f[4]!, 10), await request.arrayBuffer());
       return json({ partNumber: part.partNumber, etag: part.etag });
     }
     if (f[3] === "complete" && request.method === "POST") {
+      if (!env.RENDERS) return json({ error: "no R2 bucket" }, 501);
       const b = (await request.json()) as { parts: { partNumber: number; etag: string }[] };
       const mpu = env.RENDERS.resumeMultipartUpload(key, f[2]!);
       const obj = await mpu.complete(b.parts);

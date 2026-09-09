@@ -7,7 +7,7 @@ import { TEMPLATES, TEMPLATE_IDS } from "./templates";
 import { createJob, cancelJob, jobView, resultLinks, JobError, FILE_NAMES } from "./jobs";
 import { audit } from "./db";
 
-const INSTRUCTIONS = `Gatto renders YouTube videos and Shorts (4K, 60 fps) from a template and a prompt.
+const INSTRUCTIONS = `Kleo renders YouTube videos and Shorts (4K, 60 fps) from a template and a prompt.
 Rendering takes 15–70 minutes, so create_video returns a job_id immediately. Tell the user the estimate, then use get_job when they ask for progress and get_result for the download links. Never block waiting.
 If the user has not chosen a template, call list_templates and pick the closest match yourself (Shorts → viral-short unless the content is clearly a Reddit story, a quote, or a list of facts).`;
 
@@ -23,11 +23,11 @@ async function guarded<T>(fn: () => Promise<T>): Promise<T | ReturnType<typeof f
 }
 
 export function buildServer(env: Env, user: User, base: string): McpServer {
-  const server = new McpServer({ name: "Gatto", version: "0.1.0" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "Kleo", version: "0.1.0" }, { instructions: INSTRUCTIONS });
 
   server.registerTool("list_templates", {
     title: "List video templates",
-    description: "List the templates Gatto can render, with formats, duration ranges, voices and credit cost. Call it before create_video when the user has not named a template, and pick the best match.",
+    description: "List the templates Kleo can render, with formats, duration ranges, voices and credit cost. Call it before create_video when the user has not named a template, and pick the best match.",
     inputSchema: z.object({}),
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   }, async () => {

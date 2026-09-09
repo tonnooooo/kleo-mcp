@@ -1,6 +1,7 @@
 import type { Env } from "./env";
 import { getJob, listFiles } from "./db";
 import { hmacHex, safeEqual } from "./util";
+import { getFile } from "./storage";
 
 /** GET /dl/:jobId/:file?exp=<unix>&sig=<hmac>  — signed, time-limited download straight from R2. */
 export async function handleDownload(request: Request, env: Env): Promise<Response> {
@@ -19,25 +20,15 @@ export async function handleDownload(request: Request, env: Env): Promise<Respon
   const file = (await listFiles(env, jobId)).find((f) => f.name === name);
   if (!file) return new Response("Not found", { status: 404 });
 
-  const wantsRange = request.headers.has("range");
-  const obj = await env.RENDERS.get(file.key, wantsRange ? { range: request.headers, onlyIf: request.headers } : { onlyIf: request.headers });
-  if (!obj) return new Response("Not found", { status: 404 });
-  const headers = new Headers();
-  obj.writeHttpMetadata(headers);
-  headers.set("etag", obj.httpEtag);
-  headers.set("accept-ranges", "bytes");
-  headers.set("cache-control", "private, max-age=3600");
-  headers.set("content-disposition", `attachment; filename="gatto-${jobId}-${name}"`);
-  if (!("body" in obj) || !obj.body) return new Response(null, { status: 304, headers });
-  let status = 200;
-  if (wantsRange && obj.range && "offset" in obj.range) {
-    const start = obj.range.offset ?? 0;
-    const length = obj.range.length ?? obj.size - start;
-    headers.set("content-range", `bytes ${start}-${start + length - 1}/${obj.size}`);
-    headers.set("content-length", String(length));
-    status = 206;
-  } else {
-    headers.set("content-length", String(obj.size));
+  const f = await getFile(env, file.key, request.headers.get("range"));
+  if (!f) return new Response("Not found", { status: 404 });
+  const headers = new Headers({ "content-type": f.contentType, etag: f.etag, "accept-ranges": "bytes", "cache-control": "private, max-age=3600",
+    "content-disposition": `attachment; filename="kleo-${jobId}-${name}"` });
+  if (f.range) {
+    headers.set("content-range", `bytes ${f.range.offset}-${f.range.offset + f.range.length - 1}/${f.size}`);
+    headers.set("content-length", String(f.range.length));
+    return new Response(f.body as BodyInit, { status: 206, headers });
   }
-  return new Response(obj.body, { status, headers });
+  headers.set("content-length", String(f.size));
+  return new Response(f.body as BodyInit, { status: 200, headers });
 }

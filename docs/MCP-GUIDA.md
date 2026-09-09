@@ -1,20 +1,20 @@
-# Gatto e l'MCP: come funziona, come si collega, come si costruisce
+# Kleo e l'MCP: come funziona, come si collega, come si costruisce
 
-*Guida per te, in italiano. Il sito resta in inglese. "Gatto" è un nome provvisorio: quando lo cambiamo, la sezione 9 dice cosa toccare.*
+*Guida per te, in italiano. Il sito resta in inglese. "Kleo" è un nome provvisorio: quando lo cambiamo, la sezione 9 dice cosa toccare.*
 
 ## 1. Cos'è un MCP, in cinque righe
 
-Il Model Context Protocol è il modo standard con cui un assistente AI usa strumenti esterni. Ci sono due ruoli: il **client** (Claude, ChatGPT, Grok, Cursor, Claude Code) e il **server** (Gatto). Il server dichiara una lista di **strumenti**, ognuno con un nome, una descrizione e uno schema dei parametri. Il modello legge quelle descrizioni e decide da solo quando chiamare uno strumento. Un server "remoto" è semplicemente un indirizzo HTTPS pubblico, per esempio `https://mcp.gatto.ai/mcp`: chi lo incolla nel proprio assistente ottiene i tuoi strumenti.
+Il Model Context Protocol è il modo standard con cui un assistente AI usa strumenti esterni. Ci sono due ruoli: il **client** (Claude, ChatGPT, Grok, Cursor, Claude Code) e il **server** (Kleo). Il server dichiara una lista di **strumenti**, ognuno con un nome, una descrizione e uno schema dei parametri. Il modello legge quelle descrizioni e decide da solo quando chiamare uno strumento. Un server "remoto" è semplicemente un indirizzo HTTPS pubblico, per esempio `https://mcp.kleo.ai/mcp`: chi lo incolla nel proprio assistente ottiene i tuoi strumenti.
 
 La tua azienda quindi non vende un'app: vende un indirizzo. Tutta l'interfaccia utente è quella dell'assistente che il cliente usa già.
 
 ## 2. Cosa succede quando Cristiano incolla l'indirizzo
 
 1. Il client chiama l'indirizzo e trova `/.well-known/oauth-protected-resource`, che dice "per usarmi serve un token, l'accesso lo gestisce questo authorization server".
-2. Il client si registra come applicazione presso Gatto (in automatico, standard OAuth 2.1) e apre nel browser la **pagina di accesso di Gatto**. Cristiano entra (Google, oppure un codice invito nella beta) e acconsente.
-3. Gatto rilascia un token. Da quel momento ogni richiesta del client porta quel token e Gatto sa che è Cristiano, quanti crediti ha, quanti job ha in corso.
+2. Il client si registra come applicazione presso Kleo (in automatico, standard OAuth 2.1) e apre nel browser la **pagina di accesso di Kleo**. Cristiano entra (Google, oppure un codice invito nella beta) e acconsente.
+3. Kleo rilascia un token. Da quel momento ogni richiesta del client porta quel token e Kleo sa che è Cristiano, quanti crediti ha, quanti job ha in corso.
 4. Il client chiama `tools/list` e mostra al modello i sei strumenti con le loro descrizioni.
-5. Cristiano scrive "fammi uno Short sui pirati". Il modello capisce che serve `create_video`, compila i parametri e il client manda `tools/call`. Gatto risponde in meno di un secondo con un `job_id`. Il modello lo dice a Cristiano: "avviato, ci vogliono circa 25 minuti".
+5. Cristiano scrive "fammi uno Short sui pirati". Il modello capisce che serve `create_video`, compila i parametri e il client manda `tools/call`. Kleo risponde in meno di un secondo con un `job_id`. Il modello lo dice a Cristiano: "avviato, ci vogliono circa 25 minuti".
 6. Venti minuti dopo Cristiano chiede "a che punto è?". Il modello chiama `get_job`, legge "82%, finitura 4K", e lo riferisce. Quando è pronto, `get_result` restituisce i link. Se Cristiano ha lasciato un'email, riceve anche un avviso.
 
 Tutto questo funziona uguale in Claude, ChatGPT, Grok e Cursor, perché lo standard è lo stesso. Cambia solo dove si incolla l'indirizzo.
@@ -28,7 +28,7 @@ Un tool MCP ha lo stesso tempo di una pagina web: i client aspettano al massimo 
 Le descrizioni sono il manuale del modello: se sono scritte bene, il modello sceglie lo strumento giusto e compila i parametri giusti senza che l'utente sappia nulla di tecnico.
 
 ```jsonc
-// list_templates — "List the video templates Gatto can render. Call this before create_video
+// list_templates — "List the video templates Kleo can render. Call this before create_video
 //                   when the user hasn't named a template, and pick the best match."
 { } // nessun parametro
 
@@ -75,7 +75,7 @@ client MCP ──HTTPS──▶ /mcp  (server MCP: tools/list, tools/call)
                       /authorize, /token  (OAuth 2.1: login e token)
                       DB: utenti, crediti, job, log
                       orchestratore: ogni 30–60 s guarda la coda
-                          │ crea GPU effimera (Vast.ai) con env: GATTO_API, GATTO_JOB_ID, GATTO_SECRET
+                          │ crea GPU effimera (Vast.ai) con env: KLEO_API, KLEO_JOB_ID, KLEO_SECRET
                           │ ascolta il callback "done" / "failed"
                           │ distrugge la GPU, aggiorna il job
                       storage (R2): renders/{job_id}/video.mp4, subs.srt, thumb.jpg  (scadenza 7 gg)
@@ -88,7 +88,7 @@ Il sito pubblico è una pagina statica separata: non parla con il server, se non
 
 È la tua procedura manuale di oggi, scritta in uno script che parte da solo:
 
-1. **Avvio**: l'istanza nasce da un'immagine Docker tua (ComfyUI, nodi, ffmpeg, SeedVR2, RIFE già dentro). Riceve `GATTO_API` (l'indirizzo del server), `GATTO_JOB_ID`, `GATTO_SECRET` (segreto valido solo per quel job) e `GATTO_SELF_DESTRUCT_MIN`.
+1. **Avvio**: l'istanza nasce da un'immagine Docker tua (ComfyUI, nodi, ffmpeg, SeedVR2, RIFE già dentro). Riceve `KLEO_API` (l'indirizzo del server), `KLEO_JOB_ID`, `KLEO_SECRET` (segreto valido solo per quel job) e `KLEO_SELF_DESTRUCT_MIN`.
 2. **Modelli**: scarica i pesi da R2 in parallelo (`aria2c -x16`). Egress R2 gratis, 50 GB in pochi minuti su host con `inet_down > 500`.
 3. **Le cinque tracce**: script (API di un modello linguistico) → voce (TTS) → clip per scena, in parallelo (Wan 2.2 o LTX-2.5) → montaggio (ffmpeg, sottotitoli ASS, musica) → finitura (SeedVR2 a 2160p, RIFE a 60 fps, H.265). A ogni passo manda `POST progress` con percentuale e traccia.
 4. **Consegna**: carica MP4, SRT, JPG sul server (a pezzi da 50 MB per i file grandi), chiama `POST done`.
@@ -101,27 +101,27 @@ Se un host Vast è lento o fallisce, l'orchestratore rimette il job in coda su u
 | Client | Dove incollare l'indirizzo | Note |
 |---|---|---|
 | Claude (web e app) | Impostazioni → Connettori → Aggiungi connettore personalizzato | Tutti i piani; il gratuito ammette un connettore. Accetta anche server senza login, ma noi lo vogliamo con login. |
-| Claude Code | `claude mcp add --transport http gatto https://mcp.gatto.ai/mcp` poi `/mcp` per autenticarsi | `--scope user` per averlo in tutti i progetti |
+| Claude Code | `claude mcp add --transport http kleo https://mcp.kleo.ai/mcp` poi `/mcp` per autenticarsi | `--scope user` per averlo in tutti i progetti |
 | ChatGPT | Impostazioni → Sicurezza e accesso → Modalità sviluppatore, poi Connettori → Crea | Plus, Pro, Business, Enterprise; non il piano gratuito |
 | Grok | grok.com o app → Connectors → New connector → Custom | Disponibile da maggio 2026 |
-| Cursor | `.cursor/mcp.json` con `{"mcpServers":{"gatto":{"url":"https://mcp.gatto.ai/mcp"}}}` | Login OAuth al primo uso |
-| VS Code | `.vscode/mcp.json` con `{"servers":{"gatto":{"type":"http","url":"https://mcp.gatto.ai/mcp"}}}` | |
-| Gemini CLI | `gemini mcp add --transport http gatto https://mcp.gatto.ai/mcp` | |
+| Cursor | `.cursor/mcp.json` con `{"mcpServers":{"kleo":{"url":"https://mcp.kleo.ai/mcp"}}}` | Login OAuth al primo uso |
+| VS Code | `.vscode/mcp.json` con `{"servers":{"kleo":{"type":"http","url":"https://mcp.kleo.ai/mcp"}}}` | |
+| Gemini CLI | `gemini mcp add --transport http kleo https://mcp.kleo.ai/mcp` | |
 | App Gemini | Impostazioni → App collegate → App personalizzate | Oggi solo Google AI Pro/Ultra, account personale, USA |
 
-Requisito comune a tutti: l'indirizzo deve essere **HTTPS pubblico**. In locale si prova con Claude Code e con l'Inspector; per provare da Claude.ai o ChatGPT serve il deploy (vedi `gatto-mcp/DEPLOY.md`) oppure un tunnel temporaneo.
+Requisito comune a tutti: l'indirizzo deve essere **HTTPS pubblico**. In locale si prova con Claude Code e con l'Inspector; per provare da Claude.ai o ChatGPT serve il deploy (vedi `kleo-mcp/DEPLOY.md`) oppure un tunnel temporaneo.
 
 ## 8. Cosa vede l'utente, in pratica
 
-- In Claude: dopo il collegamento, nel menu strumenti compare "Gatto" con l'interruttore. Le chiamate compaiono come schede "gatto · create_video" con i parametri, esattamente come nel mockup del sito.
+- In Claude: dopo il collegamento, nel menu strumenti compare "Kleo" con l'interruttore. Le chiamate compaiono come schede "kleo · create_video" con i parametri, esattamente come nel mockup del sito.
 - In ChatGPT: chiede conferma prima di ogni chiamata che modifica qualcosa (create_video, cancel_job); le letture (get_job) passano senza conferma se lo strumento è marcato "read-only".
 - In Cursor e Claude Code: il modello può anche scaricare il file con `curl` nella cartella del progetto, perché ha un terminale.
 
 ## 9. Quando cambiamo nome
 
 Da toccare, in ordine:
-1. Sito: cerca e sostituisci "Gatto" e "gatto" in `index.html` (testo, `data-copy`, snippet). Il favicon e il marchio SVG nel nav.
-2. Dominio: `mcp.gatto.ai` nei tre snippet del sito e nel documento di architettura.
+1. Sito: cerca e sostituisci "Kleo" e "kleo" in `index.html` (testo, `data-copy`, snippet). Il favicon e il marchio SVG nel nav.
+2. Dominio: `mcp.kleo.ai` nei tre snippet del sito e nel documento di architettura.
 3. Server: il nome del server MCP (quello che i client mostrano), il nome del progetto Cloudflare o della VM, il nome del repository GitHub.
 4. Email di contatto nel footer.
 
@@ -130,7 +130,7 @@ Tutto il resto (strumenti, schema, pipeline) non cambia.
 ## 10. Glossario
 
 - **Client MCP**: l'assistente che usa gli strumenti (Claude, ChatGPT...).
-- **Server MCP**: chi espone gli strumenti (Gatto).
+- **Server MCP**: chi espone gli strumenti (Kleo).
 - **Streamable HTTP**: il trasporto standard attuale: una sola rotta `/mcp`, richieste JSON, risposte anche in streaming.
 - **OAuth 2.1**: lo schema di login con cui il client ottiene un token a nome dell'utente senza vedere la sua password.
 - **Job**: un render in coda o in corso, identificato da `job_id`.

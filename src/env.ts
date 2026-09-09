@@ -4,7 +4,7 @@ export interface Env {
   OAUTH_KV: KVNamespace;
   OAUTH_PROVIDER: OAuthHelpers;
   DB: D1Database;
-  RENDERS: R2Bucket;
+  RENDERS?: R2Bucket; // optional: temporary accounts have no R2; files then go to KV (mock sizes only)
 
   PUBLIC_URL: string;
   RENDER_BACKEND: "mock" | "vast";
