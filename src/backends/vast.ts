@@ -55,6 +55,18 @@ export async function searchOffers(env: Env): Promise<Offer[]> {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Boot script (Vast limit: 4048 chars). With VAST_BOOTSTRAP_URL set, any public image with python3 works:
+ * the script installs ffmpeg if missing and downloads the worker; otherwise the image must already ship /opt/kleo.
+ */
+function onstartScript(env: Env): string {
+  const url = env.VAST_BOOTSTRAP_URL;
+  const fetchWorker = url
+    ? `mkdir -p /opt/kleo && (command -v ffmpeg >/dev/null || (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ffmpeg python3 curl ca-certificates >/dev/null)) && curl -fsSL '${url}' -o /opt/kleo/kleo_worker.py; `
+    : "";
+  return `env >> /etc/environment; ${fetchWorker}cd /opt/kleo && nohup python3 kleo_worker.py >> /var/log/kleo.log 2>&1 &`;
+}
+
 export const vastBackend: RenderBackend = {
   name: "vast",
 
@@ -74,7 +86,7 @@ export const vastBackend: RenderBackend = {
           label: `kleo-${job.id}`,
           runtype: "ssh",
           cancel_unavail: true,
-          onstart: "env >> /etc/environment; cd /opt/kleo && nohup python3 kleo_worker.py >> /var/log/kleo.log 2>&1 &",
+          onstart: onstartScript(env),
           env: {
             KLEO_API: env.PUBLIC_URL,
             KLEO_JOB_ID: job.id,

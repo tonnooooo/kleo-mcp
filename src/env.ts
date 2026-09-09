@@ -23,6 +23,7 @@ export interface Env {
   VAST_GPU_NAME?: string;
   VAST_MAX_DPH?: string;
   VAST_DISK_GB?: string;
+  VAST_BOOTSTRAP_URL?: string; // raw URL of worker/kleo_worker.py, for images that do not ship it
 
   RESEND_API_KEY?: string;
   NOTIFY_FROM?: string;
