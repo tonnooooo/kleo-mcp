@@ -23,7 +23,11 @@ async function guarded<T>(fn: () => Promise<T>): Promise<T | ReturnType<typeof f
 }
 
 export function buildServer(env: Env, user: User, base: string): McpServer {
-  const server = new McpServer({ name: "Kleo", version: "0.1.0" }, { instructions: INSTRUCTIONS });
+  const simulated = env.RENDER_BACKEND !== "vast";
+  const modeNote = simulated
+    ? "IMPORTANT: Kleo is currently in SIMULATED mode (beta test). Renders finish in about a minute and the files are small placeholders (a 1-second test MP4, a sample .srt, a text thumbnail), not real videos. Always tell the user this when they create a video or get results. "
+    : "";
+  const server = new McpServer({ name: "Kleo", version: "0.1.0" }, { instructions: modeNote + INSTRUCTIONS });
 
   server.registerTool("kleo_list_templates", {
     title: "List video templates",
@@ -56,8 +60,9 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     const fresh = (await getUser(env, user.id)) ?? user;
     const job = await createJob(env, fresh, args);
     const view = jobView(job);
-    return ok({ ...view, message: `Queued. Estimated ${job.eta_min} minutes. ${job.credits} credit${job.credits > 1 ? "s" : ""} charged.` },
-      `Job ${job.id} queued (template ${job.template}, ${view.format}, ${view.duration_s}s). Estimated ${job.eta_min} minutes. ${job.credits} credit(s) charged, ${fresh.credits - job.credits} left. Check progress later with kleo_get_job.`);
+    const sim = simulated ? " SIMULATED MODE: this is a test render, it finishes in about a minute and the files are placeholders, not a real video." : "";
+    return ok({ ...view, mode: simulated ? "simulated" : "gpu", message: `Queued. Estimated ${simulated ? 1 : job.eta_min} minutes. ${job.credits} credit${job.credits > 1 ? "s" : ""} charged.${sim}` },
+      `Job ${job.id} queued (template ${job.template}, ${view.format}, ${view.duration_s}s). Estimated ${simulated ? 1 : job.eta_min} minute(s). ${job.credits} credit(s) charged, ${fresh.credits - job.credits} left. Check progress later with kleo_get_job.${sim}`);
   }));
 
   server.registerTool("kleo_get_job", {
@@ -92,8 +97,9 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     if (job.state !== "done") throw new JobError(`Job ${job.id} is ${job.state}${job.state === "failed" ? ` (${job.error})` : ""}; no files yet.`);
     if (job.purged_at) throw new JobError(`The files of job ${job.id} expired on ${job.expires_at} and were deleted.`);
     const links = await resultLinks(env, base, job);
-    return ok({ job_id: job.id, expires_at: job.expires_at, ...links },
-      `Files for ${job.id} (valid until ${job.expires_at}):\n` + Object.entries(links).map(([k, v]) => `${k.replace("_url", "")}: ${v}`).join("\n"));
+    const sim = job.backend === "mock" ? "\nNOTE: this job ran in SIMULATED mode: the MP4 is a 1-second placeholder, not a real video." : "";
+    return ok({ job_id: job.id, expires_at: job.expires_at, mode: job.backend === "mock" ? "simulated" : "gpu", ...links },
+      `Files for ${job.id} (valid until ${job.expires_at}):\n` + Object.entries(links).map(([k, v]) => `${k.replace("_url", "")}: ${v}`).join("\n") + sim);
   }));
 
   server.registerTool("kleo_generate_thumbnail", {
