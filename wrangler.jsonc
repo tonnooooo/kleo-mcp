@@ -9,6 +9,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "kleo-mcp",
+  "account_id": "e4a5a1308df5b44c65497b85210c6845",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-02",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
@@ -17,14 +18,13 @@
     { "binding": "OAUTH_KV", "id": "5e3ad54946764fa781fcd17c0a735bff" }
   ],
   "d1_databases": [
-    { "binding": "DB", "database_name": "kleo-db", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations" }
+    { "binding": "DB", "database_name": "kleo-db", "database_id": "ffaa0767-9df1-4e5c-84f2-552e37851d63", "migrations_dir": "migrations" }
   ],
-  "r2_buckets": [
-    { "binding": "RENDERS", "bucket_name": "kleo-renders" }
-  ],
+  // R2 not enabled yet on this account (enable it in the dashboard, then restore):
+  // "r2_buckets": [ { "binding": "RENDERS", "bucket_name": "kleo-renders" } ],
   "triggers": { "crons": ["* * * * *"] },
   "vars": {
-    "PUBLIC_URL": "http://localhost:8787",
+    "PUBLIC_URL": "https://kleo-mcp.plural-juice.workers.dev",
     "RENDER_BACKEND": "mock",
     "MAX_CONCURRENT_GPUS": "5",
     "MAX_JOBS_PER_USER": "2",
@@ -34,7 +34,8 @@
     "VAST_GPU_NAME": "RTX 4090",
     "VAST_MAX_DPH": "0.60",
     "VAST_DISK_GB": "80",
-    "VAST_IMAGE": "docker.io/REPLACE_ME/kleo-worker:latest"
+    "VAST_IMAGE": "docker.io/nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04",
+    "VAST_BOOTSTRAP_URL": "https://raw.githubusercontent.com/tonnooooo/kleo-site/main/worker/kleo_worker.py"
   },
   "dev": { "port": 8787 }
 }

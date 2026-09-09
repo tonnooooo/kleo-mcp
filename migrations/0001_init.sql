@@ -1,5 +1,5 @@
 -- Kleo MCP: initial schema (D1 / SQLite)
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
   id            TEXT PRIMARY KEY,
   email         TEXT NOT NULL UNIQUE,
   display_name  TEXT,
@@ -10,7 +10,7 @@ CREATE TABLE users (
   last_seen_at  TEXT
 );
 
-CREATE TABLE invites (
+CREATE TABLE IF NOT EXISTS invites (
   code      TEXT PRIMARY KEY,
   credits   INTEGER NOT NULL DEFAULT 3,
   max_uses  INTEGER NOT NULL DEFAULT 1,
@@ -18,7 +18,7 @@ CREATE TABLE invites (
   note      TEXT
 );
 
-CREATE TABLE jobs (
+CREATE TABLE IF NOT EXISTS jobs (
   id             TEXT PRIMARY KEY,
   user_id        TEXT NOT NULL REFERENCES users(id),
   template       TEXT NOT NULL,
@@ -43,10 +43,10 @@ CREATE TABLE jobs (
   purged_at      TEXT,
   cost_usd       REAL
 );
-CREATE INDEX jobs_state ON jobs(state);
-CREATE INDEX jobs_user ON jobs(user_id, created_at);
+CREATE INDEX IF NOT EXISTS jobs_state ON jobs(state);
+CREATE INDEX IF NOT EXISTS jobs_user ON jobs(user_id, created_at);
 
-CREATE TABLE job_files (
+CREATE TABLE IF NOT EXISTS job_files (
   job_id        TEXT NOT NULL REFERENCES jobs(id),
   name          TEXT NOT NULL,
   key           TEXT NOT NULL,
@@ -55,7 +55,7 @@ CREATE TABLE job_files (
   PRIMARY KEY (job_id, name)
 );
 
-CREATE TABLE audit (
+CREATE TABLE IF NOT EXISTS audit (
   id       INTEGER PRIMARY KEY AUTOINCREMENT,
   at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   user_id  TEXT,
@@ -66,4 +66,4 @@ CREATE TABLE audit (
 
 -- Seed: one shared beta code (50 uses, 3 credits each). Add personal codes with:
 --   npx wrangler d1 execute kleo-db --remote --command "INSERT INTO invites (code,credits,max_uses,note) VALUES ('CRISTIANO-1',5,1,'Cristiano')"
-INSERT INTO invites (code, credits, max_uses, note) VALUES ('KLEO-BETA', 3, 50, 'shared beta code');
+INSERT OR IGNORE INTO invites (code, credits, max_uses, note) VALUES ('KLEO-BETA', 3, 50, 'shared beta code');
