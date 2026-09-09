@@ -1,0 +1,406 @@
+{
+  "schema_version": 1,
+  "editorial_status": "ready",
+  "id": "short-relay-cinema",
+  "title": "Your Car Key Never Left the House. Your Car Did.",
+  "brand": "@TuNaaa0",
+  "style": "cinema",
+  "format": "9:16",
+  "width": 2160,
+  "fps": 60,
+  "language": "en",
+  "voice": "am_michael",
+  "speed": 1.3,
+  "music": "none",
+  "max_duration": 120,
+  "script_file": "script.txt",
+  "description": "Relay attack explained in 40 seconds. Full breakdown on the channel.\n\n#shorts #cartheft #keyless #relayattack",
+  "tags": [
+    "shorts",
+    "car theft",
+    "keyless",
+    "relay attack",
+    "faraday pouch",
+    "cybersecurity",
+    "tunaaa0"
+  ],
+  "scenes": [
+    {
+      "id": "01-gone",
+      "kind": "cinema",
+      "chapter": "01 HOOK",
+      "accent": "red",
+      "title": "gone",
+      "hl": "gone",
+      "voice": "Your car key is on the kitchen bench. And your car is already gone. Under 30 seconds. No broken glass.",
+      "beats": [
+        {
+          "kind": "type",
+          "text": "YOUR CAR IS GONE",
+          "hl": "GONE",
+          "slam": true,
+          "icon": "car"
+        },
+        {
+          "kind": "icon",
+          "name": "house",
+          "fx": "key",
+          "at": "kitchen",
+          "label": "key inside"
+        },
+        {
+          "kind": "icon",
+          "name": "car",
+          "fx": "drive",
+          "at": "your car is",
+          "label": "gone"
+        },
+        {
+          "kind": "icon",
+          "name": "timer",
+          "size": 0.6,
+          "at": "Under 30"
+        },
+        {
+          "kind": "icon",
+          "name": "thief",
+          "fx": "run",
+          "size": 0.7,
+          "at": "seconds",
+          "label": "30 seconds"
+        },
+        {
+          "kind": "split",
+          "items": [
+            "figure",
+            "lock"
+          ],
+          "fx": "open",
+          "at": "No broken",
+          "label": "no broken glass"
+        },
+        {
+          "kind": "icon",
+          "name": "figure",
+          "fx": "alarm",
+          "size": 0.7,
+          "at": "glass",
+          "label": "gone"
+        }
+      ],
+      "hold": 0.2
+    },
+    {
+      "id": "02-relay",
+      "kind": "cinema",
+      "chapter": "02 THE RELAY",
+      "accent": "green",
+      "title": "relay",
+      "hl": "relay",
+      "voice": "It is called a relay attack. Two thieves, one cheap amplifier. One stands at your front door and boosts the signal of the key inside your house.",
+      "beats": [
+        {
+          "kind": "type",
+          "text": "RELAY ATTACK",
+          "hl": "RELAY",
+          "slam": true,
+          "icon": "amplifier"
+        },
+        {
+          "kind": "icon",
+          "name": "keyfob",
+          "size": 0.7,
+          "at": "attack",
+          "label": "your key signal"
+        },
+        {
+          "kind": "grid",
+          "items": [
+            "thief",
+            "amplifier",
+            "thief"
+          ],
+          "at": "Two thieves",
+          "label": "2 thieves · 1 amplifier"
+        },
+        {
+          "kind": "icon",
+          "name": "amplifier",
+          "size": 0.7,
+          "at": "cheap",
+          "label": "a cheap amplifier"
+        },
+        {
+          "kind": "split",
+          "items": [
+            "thief",
+            "house"
+          ],
+          "at": "One stands",
+          "label": "at your front door"
+        },
+        {
+          "kind": "icon",
+          "name": "wave",
+          "size": 0.7,
+          "at": "boosts",
+          "label": "signal boosted"
+        },
+        {
+          "kind": "timeline",
+          "labels": [
+            "KEY",
+            "AMP",
+            "CAR"
+          ],
+          "icons": [
+            "keyfob",
+            "amplifier",
+            "car"
+          ],
+          "at": "key inside"
+        },
+        {
+          "kind": "split",
+          "items": [
+            "house",
+            "car"
+          ],
+          "fx": "lit",
+          "at": "house",
+          "label": "key relayed"
+        }
+      ],
+      "hold": 0.2
+    },
+    {
+      "id": "03-believes",
+      "kind": "cinema",
+      "chapter": "02 THE RELAY",
+      "accent": "red",
+      "title": "believes",
+      "hl": "believes",
+      "voice": "The other one stands at your car. The car thinks the key is right there, and it starts.",
+      "beats": [
+        {
+          "kind": "icon",
+          "name": "thief",
+          "fx": "point",
+          "size": 0.7,
+          "label": "thief 2"
+        },
+        {
+          "kind": "icon",
+          "name": "car",
+          "fx": "lit",
+          "at": "your car",
+          "label": "at your car"
+        },
+        {
+          "kind": "split",
+          "items": [
+            "keyfob",
+            "car"
+          ],
+          "fx": "lit",
+          "at": "thinks",
+          "label": "key detected"
+        },
+        {
+          "kind": "dialog",
+          "text": "KEY DETECTED ?",
+          "count": 3,
+          "at": "right there"
+        },
+        {
+          "kind": "type",
+          "text": "IT STARTS",
+          "hl": "STARTS",
+          "slam": true,
+          "icon": "car",
+          "fx": "lit",
+          "at": "it starts"
+        }
+      ],
+      "hold": 0.2
+    },
+    {
+      "id": "04-test",
+      "kind": "cinema",
+      "chapter": "03 THE TEST",
+      "accent": "red",
+      "title": "85%",
+      "hl": "85%",
+      "voice": "ADAC tested 850 keyless cars. 85 percent were opened and driven away.",
+      "beats": [
+        {
+          "kind": "icon",
+          "name": "radar",
+          "size": 0.7,
+          "label": "ADAC lab test"
+        },
+        {
+          "kind": "type",
+          "text": "850 CARS TESTED",
+          "hl": "850",
+          "slam": true,
+          "icon": "car",
+          "at": "850"
+        },
+        {
+          "kind": "split",
+          "items": [
+            "keyfob",
+            "car"
+          ],
+          "fx": "lit",
+          "at": "cars",
+          "label": "keyless entry"
+        },
+        {
+          "kind": "people",
+          "total": 10,
+          "lit": 8,
+          "label": "85% driven away",
+          "last": true,
+          "at": "85 percent"
+        },
+        {
+          "kind": "bars",
+          "labels": [
+            "TESTED",
+            "DRIVEN AWAY"
+          ],
+          "values": [
+            850,
+            722
+          ],
+          "at": "opened"
+        },
+        {
+          "kind": "type",
+          "text": "85% GONE",
+          "hl": "85%",
+          "slam": true,
+          "icon": "cross",
+          "at": "away"
+        }
+      ],
+      "hold": 0.2
+    },
+    {
+      "id": "05-fix",
+      "kind": "cinema",
+      "chapter": "04 THE FIX",
+      "accent": "green",
+      "title": "faraday",
+      "hl": "faraday",
+      "voice": "The fix is a Faraday pouch. Drop the key in, and the signal dies. No signal, no relay, and no stolen car.",
+      "beats": [
+        {
+          "kind": "type",
+          "text": "THE FIX",
+          "hl": "FIX",
+          "slam": true,
+          "icon": "shield"
+        },
+        {
+          "kind": "icon",
+          "name": "pouch",
+          "fx": "key",
+          "at": "Faraday",
+          "label": "faraday pouch"
+        },
+        {
+          "kind": "terminal",
+          "label": "KEY",
+          "lines": [
+            "key --into faraday_pouch",
+            "signal: 0 dBm"
+          ],
+          "at": "Drop the key"
+        },
+        {
+          "kind": "icon",
+          "name": "wave",
+          "fx": "dead",
+          "size": 0.7,
+          "at": "signal dies",
+          "label": "signal dead"
+        },
+        {
+          "kind": "steps",
+          "items": [
+            "NO SIGNAL",
+            "NO RELAY",
+            "NO THEFT"
+          ],
+          "lit": 3,
+          "at": "No signal"
+        },
+        {
+          "kind": "split",
+          "items": [
+            "car",
+            "shield"
+          ],
+          "at": "no stolen",
+          "label": "protected"
+        },
+        {
+          "kind": "type",
+          "text": "NO THEFT.",
+          "hl": "THEFT.",
+          "slam": true,
+          "icon": "lock",
+          "at": "car"
+        }
+      ],
+      "hold": 0.2
+    },
+    {
+      "id": "06-loop",
+      "kind": "closing",
+      "chapter": "05 YOUR CAR",
+      "accent": "green",
+      "title": "which cars pass",
+      "hl": "pass",
+      "voice": "Which cars actually pass the test? Full breakdown on the channel.",
+      "beats": [
+        {
+          "kind": "icon",
+          "name": "figure",
+          "fx": "think",
+          "size": 0.7,
+          "label": "which cars?"
+        },
+        {
+          "kind": "split",
+          "items": [
+            "car",
+            "check"
+          ],
+          "at": "pass the test",
+          "label": "the ones that pass"
+        },
+        {
+          "kind": "icon",
+          "name": "phone",
+          "size": 0.7,
+          "at": "Full breakdown",
+          "label": "full video · @tunaaa0"
+        },
+        {
+          "kind": "type",
+          "text": "WHICH CARS PASS?",
+          "hl": "PASS?",
+          "slam": true,
+          "icon": "car",
+          "at": "channel"
+        }
+      ],
+      "detail": "Loop ending: the question sends the viewer back to the start.",
+      "hold": 0.4
+    }
+  ]
+}

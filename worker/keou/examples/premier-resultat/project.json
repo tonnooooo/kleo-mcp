@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "editorial_status": "ready",
+  "id": "premier-resultat",
+  "title": "Une idée, un premier résultat",
+  "description": "Une méthode simple pour passer d'une idée à une première réalisation : choisir, faire, puis observer. Motion design original et voix synthétique.",
+  "brand": "UNE IDÉE À LA FOIS",
+  "style": "editorial",
+  "format": "9:16",
+  "width": 1080,
+  "fps": 60,
+  "language": "fr",
+  "voice": "ff_siwis",
+  "speed": 1.0,
+  "max_duration": 90,
+  "script_file": "script.txt",
+  "tags": ["créativité", "projet", "méthode"],
+  "scenes": [
+    {"id":"idee","kind":"hero","eyebrow":"PASSER À L’ACTION","title":"Une idée mérite un premier pas.","visual":"spark","voice":"Tu as une idée, mais tu ne sais pas par où commencer ?"},
+    {"id":"choix","kind":"compare","eyebrow":"LE POINT DE DÉPART","title":"Réduis la première étape.","items":["Tout prévoir","Commencer petit"],"voice":"Au lieu de tout prévoir, choisis une première étape assez petite pour la terminer."},
+    {"id":"methode","kind":"steps","eyebrow":"UNE MÉTHODE SIMPLE","title":"Trois verbes suffisent.","items":["Choisir","Faire","Observer"],"voice":"Choisis ce que tu veux essayer. Fais une première version. Puis observe ce qui fonctionne."},
+    {"id":"visible","kind":"image","eyebrow":"DU CONCRET","title":"Rends ton idée visible.","image":"assets/premiere-version.svg","image_credit":"Illustration vectorielle originale créée pour Keou Production, 2026.","voice":"Un croquis, un paragraphe, une maquette : donne à ton idée une forme que tu peux regarder."},
+    {"id":"action","kind":"metric","eyebrow":"LE PROCHAIN GESTE","title":"Garde une priorité.","value":"1","unit":"action concrète","voice":"Pour la suite, garde une seule action concrète. Celle que tu peux commencer maintenant."},
+    {"id":"question","kind":"quote","eyebrow":"PRENDRE DU RECUL","title":"Pose une question utile.","quote":"Qu’est-ce que je garde ?","voice":"Devant cette première version, demande-toi simplement : qu'est-ce que je garde ?"},
+    {"id":"ajuster","kind":"list","eyebrow":"AMÉLIORER PAR ÉTAPES","title":"Un choix après l’autre.","items":["Garder l’essentiel","Corriger un point","Essayer à nouveau"],"voice":"Garde l'essentiel, corrige un point, puis essaie à nouveau. Chaque étape prépare la suivante."},
+    {"id":"fin","kind":"closing","eyebrow":"À TOI DE JOUER","title":"Quel sera ton premier pas ?","button":"Choisis une action.","hold":1.8,"voice":"Ton projet peut commencer par un geste simple. Alors, quel sera ton premier pas ?"}
+  ]
+}

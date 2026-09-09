@@ -3,6 +3,7 @@ import { type Job, type JobParams, type User, countOpenForUser, debitCredits, cr
 import { findTemplate, creditsFor, etaFor, type Format } from "./templates";
 import { rid, nowIso, int, hmacHex } from "./util";
 import { getBackend } from "./backends";
+import { validateStoryboard } from "./keou-contract";
 
 export class JobError extends Error {}
 
@@ -14,6 +15,8 @@ export interface CreateInput {
   language?: string;
   voice?: string;
   notify_email?: string;
+  /** Optional client-authored Keou storyboard (see keou-contract.ts); validated here, stored as JSON. */
+  storyboard?: unknown;
 }
 
 /** Minimal safety gate before any GPU money is spent. Replace with a real moderation API before opening to the public. */
@@ -36,6 +39,13 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   if (moderationBlocks(prompt)) throw new JobError("This request violates the content policy and was not started.");
   const voice = input.voice ?? null;
   if (voice && !t.voices.includes(voice)) throw new JobError(`Unknown voice "${voice}". Available: ${t.voices.join(", ")}.`);
+  const language = input.language ?? "en";
+  let storyboard: string | null = null;
+  if (input.storyboard !== undefined && input.storyboard !== null) {
+    const r = validateStoryboard(input.storyboard, { format, language });
+    if (!r.ok) throw new JobError(`The storyboard was refused (${r.errors.length} problem${r.errors.length > 1 ? "s" : ""}, fix them and call again; nothing was charged):\n- ${r.errors.join("\n- ")}`);
+    storyboard = JSON.stringify(r.storyboard);
+  }
 
   const maxOpen = int(env.MAX_JOBS_PER_USER, 2);
   const open = await countOpenForUser(env, user.id);
@@ -45,16 +55,17 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   if (!(await debitCredits(env, user.id, credits)))
     throw new JobError(`Not enough credits: this video costs ${credits}, you have ${user.credits}. Ask for more credits at the address in the footer of the site.`);
 
-  const params: JobParams = { duration_s: duration, format, language: input.language ?? "en", voice };
+  const params: JobParams = { duration_s: duration, format, language, voice };
   const job: Job = {
     id: rid("gt", 8), user_id: user.id, template: t.id, prompt, params: JSON.stringify(params),
     state: "queued", track: null, percent: 0, eta_min: etaFor(duration), credits,
     backend: null, instance_id: null, instance_meta: null, worker_secret: rid("wk", 32), attempts: 0,
     error: null, notify_email: input.notify_email ?? null, created_at: nowIso(), started_at: null, finished_at: null,
     expires_at: null, purged_at: null, cost_usd: null,
+    storyboard, plan_attempts: 0, plan_error: null,
   };
   await insertJob(env, job);
-  await audit(env, user.id, job.id, "job.created", { template: t.id, credits, duration, format });
+  await audit(env, user.id, job.id, "job.created", { template: t.id, credits, duration, format, storyboard: storyboard ? "client" : "auto" });
   return job;
 }
 

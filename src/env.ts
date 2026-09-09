@@ -5,6 +5,12 @@ export interface Env {
   OAUTH_PROVIDER: OAuthHelpers;
   DB: D1Database;
   RENDERS?: R2Bucket; // optional: temporary accounts have no R2; files then go to KV (mock sizes only)
+  AI?: Ai; // Workers AI (storyboard generation); absent in local dev without a login → fixture
+
+  AI_MODEL?: string; // default: storyboard.ts DEFAULT_MODEL
+  STORYBOARD_FIXTURE?: string; // "example" (dev only): use the bundled cinema example instead of calling AI
+  DEV_ROUTES?: string; // "1" enables GET /internal/dev/plan (bearer INTERNAL_SECRET)
+  BRAND?: string; // on-screen brand handed to the render worker (default "Kleo")
 
   PUBLIC_URL: string;
   RENDER_BACKEND: "mock" | "vast" | "manual";
@@ -23,6 +29,8 @@ export interface Env {
   VAST_GPU_NAME?: string;
   VAST_MAX_DPH?: string;
   VAST_DISK_GB?: string;
+  VAST_MIN_CPU?: string;      // effective cores required (the Keou renderer is CPU-bound)
+  VAST_MIN_RAM_GB?: string;
   VAST_BOOTSTRAP_URL?: string; // raw URL of worker/kleo_worker.py, for images that do not ship it
 
   RESEND_API_KEY?: string;

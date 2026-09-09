@@ -1,0 +1,18 @@
+{
+  "title": "That Voice Could Be Fake — The AI Scam Check",
+  "description": "An unexpected urgent call can sound familiar without proving who is calling. A short cybersecurity awareness film about AI voice impersonation and independent verification.\n\nOriginal motion graphics and synthetic English narration. Signals and networks are illustrative, not detection software.\n\nSources:\nhttps://consumer.ftc.gov/articles/scammers-use-fake-emergencies-steal-your-money\nhttps://consumer.ftc.gov/consumer-alerts/2023/03/scammers-use-ai-enhance-their-family-emergency-schemes",
+  "language": "en",
+  "tags": [
+    "cybersecurity",
+    "AI",
+    "scams",
+    "social engineering",
+    "security awareness"
+  ],
+  "privacyStatus": "private",
+  "publication_status": "not_configured",
+  "channel_id": null,
+  "synthetic_voice": true,
+  "script": "Your phone rings. It sounds like someone you trust. They need money, right now. What would you do? Artificial intelligence can imitate a familiar voice. Sounding convincing does not prove who is calling. Scammers use urgency to rush a decision. A frightening story can make an ordinary request feel impossible to question. Before you act, make one independent check. Hang up. Call the person back on a number you already know. Do not use contact details from the suspicious message. Pause, verify, then decide. A familiar voice is a clue, not an identity check. Share this habit with your family. Agree on how you will verify an unexpected urgent request. If that call came tonight, would you trust the voice, or verify the person?",
+  "thumbnail": "qa/001-hook.png"
+}

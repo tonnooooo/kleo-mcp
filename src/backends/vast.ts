@@ -28,7 +28,7 @@ async function vast<T>(env: Env, method: string, path: string, body?: unknown): 
   return (text ? JSON.parse(text) : {}) as T;
 }
 
-export interface Offer { id: number; dph_total: number; gpu_name: string; inet_down: number; reliability2?: number; disk_space: number; cuda_max_good?: number; geolocation?: string; }
+export interface Offer { id: number; dph_total: number; gpu_name: string; inet_down: number; reliability2?: number; disk_space: number; cuda_max_good?: number; geolocation?: string; cpu_cores_effective?: number; cpu_ram?: number; }
 interface Instance { actual_status?: string | null; cur_state?: string; start_date?: number; dph_total?: number; status_msg?: string; }
 
 export async function searchOffers(env: Env): Promise<Offer[]> {
@@ -40,6 +40,8 @@ export async function searchOffers(env: Env): Promise<Offer[]> {
     num_gpus: { eq: 1 },
     gpu_name: { eq: env.VAST_GPU_NAME ?? "RTX 4090" },
     inet_down: { gte: 500 },
+    cpu_cores_effective: { gte: int(env.VAST_MIN_CPU, 16) },
+    cpu_ram: { gte: int(env.VAST_MIN_RAM_GB, 32) * 1024 },
     reliability2: { gte: 0.98 },
     disk_space: { gte: disk },
     dph_total: { lte: num(env.VAST_MAX_DPH, 0.6) },
@@ -57,7 +59,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Boot script (Vast limit: 4048 chars). With VAST_BOOTSTRAP_URL set, any public image with python3 works:
- * the script installs ffmpeg if missing and downloads the worker; otherwise the image must already ship /opt/kleo.
+ * the script installs ffmpeg if missing and downloads the worker; otherwise the image must already ship /opt/kleo
+ * (worker/Dockerfile: /opt/kleo/kleo_worker.py + the Keou engine in /opt/kleo/keou). Setting the URL on an image
+ * that ships /opt/kleo is harmless: it only refreshes kleo_worker.py.
  */
 function onstartScript(env: Env): string {
   const url = env.VAST_BOOTSTRAP_URL;
@@ -65,6 +69,18 @@ function onstartScript(env: Env): string {
     ? `mkdir -p /opt/kleo && (command -v ffmpeg >/dev/null || (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ffmpeg python3 curl ca-certificates >/dev/null)) && curl -fsSL '${url}' -o /opt/kleo/kleo_worker.py; `
     : "";
   return `env >> /etc/environment; ${fetchWorker}cd /opt/kleo && nohup python3 kleo_worker.py >> /var/log/kleo.log 2>&1 &`;
+}
+
+/** Optional render tuning forwarded to the worker verbatim when set on the Worker (wrangler vars or secrets). */
+const RENDER_ENV_PASSTHROUGH = ["KLEO_WIDTH_PORTRAIT", "KLEO_WIDTH_LANDSCAPE", "KLEO_RENDER_TIMEOUT_MIN"] as const;
+function renderEnv(env: Env): Record<string, string> {
+  const bag = env as unknown as Record<string, unknown>;
+  const out: Record<string, string> = {};
+  for (const k of RENDER_ENV_PASSTHROUGH) {
+    const v = bag[k];
+    if (typeof v === "string" && v.trim()) out[k] = v.trim();
+  }
+  return out;
 }
 
 export const vastBackend: RenderBackend = {
@@ -93,11 +109,13 @@ export const vastBackend: RenderBackend = {
             KLEO_SECRET: job.worker_secret,
             KLEO_SELF_DESTRUCT_MIN: String(Math.max(10, timeoutMin - 5)),
             KLEO_DPH: String(offer.dph_total),
+            KLEO_KEOU_WORKERS: String(Math.max(2, Math.floor(offer.cpu_cores_effective ?? 8))), // use the whole box
+            ...renderEnv(env),
           },
         };
         const r = await vast<{ success: boolean; new_contract?: number; msg?: string; error?: string }>(env, "PUT", `/asks/${offer.id}/`, body);
         if (!r.success || !r.new_contract) throw new Error(r.msg ?? r.error ?? "create instance failed");
-        return { instanceId: String(r.new_contract), meta: { offer: offer.id, gpu: offer.gpu_name, dph: offer.dph_total, inet_down: offer.inet_down, geo: offer.geolocation } };
+        return { instanceId: String(r.new_contract), meta: { offer: offer.id, gpu: offer.gpu_name, dph: offer.dph_total, inet_down: offer.inet_down, geo: offer.geolocation, cpu: offer.cpu_cores_effective, ram_mb: offer.cpu_ram } };
       } catch (e) {
         lastErr = e; // 404/410: the offer was taken meanwhile → next one
       }

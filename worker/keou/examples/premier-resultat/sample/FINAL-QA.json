@@ -1,0 +1,21 @@
+{
+  "status": "PASS",
+  "version": "1.0.0",
+  "master": "master.mp4",
+  "sha256": "bd5d10f93a05ce5eb287792c3b48bdcea76908e6568ff04b6c7830af190fc174",
+  "width": 1080,
+  "height": 1920,
+  "fps": 60,
+  "frames": 2909,
+  "duration": 48.484,
+  "full_decode": "PASS",
+  "black_intervals": [],
+  "audio_lufs": -16.29,
+  "audio_true_peak_db": -4.5,
+  "minimum_scene_speech_match": 0.9090909090909091,
+  "longest_identical_sample_run": 0,
+  "limitations": [
+    "Layout bounds checked at render time; aesthetic and pronunciation review remains with Pearl.",
+    "ASR agreement is a content check, not a guarantee of perfect pronunciation."
+  ]
+}

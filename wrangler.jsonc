@@ -21,10 +21,12 @@
     { "binding": "DB", "database_name": "kleo-db", "database_id": "ffaa0767-9df1-4e5c-84f2-552e37851d63", "migrations_dir": "migrations" }
   ],
   "r2_buckets": [ { "binding": "RENDERS", "bucket_name": "kleo-renders" } ],
+  "ai": { "binding": "AI" }, // storyboard generation (Workers AI, free tier: 10k neurons/day; model in src/storyboard.ts or var AI_MODEL)
   "triggers": { "crons": ["* * * * *"] },
   "vars": {
     "PUBLIC_URL": "https://kleo-mcp.plural-juice.workers.dev",
     "RENDER_BACKEND": "mock",
+    "AI_MODEL": "@cf/meta/llama-4-scout-17b-16e-instruct",
     "MAX_CONCURRENT_GPUS": "5",
     "MAX_JOBS_PER_USER": "2",
     "JOB_TIMEOUT_MIN": "120",
@@ -33,8 +35,7 @@
     "VAST_GPU_NAME": "RTX 4090",
     "VAST_MAX_DPH": "0.60",
     "VAST_DISK_GB": "80",
-    "VAST_IMAGE": "docker.io/nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04",
-    "VAST_BOOTSTRAP_URL": "https://raw.githubusercontent.com/tonnooooo/kleo-site/main/worker/kleo_worker.py"
+    "VAST_IMAGE": "ghcr.io/tonnooooo/kleo-worker:keou"
   },
   "dev": { "port": 8787 }
 }

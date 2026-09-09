@@ -114,8 +114,11 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    if os.environ.get("SKIP_CF"):
+        state["cf_done"] = True
     save()
-    threading.Thread(target=cf_loop, daemon=True).start()
+    if not state["cf_done"]:
+        threading.Thread(target=cf_loop, daemon=True).start()
     threading.Thread(target=gh_loop, daemon=True).start()
     srv = ThreadingHTTPServer(("127.0.0.1", 8977), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()

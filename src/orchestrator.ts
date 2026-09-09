@@ -1,18 +1,33 @@
 import type { Env } from "./env";
-import { type Job, type JobState, activeJobs, queuedJobs, countRunning, updateJob, audit, creditCredits, expiredJobs, listFiles, deleteFiles, setFile, getJob } from "./db";
+import { type Job, type JobState, activeJobs, queuedJobs, unplannedJobs, claimPlanAttempt, countRunning, updateJob, audit, creditCredits, expiredJobs, listFiles, deleteFiles, setFile, getJob } from "./db";
 import { backendFor, getBackend } from "./backends";
 import { int, nowIso, minutesSince, secondsSince, addDays, base64ToBytes } from "./util";
 import { TINY_MP4_B64 } from "./assets";
 import { resultLinks, FILE_NAMES } from "./jobs";
 import { notifyDone } from "./notify";
 import { putFile, deleteFile } from "./storage";
-import { acquireLock, releaseLock } from "./schema";
+import { acquireLock, releaseLock, holdLock } from "./schema";
+import { generateStoryboard, StoryboardError, isTransientAiError } from "./storyboard";
 
 const MAX_ATTEMPTS = 3;
+/** Storyboard generation attempts per job (each one may call the model twice). */
+const MAX_PLAN_ATTEMPTS = 2;
+/** After a Workers AI quota/outage error, planning pauses this long (the daily free allocation resets at 00:00 UTC). */
+const PLAN_PAUSE_SECONDS = 15 * 60;
 
-/** Runs every minute (cron) and also on demand in dev via /__scheduled. Every step is idempotent. */
-export async function tick(env: Env): Promise<{ started: number; advanced: number; failed: number; purged: number; skipped?: boolean }> {
-  const stats = { started: 0, advanced: 0, failed: 0, purged: 0 };
+type Stats = { planned: number; started: number; advanced: number; failed: number; purged: number };
+
+/**
+ * Runs every minute (cron) and also on demand in dev via /__scheduled. Every step is idempotent.
+ * `plan` (cron only): storyboard generation takes 1–5 min of model time (outline + chunks), so it runs under its own lock and
+ * never from a fetch-triggered waitUntil, which could be cut short and burn a planning attempt.
+ */
+export async function tick(env: Env, opts: { plan?: boolean } = {}): Promise<Stats & { skipped?: boolean }> {
+  const stats: Stats = { planned: 0, started: 0, advanced: 0, failed: 0, purged: 0 };
+  if (opts.plan && (await acquireLock(env, "plan", 600))) {
+    let pause = 0;
+    try { pause = await planOne(env, stats); } finally { await (pause ? holdLock(env, "plan", pause) : releaseLock(env, "plan")); }
+  }
   if (!(await acquireLock(env, "tick", 50))) return { ...stats, skipped: true };
   try {
     return await tickInner(env, stats);
@@ -21,7 +36,39 @@ export async function tick(env: Env): Promise<{ started: number; advanced: numbe
   }
 }
 
-async function tickInner(env: Env, stats: { started: number; advanced: number; failed: number; purged: number }) {
+/**
+ * Every queued job gets a storyboard before any GPU money is spent. One job per tick; the attempt is claimed atomically.
+ * Returns the number of seconds planning should pause (quota exhausted, upstream down): those errors give the attempt back.
+ */
+async function planOne(env: Env, stats: Stats): Promise<number> {
+  for (const job of await unplannedJobs(env, 1, MAX_PLAN_ATTEMPTS)) {
+    if (!(await claimPlanAttempt(env, job.id, job.plan_attempts))) continue;
+    const attempts = job.plan_attempts + 1;
+    try {
+      const r = await generateStoryboard(env, job);
+      await updateJob(env, job.id, { storyboard: JSON.stringify(r.storyboard), plan_error: null });
+      await audit(env, job.user_id, job.id, "job.planned", { model: r.model, attempt: attempts, model_calls: r.attempts, ms: r.ms, usage: r.usage, est_neurons: r.est_neurons, words: r.words, scenes: r.scenes, fixture: r.fixture });
+      stats.planned++;
+    } catch (e) {
+      const msg = (e instanceof StoryboardError ? e.errors.join("; ") : String(e)).slice(0, 2000);
+      if (!(e instanceof StoryboardError) && isTransientAiError(e)) {
+        await updateJob(env, job.id, { plan_attempts: job.plan_attempts, plan_error: `waiting for Workers AI: ${msg.slice(0, 300)}` });
+        await audit(env, job.user_id, job.id, "job.plan.paused", { error: msg, pause_s: PLAN_PAUSE_SECONDS });
+        return PLAN_PAUSE_SECONDS;
+      }
+      await audit(env, job.user_id, job.id, "job.plan.error", { attempt: attempts, error: msg });
+      if (attempts >= MAX_PLAN_ATTEMPTS) {
+        await failJob(env, { ...job, plan_attempts: attempts }, `could not plan the video: ${msg.slice(0, 600)}`, false);
+        stats.failed++;
+      } else {
+        await updateJob(env, job.id, { plan_error: msg });
+      }
+    }
+  }
+  return 0;
+}
+
+async function tickInner(env: Env, stats: Stats) {
   const timeoutMin = int(env.JOB_TIMEOUT_MIN, 120);
 
   for (const job of await activeJobs(env)) {

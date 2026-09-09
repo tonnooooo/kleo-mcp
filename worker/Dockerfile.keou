@@ -1,0 +1,47 @@
+# Kleo worker image with the Keou motion-design engine baked in (CPU or GPU).
+#   cd /home/madiva/kleo/kleo-mcp && podman build -f worker/Dockerfile.keou -t kleo-worker:keou .
+# Layers are ordered so that source edits never re-download Node, Chromium, pip deps or models.
+FROM docker.io/pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime
+ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 \
+    HF_HOME=/opt/kleo/hf HF_HUB_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/kleo/ms-playwright \
+    KEOU_ROOT=/opt/kleo/keou PATH=/usr/local/bin:$PATH
+
+# --- system packages (mirrors keou/bootstrap.sh) ---
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+      ffmpeg espeak-ng curl xz-utils ca-certificates rsync util-linux fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- Node 22 from the official tarball, checksum verified like bootstrap.sh ---
+ARG NODE_VERSION=22.23.2
+RUN cd /tmp && curl -fsSL https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz -o node.tar.xz \
+    && curl -fsSL https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt -o node-sha.txt \
+    && grep " node-v${NODE_VERSION}-linux-x64.tar.xz\$" node-sha.txt | sed 's/  .*/  node.tar.xz/' | sha256sum -c - \
+    && tar -xJf node.tar.xz -C /usr/local --strip-components=1 && rm -f node.tar.xz node-sha.txt \
+    && node --version && npm --version
+
+# --- JS deps + Chromium (only package*.json here, so source edits keep this layer) ---
+WORKDIR /opt/kleo/keou
+COPY worker/keou/package.json worker/keou/package-lock.json ./
+RUN npm ci --no-audit --no-fund && npx playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/* /root/.npm
+
+# --- Python deps + the spaCy model misaki would otherwise download on first run ---
+COPY worker/keou/requirements.txt ./
+RUN pip install -r requirements.txt \
+    && pip install https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+
+# --- Models: Kokoro-82M + every contract voice, faster-whisper small/int8 (HF cache inside the image) ---
+COPY worker/keou/contract.py /opt/kleo/prewarm/contract.py
+COPY worker/prewarm_models.py /opt/kleo/prewarm/prewarm_models.py
+RUN HF_HUB_OFFLINE=0 python3 /opt/kleo/prewarm/prewarm_models.py /opt/kleo/prewarm/contract.py \
+    && rm -rf /root/.cache/pip
+
+# --- Engine source + worker (last: cheapest layers to rebuild) ---
+COPY worker/keou /opt/kleo/keou
+COPY worker/kleo_worker.py /opt/kleo/kleo_worker.py
+RUN node --version > runtime-node.txt && ffmpeg -version | head -1 > runtime-ffmpeg.txt \
+    && pip freeze > runtime-python.txt && python3 -c "import contract; print('contract', contract.VERSION, sorted(contract.VOICES))"
+
+WORKDIR /opt/kleo
+CMD ["python3", "/opt/kleo/kleo_worker.py"]

@@ -5,6 +5,8 @@ import { finishJob, failJob, trackFor } from "./orchestrator";
 import { backendFor } from "./backends";
 import { FILE_NAMES } from "./jobs";
 import { putFile } from "./storage";
+import { generateStoryboard, StoryboardError } from "./storyboard";
+import { findTemplate } from "./templates";
 
 const ALLOWED_FILES = new Set([FILE_NAMES.video.name, FILE_NAMES.subtitles.name, FILE_NAMES.thumbnail.name, "thumbnail.svg", "log.txt"]);
 const TYPES: Record<string, string> = { mp4: "video/mp4", srt: "application/x-subrip", jpg: "image/jpeg", svg: "image/svg+xml", txt: "text/plain" };
@@ -35,6 +37,7 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
 
   if (rest === "" && request.method === "GET") {
     return json({ job_id: job.id, template: job.template, prompt: job.prompt, params: JSON.parse(job.params), state: job.state,
+      storyboard: job.storyboard ? JSON.parse(job.storyboard) : null, brand: env.BRAND || "Kleo",
       files: { video: FILE_NAMES.video.name, subtitles: FILE_NAMES.subtitles.name, thumbnail: FILE_NAMES.thumbnail.name }, part_size_bytes: 50 * 1024 * 1024 });
   }
   if (rest === "selfdestruct" && request.method === "POST") { // allowed in any state: it is the worker's last call
@@ -102,3 +105,30 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
 }
 
 export type { Job };
+
+/**
+ * Dev-only: GET /internal/dev/plan?template=viral-short&prompt=...&duration_s=45&format=9:16&language=en&voice=
+ * Runs the storyboard generator against Workers AI without creating a job. Enabled with DEV_ROUTES=1,
+ * authenticated with `Authorization: Bearer <INTERNAL_SECRET>`.
+ */
+export async function handleDevPlan(request: Request, env: Env): Promise<Response> {
+  if (env.DEV_ROUTES !== "1") return json({ error: "not found" }, 404);
+  const auth = request.headers.get("authorization") ?? "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  if (!env.INTERNAL_SECRET || !token || !safeEqual(token, env.INTERNAL_SECRET)) return json({ error: "unauthorized" }, 401);
+  const q = new URL(request.url).searchParams;
+  const t = findTemplate(q.get("template") ?? "");
+  if (!t) return json({ error: "unknown template" }, 400);
+  const prompt = (q.get("prompt") ?? "").trim();
+  if (prompt.length < 8) return json({ error: "prompt too short" }, 400);
+  const format = (q.get("format") || t.formats[0]) as "16:9" | "9:16";
+  const duration_s = Math.round(Number(q.get("duration_s") || t.defaultSeconds));
+  const params = { duration_s, format, language: q.get("language") || "en", voice: q.get("voice") || null };
+  const job = { id: `dev_${Date.now().toString(36)}`, template: t.id, prompt, params: JSON.stringify(params) };
+  try {
+    const r = await generateStoryboard(env, job, { model: q.get("model") || undefined });
+    return json({ ok: true, ...r });
+  } catch (e) {
+    return json({ ok: false, error: String(e), errors: e instanceof StoryboardError ? e.errors : undefined, draft: e instanceof StoryboardError ? e.draft : undefined }, 422);
+  }
+}

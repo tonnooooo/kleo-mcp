@@ -39,6 +39,9 @@ export interface Job {
   expires_at: string | null;
   purged_at: string | null;
   cost_usd: number | null;
+  storyboard: string | null; // JSON: Keou project without id/script_file/music_quiet/image scenes (see keou-contract.ts)
+  plan_attempts: number;
+  plan_error: string | null;
 }
 
 export interface JobParams {
@@ -102,9 +105,19 @@ export async function countRunning(env: Env): Promise<number> {
   const r = await env.DB.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE state IN (${inList(ACTIVE_STATES)})`).first<{ n: number }>();
   return r?.n ?? 0;
 }
+/** Queued jobs that already have a storyboard: the only ones a GPU may be started for. */
 export async function queuedJobs(env: Env, limit: number): Promise<Job[]> {
   if (limit <= 0) return [];
-  return (await env.DB.prepare("SELECT * FROM jobs WHERE state = 'queued' ORDER BY created_at LIMIT ?").bind(limit).all<Job>()).results;
+  return (await env.DB.prepare("SELECT * FROM jobs WHERE state = 'queued' AND storyboard IS NOT NULL ORDER BY created_at LIMIT ?").bind(limit).all<Job>()).results;
+}
+export async function unplannedJobs(env: Env, limit: number, maxAttempts: number): Promise<Job[]> {
+  if (limit <= 0) return [];
+  return (await env.DB.prepare("SELECT * FROM jobs WHERE state = 'queued' AND storyboard IS NULL AND plan_attempts < ? ORDER BY created_at LIMIT ?").bind(maxAttempts, limit).all<Job>()).results;
+}
+/** Atomically claims one planning attempt (so two overlapping ticks never plan the same job twice). */
+export async function claimPlanAttempt(env: Env, id: string, expectedAttempts: number): Promise<boolean> {
+  const r = await env.DB.prepare("UPDATE jobs SET plan_attempts = plan_attempts + 1 WHERE id = ? AND plan_attempts = ? AND state = 'queued' AND storyboard IS NULL").bind(id, expectedAttempts).run();
+  return (r.meta.changes ?? 0) === 1;
 }
 export async function activeJobs(env: Env): Promise<Job[]> {
   return (await env.DB.prepare(`SELECT * FROM jobs WHERE state IN (${inList(ACTIVE_STATES)}) ORDER BY started_at`).all<Job>()).results;
@@ -120,9 +133,9 @@ export async function expiredJobs(env: Env, limit = 20): Promise<Job[]> {
 
 export async function insertJob(env: Env, j: Job): Promise<void> {
   await env.DB.prepare(
-    `INSERT INTO jobs (id, user_id, template, prompt, params, state, percent, eta_min, credits, worker_secret, notify_email, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(j.id, j.user_id, j.template, j.prompt, j.params, j.state, j.percent, j.eta_min, j.credits, j.worker_secret, j.notify_email, j.created_at).run();
+    `INSERT INTO jobs (id, user_id, template, prompt, params, state, percent, eta_min, credits, worker_secret, notify_email, created_at, storyboard, plan_attempts, plan_error)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(j.id, j.user_id, j.template, j.prompt, j.params, j.state, j.percent, j.eta_min, j.credits, j.worker_secret, j.notify_email, j.created_at, j.storyboard, j.plan_attempts, j.plan_error).run();
 }
 
 export async function updateJob(env: Env, id: string, fields: Partial<Job>): Promise<void> {

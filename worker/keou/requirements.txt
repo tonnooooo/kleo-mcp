@@ -1,0 +1,10 @@
+kokoro==0.9.4
+soundfile==0.14.0
+faster-whisper==1.2.1
+misaki[en]==0.9.4
+transformers==5.16.1
+tokenizers==0.23.2
+huggingface-hub==1.30.0
+ctranslate2==4.8.2
+phonemizer-fork==3.3.2
+spacy==3.8.16

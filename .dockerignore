@@ -1,0 +1,13 @@
+# Build context for worker/Dockerfile.keou (context = repo root).
+node_modules
+.wrangler
+.git
+**/node_modules
+**/.venv
+worker/keou/examples/**/build
+worker/keou/examples/**/out
+**/out
+**/.vast.lock
+**/run.lock
+**/run.log
+**/__pycache__

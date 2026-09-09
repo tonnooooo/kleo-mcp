@@ -1,0 +1,16 @@
+{
+  "status": "base_reference_user_approved",
+  "approved_date": "2026-09-09",
+  "reference": "examples/galactic-black-hole/sample/master.mp4",
+  "sha256": "1fbb2fd68ebec0ab1071dfb53d5e0ccf2fa799aa8977e7f5a4b4e9fc56762875",
+  "renderer_revision": "1.1.0",
+  "principles": [
+    "Real internal object motion",
+    "Stable readable titles",
+    "Native animated values",
+    "Original English narration and editorial palette preserved"
+  ],
+  "cyber_status": "terminal_revision_pending_user_review",
+  "cyber_requested_direction": "Black and green hacker/programming terminal, monospace, typed code and animated cursor",
+  "cyber_direction_requested_date": "2026-09-09"
+}

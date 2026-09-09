@@ -3,7 +3,7 @@ import type { Env, AuthProps } from "./env";
 import { getUser, touchUser } from "./db";
 import { mcpHandlerFor } from "./mcp";
 import { handleAuthorize } from "./auth";
-import { handleInternal } from "./internal";
+import { handleInternal, handleDevPlan } from "./internal";
 import { handleDownload } from "./dl";
 import { tick } from "./orchestrator";
 import { json } from "./util";
@@ -35,6 +35,7 @@ const app: ExportedHandler<Env> = {
     const url = new URL(request.url);
     const p = url.pathname;
     await ensureSchema(env);
+    if (p === "/internal/dev/plan") return handleDevPlan(request, env);
     if (p.startsWith("/internal/")) ctx.waitUntil(tick(env).catch(() => undefined));
     if (p === "/authorize") return handleAuthorize(request, env);
     if (p.startsWith("/internal/")) return handleInternal(request, env);
@@ -66,5 +67,5 @@ const provider = new OAuthProvider<Env>({
 
 export default {
   fetch: (request: Request, env: Env, ctx: ExecutionContext) => provider.fetch(request, env, ctx),
-  scheduled: (_controller: ScheduledController, env: Env, ctx: ExecutionContext) => { ctx.waitUntil(ensureSchema(env).then(() => tick(env))); },
+  scheduled: (_controller: ScheduledController, env: Env, ctx: ExecutionContext) => { ctx.waitUntil(ensureSchema(env).then(() => tick(env, { plan: true }))); },
 } satisfies ExportedHandler<Env>;

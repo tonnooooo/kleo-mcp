@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "editorial_status": "ready",
+  "id": "galactic-black-hole",
+  "title": "Why Our Galaxy’s Black Hole Hasn’t Swallowed Us",
+  "description": "A giant black hole lives at the center of the Milky Way. Why are we still here? An equal-mass thought experiment reveals why black holes are not cosmic vacuum cleaners.\n\nOriginal motion graphics and synthetic English narration. Diagrams are schematic and not to scale.\n\nSources: NASA\nhttps://science.nasa.gov/solar-system/10-questions-you-might-have-about-black-holes/\nhttps://www.nasa.gov/image-article/supermassive-black-hole-sagittarius/",
+  "brand": "COSMIC QUESTIONS",
+  "style": "editorial",
+  "format": "9:16",
+  "width": 1080,
+  "fps": 60,
+  "language": "en",
+  "voice": "af_heart",
+  "speed": 1.0,
+  "max_duration": 100,
+  "script_file": "script.txt",
+  "tags": [
+    "space",
+    "Milky Way",
+    "black holes",
+    "astronomy",
+    "science",
+    "shorts"
+  ],
+  "scenes": [
+    {
+      "id": "hook",
+      "kind": "image",
+      "eyebrow": "THE MILKY WAY",
+      "title": "Why hasn’t it swallowed us?",
+      "image": "assets/galaxy.svg",
+      "image_credit": "Original schematic illustration, Keou Production. NASA facts; not to scale.",
+      "voice": "There is a giant black hole at the center of our galaxy. So why hasn't it swallowed us?",
+      "motion": "galaxy"
+    },
+    {
+      "id": "mass",
+      "kind": "metric",
+      "eyebrow": "SAGITTARIUS A*",
+      "title": "A heavyweight in the dark.",
+      "value": "4 MILLION",
+      "unit": "times the mass of our Sun",
+      "detail": "Approximate mass · NASA",
+      "voice": "It packs roughly four million times the mass of our Sun. But mass alone does not tell the whole story.",
+      "animate_value": true
+    },
+    {
+      "id": "myth",
+      "kind": "quote",
+      "eyebrow": "THE BIG MISCONCEPTION",
+      "title": "Gravity follows rules.",
+      "quote": "A black hole is no cosmic vacuum cleaner.",
+      "voice": "Black holes do not magically suck everything in. From far away, their gravity depends on mass and distance."
+    },
+    {
+      "id": "experiment",
+      "kind": "image",
+      "eyebrow": "A THOUGHT EXPERIMENT",
+      "title": "New object. Same orbit.",
+      "image": "assets/same-orbit.svg",
+      "image_credit": "Original schematic illustration, Keou Production. Equal-mass thought experiment from NASA; not to scale.",
+      "voice": "Imagine replacing the Sun with a black hole of exactly the same mass. Earth would keep its orbit.",
+      "motion": "orbit-compare"
+    },
+    {
+      "id": "twist",
+      "kind": "compare",
+      "eyebrow": "HERE’S THE CATCH",
+      "title": "The orbit stays. The light goes.",
+      "items": [
+        "Orbit unchanged",
+        "Sunlight gone"
+      ],
+      "voice": "We would lose sunlight, which would be disastrous for life. But we would not suddenly spiral into the center."
+    },
+    {
+      "id": "distance",
+      "kind": "metric",
+      "eyebrow": "BACK TO OUR GALAXY",
+      "title": "We are a long way out.",
+      "value": "26,000",
+      "unit": "light-years from Earth",
+      "detail": "Approximate distance · NASA",
+      "voice": "Our galaxy's central black hole is about twenty six thousand light years away. It is not about to swallow Earth.",
+      "animate_value": true
+    },
+    {
+      "id": "takeaway",
+      "kind": "list",
+      "eyebrow": "THE REAL PHYSICS",
+      "title": "More than a scary name.",
+      "items": [
+        "How much mass?",
+        "How far away?",
+        "How are you moving?"
+      ],
+      "voice": "To understand an orbit, ask about mass, distance, and motion. The words black hole are not enough."
+    },
+    {
+      "id": "end",
+      "kind": "closing",
+      "eyebrow": "KEEP LOOKING UP",
+      "title": "What happens at the edge?",
+      "button": "Which cosmic mystery next?",
+      "hold": 1.8,
+      "voice": "The real mystery begins much closer. What would happen if you crossed the point of no return?"
+    }
+  ]
+}

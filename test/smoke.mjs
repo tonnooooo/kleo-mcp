@@ -28,7 +28,7 @@ async function waitHealthy(ms = 60000) {
 async function main() {
   if (!process.env.KLEO_URL) {
     step("starting wrangler dev");
-    dev = spawn("npx", ["wrangler", "dev", "--test-scheduled", "--port", PORT, "--ip", "127.0.0.1", "--var", "MOCK_TOTAL_SECONDS:12"], { stdio: ["ignore", "pipe", "pipe"], detached: true });
+    dev = spawn("npx", ["wrangler", "dev", "--test-scheduled", "--port", PORT, "--ip", "127.0.0.1", "--var", "MOCK_TOTAL_SECONDS:12", "--var", "STORYBOARD_FIXTURE:example"], { stdio: ["ignore", "pipe", "pipe"], detached: true });
     dev.stdout.on("data", (d) => process.env.SMOKE_VERBOSE && process.stdout.write(d));
     dev.stderr.on("data", (d) => process.env.SMOKE_VERBOSE && process.stderr.write(d));
   }

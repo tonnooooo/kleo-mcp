@@ -1,0 +1,165 @@
+{
+  "schema_version": 1,
+  "editorial_status": "ready",
+  "id": "cyber-voice-scam",
+  "title": "That Voice Could Be Fake — The AI Scam Check",
+  "description": "An unexpected urgent call can sound familiar without proving who is calling. A short cybersecurity awareness film about AI voice impersonation and independent verification.\n\nOriginal motion graphics and synthetic English narration. Signals and networks are illustrative, not detection software.\n\nSources:\nhttps://consumer.ftc.gov/articles/scammers-use-fake-emergencies-steal-your-money\nhttps://consumer.ftc.gov/consumer-alerts/2023/03/scammers-use-ai-enhance-their-family-emergency-schemes",
+  "brand": "signal@kanakytech:~/security",
+  "style": "terminal",
+  "format": "9:16",
+  "width": 1080,
+  "fps": 60,
+  "language": "en",
+  "voice": "af_heart",
+  "speed": 1.0,
+  "max_duration": 100,
+  "script_file": "script.txt",
+  "tags": [
+    "cybersecurity",
+    "AI",
+    "scams",
+    "social engineering",
+    "security awareness"
+  ],
+  "scenes": [
+    {
+      "id": "hook",
+      "kind": "image",
+      "eyebrow": "AI / SOCIAL ENGINEERING",
+      "title": "That voice could be fake.",
+      "image": "assets/voice.svg",
+      "motion": "voice-signal",
+      "motion_labels": [
+        "FAMILIAR VOICE",
+        "AI CAN IMITATE",
+        "VOICE ≠ IDENTITY"
+      ],
+      "image_credit": "Original animated schematic by Keou. Decorative signal, not biometric evidence.",
+      "voice": "Your phone rings. It sounds like someone you trust. They need money, right now. What would you do?",
+      "terminal_lines": [
+        "// incoming call :: scenario",
+        "const caller = \"unverified\";",
+        "voice !== identity;"
+      ]
+    },
+    {
+      "id": "ai",
+      "kind": "image",
+      "eyebrow": "THE NEW DISGUISE",
+      "title": "Familiar does not mean verified.",
+      "image": "assets/network.svg",
+      "motion": "ai-network",
+      "motion_labels": [
+        "AUDIO",
+        "AI MODEL",
+        "IMITATION"
+      ],
+      "image_credit": "Original illustrative network by Keou; simplified AI concept, not a model architecture.",
+      "voice": "Artificial intelligence can imitate a familiar voice. Sounding convincing does not prove who is calling.",
+      "terminal_lines": [
+        "// voice model :: illustration",
+        "const output = model(audio);",
+        "output !== proof;"
+      ]
+    },
+    {
+      "id": "pressure",
+      "kind": "compare",
+      "eyebrow": "THE PRESSURE TACTIC",
+      "title": "Urgency is part of the trap.",
+      "items": [
+        "Act right now",
+        "Pause and verify"
+      ],
+      "voice": "Scammers use urgency to rush a decision. A frightening story can make an ordinary request feel impossible to question.",
+      "terminal_lines": [
+        "// social engineering",
+        "urgency.push(\"act now\");",
+        "decision.pause();"
+      ]
+    },
+    {
+      "id": "check",
+      "kind": "metric",
+      "eyebrow": "BEFORE YOU ACT",
+      "title": "Break the pressure.",
+      "value": "1",
+      "unit": "independent check",
+      "animate_value": true,
+      "voice": "Before you act, make one independent check.",
+      "terminal_lines": [
+        "// break the pressure",
+        "await independent_check();",
+        "checks += 1;"
+      ]
+    },
+    {
+      "id": "verify",
+      "kind": "image",
+      "eyebrow": "USE A TRUSTED CHANNEL",
+      "title": "Hang up. Then call back.",
+      "image": "assets/verify.svg",
+      "motion": "data-flow",
+      "motion_labels": [
+        "REQUEST",
+        "CALL BACK",
+        "DECISION"
+      ],
+      "image_credit": "Original verification-flow schematic by Keou. Illustrative, not live security telemetry.",
+      "voice": "Hang up. Call the person back on a number you already know. Do not use contact details from the suspicious message.",
+      "terminal_lines": [
+        "// verify through a known channel",
+        "hang_up();",
+        "call_back(known_number);"
+      ]
+    },
+    {
+      "id": "steps",
+      "kind": "steps",
+      "eyebrow": "A SIMPLE RESPONSE",
+      "title": "Three moves. More control.",
+      "items": [
+        "Pause",
+        "Verify",
+        "Then decide"
+      ],
+      "voice": "Pause, verify, then decide. A familiar voice is a clue, not an identity check.",
+      "terminal_lines": [
+        "// response protocol",
+        "pause(); verify();",
+        "then_decide();"
+      ]
+    },
+    {
+      "id": "habit",
+      "kind": "list",
+      "eyebrow": "MAKE IT A HABIT",
+      "title": "Plan before the pressure.",
+      "items": [
+        "Talk with your family",
+        "Agree how to verify",
+        "Use known contacts"
+      ],
+      "voice": "Share this habit with your family. Agree on how you will verify an unexpected urgent request.",
+      "terminal_lines": [
+        "// prepare before the next call",
+        "family.agree_on_verification();",
+        "keep_known_contacts();"
+      ]
+    },
+    {
+      "id": "end",
+      "kind": "closing",
+      "eyebrow": "YOUR NEXT CALL",
+      "title": "Would you trust the voice?",
+      "button": "Pause. Call back. Verify.",
+      "hold": 1.8,
+      "voice": "If that call came tonight, would you trust the voice, or verify the person?",
+      "terminal_lines": [
+        "// next unexpected call",
+        "trust = await verify(person);",
+        "return informed_decision;"
+      ]
+    }
+  ]
+}

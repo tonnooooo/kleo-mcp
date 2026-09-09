@@ -16,11 +16,28 @@ const STATEMENTS = [
   `INSERT OR IGNORE INTO invites (code, credits, max_uses, note) VALUES ('KLEO-BETA', 3, 50, 'shared beta code')`,
 ];
 
+/** Columns added after 0001 (mirrors migrations/0003_storyboard.sql). SQLite has no ADD COLUMN IF NOT EXISTS. */
+const COLUMNS: [table: string, column: string, definition: string][] = [
+  ["jobs", "storyboard", "TEXT"],
+  ["jobs", "plan_attempts", "INTEGER NOT NULL DEFAULT 0"],
+  ["jobs", "plan_error", "TEXT"],
+];
+
+async function ensureColumns(env: Env): Promise<void> {
+  for (const [table, column, definition] of COLUMNS) {
+    try {
+      await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
+    } catch (e) {
+      if (!/duplicate column/i.test(String(e))) throw e;
+    }
+  }
+}
+
 let ready: Promise<void> | null = null;
 
 export function ensureSchema(env: Env): Promise<void> {
   if (!ready) {
-    ready = env.DB.batch(STATEMENTS.map((s) => env.DB.prepare(s))).then(() => undefined).catch((e) => { ready = null; throw e; });
+    ready = env.DB.batch(STATEMENTS.map((s) => env.DB.prepare(s))).then(() => ensureColumns(env)).catch((e) => { ready = null; throw e; });
   }
   return ready;
 }
@@ -32,5 +49,8 @@ export async function acquireLock(env: Env, name: string, seconds: number): Prom
   const r = await env.DB.prepare("UPDATE locks SET until = ? WHERE name = ? AND until < strftime('%Y-%m-%dT%H:%M:%fZ','now')").bind(until, name).run();
   return (r.meta.changes ?? 0) === 1;
 }
+/** Keeps a lock for `seconds` more (used to pause planning after a quota error). */
+export const holdLock = (env: Env, name: string, seconds: number) =>
+  env.DB.prepare("UPDATE locks SET until = ? WHERE name = ?").bind(new Date(Date.now() + seconds * 1000).toISOString(), name).run();
 export const releaseLock = (env: Env, name: string) =>
   env.DB.prepare("UPDATE locks SET until = '1970-01-01T00:00:00Z' WHERE name = ?").bind(name).run();

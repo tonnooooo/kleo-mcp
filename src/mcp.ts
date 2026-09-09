@@ -54,6 +54,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       language: z.enum(["en", "it"]).default("en").describe("Voice and caption language."),
       voice: z.string().optional().describe("Voice id from list_templates. Optional."),
       notify_email: z.string().email().optional().describe("Optional: email the download links when the render finishes."),
+      storyboard: z.looseObject({}).optional().describe("Optional: a Keou storyboard you authored (a Keou project object without id, script_file, music_quiet or image scenes). Kleo writes one automatically from the prompt when omitted. Validated server-side; on error the tool lists the problems so you can fix them and call again."),
     }),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   }, async (args) => guarded(async () => {
