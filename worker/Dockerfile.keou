@@ -8,7 +8,7 @@ ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 \
     KEOU_ROOT=/opt/kleo/keou PATH=/usr/local/bin:$PATH
 
 # --- system packages (mirrors keou/bootstrap.sh) ---
-RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends fonts-noto-color-emoji \
       ffmpeg espeak-ng curl xz-utils ca-certificates rsync util-linux fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 

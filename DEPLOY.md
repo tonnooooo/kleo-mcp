@@ -37,6 +37,24 @@ Cosa vuol dire: il contratto tra orchestratore, Vast.ai e worker funziona davver
 
 La chiave Vast è in `.secrets.local` (fuori da git) e andrà come secret Cloudflare appena wrangler è collegato. In produzione consiglio di restare su `RENDER_BACKEND=mock` finché la pipeline vera non è dentro il worker: il mock è gratis e istantaneo e mostra il giro completo a chi prova; il passaggio a `vast` è una variabile.
 
+
+## 0c. Motore vero: Keou dentro Kleo (10 settembre)
+
+Da oggi Kleo può produrre video veri. Cosa è cambiato:
+
+| Pezzo | Cosa fa |
+|---|---|
+| `worker/keou/` | il tuo motore Keou (Playwright + ffmpeg + voce Kokoro + sottotitoli allineati), con le voci italiane aggiunte (`if_sara`, `im_nicola`) |
+| `worker/Dockerfile.keou` | immagine del worker con motore, Chromium, Node, ffmpeg e modelli già dentro (10,8 GB); pubblicata su `ghcr.io/tonnooooo/kleo-worker:keou` |
+| `src/storyboard.ts` | dal prompt allo storyboard Keou con Workers AI (modello `AI_MODEL`, gratis fino a ~10 storyboard al giorno con llama-3.3, circa 25 con llama-4-scout) |
+| `src/keou-contract.ts` | validatore identico alle regole di Keou: nessuno storyboard invalido arriva alla GPU |
+| `kleo_storyboard_guide` | nuovo strumento: consegna il formato all'assistente dell'utente (Claude, ChatGPT, Gemini) perché scriva lui lo storyboard, originale e adatto alla conversazione; `kleo_create_video` lo accetta nel campo `storyboard` |
+| Offerte Vast | filtrate per almeno 16 core e 32 GB di RAM (`VAST_MIN_CPU`, `VAST_MIN_RAM_GB`): il render è lavoro di CPU; il worker usa tutti i core dell'istanza |
+
+Verifiche superate: render vero in container sul portatile (Short 38 s, 1080×1920, 60 fps, voce, 24 sottotitoli, QA ok, ~5 min), 20 test unitari, test end-to-end locale e in produzione.
+
+Per accendere le GPU vere: il pacchetto `kleo-worker` su GitHub deve essere pubblico (GitHub → il tuo profilo → Packages → kleo-worker → Package settings → Change visibility → Public), poi `RENDER_BACKEND` da `mock` a `vast` in `wrangler.jsonc` e `npm run deploy`. Larghezze di render: 2160 per 9:16, 1920 per 16:9 (`KLEO_WIDTH_PORTRAIT`/`KLEO_WIDTH_LANDSCAPE`).
+
 ## 1. La decisione: tutto su Cloudflare, nessuna macchina virtuale, zero euro
 
 Hai chiesto se Oracle Always Free a 0 € è una buona scelta. **No, non per un servizio che deve stare in piedi.** Ho verificato lo stato a settembre 2026:

@@ -28,6 +28,10 @@ Un tool MCP ha lo stesso tempo di una pagina web: i client aspettano al massimo 
 Le descrizioni sono il manuale del modello: se sono scritte bene, il modello sceglie lo strumento giusto e compila i parametri giusti senza che l'utente sappia nulla di tecnico.
 
 ```jsonc
+// kleo_storyboard_guide — "Returns the storyboard format (styles, scenes, beats, icons, voices, rules)
+//                          with examples, so the assistant writes an original storyboard itself."
+{ "template": "viral-short", "duration_s": 45 } // entrambi facoltativi
+
 // kleo_list_templates — "List the video templates Kleo can render. Call this before kleo_create_video
 //                   when the user hasn't named a template, and pick the best match."
 { } // nessun parametro
