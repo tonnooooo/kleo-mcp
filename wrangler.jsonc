@@ -20,8 +20,7 @@
   "d1_databases": [
     { "binding": "DB", "database_name": "kleo-db", "database_id": "ffaa0767-9df1-4e5c-84f2-552e37851d63", "migrations_dir": "migrations" }
   ],
-  // R2 not enabled yet on this account (enable it in the dashboard, then restore):
-  // "r2_buckets": [ { "binding": "RENDERS", "bucket_name": "kleo-renders" } ],
+  "r2_buckets": [ { "binding": "RENDERS", "bucket_name": "kleo-renders" } ],
   "triggers": { "crons": ["* * * * *"] },
   "vars": {
     "PUBLIC_URL": "https://kleo-mcp.plural-juice.workers.dev",

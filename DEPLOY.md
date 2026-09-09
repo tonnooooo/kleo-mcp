@@ -9,14 +9,15 @@
 | Sito | https://tonnooooo.github.io/kleo-site/ | online, permanente (GitHub Pages) |
 | Server MCP | https://kleo-mcp.plural-juice.workers.dev/mcp | online, **permanente**, nel tuo account Cloudflare "Plural Juice" (id `e4a5a1308df5b44c65497b85210c6845`), account creato dal claim |
 | Database D1 `kleo-db` | stesso account | migrazioni applicate |
-| KV `kleo-mcp-oauth-kv` | stesso account | token OAuth e, finché manca R2, i file dei render simulati |
+| KV `kleo-mcp-oauth-kv` | stesso account | token OAuth |
+| R2 `kleo-renders` | stesso account | file dei render, cancellati dopo 7 giorni (regola di sicurezza a 8) |
 | Cron ogni minuto | attivo | orchestratore |
 | Segreti | `INTERNAL_SECRET`, `INVITE_CODES`, `VAST_API_KEY` | caricati come secret Cloudflare (copia in `.secrets.local`) |
 | Backend render | `mock` | passare a `vast` cambiando la variabile in `wrangler.jsonc` e `npm run deploy` |
 | Test end-to-end | contro l'indirizzo definitivo | superato |
 
 Da fare, quando vuoi:
-1. **Abilitare R2** dalla dashboard Cloudflare (menu R2 → attiva; se chiede un metodo di pagamento è per il piano a consumo, il primo 10 GB al mese resta gratis). Poi mi dici e io ripristino il binding in `wrangler.jsonc` e faccio il deploy: serve per i video veri, che pesano centinaia di MB.
+1. ~~Abilitare R2~~ fatto il 9 settembre alle 11:42 UTC: bucket creato, binding attivo, test superato.
 2. **GitHub, permesso pacchetti** (facoltativo): serve solo per pubblicare l'immagine Docker del worker su ghcr.io. Oggi non è necessario, perché l'istanza Vast usa l'immagine pubblica `nvidia/cuda` e scarica lo script del worker al boot. Quando vorrai un'immagine con ComfyUI e i modelli preinstallati, tornerà utile.
 3. **Pipeline vera** nella funzione `render()` di `worker/kleo_worker.py`.
 
