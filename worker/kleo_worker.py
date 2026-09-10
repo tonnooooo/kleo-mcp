@@ -18,13 +18,16 @@ Engines (KLEO_ENGINE):
 Kleo pictures (keou engine only): a storyboard may carry "kleo_style" (cartoon | realistic | cyber | stickman) and, per
 scene, an "image_prompt". For cartoon/realistic the worker asks POST /internal/jobs/{id}/images for the pictures the
 server generated (one per scene with a prompt), downloads them into <project>/img/<sceneId>.<ext> and sets scene.image;
-kleo_style and image_prompt are stripped before project.json is written. A missing or broken picture is never fatal:
-the scene simply renders without it.
+the scenes the server could not make are then drawn on the instance's own GPU by kleo_pictures.py (Stable Diffusion 1.5,
+diffusers, weights baked into the image) when one is present. KLEO_PICTURES=auto (default: server first, GPU for the
+rest) | server (never generate locally) | local (never ask the server). kleo_style and image_prompt are stripped before
+project.json is written. A missing or broken picture is never fatal: the scene simply renders without it.
 Tuning: KLEO_WIDTH_PORTRAIT (2160) / KLEO_WIDTH_LANDSCAPE (1920), KLEO_RENDER_TIMEOUT_MIN (100),
         KLEO_IMAGES_TIMEOUT_S (300: the images call, the server generates on the first request), KLEO_IMAGES_RETRY_WAIT_S (20),
+        KLEO_PICTURES (auto | server | local), KLEO_PICTURES_CPU=1 (let kleo_pictures draw on the CPU: tests only),
         KLEO_KEOU_WORKERS (Chromium render workers for run.py: default min(8, cpu count); each one costs RAM),
         KLEO_KEOU_PYTHON (interpreter for run.py: default <engine>/.venv/bin/python if present, else this one).
-Standard library only, so it runs in any image with python3 and ffmpeg.
+Standard library only (kleo_pictures.py, next to this file, is optional and imported lazily), so it runs in any image with python3 and ffmpeg.
 """
 import copy, glob, json, os, re, shutil, sys, time, threading, subprocess, tempfile, urllib.request, urllib.error, traceback
 from collections import deque
@@ -46,8 +49,10 @@ PICTURE_STYLES = ("cartoon", "realistic")
 IMAGES_TIMEOUT_S = float(os.environ.get("KLEO_IMAGES_TIMEOUT_S", "300"))      # the server generates the pictures on the first call
 IMAGES_RETRY_WAIT_S = float(os.environ.get("KLEO_IMAGES_RETRY_WAIT_S", "20"))  # one retry after this long on 5xx / network errors
 IMAGE_DOWNLOAD_TIMEOUT_S = 60
+PICTURES_POLICY = (os.environ.get("KLEO_PICTURES", "auto").strip().lower() or "auto")  # auto | server | local (see pictures_policy())
 IMAGE_MAX_BYTES = 25 * 1024 * 1024
 SCENE_ID = re.compile(r"[a-z0-9-]{1,50}")                                       # contract.py scene id slug → safe file name
+IMAGE_KINDS = ("image", "cinema", "story", "closing")                          # contract.py: the only kinds that accept scene.image
 
 # Mirrors contract.VOICES; the engine's own contract.py overrides it at run time (see load_voices()).
 DEFAULT_VOICES = {"fr": ["ff_siwis"], "en": ["af_heart", "am_michael", "bf_emma"], "it": ["if_sara", "im_nicola"]}
@@ -513,6 +518,10 @@ def attach_pictures(project, pdir, reply):
         if not (isinstance(s, dict) and isinstance(s.get("image_prompt"), str) and s["image_prompt"].strip()):
             continue
         sid = s.get("id")
+        if s.get("kind") not in IMAGE_KINDS:  # the engine refuses scene.image elsewhere; better no picture than no video
+            log(f"picture {sid}: a {s.get('kind')!r} scene cannot carry a picture, skipped")
+            missing.append(sid)
+            continue
         name = download_picture(images.get(sid), os.path.join(pdir, "img"), sid) if sid in images else None
         if name:
             s["image"] = "img/" + name
@@ -520,6 +529,79 @@ def attach_pictures(project, pdir, reply):
         else:
             missing.append(sid)
     return ready, missing
+
+
+def pictures_policy():
+    """KLEO_PICTURES normalised: auto (server first, GPU for the rest), server (never local), local (never the server)."""
+    return PICTURES_POLICY if PICTURES_POLICY in ("auto", "server", "local") else "auto"
+
+
+def local_pictures_module():
+    """kleo_pictures (next to this file) or None when it is not shipped. Never raises."""
+    try:
+        import kleo_pictures
+        return kleo_pictures
+    except ImportError:
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+            try:
+                import kleo_pictures
+                return kleo_pictures
+            except ImportError:
+                pass
+    except Exception as e:
+        log("kleo_pictures could not be imported:", e)
+    return None
+
+
+def local_pictures_available():
+    """True when this instance can draw pictures itself (kleo_pictures present + a CUDA GPU, or KLEO_PICTURES_CPU=1)."""
+    mod = local_pictures_module()
+    if mod is None:
+        return False
+    try:
+        return bool(mod.can_generate())
+    except Exception as e:
+        log("local pictures unavailable:", e)
+        return False
+
+
+def generate_local_pictures(project, pdir, scene_ids):
+    """Draws the listed scenes (those still without picture) with kleo_pictures on this machine into <pdir>/img/<sceneId>.png
+    and sets scene.image on each success. Returns the ids that got a picture, in scene order. Never raises."""
+    mod = local_pictures_module()
+    if mod is None or not scene_ids:
+        return []
+    wanted = set(scene_ids)
+    scenes = [{"id": s["id"], "image_prompt": s["image_prompt"]} for s in project.get("scenes") or []
+              if isinstance(s, dict) and s.get("id") in wanted and isinstance(s.get("image_prompt"), str)
+              and s["image_prompt"].strip() and isinstance(s["id"], str) and SCENE_ID.fullmatch(s["id"])
+              and s.get("kind") in IMAGE_KINDS]
+    if not scenes:
+        return []
+    img_dir = os.path.join(pdir, "img")
+    try:
+        made = mod.generate_pictures(scenes, project.get("kleo_style"), project.get("format") or "9:16", img_dir)
+    except Exception as e:
+        log("local picture generation failed:", e)
+        return []
+    if not isinstance(made, dict):
+        return []
+    done = []
+    for s in project.get("scenes") or []:
+        if not (isinstance(s, dict) and s.get("id") in wanted):
+            continue
+        path = made.get(s["id"])
+        if not (isinstance(path, str) and os.path.isfile(path) and os.path.getsize(path) > 0):
+            continue
+        name = os.path.basename(path)
+        if os.path.dirname(os.path.abspath(path)) != os.path.abspath(img_dir) or not name.startswith(s["id"] + "."):
+            log(f"picture {s['id']}: unexpected path {path!r}, skipped")
+            continue
+        s["image"] = "img/" + name
+        done.append(s["id"])
+    return done
 
 
 def strip_kleo_fields(project):
@@ -538,13 +620,25 @@ def prepare_project(job, engine, projects_dir):
     os.makedirs(pdir)
     pictures = "no pictures"
     if wants_pictures(project):
-        progress("script", 4, message=f"fetching {len(picture_scene_ids(project))} pictures ({project['kleo_style']})")
-        reply = fetch_pictures(JOB)
-        if reply and reply["missing"]:
-            log("pictures the server could not make:", reply["missing"])
-        ready, missing = attach_pictures(project, pdir, reply)
-        pictures = f"{len(ready)} pictures ready, {len(missing)} missing"
-        log("pictures:", pictures, "ready", ready, "missing", missing)
+        # Policy (KLEO_PICTURES): auto → the server first, then this machine's GPU for whatever is still missing;
+        # server → only the server; local → only this machine (no images call at all).
+        policy, style, ids = pictures_policy(), project["kleo_style"], picture_scene_ids(project)
+        ready, generated, missing = [], [], list(ids)
+        if policy != "local":
+            progress("script", 4, message=f"fetching {len(ids)} pictures ({style})")
+            reply = fetch_pictures(JOB)
+            if reply and reply["missing"]:
+                log("pictures the server could not make:", reply["missing"])
+            ready, missing = attach_pictures(project, pdir, reply)
+        if missing and policy != "server":
+            if local_pictures_available():
+                progress("script", 5, message=f"generating {len(missing)} pictures on the GPU ({style})")
+                generated = generate_local_pictures(project, pdir, missing)
+                missing = [m for m in missing if m not in generated]
+            else:
+                log(f"pictures: {len(missing)} missing and no GPU here (policy {policy}); rendering without them")
+        pictures = f"{len(ready)} pictures from server, {len(generated)} generated on the GPU, {len(missing)} missing"
+        log("pictures:", pictures, "server", ready, "gpu", generated, "missing", missing, "policy", policy)
         progress("script", 5, message=pictures)
     strip_kleo_fields(project)
     with open(os.path.join(pdir, "project.json"), "w") as f:

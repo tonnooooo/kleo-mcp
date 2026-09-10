@@ -246,7 +246,7 @@ class PicturesTest(unittest.TestCase):
             self.assertNotIn("image", s[sid])
         self.assertTrue(os.path.isfile(os.path.join(pdir, "img", "01-hook.png")))
         self.assertTrue(os.path.isfile(os.path.join(pdir, "img", "02-ship.jpg")))
-        self.assertIn("2 pictures ready, 3 missing", [p.get("message") for p in FakeKleo.state["progress"]])
+        self.assertIn("2 pictures from server, 0 generated on the GPU, 3 missing", [p.get("message") for p in FakeKleo.state["progress"]])
         self.assertEqual(len(self.posts("/images")), 1)
         contract.validate(pj)  # the engine's own validator: image paths resolve inside the project, everything else intact
 
@@ -254,7 +254,7 @@ class PicturesTest(unittest.TestCase):
         FakeKleo.state["images_replies"] = [(500, {"error": "a"}), (500, {"error": "b"})]
         project, pdir = kw.prepare_project(job_for(storyboard()), ENGINE, self.tmp)
         self.assertFalse(any("image" in s or "image_prompt" in s for s in project["scenes"]))
-        self.assertIn("0 pictures ready, 5 missing", [p.get("message") for p in FakeKleo.state["progress"]])
+        self.assertIn("0 pictures from server, 0 generated on the GPU, 5 missing", [p.get("message") for p in FakeKleo.state["progress"]])
         contract.validate(os.path.join(pdir, "project.json"))
 
     def test_prepare_project_cyber_never_asks_for_pictures(self):

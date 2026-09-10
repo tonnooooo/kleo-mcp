@@ -1,9 +1,39 @@
 #!/usr/bin/env python3
 """Build-time model warm-up: every model the Keou engine needs lands in the image's
 HF cache (HF_HOME) so a Vast instance boots and renders without any download.
-Reads the voice list from contract.py so the cache always matches the contract."""
+Reads the voice list from contract.py so the cache always matches the contract.
+Also fetches the two Stable Diffusion 1.5 checkpoints kleo_pictures.py draws the cartoon / realistic
+scene pictures with (fp16 safetensors + configs only, ~2 GB each; PREWARM_PICTURES=0 skips them).
+PICTURE_MODELS is a copy of kleo_pictures.MODELS on purpose: importing kleo_pictures here would key this
+(slow, 4 GB) layer on a file that changes often; test_kleo_pictures.py checks the two tables agree."""
 import importlib.util, os, sys, time
 from pathlib import Path
+
+PICTURE_MODELS = {"cartoon": "Lykon/dreamshaper-8", "realistic": "SG161222/Realistic_Vision_V5.1_noVAE"}
+# Configs, tokenizer files and fp16 weights of the parts the pipeline loads; the safety checker (disabled at run time,
+# 1.2 GB) and the .bin / .ckpt duplicates never enter the image.
+PICTURE_ALLOW_FP16 = ["*.json", "*.txt", "text_encoder/*.fp16.safetensors", "unet/*.fp16.safetensors", "vae/*.fp16.safetensors"]
+PICTURE_ALLOW_FULL = ["*.json", "*.txt", "text_encoder/*.safetensors", "unet/*.safetensors", "vae/*.safetensors"]
+PICTURE_IGNORE = ["safety_checker/*", "*.bin", "*.ckpt", "*.msgpack", "*.onnx", "*.h5"]
+
+
+def prewarm_pictures():
+    """snapshot_download of each picture model into HF_HOME. Tries the fp16 variant first; a repo without fp16 files
+    (the unet is the tell) gets its plain safetensors instead (loaded as fp16 at run time all the same)."""
+    from huggingface_hub import snapshot_download
+    for style, repo in sorted(PICTURE_MODELS.items()):
+        t0 = time.time()
+        path = snapshot_download(repo, allow_patterns=PICTURE_ALLOW_FP16, ignore_patterns=PICTURE_IGNORE)
+        variant = "fp16"
+        if not list(Path(path, "unet").glob("*.fp16.safetensors")):
+            path = snapshot_download(repo, allow_patterns=PICTURE_ALLOW_FULL, ignore_patterns=PICTURE_IGNORE)
+            variant = "default"
+        files = [p for p in Path(path).rglob("*") if p.is_file()]
+        size = sum(p.stat().st_size for p in files) / 1e9
+        assert Path(path, "model_index.json").is_file(), f"{repo}: no model_index.json"
+        assert any(p.suffix == ".safetensors" and p.parent.name == "unet" for p in files), f"{repo}: no unet weights"
+        print(f"PREWARM picture {style} {repo} variant={variant} {len(files)} files {size:.2f} GB in {time.time() - t0:.0f}s", flush=True)
+
 
 contract = Path(sys.argv[1]).resolve()
 spec = importlib.util.spec_from_file_location('contract', contract); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
@@ -27,4 +57,19 @@ segments, _ = asr.transcribe(np.zeros(24000, dtype=np.float32), language='en', b
 list(segments)
 print(f'PREWARM asr small/int8 ok', flush=True)
 import spacy; spacy.load('en_core_web_sm'); print('PREWARM spacy en_core_web_sm ok', flush=True)
+if os.environ.get('PREWARM_PICTURES', '1') != '0':
+    prewarm_pictures()
+    # Load once on the CPU, offline, exactly as kleo_pictures.load_pipeline does at run time: proves the cached files are
+    # enough (no weights are run: KLEO_PICTURES_CPU is not set, so no picture is drawn here).
+    import torch
+    from diffusers import StableDiffusionPipeline
+    for style, repo in sorted(PICTURE_MODELS.items()):
+        try:
+            _pipe = StableDiffusionPipeline.from_pretrained(repo, torch_dtype=torch.float16, variant='fp16', safety_checker=None,
+                                                            requires_safety_checker=False, use_safetensors=True, local_files_only=True)
+        except Exception:
+            _pipe = StableDiffusionPipeline.from_pretrained(repo, torch_dtype=torch.float16, safety_checker=None,
+                                                            requires_safety_checker=False, use_safetensors=True, local_files_only=True)
+        print(f'PREWARM picture pipeline {style} loads offline', flush=True)
+        del _pipe; import gc; gc.collect()
 print(f'PREWARM_DONE {time.time()-t0:.0f}s HF_HOME={os.environ.get("HF_HOME")}', flush=True)

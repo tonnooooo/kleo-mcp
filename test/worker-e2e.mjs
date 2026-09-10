@@ -11,7 +11,7 @@
  *       KLEO_KEOU_WORKERS). Asserts: job done, MP4 1080 wide / 60 fps / AAC audio / > 20 s, SRT ≥ 5 cues, JPEG thumbnail.
  *       Kleo pictures: the storyboard is injected as kleo_style "cartoon" with an image_prompt on 01-gone and 05-fix, the
  *       local dev runs with IMAGE_FIXTURE=1 (deterministic placeholder PNGs, no Workers AI); the test checks
- *       POST /internal/jobs/:id/images itself and then that the worker log reports "2 pictures ready, 0 missing".
+ *       POST /internal/jobs/:id/images itself and then that the worker log reports "2 pictures from server, 0 generated on the GPU, 0 missing".
  *   PLACEHOLDER (ffmpeg only):    KLEO_ENGINE=placeholder KLEO_IMAGE=localhost/kleo-worker:latest node test/worker-e2e.mjs
  *       no storyboard needed; asserts the old geometry contract (2160x3840, 60 fps, ~20 s).
  * KLEO_MOUNT_WORKER=1 bind-mounts the repo's worker/kleo_worker.py over /opt/kleo/kleo_worker.py in the container
@@ -129,7 +129,7 @@ async function main() {
   }
   console.log(log.split("\n").filter(Boolean).map((l) => "  │ " + l).join("\n"));
   console.log(`  worker finished in ${Math.round((Date.now() - t0) / 1000)} s`);
-  if (KEOU) assert(/2 pictures ready, 0 missing/.test(log),
+  if (KEOU) assert(/2 pictures from server, 0 generated on the GPU, 0 missing/.test(log),
     "the worker did not report the 2 fixture pictures (image built from an old kleo_worker.py? rebuild it or run with KLEO_MOUNT_WORKER=1)");
 
   step("job is done and the files are real");

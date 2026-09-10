@@ -1,6 +1,7 @@
 # Kleo worker image with the Keou motion-design engine baked in (CPU or GPU).
 #   cd /home/madiva/kleo/kleo-mcp && podman build -f worker/Dockerfile.keou -t kleo-worker:keou .
-# Layers are ordered so that source edits never re-download Node, Chromium, pip deps or models.
+# Layers are ordered so that source edits never re-download Node, Chromium, pip deps or models
+# (the SD picture models are keyed on prewarm_models.py + contract.py only, never on kleo_pictures.py).
 FROM docker.io/pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime
 ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 \
     HF_HOME=/opt/kleo/hf HF_HUB_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 \
@@ -31,14 +32,23 @@ COPY worker/keou/requirements.txt ./
 RUN pip install -r requirements.txt \
     && pip install https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 
-# --- Models: Kokoro-82M + every contract voice, faster-whisper small/int8 (HF cache inside the image) ---
+# --- Python deps for local picture generation (diffusers on the base image's torch; see worker/kleo_pictures.py) ---
+COPY worker/requirements-pictures.txt /opt/kleo/requirements-pictures.txt
+RUN pip install -r /opt/kleo/requirements-pictures.txt && pip check \
+    && python3 -c "import diffusers, transformers, accelerate, safetensors; print('diffusers', diffusers.__version__, 'transformers', transformers.__version__)"
+
+# --- Models: Kokoro-82M + every contract voice, faster-whisper small/int8, and the two SD1.5 picture checkpoints
+#     (dreamshaper-8 for cartoon, Realistic_Vision_V5.1 for realistic: fp16 safetensors + configs, ~2 GB each), all in
+#     the HF cache inside the image so an instance never downloads. PREWARM_PICTURES=0 builds without the SD models. ---
+ARG PREWARM_PICTURES=1
 COPY worker/keou/contract.py /opt/kleo/prewarm/contract.py
 COPY worker/prewarm_models.py /opt/kleo/prewarm/prewarm_models.py
-RUN HF_HUB_OFFLINE=0 python3 /opt/kleo/prewarm/prewarm_models.py /opt/kleo/prewarm/contract.py \
-    && rm -rf /root/.cache/pip
+RUN HF_HUB_OFFLINE=0 PREWARM_PICTURES=${PREWARM_PICTURES} python3 /opt/kleo/prewarm/prewarm_models.py /opt/kleo/prewarm/contract.py \
+    && rm -rf /root/.cache/pip && du -sh /opt/kleo/hf
 
 # --- Engine source + worker (last: cheapest layers to rebuild) ---
 COPY worker/keou /opt/kleo/keou
+COPY worker/kleo_pictures.py /opt/kleo/kleo_pictures.py
 COPY worker/kleo_worker.py /opt/kleo/kleo_worker.py
 RUN node --version > runtime-node.txt && ffmpeg -version | head -1 > runtime-ffmpeg.txt \
     && pip freeze > runtime-python.txt && python3 -c "import contract; print('contract', contract.VERSION, sorted(contract.VOICES))"
