@@ -1,6 +1,7 @@
 import type { Env } from "./env";
 import { type Job, type JobState, ACTIVE_STATES, OPEN_STATES, activeJobs, queuedJobs, unplannedJobs, claimPlanAttempt, countRunning, updateJob, transitionJob, audit, refundCredits, expiredJobs, listFiles, deleteFiles, setFile, getJob, reserveJob, unreserveJob } from "./db";
 import { backendFor, getBackend } from "./backends";
+import { vastStatus } from "./backends/vast";
 import { int, nowIso, minutesSince, secondsSince, addDays, base64ToBytes, rid } from "./util";
 import { TINY_MP4_B64 } from "./assets";
 import { resultLinks, FILE_NAMES } from "./jobs";
@@ -93,9 +94,16 @@ async function tickInner(env: Env, stats: Stats) {
       // A worker that never reports (image pull stuck, boot failure) must not hold a paid GPU for the whole timeout.
       const startTimeoutMin = int(env.START_TIMEOUT_MIN, 15);
       if (job.state === "starting" && job.started_at && minutesSince(job.started_at) > startTimeoutMin) {
-        await failJob(env, job, `worker never started within ${startTimeoutMin} min (image pull or boot problem)`, true);
-        stats.failed++;
-        continue;
+        // A fresh host may still be pulling the 10 GB image: give "loading" instances more time, but never more than LOADING_TIMEOUT_MIN.
+        const loadingTimeoutMin = int(env.LOADING_TIMEOUT_MIN, 35);
+        const st = job.backend === "vast" ? await vastStatus(env, job) : null;
+        if (st === "loading" && minutesSince(job.started_at) <= loadingTimeoutMin) {
+          await audit(env, job.user_id, job.id, "vast.still_loading", { minutes: Math.round(minutesSince(job.started_at)) });
+        } else {
+          await failJob(env, job, `worker never started within ${Math.round(minutesSince(job.started_at))} min (instance status: ${st ?? "unknown"})`, true);
+          stats.failed++;
+          continue;
+        }
       }
       const backend = backendFor(env, job.backend);
       if (backend.poll && job.state !== "finishing") {

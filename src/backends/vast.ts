@@ -153,3 +153,14 @@ export const vastBackend: RenderBackend = {
     return cost;
   },
 };
+
+/** Raw actual_status of a Vast instance ("loading" while the image is still being pulled, "running", "exited"...). */
+export async function vastStatus(env: Env, job: Job): Promise<string | null> {
+  if (!job.instance_id) return null;
+  try {
+    const r = await vast<{ instances?: Instance | null }>(env, "GET", `/instances/${job.instance_id}/`);
+    return r.instances?.actual_status ?? null;
+  } catch {
+    return null;
+  }
+}

@@ -27,7 +27,8 @@ export interface Env {
   MAX_CONCURRENT_GPUS: string;
   MAX_JOBS_PER_USER: string;
   JOB_TIMEOUT_MIN: string;
-  START_TIMEOUT_MIN?: string; // minutes a GPU may stay silent after rental before it is destroyed and the job requeued
+  START_TIMEOUT_MIN?: string;
+  LOADING_TIMEOUT_MIN?: string; // max minutes an instance may stay in "loading" (image pull) before it is destroyed // minutes a GPU may stay silent after rental before it is destroyed and the job requeued
   FREE_CREDITS: string;
   RESULT_TTL_DAYS: string;
   MOCK_TOTAL_SECONDS?: string;
