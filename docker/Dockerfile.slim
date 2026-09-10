@@ -27,7 +27,8 @@ FROM ${BASE_IMAGE}
 ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1 \
     HF_HOME=/opt/kleo/hf HF_HUB_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 \
     PLAYWRIGHT_BROWSERS_PATH=/opt/kleo/ms-playwright \
-    KEOU_ROOT=/opt/kleo/keou VIRTUAL_ENV=/opt/venv PATH=/opt/venv/bin:/usr/local/bin:$PATH
+    KEOU_ROOT=/opt/kleo/keou VIRTUAL_ENV=/opt/venv PATH=/opt/venv/bin:/usr/local/bin:$PATH \
+    KLEO_KEOU_PYTHON=/opt/venv/bin/python3
 
 # --- system packages (mirrors keou/bootstrap.sh) plus what the conda base used to provide for free:
 #     python itself, libgomp (libtorch_global_deps.so links it) and libstdc++ (every cuDNN sub-library links it). ---
@@ -59,10 +60,16 @@ RUN cd /tmp && curl -fsSL https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_
 #                                    _adv is unreachable unless torch.nn.RNN or the cuDNN MHA API is called.
 #       libcusolverMg.so.11 (161 MB) multi-GPU cuSOLVER. One GPU, one process.
 #       libnvrtc.alt.so.12 (111 MB)  the alternate NVRTC, only ever selected through CUDA_NVRTC_ALT.
-#       torch/include, torch/bin (48 MB) C++ headers and protoc: for building extensions, not for running them.
-#       nccl (430 MB) + cusparselt (452 MB) torch.distributed and torch._cslt_sparse_mm: one GPU, dense fp16.
-#                                    These two are moved aside and put straight back if `import torch` turns out
-#                                    to need them at load time, so a wrong guess costs a log line, not an image.
+#       torch/include + the two protoc copies (48 MB) headers and a compiler for building extensions, not for
+#                                    running them. The rest of torch/bin stays: torch_shm_manager is 50 KB and
+#                                    `import torch` refuses to start without it.
+#       nccl (430 MB) + cusparselt (452 MB) torch.distributed and torch._cslt_sparse_mm, neither of which one
+#                                    GPU running dense fp16 can reach — but ldd says libtorch_cuda.so has both
+#                                    on DT_NEEDED, so the loader wants them present whether or not a symbol is
+#                                    ever called, and the guard below puts them back. Left in the file because
+#                                    it is the check, not the guess, that decides: the log line says which.
+#     The import right after the deletions is what makes that guard honest — without it a prune that broke
+#     `import torch` for some other reason would read as "torch needs nccl" and quietly keep 900 MB.
 #     PRUNE_CUDA=0 keeps every byte, for a like-for-like comparison against :keou. ---
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
 ARG TORCH_VERSION=2.8.0+cu128
@@ -81,7 +88,8 @@ RUN set -eu; \
              "$SITE"/nvidia/cusolver/lib/libcusolverMg.so.11 \
              "$SITE"/nvidia/cuda_nvrtc/lib/libnvrtc.alt.so.12 \
              "$SITE"/nvidia/cuda_nvrtc/lib/libnvrtc-builtins.alt.so.* \
-             "$SITE"/torch/include "$SITE"/torch/bin "$SITE"/torch/test; \
+             "$SITE"/torch/include "$SITE"/torch/bin/protoc "$SITE"/torch/bin/protoc-*; \
+      python3 -c "import torch; print('BASELINE_IMPORT_OK', torch.__version__)"; \
       for lib in nccl cusparselt; do \
         d="$SITE/nvidia/$lib"; \
         if [ -d "$d" ]; then \
@@ -167,9 +175,20 @@ RUN curl -fsSL --retry 3 --max-time 180 "https://raw.githubusercontent.com/googl
     && curl -fsSL --retry 3 --max-time 180 "https://raw.githubusercontent.com/google/fonts/${GOOGLE_FONTS_REF}/ofl/oswald/Oswald%5Bwght%5D.ttf" -o /opt/kleo/keou/engine/assets/real.ttf \
     && python3 -c 'import hashlib,sys;A="/opt/kleo/keou/engine/assets/";W=[("cartoon.ttf",683200,"bc1b9f1191c0d6d23cb2ce0af66aba82ddbf8d6c"),("real.ttf",172088,"d1a3b9cb1325bf20b3a06ef9849d21c411212a3b")];D={n:open(A+n,"rb").read() for n,_,_ in W};B={n:hashlib.sha1(("blob %d"%len(d)).encode()+bytes(1)+d).hexdigest() for n,d in D.items()};bad=["%s: got %d bytes blob %s, want %d bytes blob %s"%(n,len(D[n]),B[n],s,h) for n,s,h in W if len(D[n])!=s or B[n]!=h];bad and sys.exit("Font verification failed: "+"; ".join(bad));print("FONTS_OK",[(n,len(d)) for n,d in D.items()])'
 
+# --- One difference the conda base hid: a venv leaves a second python3 on the box, /usr/bin/python3, with none
+#     of these packages in it. Vast starts the worker with a bare `python3 kleo_worker.py` from its onstart
+#     script, and kleo_worker.py runs the engine with sys.executable, so a PATH that ever missed /opt/venv/bin
+#     would render with an interpreter that has no torch and no kokoro — and quietly, because kleo_pictures is
+#     imported lazily. The conda image failed loudly there instead (it had no other python3 at all). Two
+#     belts: KLEO_KEOU_PYTHON above pins the engine's interpreter, and a wrapper in /usr/local/bin — which
+#     comes before /usr/bin in every default PATH — execs the venv python by its real path, so venv detection
+#     still works (a symlink would not: python looks for pyvenv.cfg beside the name it was invoked as). ---
 COPY worker/kleo_pictures.py /opt/kleo/kleo_pictures.py
 COPY worker/kleo_worker.py /opt/kleo/kleo_worker.py
-RUN node --version > runtime-node.txt && ffmpeg -version | head -1 > runtime-ffmpeg.txt \
+RUN printf '#!/bin/sh\nexec /opt/venv/bin/python3 "$@"\n' > /usr/local/bin/python3 \
+    && chmod +x /usr/local/bin/python3 && ln -sf python3 /usr/local/bin/python \
+    && env -i /usr/local/bin/python3 -c "import sys, torch, kokoro; print('WRAPPER_OK', sys.executable, torch.__version__)" \
+    && node --version > runtime-node.txt && ffmpeg -version | head -1 > runtime-ffmpeg.txt \
     && pip freeze > runtime-python.txt && python3 -c "import contract; print('contract', contract.VERSION, sorted(contract.VOICES))" \
     && echo "=== what the image is made of" \
     && du -sh /opt/venv /opt/kleo/hf /opt/kleo/ms-playwright /opt/kleo/keou/node_modules /usr/local/lib/node_modules /usr/local/bin 2>/dev/null
