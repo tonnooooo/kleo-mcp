@@ -934,6 +934,12 @@ def prepare_project(job, engine, projects_dir):
         progress("script", 5, message=pictures)
     # Read the shots to film BEFORE the strip: it is about to take every image_prompt out of the project.
     units = video_units(project) if wants_footage(project) else []
+    # AND TAKE THE BACKDROP STRAIGHT BACK OFF. The storyboard declares it as a REQUEST; the project on disk may
+    # only declare it as a FACT, and it is not a fact until the clips exist. contract.py refuses a video backdrop
+    # with a missing clip, and the voice pass validates this very file before the clips can possibly exist — the
+    # cut times come from the timeline the voice pass is about to make. So the request lives in `units` from here
+    # on, and render_keou writes the backdrop back only once every clip is on disk.
+    project.pop("backdrop", None)
     strip_kleo_fields(project)
     write_project(project, pdir)
     log(f"project {project['id']}: {len(project['scenes'])} scenes, {project['format']} {project['width']}px {project['fps']} fps, "
@@ -960,15 +966,17 @@ def render_keou(job, out_dir):
     progress("script", 6, message=f"{len(project['scenes'])} scenes")
     log_path = os.path.join(out_dir, "log.txt")
 
-    if wants_footage(project):
-        if not generate_footage(project, pdir, engine, log_path, units):
-            # Without a track the backdrop is a promise the render cannot keep: the engine would draw the graphics
-            # onto a transparent canvas with nothing behind them, which is worse than the stills it replaced. So
-            # the backdrop comes off, the half-made clips go with it, and the film is drawn the old way.
-            project.pop("backdrop", None)
+    # `units` is the request to film: prepare_project fills it only when the storyboard asked, and it took the
+    # backdrop off the project on the way past. The backdrop goes back on ONLY here, and only once the clips are
+    # real — never as a promise. Without a track the engine would draw the graphics onto a transparent canvas with
+    # nothing behind them, which is worse than the stills it replaced.
+    if units:
+        if generate_footage(project, pdir, engine, log_path, units):
+            project["backdrop"] = "video"
+        else:
             for u in units:
                 u["shot"].pop("clip", None)
-            log("the video backdrop came off: this film is drawn from the stills")
+            log("no track: this film is drawn from the stills")
         write_project(project, pdir)
 
     # If anything above needed the shot times, the script is already voiced; run.py checks that alignment itself

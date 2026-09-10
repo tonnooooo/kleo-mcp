@@ -122,8 +122,16 @@ class VideoWiringTest(unittest.TestCase):
         self.addCleanup(lambda: [setattr(kw, k, v) for k, v in self.saved.items()])
 
     def step(self, cmd, engine, log_path, what, timeout_min):
-        """Stands in for the voice pass and the shot-timing pass; the timing pass leaves shots.json behind."""
+        """Stands in for the voice pass and the shot-timing pass; the timing pass leaves shots.json behind.
+
+        IT ALSO VALIDATES THE PROJECT, because the real prepare.py does, and that one line is the whole reason a
+        day of green tests missed a fault a rented GPU found in fifty seconds. A stub that only records being
+        called tests the caller and nothing else: the voice pass reads project.json through contract.validate()
+        BEFORE any clip can exist, and a project that declares a video backdrop at that moment is refused."""
         self.steps.append(what)
+        pj = [str(c) for c in cmd if str(c).endswith("project.json")]
+        if pj:
+            contract.validate(pj[0])
         if "--shots" in [str(c) for c in cmd]:
             pj = [str(c) for c in cmd if str(c).endswith("project.json")][0]
             with open(pj) as f:
@@ -358,6 +366,25 @@ class ContractTest(unittest.TestCase):
         kw.write_project(project, pdir)
         contract.validate(os.path.join(pdir, "project.json"))
 
+    def test_the_voice_pass_reads_a_project_it_can_accept_before_a_single_clip_exists(self):
+        """THE ONE THAT WAS MISSING, and it cost a rented card to find.
+
+        The order is forced: the clips are cut to times the engine computes from the timeline, and the timeline is
+        made by the voice pass — so the voice pass necessarily runs while there are no clips. It validates
+        project.json on the way in. contract.py refuses a video backdrop whose shots have no clip. Therefore the
+        file on disk may NOT declare the backdrop until the clips are real: the storyboard asks, and the answer is
+        written down only once it is true.
+
+        Every other test here checked the project at the START and at the END. Nothing checked it in the MIDDLE,
+        which is the only moment the voice pass ever sees."""
+        project, pdir, units = self.build()
+        self.assertTrue(units, "this storyboard did ask to be filmed")
+        with open(os.path.join(pdir, "project.json")) as f:
+            written = json.load(f)
+        self.assertNotIn("backdrop", written,
+                         "a request to be filmed is not a fact until the clips exist, and the file holds facts")
+        contract.validate(os.path.join(pdir, "project.json"))
+
     def test_the_engine_refuses_the_backdrop_when_a_clip_is_missing(self):
         """The reason the worker gives up the whole backdrop for one missing clip: this is what would happen
         otherwise, and it happens after the GPU, the model and every other clip have already been paid for."""
@@ -367,6 +394,8 @@ class ContractTest(unittest.TestCase):
             with open(os.path.join(pdir, "clips", u["id"] + ".mp4"), "wb") as f:
                 f.write(b"\0" * 32)
             u["shot"]["clip"] = f"clips/{u['id']}.mp4"
+        # Declared by hand: the worker never writes this state, and this test exists to show why it must not.
+        project["backdrop"] = "video"
         kw.write_project(project, pdir)
         with self.assertRaises(ValueError) as e:
             contract.validate(os.path.join(pdir, "project.json"))
