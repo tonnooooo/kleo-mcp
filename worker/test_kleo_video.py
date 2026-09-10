@@ -90,6 +90,17 @@ class TimingTest(unittest.TestCase):
         self.assertNotEqual(a, kv.seed_for("02-ship-s2"))
         self.assertTrue(0 <= a < 2 ** 31)
 
+    def test_every_line_of_life_is_itself_recognised_as_life(self):
+        """The invariant that catches the trap chat 2 fell into: a repair the rule cannot recognise makes the
+        repair run again on the next pass, or worse, look like it never happened. Every phrase this module can
+        add must satisfy has_motion(), and a repaired prompt must survive a second pass unchanged."""
+        for phrase in kv.ALIVE:
+            self.assertTrue(kv.has_motion(phrase), f"the rule must recognise its own repair: {phrase!r}")
+        dead = {"id": "s1", "image_prompt": "a brass compass on a wooden table", "motion": "push_in"}
+        once = kv.build_prompt(dead, "realistic")
+        again = kv.build_prompt({**dead, "image_prompt": once.split(". ")[0]}, "realistic")
+        self.assertEqual(len([a for a in kv.ALIVE if a in again]), 1, "a second pass must not stack a second life")
+
     def test_the_life_added_to_a_still_scene_is_also_deterministic(self):
         self.assertEqual(kv.alive("03-storm"), kv.alive("03-storm"))
         self.assertIn(kv.alive("03-storm"), kv.ALIVE)
