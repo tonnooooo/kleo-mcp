@@ -18,6 +18,8 @@ import assert from "node:assert/strict";
 import { generateStoryboard, planFor, normalizeStoryboard } from "../src/storyboard.ts";
 import { checkExplainer, repairExplainer, EXPLAINER_RULES, anchorAt } from "../src/explainer-plan.ts";
 import { validateStoryboard, SKETCH_ART, quotesVoice } from "../src/keou-contract.ts";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 /* ------------------------------------------------------------------ the twenty-four subjects */
 
@@ -370,4 +372,41 @@ test("echo, promise and variety catch what thirteen rules did not, and the shipp
     good({ id: "04-x", accent: "yellow", voice: "So which hotel card opened your door last night?", art: [{ name: "keycard", drawn: true }, { name: "door", at: "your door" }] }),
   ];
   assert.ok(!film(plural).includes("promise"), "hotel and hotels are the same word");
+});
+
+test("the founding rule is checkable: a scene must draw something its own line names", () => {
+  // "One phrase, one drawing, and the drawing is literally what the words say" was prose in the prompt
+  // until the real model answered a line about a charging cable by drawing a crowd, and three readers all
+  // saw it before any rule did.
+  const bad = [
+    good({ voice: "You lend someone a charging cable for ten minutes.", art: [{ name: "crowd", drawn: true }, { name: "warning", at: "ten minutes" }] }),
+    good({ id: "02-x", accent: "blue", voice: "But that cable is never just a cable, it turns out.", art: [{ name: "usb", at: "that cable" }, { name: "chip", at: "just a cable" }] }),
+    good({ id: "03-x", accent: "green", voice: "So which cable did you plug in this morning?", art: [{ name: "usb", drawn: true }, { name: "clock", at: "this morning" }] }),
+  ];
+  const fired = film(bad).filter((r) => r === "draws-what-it-says");
+  assert.equal(fired.length, 1, "the crowd standing in for a cable must fire, and only that scene");
+
+  // Two figures for "two people" is correct art, and an index where only "crowd" may own "people" called
+  // it a mistake. A word may belong to more than one drawing when both are right answers.
+  const fine = [
+    good({ voice: "Two people can open your car without touching the key.", art: [{ name: "figure", drawn: true }, { name: "car", at: "your car" }] }),
+    good({ id: "02-x", accent: "blue", voice: "But the radio in their hand is doing all of it.", art: [{ name: "signal", at: "the radio" }, { name: "hand", at: "their hand" }] }),
+    good({ id: "03-x", accent: "green", voice: "So where do you leave your keys at night?", art: [{ name: "key", drawn: true }, { name: "room", at: "at night" }] }),
+  ];
+  assert.ok(!film(fine).includes("draws-what-it-says"), "two figures for two people is the drawing the line asks for");
+});
+
+test("every drawing has words in all three languages, or the rule is blind in two of them", () => {
+  // A drawing with no Italian words can never be named by an Italian line, so the rule would accuse every
+  // Italian film that used it correctly.
+  const src = readFileSync(resolve(import.meta.dirname, "../src/explainer-plan.ts"), "utf8");
+  const table = src.slice(src.indexOf("const SKETCH_WORDS"), src.indexOf("\n};", src.indexOf("const SKETCH_WORDS")));
+  for (const name of SKETCH_ART) {
+    const row = new RegExp(`^  ${name}: \\{ en: \\[([^\\]]*)\\], it: \\[([^\\]]*)\\], fr: \\[([^\\]]*)\\] \\},$`, "m").exec(table);
+    assert.ok(row, `${name} has no row in SKETCH_WORDS`);
+    ["en", "it", "fr"].forEach((lang, i) => {
+      const n = row[i + 1].split(",").filter((x) => x.trim()).length;
+      assert.ok(n >= 4, `${name} has only ${n} ${lang} words: the rule cannot see it in that language`);
+    });
+  }
 });
