@@ -83,8 +83,13 @@ export const findTemplate = (id: string): Template | undefined => TEMPLATES.find
  * (DAILY_GPU_BUDGET_USD) spent by one stranger.
  *
  * So the multiplier follows the dollar. Every style that draws still pictures, or draws itself live, is 1.
- * A style that generates motion is about 7, which also puts it out of reach of the free credits by construction —
- * the same thing that already keeps long videos out of the free tier.
+ * A style that generates motion is 7, which also puts it out of reach of the free credits by construction — the
+ * same thing that already keeps long videos out of the free tier.
+ *
+ * 7 is the TYPICAL cost, not the ceiling: measured 11 September, about a quarter of generated clips come back frozen
+ * and have to be regenerated with another seed, and the generator gives up after two attempts per shot. So the worst
+ * case is three times the base, around 10 credits' worth of GPU, and the price is charged up front at the typical
+ * figure. What bounds the bad day is not the price list but DAILY_GPU_BUDGET_USD, which is exactly what it is for.
  */
 export const STYLE_CREDITS: Record<string, number> = {
   cartoon: 1,     // AI pictures + Ken Burns

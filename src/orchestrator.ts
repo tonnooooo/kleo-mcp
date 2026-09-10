@@ -237,10 +237,29 @@ async function tickInner(env: Env, stats: Stats) {
  * statement — the Vast.ai balance is.
  */
 export async function budgetSpentUsd(env: Env): Promise<number> {
-  const dph = num(env.VAST_MAX_DPH, 0.4);
+  const cap = num(env.VAST_MAX_DPH, 0.4);
   let committed = 0;
-  for (const job of await runningPaidJobs(env)) committed += dph * (jobTimeoutMin(env, job) / 60);
+  for (const job of await runningPaidJobs(env)) committed += rentedDph(job, cap) * (jobTimeoutMin(env, job) / 60);
   return (await spentTodayUsd(env)) + committed;
+}
+
+/**
+ * What a rental really costs per hour: the price its offer was taken at (instance_meta, written by the backend the
+ * moment the machine is rented), falling back to the cap while no machine has been chosen yet.
+ *
+ * Pricing every running job at VAST_MAX_DPH was harmless while one cap fitted every job — every card was an RTX 4090
+ * around $0.30-0.40. It stops being harmless the day a style needs a dearer card: raising the cap to fit it would
+ * make the phantom bill of two idle-but-running jobs exceed DAILY_GPU_BUDGET_USD before a single video finished, and
+ * Kleo would pause itself permanently on money it had not spent. The commitment stays deliberately pessimistic in
+ * the other direction — the FULL timeout, not the minutes elapsed — because that is what a rental can still cost.
+ */
+function rentedDph(job: Job, cap: number): number {
+  try {
+    const dph = (JSON.parse(job.instance_meta ?? "{}") as { dph?: number }).dph;
+    return typeof dph === "number" && dph > 0 ? dph : cap;
+  } catch {
+    return cap; // an unreadable meta is not a reason to under-count money
+  }
 }
 
 /**

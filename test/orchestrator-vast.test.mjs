@@ -418,6 +418,34 @@ test("budget: the estimate counts money already committed, not only money alread
   assert.equal(Math.round((await m.budgetSpentUsd(env)) * 100) / 100, 0.97, "today's bill plus what is in flight");
 });
 
+test("budget: a rental is priced at what it was actually taken at, not at the cap", async () => {
+  // The cap is a stand-in for a price we do not know yet. Once the backend has taken an offer it writes the real
+  // hourly price into instance_meta, and using it matters the day one style needs a card dearer than the others:
+  // pricing every job at a cap raised to fit that card would pause Kleo over money it never spent.
+  const env = await newEnv({ VAST_MAX_DPH: "0.80", JOB_TIMEOUT_MIN: "60", MAX_JOBS_PER_USER: "10" });
+  const u = await user(env, 10);
+
+  const cheap = await short(env, u);
+  await m.updateJob(env, cheap.id, {
+    state: "rendering", backend: "vast", instance_id: "i-cheap", started_at: new Date().toISOString(),
+    instance_meta: JSON.stringify({ offer: 1, gpu: "RTX 4090", dph: 0.30 }),
+  });
+  assert.equal(Math.round((await m.budgetSpentUsd(env)) * 100) / 100, 0.30, "the machine costs 0.30, not the 0.80 the cap allows");
+
+  // Still being chosen: no meta, so the cap is the only honest guess and the estimate stays pessimistic.
+  const starting = await short(env, u);
+  await m.updateJob(env, starting.id, { state: "starting", backend: "vast", started_at: new Date().toISOString() });
+  assert.equal(Math.round((await m.budgetSpentUsd(env)) * 100) / 100, 1.10, "0.30 taken plus 0.80 not yet known");
+
+  // A meta that cannot be read must never round down to zero: money is the one place to stay pessimistic.
+  const broken = await short(env, u);
+  await m.updateJob(env, broken.id, {
+    state: "rendering", backend: "vast", instance_id: "i-broken", started_at: new Date().toISOString(),
+    instance_meta: "{not json",
+  });
+  assert.equal(Math.round((await m.budgetSpentUsd(env)) * 100) / 100, 1.90, "an unreadable meta falls back to the cap");
+});
+
 test("budget: a long video is priced at its own timeout, not at a Short's", async () => {
   // The timeout follows the video (templates.ts jobTimeoutMin), so the money term has to follow it too: a video the
   // server itself announces in 80 minutes is allowed to run that long, and is worth that many GPU minutes.
