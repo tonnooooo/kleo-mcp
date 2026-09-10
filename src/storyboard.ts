@@ -12,7 +12,7 @@
  */
 import type { Env } from "./env";
 import type { Job, JobParams } from "./db";
-import { TEMPLATES, findTemplate, narrativeFor, sceneSplit, type Family } from "./templates.ts";
+import { TEMPLATES, findTemplate, isVideoStyle, narrativeFor, sceneSplit, type Family } from "./templates.ts";
 import {
   validateStoryboard, defaultVoice, wordBudget, type Storyboard, type Format, type KleoStyle,
   KINDS, BEAT_KINDS, BEAT_ICONS, BEAT_FX, CINEMA_ACCENTS, VISUALS, FORBIDDEN_FIELDS,
@@ -857,6 +857,16 @@ export function normalizeStoryboard(raw: unknown, plan: Plan): unknown {
   delete c.width; delete c.fps; delete c.brand;
   c.style = plan.style;
   c.kleo_style = plan.kleo;
+  // THE FOURTH SIDE OF ONE DECISION. templates.ts already decides what a style costs, what card it needs and how
+  // many may run at once; this is where the storyboard asks the worker to go and FILM the shots instead of drawing
+  // one picture and moving a window over it. It is derived from that same table, never from a second list, so the
+  // day realistic becomes VIDEO there it starts asking to be filmed here on its own and cannot be forgotten.
+  // Declaring it is a request and never a promise: the worker takes the backdrop straight off again if even one
+  // shot will not film, and delivers the stills instead.
+  // The deletion is not tidiness. Without it a storyboard that arrived with `backdrop: "video"` already on it would
+  // be filmed at the price of a style that is not, which is a seven-credit render sold for one.
+  if (isVideoStyle(plan.kleo) && plan.style === "picture") c.backdrop = "video";
+  else delete c.backdrop;
   // THE COLOUR LAW IS ARITHMETIC, SO IT IS REPAIRED, NOT REFUSED. Every scene wears the accent of the section it sits
   // in; a model that wrote a different one is corrected here rather than bounced back, because a retry spent on
   // copying a colour out of a table is a retry not spent on the story. The validator still refuses a mismatch, which
@@ -1111,6 +1121,9 @@ export function fixtureStoryboard(job: PlanJob): Storyboard {
   sb.kleo_style = kleo;
   const pictures = PICTURE_STYLES.includes(kleo);
   if (pictures) sb.style = "picture";
+  // Same rule as the planned path, so the fixture cannot quietly describe a different product from the real one.
+  if (pictures && isVideoStyle(kleo)) sb.backdrop = "video";
+  else delete sb.backdrop;
   for (const s of sb.scenes as Record<string, unknown>[]) {
     delete s.image; delete s.image_credit;
     if (!pictures) continue;
