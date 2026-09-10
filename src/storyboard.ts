@@ -339,15 +339,30 @@ const CYBER_WORDS = /\b(cyber|security|hacker|hacking|malware|phishing|scam(?:me
 const VOCAB: Record<Look, RegExp> = { cartoon: CARTOON_WORDS, realistic: REALISTIC_WORDS, cyber: CYBER_WORDS };
 
 /**
- * The look a template leans towards when the words settle nothing. A prior, not a default: it is reported as the
- * reason, so "the template chose it" and "the request chose it" are never the same sentence.
+ * What a template already tells us about the look, and how hard it argues.
+ *
+ * STRONG means the template names its subject matter: an explainer explains a mechanism, a product review reviews a
+ * thing, a news roundup reports. There the words of one request have to beat the template by a clear margin before
+ * they overturn it, because a single incidental noun ("phone", in a request about battery life) is not an argument
+ * against a choice the user already made.
+ *
+ * WEAK means the template is a FORMAT, not a subject: a Short, a countdown, a trailer say how long and how fast, not
+ * what about. There any evidence in the words wins, because the template is guessing too.
  */
-const TEMPLATE_PRIOR: Record<string, Look> = {
-  "product-review": "realistic", "weekly-news": "realistic", "story-documentary": "realistic",
-  "explainer": "cyber",
-  "viral-short": "cartoon", "did-you-know": "cartoon", "reddit-story": "cartoon",
-  "motivational": "cartoon", "top-10": "cartoon", "cinematic-trailer": "cartoon",
+const TEMPLATE_PRIOR: Record<string, { look: Look; strong: boolean }> = {
+  "product-review": { look: "realistic", strong: true },
+  "weekly-news": { look: "realistic", strong: true },
+  "story-documentary": { look: "realistic", strong: true },
+  "explainer": { look: "cyber", strong: true },
+  "viral-short": { look: "cartoon", strong: false },
+  "did-you-know": { look: "cartoon", strong: false },
+  "reddit-story": { look: "cartoon", strong: false },
+  "motivational": { look: "cartoon", strong: false },
+  "top-10": { look: "cartoon", strong: false },
+  "cinematic-trailer": { look: "cartoon", strong: false },
 };
+/** A look must beat a STRONG template by this many distinct terms before it overturns it. */
+const STRONG_MARGIN = 2;
 const EXPLAINER_TEMPLATES = new Set(["explainer-short", "explainer-long"]);
 
 /** Distinct terms of a vocabulary the request uses. Distinct, so one word repeated is not an argument. */
@@ -375,19 +390,18 @@ export function pickKleoStyleWhy(template: string, prompt: string): StylePick {
   const hits: Record<Look, string[]> = {
     cartoon: score(text, VOCAB.cartoon), realistic: score(text, VOCAB.realistic), cyber: score(text, VOCAB.cyber),
   };
-  const prior = TEMPLATE_PRIOR[template] ?? "cartoon";
+  const p = TEMPLATE_PRIOR[template] ?? { look: "cartoon" as Look, strong: false };
   const looks: Look[] = ["cartoon", "realistic", "cyber"];
-  const best = looks.reduce((a, b) => (hits[b].length > hits[a].length ? b : a), prior);
-  const top = hits[best].length;
-  if (top === 0)
-    return { style: prior, why: `nothing in the request names a subject, so the ${template} template decides: ${prior}`, hits };
-  // A tie is not a decision either: the prior breaks it, and says so.
-  const tied = looks.filter((l) => hits[l].length === top);
-  if (tied.length > 1 && !tied.includes(prior))
-    return { style: tied[0], why: `${tied.join(" and ")} are level on ${top}, and the template leans elsewhere; taking ${tied[0]}`, hits };
-  if (tied.length > 1)
-    return { style: prior, why: `${tied.join(" and ")} are level on ${top}, so the ${template} template breaks the tie: ${prior}`, hits };
-  return { style: best, why: `the request says ${hits[best].slice(0, 4).join(", ")}`, hits };
+  const best = looks.reduce((a, b) => (hits[b].length > hits[a].length ? b : a), p.look);
+  const lead = hits[best].length - hits[p.look].length;
+
+  if (hits[best].length === 0)
+    return { style: p.look, why: `nothing in the request names a subject, so the ${template} template decides: ${p.look}`, hits };
+  if (best === p.look)
+    return { style: best, why: `the request says ${hits[best].slice(0, 4).join(", ")}`, hits };
+  if (p.strong && lead < STRONG_MARGIN)
+    return { style: p.look, why: `${best} is only ${lead} term${lead === 1 ? "" : "s"} ahead (${hits[best].slice(0, 3).join(", ")}), and the ${template} template is explicit about its subject: ${p.look}`, hits };
+  return { style: best, why: `the request says ${hits[best].slice(0, 4).join(", ")}, ahead of ${p.look} by ${lead}`, hits };
 }
 
 /**
