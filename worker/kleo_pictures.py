@@ -59,9 +59,20 @@ def seed_for(scene_id):
 
 
 def full_prompt(image_prompt, style, context=""):
-    """<scene prompt>, <direction context>, <style suffix>. SD1.5's CLIP encoder reads 77 tokens only, so the scene
-    text is cut at BASE_MAX characters (about 40 tokens) to be sure the style suffix (about 25 tokens) is never
-    truncated away, and the direction context gets CONTEXT_MAX of what is left.
+    """<scene prompt>, <direction context>, <style suffix>. SD1.5's CLIP encoder reads 77 tokens only.
+
+    THE STYLE SUFFIX IS LAST, SO IT IS WHAT FALLS. An earlier version of this comment claimed the character budget
+    protected it; it does not, because CLIP truncates from the tail and the tail is the suffix. Measured on the 23
+    real image prompts of the three cartoon films delivered so far: without a direction they run 46-54 tokens and
+    none overflows. Attach a direction and the same prompts run 69-77, and 3 of the 23 cross the line. What falls
+    is "no letters" — a term the negative prompt already carries, so today the loss costs nothing.
+
+    What it costs is the MARGIN. The next terms in the tail are "simple shapes", "vivid warm colors", "bold clean
+    outlines": the look itself. One longer scene sentence, or one longer character look, and the picture stops
+    being drawn in the film's style. Whoever raises CONTEXT_MAX or PROMPT_MAX must re-run that measurement first.
+
+    The ceiling belongs to SD1.5's CLIP, not to Kleo: an encoder with room (FLUX reads 512 tokens through T5) makes
+    all three budgets here obsolete, and the direction could then carry its world sentence too instead of dropping it.
 
     The context is the film's direction as src/direction.ts pictureContext() builds it — the verbatim look of the
     characters in this picture, and the light of the section it belongs to. It is what keeps the captain looking like
