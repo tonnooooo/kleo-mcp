@@ -34,7 +34,7 @@ before(async () => {
     stdin: {
       contents: `export * from "./src/jobs.ts"; export * from "./src/orchestrator.ts"; export * from "./src/db.ts";
         export * from "./src/schema.ts"; export * from "./src/templates.ts";
-        export { vastBackend, listKleoInstances, jobLabel } from "./src/backends/vast.ts";`,
+        export { vastBackend, listKleoInstances, vastStatus, GONE, jobLabel } from "./src/backends/vast.ts";`,
       resolveDir: ROOT, loader: "ts",
     },
     bundle: true, write: false, format: "esm", platform: "neutral", target: "es2022", logLevel: "silent",
@@ -762,4 +762,24 @@ test("timeout: a worker that is still talking is left alone, however slow it is"
 
   await m.tick(env);
   assert.equal((await m.getJob(env, j.id)).state, "rendering", "90% and talking two minutes ago is not a dead render");
+});
+
+test("vast: a machine that no longer exists is not the same answer as not being able to ask", async () => {
+  // Vast does not 404 a destroyed instance: it answers 200 with a stunted record and no status at all. Until now
+  // that arrived as null, which ALSO means "the API call failed" — and those two deserve opposite reactions: one is
+  // a decision the server can act on now, the other is a reason to ask again.
+  const env = await newEnv({ MAX_JOBS_PER_USER: "10" });
+  const u = await user(env, 10);
+  const j = await short(env, u);
+
+  await m.updateJob(env, j.id, { state: "starting", backend: "vast", instance_id: "777" });
+  const job = await m.getJob(env, j.id);
+
+  // withVast puts the fake back when it is done: assigning globalThis.fetch by hand would leave it in place for
+  // every test after this one, which is its own quiet way of making a suite lie.
+  const gone = await withVast(fakeVast({ instances: [{ id: 777 }] }), () => m.vastStatus(env, job));
+  assert.equal(gone, "gone", "200 with a stunted record is a machine that is not there");
+
+  const loading = await withVast(fakeVast({ instances: [{ id: 777, actual_status: "loading" }] }), () => m.vastStatus(env, job));
+  assert.equal(loading, "loading", "a live machine still answers plainly");
 });

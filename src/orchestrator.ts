@@ -1,7 +1,7 @@
 import type { Env } from "./env";
 import { type Job, type JobState, ACTIVE_STATES, OPEN_STATES, GPU_ONLY_WAIT, activeJobs, queuedJobs, queuedPictureJobs, staleQueuedJobs, jobInstances, unplannedJobs, claimPlanAttempt, countRunning, runningPaidJobs, spentTodayUsd, addJobCost, rememberTriedMachine, updateJob, transitionJob, audit, refundCredits, expiredJobs, listFiles, deleteFiles, setFile, getJob, reserveJob, unreserveJob } from "./db";
 import { backendFor, getBackend } from "./backends";
-import { vastStatus, listKleoInstances, destroyInstance } from "./backends/vast";
+import { vastStatus, GONE, listKleoInstances, destroyInstance } from "./backends/vast";
 import { int, num, nowIso, minutesSince, secondsSince, addDays, base64ToBytes, rid } from "./util";
 import { TINY_MP4_B64 } from "./assets";
 import { resultLinks, FILE_NAMES } from "./jobs";
@@ -105,13 +105,22 @@ async function tickInner(env: Env, stats: Stats) {
       const startingFor = job.started_at ? minutesSince(job.started_at) : 0;
       // Two different questions, and the slow-host one has to be asked FIRST: a machine that is still pulling the image
       // is not silent because the worker broke, it is silent because it has nothing yet. Some hosts crawl or sit on
-      // "Retrying in 1 second" for twenty paid minutes; another machine would have started long ago. So a job still
-      // loading after LOADING_RETRY_MIN moves hosts (that is what a retry is for), before the silence rule can apply.
+      // "Retrying in 1 second" for twenty paid minutes; another machine would have started long ago. So a job whose
+      // worker has still not spoken after LOADING_RETRY_MIN moves hosts (that is what a retry is for), before the
+      // silence rule can apply.
       if (job.state === "starting" && job.backend === "vast" && !job.last_report_at
-          && startingFor > loadingRetryMin && job.attempts < MAX_ATTEMPTS
-          && (await vastStatus(env, job)) === "loading") {
-        await audit(env, job.user_id, job.id, "vast.loading_too_slow", { minutes: Math.round(startingFor), instance: job.instance_id });
-        await failJob(env, job, `the rented machine was still downloading the renderer after ${Math.round(startingFor)} min; trying another one`, true);
+          && startingFor > loadingRetryMin && job.attempts < MAX_ATTEMPTS) {
+        // Vast's own actual_status is NOT consulted here, on purpose. A state is the provider's opinion; silence is a
+        // fact. `!job.last_report_at` after LOADING_RETRY_MIN already says everything: the worker announces itself as
+        // its first act, a healthy boot reaches running in about a minute and the longest pull measured is 3.5, so
+        // nothing is legitimately still loading fourteen minutes in. Asking anyway could only ever BLOCK the right
+        // move — a dead worker on a host reporting anything but "loading" would have been left to rot until the
+        // timeout, and the field was measured flickering running -> loading -> running inside a single minute.
+        await audit(env, job.user_id, job.id, "vast.never_started", { minutes: Math.round(startingFor), instance: job.instance_id });
+        // NOT "still downloading": the download was measured at about three minutes, four separate times. What this
+        // machine is doing is unknown — the boot chain itself was proved sound on eight hosts — so the message says
+        // the fact (it never started) instead of a cause we no longer believe.
+        await failJob(env, job, `the rented machine never started the renderer, ${Math.round(startingFor)} min after it was rented; trying another one`, true);
         stats.failed++;
         continue;
       }
@@ -139,7 +148,7 @@ async function tickInner(env: Env, stats: Stats) {
         // Out of retries, or a slow pull we have decided to sit out: never past LOADING_TIMEOUT_MIN.
         const loadingTimeoutMin = int(env.LOADING_TIMEOUT_MIN, 35);
         const st = job.backend === "vast" ? await vastStatus(env, job) : null;
-        if (st === "loading" && startingFor <= loadingTimeoutMin) {
+        if (st === "loading" && startingFor <= loadingTimeoutMin) { // GONE never waits: there is nothing left to wait for
           await audit(env, job.user_id, job.id, "vast.still_loading", { minutes: Math.round(startingFor) });
         } else {
           const quiet = Math.round(minutesSince(lastWord));

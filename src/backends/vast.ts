@@ -322,12 +322,24 @@ export const vastBackend: RenderBackend = {
 };
 
 /** Raw actual_status of a Vast instance ("loading" while the image is still being pulled, "running", "exited"...). */
+/**
+ * "gone" means the instance is not there any more — which Vast does NOT say with a 404: it answers 200 with a
+ * stunted record that carries no status at all. Worth separating from null, because null used to mean both "the
+ * machine has vanished" and "I could not ask", and those deserve opposite reactions: the first is a decision the
+ * server can act on immediately, the second is a reason to wait and ask again.
+ * A machine can vanish on its own for a good reason — the worker finished and destroyed it — and for a bad one.
+ * Either way there is nothing left to wait for.
+ */
+export const GONE = "gone";
+
 export async function vastStatus(env: Env, job: Job): Promise<string | null> {
   if (!job.instance_id) return null;
   try {
     const r = await vast<{ instances?: Instance | null }>(env, "GET", `/instances/${job.instance_id}/`);
-    return r.instances?.actual_status ?? null;
+    const inst = r.instances;
+    if (!inst || (!inst.actual_status && !inst.cur_state)) return GONE;
+    return inst.actual_status ?? null;
   } catch {
-    return null;
+    return null; // could not ask: not the same thing as an answer, and must not be read as one
   }
 }
