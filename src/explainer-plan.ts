@@ -15,6 +15,7 @@
 import {
   SKETCH_ACCENTS, SKETCH_ART, SKETCH_DROP, SKETCH_ENTER, SKETCH_EXIT, SKETCH_MOODS, SKETCH_MOTION, quotesVoice,
 } from "./keou-contract.ts";
+import { narrativeFor } from "./templates.ts";
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const words = (s: string) => s.split(/\s+/).filter(Boolean);
@@ -22,25 +23,19 @@ const quoted = (a: readonly string[]) => a.join(" | ");
 
 /* ------------------------------------------------------------------ the brief */
 
+// THE NUMBERS LIVE IN src/templates.ts, once. They used to be here AND in the planner's briefs, which is two
+// places to remember on the day the rhythm of a look changes — and the rhythm of a look changes often.
+const SHORT = narrativeFor("explainer-short"), LONG = narrativeFor("explainer-long");
 /** Words per scene. A Short's line is one breath; a long film's is a sentence you can follow while a drawing changes. */
-export const EXPLAINER_WORDS: Record<"short" | "long", [number, number]> = { short: [8, 14], long: [12, 20] };
+export const EXPLAINER_WORDS: Record<"short" | "long", [number, number]> = { short: SHORT.wordsPerScene, long: LONG.wordsPerScene };
 /** Seconds one drawing may hold the frame before the film stops moving. Measured against the reference Short. */
-const SECONDS_PER_DRAWING: Record<"short" | "long", number> = { short: 2.0, long: 2.6 };
+const SECONDS_PER_DRAWING: Record<"short" | "long", number> = { short: SHORT.shotSeconds, long: LONG.shotSeconds };
 /** Speech rate the planner budgets with (words per second at speed 1.1), shared with wordBudget. */
 const WPS = 2.6;
 
 export const lengthOf = (duration: number): "short" | "long" => (duration <= 90 ? "short" : "long");
 
-export const EXPLAINER_GUIDANCE: Record<"short" | "long", string> = {
-  short:
-    "A 60-second explainer that opens on the thing itself: the first line says something the viewer believes is safe and " +
-    "takes it away ('your hotel door is not locked'), the second shows the object, the middle is the method in three moves, " +
-    "and the last line hands the viewer the one thing they can do. No introduction, no 'in this video', no sign-off.",
-  long:
-    "A long explainer built as a chain of small reveals: the claim, the object, how it actually works step by step, the " +
-    "moment it goes wrong, what it cost, what changed, and what the viewer does about it. Every section ends on a sentence " +
-    "that makes the next one necessary. Plain language; a term is defined the first time it is used and never again.",
-};
+export const EXPLAINER_GUIDANCE: Record<"short" | "long", string> = { short: SHORT.guidance, long: LONG.guidance };
 
 /* ------------------------------------------------------------------ the rules given to the model */
 

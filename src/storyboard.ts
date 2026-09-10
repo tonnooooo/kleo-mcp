@@ -12,7 +12,7 @@
  */
 import type { Env } from "./env";
 import type { Job, JobParams } from "./db";
-import { findTemplate } from "./templates.ts";
+import { TEMPLATES, findTemplate, narrativeFor, sceneSplit, type Family } from "./templates.ts";
 import {
   validateStoryboard, defaultVoice, wordBudget, type Storyboard, type Format, type KleoStyle,
   KINDS, BEAT_KINDS, BEAT_ICONS, BEAT_FX, CINEMA_ACCENTS, VISUALS, FORBIDDEN_FIELDS,
@@ -272,22 +272,18 @@ Scene shapes ("?" marks optional keys; do not add other keys):
 {"id":"…","kind":"closing","eyebrow":"…","title":"…","voice":"…","button":"≤40","hold":1.8}   (last scene only; "button" OR "detail" ≤110, never both)
 Optional on any scene: "source":"≤80" (outlet or organisation), "detail":"≤110". Items mirror what the narration says.`;
 
-const BRIEFS: Record<string, Brief> = {
-  "viral-short": { style: "cinema", wordsPerScene: [10, 18], guidance: "A viral Short: hook in the first sentence (a surprising claim, a number, a fear), then the reveal, the proof, the fix or twist, and a loop question at the end that sends the viewer back to the start. Short punchy sentences, one narrated line per scene." },
-  "did-you-know": { style: "cinema", wordsPerScene: [10, 16], guidance: "A 'did you know' Short: one striking fact per scene, each fact a self-contained sentence with a concrete number or comparison, escalating to the most surprising one. Open with 'Did you know' or a question." },
-  "reddit-story": { style: "cinema", wordsPerScene: [12, 18], guidance: "A narrated Reddit-style story told in first person: setup, rising tension, the turning point, the payoff, a one-line reaction at the end. Keep the poster's voice and details from the prompt; chapters like '01 THE SETUP', '02 THE TWIST'. Use dialog beats for things people said (≤32 chars) and figure/thief/phone/house/car icons for characters and objects." },
-  "motivational": { style: "cinema", wordsPerScene: [10, 16], guidance: "A motivational piece: short declarative lines that build, a personal 'you' address, one memorable quote-like line per scene, ending on a call to act today. Accent amber/green. Type beats carry the key words in caps." },
-  "cinematic-trailer": { style: "cinema", wordsPerScene: [8, 14], guidance: "A cinematic trailer: terse ominous lines, escalating stakes, chapter cards like '01 THE CALM', a title reveal near the end (a slammed type beat with the title), one last line after it. Mostly type and icon beats, red/amber accents." },
-  "story-documentary": { style: "editorial", wordsPerScene: [30, 45], guidance: "A calm documentary: cold open with a striking question or scene, context, chronological chapters (eyebrow = chapter name, e.g. 'CHAPTER 2 · THE CROSSING'), dates and numbers as metric scenes, a human quote as a quote scene, consequences, and a reflective closing. Facts must be accurate and specific; say 'about' when a number is approximate." },
-  "weekly-news": { style: "editorial", wordsPerScene: [30, 45], guidance: "A weekly news roundup with FOUR stories: for each story 2–4 scenes (a hero with eyebrow 'STORY 1 · <TOPIC>', then a metric/list/compare/quote scene with the key figure), and a 'source' field (≤80, the outlet or organisation) on at least one scene per story. Hard, factual, neutral tone; finish with a short 'what to watch next week' closing." },
-  "explainer": { style: "technical", wordsPerScene: [30, 45], guidance: "An explainer/tutorial: the question, why it matters, the concept built step by step (steps scenes with 3 items that mirror the narration), a comparison (compare scene), one or two concrete numbers (metric scenes), common mistakes (list scene), and a recap list scene right before the closing. Clear plain language, define every term once." },
-  // Two rows, not one with a duration switch: a 45-second explainer is one idea taken apart, a five-minute one is a
-  // chain of them, and the line length, the scene count and what the last scene owes the viewer all differ.
-  "explainer-short": { style: "sketch", wordsPerScene: EXPLAINER_WORDS.short, guidance: EXPLAINER_GUIDANCE.short },
-  "explainer-long": { style: "sketch", wordsPerScene: EXPLAINER_WORDS.long, guidance: EXPLAINER_GUIDANCE.long },
-  "top-10": { style: "illustrated", wordsPerScene: [30, 45], guidance: "A countdown from #10 to #1: an intro scene, then ONE scene per entry with eyebrow '#10', '#9' … '#1' and the entry name in the title; alternate scene kinds (hero, metric for a number, compare, list, quote) so consecutive entries look different; the #1 gets the longest narration; closing asks the viewer for their own #1." },
-  "product-review": { style: "illustrated", wordsPerScene: [30, 45], guidance: "A product review: what it is and who it is for, design, key specs as metric scenes, a pros list, a cons list, a compare scene versus the obvious alternative, a final score as a metric (value like '8.5', unit '/ 10 · <verdict in two words>'), and a closing with the verdict as button text. Balanced, concrete, no marketing fluff." },
+/**
+ * THE BRIEFS ARE DERIVED, NOT WRITTEN. Until 11 September 2026 this was a second table: the structure of a
+ * video lived here, in the template description the assistant reads, and in the guide — and the day a look's
+ * rhythm changed it had to be remembered in three places. src/templates.ts is the one place now; this reads
+ * it. A template that names no family falls back the way it always did.
+ */
+const briefOf = (template: string): Brief => {
+  const f: Family = narrativeFor(template);
+  return { style: f.keouStyle as StyleId, wordsPerScene: f.wordsPerScene, guidance: f.guidance };
 };
+const BRIEFS: Record<string, Brief> = Object.fromEntries(TEMPLATES.map((t) => [t.id, briefOf(t.id)]));
+
 
 /** Keou style for a Kleo template and format in the cyber look (cinema is portrait-first; 16:9 motivational falls back to editorial). */
 export function styleFor(template: string, format: Format): StyleId {

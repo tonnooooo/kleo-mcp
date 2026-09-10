@@ -15,7 +15,202 @@ export interface Template {
   defaultSeconds: number;
   description: string;
   voices: string[];
+  /** The narrative language this template speaks, from FAMILIES. */
+  family: string;
+  /**
+   * ONLY what the format forces. If an override rewrites more than three fields it is not a template any
+   * more, it is a family nobody has written down yet — and narrativeFor's own test refuses it.
+   */
+  override?: Partial<Pick<Family, "sections" | "wordsPerScene" | "shotSeconds" | "closing" | "guidance" | "tone" | "keouStyle">>;
 }
+
+/* ------------------------------------------------------------------ the narrative shape */
+
+/**
+ * One stretch of a film. `weight` is its share of the running time, so the same shape works at forty
+ * seconds and at eight minutes without a second table.
+ */
+export interface Section {
+  /** What the section is called on screen and in the outline, e.g. "01 THE HOOK". */
+  name: string;
+  /** What this stretch is FOR — the sentence the planner hands the model for these scenes. */
+  role: string;
+  /** The colour the direction gives it. The looks translate it into their own palettes. */
+  accent: "red" | "green" | "cyan" | "amber";
+  /** Share of the film, 0-1. A family's weights add up to 1. */
+  weight: number;
+}
+
+/**
+ * A FAMILY is the narrative language: what the film is made of, in what order, with what tone, and
+ * what the last scene owes the viewer. A TEMPLATE is a family at a length and in a frame.
+ *
+ * The split is not tidiness. Before it, the structure of a video lived in three places — the template
+ * description the assistant reads, the brief in the planner, and the guide — and the day the explainer's
+ * rhythm changed it had to be remembered in all three. Here it is written once. `explainer-short` and
+ * `explainer-long` are the first pair to prove it: same language, different length, one definition.
+ */
+export interface Family {
+  id: string;
+  /** The Keou engine style it is drawn in. src/storyboard.ts maps this to the look. */
+  keouStyle: "cinema" | "editorial" | "technical" | "illustrated" | "stickman" | "picture" | "sketch";
+  /** How it should sound, in the words the model reads. */
+  tone: string;
+  /** The brief: what this kind of film is, in the order it is written. */
+  guidance: string;
+  /** The film, in order. Weights add up to 1. */
+  sections: Section[];
+  /** Narration words in one scene: the low and high the planner budgets against. */
+  wordsPerScene: [number, number];
+  /** How long one shot or drawing may hold the frame, in seconds. */
+  shotSeconds: number;
+  /**
+   * What the last scene is. "closing-scene" is a real closing card; "loop" sends the viewer back to the
+   * start with a question; "act" hands them one thing to do; "title" ends on the title itself.
+   */
+  closing: "closing-scene" | "loop" | "act" | "title";
+}
+
+/** Where the hook is and where it turns, read off the weights: the first section and the first non-hook one. */
+export const hookOf = (f: Family): Section => f.sections[0];
+export const turnOf = (f: Family): Section => f.sections[Math.min(1, f.sections.length - 1)];
+
+/** A countdown is the segmented language with its middle section named for what it counts. */
+const COUNTDOWN: Section[] = [
+  { name: "01 THE LIST", role: "What is being counted and why these ten", accent: "cyan", weight: 0.1 },
+  { name: "02 THE COUNTDOWN", role: "One entry per scene, from the last to the second, the number spoken", accent: "amber", weight: 0.7 },
+  { name: "03 NUMBER ONE", role: "The first place, given the longest scene of the film", accent: "red", weight: 0.2 },
+];
+
+/** Five minutes of the drawn language is a chain of small reveals, not one reveal stretched. */
+const LONG_DRAWN =
+  "A long explainer built as a chain of small reveals: the claim, the object, how it actually works step by step, the " +
+  "moment it goes wrong, what it cost, what changed, and what the viewer does about it. Every section ends on a " +
+  "sentence that makes the next one necessary. Plain language; a term is defined the first time it is used.";
+
+/** The same sixty-second arc, but every scene is a fact that stands on its own. */
+const DID_YOU_KNOW =
+  "One striking fact per scene, each a self-contained sentence with a concrete number or comparison, escalating to the " +
+  "most surprising one last. Open with a question or 'did you know'; never explain a fact across two scenes.";
+
+export const FAMILIES: Record<string, Family> = {
+  /* ---------------------------------------------------------------- the sixty-second arc */
+  "short-hook": {
+    id: "short-hook", keouStyle: "cinema", tone: "Direct and fast, second person, no introduction",
+    guidance:
+      "A Short: the hook is the first sentence and it takes something away from the viewer (a surprising claim, a " +
+      "number, a fear), then the reveal, then the proof, then the fix or the twist, and a last line that sends them " +
+      "back to the start. Short punchy sentences, one narrated line per scene, no sign-off.",
+    sections: [
+      { name: "01 THE HOOK", role: "Take something the viewer believes and remove it, in one sentence", accent: "red", weight: 0.15 },
+      { name: "02 THE REVEAL", role: "Show what is actually going on, with the thing itself on screen", accent: "amber", weight: 0.3 },
+      { name: "03 THE PROOF", role: "One concrete fact, number or demonstration that settles it", accent: "cyan", weight: 0.3 },
+      { name: "04 THE TURN", role: "The fix, the cost, or the twist the viewer did not expect", accent: "green", weight: 0.25 },
+    ],
+    wordsPerScene: [10, 18], shotSeconds: 2.5, closing: "loop",
+  },
+  /* ---------------------------------------------------------------- one person telling it */
+  confession: {
+    id: "confession", keouStyle: "cinema", tone: "First person, plain, as if told to a friend",
+    guidance:
+      "A story told in first person: the setup, the tension rising, the turning point, the payoff, and a one-line " +
+      "reaction at the end. Keep the narrator's own voice and the details from the prompt; things people said become " +
+      "short quoted lines.",
+    sections: [
+      { name: "01 THE SETUP", role: "Who, where, and what was normal until now", accent: "cyan", weight: 0.2 },
+      { name: "02 IT BUILDS", role: "The pressure rising, one step at a time", accent: "amber", weight: 0.3 },
+      { name: "03 THE TWIST", role: "The moment it changes, said plainly", accent: "red", weight: 0.25 },
+      { name: "04 THE PAYOFF", role: "What happened after, and what it cost", accent: "green", weight: 0.25 },
+    ],
+    wordsPerScene: [12, 18], shotSeconds: 2.6, closing: "loop",
+  },
+  /* ---------------------------------------------------------------- lines that build */
+  build: {
+    id: "build", keouStyle: "cinema", tone: "Warm, second person, one idea per line",
+    guidance:
+      "Short declarative lines that build on each other, addressed to one person as 'you', one memorable quote-like " +
+      "line per scene, ending on something to do today. Never a list, never advice in the abstract.",
+    sections: [
+      { name: "01 WHERE YOU ARE", role: "Name the situation the viewer is actually in", accent: "amber", weight: 0.25 },
+      { name: "02 WHY IT HOLDS", role: "The reason it has not changed yet, without blame", accent: "red", weight: 0.25 },
+      { name: "03 THE SHIFT", role: "The one thing that moves it", accent: "cyan", weight: 0.25 },
+      { name: "04 TODAY", role: "The smallest version of it they can do today", accent: "green", weight: 0.25 },
+    ],
+    wordsPerScene: [10, 16], shotSeconds: 2.8, closing: "act",
+  },
+  /* ---------------------------------------------------------------- stakes to a title */
+  trailer: {
+    id: "trailer", keouStyle: "cinema", tone: "Terse and ominous, never explanatory",
+    guidance:
+      "A trailer: terse lines, stakes escalating scene by scene, chapter cards, the title revealed near the end, and " +
+      "exactly one line after it. Nothing is ever explained.",
+    sections: [
+      { name: "01 THE CALM", role: "The world before, in two or three images", accent: "cyan", weight: 0.25 },
+      { name: "02 THE CRACK", role: "The first sign that it will not hold", accent: "amber", weight: 0.25 },
+      { name: "03 THE STAKES", role: "What is lost if it goes wrong, escalating", accent: "red", weight: 0.3 },
+      { name: "04 THE TITLE", role: "The title itself, then one line after it", accent: "green", weight: 0.2 },
+    ],
+    wordsPerScene: [8, 14], shotSeconds: 2.2, closing: "title",
+  },
+  /* ---------------------------------------------------------------- a subject with chapters */
+  chaptered: {
+    id: "chaptered", keouStyle: "editorial", tone: "Calm and factual; say 'about' when a number is approximate",
+    guidance:
+      "A calm long-form piece: a cold open on a striking question or scene, the context, then chapters in order, dates " +
+      "and numbers stated as figures, a human quote where there is one, the consequences, and a reflective close. " +
+      "Every chapter ends on a sentence that makes the next one necessary.",
+    sections: [
+      { name: "01 COLD OPEN", role: "One striking question, scene or number, before any context", accent: "red", weight: 0.12 },
+      { name: "02 THE GROUND", role: "What the viewer needs to know to follow the rest", accent: "cyan", weight: 0.23 },
+      { name: "03 HOW IT WORKS", role: "The mechanism, step by step, in the order it happens", accent: "amber", weight: 0.35 },
+      { name: "04 WHAT IT COST", role: "The consequence, in people, money or time", accent: "red", weight: 0.18 },
+      { name: "05 WHERE IT LEAVES US", role: "What changed, and what the viewer does with it", accent: "green", weight: 0.12 },
+    ],
+    wordsPerScene: [30, 45], shotSeconds: 4, closing: "closing-scene",
+  },
+  /* ---------------------------------------------------------------- independent segments */
+  segmented: {
+    id: "segmented", keouStyle: "editorial", tone: "Hard, factual, neutral",
+    guidance:
+      "A run of independent segments, each opening on its own headline and cutting hard to the next. Every segment " +
+      "carries one figure or one source; the segments do not refer to each other.",
+    sections: [
+      { name: "01 THE OPENING", role: "What this edition covers, in one sentence", accent: "cyan", weight: 0.12 },
+      { name: "02 THE SEGMENTS", role: "Each item in turn: headline, the one figure, why it matters", accent: "amber", weight: 0.76 },
+      { name: "03 NEXT", role: "What to watch after this", accent: "green", weight: 0.12 },
+    ],
+    wordsPerScene: [30, 45], shotSeconds: 3.5, closing: "closing-scene",
+  },
+  /* ---------------------------------------------------------------- a claim, then a verdict */
+  verdict: {
+    id: "verdict", keouStyle: "illustrated", tone: "Balanced and concrete, no marketing language",
+    guidance:
+      "What it is and who it is for, then one claim per scene with the evidence for it, the case against, the obvious " +
+      "alternative side by side, and the verdict last as a single figure with two words of judgement.",
+    sections: [
+      { name: "01 WHAT IT IS", role: "The thing and who it is for, without adjectives", accent: "cyan", weight: 0.2 },
+      { name: "02 WHAT IS GOOD", role: "One claim per scene, each with its evidence", accent: "green", weight: 0.3 },
+      { name: "03 WHAT IS NOT", role: "The case against, stated as plainly as the case for", accent: "red", weight: 0.25 },
+      { name: "04 THE VERDICT", role: "Against the obvious alternative, then the score", accent: "amber", weight: 0.25 },
+    ],
+    wordsPerScene: [30, 45], shotSeconds: 4, closing: "closing-scene",
+  },
+  /* ---------------------------------------------------------------- the drawn explainer */
+  drawn: {
+    id: "drawn", keouStyle: "sketch", tone: "Plain and certain; define a term the first time and never again",
+    guidance:
+      "An explainer that opens on the thing itself: the first line says something the viewer believes is safe and takes " +
+      "it away, the second shows the object, the middle is the method in three moves, and the last line hands the viewer " +
+      "the one thing they can do. No introduction, no 'in this video', no sign-off.",
+    sections: [
+      { name: "01 THE CLAIM", role: "Take away something the viewer thinks is safe, with the object on screen", accent: "red", weight: 0.2 },
+      { name: "02 THE OBJECT", role: "Show the thing itself and what it really is", accent: "cyan", weight: 0.25 },
+      { name: "03 THE METHOD", role: "How it actually works, one move per scene", accent: "amber", weight: 0.35 },
+      { name: "04 WHAT YOU DO", role: "The one thing the viewer can act on", accent: "green", weight: 0.2 },
+    ],
+    wordsPerScene: [8, 14], shotSeconds: 2.0, closing: "act",
+  },
+};
 
 const EN_IT = ["narrator-en-m", "narrator-en-f", "narrator-it-m", "narrator-it-f"];
 
@@ -52,36 +247,77 @@ export const voiceSpellings = (friendly: readonly string[]): string[] =>
  */
 export const TEMPLATES: Template[] = [
   { id: "story-documentary", name: "Story / Documentary", formats: ["16:9"], minSeconds: 300, maxSeconds: 720, defaultSeconds: 480,
-    description: "Calm narration across chapters, one drawn picture per shot and a camera that drifts slowly over it. History, science, true stories.", voices: EN_IT },
+    description: "Calm narration across chapters, one drawn picture per shot and a camera that drifts slowly over it. History, science, true stories.", voices: EN_IT,
+    family: "chaptered" },
   { id: "top-10", name: "Top 10", formats: ["16:9"], minSeconds: 360, maxSeconds: 600, defaultSeconds: 420,
-    description: "A countdown: one entry per scene, its number spoken and picked out in the caption, hard cuts between entries.", voices: EN_IT },
+    description: "A countdown: one entry per scene, its number spoken and picked out in the caption, hard cuts between entries.", voices: EN_IT,
+    // A countdown is the segmented language, but drawn: every entry is a thing you can see.
+    family: "segmented", override: { sections: COUNTDOWN, keouStyle: "illustrated" } },
   { id: "viral-short", name: "Viral Short", formats: ["9:16"], minSeconds: 30, maxSeconds: 60, defaultSeconds: 45,
-    description: "Hook in the first two seconds, big word-by-word captions, a cut every 2–3 seconds. The default for any Short.", voices: EN_IT },
+    description: "Hook in the first two seconds, big word-by-word captions, a cut every 2–3 seconds. The default for any Short.", voices: EN_IT,
+    family: "short-hook" },
   { id: "reddit-story", name: "Reddit Story", formats: ["9:16"], minSeconds: 45, maxSeconds: 90, defaultSeconds: 60,
-    description: "The post read aloud as a story, a picture per shot cut on the words, big captions. Paste the post text in the prompt.", voices: EN_IT },
+    description: "The post read aloud as a story, a picture per shot cut on the words, big captions. Paste the post text in the prompt.", voices: EN_IT,
+    family: "confession" },
   { id: "motivational", name: "Motivational", formats: ["9:16", "16:9"], minSeconds: 30, maxSeconds: 90, defaultSeconds: 60,
-    description: "One line held per scene, a picture drawn for each and the camera pushing slowly in, music underneath throughout.", voices: EN_IT },
+    description: "One line held per scene, a picture drawn for each and the camera pushing slowly in, music underneath throughout.", voices: EN_IT,
+    family: "build" },
   { id: "explainer", name: "Explainer / Tutorial", formats: ["16:9"], minSeconds: 240, maxSeconds: 480, defaultSeconds: 300,
-    description: "One idea per scene, built in the order the voice explains it, with a recap at the end.", voices: EN_IT },
+    description: "One idea per scene, built in the order the voice explains it, with a recap at the end.", voices: EN_IT,
+    // The cyber tutorial: the chaptered language drawn as motion design instead of pictures.
+    family: "chaptered", override: { keouStyle: "technical" } },
   { id: "weekly-news", name: "Weekly News", formats: ["16:9"], minSeconds: 180, maxSeconds: 300, defaultSeconds: 240,
-    description: "Four stories, each opening on its headline, hard cuts between segments.", voices: EN_IT },
+    description: "Four stories, each opening on its headline, hard cuts between segments.", voices: EN_IT,
+    family: "segmented" },
   { id: "cinematic-trailer", name: "Cinematic Trailer", formats: ["16:9"], minSeconds: 60, maxSeconds: 90, defaultSeconds: 75,
-    description: "Short scenes, a beat of silence before the last line, and the title held at the end.", voices: EN_IT },
+    description: "Short scenes, a beat of silence before the last line, and the title held at the end.", voices: EN_IT,
+    family: "trailer" },
   { id: "product-review", name: "Product Review", formats: ["16:9"], minSeconds: 240, maxSeconds: 360, defaultSeconds: 300,
-    description: "The product in every shot, one claim per scene, and the verdict last.", voices: EN_IT },
+    description: "The product in every shot, one claim per scene, and the verdict last.", voices: EN_IT,
+    family: "verdict" },
   // The explainer look (kleo_style "explainer"): one drawing per phrase, karaoke captions, a camera
   // that only pushes in. Two rows because the two lengths are different films: a Short is one idea
   // told in under a minute — past that people stop following — and a video is a subject with chapters.
   { id: "explainer-short", name: "Explainer Short (drawn)", formats: ["9:16"], minSeconds: 20, maxSeconds: 60, defaultSeconds: 45,
-    description: "Hand-drawn white line art on black. One picture for every phrase, a hard hook in the first second, karaoke captions. Under a minute on purpose.", voices: EN_IT },
+    description: "Hand-drawn white line art on black. One picture for every phrase, a hard hook in the first second, karaoke captions. Under a minute on purpose.", voices: EN_IT,
+    family: "drawn" },
   { id: "explainer-long", name: "Explainer Video (drawn)", formats: ["16:9"], minSeconds: 180, maxSeconds: 480, defaultSeconds: 300,
-    description: "The same drawn look across a full subject: chapters, one picture per phrase, and a camera that never stops moving. Landscape.", voices: EN_IT },
+    description: "The same drawn look across a full subject: chapters, one picture per phrase, and a camera that never stops moving. Landscape.", voices: EN_IT,
+    // Same language, five minutes instead of forty seconds: only what the length forces changes.
+    family: "drawn", override: { wordsPerScene: [12, 20], shotSeconds: 2.6, guidance: LONG_DRAWN } },
   { id: "did-you-know", name: "Did You Know", formats: ["9:16"], minSeconds: 20, maxSeconds: 40, defaultSeconds: 30,
-    description: "One fact per scene, karaoke captions, the image changes on every sentence.", voices: EN_IT },
+    description: "One fact per scene, karaoke captions, the image changes on every sentence.", voices: EN_IT,
+    family: "short-hook", override: { wordsPerScene: [10, 16], guidance: DID_YOU_KNOW } },
 ];
 
 export const TEMPLATE_IDS = TEMPLATES.map((t) => t.id) as [string, ...string[]];
 export const findTemplate = (id: string): Template | undefined => TEMPLATES.find((t) => t.id === id);
+
+/**
+ * The narrative shape of one template: its family with its overrides applied. This is the ONE place the
+ * planner, the guide and the site may read the structure of a video from — src/storyboard.ts builds its
+ * briefs from it, so a change to the rhythm of a look is a change in one file.
+ */
+export function narrativeFor(templateId: string): Family {
+  const t = findTemplate(templateId);
+  const base = FAMILIES[t?.family ?? ""] ?? FAMILIES["short-hook"];
+  return t?.override ? { ...base, ...t.override } : base;
+}
+
+/** How many scenes a section owns, given the film's total. Never zero: a section with no scene is not a section. */
+export function sceneSplit(f: Family, scenes: number): number[] {
+  const raw = f.sections.map((s) => s.weight * scenes);
+  const out = raw.map((n) => Math.max(1, Math.round(n)));
+  // Rounding up every short section can overshoot; take the difference off the widest one, which can afford it.
+  let drift = out.reduce((a, b) => a + b, 0) - scenes;
+  while (drift !== 0) {
+    const i = drift > 0 ? out.indexOf(Math.max(...out)) : out.indexOf(Math.min(...out));
+    if (drift > 0 && out[i] <= 1) break;
+    out[i] += drift > 0 ? -1 : 1;
+    drift += drift > 0 ? -1 : 1;
+  }
+  return out;
+}
 
 /**
  * What one credit buys is NOT the same in every style, because what a style costs on a rented GPU differs by an
