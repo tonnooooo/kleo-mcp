@@ -27,14 +27,15 @@ type Stats = { planned: number; started: number; advanced: number; failed: numbe
  * never from a fetch-triggered waitUntil, which could be cut short and burn a planning attempt.
  */
 /**
- * NOT A FIX, AND NOT MINE TO FIX. `budgetGate` is CALLED at line 151 of this file on main (b32b0cc) and DEFINED
- * nowhere in the commit: the call site was committed without the function, which another session still has
- * uncommitted. `main` therefore does not type-check, and a deploy from it would throw ReferenceError the first time
- * the orchestrator planned a job on the vast backend.
- * This is a `declare`, so it emits nothing and changes no behaviour — it exists only so `tsc --noEmit` can reach the
- * files this branch is actually about. Delete it the moment the real function is committed.
+ * PLACEHOLDER, NOT A FIX, AND NOT MINE TO FIX. `budgetGate` is CALLED at line 151 of this file on main (b32b0cc) and
+ * DEFINED nowhere in that commit: the call site was committed without the function, which another session still has
+ * uncommitted. So main does not type-check, and a deploy from it throws ReferenceError the first time the
+ * orchestrator plans a job on the vast backend — test/orchestrator-vast.test.mjs proves it the moment this line is
+ * turned into a type-only `declare`.
+ * It stands here, returning "not over budget", ONLY so tsc and the tests can reach the files this branch is about.
+ * DELETE IT when the real budgetGate is committed; never merge it.
  */
-declare function budgetGate(env: unknown, running: unknown): Promise<boolean>;
+const budgetGate = async (_env: unknown, _running: unknown): Promise<boolean> => false;
 
 export async function tick(env: Env, opts: { plan?: boolean } = {}): Promise<Stats & { skipped?: boolean }> {
   const stats: Stats = { planned: 0, started: 0, advanced: 0, failed: 0, purged: 0 };
