@@ -843,7 +843,8 @@ export function normalizeStoryboard(raw: unknown, plan: Plan): unknown {
   // in; a model that wrote a different one is corrected here rather than bounced back, because a retry spent on
   // copying a colour out of a table is a retry not spent on the story. The validator still refuses a mismatch, which
   // is what catches a CLIENT-written storyboard: there the author chose both, and a mismatch is a real contradiction.
-  if (isObj(c.direction) && Array.isArray((c.direction as Record<string, unknown>).sections) && Array.isArray(c.scenes)) {
+  const colourLaw = plan.style === "picture" || plan.style === "cinema";
+  if (colourLaw && isObj(c.direction) && Array.isArray((c.direction as Record<string, unknown>).sections) && Array.isArray(c.scenes)) {
     const sections = (c.direction as unknown as Direction).sections;
     sectionOfScene(sections, (c.scenes as unknown[]).length).forEach((sec, i) => {
       const scene = (c.scenes as Record<string, unknown>[])[i];

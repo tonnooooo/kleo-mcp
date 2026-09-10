@@ -376,14 +376,20 @@ test("picture: normalizeStoryboard turns a scene image_prompt into shots and kee
   assert.equal(z.shots[1].at, "part two");
   assert.equal(z.button, undefined, "a button longer than 24 characters is dropped");
   assert.ok(!("detail" in z), "the picture style has no detail line");
-  assert.equal(validateStoryboard(sb, { format: "9:16", language: "en" }).ok, true);
+  // The shorthand normalises, but one picture for a whole narrated line is refused however it was written — and that
+  // is the ONLY thing left wrong with this storyboard.
+  const one = validateStoryboard(sb, { format: "9:16", language: "en" });
+  assert.equal(one.ok, false);
+  assert.deepEqual(one.errors.filter((e) => !/a scene needs at least 2/.test(e)), []);
   // A scene the model left without any usable picture still renders: the title becomes the prompt.
   const bare = normalizeStoryboard({ title: "T", scenes: [
     { id: "01-a", kind: "cinema", chapter: "01 A", accent: "red", title: "A quiet street at dawn", hl: "quiet", voice: "A quiet street at dawn, and nobody is watching the door.", shots: [{ caption: "NOTHING" }] },
     { id: "02-b", kind: "closing", accent: "green", title: "Follow", voice: "Follow for part two.", shots: [{ image_prompt: "An empty street at noon" }] },
   ] }, plan);
   assert.deepEqual(bare.scenes[0].shots, [{ image_prompt: "A quiet street at dawn", shot_kind: "hook" }]);
-  assert.equal(validateStoryboard(bare, { format: "9:16", language: "en" }).ok, true);
+  const rescued = validateStoryboard(bare, { format: "9:16", language: "en" });
+  assert.equal(rescued.ok, false, "it renders, but it is still one picture for a whole line");
+  assert.deepEqual(rescued.errors.filter((e) => !/a scene needs at least 2/.test(e)), []);
   // An "at" the engine could not anchor is dropped here, quietly: it would otherwise cost a whole model round trip.
   const cuts = normalizeStoryboard({ title: "T", scenes: [
     { id: "01-part-s2", kind: "cinema", chapter: 7, hl: "   ", title: "The morning after", voice: "Whatever came next, nobody saw it coming.", shots: [
@@ -395,7 +401,14 @@ test("picture: normalizeStoryboard turns a scene image_prompt into shots and kee
     { id: "01-part-s2", kind: "closing", title: "Follow", voice: "Follow for part two.", shots: [{ image_prompt: "An empty street at noon" }] },
   ] }, plan);
   assert.deepEqual(cuts.scenes.map((s) => s.id), ["01-part-p2", "01-part-p2-2"], '"-s<number>" is reserved for picture ids, so the scene is renamed');
-  assert.deepEqual(cuts.scenes[0].shots.map((sh) => sh.at), [undefined, undefined, "nobody saw", undefined]);
+  // An "at" the engine could not anchor is dropped, and Kleo then chooses a legal one in its place: the cut lands on a
+  // word the viewer hears either way, and the model is not sent round the loop over a mis-quote.
+  const ats = cuts.scenes[0].shots.map((sh) => sh.at);
+  assert.equal(ats[0], undefined, "the first shot opens the scene");
+  assert.equal(ats[2], "nobody saw", "an anchor the author quoted correctly is left alone");
+  for (const [i, at] of ats.entries())
+    if (i) assert.ok(typeof at === "string" && quotesVoice(at, cuts.scenes[0].voice), `shot ${i + 1}: "${at}" must quote the voice`);
+  assert.equal(new Set(ats.slice(1)).size, ats.length - 1, "and no two pictures cut on the same words");
   assert.ok(!("chapter" in cuts.scenes[0]) && !("hl" in cuts.scenes[0]), "a chapter that is not text and a blank hl are dropped");
   assert.deepEqual(validateStoryboard(cuts, { format: "9:16", language: "en" }).errors ?? [], []);
 });
@@ -510,7 +523,8 @@ test("the storyboard guide teaches shot_kind and never a camera move", () => {
   assert.ok(shots.every((sh) => !sh.shot_kind || SHOT_KINDS.includes(sh.shot_kind)), "every kind in the example is one of the ten");
   assert.deepEqual(sequenceProblems(shots.map((sh) => ({ ...sh, shot_kind: sh.shot_kind ?? "establish" }))), []);
   assert.equal(shots[0].shot_kind, "hook", "the example opens on the hook");
-  assert.ok(shots.slice(1).every((sh) => typeof sh.at === "string" && sh.at), "every picture after the first is anchored in the example");
+  for (const sc of EXAMPLE_SCENES)
+    sc.shots.forEach((sh, i) => assert.ok(i === 0 || (typeof sh.at === "string" && sh.at), `${sc.id} shot ${i + 1}: every picture after the first in a scene is anchored`));
 });
 
 test("shot grammar: whatever the model writes, the storyboard that comes out is one the contract will shoot", () => {

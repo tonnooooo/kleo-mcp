@@ -583,7 +583,9 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
   if (direction !== undefined) {
     for (const p of directionProblems(direction, { accents: CINEMA_ACCENTS, scenes: scenes.length })) e.add(p);
     const sections = isObj(direction) && Array.isArray(direction.sections) ? (direction.sections as Section[]) : [];
-    if (sections.length) {
+    // The colour law is written in CINEMA_ACCENTS, which are the accents of the picture and cinema looks. The
+    // stickman has its own smaller palette (STORY_ACCENTS), so a section accent must never be pressed onto it.
+    if (sections.length && (c.style === "picture" || c.style === "cinema")) {
       const owner = sectionOfScene(sections, scenes.length);
       scenes.forEach((s, i) => {
         const want = owner[i]?.accent;
