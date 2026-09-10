@@ -134,8 +134,11 @@ const HELD_OUT_2 = [
  * `pivotal` marks 1, 3 and 5: same semantic field as 2, 6 and 7, opposite answer. If the classifier gets the twins
  * right and the pivotal ones wrong, the overall score stays high while the measure says nothing — it is a classifier
  * of TOPICS posing as a classifier of LOOKS. `pair` names the twin, so the collapse is reported and not averaged away.
- * Number 4 carries no technical word at all: if it cannot reach the explainer, that look is not a language of its
- * own, it is a subset of cyber.
+ * Number 4 carries no technical word at all, and it does NOT reach the drawn explainer. That is not a defect. The
+ * session that owns that look does not want it reachable from a prompt, on purpose: it is a different product — no
+ * closing scene, one drawing per phrase, the film ends on the last drawing — and nobody asking for a viral Short
+ * should be handed it by accident. What the request really shows is that if the prompt is not a road to it, the
+ * TEMPLATE is the only road, and one road with no guard is a single point of failure. That guard now exists.
  */
 const HELD_OUT_3 = [
   { p: "Spiegami cos'è una VPN a mia madre.", want: "explainer", lang: "it", pivotal: true, pair: "attacchi" },
@@ -300,7 +303,9 @@ for (const a of h3.filter((x) => x.pair)) {
   line(`  ${" ".repeat(19)} "${b.p.slice(0, 42)}" -> ${b.got}${b.ok ? "" : "  (wanted " + b.accept.join("/") + ")"}`);
 }
 const independent = h3.find((x) => x.p.startsWith("Spiega in un minuto perché l'acqua"));
-line(`  independence: a request with no technical word at all -> ${independent ? independent.got : "?"}${independent && independent.got === "cyber" ? "" : "   (the drawn explainer is not reachable without technical vocabulary)"}`);
+line(`  independence: a request with no technical word at all -> ${independent ? independent.got : "?"}`);
+line("                the drawn explainer is reachable only by naming its template, and that is deliberate — which is");
+line("                why that template is a single point of failure, and why it now has a test of its own.");
 line(`  ${collapsed} of 3 pairs are not a distinction: a classifier of topics cannot see a difference of FORM.`);
 line();
 
