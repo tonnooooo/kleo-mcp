@@ -169,6 +169,11 @@ npm run test:smoke          # l'intero giro in circa 40 secondi: login, strument
 node --test test/keou-contract.test.mjs test/storyboard.test.mjs   # test unitari, senza rete
 node test/worker-e2e.mjs    # render vero con il motore Keou dentro il container (podman, ~5 minuti, senza GPU)
 node test/vast-e2e.mjs      # un video vero di 20 s su Vast.ai: costa qualche centesimo, leggi l'intestazione del file prima
+
+# Con uno storyboard scritto a mano, come lo manderebbe un assistente. Da qui in poi lo storyboard DEVE portare il
+# blocco "direction" (la regia): senza, il server lo rifiuta prima di addebitare. L'unico fixture completo e' questo,
+# gli altri sono la forma del pianificatore e non hanno la regia apposta.
+STORYBOARD_FILE=test/fixtures/cartoon-pirates-directed.json node test/vast-e2e.mjs
 ```
 
 Da Claude Code sul tuo computer: `claude mcp add --transport http kleo-local http://localhost:8787/mcp`, poi `/mcp` → Kleo → Authenticate e un solo clic sul bottone: non c'è niente da scrivere.

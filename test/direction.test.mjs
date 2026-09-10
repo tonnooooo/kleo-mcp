@@ -361,3 +361,15 @@ test("the missing direction is reported together with the other problems, not in
   assert.match(said, /direction is required/, "the direction error survives the scene guard");
   assert.match(said, /2–240 scenes/, "and the scene error is there too: one call learns everything");
 });
+
+test("the directed fixture is a complete client storyboard: what an assistant must now send", () => {
+  // cartoon-pirates-directed.json exists because the production end-to-end test (DEPLOY.md, STORYBOARD_FILE) posts a
+  // fixture as if it were an assistant's storyboard, and every other fixture carries no direction — so from the day
+  // requireDirection shipped, the documented production test would have been refused by our own new rule. The other
+  // fixtures stay as they are: they are the planner's shape, and the planner still validates with the flag off.
+  const sb = fixture("cartoon-pirates-directed");
+  const r = validateStoryboard(sb, { format: sb.format, language: sb.language, requireDirection: true });
+  assert.deepEqual(r.ok ? [] : r.errors, [], "it must pass the rule it exists to demonstrate");
+  assert.equal(sb.direction.sections.reduce((a, s) => a + s.scenes, 0), sb.scenes.length,
+    "its sections tile the film exactly");
+});
