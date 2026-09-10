@@ -109,7 +109,7 @@ export const vastBackend: RenderBackend = {
             KLEO_SECRET: job.worker_secret,
             KLEO_SELF_DESTRUCT_MIN: String(Math.max(10, timeoutMin - 5)),
             KLEO_DPH: String(offer.dph_total),
-            KLEO_KEOU_WORKERS: String(Math.max(2, Math.floor(offer.cpu_cores_effective ?? 8))), // use the whole box
+            KLEO_KEOU_WORKERS: String(Math.min(16, Math.max(2, Math.floor(offer.cpu_cores_effective ?? 8)))), // whole box, but the engine caps render workers at 16
             ...renderEnv(env),
           },
         };

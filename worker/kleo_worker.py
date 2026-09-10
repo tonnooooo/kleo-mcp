@@ -38,7 +38,7 @@ KEOU_DIR = os.environ.get("KLEO_KEOU_DIR", "/opt/kleo/keou")
 RENDER_TIMEOUT_MIN = float(os.environ.get("KLEO_RENDER_TIMEOUT_MIN", "100"))
 WIDTH_PORTRAIT = int(os.environ.get("KLEO_WIDTH_PORTRAIT", "2160"))
 WIDTH_LANDSCAPE = int(os.environ.get("KLEO_WIDTH_LANDSCAPE", "1920"))
-KEOU_WORKERS = int(os.environ.get("KLEO_KEOU_WORKERS", "0") or 0)  # 0 → min(8, cpu count)
+KEOU_WORKERS = min(16, int(os.environ.get("KLEO_KEOU_WORKERS", "0") or 0))  # 0 → min(8, cpu count); the engine refuses more than 16
 PART = 50 * 1024 * 1024
 UA = "kleo-worker/1.0 (+https://github.com/tonnooooo/kleo-mcp)"
 # Kleo pictures: kleo_style values that come with server-generated pictures, and the knobs of the images call.
