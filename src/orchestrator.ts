@@ -102,8 +102,20 @@ async function tickInner(env: Env, stats: Stats) {
         // A fresh host may still be pulling the 10 GB image: give "loading" instances more time, but never more than LOADING_TIMEOUT_MIN.
         const loadingTimeoutMin = int(env.LOADING_TIMEOUT_MIN, 35);
         const st = job.backend === "vast" ? await vastStatus(env, job) : null;
-        if (st === "loading" && minutesSince(job.started_at!) <= loadingTimeoutMin) {
-          await audit(env, job.user_id, job.id, "vast.still_loading", { minutes: Math.round(minutesSince(job.started_at!)) });
+        // Still pulling the image. Some hosts crawl or keep retrying a layer; waiting the full loading budget on one of
+        // them costs the user twenty minutes and the account the rent, when another machine would have started already.
+        // So: give it LOADING_RETRY_MIN, then take the job to a different host (that is what a retry is for), and only
+        // give up entirely at LOADING_TIMEOUT_MIN.
+        const loadingRetryMin = int(env.LOADING_RETRY_MIN, 14);
+        const loadingFor = minutesSince(job.started_at!);
+        if (st === "loading" && loadingFor > loadingRetryMin && job.attempts < 3) {
+          await audit(env, job.user_id, job.id, "vast.loading_too_slow", { minutes: Math.round(loadingFor), instance: job.instance_id });
+          await failJob(env, job, `the rented machine was still downloading the renderer after ${Math.round(loadingFor)} min; trying another one`, true);
+          stats.failed++;
+          continue;
+        }
+        if (st === "loading" && loadingFor <= loadingTimeoutMin) {
+          await audit(env, job.user_id, job.id, "vast.still_loading", { minutes: Math.round(loadingFor) });
         } else {
           const quiet = Math.round(minutesSince(lastWord));
           await failJob(env, job, job.last_report_at

@@ -32,6 +32,7 @@ export interface Env {
   JOB_TIMEOUT_MIN: string;
   START_TIMEOUT_MIN?: string;
   LOADING_TIMEOUT_MIN?: string; // max minutes an instance may stay in "loading" (image pull) before it is destroyed // minutes a GPU may stay silent after rental before it is destroyed and the job requeued
+  LOADING_RETRY_MIN?: string;   // minutes of image pull after which the job moves to another host (default 14)
   FREE_CREDITS: string;
   RESULT_TTL_DAYS: string;
   MOCK_TOTAL_SECONDS?: string;
@@ -44,6 +45,7 @@ export interface Env {
   VAST_GPU_NAME?: string;
   VAST_MAX_DPH?: string;
   VAST_DISK_GB?: string;
+  VAST_MIN_INET?: string;   // Mbit/s down the host must have (default 800): the image pull is the slowest part of a job
   VAST_MIN_CPU?: string;      // effective cores required (the Keou renderer is CPU-bound)
   VAST_MIN_RAM_GB?: string;
   VAST_BOOTSTRAP_URL?: string; // raw URL of worker/kleo_worker.py, for images that do not ship it

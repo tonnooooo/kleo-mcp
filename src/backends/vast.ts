@@ -155,7 +155,9 @@ export async function searchOffers(env: Env): Promise<Offer[]> {
     external: { eq: false },
     num_gpus: { eq: 1 },
     gpu_name: { eq: env.VAST_GPU_NAME ?? "RTX 4090" },
-    inet_down: { gte: 500 },
+    // A slow or flaky host turns the image pull into twenty minutes of paid waiting (one Japanese host spent that
+    // long on "Retrying in 1 second"), so the floor is high: bandwidth is the single biggest slice of time to first frame.
+    inet_down: { gte: int(env.VAST_MIN_INET, 800) },
     cpu_cores_effective: { gte: int(env.VAST_MIN_CPU, 16) },
     cpu_ram: { gte: int(env.VAST_MIN_RAM_GB, 32) * 1024 },
     reliability2: { gte: 0.98 },
