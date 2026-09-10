@@ -6,8 +6,8 @@ import { getUserJob, getUser, recentJobsForUser, countOpenForUser, GPU_ONLY_WAIT
 import { TEMPLATES, TEMPLATE_IDS, findTemplate, creditsFor } from "./templates";
 import { createJob, cancelJob, jobView, resultLinks, JobError, FILE_NAMES } from "./jobs";
 import { audit } from "./db";
-import { STYLES, KINDS, BEAT_KINDS, BEAT_ICONS, BEAT_FX, CINEMA_ACCENTS, STORY_ACTS, STORY_CAST, STORY_PROPS, STORY_FX, VISUALS, VOICES, KLEO_STYLES, IMAGE_PROMPT_MAX, SHOT_CAPTION_MAX, SHOT_HL_MAX, SHOT_AT_MAX, CLOSING_BUTTON_MAX, MAX_PICTURES, SHOTS_PER_SCENE } from "./keou-contract";
-import { SHOT_KINDS } from "./shot-grammar";
+import { KLEO_STYLES, wordBudget, shotRangeText } from "./keou-contract";
+import { guideText } from "./guide.ts";
 import { int } from "./util";
 
 /**
@@ -16,8 +16,8 @@ import { int } from "./util";
  * guide must never offer a language this tool cannot take, or the model writes a storyboard that is rejected.
  */
 const JOB_LANGUAGES = ["en", "it"] as const;
-/** "1-4" / "1-2": the shot count the validator enforces, so the guide can never drift from SHOTS_PER_SCENE. */
-const shotRange = (kind: "cinema" | "closing") => SHOTS_PER_SCENE[kind].join("-");
+/** "2-4" / "1-2": the shot count Kleo really enforces, from the contract, so no two texts can quote different numbers. */
+const shotRange = shotRangeText;
 
 const INSTRUCTIONS = `This server is Kleo (the kleo_* tools): the video studio the user connected. It is not kie-mcp or any other product. Kleo renders YouTube videos and Shorts (4K, 60 fps) from a template and a prompt. When the user mentions Kleo, a video, a Short or a YouTube clip, use these tools; never answer from memory.
 DELIVERY RULE: the user expects the finished video in this same conversation, without coming back later. After kleo_create_video, call kleo_wait_for_video repeatedly (each call waits up to 50 seconds and returns progress) until it returns the download links, then hand them over. Tell the user once that the render is running and the estimated time; do not ask "shall I keep waiting?"; keep calling until done unless the user says stop.
@@ -125,98 +125,21 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
 
   server.registerTool("kleo_storyboard_guide", {
     title: "Storyboard guide (write your own video)",
-    description: "Step 2 (recommended). Returns the storyboard format Kleo renders (visual styles: cartoon, realistic, cyber, stickman; scene kinds, the picture shots of the cartoon/realistic looks, beats and icons for cyber, voices, limits, rules) with full examples, so you can write an original storyboard tailored to the user and pass it to kleo_create_video. Call it once per conversation, before kleo_create_video. Without a storyboard Kleo plans a more generic one from the prompt.",
+    description: "Step 2 (recommended). Returns how to write a storyboard Kleo renders, in the order it should be written: first the DIRECTION of the film (subject, goal, audience, tone, the facts from the request that the narration must still say, the world it is drawn in, what must never appear, and one accent colour per section), then the scene and shot shapes, the limits Kleo enforces before anything is billed, and one worked example. Pass \"style\" to get that look\u2019s vocabulary alone instead of all four. Call it once per conversation, before kleo_create_video. Without a storyboard Kleo plans a more generic one from the prompt.",
     inputSchema: z.object({
       template: z.enum(TEMPLATE_IDS).optional().describe("The template you intend to use; tailors the target length."),
       duration_s: z.number().int().min(15).max(900).optional().describe("Target length in seconds, if the user chose one."),
+      style: z.enum(KLEO_STYLES).optional().describe("The look this storyboard is for. Naming it returns that look only: cartoon or realistic (full-screen generated pictures cut on the narration), cyber (motion design with icons and big type, no pictures), stickman (a hand-drawn stickman, 9:16, on request). Omit it for the picture looks plus a line about the others."),
     }),
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
-  }, async ({ template, duration_s }) => {
+  }, async ({ template, duration_s, style }) => {
     const t = TEMPLATES.find((x) => x.id === template) ?? null;
     const dur = duration_s ?? t?.defaultSeconds ?? 45;
-    const words = Math.round(dur * 2.3);
-    const scenes = dur <= 90 ? "4-8" : dur <= 300 ? "10-20" : "18-30";
-    const text = `KLEO STORYBOARD GUIDE (engine: Keou, canvas motion design, 60 fps, local TTS)
-Target: ${dur}s → about ${words} narrated words in ${scenes} scenes (speed 1.1). Every scene's "voice" is narrated by TTS and drives the timing; visuals are drawn per scene.
-
-TOP-LEVEL OBJECT (no id, no script_file, no music_quiet, no image scenes, never scene.image):
-{ "schema_version": 1, "editorial_status": "ready", "title": "<=120 chars", "brand": "Kleo or the channel name <=28", "kleo_style": one of ${JSON.stringify(KLEO_STYLES)},
-  "style": one of ${JSON.stringify(STYLES)}, "format": "9:16" | "16:9", "language": ${JOB_LANGUAGES.map((l) => `"${l}"`).join(" | ")},
-  "voice": ${JOB_LANGUAGES.map((l) => `${l}: ${(VOICES[l] ?? []).join("|")}`).join(" · ")}, "speed": 0.8-1.3 (use 1.1), "music": "bed" | "none",
-  "max_duration": ${Math.round(dur * 1.6)}, "description": "<=180", "tags": ["..."], "scenes": [...] }
-"format" and "language" are NOT free choices: they must equal the "format" and "language" you pass to kleo_create_video (the validator rejects a storyboard that disagrees), and "voice" must be one of that language's voices above. A job is ${JOB_LANGUAGES.join(" or ")} only: never write a storyboard in any other language.
-
-KLEO STYLES ("kleo_style", always set it; it must match the Keou "style"):
- "cartoon": the story told in flat vector illustrations generated from your descriptions (pirates → beaches, sand, ships; space → rockets, stations), full screen, cut on the narration. Stories, kids, travel, animals, history, fun facts. Needs style "picture" (9:16 or 16:9).
- "realistic": the same shape with cinematic photo-look pictures. Products, places, news, sport, documentaries. Needs style "picture".
- "cyber": the plain Keou motion-design look (dark background, glowing icons, big type), no pictures. Tech, security, AI, code. Works with any Keou style except "picture" and "stickman".
- "stickman": a hand-drawn stickman acting the story (Keou style "stickman", scenes of kind "story", 9:16 only). Only when the user asks for it.
-KEOU STYLES: "picture" (cartoon/realistic: nothing but full-screen pictures cut on the narration, like a short documentary; no icons, no beats), "cinema" (cyber, portrait-first: each scene has 1-8 beats = hero visuals cut on the narration), "stickman" (9:16 only, scenes of kind "story"), "editorial" / "illustrated" / "technical" / "terminal" (landscape-friendly, one composition per scene: hero, list, compare, steps, metric, quote, closing; cyber only).
-
-PICTURE SCENE (cartoon and realistic; the whole video is these pictures: no beats, no icons, no cards):
-{ "id": "01-hook", "kind": "cinema", "chapter": "01 THE CAPTAIN <=32", "accent": ${JSON.stringify(CINEMA_ACCENTS)}, "title": "<=90, the line shown on the first picture", "hl": "<=24, one word of the title", "voice": "1-3 sentences <=350 chars", "hold": 0.15-3, "shots": [${shotRange("cinema")} pictures, 2-3 is the usual rhythm; a closing scene takes ${shotRange("closing")}, normally 1] }
- SHOT: {"image_prompt":"<=${IMAGE_PROMPT_MAX} chars, ONE sentence describing the picture","caption":"2-5 BIG WORDS <=${SHOT_CAPTION_MAX}","hl":"ONE WORD OF caption <=${SHOT_HL_MAX}","at":"<=${SHOT_AT_MAX} chars, an unbroken run of whole words copied from this scene's voice (see below)","shot_kind":${JSON.stringify(SHOT_KINDS)}} — only "image_prompt" is required, and a shot carries no other key.
- - image_prompt: concrete subject, place, action, light and mood; the SAME characters described the same way in every shot (hair, clothes, colours); consecutive shots of one scene show the next moment or a new angle of the same place. NO text, letters, numbers, logos or captions inside the picture, and no real people.
- - the first shot opens the scene and must NOT carry "at"; every other shot cuts when its "at" words are spoken, so place the anchors along the line in reading order. An "at" must be an unbroken piece of that scene's "voice", copied character for character (punctuation included) AND landing on whole words: from "only one cabin boy swam back to shore" take "swam back" — never a fragment ("wam bac"), never a paraphrase ("he swam"), and never a jump across punctuation ("1720 Captain" when the line reads "In 1720, Captain Mara"). Case does not matter.
- - "caption" is optional and rare: 2-5 strong words on the shot that carries the idea (the first shot falls back to the scene title).
- SHOT KINDS ("shot_kind"): you say what the shot is FOR, Kleo picks the camera move from it. NEVER write a camera move, a zoom, a pan or a direction anywhere in a storyboard - naming the move by hand is refused.
-  hook = the opening jolt, the first shot of the video · establish = where we are · face = one face or one animal carrying the feeling · detail = one object, close · detail_orbit = one object worth circling · action = something moving through the frame · reveal = the frame opens on the answer the line just gave · tension = the moment before it goes wrong · closing = the last picture of the video
-  static_forced = the picture must NOT move. Use it whenever the shot shows visible hands doing something, a crowd, readable signs or writing, a mechanism with moving parts, or two people interacting: those four break under any camera move, so Kleo forces this kind when it recognises them - and it refuses two such pictures in a row, so give the next shot a different subject.
-  Leave "shot_kind" out and Kleo picks one. Two shots in a row never get the same sort of move, and the loud kinds (hook, tension, detail_orbit) stay rare and never touch, so do not put "hook" or "tension" on every shot.
- - the closing scene: kind "closing" (the last scene always is), ${shotRange("closing")} shots — one is the norm — and "button" (<=${CLOSING_BUTTON_MAX}, default "Subscribe") OR a "detail" line (<=110), never both.
- Kleo draws a picture for every shot you write, so keep the total sensible for the length (about ${MAX_PICTURES(dur)} for a video of this length): never set scene.image or shot.image, and never write "image_prompt" on the scene itself. Each picture is named "<scene id>-s<shot number>", so a scene id must not itself end in "-s" and a number.
-
-CINEMA SCENE (cyber only): { "id": "01-hook", "kind": "cinema", "chapter": "01 HOOK <=32", "accent": ${JSON.stringify(CINEMA_ACCENTS)}, "title": "<=90", "hl": "<=24 word highlighted", "voice": "1-3 sentences <=350 chars", "beats": [ ... 1-8 ... ], "hold": 0.15-3 }
- BEATS (each may carry "at": "<=24 chars quoted verbatim from this scene's voice", to sync the cut):
-  {"kind":"type","text":"<=40 BIG TEXT","hl":"<=20","slam":true,"icon":<icon>,"fx":<fx>}   big typographic card
-  {"kind":"icon","name":<icon>,"label":"<=24","fx":<fx>,"size":0.3-1}                       one hero icon
-  {"kind":"split","items":[<icon>,<icon>],"label":"<=24"} · {"kind":"grid","items":[2-3 icons]}
-  {"kind":"steps","items":["<=14","<=14","<=14"],"lit":1} · {"kind":"timeline","labels":["<=14"x2-4],"icons":[...]}
-  {"kind":"bars","labels":["<=14"x1-4],"values":[ints 0-1000000]} · {"kind":"people","total":0-12,"lit":0-12,"label":"<=32"}
-  {"kind":"terminal","lines":["<=48"x1-4],"label":"<=16"} · {"kind":"dialog","text":"<=32","count":1-5} · {"kind":"cta","label":"<=24","toggles":["<=14"x1-3]}
- ICONS: ${JSON.stringify(BEAT_ICONS)}  FX: ${JSON.stringify(BEAT_FX)}
- The icon set is small and tech-flavoured: use them as metaphors (radar=search, shield=safety, timer=time, figure/thief=people, wave=signal, house/car=places) and lean on "type" beats with strong words for everything else.
-
-STICKMAN SCENE: { "id", "kind": "story", "act": ${JSON.stringify(STORY_ACTS)}, "cast": ["hero", +"thief"|"thief2"], "props": [<=3 of ${JSON.stringify(STORY_PROPS)}], "fx": ${JSON.stringify(STORY_FX)}, "accent": green|red|amber, "bubble": "<=40 speech bubble", "hl": "<=24", "title", "voice" }
-
-EDITORIAL/ILLUSTRATED/TECHNICAL/TERMINAL SCENES: { "id", "kind": hero|list|compare|steps|metric|quote|closing, "eyebrow": "<=40", "title": "<=90", "detail": "<=110", "voice": "<=350", "visual": ${JSON.stringify(VISUALS)}, "hold": 0.65 }
-  list/steps: "items": [3 x <=42] · compare: "items": [2] · metric: "value": "<=12", "unit": "<=45", "animate_value": true (value must start with a number) · quote: "quote": "<=120", "source": "<=80" · terminal style may add "terminal_lines": [1-3 x <=48] · closing: "button": "<=40" OR "detail".
-  No scene ever carries "motion" (nor "image", "image_credit" or any other motion_* field): the engine's motion backgrounds cannot be requested from a storyboard, and kind "image" is not allowed either.
-
-RULES THE VALIDATOR ENFORCES: 2-240 scenes; unique slug ids [a-z0-9-] that must not end with "-s" + a number (reserved for pictures); last scene kind "closing"; every scene needs "title" and "voice"; picture style: only cinema/closing scenes, ${shotRange("cinema")} shots each (closing ${shotRange("closing")}), "beats" forbidden, image_prompt 2-${IMAGE_PROMPT_MAX} chars on every shot; cinema style only cinema/closing scenes; stickman only story/closing and 9:16; kleo_style cartoon/realistic need style "picture", kleo_style stickman needs style "stickman"; scene.image, scene.motion (and motion_*) and shot.image forbidden; "at" (beat or shot) must be an unbroken run of that scene's voice, copied verbatim (case-insensitive, punctuation included) and landing on whole words, and never sits on the first shot; a shot carries only image_prompt, caption, hl, at and shot_kind (a hand-written camera move is refused); format and language must equal the job's; voice legal for that language; total narration must fit max_duration (never exceed ~${Math.round(words * 1.25)} words for ${dur}s).
-
-CREATIVE DIRECTION: open with a hook in the first sentence; vary accents per scene; alternate beat kinds (type → icon → steps → dialog...); one idea per scene; end with a clear closing (question, promise or CTA). In the picture style, give each scene ${shotRange("cinema")} shots (2-3 is the usual rhythm): each shot is the next moment or a new angle, with the same characters throughout. Do not copy the examples; adapt tone and vocabulary to the user's topic and audience.
-
-EXAMPLE A (cartoon picture Short, 9:16, 40s, en):
-{"schema_version":1,"editorial_status":"ready","title":"The Treasure Nobody Ever Came Back For","brand":"Kleo","kleo_style":"cartoon","style":"picture","format":"9:16","language":"en","voice":"am_michael","speed":1.1,"music":"bed","max_duration":64,"scenes":[
- {"id":"01-hook","kind":"cinema","chapter":"01 THE CAPTAIN","accent":"red","title":"she never came back","hl":"never","voice":"In 1720, Captain Mara buried her treasure on Skull Beach. She never came back for it.","hold":0.2,"shots":[
-  {"image_prompt":"A pirate captain with a red bandana and a long dark braid burying a wooden chest on a golden beach at sunset, palm trees, her red-sailed ship anchored in the bay","caption":"SHE NEVER CAME BACK","hl":"NEVER","shot_kind":"hook"},
-  {"image_prompt":"The same pirate captain in her red bandana walking away along the shoreline at dusk, deep footprints in the wet sand, the beach empty behind her","at":"never came back","shot_kind":"action"}]},
- {"id":"02-storm","kind":"cinema","chapter":"02 THE STORM","accent":"amber","title":"three days later","hl":"three","voice":"Three days later a storm took her ship, and only one cabin boy swam back to shore.","hold":0.2,"shots":[
-  {"image_prompt":"The red-sailed pirate ship tossed by huge black waves at night, lightning splitting the sky, torn sails, rain across the deck","caption":"THREE DAYS LATER","hl":"THREE","shot_kind":"tension"},
-  {"image_prompt":"A young cabin boy in a striped shirt clinging to a broken plank in the dark water, the ship going down behind him","at":"one cabin boy","shot_kind":"establish"},
-  {"image_prompt":"The same cabin boy lying exhausted on an empty beach at dawn, calm turquoise water, palm trees, soft pink sky","at":"swam back","shot_kind":"face"}]},
- {"id":"03-map","kind":"cinema","chapter":"03 THE MAP","accent":"green","title":"the same beach","hl":"same","voice":"He drew the map a hundred times, and every single copy pointed to the same beach.","hold":0.2,"shots":[
-  {"image_prompt":"An old sailor with a white beard leaning over a worn treasure map spread on a table in a lantern-lit ship cabin, a green parrot perched beside him","caption":"A HUNDRED COPIES","hl":"HUNDRED","shot_kind":"establish"},
-  {"image_prompt":"Close view of the worn map in warm candlelight, a black cross inked on a curved beach with three palm trees","at":"the same beach","shot_kind":"static_forced"}]},
- {"id":"04-closing","kind":"closing","chapter":"04 SKULL BEACH","accent":"cyan","title":"Is the gold still there?","hl":"still","voice":"So is the gold still there? Follow, and next time we dig up Skull Beach.","button":"Follow","hold":0.4,"shots":[
-  {"image_prompt":"A half-buried wooden chest spilling gold coins into golden sand at dawn, a shovel stuck in the sand beside it, palm trees, calm sea","shot_kind":"closing"}]}]}
-
-EXAMPLE B (realistic picture Short, 9:16, 40s, en):
-{"schema_version":1,"editorial_status":"ready","title":"The Last Night Train Across the Alps","brand":"Kleo","kleo_style":"realistic","style":"picture","format":"9:16","language":"en","voice":"bf_emma","speed":1.1,"music":"bed","max_duration":64,"scenes":[
- {"id":"01-platform","kind":"cinema","chapter":"01 THE PLATFORM","accent":"cyan","title":"nobody was waiting","hl":"nobody","voice":"At ten past midnight the platform was empty, and the night train was already boarding.","hold":0.2,"shots":[
-  {"image_prompt":"An empty station platform at midnight, wet concrete reflecting cold blue lamps, a long sleeper train waiting with its windows lit","caption":"TEN PAST MIDNIGHT","hl":"MIDNIGHT","shot_kind":"hook"},
-  {"image_prompt":"A conductor in a dark uniform walking along the platform beside the lit sleeper train, warm yellow light from the windows, cold breath in the air","at":"already boarding","shot_kind":"action"}]},
- {"id":"02-cabin","kind":"cinema","chapter":"02 THE CABIN","accent":"amber","title":"two metres of Europe","hl":"metres","voice":"A sleeper cabin is two metres of Europe: a narrow bed, a folding sink, and a window that never stops moving.","hold":0.2,"shots":[
-  {"image_prompt":"A narrow sleeper cabin at night, a made bed under a warm reading lamp, a small folding metal sink, shallow depth of field","shot_kind":"establish"},
-  {"image_prompt":"The view through the same cabin window at night, dark mountains and scattered village lights streaking past the cold glass","at":"never stops moving","shot_kind":"detail"}]},
- {"id":"03-closing","kind":"closing","chapter":"03 SUNRISE","accent":"green","title":"You wake up in the mountains","hl":"mountains","voice":"You fall asleep in a city and wake up in the mountains. Follow for part two.","button":"Follow","hold":0.4,"shots":[
-  {"image_prompt":"Sunrise over snowy alpine peaks seen from a moving train window, warm gold light on the rock, soft mist filling the valley below","shot_kind":"closing"}]}]}
-
-EXAMPLE C (editorial long-form scene, 16:9, en, cyber):
-{"id":"04-why-it-matters","kind":"steps","eyebrow":"WHY IT MATTERS","title":"Three things the map got wrong","detail":"Latitude, currents, and pride.","items":["Latitude was guessed","Currents were ignored","Nobody admitted it"],"visual":"network","voice":"The map got three things wrong. Latitude was guessed. Currents were ignored. And nobody wanted to admit it.","hold":0.8}
-`;
-    return ok({ guide: text, template: t?.id ?? null, duration_s: dur, words_target: words, credits: creditsFor(dur), styles: [...KLEO_STYLES] }, text);
+    const words = wordBudget(dur, 1.1).target;
+    // The guide is built in src/guide.ts from the contract\u2019s own constants, so the numbers it prints are the numbers
+    // the validator enforces \u2014 the shot range used to be 1-4 here, 2-4 in the planner and "two to four" on the website.
+    const text = guideText({ template, templateName: t?.name, duration_s: dur, style: style ?? null, languages: JOB_LANGUAGES });
+    return ok({ guide: text, template: t?.id ?? null, duration_s: dur, words_target: words, credits: creditsFor(dur), styles: [...KLEO_STYLES], style: style ?? null }, text);
   });
 
   server.registerTool("kleo_create_video", {

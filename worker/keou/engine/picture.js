@@ -95,7 +95,11 @@
   function shotGrammar(shot, index) {
     const named = shot && typeof shot.motion === 'string' && Object.prototype.hasOwnProperty.call(MOVES, shot.motion)
       ? shot.motion : null;
-    const move = named || LEGACY_MOVE[shotMotion(shot, index)];
+    // The grammar (src/shot-grammar.ts) declares thirteen moves; this table draws ten. The three it does not draw —
+    // orbit_right, crane_up, whip_pan — are mirrors no shot kind resolves to today, so nothing reaches here with one.
+    // If one ever does, a picture that holds still is a picture; `MOVES[move].cls` on an unknown name is a TypeError
+    // thrown from inside the frame loop, on a machine that has already been paid for and after every picture was drawn.
+    const move = (named || LEGACY_MOVE[shotMotion(shot, index)]) in MOVES ? (named || LEGACY_MOVE[shotMotion(shot, index)]) : 'static_hold';
     const raw = shot && typeof shot.strength === 'number' && isFinite(shot.strength) ? shot.strength : null;
     const strength = raw === null ? 1 : Math.min(1, Math.max(0, raw));
     return { kind: null, move, strength, cls: MOVES[move].cls, loud: MOVES[move].loud };

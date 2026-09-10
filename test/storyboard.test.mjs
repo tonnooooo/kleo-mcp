@@ -66,16 +66,56 @@ const outlineFor = (user, cinema) => {
 };
 const chunkRange = (user) => { const m = /write scenes (\d+)–(\d+)/.exec(user); return [Number(m[1]) - 1, Number(m[2])]; };
 
-/** Fake AI: `respond(kind, user, attempt)` returns the raw model output (object or string) or throws. */
-function fakeEnv(respond) {
+/**
+ * A direction the planner accepts: the sections tile exactly the scene count the direction prompt asks for, and no two
+ * neighbouring sections share an accent. It deliberately names NO style, so the look each test expects (chosen by the
+ * template or by the caller) is left alone, and it lists no facts, so the fidelity gate has nothing to demand.
+ */
+const directionFor = (user) => {
+  const n = Number(/add up to exactly (\d+)/.exec(user)?.[1] ?? 5);
+  const accents = ["amber", "red", "cyan", "green"];
+  const per = Math.max(1, Math.ceil(n / 3));
+  const sections = [];
+  for (let left = n, i = 0; left > 0; i++) {
+    const take = Math.min(left, per);
+    sections.push({ name: `0${i + 1} PART`, accent: accents[i % accents.length], means: "a part of the story", scenes: take });
+    left -= take;
+  }
+  // Two sections is the floor; a one-scene film would otherwise produce one.
+  if (sections.length < 2) { sections[0].scenes -= 1; sections.push({ name: "02 PART", accent: "red", means: "the end", scenes: 1 }); }
+  return {
+    direction: {
+      subject: "Why a phone battery dies faster in winter",
+      goal: "The viewer keeps their battery healthy in the cold",
+      audience: "Anyone with a phone",
+      tone: "Calm and factual",
+      must_keep: [],
+      world: "Ordinary winter streets and warm indoor rooms, cold blue light outside and warm light inside",
+      cast: [],
+      objects: ["phone", "coat pocket", "charger", "snow"],
+      forbidden: ["text in the picture", "brand logo", "real person", "wifi symbol"],
+      sections,
+    },
+  };
+};
+
+/**
+ * Fake AI: `respond(kind, user, attempt)` returns the raw model output (object or string) or throws.
+ * The direction call (step 0 of the planner) is answered by `directionFor` unless a test passes its own handler as
+ * `opts.direction` — so every test here exercises the direction stage without having to know it exists, and the ones
+ * that care about it can still drive it.
+ */
+function fakeEnv(respond, opts = {}) {
   const attempts = new Map();
   return {
     AI: { async run(_model, inputs) {
       const user = inputs.messages.at(-1).content;
-      const kind = /TASK: plan the whole video/.test(user) ? "outline" : "chunk";
-      const key = kind === "outline" ? "outline" : `chunk-${chunkRange(user).join("-")}`;
+      const kind = /TASK: write the DIRECTION/.test(user) ? "direction"
+        : /TASK: plan the whole video/.test(user) ? "outline" : "chunk";
+      const key = kind === "chunk" ? `chunk-${chunkRange(user).join("-")}` : kind;
       const a = (attempts.get(key) ?? 0) + 1; attempts.set(key, a);
-      const out = await respond(kind, user, a, inputs);
+      const handler = kind === "direction" ? (opts.direction ?? directionFor) : respond;
+      const out = kind === "direction" && !opts.direction ? handler(user) : await handler(kind, user, a, inputs);
       return { response: out, usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 } };
     } },
     INTERNAL_SECRET: "x",
@@ -293,7 +333,9 @@ test("picture: the schema asks for shots, a lone shot is fed back once, the resu
   assert.equal(first.shots[0].caption, "PIRATES AHEAD"); assert.equal(first.shots[0].hl, "PIRATES");
   assert.ok(first.shots[1].image_prompt.length <= 240 && !/\s$/.test(first.shots[1].image_prompt), "an over-long prompt is cut at a word boundary");
   assert.equal(first.shots[1].at, "concrete detail");
-  assert.equal(first.shots[2].at, undefined, "an at that is not in the voice is dropped");
+  assert.notEqual(first.shots[2].at, "bananas and cake", "an at that is not in the voice is dropped");
+  assert.ok(quotesVoice(first.shots[2].at, first.voice), "and Kleo picks a legal anchor in its place, so the cut still lands on a word the viewer hears");
+  for (const sc of sb.scenes) sc.shots.forEach((sh, i) => assert.ok(i === 0 || quotesVoice(sh.at, sc.voice), `${sc.id} shot ${i + 1}: every cut after the first is anchored`));
   assert.equal(first.shots[2].caption, undefined); assert.equal(first.shots[2].hl, undefined);
   assert.equal(first.shots[3].shot_kind, "detail", "the kind the author wrote is kept");
   // The shot grammar: story kinds only, never a camera move, and a sequence that is already shootable.
@@ -511,4 +553,118 @@ test("shot grammar: whatever the model writes, the storyboard that comes out is 
       assert.deepEqual(r.ok ? [] : r.errors, [], `${where}: the contract refuses the plan`);
     }
   }
+});
+
+test("the direction is step zero: it reaches the storyboard, the colour law is applied, and a missing fact is fed back", async () => {
+  let chunkCalls = 0;
+  let sawDirectionBlock = 0;
+  const env = fakeEnv((kind, user, attempt) => {
+    if (kind === "outline") {
+      // The outline must be told which section each scene sits in, and which facts it owes.
+      assert.match(user, /SECTIONS \(fixed; every scene wears its section's accent/);
+      assert.match(user, /FACTS TO PLACE/);
+      const o = outlineFor(user, true);
+      o.scenes.forEach((sc, i) => { sc.keeps = i === 1 ? [0] : []; });
+      return o;
+    }
+    chunkCalls++;
+    if (/DIRECTION OF THIS FILM/.test(user)) sawDirectionBlock++;
+    const [from, to] = chunkRange(user);
+    const total = Number(/VIDEO OUTLINE \((\d+) scenes/.exec(user)[1]);
+    const scenes = [];
+    for (let i = from; i < to; i++) {
+      const closing = i === total - 1;
+      // Scene 2 owes the fact "1720". The first attempt drops it; the retry says it.
+      const voice = i === 1 && attempt === 1
+        ? "The crew sailed away one grey morning and nobody wrote down the year at all."
+        : i === 1
+        ? "In 1720 the crew sailed away one grey morning and nobody ever saw them again."
+        : `Scene ${i + 1} of the story, told in one line with a concrete detail in it.`;
+      scenes.push({
+        id: `${String(i + 1).padStart(2, "0")}-part`, kind: closing ? "closing" : "cinema", chapter: `0${i + 1} PART`,
+        accent: "cyan", title: `Part ${i + 1}`, hl: "Part", voice, hold: 0.2,
+        shots: closing
+          ? [{ image_prompt: "An empty beach at noon, the tide coming in" }]
+          : [{ image_prompt: `A wooden ship at anchor in a sandy bay, scene ${i + 1}` }, { image_prompt: "The same bay from the cliff above, empty" }],
+      });
+    }
+    return { scenes };
+  }, {
+    direction: (kind, user) => {
+      assert.match(user, /TASK: write the DIRECTION of this one film/);
+      const n = Number(/add up to exactly (\d+)/.exec(user)[1]);
+      return {
+        style: "cartoon",
+        why: "a story wants drawings",
+        direction: {
+          subject: "The crew that sailed away and never came back",
+          goal: "The viewer wants to know where they went",
+          audience: "People who like sea stories",
+          tone: "Warm and a little eerie",
+          must_keep: ["1720"],
+          world: "A tropical bay in 1720, golden sand, turquoise water, wooden ships with red sails",
+          cast: [{ name: "the captain", look: "a pirate captain with a red bandana and a long dark braid" }],
+          objects: ["wooden ship", "sandy bay", "cliff", "rope"],
+          forbidden: ["wifi symbol", "phone", "brand logo", "text in the picture"],
+          sections: [
+            { name: "01 THE BAY", accent: "amber", means: "where it began", scenes: 1 },
+            { name: "02 THE CREW", accent: "red", means: "who left", scenes: n - 2 },
+            { name: "03 THE QUESTION", accent: "green", means: "what is left", scenes: 1 },
+          ],
+        },
+      };
+    },
+  });
+
+  const r = await generateStoryboard(env, job("viral-short", 45, "9:16", "en", "The crew that sailed away in 1720 and never came back"));
+  const sb = r.storyboard;
+  assert.deepEqual(validateStoryboard(sb, { format: "9:16", language: "en" }).ok ? [] : validateStoryboard(sb, { format: "9:16", language: "en" }).errors, []);
+
+  // The direction the film was planned under travels with it.
+  assert.equal(sb.direction.subject, "The crew that sailed away and never came back");
+  assert.deepEqual(r.direction.must_keep, ["1720"]);
+  assert.equal(r.style, "cartoon", "the direction chose the look, not a keyword match on the prompt");
+  assert.equal(sb.kleo_style, "cartoon"); assert.equal(sb.style, "picture");
+  assert.ok(sawDirectionBlock === chunkCalls && chunkCalls >= 1, "every scene-writing call carried the direction");
+
+  // The colour law: every scene wears its section's accent, whatever the model wrote.
+  const accents = sb.scenes.map((s) => s.accent);
+  assert.equal(accents[0], "amber");
+  assert.equal(accents.at(-1), "green");
+  assert.ok(accents.slice(1, -1).every((a) => a === "red"), accents.join(","));
+  assert.ok(!accents.includes("cyan"), "the accent the model wrote is overwritten by the section it belongs to");
+
+  // The fidelity gate: the fact was fed back and the finished narration says it.
+  assert.match(sb.scenes[1].voice, /1720/);
+  assert.deepEqual(r.missing_facts, []);
+  assert.ok(r.history.some((h) => h.some((m) => /never says "1720"/.test(m))), JSON.stringify(r.history));
+});
+
+test("without a valid direction the planner still ships a video", async () => {
+  const env = fakeEnv((kind, user) => {
+    if (kind === "outline") {
+      assert.doesNotMatch(user, /SECTIONS \(fixed/, "no direction means no section table");
+      return outlineFor(user, true);
+    }
+    const [from, to] = chunkRange(user);
+    const total = Number(/VIDEO OUTLINE \((\d+) scenes/.exec(user)[1]);
+    const scenes = [];
+    for (let i = from; i < to; i++) {
+      const closing = i === total - 1;
+      scenes.push({
+        id: `${String(i + 1).padStart(2, "0")}-part`, kind: closing ? "closing" : "cinema", chapter: `0${i + 1} PART`,
+        accent: "cyan", title: `Part ${i + 1}`, hl: "Part", hold: 0.2,
+        voice: `Scene ${i + 1} of the story, told in one line with a concrete detail in it.`,
+        shots: closing ? [{ image_prompt: "An empty beach at noon" }]
+          : [{ image_prompt: `A ship at anchor, scene ${i + 1}` }, { image_prompt: "The same bay from the cliff above" }],
+      });
+    }
+    return { scenes };
+  }, { direction: () => ({ direction: { subject: "" } }) }); // rejected twice, then given up on
+
+  const r = await generateStoryboard(env, job("viral-short", 45, "9:16", "en", "The crew that sailed away"));
+  assert.equal(r.direction, null);
+  assert.equal(r.storyboard.direction, undefined, "no direction travels with the storyboard");
+  assert.deepEqual(validateStoryboard(r.storyboard, { format: "9:16", language: "en" }).ok ? [] : ["invalid"], []);
+  assert.ok(r.history.some((h) => h.some((m) => /^direction: rejected/.test(m))), JSON.stringify(r.history));
 });

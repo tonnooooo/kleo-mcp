@@ -18,8 +18,17 @@ import {
   KINDS, BEAT_KINDS, BEAT_ICONS, BEAT_FX, CINEMA_ACCENTS, VISUALS, FORBIDDEN_FIELDS,
   KLEO_STYLES, PICTURE_STYLES, IMAGE_PROMPT_MAX, kleoStyleOf, STORY_ACTS, STORY_CAST, STORY_PROPS, STORY_FX, STORY_ACCENTS,
   SHOTS_PER_SCENE, SHOT_CAPTION_MAX, SHOT_HL_MAX, SHOT_AT_MAX, IMAGE_PROMPT_MIN, CLOSING_BUTTON_MAX,
-  SHOT_ID_SUFFIX_RE, quotesVoice,
+  SHOT_ID_SUFFIX_RE, quotesVoice, SHOTS_MIN_CINEMA, shotRangeText, narrationOf,
 } from "./keou-contract.ts";
+/**
+ * The direction: the art direction of ONE film, decided before a single scene exists. It is the step this planner
+ * never had — it went straight from the user's sentence to a list of scenes, so the style came from a keyword match,
+ * the world of the video was never written down, nothing said what must NOT appear, and no colour meant anything.
+ */
+import {
+  directionProblems, missingFacts, sectionOfScene, D as DL,
+  type Direction, type Section,
+} from "./direction.ts";
 // The shot grammar: the ten story kinds and the one preset table that turns a kind into a camera move.
 // src/shot-grammar.ts is mirrored by worker/keou/shot_grammar.py; nothing here restates what that table says.
 import {
@@ -54,6 +63,10 @@ export interface PlanResult {
   history: string[][];
   /** The Kleo style of the storyboard. */
   style: KleoStyle;
+  /** The art direction the film was planned under, or null when the model could not produce a valid one. */
+  direction: Direction | null;
+  /** Facts the user asked for that the finished narration still does not say. Empty is the normal case. */
+  missing_facts: string[];
 }
 
 /** Errors that say nothing about the storyboard: quota, rate limit, upstream outage. The job should wait, not fail. */
@@ -312,11 +325,17 @@ function sceneRange(words: number, wps: [number, number]): [number, number] {
 
 interface Plan { style: StyleId; kleo: KleoStyle; pictures: boolean; brief: Brief; format: Format; language: string; voice: string; duration: number; speed: number; words: ReturnType<typeof wordBudget>; scenes: [number, number]; maxDuration: number; chunk: number }
 
-export function planFor(job: PlanJob): Plan {
+/**
+ * `chosen` is the look the DIRECTION picked after reading the request. It only applies when the client did not name a
+ * style itself: the user's own choice always wins, and the keyword fallback is what is left when there is no model.
+ */
+export function planFor(job: PlanJob, chosen?: KleoStyle | null): Plan {
   const p = JSON.parse(job.params) as JobParams;
   const format = p.format;
   const brief = BRIEFS[job.template] ?? BRIEFS.explainer;
-  const kleo: KleoStyle = (KLEO_STYLES as readonly string[]).includes(p.style ?? "") ? (p.style as KleoStyle) : pickKleoStyle(job.template, job.prompt);
+  const kleo: KleoStyle = (KLEO_STYLES as readonly string[]).includes(p.style ?? "")
+    ? (p.style as KleoStyle)
+    : chosen && (KLEO_STYLES as readonly string[]).includes(chosen) ? chosen : pickKleoStyle(job.template, job.prompt);
   const style = keouStyleFor(kleo, job.template, format);
   const speed = 1.1;
   const words = wordBudget(p.duration_s, speed);
@@ -360,31 +379,184 @@ USER REQUEST (the video is about this; keep every fact, name and constraint from
 """${job.prompt.trim()}"""`;
 }
 
-/** Outline entry: what the model plans for one scene before writing it. */
-interface OutlineEntry { id: string; kind: string; label: string; accent?: string; summary: string; words: number }
+/* ------------------------------------------------------------------ the direction: step zero of the reasoning */
 
-function outlinePrompt(job: PlanJob, plan: Plan, n: number): string {
+/**
+ * The direction call. It runs BEFORE the outline and it is the only stage that reads the user's request as a request
+ * rather than as raw material: what they asked for, who it is for, what they said that must survive into the finished
+ * narration, what world the film is drawn in, what must never appear in it, and which colour owns which stretch.
+ *
+ * It also picks the look, in words and with a reason. That decision used to be three regular expressions over the
+ * first 1,500 characters of the prompt, in fixed precedence, falling back to cartoon: "the history of hacking, told as
+ * a bedtime story" matched CYBER_WORDS and came back as dark motion design with no pictures at all, and nothing
+ * anywhere recorded that a choice had been made.
+ */
+function directionPrompt(job: PlanJob, plan: Plan): string {
+  const t = findTemplate(job.template);
+  const scenes = Math.max(plan.scenes[0], Math.min(plan.scenes[1], Math.round((plan.scenes[0] + plan.scenes[1]) / 2)));
+  const lang = LANG_NAMES[plan.language] ?? plan.language;
+  return `USER REQUEST (read it as a request, not as raw material):
+"""${job.prompt.trim()}"""
+TEMPLATE: ${t?.name ?? job.template}. LENGTH: ${plan.duration} seconds, about ${scenes} scenes, narrated in ${lang}.
+
+TASK: write the DIRECTION of this one film, before any scene exists. Return one JSON object:
+
+{"style":"cartoon|realistic|cyber|stickman","why":"<=90 chars, why that look fits THIS request",
+ "direction":{
+  "subject":"<=${DL.subject}, the one thing the video is about, in the user's own terms",
+  "goal":"<=${DL.goal}, what the viewer should understand or feel by the end",
+  "audience":"<=${DL.audience}, who is watching",
+  "tone":"<=${DL.tone}, e.g. calm and factual / playful / ominous",
+  "must_keep":[up to ${DL.mustKeep.max} strings <=${DL.mustKeep.len}: facts, names, numbers and constraints COPIED FROM THE REQUEST that the finished narration must still say. Use [] if the request states none. Never invent one.],
+  "world":"<=${DL.world}, the place, period and material everything is drawn in — one sentence a picture can be built from",
+  "cast":[up to ${DL.cast.max} {"name":"<=${DL.cast.name}, how the narration refers to them","look":"<=${DL.cast.look}, the ONE description reused word for word in every picture that shows them"}],
+  "objects":[${DL.objects.min}-${DL.objects.max} strings <=${DL.objects.len}: the object vocabulary of THIS film and nothing else — pirates: beach, sand, chest, red-sailed ship; space: rocket, launch pad, orbital station],
+  "forbidden":[${DL.forbidden.min}-${DL.forbidden.max} strings <=${DL.forbidden.len}: what must NEVER appear. Name the things a picture generator adds by habit and the things that belong to a DIFFERENT subject than this one],
+  "sections":[${DL.sections.min}-${DL.sections.max} {"name":"<=${DL.sections.name} UPPERCASE narrative name","accent":"${list(CINEMA_ACCENTS)}","means":"<=${DL.sections.means}, what the colour means here","scenes":<whole number>}]}}
+
+RULES
+- must_keep is quoted from the request. If the user wrote "5 mistakes", "in Naples", "for beginners" or a number, it goes in must_keep and the narration must still contain it.
+- The sections tile the film in order and their "scenes" must add up to exactly ${scenes}. Two sections in a row never share an accent: a new part of the story takes a new colour, and that is the only thing colour is allowed to mean.
+- forbidden is what makes a film its own. A pirate film forbids modern objects, wifi symbols, phones, screens and logos; a film about a city forbids the objects of every other city. Write it for THIS video.
+- Choose the style from the request, not from a keyword: cartoon = drawn stories, kids, history, animals, travel; realistic = products, places, news, sport, documentary; cyber = motion design with no pictures at all, only for tech and security topics that want diagrams rather than scenes; stickman = only if the user asked for a stickman.
+- Everything you write here is in ${lang} except the enum values (style, accent), which stay in English.`;
+}
+
+const directionSchema = (): Record<string, unknown> => ({
+  type: "object",
+  additionalProperties: false,
+  required: ["style", "direction"],
+  properties: {
+    style: { type: "string", enum: [...KLEO_STYLES] },
+    why: str,
+    direction: {
+      type: "object",
+      additionalProperties: false,
+      required: ["subject", "goal", "audience", "tone", "must_keep", "world", "cast", "objects", "forbidden", "sections"],
+      properties: {
+        subject: str, goal: str, audience: str, tone: str, world: str,
+        must_keep: strArr, objects: strArr, forbidden: strArr,
+        cast: { type: "array", items: { type: "object", additionalProperties: false, required: ["name", "look"], properties: { name: str, look: str } } },
+        sections: {
+          type: "array",
+          items: {
+            type: "object", additionalProperties: false, required: ["name", "accent", "means", "scenes"],
+            properties: { name: str, accent: { type: "string", enum: [...CINEMA_ACCENTS] }, means: str, scenes: { type: "integer" } },
+          },
+        },
+      },
+    },
+  },
+});
+
+/** Trim a direction to the contract's limits instead of failing on a model that ran three characters long. */
+function repairDirection(raw: unknown, scenes: number): Direction | null {
+  if (!isObj(raw)) return null;
+  const cut = (v: unknown, max: number): string => (typeof v === "string" ? v.trim().replace(/\s+/g, " ").slice(0, max) : "");
+  const cutList = (v: unknown, max: number, len: number): string[] => {
+    const seen = new Set<string>();
+    return strs(v, 10_000).map((s) => cut(s, len)).filter((s) => { const k = s.toLowerCase(); if (!s || seen.has(k)) return false; seen.add(k); return true; }).slice(0, max);
+  };
+  const sections: Section[] = (Array.isArray(raw.sections) ? raw.sections : []).filter(isObj).slice(0, DL.sections.max).map((s) => ({
+    name: cut(s.name, DL.sections.name), means: cut(s.means, DL.sections.means),
+    accent: inSet(s.accent, CINEMA_ACCENTS) ? (s.accent as string) : CINEMA_ACCENTS[0],
+    scenes: isInt(s.scenes) && s.scenes > 0 ? s.scenes : 1,
+  })).filter((s) => s.name && s.means);
+  // Two sections in a row must not share an accent, and the counts must tile the film exactly. Both are repaired here
+  // rather than bounced back to the model: they are arithmetic, and a retry spent on arithmetic is a retry not spent
+  // on the story. The last section absorbs the remainder, which is where a closing scene belongs anyway.
+  sections.forEach((s, i) => {
+    if (i && s.accent === sections[i - 1].accent) s.accent = CINEMA_ACCENTS.find((a) => a !== sections[i - 1].accent && a !== sections[i + 1]?.accent) ?? CINEMA_ACCENTS.find((a) => a !== sections[i - 1].accent)!;
+  });
+  if (sections.length) {
+    let total = sections.reduce((a, s) => a + s.scenes, 0);
+    while (total > scenes && sections.length) {
+      const big = sections.reduce((best, s, i) => (s.scenes > sections[best].scenes ? i : best), 0);
+      if (sections[big].scenes <= 1) { const gone = sections.pop()!; total -= gone.scenes; continue; }
+      sections[big].scenes--; total--;
+    }
+    if (total < scenes && sections.length) sections[sections.length - 1].scenes += scenes - total;
+  }
+  const d: Direction = {
+    subject: cut(raw.subject, DL.subject), goal: cut(raw.goal, DL.goal), audience: cut(raw.audience, DL.audience),
+    tone: cut(raw.tone, DL.tone), world: cut(raw.world, DL.world),
+    must_keep: cutList(raw.must_keep, DL.mustKeep.max, DL.mustKeep.len),
+    objects: cutList(raw.objects, DL.objects.max, DL.objects.len),
+    forbidden: cutList(raw.forbidden, DL.forbidden.max, DL.forbidden.len),
+    cast: (Array.isArray(raw.cast) ? raw.cast : []).filter(isObj).slice(0, DL.cast.max)
+      .map((m) => ({ name: cut(m.name, DL.cast.name), look: cut(m.look, DL.cast.look) })).filter((m) => m.name && m.look),
+    sections,
+  };
+  return directionProblems(d, { accents: CINEMA_ACCENTS, scenes }).length ? null : d;
+}
+
+/** The direction as the block every later prompt carries: this is what keeps twelve pictures inside one film. */
+function directionBlock(d: Direction): string {
+  return `DIRECTION OF THIS FILM (decided already; obey it, do not restate it and do not contradict it):
+Subject: ${d.subject}
+Goal: ${d.goal}   Audience: ${d.audience}   Tone: ${d.tone}
+World (everything is drawn here): ${d.world}
+${d.cast.length ? `Cast, described the SAME WAY every time they appear:\n${d.cast.map((m) => `  - ${m.name}: ${m.look}`).join("\n")}\n` : ""}Objects this film may show: ${d.objects.join(", ")}
+NEVER show: ${d.forbidden.join(", ")}
+${d.must_keep.length ? `The narration MUST still say all of this, in the viewer's hearing:\n${d.must_keep.map((f) => `  - ${f}`).join("\n")}` : ""}`;
+}
+
+/**
+ * The scene an unplaced fact belongs to: the one whose summary shares the most content words with it, never the
+ * closing (a fact stated for the first time in the sign-off is a fact the video never really made). Ties go to the
+ * earliest scene, so a forgotten fact lands early enough to be built on rather than tacked on.
+ */
+function bestSceneFor(fact: string, outline: OutlineEntry[]): number {
+  const wordsOf = (t: string) => new Set((t.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter((w) => w.length > 3));
+  const want = wordsOf(fact);
+  let best = 0, bestScore = -1;
+  outline.forEach((e, i) => {
+    if (e.kind === "closing" && outline.length > 1) return;
+    let score = 0;
+    for (const w of wordsOf(`${e.summary} ${e.label}`)) if (want.has(w)) score++;
+    if (score > bestScore) { bestScore = score; best = i; }
+  });
+  return best;
+}
+
+/** Outline entry: what the model plans for one scene before writing it. */
+interface OutlineEntry { id: string; kind: string; label: string; accent?: string; summary: string; words: number; keeps: number[] }
+
+function outlinePrompt(job: PlanJob, plan: Plan, n: number, d: Direction | null): string {
   const perScene = Math.round(plan.words.target / n);
   const cin = plan.style === "cinema" || plan.style === "picture", stick = plan.style === "stickman";
   const kind = cin ? "cinema" : stick ? "story" : "<kind>";
   const label = cin ? "chapter ≤32 like 01 HOOK" : stick ? "situation ≤32 like 01 THE SETUP" : "UPPERCASE eyebrow ≤40";
-  return `${contextBlock(job, plan)}
-TASK: plan the whole video as an outline of exactly ${n} scenes, in order. The narration will total about ${plan.words.target} words (${perScene} per scene on average; the hook and the closing may be shorter, key scenes longer). Return {"title":"<video title ≤120>","description":"<YouTube description, one paragraph>","tags":["…"],"scenes":[{"id":"01-slug","kind":"${kind}","label":"<${label}>",${cin ? '"accent":"<accent>",' : ""}"summary":"<what this scene says, ≤25 words>","words":<narration words for this scene>}, …]}.
-${cin ? "Chapters group scenes (several scenes may share a chapter label); accents follow the mood." : stick ? "Each scene is one situation the stickman can act out." : "Vary the kinds: never more than two of the same kind in a row, at least four different kinds overall; use metric for numbers, compare for two-sided points, steps/list for three-part points, quote for a memorable line, hero for openings and transitions."} The last scene has kind "closing". The first scene is the hook.`;
+  // With a direction the accent is NOT the model's to choose: the sections already own the colours, and the outline is
+  // told which scene sits in which section. Colour that follows the mood of whoever wrote the scene is decoration;
+  // colour that follows the structure of the film is something a viewer can actually read.
+  const owners = d ? sectionOfScene(d.sections, n) : [];
+  const sectionMap = d
+    ? `\nSECTIONS (fixed; every scene wears its section's accent, and you do not choose accents):\n${owners.map((s, i) => `  scene ${i + 1}: ${s?.name ?? "—"} · accent ${s?.accent ?? "green"} (${s?.means ?? ""})`).join("\n")}`
+    : "";
+  const keeps = d?.must_keep.length
+    ? `\nFACTS TO PLACE (from the user's own request; every one must be said out loud somewhere in the video):\n${d.must_keep.map((f, i) => `  [${i}] ${f}`).join("\n")}\nGive each scene a "keeps" array with the indexes of the facts THAT scene will state. Every index must appear on exactly one scene.`
+    : "";
+  return `${contextBlock(job, plan)}${d ? `\n${directionBlock(d)}` : ""}${sectionMap}${keeps}
+TASK: plan the whole video as an outline of exactly ${n} scenes, in order. The narration will total about ${plan.words.target} words (${perScene} per scene on average; the hook and the closing may be shorter, key scenes longer). Return {"title":"<video title ≤120>","description":"<YouTube description, one paragraph>","tags":["…"],"scenes":[{"id":"01-slug","kind":"${kind}","label":"<${label}>",${cin ? '"accent":"<accent>",' : ""}"summary":"<what this scene says, ≤25 words>","words":<narration words for this scene>${d?.must_keep.length ? ',"keeps":[<fact indexes>]' : ""}}, …]}.
+${cin ? `Chapters group scenes (several scenes may share a chapter label)${d ? "; copy each scene's accent from the section table above" : "; accents follow the mood"}.` : stick ? "Each scene is one situation the stickman can act out." : "Vary the kinds: never more than two of the same kind in a row, at least four different kinds overall; use metric for numbers, compare for two-sided points, steps/list for three-part points, quote for a memorable line, hero for openings and transitions."} The last scene has kind "closing". The first scene is the hook.`;
 }
 
-function chunkPrompt(job: PlanJob, plan: Plan, outline: OutlineEntry[], from: number, to: number, prevVoice: string | null, feedback?: string[]): string {
+function chunkPrompt(job: PlanJob, plan: Plan, outline: OutlineEntry[], from: number, to: number, prevVoice: string | null, feedback?: string[], d?: Direction | null): string {
   const entries = outline.slice(from, to);
   const words = entries.reduce((n, e) => n + e.words, 0);
   const total = outline.length;
+  // The facts these particular scenes are on the hook for. Handing a chunk the whole list would invite it to say
+  // everything twice; handing it none is how a fact quietly disappears between two chunks and nobody notices.
+  const owed = d?.must_keep.length ? [...new Set(entries.flatMap((e) => e.keeps))].filter((i) => i >= 0 && i < d.must_keep.length) : [];
   const pic = plan.style === "picture";
   const cin = plan.style === "cinema" || pic, stick = plan.style === "stickman";
   const lineWords = plan.duration > 120 ? "35–50" : "10–18";
-  const how = pic ? `Each voice line is ${plan.duration > 120 ? "two or three spoken sentences" : "one spoken sentence"} of ${lineWords} words; every scene needs 2–4 shots (the closing exactly one), each with its own "image_prompt"; every shot after the first carries "at" with words copied from its own voice line.`
+  const how = pic ? `Each voice line is ${plan.duration > 120 ? "two or three spoken sentences" : "one spoken sentence"} of ${lineWords} words; every scene needs ${shotRangeText("cinema")} shots (the closing exactly one), each with its own "image_prompt"; every shot after the first carries "at" with words copied from its own voice line. One picture per scene is refused: a still held for a whole line is a slideshow.`
     : cin ? `Each voice line is ${plan.duration > 120 ? "two or three spoken sentences" : "one spoken sentence"} of ${lineWords} words; every scene needs 4–8 beats of different kinds, each anchored with "at" to words of its own voice line.`
     : stick ? `Each voice line is one spoken sentence of ${lineWords} words; every scene has an act, a cast with hero, an accent and a title; add a bubble when the character says something.`
     : "Fill the kind-specific fields exactly as the shapes show: list/steps need 3 items, compare 2 items, metric needs value and unit, quote needs quote, hero needs visual.";
-  let msg = `${contextBlock(job, plan)}
+  let msg = `${contextBlock(job, plan)}${d ? `\n${directionBlock(d)}` : ""}${owed.length ? `\nTHESE SCENES OWE THESE FACTS — say each one out loud in a "voice" line:\n${owed.map((i) => `  - ${d!.must_keep[i]}`).join("\n")}` : ""}
 VIDEO OUTLINE (${total} scenes; you write scenes ${from + 1}–${to} now):
 ${outline.map((e, i) => `${i + 1}. [${e.id}] ${e.kind} · ${e.label}${e.accent ? ` · ${e.accent}` : ""} — ${e.summary} (${e.words} words)`).join("\n")}
 ${prevVoice ? `The previous scene ended with this narration, continue naturally from it: "${prevVoice}"` : "This is the start of the video."}
@@ -463,13 +635,15 @@ function sceneSchema(plan: Plan): Record<string, unknown> {
   };
 }
 
-function outlineSchema(plan: Plan): Record<string, unknown> {
+function outlineSchema(plan: Plan, facts = 0): Record<string, unknown> {
   const cin = plan.style === "cinema" || plan.style === "picture"; // both plan chapters and accents, scene kinds cinema/closing
   const entry: Record<string, unknown> = {
     type: "object",
     properties: {
       id: str, kind: { type: "string", enum: cin ? ["cinema", "closing"] : plan.style === "stickman" ? ["story", "closing"] : editorialKinds() }, label: str,
       ...(cin ? { accent: { type: "string", enum: [...CINEMA_ACCENTS] } } : {}), summary: str, words: { type: "integer" },
+      // "keeps" only exists when the direction listed facts to place: an empty enum is not a schema a grammar can decode.
+      ...(facts ? { keeps: { type: "array", items: { type: "integer" } } } : {}),
     },
     required: ["id", "kind", "label", "summary", "words", ...(cin ? ["accent"] : [])],
     additionalProperties: false,
@@ -665,6 +839,17 @@ export function normalizeStoryboard(raw: unknown, plan: Plan): unknown {
   delete c.width; delete c.fps; delete c.brand;
   c.style = plan.style;
   c.kleo_style = plan.kleo;
+  // THE COLOUR LAW IS ARITHMETIC, SO IT IS REPAIRED, NOT REFUSED. Every scene wears the accent of the section it sits
+  // in; a model that wrote a different one is corrected here rather than bounced back, because a retry spent on
+  // copying a colour out of a table is a retry not spent on the story. The validator still refuses a mismatch, which
+  // is what catches a CLIENT-written storyboard: there the author chose both, and a mismatch is a real contradiction.
+  if (isObj(c.direction) && Array.isArray((c.direction as Record<string, unknown>).sections) && Array.isArray(c.scenes)) {
+    const sections = (c.direction as unknown as Direction).sections;
+    sectionOfScene(sections, (c.scenes as unknown[]).length).forEach((sec, i) => {
+      const scene = (c.scenes as Record<string, unknown>[])[i];
+      if (sec && isObj(scene) && "accent" in scene) scene.accent = sec.accent;
+    });
+  }
   if (typeof c.title === "string" && c.title.length > 120) c.title = c.title.slice(0, 117) + "…";
   if (Array.isArray(c.scenes)) {
     const seen = new Set<string>();
@@ -704,6 +889,9 @@ export function normalizeStoryboard(raw: unknown, plan: Plan): unknown {
         // Last resort so the scene still renders: the title becomes the picture. The validator asks the model for real shots first.
         else if (typeof s.title === "string" && s.title.trim().length >= IMAGE_PROMPT_MIN) shots.push({ image_prompt: fitPrompt(s.title.trim()) });
         s.shots = shots;
+        // Every cut lands on a spoken word, including the ones whose anchor the author quoted wrongly and repairShot
+        // dropped. Filling them here is what makes the rule affordable: the alternative was a retry per bad quote.
+        anchorShots(s);
       } else {
         delete s.shots; delete s.image_prompt; // only the picture style draws pictures, and it keeps them on its shots
       }
@@ -842,6 +1030,56 @@ const FIXTURE_SHOTS: Record<string, { image_prompt: string; caption?: string; hl
  * and the validator both accept. Nothing fits (a very short or wordless line) → null, and the shot simply keeps
  * no "at", which is legal on every shot but the first.
  */
+/**
+ * A legal `at` for the n-th of `count` shots: an unbroken run of whole words, quoted verbatim from this scene's own
+ * voice, that no earlier shot has taken, starting near where that shot falls in the line.
+ *
+ * This exists because dropping a bad anchor used to leave the cut to arithmetic — the picture then changed NEAR the
+ * right words instead of ON them, silently, which is the defect the owner named twice. A model that quotes the line
+ * wrongly is not worth a retry: choosing the anchor is mechanical, so Kleo chooses it, exactly as it chooses the
+ * camera move. What Kleo will not do is invent one for a CLIENT storyboard — there the author chose the words, and
+ * the validator says so.
+ */
+function anchorAt(voice: string, index: number, count: number, taken: Set<string>): string | null {
+  const spans: { from: number; to: number }[] = [];
+  const re = /\S+/g;
+  for (let m = re.exec(voice); m; m = re.exec(voice)) spans.push({ from: m.index, to: m.index + m[0].length });
+  if (spans.length < 2) return null;
+  // Where this cut belongs in the line: shot 1 of 3 lands about a third in, shot 2 about two thirds.
+  const want = Math.min(spans.length - 1, Math.max(1, Math.round((index * spans.length) / Math.max(count, 1))));
+  const order: number[] = [];
+  for (let d = 0; d < spans.length; d++) {
+    if (want + d < spans.length) order.push(want + d);
+    if (d && want - d >= 1) order.push(want - d);   // never the very first word: a cut there is the scene opening
+  }
+  for (const i of order) {
+    for (const n of [2, 1]) {
+      const last = spans[i + n - 1];
+      if (!last) continue;
+      const at = voice.slice(spans[i].from, last.to);
+      if (at.length <= SHOT_AT_MAX && !taken.has(at.toLowerCase()) && quotesVoice(at, voice)) return at;
+    }
+  }
+  return null;
+}
+
+/**
+ * Every shot after the first carries an anchor, so every cut lands on a word the viewer hears. Anchors the author
+ * wrote and the contract accepted are kept as they are; only the missing ones are filled, in reading order.
+ */
+export function anchorShots(scene: Record<string, unknown>): void {
+  const voice = typeof scene.voice === "string" ? scene.voice : "";
+  const shots = Array.isArray(scene.shots) ? (scene.shots as Record<string, unknown>[]) : [];
+  if (!voice || shots.length < 2) return;
+  const taken = new Set<string>();
+  for (const sh of shots) if (isObj(sh) && typeof sh.at === "string") taken.add(sh.at.toLowerCase());
+  shots.forEach((sh, i) => {
+    if (!i || !isObj(sh) || (typeof sh.at === "string" && sh.at.trim())) return;
+    const at = anchorAt(voice, i, shots.length, taken);
+    if (at) { sh.at = at; taken.add(at.toLowerCase()); }
+  });
+}
+
 function fixtureAnchor(voice: unknown): string | null {
   if (typeof voice !== "string") return null;
   const words: { from: number; to: number }[] = [];
@@ -864,6 +1102,32 @@ function fixtureAnchor(voice: unknown): string | null {
 }
 
 /** The cinema example adapted to a job's format/language/voice (local dev and tests; never calls AI). Cartoon look: picture style with shots. */
+/**
+ * The direction of the fixture film (relay car theft, six scenes). `must_keep` is deliberately empty: the fixture must
+ * stay valid whatever the example's narration says, and the fidelity gate is proven by its own unit tests instead.
+ * The last section absorbs any scene the example gains or loses, so this never has to be edited in two places.
+ */
+const FIXTURE_DIRECTION = (scenes: number): Direction => {
+  const sections: Section[] = [
+    { name: "01 THE LOSS", accent: "red", means: "what was taken", scenes: 1 },
+    { name: "02 THE METHOD", accent: "cyan", means: "how it is done", scenes: 2 },
+    { name: "03 THE PROOF", accent: "amber", means: "how often it works", scenes: 1 },
+    { name: "04 THE FIX", accent: "green", means: "what stops it", scenes: Math.max(1, scenes - 4) },
+  ];
+  return {
+    subject: "Keyless car theft by signal relay, and the pouch that stops it",
+    goal: "The viewer understands that the car believes the key is close, and puts their key in a pouch tonight",
+    audience: "Ordinary car owners with a keyless car",
+    tone: "Calm and factual, never alarmist",
+    must_keep: [],
+    world: "A quiet suburban street at night and a plain kitchen at dawn, ordinary houses, ordinary cars, cold blue night light and warm morning light",
+    cast: [],
+    objects: ["car key", "signal pouch", "driveway", "front door", "relay amplifier", "kitchen bench", "parked car", "test hall"],
+    forbidden: ["wifi symbol", "lock icon", "shield icon", "computer screen", "hacker in a hood at a laptop", "text or numbers in the picture", "brand logo", "real person"],
+    sections,
+  };
+};
+
 export function fixtureStoryboard(job: PlanJob): Storyboard {
   const p = JSON.parse(job.params) as JobParams;
   const sb = structuredClone(cinemaExample) as Record<string, unknown>;
@@ -883,6 +1147,15 @@ export function fixtureStoryboard(job: PlanJob): Storyboard {
     s.shots = planned.slice(0, SHOTS_PER_SCENE[s.kind === "closing" ? "closing" : "cinema"][1]).map((sh, i) => (i && at ? { ...sh, at } : { ...sh }));
     if (s.kind === "closing") s.button = "Subscribe";
   }
+  // The fixture carries a direction too, so every path that uses it exercises the colour law and the picture context
+  // rather than testing a shape production never sees. The sections tile the example's six scenes exactly, and each
+  // scene's accent is overwritten from its section: that is the law, applied, not described.
+  const direction = FIXTURE_DIRECTION((sb.scenes as unknown[]).length);
+  sb.direction = direction;
+  sectionOfScene(direction.sections, (sb.scenes as unknown[]).length).forEach((sec, i) => {
+    const scene = (sb.scenes as Record<string, unknown>[])[i];
+    if (sec && scene && "accent" in scene) scene.accent = sec.accent;
+  });
   sb.format = p.format;
   sb.language = p.language;
   sb.voice = defaultVoice(p.language, job.template, p.voice);
@@ -912,10 +1185,13 @@ const TEMP_CLOSING = (plan: Plan): Record<string, unknown> =>
     ? { id: "zz-temp-closing", kind: "closing", chapter: "99 END", accent: "green", title: "end", hl: "end", voice: "the end", beats: [{ kind: "cta" }] }
     : { id: "zz-temp-closing", kind: "closing", title: "end", voice: "the end" };
 
-function header(plan: Plan, outline: { title?: unknown; description?: unknown; tags?: unknown }): Record<string, unknown> {
+function header(plan: Plan, outline: { title?: unknown; description?: unknown; tags?: unknown }, direction?: Direction | null): Record<string, unknown> {
   return {
     schema_version: 1, editorial_status: "ready", title: outline.title, description: outline.description, tags: outline.tags,
     style: plan.style, kleo_style: plan.kleo, format: plan.format, language: plan.language, voice: plan.voice, speed: plan.speed, music: "bed", max_duration: plan.maxDuration,
+    // The direction travels with the storyboard: the picture prompts read it (src/images.ts), the validator holds the
+    // scenes to it, and the worker passes it through untouched, so a render can only ever ignore it, never trip on it.
+    ...(direction ? { direction } : {}),
   };
 }
 
@@ -927,16 +1203,18 @@ export interface GenerateOptions { model?: string }
  */
 export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateOptions = {}): Promise<PlanResult> {
   const t0 = Date.now();
-  const plan = planFor(job);
+  let plan = planFor(job);
   if (useFixture(env)) {
     const sb = fixtureStoryboard(job);
-    return { storyboard: sb, model: "fixture", attempts: 0, ms: Date.now() - t0, usage: {}, est_neurons: 0, words: countWords(sb), scenes: sb.scenes.length, fixture: true, history: [], style: kleoStyleOf(sb) };
+    return { storyboard: sb, model: "fixture", attempts: 0, ms: Date.now() - t0, usage: {}, est_neurons: 0, words: countWords(sb), scenes: sb.scenes.length, fixture: true, history: [], style: kleoStyleOf(sb), direction: (sb as { direction?: Direction }).direction ?? null, missing_facts: [] };
   }
   const model = opts.model || env.AI_MODEL || DEFAULT_MODEL;
   const usage: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   const history: string[][] = [];
   let calls = 0;
-  const system = systemPrompt(plan);
+  // The system prompt is rebuilt whenever the plan changes, because the direction is allowed to change the look and
+  // the system prompt is where the look's rules live: a cartoon storyboard written under the cyber rules is garbage.
+  let system = systemPrompt(plan);
   const call = async (user: string, schema: Record<string, unknown>, maxTokens: number) => {
     calls++;
     const out = await callModel(env, model, [{ role: "system", content: system }, { role: "user", content: user }], schema, maxTokens);
@@ -946,13 +1224,35 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   const fail = (errors: string[], draft?: unknown): never => { throw new StoryboardError(`storyboard invalid (${model}, ${calls} calls): ${errors.join("; ")}`, errors, draft); };
   let transient: unknown = null; // the last quota/outage error: reported instead of a storyboard problem
 
+  // 0. THE DIRECTION. One call, before anything exists, that reads the request as a request: subject, goal, audience,
+  //    tone, the facts that must survive, the world the film is drawn in, what must never appear, and which colour
+  //    owns which stretch of the story. It also picks the look and says why. A film planned without it is what Kleo
+  //    used to make: a list of scenes with nothing holding them together.
+  //    It is allowed to fail. A direction is a large improvement, not a precondition — when the model cannot produce a
+  //    valid one in two tries the planner carries on exactly as it did before, and the video still ships.
+  let direction: Direction | null = null;
+  const sceneGuess = Math.max(plan.scenes[0], Math.min(plan.scenes[1], Math.round((plan.scenes[0] + plan.scenes[1]) / 2)));
+  for (let attempt = 1; attempt <= 2 && !direction; attempt++) {
+    let raw: unknown;
+    try { raw = clean(await call(directionPrompt(job, plan), directionSchema(), 900)); }
+    catch (e) { history.push([`direction: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) { transient = e; break; } continue; }
+    const o = isObj(raw) ? raw : {};
+    const d = repairDirection(o.direction, sceneGuess);
+    if (!d) { history.push([`direction: rejected (${directionProblems(isObj(o.direction) ? o.direction : {}, { accents: CINEMA_ACCENTS, scenes: sceneGuess }).slice(0, 3).join("; ")})`]); continue; }
+    direction = d;
+    // The look the direction chose, unless the client named one: planFor() keeps the user's choice above everything.
+    const wanted = inSet(o.style, KLEO_STYLES) ? (o.style as KleoStyle) : null;
+    if (wanted && wanted !== plan.kleo) { plan = planFor(job, wanted); system = systemPrompt(plan); }
+  }
+  if (transient) throw transient;
+
   // 1. Outline
-  const n = Math.max(plan.scenes[0], Math.min(plan.scenes[1], Math.round((plan.scenes[0] + plan.scenes[1]) / 2)));
+  const n = sceneGuess;
   let outline: OutlineEntry[] = [];
   let meta: { title?: unknown; description?: unknown; tags?: unknown } = {};
   for (let attempt = 1; attempt <= 2 && !outline.length; attempt++) {
     let raw: unknown;
-    try { raw = clean(await call(outlinePrompt(job, plan, n), outlineSchema(plan), 400 + n * 90)); }
+    try { raw = clean(await call(outlinePrompt(job, plan, n, direction), outlineSchema(plan, direction?.must_keep.length ?? 0), 400 + n * 90)); }
     catch (e) { history.push([`outline: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) { transient = e; break; } continue; }
     const o = isObj(raw) ? raw : {};
     const entries = Array.isArray(o.scenes) ? o.scenes.filter(isObj) : [];
@@ -961,8 +1261,20 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     outline = entries.map((e, i) => {
       let id = slug(e.id, i).slice(0, 50); if (seen.has(id)) id = `${id}-${i + 1}`; seen.add(id);
       const words = typeof e.words === "number" && e.words > 3 ? Math.round(e.words) : Math.round(plan.words.target / entries.length);
-      return { id, kind: typeof e.kind === "string" ? e.kind : "hero", label: typeof e.label === "string" ? e.label.slice(0, plan.style === "cinema" || plan.style === "picture" ? 32 : 40) : `PART ${i + 1}`, accent: typeof e.accent === "string" ? e.accent : undefined, summary: typeof e.summary === "string" ? e.summary : "", words };
+      const keeps = Array.isArray(e.keeps) ? e.keeps.filter(isInt).filter((k) => k >= 0 && k < (direction?.must_keep.length ?? 0)) : [];
+      return { id, kind: typeof e.kind === "string" ? e.kind : "hero", label: typeof e.label === "string" ? e.label.slice(0, plan.style === "cinema" || plan.style === "picture" ? 32 : 40) : `PART ${i + 1}`, accent: typeof e.accent === "string" ? e.accent : undefined, summary: typeof e.summary === "string" ? e.summary : "", words, keeps };
     });
+    // A fact the outline forgot to hand to anyone is handed to the scene whose summary is closest to it, and failing
+    // that to the first scene that is not the closing. An unassigned fact is a fact the chunk prompts never ask for,
+    // and it is exactly the silent way a video stops being about what the user wrote.
+    if (direction?.must_keep.length) {
+      const taken = new Set(outline.flatMap((e) => e.keeps));
+      direction.must_keep.forEach((fact, idx) => {
+        if (taken.has(idx)) return;
+        const target = bestSceneFor(fact, outline);
+        outline[target].keeps.push(idx);
+      });
+    }
     outline.forEach((e, i) => { if (e.kind === "closing" && i < outline.length - 1) e.kind = plan.style === "cinema" || plan.style === "picture" ? "cinema" : "hero"; });
     outline[outline.length - 1].kind = "closing";
     // Scale the per-scene word plan to the budget.
@@ -975,7 +1287,12 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
 
   // 2. Scenes, chunk by chunk
   const scenes: Record<string, unknown>[] = [];
-  const head = header(plan, meta);
+  const head = header(plan, meta, direction);
+  // A chunk is validated as a project of its own, so it holds only some of the scenes — and the direction's sections
+  // are sized for the WHOLE film. Handing it the direction would fail every chunk on "the sections cover N scenes but
+  // the video has M". The colour law is applied and checked once, on the assembled storyboard, where it means something.
+  const chunkHead: Record<string, unknown> = { ...head };
+  delete chunkHead.direction;
   const chunkSize = Math.ceil(outline.length / Math.ceil(outline.length / plan.chunk)); // even chunks: no 1-scene tail
   for (let from = 0; from < outline.length; from += chunkSize) {
     const to = Math.min(outline.length, from + chunkSize);
@@ -987,12 +1304,12 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     for (let attempt = 1; attempt <= 3 && !accepted; attempt++) {
       let raw: unknown;
       const maxTokens = plan.style === "cinema" ? 700 * (to - from) : plan.style === "picture" ? 600 * (to - from) : 350 * (to - from);
-      try { raw = await call(chunkPrompt(job, plan, outline, from, to, prevVoice, feedback), chunkSchema(plan), 400 + maxTokens); }
+      try { raw = await call(chunkPrompt(job, plan, outline, from, to, prevVoice, feedback, direction), chunkSchema(plan), 400 + maxTokens); }
       catch (e) { history.push([`scenes ${from + 1}–${to}: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) throw e; feedback = undefined; continue; }
       const got = isObj(raw) && Array.isArray(raw.scenes) ? raw.scenes.filter(isObj) : [];
       // Validated in context (the scenes accepted so far + this chunk + a temporary closing unless it is the last chunk);
       // error labels are remapped so "scene n" counts within the scenes the model just returned.
-      const temp = normalizeStoryboard({ ...head, scenes: [...structuredClone(scenes), ...got, ...(isLast ? [] : [TEMP_CLOSING(plan)])] }, plan) as Record<string, unknown>;
+      const temp = normalizeStoryboard({ ...chunkHead, scenes: [...structuredClone(scenes), ...got, ...(isLast ? [] : [TEMP_CLOSING(plan)])] }, plan) as Record<string, unknown>;
       lastDraft = temp;
       const problems: string[] = [];
       if (got.length !== to - from) problems.push(`expected exactly ${to - from} scenes, got ${got.length}`);
@@ -1003,6 +1320,14 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
       const words = countWords({ scenes: chunkScenes });
       if (words < want * 0.55) problems.push(`the narration of these scenes is far too short: ${words} words, it must total about ${want}`);
       if (words > want * 1.6) problems.push(`the narration of these scenes is far too long: ${words} words, it must total about ${want}`);
+      // Fidelity, chunk by chunk. The validator can prove a chunk is well-formed; only this can prove it is still
+      // about what the user asked for. Checking it here rather than at the end means the fix costs one retry of four
+      // scenes instead of a whole re-plan — and a fact that has already slipped through two chunks never comes back.
+      if (direction?.must_keep.length) {
+        const owed = [...new Set(outline.slice(from, to).flatMap((e) => e.keeps))].map((i) => direction!.must_keep[i]).filter(Boolean);
+        const lost = missingFacts(owed, chunkScenes.map((x) => String(x.voice ?? "")).join(" "));
+        for (const f of lost) problems.push(`the narration of these scenes never says "${f}", which the user asked for: put it in a "voice" line, in words the viewer will hear`);
+      }
       if (plan.style === "picture") {
         // A cinema scene that ends up with one picture holds it for the whole line: ask for the missing cuts once.
         const thin = chunkScenes.map((s, i) => (s.kind !== "closing" && (!Array.isArray(s.shots) || s.shots.length < 2) ? i + 1 : 0)).filter(Boolean);
@@ -1032,5 +1357,9 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   const price = PRICES[model];
   const est = price ? Math.round((((usage.prompt_tokens ?? 0) * price.in + (usage.completion_tokens ?? 0) * price.out) / 1e6) / 0.000011) : null;
   const ok = r as { ok: true; storyboard: Storyboard };
-  return { storyboard: ok.storyboard, model, attempts: calls, ms: Date.now() - t0, usage, est_neurons: est, words: countWords(ok.storyboard), scenes: ok.storyboard.scenes.length, fixture: false, history, style: plan.kleo };
+  // What the finished plan still does not say. It is reported, never hidden: the owner accepts declared uncertainty
+  // and refuses the hidden kind, and this is the one number that says whether the video is about what was asked.
+  const missing = direction ? missingFacts(direction.must_keep, narrationOf(ok.storyboard)) : [];
+  if (missing.length) history.push(missing.map((f) => `narration never says "${f}"`));
+  return { storyboard: ok.storyboard, model, attempts: calls, ms: Date.now() - t0, usage, est_neurons: est, words: countWords(ok.storyboard), scenes: ok.storyboard.scenes.length, fixture: false, history, style: plan.kleo, direction, missing_facts: missing };
 }

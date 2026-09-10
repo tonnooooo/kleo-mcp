@@ -36,6 +36,15 @@ STEPS = 22
 SIZES = {"9:16": (512, 896), "16:9": (896, 512)}  # (width, height): SD1.5 is trained at 512, ~1.75:1 still holds together
 PROMPT_MAX = 240                                    # src/keou-contract.ts IMAGE_PROMPT_MAX
 BASE_MAX = 150                                      # scene text kept in the SD prompt (CLIP: 77 tokens in total)
+CONTEXT_MAX = 110                                   # the film's direction (cast look + section light) inside that budget
+NEGATIVE_MAX = 320                                  # the negative side of CLIP has its own 77 tokens; stay under them
+# Mirrors src/direction.ts ACCENT_LIGHT: a named colour, because diffusion models follow colour names and ignore hex.
+ACCENT_LIGHT = {
+    "red": "a single warm red light source",
+    "amber": "a single warm amber light source",
+    "green": "a single cool green light source",
+    "cyan": "a single cold cyan light source",
+}
 SCENE_ID = re.compile(r"[a-z0-9-]{1,56}")           # picture id "<sceneId>-s<n>" (contract.py slug ≤ 50 + shot suffix) → safe file name
 _pipelines = {}                                     # style → loaded pipeline (one job per instance, but a job may need one style only)
 
@@ -49,15 +58,60 @@ def seed_for(scene_id):
     return int.from_bytes(hashlib.sha256(str(scene_id).encode("utf-8")).digest()[:4], "big") & 0x7FFFFFFF
 
 
-def full_prompt(image_prompt, style):
-    """<scene prompt>, <style suffix>. SD1.5's CLIP encoder reads 77 tokens only, so the scene text is cut at BASE_MAX
-    characters (about 40 tokens) to be sure the style suffix (about 25 tokens) is never truncated away."""
+def full_prompt(image_prompt, style, context=""):
+    """<scene prompt>, <direction context>, <style suffix>. SD1.5's CLIP encoder reads 77 tokens only, so the scene
+    text is cut at BASE_MAX characters (about 40 tokens) to be sure the style suffix (about 25 tokens) is never
+    truncated away, and the direction context gets CONTEXT_MAX of what is left.
+
+    The context is the film's direction as src/direction.ts pictureContext() builds it — the verbatim look of the
+    characters in this picture, and the light of the section it belongs to. It is what keeps the captain looking like
+    the captain across twelve independently drawn pictures. The server has room for the world sentence as well; here
+    the token budget does not stretch that far, so the cast comes first: a face that changes is what a viewer sees."""
     base = " ".join(str(image_prompt or "").split())[:PROMPT_MAX].strip()
     if len(base) > BASE_MAX:
         base = base[:BASE_MAX].rsplit(" ", 1)[0] if " " in base[:BASE_MAX] else base[:BASE_MAX]
     base = base.strip().rstrip(",.;")
+    ctx = " ".join(str(context or "").split())[:CONTEXT_MAX].strip().rstrip(",.;")
     suffix = STYLE_SUFFIX[style]
-    return f"{base}, {suffix}" if base else suffix
+    return ", ".join([x for x in (base, ctx, suffix) if x])
+
+
+def negative_for(direction):
+    """The product-wide negative prompt plus everything THIS film's direction forbids, capped so the negative side of
+    CLIP cannot overflow either. One fixed ten-word negative for every video Kleo will ever make is what let a wifi
+    symbol into a pirate storm; an exclusion list written for one film is what stops it."""
+    terms = []
+    if isinstance(direction, dict):
+        for t in direction.get("forbidden") or []:
+            t = " ".join(str(t).split()).strip().rstrip(",.;")
+            if t and t.lower() not in NEGATIVE_PROMPT.lower():
+                terms.append(t)
+    joined = NEGATIVE_PROMPT
+    for t in terms:
+        if len(joined) + len(t) + 2 > NEGATIVE_MAX:
+            break
+        joined += ", " + t
+    return joined
+
+
+def context_for(direction, image_prompt, accent):
+    """The direction's extra sentences for ONE picture: the look of whichever cast members it names, then the light of
+    its section. Mirrors src/direction.ts pictureContext(), minus the world sentence the CLIP budget cannot afford."""
+    if not isinstance(direction, dict):
+        return ""
+    lowered = str(image_prompt or "").lower()
+    bits = []
+    for m in direction.get("cast") or []:
+        if not isinstance(m, dict):
+            continue
+        name = " ".join(str(m.get("name") or "").split()).strip()
+        look = " ".join(str(m.get("look") or "").split()).strip()
+        if name and look and name.lower() in lowered:
+            bits.append(f"{name}: {look}")
+    light = ACCENT_LIGHT.get(accent)
+    if light:
+        bits.append(light)
+    return ". ".join(bits)
 
 
 def size_for(fmt):
@@ -169,10 +223,12 @@ def load_pipeline(style, device=None):
     return pipe
 
 
-def generate_pictures(scenes, style, fmt, out_dir, device=None):
-    """scenes: [{"id": <pictureId>, "image_prompt": <text>}, ...] → {pictureId: absolute PNG path} for the pictures made.
-    style: cartoon | realistic; fmt: 9:16 | 16:9; out_dir is created. Returns {} without CUDA (unless KLEO_PICTURES_CPU=1),
-    for an unknown style, or when the model cannot be loaded; a failing scene is logged and skipped."""
+def generate_pictures(scenes, style, fmt, out_dir, device=None, direction=None):
+    """scenes: [{"id": <pictureId>, "image_prompt": <text>, "accent": <accent | None>}, ...] → {pictureId: absolute PNG
+    path} for the pictures made. style: cartoon | realistic; fmt: 9:16 | 16:9; out_dir is created. `direction` is the
+    storyboard's art direction (src/direction.ts): its cast, its accents and its exclusion list shape every prompt.
+    Returns {} without CUDA (unless KLEO_PICTURES_CPU=1), for an unknown style, or when the model cannot be loaded;
+    a failing scene is logged and skipped."""
     if style not in MODELS:
         log(f"style {style!r} has no local model")
         return {}
@@ -196,6 +252,7 @@ def generate_pictures(scenes, style, fmt, out_dir, device=None):
         return {}
     import torch
     width, height = size_for(fmt)
+    negative = negative_for(direction)
     os.makedirs(out_dir, exist_ok=True)
     done = {}
     t_all = time.time()
@@ -205,7 +262,8 @@ def generate_pictures(scenes, style, fmt, out_dir, device=None):
         t0 = time.time()
         try:
             gen = torch.Generator(device=device).manual_seed(seed)
-            result = pipe(prompt=full_prompt(s["image_prompt"], style), negative_prompt=NEGATIVE_PROMPT, width=width, height=height,
+            prompt = full_prompt(s["image_prompt"], style, context_for(direction, s["image_prompt"], s.get("accent")))
+            result = pipe(prompt=prompt, negative_prompt=negative, width=width, height=height,
                           num_inference_steps=STEPS, guidance_scale=GUIDANCE[style], generator=gen)
             image = result.images[0]
             image.save(path, format="PNG")

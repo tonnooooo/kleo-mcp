@@ -26,7 +26,7 @@ import type { Job } from "./db";
 import { setFile, listFiles, audit } from "./db.ts";
 import { putFile } from "./storage.ts";
 import { hmacHex, int, minutesSince } from "./util.ts";
-import { kleoStyleOf, pictureScenes, PICTURE_STYLES, MAX_PICTURES, type KleoStyle } from "./keou-contract.ts";
+import { kleoStyleOf, pictureScenes, directionOf, pictureContext, negativeFor, PICTURE_STYLES, MAX_PICTURES, type KleoStyle, type Direction } from "./keou-contract.ts";
 
 /** The whole-video cap lives in the contract (the guide and the worker read the same rule); re-exported for the endpoint's callers. */
 export { MAX_PICTURES };
@@ -210,14 +210,26 @@ export function sniffImage(bytes: Uint8Array): "png" | "jpg" | null {
 export function modelFor(env: Env, style: KleoStyle): string {
   return (style === "realistic" ? env.IMAGE_MODEL_REALISTIC : env.IMAGE_MODEL_CARTOON) || DEFAULT_IMAGE_MODELS[style === "realistic" ? "realistic" : "cartoon"];
 }
-export function fullPrompt(style: KleoStyle, imagePrompt: string): string {
-  return `${imagePrompt.trim().replace(/[.\s]+$/, "")}. ${STYLE_SUFFIX[style === "realistic" ? "realistic" : "cartoon"]}`;
+/**
+ * The prompt one picture is drawn from: the author's sentence first (a diffusion model weights the opening most),
+ * then the direction — the verbatim look of whichever characters this picture shows, the world the film is set in,
+ * and the light of the section it belongs to — then the style suffix.
+ *
+ * Before the direction existed this was the author's sentence plus twelve fixed words, and that was the entire art
+ * direction of a Kleo video: every picture re-invented the look, and the captain stopped looking like the captain.
+ */
+export function fullPrompt(style: KleoStyle, imagePrompt: string, direction: Direction | null = null, accent: string | null = null): string {
+  const base = imagePrompt.trim().replace(/[.\s]+$/, "");
+  const ctx = pictureContext(direction, imagePrompt, accent);
+  return `${base}. ${ctx ? `${ctx.replace(/[.\s]+$/, "")}. ` : ""}${STYLE_SUFFIX[style === "realistic" ? "realistic" : "cartoon"]}`;
 }
-export function modelInputs(model: string, style: KleoStyle, imagePrompt: string, format: string, seed: number): Record<string, unknown> {
-  const inputs: Record<string, unknown> = { prompt: fullPrompt(style, imagePrompt) };
+export function modelInputs(model: string, style: KleoStyle, imagePrompt: string, format: string, seed: number, direction: Direction | null = null, accent: string | null = null): Record<string, unknown> {
+  const inputs: Record<string, unknown> = { prompt: fullPrompt(style, imagePrompt, direction, accent) };
   // FLUX.1 [schnell] rejects any extra property (AiError 5006 on "seed"): send only prompt + steps.
   if (!acceptsSize(model)) { inputs.steps = 4; return inputs; }
-  Object.assign(inputs, sizeFor(format), { negative_prompt: NEGATIVE_PROMPT });
+  // The film's own exclusion list rides on the product-wide one. This is what stands between a pirate storm and a
+  // wifi icon: a negative prompt written for THIS video, not one written once for every video Kleo will ever make.
+  Object.assign(inputs, sizeFor(format), { negative_prompt: negativeFor(direction, NEGATIVE_PROMPT) });
   if (/stable-diffusion|dreamshaper/.test(model)) inputs.seed = seed; // only SD-family models document a seed input
   if (/phoenix|lucid-origin/.test(model)) Object.assign(inputs, { num_steps: 20, guidance: style === "realistic" ? 4 : 5 });
   else if (/stable-diffusion|dreamshaper/.test(model)) Object.assign(inputs, { num_steps: 20, guidance: 7.5 });
@@ -238,6 +250,7 @@ async function signedImageUrl(env: Env, base: string, jobId: string, name: strin
 export async function generateJobImages(env: Env, job: Job, base: string): Promise<ImagesResult> {
   const sb = job.storyboard ? (JSON.parse(job.storyboard) as unknown) : null;
   const style = kleoStyleOf(sb);
+  const direction = directionOf(sb);
   const params = JSON.parse(job.params) as { format?: string; duration_s?: number };
   const format = params.format ?? "9:16";
   const result: ImagesResult = { images: {}, missing: [], generated: 0, reused: 0, fixture: env.IMAGE_FIXTURE === "1" };
@@ -285,7 +298,7 @@ export async function generateJobImages(env: Env, job: Job, base: string): Promi
         bytes = await placeholderPng(pic.id, width, height);
       } else {
         if (!ai) throw new Error("no Workers AI binding (env.AI)");
-        const res = await ai.run(model, modelInputs(model, style, pic.image_prompt, format, fnv1a(`${job.id}/${pic.id}`) % 1_000_000));
+        const res = await ai.run(model, modelInputs(model, style, pic.image_prompt, format, fnv1a(`${job.id}/${pic.id}`) % 1_000_000, direction, pic.accent));
         bytes = await readImageResult(res);
         const kind = sniffImage(bytes);
         if (!kind) throw new Error(`model returned ${bytes.length} bytes that are neither PNG nor JPEG`);

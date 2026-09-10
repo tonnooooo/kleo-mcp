@@ -49,6 +49,14 @@ import {
 } from "./shot-grammar.ts";
 export { SHOT_KINDS, SHOT_GRAMMAR, durationFor, LOUD_MAX_PER_WINDOW, LOUD_WINDOW_S, MAX_SHOT_S, MAX_PERSON_SHOT_S } from "./shot-grammar.ts";
 export type { Move, ShotKind } from "./shot-grammar.ts";
+/**
+ * The direction (src/direction.ts): the art direction of ONE film — what the user asked for, the world it is drawn in,
+ * what must never appear, and the colour law. It is a leaf module on purpose: it imports nothing from here, so this
+ * file can import it without a cycle, and it takes the accent list as an argument instead of reaching for it.
+ */
+import { directionProblems, sectionOfScene, type Direction, type Section } from "./direction.ts";
+export { directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor, conformity, GENRES, D as DIRECTION_LIMITS } from "./direction.ts";
+export type { Direction, Section, CastMember, Genre, Conformity } from "./direction.ts";
 
 export const STYLES = ["editorial", "technical", "illustrated", "terminal", "stickman", "cinema", "picture"] as const;
 export const KINDS = ["hero", "list", "compare", "steps", "metric", "image", "quote", "closing", "story", "cinema"] as const;
@@ -103,8 +111,17 @@ export const SHOT_AT_MAX = 24;
  * and the pictures are drawn: whatever the server lets through here is paid for before the engine throws it out.
  */
 export const SHOT_FIELDS = ["image_prompt", "caption", "hl", "at", "shot_kind", "strength", "dur", "motion"] as const;
-/** Shots per scene: a cinema scene cuts up to four times, a closing shows one picture (two at most). */
+/**
+ * Shots per scene: a cinema scene cuts up to four times, a closing shows one picture (two at most).
+ * The contract's floor stays 1 because worker/keou/contract.py has the same floor and the two must not drift; the
+ * floor a NEW storyboard is actually held to is SHOTS_MIN_CINEMA, enforced by qualityProblems() on the server alone.
+ */
 export const SHOTS_PER_SCENE: Record<"cinema" | "closing", [number, number]> = { cinema: [1, 4], closing: [1, 2] };
+/** The real floor for a cinema scene, server-side. One picture per narrated line is a slideshow; two is a cut. */
+export const SHOTS_MIN_CINEMA = 2;
+/** The shot range the guide, the planner and the website all quote, so the three can never say three different things. */
+export const shotRangeText = (kind: "cinema" | "closing"): string =>
+  kind === "closing" ? `${SHOTS_PER_SCENE.closing[0]}-${SHOTS_PER_SCENE.closing[1]}` : `${SHOTS_MIN_CINEMA}-${SHOTS_PER_SCENE.cinema[1]}`;
 export const CLOSING_BUTTON_MAX = 24;
 /** Scene ids may not end with the shot suffix: picture ids are `<sceneId>-s<n>` and must stay unambiguous. */
 export const SHOT_ID_SUFFIX_RE = /-s\d+$/;
@@ -135,19 +152,39 @@ export function kleoStyleOf(sb: unknown): KleoStyle {
  * Only the styles that draw pictures (cartoon/realistic) have any; a cyber or stickman storyboard returns [].
  * A scene-level image_prompt without shots (old format, not yet normalised) counts as the single shot 1.
  */
-export function pictureScenes(sb: unknown): { id: string; image_prompt: string }[] {
+export function pictureScenes(sb: unknown): { id: string; image_prompt: string; accent: string | null }[] {
   const c = (typeof sb === "object" && sb !== null ? sb : {}) as Record<string, unknown>;
   if (!PICTURE_STYLES.includes(kleoStyleOf(c)) || !Array.isArray(c.scenes)) return [];
   return (c.scenes as unknown[]).flatMap((s) => {
     const sc = (typeof s === "object" && s !== null ? s : {}) as Record<string, unknown>;
     if (typeof sc.id !== "string" || !sc.id) return [];
+    // The scene's accent travels with its pictures: the colour law only exists for the viewer once the accent
+    // reaches the image model, and until now it stopped at the caption furniture.
+    const accent = typeof sc.accent === "string" && (CINEMA_ACCENTS as readonly string[]).includes(sc.accent) ? sc.accent : null;
     const shots = Array.isArray(sc.shots) ? (sc.shots as unknown[]) : typeof sc.image_prompt === "string" ? [{ image_prompt: sc.image_prompt }] : [];
     return shots.flatMap((sh, i) => {
       const o = (typeof sh === "object" && sh !== null ? sh : {}) as Record<string, unknown>;
       const p = typeof o.image_prompt === "string" ? o.image_prompt.trim() : "";
-      return p ? [{ id: `${sc.id}-s${i + 1}`, image_prompt: p }] : []; // a shot without a prompt keeps its index: ids follow the shot number
+      return p ? [{ id: `${sc.id}-s${i + 1}`, image_prompt: p, accent }] : []; // a shot without a prompt keeps its index: ids follow the shot number
     });
   });
+}
+
+/** The direction a storyboard carries, or null. Storyboards written before the direction existed simply have none. */
+export function directionOf(sb: unknown): Direction | null {
+  const c = (typeof sb === "object" && sb !== null ? sb : {}) as Record<string, unknown>;
+  const d = c.direction;
+  return isObj(d) && typeof d.subject === "string" ? (d as unknown as Direction) : null;
+}
+
+/**
+ * The narration of a storyboard, joined. The fidelity gate (missingFacts) reads this: it is the only text a viewer
+ * actually hears, so it is the only text that can prove the video says what the user asked for.
+ */
+export function narrationOf(sb: unknown): string {
+  const c = (typeof sb === "object" && sb !== null ? sb : {}) as Record<string, unknown>;
+  if (!Array.isArray(c.scenes)) return "";
+  return (c.scenes as unknown[]).map((s) => (isObj(s) && typeof s.voice === "string" ? s.voice : "")).filter(Boolean).join(" ");
 }
 export interface ValidateOptions {
   format: Format;
@@ -492,6 +529,23 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
   e.finite(c.max_duration ?? 600, 5, 1800, "max_duration");
   const scenes = c.scenes;
   if (!Array.isArray(scenes) || scenes.length < 2 || scenes.length > 240) { e.add("A project needs 2–240 scenes"); return; }
+  // The direction is optional so that every storyboard written before it still validates, but a storyboard that
+  // carries one is held to it: the sections must tile the film and every scene must wear the colour of its section.
+  // Checking it here, on the free Worker, is the whole point — a colour law discovered on a rented GPU is a colour
+  // law nobody enforced.
+  const direction = "direction" in c ? c.direction : undefined;
+  if (direction !== undefined) {
+    for (const p of directionProblems(direction, { accents: CINEMA_ACCENTS, scenes: scenes.length })) e.add(p);
+    const sections = isObj(direction) && Array.isArray(direction.sections) ? (direction.sections as Section[]) : [];
+    if (sections.length) {
+      const owner = sectionOfScene(sections, scenes.length);
+      scenes.forEach((s, i) => {
+        const want = owner[i]?.accent;
+        if (!isObj(s) || !want || !("accent" in s)) return;
+        if (s.accent !== want) e.add(`scene ${i + 1}: accent "${String(s.accent)}" but it is in section "${owner[i]?.name}", which owns "${want}" — one accent per section`);
+      });
+    }
+  }
   const ids = new Set<string>();
   const seq: SeqShot[] = [];
   const fmt: Format = (FORMATS as readonly string[]).includes(c.format as string) ? (c.format as Format) : opts.format;
@@ -576,9 +630,52 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
  */
 export function validateStoryboard(sb: unknown, opts: ValidateOptions): ValidateResult {
   const e = new Collector(opts.maxErrors ?? MAX_ERRORS);
-  try { validateInner(sb, opts, e); } catch (err) { if (!(err instanceof TooMany)) throw err; }
+  try { validateInner(sb, opts, e); if (!e.errors.length) for (const p of qualityProblems(sb)) e.add(p); } catch (err) { if (!(err instanceof TooMany)) throw err; }
   if (e.errors.length) return { ok: false, errors: e.errors };
   return { ok: true, storyboard: sb as Storyboard };
+}
+
+/**
+ * The two rules that separate a video from a slideshow. They live HERE and not in worker/keou/contract.py on purpose:
+ * the server may be stricter than the worker (nothing reaches a rented GPU that the GPU would then refuse), never the
+ * other way round, so tightening here costs nothing and no python change can fall out of step with it.
+ *
+ *  1. A CINEMA SCENE SHOWS AT LEAST TWO PICTURES. The contract's shot range was [1,4] while the planner's rules said
+ *     "2-4" and the website promised "two to four": a storyboard with one picture per scene passed, was billed, and
+ *     came back as one still held for a whole narrated line — "non sono neanche dei video, sono semplicemente delle
+ *     immagini con lo zoom". The closing scene is exempt: it is meant to rest on one picture.
+ *  2. EVERY PICTURE AFTER THE FIRST CUTS ON A SPOKEN WORD. `at` was optional, and a missing one was silent: the cut
+ *     then fell by arithmetic, near the right words instead of on them. The product promise is the opposite — "Kleo
+ *     times the cut to a word you actually hear" — so a shot without an anchor is now a problem, not a default.
+ */
+export function qualityProblems(sb: unknown): string[] {
+  const c = (typeof sb === "object" && sb !== null ? sb : {}) as Record<string, unknown>;
+  const out: string[] = [];
+  // 3. THE STORYBOARD KEEPS ITS OWN PROMISES. Whoever wrote the direction wrote the narration and the pictures too, so
+  //    a fact listed in must_keep that the narration never says, or a picture that draws something the direction
+  //    forbids, is a contradiction inside one document — the cheapest kind of error to catch and the most damaging to
+  //    leave (it is how a wifi icon ended up in a pirate storm). Both checks are free and neither needs the GPU.
+  const d = directionOf(c);
+  if (d) {
+    for (const fact of missingFacts(d.must_keep ?? [], narrationOf(c)))
+      out.push(`direction.must_keep says "${fact}" but the narration never says it: put it in a scene's "voice", in the words the viewer will hear.`);
+    for (const hit of forbiddenInPrompts(d.forbidden ?? [], pictureScenes(c)))
+      out.push(`picture ${hit.id}: its image_prompt asks for "${hit.term}", which direction.forbidden rules out of this video.`);
+  }
+  if (c.style !== "picture" || !Array.isArray(c.scenes)) return out;
+  (c.scenes as unknown[]).forEach((s, i) => {
+    if (!isObj(s) || !Array.isArray(s.shots)) return;
+    const label = `scene ${i + 1}${typeof s.id === "string" ? ` (${s.id})` : ""}`;
+    const shots = s.shots as unknown[];
+    if (s.kind !== "closing" && shots.length < SHOTS_MIN_CINEMA)
+      out.push(`${label}: ${shots.length} picture${shots.length === 1 ? "" : "s"}, a scene needs at least ${SHOTS_MIN_CINEMA} — one picture held for a whole line is a slideshow, not a video. Split the line into ${SHOTS_MIN_CINEMA} moments and give each its own image_prompt and "at".`);
+    shots.forEach((sh, n) => {
+      if (n === 0 || !isObj(sh)) return;
+      if (typeof sh.at !== "string" || !sh.at.trim())
+        out.push(`${label} shot ${n + 1}: needs "at" — words copied from this scene's voice, so the cut lands on them as they are spoken.`);
+    });
+  });
+  return out;
 }
 
 /** Kleo voice ids (templates.ts) → Kokoro voices. */

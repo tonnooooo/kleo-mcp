@@ -247,7 +247,8 @@ test("shots: 1-4 on a cinema scene, 1-2 on a closing, only cinema/closing kinds"
   closing.scenes.at(-1).shots.push({ image_prompt: "a second closing picture of the chest" }, { image_prompt: "a third one" });
   assert.ok(errorsOf(closing, { format: "9:16", language: "en" }).includes("scene 5: shots must list 1–2 full-screen pictures"));
   const two = pirates();
-  two.scenes.at(-1).shots.push({ image_prompt: "the same beach a moment later, the chest closed again" });
+  const closingVoice = two.scenes.at(-1).voice.split(/\s+/).slice(0, 2).join(" ");
+  two.scenes.at(-1).shots.push({ image_prompt: "the same beach a moment later, the chest closed again", at: closingVoice });
   assert.equal(validateStoryboard(two, { format: "9:16", language: "en" }).ok, true, "a closing may hold two pictures");
   const none = pirates(); delete none.scenes[1].shots;
   assert.ok(errorsOf(none, { format: "9:16", language: "en" }).includes("scene 2: shots must list 1–4 full-screen pictures"), "shots are required");
@@ -376,6 +377,7 @@ test("pictureScenes flattens scene → shot in order, with `<sceneId>-s<n>` ids"
   assert.deepEqual(pics.slice(0, 4).map((p) => p.id), ["01-hook-s1", "01-hook-s2", "01-hook-s3", "02-ship-s1"]);
   assert.equal(pics.at(-1).id, "05-closing-s1");
   assert.equal(pics[0].image_prompt, sb.scenes[0].shots[0].image_prompt);
+  assert.equal(pics[0].accent, sb.scenes[0].accent, "a picture carries its scene's accent, so the image model can see the colour law");
   assert.deepEqual(pictureScenes(space()).slice(0, 2).map((p) => p.id), ["01-hook-s1", "01-hook-s2"]);
   assert.deepEqual(pictureScenes(cinema()), [], "a legacy cyber storyboard asks for no picture");
   const legacyCyber = cinema(); legacyCyber.scenes.forEach((s) => { s.image_prompt = "a car at night"; });
@@ -383,7 +385,7 @@ test("pictureScenes flattens scene → shot in order, with `<sceneId>-s<n>` ids"
   assert.deepEqual(pictureScenes(null), []);
   assert.deepEqual(pictureScenes({ kleo_style: "cartoon", scenes: "nope" }), []);
   const shorthand = { kleo_style: "realistic", scenes: [{ id: "01-a", image_prompt: "a rocket on the pad at dawn" }] };
-  assert.deepEqual(pictureScenes(shorthand), [{ id: "01-a-s1", image_prompt: "a rocket on the pad at dawn" }], "the old shorthand still maps to shot 1");
+  assert.deepEqual(pictureScenes(shorthand), [{ id: "01-a-s1", image_prompt: "a rocket on the pad at dawn", accent: null }], "the old shorthand still maps to shot 1");
   const gap = { kleo_style: "cartoon", scenes: [{ id: "01-a", shots: [{ image_prompt: "a beach" }, { caption: "NO PICTURE" }, { image_prompt: "a ship" }] }] };
   assert.deepEqual(pictureScenes(gap).map((p) => p.id), ["01-a-s1", "01-a-s3"], "ids follow the shot number, not the position in the answer");
 });

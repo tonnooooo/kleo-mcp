@@ -1,0 +1,255 @@
+/**
+ * Unit tests for src/direction.ts and the rules it puts into src/keou-contract.ts: the art direction of one film,
+ * the colour law, the fidelity gate (does the narration still say what the user asked for) and the exclusion list
+ * (does any picture ask for something this film forbids).
+ * Run: node --test test/direction.test.mjs
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor,
+  castFor, conformity, ACCENT_LIGHT, D,
+} from "../src/direction.ts";
+import { validateStoryboard, qualityProblems, directionOf, narrationOf, pictureScenes, CINEMA_ACCENTS, SHOTS_MIN_CINEMA, shotRangeText } from "../src/keou-contract.ts";
+import { fullPrompt, modelInputs, NEGATIVE_PROMPT, STYLE_SUFFIX, DEFAULT_IMAGE_MODELS } from "../src/images.ts";
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const fixture = (name) => JSON.parse(readFileSync(join(ROOT, "test", "fixtures", `${name}.json`), "utf8"));
+const pirates = () => fixture("cartoon-pirates");
+const opts = { accents: CINEMA_ACCENTS };
+
+/** A direction that passes, so every test below can break exactly one thing about it. */
+const good = (over = {}) => ({
+  subject: "The pirate captain who buried a treasure and never came back",
+  goal: "The viewer wants to know what happened to the treasure",
+  audience: "People who like short adventure stories",
+  tone: "Warm and a little eerie",
+  must_keep: ["1720", "Skull Beach"],
+  world: "A tropical island in 1720: golden beaches, turquoise water, palm trees, wooden ships with red sails",
+  cast: [{ name: "the captain", look: "a pirate captain with a red bandana and a long dark braid" }],
+  objects: ["wooden chest", "red-sailed ship", "palm trees", "wet sand"],
+  forbidden: ["wifi symbol", "phone", "brand logo", "text in the picture"],
+  sections: [
+    { name: "01 THE BURIAL", accent: "amber", means: "what was hidden", scenes: 2 },
+    { name: "02 THE STORM", accent: "red", means: "what went wrong", scenes: 2 },
+    { name: "03 THE QUESTION", accent: "green", means: "what you are left with", scenes: 1 },
+  ],
+  ...over,
+});
+
+/* ------------------------------------------------------------------ shape */
+
+test("a well-formed direction has no problems, and every limit is enforced", () => {
+  assert.deepEqual(directionProblems(good(), { ...opts, scenes: 5 }), []);
+  assert.ok(directionProblems("nope", opts)[0].includes("must be a JSON object"));
+
+  const long = directionProblems(good({ subject: "x".repeat(D.subject + 1) }), opts);
+  assert.ok(long.some((p) => /direction\.subject is \d+ characters/.test(p)), long.join("\n"));
+
+  for (const field of ["subject", "goal", "audience", "tone", "world"]) {
+    const missing = directionProblems(good({ [field]: "" }), opts);
+    assert.ok(missing.some((p) => p === `direction.${field} is required`), `${field}: ${missing.join("; ")}`);
+  }
+
+  const fewObjects = directionProblems(good({ objects: ["one"] }), opts);
+  assert.ok(fewObjects.some((p) => /direction\.objects has 1 entries, it needs 3-12/.test(p)), fewObjects.join("\n"));
+
+  const dupes = directionProblems(good({ forbidden: ["phone", "Phone", "logo", "text"] }), opts);
+  assert.ok(dupes.some((p) => /direction\.forbidden\[1\] repeats "Phone"/.test(p)), dupes.join("\n"));
+
+  // must_keep may legitimately be empty: a one-line prompt states no facts to preserve.
+  assert.deepEqual(directionProblems(good({ must_keep: [] }), { ...opts, scenes: 5 }), []);
+  assert.ok(directionProblems(good({ must_keep: "1720" }), opts).some((p) => /must_keep must be an array/.test(p)));
+
+  // A cast member is optional, but a listed one must carry the description that keeps a face a face.
+  assert.deepEqual(directionProblems(good({ cast: [] }), { ...opts, scenes: 5 }), []);
+  assert.ok(directionProblems(good({ cast: [{ name: "the captain" }] }), opts).some((p) => /cast\[0\]\.look is required/.test(p)));
+});
+
+test("the colour law: sections tile the film and no two in a row share an accent", () => {
+  const short = directionProblems(good(), { ...opts, scenes: 9 });
+  assert.ok(short.some((p) => /sections cover 5 scenes but the video has 9/.test(p)), short.join("\n"));
+
+  const repeated = good({
+    sections: [
+      { name: "A", accent: "red", means: "one", scenes: 2 },
+      { name: "B", accent: "red", means: "two", scenes: 3 },
+    ],
+  });
+  const problems = directionProblems(repeated, { ...opts, scenes: 5 });
+  assert.ok(problems.some((p) => /sections\[1\] repeats the accent "red"/.test(p)), problems.join("\n"));
+
+  assert.ok(directionProblems(good({ sections: [] }), opts).some((p) => /sections must be an array of 2-8/.test(p)));
+  assert.ok(directionProblems(good({ sections: [{ name: "A", accent: "purple", means: "x", scenes: 5 }, { name: "B", accent: "red", means: "y", scenes: 1 }] }), opts)
+    .some((p) => /sections\[0\]\.accent must be one of/.test(p)));
+});
+
+test("sectionOfScene walks the sections, and covers a film that gained a scene", () => {
+  const d = good();
+  const owners = sectionOfScene(d.sections, 5).map((s) => s.accent);
+  assert.deepEqual(owners, ["amber", "amber", "red", "red", "green"]);
+  // A storyboard whose sections do not add up is a validation error, not a crash: the last section covers the rest.
+  assert.deepEqual(sectionOfScene(d.sections, 7).map((s) => s.name).slice(-2), ["03 THE QUESTION", "03 THE QUESTION"]);
+  assert.deepEqual(sectionOfScene([], 2), [null, null]);
+});
+
+/* ------------------------------------------------------------------ fidelity */
+
+test("missingFacts: a number that changed is a fact that changed", () => {
+  assert.deepEqual(missingFacts(["1720", "Skull Beach"], "In 1720 the captain buried her chest on Skull Beach."), []);
+  assert.deepEqual(missingFacts(["1720"], "In 1719 the captain buried her chest."), ["1720"], "a rounded-away number is a missing fact");
+  assert.deepEqual(missingFacts(["3 million doors"], "Three million doors are affected."), ["3 million doors"], "digits are checked as digits");
+  assert.deepEqual(missingFacts(["Skull Beach"], "She buried it on a beach somewhere."), ["Skull Beach"]);
+  // Forgiving on wording, strict on substance: most of the content words have to survive, not all of them.
+  assert.deepEqual(missingFacts(["five common beginner mistakes"], "Here are the five mistakes beginners make."), []);
+  // An item made only of stop words proves nothing and is skipped rather than failed.
+  assert.deepEqual(missingFacts(["and the"], "anything at all"), []);
+  assert.deepEqual(missingFacts([], "anything at all"), []);
+});
+
+test("forbiddenInPrompts catches the wrong world, on whole words only", () => {
+  const prompts = [
+    { id: "01-a-s1", image_prompt: "A pirate captain on a golden beach at sunset" },
+    { id: "02-b-s1", image_prompt: "A storm at sea with a wifi symbol glowing over the mast" },
+    { id: "03-c-s1", image_prompt: "A map in context, drawn on old paper" },
+  ];
+  const hits = forbiddenInPrompts(["wifi symbol", "text"], prompts);
+  assert.deepEqual(hits, [{ id: "02-b-s1", term: "wifi symbol" }], "'text' must not fire on 'context'");
+  assert.deepEqual(forbiddenInPrompts([], prompts), []);
+  assert.deepEqual(forbiddenInPrompts(["WIFI SYMBOL"], prompts).map((h) => h.id), ["02-b-s1"], "case does not matter");
+});
+
+/* ------------------------------------------------------------------ the direction reaches the picture */
+
+test("pictureContext appends the cast look, the world and the section light — in that order", () => {
+  const d = good();
+  const ctx = pictureContext(d, "The captain walks along the shoreline at dusk", "red");
+  assert.ok(ctx.startsWith("the captain: a pirate captain with a red bandana"), ctx);
+  assert.ok(ctx.includes("A tropical island in 1720"), ctx);
+  assert.ok(ctx.endsWith(ACCENT_LIGHT.red), ctx);
+  // A picture that shows nobody carries no cast description.
+  assert.ok(!pictureContext(d, "An empty beach at dawn", null).includes("red bandana"));
+  assert.equal(pictureContext(null, "anything", "red"), "");
+  assert.deepEqual(castFor(d.cast, "the captain looks out to sea").map((m) => m.name), ["the captain"]);
+  assert.deepEqual(castFor(d.cast, "an empty deck"), []);
+});
+
+test("negativeFor puts this film's exclusion list behind the product-wide one", () => {
+  const neg = negativeFor(good(), NEGATIVE_PROMPT);
+  assert.ok(neg.startsWith(NEGATIVE_PROMPT), neg);
+  assert.ok(neg.includes("wifi symbol"), neg);
+  assert.equal(negativeFor(null, NEGATIVE_PROMPT), NEGATIVE_PROMPT);
+});
+
+test("the image call carries the direction: prompt context and per-film negatives", () => {
+  const d = good();
+  const plain = fullPrompt("cartoon", "A ship at anchor");
+  assert.equal(plain, `A ship at anchor. ${STYLE_SUFFIX.cartoon}`, "with no direction, nothing changes");
+
+  const rich = fullPrompt("cartoon", "The captain on the deck", d, "amber");
+  assert.ok(rich.startsWith("The captain on the deck."), rich);
+  assert.ok(rich.includes("red bandana"), rich);
+  assert.ok(rich.endsWith(STYLE_SUFFIX.cartoon), rich);
+
+  const inputs = modelInputs(DEFAULT_IMAGE_MODELS.realistic, "realistic", "The captain on the deck", "9:16", 7, d, "red");
+  assert.ok(String(inputs.negative_prompt).includes("wifi symbol"), String(inputs.negative_prompt));
+  assert.ok(String(inputs.prompt).includes(ACCENT_LIGHT.red), String(inputs.prompt));
+});
+
+/* ------------------------------------------------------------------ the validator holds a storyboard to its direction */
+
+/** The pirates fixture with a direction whose sections tile its five scenes and match its accents. */
+function withDirection(over = {}) {
+  const sb = pirates();
+  sb.direction = good({
+    must_keep: [],
+    sections: sb.scenes.map((s, i) => ({ name: `0${i + 1} PART`, accent: s.accent, means: "a part", scenes: 1 })),
+    ...over,
+  });
+  // The fixture's accents happen to repeat (red, amber, red, green, cyan); neighbouring sections must not, so this
+  // only builds a legal direction when they alternate. They do, which is why the fixture is usable here at all.
+  return sb;
+}
+
+test("a storyboard is held to the direction it carries", () => {
+  const sb = withDirection();
+  const r = validateStoryboard(sb, { format: "9:16", language: "en" });
+  assert.deepEqual(r.ok ? [] : r.errors, [], "the fixture plus a matching direction validates");
+  assert.equal(directionOf(sb).subject, sb.direction.subject);
+  assert.equal(directionOf(pirates()), null, "a storyboard written before the direction existed still has none");
+
+  // A scene wearing the wrong colour is refused: one accent per section is the whole colour law.
+  const wrong = withDirection();
+  wrong.scenes[0].accent = wrong.scenes[0].accent === "red" ? "green" : "red";
+  const errors = validateStoryboard(wrong, { format: "9:16", language: "en" });
+  assert.equal(errors.ok, false);
+  assert.ok(errors.errors.some((e) => /scene 1: accent .* but it is in section .* which owns/.test(e)), errors.errors.join("\n"));
+
+  // A direction whose sections do not tile the film is refused before anything is billed.
+  const short = withDirection();
+  short.direction.sections = short.direction.sections.slice(0, 2);
+  const r2 = validateStoryboard(short, { format: "9:16", language: "en" });
+  assert.equal(r2.ok, false);
+  assert.ok(r2.errors.some((e) => /sections cover 2 scenes but the video has 5/.test(e)), r2.errors.join("\n"));
+});
+
+test("a storyboard that contradicts its own direction is refused", () => {
+  const facts = withDirection({ must_keep: ["a fact this narration never states anywhere at all"] });
+  const problems = qualityProblems(facts);
+  assert.ok(problems.some((p) => /direction\.must_keep says .* but the narration never says it/.test(p)), problems.join("\n"));
+
+  const banned = withDirection();
+  banned.direction.forbidden = ["treasure chest", "phone", "logo", "text in the picture"];
+  banned.scenes[0].shots[0].image_prompt = "A treasure chest half buried in the wet sand at sunset";
+  const hits = qualityProblems(banned);
+  assert.ok(hits.some((p) => /picture 01-hook-s1: its image_prompt asks for "treasure chest"/.test(p)), hits.join("\n"));
+
+  assert.ok(narrationOf(pirates()).length > 40, "narrationOf joins the spoken lines");
+  assert.equal(narrationOf(null), "");
+});
+
+/* ------------------------------------------------------------------ a video, not a slideshow */
+
+test("one picture per scene is refused, and every picture after the first cuts on a spoken word", () => {
+  assert.equal(SHOTS_MIN_CINEMA, 2);
+  assert.equal(shotRangeText("cinema"), "2-4");
+  assert.equal(shotRangeText("closing"), "1-2");
+
+  const thin = pirates();
+  thin.scenes[1].shots = [thin.scenes[1].shots[0]];
+  const problems = qualityProblems(thin);
+  assert.ok(problems.some((p) => /scene 2 \(02-ship\): 1 picture, a scene needs at least 2/.test(p)), problems.join("\n"));
+  const r = validateStoryboard(thin, { format: "9:16", language: "en" });
+  assert.equal(r.ok, false, "and the whole storyboard is refused, before a GPU is rented");
+
+  // The closing is exempt: it is meant to rest on one picture.
+  assert.deepEqual(qualityProblems(pirates()), [], "the fixture already obeys both rules");
+
+  const loose = pirates();
+  delete loose.scenes[0].shots[1].at;
+  const anchors = qualityProblems(loose);
+  assert.ok(anchors.some((p) => /scene 1 \(01-hook\) shot 2: needs "at"/.test(p)), anchors.join("\n"));
+
+  // Neither rule touches a look that has no shots at all.
+  assert.deepEqual(qualityProblems({ style: "cinema", scenes: [{ id: "01-a", kind: "cinema" }] }), []);
+  assert.deepEqual(qualityProblems(null), []);
+});
+
+test("conformity reports what was asked against what was planned", () => {
+  const rows = conformity(good(), { scenes: 5, pictures: 13, words: 104, missing: [] });
+  assert.ok(rows.every((r) => r.ok), JSON.stringify(rows));
+  assert.ok(rows.some((r) => r.delivered.includes("13 pictures")), JSON.stringify(rows));
+  const bad = conformity(good(), { scenes: 5, pictures: 13, words: 104, missing: ["1720"] });
+  assert.ok(bad.some((r) => !r.ok && /1 requested facts missing/.test(r.delivered)), JSON.stringify(bad));
+});
+
+test("every picture of a storyboard can be checked against the direction in one pass", () => {
+  const sb = withDirection();
+  const pics = pictureScenes(sb);
+  assert.ok(pics.length >= 10, `${pics.length} pictures`);
+  assert.deepEqual(forbiddenInPrompts(sb.direction.forbidden, pics), [], "the fixture asks for nothing it forbids");
+  for (const p of pics) assert.ok(p.accent === null || CINEMA_ACCENTS.includes(p.accent), p.accent);
+});

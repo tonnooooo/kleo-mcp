@@ -1,0 +1,36 @@
+# The unit tests, on GitHub's machines. Nothing runs on the owner's computer: this is the only place, besides a
+# rented Vast box, where `node --test` and the python suite are allowed to run at all.
+# It renders nothing — no ffmpeg, no Playwright, no GPU. Pure logic: the contract, the shot grammar, the direction,
+# the planner, the picture prompts and the engine's pure blocks.
+name: tests
+on:
+  push:
+    branches: ["**"]
+    paths: ["src/**", "test/**", "worker/**", "package.json", "tsconfig.json", ".github/workflows/tests.yml"]
+  workflow_dispatch:
+concurrency: { group: "tests-${{ github.ref }}", cancel-in-progress: true }
+permissions:
+  contents: read
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }   # 22.18+ strips TypeScript types natively, which is how the tests import src/*.ts
+      - run: npm ci
+      - name: Types
+        run: npx tsc --noEmit
+      - name: Unit tests
+        run: node --test test/*.test.mjs
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Worker tests (standard library only, no torch, no ffmpeg)
+        working-directory: worker
+        run: python3 -m unittest test_kleo_pictures test_kleo_worker_images -v
