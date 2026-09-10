@@ -150,14 +150,21 @@ RUN pip install --no-compile -r requirements.txt \
     && rm -rf /opt/venv/lib/python3*/site-packages/triton
 
 # --- Python deps for local picture generation (diffusers on the torch installed above; see worker/kleo_pictures.py).
+#     PILLOW_VERSION pins the one library where "latest that satisfies the requirement" is not good enough:
+#     requirements-pictures.txt asks for pillow>=10.4, the conda base happened to hold 11.0.0, and a fresh
+#     resolve here picked 12.3.0 — a major version of the library that writes every picture the GPU draws, and
+#     the one difference the build cannot catch, since prewarm loads the pipeline but never runs it without a
+#     GPU. Pinned to what production ships. Set PILLOW_VERSION= to let it float again.
 #     `pip check` is strict here exactly as in Dockerfile.keou, and the import line under it goes further: it
 #     loads every package the worker actually reaches for, which is more than pip check can tell you. ---
+ARG PILLOW_VERSION=11.0.0
 COPY worker/requirements-pictures.txt /opt/kleo/requirements-pictures.txt
 RUN set -eu; \
-    pip install --no-compile -r /opt/kleo/requirements-pictures.txt; \
+    pip install --no-compile -r /opt/kleo/requirements-pictures.txt ${PILLOW_VERSION:+pillow==${PILLOW_VERSION}}; \
     rm -rf /opt/venv/lib/python3*/site-packages/triton; \
     pip check; \
     python3 -c "import torch, torchvision, diffusers, transformers, accelerate, safetensors, numpy, PIL, kokoro, misaki, faster_whisper, ctranslate2, spacy, soundfile, huggingface_hub; print('IMPORTS_OK diffusers', diffusers.__version__, 'transformers', transformers.__version__, 'torch', torch.__version__)"; \
+    python3 -c "import PIL, numpy; print('IMAGING', 'pillow', PIL.__version__, 'numpy', numpy.__version__)"; \
     find /opt/venv -name '__pycache__' -type d -prune -exec rm -rf {} +; \
     du -sh /opt/venv
 
