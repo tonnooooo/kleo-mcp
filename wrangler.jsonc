@@ -19,7 +19,8 @@
  *   START_TIMEOUT_MIN (15: minuti di silenzio di una GPU appena noleggiata prima di distruggerla e rimettere il video in coda),
  *   VAST_MIN_CPU (16 core) e VAST_MIN_RAM_GB (32): requisiti minimi della macchina, perché il render è lavoro di CPU,
  *   VAST_BOOTSTRAP_URL (script del worker da scaricare al boot: non serve, l'immagine lo contiene già),
- *   KLEO_WIDTH_PORTRAIT (2160) e KLEO_WIDTH_LANDSCAPE (1920): larghezza in pixel dei video 9:16 e 16:9,
+ *   KLEO_WIDTH_PORTRAIT (2160) e KLEO_WIDTH_LANDSCAPE (3840): larghezza in pixel dei video 9:16 e 16:9. Nessuna
+ *     delle due e' impostata qui: le decide l'immagine del worker, e qui si scrivono solo per forzarle,
  *   BRAND ("Kleo": il marchio mostrato nei video), MOCK_TOTAL_SECONDS (durata del render finto in modalità mock),
  *   TURNSTILE_SITEKEY (fase 2: chiave pubblica del widget anti-robot, quando lo aggiungeremo alla pagina di accesso),
  *   IMAGE_FIXTURE ("1" solo in locale: immagini segnaposto al posto di Workers AI, vedi .dev.vars).

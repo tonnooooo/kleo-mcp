@@ -122,7 +122,7 @@ L'immagine `ghcr.io/tonnooooo/kleo-worker:keou` contiene il motore Keou (il tuo 
 1. **Avvio**: riceve `KLEO_API` (l'indirizzo del server), `KLEO_JOB_ID`, `KLEO_SECRET` (segreto valido solo per quel video), `KLEO_SELF_DESTRUCT_MIN` e il numero di core da usare. Scarica la specifica del video, storyboard compreso.
 2. **Voce**: Kokoro legge la narrazione di ogni scena; whisper la riascolta e allinea i sottotitoli parola per parola. La voce detta i tempi di tutto il resto.
 3. **Scene**: Chromium disegna ogni scena fotogramma per fotogramma a 60 fps (testi grandi, icone, grafici, personaggi), più scene in parallelo, una per core.
-4. **Montaggio e finitura**: ffmpeg mette insieme scene, voce e musica; un controllo di qualità automatico verifica il file; poi MP4 (2160×3840 per i 9:16, 1920×1080 per i 16:9, H.264 + AAC), `.srt` e thumbnail.
+4. **Montaggio e finitura**: ffmpeg mette insieme scene, voce e musica; un controllo di qualità automatico verifica il file; poi MP4 (2160×3840 per i 9:16, 3840×2160 per i 16:9: 4K in tutti e due i formati, H.264 + AAC), `.srt` e thumbnail.
 5. **Consegna**: carica i tre file sul server (a pezzi per i file grandi), chiama `done`. A ogni passo manda `progress` con percentuale e fase.
 6. **Autodistruzione**: un timer avviato all'inizio distrugge la macchina dopo `KLEO_SELF_DESTRUCT_MIN` anche se lo script muore, usando la chiave ristretta che Vast inietta nel container (mai la tua). Il server fa lo stesso dal suo lato. Doppia sicurezza contro le bollette a sorpresa.
 

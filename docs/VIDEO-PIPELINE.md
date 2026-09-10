@@ -113,10 +113,14 @@ il fondo e dimentica una clip non produce un video brutto: non produce nessun vi
 
 ## 6. Quello che manca ancora
 
-**Il 16:9 non è 4K.** `KLEO_WIDTH_LANDSCAPE` è 1920, quindi un video orizzontale esce a 1920×1080; il verticale
-esce a 2160×3840. Il proprietario ha chiesto «sempre 4K»: portarlo a 3840 quadruplica i pixel che Chromium disegna
-per ogni fotogramma, quindi va **misurato su macchina noleggiata prima di cambiarlo**, non deciso a tavolino. È
-l'unico punto in cui la consegna non corrisponde ancora a quello che è stato chiesto.
+**Il 16:9 è 4K dal 10 settembre 2026** (`KLEO_WIDTH_LANDSCAPE` = 3840): 3840×2160 in orizzontale, 2160×3840 in
+verticale. Prima l'orizzontale usciva a 1920×1080, cioè un quarto dei pixel per lo stesso prezzo. Quello che resta
+da misurare non è più la risoluzione ma il **tempo**: un 16:9 lungo a 3840 non è ancora stato cronometrato su
+macchina noleggiata, e la stima che decide il timeout è stata tarata a 1920. Il primo video orizzontale lungo che
+passa in coda va guardato.
+
+Le coordinate degli storyboard non cambiano: si progetta sempre su un frame 1920×1080 (1080×1920 in verticale) e il
+motore lo scala alla consegna, esattamente come il verticale fa da sempre.
 
 **La coda muta del render, e quanto e' larga davvero.** Fra l'ultimo `FRAME` stampato dal motore e `STAGE quality`
 nessuno manda niente al server, e il server adesso spegne una scheda che tace da `RENDER_SILENCE_MIN` (20 min). In
