@@ -17,9 +17,15 @@ import {
   validateStoryboard, defaultVoice, wordBudget, type Storyboard, type Format, type KleoStyle,
   KINDS, BEAT_KINDS, BEAT_ICONS, BEAT_FX, CINEMA_ACCENTS, VISUALS, FORBIDDEN_FIELDS,
   KLEO_STYLES, PICTURE_STYLES, IMAGE_PROMPT_MAX, kleoStyleOf, STORY_ACTS, STORY_CAST, STORY_PROPS, STORY_FX, STORY_ACCENTS,
-  SHOT_MOTION, SHOTS_PER_SCENE, SHOT_CAPTION_MAX, SHOT_HL_MAX, SHOT_AT_MAX, IMAGE_PROMPT_MIN, CLOSING_BUTTON_MAX,
+  SHOTS_PER_SCENE, SHOT_CAPTION_MAX, SHOT_HL_MAX, SHOT_AT_MAX, IMAGE_PROMPT_MIN, CLOSING_BUTTON_MAX,
   SHOT_ID_SUFFIX_RE, quotesVoice,
 } from "./keou-contract.ts";
+// The shot grammar: the ten story kinds and the one preset table that turns a kind into a camera move.
+// src/shot-grammar.ts is mirrored by worker/keou/shot_grammar.py; nothing here restates what that table says.
+import {
+  SHOT_KINDS, presetFor, durationFor, moveClassOf, directionOf, isLoud, resolveKind, LOUD_MAX_PER_WINDOW, LOUD_WINDOW_S,
+  type ShotKind,
+} from "./shot-grammar.ts";
 import cinemaExample from "../worker/keou/examples/short-relay-cinema/project.json" with { type: "json" };
 
 export const DEFAULT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
@@ -60,6 +66,147 @@ export class StoryboardError extends Error {
   constructor(message: string, errors: string[], draft?: unknown) { super(message); this.errors = errors; this.draft = draft; }
 }
 
+/* ------------------------------------------------------------------ shot grammar */
+
+/**
+ * SHOT GRAMMAR, planner side. A shot says what it is FOR, in story terms; Kleo owns the camera. Nobody — not the
+ * planner, not the client model, not this file — writes a camera move by hand, which is why the old in/out/left/right
+ * "motion" is gone from everything the picture style emits.
+ *
+ * The preset table itself (kind → move, duration window, motion strength, vendor prompt suffix with its negatives,
+ * text anchor, reserved trajectory) lives in ONE place in two languages: src/shot-grammar.ts and
+ * worker/keou/shot_grammar.py, proven identical by a test. Everything below reads that table and never restates it.
+ */
+const moveFor = (kind: ShotKind) => presetFor(kind).move;
+const classFor = (kind: ShotKind) => moveClassOf(moveFor(kind));
+const loudFor = (kind: ShotKind) => isLoud(moveFor(kind));
+/** Screen direction of a kind's move, or null when the move has none (a push, a crane, a hold). */
+const dirFor = (kind: ShotKind) => { const d = directionOf(moveFor(kind)); return d === "none" ? null : d; };
+/** The scale a kind frames at, for the "never twice at the same scale on the same subject" rule. */
+const scaleFor = (kind: ShotKind) => presetFor(kind).scale;
+
+/**
+ * Kinds the repair path may reach for, cheapest first: one per move class, then a static hold as the genuine last
+ * resort. STILL is the only class that can break a LATERAL → wide-PUSH sandwich, and a picture that holds still is
+ * never wrong to look at — but it is last, so a shot only lands on it when no moving kind fits the rules.
+ */
+const QUIET_KINDS: readonly ShotKind[] = ["detail", "face", "establish", "reveal", "action", "static_forced"];
+/** The rotation a missing shot_kind falls back to: VERTICAL → PUSH → LATERAL → PUSH, so no class ever repeats. */
+const SHOT_KIND_ROTATION: readonly ShotKind[] = ["establish", "face", "detail", "reveal"];
+/** The neutral lateral (track_alongside): where a scene's screen direction is already set the other way. */
+const NEUTRAL_LATERAL: ShotKind = "action";
+
+/**
+ * Writes shot_kind on every shot of a picture-style storyboard and keeps the sequence shootable, so the model (or
+ * the fixture, or a client-written storyboard) rarely hands the renderer a plan the validator has to refuse.
+ *
+ * Order of authority: the routing rule wins over everything (resolveKind), then the kind the author actually wrote,
+ * then the rule for a missing one — the first shot of the VIDEO is the hook, the last shot of the video is the
+ * closing, anything else takes the next kind of the rotation. Then the sequencing rules are repaired in place: no
+ * two consecutive shots of the same move class, no two adjacent loud moves and no more loud moves than the budget,
+ * no two consecutive shots of one scene at the same scale, one screen direction per scene.
+ *
+ * The one thing it does NOT repair is two adjacent shots that BOTH trip the routing rule: a forced static hold is
+ * never overruled (moving a picture of hands is the exact bug this grammar exists to kill), so the pair is left
+ * standing and the validator asks for a different picture — which is what the generator's retry loop is for.
+ */
+export function assignShotKinds(scenes: Record<string, unknown>[], format: string): void {
+  const slots: { shot: Record<string, unknown>; scene: number }[] = [];
+  scenes.forEach((s, i) => { if (Array.isArray(s.shots)) for (const sh of s.shots) if (isObj(sh)) slots.push({ shot: sh, scene: i }); });
+  if (!slots.length) return;
+  const kinds: ShotKind[] = [];
+  const sameScene = (a: number, b: number) => slots[a] !== undefined && slots[b] !== undefined && slots[a].scene === slots[b].scene;
+  /** True when a shot of `kind` at `at` may not sit beside `other`: same move class, or same scale inside one scene. */
+  const collides = (kind: ShotKind, at: number, other: number) =>
+    kinds[other] !== undefined && (classFor(kind) === classFor(kinds[other]) || (sameScene(at, other) && scaleFor(kind) === scaleFor(kinds[other])));
+  /**
+   * A quiet kind that collides with neither neighbour of shot `i`. The move class is the rule a viewer sees, so it
+   * comes first: when nothing satisfies the scale rule too, the class-safe pick stands and the validator (which the
+   * generator feeds back to the model) asks for a different picture.
+   */
+  const calmAt = (i: number): ShotKind => {
+    const fits = QUIET_KINDS.filter((k) => classFor(k) !== classFor(kinds[i - 1]) && (kinds[i + 1] === undefined || classFor(k) !== classFor(kinds[i + 1])));
+    return fits.find((k) => !collides(k, i, i - 1) && !collides(k, i, i + 1)) ?? fits[0] ?? "static_forced";
+  };
+
+  let turn = 0;
+  slots.forEach((slot, i) => {
+    const prompt = typeof slot.shot.image_prompt === "string" ? slot.shot.image_prompt : "";
+    let k: ShotKind;
+    if (inSet(slot.shot.shot_kind, SHOT_KINDS)) k = slot.shot.shot_kind as ShotKind;
+    else if (i === 0) k = "hook";
+    else if (i === slots.length - 1) k = "closing"; // only the LAST picture of the video closes it
+    else {
+      k = SHOT_KIND_ROTATION[turn % SHOT_KIND_ROTATION.length];
+      for (let n = 0; n < SHOT_KIND_ROTATION.length && collides(k, i, i - 1); n++) k = SHOT_KIND_ROTATION[++turn % SHOT_KIND_ROTATION.length];
+      turn++;
+    }
+    kinds.push(resolveKind(k, prompt)); // the routing rule has the last word
+  });
+
+  /**
+   * No two consecutive shots of the same move class or scale, and no two adjacent loud moves. A forced static hold
+   * gives way to nothing, and the hook that opens the video gives way to nothing either: when one of those is the
+   * offender it is its neighbour that moves. The closing is preferred, not pinned — it keeps its pull-out whenever
+   * the shot before it can move instead, and gives it up when that shot is the hook.
+   */
+  const fixPairs = (): boolean => {
+    let changed = false;
+    for (let i = 1; i < kinds.length; i++) {
+      if (kinds[i] === "static_forced" && kinds[i - 1] === "static_forced") continue; // both pinned: only a new picture fixes it
+      if (!collides(kinds[i], i, i - 1) && !(loudFor(kinds[i]) && loudFor(kinds[i - 1]))) continue;
+      const at = kinds[i] !== "static_forced" && kinds[i] !== "closing" ? i
+        : i - 1 > 0 && kinds[i - 1] !== "static_forced" ? i - 1
+        : kinds[i] !== "static_forced" ? i : -1;
+      if (at < 0) continue;
+      const k = calmAt(at);
+      if (k !== kinds[at]) { kinds[at] = k; changed = true; }
+    }
+    return changed;
+  };
+  /**
+   * At most LOUD_MAX_PER_WINDOW loud moves inside any LOUD_WINDOW_S. The timeline is built the way the contract
+   * builds it — every shot lasts the middle of its kind's window for this format — so the planner and the validator
+   * are reading the same clock, and the third loud move of a window becomes quiet.
+   */
+  const fixLoudBudget = (): boolean => {
+    let changed = false;
+    for (let guard = 0; guard <= kinds.length; guard++) {
+      const starts: number[] = [];
+      let t = 0;
+      for (const k of kinds) { const w = durationFor(k, format); starts.push(t); t += (w.min + w.max) / 2; }
+      const loudIdx = kinds.map((_, i) => i).filter((i) => loudFor(kinds[i]));
+      let over = -1;
+      for (let a = 0; a < loudIdx.length && over < 0; a++) {
+        const win = loudIdx.slice(a).filter((i) => starts[i] < starts[loudIdx[a]] + LOUD_WINDOW_S);
+        if (win.length > LOUD_MAX_PER_WINDOW) over = win[LOUD_MAX_PER_WINDOW];
+      }
+      if (over < 0) return changed;
+      kinds[over] = calmAt(over); // QUIET_KINDS holds no loud move, so each round removes one and this terminates
+      changed = true;
+    }
+    return changed;
+  };
+  /** Screen direction stays consistent inside a scene: a second lateral that pulls the other way turns neutral. */
+  const fixDirection = (): boolean => {
+    let changed = false;
+    const dir = new Map<number, "left" | "right">();
+    kinds.forEach((k, i) => {
+      const d = dirFor(k);
+      if (!d) return;
+      const had = dir.get(slots[i].scene);
+      if (!had) dir.set(slots[i].scene, d);
+      else if (had !== d && kinds[i] !== NEUTRAL_LATERAL) { kinds[i] = NEUTRAL_LATERAL; changed = true; } // still LATERAL: the class alternation holds
+    });
+    return changed;
+  };
+  // Repair until the sequence stops moving: fixing one shot can re-open the pair beside it, and a kind changed for
+  // one rule can break another. Bounded — a plan no rule can satisfy is the validator's to report and the
+  // generator's to feed back to the model, which is what the retry loop is for.
+  for (let pass = 0; pass < 6; pass++) if (![fixPairs(), fixLoudBudget(), fixDirection()].some(Boolean)) break;
+  kinds.forEach((k, i) => { slots[i].shot.shot_kind = k; });
+}
+
 /* ------------------------------------------------------------------ template briefs */
 
 type StyleId = "cinema" | "editorial" | "technical" | "illustrated" | "stickman" | "picture";
@@ -83,8 +230,9 @@ The first beat of the hook scene is a slammed "type" beat. Every other beat carr
 /** The picture style (cartoon/realistic): scenes are runs of full-screen pictures cut on the narration, no beats, no icons. */
 const SHOT_RULES = `Scenes are "cinema" (last one "closing"). Each scene: chapter (e.g. "01 THE CAPTAIN", ≤32), accent (red for threat/tension, green for the fix/win, cyan for neutral explanation, amber for warnings), title (≤90, the line shown on the first shot), hl (ONE word taken from the title, ≤24), voice (one narrated line), hold 0.2 (0.4 on the last scene), and "shots": 2–4 pictures for a cinema scene, 1 for the closing. The video is nothing but these pictures, cut like a short documentary: there are no icons, no cards and no beats.
 Shot shape ("?" marks optional keys; WORDS = 1–4 consecutive words copied EXACTLY, same spelling, from that scene's voice):
-{"image_prompt":"one sentence ≤${IMAGE_PROMPT_MAX} chars describing the picture","caption"?:"2–5 BIG WORDS ≤${SHOT_CAPTION_MAX}","hl"?:"ONE WORD OF caption ≤${SHOT_HL_MAX}","at"?:WORDS,"motion"?:"${SHOT_MOTION.join("|")}"}
-The FIRST shot of a scene starts with the scene and must NOT carry "at"; every other shot carries "at": the picture cuts when that word is spoken, so spread the anchors over the line in reading order. A caption is optional and rare: 2–5 strong words on the shot that carries the key idea (the first shot falls back to the scene title). "motion" is the slow camera move on the picture (in/out = zoom, left/right = pan); leave it out and the engine alternates. The closing scene has ONE shot and may carry "button" (≤${CLOSING_BUTTON_MAX}, e.g. "Follow", default "Subscribe").`;
+{"image_prompt":"one sentence ≤${IMAGE_PROMPT_MAX} chars describing the picture","caption"?:"2–5 BIG WORDS ≤${SHOT_CAPTION_MAX}","hl"?:"ONE WORD OF caption ≤${SHOT_HL_MAX}","at"?:WORDS,"shot_kind"?:"${SHOT_KINDS.join("|")}"}
+The FIRST shot of a scene starts with the scene and must NOT carry "at"; every other shot carries "at": the picture cuts when that word is spoken, so spread the anchors over the line in reading order. A caption is optional and rare: 2–5 strong words on the shot that carries the key idea (the first shot falls back to the scene title). The closing scene has ONE shot and may carry "button" (≤${CLOSING_BUTTON_MAX}, e.g. "Follow", default "Subscribe").
+"shot_kind" says what the shot is FOR. NEVER write a camera move, a zoom, a pan or any other direction: Kleo owns the camera and picks the move from the kind. hook = the opening jolt, first shot of the video. establish = where we are. face = one face or animal carrying the feeling. detail = one object, close. detail_orbit = one object worth circling. action = something moving through the frame. reveal = the frame opens on the answer. tension = the moment before it goes wrong. closing = the last picture of the video. static_forced = the picture must NOT move (visible hands doing something, a crowd, readable signs or writing, a mechanism with moving parts, two people interacting) — those break under any move, so pin them. Leave shot_kind out and Kleo chooses it.`;
 
 const PICTURE_RULES: Record<"cartoon" | "realistic", string> = {
   cartoon: `PICTURES: this is a CARTOON video, so every "image_prompt" describes a flat vector cartoon illustration: concrete subjects and setting from the story (pirates → a beach, sand, a ship at anchor; space → a rocket, a station, planets), the SAME characters described the same way in every shot (hair, clothes, colours), bright simple shapes, one clear action per picture, a clear mood. Consecutive shots of one scene show the same place from a new angle or the next moment of the action. Never mention text, letters, numbers, logos, captions or the style itself; never name real people.`,
@@ -193,7 +341,7 @@ function systemPrompt(plan: Plan): string {
   const rules = plan.style === "picture" ? SHOT_RULES : plan.style === "cinema" ? CINEMA_RULES : plan.style === "stickman" ? STICKMAN_RULES : EDITORIAL_RULES;
   const pictures = plan.style === "picture" ? `\n${PICTURE_RULES[plan.kleo as "cartoon" | "realistic"]}` : "";
   const enums = plan.style === "picture"
-    ? `motion: ${list(SHOT_MOTION)}. accents: ${list(CINEMA_ACCENTS)}.`
+    ? `shot kinds: ${list(SHOT_KINDS)}. accents: ${list(CINEMA_ACCENTS)}.`
     : plan.style === "stickman"
     ? `acts: ${list(STORY_ACTS)}. cast: ${list(STORY_CAST)}. props: ${list(STORY_PROPS)}. fx: ${list(STORY_FX)}. accents: ${list(STORY_ACCENTS)}.`
     : `beat kinds: ${list(BEAT_KINDS)}. icons: ${list(BEAT_ICONS)}. fx: ${list(BEAT_FX)}. accents: ${list(CINEMA_ACCENTS)}. visuals: ${list(VISUALS)}.`;
@@ -256,7 +404,7 @@ function sceneSchema(plan: Plan): Record<string, unknown> {
   if (plan.style === "picture") {
     const shot = {
       type: "object",
-      properties: { image_prompt: str, caption: str, hl: str, at: str, motion: { type: "string", enum: [...SHOT_MOTION] } },
+      properties: { image_prompt: str, caption: str, hl: str, at: str, shot_kind: { type: "string", enum: [...SHOT_KINDS] } },
       required: ["image_prompt"],
       additionalProperties: false,
     };
@@ -495,7 +643,9 @@ function repairShot(sh: Record<string, unknown>, voice: string, first: boolean):
   // ("ver came") anchors nothing and the validator rejects it, so it is dropped here rather than costing a round trip.
   const at = typeof sh.at === "string" ? sh.at.trim() : "";
   if (!first && at && at.length <= SHOT_AT_MAX && quotesVoice(at, voice)) out.at = at;
-  if (inSet(sh.motion, SHOT_MOTION)) out.motion = sh.motion;
+  // The author writes what the shot is FOR, never how the camera moves: a hand-written "motion" (in/out/left/right)
+  // is dropped without comment, and only a kind of the shot grammar survives. assignShotKinds fills in the rest.
+  if (inSet(sh.shot_kind, SHOT_KINDS)) out.shot_kind = sh.shot_kind;
   return out;
 }
 
@@ -606,6 +756,8 @@ export function normalizeStoryboard(raw: unknown, plan: Plan): unknown {
       if (plan.style !== "cinema") delete last.beats;
       if (plan.style === "picture" && Array.isArray(last.shots)) last.shots = last.shots.slice(0, SHOTS_PER_SCENE.closing[1]); // a closing shows one picture, two at most
     }
+    // Last, once the shots of every scene are final: the shot grammar over the whole video.
+    if (plan.style === "picture") assignShotKinds(scenes, plan.format);
   }
   return c;
 }
@@ -657,29 +809,30 @@ async function callModel(env: Env, model: string, messages: { role: string; cont
  * local runs with IMAGE_FIXTURE=1 exercise several pictures per scene. The second shot's cut ("at") is derived from
  * the scene's own voice line at build time, so the fixture can never quote a word the example no longer says.
  */
-const FIXTURE_SHOTS: Record<string, { image_prompt: string; caption?: string; hl?: string; motion?: string }[]> = {
+const FIXTURE_SHOTS: Record<string, { image_prompt: string; caption?: string; hl?: string; shot_kind?: ShotKind }[]> = {
   "01-gone": [
-    { image_prompt: "A quiet suburban driveway at dawn, an empty parking spot with tyre marks on the wet tarmac, a house with one kitchen window lit", caption: "THE CAR IS GONE", hl: "GONE", motion: "in" },
-    { image_prompt: "A car key lying on a wooden kitchen bench next to a fruit bowl, seen from close by, warm morning light through the window", motion: "left" },
+    { image_prompt: "A quiet suburban driveway at dawn, an empty parking spot with tyre marks on the wet tarmac, a house with one kitchen window lit", caption: "THE CAR IS GONE", hl: "GONE", shot_kind: "hook" },
+    { image_prompt: "A car key lying on a wooden kitchen bench next to a fruit bowl, seen from close by, warm morning light through the window", shot_kind: "detail" },
   ],
   "02-relay": [
-    { image_prompt: "Two hooded figures at night on a quiet street, one crouching by a front door holding a small boxy amplifier with a short antenna", motion: "in" },
-    { image_prompt: "A close view of the small amplifier in gloved hands, a faint blue arc of signal bending towards the dark house behind it", motion: "out" },
+    // Two people interacting with a prop: the routing rule pins this one whatever it says here.
+    { image_prompt: "Two hooded figures at night on a quiet street, one crouching by a front door holding a small boxy amplifier with a short antenna", shot_kind: "tension" },
+    { image_prompt: "A close view of the small boxy amplifier left on a dark doorstep, a faint blue arc of signal bending towards the house behind it", shot_kind: "detail" },
   ],
   "03-believes": [
-    { image_prompt: "A sleek modern car in a driveway at night, its headlights switching on by themselves, the dark house reflected in the windscreen", motion: "in" },
-    { image_prompt: "The same car pulling away down an empty street at night, red tail lights, the driveway left empty behind it", motion: "right" },
+    { image_prompt: "A sleek modern car in a driveway at night, its headlights switching on by themselves, the dark house reflected in the windscreen", shot_kind: "establish" },
+    { image_prompt: "The same car pulling away down an empty street at night, red tail lights, the driveway left empty behind it", shot_kind: "action" },
   ],
   "04-test": [
-    { image_prompt: "A long row of shiny new cars in a bright test hall, orange cones on the floor, clean industrial light from above", caption: "850 CARS TESTED", hl: "850", motion: "left" },
-    { image_prompt: "A clipboard on a stand in front of one car in the test hall, rows of ticked boxes, cold neutral light", motion: "in" },
+    { image_prompt: "A long row of shiny new cars in a bright test hall, orange cones on the floor, clean industrial light from above", caption: "850 CARS TESTED", hl: "850", shot_kind: "establish" },
+    { image_prompt: "A single car alone under a bright overhead lamp in the empty test hall, orange cones around it, cold neutral light", shot_kind: "detail" },
   ],
   "05-fix": [
-    { image_prompt: "A small dark fabric pouch on a wooden kitchen bench, a car key dropping into it, soft daylight from the side", caption: "DROP THE KEY IN", hl: "KEY", motion: "in" },
-    { image_prompt: "The closed pouch on the bench with the key inside, the house quiet around it, calm warm light", motion: "out" },
+    { image_prompt: "A small dark fabric pouch on a wooden kitchen bench, a car key dropping into it, soft daylight from the side", caption: "DROP THE KEY IN", hl: "KEY", shot_kind: "reveal" },
+    { image_prompt: "The closed pouch on the bench with the key inside, the house quiet around it, calm warm light", shot_kind: "detail" },
   ],
   "06-loop": [
-    { image_prompt: "A wide car park at sunset seen from above, rows of cars of many colours, one empty lane leading out, calm warm sky", motion: "out" },
+    { image_prompt: "A wide car park at sunset seen from above, rows of cars of many colours, one empty lane leading out, calm warm sky", shot_kind: "closing" },
   ],
 };
 /**
@@ -737,6 +890,9 @@ export function fixtureStoryboard(job: PlanJob): Storyboard {
   sb.music = "bed";
   sb.max_duration = Math.min(1800, Math.max(5, Math.round(p.duration_s * 1.6)));
   sb.description = `${String(sb.description)}\n\n(fixture storyboard for job ${job.id}: ${job.prompt.slice(0, 80)})`;
+  // The hand-written kinds above go through the same grammar as a generated one: the routing rule pins the two
+  // hooded figures to a static hold, and the sequencing rules are proven on the fixture every time it is built.
+  if (pictures) assignShotKinds(sb.scenes as Record<string, unknown>[], p.format);
   const r = validateStoryboard(sb, { format: p.format, language: p.language });
   if (!r.ok) throw new StoryboardError("fixture storyboard is invalid: " + r.errors.join("; "), r.errors);
   return r.storyboard;

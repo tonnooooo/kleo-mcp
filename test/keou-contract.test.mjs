@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { validateStoryboard, defaultVoice, wordBudget, kleoStyleOf, pictureScenes, VOICES, FORBIDDEN_FIELDS, FORBIDDEN_KINDS, FORBIDDEN_SCENE_FIELDS, KLEO_STYLES, IMAGE_PROMPT_MAX, MAX_PICTURES, SHOT_MOTION, SHOT_FIELDS, SHOTS_PER_SCENE } from "../src/keou-contract.ts";
+import { validateStoryboard, defaultVoice, wordBudget, kleoStyleOf, pictureScenes, VOICES, FORBIDDEN_FIELDS, FORBIDDEN_KINDS, FORBIDDEN_SCENE_FIELDS, KLEO_STYLES, IMAGE_PROMPT_MAX, MAX_PICTURES, SHOT_MOTION, SHOT_FIELDS, SHOTS_PER_SCENE, SHOT_KINDS, SHOT_GRAMMAR, durationFor, MOTION_ALIASES, MOTION_MOVES, MAX_SHOT_S, MAX_PERSON_SHOT_S, LOUD_WINDOW_S, LOUD_MAX_PER_WINDOW } from "../src/keou-contract.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const EXAMPLES = join(ROOT, "worker", "keou", "examples");
@@ -270,9 +270,9 @@ test("shot fields: image_prompt 2-240 required, caption ≤ 40, hl ≤ 20, motio
   const hl = pirates(); hl.scenes[0].shots[0].hl = "TWENTYONECHARACTERSXX";
   assert.ok(errorsOf(hl, { format: "9:16", language: "en" }).includes("scene 1 shot 1 hl: required text, maximum 20 characters"));
   const motion = pirates(); motion.scenes[0].shots[0].motion = "spin";
-  assert.ok(errorsOf(motion, { format: "9:16", language: "en" }).includes("scene 1 shot 1: motion must be one of ['in', 'left', 'out', 'right']"));
+  assert.ok(errorsOf(motion, { format: "9:16", language: "en" }).some((e) => /^scene 1 shot 1: motion is deprecated/.test(e)));
   assert.deepEqual([...SHOT_MOTION], ["in", "out", "left", "right"]);
-  for (const m of SHOT_MOTION) { const ok = pirates(); ok.scenes[0].shots[0].motion = m; assert.equal(validateStoryboard(ok, { format: "9:16", language: "en" }).ok, true, m); }
+  for (const m of SHOT_MOTION) { const ok = pirates(); ok.scenes.at(-1).shots[0].motion = m; assert.equal(validateStoryboard(ok, { format: "9:16", language: "en" }).ok, true, m); }
   const img = pirates(); img.scenes[0].shots[0].image = "img/01-hook-s1.png";
   assert.ok(errorsOf(img, { format: "9:16", language: "en" }).some((e) => /scene 1 shot 1: image is not allowed in a storyboard/.test(e)));
   const notObj = pirates(); notObj.scenes[0].shots[1] = "a picture";
@@ -280,7 +280,7 @@ test("shot fields: image_prompt 2-240 required, caption ≤ 40, hl ≤ 20, motio
 });
 
 test("a shot carrying a field the engine does not know is refused here, not after the render", () => {
-  assert.deepEqual([...SHOT_FIELDS], ["image_prompt", "caption", "hl", "at", "motion"]);
+  assert.deepEqual([...SHOT_FIELDS], ["image_prompt", "caption", "hl", "at", "shot_kind", "strength", "dur", "motion"]);
   const one = pirates(); one.scenes[0].shots[0].note = "remember to make her look tired";
   assert.ok(errorsOf(one, { format: "9:16", language: "en" }).includes("scene 1 shot 1: unknown shot fields ['note']"));
   const many = pirates();
@@ -290,7 +290,7 @@ test("a shot carrying a field the engine does not know is refused here, not afte
   const img = pirates(); img.scenes[0].shots[0].image = "img/01-hook-s1.png";
   const errors = errorsOf(img, { format: "9:16", language: "en" });
   assert.ok(errors.some((e) => /scene 1 shot 1: image is not allowed/.test(e)) && !errors.some((e) => /unknown shot fields/.test(e)), errors.join("\n"));
-  // The five accepted fields together still validate.
+  // The deprecated set of fields still validates together.
   const all = pirates();
   Object.assign(all.scenes[0].shots[1], { caption: "SHE WALKED AWAY", hl: "AWAY", at: "never came back", motion: "left" });
   assert.equal(validateStoryboard(all, { format: "9:16", language: "en" }).ok, true);
@@ -393,6 +393,214 @@ test("MAX_PICTURES: 24 for a Short, 48 for a long video", () => {
   assert.equal(MAX_PICTURES(90), 24);
   assert.equal(MAX_PICTURES(91), 48);
   assert.equal(MAX_PICTURES(600), 48);
+});
+
+/* ------------------------------------------------------------------ *
+ * The shot grammar (src/shot-grammar.ts) and the sequencing rules.    *
+ * ------------------------------------------------------------------ */
+
+/** Pictures with nothing in them the routing rule cares about: no hands at work, no crowd, no sign, no mechanism. */
+const NEUTRAL = [
+  "An empty golden beach at sunset, palm trees and a calm turquoise bay",
+  "A wooden chest half buried in dry sand under a big white moon",
+  "Dry pale sand with one worn rope end lying across it",
+  "A red-sailed ship anchored far out on a calm empty sea at dawn",
+  "A black rock cliff above an empty grey sea under low clouds",
+  "Wet sand at the waterline, one shell, the tide sliding back",
+];
+/** A picture storyboard written in the grammar: one list of shot_kinds per scene, the last scene is the closing. */
+function grammar(kinds, format = "9:16") {
+  let n = 0;
+  return {
+    schema_version: 1, editorial_status: "ready", title: "The beach nobody came back to", style: "picture", kleo_style: "cartoon",
+    format, language: "en", voice: "am_michael", speed: 1.1, music: "bed", max_duration: 75,
+    scenes: kinds.map((list, i) => ({
+      id: `0${i + 1}-scene`, kind: i === kinds.length - 1 ? "closing" : "cinema",
+      title: "the empty beach", voice: "The beach is empty now, and the tide keeps coming back for it.",
+      shots: list.map((shot_kind) => ({ shot_kind, image_prompt: NEUTRAL[n++ % NEUTRAL.length] })),
+    })),
+  };
+}
+const G = { format: "9:16", language: "en" };
+const WIDE = { format: "16:9", language: "en" };
+/** A legal run: the class alternates, the scale cuts, screen direction holds, no loud move anywhere. */
+const LEGAL = [["establish", "face", "detail"], ["reveal", "detail", "establish"], ["closing"]];
+const errsOf = (sb, o = G) => { const r = validateStoryboard(sb, o); return r.ok ? [] : r.errors; };
+const has = (errors, re) => errors.some((e) => re.test(e));
+
+test("shot_kind is the story term: ten kinds, one per shot, never camera language", () => {
+  assert.deepEqual([...SHOT_KINDS].sort(), ["action", "closing", "detail", "detail_orbit", "establish", "face", "hook", "reveal", "static_forced", "tension"]);
+  assert.deepEqual(errsOf(grammar(LEGAL)), [], "a storyboard that respects the grammar validates");
+  // Every kind is a value the validator knows (its neighbours may still break a sequencing rule, which is not this test).
+  for (const k of SHOT_KINDS) {
+    const errors = errsOf(grammar([["static_forced"], [k], ["closing"]]));
+    assert.ok(!has(errors, /shot_kind must be one of/), `${k} should be a known kind: ${errors.join("\n")}`);
+  }
+  const unknown = grammar(LEGAL); unknown.scenes[0].shots[1].shot_kind = "dolly_zoom";
+  assert.ok(has(errsOf(unknown), /^scene 1 shot 2: shot_kind must be one of \['action', 'closing', 'detail'/), "the message lists the kinds");
+  const list = grammar(LEGAL); list.scenes[0].shots[1].shot_kind = ["face", "detail"];
+  assert.ok(errsOf(list).includes("scene 1 shot 2: one move per shot — shot_kind names a single kind, never a list of them"));
+  const motionList = pirates(); motionList.scenes[0].shots[0].motion = ["in", "left"];
+  assert.ok(has(errsOf(motionList), /^scene 1 shot 1: one move per shot — motion names a single move, never a list of them/));
+  // The camera never reaches the storyboard: a shot names a kind, and the preset table names the move.
+  for (const kind of SHOT_KINDS) assert.equal(typeof SHOT_GRAMMAR[kind].move, "string");
+});
+
+test("strength is optional and lives between 0 and 1 — 0 is the locked frame", () => {
+  for (const s of [0, 0.1, 0.25, 0.6, 1]) {
+    const ok = grammar(LEGAL); ok.scenes[0].shots[1].strength = s;
+    assert.deepEqual(errsOf(ok), [], `strength ${s} should be accepted`);
+  }
+  for (const bad of [-0.2, 1.4, "hard", null]) {
+    const sb = grammar(LEGAL); sb.scenes[0].shots[1].strength = bad;
+    assert.ok(errsOf(sb).includes("scene 1 shot 2 strength: expected a number between 0 and 1"), `strength ${bad} should be refused`);
+  }
+  // A static_forced shot resolves to strength 0, and the storyboard it produces has to validate again unchanged.
+  const held = grammar(LEGAL); held.scenes[0].shots[1] = { shot_kind: "static_forced", image_prompt: "an empty room at dawn" };
+  assert.deepEqual(errsOf(held), []);
+  assert.equal(held.scenes[0].shots[1].strength, 0);
+  assert.deepEqual(errsOf(held), [], "and again on a second pass");
+});
+
+test("dur must fall inside the kind's window, after the format factor", () => {
+  const RE = /^scene 1 shot 2 dur: a (\w+) shot runs ([\d.]+)–([\d.]+) s in (\S+);/;
+  const window = (sb, o) => {
+    const errors = errsOf(sb, o);
+    const line = errors.find((e) => RE.test(e));
+    assert.ok(line, `expected a dur window message, got ${errors.join("\n") || "no error"}`);
+    const [, kind, lo, hi, fmt] = line.match(RE);
+    return { kind, lo: Number(lo), hi: Number(hi), fmt };
+  };
+  // face is 2.5–3.5 s; a 9:16 Short multiplies by 0.7, so 3 s is outside a window that stops at 2.45.
+  const over = grammar(LEGAL); over.scenes[0].shots[1].dur = 3;
+  const face = window(over, G);
+  assert.equal(face.kind, "face");
+  assert.equal(face.fmt, "9:16");
+  assert.ok(Math.abs(face.lo - 2.5 * 0.7) < 0.01 && Math.abs(face.hi - 3.5 * 0.7) < 0.01, `9:16 face window ${face.lo}–${face.hi} should be the 2.5–3.5 s window times 0.7`);
+  assert.deepEqual(durationFor("face", "9:16"), { min: face.lo, max: face.hi }, "the message quotes the table, it does not compute its own");
+  const ok = grammar(LEGAL); ok.scenes[0].shots[1].dur = 2;
+  assert.deepEqual(errsOf(ok), [], "2 s is inside the shortened face window");
+  // establish is 3.5–4.5 s: times 0.7 that is 2.45–3.15, and 9:16 caps every shot at 3 s.
+  const est = [["face", "establish", "detail"], ["closing"]];
+  const capped = grammar(est); capped.scenes[0].shots[1].dur = 3.1;
+  const wide = window(capped, G);
+  assert.equal(wide.kind, "establish");
+  assert.equal(wide.hi, 3, "the 9:16 cap is 3 s, not 3.15");
+  const at3 = grammar(est); at3.scenes[0].shots[1].dur = 3;
+  assert.deepEqual(errsOf(at3), [], "3 s is the longest a 9:16 shot runs");
+  // 16:9 keeps the table as written: the factor is a Shorts rule.
+  const long = grammar(est, "16:9"); long.scenes[0].shots[1].dur = 4;
+  assert.deepEqual(errsOf(long, WIDE), [], "4 s is inside the 16:9 establish window");
+  const short = grammar(est, "16:9"); short.scenes[0].shots[1].dur = 2;
+  assert.deepEqual(window(short, WIDE), { kind: "establish", lo: 3.5, hi: 4.5, fmt: "16:9" });
+  const orphan = pirates(); orphan.scenes[0].shots[0].dur = 2;
+  assert.ok(errsOf(orphan).includes("scene 1 shot 1: dur needs shot_kind — the kind is what says how long the shot may run"));
+  const forever = grammar(LEGAL); forever.scenes[0].shots[1].dur = 6;
+  assert.deepEqual(errsOf(forever), [`scene 1 shot 2: duration 6s is over the ${MAX_SHOT_S}s maximum — shorten dur, or cut the shot in two`], "the ceiling answers instead of the window");
+});
+
+test("a picture with a person in it holds four seconds at most", () => {
+  const person = "A woman standing alone on the empty beach at dusk, her face turned to the sea";
+  const est = [["face", "establish", "detail"], ["closing"]];
+  const sb = grammar(est, "16:9");
+  sb.scenes[0].shots[1].dur = 4.4;
+  sb.scenes[0].shots[1].image_prompt = person;
+  assert.deepEqual(errsOf(sb, WIDE), [`scene 1 shot 2: duration 4.4s is over the ${MAX_PERSON_SHOT_S}s maximum for a shot with a person in it — shorten dur, or cut the shot in two`]);
+  const empty = grammar(est, "16:9"); empty.scenes[0].shots[1].dur = 4.4;
+  assert.deepEqual(errsOf(empty, WIDE), [], "a landscape may hold longer than a face");
+  const shorter = grammar(est, "16:9");
+  shorter.scenes[0].shots[1].dur = 3.8;
+  shorter.scenes[0].shots[1].image_prompt = person;
+  assert.deepEqual(errsOf(shorter, WIDE), []);
+});
+
+test("static_forced is routing, not taste: hands, a crowd, signage or a mechanism", () => {
+  const breaks = [
+    ["Two hands tying a knot in a thick rope, close up on the fingers", "hands doing something"],
+    ["A crowd of forty pirates packed on the deck, all shouting at once", "a crowd, or two people interacting"],
+    ["A painted signpost at the head of the empty beach, its lettering still readable", "signage the viewer can read"],
+    ["The ship's windlass, all its gears and moving parts caught mid-turn", "a mechanism with moving parts"],
+  ];
+  for (const [image_prompt, why] of breaks) {
+    const moving = grammar(LEGAL); moving.scenes[0].shots[1].image_prompt = image_prompt;
+    // Repaired, not refused: hands at work get a locked frame and the author is never sent back to rewrite the
+    // shot. `why` still names the category the router matched.
+    void why;
+    assert.deepEqual(errsOf(moving), [], image_prompt);
+    assert.equal(moving.scenes[0].shots[1].shot_kind, "static_forced", "the router locked the frame");
+    assert.equal(moving.scenes[0].shots[1].motion, "static_hold", "and the resolved move followed it");
+    const held = grammar(LEGAL); held.scenes[0].shots[1] = { shot_kind: "static_forced", image_prompt };
+    assert.deepEqual(errsOf(held), [], "static_forced is the answer, so it is never asked for again");
+  }
+  assert.deepEqual(errsOf(grammar(LEGAL)), [], "an empty beach is routed nowhere");
+});
+
+test("sequencing: the move class alternates, across the cut too", () => {
+  const same = grammar([["establish", "face", "reveal"], ["detail"], ["closing"]]);
+  assert.deepEqual(errsOf(same), ["scene 1 shot 3: move class PUSH repeats scene 1 shot 2 ('push_in' then 'pull_out') — change one of the two shot_kinds so the class alternates (PUSH / LATERAL / VERTICAL / STILL)"]);
+  const across = grammar([["establish", "face", "detail"], ["action", "face", "establish"], ["closing"]]);
+  assert.deepEqual(errsOf(across), ["scene 2 shot 1: move class LATERAL repeats scene 1 shot 3 ('track_right' then 'track_alongside') — change one of the two shot_kinds so the class alternates (PUSH / LATERAL / VERTICAL / STILL)"], "a scene cut does not reset the rule");
+});
+
+test("sequencing: two shots in a row never sit at the same scale on the same subject", () => {
+  const twice = grammar([["establish", "face", "detail_orbit"], ["closing"]]);
+  assert.deepEqual(errsOf(twice), ["scene 1 shot 3: scale 'close' repeats scene 1 shot 2 on the same subject '01-scene' — change shot_kind so the cut changes the scale"]);
+  // Across a scene cut the subject changes, and the same scale is allowed there.
+  const cut = grammar([["establish", "detail", "face"], ["detail_orbit", "establish"], ["closing"]]);
+  assert.deepEqual(errsOf(cut), [], "the rule is about one subject, not about the whole video");
+});
+
+test("sequencing: at most two loud moves per 40 s, and never two in a row", () => {
+  const pair = grammar([["tension", "detail_orbit", "establish"], ["closing"]]);
+  assert.deepEqual(errsOf(pair), ["scene 1 shot 2: loud move 'orbit_left' is adjacent to the loud move at scene 1 shot 1 — put a quiet shot between them"]);
+  const three = grammar([["hook", "establish", "tension", "establish"], ["detail_orbit", "establish"], ["closing"]]);
+  assert.deepEqual(errsOf(three), [`scene 2 shot 1: more than ${LOUD_MAX_PER_WINDOW} loud moves within ${LOUD_WINDOW_S}s (scene 1 shot 1, scene 1 shot 3, scene 2 shot 1) — keep ${LOUD_MAX_PER_WINDOW} loud moves per ${LOUD_WINDOW_S} s and let the rest be quiet`]);
+  const two = grammar([["hook", "establish", "tension", "establish"], ["face", "detail"], ["closing"]]);
+  assert.deepEqual(errsOf(two), [], "two loud moves are the budget, not the limit");
+});
+
+test("sequencing: screen direction stays the same inside a scene", () => {
+  const flip = grammar([["detail", "establish", "detail_orbit"], ["closing"]]);
+  assert.deepEqual(errsOf(flip), ["scene 1 shot 3: screen direction flips inside scene '01-scene' (right at scene 1 shot 1, left here) — keep one direction inside a scene: flip the shot, not the camera"]);
+  const own = grammar([["detail", "establish", "face"], ["detail_orbit", "establish"], ["closing"]]);
+  assert.deepEqual(errsOf(own), [], "each scene keeps its own direction");
+});
+
+test("motion is the deprecated alias: accepted silently, normalised away, and it says so", () => {
+  assert.deepEqual(MOTION_ALIASES, { in: "push_in", out: "pull_out", left: "track_left", right: "track_right" });
+  assert.deepEqual([...MOTION_MOVES], ["push_in", "pull_out", "track_left", "track_right"]);
+  const r = validateStoryboard(pirates(), G);
+  assert.deepEqual(r.ok ? [] : r.errors, [], "a storyboard written before the grammar still renders");
+  assert.deepEqual(r.storyboard.scenes[0].shots.map((s) => s.motion), ["push_in", "track_left", "pull_out"], "the old names never reach the engine");
+  assert.equal(r.storyboard.scenes[1].shots[1].motion, "track_right");
+  // Normalising is idempotent: what the server stores validates again, unchanged.
+  const again = validateStoryboard(structuredClone(r.storyboard), G);
+  assert.deepEqual(again.ok ? [] : again.errors, []);
+  assert.deepEqual(again.storyboard, r.storyboard);
+  const bad = pirates(); bad.scenes[0].shots[0].motion = "zoom";
+  const errors = errsOf(bad);
+  assert.ok(has(errors, /^scene 1 shot 1: motion is deprecated: it names the camera move by hand/), errors.join("\n"));
+  assert.ok(has(errors, /normalise to push_in, pull_out, track_left, track_right/), "the message names the mapping");
+  assert.ok(has(errors, /Say what the shot is FOR with shot_kind — one of \['action', 'closing', 'detail'/), "and what to write instead");
+  const both = grammar(LEGAL); both.scenes[0].shots[1].motion = "in";
+  assert.ok(has(errsOf(both), /^scene 1 shot 2: a shot names its move once — shot_kind face already asks for push_in, so drop motion \(motion is deprecated/), errsOf(both).join("\n"));
+});
+
+test("a storyboard that is legal today stays legal", () => {
+  for (const [name, sb] of [["cartoon-pirates", pirates()], ["realistic-space", space()], ["cinema", cinema()], ["editorial", editorial()]])
+    assert.deepEqual(errsOf(sb), [], `${name} should still validate`);
+  // The grammar judges the shots that speak it: a legacy run of push_in after push_in is never read as a sequence.
+  const pushy = pirates();
+  for (const s of pushy.scenes) for (const sh of s.shots) sh.motion = "in";
+  assert.deepEqual(errsOf(pushy), [], "the sequencing rules do not fire on shots without shot_kind");
+  const bare = pirates();
+  for (const s of bare.scenes) for (const sh of s.shots) delete sh.motion;
+  assert.deepEqual(errsOf(bare), [], "a shot may still carry nothing but a picture");
+  // A legacy shot is a gap in the run, not a licence: the grammar shots on either side are still judged on their own.
+  const mixed = grammar([["establish", "face", "detail"], ["reveal", "detail", "establish"], ["closing"]]);
+  delete mixed.scenes[0].shots[1].shot_kind;
+  mixed.scenes[0].shots[1].motion = "in";
+  assert.deepEqual(errsOf(mixed), []);
 });
 
 /**

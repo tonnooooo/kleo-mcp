@@ -12,7 +12,43 @@
  *     identified by `<sceneId>-s<n>`; the old per-scene "image_prompt" is accepted as shorthand for a single shot and
  *     normalised away here, so what is stored (and what the engine sees) always carries shots.
  * Clients never set scene.image or shot.image themselves: the server generates the pictures and the worker attaches them.
+ *
+ * Shot grammar (src/shot-grammar.ts): a shot says what it is FOR — `shot_kind` in story terms — and the preset table
+ * turns that into a camera move, a duration window, a motion strength and a prompt suffix. Nobody writes camera
+ * language by hand any more: the old `motion` field is kept as a deprecated alias so storyboards written before the
+ * grammar keep rendering, and its four names are normalised to the grammar's moves on the way in. This validator is
+ * where the sequencing rules are ENFORCED — a run of shots that all push in, two loud moves in a row, a picture full
+ * of hands under a moving camera — because everything downstream of here is paid for on a rented GPU.
  */
+
+/**
+ * The grammar itself lives in src/shot-grammar.ts (mirrored by worker/keou/shot_grammar.py): the ten kinds, the preset
+ * table and the sequencing rules as pure functions. This file is where those rules become job-blocking errors, and it
+ * is the only place that names the grammar's exports. The ".ts" extension is required: node --test loads this module
+ * directly (type stripping, no bundler resolution).
+ */
+import {
+  SHOT_KINDS,
+  SHOT_GRAMMAR,
+  durationFor,
+  presetFor,
+  staticHoldReason,
+  checkOneMovePerShot,
+  checkDurations,
+  checkLoudBudget,
+  checkMoveClassAlternation,
+  checkScaleRepetition,
+  checkScreenDirection,
+  LOUD_MAX_PER_WINDOW,
+  LOUD_WINDOW_S,
+  MAX_SHOT_S,
+  type Move,
+  type PlanShot,
+  type ShotKind,
+  type StaticHoldCategory,
+} from "./shot-grammar.ts";
+export { SHOT_KINDS, SHOT_GRAMMAR, durationFor, LOUD_MAX_PER_WINDOW, LOUD_WINDOW_S, MAX_SHOT_S, MAX_PERSON_SHOT_S } from "./shot-grammar.ts";
+export type { Move, ShotKind } from "./shot-grammar.ts";
 
 export const STYLES = ["editorial", "technical", "illustrated", "terminal", "stickman", "cinema", "picture"] as const;
 export const KINDS = ["hero", "list", "compare", "steps", "metric", "image", "quote", "closing", "story", "cinema"] as const;
@@ -44,8 +80,19 @@ export type KleoStyle = (typeof KLEO_STYLES)[number];
 /** Styles whose shots get a generated picture; they are exactly the styles that use the Keou style "picture". */
 export const PICTURE_STYLES: readonly KleoStyle[] = ["cartoon", "realistic"];
 export const IMAGE_PROMPT_MAX = 240;
-/** Shot fields (picture style): the picture, the big words on it, the word it cuts on, the Ken Burns move. */
+/**
+ * The deprecated shot field: `motion` named the camera move by hand, and when it was missing the engine picked a
+ * direction from a hash of the scene id — arbitrary movement, which is what the shot grammar replaces. The four old
+ * names are still accepted, silently, and normalised to the grammar's moves here, so a stored storyboard never carries
+ * "in" again and validating it a second time changes nothing.
+ */
 export const SHOT_MOTION = ["in", "out", "left", "right"] as const;
+export const MOTION_ALIASES: Record<(typeof SHOT_MOTION)[number], Move> = { in: "push_in", out: "pull_out", left: "track_left", right: "track_right" };
+/** The moves `motion` may already hold (what the aliases normalise to). Everything else is said with shot_kind. */
+export const MOTION_MOVES: readonly Move[] = Object.values(MOTION_ALIASES);
+/** Motion strength a shot may ask for; the preset table carries the default for each kind. */
+export const SHOT_STRENGTH_MIN = 0;
+export const SHOT_STRENGTH_MAX = 1.0;
 export const IMAGE_PROMPT_MIN = 2;
 export const SHOT_CAPTION_MAX = 40;
 export const SHOT_HL_MAX = 20;
@@ -55,7 +102,7 @@ export const SHOT_AT_MAX = 24;
  * worker-attached `image`. contract.py refuses a shot with any other key, and it only runs once the GPU is rented
  * and the pictures are drawn: whatever the server lets through here is paid for before the engine throws it out.
  */
-export const SHOT_FIELDS = ["image_prompt", "caption", "hl", "at", "motion"] as const;
+export const SHOT_FIELDS = ["image_prompt", "caption", "hl", "at", "shot_kind", "strength", "dur", "motion"] as const;
 /** Shots per scene: a cinema scene cuts up to four times, a closing shows one picture (two at most). */
 export const SHOTS_PER_SCENE: Record<"cinema" | "closing", [number, number]> = { cinema: [1, 4], closing: [1, 2] };
 export const CLOSING_BUTTON_MAX = 24;
@@ -138,6 +185,24 @@ export const quotesVoice = (at: string, voice: string): boolean => {
   for (let i = 0; i + toks.length <= said.length; i++) if (toks.every((tk, m) => said[i + m] === tk)) return true;
   return false;
 };
+
+/** Seconds as the model wrote them: 2.45, not 2.4500000000000003. */
+const secs = (n: number) => String(Math.round(n * 100) / 100);
+/** The deprecated field says, in its own error message, what to write instead. */
+const motionHelp = () =>
+  `motion is deprecated: it names the camera move by hand (${sorted(SHOT_MOTION)} normalise to ` +
+  `${MOTION_MOVES.join(", ")}). Say what the shot is FOR with shot_kind — one of ${sorted(SHOT_KINDS)} — and the ` +
+  `shot grammar picks the move`;
+/** Why a picture is held still, in words a model can act on (the grammar answers with a category). */
+const STATIC_WHY: Record<StaticHoldCategory, string> = {
+  hands: "hands doing something",
+  people: "a crowd, or two people interacting",
+  signage: "signage the viewer can read",
+  mechanism: "a mechanism with moving parts",
+};
+
+/** One shot as the sequencing rules read it: the grammar's PlanShot, plus the label this file reports it under. */
+type SeqShot = PlanShot & { label: string | null };
 
 class Collector {
   errors: string[] = [];
@@ -256,7 +321,7 @@ function validateBeats(c: Record<string, unknown>, s: Record<string, unknown>, l
  * Normalises the old shorthand (a scene-level image_prompt) into shots[0] in place, so what the caller stores and
  * what the engine receives never carries a scene-level image_prompt.
  */
-function validateShots(s: Record<string, unknown>, label: string, kind: "cinema" | "closing", e: Collector): void {
+function validateShots(s: Record<string, unknown>, label: string, kind: "cinema" | "closing", e: Collector, fmt: Format, seq: SeqShot[]): void {
   if ("beats" in s) e.add(`${label}: beats belong to the cinema style; the picture style cuts between "shots" instead`);
   if (typeof s.image_prompt === "string" && !("shots" in s)) { s.shots = [{ image_prompt: s.image_prompt.trim() }]; delete s.image_prompt; }
   else if ("image_prompt" in s) { e.add(`${label}: put the picture on a shot ("shots": [{"image_prompt": "…"}]), not on the scene`); delete s.image_prompt; }
@@ -264,6 +329,7 @@ function validateShots(s: Record<string, unknown>, label: string, kind: "cinema"
   const shots = s.shots;
   if (!Array.isArray(shots) || shots.length < lo || shots.length > hi) { e.add(`${label}: shots must list ${lo}–${hi} full-screen pictures`); return; }
   const voice = typeof s.voice === "string" ? s.voice.toLowerCase() : "";
+  const sceneId = typeof s.id === "string" && s.id ? s.id : label;
   shots.forEach((sh: unknown, j: number) => {
     const sl = `${label} shot ${j + 1}`;
     if (!isObj(sh)) { e.add(`${sl}: must be an object`); return; }
@@ -280,11 +346,118 @@ function validateShots(s: Record<string, unknown>, label: string, kind: "cinema"
       if (j === 0) e.add(`${sl}: the first shot opens the scene, it cannot carry at`);
       else if (e.text(sh.at, `${sl} at`, SHOT_AT_MAX) && !quotesVoice(sh.at as string, voice)) e.add(`${sl}: at must quote words from this scene's voice`);
     }
-    if ("motion" in sh && !(SHOT_MOTION as readonly string[]).includes(sh.motion as string)) e.add(`${sl}: motion must be one of ${sorted(SHOT_MOTION)}`);
+    // The shot grammar: shot_kind says what the shot is FOR, the preset table turns it into a camera move.
+    let shotKind: ShotKind | null = null;
+    if ("shot_kind" in sh) {
+      if (Array.isArray(sh.shot_kind)) e.add(`${sl}: one move per shot — shot_kind names a single kind, never a list of them`);
+      else if (!(SHOT_KINDS as readonly string[]).includes(sh.shot_kind as string)) e.add(`${sl}: shot_kind must be one of ${sorted(SHOT_KINDS)}`);
+      else shotKind = sh.shot_kind as ShotKind;
+    }
+    let preset = shotKind ? presetFor(shotKind) : null;
+    if ("motion" in sh) {
+      const raw = sh.motion;
+      const normalised =
+        typeof raw === "string" && raw in MOTION_ALIASES ? MOTION_ALIASES[raw as (typeof SHOT_MOTION)[number]]
+        : typeof raw === "string" && (MOTION_MOVES as readonly string[]).includes(raw) ? (raw as Move)
+        : null;
+      // A motion that already equals the kind's move is this validator's own resolution coming back through a second
+      // pass (a storyboard is validated again after the planner repairs it, and again when it is read back), not an
+      // author naming the move twice. Only a CONTRADICTION is worth an error.
+      if (preset && raw !== preset.move)
+        e.add(`${sl}: a shot names its move once — shot_kind ${shotKind} already asks for ${preset.move}, so drop motion (${motionHelp()})`);
+      else if (preset) { /* our own resolved move, left as it is */ }
+      else if (Array.isArray(raw)) e.add(`${sl}: one move per shot — motion names a single move, never a list of them (${motionHelp()})`);
+      else if (!normalised) e.add(`${sl}: ${motionHelp()}`);
+      if (normalised && !preset) sh.motion = normalised; // legacy spelling accepted silently, normalised away
+    }
+    if ("strength" in sh) e.finite(sh.strength, SHOT_STRENGTH_MIN, SHOT_STRENGTH_MAX, `${sl} strength`);
+    const prompt = typeof sh.image_prompt === "string" ? sh.image_prompt : "";
+    // Repaired, never refused: the author asked for a picture of hands at work, and the answer to that is a locked
+    // frame, not an error message. It has to happen BEFORE the duration window is read, because the repair changes the
+    // kind and therefore how long the shot may run. Refusing here also made two such shots in a row unsatisfiable: the
+    // only legal kind for both was static_forced, and the alternation rule then forbade the pair.
+    if (prompt && staticHoldReason(prompt) && shotKind !== "static_forced") {
+      shotKind = "static_forced";
+      preset = presetFor(shotKind);
+      sh.shot_kind = shotKind;
+    }
+    const window = shotKind ? durationFor(shotKind, fmt) : null;
+    let duration = window ? (window.min + window.max) / 2 : 0;
+    if ("dur" in sh) {
+      const n = typeof sh.dur === "number" && Number.isFinite(sh.dur) ? sh.dur : null;
+      if (n !== null) duration = n;
+      if (!window) e.add(`${sl}: dur needs shot_kind — the kind is what says how long the shot may run`);
+      // A duration past the hard ceiling is a sequencing failure and is reported below, in the grammar's own words.
+      else if ((n === null || n < window.min || n > window.max) && !(n !== null && n > MAX_SHOT_S))
+        e.add(`${sl} dur: a ${shotKind} shot runs ${secs(window.min)}–${secs(window.max)} s in ${fmt}; write a duration inside that window, or drop dur and let the kind decide`);
+    }
+    // The routing rule, not a taste: hands at work, a crowd, legible signage or a mechanism all come apart under a
+    // moving camera. The kind has to say so, because the picture the vendor is sent is built from it.
+    // Only the shots that speak the grammar are sequenced; a legacy shot is a gap that breaks the run in two.
+    // One table, one resolution: from here on the storyboard carries the concrete move, so the worker, contract.py and
+    // the engine never need a copy of the grammar (and cannot drift from it).
+    if (shotKind && preset) {
+      sh.motion = preset.move;
+      if (typeof sh.strength !== "number") sh.strength = preset.strength;   // the engine scales the move by this
+    }
+    seq.push(
+      shotKind && preset
+        ? { label: sl, scene_id: sceneId, kind: shotKind, move: preset.move, duration_s: duration, scale: preset.scale, subject: sceneId, image_prompt: prompt }
+        : { label: null },
+    );
   });
   if ("chapter" in s) e.text(s.chapter, `${label} chapter`, 32);
   if ("accent" in s && !(CINEMA_ACCENTS as readonly string[]).includes(s.accent as string)) e.add(`${label}: accent must be green, cyan, red or amber`);
   if ("hl" in s) e.text(s.hl, `${label} hl`, 24);
+}
+
+/**
+ * The sequencing rules. Every one of them lives in src/shot-grammar.ts as a pure function over a list of shots; this
+ * is where their answers become job-blocking errors, relabelled ("shot 4" → "scene 2 shot 1") and finished with the
+ * one thing a pure rule cannot know: what the model should change. They are errors and not warnings because a run of
+ * shots that all push in is exactly the "images with zoom" the grammar exists to kill, and by the time a human sees
+ * the video the GPU is already paid for.
+ *
+ * The grammar only judges the shots that speak it. A shot still written the old way (bare `motion`, or nothing at
+ * all) is a gap: it breaks the run in two and the rules are applied to each side on its own, so a storyboard written
+ * before the grammar keeps rendering exactly as it did. "The same subject" is the scene — one scene is one run of
+ * pictures on one thing — so the scale and direction rules compare inside a scene, while the move class and the loud
+ * budget run across the cut as well.
+ */
+// Only the rules that protect the RENDER stay job-blocking: a shot that runs too long is where a generated clip melts.
+// Rhythm — alternating move classes, not repeating a scale, holding screen direction, spending the loud moves sparingly —
+// is the planner's job to get right (src/storyboard.ts repairs it) and not a reason to refuse a video someone is waiting
+// for. Refusing on rhythm also produced storyboards with no legal answer at all.
+const SEQUENCE_RULES: { check: (shots: PlanShot[]) => string[]; fix: (msg: string) => string }[] = [
+  { check: checkOneMovePerShot, fix: () => `name the shot once with shot_kind — one of ${sorted(SHOT_KINDS)} — and let the grammar pick the move` },
+  { check: checkDurations, fix: () => "shorten dur, or cut the shot in two" },
+  {
+    check: checkLoudBudget,
+    fix: (msg) => (/adjacent/.test(msg) ? "put a quiet shot between them" : `keep ${LOUD_MAX_PER_WINDOW} loud moves per ${secs(LOUD_WINDOW_S)} s and let the rest be quiet`),
+  },
+  { check: checkMoveClassAlternation, fix: () => "change one of the two shot_kinds so the class alternates (PUSH / LATERAL / VERTICAL / STILL)" },
+  { check: checkScaleRepetition, fix: () => "change shot_kind so the cut changes the scale" },
+  { check: checkScreenDirection, fix: () => "keep one direction inside a scene: flip the shot, not the camera" },
+];
+
+/** "shot 4: …" and "(shots 1, 3, 4)" as the rules number them → the labels this file reports errors under. */
+const relabel = (msg: string, labels: string[]): string =>
+  // One pass, both shapes: a label contains the word "shot", so a second pass would relabel its own output.
+  msg.replace(/\bshots? \d+(?:, \d+)*\b/g, (m) => {
+    const list = m.slice(m.startsWith("shots ") ? 6 : 5).split(", ");
+    return list.map((n) => labels[Number(n) - 1] ?? `shot ${n}`).join(", ");
+  });
+
+function validateSequence(seq: SeqShot[], e: Collector): void {
+  // Split at the legacy shots: what is left is the runs the grammar can read, each still in screen order.
+  const runs: SeqShot[][] = [[]];
+  for (const sh of seq) { if (sh.label) runs[runs.length - 1].push(sh); else runs.push([]); }
+  for (const run of runs) {
+    if (run.length < 1) continue;
+    const labels = run.map((sh) => sh.label as string);
+    const shots: PlanShot[] = run.map(({ label: _label, ...plan }) => plan);
+    for (const { check, fix } of SEQUENCE_RULES) for (const msg of check(shots)) e.add(`${relabel(msg, labels)} — ${fix(msg)}`);
+  }
 }
 
 function validateInner(input: unknown, opts: ValidateOptions, e: Collector): void {
@@ -320,6 +493,8 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
   const scenes = c.scenes;
   if (!Array.isArray(scenes) || scenes.length < 2 || scenes.length > 240) { e.add("A project needs 2–240 scenes"); return; }
   const ids = new Set<string>();
+  const seq: SeqShot[] = [];
+  const fmt: Format = (FORMATS as readonly string[]).includes(c.format as string) ? (c.format as Format) : opts.format;
   scenes.forEach((s: unknown, i: number) => {
     const label = `scene ${i + 1}`;
     if (!isObj(s)) { e.add(`${label}: must be an object`); return; }
@@ -334,7 +509,7 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
     for (const f of FORBIDDEN_SCENE_FIELDS) if (f in s) e.add(`${label}: ${f} is not allowed in a storyboard${f === "image" ? " (describe the picture in image_prompt instead; Kleo generates it)" : ""}`);
     if (c.style === "picture") {
       if (kind !== "cinema" && kind !== "closing") e.add(`${label}: the picture style only draws cinema and closing scenes`);
-      else validateShots(s, label, kind, e);
+      else validateShots(s, label, kind, e, fmt, seq);
     } else {
       if ("shots" in s) e.add(`${label}: shots need the picture style (kleo_style cartoon or realistic)`);
       if ("image_prompt" in s) e.text(s.image_prompt, `${label} image_prompt`, IMAGE_PROMPT_MAX);
@@ -387,14 +562,17 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
     if (kind === "closing" && s.button && s.detail) e.add(`${label}: use either a closing button or a detail line`);
     e.finite(s.hold ?? 0.65, 0.15, 3, `${label} hold`);
   });
+  if (seq.length) validateSequence(seq, e);
   const last = scenes[scenes.length - 1];
   if (!isObj(last) || last.kind !== "closing") e.add("Last scene must be a closing");
 }
 
 /**
  * Validates a storyboard for a job. Collects up to 10 problems; never throws on bad input.
- * In style "picture" it also normalises in place: a scene-level image_prompt becomes shots[0], so the returned
- * storyboard is what gets stored and handed to the worker (no scene-level image_prompt survives).
+ * In style "picture" it also normalises in place: a scene-level image_prompt becomes shots[0] and a deprecated
+ * motion name becomes the grammar's move, so the returned storyboard is what gets stored and handed to the worker
+ * (no scene-level image_prompt survives, and no "in"/"out"/"left"/"right"). Validating that result again returns it
+ * unchanged: normalising is idempotent, and the sequencing rules read the shots that carry shot_kind.
  */
 export function validateStoryboard(sb: unknown, opts: ValidateOptions): ValidateResult {
   const e = new Collector(opts.maxErrors ?? MAX_ERRORS);

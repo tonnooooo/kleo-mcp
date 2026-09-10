@@ -679,6 +679,10 @@ def strip_kleo_fields(project):
             for sh in shots_of(s):
                 if isinstance(sh, dict):
                     sh.pop("image_prompt", None)
+                    # Authoring fields: the server has already turned shot_kind into the concrete `motion` and
+                    # `strength` the engine draws with, so the kind and its planned duration stop here.
+                    for f in ("shot_kind", "dur"):
+                        sh.pop(f, None)
 
 
 def prepare_project(job, engine, projects_dir):

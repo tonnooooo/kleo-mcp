@@ -5,9 +5,53 @@
  * Run: node --test test/storyboard.test.mjs   (never calls Workers AI)
  */
 import { test } from "node:test";
+import { readFile } from "node:fs/promises";
 import assert from "node:assert/strict";
 import { generateStoryboard, fixtureStoryboard, isTransientAiError, StoryboardError, styleFor, keouStyleFor, pickKleoStyle, planFor, normalizeStoryboard } from "../src/storyboard.ts";
 import { validateStoryboard, pictureScenes, quotesVoice, BEAT_ICONS, STORY_ACTS } from "../src/keou-contract.ts";
+import { assignShotKinds } from "../src/storyboard.ts";
+import { SHOT_KINDS, presetFor, moveClassOf, isLoud, needsStaticHold, LOUD_MAX_PER_WINDOW } from "../src/shot-grammar.ts";
+
+const moveOfKind = (k) => presetFor(k).move;
+const classOfKind = (k) => moveClassOf(moveOfKind(k));
+/** Every shot of a picture storyboard, flattened in scene → shot order, with the scene it belongs to. */
+const flatShots = (sb) => sb.scenes.flatMap((sc) => (sc.shots ?? []).map((sh) => ({ ...sh, scene: sc.id })));
+/**
+ * The sequencing rules a storyboard must already satisfy when it leaves the planner: one kind per shot, no two
+ * consecutive shots of the same move class, no two adjacent loud moves, one screen direction per scene.
+ * Two forced static holds in a row are the one pair the planner leaves standing (only a new picture fixes it).
+ */
+function sequenceProblems(shots) {
+  const bad = [];
+  shots.forEach((sh, i) => {
+    if (!SHOT_KINDS.includes(sh.shot_kind)) bad.push(`shot ${i + 1}: shot_kind ${JSON.stringify(sh.shot_kind)} is not one of the ten kinds`);
+    if (Array.isArray(sh.shot_kind)) bad.push(`shot ${i + 1}: one move per shot, never a list`);
+    // The validator RESOLVES shot_kind into motion on purpose, so the worker and the engine never need the grammar.
+    // What must never survive is a motion that contradicts the kind, or one on a shot with no kind at all.
+    if ("motion" in sh && !("shot_kind" in sh)) bad.push(`shot ${i + 1}: a camera move with no kind behind it`);
+  });
+  for (let i = 1; i < shots.length; i++) {
+    const a = shots[i - 1].shot_kind, b = shots[i].shot_kind;
+    if (a === "static_forced" && b === "static_forced") continue;
+    if (classOfKind(a) === classOfKind(b)) bad.push(`shot ${i + 1}: move class ${classOfKind(b)} repeats shot ${i} (${a} → ${b})`);
+    if (isLoud(moveOfKind(a)) && isLoud(moveOfKind(b))) bad.push(`shot ${i + 1}: two loud moves in a row (${a} → ${b})`);
+  }
+  for (let i = 1; i < shots.length; i++) {
+    if (shots[i].scene !== shots[i - 1].scene) continue; // "the same subject" is the scene
+    const a = presetFor(shots[i - 1].shot_kind).scale, b = presetFor(shots[i].shot_kind).scale;
+    if (a === b) bad.push(`shot ${i + 1}: scale ${b} repeats shot ${i} inside scene ${shots[i].scene}`);
+  }
+  const dir = new Map();
+  shots.forEach((sh, i) => {
+    const d = presetFor(sh.shot_kind).move;
+    const dd = { track_right: "right", track_alongside: "right", orbit_right: "right", whip_pan: "right", track_left: "left", orbit_left: "left" }[d];
+    if (!dd) return;
+    const had = dir.get(sh.scene);
+    if (!had) dir.set(sh.scene, dd);
+    else if (had !== dd) bad.push(`shot ${i + 1}: screen direction flips inside scene ${sh.scene}`);
+  });
+  return bad;
+}
 
 const job = (template, duration_s, format, language = "en", prompt = "Why your phone battery dies faster in winter and the two habits that keep it healthy.", style = undefined) =>
   ({ id: "gt_test", template, prompt, params: JSON.stringify({ duration_s, format, language, voice: null, ...(style ? { style } : {}) }) });
@@ -153,6 +197,15 @@ test("fixture: used without an AI binding or with STORYBOARD_FIXTURE=example, ad
   const pics = pictureScenes(r.storyboard);
   assert.ok(pics.length > scenes.length, `several pictures per scene, got ${pics.length} for ${scenes.length} scenes`);
   assert.deepEqual(pics.slice(0, 2).map((x) => x.id), [`${scenes[0].id}-s1`, `${scenes[0].id}-s2`]);
+  // The shot grammar reaches the fixture too: story kinds only, a shootable sequence, and the routing rule
+  // pinning the one picture that would melt under a camera move (two hooded figures holding an amplifier).
+  const shots = flatShots(r.storyboard);
+  assert.deepEqual(sequenceProblems(shots), []);
+  assert.equal(shots[0].shot_kind, "hook"); assert.equal(shots.at(-1).shot_kind, "closing");
+  const relay = r.storyboard.scenes.find((sc) => sc.id === "02-relay");
+  assert.equal(relay.shots[0].shot_kind, "static_forced", "two hooded figures holding something is forced to a static hold");
+  // No shot names a move by hand; the ones that carry `motion` carry the one the validator resolved from their kind.
+  assert.ok(shots.every((sh) => !("motion" in sh) || "shot_kind" in sh), "the fixture writes no camera moves by hand");
   const real = fixtureStoryboard(job("viral-short", 45, "9:16", "en", undefined, "realistic"));
   assert.equal(real.kleo_style, "realistic"); assert.equal(real.style, "picture");
   assert.ok(real.scenes.every((s) => s.shots.length >= 1));
@@ -201,7 +254,8 @@ test("picture: the schema asks for shots, a lone shot is fed back once, the resu
     assert.ok(schema.required.includes("shots"), "the scene schema requires shots");
     assert.ok(!("beats" in schema.properties), "the picture schema knows nothing about beats");
     assert.deepEqual(schema.properties.shots.items.required, ["image_prompt"]);
-    assert.deepEqual(schema.properties.shots.items.properties.motion.enum, ["in", "out", "left", "right"]);
+    assert.ok(!("motion" in schema.properties.shots.items.properties), "the picture schema no longer offers a camera move");
+    assert.deepEqual(schema.properties.shots.items.properties.shot_kind.enum, [...SHOT_KINDS]);
     assert.ok(/2-4 shots|2–4 shots|"shots"/.test(user), "the task text names the shots");
     const scenes = [];
     for (let i = from; i < to; i++) {
@@ -210,11 +264,11 @@ test("picture: the schema asks for shots, a lone shot is fed back once, the resu
       const shots = closing
         ? [{ image_prompt: "A treasure chest half buried in the sand at dawn" }, { image_prompt: "The same beach empty at noon" }, { image_prompt: "A third one, over the cap" }]
         : [
-            { image_prompt: `A pirate ship anchored in a sandy bay, scene ${i + 1}`, caption: "PIRATES AHEAD", hl: "PIRATES", at: "one small piece", motion: "in" }, // at on the first shot → dropped
-            { image_prompt: "A ".repeat(200) + "crew hauling ropes on the deck", at: "concrete detail", motion: "zoom" },                                            // prompt cut, motion dropped
-            { image_prompt: "The same crew in a storm at night", at: "bananas and cake", caption: "A CAPTION THAT IS FAR TOO LONG TO FIT ON THE SCREEN", hl: "STORM" }, // at, caption and hl dropped
+            { image_prompt: `A pirate ship anchored in a sandy bay, scene ${i + 1}`, caption: "PIRATES AHEAD", hl: "PIRATES", at: "one small piece", shot_kind: "hook" }, // at on the first shot → dropped
+            { image_prompt: "A ".repeat(200) + "crew hauling ropes on the deck", at: "concrete detail", shot_kind: "slow zoom in" },                                 // prompt cut, camera language dropped
+            { image_prompt: "The same crew in a storm at night", at: "bananas and cake", caption: "A CAPTION THAT IS FAR TOO LONG TO FIT ON THE SCREEN", hl: "STORM", motion: "in" }, // at, caption, hl and motion dropped
             { caption: "NO PICTURE HERE" },                                                                                                                          // no image_prompt → shot dropped
-            { image_prompt: "A map spread on a wooden table in lantern light", at: "a twist", motion: "out" },
+            { image_prompt: "A map spread on a wooden table in lantern light", at: "a twist", shot_kind: "detail" },
           ];
       const s = { id: `${String(i + 1).padStart(2, "0")}-part`, kind: closing ? "closing" : "cinema", chapter: `0${i + 1} PART`, accent: "amber", title: `Part ${i + 1}`, hl: "Part",
         voice, image: "img/hack.png", beats: [{ kind: "type", text: "PIRATES", slam: true }], button: closing ? "Follow" : undefined, shots };
@@ -238,11 +292,16 @@ test("picture: the schema asks for shots, a lone shot is fed back once, the resu
   assert.equal(first.shots[0].at, undefined, "the first shot cannot carry at");
   assert.equal(first.shots[0].caption, "PIRATES AHEAD"); assert.equal(first.shots[0].hl, "PIRATES");
   assert.ok(first.shots[1].image_prompt.length <= 240 && !/\s$/.test(first.shots[1].image_prompt), "an over-long prompt is cut at a word boundary");
-  assert.equal(first.shots[1].motion, undefined, "an unknown motion is dropped");
   assert.equal(first.shots[1].at, "concrete detail");
   assert.equal(first.shots[2].at, undefined, "an at that is not in the voice is dropped");
   assert.equal(first.shots[2].caption, undefined); assert.equal(first.shots[2].hl, undefined);
-  assert.equal(first.shots[3].motion, "out");
+  assert.equal(first.shots[3].shot_kind, "detail", "the kind the author wrote is kept");
+  // The shot grammar: story kinds only, never a camera move, and a sequence that is already shootable.
+  const shots = flatShots(sb);
+  assert.deepEqual(sequenceProblems(shots), []);
+  assert.equal(shots[0].shot_kind, "hook", "the first shot of the video is the hook");
+  assert.equal(shots.at(-1).shot_kind, "closing", "the last shot of the video is the closing");
+  assert.ok(SHOT_KINDS.includes(first.shots[1].shot_kind), "an invented camera phrase is replaced by a real kind");
   const closing = sb.scenes.at(-1);
   assert.equal(closing.kind, "closing"); assert.equal(closing.shots.length, 2, "the closing keeps at most two pictures"); assert.equal(closing.button, "Follow");
   const pics = pictureScenes(sb);
@@ -267,7 +326,7 @@ test("picture: normalizeStoryboard turns a scene image_prompt into shots and kee
   assert.equal(sb.style, "picture"); assert.equal(sb.kleo_style, "realistic");
   const a = sb.scenes[0];
   assert.equal(a.id, "01-hook", "ids are slugged");
-  assert.deepEqual(a.shots, [{ image_prompt: "A wooden ship at anchor in a turquoise bay under a stormy sky" }], "the old scene-level prompt becomes shot 1");
+  assert.deepEqual(a.shots, [{ image_prompt: "A wooden ship at anchor in a turquoise bay under a stormy sky", shot_kind: "hook" }], "the old scene-level prompt becomes shot 1, opened by the hook");
   assert.ok(!("image_prompt" in a) && !("beats" in a) && !("eyebrow" in a) && !("visual" in a) && !("items" in a));
   const z = sb.scenes[1];
   assert.equal(z.shots.length, 2, "a closing shows one picture, two at most");
@@ -280,7 +339,7 @@ test("picture: normalizeStoryboard turns a scene image_prompt into shots and kee
     { id: "01-a", kind: "cinema", chapter: "01 A", accent: "red", title: "A quiet street at dawn", hl: "quiet", voice: "A quiet street at dawn, and nobody is watching the door.", shots: [{ caption: "NOTHING" }] },
     { id: "02-b", kind: "closing", accent: "green", title: "Follow", voice: "Follow for part two.", shots: [{ image_prompt: "An empty street at noon" }] },
   ] }, plan);
-  assert.deepEqual(bare.scenes[0].shots, [{ image_prompt: "A quiet street at dawn" }]);
+  assert.deepEqual(bare.scenes[0].shots, [{ image_prompt: "A quiet street at dawn", shot_kind: "hook" }]);
   assert.equal(validateStoryboard(bare, { format: "9:16", language: "en" }).ok, true);
   // An "at" the engine could not anchor is dropped here, quietly: it would otherwise cost a whole model round trip.
   const cuts = normalizeStoryboard({ title: "T", scenes: [
@@ -323,4 +382,133 @@ test("stickman: story scenes with acts, cast, props and bubbles, repaired to the
   const s1 = sb.scenes[1];
   assert.ok(STORY_ACTS.includes(s1.act)); assert.equal(s1.fx, "relay"); assert.equal(s1.accent, "red"); assert.equal(s1.bubble, "Where is my car?");
   assert.equal(sb.scenes.at(-1).cast, undefined, "closing scenes carry no cast");
+});
+
+/* ------------------------------------------------------------------ shot grammar */
+
+const pictureScene = (i, n, shots) => ({
+  id: `${String(i + 1).padStart(2, "0")}-part`, kind: i === n - 1 ? "closing" : "cinema", chapter: `0${i + 1} PART`, accent: "cyan",
+  title: `Part ${i + 1}`, hl: "Part", voice: `Scene ${i + 1} of the story, told in one line.`, shots,
+});
+
+test("shot grammar: a missing shot_kind is filled by rule and the sequence comes out shootable", () => {
+  const prompts = [
+    "A lighthouse on a black cliff above a cold sea at dawn",
+    "A rusted anchor half buried in grey shingle",
+    "A wooden rowing boat drifting out of the bay",
+    "An empty lifebuoy swinging from a rail in the wind",
+    "The lighthouse lamp lit against a violet sky",
+    "A long stone jetty running out into flat water",
+    "A gull turning over the swell",
+    "The bay seen from the cliff top at last light",
+  ];
+  const scenes = [0, 1, 2, 3].map((i) => pictureScene(i, 4, prompts.slice(i * 2, i * 2 + 2).map((image_prompt) => ({ image_prompt }))));
+  assignShotKinds(scenes, "9:16");
+  const shots = scenes.flatMap((sc) => sc.shots.map((sh) => ({ ...sh, scene: sc.id })));
+  assert.deepEqual(sequenceProblems(shots), []);
+  assert.equal(shots[0].shot_kind, "hook", "the first shot of the video is the hook");
+  assert.equal(shots.at(-1).shot_kind, "closing", "a shot of the last scene is the closing");
+  assert.ok(shots.every((sh) => SHOT_KINDS.includes(sh.shot_kind)), "every shot ends up with one of the ten story kinds");
+  // Running it again changes nothing: the kinds it wrote are the kinds it keeps.
+  const before = shots.map((sh) => sh.shot_kind);
+  assignShotKinds(scenes, "9:16");
+  assert.deepEqual(scenes.flatMap((sc) => sc.shots.map((sh) => sh.shot_kind)), before, "assigning twice is idempotent");
+});
+
+test("shot grammar: the routing rule beats the author, hands/crowd/signage/mechanism/two people all pin the camera", () => {
+  const breaks = [
+    "A close view of gloved hands soldering a green circuit board",       // hands
+    "A crowd filling the square in front of the old town hall",           // crowd
+    "A red neon sign glowing above a narrow doorway in the rain",         // signage
+    "The gears of a harbour crane turning against a grey sky",            // mechanism
+    "Two hooded figures facing each other under a street lamp at night",  // two people interacting
+  ];
+  for (const image_prompt of breaks) {
+    assert.equal(needsStaticHold(image_prompt), true, `should break under motion: ${image_prompt}`);
+    const scenes = [pictureScene(0, 2, [{ image_prompt, shot_kind: "hook" }]), pictureScene(1, 2, [{ image_prompt: "An empty pier at dawn" }])];
+    assignShotKinds(scenes, "9:16");
+    assert.equal(scenes[0].shots[0].shot_kind, "static_forced", `the routing rule must overrule "hook" for: ${image_prompt}`);
+  }
+  // A picture with nothing to break keeps the kind its author chose.
+  const ok = [
+    pictureScene(0, 3, [{ image_prompt: "An empty pier at dawn under a low grey sky", shot_kind: "hook" }, { image_prompt: "A mooring rope coiled on the wet boards" }]),
+    pictureScene(1, 3, [{ image_prompt: "The same pier at noon, flat water on both sides" }]),
+    pictureScene(2, 3, [{ image_prompt: "The pier from the headland at last light" }]),
+  ];
+  assignShotKinds(ok, "9:16");
+  assert.equal(ok[0].shots[0].shot_kind, "hook");
+});
+
+test("shot grammar: loud moves stay rare and never touch, even when every shot asks to be loud", () => {
+  const n = 20;
+  const scenes = Array.from({ length: 5 }, (_, i) =>
+    pictureScene(i, 5, Array.from({ length: 4 }, (_, j) => ({ image_prompt: `A cliff path above the sea, view ${i * 4 + j + 1}`, shot_kind: "hook" }))));
+  assignShotKinds(scenes, "9:16");
+  const shots = scenes.flatMap((sc) => sc.shots.map((sh) => ({ ...sh, scene: sc.id })));
+  assert.equal(shots.length, n);
+  assert.deepEqual(sequenceProblems(shots), []);
+  const loud = shots.filter((sh) => isLoud(moveOfKind(sh.shot_kind))).length;
+  assert.ok(loud <= LOUD_MAX_PER_WINDOW, `a 40s video takes at most ${LOUD_MAX_PER_WINDOW} loud moves, got ${loud}`);
+});
+
+test("the storyboard guide teaches shot_kind and never a camera move", async () => {
+  const guide = await readFile(new URL("../src/mcp.ts", import.meta.url), "utf8");
+  const block = guide.slice(guide.indexOf("KLEO STORYBOARD GUIDE"), guide.indexOf("EXAMPLE C"));
+  for (const kind of SHOT_KINDS) assert.ok(block.includes(kind), `the guide must name the shot kind "${kind}"`);
+  assert.ok(/SHOT KINDS/.test(block), "the guide has a shot-kind section");
+  assert.ok(!/"motion":"(in|out|left|right)"/.test(block), "no worked example writes a camera move by hand");
+  assert.ok(!/"motion" is the slow camera move/.test(block), "the old motion prose is gone, not merely added to");
+  // Both picture examples carry the grammar.
+  const a = block.slice(block.indexOf("EXAMPLE A"), block.indexOf("EXAMPLE B"));
+  const b = block.slice(block.indexOf("EXAMPLE B"));
+  for (const [name, ex] of [["A", a], ["B", b]]) {
+    // Walk the example in order so every shot_kind is tagged with the scene id it sits under: the scale and
+    // direction rules are per scene, and an example that breaks them teaches the model to break them.
+    const shots = [];
+    let scene = "?";
+    for (const m of ex.matchAll(/"id":"([^"]+)"|"shot_kind":"([a-z_]+)"/g)) {
+      if (m[1]) scene = m[1];
+      else shots.push({ shot_kind: m[2], scene });
+    }
+    const kinds = shots.map((sh) => sh.shot_kind);
+    assert.ok(kinds.length >= 5, `example ${name} puts shot_kind on every shot, got ${kinds.length}`);
+    assert.ok(kinds.every((k) => SHOT_KINDS.includes(k)), `example ${name} uses only real kinds`);
+    assert.equal(kinds[0], "hook", `example ${name} opens on the hook`);
+    assert.equal(kinds.at(-1), "closing", `example ${name} ends on the closing`);
+    assert.deepEqual(sequenceProblems(shots), [], `example ${name} is shootable`);
+  }
+});
+
+test("shot grammar: whatever the model writes, the storyboard that comes out is one the contract will shoot", () => {
+  // A deterministic sweep: every shape a model realistically hands back — no kinds at all, every kind loud, kinds
+  // that repeat, a camera move written by hand, and pictures that trip the routing rule — over several lengths.
+  const wild = ["hook", "tension", "detail_orbit", "hook", undefined, "closing", "face", "static_forced", "detail", "establish"];
+  const breaks = ["A crowd filling the square at noon", "Gloved hands soldering a circuit board", "A red neon sign over a doorway", "The gears of a harbour crane turning"];
+  const plain = ["An empty pier at dawn", "A lighthouse on a black cliff", "A rowing boat drifting out of the bay", "A gull turning over the swell", "A stone jetty in flat water"];
+  for (const [duration, sceneCount] of [[30, 4], [45, 6], [120, 12], [300, 20]]) {
+    for (const flavour of ["none", "wild", "breaking"]) {
+      const j = job("viral-short", duration, "9:16", "en", "The lighthouse nobody was ever posted to", "cartoon");
+      const plan = planFor(j);
+      let n = 0;
+      const scenes = Array.from({ length: sceneCount }, (_, i) => {
+        const closing = i === sceneCount - 1;
+        const shots = Array.from({ length: closing ? 1 : 2 + (i % 3) }, () => {
+          const k = n++;
+          const image_prompt = flavour === "breaking" && k % 3 === 0 ? breaks[k % breaks.length] : `${plain[k % plain.length]}, view ${k + 1}`;
+          const shot = { image_prompt };
+          if (flavour === "wild") { const w = wild[k % wild.length]; if (w) shot.shot_kind = w; else shot.motion = "in"; }
+          return shot;
+        });
+        return { id: `${String(i + 1).padStart(2, "0")}-part`, kind: closing ? "closing" : "cinema", chapter: `0 PART`, accent: "cyan",
+          title: `Part ${i + 1}`, hl: "Part", voice: `Scene ${i + 1} of the story, one line of narration and nothing more.`, shots };
+      });
+      const sb = normalizeStoryboard({ title: "Sweep", description: "d", tags: ["a"], scenes }, plan);
+      const where = `${duration}s / ${sceneCount} scenes / ${flavour}`;
+      const shots = flatShots(sb);
+      assert.ok(shots.every((sh) => !("motion" in sh) || "shot_kind" in sh), `${where}: a camera move with no kind behind it`);
+      assert.ok(shots.every((sh) => SHOT_KINDS.includes(sh.shot_kind)), `${where}: a shot came out without a story kind`);
+      const r = validateStoryboard(sb, { format: "9:16", language: "en" });
+      assert.deepEqual(r.ok ? [] : r.errors, [], `${where}: the contract refuses the plan`);
+    }
+  }
 });

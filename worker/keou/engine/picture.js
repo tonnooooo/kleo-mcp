@@ -14,15 +14,42 @@
   const CARTOON = 'KleoCartoon, Manrope, sans-serif', REAL = 'KleoReal, Manrope, sans-serif';
 
   /* @kleo-pure picture-plan — pure planning, no canvas and no globals: shot timing from the
-     narration, the cover-fit + Ken Burns rect per motion, and caption line fitting against a
-     measure function supplied by the caller. test/engine-picture.test.mjs evaluates this block
+     narration, the shot grammar and the cover-fit + Ken Burns rect it plays, and caption line
+     fitting against a measure function supplied by the caller. test/engine-picture.test.mjs evaluates this block
      on its own, so nothing in here may touch the page, the drawing surface or the project. */
   const SHOT_FADE = .35;                       // crossfade between two pictures of the same scene
   const PUNCH = .03, PUNCH_IN = .3;            // 3% scale punch on the incoming picture, gone in 0.3 s
   const MIN_SHOT = .8;                         // a picture nobody can see is not a picture
-  const MOTIONS = ['in', 'out', 'left', 'right'];
-  const ZOOM = { in: [1, 1.1], out: [1.1, 1], left: [1.04, 1.04], right: [1.04, 1.04] };
-  const DRIFT = { in: 0, out: 0, left: -.06, right: .06 };   // total horizontal travel, share of the width
+  const MOTIONS = ['in', 'out', 'left', 'right'];   // deprecated shot.motion, kept as an alias
+  /* Shot grammar. A shot says what it is FOR (`shot_kind`), in story terms, and never how the
+     camera moves; one table turns the ten story kinds into one camera move. The kinds, the moves,
+     the strengths and the durations are the same table the planner and the validator carry
+     (docs/PICTURE-STYLE.md §1a) — here only the RENDERER differs: this is still the stills path, so
+     a move is played as Ken Burns on a photograph. Generated motion replaces that in a later phase
+     and the grammar does not change with it: same kinds, same moves, same strengths.
+     Direction names say how the PICTURE travels across the frame ("left" slides it leftwards),
+     which is what the deprecated shot.motion always meant.
+     zoom = 1 + hold + z[i] * strength; dx / dy = travel * strength, as a share of the width / height.
+     `hold` is the crop a lateral or vertical move needs simply to have somewhere to travel, so it
+     does NOT scale with strength: the strength scales the movement, not the framing. `cls` is the
+     move class the sequencing rules count on (PUSH / LATERAL / VERTICAL / STILL) and `loud` marks
+     the moves the validator allows at most twice per 40 s and never side by side. */
+  const MOVES = {
+    crash_zoom_in:   { hold: 0,   z: [0, .18], dx: 0,    dy: 0,   ease: 'crash', cls: 'PUSH',     loud: true,  legacy: 'in' },
+    push_in:         { hold: 0,   z: [0, .10], dx: 0,    dy: 0,   ease: 'ease',  cls: 'PUSH',     loud: false, legacy: 'in' },
+    push_in_dutch:   { hold: .01, z: [0, .12], dx: .05,  dy: 0,   ease: 'ease',  cls: 'PUSH',     loud: true,  legacy: 'in' },
+    pull_out:        { hold: 0,   z: [.10, 0], dx: 0,    dy: 0,   ease: 'ease',  cls: 'PUSH',     loud: false, legacy: 'out' },
+    track_left:      { hold: .04, z: [0, 0],   dx: -.06, dy: 0,   ease: 'ease',  cls: 'LATERAL',  loud: false, legacy: 'left' },
+    track_right:     { hold: .04, z: [0, 0],   dx: .06,  dy: 0,   ease: 'ease',  cls: 'LATERAL',  loud: false, legacy: 'right' },
+    track_alongside: { hold: .05, z: [0, 0],   dx: .10,  dy: 0,   ease: 'ease',  cls: 'LATERAL',  loud: false, legacy: 'right' },
+    orbit_left:      { hold: .03, z: [0, .06], dx: -.08, dy: 0,   ease: 'ease',  cls: 'LATERAL',  loud: true,  legacy: 'left' },
+    crane_down:      { hold: .05, z: [0, 0],   dx: 0,    dy: .10, ease: 'ease',  cls: 'VERTICAL', loud: false, legacy: null },
+    static_hold:     { hold: 0,   z: [0, 0],   dx: 0,    dy: 0,   ease: 'ease',  cls: 'STILL',    loud: false, legacy: null },
+  };
+  // The ten kinds. `static_forced` is a routing rule, not a taste: the planner forces it whenever
+  // the picture shows working hands, a crowd, legible signage, a mechanism or two people
+  // interacting, because those four break under any camera move.
+  const LEGACY_MOVE = { in: 'push_in', out: 'pull_out', left: 'track_left', right: 'track_right' };
   const pclamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, Number(x) || 0));
   const smooth = x => { x = pclamp(x); return x * x * (3 - 2 * x) };
   const pop = x => 1 - (1 - pclamp(x)) ** 4;
@@ -52,10 +79,26 @@
     const list = (s && Array.isArray(s.shots) && s.shots.length) ? s.shots : [{ image: s && s.image }];
     return list.map(x => (x && typeof x === 'object') ? x : {});
   }
-  // The camera move of picture n: what the shot asks for, else in / out / left / right by index.
+  // DEPRECATED. The old camera field: what the shot asks for, else in / out / left / right by
+  // index. A move picked by position says nothing about the shot, which is the whole reason the
+  // grammar exists; it survives only so storyboards written before the grammar still render.
   function shotMotion(shot, index) {
     const m = shot && shot.motion;
     return MOTIONS.indexOf(m) >= 0 ? m : MOTIONS[(((index | 0) % 4) + 4) % 4];
+  }
+  // What picture n is FOR, resolved through the grammar to one camera move and its strength.
+  // `shot_kind` wins; `shot.motion` is the deprecated alias; with neither, the old index rotation.
+  // Pure: the same shot at the same index always resolves to the same move, on every worker.
+  // What the shot asks the camera to do. The server resolved the story kind into a concrete move and its strength
+  // before the storyboard was stored (src/shot-grammar.ts), so there is no grammar here to drift: a name and a number.
+  // A storyboard written before the grammar carries the old in|out|left|right, or nothing, and still renders.
+  function shotGrammar(shot, index) {
+    const named = shot && typeof shot.motion === 'string' && Object.prototype.hasOwnProperty.call(MOVES, shot.motion)
+      ? shot.motion : null;
+    const move = named || LEGACY_MOVE[shotMotion(shot, index)];
+    const raw = shot && typeof shot.strength === 'number' && isFinite(shot.strength) ? shot.strength : null;
+    const strength = raw === null ? 1 : Math.min(1, Math.max(0, raw));
+    return { kind: null, move, strength, cls: MOVES[move].cls, loud: MOVES[move].loud };
   }
   // Relative start of every picture inside the scene, in seconds. A shot with an `at` cuts when
   // that word is spoken (s.words carries absolute word times, s.start the scene start); the rest
@@ -90,17 +133,25 @@
   // picture keeps travelling under the crossfade instead of freezing on its last frame, which read
   // as a stutter. The last picture of a scene has nothing after it and lands exactly on the cut.
   const shotProgress = (ub, span, hasNext) => pclamp(ub / (Math.max(Number(span) || 0, .1) + (hasNext ? SHOT_FADE : 0)));
-  // Cover-fit + Ken Burns rect for a picture of iw×ih on a W×H frame at shot progress p (0..1).
+  // Cover-fit + Ken Burns rect for a picture of iw×ih on a W×H frame at shot progress p (0..1),
+  // playing `move` at `strength` (0..1, 1 = the full amplitude of the table; default 1).
   // The rect always covers the frame: the drift is clamped to the overflow the zoom leaves on
-  // that side, so an edge of the frame is never empty whatever the picture's shape.
-  function kenBurns(motion, iw, ih, W, H, p, punch) {
-    const m = MOTIONS.indexOf(motion) >= 0 ? motion : 'in';
+  // that side, so an edge of the frame is never empty whatever the picture's shape. A deprecated
+  // motion name ('in' | 'out' | 'left' | 'right') is accepted and renders exactly as it always did.
+  function kenBurns(move, iw, ih, W, H, p, punch, strength) {
+    const m = Object.prototype.hasOwnProperty.call(MOVES, move) ? move : (LEGACY_MOVE[move] || 'push_in');
+    const M = MOVES[m], k = strength === undefined || strength === null ? 1 : pclamp(strength);
     p = pclamp(p); const sp = smooth(p), pu = Math.max(1, Number(punch) || 1);
-    const z = ZOOM[m], zoom = (z[0] + (z[1] - z[0]) * p) * pu;
+    const e = M.ease === 'crash' ? pop(p) : p;      // a crash zoom lands most of its travel at once
+    const zoom = (1 + M.hold + (M.z[0] + (M.z[1] - M.z[0]) * e) * k) * pu;
     const cover = Math.max(W / iw, H / ih) * zoom, w = iw * cover, h = ih * cover;
     const ox = Math.max(0, (w - W) / 2), oy = Math.max(0, (h - H) / 2);
-    const travel = DRIFT[m] * W, panX = Math.sign(travel) * Math.min(ox, Math.abs(travel) / 2) * (2 * sp - 1);
-    return { x: W / 2 + panX - w / 2, y: H / 2 - h / 2, w, h, zoom, panX, panY: 0, ox, oy, motion: m };
+    // Half of the travel on each side of centre, never further than the overflow the zoom leaves
+    // on that side (an edge of the frame is never empty). A move with no travel gives a plain 0.
+    const pan = (t, over) => t ? Math.sign(t) * Math.min(over, Math.abs(t) / 2) * (2 * sp - 1) : 0;
+    const panX = pan(M.dx * k * W, ox), panY = pan(M.dy * k * H, oy);
+    return { x: W / 2 + panX - w / 2, y: H / 2 + panY - h / 2, w, h, zoom, panX, panY, ox, oy,
+             move: m, cls: M.cls, strength: k, motion: M.legacy };
   }
   // Break `value` into at most `lines` lines no wider than `width`, shrinking the size from
   // `size` down to `min`. `measure(text, size)` is the caller's text measurement.
@@ -259,7 +310,10 @@
     const ctx = A.ctx, G = geo(), img = shot && shot.image && A.images ? A.images[shot.image] : null;
     ctx.save(); ctx.globalAlpha *= pclamp(alpha);
     if (img && img.width && img.height) {
-      const r = kenBurns(shotMotion(shot, index), img.width, img.height, G.W, G.H, p, punch);
+      // A static_forced shot holds absolutely still: not even the 3% entrance punch of a cut,
+      // because it is static precisely so that hands, a crowd or signage do not move.
+      const g = shotGrammar(shot, index), still = g.move === 'static_hold';
+      const r = kenBurns(g.move, img.width, img.height, G.W, G.H, p, still ? 1 : punch, g.strength);
       ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'medium';   // 4x upscale: 'high' costs frames and shows no difference
       ctx.drawImage(img, r.x, r.y, r.w, r.h);
     } else {                                              // no picture: a quiet accent-to-black wash

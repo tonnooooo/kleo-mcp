@@ -16,8 +16,13 @@ CINEMA_ACCENTS = {'green', 'cyan', 'red', 'amber'}
 # Kleo picture style (docs/PICTURE-STYLE.md): full-screen pictures cut on the narration, no beats
 # and no icons. `look` picks the typography; every shot is one generated picture in img/.
 LOOKS = {'cartoon', 'realistic'}
-SHOT_MOTIONS = {'in', 'out', 'left', 'right'}
-SHOT_FIELDS = {'image', 'caption', 'hl', 'at', 'motion'}
+# The camera moves the server resolves a shot_kind into (src/shot-grammar.ts). The engine never sees shot_kind:
+# the server writes the resolved move here, so the grammar lives in one place and this file only has to draw it.
+# The first four are the old hand-written vocabulary, still accepted so a storyboard written before the grammar renders.
+SHOT_MOTIONS = {'in', 'out', 'left', 'right',
+                'crash_zoom_in', 'push_in', 'push_in_dutch', 'pull_out', 'track_left', 'track_right',
+                'track_alongside', 'orbit_left', 'orbit_right', 'crane_down', 'crane_up', 'whip_pan', 'static_hold'}
+SHOT_FIELDS = {'image', 'caption', 'hl', 'at', 'motion', 'strength'}
 # Stickman story slides (style 'stickman', portrait only). Every value is an
 # enum the renderer knows how to draw; nothing here is ever executed.
 STORY_ACTS = {'idle', 'explain', 'point-up', 'shrug', 'think', 'alarm', 'hold', 'drop', 'wave', 'walk', 'run', 'crouch'}
@@ -218,6 +223,9 @@ def validate(path, approved=True):
                         raise ValueError(sl + ': the first shot opens the scene, it takes no at')
                     if shot['at'].lower() not in str(s.get('voice') or '').lower():
                         raise ValueError(sl + ': at must quote words from this scene\'s voice')
+                if 'strength' in shot and not (isinstance(shot['strength'], (int, float))
+                                              and not isinstance(shot['strength'], bool) and 0 <= shot['strength'] <= 1):
+                    raise ValueError(sl + ': strength scales the camera move and runs from 0 to 1')
                 if 'motion' in shot and shot['motion'] not in SHOT_MOTIONS:
                     raise ValueError(sl + f': motion must be one of {sorted(SHOT_MOTIONS)}')
             if 'chapter' in s:

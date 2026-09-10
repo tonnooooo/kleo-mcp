@@ -1,9 +1,11 @@
 /**
- * Unit tests for the Kleo "picture" style (docs/PICTURE-STYLE.md §3 and §4).
+ * Unit tests for the Kleo "picture" style (docs/PICTURE-STYLE.md §1a, §3 and §4).
  *
  * worker/keou/engine/picture.js and film.js are browser scripts, so they are evaluated three ways:
  *  - the pure planning block between the `@kleo-pure picture-plan` and `@end picture-plan` markers
- *    on its own (shot timing, the Ken Burns rect, caption fitting, the karaoke word match);
+ *    on its own (shot timing, the shot grammar and the Ken Burns rect it plays for each of the ten
+ *    story kinds, caption fitting, the karaoke word match), including a check that the grammar in
+ *    the engine and the table in docs/PICTURE-STYLE.md §1a have not drifted apart;
  *  - the whole of picture.js against a recording fake 2D context, which is the only way to see the
  *    timing that lives in S.scene: which picture is moving, how large the next one comes in, when
  *    a caption replays its entrance;
@@ -16,6 +18,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { SHOT_GRAMMAR } from "../src/shot-grammar.ts";
 import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,8 +39,9 @@ function pureBlock() {
   return pictureSource.slice(a, b);
 }
 const P = new Function(pureBlock() + `
-  return { shotStarts, shotMotion, sceneShots, kenBurns, fitLines, groupWords, keyWord, flatten,
-           shotFade, shotPunch, shotProgress, MOTIONS, SHOT_FADE, PUNCH, PUNCH_IN, MIN_SHOT, ZOOM };`)();
+  return { shotStarts, shotMotion, shotGrammar, sceneShots, kenBurns, fitLines, groupWords, keyWord,
+           flatten, shotFade, shotPunch, shotProgress, MOTIONS, SHOT_FADE, PUNCH, PUNCH_IN, MIN_SHOT,
+           MOVES, LEGACY_MOVE };`)();
 
 /* A recording 2D context. Enough of the canvas API for picture.js to draw a whole scene into it,
    so the timing that only shows up in S.scene (which picture is moving, how large it comes in,
@@ -93,6 +97,10 @@ test("the pure block is self-contained: no canvas, no page, no engine globals", 
     assert.ok(!block.includes(forbidden), `the pure block must not reference ${forbidden}`);
   for (const name of ["shotStarts", "shotMotion", "kenBurns", "fitLines", "groupWords"])
     assert.equal(typeof P[name], "function", `${name} must live in the pure block`);
+  // Every frame is a pure function of time: the renderer splits one video across parallel workers,
+  // so two workers drawing the same frame must draw the same pixels.
+  for (const impure of ["Math.random", "Date.now", "new Date", "performance.now"])
+    assert.ok(!pictureSource.includes(impure), `picture.js must stay deterministic: no ${impure}`);
   assert.equal(P.SHOT_FADE, .35, "the crossfade is 0.35 s");
   assert.equal(P.PUNCH, .03, "the incoming shot gets a 3% scale punch");
   assert.ok(P.PUNCH_IN >= .18 && P.PUNCH_IN <= .35, "the punch settles in 0.18–0.35 s");
@@ -139,6 +147,196 @@ test("the default camera move alternates in / out / left / right, a shot may ask
   assert.equal(P.shotMotion({ motion: "left" }, 0), "left");
   assert.equal(P.shotMotion({ motion: "zoom-of-doom" }, 1), "out", "an unknown motion falls back to the rotation");
   assert.equal(P.shotMotion(null, 2), "left");
+});
+
+/* ---- the shot grammar ----------------------------------------------------- */
+
+// One row per kind: what the engine must resolve it to, and what that must look like on screen.
+// `move` and `strength` are the contract with the preset table (docs/PICTURE-STYLE.md §1a); the
+// rest describes the Ken Burns the engine plays for it today.
+const KINDS = [
+  { kind: "hook",          move: "crash_zoom_in",   cls: "PUSH",     strength: .85, zoom: "in",   dx: 0,  dy: 0 },
+  { kind: "establish",     move: "crane_down",      cls: "VERTICAL", strength: .35, zoom: "flat", dx: 0,  dy: 1 },
+  { kind: "face",          move: "push_in",         cls: "PUSH",     strength: .25, zoom: "in",   dx: 0,  dy: 0 },
+  { kind: "detail",        move: "track_right",     cls: "LATERAL",  strength: .3,  zoom: "flat", dx: 1,  dy: 0 },
+  { kind: "detail_orbit",  move: "orbit_left",      cls: "LATERAL",  strength: .45, zoom: "in",   dx: -1, dy: 0 },
+  { kind: "action",        move: "track_alongside", cls: "LATERAL",  strength: .55, zoom: "flat", dx: 1,  dy: 0 },
+  { kind: "reveal",        move: "pull_out",        cls: "PUSH",     strength: .4,  zoom: "out",  dx: 0,  dy: 0 },
+  { kind: "tension",       move: "push_in_dutch",   cls: "PUSH",     strength: .6,  zoom: "in",   dx: 1,  dy: 0 },
+  { kind: "closing",       move: "pull_out",        cls: "PUSH",     strength: .15, zoom: "out",  dx: 0,  dy: 0 },
+  { kind: "static_forced", move: "static_hold",     cls: "STILL",    strength: 0,   zoom: "flat", dx: 0,  dy: 0 },
+];
+// The grammar now has one home: src/shot-grammar.ts on the server, which resolves shot_kind into the concrete move
+// before a storyboard is stored. The engine never sees a kind, so these tests reference the kind table only to prove
+// the engine can DRAW every move the server can name, and the strengths come from the same list below.
+const GRAMMAR = Object.fromEntries(KINDS.map((k) => [k.kind, {
+  move: k.move, strength: k.strength, min: SHOT_GRAMMAR[k.kind].min_s, max: SHOT_GRAMMAR[k.kind].max_s,
+}]));
+const SHOT_KINDS_ORDER = KINDS.map((k) => k.kind);
+
+// A wide picture on the portrait frame: plenty of horizontal overflow, so a lateral drift is never
+// clamped away and the direction of every move is actually visible.
+const rectAt = (move, p, strength, [iw, ih] = [2000, 1400], [W, H] = FRAMES[0]) =>
+  P.kenBurns(move, iw, ih, W, H, p, 1, strength);
+
+test("the shot grammar: ten story kinds, one camera move each, nothing else", () => {
+  assert.deepEqual(SHOT_KINDS_ORDER, KINDS.map(k => k.kind), "the ten kinds, in order");
+  for (const k of KINDS) assert.ok(P.MOVES[k.move], `the engine can draw ${k.move}, the move ${k.kind} resolves to`);
+  for (const k of KINDS) {
+    const g = GRAMMAR[k.kind];
+    assert.equal(g.move, k.move, `${k.kind} is a ${k.move}`);
+    assert.equal(g.strength, k.strength, `${k.kind} has strength ${k.strength}`);
+    assert.equal(typeof P.MOVES[g.move], "object", `${g.move} must exist in the move table`);
+    assert.equal(P.MOVES[g.move].cls, k.cls, `${k.move} belongs to the ${k.cls} class`);
+    assert.ok(g.min > 0 && g.max > g.min, `${k.kind} carries a duration range`);
+    assert.ok(typeof g.move === "string", "one move per kind, never a list");
+  }
+  // The sequencing rules count classes and loud moves, so both have to be on the move itself.
+  assert.deepEqual([...new Set(Object.values(P.MOVES).map(m => m.cls))].sort(),
+    ["LATERAL", "PUSH", "STILL", "VERTICAL"], "four move classes and no fifth");
+  const loud = Object.entries(P.MOVES).filter(([, m]) => m.loud).map(([n]) => n).sort();
+  assert.deepEqual(loud, ["crash_zoom_in", "orbit_left", "push_in_dutch"], "the loud moves are marked as such");
+});
+
+test("the grammar table in the engine and the one in docs/PICTURE-STYLE.md §1a are the same table", () => {
+  const doc = readFileSync(join(ROOT, "docs", "PICTURE-STYLE.md"), "utf8");
+  const sec = doc.slice(doc.indexOf("## 1a."), doc.indexOf("## 2."));
+  assert.ok(sec.length > 500, "docs/PICTURE-STYLE.md must keep the §1a shot grammar section");
+  const rows = sec.split("\n").filter(l => /^\|\s*`/.test(l)).map(l => l.split("|").slice(1, -1).map(c => c.trim()))
+    .filter(r => r[0] !== "`shot_kind`");                                  // the header row of the table
+  assert.equal(rows.length, KINDS.length, "the documented table has one row per kind");
+  for (const [kindCell, , moveCell, clsCell, durCell, strengthCell] of rows) {
+    const kind = kindCell.replace(/`/g, ""), g = GRAMMAR[kind];
+    assert.ok(g, `the doc documents an unknown kind: ${kind}`);
+    assert.equal(moveCell.replace(/`/g, ""), g.move, `${kind}: the doc and the engine disagree on the move`);
+    assert.equal(clsCell, P.MOVES[g.move].cls, `${kind}: the doc and the engine disagree on the move class`);
+    const [min, max] = durCell.replace(/\s*s$/, "").split(/[–-]/).map(Number);
+    assert.deepEqual([min, max], [g.min, g.max], `${kind}: the doc and the engine disagree on the duration`);
+    assert.equal(Number(strengthCell), g.strength, `${kind}: the doc and the engine disagree on the strength`);
+  }
+  for (const rule of [
+    "no morphing, no extra fingers, no warping faces, no floating objects, no camera shake beyond the specified move, no zoom, no text, no watermark, no logo",
+    "multiplied by **0.7** and capped at **3.0 s** for 9:16",
+  ]) assert.ok(sec.includes(rule), `§1a must state: ${rule}`);
+});
+
+test("the engine draws the move and the strength the server resolved, and the old spellings still work", () => {
+  for (const k of KINDS) {
+    // The server hands the engine the resolved move and its strength; shot_kind never reaches the GPU.
+    const g = P.shotGrammar({ motion: k.move, strength: k.strength }, 3);
+    assert.deepEqual([g.move, g.strength, g.cls], [k.move, k.strength, k.cls]);
+    assert.equal(g.kind, null, "the story kind stays on the server");
+    assert.deepEqual(P.shotGrammar({ motion: k.move, strength: k.strength }, 0), P.shotGrammar({ motion: k.move, strength: k.strength }, 7),
+      `${k.kind} does not depend on where the shot sits`);
+    assert.equal(P.shotGrammar({ motion: k.move, strength: k.strength }, 1).move, k.move,
+      "a named move is drawn as named, wherever the shot sits");
+  }
+  assert.deepEqual(P.shotGrammar({ motion: "left" }, 0), { kind: null, move: "track_left", strength: 1, cls: "LATERAL", loud: false });
+  assert.equal(P.shotGrammar({ motion: "out" }, 3).move, "pull_out");
+  assert.deepEqual([0, 1, 2, 3, 4].map(i => P.shotGrammar({}, i).move),
+    ["push_in", "pull_out", "track_left", "track_right", "push_in"], "no field at all: the deprecated index rotation");
+  assert.equal(P.shotGrammar({ motion: "money_shot" }, 1).move, "pull_out", "an unknown kind falls back, it never throws");
+  assert.equal(P.shotGrammar({ motion: "constructor" }, 0).move, "push_in", "an inherited property is not a kind");
+  assert.equal(P.shotGrammar(null, 2).move, "track_left");
+  assert.equal(P.shotGrammar({ shot_kind: 7 }, 0).move, "push_in", "a kind that is not a string is ignored");
+});
+
+test("every kind covers the frame, keeps the picture undistorted and is deterministic", () => {
+  for (const k of KINDS) for (const [W, H] of FRAMES) for (const [iw, ih] of IMAGES) for (const p of STEPS)
+    for (const punch of [1, 1.03]) {
+      const r = P.kenBurns(k.move, iw, ih, W, H, p, punch, GRAMMAR[k.kind].strength);
+      assert.ok(covers(r, W, H), `uncovered: ${k.kind} ${iw}x${ih} on ${W}x${H} at ${p} -> ${JSON.stringify(r)}`);
+      assert.ok(Math.abs(r.w / r.h - iw / ih) < 1e-9, `${k.kind} must never distort the picture`);
+      assert.ok(r.w > 0 && r.h > 0 && Number.isFinite(r.x) && Number.isFinite(r.y));
+      assert.deepEqual(P.kenBurns(k.move, iw, ih, W, H, p, punch, GRAMMAR[k.kind].strength), r,
+        "every frame is a pure function of its arguments: the renderer splits the video across workers");
+      assert.equal(r.move, k.move);
+      assert.equal(r.cls, k.cls);
+    }
+});
+
+test("every kind moves the way its story asks: direction, and how much", () => {
+  for (const k of KINDS) {
+    const s = GRAMMAR[k.kind].strength;
+    const all = STEPS.map(p => rectAt(k.move, p, s));
+    const [z0, z1] = [all[0].zoom, all.at(-1).zoom];
+    if (k.zoom === "in") assert.ok(z1 > z0 + 1e-9, `${k.kind} must push in (${z0} → ${z1})`);
+    if (k.zoom === "out") assert.ok(z1 < z0 - 1e-9, `${k.kind} must pull out (${z0} → ${z1})`);
+    if (k.zoom === "flat") assert.ok(Math.abs(z1 - z0) < 1e-9, `${k.kind} holds its zoom (${z0} → ${z1})`);
+    const dx = all.at(-1).panX - all[0].panX, dy = all.at(-1).panY - all[0].panY;
+    assert.equal(Math.sign(dx), k.dx, `${k.kind}: horizontal drift ${dx}`);
+    assert.equal(Math.sign(dy), k.dy, `${k.kind}: vertical drift ${dy}`);
+    for (const r of all) {
+      assert.ok(Math.abs(r.panX) <= FRAMES[0][0] * .05 + EPS, `${k.kind} never slides half a frame away`);
+      assert.ok(r.zoom <= 1.2 + EPS, `${k.kind} never blows the picture up past 1.2 (${r.zoom})`);
+      assert.ok(r.zoom >= 1 - EPS, `${k.kind} never zooms below the cover fit (${r.zoom})`);
+    }
+    // Monotonic: a camera move that changes its mind mid-shot reads as a wobble, never as a camera.
+    const mono = list => list.every((v, i) => !i || v >= list[i - 1] - EPS) || list.every((v, i) => !i || v <= list[i - 1] + EPS);
+    assert.ok(mono(all.map(r => r.zoom)), `${k.kind} zooms one way only`);
+    assert.ok(mono(all.map(r => r.panX)), `${k.kind} drifts one way only`);
+    assert.ok(mono(all.map(r => r.panY)), `${k.kind} drifts one way only`);
+  }
+});
+
+test("a hook punches, a face barely breathes, a closing barely breathes the other way", () => {
+  const span = k => { const s = GRAMMAR[k].strength, m = GRAMMAR[k].move;
+    const all = STEPS.map(p => rectAt(m, p, s).zoom); return Math.abs(all.at(-1) - all[0]) };
+  assert.ok(Math.abs(span("hook") - .18 * GRAMMAR.hook.strength) < 1e-9, "the hook crashes in by 15%");
+  assert.ok(span("face") <= .03, `a face is a slow push, not a zoom (${span("face")})`);
+  assert.ok(span("closing") <= .02, `a closing barely drifts (${span("closing")})`);
+  assert.ok(span("hook") > span("tension") && span("tension") > span("face"), "hook > tension > face");
+  // Front-loaded: the crash has done most of its travel in the first third of the shot.
+  const z = p => rectAt("crash_zoom_in", p, 1).zoom;
+  assert.ok((z(.3) - z(0)) / (z(1) - z(0)) > .6, "a crash zoom lands most of its travel at once");
+  const e = p => rectAt("push_in", p, 1).zoom;
+  assert.ok(Math.abs((e(.5) - e(0)) / (e(1) - e(0)) - .5) < 1e-9, "a push-in is even, it does not crash");
+});
+
+test("an action shot travels further than a detail, and a detail_orbit both slides and pushes", () => {
+  const travel = k => { const g = GRAMMAR[k], all = STEPS.map(p => rectAt(g.move, p, g.strength).panX);
+    return Math.abs(all.at(-1) - all[0]) };
+  assert.ok(travel("action") > travel("detail"), "the action shot is the livelier lateral");
+  assert.ok(travel("detail") > 0 && travel("tension") > 0, "a lean is still a lean");
+  const orbit = STEPS.map(p => rectAt("orbit_left", p, GRAMMAR.detail_orbit.strength));
+  assert.ok(orbit.at(-1).panX < orbit[0].panX && orbit.at(-1).zoom > orbit[0].zoom,
+    "an orbit slides and pushes at the same time: that is what makes it read as an orbit");
+  const crane = STEPS.map(p => rectAt("crane_down", p, GRAMMAR.establish.strength));
+  assert.ok(crane.at(-1).panY > crane[0].panY && crane.every(r => r.panX === 0), "a crane is vertical only");
+});
+
+test("static_forced holds absolutely still, at any strength, on any picture", () => {
+  for (const [W, H] of FRAMES) for (const [iw, ih] of IMAGES) {
+    const box = r => [r.x, r.y, r.w, r.h, r.zoom, r.panX, r.panY];
+    const first = box(P.kenBurns("static_hold", iw, ih, W, H, 0, 1, 0));
+    for (const p of STEPS) for (const k of [0, .5, 1])
+      assert.deepEqual(box(P.kenBurns("static_hold", iw, ih, W, H, p, 1, k)), first,
+        "a static hold is the same rect at every time and every strength: the frame is frozen by design");
+    assert.deepEqual(first.slice(4), [1, 0, 0], "and it sits exactly on the cover fit, dead centre");
+  }
+});
+
+test("the deprecated motion names render exactly as they always did", () => {
+  const same = (a, b) => assert.deepEqual(a, b);
+  for (const [motion, move] of Object.entries(P.LEGACY_MOVE)) for (const p of STEPS)
+    same(P.kenBurns(motion, 720, 1280, 1080, 1920, p, 1), P.kenBurns(move, 720, 1280, 1080, 1920, p, 1, 1));
+  assert.equal(P.kenBurns("in", 720, 1280, 1080, 1920, 1, 1).zoom, 1.1);
+  assert.equal(P.kenBurns("out", 720, 1280, 1080, 1920, 0, 1).zoom, 1.1);
+  assert.equal(P.kenBurns("left", 720, 1280, 1080, 1920, .5, 1).zoom, 1.04);
+  assert.equal(P.kenBurns("in", 720, 1280, 1080, 1920, 0, 1).move, "push_in", "and they carry their new name");
+  assert.equal(P.kenBurns("nonsense", 720, 1280, 1080, 1920, 0, 1).move, "push_in", "an unknown move pushes in");
+});
+
+test("strength scales the amplitude and nothing else", () => {
+  const z = (move, p, k) => rectAt(move, p, k).zoom;
+  assert.ok(Math.abs((z("push_in", 1, .5) - 1) / (z("push_in", 1, 1) - 1) - .5) < 1e-9, "half the strength, half the push");
+  assert.equal(z("push_in", 1, 0), 1, "strength 0 is a static frame");
+  assert.equal(z("push_in", 1, -3), z("push_in", 1, 0), "strength is clamped to 0…1");
+  assert.equal(z("push_in", 1, 9), z("push_in", 1, 1));
+  assert.equal(z("push_in", 1, undefined), z("push_in", 1, 1), "no strength given means the full move");
+  const a = rectAt("track_right", 1, .5).panX - rectAt("track_right", 0, .5).panX;
+  const b = rectAt("track_right", 1, 1).panX - rectAt("track_right", 0, 1).panX;
+  assert.ok(a > 0 && b > a, "a weaker lateral travels less far");
 });
 
 test("Ken Burns: the picture covers the whole frame for every shape, frame, move and progress", () => {
@@ -446,6 +644,34 @@ test("the 3% punch fires on a cut inside a scene, never on the scene's own first
   assert.equal(cut.draw.length, 2, "the outgoing picture is drawn underneath the incoming one");
   assert.ok(Math.abs(cut.draw[1].w / (plain * 1.1) - 1.03) < 1e-6, "the incoming picture arrives 3% large");
   assert.ok(Math.abs(drawScene(s, 5.3, { images }).draw.at(-1).w / (plain * 1.1) - 1.03) > .02, "and settles");
+});
+
+test("a static_forced shot does not move on screen, not even the 3% punch of the cut", () => {
+  const images = { a: SQUARE, b: SQUARE };
+  // As the server hands them over: the kind is already resolved into a move and a strength.
+  const s = { ...cinema(), shots: [{ image: "a", motion: "push_in", strength: .25 },
+                                   { image: "b", motion: "static_hold", strength: 0 }] };
+  const plain = 1024 * COVER(1024, 1024, 1080, 1920);
+  const held = [5, 5.15, 5.3, 7, 9.9].map(u => drawScene(s, u, { images }).draw.at(-1));
+  for (const r of held) {
+    assert.ok(Math.abs(r.w - plain) < 1e-6, `a static hold must arrive at the cover fit and stay there (${r.w} vs ${plain})`);
+    assert.deepEqual([r.x, r.y], [held[0].x, held[0].y], "and never travel");
+  }
+  // The shot before it is a `face`: a real, if slow, push. The kinds are read, not ignored.
+  const face = [0, 2, 4.9].map(u => drawScene(s, u, { images }).draw[0].w);
+  assert.ok(face[1] > face[0] && face[2] > face[1], `a face shot still pushes in gently (${face})`);
+  assert.ok(face.at(-1) / face[0] < 1.03, "gently: a quarter of a full push");
+});
+
+test("a resolved crash zoom opens harder than the old index rotation, which still works", () => {
+  const images = { a: SQUARE, b: SQUARE };
+  const at = (shots, u) => drawScene({ ...cinema(), shots }, u, { images }).draw[0].w;
+  const legacy = [0, .5].map(u => at([{ image: "a" }, { image: "b" }], u));            // no field: 'in' by index
+  const hook = [0, .5].map(u => at([{ image: "a", motion: "crash_zoom_in", strength: .85 }, { image: "b" }], u));
+  assert.ok(hook[1] > legacy[1], `a hook opens harder than the deprecated rotation (${hook[1]} vs ${legacy[1]})`);
+  const kept = [0, .5].map(u => at([{ image: "a", motion: "left" }, { image: "b" }], u));
+  assert.ok(Math.abs(kept[0] - 1024 * COVER(1024, 1024, 1080, 1920) * 1.04) < 1e-6,
+    "and a storyboard written before the grammar still renders its `motion`");
 });
 
 test("the outgoing picture keeps its Ken Burns running through the crossfade", () => {
