@@ -350,14 +350,27 @@ test("scene ids never end with the shot suffix (it belongs to picture ids)", () 
 });
 
 test("a scene-level image_prompt is normalised into shots[0] and disappears", () => {
+  // The shorthand becomes shot 1 of the scene, and the scene-level key is gone from what gets stored. The storyboard
+  // is refused all the same: one picture held for a whole narrated line is a slideshow, whichever way it was written.
   const sb = pirates();
-  const scene = sb.scenes[1];
-  delete scene.shots;
-  scene.image_prompt = "  The Red Gull racing over turquoise waves under a clear sky  ";
-  const r = validateStoryboard(sb, { format: "9:16", language: "en" });
+  delete sb.scenes[1].shots;
+  sb.scenes[1].image_prompt = "  The Red Gull racing over turquoise waves under a clear sky  ";
+  const lone = validateStoryboard(sb, { format: "9:16", language: "en" });
+  assert.equal(lone.ok, false, "one picture for a whole line is refused");
+  assert.ok(lone.errors.some((e) => /1 picture, a scene needs at least 2/.test(e)), lone.errors.join("\n"));
+  assert.deepEqual(sb.scenes[1].shots, [{ image_prompt: "The Red Gull racing over turquoise waves under a clear sky" }], "the shorthand still becomes shot 1");
+  assert.ok(!("image_prompt" in sb.scenes[1]), "and no scene-level image_prompt survives normalisation");
+
+  // With a second picture beside it the same scene validates, and the picture ids follow the shot numbers.
+  const ok2 = pirates();
+  const keep = ok2.scenes[1].shots[1];
+  delete ok2.scenes[1].shots;
+  ok2.scenes[1].image_prompt = "The Red Gull racing over turquoise waves under a clear sky";
+  validateStoryboard(ok2, { format: "9:16", language: "en" });        // normalises the shorthand into shots[0]
+  ok2.scenes[1].shots.push(keep);
+  const r = validateStoryboard(ok2, { format: "9:16", language: "en" });
   assert.deepEqual(r.ok ? [] : r.errors, []);
-  assert.deepEqual(r.storyboard.scenes[1].shots, [{ image_prompt: "The Red Gull racing over turquoise waves under a clear sky" }]);
-  assert.ok(!("image_prompt" in r.storyboard.scenes[1]), "the stored storyboard carries no scene-level image_prompt");
+  assert.equal(r.storyboard.scenes[1].shots[0].image_prompt, "The Red Gull racing over turquoise waves under a clear sky");
   assert.equal(pictureScenes(r.storyboard)[3].id, "02-ship-s1");
   const both = pirates();
   both.scenes[0].image_prompt = "a beach";

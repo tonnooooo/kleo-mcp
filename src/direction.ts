@@ -136,7 +136,10 @@ export function directionProblems(d: unknown, opts: DirectionOptions): string[] 
   add(badText(d.world, "world", D.world));
 
   // must_keep may legitimately be empty: a one-line prompt ("a Short about pirates") carries no facts to preserve.
-  if (!Array.isArray(d.must_keep)) out.push("direction.must_keep must be an array (use [] when the request states no facts to keep)");
+  // ABSENT means empty. An empty array does not survive a round trip through the planner's cleaner (it drops empty
+  // values), so demanding the key would refuse a direction for having nothing to demand.
+  if (d.must_keep === undefined) { /* none to keep */ }
+  else if (!Array.isArray(d.must_keep)) out.push("direction.must_keep must be an array (use [] when the request states no facts to keep)");
   else if (d.must_keep.length > D.mustKeep.max) out.push(`direction.must_keep has ${d.must_keep.length} entries, the limit is ${D.mustKeep.max}`);
   else d.must_keep.forEach((x, i) => add(badText(x, `must_keep[${i}]`, D.mustKeep.len)));
 
@@ -144,7 +147,8 @@ export function directionProblems(d: unknown, opts: DirectionOptions): string[] 
   out.push(...listProblems(d.forbidden, "forbidden", D.forbidden.min, D.forbidden.max, D.forbidden.len));
 
   // The cast is optional (a film about a city has none), but a character that IS listed must be described once.
-  if (!Array.isArray(d.cast)) out.push("direction.cast must be an array (use [] when the film has no recurring character)");
+  if (d.cast === undefined) { /* nobody recurring */ }
+  else if (!Array.isArray(d.cast)) out.push("direction.cast must be an array (use [] when the film has no recurring character)");
   else if (d.cast.length > D.cast.max) out.push(`direction.cast has ${d.cast.length} entries, the limit is ${D.cast.max}`);
   else d.cast.forEach((m, i) => {
     if (!isObj(m)) { out.push(`direction.cast[${i}] must be {name, look}`); return; }
@@ -222,7 +226,8 @@ function spoken(w: string, said: Set<string>): boolean {
  * narration verbatim (a number the model rounded away is a changed fact), and at least 60 % of the item's content
  * words must appear somewhere in the narration. An item made only of stop words proves nothing and is skipped.
  */
-export function missingFacts(mustKeep: readonly string[], narration: string): string[] {
+export function missingFacts(mustKeep: readonly string[] | undefined, narration: string): string[] {
+  if (!Array.isArray(mustKeep) || !mustKeep.length) return [];
   const said = new Set(words(narration));
   const saidNumbers = new Set(narration.match(NUM)?.map((n) => n.replace(/[.,]$/, "")) ?? []);
   const out: string[] = [];
@@ -245,11 +250,11 @@ export function missingFacts(mustKeep: readonly string[], narration: string): st
  * free prose. A multi-word forbidden term matches as a phrase.
  */
 export function forbiddenInPrompts(
-  forbidden: readonly string[],
+  forbidden: readonly string[] | undefined,
   prompts: readonly { id: string; image_prompt: string }[],
 ): { id: string; term: string }[] {
   const out: { id: string; term: string }[] = [];
-  const terms = forbidden.map((t) => ({ term: t, re: new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(t.trim())}(?![\\p{L}\\p{N}])`, "iu") })).filter((t) => t.term.trim());
+  const terms = (forbidden ?? []).map((t) => ({ term: t, re: new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(t.trim())}(?![\\p{L}\\p{N}])`, "iu") })).filter((t) => t.term.trim());
   for (const p of prompts) for (const t of terms) if (t.re.test(p.image_prompt)) out.push({ id: p.id, term: t.term });
   return out;
 }

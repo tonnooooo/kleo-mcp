@@ -8,6 +8,7 @@ import { test } from "node:test";
 import { readFile } from "node:fs/promises";
 import assert from "node:assert/strict";
 import { generateStoryboard, fixtureStoryboard, isTransientAiError, StoryboardError, styleFor, keouStyleFor, pickKleoStyle, planFor, normalizeStoryboard } from "../src/storyboard.ts";
+import { guideText, EXAMPLE_SCENES } from "../src/guide.ts";
 import { validateStoryboard, pictureScenes, quotesVoice, BEAT_ICONS, STORY_ACTS } from "../src/keou-contract.ts";
 import { assignShotKinds } from "../src/storyboard.ts";
 import { SHOT_KINDS, presetFor, moveClassOf, isLoud, needsStaticHold, LOUD_MAX_PER_WINDOW } from "../src/shot-grammar.ts";
@@ -493,32 +494,23 @@ test("shot grammar: loud moves stay rare and never touch, even when every shot a
   assert.ok(loud <= LOUD_MAX_PER_WINDOW, `a 40s video takes at most ${LOUD_MAX_PER_WINDOW} loud moves, got ${loud}`);
 });
 
-test("the storyboard guide teaches shot_kind and never a camera move", async () => {
-  const guide = await readFile(new URL("../src/mcp.ts", import.meta.url), "utf8");
-  const block = guide.slice(guide.indexOf("KLEO STORYBOARD GUIDE"), guide.indexOf("EXAMPLE C"));
-  for (const kind of SHOT_KINDS) assert.ok(block.includes(kind), `the guide must name the shot kind "${kind}"`);
-  assert.ok(/SHOT KINDS/.test(block), "the guide has a shot-kind section");
-  assert.ok(!/"motion":"(in|out|left|right)"/.test(block), "no worked example writes a camera move by hand");
-  assert.ok(!/"motion" is the slow camera move/.test(block), "the old motion prose is gone, not merely added to");
-  // Both picture examples carry the grammar.
-  const a = block.slice(block.indexOf("EXAMPLE A"), block.indexOf("EXAMPLE B"));
-  const b = block.slice(block.indexOf("EXAMPLE B"));
-  for (const [name, ex] of [["A", a], ["B", b]]) {
-    // Walk the example in order so every shot_kind is tagged with the scene id it sits under: the scale and
-    // direction rules are per scene, and an example that breaks them teaches the model to break them.
-    const shots = [];
-    let scene = "?";
-    for (const m of ex.matchAll(/"id":"([^"]+)"|"shot_kind":"([a-z_]+)"/g)) {
-      if (m[1]) scene = m[1];
-      else shots.push({ shot_kind: m[2], scene });
-    }
-    const kinds = shots.map((sh) => sh.shot_kind);
-    assert.ok(kinds.length >= 5, `example ${name} puts shot_kind on every shot, got ${kinds.length}`);
-    assert.ok(kinds.every((k) => SHOT_KINDS.includes(k)), `example ${name} uses only real kinds`);
-    assert.equal(kinds[0], "hook", `example ${name} opens on the hook`);
-    assert.equal(kinds.at(-1), "closing", `example ${name} ends on the closing`);
-    assert.deepEqual(sequenceProblems(shots), [], `example ${name} is shootable`);
+test("the storyboard guide teaches shot_kind and never a camera move", () => {
+  // The guide is built by src/guide.ts now, so this reads what a caller is actually handed, not the source of a
+  // template literal. Only the picture looks have shot kinds; cyber and stickman have no camera to talk about.
+  for (const style of [null, "cartoon", "realistic"]) {
+    const block = guideText({ duration_s: 45, style, languages: ["en", "it"] });
+    for (const kind of SHOT_KINDS) assert.ok(block.includes(kind), `${style}: the guide must name the shot kind "${kind}"`);
+    assert.ok(/shot_kind says what the shot is FOR/.test(block), `${style}: the guide has a shot-kind section`);
+    assert.ok(!/"motion":"(in|out|left|right)"/.test(block), `${style}: no worked example writes a camera move by hand`);
+    assert.ok(/NEVER write a camera move/.test(block), `${style}: the guide forbids camera language outright`);
   }
+
+  // The worked example must itself obey the sequencing rules: an example that breaks them teaches the model to.
+  const shots = EXAMPLE_SCENES.flatMap((sc) => sc.shots.map((sh) => ({ ...sh, scene: sc.id })));
+  assert.ok(shots.every((sh) => !sh.shot_kind || SHOT_KINDS.includes(sh.shot_kind)), "every kind in the example is one of the ten");
+  assert.deepEqual(sequenceProblems(shots.map((sh) => ({ ...sh, shot_kind: sh.shot_kind ?? "establish" }))), []);
+  assert.equal(shots[0].shot_kind, "hook", "the example opens on the hook");
+  assert.ok(shots.slice(1).every((sh) => typeof sh.at === "string" && sh.at), "every picture after the first is anchored in the example");
 });
 
 test("shot grammar: whatever the model writes, the storyboard that comes out is one the contract will shoot", () => {
