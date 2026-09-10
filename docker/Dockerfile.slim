@@ -50,10 +50,15 @@ RUN cd /tmp && curl -fsSL https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_
 
 # --- torch, the layer this whole file exists for. The wheels are the ones the pytorch base image installs
 #     itself; the deletions happen in the same RUN, or the bytes would still ship in the layer:
-#       triton (565 MB)              torch.compile's JIT backend, with ptxas and two CUPTI static archives.
+#       triton (540 MB)              torch.compile's JIT backend, with ptxas and two CUPTI static archives.
 #                                    Nothing here compiles: diffusers runs the SD1.5 UNet eagerly and kokoro is
-#                                    a plain nn.Module. torch keeps a stale "requires triton" in its metadata;
-#                                    the import test below is the check that matters.
+#                                    a plain nn.Module, and torch.compile is never called. The payload goes but
+#                                    triton-3.4.0.dist-info stays on purpose: `pip uninstall triton` leaves the
+#                                    requirement torch declares unsatisfied, and the very next `pip install -r`
+#                                    that touches torch's dependency tree (kokoro pulls torch in) downloads all
+#                                    540 MB again — measured, that is exactly what happened. With the metadata
+#                                    left in place pip sees the requirement met, `pip check` is clean, and
+#                                    torch.has_triton() just reports False as it does on any CPU-only install.
 #       libcudnn_adv.so.9 (285 MB)   cuDNN's RNN / CTC / multi-head-attention engines. libcudnn.so.9 is a 100 KB
 #                                    dispatcher that dlopens its sub-libraries on demand, and libcudnn_cnn.so.9
 #                                    (the convolutions SD1.5 runs) has DT_NEEDED on _ops and _graph only, so
@@ -83,7 +88,6 @@ RUN set -eu; \
     echo "=== torch stack as installed"; du -sh "$SITE"; du -sh "$SITE"/nvidia/* "$SITE"/torch "$SITE"/triton 2>/dev/null | sort -h; \
     echo "=== libtorch_cuda.so links"; ldd "$SITE/torch/lib/libtorch_cuda.so" | sed 's/^[[:space:]]*//' | sort; \
     if [ "${PRUNE_CUDA}" = "1" ]; then \
-      pip uninstall -y triton pytorch-triton 2>/dev/null || true; \
       rm -rf "$SITE"/triton "$SITE"/nvidia/cudnn/lib/libcudnn_adv.so.9 \
              "$SITE"/nvidia/cusolver/lib/libcusolverMg.so.11 \
              "$SITE"/nvidia/cuda_nvrtc/lib/libnvrtc.alt.so.12 \
@@ -142,19 +146,20 @@ RUN set -eu; \
 # --- Python deps + the spaCy model misaki would otherwise download on first run ---
 COPY worker/keou/requirements.txt ./
 RUN pip install --no-compile -r requirements.txt \
-    && pip install --no-compile https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+    && pip install --no-compile https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl \
+    && rm -rf /opt/venv/lib/python3*/site-packages/triton
 
 # --- Python deps for local picture generation (diffusers on the torch installed above; see worker/kleo_pictures.py).
-#     `pip check` may complain about the deliberately removed triton and about nothing else; the import line under
-#     it is the real check, and it covers more than pip check ever did. ---
+#     `pip check` is strict here exactly as in Dockerfile.keou, and the import line under it goes further: it
+#     loads every package the worker actually reaches for, which is more than pip check can tell you. ---
 COPY worker/requirements-pictures.txt /opt/kleo/requirements-pictures.txt
 RUN set -eu; \
     pip install --no-compile -r /opt/kleo/requirements-pictures.txt; \
-    pip check > /tmp/pipcheck.txt 2>&1 || true; cat /tmp/pipcheck.txt; \
-    if grep -vi triton /tmp/pipcheck.txt | grep -q '[^[:space:]]'; then echo "pip check found a real problem"; exit 1; fi; \
+    rm -rf /opt/venv/lib/python3*/site-packages/triton; \
+    pip check; \
     python3 -c "import torch, torchvision, diffusers, transformers, accelerate, safetensors, numpy, PIL, kokoro, misaki, faster_whisper, ctranslate2, spacy, soundfile, huggingface_hub; print('IMPORTS_OK diffusers', diffusers.__version__, 'transformers', transformers.__version__, 'torch', torch.__version__)"; \
     find /opt/venv -name '__pycache__' -type d -prune -exec rm -rf {} +; \
-    rm -f /tmp/pipcheck.txt
+    du -sh /opt/venv
 
 # --- Models: Kokoro-82M + every contract voice, faster-whisper small/int8, and the SD1.5 picture checkpoint
 #     (dreamshaper-8 for cartoon: fp16 safetensors + configs, ~2 GB), all in the HF cache inside the image.
