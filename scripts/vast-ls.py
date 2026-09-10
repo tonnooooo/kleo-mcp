@@ -65,8 +65,19 @@ def listing() -> int:
     rows = d.get("instances") or []
     credit = float(api("/v0/users/current/").get("credit") or 0)
 
+    # La soglia che il proprietario ha chiesto (11 settembre): avvisami quando siamo a 0,05-0,10 $. Sta qui e non
+    # nella testa di chi guarda, perche' il credito scende anche quando non lo guarda nessuno. Uno Short misurato
+    # costa 0,0414 $: sotto i 0,10 non ce ne sta piu' nemmeno uno intero con margine.
+    def allarme(c: float) -> None:
+        if c <= 0.10:
+            print(f"\n  *** RICARICA VAST: restano {c:.2f} $, cioe' {int(c / 0.0414)} Short. Sotto questa soglia")
+            print("      un video di un utente puo' morire a meta' e la GPU resta pagata a vuoto. ***")
+        elif c <= 0.50:
+            print(f"\n  (credito basso: {c:.2f} $ = circa {int(c / 0.0414)} Short)")
+
     if not rows:
         print(f"Nessuna macchina accesa. Credito: {credit:.2f} $.")
+        allarme(credit)
         return 0
 
     now = time.time()
@@ -91,6 +102,8 @@ def listing() -> int:
         print("  Quando il credito finisce, i video degli utenti smettono di partire.")
     else:
         print()
+
+    allarme(credit)
 
     if unmanaged:
         print(f"\n  {len(unmanaged)} macchine che nessun programma spegnera' mai da solo"
