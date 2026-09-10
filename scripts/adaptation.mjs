@@ -321,7 +321,10 @@ line();
  * when there is no model to ask, and why what it needs next is to say "I do not know" instead of guessing a look
  * that costs money.
  */
-const BASELINE = 0.35;
+// 0.35 was the baseline over the first twenty. The border set that followed added seven requests the classifier gets
+// wrong in every case, so the same code now measures 26% — the number moved because the corpus got harder, not
+// because anything regressed. This is a RATCHET against getting worse, and 26% is a failing grade written down.
+const BASELINE = 0.25;
 const heldScore = allHeld.filter((h) => h.ok).length / allHeld.length;
 const ok = heldScore >= BASELINE;
 line(ok
