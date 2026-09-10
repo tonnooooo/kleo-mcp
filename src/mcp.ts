@@ -142,6 +142,7 @@ CINEMA SCENE: { "id": "01-hook", "kind": "cinema", "chapter": "01 HOOK <=32", "a
   {"kind":"terminal","lines":["<=48"x1-4],"label":"<=16"} · {"kind":"dialog","text":"<=32","count":1-5} · {"kind":"cta","label":"<=24","toggles":["<=14"x1-3]}
  ICONS: ${JSON.stringify(BEAT_ICONS)}  FX: ${JSON.stringify(BEAT_FX)}
  The icon set is small and tech-flavoured: use them as metaphors (radar=search, shield=safety, timer=time, figure/thief=people, wave=signal, house/car=places) and lean on "type" beats with strong words for everything else.
+ cartoon/realistic: the picture already shows the people and the place, so do NOT use figure/person/thief icons (Kleo replaces them with words) and keep 2-4 beats per scene so the picture breathes: "type" beats with 2-4 strong words, timeline, steps, people counts, bars, metric-like numbers. Icons only as small metaphors on type beats (check, cross, alarm, timer, lock, map-like ones).
 
 STICKMAN SCENE: { "id", "kind": "story", "act": ${JSON.stringify(STORY_ACTS)}, "cast": ["hero", +"thief"|"thief2"], "props": [<=3 of ${JSON.stringify(STORY_PROPS)}], "fx": ${JSON.stringify(STORY_FX)}, "accent": green|red|amber, "bubble": "<=40 speech bubble", "hl": "<=24", "title", "voice" }
 

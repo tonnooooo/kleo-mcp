@@ -138,7 +138,21 @@
     }
     return hw / 2;
   }
+  const PEOPLE_ICONS = new Set(['figure', 'person', 'thief']);              // Kleo: over a picture the people are already in the picture
+  function measureSpaced(text, size, tracking, font = 'Manrope', weight = 700) {
+    const ctx = A.ctx; ctx.font = `${weight} ${size}px ${font}`; const chars = [...text];
+    return chars.reduce((a, c) => a + ctx.measureText(c).width, 0) + tracking * (chars.length - 1);
+  }
+  function label(s, text, x, y, size, color, tracking = 5) {                  // beat label; on a picture it sits on a dark pill so it stays readable
+    const ctx = A.ctx, up = text.toUpperCase();
+    if (s._picture) { const w = measureSpaced(up, size, tracking); ctx.save(); ctx.fillStyle = 'rgba(0,0,0,.58)'; rr(x - w / 2 - 22, y - size - 10, w + 44, size + 26, 12); ctx.fill(); ctx.restore() }
+    spaced(up, x, y, size, color, 'center', tracking);
+  }
   function beat(b, s, k, ub, bd, t, G, n = 1) {
+    if (s._picture) {                                                          // Kleo pictures: no stickmen on top of drawn people, words instead
+      if (b.kind === 'icon' && PEOPLE_ICONS.has(b.name)) b = b.label ? { kind: 'type', text: b.label.slice(0, 40), at: b.at } : { kind: 'type', text: (s.hl || s.title || '').slice(0, 40), at: b.at };
+      else if (b.kind === 'type' && PEOPLE_ICONS.has(b.icon)) b = { ...b, icon: undefined };
+    }
     const ctx = A.ctx, acc = COL[s.accent || 'green'], [hx, hy, hw, hh] = G.hero;
     const MU = s._picture ? PALE : MUTED;                                       // Kleo: muted labels sink into a photo, use the pale tone there
     const first = k === 0, last = k === n - 1;
@@ -155,18 +169,19 @@
       case 'icon': { const sz = size * (b.size || .78), drive = b.fx === 'drive';
         const q = drive ? clamp(ub / Math.max(bd - .1, .3)) : 0, dx = q * q * hw * 1.1, ia = 1;   // drive: the car accelerates and is physically out of frame right at the cut
         icon(b.name, hx + dx, hy - (b.label ? 40 : 0), sz, t, acc, { lit: b.fx === 'lit' || drive, dead: b.fx === 'dead', key: b.fx === 'key', open: b.fx === 'open', drive, pose: ['alarm', 'point', 'run', 'think'].includes(b.fx) ? b.fx : undefined, u: ub, fill: Math.min(1.4, bd * .8) }, ia);
-        if (b.label) { const la = ease((ub - .7 * T) / .22); ctx.save(); ctx.globalAlpha *= la; ctx.translate(0, (1 - la) * 14); spaced(b.label.toUpperCase(), hx, hy + sz * .5 + 30, 26, acc, 'center', 5); ctx.restore() } break; }
+        if (b.label) { const la = ease((ub - .7 * T) / .22); ctx.save(); ctx.globalAlpha *= la; ctx.translate(0, (1 - la) * 14); label(s, b.label, hx, hy + sz * .5 + 30, 26, acc); ctx.restore() } break; }
       case 'split': { const [l, r] = b.items, sz = size * .38, gap = hw * .26;
         icon(l, hx - gap, hy, sz, t, acc, {}); const aa = ease((ub - .5 * T) / .25); ctx.save(); ctx.globalAlpha *= aa; stroke(acc, 6); glowOn(acc, 16); ctx.beginPath(); ctx.moveTo(hx - 48, hy); ctx.lineTo(hx + 40, hy); ctx.moveTo(hx + 18, hy - 20); ctx.lineTo(hx + 40, hy); ctx.lineTo(hx + 18, hy + 20); ctx.stroke(); glowOff(); ctx.restore();
         ctx.save(); ctx.globalAlpha *= ease((ub - .55 * T) / .2); icon(r, hx + gap, hy, sz, t, acc, { lit: b.fx === 'lit', dead: b.fx === 'dead', open: b.fx === 'open' }); ctx.restore();
-        if (b.label) { const la = ease((ub - .9 * T) / .22); ctx.save(); ctx.globalAlpha *= la; spaced(b.label.toUpperCase(), hx, hy + sz * .6 + 40, 26, acc, 'center', 5); ctx.restore() } break; }
+        if (b.label) { const la = ease((ub - .9 * T) / .22); ctx.save(); ctx.globalAlpha *= la; label(s, b.label, hx, hy + sz * .6 + 40, 26, acc); ctx.restore() } break; }
       case 'grid': { const m = b.items.length, sz = size * .28, gap = Math.min(hw / m, 330);
         b.items.forEach((nm, i) => { const ia = ease((ub - i * .3 * T) / .22); ctx.save(); ctx.globalAlpha *= ia; ctx.translate(0, (1 - ia) * 20); icon(nm, hx + (i - (m - 1) / 2) * gap, hy, sz, t, acc, {}); ctx.restore(); if (i < m - 1) { ctx.save(); ctx.globalAlpha *= ease((ub - (i + .65) * .3 * T) / .2); ctx.fillStyle = acc; ctx.beginPath(); ctx.arc(hx + (i - (m - 1) / 2) * gap + gap / 2, hy, 6, 0, TAU); ctx.fill(); ctx.restore() } });
-        if (b.label) { const la = ease((ub - m * .3 * T) / .22); ctx.save(); ctx.globalAlpha *= la; spaced(b.label.toUpperCase(), hx, hy + sz * .6 + 40, 26, acc, 'center', 5); ctx.restore() } break; }
+        if (b.label) { const la = ease((ub - m * .3 * T) / .22); ctx.save(); ctx.globalAlpha *= la; label(s, b.label, hx, hy + sz * .6 + 40, 26, acc); ctx.restore() } break; }
       case 'type': { const { words, font, fs, ic } = typeFit(b, size, hw, hh, ctx), nw = words.length, slam = !!b.slam, sk = slam ? ease(ub / .14) : 1;
         if (slam && ub < .35) { ctx.save(); ctx.globalAlpha *= (1 - ub / .35) * .35; ctx.fillStyle = acc; ctx.fillRect(-hw, -hh, hw * 4, hh * 6); ctx.restore(); ctx.translate((Math.sin(ub * 90) * 9) * (1 - ub / .35), (Math.cos(ub * 70) * 6) * (1 - ub / .35)) }
         if (slam) { const over = lerp(Math.min(1.35, room), 1, sk); ctx.translate(hx, hy); ctx.scale(over, over); ctx.translate(-hx, -hy) }
         const lh = fs * 1.1, top = hy - (nw * lh + ic) / 2;
+        if (s._picture) { const { half } = typeFit(b, size, hw, hh, ctx); ctx.save(); ctx.fillStyle = 'rgba(0,0,0,.42)'; rr(hx - half - fs * .5, top + ic - fs * .12, half * 2 + fs, nw * lh + fs * .3, fs * .3); ctx.fill(); ctx.restore() }   // Kleo: words stay readable on a bright picture
         if (b.icon) { const isz = ic - 24; icon(b.icon, hx, top + isz / 2, isz, t, acc, { lit: b.fx === 'lit', dead: b.fx === 'dead', open: b.fx === 'open', key: b.fx === 'key' }) }   // the picture above the words, slammed with them
         words.forEach((w, i) => { const wa = slam ? 1 : ease((ub - i * .12 * T) / .3), hl = w === (b.hl || '').toUpperCase(); ctx.save(); ctx.globalAlpha *= wa; glowOn(hl ? acc : '#ffffff', 22); spaced(w, hx, top + ic + i * lh + lh / 2 + fs * .36 + (1 - wa) * 18, fs, hl ? acc : WHITE, 'center', fs * .06, font, 800); glowOff(); ctx.restore() });
         break; }
