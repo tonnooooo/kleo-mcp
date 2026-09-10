@@ -32,10 +32,13 @@ jobs:
       - name: Free disk space
         if: steps.claim.outputs.job != ''
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift \
+                      /usr/local/.ghcup /usr/lib/jvm /usr/local/julia* /opt/az /usr/share/miniconda /opt/microsoft /usr/local/share/chromium || true
+          sudo apt-get remove -y --purge '^aspnetcore-.*' '^dotnet-.*' '^llvm-.*' 'php.*' '^mongodb-.*' '^mysql-.*' google-cloud-cli azure-cli firefox powershell mono-devel >/dev/null 2>&1 || true
+          sudo apt-get autoremove -y >/dev/null 2>&1 || true; sudo apt-get clean || true
           sudo docker image prune -af || true
           df -h / | tail -1
-      - name: Pull the worker image
+      - name: Pull the worker image (~15 GB)
         if: steps.claim.outputs.job != ''
         run: docker pull ghcr.io/tonnooooo/kleo-worker:keou
       - name: Render
