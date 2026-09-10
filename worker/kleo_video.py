@@ -308,6 +308,61 @@ def finish_clip(src, dst, width, height, fps=60, grade=True, trim=0.12):
     return dst
 
 
+def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=None):
+    """One continuous video track for the whole film, exactly as long as the timeline, from the clips generated per
+    shot. Built from build/shots.json — the cut times the ENGINE itself computed — so the footage and the graphics
+    can never disagree about where a shot begins.
+
+    A shot with no clip becomes black for its own length: a hole in the picture, never a hole in the timing, because
+    a track that is even a frame short desynchronises everything after it. Returns out_path, or None.
+    """
+    say = log_fn or log
+    try:
+        plan = json.load(open(shots_json))
+    except Exception as e:
+        say("no shot plan:", e)
+        return None
+    parts, total = [], 0.0
+    work = os.path.join(os.path.dirname(out_path), "footage-parts")
+    os.makedirs(work, exist_ok=True)
+    n = 0
+    for scene in plan.get("scenes") or []:
+        for sh in scene.get("shots") or []:
+            want = max(0.04, float(sh.get("end", 0)) - float(sh.get("start", 0)))
+            src = clips.get(f"{scene['id']}-s{int(sh.get('index', 0)) + 1}") or sh.get("clip")
+            dst = os.path.join(work, f"{n:03d}.mp4")
+            n += 1
+            if src and os.path.isfile(src):
+                # The clip is trimmed or held on its last frame to fill exactly the time the shot occupies.
+                vf = (f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},"
+                      f"fps={fps},tpad=stop_mode=clone:stop_duration={want:.3f}")
+                cmd = ["ffmpeg", "-v", "error", "-y", "-i", src, "-vf", vf, "-t", f"{want:.3f}",
+                       "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p", dst]
+            else:
+                say(f"{scene['id']} shot {sh.get('index')}: no clip, that stretch stays black")
+                cmd = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                       f"color=c=black:s={width}x{height}:r={fps}:d={want:.3f}",
+                       "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p", dst]
+            if subprocess.run(cmd, capture_output=True, text=True).returncode != 0 or not os.path.isfile(dst):
+                say(f"could not prepare {os.path.basename(dst)}")
+                return None
+            parts.append(dst)
+            total += want
+    if not parts:
+        return None
+    listing = os.path.join(work, "list.txt")
+    with open(listing, "w") as f:
+        for p in parts:
+            f.write("file '%s'\n" % p.replace("'", "'\\''"))
+    r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", listing,
+                        "-c", "copy", out_path], capture_output=True, text=True)
+    if r.returncode != 0 or not os.path.isfile(out_path):
+        say("could not join the footage:", r.stderr[-300:])
+        return None
+    say(f"footage: {len(parts)} shots, {total:.1f} s, {os.path.getsize(out_path) / 1e6:.0f} MB")
+    return out_path
+
+
 if __name__ == "__main__":   # manual check on a GPU box
     shots = json.load(open(sys.argv[1])) if len(sys.argv) > 1 else [
         {"id": "probe-1", "image_prompt": "a fisherman mending a net on a harbour wall at dawn", "motion": "push_in"}]
