@@ -54,7 +54,7 @@ export type { Move, ShotKind } from "./shot-grammar.ts";
  * what must never appear, and the colour law. It is a leaf module on purpose: it imports nothing from here, so this
  * file can import it without a cycle, and it takes the accent list as an argument instead of reaching for it.
  */
-import { directionProblems, sectionOfScene, type Direction, type Section } from "./direction.ts";
+import { directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, type Direction, type Section } from "./direction.ts";
 export { directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor, conformity, GENRES, D as DIRECTION_LIMITS } from "./direction.ts";
 export type { Direction, Section, CastMember, Genre, Conformity } from "./direction.ts";
 

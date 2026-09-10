@@ -26,6 +26,9 @@ type Stats = { planned: number; started: number; advanced: number; failed: numbe
  * `plan` (cron only): storyboard generation takes 1–5 min of model time (outline + chunks), so it runs under its own lock and
  * never from a fetch-triggered waitUntil, which could be cut short and burn a planning attempt.
  */
+/** VERIFICATION STUB ONLY (not for main): budgetGate lives in work another session has not committed yet. */
+const budgetGate = async (_env: unknown, _running: unknown): Promise<boolean> => false;
+
 export async function tick(env: Env, opts: { plan?: boolean } = {}): Promise<Stats & { skipped?: boolean }> {
   const stats: Stats = { planned: 0, started: 0, advanced: 0, failed: 0, purged: 0 };
   if (opts.plan && (await acquireLock(env, "plan", 600))) {

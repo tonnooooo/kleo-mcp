@@ -357,9 +357,11 @@ class FakeKleoPictures(types.ModuleType):
     def can_generate(self):
         return self.gpu
 
-    def generate_pictures(self, scenes, style, fmt, out_dir):
+    def generate_pictures(self, scenes, style, fmt, out_dir, direction=None):
+        # The accent of each picture's scene and the film's direction travel with the call: the exclusion list and the
+        # colour law only reach the image model through here, so the fake records them and the tests can assert on them.
         self.calls.append({"ids": [s["id"] for s in scenes], "prompts": [s["image_prompt"] for s in scenes], "style": style,
-                           "format": fmt, "out_dir": out_dir})
+                           "format": fmt, "out_dir": out_dir, "accents": [s.get("accent") for s in scenes], "direction": direction})
         os.makedirs(out_dir, exist_ok=True)
         made = {}
         for s in scenes:
@@ -522,7 +524,7 @@ class PolicyTest(unittest.TestCase):
 
     def test_generate_local_pictures_rejects_paths_outside_img(self):
         class Sneaky(FakeKleoPictures):
-            def generate_pictures(self, scenes, style, fmt, out_dir):
+            def generate_pictures(self, scenes, style, fmt, out_dir, direction=None):
                 outside = os.path.join(self.tmp_root, "elsewhere.png")
                 with open(outside, "wb") as f:
                     f.write(solid_png(2, 2))
@@ -543,6 +545,53 @@ class PolicyTest(unittest.TestCase):
         self.assertFalse(kw.local_pictures_available())
         project, pdir = kw.prepare_project(job_for(storyboard()), ENGINE, self.tmp)
         self.assertIn("2 pictures from server, 0 generated on the GPU, 4 missing", self.messages())
+
+
+class DirectionTest(unittest.TestCase):
+    """The film's direction, GPU side. Mirrors src/direction.ts: the cast's look and the section's light go into the
+    prompt, the film's exclusion list goes into the negative prompt, and both stay inside CLIP's 77 tokens."""
+
+    DIRECTION = {
+        "world": "A tropical island in 1720, golden beaches and wooden ships",
+        "cast": [{"name": "the captain", "look": "a pirate captain with a red bandana and a long dark braid"}],
+        "forbidden": ["wifi symbol", "phone", "brand logo"],
+    }
+
+    def test_cast_look_is_repeated_only_where_the_character_appears(self):
+        shown = kp.context_for(self.DIRECTION, "The captain walks along the shoreline at dusk", "red")
+        self.assertIn("red bandana", shown)
+        self.assertTrue(shown.endswith(kp.ACCENT_LIGHT["red"]), shown)
+        absent = kp.context_for(self.DIRECTION, "An empty beach at dawn", None)
+        self.assertNotIn("red bandana", absent)
+        self.assertEqual(absent, "")
+        self.assertEqual(kp.context_for(None, "anything", "red"), "")
+        self.assertEqual(kp.context_for({}, "anything", "nosuchaccent"), "")
+
+    def test_the_films_exclusion_list_rides_on_the_product_wide_one(self):
+        neg = kp.negative_for(self.DIRECTION)
+        self.assertTrue(neg.startswith(kp.NEGATIVE_PROMPT), neg)
+        self.assertIn("wifi symbol", neg)
+        self.assertLessEqual(len(neg), kp.NEGATIVE_MAX)
+        self.assertEqual(kp.negative_for(None), kp.NEGATIVE_PROMPT)
+        # A term already covered by the product-wide negative is not repeated.
+        self.assertEqual(kp.negative_for({"forbidden": ["blurry"]}), kp.NEGATIVE_PROMPT)
+        # A direction that forbids more than the budget allows is cut, never overflowed.
+        many = {"forbidden": ["x" * 40 for _ in range(12)]}
+        self.assertLessEqual(len(kp.negative_for(many)), kp.NEGATIVE_MAX)
+
+    def test_the_prompt_keeps_the_authors_sentence_first_and_the_style_suffix_last(self):
+        plain = kp.full_prompt("a pirate captain on a sandy beach", "cartoon")
+        self.assertTrue(plain.startswith("a pirate captain on a sandy beach"), plain)
+        self.assertTrue(plain.endswith(kp.STYLE_SUFFIX["cartoon"]), plain)
+        ctx = kp.context_for(self.DIRECTION, "the captain on a sandy beach", "amber")
+        rich = kp.full_prompt("the captain on a sandy beach", "cartoon", ctx)
+        self.assertTrue(rich.startswith("the captain on a sandy beach"), rich)
+        self.assertIn("red bandana", rich)
+        self.assertTrue(rich.endswith(kp.STYLE_SUFFIX["cartoon"]), rich)
+        # The context is cut before it can push the style suffix out of CLIP's window.
+        long = kp.full_prompt("a beach", "cartoon", "y" * 400)
+        self.assertTrue(long.endswith(kp.STYLE_SUFFIX["cartoon"]), long)
+        self.assertLessEqual(len(long) - len(kp.STYLE_SUFFIX["cartoon"]), kp.BASE_MAX + kp.CONTEXT_MAX + 8)
 
 
 if __name__ == "__main__":
