@@ -24,6 +24,10 @@ jobs:
         run: npx tsc --noEmit
       - name: Unit tests
         run: node --test test/*.test.mjs
+      - name: How much of a video the prompt decides
+        # A measurement, not a test of a rule: it prints the numbers and fails only if the planner picks the wrong
+        # look for more than a quarter of ordinary requests. Runs here because nothing may run on the owner's PC.
+        run: node scripts/adaptation.mjs
   python:
     runs-on: ubuntu-latest
     timeout-minutes: 15
