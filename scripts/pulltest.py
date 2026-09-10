@@ -63,8 +63,14 @@ def offers(n):
 
 
 def rent(offer, tag):
+    # runtype "ssh", the same one src/backends/vast.ts rents production with, and NOT "args".
+    # Measured 11 September: with "args" both tags died on every host with `failed to create task for container`,
+    # before either had finished pulling — so the measurement never happened and the run cost money for nothing.
+    # Worse than useless, it looked like a finding: the production job failing that day had also never started, and
+    # the two failures were nearly mistaken for the same one. They are not related. A tool that rents the machine
+    # differently from production measures a machine production never rents.
     body = {"client_id": "me", "image": f"{IMAGE}:{tag}", "disk": DISK_GB, "label": f"kleo-pulltest-{tag}",
-            "runtype": "args", "cancel_unavail": True, "onstart": "echo kleo-pulltest ready"}
+            "runtype": "ssh", "cancel_unavail": True, "onstart": "echo kleo-pulltest ready"}
     r = api("PUT", f"/asks/{offer['id']}/", body)
     if not r.get("success"):
         raise SystemExit(f"rent failed for {tag}: {json.dumps(r)[:200]}")
