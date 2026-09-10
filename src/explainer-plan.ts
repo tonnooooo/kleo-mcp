@@ -46,7 +46,7 @@ export function explainerRules(format: string, duration: number): string {
   const [lo, hi] = EXPLAINER_WORDS[len];
   return `Scenes are all kind "sketch" — there is no closing scene, no title card and no call to action: the film ends on its last drawing.
 Hand-drawn white marker line art on pure black. The ONLY text on screen is the caption, burned in from the narration; nothing you write appears as a title.
-SCENE: {"id":"01-hook","kind":"sketch","voice":"one narrated sentence of ${lo}-${hi} words","accent":<its section's accent>,"enter"?:${quoted(SKETCH_ENTER)},"exit"?:${quoted(SKETCH_EXIT)},"shot":{"zoom":[1,1.25],"focus":[x,y]},"art":[…],"hold"?:0.05}
+SCENE: {"id":"01-hook","kind":"sketch","voice":"one narrated sentence of ${lo}-${hi} words - COUNT THEM","accent":<its section's accent>,"enter"?:${quoted(SKETCH_ENTER)},"exit"?:${quoted(SKETCH_EXIT)},"shot":{"zoom":[1,1.25],"focus":[x,y]},"art":[…],"hold"?:0.05}
   shot.zoom [start,end] with end GREATER than start — the camera never stops pushing in. focus is the point it pushes toward, in this frame's pixels (0-${fw} by 0-${fh}).
   exit "flare" blooms the accent out of the frame: use it once in the whole film, on the turn.
 ART (2-8 per scene): {"name":<drawing>,"at":<words>,"until"?:<words>,"x"?:${Math.round(fw / 2)},"y"?:${Math.round(fh * .45)},"size"?:1,"motion"?:${quoted(SKETCH_MOTION)},"drawn"?:true,…}
@@ -57,7 +57,13 @@ ART (2-8 per scene): {"name":<drawing>,"at":<words>,"until"?:<words>,"x"?:${Math
   "drawn":true means it is already on the page at the first frame. The FIRST drawing of the FIRST scene must have it, or the film opens on black.
   Drawings: ${SKETCH_ART.join(", ")}.
   Extras: tint/led/beam/chip = an accent colour on the drawing or one part of it; mood (${quoted(SKETCH_MOODS)}) on "face"; count 1-12 on crowd/footprints/blank/chain; text (≤24, the only drawing that carries words) on "tag"; open/open_to on "door" and "lock"; reach on "figure"; flags no (crossed out or broken), sweat, xray, flash, flip, leader.
-  Accents: ${quoted(SKETCH_ACCENTS)} — one per scene, never two in a frame.`;
+  Accents: ${quoted(SKETCH_ACCENTS)} — one per scene, never two in a frame.
+THE LINE IS A SENTENCE, NOT A CAPTION. The caption on screen is made FROM the line automatically, word by word: you never write one. A line of three or four words is refused every time, and it is the single most common way this look is written wrongly.
+  GOOD  "This looks like a normal hotel key card. It isn't."   (10 words)
+  GOOD  "Read one card once, and the lock gives up its secret." (11 words)
+  BAD   "Websites don't see passwords"                          (4 words - a caption, not a line)
+  BAD   "Your password is safe"                                 (4 words - says nothing the next line can follow)
+Every line must carry a fact, a name or a number that the line before it did not have.`;
 }
 
 /* ------------------------------------------------------------------ the schema it decodes into */

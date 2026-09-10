@@ -1373,7 +1373,13 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   let direction: Direction | null = null;
   /** Set when the direction wanted a dearer look than the job was priced for: the user is told, never substituted in silence. */
   let blockedUpgrade: string | null = null;
-  const sceneGuess = Math.max(plan.scenes[0], Math.min(plan.scenes[1], Math.round((plan.scenes[0] + plan.scenes[1]) / 2)));
+  // The explainer plans at the FEWEST scenes its budget allows. The midpoint left every line at the very
+  // bottom of the 8-14 word window, and a model that is one word short of the bottom writes a caption
+  // instead of a sentence — measured, on the real model: ten scenes for ninety-two words produced lines of
+  // three and four words. Fewer scenes hand each line the top of the window.
+  const sceneGuess = plan.style === "sketch"
+    ? plan.scenes[0]
+    : Math.max(plan.scenes[0], Math.min(plan.scenes[1], Math.round((plan.scenes[0] + plan.scenes[1]) / 2)));
   for (let attempt = 1; attempt <= 2 && !direction; attempt++) {
     let raw: unknown;
     try { raw = clean(await call(directionPrompt(job, plan), directionSchema(), 900)); }
@@ -1511,7 +1517,11 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
         });
       }
       // Contract errors always retry; soft problems retry once, then the valid chunk is kept.
-      if (r.ok && got.length === to - from && (attempt >= 2 || !problems.length)) { accepted = chunkScenes; break; }
+      // A rule that is measured and then overruled is a rule the model learns to ignore. Every other look
+      // takes the second answer to keep the retry budget for real errors; the explainer spends all three,
+      // because its problems are exactly the ones that decide whether the film holds a viewer.
+      const patient = plan.style === "sketch" ? 3 : 2;
+      if (r.ok && got.length === to - from && (attempt >= patient || !problems.length)) { accepted = chunkScenes; break; }
       history.push(problems);
       feedback = problems;
     }

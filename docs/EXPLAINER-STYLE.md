@@ -135,3 +135,69 @@ Measured frame by frame against the channel's reference Short, and unchanged sin
 - two-pass loudness to −14.5 LUFS, `qa.py` black-frame threshold 0.998 because the frame is 90 % black.
 
 Both ratios, so 16:9 keeps the same reading rhythm on a wider, shorter frame.
+
+## 4. How a request reaches this look, and why it is the only way
+
+**The template chooses it. Nothing else can.**
+
+Twenty-seven prompts written blind by two sessions that had not read the vocabularies scored **26 %** on
+Kleo's look picker. One of them settled a design question rather than a classification one: *"why boiling
+water sometimes freezes before cold water"* — a request with no technical word in it — comes out
+`cartoon`, because the drawn look is only ever reached through a word list borrowed from the cyber one.
+
+That is not a list to widen. What separates this look from `cyber` is **the shape of the answer, not the
+topic**: cyber wants something to diagram — a flow, a comparison, numbers — and the explainer wants one
+idea taken apart, where every phrase has a literal object and the viewer ends up having changed a belief.
+Three paired prompts proved it from the other side: identical vocabulary, opposite correct answers, and
+the picker told them apart *in the wrong direction*. "Cinque attacchi informatici più costosi **della
+storia**" alone breaks it, because the Italian word carries both *story* and *history* and a list cannot
+know which was meant.
+
+So the look is named, never guessed, and `test/templates-narrative.test.mjs` guards the single point of
+failure that creates: both templates are driven with prompts deliberately free of anything a word list
+could catch, with no style named, and must still come out `explainer` / `sketch`. Without that guard, a
+user who asked for the drawn Short would silently get cartoon pictures — the job validates, the GPU is
+rented, and the video comes back in the wrong style with nothing anywhere reporting an error.
+
+A caller who names a style still wins over the template, as everywhere else.
+
+## 5. What the real model does, and the two things that had to change for it
+
+Everything above is checkable offline. What is not checkable offline is whether a real model, handed
+these rules, writes a film. Run `scripts/explainer-make.mjs "<subject>" out.json` to find out for one
+subject: it calls the same Workers AI the deployed worker calls, and prints the rule report beside the
+storyboard so the two are read together.
+
+The first real run produced a contract-valid storyboard and a bad film, and the two causes were both in
+the planner, not in the model:
+
+**The rules were measured and then overruled.** The chunk loop accepted a contract-valid answer from the
+second attempt onward, whatever `checkExplainer` said — so a hook that was not a hook and lines of three
+words shipped with the violations recorded in the history and ignored. A rule that is checked and then
+overridden is a rule the model learns to ignore. The explainer now spends all three attempts before it
+will accept a chunk with rule violations; every other look still takes the second answer, because its
+retry budget is better spent on real errors.
+
+**The scene count starved the lines.** The planner took the midpoint of the scene range, which put every
+line at the very bottom of the 8–14 word window with nowhere to go but under it: ten scenes for
+ninety-two words, and the model answered with lines of three and four words. A model one word short of
+the bottom of a window writes a *caption*, not a sentence — which is exactly the mistake this look
+invites, since the caption on screen is derived from the line. The explainer now plans at the **fewest**
+scenes its budget allows, which hands each line the top of the window instead, and the rules block says
+so out loud with a good line and a refused line side by side, counted.
+
+## 6. The pass that is not optional
+
+Four defects in this style were found by watching a rendered film, and none of them failed a test:
+
+| what it looked like | what it was |
+|---|---|
+| a hand read as a rock | three short strokes inside a silhouette instead of four fingers reaching its edge |
+| a chain read as a row of eggs | links too round, rotated too little, not overlapping |
+| a black hole opened for a third of a second | the opaque base of a drawing painted at full strength before its own outline existed |
+| the caption was read through a face | nothing anywhere said the caption owns the bottom of the frame |
+
+The pass costs a minute: extract one frame from the middle of every scene of a finished master and look
+at them. `ffmpeg -ss <t> -i master.mp4 -frames:v 1 frame.png`, with `<t>` read from `build/timeline.json`.
+Do it before calling a render good. The suite proves that what somebody thought to check still works; it
+says nothing about what nobody thought of.
