@@ -2,17 +2,18 @@
 """
 Local picture generation for Kleo cartoon / realistic storyboards, run on the Vast.ai GPU by kleo_worker.py.
 
-The server draws the scene pictures with Cloudflare Workers AI; when its quota is gone the scenes come back "missing"
+The server draws the shot pictures with Cloudflare Workers AI; when its quota is gone the pictures come back "missing"
 and this module fills the gap with Stable Diffusion 1.5 checkpoints (diffusers, fp16 on CUDA):
 
     cartoon    Lykon/dreamshaper-8                    illustration-friendly SD1.5 fine-tune
     realistic  SG161222/Realistic_Vision_V5.1_noVAE   photo-look SD1.5 fine-tune (SD1.5's own VAE is fine)
 
 Sizes 512x896 (9:16) / 896x512 (16:9), 22 DPM++ steps, guidance 6.5 (cartoon) / 5.5 (realistic), the same style suffix
-and negative prompt the server uses, a deterministic seed per scene id, the safety checker disabled (it blanks
-harmless pictures; prompts are validated by the server before the job exists), attention slicing on.
+and negative prompt the server uses, a deterministic seed per picture id ("<sceneId>-s<n>", one per shot), the safety
+checker disabled (it blanks harmless pictures; prompts are validated by the server before the job exists), attention
+slicing on.
 
-generate_pictures() never raises for a scene: it returns only the successes. Without CUDA it returns {} at once
+generate_pictures() never raises for a picture: it returns only the successes. Without CUDA it returns {} at once
 (the CPU pool keeps using the server pictures) unless KLEO_PICTURES_CPU=1 (fp32, minutes per picture: tests only).
 Weights are expected in HF_HOME (the image pre-downloads them in prewarm_models.py; HF_HUB_OFFLINE=1 is set there).
 When a model is not cached and KLEO_PICTURES_DOWNLOAD is not "0", the load temporarily lifts the offline flag and
@@ -35,7 +36,7 @@ STEPS = 22
 SIZES = {"9:16": (512, 896), "16:9": (896, 512)}  # (width, height): SD1.5 is trained at 512, ~1.75:1 still holds together
 PROMPT_MAX = 240                                    # src/keou-contract.ts IMAGE_PROMPT_MAX
 BASE_MAX = 150                                      # scene text kept in the SD prompt (CLIP: 77 tokens in total)
-SCENE_ID = re.compile(r"[a-z0-9-]{1,50}")           # contract.py scene id slug → safe file name
+SCENE_ID = re.compile(r"[a-z0-9-]{1,56}")           # picture id "<sceneId>-s<n>" (contract.py slug ≤ 50 + shot suffix) → safe file name
 _pipelines = {}                                     # style → loaded pipeline (one job per instance, but a job may need one style only)
 
 
@@ -44,7 +45,7 @@ def log(*a):
 
 
 def seed_for(scene_id):
-    """Deterministic 31-bit seed from the scene id: the same scene always draws the same picture (re-runs, retries)."""
+    """Deterministic 31-bit seed from the picture id: the same shot always draws the same picture (re-runs, retries)."""
     return int.from_bytes(hashlib.sha256(str(scene_id).encode("utf-8")).digest()[:4], "big") & 0x7FFFFFFF
 
 
@@ -169,7 +170,7 @@ def load_pipeline(style, device=None):
 
 
 def generate_pictures(scenes, style, fmt, out_dir, device=None):
-    """scenes: [{"id": <slug>, "image_prompt": <text>}, ...] → {sceneId: absolute PNG path} for the pictures that were made.
+    """scenes: [{"id": <pictureId>, "image_prompt": <text>}, ...] → {pictureId: absolute PNG path} for the pictures made.
     style: cartoon | realistic; fmt: 9:16 | 16:9; out_dir is created. Returns {} without CUDA (unless KLEO_PICTURES_CPU=1),
     for an unknown style, or when the model cannot be loaded; a failing scene is logged and skipped."""
     if style not in MODELS:
@@ -248,5 +249,5 @@ def release():
 if __name__ == "__main__":  # manual check on a GPU box: python3 kleo_pictures.py cartoon 9:16 /tmp/pics "a pirate ship at anchor"
     style, fmt, out = sys.argv[1], sys.argv[2], sys.argv[3]
     prompts = sys.argv[4:] or ["a wooden pirate ship at anchor in a turquoise bay, palm trees, a red parrot on the bow"]
-    made = generate_pictures([{"id": f"scene-{i + 1}", "image_prompt": p} for i, p in enumerate(prompts)], style, fmt, out)
+    made = generate_pictures([{"id": f"scene-{i + 1}-s1", "image_prompt": p} for i, p in enumerate(prompts)], style, fmt, out)
     print(made)

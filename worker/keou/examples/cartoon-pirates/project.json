@@ -4,7 +4,8 @@
   "id": "cartoon-pirates",
   "title": "Why Pirates Really Wore Eye Patches",
   "brand": "@TuNaaa0",
-  "style": "cinema",
+  "style": "picture",
+  "look": "cartoon",
   "format": "9:16",
   "width": 1080,
   "fps": 30,
@@ -14,7 +15,7 @@
   "music": "none",
   "max_duration": 60,
   "script_file": "script.txt",
-  "description": "Kleo engine check: a cartoon-style cinema Short whose two cinema scenes carry a full-bleed picture (img/01-hook.png, img/02-crew.png) under the beats; the closing scene has no picture and must fall back to the plain cyber background. The PNGs are flat placeholders made with PIL; in production the worker downloads the server-generated pictures into img/.",
+  "description": "Kleo engine check for the picture style: three shots per cinema scene, cut on the narration with `at`, one shot on the closing. The PNGs in img/ are flat 720x1280 placeholders; in production the worker downloads the generated picture of every shot as img/<sceneId>-s<n>.png and copies the first one onto scene.image for older tooling. Here scene.image is kept on the two cinema scenes only, which also proves the picture style ignores it and draws the shots.",
   "tags": [
     "shorts",
     "pirates",
@@ -32,27 +33,24 @@
       "hl": "patch",
       "image": "img/01-hook.png",
       "voice": "Every pirate you have ever drawn wears an eye patch. But most of them still had both eyes. So what was the patch for?",
-      "beats": [
+      "shots": [
         {
-          "kind": "type",
-          "text": "THE EYE PATCH",
-          "hl": "PATCH",
-          "slam": true
+          "image": "img/01-hook.png",
+          "caption": "THE EYE PATCH",
+          "hl": "PATCH"
         },
         {
-          "kind": "icon",
-          "name": "figure",
-          "fx": "think",
-          "size": 0.7,
+          "image": "img/01-hook-s2.png",
           "at": "both eyes",
-          "label": "both eyes fine"
+          "caption": "BOTH EYES WORKED",
+          "hl": "BOTH",
+          "motion": "left"
         },
         {
-          "kind": "type",
-          "text": "WHAT FOR?",
-          "hl": "FOR?",
-          "slam": true,
-          "at": "what was"
+          "image": "img/01-hook-s3.png",
+          "at": "what was",
+          "caption": "SO WHAT FOR?",
+          "hl": "WHAT"
         }
       ],
       "hold": 0.2
@@ -66,30 +64,24 @@
       "hl": "night",
       "image": "img/02-crew.png",
       "voice": "Below deck it is pitch black. Eyes need up to twenty five minutes to adapt to the dark. Keep one eye covered, and it is always ready. Lift the patch, and you can fight in the dark at once.",
-      "beats": [
+      "shots": [
         {
-          "kind": "icon",
-          "name": "clock",
-          "size": 0.7,
+          "image": "img/02-crew.png",
+          "caption": "PITCH BLACK BELOW",
+          "hl": "BLACK"
+        },
+        {
+          "image": "img/02-crew-s2.png",
           "at": "twenty five",
-          "label": "25 minutes"
+          "caption": "25 MINUTES TO ADAPT",
+          "hl": "25",
+          "motion": "in"
         },
         {
-          "kind": "steps",
-          "items": [
-            "COVER",
-            "GO BELOW",
-            "LIFT"
-          ],
-          "lit": 3,
-          "at": "Keep one"
-        },
-        {
-          "kind": "type",
-          "text": "INSTANT NIGHT VISION",
-          "hl": "NIGHT",
-          "slam": true,
-          "at": "at once"
+          "image": "img/02-crew-s3.png",
+          "at": "at once",
+          "caption": "INSTANT NIGHT VISION",
+          "hl": "NIGHT"
         }
       ],
       "hold": 0.2
@@ -99,24 +91,14 @@
       "kind": "closing",
       "chapter": "03 YOUR TURN",
       "accent": "green",
-      "title": "try it tonight",
+      "title": "Try it tonight",
       "hl": "tonight",
+      "button": "Follow",
       "voice": "Try it tonight before you switch off the light. Then tell me if it worked.",
-      "beats": [
+      "shots": [
         {
-          "kind": "type",
-          "text": "TRY IT TONIGHT",
-          "hl": "TONIGHT",
-          "slam": true
-        },
-        {
-          "kind": "cta",
-          "label": "DID IT WORK?",
-          "toggles": [
-            "YES",
-            "NO"
-          ],
-          "at": "tell me"
+          "image": "img/03-loop-s1.png",
+          "motion": "out"
         }
       ],
       "hold": 0.4

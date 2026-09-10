@@ -46,6 +46,38 @@ The run command creates paid compute on your own Vast account. Installation and 
 
 The original eight compositions remain available, along with the astronomy motion modes from the base kit. Choose a diagram because it explains the subject, not because it looks technical.
 
+## The picture style (Kleo cartoon and realistic)
+
+`"style": "picture"` is the look used by the Kleo cartoon and realistic videos: no icons, no HUD, no
+beats. Each scene carries **shots** — one full-screen generated picture each — cut on the narration
+like a short documentary, with cover-fit + Ken Burns motion, a 0.35 s crossfade on the cut, fitted
+captions and karaoke subtitles. `"look"` (`cartoon` or `realistic`) is required and chooses the
+typography: Baloo 2 for cartoon, Oswald for realistic, both downloaded into the worker image and both
+falling back to Manrope in a plain checkout.
+
+```json
+{ "style": "picture", "look": "cartoon",
+  "scenes": [
+    { "id": "01-hook", "kind": "cinema", "chapter": "01 THE MYTH", "accent": "amber",
+      "title": "eye patch", "hl": "patch", "voice": "…", "hold": 0.2,
+      "shots": [
+        { "image": "img/01-hook.png", "caption": "THE EYE PATCH", "hl": "PATCH" },
+        { "image": "img/01-hook-s2.png", "at": "both eyes", "caption": "BOTH EYES WORKED", "motion": "left" }
+      ] },
+    { "id": "03-loop", "kind": "closing", "button": "Follow", "title": "Try it tonight",
+      "voice": "…", "shots": [{ "image": "img/03-loop-s1.png" }] }
+  ] }
+```
+
+Shot fields: `image` (a picture in `img/`, optional — a shot without one renders as an accent
+gradient), `caption` (≤ 40 characters, the words on that shot; the scene `title` is used on the first
+shot when it has none), `hl` (≤ 20, the word to colour), `at` (≤ 24, quoted from this scene's `voice`
+— the shot cuts when those words are spoken; never on the first shot) and `motion`
+(`in` | `out` | `left` | `right`; the engine alternates when it is absent). One to four shots on a
+`cinema` scene, one or two on the `closing`; `beats` are refused. Full specification: `docs/PICTURE-STYLE.md`
+in the Kleo repository. Working example: `examples/cartoon-pirates/`. Renderer: `engine/picture.js`,
+validation: `contract.py`.
+
 ## Documentation
 
 [Cyber style and motion fields](docs/CYBER-STYLE.md) · [Topic recipes](docs/CYBER-RECIPES.md) · [Workflow](docs/WORKFLOW.md) · [Project contract](docs/PROJECT-CONTRACT.md) · [Agent compatibility](docs/AGENTS-GUIDE.md) · [Installation](docs/INSTALL.md) · [QA](docs/QUALITY.md) · [Recovery](docs/TROUBLESHOOTING.md) · [Automation](docs/AUTOMATION.md) · [Validation evidence](VALIDATION.md)

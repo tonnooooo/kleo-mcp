@@ -1,16 +1,19 @@
 /**
- * Scene pictures for the cartoon and realistic Kleo styles.
+ * Shot pictures for the cartoon and realistic Kleo styles (Keou style "picture", docs/PICTURE-STYLE.md).
  *
- * POST /internal/jobs/:id/images (worker secret, empty body) → {"images": {"<sceneId>": "<signed /dl url>"}, "missing": [sceneIds]}
+ * POST /internal/jobs/:id/images (worker secret, empty body) → {"images": {"<pictureId>": "<signed /dl url>"}, "missing": [pictureIds]}
  *
- * - Every scene with an image_prompt gets ONE picture, generated once with Workers AI (env.AI) and stored under
- *   renders/<job>/img/<sceneId>.png|jpg (storage.ts putFile + db.ts setFile). A second call reuses what job_files already lists.
+ * - One picture per SHOT, keyed by its picture id `<sceneId>-s<n>` (keou-contract.ts pictureScenes flattens the
+ *   storyboard in scene → shot order), generated once with Workers AI (env.AI) and stored under
+ *   renders/<job>/img/<pictureId>.png|jpg (storage.ts putFile + db.ts setFile). A second call reuses what job_files lists.
  * - Model per style: vars IMAGE_MODEL_CARTOON / IMAGE_MODEL_REALISTIC (defaults below); the style suffix is appended here.
  * - Portrait (768x1344) or landscape (1344x768) by job format, for the models that accept a size (FLUX.1 schnell is square only).
- * - Cap IMAGE_MAX_PER_JOB (10) pictures per job, spread evenly over the scenes that ask for one; one attempt per scene
- *   (an "images.error" audit row marks the scenes already tried). Failures, quota exhaustion (4006) and a missing AI
- *   binding are never fatal: the scene lands in "missing" and the video renders without that picture.
- * - Dev/test hook: IMAGE_FIXTURE=1 → a deterministic placeholder PNG per scene (flat colour from the scene id + a diagonal
+ * - Two caps: MAX_PICTURES(duration) (24 for a Short, 48 for a long video) bounds the whole video, then IMAGE_SERVER_MAX
+ *   (10) bounds what the SERVER draws, spread evenly over that list (pickImageScenes); everything else is answered as
+ *   "missing" and drawn by the GPU worker. One attempt per picture (an "images.error" audit row marks the ones already
+ *   tried). Failures, quota exhaustion (4006) and a missing AI binding are never fatal: the shot lands in "missing" and
+ *   the engine paints an accent gradient instead.
+ * - Dev/test hook: IMAGE_FIXTURE=1 → a deterministic placeholder PNG per picture id (flat colour from the id + a diagonal
  *   stripe), encoded here with CompressionStream("deflate"); no AI call.
  *
  * Only imports modules that are plain TypeScript with type-only dependencies, so test/images.test.mjs can load it
@@ -21,7 +24,10 @@ import type { Job } from "./db";
 import { setFile, listFiles, audit } from "./db.ts";
 import { putFile } from "./storage.ts";
 import { hmacHex } from "./util.ts";
-import { kleoStyleOf, pictureScenes, PICTURE_STYLES, type KleoStyle } from "./keou-contract.ts";
+import { kleoStyleOf, pictureScenes, PICTURE_STYLES, MAX_PICTURES, type KleoStyle } from "./keou-contract.ts";
+
+/** The whole-video cap lives in the contract (the guide and the worker read the same rule); re-exported for the endpoint's callers. */
+export { MAX_PICTURES };
 
 /** Defaults (developers.cloudflare.com/workers-ai/models, pricing Sept 2026; 1,000 neurons = $0.011):
  *  cartoon   @cf/black-forest-labs/flux-1-schnell  4.8 neurons per 512² tile + 9.6 per step → 1024² at 4 steps ≈ 58 neurons (≈ $0.0006) per picture; square only.
@@ -36,7 +42,8 @@ export const STYLE_SUFFIX: Record<"cartoon" | "realistic", string> = {
   realistic: "cinematic photograph, 35mm lens, dramatic natural light, high detail, no text",
 };
 export const NEGATIVE_PROMPT = "text, letters, words, watermark, logo, signature, caption, subtitles, blurry, deformed";
-export const DEFAULT_MAX_IMAGES = 10;
+/** Pictures the server itself draws per job (env IMAGE_SERVER_MAX); the worker draws the rest on the GPU. */
+export const DEFAULT_SERVER_MAX = 10;
 /** Signed picture links stay valid this long (the worker downloads them right away). */
 const LINK_TTL_S = 6 * 60 * 60;
 
@@ -44,10 +51,11 @@ export type ImageFormat = "9:16" | "16:9";
 export const sizeFor = (format: string): { width: number; height: number } => (format === "16:9" ? { width: 1344, height: 768 } : { width: 768, height: 1344 });
 /** FLUX.1 [schnell] only takes prompt/steps/seed (1024² output); every other hosted model accepts width/height. */
 export const acceptsSize = (model: string): boolean => !/flux-1-schnell/.test(model);
-export const imageFileName = (sceneId: string, ext: "png" | "jpg") => `img/${sceneId}.${ext}`;
-export const IMAGE_NAME_RE = /^img\/[a-z0-9-]{1,50}\.(png|jpg)$/;
+/** A picture is stored under its picture id: `img/<sceneId>-s<n>.png` (scene id ≤ 50 chars + the shot suffix). */
+export const imageFileName = (pictureId: string, ext: "png" | "jpg") => `img/${pictureId}.${ext}`;
+export const IMAGE_NAME_RE = /^img\/[a-z0-9-]{1,56}\.(png|jpg)$/;
 
-/** Picks up to `max` of the scenes that ask for a picture, spread evenly over the video (never only the first ones). */
+/** Picks up to `max` of the pictures the video asks for, spread evenly over it (never only the first ones). */
 export function pickImageScenes<T>(scenes: T[], max: number): T[] {
   if (max <= 0) return [];
   if (scenes.length <= max) return scenes;
@@ -113,7 +121,7 @@ export async function encodePng(width: number, height: number, rgb: (x: number, 
   for (const p of parts) { out.set(p, off); off += p.length; }
   return out;
 }
-/** FNV-1a hash of a string (deterministic colour per scene id). */
+/** FNV-1a hash of a string (deterministic colour per picture id). */
 export function fnv1a(s: string): number {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
@@ -125,9 +133,9 @@ function hslToRgb(h: number, s: number, l: number): [number, number, number] {
   const f = (n: number) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
   return [Math.round(f(0) * 255), Math.round(f(8) * 255), Math.round(f(4) * 255)];
 }
-/** Placeholder picture for IMAGE_FIXTURE=1: a flat colour from the scene id and one pale diagonal stripe (so motion is visible). */
-export function placeholderPng(sceneId: string, width: number, height: number): Promise<Uint8Array> {
-  const h = fnv1a(sceneId);
+/** Placeholder picture for IMAGE_FIXTURE=1: a flat colour from the picture id and one pale diagonal stripe (so motion is visible). */
+export function placeholderPng(pictureId: string, width: number, height: number): Promise<Uint8Array> {
+  const h = fnv1a(pictureId);
   const base = hslToRgb(h % 360, 0.55, 0.42);
   const stripe = hslToRgb((h % 360 + 30) % 360, 0.6, 0.72);
   const band = Math.max(24, Math.round(Math.min(width, height) / 6));
@@ -190,12 +198,14 @@ async function signedImageUrl(env: Env, base: string, jobId: string, name: strin
 export async function generateJobImages(env: Env, job: Job, base: string): Promise<ImagesResult> {
   const sb = job.storyboard ? (JSON.parse(job.storyboard) as unknown) : null;
   const style = kleoStyleOf(sb);
-  const format = (JSON.parse(job.params) as { format?: string }).format ?? "9:16";
+  const params = JSON.parse(job.params) as { format?: string; duration_s?: number };
+  const format = params.format ?? "9:16";
   const result: ImagesResult = { images: {}, missing: [], generated: 0, reused: 0, fixture: env.IMAGE_FIXTURE === "1" };
   if (!PICTURE_STYLES.includes(style)) return result;
-  const wanted = pictureScenes(sb);
+  // The video's own cap first (a 40 s Short never carries more than 24 pictures), then what the server may draw itself.
+  const wanted = pictureScenes(sb).slice(0, MAX_PICTURES(params.duration_s ?? 60));
   if (!wanted.length) return result;
-  const max = Math.max(0, Math.min(40, parseInt(env.IMAGE_MAX_PER_JOB ?? "", 10) || DEFAULT_MAX_IMAGES));
+  const max = Math.max(0, Math.min(40, parseInt(env.IMAGE_SERVER_MAX ?? env.IMAGE_MAX_PER_JOB ?? "", 10) || DEFAULT_SERVER_MAX));
   const chosen = pickImageScenes(wanted, max);
   const chosenIds = new Set(chosen.map((s) => s.id));
   for (const s of wanted) if (!chosenIds.has(s.id)) result.missing.push(s.id);
@@ -204,25 +214,25 @@ export async function generateJobImages(env: Env, job: Job, base: string): Promi
   const tried = new Set<string>();
   try {
     const rows = (await env.DB.prepare("SELECT detail FROM audit WHERE job_id = ? AND event = 'images.error'").bind(job.id).all<{ detail: string | null }>()).results;
-    for (const r of rows) { try { const d = JSON.parse(r.detail ?? "{}") as { scene?: string }; if (d.scene) tried.add(d.scene); } catch { /* ignore */ } }
+    for (const r of rows) { try { const d = JSON.parse(r.detail ?? "{}") as { picture?: string; scene?: string }; const id = d.picture ?? d.scene; if (id) tried.add(id); } catch { /* ignore */ } }
   } catch { /* an unreadable audit table only costs a retry */ }
 
   const model = modelFor(env, style);
   const ai = env.AI as unknown as AiRunner | undefined;
   let quotaHit = false;
-  for (const scene of chosen) {
-    const have = existing.get(scene.id);
-    if (have) { result.images[scene.id] = await signedImageUrl(env, base, job.id, have); result.reused++; continue; }
-    if (tried.has(scene.id) || quotaHit) { result.missing.push(scene.id); continue; }
+  for (const pic of chosen) {
+    const have = existing.get(pic.id);
+    if (have) { result.images[pic.id] = await signedImageUrl(env, base, job.id, have); result.reused++; continue; }
+    if (tried.has(pic.id) || quotaHit) { result.missing.push(pic.id); continue; }
     let bytes: Uint8Array | null = null;
     let ext: "png" | "jpg" = "png";
     try {
       if (result.fixture) {
         const { width, height } = sizeFor(format);
-        bytes = await placeholderPng(scene.id, width, height);
+        bytes = await placeholderPng(pic.id, width, height);
       } else {
         if (!ai) throw new Error("no Workers AI binding (env.AI)");
-        const res = await ai.run(model, modelInputs(model, style, scene.image_prompt, format, fnv1a(`${job.id}/${scene.id}`) % 1_000_000));
+        const res = await ai.run(model, modelInputs(model, style, pic.image_prompt, format, fnv1a(`${job.id}/${pic.id}`) % 1_000_000));
         bytes = await readImageResult(res);
         const kind = sniffImage(bytes);
         if (!kind) throw new Error(`model returned ${bytes.length} bytes that are neither PNG nor JPEG`);
@@ -231,21 +241,21 @@ export async function generateJobImages(env: Env, job: Job, base: string): Promi
     } catch (e) {
       const msg = String(e).slice(0, 400);
       if (isQuotaError(e)) quotaHit = true;
-      await audit(env, job.user_id, job.id, "images.error", { scene: scene.id, model: result.fixture ? "fixture" : model, error: msg, quota: quotaHit });
-      result.missing.push(scene.id);
+      await audit(env, job.user_id, job.id, "images.error", { picture: pic.id, model: result.fixture ? "fixture" : model, error: msg, quota: quotaHit });
+      result.missing.push(pic.id);
       continue;
     }
     try {
-      const name = imageFileName(scene.id, ext);
+      const name = imageFileName(pic.id, ext);
       const key = `renders/${job.id}/${name}`;
       const ctype = ext === "png" ? "image/png" : "image/jpeg";
       const size = await putFile(env, key, bytes, ctype);
       await setFile(env, { job_id: job.id, name, key, size, content_type: ctype });
-      result.images[scene.id] = await signedImageUrl(env, base, job.id, name);
+      result.images[pic.id] = await signedImageUrl(env, base, job.id, name);
       result.generated++;
     } catch (e) {
-      await audit(env, job.user_id, job.id, "images.error", { scene: scene.id, model, error: `store: ${String(e).slice(0, 300)}` });
-      result.missing.push(scene.id);
+      await audit(env, job.user_id, job.id, "images.error", { picture: pic.id, model, error: `store: ${String(e).slice(0, 300)}` });
+      result.missing.push(pic.id);
     }
   }
   await audit(env, job.user_id, job.id, "images.generated", { style, model: result.fixture ? "fixture" : model, generated: result.generated, reused: result.reused, missing: result.missing.length, quota: quotaHit });

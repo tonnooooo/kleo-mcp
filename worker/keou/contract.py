@@ -6,13 +6,18 @@ import re
 from pathlib import Path
 
 VERSION = '1.0.0'
-STYLES = {'editorial', 'technical', 'illustrated', 'terminal', 'stickman', 'cinema'}
+STYLES = {'editorial', 'technical', 'illustrated', 'terminal', 'stickman', 'cinema', 'picture'}
 KINDS = {'hero', 'list', 'compare', 'steps', 'metric', 'image', 'quote', 'closing', 'story', 'cinema'}
 # Cinema beats: one hero visual each, several per narrated scene for pace.
 BEAT_KINDS = {'icon', 'type', 'terminal', 'steps', 'people', 'bars', 'timeline', 'dialog', 'cta', 'split', 'grid'}
 BEAT_ICONS = {'coffee', 'desk', 'hoodie', 'keyboard', 'hand', 'bug', 'alarm', 'shield', 'radar', 'car', 'keyfob', 'house', 'amplifier', 'pouch', 'lock', 'timer', 'check', 'cross', 'figure', 'thief', 'phone', 'wave', 'clock'}
 BEAT_FX = {'lit', 'dead', 'key', 'open', 'drive', 'alarm', 'point', 'run', 'think'}
 CINEMA_ACCENTS = {'green', 'cyan', 'red', 'amber'}
+# Kleo picture style (docs/PICTURE-STYLE.md): full-screen pictures cut on the narration, no beats
+# and no icons. `look` picks the typography; every shot is one generated picture in img/.
+LOOKS = {'cartoon', 'realistic'}
+SHOT_MOTIONS = {'in', 'out', 'left', 'right'}
+SHOT_FIELDS = {'image', 'caption', 'hl', 'at', 'motion'}
 # Stickman story slides (style 'stickman', portrait only). Every value is an
 # enum the renderer knows how to draw; nothing here is ever executed.
 STORY_ACTS = {'idle', 'explain', 'point-up', 'shrug', 'think', 'alarm', 'hold', 'drop', 'wave', 'walk', 'run', 'crouch'}
@@ -81,6 +86,11 @@ def validate(path, approved=True):
     text(c.get('brand'), 'brand', 28)
     if c.get('style') not in STYLES:
         raise ValueError(f'style must be one of {sorted(STYLES)}')
+    if c['style'] == 'picture':
+        if c.get('look') not in LOOKS:
+            raise ValueError(f'look must be one of {sorted(LOOKS)} when style is picture')
+    elif 'look' in c:
+        raise ValueError('look belongs to the picture style only')
     if c.get('format') not in {'9:16', '16:9'} or c.get('fps') not in {30, 60}:
         raise ValueError('format: 9:16 or 16:9; fps: 30 or 60')
     if c.get('style') == 'stickman' and c.get('format') != '9:16':
@@ -107,7 +117,7 @@ def validate(path, approved=True):
             raise ValueError(label + ': unknown composition')
         if c['style'] == 'cinema' and s['kind'] not in {'cinema', 'closing'}:
             raise ValueError(label + ': the cinema style only draws cinema and closing scenes')
-        if s['kind'] == 'cinema' or (s['kind'] == 'closing' and c['style'] == 'cinema' and 'beats' in s):
+        if c['style'] != 'picture' and (s['kind'] == 'cinema' or (s['kind'] == 'closing' and c['style'] == 'cinema' and 'beats' in s)):
             if c['style'] != 'cinema':
                 raise ValueError(label + ': cinema scenes need the cinema style')
             beats = s.get('beats')
@@ -180,6 +190,46 @@ def validate(path, approved=True):
         if s['kind'] == 'closing' and c['style'] == 'cinema':
             if 'chapter' in s: text(s['chapter'], label + ' chapter', 32)
             if 'accent' in s and s['accent'] not in CINEMA_ACCENTS: raise ValueError(label + ': accent must be green, cyan, red or amber')
+        if c['style'] == 'picture':
+            if s['kind'] not in {'cinema', 'closing'}:
+                raise ValueError(label + ': the picture style only draws cinema and closing scenes')
+            if 'beats' in s:
+                raise ValueError(label + ': the picture style has no beats; use shots')
+            shots = s.get('shots')
+            most = 2 if s['kind'] == 'closing' else 4
+            if not isinstance(shots, list) or not 1 <= len(shots) <= most:
+                raise ValueError(label + f': shots must list one to {most} pictures')
+            for j, shot in enumerate(shots):
+                sl = f'{label} shot {j + 1}'
+                if not isinstance(shot, dict):
+                    raise ValueError(sl + ': each shot is an object')
+                unknown = set(shot) - SHOT_FIELDS
+                if unknown:
+                    raise ValueError(sl + f': unknown shot fields {sorted(unknown)}')
+                if 'image' in shot:
+                    local_asset(path, shot['image'])
+                if 'caption' in shot:
+                    text(shot['caption'], sl + ' caption', 40)
+                if 'hl' in shot:
+                    text(shot['hl'], sl + ' hl', 20)
+                if 'at' in shot:
+                    text(shot['at'], sl + ' at', 24)
+                    if j == 0:
+                        raise ValueError(sl + ': the first shot opens the scene, it takes no at')
+                    if shot['at'].lower() not in str(s.get('voice') or '').lower():
+                        raise ValueError(sl + ': at must quote words from this scene\'s voice')
+                if 'motion' in shot and shot['motion'] not in SHOT_MOTIONS:
+                    raise ValueError(sl + f': motion must be one of {sorted(SHOT_MOTIONS)}')
+            if 'chapter' in s:
+                text(s['chapter'], label + ' chapter', 32)
+            if 'accent' in s and s['accent'] not in CINEMA_ACCENTS:
+                raise ValueError(label + ': accent must be green, cyan, red or amber')
+            if 'hl' in s:
+                text(s['hl'], label + ' hl', 24)
+            if s['kind'] == 'closing' and 'button' in s:
+                text(s['button'], label + ' button', 24)
+        elif 'shots' in s:
+            raise ValueError(label + ': shots belong to the picture style only')
         if c['style'] == 'stickman' and s['kind'] not in {'story', 'closing'}:
             raise ValueError(label + ': the stickman style only draws story and closing scenes')
         if s['kind'] == 'story':

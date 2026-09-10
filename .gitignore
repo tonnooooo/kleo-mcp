@@ -6,3 +6,4 @@ worker-configuration.d.ts
 .secrets.local
 __pycache__/
 *.pyc
+scripts/.devbox.json

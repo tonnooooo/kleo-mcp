@@ -4,10 +4,11 @@
  *
  * - Model: env.AI_MODEL, default @cf/meta/llama-3.3-70b-instruct-fp8-fast (JSON mode, free tier).
  * - One retry that feeds the validation errors back; then it throws with the errors.
- * - Test hook: env.STORYBOARD_FIXTURE === "example" or no AI binding → the cinema example, adapted (cartoon, with image prompts).
+ * - Test hook: env.STORYBOARD_FIXTURE === "example" or no AI binding → the cinema example, adapted (cartoon: picture style, shots).
  * - Kleo styles: params.style (cartoon | realistic | cyber | stickman; pickKleoStyle() when the client gave none). cartoon and
- *   realistic are cinema projects whose scenes carry an image_prompt (the server draws a picture per scene, images.ts);
- *   cyber is the plain Keou look of the template; stickman is Keou's stickman (story scenes, 9:16 only).
+ *   realistic are "picture" projects: every scene cuts between 2–4 full-screen shots, each with its own image_prompt
+ *   (the server draws the pictures, images.ts), no beats and no icons; cyber is the plain Keou look of the template;
+ *   stickman is Keou's stickman (story scenes, 9:16 only). See docs/PICTURE-STYLE.md.
  */
 import type { Env } from "./env";
 import type { Job, JobParams } from "./db";
@@ -16,6 +17,7 @@ import {
   validateStoryboard, defaultVoice, wordBudget, type Storyboard, type Format, type KleoStyle,
   KINDS, BEAT_KINDS, BEAT_ICONS, BEAT_FX, CINEMA_ACCENTS, VISUALS, FORBIDDEN_FIELDS,
   KLEO_STYLES, PICTURE_STYLES, IMAGE_PROMPT_MAX, kleoStyleOf, STORY_ACTS, STORY_CAST, STORY_PROPS, STORY_FX, STORY_ACCENTS,
+  SHOT_MOTION, SHOTS_PER_SCENE, SHOT_CAPTION_MAX, SHOT_HL_MAX, SHOT_AT_MAX, IMAGE_PROMPT_MIN, CLOSING_BUTTON_MAX,
 } from "./keou-contract.ts";
 import cinemaExample from "../worker/keou/examples/short-relay-cinema/project.json" with { type: "json" };
 
@@ -59,7 +61,7 @@ export class StoryboardError extends Error {
 
 /* ------------------------------------------------------------------ template briefs */
 
-type StyleId = "cinema" | "editorial" | "technical" | "illustrated" | "stickman";
+type StyleId = "cinema" | "editorial" | "technical" | "illustrated" | "stickman" | "picture";
 interface Brief { style: StyleId; wordsPerScene: [number, number]; guidance: string }
 
 const CINEMA_RULES = `Scenes are "cinema" (last one "closing"). Each scene: chapter (e.g. "01 HOOK", "02 THE TWIST", ≤32 chars), accent (red for threat/tension, green for the fix/win, cyan for neutral explanation, amber for warnings), title (≤90, short lockup line), hl (ONE word taken from the title, ≤24), voice (one narrated line), hold 0.2 (0.4 on the last scene), beats: 4–8 hero visuals of DIFFERENT kinds.
@@ -77,9 +79,15 @@ Beat shapes (ICON = one icon name from the enum, FX = one fx from the enum, WORD
 {"kind":"cta","label"?:"≤24","toggles"?:["≤14","≤14"]}   (closing scene only)
 The first beat of the hook scene is a slammed "type" beat. Every other beat carries "at", anchors in reading order. Icons: figure = the viewer, thief = the villain, phone/car/house/keyfob/pouch/timer/clock/wave/lock/shield/check/cross/bug/radar/alarm/hand/keyboard/desk/coffee/hoodie/amplifier are the only objects you can draw, so choose the closest metaphor. The closing scene keeps beats (a "type" beat with the loop question and a "cta" beat) plus a "detail" line ≤110.`;
 
+/** The picture style (cartoon/realistic): scenes are runs of full-screen pictures cut on the narration, no beats, no icons. */
+const SHOT_RULES = `Scenes are "cinema" (last one "closing"). Each scene: chapter (e.g. "01 THE CAPTAIN", ≤32), accent (red for threat/tension, green for the fix/win, cyan for neutral explanation, amber for warnings), title (≤90, the line shown on the first shot), hl (ONE word taken from the title, ≤24), voice (one narrated line), hold 0.2 (0.4 on the last scene), and "shots": 2–4 pictures for a cinema scene, 1 for the closing. The video is nothing but these pictures, cut like a short documentary: there are no icons, no cards and no beats.
+Shot shape ("?" marks optional keys; WORDS = 1–4 consecutive words copied EXACTLY, same spelling, from that scene's voice):
+{"image_prompt":"one sentence ≤${IMAGE_PROMPT_MAX} chars describing the picture","caption"?:"2–5 BIG WORDS ≤${SHOT_CAPTION_MAX}","hl"?:"ONE WORD OF caption ≤${SHOT_HL_MAX}","at"?:WORDS,"motion"?:"${SHOT_MOTION.join("|")}"}
+The FIRST shot of a scene starts with the scene and must NOT carry "at"; every other shot carries "at": the picture cuts when that word is spoken, so spread the anchors over the line in reading order. A caption is optional and rare: 2–5 strong words on the shot that carries the key idea (the first shot falls back to the scene title). "motion" is the slow camera move on the picture (in/out = zoom, left/right = pan); leave it out and the engine alternates. The closing scene has ONE shot and may carry "button" (≤${CLOSING_BUTTON_MAX}, e.g. "Follow", default "Subscribe").`;
+
 const PICTURE_RULES: Record<"cartoon" | "realistic", string> = {
-  cartoon: `PICTURES: this is a CARTOON video. Every scene (closing included) carries "image_prompt" (≤${IMAGE_PROMPT_MAX} chars): ONE sentence describing the picture drawn full-screen behind that scene as a flat vector cartoon: concrete subjects and setting from the story (pirates → a beach, sand, a ship at anchor; space → a rocket, a station, planets), the same characters drawn the same way in every scene, bright simple shapes, a clear mood. Never mention text, letters, numbers, logos, captions or the style itself; never name real people. The beats are drawn on top of the picture, so keep it a background: no tiny details.`,
-  realistic: `PICTURES: this is a REALISTIC video. Every scene (closing included) carries "image_prompt" (≤${IMAGE_PROMPT_MAX} chars): ONE sentence describing the cinematic photograph shown full-screen behind that scene: the concrete subject and place (a product on a desk, a city street at dusk, a mountain road in rain), the light and the mood, a consistent look from scene to scene. Never mention text, letters, numbers, logos or captions; never name or depict real people. The beats are drawn on top of the picture, so keep it a background: no tiny details.`,
+  cartoon: `PICTURES: this is a CARTOON video, so every "image_prompt" describes a flat vector cartoon illustration: concrete subjects and setting from the story (pirates → a beach, sand, a ship at anchor; space → a rocket, a station, planets), the SAME characters described the same way in every shot (hair, clothes, colours), bright simple shapes, one clear action per picture, a clear mood. Consecutive shots of one scene show the same place from a new angle or the next moment of the action. Never mention text, letters, numbers, logos, captions or the style itself; never name real people.`,
+  realistic: `PICTURES: this is a REALISTIC video, so every "image_prompt" describes a cinematic photograph: the concrete subject and place (a rocket on the pad at dawn, a control room, a mountain road in rain), the lens feel, the light and the mood, the SAME subject described the same way in every shot, one clear action per picture. Consecutive shots of one scene show the same place from a new angle or the next moment. Never mention text, letters, numbers, logos or captions; never name or depict real people.`,
 };
 
 const STICKMAN_RULES = `Scenes are "story" (last one "closing"): a hand-drawn stickman acts out the narration, one situation per scene.
@@ -118,10 +126,10 @@ export function styleFor(template: string, format: Format): StyleId {
   return b.style;
 }
 
-/** Keou style for a Kleo style: pictures live behind cinema scenes, the stickman has its own style, cyber keeps the template's look. */
+/** Keou style for a Kleo style: cartoon/realistic are the "picture" style, the stickman has its own, cyber keeps the template's look. */
 export function keouStyleFor(kleo: KleoStyle, template: string, format: Format): StyleId {
   if (kleo === "stickman") return "stickman";
-  if (kleo === "cartoon" || kleo === "realistic") return "cinema";
+  if (kleo === "cartoon" || kleo === "realistic") return "picture";
   return styleFor(template, format);
 }
 
@@ -163,13 +171,14 @@ export function planFor(job: PlanJob): Plan {
   const style = keouStyleFor(kleo, job.template, format);
   const speed = 1.1;
   const words = wordBudget(p.duration_s, speed);
-  // Cinema/stickman scenes carry one spoken line each in Shorts; long videos in those styles use longer lines so the scene count stays sane.
+  // Cinema/picture/stickman scenes carry one spoken line each in Shorts; long videos in those styles use longer lines so the scene count stays sane.
   const perLine: [number, number] = p.duration_s > 120 ? [35, 50] : [10, 18];
-  const wps: [number, number] = style === "cinema" || style === "stickman" ? (brief.style === "cinema" && p.duration_s <= 120 ? brief.wordsPerScene : perLine) : (brief.style === "cinema" ? [25, 40] : brief.wordsPerScene);
+  const shortLine = style === "cinema" || style === "picture" || style === "stickman";
+  const wps: [number, number] = shortLine ? (brief.style === "cinema" && p.duration_s <= 120 ? brief.wordsPerScene : perLine) : (brief.style === "cinema" ? [25, 40] : brief.wordsPerScene);
   return {
     style, kleo, pictures: PICTURE_STYLES.includes(kleo), brief, format, language: p.language, voice: defaultVoice(p.language, job.template, p.voice), duration: p.duration_s, speed, words,
     scenes: sceneRange(words.target, wps), maxDuration: Math.min(1800, Math.max(5, Math.round(p.duration_s * 1.6))),
-    chunk: style === "cinema" ? 4 : 5, // scenes per model call: keeps every call under ~2k output tokens (Workers AI times out on long generations)
+    chunk: style === "cinema" || style === "picture" ? 4 : 5, // scenes per model call: keeps every call under ~2k output tokens (Workers AI times out on long generations)
   };
 }
 
@@ -178,11 +187,13 @@ const list = (a: readonly string[]) => a.join(", ");
 const editorialKinds = () => KINDS.filter((k) => !["image", "story", "cinema"].includes(k));
 
 function systemPrompt(plan: Plan): string {
-  const kinds = plan.style === "cinema" ? "cinema, closing" : plan.style === "stickman" ? "story, closing" : list(editorialKinds());
+  const kinds = plan.style === "cinema" || plan.style === "picture" ? "cinema, closing" : plan.style === "stickman" ? "story, closing" : list(editorialKinds());
   const lang = LANG_NAMES[plan.language] ?? plan.language;
-  const rules = plan.style === "cinema" ? CINEMA_RULES : plan.style === "stickman" ? STICKMAN_RULES : EDITORIAL_RULES;
-  const pictures = plan.pictures ? `\n${PICTURE_RULES[plan.kleo as "cartoon" | "realistic"]}` : "";
-  const enums = plan.style === "stickman"
+  const rules = plan.style === "picture" ? SHOT_RULES : plan.style === "cinema" ? CINEMA_RULES : plan.style === "stickman" ? STICKMAN_RULES : EDITORIAL_RULES;
+  const pictures = plan.style === "picture" ? `\n${PICTURE_RULES[plan.kleo as "cartoon" | "realistic"]}` : "";
+  const enums = plan.style === "picture"
+    ? `motion: ${list(SHOT_MOTION)}. accents: ${list(CINEMA_ACCENTS)}.`
+    : plan.style === "stickman"
     ? `acts: ${list(STORY_ACTS)}. cast: ${list(STORY_CAST)}. props: ${list(STORY_PROPS)}. fx: ${list(STORY_FX)}. accents: ${list(STORY_ACCENTS)}.`
     : `beat kinds: ${list(BEAT_KINDS)}. icons: ${list(BEAT_ICONS)}. fx: ${list(BEAT_FX)}. accents: ${list(CINEMA_ACCENTS)}. visuals: ${list(VISUALS)}.`;
   return `You are Kleo's storyboard writer for the Keou motion-design renderer. You output ONE JSON object and nothing else: no prose, no markdown fences, standard JSON with double-quoted keys and strings (never single quotes, never Python dict syntax).
@@ -205,7 +216,7 @@ interface OutlineEntry { id: string; kind: string; label: string; accent?: strin
 
 function outlinePrompt(job: PlanJob, plan: Plan, n: number): string {
   const perScene = Math.round(plan.words.target / n);
-  const cin = plan.style === "cinema", stick = plan.style === "stickman";
+  const cin = plan.style === "cinema" || plan.style === "picture", stick = plan.style === "stickman";
   const kind = cin ? "cinema" : stick ? "story" : "<kind>";
   const label = cin ? "chapter ≤32 like 01 HOOK" : stick ? "situation ≤32 like 01 THE SETUP" : "UPPERCASE eyebrow ≤40";
   return `${contextBlock(job, plan)}
@@ -217,16 +228,18 @@ function chunkPrompt(job: PlanJob, plan: Plan, outline: OutlineEntry[], from: nu
   const entries = outline.slice(from, to);
   const words = entries.reduce((n, e) => n + e.words, 0);
   const total = outline.length;
-  const cin = plan.style === "cinema", stick = plan.style === "stickman";
+  const pic = plan.style === "picture";
+  const cin = plan.style === "cinema" || pic, stick = plan.style === "stickman";
   const lineWords = plan.duration > 120 ? "35–50" : "10–18";
-  const how = cin ? `Each voice line is ${plan.duration > 120 ? "two or three spoken sentences" : "one spoken sentence"} of ${lineWords} words; every scene needs 4–8 beats of different kinds, each anchored with "at" to words of its own voice line.`
+  const how = pic ? `Each voice line is ${plan.duration > 120 ? "two or three spoken sentences" : "one spoken sentence"} of ${lineWords} words; every scene needs 2–4 shots (the closing exactly one), each with its own "image_prompt"; every shot after the first carries "at" with words copied from its own voice line.`
+    : cin ? `Each voice line is ${plan.duration > 120 ? "two or three spoken sentences" : "one spoken sentence"} of ${lineWords} words; every scene needs 4–8 beats of different kinds, each anchored with "at" to words of its own voice line.`
     : stick ? `Each voice line is one spoken sentence of ${lineWords} words; every scene has an act, a cast with hero, an accent and a title; add a bubble when the character says something.`
     : "Fill the kind-specific fields exactly as the shapes show: list/steps need 3 items, compare 2 items, metric needs value and unit, quote needs quote, hero needs visual.";
   let msg = `${contextBlock(job, plan)}
 VIDEO OUTLINE (${total} scenes; you write scenes ${from + 1}–${to} now):
 ${outline.map((e, i) => `${i + 1}. [${e.id}] ${e.kind} · ${e.label}${e.accent ? ` · ${e.accent}` : ""} — ${e.summary} (${e.words} words)`).join("\n")}
 ${prevVoice ? `The previous scene ended with this narration, continue naturally from it: "${prevVoice}"` : "This is the start of the video."}
-TASK: write scenes ${from + 1}–${to} in full, in order, keeping their ids, kinds${cin ? ", chapters (as \"chapter\") and accents" : stick ? " and titles" : " and eyebrows"} from the outline. Their narration together totals about ${words} words (${entries.map((e) => `${e.id}: ${e.words}`).join(", ")}). ${how}${plan.pictures ? ` Every scene carries its "image_prompt" (one sentence, ≤${IMAGE_PROMPT_MAX} characters, no text in the picture).` : ""}
+TASK: write scenes ${from + 1}–${to} in full, in order, keeping their ids, kinds${cin ? ", chapters (as \"chapter\") and accents" : stick ? " and titles" : " and eyebrows"} from the outline. Their narration together totals about ${words} words (${entries.map((e) => `${e.id}: ${e.words}`).join(", ")}). ${how}${pic ? ` Each "image_prompt" is one sentence, ≤${IMAGE_PROMPT_MAX} characters, with no text in the picture.` : ""}
 Return {"scenes":[…]} with exactly ${entries.length} scene objects and nothing else.`;
   if (feedback?.length) msg += `\n\nYOUR PREVIOUS ANSWER WAS REJECTED by the validator with these problems (scene numbers count within the scenes you returned, "beat n" counts inside that scene). Fix every one of them and return all ${entries.length} scenes again:\n- ${feedback.join("\n- ")}`;
   return msg;
@@ -239,6 +252,23 @@ const strArr = { type: "array", items: str };
 /** Every property the contract knows, closed with additionalProperties:false (open objects let the grammar accept
  * garbled keys). Junk the model puts in irrelevant properties is removed per kind by normalizeStoryboard. */
 function sceneSchema(plan: Plan): Record<string, unknown> {
+  if (plan.style === "picture") {
+    const shot = {
+      type: "object",
+      properties: { image_prompt: str, caption: str, hl: str, at: str, motion: { type: "string", enum: [...SHOT_MOTION] } },
+      required: ["image_prompt"],
+      additionalProperties: false,
+    };
+    return {
+      type: "object",
+      properties: {
+        id: str, kind: { type: "string", enum: ["cinema", "closing"] }, chapter: str, accent: { type: "string", enum: [...CINEMA_ACCENTS] },
+        title: str, hl: str, voice: str, hold: { type: "number" }, shots: { type: "array", items: shot }, button: str,
+      },
+      required: ["id", "kind", "chapter", "accent", "title", "hl", "voice", "shots"],
+      additionalProperties: false,
+    };
+  }
   if (plan.style === "cinema") {
     const beat = {
       type: "object",
@@ -256,9 +286,8 @@ function sceneSchema(plan: Plan): Record<string, unknown> {
       properties: {
         id: str, kind: { type: "string", enum: ["cinema", "closing"] }, chapter: str, accent: { type: "string", enum: [...CINEMA_ACCENTS] },
         title: str, hl: str, voice: str, hold: { type: "number" }, beats: { type: "array", items: beat }, detail: str,
-        ...(plan.pictures ? { image_prompt: str } : {}),
       },
-      required: ["id", "kind", "chapter", "accent", "title", "hl", "voice", "beats", ...(plan.pictures ? ["image_prompt"] : [])],
+      required: ["id", "kind", "chapter", "accent", "title", "hl", "voice", "beats"],
       additionalProperties: false,
     };
   }
@@ -286,13 +315,14 @@ function sceneSchema(plan: Plan): Record<string, unknown> {
 }
 
 function outlineSchema(plan: Plan): Record<string, unknown> {
+  const cin = plan.style === "cinema" || plan.style === "picture"; // both plan chapters and accents, scene kinds cinema/closing
   const entry: Record<string, unknown> = {
     type: "object",
     properties: {
-      id: str, kind: { type: "string", enum: plan.style === "cinema" ? ["cinema", "closing"] : plan.style === "stickman" ? ["story", "closing"] : editorialKinds() }, label: str,
-      ...(plan.style === "cinema" ? { accent: { type: "string", enum: [...CINEMA_ACCENTS] } } : {}), summary: str, words: { type: "integer" },
+      id: str, kind: { type: "string", enum: cin ? ["cinema", "closing"] : plan.style === "stickman" ? ["story", "closing"] : editorialKinds() }, label: str,
+      ...(cin ? { accent: { type: "string", enum: [...CINEMA_ACCENTS] } } : {}), summary: str, words: { type: "integer" },
     },
-    required: ["id", "kind", "label", "summary", "words", ...(plan.style === "cinema" ? ["accent"] : [])],
+    required: ["id", "kind", "label", "summary", "words", ...(cin ? ["accent"] : [])],
     additionalProperties: false,
   };
   return {
@@ -446,6 +476,25 @@ function repairBeat(b: Record<string, unknown>, voice: string): Record<string, u
 }
 const printableStr = (x: string) => ![...x].some((ch) => ch.charCodeAt(0) < 32 || ch.charCodeAt(0) === 127);
 
+/** Cuts a prompt to the contract's length at a word boundary (a half word reads worse than a short prompt). */
+const fitPrompt = (p: string): string => (p.length <= IMAGE_PROMPT_MAX ? p : p.slice(0, IMAGE_PROMPT_MAX).replace(/\s+\S*$/, "").trim() || p.slice(0, IMAGE_PROMPT_MAX));
+
+/**
+ * Keeps only what the picture style reads on a shot and drops shots without a usable image_prompt.
+ * `first` shots may not carry "at" (they open the scene), an "at" that is not in the voice is dropped like a beat's,
+ * and an "hl" that does not colour a word of this shot's caption is meaningless, so it goes too.
+ */
+function repairShot(sh: Record<string, unknown>, voice: string, first: boolean): Record<string, unknown> | null {
+  const prompt = typeof sh.image_prompt === "string" ? fitPrompt(sh.image_prompt.trim()) : "";
+  if (prompt.length < IMAGE_PROMPT_MIN) return null;
+  const out: Record<string, unknown> = { image_prompt: prompt };
+  if (typeof sh.caption === "string" && sh.caption.trim() && sh.caption.length <= SHOT_CAPTION_MAX && printableStr(sh.caption)) out.caption = sh.caption.trim();
+  if (typeof sh.hl === "string" && sh.hl.trim() && sh.hl.length <= SHOT_HL_MAX && typeof out.caption === "string" && String(out.caption).toLowerCase().includes(sh.hl.trim().toLowerCase())) out.hl = sh.hl.trim();
+  if (!first && typeof sh.at === "string" && sh.at.length <= SHOT_AT_MAX && voice.includes(sh.at.toLowerCase())) out.at = sh.at;
+  if (inSet(sh.motion, SHOT_MOTION)) out.motion = sh.motion;
+  return out;
+}
+
 /** Deterministic repairs that never change the story: forced job fields, slugs, anchors, holds, xor button/detail. */
 export function normalizeStoryboard(raw: unknown, plan: Plan): unknown {
   const c = clean(raw);
@@ -480,10 +529,25 @@ export function normalizeStoryboard(raw: unknown, plan: Plan): unknown {
       if (typeof s.hl === "string" && s.hl.length > 24) delete s.hl;
       if ("visual" in s && !inSet(s.visual, VISUALS)) delete s.visual;
       if ("accent" in s && !inSet(s.accent, plan.style === "stickman" ? STORY_ACCENTS : CINEMA_ACCENTS)) delete s.accent;
-      // Picture prompts: one trimmed sentence for the picture styles, nothing elsewhere (image is never accepted from a model).
+      // Pictures: the picture style keeps shots (and only shots), every other style keeps none (image is never accepted from a model).
       delete s.image; delete s.image_credit;
-      if (!plan.pictures || typeof s.image_prompt !== "string") delete s.image_prompt;
-      else if (s.image_prompt.length > IMAGE_PROMPT_MAX) s.image_prompt = s.image_prompt.slice(0, IMAGE_PROMPT_MAX).replace(/\s+\S*$/, "").trim() || s.image_prompt.slice(0, IMAGE_PROMPT_MAX);
+      if (plan.style === "picture") {
+        delete s.beats; delete s.eyebrow; delete s.visual; delete s.detail; delete s.source;
+        for (const key of KIND_ONLY_KEYS) if (key !== "button") delete s[key];
+        if (s.kind !== "closing") { s.kind = "cinema"; delete s.button; }
+        else if (typeof s.button !== "string" || !s.button.trim() || s.button.length > CLOSING_BUTTON_MAX) delete s.button;
+        if (typeof s.title === "string" && s.title.length > 90) s.title = s.title.slice(0, 90).replace(/\s+\S*$/, "").trim() || s.title.slice(0, 90);
+        const spoken = typeof s.voice === "string" ? s.voice.toLowerCase() : "";
+        const raw = Array.isArray(s.shots) ? s.shots : typeof s.image_prompt === "string" ? [{ image_prompt: s.image_prompt }] : []; // old format: one picture per scene
+        delete s.image_prompt;
+        const shots = raw.filter(isObj).map((sh, i) => repairShot(sh, spoken, i === 0)).filter((x): x is Record<string, unknown> => !!x).slice(0, SHOTS_PER_SCENE[s.kind === "closing" ? "closing" : "cinema"][1]);
+        if (shots.length) delete shots[0].at; // a dropped first shot must not promote its "at" to the opening one
+        // Last resort so the scene still renders: the title becomes the picture. The validator asks the model for real shots first.
+        else if (typeof s.title === "string" && s.title.trim().length >= IMAGE_PROMPT_MIN) shots.push({ image_prompt: fitPrompt(s.title.trim()) });
+        s.shots = shots;
+      } else {
+        delete s.shots; delete s.image_prompt; // only the picture style draws pictures, and it keeps them on its shots
+      }
       if (plan.style === "stickman") {
         delete s.beats; delete s.chapter; delete s.eyebrow; delete s.visual;
         for (const key of KIND_ONLY_KEYS) delete s[key];
@@ -499,7 +563,7 @@ export function normalizeStoryboard(raw: unknown, plan: Plan): unknown {
         if (typeof s.bubble !== "string" || s.bubble.length > 40 || !printableStr(s.bubble)) delete s.bubble;
         if (typeof s.hl !== "string" || s.hl.length > 24 || !printableStr(s.hl)) delete s.hl;
         if (typeof s.title === "string" && s.title.length > 90) s.title = s.title.slice(0, 90).replace(/\s+\S*$/, "").trim() || s.title.slice(0, 90);
-      } else if (plan.style !== "cinema") {
+      } else if (plan.style !== "cinema" && plan.style !== "picture") {
         const keep = SCENE_KEYS[s.kind as string] ?? [];
         for (const key of KIND_ONLY_KEYS) if (!keep.includes(key) && key in s) delete s[key];
         if (s.kind === "metric" && s.animate_value === true && !/^\d+(?:,\d{3})*(?:\.\d+)?[^\d]*$/.test(String(s.value ?? ""))) delete s.animate_value;
@@ -531,6 +595,7 @@ export function normalizeStoryboard(raw: unknown, plan: Plan): unknown {
       last.kind = "closing";
       for (const k of ["items", "value", "unit", "quote", "animate_value", "visual", "act", "cast", "props", "fx"]) delete last[k];
       if (plan.style !== "cinema") delete last.beats;
+      if (plan.style === "picture" && Array.isArray(last.shots)) last.shots = last.shots.slice(0, SHOTS_PER_SCENE.closing[1]); // a closing shows one picture, two at most
     }
   }
   return c;
@@ -578,17 +643,45 @@ async function callModel(env: Env, model: string, messages: { role: string; cont
 
 /* ------------------------------------------------------------------ fixture */
 
-/** Picture prompts for the fixture's scenes (short-relay-cinema), so local runs with IMAGE_FIXTURE=1 exercise the pictures. */
-const FIXTURE_PROMPTS: Record<string, string> = {
-  "01-gone": "A quiet suburban driveway at dawn, an empty parking spot with tyre marks, a house with a kitchen window lit, a car key on the bench inside",
-  "02-relay": "Two hooded figures at night, one crouching by a front door holding a small boxy amplifier with a glowing antenna, the house dark",
-  "03-believes": "A sleek modern car in a driveway at night, its headlights switching on by themselves, a faint radio wave arc reaching from the house",
-  "04-test": "A long row of shiny new cars in a bright test hall, orange cones, a clipboard on a stand, clean industrial light",
-  "05-fix": "A small dark fabric pouch on a wooden kitchen bench, a car key dropping into it, a soft green glow around the pouch",
-  "06-loop": "A wide car park at sunset seen from above, rows of cars of many colours, one lane lit in green, calm warm sky",
+/**
+ * Shots for the fixture's scenes (the cinema example short-relay-cinema, turned into a picture-style storyboard), so
+ * local runs with IMAGE_FIXTURE=1 exercise several pictures per scene. The second shot's cut ("at") is derived from
+ * the scene's own voice line at build time, so the fixture can never quote a word the example no longer says.
+ */
+const FIXTURE_SHOTS: Record<string, { image_prompt: string; caption?: string; hl?: string; motion?: string }[]> = {
+  "01-gone": [
+    { image_prompt: "A quiet suburban driveway at dawn, an empty parking spot with tyre marks on the wet tarmac, a house with one kitchen window lit", caption: "THE CAR IS GONE", hl: "GONE", motion: "in" },
+    { image_prompt: "A car key lying on a wooden kitchen bench next to a fruit bowl, seen from close by, warm morning light through the window", motion: "left" },
+  ],
+  "02-relay": [
+    { image_prompt: "Two hooded figures at night on a quiet street, one crouching by a front door holding a small boxy amplifier with a short antenna", motion: "in" },
+    { image_prompt: "A close view of the small amplifier in gloved hands, a faint blue arc of signal bending towards the dark house behind it", motion: "out" },
+  ],
+  "03-believes": [
+    { image_prompt: "A sleek modern car in a driveway at night, its headlights switching on by themselves, the dark house reflected in the windscreen", motion: "in" },
+    { image_prompt: "The same car pulling away down an empty street at night, red tail lights, the driveway left empty behind it", motion: "right" },
+  ],
+  "04-test": [
+    { image_prompt: "A long row of shiny new cars in a bright test hall, orange cones on the floor, clean industrial light from above", caption: "850 CARS TESTED", hl: "850", motion: "left" },
+    { image_prompt: "A clipboard on a stand in front of one car in the test hall, rows of ticked boxes, cold neutral light", motion: "in" },
+  ],
+  "05-fix": [
+    { image_prompt: "A small dark fabric pouch on a wooden kitchen bench, a car key dropping into it, soft daylight from the side", caption: "DROP THE KEY IN", hl: "KEY", motion: "in" },
+    { image_prompt: "The closed pouch on the bench with the key inside, the house quiet around it, calm warm light", motion: "out" },
+  ],
+  "06-loop": [
+    { image_prompt: "A wide car park at sunset seen from above, rows of cars of many colours, one empty lane leading out, calm warm sky", motion: "out" },
+  ],
 };
+/** A verbatim slice of the second half of a voice line: a legal "at" anchor for the fixture's second shot. */
+function fixtureAnchor(voice: unknown): string | null {
+  if (typeof voice !== "string" || voice.length < 24) return null;
+  const tail = voice.slice(Math.floor(voice.length / 2));
+  const m = /[A-Za-z][A-Za-z']* [A-Za-z][A-Za-z']*/.exec(tail);
+  return m && m[0].length <= 24 && voice.toLowerCase().includes(m[0].toLowerCase()) ? m[0] : null;
+}
 
-/** The cinema example adapted to a job's format/language/voice (local dev and tests; never calls AI). Cartoon look with a picture per scene. */
+/** The cinema example adapted to a job's format/language/voice (local dev and tests; never calls AI). Cartoon look: picture style with shots. */
 export function fixtureStoryboard(job: PlanJob): Storyboard {
   const p = JSON.parse(job.params) as JobParams;
   const sb = structuredClone(cinemaExample) as Record<string, unknown>;
@@ -596,9 +689,17 @@ export function fixtureStoryboard(job: PlanJob): Storyboard {
   delete sb.width; delete sb.fps; delete sb.brand;
   const kleo: KleoStyle = p.style === "realistic" || p.style === "cyber" ? p.style : "cartoon"; // the example is a cinema project: stickman cannot be faked
   sb.kleo_style = kleo;
+  const pictures = PICTURE_STYLES.includes(kleo);
+  if (pictures) sb.style = "picture";
   for (const s of sb.scenes as Record<string, unknown>[]) {
     delete s.image; delete s.image_credit;
-    if (PICTURE_STYLES.includes(kleo)) s.image_prompt = FIXTURE_PROMPTS[String(s.id)] ?? `A simple scene about ${String(s.title ?? "the story")}, no text`;
+    if (!pictures) continue;
+    // The picture style has no beats and no icons: the scene is the run of its shots.
+    delete s.beats; delete s.detail;
+    const planned = FIXTURE_SHOTS[String(s.id)] ?? [{ image_prompt: `A simple scene about ${String(s.title ?? "the story")}, no text` }];
+    const at = fixtureAnchor(s.voice);
+    s.shots = planned.slice(0, SHOTS_PER_SCENE[s.kind === "closing" ? "closing" : "cinema"][1]).map((sh, i) => (i && at ? { ...sh, at } : { ...sh }));
+    if (s.kind === "closing") s.button = "Subscribe";
   }
   sb.format = p.format;
   sb.language = p.language;
@@ -620,8 +721,10 @@ export function useFixture(env: Env): boolean {
 
 /** A temporary closing so a chunk of scenes can be validated as a project on its own. */
 const TEMP_CLOSING = (plan: Plan): Record<string, unknown> =>
-  plan.style === "cinema"
-    ? { id: "zz-temp-closing", kind: "closing", chapter: "99 END", accent: "green", title: "end", hl: "end", voice: "the end", beats: [{ kind: "cta" }], ...(plan.pictures ? { image_prompt: "the end" } : {}) }
+  plan.style === "picture"
+    ? { id: "zz-temp-closing", kind: "closing", chapter: "99 END", accent: "green", title: "end", hl: "end", voice: "the end", shots: [{ image_prompt: "an empty stage at the end of the story" }] }
+    : plan.style === "cinema"
+    ? { id: "zz-temp-closing", kind: "closing", chapter: "99 END", accent: "green", title: "end", hl: "end", voice: "the end", beats: [{ kind: "cta" }] }
     : { id: "zz-temp-closing", kind: "closing", title: "end", voice: "the end" };
 
 function header(plan: Plan, outline: { title?: unknown; description?: unknown; tags?: unknown }): Record<string, unknown> {
@@ -673,9 +776,9 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     outline = entries.map((e, i) => {
       let id = slug(e.id, i).slice(0, 50); if (seen.has(id)) id = `${id}-${i + 1}`; seen.add(id);
       const words = typeof e.words === "number" && e.words > 3 ? Math.round(e.words) : Math.round(plan.words.target / entries.length);
-      return { id, kind: typeof e.kind === "string" ? e.kind : "hero", label: typeof e.label === "string" ? e.label.slice(0, plan.style === "cinema" ? 32 : 40) : `PART ${i + 1}`, accent: typeof e.accent === "string" ? e.accent : undefined, summary: typeof e.summary === "string" ? e.summary : "", words };
+      return { id, kind: typeof e.kind === "string" ? e.kind : "hero", label: typeof e.label === "string" ? e.label.slice(0, plan.style === "cinema" || plan.style === "picture" ? 32 : 40) : `PART ${i + 1}`, accent: typeof e.accent === "string" ? e.accent : undefined, summary: typeof e.summary === "string" ? e.summary : "", words };
     });
-    outline.forEach((e, i) => { if (e.kind === "closing" && i < outline.length - 1) e.kind = plan.style === "cinema" ? "cinema" : "hero"; });
+    outline.forEach((e, i) => { if (e.kind === "closing" && i < outline.length - 1) e.kind = plan.style === "cinema" || plan.style === "picture" ? "cinema" : "hero"; });
     outline[outline.length - 1].kind = "closing";
     // Scale the per-scene word plan to the budget.
     const sum = outline.reduce((a, e) => a + e.words, 0) || 1;
@@ -698,7 +801,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     let lastDraft: unknown;
     for (let attempt = 1; attempt <= 3 && !accepted; attempt++) {
       let raw: unknown;
-      const maxTokens = plan.style === "cinema" ? 700 * (to - from) : 350 * (to - from);
+      const maxTokens = plan.style === "cinema" ? 700 * (to - from) : plan.style === "picture" ? 600 * (to - from) : 350 * (to - from);
       try { raw = await call(chunkPrompt(job, plan, outline, from, to, prevVoice, feedback), chunkSchema(plan), 400 + maxTokens); }
       catch (e) { history.push([`scenes ${from + 1}–${to}: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) throw e; feedback = undefined; continue; }
       const got = isObj(raw) && Array.isArray(raw.scenes) ? raw.scenes.filter(isObj) : [];
@@ -715,11 +818,11 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
       const words = countWords({ scenes: chunkScenes });
       if (words < want * 0.55) problems.push(`the narration of these scenes is far too short: ${words} words, it must total about ${want}`);
       if (words > want * 1.6) problems.push(`the narration of these scenes is far too long: ${words} words, it must total about ${want}`);
-      if (plan.pictures) {
-        const blank = chunkScenes.map((s, i) => (typeof s.image_prompt !== "string" ? i + 1 : 0)).filter(Boolean);
-        if (blank.length) problems.push(`scene${blank.length > 1 ? "s" : ""} ${blank.join(", ")}: missing "image_prompt" (one sentence describing the picture behind the scene, no text in it)`);
-      }
-      if (plan.style === "cinema") {
+      if (plan.style === "picture") {
+        // A cinema scene that ends up with one picture holds it for the whole line: ask for the missing cuts once.
+        const thin = chunkScenes.map((s, i) => (s.kind !== "closing" && (!Array.isArray(s.shots) || s.shots.length < 2) ? i + 1 : 0)).filter(Boolean);
+        if (thin.length) problems.push(`scene${thin.length > 1 ? "s" : ""} ${thin.join(", ")}: only one picture; every scene needs 2–4 "shots", each with its own "image_prompt", and every shot after the first anchored with "at" to words of that scene's voice`);
+      } else if (plan.style === "cinema") {
         const thin = chunkScenes.map((s, i) => (!Array.isArray(s.beats) || s.beats.length < 3 ? i + 1 : 0)).filter(Boolean);
         if (thin.length) problems.push(`scene${thin.length > 1 ? "s" : ""} ${thin.join(", ")}: only 1–2 beats; every scene needs 4–8 beats of different kinds, each anchored with "at"`);
       } else if (plan.style !== "stickman") {

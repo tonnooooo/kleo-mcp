@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { validateStoryboard, defaultVoice, wordBudget, kleoStyleOf, pictureScenes, VOICES, FORBIDDEN_FIELDS, FORBIDDEN_KINDS, KLEO_STYLES, IMAGE_PROMPT_MAX } from "../src/keou-contract.ts";
+import { validateStoryboard, defaultVoice, wordBudget, kleoStyleOf, pictureScenes, VOICES, FORBIDDEN_FIELDS, FORBIDDEN_KINDS, KLEO_STYLES, IMAGE_PROMPT_MAX, MAX_PICTURES, SHOT_MOTION } from "../src/keou-contract.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const EXAMPLES = join(ROOT, "worker", "keou", "examples");
@@ -25,12 +25,18 @@ const opts = (p) => ({ format: p.format, language: p.language });
 const errorsOf = (sb, o) => { const r = validateStoryboard(sb, o); assert.equal(r.ok, false, "expected a validation failure"); return r.errors; };
 const cinema = () => toStoryboard(load("short-relay-cinema"));
 const editorial = () => toStoryboard(load("galactic-black-hole"));
+/** The picture-style storyboards a client would send (test/fixtures), not the engine projects. */
+const fixture = (name) => JSON.parse(readFileSync(join(ROOT, "test", "fixtures", `${name}.json`), "utf8"));
+const pirates = () => fixture("cartoon-pirates");
+const space = () => fixture("realistic-space");
 
 test("every example project validates once turned into a storyboard", () => {
   const names = readdirSync(EXAMPLES).filter((n) => !n.startsWith("."));
   assert.ok(names.length >= 4, `expected the Keou examples, found ${names.length}`);
   for (const name of names) {
     const p = load(name);
+    // A picture-style example is an engine project (look + img/ assets on its shots), never a client storyboard.
+    if (p.style === "picture") { assert.equal(typeof p.look, "string", `${name} is a picture project and needs a look`); continue; }
     const r = validateStoryboard(toStoryboard(p), opts(p));
     assert.deepEqual(r.ok ? [] : r.errors, [], `${name} should validate`);
   }
@@ -174,30 +180,46 @@ test("helpers: defaultVoice and wordBudget", () => {
   assert.ok(b.min < b.target && b.target < b.max);
 });
 
-/* ------------------------------------------------------------------ Kleo styles and pictures */
+/* ------------------------------------------------------------------ Kleo styles and pictures (docs/PICTURE-STYLE.md) */
 
-test("kleo_style: enum, default cyber, cartoon/realistic need cinema, stickman needs stickman", () => {
+test("kleo_style: enum, default cyber, cartoon/realistic need the picture style, stickman needs stickman", () => {
   assert.deepEqual([...KLEO_STYLES], ["cartoon", "realistic", "cyber", "stickman"]);
   const plain = cinema();
   assert.equal(validateStoryboard(plain, { format: "9:16", language: "en" }).ok, true);
   assert.equal(kleoStyleOf(plain), "cyber");
-  for (const style of ["cartoon", "realistic", "cyber"]) {
-    const sb = cinema(); sb.kleo_style = style;
-    assert.equal(validateStoryboard(sb, { format: "9:16", language: "en" }).ok, true, `${style} on a cinema Short`);
-    assert.equal(kleoStyleOf(sb), style);
+  const cyber = cinema(); cyber.kleo_style = "cyber";
+  assert.equal(validateStoryboard(cyber, { format: "9:16", language: "en" }).ok, true, "cyber keeps the cinema look");
+  assert.equal(kleoStyleOf(cyber), "cyber");
+  for (const sb of [pirates(), space()]) {
+    assert.deepEqual(validateStoryboard(sb, opts(sb)).ok ? [] : validateStoryboard(sb, opts(sb)).errors, [], `${sb.kleo_style} fixture should validate`);
+    assert.equal(kleoStyleOf(sb), sb.kleo_style);
+    assert.equal(sb.style, "picture");
   }
   const bad = cinema(); bad.kleo_style = "anime";
   assert.ok(errorsOf(bad, { format: "9:16", language: "en" }).some((e) => e.startsWith("kleo_style must be one of ['cartoon', 'cyber', 'realistic', 'stickman']")));
   const ed = editorial(); ed.kleo_style = "cartoon";
-  assert.ok(errorsOf(ed, { format: "9:16", language: "en" }).some((e) => /kleo_style cartoon needs the Keou style "cinema"/.test(e)));
+  assert.ok(errorsOf(ed, { format: "9:16", language: "en" }).some((e) => /kleo_style cartoon needs the Keou style "picture"/.test(e)), "the message names the picture style");
+  const asCinema = pirates(); asCinema.style = "cinema";
+  assert.ok(errorsOf(asCinema, { format: "9:16", language: "en" }).some((e) => /kleo_style cartoon needs the Keou style "picture" \(full-screen shots cut on the narration\), not "cinema"/.test(e)));
   const ed2 = editorial(); ed2.kleo_style = "cyber";
   assert.equal(validateStoryboard(ed2, { format: "9:16", language: "en" }).ok, true, "cyber keeps the editorial look");
   const wrong = cinema(); wrong.kleo_style = "stickman";
   assert.ok(errorsOf(wrong, { format: "9:16", language: "en" }).some((e) => /kleo_style stickman needs the Keou style "stickman"/.test(e)));
+  assert.equal(kleoStyleOf({ style: "picture" }), "cartoon", "a picture project without kleo_style reads as cartoon");
 });
 
-test("cartoon and realistic are accepted in 16:9 (beta); stickman in 16:9 is refused with a clear message", () => {
-  const wide = cinema(); wide.format = "16:9"; wide.kleo_style = "realistic"; delete wide.width;
+test("the picture style belongs to cartoon/realistic only, and shots need it", () => {
+  const cyberPic = pirates(); cyberPic.kleo_style = "cyber";
+  assert.ok(errorsOf(cyberPic, { format: "9:16", language: "en" }).some((e) => /the Keou style "picture" is the cartoon\/realistic look: set kleo_style to "cartoon" or "realistic", not "cyber"/.test(e)));
+  const noStyle = pirates(); delete noStyle.kleo_style;
+  assert.ok(errorsOf(noStyle, { format: "9:16", language: "en" }).some((e) => /the Keou style "picture" is the cartoon\/realistic look/.test(e)));
+  const shotsInCinema = cinema();
+  shotsInCinema.scenes[0].shots = [{ image_prompt: "a car in a driveway at night" }];
+  assert.ok(errorsOf(shotsInCinema, { format: "9:16", language: "en" }).includes("scene 1: shots need the picture style (kleo_style cartoon or realistic)"));
+});
+
+test("cartoon and realistic render in 16:9 too; stickman in 16:9 is refused with a clear message", () => {
+  const wide = space(); wide.format = "16:9";
   assert.equal(validateStoryboard(wide, { format: "16:9", language: "en" }).ok, true);
   const stick = {
     schema_version: 1, editorial_status: "ready", title: "t", style: "stickman", kleo_style: "stickman", format: "16:9", language: "en", voice: "am_michael",
@@ -210,26 +232,142 @@ test("cartoon and realistic are accepted in 16:9 (beta); stickman in 16:9 is ref
   assert.equal(kleoStyleOf({ style: "stickman" }), "stickman", "a stickman project without kleo_style is the stickman style");
 });
 
-test("image_prompt: any kind, ≤ 240 chars, listed only for the picture styles; scene.image stays forbidden", () => {
-  const sb = cinema(); sb.kleo_style = "cartoon";
-  sb.scenes.forEach((s, i) => { s.image_prompt = `Picture ${i + 1}: a pirate ship at anchor in a sandy bay`; });
-  assert.equal(validateStoryboard(sb, { format: "9:16", language: "en" }).ok, true);
-  assert.equal(pictureScenes(sb).length, sb.scenes.length);
-  assert.deepEqual(pictureScenes(sb)[0], { id: sb.scenes[0].id, image_prompt: "Picture 1: a pirate ship at anchor in a sandy bay" });
+test("shots: 1-4 on a cinema scene, 1-2 on a closing, only cinema/closing kinds", () => {
+  const sb = pirates();
+  sb.scenes[0].shots = [];
+  assert.ok(errorsOf(sb, { format: "9:16", language: "en" }).includes("scene 1: shots must list 1–4 full-screen pictures"));
+  const many = pirates();
+  while (many.scenes[0].shots.length < 5) many.scenes[0].shots.push({ image_prompt: "one more picture of the same beach" });
+  assert.ok(errorsOf(many, { format: "9:16", language: "en" }).includes("scene 1: shots must list 1–4 full-screen pictures"));
+  const closing = pirates();
+  closing.scenes.at(-1).shots.push({ image_prompt: "a second closing picture of the chest" }, { image_prompt: "a third one" });
+  assert.ok(errorsOf(closing, { format: "9:16", language: "en" }).includes("scene 5: shots must list 1–2 full-screen pictures"));
+  const two = pirates();
+  two.scenes.at(-1).shots.push({ image_prompt: "the same beach a moment later, the chest closed again" });
+  assert.equal(validateStoryboard(two, { format: "9:16", language: "en" }).ok, true, "a closing may hold two pictures");
+  const none = pirates(); delete none.scenes[1].shots;
+  assert.ok(errorsOf(none, { format: "9:16", language: "en" }).includes("scene 2: shots must list 1–4 full-screen pictures"), "shots are required");
+  const hero = pirates(); hero.scenes[1].kind = "hero";
+  assert.ok(errorsOf(hero, { format: "9:16", language: "en" }).includes("scene 2: the picture style only draws cinema and closing scenes"));
+});
+
+test("shot fields: image_prompt 2-240 required, caption ≤ 40, hl ≤ 20, motion enum, no shot.image", () => {
+  const sb = pirates();
+  delete sb.scenes[0].shots[1].image_prompt;
+  assert.ok(errorsOf(sb, { format: "9:16", language: "en" }).includes(`scene 1 shot 2 image_prompt: required text, maximum ${IMAGE_PROMPT_MAX} characters`));
+  const long = pirates(); long.scenes[0].shots[0].image_prompt = "x".repeat(IMAGE_PROMPT_MAX + 1);
+  assert.ok(errorsOf(long, { format: "9:16", language: "en" }).includes(`scene 1 shot 1 image_prompt: required text, maximum ${IMAGE_PROMPT_MAX} characters`));
+  const tiny = pirates(); tiny.scenes[0].shots[0].image_prompt = "a";
+  assert.ok(errorsOf(tiny, { format: "9:16", language: "en" }).includes("scene 1 shot 1 image_prompt: required text, minimum 2 characters"));
+  const blank = pirates(); blank.scenes[0].shots[0].image_prompt = "   ";
+  assert.ok(errorsOf(blank, { format: "9:16", language: "en" }).some((e) => e.startsWith("scene 1 shot 1 image_prompt: required text")));
+  const caption = pirates(); caption.scenes[0].shots[0].caption = "A CAPTION THAT IS FAR TOO LONG FOR THE SCREEN";
+  assert.ok(errorsOf(caption, { format: "9:16", language: "en" }).includes("scene 1 shot 1 caption: required text, maximum 40 characters"));
+  const hl = pirates(); hl.scenes[0].shots[0].hl = "TWENTYONECHARACTERSXX";
+  assert.ok(errorsOf(hl, { format: "9:16", language: "en" }).includes("scene 1 shot 1 hl: required text, maximum 20 characters"));
+  const motion = pirates(); motion.scenes[0].shots[0].motion = "spin";
+  assert.ok(errorsOf(motion, { format: "9:16", language: "en" }).includes("scene 1 shot 1: motion must be one of ['in', 'left', 'out', 'right']"));
+  assert.deepEqual([...SHOT_MOTION], ["in", "out", "left", "right"]);
+  for (const m of SHOT_MOTION) { const ok = pirates(); ok.scenes[0].shots[0].motion = m; assert.equal(validateStoryboard(ok, { format: "9:16", language: "en" }).ok, true, m); }
+  const img = pirates(); img.scenes[0].shots[0].image = "img/01-hook-s1.png";
+  assert.ok(errorsOf(img, { format: "9:16", language: "en" }).some((e) => /scene 1 shot 1: image is not allowed in a storyboard/.test(e)));
+  const notObj = pirates(); notObj.scenes[0].shots[1] = "a picture";
+  assert.ok(errorsOf(notObj, { format: "9:16", language: "en" }).includes("scene 1 shot 2: must be an object"));
+});
+
+test("shot `at`: ≤ 24 chars, quoted verbatim from the scene voice, never on the first shot", () => {
+  const sb = pirates();
+  sb.scenes[0].shots[1].at = "bananas";
+  assert.ok(errorsOf(sb, { format: "9:16", language: "en" }).includes("scene 1 shot 2: at must quote words from this scene's voice"));
+  const first = pirates(); first.scenes[0].shots[0].at = "Skull Beach";
+  assert.ok(errorsOf(first, { format: "9:16", language: "en" }).includes("scene 1 shot 1: the first shot opens the scene, it cannot carry at"));
+  const long = pirates(); long.scenes[0].shots[1].at = "she never came back for it at all";
+  assert.ok(errorsOf(long, { format: "9:16", language: "en" }).includes("scene 1 shot 2 at: required text, maximum 24 characters"));
+  const cased = pirates(); cased.scenes[0].shots[1].at = "NEVER CAME BACK";
+  assert.equal(validateStoryboard(cased, { format: "9:16", language: "en" }).ok, true, "the quote is compared case-insensitively");
+});
+
+test("beats are forbidden in the picture style; the closing button is ≤ 24", () => {
+  const sb = pirates();
+  sb.scenes[0].beats = [{ kind: "type", text: "SHE NEVER CAME BACK", slam: true }];
+  const errors = errorsOf(sb, { format: "9:16", language: "en" });
+  assert.ok(errors.includes('scene 1: beats belong to the cinema style; the picture style cuts between "shots" instead'), errors.join("\n"));
+  const button = pirates(); button.scenes.at(-1).button = "Follow for the second part";
+  assert.ok(errorsOf(button, { format: "9:16", language: "en" }).includes("scene 5 button: required text, maximum 24 characters"));
+  const ok = pirates(); ok.scenes.at(-1).button = "Follow";
+  assert.equal(validateStoryboard(ok, { format: "9:16", language: "en" }).ok, true);
+});
+
+test("scene ids never end with the shot suffix (it belongs to picture ids)", () => {
+  const sb = pirates();
+  sb.scenes[1].id = "02-ship-s2";
+  assert.ok(errorsOf(sb, { format: "9:16", language: "en" }).includes('scene 2 id: "-s" followed by a number is reserved for picture ids (02-ship-s2-s1, …); rename the scene'));
+  const fine = pirates(); fine.scenes[1].id = "02-ship-s";
+  assert.equal(validateStoryboard(fine, { format: "9:16", language: "en" }).ok, true, "only a trailing -s<number> is reserved");
+  const cy = cinema(); cy.scenes[0].id = "01-gone-s12";
+  assert.ok(errorsOf(cy, { format: "9:16", language: "en" }).some((e) => /^scene 1 id: "-s" followed by a number is reserved/.test(e)), "the rule holds in every style");
+});
+
+test("a scene-level image_prompt is normalised into shots[0] and disappears", () => {
+  const sb = pirates();
+  const scene = sb.scenes[1];
+  delete scene.shots;
+  scene.image_prompt = "  The Red Gull racing over turquoise waves under a clear sky  ";
+  const r = validateStoryboard(sb, { format: "9:16", language: "en" });
+  assert.deepEqual(r.ok ? [] : r.errors, []);
+  assert.deepEqual(r.storyboard.scenes[1].shots, [{ image_prompt: "The Red Gull racing over turquoise waves under a clear sky" }]);
+  assert.ok(!("image_prompt" in r.storyboard.scenes[1]), "the stored storyboard carries no scene-level image_prompt");
+  assert.equal(pictureScenes(r.storyboard)[3].id, "02-ship-s1");
+  const both = pirates();
+  both.scenes[0].image_prompt = "a beach";
+  const errors = errorsOf(both, { format: "9:16", language: "en" });
+  assert.ok(errors.some((e) => /scene 1: put the picture on a shot/.test(e)), errors.join("\n"));
   const cyber = cinema(); cyber.scenes[0].image_prompt = "ignored in the cyber look";
-  assert.equal(validateStoryboard(cyber, { format: "9:16", language: "en" }).ok, true);
-  assert.deepEqual(pictureScenes(cyber), [], "no pictures without a picture style");
+  assert.equal(validateStoryboard(cyber, { format: "9:16", language: "en" }).ok, true, "a legacy cyber storyboard may still carry one");
   const ed = editorial(); ed.scenes[1].image_prompt = "a black hole seen from a distant moon";
-  assert.equal(validateStoryboard(ed, { format: "9:16", language: "en" }).ok, true, "image_prompt is allowed on editorial kinds too");
-  const long = cinema(); long.kleo_style = "realistic"; long.scenes[0].image_prompt = "x".repeat(IMAGE_PROMPT_MAX + 1);
-  assert.ok(errorsOf(long, { format: "9:16", language: "en" }).includes(`scene 1 image_prompt: required text, maximum ${IMAGE_PROMPT_MAX} characters`));
-  const empty = cinema(); empty.kleo_style = "realistic"; empty.scenes[0].image_prompt = "   ";
-  assert.ok(errorsOf(empty, { format: "9:16", language: "en" }).some((e) => e.startsWith("scene 1 image_prompt: required text")));
-  const withImage = cinema(); withImage.kleo_style = "cartoon"; withImage.scenes[0].image = "img/01-gone.png";
-  const errors = errorsOf(withImage, { format: "9:16", language: "en" });
-  assert.ok(errors.some((e) => /scene 1: image is not allowed in a storyboard \(describe the picture in image_prompt instead/.test(e)), errors.join("\n"));
-  const pirates = load("cartoon-pirates");
-  assert.ok(pirates.scenes.some((s) => typeof s.image === "string"), "the cartoon example carries worker-attached pictures");
-  assert.equal(validateStoryboard(pirates, opts(pirates)).ok, false, "raw example with scene.image is not a client storyboard");
-  assert.equal(validateStoryboard(toStoryboard(pirates), opts(pirates)).ok, true);
+  assert.equal(validateStoryboard(ed, { format: "9:16", language: "en" }).ok, true);
+  const tooLong = cinema(); tooLong.scenes[0].image_prompt = "x".repeat(IMAGE_PROMPT_MAX + 1);
+  assert.ok(errorsOf(tooLong, { format: "9:16", language: "en" }).includes(`scene 1 image_prompt: required text, maximum ${IMAGE_PROMPT_MAX} characters`));
+});
+
+test("pictureScenes flattens scene → shot in order, with `<sceneId>-s<n>` ids", () => {
+  const sb = pirates();
+  const pics = pictureScenes(sb);
+  assert.equal(pics.length, sb.scenes.reduce((n, s) => n + s.shots.length, 0));
+  assert.deepEqual(pics.slice(0, 4).map((p) => p.id), ["01-hook-s1", "01-hook-s2", "01-hook-s3", "02-ship-s1"]);
+  assert.equal(pics.at(-1).id, "05-closing-s1");
+  assert.equal(pics[0].image_prompt, sb.scenes[0].shots[0].image_prompt);
+  assert.deepEqual(pictureScenes(space()).slice(0, 2).map((p) => p.id), ["01-hook-s1", "01-hook-s2"]);
+  assert.deepEqual(pictureScenes(cinema()), [], "a legacy cyber storyboard asks for no picture");
+  const legacyCyber = cinema(); legacyCyber.scenes.forEach((s) => { s.image_prompt = "a car at night"; });
+  assert.deepEqual(pictureScenes(legacyCyber), [], "not even with image prompts on every scene");
+  assert.deepEqual(pictureScenes(null), []);
+  assert.deepEqual(pictureScenes({ kleo_style: "cartoon", scenes: "nope" }), []);
+  const shorthand = { kleo_style: "realistic", scenes: [{ id: "01-a", image_prompt: "a rocket on the pad at dawn" }] };
+  assert.deepEqual(pictureScenes(shorthand), [{ id: "01-a-s1", image_prompt: "a rocket on the pad at dawn" }], "the old shorthand still maps to shot 1");
+  const gap = { kleo_style: "cartoon", scenes: [{ id: "01-a", shots: [{ image_prompt: "a beach" }, { caption: "NO PICTURE" }, { image_prompt: "a ship" }] }] };
+  assert.deepEqual(pictureScenes(gap).map((p) => p.id), ["01-a-s1", "01-a-s3"], "ids follow the shot number, not the position in the answer");
+});
+
+test("MAX_PICTURES: 24 for a Short, 48 for a long video", () => {
+  assert.equal(MAX_PICTURES(30), 24);
+  assert.equal(MAX_PICTURES(90), 24);
+  assert.equal(MAX_PICTURES(91), 48);
+  assert.equal(MAX_PICTURES(600), 48);
+});
+
+test("the storyboard guide's examples validate against this contract", () => {
+  const src = readFileSync(join(ROOT, "src", "mcp.ts"), "utf8");
+  const examples = src.match(/\{"schema_version"[\s\S]*?\]\}\n/g) ?? [];
+  assert.ok(examples.length >= 2, `expected the cartoon and realistic examples in the guide, found ${examples.length}`);
+  const styles = new Set();
+  for (const raw of examples) {
+    const sb = JSON.parse(raw);
+    styles.add(sb.kleo_style);
+    assert.equal(sb.style, "picture");
+    const r = validateStoryboard(sb, opts(sb));
+    assert.deepEqual(r.ok ? [] : r.errors, [], `the ${sb.kleo_style} example should validate`);
+    assert.ok(pictureScenes(sb).length >= sb.scenes.length, "every scene of an example carries at least one shot");
+  }
+  assert.deepEqual([...styles].sort(), ["cartoon", "realistic"]);
 });

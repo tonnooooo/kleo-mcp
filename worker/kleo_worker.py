@@ -15,13 +15,16 @@ Engines (KLEO_ENGINE):
   keou (default)  the real motion-design renderer shipped in KLEO_KEOU_DIR (default /opt/kleo/keou);
                   the job must carry a "storyboard" (a Keou project without id/script_file/music_quiet/image scenes).
   placeholder     ffmpeg-only dark frame with the prompt as text; no storyboard needed (container contract tests).
-Kleo pictures (keou engine only): a storyboard may carry "kleo_style" (cartoon | realistic | cyber | stickman) and, per
-scene, an "image_prompt". For cartoon/realistic the worker asks POST /internal/jobs/{id}/images for the pictures the
-server generated (one per scene with a prompt), downloads them into <project>/img/<sceneId>.<ext> and sets scene.image;
-the scenes the server could not make are then drawn on the instance's own GPU by kleo_pictures.py (Stable Diffusion 1.5,
-diffusers, weights baked into the image) when one is present. KLEO_PICTURES=auto (default: server first, GPU for the
-rest) | server (never generate locally) | local (never ask the server). kleo_style and image_prompt are stripped before
-project.json is written. A missing or broken picture is never fatal: the scene simply renders without it.
+Kleo pictures (keou engine only): a storyboard may carry "kleo_style" (cartoon | realistic | cyber | stickman); for
+cartoon/realistic (style "picture", see docs/PICTURE-STYLE.md) every scene carries "shots", each shot one full-screen
+picture described by an "image_prompt". Picture id = "<sceneId>-s<n>" (1-based shot index). The worker asks
+POST /internal/jobs/{id}/images for the pictures the server generated, downloads them into
+<project>/img/<pictureId>.<ext> and sets shot.image (plus scene.image = the scene's first picture, kept for
+compatibility); the pictures the server could not make are then drawn on the instance's own GPU by kleo_pictures.py
+(Stable Diffusion 1.5, diffusers, weights baked into the image) when one is present. KLEO_PICTURES=auto (default:
+server first, GPU for the rest) | server (never generate locally) | local (never ask the server). kleo_style and every
+image_prompt are stripped before project.json is written, and the engine's own "look" (cartoon | realistic) is written
+at the top level. A missing or broken picture is never fatal: the shot simply renders as a flat gradient.
 Tuning: KLEO_WIDTH_PORTRAIT (2160) / KLEO_WIDTH_LANDSCAPE (1920), KLEO_RENDER_TIMEOUT_MIN (100),
         KLEO_IMAGES_TIMEOUT_S (300: the images call, the server generates on the first request), KLEO_IMAGES_RETRY_WAIT_S (20),
         KLEO_PICTURES (auto | server | local), KLEO_PICTURES_CPU=1 (let kleo_pictures draw on the CPU: tests only),
@@ -52,13 +55,14 @@ IMAGE_DOWNLOAD_TIMEOUT_S = 60
 PICTURES_POLICY = (os.environ.get("KLEO_PICTURES", "auto").strip().lower() or "auto")  # auto | server | local (see pictures_policy())
 IMAGE_MAX_BYTES = 25 * 1024 * 1024
 SCENE_ID = re.compile(r"[a-z0-9-]{1,50}")                                       # contract.py scene id slug → safe file name
+PICTURE_ID = re.compile(r"[a-z0-9-]{1,56}")                                     # <sceneId>-s<n>: the slug plus the shot suffix
 IMAGE_KINDS = ("image", "cinema", "story", "closing")                          # contract.py: the only kinds that accept scene.image
 
 # Mirrors contract.VOICES; the engine's own contract.py overrides it at run time (see load_voices()).
 DEFAULT_VOICES = {"fr": ["ff_siwis"], "en": ["af_heart", "am_michael", "bf_emma"], "it": ["if_sara", "im_nicola"]}
 # Kleo voice ids (src/templates.ts) → Kokoro voice ids.
 KLEO_VOICE_MAP = {"narrator-en-m": "am_michael", "narrator-en-f": "af_heart", "narrator-it-m": "im_nicola", "narrator-it-f": "if_sara", "narrator-fr-f": "ff_siwis"}
-FORBIDDEN_TOP = ("id", "script_file", "music_quiet")
+FORBIDDEN_TOP = ("id", "script_file", "music_quiet", "look")  # look is the engine's own field: only strip_kleo_fields writes it
 
 
 class RenderError(Exception):
@@ -246,12 +250,16 @@ def build_project(job, engine):
         c["scenes"] = [s for s in c["scenes"] if not (isinstance(s, dict) and s.get("kind") == "image")]
     if not c["scenes"]:
         raise RenderError("storyboard has no renderable scenes", retry=False)
-    stale = [s.get("id") for s in c["scenes"] if isinstance(s, dict) and "image" in s]
+    stale = [s.get("id") for s in c["scenes"] if isinstance(s, dict)
+             and ("image" in s or any(isinstance(sh, dict) and "image" in sh for sh in shots_of(s)))]
     if stale:  # no asset travels with a job: only the pictures the worker downloads itself (attach_pictures) may be referenced
-        log("dropping scene.image (assets never travel with a job):", stale)
+        log("dropping scene.image / shot.image (assets never travel with a job):", stale)
         for s in c["scenes"]:
             if isinstance(s, dict):
                 s.pop("image", None)
+                for sh in shots_of(s):
+                    if isinstance(sh, dict):
+                        sh.pop("image", None)
 
     p = job.get("params") or {}
     fmt = p.get("format") or c.get("format") or "9:16"
@@ -411,18 +419,56 @@ def run_keou(engine, project_json, n_scenes, log_path):
 
 
 # ---- Kleo pictures ----------------------------------------------------------------------------
-# cartoon / realistic storyboards carry an image_prompt per scene; the server turns each one into a picture (once per
-# job) and hands out signed download links. Everything in this section is optional for the render: any failure
-# leaves the scene without picture and the video is made like a plain Keou project.
-def picture_scene_ids(sb):
-    """Ids of the scenes carrying an image_prompt, in scene order (whatever the style)."""
-    return [s["id"] for s in (sb.get("scenes") or []) if isinstance(s, dict) and isinstance(s.get("id"), str)
-            and isinstance(s.get("image_prompt"), str) and s["image_prompt"].strip()]
+# cartoon / realistic storyboards (style "picture") carry a list of shots per scene, each shot one image_prompt; the
+# server turns each one into a picture (once per job) and hands out signed download links, keyed by picture id
+# "<sceneId>-s<n>". Everything in this section is optional for the render: any failure leaves the shot without picture
+# (the engine draws a flat accent gradient) and the video is made like a plain Keou project.
+def shots_of(scene):
+    """The scene's shots as a list (empty when the scene has none: cyber/stickman scenes, or a legacy picture scene)."""
+    shots = scene.get("shots") if isinstance(scene, dict) else None
+    return shots if isinstance(shots, list) else []
+
+
+def picture_units(sb):
+    """Every shot that asks for a picture, in scene → shot order:
+        [{"id": "<sceneId>-s<n>", "scene": <scene dict>, "shot": <shot dict | None>, "image_prompt": <text>}, ...]
+    The id is the picture id the server keys its images / missing maps by (n = 1-based shot index). A scene with no
+    shots but a scene-level image_prompt (the pre-shots format: the server normalises it away before storing, so it
+    should not reach the worker any more) counts as that scene's shot 1, with "shot": None — the picture is then
+    attached to the scene itself. Malformed entries are skipped: a scene id that is not a slug, a shot that is not an
+    object, an empty prompt, a picture id no longer usable as a file name, or a duplicate id."""
+    units, seen = [], set()
+    for s in (sb.get("scenes") if isinstance(sb, dict) else None) or []:
+        if not isinstance(s, dict):
+            continue
+        shots = shots_of(s)
+        entries = ([(i + 1, sh, sh.get("image_prompt") if isinstance(sh, dict) else None) for i, sh in enumerate(shots)]
+                   if shots else [(1, None, s.get("image_prompt"))])
+        entries = [(n, shot, p) for n, shot, p in entries if isinstance(p, str) and p.strip()]
+        if not entries:
+            continue
+        sid = s.get("id")
+        if not (isinstance(sid, str) and SCENE_ID.fullmatch(sid)):
+            log(f"picture: scene id {sid!r} is not a slug, skipped")
+            continue
+        for n, shot, prompt in entries:
+            pid = f"{sid}-s{n}"
+            if not PICTURE_ID.fullmatch(pid) or pid in seen:
+                log(f"picture {pid!r}: unusable picture id, skipped")
+                continue
+            seen.add(pid)
+            units.append({"id": pid, "scene": s, "shot": shot, "image_prompt": prompt})
+    return units
+
+
+def picture_ids(sb):
+    """The picture ids of a storyboard, in scene → shot order."""
+    return [u["id"] for u in picture_units(sb)]
 
 
 def wants_pictures(sb):
-    """True when the server is expected to hold pictures for this storyboard: cartoon/realistic with at least one image_prompt."""
-    return isinstance(sb, dict) and sb.get("kleo_style") in PICTURE_STYLES and bool(picture_scene_ids(sb))
+    """True when the server is expected to hold pictures for this storyboard: cartoon/realistic with at least one shot prompt."""
+    return isinstance(sb, dict) and sb.get("kleo_style") in PICTURE_STYLES and bool(picture_units(sb))
 
 
 def request_pictures(job_id):
@@ -438,7 +484,7 @@ def request_pictures(job_id):
 
 
 def fetch_pictures(job_id, retry_wait_s=None):
-    """{"images": {sceneId: url}, "missing": [sceneIds]} from the server, or None when it could not answer.
+    """{"images": {pictureId: url}, "missing": [pictureIds]} from the server, or None when it could not answer.
     A 5xx, a network error or a garbled reply is retried once after retry_wait_s (default IMAGES_RETRY_WAIT_S);
     a 4xx (no such endpoint, job in the wrong state) is final. Never raises: pictures are optional."""
     wait = IMAGES_RETRY_WAIT_S if retry_wait_s is None else retry_wait_s
@@ -478,14 +524,14 @@ def image_ext(data):
     return None
 
 
-def download_picture(url, img_dir, scene_id):
-    """GET a signed picture link (same User-Agent as api(); no bearer, the link is signed) into <img_dir>/<scene_id>.<ext>.
+def download_picture(url, img_dir, picture_id):
+    """GET a signed picture link (same User-Agent as api(); no bearer, the link is signed) into <img_dir>/<picture_id>.<ext>.
     Returns the file name, or None when anything is off (never raises)."""
-    if not (isinstance(scene_id, str) and SCENE_ID.fullmatch(scene_id)):
-        log(f"picture: scene id {scene_id!r} is not a slug, skipped")
+    if not (isinstance(picture_id, str) and PICTURE_ID.fullmatch(picture_id)):
+        log(f"picture: id {picture_id!r} is not a slug, skipped")
         return None
     if not isinstance(url, str) or not url.startswith(("http://", "https://")):
-        log(f"picture {scene_id}: no usable link")
+        log(f"picture {picture_id}: no usable link")
         return None
     try:
         req = urllib.request.Request(url, method="GET")
@@ -493,41 +539,58 @@ def download_picture(url, img_dir, scene_id):
         with urllib.request.urlopen(req, timeout=IMAGE_DOWNLOAD_TIMEOUT_S) as r:
             data = r.read(IMAGE_MAX_BYTES + 1)
     except Exception as e:
-        log(f"picture {scene_id}: download failed: {e}")
+        log(f"picture {picture_id}: download failed: {e}")
         return None
     if len(data) > IMAGE_MAX_BYTES:
-        log(f"picture {scene_id}: larger than {IMAGE_MAX_BYTES} bytes, skipped")
+        log(f"picture {picture_id}: larger than {IMAGE_MAX_BYTES} bytes, skipped")
         return None
     ext = image_ext(data)
     if not ext:
-        log(f"picture {scene_id}: not a PNG/JPEG/WebP file ({len(data)} bytes), skipped")
+        log(f"picture {picture_id}: not a PNG/JPEG/WebP file ({len(data)} bytes), skipped")
         return None
     os.makedirs(img_dir, exist_ok=True)
-    name = scene_id + ext
+    name = picture_id + ext
     with open(os.path.join(img_dir, name), "wb") as f:
         f.write(data)
     return name
 
 
+def attach_picture(unit, name):
+    """Points a picture unit at the file it just got: shot.image, or scene.image for a legacy scene-level prompt."""
+    target = unit["shot"] if isinstance(unit["shot"], dict) else unit["scene"]
+    target["image"] = "img/" + name
+
+
+def set_scene_images(project):
+    """scene.image = the scene's first shot picture (compatibility: the picture style draws the shots themselves).
+    A scene whose shots got no picture at all is left alone (a legacy scene-level picture stays where it is)."""
+    for s in project.get("scenes") or []:
+        if not isinstance(s, dict):
+            continue
+        first = next((sh["image"] for sh in shots_of(s) if isinstance(sh, dict) and isinstance(sh.get("image"), str)), None)
+        if first:
+            s["image"] = first
+
+
 def attach_pictures(project, pdir, reply):
-    """Downloads the server's pictures into <pdir>/img/ and sets scene.image = "img/<sceneId>.<ext>" on every scene that
-    has an image_prompt. Returns (ready_ids, missing_ids): a scene without a link, or whose download fails, keeps no picture."""
+    """Downloads the server's pictures into <pdir>/img/ and sets shot.image = "img/<pictureId>.<ext>" on every shot that
+    asked for one, then scene.image on every scene that got a picture. Returns (ready_ids, missing_ids): a picture
+    without a link, or whose download fails, simply stays missing."""
     images = (reply or {}).get("images") or {}
     ready, missing = [], []
-    for s in project.get("scenes") or []:
-        if not (isinstance(s, dict) and isinstance(s.get("image_prompt"), str) and s["image_prompt"].strip()):
+    for u in picture_units(project):
+        pid, scene = u["id"], u["scene"]
+        if scene.get("kind") not in IMAGE_KINDS:  # the engine refuses pictures elsewhere; better no picture than no video
+            log(f"picture {pid}: a {scene.get('kind')!r} scene cannot carry a picture, skipped")
+            missing.append(pid)
             continue
-        sid = s.get("id")
-        if s.get("kind") not in IMAGE_KINDS:  # the engine refuses scene.image elsewhere; better no picture than no video
-            log(f"picture {sid}: a {s.get('kind')!r} scene cannot carry a picture, skipped")
-            missing.append(sid)
-            continue
-        name = download_picture(images.get(sid), os.path.join(pdir, "img"), sid) if sid in images else None
+        name = download_picture(images.get(pid), os.path.join(pdir, "img"), pid) if pid in images else None
         if name:
-            s["image"] = "img/" + name
-            ready.append(sid)
+            attach_picture(u, name)
+            ready.append(pid)
         else:
-            missing.append(sid)
+            missing.append(pid)
+    set_scene_images(project)
     return ready, missing
 
 
@@ -567,49 +630,55 @@ def local_pictures_available():
         return False
 
 
-def generate_local_pictures(project, pdir, scene_ids):
-    """Draws the listed scenes (those still without picture) with kleo_pictures on this machine into <pdir>/img/<sceneId>.png
-    and sets scene.image on each success. Returns the ids that got a picture, in scene order. Never raises."""
+def generate_local_pictures(project, pdir, ids):
+    """Draws the listed pictures (those still missing) with kleo_pictures on this machine into <pdir>/img/<pictureId>.png
+    and sets shot.image on each success. Returns the ids that got a picture, in scene → shot order. Never raises."""
     mod = local_pictures_module()
-    if mod is None or not scene_ids:
+    if mod is None or not ids:
         return []
-    wanted = set(scene_ids)
-    scenes = [{"id": s["id"], "image_prompt": s["image_prompt"]} for s in project.get("scenes") or []
-              if isinstance(s, dict) and s.get("id") in wanted and isinstance(s.get("image_prompt"), str)
-              and s["image_prompt"].strip() and isinstance(s["id"], str) and SCENE_ID.fullmatch(s["id"])
-              and s.get("kind") in IMAGE_KINDS]
-    if not scenes:
+    wanted = set(ids)
+    units = [u for u in picture_units(project) if u["id"] in wanted and u["scene"].get("kind") in IMAGE_KINDS]
+    if not units:
         return []
     img_dir = os.path.join(pdir, "img")
     try:
-        made = mod.generate_pictures(scenes, project.get("kleo_style"), project.get("format") or "9:16", img_dir)
+        made = mod.generate_pictures([{"id": u["id"], "image_prompt": u["image_prompt"]} for u in units],
+                                     project.get("kleo_style"), project.get("format") or "9:16", img_dir)
     except Exception as e:
         log("local picture generation failed:", e)
         return []
     if not isinstance(made, dict):
         return []
     done = []
-    for s in project.get("scenes") or []:
-        if not (isinstance(s, dict) and s.get("id") in wanted):
-            continue
-        path = made.get(s["id"])
+    for u in units:
+        path = made.get(u["id"])
         if not (isinstance(path, str) and os.path.isfile(path) and os.path.getsize(path) > 0):
             continue
         name = os.path.basename(path)
-        if os.path.dirname(os.path.abspath(path)) != os.path.abspath(img_dir) or not name.startswith(s["id"] + "."):
-            log(f"picture {s['id']}: unexpected path {path!r}, skipped")
+        if os.path.dirname(os.path.abspath(path)) != os.path.abspath(img_dir) or not name.startswith(u["id"] + "."):
+            log(f"picture {u['id']}: unexpected path {path!r}, skipped")
             continue
-        s["image"] = "img/" + name
-        done.append(s["id"])
+        attach_picture(u, name)
+        done.append(u["id"])
+    set_scene_images(project)
     return done
 
 
 def strip_kleo_fields(project):
-    """Removes what the engine does not know: kleo_style and every scene's image_prompt (the pictures stay as scene.image)."""
-    project.pop("kleo_style", None)
+    """Turns a Kleo storyboard into an engine project: drops kleo_style and every image_prompt (scene and shot level;
+    the pictures stay as shot.image / scene.image) and writes the engine's own top-level "look" (cartoon | realistic)
+    for the picture style, so the engine knows which typography to draw. cyber / stickman never get a look."""
+    style = project.pop("kleo_style", None)
+    if style in PICTURE_STYLES and project.get("style") == "picture":
+        project["look"] = style
+    else:
+        project.pop("look", None)  # the engine refuses a look outside the picture style
     for s in project.get("scenes") or []:
         if isinstance(s, dict):
             s.pop("image_prompt", None)
+            for sh in shots_of(s):
+                if isinstance(sh, dict):
+                    sh.pop("image_prompt", None)
 
 
 def prepare_project(job, engine, projects_dir):
@@ -622,7 +691,7 @@ def prepare_project(job, engine, projects_dir):
     if wants_pictures(project):
         # Policy (KLEO_PICTURES): auto → the server first, then this machine's GPU for whatever is still missing;
         # server → only the server; local → only this machine (no images call at all).
-        policy, style, ids = pictures_policy(), project["kleo_style"], picture_scene_ids(project)
+        policy, style, ids = pictures_policy(), project["kleo_style"], picture_ids(project)
         ready, generated, missing = [], [], list(ids)
         if policy != "local":
             progress("script", 4, message=f"fetching {len(ids)} pictures ({style})")

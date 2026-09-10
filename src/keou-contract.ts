@@ -7,11 +7,14 @@
  *
  * Kleo additions on top of the Keou project (the worker strips them before writing project.json):
  *   - top-level "kleo_style": cartoon | realistic | cyber | stickman (default cyber = the Keou look, no pictures);
- *   - per scene "image_prompt" (≤ 240 chars): the picture the server generates for that scene (cartoon/realistic only).
- * Clients never set scene.image themselves: the server generates the pictures and the worker attaches them.
+ *   - style "picture" (docs/PICTURE-STYLE.md): the cartoon/realistic look. Each scene cuts between several full-screen
+ *     pictures ("shots"), like a short documentary: no beats, no icons, no HUD. One shot = one generated picture,
+ *     identified by `<sceneId>-s<n>`; the old per-scene "image_prompt" is accepted as shorthand for a single shot and
+ *     normalised away here, so what is stored (and what the engine sees) always carries shots.
+ * Clients never set scene.image or shot.image themselves: the server generates the pictures and the worker attaches them.
  */
 
-export const STYLES = ["editorial", "technical", "illustrated", "terminal", "stickman", "cinema"] as const;
+export const STYLES = ["editorial", "technical", "illustrated", "terminal", "stickman", "cinema", "picture"] as const;
 export const KINDS = ["hero", "list", "compare", "steps", "metric", "image", "quote", "closing", "story", "cinema"] as const;
 export const BEAT_KINDS = ["icon", "type", "terminal", "steps", "people", "bars", "timeline", "dialog", "cta", "split", "grid"] as const;
 export const BEAT_ICONS = ["coffee", "desk", "hoodie", "keyboard", "hand", "bug", "alarm", "shield", "radar", "car", "keyfob", "house", "amplifier", "pouch", "lock", "timer", "check", "cross", "figure", "thief", "phone", "wave", "clock"] as const;
@@ -35,12 +38,28 @@ export const VOICES: Record<string, readonly string[]> = {
 };
 export const LANGUAGES = Object.keys(VOICES);
 export const FORMATS = ["9:16", "16:9"] as const;
-/** Kleo visual styles. cartoon/realistic add an AI picture per scene (image_prompt); cyber is the plain Keou look; stickman is Keou's stickman. */
+/** Kleo visual styles. cartoon/realistic cut between generated pictures (Keou style "picture"); cyber is the plain Keou look; stickman is Keou's stickman. */
 export const KLEO_STYLES = ["cartoon", "realistic", "cyber", "stickman"] as const;
 export type KleoStyle = (typeof KLEO_STYLES)[number];
-/** Styles whose scenes get a generated picture. */
+/** Styles whose shots get a generated picture; they are exactly the styles that use the Keou style "picture". */
 export const PICTURE_STYLES: readonly KleoStyle[] = ["cartoon", "realistic"];
 export const IMAGE_PROMPT_MAX = 240;
+/** Shot fields (picture style): the picture, the big words on it, the word it cuts on, the Ken Burns move. */
+export const SHOT_MOTION = ["in", "out", "left", "right"] as const;
+export const IMAGE_PROMPT_MIN = 2;
+export const SHOT_CAPTION_MAX = 40;
+export const SHOT_HL_MAX = 20;
+export const SHOT_AT_MAX = 24;
+/** Shots per scene: a cinema scene cuts up to four times, a closing shows one picture (two at most). */
+export const SHOTS_PER_SCENE: Record<"cinema" | "closing", [number, number]> = { cinema: [1, 4], closing: [1, 2] };
+export const CLOSING_BUTTON_MAX = 24;
+/** Scene ids may not end with the shot suffix: picture ids are `<sceneId>-s<n>` and must stay unambiguous. */
+export const SHOT_ID_SUFFIX_RE = /-s\d+$/;
+/**
+ * Pictures a video may carry in total (server + worker): 24 for a Short, 48 for a long video. Defined here so the
+ * server (images.ts, re-exported there), the guide and the tests all read the same number.
+ */
+export const MAX_PICTURES = (duration_s: number): number => (duration_s <= 90 ? 24 : 48);
 export const WIDTHS: Record<string, readonly number[]> = { "9:16": [540, 1080, 2160], "16:9": [960, 1920, 3840] };
 
 /** Fields a storyboard must not carry (the worker adds them) and the scene kind it cannot use. */
@@ -51,19 +70,30 @@ export const FORBIDDEN_SCENE_FIELDS = ["image", "image_credit", "motion", "motio
 export type Format = (typeof FORMATS)[number];
 export type Storyboard = Record<string, unknown> & { scenes: Record<string, unknown>[] };
 
-/** The Kleo style of a storyboard: explicit kleo_style, else stickman for a stickman project, else cyber. */
+/** The Kleo style of a storyboard: explicit kleo_style, else stickman/cartoon for a stickman/picture project, else cyber. */
 export function kleoStyleOf(sb: unknown): KleoStyle {
   const c = (typeof sb === "object" && sb !== null ? sb : {}) as Record<string, unknown>;
   if ((KLEO_STYLES as readonly string[]).includes(c.kleo_style as string)) return c.kleo_style as KleoStyle;
-  return c.style === "stickman" ? "stickman" : "cyber";
+  if (c.style === "stickman") return "stickman";
+  return c.style === "picture" ? "cartoon" : "cyber";
 }
-/** Scenes that carry an image_prompt (in order), only for the styles that draw pictures. */
+/**
+ * Every picture of a storyboard, flattened in scene → shot order: `{ id: "<sceneId>-s<n>", image_prompt }`.
+ * Only the styles that draw pictures (cartoon/realistic) have any; a cyber or stickman storyboard returns [].
+ * A scene-level image_prompt without shots (old format, not yet normalised) counts as the single shot 1.
+ */
 export function pictureScenes(sb: unknown): { id: string; image_prompt: string }[] {
   const c = (typeof sb === "object" && sb !== null ? sb : {}) as Record<string, unknown>;
   if (!PICTURE_STYLES.includes(kleoStyleOf(c)) || !Array.isArray(c.scenes)) return [];
   return (c.scenes as unknown[]).flatMap((s) => {
     const sc = (typeof s === "object" && s !== null ? s : {}) as Record<string, unknown>;
-    return typeof sc.id === "string" && typeof sc.image_prompt === "string" && sc.image_prompt.trim() ? [{ id: sc.id, image_prompt: sc.image_prompt.trim() }] : [];
+    if (typeof sc.id !== "string" || !sc.id) return [];
+    const shots = Array.isArray(sc.shots) ? (sc.shots as unknown[]) : typeof sc.image_prompt === "string" ? [{ image_prompt: sc.image_prompt }] : [];
+    return shots.flatMap((sh, i) => {
+      const o = (typeof sh === "object" && sh !== null ? sh : {}) as Record<string, unknown>;
+      const p = typeof o.image_prompt === "string" ? o.image_prompt.trim() : "";
+      return p ? [{ id: `${sc.id}-s${i + 1}`, image_prompt: p }] : []; // a shot without a prompt keeps its index: ids follow the shot number
+    });
   });
 }
 export interface ValidateOptions {
@@ -196,6 +226,38 @@ function validateBeats(c: Record<string, unknown>, s: Record<string, unknown>, l
   if ("hl" in s) e.text(s.hl, `${label} hl`, 24);
 }
 
+/**
+ * Picture style: a scene is a run of full-screen pictures ("shots") cut on the narration. No beats, no icons.
+ * Normalises the old shorthand (a scene-level image_prompt) into shots[0] in place, so what the caller stores and
+ * what the engine receives never carries a scene-level image_prompt.
+ */
+function validateShots(s: Record<string, unknown>, label: string, kind: "cinema" | "closing", e: Collector): void {
+  if ("beats" in s) e.add(`${label}: beats belong to the cinema style; the picture style cuts between "shots" instead`);
+  if (typeof s.image_prompt === "string" && !("shots" in s)) { s.shots = [{ image_prompt: s.image_prompt.trim() }]; delete s.image_prompt; }
+  else if ("image_prompt" in s) { e.add(`${label}: put the picture on a shot ("shots": [{"image_prompt": "…"}]), not on the scene`); delete s.image_prompt; }
+  const [lo, hi] = SHOTS_PER_SCENE[kind];
+  const shots = s.shots;
+  if (!Array.isArray(shots) || shots.length < lo || shots.length > hi) { e.add(`${label}: shots must list ${lo}–${hi} full-screen pictures`); return; }
+  const voice = typeof s.voice === "string" ? s.voice.toLowerCase() : "";
+  shots.forEach((sh: unknown, j: number) => {
+    const sl = `${label} shot ${j + 1}`;
+    if (!isObj(sh)) { e.add(`${sl}: must be an object`); return; }
+    if ("image" in sh) e.add(`${sl}: image is not allowed in a storyboard (describe the picture in image_prompt instead; Kleo generates it)`);
+    if (e.text(sh.image_prompt, `${sl} image_prompt`, IMAGE_PROMPT_MAX) && (sh.image_prompt as string).trim().length < IMAGE_PROMPT_MIN)
+      e.add(`${sl} image_prompt: required text, minimum ${IMAGE_PROMPT_MIN} characters`);
+    if ("caption" in sh) e.text(sh.caption, `${sl} caption`, SHOT_CAPTION_MAX);
+    if ("hl" in sh) e.text(sh.hl, `${sl} hl`, SHOT_HL_MAX);
+    if ("at" in sh) {
+      if (j === 0) e.add(`${sl}: the first shot opens the scene, it cannot carry at`);
+      else if (e.text(sh.at, `${sl} at`, SHOT_AT_MAX) && !voice.includes((sh.at as string).toLowerCase())) e.add(`${sl}: at must quote words from this scene's voice`);
+    }
+    if ("motion" in sh && !(SHOT_MOTION as readonly string[]).includes(sh.motion as string)) e.add(`${sl}: motion must be one of ${sorted(SHOT_MOTION)}`);
+  });
+  if ("chapter" in s) e.text(s.chapter, `${label} chapter`, 32);
+  if ("accent" in s && !(CINEMA_ACCENTS as readonly string[]).includes(s.accent as string)) e.add(`${label}: accent must be green, cyan, red or amber`);
+  if ("hl" in s) e.text(s.hl, `${label} hl`, 24);
+}
+
 function validateInner(input: unknown, opts: ValidateOptions, e: Collector): void {
   if (!isObj(input)) { e.add("storyboard must be a JSON object"); return; }
   const c = input;
@@ -207,13 +269,15 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
   if (!(STYLES as readonly string[]).includes(c.style as string)) e.add(`style must be one of ${sorted(STYLES)}`);
   if (!(FORMATS as readonly string[]).includes(c.format as string) || ("fps" in c && c.fps !== 30 && c.fps !== 60)) e.add("format: 9:16 or 16:9; fps: 30 or 60");
   else if (c.format !== opts.format) e.add(`format must be ${opts.format} for this job, not ${String(c.format)}`);
-  // Kleo style → Keou style. cartoon/realistic draw their pictures as cinema backgrounds; stickman is Keou's stickman (9:16 only).
+  // Kleo style ⇔ Keou style. cartoon/realistic are the "picture" style (shots); stickman is Keou's stickman (9:16 only).
   const kleo = "kleo_style" in c ? c.kleo_style : undefined;
   if (kleo !== undefined && !(KLEO_STYLES as readonly string[]).includes(kleo as string)) e.add(`kleo_style must be one of ${sorted(KLEO_STYLES)}`);
   else if (kleo === "stickman" && c.format !== "9:16") e.add("The stickman style makes 9:16 Shorts only: use format 9:16, or pick another style (cartoon, realistic or cyber) for 16:9");
   else if (kleo === "stickman" && c.style !== "stickman") e.add(`kleo_style stickman needs the Keou style "stickman" (story scenes), not "${String(c.style)}"`);
-  else if ((kleo === "cartoon" || kleo === "realistic") && c.style !== "cinema") e.add(`kleo_style ${kleo} needs the Keou style "cinema" (the pictures are drawn behind cinema scenes), not "${String(c.style)}"`);
+  else if ((kleo === "cartoon" || kleo === "realistic") && c.style !== "picture") e.add(`kleo_style ${kleo} needs the Keou style "picture" (full-screen shots cut on the narration), not "${String(c.style)}"`);
   else if (kleo === "cyber" && c.style === "stickman") e.add('kleo_style cyber does not draw the stickman: set kleo_style to "stickman" or change the style');
+  if (c.style === "picture" && kleo !== "cartoon" && kleo !== "realistic")
+    e.add(`the Keou style "picture" is the cartoon/realistic look: set kleo_style to "cartoon" or "realistic"${kleo === undefined ? "" : `, not "${String(kleo)}"`}`);
   if (c.style === "stickman" && c.format !== "9:16" && kleo !== "stickman") e.add("The stickman style is laid out for 9:16 only");
   if ("width" in c && !(WIDTHS[c.format as string] ?? []).includes(c.width as number)) e.add("Invalid width for aspect ratio");
   const voices = VOICES[c.language as string];
@@ -230,15 +294,22 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
     if (!isObj(s)) { e.add(`${label}: must be an object`); return; }
     if (e.text(s.id, `${label} id`, 50)) {
       if (!/^[a-z0-9-]+$/.test(s.id) || ids.has(s.id)) e.add("Scene IDs must be unique slugs");
+      else if (SHOT_ID_SUFFIX_RE.test(s.id)) e.add(`${label} id: "-s" followed by a number is reserved for picture ids (${s.id}-s1, …); rename the scene`);
       ids.add(s.id);
     }
     const kind = s.kind as string;
     if (!(KINDS as readonly string[]).includes(kind)) { e.add(`${label}: unknown composition`); return; }
     if ((FORBIDDEN_KINDS as readonly string[]).includes(kind)) e.add(`${label}: image scenes are not allowed in a storyboard (no assets); use another composition`);
     for (const f of FORBIDDEN_SCENE_FIELDS) if (f in s) e.add(`${label}: ${f} is not allowed in a storyboard${f === "image" ? " (describe the picture in image_prompt instead; Kleo generates it)" : ""}`);
-    if ("image_prompt" in s) e.text(s.image_prompt, `${label} image_prompt`, IMAGE_PROMPT_MAX);
+    if (c.style === "picture") {
+      if (kind !== "cinema" && kind !== "closing") e.add(`${label}: the picture style only draws cinema and closing scenes`);
+      else validateShots(s, label, kind, e);
+    } else {
+      if ("shots" in s) e.add(`${label}: shots need the picture style (kleo_style cartoon or realistic)`);
+      if ("image_prompt" in s) e.text(s.image_prompt, `${label} image_prompt`, IMAGE_PROMPT_MAX);
+    }
     if (c.style === "cinema" && kind !== "cinema" && kind !== "closing") e.add(`${label}: the cinema style only draws cinema and closing scenes`);
-    if (kind === "cinema" || (kind === "closing" && c.style === "cinema" && "beats" in s)) validateBeats(c, s, label, e);
+    if (c.style !== "picture" && (kind === "cinema" || (kind === "closing" && c.style === "cinema" && "beats" in s))) validateBeats(c, s, label, e);
     if (kind === "closing" && c.style === "cinema") {
       if ("chapter" in s) e.text(s.chapter, `${label} chapter`, 32);
       if ("accent" in s && !(CINEMA_ACCENTS as readonly string[]).includes(s.accent as string)) e.add(`${label}: accent must be green, cyan, red or amber`);
@@ -262,7 +333,8 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
     }
     e.text(s.voice, `${label} voice`, 350);
     e.text(s.title, `${label} title`, 90);
-    for (const [key, limit] of [["eyebrow", 40], ["detail", 110], ["source", 80], ["button", 40]] as const) if (key in s) e.text(s[key], `${label} ${key}`, limit);
+    // The picture style paints the closing button inside a pill: it is shorter than the editorial one.
+    for (const [key, limit] of [["eyebrow", 40], ["detail", 110], ["source", 80], ["button", c.style === "picture" ? CLOSING_BUTTON_MAX : 40]] as const) if (key in s) e.text(s[key], `${label} ${key}`, limit);
     if (!(VISUALS as readonly string[]).includes((s.visual ?? "focus") as string)) e.add(`${label}: unknown visual`);
     if (kind === "steps" || kind === "list" || kind === "compare") {
       const items = s.items;
@@ -288,7 +360,11 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
   if (!isObj(last) || last.kind !== "closing") e.add("Last scene must be a closing");
 }
 
-/** Validates a storyboard for a job. Collects up to 10 problems; never throws on bad input. */
+/**
+ * Validates a storyboard for a job. Collects up to 10 problems; never throws on bad input.
+ * In style "picture" it also normalises in place: a scene-level image_prompt becomes shots[0], so the returned
+ * storyboard is what gets stored and handed to the worker (no scene-level image_prompt survives).
+ */
 export function validateStoryboard(sb: unknown, opts: ValidateOptions): ValidateResult {
   const e = new Collector(opts.maxErrors ?? MAX_ERRORS);
   try { validateInner(sb, opts, e); } catch (err) { if (!(err instanceof TooMany)) throw err; }

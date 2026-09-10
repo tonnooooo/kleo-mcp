@@ -3,6 +3,8 @@
 Unit tests for worker/kleo_pictures.py and the KLEO_PICTURES policy in kleo_worker.prepare_project(): no torch, no
 diffusers, no GPU, no network. Fake `torch` / `diffusers` modules are injected through sys.modules (kleo_pictures imports
 them inside its functions only); the fake StableDiffusionPipeline records every call and writes a solid PNG.
+One picture per shot (docs/PICTURE-STYLE.md): the ids passed around are picture ids `<sceneId>-s<n>`, and the files are
+named after them.
 Run: python3 worker/test_kleo_pictures.py -v      or      cd worker && python3 -m unittest test_kleo_pictures -v
 """
 import ast, importlib.util, os, shutil, struct, sys, tempfile, types, unittest, zlib
@@ -113,9 +115,11 @@ def remove_fakes():
         sys.modules.pop(name, None)
 
 
-SCENES = [{"id": "01-hook", "image_prompt": "a pirate captain on a sandy beach, a ship at anchor"},
-          {"id": "02-ship", "image_prompt": "the fastest ship in the caribbean, full sails"},
-          {"id": "03-storm", "image_prompt": "the ship in a violent storm, dark waves"}]
+# What kleo_worker.generate_local_pictures() hands over: two shots of the first scene, one of the second.
+SCENES = [{"id": "01-hook-s1", "image_prompt": "a pirate captain on a sandy beach, a ship at anchor"},
+          {"id": "01-hook-s2", "image_prompt": "the fastest ship in the caribbean, full sails"},
+          {"id": "02-ship-s1", "image_prompt": "the ship in a violent storm, dark waves"}]
+MADE = ["01-hook-s1", "01-hook-s2", "02-ship-s1"]
 
 
 class GeneratePicturesTest(unittest.TestCase):
@@ -132,14 +136,14 @@ class GeneratePicturesTest(unittest.TestCase):
     def test_file_naming_and_png_output(self):
         state = install_fakes(cuda=True)
         made = kp.generate_pictures(SCENES, "cartoon", "9:16", os.path.join(self.tmp, "img"))
-        self.assertEqual(sorted(made), ["01-hook", "02-ship", "03-storm"])
+        self.assertEqual(sorted(made), MADE)
         for sid, path in made.items():
             self.assertEqual(path, os.path.join(self.tmp, "img", sid + ".png"))
             with open(path, "rb") as f:
                 data = f.read()
             self.assertTrue(data.startswith(b"\x89PNG\r\n\x1a\n"), sid)
             self.assertEqual(struct.unpack(">II", data[16:24]), (512, 896), "9:16 → 512x896")
-        self.assertEqual(sorted(os.listdir(os.path.join(self.tmp, "img"))), ["01-hook.png", "02-ship.png", "03-storm.png"])
+        self.assertEqual(sorted(os.listdir(os.path.join(self.tmp, "img"))), [s + ".png" for s in MADE])
         self.assertEqual(state["device"], "cuda")
         self.assertFalse(state["slicing"], "attention slicing stays off on CUDA (slower on a 24 GB card)")
         self.assertEqual(kp._pipelines, {}, "the pipeline is released after the batch (VRAM back before the Keou render)")
@@ -155,18 +159,27 @@ class GeneratePicturesTest(unittest.TestCase):
         self.assertEqual(offline, "1")
         self.assertEqual(os.environ.get("HF_HUB_OFFLINE"), "1", "the offline flag is restored")
 
-    def test_bad_scene_ids_and_empty_prompts_are_skipped(self):
+    def test_bad_picture_ids_and_empty_prompts_are_skipped(self):
         state = install_fakes(cuda=True)
-        scenes = SCENES + [{"id": "../etc", "image_prompt": "x"}, {"id": "Bad Id", "image_prompt": "x"},
-                           {"id": "04-empty", "image_prompt": "   "}, "junk", {"id": 5, "image_prompt": "x"}]
+        scenes = SCENES + [{"id": "../etc", "image_prompt": "x"}, {"id": "Bad Id-s1", "image_prompt": "x"},
+                           {"id": "04-empty-s1", "image_prompt": "   "}, "junk", {"id": 5, "image_prompt": "x"}]
         made = kp.generate_pictures(scenes, "realistic", "16:9", os.path.join(self.tmp, "img"))
-        self.assertEqual(sorted(made), ["01-hook", "02-ship", "03-storm"])
+        self.assertEqual(sorted(made), MADE)
         self.assertEqual(len(state["calls"]), 3)
         self.assertEqual(state["loads"][0][0], "SG161222/Realistic_Vision_V5.1_noVAE")
-        with open(made["01-hook"], "rb") as f:
+        with open(made["01-hook-s1"], "rb") as f:
             self.assertEqual(struct.unpack(">II", f.read(24)[16:24]), (896, 512), "16:9 → 896x512")
 
-    def test_seed_is_deterministic_per_scene_id(self):
+    def test_picture_ids_from_the_worker_are_accepted(self):
+        """kleo_worker sends `<sceneId>-s<n>`: the slug rule here must accept it, up to the longest legal scene id."""
+        for pid in ("01-hook-s1", "01-hook-s12", "a-s1", "a" * 50 + "-s4"):
+            self.assertTrue(kp.SCENE_ID.fullmatch(pid), pid)
+            self.assertTrue(kw.PICTURE_ID.fullmatch(pid), pid)
+        for pid in ("01 hook-s1", "01-hook-s1/../x", "a" * 60 + "-s1"):
+            self.assertIsNone(kp.SCENE_ID.fullmatch(pid), pid)
+            self.assertIsNone(kw.PICTURE_ID.fullmatch(pid), pid)
+
+    def test_seed_is_deterministic_per_picture_id(self):
         state = install_fakes(cuda=True)
         kp.generate_pictures(SCENES, "cartoon", "9:16", os.path.join(self.tmp, "a"))
         first = [c["generator"].seed for c in state["calls"]]
@@ -176,11 +189,11 @@ class GeneratePicturesTest(unittest.TestCase):
         second = [c["generator"].seed for c in reversed(state["calls"])]
         self.assertEqual(first, second, "same id → same seed whatever the order or the run")
         self.assertEqual(first, [kp.seed_for(s["id"]) for s in SCENES])
-        self.assertEqual(len(set(first)), 3, "different scenes get different seeds")
+        self.assertEqual(len(set(first)), 3, "different shots get different seeds")
         for seed in first:
             self.assertTrue(0 <= seed < 2 ** 31)
-        self.assertEqual(kp.seed_for("01-hook"), kp.seed_for("01-hook"))
-        self.assertNotEqual(kp.seed_for("01-hook"), kp.seed_for("01-hook-2"))
+        self.assertEqual(kp.seed_for("01-hook-s1"), kp.seed_for("01-hook-s1"))
+        self.assertNotEqual(kp.seed_for("01-hook-s1"), kp.seed_for("01-hook-s2"), "two shots of one scene differ")
         self.assertEqual(state["calls"][0]["generator"].device, "cuda")
 
     def test_style_suffix_negative_prompt_steps_guidance(self):
@@ -231,7 +244,7 @@ class GeneratePicturesTest(unittest.TestCase):
         os.environ["KLEO_PICTURES_CPU"] = "1"
         self.assertTrue(kp.can_generate())
         made = kp.generate_pictures(SCENES[:1], "cartoon", "9:16", self.tmp)
-        self.assertEqual(list(made), ["01-hook"])
+        self.assertEqual(list(made), ["01-hook-s1"])
         self.assertEqual(state["device"], "cpu")
         self.assertEqual(state["loads"][0][1]["torch_dtype"], "float32")
         self.assertEqual(state["calls"][0]["generator"].device, "cpu")
@@ -243,18 +256,18 @@ class GeneratePicturesTest(unittest.TestCase):
         self.assertEqual(kp.generate_pictures(None, "cartoon", "9:16", self.tmp), {})
         self.assertEqual(state["loads"], [])
 
-    def test_one_failing_scene_does_not_sink_the_others(self):
+    def test_one_failing_picture_does_not_sink_the_others(self):
         state = install_fakes(cuda=True)
         state["fail_prompts"] = ["violent storm"]
         made = kp.generate_pictures(SCENES, "cartoon", "9:16", os.path.join(self.tmp, "img"))
-        self.assertEqual(sorted(made), ["01-hook", "02-ship"])
-        self.assertEqual(len(state["calls"]), 3, "every scene was attempted")
-        self.assertFalse(os.path.exists(os.path.join(self.tmp, "img", "03-storm.png")))
+        self.assertEqual(sorted(made), ["01-hook-s1", "01-hook-s2"])
+        self.assertEqual(len(state["calls"]), 3, "every shot was attempted")
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "img", "02-ship-s1.png")))
 
     def test_model_load_falls_back_to_download_then_gives_up_cleanly(self):
         state = install_fakes(cuda=True, load_error=2)  # both offline attempts fail, the third (download allowed) works
         made = kp.generate_pictures(SCENES[:1], "cartoon", "9:16", self.tmp)
-        self.assertEqual(list(made), ["01-hook"])
+        self.assertEqual(list(made), ["01-hook-s1"])
         attempts = [(kw.get("variant"), kw["local_files_only"], offline) for _, kw, offline in state["loads"]]
         self.assertEqual(attempts, [("fp16", True, "1"), (None, True, "1"), ("fp16", False, "0")])
         self.assertEqual(os.environ.get("HF_HUB_OFFLINE"), "1", "restored after the download attempt")
@@ -300,19 +313,34 @@ class GeneratePicturesTest(unittest.TestCase):
 
 
 # ---- the policy in kleo_worker.prepare_project ----------------------------------------------------------------------
+# The engine side of docs/PICTURE-STYLE.md lands separately; until contract.py knows the style, picture projects are
+# checked by this file only (the cyber project still goes through the engine's validator on every run).
+ENGINE_KNOWS_PICTURE = "picture" in getattr(contract, "STYLES", set())
 IDS = ["01-hook", "02-ship", "03-storm", "04-treasure", "05-closing"]
+SHOTS = {"01-hook": 2, "02-ship": 1, "03-storm": 1, "04-treasure": 1, "05-closing": 1}  # 6 pictures over 5 scenes
+PICTURES = ["01-hook-s1", "01-hook-s2", "02-ship-s1", "03-storm-s1", "04-treasure-s1", "05-closing-s1"]
+SERVED = ["01-hook-s1", "01-hook-s2"]                    # what the fake server can make; the rest is for the GPU
+MISSING = [p for p in PICTURES if p not in SERVED]
 
 
 def storyboard(style="cartoon", fmt="9:16"):
+    """cartoon / realistic: the picture style (shots). cyber / stickman: the cinema shape, which never asks for pictures."""
+    picture = style in ("cartoon", "realistic")
     voices = ["Captain Mara buried her treasure on Skull Beach.", "Her ship was the fastest in the Caribbean.",
               "Then came the storm.", "The boy kept the map his whole life.", "Is the treasure still there? Follow for part two."]
     scenes = []
     for i, (sid, v) in enumerate(zip(IDS, voices)):
-        scenes.append({"id": sid, "kind": "closing" if i == 4 else "cinema", "chapter": f"0{i + 1} PART", "accent": "amber",
-                       "title": f"part {i + 1}", "voice": v, "beats": [{"kind": "icon", "name": "wave"}],
-                       "image_prompt": f"picture for scene {i + 1}", "hold": 0.2})
-    return {"schema_version": 1, "editorial_status": "ready", "title": "Pirates test", "brand": "Kleo", "style": "cinema",
-            "format": fmt, "language": "en", "voice": "am_michael", "kleo_style": style, "scenes": scenes}
+        s = {"id": sid, "kind": "closing" if i == 4 else "cinema", "chapter": f"0{i + 1} PART", "accent": "amber",
+             "title": f"part {i + 1}", "voice": v, "hold": 0.2}
+        if picture:
+            s["shots"] = [{"image_prompt": f"picture for {sid} shot {n + 1}"} for n in range(SHOTS[sid])]
+        else:
+            s["beats"] = [{"kind": "icon", "name": "wave"}]
+            s["image_prompt"] = f"picture for scene {i + 1}"
+        scenes.append(s)
+    return {"schema_version": 1, "editorial_status": "ready", "title": "Pirates test", "brand": "Kleo",
+            "style": "picture" if picture else "cinema", "format": fmt, "language": "en", "voice": "am_michael",
+            "kleo_style": style, "scenes": scenes}
 
 
 def job_for(sb):
@@ -321,7 +349,7 @@ def job_for(sb):
 
 
 class FakeKleoPictures(types.ModuleType):
-    """Stands in for kleo_pictures inside kleo_worker: records the request, writes a PNG per scene except `fail`."""
+    """Stands in for kleo_pictures inside kleo_worker: records the request, writes a PNG per picture except `fail`."""
     def __init__(self, gpu=True, fail=()):
         super().__init__("kleo_pictures")
         self.gpu, self.fail, self.calls = gpu, set(fail), []
@@ -355,12 +383,12 @@ class PolicyTest(unittest.TestCase):
         self.progress = []
         kw.progress = lambda track, percent, eta_min=None, message=None: self.progress.append((track, percent, message))
         self.server_calls = []
-        # the fake server can make 2 of the 5 pictures: real files served from a local directory via file:// is not allowed
-        # by download_picture (http(s) only), so the reply points at a tiny local http server
+        # the fake server can make 2 of the 6 pictures: real files served from a local directory via file:// is not
+        # allowed by download_picture (http(s) only), so the reply points at a tiny local http server
         self.srv_dir = os.path.join(self.tmp, "srv")
         os.makedirs(self.srv_dir)
-        for sid in ("01-hook", "02-ship"):
-            with open(os.path.join(self.srv_dir, sid + ".png"), "wb") as f:
+        for pid in SERVED:
+            with open(os.path.join(self.srv_dir, pid + ".png"), "wb") as f:
                 f.write(solid_png(4, 4))
         import http.server, threading
         srv_dir = self.srv_dir
@@ -379,7 +407,7 @@ class PolicyTest(unittest.TestCase):
 
         def request_pictures(job_id):
             self.server_calls.append(job_id)
-            return {"images": {"01-hook": f"{base}/01-hook.png", "02-ship": f"{base}/02-ship.png"}, "missing": ["03-storm", "04-treasure", "05-closing"]}
+            return {"images": {pid: f"{base}/{pid}.png" for pid in SERVED}, "missing": list(MISSING)}
         kw.request_pictures = request_pictures
 
     def prepare(self, policy, gpu=True, fail=(), style="cartoon", fmt="9:16"):
@@ -387,53 +415,77 @@ class PolicyTest(unittest.TestCase):
         fake = FakeKleoPictures(gpu=gpu, fail=fail)
         sys.modules["kleo_pictures"] = fake
         project, pdir = kw.prepare_project(job_for(storyboard(style, fmt)), ENGINE, self.tmp)
-        contract.validate(os.path.join(pdir, "project.json"))  # the engine's own validator accepts what we wrote
+        pj = os.path.join(pdir, "project.json")
+        if project.get("style") != "picture" or ENGINE_KNOWS_PICTURE:
+            contract.validate(pj)  # the engine's own validator accepts what we wrote
         return project, pdir, fake
 
     def images_of(self, project):
+        """picture id → the image path on its shot, read off the written project (the prompts are gone by then)."""
+        out = {}
+        for s in project["scenes"]:
+            shots = s.get("shots") or []
+            for n, sh in enumerate(shots):
+                out[f"{s['id']}-s{n + 1}"] = sh.get("image")
+            if not shots:
+                out[f"{s['id']}-s1"] = s.get("image")
+        return out
+
+    def scene_images_of(self, project):
         return {s["id"]: s.get("image") for s in project["scenes"]}
 
     def messages(self):
         return [m for _, _, m in self.progress]
 
     def test_auto_server_first_then_gpu_for_the_rest(self):
-        project, pdir, fake = self.prepare("auto", fail=["05-closing"])
+        project, pdir, fake = self.prepare("auto", fail=["05-closing-s1"])
         self.assertEqual(self.server_calls, ["j1"], "the server is asked once")
         self.assertEqual(len(fake.calls), 1)
-        self.assertEqual(fake.calls[0]["ids"], ["03-storm", "04-treasure", "05-closing"], "only what the server could not make")
-        self.assertEqual(fake.calls[0]["prompts"], ["picture for scene 3", "picture for scene 4", "picture for scene 5"])
+        self.assertEqual(fake.calls[0]["ids"], MISSING, "only what the server could not make")
+        self.assertEqual(fake.calls[0]["prompts"], ["picture for 02-ship shot 1", "picture for 03-storm shot 1",
+                                                    "picture for 04-treasure shot 1", "picture for 05-closing shot 1"])
         self.assertEqual(fake.calls[0]["style"], "cartoon")
         self.assertEqual(fake.calls[0]["format"], "9:16")
         self.assertEqual(fake.calls[0]["out_dir"], os.path.join(pdir, "img"))
-        self.assertEqual(self.images_of(project), {"01-hook": "img/01-hook.png", "02-ship": "img/02-ship.png", "03-storm": "img/03-storm.png",
-                                                   "04-treasure": "img/04-treasure.png", "05-closing": None})
-        self.assertEqual(sorted(os.listdir(os.path.join(pdir, "img"))), ["01-hook.png", "02-ship.png", "03-storm.png", "04-treasure.png"])
-        self.assertIn("2 pictures from server, 2 generated on the GPU, 1 missing", self.messages())
-        self.assertIn("generating 3 pictures on the GPU (cartoon)", self.messages())
+        self.assertEqual(self.images_of(project), {"01-hook-s1": "img/01-hook-s1.png", "01-hook-s2": "img/01-hook-s2.png",
+                                                   "02-ship-s1": "img/02-ship-s1.png", "03-storm-s1": "img/03-storm-s1.png",
+                                                   "04-treasure-s1": "img/04-treasure-s1.png", "05-closing-s1": None})
+        self.assertEqual(self.scene_images_of(project), {"01-hook": "img/01-hook-s1.png", "02-ship": "img/02-ship-s1.png",
+                                                         "03-storm": "img/03-storm-s1.png",
+                                                         "04-treasure": "img/04-treasure-s1.png", "05-closing": None})
+        self.assertEqual(sorted(os.listdir(os.path.join(pdir, "img"))),
+                         ["01-hook-s1.png", "01-hook-s2.png", "02-ship-s1.png", "03-storm-s1.png", "04-treasure-s1.png"])
+        self.assertIn("2 pictures from server, 3 generated on the GPU, 1 missing", self.messages())
+        self.assertIn("generating 4 pictures on the GPU (cartoon)", self.messages())
+        self.assertEqual(project["look"], "cartoon")
         self.assertNotIn("kleo_style", project)
         self.assertFalse(any("image_prompt" in s for s in project["scenes"]))
+        self.assertFalse(any("image_prompt" in sh for s in project["scenes"] for sh in s["shots"]))
 
     def test_auto_without_gpu_keeps_the_server_pictures_only(self):
         project, pdir, fake = self.prepare("auto", gpu=False)
         self.assertEqual(self.server_calls, ["j1"])
         self.assertEqual(fake.calls, [], "no GPU: never asked")
-        self.assertEqual(self.images_of(project), {"01-hook": "img/01-hook.png", "02-ship": "img/02-ship.png", "03-storm": None, "04-treasure": None, "05-closing": None})
-        self.assertIn("2 pictures from server, 0 generated on the GPU, 3 missing", self.messages())
+        self.assertEqual(self.images_of(project), dict({p: f"img/{p}.png" for p in SERVED}, **{p: None for p in MISSING}))
+        self.assertEqual(self.scene_images_of(project)["01-hook"], "img/01-hook-s1.png")
+        self.assertIsNone(self.scene_images_of(project)["02-ship"])
+        self.assertIn("2 pictures from server, 0 generated on the GPU, 4 missing", self.messages())
 
     def test_server_policy_never_generates_locally(self):
         project, pdir, fake = self.prepare("server", gpu=True)
         self.assertEqual(self.server_calls, ["j1"])
         self.assertEqual(fake.calls, [])
-        self.assertIn("2 pictures from server, 0 generated on the GPU, 3 missing", self.messages())
+        self.assertIn("2 pictures from server, 0 generated on the GPU, 4 missing", self.messages())
 
     def test_local_policy_skips_the_server(self):
         project, pdir, fake = self.prepare("local", gpu=True, style="realistic", fmt="16:9")
         self.assertEqual(self.server_calls, [], "no images call at all")
-        self.assertEqual(fake.calls[0]["ids"], IDS)
+        self.assertEqual(fake.calls[0]["ids"], PICTURES)
         self.assertEqual(fake.calls[0]["style"], "realistic")
         self.assertEqual(fake.calls[0]["format"], "16:9")
-        self.assertEqual(self.images_of(project), {sid: f"img/{sid}.png" for sid in IDS})
-        self.assertIn("0 pictures from server, 5 generated on the GPU, 0 missing", self.messages())
+        self.assertEqual(self.images_of(project), {pid: f"img/{pid}.png" for pid in PICTURES})
+        self.assertEqual(project["look"], "realistic")
+        self.assertIn("0 pictures from server, 6 generated on the GPU, 0 missing", self.messages())
         self.assertFalse(any(m and m.startswith("fetching") for m in self.messages()))
 
     def test_local_policy_without_gpu_renders_without_pictures(self):
@@ -441,7 +493,8 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual(self.server_calls, [])
         self.assertEqual(fake.calls, [])
         self.assertFalse(any("image" in s for s in project["scenes"]))
-        self.assertIn("0 pictures from server, 0 generated on the GPU, 5 missing", self.messages())
+        self.assertFalse(any("image" in sh for s in project["scenes"] for sh in s["shots"]))
+        self.assertIn("0 pictures from server, 0 generated on the GPU, 6 missing", self.messages())
 
     def test_auto_when_the_server_fails_entirely(self):
         def boom(job_id):
@@ -450,8 +503,8 @@ class PolicyTest(unittest.TestCase):
         kw.request_pictures = boom
         project, pdir, fake = self.prepare("auto")
         self.assertEqual(self.server_calls, ["j1", "j1"], "fetch_pictures retries once, then gives up")
-        self.assertEqual(fake.calls[0]["ids"], IDS, "everything is drawn locally")
-        self.assertIn("0 pictures from server, 5 generated on the GPU, 0 missing", self.messages())
+        self.assertEqual(fake.calls[0]["ids"], PICTURES, "everything is drawn locally")
+        self.assertIn("0 pictures from server, 6 generated on the GPU, 0 missing", self.messages())
 
     def test_unknown_policy_value_means_auto(self):
         kw.PICTURES_POLICY = "whatever"
@@ -465,6 +518,7 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual(self.server_calls, [])
         self.assertEqual(fake.calls, [])
         self.assertFalse(any("image" in s for s in project["scenes"]))
+        self.assertNotIn("look", project, "look belongs to the picture style only")
 
     def test_generate_local_pictures_rejects_paths_outside_img(self):
         class Sneaky(FakeKleoPictures):
@@ -479,15 +533,16 @@ class PolicyTest(unittest.TestCase):
         project = storyboard()
         pdir = os.path.join(self.tmp, "p")
         os.makedirs(pdir)
-        self.assertEqual(kw.generate_local_pictures(project, pdir, IDS), [])
+        self.assertEqual(kw.generate_local_pictures(project, pdir, PICTURES), [])
         self.assertFalse(any("image" in s for s in project["scenes"]))
+        self.assertFalse(any("image" in sh for s in project["scenes"] for sh in s["shots"]))
 
     def test_local_module_missing_is_not_fatal(self):
         sys.modules["kleo_pictures"] = None  # import raises ImportError
         kw.PICTURES_POLICY = "auto"
         self.assertFalse(kw.local_pictures_available())
         project, pdir = kw.prepare_project(job_for(storyboard()), ENGINE, self.tmp)
-        self.assertIn("2 pictures from server, 0 generated on the GPU, 3 missing", self.messages())
+        self.assertIn("2 pictures from server, 0 generated on the GPU, 4 missing", self.messages())
 
 
 if __name__ == "__main__":

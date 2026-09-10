@@ -46,6 +46,7 @@ def produce(project,workers=2,stills=False,skip_voice=False):
             atomic_json(out/'youtube-package.json',{'title':c['title'],'description':c.get('description',''),'language':c['language'],'tags':c.get('tags',[]),'privacyStatus':'private','publication_status':'not_configured','channel_id':None,'synthetic_voice':True,'script':' '.join(s['voice'] for s in c['scenes']),'thumbnail':'qa/001-'+c['scenes'][0]['id']+'.png'})
             files=[project,build/'timeline.json',build/'voice.wav',build/'mix.wav',out/'master.mp4',out/'preview.mp4',out/'FINAL-QA.json',out/'render.json',out/'captions.srt',out/'youtube-package.json']
             files += [project.parent/s['image'] for s in c['scenes'] if s.get('image')]
+            files += [project.parent/sh['image'] for s in c['scenes'] for sh in (s.get('shots') or []) if sh.get('image')]
             if c.get('script_file'):files.append(project.parent/c['script_file'])
             files+=sorted((out/'qa').glob('*.png'))
             manifest={str(p.relative_to(project.parent)):{'bytes':p.stat().st_size,'sha256':digest(p)} for p in files}

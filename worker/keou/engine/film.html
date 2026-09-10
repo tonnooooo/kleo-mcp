@@ -1,6 +1,10 @@
 <!doctype html><html lang="en"><meta charset="utf-8"><title>Keou renderer</title><style>
 @font-face{font-family:Manrope;src:url('/engine/assets/font.ttf');font-weight:200 800;font-display:block}
 @font-face{font-family:KeouMono;src:url('/engine/assets/mono.ttf');font-weight:400;font-display:block}
+/* Kleo picture style. Both files are downloaded into the image by worker/Dockerfile.keou; a
+   checkout without them simply falls back to Manrope in the stacks used by engine/picture.js. */
+@font-face{font-family:KleoCartoon;src:url('/engine/assets/cartoon.ttf');font-weight:400 800;font-display:block}
+@font-face{font-family:KleoReal;src:url('/engine/assets/real.ttf');font-weight:200 700;font-display:block}
 *{margin:0}html,body{background:#041624;overflow:hidden}canvas{display:block}
 </style><canvas id="film"></canvas><script>window.KEOU_MODES={}</script>
 <script src="/engine/modes/timeline-track.js"></script>
@@ -15,4 +19,5 @@
 <script src="/engine/modes/terminal-quote.js"></script>
 <script src="/engine/stickman.js"></script>
 <script src="/engine/cinema.js"></script>
+<script src="/engine/picture.js"></script>
 <script src="/engine/film.js"></script></html>

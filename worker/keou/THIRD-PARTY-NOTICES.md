@@ -22,6 +22,8 @@ The original Keou code and documentation are distinct from the upstream componen
 | PyTorch | [PyTorch](https://github.com/pytorch/pytorch); installed in the worker container |
 | Playwright / Chromium | [Playwright](https://github.com/microsoft/playwright); browser downloaded at installation, with its own third-party notices |
 | FFmpeg / libx264 | Distribution-provided binaries; licensing depends on build options. See [FFmpeg legal page](https://ffmpeg.org/legal.html). Binaries are not shipped in this source kit. |
+| Baloo 2 (engine/assets/cartoon.ttf) | [Baloo 2 by Ek Type](https://github.com/google/fonts/tree/main/ofl/baloo2), SIL Open Font License 1.1. Downloaded unmodified from google/fonts by worker/Dockerfile.keou at image build time; not part of this source kit. |
+| Oswald (engine/assets/real.ttf) | [Oswald by Vernon Adams, Kalapi Gajjar and Cyreal](https://github.com/google/fonts/tree/main/ofl/oswald), SIL Open Font License 1.1. Downloaded unmodified from google/fonts by worker/Dockerfile.keou at image build time; not part of this source kit. |
 | Vast CLI | [vast-ai/vast-cli](https://github.com/vast-ai/vast-cli), installed by setup-host.sh |
 | Python and Node packages | Explicit top-level versions in requirements.txt and package-lock.json; transitive components retain their own terms |
 
@@ -34,3 +36,21 @@ Audio displays, network activity and verification diagrams are original illustra
 ## JetBrains Mono
 
 Terminal typography uses the unmodified JetBrains Mono Regular font from the official [JetBrains Mono repository](https://github.com/JetBrains/JetBrainsMono), retrieved 9 September 2026. Font: engine/assets/mono.ttf. Its SIL Open Font License 1.1 and copyright notice are included verbatim in engine/assets/mono-LICENSE.txt. Manrope remains bundled for the other palettes.
+
+## Kleo picture style fonts
+
+The cartoon and realistic looks of the Kleo picture style use two variable fonts from the
+[google/fonts](https://github.com/google/fonts) repository, both under the SIL Open Font License 1.1:
+
+| Engine file | Font | Upstream file and licence |
+|---|---|---|
+| engine/assets/cartoon.ttf | Baloo 2, © 2019 The Baloo 2 Project Authors (Ek Type) | `ofl/baloo2/Baloo2[wght].ttf`, licence in `ofl/baloo2/OFL.txt` |
+| engine/assets/real.ttf | Oswald, © 2016 The Oswald Project Authors | `ofl/oswald/Oswald[wght].ttf`, licence in `ofl/oswald/OFL.txt` |
+
+Neither file is included in this source kit. worker/Dockerfile.keou downloads both into the worker
+image built by GitHub Actions, byte for byte as published upstream; only the file name on disk
+changes (cartoon.ttf / real.ttf) and film.html declares them as the CSS families KleoCartoon and
+KleoReal, which is a stack alias rather than a modified font. Redistributing the built image
+redistributes the two fonts, so each upstream OFL.txt must travel with it, and any Reserved Font
+Name declared there must be respected if a font is ever modified. Without the files the engine falls
+back to the bundled Manrope, so a plain checkout still renders.

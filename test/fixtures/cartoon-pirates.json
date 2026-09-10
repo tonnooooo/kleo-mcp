@@ -3,7 +3,7 @@
  "editorial_status": "ready",
  "title": "The Pirate Treasure Nobody Came Back For",
  "brand": "Kleo",
- "style": "cinema",
+ "style": "picture",
  "kleo_style": "cartoon",
  "format": "9:16",
  "language": "en",
@@ -28,27 +28,22 @@
    "title": "she never came back",
    "hl": "never",
    "voice": "Captain Mara buried her treasure on Skull Beach in 1720. She never came back for it. Nobody knows why.",
-   "image_prompt": "Pirate captain Mara, red bandana and long dark braid, burying a wooden treasure chest on a golden beach at sunset, palm trees, her red-sailed ship anchored in the turquoise bay",
-   "beats": [
+   "shots": [
     {
-     "kind": "type",
-     "text": "SHE NEVER CAME BACK",
+     "image_prompt": "Pirate captain Mara, red bandana and long dark braid, burying a wooden treasure chest on a golden beach at sunset, palm trees, her red-sailed ship anchored in the turquoise bay",
+     "caption": "SHE NEVER CAME BACK",
      "hl": "NEVER",
-     "slam": true,
-     "at": "never came back"
+     "motion": "in"
     },
     {
-     "kind": "icon",
-     "name": "lock",
-     "size": 0.6,
-     "label": "buried in 1720",
-     "at": "1720"
+     "image_prompt": "The same pirate captain Mara in her red bandana walking away along the shoreline at dusk, deep footprints in the wet sand, the beach empty behind her",
+     "at": "never came back",
+     "motion": "left"
     },
     {
-     "kind": "type",
-     "text": "NOBODY KNOWS WHY",
-     "hl": "WHY",
-     "at": "Nobody knows"
+     "image_prompt": "The same golden beach at night, empty under a big moon, silver light on the sand and one low mound where the chest is buried, calm dark waves",
+     "at": "Nobody knows",
+     "motion": "out"
     }
    ],
    "hold": 0.2
@@ -61,28 +56,22 @@
    "title": "the fastest ship",
    "hl": "fastest",
    "voice": "Her ship, the Red Gull, was the fastest in the Caribbean. Forty pirates, one parrot, and a map that only Mara could read.",
-   "image_prompt": "The Red Gull, a pirate ship with bright red sails racing over turquoise waves under a clear sky, captain Mara in her red bandana at the wheel, a green parrot on her shoulder, crew hauling ropes",
-   "beats": [
+   "shots": [
     {
-     "kind": "type",
-     "text": "THE RED GULL",
-     "hl": "RED GULL",
-     "slam": true,
-     "icon": "wave",
-     "at": "Red Gull"
+     "image_prompt": "The Red Gull, a pirate ship with bright red sails, racing over turquoise waves under a clear sky, captain Mara in her red bandana at the wheel",
+     "caption": "THE RED GULL",
+     "hl": "RED",
+     "motion": "in"
     },
     {
-     "kind": "people",
-     "total": 12,
-     "lit": 12,
-     "label": "forty pirates, one parrot",
-     "at": "Forty pirates"
+     "image_prompt": "Pirates in striped shirts hauling ropes on the deck of the same red-sailed ship, a green parrot on the rail, spray flying over the side",
+     "at": "Forty pirates",
+     "motion": "right"
     },
     {
-     "kind": "type",
-     "text": "ONLY MARA COULD READ IT",
-     "hl": "MARA",
-     "at": "only Mara"
+     "image_prompt": "Captain Mara in her red bandana studying a hand-drawn map in her lantern-lit cabin, the green parrot watching from the back of a chair",
+     "at": "only Mara could read",
+     "motion": "in"
     }
    ],
    "hold": 0.2
@@ -95,36 +84,22 @@
    "title": "three days of storm",
    "hl": "storm",
    "voice": "Then came the storm. Three days of black waves and lightning. The Red Gull went down with everyone on board, except one cabin boy.",
-   "image_prompt": "The red-sailed pirate ship Red Gull tossed by huge black waves in a night storm, lightning splitting the sky, torn sails, a small cabin boy clinging to the mast, dramatic and moody",
-   "beats": [
+   "shots": [
     {
-     "kind": "type",
-     "text": "THE STORM",
+     "image_prompt": "The red-sailed pirate ship Red Gull tossed by huge black waves in a night storm, lightning splitting the purple sky, torn sails",
+     "caption": "THREE DAYS OF STORM",
      "hl": "STORM",
-     "slam": true,
-     "icon": "wave",
-     "fx": "alarm",
-     "at": "the storm"
+     "motion": "in"
     },
     {
-     "kind": "timeline",
-     "labels": [
-      "DAY 1",
-      "DAY 2",
-      "DAY 3"
-     ],
-     "icons": [
-      "wave",
-      "alarm",
-      "cross"
-     ],
-     "at": "Three days"
+     "image_prompt": "Huge black waves breaking over the deck of the same ship at night, pirates clinging to the ropes, rain sheeting across the lanterns",
+     "at": "black waves",
+     "motion": "left"
     },
     {
-     "kind": "type",
-     "text": "ONE CABIN BOY",
-     "hl": "ONE",
-     "at": "cabin boy"
+     "image_prompt": "A young cabin boy in a striped shirt alone on a broken plank in the dark sea at first light, wreckage and a torn red sail floating nearby",
+     "at": "one cabin boy",
+     "motion": "out"
     }
    ],
    "hold": 0.2
@@ -137,31 +112,22 @@
    "title": "the same beach",
    "hl": "same",
    "voice": "That boy grew old with the map in his pocket. He drew it a hundred times, and every copy pointed to the same beach.",
-   "image_prompt": "An old sailor with a white beard, the grown-up cabin boy, unrolling a worn treasure map on a table in a lantern-lit ship cabin, a green parrot perched beside him, warm candlelight",
-   "beats": [
+   "shots": [
     {
-     "kind": "type",
-     "text": "THE CABIN BOY GREW OLD",
-     "hl": "OLD",
-     "at": "grew old"
+     "image_prompt": "An old sailor with a white beard, the grown-up cabin boy, unrolling a worn treasure map on a table in a lantern-lit room, warm candlelight",
+     "caption": "A HUNDRED COPIES",
+     "hl": "HUNDRED",
+     "motion": "in"
     },
     {
-     "kind": "steps",
-     "items": [
-      "ONE MAP",
-      "100 COPIES",
-      "ONE BEACH"
-     ],
-     "lit": 3,
-     "at": "hundred times"
+     "image_prompt": "A wooden table covered with dozens of hand-drawn copies of the same treasure map, ink pot and quill, the old sailor's hands over them",
+     "at": "a hundred times",
+     "motion": "left"
     },
     {
-     "kind": "type",
-     "text": "THE SAME BEACH",
-     "hl": "SAME",
-     "slam": true,
-     "icon": "check",
-     "at": "same beach"
+     "image_prompt": "Close view of one worn map in candlelight, a curved golden beach with three palm trees and a black cross inked into the sand",
+     "at": "the same beach",
+     "motion": "out"
     }
    ],
    "hold": 0.2
@@ -174,27 +140,13 @@
    "title": "still there?",
    "hl": "still",
    "voice": "So is the treasure still there? Follow, and next time we dig up Skull Beach.",
-   "image_prompt": "Golden beach at dawn with a half-buried wooden treasure chest spilling gold coins into the sand, palm trees, a shovel, the red-sailed ship far out on a calm turquoise sea",
-   "beats": [
+   "button": "Follow",
+   "shots": [
     {
-     "kind": "icon",
-     "name": "figure",
-     "fx": "think",
-     "size": 0.6,
-     "label": "still there?",
-     "at": "still there"
-    },
-    {
-     "kind": "cta",
-     "label": "DIG WITH US",
-     "toggles": [
-      "follow",
-      "share"
-     ],
-     "at": "Follow"
+     "image_prompt": "Golden beach at dawn with a half-buried wooden treasure chest spilling gold coins into the sand, a shovel beside it, palm trees, calm turquoise sea",
+     "motion": "in"
     }
    ],
-   "detail": "Loop ending: the question sends the viewer back to the buried chest.",
    "hold": 0.4
   }
  ]

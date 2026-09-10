@@ -85,26 +85,37 @@ senza connessione." (4.2 s / 4.6 s) and faster-whisper transcribes the sentence 
 ## Kleo pictures (cartoon / realistic)
 
 A Kleo storyboard is a Keou project plus a top-level `kleo_style` (`cartoon` | `realistic` | `cyber` | `stickman`,
-default cyber) and, per scene, an optional `image_prompt` (≤ 240 chars). Clients never set `scene.image`: for
-`cartoon` and `realistic` the **server** generates one picture per prompted scene (Workers AI, once per job, at
+default cyber). `cartoon` and `realistic` are the **picture style** (`style: "picture"`, see
+[docs/PICTURE-STYLE.md](../docs/PICTURE-STYLE.md)): every scene carries `shots`, and **each shot is one full-screen
+picture** described by its `image_prompt` (≤ 240 chars). Picture id = `<sceneId>-s<n>` with `n` the 1-based shot index
+(`01-hook-s1`, `01-hook-s2`) — that is the id the server keys its answer by and the name of the file on disk. Clients
+never set `scene.image` or `shot.image`: the **server** generates the pictures it can (Workers AI, once per job, at
 most 10) and the **worker** attaches them. Right after `build_project`, `prepare_project()` in `kleo_worker.py`:
 
 1. `POST /internal/jobs/{id}/images` (empty body, the job secret, worker User-Agent) →
-   `{"images": {"<sceneId>": "<signed download url>"}, "missing": ["<sceneId>", ...]}`;
+   `{"images": {"<pictureId>": "<signed download url>"}, "missing": ["<pictureId>", ...]}`;
    a 5xx, a network error or a garbled reply is retried **once after `KLEO_IMAGES_RETRY_WAIT_S`** (20 s), a 4xx is final;
 2. downloads every link (same User-Agent, no bearer: the link is signed) into
-   `<engine>/projects/<id>/img/<sceneId>.<ext>` — the extension is sniffed from the bytes (png / jpg / webp), anything
+   `<engine>/projects/<id>/img/<pictureId>.<ext>` — the extension is sniffed from the bytes (png / jpg / webp), anything
    else (an HTML error page, an empty body, > 25 MB) is discarded;
-3. for the scenes still missing, draws the pictures itself on the instance's GPU (see *Local GPU pictures* below)
-   into `<project>/img/<sceneId>.png`;
-4. sets `scene.image = "img/<sceneId>.<ext>"`, strips `kleo_style` and every `image_prompt`, writes `project.json`
-   and reports `progress("script", 5, "N pictures from server, M generated on the GPU, K missing")`.
+3. for the pictures still missing, draws them itself on the instance's GPU (see *Local GPU pictures* below)
+   into `<project>/img/<pictureId>.png`;
+4. sets `shot.image = "img/<pictureId>.<ext>"` and then `scene.image` = the scene's first shot picture (compatibility;
+   the picture style draws the shots themselves), strips `kleo_style` and every `image_prompt` (scene and shot level),
+   writes the engine's own top-level `look` (`cartoon` | `realistic`, never for cyber / stickman) and `project.json`,
+   and reports `progress("script", 5, "N pictures from server, M generated on the GPU, K missing")` — N, M and K count
+   pictures, i.e. shots, not scenes.
 
-The engine then draws the picture as a full-bleed Ken Burns background behind cinema / closing scenes (and behind the
-stickman on story scenes); `contract.py` accepts `image` on cinema, story and closing scenes with the usual
-`local_asset` rules. Nothing here is fatal: a scene without picture renders exactly as before, `cyber` / `stickman`
-never call the endpoint, and any `scene.image` a client managed to send is dropped by `build_project` (no asset
-travels with a job). `KLEO_IMAGES_TIMEOUT_S` (300) bounds the images call: the server generates on the first request.
+The engine then cuts the shots full-screen with a Ken Burns move and the typography of the `look`; `contract.py`
+accepts `image` on the shots and on cinema, story and closing scenes with the usual `local_asset` rules (the cyber look
+still uses `scene.image` as a full-bleed background). Nothing here is fatal: a shot without picture renders as a flat
+accent gradient, `cyber` / `stickman` never call the endpoint, and any `scene.image` / `shot.image` a client managed to
+send is dropped by `build_project` (no asset travels with a job), as is any top-level `look`.
+`KLEO_IMAGES_TIMEOUT_S` (300) bounds the images call: the server generates on the first request.
+
+A **legacy** scene-level `image_prompt` (the pre-shots shorthand, normalised into `shots` by the server validator
+before the storyboard is stored) is still accepted by the worker: it counts as that scene's shot 1 (`<sceneId>-s1`) and
+its picture is attached to the scene itself.
 
 The worker script is baked into the image (`/opt/kleo/kleo_worker.py`): after editing it either rebuild (last layer,
 seconds) or run the e2e with `KLEO_MOUNT_WORKER=1`.
@@ -113,37 +124,41 @@ Tests, none of which render anything:
 
 - `python3 worker/test_kleo_worker_images.py -v` (also `node --test test/worker-images.test.mjs`): a local
   `http.server` plays the API and the signed `/dl` route (a real PNG, a JPEG, a 404, an expired link answering HTML);
-  asserts the files land in `<project>/img/`, `scene.image` is set, the Kleo fields are stripped, the retry / 4xx
-  paths, the progress message, and that the written `project.json` passes the engine's own `contract.validate()`.
+  asserts the picture ids and their order (`picture_units`), the files landing in `<project>/img/<pictureId>.<ext>`,
+  `shot.image` and `scene.image`, the legacy scene-level fallback, the stripping and the `look`, the retry / 4xx paths,
+  the progress message, and that the written `project.json` passes the engine's own `contract.validate()` (picture
+  projects are checked there as soon as the engine's `contract.py` knows the style).
 - `node test/worker-e2e.mjs` (podman + the image + ffprobe, ~5 min on CPU) injects the short-relay-cinema storyboard as
-  `kleo_style: cartoon` with an `image_prompt` on `01-gone` and `05-fix`, starts `wrangler dev --var IMAGE_FIXTURE:1`
-  (deterministic placeholder PNGs, no Workers AI), checks `POST /internal/jobs/:id/images` and the PNG links itself,
-  then asserts the worker log says `2 pictures from server, 0 generated on the GPU, 0 missing`.
+  `kleo_style: cartoon` with one shot on `01-gone` and `05-fix` (picture ids `01-gone-s1`, `05-fix-s1`), starts
+  `wrangler dev --var IMAGE_FIXTURE:1` (deterministic placeholder PNGs, no Workers AI), checks
+  `POST /internal/jobs/:id/images` and the PNG links itself, then asserts the worker log says
+  `2 pictures from server, 0 generated on the GPU, 0 missing`.
 - `python3 worker/test_kleo_pictures.py -v` (also `cd worker && python3 -m unittest test_kleo_pictures`): fake `torch` /
   `diffusers` modules injected through `sys.modules` (no GPU, no model, no network) prove the file naming, the per-scene
   seed, the style suffix / negative prompt / sizes / steps / guidance, the `{}` answer without CUDA, the cache-then-download
   load order with `HF_HUB_OFFLINE` restored, and the `KLEO_PICTURES` auto / server / local ordering in `prepare_project`
   (the images call mocked, a fake `kleo_pictures` recording what it was asked to draw).
-- `test/fixtures/cartoon-pirates.json`: the first real cartoon Short (cinema, 5 scenes, ~105 words, `am_michael`,
-  an `image_prompt` on every scene with the same captain, ship and parrot throughout).
+- `test/fixtures/cartoon-pirates.json`: the first real cartoon Short (5 scenes, ~105 words, `am_michael`, the same
+  captain, ship and parrot described in every shot prompt).
 
 ## Local GPU pictures (`worker/kleo_pictures.py`)
 
-The server draws the pictures with Cloudflare Workers AI, whose free quota (10k neurons/day) runs out: scenes then come
-back `missing` and the video renders without pictures. The Vast instance has an RTX 4090-class GPU, so the worker draws
-the missing pictures itself with Stable Diffusion 1.5 through diffusers (fp16 on CUDA, weights baked into the image).
+The server draws the pictures with Cloudflare Workers AI, whose free quota (10k neurons/day) runs out: pictures then
+come back `missing` and those shots render without a picture. The Vast instance has an RTX 4090-class GPU, so the
+worker draws the missing pictures itself with Stable Diffusion 1.5 through diffusers (fp16 on CUDA, weights baked into the image).
 
 **Policy — `KLEO_PICTURES`** (read by `prepare_project()`, cartoon / realistic storyboards only):
 
 | Value | What happens |
 |---|---|
-| `auto` (default) | ask the server as before; every scene still missing is generated on the GPU; no GPU → those stay missing |
+| `auto` (default) | ask the server as before; every picture still missing is generated on the GPU; no GPU → those stay missing |
 | `server` | the server only, never generate locally (the pre-GPU behaviour) |
-| `local` | never call `POST /internal/jobs/:id/images`; every prompted scene is generated on the GPU (nothing at all without a GPU) |
+| `local` | never call `POST /internal/jobs/:id/images`; every shot is generated on the GPU (nothing at all without a GPU) |
 
-Progress / log line: `N pictures from server, M generated on the GPU, K missing` (preceded by `generating K pictures on
-the GPU (cartoon)` while the GPU works). The images call, the download and the local generation are each optional and
-never fatal: a scene without picture renders like a plain Keou scene.
+Progress / log line: `N pictures from server, M generated on the GPU, K missing` — pictures, i.e. shots, so a 5-scene
+cartoon with 12 shots reports `0 pictures from server, 12 generated on the GPU, 0 missing` (preceded by
+`generating K pictures on the GPU (cartoon)` while the GPU works). The images call, the download and the local
+generation are each optional and never fatal: a shot without picture renders as a flat accent gradient.
 
 **Models and settings** (`kleo_pictures.py`, same spirit as `src/images.ts`):
 
@@ -154,14 +169,15 @@ never fatal: a scene without picture renders like a plain Keou scene.
 
 Common: 512x896 for 9:16, 896x512 for 16:9 (SD1.5 is trained at 512; the engine scales the picture full-bleed with the
 Ken Burns move, so 512 wide is plenty behind 2160 px beats), 22 steps of DPM++ 2M Karras, negative prompt `text, letters,
-words, watermark, logo, signature, caption, subtitles, blurry, deformed, low quality, worst quality`, one PNG per scene at
-`<project>/img/<sceneId>.png`, seed = first 31 bits of `sha256(sceneId)` (a retry of the same job draws the same pictures),
+words, watermark, logo, signature, caption, subtitles, blurry, deformed, low quality, worst quality`, one PNG per shot at
+`<project>/img/<pictureId>.png`, seed = first 31 bits of `sha256(pictureId)` (a retry of the same job draws the same
+pictures, and two shots of one scene never draw the same one),
 safety checker disabled (it blanks harmless pictures; prompts are validated by the server before the job exists),
 attention slicing on, the pipeline loaded once per style and kept for the job.
 
 **Timings to expect** (SD1.5 fp16, RTX 4090): about 1.5 s per 512x896 picture at 22 steps, plus 3-6 s to load the
-pipeline from the image's cache the first time; a 10-scene cartoon Short therefore costs ~20 s of GPU before the voice
-stage. On an RTX 3090 / A5000 count 3-4 s per picture, on a T4 ~10 s. VRAM: under 4 GB, so it never competes with Kokoro.
+pipeline from the image's cache the first time; a cartoon Short with 12 shots therefore costs ~25 s of GPU before the
+voice stage. On an RTX 3090 / A5000 count 3-4 s per picture, on a T4 ~10 s. VRAM: under 4 GB, so it never competes with Kokoro.
 
 **Weights**: `prewarm_models.py` downloads both checkpoints at build time into `HF_HOME` (`/opt/kleo/hf`) — configs,
 tokenizer files and the fp16 safetensors of `text_encoder` / `unet` / `vae` only, never the safety checker nor the
@@ -180,6 +196,6 @@ Manual check on a GPU box (inside the container):
 ```sh
 python3 /opt/kleo/kleo_pictures.py cartoon 9:16 /tmp/pics "a wooden pirate ship at anchor in a turquoise bay, a red parrot on the bow"
 # → HH:MM:SS pictures: loaded Lykon/dreamshaper-8 variant=fp16 local_files_only=True in 4.2 s
-#   HH:MM:SS pictures: scene-1: 512x896 seed 1234567 in 1.6 s
+#   HH:MM:SS pictures: scene-1-s1: 512x896 seed 1234567 in 1.6 s
 #   HH:MM:SS pictures: 1/1 pictures (cartoon, 9:16) on cuda in 6.1 s
 ```

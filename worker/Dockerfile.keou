@@ -48,6 +48,15 @@ RUN HF_HUB_OFFLINE=0 PREWARM_PICTURES=${PREWARM_PICTURES} python3 /opt/kleo/prew
 
 # --- Engine source + worker (last: cheapest layers to rebuild) ---
 COPY worker/keou /opt/kleo/keou
+
+# --- Kleo picture-style fonts (OFL, google/fonts): Baloo 2 for the cartoon look, Oswald for the
+#     realistic one. Downloaded here, after the engine source, so editing the engine never
+#     re-downloads them; film.html falls back to Manrope when a file is missing. ---
+RUN curl -fsSL "https://github.com/google/fonts/raw/main/ofl/baloo2/Baloo2%5Bwght%5D.ttf" -o /opt/kleo/keou/engine/assets/cartoon.ttf \
+    && curl -fsSL "https://github.com/google/fonts/raw/main/ofl/oswald/Oswald%5Bwght%5D.ttf" -o /opt/kleo/keou/engine/assets/real.ttf \
+    && test $(stat -c%s /opt/kleo/keou/engine/assets/cartoon.ttf) -gt 100000 \
+    && test $(stat -c%s /opt/kleo/keou/engine/assets/real.ttf) -gt 100000
+
 COPY worker/kleo_pictures.py /opt/kleo/kleo_pictures.py
 COPY worker/kleo_worker.py /opt/kleo/kleo_worker.py
 RUN node --version > runtime-node.txt && ffmpeg -version | head -1 > runtime-ffmpeg.txt \

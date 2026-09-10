@@ -6,7 +6,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { generateStoryboard, fixtureStoryboard, isTransientAiError, StoryboardError, styleFor, keouStyleFor, pickKleoStyle, planFor } from "../src/storyboard.ts";
+import { generateStoryboard, fixtureStoryboard, isTransientAiError, StoryboardError, styleFor, keouStyleFor, pickKleoStyle, planFor, normalizeStoryboard } from "../src/storyboard.ts";
 import { validateStoryboard, pictureScenes, BEAT_ICONS, STORY_ACTS } from "../src/keou-contract.ts";
 
 const job = (template, duration_s, format, language = "en", prompt = "Why your phone battery dies faster in winter and the two habits that keep it healthy.", style = undefined) =>
@@ -130,17 +130,30 @@ test("a persistently invalid model answer fails with the validator's problems", 
   await assert.rejects(generateStoryboard(env, job("explainer", 240, "16:9")), (e) => e instanceof StoryboardError && e.errors.some((m) => /expected exactly \d+ scenes/.test(m)));
 });
 
-test("fixture: used without an AI binding or with STORYBOARD_FIXTURE=example, adapted to the job, cartoon with a picture per scene", async () => {
+test("fixture: used without an AI binding or with STORYBOARD_FIXTURE=example, adapted to the job, cartoon with shots", async () => {
   const r = await generateStoryboard({}, job("explainer", 240, "16:9", "it"));
   assert.equal(r.fixture, true); assert.equal(r.storyboard.format, "16:9"); assert.equal(r.storyboard.language, "it"); assert.equal(r.storyboard.voice, "if_sara");
   assert.equal(validateStoryboard(r.storyboard, { format: "16:9", language: "it" }).ok, true);
-  assert.equal(r.storyboard.kleo_style, "cartoon"); assert.equal(r.style, "cartoon");
-  assert.equal(pictureScenes(r.storyboard).length, r.storyboard.scenes.length, "every fixture scene has an image_prompt");
-  for (const s of r.storyboard.scenes) { assert.ok(s.image_prompt.length <= 240 && !("image" in s)); }
+  assert.equal(r.storyboard.kleo_style, "cartoon"); assert.equal(r.storyboard.style, "picture"); assert.equal(r.style, "cartoon");
+  const scenes = r.storyboard.scenes;
+  for (const s of scenes) {
+    assert.ok(Array.isArray(s.shots) && s.shots.length >= 1, "every fixture scene carries shots");
+    assert.ok(!("beats" in s) && !("image_prompt" in s) && !("image" in s), "no beats, no scene-level picture");
+    for (const sh of s.shots) assert.ok(sh.image_prompt.length <= 240 && !("image" in sh));
+  }
+  assert.equal(scenes.at(-1).kind, "closing"); assert.equal(scenes.at(-1).shots.length, 1);
+  assert.equal(scenes[0].shots[0].at, undefined, "the first shot opens the scene");
+  assert.ok(scenes[0].voice.toLowerCase().includes(String(scenes[0].shots[1].at).toLowerCase()), "the second shot cuts on words of the voice");
+  const pics = pictureScenes(r.storyboard);
+  assert.ok(pics.length > scenes.length, `several pictures per scene, got ${pics.length} for ${scenes.length} scenes`);
+  assert.deepEqual(pics.slice(0, 2).map((x) => x.id), [`${scenes[0].id}-s1`, `${scenes[0].id}-s2`]);
   const real = fixtureStoryboard(job("viral-short", 45, "9:16", "en", undefined, "realistic"));
-  assert.equal(real.kleo_style, "realistic"); assert.ok(real.scenes.every((s) => s.image_prompt));
+  assert.equal(real.kleo_style, "realistic"); assert.equal(real.style, "picture");
+  assert.ok(real.scenes.every((s) => s.shots.length >= 1));
   const cyber = fixtureStoryboard(job("viral-short", 45, "9:16", "en", undefined, "cyber"));
-  assert.equal(cyber.kleo_style, "cyber"); assert.ok(cyber.scenes.every((s) => !("image_prompt" in s)));
+  assert.equal(cyber.kleo_style, "cyber"); assert.equal(cyber.style, "cinema");
+  assert.ok(cyber.scenes.every((s) => !("shots" in s) && !("image_prompt" in s)), "the cyber fixture keeps the plain cinema look");
+  assert.ok(cyber.scenes.some((s) => Array.isArray(s.beats) && s.beats.length), "with its beats");
   const r2 = await generateStoryboard({ AI: { run() { throw new Error("must not be called"); } }, STORYBOARD_FIXTURE: "example" }, job("viral-short", 45, "9:16"));
   assert.equal(r2.fixture, true);
   assert.equal(fixtureStoryboard(job("viral-short", 45, "9:16")).scenes.at(-1).kind, "closing");
@@ -162,43 +175,107 @@ test("kleo style: explicit or picked from the prompt; keou style follows it", ()
   assert.equal(pickKleoStyle("explainer", "Something without keywords"), "cyber");
   assert.equal(pickKleoStyle("motivational", "Something without keywords"), "cartoon");
   assert.notEqual(pickKleoStyle("viral-short", "please make it a stickman"), "stickman", "stickman is never picked automatically");
-  assert.equal(keouStyleFor("cartoon", "explainer", "16:9"), "cinema");
-  assert.equal(keouStyleFor("realistic", "viral-short", "9:16"), "cinema");
+  assert.equal(keouStyleFor("cartoon", "explainer", "16:9"), "picture");
+  assert.equal(keouStyleFor("realistic", "viral-short", "9:16"), "picture");
   assert.equal(keouStyleFor("cyber", "explainer", "16:9"), "technical");
   assert.equal(keouStyleFor("cyber", "motivational", "16:9"), "editorial");
   assert.equal(keouStyleFor("stickman", "viral-short", "9:16"), "stickman");
   const p = planFor(job("story-documentary", 480, "16:9", "en", "The pirates who found an island", "cartoon"));
-  assert.equal(p.style, "cinema"); assert.equal(p.pictures, true); assert.ok(p.scenes[1] <= 36, `long cartoon videos keep a sane scene count, got ${p.scenes}`);
+  assert.equal(p.style, "picture"); assert.equal(p.pictures, true); assert.ok(p.scenes[1] <= 36, `long cartoon videos keep a sane scene count, got ${p.scenes}`);
 });
 
-test("cartoon: image_prompt is requested per scene, trimmed to 240 chars, and its absence is fed back once", async () => {
-  let asked = 0, feedback = 0;
+test("picture: the schema asks for shots, a lone shot is fed back once, the result is a valid picture storyboard", async () => {
+  let feedback = 0;
   const env = fakeEnv((kind, user, attempt, inputs) => {
     if (kind === "outline") return outlineFor(user, true);
-    asked++;
-    if (/missing "image_prompt"/.test(user)) feedback++;
+    if (/only one picture/.test(user)) feedback++;
     const [from, to] = chunkRange(user);
     const total = Number(/VIDEO OUTLINE \((\d+) scenes/.exec(user)[1]);
     const schema = inputs.response_format.json_schema.properties.scenes.items;
-    assert.ok(schema.required.includes("image_prompt"), "the scene schema requires image_prompt for a picture style");
+    assert.ok(schema.required.includes("shots"), "the scene schema requires shots");
+    assert.ok(!("beats" in schema.properties), "the picture schema knows nothing about beats");
+    assert.deepEqual(schema.properties.shots.items.required, ["image_prompt"]);
+    assert.deepEqual(schema.properties.shots.items.properties.motion.enum, ["in", "out", "left", "right"]);
+    assert.ok(/2-4 shots|2–4 shots|"shots"/.test(user), "the task text names the shots");
     const scenes = [];
     for (let i = from; i < to; i++) {
-      const s = { id: `${String(i + 1).padStart(2, "0")}-part`, kind: i === total - 1 ? "closing" : "cinema", chapter: `0${i + 1} PART`, accent: "amber", title: `Part ${i + 1}`, hl: "Part",
-        voice: `Scene ${i + 1} tells one small piece of the pirate story with a concrete detail and a twist.`, image: "img/hack.png",
-        beats: [{ kind: "type", text: "PIRATES", slam: true }, { kind: "icon", name: "wave", at: "pirate" }, { kind: "people", total: 8, lit: 3, at: "twist" }, { kind: "dialog", text: "Land ahead", at: "story" }] };
-      if (i === 1 && attempt === 1) { /* no image_prompt the first time */ } else s.image_prompt = i === 2 ? "A ".repeat(200) + "ship" : `A pirate ship anchored in a sandy bay, scene ${i + 1}`;
+      const closing = i === total - 1;
+      const voice = `Scene ${i + 1} tells one small piece of the pirate story with a concrete detail and a twist.`;
+      const shots = closing
+        ? [{ image_prompt: "A treasure chest half buried in the sand at dawn" }, { image_prompt: "The same beach empty at noon" }, { image_prompt: "A third one, over the cap" }]
+        : [
+            { image_prompt: `A pirate ship anchored in a sandy bay, scene ${i + 1}`, caption: "PIRATES AHEAD", hl: "PIRATES", at: "one small piece", motion: "in" }, // at on the first shot → dropped
+            { image_prompt: "A ".repeat(200) + "crew hauling ropes on the deck", at: "concrete detail", motion: "zoom" },                                            // prompt cut, motion dropped
+            { image_prompt: "The same crew in a storm at night", at: "bananas and cake", caption: "A CAPTION THAT IS FAR TOO LONG TO FIT ON THE SCREEN", hl: "STORM" }, // at, caption and hl dropped
+            { caption: "NO PICTURE HERE" },                                                                                                                          // no image_prompt → shot dropped
+            { image_prompt: "A map spread on a wooden table in lantern light", at: "a twist", motion: "out" },
+          ];
+      const s = { id: `${String(i + 1).padStart(2, "0")}-part`, kind: closing ? "closing" : "cinema", chapter: `0${i + 1} PART`, accent: "amber", title: `Part ${i + 1}`, hl: "Part",
+        voice, image: "img/hack.png", beats: [{ kind: "type", text: "PIRATES", slam: true }], button: closing ? "Follow" : undefined, shots };
+      if (i === 1 && attempt === 1) s.shots = [shots[0]]; // one picture for the whole line the first time
       scenes.push(s);
     }
     return { scenes };
   });
   const r = await generateStoryboard(env, job("viral-short", 45, "9:16", "en", "The pirates who found an island missing from every map"));
   const sb = r.storyboard;
+  assert.deepEqual(validateStoryboard(sb, { format: "9:16", language: "en" }).ok ? [] : validateStoryboard(sb, { format: "9:16", language: "en" }).errors, []);
+  assert.equal(sb.kleo_style, "cartoon"); assert.equal(sb.style, "picture"); assert.equal(r.style, "cartoon");
+  assert.ok(feedback >= 1, "a scene with a single picture was fed back to the model");
+  for (const s of sb.scenes) {
+    assert.ok(!("beats" in s) && !("image" in s) && !("image_prompt" in s), "no beats and no scene-level picture survive");
+    assert.ok(s.shots.length >= 1 && s.shots.length <= (s.kind === "closing" ? 2 : 4));
+    for (const sh of s.shots) assert.ok(sh.image_prompt.length >= 2 && sh.image_prompt.length <= 240);
+  }
+  const first = sb.scenes[0];
+  assert.equal(first.shots.length, 4, "the shot without a picture is dropped, the rest kept");
+  assert.equal(first.shots[0].at, undefined, "the first shot cannot carry at");
+  assert.equal(first.shots[0].caption, "PIRATES AHEAD"); assert.equal(first.shots[0].hl, "PIRATES");
+  assert.ok(first.shots[1].image_prompt.length <= 240 && !/\s$/.test(first.shots[1].image_prompt), "an over-long prompt is cut at a word boundary");
+  assert.equal(first.shots[1].motion, undefined, "an unknown motion is dropped");
+  assert.equal(first.shots[1].at, "concrete detail");
+  assert.equal(first.shots[2].at, undefined, "an at that is not in the voice is dropped");
+  assert.equal(first.shots[2].caption, undefined); assert.equal(first.shots[2].hl, undefined);
+  assert.equal(first.shots[3].motion, "out");
+  const closing = sb.scenes.at(-1);
+  assert.equal(closing.kind, "closing"); assert.equal(closing.shots.length, 2, "the closing keeps at most two pictures"); assert.equal(closing.button, "Follow");
+  const pics = pictureScenes(sb);
+  assert.equal(pics.length, sb.scenes.reduce((n, s) => n + s.shots.length, 0));
+  assert.deepEqual(pics.slice(0, 2).map((p) => p.id), ["01-part-s1", "01-part-s2"]);
+});
+
+test("picture: normalizeStoryboard turns a scene image_prompt into shots and keeps the closing to one picture", () => {
+  const j = job("viral-short", 45, "9:16", "en", "The pirates who found an island missing from every map", "realistic");
+  const plan = planFor(j);
+  assert.equal(plan.style, "picture"); assert.equal(plan.kleo, "realistic");
+  const raw = { title: "Test", scenes: [
+    { id: "01 Hook!", kind: "cinema", chapter: "01 HOOK", accent: "amber", title: "the island", hl: "island", voice: "The crew found an island that was not on any map, and three days later it was gone.",
+      image_prompt: "  A wooden ship at anchor in a turquoise bay under a stormy sky  ", beats: [{ kind: "type", text: "GONE" }], eyebrow: "JUNK", visual: "focus", items: ["a", "b"] },
+    { id: "02-closing", kind: "closing", accent: "cyan", title: "Follow for part two", voice: "Was it a mirage, or something the sea wanted to keep? Follow for part two.",
+      button: "Follow for the whole story", detail: "a detail line", shots: [
+        { image_prompt: "Empty open sea at sunset seen from the deck" },
+        { image_prompt: "The same sea at night, a lantern on the rail", at: "part two" },
+        { image_prompt: "One picture too many for a closing" }] },
+  ] };
+  const sb = normalizeStoryboard(structuredClone(raw), plan);
+  assert.equal(sb.style, "picture"); assert.equal(sb.kleo_style, "realistic");
+  const a = sb.scenes[0];
+  assert.equal(a.id, "01-hook", "ids are slugged");
+  assert.deepEqual(a.shots, [{ image_prompt: "A wooden ship at anchor in a turquoise bay under a stormy sky" }], "the old scene-level prompt becomes shot 1");
+  assert.ok(!("image_prompt" in a) && !("beats" in a) && !("eyebrow" in a) && !("visual" in a) && !("items" in a));
+  const z = sb.scenes[1];
+  assert.equal(z.shots.length, 2, "a closing shows one picture, two at most");
+  assert.equal(z.shots[1].at, "part two");
+  assert.equal(z.button, undefined, "a button longer than 24 characters is dropped");
+  assert.ok(!("detail" in z), "the picture style has no detail line");
   assert.equal(validateStoryboard(sb, { format: "9:16", language: "en" }).ok, true);
-  assert.equal(sb.kleo_style, "cartoon"); assert.equal(sb.style, "cinema");
-  assert.ok(feedback >= 1, "the missing image_prompt was fed back to the model");
-  assert.equal(pictureScenes(sb).length, sb.scenes.length);
-  assert.ok(sb.scenes.every((s) => s.image_prompt.length <= 240 && !("image" in s)));
-  assert.ok(sb.scenes[2].image_prompt.length > 200 && sb.scenes[2].image_prompt.length <= 240 && !/\s$/.test(sb.scenes[2].image_prompt), "over-long prompts are cut at a word boundary");
+  // A scene the model left without any usable picture still renders: the title becomes the prompt.
+  const bare = normalizeStoryboard({ title: "T", scenes: [
+    { id: "01-a", kind: "cinema", chapter: "01 A", accent: "red", title: "A quiet street at dawn", hl: "quiet", voice: "A quiet street at dawn, and nobody is watching the door.", shots: [{ caption: "NOTHING" }] },
+    { id: "02-b", kind: "closing", accent: "green", title: "Follow", voice: "Follow for part two.", shots: [{ image_prompt: "An empty street at noon" }] },
+  ] }, plan);
+  assert.deepEqual(bare.scenes[0].shots, [{ image_prompt: "A quiet street at dawn" }]);
+  assert.equal(validateStoryboard(bare, { format: "9:16", language: "en" }).ok, true);
 });
 
 test("stickman: story scenes with acts, cast, props and bubbles, repaired to the contract", async () => {

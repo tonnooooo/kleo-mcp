@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { inflateSync } from "node:zlib";
 import {
   encodePng, placeholderPng, crc32, fnv1a, pickImageScenes, sizeFor, acceptsSize, modelInputs, readImageResult, sniffImage, fullPrompt,
-  generateJobImages, DEFAULT_IMAGE_MODELS, IMAGE_NAME_RE, STYLE_SUFFIX,
+  generateJobImages, DEFAULT_IMAGE_MODELS, DEFAULT_SERVER_MAX, IMAGE_NAME_RE, STYLE_SUFFIX, MAX_PICTURES, imageFileName,
 } from "../src/images.ts";
 
 const be32 = (b, o) => ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0;
@@ -30,8 +30,8 @@ test("crc32 and fnv1a match the reference values", () => {
   assert.equal(crc32(new Uint8Array(0)), 0);
   assert.equal(fnv1a(""), 0x811c9dc5);
   assert.equal(fnv1a("a"), 0xe40c292c);
-  assert.equal(fnv1a("01-hook"), fnv1a("01-hook"));
-  assert.notEqual(fnv1a("01-hook"), fnv1a("02-crew"));
+  assert.equal(fnv1a("01-hook-s1"), fnv1a("01-hook-s1"));
+  assert.notEqual(fnv1a("01-hook-s1"), fnv1a("01-hook-s2"));
 });
 
 test("encodePng: signature, IHDR (size, 8-bit RGB), IDAT inflates to the raw scanlines, IEND", async () => {
@@ -51,10 +51,10 @@ test("encodePng: signature, IHDR (size, 8-bit RGB), IDAT inflates to the raw sca
   assert.equal(c[2].data.length, 0);
 });
 
-test("placeholderPng: deterministic per scene id, portrait and landscape sizes, a visible stripe", async () => {
-  const a = await placeholderPng("01-hook", 96, 168);
-  const b = await placeholderPng("01-hook", 96, 168);
-  const other = await placeholderPng("02-crew", 96, 168);
+test("placeholderPng: deterministic per picture id, portrait and landscape sizes, a visible stripe", async () => {
+  const a = await placeholderPng("01-hook-s1", 96, 168);
+  const b = await placeholderPng("01-hook-s1", 96, 168);
+  const other = await placeholderPng("01-hook-s2", 96, 168);
   assert.deepEqual([...a], [...b]);
   assert.notDeepEqual([...a], [...other]);
   assert.equal(sniffImage(a), "png");
@@ -133,37 +133,71 @@ function fakeEnv(extra = {}) {
   };
   return { env: { DB: db, OAUTH_KV: { async put(k, v, o) { kv.set(k, { v, o }); }, async getWithMetadata(k) { const e = kv.get(k); return { value: e?.v ?? null, metadata: e?.o?.metadata }; } }, INTERNAL_SECRET: "s3cret", ...extra }, files, auditRows, kv };
 }
-const sceneList = (n) => Array.from({ length: n }, (_, i) => ({ id: `${String(i + 1).padStart(2, "0")}-s`, kind: "cinema", image_prompt: `picture ${i + 1}` }));
-const jobFor = (style, n = 3, format = "9:16") => ({ id: "gt_img", user_id: "u1", params: JSON.stringify({ duration_s: 45, format, language: "en", voice: null, style }), storyboard: JSON.stringify({ style: "cinema", kleo_style: style, scenes: sceneList(n) }) });
+/** A picture-style storyboard: `n` scenes of `shots` shots each, prompts numbered over the flattened list. */
+function storyboardFor(style, n, shots) {
+  let k = 0;
+  return {
+    style: "picture", kleo_style: style,
+    scenes: Array.from({ length: n }, (_, i) => ({
+      id: `${String(i + 1).padStart(2, "0")}-sc`, kind: i === n - 1 ? "closing" : "cinema", title: `scene ${i + 1}`, voice: "a line",
+      shots: Array.from({ length: shots }, () => ({ image_prompt: `picture ${++k}` })),
+    })),
+  };
+}
+const jobFor = (style, n = 3, format = "9:16", { shots = 1, duration_s = 45 } = {}) =>
+  ({ id: "gt_img", user_id: "u1", params: JSON.stringify({ duration_s, format, language: "en", voice: null, style }), storyboard: JSON.stringify(storyboardFor(style, n, shots)) });
+/** The picture ids of a job, in order (what the endpoint keys its answer by). */
+const idsOf = (n, shots) => Array.from({ length: n }, (_, i) => Array.from({ length: shots }, (_, j) => `${String(i + 1).padStart(2, "0")}-sc-s${j + 1}`)).flat();
 
-test("fixture: one PNG per scene in job_files, signed /dl links, idempotent on a second call", async () => {
+test("fixture: one PNG per shot in job_files, keyed by picture id, signed /dl links, idempotent on a second call", async () => {
   const { env, files, auditRows, kv } = fakeEnv({ IMAGE_FIXTURE: "1" });
-  const r = await generateJobImages(env, jobFor("cartoon"), "http://kleo.test");
-  assert.equal(r.fixture, true); assert.equal(r.generated, 3); assert.equal(r.reused, 0); assert.deepEqual(r.missing, []);
-  assert.deepEqual(Object.keys(r.images), ["01-s", "02-s", "03-s"]);
+  const r = await generateJobImages(env, jobFor("cartoon", 3, "9:16", { shots: 2 }), "http://kleo.test");
+  assert.equal(r.fixture, true); assert.equal(r.generated, 6); assert.equal(r.reused, 0); assert.deepEqual(r.missing, []);
+  assert.deepEqual(Object.keys(r.images), idsOf(3, 2));
   for (const [id, url] of Object.entries(r.images)) {
     assert.match(url, new RegExp(`^http://kleo\\.test/dl/gt_img/img%2F${id}\\.png\\?exp=\\d+&sig=[0-9a-f]{64}$`));
-    assert.ok(IMAGE_NAME_RE.test(`img/${id}.png`));
+    assert.ok(IMAGE_NAME_RE.test(imageFileName(id, "png")), `${id} makes a legal file name`);
     const f = files.get(`img/${id}.png`);
     assert.equal(f.key, `renders/gt_img/img/${id}.png`); assert.equal(f.content_type, "image/png"); assert.ok(f.size > 100);
     const stored = new Uint8Array(kv.get(`file:${f.key}`).v);
     assert.equal(sniffImage(stored), "png");
     assert.equal(be32(chunks(stored)[0].data, 0), 768); assert.equal(be32(chunks(stored)[0].data, 4), 1344);
   }
+  assert.notDeepEqual([...new Uint8Array(kv.get("file:renders/gt_img/img/01-sc-s1.png").v)], [...new Uint8Array(kv.get("file:renders/gt_img/img/01-sc-s2.png").v)], "two shots of one scene are two different pictures");
   assert.equal(auditRows.filter((a) => a.event === "images.generated").length, 1);
-  const again = await generateJobImages(env, jobFor("cartoon"), "http://kleo.test");
-  assert.equal(again.generated, 0); assert.equal(again.reused, 3); assert.equal(files.size, 3);
+  const again = await generateJobImages(env, jobFor("cartoon", 3, "9:16", { shots: 2 }), "http://kleo.test");
+  assert.equal(again.generated, 0); assert.equal(again.reused, 6); assert.equal(files.size, 6);
 });
 
-test("no pictures for cyber/stickman or without image_prompt; the cap spreads and lists the rest as missing", async () => {
+test("no pictures for cyber/stickman or without shots; the server cap spreads and lists the rest as missing", async () => {
   const { env } = fakeEnv({ IMAGE_FIXTURE: "1" });
   assert.deepEqual(await generateJobImages(env, jobFor("cyber"), "http://kleo.test"), { images: {}, missing: [], generated: 0, reused: 0, fixture: true });
-  const r = await generateJobImages(env, jobFor("realistic", 14, "16:9"), "http://kleo.test");
+  assert.deepEqual(await generateJobImages(env, jobFor("stickman"), "http://kleo.test"), { images: {}, missing: [], generated: 0, reused: 0, fixture: true });
+  const empty = { id: "gt_img", user_id: "u1", params: JSON.stringify({ duration_s: 45, format: "9:16", language: "en", voice: null, style: "cartoon" }), storyboard: JSON.stringify({ style: "picture", kleo_style: "cartoon", scenes: [{ id: "01-sc", kind: "cinema" }] }) };
+  assert.deepEqual((await generateJobImages(env, empty, "http://kleo.test")).images, {}, "a scene without shots asks for nothing");
+  assert.equal(DEFAULT_SERVER_MAX, 10);
+  const r = await generateJobImages(env, jobFor("realistic", 7, "16:9", { shots: 2 }), "http://kleo.test");
   assert.equal(Object.keys(r.images).length, 10); assert.equal(r.missing.length, 4);
-  assert.ok("01-s" in r.images && "14-s" in r.images, "first and last scenes keep their picture");
-  const { env: env2 } = fakeEnv({ IMAGE_FIXTURE: "1", IMAGE_MAX_PER_JOB: "2" });
+  assert.ok("01-sc-s1" in r.images && "07-sc-s2" in r.images, "the first and last pictures are always drawn");
+  const { env: env2 } = fakeEnv({ IMAGE_FIXTURE: "1", IMAGE_SERVER_MAX: "2" });
   const r2 = await generateJobImages(env2, jobFor("cartoon", 5), "http://kleo.test");
-  assert.deepEqual(Object.keys(r2.images), ["01-s", "05-s"]); assert.deepEqual(r2.missing, ["02-s", "03-s", "04-s"]);
+  assert.deepEqual(Object.keys(r2.images), ["01-sc-s1", "05-sc-s1"]); assert.deepEqual(r2.missing, ["02-sc-s1", "03-sc-s1", "04-sc-s1"]);
+  const { env: env3 } = fakeEnv({ IMAGE_FIXTURE: "1", IMAGE_MAX_PER_JOB: "1" });
+  const r3 = await generateJobImages(env3, jobFor("cartoon", 5), "http://kleo.test");
+  assert.deepEqual(Object.keys(r3.images), ["01-sc-s1"], "the legacy variable name still caps the server");
+});
+
+test("the video cap (MAX_PICTURES) bounds the whole list: extra shots are neither drawn nor listed", async () => {
+  const { env } = fakeEnv({ IMAGE_FIXTURE: "1" });
+  const short = await generateJobImages(env, jobFor("cartoon", 15, "9:16", { shots: 2, duration_s: 45 }), "http://kleo.test");
+  assert.equal(MAX_PICTURES(45), 24);
+  assert.equal(Object.keys(short.images).length + short.missing.length, 24, "a 45 s Short considers 24 pictures out of 30");
+  const listed = new Set([...Object.keys(short.images), ...short.missing]);
+  assert.ok(listed.has("12-sc-s2") && !listed.has("13-sc-s1"), "the list is cut after the 24th picture, in order");
+  const { env: env2 } = fakeEnv({ IMAGE_FIXTURE: "1" });
+  const long = await generateJobImages(env2, jobFor("cartoon", 15, "9:16", { shots: 2, duration_s: 300 }), "http://kleo.test");
+  assert.equal(MAX_PICTURES(300), 48);
+  assert.equal(Object.keys(long.images).length + long.missing.length, 30, "a long video keeps all 30");
 });
 
 test("Workers AI: binary and base64 answers are stored with the right extension; errors and quota are never fatal and never retried", async () => {
@@ -171,36 +205,36 @@ test("Workers AI: binary and base64 answers are stored with the right extension;
   const png = await placeholderPng("ai", 16, 16);
   const ai = { async run(model, inputs) {
     calls.push({ model, inputs });
-    if (inputs.prompt.startsWith("picture 1")) return new Blob([png]).stream();
-    if (inputs.prompt.startsWith("picture 2")) return { image: Buffer.from([0xff, 0xd8, 0xff, 0xdb, 1, 2]).toString("base64") };
-    if (inputs.prompt.startsWith("picture 3")) throw new Error("AiError: 3010: model overloaded");
+    if (inputs.prompt.startsWith("picture 1.")) return new Blob([png]).stream();
+    if (inputs.prompt.startsWith("picture 2.")) return { image: Buffer.from([0xff, 0xd8, 0xff, 0xdb, 1, 2]).toString("base64") };
+    if (inputs.prompt.startsWith("picture 3.")) throw new Error("AiError: 3010: model overloaded");
     throw new Error("AiError: 4006: you have used up your daily free allocation of 10,000 neurons");
   } };
   const { env, files, auditRows } = fakeEnv({ AI: ai, IMAGE_MODEL_REALISTIC: "@cf/leonardo/lucid-origin" });
   const r = await generateJobImages(env, jobFor("realistic", 6), "http://kleo.test");
   assert.equal(r.fixture, false);
-  assert.deepEqual(Object.keys(r.images), ["01-s", "02-s"]);
-  assert.deepEqual(r.missing, ["03-s", "04-s", "05-s", "06-s"], "one AI error, one quota error, then the rest is skipped without a call");
+  assert.deepEqual(Object.keys(r.images), ["01-sc-s1", "02-sc-s1"]);
+  assert.deepEqual(r.missing, ["03-sc-s1", "04-sc-s1", "05-sc-s1", "06-sc-s1"], "one AI error, one quota error, then the rest is skipped without a call");
   assert.equal(calls.length, 4);
   assert.equal(calls[0].model, "@cf/leonardo/lucid-origin"); assert.equal(calls[0].inputs.width, 768); assert.ok(calls[0].inputs.prompt.endsWith(STYLE_SUFFIX.realistic));
-  assert.equal(files.get("img/01-s.png").content_type, "image/png"); assert.equal(files.get("img/02-s.jpg").content_type, "image/jpeg");
+  assert.equal(files.get("img/01-sc-s1.png").content_type, "image/png"); assert.equal(files.get("img/02-sc-s1.jpg").content_type, "image/jpeg");
   const errors = auditRows.filter((a) => a.event === "images.error").map((a) => JSON.parse(a.detail));
-  assert.deepEqual(errors.map((e) => e.scene), ["03-s", "04-s"]);
+  assert.deepEqual(errors.map((e) => e.picture), ["03-sc-s1", "04-sc-s1"]);
   assert.equal(errors[1].quota, true);
-  // second call: the two pictures are reused, the two tried scenes are not retried, the untried ones get their one attempt
+  // second call: the two pictures are reused, the two tried ones are not retried, the untried ones get their one attempt
   const r2 = await generateJobImages(env, jobFor("realistic", 6), "http://kleo.test");
-  assert.equal(r2.reused, 2); assert.equal(calls.length, 5, "05-s gets its single attempt (quota again), 06-s is skipped in the same call");
-  assert.deepEqual(r2.missing, ["03-s", "04-s", "05-s", "06-s"]);
+  assert.equal(r2.reused, 2); assert.equal(calls.length, 5, "05-sc-s1 gets its single attempt (quota again), 06-sc-s1 is skipped in the same call");
+  assert.deepEqual(r2.missing, ["03-sc-s1", "04-sc-s1", "05-sc-s1", "06-sc-s1"]);
   const r3 = await generateJobImages(env, jobFor("realistic", 6), "http://kleo.test");
-  assert.equal(calls.length, 6, "06-s gets its single attempt");
+  assert.equal(calls.length, 6, "06-sc-s1 gets its single attempt");
   assert.equal(r3.reused, 2);
   await generateJobImages(env, jobFor("realistic", 6), "http://kleo.test");
-  assert.equal(calls.length, 6, "no scene is ever tried twice");
+  assert.equal(calls.length, 6, "no picture is ever tried twice");
 });
 
 test("no AI binding and no fixture: everything is missing, nothing throws", async () => {
   const { env, auditRows } = fakeEnv();
   const r = await generateJobImages(env, jobFor("cartoon", 2), "http://kleo.test");
-  assert.deepEqual(r.images, {}); assert.deepEqual(r.missing, ["01-s", "02-s"]);
+  assert.deepEqual(r.images, {}); assert.deepEqual(r.missing, ["01-sc-s1", "02-sc-s1"]);
   assert.ok(auditRows.some((a) => a.event === "images.error" && /no Workers AI binding/.test(a.detail)));
 });
