@@ -8,6 +8,7 @@ import { FILE_NAMES } from "./jobs";
 import { putFile } from "./storage";
 import { generateStoryboard, StoryboardError } from "./storyboard";
 import { findTemplate } from "./templates";
+import { generateJobImages } from "./images";
 
 const ALLOWED_FILES = new Set([FILE_NAMES.video.name, FILE_NAMES.subtitles.name, FILE_NAMES.thumbnail.name, "thumbnail.svg", "log.txt"]);
 const TYPES: Record<string, string> = { mp4: "video/mp4", srt: "application/x-subrip", jpg: "image/jpeg", svg: "image/svg+xml", txt: "text/plain" };
@@ -22,6 +23,7 @@ const TYPES: Record<string, string> = { mp4: "video/mp4", srt: "application/x-su
  *   POST /internal/jobs/:id/files/:name/uploads               start multipart → {uploadId}
  *   PUT  /internal/jobs/:id/files/:name/uploads/:uid/parts/:n upload one part (≥ 5 MB except last) → {etag}
  *   POST /internal/jobs/:id/files/:name/uploads/:uid/complete {parts:[{partNumber, etag}]}
+ *   POST /internal/jobs/:id/images     (empty body) → {images: {sceneId: url}, missing: [sceneId]}  scene pictures (cartoon/realistic)
  *   POST /internal/jobs/:id/done       {cost_usd?}
  *   POST /internal/jobs/:id/failed     {error, retry?}
  *   POST /internal/jobs/:id/selfdestruct                      ask the server to destroy the GPU (fallback)
@@ -42,7 +44,8 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
   const rest = m[2] ?? "";
 
   if (rest === "" && request.method === "GET") {
-    return json({ job_id: job.id, template: job.template, prompt: job.prompt, params: JSON.parse(job.params), state: job.state,
+    const params = JSON.parse(job.params) as { style?: string };
+    return json({ job_id: job.id, template: job.template, prompt: job.prompt, params, state: job.state, style: params.style ?? null,
       storyboard: job.storyboard ? JSON.parse(job.storyboard) : null, brand: env.BRAND || "Kleo",
       files: { video: FILE_NAMES.video.name, subtitles: FILE_NAMES.subtitles.name, thumbnail: FILE_NAMES.thumbnail.name }, part_size_bytes: 50 * 1024 * 1024 });
   }
@@ -56,6 +59,12 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
     // Repeats of the final call the job already took are fine (the worker may retry after a network hiccup); anything else is a conflict.
     if (request.method === "POST" && ((rest === "done" && job.state === "done") || (rest === "failed" && job.state === "failed"))) return json({ ok: true, state: job.state, already: true });
     return json({ error: `job is ${job.state}`, state: job.state }, 409);
+  }
+
+  if (rest === "images" && request.method === "POST") {
+    // Pictures are generated once; AI errors and quota exhaustion only move scenes to "missing" (audited as images.error).
+    const r = await generateJobImages(env, job, url.origin);
+    return json({ images: r.images, missing: r.missing, generated: r.generated, reused: r.reused, fixture: r.fixture });
   }
 
   if (rest === "progress" && request.method === "POST") {

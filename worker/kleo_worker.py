@@ -15,7 +15,13 @@ Engines (KLEO_ENGINE):
   keou (default)  the real motion-design renderer shipped in KLEO_KEOU_DIR (default /opt/kleo/keou);
                   the job must carry a "storyboard" (a Keou project without id/script_file/music_quiet/image scenes).
   placeholder     ffmpeg-only dark frame with the prompt as text; no storyboard needed (container contract tests).
+Kleo pictures (keou engine only): a storyboard may carry "kleo_style" (cartoon | realistic | cyber | stickman) and, per
+scene, an "image_prompt". For cartoon/realistic the worker asks POST /internal/jobs/{id}/images for the pictures the
+server generated (one per scene with a prompt), downloads them into <project>/img/<sceneId>.<ext> and sets scene.image;
+kleo_style and image_prompt are stripped before project.json is written. A missing or broken picture is never fatal:
+the scene simply renders without it.
 Tuning: KLEO_WIDTH_PORTRAIT (2160) / KLEO_WIDTH_LANDSCAPE (1920), KLEO_RENDER_TIMEOUT_MIN (100),
+        KLEO_IMAGES_TIMEOUT_S (300: the images call, the server generates on the first request), KLEO_IMAGES_RETRY_WAIT_S (20),
         KLEO_KEOU_WORKERS (Chromium render workers for run.py: default min(8, cpu count); each one costs RAM),
         KLEO_KEOU_PYTHON (interpreter for run.py: default <engine>/.venv/bin/python if present, else this one).
 Standard library only, so it runs in any image with python3 and ffmpeg.
@@ -35,6 +41,13 @@ WIDTH_LANDSCAPE = int(os.environ.get("KLEO_WIDTH_LANDSCAPE", "1920"))
 KEOU_WORKERS = int(os.environ.get("KLEO_KEOU_WORKERS", "0") or 0)  # 0 → min(8, cpu count)
 PART = 50 * 1024 * 1024
 UA = "kleo-worker/1.0 (+https://github.com/tonnooooo/kleo-mcp)"
+# Kleo pictures: kleo_style values that come with server-generated pictures, and the knobs of the images call.
+PICTURE_STYLES = ("cartoon", "realistic")
+IMAGES_TIMEOUT_S = float(os.environ.get("KLEO_IMAGES_TIMEOUT_S", "300"))      # the server generates the pictures on the first call
+IMAGES_RETRY_WAIT_S = float(os.environ.get("KLEO_IMAGES_RETRY_WAIT_S", "20"))  # one retry after this long on 5xx / network errors
+IMAGE_DOWNLOAD_TIMEOUT_S = 60
+IMAGE_MAX_BYTES = 25 * 1024 * 1024
+SCENE_ID = re.compile(r"[a-z0-9-]{1,50}")                                       # contract.py scene id slug → safe file name
 
 # Mirrors contract.VOICES; the engine's own contract.py overrides it at run time (see load_voices()).
 DEFAULT_VOICES = {"fr": ["ff_siwis"], "en": ["af_heart", "am_michael", "bf_emma"], "it": ["if_sara", "im_nicola"]}
@@ -228,6 +241,12 @@ def build_project(job, engine):
         c["scenes"] = [s for s in c["scenes"] if not (isinstance(s, dict) and s.get("kind") == "image")]
     if not c["scenes"]:
         raise RenderError("storyboard has no renderable scenes", retry=False)
+    stale = [s.get("id") for s in c["scenes"] if isinstance(s, dict) and "image" in s]
+    if stale:  # no asset travels with a job: only the pictures the worker downloads itself (attach_pictures) may be referenced
+        log("dropping scene.image (assets never travel with a job):", stale)
+        for s in c["scenes"]:
+            if isinstance(s, dict):
+                s.pop("image", None)
 
     p = job.get("params") or {}
     fmt = p.get("format") or c.get("format") or "9:16"
@@ -386,6 +405,155 @@ def run_keou(engine, project_json, n_scenes, log_path):
         raise RenderError(f"engine exited with code {code}: {detail}"[:480], retry=True)
 
 
+# ---- Kleo pictures ----------------------------------------------------------------------------
+# cartoon / realistic storyboards carry an image_prompt per scene; the server turns each one into a picture (once per
+# job) and hands out signed download links. Everything in this section is optional for the render: any failure
+# leaves the scene without picture and the video is made like a plain Keou project.
+def picture_scene_ids(sb):
+    """Ids of the scenes carrying an image_prompt, in scene order (whatever the style)."""
+    return [s["id"] for s in (sb.get("scenes") or []) if isinstance(s, dict) and isinstance(s.get("id"), str)
+            and isinstance(s.get("image_prompt"), str) and s["image_prompt"].strip()]
+
+
+def wants_pictures(sb):
+    """True when the server is expected to hold pictures for this storyboard: cartoon/realistic with at least one image_prompt."""
+    return isinstance(sb, dict) and sb.get("kleo_style") in PICTURE_STYLES and bool(picture_scene_ids(sb))
+
+
+def request_pictures(job_id):
+    """One POST /internal/jobs/{id}/images (empty body, job secret) → the parsed JSON reply. Raises on any failure."""
+    req = urllib.request.Request(f"{API}/internal/jobs/{job_id}/images", data=b"", method="POST")
+    req.add_header("Authorization", f"Bearer {SECRET}")
+    req.add_header("User-Agent", UA)
+    with urllib.request.urlopen(req, timeout=IMAGES_TIMEOUT_S) as r:
+        reply = json.loads(r.read().decode() or "{}")
+    if not isinstance(reply, dict):
+        raise ValueError("images reply is not a JSON object")
+    return reply
+
+
+def fetch_pictures(job_id, retry_wait_s=None):
+    """{"images": {sceneId: url}, "missing": [sceneIds]} from the server, or None when it could not answer.
+    A 5xx, a network error or a garbled reply is retried once after retry_wait_s (default IMAGES_RETRY_WAIT_S);
+    a 4xx (no such endpoint, job in the wrong state) is final. Never raises: pictures are optional."""
+    wait = IMAGES_RETRY_WAIT_S if retry_wait_s is None else retry_wait_s
+    err = None
+    for attempt in (1, 2):
+        try:
+            reply = request_pictures(job_id)
+            images = reply.get("images") if isinstance(reply.get("images"), dict) else {}
+            missing = [m for m in (reply.get("missing") if isinstance(reply.get("missing"), list) else []) if isinstance(m, str)]
+            return {"images": images, "missing": missing}
+        except urllib.error.HTTPError as e:
+            if 400 <= e.code < 500:
+                try:
+                    detail = e.read(200).decode("utf-8", "replace")
+                except Exception:
+                    detail = ""
+                log(f"pictures: server answered {e.code} {detail!r}; rendering without pictures")
+                return None
+            err = f"HTTP {e.code}"
+        except Exception as e:  # URLError, timeout, bad JSON
+            err = repr(e)
+        if attempt == 1:
+            log(f"pictures: request failed ({err}); retrying once in {wait:g} s")
+            time.sleep(wait)
+    log(f"pictures: request failed again ({err}); rendering without pictures")
+    return None
+
+
+def image_ext(data):
+    """File extension for PNG / JPEG / WebP bytes (sniffed: the link's content-type is not trusted), else None."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    return None
+
+
+def download_picture(url, img_dir, scene_id):
+    """GET a signed picture link (same User-Agent as api(); no bearer, the link is signed) into <img_dir>/<scene_id>.<ext>.
+    Returns the file name, or None when anything is off (never raises)."""
+    if not (isinstance(scene_id, str) and SCENE_ID.fullmatch(scene_id)):
+        log(f"picture: scene id {scene_id!r} is not a slug, skipped")
+        return None
+    if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+        log(f"picture {scene_id}: no usable link")
+        return None
+    try:
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("User-Agent", UA)
+        with urllib.request.urlopen(req, timeout=IMAGE_DOWNLOAD_TIMEOUT_S) as r:
+            data = r.read(IMAGE_MAX_BYTES + 1)
+    except Exception as e:
+        log(f"picture {scene_id}: download failed: {e}")
+        return None
+    if len(data) > IMAGE_MAX_BYTES:
+        log(f"picture {scene_id}: larger than {IMAGE_MAX_BYTES} bytes, skipped")
+        return None
+    ext = image_ext(data)
+    if not ext:
+        log(f"picture {scene_id}: not a PNG/JPEG/WebP file ({len(data)} bytes), skipped")
+        return None
+    os.makedirs(img_dir, exist_ok=True)
+    name = scene_id + ext
+    with open(os.path.join(img_dir, name), "wb") as f:
+        f.write(data)
+    return name
+
+
+def attach_pictures(project, pdir, reply):
+    """Downloads the server's pictures into <pdir>/img/ and sets scene.image = "img/<sceneId>.<ext>" on every scene that
+    has an image_prompt. Returns (ready_ids, missing_ids): a scene without a link, or whose download fails, keeps no picture."""
+    images = (reply or {}).get("images") or {}
+    ready, missing = [], []
+    for s in project.get("scenes") or []:
+        if not (isinstance(s, dict) and isinstance(s.get("image_prompt"), str) and s["image_prompt"].strip()):
+            continue
+        sid = s.get("id")
+        name = download_picture(images.get(sid), os.path.join(pdir, "img"), sid) if sid in images else None
+        if name:
+            s["image"] = "img/" + name
+            ready.append(sid)
+        else:
+            missing.append(sid)
+    return ready, missing
+
+
+def strip_kleo_fields(project):
+    """Removes what the engine does not know: kleo_style and every scene's image_prompt (the pictures stay as scene.image)."""
+    project.pop("kleo_style", None)
+    for s in project.get("scenes") or []:
+        if isinstance(s, dict):
+            s.pop("image_prompt", None)
+
+
+def prepare_project(job, engine, projects_dir):
+    """build_project + Kleo pictures + <projects_dir>/<id>/project.json. Returns (project, project_dir). No rendering here."""
+    project = build_project(job, engine)
+    pdir = os.path.join(projects_dir, project["id"])
+    shutil.rmtree(pdir, ignore_errors=True)
+    os.makedirs(pdir)
+    pictures = "no pictures"
+    if wants_pictures(project):
+        progress("script", 4, message=f"fetching {len(picture_scene_ids(project))} pictures ({project['kleo_style']})")
+        reply = fetch_pictures(JOB)
+        if reply and reply["missing"]:
+            log("pictures the server could not make:", reply["missing"])
+        ready, missing = attach_pictures(project, pdir, reply)
+        pictures = f"{len(ready)} pictures ready, {len(missing)} missing"
+        log("pictures:", pictures, "ready", ready, "missing", missing)
+        progress("script", 5, message=pictures)
+    strip_kleo_fields(project)
+    with open(os.path.join(pdir, "project.json"), "w") as f:
+        json.dump(project, f, ensure_ascii=False, indent=2)
+    log(f"project {project['id']}: {len(project['scenes'])} scenes, {project['format']} {project['width']}px {project['fps']} fps, "
+        f"{project['language']}/{project['voice']}, style {project.get('style')}, {pictures}")
+    return project, pdir
+
+
 def render_keou(job, out_dir):
     engine = os.path.abspath(KEOU_DIR)
     run_py = os.path.join(engine, "run.py")
@@ -393,18 +561,10 @@ def render_keou(job, out_dir):
         # Not retried: a retry would rent another instance with the same image and fail the same way.
         raise RenderError(f"Keou engine not found at {engine} (VAST_IMAGE must ship the engine; set KLEO_KEOU_DIR or KLEO_ENGINE=placeholder)", retry=False)
     progress("script", 3, message="preparing the storyboard")
-    project = build_project(job, engine)
-    pdir = os.path.join(engine, "projects", project["id"])
-    shutil.rmtree(pdir, ignore_errors=True)
-    os.makedirs(pdir)
-    project_json = os.path.join(pdir, "project.json")
-    with open(project_json, "w") as f:
-        json.dump(project, f, ensure_ascii=False, indent=2)
-    log(f"project {project['id']}: {len(project['scenes'])} scenes, {project['format']} {project['width']}px {project['fps']} fps, "
-        f"{project['language']}/{project['voice']}, style {project.get('style')}")
+    project, pdir = prepare_project(job, engine, os.path.join(engine, "projects"))
     progress("script", 6, message=f"{len(project['scenes'])} scenes")
 
-    run_keou(engine, project_json, len(project["scenes"]), os.path.join(out_dir, "log.txt"))
+    run_keou(engine, os.path.join(pdir, "project.json"), len(project["scenes"]), os.path.join(out_dir, "log.txt"))
 
     out = os.path.join(pdir, "out")
     master, captions = os.path.join(out, "master.mp4"), os.path.join(out, "captions.srt")

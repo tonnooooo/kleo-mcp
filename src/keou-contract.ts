@@ -4,6 +4,11 @@
  * scene of kind `image` (no assets can travel with a job). Enums are copied verbatim from
  * contract.py; keep the two files in sync. Error wording follows contract.py so a worker-side
  * failure and a server-side failure read the same.
+ *
+ * Kleo additions on top of the Keou project (the worker strips them before writing project.json):
+ *   - top-level "kleo_style": cartoon | realistic | cyber | stickman (default cyber = the Keou look, no pictures);
+ *   - per scene "image_prompt" (≤ 240 chars): the picture the server generates for that scene (cartoon/realistic only).
+ * Clients never set scene.image themselves: the server generates the pictures and the worker attaches them.
  */
 
 export const STYLES = ["editorial", "technical", "illustrated", "terminal", "stickman", "cinema"] as const;
@@ -30,6 +35,12 @@ export const VOICES: Record<string, readonly string[]> = {
 };
 export const LANGUAGES = Object.keys(VOICES);
 export const FORMATS = ["9:16", "16:9"] as const;
+/** Kleo visual styles. cartoon/realistic add an AI picture per scene (image_prompt); cyber is the plain Keou look; stickman is Keou's stickman. */
+export const KLEO_STYLES = ["cartoon", "realistic", "cyber", "stickman"] as const;
+export type KleoStyle = (typeof KLEO_STYLES)[number];
+/** Styles whose scenes get a generated picture. */
+export const PICTURE_STYLES: readonly KleoStyle[] = ["cartoon", "realistic"];
+export const IMAGE_PROMPT_MAX = 240;
 export const WIDTHS: Record<string, readonly number[]> = { "9:16": [540, 1080, 2160], "16:9": [960, 1920, 3840] };
 
 /** Fields a storyboard must not carry (the worker adds them) and the scene kind it cannot use. */
@@ -39,6 +50,22 @@ export const FORBIDDEN_SCENE_FIELDS = ["image", "image_credit", "motion", "motio
 
 export type Format = (typeof FORMATS)[number];
 export type Storyboard = Record<string, unknown> & { scenes: Record<string, unknown>[] };
+
+/** The Kleo style of a storyboard: explicit kleo_style, else stickman for a stickman project, else cyber. */
+export function kleoStyleOf(sb: unknown): KleoStyle {
+  const c = (typeof sb === "object" && sb !== null ? sb : {}) as Record<string, unknown>;
+  if ((KLEO_STYLES as readonly string[]).includes(c.kleo_style as string)) return c.kleo_style as KleoStyle;
+  return c.style === "stickman" ? "stickman" : "cyber";
+}
+/** Scenes that carry an image_prompt (in order), only for the styles that draw pictures. */
+export function pictureScenes(sb: unknown): { id: string; image_prompt: string }[] {
+  const c = (typeof sb === "object" && sb !== null ? sb : {}) as Record<string, unknown>;
+  if (!PICTURE_STYLES.includes(kleoStyleOf(c)) || !Array.isArray(c.scenes)) return [];
+  return (c.scenes as unknown[]).flatMap((s) => {
+    const sc = (typeof s === "object" && s !== null ? s : {}) as Record<string, unknown>;
+    return typeof sc.id === "string" && typeof sc.image_prompt === "string" && sc.image_prompt.trim() ? [{ id: sc.id, image_prompt: sc.image_prompt.trim() }] : [];
+  });
+}
 export interface ValidateOptions {
   format: Format;
   language: string;
@@ -180,7 +207,14 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
   if (!(STYLES as readonly string[]).includes(c.style as string)) e.add(`style must be one of ${sorted(STYLES)}`);
   if (!(FORMATS as readonly string[]).includes(c.format as string) || ("fps" in c && c.fps !== 30 && c.fps !== 60)) e.add("format: 9:16 or 16:9; fps: 30 or 60");
   else if (c.format !== opts.format) e.add(`format must be ${opts.format} for this job, not ${String(c.format)}`);
-  if (c.style === "stickman" && c.format !== "9:16") e.add("The stickman style is laid out for 9:16 only");
+  // Kleo style → Keou style. cartoon/realistic draw their pictures as cinema backgrounds; stickman is Keou's stickman (9:16 only).
+  const kleo = "kleo_style" in c ? c.kleo_style : undefined;
+  if (kleo !== undefined && !(KLEO_STYLES as readonly string[]).includes(kleo as string)) e.add(`kleo_style must be one of ${sorted(KLEO_STYLES)}`);
+  else if (kleo === "stickman" && c.format !== "9:16") e.add("The stickman style makes 9:16 Shorts only: use format 9:16, or pick another style (cartoon, realistic or cyber) for 16:9");
+  else if (kleo === "stickman" && c.style !== "stickman") e.add(`kleo_style stickman needs the Keou style "stickman" (story scenes), not "${String(c.style)}"`);
+  else if ((kleo === "cartoon" || kleo === "realistic") && c.style !== "cinema") e.add(`kleo_style ${kleo} needs the Keou style "cinema" (the pictures are drawn behind cinema scenes), not "${String(c.style)}"`);
+  else if (kleo === "cyber" && c.style === "stickman") e.add('kleo_style cyber does not draw the stickman: set kleo_style to "stickman" or change the style');
+  if (c.style === "stickman" && c.format !== "9:16" && kleo !== "stickman") e.add("The stickman style is laid out for 9:16 only");
   if ("width" in c && !(WIDTHS[c.format as string] ?? []).includes(c.width as number)) e.add("Invalid width for aspect ratio");
   const voices = VOICES[c.language as string];
   if (!voices || !voices.includes(c.voice as string)) e.add("Unsupported language/voice combination");
@@ -201,7 +235,8 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
     const kind = s.kind as string;
     if (!(KINDS as readonly string[]).includes(kind)) { e.add(`${label}: unknown composition`); return; }
     if ((FORBIDDEN_KINDS as readonly string[]).includes(kind)) e.add(`${label}: image scenes are not allowed in a storyboard (no assets); use another composition`);
-    for (const f of FORBIDDEN_SCENE_FIELDS) if (f in s) e.add(`${label}: ${f} is not allowed in a storyboard`);
+    for (const f of FORBIDDEN_SCENE_FIELDS) if (f in s) e.add(`${label}: ${f} is not allowed in a storyboard${f === "image" ? " (describe the picture in image_prompt instead; Kleo generates it)" : ""}`);
+    if ("image_prompt" in s) e.text(s.image_prompt, `${label} image_prompt`, IMAGE_PROMPT_MAX);
     if (c.style === "cinema" && kind !== "cinema" && kind !== "closing") e.add(`${label}: the cinema style only draws cinema and closing scenes`);
     if (kind === "cinema" || (kind === "closing" && c.style === "cinema" && "beats" in s)) validateBeats(c, s, label, e);
     if (kind === "closing" && c.style === "cinema") {

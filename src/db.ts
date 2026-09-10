@@ -49,6 +49,8 @@ export interface JobParams {
   format: "16:9" | "9:16";
   language: string;
   voice: string | null;
+  /** Kleo visual style (keou-contract.ts KLEO_STYLES); absent on jobs created before styles existed (= cyber). */
+  style?: string;
 }
 
 export interface JobFile {

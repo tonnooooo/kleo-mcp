@@ -5,7 +5,12 @@ export interface Env {
   OAUTH_PROVIDER: OAuthHelpers;
   DB: D1Database;
   RENDERS?: R2Bucket; // optional: temporary accounts have no R2; files then go to KV (mock sizes only)
-  AI?: Ai; // Workers AI (storyboard generation); absent in local dev without a login → fixture
+  AI?: Ai; // Workers AI (storyboard generation, scene pictures); absent in local dev without a login → fixtures
+
+  IMAGE_MODEL_CARTOON?: string;   // Workers AI text-to-image model for the cartoon style (default images.ts DEFAULT_IMAGE_MODELS)
+  IMAGE_MODEL_REALISTIC?: string; // idem for the realistic style
+  IMAGE_MAX_PER_JOB?: string;     // pictures generated per video (default 10)
+  IMAGE_FIXTURE?: string;         // "1" (dev only): placeholder PNGs instead of Workers AI pictures
 
   AI_MODEL?: string; // default: storyboard.ts DEFAULT_MODEL
   STORYBOARD_FIXTURE?: string; // "example" (dev only): use the bundled cinema example instead of calling AI

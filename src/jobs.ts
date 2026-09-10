@@ -4,7 +4,8 @@ import { findTemplate, creditsFor, etaFor, type Format } from "./templates";
 import { rid, nowIso, int, hmacHex } from "./util";
 import { isFlagActive } from "./schema";
 import { backendFor } from "./backends";
-import { validateStoryboard } from "./keou-contract";
+import { validateStoryboard, kleoStyleOf, KLEO_STYLES, type KleoStyle } from "./keou-contract";
+import { pickKleoStyle } from "./storyboard";
 
 /** An error whose message is shown to the user as-is: plain English, always says whether something was charged. */
 export class JobError extends Error {}
@@ -17,6 +18,8 @@ export interface CreateInput {
   language?: string;
   voice?: string;
   notify_email?: string;
+  /** Kleo visual style (cartoon | realistic | cyber | stickman). Omitted: the storyboard's kleo_style, else the planner picks one from the prompt. */
+  style?: string;
   /** Optional client-authored Keou storyboard (see keou-contract.ts); validated here, stored as JSON. */
   storyboard?: unknown;
 }
@@ -62,15 +65,29 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   const voice = input.voice ?? null;
   if (voice && !t.voices.includes(voice)) throw new JobError(`There is no voice called "${voice}". Available voices: ${t.voices.join(", ")}. Nothing was charged.`);
   const language = input.language ?? "en";
+  if (input.style !== undefined && !(KLEO_STYLES as readonly string[]).includes(input.style))
+    throw new JobError(`There is no style called "${input.style}". Pick one of cartoon, realistic, cyber or stickman. Nothing was charged.`);
+  let style = input.style as KleoStyle | undefined;
+  if (style === "stickman" && format !== "9:16")
+    throw new JobError("The stickman style makes 9:16 Shorts only. Use format 9:16, or pick cartoon, realistic or cyber for a 16:9 video. Nothing was charged.");
   let storyboard: string | null = null;
   if (input.storyboard !== undefined && input.storyboard !== null) {
-    const r = validateStoryboard(input.storyboard, { format, language });
+    const sbIn = input.storyboard;
+    if (typeof sbIn === "object" && !Array.isArray(sbIn)) {
+      const sb = sbIn as Record<string, unknown>;
+      if (style && "kleo_style" in sb && sb.kleo_style !== style)
+        throw new JobError(`The style argument says "${style}" but the storyboard's kleo_style says "${String(sb.kleo_style)}". Make them agree (or drop one of them). Nothing was charged.`);
+      if (style && !("kleo_style" in sb)) sb.kleo_style = style;
+    }
+    const r = validateStoryboard(sbIn, { format, language });
     if (!r.ok) {
       const n = r.errors.length;
       throw new JobError(`The storyboard has ${plural(n, "problem")} (nothing was charged). Fix ${n === 1 ? "it" : "them"} and call kleo_create_video again:\n- ${r.errors.join("\n- ")}`);
     }
     storyboard = JSON.stringify(r.storyboard);
+    style = kleoStyleOf(r.storyboard);
   }
+  if (!style) style = pickKleoStyle(t.id, prompt);
 
   if (!input.storyboard && (await isFlagActive(env, "plan_pause")))
     throw new JobError("Kleo's automatic storyboard planner is paused right now (its daily AI quota is used up). Call kleo_storyboard_guide, write the storyboard yourself, then call kleo_create_video again with the storyboard argument. Nothing was charged.");
@@ -85,7 +102,7 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   if (!(await debitCredits(env, user.id, credits, jobId)))
     throw new JobError(`Not enough credits: this ${kindOf(format)} costs ${plural(credits, "credit")} and you have ${plural(Math.max(0, user.credits), "credit")}. Ask the Kleo team for more credits. Nothing was charged.`);
 
-  const params: JobParams = { duration_s: duration, format, language, voice };
+  const params: JobParams = { duration_s: duration, format, language, voice, style };
   const job: Job = {
     id: jobId, user_id: user.id, template: t.id, prompt, params: JSON.stringify(params),
     state: "queued", track: null, percent: 0, eta_min: etaFor(duration), credits,
@@ -102,7 +119,7 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     await audit(env, user.id, jobId, "job.create.error", String(e).slice(0, 500));
     throw new JobError("Kleo could not save the video request. Nothing was charged; please try again in a moment.");
   }
-  await audit(env, user.id, job.id, "job.created", { template: t.id, credits, duration, format, storyboard: storyboard ? "client" : "auto" });
+  await audit(env, user.id, job.id, "job.created", { template: t.id, credits, duration, format, style, storyboard: storyboard ? "client" : "auto" });
   return job;
 }
 
@@ -146,9 +163,14 @@ export async function signedDownloadUrl(env: Env, base: string, job: Job, fileNa
   return `${base}/dl/${job.id}/${encodeURIComponent(fileName)}?exp=${exp}&sig=${sig}`;
 }
 
+/** Scene pictures (img/<sceneId>.png|jpg) are worker inputs, not deliverables: they never appear in the user's links. */
+export const isSceneImage = (name: string): boolean => name.startsWith("img/");
+
 export async function resultLinks(env: Env, base: string, job: Job): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
   for (const f of await listFiles(env, job.id)) {
+    if (f.name === "log.txt") continue; // technical worker log: not for users
+    if (isSceneImage(f.name)) continue;
     const key = f.name.replace(/\.[a-z0-9]+$/i, "") + "_url";
     out[key] = await signedDownloadUrl(env, base, job, f.name);
   }
@@ -163,6 +185,7 @@ export function jobView(job: Job) {
     template: job.template,
     format: p.format,
     duration_s: p.duration_s,
+    style: p.style ?? null,
     track: job.track,
     percent: job.percent,
     eta_min: job.state === "done" || job.state === "failed" || job.state === "cancelled" ? 0 : job.eta_min,

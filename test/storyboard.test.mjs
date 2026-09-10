@@ -6,11 +6,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { generateStoryboard, fixtureStoryboard, isTransientAiError, StoryboardError, styleFor } from "../src/storyboard.ts";
-import { validateStoryboard, BEAT_ICONS } from "../src/keou-contract.ts";
+import { generateStoryboard, fixtureStoryboard, isTransientAiError, StoryboardError, styleFor, keouStyleFor, pickKleoStyle, planFor } from "../src/storyboard.ts";
+import { validateStoryboard, pictureScenes, BEAT_ICONS, STORY_ACTS } from "../src/keou-contract.ts";
 
-const job = (template, duration_s, format, language = "en", prompt = "Why your phone battery dies faster in winter and the two habits that keep it healthy.") =>
-  ({ id: "gt_test", template, prompt, params: JSON.stringify({ duration_s, format, language, voice: null }) });
+const job = (template, duration_s, format, language = "en", prompt = "Why your phone battery dies faster in winter and the two habits that keep it healthy.", style = undefined) =>
+  ({ id: "gt_test", template, prompt, params: JSON.stringify({ duration_s, format, language, voice: null, ...(style ? { style } : {}) }) });
 
 const outlineFor = (user, cinema) => {
   const n = Number(/exactly (\d+) scenes/.exec(user)[1]);
@@ -64,10 +64,10 @@ test("cinema: defective beats are repaired, not fatal", async () => {
     }
     return { scenes };
   });
-  const r = await generateStoryboard(env, job("viral-short", 45, "9:16"));
+  const r = await generateStoryboard(env, job("viral-short", 45, "9:16", "en", undefined, "cyber"));
   const sb = r.storyboard;
   assert.equal(validateStoryboard(sb, { format: "9:16", language: "en" }).ok, true);
-  assert.equal(sb.style, "cinema"); assert.equal(sb.voice, "am_michael"); assert.equal(sb.speed, 1.1); assert.equal(sb.music, "bed"); assert.equal(sb.max_duration, 72);
+  assert.equal(sb.style, "cinema"); assert.equal(sb.kleo_style, "cyber"); assert.equal(r.style, "cyber"); assert.equal(sb.voice, "am_michael"); assert.equal(sb.speed, 1.1); assert.equal(sb.music, "bed"); assert.equal(sb.max_duration, 72);
   assert.ok(sb.scenes.length >= 4 && sb.scenes.at(-1).kind === "closing");
   assert.ok(sb.scenes[0].voice.length <= 350 && /\.$/.test(sb.scenes[0].voice), "voice fitted at a sentence boundary");
   const b = sb.scenes[1].beats;
@@ -103,7 +103,7 @@ test("editorial: garbled JSON is retried, under-specified scenes are downgraded,
   const r = await generateStoryboard(env, job("explainer", 240, "16:9"));
   const sb = r.storyboard;
   assert.equal(validateStoryboard(sb, { format: "16:9", language: "en" }).ok, true);
-  assert.equal(sb.style, "technical"); assert.equal(sb.voice, "af_heart"); assert.equal(garbled, 1);
+  assert.equal(sb.style, "technical"); assert.equal(sb.kleo_style, "cyber", "an explainer defaults to the cyber look"); assert.equal(sb.voice, "af_heart"); assert.equal(garbled, 1);
   assert.ok(sb.scenes.length >= 12, `expected a long-form scene count, got ${sb.scenes.length}`);
   for (const s of sb.scenes) {
     assert.ok(s.eyebrow.length <= 40); assert.equal(s.visual, undefined);
@@ -130,10 +130,17 @@ test("a persistently invalid model answer fails with the validator's problems", 
   await assert.rejects(generateStoryboard(env, job("explainer", 240, "16:9")), (e) => e instanceof StoryboardError && e.errors.some((m) => /expected exactly \d+ scenes/.test(m)));
 });
 
-test("fixture: used without an AI binding or with STORYBOARD_FIXTURE=example, adapted to the job", async () => {
+test("fixture: used without an AI binding or with STORYBOARD_FIXTURE=example, adapted to the job, cartoon with a picture per scene", async () => {
   const r = await generateStoryboard({}, job("explainer", 240, "16:9", "it"));
   assert.equal(r.fixture, true); assert.equal(r.storyboard.format, "16:9"); assert.equal(r.storyboard.language, "it"); assert.equal(r.storyboard.voice, "if_sara");
   assert.equal(validateStoryboard(r.storyboard, { format: "16:9", language: "it" }).ok, true);
+  assert.equal(r.storyboard.kleo_style, "cartoon"); assert.equal(r.style, "cartoon");
+  assert.equal(pictureScenes(r.storyboard).length, r.storyboard.scenes.length, "every fixture scene has an image_prompt");
+  for (const s of r.storyboard.scenes) { assert.ok(s.image_prompt.length <= 240 && !("image" in s)); }
+  const real = fixtureStoryboard(job("viral-short", 45, "9:16", "en", undefined, "realistic"));
+  assert.equal(real.kleo_style, "realistic"); assert.ok(real.scenes.every((s) => s.image_prompt));
+  const cyber = fixtureStoryboard(job("viral-short", 45, "9:16", "en", undefined, "cyber"));
+  assert.equal(cyber.kleo_style, "cyber"); assert.ok(cyber.scenes.every((s) => !("image_prompt" in s)));
   const r2 = await generateStoryboard({ AI: { run() { throw new Error("must not be called"); } }, STORYBOARD_FIXTURE: "example" }, job("viral-short", 45, "9:16"));
   assert.equal(r2.fixture, true);
   assert.equal(fixtureStoryboard(job("viral-short", 45, "9:16")).scenes.at(-1).kind, "closing");
@@ -145,4 +152,78 @@ test("template → style mapping", () => {
   assert.equal(styleFor("cinematic-trailer", "16:9"), "cinema");
   assert.equal(styleFor("top-10", "16:9"), "illustrated");
   assert.equal(styleFor("explainer", "16:9"), "technical");
+});
+
+test("kleo style: explicit or picked from the prompt; keou style follows it", () => {
+  assert.equal(pickKleoStyle("viral-short", "How hackers steal your password with a fake login page"), "cyber");
+  assert.equal(pickKleoStyle("story-documentary", "The pirates who found an island missing from every map"), "cartoon");
+  assert.equal(pickKleoStyle("viral-short", "Is the new noise cancelling headphones worth the price? A quick review"), "realistic");
+  assert.equal(pickKleoStyle("product-review", "Something without keywords"), "realistic");
+  assert.equal(pickKleoStyle("explainer", "Something without keywords"), "cyber");
+  assert.equal(pickKleoStyle("motivational", "Something without keywords"), "cartoon");
+  assert.notEqual(pickKleoStyle("viral-short", "please make it a stickman"), "stickman", "stickman is never picked automatically");
+  assert.equal(keouStyleFor("cartoon", "explainer", "16:9"), "cinema");
+  assert.equal(keouStyleFor("realistic", "viral-short", "9:16"), "cinema");
+  assert.equal(keouStyleFor("cyber", "explainer", "16:9"), "technical");
+  assert.equal(keouStyleFor("cyber", "motivational", "16:9"), "editorial");
+  assert.equal(keouStyleFor("stickman", "viral-short", "9:16"), "stickman");
+  const p = planFor(job("story-documentary", 480, "16:9", "en", "The pirates who found an island", "cartoon"));
+  assert.equal(p.style, "cinema"); assert.equal(p.pictures, true); assert.ok(p.scenes[1] <= 36, `long cartoon videos keep a sane scene count, got ${p.scenes}`);
+});
+
+test("cartoon: image_prompt is requested per scene, trimmed to 240 chars, and its absence is fed back once", async () => {
+  let asked = 0, feedback = 0;
+  const env = fakeEnv((kind, user, attempt, inputs) => {
+    if (kind === "outline") return outlineFor(user, true);
+    asked++;
+    if (/missing "image_prompt"/.test(user)) feedback++;
+    const [from, to] = chunkRange(user);
+    const total = Number(/VIDEO OUTLINE \((\d+) scenes/.exec(user)[1]);
+    const schema = inputs.response_format.json_schema.properties.scenes.items;
+    assert.ok(schema.required.includes("image_prompt"), "the scene schema requires image_prompt for a picture style");
+    const scenes = [];
+    for (let i = from; i < to; i++) {
+      const s = { id: `${String(i + 1).padStart(2, "0")}-part`, kind: i === total - 1 ? "closing" : "cinema", chapter: `0${i + 1} PART`, accent: "amber", title: `Part ${i + 1}`, hl: "Part",
+        voice: `Scene ${i + 1} tells one small piece of the pirate story with a concrete detail and a twist.`, image: "img/hack.png",
+        beats: [{ kind: "type", text: "PIRATES", slam: true }, { kind: "icon", name: "wave", at: "pirate" }, { kind: "people", total: 8, lit: 3, at: "twist" }, { kind: "dialog", text: "Land ahead", at: "story" }] };
+      if (i === 1 && attempt === 1) { /* no image_prompt the first time */ } else s.image_prompt = i === 2 ? "A ".repeat(200) + "ship" : `A pirate ship anchored in a sandy bay, scene ${i + 1}`;
+      scenes.push(s);
+    }
+    return { scenes };
+  });
+  const r = await generateStoryboard(env, job("viral-short", 45, "9:16", "en", "The pirates who found an island missing from every map"));
+  const sb = r.storyboard;
+  assert.equal(validateStoryboard(sb, { format: "9:16", language: "en" }).ok, true);
+  assert.equal(sb.kleo_style, "cartoon"); assert.equal(sb.style, "cinema");
+  assert.ok(feedback >= 1, "the missing image_prompt was fed back to the model");
+  assert.equal(pictureScenes(sb).length, sb.scenes.length);
+  assert.ok(sb.scenes.every((s) => s.image_prompt.length <= 240 && !("image" in s)));
+  assert.ok(sb.scenes[2].image_prompt.length > 200 && sb.scenes[2].image_prompt.length <= 240 && !/\s$/.test(sb.scenes[2].image_prompt), "over-long prompts are cut at a word boundary");
+});
+
+test("stickman: story scenes with acts, cast, props and bubbles, repaired to the contract", async () => {
+  const env = fakeEnv((kind, user) => {
+    if (kind === "outline") return outlineFor(user, false);
+    const [from, to] = chunkRange(user);
+    const total = Number(/VIDEO OUTLINE \((\d+) scenes/.exec(user)[1]);
+    const scenes = [];
+    for (let i = from; i < to; i++) {
+      scenes.push({ id: `${String(i + 1).padStart(2, "0")}-part`, kind: i === total - 1 ? "closing" : "story", act: i === 0 ? "dance" : "alarm", cast: ["thief", "thief", "hero", "ghost"], props: ["keyfob", "keyfob", "car", "laser", "house", "pouch"],
+        fx: i === 0 ? "explode" : "relay", accent: i === 0 ? "cyan" : "red", bubble: i === 0 ? "This bubble is far too long for forty characters!!" : "Where is my car?", hl: "car", title: `Part ${i + 1}`,
+        voice: `Scene ${i + 1}: the thief walks up with a relay box and the car opens by itself.`, beats: [{ kind: "type", text: "X" }], items: ["a", "b", "c"] });
+    }
+    return { scenes };
+  });
+  const r = await generateStoryboard(env, job("viral-short", 45, "9:16", "en", "Relay attack on keyless cars", "stickman"));
+  const sb = r.storyboard;
+  assert.deepEqual(validateStoryboard(sb, { format: "9:16", language: "en" }).ok ? [] : validateStoryboard(sb, { format: "9:16", language: "en" }).errors, []);
+  assert.equal(sb.style, "stickman"); assert.equal(sb.kleo_style, "stickman"); assert.equal(r.style, "stickman");
+  assert.ok(sb.scenes.length >= 3 && sb.scenes.at(-1).kind === "closing" && sb.scenes.slice(0, -1).every((s) => s.kind === "story"));
+  const s0 = sb.scenes[0];
+  assert.equal(s0.act, undefined, "unknown act dropped (engine default idle)"); assert.equal(s0.accent, undefined); assert.equal(s0.fx, undefined); assert.equal(s0.bubble, undefined);
+  assert.deepEqual(s0.cast, ["hero", "thief"]); assert.deepEqual(s0.props, ["keyfob", "car", "house"]);
+  assert.equal(s0.beats, undefined); assert.equal(s0.items, undefined);
+  const s1 = sb.scenes[1];
+  assert.ok(STORY_ACTS.includes(s1.act)); assert.equal(s1.fx, "relay"); assert.equal(s1.accent, "red"); assert.equal(s1.bubble, "Where is my car?");
+  assert.equal(sb.scenes.at(-1).cast, undefined, "closing scenes carry no cast");
 });

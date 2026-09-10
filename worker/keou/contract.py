@@ -262,6 +262,12 @@ def validate(path, approved=True):
         if s['kind'] == 'image':
             local_asset(path, s.get('image'))
             text(s.get('image_credit'), label + ' image_credit', 180)
+        elif 'image' in s:
+            # Kleo backdrop: a full-bleed animated picture behind cinema, story and closing
+            # scenes. Same local-asset rules as the image kind; other kinds never carry one.
+            if s['kind'] not in {'cinema', 'story', 'closing'}:
+                raise ValueError(label + ': image is only accepted on image, cinema, story and closing scenes')
+            local_asset(path, s['image'])
         finite(s.get('hold', .65), .15, 3, label + ' hold')
     if scenes[-1]['kind'] != 'closing':
         raise ValueError('Last scene must be a closing')

@@ -169,7 +169,9 @@
     for (let y = -72 + drift; y < H; y += 72) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
     for (let y = 0; y < H; y += 6) { ctx.fillStyle = PAL.green + '05'; ctx.fillRect(0, y, W, 1); }
   };
-  S.header = function (i, t) { A.raw(A.project.brand, 60, 212, 28, PAL.green + 'aa', 500, 'left', 700, 'KeouMono'); };
+  function brand() { A.raw(A.project.brand, 60, 212, 28, PAL.green + 'aa', 500, 'left', 700, 'KeouMono'); }
+  // Kleo: on a picture slide the brand is drawn by the scene itself, after the backdrop (film.js draws the header first)
+  S.header = function (i, t) { const s = A.timeline.scenes[i]; if (s && s.image) return; brand(); };
   S.progress = function (t) { const W = A.W; A.line(60, 14, W - 60, 14, PAL.green + '22', 3); A.line(60, 14, 60 + (W - 120) * clamp(t / A.timeline.duration), 14, PAL.green, 3); };
 
   function headline(s, u) {
@@ -180,6 +182,7 @@
     lines.forEach((ln, i) => {
       const a = ease((u - i * .08) / .5), y = y0 + i * size * 1.08 + (1 - a) * 24;
       ctx.save(); ctx.globalAlpha *= a; ctx.font = `800 ${size}px Manrope`; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+      if (s.image) { ctx.shadowColor = '#000'; ctx.shadowBlur = 14 }             // Kleo: headline over a picture
       const words = ln.split(' '), total = ctx.measureText(ln).width, space = ctx.measureText(' ').width; let x = (W - total) / 2;
       if (x < 48) A.issues.push({ time: A.frameTime, text: ln, error: 'Headline bounds' });
       for (const w of words) { ctx.fillStyle = hl && w.replace(/[^A-Z0-9%$]/g, '') === hl.replace(/[^A-Z0-9%$]/g, '') ? PAL.green : PAL.white; ctx.fillText(w, x, y); x += ctx.measureText(w).width + space; }
@@ -209,6 +212,7 @@
     const groundY = 1250, ctx = A.ctx, crowd = cast.length > 1 || props.includes('house');
     const mirrored = fx === 'signal';                                  // hero left, thief at the door, house right
     const heroX = mirrored ? 200 : (crowd ? 430 : 330), THIEF1 = mirrored ? 560 : 110, THIEF2 = 770;
+    if (s.image) { if (A.backdrop) A.backdrop(s, u, { top: .65, bottom: .8, dim: .38 }); brand(); }   // Kleo: the picture is the set behind the character
     headline(s, u);
     ctx.save(); ctx.globalAlpha *= ease(u / .45);
     stroke(PAL.dim, 4); ctx.beginPath(); ctx.moveTo(60, groundY + 2); ctx.lineTo(W - 150, groundY + 2); ctx.stroke();     // the ground line
@@ -244,6 +248,7 @@
 
   S.closing = function (s, u, t) {
     const W = A.W, groundY = 1250, ctx = A.ctx;
+    if (s.image) { if (A.backdrop) A.backdrop(s, u, { top: .65, bottom: .8, dim: .38 }); brand(); }
     headline(s, u);
     stroke(PAL.dim, 4); ctx.beginPath(); ctx.moveTo(60, groundY + 2); ctx.lineTo(W - 150, groundY + 2); ctx.stroke();
     const hero = figure(420, groundY, 'wave', u, t, s.end - s.start, PAL.white, 1.05, false);

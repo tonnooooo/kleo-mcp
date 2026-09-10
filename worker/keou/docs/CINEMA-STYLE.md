@@ -26,8 +26,9 @@ pace of ~2.8 words per second.
 | `voice` | the narrated line (captions come from it; the caption keyword is `hl` when present, else the longest meaningful word) |
 | `beats` | 1–8 hero visuals played in sequence across the scene. Pace rules built in: every beat is a hard cut with an accent flash (no fades), the last beat holds until the next scene, any beat longer than 1.3 s gets an automatic zoom punch-in (a second one at 2.6 s), and every reveal inside a beat (labels, arrows, typing, bar rise, dialog stagger) is scaled to the beat's length so a 0.8 s shot still lands its payload before the cut |
 | `hold` | silence after the line, seconds. Shorts honour it down to 0.15 (the last scene keeps ≥0.4 before the loop); 16:9 keeps the editorial floor of 0.65 / 1.5 |
+| `image` (Kleo) | optional local picture (`img/<sceneId>.png`, same asset rules as the image kind). Drawn **full-bleed under the beats**: cover-fit, a slow Ken Burns zoom from 1.0 to 1.08 across the scene, a soft pan whose direction is derived from the scene id, then a dark dim + top/bottom gradients + vignette so the chapter label (switched from muted to pale with a soft shadow), the beats and the captions keep their contrast. Kleo's worker sets this field itself from the scene's `image_prompt`; a missing picture simply falls back to the plain cyber background |
 
-The closing scene (`"kind": "closing"`) draws the CTA beat: red SUBSCRIBE, comment box, toggles.
+The closing scene (`"kind": "closing"`) draws the CTA beat: red SUBSCRIBE, comment box, toggles; it accepts `image` the same way.
 
 ## Beats
 

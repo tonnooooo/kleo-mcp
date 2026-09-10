@@ -41,7 +41,9 @@
   S.chrome = function (s, i, t) {
     const ctx = A.ctx, G = geo(), acc = COL[s.accent || 'green'];
     const [lx, ly, ls] = G.label; ctx.fillStyle = acc; ctx.beginPath(); ctx.arc(lx + 5, ly - ls * .35, 4, 0, TAU); ctx.fill();
-    spaced(((s.chapter) || '').toUpperCase(), lx + 22, ly, ls, MUTED, 'left', ls * .28, 'Manrope', 700);
+    // on a Kleo picture the muted label would sink into the photo: use the pale tone with a soft shadow, no glow
+    if (s._picture) { ctx.save(); ctx.shadowColor = '#000'; ctx.shadowBlur = 10; spaced(((s.chapter) || '').toUpperCase(), lx + 22, ly, ls, PALE, 'left', ls * .28, 'Manrope', 700); ctx.restore() }
+    else spaced(((s.chapter) || '').toUpperCase(), lx + 22, ly, ls, MUTED, 'left', ls * .28, 'Manrope', 700);
     const [bx0, by0, bx1, by1] = G.brackets, L = 60; stroke('#ffffff14', 2);
     for (const [x, y, dx, dy] of [[bx0, by0, 1, 1], [bx1, by0, -1, 1], [bx0, by1, 1, -1], [bx1, by1, -1, -1]]) { ctx.beginPath(); ctx.moveTo(x, y + dy * L); ctx.lineTo(x, y); ctx.lineTo(x + dx * L, y); ctx.stroke() }
   };
@@ -138,6 +140,7 @@
   }
   function beat(b, s, k, ub, bd, t, G, n = 1) {
     const ctx = A.ctx, acc = COL[s.accent || 'green'], [hx, hy, hw, hh] = G.hero;
+    const MU = s._picture ? PALE : MUTED;                                       // Kleo: muted labels sink into a photo, use the pale tone there
     const first = k === 0, last = k === n - 1;
     const enter = first ? 1 : ease(ub / (b.slam ? .1 : .16));                  // every beat is a cut, not a fade
     const exit = last ? 1 : 1 - ease((ub - (bd - .1)) / .1);                   // the last beat holds until the next scene
@@ -168,7 +171,7 @@
         words.forEach((w, i) => { const wa = slam ? 1 : ease((ub - i * .12 * T) / .3), hl = w === (b.hl || '').toUpperCase(); ctx.save(); ctx.globalAlpha *= wa; glowOn(hl ? acc : '#ffffff', 22); spaced(w, hx, top + ic + i * lh + lh / 2 + fs * .36 + (1 - wa) * 18, fs, hl ? acc : WHITE, 'center', fs * .06, font, 800); glowOff(); ctx.restore() });
         break; }
       case 'terminal': { const w = Math.min(hw * .94, 900), h = 70 + (b.lines.length) * 52 + 30, x = hx - w / 2, y = hy - h / 2; ctx.fillStyle = '#0a0f0d'; rr(x, y, w, h, 12); ctx.fill(); stroke(acc + '66', 2); rr(x, y, w, h, 12); ctx.stroke();
-        spaced(b.label || 'PROMPT', x + 26, y + 34, 16, MUTED, 'left', 4);
+        spaced(b.label || 'PROMPT', x + 26, y + 34, 16, MU, 'left', 4);
         const chars = b.lines.reduce((q, ln) => q + ln.length + 4, 0), cps = Math.max(40, chars / Math.max(bd * .65, .1));   // finish typing inside the beat
         let budget = Math.max(0, Math.floor((ub - .2 * T) * cps)), yy = y + 92;
         b.lines.forEach((ln, i) => { const shown = ln.slice(0, Math.max(0, budget)); budget -= ln.length + 4; A.mono('› ' + shown, x + 26, yy + i * 52, 26, i === 0 ? WHITE : acc, 'left'); if (budget >= -3 && budget < 0 && Math.floor(ub * 2.5) % 2 === 0) { ctx.fillStyle = acc; ctx.fillRect(x + 40 + ctx.measureText('› ' + shown).width, yy + i * 52 - 24, 12, 30) } });
@@ -176,7 +179,7 @@
       case 'steps': { const m = b.items.length, bw = Math.min(200, (hw - (m - 1) * 60) / m), gap = 60, x0 = hx - (m * bw + (m - 1) * gap) / 2;
         b.items.forEach((it, i) => { const lit = i < (b.lit ?? 0), sa = ease((ub - i * .22 * T) / .35), x = x0 + i * (bw + gap), y = hy - bw / 2; ctx.save(); ctx.globalAlpha *= sa;
           ctx.fillStyle = lit ? acc + '18' : '#0a0f0d'; rr(x, y, bw, bw, 14); ctx.fill(); stroke(lit ? acc : '#ffffff33', 2.5); if (lit) glowOn(acc, 22); rr(x, y, bw, bw, 14); ctx.stroke(); glowOff();
-          spaced(`0${i + 1}`, x + 18, y + 34, 18, lit ? acc : MUTED, 'left', 3); ctx.font = `800 ${Math.min(30, bw * .16)}px Manrope`; ctx.textAlign = 'center'; ctx.fillStyle = lit ? WHITE : PALE; ctx.fillText(it.toUpperCase(), x + bw / 2, y + bw * .62);
+          spaced(`0${i + 1}`, x + 18, y + 34, 18, lit ? acc : MU, 'left', 3); ctx.font = `800 ${Math.min(30, bw * .16)}px Manrope`; ctx.textAlign = 'center'; ctx.fillStyle = lit ? WHITE : PALE; ctx.fillText(it.toUpperCase(), x + bw / 2, y + bw * .62);
           if (i < m - 1) { ctx.setLineDash([10, 12]); stroke('#ffffff44', 3); ctx.beginPath(); ctx.moveTo(x + bw + 10, hy); ctx.lineTo(x + bw + gap - 10, hy); ctx.stroke(); ctx.setLineDash([]) } ctx.restore() }); break; }
       case 'people': { const m = Math.min(b.total, 12), cell = Math.min(110, hw / m), x0 = hx - (m * cell) / 2 + cell / 2;
         for (let i = 0; i < m; i++) { const lit = i < b.lit, pa = ease((ub - i * .07 * T) / .3), x = x0 + i * cell; ctx.save(); ctx.globalAlpha *= pa; if (lit) { const g = ctx.createRadialGradient(x, hy - 20, 5, x, hy - 20, cell * .7); g.addColorStop(0, acc + '55'); g.addColorStop(1, acc + '00'); ctx.fillStyle = g; ctx.fillRect(x - cell, hy - cell - 20, cell * 2, cell * 2) } icon('person', x, hy - 20, cell * .85, t, acc, { color: lit ? acc : (i === m - 1 && b.last ? WHITE : '#ffffff44') }); ctx.restore() }
@@ -185,14 +188,14 @@
       case 'bars': { const m = b.labels.length, max = Math.max(...b.values), bw = Math.min(150, hw / (m * 1.8)), gap = bw * .8, x0 = hx - (m * bw + (m - 1) * gap) / 2, base = hy + hh * .28, top = hy - hh * .32, rise = Math.min(1.1, bd * .55), stg = Math.min(.2, bd * .1);
         b.labels.forEach((lb, i) => { const p = ease((ub - i * stg) / rise), v = b.values[i] / max * p, x = x0 + i * (bw + gap), h = (base - top) * v, col = i === m - 1 ? acc : '#ffffff55'; ctx.fillStyle = col; if (i === m - 1) glowOn(acc, 24); rr(x, base - h, bw, h, 8); ctx.fill(); glowOff();
           const num = (p >= .98 || ub >= bd - .25) ? b.values[i] : Math.round(b.values[i] * p);           // the true figure is on screen before the cut
-          spaced(String(num), x + bw / 2, base - h - 16, 26, i === m - 1 ? acc : PALE, 'center', 2, 'KeouMono', 700); spaced(lb.toUpperCase(), x + bw / 2, base + 36, 17, MUTED, 'center', 3) });
+          spaced(String(num), x + bw / 2, base - h - 16, 26, i === m - 1 ? acc : PALE, 'center', 2, 'KeouMono', 700); spaced(lb.toUpperCase(), x + bw / 2, base + 36, 17, MU, 'center', 3) });
         stroke('#ffffff22', 2); ctx.beginPath(); ctx.moveTo(hx - hw * .46, base); ctx.lineTo(hx + hw * .46, base); ctx.stroke(); break; }
       case 'timeline': { const m = b.labels.length, x0 = hx - hw * .42, x1 = hx + hw * .42, y = hy, kf = ease(ub / Math.min(1.2, bd * .6)); stroke('#ffffff33', 3); ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke(); stroke(acc, 3); ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x0 + (x1 - x0) * kf, y); ctx.stroke();
-        b.labels.forEach((lb, i) => { const x = x0 + (x1 - x0) * i / (m - 1), on = kf >= i / (m - 1) - .01; if (b.icons) icon(b.icons[i], x, y - 135, 150, t, acc, {}, on ? 1 : .35); ctx.fillStyle = on ? acc : '#ffffff44'; if (on) glowOn(acc, 18); ctx.beginPath(); ctx.arc(x, y, 9, 0, TAU); ctx.fill(); glowOff(); spaced(`0${i + 1}`, x, y - 30, 15, MUTED, 'center', 3); spaced(lb.toUpperCase(), x, y + 44, 18, on ? WHITE : MUTED, 'center', 3) });
+        b.labels.forEach((lb, i) => { const x = x0 + (x1 - x0) * i / (m - 1), on = kf >= i / (m - 1) - .01; if (b.icons) icon(b.icons[i], x, y - 135, 150, t, acc, {}, on ? 1 : .35); ctx.fillStyle = on ? acc : '#ffffff44'; if (on) glowOn(acc, 18); ctx.beginPath(); ctx.arc(x, y, 9, 0, TAU); ctx.fill(); glowOff(); spaced(`0${i + 1}`, x, y - 30, 15, MU, 'center', 3); spaced(lb.toUpperCase(), x, y + 44, 18, on ? WHITE : MU, 'center', 3) });
         for (let q = 0; q < 3; q++) { const ph = (t * .5 + q / 3) % 1; ctx.save(); ctx.fillStyle = acc; ctx.globalAlpha *= .8; ctx.beginPath(); ctx.arc(x0 + (x1 - x0) * ph, y, 5, 0, TAU); ctx.fill(); ctx.restore() } break; }
       case 'dialog': { const m = b.count || 3, w = Math.min(hw * .78, 700), h = 120, step = h + 16; for (let i = 0; i < m; i++) { const da = ease((ub - i * .28 * T) / (.3 * T)), x = hx - w / 2 + (i - (m - 1) / 2) * 18, y = hy - (m * step) / 2 + i * step; ctx.save(); ctx.globalAlpha *= da; ctx.fillStyle = '#0a0f0d'; rr(x, y, w, h, 12); ctx.fill(); stroke(i === m - 1 ? acc : '#ffffff44', 2.5); if (i === m - 1) glowOn(acc, 18); rr(x, y, w, h, 12); ctx.stroke(); glowOff(); A.mono(b.text, x + w / 2, y + h / 2 + 14, 40, i === m - 1 ? WHITE : PALE, 'center'); ctx.restore() } break; }
       case 'cta': { const w = Math.min(hw, 760), x = hx - w / 2; const ba = ease(ub / .35); ctx.save(); ctx.globalAlpha *= ba; ctx.fillStyle = COL.red; glowOn(COL.red, 30); rr(hx - 170, hy - 150, 340, 74, 10); ctx.fill(); glowOff(); ctx.font = `800 30px Manrope`; ctx.textAlign = 'center'; ctx.fillStyle = WHITE; ctx.fillText('SUBSCRIBE', hx, hy - 103); ctx.restore();
-        ctx.fillStyle = '#0a0f0d'; rr(x, hy - 30, w, 150, 12); ctx.fill(); stroke('#ffffff33', 2); rr(x, hy - 30, w, 150, 12); ctx.stroke(); spaced((b.label || 'ADD A COMMENT').toUpperCase(), x + 24, hy + 6, 16, MUTED, 'left', 4);
+        ctx.fillStyle = '#0a0f0d'; rr(x, hy - 30, w, 150, 12); ctx.fill(); stroke('#ffffff33', 2); rr(x, hy - 30, w, 150, 12); ctx.stroke(); spaced((b.label || 'ADD A COMMENT').toUpperCase(), x + 24, hy + 6, 16, MU, 'left', 4);
         (b.toggles || []).forEach((tg, i) => { const tw = 200, tx = x + 24 + i * (tw + 20), ty = hy + 40, on = i === 0 && Math.floor(t * 1.5) % 2 === 0; ctx.fillStyle = on ? acc + '22' : '#ffffff08'; rr(tx, ty, tw, 56, 28); ctx.fill(); stroke(on ? acc : '#ffffff33', 2); rr(tx, ty, tw, 56, 28); ctx.stroke(); ctx.font = `700 22px Manrope`; ctx.textAlign = 'center'; ctx.fillStyle = on ? acc : PALE; ctx.fillText(tg, tx + tw / 2, ty + 36) }); break; }
     }
     ctx.restore();
@@ -204,6 +207,7 @@
     const text = s.title.toUpperCase(), hl = (s.hl || '').toUpperCase(), fs = G.lockupSize; ctx.font = `800 ${fs}px Manrope`;
     const words = text.split(' '), sp = ctx.measureText(' ').width, w = words.reduce((acc2, wd) => acc2 + ctx.measureText(wd).width, 0) + sp * (words.length - 1);
     let x = G.W / 2 - w / 2 + 22, y = G.lockupY; ctx.save(); ctx.globalAlpha *= a; ctx.translate((1 - a) * -24, 0);
+    if (s._picture) { ctx.shadowColor = '#000'; ctx.shadowBlur = 16 }                 // Kleo: keep the title readable on the picture
     ctx.fillStyle = COL.cyan; ctx.fillRect(x - 40, y - fs * .82, 6, fs * 1.0);
     for (const wd of words) { ctx.fillStyle = wd.replace(/[^A-Z0-9%$]/g, '') === hl.replace(/[^A-Z0-9%$]/g, '') ? acc : WHITE; ctx.textAlign = 'left'; ctx.fillText(wd, x, y); x += ctx.measureText(wd).width + sp } ctx.restore();
   }
@@ -223,7 +227,10 @@
     return starts;
   }
   S.scene = function (s, u, t, i) {
-    const G = geo(); s._index = i; S.chrome(s, i, t);
+    const G = geo(); s._index = i;
+    // Kleo: a full-bleed animated picture under everything (cinema and closing scenes with scene.image)
+    s._picture = !!(s.image && A.backdrop && A.backdrop(s, u, { top: G.p ? .6 : .55, bottom: G.p ? .78 : .72, dim: .32 }));
+    S.chrome(s, i, t);
     const beats = (s.beats && s.beats.length) ? s.beats : (s.kind === 'closing' ? [{ kind: 'cta', label: 'ADD A COMMENT', toggles: [s.button || 'SUBSCRIBE', A.project.brand] }] : []);
     const dur = s.end - s.start; if (!beats.length) { lockup(s, u, dur, G); return }
     const starts = beatStarts(s, beats, dur); let k = 0; for (let j = 0; j < starts.length; j++) if (u >= starts[j]) k = j;

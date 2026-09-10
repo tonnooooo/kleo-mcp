@@ -17,7 +17,9 @@
  *   VAST_MIN_CPU (16 core) e VAST_MIN_RAM_GB (32): requisiti minimi della macchina, perché il render è lavoro di CPU,
  *   VAST_BOOTSTRAP_URL (script del worker da scaricare al boot: non serve, l'immagine lo contiene già),
  *   KLEO_WIDTH_PORTRAIT (2160) e KLEO_WIDTH_LANDSCAPE (1920): larghezza in pixel dei video 9:16 e 16:9,
- *   BRAND ("Kleo": il marchio mostrato nei video), MOCK_TOTAL_SECONDS (durata del render finto in modalità mock).
+ *   BRAND ("Kleo": il marchio mostrato nei video), MOCK_TOTAL_SECONDS (durata del render finto in modalità mock),
+ *   IMAGE_MAX_PER_JOB (10: immagini generate al massimo per ogni video negli stili cartoon/realistic),
+ *   IMAGE_FIXTURE ("1" solo in locale: immagini segnaposto al posto di Workers AI, vedi .dev.vars).
  */
 {
   "$schema": "node_modules/wrangler/config-schema.json",
@@ -34,7 +36,7 @@
     { "binding": "DB", "database_name": "kleo-db", "database_id": "ffaa0767-9df1-4e5c-84f2-552e37851d63", "migrations_dir": "migrations" } // utenti, crediti, codici invito, video, log
   ],
   "r2_buckets": [ { "binding": "RENDERS", "bucket_name": "kleo-renders" } ], // i file dei video (MP4, .srt, thumbnail), cancellati dopo RESULT_TTL_DAYS
-  "ai": { "binding": "AI" }, // Workers AI: scrive lo storyboard dal prompt (gratis entro la quota giornaliera; modello in AI_MODEL)
+  "ai": { "binding": "AI" }, // Workers AI: scrive lo storyboard dal prompt (gratis entro la quota giornaliera; modello in AI_MODEL) e genera le immagini delle scene (IMAGE_MODEL_*)
   "triggers": { "crons": ["* * * * *"] }, // ogni minuto: storyboard dei video in coda, noleggio GPU, controllo dei render, pulizia dei file scaduti
   "vars": {
     "PUBLIC_URL": "https://kleo-mcp.plural-juice.workers.dev", // indirizzo pubblico del server; l'indirizzo MCP da dare ai client è PUBLIC_URL + /mcp
@@ -42,6 +44,8 @@
     "POOL_AFTER_MIN": "3", // in modalità vast: un video fermo in coda da tanti minuti può essere preso dal runner gratuito di GitHub Actions (render-pool.yml)
     "VAST_RETRY_MIN": "30", // se Vast.ai risponde "nessuna offerta" o "credito finito", non lo si interpella per tanti minuti (intanto lavorano i runner)
     "AI_MODEL": "@cf/meta/llama-4-scout-17b-16e-instruct", // modello Workers AI che scrive lo storyboard
+    "IMAGE_MODEL_CARTOON": "@cf/black-forest-labs/flux-1-schnell", // Workers AI: immagini dello stile "cartoon" (≈58 neuroni ≈ $0.0006 a immagine, 1024², max 10 per video)
+    "IMAGE_MODEL_REALISTIC": "@cf/leonardo/phoenix-1.0", // Workers AI: immagini dello stile "realistic" (≈2.300 neuroni ≈ $0.025 a immagine a 768x1344; alternativa gratuita in beta: @cf/bytedance/stable-diffusion-xl-lightning)
     "MAX_CONCURRENT_GPUS": "5", // massimo GPU accese in totale: è il tetto di spesa oraria
     "MAX_JOBS_PER_USER": "2", // massimo video in corso per ogni utente
     "JOB_TIMEOUT_MIN": "120", // dopo tanti minuti un render è considerato fallito, la GPU viene distrutta e i crediti restituiti

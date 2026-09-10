@@ -76,3 +76,41 @@ Supported. kokoro 0.9.4 maps `it` → lang_code `i` (`KPipeline.ALIASES`/`LANG_C
 `'it': {'if_sara', 'im_nicola'}` and `prepare.py` maps language `it` to `'i'` (en stays `a`/`b`, fr `f`).
 Verified in the container offline: both voices synthesize "Il motore di rendering è pronto e funziona
 senza connessione." (4.2 s / 4.6 s) and faster-whisper transcribes the sentence back verbatim.
+
+## Kleo pictures (cartoon / realistic)
+
+A Kleo storyboard is a Keou project plus a top-level `kleo_style` (`cartoon` | `realistic` | `cyber` | `stickman`,
+default cyber) and, per scene, an optional `image_prompt` (≤ 240 chars). Clients never set `scene.image`: for
+`cartoon` and `realistic` the **server** generates one picture per prompted scene (Workers AI, once per job, at
+most 10) and the **worker** attaches them. Right after `build_project`, `prepare_project()` in `kleo_worker.py`:
+
+1. `POST /internal/jobs/{id}/images` (empty body, the job secret, worker User-Agent) →
+   `{"images": {"<sceneId>": "<signed download url>"}, "missing": ["<sceneId>", ...]}`;
+   a 5xx, a network error or a garbled reply is retried **once after `KLEO_IMAGES_RETRY_WAIT_S`** (20 s), a 4xx is final;
+2. downloads every link (same User-Agent, no bearer: the link is signed) into
+   `<engine>/projects/<id>/img/<sceneId>.<ext>` — the extension is sniffed from the bytes (png / jpg / webp), anything
+   else (an HTML error page, an empty body, > 25 MB) is discarded;
+3. sets `scene.image = "img/<sceneId>.<ext>"`, strips `kleo_style` and every `image_prompt`, writes `project.json`
+   and reports `progress("script", 5, "N pictures ready, M missing")`.
+
+The engine then draws the picture as a full-bleed Ken Burns background behind cinema / closing scenes (and behind the
+stickman on story scenes); `contract.py` accepts `image` on cinema, story and closing scenes with the usual
+`local_asset` rules. Nothing here is fatal: a scene without picture renders exactly as before, `cyber` / `stickman`
+never call the endpoint, and any `scene.image` a client managed to send is dropped by `build_project` (no asset
+travels with a job). `KLEO_IMAGES_TIMEOUT_S` (300) bounds the images call: the server generates on the first request.
+
+The worker script is baked into the image (`/opt/kleo/kleo_worker.py`): after editing it either rebuild (last layer,
+seconds) or run the e2e with `KLEO_MOUNT_WORKER=1`.
+
+Tests, none of which render anything:
+
+- `python3 worker/test_kleo_worker_images.py -v` (also `node --test test/worker-images.test.mjs`): a local
+  `http.server` plays the API and the signed `/dl` route (a real PNG, a JPEG, a 404, an expired link answering HTML);
+  asserts the files land in `<project>/img/`, `scene.image` is set, the Kleo fields are stripped, the retry / 4xx
+  paths, the progress message, and that the written `project.json` passes the engine's own `contract.validate()`.
+- `node test/worker-e2e.mjs` (podman + the image + ffprobe, ~5 min on CPU) injects the short-relay-cinema storyboard as
+  `kleo_style: cartoon` with an `image_prompt` on `01-gone` and `05-fix`, starts `wrangler dev --var IMAGE_FIXTURE:1`
+  (deterministic placeholder PNGs, no Workers AI), checks `POST /internal/jobs/:id/images` and the PNG links itself,
+  then asserts the worker log says `2 pictures ready, 0 missing`.
+- `test/fixtures/cartoon-pirates.json`: the first real cartoon Short (cinema, 5 scenes, ~105 words, `am_michael`,
+  an `image_prompt` on every scene with the same captain, ship and parrot throughout).

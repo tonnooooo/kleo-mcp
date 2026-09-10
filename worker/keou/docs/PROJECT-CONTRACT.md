@@ -37,6 +37,7 @@ Required: unique slug `id` (max 50), `kind`, nonempty `title` (max 90), and `voi
 | steps / list | Exactly 3 items, each ≤42 |
 | quote | quote ≤120 |
 | closing | button or detail, never both |
+| cinema / story / closing | Optional `image` (Kleo backdrop): a local picture drawn full-bleed behind the scene with a slow Ken Burns zoom (1.0 → 1.08), a soft pan and a dark gradient/vignette overlay. Same asset rules as the image kind. Any other kind carrying `image` is rejected. In the editorial styles a closing `image` is validated but not drawn |
 
 Image files must live inside the project: .png, .jpg, .jpeg, .webp or .svg. SVG must be self-contained without scripts, event handlers, foreign objects or remote references. Assets copied from an example must be updated if the subject changes.
 

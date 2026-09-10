@@ -24,7 +24,44 @@ function block(value,x,y,{size=80,min=48,max=850,lines=3,color=C.white,align='le
  if(parts.length>lines)issues.push({text:value,error:'Too many lines',time:frameTime});
  parts.forEach((p,i)=>{let a=ease((u-i*.075)/.55);ctx.save();ctx.globalAlpha*=a;raw(p,x,y+i*size*1.18+(1-a)*22,size,color,weight,align,max);ctx.restore()});return parts.length*size*1.18;
 }
-function stickApi(){return {ctx,W,H,project,timeline,issues,frameTime,raw:(s,x,y,size,color,weight,align,max,family)=>{const f=fontFamily;if(family)fontFamily=family;raw(s,x,y,size,color,weight,align,max);fontFamily=f},block,wrap,box,line,ease,clamp,mono:(s,x,y,size,color,align)=>{ctx.font=`500 ${size}px KeouMono`;ctx.textAlign=align;ctx.textBaseline='alphabetic';ctx.fillStyle=color;const w=ctx.measureText(s).width,left=align==='left'?x:align==='right'?x-w:x-w/2;if(left<48||left+w>W-48||y-size<30||y>H-65)issues.push({time:frameTime,text:s,error:'Story text bounds'});ctx.fillText(s,x,y)},label:(s,x,y,size,color,align)=>{ctx.font=`600 ${size}px Manrope`;ctx.textAlign=align;ctx.textBaseline='alphabetic';ctx.fillStyle=color;ctx.fillText(s,x,y)}}}
+/* Kleo full-bleed picture (cinema/closing/story scenes with scene.image): cover-fit,
+   a slow Ken Burns zoom from 1.0 to 1.08 across the scene, a soft pan whose direction
+   is derived from the scene id, then a dark gradient + vignette so the beats, chapter
+   label, headline and captions drawn afterwards keep their contrast. Deterministic:
+   a pure function of (scene, u). Returns true when a picture was drawn. */
+/* @kleo-pure backdropPlan — pure geometry, no canvas: test/engine-image-plan.test.mjs evaluates this block. */
+const BACKDROP_ZOOM=.08;                                            // Ken Burns: 1.0 at the first frame, 1.08 at the last
+function backdropSeed(id){return [...String(id||'')].reduce((a,ch)=>(a*31+ch.charCodeAt(0))>>>0,7)}
+/* Cover-fit + Ken Burns plan for a picture of iw×ih on a W×H frame at scene progress p (0..1).
+   The pan direction comes from the seed (a scene id hash) so every scene drifts differently but
+   deterministically. The returned rect always covers the whole frame: the pan never exceeds
+   60% of the overflow that the cover-fit and the zoom leave on each side. */
+function backdropPlan(iw,ih,W,H,p,seed=7){
+ p=Math.min(1,Math.max(0,Number(p)||0));const sp=p*p*(3-2*p);
+ const dirX=seed%2?1:-1,dirY=(seed>>1)%2?1:-1;
+ const zoom=1+BACKDROP_ZOOM*p,z=Math.max(W/iw,H/ih)*zoom,w=iw*z,h=ih*z;
+ const ox=Math.max(0,(w-W)/2),oy=Math.max(0,(h-H)/2);
+ const panX=dirX*Math.min(ox*.6,W*.04)*(2*sp-1),panY=dirY*Math.min(oy*.6,H*.03)*(2*sp-1);
+ return {x:W/2+panX-w/2,y:H/2+panY-h/2,w,h,zoom,panX,panY};
+}
+/* @end backdropPlan */
+/* Kleo full-bleed picture (cinema/closing/story scenes with scene.image): cover-fit, a slow
+   Ken Burns zoom across the scene, a soft pan, then a flat dim + top/bottom gradients + vignette
+   so the beats, chapter label, headline and captions drawn afterwards keep their contrast.
+   A hard cut by default (fade=0), like every other cinema transition. Returns true when a
+   picture was drawn so the caller can switch to its "over a photo" text treatment. */
+function backdrop(s,u,{top=.55,bottom=.72,dim=.3,fade=0}={}){
+ const img=s.image&&images[s.image];if(!img||!img.width||!img.height)return false;
+ const dur=Math.max(s.end-s.start,.1),r=backdropPlan(img.width,img.height,W,H,u/dur,backdropSeed(s.id));
+ ctx.save();if(fade>0)ctx.globalAlpha*=ease(u/fade);ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
+ ctx.drawImage(img,r.x,r.y,r.w,r.h);
+ ctx.fillStyle=`rgba(0,0,0,${dim})`;ctx.fillRect(0,0,W,H);
+ const gt=ctx.createLinearGradient(0,0,0,H*.3);gt.addColorStop(0,`rgba(0,0,0,${top})`);gt.addColorStop(1,'rgba(0,0,0,0)');ctx.fillStyle=gt;ctx.fillRect(0,0,W,H*.3);
+ const gb=ctx.createLinearGradient(0,H*.55,0,H);gb.addColorStop(0,'rgba(0,0,0,0)');gb.addColorStop(1,`rgba(0,0,0,${bottom})`);ctx.fillStyle=gb;ctx.fillRect(0,H*.55,W,H*.45);
+ const v=ctx.createRadialGradient(W/2,H/2,Math.min(W,H)*.4,W/2,H/2,Math.max(W,H)*.72);v.addColorStop(0,'rgba(0,0,0,0)');v.addColorStop(1,'rgba(0,0,0,.6)');ctx.fillStyle=v;ctx.fillRect(0,0,W,H);
+ ctx.restore();return true;
+}
+function stickApi(){return {ctx,W,H,project,timeline,issues,frameTime,images,backdrop,raw:(s,x,y,size,color,weight,align,max,family)=>{const f=fontFamily;if(family)fontFamily=family;raw(s,x,y,size,color,weight,align,max);fontFamily=f},block,wrap,box,line,ease,clamp,mono:(s,x,y,size,color,align)=>{ctx.font=`500 ${size}px KeouMono`;ctx.textAlign=align;ctx.textBaseline='alphabetic';ctx.fillStyle=color;const w=ctx.measureText(s).width,left=align==='left'?x:align==='right'?x-w:x-w/2;if(left<48||left+w>W-48||y-size<30||y>H-65)issues.push({time:frameTime,text:s,error:'Story text bounds'});ctx.fillText(s,x,y)},label:(s,x,y,size,color,align)=>{ctx.font=`600 ${size}px Manrope`;ctx.textAlign=align;ctx.textBaseline='alphabetic';ctx.fillStyle=color;ctx.fillText(s,x,y)}}}
 function background(t){
  if(project.style==='cinema'){window.KEOU_CINEMA.attach(stickApi());window.KEOU_CINEMA.background(t);return}
  if(project.style==='stickman'){window.KEOU_STICKMAN.attach(stickApi());window.KEOU_STICKMAN.background(t);return}

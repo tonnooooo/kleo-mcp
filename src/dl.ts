@@ -3,12 +3,18 @@ import { getJob, listFiles } from "./db";
 import { hmacHex, safeEqual } from "./util";
 import { getFile } from "./storage";
 
+/** File names a link may point to: the render outputs, and the scene pictures the worker downloads (img/<sceneId>.png|jpg). */
+const NAME_RE = /^(?:[A-Za-z0-9._-]+|img\/[a-z0-9-]{1,50}\.(?:png|jpg))$/;
+
 /** GET /dl/:jobId/:file?exp=<unix>&sig=<hmac>  — signed, time-limited download straight from R2. */
 export async function handleDownload(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
-  const m = url.pathname.match(/^\/dl\/([A-Za-z0-9_]+)\/([A-Za-z0-9._-]+)$/);
+  const m = url.pathname.match(/^\/dl\/([A-Za-z0-9_]+)\/([A-Za-z0-9._%-]+(?:\/[A-Za-z0-9._-]+)?)$/);
   if (!m) return new Response("Not found", { status: 404 });
-  const [, jobId, name] = m;
+  const jobId = m[1];
+  let name: string;
+  try { name = decodeURIComponent(m[2]); } catch { return new Response("Not found", { status: 404 }); }
+  if (!NAME_RE.test(name)) return new Response("Not found", { status: 404 });
   const exp = parseInt(url.searchParams.get("exp") ?? "0", 10);
   const sig = url.searchParams.get("sig") ?? "";
   if (!exp || Date.now() / 1000 > exp) return new Response("This link has expired.", { status: 410 });
@@ -23,7 +29,7 @@ export async function handleDownload(request: Request, env: Env): Promise<Respon
   const f = await getFile(env, file.key, request.headers.get("range"));
   if (!f) return new Response("Not found", { status: 404 });
   const headers = new Headers({ "content-type": f.contentType, etag: f.etag, "accept-ranges": "bytes", "cache-control": "private, max-age=3600",
-    "content-disposition": `attachment; filename="kleo-${jobId}-${name}"` });
+    "content-disposition": `attachment; filename="kleo-${jobId}-${name.replace("/", "-")}"` });
   if (f.range) {
     headers.set("content-range", `bytes ${f.range.offset}-${f.range.offset + f.range.length - 1}/${f.size}`);
     headers.set("content-length", String(f.range.length));

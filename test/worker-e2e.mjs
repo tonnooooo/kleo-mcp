@@ -9,6 +9,9 @@
  *       row, rendered in 9:16 at KLEO_WIDTH_PORTRAIT=1080 to keep it short (~40 s of video, 60 fps, Kokoro voice,
  *       whisper captions, KLEO_KEOU_WORKERS=4 Chromium workers so an 8-core laptop is not starved; override with
  *       KLEO_KEOU_WORKERS). Asserts: job done, MP4 1080 wide / 60 fps / AAC audio / > 20 s, SRT ≥ 5 cues, JPEG thumbnail.
+ *       Kleo pictures: the storyboard is injected as kleo_style "cartoon" with an image_prompt on 01-gone and 05-fix, the
+ *       local dev runs with IMAGE_FIXTURE=1 (deterministic placeholder PNGs, no Workers AI); the test checks
+ *       POST /internal/jobs/:id/images itself and then that the worker log reports "2 pictures ready, 0 missing".
  *   PLACEHOLDER (ffmpeg only):    KLEO_ENGINE=placeholder KLEO_IMAGE=localhost/kleo-worker:latest node test/worker-e2e.mjs
  *       no storyboard needed; asserts the old geometry contract (2160x3840, 60 fps, ~20 s).
  * KLEO_MOUNT_WORKER=1 bind-mounts the repo's worker/kleo_worker.py over /opt/kleo/kleo_worker.py in the container
@@ -43,8 +46,8 @@ async function main() {
   try { execSync(`podman image exists ${IMAGE}`); } catch { throw new Error(`podman image ${IMAGE} not found (build it first, or set KLEO_IMAGE)`); }
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "kleo-e2e-"));
 
-  step("wrangler dev (manual backend, no R2 needed but present)");
-  dev = spawn("npx", ["wrangler", "dev", "--port", PORT, "--ip", "127.0.0.1", "--var", "RENDER_BACKEND:manual"], { stdio: ["ignore", "pipe", "pipe"], detached: true, cwd: ROOT });
+  step("wrangler dev (manual backend, IMAGE_FIXTURE=1: placeholder pictures without Workers AI)");
+  dev = spawn("npx", ["wrangler", "dev", "--port", PORT, "--ip", "127.0.0.1", "--var", "RENDER_BACKEND:manual", "--var", "IMAGE_FIXTURE:1"], { stdio: ["ignore", "pipe", "pipe"], detached: true, cwd: ROOT });
   dev.stdout.on("data", (d) => process.env.SMOKE_VERBOSE && process.stdout.write(d));
   dev.stderr.on("data", (d) => process.env.SMOKE_VERBOSE && process.stderr.write(d));
   for (let i = 0; i < 120; i++) { try { if ((await fetch(`${BASE}/health`)).ok) break; } catch {} await new Promise((r) => setTimeout(r, 500)); }
@@ -78,13 +81,37 @@ async function main() {
     for (const k of ["id", "script_file", "music_quiet"]) delete project[k];
     project.format = "9:16";
     project.scenes = project.scenes.filter((s) => s.kind !== "image");
+    // Kleo: cartoon style, a picture on two scenes (the server makes them, the worker downloads them into <project>/img/).
+    project.kleo_style = "cartoon";
+    const prompts = {
+      "01-gone": "an empty kitchen bench at night with a car key on it, through the window a car driving away down a dark street",
+      "05-fix": "a hand dropping a car key into a small grey faraday pouch on a wooden table, warm kitchen light",
+    };
+    for (const s of project.scenes) if (prompts[s.id]) s.image_prompt = prompts[s.id];
+    const pictured = Object.keys(prompts).sort();
+    assert(project.scenes.filter((s) => s.image_prompt).length === pictured.length, "example storyboard changed: expected scenes " + pictured.join(", "));
     const sqlFile = path.join(tmp, "storyboard.sql");
     fs.writeFileSync(sqlFile, `UPDATE jobs SET storyboard = '${sql(JSON.stringify(project))}' WHERE id = '${job.job_id}';\n`);
     d1(`--file "${sqlFile}"`);
     const spec = await (await fetch(`${BASE}/internal/jobs/${job.job_id}`, { headers: { authorization: `Bearer ${row.worker_secret}` } })).json();
     assert(Array.isArray(spec.storyboard?.scenes) && spec.storyboard.scenes.length === project.scenes.length,
       "GET /internal/jobs/:id does not return the injected storyboard (server-side storyboard support missing?): " + JSON.stringify(spec).slice(0, 300));
-    console.log("  storyboard:", project.scenes.length, "scenes, brand", JSON.stringify(spec.brand ?? null));
+    assert(spec.storyboard.kleo_style === "cartoon" && spec.storyboard.scenes.filter((s) => s.image_prompt).length === pictured.length,
+      "GET /internal/jobs/:id lost kleo_style / image_prompt: " + JSON.stringify(spec.storyboard).slice(0, 300));
+    console.log("  storyboard:", project.scenes.length, "scenes, cartoon, pictures on", pictured.join(", "), "· brand", JSON.stringify(spec.brand ?? null));
+
+    step("POST /internal/jobs/:id/images (IMAGE_FIXTURE placeholder pictures)");
+    const imgRes = await fetch(`${BASE}/internal/jobs/${job.job_id}/images`, { method: "POST", headers: { authorization: `Bearer ${row.worker_secret}` } });
+    assert(imgRes.ok, `images endpoint answered ${imgRes.status} (server-side pictures support missing?): ${(await imgRes.text()).slice(0, 300)}`);
+    const imgs = await imgRes.json();
+    assert(imgs.images && typeof imgs.images === "object" && Object.keys(imgs.images).sort().join() === pictured.join(),
+      "expected fixture pictures for " + pictured.join(", ") + ", got " + JSON.stringify(imgs).slice(0, 300));
+    assert(Array.isArray(imgs.missing) && imgs.missing.length === 0, "fixture pictures must never be missing: " + JSON.stringify(imgs.missing));
+    for (const [sid, u] of Object.entries(imgs.images)) {
+      const png = Buffer.from(await (await fetch(u)).arrayBuffer());
+      assert(png.length > 60 && png.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])), `picture ${sid} is not a PNG (${png.length} bytes) at ${u}`);
+      console.log("  picture", sid, png.length, "bytes");
+    }
   }
 
   step(`run the worker container (${IMAGE}, engine ${ENGINE}) against the local server`);
@@ -102,6 +129,8 @@ async function main() {
   }
   console.log(log.split("\n").filter(Boolean).map((l) => "  │ " + l).join("\n"));
   console.log(`  worker finished in ${Math.round((Date.now() - t0) / 1000)} s`);
+  if (KEOU) assert(/2 pictures ready, 0 missing/.test(log),
+    "the worker did not report the 2 fixture pictures (image built from an old kleo_worker.py? rebuild it or run with KLEO_MOUNT_WORKER=1)");
 
   step("job is done and the files are real");
   const view = await call("kleo_get_job", { job_id: job.job_id });
