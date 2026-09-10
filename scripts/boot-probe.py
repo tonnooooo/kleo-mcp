@@ -93,7 +93,14 @@ def look(iid):
     i = r.get("instances") if isinstance(r.get("instances"), dict) else r
     if not isinstance(i, dict) or not i:
         return "SPARITA", ""
-    return (i.get("actual_status") or i.get("cur_state") or "?"), (i.get("status_msg") or "").strip()
+    # Un'istanza che si e' appena distrutta non sparisce e non da' 404: Vast risponde 200 con un record MONCO,
+    # senza actual_status e senza cur_state. Trattarlo come uno stato sconosciuto fa aspettare la sonda fino alla
+    # fine per una macchina che non esiste piu' — ed e' esattamente il segnale che vale di piu', perche' una
+    # macchina puo' auto-distruggersi solo se il worker ha girato davvero.
+    st = i.get("actual_status") or i.get("cur_state")
+    if not st:
+        return "SPARITA", ""
+    return st, (i.get("status_msg") or "").strip()
 
 
 def destroy_all():

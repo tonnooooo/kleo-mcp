@@ -50,9 +50,38 @@ Tutto quello che era facile da incolpare è stato controllato ed è sano:
 - **il copione di avvio**: `VAST_BOOTSTRAP_URL` non è configurato, quindi non c'è nessun `apt-get` all'avvio; l'onstart è due comandi.
 - **il tag mutabile**: `worker-image.yml` riscrive `:keou` a ogni push, ma il secondo dei tre tentativi è fallito senza nessuna ricostruzione in corso.
 
-**La causa è ancora ignota, ed è la cosa più importante rimasta aperta.** Il prossimo passo non è un'ipotesi in
-più: è noleggiare una macchina con lo stesso identico corredo di variabili di un job vero, collegarsi, e leggere
-`/var/log/kleo.log` — che è l'unico posto dove il worker scrive quando non riesce a parlare col server.
+### La catena di avvio funziona, e funziona in un minuto
+
+`scripts/boot-probe.py` noleggia una macchina con i filtri, l'immagine, il `runtype`, l'onstart e la forma di
+ambiente della produzione, ma con un id di job **finto**. Esito, 11 settembre:
+
+    0,1 min   running
+    0,4 min   loading            <- lo stato oscilla durante l'avvio
+    1,1 min   running            "success, running ghcr.io/tonnooooo/kleo-worker_keou/ssh"
+    1,5 min   l'istanza non esiste più
+    fine      DELETE -> 404 no_such_instance
+
+**L'istanza si è distrutta da sola dopo un minuto e mezzo.** Una macchina può auto-distruggersi solo se il worker
+ha girato: quindi il container è partito, le variabili d'ambiente sono arrivate, il worker si è avviato, **ha
+raggiunto il server**, ha ricevuto il 401 che meritava per un job inesistente, e ha ripulito dietro di sé.
+
+Aggiungendo le cinque misure indipendenti della sessione explainer (mediana 3,2 min al primo SSH riuscito, due
+host su cinque sotto il minuto perché avevano l'immagine in cache), **tutta la catena di avvio è verificata e
+sana**: noleggio, download, container, ambiente, worker, rete verso il server.
+
+**Il guasto non è riproducibile.** Su quattro strumenti diversi e otto macchine, nessuna si è comportata come i
+tre tentativi di `gt_7f7gnsjt`. Il che è a sua volta un risultato: se la catena è sana e il guasto compare
+comunque, allora **è dell'host, non del sistema**, e la cura non è ripararla — è accorgersene e cambiare macchina
+in fretta. Che è esattamente la riparazione arrivata stamattina: fino a ieri il tentativo che doveva «cambiare
+host» ne ripescava lo stesso, perché il ricordo dell'host fallito veniva cancellato subito prima di riprovare.
+
+**Una cosa da sapere per chi legge `actual_status`**: durante l'avvio oscilla, `running` → `loading` → `running`
+nel giro di un minuto. Chi decide qualcosa su una singola lettura di quel campo decide su un fotogramma di una
+cosa che si muove.
+
+**Cosa resta da guardare, se ricapita**: `/var/log/kleo.log` su una macchina viva, con le variabili di un job
+vero. È l'unico posto dove il worker scrive quando non riesce a parlare col server, ed è l'unica cosa che nessuno
+ha ancora letto.
 
 ## La regola, che è la parte che sopravvive
 
