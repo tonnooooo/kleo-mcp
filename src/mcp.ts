@@ -9,6 +9,7 @@ import { accountUrl, makeHandle } from "./accounts";
 import { audit } from "./db";
 import { KLEO_STYLES, FORMATS, wordBudget, shotRangeText } from "./keou-contract";
 import { guideText } from "./guide.ts";
+import { pickKleoStyleWhy } from "./storyboard.ts";
 import { int } from "./util";
 
 /**
@@ -183,7 +184,16 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     const what = kindOf(view.format);
     const sim = simulated ? " SIMULATED MODE: this is a test render; it finishes in about a minute and the files are placeholders, not a real video." : "";
     const eta = simulated ? "about a minute" : `about ${plural(job.eta_min ?? 0, "minute")}`;
-    const styleNote = view.style ? ` Style: ${view.style}${args.style || (args.storyboard as Record<string, unknown> | undefined)?.kleo_style ? "" : " (picked from the topic)"}.` : "";
+    // WHEN KLEO GUESSED THE LOOK, IT SAYS SO. Measured on 27 requests written by two other sessions: 13 named no
+    // subject the word lists know, and the whole set scored 26%. A guess that presents itself as a decision is the
+    // bug — the user sees a video in the wrong look and cannot tell why. A guess that admits it is a conversation:
+    // the assistant reads this line, tells the user, and the user fixes it while the credits can still come back.
+    const guessed = !args.style && !(args.storyboard as Record<string, unknown> | undefined)?.kleo_style;
+    const pick = guessed && view.style ? pickKleoStyleWhy(t.id, args.prompt) : null;
+    const styleNote = !view.style ? ""
+      : !guessed ? ` Style: ${view.style}.`
+      : pick?.confident ? ` Style: ${view.style}, chosen from what you asked for.`
+      : ` Style: ${view.style} — but Kleo could not tell which look fits from the description, so it used the one this template usually takes. If you wanted a different one (${KLEO_STYLES.filter((k) => k !== view.style).join(", ")}), cancel with kleo_cancel_job — the credits come back while it is still queued — and call again with "style". Tell the user this: nothing has been drawn yet.`;
     const summary = `Your ${what} is in the queue. Video number: ${job.id}. Template: ${t.name}, ${view.format}, ${view.duration_s} seconds.${styleNote} It should be ready in ${eta}. ${plural(job.credits, "credit")} used, ${plural(fresh.credits - job.credits, "credit")} left. NEXT STEP, do it now: call kleo_wait_for_video with job_id "${job.id}", and when it answers that the video is still rendering call it again, and again, until it answers that the video is ready. Do not end your turn and do not ask the user anything in between: they are waiting for the finished video in this conversation.${sim}`;
     return ok({ ...view, credits_left: fresh.credits - job.credits, mode: simulated ? "simulated" : "gpu", message: summary }, summary);
   }));
