@@ -32,7 +32,7 @@ lays the clips into build/footage.mp4 exactly as long as the timeline, hangs eac
 with --skip-voice over the alignment already on disk. That order is forced: the cut times come from the engine,
 the engine needs the word alignment, and the alignment comes from the voice pass. If even ONE shot does not film,
 the backdrop comes off and the film is drawn from the stills — see the note above generate_footage().
-Tuning: KLEO_WIDTH_PORTRAIT (2160) / KLEO_WIDTH_LANDSCAPE (1920), KLEO_RENDER_TIMEOUT_MIN (100),
+Tuning: KLEO_WIDTH_PORTRAIT (2160) / KLEO_WIDTH_LANDSCAPE (3840): both formats deliver 4K, KLEO_RENDER_TIMEOUT_MIN (100),
         KLEO_VOICE_TIMEOUT_MIN (25) / KLEO_SHOTS_TIMEOUT_MIN (5): the two passes that precede the filming,
         KLEO_IMAGES_TIMEOUT_S (300: the images call, the server generates on the first request), KLEO_IMAGES_RETRY_WAIT_S (20),
         KLEO_PICTURES (auto | server | local), KLEO_PICTURES_CPU=1 (let kleo_pictures draw on the CPU: tests only),
@@ -51,8 +51,19 @@ SELF_DESTRUCT_MIN = int(os.environ.get("KLEO_SELF_DESTRUCT_MIN", "110"))
 ENGINE = os.environ.get("KLEO_ENGINE", "keou").strip().lower()
 KEOU_DIR = os.environ.get("KLEO_KEOU_DIR", "/opt/kleo/keou")
 RENDER_TIMEOUT_MIN = float(os.environ.get("KLEO_RENDER_TIMEOUT_MIN", "100"))
-WIDTH_PORTRAIT = int(os.environ.get("KLEO_WIDTH_PORTRAIT", "2160"))
-WIDTH_LANDSCAPE = int(os.environ.get("KLEO_WIDTH_LANDSCAPE", "1920"))
+# DELIVERY SIZE, and the two formats now cost the same to make. The engine draws into a fixed design space
+# (1080x1920 or 1920x1080) and scales it to whatever width is asked for, so the delivered size is decoupled from
+# the layout: portrait has been going 1080 -> 2160 every day since the beginning, and landscape going 1920 -> 3840
+# is the identical doubling of a vector drawing.
+# Why it changed: portrait delivered 2160x3840 and landscape 1920x1080 for the same price, four times the pixels
+# per frame for the same credits (docs/PREZZO-E-COSTO.md). The owner asked for 4K everywhere, and 4K landscape is
+# 8.3 Mpixel — exactly what every portrait Short has already been rendered at and sold at. So the cost per frame
+# is not a guess here, it is the one this service already pays. etaFor() in src/templates.ts, and the job timeout
+# derived from it, were already written for "4K 60 fps": until now landscape simply did not deliver what they
+# promised. What is still worth measuring is wall clock on the LONGEST landscape videos, where four times the
+# pixels eats into a timeout budget that was generous while the frames were small.
+WIDTH_PORTRAIT = int(os.environ.get("KLEO_WIDTH_PORTRAIT", "2160"))      # 2160x3840
+WIDTH_LANDSCAPE = int(os.environ.get("KLEO_WIDTH_LANDSCAPE", "3840"))    # 3840x2160
 KEOU_WORKERS = min(16, int(os.environ.get("KLEO_KEOU_WORKERS", "0") or 0))  # 0 → min(8, cpu count); the engine refuses more than 16
 PART = 50 * 1024 * 1024
 UA = "kleo-worker/1.0 (+https://github.com/tonnooooo/kleo-mcp)"

@@ -387,6 +387,25 @@ class PicturesTest(unittest.TestCase):
         self.assertEqual(kw.fetch_pictures("j1"), {"images": {}, "missing": []})
 
     # -- the whole preparation, exactly what render_keou runs before the engine -------------------
+    def test_both_formats_deliver_the_same_number_of_pixels(self):
+        """The price is charged per SECOND of video, never per pixel, so the two formats have to cost the same to
+        make or the cheaper one is subsidising the dearer one. Portrait delivered 2160x3840 and landscape
+        1920x1080 for the same credits: four times the work for the same money, and nothing anywhere said so.
+        Both are 4K now. If someone changes one width, this test is where they find out what it costs."""
+        sizes = {}
+        for fmt in ("9:16", "16:9"):
+            job = job_for(storyboard())
+            job["params"] = {**(job.get("params") or {}), "format": fmt}
+            project = kw.build_project(job, ENGINE)
+            w = project["width"]
+            h = round(w * (16 / 9 if fmt == "9:16" else 9 / 16))
+            sizes[fmt] = (w, h)
+        self.assertEqual(sizes["9:16"], (2160, 3840))
+        self.assertEqual(sizes["16:9"], (3840, 2160))
+        px = {f: w * h for f, (w, h) in sizes.items()}
+        self.assertEqual(px["9:16"], px["16:9"],
+                         f"one format is being sold at the other's price: {px}")
+
     def test_prepare_project_writes_pictures_into_the_project(self):
         FakeKleo.state["images_replies"] = [(200, self.reply())]
         project, pdir, _ = kw.prepare_project(job_for(storyboard()), ENGINE, self.tmp)
