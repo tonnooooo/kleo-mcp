@@ -118,6 +118,33 @@ esce a 2160×3840. Il proprietario ha chiesto «sempre 4K»: portarlo a 3840 qua
 per ogni fotogramma, quindi va **misurato su macchina noleggiata prima di cambiarlo**, non deciso a tavolino. È
 l'unico punto in cui la consegna non corrisponde ancora a quello che è stato chiesto.
 
+**La coda muta del render, e quanto e' larga davvero.** Fra l'ultimo `FRAME` stampato dal motore e `STAGE quality`
+nessuno manda niente al server, e il server adesso spegne una scheda che tace da `RENDER_SILENCE_MIN` (20 min). In
+quel tratto, e nei due successivi, ci sono **quattro passate complete sul master**, tutte mute:
+
+| dove | cosa | costo |
+|---|---|---|
+| `render.mjs` linea 87 | `validPart(temp,total)` → ffprobe `-count_frames` | decodifica ogni fotogramma |
+| `qa.py` linea 16 | ffprobe `-count_frames` | decodifica ogni fotogramma, **di nuovo** |
+| `qa.py` linea 27 | ffmpeg `blackdetect` | decodifica ogni fotogramma, terza volta |
+| `run.py` stage preview | ffmpeg libx264 verso 540/960 px | decodifica a 4K, ricodifica in piccolo |
+
+Il montaggio finale **non** e' fra questi: usa `-c:v copy`, quindi e' rapido anche a 4K.
+
+**Stima, dichiarata come stima.** A 250-700 fotogrammi al secondo di decodifica 4K, una passata su un video da otto
+minuti a 60 fps sta fra **0,7 e 1,9 minuti**; quattro passate fra tre e otto. Cioe' **sotto i venti**, ma con un
+margine che nessuno ha misurato: quei numeri di decodifica sono ipotesi, non misure su una macchina Vast.
+
+Un Corto non e' in discussione (0,1-0,2 minuti a passata, e sono 27 job su 29). Il rischio riguarda solo i video
+lunghi, e sono due.
+
+**Cosa fare, in ordine.** Prima misurare: il primo render 4K vero dice quanto dura davvero quella coda, e va
+cronometrato apposta. Se serve un tampone prima, **non** alzare `RENDER_SILENCE_MIN` in blocco — allargarlo per
+tutti paga in soldi il silenzio dei worker davvero morti — ma farlo **crescere con la durata**, che e' esattamente
+la variabile da cui dipende la lunghezza delle quattro passate. La cura vera, se la misura dice che serve, e' far
+parlare quelle operazioni: `-progress pipe:1` su ffmpeg da' un avanzamento reale, e la validazione a conteggio
+fotogrammi puo' essere fatta da un ffmpeg che decodifica **e** riferisce, invece che da un ffprobe muto.
+
 **L'immagine ferma come primo fotogramma.** Wan 2.2 TI2V accetta anche un'immagine di partenza. Oggi la clip nasce
 dal solo testo, quindi la fotografia che il modello delle immagini ha già disegnato per quell'inquadratura viene
 usata soltanto come rete di sicurezza. Partire da quella darebbe continuità fra i due modelli e toglierebbe una
