@@ -407,16 +407,16 @@ test("budget: the estimate counts money already committed, not only money alread
     return j;
   };
   await rent("vast"); await rent("vast");
-  assert.equal(Math.round((await m.budgetSpentUsd(env)) * 100) / 100, 0.8, "two rented GPUs are worth 0.80, not 0.00");
+  assert.equal(Math.round((await m.budgetSpentUsd(env)) * 100) / 100, 0.83, "two rented GPUs are worth 0.83, not 0.00");
 
   // A job claimed by the free GitHub pool has committed nothing: counting it would shut the paid path down over
   // money that was never spent, and audit a budget.paused the owner cannot reconcile with his Vast balance.
   await rent("pool");
-  assert.equal(Math.round((await m.budgetSpentUsd(env)) * 100) / 100, 0.8, "free work costs nothing and must not price anything");
+  assert.equal(Math.round((await m.budgetSpentUsd(env)) * 100) / 100, 0.83, "free work costs nothing and must not price anything");
 
   const done = await short(env, u);
   await m.updateJob(env, done.id, { state: "done", cost_usd: 0.17, finished_at: new Date().toISOString() });
-  assert.equal(Math.round((await m.budgetSpentUsd(env)) * 100) / 100, 0.97, "today's bill plus what is in flight");
+  assert.equal(Math.round((await m.budgetSpentUsd(env)) * 100) / 100, 1, "today's bill plus what is in flight");
 });
 
 test("budget: a rental is priced at what it was actually taken at, not at the cap", async () => {
@@ -431,12 +431,12 @@ test("budget: a rental is priced at what it was actually taken at, not at the ca
     state: "rendering", backend: "vast", instance_id: "i-cheap", started_at: new Date().toISOString(),
     instance_meta: JSON.stringify({ offer: 1, gpu: "RTX 4090", dph: 0.30 }),
   });
-  assert.equal(Math.round((await m.budgetSpentUsd(env)) * 100) / 100, 0.30, "the machine costs 0.30, not the 0.80 the cap allows");
+  assert.equal(Math.round((await m.budgetSpentUsd(env)) * 100) / 100, 0.31, "the machine costs 0.30/h, not the 0.80 the cap allows");
 
   // Still being chosen: no meta, so the cap is the only honest guess and the estimate stays pessimistic.
   const starting = await short(env, u);
   await m.updateJob(env, starting.id, { state: "starting", backend: "vast", started_at: new Date().toISOString() });
-  assert.equal(Math.round((await m.budgetSpentUsd(env)) * 100) / 100, 1.10, "0.30 taken plus 0.80 not yet known");
+  assert.equal(Math.round((await m.budgetSpentUsd(env)) * 100) / 100, 1.14, "0.30 taken plus 0.80 not yet known");
 
   // A meta that cannot be read must never round down to zero: money is the one place to stay pessimistic.
   const broken = await short(env, u);
@@ -444,7 +444,7 @@ test("budget: a rental is priced at what it was actually taken at, not at the ca
     state: "rendering", backend: "vast", instance_id: "i-broken", started_at: new Date().toISOString(),
     instance_meta: "{not json",
   });
-  assert.equal(Math.round((await m.budgetSpentUsd(env)) * 100) / 100, 1.90, "an unreadable meta falls back to the cap");
+  assert.equal(Math.round((await m.budgetSpentUsd(env)) * 100) / 100, 1.96, "an unreadable meta falls back to the cap");
 });
 
 test("budget: a long video is priced at its own timeout, not at a Short's", async () => {
@@ -454,8 +454,10 @@ test("budget: a long video is priced at its own timeout, not at a Short's", asyn
   const u = await user(env, 10);
   const long = await m.createJob(env, u, { template: "story-documentary", prompt: "The island that was never on any map", duration_s: 480 });
   await m.updateJob(env, long.id, { state: "rendering", backend: "vast", instance_id: "i-long", started_at: new Date().toISOString() });
-  // etaFor(480) = 80 min of render + 40 min of tolerated image pull = 120 min at 0.40 $/h.
-  assert.equal(Math.round((await m.budgetSpentUsd(env)) * 100) / 100, 0.8);
+  // etaFor(480) = 80 min, and the limit is half again as much (120) + 40 of tolerated image pull = 160 min at
+  // 0.40 $/h. These figures move ON PURPOSE when jobTimeoutMin changes: a longer clock reserves more money, and
+  // that coupling is the thing worth seeing in a test rather than discovering on the Vast balance.
+  assert.equal(Math.round((await m.budgetSpentUsd(env)) * 100) / 100, 1.07);
 });
 
 test("budget: yesterday's spending does not count against today", async () => {
@@ -681,6 +683,10 @@ test("price cap: Kleo may guess a look, but never one that costs extra", async (
     const picked = JSON.parse(guessed.params).style;
     assert.equal(m.isVideoStyle(picked), false, `guessed "${picked}", which costs extra: a hunch must not spend 7 credits`);
     assert.equal(guessed.credits, 1, "and the debit follows the style that was actually used");
+    // Never a mute substitution: the user must be able to find out that they got a different look, and how to ask
+    // for the one Kleo had in mind. Without this the video simply arrives wrong, with nothing to explain it.
+    assert.ok(["cartoon", "realistic"].includes(JSON.parse(guessed.params).style_capped_from),
+      "the look that was replaced is written down, so the answer can say it");
 
     // Naming it is a decision, not a hunch, and is honoured whatever it costs.
     const asked = await short(env, u, { style: "cartoon" });
@@ -690,4 +696,52 @@ test("price cap: Kleo may guess a look, but never one that costs extra", async (
     machine.cartoon = before.cartoon; machine.realistic = before.realistic;
     credits.cartoon = before.cc; credits.realistic = before.cr;
   }
+});
+
+/* ------------------------------------------------------------------ a clock cannot tell dead from slow */
+
+test("timeout: a long video gets headroom over the estimate it was quoted", () => {
+  const env = { JOB_TIMEOUT_MIN: "60", LOADING_TIMEOUT_MIN: "35" };
+  const long = { params: JSON.stringify({ duration_s: 300 }) };
+  // etaFor(300) = 50 min, and 50 + 35 = 85 was the whole allowance: a render measured at ~60 min plus a ~20 min
+  // image pull left three minutes of margin, on an estimate calibrated at 1920 wide and now asked about 3840.
+  assert.equal(m.jobTimeoutMin(env, long), 110, "75 of render plus 35 of pull, not 50 plus 35");
+  const short = { params: JSON.stringify({ duration_s: 45 }) };
+  assert.equal(m.jobTimeoutMin(env, short), 62, "a Short barely moves: 27 plus 35, and the floor of 60 is passed");
+  assert.equal(m.jobTimeoutMin({}, { params: "{not json" }), 62, "an unreadable row reads as 0 seconds, which is a Short, and still gets a real limit");
+});
+
+test("timeout: a worker that goes quiet mid-render gives the GPU back, and the credits with it", async () => {
+  // The headroom above is only affordable because of this: until today the silence rule was gated on state
+  // "starting", so a worker wedged at 40% held a paid GPU until the wall clock ran out.
+  const env = await newEnv({ RENDER_SILENCE_MIN: "20", MAX_JOBS_PER_USER: "10" });
+  const u = await user(env, 10);
+  const j = await short(env, u);
+  const longAgo = new Date(Date.now() - 31 * 60_000).toISOString();
+  await m.updateJob(env, j.id, {
+    state: "rendering", backend: "vast", instance_id: "i-wedged", percent: 40,
+    started_at: new Date(Date.now() - 35 * 60_000).toISOString(), last_report_at: longAgo,
+  });
+
+  await m.tick(env);
+  const after = await m.getJob(env, j.id);
+  assert.equal(after.state, "queued", "requeued, because a wedged worker is worth another machine");
+  assert.match(after.error, /stopped reporting 31 min ago, at 40%/);
+  const silent = await events(env, "worker.silent");
+  assert.equal(silent.length, 1);
+  assert.equal(silent[0].detail.percent, 40);
+});
+
+test("timeout: a worker that is still talking is left alone, however slow it is", async () => {
+  const env = await newEnv({ RENDER_SILENCE_MIN: "20", MAX_JOBS_PER_USER: "10" });
+  const u = await user(env, 10);
+  const j = await short(env, u);
+  await m.updateJob(env, j.id, {
+    state: "rendering", backend: "vast", instance_id: "i-slow-but-alive", percent: 90,
+    started_at: new Date(Date.now() - 50 * 60_000).toISOString(),
+    last_report_at: new Date(Date.now() - 2 * 60_000).toISOString(),
+  });
+
+  await m.tick(env);
+  assert.equal((await m.getJob(env, j.id)).state, "rendering", "90% and talking two minutes ago is not a dead render");
 });

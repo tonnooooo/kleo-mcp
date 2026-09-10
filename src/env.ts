@@ -35,6 +35,7 @@ export interface Env {
   DAILY_GPU_BUDGET_USD?: string; // hard ceiling on GPU dollars per UTC day (default 1.00); over it, rentals pause and jobs stay queued
   JOB_TIMEOUT_MIN: string;
   START_TIMEOUT_MIN?: string;
+  RENDER_SILENCE_MIN?: string; // minutes a RENDERING worker may stay silent before the GPU is taken back (default 20)
   LOADING_TIMEOUT_MIN?: string; // max minutes an instance may stay in "loading" (image pull) before it is destroyed // minutes a GPU may stay silent after rental before it is destroyed and the job requeued
   LOADING_RETRY_MIN?: string;   // minutes of image pull after which the job moves to another host (default 14)
   FREE_CREDITS: string;         // credits a brand-new anonymous account is given (1 credit = 1 Short)

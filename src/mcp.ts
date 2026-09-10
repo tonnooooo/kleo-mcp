@@ -1,7 +1,7 @@
 import { McpServer, createMcpHandler } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { Env } from "./env";
-import type { User, Job } from "./db";
+import type { User, Job, JobParams } from "./db";
 import { getUserJob, getUser, recentJobsForUser, countOpenForUser, GPU_ONLY_WAIT } from "./db";
 import { TEMPLATES, TEMPLATE_IDS, findTemplate, creditsFor } from "./templates";
 import { createJob, cancelJob, jobView, resultLinks, JobError, FILE_NAMES } from "./jobs";
@@ -194,7 +194,14 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       : !guessed ? ` Style: ${view.style}.`
       : pick?.confident ? ` Style: ${view.style}, chosen from what you asked for.`
       : ` Style: ${view.style} — but Kleo could not tell which look fits from the description, so it used the one this template usually takes. If you wanted a different one (${KLEO_STYLES.filter((k) => k !== view.style).join(", ")}), cancel with kleo_cancel_job — the credits come back while it is still queued — and call again with "style". Tell the user this: nothing has been drawn yet.`;
-    const summary = `Your ${what} is in the queue. Video number: ${job.id}. Template: ${t.name}, ${view.format}, ${view.duration_s} seconds.${styleNote} It should be ready in ${eta}. ${plural(job.credits, "credit")} used, ${plural(fresh.credits - job.credits, "credit")} left. NEXT STEP, do it now: call kleo_wait_for_video with job_id "${job.id}", and when it answers that the video is still rendering call it again, and again, until it answers that the video is ready. Do not end your turn and do not ask the user anything in between: they are waiting for the finished video in this conversation.${sim}`;
+    // A guessed look that was replaced because it costs more has to be SAID: the user would otherwise receive a
+    // different video from the one Kleo understood, with nothing anywhere explaining why. Naming the style is always
+    // honoured, so the way to get it is one argument, and the sentence says which one.
+    const jp = JSON.parse(job.params) as JobParams;
+    const cappedNote = jp.style_capped_from
+      ? ` Kleo would have chosen the "${jp.style_capped_from}" look for this, but it costs ${plural(creditsFor(view.duration_s, jp.style_capped_from), "credit")} instead of ${plural(job.credits, "credit")}, and Kleo never spends the dearer ones on a guess: it used "${jp.style}". Ask again with style: "${jp.style_capped_from}" if that is the one you want.`
+      : "";
+    const summary = `Your ${what} is in the queue. Video number: ${job.id}.${cappedNote} Template: ${t.name}, ${view.format}, ${view.duration_s} seconds.${styleNote} It should be ready in ${eta}. ${plural(job.credits, "credit")} used, ${plural(fresh.credits - job.credits, "credit")} left. NEXT STEP, do it now: call kleo_wait_for_video with job_id "${job.id}", and when it answers that the video is still rendering call it again, and again, until it answers that the video is ready. Do not end your turn and do not ask the user anything in between: they are waiting for the finished video in this conversation.${sim}`;
     return ok({ ...view, credits_left: fresh.credits - job.credits, mode: simulated ? "simulated" : "gpu", message: summary }, summary);
   }));
 

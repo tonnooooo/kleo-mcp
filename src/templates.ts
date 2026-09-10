@@ -394,6 +394,29 @@ export const STYLE_MACHINE: Record<string, Machine> = {
 export const isVideoStyle = (style: string | null | undefined): boolean =>
   !!style && (STYLE_MACHINE[style]?.minVramGb ?? 0) > PICTURES.minVramGb;
 
+/**
+ * ONE RULE, SAID ONCE: **a guess never changes the price.**
+ *
+ * It has two halves that live in two different files, and both derive from STYLE_CREDITS rather than from a list of
+ * their own — that is the whole point. createJob (src/jobs.ts) uses affordableGuess at CREATION: a look nobody
+ * asked for cannot cost more than the cheapest. generateStoryboard (src/storyboard.ts) uses samePrice at PLANNING:
+ * the direction may refine a guessed look, but only inside the price already paid.
+ *
+ * The asymmetry is deliberate and worth keeping in mind: naming a style is a DECISION and is always honoured,
+ * whatever it costs. Not naming one is a bet — and bets are not paid for with somebody else's credits. The style
+ * planner's own accuracy was measured at 35% on 11 September 2026, so the bet is wrong two times out of three.
+ */
+
+/** The dearest look Kleo may pick BY ITSELF: the guess when it is affordable, otherwise the cheapest style there is. */
+export function affordableGuess(style: string, duration: number): string {
+  const cheapest = Object.keys(STYLE_CREDITS).reduce((a, b) => (creditsFor(duration, b) < creditsFor(duration, a) ? b : a), style);
+  return creditsFor(duration, style) <= creditsFor(duration, cheapest) ? style : cheapest;
+}
+
+/** True when two looks cost the same, which is the only condition under which a guess may be refined into another. */
+export const samePrice = (a: string, b: string, duration: number): boolean =>
+  creditsFor(duration, a) === creditsFor(duration, b);
+
 /** The machine this job needs. An unknown style gets the ordinary profile: the price table is what punishes a
  *  missing entry, and refusing to rent anything at all would take the whole service down instead. */
 export const machineFor = (style: string | null | undefined): Machine =>
@@ -430,5 +453,10 @@ export function styleOfJob(job: Pick<Job, "params">): string | null {
 export function jobTimeoutMin(env: Env, job: Pick<Job, "params">): number {
   let seconds = 0;
   try { seconds = (JSON.parse(job.params) as JobParams).duration_s; } catch { /* an unreadable row just gets the flat value */ }
-  return Math.max(int(env.JOB_TIMEOUT_MIN, 60), etaFor(seconds) + int(env.LOADING_TIMEOUT_MIN, 35));
+  // etaFor is an ESTIMATE, and a timeout set to an estimate kills every render the estimate was optimistic about.
+  // It is also an estimate that was calibrated at 1920 wide and is now asked about 3840, so the half it can be wrong
+  // by is the half that matters. Hence the headroom: the quote stays what the user is told, the limit is half again
+  // as much. It is not generosity — nothing else stops a render once it is under way, and the thing that catches a
+  // worker that has actually died is silence (orchestrator.ts RENDER_SILENCE_MIN), which is a sensor, not a clock.
+  return Math.max(int(env.JOB_TIMEOUT_MIN, 60), Math.round(etaFor(seconds) * 1.5) + int(env.LOADING_TIMEOUT_MIN, 35));
 }

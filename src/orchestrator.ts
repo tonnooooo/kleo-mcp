@@ -115,6 +115,25 @@ async function tickInner(env: Env, stats: Stats) {
         stats.failed++;
         continue;
       }
+      // The same question once the render is under way, and until today nobody asked it: the silence rule below was
+      // gated on state "starting", so a worker that wedged at 40% held a paid GPU until the wall clock ran out — and
+      // the wall clock is the one thing that cannot tell a dead render from a slow one. Silence can. This is the half
+      // that pays for the headroom jobTimeoutMin now gives a healthy render.
+      // WHAT THIS NUMBER IS RACING, because it is invisible from here: "silence" means last_report_at, which is only
+      // written when the worker POSTs progress (internal.ts), which happens when it parses a line out of the engine's
+      // stdout — and between frames that line is FRAME, emitted every N frames by worker/keou (another file, another
+      // language, another author). At 1080p that was ~90 seconds; at 3840x2160 the same N is minutes. Anyone lowering
+      // this number is racing that cadence, and a healthy render that loses the race is killed and requeued — the very
+      // bug this sensor exists to prevent, coming back through the other door. There is a test on the engine side
+      // holding the two together; do not move this one without reading it.
+      const renderSilenceMin = int(env.RENDER_SILENCE_MIN, 20);
+      if (job.state !== "starting" && job.last_report_at && minutesSince(job.last_report_at) > renderSilenceMin) {
+        const quiet = Math.round(minutesSince(job.last_report_at));
+        await audit(env, job.user_id, job.id, "worker.silent", { minutes: quiet, percent: job.percent, state: job.state });
+        await failJob(env, job, `the worker stopped reporting ${quiet} min ago, at ${job.percent}%`, true);
+        stats.failed++;
+        continue;
+      }
       // A worker that never reports (boot failure, a wedged container) must not hold a paid GPU for the whole job timeout.
       if (job.state === "starting" && lastWord && minutesSince(lastWord) > startTimeoutMin) {
         // Out of retries, or a slow pull we have decided to sit out: never past LOADING_TIMEOUT_MIN.
