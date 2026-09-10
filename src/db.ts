@@ -43,6 +43,8 @@ export interface Job {
   last_report_at?: string | null;
   /** ISO time the job entered the QUEUE, reset on every requeue; null on rows created before the column existed. */
   queued_at?: string | null;
+  /** JSON array of machine keys already tried for this job ("m:<machine_id>" / "o:<offer_id>"); see migration 0008. */
+  tried_machines?: string | null;
   storyboard: string | null; // JSON: Keou project without id/script_file/music_quiet/image scenes (see keou-contract.ts)
   plan_attempts: number;
   plan_error: string | null;
@@ -171,6 +173,28 @@ async function balanceOf(env: Env, userId: string): Promise<number | null> {
 export const getInvite = (env: Env, code: string) => env.DB.prepare("SELECT * FROM invites WHERE code = ?").bind(code).first<Invite>();
 export const useInvite = (env: Env, code: string) =>
   env.DB.prepare("UPDATE invites SET uses = uses + 1 WHERE code = ? AND uses < max_uses").bind(code).run();
+
+/**
+ * Adds a machine to the list this job has already tried. Append-only and idempotent: the list is a PREFERENCE the
+ * renter reads, never a gate, so a duplicate costs nothing and a lost write only means one repeated attempt.
+ */
+export async function rememberTriedMachine(env: Env, jobId: string, key: string): Promise<void> {
+  const row = await env.DB.prepare("SELECT tried_machines FROM jobs WHERE id = ?").bind(jobId).first<{ tried_machines: string | null }>();
+  let tried: string[] = [];
+  try { tried = JSON.parse(row?.tried_machines ?? "[]") as string[]; } catch { tried = []; }
+  if (!Array.isArray(tried)) tried = [];
+  if (tried.includes(key)) return;
+  tried.push(key);
+  await env.DB.prepare("UPDATE jobs SET tried_machines = ? WHERE id = ?").bind(JSON.stringify(tried.slice(-10)), jobId).run();
+}
+
+/** The machines this job has already been given and did not finish on. */
+export function triedMachines(job: Pick<Job, "tried_machines">): string[] {
+  try {
+    const v = JSON.parse(job.tried_machines ?? "[]") as unknown;
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch { return []; }
+}
 
 export const getJob = (env: Env, id: string) => env.DB.prepare("SELECT * FROM jobs WHERE id = ?").bind(id).first<Job>();
 export const getUserJob = (env: Env, userId: string, id: string) =>

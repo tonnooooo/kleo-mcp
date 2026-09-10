@@ -1,6 +1,7 @@
 import type { RenderBackend, StartResult } from "./types";
 import type { Env } from "../env";
 import type { Job } from "../db";
+import { triedMachines } from "../db";
 import { int, num, minutesSince } from "../util";
 import { jobTimeoutMin, machineFor, styleOfJob } from "../templates";
 
@@ -55,7 +56,7 @@ async function vast<T>(env: Env, method: string, path: string, body?: unknown, b
   }
 }
 
-export interface Offer { id: number; dph_total: number; gpu_name: string; inet_down: number; reliability2?: number; disk_space: number; cuda_max_good?: number; geolocation?: string; cpu_cores_effective?: number; cpu_ram?: number; }
+export interface Offer { id: number; machine_id?: number; dph_total: number; gpu_name: string; inet_down: number; reliability2?: number; disk_space: number; cuda_max_good?: number; geolocation?: string; cpu_cores_effective?: number; cpu_ram?: number; }
 interface Instance { actual_status?: string | null; cur_state?: string; start_date?: number; dph_total?: number; status_msg?: string; }
 interface InstanceRow extends Instance { id: number; label?: string | null; }
 
@@ -148,6 +149,14 @@ async function adoptOrphan(env: Env, job: Job, offer: Offer, notBefore: number):
   };
 }
 
+/**
+ * How a machine is recognised across attempts. `machine_id` is the PHYSICAL host and is what we want: the same box
+ * is offered under a new offer id the moment the previous rental is destroyed, so excluding the offer alone excludes
+ * nothing. The offer id is the fallback for an answer that does not carry the machine.
+ */
+export const machineKey = (o: { machine_id?: number; id: number }): string =>
+  o.machine_id ? `m:${o.machine_id}` : `o:${o.id}`;
+
 export async function searchOffers(env: Env, style?: string | null): Promise<Offer[]> {
   const disk = int(env.VAST_DISK_GB, 80);
   // What this style needs of a machine (src/templates.ts): memory, architecture and its own price ceiling. The
@@ -220,13 +229,22 @@ export const vastBackend: RenderBackend = {
       const need = machineFor(styleOfJob(job));
       throw new Error(`no Vast.ai offer matches the filters: ${need.minVramGb} GB of VRAM, compute ${need.minComputeCap / 100}, at most $${need.maxDph}/h`);
     }
+    // A retry must move HOST, which is the whole point of retrying a job that was still downloading after 23 minutes.
+    // It could not: the requeue clears instance_id and instance_meta, and the search orders by price, so the machine
+    // just declared too slow is freed, returns to the top and is rented again — measured on gt_7f7gnsjt, whose third
+    // attempt took the same offer the second had abandoned. The job now carries what it has already tried.
+    // It is a PREFERENCE, never a gate: a slow machine sometimes finishes, a job that rents nothing never does, so
+    // when every candidate has been tried the full list is used again rather than failing the job.
+    const tried = new Set(triedMachines(job));
+    const fresh = offers.filter((o) => !tried.has(machineKey(o)));
+    const candidates = fresh.length ? fresh : offers;
     // The same per-job number the orchestrator kills on (templates.ts), so the container's own watchdog and the
     // server always agree; a flat 120 here would let a machine run an hour past the moment the server gave up on it.
     const timeoutMin = jobTimeoutMin(env, job);
     let lastErr: unknown = null;
     // Anchor for adoption: nothing that existed before this call can belong to it (see adoptOrphan).
     const attemptStart = Date.now();
-    for (const [i, offer] of offers.slice(0, 3).entries()) {
+    for (const [i, offer] of candidates.slice(0, 3).entries()) {
       if (i > 0) await sleep(1500); // create endpoint is rate-limited
       try {
         const body: Record<string, unknown> = {
@@ -254,7 +272,7 @@ export const vastBackend: RenderBackend = {
         const r = await vast<{ success: boolean; new_contract?: number; msg?: string; error?: string }>(env, "PUT", `/asks/${offer.id}/`, body);
         // A well-formed refusal ("offer taken", no credit...): the request was understood and declined, nothing was rented.
         if (!r.success || !r.new_contract) throw new VastCallError(r.msg ?? r.error ?? "create instance failed", 200, false);
-        return { instanceId: String(r.new_contract), meta: { offer: offer.id, gpu: offer.gpu_name, dph: offer.dph_total, inet_down: offer.inet_down, geo: offer.geolocation, cpu: offer.cpu_cores_effective, ram_mb: offer.cpu_ram } };
+        return { instanceId: String(r.new_contract), meta: { offer: offer.id, machine: offer.machine_id ?? null, key: machineKey(offer), gpu: offer.gpu_name, dph: offer.dph_total, inet_down: offer.inet_down, geo: offer.geolocation, cpu: offer.cpu_cores_effective, ram_mb: offer.cpu_ram } };
       } catch (e) {
         lastErr = e; // 404/410: the offer was taken meanwhile → next one
         // PUT /asks/{offer}/ is the side-effectful call: Vast may have created the instance and only the ANSWER be

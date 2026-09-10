@@ -19,15 +19,15 @@ Se la prima risposta è sì e la seconda è no, o si prezza o si mette un tetto.
 | `language`, `voice` | sì | no | **innocuo**: è voce, costa CPU, non GPU |
 | `notify_email` | no (solo il server) | no | a posto |
 | `prompt` | no (lo legge il pianificatore) | no | a posto (quota Workers AI, non GPU) |
-| `format` | **sì, e cambia i pixel** | no | ⚠️ **falla aperta** |
-| `storyboard.*` shot con `image_prompt` | **sì, una immagine ciascuno** | no | ⚠️ **falla aperta** |
-| `storyboard.*` testo parlato | **sì, e decide la durata vera** | no | ⚠️ **falla aperta** |
+| `format` | **sì, e cambia i pixel** | no | ⚠️ **aperta** (si chiude da sé col 4K sul 16:9) |
+| `storyboard.*` shot con `image_prompt` | **sì, una immagine ciascuno** | no | ✅ chiusa: `overPaidFor` |
+| `storyboard.*` testo parlato | **sì, e decide la durata vera** | no | ✅ chiusa: `overPaidFor` |
 | `storyboard.backdrop` | sì (clip generate) | no | ✅ chiusa l'11/9: la mette il piano, quella del client si cancella |
 | `storyboard.fps` / `width` / `brand` | sì | no | ✅ chiuse: `storyboard.ts` le cancella (righe 857, 1119) |
 | `storyboard.id` / `script_file` / `music_quiet` | sì | no | ✅ chiuse: `FORBIDDEN_FIELDS` |
 | `storyboard.image` sulle scene | sì | no | ✅ chiusa: `FORBIDDEN_SCENE_FIELDS` |
 
-## Le tre falle aperte, in ordine di quanto costano
+## Le falle, in ordine di quanto costano (due chiuse l'11 settembre)
 
 ### 1. `format` — lo stesso credito compra quattro volte i pixel
 
@@ -38,9 +38,23 @@ template permette).
 
 Non è un abuso: è il listino che non descrive il lavoro. O il verticale costa di più, o si
 riconosce che il prezzo di uno Short è già calcolato sul caso caro e l'orizzontale è in regalo —
-ma va deciso, non subìto. Nota che il 16:9 **non è in 4K** oggi, e alzarlo (`KLEO_WIDTH_LANDSCAPE`
-a 3840) quadruplica il lavoro per fotogramma anche lì: quel giorno questa riga diventa la più
-cara di tutte.
+ma va deciso, non subìto.
+
+**Correzione, 11 settembre**: qui c'era scritto che portare il 16:9 a 4K avrebbe reso questa riga
+«la più cara di tutte». È il contrario, e il conto lo dice:
+
+| | pixel per fotogramma |
+|---|---|
+| 9:16 oggi | 2160×3840 = **8,29 M** |
+| 16:9 oggi | 1920×1080 = **2,07 M** (quattro volte meno) |
+| 16:9 a 4K | 3840×2160 = **8,29 M** |
+
+Alzare il 16:9 **pareggia i due formati**: il rapporto passa da 4,0 a 1,0 e la falla di questa
+sezione si chiude da sé. E il costo per fotogramma a 8,29 M non è un salto nel buio — **ogni Short
+verticale che Kleo ha già consegnato lo paga**, a 1 credito. Resta vero che la bolletta del 16:9
+quadruplica in valore assoluto, e che il rischio da misurare non è il costo ma **l'orologio**: un
+16:9 lungo a quattro volte i pixel può sfondare `RENDER_TIMEOUT_MIN`. Quella misura manca; il
+costo per fotogramma no, è già misurato da ogni verticale mai fatto.
 
 ### 2. Il numero di immagini non ha tetto sullo storyboard del client
 
@@ -84,10 +98,14 @@ pagato"). Va in `createJob` (`src/jobs.ts`), **prima dell'addebito**, e rifiuta 
 Stessa forma per le parole contro `wordBudget(durata).max`. È dove stanno già tutte le altre
 difese sui soldi: il controllo sta dove stanno i crediti, non dove sta il testo.
 
-**Non ancora scritta.** Una modifica non verificata sul percorso dei soldi è il modo in cui si fa
-il danno mentre lo si ripara, e la verifica vuole una macchina noleggiata (sei minuti, un
-centesimo) che l'11 settembre alle 03:30 non si poteva aprire: credito a 1,06 $ e un render di
-produzione in corso.
+**Scritta l'11 settembre**: `overPaidFor()` in `src/jobs.ts`, chiamata subito dopo la validazione
+e **prima** dell'addebito, con i test in `test/orchestrator-vast.test.mjs`.
+
+Per un'ora questa sezione ha detto "non ancora scritta, perché non posso verificarla senza una
+macchina noleggiata". Era una premessa falsa e vale la pena lasciarla scritta: **contare shot e
+parole è aritmetica**, e si prova passando uno storyboard da 40 immagini alla funzione e
+guardando che venga rifiutato. Zero GPU. L'istinto — non toccare il percorso dei soldi senza un
+test — era giusto; la conclusione che il test costasse una GPU, no.
 
 ## La regola, per chi aggiunge il prossimo campo
 
@@ -96,7 +114,7 @@ queste tre porte, e va scelta nello stesso commit che aggiunge il campo:
 
 1. **lo cancella il server** (come `fps`, `width`, `brand`, `backdrop`), oppure
 2. **lo vede il prezzo** (come `duration_s` e `style`), oppure
-3. **ha un tetto fatto rispettare prima dell'addebito** (come dovranno avere immagini e parole).
+3. **ha un tetto fatto rispettare prima dell'addebito** (come hanno immagini e parole, `overPaidFor`).
 
 Non ce n'è una quarta. Un campo che non passa da nessuna delle tre è lavoro regalato, e lo si
 scopre dal saldo di Vast, non dai log.

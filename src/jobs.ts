@@ -1,11 +1,11 @@
 import type { Env } from "./env";
 import { type Job, type JobParams, type JobState, type User, OPEN_STATES, countOpenForUser, countJobsTodayForUser, addJobCost, debitCredits, refundCredits, insertJob, transitionJob, audit, getUserJob, listFiles } from "./db";
 import { accountUrl } from "./accounts";
-import { findTemplate, creditsFor, etaFor, normalizeVoice, voiceSpellings, type Format } from "./templates";
+import { findTemplate, creditsFor, etaFor, isVideoStyle, normalizeVoice, voiceSpellings, type Format } from "./templates";
 import { rid, nowIso, int, hmacHex } from "./util";
 import { isFlagActive } from "./schema";
 import { backendFor } from "./backends";
-import { validateStoryboard, kleoStyleOf, KLEO_STYLES, type KleoStyle } from "./keou-contract";
+import { validateStoryboard, kleoStyleOf, pictureScenes, narrationOf, MAX_PICTURES, wordBudget, KLEO_STYLES, type KleoStyle } from "./keou-contract";
 import { pickKleoStyle } from "./storyboard";
 
 /** An error whose message is shown to the user as-is: plain English, always says whether something was charged. */
@@ -50,6 +50,35 @@ export function refundFor(credits: number, state: JobState, percent: number): nu
   return Math.max(0, Math.min(credits, Math.round((credits * (100 - pct)) / 100)));
 }
 
+/**
+ * "This storyboard asks for more work than it was priced for."
+ *
+ * A PRICE rule, deliberately not a contract rule: validateStoryboard answers "is this written correctly", and a
+ * correctly written storyboard can still ask for ten times the GPU of the length it is charged on. The price is
+ * creditsFor(duration, style) — two numbers — while the bill is set by how many pictures get drawn and how long the
+ * voice actually speaks, and neither of those was bounded anywhere for a storyboard written by the caller:
+ * MAX_PICTURES only ever sliced the list the SERVER draws (images.ts), and wordBudget was only ever advice.
+ * With IMAGE_SERVER_MAX=0 every picture is drawn by the rented GPU, so a 1-credit Short could ask for hundreds.
+ *
+ * It runs BEFORE the debit and throws, so nothing is charged; and it says the number asked, the number allowed and
+ * the way out, because a refusal that does not say how to pass is a dead end with an explanation on it.
+ */
+export function overPaidFor(sb: unknown, duration: number): string[] {
+  const out: string[] = [];
+  const pictures = pictureScenes(sb).length;
+  const maxPictures = MAX_PICTURES(duration);
+  if (pictures > maxPictures)
+    out.push(`This storyboard asks for ${pictures} pictures and a ${duration}-second video allows ${maxPictures}. ` +
+      `Give some scenes fewer shots, or ask for a longer video. Nothing was charged.`);
+  const words = narrationOf(sb).trim().split(/\s+/).filter(Boolean).length;
+  const maxWords = wordBudget(duration).max;
+  if (words > maxWords)
+    out.push(`This storyboard has ${words} words of narration and a ${duration}-second video fits about ${maxWords}. ` +
+      `The voice decides how long the video really is, so this one would run far past the length it was priced on: ` +
+      `shorten the narration, or ask for a longer video. Nothing was charged.`);
+  return out;
+}
+
 export async function createJob(env: Env, user: User, input: CreateInput): Promise<Job> {
   const t = findTemplate(input.template);
   if (!t) throw new JobError(`There is no template called "${input.template}". Call kleo_list_templates for the valid ids. Nothing was charged.`);
@@ -85,10 +114,23 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
       const n = r.errors.length;
       throw new JobError(`The storyboard has ${plural(n, "problem")} (nothing was charged). Fix ${n === 1 ? "it" : "them"} and call kleo_create_video again:\n- ${r.errors.join("\n- ")}`);
     }
+    const overpaid = overPaidFor(r.storyboard, duration);
+    if (overpaid.length) throw new JobError(overpaid.join("\n"));
     storyboard = JSON.stringify(r.storyboard);
     style = kleoStyleOf(r.storyboard);
   }
-  if (!style) style = pickKleoStyle(t.id, prompt);
+  if (!style) {
+    style = pickKleoStyle(t.id, prompt);
+    // Kleo may GUESS a look, but never a look that costs extra. A guess that lands on a generated-video style would
+    // spend seven of somebody's credits on a hunch about what their prompt was about — and the style planner's own
+    // accuracy was measured at 35% on 11 September, so the hunch is wrong two times out of three. Naming the style
+    // is always allowed and always honoured; this only governs what happens when nobody named one.
+    // A no-op today: every style is priced 1. It becomes the guard the day one of them is not.
+    if (isVideoStyle(style)) {
+      const cheapest = (KLEO_STYLES as readonly string[]).find((k) => !isVideoStyle(k)) as KleoStyle | undefined;
+      if (cheapest) style = cheapest;
+    }
+  }
 
   if (!input.storyboard && (await isFlagActive(env, "plan_pause")))
     throw new JobError("Kleo cannot write the storyboard itself right now: it has used up today's free planning. You can still make the video, and it costs the same: call kleo_storyboard_guide, write the storyboard yourself, then call kleo_create_video again with the storyboard argument. Nothing was charged.");

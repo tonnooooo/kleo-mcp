@@ -1,5 +1,5 @@
 import type { Env } from "./env";
-import { type Job, type JobState, ACTIVE_STATES, OPEN_STATES, GPU_ONLY_WAIT, activeJobs, queuedJobs, queuedPictureJobs, staleQueuedJobs, jobInstances, unplannedJobs, claimPlanAttempt, countRunning, runningPaidJobs, spentTodayUsd, addJobCost, updateJob, transitionJob, audit, refundCredits, expiredJobs, listFiles, deleteFiles, setFile, getJob, reserveJob, unreserveJob } from "./db";
+import { type Job, type JobState, ACTIVE_STATES, OPEN_STATES, GPU_ONLY_WAIT, activeJobs, queuedJobs, queuedPictureJobs, staleQueuedJobs, jobInstances, unplannedJobs, claimPlanAttempt, countRunning, runningPaidJobs, spentTodayUsd, addJobCost, rememberTriedMachine, updateJob, transitionJob, audit, refundCredits, expiredJobs, listFiles, deleteFiles, setFile, getJob, reserveJob, unreserveJob } from "./db";
 import { backendFor, getBackend } from "./backends";
 import { vastStatus, listKleoInstances, destroyInstance } from "./backends/vast";
 import { int, num, nowIso, minutesSince, secondsSince, addDays, base64ToBytes, rid } from "./util";
@@ -241,6 +241,16 @@ async function tickInner(env: Env, stats: Stats) {
  * cost estimate could not be read from Vast still writes nothing. It bounds the damage, it is not an account
  * statement — the Vast.ai balance is.
  */
+/** The machine a job is on right now, as the key the renter excludes by (instance_meta, written at rental). */
+function machineKeyOf(job: Job): string | null {
+  try {
+    const m = JSON.parse(job.instance_meta ?? "{}") as { key?: string; machine?: number | null; offer?: number };
+    if (typeof m.key === "string" && m.key) return m.key;
+    if (typeof m.machine === "number") return `m:${m.machine}`;
+    return typeof m.offer === "number" ? `o:${m.offer}` : null;
+  } catch { return null; }
+}
+
 /** Generated-video renders on a paid GPU right now (their style is what says so, src/templates.ts). */
 async function runningVideoJobs(env: Env): Promise<number> {
   return (await runningPaidJobs(env)).filter((j) => isVideoStyle(styleOfJob(j))).length;
@@ -371,6 +381,10 @@ export async function failJob(env: Env, job: Job, reason: string, retry: boolean
   if (retry && job.attempts < MAX_ATTEMPTS) {
     // Back to the queue with a fresh worker secret: the old GPU (possibly still alive) can no longer report on this job.
     // queued_at restarts here, so the queue-wait reaper measures the new wait and not the age of the job.
+    // Remember the machine BEFORE the row forgets it: the very next line clears instance_id and instance_meta, and
+    // that is exactly the information the next attempt needs in order not to rent the same host again.
+    const failedKey = machineKeyOf(job);
+    if (failedKey) await rememberTriedMachine(env, job.id, failedKey);
     const requeued = await transitionJob(env, job.id, OPEN_STATES, {
       state: "queued", backend: null, instance_id: null, instance_meta: null, started_at: null, queued_at: nowIso(), percent: 0, track: null, error: reason, worker_secret: rid("wk", 32),
     });

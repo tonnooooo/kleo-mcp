@@ -33,7 +33,8 @@ before(async () => {
   const r = await esbuild.build({
     stdin: {
       contents: `export * from "./src/jobs.ts"; export * from "./src/orchestrator.ts"; export * from "./src/db.ts";
-        export * from "./src/schema.ts"; export { vastBackend, listKleoInstances, jobLabel } from "./src/backends/vast.ts";`,
+        export * from "./src/schema.ts"; export * from "./src/templates.ts";
+        export { vastBackend, listKleoInstances, jobLabel } from "./src/backends/vast.ts";`,
       resolveDir: ROOT, loader: "ts",
     },
     bundle: true, write: false, format: "esm", platform: "neutral", target: "es2022", logLevel: "silent",
@@ -557,4 +558,136 @@ test("queue: the wait is counted from the last time the job entered the queue, a
   assert.equal(j.state, "failed");
   assert.match(j.error, /could not write the storyboard/);
   assert.ok(!/no GPU was free/.test(j.error), "pointing at Vast for a Workers AI outage sends the owner to the wrong place");
+});
+
+/* ------------------------------------------------------------------ a retry has to move host */
+
+test("retry: the machine that just failed is remembered before the row forgets it", async () => {
+  // Measured on gt_7f7gnsjt (11 September): attempt two abandoned an instance for still downloading after 23
+  // minutes, and attempt three rented the SAME offer. Not bad luck — the requeue cleared instance_meta, the search
+  // orders by price, and the freed machine came back to the top.
+  const env = await newEnv({ VAST_MAX_DPH: "0.40", MAX_JOBS_PER_USER: "10" });
+  const u = await user(env, 10);
+  const j = await short(env, u);
+  await m.updateJob(env, j.id, {
+    state: "starting", backend: "vast", instance_id: "i-slow", started_at: new Date().toISOString(),
+    instance_meta: JSON.stringify({ offer: 44217727, machine: 9911, key: "m:9911", dph: 0.336 }),
+  });
+
+  const outcome = await m.failJob(env, { ...(await m.getJob(env, j.id)) }, "still downloading the renderer after 23 min", true);
+  assert.equal(outcome, "requeued");
+
+  const back = await m.getJob(env, j.id);
+  assert.equal(back.state, "queued");
+  assert.equal(back.instance_meta, null, "the row still forgets the instance, as it must");
+  assert.deepEqual(m.triedMachines(back), ["m:9911"], "but the machine survives the forgetting");
+});
+
+test("retry: a second failure adds to the list and never loses the first", async () => {
+  const env = await newEnv({ MAX_JOBS_PER_USER: "10" });
+  const u = await user(env, 10);
+  const j = await short(env, u);
+  for (const [id, key] of [["i-a", "m:1"], ["i-b", "o:2"]]) {
+    await m.updateJob(env, j.id, {
+      state: "starting", backend: "vast", instance_id: id, started_at: new Date().toISOString(),
+      instance_meta: JSON.stringify(key.startsWith("m:") ? { machine: Number(key.slice(2)) } : { offer: Number(key.slice(2)) }),
+    });
+    await m.failJob(env, { ...(await m.getJob(env, j.id)) }, "too slow", true);
+  }
+  assert.deepEqual(m.triedMachines(await m.getJob(env, j.id)), ["m:1", "o:2"]);
+
+  // Twice the same machine is not two entries: the list is a preference, and a duplicate would only waste room.
+  await m.rememberTriedMachine(env, j.id, "m:1");
+  assert.deepEqual(m.triedMachines(await m.getJob(env, j.id)), ["m:1", "o:2"]);
+});
+
+test("retry: an unreadable or empty memory is an empty list, never a crash", () => {
+  assert.deepEqual(m.triedMachines({ tried_machines: null }), []);
+  assert.deepEqual(m.triedMachines({ tried_machines: "{not json" }), []);
+  assert.deepEqual(m.triedMachines({ tried_machines: '"a string"' }), [], "a shape that is not a list is not a list");
+  assert.deepEqual(m.triedMachines({ tried_machines: '["m:1", 7, null, "o:2"]' }), ["m:1", "o:2"], "only the strings survive");
+});
+
+/* ------------------------------------------------------------------ paying for the work you ask for */
+
+const pirates = () => JSON.parse(readFileSync(join(ROOT, "test/fixtures/cartoon-pirates.json"), "utf8"));
+
+test("price cap: a storyboard within its length is not touched", () => {
+  const sb = pirates();
+  assert.deepEqual(m.overPaidFor(sb, 45), [], "the fixture is what a well-behaved 45-second Short looks like");
+});
+
+test("price cap: more pictures than the length allows is refused, and says the way out", () => {
+  // MAX_PICTURES is 24 for a Short. Nothing bounded this for a caller's storyboard: images.ts only ever sliced the
+  // list the SERVER draws, and with IMAGE_SERVER_MAX=0 the rented GPU drew every one of them, for one credit.
+  const sb = pirates();
+  const scene = sb.scenes.find((s) => Array.isArray(s.shots) && s.shots.length);
+  // Short lines on purpose: 40 scenes of real narration would ALSO bust the word budget, and this test is about
+  // the pictures. That the two can fire together is the next test.
+  sb.scenes = Array.from({ length: 40 }, (_, i) => ({ ...scene, id: `x${i}`, voice: "A line.", shots: scene.shots.slice(0, 1) }));
+  const [problem, ...rest] = m.overPaidFor(sb, 45);
+  assert.equal(rest.length, 0, "one problem, because only one thing is wrong");
+  assert.match(problem, /asks for 40 pictures/);
+  assert.match(problem, /allows 24/, "it says the number allowed, not just that the number is wrong");
+  assert.match(problem, /fewer shots, or ask for a longer video/, "and how to pass");
+  assert.match(problem, /Nothing was charged/);
+});
+
+test("price cap: narration far past the length is refused — the voice decides how long the video really is", () => {
+  const sb = pirates();
+  sb.scenes = sb.scenes.map((s) => ({ ...s, voice: Array.from({ length: 60 }, () => "word").join(" ") }));
+  const problem = m.overPaidFor(sb, 45).find((p) => /words of narration/.test(p));
+  assert.ok(problem, "300 words in a 45-second Short must not pass");
+  assert.match(problem, /fits about 114/, "wordBudget(45).max — the ceiling, not the target of 104");
+  assert.match(problem, /shorten the narration, or ask for a longer video/);
+});
+
+test("price cap: a longer video is allowed more of both, because it paid for more", () => {
+  const sb = pirates();
+  const scene = sb.scenes.find((s) => Array.isArray(s.shots) && s.shots.length);
+  sb.scenes = Array.from({ length: 40 }, (_, i) => ({ ...scene, id: `x${i}`, shots: scene.shots.slice(0, 1) }));
+  assert.deepEqual(m.overPaidFor(sb, 600).filter((p) => /pictures/.test(p)), [],
+    "40 pictures are over the 24 of a Short and inside the 48 of a long video: the cap follows what was paid");
+});
+
+test("price cap: a storyboard with no pictures and no words cannot be refused for having too many", () => {
+  assert.deepEqual(m.overPaidFor({}, 45), []);
+  assert.deepEqual(m.overPaidFor(null, 45), []);
+  assert.deepEqual(m.overPaidFor({ scenes: [] }, 45), []);
+});
+
+test("price cap: two things wrong are said together, not one refusal at a time", () => {
+  const sb = pirates();
+  const scene = sb.scenes.find((s) => Array.isArray(s.shots) && s.shots.length);
+  sb.scenes = Array.from({ length: 40 }, (_, i) => ({ ...scene, id: `x${i}`, shots: scene.shots.slice(0, 1) }));
+  const problems = m.overPaidFor(sb, 45);
+  assert.equal(problems.length, 2, "40 scenes of real narration are over BOTH ceilings");
+  assert.ok(problems.some((p) => /pictures/.test(p)) && problems.some((p) => /words of narration/.test(p)),
+    "and createJob joins them, so one call learns everything that is wrong instead of one thing per attempt");
+});
+
+test("price cap: Kleo may guess a look, but never one that costs extra", async () => {
+  // A style the caller NAMED is always honoured. A style Kleo picked from the topic is a HUNCH — and the planner's
+  // own accuracy was measured at 35% on 11 September — so a hunch must never reach for the credits of an expensive
+  // style. Today nothing is expensive, so the tables are flipped inside the test to make the guard reachable.
+  const env = await newEnv({ MAX_JOBS_PER_USER: "10", MAX_JOBS_PER_DAY: "10" });
+  const u = await user(env, 20);
+  const machine = m.STYLE_MACHINE, credits = m.STYLE_CREDITS;
+  const before = { cartoon: machine.cartoon, realistic: machine.realistic, cc: credits.cartoon, cr: credits.realistic };
+  try {
+    machine.cartoon = m.VIDEO; machine.realistic = m.VIDEO;   // the two a pirate prompt would plausibly land on
+    credits.cartoon = 7; credits.realistic = 7;
+    const guessed = await short(env, u);                       // no style argument: Kleo has to pick one
+    const picked = JSON.parse(guessed.params).style;
+    assert.equal(m.isVideoStyle(picked), false, `guessed "${picked}", which costs extra: a hunch must not spend 7 credits`);
+    assert.equal(guessed.credits, 1, "and the debit follows the style that was actually used");
+
+    // Naming it is a decision, not a hunch, and is honoured whatever it costs.
+    const asked = await short(env, u, { style: "cartoon" });
+    assert.equal(JSON.parse(asked.params).style, "cartoon");
+    assert.equal(asked.credits, 7, "7 credits, because the user asked for the expensive look with open eyes");
+  } finally {
+    machine.cartoon = before.cartoon; machine.realistic = before.realistic;
+    credits.cartoon = before.cc; credits.realistic = before.cr;
+  }
 });

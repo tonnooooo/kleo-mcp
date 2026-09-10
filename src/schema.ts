@@ -33,6 +33,9 @@ const COLUMNS: [table: string, column: string, definition: string][] = [
   // HMAC of the address a new account was opened from — never the address itself. It is what the daily per-address
   // cap counts, inside the INSERT that creates the account (src/db.ts createUserIfUnderCaps).
   ["users", "ip_hash", "TEXT"],
+  // Machines already tried for THIS job, so a retry moves host instead of renting the one that just failed: the
+  // requeue clears instance_id and instance_meta, which is exactly the memory the next attempt needed.
+  ["jobs", "tried_machines", "TEXT"],
 ];
 
 /** Indexes over columns from COLUMNS. They belong here and NOT in STATEMENTS: that batch runs before the ALTERs, so
