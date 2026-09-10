@@ -509,8 +509,25 @@ USER REQUEST (the video is about this; keep every fact, name and constraint from
  */
 export function sectionSkeleton(template: string, scenes: number): { name: string; role: string; accent: string; scenes: number }[] {
   const f: Family = narrativeFor(template);
-  const split = sceneSplit(f, scenes);
-  return f.sections.map((sec, i) => ({ name: sec.name, role: sec.role, accent: sec.accent, scenes: split[i] ?? 1 }));
+  // A FILM SHORTER THAN ITS OWN SHAPE. sceneSplit gives every section at least one scene, so a five-section family
+  // asked for three scenes returns five — it cannot tile, and the direction built on it would be refused. When there
+  // are not enough scenes to go round, the film uses fewer sections: the FIRST and the LAST always survive (the hook
+  // and the ending are the two a viewer actually feels), and the widest of the middle ones fill whatever is left.
+  // Dropping from the end instead — which is what a plain truncation does — takes the closing, the one part the
+  // planner does not know is load-bearing.
+  let sections = f.sections;
+  if (scenes < sections.length) {
+    const middle = sections.slice(1, -1)
+      .map((sec, i) => ({ sec, i: i + 1 }))
+      .sort((a, b) => b.sec.weight - a.sec.weight)
+      .slice(0, Math.max(0, scenes - 2))
+      .sort((a, b) => a.i - b.i)
+      .map((x) => x.sec);
+    sections = scenes <= 1 ? [sections[0]] : [sections[0], ...middle, sections[sections.length - 1]];
+  }
+  const trimmed: Family = { ...f, sections };
+  const split = sceneSplit(trimmed, scenes);
+  return sections.map((sec, i) => ({ name: sec.name, role: sec.role, accent: sec.accent, scenes: split[i] ?? 1 }));
 }
 
 function directionPrompt(job: PlanJob, plan: Plan): string {

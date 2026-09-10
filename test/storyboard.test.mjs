@@ -76,17 +76,9 @@ const chunkRange = (user) => { const m = /write scenes (\d+)–(\d+)/.exec(user)
  * template or by the caller) is left alone, and it lists no facts, so the fidelity gate has nothing to demand.
  */
 const directionFor = (user) => {
-  const n = Number(/add up to exactly (\d+)/.exec(user)?.[1] ?? 5);
-  const accents = ["amber", "red", "cyan", "green"];
-  const per = Math.max(1, Math.ceil(n / 3));
-  const sections = [];
-  for (let left = n, i = 0; left > 0; i++) {
-    const take = Math.min(left, per);
-    sections.push({ name: `0${i + 1} PART`, accent: accents[i % accents.length], means: "a part of the story", scenes: take });
-    left -= take;
-  }
-  // Two sections is the floor; a one-scene film would otherwise produce one.
-  if (sections.length < 2) { sections[0].scenes -= 1; sections.push({ name: "02 PART", accent: "red", means: "the end", scenes: 1 }); }
+  // The prompt now PRINTS the shape instead of asking for one, so a fake reads the number of sections off it.
+  const n = (user.match(/^ {2}\d+\. /gm) || []).length || 3;
+  const sections = Array.from({ length: n }, (_, i) => ({ name: `0${i + 1} PART`, means: "a part of the story" }));
   return {
     direction: {
       subject: "Why a phone battery dies faster in winter",
@@ -606,7 +598,8 @@ test("the direction is step zero: it reaches the storyboard, the colour law is a
   }, {
     direction: (kind, user) => {
       assert.match(user, /TASK: write the DIRECTION of this one film/);
-      const n = Number(/add up to exactly (\d+)/.exec(user)[1]);
+      const n = (user.match(/^ {2}\d+\. /gm) || []).length;
+      assert.ok(n >= 2, `the prompt must print the shape: ${n} sections found`);
       return {
         style: "cartoon",
         why: "a story wants drawings",
@@ -620,11 +613,7 @@ test("the direction is step zero: it reaches the storyboard, the colour law is a
           cast: [{ name: "the captain", look: "a pirate captain with a red bandana and a long dark braid" }],
           objects: ["wooden ship", "sandy bay", "cliff", "rope"],
           forbidden: ["wifi symbol", "phone", "brand logo", "text in the picture"],
-          sections: [
-            { name: "01 THE BAY", accent: "amber", means: "where it began", scenes: 1 },
-            { name: "02 THE CREW", accent: "red", means: "who left", scenes: n - 2 },
-            { name: "03 THE QUESTION", accent: "green", means: "what is left", scenes: 1 },
-          ],
+          sections: Array.from({ length: n }, (_, i) => ({ name: `0${i + 1} OF THE STORY`, means: "what this part is for" })),
         },
       };
     },
@@ -642,11 +631,11 @@ test("the direction is step zero: it reaches the storyboard, the colour law is a
   assert.ok(sawDirectionBlock === chunkCalls && chunkCalls >= 1, "every scene-writing call carried the direction");
 
   // The colour law: every scene wears its section's accent, whatever the model wrote.
-  const accents = sb.scenes.map((s) => s.accent);
-  assert.equal(accents[0], "amber");
-  assert.equal(accents.at(-1), "green");
-  assert.ok(accents.slice(1, -1).every((a) => a === "red"), accents.join(","));
-  assert.ok(!accents.includes("cyan"), "the accent the model wrote is overwritten by the section it belongs to");
+  // The colour law: the accents come from the TEMPLATE's shape, not from the model and not from the scene.
+  const bones = sectionSkeleton("viral-short", sb.scenes.length);
+  const want = bones.flatMap((b) => Array.from({ length: b.scenes }, () => b.accent));
+  assert.deepEqual(sb.scenes.map((s) => s.accent), want, "every scene wears the accent of the section it sits in");
+  assert.ok(new Set(want).size > 1, "and the film is not one colour throughout");
 
   // The fidelity gate: the fact was fed back and the finished narration says it.
   assert.match(sb.scenes[1].voice, /1720/);
