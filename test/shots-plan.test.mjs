@@ -159,3 +159,19 @@ test("no shot in an ordinary Short outruns what the model can film in one take",
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("the engine says it is alive often enough that the silence rule cannot kill a healthy render", () => {
+  // The server destroys a GPU that has reported nothing for RENDER_SILENCE_MIN. The only thing that reports during
+  // a render is this one FRAME line, so the interval between two of them is the longest silence a healthy render
+  // can produce. At 1080p almost any number worked; at 3840x2160 a frame costs several times as much and the same
+  // number becomes twenty minutes of silence from a render that is working perfectly.
+  const src = readFileSync(join(ENGINE, "render.mjs"), "utf8");
+  const m = /if\(f%(\d+)===0\)console\.log\('FRAME'/.exec(src);
+  assert.ok(m, "the FRAME heartbeat is gone or was renamed: the silence rule now has nothing to listen to");
+  const every = Number(m[1]);
+  const SLOWEST_4K_SECONDS_PER_FRAME = 7;   // deliberately pessimistic: the point is the worst case, not the usual one
+  const silenceMin = (every * SLOWEST_4K_SECONDS_PER_FRAME) / 60;
+  assert.ok(silenceMin < 10,
+    `${every} frames between heartbeats is up to ${silenceMin.toFixed(0)} min of silence at 4K, and the server ` +
+    `reaps a GPU that has been quiet for 20`);
+});
