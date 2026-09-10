@@ -310,7 +310,13 @@
   };
 
   /* ---- the pictures -------------------------------------------------------- */
+  // True when the picture under the graphics is a real video track that ffmpeg composites afterwards: then this
+  // layer draws nothing where the picture would be and leaves transparency, but still draws the veil, because the
+  // dim and the gradients are the grade the captions are read against, not the background.
+  function external() { return !!(A && A.project && A.project.backdrop === 'video') }
+
   function paint(s, shot, index, p, alpha, punch) {
+    if (external()) return;
     const ctx = A.ctx, G = geo(), img = shot && shot.image && A.images ? A.images[shot.image] : null;
     ctx.save(); ctx.globalAlpha *= pclamp(alpha);
     if (img && img.width && img.height) {

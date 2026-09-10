@@ -1,5 +1,11 @@
 /* Keou production 1.0 — data-driven compositions, derived from the Pasifika visual language. */
-const canvas = document.getElementById('film'), ctx = canvas.getContext('2d', {alpha:false});
+// The canvas is opaque by default: it is faster, and every style but one paints its own background. A project
+// that declares `backdrop: "video"` is the exception — under the graphics there is a real video track that ffmpeg
+// composites afterwards, so this layer has to come out with a transparent hole where the picture would have been.
+// A 2D context cannot change its alpha after creation, so the context is made inside init(), once the project is
+// known. That is also why `backdrop` lives on the project and never on a shot.
+const canvas = document.getElementById('film');
+let ctx = canvas.getContext('2d', {alpha:false});
 let project, timeline, W, H, portrait, C, fontFamily='Manrope', frameTime=0, issues=[], images={}, imageIssues=[], land;
 const themes = {
   terminal:{ink:'#010503',deep:'#061109',white:'#c9ffd7',muted:'#74a680',accent:'#3cff81',second:'#18ab52'},
@@ -64,7 +70,12 @@ function backdrop(s,u,{top=.55,bottom=.72,dim=.3,fade=0}={}){
  ctx.restore();return true;
 }
 function stickApi(){return {ctx,W,H,project,timeline,issues,frameTime,images,backdrop,backdropPlan,raw:(s,x,y,size,color,weight,align,max,family)=>{const f=fontFamily;if(family)fontFamily=family;raw(s,x,y,size,color,weight,align,max);fontFamily=f},block,wrap,box,line,ease,clamp,mono:(s,x,y,size,color,align)=>{ctx.font=`500 ${size}px KeouMono`;ctx.textAlign=align;ctx.textBaseline='alphabetic';ctx.fillStyle=color;const w=ctx.measureText(s).width,left=align==='left'?x:align==='right'?x-w:x-w/2;if(left<48||left+w>W-48||y-size<30||y>H-65)issues.push({time:frameTime,text:s,error:'Story text bounds'});ctx.fillText(s,x,y)},label:(s,x,y,size,color,align)=>{ctx.font=`600 ${size}px Manrope`;ctx.textAlign=align;ctx.textBaseline='alphabetic';ctx.fillStyle=color;ctx.fillText(s,x,y)}}}
+function externalBackdrop(){return !!(project && project.backdrop==='video')}
 function background(t){
+ // With an external video track underneath there is nothing to paint: the frame starts empty and everything the
+ // engine draws from here on lands on transparency. The dim, the gradients and the vignette are still drawn by the
+ // style itself, as semi-transparent black — they are part of the grade, not part of the background.
+ if(externalBackdrop()){ctx.clearRect(0,0,W,H);if(project.style==='picture'){const M=window.KEOU_PICTURE;M.attach(stickApi());M.background(t)}return}
  if(project.style==='sketch'){window.KEOU_SKETCH.attach(stickApi());window.KEOU_SKETCH.background(t);return}
  if(project.style==='cinema'||project.style==='picture'){const M=project.style==='picture'?window.KEOU_PICTURE:window.KEOU_CINEMA;M.attach(stickApi());M.background(t);return}
  if(project.style==='stickman'){window.KEOU_STICKMAN.attach(stickApi());window.KEOU_STICKMAN.background(t);return}
@@ -322,7 +333,7 @@ function scene(s,u,t){
  if(s.kind==='closing'&&s.button){const by=portrait?(terminal?1470:1420):800,bw=portrait?880:790;box(100,by,bw,82,C.accent,null,41);block(s.button,100+bw/2,by+54,{size:32,min:26,max:bw-70,lines:1,color:C.ink,align:'center',u:u-.2})}
 }
 function subtitle(s,t){if(project.style==='sketch'){window.KEOU_SKETCH.subtitle(s,t);return}if(project.style==='cinema'||project.style==='picture'){(project.style==='picture'?window.KEOU_PICTURE:window.KEOU_CINEMA).subtitle(s,t);return}if(project.style==='stickman'){window.KEOU_STICKMAN.subtitle(s,t);return}const group=(s.captions||[]).find(c=>t>=c.start&&t<c.end);if(!group)return;const size=portrait?38:34,max=portrait?810:1490,lines=wrap(group.text,size,max,550);if(lines.length>2)issues.push({time:t,error:'Caption exceeds two lines',text:group.text});const hh=lines.length*size*1.3+32,yy=portrait?1630:H-175,ww=portrait?880:1600,xx=(W-ww)/2;box(xx,yy,ww,hh,C.ink+'e8',C.accent+'22',20);lines.forEach((l,j)=>raw(l,W/2,yy+size+12+j*size*1.3,size,C.white,550,'center',max))}
-window.init=async function(config,tl,width){project=config;timeline=tl;portrait=config.format==='9:16';W=portrait?1080:1920;H=portrait?1920:1080;C=themes[config.style];fontFamily=config.style==='terminal'?'KeouMono':'Manrope';canvas.width=width;canvas.height=width*H/W;await document.fonts.load('650 80px Manrope');await document.fonts.load('800 80px Manrope');await document.fonts.load('400 80px KeouMono');if(config.style==='picture')await Promise.allSettled(['800 80px KleoCartoon','700 80px KleoCartoon','700 80px KleoReal','600 80px KleoReal'].map(f=>document.fonts.load(f)));await document.fonts.ready;if(!document.fonts.check(`400 80px ${fontFamily}`))throw Error('Font unavailable');land=await (await fetch('/engine/assets/world.json')).json();
+window.init=async function(config,tl,width){project=config;ctx=canvas.getContext('2d',{alpha:config&&config.backdrop==='video'});timeline=tl;portrait=config.format==='9:16';W=portrait?1080:1920;H=portrait?1920:1080;C=themes[config.style];fontFamily=config.style==='terminal'?'KeouMono':'Manrope';canvas.width=width;canvas.height=width*H/W;await document.fonts.load('650 80px Manrope');await document.fonts.load('800 80px Manrope');await document.fonts.load('400 80px KeouMono');if(config.style==='picture')await Promise.allSettled(['800 80px KleoCartoon','700 80px KleoCartoon','700 80px KleoReal','600 80px KleoReal'].map(f=>document.fonts.load(f)));await document.fonts.ready;if(!document.fonts.check(`400 80px ${fontFamily}`))throw Error('Font unavailable');land=await (await fetch('/engine/assets/world.json')).json();
  // One truncated or half-written PNG used to reject img.decode() and kill the page, losing a paid
  // job over a single picture. A picture is never worth the whole job, in any style: a failed decode
  // is recorded and the render carries on. The picture style draws a shot with no usable picture as
@@ -333,9 +344,13 @@ window.init=async function(config,tl,width){project=config;timeline=tl;portrait=
  // into a hard failure, and renderFrame reassigns issues=[] as its first statement anyway): it is
  // kept in imageIssues, logged, and handed back from init.
  imageIssues.length=0;window.KEOU_IMAGE_ISSUES=imageIssues;   // the QA layer reads the pictures that never arrived
+ // With an external video track there is no still to decode: skipping them saves the whole preload, which on a
+ // twelve-shot film is a few hundred megabytes of pictures nobody would ever see.
+ if(!externalBackdrop()){
  for(const s of tl.scenes)await loadImage(s.image);
  // Picture style: every shot of every scene carries its own picture; decode them all before the first frame.
  for(const s of tl.scenes)for(const shot of (s.shots||[]))await loadImage(shot&&shot.image);
+ }
  return imageIssues.length?{ok:true,images:imageIssues}:true;};
 // Memoised both ways: a path that decoded is kept as the image, a path that failed is kept as null.
 // The worker copies the first shot's picture onto scene.image, so the same path is loaded twice by

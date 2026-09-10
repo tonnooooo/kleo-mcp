@@ -760,6 +760,26 @@ test("init: every picture readable leaves nothing to report", async () => {
   assert.deepEqual(warned, []);
 });
 
+test("backdrop video: the engine leaves the picture to ffmpeg and draws on transparency", async () => {
+  // The whole point of the mode: the graphics layer comes out with a hole where the picture would be, so the real
+  // video track can be composited under it. What must NOT disappear is the veil — the dim and the gradients are
+  // what the captions are read against.
+  const { win } = loadFilm(() => { });
+  const tl = shotTimeline();
+  const r = await win.init({ style: "picture", format: "9:16", look: "cartoon", backdrop: "video" }, tl, 540);
+  assert.equal(r === true || (r && r.ok), true, "init still resolves");
+  const src = readFileSync(join(ROOT, "worker", "keou", "engine", "film.js"), "utf8");
+  assert.match(src, /getContext\('2d',\s*\{alpha:\s*config&&config\.backdrop==='video'\}\)/,
+    "the context is created transparent, and only inside init where the project is known");
+  assert.match(src, /if\(externalBackdrop\(\)\)\{ctx\.clearRect/, "the background is cleared, not painted");
+  assert.match(src, /if\(!externalBackdrop\(\)\)\{/, "and no still is preloaded when the track comes from outside");
+  const pic = readFileSync(join(ROOT, "worker", "keou", "engine", "picture.js"), "utf8");
+  const paint = pic.slice(pic.indexOf("function paint("), pic.indexOf("function paint(") + 200);
+  assert.match(paint, /if \(external\(\)\) return;/, "the picture itself is not drawn");
+  assert.ok(pic.indexOf("function veil(") > 0 && !/function veil[\s\S]{0,200}external\(\)/.test(pic),
+    "but the veil still is: it is the grade, not the background");
+});
+
 test("init: a broken picture is never fatal, in any style, and is reported", async () => {
   // Every drawing path guards on img.width (film.js backdrop() and the image-kind branch), so a picture that cannot
   // be decoded costs that one picture, not the whole paid render. It must still be visible: KEOU_IMAGE_ISSUES.
