@@ -543,9 +543,10 @@ function validateShots(s: Record<string, unknown>, label: string, kind: "cinema"
     const sl = `${label} shot ${j + 1}`;
     if (!isObj(sh)) { e.add(`${sl}: must be an object`); return; }
     if ("image" in sh) e.add(`${sl}: image is not allowed in a storyboard (describe the picture in image_prompt instead; Kleo generates it)`);
+    if ("clip" in sh) e.add(`${sl}: clip is not allowed in a storyboard (Kleo generates the video track on the GPU and attaches it there)`);
     // contract.py: `unknown = set(shot) - SHOT_FIELDS` → same wording, same sorted list. A stray "note" or "seed"
     // costs a whole rendered job otherwise. `image` keeps the dedicated message above.
-    const unknown = Object.keys(sh).filter((k) => k !== "image" && !(SHOT_FIELDS as readonly string[]).includes(k));
+    const unknown = Object.keys(sh).filter((k) => k !== "image" && k !== "clip" && !(SHOT_FIELDS as readonly string[]).includes(k));
     if (unknown.length) e.add(`${sl}: unknown shot fields ${sorted(unknown)}`);
     if (e.text(sh.image_prompt, `${sl} image_prompt`, IMAGE_PROMPT_MAX) && (sh.image_prompt as string).trim().length < IMAGE_PROMPT_MIN)
       e.add(`${sl} image_prompt: required text, minimum ${IMAGE_PROMPT_MIN} characters`);
@@ -678,6 +679,14 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
   e.text(c.title, "title", 120);
   if ("brand" in c) e.text(c.brand, "brand", 28);
   if (!(STYLES as readonly string[]).includes(c.style as string)) e.add(`style must be one of ${sorted(STYLES)}`);
+  // THE BACKDROP IS A PROPERTY OF THE PAGE, NOT OF A SHOT. Transparent mode changes how the canvas is created,
+  // and the canvas is created once when the page loads — so it cannot be switched on for shot four and off for
+  // shot five. Refused outside the picture style on purpose: no other style has a video track to lie over, and
+  // the explainer must not be able to fall into it by accident. Mirrors worker/keou/contract.py.
+  if ("backdrop" in c) {
+    if (c.backdrop !== "video") e.add(`backdrop must be 'video'`);
+    else if (c.style !== "picture") e.add(`backdrop belongs to the picture style only`);
+  }
   if (!(FORMATS as readonly string[]).includes(c.format as string) || ("fps" in c && c.fps !== 30 && c.fps !== 60)) e.add("format: 9:16 or 16:9; fps: 30 or 60");
   else if (c.format !== opts.format) e.add(`format must be ${opts.format} for this job, not ${String(c.format)}`);
   // Kleo style ⇔ Keou style. cartoon/realistic are the "picture" style (shots); stickman is Keou's stickman (9:16 only).

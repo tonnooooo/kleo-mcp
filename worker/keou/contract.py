@@ -53,7 +53,7 @@ LOOKS = {'cartoon', 'realistic'}
 SHOT_MOTIONS = {'in', 'out', 'left', 'right',
                 'crash_zoom_in', 'push_in', 'push_in_dutch', 'pull_out', 'track_left', 'track_right',
                 'track_alongside', 'orbit_left', 'orbit_right', 'crane_down', 'crane_up', 'whip_pan', 'static_hold'}
-SHOT_FIELDS = {'image', 'caption', 'hl', 'at', 'motion', 'strength'}
+SHOT_FIELDS = {'image', 'clip', 'caption', 'hl', 'at', 'motion', 'strength'}
 # Stickman story slides (style 'stickman', portrait only). Every value is an
 # enum the renderer knows how to draw; nothing here is ever executed.
 STORY_ACTS = {'idle', 'explain', 'point-up', 'shrug', 'think', 'alarm', 'hold', 'drop', 'wave', 'walk', 'run', 'crouch'}
@@ -108,6 +108,20 @@ def local_asset(project, value):
             raise ValueError('SVG must be self-contained, without scripts or external references')
     return p
 
+# The video track a picture film may be laid over. Kept apart from local_asset because the two answer
+# different questions: an image is a frame the engine draws, a clip is a track ffmpeg composites under it.
+CLIP_FORMATS = {'.mp4', '.mov', '.webm'}
+
+def local_clip(project, value):
+    text(value, 'clip path', 250)
+    p = (project.parent / value).resolve()
+    root = (project.parent / 'clips').resolve()
+    if not p.is_relative_to(root) or not p.is_file():
+        raise ValueError(f'Clip must exist inside the project\'s clips/ folder: {value}')
+    if p.suffix.lower() not in CLIP_FORMATS:
+        raise ValueError(f'Unsupported clip format: {p.suffix} (one of {sorted(CLIP_FORMATS)})')
+    return p
+
 def validate(path, approved=True):
     path = Path(path).resolve()
     c = json.loads(path.read_text())
@@ -127,6 +141,15 @@ def validate(path, approved=True):
             raise ValueError(f'look must be one of {sorted(LOOKS)} when style is picture')
     elif 'look' in c:
         raise ValueError('look belongs to the picture style only')
+    # THE BACKDROP IS A PROPERTY OF THE PAGE, NOT OF A SHOT. Transparent mode changes how the canvas is
+    # created, and the canvas is created once when the page loads — so it cannot be switched on for shot
+    # four and off for shot five. It is refused outside the picture style on purpose: no other style has a
+    # video track to lie over, and the explainer must not be able to fall into it by accident.
+    if 'backdrop' in c:
+        if c['backdrop'] != 'video':
+            raise ValueError("backdrop must be 'video'")
+        if c['style'] != 'picture':
+            raise ValueError('backdrop belongs to the picture style only')
     if c.get('format') not in {'9:16', '16:9'} or c.get('fps') not in {30, 60}:
         raise ValueError('format: 9:16 or 16:9; fps: 30 or 60')
     # Read by prepare.py (the silence before the first word) and run.py (the mix target). The
@@ -249,6 +272,13 @@ def validate(path, approved=True):
                     raise ValueError(sl + f': unknown shot fields {sorted(unknown)}')
                 if 'image' in shot:
                     local_asset(path, shot['image'])
+                # A shot may carry both: the clip is the track, the image is what is drawn if the clip was
+                # never generated. With a video backdrop the clip is not optional — one missing clip is a
+                # hole in the track, which is a black hole in the finished film that only a viewing finds.
+                if 'clip' in shot:
+                    local_clip(path, shot['clip'])
+                elif c.get('backdrop') == 'video':
+                    raise ValueError(sl + ": every shot needs a 'clip' when the project has a video backdrop")
                 if 'caption' in shot:
                     text(shot['caption'], sl + ' caption', 40)
                 if 'hl' in shot:
