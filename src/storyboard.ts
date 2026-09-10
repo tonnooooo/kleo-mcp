@@ -71,6 +71,12 @@ export interface PlanResult {
   direction: Direction | null;
   /** Facts the user asked for that the finished narration still does not say. Empty is the normal case. */
   missing_facts: string[];
+  /**
+   * A sentence for the USER when the direction wanted a look the job was not priced for, or null. It is not an
+   * error and the video is fine; it is the difference between "you got the second choice" and "you got the second
+   * choice and nobody told you". Whoever surfaces a job's progress owes the user this line.
+   */
+  blocked_upgrade: string | null;
 }
 
 /** Errors that say nothing about the storyboard: quota, rate limit, upstream outage. The job should wait, not fail. */
@@ -1333,7 +1339,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   let plan = planFor(job);
   if (useFixture(env)) {
     const sb = fixtureStoryboard(job);
-    return { storyboard: sb, model: "fixture", attempts: 0, ms: Date.now() - t0, usage: {}, est_neurons: 0, words: countWords(sb), scenes: sb.scenes.length, fixture: true, history: [], style: kleoStyleOf(sb), direction: (sb as { direction?: Direction }).direction ?? null, missing_facts: [] };
+    return { storyboard: sb, model: "fixture", attempts: 0, ms: Date.now() - t0, usage: {}, est_neurons: 0, words: countWords(sb), scenes: sb.scenes.length, fixture: true, history: [], style: kleoStyleOf(sb), direction: (sb as { direction?: Direction }).direction ?? null, missing_facts: [], blocked_upgrade: null };
   }
   const model = opts.model || env.AI_MODEL || DEFAULT_MODEL;
   const usage: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
@@ -1358,6 +1364,8 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   //    It is allowed to fail. A direction is a large improvement, not a precondition — when the model cannot produce a
   //    valid one in two tries the planner carries on exactly as it did before, and the video still ships.
   let direction: Direction | null = null;
+  /** Set when the direction wanted a dearer look than the job was priced for: the user is told, never substituted in silence. */
+  let blockedUpgrade: string | null = null;
   const sceneGuess = Math.max(plan.scenes[0], Math.min(plan.scenes[1], Math.round((plan.scenes[0] + plan.scenes[1]) / 2)));
   for (let attempt = 1; attempt <= 2 && !direction; attempt++) {
     let raw: unknown;
@@ -1375,7 +1383,14 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     const wanted = inSet(o.style, KLEO_STYLES) ? (o.style as KleoStyle) : null;
     if (wanted && wanted !== plan.kleo) {
       if (creditsFor(plan.duration, wanted) === creditsFor(plan.duration, plan.kleo)) { plan = planFor(job, wanted); system = systemPrompt(plan); }
-      else history.push([`direction wanted ${wanted} but the job was priced as ${plan.kleo}; keeping ${plan.kleo}`]);
+      else {
+        // NEVER A MUTE SUBSTITUTION, in either direction. Refusing the upgrade saves the money and loses the video:
+        // the viewer gets the second-best look and is never told a better one existed. So the refusal speaks, and it
+        // speaks in the user's terms — what it would have chosen, what that costs, and the one word that gets it.
+        const asked = creditsFor(plan.duration, wanted), paid = creditsFor(plan.duration, plan.kleo);
+        blockedUpgrade = `Kleo would have used the "${wanted}" look for this, but it costs ${asked} credits instead of ${paid}, and the video was already charged at ${paid}. It is being made as "${plan.kleo}". To get "${wanted}", cancel with kleo_cancel_job and ask again with style: "${wanted}".`;
+        history.push([blockedUpgrade]);
+      }
     }
   }
   if (transient) throw transient;
@@ -1508,5 +1523,5 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   // and refuses the hidden kind, and this is the one number that says whether the video is about what was asked.
   const missing = direction ? missingFacts(direction.must_keep, narrationOf(ok.storyboard)) : [];
   if (missing.length) history.push(missing.map((f) => `narration never says "${f}"`));
-  return { storyboard: ok.storyboard, model, attempts: calls, ms: Date.now() - t0, usage, est_neurons: est, words: countWords(ok.storyboard), scenes: ok.storyboard.scenes.length, fixture: false, history, style: plan.kleo, direction, missing_facts: missing };
+  return { storyboard: ok.storyboard, model, attempts: calls, ms: Date.now() - t0, usage, est_neurons: est, words: countWords(ok.storyboard), scenes: ok.storyboard.scenes.length, fixture: false, history, style: plan.kleo, direction, missing_facts: missing, blocked_upgrade: blockedUpgrade };
 }
