@@ -72,7 +72,7 @@ function onstartScript(env: Env): string {
 }
 
 /** Optional render tuning forwarded to the worker verbatim when set on the Worker (wrangler vars or secrets). */
-const RENDER_ENV_PASSTHROUGH = ["KLEO_WIDTH_PORTRAIT", "KLEO_WIDTH_LANDSCAPE", "KLEO_RENDER_TIMEOUT_MIN"] as const;
+const RENDER_ENV_PASSTHROUGH = ["KLEO_WIDTH_PORTRAIT", "KLEO_WIDTH_LANDSCAPE", "KLEO_RENDER_TIMEOUT_MIN", "KLEO_PICTURES", "KLEO_PICTURES_DOWNLOAD"] as const; // KLEO_PICTURES: auto | server | local (where the scene pictures are drawn)
 function renderEnv(env: Env): Record<string, string> {
   const bag = env as unknown as Record<string, unknown>;
   const out: Record<string, string> = {};
