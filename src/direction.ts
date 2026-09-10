@@ -227,12 +227,14 @@ function spoken(w: string, said: Set<string>): boolean {
  * words must appear somewhere in the narration. An item made only of stop words proves nothing and is skipped.
  */
 export function missingFacts(mustKeep: readonly string[] | undefined, narration: string): string[] {
-  if (!Array.isArray(mustKeep) || !mustKeep.length) return [];
+  // A storyboard arrives as untrusted JSON, so the runtime guard stays; the local keeps the element type.
+  const facts: readonly string[] = Array.isArray(mustKeep) ? mustKeep.filter((x): x is string => typeof x === "string") : [];
+  if (!facts.length) return [];
   const said = new Set(words(narration));
-  const saidNumbers = new Set(narration.match(NUM)?.map((n) => n.replace(/[.,]$/, "")) ?? []);
+  const saidNumbers = new Set(narration.match(NUM)?.map((n: string) => n.replace(/[.,]$/, "")) ?? []);
   const out: string[] = [];
-  for (const item of mustKeep) {
-    const numbers = (item.match(NUM) ?? []).map((n) => n.replace(/[.,]$/, ""));
+  for (const item of facts) {
+    const numbers = (item.match(NUM) ?? []).map((n: string) => n.replace(/[.,]$/, ""));
     if (numbers.some((n) => !saidNumbers.has(n))) { out.push(item); continue; }
     const content = words(item).filter((w) => !STOP.has(w) && !/^\d+$/.test(w));
     if (!content.length) continue;
