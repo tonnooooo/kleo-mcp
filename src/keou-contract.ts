@@ -72,8 +72,30 @@ export const CINEMA_ACCENTS = ["green", "cyan", "red", "amber"] as const;
  * a job that validates here, rents a GPU, and dies there with the credit already spent.
  */
 export const SKETCH_ACCENTS = ["red", "blue", "green", "yellow", "white"] as const;
-export const SKETCH_ART = ["figure", "hand", "keycard", "door", "reader", "phone", "corridor", "tag", "room",
-  "writer", "blank", "crowbar", "bell", "hotels", "globe", "face", "intruder", "footprints", "suitcase"] as const;
+/** The alphabet the explainer draws with: the hotel film's nineteen, then what every other subject needs. */
+export const SKETCH_ART = ["figure", "hand", "keycard", "door", "reader", "phone", "corridor", "tag", "room", "writer", "blank",
+  "crowbar", "bell", "hotels", "globe", "face", "intruder", "footprints", "suitcase", "crowd", "handshake",
+  "eye", "brain", "robot", "laptop", "server", "router", "camera", "chip", "usb", "car", "lock", "key",
+  "shield", "bug", "fingerprint", "envelope", "signal", "chart", "graph", "folder", "cloud", "code", "scale",
+  "warning", "question", "city", "coin", "clock", "calendar", "box", "book", "rocket", "bulb", "magnifier",
+  "gear", "chain", "tree", "satellite"] as const;
+/**
+ * How far each drawing reaches BELOW its own centre, in design pixels at size 1, measured by running
+ * every builder against a context that records where it puts ink (scripts/sketch-extent.mjs). It is what
+ * makes the caption safe area a fact rather than a guess: a tag is 53 pixels tall and a figure is 246, so
+ * one rule for both is either useless or wrong. The five at 0 are backdrops — the space the other
+ * drawings stand in — and the caption is meant to sit over them.
+ */
+export const SKETCH_DROP: Record<string, number> = {
+  figure: 246, hand: 117, keycard: 104, door: 380, reader: 472, phone: 260, corridor: 0, tag: 53, room: 0,
+  writer: 150, blank: 0, crowbar: 440, bell: 333, hotels: 0, globe: 259, face: 308, intruder: 246,
+  footprints: 295, suitcase: 198, crowd: 342, handshake: 62, eye: 135, brain: 124, robot: 166, laptop: 137,
+  server: 241, router: 127, camera: 0, chip: 184, usb: 165, car: 126, lock: 182, key: 84, shield: 210,
+  bug: 106, fingerprint: 190, envelope: 152, signal: 235, chart: 179, graph: 219, folder: 162, cloud: 35,
+  code: 182, scale: 190, warning: 180, question: 199, city: 0, coin: 198, clock: 203, calendar: 192,
+  box: 200, book: 141, rocket: 173, bulb: 195, magnifier: 202, gear: 187, chain: 105, tree: 238,
+  satellite: 327,
+};
 export const SKETCH_MOODS = ["worried", "scared", "calm"] as const;
 export const SKETCH_MOTION = ["turn", "slide", "rise", "tap", "shake", "walk", "pulse", "drift"] as const;
 export const SKETCH_ENTER = ["whip", "cut"] as const;
@@ -333,7 +355,17 @@ function validateSketchScene(c: Record<string, unknown>, s: Record<string, unkno
     if ("motion_over" in a) e.finite(a.motion_over, .1, 4, `${el} motion_over`);
     if ("drawn" in a && typeof a.drawn !== "boolean") e.add(`${el}: drawn must be a boolean`);
     if ("x" in a) e.finite(a.x, -fw * .4, fw * 1.4, `${el} x`);
-    if ("y" in a) e.finite(a.y, -fh * .25, fh * 1.25, `${el} y`);
+    if ("y" in a) {
+      e.finite(a.y, -fh * .25, fh * 1.25, `${el} y`);
+      // THE CAPTION OWNS THE BOTTOM OF THE FRAME. It is burned in at 81.8 % of the height and is the only
+      // text in the film, so a drawing that sits under it is a drawing the viewer reads words through.
+      // SKETCH_DROP says how far this particular drawing actually reaches below its centre. Its outer edge
+      // may pass under the band — a panel, a skyline and a corridor all do, and a thin line under a word
+      // costs nothing — but its BODY may not, and half the reach is where an edge becomes a body.
+      const drop = (SKETCH_DROP[a.name as string] ?? 250) * (typeof a.size === "number" && a.size > 0 ? a.size : 1) * .75;
+      if (typeof a.y === "number" && a.y + drop > fh * .78)
+        e.add(`${el}: y ${a.y} puts ${a.name} behind the caption, which is burned in at 78-86% of the frame; at this size keep y at or under ${Math.round(fh * .78 - drop)}`);
+    }
     if ("size" in a) e.finite(a.size, .1, 6, `${el} size`);
     for (const key of ["tint", "led", "beam", "chip", "no_col"] as const)
       if (key in a && !(SKETCH_ACCENTS as readonly string[]).includes(a[key] as string)) e.add(`${el}: ${key} must be one of ${sorted(SKETCH_ACCENTS)}`);
@@ -750,7 +782,8 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
     if (kind === "metric") { e.text(s.value, `${label} value`, 12); e.text(s.unit, `${label} unit`, 45); }
     if (kind === "quote") e.text(s.quote, `${label} quote`, 120);
     if (kind === "closing" && s.button && s.detail) e.add(`${label}: use either a closing button or a detail line`);
-    e.finite(s.hold ?? 0.65, 0.15, 3, `${label} hold`);
+    // The explainer does not pause: it ends a scene on the word and cuts.
+    e.finite(s.hold ?? 0.65, kind === "sketch" ? 0.05 : 0.15, 3, `${label} hold`);
   });
   if (seq.length) validateSequence(seq, e);
   const last = scenes[scenes.length - 1];

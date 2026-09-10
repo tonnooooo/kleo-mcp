@@ -86,14 +86,16 @@ def align_words(script, heard, duration):
         starts.append(lo+(hi-lo)*(i-left)/(right-left))
     return words, starts, score, bool(anchors)
 
-def caption_groups(script, heard, duration, defer=False, portrait=False):
+def caption_groups(script, heard, duration, defer=False, portrait=False, compact=False):
     words, starts, score, anchored = align_words(script, heard, duration)
     if score < .85 and not defer:
         raise ValueError(f'Speech review required: script/transcript match {score:.1%}')
     if not anchored:
         raise ValueError('No speech anchors found')
     # Portrait captions are drawn large: shorter groups, broken at punctuation first.
-    max_words, max_chars = (5, 32) if portrait else (7, 48)
+    # The explainer is stricter still: 1-4 words a block, about a quarter second per word.
+    max_words, max_chars = (4, 26) if compact else (5, 32) if portrait else (7, 48)
+    brief_floor = .35 if compact else .55
     groups, current, first = [], [], 0
     for i, word in enumerate(words):
         if current and (len(current) >= max_words or len(' '.join(current+[word])) > max_chars):
@@ -109,13 +111,30 @@ def caption_groups(script, heard, duration, defer=False, portrait=False):
         # A group too brief to read is merged into its neighbour rather than shown for a blink.
         merged = []
         for g in groups:
-            if merged and (g['end']-g['start'] < .55 or len(g['text'].split()) <= 1) and len(merged[-1]['text']+' '+g['text']) <= max_chars + 12:
+            if merged and (g['end']-g['start'] < brief_floor or (len(g['text'].split()) <= 1 and not compact)) and len((merged[-1]['text']+' '+g['text']).split()) <= max_words and len(merged[-1]['text']+' '+g['text']) <= max_chars + 12:
                 merged[-1] = {'text': merged[-1]['text']+' '+g['text'], 'start': merged[-1]['start'], 'end': g['end']}
             else:
                 merged.append(g)
         groups = merged
+    if compact:
+        # A block too brief to read borrows a word from its neighbour rather than being merged past
+        # the four-word ceiling the engine enforces.
+        for _ in range(4):
+            moved = False
+            for k, g in enumerate(groups):
+                if g['end'] - g['start'] >= brief_floor: continue
+                prev = groups[k-1] if k else None
+                if prev and len(prev['text'].split()) > 1:
+                    w = prev['text'].split()
+                    if len(g['text'].split()) < max_words and len(w[-1] + ' ' + g['text']) <= max_chars:
+                        prev['text'] = ' '.join(w[:-1])
+                        g['text'] = w[-1] + ' ' + g['text']
+                        span = (g['start'] - prev['start']) / (len(w))
+                        g['start'] = prev['end'] = max(prev['start'] + .05, g['start'] - span)
+                        moved = True; break
+            if not moved: break
     for g in groups:
-        if g['end']-g['start'] < .55:
+        if g['end']-g['start'] < (.25 if compact else .55):
             raise ValueError('Caption too brief; shorten the sentence or adjust the voice speed')
     return groups, score
 
@@ -163,7 +182,7 @@ def main():
             segments = list(segments)
             heard = [{'word':w.word,'start':w.start,'end':w.end} for seg in segments for w in (seg.words or [])]
             atomic_json(cache/(key+'.asr.json'),{'script':s['voice'],'heard':heard,'transcript':' '.join(seg.text.strip() for seg in segments)})
-            captions, score = caption_groups(s['voice'], heard, len(audio)/sr, defer=True, portrait=c['format']=='9:16')
+            captions, score = caption_groups(s['voice'], heard, len(audio)/sr, defer=True, portrait=c['format']=='9:16', compact=c['style']=='sketch')
             w_words, w_starts, _, _ = align_words(s['voice'], heard, len(audio)/sr)
             word_times = [{'text': w, 'start': st} for w, st in zip(w_words, w_starts)]
             if score < .85:
@@ -175,10 +194,11 @@ def main():
             atomic_json(meta, timing)
             print('VOICE_NEW',s['id'],round(len(audio)/sr,2),'seconds',round(score,3),flush=True)
         duration = len(audio)/sr
-        lead = .22
+        lead = c.get('lead', .15 if c['style'] == 'sketch' else .22)
         # Landscape keeps the editorial floor; a Short cuts on the word, so its scenes keep
         # the hold the project asked for (the last one still leaves a beat before the loop).
-        floor = (.15, .4) if c['format'] == '9:16' else (.65, 1.5)
+        # The explainer ends on its last drawn frame in both formats: no tail, no loop pad.
+        floor = (.05, .05) if c['style'] == 'sketch' else (.15, .4) if c['format'] == '9:16' else (.65, 1.5)
         hold = max(s.get('hold',.65), floor[1] if index == len(c['scenes'])-1 else floor[0])
         end = math.ceil((cursor+lead+duration+hold)*fps)/fps
         audio_start = cursor+lead

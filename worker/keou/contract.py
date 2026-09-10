@@ -6,13 +6,44 @@ import re
 from pathlib import Path
 
 VERSION = '1.0.0'
-STYLES = {'editorial', 'technical', 'illustrated', 'terminal', 'stickman', 'cinema', 'picture'}
-KINDS = {'hero', 'list', 'compare', 'steps', 'metric', 'image', 'quote', 'closing', 'story', 'cinema'}
+STYLES = {'editorial', 'technical', 'illustrated', 'terminal', 'stickman', 'cinema', 'picture', 'sketch'}
+KINDS = {'hero', 'list', 'compare', 'steps', 'metric', 'image', 'quote', 'closing', 'story', 'cinema', 'sketch'}
 # Cinema beats: one hero visual each, several per narrated scene for pace.
 BEAT_KINDS = {'icon', 'type', 'terminal', 'steps', 'people', 'bars', 'timeline', 'dialog', 'cta', 'split', 'grid'}
 BEAT_ICONS = {'coffee', 'desk', 'hoodie', 'keyboard', 'hand', 'bug', 'alarm', 'shield', 'radar', 'car', 'keyfob', 'house', 'amplifier', 'pouch', 'lock', 'timer', 'check', 'cross', 'figure', 'thief', 'phone', 'wave', 'clock'}
 BEAT_FX = {'lit', 'dead', 'key', 'open', 'drive', 'alarm', 'point', 'run', 'think'}
 CINEMA_ACCENTS = {'green', 'cyan', 'red', 'amber'}
+# The explainer (Kleo style 'explainer', Keou style 'sketch'; docs/EXPLAINER-STYLE.md): hand-drawn white
+# marker line art on pure black, ONE accent per section and never two in a frame, a camera that only ever
+# pushes in, and burned-in karaoke captions as the only text on screen.
+SKETCH_ACCENTS = {'red', 'blue', 'green', 'yellow', 'white'}
+# The alphabet the explainer draws with. The first nineteen are the hotel film's own world; the rest are
+# what every other subject needs, because one drawing per phrase only works when the phrase has a drawing.
+SKETCH_ART = {'figure', 'hand', 'keycard', 'door', 'reader', 'phone', 'corridor', 'tag', 'room', 'writer',
+              'blank', 'crowbar', 'bell', 'hotels', 'globe', 'face', 'intruder', 'footprints', 'suitcase',
+              'crowd', 'handshake', 'eye', 'brain', 'robot', 'laptop', 'server', 'router', 'camera', 'chip',
+              'usb', 'car', 'lock', 'key', 'shield', 'bug', 'fingerprint', 'envelope', 'signal', 'chart',
+              'graph', 'folder', 'cloud', 'code', 'scale', 'warning', 'question', 'city', 'coin', 'clock',
+              'calendar', 'box', 'book', 'rocket', 'bulb', 'magnifier', 'gear', 'chain', 'tree', 'satellite'}
+# How far each drawing reaches BELOW its own centre, in design pixels at size 1, measured by running
+# every builder against a context that records where it puts ink (scripts/sketch-extent.mjs). It is
+# what makes the caption safe area a fact rather than a guess: a tag is 53 pixels tall and a figure is
+# 246, so one rule for both is either useless or wrong. The five drawings at 0 are backdrops — the
+# space the others stand in — and the caption is meant to sit over them.
+SKETCH_DROP = {'figure': 246, 'hand': 117, 'keycard': 104, 'door': 380, 'reader': 472, 'phone': 260,
+                 'corridor': 0, 'tag': 53, 'room': 0, 'writer': 150, 'blank': 0, 'crowbar': 440, 'bell': 333,
+                 'hotels': 0, 'globe': 259, 'face': 308, 'intruder': 246, 'footprints': 295, 'suitcase': 198,
+                 'crowd': 342, 'handshake': 62, 'eye': 135, 'brain': 124, 'robot': 166, 'laptop': 137,
+                 'server': 241, 'router': 127, 'camera': 0, 'chip': 184, 'usb': 165, 'car': 126, 'lock': 182,
+                 'key': 84, 'shield': 210, 'bug': 106, 'fingerprint': 190, 'envelope': 152, 'signal': 235,
+                 'chart': 179, 'graph': 219, 'folder': 162, 'cloud': 35, 'code': 182, 'scale': 190, 'warning': 180,
+                 'question': 199, 'city': 0, 'coin': 198, 'clock': 203, 'calendar': 192, 'box': 200, 'book': 141,
+                 'rocket': 173, 'bulb': 195, 'magnifier': 202, 'gear': 187, 'chain': 105, 'tree': 238,
+                 'satellite': 327}
+SKETCH_MOODS = {'worried', 'scared', 'calm'}
+SKETCH_MOTION = {'turn', 'slide', 'rise', 'tap', 'shake', 'walk', 'pulse', 'drift'}
+SKETCH_ENTER = {'whip', 'cut'}
+SKETCH_EXIT = {'flare', 'cut'}
 # Kleo picture style (docs/PICTURE-STYLE.md): full-screen pictures cut on the narration, no beats
 # and no icons. `look` picks the typography; every shot is one generated picture in img/.
 LOOKS = {'cartoon', 'realistic'}
@@ -98,6 +129,11 @@ def validate(path, approved=True):
         raise ValueError('look belongs to the picture style only')
     if c.get('format') not in {'9:16', '16:9'} or c.get('fps') not in {30, 60}:
         raise ValueError('format: 9:16 or 16:9; fps: 30 or 60')
+    # Read by prepare.py (the silence before the first word) and run.py (the mix target). The
+    # loudness window is the one qa.py will hold the master to, so the contract cannot accept a
+    # target the render is then failed for hitting.
+    finite(c.get('lead', .22), 0, 2, 'lead')
+    finite(c.get('loudness', -16), -18, -14, 'loudness')
     if c.get('style') == 'stickman' and c.get('format') != '9:16':
         raise ValueError('The stickman style is laid out for 9:16 only')
     if c.get('width') not in ({540, 1080, 2160} if c['format'] == '9:16' else {960, 1920, 3840}):
@@ -238,6 +274,94 @@ def validate(path, approved=True):
                 text(s['button'], label + ' button', 24)
         elif 'shots' in s:
             raise ValueError(label + ': shots belong to the picture style only')
+        # --- explainer (Keou style 'sketch') ------------------------------------------------
+        if c['style'] == 'sketch' and s['kind'] != 'sketch':
+            raise ValueError(label + ': the explainer style only draws explainer scenes')
+        if s['kind'] == 'sketch':
+            if c['style'] != 'sketch':
+                raise ValueError(label + ': explainer scenes need the explainer style')
+            # The art is authored in the frame's own pixels, so the bounds follow the format.
+            fw, fh = (1080, 1920) if c['format'] == '9:16' else (1920, 1080)
+            if s.get('accent', 'white') not in SKETCH_ACCENTS:
+                raise ValueError(label + f': accent must be one of {sorted(SKETCH_ACCENTS)}')
+            if s.get('enter', 'cut') not in SKETCH_ENTER or s.get('exit', 'cut') not in SKETCH_EXIT:
+                raise ValueError(label + f': enter must be one of {sorted(SKETCH_ENTER)}, exit one of {sorted(SKETCH_EXIT)}')
+            shot = s.get('shot', {})
+            if not isinstance(shot, dict):
+                raise ValueError(label + ': shot must be an object')
+            zoom = shot.get('zoom', [1, 1.2])
+            if not isinstance(zoom, list) or len(zoom) != 2:
+                raise ValueError(label + ': shot zoom needs a start and an end')
+            for z in zoom:
+                finite(z, .5, 4, label + ' zoom')
+            # Not taste: qa.py fails a master with a second of identical frames, and a camera that
+            # does not move produces exactly that.
+            if zoom[1] <= zoom[0]:
+                raise ValueError(label + ': the camera never stops pushing in - zoom must increase')
+            focus = shot.get('focus', [fw / 2, fh / 2])
+            if not isinstance(focus, list) or len(focus) != 2:
+                raise ValueError(label + ': shot focus needs x and y')
+            finite(focus[0], 0, fw, label + ' focus x')
+            finite(focus[1], 0, fh, label + ' focus y')
+            art = s.get('art')
+            if not isinstance(art, list) or not 1 <= len(art) <= 8:
+                raise ValueError(label + ': art must list one to eight drawn elements')
+            for j, e in enumerate(art):
+                el = f'{label} art {j + 1}'
+                if not isinstance(e, dict) or e.get('name') not in SKETCH_ART:
+                    raise ValueError(el + f': name must be one of {sorted(SKETCH_ART)}')
+                # A cue is either a fraction of the shot or the words it must land on. The engine
+                # matches the words on a folded character stream, so quote them exactly.
+                for key in ('at', 'until'):
+                    if key in e and isinstance(e[key], str):
+                        text(e[key], el + ' ' + key, 32)
+                        if e[key].lower() not in s.get('voice', '').lower():
+                            raise ValueError(el + f": {key} must quote words from this scene's voice")
+                if 'at' in e and not isinstance(e['at'], str):
+                    finite(e['at'], 0, .95, el + ' at')
+                if 'until' in e and not isinstance(e['until'], str):
+                    finite(e['until'], .05, 1, el + ' until')
+                    if not isinstance(e.get('at', 0), str) and e['until'] <= e.get('at', 0):
+                        raise ValueError(el + ': until must come after at')
+                if 'motion' in e and e['motion'] not in SKETCH_MOTION:
+                    raise ValueError(el + f': motion must be one of {sorted(SKETCH_MOTION)}')
+                if 'motion_over' in e: finite(e['motion_over'], .1, 4, el + ' motion_over')
+                if 'drawn' in e and type(e['drawn']) is not bool: raise ValueError(el + ': drawn must be a boolean')
+                if 'x' in e: finite(e['x'], -fw * .4, fw * 1.4, el + ' x')
+                if 'y' in e:
+                    finite(e['y'], -fh * .25, fh * 1.25, el + ' y')
+                    # THE CAPTION OWNS THE BOTTOM OF THE FRAME. It is burned in at 81.8 % of the height and
+                    # it is the only text in the film, so a drawing that reaches into it is a drawing the
+                    # viewer reads words through. SKETCH_DROP says how far this particular drawing actually
+                    # reaches below its centre; the band starts at 78 %.
+                    # Its outer edge may pass under the caption — a panel, a skyline and a corridor all
+                    # do, and a thin line under a word costs nothing — but only its last quarter: at half,
+                    # measured against real films, a face could put its mouth behind the words and pass.
+                    drop = SKETCH_DROP.get(e.get('name'), 250) * float(e.get('size') or 1) * .75
+                    if float(e['y']) + drop > fh * .78:
+                        raise ValueError(el + ": y %g puts %s behind the caption, which is burned in at 78-86%% "
+                                              "of the frame; at this size keep y at or under %d"
+                                         % (e['y'], e.get('name'), fh * .78 - drop))
+                if 'size' in e: finite(e['size'], .1, 6, el + ' size')
+                for key in ('tint', 'led', 'beam', 'chip', 'no_col'):
+                    if key in e and e[key] not in SKETCH_ACCENTS:
+                        raise ValueError(el + f': {key} must be one of {sorted(SKETCH_ACCENTS)}')
+                if 'mood' in e and e['mood'] not in SKETCH_MOODS:
+                    raise ValueError(el + f': mood must be one of {sorted(SKETCH_MOODS)}')
+                if 'count' in e and (isinstance(e['count'], bool) or not isinstance(e['count'], int) or not 1 <= e['count'] <= 12):
+                    raise ValueError(el + ': count must be 1-12')
+                for flag in ('no', 'sweat', 'xray', 'flash', 'flip', 'leader'):
+                    if flag in e and type(e[flag]) is not bool:
+                        raise ValueError(el + f': {flag} must be a boolean')
+                if 'text' in e: text(e['text'], el + ' text', 24)
+                for key in ('open', 'open_to'):
+                    if key in e: finite(e[key], 0, 1, el + ' ' + key)
+                if 'swing_over' in e: finite(e['swing_over'], .2, 3, el + ' swing_over')
+                if 'reach' in e:
+                    if not isinstance(e['reach'], list) or len(e['reach']) != 2:
+                        raise ValueError(el + ': reach needs x and y')
+                    for v in e['reach']:
+                        finite(v, -600, 600, el + ' reach')
         if c['style'] == 'stickman' and s['kind'] not in {'story', 'closing'}:
             raise ValueError(label + ': the stickman style only draws story and closing scenes')
         if s['kind'] == 'story':
@@ -264,7 +388,11 @@ def validate(path, approved=True):
             for key, limit in (('bubble', 40), ('hl', 24)):
                 if key in s: text(s[key], label + ' ' + key, limit)
         text(s.get('voice'), label + ' voice', 350)
-        text(s.get('title'), label + ' title', 90)
+        # The explainer draws no title: its captions are the only text on screen.
+        if s['kind'] == 'sketch':
+            if 'title' in s: text(s['title'], label + ' title', 90)
+        else:
+            text(s.get('title'), label + ' title', 90)
         for key, limit in [('eyebrow', 40), ('detail', 110), ('source', 80), ('button', 40)]:
             if key in s:
                 text(s[key], label + ' ' + key, limit)
@@ -326,8 +454,9 @@ def validate(path, approved=True):
             if s['kind'] not in {'cinema', 'story', 'closing'}:
                 raise ValueError(label + ': image is only accepted on image, cinema, story and closing scenes')
             local_asset(path, s['image'])
-        finite(s.get('hold', .65), .15, 3, label + ' hold')
-    if scenes[-1]['kind'] != 'closing':
+        finite(s.get('hold', .65), .05 if s['kind'] == 'sketch' else .15, 3, label + ' hold')
+    # The explainer ends on its last drawn frame: no end card, no logo, no subscribe.
+    if c['style'] != 'sketch' and scenes[-1]['kind'] != 'closing':
         raise ValueError('Last scene must be a closing')
     # One deliberate near-silence window in the music bed, addressed by scene id.
     if 'music_quiet' in c:

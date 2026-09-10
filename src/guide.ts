@@ -131,7 +131,8 @@ The closing scene keeps beats (a "type" beat with the loop question, then a "cta
 }
 
 /**
- * The explainer. Everything the model would otherwise invent is printed here: the nineteen drawings,
+ * The explainer. Everything the model would otherwise invent is printed here: the drawings grouped by
+ * what they MEAN (a flat list of fifty-nine names is a list nobody chooses well from),
  * the eight motions, the five accents, the shot object and the rule that a cue must quote words that
  * are really spoken — because worker/keou/contract.py rejects anything else, and it rejects it on a
  * machine the account has already paid for.
@@ -164,18 +165,36 @@ SCENE (kind "sketch"): {"id","kind":"sketch","voice","accent","enter","exit","sh
 
 ART (1-8 per scene, drawn in order, each one anchored to the words it illustrates):
   {"name","at","until","x","y","size","motion","motion_over","drawn", …}
-  name    ${quoted(SKETCH_ART)}
+  name    one of these, and nothing else. They are grouped by what they say, not by what they look like:
+          people      figure (the viewer, with "reach") · face (a feeling, with "mood") · crowd (many, "count")
+                      intruder (the attacker) · handshake (a deal) · hand (holding something) · robot (a machine that decides)
+          the body    eye (being watched, "no" strikes it out) · brain (thinking, a model) · fingerprint (identity)
+          machines    phone · laptop · server (a rack) · router (the box the signal leaves) · camera (CCTV)
+                      chip (the silicon) · usb (what you plug in) · car · satellite · writer (the card writer)
+          security    lock ("open" 0-1 swings the shackle) · key · keycard · reader · shield ("flash" ticks it, "no" cracks it)
+                      bug (malware) · signal (a broadcast) · footprints (someone was here) · crowbar (nothing was forced)
+          data        code (a window of it) · folder · cloud · graph (a network) · chart (a line, "flip" sends it down)
+                      envelope (the message) · chain (links, "no" breaks one) · gear (the mechanism) · scale (the trade-off)
+          places      door ("open_to") · room · corridor · hotels · city · globe · tree
+          quantities  coin (money) · clock (time) · calendar (the date) · blank (how many, "count") · box (a parcel)
+          ideas       question · warning · bulb (the idea, "flash" lights it) · magnifier (looking closer)
+                      book (the rule nobody read) · rocket (a launch) · bell (an alarm that did not ring)
+                      suitcase (the guest) · tag (a label, "text" ≤24 — the ONLY drawing that carries words)
   at      WHEN it appears: either a number (fraction of the scene) or a quoted piece of THIS scene's
           voice, e.g. "at":"read one card". Quote the words exactly as they are spoken.
   until   when it leaves, same two forms. Give a drawing an "until" and its successor an "at" on the
           same words: they overlap, so the frame is never empty.
   x,y     where it sits, in this frame's pixels. size 1 is the drawing's natural size.
+          THE CAPTION OWNS THE BOTTOM ${Math.round(fh * .22)} PIXELS: it is burned in from ${Math.round(fh * .78)} down, so
+          nothing may sit under it. Keep y at or under ${Math.round(fh * .70)} for anything the viewer has to read.
   motion  ${quoted(SKETCH_MOTION)} — what the drawing DOES while it is on screen.
   drawn   true means it is already on the page at the scene's first frame. Use it on the very first
           drawing of the film and on the first drawing after a flare, or the film opens on black.
-  extras  tint/led/beam/chip (an accent colour on part of a drawing), mood (${quoted(SKETCH_MOODS)}) on
-          "face", count 1-12 on "footprints"/"blank", text (≤24) on "tag", open/open_to/swing_over on
-          "door", reach on "figure", and the flags no, sweat, xray, flash, flip, leader.
+  extras  tint (the whole drawing in an accent) · led/beam/chip (an accent on ONE part of it)
+          mood ${quoted(SKETCH_MOODS)} on "face" · count 1-12 on crowd/footprints/blank/chain
+          text (≤24) on "tag" · open/open_to/swing_over on "door" and "lock" · reach on "figure"
+          flags: no (crossed out, broken), sweat, xray (see inside), flash (it lights up), flip
+          (mirrored, or a chart that falls), leader.
 
 PACE: ${short ? "one drawing per caption block, 20-60 s, 5-7 scenes" : "one drawing per caption block, 3-8 minutes, 18-30 scenes"}. Nothing holds still.`;
 }
@@ -248,6 +267,15 @@ export function guideExample(style: GuideStyle | null): string {
  {"kind":"split","items":["thief","car"],"label":"door to car","at":"one at your"},
  {"kind":"icon","name":"amplifier","label":"the relay","fx":"lit","at":"pass the signal"}]}`;
   }
+  if (style === "explainer") {
+    // Two real scenes from worker/keou/examples/explainer-hotel, which the suite validates through the
+    // contract: the guide cannot teach a shape the validator refuses. It shows the two things a model
+    // gets wrong on its own — a drawing on the page at frame zero, and cues spread across the line so
+    // the last one lands in its second half.
+    return `EXAMPLE (explainer Short, 9:16, the first two scenes of six):
+${JSON.stringify(EXAMPLE_SKETCH_SCENES, null, 0)}
+Notice: every phrase has its own drawing and the drawing is the thing the words name; the first drawing carries "drawn":true so the film does not open on black; each "at" quotes words the scene really says, spread across the line so the last one lands in its second half; one accent per scene and never two in a frame; the camera only ever pushes in; there is no closing scene and no title — the caption is the only text.`;
+  }
   if (style === "stickman") {
     return `EXAMPLE (stickman Short, 9:16, one scene):
 {"id":"02-relay","kind":"story","act":"alarm","cast":["hero","thief"],"props":["keyfob","car"],"fx":"relay","accent":"red","bubble":"That's my car!","title":"they never touch the key","hl":"never","voice":"Two people pass your key's signal from your front door to your car, and it opens.","hold":0.2}`;
@@ -260,6 +288,34 @@ export function guideExample(style: GuideStyle | null): string {
 "scenes":${JSON.stringify(EXAMPLE_SCENES)}
 Notice: every scene has ${SHOTS_MIN_CINEMA} or more pictures; every picture after the first carries "at" quoted from its own voice line; the accents come from the sections, not from the mood; "${d.cast[0].name}" and "${d.cast[1].name}" are named exactly as the direction names them, so Kleo appends their look to every picture that shows them; nothing on the forbidden list appears anywhere.`;
 }
+
+/**
+ * The explainer's worked example, as data. Lifted from worker/keou/examples/explainer-hotel so the guide
+ * teaches a film that was actually rendered, and validated by the suite so it can never teach an illegal one.
+ */
+export const EXAMPLE_SKETCH_SCENES = [
+  {
+    id: "01-card", kind: "sketch", accent: "red", enter: "cut", exit: "cut", hold: 0.05,
+    voice: "This looks like a normal hotel key card. It isn't.",
+    shot: { zoom: [1.0, 1.42], focus: [660, 900] },
+    art: [
+      { name: "keycard", x: 700, y: 900, size: 1.15, drawn: true, until: "a normal" },
+      { name: "hand", x: 506, y: 938, size: 1.25, drawn: true, until: "a normal" },
+      { name: "keycard", x: 540, y: 880, size: 1.85, at: "a normal", until: "It isn't", motion: "turn", motion_over: 0.9 },
+      { name: "keycard", x: 540, y: 880, size: 2.0, at: "It isn't", xray: true, motion: "pulse" },
+    ],
+  },
+  {
+    id: "02-read", kind: "sketch", accent: "blue", enter: "whip", exit: "flare", hold: 0.05,
+    voice: "Read one card once, and the lock gives up its secret.",
+    shot: { zoom: [1.0, 1.36], focus: [540, 820] },
+    art: [
+      { name: "reader", x: 540, y: 620, size: 1.0, drawn: true, beam: "blue" },
+      { name: "keycard", x: 540, y: 1080, size: 1.2, at: "Read one card", motion: "rise" },
+      { name: "lock", x: 540, y: 1000, size: 1.1, at: "gives up", open: 1, tint: "blue", motion: "shake" },
+    ],
+  },
+];
 
 /** The worked example as data, so the tests can put it through the validator instead of through a regular expression. */
 export const EXAMPLE_DIRECTION = {

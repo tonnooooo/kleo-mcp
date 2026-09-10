@@ -1,0 +1,452 @@
+{
+  "schema_version": 1,
+  "editorial_status": "ready",
+  "id": "short-hotel",
+  "title": "Your Hotel Door Isn't Locked",
+  "brand": "@TuNaaa0",
+  "style": "sketch",
+  "format": "9:16",
+  "width": 2160,
+  "fps": 60,
+  "language": "en",
+  "voice": "am_michael",
+  "speed": 1.22,
+  "music": "none",
+  "lead": 0.15,
+  "loudness": -14.5,
+  "max_duration": 120,
+  "script_file": "script.txt",
+  "description": "Reading one key card from a hotel lets an attacker forge a pair of cards that open every room. Over 3 million doors, about 13,000 properties, 131 countries.\n\nResearch: Unsaflok (unsaflok.com), disclosed March 2024, presented at DEF CON 32 by Lennert Wouters, Ian Carroll, rqu, BusesCanFly, Sam Curry, sshell and Will Caruana. dormakaba has been rolling out fixes since; many locks still need the update in person.\n\n#shorts #cybersecurity #hotel #rfid #hacking",
+  "tags": [
+    "shorts",
+    "unsaflok",
+    "saflok",
+    "hotel lock",
+    "rfid",
+    "keycard",
+    "cybersecurity",
+    "defcon",
+    "tunaaa0"
+  ],
+  "scenes": [
+    {
+      "id": "01-card",
+      "kind": "sketch",
+      "accent": "red",
+      "voice": "This looks like a normal hotel key card. It isn't.",
+      "shot": {
+        "zoom": [
+          1.0,
+          1.42
+        ],
+        "focus": [
+          660,
+          900
+        ]
+      },
+      "enter": "cut",
+      "exit": "cut",
+      "art": [
+        {
+          "name": "figure",
+          "x": 280,
+          "y": 1080,
+          "size": 1.1,
+          "reach": [
+            205,
+            -129
+          ],
+          "drawn": true,
+          "until": "a normal"
+        },
+        {
+          "name": "keycard",
+          "x": 700,
+          "y": 900,
+          "size": 1.15,
+          "drawn": true,
+          "until": "a normal"
+        },
+        {
+          "name": "hand",
+          "x": 506,
+          "y": 938,
+          "size": 1.25,
+          "drawn": true,
+          "until": "a normal"
+        },
+        {
+          "name": "keycard",
+          "x": 540,
+          "y": 880,
+          "size": 1.85,
+          "at": "a normal",
+          "until": "card",
+          "motion": "turn",
+          "motion_over": 0.9
+        },
+        {
+          "name": "keycard",
+          "x": 540,
+          "y": 880,
+          "size": 2.0,
+          "at": "card",
+          "until": "It isn't",
+          "motion": "pulse"
+        },
+        {
+          "name": "keycard",
+          "x": 540,
+          "y": 880,
+          "size": 2.05,
+          "at": "It isn't",
+          "xray": true
+        }
+      ],
+      "hold": 0.05
+    },
+    {
+      "id": "02-forge",
+      "kind": "sketch",
+      "accent": "blue",
+      "voice": "Read one card, forge two, and every door in the hotel opens.",
+      "shot": {
+        "zoom": [
+          1.05,
+          1.4
+        ],
+        "focus": [
+          540,
+          940
+        ]
+      },
+      "enter": "whip",
+      "exit": "cut",
+      "art": [
+        {
+          "name": "writer",
+          "x": 560,
+          "y": 1020,
+          "size": 1.15,
+          "beam": "blue",
+          "drawn": true,
+          "until": "forge two"
+        },
+        {
+          "name": "keycard",
+          "x": 560,
+          "y": 620,
+          "size": 0.95,
+          "drawn": true,
+          "until": "forge two",
+          "motion": "rise",
+          "motion_over": 0.6
+        },
+        {
+          "name": "blank",
+          "x": 540,
+          "y": 880,
+          "size": 0.92,
+          "at": "forge two",
+          "until": "the hotel",
+          "chip": "blue",
+          "count": 2,
+          "motion": "rise",
+          "motion_over": 0.7
+        },
+        {
+          "name": "door",
+          "x": 520,
+          "y": 900,
+          "size": 1.0,
+          "at": "the hotel",
+          "led": "blue",
+          "open_to": 0.55,
+          "swing_over": 1.2
+        }
+      ],
+      "hold": 0.05
+    },
+    {
+      "id": "03-write",
+      "kind": "sketch",
+      "accent": "blue",
+      "voice": "An ordinary phone can write it, and the lock just opens.",
+      "shot": {
+        "zoom": [
+          1.0,
+          1.36
+        ],
+        "focus": [
+          540,
+          900
+        ]
+      },
+      "enter": "whip",
+      "exit": "cut",
+      "art": [
+        {
+          "name": "phone",
+          "x": 540,
+          "y": 880,
+          "size": 1.2,
+          "drawn": true,
+          "until": "can write"
+        },
+        {
+          "name": "phone",
+          "x": 400,
+          "y": 880,
+          "size": 1.05,
+          "at": "can write",
+          "until": "it, and",
+          "motion": "tap",
+          "motion_over": 0.55
+        },
+        {
+          "name": "keycard",
+          "x": 690,
+          "y": 930,
+          "size": 1.0,
+          "at": "can write",
+          "until": "it, and"
+        },
+        {
+          "name": "reader",
+          "x": 560,
+          "y": 820,
+          "size": 1.35,
+          "at": "it, and",
+          "until": "just opens",
+          "led": "blue"
+        },
+        {
+          "name": "door",
+          "x": 520,
+          "y": 900,
+          "size": 1.0,
+          "at": "just opens",
+          "led": "blue",
+          "open_to": 0.5,
+          "swing_over": 0.85
+        }
+      ],
+      "hold": 0.05
+    },
+    {
+      "id": "04-green",
+      "kind": "sketch",
+      "accent": "green",
+      "voice": "Green light. Nothing forced, no alarm, no broken door.",
+      "shot": {
+        "zoom": [
+          1.1,
+          1.62
+        ],
+        "focus": [
+          560,
+          780
+        ]
+      },
+      "enter": "whip",
+      "exit": "flare",
+      "art": [
+        {
+          "name": "reader",
+          "x": 560,
+          "y": 780,
+          "size": 1.75,
+          "led": "green",
+          "drawn": true,
+          "until": "Nothing forced"
+        },
+        {
+          "name": "crowbar",
+          "x": 540,
+          "y": 980,
+          "size": 0.82,
+          "at": "Nothing forced",
+          "until": "no alarm",
+          "motion": "rise",
+          "motion_over": 0.5,
+          "no": true
+        },
+        {
+          "name": "bell",
+          "x": 540,
+          "y": 800,
+          "size": 0.92,
+          "at": "no alarm",
+          "until": "no broken",
+          "motion": "rise",
+          "motion_over": 0.5,
+          "no": true
+        },
+        {
+          "name": "door",
+          "x": 540,
+          "y": 880,
+          "size": 1.0,
+          "at": "no broken",
+          "led": "green"
+        },
+        {
+          "name": "reader",
+          "x": 560,
+          "y": 780,
+          "size": 1.9,
+          "at": 0.86,
+          "led": "green",
+          "flare": true
+        }
+      ],
+      "hold": 0.05
+    },
+    {
+      "id": "05-scale",
+      "kind": "sketch",
+      "accent": "yellow",
+      "voice": "Three million doors, thirteen thousand hotels, a hundred and thirty-one countries.",
+      "shot": {
+        "zoom": [
+          1.0,
+          1.28
+        ],
+        "focus": [
+          540,
+          900
+        ]
+      },
+      "enter": "cut",
+      "exit": "cut",
+      "art": [
+        {
+          "name": "corridor",
+          "x": 540,
+          "y": 980,
+          "size": 1.0,
+          "led": "yellow",
+          "drawn": true,
+          "until": "thirteen thousand"
+        },
+        {
+          "name": "tag",
+          "x": 460,
+          "y": 460,
+          "size": 1.1,
+          "at": 0.16,
+          "until": "thirteen thousand",
+          "text": "3,000,000",
+          "col": "yellow",
+          "leader": true
+        },
+        {
+          "name": "hotels",
+          "x": 540,
+          "y": 880,
+          "size": 1.0,
+          "at": "thirteen thousand",
+          "until": "a hundred",
+          "led": "yellow",
+          "motion": "rise",
+          "motion_over": 0.6
+        },
+        {
+          "name": "tag",
+          "x": 560,
+          "y": 430,
+          "size": 1.0,
+          "at": "thousand hotels",
+          "until": "a hundred",
+          "text": "13,000 HOTELS",
+          "col": "yellow"
+        },
+        {
+          "name": "globe",
+          "x": 540,
+          "y": 880,
+          "size": 1.15,
+          "at": "a hundred",
+          "led": "yellow",
+          "motion": "pulse"
+        },
+        {
+          "name": "tag",
+          "x": 560,
+          "y": 1330,
+          "size": 0.95,
+          "at": "thirty-one",
+          "text": "131 COUNTRIES",
+          "col": "yellow"
+        }
+      ],
+      "hold": 0.05
+    },
+    {
+      "id": "06-room",
+      "kind": "sketch",
+      "accent": "red",
+      "voice": "Would you know if someone had been in your room?",
+      "shot": {
+        "zoom": [
+          1.0,
+          1.24
+        ],
+        "focus": [
+          540,
+          920
+        ]
+      },
+      "enter": "whip",
+      "exit": "cut",
+      "art": [
+        {
+          "name": "face",
+          "x": 540,
+          "y": 880,
+          "size": 1.05,
+          "mood": "worried",
+          "sweat": true,
+          "drawn": true,
+          "until": "if someone"
+        },
+        {
+          "name": "room",
+          "x": 540,
+          "y": 900,
+          "size": 1.0,
+          "at": "if someone"
+        },
+        {
+          "name": "footprints",
+          "x": 560,
+          "y": 1040,
+          "size": 1.35,
+          "at": "if someone",
+          "tint": "red",
+          "count": 4
+        },
+        {
+          "name": "suitcase",
+          "x": 735,
+          "y": 905,
+          "size": 0.86,
+          "at": "your room"
+        },
+        {
+          "name": "figure",
+          "x": 250,
+          "y": 1250,
+          "size": 0.58,
+          "at": "your room",
+          "frown": true,
+          "reach": [
+            120,
+            40
+          ]
+        }
+      ],
+      "hold": 0.12
+    }
+  ]
+}

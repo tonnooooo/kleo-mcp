@@ -7,7 +7,7 @@ import { TEMPLATES, TEMPLATE_IDS, findTemplate, creditsFor } from "./templates";
 import { createJob, cancelJob, jobView, resultLinks, JobError, FILE_NAMES } from "./jobs";
 import { accountUrl, makeHandle } from "./accounts";
 import { audit } from "./db";
-import { KLEO_STYLES, wordBudget, shotRangeText } from "./keou-contract";
+import { KLEO_STYLES, FORMATS, wordBudget, shotRangeText } from "./keou-contract";
 import { guideText } from "./guide.ts";
 import { int } from "./util";
 
@@ -130,17 +130,21 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     inputSchema: z.object({
       template: z.enum(TEMPLATE_IDS).optional().describe("The template you intend to use; tailors the target length."),
       duration_s: z.number().int().min(15).max(900).optional().describe("Target length in seconds, if the user chose one."),
-      style: z.enum(KLEO_STYLES).optional().describe("The look this storyboard is for. Naming it returns that look only: cartoon or realistic (full-screen generated pictures cut on the narration), cyber (motion design with icons and big type, no pictures), stickman (a hand-drawn stickman, 9:16, on request). Omit it for the picture looks plus a line about the others."),
+      style: z.enum(KLEO_STYLES).optional().describe("The look this storyboard is for. Naming it returns that look only: cartoon or realistic (full-screen generated pictures cut on the narration), cyber (motion design with icons and big type, no pictures), explainer (hand-drawn white marker line art on black, one drawing per spoken phrase, karaoke captions), stickman (a hand-drawn stickman, 9:16, on request). Omit it for the picture looks plus a line about the others."),
+      format: z.enum(FORMATS).optional().describe("The frame the video will be in. The explainer authors its drawings in the frame's own pixels, so its guide prints different coordinates for 9:16 and 16:9; the template's own format is used when this is omitted."),
     }),
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
-  }, async ({ template, duration_s, style }) => {
+  }, async ({ template, duration_s, style, format }) => {
     const t = TEMPLATES.find((x) => x.id === template) ?? null;
     const dur = duration_s ?? t?.defaultSeconds ?? 45;
+    // The explainer writes coordinates, so the guide has to know the frame before it prints them: a storyboard
+    // authored against 1080x1920 and rendered at 1920x1080 puts every drawing off the page.
+    const fmt = format ?? t?.formats[0] ?? "9:16";
     const words = wordBudget(dur, 1.1).target;
     // The guide is built in src/guide.ts from the contract\u2019s own constants, so the numbers it prints are the numbers
     // the validator enforces \u2014 the shot range used to be 1-4 here, 2-4 in the planner and "two to four" on the website.
-    const text = guideText({ template, templateName: t?.name, duration_s: dur, style: style ?? null, languages: JOB_LANGUAGES });
-    return ok({ guide: text, template: t?.id ?? null, duration_s: dur, words_target: words, credits: creditsFor(dur), styles: [...KLEO_STYLES], style: style ?? null }, text);
+    const text = guideText({ template, templateName: t?.name, duration_s: dur, style: style ?? null, languages: JOB_LANGUAGES, format: fmt });
+    return ok({ guide: text, template: t?.id ?? null, duration_s: dur, format: fmt, words_target: words, credits: creditsFor(dur), styles: [...KLEO_STYLES], style: style ?? null }, text);
   });
 
   server.registerTool("kleo_create_video", {

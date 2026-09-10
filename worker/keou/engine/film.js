@@ -5,6 +5,7 @@ const themes = {
   terminal:{ink:'#010503',deep:'#061109',white:'#c9ffd7',muted:'#74a680',accent:'#3cff81',second:'#18ab52'},
   stickman:{ink:'#0a0a0c',deep:'#0f1a14',white:'#e6edf3',muted:'#7a8590',accent:'#00ff88',second:'#00d4ff'},
   cinema:{ink:'#050607',deep:'#0a0f0d',white:'#eef2f5',muted:'#6b7681',accent:'#00ff88',second:'#2bb0ff'},
+  sketch:{ink:'#000000',deep:'#000000',white:'#ffffff',muted:'#8a8a8a',accent:'#16FC2B',second:'#15B3F6'},
   picture:{ink:'#0b0b0f',deep:'#15151d',white:'#ffffff',muted:'#8b93a1',accent:'#ffd23f',second:'#39d5ff'},
   editorial:{ink:'#041624',deep:'#0a3549',white:'#eef5f2',muted:'#9ab6c4',accent:'#66e7e1',second:'#259ec5'},
   technical:{ink:'#080e13',deep:'#162b2b',white:'#f3f6f2',muted:'#a8b8b6',accent:'#63f2ae',second:'#56cfe3'},
@@ -64,6 +65,7 @@ function backdrop(s,u,{top=.55,bottom=.72,dim=.3,fade=0}={}){
 }
 function stickApi(){return {ctx,W,H,project,timeline,issues,frameTime,images,backdrop,backdropPlan,raw:(s,x,y,size,color,weight,align,max,family)=>{const f=fontFamily;if(family)fontFamily=family;raw(s,x,y,size,color,weight,align,max);fontFamily=f},block,wrap,box,line,ease,clamp,mono:(s,x,y,size,color,align)=>{ctx.font=`500 ${size}px KeouMono`;ctx.textAlign=align;ctx.textBaseline='alphabetic';ctx.fillStyle=color;const w=ctx.measureText(s).width,left=align==='left'?x:align==='right'?x-w:x-w/2;if(left<48||left+w>W-48||y-size<30||y>H-65)issues.push({time:frameTime,text:s,error:'Story text bounds'});ctx.fillText(s,x,y)},label:(s,x,y,size,color,align)=>{ctx.font=`600 ${size}px Manrope`;ctx.textAlign=align;ctx.textBaseline='alphabetic';ctx.fillStyle=color;ctx.fillText(s,x,y)}}}
 function background(t){
+ if(project.style==='sketch'){window.KEOU_SKETCH.attach(stickApi());window.KEOU_SKETCH.background(t);return}
  if(project.style==='cinema'||project.style==='picture'){const M=project.style==='picture'?window.KEOU_PICTURE:window.KEOU_CINEMA;M.attach(stickApi());M.background(t);return}
  if(project.style==='stickman'){window.KEOU_STICKMAN.attach(stickApi());window.KEOU_STICKMAN.background(t);return}
  if(project.style==='terminal'){
@@ -288,7 +290,7 @@ function terminalCode(s,u){
  if(cursor&&Math.floor(u*2)%2===0){ctx.fillStyle=C.accent;ctx.fillRect(cursor.x+4,cursor.y-size+5,12,size);}
 }
 function header(i,t){
- if(project.style==='cinema'||project.style==='picture')return;   // neither style draws a header
+ if(project.style==='sketch'||project.style==='cinema'||project.style==='picture')return;   // none of these draws a header
  if(project.style==='stickman'){window.KEOU_STICKMAN.header(i,t);return}
  if(project.style==='terminal'){
   raw('>_',100,portrait?176:139,36,C.accent,650,'left',70);
@@ -299,6 +301,7 @@ function header(i,t){
  mark(105,portrait?153:100,25,t);raw(project.brand,150,portrait?165:112,29,C.white,650,'left',660);raw(`${String(i+1).padStart(2,'0')} / ${String(timeline.scenes.length).padStart(2,'0')}`,W-100,portrait?162:108,23,C.muted,500,'right',200);line(100,portrait?215:152,W-100,portrait?215:152,C.accent+'24',1)
 }
 function scene(s,u,t){
+ if(project.style==='sketch'){window.KEOU_SKETCH.scene(s,u,t,timeline.scenes.indexOf(s));return}
  if(project.style==='cinema'||project.style==='picture'){(project.style==='picture'?window.KEOU_PICTURE:window.KEOU_CINEMA).scene(s,u,t,timeline.scenes.indexOf(s));return}
  if(project.style==='stickman'){if(s.kind==='closing')window.KEOU_STICKMAN.closing(s,u,t);else window.KEOU_STICKMAN.scene(s,u,t);return}
  const terminal=project.style==='terminal';
@@ -318,7 +321,7 @@ function scene(s,u,t){
  if(s.detail)block(s.detail,portrait?100:100,portrait?1490:770,{size:30,min:26,max:portrait?880:790,lines:2,color:C.muted,u:u-.2});
  if(s.kind==='closing'&&s.button){const by=portrait?(terminal?1470:1420):800,bw=portrait?880:790;box(100,by,bw,82,C.accent,null,41);block(s.button,100+bw/2,by+54,{size:32,min:26,max:bw-70,lines:1,color:C.ink,align:'center',u:u-.2})}
 }
-function subtitle(s,t){if(project.style==='cinema'||project.style==='picture'){(project.style==='picture'?window.KEOU_PICTURE:window.KEOU_CINEMA).subtitle(s,t);return}if(project.style==='stickman'){window.KEOU_STICKMAN.subtitle(s,t);return}const group=(s.captions||[]).find(c=>t>=c.start&&t<c.end);if(!group)return;const size=portrait?38:34,max=portrait?810:1490,lines=wrap(group.text,size,max,550);if(lines.length>2)issues.push({time:t,error:'Caption exceeds two lines',text:group.text});const hh=lines.length*size*1.3+32,yy=portrait?1630:H-175,ww=portrait?880:1600,xx=(W-ww)/2;box(xx,yy,ww,hh,C.ink+'e8',C.accent+'22',20);lines.forEach((l,j)=>raw(l,W/2,yy+size+12+j*size*1.3,size,C.white,550,'center',max))}
+function subtitle(s,t){if(project.style==='sketch'){window.KEOU_SKETCH.subtitle(s,t);return}if(project.style==='cinema'||project.style==='picture'){(project.style==='picture'?window.KEOU_PICTURE:window.KEOU_CINEMA).subtitle(s,t);return}if(project.style==='stickman'){window.KEOU_STICKMAN.subtitle(s,t);return}const group=(s.captions||[]).find(c=>t>=c.start&&t<c.end);if(!group)return;const size=portrait?38:34,max=portrait?810:1490,lines=wrap(group.text,size,max,550);if(lines.length>2)issues.push({time:t,error:'Caption exceeds two lines',text:group.text});const hh=lines.length*size*1.3+32,yy=portrait?1630:H-175,ww=portrait?880:1600,xx=(W-ww)/2;box(xx,yy,ww,hh,C.ink+'e8',C.accent+'22',20);lines.forEach((l,j)=>raw(l,W/2,yy+size+12+j*size*1.3,size,C.white,550,'center',max))}
 window.init=async function(config,tl,width){project=config;timeline=tl;portrait=config.format==='9:16';W=portrait?1080:1920;H=portrait?1920:1080;C=themes[config.style];fontFamily=config.style==='terminal'?'KeouMono':'Manrope';canvas.width=width;canvas.height=width*H/W;await document.fonts.load('650 80px Manrope');await document.fonts.load('800 80px Manrope');await document.fonts.load('400 80px KeouMono');if(config.style==='picture')await Promise.allSettled(['800 80px KleoCartoon','700 80px KleoCartoon','700 80px KleoReal','600 80px KleoReal'].map(f=>document.fonts.load(f)));await document.fonts.ready;if(!document.fonts.check(`400 80px ${fontFamily}`))throw Error('Font unavailable');land=await (await fetch('/engine/assets/world.json')).json();
  // One truncated or half-written PNG used to reject img.decode() and kill the page, losing a paid
  // job over a single picture. A picture is never worth the whole job, in any style: a failed decode
@@ -350,6 +353,6 @@ async function loadImage(path){
   imageIssues.push(issue);console.warn('PICTURE_LOAD_FAILED',path,issue.detail);
  }
 }
-window.renderFrame=function(t){issues=[];frameTime=t;ctx.setTransform(canvas.width/W,0,0,canvas.height/H,0,0);ctx.globalAlpha=1;background(t);let i=timeline.scenes.findIndex(s=>t>=s.start&&t<s.end);if(i<0)throw Error('Time outside timeline: '+t);const s=timeline.scenes[i];header(i,t);scene(s,t-s.start,t);subtitle(s,t);if(project.style==='cinema'||project.style==='picture'){(project.style==='picture'?window.KEOU_PICTURE:window.KEOU_CINEMA).progress(t)}else if(project.style==='stickman'){window.KEOU_STICKMAN.progress(t)}else{line(100,H-89,W-100,H-89,C.accent+'22',2);line(100,H-89,100+(W-200)*clamp(t/timeline.duration),H-89,C.accent,2)}return issues;};
+window.renderFrame=function(t){issues=[];frameTime=t;ctx.setTransform(canvas.width/W,0,0,canvas.height/H,0,0);ctx.globalAlpha=1;background(t);let i=timeline.scenes.findIndex(s=>t>=s.start&&t<s.end);if(i<0)throw Error('Time outside timeline: '+t);const s=timeline.scenes[i];header(i,t);scene(s,t-s.start,t);subtitle(s,t);if(project.style==='cinema'||project.style==='picture'){(project.style==='picture'?window.KEOU_PICTURE:window.KEOU_CINEMA).progress(t)}else if(project.style==='sketch'){/* the explainer draws no progress bar: the caption is the only text */}else if(project.style==='stickman'){window.KEOU_STICKMAN.progress(t)}else{line(100,H-89,W-100,H-89,C.accent+'22',2);line(100,H-89,100+(W-200)*clamp(t/timeline.duration),H-89,C.accent,2)}return issues;};
 
 // 🥚 kanaky.ai

@@ -36,6 +36,10 @@ import {
   type ShotKind,
 } from "./shot-grammar.ts";
 import cinemaExample from "../worker/keou/examples/short-relay-cinema/project.json" with { type: "json" };
+import {
+  EXPLAINER_GUIDANCE, EXPLAINER_WORDS, checkExplainer, explainerRules, explainerSceneSchema, lengthOf,
+  repairExplainer, repairExplainerScene, sketchAccent,
+} from "./explainer-plan.ts";
 
 export const DEFAULT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 /** USD per million tokens (developers.cloudflare.com/workers-ai/platform/pricing, Sept 2026); 1 neuron = $0.000011. */
@@ -222,7 +226,7 @@ export function assignShotKinds(scenes: Record<string, unknown>[], format: strin
 
 /* ------------------------------------------------------------------ template briefs */
 
-type StyleId = "cinema" | "editorial" | "technical" | "illustrated" | "stickman" | "picture";
+type StyleId = "cinema" | "editorial" | "technical" | "illustrated" | "stickman" | "picture" | "sketch";
 interface Brief { style: StyleId; wordsPerScene: [number, number]; guidance: string }
 
 const CINEMA_RULES = `Scenes are "cinema" (last one "closing"). Each scene: chapter (e.g. "01 HOOK", "02 THE TWIST", ≤32 chars), accent (red for threat/tension, green for the fix/win, cyan for neutral explanation, amber for warnings), title (≤90, short lockup line), hl (ONE word taken from the title, ≤24), voice (one narrated line), hold 0.2 (0.4 on the last scene), beats: 4–8 hero visuals of DIFFERENT kinds.
@@ -277,6 +281,10 @@ const BRIEFS: Record<string, Brief> = {
   "story-documentary": { style: "editorial", wordsPerScene: [30, 45], guidance: "A calm documentary: cold open with a striking question or scene, context, chronological chapters (eyebrow = chapter name, e.g. 'CHAPTER 2 · THE CROSSING'), dates and numbers as metric scenes, a human quote as a quote scene, consequences, and a reflective closing. Facts must be accurate and specific; say 'about' when a number is approximate." },
   "weekly-news": { style: "editorial", wordsPerScene: [30, 45], guidance: "A weekly news roundup with FOUR stories: for each story 2–4 scenes (a hero with eyebrow 'STORY 1 · <TOPIC>', then a metric/list/compare/quote scene with the key figure), and a 'source' field (≤80, the outlet or organisation) on at least one scene per story. Hard, factual, neutral tone; finish with a short 'what to watch next week' closing." },
   "explainer": { style: "technical", wordsPerScene: [30, 45], guidance: "An explainer/tutorial: the question, why it matters, the concept built step by step (steps scenes with 3 items that mirror the narration), a comparison (compare scene), one or two concrete numbers (metric scenes), common mistakes (list scene), and a recap list scene right before the closing. Clear plain language, define every term once." },
+  // Two rows, not one with a duration switch: a 45-second explainer is one idea taken apart, a five-minute one is a
+  // chain of them, and the line length, the scene count and what the last scene owes the viewer all differ.
+  "explainer-short": { style: "sketch", wordsPerScene: EXPLAINER_WORDS.short, guidance: EXPLAINER_GUIDANCE.short },
+  "explainer-long": { style: "sketch", wordsPerScene: EXPLAINER_WORDS.long, guidance: EXPLAINER_GUIDANCE.long },
   "top-10": { style: "illustrated", wordsPerScene: [30, 45], guidance: "A countdown from #10 to #1: an intro scene, then ONE scene per entry with eyebrow '#10', '#9' … '#1' and the entry name in the title; alternate scene kinds (hero, metric for a number, compare, list, quote) so consecutive entries look different; the #1 gets the longest narration; closing asks the viewer for their own #1." },
   "product-review": { style: "illustrated", wordsPerScene: [30, 45], guidance: "A product review: what it is and who it is for, design, key specs as metric scenes, a pros list, a cons list, a compare scene versus the obvious alternative, a final score as a metric (value like '8.5', unit '/ 10 · <verdict in two words>'), and a closing with the verdict as button text. Balanced, concrete, no marketing fluff." },
 };
@@ -291,6 +299,7 @@ export function styleFor(template: string, format: Format): StyleId {
 /** Keou style for a Kleo style: cartoon/realistic are the "picture" style, the stickman has its own, cyber keeps the template's look. */
 export function keouStyleFor(kleo: KleoStyle, template: string, format: Format): StyleId {
   if (kleo === "stickman") return "stickman";
+  if (kleo === "explainer") return "sketch";
   if (kleo === "cartoon" || kleo === "realistic") return "picture";
   return styleFor(template, format);
 }
@@ -300,6 +309,7 @@ const REALISTIC_WORDS = /\b(product|review|unboxing|specs?|price|buy|brand|camer
 const CARTOON_WORDS = /\b(story|stories|tale|fairy|kids?|children|bedtime|cartoon|animated|pirates?|dragons?|knights?|castle|princess|wizard|monster|animals?|cats?|dogs?|dinosaurs?|space|rocket|planet|history|ancient|medieval|legend|myth|fable|adventure|treasure|island|jungle|ocean|magic|school|funny|joke)\b/i;
 const REALISTIC_TEMPLATES = new Set(["product-review", "weekly-news"]);
 const CYBER_TEMPLATES = new Set(["explainer"]);
+const EXPLAINER_TEMPLATES = new Set(["explainer-short", "explainer-long"]);
 
 /**
  * The Kleo style when the client picked none: cyber for tech/security/AI topics, realistic for products, places and news,
@@ -307,6 +317,7 @@ const CYBER_TEMPLATES = new Set(["explainer"]);
  */
 export function pickKleoStyle(template: string, prompt: string): KleoStyle {
   const text = prompt.slice(0, 1500);
+  if (EXPLAINER_TEMPLATES.has(template)) return "explainer";   // the template IS the look: there is nothing to guess
   if (CYBER_WORDS.test(text)) return "cyber";
   if (CARTOON_WORDS.test(text)) return "cartoon";
   if (REALISTIC_WORDS.test(text)) return "realistic";
@@ -342,11 +353,14 @@ export function planFor(job: PlanJob, chosen?: KleoStyle | null): Plan {
   // Cinema/picture/stickman scenes carry one spoken line each in Shorts; long videos in those styles use longer lines so the scene count stays sane.
   const perLine: [number, number] = p.duration_s > 120 ? [35, 50] : [10, 18];
   const shortLine = style === "cinema" || style === "picture" || style === "stickman";
-  const wps: [number, number] = shortLine ? (brief.style === "cinema" && p.duration_s <= 120 ? brief.wordsPerScene : perLine) : (brief.style === "cinema" ? [25, 40] : brief.wordsPerScene);
+  // The explainer's line length is the style's own, at both lengths: it is what the caption rhythm was calibrated on.
+  const wps: [number, number] = style === "sketch" ? EXPLAINER_WORDS[lengthOf(p.duration_s)]
+    : shortLine ? (brief.style === "cinema" && p.duration_s <= 120 ? brief.wordsPerScene : perLine)
+    : (brief.style === "cinema" ? [25, 40] : brief.wordsPerScene);
   return {
     style, kleo, pictures: PICTURE_STYLES.includes(kleo), brief, format, language: p.language, voice: defaultVoice(p.language, job.template, p.voice), duration: p.duration_s, speed, words,
     scenes: sceneRange(words.target, wps), maxDuration: Math.min(1800, Math.max(5, Math.round(p.duration_s * 1.6))),
-    chunk: style === "cinema" || style === "picture" ? 4 : 5, // scenes per model call: keeps every call under ~2k output tokens (Workers AI times out on long generations)
+    chunk: style === "cinema" || style === "picture" ? 4 : style === "sketch" ? 4 : 5, // scenes per model call: keeps every call under ~2k output tokens (Workers AI times out on long generations)
   };
 }
 
@@ -355,9 +369,10 @@ const list = (a: readonly string[]) => a.join(", ");
 const editorialKinds = () => KINDS.filter((k) => !["image", "story", "cinema"].includes(k));
 
 function systemPrompt(plan: Plan): string {
-  const kinds = plan.style === "cinema" || plan.style === "picture" ? "cinema, closing" : plan.style === "stickman" ? "story, closing" : list(editorialKinds());
+  const kinds = plan.style === "cinema" || plan.style === "picture" ? "cinema, closing" : plan.style === "stickman" ? "story, closing" : plan.style === "sketch" ? "sketch" : list(editorialKinds());
   const lang = LANG_NAMES[plan.language] ?? plan.language;
-  const rules = plan.style === "picture" ? SHOT_RULES : plan.style === "cinema" ? CINEMA_RULES : plan.style === "stickman" ? STICKMAN_RULES : EDITORIAL_RULES;
+  const rules = plan.style === "picture" ? SHOT_RULES : plan.style === "cinema" ? CINEMA_RULES : plan.style === "stickman" ? STICKMAN_RULES
+    : plan.style === "sketch" ? explainerRules(plan.format, plan.duration) : EDITORIAL_RULES;
   const pictures = plan.style === "picture" ? `\n${PICTURE_RULES[plan.kleo as "cartoon" | "realistic"]}` : "";
   const enums = plan.style === "picture"
     ? `shot kinds: ${list(SHOT_KINDS)}. accents: ${list(CINEMA_ACCENTS)}.`
@@ -524,9 +539,9 @@ interface OutlineEntry { id: string; kind: string; label: string; accent?: strin
 
 function outlinePrompt(job: PlanJob, plan: Plan, n: number, d: Direction | null): string {
   const perScene = Math.round(plan.words.target / n);
-  const cin = plan.style === "cinema" || plan.style === "picture", stick = plan.style === "stickman";
-  const kind = cin ? "cinema" : stick ? "story" : "<kind>";
-  const label = cin ? "chapter ≤32 like 01 HOOK" : stick ? "situation ≤32 like 01 THE SETUP" : "UPPERCASE eyebrow ≤40";
+  const cin = plan.style === "cinema" || plan.style === "picture", stick = plan.style === "stickman", sk = plan.style === "sketch";
+  const kind = cin ? "cinema" : stick ? "story" : sk ? "sketch" : "<kind>";
+  const label = cin ? "chapter ≤32 like 01 HOOK" : stick ? "situation ≤32 like 01 THE SETUP" : sk ? "section ≤32 like 01 THE CARD" : "UPPERCASE eyebrow ≤40";
   // With a direction the accent is NOT the model's to choose: the sections already own the colours, and the outline is
   // told which scene sits in which section. Colour that follows the mood of whoever wrote the scene is decoration;
   // colour that follows the structure of the film is something a viewer can actually read.
@@ -539,7 +554,7 @@ function outlinePrompt(job: PlanJob, plan: Plan, n: number, d: Direction | null)
     : "";
   return `${contextBlock(job, plan)}${d ? `\n${directionBlock(d)}` : ""}${sectionMap}${keeps}
 TASK: plan the whole video as an outline of exactly ${n} scenes, in order. The narration will total about ${plan.words.target} words (${perScene} per scene on average; the hook and the closing may be shorter, key scenes longer). Return {"title":"<video title ≤120>","description":"<YouTube description, one paragraph>","tags":["…"],"scenes":[{"id":"01-slug","kind":"${kind}","label":"<${label}>",${cin ? '"accent":"<accent>",' : ""}"summary":"<what this scene says, ≤25 words>","words":<narration words for this scene>${d?.must_keep.length ? ',"keeps":[<fact indexes>]' : ""}}, …]}.
-${cin ? `Chapters group scenes (several scenes may share a chapter label)${d ? "; copy each scene's accent from the section table above" : "; accents follow the mood"}.` : stick ? "Each scene is one situation the stickman can act out." : "Vary the kinds: never more than two of the same kind in a row, at least four different kinds overall; use metric for numbers, compare for two-sided points, steps/list for three-part points, quote for a memorable line, hero for openings and transitions."} The last scene has kind "closing". The first scene is the hook.`;
+${cin ? `Chapters group scenes (several scenes may share a chapter label)${d ? "; copy each scene's accent from the section table above" : "; accents follow the mood"}.` : stick ? "Each scene is one situation the stickman can act out." : sk ? "Every scene is one drawn moment, and each one has to make the next one necessary." : "Vary the kinds: never more than two of the same kind in a row, at least four different kinds overall; use metric for numbers, compare for two-sided points, steps/list for three-part points, quote for a memorable line, hero for openings and transitions."} ${sk ? "There is NO closing scene: the film ends on its last drawing, so the last scene is the payoff itself." : `The last scene has kind "closing".`} The first scene is the hook.`;
 }
 
 function chunkPrompt(job: PlanJob, plan: Plan, outline: OutlineEntry[], from: number, to: number, prevVoice: string | null, feedback?: string[], d?: Direction | null): string {
@@ -550,17 +565,18 @@ function chunkPrompt(job: PlanJob, plan: Plan, outline: OutlineEntry[], from: nu
   // everything twice; handing it none is how a fact quietly disappears between two chunks and nobody notices.
   const owed = d?.must_keep.length ? [...new Set(entries.flatMap((e) => e.keeps))].filter((i) => i >= 0 && i < d.must_keep.length) : [];
   const pic = plan.style === "picture";
-  const cin = plan.style === "cinema" || pic, stick = plan.style === "stickman";
+  const cin = plan.style === "cinema" || pic, stick = plan.style === "stickman", sk = plan.style === "sketch";
   const lineWords = plan.duration > 120 ? "35–50" : "10–18";
   const how = pic ? `Each voice line is ${plan.duration > 120 ? "two or three spoken sentences" : "one spoken sentence"} of ${lineWords} words; every scene needs ${shotRangeText("cinema")} shots (the closing exactly one), each with its own "image_prompt"; every shot after the first carries "at" with words copied from its own voice line. One picture per scene is refused: a still held for a whole line is a slideshow.`
     : cin ? `Each voice line is ${plan.duration > 120 ? "two or three spoken sentences" : "one spoken sentence"} of ${lineWords} words; every scene needs 4–8 beats of different kinds, each anchored with "at" to words of its own voice line.`
+    : sk ? `Each voice line is ONE spoken sentence of ${EXPLAINER_WORDS[lengthOf(plan.duration)].join("-")} words; every scene needs 2-8 drawings, each with an "at" quoting words from its OWN line, and the last of them must land in the second half of that line. One phrase, one drawing, and the drawing is literally what the words say.`
     : stick ? `Each voice line is one spoken sentence of ${lineWords} words; every scene has an act, a cast with hero, an accent and a title; add a bubble when the character says something.`
     : "Fill the kind-specific fields exactly as the shapes show: list/steps need 3 items, compare 2 items, metric needs value and unit, quote needs quote, hero needs visual.";
   let msg = `${contextBlock(job, plan)}${d ? `\n${directionBlock(d)}` : ""}${owed.length ? `\nTHESE SCENES OWE THESE FACTS — say each one out loud in a "voice" line:\n${owed.map((i) => `  - ${d!.must_keep[i]}`).join("\n")}` : ""}
 VIDEO OUTLINE (${total} scenes; you write scenes ${from + 1}–${to} now):
 ${outline.map((e, i) => `${i + 1}. [${e.id}] ${e.kind} · ${e.label}${e.accent ? ` · ${e.accent}` : ""} — ${e.summary} (${e.words} words)`).join("\n")}
 ${prevVoice ? `The previous scene ended with this narration, continue naturally from it: "${prevVoice}"` : "This is the start of the video."}
-TASK: write scenes ${from + 1}–${to} in full, in order, keeping their ids, kinds${cin ? ", chapters (as \"chapter\") and accents" : stick ? " and titles" : " and eyebrows"} from the outline. Their narration together totals about ${words} words (${entries.map((e) => `${e.id}: ${e.words}`).join(", ")}). ${how}${pic ? ` Each "image_prompt" is one sentence, ≤${IMAGE_PROMPT_MAX} characters, with no text in the picture.` : ""}
+TASK: write scenes ${from + 1}–${to} in full, in order, keeping their ids, kinds${cin ? ", chapters (as \"chapter\") and accents" : stick ? " and titles" : sk ? " and accents" : " and eyebrows"} from the outline. Their narration together totals about ${words} words (${entries.map((e) => `${e.id}: ${e.words}`).join(", ")}). ${how}${pic ? ` Each "image_prompt" is one sentence, ≤${IMAGE_PROMPT_MAX} characters, with no text in the picture.` : ""}
 Return {"scenes":[…]} with exactly ${entries.length} scene objects and nothing else.`;
   if (feedback?.length) msg += `\n\nYOUR PREVIOUS ANSWER WAS REJECTED by the validator with these problems (scene numbers count within the scenes you returned, "beat n" counts inside that scene). Fix every one of them and return all ${entries.length} scenes again:\n- ${feedback.join("\n- ")}`;
   return msg;
@@ -573,6 +589,7 @@ const strArr = { type: "array", items: str };
 /** Every property the contract knows, closed with additionalProperties:false (open objects let the grammar accept
  * garbled keys). Junk the model puts in irrelevant properties is removed per kind by normalizeStoryboard. */
 function sceneSchema(plan: Plan): Record<string, unknown> {
+  if (plan.style === "sketch") return explainerSceneSchema();
   if (plan.style === "picture") {
     const shot = {
       type: "object",
@@ -640,7 +657,7 @@ function outlineSchema(plan: Plan, facts = 0): Record<string, unknown> {
   const entry: Record<string, unknown> = {
     type: "object",
     properties: {
-      id: str, kind: { type: "string", enum: cin ? ["cinema", "closing"] : plan.style === "stickman" ? ["story", "closing"] : editorialKinds() }, label: str,
+      id: str, kind: { type: "string", enum: cin ? ["cinema", "closing"] : plan.style === "stickman" ? ["story", "closing"] : plan.style === "sketch" ? ["sketch"] : editorialKinds() }, label: str,
       ...(cin ? { accent: { type: "string", enum: [...CINEMA_ACCENTS] } } : {}), summary: str, words: { type: "integer" },
       // "keeps" only exists when the direction listed facts to place: an empty enum is not a schema a grammar can decode.
       ...(facts ? { keeps: { type: "array", items: { type: "integer" } } } : {}),
@@ -848,12 +865,13 @@ export function normalizeStoryboard(raw: unknown, plan: Plan): unknown {
   // in; a model that wrote a different one is corrected here rather than bounced back, because a retry spent on
   // copying a colour out of a table is a retry not spent on the story. The validator still refuses a mismatch, which
   // is what catches a CLIENT-written storyboard: there the author chose both, and a mismatch is a real contradiction.
-  const colourLaw = plan.style === "picture" || plan.style === "cinema";
+  const colourLaw = plan.style === "picture" || plan.style === "cinema" || plan.style === "sketch";
   if (colourLaw && isObj(c.direction) && Array.isArray((c.direction as Record<string, unknown>).sections) && Array.isArray(c.scenes)) {
     const sections = (c.direction as unknown as Direction).sections;
     sectionOfScene(sections, (c.scenes as unknown[]).length).forEach((sec, i) => {
       const scene = (c.scenes as Record<string, unknown>[])[i];
-      if (sec && isObj(scene) && "accent" in scene) scene.accent = sec.accent;
+      // The explainer draws with five colours and the direction plans in the cinema four: map, do not copy.
+      if (sec && isObj(scene) && "accent" in scene) scene.accent = plan.style === "sketch" ? sketchAccent(sec.accent) : sec.accent;
     });
   }
   if (typeof c.title === "string" && c.title.length > 120) c.title = c.title.slice(0, 117) + "…";
@@ -867,7 +885,7 @@ export function normalizeStoryboard(raw: unknown, plan: Plan): unknown {
       if (seen.has(id)) id = `${id.slice(0, 44)}-${i + 1}`;
       seen.add(id);
       s.id = id;
-      if (typeof s.hold === "number") s.hold = Math.min(3, Math.max(0.15, s.hold)); else delete s.hold;
+      if (typeof s.hold === "number") s.hold = Math.min(3, Math.max(plan.style === "sketch" ? 0.05 : 0.15, s.hold)); else delete s.hold;
       if (s.kind === "closing" && s.button && s.detail) delete s.detail;
       if (typeof s.voice === "string") s.voice = fitVoice(s.voice);
       if (typeof s.eyebrow === "string" && s.eyebrow.length > 40) s.eyebrow = s.eyebrow.slice(0, 40).trim();
@@ -876,9 +894,12 @@ export function normalizeStoryboard(raw: unknown, plan: Plan): unknown {
       if (typeof s.detail === "string" && s.detail.length > 110) delete s.detail;
       if (typeof s.hl === "string" && s.hl.length > 24) delete s.hl;
       if ("visual" in s && !inSet(s.visual, VISUALS)) delete s.visual;
-      if ("accent" in s && !inSet(s.accent, plan.style === "stickman" ? STORY_ACCENTS : CINEMA_ACCENTS)) delete s.accent;
+      if ("accent" in s && plan.style !== "sketch" && !inSet(s.accent, plan.style === "stickman" ? STORY_ACCENTS : CINEMA_ACCENTS)) delete s.accent;
       // Pictures: the picture style keeps shots (and only shots), every other style keeps none (image is never accepted from a model).
       delete s.image; delete s.image_credit;
+      // The explainer is repaired in one place, in src/explainer-plan.ts, and skips every branch below: it shares no
+      // field with the other looks — no chapter, no title, no beats, no shots, and no closing scene at all.
+      if (plan.style === "sketch") return repairExplainerScene(s, plan.format);
       if (plan.style === "picture") {
         delete s.beats; delete s.eyebrow; delete s.visual; delete s.detail; delete s.source;
         for (const key of KIND_ONLY_KEYS) if (key !== "button") delete s[key];
@@ -943,7 +964,8 @@ export function normalizeStoryboard(raw: unknown, plan: Plan): unknown {
     });
     // No closing at all: the last scene becomes the closing (content kept).
     const scenes = c.scenes as Record<string, unknown>[];
-    if (scenes.length && !scenes.some((s) => s.kind === "closing")) {
+    if (plan.style === "sketch") repairExplainer(scenes, plan.format);
+    else if (scenes.length && !scenes.some((s) => s.kind === "closing")) {
       const last = scenes[scenes.length - 1];
       last.kind = "closing";
       for (const k of ["items", "value", "unit", "quote", "animate_value", "visual", "act", "cast", "props", "fx"]) delete last[k];
@@ -1139,6 +1161,8 @@ const TEMP_CLOSING = (plan: Plan): Record<string, unknown> =>
     ? { id: "zz-temp-closing", kind: "closing", chapter: "99 END", accent: "green", title: "end", hl: "end", voice: "the end", shots: [{ image_prompt: "an empty stage at the end of the story" }] }
     : plan.style === "cinema"
     ? { id: "zz-temp-closing", kind: "closing", chapter: "99 END", accent: "green", title: "end", hl: "end", voice: "the end", beats: [{ kind: "cta" }] }
+    : plan.style === "sketch"
+    ? { id: "zz-temp-closing", kind: "sketch", accent: "white", voice: "and that is the end of it.", shot: { zoom: [1, 1.2], focus: [540, 860] }, art: [{ name: "blank", drawn: true }] }
     : { id: "zz-temp-closing", kind: "closing", title: "end", voice: "the end" };
 
 function header(plan: Plan, outline: { title?: unknown; description?: unknown; tags?: unknown }, direction?: Direction | null): Record<string, unknown> {
@@ -1231,8 +1255,9 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
         outline[target].keeps.push(idx);
       });
     }
-    outline.forEach((e, i) => { if (e.kind === "closing" && i < outline.length - 1) e.kind = plan.style === "cinema" || plan.style === "picture" ? "cinema" : "hero"; });
-    outline[outline.length - 1].kind = "closing";
+    const bodyKind = plan.style === "cinema" || plan.style === "picture" ? "cinema" : plan.style === "sketch" ? "sketch" : "hero";
+    outline.forEach((e, i) => { if (e.kind === "closing" && (plan.style === "sketch" || i < outline.length - 1)) e.kind = bodyKind; });
+    if (plan.style !== "sketch") outline[outline.length - 1].kind = "closing";
     // Scale the per-scene word plan to the budget.
     const sum = outline.reduce((a, e) => a + e.words, 0) || 1;
     outline.forEach((e) => { e.words = Math.max(5, Math.round((e.words * plan.words.target) / sum)); });
@@ -1283,6 +1308,13 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
         const owed = [...new Set(outline.slice(from, to).flatMap((e) => e.keeps))].map((i) => direction!.must_keep[i]).filter(Boolean);
         const lost = missingFacts(owed, chunkScenes.map((x) => String(x.voice ?? "")).join(" "));
         for (const f of lost) problems.push(`the narration of these scenes never says "${f}", which the user asked for: put it in a "voice" line, in words the viewer will hear`);
+      }
+      // THE RULES ARE FUNCTIONS, NOT ADVICE. A hook and "keep it entertaining" written into a prompt are ignored by
+      // every model that has ever read them, because nothing measures whether they happened. checkExplainer measures
+      // it on the scenes that came back, and what it finds is what the next attempt is asked to fix — in its words.
+      if (plan.style === "sketch") {
+        repairExplainer(chunkScenes, plan.format);
+        for (const v of checkExplainer(chunkScenes, { duration: plan.duration, language: plan.language })) problems.push(v.message);
       }
       if (plan.style === "picture") {
         // A cinema scene that ends up with one picture holds it for the whole line: ask for the missing cuts once.

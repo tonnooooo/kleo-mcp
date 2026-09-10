@@ -3,6 +3,7 @@ import argparse
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -32,7 +33,19 @@ def produce(project,workers=2,stills=False,skip_voice=False):
                 raise ValueError('Cached timeline does not match the script')
             ffmpeg=os.environ.get('FFMPEG','ffmpeg')
             if not stills:
-                stage('audio',[ffmpeg,'-nostdin','-v','error','-y','-i',str(build/'voice.wav'),'-i',str(build/'music.wav'),'-filter_complex','[0:a]aresample=48000,highpass=f=75,lowpass=f=12000,acompressor=threshold=0.15:ratio=2:attack=15:release=180,volume=1.6,asplit=2[v][s];[1:a][s]sidechaincompress=threshold=0.025:ratio=5:attack=15:release=320[bed];[v][bed]amix=inputs=2:duration=longest:normalize=0,loudnorm=I=-16:TP=-1.5:LRA=7,aresample=48000[a]','-map','[a]','-ac','2','-t',str(timeline['duration']),'-c:a','pcm_s24le',str(build/'mix.wav')])
+                target=c.get('loudness',-16)
+                chain='[0:a]aresample=48000,highpass=f=75,lowpass=f=12000,acompressor=threshold=0.15:ratio=2:attack=15:release=180,volume=1.6,asplit=2[v][s];[1:a][s]sidechaincompress=threshold=0.025:ratio=5:attack=15:release=320[bed];[v][bed]amix=inputs=2:duration=longest:normalize=0'
+                if c['style']=='sketch':
+                    # Two passes: a track that is mostly silence lands about 2 dB under the target on
+                    # one pass, and the feed plays a quiet Short at half the volume of everything else.
+                    probe=subprocess.run([ffmpeg,'-nostdin','-hide_banner','-y','-i',str(build/'voice.wav'),'-i',str(build/'music.wav'),'-filter_complex',chain+f',loudnorm=I={target:.1f}:TP=-1.5:LRA=7:print_format=json[a]','-map','[a]','-t',str(timeline['duration']),'-f','null','-'],capture_output=True,text=True,check=True)
+                    m=re.search(r'\{[^{]*"input_i".*?\}',probe.stderr,re.S)
+                    if not m:raise ValueError('Loudness measurement failed')
+                    d=json.loads(m.group())
+                    measured=f":measured_I={d['input_i']}:measured_TP={d['input_tp']}:measured_LRA={d['input_lra']}:measured_thresh={d['input_thresh']}:offset={d['target_offset']}:linear=true"
+                else:
+                    measured=''
+                stage('audio',[ffmpeg,'-nostdin','-v','error','-y','-i',str(build/'voice.wav'),'-i',str(build/'music.wav'),'-filter_complex',chain+f',loudnorm=I={target:.1f}:TP=-1.5:LRA=7'+measured+',aresample=48000[a]','-map','[a]','-ac','2','-t',str(timeline['duration']),'-c:a','pcm_s24le',str(build/'mix.wav')])
             stage('layout' if stills else 'render',['node',str(ROOT/'engine/render.mjs'),str(project),'--workers',str(workers)]+(['--stills'] if stills else []))
             if stills:
                 state.update(status='layout_checked');atomic_json(out/'state.json',state);return

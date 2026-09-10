@@ -188,7 +188,7 @@ test("helpers: defaultVoice and wordBudget", () => {
 /* ------------------------------------------------------------------ Kleo styles and pictures (docs/PICTURE-STYLE.md) */
 
 test("kleo_style: enum, default cyber, cartoon/realistic need the picture style, stickman needs stickman", () => {
-  assert.deepEqual([...KLEO_STYLES], ["cartoon", "realistic", "cyber", "stickman"]);
+  assert.deepEqual([...KLEO_STYLES], ["cartoon", "realistic", "cyber", "stickman", "explainer"]);
   const plain = cinema();
   assert.equal(validateStoryboard(plain, { format: "9:16", language: "en" }).ok, true);
   assert.equal(kleoStyleOf(plain), "cyber");
@@ -201,7 +201,7 @@ test("kleo_style: enum, default cyber, cartoon/realistic need the picture style,
     assert.equal(sb.style, "picture");
   }
   const bad = cinema(); bad.kleo_style = "anime";
-  assert.ok(errorsOf(bad, { format: "9:16", language: "en" }).some((e) => e.startsWith("kleo_style must be one of ['cartoon', 'cyber', 'realistic', 'stickman']")));
+  assert.ok(errorsOf(bad, { format: "9:16", language: "en" }).some((e) => e.startsWith("kleo_style must be one of ['cartoon', 'cyber', 'explainer', 'realistic', 'stickman']")));
   const ed = editorial(); ed.kleo_style = "cartoon";
   assert.ok(errorsOf(ed, { format: "9:16", language: "en" }).some((e) => /kleo_style cartoon needs the Keou style "picture"/.test(e)), "the message names the picture style");
   const asCinema = pirates(); asCinema.style = "cinema";
@@ -658,7 +658,7 @@ test("the guide only offers languages and voices kleo_create_video accepts", () 
   const jobLangs = ["en", "it"];
   assert.match(MCP_SRC, /const JOB_LANGUAGES = \["en", "it"\] as const;/, "the job languages are declared once");
   assert.match(MCP_SRC, /z\.enum\(JOB_LANGUAGES\)/, "the tool schema and the guide read the same list");
-  for (const style of [null, "cartoon", "realistic", "cyber", "stickman"]) {
+  for (const style of [null, "cartoon", "realistic", "cyber", "stickman", "explainer"]) {
     const guide = guideFor(style);
     for (const lang of Object.keys(VOICES).filter((l) => !jobLangs.includes(l)))
       for (const v of VOICES[lang]) assert.ok(!guide.includes(v), `${style}: the guide must not offer ${v} (${lang} is not a job language)`);
@@ -668,7 +668,7 @@ test("the guide only offers languages and voices kleo_create_video accepts", () 
 });
 
 test("the guide never suggests a field the validator forbids on a scene", () => {
-  for (const style of [null, "cartoon", "cyber", "stickman"]) {
+  for (const style of [null, "cartoon", "cyber", "stickman", "explainer"]) {
     const guide = rulesFor(style);
     // "motion" is legal on a SHOT and forbidden on a scene: check the guide with the shot line taken out.
     const sceneLines = guide.split("\n").filter((l) => !l.trimStart().startsWith("SHOT:")).join("\n");

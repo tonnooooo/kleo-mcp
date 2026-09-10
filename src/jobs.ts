@@ -67,7 +67,7 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   if (voice && !t.voices.includes(voice)) throw new JobError(`There is no voice called "${input.voice}". Available voices: ${voiceSpellings(t.voices).join(", ")}. Nothing was charged.`);
   const language = input.language ?? "en";
   if (input.style !== undefined && !(KLEO_STYLES as readonly string[]).includes(input.style))
-    throw new JobError(`There is no style called "${input.style}". Pick one of cartoon, realistic, cyber or stickman. Nothing was charged.`);
+    throw new JobError(`There is no style called "${input.style}". Pick one of cartoon, realistic, cyber, stickman or explainer. Nothing was charged.`);
   let style = input.style as KleoStyle | undefined;
   if (style === "stickman" && format !== "9:16")
     throw new JobError("The stickman style makes 9:16 Shorts only. Use format 9:16, or pick cartoon, realistic or cyber for a 16:9 video. Nothing was charged.");
