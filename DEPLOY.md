@@ -103,6 +103,17 @@ git status --short && git log --oneline -1
 
 Se stampa qualcosa che non è tuo, non deployare da lì: usa il worktree qui sopra.
 
+**Kleo ha DUE canali che si aggiornano in momenti diversi, e il deploy ne muove uno solo.** Il deploy porta `src/` e `wrangler.jsonc` sul Worker; tutto ciò che sta in `worker/` — il motore che disegna, il validatore che gira sulla GPU, i modelli delle immagini — arriva solo quando GitHub ricostruisce l'immagine (`worker-image.yml`, circa sette minuti). Una riparazione in `worker/` non è viva dopo un deploy: è viva dopo una build riuscita.
+
+E le build si annullano da sole: `worker-image.yml` cancella quella in corso quando arriva una spinta più recente, quindi nella lista si vedono `cancelled` che non sono guasti. Quello che conta non è l'ultima build, è **l'ultima build RIUSCITA, e se contiene il commit che ti interessa**:
+
+```bash
+gh run list --repo tonnooooo/kleo-mcp --workflow worker-image --limit 20 --json headSha,conclusion
+git merge-base --is-ancestor <il tuo commit> <sha dell'ultima build riuscita> && echo DENTRO || echo FUORI
+```
+
+Un `FUORI` su una riparazione del motore significa che le GPU noleggiate da adesso in poi useranno ancora la versione vecchia, e nessun deploy lo cambierà.
+
 Codici regalo (facoltativi, non servono per entrare): `npx wrangler d1 execute kleo-db --remote --command "INSERT INTO invites (code,credits,max_uses,note) VALUES ('NOME-1',3,1,'Nome')"`. Chi scrive `NOME-1` nel campo facoltativo della pagina di accesso riceve quei crediti **in più** ai 2 gratuiti; chi non scrive niente entra lo stesso.
 
 ## 5. GPU vere: come funzionano, come spegnerle, la riserva gratuita
