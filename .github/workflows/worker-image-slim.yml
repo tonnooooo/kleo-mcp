@@ -99,21 +99,37 @@ jobs:
               print(f"\nCOMPRESSED DELTA: {(a-b)/1e9:+.2f} GB ({100*(a-b)/b:+.1f}% vs keou)")
           PY
           python3 /tmp/layers.py "$IMAGE:$TAG" "$IMAGE:keou"
-      - name: Uncompressed image size and per-layer history
+      - name: Uncompressed image size, slim vs keou
+        # One image on disk at a time: both are over 10 GB unpacked and the runner is not.
         run: |
           set -e
           docker buildx prune -af >/dev/null 2>&1 || true
           docker builder prune -af >/dev/null 2>&1 || true
           df -h / | tail -1
-          docker pull "$IMAGE:$TAG"
-          echo "=== docker image inspect --format '{{.Size}}'"
-          SIZE=$(docker image inspect "$IMAGE:$TAG" --format '{{.Size}}')
-          echo "$SIZE bytes"
-          python3 -c "print('UNCOMPRESSED IMAGE SIZE: %.2f GB  (production :keou is about 11.5 GB)' % ($SIZE/1e9))"
-          echo "=== docker images"
-          docker images "$IMAGE"
-          echo "=== docker history (uncompressed, per layer)"
-          docker history --human=false --format '{{.Size}}\t{{.CreatedBy}}' "$IMAGE:$TAG" | \
-            awk -F'\t' '{ printf "%10.1f MB  %.140s\n", $1/1000000, $2 }'
+          : > /tmp/sizes.txt
+          for REF in "$IMAGE:keou" "$IMAGE:$TAG"; do
+            echo "--- pulling $REF"
+            docker pull -q "$REF"
+            SIZE=$(docker image inspect "$REF" --format '{{.Size}}')
+            echo "$REF $SIZE" >> /tmp/sizes.txt
+            echo "docker image inspect --format '{{.Size}}' $REF -> $SIZE bytes"
+            if [ "$REF" = "$IMAGE:$TAG" ]; then
+              echo "=== docker history (uncompressed, per layer)"
+              docker history --human=false --format '{{.Size}}\t{{.CreatedBy}}' "$REF" | \
+                awk -F'\t' '{ printf "%10.1f MB  %.140s\n", $1/1000000, $2 }'
+            fi
+            docker image rm -f "$REF" >/dev/null 2>&1 || true
+            df -h / | tail -1
+          done
+          python3 - <<'PY'
+          vals = [l.split() for l in open('/tmp/sizes.txt') if l.strip()]
+          vals = [(r, int(s)) for r, s in vals]
+          for r, s in vals:
+              print('UNCOMPRESSED %-44s %6.2f GB' % (r, s / 1e9))
+          if len(vals) == 2:
+              keou = [s for r, s in vals if r.endswith(':keou')][0]
+              slim = [s for r, s in vals if not r.endswith(':keou')][0]
+              print('UNCOMPRESSED DELTA: %+.2f GB (%+.1f%%)' % ((slim - keou) / 1e9, 100 * (slim - keou) / keou))
+          PY
       - name: Report
         run: echo "pushed $IMAGE:$TAG from docker/Dockerfile.slim (${{ github.sha }}); production :keou untouched"
