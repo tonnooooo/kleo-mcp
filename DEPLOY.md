@@ -11,18 +11,19 @@ Kleo è online e produce video veri. **La produzione usa GPU a pagamento: ogni v
 | Sito | https://tonnooooo.github.io/kleo-site/ | online (GitHub Pages); legge l'indirizzo MCP da `config.json` |
 | Server MCP | https://kleo-mcp.plural-juice.workers.dev/mcp | online, permanente, account Cloudflare "Plural Juice" (`e4a5a1308df5b44c65497b85210c6845`) |
 | Render | `RENDER_BACKEND=vast` | GPU vere su Vast.ai: RTX 4090, massimo 0,60 $/h, almeno 16 core e 32 GB di RAM |
-| Immagine del worker | `ghcr.io/tonnooooo/kleo-worker:keou` (pubblica) | motore Keou, Chromium, ffmpeg, voci Kokoro e whisper già dentro (~11 GB); la costruisce GitHub Actions (`worker-image.yml`) a ogni modifica di `worker/` |
+| Immagine del worker | `ghcr.io/tonnooooo/kleo-worker:keou` (pubblica) | motore Keou, Chromium, ffmpeg, voci Kokoro, whisper e i due modelli Stable Diffusion per le immagini (cartoon: Dreamshaper-8, realistico: Realistic Vision 5.1) già dentro (~15 GB); la costruisce GitHub Actions (`worker-image.yml`) a ogni modifica di `worker/` |
 | Riserva gratuita | GitHub Actions `render-pool.yml`, ogni 5 minuti | prende i video che Vast non riesce ad avviare (credito finito, nessuna offerta) dopo `POOL_AFTER_MIN` minuti; richiede il segreto `POOL_SECRET` sul Worker e `KLEO_API` + `KLEO_POOL_SECRET` nel repository GitHub |
-| Storyboard | Workers AI, modello `AI_MODEL` (llama-4-scout) | gratis entro la quota giornaliera; se la quota finisce, `kleo_create_video` chiede all'assistente dell'utente di scrivere lo storyboard con `kleo_storyboard_guide` |
+| Storyboard | scritto dall'assistente dell'utente con `kleo_storyboard_guide` (preferito, gratis) oppure da Workers AI (`AI_MODEL` llama-4-scout) | la quota gratuita di Workers AI (10k neuroni/giorno) finisce presto: quando è in pausa `kleo_create_video` chiede all'assistente di scrivere lo storyboard |
+| Stili e immagini | `kleo_style`: `cartoon`, `realistic`, `cyber` (look Keou), `stickman`; per cartoon/realistic ogni scena ha un `image_prompt` | le immagini di sfondo le disegna prima Workers AI (`IMAGE_MODEL_*`, quota limitata) e, per quelle mancanti, la GPU Vast stessa (`worker/kleo_pictures.py`); il motore le usa a tutto schermo con Ken Burns e sfumatura |
 | Database D1 `kleo-db` · KV `OAUTH_KV` · R2 `kleo-renders` | stesso account | attivi; file cancellati dopo 7 giorni |
 | Cron ogni minuto | attivo | orchestratore: storyboard, noleggio GPU, controllo dei render, pulizia |
-| Segreti Cloudflare | `INTERNAL_SECRET`, `INVITE_CODES`, `VAST_API_KEY` | caricati (copia in `.secrets.local`, fuori da git) |
+| Segreti Cloudflare | `INTERNAL_SECRET`, `INVITE_CODES`, `VAST_API_KEY`, `POOL_SECRET` | caricati (copia in `.secrets.local`, fuori da git); manca `GITHUB_TOKEN` (token fine-grained, Actions read/write su kleo-mcp) per far partire la riserva gratuita dal server |
 | Codici invito | `KLEO-BETA` (condiviso, 50 usi) · `MARCO-1`, `CRISTIANO-1` (personali) | 10 crediti di prova ciascuno |
 | Crediti | 1 per uno Short (fino a 90 s) · 3 per un video fino a 5 minuti · +1 per ogni minuto in più | scalati alla messa in coda; restituiti se il video fallisce o viene annullato |
 | Strumenti MCP | 7 (elenco in `docs/MCP-GUIDA.md`, sezione 4) | `kleo_generate_thumbnail` non è ancora attivo: risponde con un avviso, ogni video ha già la sua thumbnail |
-| Test | sezione 6 | locali superati (giro completo simulato, unitari, container con motore Keou); GPU vera: superata il 9 settembre con il render segnaposto, da ripetere con l'immagine Keou (`node test/vast-e2e.mjs`, costa qualche centesimo) |
+| Test | sezione 6 | 64 test Node + 38 test Python; GPU vera con motore Keou superata il 10 settembre: Short cartoon 40 s in 5,4–6 minuti dal noleggio al link, circa 0,04 $ di GPU (`node test/vast-e2e.mjs` con `KLEO_URL` e `STORYBOARD_FILE`) |
 
-Tempi reali: uno Short circa 10–20 minuti (compresi noleggio e avvio della macchina), un video lungo fino a circa un'ora. Risoluzione: 2160×3840 (4K) per i 9:16, 1920×1080 (Full HD) per i 16:9, sempre 60 fps, H.264 con audio AAC, più sottotitoli `.srt` e thumbnail.
+Tempi reali misurati il 10 settembre su Vast (RTX 4090, 16+ core): Short di 40 s pronto in 5–6 minuti dal noleggio (se la macchina deve ancora scaricare l'immagine da 15 GB si aggiungono 3–8 minuti); un video lungo fino a circa un'ora. Risoluzione: 2160×3840 (4K) per i 9:16, 1920×1080 (Full HD) per i 16:9, sempre 60 fps, H.264 con audio AAC, più sottotitoli `.srt` e thumbnail.
 
 Da controllare, una volta: il codice `KLEO-BETA` sta nella tabella `invites` del database, che nasce con **3** crediti (migrazione `0001`), mentre i 10 crediti di `FREE_CREDITS` valgono per i codici del segreto `INVITE_CODES` che non stanno in tabella. Perché anche `KLEO-BETA` dia 10 crediti: `npx wrangler d1 execute kleo-db --remote --command "UPDATE invites SET credits=10 WHERE code='KLEO-BETA'"`.
 
