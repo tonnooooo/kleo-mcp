@@ -166,9 +166,11 @@ export function fullPrompt(style: KleoStyle, imagePrompt: string): string {
   return `${imagePrompt.trim().replace(/[.\s]+$/, "")}. ${STYLE_SUFFIX[style === "realistic" ? "realistic" : "cartoon"]}`;
 }
 export function modelInputs(model: string, style: KleoStyle, imagePrompt: string, format: string, seed: number): Record<string, unknown> {
-  const inputs: Record<string, unknown> = { prompt: fullPrompt(style, imagePrompt), seed };
+  const inputs: Record<string, unknown> = { prompt: fullPrompt(style, imagePrompt) };
+  // FLUX.1 [schnell] rejects any extra property (AiError 5006 on "seed"): send only prompt + steps.
   if (!acceptsSize(model)) { inputs.steps = 4; return inputs; }
   Object.assign(inputs, sizeFor(format), { negative_prompt: NEGATIVE_PROMPT });
+  if (/stable-diffusion|dreamshaper/.test(model)) inputs.seed = seed; // only SD-family models document a seed input
   if (/phoenix|lucid-origin/.test(model)) Object.assign(inputs, { num_steps: 20, guidance: style === "realistic" ? 4 : 5 });
   else if (/stable-diffusion|dreamshaper/.test(model)) Object.assign(inputs, { num_steps: 20, guidance: 7.5 });
   return inputs;
