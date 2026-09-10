@@ -28,17 +28,23 @@ export interface Env {
   POOL_AFTER_MIN?: string;   // in vast mode, runners may take a job that waited this long (default 3)
   VAST_RETRY_MIN?: string;   // after "no credit"/"no offer", leave Vast alone this long (default 30)
   MAX_CONCURRENT_GPUS: string;
-  MAX_JOBS_PER_USER: string;
+  MAX_JOBS_PER_USER: string;   // videos one account may have open at the same time
+  MAX_JOBS_PER_DAY?: string;   // videos one account may START in a UTC day (default 2): the open-jobs limit only counts concurrent ones
+  QUEUE_MAX_WAIT_MIN?: string; // a job that never got a GPU in this many minutes fails and is refunded (default 180)
+  DAILY_GPU_BUDGET_USD?: string; // hard ceiling on GPU dollars per UTC day (default 1.00); over it, rentals pause and jobs stay queued
   JOB_TIMEOUT_MIN: string;
   START_TIMEOUT_MIN?: string;
   LOADING_TIMEOUT_MIN?: string; // max minutes an instance may stay in "loading" (image pull) before it is destroyed // minutes a GPU may stay silent after rental before it is destroyed and the job requeued
   LOADING_RETRY_MIN?: string;   // minutes of image pull after which the job moves to another host (default 14)
-  FREE_CREDITS: string;
+  FREE_CREDITS: string;         // credits a brand-new anonymous account is given (1 credit = 1 Short)
+  MAX_NEW_USERS_PER_DAY?: string; // new accounts created in a UTC day (default 25); past it the page says come back tomorrow
   RESULT_TTL_DAYS: string;
   MOCK_TOTAL_SECONDS?: string;
 
-  INTERNAL_SECRET: string;
-  INVITE_CODES?: string;
+  INTERNAL_SECRET: string;      // also signs the account handle (cookie + "Kleo key"): rotating it logs everybody out
+  TURNSTILE_SITEKEY?: string;   // public key of the Cloudflare Turnstile widget (Phase 2; the sign-in page has no widget yet)
+  TURNSTILE_SECRET?: string;    // Turnstile server key; while it is unset the bot check is skipped entirely (src/accounts.ts)
+  SIGNUP_LIMIT?: RateLimit;     // optional Workers rate-limit binding on /authorize (config only, no external account)
 
   VAST_API_KEY?: string;
   VAST_IMAGE?: string;

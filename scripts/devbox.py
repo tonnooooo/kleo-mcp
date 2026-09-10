@@ -24,6 +24,9 @@ MAX_DPH = float(os.environ.get("DEVBOX_MAX_DPH", "0.60"))
 MIN_CPU = int(os.environ.get("DEVBOX_MIN_CPU", "16"))
 MIN_RAM_GB = int(os.environ.get("DEVBOX_MIN_RAM_GB", "32"))
 DISK_GB = int(os.environ.get("DEVBOX_DISK_GB", "80"))
+MIN_VRAM_GB = int(os.environ.get("DEVBOX_MIN_VRAM_GB", "0"))   # a video model needs the whole card
+MIN_INET = int(os.environ.get("DEVBOX_MIN_INET", "400"))
+MIN_COMPUTE_CAP = int(os.environ.get("DEVBOX_MIN_CC", "860"))  # 860 = Ampere; below that there are no bf16 tensor cores
 API = "https://console.vast.ai/api/v0"
 SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
             "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=20", "-i", KEY]
@@ -60,24 +63,60 @@ def pubkey():
     return subprocess.run(["ssh-keygen", "-y", "-f", KEY], capture_output=True, text=True, check=True).stdout.strip()
 
 
-def search():
+def search(n=1):
     q = {"verified": {"eq": True}, "rentable": {"eq": True}, "external": {"eq": False},
          "num_gpus": {"eq": 1}, "cpu_cores_effective": {"gte": MIN_CPU}, "cpu_ram": {"gte": MIN_RAM_GB * 1024},
-         "reliability2": {"gte": 0.98}, "cuda_max_good": {"gte": 12.4},
-         "disk_space": {"gte": DISK_GB}, "dph_total": {"lte": MAX_DPH}, "inet_down": {"gte": 400},
+         "reliability2": {"gte": 0.98}, "cuda_max_good": {"gte": 12.4}, "gpu_ram": {"gte": MIN_VRAM_GB * 1024},
+         # Ampere or newer. A V100 has 32 GB and rents for pennies, and it is the wrong card: no bf16 tensor cores,
+         # no flash attention, several times slower on exactly the diffusion work this box exists for.
+         "compute_cap": {"gte": MIN_COMPUTE_CAP},
+         "disk_space": {"gte": DISK_GB}, "dph_total": {"lte": MAX_DPH}, "inet_down": {"gte": MIN_INET},
+         # Some regions cannot reach PyPI or Hugging Face at all (a Fujian host answered "no versions" for every
+         # package), and a box that cannot install anything is not cheap, it is useless.
+         "geolocation": {"notin": [c for c in os.environ.get("DEVBOX_SKIP_GEO", "CN,RU,IR").split(",") if c]},
          "type": "on-demand", "allocated_storage": DISK_GB, "order": [["dph_total", "asc"]], "limit": 20}
     offers = api("POST", "/bundles/", q).get("offers") or []
-    if not offers:
+    seen, out = set(), []
+    for o in offers:                       # one per machine: two of ours on one host would share its disk and network
+        if o.get("machine_id") in seen:
+            continue
+        seen.add(o.get("machine_id"))
+        out.append(o)
+    if not out:
         raise SystemExit("no Vast offer matches (raise DEVBOX_MAX_DPH or lower DEVBOX_MIN_CPU)")
-    return offers[0]
+    return out[:max(1, n)]
 
 
-def up():
+def up(tries=None):
+    """Rent a machine and wait for it to answer. A host whose ssh proxy never lets us in (it happens: the key is
+    registered, the instance says running, the proxy still refuses) is destroyed and the next offer is taken — an
+    instance nobody can reach is not a cheap machine, it is a bill for nothing."""
     st = state()
     if st.get("id") and instance(st["id"]):
         print("devbox already up:", st["id"])
         return wait_ssh(st["id"])
-    off = search()
+    tries = int(os.environ.get("DEVBOX_TRIES", "3")) if tries is None else tries
+    offers = search(tries)
+    last = None
+    for n, off in enumerate(offers):
+        try:
+            return rent_and_wait(off)
+        except SystemExit as e:
+            last = e
+            print(f"  offer {n + 1}/{len(offers)} unusable: {e}", flush=True)
+            st = state()
+            if st.get("id"):
+                try:
+                    api("DELETE", f"/instances/{st['id']}/", {})
+                    print(f"  destroyed {st['id']} (never answered)", flush=True)
+                except SystemExit:
+                    pass
+            if os.path.exists(STATE):
+                os.remove(STATE)
+    raise SystemExit(f"no machine answered after {len(offers)} tries ({last})")
+
+
+def rent_and_wait(off):
     onstart = ("mkdir -p /root/.ssh && echo %r >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys; "
                "mkdir -p /opt/kleo/repo; touch /opt/kleo/devbox-ready" % pubkey())
     body = {"client_id": "me", "image": IMAGE, "disk": DISK_GB, "label": LABEL, "runtype": "ssh",
@@ -89,7 +128,8 @@ def up():
     add_key(iid)
     state({"id": iid, "dph": off.get("dph_total"), "gpu": off.get("gpu_name"), "cores": off.get("cpu_cores_effective"),
            "geo": off.get("geolocation")})
-    print(f"rented instance {iid} · {off.get('gpu_name')} · {off.get('cpu_cores_effective')} cores · "
+    print(f"rented instance {iid} · {off.get('gpu_name')} {round((off.get('gpu_ram') or 0)/1024)} GB · "
+          f"{off.get('cpu_cores_effective')} cores · {off.get('inet_down')} Mbit · "
           f"${off.get('dph_total'):.3f}/h · {off.get('geolocation')}")
     return wait_ssh(iid)
 
@@ -121,7 +161,7 @@ def ssh_target(iid):
     return host, port, (inst.get("actual_status") or inst.get("cur_state") or "?")
 
 
-def wait_ssh(iid, minutes=20):
+def wait_ssh(iid, minutes=float(os.environ.get("DEVBOX_SSH_WAIT_MIN", "7"))):
     deadline = time.time() + minutes * 60
     last = ""
     while time.time() < deadline:
@@ -137,7 +177,7 @@ def wait_ssh(iid, minutes=20):
         if line != last:
             print(line, flush=True); last = line
         time.sleep(15)
-    raise SystemExit("devbox did not answer in time (check `python3 scripts/devbox.py status`)")
+    raise SystemExit("this host never answered on ssh")
 
 
 def need():

@@ -77,10 +77,15 @@ export const getUser = (env: Env, id: string) => env.DB.prepare("SELECT * FROM u
 export const getUserByEmail = (env: Env, email: string) =>
   env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email.toLowerCase()).first<User>();
 
-export async function createUser(env: Env, u: { id: string; email: string; credits: number; inviteCode: string | null }): Promise<User> {
+export async function createUser(env: Env, u: { id: string; email: string; credits: number; inviteCode?: string | null }): Promise<User> {
   await env.DB.prepare("INSERT INTO users (id, email, credits, invite_code) VALUES (?, ?, ?, ?)")
-    .bind(u.id, u.email.toLowerCase(), u.credits, u.inviteCode).run();
+    .bind(u.id, u.email.toLowerCase(), u.credits, u.inviteCode ?? null).run();
   return (await getUser(env, u.id))!;
+}
+/** Accounts created since midnight UTC. created_at is ISO text, so the comparison is safely lexicographic. */
+export async function countUsersCreatedToday(env: Env): Promise<number> {
+  const r = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE created_at >= strftime('%Y-%m-%dT00:00:00.000Z','now')").first<{ n: number }>();
+  return r?.n ?? 0;
 }
 export const touchUser = (env: Env, id: string) =>
   env.DB.prepare("UPDATE users SET last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").bind(id).run();
@@ -121,6 +126,20 @@ export async function countOpenForUser(env: Env, userId: string): Promise<number
   const r = await env.DB.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE user_id = ? AND state IN (${inList(OPEN_STATES)})`).bind(userId).first<{ n: number }>();
   return r?.n ?? 0;
 }
+/** Videos this account has STARTED since midnight UTC (countOpenForUser only sees the concurrent ones). */
+export async function countJobsTodayForUser(env: Env, userId: string): Promise<number> {
+  const r = await env.DB.prepare("SELECT COUNT(*) AS n FROM jobs WHERE user_id = ? AND created_at >= strftime('%Y-%m-%dT00:00:00.000Z','now')").bind(userId).first<{ n: number }>();
+  return r?.n ?? 0;
+}
+/**
+ * GPU dollars charged to jobs that FINISHED since midnight UTC. This is the only spend written down, and it is an
+ * undercount by construction: cost_usd is set when a job finishes, so a GPU that is still burning is worth 0 here,
+ * and a rental that failed never writes the field at all. The orchestrator adds the in-flight term on top.
+ */
+export async function spentTodayUsd(env: Env): Promise<number> {
+  const r = await env.DB.prepare("SELECT COALESCE(SUM(cost_usd),0) AS s FROM jobs WHERE finished_at >= strftime('%Y-%m-%dT00:00:00.000Z','now')").first<{ s: number }>();
+  return r?.s ?? 0;
+}
 export async function countRunning(env: Env): Promise<number> {
   const r = await env.DB.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE state IN (${inList(ACTIVE_STATES)})`).first<{ n: number }>();
   return r?.n ?? 0;
@@ -138,6 +157,11 @@ export async function unplannedJobs(env: Env, limit: number, maxAttempts: number
 export async function claimPlanAttempt(env: Env, id: string, expectedAttempts: number): Promise<boolean> {
   const r = await env.DB.prepare("UPDATE jobs SET plan_attempts = plan_attempts + 1 WHERE id = ? AND plan_attempts = ? AND state = 'queued' AND storyboard IS NULL").bind(id, expectedAttempts).run();
   return (r.meta.changes ?? 0) === 1;
+}
+/** Jobs still queued after `minutes`: nothing ever times out a queued job, so without this they wait for ever. */
+export async function staleQueuedJobs(env: Env, minutes: number, limit = 20): Promise<Job[]> {
+  const cutoff = new Date(Date.now() - minutes * 60_000).toISOString();
+  return (await env.DB.prepare("SELECT * FROM jobs WHERE state = 'queued' AND created_at < ? ORDER BY created_at LIMIT ?").bind(cutoff, limit).all<Job>()).results;
 }
 export async function activeJobs(env: Env): Promise<Job[]> {
   return (await env.DB.prepare(`SELECT * FROM jobs WHERE state IN (${inList(ACTIVE_STATES)}) ORDER BY started_at`).all<Job>()).results;

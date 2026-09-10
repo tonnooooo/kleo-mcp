@@ -1,8 +1,8 @@
 import type { Env } from "./env";
-import { type Job, type JobState, ACTIVE_STATES, OPEN_STATES, GPU_ONLY_WAIT, activeJobs, queuedJobs, queuedPictureJobs, jobInstances, unplannedJobs, claimPlanAttempt, countRunning, updateJob, transitionJob, audit, refundCredits, expiredJobs, listFiles, deleteFiles, setFile, getJob, reserveJob, unreserveJob } from "./db";
+import { type Job, type JobState, ACTIVE_STATES, OPEN_STATES, GPU_ONLY_WAIT, activeJobs, queuedJobs, queuedPictureJobs, staleQueuedJobs, jobInstances, unplannedJobs, claimPlanAttempt, countRunning, spentTodayUsd, updateJob, transitionJob, audit, refundCredits, expiredJobs, listFiles, deleteFiles, setFile, getJob, reserveJob, unreserveJob } from "./db";
 import { backendFor, getBackend } from "./backends";
 import { vastStatus, listKleoInstances, destroyInstance } from "./backends/vast";
-import { int, nowIso, minutesSince, secondsSince, addDays, base64ToBytes, rid } from "./util";
+import { int, num, nowIso, minutesSince, secondsSince, addDays, base64ToBytes, rid } from "./util";
 import { TINY_MP4_B64 } from "./assets";
 import { resultLinks, FILE_NAMES } from "./jobs";
 import { notifyDone } from "./notify";
@@ -145,7 +145,12 @@ async function tickInner(env: Env, stats: Stats) {
   const max = int(env.MAX_CONCURRENT_GPUS, 5);
   const backend = getBackend(env);
   const providerDown = backend.name === "vast" && (await isFlagActive(env, "vast_unavailable"));
-  if (backend.name !== "pool" && !providerDown) for (const job of await queuedJobs(env, max - running)) {
+  // "paused" is the switch the owner presses from his phone (/internal/admin/pause); "budget_pause" is the money wall.
+  // Both are read exactly where vast_unavailable is read, so pressing either really does stop GPU rentals.
+  const paused = await isFlagActive(env, "paused");
+  const overBudget = backend.name === "vast" && !paused && (await budgetGate(env, running));
+  const noGpu = providerDown || paused || overBudget;
+  if (backend.name !== "pool" && !noGpu) for (const job of await queuedJobs(env, max - running)) {
     if (!(await reserveJob(env, job.id, backend.name))) continue; // a pool runner took it first
     try {
       const r = await backend.start(env, job);
@@ -183,10 +188,19 @@ async function tickInner(env: Env, stats: Stats) {
     }
   }
 
-  const poolOnly = providerDown || backend.name === "pool";
-  if (poolOnly) await explainGpuWait(env, providerDown ? "vast_unavailable" : "pool_backend");
+  const poolOnly = noGpu || backend.name === "pool";
+  if (poolOnly) await explainGpuWait(env, providerDown ? "vast_unavailable" : paused ? "paused" : overBudget ? "budget_pause" : "pool_backend");
+  // The free GitHub runners cost nothing, so a pause of the MONEY must not stop them: they keep draining the queue.
   await dispatchPoolRunner(env, poolOnly);
   await sweepVastOrphans(env);
+
+  // Nothing else ever times out a QUEUED job (the timeout above needs started_at), so on a day the budget runs out
+  // every user would sit at their concurrency limit for ever with the credits already taken. Refund and let go.
+  const queueMaxWait = int(env.QUEUE_MAX_WAIT_MIN, 180);
+  for (const job of await staleQueuedJobs(env, queueMaxWait)) {
+    await failJob(env, job, `no GPU was free in time (waited ${queueMaxWait} min)`, false);
+    stats.failed++;
+  }
 
   for (const job of await expiredJobs(env)) {
     for (const f of await listFiles(env, job.id)) await deleteFile(env, f.key);
