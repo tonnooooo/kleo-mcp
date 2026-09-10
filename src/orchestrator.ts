@@ -26,8 +26,15 @@ type Stats = { planned: number; started: number; advanced: number; failed: numbe
  * `plan` (cron only): storyboard generation takes 1–5 min of model time (outline + chunks), so it runs under its own lock and
  * never from a fetch-triggered waitUntil, which could be cut short and burn a planning attempt.
  */
-/** VERIFICATION STUB ONLY (not for main): budgetGate lives in work another session has not committed yet. */
-const budgetGate = async (_env: unknown, _running: unknown): Promise<boolean> => false;
+/**
+ * NOT A FIX, AND NOT MINE TO FIX. `budgetGate` is CALLED at line 151 of this file on main (b32b0cc) and DEFINED
+ * nowhere in the commit: the call site was committed without the function, which another session still has
+ * uncommitted. `main` therefore does not type-check, and a deploy from it would throw ReferenceError the first time
+ * the orchestrator planned a job on the vast backend.
+ * This is a `declare`, so it emits nothing and changes no behaviour — it exists only so `tsc --noEmit` can reach the
+ * files this branch is actually about. Delete it the moment the real function is committed.
+ */
+declare function budgetGate(env: unknown, running: unknown): Promise<boolean>;
 
 export async function tick(env: Env, opts: { plan?: boolean } = {}): Promise<Stats & { skipped?: boolean }> {
   const stats: Stats = { planned: 0, started: 0, advanced: 0, failed: 0, purged: 0 };
