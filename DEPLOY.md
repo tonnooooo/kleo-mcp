@@ -95,6 +95,14 @@ git diff --stat <commit-verde> <commit-da-deployare>
 
 La macchina noleggiata serve solo per quello che la CI non può fare: un render vero, un'immagine disegnata davvero, il tempo che ci mette. Per i tipi e i test, noleggiare è buttare soldi.
 
+**E lo stato dell'albero si legge in un comando che non spedisce niente.** Sembra ovvio e non lo è: la prima volta che questa regola è servita, `git status` e `wrangler deploy` erano nello stesso comando, quindi lo stato è arrivato sotto gli occhi *dopo* che il pacchetto era già partito. Un controllo che si legge dopo l'azione non è un controllo, è un referto.
+
+```bash
+git status --short && git log --oneline -1
+```
+
+Se stampa qualcosa che non è tuo, non deployare da lì: usa il worktree qui sopra.
+
 Codici regalo (facoltativi, non servono per entrare): `npx wrangler d1 execute kleo-db --remote --command "INSERT INTO invites (code,credits,max_uses,note) VALUES ('NOME-1',3,1,'Nome')"`. Chi scrive `NOME-1` nel campo facoltativo della pagina di accesso riceve quei crediti **in più** ai 2 gratuiti; chi non scrive niente entra lo stesso.
 
 ## 5. GPU vere: come funzionano, come spegnerle, la riserva gratuita
