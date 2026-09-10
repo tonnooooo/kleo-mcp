@@ -1,7 +1,7 @@
 import type { Env } from "./env";
 import { type Job, type JobParams, type JobState, type User, OPEN_STATES, countOpenForUser, countJobsTodayForUser, addJobCost, debitCredits, refundCredits, insertJob, transitionJob, audit, getUserJob, listFiles } from "./db";
 import { accountUrl } from "./accounts";
-import { findTemplate, creditsFor, etaFor, isVideoStyle, normalizeVoice, voiceSpellings, type Format } from "./templates";
+import { findTemplate, affordableGuess, creditsFor, etaFor, normalizeVoice, voiceSpellings, type Format } from "./templates";
 import { rid, nowIso, int, hmacHex } from "./util";
 import { isFlagActive } from "./schema";
 import { backendFor } from "./backends";
@@ -100,6 +100,7 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   let style = input.style as KleoStyle | undefined;
   if (style === "stickman" && format !== "9:16")
     throw new JobError("The stickman style makes 9:16 Shorts only. Use format 9:16, or pick cartoon, realistic or cyber for a 16:9 video. Nothing was charged.");
+  let cappedFrom: string | null = null; // set only when a guessed look was replaced by a cheaper one
   let storyboard: string | null = null;
   if (input.storyboard !== undefined && input.storyboard !== null) {
     const sbIn = input.storyboard;
@@ -119,17 +120,21 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     storyboard = JSON.stringify(r.storyboard);
     style = kleoStyleOf(r.storyboard);
   }
+  let styleGuessed = false;
   if (!style) {
-    style = pickKleoStyle(t.id, prompt);
-    // Kleo may GUESS a look, but never a look that costs extra. A guess that lands on a generated-video style would
-    // spend seven of somebody's credits on a hunch about what their prompt was about — and the style planner's own
-    // accuracy was measured at 35% on 11 September, so the hunch is wrong two times out of three. Naming the style
-    // is always allowed and always honoured; this only governs what happens when nobody named one.
-    // A no-op today: every style is priced 1. It becomes the guard the day one of them is not.
-    if (isVideoStyle(style)) {
-      const cheapest = (KLEO_STYLES as readonly string[]).find((k) => !isVideoStyle(k)) as KleoStyle | undefined;
-      if (cheapest) style = cheapest;
-    }
+    // Nobody named the look, so it is a bet, and the planner may overturn it once the direction has actually read
+    // the request. Until this flag existed it could not: every job carried a params.style indistinguishable from one
+    // the user chose, and planFor took that over the direction's answer in all cases.
+    styleGuessed = true;
+    // Half of "a guess never changes the price", and the rule itself lives in templates.ts so that the other half —
+    // the direction refining a guessed look at PLANNING time — derives from the same table instead of a second copy.
+    // Naming a style is a decision and is honoured whatever it costs; not naming one is a bet, and bets are not paid
+    // for with somebody else's credits. A no-op today: every style is priced 1.
+    const guess = pickKleoStyle(t.id, prompt);
+    style = affordableGuess(guess, duration) as KleoStyle;
+    // Never a mute substitution. The user would otherwise get a different video from the one Kleo understood, with
+    // no line anywhere saying so: mcp.ts turns this into a sentence in the answer.
+    if (style !== guess) cappedFrom = guess;
   }
 
   if (!input.storyboard && (await isFlagActive(env, "plan_pause")))
@@ -150,7 +155,7 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   if (!(await debitCredits(env, user.id, credits, jobId)))
     throw new JobError(`Not enough credits: this ${kindOf(format)} costs ${plural(credits, "credit")} and you have ${plural(Math.max(0, user.credits), "credit")}. Nothing was charged. Your account and how to get more: ${await accountUrl(env, user.id)}`);
 
-  const params: JobParams = { duration_s: duration, format, language, voice, style };
+  const params: JobParams = { duration_s: duration, format, language, voice, style, ...(styleGuessed ? { style_guessed: true } : {}), ...(cappedFrom ? { style_capped_from: cappedFrom } : {}) };
   const job: Job = {
     id: jobId, user_id: user.id, template: t.id, prompt, params: JSON.stringify(params),
     state: "queued", track: null, percent: 0, eta_min: etaFor(duration), credits,

@@ -57,6 +57,18 @@ export interface JobParams {
   voice: string | null;
   /** Kleo visual style (keou-contract.ts KLEO_STYLES); absent on jobs created before styles existed (= cyber). */
   style?: string;
+  /**
+   * True when NOBODY named the look: not the caller, not the storyboard. It is a guess, and the planner is allowed
+   * to overturn it once the direction has actually read the request — which it could not do while every job carried
+   * a style indistinguishable from one the user chose. Naming a style is a decision and is never overturned.
+   */
+  style_guessed?: boolean;
+  /**
+   * The style Kleo would have GUESSED, when that guess was replaced because it costs more than the cheapest.
+   * Present only on that path, and only so the answer can say it out loud: a substitution nobody mentions hands
+   * the user a different video from the one the system understood, with no way to find out why.
+   */
+  style_capped_from?: string;
 }
 
 export interface JobFile {

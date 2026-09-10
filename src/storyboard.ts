@@ -12,7 +12,7 @@
  */
 import type { Env } from "./env";
 import type { Job, JobParams } from "./db";
-import { TEMPLATES, findTemplate, isVideoStyle, narrativeFor, sceneSplit, creditsFor, type Family } from "./templates.ts";
+import { TEMPLATES, findTemplate, isVideoStyle, narrativeFor, sceneSplit, creditsFor, samePrice, type Family } from "./templates.ts";
 import {
   validateStoryboard, defaultVoice, wordBudget, type Storyboard, type Format, type KleoStyle,
   KINDS, BEAT_KINDS, BEAT_ICONS, BEAT_FX, CINEMA_ACCENTS, VISUALS, FORBIDDEN_FIELDS,
@@ -445,9 +445,16 @@ export function planFor(job: PlanJob, chosen?: KleoStyle | null): Plan {
   const p = JSON.parse(job.params) as JobParams;
   const format = p.format;
   const brief = BRIEFS[job.template] ?? BRIEFS.explainer;
-  const kleo: KleoStyle = (KLEO_STYLES as readonly string[]).includes(p.style ?? "")
+  // NAMING A STYLE IS A DECISION; NOT NAMING ONE IS A BET. A decision is honoured whatever it costs. A bet is exactly
+  // what the direction exists to improve on, so it yields — and until this line it could not: createJob writes
+  // params.style on every job, guessed or chosen, and this took p.style over `chosen` in every case. The look the
+  // direction read out of the request was computed and then thrown away, on every job that has ever run.
+  const named = (KLEO_STYLES as readonly string[]).includes(p.style ?? "") && !p.style_guessed;
+  const kleo: KleoStyle = named
     ? (p.style as KleoStyle)
-    : chosen && (KLEO_STYLES as readonly string[]).includes(chosen) ? chosen : pickKleoStyle(job.template, job.prompt);
+    : chosen && (KLEO_STYLES as readonly string[]).includes(chosen) ? chosen
+    : (KLEO_STYLES as readonly string[]).includes(p.style ?? "") ? (p.style as KleoStyle)
+    : pickKleoStyle(job.template, job.prompt);
   const style = keouStyleFor(kleo, job.template, format);
   const speed = 1.1;
   const words = wordBudget(p.duration_s, speed);
@@ -1382,7 +1389,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     // user for a video they did not ask for or hand out a dollar of GPU for one credit.
     const wanted = inSet(o.style, KLEO_STYLES) ? (o.style as KleoStyle) : null;
     if (wanted && wanted !== plan.kleo) {
-      if (creditsFor(plan.duration, wanted) === creditsFor(plan.duration, plan.kleo)) { plan = planFor(job, wanted); system = systemPrompt(plan); }
+      if (samePrice(wanted, plan.kleo, plan.duration)) { plan = planFor(job, wanted); system = systemPrompt(plan); }
       else {
         // NEVER A MUTE SUBSTITUTION, in either direction. Refusing the upgrade saves the money and loses the video:
         // the viewer gets the second-best look and is never told a better one existed. So the refusal speaks, and it
