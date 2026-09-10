@@ -9,6 +9,7 @@ import { readFile } from "node:fs/promises";
 import assert from "node:assert/strict";
 import { generateStoryboard, fixtureStoryboard, isTransientAiError, StoryboardError, styleFor, keouStyleFor, pickKleoStyle, planFor, normalizeStoryboard } from "../src/storyboard.ts";
 import { guideText, EXAMPLE_SCENES } from "../src/guide.ts";
+import { stillness } from "../src/direction.ts";
 import { validateStoryboard, pictureScenes, quotesVoice, BEAT_ICONS, STORY_ACTS } from "../src/keou-contract.ts";
 import { assignShotKinds } from "../src/storyboard.ts";
 import { SHOT_KINDS, presetFor, moveClassOf, isLoud, needsStaticHold, LOUD_MAX_PER_WINDOW } from "../src/shot-grammar.ts";
@@ -369,7 +370,12 @@ test("picture: normalizeStoryboard turns a scene image_prompt into shots and kee
   assert.equal(sb.style, "picture"); assert.equal(sb.kleo_style, "realistic");
   const a = sb.scenes[0];
   assert.equal(a.id, "01-hook", "ids are slugged");
-  assert.deepEqual(a.shots, [{ image_prompt: "A wooden ship at anchor in a turquoise bay under a stormy sky", shot_kind: "hook" }], "the old scene-level prompt becomes shot 1, opened by the hook");
+  // The shorthand becomes shot 1 — and, having named nothing that moves, it is given something: a still description
+  // comes back as a frozen frame once the shot is a generated clip (measured at 0.03 px), so the planner repairs it.
+  assert.equal(a.shots.length, 1);
+  assert.equal(a.shots[0].shot_kind, "hook", "the first picture of the video opens it");
+  assert.ok(a.shots[0].image_prompt.startsWith("A wooden ship at anchor in a turquoise bay under a stormy sky"), a.shots[0].image_prompt);
+  assert.ok(stillness(a.shots[0].image_prompt).alive, "something in it is doing something");
   assert.ok(!("image_prompt" in a) && !("beats" in a) && !("eyebrow" in a) && !("visual" in a) && !("items" in a));
   const z = sb.scenes[1];
   assert.equal(z.shots.length, 2, "a closing shows one picture, two at most");

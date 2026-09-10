@@ -300,22 +300,28 @@ const LIVING_SUBJECT = /\b(man|men|woman|women|boy|boys|girl|girls|child|childre
  */
 const MOTION_VERB = /\b(drifting|swirling|blowing|streaming|pouring|spilling|dripping|splashing|surging|breaking|crashing|rolling|tumbling|falling|rising|climbing|sinking|floating|hovering|gliding|soaring|flying|sailing|running|walking|marching|striding|riding|racing|charging|turning|spinning|circling|orbiting|swaying|rippling|flapping|snapping|whipping|waving|flickering|guttering|flaring|burning|smouldering|steaming|smoking|curling|boiling|bubbling|scattering|bursting|erupting|collapsing|crumbling|sliding|slipping|creeping|spreading|shaking|trembling|swinging|bouncing|leaping|jumping|chasing|opening|closing|reaching|pointing|throwing|catching|lifting|dropping)\b/i;
 
-/** What the picture already names, and the movement that belongs to it. Order matters: the first match wins. */
+/**
+ * What the picture already names, and the movement that belongs to it. The first match wins, and the order is
+ * deliberate: STRONGEST ON SCREEN FIRST. A flame guttering is bright, local and unmistakable; dust swirling is
+ * diffuse and low contrast. When a picture names several of these — a compass by candlelight with dust in the air
+ * names two — the one a viewer will actually see moving is the one worth asking for.
+ * Birds and other creatures are absent on purpose: they are LIVING_SUBJECT, so a picture that names one never
+ * reaches this table at all.
+ */
 const ENLIVEN: readonly { of: RegExp; clause: string }[] = [
-  { of: /\b(mist|fog|haze)\b/i, clause: "the mist drifting fast across the frame" },
-  { of: /\b(dust|motes|particles)\b/i, clause: "dust swirling through the light" },
-  { of: /\b(candle|candlelight|lantern|torch|fire|flame|campfire)\b/i, clause: "the flame guttering" },
+  { of: /\b(candle|candlelight|lantern|torch|fire|flame|campfire|hearth)\b/i, clause: "the flame guttering" },
   { of: /\b(wave|waves|sea|ocean|surf|tide)\b/i, clause: "waves breaking in the background" },
   { of: /\b(rain|downpour|storm)\b/i, clause: "rain falling hard through the shot" },
   { of: /\b(snow|blizzard)\b/i, clause: "snow blowing sideways" },
   { of: /\b(smoke|steam|vapour|vapor)\b/i, clause: "smoke curling upward" },
+  { of: /\b(flag|sail|sails|curtain|cloth|banner|cape|scarf)\b/i, clause: "the cloth snapping in the wind" },
+  { of: /\b(mist|fog|haze)\b/i, clause: "the mist drifting fast across the frame" },
   { of: /\b(sand|desert|dune)\b/i, clause: "sand blowing across the ground" },
   { of: /\b(leaf|leaves|tree|trees|grass|field|forest)\b/i, clause: "leaves moving in the wind" },
-  { of: /\b(flag|sail|sails|curtain|cloth|banner|cape|scarf)\b/i, clause: "the cloth snapping in the wind" },
+  { of: /\b(river|stream|waterfall|fountain)\b/i, clause: "water running past" },
+  { of: /\b(road|street|traffic|car|cars|train|bus)\b/i, clause: "a vehicle passing through the frame" },
   { of: /\b(cloud|clouds|sky)\b/i, clause: "clouds moving across the sky" },
-  { of: /\b(water|river|stream|waterfall|rain)\b/i, clause: "water running past" },
-  { of: /\b(road|street|traffic|car|cars|train)\b/i, clause: "a vehicle passing through the frame" },
-  { of: /\b(bird|birds|gull|gulls)\b/i, clause: "birds crossing the frame" },
+  { of: /\b(dust|motes|particles)\b/i, clause: "dust swirling through the light" },
 ];
 /** When the picture names nothing that can be set moving, this is what a cinematographer adds: it works anywhere. */
 const ENLIVEN_FALLBACK = "dust drifting through the light";
