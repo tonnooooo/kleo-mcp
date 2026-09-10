@@ -1,0 +1,320 @@
+#!/usr/bin/env python3
+"""
+Unit tests for the generated-motion wiring in kleo_worker.py: no GPU, no engine, no network. kleo_video is replaced
+by a fake and the two engine steps (the voice pass, the shot-timing pass) are stubbed out, because what is under
+test here is not whether a clip is beautiful. It is whether the worker can be trusted with a card that costs money.
+
+THE RULE THIS FILE EXISTS TO DEFEND: a project that keeps its video backdrop must satisfy the engine's own
+contract. contract.py refuses a video backdrop when any shot is missing its clip, and it is validated at the very
+top of run.py — after the GPU has been rented, after the model has been fetched, after every clip has been paid
+for. A worker that attaches the backdrop and forgets one clip does not produce a poor video, it produces no video
+at all and still bills the user. That exact shape of error has already cost this project a paid card once.
+
+So both endings are checked against the real validator: the film that was shot, and the film that fell back to the
+stills when the shooting failed.
+
+Run: python3 -m unittest worker.test_kleo_worker_video       (from the repo root)
+"""
+import copy, importlib.util, json, os, shutil, tempfile, unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ENGINE = os.path.join(HERE, "keou")
+
+
+def load_module(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+kw = load_module("kleo_worker_under_video_test", os.path.join(HERE, "kleo_worker.py"))
+contract = load_module("keou_contract_under_video_test", os.path.join(ENGINE, "contract.py"))
+
+SCENES = [
+    ("01-hook", "A lone figure runs down a rain-soaked alley at night.",
+     [("a figure in a heavy coat running through neon rain", "crash_zoom_in"),
+      ("water spraying up from every step", "track_alongside")]),
+    ("02-city", "The city never stops moving underneath her.",
+     [("a vast rain-lashed city from above, traffic flowing in rivers of light", "crane_down")]),
+    ("03-closing", "Nobody ever found out where she was going.",
+     [("an empty floodlit pier, the sea heaving black behind it", "pull_out")]),
+]
+
+
+def storyboard(backdrop="video", style="realistic"):
+    scenes = []
+    for i, (sid, voice, shots) in enumerate(SCENES):
+        scenes.append({"id": sid, "kind": "closing" if i == len(SCENES) - 1 else "cinema",
+                       "chapter": f"0{i + 1} PART", "accent": "amber", "title": f"part {i + 1}",
+                       "voice": voice, "hold": 0.2,
+                       "shots": [{"image_prompt": p, "motion": m, "strength": 0.8} for p, m in shots]})
+    sb = {"schema_version": 1, "title": "Night run", "style": "picture", "kleo_style": style,
+          "format": "16:9", "language": "en", "voice": "am_michael", "scenes": scenes}
+    if backdrop:
+        sb["backdrop"] = backdrop
+    return sb
+
+
+def job_for(sb):
+    return {"job_id": "j1", "storyboard": sb, "params": {"format": "16:9"}, "brand": "Kleo", "prompt": "night run"}
+
+
+def shots_json_for(project, width=3840, height=2160, fps=60):
+    """What render.mjs --shots would have written for this project: one entry per shot, cut times end to end."""
+    scenes, t = [], 0.0
+    for s in project["scenes"]:
+        shots, per = s.get("shots") or [{}], 3.0
+        entry = {"id": s["id"], "start": t, "end": t + per * len(shots), "shots": []}
+        for i in range(len(shots)):
+            entry["shots"].append({"index": i, "start": t, "end": t + per, "clip": None, "image": None})
+            t += per
+        scenes.append(entry)
+    return {"duration": t, "fps": fps, "width": width, "height": height, "scenes": scenes}
+
+
+class FakeVideo:
+    """kleo_video, without a GPU. Records what it was asked for; films whatever it is told to film."""
+
+    def __init__(self, gpu=True, skip=(), track=True):
+        self.gpu, self.skip, self.track = gpu, set(skip), track
+        self.asked, self.footage_args, self.out_dir = None, None, None
+
+    def can_generate(self):
+        return self.gpu
+
+    def generate_clips(self, shots, look, fmt, out_dir, seconds_of=None):
+        self.asked = {"shots": copy.deepcopy(shots), "look": look, "fmt": fmt, "seconds_of": dict(seconds_of or {})}
+        self.out_dir = out_dir
+        os.makedirs(out_dir, exist_ok=True)
+        made = {}
+        for s in shots:
+            if s["id"] in self.skip:
+                continue
+            path = os.path.join(out_dir, s["id"] + ".mp4")
+            with open(path, "wb") as f:
+                f.write(b"\0" * 32)
+            made[s["id"]] = path
+        return made
+
+    def build_footage(self, shots_json, clips, out_path, width, height, fps=60, log_fn=None):
+        self.footage_args = {"width": width, "height": height, "fps": fps, "clips": sorted(clips)}
+        if not self.track:
+            return None
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        with open(out_path, "wb") as f:
+            f.write(b"\0" * 32)
+        return out_path
+
+
+class VideoWiringTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kleo-video-wiring-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.steps = []
+        self.fake = FakeVideo()
+        # No server, no pictures, no engine: only the decisions the worker makes on its own are under test.
+        self.saved = {k: getattr(kw, k) for k in ("progress", "engine_step", "local_video_module", "wants_pictures")}
+        kw.progress = lambda *a, **k: None
+        kw.wants_pictures = lambda sb: False
+        kw.local_video_module = lambda: self.fake
+        kw.engine_step = self.step
+        self.addCleanup(lambda: [setattr(kw, k, v) for k, v in self.saved.items()])
+
+    def step(self, cmd, engine, log_path, what, timeout_min):
+        """Stands in for the voice pass and the shot-timing pass; the timing pass leaves shots.json behind."""
+        self.steps.append(what)
+        if "--shots" in [str(c) for c in cmd]:
+            pj = [str(c) for c in cmd if str(c).endswith("project.json")][0]
+            with open(pj) as f:
+                project = json.load(f)
+            build = os.path.join(os.path.dirname(pj), "build")
+            os.makedirs(build, exist_ok=True)
+            with open(os.path.join(build, "shots.json"), "w") as f:
+                json.dump(shots_json_for(project), f)
+
+    def prepared(self, sb=None):
+        project, pdir, units = kw.prepare_project(job_for(sb or storyboard()), ENGINE, self.tmp)
+        return project, pdir, units
+
+    def film(self, sb=None):
+        project, pdir, units = self.prepared(sb)
+        ok = kw.generate_footage(project, pdir, ENGINE, os.path.join(self.tmp, "log.txt"), units)
+        return project, pdir, units, ok
+
+    # ---- the gate ------------------------------------------------------------------------------------------
+
+    def test_only_a_picture_project_that_asked_for_it_is_filmed(self):
+        self.assertTrue(kw.wants_footage({"backdrop": "video", "style": "picture"}))
+        self.assertFalse(kw.wants_footage({"style": "picture"}), "silence is not a request")
+        self.assertFalse(kw.wants_footage({"backdrop": "video", "style": "sketch"}),
+                         "the explainer must not be able to fall into the video path by accident")
+        self.assertFalse(kw.wants_footage({"backdrop": "photo", "style": "picture"}))
+        self.assertFalse(kw.wants_footage(None))
+
+    def test_a_project_that_never_asked_runs_the_old_way_and_costs_nothing(self):
+        project, pdir, units = self.prepared(storyboard(backdrop=None))
+        self.assertEqual(units, [], "nothing is filmed for a project with no video backdrop")
+        self.assertNotIn("backdrop", project)
+        self.assertIsNone(self.fake.asked, "the model must not even be loaded")
+
+    # ---- what gets filmed ----------------------------------------------------------------------------------
+
+    def test_the_prompts_are_read_before_the_strip_takes_them_away(self):
+        project, pdir, units = self.prepared()
+        self.assertEqual([u["id"] for u in units],
+                         ["01-hook-s1", "01-hook-s2", "02-city-s1", "03-closing-s1"])
+        self.assertTrue(all(u["image_prompt"].strip() for u in units))
+        self.assertEqual(units[0]["motion"], "crash_zoom_in")
+        for s in project["scenes"]:
+            for sh in s["shots"]:
+                self.assertNotIn("image_prompt", sh, "the engine never sees a prompt")
+
+    def test_the_camera_the_server_resolved_reaches_the_model(self):
+        _, _, _, ok = self.film()
+        self.assertTrue(ok)
+        asked = {s["id"]: s for s in self.fake.asked["shots"]}
+        self.assertEqual(asked["01-hook-s1"]["motion"], "crash_zoom_in")
+        self.assertEqual(asked["02-city-s1"]["motion"], "crane_down")
+        self.assertEqual(asked["01-hook-s1"]["strength"], 0.8)
+        self.assertEqual(self.fake.asked["look"], "realistic", "the look is the one the engine will draw for")
+        self.assertEqual(self.fake.asked["fmt"], "16:9")
+
+    def test_every_clip_is_filmed_to_the_length_the_engine_chose(self):
+        """The one number the worker is not allowed to invent: a clip shorter than its shot is a gap in the film."""
+        _, _, _, ok = self.film()
+        self.assertTrue(ok)
+        self.assertEqual(sorted(self.fake.asked["seconds_of"]),
+                         ["01-hook-s1", "01-hook-s2", "02-city-s1", "03-closing-s1"])
+        self.assertTrue(all(v == 3.0 for v in self.fake.asked["seconds_of"].values()))
+
+    def test_the_frame_comes_from_the_engine_and_is_never_recomputed(self):
+        """The footage lies under the graphics: a frame worked out twice is a frame that can disagree once."""
+        _, _, _, ok = self.film()
+        self.assertTrue(ok)
+        self.assertEqual((self.fake.footage_args["width"], self.fake.footage_args["height"]), (3840, 2160))
+        self.assertEqual(self.fake.footage_args["fps"], 60)
+
+    def test_the_voice_runs_before_the_timing_and_the_timing_before_the_camera(self):
+        _, _, _, ok = self.film()
+        self.assertTrue(ok)
+        self.assertEqual(self.steps, ["the voice pass", "the shot timing pass"])
+
+    def test_the_clips_land_where_the_contract_allows_them_and_nowhere_else(self):
+        project, pdir, units, ok = self.film()
+        self.assertTrue(ok)
+        self.assertEqual(os.path.abspath(self.fake.out_dir), os.path.abspath(os.path.join(pdir, "clips")))
+        for s in project["scenes"]:
+            for sh in s["shots"]:
+                self.assertTrue(sh["clip"].startswith("clips/"), sh["clip"])
+                self.assertTrue(os.path.isfile(os.path.join(pdir, sh["clip"])))
+
+    # ---- the fallback, which is the whole point ------------------------------------------------------------
+
+    def test_one_shot_that_would_not_film_takes_the_whole_backdrop_off(self):
+        """A hole in the track is a black hole in the delivered film. contract.py refuses it; so does the worker,
+        before spending the render on it."""
+        self.fake = FakeVideo(skip=["02-city-s1"])
+        kw.local_video_module = lambda: self.fake
+        project, pdir, units, ok = self.film()
+        self.assertFalse(ok, "three clips out of four is not a film")
+        self.assertIsNone(self.fake.footage_args, "the track is not even attempted")
+
+    def test_a_track_that_would_not_assemble_also_takes_the_backdrop_off(self):
+        self.fake = FakeVideo(track=False)
+        kw.local_video_module = lambda: self.fake
+        _, _, _, ok = self.film()
+        self.assertFalse(ok)
+
+    def test_without_a_gpu_nothing_is_filmed_and_no_engine_step_is_paid_for(self):
+        self.fake = FakeVideo(gpu=False)
+        kw.local_video_module = lambda: self.fake
+        _, _, _, ok = self.film()
+        self.assertFalse(ok)
+        self.assertEqual(self.steps, [], "a machine that cannot film must not voice the script twice")
+
+    def test_without_the_module_nothing_is_filmed(self):
+        kw.local_video_module = lambda: None
+        _, _, _, ok = self.film()
+        self.assertFalse(ok)
+        self.assertEqual(self.steps, [])
+
+
+class ShotPlanTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kleo-shotplan-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def write(self, data):
+        with open(os.path.join(self.tmp, "shots.json"), "w") as f:
+            json.dump(data, f)
+        return self.tmp
+
+    def test_the_ids_are_the_ones_the_pictures_use(self):
+        """Same key on both sides or the clip lands under the wrong shot: <sceneId>-s<n>, n counting from one."""
+        plan, seconds = kw.shot_plan(self.write(shots_json_for(
+            {"scenes": [{"id": "01-hook", "shots": [{}, {}]}, {"id": "02-city", "shots": [{}]}]})))
+        self.assertEqual(sorted(seconds), ["01-hook-s1", "01-hook-s2", "02-city-s1"])
+        self.assertEqual(plan["width"], 3840)
+
+    def test_a_missing_plan_is_not_a_crash(self):
+        plan, seconds = kw.shot_plan(self.tmp)
+        self.assertIsNone(plan)
+        self.assertEqual(seconds, {})
+
+    def test_a_shot_with_no_length_is_dropped_rather_than_filmed_at_zero(self):
+        _, seconds = kw.shot_plan(self.write({"width": 1920, "height": 1080, "fps": 60, "scenes": [
+            {"id": "01-hook", "shots": [{"index": 0, "start": 0, "end": 2}, {"index": 1, "start": 2, "end": 2}]}]}))
+        self.assertEqual(sorted(seconds), ["01-hook-s1"])
+
+
+class ContractTest(unittest.TestCase):
+    """Both endings go through the engine's real validator — the one that runs after the card has been paid for."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kleo-video-contract-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.saved = {k: getattr(kw, k) for k in ("progress", "wants_pictures")}
+        kw.progress = lambda *a, **k: None
+        kw.wants_pictures = lambda sb: False
+        self.addCleanup(lambda: [setattr(kw, k, v) for k, v in self.saved.items()])
+
+    def build(self):
+        project, pdir, units = kw.prepare_project(job_for(storyboard()), ENGINE, self.tmp)
+        return project, pdir, units
+
+    def test_a_filmed_project_is_accepted_by_the_engine(self):
+        project, pdir, units = self.build()
+        os.makedirs(os.path.join(pdir, "clips"), exist_ok=True)
+        for u in units:
+            with open(os.path.join(pdir, "clips", u["id"] + ".mp4"), "wb") as f:
+                f.write(b"\0" * 32)
+            u["shot"]["clip"] = f"clips/{u['id']}.mp4"
+        kw.write_project(project, pdir)
+        contract.validate(os.path.join(pdir, "project.json"))
+
+    def test_the_film_that_fell_back_to_the_stills_is_accepted_too(self):
+        project, pdir, units = self.build()
+        project.pop("backdrop", None)
+        for u in units:
+            u["shot"].pop("clip", None)
+        kw.write_project(project, pdir)
+        contract.validate(os.path.join(pdir, "project.json"))
+
+    def test_the_engine_refuses_the_backdrop_when_a_clip_is_missing(self):
+        """The reason the worker gives up the whole backdrop for one missing clip: this is what would happen
+        otherwise, and it happens after the GPU, the model and every other clip have already been paid for."""
+        project, pdir, units = self.build()
+        os.makedirs(os.path.join(pdir, "clips"), exist_ok=True)
+        for u in units[:-1]:
+            with open(os.path.join(pdir, "clips", u["id"] + ".mp4"), "wb") as f:
+                f.write(b"\0" * 32)
+            u["shot"]["clip"] = f"clips/{u['id']}.mp4"
+        kw.write_project(project, pdir)
+        with self.assertRaises(ValueError) as e:
+            contract.validate(os.path.join(pdir, "project.json"))
+        self.assertIn("clip", str(e.exception))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

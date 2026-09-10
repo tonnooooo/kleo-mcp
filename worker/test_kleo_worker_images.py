@@ -389,7 +389,7 @@ class PicturesTest(unittest.TestCase):
     # -- the whole preparation, exactly what render_keou runs before the engine -------------------
     def test_prepare_project_writes_pictures_into_the_project(self):
         FakeKleo.state["images_replies"] = [(200, self.reply())]
-        project, pdir = kw.prepare_project(job_for(storyboard()), ENGINE, self.tmp)
+        project, pdir, _ = kw.prepare_project(job_for(storyboard()), ENGINE, self.tmp)
         self.assertEqual(pdir, os.path.join(self.tmp, "j1"))
         pj = os.path.join(pdir, "project.json")
         with open(pj) as f:
@@ -414,7 +414,7 @@ class PicturesTest(unittest.TestCase):
 
     def test_prepare_project_without_any_picture(self):
         FakeKleo.state["images_replies"] = [(500, {"error": "a"}), (500, {"error": "b"})]
-        project, pdir = kw.prepare_project(job_for(storyboard()), ENGINE, self.tmp)
+        project, pdir, _ = kw.prepare_project(job_for(storyboard()), ENGINE, self.tmp)
         self.assertEqual(project["look"], "cartoon", "the look does not depend on the pictures")
         self.assertFalse(any("image" in s or "image_prompt" in s for s in project["scenes"]))
         self.assertFalse(any("image" in sh for s in project["scenes"] for sh in s["shots"]))
@@ -423,7 +423,7 @@ class PicturesTest(unittest.TestCase):
         self.validate_engine(os.path.join(pdir, "project.json"))
 
     def test_prepare_project_cyber_never_asks_for_pictures(self):
-        project, pdir = kw.prepare_project(job_for(storyboard("cyber")), ENGINE, self.tmp)
+        project, pdir, _ = kw.prepare_project(job_for(storyboard("cyber")), ENGINE, self.tmp)
         self.assertEqual(self.posts("/images"), [])
         self.assertNotIn("kleo_style", project)
         self.assertNotIn("look", project)
@@ -454,7 +454,7 @@ class PicturesTest(unittest.TestCase):
         self.assertTrue(all(len(u["image_prompt"]) <= 240 for u in kw.picture_units(sb)))
         first = ids[0]
         FakeKleo.state["images_replies"] = [(200, {"images": {first: self.dl("01-hook-s1.png")}, "missing": ids[1:]})]
-        project, pdir = kw.prepare_project(job_for(copy.deepcopy(sb)), ENGINE, self.tmp)
+        project, pdir, _ = kw.prepare_project(job_for(copy.deepcopy(sb)), ENGINE, self.tmp)
         self.assertEqual(first, "01-hook-s1")
         self.assertEqual(project["scenes"][0]["image"], "img/01-hook-s1.png")
         self.assertEqual([s.get("image") for s in project["scenes"][1:]], [None] * (len(project["scenes"]) - 1))

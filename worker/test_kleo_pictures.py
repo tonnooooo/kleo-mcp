@@ -416,7 +416,7 @@ class PolicyTest(unittest.TestCase):
         kw.PICTURES_POLICY = policy
         fake = FakeKleoPictures(gpu=gpu, fail=fail)
         sys.modules["kleo_pictures"] = fake
-        project, pdir = kw.prepare_project(job_for(storyboard(style, fmt)), ENGINE, self.tmp)
+        project, pdir, _ = kw.prepare_project(job_for(storyboard(style, fmt)), ENGINE, self.tmp)
         pj = os.path.join(pdir, "project.json")
         if project.get("style") != "picture" or ENGINE_KNOWS_PICTURE:
             contract.validate(pj)  # the engine's own validator accepts what we wrote
@@ -543,7 +543,7 @@ class PolicyTest(unittest.TestCase):
         sys.modules["kleo_pictures"] = None  # import raises ImportError
         kw.PICTURES_POLICY = "auto"
         self.assertFalse(kw.local_pictures_available())
-        project, pdir = kw.prepare_project(job_for(storyboard()), ENGINE, self.tmp)
+        project, pdir, _ = kw.prepare_project(job_for(storyboard()), ENGINE, self.tmp)
         self.assertIn("2 pictures from server, 0 generated on the GPU, 4 missing", self.messages())
 
 

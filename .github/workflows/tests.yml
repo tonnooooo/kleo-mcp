@@ -39,4 +39,8 @@ jobs:
         with: { python-version: "3.11" }
       - name: Worker tests (standard library only, no torch, no ffmpeg)
         working-directory: worker
-        run: python3 -m unittest test_kleo_pictures test_kleo_worker_images -v
+        run: python3 -m unittest test_kleo_pictures test_kleo_worker_images test_kleo_video test_kleo_worker_video -v
+        # test_kleo_video and test_kleo_worker_video cover the generated-motion chain: the prompt the model is
+        # given, and whether the worker may attach a video backdrop at all. Neither loads torch or touches a GPU
+        # (the pipeline and the whole kleo_video module are replaced by fakes), and both belong here because the
+        # failure they guard against is only visible after a card has already been rented and paid for.

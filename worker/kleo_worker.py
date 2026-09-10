@@ -25,12 +25,21 @@ compatibility); the pictures the server could not make are then drawn on the ins
 server first, GPU for the rest) | server (never generate locally) | local (never ask the server). kleo_style and every
 image_prompt are stripped before project.json is written, and the engine's own "look" (cartoon | realistic) is written
 at the top level. A missing or broken picture is never fatal: the shot simply renders as a flat gradient.
+Kleo video (keou engine only): a storyboard may also declare backdrop "video", which asks for shots that were
+FILMED instead of photographs with a zoom on them. The worker then voices the script itself, asks the engine when
+each shot cuts (render.mjs --shots), films every shot with kleo_video.py on this instance's GPU (Wan 2.2 TI2V-5B),
+lays the clips into build/footage.mp4 exactly as long as the timeline, hangs each clip on its shot, and renders
+with --skip-voice over the alignment already on disk. That order is forced: the cut times come from the engine,
+the engine needs the word alignment, and the alignment comes from the voice pass. If even ONE shot does not film,
+the backdrop comes off and the film is drawn from the stills — see the note above generate_footage().
 Tuning: KLEO_WIDTH_PORTRAIT (2160) / KLEO_WIDTH_LANDSCAPE (1920), KLEO_RENDER_TIMEOUT_MIN (100),
+        KLEO_VOICE_TIMEOUT_MIN (25) / KLEO_SHOTS_TIMEOUT_MIN (5): the two passes that precede the filming,
         KLEO_IMAGES_TIMEOUT_S (300: the images call, the server generates on the first request), KLEO_IMAGES_RETRY_WAIT_S (20),
         KLEO_PICTURES (auto | server | local), KLEO_PICTURES_CPU=1 (let kleo_pictures draw on the CPU: tests only),
         KLEO_KEOU_WORKERS (Chromium render workers for run.py: default min(8, cpu count); each one costs RAM),
         KLEO_KEOU_PYTHON (interpreter for run.py: default <engine>/.venv/bin/python if present, else this one).
-Standard library only (kleo_pictures.py, next to this file, is optional and imported lazily), so it runs in any image with python3 and ffmpeg.
+Standard library only (kleo_pictures.py and kleo_video.py, next to this file, are optional and imported lazily),
+so it runs in any image with python3 and ffmpeg.
 """
 import copy, glob, json, os, re, shutil, sys, time, threading, subprocess, tempfile, urllib.request, urllib.error, traceback
 from collections import deque
@@ -361,9 +370,14 @@ def keou_python(engine):
     return venv if os.path.isfile(venv) else sys.executable
 
 
-def run_keou(engine, project_json, n_scenes, log_path):
+def run_keou(engine, project_json, n_scenes, log_path, skip_voice=False):
     workers = max(1, KEOU_WORKERS) if KEOU_WORKERS > 0 else min(8, os.cpu_count() or 2)
     cmd = [keou_python(engine), os.path.join(engine, "run.py"), project_json, "--workers", str(workers)]
+    if skip_voice:
+        # The worker already voiced the script, because the shot cut times are computed from that alignment and
+        # the footage had to be filmed to those lengths before this render could start. run.py checks the cached
+        # timeline still matches the script, so a stale alignment cannot slip through.
+        cmd.append("--skip-voice")
     log("engine:", " ".join(cmd))
     env = dict(os.environ, PYTHONUNBUFFERED="1")
     proc = subprocess.Popen(cmd, cwd=engine, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
@@ -667,6 +681,197 @@ def generate_local_pictures(project, pdir, ids):
     return done
 
 
+# ---- Kleo video: the shot is filmed, not photographed ---------------------------------------------------------
+# A storyboard asks for generated motion by declaring backdrop "video". src/keou-contract.ts lets that ask through
+# and, in the same breath, forbids a storyboard from carrying the clips themselves — they are made here, on the
+# rented card, because they cost minutes and dollars and must never travel with a job. Fulfilling the ask is this
+# section's whole job: film every shot, lay the clips into one track exactly as long as the timeline, and hand the
+# engine a project whose shots each carry their own clip.
+#
+# THE ORDER IS FORCED, and that is why this lives in the worker and not in the engine. The cut times belong to the
+# engine (render.mjs --shots); the engine cannot work them out without the word alignment (build/timeline.json);
+# and that alignment is made by the voice stage inside run.py. So the worker runs the voice itself, asks the engine
+# when each shot cuts, films to exactly those lengths, and only then lets run.py render with --skip-voice over the
+# alignment that is already on disk. Nothing in the engine was changed for any of this: it already lays
+# build/footage.mp4 under the graphics whenever the project declares the backdrop.
+#
+# THE FALLBACK IS THE POINT OF THE DESIGN. If even one shot comes back without a clip, the backdrop comes off the
+# project and the film is drawn from the stills, exactly as it was before any of this existed. contract.py refuses
+# a video backdrop with a missing clip deliberately: a hole in the track is a black hole in the delivered film, and
+# the only thing that ever finds it is the person watching the video they have already paid for.
+VOICE_TIMEOUT_MIN = float(os.environ.get("KLEO_VOICE_TIMEOUT_MIN", "25"))
+SHOTS_TIMEOUT_MIN = float(os.environ.get("KLEO_SHOTS_TIMEOUT_MIN", "5"))
+CLIPS_DIR = "clips"                       # contract.py: a clip is legal only inside the project's clips/ folder
+
+
+def wants_footage(project):
+    """True when the storyboard asked to be filmed. Only the picture style may ask (contract.py refuses the rest)."""
+    return isinstance(project, dict) and project.get("backdrop") == "video" and project.get("style") == "picture"
+
+
+def video_units(project):
+    """The shots to film, each with the camera the server already resolved into `motion`. Must be read BEFORE
+    strip_kleo_fields takes the prompts away, and it keeps the shot object itself so the clip can be hung on it."""
+    units = []
+    for u in picture_units(project):
+        shot = u["shot"]
+        if not isinstance(shot, dict):
+            continue          # the pre-shots format has no shot object to hang a clip on
+        units.append({"id": u["id"], "image_prompt": u["image_prompt"], "shot": shot,
+                      "motion": shot.get("motion"), "strength": shot.get("strength")})
+    return units
+
+
+def local_video_module():
+    """kleo_video (next to this file) or None when it is not shipped. Never raises."""
+    try:
+        import kleo_video
+        return kleo_video
+    except ImportError:
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+            try:
+                import kleo_video
+                return kleo_video
+            except ImportError:
+                pass
+    except Exception as e:
+        log("kleo_video could not be imported:", e)
+    return None
+
+
+def engine_step(cmd, engine, log_path, what, timeout_min):
+    """One engine command, streamed into the same log the render writes into. Raises RenderError on failure."""
+    cmd = [str(c) for c in cmd]
+    log("engine:", " ".join(cmd))
+    proc = subprocess.Popen(cmd, cwd=engine, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                            errors="replace", env=dict(os.environ, PYTHONUNBUFFERED="1"), start_new_session=True)
+    timed_out = threading.Event()
+
+    def kill():
+        timed_out.set()
+        log(f"{what}: timeout after {timeout_min:g} min, killing it")
+        for sig in (15, 9):
+            try:
+                os.killpg(proc.pid, sig)
+            except Exception:
+                pass
+            time.sleep(5)
+
+    timer = threading.Timer(timeout_min * 60, kill)
+    timer.daemon = True
+    timer.start()
+    tail = deque(maxlen=25)
+    try:
+        with open(log_path, "a") as lf:
+            for line in proc.stdout:
+                line = line.rstrip("\n")
+                lf.write(line + "\n")
+                print("  │", line, flush=True)
+                tail.append(line)
+        code = proc.wait()
+    finally:
+        timer.cancel()
+        if proc.poll() is None:
+            try:
+                os.killpg(proc.pid, 9)
+            except Exception:
+                pass
+    if timed_out.is_set():
+        raise RenderError(f"{what} exceeded {timeout_min:g} minutes", retry=True)
+    if code != 0:
+        detail = " | ".join(l for l in list(tail)[-5:] if l.strip())
+        raise RenderError(f"{what} exited with code {code}: {detail}"[:480], retry=True)
+
+
+def shot_plan(build):
+    """build/shots.json: the frame the engine will draw in, and when every shot cuts, keyed by the same picture ids
+    picture_units builds — so the clip a shot gets is the clip that shot's graphics were timed against."""
+    try:
+        with open(os.path.join(build, "shots.json")) as f:
+            plan = json.load(f)
+    except Exception as e:
+        log("could not read the shot plan:", e)
+        return None, {}
+    seconds = {}
+    for scene in plan.get("scenes") or []:
+        sid = scene.get("id")
+        for sh in scene.get("shots") or []:
+            try:
+                n, secs = int(sh.get("index", 0)) + 1, float(sh.get("end", 0)) - float(sh.get("start", 0))
+            except (TypeError, ValueError):
+                continue
+            if sid and secs > 0:
+                seconds[f"{sid}-s{n}"] = secs
+    return plan, seconds
+
+
+def generate_footage(project, pdir, engine, log_path, units):
+    """Voice → cut times → film every shot → build/footage.mp4, with each shot's clip hung on the shot itself.
+    Returns True when the project keeps its video backdrop, False when the film falls back to the stills."""
+    mod = local_video_module()
+    if mod is None:
+        log("no generated motion: kleo_video is not in this image")
+        return False
+    try:
+        if not mod.can_generate():
+            log("no generated motion: this machine has no usable GPU")
+            return False
+    except Exception as e:
+        log("no generated motion:", e)
+        return False
+    if not units:
+        log("no generated motion: no shot carries a description to film")
+        return False
+
+    project_json, build = os.path.join(pdir, "project.json"), os.path.join(pdir, "build")
+    os.makedirs(build, exist_ok=True)
+    progress("voice", 8, message="voicing the script to find the cuts")
+    engine_step([keou_python(engine), os.path.join(engine, "prepare.py"), project_json],
+                engine, log_path, "the voice pass", VOICE_TIMEOUT_MIN)
+    engine_step(["node", os.path.join(engine, "engine", "render.mjs"), project_json, "--shots"],
+                engine, log_path, "the shot timing pass", SHOTS_TIMEOUT_MIN)
+    plan, seconds = shot_plan(build)
+    if not plan or not seconds:
+        log("no generated motion: the engine did not say when the shots cut")
+        return False
+    # The frame comes from the plan, never recomputed here: the footage has to match the canvas the graphics will
+    # be drawn on to the pixel, and the engine is the only thing entitled to decide what that is.
+    width, height, fps = int(plan["width"]), int(round(plan["height"])), int(plan.get("fps") or 60)
+    look, fmt, n = project.get("look") or "realistic", project.get("format") or "9:16", len(units)
+
+    progress("clips", 12, eta_min=round(n * 2.6) or None, message=f"filming {n} shots ({look}, {width}x{height})")
+    try:
+        made = mod.generate_clips([{"id": u["id"], "image_prompt": u["image_prompt"],
+                                    "motion": u["motion"], "strength": u["strength"]} for u in units],
+                                  look, fmt, os.path.join(pdir, CLIPS_DIR), seconds_of=seconds)
+    except Exception as e:
+        log("filming failed:", e)
+        return False
+    made = made if isinstance(made, dict) else {}
+    missing = [u["id"] for u in units
+               if not (isinstance(made.get(u["id"]), str) and os.path.isfile(made[u["id"]]))]
+    if missing:
+        log(f"{len(missing)} of {n} shots did not film ({', '.join(missing[:6])}): drawing from the stills instead")
+        return False
+
+    progress("clips", 55, message=f"{n} shots filmed, laying the track")
+    try:
+        track = mod.build_footage(os.path.join(build, "shots.json"), made, os.path.join(build, "footage.mp4"),
+                                  width, height, fps=fps, log_fn=log)
+    except Exception as e:
+        log("could not lay the track:", e)
+        return False
+    if not track:
+        return False
+    for u in units:
+        # contract.py validates this path: it must resolve inside the project's clips/ folder and exist.
+        u["shot"]["clip"] = f"{CLIPS_DIR}/{os.path.basename(made[u['id']])}"
+    progress("clips", 62, message="the track is under the graphics")
+    return True
+
+
 def strip_kleo_fields(project):
     """Turns a Kleo storyboard into an engine project: drops kleo_style and every image_prompt (scene and shot level;
     the pictures stay as shot.image / scene.image) and writes the engine's own top-level "look" (cartoon | realistic)
@@ -716,12 +921,21 @@ def prepare_project(job, engine, projects_dir):
         pictures = f"{len(ready)} pictures from server, {len(generated)} generated on the GPU, {len(missing)} missing"
         log("pictures:", pictures, "server", ready, "gpu", generated, "missing", missing, "policy", policy)
         progress("script", 5, message=pictures)
+    # Read the shots to film BEFORE the strip: it is about to take every image_prompt out of the project.
+    units = video_units(project) if wants_footage(project) else []
     strip_kleo_fields(project)
+    write_project(project, pdir)
+    log(f"project {project['id']}: {len(project['scenes'])} scenes, {project['format']} {project['width']}px {project['fps']} fps, "
+        f"{project['language']}/{project['voice']}, style {project.get('style')}, {pictures}"
+        + (f", {len(units)} shots to film" if units else ""))
+    return project, pdir, units
+
+
+def write_project(project, pdir):
+    """project.json, written whole. It is written twice for a filmed project: once so the voice and timing passes
+    have something to read, and again once the clips are attached — or once the backdrop has been taken off."""
     with open(os.path.join(pdir, "project.json"), "w") as f:
         json.dump(project, f, ensure_ascii=False, indent=2)
-    log(f"project {project['id']}: {len(project['scenes'])} scenes, {project['format']} {project['width']}px {project['fps']} fps, "
-        f"{project['language']}/{project['voice']}, style {project.get('style')}, {pictures}")
-    return project, pdir
 
 
 def render_keou(job, out_dir):
@@ -731,10 +945,25 @@ def render_keou(job, out_dir):
         # Not retried: a retry would rent another instance with the same image and fail the same way.
         raise RenderError(f"Keou engine not found at {engine} (VAST_IMAGE must ship the engine; set KLEO_KEOU_DIR or KLEO_ENGINE=placeholder)", retry=False)
     progress("script", 3, message="preparing the storyboard")
-    project, pdir = prepare_project(job, engine, os.path.join(engine, "projects"))
+    project, pdir, units = prepare_project(job, engine, os.path.join(engine, "projects"))
     progress("script", 6, message=f"{len(project['scenes'])} scenes")
+    log_path = os.path.join(out_dir, "log.txt")
 
-    run_keou(engine, os.path.join(pdir, "project.json"), len(project["scenes"]), os.path.join(out_dir, "log.txt"))
+    if wants_footage(project):
+        if not generate_footage(project, pdir, engine, log_path, units):
+            # Without a track the backdrop is a promise the render cannot keep: the engine would draw the graphics
+            # onto a transparent canvas with nothing behind them, which is worse than the stills it replaced. So
+            # the backdrop comes off, the half-made clips go with it, and the film is drawn the old way.
+            project.pop("backdrop", None)
+            for u in units:
+                u["shot"].pop("clip", None)
+            log("the video backdrop came off: this film is drawn from the stills")
+        write_project(project, pdir)
+
+    # If anything above needed the shot times, the script is already voiced; run.py checks that alignment itself
+    # against the script before it trusts it.
+    run_keou(engine, os.path.join(pdir, "project.json"), len(project["scenes"]), log_path,
+             skip_voice=os.path.isfile(os.path.join(pdir, "build", "timeline.json")))
 
     out = os.path.join(pdir, "out")
     master, captions = os.path.join(out, "master.mp4"), os.path.join(out, "captions.srt")
