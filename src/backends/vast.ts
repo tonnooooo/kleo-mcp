@@ -173,8 +173,10 @@ export async function searchOffers(env: Env, style?: string | null): Promise<Off
     // bf16 tensor cores, several times slower on this exact work). Memory and architecture are the constraint.
     gpu_ram: { gte: need.minVramGb * 1024 },
     compute_cap: { gte: need.minComputeCap },
-    // A slow or flaky host turns the image pull into twenty minutes of paid waiting (one Japanese host spent that
-    // long on "Retrying in 1 second"), so the floor is high: bandwidth is the single biggest slice of time to first frame.
+    // NOT because bandwidth is the biggest slice of time to first frame — that was the fifth place the mis-measured
+    // twenty-minute pull was still written down, and the pull is about three minutes (docs/PULL-IMMAGINE.md). Measured
+    // 11 September, dropping this filter entirely returns four more offers out of nine: it costs almost nothing and
+    // still keeps out the hosts that crawl. The filter that actually decides how many machines exist is the price.
     inet_down: { gte: int(env.VAST_MIN_INET, 800) },
     cpu_cores_effective: { gte: int(env.VAST_MIN_CPU, 16) },
     cpu_ram: { gte: int(env.VAST_MIN_RAM_GB, 32) * 1024 },
