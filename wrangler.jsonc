@@ -55,6 +55,7 @@
     "IMAGE_MODEL_CARTOON": "@cf/black-forest-labs/flux-1-schnell", // Workers AI: immagini dello stile "cartoon" (≈58 neuroni ≈ $0.0006 a immagine, 1024², max 10 per video)
     "IMAGE_MODEL_REALISTIC": "@cf/leonardo/phoenix-1.0", // Workers AI: immagini dello stile "realistic" (≈2.300 neuroni ≈ $0.025 a immagine a 768x1344; alternativa gratuita in beta: @cf/bytedance/stable-diffusion-xl-lightning)
     "MAX_CONCURRENT_GPUS": "2", // massimo GPU accese in totale: è il tetto di spesa oraria (2 x VAST_MAX_DPH = 0,80 $/h nel caso peggiore)
+    "MAX_CONCURRENT_VIDEO_GPUS": "1", // di quelle GPU, quante possono fare un video GENERATO insieme: una. Sono le schede piu' care e sono quelle il cui conto triplica quando una clip torna ferma e va rifatta: due in parallelo sono l'unico modo in cui il credito puo' sparire senza che nessuno se ne accorga
     "MAX_JOBS_PER_USER": "1", // massimo video in corso per ogni utente: con solo 2 GPU un account non deve occuparle tutte e due
     "MAX_JOBS_PER_DAY": "2", // massimo video AVVIATI in un giorno (UTC) da uno stesso account: il limite qui sopra conta solo quelli in corso
     "START_TIMEOUT_MIN": "25",
@@ -67,7 +68,6 @@
     "MAX_NEW_USERS_PER_DAY": "25", // nuovi account creati in un giorno (UTC); oltre, la pagina dice di tornare domani senza accusare nessuno
     "MAX_NEW_USERS_PER_IP_DAY": "5", // nuovi account al giorno da uno stesso indirizzo (di cui si salva solo un'impronta): senza questo, 25 richieste da un solo visitatore chiudono la prova gratuita a tutti fino a mezzanotte
     "RESULT_TTL_DAYS": "7", // giorni di validità dei link e dei file
-    "VAST_GPU_NAME": "RTX 4090", // modello di GPU da noleggiare
     "VAST_MAX_DPH": "0.40", // prezzo massimo accettato, in dollari all'ora. Abbassato da 0,60: il render misurato girava su una macchina da 0,175 $/h e le 4090 stanno fra 0,30 e 0,39 $/h, quindi 0,40 basta. Se un giorno nessuna offerta rientra, i video restano in coda: allora rialzalo
     "VAST_MIN_INET": "1200", // Mbit/s in discesa richiesti alla macchina (il predefinito è 800): dei 23 minuti misurati, 13 erano solo lo scaricamento dell'immagine, cioè più della metà del conto
     "IMAGE_SERVER_MAX": "0", // immagini disegnate dal server con Workers AI: nessuna. Le disegna tutte la GPU noleggiata (circa 0,004 $ per 24), così la quota gratuita giornaliera di Workers AI resta intera per gli storyboard, che è ciò che limita davvero quanti video Kleo sa progettare in un giorno

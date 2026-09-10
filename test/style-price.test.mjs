@@ -10,7 +10,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { STYLE_CREDITS, creditsFor } from "../src/templates.ts";
+import { STYLE_CREDITS, STYLE_MACHINE, VIDEO, creditsFor, machineFor, isVideoStyle } from "../src/templates.ts";
 import { KLEO_STYLES } from "../src/keou-contract.ts";
 
 test("every style Kleo can render has a declared price", () => {
@@ -56,4 +56,46 @@ test("two free credits cannot reach a style that costs more than a picture", () 
     assert.ok(creditsFor(45, style) > FREE,
       `${style} costs ${price} per Short, which a free account can still afford: the free tier would pay for it`);
   }
+});
+
+/* ------------------------------------------------------------------ what a style needs of a machine */
+
+test("every style Kleo can render declares the machine it needs", () => {
+  const undeclared = KLEO_STYLES.filter((s) => !(s in STYLE_MACHINE));
+  assert.deepEqual(undeclared, [],
+    `these styles have no entry in STYLE_MACHINE (src/templates.ts): ${undeclared.join(", ")}. ` +
+    "A style whose machine nobody declared is rented a card that may not be able to run it — and the failure comes " +
+    "AFTER the rental and the 15 GB image pull have been paid for.");
+});
+
+test("the machine list carries no style that does not exist", () => {
+  const ghosts = Object.keys(STYLE_MACHINE).filter((s) => !KLEO_STYLES.includes(s));
+  assert.deepEqual(ghosts, [], `given a machine but unrenderable: ${ghosts.join(", ")}`);
+});
+
+test("no profile asks for a card older than Ampere, whatever its memory", () => {
+  // A Tesla V100 has 32 GB and rents for pennies, and is several times slower on diffusion work: compute capability
+  // is the other half of the floor, and a profile that forgets it buys the wrong card cheaply.
+  for (const [style, m] of Object.entries(STYLE_MACHINE)) {
+    assert.ok(m.minComputeCap >= 800, `${style} accepts compute ${m.minComputeCap / 100}; 8.0 is the floor`);
+    assert.ok(m.minVramGb >= 16 && m.maxDph > 0, `${style} has an impossible profile`);
+  }
+});
+
+test("a style that needs the dear card is also priced above the free credits", () => {
+  // The two tables are one decision seen twice. A style that rents a $0.90/h card while costing 1 credit is a
+  // machine bought with the owner's money and sold for a seventh of it — to an account that got its credits free.
+  const FREE = 2;
+  for (const [style, m] of Object.entries(STYLE_MACHINE)) {
+    if (!isVideoStyle(style)) continue;
+    assert.ok(creditsFor(45, style) > FREE,
+      `${style} rents a ${m.minVramGb} GB card at up to $${m.maxDph}/h but a free account can still afford it`);
+    assert.ok(STYLE_CREDITS[style] > 1, `${style} needs the dear machine and is still priced as if it did not`);
+  }
+});
+
+test("the video profile is real, and an unknown style gets the ordinary one", () => {
+  assert.ok(VIDEO.minVramGb >= 32, "24 GB was measured failing on Wan 2.2: the floor is not negotiable downwards");
+  assert.equal(machineFor("a-style-nobody-declared").minVramGb, 16, "renting nothing at all would take the service down");
+  assert.equal(isVideoStyle("a-style-nobody-declared"), false);
 });

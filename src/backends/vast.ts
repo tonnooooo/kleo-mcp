@@ -2,7 +2,7 @@ import type { RenderBackend, StartResult } from "./types";
 import type { Env } from "../env";
 import type { Job } from "../db";
 import { int, num, minutesSince } from "../util";
-import { jobTimeoutMin } from "../templates";
+import { jobTimeoutMin, machineFor, styleOfJob } from "../templates";
 
 /**
  * Vast.ai backend: one ephemeral instance per job.
@@ -148,14 +148,22 @@ async function adoptOrphan(env: Env, job: Job, offer: Offer, notBefore: number):
   };
 }
 
-export async function searchOffers(env: Env): Promise<Offer[]> {
+export async function searchOffers(env: Env, style?: string | null): Promise<Offer[]> {
   const disk = int(env.VAST_DISK_GB, 80);
+  // What this style needs of a machine (src/templates.ts): memory, architecture and its own price ceiling. The
+  // global VAST_MAX_DPH stays the ceiling for everything ordinary — a cyber video must never pay for a card rented
+  // to generate motion — and a style only ever raises it for itself.
+  const need = machineFor(style);
   const query = {
     verified: { eq: true },
     rentable: { eq: true },
     external: { eq: false },
     num_gpus: { eq: 1 },
-    gpu_name: { eq: env.VAST_GPU_NAME ?? "RTX 4090" },
+    // NOT the card's name. The name is not the constraint and never was: modified RTX 4090s with 48 GB exist, and a
+    // Tesla V100 passes any name filter written for its memory while being the wrong card entirely (compute 7.0, no
+    // bf16 tensor cores, several times slower on this exact work). Memory and architecture are the constraint.
+    gpu_ram: { gte: need.minVramGb * 1024 },
+    compute_cap: { gte: need.minComputeCap },
     // A slow or flaky host turns the image pull into twenty minutes of paid waiting (one Japanese host spent that
     // long on "Retrying in 1 second"), so the floor is high: bandwidth is the single biggest slice of time to first frame.
     inet_down: { gte: int(env.VAST_MIN_INET, 800) },
@@ -163,7 +171,7 @@ export async function searchOffers(env: Env): Promise<Offer[]> {
     cpu_ram: { gte: int(env.VAST_MIN_RAM_GB, 32) * 1024 },
     reliability2: { gte: 0.98 },
     disk_space: { gte: disk },
-    dph_total: { lte: num(env.VAST_MAX_DPH, 0.6) },
+    dph_total: { lte: Math.max(num(env.VAST_MAX_DPH, 0.4), need.maxDph) },
     cuda_max_good: { gte: 12.4 },
     type: "on-demand",
     allocated_storage: disk,
@@ -207,8 +215,11 @@ export const vastBackend: RenderBackend = {
 
   async start(env: Env, job: Job): Promise<StartResult> {
     if (!env.VAST_IMAGE || env.VAST_IMAGE.includes("REPLACE_ME")) throw new Error("VAST_IMAGE is not configured");
-    const offers = await searchOffers(env);
-    if (!offers.length) throw new Error("no Vast.ai offer matches the filters (gpu/price/network)");
+    const offers = await searchOffers(env, styleOfJob(job));
+    if (!offers.length) {
+      const need = machineFor(styleOfJob(job));
+      throw new Error(`no Vast.ai offer matches the filters: ${need.minVramGb} GB of VRAM, compute ${need.minComputeCap / 100}, at most $${need.maxDph}/h`);
+    }
     // The same per-job number the orchestrator kills on (templates.ts), so the container's own watchdog and the
     // server always agree; a flat 120 here would let a machine run an hour past the moment the server gave up on it.
     const timeoutMin = jobTimeoutMin(env, job);

@@ -5,7 +5,7 @@ import { vastStatus, listKleoInstances, destroyInstance } from "./backends/vast"
 import { int, num, nowIso, minutesSince, secondsSince, addDays, base64ToBytes, rid } from "./util";
 import { TINY_MP4_B64 } from "./assets";
 import { resultLinks, FILE_NAMES } from "./jobs";
-import { jobTimeoutMin } from "./templates";
+import { jobTimeoutMin, isVideoStyle, styleOfJob } from "./templates";
 import { notifyDone } from "./notify";
 import { putFile, deleteFile } from "./storage";
 import { acquireLock, releaseLock, holdLock, setFlagUntil, isFlagActive } from "./schema";
@@ -157,6 +157,11 @@ async function tickInner(env: Env, stats: Stats) {
     // Re-read, per rental and not per tick: the tick lock can expire under a slow Vast, and a second tick that
     // read the same `running` would rent up to `max` GPUs of its own — twice the hourly ceiling the owner was promised.
     if ((await countRunning(env)) >= max) break;
+    // At most MAX_CONCURRENT_VIDEO_GPUS generated-video renders at once, whatever `max` allows. Those are both the
+    // dearest cards and the ones whose bill triples when clips come back frozen and have to be regenerated, so two
+    // of them overlapping is the one way this can empty the balance with nobody watching. `continue`, not `break`:
+    // an ordinary job further down the queue is cheap and must not be held hostage by a video one at the front.
+    if (isVideoStyle(styleOfJob(job)) && (await runningVideoJobs(env)) >= int(env.MAX_CONCURRENT_VIDEO_GPUS, 1)) continue;
     if (!(await reserveJob(env, job.id, backend.name))) continue; // a pool runner took it first
     try {
       const r = await backend.start(env, job);
@@ -236,6 +241,11 @@ async function tickInner(env: Env, stats: Stats) {
  * cost estimate could not be read from Vast still writes nothing. It bounds the damage, it is not an account
  * statement — the Vast.ai balance is.
  */
+/** Generated-video renders on a paid GPU right now (their style is what says so, src/templates.ts). */
+async function runningVideoJobs(env: Env): Promise<number> {
+  return (await runningPaidJobs(env)).filter((j) => isVideoStyle(styleOfJob(j))).length;
+}
+
 export async function budgetSpentUsd(env: Env): Promise<number> {
   const cap = num(env.VAST_MAX_DPH, 0.4);
   let committed = 0;

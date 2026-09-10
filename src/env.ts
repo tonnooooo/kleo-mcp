@@ -28,6 +28,7 @@ export interface Env {
   POOL_AFTER_MIN?: string;   // in vast mode, runners may take a job that waited this long (default 3)
   VAST_RETRY_MIN?: string;   // after "no credit"/"no offer", leave Vast alone this long (default 30)
   MAX_CONCURRENT_GPUS: string;
+  MAX_CONCURRENT_VIDEO_GPUS?: string; // how many generated-video renders may run at once (default 1); see templates.ts isVideoStyle
   MAX_JOBS_PER_USER: string;   // videos one account may have open at the same time
   MAX_JOBS_PER_DAY?: string;   // videos one account may START in a UTC day (default 2): the open-jobs limit only counts concurrent ones
   QUEUE_MAX_WAIT_MIN?: string; // a job that never got a GPU in this many minutes fails and is refunded (default 180)
@@ -50,7 +51,6 @@ export interface Env {
 
   VAST_API_KEY?: string;
   VAST_IMAGE?: string;
-  VAST_GPU_NAME?: string;
   VAST_MAX_DPH?: string;
   VAST_DISK_GB?: string;
   VAST_MIN_INET?: string;   // Mbit/s down the host must have (default 800): the image pull is the slowest part of a job

@@ -41,25 +41,34 @@ export function normalizeVoice(voice: string | null | undefined): string | null 
 export const voiceSpellings = (friendly: readonly string[]): string[] =>
   [...friendly, ...Object.entries(KOKORO_TO_FRIENDLY).filter(([, f]) => friendly.includes(f)).map(([k]) => k)];
 
+/**
+ * Una descrizione entra nel contesto dell'assistente (kleo_list_templates) e diventa quello che l'assistente
+ * PROMETTE all'utente prima ancora che il render parta. Quindi puo' descrivere il CONTENUTO — quante idee per
+ * scena, che ritmo, che tono — ma non un componente che il motore non disegna. Fino all'11 settembre 2026 qui
+ * c'erano "cinematic clips", "continuous footage", "slow-motion imagery" (Kleo non ha un solo fotogramma di
+ * repertorio: disegna immagini), "2.39:1 letterbox", "orchestral score", "lower thirds", "post card on top",
+ * "pros and cons on the sides": nessuna di quelle parole esiste in worker/keou/. L'utente le leggeva in chat e
+ * poi non le vedeva nel video.
+ */
 export const TEMPLATES: Template[] = [
   { id: "story-documentary", name: "Story / Documentary", formats: ["16:9"], minSeconds: 300, maxSeconds: 720, defaultSeconds: 480,
-    description: "Calm narration over cinematic clips, chapter titles, a map or a date when it helps. History, science, true stories.", voices: EN_IT },
+    description: "Calm narration across chapters, one drawn picture per shot and a camera that drifts slowly over it. History, science, true stories.", voices: EN_IT },
   { id: "top-10", name: "Top 10", formats: ["16:9"], minSeconds: 360, maxSeconds: 600, defaultSeconds: 420,
-    description: "Countdown with a big on-screen number, one scene per entry, fast cuts on the beat.", voices: EN_IT },
+    description: "A countdown: one entry per scene, its number spoken and picked out in the caption, hard cuts between entries.", voices: EN_IT },
   { id: "viral-short", name: "Viral Short", formats: ["9:16"], minSeconds: 30, maxSeconds: 60, defaultSeconds: 45,
     description: "Hook in the first two seconds, big word-by-word captions, a cut every 2–3 seconds. The default for any Short.", voices: EN_IT },
   { id: "reddit-story", name: "Reddit Story", formats: ["9:16"], minSeconds: 45, maxSeconds: 90, defaultSeconds: 60,
-    description: "Post card on top, narrated story, continuous satisfying footage below. Paste the post text in the prompt.", voices: EN_IT },
+    description: "The post read aloud as a story, a picture per shot cut on the words, big captions. Paste the post text in the prompt.", voices: EN_IT },
   { id: "motivational", name: "Motivational", formats: ["9:16", "16:9"], minSeconds: 30, maxSeconds: 90, defaultSeconds: 60,
-    description: "Centered quotes, slow-motion epic imagery, music that builds to the end.", voices: EN_IT },
+    description: "One line held per scene, a picture drawn for each and the camera pushing slowly in, music underneath throughout.", voices: EN_IT },
   { id: "explainer", name: "Explainer / Tutorial", formats: ["16:9"], minSeconds: 240, maxSeconds: 480, defaultSeconds: 300,
-    description: "Animated diagrams that build while the voice explains, with a recap at the end.", voices: EN_IT },
+    description: "One idea per scene, built in the order the voice explains it, with a recap at the end.", voices: EN_IT },
   { id: "weekly-news", name: "Weekly News", formats: ["16:9"], minSeconds: 180, maxSeconds: 300, defaultSeconds: 240,
-    description: "Four stories, lower thirds with headline and source, hard cuts between segments.", voices: EN_IT },
+    description: "Four stories, each opening on its headline, hard cuts between segments.", voices: EN_IT },
   { id: "cinematic-trailer", name: "Cinematic Trailer", formats: ["16:9"], minSeconds: 60, maxSeconds: 90, defaultSeconds: 75,
-    description: "2.39:1 letterbox, title cards between scenes, orchestral score, a beat of silence before the title.", voices: EN_IT },
+    description: "Short scenes, a beat of silence before the last line, and the title held at the end.", voices: EN_IT },
   { id: "product-review", name: "Product Review", formats: ["16:9"], minSeconds: 240, maxSeconds: 360, defaultSeconds: 300,
-    description: "Product centered, pros and cons appearing on the sides, final score and verdict.", voices: EN_IT },
+    description: "The product in every shot, one claim per scene, and the verdict last.", voices: EN_IT },
   // The explainer look (kleo_style "explainer"): one drawing per phrase, karaoke captions, a camera
   // that only pushes in. Two rows because the two lengths are different films: a Short is one idea
   // told in under a minute — past that people stop following — and a video is a subject with chapters.
@@ -100,6 +109,59 @@ export const STYLE_CREDITS: Record<string, number> = {
 };
 
 /**
+ * What machine a style needs, which is a different question from what it costs and has to be asked separately:
+ * a style can be cheap to sell and impossible to render on the card the renter happens to pick.
+ *
+ * Measured 11 September 2026 by the session that owns the render chain, on real rentals and not from a datasheet:
+ *   · 24 GB (RTX PRO 4000 Blackwell): Wan 2.2 TI2V-5B dies with OutOfMemory at 1280x704 / 49 frames — and it dies
+ *     at the FIRST shot, after the rental and the 15 GB image pull have already been paid for.
+ *   · 48 GB (RTX 6000 Ada): comfortable, about 125 s per 2-second clip.
+ *   · 32 GB but compute capability 7.0 (Tesla V100): has the memory and is the WRONG card — no bf16 tensor cores,
+ *     no flash attention, several times slower. Memory alone is not a floor; the architecture is the other half.
+ * Hence 32 GB as the honest floor for generated video (5090, L40S, A6000, 6000 Ada, A100 all clear it) and 8.0 as
+ * the compute floor everywhere: Ampere or newer.
+ *
+ * The renter used to ask for `gpu_name: { eq: "RTX 4090" }`. That is wrong at the root, not merely too narrow — the
+ * name is not the constraint (modified 4090s with 48 GB exist, and a V100 passes any name test you write for it).
+ * The numbers are the constraint, and Vast filters on them directly: gpu_ram in MB, compute_cap as cc x 100.
+ */
+export interface Machine { minVramGb: number; minComputeCap: number; maxDph: number }
+
+/** The profile every style takes today: no generated video anywhere, so nothing needs a big card. */
+const PICTURES: Machine = { minVramGb: 16, minComputeCap: 800, maxDph: 0.40 };
+
+/**
+ * The profile a style takes the day its shots become generated video. It is NOT wired to anything yet, on purpose:
+ * the render chain is not finished, and until it is, realistic stays on still pictures and risks nothing.
+ * Turning it on is one line here — realistic: VIDEO — and it must happen in the SAME commit as its price in
+ * STYLE_CREDITS (7) and as the engine change, because the three are the same decision seen from three sides.
+ */
+export const VIDEO: Machine = { minVramGb: 32, minComputeCap: 800, maxDph: 0.90 };
+
+export const STYLE_MACHINE: Record<string, Machine> = {
+  cartoon: PICTURES,    // Stable Diffusion 1.5, about 6 GB
+  realistic: PICTURES,  // becomes VIDEO the day Wan 2.2 draws its shots
+  cyber: PICTURES,      // draws itself live, no model at all
+  stickman: PICTURES,
+  explainer: PICTURES,
+};
+
+/**
+ * A style whose machine costs more than the ordinary one is a generated-video style, and at most
+ * MAX_CONCURRENT_VIDEO_GPUS of them may run at once. Two of those at the same time is the only way this can quietly
+ * empty the balance: they are the dearest cards AND the ones whose cost triples when clips come back frozen.
+ * Deriving it from the table rather than from a second list means flipping one entry to VIDEO moves the price, the
+ * machine and the concurrency limit together, and none of the three can be forgotten on its own.
+ */
+export const isVideoStyle = (style: string | null | undefined): boolean =>
+  !!style && (STYLE_MACHINE[style]?.minVramGb ?? 0) > PICTURES.minVramGb;
+
+/** The machine this job needs. An unknown style gets the ordinary profile: the price table is what punishes a
+ *  missing entry, and refusing to rent anything at all would take the whole service down instead. */
+export const machineFor = (style: string | null | undefined): Machine =>
+  (style && STYLE_MACHINE[style]) || PICTURES;
+
+/**
  * A style nobody priced is charged at the DEAREST price we know, never the cheapest. Forgetting an entry above is
  * then loud and free (a user says "why did this cost 7 credits?") instead of silent and expensive (the owner pays
  * for every render of it). test/style-price.test.mjs fails outright if a KLEO_STYLES entry has no price here.
@@ -122,6 +184,11 @@ export const etaFor = (seconds: number): number => (seconds <= 90 ? 18 : Math.ma
  * The image pull happens inside the same clock (started_at is the rental, not the first frame), so the pull we
  * already agree to wait for (LOADING_TIMEOUT_MIN) is part of the budget too.
  */
+/** The Kleo style stored on a job, or null for a row written before styles existed / an unreadable one. */
+export function styleOfJob(job: Pick<Job, "params">): string | null {
+  try { return (JSON.parse(job.params) as JobParams).style ?? null; } catch { return null; }
+}
+
 export function jobTimeoutMin(env: Env, job: Pick<Job, "params">): number {
   let seconds = 0;
   try { seconds = (JSON.parse(job.params) as JobParams).duration_s; } catch { /* an unreadable row just gets the flat value */ }
