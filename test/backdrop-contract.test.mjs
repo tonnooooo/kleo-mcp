@@ -68,3 +68,53 @@ test("the rented machine refuses a video backdrop with a shot that has no clip",
   assert.match(PY, /backdrop belongs to the picture style only/);
   assert.match(PY, /SHOT_FIELDS = \{[^}]*'clip'/, "contract.py must accept the field it requires");
 });
+
+/* ------------------------------------------------------------------ the explainer can never be filmed */
+
+/**
+ * The guarantee the drawn look depends on, checked from its own side.
+ *
+ * `backdrop: "video"` is now DERIVED — normalizeStoryboard sets it from the machine table, so a style whose
+ * profile is raised above the ordinary one starts asking to be filmed. That derivation is the right design
+ * and it is tested from the picture style's side. This is the other side of it: the explainer draws white
+ * marker on pure black, so a transparent ground renders it as nothing at all — a film that is not wrong,
+ * but empty. test/filmed-backdrop.test.mjs flips cyber; nothing flipped the explainer, and the explainer is
+ * the style with the most to lose.
+ */
+test("raising the explainer's machine profile never turns the film transparent", async () => {
+  const { planFor, normalizeStoryboard, fixtureStoryboard } = await import("../src/storyboard.ts");
+  const { STYLE_MACHINE, VIDEO, isVideoStyle } = await import("../src/templates.ts");
+
+  const job = (style, template, format, duration_s) => ({
+    id: "gt_test", template, prompt: "How a password becomes a hash.",
+    params: JSON.stringify({ duration_s, format, language: "en", voice: null, style }),
+  });
+  const scenes = [
+    { id: "01-a", kind: "sketch", accent: "red", voice: "Your password was never stored anywhere at all.",
+      shot: { zoom: [1, 1.3], focus: [540, 860] }, art: [{ name: "laptop", drawn: true }, { name: "lock", at: "never stored" }] },
+    { id: "02-b", kind: "sketch", accent: "green", voice: "So what does the website actually keep instead?",
+      shot: { zoom: [1, 1.3], focus: [540, 860] }, art: [{ name: "server", drawn: true }, { name: "code", at: "actually keep" }] },
+  ];
+
+  const before = STYLE_MACHINE.explainer;
+  STYLE_MACHINE.explainer = VIDEO;   // the day someone decides the drawn look needs a bigger card
+  try {
+    assert.equal(isVideoStyle("explainer"), true, "the flip has to be real, or this test proves nothing");
+    for (const [template, format, dur] of [["explainer-short", "9:16", 45], ["explainer-long", "16:9", 300]]) {
+      const plan = planFor(job("explainer", template, format, dur), "explainer");
+      assert.equal(plan.style, "sketch");
+      const sb = normalizeStoryboard({ title: "Hashes", description: "d", tags: ["a"], scenes }, plan);
+      assert.equal("backdrop" in sb, false,
+        `${template}: the explainer asked to be filmed — on a transparent ground its white marker draws nothing`);
+      // And the contract is the second lock: even if something did set it, the job would never reach a GPU.
+      assert.ok(validateStoryboard({ ...sb, backdrop: "video" }, { format, language: "en" })
+        .errors?.some((m) => /backdrop belongs to the picture style only/.test(m)));
+    }
+    // The fixture path writes the field too, and a fixture that describes a different product from the real
+    // one is how a look ships broken to the one person who renders offline.
+    const fx = fixtureStoryboard(job("explainer", "explainer-short", "9:16", 45));
+    assert.equal("backdrop" in fx, false, "the offline fixture must describe the same product as the planner");
+  } finally {
+    STYLE_MACHINE.explainer = before;
+  }
+});
