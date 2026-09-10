@@ -83,6 +83,45 @@ cosa che si muove.
 vero. È l'unico posto dove il worker scrive quando non riesce a parlare col server, ed è l'unica cosa che nessuno
 ha ancora letto.
 
+## E a volte non c'è nessuna macchina: il filtro che stringe è il prezzo
+
+Il job di `gt_7f7gnsjt` è nato alle 13:54 con questo, prima ancora di noleggiare qualcosa:
+
+    vast.unavailable  {"error":"no Vast.ai offer matches the filters (gpu/price/network)","pause_min":30}
+
+Trenta minuti di attesa prima di provarci. **Quale filtro stringe davvero**, misurato l'11 settembre togliendone
+uno alla volta dalla ricerca di produzione per lo stile picture (9 offerte con tutti):
+
+| tolgo | offerte |
+|---|---|
+| **prezzo ≤ 0,40 $/h** | **92** (+83) |
+| CPU ≥ 16 core | 15 (+6) |
+| banda ≥ 800 Mbit | 13 (+4) |
+| RAM ≥ 32 GB | 12 (+3) |
+| affidabilità ≥ 0,98 | 9 (+0) |
+
+**È il prezzo, di un ordine di grandezza.** Non la banda, che era il sospetto naturale — e che il commento sopra
+quel filtro giustificava con i venti minuti di download che non esistono.
+
+**E adesso il numero che decide.** Alzare il tetto **non fa noleggiare macchine più care**, perché la ricerca è
+ordinata per prezzo crescente e prende la prima:
+
+| tetto | offerte | la più economica | uno Short da 25 min |
+|---|---|---|---|
+| 0,40 $/h (oggi) | 8 | **0,169 $/h** | 0,070 $ |
+| 0,50 $/h | 12 | **0,169 $/h** | 0,070 $ |
+| 0,60 $/h | 17 | **0,169 $/h** | 0,070 $ |
+| 0,80 $/h | 41 | **0,169 $/h** | 0,070 $ |
+
+La macchina scelta è **la stessa a ogni tetto**. Il tetto non decide quanto si paga di solito: decide **quante
+macchine restano quando le economiche sono occupate**. Oggi ne restano otto, ed è per questo che ogni tanto ne
+restano zero.
+
+Il commento in `wrangler.jsonc` sopra `VAST_MAX_DPH` lo aveva previsto: «Se un giorno nessuna offerta rientra, i
+video restano in coda: allora rialzalo». Quel giorno è successo oggi, ed è la prima volta che c'è la misura per
+dirlo invece di sospettarlo. Il muro vero resta `DAILY_GPU_BUDGET_USD`, che è esattamente il suo mestiere: alzare
+il tetto per offerta non alza la spesa del giorno.
+
 ## La regola, che è la parte che sopravvive
 
 Il tempo fra il noleggio e il primo messaggio del worker **non è il tempo del download**. Chi vuole il tempo del
