@@ -90,3 +90,46 @@ test("a Short's shape fits in a Short", () => {
       `${t.id}: ${seconds}s at ${f.wordsPerScene.join("-")} words gives about ${scenes} scenes, but "${f.id}" needs ${f.sections.length}`);
   }
 });
+
+/* ------------------------------------------------------------------ the only road to the drawn look */
+
+/**
+ * The explainer is chosen BY NAME, and the twenty-seven blind prompts proved that is not a preference but
+ * the only thing that works: a request with no technical vocabulary in it ("why boiling water sometimes
+ * freezes before cold water") is classified as cartoon, because the drawn look is only ever reached
+ * through a word list borrowed from the cyber one. Reaching it from a prompt would need a vocabulary that
+ * cannot exist, since what separates it from cyber is the SHAPE of the answer — one idea taken apart
+ * versus something to diagram — and the shape is not in the words of the request.
+ *
+ * So the template is the road, and it is the only road. That makes it the single point of failure for the
+ * whole look: if the template stops resolving to it, a user who asked for the drawn Short silently gets
+ * cartoon pictures, the job validates, the GPU is rented, and a video comes back in the wrong style.
+ * Nothing else in the suite covers this path — the planner sweep names the style explicitly, so it tests
+ * the road that is already safe.
+ */
+test("the explainer templates reach the drawn look on their own, with no style named and no keyword to help", async () => {
+  const { planFor, pickKleoStyle } = await import("../src/storyboard.ts");
+  const job = (template, format, duration_s, prompt) =>
+    ({ id: "gt_test", template, prompt, params: JSON.stringify({ duration_s, format, language: "en", voice: null }) });
+
+  // Deliberately free of anything a word list could catch: no cyber, no product, no story.
+  const PLAIN = [
+    "Why boiling water sometimes freezes before cold water does.",
+    "Perché il pane di una volta durava una settimana.",
+    "What actually happens in the first ten minutes of a cold shower.",
+  ];
+  for (const [template, format, dur] of [["explainer-short", "9:16", 45], ["explainer-long", "16:9", 300]]) {
+    for (const prompt of PLAIN) {
+      const j = job(template, format, dur, prompt);
+      assert.equal(pickKleoStyle(template, prompt), "explainer",
+        `${template} must be the look itself: "${prompt.slice(0, 40)}…" has nothing for a keyword to find`);
+      const plan = planFor(j);
+      assert.equal(plan.kleo, "explainer");
+      assert.equal(plan.style, "sketch", `${template} planned ${plan.style}: the drawn engine would never be loaded`);
+      assert.deepEqual(plan.brief.wordsPerScene, narrativeFor(template).wordsPerScene);
+    }
+  }
+  // And a style the caller names still wins over the template, which is the rule everywhere else.
+  const named = planFor({ ...job("explainer-short", "9:16", 45, PLAIN[0]), params: JSON.stringify({ duration_s: 45, format: "9:16", language: "en", voice: null, style: "cartoon" }) });
+  assert.equal(named.kleo, "cartoon", "the caller's own choice is never overridden by the template");
+});
