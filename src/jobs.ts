@@ -102,7 +102,7 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   if (today >= maxPerDay)
     throw new JobError(`You have already started ${plural(today, "video")} today, and the limit is ${maxPerDay} a day while Kleo is in beta. Come back tomorrow. Nothing was charged.`);
 
-  const credits = creditsFor(duration);
+  const credits = creditsFor(duration, style); // the style is what decides the price, not just the length
   const jobId = rid("gt", 8);
   // The debit is one conditional UPDATE: it either takes the credits for this job or does nothing.
   if (!(await debitCredits(env, user.id, credits, jobId)))

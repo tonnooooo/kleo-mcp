@@ -164,7 +164,10 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     if (!t) throw new JobError(`There is no template called "${args.template}". Call kleo_list_templates and use one of these ids: ${TEMPLATE_IDS.join(", ")}. Nothing was charged.`);
     const fresh = (await getUser(env, user.id)) ?? user;
     const duration = Math.round(args.duration_s ?? t.defaultSeconds);
-    const cost = creditsFor(duration);
+    // Priced on the style the caller NAMED. When none is named, createJob picks one from the topic and debits that
+    // price instead, so this figure is an early courtesy ("you cannot afford this"), never the charge itself: the
+    // authoritative debit is one conditional UPDATE in createJob, and it refuses with its own accurate message.
+    const cost = creditsFor(duration, args.style);
     if (duration >= t.minSeconds && duration <= t.maxSeconds && fresh.credits < cost)
       throw new JobError(`Not enough credits: this ${kindOf(args.format ?? t.formats[0])} costs ${plural(cost, "credit")} and you have ${plural(fresh.credits, "credit")}. Nothing was charged. Your account and how to get more: ${await accountUrl(env, user.id, base)}`);
     const maxOpen = int(env.MAX_JOBS_PER_USER, 2);

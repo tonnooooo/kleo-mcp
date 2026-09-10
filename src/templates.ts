@@ -60,6 +60,13 @@ export const TEMPLATES: Template[] = [
     description: "2.39:1 letterbox, title cards between scenes, orchestral score, a beat of silence before the title.", voices: EN_IT },
   { id: "product-review", name: "Product Review", formats: ["16:9"], minSeconds: 240, maxSeconds: 360, defaultSeconds: 300,
     description: "Product centered, pros and cons appearing on the sides, final score and verdict.", voices: EN_IT },
+  // The explainer look (kleo_style "explainer"): one drawing per phrase, karaoke captions, a camera
+  // that only pushes in. Two rows because the two lengths are different films: a Short is one idea
+  // told in under a minute — past that people stop following — and a video is a subject with chapters.
+  { id: "explainer-short", name: "Explainer Short (drawn)", formats: ["9:16"], minSeconds: 20, maxSeconds: 60, defaultSeconds: 45,
+    description: "Hand-drawn white line art on black. One picture for every phrase, a hard hook in the first second, karaoke captions. Under a minute on purpose.", voices: EN_IT },
+  { id: "explainer-long", name: "Explainer Video (drawn)", formats: ["16:9"], minSeconds: 180, maxSeconds: 480, defaultSeconds: 300,
+    description: "The same drawn look across a full subject: chapters, one picture per phrase, and a camera that never stops moving. Landscape.", voices: EN_IT },
   { id: "did-you-know", name: "Did You Know", formats: ["9:16"], minSeconds: 20, maxSeconds: 40, defaultSeconds: 30,
     description: "One fact per scene, karaoke captions, the image changes on every sentence.", voices: EN_IT },
 ];
@@ -67,8 +74,37 @@ export const TEMPLATES: Template[] = [
 export const TEMPLATE_IDS = TEMPLATES.map((t) => t.id) as [string, ...string[]];
 export const findTemplate = (id: string): Template | undefined => TEMPLATES.find((t) => t.id === id);
 
-/** Credits: 1 for a Short (≤ 90 s), 3 for up to 5 minutes, +1 per extra minute. Pricing is a draft. */
-export const creditsFor = (seconds: number): number => (seconds <= 90 ? 1 : seconds <= 300 ? 3 : 3 + Math.ceil((seconds - 300) / 60));
+/**
+ * What one credit buys is NOT the same in every style, because what a style costs on a rented GPU differs by an
+ * order of magnitude. Measured 10-11 September 2026 on an RTX 4090: a 40 s Short whose shots are still pictures
+ * costs $0.067 of rental; the same Short with generated motion costs about $0.50, because every shot is roughly two
+ * minutes of card. Selling both for one credit means the second is sold at a seventh of its price — and, worse, the
+ * two free credits a new account is given would then buy a full dollar of GPU, which is the entire daily budget
+ * (DAILY_GPU_BUDGET_USD) spent by one stranger.
+ *
+ * So the multiplier follows the dollar. Every style that draws still pictures, or draws itself live, is 1.
+ * A style that generates motion is about 7, which also puts it out of reach of the free credits by construction —
+ * the same thing that already keeps long videos out of the free tier.
+ */
+export const STYLE_CREDITS: Record<string, number> = {
+  cartoon: 1,     // AI pictures + Ken Burns
+  realistic: 1,   // idem, cinematic look — becomes ~7 the day its shots are generated video, not pictures
+  cyber: 1,       // no pictures at all, drawn live by the engine
+  stickman: 1,    // idem
+  explainer: 1,   // one drawing per phrase
+};
+
+/**
+ * A style nobody priced is charged at the DEAREST price we know, never the cheapest. Forgetting an entry above is
+ * then loud and free (a user says "why did this cost 7 credits?") instead of silent and expensive (the owner pays
+ * for every render of it). test/style-price.test.mjs fails outright if a KLEO_STYLES entry has no price here.
+ */
+const priceOf = (style: string | null | undefined): number =>
+  style ? STYLE_CREDITS[style] ?? Math.max(...Object.values(STYLE_CREDITS)) : 1;
+
+/** Credits: 1 for a Short (≤ 90 s), 3 for up to 5 minutes, +1 per extra minute — times what the style costs. */
+export const creditsFor = (seconds: number, style?: string | null): number =>
+  (seconds <= 90 ? 1 : seconds <= 300 ? 3 : 3 + Math.ceil((seconds - 300) / 60)) * priceOf(style);
 
 /** Rough wall-clock estimate on one RTX 4090 at 4K 60 fps: ~25 min for a Short, ~12 min per minute of long-form. */
 export const etaFor = (seconds: number): number => (seconds <= 90 ? 18 : Math.max(30, Math.round((seconds / 60) * 10)));
