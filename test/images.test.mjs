@@ -83,7 +83,10 @@ test("model inputs: style suffix, size only for models that take one, negative p
   assert.equal(acceptsSize(DEFAULT_IMAGE_MODELS.realistic), true);
   const flux = modelInputs(DEFAULT_IMAGE_MODELS.cartoon, "cartoon", "Pirates on a beach. ", "9:16", 7);
   assert.equal(flux.prompt, `Pirates on a beach. ${STYLE_SUFFIX.cartoon}`);
-  assert.deepEqual(Object.keys(flux).sort(), ["prompt", "seed", "steps"]);
+  assert.deepEqual(Object.keys(flux).sort(), ["prompt", "steps"]); // FLUX schnell rejects seed (AiError 5006)
+  assert.equal(flux.steps, 4);
+  const sd = modelInputs("@cf/lykon/dreamshaper-8-lcm", "cartoon", "x", "9:16", 7);
+  assert.equal(sd.seed, 7); assert.equal(sd.guidance, 7.5);
   const phoenix = modelInputs(DEFAULT_IMAGE_MODELS.realistic, "realistic", "A mountain road in rain", "16:9", 7);
   assert.equal(phoenix.width, 1344); assert.equal(phoenix.height, 768); assert.equal(phoenix.num_steps, 20);
   assert.ok(String(phoenix.negative_prompt).includes("text"));
