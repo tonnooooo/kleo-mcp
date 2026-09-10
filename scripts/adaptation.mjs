@@ -68,6 +68,61 @@ const CORPUS = [
   { p: "Perché di notte non riesci a dormire, e le due abitudini che aiutano", want: "cartoon", lang: "it" },
 ];
 
+/**
+ * THE HELD-OUT SET. Ten requests written by another session (KLEO-3, the explainer look) that had NOT seen this file
+ * and had not read the vocabularies since they were rewritten. Its own declaration, kept here because it changes how
+ * much the number is worth: it had read the OLD monolingual word lists earlier in the day while looking for a place
+ * to hook its own work, so it is not blind — but it did not reopen them before writing, and it deliberately chose
+ * requests that AVOID the trigger words it remembered. A request with no obvious keyword is exactly where a
+ * vocabulary classifier fails, so that choice makes the set harder, not softer.
+ *
+ * `also` are the answers its author called defensible: where a person could reasonably expect either, both count.
+ * Nothing here was used to write or tune the vocabularies. Whatever it scores, it scored on requests never seen.
+ *
+ * One rule of scoring, stated rather than assumed: three of these expect "explainer", and a viral-short can never
+ * return it — the drawn explainer is chosen BY NAME, on purpose, because it is a different product (no closing
+ * scene, one drawing per phrase, karaoke captions) and nobody asking for a viral Short should be handed it by
+ * accident. For a Short, the right answer to "explain this invisible mechanism" is the diagram look, cyber.
+ */
+const HELD_OUT = [
+  { p: "Mia nonna diceva che il pane di una volta durava una settimana e adesso ammuffisce in due giorni. Fammi un video che spiega perché.", want: "realistic", lang: "it" },
+  { p: "Mio nonno partì in nave a diciassette anni e non tornò più al paese. Voglio raccontarlo in un minuto.", want: "cartoon", lang: "it" },
+  { p: "Come fa il semaforo a sapere che c'è una macchina che aspetta?", want: "cyber", lang: "it" },
+  { p: "Ho comprato un materasso da ottocento euro e dormo peggio di prima. Fammi un video su come si sceglie.", want: "realistic", lang: "it" },
+  { p: "Cosa succede al corpo quando smetti di bere alcol per trenta giorni?", want: "cyber", also: ["realistic"], lang: "it" },
+  { p: "My landlord says the boiler is fine but the radiators are cold on the top floor only. Make a video explaining what's actually happening.", want: "cyber", lang: "en" },
+  { p: "I want to tell people what happened the night the lights went out across half the country in 2003.", want: "realistic", lang: "en" },
+  { p: "Explain what actually happens to the money when I tap my card.", want: "cyber", lang: "en" },
+  { p: "A short about the woman who sold the Eiffel Tower twice.", want: "cartoon", also: ["realistic"], lang: "en" },
+  { p: "Why does my sourdough smell like nail polish?", want: "cyber", lang: "en" },
+];
+
+/**
+ * A SECOND HELD-OUT SET, from the coordinating session (BOSS), which states that it read neither this file, nor the
+ * vocabularies, nor the body of pickKleoStyle, and wrote its labels before looking at anything. Kept separate from
+ * the first because provenance is part of a number: two sources that did not see each other's requests are worth
+ * more than twenty from one.
+ *
+ * Its author marked #6 uncertain on purpose — a nuclear reactor is a physical mechanism, which pulls towards the
+ * drawn look, and a technical one, which pulls towards motion design — and asked for it to be counted as a boundary
+ * rather than an error. A corpus where every answer is obvious measures nothing.
+ *
+ * It also named the pair that matters: 3 and 9 are both "how does this work", one domestic and one computing. The
+ * same answer for both is where the mechanism still cannot tell them apart.
+ */
+const HELD_OUT_2 = [
+  { p: "Come fanno i ladri a rubare una macchina senza la chiave", want: "cyber", lang: "it" },
+  { p: "The lighthouse keeper who kept the light burning for forty years", want: "cartoon", lang: "en" },
+  { p: "Perché il telefono si scarica più in fretta d'inverno", want: "cyber", lang: "it" },
+  { p: "A 40 second Short about life on the International Space Station", want: "realistic", lang: "en" },
+  { p: "I tre errori che fanno tutti quando cuociono la pasta", want: "cyber", also: ["cartoon"], lang: "it" },
+  { p: "How a nuclear reactor actually works", want: "cyber", also: ["cartoon"], lang: "en" },
+  { p: "La storia del pirata che seppellì il tesoro e non tornò mai", want: "cartoon", lang: "it" },
+  { p: "Review of the new Sony headphones, 30 seconds", want: "realistic", lang: "en" },
+  { p: "What happens to your data when you delete a file", want: "cyber", lang: "en" },
+  { p: "Il borgo italiano più bello che non conosce nessuno", want: "realistic", lang: "it" },
+];
+
 /** Pairs that mean the same thing. A plan that changes between them is reacting to words, not to meaning. */
 const SAME_MEANING = [
   ["A Short about pirates who find an island that isn't on any map",
@@ -177,6 +232,29 @@ if (wrong.length) {
   }
   line();
 }
+
+/* ---------------------------------------------------------------- the held-out sets */
+const scoreHeld = (set) => set.map((h) => {
+  const pick = pickKleoStyleWhy(TEMPLATE, h.p);
+  const accept = [h.want, ...(h.also ?? [])];
+  return { ...h, got: pick.style, why: pick.why, ok: accept.includes(pick.style), accept };
+});
+const report = (name, set) => {
+  const r = scoreHeld(set);
+  line(name);
+  for (const h of r) {
+    line(`  ${h.ok ? "OK  " : "MISS"} [${h.lang}] want ${h.accept.join("/").padEnd(18)} got ${h.got.padEnd(9)} "${h.p.slice(0, 56)}"`);
+    if (!h.ok) line(`         because: ${h.why}`);
+  }
+  line(`  ${r.filter((h) => h.ok).length}/${r.length} = ${pct(r.filter((h) => h.ok).length, r.length)}`);
+  line();
+  return r;
+};
+const h1 = report("HELD-OUT A — written by the explainer session (had seen the OLD word lists, avoided them on purpose)", HELD_OUT);
+const h2 = report("HELD-OUT B — written by the coordinating session (read nothing; labels written before looking)", HELD_OUT_2);
+const allHeld = [...h1, ...h2];
+line(`HELD-OUT TOTAL  ${allHeld.filter((h) => h.ok).length}/${allHeld.length} = ${pct(allHeld.filter((h) => h.ok).length, allHeld.length)} on requests this code never saw`);
+line();
 
 /** The floor. Not a target — a line under which the reasoning is not reasoning. */
 const FLOOR = 0.75;
