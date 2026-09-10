@@ -1,0 +1,309 @@
+/**
+ * THE GUIDE: what kleo_storyboard_guide hands the calling assistant.
+ *
+ * This is the most valuable surface in the product and it used to be the least designed. One string of about six
+ * thousand words described, all at once, four Kleo looks, six Keou looks, the picture schema, the cyber beat
+ * vocabulary with its twenty-three icons, the stickman schema, the four editorial schemas, the entire validator
+ * ruleset on a single line, and three worked examples. A model writing a cartoon Short read all of it — including the
+ * instructions for three films it was not writing — and the instructions that mattered were diluted by the ones that
+ * did not.
+ *
+ * Two things changed here.
+ *
+ * 1. THE GUIDE IS FOR ONE FILM. The caller says which look it wants and gets that look's vocabulary and that look's
+ *    example, plus one line each about the others. The rules that apply to every look are written once.
+ * 2. THE GUIDE TEACHES THE REASONING, NOT ONLY THE SCHEMA. It opens with the DIRECTION — the art direction of this one
+ *    film, written before any scene exists — because that is the step the product was missing: Kleo went from the
+ *    user's sentence straight to a list of scenes, and nothing in between ever decided what the film was made of.
+ *
+ * The text is assembled from the contract's own constants, never from copies of them: the shot range printed here is
+ * the shot range the validator enforces, which is how the guide, the planner and the website stopped saying three
+ * different numbers for the same rule.
+ */
+import {
+  STYLES, CINEMA_ACCENTS, BEAT_KINDS, BEAT_ICONS, BEAT_FX, VISUALS, VOICES, KLEO_STYLES,
+  STORY_ACTS, STORY_CAST, STORY_PROPS, STORY_FX,
+  IMAGE_PROMPT_MAX, SHOT_CAPTION_MAX, SHOT_HL_MAX, SHOT_AT_MAX, CLOSING_BUTTON_MAX,
+  MAX_PICTURES, SHOTS_MIN_CINEMA, shotRangeText, SHOTS_PER_SCENE, wordBudget,
+  DIRECTION_LIMITS as DL, SHOT_KINDS,
+  SKETCH_ACCENTS, SKETCH_ART, SKETCH_MOODS, SKETCH_MOTION, SKETCH_ENTER, SKETCH_EXIT,
+} from "./keou-contract.ts";
+
+/** The looks a job can be written in, and which schema section each one needs. */
+export type GuideStyle = "cartoon" | "realistic" | "cyber" | "stickman" | "explainer";
+const PICTURE_LOOKS: readonly GuideStyle[] = ["cartoon", "realistic"];
+
+export interface GuideOptions {
+  /** The template the caller intends to use; only tailors the target length. */
+  template?: string;
+  templateName?: string;
+  /** Target length in seconds. */
+  duration_s?: number;
+  /** The look this storyboard is for. Without it the guide teaches the picture looks and summarises the other two. */
+  style?: GuideStyle | null;
+  /** Languages kleo_create_video accepts, so the guide can never offer one the tool refuses. */
+  languages: readonly string[];
+  /** The frame the storyboard is written for: the explainer authors its art in the frame's own pixels. */
+  format?: string;
+}
+
+const list = (a: readonly string[]) => a.join(", ");
+const quoted = (a: readonly string[]) => a.map((x) => `"${x}"`).join(" | ");
+
+/* ------------------------------------------------------------------ the direction */
+
+/**
+ * The direction block. Everything else in the guide describes a shape; this describes a decision, and it is the one
+ * the finished video is actually judged on — whether it is about what the user wrote.
+ */
+function directionSection(scenes: string): string {
+  return `1. THE DIRECTION — write this FIRST, before a single scene
+Read the user's request as a request, not as raw material, and answer these ten questions once. Everything after this obeys it. It travels with the storyboard as "direction" and Kleo enforces it: the pictures are drawn from it, and a storyboard that contradicts it is refused before anything is billed.
+
+"direction": {
+ "subject":   "<=${DL.subject}  the one thing the video is about, in the user's own terms",
+ "goal":      "<=${DL.goal}  what the viewer should understand or feel by the end",
+ "audience":  "<=${DL.audience}  who is watching",
+ "tone":      "<=${DL.tone}  calm and factual / playful / ominous / warm",
+ "must_keep": [up to ${DL.mustKeep.max} strings <=${DL.mustKeep.len}],
+ "world":     "<=${DL.world}  the place, period, light and material everything is drawn in — one sentence a picture can be built from",
+ "cast":      [up to ${DL.cast.max} {"name":"<=${DL.cast.name}","look":"<=${DL.cast.look}"}],
+ "objects":   [${DL.objects.min}-${DL.objects.max} strings <=${DL.objects.len}],
+ "forbidden": [${DL.forbidden.min}-${DL.forbidden.max} strings <=${DL.forbidden.len}],
+ "sections":  [${DL.sections.min}-${DL.sections.max} {"name":"<=${DL.sections.name} UPPERCASE","accent":${quoted(CINEMA_ACCENTS)},"means":"<=${DL.sections.means}","scenes":<whole number>}]
+}
+
+ must_keep is QUOTED FROM THE REQUEST, never invented. If the user wrote "5 mistakes", "in Naples", "for beginners", "under 300 euros" or any number, it goes here — and Kleo checks that the finished narration still says it. A fact listed here and missing from the narration is a rejected storyboard, not a warning.
+ world is what stops twelve independently drawn pictures from looking like twelve different films. Write it once, concretely.
+ cast is the reason a character stays the same character: the "look" string is repeated word for word in every picture that shows them. Give a name the narration would actually use ("the captain", "the cabin boy"), not a proper name.
+ objects is the vocabulary of THIS film and nothing else. Pirates: beach, sand, wooden chest, red-sailed ship, rope, lantern. Space: launch pad, rocket, orbital station, visor, cable.
+ forbidden is what makes a film its own, and it is the field most people skip. Name (a) the things an image generator adds by habit — text in the picture, logos, watermarks, extra fingers — and (b) the things that belong to a DIFFERENT subject than this one. A pirate film forbids wifi symbols, phones, screens and modern clothing. Kleo sends this to the image model as a negative prompt and refuses any picture description that asks for something on the list.
+ sections are the colour law. They tile the video in order, their "scenes" add up to the scene count exactly (${scenes} scenes here), and two sections in a row NEVER share an accent. Every scene then wears its section's accent — you do not pick accents per scene, and Kleo refuses a scene wearing the wrong one. One colour, one part of the story, one meaning: that is the whole of it.`;
+}
+
+/* ------------------------------------------------------------------ per-look sections */
+
+function pictureSection(look: "cartoon" | "realistic", dur: number): string {
+  const kind = look === "cartoon" ? "flat vector cartoon illustration" : "cinematic photograph";
+  return `3. THE SCENES — ${look}: full-screen pictures cut on the narration
+The whole video is these pictures, cut like a short documentary. No icons, no cards, no beats, no HUD.
+
+SCENE: {"id":"01-hook","kind":"cinema","chapter":"01 THE CAPTAIN <=32","accent":<its section's accent>,"title":"<=90, the line shown on the first picture","hl":"<=24, ONE word of the title","voice":"1-3 sentences <=350 chars","hold":0.2,"shots":[${shotRangeText("cinema")} pictures]}
+CLOSING (always the last scene): {"id":"…","kind":"closing", …, "shots":[${shotRangeText("closing")}, one is the norm], "button":"<=${CLOSING_BUTTON_MAX}, default Subscribe" OR "detail":"<=110", never both}
+
+SHOT: {"image_prompt":"ONE sentence <=${IMAGE_PROMPT_MAX} chars","caption"?:"2-5 BIG WORDS <=${SHOT_CAPTION_MAX}","hl"?:"ONE WORD OF caption <=${SHOT_HL_MAX}","at"?:"<=${SHOT_AT_MAX} chars","shot_kind"?:${quoted(SHOT_KINDS)}}
+ A shot carries these five keys and no others.
+
+ EVERY SCENE SHOWS AT LEAST ${SHOTS_MIN_CINEMA} PICTURES. ${SHOTS_MIN_CINEMA}-3 is the usual rhythm. One picture held for a whole narrated line is a slideshow, and Kleo refuses it: split the line into its moments and give each moment its own picture.
+ EVERY PICTURE AFTER THE FIRST CARRIES "at". "at" is an unbroken run of whole words copied character for character out of THAT scene's own "voice" — punctuation included, case ignored. The picture cuts the instant those words are spoken. From "only one cabin boy swam back to shore" take "swam back"; never a fragment ("wam bac"), never a paraphrase ("he swam"), never a jump across punctuation. The first shot of a scene opens with the scene and must NOT carry "at". Place the anchors along the line in reading order.
+ image_prompt describes ONE ${kind}: a concrete subject, a place, an action, the light and the mood. Consecutive shots of one scene are the next moment or a new angle of the same place. Everything you write must come from the direction's world and objects; anything on the direction's forbidden list is refused. Never ask for text, letters, numbers, logos or captions inside the picture, and never a real person.
+ caption is optional and rare: 2-5 strong words on the shot that carries the idea (the first shot falls back to the scene title).
+
+ shot_kind says what the shot is FOR. NEVER write a camera move, a zoom, a pan or a direction anywhere — Kleo owns the camera and picks the move from the kind; a hand-written move is refused.
+  hook = the opening jolt, the first shot of the video · establish = where we are · face = one face or animal carrying the feeling · detail = one object, close · detail_orbit = one object worth circling · action = something moving through the frame · reveal = the frame opens on the answer · tension = the moment before it goes wrong · closing = the last picture of the video
+  static_forced = the picture must NOT move. Use it whenever the shot shows visible hands doing something, a crowd, readable signs or writing, a mechanism with moving parts, or two people interacting: those break under any camera move. Kleo forces this kind when it recognises them and refuses two such pictures in a row, so give the next shot a different subject.
+  Leave shot_kind out and Kleo chooses. Two shots in a row never get the same sort of move, and the loud kinds (hook, tension, detail_orbit) stay rare and never touch.
+
+ Kleo draws a picture for every shot you write: about ${MAX_PICTURES(dur)} is the ceiling for a video of this length. Each is named "<scene id>-s<shot number>", so a scene id must never itself end in "-s" and a number. Never set scene.image, shot.image or a scene-level image_prompt.`;
+}
+
+function cyberSection(): string {
+  return `3. THE SCENES — cyber: motion design, no pictures at all
+Dark ground, glowing icons, big type. Every scene is "cinema" (last one "closing").
+
+SCENE: {"id":"01-hook","kind":"cinema","chapter":"01 HOOK <=32","accent":<its section's accent>,"title":"<=90","hl":"<=24 word of the title","voice":"1-3 sentences <=350","hold":0.2,"beats":[4-8 beats of DIFFERENT kinds]}
+BEATS (each may carry "at": 1-3 words <=${SHOT_AT_MAX} copied verbatim from that scene's voice, to sync the cut; the first beat of the hook is a slammed "type"):
+ {"kind":"type","text":"2-4 UPPERCASE WORDS <=40","hl":"<=20","slam":true,"icon"?:<icon>}   big typographic card
+ {"kind":"icon","name":<icon>,"label"?:"<=24","fx"?:<fx>,"size"?:0.6}                        one hero icon
+ {"kind":"split","items":[<icon>,<icon>],"label"?:"<=24"}   cause → effect
+ {"kind":"grid","items":[2-3 icons],"label"?:"<=24"}
+ {"kind":"steps","items":["<=14","<=14","<=14"],"lit"?:2}   2-4 steps
+ {"kind":"people","total":10,"lit":8,"label"?:"<=32"}   x out of y, max 12
+ {"kind":"bars","labels":["<=14"],"values":[integers 0-1000000]}   1-4 values
+ {"kind":"timeline","labels":["<=14" x2-4],"icons"?:[<icon> per label]}
+ {"kind":"dialog","text":"<=32","count"?:3} · {"kind":"terminal","lines":["<=48" x1-4],"label"?:"<=16"} · {"kind":"cta","label"?:"<=24","toggles"?:["<=14" x1-3]}  (cta: closing only)
+BEAT KINDS: ${list(BEAT_KINDS)}
+ICONS (the only objects this look can draw — pick the closest metaphor and lean on "type" beats for everything else): ${list(BEAT_ICONS)}
+ figure = the viewer · thief = the villain · radar = search · shield = safety · timer/clock = time · wave = signal · house/car/phone = places and things
+FX: ${list(BEAT_FX)}
+The closing scene keeps beats (a "type" beat with the loop question, then a "cta") plus a "detail" line <=110.`;
+}
+
+/**
+ * The explainer. Everything the model would otherwise invent is printed here: the nineteen drawings,
+ * the eight motions, the five accents, the shot object and the rule that a cue must quote words that
+ * are really spoken — because worker/keou/contract.py rejects anything else, and it rejects it on a
+ * machine the account has already paid for.
+ */
+function explainerSection(dur: number, format: string): string {
+  const [fw, fh] = format === "9:16" ? [1080, 1920] : [1920, 1080];
+  const short = dur <= 90;
+  return `THE EXPLAINER LOOK (style "explainer", ${format})
+Hand-drawn white marker line art on pure black. Rough, pressure-varying stroke, never clean vector.
+Objects in three-quarter view with a soft grey interior; everything else is outline. White dust drifts.
+The ONLY text on screen is the caption line, burned in, ALL CAPS, one word lit green as it is spoken.
+No titles, no logos, no end card, no subscribe: the film ends on its last drawing.
+
+THE ONE RULE THAT MAKES IT WORK: every phrase gets its own picture, and the picture is literally what
+the words say. "If you are worried" is a face with raised inner brows, not a mood. "Read one card" is
+a hand holding a card against a reader. Never a symbol where the thing itself can be drawn.
+
+COLOUR LAW: one accent per scene and never two in a frame.
+  ${quoted(SKETCH_ACCENTS)}
+  red = the hidden threat · blue = the attacker's radio · green = the light that says everything is fine
+  yellow = scale and money · white = no accent, the plain world.
+
+SCENE (kind "sketch"): {"id","kind":"sketch","voice","accent","enter","exit","shot":{"zoom":[a,b],"focus":[x,y]},"art":[…],"hold"}
+  voice   one narrated sentence, ${short ? "8-14" : "12-20"} words.
+  enter   ${quoted(SKETCH_ENTER)} — "whip" smears into the shot, "cut" is a hard cut.
+  exit    ${quoted(SKETCH_EXIT)} — "flare" blooms the accent out of the frame; use it once per film.
+  shot    the camera. zoom [start,end] with end GREATER than start: it never stops pushing in.
+          focus is the point it pushes toward, in this frame's pixels (0-${fw} by 0-${fh}).
+  hold    silence after the line, 0.05 is normal — the explainer does not pause.
+
+ART (1-8 per scene, drawn in order, each one anchored to the words it illustrates):
+  {"name","at","until","x","y","size","motion","motion_over","drawn", …}
+  name    ${quoted(SKETCH_ART)}
+  at      WHEN it appears: either a number (fraction of the scene) or a quoted piece of THIS scene's
+          voice, e.g. "at":"read one card". Quote the words exactly as they are spoken.
+  until   when it leaves, same two forms. Give a drawing an "until" and its successor an "at" on the
+          same words: they overlap, so the frame is never empty.
+  x,y     where it sits, in this frame's pixels. size 1 is the drawing's natural size.
+  motion  ${quoted(SKETCH_MOTION)} — what the drawing DOES while it is on screen.
+  drawn   true means it is already on the page at the scene's first frame. Use it on the very first
+          drawing of the film and on the first drawing after a flare, or the film opens on black.
+  extras  tint/led/beam/chip (an accent colour on part of a drawing), mood (${quoted(SKETCH_MOODS)}) on
+          "face", count 1-12 on "footprints"/"blank", text (≤24) on "tag", open/open_to/swing_over on
+          "door", reach on "figure", and the flags no, sweat, xray, flash, flip, leader.
+
+PACE: ${short ? "one drawing per caption block, 20-60 s, 5-7 scenes" : "one drawing per caption block, 3-8 minutes, 18-30 scenes"}. Nothing holds still.`;
+}
+
+function stickmanSection(): string {
+  return `3. THE SCENES — stickman: a hand-drawn stickman acts the story (9:16 only)
+SCENE: {"id":"01-hook","kind":"story","act":${quoted(STORY_ACTS)},"cast":[${quoted(STORY_CAST)}],"props"?:[up to 3 of ${list(STORY_PROPS)}],"fx"?:${quoted(STORY_FX)},"accent":<its section's accent>,"bubble"?:"<=40 the character says this","hl"?:"<=24 word of the title","title":"<=90","voice":"one narrated sentence","hold"?:0.2}
+CLOSING: {"id":"…","kind":"closing","title":"…","voice":"…","bubble"?:"<=40","hl"?:"<=24","hold":0.4}
+hero = the viewer, thief/thief2 = villains. The act follows the narration: alarm when something goes wrong, explain/point-up when teaching, shrug for doubt, walk/run for movement, hold/drop with a prop.`;
+}
+
+/* ------------------------------------------------------------------ the whole guide */
+
+export function buildGuide(o: GuideOptions): string {
+  const dur = o.duration_s ?? 45;
+  const words = wordBudget(dur, 1.1).target;
+  const scenes = dur <= 90 ? "4-8" : dur <= 300 ? "10-20" : "18-30";
+  const look = o.style && (KLEO_STYLES as readonly string[]).includes(o.style) ? o.style : null;
+  const keou = look ? (PICTURE_LOOKS.includes(look) ? "picture" : look === "stickman" ? "stickman" : look === "explainer" ? "sketch" : "cinema") : "picture";
+  const voiceLine = o.languages.map((l) => `${l}: ${(VOICES[l] ?? []).join("|")}`).join(" · ");
+
+  const scenesSection = !look
+    ? `${pictureSection("cartoon", dur)}
+
+OTHER LOOKS: call kleo_storyboard_guide again with style "cyber" (motion design with icons and big type, no pictures — tech and security topics that want diagrams), style "explainer" (hand-drawn white marker line art on pure black, one drawing per phrase, karaoke captions — the strongest look for teaching one idea fast) or style "stickman" (a hand-drawn stickman acting the story, 9:16 only, on request) to get that look's vocabulary instead of this one.`
+    : PICTURE_LOOKS.includes(look)
+    ? pictureSection(look as "cartoon" | "realistic", dur)
+    : look === "cyber"
+    ? cyberSection()
+    : look === "explainer"
+    ? explainerSection(dur, o.format ?? "9:16")
+    : stickmanSection();
+
+  return `KLEO STORYBOARD GUIDE${look ? ` — ${look}` : ""}
+Engine: Keou, canvas motion design, 4K 60 fps, local text-to-speech. Target ${dur}s: about ${words} narrated words across ${scenes} scenes.
+Write the storyboard in three passes, in this order: the DIRECTION, then the OUTLINE, then the SCENES. The direction is the pass Kleo cannot do for you and the one the finished video is judged on.
+
+${directionSection(scenes)}
+
+2. THE TOP-LEVEL OBJECT
+{"schema_version":1,"editorial_status":"ready","title":"<=120","brand":"<=28","direction":{…as above…},
+ "kleo_style":${quoted(look ? [look] : KLEO_STYLES)},"style":"${keou}","format":"9:16"|"16:9","language":${quoted(o.languages)},
+ "voice":"${voiceLine}","speed":1.1,"music":"bed"|"none","max_duration":${Math.round(dur * 1.6)},"description":"<=180","tags":["…"],"scenes":[…]}
+"format" and "language" are not free choices: they must equal what you pass to kleo_create_video, and "voice" must be one of that language's voices. Never write a storyboard in any other language.
+${look ? `This guide is for kleo_style "${look}", which needs style "${keou}".` : `kleo_style cartoon and realistic need style "picture"; cyber keeps the template's look; stickman needs style "stickman" and 9:16.`}
+
+${scenesSection}
+
+4. WHAT KLEO REFUSES, BEFORE ANYTHING IS BILLED
+ 2-240 scenes; ids are unique lowercase slugs and must not end in "-s" + a number; the last scene is "closing"; every scene needs "title" and "voice".
+ The direction's sections must add up to the scene count, no two neighbouring sections share an accent, and every scene wears its section's accent.
+ Every fact in direction.must_keep must appear in the narration; no image_prompt may ask for anything in direction.forbidden.
+ Picture looks: only cinema and closing scenes, ${shotRangeText("cinema")} shots each (closing ${shotRangeText("closing")}), "at" on every shot after the first, no "beats".
+ A shot carries only image_prompt, caption, hl, at and shot_kind. A hand-written camera move is refused.
+ scene.image, scene.motion and shot.image are refused (Kleo generates the pictures; no asset travels with a job).
+ Total narration must fit the length: never more than about ${Math.round(words * 1.25)} words for ${dur}s.
+
+5. WRITING IT WELL
+ Open with the hook in the FIRST sentence — a surprising claim, a number, or a fear. One idea per scene. End on a question or a promise that sends the viewer back to the start.
+ Write the narration as speech: no emojis, no hashtags, no URLs, no stage directions, no invented quotes from real people.
+ Do not copy the example below. Take its shape and write the user's subject, in the user's tone, for the user's audience.`;
+}
+
+/** The worked example, kept apart from the rules so a caller can be given the rules alone when context is tight. */
+export function guideExample(style: GuideStyle | null): string {
+  if (style === "cyber") {
+    return `EXAMPLE (cyber Short, 9:16, one scene of five):
+{"id":"02-relay","kind":"cinema","chapter":"02 THE METHOD","accent":"cyan","title":"they never touch the key","hl":"never","voice":"Two people, one at your door and one at your car, pass the signal between them.","hold":0.2,"beats":[
+ {"kind":"type","text":"THEY NEVER TOUCH IT","hl":"NEVER","slam":true},
+ {"kind":"split","items":["thief","car"],"label":"door to car","at":"one at your"},
+ {"kind":"icon","name":"amplifier","label":"the relay","fx":"lit","at":"pass the signal"}]}`;
+  }
+  if (style === "stickman") {
+    return `EXAMPLE (stickman Short, 9:16, one scene):
+{"id":"02-relay","kind":"story","act":"alarm","cast":["hero","thief"],"props":["keyfob","car"],"fx":"relay","accent":"red","bubble":"That's my car!","title":"they never touch the key","hl":"never","voice":"Two people pass your key's signal from your front door to your car, and it opens.","hold":0.2}`;
+  }
+  // The picture example carries a direction, because the direction is the part people skip. It is a real object, not
+  // prose: test/keou-contract.test.mjs validates it through the contract, so the guide cannot teach an illegal shape.
+  const d = EXAMPLE_DIRECTION;
+  return `EXAMPLE (cartoon Short, 9:16, 40s, en — the direction plus the first two scenes of six):
+"direction":${JSON.stringify(d)}
+"scenes":${JSON.stringify(EXAMPLE_SCENES)}
+Notice: every scene has ${SHOTS_MIN_CINEMA} or more pictures; every picture after the first carries "at" quoted from its own voice line; the accents come from the sections, not from the mood; "${d.cast[0].name}" and "${d.cast[1].name}" are named exactly as the direction names them, so Kleo appends their look to every picture that shows them; nothing on the forbidden list appears anywhere.`;
+}
+
+/** The worked example as data, so the tests can put it through the validator instead of through a regular expression. */
+export const EXAMPLE_DIRECTION = {
+  subject: "The pirate captain who buried a treasure and never came back for it",
+  goal: "The viewer wants to know what happened to the treasure",
+  audience: "People who like short history and adventure stories",
+  tone: "Warm and a little eerie",
+  must_keep: ["1720", "Skull Beach", "one cabin boy"],
+  world: "A tropical island in 1720: golden beaches, turquoise water, palm trees, wooden ships with red sails, warm low sunlight",
+  cast: [
+    { name: "the captain", look: "a pirate captain with a red bandana and a long dark braid, brown coat, wide belt" },
+    { name: "the cabin boy", look: "a thin young boy in a striped blue and white shirt, bare feet, short sandy hair" },
+  ],
+  objects: ["wooden chest", "red-sailed ship", "palm trees", "wet sand", "lantern", "rope", "treasure map", "storm waves"],
+  forbidden: ["text or letters in the picture", "modern clothing", "phone", "wifi symbol", "brand logo", "real person", "extra fingers"],
+  sections: [
+    { name: "01 THE BURIAL", accent: "amber", means: "what was hidden", scenes: 1 },
+    { name: "02 THE STORM", accent: "red", means: "what went wrong", scenes: 1 },
+  ],
+};
+
+export const EXAMPLE_SCENES = [
+  {
+    id: "01-burial", kind: "cinema", chapter: "01 THE BURIAL", accent: "amber", title: "she never came back", hl: "never",
+    voice: "In 1720, the captain buried her treasure on Skull Beach. She never came back for it.", hold: 0.2,
+    shots: [
+      { image_prompt: "The captain burying a wooden chest on a golden beach at sunset, palm trees, her red-sailed ship anchored in the bay", caption: "SHE NEVER CAME BACK", hl: "NEVER", shot_kind: "hook" },
+      { image_prompt: "The captain walking away along the shoreline at dusk, deep footprints in the wet sand, the beach empty behind her", at: "never came back", shot_kind: "action" },
+    ],
+  },
+  {
+    id: "02-storm", kind: "cinema", chapter: "02 THE STORM", accent: "red", title: "three days later", hl: "three",
+    voice: "Three days later a storm took her ship, and only one cabin boy swam back to shore.", hold: 0.2,
+    shots: [
+      { image_prompt: "A red-sailed ship tossed by huge black waves at night, lightning splitting the sky, torn sails, rain across the deck", caption: "THREE DAYS LATER", hl: "THREE", shot_kind: "tension" },
+      { image_prompt: "The cabin boy clinging to a broken plank in the dark water, the ship going down behind him", at: "one cabin boy", shot_kind: "establish" },
+      { image_prompt: "The cabin boy lying exhausted on an empty beach at dawn, calm turquoise water, palm trees, soft pink sky", at: "swam back", shot_kind: "face" },
+    ],
+  },
+];
+
+/** Everything a caller gets in one string: the rules, then the one example that matches the look they asked for. */
+export const guideText = (o: GuideOptions): string => `${buildGuide(o)}\n\n${guideExample(o.style ?? null)}`;
+
+/** Kept so a caller can still see which Keou styles exist without the guide having to list them all. */
+export const KEOU_STYLE_NAMES = STYLES;
+export const GUIDE_VISUALS = VISUALS;
+export const GUIDE_SHOTS_PER_SCENE = SHOTS_PER_SCENE;

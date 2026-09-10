@@ -49,13 +49,35 @@ import {
 } from "./shot-grammar.ts";
 export { SHOT_KINDS, SHOT_GRAMMAR, durationFor, LOUD_MAX_PER_WINDOW, LOUD_WINDOW_S, MAX_SHOT_S, MAX_PERSON_SHOT_S } from "./shot-grammar.ts";
 export type { Move, ShotKind } from "./shot-grammar.ts";
+/**
+ * The direction (src/direction.ts): the art direction of ONE film — what the user asked for, the world it is drawn in,
+ * what must never appear, and the colour law. It is a leaf module on purpose: it imports nothing from here, so this
+ * file can import it without a cycle, and it takes the accent list as an argument instead of reaching for it.
+ */
+import { directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, type Direction, type Section } from "./direction.ts";
+export { directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor, conformity, GENRES, D as DIRECTION_LIMITS } from "./direction.ts";
+export type { Direction, Section, CastMember, Genre, Conformity } from "./direction.ts";
 
-export const STYLES = ["editorial", "technical", "illustrated", "terminal", "stickman", "cinema", "picture"] as const;
-export const KINDS = ["hero", "list", "compare", "steps", "metric", "image", "quote", "closing", "story", "cinema"] as const;
+export const STYLES = ["editorial", "technical", "illustrated", "terminal", "stickman", "cinema", "picture", "sketch"] as const;
+export const KINDS = ["hero", "list", "compare", "steps", "metric", "image", "quote", "closing", "story", "cinema", "sketch"] as const;
 export const BEAT_KINDS = ["icon", "type", "terminal", "steps", "people", "bars", "timeline", "dialog", "cta", "split", "grid"] as const;
 export const BEAT_ICONS = ["coffee", "desk", "hoodie", "keyboard", "hand", "bug", "alarm", "shield", "radar", "car", "keyfob", "house", "amplifier", "pouch", "lock", "timer", "check", "cross", "figure", "thief", "phone", "wave", "clock"] as const;
 export const BEAT_FX = ["lit", "dead", "key", "open", "drive", "alarm", "point", "run", "think"] as const;
 export const CINEMA_ACCENTS = ["green", "cyan", "red", "amber"] as const;
+/**
+ * The explainer (Kleo style "explainer", Keou style "sketch"): hand-drawn white marker line art on
+ * pure black, ONE accent per section and never two in a frame, a camera that only ever pushes in,
+ * and burned-in karaoke captions as the only text. These six lists mirror worker/keou/contract.py
+ * exactly; test/explainer-contract.test.mjs fails the build if they ever drift, because a drift is
+ * a job that validates here, rents a GPU, and dies there with the credit already spent.
+ */
+export const SKETCH_ACCENTS = ["red", "blue", "green", "yellow", "white"] as const;
+export const SKETCH_ART = ["figure", "hand", "keycard", "door", "reader", "phone", "corridor", "tag", "room",
+  "writer", "blank", "crowbar", "bell", "hotels", "globe", "face", "intruder", "footprints", "suitcase"] as const;
+export const SKETCH_MOODS = ["worried", "scared", "calm"] as const;
+export const SKETCH_MOTION = ["turn", "slide", "rise", "tap", "shake", "walk", "pulse", "drift"] as const;
+export const SKETCH_ENTER = ["whip", "cut"] as const;
+export const SKETCH_EXIT = ["flare", "cut"] as const;
 export const STORY_ACTS = ["idle", "explain", "point-up", "shrug", "think", "alarm", "hold", "drop", "wave", "walk", "run", "crouch"] as const;
 export const STORY_CAST = ["hero", "thief", "thief2"] as const;
 export const STORY_PROPS = ["keyfob", "car", "house", "amplifier", "pouch", "timer", "bar", "check"] as const;
@@ -75,7 +97,7 @@ export const VOICES: Record<string, readonly string[]> = {
 export const LANGUAGES = Object.keys(VOICES);
 export const FORMATS = ["9:16", "16:9"] as const;
 /** Kleo visual styles. cartoon/realistic cut between generated pictures (Keou style "picture"); cyber is the plain Keou look; stickman is Keou's stickman. */
-export const KLEO_STYLES = ["cartoon", "realistic", "cyber", "stickman"] as const;
+export const KLEO_STYLES = ["cartoon", "realistic", "cyber", "stickman", "explainer"] as const;
 export type KleoStyle = (typeof KLEO_STYLES)[number];
 /** Styles whose shots get a generated picture; they are exactly the styles that use the Keou style "picture". */
 export const PICTURE_STYLES: readonly KleoStyle[] = ["cartoon", "realistic"];
@@ -103,8 +125,17 @@ export const SHOT_AT_MAX = 24;
  * and the pictures are drawn: whatever the server lets through here is paid for before the engine throws it out.
  */
 export const SHOT_FIELDS = ["image_prompt", "caption", "hl", "at", "shot_kind", "strength", "dur", "motion"] as const;
-/** Shots per scene: a cinema scene cuts up to four times, a closing shows one picture (two at most). */
+/**
+ * Shots per scene: a cinema scene cuts up to four times, a closing shows one picture (two at most).
+ * The contract's floor stays 1 because worker/keou/contract.py has the same floor and the two must not drift; the
+ * floor a NEW storyboard is actually held to is SHOTS_MIN_CINEMA, enforced by qualityProblems() on the server alone.
+ */
 export const SHOTS_PER_SCENE: Record<"cinema" | "closing", [number, number]> = { cinema: [1, 4], closing: [1, 2] };
+/** The real floor for a cinema scene, server-side. One picture per narrated line is a slideshow; two is a cut. */
+export const SHOTS_MIN_CINEMA = 2;
+/** The shot range the guide, the planner and the website all quote, so the three can never say three different things. */
+export const shotRangeText = (kind: "cinema" | "closing"): string =>
+  kind === "closing" ? `${SHOTS_PER_SCENE.closing[0]}-${SHOTS_PER_SCENE.closing[1]}` : `${SHOTS_MIN_CINEMA}-${SHOTS_PER_SCENE.cinema[1]}`;
 export const CLOSING_BUTTON_MAX = 24;
 /** Scene ids may not end with the shot suffix: picture ids are `<sceneId>-s<n>` and must stay unambiguous. */
 export const SHOT_ID_SUFFIX_RE = /-s\d+$/;
@@ -128,6 +159,7 @@ export function kleoStyleOf(sb: unknown): KleoStyle {
   const c = (typeof sb === "object" && sb !== null ? sb : {}) as Record<string, unknown>;
   if ((KLEO_STYLES as readonly string[]).includes(c.kleo_style as string)) return c.kleo_style as KleoStyle;
   if (c.style === "stickman") return "stickman";
+  if (c.style === "sketch") return "explainer";
   return c.style === "picture" ? "cartoon" : "cyber";
 }
 /**
@@ -135,19 +167,39 @@ export function kleoStyleOf(sb: unknown): KleoStyle {
  * Only the styles that draw pictures (cartoon/realistic) have any; a cyber or stickman storyboard returns [].
  * A scene-level image_prompt without shots (old format, not yet normalised) counts as the single shot 1.
  */
-export function pictureScenes(sb: unknown): { id: string; image_prompt: string }[] {
+export function pictureScenes(sb: unknown): { id: string; image_prompt: string; accent: string | null }[] {
   const c = (typeof sb === "object" && sb !== null ? sb : {}) as Record<string, unknown>;
   if (!PICTURE_STYLES.includes(kleoStyleOf(c)) || !Array.isArray(c.scenes)) return [];
   return (c.scenes as unknown[]).flatMap((s) => {
     const sc = (typeof s === "object" && s !== null ? s : {}) as Record<string, unknown>;
     if (typeof sc.id !== "string" || !sc.id) return [];
+    // The scene's accent travels with its pictures: the colour law only exists for the viewer once the accent
+    // reaches the image model, and until now it stopped at the caption furniture.
+    const accent = typeof sc.accent === "string" && (CINEMA_ACCENTS as readonly string[]).includes(sc.accent) ? sc.accent : null;
     const shots = Array.isArray(sc.shots) ? (sc.shots as unknown[]) : typeof sc.image_prompt === "string" ? [{ image_prompt: sc.image_prompt }] : [];
     return shots.flatMap((sh, i) => {
       const o = (typeof sh === "object" && sh !== null ? sh : {}) as Record<string, unknown>;
       const p = typeof o.image_prompt === "string" ? o.image_prompt.trim() : "";
-      return p ? [{ id: `${sc.id}-s${i + 1}`, image_prompt: p }] : []; // a shot without a prompt keeps its index: ids follow the shot number
+      return p ? [{ id: `${sc.id}-s${i + 1}`, image_prompt: p, accent }] : []; // a shot without a prompt keeps its index: ids follow the shot number
     });
   });
+}
+
+/** The direction a storyboard carries, or null. Storyboards written before the direction existed simply have none. */
+export function directionOf(sb: unknown): Direction | null {
+  const c = (typeof sb === "object" && sb !== null ? sb : {}) as Record<string, unknown>;
+  const d = c.direction;
+  return isObj(d) && typeof d.subject === "string" ? (d as unknown as Direction) : null;
+}
+
+/**
+ * The narration of a storyboard, joined. The fidelity gate (missingFacts) reads this: it is the only text a viewer
+ * actually hears, so it is the only text that can prove the video says what the user asked for.
+ */
+export function narrationOf(sb: unknown): string {
+  const c = (typeof sb === "object" && sb !== null ? sb : {}) as Record<string, unknown>;
+  if (!Array.isArray(c.scenes)) return "";
+  return (c.scenes as unknown[]).map((s) => (isObj(s) && typeof s.voice === "string" ? s.voice : "")).filter(Boolean).join(" ");
 }
 export interface ValidateOptions {
   format: Format;
@@ -227,6 +279,76 @@ class Collector {
     }
     return true;
   }
+}
+
+/**
+ * One explainer scene, mirroring worker/keou/contract.py. This is the only gate that runs BEFORE a
+ * GPU is rented and a credit is spent, so every rule the Python enforces has to be here too.
+ */
+function validateSketchScene(c: Record<string, unknown>, s: Record<string, unknown>, label: string, e: Collector): void {
+  if (c.style !== "sketch") { e.add(`${label}: explainer scenes need the explainer style`); return }
+  // The art is authored in the frame's own pixels, so the bounds follow the format.
+  const [fw, fh] = c.format === "9:16" ? [1080, 1920] : [1920, 1080];
+  if (!(SKETCH_ACCENTS as readonly string[]).includes((s.accent ?? "white") as string)) e.add(`${label}: accent must be one of ${sorted(SKETCH_ACCENTS)}`);
+  if (!(SKETCH_ENTER as readonly string[]).includes((s.enter ?? "cut") as string)) e.add(`${label}: enter must be one of ${sorted(SKETCH_ENTER)}`);
+  if (!(SKETCH_EXIT as readonly string[]).includes((s.exit ?? "cut") as string)) e.add(`${label}: exit must be one of ${sorted(SKETCH_EXIT)}`);
+  const shot = (s.shot ?? {}) as Record<string, unknown>;
+  if (!isObj(shot)) { e.add(`${label}: shot must be an object`); return }
+  const zoom = (shot.zoom ?? [1, 1.2]) as unknown;
+  if (!Array.isArray(zoom) || zoom.length !== 2) e.add(`${label}: shot zoom needs a start and an end`);
+  else {
+    for (const z of zoom) e.finite(z, .5, 4, `${label} zoom`);
+    // Not taste: qa.py fails a master with a second of identical frames, and a camera that does
+    // not move produces exactly that.
+    if (typeof zoom[0] === "number" && typeof zoom[1] === "number" && zoom[1] <= zoom[0])
+      e.add(`${label}: the camera never stops pushing in - zoom must increase`);
+  }
+  const focus = (shot.focus ?? [fw / 2, fh / 2]) as unknown;
+  if (!Array.isArray(focus) || focus.length !== 2) e.add(`${label}: shot focus needs x and y`);
+  else { e.finite(focus[0], 0, fw, `${label} focus x`); e.finite(focus[1], 0, fh, `${label} focus y`) }
+  const art = s.art;
+  if (!Array.isArray(art) || art.length < 1 || art.length > 8) { e.add(`${label}: art must list one to eight drawn elements`); return }
+  const voice = typeof s.voice === "string" ? s.voice : "";
+  art.forEach((raw, j) => {
+    const el = `${label} art ${j + 1}`;
+    if (!isObj(raw)) { e.add(`${el}: must be an object`); return }
+    const a = raw as Record<string, unknown>;
+    if (!(SKETCH_ART as readonly string[]).includes(a.name as string)) e.add(`${el}: name must be one of ${sorted(SKETCH_ART)}`);
+    // A cue is either a fraction of the shot or the words it must land on. The engine matches the
+    // words on a folded character stream, so quote them the way they are actually spoken.
+    for (const key of ["at", "until"] as const) {
+      const v = a[key];
+      if (typeof v === "string") {
+        if (e.text(v, `${el} ${key}`, 32) && !quotesVoice(v, voice)) e.add(`${el}: ${key} must quote words from this scene's voice`);
+      } else if (v !== undefined) {
+        if (key === "at") e.finite(v, 0, .95, `${el} at`);
+        else {
+          e.finite(v, .05, 1, `${el} until`);
+          const at = a.at;
+          if (typeof at !== "string" && typeof v === "number" && typeof (at ?? 0) === "number" && v <= ((at as number) ?? 0)) e.add(`${el}: until must come after at`);
+        }
+      }
+    }
+    if ("motion" in a && !(SKETCH_MOTION as readonly string[]).includes(a.motion as string)) e.add(`${el}: motion must be one of ${sorted(SKETCH_MOTION)}`);
+    if ("motion_over" in a) e.finite(a.motion_over, .1, 4, `${el} motion_over`);
+    if ("drawn" in a && typeof a.drawn !== "boolean") e.add(`${el}: drawn must be a boolean`);
+    if ("x" in a) e.finite(a.x, -fw * .4, fw * 1.4, `${el} x`);
+    if ("y" in a) e.finite(a.y, -fh * .25, fh * 1.25, `${el} y`);
+    if ("size" in a) e.finite(a.size, .1, 6, `${el} size`);
+    for (const key of ["tint", "led", "beam", "chip", "no_col"] as const)
+      if (key in a && !(SKETCH_ACCENTS as readonly string[]).includes(a[key] as string)) e.add(`${el}: ${key} must be one of ${sorted(SKETCH_ACCENTS)}`);
+    if ("mood" in a && !(SKETCH_MOODS as readonly string[]).includes(a.mood as string)) e.add(`${el}: mood must be one of ${sorted(SKETCH_MOODS)}`);
+    if ("count" in a && (typeof a.count !== "number" || !Number.isInteger(a.count) || a.count < 1 || a.count > 12)) e.add(`${el}: count must be 1-12`);
+    for (const flag of ["no", "sweat", "xray", "flash", "flip", "leader"] as const)
+      if (flag in a && typeof a[flag] !== "boolean") e.add(`${el}: ${flag} must be a boolean`);
+    if ("text" in a) e.text(a.text, `${el} text`, 24);
+    for (const key of ["open", "open_to"] as const) if (key in a) e.finite(a[key], 0, 1, `${el} ${key}`);
+    if ("swing_over" in a) e.finite(a.swing_over, .2, 3, `${el} swing_over`);
+    if ("reach" in a) {
+      if (!Array.isArray(a.reach) || a.reach.length !== 2) e.add(`${el}: reach needs x and y`);
+      else for (const v of a.reach) e.finite(v, -600, 600, `${el} reach`);
+    }
+  });
 }
 
 function validateBeats(c: Record<string, unknown>, s: Record<string, unknown>, label: string, e: Collector): void {
@@ -321,6 +443,51 @@ function validateBeats(c: Record<string, unknown>, s: Record<string, unknown>, l
  * Normalises the old shorthand (a scene-level image_prompt) into shots[0] in place, so what the caller stores and
  * what the engine receives never carries a scene-level image_prompt.
  */
+/**
+ * A legal `at` for the n-th of `count` shots: an unbroken run of whole words, quoted verbatim from this scene's own
+ * voice, that no other shot has taken, starting near where that cut falls in the line. Null when the line is too
+ * short or too odd to yield one.
+ */
+function anchorAt(voice: string, index: number, count: number, taken: Set<string>): string | null {
+  const spans: { from: number; to: number }[] = [];
+  const re = /\S+/g;
+  for (let m = re.exec(voice); m; m = re.exec(voice)) spans.push({ from: m.index, to: m.index + m[0].length });
+  if (spans.length < 2) return null;
+  const want = Math.min(spans.length - 1, Math.max(1, Math.round((index * spans.length) / Math.max(count, 1))));
+  const order: number[] = [];
+  for (let d = 0; d < spans.length; d++) {
+    if (want + d < spans.length) order.push(want + d);
+    if (d && want - d >= 1) order.push(want - d);   // never the very first word: a cut there is the scene opening
+  }
+  for (const i of order) for (const n of [2, 1]) {
+    const last = spans[i + n - 1];
+    if (!last) continue;
+    const at = voice.slice(spans[i].from, last.to);
+    if (at.length <= SHOT_AT_MAX && !taken.has(at.toLowerCase()) && quotesVoice(at, voice)) return at;
+  }
+  return null;
+}
+
+/**
+ * EVERY CUT AFTER THE FIRST LANDS ON A WORD THE VIEWER HEARS. `at` used to be optional and a missing one was silent:
+ * the picture then changed NEAR the right words instead of ON them, by arithmetic, while the product promised the
+ * opposite. Choosing the anchor is mechanical — like choosing the camera move — so Kleo chooses it rather than
+ * demanding it: anchors the author wrote and the contract accepted are kept untouched, only the gaps are filled.
+ * A scene whose line is too short to yield one is the author's problem, and qualityProblems() says so.
+ */
+export function anchorShots(scene: Record<string, unknown>): void {
+  const voice = typeof scene.voice === "string" ? scene.voice : "";
+  const shots = Array.isArray(scene.shots) ? (scene.shots as unknown[]) : [];
+  if (!voice || shots.length < 2) return;
+  const taken = new Set<string>();
+  for (const sh of shots) if (isObj(sh) && typeof sh.at === "string") taken.add(sh.at.toLowerCase());
+  shots.forEach((sh, i) => {
+    if (!i || !isObj(sh) || (typeof sh.at === "string" && sh.at.trim())) return;
+    const at = anchorAt(voice, i, shots.length, taken);
+    if (at) { sh.at = at; taken.add(at.toLowerCase()); }
+  });
+}
+
 function validateShots(s: Record<string, unknown>, label: string, kind: "cinema" | "closing", e: Collector, fmt: Format, seq: SeqShot[]): void {
   if ("beats" in s) e.add(`${label}: beats belong to the cinema style; the picture style cuts between "shots" instead`);
   if (typeof s.image_prompt === "string" && !("shots" in s)) { s.shots = [{ image_prompt: s.image_prompt.trim() }]; delete s.image_prompt; }
@@ -330,6 +497,7 @@ function validateShots(s: Record<string, unknown>, label: string, kind: "cinema"
   if (!Array.isArray(shots) || shots.length < lo || shots.length > hi) { e.add(`${label}: shots must list ${lo}–${hi} full-screen pictures`); return; }
   const voice = typeof s.voice === "string" ? s.voice.toLowerCase() : "";
   const sceneId = typeof s.id === "string" && s.id ? s.id : label;
+  anchorShots(s);   // fills only the gaps; an `at` the author wrote is validated below exactly as before
   shots.forEach((sh: unknown, j: number) => {
     const sl = `${label} shot ${j + 1}`;
     if (!isObj(sh)) { e.add(`${sl}: must be an object`); return; }
@@ -492,6 +660,25 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
   e.finite(c.max_duration ?? 600, 5, 1800, "max_duration");
   const scenes = c.scenes;
   if (!Array.isArray(scenes) || scenes.length < 2 || scenes.length > 240) { e.add("A project needs 2–240 scenes"); return; }
+  // The direction is optional so that every storyboard written before it still validates, but a storyboard that
+  // carries one is held to it: the sections must tile the film and every scene must wear the colour of its section.
+  // Checking it here, on the free Worker, is the whole point — a colour law discovered on a rented GPU is a colour
+  // law nobody enforced.
+  const direction = "direction" in c ? c.direction : undefined;
+  if (direction !== undefined) {
+    for (const p of directionProblems(direction, { accents: CINEMA_ACCENTS, scenes: scenes.length })) e.add(p);
+    const sections = isObj(direction) && Array.isArray(direction.sections) ? (direction.sections as Section[]) : [];
+    // The colour law is written in CINEMA_ACCENTS, which are the accents of the picture and cinema looks. The
+    // stickman has its own smaller palette (STORY_ACCENTS), so a section accent must never be pressed onto it.
+    if (sections.length && (c.style === "picture" || c.style === "cinema")) {
+      const owner = sectionOfScene(sections, scenes.length);
+      scenes.forEach((s, i) => {
+        const want = owner[i]?.accent;
+        if (!isObj(s) || !want || !("accent" in s)) return;
+        if (s.accent !== want) e.add(`scene ${i + 1}: accent "${String(s.accent)}" but it is in section "${owner[i]?.name}", which owns "${want}" — one accent per section`);
+      });
+    }
+  }
   const ids = new Set<string>();
   const seq: SeqShot[] = [];
   const fmt: Format = (FORMATS as readonly string[]).includes(c.format as string) ? (c.format as Format) : opts.format;
@@ -520,6 +707,8 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
       if ("chapter" in s) e.text(s.chapter, `${label} chapter`, 32);
       if ("accent" in s && !(CINEMA_ACCENTS as readonly string[]).includes(s.accent as string)) e.add(`${label}: accent must be green, cyan, red or amber`);
     }
+    if (c.style === "sketch" && kind !== "sketch") e.add(`${label}: the explainer style only draws explainer scenes`);
+    if (kind === "sketch") validateSketchScene(c, s, label, e);
     if (c.style === "stickman" && kind !== "story" && kind !== "closing") e.add(`${label}: the stickman style only draws story and closing scenes`);
     if (kind === "story") {
       if (c.style !== "stickman") e.add(`${label}: story scenes need the stickman style`);
@@ -538,7 +727,8 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
       for (const [key, limit] of [["bubble", 40], ["hl", 24]] as const) if (key in s) e.text(s[key], `${label} ${key}`, limit);
     }
     e.text(s.voice, `${label} voice`, 350);
-    e.text(s.title, `${label} title`, 90);
+    // The explainer draws no title: its captions are the only text on screen.
+    if (kind === "sketch") { if ("title" in s) e.text(s.title, `${label} title`, 90); } else e.text(s.title, `${label} title`, 90);
     // The picture style paints the closing button inside a pill: it is shorter than the editorial one.
     for (const [key, limit] of [["eyebrow", 40], ["detail", 110], ["source", 80], ["button", c.style === "picture" ? CLOSING_BUTTON_MAX : 40]] as const) if (key in s) e.text(s[key], `${label} ${key}`, limit);
     if (!(VISUALS as readonly string[]).includes((s.visual ?? "focus") as string)) e.add(`${label}: unknown visual`);
@@ -564,7 +754,8 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
   });
   if (seq.length) validateSequence(seq, e);
   const last = scenes[scenes.length - 1];
-  if (!isObj(last) || last.kind !== "closing") e.add("Last scene must be a closing");
+  // The explainer ends on its last drawn frame: no end card, no logo, no subscribe.
+  if (c.style !== "sketch" && (!isObj(last) || last.kind !== "closing")) e.add("Last scene must be a closing");
 }
 
 /**
@@ -576,9 +767,52 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
  */
 export function validateStoryboard(sb: unknown, opts: ValidateOptions): ValidateResult {
   const e = new Collector(opts.maxErrors ?? MAX_ERRORS);
-  try { validateInner(sb, opts, e); } catch (err) { if (!(err instanceof TooMany)) throw err; }
+  try { validateInner(sb, opts, e); if (!e.errors.length) for (const p of qualityProblems(sb)) e.add(p); } catch (err) { if (!(err instanceof TooMany)) throw err; }
   if (e.errors.length) return { ok: false, errors: e.errors };
   return { ok: true, storyboard: sb as Storyboard };
+}
+
+/**
+ * The two rules that separate a video from a slideshow. They live HERE and not in worker/keou/contract.py on purpose:
+ * the server may be stricter than the worker (nothing reaches a rented GPU that the GPU would then refuse), never the
+ * other way round, so tightening here costs nothing and no python change can fall out of step with it.
+ *
+ *  1. A CINEMA SCENE SHOWS AT LEAST TWO PICTURES. The contract's shot range was [1,4] while the planner's rules said
+ *     "2-4" and the website promised "two to four": a storyboard with one picture per scene passed, was billed, and
+ *     came back as one still held for a whole narrated line — "non sono neanche dei video, sono semplicemente delle
+ *     immagini con lo zoom". The closing scene is exempt: it is meant to rest on one picture.
+ *  2. EVERY PICTURE AFTER THE FIRST CUTS ON A SPOKEN WORD. `at` was optional, and a missing one was silent: the cut
+ *     then fell by arithmetic, near the right words instead of on them. The product promise is the opposite — "Kleo
+ *     times the cut to a word you actually hear" — so a shot without an anchor is now a problem, not a default.
+ */
+export function qualityProblems(sb: unknown): string[] {
+  const c = (typeof sb === "object" && sb !== null ? sb : {}) as Record<string, unknown>;
+  const out: string[] = [];
+  // 3. THE STORYBOARD KEEPS ITS OWN PROMISES. Whoever wrote the direction wrote the narration and the pictures too, so
+  //    a fact listed in must_keep that the narration never says, or a picture that draws something the direction
+  //    forbids, is a contradiction inside one document — the cheapest kind of error to catch and the most damaging to
+  //    leave (it is how a wifi icon ended up in a pirate storm). Both checks are free and neither needs the GPU.
+  const d = directionOf(c);
+  if (d) {
+    for (const fact of missingFacts(d.must_keep ?? [], narrationOf(c)))
+      out.push(`direction.must_keep says "${fact}" but the narration never says it: put it in a scene's "voice", in the words the viewer will hear.`);
+    for (const hit of forbiddenInPrompts(d.forbidden ?? [], pictureScenes(c)))
+      out.push(`picture ${hit.id}: its image_prompt asks for "${hit.term}", which direction.forbidden rules out of this video.`);
+  }
+  if (c.style !== "picture" || !Array.isArray(c.scenes)) return out;
+  (c.scenes as unknown[]).forEach((s, i) => {
+    if (!isObj(s) || !Array.isArray(s.shots)) return;
+    const label = `scene ${i + 1}${typeof s.id === "string" ? ` (${s.id})` : ""}`;
+    const shots = s.shots as unknown[];
+    if (s.kind !== "closing" && shots.length < SHOTS_MIN_CINEMA)
+      out.push(`${label}: ${shots.length} picture${shots.length === 1 ? "" : "s"}, a scene needs at least ${SHOTS_MIN_CINEMA} — one picture held for a whole line is a slideshow, not a video. Split the line into ${SHOTS_MIN_CINEMA} moments and give each its own image_prompt and "at".`);
+    shots.forEach((sh, n) => {
+      if (n === 0 || !isObj(sh)) return;
+      if (typeof sh.at !== "string" || !sh.at.trim())
+        out.push(`${label} shot ${n + 1}: needs "at" — words copied from this scene's voice, so the cut lands on them as they are spoken.`);
+    });
+  });
+  return out;
 }
 
 /** Kleo voice ids (templates.ts) → Kokoro voices. */

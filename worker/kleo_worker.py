@@ -642,8 +642,11 @@ def generate_local_pictures(project, pdir, ids):
         return []
     img_dir = os.path.join(pdir, "img")
     try:
-        made = mod.generate_pictures([{"id": u["id"], "image_prompt": u["image_prompt"]} for u in units],
-                                     project.get("kleo_style"), project.get("format") or "9:16", img_dir)
+        # The scene's accent and the film's direction travel with every picture: the colour law and the exclusion
+        # list are only real once the image model sees them, and until now they stopped at the caption furniture.
+        made = mod.generate_pictures([{"id": u["id"], "image_prompt": u["image_prompt"], "accent": u["scene"].get("accent")} for u in units],
+                                     project.get("kleo_style"), project.get("format") or "9:16", img_dir,
+                                     direction=project.get("direction"))
     except Exception as e:
         log("local picture generation failed:", e)
         return []
