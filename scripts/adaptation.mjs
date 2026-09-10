@@ -123,6 +123,30 @@ const HELD_OUT_2 = [
   { p: "Il borgo italiano più bello che non conosce nessuno", want: "realistic", lang: "it" },
 ];
 
+/**
+ * A THIRD HELD-OUT SET, from the explainer session again, and built to probe one thing the other two cannot: the
+ * border between the diagram look and the drawn explainer. Its author's framing, which is the useful part:
+ *   cyber wants something to DIAGRAM — a flow, a comparison, numbers.
+ *   explainer wants ONE IDEA TAKEN APART — every sentence has a literal object to draw, and the viewer ends up
+ *   believing something different.
+ * A topic can sit in either. "Cybersecurity" decides nothing.
+ *
+ * `pivotal` marks 1, 3 and 5: same semantic field as 2, 6 and 7, opposite answer. If the classifier gets the twins
+ * right and the pivotal ones wrong, the overall score stays high while the measure says nothing — it is a classifier
+ * of TOPICS posing as a classifier of LOOKS. `pair` names the twin, so the collapse is reported and not averaged away.
+ * Number 4 carries no technical word at all: if it cannot reach the explainer, that look is not a language of its
+ * own, it is a subset of cyber.
+ */
+const HELD_OUT_3 = [
+  { p: "Spiegami cos'è una VPN a mia madre.", want: "explainer", lang: "it", pivotal: true, pair: "attacchi" },
+  { p: "Fammi un video sui cinque attacchi informatici più costosi della storia.", want: "cyber", lang: "it", id: "attacchi" },
+  { p: "Perché il wi-fi dell'hotel è pericoloso? Voglio una cosa corta che capisca chiunque.", want: "explainer", lang: "it", pivotal: true, pair: "flusso" },
+  { p: "Spiega in un minuto perché l'acqua bollente in freezer a volte ghiaccia prima di quella fredda.", want: "explainer", lang: "it", pivotal: true },
+  { p: "Explain why a password manager is safer than remembering them, to someone who is sure it is less safe.", want: "explainer", lang: "en", pivotal: true, pair: "bolletta" },
+  { p: "Show how our data goes from the app to the servers to the third parties nobody reads about.", want: "cyber", lang: "en", id: "flusso" },
+  { p: "Break down how much of a phone bill is actually the network and how much is everything else.", want: "cyber", lang: "en", id: "bolletta" },
+];
+
 /** Pairs that mean the same thing. A plan that changes between them is reacting to words, not to meaning. */
 const SAME_MEANING = [
   ["A Short about pirates who find an island that isn't on any map",
@@ -252,7 +276,31 @@ const report = (name, set) => {
 };
 const h1 = report("HELD-OUT A — written by the explainer session (had seen the OLD word lists, avoided them on purpose)", HELD_OUT);
 const h2 = report("HELD-OUT B — written by the coordinating session (read nothing; labels written before looking)", HELD_OUT_2);
-const allHeld = [...h1, ...h2];
+const h3 = report("HELD-OUT C — the border between the diagram look and the drawn explainer, from the explainer session", HELD_OUT_3);
+
+/**
+ * The question this set was built to answer, and the one a score cannot: can the classifier tell the two apart AT
+ * ALL? A viral-short may not return the drawn explainer — that look is chosen by name, on purpose — so a request
+ * that wants it and its twin that wants a diagram should still not be indistinguishable. They are twins in TOPIC
+ * and opposites in FORM.
+ */
+line("THE BORDER — twins in topic, opposites in form");
+const byId = new Map(h3.filter((x) => x.id).map((x) => [x.id, x]));
+let collapsed = 0;
+for (const a of h3.filter((x) => x.pair)) {
+  const b = byId.get(a.pair);
+  if (!b) continue;
+  const same = a.got === b.got;
+  if (same) collapsed++;
+  line(`  ${same ? "COLLAPSED" : "told apart"}  "${a.p.slice(0, 44)}" -> ${a.got}`);
+  line(`                 "${b.p.slice(0, 44)}" -> ${b.got}`);
+}
+const independent = h3.find((x) => x.p.startsWith("Spiega in un minuto perché l'acqua"));
+line(`  independence: a request with no technical word at all -> ${independent ? independent.got : "?"}${independent && independent.got === "cyber" ? "" : "   (the drawn explainer is not reachable without technical vocabulary)"}`);
+line(`  ${collapsed} of 3 pairs got the SAME answer: a classifier of topics cannot see a difference of form.`);
+line();
+
+const allHeld = [...h1, ...h2, ...h3];
 line(`HELD-OUT TOTAL  ${allHeld.filter((h) => h.ok).length}/${allHeld.length} = ${pct(allHeld.filter((h) => h.ok).length, allHeld.length)} on requests this code never saw`);
 line();
 
