@@ -26,6 +26,8 @@
   "vars": {
     "PUBLIC_URL": "https://kleo-mcp.plural-juice.workers.dev",
     "RENDER_BACKEND": "vast",
+    "POOL_AFTER_MIN": "3",
+    "VAST_RETRY_MIN": "30",
     "AI_MODEL": "@cf/meta/llama-4-scout-17b-16e-instruct",
     "MAX_CONCURRENT_GPUS": "5",
     "MAX_JOBS_PER_USER": "2",

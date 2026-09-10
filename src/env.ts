@@ -13,7 +13,10 @@ export interface Env {
   BRAND?: string; // on-screen brand handed to the render worker (default "Kleo")
 
   PUBLIC_URL: string;
-  RENDER_BACKEND: "mock" | "vast" | "manual";
+  RENDER_BACKEND: "mock" | "vast" | "manual" | "pool";
+  POOL_SECRET?: string;      // shared secret for external runners (GitHub Actions) that claim queued jobs
+  POOL_AFTER_MIN?: string;   // in vast mode, runners may take a job that waited this long (default 3)
+  VAST_RETRY_MIN?: string;   // after "no credit"/"no offer", leave Vast alone this long (default 30)
   MAX_CONCURRENT_GPUS: string;
   MAX_JOBS_PER_USER: string;
   JOB_TIMEOUT_MIN: string;

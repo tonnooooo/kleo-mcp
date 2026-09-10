@@ -157,3 +157,23 @@ export async function listFiles(env: Env, jobId: string): Promise<JobFile[]> {
   return (await env.DB.prepare("SELECT * FROM job_files WHERE job_id = ?").bind(jobId).all<JobFile>()).results;
 }
 export const deleteFiles = (env: Env, jobId: string) => env.DB.prepare("DELETE FROM job_files WHERE job_id = ?").bind(jobId).run();
+
+/** Atomic queued → starting transition; false if someone else took the job first. */
+export async function reserveJob(env: Env, id: string, backend: string): Promise<boolean> {
+  const r = await env.DB.prepare("UPDATE jobs SET state = 'starting', backend = ?, started_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), track = 'script', error = NULL WHERE id = ? AND state = 'queued'").bind(backend, id).run();
+  return (r.meta.changes ?? 0) === 1;
+}
+/** Gives a reserved job back to the queue without burning an attempt (used when the provider itself is unavailable). */
+export const unreserveJob = (env: Env, id: string) =>
+  env.DB.prepare("UPDATE jobs SET state = 'queued', backend = NULL, instance_id = NULL, instance_meta = NULL, started_at = NULL, track = NULL WHERE id = ? AND state = 'starting' AND instance_id IS NULL").bind(id).run();
+/** Hands the oldest planned queued job (queued for at least minQueuedMin minutes) to a pool runner. */
+export async function claimQueuedJob(env: Env, instanceId: string, minQueuedMin: number): Promise<Job | null> {
+  const cutoff = new Date(Date.now() - minQueuedMin * 60_000).toISOString();
+  const rows = (await env.DB.prepare("SELECT id FROM jobs WHERE state = 'queued' AND storyboard IS NOT NULL AND created_at <= ? ORDER BY created_at LIMIT 5").bind(cutoff).all<{ id: string }>()).results;
+  for (const r of rows) {
+    const u = await env.DB.prepare("UPDATE jobs SET state = 'starting', backend = 'pool', instance_id = ?, instance_meta = ?, started_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), attempts = attempts + 1, track = 'script', error = NULL WHERE id = ? AND state = 'queued'")
+      .bind(instanceId, JSON.stringify({ pool: true, runner: instanceId }), r.id).run();
+    if ((u.meta.changes ?? 0) === 1) return await getJob(env, r.id);
+  }
+  return null;
+}

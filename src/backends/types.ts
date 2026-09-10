@@ -7,7 +7,7 @@ export interface StartResult {
 }
 
 export interface RenderBackend {
-  readonly name: "mock" | "vast" | "manual";
+  readonly name: "mock" | "vast" | "manual" | "pool";
   /** Provision a GPU for this job and start the worker. Must be quick (API calls only). */
   start(env: Env, job: Job): Promise<StartResult>;
   /** Optional liveness check for a running job. "gone" means the instance died. */

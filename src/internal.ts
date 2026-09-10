@@ -1,6 +1,7 @@
 import type { Env } from "./env";
-import { getJob, updateJob, setFile, audit, type Job } from "./db";
-import { json, safeEqual, nowIso } from "./util";
+import { getJob, updateJob, setFile, audit, type Job, claimQueuedJob } from "./db";
+import { json, safeEqual, nowIso, int } from "./util";
+import { isFlagActive } from "./schema";
 import { finishJob, failJob, trackFor } from "./orchestrator";
 import { backendFor } from "./backends";
 import { FILE_NAMES } from "./jobs";
@@ -27,6 +28,7 @@ const TYPES: Record<string, string> = { mp4: "video/mp4", srt: "application/x-su
  */
 export async function handleInternal(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
+  if (url.pathname === "/internal/pool/claim") return handlePoolClaim(request, env);
   const m = url.pathname.match(/^\/internal\/jobs\/([A-Za-z0-9_]+)(?:\/(.*))?$/);
   if (!m) return json({ error: "not found" }, 404);
   const job = await getJob(env, m[1]);
@@ -131,4 +133,24 @@ export async function handleDevPlan(request: Request, env: Env): Promise<Respons
   } catch (e) {
     return json({ ok: false, error: String(e), errors: e instanceof StoryboardError ? e.errors : undefined, draft: e instanceof StoryboardError ? e.draft : undefined }, 422);
   }
+}
+
+/**
+ * POST /internal/pool/claim  (Authorization: Bearer <POOL_SECRET>, body {"runner": "gha-123"})
+ * Hands one planned job to an external runner. In vast mode a runner only gets jobs Vast did not pick up
+ * (provider flagged unavailable, or queued longer than POOL_AFTER_MIN); otherwise any planned job.
+ */
+async function handlePoolClaim(request: Request, env: Env): Promise<Response> {
+  if (!env.POOL_SECRET) return json({ error: "pool disabled" }, 404);
+  if (request.method !== "POST") return json({ error: "method" }, 405);
+  const auth = request.headers.get("authorization") ?? "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  if (!token || !safeEqual(token, env.POOL_SECRET)) return json({ error: "unauthorized" }, 401);
+  const body = (await request.json().catch(() => ({}))) as { runner?: string };
+  const runner = String(body.runner ?? "runner").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 60) || "runner";
+  const vastFirst = env.RENDER_BACKEND === "vast" && !(await isFlagActive(env, "vast_unavailable"));
+  const job = await claimQueuedJob(env, runner, vastFirst ? int(env.POOL_AFTER_MIN, 3) : 0);
+  if (!job) return json({ job: null });
+  await audit(env, job.user_id, job.id, "job.started", { backend: "pool", instance: runner });
+  return json({ job_id: job.id, worker_secret: job.worker_secret, api: env.PUBLIC_URL, template: job.template, format: (JSON.parse(job.params) as { format: string }).format });
 }

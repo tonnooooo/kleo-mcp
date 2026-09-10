@@ -1,12 +1,12 @@
 import type { Env } from "./env";
-import { type Job, type JobState, activeJobs, queuedJobs, unplannedJobs, claimPlanAttempt, countRunning, updateJob, audit, creditCredits, expiredJobs, listFiles, deleteFiles, setFile, getJob } from "./db";
+import { type Job, type JobState, activeJobs, queuedJobs, unplannedJobs, claimPlanAttempt, countRunning, updateJob, audit, creditCredits, expiredJobs, listFiles, deleteFiles, setFile, getJob, reserveJob, unreserveJob } from "./db";
 import { backendFor, getBackend } from "./backends";
 import { int, nowIso, minutesSince, secondsSince, addDays, base64ToBytes } from "./util";
 import { TINY_MP4_B64 } from "./assets";
 import { resultLinks, FILE_NAMES } from "./jobs";
 import { notifyDone } from "./notify";
 import { putFile, deleteFile } from "./storage";
-import { acquireLock, releaseLock, holdLock, setFlagUntil } from "./schema";
+import { acquireLock, releaseLock, holdLock, setFlagUntil, isFlagActive } from "./schema";
 import { generateStoryboard, StoryboardError, isTransientAiError } from "./storyboard";
 
 const MAX_ATTEMPTS = 3;
@@ -108,23 +108,34 @@ async function tickInner(env: Env, stats: Stats) {
   const running = await countRunning(env);
   const max = int(env.MAX_CONCURRENT_GPUS, 5);
   const backend = getBackend(env);
-  for (const job of await queuedJobs(env, max - running)) {
+  const providerDown = backend.name === "vast" && (await isFlagActive(env, "vast_unavailable"));
+  if (backend.name !== "pool" && !providerDown) for (const job of await queuedJobs(env, max - running)) {
+    if (!(await reserveJob(env, job.id, backend.name))) continue; // a pool runner took it first
     try {
       const r = await backend.start(env, job);
       await updateJob(env, job.id, {
-        state: "starting", backend: backend.name, instance_id: r.instanceId, instance_meta: JSON.stringify(r.meta ?? {}),
-        started_at: nowIso(), attempts: job.attempts + 1, track: "script", error: null,
+        instance_id: r.instanceId, instance_meta: JSON.stringify(r.meta ?? {}), attempts: job.attempts + 1,
       });
       await audit(env, job.user_id, job.id, "job.started", { backend: backend.name, instance: r.instanceId, meta: r.meta });
       stats.started++;
     } catch (e) {
+      const msg = String(e);
+      if (backend.name === "vast" && /insufficient_credit|lacks credit|no Vast\.ai offer/i.test(msg)) {
+        // The provider, not the job, is the problem: hand the job back untouched and let pool runners take it.
+        const pauseMin = int(env.VAST_RETRY_MIN, 30);
+        await setFlagUntil(env, "vast_unavailable", pauseMin * 60);
+        await unreserveJob(env, job.id);
+        await audit(env, job.user_id, job.id, "vast.unavailable", { error: msg.slice(0, 200), pause_min: pauseMin });
+        break;
+      }
       const attempts = job.attempts + 1;
-      await audit(env, job.user_id, job.id, "job.start.error", { attempt: attempts, error: String(e) });
+      await audit(env, job.user_id, job.id, "job.start.error", { attempt: attempts, error: msg });
+      await unreserveJob(env, job.id);
       if (attempts >= MAX_ATTEMPTS) {
-        await failJob(env, { ...job, attempts }, `could not start a GPU: ${String(e)}`, false);
+        await failJob(env, { ...job, attempts, state: "queued" }, `could not start a GPU: ${msg}`, false);
         stats.failed++;
       } else {
-        await updateJob(env, job.id, { attempts, error: String(e) });
+        await updateJob(env, job.id, { attempts, error: msg });
       }
     }
   }
