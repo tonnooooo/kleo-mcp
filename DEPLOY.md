@@ -29,10 +29,9 @@ Kleo è online e produce video veri. **La produzione usa GPU a pagamento: ogni v
 
 Tempi reali misurati il 10 settembre sulla catena di produzione (RTX 4090): Short cartoon di 40 secondi consegnato in 23 minuti dal noleggio, di cui 13 solo per scaricare l'immagine del worker, 29 secondi per disegnare 13 immagini sulla GPU e 8 minuti di render vero. Costo GPU: 0,067 $. Un video lungo richiede molto di più: il tempo massimo concesso a un render si alza da solo con la durata (stima del video + attesa massima per lo scaricamento dell'immagine, `src/templates.ts`), quindi circa 2 ore per un video di 8 minuti.
 
-Da fare una volta sola, dopo questo deploy: il vecchio codice condiviso `KLEO-BETA` è ancora nella tabella `invites` con 50 usi da 3 crediti (circa 25 $ di crediti che nessuno controlla più). La migrazione `0005_kleo_beta_off.sql` lo spegne da sola su un database ricostruito da zero; sul database vivo, che le migrazioni vecchie le ha già applicate, serve questo comando (il secondo cancella un segreto che non si usa più):
+Fatto l'11 settembre 2026: il vecchio codice condiviso `KLEO-BETA` è spento sul database vivo (`max_uses = 0`, dopo 19 usi), applicando la migrazione `0005_kleo_beta_off.sql`. Erano circa 25 $ di crediti che nessuno controllava più. Resta un segreto che non si usa più e si può cancellare quando vuoi:
 
 ```bash
-npx wrangler d1 execute kleo-db --remote --command "UPDATE invites SET max_uses = 0 WHERE code = 'KLEO-BETA'"
 npx wrangler secret delete INVITE_CODES
 ```
 
@@ -69,6 +68,18 @@ bash scripts/finish-install.sh https://kleo-mcp.plural-juice.workers.dev
 ```
 
 Lo script crea KV, D1 e R2 se mancano, scrive gli id in `wrangler.jsonc`, applica le migrazioni, carica `INTERNAL_SECRET` da `.secrets.local` e fa il deploy. **`INTERNAL_SECRET` non va mai cambiato**: oltre a firmare i link di download firma anche l'identità degli account anonimi, quindi un valore nuovo scollega tutti gli utenti dai loro crediti, senza modo di tornare indietro. La chiave Vast va caricata a parte: `npx wrangler secret put VAST_API_KEY` (la incolli tu nel terminale, non in chat; consiglio una chiave "Instance management only"). Per un aggiornamento normale basta `npm run deploy`.
+
+**`wrangler deploy` impacchetta la cartella così com'è, non il commit.** Non guarda git: se un file è modificato e non ancora committato, quel file finisce in produzione lo stesso, e in produzione gira codice che non esiste in nessun commit — quindi nessuno può dire cosa sia vivo, e il deploy successivo da un albero pulito lo cancella senza che nessuno se ne accorga. Con più sessioni che lavorano sulla stessa cartella succede senza fare niente di sbagliato: basta che un'altra stia salvando un file nel momento in cui parte il deploy. Il rimedio è deployare da una copia pulita del ramo, che non può contenere il lavoro a metà di nessuno:
+
+```bash
+git fetch origin main
+git worktree add --detach /tmp/kleo-deploy origin/main
+ln -s "$PWD/node_modules" /tmp/kleo-deploy/node_modules
+cd /tmp/kleo-deploy && npx wrangler deploy --message "origin/main $(git rev-parse --short HEAD)"
+cd - && git worktree remove /tmp/kleo-deploy
+```
+
+Il `--message` finisce nella lista dei deploy (`npx wrangler deployments list`): scriverci dentro il commit è l'unico modo per sapere, mesi dopo, quale codice stava girando.
 
 Codici regalo (facoltativi, non servono per entrare): `npx wrangler d1 execute kleo-db --remote --command "INSERT INTO invites (code,credits,max_uses,note) VALUES ('NOME-1',3,1,'Nome')"`. Chi scrive `NOME-1` nel campo facoltativo della pagina di accesso riceve quei crediti **in più** ai 2 gratuiti; chi non scrive niente entra lo stesso.
 
