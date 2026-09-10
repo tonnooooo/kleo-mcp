@@ -72,7 +72,7 @@ async function main() {
   await client.connect(transport);
   const tools = (await client.listTools()).tools.map((t) => t.name).sort();
   console.log("  tools:", tools.join(", "));
-  for (const n of ["kleo_list_templates", "kleo_create_video", "kleo_get_job", "kleo_get_result", "kleo_generate_thumbnail", "kleo_cancel_job"]) assert(tools.includes(n), `missing tool ${n}`);
+  for (const n of ["kleo_list_templates", "kleo_create_video", "kleo_get_job", "kleo_wait_for_video", "kleo_get_result", "kleo_generate_thumbnail", "kleo_cancel_job"]) assert(tools.includes(n), `missing tool ${n}`);
 
   const call = async (name, args) => { const r = await client.callTool({ name, arguments: args }); return { r, data: r.structuredContent ?? (() => { try { return JSON.parse(r.content?.[0]?.text ?? ""); } catch { return null; } })() }; };
 
@@ -91,6 +91,11 @@ async function main() {
   step("validation: bad duration is refused without charging");
   const bad = await call("kleo_create_video", { template: "viral-short", prompt: "This should fail because it is far too long for a short", duration_s: 600, format: "9:16" });
   assert(bad.r.isError, "expected an error for out-of-range duration");
+
+  step("kleo_wait_for_video returns progress or links (10 s wait)");
+  const w = await call("kleo_wait_for_video", { job_id: jobId, max_wait_s: 10 });
+  assert(w.data && (w.data.next === "call kleo_wait_for_video again" || w.data.state === "done"), "wait tool unexpected: " + JSON.stringify(w.data).slice(0, 200));
+  console.log("  wait →", (w.r.content?.[0]?.text ?? "").slice(0, 110));
 
   step("orchestrator ticks (cron) until the mock render finishes");
   let view;

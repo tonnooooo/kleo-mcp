@@ -10,6 +10,7 @@ import { STYLES, KINDS, BEAT_KINDS, BEAT_ICONS, BEAT_FX, CINEMA_ACCENTS, STORY_A
 import { int } from "./util";
 
 const INSTRUCTIONS = `This server is Kleo (the kleo_* tools): the video studio the user connected. It is not kie-mcp or any other product. Kleo renders YouTube videos and Shorts (4K, 60 fps) from a template and a prompt. When the user mentions Kleo, a video, a Short or a YouTube clip, use these tools; never answer from memory.
+DELIVERY RULE: the user expects the finished video in this same conversation, without coming back later. After kleo_create_video, call kleo_wait_for_video repeatedly (each call waits up to 50 seconds and returns progress) until it returns the download links, then hand them over. Tell the user once that the render is running and the estimated time; do not ask "shall I keep waiting?"; keep calling until done unless the user says stop.
 Order of calls: 1) kleo_list_templates if the user has not named a template (Shorts → viral-short unless the content is clearly a Reddit story, a quote or a list of facts). 2) kleo_storyboard_guide once per conversation, then write an original storyboard for this conversation (hook, scenes, narration, visuals) and pass it as the "storyboard" argument of kleo_create_video; if you skip it, Kleo plans a more generic storyboard from the prompt. 3) kleo_create_video: it returns at once with a video number (job_id) and an estimate in minutes. 4) kleo_get_job when the user asks how it is going. 5) kleo_get_result for the download links once it is done.
 Rendering runs on a GPU in the background: a Short usually takes about 10–20 minutes, long videos longer. The estimate to quote is the eta_min the server returns, never your own guess; never block or loop waiting. Never invent progress, files or links: only repeat what these tools return. Call the video by its number (for example "video gt_ab12cd34"), not "job".`;
 
@@ -41,6 +42,19 @@ const TRACK_LABEL: Record<string, string> = {
 const trackLabel = (track: string | null) => (track && TRACK_LABEL[track]) || "working";
 const noSuchVideo = (id: string) =>
   new JobError(`There is no video number "${id}" on this account. Check the number, or call kleo_get_job without a number to see your recent videos.`);
+
+
+/** Download links for a finished job, as data + human text (shared by kleo_get_result and kleo_wait_for_video). */
+async function resultPayload(env: Env, base: string, job: Job) {
+  const what = kindOf(jobView(job).format);
+  const links = await resultLinks(env, base, job);
+  const label: Record<string, string> = { video_url: "Video (MP4)", subtitles_url: "Subtitles (.srt)", thumbnail_url: "Thumbnail" };
+  const order = ["video_url", "subtitles_url", "thumbnail_url"];
+  const sim = job.backend === "mock" ? "\nNOTE: this video was rendered in SIMULATED mode: the MP4 is a 1-second placeholder, not a real video." : "";
+  const text = `Your ${what} ${job.id} is ready. The links work until ${niceDate(job.expires_at)}:\n` +
+    Object.entries(links).sort(([a], [b]) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99)).map(([k, v]) => `${label[k] ?? k.replace("_url", "")}: ${v}`).join("\n") + sim;
+  return { data: { job_id: job.id, state: "done", expires_at: job.expires_at, mode: job.backend === "mock" ? "simulated" : "gpu", ...links }, text };
+}
 
 export function buildServer(env: Env, user: User, base: string): McpServer {
   const simulated = env.RENDER_BACKEND === "mock";
@@ -178,7 +192,7 @@ EXAMPLE B (editorial long-form scene, 16:9, en):
 
   server.registerTool("kleo_get_job", {
     title: "Check progress",
-    description: "Step 4. Progress of a video: state (queued, starting, rendering, finishing, done, failed, cancelled), what it is doing now, percent done and minutes left (eta_min). Call it when the user asks how it is going; do not poll in a loop. When the state is done, call kleo_get_result. Without a job_id it lists the account's recent videos.",
+    description: "Step 4. Progress of a video: state (queued, starting, rendering, finishing, done, failed, cancelled), what it is doing now, percent done and minutes left (eta_min). Use it for a one-off status check; to wait until the video is ready use kleo_wait_for_video instead. When the state is done, call kleo_get_result. Without a job_id it lists the account's recent videos.",
     inputSchema: z.object({ job_id: z.string().optional().describe("The video number returned by kleo_create_video (for example gt_ab12cd34). Omit to list recent videos.") }),
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   }, async ({ job_id }) => guarded(async () => {
@@ -200,6 +214,37 @@ EXAMPLE B (editorial long-form scene, 16:9, en):
     return ok(jobView(job), statusLine(job));
   }));
 
+
+  server.registerTool("kleo_wait_for_video", {
+    title: "Wait for the video (keeps the chat working until it is ready)",
+    description: "Step 4b. Waits up to max_wait_s seconds (default 50) for a video and returns either the download links (when done) or its progress. THIS IS HOW YOU DELIVER A VIDEO WITHOUT ASKING THE USER TO COME BACK: after kleo_create_video, call kleo_wait_for_video again and again, one call after the other, until it returns the links (a Short usually needs 15–25 calls, a long video more). Do not stop after a few calls and do not ask the user whether to continue; only stop if the user asks you to, or if the result says the video failed or was cancelled. Say once that the render is running and how long it should take, then keep calling silently and finally hand over the links.",
+    inputSchema: z.object({
+      job_id: z.string().optional().describe("The video number from kleo_create_video. Omit to wait for your most recent video."),
+      max_wait_s: z.number().int().min(10).max(110).default(50).describe("How long this call may wait before reporting progress (seconds). Keep the default unless the client times out."),
+    }),
+    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  }, async ({ job_id, max_wait_s }, ctx) => guarded(async () => {
+    let job = job_id ? await getUserJob(env, user.id, job_id) : (await recentJobsForUser(env, user.id, 1))[0];
+    if (!job) throw job_id ? noSuchVideo(job_id) : new JobError("No videos on this account yet. Create one with kleo_create_video.");
+    const signal = ctx?.mcpReq?.signal;
+    const deadline = Date.now() + Math.min(110, Math.max(10, max_wait_s ?? 50)) * 1000;
+    const finished = (j: Job) => j.state === "done" || j.state === "failed" || j.state === "cancelled";
+    while (!finished(job) && Date.now() < deadline && !signal?.aborted) {
+      await new Promise((r) => setTimeout(r, 5000));
+      job = (await getUserJob(env, user.id, job.id)) ?? job;
+    }
+    const what = kindOf(jobView(job).format);
+    if (job.state === "done") {
+      const r = await resultPayload(env, base, job);
+      return ok(r.data, r.text);
+    }
+    if (job.state === "failed") return ok({ ...jobView(job), next: "stop" }, `Sorry, ${what} ${job.id} could not be rendered: ${job.error ?? "unknown error"}. Your credits were given back. You can try again with kleo_create_video.`);
+    if (job.state === "cancelled") return ok({ ...jobView(job), next: "stop" }, `${what[0].toUpperCase() + what.slice(1)} ${job.id} was cancelled.`);
+    const eta = job.eta_min ? ` About ${plural(job.eta_min, "minute")} to go.` : "";
+    const where = job.state === "queued" ? "waiting for a renderer" : `${job.percent}% done (${trackLabel(job.track)})`;
+    return ok({ ...jobView(job), next: "call kleo_wait_for_video again" }, `Still rendering: ${what} ${job.id} is ${where}.${eta} Call kleo_wait_for_video again now to keep waiting; the links will come back from that call as soon as it is ready.`);
+  }));
+
   server.registerTool("kleo_get_result", {
     title: "Get download links",
     description: "Step 5. Download links for a finished video: the MP4, the subtitles (.srt) and the thumbnail. Only works when kleo_get_job says the state is done. Links stop working after 7 days. Share them with the user exactly as returned, as plain URLs; never make up a link.",
@@ -213,12 +258,8 @@ EXAMPLE B (editorial long-form scene, 16:9, en):
     if (job.state === "failed") throw new JobError(`Sorry, ${what} ${job.id} could not be rendered, so there are no files. Your credits were given back. Please try again.`);
     if (job.state !== "done") throw new JobError(`Your ${what} ${job.id} is not ready yet: ${job.state === "queued" ? "it is waiting in the queue" : `${job.percent}% done (${trackLabel(job.track)})`}. Check again later with kleo_get_job.`);
     if (job.purged_at) throw new JobError(`The files of ${what} ${job.id} expired on ${niceDate(job.expires_at)} and were deleted. Files are kept for 7 days; create the video again if you need it.`);
-    const links = await resultLinks(env, base, job);
-    const label: Record<string, string> = { video_url: "Video (MP4)", subtitles_url: "Subtitles (.srt)", thumbnail_url: "Thumbnail" };
-    const order = ["video_url", "subtitles_url", "thumbnail_url"];
-    const sim = job.backend === "mock" ? "\nNOTE: this video was rendered in SIMULATED mode: the MP4 is a 1-second placeholder, not a real video." : "";
-    return ok({ job_id: job.id, expires_at: job.expires_at, mode: job.backend === "mock" ? "simulated" : "gpu", ...links },
-      `Your ${what} ${job.id} is ready. The links work until ${niceDate(job.expires_at)}:\n` + Object.entries(links).sort(([a], [b]) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99)).map(([k, v]) => `${label[k] ?? k.replace("_url", "")}: ${v}`).join("\n") + sim);
+    const r = await resultPayload(env, base, job);
+    return ok(r.data, r.text);
   }));
 
   server.registerTool("kleo_generate_thumbnail", {
