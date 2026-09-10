@@ -6,7 +6,9 @@ name: tests
 on:
   push:
     branches: ["**"]
-    paths: ["src/**", "test/**", "worker/**", "package.json", "tsconfig.json", ".github/workflows/tests.yml"]
+    # scripts/** is in the list because the adaptation measurement lives there: without it, changing the measure did
+    # not re-run the measure, and the report on the branch stayed the one from the previous commit.
+    paths: ["src/**", "test/**", "worker/**", "scripts/**", "package.json", "tsconfig.json", ".github/workflows/tests.yml"]
   workflow_dispatch:
 concurrency: { group: "tests-${{ github.ref }}", cancel-in-progress: true }
 permissions:
