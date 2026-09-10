@@ -111,7 +111,9 @@ RUN set -eu; \
 #     exactly what the next line asks for and nothing else. engine/render.mjs launches chromium with
 #     headless:true and no channel, which Playwright serves from chromium-headless-shell — a few hundred MB less
 #     than the full browser. If this version of Playwright wants the full chromium instead, the launch probe
-#     below fails and the full browser is installed on the spot, so the saving is taken only when it is real. ---
+#     below fails and the full browser is installed on the spot, so the saving is taken only when it is real.
+#     The probe is written into the WORKDIR, not /tmp: node resolves a bare `playwright` import against the
+#     node_modules above the *script*, so a probe in /tmp cannot see the package it is there to test. ---
 WORKDIR /opt/kleo/keou
 COPY worker/keou/package.json worker/keou/package-lock.json ./
 ARG PLAYWRIGHT_BROWSER=chromium-headless-shell
@@ -124,15 +126,16 @@ RUN set -eu; \
       "const p = await b.newPage();" \
       "await p.setContent('<h1>kleo</h1>');" \
       "console.log('PLAYWRIGHT_LAUNCH_OK', b.version(), await p.textContent('h1'));" \
-      "await b.close();" > /tmp/plaunch.mjs; \
-    if npx playwright install "${PLAYWRIGHT_BROWSER}" && node /tmp/plaunch.mjs; then \
+      "await b.close();" > ./plaunch.mjs; \
+    if npx playwright install "${PLAYWRIGHT_BROWSER}" && node ./plaunch.mjs; then \
       echo "BROWSER=${PLAYWRIGHT_BROWSER}"; \
     else \
       echo "BROWSER=chromium (the headless shell was not enough)"; \
       npx playwright install chromium; \
-      node /tmp/plaunch.mjs; \
+      rm -rf /opt/kleo/ms-playwright/chromium_headless_shell-*; \
+      node ./plaunch.mjs; \
     fi; \
-    rm -f /tmp/plaunch.mjs; \
+    rm -f ./plaunch.mjs; \
     du -sh /opt/kleo/ms-playwright/* /opt/kleo/keou/node_modules; \
     rm -rf /var/lib/apt/lists/* /root/.npm
 
