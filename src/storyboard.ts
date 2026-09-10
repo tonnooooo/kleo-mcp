@@ -1290,12 +1290,17 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
       const got = isObj(raw) && Array.isArray(raw.scenes) ? raw.scenes.filter(isObj) : [];
       // Validated in context (the scenes accepted so far + this chunk + a temporary closing unless it is the last chunk);
       // error labels are remapped so "scene n" counts within the scenes the model just returned.
-      const temp = normalizeStoryboard({ ...chunkHead, scenes: [...structuredClone(scenes), ...got, ...(isLast ? [] : [TEMP_CLOSING(plan)])] }, plan) as Record<string, unknown>;
-      lastDraft = temp;
+      const draft = normalizeStoryboard({ ...chunkHead, scenes: [...structuredClone(scenes), ...got, ...(isLast ? [] : [TEMP_CLOSING(plan)])] }, plan) as Record<string, unknown>;
       const problems: string[] = [];
       if (got.length !== to - from) problems.push(`expected exactly ${to - from} scenes, got ${got.length}`);
-      const r = validateStoryboard(temp, { format: plan.format, language: plan.language });
+      const r = validateStoryboard(draft, { format: plan.format, language: plan.language });
       if (!r.ok) problems.push(...r.errors.map((m) => m.replace(/^scene (\d+)/, (_, n) => `scene ${Number(n) - scenes.length}`)).filter((m) => !/^scene (-\d+|0)\b/.test(m)));
+      // The scenes this chunk contributes, read from what the VALIDATOR normalised — not from the object handed to
+      // it. validateStoryboard no longer writes into its input, so the shots it repaired (the anchors it chose, a
+      // scene-level prompt folded into shots[0]) exist only in what it returns. Reading `draft` here would keep the
+      // unrepaired draft, and the scenes accepted into the film would quietly differ from the ones it approved.
+      const temp = (r.ok ? r.storyboard : r.normalised) as Record<string, unknown>;
+      lastDraft = temp;
       const chunkScenes = (temp.scenes as Record<string, unknown>[]).slice(scenes.length, isLast ? undefined : -1);
       const want = outline.slice(from, to).reduce((a, e) => a + e.words, 0);
       const words = countWords({ scenes: chunkScenes });

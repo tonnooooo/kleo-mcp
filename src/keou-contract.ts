@@ -229,7 +229,15 @@ export interface ValidateOptions {
   /** Maximum number of errors collected (default 10). */
   maxErrors?: number;
 }
-export type ValidateResult = { ok: true; storyboard: Storyboard } | { ok: false; errors: string[] };
+/**
+ * The result always carries the NORMALISED object, whether or not it is legal: validation and normalisation are the
+ * same pass (a scene-level image_prompt becomes shots[0], a deprecated motion becomes a move, a missing anchor is
+ * chosen), and a caller that has to report on a rejected draft needs to see what the draft became. `ok` says whether
+ * it may be rendered; `storyboard` and `normalised` are the same object under two names, honestly typed.
+ */
+export type ValidateResult =
+  | { ok: true; storyboard: Storyboard }
+  | { ok: false; errors: string[]; normalised: unknown };
 
 const MAX_ERRORS = 10;
 class TooMany extends Error {}
@@ -799,10 +807,21 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
  * unchanged: normalising is idempotent, and the sequencing rules read the shots that carry shot_kind.
  */
 export function validateStoryboard(sb: unknown, opts: ValidateOptions): ValidateResult {
+  // THE INPUT IS NEVER TOUCHED. This function normalises as it validates, and it used to do that in place and hand
+  // the caller back the very object it was given — so every caller silently depended on a side effect. That is the
+  // class of bug that produces tests which pass one at a time and fail together, and a caller that validates twice
+  // to be safe gets a different answer the second time. It works on a copy now, and the copy is what comes out.
+  const draft = clone(sb);
   const e = new Collector(opts.maxErrors ?? MAX_ERRORS);
-  try { validateInner(sb, opts, e); if (!e.errors.length) for (const p of qualityProblems(sb)) e.add(p); } catch (err) { if (!(err instanceof TooMany)) throw err; }
-  if (e.errors.length) return { ok: false, errors: e.errors };
-  return { ok: true, storyboard: sb as Storyboard };
+  try { validateInner(draft, opts, e); if (!e.errors.length) for (const p of qualityProblems(draft)) e.add(p); } catch (err) { if (!(err instanceof TooMany)) throw err; }
+  if (e.errors.length) return { ok: false, errors: e.errors, normalised: draft };
+  return { ok: true, storyboard: draft as Storyboard };
+}
+
+/** A deep copy that survives a storyboard's shapes (plain objects, arrays, strings, numbers, booleans, null). */
+function clone<T>(v: T): T {
+  if (typeof structuredClone === "function") return structuredClone(v);
+  return v === undefined ? v : (JSON.parse(JSON.stringify(v)) as T);
 }
 
 /**

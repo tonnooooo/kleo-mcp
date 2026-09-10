@@ -384,6 +384,33 @@ test("a scene-level image_prompt is normalised into shots[0] and disappears", ()
   assert.ok(errorsOf(tooLong, { format: "9:16", language: "en" }).includes(`scene 1 image_prompt: required text, maximum ${IMAGE_PROMPT_MAX} characters`));
 });
 
+test("validateStoryboard never writes into what it was given", () => {
+  // It normalises as it validates — a scene-level image_prompt becomes shots[0], a missing anchor is chosen — and it
+  // used to do that in place, so every caller depended on a side effect. Validating the same object twice then gave
+  // two different answers, and a test that passed alone failed beside another one.
+  const sb = pirates();
+  delete sb.scenes[1].shots;
+  sb.scenes[1].image_prompt = "The Red Gull racing over turquoise waves under a clear sky";
+  const before = JSON.stringify(sb);
+  const r1 = validateStoryboard(sb, { format: "9:16", language: "en" });
+  assert.equal(JSON.stringify(sb), before, "the caller's object is exactly as it was");
+  assert.ok(!r1.ok, "one picture for a whole line is still refused");
+  assert.ok(r1.normalised.scenes[1].shots, "and the normalised copy carries the repair");
+  assert.ok(!("image_prompt" in r1.normalised.scenes[1]), "which the caller's object must not have");
+
+  // Twice in a row gives the same answer, which is the property that was actually broken.
+  const r2 = validateStoryboard(sb, { format: "9:16", language: "en" });
+  assert.deepEqual(r2.errors, r1.errors);
+
+  // On the happy path the returned storyboard is the repaired one, and validating IT again changes nothing.
+  const good = pirates();
+  const ok1 = validateStoryboard(good, { format: "9:16", language: "en" });
+  assert.equal(ok1.ok, true, JSON.stringify(ok1.errors));
+  const ok2 = validateStoryboard(ok1.storyboard, { format: "9:16", language: "en" });
+  assert.equal(ok2.ok, true);
+  assert.deepEqual(ok2.storyboard, ok1.storyboard, "normalising is idempotent");
+});
+
 test("pictureScenes flattens scene → shot in order, with `<sceneId>-s<n>` ids", () => {
   const sb = pirates();
   const pics = pictureScenes(sb);
