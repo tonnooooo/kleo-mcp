@@ -285,6 +285,15 @@ GRADE = ("curves=r='0/0.02 0.25/0.22 0.75/0.80 1/0.98':g='0/0.02 0.25/0.22 0.75/
          "b='0/0.035 0.25/0.235 0.75/0.79 1/0.97',eq=saturation=0.92:contrast=1.06,noise=alls=6:allf=t+u")
 
 
+def seconds_of(path):
+    """Length of a file in seconds, or 0 when ffprobe cannot say. Never raises."""
+    try:
+        return float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+                                    capture_output=True, text=True).stdout.strip() or 0)
+    except Exception:
+        return 0.0
+
+
 def finish_clip(src, dst, width, height, fps=60, grade=True, trim=0.12):
     """Upscale, interpolate and grade one clip. Lanczos, not a neural upscaler: per-frame networks shimmer on
     generated footage, and the grain pass hides more than they would have added. Returns dst or None."""
@@ -339,6 +348,13 @@ def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=Non
             dst = os.path.join(work, f"{n:03d}.mp4")
             n += 1
             if src and os.path.isfile(src):
+                # A generated clip is capped at MAX_S because it drifts past that, so a shot longer than one take
+                # is filled by holding the last frame. That hold is a freeze on screen and it is invisible in every
+                # log unless it is said out loud here: a viewer sees it, and nothing else ever reports it.
+                have = seconds_of(src)
+                if have and want - have > 0.35:
+                    say(f"{scene['id']} shot {int(sh.get('index', 0)) + 1}: {want:.1f} s of film from a {have:.1f} s "
+                        f"clip — the last {want - have:.1f} s is a held frame")
                 # ONE encode per shot does the entire finish. 24 fps becomes 60 with real motion compensation at
                 # the size the model produced, then Lanczos to the delivery size, then the film's own grade — a
                 # separate finishing pass would encode every frame a second time for nothing. `fps=` on its own
