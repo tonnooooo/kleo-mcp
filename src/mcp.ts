@@ -2,16 +2,25 @@ import { McpServer, createMcpHandler } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { Env } from "./env";
 import type { User, Job } from "./db";
-import { getUserJob, getUser, recentJobsForUser, countOpenForUser } from "./db";
+import { getUserJob, getUser, recentJobsForUser, countOpenForUser, GPU_ONLY_WAIT } from "./db";
 import { TEMPLATES, TEMPLATE_IDS, findTemplate, creditsFor } from "./templates";
 import { createJob, cancelJob, jobView, resultLinks, JobError, FILE_NAMES } from "./jobs";
 import { audit } from "./db";
-import { STYLES, KINDS, BEAT_KINDS, BEAT_ICONS, BEAT_FX, CINEMA_ACCENTS, STORY_ACTS, STORY_CAST, STORY_PROPS, STORY_FX, VISUALS, MOTION, VOICES, KLEO_STYLES, IMAGE_PROMPT_MAX, SHOT_MOTION, SHOT_CAPTION_MAX, SHOT_HL_MAX, SHOT_AT_MAX, CLOSING_BUTTON_MAX, MAX_PICTURES } from "./keou-contract";
+import { STYLES, KINDS, BEAT_KINDS, BEAT_ICONS, BEAT_FX, CINEMA_ACCENTS, STORY_ACTS, STORY_CAST, STORY_PROPS, STORY_FX, VISUALS, VOICES, KLEO_STYLES, IMAGE_PROMPT_MAX, SHOT_MOTION, SHOT_CAPTION_MAX, SHOT_HL_MAX, SHOT_AT_MAX, CLOSING_BUTTON_MAX, MAX_PICTURES, SHOTS_PER_SCENE } from "./keou-contract";
 import { int } from "./util";
+
+/**
+ * Languages a job can be created in. The engine ships more Kokoro voices (keou-contract VOICES still knows fr),
+ * but kleo_create_video only accepts these and the validator demands storyboard.language === job language: the
+ * guide must never offer a language this tool cannot take, or the model writes a storyboard that is rejected.
+ */
+const JOB_LANGUAGES = ["en", "it"] as const;
+/** "1-4" / "1-2": the shot count the validator enforces, so the guide can never drift from SHOTS_PER_SCENE. */
+const shotRange = (kind: "cinema" | "closing") => SHOTS_PER_SCENE[kind].join("-");
 
 const INSTRUCTIONS = `This server is Kleo (the kleo_* tools): the video studio the user connected. It is not kie-mcp or any other product. Kleo renders YouTube videos and Shorts (4K, 60 fps) from a template and a prompt. When the user mentions Kleo, a video, a Short or a YouTube clip, use these tools; never answer from memory.
 DELIVERY RULE: the user expects the finished video in this same conversation, without coming back later. After kleo_create_video, call kleo_wait_for_video repeatedly (each call waits up to 50 seconds and returns progress) until it returns the download links, then hand them over. Tell the user once that the render is running and the estimated time; do not ask "shall I keep waiting?"; keep calling until done unless the user says stop.
-Order of calls: 1) kleo_list_templates if the user has not named a template (Shorts → viral-short unless the content is clearly a Reddit story, a quote or a list of facts). 2) kleo_storyboard_guide once per conversation, then write an original storyboard for this conversation (hook, scenes, narration, visuals, and for the cartoon/realistic styles the "shots": 2-4 pictures per scene, each described in one sentence) and pass it as the "storyboard" argument of kleo_create_video; if you skip it, Kleo plans a more generic storyboard from the prompt. Every video has a visual style (cartoon, realistic, cyber or stickman): pass "style" when the user has a preference, otherwise Kleo picks one from the topic. 3) kleo_create_video: it returns at once with a video number (job_id) and an estimate in minutes. 4) kleo_get_job when the user asks how it is going. 5) kleo_get_result for the download links once it is done.
+Order of calls: 1) kleo_list_templates if the user has not named a template (Shorts → viral-short unless the content is clearly a Reddit story, a quote or a list of facts). 2) kleo_storyboard_guide once per conversation, then write an original storyboard for this conversation (hook, scenes, narration, visuals, and for the cartoon/realistic styles the "shots": ${shotRange("cinema")} pictures per scene, each described in one sentence) and pass it as the "storyboard" argument of kleo_create_video; if you skip it, Kleo plans a more generic storyboard from the prompt. Every video has a visual style (cartoon, realistic, cyber or stickman): pass "style" when the user has a preference, otherwise Kleo picks one from the topic. 3) kleo_create_video: it returns at once with a video number (job_id) and an estimate in minutes. 4) kleo_get_job when the user asks how it is going. 5) kleo_get_result for the download links once it is done.
 Rendering runs on a GPU in the background: a Short usually takes about 10–20 minutes, long videos longer. The estimate to quote is the eta_min the server returns, never your own guess; never block or loop waiting. Never invent progress, files or links: only repeat what these tools return. Call the video by its number (for example "video gt_ab12cd34"), not "job".`;
 
 const ok = (data: unknown, text?: string) => ({
@@ -40,6 +49,17 @@ const TRACK_LABEL: Record<string, string> = {
   script: "writing the script", voice: "recording the narration", clips: "drawing the scenes", edit: "editing", finishing: "finishing up",
 };
 const trackLabel = (track: string | null) => (track && TRACK_LABEL[track]) || "working";
+/**
+ * A cartoon / realistic job draws every picture on a GPU, so the free GitHub Actions pool never claims it
+ * (POOL_SKIP in db.ts). When no GPU can be rented the orchestrator leaves GPU_ONLY_WAIT on `error`, the one field a
+ * queued job shows, so the job can say why it is not moving; reserveJob clears it the moment a GPU is reserved.
+ */
+// GPU_ONLY_WAIT is the PREFIX of the recorded error (the orchestrator appends the last real failure after it),
+// so this has to be startsWith: an equality test silently never matches and the explanation never reaches the user.
+const gpuOnlyWait = (job: Job) => job.state === "queued" && typeof job.error === "string" && job.error.startsWith(GPU_ONLY_WAIT);
+/** The one explanation both kleo_get_job and kleo_wait_for_video give for a stranded picture job. */
+const gpuWaitText = (what: string) =>
+  `This style draws its own pictures, and pictures can only be drawn on a GPU, so the free renderers cannot take this one. No GPU is free right now, so your ${what} is simply waiting its turn: it starts on its own as soon as one comes free, and the wait costs nothing extra. If you would rather not wait, kleo_cancel_job gives the credits back.`;
 const noSuchVideo = (id: string) =>
   new JobError(`There is no video number "${id}" on this account. Check the number, or call kleo_get_job without a number to see your recent videos.`);
 
@@ -120,9 +140,10 @@ Target: ${dur}s → about ${words} narrated words in ${scenes} scenes (speed 1.1
 
 TOP-LEVEL OBJECT (no id, no script_file, no music_quiet, no image scenes, never scene.image):
 { "schema_version": 1, "editorial_status": "ready", "title": "<=120 chars", "brand": "Kleo or the channel name <=28", "kleo_style": one of ${JSON.stringify(KLEO_STYLES)},
-  "style": one of ${JSON.stringify(STYLES)}, "format": "9:16" | "16:9", "language": "en" | "it" | "fr",
-  "voice": en: af_heart|am_michael|bf_emma · it: if_sara|im_nicola · fr: ff_siwis, "speed": 0.8-1.3 (use 1.1), "music": "bed" | "none",
+  "style": one of ${JSON.stringify(STYLES)}, "format": "9:16" | "16:9", "language": ${JOB_LANGUAGES.map((l) => `"${l}"`).join(" | ")},
+  "voice": ${JOB_LANGUAGES.map((l) => `${l}: ${(VOICES[l] ?? []).join("|")}`).join(" · ")}, "speed": 0.8-1.3 (use 1.1), "music": "bed" | "none",
   "max_duration": ${Math.round(dur * 1.6)}, "description": "<=180", "tags": ["..."], "scenes": [...] }
+"format" and "language" are NOT free choices: they must equal the "format" and "language" you pass to kleo_create_video (the validator rejects a storyboard that disagrees), and "voice" must be one of that language's voices above. A job is ${JOB_LANGUAGES.join(" or ")} only: never write a storyboard in any other language.
 
 KLEO STYLES ("kleo_style", always set it; it must match the Keou "style"):
  "cartoon": the story told in flat vector illustrations generated from your descriptions (pirates → beaches, sand, ships; space → rockets, stations), full screen, cut on the narration. Stories, kids, travel, animals, history, fun facts. Needs style "picture" (9:16 or 16:9).
@@ -132,13 +153,13 @@ KLEO STYLES ("kleo_style", always set it; it must match the Keou "style"):
 KEOU STYLES: "picture" (cartoon/realistic: nothing but full-screen pictures cut on the narration, like a short documentary; no icons, no beats), "cinema" (cyber, portrait-first: each scene has 1-8 beats = hero visuals cut on the narration), "stickman" (9:16 only, scenes of kind "story"), "editorial" / "illustrated" / "technical" / "terminal" (landscape-friendly, one composition per scene: hero, list, compare, steps, metric, quote, closing; cyber only).
 
 PICTURE SCENE (cartoon and realistic; the whole video is these pictures: no beats, no icons, no cards):
-{ "id": "01-hook", "kind": "cinema", "chapter": "01 THE CAPTAIN <=32", "accent": ${JSON.stringify(CINEMA_ACCENTS)}, "title": "<=90, the line shown on the first picture", "hl": "<=24, one word of the title", "voice": "1-3 sentences <=350 chars", "hold": 0.15-3, "shots": [2-4 pictures; the closing scene has exactly 1] }
- SHOT: {"image_prompt":"<=${IMAGE_PROMPT_MAX} chars, ONE sentence describing the picture","caption":"2-5 BIG WORDS <=${SHOT_CAPTION_MAX}","hl":"ONE WORD OF caption <=${SHOT_HL_MAX}","at":"<=${SHOT_AT_MAX} chars quoted verbatim from this scene's voice","motion":${JSON.stringify(SHOT_MOTION)}} — only "image_prompt" is required.
+{ "id": "01-hook", "kind": "cinema", "chapter": "01 THE CAPTAIN <=32", "accent": ${JSON.stringify(CINEMA_ACCENTS)}, "title": "<=90, the line shown on the first picture", "hl": "<=24, one word of the title", "voice": "1-3 sentences <=350 chars", "hold": 0.15-3, "shots": [${shotRange("cinema")} pictures, 2-3 is the usual rhythm; a closing scene takes ${shotRange("closing")}, normally 1] }
+ SHOT: {"image_prompt":"<=${IMAGE_PROMPT_MAX} chars, ONE sentence describing the picture","caption":"2-5 BIG WORDS <=${SHOT_CAPTION_MAX}","hl":"ONE WORD OF caption <=${SHOT_HL_MAX}","at":"<=${SHOT_AT_MAX} chars, an unbroken run of whole words copied from this scene's voice (see below)","motion":${JSON.stringify(SHOT_MOTION)}} — only "image_prompt" is required, and a shot carries no other key.
  - image_prompt: concrete subject, place, action, light and mood; the SAME characters described the same way in every shot (hair, clothes, colours); consecutive shots of one scene show the next moment or a new angle of the same place. NO text, letters, numbers, logos or captions inside the picture, and no real people.
- - the first shot opens the scene and must NOT carry "at"; every other shot cuts when its "at" words are spoken, so place the anchors along the line in reading order.
- - "caption" is optional and rare: 2-5 strong words on the shot that carries the idea (the first shot falls back to the scene title). "motion" is the slow camera move on the picture; leave it out and Kleo alternates.
- - the closing scene: one shot, and "button" (<=${CLOSING_BUTTON_MAX}, default "Subscribe").
- Kleo generates every picture (up to ${MAX_PICTURES(dur)} for a video of this length): never set scene.image or shot.image, and never write "image_prompt" on the scene itself.
+ - the first shot opens the scene and must NOT carry "at"; every other shot cuts when its "at" words are spoken, so place the anchors along the line in reading order. An "at" must be an unbroken piece of that scene's "voice", copied character for character (punctuation included) AND landing on whole words: from "only one cabin boy swam back to shore" take "swam back" — never a fragment ("wam bac"), never a paraphrase ("he swam"), and never a jump across punctuation ("1720 Captain" when the line reads "In 1720, Captain Mara"). Case does not matter.
+ - "caption" is optional and rare: 2-5 strong words on the shot that carries the idea (the first shot falls back to the scene title). "motion" is the slow camera move on the picture; it lives on the SHOT and nowhere else (a "motion" on the scene is refused); leave it out and Kleo alternates.
+ - the closing scene: kind "closing" (the last scene always is), ${shotRange("closing")} shots — one is the norm — and "button" (<=${CLOSING_BUTTON_MAX}, default "Subscribe") OR a "detail" line (<=110), never both.
+ Kleo draws a picture for every shot you write, so keep the total sensible for the length (about ${MAX_PICTURES(dur)} for a video of this length): never set scene.image or shot.image, and never write "image_prompt" on the scene itself. Each picture is named "<scene id>-s<shot number>", so a scene id must not itself end in "-s" and a number.
 
 CINEMA SCENE (cyber only): { "id": "01-hook", "kind": "cinema", "chapter": "01 HOOK <=32", "accent": ${JSON.stringify(CINEMA_ACCENTS)}, "title": "<=90", "hl": "<=24 word highlighted", "voice": "1-3 sentences <=350 chars", "beats": [ ... 1-8 ... ], "hold": 0.15-3 }
  BEATS (each may carry "at": "<=24 chars quoted verbatim from this scene's voice", to sync the cut):
@@ -155,11 +176,11 @@ STICKMAN SCENE: { "id", "kind": "story", "act": ${JSON.stringify(STORY_ACTS)}, "
 
 EDITORIAL/ILLUSTRATED/TECHNICAL/TERMINAL SCENES: { "id", "kind": hero|list|compare|steps|metric|quote|closing, "eyebrow": "<=40", "title": "<=90", "detail": "<=110", "voice": "<=350", "visual": ${JSON.stringify(VISUALS)}, "hold": 0.65 }
   list/steps: "items": [3 x <=42] · compare: "items": [2] · metric: "value": "<=12", "unit": "<=45", "animate_value": true (value must start with a number) · quote: "quote": "<=120", "source": "<=80" · terminal style may add "terminal_lines": [1-3 x <=48] · closing: "button": "<=40" OR "detail".
-  Motion backgrounds (optional, kind "image" is NOT allowed; skip "motion" unless you know the engine): ${JSON.stringify(MOTION)}.
+  No scene ever carries "motion" (nor "image", "image_credit" or any other motion_* field): the engine's motion backgrounds cannot be requested from a storyboard, and kind "image" is not allowed either.
 
-RULES THE VALIDATOR ENFORCES: 2-240 scenes; unique slug ids [a-z0-9-] that must not end with "-s" + a number (reserved for pictures); last scene kind "closing"; picture style: only cinema/closing scenes, 1-4 shots each (closing 1-2), "beats" forbidden, image_prompt 2-${IMAGE_PROMPT_MAX} chars on every shot; cinema style only cinema/closing scenes; stickman only story/closing and 9:16; kleo_style cartoon/realistic need style "picture", kleo_style stickman needs style "stickman"; scene.image and shot.image forbidden; "at" (beat or shot) must appear verbatim (case-insensitive) in that scene's voice and never on the first shot; voice legal for language; total narration must fit max_duration (never exceed ~${Math.round(words * 1.25)} words for ${dur}s).
+RULES THE VALIDATOR ENFORCES: 2-240 scenes; unique slug ids [a-z0-9-] that must not end with "-s" + a number (reserved for pictures); last scene kind "closing"; every scene needs "title" and "voice"; picture style: only cinema/closing scenes, ${shotRange("cinema")} shots each (closing ${shotRange("closing")}), "beats" forbidden, image_prompt 2-${IMAGE_PROMPT_MAX} chars on every shot; cinema style only cinema/closing scenes; stickman only story/closing and 9:16; kleo_style cartoon/realistic need style "picture", kleo_style stickman needs style "stickman"; scene.image, scene.motion (and motion_*) and shot.image forbidden; "at" (beat or shot) must be an unbroken run of that scene's voice, copied verbatim (case-insensitive, punctuation included) and landing on whole words, and never sits on the first shot; a shot carries only image_prompt, caption, hl, at and motion; format and language must equal the job's; voice legal for that language; total narration must fit max_duration (never exceed ~${Math.round(words * 1.25)} words for ${dur}s).
 
-CREATIVE DIRECTION: open with a hook in the first sentence; vary accents per scene; alternate beat kinds (type → icon → steps → dialog...); one idea per scene; end with a clear closing (question, promise or CTA). In the picture style, cut 2-4 times per scene: each shot is the next moment or a new angle, with the same characters throughout. Do not copy the examples; adapt tone and vocabulary to the user's topic and audience.
+CREATIVE DIRECTION: open with a hook in the first sentence; vary accents per scene; alternate beat kinds (type → icon → steps → dialog...); one idea per scene; end with a clear closing (question, promise or CTA). In the picture style, give each scene ${shotRange("cinema")} shots (2-3 is the usual rhythm): each shot is the next moment or a new angle, with the same characters throughout. Do not copy the examples; adapt tone and vocabulary to the user's topic and audience.
 
 EXAMPLE A (cartoon picture Short, 9:16, 40s, en):
 {"schema_version":1,"editorial_status":"ready","title":"The Treasure Nobody Ever Came Back For","brand":"Kleo","kleo_style":"cartoon","style":"picture","format":"9:16","language":"en","voice":"am_michael","speed":1.1,"music":"bed","max_duration":64,"scenes":[
@@ -201,11 +222,11 @@ EXAMPLE C (editorial long-form scene, 16:9, en, cyber):
       prompt: z.string().describe("What the video is about, in the user's words (8 to 4000 characters): topic, angle, facts, names, tone, anything that must appear on screen."),
       duration_s: z.number().optional().describe("Target length in seconds. Defaults to the template default and must stay inside the template's range."),
       format: z.enum(["16:9", "9:16"]).optional().describe("16:9 for YouTube videos, 9:16 for Shorts. Defaults to the template's first format."),
-      language: z.enum(["en", "it"]).default("en").describe("Voice and caption language."),
+      language: z.enum(JOB_LANGUAGES).default("en").describe("Voice and caption language. A storyboard you pass must declare this same language."),
       voice: z.string().optional().describe("Voice id from kleo_list_templates. Optional."),
       style: z.enum(KLEO_STYLES).optional().describe("What the viewer sees. cartoon: illustrated full-screen shots drawn for the topic and cut on the narration — pirates get beaches and ships, space gets rockets and stations (stories, kids, travel, animals, history). realistic: the same, with cinematic photo shots (products, places, news, sport). cyber: the dark motion-design look with glowing icons and big type, no pictures (tech, security, AI, code). stickman: a hand-drawn stickman acting the story, 9:16 Shorts only. Omit it and Kleo picks one from the topic (never stickman)."),
       notify_email: z.string().email().optional().describe("Optional: email the download links when the render finishes."),
-      storyboard: z.looseObject({}).optional().describe("Optional but recommended: the storyboard you wrote following kleo_storyboard_guide (a Keou project object without id, script_file, music_quiet or image scenes). When omitted, Kleo plans one from the prompt. Checked before anything is charged; on error the tool lists the problems so you can fix them and call again."),
+      storyboard: z.looseObject({}).optional().describe("Optional but recommended: the storyboard you wrote following kleo_storyboard_guide (a Keou project object without id, script_file, music_quiet or image scenes). Its format and language must equal the ones you pass here, and its voice must belong to that language. When omitted, Kleo plans one from the prompt. Checked before anything is charged; on error the tool lists the problems so you can fix them and call again."),
     }),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   }, async (args) => guarded(async () => {
@@ -238,7 +259,12 @@ EXAMPLE C (editorial long-form scene, 16:9, en, cyber):
       case "done": return `Your ${what} ${job.id} is ready. Call kleo_get_result for the download links.`;
       case "failed": return `Sorry, ${what} ${job.id} could not be rendered. Your ${plural(job.credits, "credit")} ${job.credits === 1 ? "was" : "were"} given back. Please try again; if it happens again, tell the Kleo team.${job.error ? ` (Technical detail: ${job.error})` : ""}`;
       case "cancelled": return `${what[0].toUpperCase() + what.slice(1)} ${job.id} was cancelled.`;
-      case "queued": return `Your ${what} ${job.id} is in the queue, waiting for a free GPU. Once it starts it takes ${simulated ? "about a minute" : `about ${plural(job.eta_min ?? 0, "minute")}`}.`;
+      case "queued": {
+        const takes = `Once it starts it takes ${simulated ? "about a minute" : `about ${plural(job.eta_min ?? 0, "minute")}`}.`;
+        return gpuOnlyWait(job)
+          ? `Your ${what} ${job.id} is in the queue and has not started yet. ${gpuWaitText(what)} ${takes}`
+          : `Your ${what} ${job.id} is in the queue, waiting for a free GPU. ${takes}`;
+      }
       default: return `Your ${what} ${job.id} is ${job.percent}% done (${trackLabel(job.track)}). ${simulated ? "Less than a minute to go." : `About ${plural(Math.max(1, job.eta_min ?? 1), "minute")} to go.`}`;
     }
   };
@@ -256,7 +282,7 @@ EXAMPLE C (editorial long-form scene, 16:9, en, cyber):
         const status = j.state === "done" ? `ready (links valid until ${niceDate(j.expires_at)})`
           : j.state === "failed" ? "failed (credits given back)"
           : j.state === "cancelled" ? "cancelled"
-          : j.state === "queued" ? "waiting in the queue"
+          : j.state === "queued" ? (gpuOnlyWait(j) ? "waiting for a free GPU (this style draws its pictures on one)" : "waiting in the queue")
           : `${j.percent}% done`;
         return `- ${j.id}: ${v.duration_s}-second ${kindOf(v.format)}, template "${templateName(j.template)}", ${status}`;
       });
@@ -294,7 +320,7 @@ EXAMPLE C (editorial long-form scene, 16:9, en, cyber):
       tickN++;
       if (progressToken !== undefined && ctx?.mcpReq?.notify) {
         try {
-          await ctx.mcpReq.notify({ method: "notifications/progress", params: { progressToken, progress: tickN, message: job.state === "queued" ? "waiting for a renderer" : `${job.percent}% · ${trackLabel(job.track)}` } });
+          await ctx.mcpReq.notify({ method: "notifications/progress", params: { progressToken, progress: tickN, message: job.state === "queued" ? (gpuOnlyWait(job) ? "waiting for a GPU (this style draws its pictures on one)" : "waiting for a renderer") : `${job.percent}% · ${trackLabel(job.track)}` } });
         } catch { /* client may not accept progress */ }
       }
     }
@@ -305,9 +331,12 @@ EXAMPLE C (editorial long-form scene, 16:9, en, cyber):
     }
     if (job.state === "failed") return ok({ ...jobView(job), next: "stop" }, `Sorry, ${what} ${job.id} could not be rendered: ${job.error ?? "unknown error"}. Your credits were given back. You can try again with kleo_create_video.`);
     if (job.state === "cancelled") return ok({ ...jobView(job), next: "stop" }, `${what[0].toUpperCase() + what.slice(1)} ${job.id} was cancelled.`);
+    const again = "Call kleo_wait_for_video again now to keep waiting; the links will come back from that call as soon as it is ready.";
+    if (gpuOnlyWait(job))
+      return ok({ ...jobView(job), next: "call kleo_wait_for_video again" }, `Still waiting: ${what} ${job.id} has not started yet. ${gpuWaitText(what)} ${again}`);
     const eta = job.eta_min ? ` About ${plural(job.eta_min, "minute")} to go.` : "";
     const where = job.state === "queued" ? "waiting for a renderer" : `${job.percent}% done (${trackLabel(job.track)})`;
-    return ok({ ...jobView(job), next: "call kleo_wait_for_video again" }, `Still rendering: ${what} ${job.id} is ${where}.${eta} Call kleo_wait_for_video again now to keep waiting; the links will come back from that call as soon as it is ready.`);
+    return ok({ ...jobView(job), next: "call kleo_wait_for_video again" }, `Still rendering: ${what} ${job.id} is ${where}.${eta} ${again}`);
   }));
 
   server.registerTool("kleo_get_result", {
@@ -321,7 +350,7 @@ EXAMPLE C (editorial long-form scene, 16:9, en, cyber):
     const what = kindOf(jobView(job).format);
     if (job.state === "cancelled") throw new JobError(`${what[0].toUpperCase() + what.slice(1)} ${job.id} was cancelled, so there are no files. Create it again with kleo_create_video if you want it.`);
     if (job.state === "failed") throw new JobError(`Sorry, ${what} ${job.id} could not be rendered, so there are no files. Your credits were given back. Please try again.`);
-    if (job.state !== "done") throw new JobError(`Your ${what} ${job.id} is not ready yet: ${job.state === "queued" ? "it is waiting in the queue" : `${job.percent}% done (${trackLabel(job.track)})`}. Check again later with kleo_get_job.`);
+    if (job.state !== "done") throw new JobError(`Your ${what} ${job.id} is not ready yet: ${job.state === "queued" ? (gpuOnlyWait(job) ? "it is waiting for a free GPU, because this style draws every picture on one. Nothing extra is charged while it waits" : "it is waiting in the queue") : `${job.percent}% done (${trackLabel(job.track)})`}. Check again later with kleo_get_job.`);
     if (job.purged_at) throw new JobError(`The files of ${what} ${job.id} expired on ${niceDate(job.expires_at)} and were deleted. Files are kept for 7 days; create the video again if you need it.`);
     const r = await resultPayload(env, base, job);
     return ok(r.data, r.text);

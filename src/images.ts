@@ -9,10 +9,12 @@
  * - Model per style: vars IMAGE_MODEL_CARTOON / IMAGE_MODEL_REALISTIC (defaults below); the style suffix is appended here.
  * - Portrait (768x1344) or landscape (1344x768) by job format, for the models that accept a size (FLUX.1 schnell is square only).
  * - Two caps: MAX_PICTURES(duration) (24 for a Short, 48 for a long video) bounds the whole video, then IMAGE_SERVER_MAX
- *   (10) bounds what the SERVER draws, spread evenly over that list (pickImageScenes); everything else is answered as
- *   "missing" and drawn by the GPU worker. One attempt per picture (an "images.error" audit row marks the ones already
- *   tried). Failures, quota exhaustion (4006) and a missing AI binding are never fatal: the shot lands in "missing" and
- *   the engine paints an accent gradient instead.
+ *   (10, and 0 leaves every picture to the GPU) bounds what the SERVER draws, spread evenly over that list
+ *   (pickImageScenes); everything else is answered as "missing" and drawn by the GPU worker. One attempt per picture (an
+ *   "images.error" audit row marks the ones already tried) — except a transient failure (quota 4006, rate limit, 5xx, or
+ *   a store hiccup after a successful draw), which only holds the picture back for TRANSIENT_RETRY_MIN so a later call
+ *   still draws it. Failures, quota exhaustion and a missing AI binding are never fatal: the shot lands in "missing"
+ *   and the engine paints an accent gradient.
  * - Dev/test hook: IMAGE_FIXTURE=1 → a deterministic placeholder PNG per picture id (flat colour from the id + a diagonal
  *   stripe), encoded here with CompressionStream("deflate"); no AI call.
  *
@@ -23,7 +25,7 @@ import type { Env } from "./env";
 import type { Job } from "./db";
 import { setFile, listFiles, audit } from "./db.ts";
 import { putFile } from "./storage.ts";
-import { hmacHex } from "./util.ts";
+import { hmacHex, int, minutesSince } from "./util.ts";
 import { kleoStyleOf, pictureScenes, PICTURE_STYLES, MAX_PICTURES, type KleoStyle } from "./keou-contract.ts";
 
 /** The whole-video cap lives in the contract (the guide and the worker read the same rule); re-exported for the endpoint's callers. */
@@ -46,13 +48,20 @@ export const NEGATIVE_PROMPT = "text, letters, words, watermark, logo, signature
 export const DEFAULT_SERVER_MAX = 10;
 /** Signed picture links stay valid this long (the worker downloads them right away). */
 const LINK_TTL_S = 6 * 60 * 60;
+/** A transient failure (quota exhausted, rate limit, gateway hiccup) holds a picture back only this long. It is not the
+ *  picture's one attempt: the model never saw a problem with THIS prompt, it said "not now", so a later call must draw
+ *  it once the allocation is back instead of leaving one shot grey for the life of the video. Long enough that a worker
+ *  retrying in a tight loop cannot burn the quota again and again. */
+const TRANSIENT_RETRY_MIN = 10;
 
 export type ImageFormat = "9:16" | "16:9";
 export const sizeFor = (format: string): { width: number; height: number } => (format === "16:9" ? { width: 1344, height: 768 } : { width: 768, height: 1344 });
 /** FLUX.1 [schnell] only takes prompt/steps/seed (1024² output); every other hosted model accepts width/height. */
 export const acceptsSize = (model: string): boolean => !/flux-1-schnell/.test(model);
-/** A picture is stored under its picture id: `img/<sceneId>-s<n>.png` (scene id ≤ 50 chars + the shot suffix). */
+/** A picture is stored under its picture id: `img/<sceneId>-s<n>.png` (scene id ≤ 50 chars + "-s<n>" → 56 covers it). */
 export const imageFileName = (pictureId: string, ext: "png" | "jpg") => `img/${pictureId}.${ext}`;
+/** The ONE name rule for pictures: the store side writes it, dl.ts serves exactly what matches it. Two copies of this
+ *  regex used to disagree on the length, so long scene ids were signed here and answered 404 there. */
 export const IMAGE_NAME_RE = /^img\/[a-z0-9-]{1,56}\.(png|jpg)$/;
 
 /** Picks up to `max` of the pictures the video asks for, spread evenly over it (never only the first ones). */
@@ -145,7 +154,38 @@ export function placeholderPng(pictureId: string, width: number, height: number)
 /* ------------------------------------------------------------------ Workers AI */
 
 interface AiRunner { run(model: string, inputs: Record<string, unknown>): Promise<unknown> }
-export const isQuotaError = (e: unknown): boolean => /4006|daily free allocation|neurons/i.test(String(e));
+/** What this module itself throws about the ANSWER rather than about the service: the bytes are not a picture. Such a
+ *  message carries a byte count, and a byte count is not a status code — "model returned 429 bytes that are neither
+ *  PNG nor JPEG" (or a 4006-byte blob) used to read as "rate limited"/"quota", so a model that reliably answers junk
+ *  was retried for the life of the video instead of spending the picture's one attempt. Checked before any number is. */
+const PAYLOAD_ERROR_RE = /neither PNG nor JPEG|unexpected image model response/i;
+/** A number is an HTTP status only when nothing says it is a quantity: "429 Too Many Requests", "AiError: 503", "got
+ *  500" — never "… 500 bytes", "500 ms", "500 px". The four-digit AiError codes (3010, 5006, …) never match at all,
+ *  \b sees to that; they are genuine model errors. */
+const HTTP_STATUS_RE = /\b(?:429|5\d\d)\b(?!\s*(?:bytes?|kb|kib|mb|mib|ms|s|px|pixels?|chars?|tokens?|neurons?)\b)/i;
+const TRANSIENT_WORDS_RE = /rate.?limit|too many requests|timed? ?out|fetch failed|network error|temporarily/i;
+export const isQuotaError = (e: unknown): boolean => {
+  const s = String(e);
+  return !PAYLOAD_ERROR_RE.test(s) && /\b4006\b|daily free allocation|neurons/i.test(s);
+};
+/** "Not now" rather than "not this picture": quota exhaustion, a rate limit, a 5xx or a dropped fetch. Such a failure
+ *  does not spend the picture's single attempt (see TRANSIENT_RETRY_MIN); a model error about the prompt itself, or an
+ *  answer that is not a picture at all, does. */
+export const isTransientError = (e: unknown): boolean => {
+  const s = String(e);
+  if (PAYLOAD_ERROR_RE.test(s)) return false;
+  return isQuotaError(s) || HTTP_STATUS_RE.test(s) || TRANSIENT_WORDS_RE.test(s);
+};
+/** The same question for the WRITE that follows a successful draw (R2/D1/KV). The picture is already drawn and paid
+ *  for, so the default here is the other way round: anything that could be a hiccup (a lost connection, an internal
+ *  error, a 5xx from R2) must not burn the attempt of a picture the model already produced. Only a failure that will
+ *  give the same answer next time — the file cannot fit where files go, or the store is not configured at all —
+ *  counts once, exactly like a model error about the prompt. */
+// Narrow on purpose: a bare \bTypeError\b or \bbinding\b also matches a genuinely transient message such as
+// "TypeError: Network connection lost" (Workers wraps socket failures that way) or an R2 5xx that happens to
+// mention the binding, and marking those permanent is exactly the loss this predicate exists to prevent.
+const PERMANENT_STORE_RE = /too large for KV|configure an R2 bucket|no (?:R2|KV) binding|is not a function|of undefined|of null|Cannot read propert/i;
+export const isTransientStoreError = (e: unknown): boolean => !PERMANENT_STORE_RE.test(String(e));
 
 /** Reads whatever the model returned (binary stream, bytes, or {image: base64}) as bytes. */
 export async function readImageResult(res: unknown): Promise<Uint8Array> {
@@ -205,7 +245,9 @@ export async function generateJobImages(env: Env, job: Job, base: string): Promi
   // The video's own cap first (a 40 s Short never carries more than 24 pictures), then what the server may draw itself.
   const wanted = pictureScenes(sb).slice(0, MAX_PICTURES(params.duration_s ?? 60));
   if (!wanted.length) return result;
-  const max = Math.max(0, Math.min(40, parseInt(env.IMAGE_SERVER_MAX ?? env.IMAGE_MAX_PER_JOB ?? "", 10) || DEFAULT_SERVER_MAX));
+  // int() keeps a configured 0 (a `|| DEFAULT_SERVER_MAX` turned it back into 10, so no operator could switch
+  // server-side drawing off and leave every picture to the GPU worker); only an unset/unparsable value defaults.
+  const max = Math.max(0, Math.min(40, int(env.IMAGE_SERVER_MAX ?? env.IMAGE_MAX_PER_JOB, DEFAULT_SERVER_MAX)));
   const chosen = pickImageScenes(wanted, max);
   const chosenIds = new Set(chosen.map((s) => s.id));
   for (const s of wanted) if (!chosenIds.has(s.id)) result.missing.push(s.id);
@@ -213,8 +255,19 @@ export async function generateJobImages(env: Env, job: Job, base: string): Promi
   const existing = new Map((await listFiles(env, job.id)).filter((f) => IMAGE_NAME_RE.test(f.name)).map((f) => [f.name.slice(4).replace(/\.(png|jpg)$/, ""), f.name]));
   const tried = new Set<string>();
   try {
-    const rows = (await env.DB.prepare("SELECT detail FROM audit WHERE job_id = ? AND event = 'images.error'").bind(job.id).all<{ detail: string | null }>()).results;
-    for (const r of rows) { try { const d = JSON.parse(r.detail ?? "{}") as { picture?: string; scene?: string }; const id = d.picture ?? d.scene; if (id) tried.add(id); } catch { /* ignore */ } }
+    const rows = (await env.DB.prepare("SELECT detail, at FROM audit WHERE job_id = ? AND event = 'images.error'").bind(job.id).all<{ detail: string | null; at: string | null }>()).results;
+    for (const r of rows) {
+      try {
+        const d = JSON.parse(r.detail ?? "{}") as { picture?: string; scene?: string; quota?: boolean; transient?: boolean };
+        const id = d.picture ?? d.scene;
+        if (!id) continue;
+        // A transient row (quota is the usual one) expires: past the cool-off the picture is fair game again. An
+        // unreadable timestamp keeps it held back — better one grey shot than a loop hammering an exhausted quota.
+        const age = minutesSince(r.at ?? "");
+        if ((d.transient || d.quota) && Number.isFinite(age) && age > TRANSIENT_RETRY_MIN) continue;
+        tried.add(id);
+      } catch { /* ignore */ }
+    }
   } catch { /* an unreadable audit table only costs a retry */ }
 
   const model = modelFor(env, style);
@@ -240,8 +293,10 @@ export async function generateJobImages(env: Env, job: Job, base: string): Promi
       }
     } catch (e) {
       const msg = String(e).slice(0, 400);
-      if (isQuotaError(e)) quotaHit = true;
-      await audit(env, job.user_id, job.id, "images.error", { picture: pic.id, model: result.fixture ? "fixture" : model, error: msg, quota: quotaHit });
+      const quota = isQuotaError(e);
+      if (quota) quotaHit = true; // the rest of this call is hopeless: skip it without paying for more failures
+      // `transient` is what the next call reads back: it decides whether this row spent the picture's one attempt.
+      await audit(env, job.user_id, job.id, "images.error", { picture: pic.id, model: result.fixture ? "fixture" : model, error: msg, quota, transient: isTransientError(e) });
       result.missing.push(pic.id);
       continue;
     }
@@ -254,7 +309,13 @@ export async function generateJobImages(env: Env, job: Job, base: string): Promi
       result.images[pic.id] = await signedImageUrl(env, base, job.id, name);
       result.generated++;
     } catch (e) {
-      await audit(env, job.user_id, job.id, "images.error", { picture: pic.id, model, error: `store: ${String(e).slice(0, 300)}` });
+      // The picture exists and was paid for; only the write failed. A hiccup in R2/D1/KV must not spend its one
+      // attempt (a permanent grey shot for a two-second outage), so the row carries the same `transient` flag the
+      // model branch writes — a store failure that will repeat (too large for KV, no store configured) counts once.
+      await audit(env, job.user_id, job.id, "images.error", {
+        picture: pic.id, model: result.fixture ? "fixture" : model, error: `store: ${String(e).slice(0, 300)}`,
+        quota: false, transient: isTransientStoreError(e),
+      });
       result.missing.push(pic.id);
     }
   }

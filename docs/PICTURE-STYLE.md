@@ -45,9 +45,15 @@ Rules (enforced by src/keou-contract.ts on the server and by worker/keou/contrac
   A scene-level `image_prompt` (old format) is accepted as shorthand and normalised to `shots: [{image_prompt}]`
   by the server validator before the storyboard is stored (the engine never sees scene-level image_prompt).
 - Shot fields: `image_prompt` (required, 2–240 chars, no text/logos in the picture), `caption` (≤40 chars, big words on
-  that shot; optional), `hl` (≤20, one word of the caption to colour; optional), `at` (≤24 chars quoted verbatim from
-  the scene voice: the shot cuts when that word is spoken; optional, never on the first shot), `motion`
+  that shot; optional), `hl` (≤20, one word of the caption to colour; optional), `at` (≤24 chars taken from the scene
+  voice: the shot cuts when those words are spoken; optional, never on the first shot), `motion`
   ("in" | "out" | "left" | "right"; optional, the engine alternates when absent).
+- A shot's `at` is checked by `quotesVoice` (src/keou-contract.ts) on **two** counts, both required (a cinema beat's
+  `at`, in the cyber style, is still the older substring-only test):
+  it must be a case-insensitive **substring** of that scene's `voice` (punctuation and spacing included) **and** it
+  must line up on **whole words** — an unbroken run of the spoken tokens. So "swam back" passes against "…boy swam
+  back to shore", while the fragment "wam bac" fails the word check and "1720 Captain" (from "In 1720, Captain Mara")
+  fails the substring check because it jumps a comma. Neither test implies the other, which is why both run.
 - Scene fields kept from cinema: `chapter` (≤32, optional), `accent` (green | cyan | red | amber), `title` (≤90),
   `hl` (≤24), `voice` (≤350), `hold` (0.15–3). Closing adds `button` (≤24, optional; default "Subscribe").
 - Everything else in the storyboard (voices per language, speed, music, duration, forbidden fields such as
@@ -59,11 +65,14 @@ Rules (enforced by src/keou-contract.ts on the server and by worker/keou/contrac
   File in the project: `img/<pictureId>.png` (or .jpg when the server stored a JPEG).
 - `pictureScenes(sb)` (src/keou-contract.ts) returns the flattened list `[{ id, image_prompt }]` in scene → shot order.
   The images endpoint (`POST /internal/jobs/:id/images`) keys its `images` and `missing` maps by picture id.
-- Caps: total pictures per video = 24 when duration_s ≤ 90, else 48 (constant `MAX_PICTURES(duration)` in
-  src/images.ts). The server draws at most `IMAGE_SERVER_MAX` (env, default 10) pictures with Workers AI per job,
+- Caps: `MAX_PICTURES(duration)` (24 when duration_s ≤ 90, else 48; src/images.ts) bounds what the SERVER considers,
+  not the video: shots past it are simply never offered to Workers AI, and the GPU worker still draws them, because the
+  worker builds its own missing list from the storyboard. The server draws at most `IMAGE_SERVER_MAX` (env, default 10) pictures with Workers AI per job,
   spread over the list like today (pickImageScenes), and lists the others as `missing`; the worker draws the missing
-  ones on the GPU (worker/kleo_pictures.py, policy KLEO_PICTURES=auto). Nothing is fatal: a shot without a picture
-  renders as a flat accent-coloured gradient.
+  ones on the GPU (worker/kleo_pictures.py, policy KLEO_PICTURES=auto). **`IMAGE_SERVER_MAX=0` is honoured and turns
+  server-side drawing off entirely**: no Workers AI call at all, every picture is left to the GPU worker (`int()`
+  keeps the configured 0 — a `|| DEFAULT_SERVER_MAX` would have turned it back into 10). Nothing is fatal: a shot
+  without a picture renders as a flat accent-coloured gradient.
 - The worker attaches `shot.image = "img/<pictureId>.<ext>"` on success, sets `scene.image` to the first shot's image
   (kept for compatibility, unused by the picture style), strips every `image_prompt` (scene and shot level) and the
   top-level `kleo_style`, and writes `look: "cartoon" | "realistic"` at the top level of project.json so the engine
@@ -115,9 +124,12 @@ Rules (enforced by src/keou-contract.ts on the server and by worker/keou/contrac
 
 ## 5. Guide, planner, templates (server)
 
-- `kleo_storyboard_guide` describes shots for cartoon/realistic (2–4 per scene, 1 for the closing; the same characters
-  described the same way in every prompt; captions of 2–5 strong words; `at` quoted from the voice; no icons, no
-  beats), gives one full example in each of the two looks, and keeps the cinema/stickman documentation for cyber.
+- `kleo_storyboard_guide` describes shots for cartoon/realistic (the counts of §1: 1–4 on a cinema scene, 1–2 on a
+  closing, with 2–3 the usual rhythm and 1 the usual closing; the same characters described the same way in every
+  prompt; captions of 2–5 strong words; `at` an unbroken, whole-word run of that scene's voice; no icons, no beats),
+  gives one full example in each of the two looks, and keeps the cinema/stickman documentation for cyber. The counts
+  are interpolated from `SHOTS_PER_SCENE` (src/keou-contract.ts) rather than written out, so the guide cannot drift
+  from the validator; test/keou-contract.test.mjs fails on a hard-coded range.
 - `kleo_create_video` `style` descriptions say what the viewer sees (cartoon: illustrated shots drawn for the topic —
   pirates get beaches and ships, space gets rockets and stations; realistic: cinematic photo shots; cyber: the dark
   motion-design look with glowing icons for tech topics; stickman: hand-drawn stickman story).

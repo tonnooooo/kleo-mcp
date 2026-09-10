@@ -16,11 +16,16 @@ const STATEMENTS = [
   `INSERT OR IGNORE INTO invites (code, credits, max_uses, note) VALUES ('KLEO-BETA', 3, 50, 'shared beta code')`,
 ];
 
-/** Columns added after 0001 (mirrors migrations/0003_storyboard.sql). SQLite has no ADD COLUMN IF NOT EXISTS. */
+/** Columns added after 0001 (mirrors migrations/0003_storyboard.sql + 0004_last_report.sql — one migration per column,
+ *  in the same order as here). SQLite has no ADD COLUMN IF NOT EXISTS. */
 const COLUMNS: [table: string, column: string, definition: string][] = [
   ["jobs", "storyboard", "TEXT"],
   ["jobs", "plan_attempts", "INTEGER NOT NULL DEFAULT 0"],
   ["jobs", "plan_error", "TEXT"],
+  // Last time the worker on the instance said anything. The start timeout measures silence from here, not wall
+  // clock since the GPU was rented: pulling a 15 GB image plus drawing 24 pictures keeps a healthy job under 8%
+  // (state "starting") for well over fifteen minutes.
+  ["jobs", "last_report_at", "TEXT"],
 ];
 
 async function ensureColumns(env: Env): Promise<void> {

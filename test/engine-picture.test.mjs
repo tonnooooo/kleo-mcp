@@ -1,11 +1,17 @@
 /**
  * Unit tests for the Kleo "picture" style (docs/PICTURE-STYLE.md §3 and §4).
  *
- * worker/keou/engine/picture.js is a browser script (it assigns window.KEOU_PICTURE at load), so
- * only the pure planning block between the `@kleo-pure picture-plan` and `@end picture-plan`
- * markers is evaluated here — shot timing, the Ken Burns rect and caption fitting. Everything
- * else is checked as source: the wiring in film.js / film.html and the rules in contract.py.
- * No rendering, no canvas, no browser, no Playwright.
+ * worker/keou/engine/picture.js and film.js are browser scripts, so they are evaluated three ways:
+ *  - the pure planning block between the `@kleo-pure picture-plan` and `@end picture-plan` markers
+ *    on its own (shot timing, the Ken Burns rect, caption fitting, the karaoke word match);
+ *  - the whole of picture.js against a recording fake 2D context, which is the only way to see the
+ *    timing that lives in S.scene: which picture is moving, how large the next one comes in, when
+ *    a caption replays its entrance;
+ *  - film.js against a fake page (canvas, fonts, fetch, Image) to drive window.init, so a picture
+ *    that will not decode can be proved non-fatal.
+ * The rest is checked as source: film.html, the film.js wiring, the fonts layer of the worker
+ * image and the rules in contract.py.
+ * No real canvas, no browser, no Playwright, nothing rendered.
  * Run: node --test test/engine-picture.test.mjs
  */
 import { test } from "node:test";
@@ -30,8 +36,47 @@ function pureBlock() {
   return pictureSource.slice(a, b);
 }
 const P = new Function(pureBlock() + `
-  return { shotStarts, shotMotion, sceneShots, kenBurns, fitLines, groupWords, keyWord,
-           shotFade, shotPunch, MOTIONS, SHOT_FADE, PUNCH, PUNCH_IN, MIN_SHOT, ZOOM };`)();
+  return { shotStarts, shotMotion, sceneShots, kenBurns, fitLines, groupWords, keyWord, flatten,
+           shotFade, shotPunch, shotProgress, MOTIONS, SHOT_FADE, PUNCH, PUNCH_IN, MIN_SHOT, ZOOM };`)();
+
+/* A recording 2D context. Enough of the canvas API for picture.js to draw a whole scene into it,
+   so the timing that only shows up in S.scene (which picture is moving, how large it comes in,
+   when a caption replays its entrance) is asserted on the calls, not on the source text.
+   measureText is 0.5 em per character, taken from the size in ctx.font, so fitLines shrinks and
+   wraps the way it does in the browser. */
+function fakeCtx(rec) {
+  const stack = [], grad = () => ({ addColorStop() { } });
+  return {
+    globalAlpha: 1, fillStyle: "", strokeStyle: "", font: "800 100px X", letterSpacing: "0px",
+    textAlign: "left", textBaseline: "alphabetic", lineJoin: "", lineCap: "", miterLimit: 0, lineWidth: 0,
+    shadowColor: "", shadowBlur: 0, shadowOffsetY: 0, imageSmoothingEnabled: false, imageSmoothingQuality: "",
+    save() { stack.push(this.globalAlpha) },
+    restore() { this.globalAlpha = stack.length ? stack.pop() : 1 },
+    fillRect() { }, beginPath() { }, roundRect() { }, fill() { }, stroke() { },
+    translate() { }, scale() { }, rotate() { },
+    createLinearGradient: grad, createRadialGradient: grad,
+    measureText(t) { return { width: String(t).length * (Number(/(\d+(?:\.\d+)?)px/.exec(this.font)?.[1]) || 100) * .5 } },
+    strokeText() { },
+    fillText(t, x, y) { rec.text.push({ text: String(t), x, y, alpha: this.globalAlpha, fill: this.fillStyle }) },
+    // The veil is blitted as drawImage(canvas, 0, 0); only the five-argument calls are pictures.
+    drawImage(img, x, y, w, h) { if (arguments.length >= 5) rec.draw.push({ img, x, y, w, h, alpha: this.globalAlpha }) },
+  };
+}
+// picture.js in a page-shaped sandbox: no OffscreenCanvas, so the veil uses document.createElement.
+function pictureModule() {
+  const win = {}, doc = { createElement: () => ({ getContext: () => fakeCtx({ text: [], draw: [] }) }) };
+  new Function("window", "document", "OffscreenCanvas", pictureSource)(win, doc, undefined);
+  return win.KEOU_PICTURE;
+}
+// One frame of one scene. Returns what reached the context.
+function drawScene(scene, u, { look = "cartoon", images = {}, brand = "Kleo", W = 1080, H = 1920 } = {}) {
+  const rec = { text: [], draw: [] }, ctx = fakeCtx(rec);
+  const M = pictureModule();
+  M.attach({ ctx, W, H, project: { look, brand, style: "picture" }, images, issues: [], frameTime: scene.start + u });
+  M.scene(scene, u, scene.start + u, 0);
+  return rec;
+}
+const COVER = (iw, ih, W, H) => Math.max(W / iw, H / ih);
 
 const FRAMES = [[1080, 1920], [1920, 1080]];                       // 9:16 and 16:9 design spaces
 const IMAGES = [[720, 1280], [1280, 720], [1024, 1024], [1080, 1920], [1920, 1080], [300, 2000], [2000, 300]];
@@ -179,6 +224,65 @@ test("karaoke: a caption group is matched onto the word timings of the scene", (
   assert.equal(P.keyWord("", ""), "");
 });
 
+test("karaoke: an s.words entry that holds several script words never shifts the highlight", () => {
+  // prepare.py glues a token with no letters onto the entry before it ("back" + "—"), and splits
+  // nothing: "don't" is one entry but two spoken tokens. The caption group splits on whitespace,
+  // so entry-by-entry matching drifts by one word for the rest of the line.
+  const said = [
+    { text: "She", start: 1 }, { text: "never", start: 1.5 }, { text: "came", start: 2 },
+    { text: "back —", start: 2.5 }, { text: "she", start: 3 }, { text: "didn't", start: 3.5 }, { text: "dig.", start: 4 },
+  ];
+  const timed = P.groupWords(said, { text: "came back — she didn't dig.", start: 2 });
+  assert.deepEqual(timed.map(w => w.text), ["came", "back", "—", "she", "didn't", "dig."]);
+  assert.deepEqual(timed.map(w => w.start), [2, 2.5, null, 3, 3.5, 4],
+    "every written word keeps the time of the word actually spoken; the dash gets none");
+  const late = P.groupWords(said, { text: "she didn't dig.", start: 3 });
+  assert.deepEqual(late.map(w => w.start), [3, 3.5, 4], "a group that opens after the merged entry is still aligned");
+  assert.deepEqual(P.groupWords(said, { text: "came back — she didn't dig.", start: 99 }).map(w => w.start),
+    [2, 2.5, null, 3, 3.5, 4], "the text fallback matches on the same token stream");
+  assert.deepEqual(P.groupWords([{ text: "—", start: 1 }, { text: "Go", start: 2 }], { text: "— Go", start: 1 }).map(w => w.start),
+    [null, 2], "an entry that says nothing at all is skipped, not counted");
+  assert.deepEqual(P.groupWords(said, { text: "— —", start: 1 }).map(w => w.start), [null, null],
+    "a group with nothing spoken in it carries no time");
+  assert.deepEqual(P.flatten([{ text: "17,600", start: 5 }]).map(x => x.k), ["17", "600"],
+    "one written word can hold several spoken tokens");
+});
+
+test("shot timing: an `at` still finds its word across a merged s.words entry", () => {
+  const s = {
+    start: 0, end: 8, words: [
+      { text: "She", start: 0 }, { text: "buried", start: .5 }, { text: "it —", start: 1 },
+      { text: "she", start: 1.5 }, { text: "never", start: 2 }, { text: "came", start: 2.5 }, { text: "back.", start: 3 },
+    ],
+  };
+  assert.ok(Math.abs(P.shotStarts(s, [{}, { at: "it — she never" }], 8)[1] - (1 - .12)) < 1e-9,
+    "the cut lands on the entry that carries the first quoted word");
+  assert.ok(Math.abs(P.shotStarts(s, [{}, { at: "never came back" }], 8)[1] - (2 - .12)) < 1e-9,
+    "a quote after the merged entry is not shifted by one word");
+  assert.deepEqual(P.shotStarts(s, [{}, { at: "—" }], 8), P.shotStarts(s, [{}, {}], 8),
+    "a quote with nothing spoken in it falls back to the even split");
+  // A stand-alone "$" or "%" is a script token that carries no letters, so prepare.py glues it
+  // onto the number before it: the entry reads "500 $" while the quote reads "500" then "$".
+  const money = {
+    start: 0, end: 8, words: [
+      { text: "It", start: 0 }, { text: "cost", start: .5 }, { text: "500 $", start: 1 },
+      { text: "per", start: 1.5 }, { text: "year.", start: 2 },
+    ],
+  };
+  assert.ok(Math.abs(P.shotStarts(money, [{}, { at: "500 $ per" }], 8)[1] - (1 - .12)) < 1e-9,
+    "the cut lands on the spoken number, not on the even split");
+});
+
+test("a picture keeps moving while the next one fades over it", () => {
+  const mid = P.shotProgress(2.5, 5, true), cut = P.shotProgress(5, 5, true), after = P.shotProgress(5.2, 5, true);
+  assert.ok(cut > mid && after > cut, "the outgoing picture travels on through the crossfade");
+  assert.ok(Math.abs(P.shotProgress(5 + P.SHOT_FADE, 5, true) - 1) < 1e-9, "it lands exactly when the fade ends");
+  assert.equal(P.shotProgress(5, 5, false), 1, "the last picture of a scene has nothing to fade under and lands on the cut");
+  assert.equal(P.shotProgress(-3, 5, true), 0);
+  assert.equal(P.shotProgress(99, 5, true), 1);
+  assert.ok(Number.isFinite(P.shotProgress(1, 0, true)));
+});
+
 test("a scene without shots still draws one picture", () => {
   assert.deepEqual(P.sceneShots({ image: "img/a.png" }), [{ image: "img/a.png" }]);
   assert.equal(P.sceneShots({ shots: [{ image: "img/a.png" }, { caption: "B" }] }).length, 2);
@@ -321,4 +425,145 @@ test("the cartoon-pirates example is a picture project whose pictures all exist"
   assert.ok(pictures >= 7, "every shot of the example ships a picture");
   const script = readFileSync(join(dir, "script.txt"), "utf8").trim().split(/\s+/).join(" ");
   assert.equal(script, project.scenes.map(s => s.voice).join(" "), "script.txt still matches the narration");
+});
+
+/* ---- the scene, drawn into a recording context ---------------------------- */
+
+const SQUARE = { width: 1024, height: 1024 };
+const cinema = () => ({
+  id: "01-hook", kind: "cinema", accent: "amber", title: "SHE NEVER CAME BACK", start: 10, end: 20,
+  captions: [], words: [], shots: [{ image: "a" }, { image: "b" }],
+});
+
+test("the 3% punch fires on a cut inside a scene, never on the scene's own first frame", () => {
+  const s = cinema(), images = { a: SQUARE, b: SQUARE };
+  const plain = 1024 * COVER(1024, 1024, 1080, 1920);      // shot 1 moves 'in': zoom 1.00 at p=0
+  const open = drawScene(s, 0, { images });
+  assert.equal(open.draw.length, 1, "one picture on the opening frame");
+  assert.ok(Math.abs(open.draw[0].w - plain) < 1e-6,
+    `a scene opens on a hard cut and must not be punched 3% out of frame (${open.draw[0].w} vs ${plain})`);
+  const cut = drawScene(s, 5, { images });                 // shot 2 starts at the even split, moves 'out': zoom 1.10
+  assert.equal(cut.draw.length, 2, "the outgoing picture is drawn underneath the incoming one");
+  assert.ok(Math.abs(cut.draw[1].w / (plain * 1.1) - 1.03) < 1e-6, "the incoming picture arrives 3% large");
+  assert.ok(Math.abs(drawScene(s, 5.3, { images }).draw.at(-1).w / (plain * 1.1) - 1.03) > .02, "and settles");
+});
+
+test("the outgoing picture keeps its Ken Burns running through the crossfade", () => {
+  const s = cinema(), images = { a: SQUARE, b: SQUARE };
+  const at = u => drawScene(s, u, { images }).draw;
+  const [w0, w1, w2] = [at(5)[0].w, at(5.15)[0].w, at(5.3)[0].w];
+  assert.ok(w1 > w0 && w2 > w1, `the picture being faded out must not freeze (${w0} ${w1} ${w2})`);
+  assert.ok(at(5)[1].alpha < at(5.3)[1].alpha, "while the incoming one fades in over it");
+  assert.equal(at(5)[0].alpha, 1, "the outgoing picture stays fully opaque underneath");
+});
+
+test("a closing with two shots replays the caption entrance on the cut", () => {
+  const base = {
+    id: "05-closing", kind: "closing", accent: "cyan", title: "FOLLOW FOR PART TWO", button: "Follow",
+    start: 0, end: 8, captions: [], words: [],
+  };
+  const images = { a: SQUARE, b: SQUARE };
+  const alpha = (rec, word) => rec.text.filter(x => x.text === word).map(x => x.alpha);
+  const swap = { ...base, shots: [{ image: "a" }, { image: "b", caption: "NEXT TIME WE DIG" }] };
+  assert.deepEqual(alpha(drawScene(swap, 3.9, { images }), "FOLLOW"), [1], "the first caption is settled before the cut");
+  const onCut = alpha(drawScene(swap, 4, { images }), "NEXT");
+  assert.equal(onCut.length, 1);
+  assert.ok(onCut[0] < .05, `new words on the cut must animate in, not appear (alpha ${onCut[0]})`);
+  assert.ok(alpha(drawScene(swap, 4.06, { images }), "NEXT")[0] > onCut[0], "and keep rising");
+  assert.deepEqual(alpha(drawScene(swap, 4.5, { images }), "NEXT"), [1], "settled a quarter of a second later");
+  const hold = { ...base, shots: [{ image: "a" }, { image: "b" }] };
+  assert.deepEqual(alpha(drawScene(hold, 4, { images }), "FOLLOW"), [1],
+    "words that do not change keep the scene clock: the entrance is never replayed under the viewer");
+});
+
+test("a shot whose picture never loaded is drawn as the accent gradient, not skipped", () => {
+  // film.js leaves a picture it could not decode out of `images`; the shot must still play.
+  const s = { ...cinema(), shots: [{ image: "a" }, { image: "gone", caption: "NEVER CAME BACK" }] };
+  const rec = drawScene(s, 6, { images: { a: SQUARE } });
+  assert.equal(rec.draw.length, 0, "no picture is drawn, and nothing throws");
+  assert.ok(rec.text.some(x => x.text === "NEVER"), "the words of the shot are still on screen");
+  assert.ok(drawScene(s, 0, { images: { a: SQUARE } }).draw.length === 1, "the shot that did load is unaffected");
+});
+
+/* ---- film.js init: a broken picture must not cost the job ------------------ */
+
+// film.js is a page script; run it in a sandbox that gives it a canvas, fonts, fetch and Image.
+function loadFilm(decode) {
+  const win = {}, warned = [], rec = { text: [], draw: [] };
+  const doc = {
+    getElementById: () => ({ getContext: () => fakeCtx(rec) }),
+    createElement: () => ({ getContext: () => fakeCtx({ text: [], draw: [] }) }),
+    fonts: { load: async () => { }, ready: Promise.resolve(), check: () => true },
+  };
+  class FakeImage {
+    constructor() { this.width = 1024; this.height = 1024; this.src = "" }
+    async decode() { return decode(this.src, this) }
+  }
+  const fetchStub = async () => ({ json: async () => ({}) });
+  new Function("window", "document", "Image", "fetch", "console", filmSource)(
+    win, doc, FakeImage, fetchStub, { warn: (...a) => warned.push(a.join(" ")), log() { } });
+  return { win, warned };
+}
+const shotTimeline = () => ({
+  duration: 10, fps: 30,
+  scenes: [{ id: "01-hook", kind: "cinema", start: 0, end: 10, captions: [], words: [], shots: [{ image: "img/01-hook-s1.png" }, { image: "img/01-hook-s2.png" }] }],
+});
+
+test("init: one unreadable picture is recorded and the render carries on", async () => {
+  const broken = "img/01-hook-s2.png";
+  const { win, warned } = loadFilm(src => { if (src.endsWith(broken)) throw Error("Truncated PNG"); });
+  const out = await win.init({ style: "picture", format: "9:16", look: "cartoon" }, shotTimeline(), 540);
+  assert.ok(out, "init must resolve: a paid job is not lost over one corrupt shot");
+  assert.equal(win.KEOU_IMAGE_ISSUES.length, 1, "the failure is recorded, not swallowed");
+  assert.equal(win.KEOU_IMAGE_ISSUES[0].image, broken);
+  assert.match(win.KEOU_IMAGE_ISSUES[0].detail, /Truncated PNG/);
+  assert.ok(warned.some(w => w.includes("PICTURE_LOAD_FAILED") && w.includes(broken)), "and logged for the worker");
+  assert.deepEqual(out.images, win.KEOU_IMAGE_ISSUES, "init hands the list back to its caller");
+});
+
+test("init: a picture that decodes but has no pixels counts as missing", async () => {
+  const { win } = loadFilm((src, img) => { if (src.endsWith("s1.png")) { img.width = 0; img.height = 0 } });
+  await win.init({ style: "picture", format: "9:16", look: "cartoon" }, shotTimeline(), 540);
+  assert.deepEqual(win.KEOU_IMAGE_ISSUES.map(x => x.image), ["img/01-hook-s1.png"]);
+});
+
+test("init: every picture readable leaves nothing to report", async () => {
+  const { win, warned } = loadFilm(() => { });
+  assert.equal(await win.init({ style: "picture", format: "9:16", look: "cartoon" }, shotTimeline(), 540), true);
+  assert.deepEqual(win.KEOU_IMAGE_ISSUES, []);
+  assert.deepEqual(warned, []);
+});
+
+test("init: a broken picture is never fatal, in any style, and is reported", async () => {
+  // Every drawing path guards on img.width (film.js backdrop() and the image-kind branch), so a picture that cannot
+  // be decoded costs that one picture, not the whole paid render. It must still be visible: KEOU_IMAGE_ISSUES.
+  for (const style of ["picture", "cinema", "editorial"]) {
+    const { win } = loadFilm(() => { throw Error("Truncated PNG") });
+    const tl = { duration: 10, fps: 30, scenes: [{ id: "01", kind: "image", start: 0, end: 10, captions: [], image: "img/01.png" }] };
+    const r = await win.init({ style, format: "9:16", look: "cartoon" }, tl, 540);
+    assert.equal(r && r.ok, true, style);                       // init resolves, the render goes on
+    assert.equal(win.KEOU_IMAGE_ISSUES.length, 1, style);
+    assert.deepEqual(r.images, win.KEOU_IMAGE_ISSUES, style);   // and hands the same record back
+    assert.match(JSON.stringify(win.KEOU_IMAGE_ISSUES[0]), /img\/01\.png/);
+  }
+});
+
+/* ---- the worker image ----------------------------------------------------- */
+
+test("Dockerfile.keou pins the two OFL fonts to a commit and verifies what it downloaded", () => {
+  const df = readFileSync(join(ROOT, "worker", "Dockerfile.keou"), "utf8");
+  const fonts = df.slice(df.indexOf("# --- Kleo picture-style fonts"), df.indexOf("COPY worker/kleo_pictures.py"));
+  assert.ok(fonts, "the fonts layer must still exist");
+  assert.ok(!/google\/fonts\/(raw\/)?main\//.test(fonts), "the fonts must not be fetched from a moving branch");
+  const ref = /ARG GOOGLE_FONTS_REF=([0-9a-f]{40})\b/.exec(fonts);
+  assert.ok(ref, "the google/fonts commit must be pinned to a full 40-character sha");
+  const urls = [...fonts.matchAll(/raw\.githubusercontent\.com\/google\/fonts\/\$\{GOOGLE_FONTS_REF\}\/(\S+?)"/g)].map(m => m[1]);
+  assert.deepEqual(urls, ["ofl/baloo2/Baloo2%5Bwght%5D.ttf", "ofl/oswald/Oswald%5Bwght%5D.ttf"],
+    "Baloo 2 for cartoon.ttf, Oswald for real.ttf, both at the pinned commit");
+  assert.equal((fonts.match(/\b[0-9a-f]{40}\b/g) || []).length, 3, "the commit plus one expected digest per font");
+  assert.ok(/\b683200\b/.test(fonts) && /\b172088\b/.test(fonts), "the exact byte length of each font is checked too");
+  assert.ok(fonts.includes("hashlib.sha1") && fonts.includes("sys.exit"), "a mismatch must fail the build, not warn");
+  // engine/assets/ lives inside worker/keou, so the fonts have to land after that COPY.
+  assert.ok(df.indexOf("COPY worker/keou /opt/kleo/keou") < df.indexOf("# --- Kleo picture-style fonts"),
+    "the fonts layer stays after the engine COPY");
 });

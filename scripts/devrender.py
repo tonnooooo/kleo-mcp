@@ -8,16 +8,38 @@ before spending a production job on it. Runs ON the dev box (send it there with 
     python3 scripts/devrender.py <file> --no-render                          pictures + project.json only
 
 What it does: overlays this repo's engine and worker onto the image's /opt/kleo (which already has node_modules,
-the Python venv, Chromium and the models), makes sure the two style fonts are there, draws every shot picture on
+the Python venv, Chromium and the models), makes sure the two pinned style fonts are there, draws every shot picture on
 the box's own GPU (KLEO_PICTURES=local, so no server is called), writes project.json, runs the Keou engine, then
 extracts frames and stitches a contact sheet at out/sheet.jpg.
+
+The two picture-style fonts are fetched from the same pinned google/fonts commit as worker/Dockerfile.keou and
+verified byte for byte, so what you approve on the dev box is cut with the very outlines the image ships.
 """
-import argparse, glob, json, os, shutil, subprocess, sys, time
+import argparse, glob, hashlib, json, os, shutil, subprocess, sys, time
 
 IMAGE_ENGINE = os.environ.get("KLEO_KEOU_DIR", "/opt/kleo/keou")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FONTS = {"cartoon.ttf": "https://github.com/google/fonts/raw/main/ofl/baloo2/Baloo2%5Bwght%5D.ttf",
-         "real.ttf": "https://github.com/google/fonts/raw/main/ofl/oswald/Oswald%5Bwght%5D.ttf"}
+
+# The two OFL picture-style fonts, pinned to the same google/fonts commit as worker/Dockerfile.keou's
+# GOOGLE_FONTS_REF and checked the same way (exact byte length + git blob id). "main" would re-cut the
+# typography here the day upstream ships a new build of either family, and a dev render whose letters
+# are not the image's letters is a look you cannot sign off on.
+GOOGLE_FONTS_REF = "b6f0fe1740573b70ee367fbaba04b7586be85af3"
+FONT_URL = "https://raw.githubusercontent.com/google/fonts/" + GOOGLE_FONTS_REF + "/ofl/%s"
+FONTS = {                                  # file on disk: (upstream path under ofl/, byte length, git blob id)
+    "cartoon.ttf": ("baloo2/Baloo2%5Bwght%5D.ttf", 683200, "bc1b9f1191c0d6d23cb2ce0af66aba82ddbf8d6c"),
+    "real.ttf": ("oswald/Oswald%5Bwght%5D.ttf", 172088, "d1a3b9cb1325bf20b3a06ef9849d21c411212a3b"),
+}
+
+
+def font_ok(path, size, blob):
+    """True when the file on disk is exactly the pinned blob (the id github.com/google/fonts publishes)."""
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return False
+    return len(data) == size and hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest() == blob
 
 
 def sh(cmd, **kw):
@@ -45,11 +67,19 @@ def overlay():
     shutil.copy2(os.path.join(REPO, "worker", "kleo_worker.py"), "/opt/kleo/kleo_worker.py")
     shutil.copy2(os.path.join(REPO, "worker", "kleo_pictures.py"), "/opt/kleo/kleo_pictures.py")
     assets = os.path.join(IMAGE_ENGINE, "engine", "assets")
-    for name, url in FONTS.items():
+    for name, (rel, size, blob) in FONTS.items():
         p = os.path.join(assets, name)
-        if not (os.path.isfile(p) and os.path.getsize(p) > 100_000):
-            sh(["curl", "-fsSL", "-o", p, url])
-            print(f"  font {name}: {os.path.getsize(p) if os.path.isfile(p) else 0} bytes", flush=True)
+        if font_ok(p, size, blob):
+            continue                       # already the pinned build (including one left by an older, unpinned run)
+        sh(["curl", "-fsSL", "--retry", "3", "--max-time", "180", "-o", p, FONT_URL % rel])
+        if font_ok(p, size, blob):
+            print(f"  font {name}: {size} bytes, google/fonts {GOOGLE_FONTS_REF[:8]}", flush=True)
+        else:
+            got = os.path.getsize(p) if os.path.isfile(p) else 0
+            if os.path.isfile(p):
+                os.remove(p)               # never render with an unknown build: film.html falls back to Manrope
+            print(f"  font {name}: NOT the pinned build ({got} bytes, want {size}) — removed, this render "
+                  f"falls back to Manrope and its typography is NOT the image's", flush=True)
     print("  engine overlaid from the repo", flush=True)
 
 

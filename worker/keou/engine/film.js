@@ -1,6 +1,6 @@
 /* Keou production 1.0 — data-driven compositions, derived from the Pasifika visual language. */
 const canvas = document.getElementById('film'), ctx = canvas.getContext('2d', {alpha:false});
-let project, timeline, W, H, portrait, C, fontFamily='Manrope', frameTime=0, issues=[], images={}, land;
+let project, timeline, W, H, portrait, C, fontFamily='Manrope', frameTime=0, issues=[], images={}, imageIssues=[], land;
 const themes = {
   terminal:{ink:'#010503',deep:'#061109',white:'#c9ffd7',muted:'#74a680',accent:'#3cff81',second:'#18ab52'},
   stickman:{ink:'#0a0a0c',deep:'#0f1a14',white:'#e6edf3',muted:'#7a8590',accent:'#00ff88',second:'#00d4ff'},
@@ -313,16 +313,43 @@ function scene(s,u,t){
  if(s.kind==='metric'){ctx.save();ctx.globalAlpha=.32;ctx.beginPath();ctx.arc(cx,cy,Math.min(w,h)*.43,t*.06,t*.06+Math.PI*1.65);ctx.strokeStyle=C.accent;ctx.lineWidth=2;ctx.stroke();ctx.restore();block(metricText(s,u),cx,cy+35,{size:metricSize(s,w),min:100,max:w-50,align:'center',lines:1,color:C.accent,u});block(s.unit,cx,cy+125,{size:39,min:30,max:w-50,align:'center',lines:2,u:u-.15});}
  if(s.kind==='quote'){line(x+10,y+20,x+10,y+h-30,C.accent,5);block(s.quote,x+50,y+100,{size:68,min:46,max:w-85,lines:5,u:u-.1});if(s.source)block(s.source,x+50,y+h-20,{size:25,min:23,max:w-85,lines:1,color:C.muted,u:3})}
  if(s.kind==='image'&&s.motion)movingDiagram(s.motion,x,y,w,h,u,s.motion_labels,s,t);
- if(s.kind==='image'&&!s.motion){const img=images[s.image],a=ease(u/.7);ctx.save();ctx.beginPath();ctx.roundRect(x,y,w,h,project.style==='terminal'?3:25);ctx.clip();ctx.fillStyle=C.deep;ctx.fillRect(x,y,w,h);const z=Math.min(w/img.width,h/img.height)*(1+.025*clamp(u/8));ctx.globalAlpha=.45+.55*a;ctx.drawImage(img,cx-img.width*z/2,cy-img.height*z/2+(1-a)*18,img.width*z,img.height*z);ctx.restore()}
+ // A picture that never decoded leaves its frame empty rather than taking the frame down with it.
+ if(s.kind==='image'&&!s.motion){const img=images[s.image],a=ease(u/.7);ctx.save();ctx.beginPath();ctx.roundRect(x,y,w,h,project.style==='terminal'?3:25);ctx.clip();ctx.fillStyle=C.deep;ctx.fillRect(x,y,w,h);if(img&&img.width&&img.height){const z=Math.min(w/img.width,h/img.height)*(1+.025*clamp(u/8));ctx.globalAlpha=.45+.55*a;ctx.drawImage(img,cx-img.width*z/2,cy-img.height*z/2+(1-a)*18,img.width*z,img.height*z)}ctx.restore()}
  if(s.detail)block(s.detail,portrait?100:100,portrait?1490:770,{size:30,min:26,max:portrait?880:790,lines:2,color:C.muted,u:u-.2});
  if(s.kind==='closing'&&s.button){const by=portrait?(terminal?1470:1420):800,bw=portrait?880:790;box(100,by,bw,82,C.accent,null,41);block(s.button,100+bw/2,by+54,{size:32,min:26,max:bw-70,lines:1,color:C.ink,align:'center',u:u-.2})}
 }
 function subtitle(s,t){if(project.style==='cinema'||project.style==='picture'){(project.style==='picture'?window.KEOU_PICTURE:window.KEOU_CINEMA).subtitle(s,t);return}if(project.style==='stickman'){window.KEOU_STICKMAN.subtitle(s,t);return}const group=(s.captions||[]).find(c=>t>=c.start&&t<c.end);if(!group)return;const size=portrait?38:34,max=portrait?810:1490,lines=wrap(group.text,size,max,550);if(lines.length>2)issues.push({time:t,error:'Caption exceeds two lines',text:group.text});const hh=lines.length*size*1.3+32,yy=portrait?1630:H-175,ww=portrait?880:1600,xx=(W-ww)/2;box(xx,yy,ww,hh,C.ink+'e8',C.accent+'22',20);lines.forEach((l,j)=>raw(l,W/2,yy+size+12+j*size*1.3,size,C.white,550,'center',max))}
 window.init=async function(config,tl,width){project=config;timeline=tl;portrait=config.format==='9:16';W=portrait?1080:1920;H=portrait?1920:1080;C=themes[config.style];fontFamily=config.style==='terminal'?'KeouMono':'Manrope';canvas.width=width;canvas.height=width*H/W;await document.fonts.load('650 80px Manrope');await document.fonts.load('800 80px Manrope');await document.fonts.load('400 80px KeouMono');if(config.style==='picture')await Promise.allSettled(['800 80px KleoCartoon','700 80px KleoCartoon','700 80px KleoReal','600 80px KleoReal'].map(f=>document.fonts.load(f)));await document.fonts.ready;if(!document.fonts.check(`400 80px ${fontFamily}`))throw Error('Font unavailable');land=await (await fetch('/engine/assets/world.json')).json();
- for(const s of tl.scenes)if(s.image&&!images[s.image]){const img=new Image();img.src='/project/'+s.image;await img.decode();images[s.image]=img;}
+ // One truncated or half-written PNG used to reject img.decode() and kill the page, losing a paid
+ // job over a single picture. A picture is never worth the whole job, in any style: a failed decode
+ // is recorded and the render carries on. The picture style draws a shot with no usable picture as
+ // an accent gradient; every other drawing path guards on the image being missing (backdrop()
+ // returns false, scene kind 'image' draws its empty frame), so the video loses one picture, not
+ // every frame after it.
+ // The record cannot go into the per-frame `issues` (render.mjs turns a non-empty frame issue list
+ // into a hard failure, and renderFrame reassigns issues=[] as its first statement anyway): it is
+ // kept in imageIssues, logged, and handed back from init.
+ imageIssues.length=0;window.KEOU_IMAGE_ISSUES=imageIssues;   // the QA layer reads the pictures that never arrived
+ for(const s of tl.scenes)await loadImage(s.image);
  // Picture style: every shot of every scene carries its own picture; decode them all before the first frame.
- for(const s of tl.scenes)for(const shot of (s.shots||[]))if(shot.image&&!images[shot.image]){const img=new Image();img.src='/project/'+shot.image;await img.decode();images[shot.image]=img;}
- return true;};
+ for(const s of tl.scenes)for(const shot of (s.shots||[]))await loadImage(shot&&shot.image);
+ return imageIssues.length?{ok:true,images:imageIssues}:true;};
+// Memoised both ways: a path that decoded is kept as the image, a path that failed is kept as null.
+// The worker copies the first shot's picture onto scene.image, so the same path is loaded twice by
+// the two preload loops above; without the null the failure would be fetched, and reported, twice.
+async function loadImage(path){
+ if(!path||path in images)return;
+ const img=new Image();img.src='/project/'+path;
+ try{
+  await img.decode();
+  if(!img.width||!img.height)throw Error('Empty picture');
+  images[path]=img;
+ }catch(e){
+  images[path]=null;
+  const issue={error:'Picture failed to load',image:path,detail:String(e&&e.message||e)};
+  imageIssues.push(issue);console.warn('PICTURE_LOAD_FAILED',path,issue.detail);
+ }
+}
 window.renderFrame=function(t){issues=[];frameTime=t;ctx.setTransform(canvas.width/W,0,0,canvas.height/H,0,0);ctx.globalAlpha=1;background(t);let i=timeline.scenes.findIndex(s=>t>=s.start&&t<s.end);if(i<0)throw Error('Time outside timeline: '+t);const s=timeline.scenes[i];header(i,t);scene(s,t-s.start,t);subtitle(s,t);if(project.style==='cinema'||project.style==='picture'){(project.style==='picture'?window.KEOU_PICTURE:window.KEOU_CINEMA).progress(t)}else if(project.style==='stickman'){window.KEOU_STICKMAN.progress(t)}else{line(100,H-89,W-100,H-89,C.accent+'22',2);line(100,H-89,100+(W-200)*clamp(t/timeline.duration),H-89,C.accent,2)}return issues;};
 
 // 🥚 kanaky.ai

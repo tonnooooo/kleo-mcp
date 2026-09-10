@@ -108,7 +108,113 @@ test("engine drawing code routes pictures through the backdrop for cinema, closi
   assert.ok(cinema.includes("A.backdrop(s, u"), "cinema.js draws the backdrop");
   assert.ok(cinema.indexOf("A.backdrop(s, u") < cinema.indexOf("S.chrome(s, i, t)"), "the picture goes under the chrome and the beats");
   assert.equal((stickman.match(/A\.backdrop\(s, u/g) || []).length, 2, "stickman story and closing slides draw the backdrop");
-  assert.ok(filmSource.includes("for(const s of tl.scenes)if(s.image&&!images[s.image])"), "film.js preloads every scene image");
+});
+
+/* ---------------------------------------------------------------------------------------------
+ * Picture preloading, run for real.
+ * film.js is a browser script, so it is evaluated here with a hand-made `document`, `window`,
+ * `Image` and `fetch`: no canvas, no DOM, no network — the ctx stub only records drawImage calls
+ * and the Image stub decides per path whether decode() succeeds. That is enough to drive
+ * window.init / window.renderFrame and assert on what they actually do, instead of on how film.js
+ * happens to be spelled.
+ * ------------------------------------------------------------------------------------------- */
+
+function fakeCtx(record) {
+  const grad = { addColorStop() {} }, noop = () => {}, alphas = [];
+  const ctx = {
+    globalAlpha: 1, font: "", textAlign: "left", textBaseline: "alphabetic", fillStyle: "#000", strokeStyle: "#000",
+    lineWidth: 1, lineCap: "butt", lineJoin: "miter", lineDashOffset: 0, imageSmoothingEnabled: false, imageSmoothingQuality: "low",
+    save() { alphas.push(ctx.globalAlpha); }, restore() { ctx.globalAlpha = alphas.length ? alphas.pop() : 1; },
+    beginPath: noop, closePath: noop, moveTo: noop, lineTo: noop, arc: noop, rect: noop, roundRect: noop, clip: noop,
+    fill: noop, stroke: noop, fillRect: noop, strokeRect: noop, translate: noop, rotate: noop, scale: noop,
+    setTransform: noop, setLineDash: noop, fillText: noop,
+    createLinearGradient: () => grad, createRadialGradient: () => grad,
+    measureText: (text) => ({ width: String(text).length * 6 }),
+    drawImage: (img) => record.drawn.push(img),
+  };
+  return ctx;
+}
+
+/** decode(path) -> "ok" | "fail" | "empty" (a decoded-but-zero-sized picture). Default: everything decodes. */
+function loadFilm(decode = () => "ok") {
+  const record = { requested: [], drawn: [], warned: [] };
+  const ctx = fakeCtx(record);
+  const canvas = { width: 0, height: 0, getContext: () => ctx };
+  const document = {
+    getElementById: () => canvas,
+    fonts: { load: async () => {}, ready: Promise.resolve(), check: () => true },
+  };
+  const styleModule = { attach: () => {}, background: () => {}, scene: () => {}, subtitle: () => {}, progress: () => {}, header: () => {}, closing: () => {} };
+  const win = { KEOU_CINEMA: styleModule, KEOU_PICTURE: styleModule, KEOU_STICKMAN: styleModule, KEOU_MODES: {} };
+  class FakeImage {
+    constructor() { this.width = 0; this.height = 0; this._src = ""; }
+    set src(value) { this._src = value; record.requested.push(value); }
+    get src() { return this._src; }
+    async decode() {
+      const verdict = decode(this._src.replace(/^\/project\//, ""));
+      if (verdict === "fail") throw new Error("The source image cannot be decoded");
+      if (verdict === "empty") return;                              // decodes, but stays 0x0
+      this.width = 1024; this.height = 1024;
+    }
+  }
+  const fetchStub = async () => ({ json: async () => ({ features: [] }) });
+  const consoleStub = { warn: (...a) => record.warned.push(a.join(" ")), log: () => {}, error: () => {} };
+  new Function("document", "window", "Image", "fetch", "console", filmSource)(document, win, FakeImage, fetchStub, consoleStub);
+  return { win, record, ctx };
+}
+
+const scene = (id, kind, image, shots, start, end) => ({ id, kind, title: "A short title", image, shots, start, end, captions: [] });
+const config = (style) => ({ style, format: "16:9", brand: "Kleo" });
+
+test("init preloads every scene picture and every shot picture before the first frame, each fetched once", async () => {
+  const tl = {
+    duration: 9,
+    scenes: [
+      scene("01-hook", "cinema", "img/a.png", [{ image: "img/a.png" }, { image: "img/b.png" }], 0, 3),   // the worker copies shot 1's picture onto scene.image
+      scene("02-crew", "cinema", "img/c.png", null, 3, 6),
+      scene("03-end", "closing", null, [{ image: null }], 6, 9),
+    ],
+  };
+  const { win, record } = loadFilm();
+  assert.equal(await win.init(config("picture"), tl, 540), true, "a clean load reports plain success");
+  assert.deepEqual([...record.requested].sort(), ["/project/img/a.png", "/project/img/b.png", "/project/img/c.png"]);
+  assert.equal(record.requested.length, 3, "the picture shared by scene.image and shot 1 is decoded once, not twice");
+});
+
+test("a picture that fails to decode is recorded and the render carries on — in every style", async () => {
+  for (const style of ["picture", "cinema", "stickman", "terminal", "editorial", "technical", "illustrated"]) {
+    const tl = { duration: 6, scenes: [scene("01-hook", "cinema", "img/broken.png", [{ image: "img/broken.png" }], 0, 3), scene("02-crew", "image", "img/fine.png", null, 3, 6)] };
+    const { win, record } = loadFilm((path) => (path === "img/broken.png" ? "fail" : "ok"));
+    const out = await win.init(config(style), tl, 540);                    // must not reject: one picture is never worth the job
+    assert.deepEqual(out, { ok: true, images: [{ error: "Picture failed to load", image: "img/broken.png", detail: "The source image cannot be decoded" }] }, `${style}: init reports the broken picture`);
+    assert.deepEqual(win.KEOU_IMAGE_ISSUES, out.images, `${style}: the QA layer sees the same list`);
+    assert.equal(record.requested.filter((s) => s.endsWith("broken.png")).length, 1, `${style}: a failed path is remembered, not retried on every reference`);
+    assert.equal(record.warned.filter((w) => w.startsWith("PICTURE_LOAD_FAILED")).length, 1, `${style}: reported once`);
+  }
+});
+
+test("a picture that decodes to 0x0 counts as a failure and is not handed to drawImage", async () => {
+  const tl = { duration: 3, scenes: [scene("01-hook", "image", "img/empty.png", null, 0, 3)] };
+  const { win, record } = loadFilm(() => "empty");
+  const out = await win.init(config("editorial"), tl, 540);
+  assert.equal(out.ok, true);
+  assert.deepEqual(out.images.map((i) => [i.image, i.detail]), [["img/empty.png", "Empty picture"]]);
+  assert.deepEqual(win.renderFrame(1), [], "the frame still renders, with no frame issue");
+  assert.equal(record.drawn.length, 0, "nothing is drawn for a 0x0 picture");
+});
+
+test("a missing picture degrades gracefully outside the picture style: the frame renders without it", async () => {
+  const tl = { duration: 3, scenes: [scene("01-hook", "image", "img/broken.png", null, 0, 3)] };
+  const broken = loadFilm(() => "fail");
+  await broken.win.init(config("editorial"), tl, 540);
+  assert.doesNotThrow(() => broken.win.renderFrame(1.5), "scene kind 'image' must not take the frame down with the picture");
+  assert.deepEqual(broken.win.renderFrame(1.5), []);
+  assert.equal(broken.record.drawn.length, 0);
+
+  const good = loadFilm();
+  await good.win.init(config("editorial"), tl, 540);
+  assert.deepEqual(good.win.renderFrame(1.5), []);
+  assert.ok(good.record.drawn.length >= 1, "the same scene draws the picture when it decoded");
 });
 
 test("the cartoon-pirates example carries two pictures and validates with contract.py (skipped without python3)", (t) => {

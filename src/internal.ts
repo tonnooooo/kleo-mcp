@@ -23,7 +23,7 @@ const TYPES: Record<string, string> = { mp4: "video/mp4", srt: "application/x-su
  *   POST /internal/jobs/:id/files/:name/uploads               start multipart → {uploadId}
  *   PUT  /internal/jobs/:id/files/:name/uploads/:uid/parts/:n upload one part (≥ 5 MB except last) → {etag}
  *   POST /internal/jobs/:id/files/:name/uploads/:uid/complete {parts:[{partNumber, etag}]}
- *   POST /internal/jobs/:id/images     (empty body) → {images: {sceneId: url}, missing: [sceneId]}  scene pictures (cartoon/realistic)
+ *   POST /internal/jobs/:id/images     (empty body) → {images: {pictureId: url}, missing: [pictureId]}  scene pictures (cartoon/realistic)
  *   POST /internal/jobs/:id/done       {cost_usd?}
  *   POST /internal/jobs/:id/failed     {error, retry?}
  *   POST /internal/jobs/:id/selfdestruct                      ask the server to destroy the GPU (fallback)
@@ -71,7 +71,8 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
     const b = (await request.json().catch(() => ({}))) as { track?: string; percent?: number; eta_min?: number; message?: string };
     const percent = Math.max(0, Math.min(99, Math.round(Number(b.percent ?? job.percent))));
     const auto = trackFor(percent);
-    const applied = await transitionJob(env, job.id, ACTIVE_STATES, { percent, track: b.track ?? auto.track, state: auto.state, eta_min: b.eta_min ?? job.eta_min });
+    const applied = await transitionJob(env, job.id, ACTIVE_STATES, { percent, track: b.track ?? auto.track, state: auto.state,
+      eta_min: b.eta_min ?? job.eta_min, last_report_at: new Date().toISOString() });
     if (!applied) return json({ error: "job is not running any more", state: (await getJob(env, job.id))?.state ?? job.state }, 409);
     if (b.message) await audit(env, job.user_id, job.id, "worker.progress", { percent, track: b.track, message: b.message });
     return json({ ok: true });

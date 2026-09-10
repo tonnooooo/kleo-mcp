@@ -1,6 +1,7 @@
 /**
  * Unit tests for src/images.ts: the placeholder PNG encoder (IMAGE_FIXTURE=1), model inputs, response reading and the
- * generation loop against an in-memory env (no Workers AI, no network). Run: node --test test/images.test.mjs
+ * generation loop against an in-memory env (no Workers AI, no network), plus the /dl round trip of a signed picture
+ * link (src/dl.ts serves the same names images.ts signs). Run: node --test test/images.test.mjs
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -8,7 +9,9 @@ import { inflateSync } from "node:zlib";
 import {
   encodePng, placeholderPng, crc32, fnv1a, pickImageScenes, sizeFor, acceptsSize, modelInputs, readImageResult, sniffImage, fullPrompt,
   generateJobImages, DEFAULT_IMAGE_MODELS, DEFAULT_SERVER_MAX, IMAGE_NAME_RE, STYLE_SUFFIX, MAX_PICTURES, imageFileName,
+  isQuotaError, isTransientError,
 } from "../src/images.ts";
+import { handleDownload } from "../src/dl.ts";
 
 const be32 = (b, o) => ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0;
 /** Walks the chunks of a PNG, checking each CRC. */
@@ -112,27 +115,30 @@ test("readImageResult: binary stream, bytes and base64 JSON; sniffImage tells PN
 /* ------------------------------------------------------------------ generation loop on a fake env */
 
 function fakeEnv(extra = {}) {
-  const files = new Map(), auditRows = [], kv = new Map();
+  const files = new Map(), auditRows = [], kv = new Map(), jobs = new Map();
   const db = {
     prepare(sql) {
       return {
         args: [], bind(...a) { this.args = a; return this; },
         async run() {
           if (sql.startsWith("INSERT OR REPLACE INTO job_files")) files.set(this.args[1], { job_id: this.args[0], name: this.args[1], key: this.args[2], size: this.args[3], content_type: this.args[4] });
-          else if (sql.startsWith("INSERT INTO audit")) auditRows.push({ job_id: this.args[1], event: this.args[2], detail: this.args[3] });
+          // `at` mirrors the column default (schema.ts: strftime ISO); the retry of a transient failure reads it back.
+          else if (sql.startsWith("INSERT INTO audit")) auditRows.push({ job_id: this.args[1], event: this.args[2], detail: this.args[3], at: new Date().toISOString() });
           return { meta: { changes: 1 } };
         },
         async all() {
           if (sql.startsWith("SELECT * FROM job_files")) return { results: [...files.values()] };
-          if (sql.includes("FROM audit")) return { results: auditRows.filter((r) => r.event === "images.error").map((r) => ({ detail: r.detail })) };
+          if (sql.includes("FROM audit")) return { results: auditRows.filter((r) => r.event === "images.error").map((r) => ({ detail: r.detail, at: r.at })) };
           return { results: [] };
         },
-        async first() { return null; },
+        async first() { return (sql.startsWith("SELECT * FROM jobs") ? jobs.get(this.args[0]) : null) ?? null; },
       };
     },
   };
-  return { env: { DB: db, OAUTH_KV: { async put(k, v, o) { kv.set(k, { v, o }); }, async getWithMetadata(k) { const e = kv.get(k); return { value: e?.v ?? null, metadata: e?.o?.metadata }; } }, INTERNAL_SECRET: "s3cret", ...extra }, files, auditRows, kv };
+  return { env: { DB: db, OAUTH_KV: { async put(k, v, o) { kv.set(k, { v, o }); }, async getWithMetadata(k) { const e = kv.get(k); return { value: e?.v ?? null, metadata: e?.o?.metadata }; } }, INTERNAL_SECRET: "s3cret", ...extra }, files, auditRows, kv, jobs };
 }
+/** Ages every audit row by `min` minutes, as if the call had happened that long ago. */
+const backdate = (auditRows, min) => { for (const r of auditRows) r.at = new Date(Date.parse(r.at) - min * 60_000).toISOString(); };
 /** A picture-style storyboard: `n` scenes of `shots` shots each, prompts numbered over the flattened list. */
 function storyboardFor(style, n, shots) {
   let k = 0;
@@ -237,4 +243,83 @@ test("no AI binding and no fixture: everything is missing, nothing throws", asyn
   const r = await generateJobImages(env, jobFor("cartoon", 2), "http://kleo.test");
   assert.deepEqual(r.images, {}); assert.deepEqual(r.missing, ["01-sc-s1", "02-sc-s1"]);
   assert.ok(auditRows.some((a) => a.event === "images.error" && /no Workers AI binding/.test(a.detail)));
+});
+
+test("isTransientError: quota, rate limits and gateway hiccups say \"not now\"; a model error about the prompt does not", () => {
+  assert.ok(isQuotaError("AiError: 4006: you have used up your daily free allocation of 10000 neurons"));
+  for (const e of ["AiError: 4006: daily free allocation", "429 Too Many Requests", "rate limit exceeded", "503 Service Unavailable",
+                   "fetch failed", "request timed out", "the service is temporarily unavailable"]) assert.ok(isTransientError(e), e);
+  for (const e of ["AiError: 3010: model overloaded", "AiError: 5006: invalid property \"seed\"", "model returned 12 bytes that are neither PNG nor JPEG",
+                   "no Workers AI binding (env.AI)"]) assert.equal(isTransientError(e), false, e);
+});
+
+test("a 50-char scene id: the name images.ts signs is the name /dl serves (one shared IMAGE_NAME_RE)", async () => {
+  const { env, jobs } = fakeEnv({ IMAGE_FIXTURE: "1" });
+  const sceneId = `07-${"a".repeat(47)}`; // the contract allows a scene id of 50 chars
+  assert.equal(sceneId.length, 50);
+  const job = {
+    id: "gt_long", user_id: "u1", params: JSON.stringify({ duration_s: 45, format: "9:16", language: "en", voice: null, style: "cartoon" }),
+    storyboard: JSON.stringify({ style: "picture", kleo_style: "cartoon", scenes: [{ id: sceneId, kind: "cinema", title: "t", voice: "a line", shots: [{ image_prompt: "p1" }, { image_prompt: "p2" }] }] }),
+  };
+  jobs.set(job.id, { ...job, purged_at: null });
+  const r = await generateJobImages(env, job, "http://kleo.test");
+  const pictureId = `${sceneId}-s2`;
+  assert.equal(pictureId.length, 53, "a picture id runs past the 50 chars of its scene id");
+  const url = r.images[pictureId];
+  assert.ok(url, "the picture is generated, stored and signed");
+  const res = await handleDownload(new Request(url), env);
+  assert.equal(res.status, 200, "and served: the serve side must not refuse a name the store side signed");
+  assert.equal(res.headers.get("content-type"), "image/png");
+  assert.equal(sniffImage(new Uint8Array(await res.arrayBuffer())), "png");
+  // the guards around that name are untouched
+  assert.equal((await handleDownload(new Request(url.replace(/sig=[0-9a-f]{64}/, `sig=${"0".repeat(64)}`)), env)).status, 403);
+  assert.equal((await handleDownload(new Request(url.replace(/exp=\d+/, "exp=1")), env)).status, 410, "an expired link is refused before the lookup");
+  const exp = new URL(url).searchParams.get("exp");
+  assert.equal((await handleDownload(new Request(`http://kleo.test/dl/gt_long/img%2F${"z".repeat(57)}.png?exp=${exp}&sig=${"0".repeat(64)}`), env)).status, 404, "past 56 chars the name is not a picture name");
+  assert.equal((await handleDownload(new Request(`http://kleo.test/dl/gt_long/img%2FNOPE.gif?exp=${exp}&sig=${"0".repeat(64)}`), env)).status, 404);
+});
+
+test('IMAGE_SERVER_MAX="0" leaves every picture to the GPU worker; only an unset/unreadable value defaults to 10', async () => {
+  const { env, files, auditRows } = fakeEnv({ IMAGE_FIXTURE: "1", IMAGE_SERVER_MAX: "0" });
+  const r = await generateJobImages(env, jobFor("cartoon", 3), "http://kleo.test");
+  assert.deepEqual(r.images, {}); assert.deepEqual(r.missing, idsOf(3, 1));
+  assert.equal(r.generated, 0); assert.equal(files.size, 0, "not one picture drawn, not one file stored");
+  assert.equal(auditRows.filter((a) => a.event === "images.error").length, 0, "off is not an error");
+  const { env: env2 } = fakeEnv({ IMAGE_FIXTURE: "1", IMAGE_MAX_PER_JOB: "0" });
+  assert.deepEqual((await generateJobImages(env2, jobFor("cartoon", 3), "http://kleo.test")).images, {}, "the legacy variable name switches it off too");
+  for (const v of [undefined, "", "off"]) {
+    const { env: env3 } = fakeEnv({ IMAGE_FIXTURE: "1", ...(v === undefined ? {} : { IMAGE_SERVER_MAX: v }) });
+    assert.equal(Object.keys((await generateJobImages(env3, jobFor("cartoon", 12), "http://kleo.test")).images).length, DEFAULT_SERVER_MAX, `IMAGE_SERVER_MAX=${JSON.stringify(v)}`);
+  }
+});
+
+test("quota exhaustion is not a picture's one attempt: it is retried later, a real model error never is", async () => {
+  const calls = [];
+  let quotaOut = true;
+  const png = await placeholderPng("ai", 16, 16);
+  const ai = { async run(_model, inputs) {
+    calls.push(inputs.prompt.slice(0, 9));
+    if (inputs.prompt.startsWith("picture 2.")) throw new Error('AiError: 5006: invalid property "shots"');
+    if (quotaOut) throw new Error("AiError: 4006: you have used up your daily free allocation of 10,000 neurons");
+    return new Blob([png]).stream();
+  } };
+  const { env, auditRows } = fakeEnv({ AI: ai });
+  const job = () => jobFor("cartoon", 2);
+  const r1 = await generateJobImages(env, job(), "http://kleo.test");
+  assert.deepEqual(r1.missing, ["01-sc-s1", "02-sc-s1"]);
+  assert.deepEqual(calls, ["picture 1"], "the quota answer stops the rest of THIS call");
+  const r2 = await generateJobImages(env, job(), "http://kleo.test");
+  assert.deepEqual(calls, ["picture 1", "picture 2"], "seconds later the quota is still out: 01 is held back, 02 spends its attempt");
+  assert.deepEqual(r2.missing, ["01-sc-s1", "02-sc-s1"]);
+  const flags = auditRows.filter((a) => a.event === "images.error").map((a) => JSON.parse(a.detail));
+  assert.deepEqual(flags.map((f) => [f.picture, f.quota, f.transient]), [["01-sc-s1", true, true], ["02-sc-s1", false, false]]);
+
+  backdate(auditRows, 11); // the allocation is back and the cool-off has passed
+  quotaOut = false;
+  const r3 = await generateJobImages(env, job(), "http://kleo.test");
+  assert.deepEqual(calls, ["picture 1", "picture 2", "picture 1"], "01 is drawn at last; 02 keeps its verdict for good");
+  assert.equal(r3.generated, 1);
+  assert.deepEqual(Object.keys(r3.images), ["01-sc-s1"]); assert.deepEqual(r3.missing, ["02-sc-s1"]);
+  const r4 = await generateJobImages(env, job(), "http://kleo.test");
+  assert.equal(r4.reused, 1); assert.equal(calls.length, 3, "a stored picture is reused and a genuine error is never retried");
 });

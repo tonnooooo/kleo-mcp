@@ -18,6 +18,7 @@ import {
   KINDS, BEAT_KINDS, BEAT_ICONS, BEAT_FX, CINEMA_ACCENTS, VISUALS, FORBIDDEN_FIELDS,
   KLEO_STYLES, PICTURE_STYLES, IMAGE_PROMPT_MAX, kleoStyleOf, STORY_ACTS, STORY_CAST, STORY_PROPS, STORY_FX, STORY_ACCENTS,
   SHOT_MOTION, SHOTS_PER_SCENE, SHOT_CAPTION_MAX, SHOT_HL_MAX, SHOT_AT_MAX, IMAGE_PROMPT_MIN, CLOSING_BUTTON_MAX,
+  SHOT_ID_SUFFIX_RE, quotesVoice,
 } from "./keou-contract.ts";
 import cinemaExample from "../worker/keou/examples/short-relay-cinema/project.json" with { type: "json" };
 
@@ -490,7 +491,10 @@ function repairShot(sh: Record<string, unknown>, voice: string, first: boolean):
   const out: Record<string, unknown> = { image_prompt: prompt };
   if (typeof sh.caption === "string" && sh.caption.trim() && sh.caption.length <= SHOT_CAPTION_MAX && printableStr(sh.caption)) out.caption = sh.caption.trim();
   if (typeof sh.hl === "string" && sh.hl.trim() && sh.hl.length <= SHOT_HL_MAX && typeof out.caption === "string" && String(out.caption).toLowerCase().includes(sh.hl.trim().toLowerCase())) out.hl = sh.hl.trim();
-  if (!first && typeof sh.at === "string" && sh.at.length <= SHOT_AT_MAX && voice.includes(sh.at.toLowerCase())) out.at = sh.at;
+  // The cut has to be whole words of the narration (quotesVoice, the way engine/picture.js aligns a shot): a fragment
+  // ("ver came") anchors nothing and the validator rejects it, so it is dropped here rather than costing a round trip.
+  const at = typeof sh.at === "string" ? sh.at.trim() : "";
+  if (!first && at && at.length <= SHOT_AT_MAX && quotesVoice(at, voice)) out.at = at;
   if (inSet(sh.motion, SHOT_MOTION)) out.motion = sh.motion;
   return out;
 }
@@ -516,7 +520,10 @@ export function normalizeStoryboard(raw: unknown, plan: Plan): unknown {
     const seen = new Set<string>();
     c.scenes = c.scenes.filter(isObj).map((s, i) => {
       let id = slug(s.id, i).slice(0, 50);
-      if (seen.has(id)) id = `${id}-${i + 1}`.slice(0, 50);
+      // "-s" followed by a number is reserved for the picture ids ("<sceneId>-s1"), so a model id like "part-s2"
+      // would fail the contract: rename it instead of spending a round trip on it.
+      if (SHOT_ID_SUFFIX_RE.test(id)) id = id.replace(SHOT_ID_SUFFIX_RE, (m) => `-p${m.slice(2)}`);
+      if (seen.has(id)) id = `${id.slice(0, 44)}-${i + 1}`;
       seen.add(id);
       s.id = id;
       if (typeof s.hold === "number") s.hold = Math.min(3, Math.max(0.15, s.hold)); else delete s.hold;
@@ -534,6 +541,8 @@ export function normalizeStoryboard(raw: unknown, plan: Plan): unknown {
       if (plan.style === "picture") {
         delete s.beats; delete s.eyebrow; delete s.visual; delete s.detail; delete s.source;
         for (const key of KIND_ONLY_KEYS) if (key !== "button") delete s[key];
+        // validateShots also reads chapter and hl: a blank one, or a number the model wrote there, is dropped rather than failing the scene.
+        for (const key of ["chapter", "hl"]) if (key in s && (typeof s[key] !== "string" || !(s[key] as string).trim())) delete s[key];
         if (s.kind !== "closing") { s.kind = "cinema"; delete s.button; }
         else if (typeof s.button !== "string" || !s.button.trim() || s.button.length > CLOSING_BUTTON_MAX) delete s.button;
         if (typeof s.title === "string" && s.title.length > 90) s.title = s.title.slice(0, 90).replace(/\s+\S*$/, "").trim() || s.title.slice(0, 90);
@@ -673,12 +682,32 @@ const FIXTURE_SHOTS: Record<string, { image_prompt: string; caption?: string; hl
     { image_prompt: "A wide car park at sunset seen from above, rows of cars of many colours, one empty lane leading out, calm warm sky", motion: "out" },
   ],
 };
-/** A verbatim slice of the second half of a voice line: a legal "at" anchor for the fixture's second shot. */
+/**
+ * A verbatim run of whole words from a voice line: a legal "at" anchor for the fixture's later shots.
+ * It starts on a word boundary (a slice by character can begin mid-word, and "ver came" anchors no cut) and the
+ * result is checked with the contract's own quotesVoice, so the fixture can only ever carry an anchor the engine
+ * and the validator both accept. Nothing fits (a very short or wordless line) → null, and the shot simply keeps
+ * no "at", which is legal on every shot but the first.
+ */
 function fixtureAnchor(voice: unknown): string | null {
-  if (typeof voice !== "string" || voice.length < 24) return null;
-  const tail = voice.slice(Math.floor(voice.length / 2));
-  const m = /[A-Za-z][A-Za-z']* [A-Za-z][A-Za-z']*/.exec(tail);
-  return m && m[0].length <= 24 && voice.toLowerCase().includes(m[0].toLowerCase()) ? m[0] : null;
+  if (typeof voice !== "string") return null;
+  const words: { from: number; to: number }[] = [];
+  const re = /\S+/g;
+  for (let m = re.exec(voice); m; m = re.exec(voice)) words.push({ from: m.index, to: m.index + m[0].length });
+  if (words.length < 2) return null;
+  const mid = Math.floor(words.length / 2);
+  const order = words.map((_, i) => i);
+  // Prefer the second half (the cut lands late in the line), then walk back towards the start; two words, else one.
+  const starts = order.slice(mid).concat(order.slice(0, mid).reverse());
+  for (const i of starts) {
+    for (const n of [2, 1]) {
+      const last = words[i + n - 1];
+      if (!last) continue;
+      const at = voice.slice(words[i].from, last.to);
+      if (at.length <= SHOT_AT_MAX && quotesVoice(at, voice)) return at;
+    }
+  }
+  return null;
 }
 
 /** The cinema example adapted to a job's format/language/voice (local dev and tests; never calls AI). Cartoon look: picture style with shots. */

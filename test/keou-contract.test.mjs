@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { validateStoryboard, defaultVoice, wordBudget, kleoStyleOf, pictureScenes, VOICES, FORBIDDEN_FIELDS, FORBIDDEN_KINDS, KLEO_STYLES, IMAGE_PROMPT_MAX, MAX_PICTURES, SHOT_MOTION } from "../src/keou-contract.ts";
+import { validateStoryboard, defaultVoice, wordBudget, kleoStyleOf, pictureScenes, VOICES, FORBIDDEN_FIELDS, FORBIDDEN_KINDS, FORBIDDEN_SCENE_FIELDS, KLEO_STYLES, IMAGE_PROMPT_MAX, MAX_PICTURES, SHOT_MOTION, SHOT_FIELDS, SHOTS_PER_SCENE } from "../src/keou-contract.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const EXAMPLES = join(ROOT, "worker", "keou", "examples");
@@ -275,6 +275,23 @@ test("shot fields: image_prompt 2-240 required, caption ≤ 40, hl ≤ 20, motio
   assert.ok(errorsOf(notObj, { format: "9:16", language: "en" }).includes("scene 1 shot 2: must be an object"));
 });
 
+test("a shot carrying a field the engine does not know is refused here, not after the render", () => {
+  assert.deepEqual([...SHOT_FIELDS], ["image_prompt", "caption", "hl", "at", "motion"]);
+  const one = pirates(); one.scenes[0].shots[0].note = "remember to make her look tired";
+  assert.ok(errorsOf(one, { format: "9:16", language: "en" }).includes("scene 1 shot 1: unknown shot fields ['note']"));
+  const many = pirates();
+  Object.assign(many.scenes[1].shots[2], { seed: 42, duration: 2.5, prompt: "a duplicate of image_prompt" });
+  assert.ok(errorsOf(many, { format: "9:16", language: "en" }).includes("scene 2 shot 3: unknown shot fields ['duration', 'prompt', 'seed']"), "sorted, like contract.py");
+  // `image` keeps its own message: it is a real engine field, only forbidden in a storyboard.
+  const img = pirates(); img.scenes[0].shots[0].image = "img/01-hook-s1.png";
+  const errors = errorsOf(img, { format: "9:16", language: "en" });
+  assert.ok(errors.some((e) => /scene 1 shot 1: image is not allowed/.test(e)) && !errors.some((e) => /unknown shot fields/.test(e)), errors.join("\n"));
+  // The five accepted fields together still validate.
+  const all = pirates();
+  Object.assign(all.scenes[0].shots[1], { caption: "SHE WALKED AWAY", hl: "AWAY", at: "never came back", motion: "left" });
+  assert.equal(validateStoryboard(all, { format: "9:16", language: "en" }).ok, true);
+});
+
 test("shot `at`: ≤ 24 chars, quoted verbatim from the scene voice, never on the first shot", () => {
   const sb = pirates();
   sb.scenes[0].shots[1].at = "bananas";
@@ -285,6 +302,24 @@ test("shot `at`: ≤ 24 chars, quoted verbatim from the scene voice, never on th
   assert.ok(errorsOf(long, { format: "9:16", language: "en" }).includes("scene 1 shot 2 at: required text, maximum 24 characters"));
   const cased = pirates(); cased.scenes[0].shots[1].at = "NEVER CAME BACK";
   assert.equal(validateStoryboard(cased, { format: "9:16", language: "en" }).ok, true, "the quote is compared case-insensitively");
+});
+
+test("shot `at` is matched on whole words, the way the engine anchors the cut", () => {
+  const miss = "at must quote words from this scene's voice";
+  // A fragment inside a word is a substring of the voice but no run of words: picture.js would find no anchor and
+  // fall back to the even split, so the server must not accept it.
+  const cut = pirates(); cut.scenes[1].shots[1].at = "orty pirates";
+  assert.ok(errorsOf(cut, { format: "9:16", language: "en" }).includes(`scene 2 shot 2: ${miss}`), "a cut word is not a quote");
+  const head = pirates(); head.scenes[0].shots[1].at = "he never came back";
+  assert.ok(errorsOf(head, { format: "9:16", language: "en" }).includes(`scene 1 shot 2: ${miss}`), '"he" is not the word "she"');
+  // Whole words are not enough on their own: contract.py still runs its raw substring test on the GPU.
+  const comma = pirates(); comma.scenes[1].shots[1].at = "the Red Gull was";
+  assert.ok(errorsOf(comma, { format: "9:16", language: "en" }).includes(`scene 2 shot 2: ${miss}`), "the voice has a comma the quote drops");
+  const punct = pirates(); punct.scenes[0].shots[1].at = ".";
+  assert.ok(errorsOf(punct, { format: "9:16", language: "en" }).includes(`scene 1 shot 2: ${miss}`), "punctuation alone carries no word");
+  // Punctuation *inside* a quote that is otherwise verbatim is fine: both engine checks find it.
+  const inner = pirates(); inner.scenes[1].shots[1].at = "Red Gull, was";
+  assert.equal(validateStoryboard(inner, { format: "9:16", language: "en" }).ok, true);
 });
 
 test("beats are forbidden in the picture style; the closing button is ≤ 24", () => {
@@ -356,8 +391,18 @@ test("MAX_PICTURES: 24 for a Short, 48 for a long video", () => {
   assert.equal(MAX_PICTURES(600), 48);
 });
 
+/**
+ * src/mcp.ts is the guide the calling model reads before it writes a storyboard, so every claim it makes has to be
+ * one this validator agrees with: a drifted guide costs a whole rejected job. `guide` is the prose part (the tail,
+ * from EXAMPLE A on, is checked by parsing and validating the examples themselves).
+ */
+const MCP_SRC = readFileSync(join(ROOT, "src", "mcp.ts"), "utf8");
+const guideText = () => MCP_SRC.slice(MCP_SRC.indexOf("KLEO STORYBOARD GUIDE"), MCP_SRC.indexOf("EXAMPLE A"));
+/** The guide is a template literal: drop the `${...}` holes so a check reads the prose, not the interpolation. */
+const literalOnly = (text) => text.replace(/\$\{[^}]*\}/g, "");
+
 test("the storyboard guide's examples validate against this contract", () => {
-  const src = readFileSync(join(ROOT, "src", "mcp.ts"), "utf8");
+  const src = MCP_SRC;
   const examples = src.match(/\{"schema_version"[\s\S]*?\]\}\n/g) ?? [];
   assert.ok(examples.length >= 2, `expected the cartoon and realistic examples in the guide, found ${examples.length}`);
   const styles = new Set();
@@ -370,4 +415,34 @@ test("the storyboard guide's examples validate against this contract", () => {
     assert.ok(pictureScenes(sb).length >= sb.scenes.length, "every scene of an example carries at least one shot");
   }
   assert.deepEqual([...styles].sort(), ["cartoon", "realistic"]);
+});
+
+test("the guide only offers languages and voices kleo_create_video accepts", () => {
+  const jobLangs = ["en", "it"];
+  assert.match(MCP_SRC, /const JOB_LANGUAGES = \["en", "it"\] as const;/, "the job languages are declared once");
+  assert.match(MCP_SRC, /z\.enum\(JOB_LANGUAGES\)/, "the tool schema and the guide read the same list");
+  const guide = guideText();
+  for (const lang of Object.keys(VOICES).filter((l) => !jobLangs.includes(l)))
+    for (const v of VOICES[lang]) assert.ok(!guide.includes(v), `the guide must not offer ${v} (${lang} is not a job language)`);
+  assert.ok(!/"fr"/.test(guide), "fr is not a language a job can have: the validator rejects a storyboard in it");
+  assert.match(guide, /must equal the "format" and "language" you pass to kleo_create_video/);
+});
+
+test("the guide never suggests a field the validator forbids on a scene", () => {
+  const guide = guideText();
+  assert.ok(!guide.includes("JSON.stringify(MOTION)"), "scene motion backgrounds are a forbidden scene field");
+  // "motion" is legal on a SHOT and forbidden on a scene: check the guide with the shot line taken out.
+  const sceneLines = guide.split("\n").filter((l) => !l.trimStart().startsWith("SHOT:")).join("\n");
+  for (const f of FORBIDDEN_SCENE_FIELDS)
+    assert.ok(!new RegExp(`"${f}":`).test(sceneLines), `${f} must not be offered as a scene field`);
+});
+
+test("every shot count in the guide comes from SHOTS_PER_SCENE", () => {
+  for (const [what, text] of [["guide", guideText()], ["instructions", MCP_SRC.slice(MCP_SRC.indexOf("const INSTRUCTIONS"), MCP_SRC.indexOf("const ok ="))]]) {
+    assert.ok(!/\d ?- ?\d (?:pictures|shots)/.test(literalOnly(text)), `${what}: no hard-coded shot range, interpolate shotRange()`);
+    assert.ok(!/exactly 1|has exactly one shot/.test(text), `${what}: the closing takes 1-2 shots, not exactly 1`);
+  }
+  assert.deepEqual(SHOTS_PER_SCENE.cinema, [1, 4]);
+  assert.deepEqual(SHOTS_PER_SCENE.closing, [1, 2]);
+  assert.match(MCP_SRC, /const shotRange = \(kind: "cinema" \| "closing"\) => SHOTS_PER_SCENE\[kind\]\.join\("-"\)/);
 });

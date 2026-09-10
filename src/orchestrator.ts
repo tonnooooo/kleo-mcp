@@ -1,7 +1,7 @@
 import type { Env } from "./env";
-import { type Job, type JobState, ACTIVE_STATES, OPEN_STATES, activeJobs, queuedJobs, unplannedJobs, claimPlanAttempt, countRunning, updateJob, transitionJob, audit, refundCredits, expiredJobs, listFiles, deleteFiles, setFile, getJob, reserveJob, unreserveJob } from "./db";
+import { type Job, type JobState, ACTIVE_STATES, OPEN_STATES, GPU_ONLY_WAIT, activeJobs, queuedJobs, queuedPictureJobs, jobInstances, unplannedJobs, claimPlanAttempt, countRunning, updateJob, transitionJob, audit, refundCredits, expiredJobs, listFiles, deleteFiles, setFile, getJob, reserveJob, unreserveJob } from "./db";
 import { backendFor, getBackend } from "./backends";
-import { vastStatus } from "./backends/vast";
+import { vastStatus, listKleoInstances, destroyInstance } from "./backends/vast";
 import { int, nowIso, minutesSince, secondsSince, addDays, base64ToBytes, rid } from "./util";
 import { TINY_MP4_B64 } from "./assets";
 import { resultLinks, FILE_NAMES } from "./jobs";
@@ -16,6 +16,8 @@ const MAX_ATTEMPTS = 3;
 const MAX_PLAN_ATTEMPTS = 2;
 /** After a Workers AI quota/outage error, planning pauses this long (the daily free allocation resets at 00:00 UTC). */
 const PLAN_PAUSE_SECONDS = 15 * 60;
+/** Minutes between two Vast orphan sweeps: one full instance listing each, so not every tick. */
+const SWEEP_MIN = 10;
 
 type Stats = { planned: number; started: number; advanced: number; failed: number; purged: number };
 
@@ -92,15 +94,21 @@ async function tickInner(env: Env, stats: Stats) {
         continue;
       }
       // A worker that never reports (image pull stuck, boot failure) must not hold a paid GPU for the whole timeout.
+      // Measured from the worker's last word, not from the rental: a healthy picture job spends the image pull plus the
+      // whole picture phase under 8% (state "starting"), which is far more than fifteen minutes of wall clock.
       const startTimeoutMin = int(env.START_TIMEOUT_MIN, 15);
-      if (job.state === "starting" && job.started_at && minutesSince(job.started_at) > startTimeoutMin) {
+      const lastWord = job.last_report_at || job.started_at;
+      if (job.state === "starting" && lastWord && minutesSince(lastWord) > startTimeoutMin) {
         // A fresh host may still be pulling the 10 GB image: give "loading" instances more time, but never more than LOADING_TIMEOUT_MIN.
         const loadingTimeoutMin = int(env.LOADING_TIMEOUT_MIN, 35);
         const st = job.backend === "vast" ? await vastStatus(env, job) : null;
-        if (st === "loading" && minutesSince(job.started_at) <= loadingTimeoutMin) {
-          await audit(env, job.user_id, job.id, "vast.still_loading", { minutes: Math.round(minutesSince(job.started_at)) });
+        if (st === "loading" && minutesSince(job.started_at!) <= loadingTimeoutMin) {
+          await audit(env, job.user_id, job.id, "vast.still_loading", { minutes: Math.round(minutesSince(job.started_at!)) });
         } else {
-          await failJob(env, job, `worker never started within ${Math.round(minutesSince(job.started_at))} min (instance status: ${st ?? "unknown"})`, true);
+          const quiet = Math.round(minutesSince(lastWord));
+          await failJob(env, job, job.last_report_at
+            ? `the worker went quiet ${quiet} min ago (instance status: ${st ?? "unknown"})`
+            : `worker never started within ${quiet} min (instance status: ${st ?? "unknown"})`, true);
           stats.failed++;
           continue;
         }
@@ -160,7 +168,10 @@ async function tickInner(env: Env, stats: Stats) {
     }
   }
 
-  await dispatchPoolRunner(env, providerDown || backend.name === "pool");
+  const poolOnly = providerDown || backend.name === "pool";
+  if (poolOnly) await explainGpuWait(env, providerDown ? "vast_unavailable" : "pool_backend");
+  await dispatchPoolRunner(env, poolOnly);
+  await sweepVastOrphans(env);
 
   for (const job of await expiredJobs(env)) {
     for (const f of await listFiles(env, job.id)) await deleteFile(env, f.key);
@@ -169,6 +180,68 @@ async function tickInner(env: Env, stats: Stats) {
     stats.purged++;
   }
   return stats;
+}
+
+/**
+ * A cartoon / realistic job is rendered from AI pictures, which need a GPU, so the free GitHub Actions pool never
+ * claims it (POOL_SKIP in db.ts is right about that). When the pool is the only way in — Vast is down or is not the
+ * backend at all — such a job would sit in "queued" saying nothing until the user gives up or the job times out.
+ * The reason goes on `error`, the one queued-job field the job view exposes, and is audited once per wait so the
+ * owner can see how long a style was stranded. reserveJob clears `error` the moment a GPU is really reserved.
+ *
+ * A job that already failed to start carries a real error there ("could not start a GPU: no offer matches..."), which
+ * says far more than the generic wait: that error is KEPT, quoted after the explanation, never overwritten. Keeping
+ * GPU_ONLY_WAIT as the prefix is what makes the composed message recognisable — queuedPictureJobs filters on exactly
+ * that prefix in SQL, so a job is explained once and the query never wastes its page on jobs already explained. If a
+ * later start attempt overwrites `error` with a new failure, the job comes back here once and is explained again,
+ * this time quoting the new failure: one audit line per piece of news, not one per minute.
+ */
+async function explainGpuWait(env: Env, reason: string): Promise<void> {
+  for (const job of await queuedPictureJobs(env)) {
+    const previous = job.error?.trim();
+    const message = previous ? `${GPU_ONLY_WAIT} (last attempt: ${previous.slice(0, 400)})` : GPU_ONLY_WAIT;
+    // Guarded on the error we read, so a start error landing between the read and the write is never lost.
+    if (!(await transitionJob(env, job.id, ["queued"], { error: message }, { error: job.error }))) continue;
+    await audit(env, job.user_id, job.id, "job.waiting_for_gpu", { reason, style: (JSON.parse(job.params) as { style?: string }).style ?? null, queued_min: Math.round(minutesSince(job.created_at)), previous_error: previous ?? null });
+  }
+}
+
+/**
+ * Safety net for GPUs nobody owns any more. Every instance is labelled "kleo-<job id>" (vast.ts), so the label says
+ * which job paid for it: an instance whose job is over, or whose job now holds a different instance, is money burning
+ * for nothing — a create whose answer was lost and could not be adopted, or a destroy that failed. Instances labelled
+ * for a job this database has never heard of belong to another deployment sharing the Vast account: never touched.
+ */
+export async function sweepVastOrphans(env: Env): Promise<number> {
+  if (!env.VAST_API_KEY) return 0; // no key, no instances of ours (and no way to look)
+  if (await isFlagActive(env, "vast_sweep")) return 0;
+  await setFlagUntil(env, "vast_sweep", SWEEP_MIN * 60);
+  let destroyed = 0;
+  try {
+    const instances = await listKleoInstances(env);
+    if (!instances.length) return 0;
+    const jobs = await jobInstances(env, [...new Set(instances.map((i) => i.jobId))]);
+    for (const inst of instances) {
+      const job = jobs.get(inst.jobId);
+      if (!job) continue; // foreign deployment
+      // A job whose rental is IN FLIGHT has no instance_id yet: leave it alone, start() itself adopts what it created.
+      // "In flight" means 'starting' and nothing else. reserveJob moves queued → starting BEFORE backend.start is ever
+      // called, so a job sitting in 'queued' cannot legitimately own a live instance: an instance labelled for one is a
+      // create whose answer was lost, or a requeue that left its GPU behind — money burning with nobody watching.
+      const inFlight = ACTIVE_STATES.includes(job.state);
+      if (inFlight && (!job.instance_id || job.instance_id === String(inst.id))) continue;
+      try {
+        await destroyInstance(env, inst.id);
+        destroyed++;
+        await audit(env, null, inst.jobId, "vast.orphan.swept", { instance: inst.id, status: inst.status, dph: inst.dph, job_state: job.state, kept: inFlight ? job.instance_id : null });
+      } catch (e) {
+        await audit(env, null, inst.jobId, "vast.orphan.sweep.error", { instance: inst.id, error: String(e).slice(0, 200) });
+      }
+    }
+  } catch (e) {
+    await audit(env, null, null, "vast.orphan.sweep.error", String(e).slice(0, 200));
+  }
+  return destroyed;
 }
 
 /**

@@ -48,6 +48,7 @@
     "IMAGE_MODEL_REALISTIC": "@cf/leonardo/phoenix-1.0", // Workers AI: immagini dello stile "realistic" (≈2.300 neuroni ≈ $0.025 a immagine a 768x1344; alternativa gratuita in beta: @cf/bytedance/stable-diffusion-xl-lightning)
     "MAX_CONCURRENT_GPUS": "5", // massimo GPU accese in totale: è il tetto di spesa oraria
     "MAX_JOBS_PER_USER": "2", // massimo video in corso per ogni utente
+    "START_TIMEOUT_MIN": "25",
     "JOB_TIMEOUT_MIN": "120", // dopo tanti minuti un render è considerato fallito, la GPU viene distrutta e i crediti restituiti
     "FREE_CREDITS": "10", // crediti di prova per chi entra con un codice del segreto INVITE_CODES (i codici nella tabella "invites" hanno il valore scritto lì)
     "RESULT_TTL_DAYS": "7", // giorni di validità dei link e dei file

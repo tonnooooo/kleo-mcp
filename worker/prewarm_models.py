@@ -10,6 +10,12 @@ import importlib.util, os, sys, time
 from pathlib import Path
 
 PICTURE_MODELS = {"cartoon": "Lykon/dreamshaper-8", "realistic": "SG161222/Realistic_Vision_V5.1_noVAE"}
+# Which of them are baked into the image. Every gigabyte here is downloaded again by every rented instance before
+# it can start (a 15 GB image took 16 minutes to pull on a 900 Mbit host), while the same weights come from
+# Hugging Face at ~2 GB in half a minute, once, on the instance itself. So only the common look travels in the
+# image; PREWARM_PICTURES=all bakes both, =0 bakes none.
+BAKED = os.environ.get("PREWARM_PICTURES", "1")
+
 # Configs, tokenizer files and fp16 weights of the parts the pipeline loads; the safety checker (disabled at run time,
 # 1.2 GB) and the .bin / .ckpt duplicates never enter the image.
 PICTURE_ALLOW_FP16 = ["*.json", "*.txt", "text_encoder/*.fp16.safetensors", "unet/*.fp16.safetensors", "vae/*.fp16.safetensors"]
@@ -17,11 +23,18 @@ PICTURE_ALLOW_FULL = ["*.json", "*.txt", "text_encoder/*.safetensors", "unet/*.s
 PICTURE_IGNORE = ["safety_checker/*", "*.bin", "*.ckpt", "*.msgpack", "*.onnx", "*.h5"]
 
 
+def picture_models():
+    """The models this build bakes in: all of them with PREWARM_PICTURES=all, otherwise cartoon only."""
+    if BAKED == 'all':
+        return PICTURE_MODELS
+    return {k: v for k, v in PICTURE_MODELS.items() if k == 'cartoon'}
+
+
 def prewarm_pictures():
     """snapshot_download of each picture model into HF_HOME. Tries the fp16 variant first; a repo without fp16 files
     (the unet is the tell) gets its plain safetensors instead (loaded as fp16 at run time all the same)."""
     from huggingface_hub import snapshot_download
-    for style, repo in sorted(PICTURE_MODELS.items()):
+    for style, repo in sorted(picture_models().items()):
         t0 = time.time()
         path = snapshot_download(repo, allow_patterns=PICTURE_ALLOW_FP16, ignore_patterns=PICTURE_IGNORE)
         variant = "fp16"
@@ -63,7 +76,7 @@ if os.environ.get('PREWARM_PICTURES', '1') != '0':
     # enough (no weights are run: KLEO_PICTURES_CPU is not set, so no picture is drawn here).
     import torch
     from diffusers import StableDiffusionPipeline
-    for style, repo in sorted(PICTURE_MODELS.items()):
+    for style, repo in sorted(picture_models().items()):
         try:
             _pipe = StableDiffusionPipeline.from_pretrained(repo, torch_dtype=torch.float16, variant='fp16', safety_checker=None,
                                                             requires_safety_checker=False, use_safetensors=True, local_files_only=True)

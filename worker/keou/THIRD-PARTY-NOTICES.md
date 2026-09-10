@@ -22,8 +22,8 @@ The original Keou code and documentation are distinct from the upstream componen
 | PyTorch | [PyTorch](https://github.com/pytorch/pytorch); installed in the worker container |
 | Playwright / Chromium | [Playwright](https://github.com/microsoft/playwright); browser downloaded at installation, with its own third-party notices |
 | FFmpeg / libx264 | Distribution-provided binaries; licensing depends on build options. See [FFmpeg legal page](https://ffmpeg.org/legal.html). Binaries are not shipped in this source kit. |
-| Baloo 2 (engine/assets/cartoon.ttf) | [Baloo 2 by Ek Type](https://github.com/google/fonts/tree/main/ofl/baloo2), SIL Open Font License 1.1. Downloaded unmodified from google/fonts by worker/Dockerfile.keou at image build time; not part of this source kit. |
-| Oswald (engine/assets/real.ttf) | [Oswald by Vernon Adams, Kalapi Gajjar and Cyreal](https://github.com/google/fonts/tree/main/ofl/oswald), SIL Open Font License 1.1. Downloaded unmodified from google/fonts by worker/Dockerfile.keou at image build time; not part of this source kit. |
+| Baloo 2 (engine/assets/cartoon.ttf) | [Baloo 2 by Ek Type](https://github.com/google/fonts/tree/b6f0fe1740573b70ee367fbaba04b7586be85af3/ofl/baloo2), SIL Open Font License 1.1. Downloaded unmodified from google/fonts, pinned to commit `b6f0fe1740573b70ee367fbaba04b7586be85af3`, by worker/Dockerfile.keou at image build time and by scripts/devrender.py for dev renders; not part of this source kit. |
+| Oswald (engine/assets/real.ttf) | [Oswald by Vernon Adams, Kalapi Gajjar and Cyreal](https://github.com/google/fonts/tree/b6f0fe1740573b70ee367fbaba04b7586be85af3/ofl/oswald), SIL Open Font License 1.1. Downloaded unmodified from google/fonts, pinned to the same commit, by worker/Dockerfile.keou at image build time and by scripts/devrender.py for dev renders; not part of this source kit. |
 | Vast CLI | [vast-ai/vast-cli](https://github.com/vast-ai/vast-cli), installed by setup-host.sh |
 | Python and Node packages | Explicit top-level versions in requirements.txt and package-lock.json; transitive components retain their own terms |
 
@@ -42,10 +42,22 @@ Terminal typography uses the unmodified JetBrains Mono Regular font from the off
 The cartoon and realistic looks of the Kleo picture style use two variable fonts from the
 [google/fonts](https://github.com/google/fonts) repository, both under the SIL Open Font License 1.1:
 
-| Engine file | Font | Upstream file and licence |
+| Engine file | Font | Upstream file, pinned build and licence |
 |---|---|---|
-| engine/assets/cartoon.ttf | Baloo 2, © 2019 The Baloo 2 Project Authors (Ek Type) | `ofl/baloo2/Baloo2[wght].ttf`, licence in `ofl/baloo2/OFL.txt` |
-| engine/assets/real.ttf | Oswald, © 2016 The Oswald Project Authors | `ofl/oswald/Oswald[wght].ttf`, licence in `ofl/oswald/OFL.txt` |
+| engine/assets/cartoon.ttf | Baloo 2, © 2019 The Baloo 2 Project Authors (Ek Type) | `ofl/baloo2/Baloo2[wght].ttf` — 683 200 bytes, git blob `bc1b9f1191c0d6d23cb2ce0af66aba82ddbf8d6c`, the build published upstream since 2021-11-25; licence in `ofl/baloo2/OFL.txt` |
+| engine/assets/real.ttf | Oswald, © 2016 The Oswald Project Authors | `ofl/oswald/Oswald[wght].ttf` — 172 088 bytes, git blob `d1a3b9cb1325bf20b3a06ef9849d21c411212a3b`, the build published upstream since 2023-07-20; licence in `ofl/oswald/OFL.txt` |
+
+**Pinned build.** Both files come from google/fonts commit `b6f0fe1740573b70ee367fbaba04b7586be85af3` — never
+`main`. worker/Dockerfile.keou fetches them into the image (`ARG GOOGLE_FONTS_REF`) and scripts/devrender.py
+fetches the same two URLs for dev
+renders on the box; both verify each file by exact byte length and git blob id (the sha1 of `blob <len>\0` +
+content, which is the id github.com/google/fonts publishes for the blob, so the values above can be re-checked
+against the GitHub API without downloading anything) and refuse a file that does not match. Those two blob ids are
+the version of the typography every picture-style video we ship is cut with: the family version string in each
+file is whatever that pinned blob carries, readable from a built image with
+`python3 -c "from fontTools.ttLib import TTFont; print(TTFont('engine/assets/real.ttf')['name'].getDebugName(5))"`.
+Moving the pin re-cuts the look of every future video, so treat it as a deliberate design change, re-record the
+byte length and blob id here and in both fetchers, and look at a render before shipping it.
 
 Neither file is included in this source kit. worker/Dockerfile.keou downloads both into the worker
 image built by GitHub Actions, byte for byte as published upstream; only the file name on disk

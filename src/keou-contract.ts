@@ -50,6 +50,12 @@ export const IMAGE_PROMPT_MIN = 2;
 export const SHOT_CAPTION_MAX = 40;
 export const SHOT_HL_MAX = 20;
 export const SHOT_AT_MAX = 24;
+/**
+ * Everything a shot may carry, mirroring contract.py SHOT_FIELDS with image_prompt where the engine has the
+ * worker-attached `image`. contract.py refuses a shot with any other key, and it only runs once the GPU is rented
+ * and the pictures are drawn: whatever the server lets through here is paid for before the engine throws it out.
+ */
+export const SHOT_FIELDS = ["image_prompt", "caption", "hl", "at", "motion"] as const;
 /** Shots per scene: a cinema scene cuts up to four times, a closing shows one picture (two at most). */
 export const SHOTS_PER_SCENE: Record<"cinema" | "closing", [number, number]> = { cinema: [1, 4], closing: [1, 2] };
 export const CLOSING_BUTTON_MAX = 24;
@@ -113,6 +119,25 @@ const isBool = (v: unknown): v is boolean => typeof v === "boolean";
 const printable = (s: string) => ![...s].some((ch) => ch.charCodeAt(0) < 32 || ch.charCodeAt(0) === 127);
 const sorted = (list: readonly string[]) => `[${[...list].sort().map((x) => `'${x}'`).join(", ")}]`;
 const subset = (items: unknown[], set: readonly string[]) => items.every((x) => typeof x === "string" && (set as readonly string[]).includes(x));
+/** The engine's word key (engine/picture.js `key`): lowercase, everything but a-z0-9%$ dropped. */
+const wordKey = (w: string) => w.toLowerCase().replace(/[^a-z0-9%$]/g, "");
+/** A text as the engine reads it: whitespace-separated words, keyed, empties dropped (engine/picture.js shotStarts). */
+const wordsOf = (s: string) => s.split(/\s+/).map(wordKey).filter(Boolean);
+/**
+ * True when `at` quotes the scene voice the way *both* engine checks read it, so an accepted cut is really anchored:
+ *   - picture.js shotStarts() keys the shot's words and the aligned s.words and looks for the shot's words as a
+ *     contiguous run of the scene's. A fragment that is not a whole word ("orty pirate", "he st") matches no run,
+ *     so the cut silently falls back to the even split — the picture lands on nothing in particular.
+ *   - contract.py (like the cinema-beat rule it reuses) keeps a raw substring test on the lowercased voice, and it
+ *     runs on the GPU after the pictures are paid for, so a quote it would reject must never leave the server.
+ * Both are required: neither implies the other ("hello world" is whole words of "Hello, world" but not a substring).
+ */
+export const quotesVoice = (at: string, voice: string): boolean => {
+  const toks = wordsOf(at), said = wordsOf(voice);
+  if (!toks.length || !voice.toLowerCase().includes(at.toLowerCase())) return false;
+  for (let i = 0; i + toks.length <= said.length; i++) if (toks.every((tk, m) => said[i + m] === tk)) return true;
+  return false;
+};
 
 class Collector {
   errors: string[] = [];
@@ -243,13 +268,17 @@ function validateShots(s: Record<string, unknown>, label: string, kind: "cinema"
     const sl = `${label} shot ${j + 1}`;
     if (!isObj(sh)) { e.add(`${sl}: must be an object`); return; }
     if ("image" in sh) e.add(`${sl}: image is not allowed in a storyboard (describe the picture in image_prompt instead; Kleo generates it)`);
+    // contract.py: `unknown = set(shot) - SHOT_FIELDS` → same wording, same sorted list. A stray "note" or "seed"
+    // costs a whole rendered job otherwise. `image` keeps the dedicated message above.
+    const unknown = Object.keys(sh).filter((k) => k !== "image" && !(SHOT_FIELDS as readonly string[]).includes(k));
+    if (unknown.length) e.add(`${sl}: unknown shot fields ${sorted(unknown)}`);
     if (e.text(sh.image_prompt, `${sl} image_prompt`, IMAGE_PROMPT_MAX) && (sh.image_prompt as string).trim().length < IMAGE_PROMPT_MIN)
       e.add(`${sl} image_prompt: required text, minimum ${IMAGE_PROMPT_MIN} characters`);
     if ("caption" in sh) e.text(sh.caption, `${sl} caption`, SHOT_CAPTION_MAX);
     if ("hl" in sh) e.text(sh.hl, `${sl} hl`, SHOT_HL_MAX);
     if ("at" in sh) {
       if (j === 0) e.add(`${sl}: the first shot opens the scene, it cannot carry at`);
-      else if (e.text(sh.at, `${sl} at`, SHOT_AT_MAX) && !voice.includes((sh.at as string).toLowerCase())) e.add(`${sl}: at must quote words from this scene's voice`);
+      else if (e.text(sh.at, `${sl} at`, SHOT_AT_MAX) && !quotesVoice(sh.at as string, voice)) e.add(`${sl}: at must quote words from this scene's voice`);
     }
     if ("motion" in sh && !(SHOT_MOTION as readonly string[]).includes(sh.motion as string)) e.add(`${sl}: motion must be one of ${sorted(SHOT_MOTION)}`);
   });

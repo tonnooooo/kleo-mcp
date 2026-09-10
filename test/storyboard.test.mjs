@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateStoryboard, fixtureStoryboard, isTransientAiError, StoryboardError, styleFor, keouStyleFor, pickKleoStyle, planFor, normalizeStoryboard } from "../src/storyboard.ts";
-import { validateStoryboard, pictureScenes, BEAT_ICONS, STORY_ACTS } from "../src/keou-contract.ts";
+import { validateStoryboard, pictureScenes, quotesVoice, BEAT_ICONS, STORY_ACTS } from "../src/keou-contract.ts";
 
 const job = (template, duration_s, format, language = "en", prompt = "Why your phone battery dies faster in winter and the two habits that keep it healthy.", style = undefined) =>
   ({ id: "gt_test", template, prompt, params: JSON.stringify({ duration_s, format, language, voice: null, ...(style ? { style } : {}) }) });
@@ -144,6 +144,12 @@ test("fixture: used without an AI binding or with STORYBOARD_FIXTURE=example, ad
   assert.equal(scenes.at(-1).kind, "closing"); assert.equal(scenes.at(-1).shots.length, 1);
   assert.equal(scenes[0].shots[0].at, undefined, "the first shot opens the scene");
   assert.ok(scenes[0].voice.toLowerCase().includes(String(scenes[0].shots[1].at).toLowerCase()), "the second shot cuts on words of the voice");
+  for (const s of scenes) for (const [i, sh] of s.shots.entries()) {
+    if (i === 0) { assert.equal(sh.at, undefined); continue; }
+    // Whole words, never a fragment ("ver came"): the engine anchors a cut on a run of the scene's words.
+    if ("at" in sh) assert.ok(quotesVoice(sh.at, s.voice), `${s.id} shot ${i + 1}: "${sh.at}" must quote whole words of the voice`);
+  }
+  assert.ok(scenes.filter((s) => s.shots.length > 1).every((s) => "at" in s.shots[1]), "every fixture scene with two pictures cuts the second on the narration");
   const pics = pictureScenes(r.storyboard);
   assert.ok(pics.length > scenes.length, `several pictures per scene, got ${pics.length} for ${scenes.length} scenes`);
   assert.deepEqual(pics.slice(0, 2).map((x) => x.id), [`${scenes[0].id}-s1`, `${scenes[0].id}-s2`]);
@@ -276,6 +282,20 @@ test("picture: normalizeStoryboard turns a scene image_prompt into shots and kee
   ] }, plan);
   assert.deepEqual(bare.scenes[0].shots, [{ image_prompt: "A quiet street at dawn" }]);
   assert.equal(validateStoryboard(bare, { format: "9:16", language: "en" }).ok, true);
+  // An "at" the engine could not anchor is dropped here, quietly: it would otherwise cost a whole model round trip.
+  const cuts = normalizeStoryboard({ title: "T", scenes: [
+    { id: "01-part-s2", kind: "cinema", chapter: 7, hl: "   ", title: "The morning after", voice: "Whatever came next, nobody saw it coming.", shots: [
+      { image_prompt: "A wide empty street at dawn" },
+      { image_prompt: "A key on a kitchen bench", at: "ver came" },              // mid-word fragment → dropped
+      { image_prompt: "A door left open", at: "  nobody saw  " },                // whole words with stray spaces → trimmed and kept
+      { image_prompt: "A car pulling away", at: "nobody, saw" },                 // whole words but not a substring of the voice → dropped
+    ] },
+    { id: "01-part-s2", kind: "closing", title: "Follow", voice: "Follow for part two.", shots: [{ image_prompt: "An empty street at noon" }] },
+  ] }, plan);
+  assert.deepEqual(cuts.scenes.map((s) => s.id), ["01-part-p2", "01-part-p2-2"], '"-s<number>" is reserved for picture ids, so the scene is renamed');
+  assert.deepEqual(cuts.scenes[0].shots.map((sh) => sh.at), [undefined, undefined, "nobody saw", undefined]);
+  assert.ok(!("chapter" in cuts.scenes[0]) && !("hl" in cuts.scenes[0]), "a chapter that is not text and a blank hl are dropped");
+  assert.deepEqual(validateStoryboard(cuts, { format: "9:16", language: "en" }).errors ?? [], []);
 });
 
 test("stickman: story scenes with acts, cast, props and bubbles, repaired to the contract", async () => {

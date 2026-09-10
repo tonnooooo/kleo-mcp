@@ -39,6 +39,8 @@ export interface Job {
   expires_at: string | null;
   purged_at: string | null;
   cost_usd: number | null;
+  /** ISO time of the last worker progress report; null until the worker speaks. */
+  last_report_at?: string | null;
   storyboard: string | null; // JSON: Keou project without id/script_file/music_quiet/image scenes (see keou-contract.ts)
   plan_attempts: number;
   plan_error: string | null;
@@ -169,12 +171,22 @@ export async function updateJob(env: Env, id: string, fields: Partial<Job>): Pro
  * must then skip every side effect tied to the transition (refund, e-mail, audit of the new state).
  * This single check is what makes refunds happen once and keeps the worker callbacks idempotent.
  */
-export async function transitionJob(env: Env, id: string, from: JobState[], fields: Partial<Job>): Promise<boolean> {
+export async function transitionJob(env: Env, id: string, from: JobState[], fields: Partial<Job>, expect: Partial<Job> = {}): Promise<boolean> {
   const keys = Object.keys(fields) as (keyof Job)[];
   if (!keys.length || !from.length) return false;
   const sets = keys.map((k) => `${k} = ?`).join(", ");
   const values = keys.map((k) => fields[k] as unknown);
-  const r = await env.DB.prepare(`UPDATE jobs SET ${sets} WHERE id = ? AND state IN (${inList(from)})`).bind(...values, id).run();
+  // Optional compare-and-set on top of the state guard: the caller read a field and only wants the write if nobody
+  // changed it in between (an `expect` value of null or undefined means "was still empty").
+  const guards: string[] = [];
+  const guardValues: unknown[] = [];
+  for (const k of Object.keys(expect) as (keyof Job)[]) {
+    const v = expect[k] as unknown;
+    if (v === null || v === undefined) guards.push(`${k} IS NULL`);
+    else { guards.push(`${k} = ?`); guardValues.push(v); }
+  }
+  const r = await env.DB.prepare(`UPDATE jobs SET ${sets} WHERE id = ? AND state IN (${inList(from)})${guards.map((g) => ` AND ${g}`).join("")}`)
+    .bind(...values, id, ...guardValues).run();
   return (r.meta.changes ?? 0) === 1;
 }
 
@@ -199,9 +211,60 @@ export async function reserveJob(env: Env, id: string, backend: string): Promise
 export const unreserveJob = (env: Env, id: string) =>
   env.DB.prepare("UPDATE jobs SET state = 'queued', backend = NULL, instance_id = NULL, instance_meta = NULL, started_at = NULL, track = NULL WHERE id = ? AND state = 'starting' AND instance_id IS NULL").bind(id).run();
 /** Hands the oldest planned queued job (queued for at least minQueuedMin minutes) to a pool runner. */
+/**
+ * The free pool runs on GitHub Actions: no GPU, so it cannot draw the scene pictures a cartoon / realistic
+ * storyboard is made of (the server draws at most IMAGE_SERVER_MAX of them, a Short needs up to 24). A picture
+ * job rendered there would come out as a slideshow of empty gradients, so the pool never takes one: it waits
+ * for a real GPU instead. The tell is the stored storyboard's Keou style, which the validator normalises to
+ * "picture" for every cartoon / realistic job; cyber and stickman jobs still use the free runners.
+ */
+const PICTURE_JOB = "COALESCE(json_extract(storyboard, '$.style'), '') = 'picture'";
+const POOL_SKIP = `NOT (${PICTURE_JOB})`;
+
+/**
+ * Left on `error` (the only queued-job field the job view shows) when a picture job can do nothing but wait: the
+ * free pool will never claim it and the GPU provider is unavailable. Written by the orchestrator, cleared by
+ * reserveJob the moment a GPU is actually reserved. It is always the START of `error`: a real start error is kept
+ * after it (see explainGpuWait), and `GPU_WAIT_EXPLAINED` below recognises the whole family by that prefix.
+ */
+export const GPU_ONLY_WAIT = "waiting for a free GPU: this visual style draws every picture on a GPU, so the free pool cannot render it";
+
+/**
+ * SQL for "this job already carries the wait explanation". The message contains no LIKE wildcard (% or _), so it is
+ * its own pattern. Without this filter queuedPictureJobs kept handing back the same first twenty explained jobs and
+ * every job past them stayed silent forever; explaining is one-shot, so the already-explained belong out of the page.
+ */
+const GPU_WAIT_EXPLAINED = "error LIKE ?";
+const gpuWaitPattern = `${GPU_ONLY_WAIT}%`;
+
+/**
+ * Queued planned jobs the pool will never take (cartoon / realistic) and that have not been told why yet: they can
+ * only wait for a GPU. Oldest first, so the longest-stranded job is explained first.
+ */
+export async function queuedPictureJobs(env: Env, limit = 20): Promise<Job[]> {
+  return (await env.DB.prepare(
+    `SELECT * FROM jobs WHERE state = 'queued' AND storyboard IS NOT NULL AND ${PICTURE_JOB} AND NOT (error IS NOT NULL AND ${GPU_WAIT_EXPLAINED}) ORDER BY created_at LIMIT ?`,
+  ).bind(gpuWaitPattern, limit).all<Job>()).results;
+}
+
+/**
+ * State and known instance of the given jobs, keyed by id. Vast labels carry the job id ("kleo-<id>"), so this is
+ * what turns a list of live instances into "whose is this, and is it still wanted?" for the orphan sweep.
+ */
+export async function jobInstances(env: Env, ids: string[]): Promise<Map<string, { state: JobState; instance_id: string | null }>> {
+  const out = new Map<string, { state: JobState; instance_id: string | null }>();
+  for (let i = 0; i < ids.length; i += 50) { // D1 caps the number of bound parameters; ids come from an instance listing
+    const chunk = ids.slice(i, i + 50);
+    const rows = (await env.DB.prepare(`SELECT id, state, instance_id FROM jobs WHERE id IN (${chunk.map(() => "?").join(",")})`)
+      .bind(...chunk).all<{ id: string; state: JobState; instance_id: string | null }>()).results;
+    for (const r of rows) out.set(r.id, { state: r.state, instance_id: r.instance_id });
+  }
+  return out;
+}
+
 export async function claimQueuedJob(env: Env, instanceId: string, minQueuedMin: number): Promise<Job | null> {
   const cutoff = new Date(Date.now() - minQueuedMin * 60_000).toISOString();
-  const rows = (await env.DB.prepare("SELECT id FROM jobs WHERE state = 'queued' AND storyboard IS NOT NULL AND created_at <= ? ORDER BY created_at LIMIT 5").bind(cutoff).all<{ id: string }>()).results;
+  const rows = (await env.DB.prepare(`SELECT id FROM jobs WHERE state = 'queued' AND storyboard IS NOT NULL AND created_at <= ? AND ${POOL_SKIP} ORDER BY created_at LIMIT 5`).bind(cutoff).all<{ id: string }>()).results;
   for (const r of rows) {
     const u = await env.DB.prepare("UPDATE jobs SET state = 'starting', backend = 'pool', instance_id = ?, instance_meta = ?, started_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), attempts = attempts + 1, track = 'script', error = NULL WHERE id = ? AND state = 'queued'")
       .bind(instanceId, JSON.stringify({ pool: true, runner: instanceId }), r.id).run();
@@ -213,6 +276,6 @@ export async function claimQueuedJob(env: Env, instanceId: string, minQueuedMin:
 /** How many planned jobs have been waiting in the queue for at least minQueuedMin minutes (pool demand). */
 export async function poolWaitingJobs(env: Env, minQueuedMin: number): Promise<number> {
   const cutoff = new Date(Date.now() - minQueuedMin * 60_000).toISOString();
-  const r = await env.DB.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state = 'queued' AND storyboard IS NOT NULL AND created_at <= ?").bind(cutoff).first<{ n: number }>();
+  const r = await env.DB.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE state = 'queued' AND storyboard IS NOT NULL AND created_at <= ? AND ${POOL_SKIP}`).bind(cutoff).first<{ n: number }>();
   return r?.n ?? 0;
 }

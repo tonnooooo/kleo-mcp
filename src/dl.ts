@@ -1,10 +1,18 @@
 import type { Env } from "./env";
-import { getJob, listFiles } from "./db";
-import { hmacHex, safeEqual } from "./util";
-import { getFile } from "./storage";
+import { getJob, listFiles } from "./db.ts";
+import { hmacHex, safeEqual } from "./util.ts";
+import { getFile } from "./storage.ts";
+import { IMAGE_NAME_RE } from "./images.ts";
 
-/** File names a link may point to: the render outputs, and the scene pictures the worker downloads (img/<sceneId>.png|jpg). */
-const NAME_RE = /^(?:[A-Za-z0-9._-]+|img\/[a-z0-9-]{1,50}\.(?:png|jpg))$/;
+/** The render outputs (mp4, srt, …) live at the top level of the job. */
+const OUTPUT_NAME_RE = /^[A-Za-z0-9._-]+$/;
+/**
+ * File names a link may point to: a render output, or a shot picture the worker downloads (img/<pictureId>.png|jpg,
+ * picture id = "<sceneId>-s<n>"). The picture rule is IMPORTED, never re-typed: a second copy here once capped the id
+ * at 50 chars while images.ts signed up to 56, so every picture of a long-named scene was drawn, billed, signed — and
+ * then answered 404 before the signature was even checked.
+ */
+const allowedName = (name: string): boolean => OUTPUT_NAME_RE.test(name) || IMAGE_NAME_RE.test(name);
 
 /** GET /dl/:jobId/:file?exp=<unix>&sig=<hmac>  — signed, time-limited download straight from R2. */
 export async function handleDownload(request: Request, env: Env): Promise<Response> {
@@ -14,7 +22,7 @@ export async function handleDownload(request: Request, env: Env): Promise<Respon
   const jobId = m[1];
   let name: string;
   try { name = decodeURIComponent(m[2]); } catch { return new Response("Not found", { status: 404 }); }
-  if (!NAME_RE.test(name)) return new Response("Not found", { status: 404 });
+  if (!allowedName(name)) return new Response("Not found", { status: 404 });
   const exp = parseInt(url.searchParams.get("exp") ?? "0", 10);
   const sig = url.searchParams.get("sig") ?? "";
   if (!exp || Date.now() / 1000 > exp) return new Response("This link has expired.", { status: 410 });

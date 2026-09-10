@@ -39,7 +39,10 @@ RUN pip install -r /opt/kleo/requirements-pictures.txt && pip check \
 
 # --- Models: Kokoro-82M + every contract voice, faster-whisper small/int8, and the two SD1.5 picture checkpoints
 #     (dreamshaper-8 for cartoon, Realistic_Vision_V5.1 for realistic: fp16 safetensors + configs, ~2 GB each), all in
-#     the HF cache inside the image so an instance never downloads. PREWARM_PICTURES=0 builds without the SD models. ---
+#     the HF cache inside the image. Only the CARTOON checkpoint is baked in: every gigabyte in the image is
+#     downloaded again by every rented instance before it can start, and the realistic checkpoint comes from
+#     Hugging Face on the instance itself in about half a minute when a realistic job needs it.
+#     PREWARM_PICTURES=all bakes both, =0 bakes none. ---
 ARG PREWARM_PICTURES=1
 COPY worker/keou/contract.py /opt/kleo/prewarm/contract.py
 COPY worker/prewarm_models.py /opt/kleo/prewarm/prewarm_models.py
@@ -50,12 +53,22 @@ RUN HF_HUB_OFFLINE=0 PREWARM_PICTURES=${PREWARM_PICTURES} python3 /opt/kleo/prew
 COPY worker/keou /opt/kleo/keou
 
 # --- Kleo picture-style fonts (OFL, google/fonts): Baloo 2 for the cartoon look, Oswald for the
-#     realistic one. Downloaded here, after the engine source, so editing the engine never
-#     re-downloads them; film.html falls back to Manrope when a file is missing. ---
-RUN curl -fsSL "https://github.com/google/fonts/raw/main/ofl/baloo2/Baloo2%5Bwght%5D.ttf" -o /opt/kleo/keou/engine/assets/cartoon.ttf \
-    && curl -fsSL "https://github.com/google/fonts/raw/main/ofl/oswald/Oswald%5Bwght%5D.ttf" -o /opt/kleo/keou/engine/assets/real.ttf \
-    && test $(stat -c%s /opt/kleo/keou/engine/assets/cartoon.ttf) -gt 100000 \
-    && test $(stat -c%s /opt/kleo/keou/engine/assets/real.ttf) -gt 100000
+#     realistic one. Pinned to one commit, never "main": every video we have ever shipped in the
+#     picture style was cut with these two outlines, and an unpinned fetch would re-cut the
+#     typography under us the day upstream ships a new build of either family.
+#     b6f0fe17 is the commit that last touched Oswald[wght].ttf (2023-07-20); Baloo2[wght].ttf has
+#     not moved since 2021-11-25, so that one tree pins both files.
+#     Verified by exact byte length and git blob id (the sha1 of "blob <len>\0" + content, which is
+#     the very id github.com/google/fonts publishes for the blob, so the expected values below can
+#     be re-checked against the API without downloading anything). A size floor alone would let a
+#     silently re-hinted font through.
+#     The layer stays here, after the engine COPY: engine/assets/ lives inside worker/keou, so the
+#     fonts must land after that COPY or it would wipe them. film.html falls back to Manrope when a
+#     file is missing, so a failure here is a build failure, never a broken render. ---
+ARG GOOGLE_FONTS_REF=b6f0fe1740573b70ee367fbaba04b7586be85af3
+RUN curl -fsSL --retry 3 --max-time 180 "https://raw.githubusercontent.com/google/fonts/${GOOGLE_FONTS_REF}/ofl/baloo2/Baloo2%5Bwght%5D.ttf" -o /opt/kleo/keou/engine/assets/cartoon.ttf \
+    && curl -fsSL --retry 3 --max-time 180 "https://raw.githubusercontent.com/google/fonts/${GOOGLE_FONTS_REF}/ofl/oswald/Oswald%5Bwght%5D.ttf" -o /opt/kleo/keou/engine/assets/real.ttf \
+    && python3 -c 'import hashlib,sys;A="/opt/kleo/keou/engine/assets/";W=[("cartoon.ttf",683200,"bc1b9f1191c0d6d23cb2ce0af66aba82ddbf8d6c"),("real.ttf",172088,"d1a3b9cb1325bf20b3a06ef9849d21c411212a3b")];D={n:open(A+n,"rb").read() for n,_,_ in W};B={n:hashlib.sha1(("blob %d"%len(d)).encode()+bytes(1)+d).hexdigest() for n,d in D.items()};bad=["%s: got %d bytes blob %s, want %d bytes blob %s"%(n,len(D[n]),B[n],s,h) for n,s,h in W if len(D[n])!=s or B[n]!=h];bad and sys.exit("Font verification failed: "+"; ".join(bad));print("FONTS_OK",[(n,len(d)) for n,d in D.items()])'
 
 COPY worker/kleo_pictures.py /opt/kleo/kleo_pictures.py
 COPY worker/kleo_worker.py /opt/kleo/kleo_worker.py

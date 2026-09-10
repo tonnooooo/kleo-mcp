@@ -28,6 +28,23 @@
   const pop = x => 1 - (1 - pclamp(x)) ** 4;
   const back = x => { x = pclamp(x); return 1 + 2.2 * (x - 1) ** 3 + 1.2 * (x - 1) ** 2 };   // lands with a small overshoot
   const key = w => String(w == null ? '' : w).toLowerCase().replace(/[^a-z0-9%$]/g, '');
+  // worker/keou/prepare.py (align_words) writes one s.words entry per *script* word and glues a
+  // token with no letters ("—", "...") onto the entry before it, while a word such as "don't" or
+  // "17,600" holds two spoken tokens of its own. So an entry may carry two words, one, or none,
+  // and s.captions splits them apart again on whitespace. Everything that lines the narration up
+  // with the script therefore compares this flat token stream, never entry against entry: one
+  // merged entry in a long line used to shift every following word by one.
+  const keys = w => String(w == null ? '' : w).toLowerCase().match(/[a-z0-9%$]+/g) || [];
+  // Spoken tokens in order: `k` the token, `i` the s.words entry it came from, `start` that
+  // entry's absolute time (the finest timing the timeline carries) or null when it has none.
+  function flatten(list) {
+    const out = [];
+    (Array.isArray(list) ? list : []).forEach((w, i) => {
+      const t = Number(w && w.start), start = Number.isFinite(t) ? t : null;
+      for (const k of keys(w && w.text)) out.push({ k, i, start });
+    });
+    return out;
+  }
   const STOPS = new Set('the a an and or of to in on at for with your you it is are was were be this that they them their one two not no but into from by as if so we he she its'.split(' '));
 
   // The pictures of one scene, always at least one (an empty shot renders as an accent gradient).
@@ -48,13 +65,14 @@
     const n = shots.length, starts = new Array(n).fill(null);
     starts[0] = 0; if (n < 2) return starts;
     const span = Math.max(Number(dur) || 0, .1), min = Math.min(MIN_SHOT, span / n);
-    const said = (s && Array.isArray(s.words) && s.words.length)
-      ? s.words.map(w => ({ k: key(w.text), start: (Number(w.start) || 0) - (Number(s.start) || 0) })) : [];
+    const said = flatten(s && s.words), base = Number(s && s.start) || 0;
     if (said.length) shots.forEach((sh, i) => {
       if (!i || !sh || !sh.at) return;
-      const toks = String(sh.at).split(/\s+/).map(key).filter(Boolean); if (!toks.length) return;
+      const toks = keys(sh.at); if (!toks.length) return;      // `at` is quoted from the same script
       for (let j = 0; j + toks.length <= said.length; j++)
-        if (toks.every((tk, m) => said[j + m].k === tk)) { starts[i] = Math.max(0, said[j].start - .12); break }
+        if (toks.every((tk, m) => said[j + m].k === tk) && said[j].start !== null) {
+          starts[i] = Math.max(0, said[j].start - base - .12); break;
+        }
     });
     for (let i = 1; i < n; i++) if (starts[i] === null) {          // even split up to the next anchored cut
       let j = i; while (j < n && starts[j] === null) j++;
@@ -67,6 +85,11 @@
   }
   const shotFade = ub => pop(pclamp(ub / SHOT_FADE));               // alpha of the incoming picture
   const shotPunch = ub => 1 + PUNCH * (1 - smooth(pclamp(ub / PUNCH_IN)));
+  // Ken Burns progress of the picture that started `ub` seconds ago. A picture is on screen until
+  // the next one has finished fading over it, so its move runs over span + SHOT_FADE: the outgoing
+  // picture keeps travelling under the crossfade instead of freezing on its last frame, which read
+  // as a stutter. The last picture of a scene has nothing after it and lands exactly on the cut.
+  const shotProgress = (ub, span, hasNext) => pclamp(ub / (Math.max(Number(span) || 0, .1) + (hasNext ? SHOT_FADE : 0)));
   // Cover-fit + Ken Burns rect for a picture of iw×ih on a W×H frame at shot progress p (0..1).
   // The rect always covers the frame: the drift is clamped to the overflow the zoom leaves on
   // that side, so an edge of the frame is never empty whatever the picture's shape.
@@ -99,15 +122,23 @@
     return { size: s, lines: out, width: w, fits: out.length <= lines && w <= width + .5 };
   }
   // Word-level timing for one caption group: the groups and s.words come from the same aligned
-  // script, so a group is a contiguous run of s.words. Anchor on the start time, then on the
-  // text; with no match the words carry no time and the caller highlights the key word instead.
+  // script, so the group's spoken tokens are a contiguous run of the scene's. Anchor on the start
+  // time, then on the text; with no match the words carry no time and the caller highlights the
+  // key word instead. A written token that says nothing ("—") never gets a time of its own, so it
+  // cannot steal the karaoke highlight from the word beside it.
   function groupWords(words, group) {
     const gw = String((group && group.text) || '').split(/\s+/).filter(Boolean);
-    const all = Array.isArray(words) ? words : []; let at = -1;
-    const runs = (j) => j >= 0 && j + gw.length <= all.length && gw.every((g, m) => key(g) === key(all[j + m].text));
-    for (let j = 0; j < all.length; j++) if (Math.abs(all[j].start - (group && group.start)) < 1e-6) { at = j; break }
-    if (!runs(at)) { at = -1; for (let j = 0; j + gw.length <= all.length; j++) if (runs(j)) { at = j; break } }
-    return gw.map((text, m) => ({ text, start: at < 0 ? null : all[at + m].start }));
+    const all = flatten(words), need = [];
+    gw.forEach((w, m) => { for (const k of keys(w)) need.push({ k, m }) });
+    const runs = j => j >= 0 && need.length > 0 && j + need.length <= all.length && need.every((n, m) => all[j + m].k === n.k);
+    let at = -1; const gs = Number(group && group.start);
+    if (Number.isFinite(gs)) for (let j = 0; j < all.length; j++)      // a group always opens on an entry
+      if ((!j || all[j].i !== all[j - 1].i) && all[j].start !== null && Math.abs(all[j].start - gs) < 1e-6) { at = j; break }
+    if (!runs(at)) { at = -1; for (let j = 0; j + need.length <= all.length; j++) if (runs(j)) { at = j; break } }
+    const times = new Array(gw.length).fill(null);
+    // Backwards: when one written word holds several spoken tokens it takes the first one's time.
+    if (at >= 0) for (let m = need.length - 1; m >= 0; m--) times[need[m].m] = all[at + m].start;
+    return gw.map((text, m) => ({ text, start: times[m] }));
   }
   // Without word timings, colour the same word the cinema style would: the scene keyword when it
   // is in the group, else the longest word that carries meaning.
@@ -134,7 +165,7 @@
         subY: H - 500, subMax: Math.round(W * .84), subSize: 58, subMin: 34,
         chapX: 60, chapY: 234, chapSize: 30,
         closeY: Math.round(H * .40), btnY: Math.round(H * .58), btnH: 96, btnSize: 40, btnMin: 360,
-        brandY: H - 428, brandSize: 26, brandX: W / 2, brandAlign: 'center'
+        brandY: 234, brandSize: 26, brandX: W - 60, brandAlign: 'right'   // opposite the chapter pill: the bottom belongs to the subtitles
       }
       : {
         W, H, p, safeTop: 90, safeBottom: 150,
@@ -229,7 +260,7 @@
     ctx.save(); ctx.globalAlpha *= pclamp(alpha);
     if (img && img.width && img.height) {
       const r = kenBurns(shotMotion(shot, index), img.width, img.height, G.W, G.H, p, punch);
-      ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+      ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'medium';   // 4x upscale: 'high' costs frames and shows no difference
       ctx.drawImage(img, r.x, r.y, r.w, r.h);
     } else {                                              // no picture: a quiet accent-to-black wash
       const acc = accent(s), g = ctx.createLinearGradient(0, 0, 0, G.H);
@@ -241,20 +272,33 @@
   }
   // Flat dim, a bottom gradient for the subtitles, a top gradient only while something is written
   // up there, and a light vignette. Drawn once, over both pictures of a crossfade.
-  function veil(G, topOn) {
-    const ctx = A.ctx, W = G.W, H = G.H;
-    ctx.fillStyle = 'rgba(0,0,0,.12)'; ctx.fillRect(0, 0, W, H);
-    const gb = ctx.createLinearGradient(0, H * .5, 0, H);
+  // Four full-frame fills at 2160x3840 (one of them a radial gradient) cost more per frame than the
+  // picture itself, and they never change: each of the two variants is painted once into an offscreen
+  // canvas and then blitted. Same pixels, deterministic, ~1 composite instead of ~4 fills.
+  const veils = new Map();
+  function veilLayer(W, H, topOn) {
+    const k = W + 'x' + H + ':' + (topOn ? 1 : 0);
+    let c = veils.get(k);
+    if (c) return c;
+    c = (typeof OffscreenCanvas === 'function') ? new OffscreenCanvas(W, H) : Object.assign(document.createElement('canvas'), { width: W, height: H });
+    const x = c.getContext('2d');
+    x.fillStyle = 'rgba(0,0,0,.12)'; x.fillRect(0, 0, W, H);
+    const gb = x.createLinearGradient(0, H * .5, 0, H);
     gb.addColorStop(0, 'rgba(0,0,0,0)'); gb.addColorStop(1, 'rgba(0,0,0,.65)');
-    ctx.fillStyle = gb; ctx.fillRect(0, H * .5, W, H * .5);
+    x.fillStyle = gb; x.fillRect(0, H * .5, W, H * .5);
     if (topOn) {
-      const gt = ctx.createLinearGradient(0, 0, 0, H * .3);
+      const gt = x.createLinearGradient(0, 0, 0, H * .3);
       gt.addColorStop(0, 'rgba(0,0,0,.35)'); gt.addColorStop(1, 'rgba(0,0,0,0)');
-      ctx.fillStyle = gt; ctx.fillRect(0, 0, W, H * .3);
+      x.fillStyle = gt; x.fillRect(0, 0, W, H * .3);
     }
-    const v = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * .42, W / 2, H / 2, Math.max(W, H) * .72);
+    const v = x.createRadialGradient(W / 2, H / 2, Math.min(W, H) * .42, W / 2, H / 2, Math.max(W, H) * .72);
     v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,.35)');
-    ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+    x.fillStyle = v; x.fillRect(0, 0, W, H);
+    veils.set(k, c);
+    return c;
+  }
+  function veil(G, topOn) {
+    A.ctx.drawImage(veilLayer(G.W, G.H, !!topOn), 0, 0);
   }
 
   /* ---- the words on the picture -------------------------------------------- */
@@ -343,15 +387,21 @@
     const G = geo(), dur = Math.max(s.end - s.start, .1), shots = sceneShots(s), starts = shotStarts(s, shots, dur);
     let k = 0; for (let j = 0; j < starts.length; j++) if (u >= starts[j]) k = j;
     const span = j => Math.max((j + 1 < starts.length ? starts[j + 1] : dur) - starts[j], .1);
-    const ub = u - starts[k], a = k ? shotFade(ub) : 1;
-    if (k && a < 1) paint(s, shots[k - 1], k - 1, (u - starts[k - 1]) / span(k - 1), 1, 1);   // the outgoing picture stays underneath
-    paint(s, shots[k], k, ub / span(k), a, shotPunch(ub));
+    const ub = u - starts[k], a = k ? shotFade(ub) : 1, last = k + 1 >= starts.length;
+    if (k && a < 1) paint(s, shots[k - 1], k - 1, shotProgress(u - starts[k - 1], span(k - 1), true), 1, 1);   // the outgoing picture stays underneath, still moving
+    // The punch belongs to a cut *inside* a scene: the first picture of a scene arrives on a hard
+    // cut from the scene before and must not be shoved 3% out of frame on its opening frame.
+    paint(s, shots[k], k, shotProgress(ub, span(k), !last), a, k ? shotPunch(ub) : 1);
     const cap = s.kind === 'closing' ? null : captionOf(s, shots[k], k);
     veil(G, !!(cap || s.chapter));
     S.chrome(s, i, t);
     if (s.kind === 'closing') {
       const title = captionOf(s, shots[k], 0) || { text: String(s.title || ''), hl: String(s.hl || '') };
-      if (title.text.trim()) caption(s, title, u, G, true);
+      // A closing may hold two shots. Words that change on the cut have to play their entrance
+      // from that cut, or they swap in mid-air; words that stay keep the scene clock so the
+      // entrance is not replayed under the viewer.
+      const before = k ? (captionOf(s, shots[k - 1], 0) || { text: '' }).text : title.text;
+      if (title.text.trim()) caption(s, title, before === title.text ? u : ub, G, true);
       button(s, u, G); brand(s, u, G);
     } else if (cap) caption(s, cap, ub, G, false);
     spacingOff();

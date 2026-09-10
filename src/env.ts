@@ -9,7 +9,9 @@ export interface Env {
 
   IMAGE_MODEL_CARTOON?: string;   // Workers AI text-to-image model for the cartoon style (default images.ts DEFAULT_IMAGE_MODELS)
   IMAGE_MODEL_REALISTIC?: string; // idem for the realistic style
-  IMAGE_SERVER_MAX?: string;      // pictures the SERVER draws with Workers AI per video (default 10); the rest is left to the GPU worker
+  // Pictures the SERVER draws with Workers AI per video; the rest is left to the GPU worker. Unset (or unreadable)
+  // means 10; "0" is honoured and switches server-side drawing off entirely, leaving EVERY picture to the GPU worker.
+  IMAGE_SERVER_MAX?: string;
   IMAGE_MAX_PER_JOB?: string;     // legacy name of IMAGE_SERVER_MAX (still honoured by a deployed config)
   IMAGE_FIXTURE?: string;         // "1" (dev only): placeholder PNGs instead of Workers AI pictures
 
