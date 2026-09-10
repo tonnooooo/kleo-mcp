@@ -1,5 +1,5 @@
 import type { Env } from "./env";
-import { getJob, updateJob, setFile, audit, type Job, claimQueuedJob } from "./db";
+import { getJob, setFile, audit, type Job, claimQueuedJob, transitionJob, ACTIVE_STATES, OPEN_STATES } from "./db";
 import { json, safeEqual, nowIso, int } from "./util";
 import { isFlagActive } from "./schema";
 import { finishJob, failJob, trackFor } from "./orchestrator";
@@ -23,8 +23,12 @@ const TYPES: Record<string, string> = { mp4: "video/mp4", srt: "application/x-su
  *   PUT  /internal/jobs/:id/files/:name/uploads/:uid/parts/:n upload one part (≥ 5 MB except last) → {etag}
  *   POST /internal/jobs/:id/files/:name/uploads/:uid/complete {parts:[{partNumber, etag}]}
  *   POST /internal/jobs/:id/done       {cost_usd?}
- *   POST /internal/jobs/:id/failed     {error}
+ *   POST /internal/jobs/:id/failed     {error, retry?}
  *   POST /internal/jobs/:id/selfdestruct                      ask the server to destroy the GPU (fallback)
+ *
+ * Idempotency: every state change is an atomic transition (db.ts transitionJob). Repeating "done" or "failed"
+ * answers 200 with the current state and changes nothing; a call that contradicts a final state (progress or
+ * "failed" after done/cancelled/failed) answers 409 and changes nothing, so credits move exactly once per job.
  */
 export async function handleInternal(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
@@ -47,13 +51,19 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
     await audit(env, job.user_id, job.id, "worker.selfdestruct", { at: nowIso(), state: job.state });
     return json({ ok: true });
   }
-  if (!["queued", "starting", "rendering", "finishing"].includes(job.state)) return json({ error: `job is ${job.state}` }, 409);
+  const isOpen = (OPEN_STATES as string[]).includes(job.state);
+  if (!isOpen) {
+    // Repeats of the final call the job already took are fine (the worker may retry after a network hiccup); anything else is a conflict.
+    if (request.method === "POST" && ((rest === "done" && job.state === "done") || (rest === "failed" && job.state === "failed"))) return json({ ok: true, state: job.state, already: true });
+    return json({ error: `job is ${job.state}`, state: job.state }, 409);
+  }
 
   if (rest === "progress" && request.method === "POST") {
     const b = (await request.json().catch(() => ({}))) as { track?: string; percent?: number; eta_min?: number; message?: string };
     const percent = Math.max(0, Math.min(99, Math.round(Number(b.percent ?? job.percent))));
     const auto = trackFor(percent);
-    await updateJob(env, job.id, { percent, track: b.track ?? auto.track, state: auto.state, eta_min: b.eta_min ?? job.eta_min });
+    const applied = await transitionJob(env, job.id, ACTIVE_STATES, { percent, track: b.track ?? auto.track, state: auto.state, eta_min: b.eta_min ?? job.eta_min });
+    if (!applied) return json({ error: "job is not running any more", state: (await getJob(env, job.id))?.state ?? job.state }, 409);
     if (b.message) await audit(env, job.user_id, job.id, "worker.progress", { percent, track: b.track, message: b.message });
     return json({ ok: true });
   }
@@ -95,13 +105,17 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
 
   if (rest === "done" && request.method === "POST") {
     const b = (await request.json().catch(() => ({}))) as { cost_usd?: number };
-    await finishJob(env, job, typeof b.cost_usd === "number" ? b.cost_usd : null);
-    return json({ ok: true });
+    const applied = await finishJob(env, job, typeof b.cost_usd === "number" ? b.cost_usd : null);
+    if (applied) return json({ ok: true, state: "done" });
+    const now = (await getJob(env, job.id))?.state ?? job.state;
+    return now === "done" ? json({ ok: true, state: now, already: true }) : json({ error: `job is ${now}`, state: now }, 409);
   }
   if (rest === "failed" && request.method === "POST") {
     const b = (await request.json().catch(() => ({}))) as { error?: string; retry?: boolean };
-    await failJob(env, job, `worker: ${b.error ?? "unknown error"}`, b.retry !== false);
-    return json({ ok: true });
+    const outcome = await failJob(env, job, `worker: ${b.error ?? "unknown error"}`, b.retry !== false);
+    if (outcome !== "ignored") return json({ ok: true, state: outcome === "requeued" ? "queued" : "failed", outcome });
+    const now = (await getJob(env, job.id))?.state ?? job.state;
+    return now === "failed" ? json({ ok: true, state: now, already: true }) : json({ error: `job is ${now}`, state: now }, 409);
   }
   return json({ error: "not found" }, 404);
 }

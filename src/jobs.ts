@@ -1,11 +1,12 @@
 import type { Env } from "./env";
-import { type Job, type JobParams, type User, countOpenForUser, debitCredits, creditCredits, insertJob, updateJob, audit, getUserJob, listFiles } from "./db";
+import { type Job, type JobParams, type JobState, type User, OPEN_STATES, countOpenForUser, debitCredits, refundCredits, insertJob, transitionJob, audit, getUserJob, listFiles } from "./db";
 import { findTemplate, creditsFor, etaFor, type Format } from "./templates";
 import { rid, nowIso, int, hmacHex } from "./util";
 import { isFlagActive } from "./schema";
-import { getBackend } from "./backends";
+import { backendFor } from "./backends";
 import { validateStoryboard } from "./keou-contract";
 
+/** An error whose message is shown to the user as-is: plain English, always says whether something was charged. */
 export class JobError extends Error {}
 
 export interface CreateInput {
@@ -26,25 +27,48 @@ export function moderationBlocks(text: string): boolean {
   return BLOCKED.some((re) => re.test(text));
 }
 
+/** "1 credit" / "3 credits". */
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+/** "Short" for vertical videos, "video" otherwise. */
+export const kindOf = (format: string | null | undefined): "Short" | "video" => (format === "9:16" ? "Short" : "video");
+const capital = (s: string) => s[0].toUpperCase() + s.slice(1);
+const formatWords = (f: Format) => (f === "9:16" ? "9:16 Shorts" : "16:9 videos");
+
+/**
+ * Credits given back when a job is cancelled. Nothing was rendered before the GPU reports its first real
+ * progress, so `queued` and `starting` give everything back; while rendering the refund follows the work
+ * left, rounded to the nearest credit (a 1-credit Short cancelled below 50% is free, above it costs the credit).
+ */
+export function refundFor(credits: number, state: JobState, percent: number): number {
+  if (credits <= 0) return 0;
+  if (state === "queued" || state === "starting") return credits;
+  const pct = Math.max(0, Math.min(100, percent));
+  return Math.max(0, Math.min(credits, Math.round((credits * (100 - pct)) / 100)));
+}
+
 export async function createJob(env: Env, user: User, input: CreateInput): Promise<Job> {
   const t = findTemplate(input.template);
-  if (!t) throw new JobError(`Unknown template "${input.template}". Call list_templates to see the valid ids.`);
+  if (!t) throw new JobError(`There is no template called "${input.template}". Call kleo_list_templates for the valid ids. Nothing was charged.`);
   const format = (input.format ?? t.formats[0]) as Format;
-  if (!t.formats.includes(format)) throw new JobError(`Template "${t.id}" supports ${t.formats.join(" or ")}, not ${format}.`);
+  if (!t.formats.includes(format))
+    throw new JobError(`The "${t.name}" template only makes ${formatWords(t.formats[0])}, not ${formatWords(format)}. Pick ${t.formats[0]} or another template. Nothing was charged.`);
   const duration = Math.round(input.duration_s ?? t.defaultSeconds);
   if (duration < t.minSeconds || duration > t.maxSeconds)
-    throw new JobError(`Template "${t.id}" renders ${t.minSeconds}–${t.maxSeconds} seconds; ${duration} is out of range. Pick another duration or template.`);
+    throw new JobError(`The "${t.name}" template makes videos of ${t.minSeconds} to ${t.maxSeconds} seconds; ${duration} seconds is outside that range. Choose a length in range or another template. Nothing was charged.`);
   const prompt = input.prompt.trim();
-  if (prompt.length < 8) throw new JobError("The prompt is too short. Describe the video: topic, angle, tone, anything that must appear.");
-  if (prompt.length > 4000) throw new JobError("The prompt is too long (max 4000 characters).");
-  if (moderationBlocks(prompt)) throw new JobError("This request violates the content policy and was not started.");
+  if (prompt.length < 8) throw new JobError("The description is too short (at least 8 characters). Say what the video is about: topic, angle, tone, anything that must appear on screen. Nothing was charged.");
+  if (prompt.length > 4000) throw new JobError(`The description is too long (${prompt.length} characters, the maximum is 4000). Shorten it and call again. Nothing was charged.`);
+  if (moderationBlocks(prompt)) throw new JobError("This request goes against the content policy, so the video was not started. Nothing was charged.");
   const voice = input.voice ?? null;
-  if (voice && !t.voices.includes(voice)) throw new JobError(`Unknown voice "${voice}". Available: ${t.voices.join(", ")}.`);
+  if (voice && !t.voices.includes(voice)) throw new JobError(`There is no voice called "${voice}". Available voices: ${t.voices.join(", ")}. Nothing was charged.`);
   const language = input.language ?? "en";
   let storyboard: string | null = null;
   if (input.storyboard !== undefined && input.storyboard !== null) {
     const r = validateStoryboard(input.storyboard, { format, language });
-    if (!r.ok) throw new JobError(`The storyboard was refused (${r.errors.length} problem${r.errors.length > 1 ? "s" : ""}, fix them and call again; nothing was charged):\n- ${r.errors.join("\n- ")}`);
+    if (!r.ok) {
+      const n = r.errors.length;
+      throw new JobError(`The storyboard has ${plural(n, "problem")} (nothing was charged). Fix ${n === 1 ? "it" : "them"} and call kleo_create_video again:\n- ${r.errors.join("\n- ")}`);
+    }
     storyboard = JSON.stringify(r.storyboard);
   }
 
@@ -52,37 +76,61 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     throw new JobError("Kleo's automatic storyboard planner is paused right now (its daily AI quota is used up). Call kleo_storyboard_guide, write the storyboard yourself, then call kleo_create_video again with the storyboard argument. Nothing was charged.");
   const maxOpen = int(env.MAX_JOBS_PER_USER, 2);
   const open = await countOpenForUser(env, user.id);
-  if (open >= maxOpen) throw new JobError(`You already have ${open} video${open > 1 ? "s" : ""} in progress (limit ${maxOpen}). Wait for one to finish or cancel it with cancel_job.`);
+  if (open >= maxOpen)
+    throw new JobError(`You already have ${plural(open, "video")} in progress, and the limit is ${maxOpen} at a time. Wait for one to finish (kleo_get_job) or cancel one with kleo_cancel_job. Nothing was charged.`);
 
   const credits = creditsFor(duration);
-  if (!(await debitCredits(env, user.id, credits)))
-    throw new JobError(`Not enough credits: this video costs ${credits} credit${credits > 1 ? "s" : ""} and you have ${user.credits}. A Short (up to 90 s) costs 1 credit; ask the Kleo team for more credits. Nothing was charged.`);
+  const jobId = rid("gt", 8);
+  // The debit is one conditional UPDATE: it either takes the credits for this job or does nothing.
+  if (!(await debitCredits(env, user.id, credits, jobId)))
+    throw new JobError(`Not enough credits: this ${kindOf(format)} costs ${plural(credits, "credit")} and you have ${plural(Math.max(0, user.credits), "credit")}. Ask the Kleo team for more credits. Nothing was charged.`);
 
   const params: JobParams = { duration_s: duration, format, language, voice };
   const job: Job = {
-    id: rid("gt", 8), user_id: user.id, template: t.id, prompt, params: JSON.stringify(params),
+    id: jobId, user_id: user.id, template: t.id, prompt, params: JSON.stringify(params),
     state: "queued", track: null, percent: 0, eta_min: etaFor(duration), credits,
     backend: null, instance_id: null, instance_meta: null, worker_secret: rid("wk", 32), attempts: 0,
     error: null, notify_email: input.notify_email ?? null, created_at: nowIso(), started_at: null, finished_at: null,
     expires_at: null, purged_at: null, cost_usd: null,
     storyboard, plan_attempts: 0, plan_error: null,
   };
-  await insertJob(env, job);
+  try {
+    await insertJob(env, job);
+  } catch (e) {
+    // The row never existed, so the credits go straight back: a user is never charged for a video that was not created.
+    await refundCredits(env, user.id, credits, jobId, "job could not be saved");
+    await audit(env, user.id, jobId, "job.create.error", String(e).slice(0, 500));
+    throw new JobError("Kleo could not save the video request. Nothing was charged; please try again in a moment.");
+  }
   await audit(env, user.id, job.id, "job.created", { template: t.id, credits, duration, format, storyboard: storyboard ? "client" : "auto" });
   return job;
 }
 
+/** The message for a job that cannot be cancelled because it is already over. */
+export function notCancellable(job: Job): JobError {
+  const what = kindOf((JSON.parse(job.params) as JobParams).format);
+  if (job.state === "done") return new JobError(`${capital(what)} ${job.id} is already finished, so there is nothing to cancel. Call kleo_get_result for the download links.`);
+  if (job.state === "cancelled") return new JobError(`${capital(what)} ${job.id} was already cancelled.`);
+  return new JobError(`${capital(what)} ${job.id} had already failed and its credits were given back; there is nothing to cancel.`);
+}
+
+/**
+ * Cancels a queued or running job and refunds refundFor(). The cancel is one atomic transition, so a job that
+ * finishes or fails in the same instant is refunded by exactly one of the two paths, never both.
+ */
 export async function cancelJob(env: Env, user: User, jobId: string): Promise<{ job: Job; refunded: number }> {
   const job = await getUserJob(env, user.id, jobId);
-  if (!job) throw new JobError(`No job "${jobId}" on this account.`);
-  if (!["queued", "starting", "rendering", "finishing"].includes(job.state)) throw new JobError(`Job ${job.id} is already ${job.state}.`);
-  const refunded = job.state === "queued" ? job.credits : Math.floor((job.credits * (100 - job.percent)) / 100);
-  if (job.state !== "queued") {
-    try { await getBackend(env).destroy(env, job); } catch (e) { await audit(env, user.id, job.id, "backend.destroy.error", String(e)); }
+  if (!job) throw new JobError(`There is no video number "${jobId}" on this account. Check the number, or call kleo_get_job without a number to see your recent videos.`);
+  if (!OPEN_STATES.includes(job.state)) throw notCancellable(job);
+  const refund = refundFor(job.credits, job.state, job.percent);
+  const moved = await transitionJob(env, job.id, OPEN_STATES, { state: "cancelled", finished_at: nowIso(), error: "cancelled by user" });
+  if (!moved) throw notCancellable((await getUserJob(env, user.id, jobId)) ?? job);
+  // Whatever GPU the job holds is released now; the orchestrator never rents one for a cancelled job (see tick()).
+  if (job.instance_id) {
+    try { await backendFor(env, job.backend).destroy(env, job); } catch (e) { await audit(env, user.id, job.id, "backend.destroy.error", String(e)); }
   }
-  await updateJob(env, job.id, { state: "cancelled", finished_at: nowIso(), error: "cancelled by user" });
-  if (refunded > 0) await creditCredits(env, user.id, refunded);
-  await audit(env, user.id, job.id, "job.cancelled", { refunded });
+  const refunded = await refundCredits(env, user.id, refund, job.id, `cancelled at ${job.percent}% (${job.state})`);
+  await audit(env, user.id, job.id, "job.cancelled", { refunded, percent: job.percent, state_before: job.state });
   return { job: { ...job, state: "cancelled" }, refunded };
 }
 

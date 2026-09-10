@@ -43,4 +43,4 @@ export const findTemplate = (id: string): Template | undefined => TEMPLATES.find
 export const creditsFor = (seconds: number): number => (seconds <= 90 ? 1 : seconds <= 300 ? 3 : 3 + Math.ceil((seconds - 300) / 60));
 
 /** Rough wall-clock estimate on one RTX 4090 at 4K 60 fps: ~25 min for a Short, ~12 min per minute of long-form. */
-export const etaFor = (seconds: number): number => (seconds <= 90 ? 25 : Math.max(35, Math.round((seconds / 60) * 12)));
+export const etaFor = (seconds: number): number => (seconds <= 90 ? 18 : Math.max(30, Math.round((seconds / 60) * 10)));

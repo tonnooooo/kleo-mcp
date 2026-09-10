@@ -1,18 +1,17 @@
 import { McpServer, createMcpHandler } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { Env } from "./env";
-import type { User } from "./db";
-import { getUserJob, getUser, recentJobsForUser } from "./db";
-import { TEMPLATES, TEMPLATE_IDS } from "./templates";
+import type { User, Job } from "./db";
+import { getUserJob, getUser, recentJobsForUser, countOpenForUser } from "./db";
+import { TEMPLATES, TEMPLATE_IDS, findTemplate, creditsFor } from "./templates";
 import { createJob, cancelJob, jobView, resultLinks, JobError, FILE_NAMES } from "./jobs";
 import { audit } from "./db";
 import { STYLES, KINDS, BEAT_KINDS, BEAT_ICONS, BEAT_FX, CINEMA_ACCENTS, STORY_ACTS, STORY_CAST, STORY_PROPS, STORY_FX, VISUALS, MOTION, VOICES } from "./keou-contract";
-import { creditsFor } from "./templates";
+import { int } from "./util";
 
-const INSTRUCTIONS = `This server is Kleo (kleo_* tools), the video studio the user connected. It is not kie-mcp or any other product. Kleo renders YouTube videos and Shorts (4K, 60 fps) from a template and a prompt. When the user mentions Kleo, a video, a Short, or a YouTube clip, use these tools instead of answering from memory.
-Preferred flow for the best, most original videos: call kleo_storyboard_guide once, write a storyboard tailored to this conversation (hook, scenes, narration, visuals), then pass it as the "storyboard" argument of kleo_create_video. If you skip the storyboard, Kleo plans one from the prompt itself (fine, but more generic).
-Rendering takes 15–70 minutes, so kleo_create_video returns a job_id immediately. Tell the user the estimate, then use kleo_get_job when they ask for progress and kleo_get_result for the download links. Never block waiting.
-If the user has not chosen a template, call kleo_list_templates and pick the closest match yourself (Shorts → viral-short unless the content is clearly a Reddit story, a quote, or a list of facts).`;
+const INSTRUCTIONS = `This server is Kleo (the kleo_* tools): the video studio the user connected. It is not kie-mcp or any other product. Kleo renders YouTube videos and Shorts (4K, 60 fps) from a template and a prompt. When the user mentions Kleo, a video, a Short or a YouTube clip, use these tools; never answer from memory.
+Order of calls: 1) kleo_list_templates if the user has not named a template (Shorts → viral-short unless the content is clearly a Reddit story, a quote or a list of facts). 2) kleo_storyboard_guide once per conversation, then write an original storyboard for this conversation (hook, scenes, narration, visuals) and pass it as the "storyboard" argument of kleo_create_video; if you skip it, Kleo plans a more generic storyboard from the prompt. 3) kleo_create_video: it returns at once with a video number (job_id) and an estimate in minutes. 4) kleo_get_job when the user asks how it is going. 5) kleo_get_result for the download links once it is done.
+Rendering runs on a GPU in the background: a Short usually takes about 10–20 minutes, long videos longer. The estimate to quote is the eta_min the server returns, never your own guess; never block or loop waiting. Never invent progress, files or links: only repeat what these tools return. Call the video by its number (for example "video gt_ab12cd34"), not "job".`;
 
 const ok = (data: unknown, text?: string) => ({
   content: [{ type: "text" as const, text: text ?? JSON.stringify(data, null, 2) }],
@@ -25,32 +24,60 @@ async function guarded<T>(fn: () => Promise<T>): Promise<T | ReturnType<typeof f
   catch (e) { if (e instanceof JobError) return fail(e.message); throw e; }
 }
 
+/** "1 credit" / "3 credits", "1 minute" / "20 minutes". */
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+/** "17 September 2026" from an ISO timestamp (falls back to the date part). */
+function niceDate(iso: string | null | undefined): string {
+  if (!iso) return "later";
+  try { return new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" }); }
+  catch { return iso.slice(0, 10); }
+}
+/** "Short" for vertical videos, "video" otherwise. */
+const kindOf = (format: string | null | undefined) => (format === "9:16" ? "Short" : "video");
+const templateName = (id: string) => findTemplate(id)?.name ?? id;
+const TRACK_LABEL: Record<string, string> = {
+  script: "writing the script", voice: "recording the narration", clips: "drawing the scenes", edit: "editing", finishing: "finishing up",
+};
+const trackLabel = (track: string | null) => (track && TRACK_LABEL[track]) || "working";
+const noSuchVideo = (id: string) =>
+  new JobError(`There is no video number "${id}" on this account. Check the number, or call kleo_get_job without a number to see your recent videos.`);
+
 export function buildServer(env: Env, user: User, base: string): McpServer {
-  const simulated = env.RENDER_BACKEND !== "vast";
+  const simulated = env.RENDER_BACKEND === "mock";
   const modeNote = simulated
-    ? "IMPORTANT: Kleo is currently in SIMULATED mode (beta test). Renders finish in about a minute and the files are small placeholders (a 1-second test MP4, a sample .srt, a text thumbnail), not real videos. Always tell the user this when they create a video or get results. "
+    ? "IMPORTANT: Kleo is running in SIMULATED mode (test). Renders finish in about a minute and the files are small placeholders (a 1-second test MP4, a sample subtitle file, a plain thumbnail), not real videos. Tell the user this every time they create a video or get the links. "
     : "";
   const server = new McpServer({ name: "Kleo", version: "0.1.0" }, { instructions: modeNote + INSTRUCTIONS });
 
   server.registerTool("kleo_list_templates", {
     title: "List video templates",
-    description: "List the templates Kleo can render, with formats, duration ranges, voices and credit cost. Call it before kleo_create_video when the user has not named a template, and pick the best match.",
+    description: "Step 1. Lists the templates Kleo can render (id, name, format, length range, voices) and the credits left on the account. Call it when the user has not named a template, then pick the closest match yourself. Prices: 1 credit per Short (up to 90 seconds), 3 credits up to 5 minutes, +1 credit per extra minute.",
     inputSchema: z.object({}),
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   }, async () => {
     const fresh = (await getUser(env, user.id)) ?? user;
     const templates = TEMPLATES.map((t) => ({
       id: t.id, name: t.name, formats: t.formats, duration_s: { min: t.minSeconds, max: t.maxSeconds, default: t.defaultSeconds },
-      voices: t.voices, description: t.description,
+      credits: creditsFor(t.defaultSeconds), voices: t.voices, description: t.description,
     }));
-    return ok({ templates, credits_available: fresh.credits, pricing: "1 credit per Short (≤ 90 s), 3 credits up to 5 minutes, +1 per extra minute" });
+    const lines = TEMPLATES.map((t) => {
+      const shape = t.formats.map((f) => (f === "9:16" ? "Short (9:16)" : "YouTube video (16:9)")).join(" or ");
+      return `- ${t.name} (id: ${t.id}): ${shape}, ${t.minSeconds}–${t.maxSeconds} seconds, ${plural(creditsFor(t.defaultSeconds), "credit")}. ${t.description}`;
+    });
+    return ok(
+      { templates, credits_available: fresh.credits, pricing: "1 credit per Short (up to 90 seconds), 3 credits up to 5 minutes, +1 credit per extra minute" },
+      `Kleo has ${TEMPLATES.length} templates. You have ${plural(fresh.credits, "credit")} left.\n${lines.join("\n")}\nPrices: 1 credit per Short (up to 90 seconds), 3 credits up to 5 minutes, +1 credit per extra minute.`,
+    );
   });
 
 
   server.registerTool("kleo_storyboard_guide", {
     title: "Storyboard guide (write your own video)",
-    description: "Returns the storyboard format Kleo renders (styles, scene kinds, beats, icons, effects, voices, limits, rules) with two short examples, so you can write an original storyboard for kleo_create_video instead of letting Kleo plan a generic one. Call it once per conversation.",
-    inputSchema: z.object({ template: z.enum(TEMPLATE_IDS).optional().describe("Template you intend to use; tailors the tips."), duration_s: z.number().int().min(15).max(900).optional() }),
+    description: "Step 2 (recommended). Returns the storyboard format Kleo renders (styles, scene kinds, beats, icons, effects, voices, limits, rules) with two short examples, so you can write an original storyboard tailored to the user and pass it to kleo_create_video. Call it once per conversation, before kleo_create_video. Without a storyboard Kleo plans a more generic one from the prompt.",
+    inputSchema: z.object({
+      template: z.enum(TEMPLATE_IDS).optional().describe("The template you intend to use; tailors the target length."),
+      duration_s: z.number().int().min(15).max(900).optional().describe("Target length in seconds, if the user chose one."),
+    }),
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   }, async ({ template, duration_s }) => {
     const t = TEMPLATES.find((x) => x.id === template) ?? null;
@@ -83,7 +110,7 @@ STICKMAN SCENE: { "id", "kind": "story", "act": ${JSON.stringify(STORY_ACTS)}, "
 
 EDITORIAL/ILLUSTRATED/TECHNICAL/TERMINAL SCENES: { "id", "kind": hero|list|compare|steps|metric|quote|closing, "eyebrow": "<=40", "title": "<=90", "detail": "<=110", "voice": "<=350", "visual": ${JSON.stringify(VISUALS)}, "hold": 0.65 }
   list/steps: "items": [3 x <=42] · compare: "items": [2] · metric: "value": "<=12", "unit": "<=45", "animate_value": true (value must start with a number) · quote: "quote": "<=120", "source": "<=80" · terminal style may add "terminal_lines": [1-3 x <=48] · closing: "button": "<=40" OR "detail".
-  Motion backgrounds (optional, kind "image" is NOT allowed; use "motion" only on... skip motion unless you know the engine): ${JSON.stringify(MOTION)}.
+  Motion backgrounds (optional, kind "image" is NOT allowed; skip "motion" unless you know the engine): ${JSON.stringify(MOTION)}.
 
 RULES THE VALIDATOR ENFORCES: 2-240 scenes; unique slug ids [a-z0-9-]; last scene kind "closing"; cinema style only cinema/closing scenes; stickman only story/closing and 9:16; beat "at" must appear verbatim (case-insensitive) in that scene's voice; voice legal for language; total narration must fit max_duration (never exceed ~${Math.round(words * 1.25)} words for ${dur}s).
 
@@ -103,87 +130,128 @@ EXAMPLE B (editorial long-form scene, 16:9, en):
 
   server.registerTool("kleo_create_video", {
     title: "Create a video",
-    description: "Start rendering a video from a template and a prompt. Returns immediately with a job_id and an ETA in minutes; the render runs on a GPU in the background. Credits are charged when the job is queued. Then tell the user the ETA and offer to check progress with kleo_get_job.",
+    description: "Step 3. Starts rendering a video or Short from a template and a prompt (plus your storyboard from kleo_storyboard_guide, if you wrote one). Returns at once with the video number (job_id), the estimated minutes (eta_min) and the credits used; the render runs on a GPU in the background. Tell the user the number and the estimate, then offer to check progress with kleo_get_job. If the tool returns an error, nothing was charged: fix what it says and call again.",
     inputSchema: z.object({
-      template: z.enum(TEMPLATE_IDS).describe("Template id from list_templates."),
-      prompt: z.string().min(8).max(4000).describe("What the video is about, in the user's words: topic, angle, facts, names, tone, anything that must appear on screen."),
-      duration_s: z.number().int().min(15).max(900).optional().describe("Target length in seconds. Defaults to the template default; must stay inside the template range."),
+      template: z.string().optional().describe(`Required. Template id from kleo_list_templates: ${TEMPLATE_IDS.join(", ")}.`),
+      prompt: z.string().describe("What the video is about, in the user's words (8 to 4000 characters): topic, angle, facts, names, tone, anything that must appear on screen."),
+      duration_s: z.number().optional().describe("Target length in seconds. Defaults to the template default and must stay inside the template's range."),
       format: z.enum(["16:9", "9:16"]).optional().describe("16:9 for YouTube videos, 9:16 for Shorts. Defaults to the template's first format."),
       language: z.enum(["en", "it"]).default("en").describe("Voice and caption language."),
-      voice: z.string().optional().describe("Voice id from list_templates. Optional."),
+      voice: z.string().optional().describe("Voice id from kleo_list_templates. Optional."),
       notify_email: z.string().email().optional().describe("Optional: email the download links when the render finishes."),
-      storyboard: z.looseObject({}).optional().describe("Optional: a Keou storyboard you authored (a Keou project object without id, script_file, music_quiet or image scenes). Kleo writes one automatically from the prompt when omitted. Validated server-side; on error the tool lists the problems so you can fix them and call again."),
+      storyboard: z.looseObject({}).optional().describe("Optional but recommended: the storyboard you wrote following kleo_storyboard_guide (a Keou project object without id, script_file, music_quiet or image scenes). When omitted, Kleo plans one from the prompt. Checked before anything is charged; on error the tool lists the problems so you can fix them and call again."),
     }),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   }, async (args) => guarded(async () => {
+    if (!args.template) throw new JobError("Choose a template first: call kleo_list_templates and pass its id as \"template\" (for a Short, viral-short is the usual choice). Nothing was charged.");
+    const t = findTemplate(args.template);
+    if (!t) throw new JobError(`There is no template called "${args.template}". Call kleo_list_templates and use one of these ids: ${TEMPLATE_IDS.join(", ")}. Nothing was charged.`);
     const fresh = (await getUser(env, user.id)) ?? user;
-    const job = await createJob(env, fresh, args);
+    const duration = Math.round(args.duration_s ?? t.defaultSeconds);
+    const cost = creditsFor(duration);
+    if (duration >= t.minSeconds && duration <= t.maxSeconds && fresh.credits < cost)
+      throw new JobError(`Not enough credits: this ${kindOf(args.format ?? t.formats[0])} costs ${plural(cost, "credit")} and you have ${plural(fresh.credits, "credit")}. Ask the Kleo team for more credits. Nothing was charged.`);
+    const maxOpen = int(env.MAX_JOBS_PER_USER, 2);
+    const open = await countOpenForUser(env, user.id);
+    if (open >= maxOpen)
+      throw new JobError(`You already have ${plural(open, "video")} in progress, and the limit is ${maxOpen} at a time. Wait for one to finish (kleo_get_job) or cancel one with kleo_cancel_job. Nothing was charged.`);
+    const job = await createJob(env, fresh, { ...args, template: t.id });
     const view = jobView(job);
-    const sim = simulated ? " SIMULATED MODE: this is a test render, it finishes in about a minute and the files are placeholders, not a real video." : "";
-    return ok({ ...view, mode: simulated ? "simulated" : "gpu", message: `Queued. Estimated ${simulated ? 1 : job.eta_min} minutes. ${job.credits} credit${job.credits > 1 ? "s" : ""} charged.${sim}` },
-      `Job ${job.id} queued (template ${job.template}, ${view.format}, ${view.duration_s}s). Estimated ${simulated ? 1 : job.eta_min} minute(s). ${job.credits} credit(s) charged, ${fresh.credits - job.credits} left. Check progress later with kleo_get_job.${sim}`);
+    const what = kindOf(view.format);
+    const sim = simulated ? " SIMULATED MODE: this is a test render; it finishes in about a minute and the files are placeholders, not a real video." : "";
+    const eta = simulated ? "about a minute" : `about ${plural(job.eta_min ?? 0, "minute")}`;
+    const summary = `Your ${what} is in the queue. Video number: ${job.id}. Template: ${t.name}, ${view.format}, ${view.duration_s} seconds. It should be ready in ${eta}. ${plural(job.credits, "credit")} used, ${plural(fresh.credits - job.credits, "credit")} left. Check progress any time with kleo_get_job.${sim}`;
+    return ok({ ...view, credits_left: fresh.credits - job.credits, mode: simulated ? "simulated" : "gpu", message: summary }, summary);
   }));
 
+  const statusLine = (job: Job): string => {
+    const view = jobView(job);
+    const what = kindOf(view.format);
+    switch (job.state) {
+      case "done": return `Your ${what} ${job.id} is ready. Call kleo_get_result for the download links.`;
+      case "failed": return `Sorry, ${what} ${job.id} could not be rendered. Your ${plural(job.credits, "credit")} ${job.credits === 1 ? "was" : "were"} given back. Please try again; if it happens again, tell the Kleo team.${job.error ? ` (Technical detail: ${job.error})` : ""}`;
+      case "cancelled": return `${what[0].toUpperCase() + what.slice(1)} ${job.id} was cancelled.`;
+      case "queued": return `Your ${what} ${job.id} is in the queue, waiting for a free GPU. Once it starts it takes ${simulated ? "about a minute" : `about ${plural(job.eta_min ?? 0, "minute")}`}.`;
+      default: return `Your ${what} ${job.id} is ${job.percent}% done (${trackLabel(job.track)}). ${simulated ? "Less than a minute to go." : `About ${plural(Math.max(1, job.eta_min ?? 1), "minute")} to go.`}`;
+    }
+  };
+
   server.registerTool("kleo_get_job", {
-    title: "Check a render job",
-    description: "Progress of a render: state (queued, starting, rendering, finishing, done, failed, cancelled), current track (script, voice, clips, edit, finishing), percent and ETA. Call it when the user asks how it is going. With no job_id, returns the user's recent jobs.",
-    inputSchema: z.object({ job_id: z.string().optional().describe("The job id returned by kleo_create_video. Omit to list recent jobs.") }),
+    title: "Check progress",
+    description: "Step 4. Progress of a video: state (queued, starting, rendering, finishing, done, failed, cancelled), what it is doing now, percent done and minutes left (eta_min). Call it when the user asks how it is going; do not poll in a loop. When the state is done, call kleo_get_result. Without a job_id it lists the account's recent videos.",
+    inputSchema: z.object({ job_id: z.string().optional().describe("The video number returned by kleo_create_video (for example gt_ab12cd34). Omit to list recent videos.") }),
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   }, async ({ job_id }) => guarded(async () => {
     if (!job_id) {
-      const jobs = (await recentJobsForUser(env, user.id, 10)).map(jobView);
-      return ok({ jobs }, jobs.length ? JSON.stringify(jobs, null, 2) : "No jobs yet on this account.");
+      const jobs = await recentJobsForUser(env, user.id, 10);
+      const lines = jobs.map((j) => {
+        const v = jobView(j);
+        const status = j.state === "done" ? `ready (links valid until ${niceDate(j.expires_at)})`
+          : j.state === "failed" ? "failed (credits given back)"
+          : j.state === "cancelled" ? "cancelled"
+          : j.state === "queued" ? "waiting in the queue"
+          : `${j.percent}% done`;
+        return `- ${j.id}: ${v.duration_s}-second ${kindOf(v.format)}, template "${templateName(j.template)}", ${status}`;
+      });
+      return ok({ jobs: jobs.map(jobView) }, jobs.length ? `Your recent videos:\n${lines.join("\n")}` : "No videos on this account yet. Create one with kleo_create_video.");
     }
     const job = await getUserJob(env, user.id, job_id);
-    if (!job) throw new JobError(`No job "${job_id}" on this account.`);
-    const view = jobView(job);
-    const human = job.state === "done" ? `Job ${job.id} is done. Call kleo_get_result for the download links.`
-      : job.state === "failed" ? `Job ${job.id} failed: ${job.error}. Credits were refunded.`
-      : job.state === "cancelled" ? `Job ${job.id} was cancelled.`
-      : job.state === "queued" ? `Job ${job.id} is queued, waiting for a GPU. Estimated ${job.eta_min} minutes once started.`
-      : `Job ${job.id}: ${job.percent}% (${job.track}), about ${job.eta_min} minutes left.`;
-    return ok(view, human);
+    if (!job) throw noSuchVideo(job_id);
+    return ok(jobView(job), statusLine(job));
   }));
 
   server.registerTool("kleo_get_result", {
     title: "Get download links",
-    description: "Download links for a finished job: MP4 video, .srt subtitles, thumbnail. Links expire after 7 days. Share them with the user as plain URLs.",
-    inputSchema: z.object({ job_id: z.string() }),
+    description: "Step 5. Download links for a finished video: the MP4, the subtitles (.srt) and the thumbnail. Only works when kleo_get_job says the state is done. Links stop working after 7 days. Share them with the user exactly as returned, as plain URLs; never make up a link.",
+    inputSchema: z.object({ job_id: z.string().describe("The video number returned by kleo_create_video.") }),
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   }, async ({ job_id }) => guarded(async () => {
     const job = await getUserJob(env, user.id, job_id);
-    if (!job) throw new JobError(`No job "${job_id}" on this account.`);
-    if (job.state !== "done") throw new JobError(`Job ${job.id} is ${job.state}${job.state === "failed" ? ` (${job.error})` : ""}; no files yet.`);
-    if (job.purged_at) throw new JobError(`The files of job ${job.id} expired on ${job.expires_at} and were deleted.`);
+    if (!job) throw noSuchVideo(job_id);
+    const what = kindOf(jobView(job).format);
+    if (job.state === "cancelled") throw new JobError(`${what[0].toUpperCase() + what.slice(1)} ${job.id} was cancelled, so there are no files. Create it again with kleo_create_video if you want it.`);
+    if (job.state === "failed") throw new JobError(`Sorry, ${what} ${job.id} could not be rendered, so there are no files. Your credits were given back. Please try again.`);
+    if (job.state !== "done") throw new JobError(`Your ${what} ${job.id} is not ready yet: ${job.state === "queued" ? "it is waiting in the queue" : `${job.percent}% done (${trackLabel(job.track)})`}. Check again later with kleo_get_job.`);
+    if (job.purged_at) throw new JobError(`The files of ${what} ${job.id} expired on ${niceDate(job.expires_at)} and were deleted. Files are kept for 7 days; create the video again if you need it.`);
     const links = await resultLinks(env, base, job);
-    const sim = job.backend === "mock" ? "\nNOTE: this job ran in SIMULATED mode: the MP4 is a 1-second placeholder, not a real video." : "";
+    const label: Record<string, string> = { video_url: "Video (MP4)", subtitles_url: "Subtitles (.srt)", thumbnail_url: "Thumbnail" };
+    const order = ["video_url", "subtitles_url", "thumbnail_url"];
+    const sim = job.backend === "mock" ? "\nNOTE: this video was rendered in SIMULATED mode: the MP4 is a 1-second placeholder, not a real video." : "";
     return ok({ job_id: job.id, expires_at: job.expires_at, mode: job.backend === "mock" ? "simulated" : "gpu", ...links },
-      `Files for ${job.id} (valid until ${job.expires_at}):\n` + Object.entries(links).map(([k, v]) => `${k.replace("_url", "")}: ${v}`).join("\n") + sim);
+      `Your ${what} ${job.id} is ready. The links work until ${niceDate(job.expires_at)}:\n` + Object.entries(links).sort(([a], [b]) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99)).map(([k, v]) => `${label[k] ?? k.replace("_url", "")}: ${v}`).join("\n") + sim);
   }));
 
   server.registerTool("kleo_generate_thumbnail", {
-    title: "Generate thumbnails",
-    description: "Generate three alternative thumbnails from a finished job or from a text prompt. Returns a job_id; check it with kleo_get_job and fetch the files with kleo_get_result.",
+    title: "Generate thumbnails (coming soon)",
+    description: "Not available yet in this beta: every finished video already comes with a thumbnail (see kleo_get_result). Calling this only records the request and returns a notice; do not promise extra thumbnails to the user.",
     inputSchema: z.object({
-      job_id: z.string().optional().describe("A finished job to take frames from."),
-      prompt: z.string().min(4).max(500).optional().describe("Or describe the thumbnail you want."),
+      job_id: z.string().optional().describe("A finished video to take frames from."),
+      prompt: z.string().max(500).optional().describe("Or describe the thumbnail you want."),
     }),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   }, async ({ job_id, prompt }) => guarded(async () => {
-    if (!job_id && !prompt) throw new JobError("Give a job_id or a prompt.");
+    if (!job_id && !prompt) throw new JobError("Tell me which video (its number) or describe the thumbnail you want.");
     await audit(env, user.id, job_id ?? null, "thumbnail.requested", { prompt });
-    throw new JobError("Thumbnail generation is not enabled in this beta yet. The render already includes one thumbnail: see kleo_get_result.");
+    throw new JobError("Extra thumbnails are not available yet in this beta. Every finished video already comes with one thumbnail: call kleo_get_result to get its link.");
   }));
 
   server.registerTool("kleo_cancel_job", {
-    title: "Cancel a render",
-    description: "Cancel a queued or running job. Unused credits are refunded (fully if it had not started).",
-    inputSchema: z.object({ job_id: z.string() }),
+    title: "Cancel a video",
+    description: "Cancels a video that is waiting or rendering. The credits are given back in full if it had not started, otherwise in proportion to the work left. A finished, failed or already cancelled video cannot be cancelled.",
+    inputSchema: z.object({ job_id: z.string().describe("The video number returned by kleo_create_video.") }),
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   }, async ({ job_id }) => guarded(async () => {
     const fresh = (await getUser(env, user.id)) ?? user;
+    const existing = await getUserJob(env, user.id, job_id);
+    if (!existing) throw noSuchVideo(job_id);
+    const what = kindOf(jobView(existing).format);
+    const Cap = what[0].toUpperCase() + what.slice(1);
+    if (existing.state === "done") throw new JobError(`${Cap} ${existing.id} is already finished, so there is nothing to cancel. Call kleo_get_result for the download links.`);
+    if (existing.state === "cancelled") throw new JobError(`${Cap} ${existing.id} was already cancelled.`);
+    if (existing.state === "failed") throw new JobError(`${Cap} ${existing.id} had already failed and its credits were given back; there is nothing to cancel.`);
     const { job, refunded } = await cancelJob(env, fresh, job_id);
-    return ok({ job_id: job.id, state: "cancelled", refunded }, `Job ${job.id} cancelled. ${refunded} credit(s) refunded.`);
+    const back = refunded > 0 ? `${plural(refunded, "credit")} given back.` : "No credits given back, because the render was almost finished.";
+    return ok({ job_id: job.id, state: "cancelled", refunded, credits_left: fresh.credits + refunded }, `${Cap} ${job.id} was cancelled. ${back} You now have ${plural(fresh.credits + refunded, "credit")}.`);
   }));
 
   return server;

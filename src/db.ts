@@ -81,13 +81,29 @@ export async function createUser(env: Env, u: { id: string; email: string; credi
 export const touchUser = (env: Env, id: string) =>
   env.DB.prepare("UPDATE users SET last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").bind(id).run();
 
-/** Atomic debit: succeeds only if the user has enough credits. */
-export async function debitCredits(env: Env, userId: string, amount: number): Promise<boolean> {
+/**
+ * Credit movements. Every one of them lands in the audit table as `credits.debit` / `credits.refund`
+ * (amount, resulting balance, job, reason), so the owner can always reconstruct a user's balance.
+ */
+/** Atomic debit: succeeds only if the user has enough credits (single UPDATE, no read-then-write race). */
+export async function debitCredits(env: Env, userId: string, amount: number, jobId: string | null = null): Promise<boolean> {
+  if (amount <= 0) return true;
   const r = await env.DB.prepare("UPDATE users SET credits = credits - ? WHERE id = ? AND credits >= ?").bind(amount, userId, amount).run();
-  return (r.meta.changes ?? 0) === 1;
+  if ((r.meta.changes ?? 0) !== 1) return false;
+  await audit(env, userId, jobId, "credits.debit", { amount, balance: await balanceOf(env, userId) });
+  return true;
 }
-export const creditCredits = (env: Env, userId: string, amount: number) =>
-  env.DB.prepare("UPDATE users SET credits = credits + ? WHERE id = ?").bind(amount, userId).run();
+/** Gives credits back (cancel, failure, rollback). Returns the amount actually refunded (0 for nothing). */
+export async function refundCredits(env: Env, userId: string, amount: number, jobId: string | null, reason: string): Promise<number> {
+  if (amount <= 0) return 0;
+  await env.DB.prepare("UPDATE users SET credits = credits + ? WHERE id = ?").bind(amount, userId).run();
+  await audit(env, userId, jobId, "credits.refund", { amount, reason, balance: await balanceOf(env, userId) });
+  return amount;
+}
+async function balanceOf(env: Env, userId: string): Promise<number | null> {
+  const r = await env.DB.prepare("SELECT credits FROM users WHERE id = ?").bind(userId).first<{ credits: number }>();
+  return r?.credits ?? null;
+}
 
 export const getInvite = (env: Env, code: string) => env.DB.prepare("SELECT * FROM invites WHERE code = ?").bind(code).first<Invite>();
 export const useInvite = (env: Env, code: string) =>
@@ -144,6 +160,20 @@ export async function updateJob(env: Env, id: string, fields: Partial<Job>): Pro
   const sets = keys.map((k) => `${k} = ?`).join(", ");
   const values = keys.map((k) => fields[k] as unknown);
   await env.DB.prepare(`UPDATE jobs SET ${sets} WHERE id = ?`).bind(...values, id).run();
+}
+/**
+ * Atomic state transition: applies `fields` only if the job is still in one of the `from` states.
+ * Returns false when someone else moved the job first (cancelled, finished, failed...): the caller
+ * must then skip every side effect tied to the transition (refund, e-mail, audit of the new state).
+ * This single check is what makes refunds happen once and keeps the worker callbacks idempotent.
+ */
+export async function transitionJob(env: Env, id: string, from: JobState[], fields: Partial<Job>): Promise<boolean> {
+  const keys = Object.keys(fields) as (keyof Job)[];
+  if (!keys.length || !from.length) return false;
+  const sets = keys.map((k) => `${k} = ?`).join(", ");
+  const values = keys.map((k) => fields[k] as unknown);
+  const r = await env.DB.prepare(`UPDATE jobs SET ${sets} WHERE id = ? AND state IN (${inList(from)})`).bind(...values, id).run();
+  return (r.meta.changes ?? 0) === 1;
 }
 
 export const audit = (env: Env, userId: string | null, jobId: string | null, event: string, detail?: unknown) =>

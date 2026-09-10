@@ -1,135 +1,153 @@
 # Kleo e l'MCP: come funziona, come si collega, come si costruisce
 
-*Guida per te, in italiano. Il sito resta in inglese. "Kleo" è un nome provvisorio: quando lo cambiamo, la sezione 9 dice cosa toccare.*
+*Guida per te, in italiano. Il sito resta in inglese. Aggiornata al 10 settembre 2026. "Kleo" è un nome provvisorio: la sezione 9 dice cosa toccare per cambiarlo.*
 
 ## 1. Cos'è un MCP, in cinque righe
 
-Il Model Context Protocol è il modo standard con cui un assistente AI usa strumenti esterni. Ci sono due ruoli: il **client** (Claude, ChatGPT, Grok, Cursor, Claude Code) e il **server** (Kleo). Il server dichiara una lista di **strumenti**, ognuno con un nome, una descrizione e uno schema dei parametri. Il modello legge quelle descrizioni e decide da solo quando chiamare uno strumento. Un server "remoto" è semplicemente un indirizzo HTTPS pubblico, per esempio `https://mcp.kleo.ai/mcp`: chi lo incolla nel proprio assistente ottiene i tuoi strumenti.
+Il Model Context Protocol è il modo standard con cui un assistente AI usa strumenti esterni. Ci sono due ruoli: il **client** (Claude, ChatGPT, Grok, Cursor, Claude Code, VS Code, OpenCode, Gemini CLI) e il **server** (Kleo). Il server dichiara una lista di **strumenti**, ognuno con un nome, una descrizione e uno schema dei parametri. Il modello legge quelle descrizioni e decide da solo quando chiamare uno strumento. Un server "remoto" è semplicemente un indirizzo HTTPS pubblico: il nostro è `https://kleo-mcp.plural-juice.workers.dev/mcp`. Chi lo incolla nel proprio assistente ottiene i tuoi strumenti.
 
 La tua azienda quindi non vende un'app: vende un indirizzo. Tutta l'interfaccia utente è quella dell'assistente che il cliente usa già.
 
 ## 2. Cosa succede quando Cristiano incolla l'indirizzo
 
 1. Il client chiama l'indirizzo e trova `/.well-known/oauth-protected-resource`, che dice "per usarmi serve un token, l'accesso lo gestisce questo authorization server".
-2. Il client si registra come applicazione presso Kleo (in automatico, standard OAuth 2.1) e apre nel browser la **pagina di accesso di Kleo**. Cristiano entra (Google, oppure un codice invito nella beta) e acconsente.
-3. Kleo rilascia un token. Da quel momento ogni richiesta del client porta quel token e Kleo sa che è Cristiano, quanti crediti ha, quanti job ha in corso.
-4. Il client chiama `tools/list` e mostra al modello i sei strumenti con le loro descrizioni.
-5. Cristiano scrive "fammi uno Short sui pirati". Il modello capisce che serve `kleo_create_video`, compila i parametri e il client manda `tools/call`. Kleo risponde in meno di un secondo con un `job_id`. Il modello lo dice a Cristiano: "avviato, ci vogliono circa 25 minuti".
-6. Venti minuti dopo Cristiano chiede "a che punto è?". Il modello chiama `kleo_get_job`, legge "82%, finitura 4K", e lo riferisce. Quando è pronto, `kleo_get_result` restituisce i link. Se Cristiano ha lasciato un'email, riceve anche un avviso.
+2. Il client si registra come applicazione presso Kleo (in automatico, standard OAuth 2.1) e apre nel browser la **pagina di accesso di Kleo**. Cristiano scrive la sua email e il codice invito (`CRISTIANO-1`) e acconsente. Il codice resta legato a quella email.
+3. Kleo rilascia un token. Da quel momento ogni richiesta del client porta quel token e Kleo sa che è Cristiano, quanti crediti ha, quanti video ha in corso.
+4. Il client chiama `tools/list` e mostra al modello i sette strumenti con le loro descrizioni.
+5. Cristiano scrive "fammi uno Short sui pirati". Il modello legge i template (`kleo_list_templates`), di solito chiede la guida (`kleo_storyboard_guide`) e scrive lui lo storyboard, poi chiama `kleo_create_video`. Kleo risponde in meno di un secondo con un numero di video (`job_id`) e una stima. Il modello lo dice a Cristiano: "avviato, ci vogliono circa 15 minuti".
+6. Dieci minuti dopo Cristiano chiede "a che punto è?". Il modello chiama `kleo_get_job`, legge "70%, sta disegnando le scene", e lo riferisce. Quando è pronto, `kleo_get_result` restituisce i link a MP4, sottotitoli e thumbnail, validi 7 giorni.
 
-Tutto questo funziona uguale in Claude, ChatGPT, Grok e Cursor, perché lo standard è lo stesso. Cambia solo dove si incolla l'indirizzo.
+Tutto questo funziona uguale in ogni client, perché lo standard è lo stesso. Cambia solo dove si incolla l'indirizzo.
 
 ## 3. Perché le chiamate devono essere brevi
 
-Un tool MCP ha lo stesso tempo di una pagina web: i client aspettano al massimo qualche decina di secondi. Un render dura 25 minuti. La regola è quindi: **nessuno strumento fa aspettare la chat**. `kleo_create_video` mette il lavoro in coda e torna subito; il lavoro vero lo fa l'orchestratore in un altro processo. Lo standard MCP (revisione 2026-07-28) prevede anche l'estensione **Tasks**: la chiamata può restituire un "task" e il client lo interroga da solo. La useremo quando i client la supportano; `kleo_get_job` resta comunque, perché funziona ovunque.
+Un tool MCP ha lo stesso tempo di una pagina web: i client aspettano al massimo qualche decina di secondi. Un render dura 10–20 minuti per uno Short e fino a un'ora per un video lungo. La regola è quindi: **nessuno strumento fa aspettare la chat**. `kleo_create_video` mette il lavoro in coda e torna subito; il lavoro vero lo fa l'orchestratore (un cron ogni minuto) su una macchina noleggiata. Lo standard MCP (revisione 2026-07-28) prevede anche l'estensione **Tasks**: la useremo quando i client la supportano; `kleo_get_job` resta comunque, perché funziona ovunque.
 
-## 4. I sei strumenti, con le descrizioni che legge il modello
+## 4. I sette strumenti, con le descrizioni che legge il modello
 
-Le descrizioni sono il manuale del modello: se sono scritte bene, il modello sceglie lo strumento giusto e compila i parametri giusti senza che l'utente sappia nulla di tecnico.
+Le descrizioni sono il manuale del modello: se sono scritte bene, il modello sceglie lo strumento giusto e compila i parametri giusti senza che l'utente sappia nulla di tecnico. Le descrizioni vere e complete stanno in `src/mcp.ts`; qui il riassunto.
 
 ```jsonc
-// kleo_storyboard_guide — "Returns the storyboard format (styles, scenes, beats, icons, voices, rules)
-//                          with examples, so the assistant writes an original storyboard itself."
-{ "template": "viral-short", "duration_s": 45 } // entrambi facoltativi
-
-// kleo_list_templates — "List the video templates Kleo can render. Call this before kleo_create_video
-//                   when the user hasn't named a template, and pick the best match."
+// kleo_list_templates — passo 1. "Lists the templates Kleo can render and the credits left on the account.
+//                        Call it when the user has not named a template, then pick the closest match."
 { } // nessun parametro
+// → { templates: [{ id, name, formats, duration_s: {min, max, default}, credits, voices, description }], credits_available, pricing }
 
-// kleo_create_video — "Start rendering a video. Returns immediately with a job_id; rendering takes
-//                 15–70 minutes. Tell the user the estimate and offer to check progress later."
+// kleo_storyboard_guide — passo 2, consigliato. "Returns the storyboard format Kleo renders (styles, scene kinds,
+//                          beats, icons, effects, voices, limits, rules) with two examples, so you can write an
+//                          original storyboard and pass it to kleo_create_video. Call it once per conversation."
+{ "template": "viral-short", "duration_s": 45 } // entrambi facoltativi
+// → il testo della guida, più { words_target, credits }
+
+// kleo_create_video — passo 3. "Starts rendering a video or Short from a template and a prompt (plus your storyboard,
+//                      if you wrote one). Returns at once with the job_id, the estimated minutes and the credits used.
+//                      If the tool returns an error, nothing was charged."
 {
-  "template":   { "type": "string", "enum": ["story-documentary","top-10","viral-short","reddit-story",
-                  "motivational","explainer","weekly-news","cinematic-trailer","product-review","did-you-know"] },
-  "prompt":     { "type": "string", "description": "What the video is about, in the user's words. Include names, facts, tone." },
-  "duration_s": { "type": "integer", "minimum": 15, "maximum": 900 },
-  "format":     { "type": "string", "enum": ["16:9","9:16"] },
-  "language":   { "type": "string", "enum": ["en","it"], "default": "en" },
-  "voice":      { "type": "string", "description": "Optional voice id from kleo_list_templates; default per template." },
-  "notify_email": { "type": "string", "format": "email", "description": "Optional. Email the download link when done." }
+  "template":     { "enum": ["story-documentary","top-10","viral-short","reddit-story","motivational",
+                             "explainer","weekly-news","cinematic-trailer","product-review","did-you-know"] },
+  "prompt":       { "type": "string", "minLength": 8, "maxLength": 4000 },   // il video, con le parole dell'utente
+  "duration_s":   { "type": "integer", "minimum": 15, "maximum": 900 },      // dentro il range del template
+  "format":       { "enum": ["16:9", "9:16"] },                              // default: primo formato del template
+  "language":     { "enum": ["en", "it"], "default": "en" },
+  "voice":        { "type": "string" },                                      // facoltativo, dalla lista dei template
+  "notify_email": { "type": "string", "format": "email" },                   // facoltativo (oggi l'email non parte: manca RESEND_API_KEY)
+  "storyboard":   { "type": "object" }                                       // facoltativo: lo storyboard scritto dall'assistente, validato dal server
 }
-// → { "job_id": "gt_7f3k", "eta_min": 25, "credits_used": 1 }
+// → { job_id: "gt_ab12cd34", state: "queued", eta_min: 25, credits: 1, message }
 
-// kleo_get_job — "Check a render job. Returns state (queued|rendering|done|failed|cancelled), current
-//            track, percent and ETA. Call when the user asks for progress."
+// kleo_get_job — passo 4. "Progress of a video: state (queued, starting, rendering, finishing, done, failed, cancelled),
+//                 what it is doing now, percent done and minutes left. Without a job_id it lists the recent videos."
+{ "job_id": { "type": "string" } } // facoltativo
+// → { job_id, state: "rendering", track: "clips", percent: 70, eta_min: 4, ... }
+
+// kleo_get_result — passo 5. "Download links for a finished video: the MP4, the subtitles (.srt) and the thumbnail.
+//                    Only works when the state is done. Links stop working after 7 days."
 { "job_id": { "type": "string" } }
-// → { "state": "rendering", "track": "finishing", "percent": 82, "eta_min": 4 }
+// → { video_url, subtitles_url, thumbnail_url, expires_at }
 
-// kleo_get_result — "Get download links for a finished job (mp4, srt, thumbnail). Links expire in 7 days."
+// kleo_generate_thumbnail — "Not available yet in this beta: every finished video already comes with a thumbnail."
+{ "job_id": { "type": "string" }, "prompt": { "type": "string" } } // uno dei due; oggi risponde con un avviso
+
+// kleo_cancel_job — "Cancels a video that is waiting or rendering. Credits are given back in full if it had not
+//                    started, otherwise in proportion to the work left."
 { "job_id": { "type": "string" } }
-// → { "mp4_url": "...", "srt_url": "...", "thumb_url": "...", "expires_at": "2026-09-16T10:00:00Z" }
-
-// kleo_generate_thumbnail — "Generate three thumbnail options from a finished job or from a text prompt."
-{ "job_id": { "type": "string" }, "prompt": { "type": "string" } } // uno dei due
-
-// kleo_cancel_job — "Cancel a queued or running job. Unused credits are refunded."
-{ "job_id": { "type": "string" } }
+// → { job_id, state: "cancelled", refunded }
 ```
 
 Regole che il server applica sempre, indipendentemente da cosa chiede il modello:
-- i crediti si scalano quando il job entra in coda, non alla fine;
-- massimo 2 job contemporanei per utente, massimo 5 GPU accese in totale (il tetto di spesa oraria è così sempre noto);
-- prompt controllati per contenuti vietati prima di accendere una GPU;
-- ogni chiamata registrata con utente, strumento, costo.
+- i crediti (1 per uno Short fino a 90 s, 3 per un video fino a 5 minuti, +1 per ogni minuto in più) si scalano quando il video entra in coda e tornano indietro se fallisce o viene annullato;
+- massimo 2 video contemporanei per utente, massimo 5 GPU accese in totale (il tetto di spesa oraria è così sempre noto);
+- lo storyboard, scritto dall'assistente o da Workers AI, passa il validatore (`src/keou-contract.ts`) prima di accendere una GPU: uno storyboard sbagliato torna indietro con l'elenco dei problemi e niente viene addebitato;
+- prompt controllati per contenuti vietati prima di spendere;
+- ogni chiamata registrata nella tabella `audit` con utente, strumento, costo.
+
+Se la quota giornaliera gratuita di Workers AI finisce, `kleo_create_video` non fallisce in silenzio: risponde chiedendo all'assistente di scrivere lo storyboard con `kleo_storyboard_guide` e riprovare.
 
 ## 5. Il lato server, pezzo per pezzo
 
 ```
-client MCP ──HTTPS──▶ /mcp  (server MCP: tools/list, tools/call)
-                      /authorize, /token  (OAuth 2.1: login e token)
-                      DB: utenti, crediti, job, log
-                      orchestratore: ogni 30–60 s guarda la coda
-                          │ crea GPU effimera (Vast.ai) con env: KLEO_API, KLEO_JOB_ID, KLEO_SECRET
-                          │ ascolta il callback "done" / "failed"
-                          │ distrugge la GPU, aggiorna il job
-                      storage (R2): renders/{job_id}/video.mp4, subs.srt, thumb.jpg  (scadenza 7 gg)
-                      /internal/jobs/{id}/progress e /done  (chiamati solo dal worker, con un segreto)
+client MCP ──HTTPS──▶ /mcp  (server MCP: tools/list, tools/call)                      src/mcp.ts
+                      /authorize, /token, /register  (OAuth 2.1: pagina di accesso e token)   src/auth.ts
+                      D1: utenti, crediti, codici invito, video, log                         src/db.ts
+                      orchestratore (cron ogni minuto):                                       src/orchestrator.ts
+                          │ scrive lo storyboard dei video in coda (Workers AI)              src/storyboard.ts
+                          │ noleggia una GPU Vast.ai per video, con l'immagine Keou          src/backends/vast.ts
+                          │ ascolta progress / done / failed, distrugge la GPU, aggiorna il video
+                          │ riserva gratuita: i runner GitHub prendono i video che Vast non avvia   src/backends/pool.ts
+                      R2: renders/{job_id}/video.mp4, subtitles.srt, thumbnail.jpg  (scadenza 7 giorni)
+                      /internal/jobs/{id}/...  (chiamati solo dal worker, con un segreto per video)   src/internal.ts
+                      /dl/{job_id}/{file}?exp&sig  (link firmati, a tempo)                   src/dl.ts
 ```
 
-Il sito pubblico è una pagina statica separata: non parla con il server, se non per il link "connect".
+Il sito pubblico è una pagina statica separata: non parla con il server, se non per l'indirizzo che l'utente copia.
 
-## 6. Il worker GPU: cosa fa dentro l'istanza
+## 6. Il worker: cosa fa dentro la macchina noleggiata
 
-È la tua procedura manuale di oggi, scritta in uno script che parte da solo:
+L'immagine `ghcr.io/tonnooooo/kleo-worker:keou` contiene il motore Keou (il tuo motore di motion design), Chromium, Node, ffmpeg, le voci Kokoro (inglese e italiano) e whisper per allineare i sottotitoli: niente da scaricare all'avvio. Il worker (`worker/kleo_worker.py`) parte da solo:
 
-1. **Avvio**: l'istanza nasce da un'immagine Docker tua (ComfyUI, nodi, ffmpeg, SeedVR2, RIFE già dentro). Riceve `KLEO_API` (l'indirizzo del server), `KLEO_JOB_ID`, `KLEO_SECRET` (segreto valido solo per quel job) e `KLEO_SELF_DESTRUCT_MIN`.
-2. **Modelli**: scarica i pesi da R2 in parallelo (`aria2c -x16`). Egress R2 gratis, 50 GB in pochi minuti su host con `inet_down > 500`.
-3. **Le cinque tracce**: script (API di un modello linguistico) → voce (TTS) → clip per scena, in parallelo (Wan 2.2 o LTX-2.5) → montaggio (ffmpeg, sottotitoli ASS, musica) → finitura (SeedVR2 a 2160p, RIFE a 60 fps, H.265). A ogni passo manda `POST progress` con percentuale e traccia.
-4. **Consegna**: carica MP4, SRT, JPG sul server (a pezzi da 50 MB per i file grandi), chiama `POST done`.
-5. **Autodistruzione**: un timer avviato all'inizio chiama l'API Vast per distruggere l'istanza dopo `SELF_DESTRUCT_MIN` anche se lo script muore. Il server fa lo stesso dal suo lato. Doppia sicurezza contro le bollette a sorpresa.
+1. **Avvio**: riceve `KLEO_API` (l'indirizzo del server), `KLEO_JOB_ID`, `KLEO_SECRET` (segreto valido solo per quel video), `KLEO_SELF_DESTRUCT_MIN` e il numero di core da usare. Scarica la specifica del video, storyboard compreso.
+2. **Voce**: Kokoro legge la narrazione di ogni scena; whisper la riascolta e allinea i sottotitoli parola per parola. La voce detta i tempi di tutto il resto.
+3. **Scene**: Chromium disegna ogni scena fotogramma per fotogramma a 60 fps (testi grandi, icone, grafici, personaggi), più scene in parallelo, una per core.
+4. **Montaggio e finitura**: ffmpeg mette insieme scene, voce e musica; un controllo di qualità automatico verifica il file; poi MP4 (2160×3840 per i 9:16, 1920×1080 per i 16:9, H.264 + AAC), `.srt` e thumbnail.
+5. **Consegna**: carica i tre file sul server (a pezzi per i file grandi), chiama `done`. A ogni passo manda `progress` con percentuale e fase.
+6. **Autodistruzione**: un timer avviato all'inizio distrugge la macchina dopo `KLEO_SELF_DESTRUCT_MIN` anche se lo script muore, usando la chiave ristretta che Vast inietta nel container (mai la tua). Il server fa lo stesso dal suo lato. Doppia sicurezza contro le bollette a sorpresa.
 
-Se un host Vast è lento o fallisce, l'orchestratore rimette il job in coda su un altro host, al massimo due volte, poi segna `failed` e restituisce i crediti.
+Se una macchina Vast è lenta o fallisce, l'orchestratore rimette il video in coda su un'altra, al massimo tre tentativi, poi lo segna `failed` e restituisce i crediti. Su Vast il render è lavoro di CPU (la GPU aiuta solo la voce): per questo le offerte sono filtrate per almeno 16 core.
 
 ## 7. Come si collega, client per client
 
+L'indirizzo è lo stesso per tutti: `https://kleo-mcp.plural-juice.workers.dev/mcp`. Al primo uso ogni client apre la pagina di accesso di Kleo: email e codice invito.
+
 | Client | Dove incollare l'indirizzo | Note |
 |---|---|---|
-| Claude (web e app) | Impostazioni → Connettori → Aggiungi connettore personalizzato | Tutti i piani; il gratuito ammette un connettore. Accetta anche server senza login, ma noi lo vogliamo con login. |
-| Claude Code | `claude mcp add --transport http kleo https://mcp.kleo.ai/mcp` poi `/mcp` per autenticarsi | `--scope user` per averlo in tutti i progetti |
-| ChatGPT | Impostazioni → Sicurezza e accesso → Modalità sviluppatore, poi Connettori → Crea | Plus, Pro, Business, Enterprise; non il piano gratuito |
-| Grok | grok.com o app → Connectors → New connector → Custom | Disponibile da maggio 2026 |
-| Cursor | `.cursor/mcp.json` con `{"mcpServers":{"kleo":{"url":"https://mcp.kleo.ai/mcp"}}}` | Login OAuth al primo uso |
-| VS Code | `.vscode/mcp.json` con `{"servers":{"kleo":{"type":"http","url":"https://mcp.kleo.ai/mcp"}}}` | |
-| Gemini CLI | `gemini mcp add --transport http kleo https://mcp.kleo.ai/mcp` | |
-| App Gemini | Impostazioni → App collegate → App personalizzate | Oggi solo Google AI Pro/Ultra, account personale, USA |
+| Claude (web e app) | Impostazioni → Connettori → Aggiungi connettore personalizzato | Tutti i piani; il gratuito ammette un connettore |
+| ChatGPT | Impostazioni → App e connettori (o Connettori) → Impostazioni avanzate → Modalità sviluppatore; poi Connettori → Crea, autenticazione OAuth | Plus, Pro, Business, Enterprise; non il piano gratuito. Chiede conferma prima di ogni render |
+| Grok | grok.com o app → Impostazioni → Connectors → Add connector → Custom | |
+| Claude Code | `claude mcp add --transport http kleo https://kleo-mcp.plural-juice.workers.dev/mcp` poi `/mcp` → Kleo → Authenticate | `--scope user` per averlo in tutti i progetti |
+| Cursor | `~/.cursor/mcp.json`: `{"mcpServers":{"kleo":{"url":"https://kleo-mcp.plural-juice.workers.dev/mcp"}}}` | Login OAuth al primo uso (Settings → MCP → Connect) |
+| VS Code | `.vscode/mcp.json`: `{"servers":{"kleo":{"type":"http","url":"https://kleo-mcp.plural-juice.workers.dev/mcp"}}}` | Clic su "Start" sopra il server; strumenti in Copilot Chat, modalità Agent |
+| OpenCode | `~/.config/opencode/opencode.jsonc`: `{"mcp":{"kleo":{"type":"remote","url":"https://kleo-mcp.plural-juice.workers.dev/mcp","enabled":true}}}` poi `opencode mcp auth kleo` | Il login si fa dal terminale, apre il browser |
+| Gemini CLI | `gemini mcp add --transport http kleo https://kleo-mcp.plural-juice.workers.dev/mcp` poi `/mcp auth kleo` nella sessione | |
+| App Gemini | Impostazioni → App collegate → App personalizzate | Oggi solo Google AI Pro/Ultra, account personale |
+| Windsurf | Settings → MCP → Add server (`"serverUrl"` in `mcp_config.json`) | |
 
-Requisito comune a tutti: l'indirizzo deve essere **HTTPS pubblico**. In locale si prova con Claude Code e con l'Inspector; per provare da Claude.ai o ChatGPT serve il deploy (vedi `kleo-mcp/DEPLOY.md`) oppure un tunnel temporaneo.
+Requisito comune a tutti: l'indirizzo deve essere **HTTPS pubblico**. In locale si prova con Claude Code (`http://localhost:8787/mcp`); per provare da Claude.ai o ChatGPT serve il server di produzione oppure un tunnel temporaneo (vedi `DEPLOY.md`, sezione 6). Il sito mostra gli stessi snippet, con pulsante "Copy", nella sezione Connect.
 
 ## 8. Cosa vede l'utente, in pratica
 
-- In Claude: dopo il collegamento, nel menu strumenti compare "Kleo" con l'interruttore. Le chiamate compaiono come schede "kleo · kleo_create_video" con i parametri, esattamente come nel mockup del sito.
-- In ChatGPT: chiede conferma prima di ogni chiamata che modifica qualcosa (kleo_create_video, kleo_cancel_job); le letture (kleo_get_job) passano senza conferma se lo strumento è marcato "read-only".
-- In Cursor e Claude Code: il modello può anche scaricare il file con `curl` nella cartella del progetto, perché ha un terminale.
+- In Claude: dopo il collegamento, nel menu strumenti compare "Kleo" con l'interruttore. Le chiamate compaiono come schede "kleo_create_video" con i parametri.
+- In ChatGPT: chiede conferma prima di ogni chiamata che modifica qualcosa (`kleo_create_video`, `kleo_cancel_job`); le letture (`kleo_get_job`, `kleo_get_result`) passano senza conferma perché sono marcate "read-only".
+- In Cursor, Claude Code, VS Code, OpenCode: il modello può anche scaricare il file con `curl` nella cartella del progetto, perché ha un terminale.
+- Se qualcosa non va (crediti finiti, storyboard rifiutato, troppi video in corso), lo strumento risponde con una frase chiara e niente viene addebitato; il modello la riferisce all'utente.
 
 ## 9. Quando cambiamo nome
 
 Da toccare, in ordine:
-1. Sito: cerca e sostituisci "Kleo" e "kleo" in `index.html` (testo, `data-copy`, snippet). Il favicon e il marchio SVG nel nav.
-2. Dominio: `mcp.kleo.ai` nei tre snippet del sito e nel documento di architettura.
-3. Server: il nome del server MCP (quello che i client mostrano), il nome del progetto Cloudflare o della VM, il nome del repository GitHub.
-4. Email di contatto nel footer.
+1. Sito: cerca e sostituisci "Kleo" e "kleo" in `index.html` (testo, `data-copy`, snippet). Il favicon e il marchio SVG nel nav. L'indirizzo del server sta solo in `config.json`.
+2. Server: il nome del server MCP in `src/mcp.ts` (quello che i client mostrano), il titolo della pagina di accesso in `src/auth.ts`, `name` in `wrangler.jsonc`, il nome del repository GitHub e, se vuoi, dell'immagine (`VAST_IMAGE` e i due workflow).
+3. Email di contatto nel footer del sito.
 
-Tutto il resto (strumenti, schema, pipeline) non cambia.
+Tutto il resto (strumenti, schema, motore) non cambia.
 
 ## 10. Glossario
 
@@ -137,6 +155,7 @@ Tutto il resto (strumenti, schema, pipeline) non cambia.
 - **Server MCP**: chi espone gli strumenti (Kleo).
 - **Streamable HTTP**: il trasporto standard attuale: una sola rotta `/mcp`, richieste JSON, risposte anche in streaming.
 - **OAuth 2.1**: lo schema di login con cui il client ottiene un token a nome dell'utente senza vedere la sua password.
-- **Job**: un render in coda o in corso, identificato da `job_id`.
-- **GPU effimera**: un'istanza noleggiata per un solo job e distrutta alla fine.
+- **Job / video**: un render in coda o in corso, identificato da `job_id` (per l'utente: "il numero del video").
+- **Storyboard**: il piano del video (scene, narrazione, testi, effetti) nel formato del motore Keou.
+- **GPU effimera**: una macchina noleggiata per un solo video e distrutta alla fine.
 - **URL firmato**: un link a un file su storage che funziona solo per un certo tempo.

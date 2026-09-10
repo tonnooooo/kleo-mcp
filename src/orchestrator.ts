@@ -1,7 +1,7 @@
 import type { Env } from "./env";
-import { type Job, type JobState, activeJobs, queuedJobs, unplannedJobs, claimPlanAttempt, countRunning, updateJob, audit, creditCredits, expiredJobs, listFiles, deleteFiles, setFile, getJob, reserveJob, unreserveJob } from "./db";
+import { type Job, type JobState, ACTIVE_STATES, OPEN_STATES, activeJobs, queuedJobs, unplannedJobs, claimPlanAttempt, countRunning, updateJob, transitionJob, audit, refundCredits, expiredJobs, listFiles, deleteFiles, setFile, getJob, reserveJob, unreserveJob } from "./db";
 import { backendFor, getBackend } from "./backends";
-import { int, nowIso, minutesSince, secondsSince, addDays, base64ToBytes } from "./util";
+import { int, nowIso, minutesSince, secondsSince, addDays, base64ToBytes, rid } from "./util";
 import { TINY_MP4_B64 } from "./assets";
 import { resultLinks, FILE_NAMES } from "./jobs";
 import { notifyDone } from "./notify";
@@ -48,7 +48,11 @@ async function planOne(env: Env, stats: Stats): Promise<number> {
     const attempts = job.plan_attempts + 1;
     try {
       const r = await generateStoryboard(env, job);
-      await updateJob(env, job.id, { storyboard: JSON.stringify(r.storyboard), plan_error: null });
+      // Planning takes minutes: the job may have been cancelled meanwhile, and a cancelled job must stay cancelled.
+      if (!(await transitionJob(env, job.id, ["queued"], { storyboard: JSON.stringify(r.storyboard), plan_error: null }))) {
+        await audit(env, job.user_id, job.id, "job.plan.ignored", { reason: "job is no longer queued" });
+        continue;
+      }
       await audit(env, job.user_id, job.id, "job.planned", { model: r.model, attempt: attempts, model_calls: r.attempts, ms: r.ms, usage: r.usage, est_neurons: r.est_neurons, words: r.words, scenes: r.scenes, fixture: r.fixture });
       stats.planned++;
     } catch (e) {
@@ -113,9 +117,16 @@ async function tickInner(env: Env, stats: Stats) {
     if (!(await reserveJob(env, job.id, backend.name))) continue; // a pool runner took it first
     try {
       const r = await backend.start(env, job);
-      await updateJob(env, job.id, {
+      // Renting takes seconds; if the user cancelled in between, the job is no longer "starting" and the GPU must go straight back.
+      const attached = await transitionJob(env, job.id, ["starting"], {
         instance_id: r.instanceId, instance_meta: JSON.stringify(r.meta ?? {}), attempts: job.attempts + 1,
       });
+      if (!attached) {
+        const orphan = { ...job, backend: backend.name, instance_id: r.instanceId };
+        try { await backend.destroy(env, orphan); } catch (e) { await audit(env, job.user_id, job.id, "backend.destroy.error", String(e)); }
+        await audit(env, job.user_id, job.id, "job.started.orphan", { backend: backend.name, instance: r.instanceId, note: "job left the queue while the GPU was being rented; GPU released" });
+        continue;
+      }
       await audit(env, job.user_id, job.id, "job.started", { backend: backend.name, instance: r.instanceId, meta: r.meta });
       stats.started++;
     } catch (e) {
@@ -149,30 +160,46 @@ async function tickInner(env: Env, stats: Stats) {
   return stats;
 }
 
-/** Marks a job failed (or requeues it) and always tears the GPU down. */
-export async function failJob(env: Env, job: Job, reason: string, retry: boolean): Promise<void> {
+/**
+ * Marks a job failed (or requeues it) and always tears the GPU down. Idempotent: the state change is one
+ * atomic transition from an open state, so a job that was already cancelled, finished or failed by another
+ * path is left alone and, above all, is not refunded a second time. Returns what happened.
+ */
+export async function failJob(env: Env, job: Job, reason: string, retry: boolean): Promise<"requeued" | "failed" | "ignored"> {
   try { await backendFor(env, job.backend).destroy(env, job); } catch (e) { await audit(env, job.user_id, job.id, "backend.destroy.error", String(e)); }
   if (retry && job.attempts < MAX_ATTEMPTS) {
-    await updateJob(env, job.id, { state: "queued", instance_id: null, instance_meta: null, started_at: null, percent: 0, track: null, error: reason });
+    // Back to the queue with a fresh worker secret: the old GPU (possibly still alive) can no longer report on this job.
+    const requeued = await transitionJob(env, job.id, OPEN_STATES, {
+      state: "queued", backend: null, instance_id: null, instance_meta: null, started_at: null, percent: 0, track: null, error: reason, worker_secret: rid("wk", 32),
+    });
+    if (!requeued) { await audit(env, job.user_id, job.id, "job.requeue.ignored", { reason, note: "job was no longer open" }); return "ignored"; }
     await audit(env, job.user_id, job.id, "job.requeued", { reason, attempts: job.attempts });
-    return;
+    return "requeued";
   }
-  await updateJob(env, job.id, { state: "failed", finished_at: nowIso(), error: reason, percent: job.percent });
-  await creditCredits(env, job.user_id, job.credits);
-  await audit(env, job.user_id, job.id, "job.failed", { reason, refunded: job.credits });
+  const failed = await transitionJob(env, job.id, OPEN_STATES, { state: "failed", finished_at: nowIso(), error: reason, percent: job.percent });
+  if (!failed) { await audit(env, job.user_id, job.id, "job.fail.ignored", { reason, note: "job was no longer open (already cancelled, done or failed)" }); return "ignored"; }
+  const refunded = await refundCredits(env, job.user_id, job.credits, job.id, `failed: ${reason.slice(0, 120)}`);
+  await audit(env, job.user_id, job.id, "job.failed", { reason, refunded });
+  return "failed";
 }
 
-/** Marks a job done, releases the GPU, emails the links. Called by the worker callback and by the mock. */
-export async function finishJob(env: Env, job: Job, costUsd: number | null): Promise<void> {
+/**
+ * Marks a job done, releases the GPU, emails the links. Called by the worker callback and by the mock.
+ * Idempotent: a second "done", or a "done" after a cancel/failure, changes nothing. Returns whether it applied.
+ */
+export async function finishJob(env: Env, job: Job, costUsd: number | null): Promise<boolean> {
   const finished = nowIso();
   const expires = addDays(finished, int(env.RESULT_TTL_DAYS, 7));
+  const done = await transitionJob(env, job.id, OPEN_STATES, { state: "done", percent: 100, track: null, eta_min: 0, finished_at: finished, expires_at: expires, cost_usd: costUsd, error: null });
+  if (!done) { await audit(env, job.user_id, job.id, "job.done.ignored", { note: "job was no longer open (already done, cancelled or failed)" }); return false; }
   let cost = costUsd;
   try { const est = await backendFor(env, job.backend).destroy(env, job); if (cost == null && typeof est === "number") cost = est; }
   catch (e) { await audit(env, job.user_id, job.id, "backend.destroy.error", String(e)); }
-  await updateJob(env, job.id, { state: "done", percent: 100, track: null, eta_min: 0, finished_at: finished, expires_at: expires, cost_usd: cost, error: null });
+  if (cost !== costUsd) await updateJob(env, job.id, { cost_usd: cost });
   await audit(env, job.user_id, job.id, "job.done", { cost_usd: cost });
   const fresh = (await getJob(env, job.id))!;
   try { await notifyDone(env, fresh, await resultLinks(env, env.PUBLIC_URL, fresh)); } catch (e) { await audit(env, job.user_id, job.id, "notify.error", String(e)); }
+  return true;
 }
 
 export function trackFor(percent: number): { track: string; state: JobState } {
@@ -190,7 +217,8 @@ async function advanceMock(env: Env, job: Job): Promise<void> {
   const percent = Math.min(100, Math.floor((elapsed / total) * 100));
   if (percent < 100) {
     const { track, state } = trackFor(percent);
-    await updateJob(env, job.id, { percent, track, state, eta_min: Math.max(1, Math.ceil(((100 - percent) / 100) * (job.eta_min ?? 25))) });
+    // Only while still active: a job cancelled between the read and this write must not come back to life.
+    await transitionJob(env, job.id, ACTIVE_STATES, { percent, track, state, eta_min: Math.max(1, Math.ceil(((100 - percent) / 100) * (job.eta_min ?? 25))) });
     return;
   }
   const p = JSON.parse(job.params) as { duration_s: number; format: string };

@@ -14,7 +14,7 @@ export async function handleAuthorize(request: Request, env: Env): Promise<Respo
     const parsed = await parseOrError(request, env);
     if (parsed instanceof Response) return parsed;
     const client = await env.OAUTH_PROVIDER.lookupClient(parsed.clientId);
-    if (!client) return html(page({ error: "Unknown OAuth client.", clientName: parsed.clientId, oauthQuery: "" }), 400);
+    if (!client) return html(page({ error: "This connection request is not valid. Please add Kleo again from your assistant's connector settings.", clientName: parsed.clientId, oauthQuery: "" }), 400);
     return html(page({ clientName: client.clientName ?? parsed.clientId, oauthQuery: url.search.slice(1) }));
   }
   if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
@@ -32,16 +32,16 @@ export async function handleAuthorize(request: Request, env: Env): Promise<Respo
   const clientName = client?.clientName ?? parsed.clientId;
   const back = (error: string, status = 400) => html(page({ error, clientName, oauthQuery, email, invite }), status);
 
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return back("Enter a valid email address.");
-  if (!invite) return back("Enter your invite code.");
-  if (!consent) return back(`Tick the box to let ${clientName} create videos on your behalf.`);
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return back("Please enter a valid email address, like you@example.com.");
+  if (!invite) return back("Please enter the invite code you received from the Kleo team.");
+  if (!consent) return back(`Please tick the box to let ${clientName} create videos for you.`);
 
   let user = await getUserByEmail(env, email);
   if (user) {
-    if (user.invite_code && user.invite_code !== invite) return back("This email is registered with a different invite code.", 403);
+    if (user.invite_code && user.invite_code !== invite) return back("This email is already registered with a different invite code. Please use the same code you signed up with.", 403);
   } else {
     const grant = await validInvite(env, invite);
-    if (!grant) return back("This invite code is not valid or has been used up.", 403);
+    if (!grant) return back("This invite code is not valid or has already been used. Check the code you received, or ask the Kleo team for a new one.", 403);
     user = await createUser(env, { id: rid("u", 12), email, credits: grant.credits, inviteCode: invite });
     if (grant.fromTable) await useInvite(env, invite);
     await audit(env, user.id, null, "user.created", { invite, credits: grant.credits });
@@ -72,7 +72,7 @@ async function parseOrError(request: Request, env: Env): Promise<AuthRequest | R
     return await env.OAUTH_PROVIDER.parseAuthRequest(request);
   } catch (error) {
     if (!(error instanceof AuthorizationError)) throw error;
-    if (!error.redirectUri) return html(page({ error: error.description ?? "Invalid authorization request.", clientName: "", oauthQuery: "" }), 400);
+    if (!error.redirectUri) return html(page({ error: error.description ?? "This connection request is not valid. Please try connecting Kleo again from your assistant.", clientName: "", oauthQuery: "" }), 400);
     const redirect = new URL(error.redirectUri);
     redirect.searchParams.set("error", error.code);
     if (error.description) redirect.searchParams.set("error_description", error.description);
@@ -102,13 +102,13 @@ button{width:100%;padding:13px;border-radius:10px;border:0;background:var(--ambe
 </style></head><body><form class="card" method="post" action="/authorize">
 <div class="brand"><svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="7" width="26" height="22" rx="5" fill="#F3B53F"/><path d="M3 12h26v4H3z" fill="#1A1200" opacity=".85"/><path d="M7 12l3.5 4M13 12l3.5 4M19 12l3.5 4" stroke="#F3B53F" stroke-width="1.6"/><path d="M10 19v8M10 23l6-4M10 23l6 4" stroke="#1A1200" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>Kleo <span>MCP</span></div>
 <h1>Connect ${client} to Kleo</h1>
-<p>${client} wants to create videos on your behalf. Sign in with the email and invite code you received.</p>
+<p>${client} wants to create videos with Kleo for you. Sign in with your email and the invite code you received.</p>
 ${o.error ? `<div class="err" role="alert">${escapeHtml(o.error)}</div>` : ""}
 <input type="hidden" name="oauth_query" value="${escapeHtml(o.oauthQuery)}">
 <label for="email">Email</label><input id="email" name="email" type="email" required autocomplete="email" value="${escapeHtml(o.email ?? "")}" placeholder="you@example.com">
 <label for="invite">Invite code</label><input id="invite" name="invite" type="text" required autocomplete="off" value="${escapeHtml(o.invite ?? "")}" placeholder="KLEO-XXXX" style="text-transform:uppercase">
-<label class="chk" style="text-transform:none;letter-spacing:0"><input type="checkbox" name="consent" value="yes" required> Allow ${client} to start renders, check progress and download my videos.</label>
+<label class="chk" style="text-transform:none;letter-spacing:0"><input type="checkbox" name="consent" value="yes" required> Allow ${client} to create videos, check their progress and get the download links for me.</label>
 <button type="submit">Connect</button>
-<div class="foot">Renders cost credits from your account. You can revoke this access any time from ${client}'s connector settings.</div>
+<div class="foot">Each video uses credits from your account (1 credit per Short). You can remove this access any time from ${client}'s connector settings.</div>
 </form></body></html>`;
 }

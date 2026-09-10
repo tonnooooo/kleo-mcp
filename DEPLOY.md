@@ -1,132 +1,98 @@
 # Kleo: messa online, passo per passo
 
-*Per te, in italiano. Aggiornato al 9 settembre 2026, sera.*
+*Per te, in italiano. Aggiornato al 10 settembre 2026.*
 
-## 0. Stato adesso (9 settembre, 11:35 UTC): installazione completata
+## Stato (10 settembre 2026)
 
-| Cosa | Indirizzo | Stato |
+Kleo è online e produce video veri. **La produzione usa GPU a pagamento: ogni video creato sul server pubblico noleggia una macchina su Vast.ai.** Per provare gratis usa il server locale (sezione 6).
+
+| Cosa | Dove / valore | Stato |
 |---|---|---|
-| Sito | https://tonnooooo.github.io/kleo-site/ | online, permanente (GitHub Pages) |
-| Server MCP | https://kleo-mcp.plural-juice.workers.dev/mcp | online, **permanente**, nel tuo account Cloudflare "Plural Juice" (id `e4a5a1308df5b44c65497b85210c6845`), account creato dal claim |
-| Database D1 `kleo-db` | stesso account | migrazioni applicate |
-| KV `kleo-mcp-oauth-kv` | stesso account | token OAuth |
-| R2 `kleo-renders` | stesso account | file dei render, cancellati dopo 7 giorni (regola di sicurezza a 8) |
-| Cron ogni minuto | attivo | orchestratore |
-| Segreti | `INTERNAL_SECRET`, `INVITE_CODES`, `VAST_API_KEY` | caricati come secret Cloudflare (copia in `.secrets.local`) |
-| Backend render | `mock` | passare a `vast` cambiando la variabile in `wrangler.jsonc` e `npm run deploy` |
-| Test end-to-end | contro l'indirizzo definitivo | superato |
+| Sito | https://tonnooooo.github.io/kleo-site/ | online (GitHub Pages); legge l'indirizzo MCP da `config.json` |
+| Server MCP | https://kleo-mcp.plural-juice.workers.dev/mcp | online, permanente, account Cloudflare "Plural Juice" (`e4a5a1308df5b44c65497b85210c6845`) |
+| Render | `RENDER_BACKEND=vast` | GPU vere su Vast.ai: RTX 4090, massimo 0,60 $/h, almeno 16 core e 32 GB di RAM |
+| Immagine del worker | `ghcr.io/tonnooooo/kleo-worker:keou` (pubblica) | motore Keou, Chromium, ffmpeg, voci Kokoro e whisper già dentro (~11 GB); la costruisce GitHub Actions (`worker-image.yml`) a ogni modifica di `worker/` |
+| Riserva gratuita | GitHub Actions `render-pool.yml`, ogni 5 minuti | prende i video che Vast non riesce ad avviare (credito finito, nessuna offerta) dopo `POOL_AFTER_MIN` minuti; richiede il segreto `POOL_SECRET` sul Worker e `KLEO_API` + `KLEO_POOL_SECRET` nel repository GitHub |
+| Storyboard | Workers AI, modello `AI_MODEL` (llama-4-scout) | gratis entro la quota giornaliera; se la quota finisce, `kleo_create_video` chiede all'assistente dell'utente di scrivere lo storyboard con `kleo_storyboard_guide` |
+| Database D1 `kleo-db` · KV `OAUTH_KV` · R2 `kleo-renders` | stesso account | attivi; file cancellati dopo 7 giorni |
+| Cron ogni minuto | attivo | orchestratore: storyboard, noleggio GPU, controllo dei render, pulizia |
+| Segreti Cloudflare | `INTERNAL_SECRET`, `INVITE_CODES`, `VAST_API_KEY` | caricati (copia in `.secrets.local`, fuori da git) |
+| Codici invito | `KLEO-BETA` (condiviso, 50 usi) · `MARCO-1`, `CRISTIANO-1` (personali) | 10 crediti di prova ciascuno |
+| Crediti | 1 per uno Short (fino a 90 s) · 3 per un video fino a 5 minuti · +1 per ogni minuto in più | scalati alla messa in coda; restituiti se il video fallisce o viene annullato |
+| Strumenti MCP | 7 (elenco in `docs/MCP-GUIDA.md`, sezione 4) | `kleo_generate_thumbnail` non è ancora attivo: risponde con un avviso, ogni video ha già la sua thumbnail |
+| Test | sezione 6 | locali superati (giro completo simulato, unitari, container con motore Keou); GPU vera: superata il 9 settembre con il render segnaposto, da ripetere con l'immagine Keou (`node test/vast-e2e.mjs`, costa qualche centesimo) |
 
-Da fare, quando vuoi:
-1. ~~Abilitare R2~~ fatto il 9 settembre alle 11:42 UTC: bucket creato, binding attivo, test superato.
-2. **GitHub, permesso pacchetti** (facoltativo): serve solo per pubblicare l'immagine Docker del worker su ghcr.io. Oggi non è necessario, perché l'istanza Vast usa l'immagine pubblica `nvidia/cuda` e scarica lo script del worker al boot. Quando vorrai un'immagine con ComfyUI e i modelli preinstallati, tornerà utile.
-3. **Pipeline vera** nella funzione `render()` di `worker/kleo_worker.py`.
+Tempi reali: uno Short circa 10–20 minuti (compresi noleggio e avvio della macchina), un video lungo fino a circa un'ora. Risoluzione: 2160×3840 (4K) per i 9:16, 1920×1080 (Full HD) per i 16:9, sempre 60 fps, H.264 con audio AAC, più sottotitoli `.srt` e thumbnail.
 
-## 0b. Test reale su GPU (9 settembre, 11:00 UTC): superato
+Da controllare, una volta: il codice `KLEO-BETA` sta nella tabella `invites` del database, che nasce con **3** crediti (migrazione `0001`), mentre i 10 crediti di `FREE_CREDITS` valgono per i codici del segreto `INVITE_CODES` che non stanno in tabella. Perché anche `KLEO-BETA` dia 10 crediti: `npx wrangler d1 execute kleo-db --remote --command "UPDATE invites SET credits=10 WHERE code='KLEO-BETA'"`.
 
-Con la tua chiave Vast.ai ho fatto un giro completo dal server locale, esposto con un tunnel temporaneo, senza toccare la produzione:
+Cosa manca ancora: l'email a fine render (`notify_email`) non parte perché `RESEND_API_KEY` non è impostata; le thumbnail alternative; il modulo "lista d'attesa" del sito salva l'email solo nel browser di chi la scrive.
 
-| Passo | Quando | Nota |
-|---|---|---|
-| job creato via MCP | 0 s | template `did-you-know`, 20 s, 9:16 |
-| GPU noleggiata | 2 s | RTX 4090, Norvegia, 0,56 $/h, 832 Mbps, istanza 50376761 |
-| worker avviato nell'istanza | 2 min 31 s | immagine pubblica `nvidia/cuda`, ffmpeg installato al boot, script scaricato dal repo pubblico |
-| render + upload | 3 min 0 s | MP4 2160×3840, 60 fps, 20 s, 637 KB (segnaposto ffmpeg) |
-| job `done`, istanza autodistrutta | 3 min 12 s | 0 istanze rimaste; credito Vast: 5,15 → 5,06 $ |
+## 1. La decisione: tutto su Cloudflare, nessuna macchina virtuale, zero euro fissi
 
-Cosa vuol dire: il contratto tra orchestratore, Vast.ai e worker funziona davvero. Resta da sostituire il render segnaposto con la tua pipeline (ComfyUI, Wan o LTX, SeedVR2, RIFE) dentro `render()` in `worker/kleo_worker.py`.
+Oracle Always Free non era adatto (quota dimezzata a giugno 2026, capacità spesso assente, istanze inattive spente, registrazione che fallisce). Se un giorno servirà una macchina, la scelta è Hetzner (6 € al mese). Oggi non serve: **il server MCP gira come Cloudflare Worker**, con database D1, storage R2, KV per i token OAuth, Workers AI per lo storyboard e un cron ogni minuto per l'orchestratore. Tutto nel piano gratuito (100 000 richieste al giorno). Il sito statico sta su GitHub Pages, gratis. Si paga solo la GPU, per i minuti in cui lavora (uno Short costa circa 10–20 centesimi di Vast).
 
-La chiave Vast è in `.secrets.local` (fuori da git) e andrà come secret Cloudflare appena wrangler è collegato. In produzione consiglio di restare su `RENDER_BACKEND=mock` finché la pipeline vera non è dentro il worker: il mock è gratis e istantaneo e mostra il giro completo a chi prova; il passaggio a `vast` è una variabile.
+## 2. Cosa c'è, file per file
 
-
-## 0c. Motore vero: Keou dentro Kleo (10 settembre)
-
-Da oggi Kleo può produrre video veri. Cosa è cambiato:
-
-| Pezzo | Cosa fa |
+| Cosa | Dove |
 |---|---|
-| `worker/keou/` | il tuo motore Keou (Playwright + ffmpeg + voce Kokoro + sottotitoli allineati), con le voci italiane aggiunte (`if_sara`, `im_nicola`) |
-| `worker/Dockerfile.keou` | immagine del worker con motore, Chromium, Node, ffmpeg e modelli già dentro (10,8 GB); pubblicata su `ghcr.io/tonnooooo/kleo-worker:keou` |
-| `src/storyboard.ts` | dal prompt allo storyboard Keou con Workers AI (modello `AI_MODEL`, gratis fino a ~10 storyboard al giorno con llama-3.3, circa 25 con llama-4-scout) |
-| `src/keou-contract.ts` | validatore identico alle regole di Keou: nessuno storyboard invalido arriva alla GPU |
-| `kleo_storyboard_guide` | nuovo strumento: consegna il formato all'assistente dell'utente (Claude, ChatGPT, Gemini) perché scriva lui lo storyboard, originale e adatto alla conversazione; `kleo_create_video` lo accetta nel campo `storyboard` |
-| Offerte Vast | filtrate per almeno 16 core e 32 GB di RAM (`VAST_MIN_CPU`, `VAST_MIN_RAM_GB`): il render è lavoro di CPU; il worker usa tutti i core dell'istanza |
+| Server MCP (strumenti, login, orchestratore, backend di render) | `src/` — `mcp.ts` strumenti, `auth.ts` pagina di accesso, `orchestrator.ts` cron, `backends/vast.ts` noleggio GPU, `storyboard.ts` + `keou-contract.ts` storyboard e validatore, `templates.ts` template, crediti e stime |
+| Configurazione di produzione, con ogni variabile spiegata | `wrangler.jsonc` |
+| Valori solo per il computer locale | `.dev.vars` (fuori da git) |
+| Worker che gira dentro la GPU + motore Keou | `worker/kleo_worker.py`, `worker/keou/`, `worker/Dockerfile.keou`, `worker/README-keou.md` |
+| Costruzione dell'immagine e riserva gratuita | `.github/workflows/worker-image.yml`, `.github/workflows/render-pool.yml` |
+| Migrazioni del database | `migrations/` (`npm run db:migrate` in produzione, `npm run db:migrate:local` in locale) |
+| Test | `test/` (sezione 6) |
+| Sito | repository `kleo-site`: `index.html` + `config.json` (indirizzo MCP e nota mostrata sopra le schede "Connect") |
+| Guida ai client e agli strumenti | `docs/MCP-GUIDA.md` |
 
-Verifiche superate: render vero in container sul portatile (Short 38 s, 1080×1920, 60 fps, voce, 24 sottotitoli, QA ok, ~5 min), 20 test unitari, test end-to-end locale e in produzione.
+## 3. Account e login (fatto)
 
-Per accendere le GPU vere: il pacchetto `kleo-worker` su GitHub deve essere pubblico (GitHub → il tuo profilo → Packages → kleo-worker → Package settings → Change visibility → Public), poi `RENDER_BACKEND` da `mock` a `vast` in `wrangler.jsonc` e `npm run deploy`. Larghezze di render: 2160 per 9:16, 1920 per 16:9 (`KLEO_WIDTH_PORTRAIT`/`KLEO_WIDTH_LANDSCAPE`).
+Non creo account e non gestisco password. L'account Cloudflare è il tuo ("Plural Juice"), collegato con `npx wrangler login`; il repository GitHub è `tonnooooo/kleo-mcp`. Se cambi computer: `npx wrangler login` di nuovo, oppure un API token (My Profile → API Tokens → modello "Edit Cloudflare Workers" con D1, KV e R2) nella variabile `CLOUDFLARE_API_TOKEN`.
 
-## 1. La decisione: tutto su Cloudflare, nessuna macchina virtuale, zero euro
-
-Hai chiesto se Oracle Always Free a 0 € è una buona scelta. **No, non per un servizio che deve stare in piedi.** Ho verificato lo stato a settembre 2026:
-
-- la quota gratuita è stata dimezzata a giugno (2 OCPU e 12 GB) senza avviso, e le istanze sopra il limite sono state terminate dal 18 agosto;
-- "Out of host capacity" è ancora la norma: la gente aspetta giorni con script di retry per ottenere una macchina;
-- Oracle spegne le istanze gratuite "inattive" (CPU, rete e memoria sotto il 20% per 7 giorni): un server MCP a basso traffico ci rientra;
-- la registrazione richiede una carta vera (niente prepagate) e fallisce spesso con errori generici.
-
-Se un giorno servirà una macchina, la scelta è Hetzner (6 € al mese, affidabile). Ma oggi non serve: **il server MCP gira come Cloudflare Worker**, con database D1, storage R2, KV per i token OAuth e un cron ogni minuto per l'orchestratore. Tutto nel piano gratuito (100 000 richieste al giorno, 10 ms di CPU per richiesta, che per noi bastano). Il sito statico sta su GitHub Pages, sempre gratis. Un solo account da creare: Cloudflare. Il piano a pagamento (5 $ al mese) serve solo se un giorno la CPU non basta.
-
-## 2. Cosa esiste già
-
-| Cosa | Dove | Stato |
-|---|---|---|
-| Sito in inglese | repository GitHub `kleo-site`, GitHub Pages | online |
-| Server MCP | repository GitHub privato `kleo-mcp` (questa cartella) | online su Cloudflare (account temporaneo), test end-to-end superato anche contro l'indirizzo pubblico |
-| Worker GPU per Vast.ai | `worker/kleo_worker.py` + `worker/Dockerfile` | pronto, con pipeline segnaposto (ffmpeg) da sostituire con la tua |
-| Test end-to-end | `npm run test:smoke` | passa: login OAuth, 6 strumenti, coda, render simulato, download firmato, annullamento con rimborso |
-
-## 3. Cosa devi fare tu (dieci minuti)
-
-Non creo account e non gestisco password: è una regola fissa, anche se me lo chiedi. Tutto resta sotto i tuoi account Google e GitHub, e non c'è nessuna password mia da darti.
-
-1. **Account Cloudflare.** Vai su `https://dash.cloudflare.com/sign-up` e scegli **Sign in with Google** con il tuo account solito: crea l'account senza carta. Piano Free.
-2. **Autorizzami a fare il deploy.** Nel terminale del tuo computer, dentro la cartella `kleo-mcp`:
-   ```bash
-   npx wrangler login
-   ```
-   Si apre il browser, clicchi **Allow**. Da quel momento posso creare le risorse e pubblicare dal tuo computer, senza che nessuna chiave passi in chat. Alternativa: crea un API token (My Profile → API Tokens → Create Token → modello "Edit Cloudflare Workers", aggiungendo D1, KV e R2) e impostalo come variabile `CLOUDFLARE_API_TOKEN` prima di lanciarmi.
-3. **Dominio (facoltativo, quando vuoi).** Senza dominio il server risponde su `https://kleo-mcp.<tuo-account>.workers.dev/mcp`, che funziona già con Claude, ChatGPT e Grok. Con un dominio: aggiungilo a Cloudflare, il server va su `mcp.tuodominio` e il sito su `tuodominio`.
-
-## 4. Cosa faccio io appena hai fatto il login (cinque minuti)
+## 4. Installazione su Cloudflare (fatta; per rifarla da zero)
 
 ```bash
-npx wrangler kv namespace create OAUTH_KV      # id → wrangler.jsonc
-npx wrangler d1 create kleo-db                 # id → wrangler.jsonc
-npx wrangler r2 bucket create kleo-renders
-npm run db:migrate
-openssl rand -hex 32 | npx wrangler secret put INTERNAL_SECRET
-echo "KLEO-BETA,CRISTIANO-1" | npx wrangler secret put INVITE_CODES
-# PUBLIC_URL in wrangler.jsonc → l'URL workers.dev (o il dominio)
-npm run deploy
+bash scripts/finish-install.sh https://kleo-mcp.plural-juice.workers.dev
 ```
 
-Poi ti do l'indirizzo. Lo incolli in Claude (Impostazioni → Connettori → Aggiungi connettore personalizzato), fai l'accesso con la tua email e il codice invito, e chiedi il primo video. In modalità `mock` il render finisce in un minuto e il link scarica un MP4 di prova: serve a vedere tutto il giro funzionare da dentro Claude prima di accendere le GPU.
+Lo script crea KV, D1 e R2 se mancano, scrive gli id in `wrangler.jsonc`, applica le migrazioni, carica `INTERNAL_SECRET` e `INVITE_CODES` da `.secrets.local` e fa il deploy. La chiave Vast va caricata a parte: `npx wrangler secret put VAST_API_KEY` (la incolli tu nel terminale, non in chat; consiglio una chiave "Instance management only"). Per un aggiornamento normale basta `npm run deploy`.
 
-I segreti generati (INTERNAL_SECRET, codici invito) li salvo in `kleo-mcp/.secrets.local`, file escluso da git, così li hai tu. Le chiavi Cloudflare non le vedo mai: vivono nel login di wrangler sul tuo computer.
+Codici invito personali: `npx wrangler d1 execute kleo-db --remote --command "INSERT INTO invites (code,credits,max_uses,note) VALUES ('NOME-1',10,1,'Nome')"`. In alternativa aggiungili al segreto `INVITE_CODES` (separati da virgola): quelli ricevono `FREE_CREDITS` crediti.
 
-## 5. Accendere le GPU vere (Vast.ai)
+## 5. GPU vere: come funzionano, come spegnerle, la riserva gratuita
 
-1. Nel file `worker/kleo_worker.py` la funzione `render()` è un segnaposto che produce un MP4 con ffmpeg alla risoluzione giusta. Ci mettiamo la tua procedura di oggi (ComfyUI, Wan o LTX, SeedVR2, RIFE). Il contratto col server non cambia: `progress()`, poi i tre file, poi `done`.
-2. Costruiamo l'immagine (`podman build`, ce l'hai già) e la pubblichiamo su Docker Hub con il tuo account; il nome finisce in `VAST_IMAGE`.
-3. La tua chiave Vast.ai va messa come secret: `npx wrangler secret put VAST_API_KEY` (la incolli tu nel terminale, non in chat). Consiglio una chiave con permesso "Instance management only".
-4. `RENDER_BACKEND` da `mock` a `vast`, deploy. Il primo job reale: uno Short con il template `viral-short`.
+Ogni video: l'orchestratore scrive lo storyboard (Workers AI, oppure lo ha già scritto l'assistente), cerca su Vast.ai una RTX 4090 sotto 0,60 $/h con almeno 16 core e 32 GB di RAM, noleggia la macchina con l'immagine `ghcr.io/tonnooooo/kleo-worker:keou`, le passa l'indirizzo del server e un segreto valido solo per quel video. Il worker rende, carica MP4, `.srt` e thumbnail, segna il video come pronto e distrugge la macchina.
 
-Protezioni già attive: massimo 5 GPU accese in totale e 2 job per utente; ogni istanza viene distrutta dopo 120 minuti in ogni caso, sia dal server sia da un timer dentro il container (che usa la chiave ristretta che Vast inietta, non la tua); i crediti si scalano all'ingresso in coda; i link scadono con i file dopo 7 giorni.
+Protezioni attive: massimo 5 GPU accese in totale (`MAX_CONCURRENT_GPUS`) e 2 video in corso per utente; ogni macchina viene distrutta dopo 120 minuti in ogni caso (`JOB_TIMEOUT_MIN`), sia dal server sia da un timer dentro il container; una macchina che non dà segni di vita entro 15 minuti dal noleggio viene distrutta e il video rimesso in coda; i crediti si scalano alla messa in coda e tornano indietro se il video fallisce; i link scadono con i file dopo 7 giorni.
 
-## 6. Provare in locale, senza account
+**Spegnere le GPU** (per una demo gratuita o se il credito Vast è finito): in `wrangler.jsonc` metti `"RENDER_BACKEND": "mock"` e `npm run deploy`. In modalità mock il render finisce in un minuto con file segnaposto e il server lo dice chiaramente a ogni assistente collegato. Per riaccenderle: `"vast"` e deploy.
+
+**Riserva gratuita** (`render-pool.yml`): ogni 5 minuti un runner di GitHub Actions chiede a Kleo un video che Vast non ha avviato (credito finito, nessuna offerta) e lo rende con la stessa immagine, gratis ma più lento (CPU sola, immagine da scaricare ogni volta). Per attivarla: `npx wrangler secret put POOL_SECRET` con una stringa lunga, e nel repository GitHub la variabile `KLEO_API` (= `https://kleo-mcp.plural-juice.workers.dev`) e il segreto `KLEO_POOL_SECRET` (stessa stringa). Con `RENDER_BACKEND=pool` la riserva diventa l'unico modo di rendere: zero costi, tempi lunghi.
+
+Credito Vast: si ricarica su console.vast.ai; con il credito a zero i video restano in coda (e la riserva gratuita, se attiva, li prende).
+
+## 6. Provare in locale, gratis
 
 ```bash
 cd kleo-mcp
 npm install
 npm run db:migrate:local
-npm run dev                 # http://localhost:8787
-npm run test:smoke          # l'intero giro, in 40 secondi
+npm run dev                 # http://localhost:8787 — render simulati, storyboard d'esempio, nessuna GPU
+npm run test:smoke          # l'intero giro in circa 40 secondi: login, strumenti, coda, render simulato, download, annullamento con rimborso
+node --test test/keou-contract.test.mjs test/storyboard.test.mjs   # test unitari, senza rete
+node test/worker-e2e.mjs    # render vero con il motore Keou dentro il container (podman, ~5 minuti, senza GPU)
+node test/vast-e2e.mjs      # un video vero di 20 s su Vast.ai: costa qualche centesimo, leggi l'intestazione del file prima
 ```
 
 Da Claude Code sul tuo computer: `claude mcp add --transport http kleo-local http://localhost:8787/mcp`, poi `/mcp` → Kleo → Authenticate, email qualsiasi e codice `KLEO-BETA`.
 
-Per provare da Claude.ai, ChatGPT o Grok serve un indirizzo HTTPS pubblico: o il deploy su Cloudflare (punto 4) o, per un test di un'ora, un tunnel temporaneo `cloudflared tunnel --url http://localhost:8787` che dà un URL `trycloudflare.com` senza account.
+Per provare da Claude.ai, ChatGPT o Grok serve un indirizzo HTTPS pubblico: il server di produzione (a pagamento) oppure, per un test di un'ora, un tunnel temporaneo `cloudflared tunnel --url http://localhost:8787` che dà un URL `trycloudflare.com` senza account.
 
-## 7. Se cambiamo nome
+## 7. Aggiornare il worker (immagine Docker)
 
-Nel server: `name` in `wrangler.jsonc` e in `src/mcp.ts` (è il nome che i client mostrano), il titolo della pagina di login in `src/auth.ts`, i nomi delle risorse (`kleo-db`, `kleo-renders`) se vuoi. Nel sito: cerca e sostituisci "Kleo"/"kleo" e il dominio nei tre snippet. Nei repository: rinominali da GitHub, i link vecchi vengono reindirizzati.
+Non serve costruire nulla sul tuo computer. Ogni push su `main` che tocca `worker/` fa partire `worker-image.yml` su GitHub Actions (circa 20–30 minuti): l'immagine finisce su `ghcr.io/tonnooooo/kleo-worker:keou` e il video successivo la usa. Si può lanciare anche a mano: GitHub → Actions → worker-image → Run workflow. Il pacchetto `kleo-worker` deve restare **pubblico** (GitHub → il tuo profilo → Packages → kleo-worker → Package settings → Change visibility), altrimenti Vast non può scaricarlo.
+
+## 8. Se cambiamo nome
+
+Nel server: `name` in `wrangler.jsonc` e in `src/mcp.ts` (il nome che i client mostrano), il titolo della pagina di accesso in `src/auth.ts`, i nomi delle risorse (`kleo-db`, `kleo-renders`) se vuoi. Nel sito: cerca e sostituisci "Kleo"/"kleo" in `index.html`; l'indirizzo del server si cambia solo in `config.json`. Nei repository: rinominali da GitHub, i link vecchi vengono reindirizzati; se cambia il nome dell'immagine, aggiorna `VAST_IMAGE` e i due workflow.

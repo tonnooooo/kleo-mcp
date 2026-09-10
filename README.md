@@ -1,46 +1,76 @@
 # Kleo MCP server
 
-A remote [Model Context Protocol](https://modelcontextprotocol.io) server that renders YouTube videos and Shorts. Users connect one URL to Claude, ChatGPT, Grok, Cursor or Claude Code and ask for a video in plain language; rendering happens on an ephemeral GPU (Vast.ai), the result comes back as a signed download link.
+Kleo is a remote [Model Context Protocol](https://modelcontextprotocol.io) server that renders YouTube videos and Shorts. A user connects one URL to Claude, ChatGPT, Grok, Claude Code, Cursor, VS Code, OpenCode or Gemini CLI, signs in once with an email and an invite code, and asks for a video in plain language. The render runs on a GPU machine rented for that job only (Vast.ai) with the Keou motion-design engine; the result comes back as signed download links (MP4, `.srt` subtitles, thumbnail) that last 7 days.
 
-Runs entirely on Cloudflare (Workers + KV + D1 + R2 + Cron), free plan.
+The server runs entirely on Cloudflare (Workers + KV + D1 + R2 + Workers AI + Cron), free plan. Production address: `https://kleo-mcp.plural-juice.workers.dev/mcp`. The public site (`../kleo-site`) reads that address from its `config.json`.
+
+## Tools
+
+| Tool | What it does |
+|---|---|
+| `kleo_list_templates` | The ten templates (format, length range, voices, credit cost) and the credits left on the account. |
+| `kleo_storyboard_guide` | The storyboard format Kleo renders (styles, scene kinds, beats, icons, voices, rules) with examples, so the assistant can write an original storyboard. Optional: without one, Kleo plans the video from the prompt. |
+| `kleo_create_video` | Queues a render from a template, a prompt and (optionally) a storyboard. Returns `job_id`, `eta_min` and the credits charged at once; nothing is charged on error. |
+| `kleo_get_job` | State, current track, percent and minutes left; without `job_id`, the recent videos of the account. |
+| `kleo_get_result` | Signed download links for a finished job. |
+| `kleo_generate_thumbnail` | Not enabled yet in the beta (every render already includes a thumbnail): records the request and returns a notice. |
+| `kleo_cancel_job` | Cancels a queued or running job and refunds the unused credits. |
+
+Credits (`src/templates.ts`): 1 per Short (up to 90 s), 3 up to 5 minutes, +1 per extra minute. Trial accounts start with 10 credits. Invite codes come from the D1 table `invites` (shared code `KLEO-BETA`; personal codes such as `MARCO-1`, `CRISTIANO-1`) or from the `INVITE_CODES` secret (comma separated; those accounts get `FREE_CREDITS`). Output: 2160×3840 for 9:16, 1920×1080 for 16:9, 60 fps, H.264 + AAC. A Short takes about 10–20 minutes including the machine boot; long videos up to about an hour.
+
+## How a job flows
 
 ```
-client (Claude…) ──OAuth 2.1──▶ /mcp  tools: kleo_list_templates · kleo_create_video · kleo_get_job · kleo_get_result · kleo_generate_thumbnail · kleo_cancel_job
-                                │
-                     D1 (users, credits, jobs)   KV (OAuth)   R2 (renders, 7-day links)
-                                │  cron every minute: start queued jobs, watch running ones, purge expired files
+client (Claude…) ──OAuth 2.1──▶ /mcp  (src/mcp.ts; login page in src/auth.ts)
+                                │  D1: users, credits, invites, jobs, audit · KV: OAuth tokens · R2: rendered files
+                                │  cron every minute (src/orchestrator.ts):
+                                │    1. a storyboard for each queued job (Workers AI, src/storyboard.ts; validated by src/keou-contract.ts)
+                                │    2. one Vast.ai instance per job (src/backends/vast.ts, image VAST_IMAGE)
+                                │    3. watch running jobs, apply timeouts, purge expired files
                                 ▼
-                     Vast.ai instance per job → worker/kleo_worker.py → uploads → POST /internal/jobs/:id/done → self-destroys
+                     Vast.ai instance → worker/kleo_worker.py (Keou engine) → uploads → POST /internal/jobs/:id/done → self-destroys
+                     Free fallback: a GitHub Actions runner (.github/workflows/render-pool.yml) claims jobs that Vast could not start
+                     (POST /internal/pool/claim with POOL_SECRET) and runs the same worker image.
 ```
+
+Render backends (`RENDER_BACKEND`): `vast` (production: real GPUs, costs money), `mock` (simulated one-minute render with placeholder files, free; the server tells every client that renders are simulated), `pool` (only external runners), `manual` (a container you start by hand; used by `test/worker-e2e.mjs`).
+
+## Worker image
+
+`worker/Dockerfile.keou` builds `ghcr.io/tonnooooo/kleo-worker:keou` (about 11 GB: Keou engine, Chromium, Node, ffmpeg, Kokoro voices, faster-whisper). GitHub Actions (`.github/workflows/worker-image.yml`) builds and pushes it on every push to `main` that touches `worker/`, or by hand from the Actions tab. The package must stay public on ghcr.io so Vast.ai machines can pull it. Details: `worker/README-keou.md`.
 
 ## Local development
 
 ```bash
 npm install
 npm run db:migrate:local
-npm run dev                # http://localhost:8787  (RENDER_BACKEND=mock: simulated renders, no GPU)
-npm run test:smoke         # full OAuth + MCP + render + download flow against a local dev server
-node test/worker-e2e.mjs   # runs the worker image (podman) against a local server with RENDER_BACKEND=manual: real ffmpeg render, upload, done
+npm run dev                # http://localhost:8787 with .dev.vars: simulated renders, no GPU, bundled storyboard (STORYBOARD_FIXTURE=example)
 ```
 
-Connect Claude Code to the local server: `claude mcp add --transport http kleo-local http://localhost:8787/mcp`, then `/mcp` → Kleo → Authenticate (invite code `KLEO-BETA` in dev).
+Connect Claude Code to the local server: `claude mcp add --transport http kleo-local http://localhost:8787/mcp`, then `/mcp` → Kleo → Authenticate (any email, invite code `KLEO-BETA`).
 
-## Deploy (first time)
+## Tests
 
 ```bash
-npx wrangler login
-npx wrangler kv namespace create OAUTH_KV        # paste id into wrangler.jsonc
-npx wrangler d1 create kleo-db                  # paste database_id into wrangler.jsonc
-npx wrangler r2 bucket create kleo-renders
-npm run db:migrate
-npx wrangler secret put INTERNAL_SECRET          # long random string
-npx wrangler secret put INVITE_CODES             # e.g. KLEO-BETA,CRISTIANO-1
-# set PUBLIC_URL in wrangler.jsonc to the final https URL (workers.dev or custom domain)
-npm run deploy
+npm run test:smoke                                                  # starts its own wrangler dev on port 8799: OAuth, tools, queue, simulated render, signed download, cancel + refund
+node --test test/keou-contract.test.mjs test/storyboard.test.mjs    # unit tests: storyboard validator and generator (offline, fake AI)
+node test/worker-e2e.mjs                                            # real Keou render inside the container (podman, no GPU) against a local server in manual mode
+node test/vast-e2e.mjs                                              # one real 20 s job on Vast.ai: costs a few cents, see the file header for the setup
+npm run typecheck
 ```
 
-Switch to real GPUs: build and push `worker/Dockerfile`, set `VAST_IMAGE`, `npx wrangler secret put VAST_API_KEY`, set `RENDER_BACKEND` to `vast`.
+## Deploy
+
+Everything is provisioned: `npm run deploy` publishes `wrangler.jsonc` (every variable is explained there in a one-line comment). First-time setup, secrets and the step-by-step guide for the owner (Italian): `DEPLOY.md`. Secrets: `INTERNAL_SECRET`, `INVITE_CODES`, `VAST_API_KEY` (set); `POOL_SECRET` (pool fallback); `RESEND_API_KEY` + `NOTIFY_FROM` (email notifications; not set, so `notify_email` is currently a no-op).
+
+To switch the GPUs off for a free demo, set `RENDER_BACKEND` to `mock` in `wrangler.jsonc` and deploy.
 
 ## Safety rails
 
-Credits are debited when a job is queued; at most `MAX_JOBS_PER_USER` open jobs per account and `MAX_CONCURRENT_GPUS` instances in total; every job has a hard `JOB_TIMEOUT_MIN` after which the instance is destroyed; the worker carries its own watchdog and destroys its instance with Vast's restricted `CONTAINER_API_KEY`; download links are HMAC-signed and expire with the files.
+Credits are debited when a job is queued and refunded on failure or cancellation; at most `MAX_JOBS_PER_USER` open jobs per account and `MAX_CONCURRENT_GPUS` instances in total; every job has a hard `JOB_TIMEOUT_MIN` after which the instance is destroyed, and a machine that stays silent for `START_TIMEOUT_MIN` after rental is destroyed and the job requeued; the worker carries its own watchdog and destroys its instance with Vast's restricted `CONTAINER_API_KEY`; after a "no credit / no offer" answer Vast is left alone for `VAST_RETRY_MIN`; download links are HMAC-signed and expire with the files; a prompt filter blocks forbidden content before any GPU money is spent.
+
+## Docs
+
+- `DEPLOY.md` — current status, going live, day-to-day operations (Italian)
+- `docs/MCP-GUIDA.md` — what MCP is, how each client connects, the seven tools (Italian)
+- `docs/ARCHITETTURA.md` — the original feasibility analysis and architecture (Italian)

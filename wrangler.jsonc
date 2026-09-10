@@ -1,43 +1,56 @@
 /**
- * Kleo MCP server — Cloudflare Worker configuration.
- * Replace the placeholder ids after running:
- *   npx wrangler kv namespace create OAUTH_KV
- *   npx wrangler d1 create kleo-db
- *   npx wrangler r2 bucket create kleo-renders
- * Secrets (npx wrangler secret put NAME): INTERNAL_SECRET, INVITE_CODES, VAST_API_KEY, RESEND_API_KEY
+ * Kleo MCP server — configurazione del Cloudflare Worker (wrangler).
+ * I valori qui sotto sono quelli di PRODUZIONE: dopo ogni modifica serve `npm run deploy`
+ * (attenzione: la produzione usa GPU vere, ogni video creato costa denaro).
+ *
+ * I segreti NON stanno in questo file. Si caricano una volta con `npx wrangler secret put NOME`:
+ *   INTERNAL_SECRET  firma i link di download e protegge le rotte /internal usate dai worker
+ *   INVITE_CODES     codici invito accettati dalla pagina di accesso (separati da virgola), oltre a quelli nella tabella D1 "invites"
+ *   VAST_API_KEY     chiave Vast.ai per noleggiare le GPU
+ *   POOL_SECRET      (facoltativo) chiave con cui i runner GitHub Actions (render-pool.yml) prendono i video in attesa
+ *   RESEND_API_KEY, NOTIFY_FROM  (facoltativi, oggi non impostati) email con i link a fine render
+ * Una copia dei valori reali è in .secrets.local (fuori da git).
+ *
+ * Le risorse (KV, D1, R2) esistono già nell'account "Plural Juice"; scripts/finish-install.sh le ricrea se mancano.
+ * Variabili facoltative NON impostate qui (valgono i predefiniti nel codice, src/env.ts):
+ *   START_TIMEOUT_MIN (15: minuti di silenzio di una GPU appena noleggiata prima di distruggerla e rimettere il video in coda),
+ *   VAST_MIN_CPU (16 core) e VAST_MIN_RAM_GB (32): requisiti minimi della macchina, perché il render è lavoro di CPU,
+ *   VAST_BOOTSTRAP_URL (script del worker da scaricare al boot: non serve, l'immagine lo contiene già),
+ *   KLEO_WIDTH_PORTRAIT (2160) e KLEO_WIDTH_LANDSCAPE (1920): larghezza in pixel dei video 9:16 e 16:9,
+ *   BRAND ("Kleo": il marchio mostrato nei video), MOCK_TOTAL_SECONDS (durata del render finto in modalità mock).
  */
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "kleo-mcp",
-  "account_id": "e4a5a1308df5b44c65497b85210c6845",
-  "main": "src/index.ts",
+  "name": "kleo-mcp", // nome del Worker: compare nell'indirizzo kleo-mcp.<account>.workers.dev
+  "account_id": "e4a5a1308df5b44c65497b85210c6845", // account Cloudflare "Plural Juice"
+  "main": "src/index.ts", // punto d'ingresso del server
   "compatibility_date": "2026-07-02",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
-  "observability": { "enabled": true },
+  "observability": { "enabled": true }, // log e metriche visibili nella dashboard Cloudflare
   "kv_namespaces": [
-    { "binding": "OAUTH_KV", "id": "5e3ad54946764fa781fcd17c0a735bff" }
+    { "binding": "OAUTH_KV", "id": "5e3ad54946764fa781fcd17c0a735bff" } // token di accesso dei client (Claude, ChatGPT, Cursor...)
   ],
   "d1_databases": [
-    { "binding": "DB", "database_name": "kleo-db", "database_id": "ffaa0767-9df1-4e5c-84f2-552e37851d63", "migrations_dir": "migrations" }
+    { "binding": "DB", "database_name": "kleo-db", "database_id": "ffaa0767-9df1-4e5c-84f2-552e37851d63", "migrations_dir": "migrations" } // utenti, crediti, codici invito, video, log
   ],
-  "r2_buckets": [ { "binding": "RENDERS", "bucket_name": "kleo-renders" } ],
-  "ai": { "binding": "AI" }, // storyboard generation (Workers AI, free tier: 10k neurons/day; model in src/storyboard.ts or var AI_MODEL)
-  "triggers": { "crons": ["* * * * *"] },
+  "r2_buckets": [ { "binding": "RENDERS", "bucket_name": "kleo-renders" } ], // i file dei video (MP4, .srt, thumbnail), cancellati dopo RESULT_TTL_DAYS
+  "ai": { "binding": "AI" }, // Workers AI: scrive lo storyboard dal prompt (gratis entro la quota giornaliera; modello in AI_MODEL)
+  "triggers": { "crons": ["* * * * *"] }, // ogni minuto: storyboard dei video in coda, noleggio GPU, controllo dei render, pulizia dei file scaduti
   "vars": {
-    "PUBLIC_URL": "https://kleo-mcp.plural-juice.workers.dev",
-    "RENDER_BACKEND": "vast",
-    "POOL_AFTER_MIN": "3",
-    "VAST_RETRY_MIN": "30",
-    "AI_MODEL": "@cf/meta/llama-4-scout-17b-16e-instruct",
-    "MAX_CONCURRENT_GPUS": "5",
-    "MAX_JOBS_PER_USER": "2",
-    "JOB_TIMEOUT_MIN": "120",
-    "FREE_CREDITS": "10",
-    "RESULT_TTL_DAYS": "7",
-    "VAST_GPU_NAME": "RTX 4090",
-    "VAST_MAX_DPH": "0.60",
-    "VAST_DISK_GB": "80",
-    "VAST_IMAGE": "ghcr.io/tonnooooo/kleo-worker:keou"
+    "PUBLIC_URL": "https://kleo-mcp.plural-juice.workers.dev", // indirizzo pubblico del server; l'indirizzo MCP da dare ai client è PUBLIC_URL + /mcp
+    "RENDER_BACKEND": "vast", // chi fa i render: "vast" = GPU vere a pagamento (produzione) · "mock" = finto, gratis, 1 minuto (test) · "pool" = solo i runner GitHub · "manual" = un container avviato a mano
+    "POOL_AFTER_MIN": "3", // in modalità vast: un video fermo in coda da tanti minuti può essere preso dal runner gratuito di GitHub Actions (render-pool.yml)
+    "VAST_RETRY_MIN": "30", // se Vast.ai risponde "nessuna offerta" o "credito finito", non lo si interpella per tanti minuti (intanto lavorano i runner)
+    "AI_MODEL": "@cf/meta/llama-4-scout-17b-16e-instruct", // modello Workers AI che scrive lo storyboard
+    "MAX_CONCURRENT_GPUS": "5", // massimo GPU accese in totale: è il tetto di spesa oraria
+    "MAX_JOBS_PER_USER": "2", // massimo video in corso per ogni utente
+    "JOB_TIMEOUT_MIN": "120", // dopo tanti minuti un render è considerato fallito, la GPU viene distrutta e i crediti restituiti
+    "FREE_CREDITS": "10", // crediti di prova per chi entra con un codice del segreto INVITE_CODES (i codici nella tabella "invites" hanno il valore scritto lì)
+    "RESULT_TTL_DAYS": "7", // giorni di validità dei link e dei file
+    "VAST_GPU_NAME": "RTX 4090", // modello di GPU da noleggiare
+    "VAST_MAX_DPH": "0.60", // prezzo massimo accettato, in dollari all'ora
+    "VAST_DISK_GB": "80", // disco richiesto alla macchina (l'immagine del worker pesa circa 11 GB)
+    "VAST_IMAGE": "ghcr.io/tonnooooo/kleo-worker:keou" // immagine Docker del worker (motore Keou + modelli), costruita da GitHub Actions (worker-image.yml); deve restare pubblica
   },
-  "dev": { "port": 8787 }
+  "dev": { "port": 8787 } // porta di `npm run dev` in locale (i test usano le porte 8796–8799)
 }

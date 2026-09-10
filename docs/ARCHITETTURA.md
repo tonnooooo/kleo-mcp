@@ -1,12 +1,14 @@
 # Kleo — fattibilità e architettura
 
-*Bozza del 9 settembre 2026, aggiornata la sera stessa con la decisione finale. "Kleo" è un nome provvisorio. Prezzi verificati alla data, fonti in fondo.*
+*Bozza del 9 settembre 2026, aggiornata il 10 settembre con lo stato reale (sezione 0). "Kleo" è un nome provvisorio. Prezzi verificati alla data, fonti in fondo.*
 
 ## 0. Decisione presa (9 settembre, sera)
 
 **Server MCP su Cloudflare Workers, nessuna macchina virtuale, sito su GitHub Pages.** Costo fisso: 0 €. Motivi: un solo account da creare, HTTPS e OAuth già gestiti, nessun server da tenere aggiornato, e Oracle Always Free si è rivelato inadatto (quota dimezzata a giugno 2026, capacità spesso assente, istanze inattive spente, registrazione con carta che fallisce spesso). Il piano con la VM resta valido come alternativa (Hetzner, 6 €/mese), non Oracle. Il server è scritto e testato: vedi la cartella `kleo-mcp` e `DEPLOY.md`.
 
-Le sezioni che seguono sono l'analisi originale: restano valide, con la sostituzione "VM Hetzner" → "Cloudflare Worker + D1 + R2 + KV + cron".
+**Aggiornamento del 10 settembre.** Il motore di render in produzione non è la pipeline Wan/LTX/SeedVR2/RIFE descritta sotto ma **Keou**, il tuo motore di motion design: le scene sono disegnate da Chromium fotogramma per fotogramma, la voce è Kokoro (inglese e italiano), i sottotitoli sono allineati con whisper, il montaggio lo fa ffmpeg. Niente modelli video da scaricare: l'immagine (~11 GB) è pronta su `ghcr.io/tonnooooo/kleo-worker:keou` e il render è lavoro di CPU. Gli strumenti sono sette (si aggiunge `kleo_storyboard_guide`, con cui l'assistente scrive lo storyboard). Tempi reali: uno Short circa 10–20 minuti, un video lungo fino a circa un'ora; risoluzione 2160×3840 per i 9:16 e 1920×1080 per i 16:9, 60 fps. Stato aggiornato in `DEPLOY.md`, guida agli strumenti e ai client in `MCP-GUIDA.md`.
+
+Le sezioni che seguono sono l'analisi di fattibilità originale: restano utili come ragionamento sui costi, con la sostituzione "VM Hetzner" → "Cloudflare Worker + D1 + R2 + KV + cron" e "modelli video" → "motore Keou".
 
 ## 1. Verdetto
 
@@ -95,14 +97,17 @@ Nota sui modelli: LTX-2.5 (agosto 2026, pesi aperti) genera già 4K con audio da
 ## 6. Strumenti MCP (schema proposto)
 
 ```
-kleo_list_templates()                      -> [{id, nome, formato, durata_min, durata_max, parametri}]
-kleo_create_video(template, prompt, durata_s, formato, lingua, voce?, stile?, notifica?)
-                                      -> {job_id, stima_min, crediti_usati}
-kleo_get_job(job_id)                       -> {stato, traccia, percentuale, eta_min}
-kleo_get_result(job_id)                    -> {mp4_url, srt_url, thumb_url, scade_il}
-kleo_generate_thumbnail(job_id | prompt)   -> {job_id}
+kleo_list_templates()                      -> [{id, nome, formati, durata_min, durata_max, voci, crediti}] + crediti disponibili
+kleo_storyboard_guide(template?, durata_s?) -> il formato dello storyboard con esempi (l'assistente lo scrive lui)
+kleo_create_video(template, prompt, durata_s?, formato?, lingua?, voce?, notifica?, storyboard?)
+                                      -> {job_id, eta_min, crediti}
+kleo_get_job(job_id?)                      -> {stato, traccia, percentuale, eta_min}  (senza job_id: i video recenti)
+kleo_get_result(job_id)                    -> {video_url, subtitles_url, thumbnail_url, expires_at}
+kleo_generate_thumbnail(job_id | prompt)   -> non ancora attivo (risponde con un avviso)
 kleo_cancel_job(job_id)                    -> {stato, crediti_restituiti}
 ```
+
+Questo è lo schema realizzato (`src/mcp.ts`); la proposta originale aveva sei strumenti, senza la guida allo storyboard.
 
 Regole di sicurezza da mettere dal primo giorno:
 - crediti scalati alla creazione del job, non alla fine;
