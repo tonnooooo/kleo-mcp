@@ -7,9 +7,11 @@
 import { test } from "node:test";
 import { readFile } from "node:fs/promises";
 import assert from "node:assert/strict";
-import { generateStoryboard, fixtureStoryboard, isTransientAiError, StoryboardError, styleFor, keouStyleFor, pickKleoStyle, planFor, normalizeStoryboard } from "../src/storyboard.ts";
+import { sectionSkeleton, generateStoryboard, fixtureStoryboard, isTransientAiError, StoryboardError, styleFor, keouStyleFor, pickKleoStyle, planFor, normalizeStoryboard } from "../src/storyboard.ts";
 import { guideText, EXAMPLE_SCENES } from "../src/guide.ts";
 import { stillness } from "../src/direction.ts";
+import { TEMPLATE_IDS } from "../src/templates.ts";
+import { directionProblems, CINEMA_ACCENTS } from "../src/keou-contract.ts";
 import { validateStoryboard, pictureScenes, quotesVoice, BEAT_ICONS, STORY_ACTS } from "../src/keou-contract.ts";
 import { assignShotKinds } from "../src/storyboard.ts";
 import { SHOT_KINDS, presetFor, moveClassOf, isLoud, needsStaticHold, LOUD_MAX_PER_WINDOW } from "../src/shot-grammar.ts";
@@ -679,4 +681,29 @@ test("without a valid direction the planner still ships a video", async () => {
   assert.equal(r.storyboard.direction, undefined, "no direction travels with the storyboard");
   assert.deepEqual(validateStoryboard(r.storyboard, { format: "9:16", language: "en" }).ok ? [] : ["invalid"], []);
   assert.ok(r.history.some((h) => h.some((m) => /^direction: rejected/.test(m))), JSON.stringify(r.history));
+});
+
+test("the shape of the film comes from the template, and it is legal before the model sees it", () => {
+  // The direction used to make the model invent how many sections a film has, what colour each wears and how the
+  // scenes divide — then repairDirection patched the sums. The shape arrives correct now, so the two rules the
+  // direction is validated against hold by construction, at every length, for every template.
+  for (const t of TEMPLATE_IDS) {
+    for (const scenes of [3, 4, 6, 12, 30, 60]) {
+      const bones = sectionSkeleton(t, scenes);
+      assert.ok(bones.length >= 2, `${t}: ${bones.length} sections`);
+      assert.equal(bones.reduce((a, b) => a + b.scenes, 0), scenes, `${t} at ${scenes}: the sections must tile the film`);
+      assert.ok(bones.every((b) => b.scenes >= 1), `${t} at ${scenes}: a section with no scene is not a section`);
+      bones.forEach((b, i) => {
+        assert.ok(b.name && b.role, `${t}: section ${i + 1} needs a name and a role`);
+        if (i) assert.notEqual(b.accent, bones[i - 1].accent, `${t}: sections ${i} and ${i + 1} share an accent`);
+      });
+      // And what it produces is a legal direction skeleton by the contract's own rules, with nothing to repair.
+      const d = {
+        subject: "x", goal: "y", audience: "z", tone: "w", world: "a place",
+        must_keep: [], cast: [], objects: ["a", "b", "c"], forbidden: ["x1", "x2", "x3"],
+        sections: bones.map((b) => ({ name: b.name, means: b.role.slice(0, 40), accent: b.accent, scenes: b.scenes })),
+      };
+      assert.deepEqual(directionProblems(d, { accents: CINEMA_ACCENTS, scenes }), [], `${t} at ${scenes}`);
+    }
+  }
 });

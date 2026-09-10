@@ -492,9 +492,31 @@ USER REQUEST (the video is about this; keep every fact, name and constraint from
  * a bedtime story" matched CYBER_WORDS and came back as dark motion design with no pictures at all, and nothing
  * anywhere recorded that a choice had been made.
  */
+/**
+ * THE SHAPE OF THE FILM, TAKEN FROM THE TEMPLATE INSTEAD OF ASKED FOR.
+ *
+ * The direction used to make the model invent how many sections a film has, what colour each one wears and how the
+ * scenes divide between them — and then repairDirection patched the arithmetic when the counts did not add up, which
+ * they often did not. That was a retry spent on sums, and sums are not what a model is for.
+ *
+ * src/templates.ts now holds the narrative shape of every template (narrativeFor) and divides the scenes between its
+ * sections without ever leaving one empty (sceneSplit, measured at 3, 6, 12, 30 and 60 scenes on all twelve
+ * templates). So the shape arrives already correct and the model is asked only the part that depends on the SUBJECT:
+ * what this section is called in this story, and what its colour stands for here.
+ *
+ * The two rules the direction is validated against — the sections tile the film, and no two neighbours share an
+ * accent — hold by construction: every family's weights add to 1 and no family repeats an accent side by side.
+ */
+export function sectionSkeleton(template: string, scenes: number): { name: string; role: string; accent: string; scenes: number }[] {
+  const f: Family = narrativeFor(template);
+  const split = sceneSplit(f, scenes);
+  return f.sections.map((sec, i) => ({ name: sec.name, role: sec.role, accent: sec.accent, scenes: split[i] ?? 1 }));
+}
+
 function directionPrompt(job: PlanJob, plan: Plan): string {
   const t = findTemplate(job.template);
   const scenes = Math.max(plan.scenes[0], Math.min(plan.scenes[1], Math.round((plan.scenes[0] + plan.scenes[1]) / 2)));
+  const skeleton = sectionSkeleton(job.template, scenes);
   const lang = LANG_NAMES[plan.language] ?? plan.language;
   return `USER REQUEST (read it as a request, not as raw material):
 """${job.prompt.trim()}"""
@@ -513,11 +535,15 @@ TASK: write the DIRECTION of this one film, before any scene exists. Return one 
   "cast":[up to ${DL.cast.max} {"name":"<=${DL.cast.name}, how the narration refers to them","look":"<=${DL.cast.look}, the ONE description reused word for word in every picture that shows them"}],
   "objects":[${DL.objects.min}-${DL.objects.max} strings <=${DL.objects.len}: the object vocabulary of THIS film and nothing else — pirates: beach, sand, chest, red-sailed ship; space: rocket, launch pad, orbital station],
   "forbidden":[${DL.forbidden.min}-${DL.forbidden.max} strings <=${DL.forbidden.len}: what must NEVER appear. Name the things a picture generator adds by habit and the things that belong to a DIFFERENT subject than this one],
-  "sections":[${DL.sections.min}-${DL.sections.max} {"name":"<=${DL.sections.name} UPPERCASE narrative name","accent":"${list(CINEMA_ACCENTS)}","means":"<=${DL.sections.means}, what the colour means here","scenes":<whole number>}]}}
+  "sections":[${skeleton.length} objects, ONE PER SECTION BELOW, in the same order: {"name":"<=${DL.sections.name} UPPERCASE, the section's name FOR THIS FILM","means":"<=${DL.sections.means}, what its colour stands for in this story"}]}}
+
+THE SHAPE OF THIS FILM IS ALREADY DECIDED — you write what goes in it, not how many parts it has:
+${skeleton.map((x, i) => `  ${i + 1}. ${x.name} · ${x.scenes} scene${x.scenes === 1 ? "" : "s"} · accent ${x.accent} — ${x.role}`).join("\n")}
+Return exactly ${skeleton.length} sections, in that order. The scene counts and the colours are not yours to choose: they come from the ${t?.name ?? job.template} shape and they already add up to ${scenes}. Give each one the name it deserves in THIS story and say what its colour stands for here.
 
 RULES
 - must_keep is quoted from the request. If the user wrote "5 mistakes", "in Naples", "for beginners" or a number, it goes in must_keep and the narration must still contain it.
-- The sections tile the film in order and their "scenes" must add up to exactly ${scenes}. Two sections in a row never share an accent: a new part of the story takes a new colour, and that is the only thing colour is allowed to mean.
+- Do not invent sections, drop them or reorder them: the shape above is the one this kind of film has. Colour means a new part of the story, nothing else.
 - forbidden is what makes a film its own. A pirate film forbids modern objects, wifi symbols, phones, screens and logos; a film about a city forbids the objects of every other city. Write it for THIS video.
 - Choose the style from the request, not from a keyword: cartoon = drawn stories, kids, history, animals, travel; realistic = products, places, news, sport, documentary; cyber = motion design with no pictures at all, only for tech and security topics that want diagrams rather than scenes; stickman = only if the user asked for a stickman.
 - Everything you write here is in ${lang} except the enum values (style, accent), which stay in English.`;
@@ -538,46 +564,42 @@ const directionSchema = (): Record<string, unknown> => ({
         subject: str, goal: str, audience: str, tone: str, world: str,
         must_keep: strArr, objects: strArr, forbidden: strArr,
         cast: { type: "array", items: { type: "object", additionalProperties: false, required: ["name", "look"], properties: { name: str, look: str } } },
+        // No accent and no scene count: those come from the template's shape, so the model cannot get them wrong.
         sections: {
           type: "array",
-          items: {
-            type: "object", additionalProperties: false, required: ["name", "accent", "means", "scenes"],
-            properties: { name: str, accent: { type: "string", enum: [...CINEMA_ACCENTS] }, means: str, scenes: { type: "integer" } },
-          },
+          items: { type: "object", additionalProperties: false, required: ["name", "means"], properties: { name: str, means: str } },
         },
       },
     },
   },
 });
 
-/** Trim a direction to the contract's limits instead of failing on a model that ran three characters long. */
-function repairDirection(raw: unknown, scenes: number): Direction | null {
+/**
+ * The model's answer, fitted to the contract's limits — and married to the shape the template already decided.
+ *
+ * What this no longer does is arithmetic. It used to drop sections, move scenes between them and swap accents around
+ * until the counts tiled the film, because the model had been asked to invent all of that and regularly did not add
+ * up. The skeleton arrives correct now, so the only thing left is to take the name and the meaning the model wrote
+ * for each section and put them on it. A model that returns too few sections gets the skeleton's own names for the
+ * rest; one that returns too many has the extras ignored.
+ */
+function repairDirection(raw: unknown, template: string, scenes: number): Direction | null {
   if (!isObj(raw)) return null;
   const cut = (v: unknown, max: number): string => (typeof v === "string" ? v.trim().replace(/\s+/g, " ").slice(0, max) : "");
   const cutList = (v: unknown, max: number, len: number): string[] => {
     const seen = new Set<string>();
-    return strs(v, 10_000).map((s) => cut(s, len)).filter((s) => { const k = s.toLowerCase(); if (!s || seen.has(k)) return false; seen.add(k); return true; }).slice(0, max);
+    return strs(v, 10_000).map((x) => cut(x, len)).filter((x) => { const k = x.toLowerCase(); if (!x || seen.has(k)) return false; seen.add(k); return true; }).slice(0, max);
   };
-  const sections: Section[] = (Array.isArray(raw.sections) ? raw.sections : []).filter(isObj).slice(0, DL.sections.max).map((s) => ({
-    name: cut(s.name, DL.sections.name), means: cut(s.means, DL.sections.means),
-    accent: inSet(s.accent, CINEMA_ACCENTS) ? (s.accent as string) : CINEMA_ACCENTS[0],
-    scenes: isInt(s.scenes) && s.scenes > 0 ? s.scenes : 1,
-  })).filter((s) => s.name && s.means);
-  // Two sections in a row must not share an accent, and the counts must tile the film exactly. Both are repaired here
-  // rather than bounced back to the model: they are arithmetic, and a retry spent on arithmetic is a retry not spent
-  // on the story. The last section absorbs the remainder, which is where a closing scene belongs anyway.
-  sections.forEach((s, i) => {
-    if (i && s.accent === sections[i - 1].accent) s.accent = CINEMA_ACCENTS.find((a) => a !== sections[i - 1].accent && a !== sections[i + 1]?.accent) ?? CINEMA_ACCENTS.find((a) => a !== sections[i - 1].accent)!;
+  const written = (Array.isArray(raw.sections) ? raw.sections : []).filter(isObj);
+  const sections: Section[] = sectionSkeleton(template, scenes).map((bone, i) => {
+    const w = written[i] ?? {};
+    return {
+      name: cut(w.name, DL.sections.name) || bone.name,
+      means: cut(w.means, DL.sections.means) || bone.role.slice(0, DL.sections.means),
+      accent: bone.accent,
+      scenes: bone.scenes,
+    };
   });
-  if (sections.length) {
-    let total = sections.reduce((a, s) => a + s.scenes, 0);
-    while (total > scenes && sections.length) {
-      const big = sections.reduce((best, s, i) => (s.scenes > sections[best].scenes ? i : best), 0);
-      if (sections[big].scenes <= 1) { const gone = sections.pop()!; total -= gone.scenes; continue; }
-      sections[big].scenes--; total--;
-    }
-    if (total < scenes && sections.length) sections[sections.length - 1].scenes += scenes - total;
-  }
   const d: Direction = {
     subject: cut(raw.subject, DL.subject), goal: cut(raw.goal, DL.goal), audience: cut(raw.audience, DL.audience),
     tone: cut(raw.tone, DL.tone), world: cut(raw.world, DL.world),
@@ -1316,7 +1338,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     try { raw = clean(await call(directionPrompt(job, plan), directionSchema(), 900)); }
     catch (e) { history.push([`direction: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) { transient = e; break; } continue; }
     const o = isObj(raw) ? raw : {};
-    const d = repairDirection(o.direction, sceneGuess);
+    const d = repairDirection(o.direction, job.template, sceneGuess);
     if (!d) { history.push([`direction: rejected (${directionProblems(isObj(o.direction) ? o.direction : {}, { accents: CINEMA_ACCENTS, scenes: sceneGuess }).slice(0, 3).join("; ")})`]); continue; }
     direction = d;
     // The look the direction chose, unless the client named one: planFor() keeps the user's choice above everything.
