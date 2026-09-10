@@ -196,19 +196,54 @@ export function guideExample(style: GuideStyle | null): string {
     return `EXAMPLE (stickman Short, 9:16, one scene):
 {"id":"02-relay","kind":"story","act":"alarm","cast":["hero","thief"],"props":["keyfob","car"],"fx":"relay","accent":"red","bubble":"That's my car!","title":"they never touch the key","hl":"never","voice":"Two people pass your key's signal from your front door to your car, and it opens.","hold":0.2}`;
   }
-  // The picture example carries a direction, because the direction is the part people skip.
-  return `EXAMPLE (cartoon Short, 9:16, 40s, en — direction plus the first two scenes of six):
-"direction":{"subject":"The pirate captain who buried a treasure and never came back for it","goal":"The viewer wants to know what happened to the treasure","audience":"People who like short history and adventure stories","tone":"Warm and a little eerie","must_keep":["1720","Skull Beach","one cabin boy survived"],"world":"A tropical island in 1720: golden beaches, turquoise water, palm trees, wooden ships with red sails, warm low sunlight","cast":[{"name":"the captain","look":"a pirate captain with a red bandana and a long dark braid, brown coat, wide belt"},{"name":"the cabin boy","look":"a thin young boy in a striped blue and white shirt, bare feet, short sandy hair"}],"objects":["wooden chest","red-sailed ship","palm trees","wet sand","lantern","rope","treasure map","storm waves"],"forbidden":["text or letters in the picture","modern clothing","phones or screens","wifi symbol","brand logo","real person","guns","extra fingers"],"sections":[{"name":"01 THE BURIAL","accent":"amber","means":"what was hidden","scenes":1},{"name":"02 THE STORM","accent":"red","means":"what went wrong","scenes":2},{"name":"03 THE MAP","accent":"cyan","means":"what was left behind","scenes":2},{"name":"04 THE QUESTION","accent":"green","means":"what you are left with","scenes":1}]}
-"scenes":[
- {"id":"01-burial","kind":"cinema","chapter":"01 THE BURIAL","accent":"amber","title":"she never came back","hl":"never","voice":"In 1720, the captain buried her treasure on Skull Beach. She never came back for it.","hold":0.2,"shots":[
-  {"image_prompt":"The captain burying a wooden chest on a golden beach at sunset, palm trees, her red-sailed ship anchored in the bay","caption":"SHE NEVER CAME BACK","hl":"NEVER","shot_kind":"hook"},
-  {"image_prompt":"The captain walking away along the shoreline at dusk, deep footprints in the wet sand, the beach empty behind her","at":"never came back","shot_kind":"action"}]},
- {"id":"02-storm","kind":"cinema","chapter":"02 THE STORM","accent":"red","title":"three days later","hl":"three","voice":"Three days later a storm took her ship, and only one cabin boy swam back to shore.","hold":0.2,"shots":[
-  {"image_prompt":"A red-sailed ship tossed by huge black waves at night, lightning splitting the sky, torn sails, rain across the deck","caption":"THREE DAYS LATER","hl":"THREE","shot_kind":"tension"},
-  {"image_prompt":"The cabin boy clinging to a broken plank in the dark water, the ship going down behind him","at":"one cabin boy","shot_kind":"establish"},
-  {"image_prompt":"The cabin boy lying exhausted on an empty beach at dawn, calm turquoise water, palm trees, soft pink sky","at":"swam back","shot_kind":"face"}]}]
-Notice: every scene has ${SHOTS_MIN_CINEMA} or more pictures; every picture after the first carries "at" quoted from its own voice line; the accents come from the sections, not from the mood; "the captain" and "the cabin boy" are named exactly as the direction names them, so Kleo appends their look to every picture that shows them; nothing on the forbidden list appears anywhere.`;
+  // The picture example carries a direction, because the direction is the part people skip. It is a real object, not
+  // prose: test/keou-contract.test.mjs validates it through the contract, so the guide cannot teach an illegal shape.
+  const d = EXAMPLE_DIRECTION;
+  return `EXAMPLE (cartoon Short, 9:16, 40s, en — the direction plus the first two scenes of six):
+"direction":${JSON.stringify(d)}
+"scenes":${JSON.stringify(EXAMPLE_SCENES)}
+Notice: every scene has ${SHOTS_MIN_CINEMA} or more pictures; every picture after the first carries "at" quoted from its own voice line; the accents come from the sections, not from the mood; "${d.cast[0].name}" and "${d.cast[1].name}" are named exactly as the direction names them, so Kleo appends their look to every picture that shows them; nothing on the forbidden list appears anywhere.`;
 }
+
+/** The worked example as data, so the tests can put it through the validator instead of through a regular expression. */
+export const EXAMPLE_DIRECTION = {
+  subject: "The pirate captain who buried a treasure and never came back for it",
+  goal: "The viewer wants to know what happened to the treasure",
+  audience: "People who like short history and adventure stories",
+  tone: "Warm and a little eerie",
+  must_keep: ["1720", "Skull Beach", "one cabin boy"],
+  world: "A tropical island in 1720: golden beaches, turquoise water, palm trees, wooden ships with red sails, warm low sunlight",
+  cast: [
+    { name: "the captain", look: "a pirate captain with a red bandana and a long dark braid, brown coat, wide belt" },
+    { name: "the cabin boy", look: "a thin young boy in a striped blue and white shirt, bare feet, short sandy hair" },
+  ],
+  objects: ["wooden chest", "red-sailed ship", "palm trees", "wet sand", "lantern", "rope", "treasure map", "storm waves"],
+  forbidden: ["text or letters in the picture", "modern clothing", "phone", "wifi symbol", "brand logo", "real person", "extra fingers"],
+  sections: [
+    { name: "01 THE BURIAL", accent: "amber", means: "what was hidden", scenes: 1 },
+    { name: "02 THE STORM", accent: "red", means: "what went wrong", scenes: 1 },
+  ],
+};
+
+export const EXAMPLE_SCENES = [
+  {
+    id: "01-burial", kind: "cinema", chapter: "01 THE BURIAL", accent: "amber", title: "she never came back", hl: "never",
+    voice: "In 1720, the captain buried her treasure on Skull Beach. She never came back for it.", hold: 0.2,
+    shots: [
+      { image_prompt: "The captain burying a wooden chest on a golden beach at sunset, palm trees, her red-sailed ship anchored in the bay", caption: "SHE NEVER CAME BACK", hl: "NEVER", shot_kind: "hook" },
+      { image_prompt: "The captain walking away along the shoreline at dusk, deep footprints in the wet sand, the beach empty behind her", at: "never came back", shot_kind: "action" },
+    ],
+  },
+  {
+    id: "02-storm", kind: "cinema", chapter: "02 THE STORM", accent: "red", title: "three days later", hl: "three",
+    voice: "Three days later a storm took her ship, and only one cabin boy swam back to shore.", hold: 0.2,
+    shots: [
+      { image_prompt: "A red-sailed ship tossed by huge black waves at night, lightning splitting the sky, torn sails, rain across the deck", caption: "THREE DAYS LATER", hl: "THREE", shot_kind: "tension" },
+      { image_prompt: "The cabin boy clinging to a broken plank in the dark water, the ship going down behind him", at: "one cabin boy", shot_kind: "establish" },
+      { image_prompt: "The cabin boy lying exhausted on an empty beach at dawn, calm turquoise water, palm trees, soft pink sky", at: "swam back", shot_kind: "face" },
+    ],
+  },
+];
 
 /** Everything a caller gets in one string: the rules, then the one example that matches the look they asked for. */
 export const guideText = (o: GuideOptions): string => `${buildGuide(o)}\n\n${guideExample(o.style ?? null)}`;

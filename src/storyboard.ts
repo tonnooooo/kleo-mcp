@@ -18,7 +18,7 @@ import {
   KINDS, BEAT_KINDS, BEAT_ICONS, BEAT_FX, CINEMA_ACCENTS, VISUALS, FORBIDDEN_FIELDS,
   KLEO_STYLES, PICTURE_STYLES, IMAGE_PROMPT_MAX, kleoStyleOf, STORY_ACTS, STORY_CAST, STORY_PROPS, STORY_FX, STORY_ACCENTS,
   SHOTS_PER_SCENE, SHOT_CAPTION_MAX, SHOT_HL_MAX, SHOT_AT_MAX, IMAGE_PROMPT_MIN, CLOSING_BUTTON_MAX,
-  SHOT_ID_SUFFIX_RE, quotesVoice, SHOTS_MIN_CINEMA, shotRangeText, narrationOf,
+  SHOT_ID_SUFFIX_RE, quotesVoice, SHOTS_MIN_CINEMA, shotRangeText, narrationOf, anchorShots,
 } from "./keou-contract.ts";
 /**
  * The direction: the art direction of ONE film, decided before a single scene exists. It is the step this planner
@@ -1030,56 +1030,6 @@ const FIXTURE_SHOTS: Record<string, { image_prompt: string; caption?: string; hl
  * and the validator both accept. Nothing fits (a very short or wordless line) → null, and the shot simply keeps
  * no "at", which is legal on every shot but the first.
  */
-/**
- * A legal `at` for the n-th of `count` shots: an unbroken run of whole words, quoted verbatim from this scene's own
- * voice, that no earlier shot has taken, starting near where that shot falls in the line.
- *
- * This exists because dropping a bad anchor used to leave the cut to arithmetic — the picture then changed NEAR the
- * right words instead of ON them, silently, which is the defect the owner named twice. A model that quotes the line
- * wrongly is not worth a retry: choosing the anchor is mechanical, so Kleo chooses it, exactly as it chooses the
- * camera move. What Kleo will not do is invent one for a CLIENT storyboard — there the author chose the words, and
- * the validator says so.
- */
-function anchorAt(voice: string, index: number, count: number, taken: Set<string>): string | null {
-  const spans: { from: number; to: number }[] = [];
-  const re = /\S+/g;
-  for (let m = re.exec(voice); m; m = re.exec(voice)) spans.push({ from: m.index, to: m.index + m[0].length });
-  if (spans.length < 2) return null;
-  // Where this cut belongs in the line: shot 1 of 3 lands about a third in, shot 2 about two thirds.
-  const want = Math.min(spans.length - 1, Math.max(1, Math.round((index * spans.length) / Math.max(count, 1))));
-  const order: number[] = [];
-  for (let d = 0; d < spans.length; d++) {
-    if (want + d < spans.length) order.push(want + d);
-    if (d && want - d >= 1) order.push(want - d);   // never the very first word: a cut there is the scene opening
-  }
-  for (const i of order) {
-    for (const n of [2, 1]) {
-      const last = spans[i + n - 1];
-      if (!last) continue;
-      const at = voice.slice(spans[i].from, last.to);
-      if (at.length <= SHOT_AT_MAX && !taken.has(at.toLowerCase()) && quotesVoice(at, voice)) return at;
-    }
-  }
-  return null;
-}
-
-/**
- * Every shot after the first carries an anchor, so every cut lands on a word the viewer hears. Anchors the author
- * wrote and the contract accepted are kept as they are; only the missing ones are filled, in reading order.
- */
-export function anchorShots(scene: Record<string, unknown>): void {
-  const voice = typeof scene.voice === "string" ? scene.voice : "";
-  const shots = Array.isArray(scene.shots) ? (scene.shots as Record<string, unknown>[]) : [];
-  if (!voice || shots.length < 2) return;
-  const taken = new Set<string>();
-  for (const sh of shots) if (isObj(sh) && typeof sh.at === "string") taken.add(sh.at.toLowerCase());
-  shots.forEach((sh, i) => {
-    if (!i || !isObj(sh) || (typeof sh.at === "string" && sh.at.trim())) return;
-    const at = anchorAt(voice, i, shots.length, taken);
-    if (at) { sh.at = at; taken.add(at.toLowerCase()); }
-  });
-}
-
 function fixtureAnchor(voice: unknown): string | null {
   if (typeof voice !== "string") return null;
   const words: { from: number; to: number }[] = [];

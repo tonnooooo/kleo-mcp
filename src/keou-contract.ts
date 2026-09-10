@@ -358,6 +358,51 @@ function validateBeats(c: Record<string, unknown>, s: Record<string, unknown>, l
  * Normalises the old shorthand (a scene-level image_prompt) into shots[0] in place, so what the caller stores and
  * what the engine receives never carries a scene-level image_prompt.
  */
+/**
+ * A legal `at` for the n-th of `count` shots: an unbroken run of whole words, quoted verbatim from this scene's own
+ * voice, that no other shot has taken, starting near where that cut falls in the line. Null when the line is too
+ * short or too odd to yield one.
+ */
+function anchorAt(voice: string, index: number, count: number, taken: Set<string>): string | null {
+  const spans: { from: number; to: number }[] = [];
+  const re = /\S+/g;
+  for (let m = re.exec(voice); m; m = re.exec(voice)) spans.push({ from: m.index, to: m.index + m[0].length });
+  if (spans.length < 2) return null;
+  const want = Math.min(spans.length - 1, Math.max(1, Math.round((index * spans.length) / Math.max(count, 1))));
+  const order: number[] = [];
+  for (let d = 0; d < spans.length; d++) {
+    if (want + d < spans.length) order.push(want + d);
+    if (d && want - d >= 1) order.push(want - d);   // never the very first word: a cut there is the scene opening
+  }
+  for (const i of order) for (const n of [2, 1]) {
+    const last = spans[i + n - 1];
+    if (!last) continue;
+    const at = voice.slice(spans[i].from, last.to);
+    if (at.length <= SHOT_AT_MAX && !taken.has(at.toLowerCase()) && quotesVoice(at, voice)) return at;
+  }
+  return null;
+}
+
+/**
+ * EVERY CUT AFTER THE FIRST LANDS ON A WORD THE VIEWER HEARS. `at` used to be optional and a missing one was silent:
+ * the picture then changed NEAR the right words instead of ON them, by arithmetic, while the product promised the
+ * opposite. Choosing the anchor is mechanical — like choosing the camera move — so Kleo chooses it rather than
+ * demanding it: anchors the author wrote and the contract accepted are kept untouched, only the gaps are filled.
+ * A scene whose line is too short to yield one is the author's problem, and qualityProblems() says so.
+ */
+export function anchorShots(scene: Record<string, unknown>): void {
+  const voice = typeof scene.voice === "string" ? scene.voice : "";
+  const shots = Array.isArray(scene.shots) ? (scene.shots as unknown[]) : [];
+  if (!voice || shots.length < 2) return;
+  const taken = new Set<string>();
+  for (const sh of shots) if (isObj(sh) && typeof sh.at === "string") taken.add(sh.at.toLowerCase());
+  shots.forEach((sh, i) => {
+    if (!i || !isObj(sh) || (typeof sh.at === "string" && sh.at.trim())) return;
+    const at = anchorAt(voice, i, shots.length, taken);
+    if (at) { sh.at = at; taken.add(at.toLowerCase()); }
+  });
+}
+
 function validateShots(s: Record<string, unknown>, label: string, kind: "cinema" | "closing", e: Collector, fmt: Format, seq: SeqShot[]): void {
   if ("beats" in s) e.add(`${label}: beats belong to the cinema style; the picture style cuts between "shots" instead`);
   if (typeof s.image_prompt === "string" && !("shots" in s)) { s.shots = [{ image_prompt: s.image_prompt.trim() }]; delete s.image_prompt; }
@@ -367,6 +412,7 @@ function validateShots(s: Record<string, unknown>, label: string, kind: "cinema"
   if (!Array.isArray(shots) || shots.length < lo || shots.length > hi) { e.add(`${label}: shots must list ${lo}–${hi} full-screen pictures`); return; }
   const voice = typeof s.voice === "string" ? s.voice.toLowerCase() : "";
   const sceneId = typeof s.id === "string" && s.id ? s.id : label;
+  anchorShots(s);   // fills only the gaps; an `at` the author wrote is validated below exactly as before
   shots.forEach((sh: unknown, j: number) => {
     const sl = `${label} shot ${j + 1}`;
     if (!isObj(sh)) { e.add(`${sl}: must be an object`); return; }

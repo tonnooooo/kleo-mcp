@@ -200,6 +200,19 @@ const STOP = new Set(
 );
 /** A number as it is written, so "3 million" in the request is not answered by "a few million" in the narration. */
 const NUM = /\d[\d.,]*/g;
+/**
+ * Was this word said? Exactly, or as an inflection of itself. "beginner" is kept by a narration that says
+ * "beginners", and "errore" by one that says "errori" — otherwise the gate fires on grammar instead of on substance,
+ * which would teach the planner to parrot the request rather than write it. Five characters is the shortest prefix
+ * that does not start matching unrelated words.
+ */
+function spoken(w: string, said: Set<string>): boolean {
+  if (said.has(w)) return true;
+  if (w.length < 5) return false;
+  const stem = w.slice(0, 5);
+  for (const s of said) if (s.length >= 5 && s.startsWith(stem)) return true;
+  return false;
+}
 
 /**
  * Which of the direction's must_keep items the narration dropped. This is the fidelity gate: the validator can prove a
@@ -218,7 +231,7 @@ export function missingFacts(mustKeep: readonly string[], narration: string): st
     if (numbers.some((n) => !saidNumbers.has(n))) { out.push(item); continue; }
     const content = words(item).filter((w) => !STOP.has(w) && !/^\d+$/.test(w));
     if (!content.length) continue;
-    const hit = content.filter((w) => said.has(w)).length;
+    const hit = content.filter((w) => spoken(w, said)).length;
     if (hit / content.length < 0.6) out.push(item);
   }
   return out;

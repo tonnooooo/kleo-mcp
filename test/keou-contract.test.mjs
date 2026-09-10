@@ -7,7 +7,8 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { validateStoryboard, defaultVoice, wordBudget, kleoStyleOf, pictureScenes, VOICES, FORBIDDEN_FIELDS, FORBIDDEN_KINDS, FORBIDDEN_SCENE_FIELDS, KLEO_STYLES, IMAGE_PROMPT_MAX, MAX_PICTURES, SHOT_MOTION, SHOT_FIELDS, SHOTS_PER_SCENE, SHOT_KINDS, SHOT_GRAMMAR, durationFor, MOTION_ALIASES, MOTION_MOVES, MAX_SHOT_S, MAX_PERSON_SHOT_S, LOUD_WINDOW_S, LOUD_MAX_PER_WINDOW } from "../src/keou-contract.ts";
+import { buildGuide, guideText, EXAMPLE_DIRECTION, EXAMPLE_SCENES } from "../src/guide.ts";
+import { validateStoryboard, defaultVoice, wordBudget, kleoStyleOf, pictureScenes, directionProblems, sectionOfScene, CINEMA_ACCENTS, SHOTS_MIN_CINEMA, shotRangeText, VOICES, FORBIDDEN_FIELDS, FORBIDDEN_KINDS, FORBIDDEN_SCENE_FIELDS, KLEO_STYLES, IMAGE_PROMPT_MAX, MAX_PICTURES, SHOT_MOTION, SHOT_FIELDS, SHOTS_PER_SCENE, SHOT_KINDS, SHOT_GRAMMAR, durationFor, MOTION_ALIASES, MOTION_MOVES, MAX_SHOT_S, MAX_PERSON_SHOT_S, LOUD_WINDOW_S, LOUD_MAX_PER_WINDOW } from "../src/keou-contract.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const EXAMPLES = join(ROOT, "worker", "keou", "examples");
@@ -606,57 +607,75 @@ test("a storyboard that is legal today stays legal", () => {
 });
 
 /**
- * src/mcp.ts is the guide the calling model reads before it writes a storyboard, so every claim it makes has to be
- * one this validator agrees with: a drifted guide costs a whole rejected job. `guide` is the prose part (the tail,
- * from EXAMPLE A on, is checked by parsing and validating the examples themselves).
+ * The guide the calling model reads before it writes a storyboard, so every claim it makes has to be one this
+ * validator agrees with: a drifted guide costs a whole rejected job. It used to be a template literal inside
+ * src/mcp.ts and these tests scraped it with regular expressions; it is now built by src/guide.ts from the
+ * contract's own constants, so the tests call the builder and read what a caller actually receives.
  */
 const MCP_SRC = readFileSync(join(ROOT, "src", "mcp.ts"), "utf8");
-const guideText = () => MCP_SRC.slice(MCP_SRC.indexOf("KLEO STORYBOARD GUIDE"), MCP_SRC.indexOf("EXAMPLE A"));
-/** The guide is a template literal: drop the `${...}` holes so a check reads the prose, not the interpolation. */
-const literalOnly = (text) => text.replace(/\$\{[^}]*\}/g, "");
+const guideFor = (style) => guideText({ duration_s: 45, style, languages: ["en", "it"] });
+/** The rules half, without the worked example, for the checks that are about what the guide CLAIMS. */
+const rulesFor = (style) => buildGuide({ duration_s: 45, style, languages: ["en", "it"] });
 
 test("the storyboard guide's examples validate against this contract", () => {
-  const src = MCP_SRC;
-  const examples = src.match(/\{"schema_version"[\s\S]*?\]\}\n/g) ?? [];
-  assert.ok(examples.length >= 2, `expected the cartoon and realistic examples in the guide, found ${examples.length}`);
-  const styles = new Set();
-  for (const raw of examples) {
-    const sb = JSON.parse(raw);
-    styles.add(sb.kleo_style);
-    assert.equal(sb.style, "picture");
-    const r = validateStoryboard(sb, opts(sb));
-    assert.deepEqual(r.ok ? [] : r.errors, [], `the ${sb.kleo_style} example should validate`);
-    assert.ok(pictureScenes(sb).length >= sb.scenes.length, "every scene of an example carries at least one shot");
+  // The example is exported as data, so it goes through the real validator instead of through a regular expression.
+  const direction = structuredClone(EXAMPLE_DIRECTION);
+  const scenes = structuredClone(EXAMPLE_SCENES);
+  scenes.push({ id: "zz-end", kind: "closing", chapter: "99 END", accent: "green", title: "what happened to it",
+    hl: "happened", voice: "Nobody has found the chest on Skull Beach since. Would you go and look?",
+    shots: [{ image_prompt: "An empty beach at noon, the tide coming in over old footprints" }], button: "Follow" });
+  direction.sections.push({ name: "03 THE QUESTION", accent: "green", means: "what you are left with", scenes: 1 });
+  const sb = { schema_version: 1, editorial_status: "ready", title: "The treasure nobody came back for",
+    kleo_style: "cartoon", style: "picture", format: "9:16", language: "en", voice: "am_michael",
+    speed: 1.1, music: "bed", max_duration: 72, direction, scenes };
+
+  assert.deepEqual(directionProblems(direction, { accents: CINEMA_ACCENTS, scenes: scenes.length }), [], "the example's direction is legal");
+  const r = validateStoryboard(sb, { format: "9:16", language: "en" });
+  assert.deepEqual(r.ok ? [] : r.errors, [], "the guide's own example must validate");
+  assert.ok(pictureScenes(sb).length >= sb.scenes.length, "every scene of the example carries at least one shot");
+  // And the text a caller receives really contains it, so the guide cannot drift from the data it claims to show.
+  for (const style of ["cartoon", "realistic"]) {
+    const text = guideFor(style);
+    assert.ok(text.includes(EXAMPLE_DIRECTION.world), `${style}: the example's world is in the guide`);
+    assert.ok(text.includes(EXAMPLE_SCENES[0].shots[0].image_prompt), `${style}: the example's first picture is in the guide`);
   }
-  assert.deepEqual([...styles].sort(), ["cartoon", "realistic"]);
 });
 
 test("the guide only offers languages and voices kleo_create_video accepts", () => {
   const jobLangs = ["en", "it"];
   assert.match(MCP_SRC, /const JOB_LANGUAGES = \["en", "it"\] as const;/, "the job languages are declared once");
   assert.match(MCP_SRC, /z\.enum\(JOB_LANGUAGES\)/, "the tool schema and the guide read the same list");
-  const guide = guideText();
-  for (const lang of Object.keys(VOICES).filter((l) => !jobLangs.includes(l)))
-    for (const v of VOICES[lang]) assert.ok(!guide.includes(v), `the guide must not offer ${v} (${lang} is not a job language)`);
-  assert.ok(!/"fr"/.test(guide), "fr is not a language a job can have: the validator rejects a storyboard in it");
-  assert.match(guide, /must equal the "format" and "language" you pass to kleo_create_video/);
+  for (const style of [null, "cartoon", "realistic", "cyber", "stickman"]) {
+    const guide = guideFor(style);
+    for (const lang of Object.keys(VOICES).filter((l) => !jobLangs.includes(l)))
+      for (const v of VOICES[lang]) assert.ok(!guide.includes(v), `${style}: the guide must not offer ${v} (${lang} is not a job language)`);
+    assert.ok(!/"fr"/.test(guide), `${style}: fr is not a language a job can have`);
+    assert.match(guide, /must equal what you pass to kleo_create_video/);
+  }
 });
 
 test("the guide never suggests a field the validator forbids on a scene", () => {
-  const guide = guideText();
-  assert.ok(!guide.includes("JSON.stringify(MOTION)"), "scene motion backgrounds are a forbidden scene field");
-  // "motion" is legal on a SHOT and forbidden on a scene: check the guide with the shot line taken out.
-  const sceneLines = guide.split("\n").filter((l) => !l.trimStart().startsWith("SHOT:")).join("\n");
-  for (const f of FORBIDDEN_SCENE_FIELDS)
-    assert.ok(!new RegExp(`"${f}":`).test(sceneLines), `${f} must not be offered as a scene field`);
+  for (const style of [null, "cartoon", "cyber", "stickman"]) {
+    const guide = rulesFor(style);
+    // "motion" is legal on a SHOT and forbidden on a scene: check the guide with the shot line taken out.
+    const sceneLines = guide.split("\n").filter((l) => !l.trimStart().startsWith("SHOT:")).join("\n");
+    for (const f of FORBIDDEN_SCENE_FIELDS)
+      assert.ok(!new RegExp(`"${f}":`).test(sceneLines), `${style}: ${f} must not be offered as a scene field`);
+  }
 });
 
-test("every shot count in the guide comes from SHOTS_PER_SCENE", () => {
-  for (const [what, text] of [["guide", guideText()], ["instructions", MCP_SRC.slice(MCP_SRC.indexOf("const INSTRUCTIONS"), MCP_SRC.indexOf("const ok ="))]]) {
-    assert.ok(!/\d ?- ?\d (?:pictures|shots)/.test(literalOnly(text)), `${what}: no hard-coded shot range, interpolate shotRange()`);
-    assert.ok(!/exactly 1|has exactly one shot/.test(text), `${what}: the closing takes 1-2 shots, not exactly 1`);
-  }
-  assert.deepEqual(SHOTS_PER_SCENE.cinema, [1, 4]);
+test("every shot count the caller is told comes from the contract, and they all agree", () => {
+  assert.deepEqual(SHOTS_PER_SCENE.cinema, [1, 4], "the contract's floor stays 1: worker/keou/contract.py has the same one");
   assert.deepEqual(SHOTS_PER_SCENE.closing, [1, 2]);
-  assert.match(MCP_SRC, /const shotRange = \(kind: "cinema" \| "closing"\) => SHOTS_PER_SCENE\[kind\]\.join\("-"\)/);
+  assert.equal(SHOTS_MIN_CINEMA, 2, "but a NEW storyboard is held to two pictures a scene");
+  assert.equal(shotRangeText("cinema"), "2-4");
+  assert.equal(shotRangeText("closing"), "1-2");
+  // The guide, the tool instructions and the planner rules must all quote that one range and never a literal.
+  const texts = [["guide", rulesFor("cartoon")], ["instructions", MCP_SRC.slice(MCP_SRC.indexOf("const INSTRUCTIONS"), MCP_SRC.indexOf("const ok ="))]];
+  for (const [what, text] of texts) {
+    assert.ok(!/1 ?- ?4 (?:pictures|shots)/.test(text), `${what}: the old 1-4 range is still written down`);
+    assert.ok(!/exactly 1 shot|has exactly one shot/.test(text), `${what}: the closing takes 1-2 shots, not exactly 1`);
+  }
+  assert.match(rulesFor("cartoon"), /EVERY SCENE SHOWS AT LEAST 2 PICTURES/);
+  assert.match(MCP_SRC, /const shotRange = shotRangeText;/, "the tool instructions read the contract, not a copy of it");
 });
