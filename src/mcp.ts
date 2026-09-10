@@ -56,6 +56,23 @@ async function resultPayload(env: Env, base: string, job: Job) {
   return { data: { job_id: job.id, state: "done", expires_at: job.expires_at, mode: job.backend === "mock" ? "simulated" : "gpu", ...links }, text };
 }
 
+
+/** Which assistant is calling, from the MCP clientInfo envelope (2026 protocol) or the HTTP user agent, and how long one wait call may safely last there. */
+function detectClient(ctx: unknown): { name: string; waitS: number; ua: string } {
+  const c = ctx as { http?: { req?: Request }; mcpReq?: { _meta?: Record<string, unknown> } } | undefined;
+  const ua = c?.http?.req?.headers.get("user-agent") ?? "";
+  const info = c?.mcpReq?._meta?.["io.modelcontextprotocol/clientInfo"] as { name?: string } | undefined;
+  const n = String(info?.name ?? "").toLowerCase(), u = ua.toLowerCase();
+  const has = (...k: string[]) => k.some((x) => n.includes(x) || u.includes(x));
+  if (has("claude-code", "claude code")) return { name: "claude-code", waitS: 110, ua };   // auto-backgrounds after 2 min, no cap
+  if (has("opencode")) return { name: "opencode", waitS: 300, ua };                         // execution timeout 12 h
+  if (has("cursor")) return { name: "cursor", waitS: 50, ua };                              // 60 s hard limit
+  if (has("chatgpt", "openai")) return { name: "chatgpt", waitS: 45, ua };                  // 60 s hard limit
+  if (has("grok", "xai", "x.ai")) return { name: "grok", waitS: 45, ua };                   // undocumented, assume 60 s
+  if (has("claude", "anthropic")) return { name: "claude", waitS: 170, ua };                // 300 s documented, ~10-20 calls per turn
+  return { name: n || "unknown", waitS: 45, ua };
+}
+
 export function buildServer(env: Env, user: User, base: string): McpServer {
   const simulated = env.RENDER_BACKEND === "mock";
   const modeNote = simulated
@@ -220,18 +237,30 @@ EXAMPLE B (editorial long-form scene, 16:9, en):
     description: "Step 4b. Waits up to max_wait_s seconds (default 50) for a video and returns either the download links (when done) or its progress. THIS IS HOW YOU DELIVER A VIDEO WITHOUT ASKING THE USER TO COME BACK: after kleo_create_video, call kleo_wait_for_video again and again, one call after the other, until it returns the links (a Short usually needs 15–25 calls, a long video more). Do not stop after a few calls and do not ask the user whether to continue; only stop if the user asks you to, or if the result says the video failed or was cancelled. Say once that the render is running and how long it should take, then keep calling silently and finally hand over the links.",
     inputSchema: z.object({
       job_id: z.string().optional().describe("The video number from kleo_create_video. Omit to wait for your most recent video."),
-      max_wait_s: z.number().int().min(10).max(110).default(50).describe("How long this call may wait before reporting progress (seconds). Keep the default unless the client times out."),
+      max_wait_s: z.number().int().min(10).max(600).optional().describe("How long this call may wait before reporting progress, in seconds. Leave it empty: Kleo picks a safe value for your client (45 s for ChatGPT and Grok, 170 s for Claude, 5 minutes for OpenCode)."),
     }),
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   }, async ({ job_id, max_wait_s }, ctx) => guarded(async () => {
     let job = job_id ? await getUserJob(env, user.id, job_id) : (await recentJobsForUser(env, user.id, 1))[0];
     if (!job) throw job_id ? noSuchVideo(job_id) : new JobError("No videos on this account yet. Create one with kleo_create_video.");
     const signal = ctx?.mcpReq?.signal;
-    const deadline = Date.now() + Math.min(110, Math.max(10, max_wait_s ?? 50)) * 1000;
+    const client = detectClient(ctx);
+    const waitS = Math.min(600, Math.max(10, max_wait_s ?? client.waitS));
+    const started = Date.now();
+    const deadline = started + waitS * 1000;
+    const progressToken = (ctx?.mcpReq?._meta as Record<string, unknown> | undefined)?.progressToken as string | number | undefined;
     const finished = (j: Job) => j.state === "done" || j.state === "failed" || j.state === "cancelled";
+    void audit(env, user.id, job.id, "wait.call", { client: client.name, ua: client.ua.slice(0, 80), wait_s: waitS, state: job.state, percent: job.percent });
+    let tickN = 0;
     while (!finished(job) && Date.now() < deadline && !signal?.aborted) {
       await new Promise((r) => setTimeout(r, 5000));
       job = (await getUserJob(env, user.id, job.id)) ?? job;
+      tickN++;
+      if (progressToken !== undefined && ctx?.mcpReq?.notify) {
+        try {
+          await ctx.mcpReq.notify({ method: "notifications/progress", params: { progressToken, progress: tickN, message: job.state === "queued" ? "waiting for a renderer" : `${job.percent}% · ${trackLabel(job.track)}` } });
+        } catch { /* client may not accept progress */ }
+      }
     }
     const what = kindOf(jobView(job).format);
     if (job.state === "done") {
