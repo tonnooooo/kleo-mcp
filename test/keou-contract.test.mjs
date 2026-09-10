@@ -358,20 +358,26 @@ test("a scene-level image_prompt is normalised into shots[0] and disappears", ()
   const lone = validateStoryboard(sb, { format: "9:16", language: "en" });
   assert.equal(lone.ok, false, "one picture for a whole line is refused");
   assert.ok(lone.errors.some((e) => /1 picture, a scene needs at least 2/.test(e)), lone.errors.join("\n"));
-  assert.deepEqual(sb.scenes[1].shots, [{ image_prompt: "The Red Gull racing over turquoise waves under a clear sky" }], "the shorthand still becomes shot 1");
-  assert.ok(!("image_prompt" in sb.scenes[1]), "and no scene-level image_prompt survives normalisation");
+  // The validator works on a copy and hands it back, so the normalisation is read from the RESULT and never from
+  // the object that was passed in. The closing is the one scene a single picture is enough for, so it is where the shorthand can be read on a
+  // storyboard that actually validates. Everywhere else one picture for a whole narrated line is a slideshow and
+  // the storyboard is refused, whichever way it was written — which is what the two assertions above check.
+  const shorthand = pirates();
+  const closing = shorthand.scenes.at(-1);
+  delete closing.shots;
+  closing.image_prompt = "  A half-buried chest on the sand at dawn, gold spilling out  ";
+  const norm = validateStoryboard(shorthand, { format: "9:16", language: "en" });
+  assert.equal(norm.ok, true, JSON.stringify(norm.errors));
+  const out = norm.storyboard.scenes.at(-1);
+  assert.equal(out.image_prompt, undefined, "the scene-level key is gone from what is stored");
+  assert.deepEqual(out.shots.map((sh) => sh.image_prompt),
+    ["A half-buried chest on the sand at dawn, gold spilling out"], "the shorthand became shot 1, trimmed");
+  assert.equal(closing.image_prompt !== undefined, true, "and the caller's own object still has it");
 
-  // With a second picture beside it the same scene validates, and the picture ids follow the shot numbers.
-  const ok2 = pirates();
-  const keep = ok2.scenes[1].shots[1];
-  delete ok2.scenes[1].shots;
-  ok2.scenes[1].image_prompt = "The Red Gull racing over turquoise waves under a clear sky";
-  validateStoryboard(ok2, { format: "9:16", language: "en" });        // normalises the shorthand into shots[0]
-  ok2.scenes[1].shots.push(keep);
-  const r = validateStoryboard(ok2, { format: "9:16", language: "en" });
-  assert.deepEqual(r.ok ? [] : r.errors, []);
-  assert.equal(r.storyboard.scenes[1].shots[0].image_prompt, "The Red Gull racing over turquoise waves under a clear sky");
-  assert.equal(pictureScenes(r.storyboard)[3].id, "02-ship-s1");
+  // The picture ids follow the shot numbers, shorthand or not.
+  const ids = pictureScenes(norm.storyboard).map((p) => p.id);
+  assert.equal(ids.at(-1), `${out.id}-s1`, "the shorthand picture is shot 1 of its scene");
+  assert.ok(ids.includes("02-ship-s1"), ids.join(", "));
   const both = pirates();
   both.scenes[0].image_prompt = "a beach";
   const errors = errorsOf(both, { format: "9:16", language: "en" });
@@ -500,9 +506,11 @@ test("strength is optional and lives between 0 and 1 — 0 is the locked frame",
   }
   // A static_forced shot resolves to strength 0, and the storyboard it produces has to validate again unchanged.
   const held = grammar(LEGAL); held.scenes[0].shots[1] = { shot_kind: "static_forced", image_prompt: "an empty room at dawn" };
-  assert.deepEqual(errsOf(held), []);
-  assert.equal(held.scenes[0].shots[1].strength, 0);
-  assert.deepEqual(errsOf(held), [], "and again on a second pass");
+  const r = validateStoryboard(held, { format: "9:16", language: "en" });
+  assert.equal(r.ok, true, JSON.stringify(r.errors));
+  assert.equal(r.storyboard.scenes[0].shots[1].strength, 0, "a locked frame resolves to strength 0");
+  // And the storyboard that comes out has to validate again unchanged: the resolution must be a fixed point.
+  assert.deepEqual(errsOf(r.storyboard), [], "and again on a second pass");
 });
 
 test("dur must fall inside the kind's window, after the format factor", () => {
@@ -569,9 +577,13 @@ test("static_forced is routing, not taste: hands, a crowd, signage or a mechanis
     // Repaired, not refused: hands at work get a locked frame and the author is never sent back to rewrite the
     // shot. `why` still names the category the router matched.
     void why;
-    assert.deepEqual(errsOf(moving), [], image_prompt);
-    assert.equal(moving.scenes[0].shots[1].shot_kind, "static_forced", "the router locked the frame");
-    assert.equal(moving.scenes[0].shots[1].motion, "static_hold", "and the resolved move followed it");
+    // The repair is read from the storyboard the validator HANDS BACK: it works on a copy, so the caller's own
+    // object is never rewritten under it.
+    const rep = validateStoryboard(moving, { format: "9:16", language: "en" });
+    assert.equal(rep.ok, true, image_prompt);
+    assert.equal(rep.storyboard.scenes[0].shots[1].shot_kind, "static_forced", "the router locked the frame");
+    assert.equal(rep.storyboard.scenes[0].shots[1].motion, "static_hold", "and the resolved move followed it");
+    assert.notEqual(moving.scenes[0].shots[1].shot_kind, "static_forced", "and the caller's object was left alone");
     const held = grammar(LEGAL); held.scenes[0].shots[1] = { shot_kind: "static_forced", image_prompt };
     assert.deepEqual(errsOf(held), [], "static_forced is the answer, so it is never asked for again");
   }
