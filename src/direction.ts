@@ -298,7 +298,7 @@ const LIVING_SUBJECT = /\b(man|men|woman|women|boy|boys|girl|girls|child|childre
  * Present participles that describe real movement. Kept small and specific on purpose: "-ing" alone matches
  * "building", "lighting" and "morning", none of which move anything.
  */
-const MOTION_VERB = /\b(drifting|swirling|blowing|streaming|pouring|spilling|dripping|splashing|surging|breaking|crashing|rolling|tumbling|falling|rising|climbing|sinking|floating|hovering|gliding|soaring|flying|sailing|running|walking|marching|striding|riding|racing|charging|turning|spinning|circling|orbiting|swaying|rippling|flapping|snapping|whipping|waving|flickering|guttering|flaring|burning|smouldering|steaming|smoking|curling|boiling|bubbling|scattering|bursting|erupting|collapsing|crumbling|sliding|slipping|creeping|spreading|shaking|trembling|swinging|bouncing|leaping|jumping|chasing|opening|closing|reaching|pointing|throwing|catching|lifting|dropping)\b/i;
+const MOTION_VERB = /\b(moving|passing|crossing|travelling|traveling|approaching|receding|entering|leaving|flowing|pounding|swelling|drifting|swirling|blowing|streaming|pouring|spilling|dripping|splashing|surging|breaking|crashing|rolling|tumbling|falling|rising|climbing|sinking|floating|hovering|gliding|soaring|flying|sailing|running|walking|marching|striding|riding|racing|charging|turning|spinning|circling|orbiting|swaying|rippling|flapping|snapping|whipping|waving|flickering|guttering|flaring|burning|smouldering|steaming|smoking|curling|boiling|bubbling|scattering|bursting|erupting|collapsing|crumbling|sliding|slipping|creeping|spreading|shaking|trembling|swinging|bouncing|leaping|jumping|chasing|opening|closing|reaching|pointing|throwing|catching|lifting|dropping)\b/i;
 
 /**
  * What the picture already names, and the movement that belongs to it. The first match wins, and the order is
@@ -323,8 +323,15 @@ const ENLIVEN: readonly { of: RegExp; clause: string }[] = [
   { of: /\b(cloud|clouds|sky)\b/i, clause: "clouds moving across the sky" },
   { of: /\b(dust|motes|particles)\b/i, clause: "dust swirling through the light" },
 ];
+/**
+ * Every clause here must itself satisfy stillness(): the repair has to be recognised as a repair, or the rule
+ * contradicts itself. test/direction.test.mjs asserts exactly that over the whole table — it is how "clouds moving
+ * across the sky" was caught adding a word the detector did not know.
+ */
 /** When the picture names nothing that can be set moving, this is what a cinematographer adds: it works anywhere. */
 const ENLIVEN_FALLBACK = "dust drifting through the light";
+/** The table, exposed so a test can prove every clause in it is one the detector accepts. */
+export const ENLIVEN_CLAUSES: readonly string[] = [...ENLIVEN.map((e) => e.clause), ENLIVEN_FALLBACK];
 
 export interface Stillness {
   /** True when something in the shot moves on its own, so a generated clip will not come back frozen. */

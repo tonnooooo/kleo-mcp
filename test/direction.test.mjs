@@ -11,7 +11,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor,
-  castFor, conformity, ACCENT_LIGHT, stillness, enliven, livingClause, D,
+  castFor, conformity, ACCENT_LIGHT, stillness, enliven, livingClause, ENLIVEN_CLAUSES, D,
 } from "../src/direction.ts";
 import { validateStoryboard, qualityProblems, directionOf, narrationOf, pictureScenes, CINEMA_ACCENTS, SHOTS_MIN_CINEMA, shotRangeText } from "../src/keou-contract.ts";
 import { fullPrompt, modelInputs, NEGATIVE_PROMPT, STYLE_SUFFIX, DEFAULT_IMAGE_MODELS } from "../src/images.ts";
@@ -261,6 +261,19 @@ test("stillness: a state is not an action, and a person is always alive", () => 
   assert.equal(stillness("").alive, false);
 });
 
+test("every repair the table offers is one the detector accepts", () => {
+  // The rule has to recognise its own repair. It did not: "clouds moving across the sky" was added to a still
+  // picture and then still read as still, because "moving" was missing from the verb list. This is the invariant
+  // that catches the next one, and it also proves enliven() converges in a single pass.
+  assert.ok(ENLIVEN_CLAUSES.length >= 10, ENLIVEN_CLAUSES.length);
+  for (const clause of ENLIVEN_CLAUSES)
+    assert.ok(stillness(clause).alive, `the repair "${clause}" does not read as alive`);
+  for (const clause of ENLIVEN_CLAUSES) {
+    const once = enliven("a closed wooden door, flat even light with " + clause.split(" ")[0], 240);
+    assert.equal(enliven(once, 240), once, "a repaired picture is never repaired twice");
+  }
+});
+
 test("enliven repairs the shot instead of refusing it, using what the picture already shows", () => {
   const road = "a wide empty coastal road through black volcanic rock at dawn, low mist, cold blue light";
   const fixed = enliven(road, 240);
@@ -273,6 +286,9 @@ test("enliven repairs the shot instead of refusing it, using what the picture al
 
   // A picture that names nothing movable still gets the clause a cinematographer would add.
   assert.match(enliven("a closed wooden door, flat even light", 240), /dust drifting through the light/);
+
+  const ship = "A wooden ship at anchor in a turquoise bay under a stormy sky";
+  assert.ok(stillness(enliven(ship, 240)).alive, "the sky is the thing that can move in this one");
 
   // Already alive: left exactly as written.
   const alive = "waves breaking over a stone pier at dusk";
