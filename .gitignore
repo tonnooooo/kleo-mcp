@@ -7,3 +7,8 @@ worker-configuration.d.ts
 __pycache__/
 *.pyc
 scripts/.devbox.json
+
+# The engine writes every render here: project.json, build/ and out/ for each job. Untracked and never
+# committed, but not ignored either — so a run interrupted before its cleanup left a whole rendered video sitting
+# in the shared working tree, ready for the next `git add -A` from any of the sessions that share it.
+worker/keou/projects/

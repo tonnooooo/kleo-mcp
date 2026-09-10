@@ -240,6 +240,63 @@ class VideoWiringTest(unittest.TestCase):
         self.assertEqual(self.steps, [])
 
 
+class RenderKeouTest(unittest.TestCase):
+    """The decision that keeps a black film off the internet does not live in generate_footage — it lives in
+    render_keou, in the three lines that run when filming failed. Those lines had no test: every test above proved
+    generate_footage says no, and none proved anyone listens to it.
+
+    If they are ever removed, nothing here fails except this: the project keeps backdrop "video", contract.py
+    refuses it for the missing clips, and the job dies after the card, the model and every clip have been paid for.
+    If contract.py were relaxed instead, it would be worse — the engine would draw the graphics onto a transparent
+    canvas with nothing behind them and deliver a film that is black from end to end."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kleo-render-keou-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.ran = []
+        self.saved = {k: getattr(kw, k) for k in ("progress", "wants_pictures", "generate_footage", "run_keou", "KEOU_DIR")}
+        kw.progress = lambda *a, **k: None
+        kw.wants_pictures = lambda sb: False
+        kw.KEOU_DIR = ENGINE
+        kw.run_keou = lambda *a, **k: self.ran.append(k)
+        self.addCleanup(lambda: [setattr(kw, k, v) for k, v in self.saved.items()])
+
+    def render(self, filmed):
+        """render_keou up to the point where it looks for a master the stubbed engine never wrote."""
+        def footage(project, pdir, engine, log_path, units):
+            for u in units:                      # whatever happened, some clips were attached before it gave up
+                u["shot"]["clip"] = f"clips/{u['id']}.mp4"
+            return filmed
+        kw.generate_footage = footage
+        out = os.path.join(self.tmp, "out")
+        os.makedirs(out, exist_ok=True)
+        with self.assertRaises(kw.RenderError):
+            kw.render_keou(job_for(storyboard()), out)
+        pdir = os.path.join(ENGINE, "projects", kw.project_id_for("j1"))
+        self.addCleanup(shutil.rmtree, pdir, True)
+        with open(os.path.join(pdir, "project.json")) as f:
+            return json.load(f)
+
+    def test_when_the_filming_failed_the_backdrop_and_every_clip_come_off(self):
+        project = self.render(filmed=False)
+        self.assertNotIn("backdrop", project, "a backdrop with no track is a promise the render cannot keep")
+        for s in project["scenes"]:
+            for sh in s.get("shots") or []:
+                self.assertNotIn("clip", sh, "a half-attached clip is what contract.py refuses")
+
+    def test_when_the_filming_worked_both_survive_into_the_render(self):
+        project = self.render(filmed=True)
+        self.assertEqual(project.get("backdrop"), "video")
+        self.assertTrue(all(sh.get("clip") for s in project["scenes"] for sh in (s.get("shots") or [])))
+
+    def test_the_script_is_not_voiced_twice(self):
+        """The voice pass is the slowest thing before the render. Once the worker has run it to find the shot
+        times, run.py must be told, or every filmed video pays for its narration twice."""
+        self.render(filmed=True)
+        self.assertEqual(len(self.ran), 1)
+        self.assertIn("skip_voice", self.ran[0])
+
+
 class ShotPlanTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="kleo-shotplan-")
