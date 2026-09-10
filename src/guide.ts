@@ -185,6 +185,10 @@ ART (1-8 per scene, drawn in order, each one anchored to the words it illustrate
   until   when it leaves, same two forms. Give a drawing an "until" and its successor an "at" on the
           same words: they overlap, so the frame is never empty.
   x,y     where it sits, in this frame's pixels. size 1 is the drawing's natural size.
+          ROOM: a drawing is about 400 pixels tall at size 1 and needs that much clear space around its
+          centre, or it lands on top of the one beside it. Put two drawings side by side, not stacked,
+          unless one is meant to be held or worn by the other. These four fill the frame and everything
+          else goes ON them, never beside them: room, corridor, blank, reader.
           THE CAPTION OWNS THE BOTTOM ${Math.round(fh * .22)} PIXELS: it is burned in from ${Math.round(fh * .78)} down, so
           nothing may sit under it. Keep y at or under ${Math.round(fh * .70)} for anything the viewer has to read.
   motion  ${quoted(SKETCH_MOTION)} — what the drawing DOES while it is on screen.
