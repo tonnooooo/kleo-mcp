@@ -46,6 +46,8 @@ async function newEnv(extra = {}) {
     DB: new FakeD1(), RENDER_BACKEND: "vast", PUBLIC_URL: "http://kleo.test", INTERNAL_SECRET: "s3cret",
     VAST_API_KEY: "k".repeat(64), VAST_IMAGE: "ghcr.io/kleo/worker:test", JOB_TIMEOUT_MIN: "120",
     MAX_CONCURRENT_GPUS: "5", MAX_JOBS_PER_USER: "2", FREE_CREDITS: "10", RESULT_TTL_DAYS: "7",
+    // Out of the way unless a test is about them: the daily job cap and the GPU budget have their own tests below.
+    MAX_JOBS_PER_DAY: "500", DAILY_GPU_BUDGET_USD: "1000",
     ...extra,
   };
   for (const f of readdirSync(join(ROOT, "migrations")).sort()) env.DB.db.exec(readFileSync(join(ROOT, "migrations", f), "utf8"));
@@ -388,4 +390,143 @@ test("picture jobs: the explanation is cleared as soon as a GPU is really reserv
   assert.equal(j.state, "starting");
   assert.equal(j.error, null);
   assert.equal(j.instance_id, "808");
+});
+
+/* ------------------------------------------------------------------ the daily GPU budget */
+test("budget: the estimate counts money already committed, not only money already spent", async () => {
+  // cost_usd is written when a rental ENDS, so a bare SUM reads 0.00 while GPUs burn. Each running job is therefore
+  // priced at the worst case it can still reach: VAST_MAX_DPH for its own timeout (per job, src/templates.ts).
+  const env = await newEnv({ VAST_MAX_DPH: "0.40", JOB_TIMEOUT_MIN: "60", MAX_JOBS_PER_USER: "10" });
+  const u = await user(env, 10);
+  assert.equal(await m.budgetSpentUsd(env), 0);
+
+  const rent = async (backend) => {
+    const j = await short(env, u);
+    await m.updateJob(env, j.id, { state: "starting", backend, instance_id: `i-${j.id}`, started_at: new Date().toISOString() });
+    return j;
+  };
+  await rent("vast"); await rent("vast");
+  assert.equal(Math.round((await m.budgetSpentUsd(env)) * 100) / 100, 0.8, "two rented GPUs are worth 0.80, not 0.00");
+
+  // A job claimed by the free GitHub pool has committed nothing: counting it would shut the paid path down over
+  // money that was never spent, and audit a budget.paused the owner cannot reconcile with his Vast balance.
+  await rent("pool");
+  assert.equal(Math.round((await m.budgetSpentUsd(env)) * 100) / 100, 0.8, "free work costs nothing and must not price anything");
+
+  const done = await short(env, u);
+  await m.updateJob(env, done.id, { state: "done", cost_usd: 0.17, finished_at: new Date().toISOString() });
+  assert.equal(Math.round((await m.budgetSpentUsd(env)) * 100) / 100, 0.97, "today's bill plus what is in flight");
+});
+
+test("budget: a long video is priced at its own timeout, not at a Short's", async () => {
+  // The timeout follows the video (templates.ts jobTimeoutMin), so the money term has to follow it too: a video the
+  // server itself announces in 80 minutes is allowed to run that long, and is worth that many GPU minutes.
+  const env = await newEnv({ VAST_MAX_DPH: "0.40", JOB_TIMEOUT_MIN: "60", LOADING_TIMEOUT_MIN: "40", MAX_JOBS_PER_USER: "10" });
+  const u = await user(env, 10);
+  const long = await m.createJob(env, u, { template: "story-documentary", prompt: "The island that was never on any map", duration_s: 480 });
+  await m.updateJob(env, long.id, { state: "rendering", backend: "vast", instance_id: "i-long", started_at: new Date().toISOString() });
+  // etaFor(480) = 80 min of render + 40 min of tolerated image pull = 120 min at 0.40 $/h.
+  assert.equal(Math.round((await m.budgetSpentUsd(env)) * 100) / 100, 0.8);
+});
+
+test("budget: yesterday's spending does not count against today", async () => {
+  const env = await newEnv();
+  const u = await user(env, 10);
+  const old = await short(env, u);
+  await m.updateJob(env, old.id, { state: "done", cost_usd: 5, finished_at: new Date(Date.now() - 48 * 3600_000).toISOString() });
+  assert.equal(await m.budgetSpentUsd(env), 0, "the wall is a daily one, so it resets at midnight UTC");
+});
+
+test("budget: over the ceiling no GPU is rented, the job keeps its place and its credits", async () => {
+  const env = await newEnv({ DAILY_GPU_BUDGET_USD: "0.50", VAST_MAX_DPH: "0.40", JOB_TIMEOUT_MIN: "60" });
+  const u = await user(env, 10);
+  const spent = await short(env, u);
+  await m.updateJob(env, spent.id, { state: "done", cost_usd: 0.60, finished_at: new Date().toISOString() });
+  const waiting = await short(env, u, { style: "cartoon" });
+  await m.updateJob(env, waiting.id, { storyboard: PICTURE });
+
+  const v = fakeVast({ onCreate: () => ({ create: 909 }) });
+  await withVast(v, () => m.tick(env));
+  assert.equal(count(v, "PUT /asks/"), 0, "nothing is rented once the day's budget is gone");
+  const j = await m.getJob(env, waiting.id);
+  assert.equal(j.state, "queued", "the job waits, it is not failed and not refunded");
+  assert.equal(await m.getUser(env, u.id).then((x) => x.credits), 8, "and the credits stay debited, as for any queued job");
+  assert.ok(j.error.startsWith(m.GPU_ONLY_WAIT), "the same wait machinery explains it, no second mechanism");
+  const paused = await events(env, "budget.paused");
+  assert.equal(paused.length, 1);
+  assert.equal(paused[0].detail.budget_usd, 0.5);
+  assert.equal((await events(env, "job.waiting_for_gpu"))[0].detail.reason, "budget_pause");
+
+  // The pause lasts an hour: a second tick must not audit it again, and must still refuse to rent.
+  await withVast(v, () => m.tick(env));
+  assert.equal((await events(env, "budget.paused")).length, 1);
+  assert.equal(count(v, "PUT /asks/"), 0);
+});
+
+test("budget: under the ceiling the rental happens exactly as before", async () => {
+  const env = await newEnv({ DAILY_GPU_BUDGET_USD: "1.00", VAST_MAX_DPH: "0.40", JOB_TIMEOUT_MIN: "60" });
+  const u = await user(env, 10);
+  const job = await short(env, u);
+  await m.updateJob(env, job.id, { storyboard: JSON.stringify({ style: "cinema", scenes: [] }) });
+  const v = fakeVast({ onCreate: () => ({ create: 910 }) });
+  await withVast(v, () => m.tick(env));
+  assert.equal((await m.getJob(env, job.id)).state, "starting");
+  assert.equal((await events(env, "budget.paused")).length, 0);
+});
+
+/* ------------------------------------------------------------------ the pause switch */
+test("pause: the flag stops GPU rentals the same way a Vast outage does", async () => {
+  const env = await newEnv();
+  const u = await user(env, 10);
+  const job = await short(env, u);
+  await m.updateJob(env, job.id, { storyboard: JSON.stringify({ style: "cinema", scenes: [] }) });
+  await m.setFlagUntil(env, "paused", 3600);
+  const v = fakeVast({ onCreate: () => ({ create: 911 }) });
+  await withVast(v, () => m.tick(env));
+  assert.equal(count(v, "PUT /asks/"), 0, "the switch really does stop the spending");
+  assert.equal((await m.getJob(env, job.id)).state, "queued");
+  await m.releaseLock(env, "paused");
+  await withVast(v, () => m.tick(env));
+  assert.equal((await m.getJob(env, job.id)).state, "starting", "and resuming starts the queue again");
+});
+
+/* ------------------------------------------------------------------ jobs that never got a GPU */
+test("queue: a job that waited longer than QUEUE_MAX_WAIT_MIN fails and is refunded", async () => {
+  const env = await newEnv({ QUEUE_MAX_WAIT_MIN: "180" });
+  const u = await user(env, 10);
+  const job = await short(env, u);
+  assert.equal(await m.getUser(env, u.id).then((x) => x.credits), 9);
+  const waited = new Date(Date.now() - 200 * 60_000).toISOString();
+  await m.updateJob(env, job.id, { created_at: waited, queued_at: waited, storyboard: JSON.stringify({ style: "cinema", scenes: [] }) });
+  const v = fakeVast({ onCreate: () => ({ status: 500 }) }); // no GPU to be had, which is what the job is waiting for
+  await withVast(v, () => m.tick(env));
+  const j = await m.getJob(env, job.id);
+  assert.equal(j.state, "failed");
+  assert.match(j.error, /no GPU was free in time/);
+  assert.equal(await m.getUser(env, u.id).then((x) => x.credits), 10, "credits taken for a video that never ran come back");
+});
+
+test("queue: the wait is counted from the last time the job entered the queue, and names the right culprit", async () => {
+  const env = await newEnv({ QUEUE_MAX_WAIT_MIN: "180", MAX_JOBS_PER_USER: "10" });
+  const u = await user(env, 10);
+  const longAgo = new Date(Date.now() - 400 * 60_000).toISOString();
+
+  // Rendered for hours, failed, went back to the queue: the clock restarts, or the job is killed on the spot for a
+  // wait it never made and the two retries it still had are thrown away.
+  const retried = await short(env, u);
+  await m.updateJob(env, retried.id, { created_at: longAgo, queued_at: longAgo, storyboard: JSON.stringify({ style: "cinema", scenes: [] }),
+    state: "rendering", backend: "manual", attempts: 1, started_at: longAgo });
+  await m.failJob(env, await m.getJob(env, retried.id), "worker: crashed", true);
+  assert.equal((await m.getJob(env, retried.id)).state, "queued");
+  assert.deepEqual((await m.staleQueuedJobs(env, 180)).map((j) => j.id), [], "the wait for a GPU starts when the job entered the queue");
+
+  // A job with no storyboard never asked for a GPU at all: it was the planner that held it, and so the message must say.
+  const unplanned = await short(env, u);
+  await m.updateJob(env, unplanned.id, { created_at: longAgo, queued_at: longAgo });
+  const v = fakeVast();
+  await withVast(v, () => m.tick(env));
+  const j = await m.getJob(env, unplanned.id);
+  assert.equal(j.state, "failed");
+  assert.match(j.error, /could not write the storyboard/);
+  assert.ok(!/no GPU was free/.test(j.error), "pointing at Vast for a Workers AI outage sends the owner to the wrong place");
 });

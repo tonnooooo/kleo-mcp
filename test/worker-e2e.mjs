@@ -57,7 +57,7 @@ async function main() {
   const reg = await (await fetch(`${BASE}/register`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ client_name: "worker-e2e", redirect_uris: ["http://localhost:9999/cb"], token_endpoint_auth_method: "none", grant_types: ["authorization_code"], response_types: ["code"] }) })).json();
   const verifier = b64url(crypto.randomBytes(32)), challenge = b64url(crypto.createHash("sha256").update(verifier).digest());
   const q = new URLSearchParams({ response_type: "code", client_id: reg.client_id, redirect_uri: "http://localhost:9999/cb", scope: "video:create video:read", state: "s", code_challenge: challenge, code_challenge_method: "S256" });
-  const post = await fetch(`${BASE}/authorize`, { method: "POST", body: new URLSearchParams({ email: `e2e-${Date.now()}@example.com`, invite: "KLEO-BETA", consent: "yes", oauth_query: q.toString() }), redirect: "manual" });
+  const post = await fetch(`${BASE}/authorize`, { method: "POST", body: new URLSearchParams({ oauth_query: q.toString() }), redirect: "manual" });
   const code = new URL(post.headers.get("location")).searchParams.get("code");
   const tok = await (await fetch(`${BASE}/token`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: "http://localhost:9999/cb", client_id: reg.client_id, code_verifier: verifier }) })).json();
   assert(tok.access_token, "no token");

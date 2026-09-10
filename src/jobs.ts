@@ -1,5 +1,6 @@
 import type { Env } from "./env";
-import { type Job, type JobParams, type JobState, type User, OPEN_STATES, countOpenForUser, debitCredits, refundCredits, insertJob, transitionJob, audit, getUserJob, listFiles } from "./db";
+import { type Job, type JobParams, type JobState, type User, OPEN_STATES, countOpenForUser, countJobsTodayForUser, addJobCost, debitCredits, refundCredits, insertJob, transitionJob, audit, getUserJob, listFiles } from "./db";
+import { accountUrl } from "./accounts";
 import { findTemplate, creditsFor, etaFor, normalizeVoice, voiceSpellings, type Format } from "./templates";
 import { rid, nowIso, int, hmacHex } from "./util";
 import { isFlagActive } from "./schema";
@@ -90,17 +91,22 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   if (!style) style = pickKleoStyle(t.id, prompt);
 
   if (!input.storyboard && (await isFlagActive(env, "plan_pause")))
-    throw new JobError("Kleo's automatic storyboard planner is paused right now (its daily AI quota is used up). Call kleo_storyboard_guide, write the storyboard yourself, then call kleo_create_video again with the storyboard argument. Nothing was charged.");
+    throw new JobError("Kleo cannot write the storyboard itself right now: it has used up today's free planning. You can still make the video, and it costs the same: call kleo_storyboard_guide, write the storyboard yourself, then call kleo_create_video again with the storyboard argument. Nothing was charged.");
   const maxOpen = int(env.MAX_JOBS_PER_USER, 2);
   const open = await countOpenForUser(env, user.id);
   if (open >= maxOpen)
     throw new JobError(`You already have ${plural(open, "video")} in progress, and the limit is ${maxOpen} at a time. Wait for one to finish (kleo_get_job) or cancel one with kleo_cancel_job. Nothing was charged.`);
+  // The limit above only counts videos running AT ONCE, so it lets one account queue as fast as jobs finish.
+  const maxPerDay = int(env.MAX_JOBS_PER_DAY, 2);
+  const today = await countJobsTodayForUser(env, user.id);
+  if (today >= maxPerDay)
+    throw new JobError(`You have already started ${plural(today, "video")} today, and the limit is ${maxPerDay} a day while Kleo is in beta. Come back tomorrow. Nothing was charged.`);
 
   const credits = creditsFor(duration);
   const jobId = rid("gt", 8);
   // The debit is one conditional UPDATE: it either takes the credits for this job or does nothing.
   if (!(await debitCredits(env, user.id, credits, jobId)))
-    throw new JobError(`Not enough credits: this ${kindOf(format)} costs ${plural(credits, "credit")} and you have ${plural(Math.max(0, user.credits), "credit")}. Ask the Kleo team for more credits. Nothing was charged.`);
+    throw new JobError(`Not enough credits: this ${kindOf(format)} costs ${plural(credits, "credit")} and you have ${plural(Math.max(0, user.credits), "credit")}. Nothing was charged. Your account and how to get more: ${await accountUrl(env, user.id)}`);
 
   const params: JobParams = { duration_s: duration, format, language, voice, style };
   const job: Job = {
@@ -144,7 +150,12 @@ export async function cancelJob(env: Env, user: User, jobId: string): Promise<{ 
   if (!moved) throw notCancellable((await getUserJob(env, user.id, jobId)) ?? job);
   // Whatever GPU the job holds is released now; the orchestrator never rents one for a cancelled job (see tick()).
   if (job.instance_id) {
-    try { await backendFor(env, job.backend).destroy(env, job); } catch (e) { await audit(env, user.id, job.id, "backend.destroy.error", String(e)); }
+    try {
+      // A cancel is a rental that ENDED: those minutes are already on the Vast bill, and this job will never reach
+      // "done" to write a cost of its own, so without this line the daily ceiling never sees cancelled renders at all.
+      const est = await backendFor(env, job.backend).destroy(env, job);
+      if (typeof est === "number" && est > 0) await addJobCost(env, job.id, est);
+    } catch (e) { await audit(env, user.id, job.id, "backend.destroy.error", String(e)); }
   }
   const refunded = await refundCredits(env, user.id, refund, job.id, `cancelled at ${job.percent}% (${job.state})`);
   await audit(env, user.id, job.id, "job.cancelled", { refunded, percent: job.percent, state_before: job.state });

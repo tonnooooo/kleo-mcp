@@ -41,6 +41,8 @@ export interface Job {
   cost_usd: number | null;
   /** ISO time of the last worker progress report; null until the worker speaks. */
   last_report_at?: string | null;
+  /** ISO time the job entered the QUEUE, reset on every requeue; null on rows created before the column existed. */
+  queued_at?: string | null;
   storyboard: string | null; // JSON: Keou project without id/script_file/music_quiet/image scenes (see keou-contract.ts)
   plan_attempts: number;
   plan_error: string | null;
@@ -74,6 +76,12 @@ export interface Invite {
 const inList = (states: JobState[]) => states.map((s) => `'${s}'`).join(",");
 
 export const getUser = (env: Env, id: string) => env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<User>();
+/**
+ * Nothing calls this today (accounts are anonymous: users.email holds a synthetic <id>@anon.kleo.invalid address).
+ * It is kept on purpose as the seam for a real identity later — a Google sign-in, or the address Stripe collects:
+ * that identity must be written onto the EXISTING row, keeping the same users.id, the same credits and the same
+ * history. Creating a parallel account instead would 401 every client already connected to the old id.
+ */
 export const getUserByEmail = (env: Env, email: string) =>
   env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email.toLowerCase()).first<User>();
 
@@ -86,6 +94,27 @@ export async function createUser(env: Env, u: { id: string; email: string; credi
 export async function countUsersCreatedToday(env: Env): Promise<number> {
   const r = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE created_at >= strftime('%Y-%m-%dT00:00:00.000Z','now')").first<{ n: number }>();
   return r?.n ?? 0;
+}
+/**
+ * Accounts created today from one hashed address. There is no ip column yet (Phase 2), so the count is taken from
+ * the fingerprint the user.created audit row carries: enough to stop one address from eating the whole day's
+ * allowance, and it stores no address, only an HMAC of one.
+ */
+export async function countUsersCreatedTodayForIp(env: Env, ipHash: string): Promise<number> {
+  const r = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM audit WHERE event = 'user.created'
+       AND at >= strftime('%Y-%m-%dT00:00:00.000Z','now') AND detail LIKE '%"ip":"' || ? || '"%'`
+  ).bind(ipHash).first<{ n: number }>();
+  return r?.n ?? 0;
+}
+/**
+ * Credits a gift code onto an account that already exists, at most once in its life: the UPDATE applies only while
+ * invite_code is still empty, so a code cannot be re-typed on every reconnection to milk the same gift.
+ */
+export async function applyBonusToUser(env: Env, userId: string, code: string, credits: number): Promise<boolean> {
+  const r = await env.DB.prepare("UPDATE users SET credits = credits + ?, invite_code = ? WHERE id = ? AND invite_code IS NULL")
+    .bind(credits, code, userId).run();
+  return (r.meta.changes ?? 0) === 1;
 }
 export const touchUser = (env: Env, id: string) =>
   env.DB.prepare("UPDATE users SET last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").bind(id).run();
@@ -126,23 +155,40 @@ export async function countOpenForUser(env: Env, userId: string): Promise<number
   const r = await env.DB.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE user_id = ? AND state IN (${inList(OPEN_STATES)})`).bind(userId).first<{ n: number }>();
   return r?.n ?? 0;
 }
-/** Videos this account has STARTED since midnight UTC (countOpenForUser only sees the concurrent ones). */
+/**
+ * Videos this account has STARTED since midnight UTC (countOpenForUser only sees the concurrent ones).
+ * Failed and cancelled videos are NOT counted: their credits were given back, and a limit that counted them would
+ * lock a user out of the day with credits they cannot spend — exactly the two failures a first visit is likeliest to hit.
+ */
 export async function countJobsTodayForUser(env: Env, userId: string): Promise<number> {
-  const r = await env.DB.prepare("SELECT COUNT(*) AS n FROM jobs WHERE user_id = ? AND created_at >= strftime('%Y-%m-%dT00:00:00.000Z','now')").bind(userId).first<{ n: number }>();
+  const r = await env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM jobs WHERE user_id = ? AND created_at >= strftime('%Y-%m-%dT00:00:00.000Z','now') AND state NOT IN ('failed','cancelled')"
+  ).bind(userId).first<{ n: number }>();
   return r?.n ?? 0;
 }
 /**
- * GPU dollars charged to jobs that FINISHED since midnight UTC. This is the only spend written down, and it is an
- * undercount by construction: cost_usd is set when a job finishes, so a GPU that is still burning is worth 0 here,
- * and a rental that failed never writes the field at all. The orchestrator adds the in-flight term on top.
+ * GPU dollars written down against jobs of this UTC day. A finished job is dated by finished_at; a job that failed
+ * a rental and went back to the queue has no finished_at yet, so it is dated by created_at — its rental still cost
+ * money and the day's ceiling has to see it. Still an undercount: a GPU running right now has written nothing at all
+ * (the orchestrator adds the in-flight term on top), and a job created before midnight that fails after it is missed.
  */
 export async function spentTodayUsd(env: Env): Promise<number> {
-  const r = await env.DB.prepare("SELECT COALESCE(SUM(cost_usd),0) AS s FROM jobs WHERE finished_at >= strftime('%Y-%m-%dT00:00:00.000Z','now')").first<{ s: number }>();
+  const r = await env.DB.prepare(
+    "SELECT COALESCE(SUM(cost_usd),0) AS s FROM jobs WHERE COALESCE(finished_at, created_at) >= strftime('%Y-%m-%dT00:00:00.000Z','now')"
+  ).first<{ s: number }>();
   return r?.s ?? 0;
 }
 export async function countRunning(env: Env): Promise<number> {
   const r = await env.DB.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE state IN (${inList(ACTIVE_STATES)})`).first<{ n: number }>();
   return r?.n ?? 0;
+}
+/**
+ * The jobs holding a PAID GPU right now. Only these may be priced into the daily budget: a job claimed by a free
+ * GitHub runner is 'starting' with backend 'pool' and costs nothing, so counting it would shut the paid path down
+ * over money that was never committed (and audit a budget.paused the owner cannot reconcile with his Vast balance).
+ */
+export async function runningPaidJobs(env: Env): Promise<Job[]> {
+  return (await env.DB.prepare(`SELECT * FROM jobs WHERE state IN (${inList(ACTIVE_STATES)}) AND backend = 'vast'`).all<Job>()).results;
 }
 /** Queued jobs that already have a storyboard: the only ones a GPU may be started for. */
 export async function queuedJobs(env: Env, limit: number): Promise<Job[]> {
@@ -158,10 +204,15 @@ export async function claimPlanAttempt(env: Env, id: string, expectedAttempts: n
   const r = await env.DB.prepare("UPDATE jobs SET plan_attempts = plan_attempts + 1 WHERE id = ? AND plan_attempts = ? AND state = 'queued' AND storyboard IS NULL").bind(id, expectedAttempts).run();
   return (r.meta.changes ?? 0) === 1;
 }
-/** Jobs still queued after `minutes`: nothing ever times out a queued job, so without this they wait for ever. */
+/**
+ * Jobs still queued after `minutes`: nothing ever times out a queued job, so without this they wait for ever.
+ * The clock is queued_at, not created_at: a job that rendered for an hour, failed and was legitimately requeued
+ * would otherwise be killed on the spot with "no GPU was free in time", throwing away the retries it still had.
+ * (COALESCE covers rows written before the column existed.)
+ */
 export async function staleQueuedJobs(env: Env, minutes: number, limit = 20): Promise<Job[]> {
   const cutoff = new Date(Date.now() - minutes * 60_000).toISOString();
-  return (await env.DB.prepare("SELECT * FROM jobs WHERE state = 'queued' AND created_at < ? ORDER BY created_at LIMIT ?").bind(cutoff, limit).all<Job>()).results;
+  return (await env.DB.prepare("SELECT * FROM jobs WHERE state = 'queued' AND COALESCE(queued_at, created_at) < ? ORDER BY created_at LIMIT ?").bind(cutoff, limit).all<Job>()).results;
 }
 export async function activeJobs(env: Env): Promise<Job[]> {
   return (await env.DB.prepare(`SELECT * FROM jobs WHERE state IN (${inList(ACTIVE_STATES)}) ORDER BY started_at`).all<Job>()).results;
@@ -177,10 +228,18 @@ export async function expiredJobs(env: Env, limit = 20): Promise<Job[]> {
 
 export async function insertJob(env: Env, j: Job): Promise<void> {
   await env.DB.prepare(
-    `INSERT INTO jobs (id, user_id, template, prompt, params, state, percent, eta_min, credits, worker_secret, notify_email, created_at, storyboard, plan_attempts, plan_error)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(j.id, j.user_id, j.template, j.prompt, j.params, j.state, j.percent, j.eta_min, j.credits, j.worker_secret, j.notify_email, j.created_at, j.storyboard, j.plan_attempts, j.plan_error).run();
+    `INSERT INTO jobs (id, user_id, template, prompt, params, state, percent, eta_min, credits, worker_secret, notify_email, created_at, queued_at, storyboard, plan_attempts, plan_error)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(j.id, j.user_id, j.template, j.prompt, j.params, j.state, j.percent, j.eta_min, j.credits, j.worker_secret, j.notify_email, j.created_at, j.queued_at ?? j.created_at, j.storyboard, j.plan_attempts, j.plan_error).run();
 }
+
+/**
+ * Adds what one rental cost to the job's bill. One UPDATE, so nothing is lost between a read and a write, and it
+ * ACCUMULATES: a job may rent up to MAX_ATTEMPTS times, and every one of those rentals is real money the daily
+ * ceiling has to see — not only the rental of the attempt that happened to succeed.
+ */
+export const addJobCost = (env: Env, id: string, usd: number) =>
+  env.DB.prepare("UPDATE jobs SET cost_usd = COALESCE(cost_usd, 0) + ? WHERE id = ?").bind(usd, id).run();
 
 export async function updateJob(env: Env, id: string, fields: Partial<Job>): Promise<void> {
   const keys = Object.keys(fields) as (keyof Job)[];

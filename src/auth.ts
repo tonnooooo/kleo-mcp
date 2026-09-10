@@ -1,7 +1,7 @@
 import { AuthorizationError, type AuthRequest } from "@cloudflare/workers-oauth-provider";
 import type { Env, AuthProps } from "./env";
-import { type User, getUser, createUser, getInvite, useInvite, touchUser, countUsersCreatedToday, audit } from "./db";
-import { accountCookie, cookieHandle, makeHandle, signupRateKey, verifyHandle, verifyTurnstile } from "./accounts";
+import { type User, getUser, createUser, getInvite, useInvite, applyBonusToUser, touchUser, countUsersCreatedToday, countUsersCreatedTodayForIp, audit } from "./db";
+import { accountCookie, cookieHandle, ipFingerprint, makeHandle, signupRateKey, verifyHandle, verifyTurnstile } from "./accounts";
 import { html, escapeHtml, rid, int } from "./util";
 
 /**
@@ -44,7 +44,7 @@ export async function handleAuthorize(request: Request, env: Env): Promise<Respo
   if (!(await verifyTurnstile(env, String(form.get("cf-turnstile-response") ?? ""), ip)))
     return back("Kleo could not check that you are a person. Reload the page and press the button again.", 403);
 
-  const resolved = await resolveAccount(env, { cookie: cookieHandle(request.headers.get("cookie")), key: pastedKey, bonus: bonusCode });
+  const resolved = await resolveAccount(env, { cookie: cookieHandle(request.headers.get("cookie")), key: pastedKey, bonus: bonusCode, ip });
   if ("error" in resolved) return back(resolved.error, resolved.status);
   const user = resolved.user;
   await touchUser(env, user.id);
@@ -71,35 +71,72 @@ async function returningUser(env: Env, request: Request): Promise<User | undefin
 type Resolved = { user: User } | { error: string; status: number };
 
 /**
- * Cookie first, then a pasted Kleo key, then a new account — and ONLY the new account is given free credits.
- * The daily cap is checked before createUser, so a day that is over creates neither a user nor credits.
+ * A pasted Kleo key FIRST, then the cookie, then a new account — and ONLY the new account is given free credits.
+ * The key comes first on purpose: typing one is an explicit "this is my account", while a cookie is merely what this
+ * browser happens to hold, and the very case the key exists for (an account left on another computer) is the case
+ * where this browser already has a cookie of its own. Whichever branch wins, a gift code typed alongside is applied.
+ * The daily caps are checked before createUser, so a day that is over creates neither a user nor credits.
  */
-async function resolveAccount(env: Env, o: { cookie: string | null; key: string; bonus: string }): Promise<Resolved> {
-  for (const handle of [o.cookie, o.key]) {
+async function resolveAccount(env: Env, o: { cookie: string | null; key: string; bonus: string; ip: string | null }): Promise<Resolved> {
+  const accountFor = async (handle: string | null) => {
     const userId = await verifyHandle(env, handle);
-    const user = userId ? await getUser(env, userId) : null;
-    if (user) return { user };
+    return userId ? await getUser(env, userId) : null;
+  };
+  if (o.key) {
+    // A typed key that does not work is always an error, even here where the cookie would have done: silently signing
+    // the person into the browser's own account is how somebody ends up on the wrong balance and never finds out.
+    const user = await accountFor(o.key);
+    if (!user) return { error: "That Kleo key is not valid. Check that you copied all of it, or leave the field empty to start a new account.", status: 400 };
+    return { user: await applyBonus(env, user, o.bonus) };
   }
-  if (o.key) return { error: "That Kleo key is not valid. Check that you copied all of it, or leave the field empty to start a new account.", status: 400 };
+  const known = await accountFor(o.cookie);
+  if (known) return { user: await applyBonus(env, known, o.bonus) };
 
   if ((await countUsersCreatedToday(env)) >= int(env.MAX_NEW_USERS_PER_DAY, 25))
     return { error: "Kleo has handed out today's free Shorts. Come back tomorrow and this button will work again.", status: 429 };
+  // Without this, 25 requests from one address close the free tier for everybody until midnight UTC, at no cost to
+  // whoever sent them. Deliberately soft, and worded so it never accuses: whole offices share one address.
+  const ip = await ipFingerprint(env, o.ip);
+  if (ip && (await countUsersCreatedTodayForIp(env, ip)) >= int(env.MAX_NEW_USERS_PER_IP_DAY, 5))
+    return { error: "Kleo is giving out its free Shorts slowly today. Try again in a little while, and your account will be waiting.", status: 429 };
 
-  const bonus = o.bonus ? await bonusCredits(env, o.bonus) : 0;
+  const bonus = o.bonus ? await claimBonus(env, o.bonus) : 0;
   const credits = int(env.FREE_CREDITS, 2) + bonus;
   const id = rid("u", 12);
   // users.email is NOT NULL UNIQUE and an anonymous account has no address: this synthetic one satisfies the
   // constraint, so the open door needs no migration and no new column. .invalid can never be a real domain (RFC 2606).
   const user = await createUser(env, { id, email: `${id}@anon.kleo.invalid`, credits, inviteCode: bonus ? o.bonus : null });
-  if (bonus) await useInvite(env, o.bonus);
-  await audit(env, user.id, null, "user.created", { source: "open", credits, bonus });
+  if (o.bonus && !bonus) await audit(env, user.id, null, "bonus.rejected", { code: o.bonus, reason: "unknown code, or every use of it is gone" });
+  await audit(env, user.id, null, "user.created", { source: "open", credits, bonus, ip });
   return { user };
 }
 
-/** The invites table survives as a GIFT, never as a gate: an unknown or exhausted code simply adds nothing. */
-async function bonusCredits(env: Env, code: string): Promise<number> {
+/**
+ * A gift code typed by a browser that already has an account. Nothing is blocked either way — a code is a gift,
+ * never a gate — but the outcome is always written down, because a code that silently does nothing is a gift the
+ * owner handed out and neither side can trace.
+ */
+async function applyBonus(env: Env, user: User, code: string): Promise<User> {
+  if (!code) return user;
+  const reject = async (reason: string) => { await audit(env, user.id, null, "bonus.rejected", { code, reason }); return user; };
+  if (user.invite_code) return reject("this account has already used a bonus code");
+  const credits = await claimBonus(env, code);
+  if (!credits) return reject("unknown code, or every use of it is gone");
+  if (!(await applyBonusToUser(env, user.id, code, credits))) return reject("this account has already used a bonus code");
+  await audit(env, user.id, null, "bonus.applied", { code, credits });
+  return (await getUser(env, user.id)) ?? user;
+}
+
+/**
+ * Claims ONE use of a gift code and returns what it is worth (0: unknown, or every use gone). The atomic UPDATE
+ * comes first and the credits are granted only if it changed a row — reading the row and granting before claiming
+ * let twenty simultaneous presses all see uses = 0 and mint a one-use code twenty times over.
+ */
+async function claimBonus(env: Env, code: string): Promise<number> {
   const row = await getInvite(env, code);
-  return row && row.uses < row.max_uses ? row.credits : 0;
+  if (!row) return 0;
+  const r = await useInvite(env, code);
+  return (r.meta.changes ?? 0) === 1 ? row.credits : 0;
 }
 
 async function parseOrError(request: Request, env: Env): Promise<AuthRequest | Response> {
@@ -107,7 +144,7 @@ async function parseOrError(request: Request, env: Env): Promise<AuthRequest | R
     return await env.OAUTH_PROVIDER.parseAuthRequest(request);
   } catch (error) {
     if (!(error instanceof AuthorizationError)) throw error;
-    if (!error.redirectUri) return html(page({ error: error.description ?? "This connection request is not valid. Please try connecting Kleo again from your assistant.", clientName: "", oauthQuery: "", freeCredits: 2 }), 400);
+    if (!error.redirectUri) return html(page({ error: error.description ?? "This connection request is not valid. Please try connecting Kleo again from your assistant.", clientName: "", oauthQuery: "", freeCredits: int(env.FREE_CREDITS, 2) }), 400);
     const redirect = new URL(error.redirectUri);
     redirect.searchParams.set("error", error.code);
     if (error.description) redirect.searchParams.set("error_description", error.description);
@@ -152,7 +189,7 @@ ${o.returning ? `<div class="back">Welcome back - ${plural(o.returning.credits, 
 <details><summary>Have a bonus code, or a Kleo key?</summary>
 <label for="bonus">Bonus code</label><input id="bonus" name="bonus" type="text" autocomplete="off" placeholder="Leave empty" style="text-transform:uppercase">
 <label for="account_key">Kleo key</label><input id="account_key" name="account_key" type="text" autocomplete="off" placeholder="Leave empty">
-<p class="note">A Kleo key brings an account you already have on another browser. Ask your assistant for kleo_account to see yours.</p>
+<p class="note">A bonus code adds credits, to a new account or to the one this browser already has. A Kleo key brings an account you already have on another browser: ask your assistant for kleo_account to see yours.</p>
 </details>
 <div class="foot">1 credit = 1 Short. You start with ${o.freeCredits}. When they run out, Kleo gives you a link in the chat.</div>
 </form></body></html>`;

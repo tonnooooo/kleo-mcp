@@ -1,6 +1,6 @@
 # Kleo e l'MCP: come funziona, come si collega, come si costruisce
 
-*Guida per te, in italiano. Il sito resta in inglese. Aggiornata al 10 settembre 2026. "Kleo" è un nome provvisorio: la sezione 9 dice cosa toccare per cambiarlo.*
+*Guida per te, in italiano. Il sito resta in inglese. Aggiornata all'11 settembre 2026. "Kleo" è un nome provvisorio: la sezione 9 dice cosa toccare per cambiarlo.*
 
 ## 1. Cos'è un MCP, in cinque righe
 
@@ -11,9 +11,9 @@ La tua azienda quindi non vende un'app: vende un indirizzo. Tutta l'interfaccia 
 ## 2. Cosa succede quando Cristiano incolla l'indirizzo
 
 1. Il client chiama l'indirizzo e trova `/.well-known/oauth-protected-resource`, che dice "per usarmi serve un token, l'accesso lo gestisce questo authorization server".
-2. Il client si registra come applicazione presso Kleo (in automatico, standard OAuth 2.1) e apre nel browser la **pagina di accesso di Kleo**. Cristiano scrive la sua email e il codice invito (`CRISTIANO-1`) e acconsente. Il codice resta legato a quella email.
+2. Il client si registra come applicazione presso Kleo (in automatico, standard OAuth 2.1) e apre nel browser la **pagina di accesso di Kleo**. Cristiano non scrive niente: c'è un solo bottone, "Start free", e premerlo è il consenso. In quel momento nasce un account anonimo con 2 crediti, ricordato da un cookie firmato di quel browser. Se un domani collega Kleo anche a ChatGPT dallo stesso computer, ritrova lo stesso account e gli stessi crediti, non altri due gratis.
 3. Kleo rilascia un token. Da quel momento ogni richiesta del client porta quel token e Kleo sa che è Cristiano, quanti crediti ha, quanti video ha in corso.
-4. Il client chiama `tools/list` e mostra al modello i sette strumenti con le loro descrizioni.
+4. Il client chiama `tools/list` e mostra al modello i nove strumenti con le loro descrizioni.
 5. Cristiano scrive "fammi uno Short sui pirati". Il modello legge i template (`kleo_list_templates`), di solito chiede la guida (`kleo_storyboard_guide`) e scrive lui lo storyboard, poi chiama `kleo_create_video`. Kleo risponde in meno di un secondo con un numero di video (`job_id`) e una stima. Il modello lo dice a Cristiano: "avviato, ci vogliono circa 15 minuti".
 6. Dieci minuti dopo Cristiano chiede "a che punto è?". Il modello chiama `kleo_get_job`, legge "70%, sta disegnando le scene", e lo riferisce. Quando è pronto, `kleo_get_result` restituisce i link a MP4, sottotitoli e thumbnail, validi 7 giorni.
 
@@ -23,7 +23,7 @@ Tutto questo funziona uguale in ogni client, perché lo standard è lo stesso. C
 
 Un tool MCP ha lo stesso tempo di una pagina web: i client aspettano al massimo qualche decina di secondi. Un render dura 10–20 minuti per uno Short e fino a un'ora per un video lungo. La regola è quindi: **nessuno strumento fa aspettare la chat**. `kleo_create_video` mette il lavoro in coda e torna subito; il lavoro vero lo fa l'orchestratore (un cron ogni minuto) su una macchina noleggiata. Lo standard MCP (revisione 2026-07-28) prevede anche l'estensione **Tasks**: la useremo quando i client la supportano; `kleo_get_job` resta comunque, perché funziona ovunque.
 
-## 4. Gli otto strumenti, con le descrizioni che legge il modello
+## 4. I nove strumenti, con le descrizioni che legge il modello
 
 Le descrizioni sono il manuale del modello: se sono scritte bene, il modello sceglie lo strumento giusto e compila i parametri giusti senza che l'utente sappia nulla di tecnico. Le descrizioni vere e complete stanno in `src/mcp.ts`; qui il riassunto.
 
@@ -72,11 +72,18 @@ Le descrizioni sono il manuale del modello: se sono scritte bene, il modello sce
 //                    started, otherwise in proportion to the work left."
 { "job_id": { "type": "string" } }
 // → { job_id, state: "cancelled", refunded }
+
+// kleo_account — "The credits left, the link to the account page and the Kleo key that carries the same account
+//                 to another browser."
+{ } // nessun parametro
+// → { credits_available, free_tier, account_key, account_url, payments_open }
 ```
 
+`account_key` è la "chiave Kleo": è la stessa stringa del cookie, quindi chi ce l'ha prende l'account e ne spende i crediti. Il modello la mostra solo se l'utente la chiede; la pagina `/credits` la mostra solo al browser che quell'account ce l'ha già. Il link `account_url` invece lo può dare sempre: porta a una pagina di sola lettura (saldo, prezzi, indirizzo a cui scrivere) che non fa entrare nessuno, ed è quello che `kleo_create_video` restituisce quando i crediti sono finiti.
+
 Regole che il server applica sempre, indipendentemente da cosa chiede il modello:
-- i crediti (1 per uno Short fino a 90 s, 3 per un video fino a 5 minuti, +1 per ogni minuto in più) si scalano quando il video entra in coda e tornano indietro se fallisce o viene annullato;
-- massimo 2 video contemporanei per utente, massimo 5 GPU accese in totale (il tetto di spesa oraria è così sempre noto);
+- i crediti (1 per uno Short fino a 90 s, 3 per un video fino a 5 minuti, +1 per ogni minuto in più) si scalano quando il video entra in coda e tornano indietro per intero se fallisce o se viene annullato prima di partire; annullato a render iniziato torna solo la parte non ancora renderizzata;
+- 1 video alla volta per utente e 2 al giorno (contano solo quelli riusciti o in corso: uno fallito o annullato viene rimborsato e non occupa il posto), massimo 2 GPU accese in totale, e sopra a tutto un tetto di spesa giornaliero (`DAILY_GPU_BUDGET_USD`, oggi 1,00 $): oltre quella cifra Kleo smette di noleggiare GPU per un'ora e i video restano in coda;
 - lo storyboard, scritto dall'assistente o da Workers AI, passa il validatore (`src/keou-contract.ts`) prima di accendere una GPU: uno storyboard sbagliato torna indietro con l'elenco dei problemi e niente viene addebitato;
 - prompt controllati per contenuti vietati prima di spendere;
 - ogni chiamata registrata nella tabella `audit` con utente, strumento, costo.
@@ -87,14 +94,15 @@ Se la quota giornaliera gratuita di Workers AI finisce, `kleo_create_video` non 
 
 `kleo_wait_for_video` è lo strumento che tiene l'assistente "in attesa con la rotella": lo chiama subito dopo `kleo_create_video` e resta appeso per il tempo massimo che quel client tollera (ChatGPT e Grok circa 45 secondi, Claude circa 3 minuti, Claude Code 2 minuti, OpenCode 5 minuti), poi torna con "ancora in corso, richiamami" oppure con i link finiti. Il modello lo richiama da solo finché il video non è pronto, così l'utente non deve scrivere "a che punto è?". Il server riconosce il client dal nome che dichiara (`clientInfo`) o dallo User-Agent e regola l'attesa; ogni chiamata viene registrata nell'audit come `wait.call` con il nome del client.
 
-`kleo_create_video` accetta anche `style`: **cartoon** (illustrazioni piatte disegnate per l'argomento), **realistic** (look fotografico cinematografico), **cyber** (il look Keou originale, sfondo scuro e icone luminose) e **stickman** (l'omino disegnato a mano, solo 9:16). Cartoon e realistic usano lo stile Keou `picture` (vedi `docs/PICTURE-STYLE.md`): ogni scena si divide in `shots`, da due a quattro immagini a tutto schermo, ognuna con il suo `image_prompt` e con `at`, la parola della narrazione su cui l'immagine cambia; la scena di chiusura ne ha una sola. Il server ne disegna fino a dieci con Workers AI, le altre le disegna la GPU noleggiata su Vast; ogni immagine ha un movimento lento, una sfumatura scura in basso per i sottotitoli e, quando serve, una scritta grande di due o tre parole. Niente icone, niente HUD, niente beats: un video sui pirati mostra spiagge, sabbia e velieri, uno sullo spazio razzi e stazioni.
+`kleo_create_video` accetta anche `style`: **cartoon** (illustrazioni piatte disegnate per l'argomento), **realistic** (look fotografico cinematografico), **cyber** (il look Keou originale, sfondo scuro e icone luminose) e **stickman** (l'omino disegnato a mano, solo 9:16). Cartoon e realistic usano lo stile Keou `picture` (vedi `docs/PICTURE-STYLE.md`): ogni scena si divide in `shots`, da due a quattro immagini a tutto schermo, ognuna con il suo `image_prompt` e con `at`, la parola della narrazione su cui l'immagine cambia; la scena di chiusura ne ha una sola. Oggi le disegna tutte la GPU noleggiata su Vast (`IMAGE_SERVER_MAX=0`), così la quota gratuita giornaliera di Workers AI resta intera per gli storyboard; ogni immagine ha un movimento lento, una sfumatura scura in basso per i sottotitoli e, quando serve, una scritta grande di due o tre parole. Niente icone, niente HUD, niente beats: un video sui pirati mostra spiagge, sabbia e velieri, uno sullo spazio razzi e stazioni.
 
 ## 5. Il lato server, pezzo per pezzo
 
 ```
 client MCP ──HTTPS──▶ /mcp  (server MCP: tools/list, tools/call)                      src/mcp.ts
                       /authorize, /token, /register  (OAuth 2.1: pagina di accesso e token)   src/auth.ts
-                      D1: utenti, crediti, codici invito, video, log                         src/db.ts
+                      /credits  (pagina dell'account: crediti, chiave Kleo)                   src/credits.ts
+                      D1: utenti, crediti, codici regalo, video, log                          src/db.ts
                       orchestratore (cron ogni minuto):                                       src/orchestrator.ts
                           │ scrive lo storyboard dei video in coda (Workers AI)              src/storyboard.ts
                           │ noleggia una GPU Vast.ai per video, con l'immagine Keou          src/backends/vast.ts
@@ -122,7 +130,7 @@ Se una macchina Vast è lenta o fallisce, l'orchestratore rimette il video in co
 
 ## 7. Come si collega, client per client
 
-L'indirizzo è lo stesso per tutti: `https://kleo-mcp.plural-juice.workers.dev/mcp`. Al primo uso ogni client apre la pagina di accesso di Kleo: email e codice invito.
+L'indirizzo è lo stesso per tutti: `https://kleo-mcp.plural-juice.workers.dev/mcp`. Al primo uso ogni client apre la pagina di accesso di Kleo: un bottone, niente da scrivere.
 
 | Client | Dove incollare l'indirizzo | Note |
 |---|---|---|

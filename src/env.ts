@@ -38,6 +38,8 @@ export interface Env {
   LOADING_RETRY_MIN?: string;   // minutes of image pull after which the job moves to another host (default 14)
   FREE_CREDITS: string;         // credits a brand-new anonymous account is given (1 credit = 1 Short)
   MAX_NEW_USERS_PER_DAY?: string; // new accounts created in a UTC day (default 25); past it the page says come back tomorrow
+  MAX_NEW_USERS_PER_IP_DAY?: string; // new accounts in a UTC day from one hashed address (default 5), so 25 requests
+                                     // from a single visitor cannot consume the whole day's allowance
   RESULT_TTL_DAYS: string;
   MOCK_TOTAL_SECONDS?: string;
 

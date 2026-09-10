@@ -1,3 +1,9 @@
+import type { Env } from "./env";
+import type { Job, JobParams } from "./db";
+// ".ts" on purpose: storyboard.ts imports this file and is loaded straight from source by the test runner
+// (node type stripping), whose resolver has no extension search. Wrangler bundles either form.
+import { int } from "./util.ts";
+
 export type Format = "16:9" | "9:16";
 
 export interface Template {
@@ -66,3 +72,17 @@ export const creditsFor = (seconds: number): number => (seconds <= 90 ? 1 : seco
 
 /** Rough wall-clock estimate on one RTX 4090 at 4K 60 fps: ~25 min for a Short, ~12 min per minute of long-form. */
 export const etaFor = (seconds: number): number => (seconds <= 90 ? 18 : Math.max(30, Math.round((seconds / 60) * 10)));
+
+/**
+ * Minutes a rented GPU may live for THIS job, counted from the rental (jobs.started_at), and the same number the
+ * container's own watchdog gets. JOB_TIMEOUT_MIN is a FLOOR, never a ceiling: 60 is right for a Short (23 minutes
+ * measured) but etaFor(480) promises the user 80 minutes for a default long video, and a timeout below the ETA the
+ * server itself quoted can only ever kill a healthy render — three times over, since failJob requeues it.
+ * The image pull happens inside the same clock (started_at is the rental, not the first frame), so the pull we
+ * already agree to wait for (LOADING_TIMEOUT_MIN) is part of the budget too.
+ */
+export function jobTimeoutMin(env: Env, job: Pick<Job, "params">): number {
+  let seconds = 0;
+  try { seconds = (JSON.parse(job.params) as JobParams).duration_s; } catch { /* an unreadable row just gets the flat value */ }
+  return Math.max(int(env.JOB_TIMEOUT_MIN, 60), etaFor(seconds) + int(env.LOADING_TIMEOUT_MIN, 35));
+}

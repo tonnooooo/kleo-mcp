@@ -3,7 +3,8 @@ import type { Env, AuthProps } from "./env";
 import { getUser, touchUser, audit } from "./db";
 import { mcpHandlerFor } from "./mcp";
 import { handleAuthorize } from "./auth";
-import { handleInternal, handleDevPlan } from "./internal";
+import { handleInternal, handleDevPlan, handleAdmin } from "./internal";
+import { handleCredits } from "./credits";
 import { handleDownload } from "./dl";
 import { tick } from "./orchestrator";
 import { json } from "./util";
@@ -36,9 +37,18 @@ const app: ExportedHandler<Env> = {
     const p = url.pathname;
     await ensureSchema(env);
     if (p === "/internal/dev/plan") return handleDevPlan(request, env);
-    if (p.startsWith("/internal/")) ctx.waitUntil(tick(env).catch(() => undefined));
+    // Before handleInternal (whose router only knows /internal/jobs/… and /internal/pool/claim) and before the tick
+    // it fires: pressing "pause" must not start one last GPU on its way in.
+    if (p.startsWith("/internal/admin/")) return handleAdmin(request, env);
     if (p === "/authorize") return handleAuthorize(request, env);
-    if (p.startsWith("/internal/")) return handleInternal(request, env);
+    if (p === "/credits") return handleCredits(request, env);
+    if (p.startsWith("/internal/")) {
+      const r = await handleInternal(request, env);
+      // Progress also without the cron, but only for a call that proved it is one of ours: /internal/ is open to the
+      // internet, and an unauthenticated request must not be able to drive the orchestrator (and the Vast API) at will.
+      if (r.status !== 401 && r.status !== 404) ctx.waitUntil(tick(env).catch(() => undefined));
+      return r;
+    }
     if (p.startsWith("/dl/")) return handleDownload(request, env);
     if (p === "/health") return json({ ok: true, backend: env.RENDER_BACKEND, time: new Date().toISOString() });
     if (p === "/mcp") return json({ error: "unauthorized" }, 401, { "www-authenticate": `Bearer resource_metadata="${url.origin}/.well-known/oauth-protected-resource"` });

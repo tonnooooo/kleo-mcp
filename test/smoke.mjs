@@ -1,6 +1,6 @@
 /**
  * End-to-end smoke test against a local `wrangler dev` (or KLEO_URL if set):
- *  DCR → PKCE authorize (invite login) → token → MCP tools/list → create_video → cron ticks → get_job → get_result → download → cancel.
+ *  DCR → PKCE authorize (one button, no fields) → token → MCP tools/list → create_video → cron ticks → get_job → get_result → download → cancel.
  * Run: npm run test:smoke
  */
 import { spawn } from "node:child_process";
@@ -9,8 +9,6 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 
 const PORT = process.env.SMOKE_PORT ?? "8799";
 const BASE = process.env.KLEO_URL ?? `http://127.0.0.1:${PORT}`;
-const INVITE = process.env.KLEO_INVITE ?? "KLEO-BETA";
-const EMAIL = `smoke-${Date.now()}@example.com`;
 let dev;
 const b64url = (b) => Buffer.from(b).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const assert = (c, m) => { if (!c) throw new Error("ASSERT: " + m); };
@@ -48,15 +46,17 @@ async function main() {
     body: JSON.stringify({ client_name: "smoke-test", redirect_uris: ["http://localhost:9999/cb"], token_endpoint_auth_method: "none", grant_types: ["authorization_code", "refresh_token"], response_types: ["code"] }) })).json();
   assert(reg.client_id, "no client_id from /register");
 
-  step("authorize with PKCE + invite login");
+  step("authorize with PKCE + the one-button sign-in");
   const verifier = b64url(crypto.randomBytes(32));
   const challenge = b64url(crypto.createHash("sha256").update(verifier).digest());
   const q = new URLSearchParams({ response_type: "code", client_id: reg.client_id, redirect_uri: "http://localhost:9999/cb", scope: "video:create video:read", state: "xyz", code_challenge: challenge, code_challenge_method: "S256" });
   const page = await fetch(`${BASE}/authorize?${q}`);
-  assert(page.status === 200 && (await page.text()).includes("Invite code"), "login page not rendered");
-  const form = new URLSearchParams({ email: EMAIL, invite: INVITE, consent: "yes", oauth_query: q.toString() });
+  assert(page.status === 200 && (await page.text()).includes("Start free"), "login page not rendered");
+  // Nothing to type: the whole form is the hidden oauth_query and the button.
+  const form = new URLSearchParams({ oauth_query: q.toString() });
   const post = await fetch(`${BASE}/authorize`, { method: "POST", body: form, redirect: "manual" });
   assert(post.status === 302, `expected 302 from login, got ${post.status}: ${(await post.text()).slice(0, 200)}`);
+  assert((post.headers.get("set-cookie") ?? "").includes("kleo_id="), "the 302 must carry the account cookie (Response.redirect() cannot)");
   const loc = new URL(post.headers.get("location"));
   const code = loc.searchParams.get("code");
   assert(code && loc.searchParams.get("state") === "xyz", "no code/state in redirect");
@@ -72,14 +72,14 @@ async function main() {
   await client.connect(transport);
   const tools = (await client.listTools()).tools.map((t) => t.name).sort();
   console.log("  tools:", tools.join(", "));
-  for (const n of ["kleo_list_templates", "kleo_create_video", "kleo_get_job", "kleo_wait_for_video", "kleo_get_result", "kleo_generate_thumbnail", "kleo_cancel_job"]) assert(tools.includes(n), `missing tool ${n}`);
+  for (const n of ["kleo_list_templates", "kleo_create_video", "kleo_get_job", "kleo_wait_for_video", "kleo_get_result", "kleo_generate_thumbnail", "kleo_cancel_job", "kleo_account"]) assert(tools.includes(n), `missing tool ${n}`);
 
   const call = async (name, args) => { const r = await client.callTool({ name, arguments: args }); return { r, data: r.structuredContent ?? (() => { try { return JSON.parse(r.content?.[0]?.text ?? ""); } catch { return null; } })() }; };
 
   step("kleo_list_templates");
   const lt = await call("kleo_list_templates", {});
   assert(lt.data?.templates?.length === 10, "expected 10 templates");
-  assert(lt.data.credits_available === 3, `expected 3 trial credits, got ${lt.data.credits_available}`);
+  assert(lt.data.credits_available === 2, `expected 2 free credits, got ${lt.data.credits_available}`);
 
   step("create_video (viral-short)");
   const cv = await call("kleo_create_video", { template: "viral-short", prompt: "Pirates find an island that is missing from every map", duration_s: 45, format: "9:16", language: "en" });
@@ -124,7 +124,7 @@ async function main() {
   const cj = await call("kleo_cancel_job", { job_id: cv2.data.job_id });
   assert(cj.data.state === "cancelled" && cj.data.refunded === 1, "cancel/refund failed: " + JSON.stringify(cj.data));
   const lt2 = await call("kleo_list_templates", {});
-  assert(lt2.data.credits_available === 2, `expected 2 credits left, got ${lt2.data.credits_available}`);
+  assert(lt2.data.credits_available === 1, `expected 1 credit left, got ${lt2.data.credits_available}`);
 
   step("recent jobs listing");
   const list = (await call("kleo_get_job", {})).data;

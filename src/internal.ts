@@ -1,8 +1,8 @@
 import type { Env } from "./env";
-import { getJob, setFile, audit, type Job, claimQueuedJob, transitionJob, ACTIVE_STATES, OPEN_STATES } from "./db";
-import { json, safeEqual, nowIso, int } from "./util";
-import { isFlagActive } from "./schema";
-import { finishJob, failJob, trackFor } from "./orchestrator";
+import { getJob, setFile, audit, type Job, claimQueuedJob, countRunning, transitionJob, ACTIVE_STATES, OPEN_STATES } from "./db";
+import { json, safeEqual, nowIso, int, num } from "./util";
+import { isFlagActive, setFlagUntil, releaseLock } from "./schema";
+import { finishJob, failJob, trackFor, budgetSpentUsd } from "./orchestrator";
 import { backendFor } from "./backends";
 import { FILE_NAMES } from "./jobs";
 import { putFile } from "./storage";
@@ -160,6 +160,53 @@ export async function handleDevPlan(request: Request, env: Env): Promise<Respons
 }
 
 /**
+ * The kill switch, reachable from a phone with one request and no deploy:
+ *   POST /internal/admin/pause    {"hours": 12}                      stop renting GPUs (default 12 hours, at most 7 days)
+ *   POST /internal/admin/pause    {"hours": 12, "everything": true}  stop the free GitHub pool as well: nothing renders at all
+ *   POST /internal/admin/resume                   start again, and clear an automatic budget pause too
+ *   GET  /internal/admin/pause                    what is on right now, and today's spend estimate
+ * All three: `Authorization: Bearer <INTERNAL_SECRET>`, the same shape as /internal/dev/plan and /internal/pool/claim.
+ * The "paused" flag is read by the orchestrator exactly where vast_unavailable is, so the queue keeps its jobs and
+ * its credits and simply stops spending; the free GitHub runners keep going, because they cost nothing — unless
+ * "everything" is asked for, which is the switch to press when the problem is what is being rendered, not the bill.
+ */
+export async function handleAdmin(request: Request, env: Env): Promise<Response> {
+  const auth = request.headers.get("authorization") ?? "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  if (!env.INTERNAL_SECRET || !token || !safeEqual(token, env.INTERNAL_SECRET)) return json({ error: "unauthorized" }, 401);
+  const path = new URL(request.url).pathname;
+  const state = async () => ({
+    paused: await isFlagActive(env, "paused"),
+    paused_all: await isFlagActive(env, "paused_all"),
+    budget_pause: await isFlagActive(env, "budget_pause"),
+    running: await countRunning(env),
+    spend_today_usd: Math.round((await budgetSpentUsd(env)) * 1000) / 1000,
+    budget_usd: num(env.DAILY_GPU_BUDGET_USD, 1),
+  });
+  if (request.method === "GET" && path === "/internal/admin/pause") return json(await state());
+  if (request.method !== "POST") return json({ error: "method" }, 405);
+  if (path === "/internal/admin/pause") {
+    const b = (await request.json().catch(() => ({}))) as { hours?: number; everything?: boolean };
+    const hours = Math.min(168, Math.max(1, Math.round(Number(b.hours ?? 12)) || 12));
+    await setFlagUntil(env, "paused", hours * 3600);
+    // Money and content are two different emergencies. The plain pause stops the SPENDING and lets the free runners
+    // keep working; {"everything": true} is for the other one — a prompt that must not be rendered at all — and stops
+    // the free pool too, which is the only thing that can still deliver a video while Kleo is paused.
+    if (b.everything) await setFlagUntil(env, "paused_all", hours * 3600);
+    await audit(env, null, null, "admin.paused", { hours, everything: !!b.everything });
+    return json({ ok: true, paused_for_hours: hours, ...(await state()) });
+  }
+  if (path === "/internal/admin/resume") {
+    await releaseLock(env, "paused");
+    await releaseLock(env, "paused_all");
+    await releaseLock(env, "budget_pause"); // an automatic pause is the commonest reason to press resume
+    await audit(env, null, null, "admin.resumed", {});
+    return json({ ok: true, ...(await state()) });
+  }
+  return json({ error: "not found" }, 404);
+}
+
+/**
  * POST /internal/pool/claim  (Authorization: Bearer <POOL_SECRET>, body {"runner": "gha-123"})
  * Hands one planned job to an external runner. In vast mode a runner only gets jobs Vast did not pick up
  * (provider flagged unavailable, or queued longer than POOL_AFTER_MIN); otherwise any planned job.
@@ -170,6 +217,8 @@ async function handlePoolClaim(request: Request, env: Env): Promise<Response> {
   const auth = request.headers.get("authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
   if (!token || !safeEqual(token, env.POOL_SECRET)) return json({ error: "unauthorized" }, 401);
+  // The money pause leaves the free runners alone on purpose; "paused_all" is the switch that stops rendering itself.
+  if (await isFlagActive(env, "paused_all")) return json({ job: null, paused: true });
   const body = (await request.json().catch(() => ({}))) as { runner?: string };
   const runner = String(body.runner ?? "runner").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 60) || "runner";
   const vastFirst = env.RENDER_BACKEND === "vast" && !(await isFlagActive(env, "vast_unavailable"));

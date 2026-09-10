@@ -1,10 +1,11 @@
 import type { Env } from "./env";
-import { type Job, type JobState, ACTIVE_STATES, OPEN_STATES, GPU_ONLY_WAIT, activeJobs, queuedJobs, queuedPictureJobs, staleQueuedJobs, jobInstances, unplannedJobs, claimPlanAttempt, countRunning, spentTodayUsd, updateJob, transitionJob, audit, refundCredits, expiredJobs, listFiles, deleteFiles, setFile, getJob, reserveJob, unreserveJob } from "./db";
+import { type Job, type JobState, ACTIVE_STATES, OPEN_STATES, GPU_ONLY_WAIT, activeJobs, queuedJobs, queuedPictureJobs, staleQueuedJobs, jobInstances, unplannedJobs, claimPlanAttempt, countRunning, runningPaidJobs, spentTodayUsd, addJobCost, updateJob, transitionJob, audit, refundCredits, expiredJobs, listFiles, deleteFiles, setFile, getJob, reserveJob, unreserveJob } from "./db";
 import { backendFor, getBackend } from "./backends";
 import { vastStatus, listKleoInstances, destroyInstance } from "./backends/vast";
 import { int, num, nowIso, minutesSince, secondsSince, addDays, base64ToBytes, rid } from "./util";
 import { TINY_MP4_B64 } from "./assets";
 import { resultLinks, FILE_NAMES } from "./jobs";
+import { jobTimeoutMin } from "./templates";
 import { notifyDone } from "./notify";
 import { putFile, deleteFile } from "./storage";
 import { acquireLock, releaseLock, holdLock, setFlagUntil, isFlagActive } from "./schema";
@@ -34,7 +35,9 @@ export async function tick(env: Env, opts: { plan?: boolean } = {}): Promise<Sta
       if (pause) { await holdLock(env, "plan", pause); await setFlagUntil(env, "plan_pause", pause); } else { await releaseLock(env, "plan"); }
     }
   }
-  if (!(await acquireLock(env, "tick", 50))) return { ...stats, skipped: true };
+  // Longer than tickInner can plausibly run: every active job costs a Vast round trip or two, and a lock that expires
+  // mid-tick lets a second tick rent GPUs against the same `running` count (the per-rental re-read below is the belt).
+  if (!(await acquireLock(env, "tick", 120))) return { ...stats, skipped: true };
   try {
     return await tickInner(env, stats);
   } finally {
@@ -79,9 +82,9 @@ async function planOne(env: Env, stats: Stats): Promise<number> {
 }
 
 async function tickInner(env: Env, stats: Stats) {
-  const timeoutMin = int(env.JOB_TIMEOUT_MIN, 120);
-
   for (const job of await activeJobs(env)) {
+    // Per job, never a flat number: the timeout has to cover the ETA this very video was quoted (templates.ts).
+    const timeoutMin = jobTimeoutMin(env, job);
     try {
       if (job.backend === "mock") {
         await advanceMock(env, job);
@@ -151,6 +154,9 @@ async function tickInner(env: Env, stats: Stats) {
   const overBudget = backend.name === "vast" && !paused && (await budgetGate(env, running));
   const noGpu = providerDown || paused || overBudget;
   if (backend.name !== "pool" && !noGpu) for (const job of await queuedJobs(env, max - running)) {
+    // Re-read, per rental and not per tick: the tick lock can expire under a slow Vast, and a second tick that
+    // read the same `running` would rent up to `max` GPUs of its own — twice the hourly ceiling the owner was promised.
+    if ((await countRunning(env)) >= max) break;
     if (!(await reserveJob(env, job.id, backend.name))) continue; // a pool runner took it first
     try {
       const r = await backend.start(env, job);
@@ -191,14 +197,20 @@ async function tickInner(env: Env, stats: Stats) {
   const poolOnly = noGpu || backend.name === "pool";
   if (poolOnly) await explainGpuWait(env, providerDown ? "vast_unavailable" : paused ? "paused" : overBudget ? "budget_pause" : "pool_backend");
   // The free GitHub runners cost nothing, so a pause of the MONEY must not stop them: they keep draining the queue.
-  await dispatchPoolRunner(env, poolOnly);
+  // "paused_all" is the other reason to press the switch — a prompt that must not be rendered at all — and that one
+  // does stop them (handlePoolClaim refuses too, so a runner already awake gets nothing either).
+  if (!(await isFlagActive(env, "paused_all"))) await dispatchPoolRunner(env, poolOnly);
   await sweepVastOrphans(env);
 
   // Nothing else ever times out a QUEUED job (the timeout above needs started_at), so on a day the budget runs out
   // every user would sit at their concurrency limit for ever with the credits already taken. Refund and let go.
   const queueMaxWait = int(env.QUEUE_MAX_WAIT_MIN, 180);
   for (const job of await staleQueuedJobs(env, queueMaxWait)) {
-    await failJob(env, job, `no GPU was free in time (waited ${queueMaxWait} min)`, false);
+    // A job with no storyboard never even asked for a GPU: it was the planner (Workers AI quota, plan_pause) that
+    // held it. Saying "no GPU was free" there sends both the user and the owner looking at Vast for a quota outage.
+    await failJob(env, job, job.storyboard
+      ? `no GPU was free in time (waited ${queueMaxWait} min)`
+      : `Kleo could not write the storyboard for this video in time (waited ${queueMaxWait} min); its planning quota was exhausted`, false);
     stats.failed++;
   }
 
@@ -209,6 +221,40 @@ async function tickInner(env: Env, stats: Stats) {
     stats.purged++;
   }
   return stats;
+}
+
+/**
+ * GPU dollars this UTC day: what the jobs of today have already been charged, PLUS what the PAID machines running
+ * right now have committed. The second term is not optional. jobs.cost_usd is written when a rental ends (finishJob,
+ * failJob, cancelJob), so a plain SUM reads 0.00 while two GPUs burn and the gate would let the queue drain the whole
+ * balance before the first bill lands. Each running job is priced at the worst case it can still reach: the price cap
+ * for its own timeout — which is per job (templates.ts), because a long video is allowed to run twice as long as a Short.
+ * Only backend 'vast' is counted: a job on the free GitHub pool commits nothing, and pricing it would pause the paid
+ * path over money that was never spent.
+ *
+ * THE NUMBER IS AN ESTIMATE. The price cap is an upper bound, so a cheap host makes it pessimistic; a rental whose
+ * cost estimate could not be read from Vast still writes nothing. It bounds the damage, it is not an account
+ * statement — the Vast.ai balance is.
+ */
+export async function budgetSpentUsd(env: Env): Promise<number> {
+  const dph = num(env.VAST_MAX_DPH, 0.4);
+  let committed = 0;
+  for (const job of await runningPaidJobs(env)) committed += dph * (jobTimeoutMin(env, job) / 60);
+  return (await spentTodayUsd(env)) + committed;
+}
+
+/**
+ * True when no more GPUs may be rented today. Once tripped the pause lasts an hour, even if the spend estimate
+ * falls back below the line when the running jobs end: the queue is meant to drain slowly, not to bounce.
+ */
+async function budgetGate(env: Env, running: number): Promise<boolean> {
+  if (await isFlagActive(env, "budget_pause")) return true;
+  const budget = num(env.DAILY_GPU_BUDGET_USD, 1);
+  const spend = await budgetSpentUsd(env);
+  if (spend < budget) return false;
+  await setFlagUntil(env, "budget_pause", 3600);
+  await audit(env, null, null, "budget.paused", { estimate_usd: Math.round(spend * 1000) / 1000, budget_usd: budget, running, pause_min: 60 });
+  return true;
 }
 
 /**
@@ -274,16 +320,30 @@ export async function sweepVastOrphans(env: Env): Promise<number> {
 }
 
 /**
+ * Tears the GPU down AND writes down what that rental cost. destroy() already asks Vast for start_date and dph_total;
+ * every failure path used to throw that number away, so the daily budget was blind to any rental that did not end in a
+ * finished video — a day of failed renders, or of cancels while "starting", read $0.00 and the ceiling could never trip.
+ * Best effort by design: a destroy that throws must never stop a job from being failed, cancelled or finished.
+ */
+async function releaseGpu(env: Env, job: Job): Promise<void> {
+  let est: number | undefined;
+  try { est = await backendFor(env, job.backend).destroy(env, job); }
+  catch (e) { await audit(env, job.user_id, job.id, "backend.destroy.error", String(e)); }
+  if (typeof est === "number" && est > 0) await addJobCost(env, job.id, est);
+}
+
+/**
  * Marks a job failed (or requeues it) and always tears the GPU down. Idempotent: the state change is one
  * atomic transition from an open state, so a job that was already cancelled, finished or failed by another
  * path is left alone and, above all, is not refunded a second time. Returns what happened.
  */
 export async function failJob(env: Env, job: Job, reason: string, retry: boolean): Promise<"requeued" | "failed" | "ignored"> {
-  try { await backendFor(env, job.backend).destroy(env, job); } catch (e) { await audit(env, job.user_id, job.id, "backend.destroy.error", String(e)); }
+  await releaseGpu(env, job);
   if (retry && job.attempts < MAX_ATTEMPTS) {
     // Back to the queue with a fresh worker secret: the old GPU (possibly still alive) can no longer report on this job.
+    // queued_at restarts here, so the queue-wait reaper measures the new wait and not the age of the job.
     const requeued = await transitionJob(env, job.id, OPEN_STATES, {
-      state: "queued", backend: null, instance_id: null, instance_meta: null, started_at: null, percent: 0, track: null, error: reason, worker_secret: rid("wk", 32),
+      state: "queued", backend: null, instance_id: null, instance_meta: null, started_at: null, queued_at: nowIso(), percent: 0, track: null, error: reason, worker_secret: rid("wk", 32),
     });
     if (!requeued) { await audit(env, job.user_id, job.id, "job.requeue.ignored", { reason, note: "job was no longer open" }); return "ignored"; }
     await audit(env, job.user_id, job.id, "job.requeued", { reason, attempts: job.attempts });
@@ -303,14 +363,18 @@ export async function failJob(env: Env, job: Job, reason: string, retry: boolean
 export async function finishJob(env: Env, job: Job, costUsd: number | null): Promise<boolean> {
   const finished = nowIso();
   const expires = addDays(finished, int(env.RESULT_TTL_DAYS, 7));
-  const done = await transitionJob(env, job.id, OPEN_STATES, { state: "done", percent: 100, track: null, eta_min: 0, finished_at: finished, expires_at: expires, cost_usd: costUsd, error: null });
+  const done = await transitionJob(env, job.id, OPEN_STATES, { state: "done", percent: 100, track: null, eta_min: 0, finished_at: finished, expires_at: expires, error: null });
   if (!done) { await audit(env, job.user_id, job.id, "job.done.ignored", { note: "job was no longer open (already done, cancelled or failed)" }); return false; }
-  let cost = costUsd;
-  try { const est = await backendFor(env, job.backend).destroy(env, job); if (cost == null && typeof est === "number") cost = est; }
+  // The worker's figure is a convenience; the server's own (start_date x dph_total, straight from the Vast API) is the
+  // trustworthy one — the worker runs on a machine rented from a stranger who has root on it and could report 0 for
+  // every render. Take the larger of the two, so a reported 0 can never erase the estimate.
+  let est: number | undefined;
+  try { est = await backendFor(env, job.backend).destroy(env, job); }
   catch (e) { await audit(env, job.user_id, job.id, "backend.destroy.error", String(e)); }
-  if (cost !== costUsd) await updateJob(env, job.id, { cost_usd: cost });
-  await audit(env, job.user_id, job.id, "job.done", { cost_usd: cost });
+  const cost = Math.max(costUsd ?? 0, est ?? 0);
+  if (cost > 0) await addJobCost(env, job.id, cost);
   const fresh = (await getJob(env, job.id))!;
+  await audit(env, job.user_id, job.id, "job.done", { cost_usd: fresh.cost_usd, worker_said: costUsd, vast_said: est ?? null });
   try { await notifyDone(env, fresh, await resultLinks(env, env.PUBLIC_URL, fresh)); } catch (e) { await audit(env, job.user_id, job.id, "notify.error", String(e)); }
   return true;
 }

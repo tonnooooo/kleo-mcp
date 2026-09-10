@@ -6,6 +6,8 @@ import type { Env } from "./env";
  */
 const STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, display_name TEXT, credits INTEGER NOT NULL DEFAULT 0, plan TEXT NOT NULL DEFAULT 'trial', invite_code TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), last_seen_at TEXT)`,
+  // Codes are a GIFT now, never a gate: a row here adds credits on top of the free ones to whoever types it in the
+  // optional field of the sign-in page. Nothing is seeded, so no code exists until the owner writes one himself.
   `CREATE TABLE IF NOT EXISTS invites (code TEXT PRIMARY KEY, credits INTEGER NOT NULL DEFAULT 3, max_uses INTEGER NOT NULL DEFAULT 1, uses INTEGER NOT NULL DEFAULT 0, note TEXT)`,
   `CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), template TEXT NOT NULL, prompt TEXT NOT NULL, params TEXT NOT NULL, state TEXT NOT NULL, track TEXT, percent INTEGER NOT NULL DEFAULT 0, eta_min INTEGER, credits INTEGER NOT NULL, backend TEXT, instance_id TEXT, instance_meta TEXT, worker_secret TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, error TEXT, notify_email TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), started_at TEXT, finished_at TEXT, expires_at TEXT, purged_at TEXT, cost_usd REAL)`,
   `CREATE INDEX IF NOT EXISTS jobs_state ON jobs(state)`,
@@ -13,7 +15,6 @@ const STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS job_files (job_id TEXT NOT NULL REFERENCES jobs(id), name TEXT NOT NULL, key TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, content_type TEXT NOT NULL DEFAULT 'application/octet-stream', PRIMARY KEY (job_id, name))`,
   `CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), user_id TEXT, job_id TEXT, event TEXT NOT NULL, detail TEXT)`,
   `CREATE TABLE IF NOT EXISTS locks (name TEXT PRIMARY KEY, until TEXT NOT NULL)`,
-  `INSERT OR IGNORE INTO invites (code, credits, max_uses, note) VALUES ('KLEO-BETA', 3, 50, 'shared beta code')`,
 ];
 
 /** Columns added after 0001 (mirrors migrations/0003_storyboard.sql + 0004_last_report.sql — one migration per column,
@@ -26,6 +27,9 @@ const COLUMNS: [table: string, column: string, definition: string][] = [
   // clock since the GPU was rented: pulling a 15 GB image plus drawing 24 pictures keeps a healthy job under 8%
   // (state "starting") for well over fifteen minutes.
   ["jobs", "last_report_at", "TEXT"],
+  // When the job entered the QUEUE (reset on every requeue), so the queue-wait reaper measures the wait for a GPU
+  // and not the age of the job — a requeued job would otherwise be failed at once for a wait it never made.
+  ["jobs", "queued_at", "TEXT"],
 ];
 
 async function ensureColumns(env: Env): Promise<void> {

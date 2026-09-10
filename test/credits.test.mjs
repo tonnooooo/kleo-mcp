@@ -52,6 +52,8 @@ async function newEnv(backend = "manual") {
   const env = {
     DB: new FakeD1(), OAUTH_KV: new FakeKV(), RENDER_BACKEND: backend, PUBLIC_URL: "http://kleo.test", INTERNAL_SECRET: "s3cret",
     MAX_CONCURRENT_GPUS: "5", MAX_JOBS_PER_USER: "2", JOB_TIMEOUT_MIN: "120", FREE_CREDITS: "10", RESULT_TTL_DAYS: "7", MOCK_TOTAL_SECONDS: "60",
+    // The daily caps have their own tests (test/accounts.test.mjs); here they must never be what stops a job.
+    MAX_JOBS_PER_DAY: "500",
     STORYBOARD_FIXTURE: "example",
   };
   // the migrations, applied directly (schema.ts caches its bootstrap per process; every test wants a fresh database)
@@ -121,6 +123,30 @@ test("create: the open-jobs limit is enforced before the debit", async () => {
   await short(env, u); await short(env, u);
   await assert.rejects(short(env, u), /You already have 2 videos in progress, and the limit is 2 at a time/);
   assert.equal(await balance(env), 8);
+});
+
+test("create: the daily limit counts videos STARTED today, not only the ones still running", async () => {
+  // The open-jobs limit above lets one account queue as fast as jobs finish; this is the one that does not.
+  const env = await newEnv();
+  env.MAX_JOBS_PER_DAY = "2";
+  const u = await user(env, 10);
+  const a = await short(env, u), b = await short(env, u);
+  await m.updateJob(env, a.id, { state: "done" });
+  await m.updateJob(env, b.id, { state: "done" }); // nothing is running any more, and still:
+  await assert.rejects(short(env, u), (e) => e instanceof m.JobError && /You have already started 2 videos today, and the limit is 2 a day/.test(e.message) && /Nothing was charged/.test(e.message));
+  assert.equal(await balance(env), 8, "the cap is checked before the debit");
+});
+
+test("create: with no credits left the message hands over the signed account link, not a team to ask", async () => {
+  const env = await newEnv();
+  const u = await user(env, 1);
+  await short(env, u);
+  await assert.rejects(short(env, await m.getUser(env, "u_test")), (e) => {
+    assert.match(e.message, /Not enough credits: this Short costs 1 credit and you have 0 credits/);
+    const url = e.message.match(/http:\/\/kleo\.test\/credits\?k=(\S+)/);
+    assert.ok(url, "the user is given somewhere to go: " + e.message);
+    return true;
+  });
 });
 
 /* ------------------------------------------------------------------ cancel */

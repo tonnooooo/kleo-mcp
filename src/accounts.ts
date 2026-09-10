@@ -9,6 +9,9 @@ import { hmacHex, safeEqual } from "./util";
  *
  * Rotating INTERNAL_SECRET therefore invalidates every cookie and every Kleo key at once: everybody is
  * logged out and the only way back in is a brand-new account (written down in DEPLOY.md).
+ *
+ * The link to the account page is NOT that string (see makeViewToken): it is signed with a different message, so a
+ * link Kleo hands to a chat can be shared without handing the account over with it.
  */
 
 export const ACCOUNT_COOKIE = "kleo_id";
@@ -45,9 +48,45 @@ export function cookieHandle(header: string | null | undefined): string | null {
 export const accountCookie = (handle: string): string =>
   `${ACCOUNT_COOKIE}=${handle}; Path=/; Max-Age=${COOKIE_MAX_AGE}; HttpOnly; Secure; SameSite=Lax`;
 
+/**
+ * A READ-ONLY token for the account page, deliberately NOT the handle. The handle is a credential: whoever holds it
+ * owns the account. Kleo puts the account link into a chat (kleo_create_video when the credits run out), and a chat
+ * gets pasted, screenshotted and shared, so a link that carried the handle would be a "take over my account" link.
+ * Same shape, different HMAC message and a "v" in front of the signature, so verifyHandle can never accept one and
+ * verifyViewToken can never accept the other.
+ */
+export const makeViewToken = async (env: Env, userId: string): Promise<string> =>
+  `${userId}.v${(await hmacHex(env.INTERNAL_SECRET, `kleo-view:${userId}`)).slice(0, SIG_LEN)}`;
+
+/** The user id inside a view token, or null. Never returns an id for a Kleo key: the two are not interchangeable. */
+export async function verifyViewToken(env: Env, value: string | null | undefined): Promise<string | null> {
+  const token = (value ?? "").trim();
+  const dot = token.indexOf(".");
+  if (dot <= 0) return null;
+  const userId = token.slice(0, dot);
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(userId)) return null;
+  return safeEqual(token, await makeViewToken(env, userId)) ? userId : null;
+}
+
+/**
+ * The account page for one user: balance, prices, what to do next. The token in the query string is the whole
+ * authentication (same idea as the signed download links) — a raw user id would let anyone read anyone else's
+ * balance by guessing — but it is read-only: it cannot sign anybody in and the page it opens never shows the Kleo key.
+ */
+export const accountUrl = async (env: Env, userId: string, base?: string): Promise<string> =>
+  `${base ?? env.PUBLIC_URL}/credits?k=${encodeURIComponent(await makeViewToken(env, userId))}`;
+
 /** Rate-limit key for one visitor: the address is hashed with INTERNAL_SECRET and never stored or logged raw. */
 export const signupRateKey = (env: Env, ip: string | null | undefined): Promise<string> =>
   hmacHex(env.INTERNAL_SECRET, `rl:${ip ?? "unknown"}`);
+
+/**
+ * Short fingerprint of the visitor's address for the per-address sign-up cap, written into the user.created audit
+ * row. Not reversible, and null when there is no address at all (local dev): a cap needs a signal, and "unknown" is
+ * not one — counting every address-less visitor as the same person would close the door on all of them at once.
+ */
+export const ipFingerprint = async (env: Env, ip: string | null | undefined): Promise<string | null> =>
+  ip ? (await signupRateKey(env, ip)).slice(0, SIG_LEN) : null;
 
 /**
  * Optional bot check, one POST to Cloudflare. Like src/notify.ts with RESEND_API_KEY, an unset TURNSTILE_SECRET

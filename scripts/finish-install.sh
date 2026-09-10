@@ -37,10 +37,10 @@ echo "== migrations =="
 $W d1 migrations apply kleo-db --remote
 
 echo "== secrets =="
+# Solo INTERNAL_SECRET: firma i link di download E l'identita' degli account anonimi, quindi ricaricarlo con un
+# valore diverso da quello gia' in produzione sloggherebbe tutti. Non esistono piu' codici invito da caricare.
 SECRET=$(grep '^INTERNAL_SECRET=' .secrets.local | cut -d= -f2)
-CODES=$(grep '^INVITE_CODES=' .secrets.local | cut -d= -f2)
 printf '%s' "$SECRET" | $W secret put INTERNAL_SECRET
-printf '%s' "$CODES"  | $W secret put INVITE_CODES
 
 echo "== deploy =="
 $W deploy

@@ -2,6 +2,7 @@ import type { RenderBackend, StartResult } from "./types";
 import type { Env } from "../env";
 import type { Job } from "../db";
 import { int, num, minutesSince } from "../util";
+import { jobTimeoutMin } from "../templates";
 
 /**
  * Vast.ai backend: one ephemeral instance per job.
@@ -208,7 +209,9 @@ export const vastBackend: RenderBackend = {
     if (!env.VAST_IMAGE || env.VAST_IMAGE.includes("REPLACE_ME")) throw new Error("VAST_IMAGE is not configured");
     const offers = await searchOffers(env);
     if (!offers.length) throw new Error("no Vast.ai offer matches the filters (gpu/price/network)");
-    const timeoutMin = int(env.JOB_TIMEOUT_MIN, 120);
+    // The same per-job number the orchestrator kills on (templates.ts), so the container's own watchdog and the
+    // server always agree; a flat 120 here would let a machine run an hour past the moment the server gave up on it.
+    const timeoutMin = jobTimeoutMin(env, job);
     let lastErr: unknown = null;
     // Anchor for adoption: nothing that existed before this call can belong to it (see adoptOrphan).
     const attemptStart = Date.now();
@@ -228,6 +231,10 @@ export const vastBackend: RenderBackend = {
             KLEO_JOB_ID: job.id,
             KLEO_SECRET: job.worker_secret,
             KLEO_SELF_DESTRUCT_MIN: String(Math.max(10, timeoutMin - 5)),
+            // The engine gives up (and the worker reports a real failure) BEFORE the watchdog destroys the box, so a
+            // render that overruns comes back as an error to retry instead of a machine that silently disappears.
+            // Both are listed before renderEnv, so an explicit KLEO_RENDER_TIMEOUT_MIN in the config still wins.
+            KLEO_RENDER_TIMEOUT_MIN: String(Math.max(5, timeoutMin - 10)),
             KLEO_DPH: String(offer.dph_total),
             KLEO_KEOU_WORKERS: String(Math.min(16, Math.max(2, Math.floor(offer.cpu_cores_effective ?? 8)))), // whole box, but the engine caps render workers at 16
             ...renderEnv(env),
