@@ -1,65 +1,61 @@
-# Perché una macchina noleggiata sta venti minuti senza fare niente (11 settembre 2026)
+# Il download dell'immagine NON è il collo di bottiglia (misurato l'11 settembre 2026)
 
-Un video generato costa circa quaranta minuti dal noleggio al link. **Fino a metà di quel tempo la scheda è accesa,
-pagata, e non sta ancora renderizzando niente**: sta tirando giù e scompattando l'immagine del worker. È il singolo
-pezzo più grosso del tempo di consegna e nessuno lo guarda, perché non produce log interessanti.
+**Questo documento diceva il contrario stamattina, e diceva una cosa falsa.** La versione precedente sosteneva che
+il pull dell'immagine durasse 13-20 minuti e prescriveva zstd come cura. La misura vera dice 3 minuti. La
+correzione resta visibile invece di essere riscritta in silenzio, perché due altre sessioni stavano già
+ragionando su quel numero.
 
-Questo documento esiste perché la misura era stata fatta il 10 settembre e viveva in una cartella temporanea. Una
-diagnosi che sta in `/tmp` è una diagnosi che muore con la sessione che l'ha scritta.
+## La misura, con lo strumento che affitta come la produzione
 
-## La misura
+`scripts/pulltest.py`, due tag fianco a fianco, dal noleggio a `actual_status == running`:
 
-`ghcr.io/tonnooooo/kleo-worker:keou`, riverificata dal registro l'11 settembre:
+| tag | compressione | peso | host | tempo |
+|---|---|---|---|---|
+| `keou` | gzip | 7,85 GB | RTX 3060, Connecticut, 5175 Mbit | **3,0 min** |
+| `keou-zstd` | zstd | 7,37 GB | RTX 4060, Quebec, 1650 Mbit | **5,8 min** |
 
-| | |
-|---|---|
-| strati | 23 |
-| totale compresso | **7,8 GB** |
-| scompattato | ~11,5 GB |
-| strato più grosso | **4,25 GB** (base pytorch/conda) |
-| secondo | **2,72 GB** (dipendenze pip + modelli) |
+**Il numero che conta è il primo, non la differenza: tre minuti, non venti.**
 
-Velocità misurata da una macchina Vast (Wisconsin, banda reale 99 MB/s):
+**La differenza fra i due NON è concludente** e va detto prima che qualcuno la citi: i due host non sono uguali,
+e quello con gzip aveva **tre volte la banda** dell'altro. Con questa coppia non si può dire se zstd sia più
+lento, più veloce o uguale. Si può dire che **non è una cura da 15 minuti**, perché quei 15 minuti non c'erano.
 
-| | |
-|---|---|
-| ghcr.io serve a | 46,6 MB/s → 7,8 GB in **circa 3 minuti** |
-| il pull reale dura | **13-20 minuti** → 6,5 MB/s effettivi |
+## Da dove veniva il numero sbagliato
 
-**Quindi non è la rete.** Sette volte più lento di quanto la rete permetta, su un host che dichiara 1355 Mbit/s.
-Il collo di bottiglia è la **scompattazione**: gzip lavora con **un thread per strato**, e due strati da soli fanno
-7 GB dei 7,8. Prendere un host con più banda non sposta niente, ed è il motivo per cui `VAST_MIN_INET` non ha mai
-migliorato i tempi di avvio quanto ci si aspettava.
+Il 13-20 minuti veniva dall'osservare i job di produzione passare dal noleggio al primo messaggio del worker, e
+poi dall'attribuire quel tempo al download. È un errore di attribuzione: quel tratto contiene il pull **e tutto
+quello che viene dopo**. Il pull è la parte piccola.
 
-## Le due leve, in ordine di efficacia
+Il resto dell'analisi vecchia era coerente ma partiva da lì: «46,6 MB/s disponibili contro 6,5 effettivi, quindi
+è la scompattazione». I 6,5 MB/s erano calcolati dividendo il peso per un tempo che non era il tempo del
+download. Con il tempo giusto il conto torna e non c'è niente da spiegare.
 
-**1. Compressione zstd invece di gzip.** Si scompatta 3-5 volte più in fretta a parità di dimensione.
+## Cosa resta vero
 
-    buildx: --output type=registry,compression=zstd,force-compression=true
+Il peso e la forma dell'immagine sono quelli: **23 strati, 7,85 GB compressi, e i due strati più grossi sono
+l'89% del peso**. `scripts/image-size.py` lo legge dal registro senza scaricare niente. Resta vero anche che gzip
+scompatta con un thread per strato. Semplicemente, a 3 minuti totali, non è un problema che valga la pena
+risolvere.
 
-**RISCHIO, ed è il motivo per cui non è già stata tirata**: se il Docker delle macchine Vast è vecchio non capisce
-zstd e il pull **fallisce del tutto**, invece di essere lento. Non si prova sulla produzione. Si costruisce un tag
-separato (`:keou-zstd`), si noleggia una macchina e si misurano i due tag fianco a fianco. Lo strumento c'è già ed è
-`scripts/pulltest.py`, che noleggia un'istanza per tag, guarda lo stato di Vast fino a `running` e distrugge tutto
-alla fine, anche su Ctrl-C.
+## E quindi il vero problema è un altro, e non è risolto
 
-**2. Meno strati grossi.** 4,25 GB in un solo strato è un solo thread per tutta la sua durata. Spezzarlo fa lavorare
-la scompattazione in parallelo, e la base slim è la strada già aperta per questo.
+Il job di produzione `gt_7f7gnsjt` è stato dato per «ancora in download» per più di venti minuti, tre volte di
+fila, su tre host diversi, senza che il worker dicesse mai niente. Adesso sappiamo che **non stava scaricando**:
+il download è di tre minuti. Stava facendo altro, o non stava facendo niente.
 
-## Una fragilità separata, trovata mentre si cercava altro
+Tutto quello che era facile da incolpare è stato controllato ed è sano:
 
-La produzione tira `ghcr.io/tonnooooo/kleo-worker:keou`, che è un tag **mutabile**, e `worker-image.yml` lo
-**riscrive a ogni push su main** che tocchi `worker/**`. Cioè un commit può cambiare l'immagine sotto i piedi di un
-render già partito.
+- **l'immagine**: `Cmd` è `python3 /opt/kleo/kleo_worker.py`, `WorkingDir` è `/opt/kleo`, nessun entrypoint rotto (letto dal registro).
+- **il disco**: 80 GB richiesti, sia in produzione sia nella prova.
+- **il copione di avvio**: `VAST_BOOTSTRAP_URL` non è configurato, quindi non c'è nessun `apt-get` all'avvio; l'onstart è due comandi.
+- **il tag mutabile**: `worker-image.yml` riscrive `:keou` a ogni push, ma il secondo dei tre tentativi è fallito senza nessuna ricostruzione in corso.
 
-**Attenzione a non concludere troppo**: questo NON spiega il fallimento di `gt_7f7gnsjt` dell'11 settembre. Quel job
-ha fallito tre volte, e il secondo tentativo (14:50-15:13 UTC) è andato male senza nessuna ricostruzione in corso.
-La causa di quei tre fallimenti resta ignota. La fragilità del tag mutabile è vera lo stesso e va chiusa lo stesso,
-fissando il **digest** al momento del noleggio invece del nome del tag: così un job rende sempre con l'immagine con
-cui è partito, qualunque cosa succeda su main nel frattempo.
+**La causa è ancora ignota, ed è la cosa più importante rimasta aperta.** Il prossimo passo non è un'ipotesi in
+più: è noleggiare una macchina con lo stesso identico corredo di variabili di un job vero, collegarsi, e leggere
+`/var/log/kleo.log` — che è l'unico posto dove il worker scrive quando non riesce a parlare col server.
 
-## Cosa NON è il problema
+## La regola, che è la parte che sopravvive
 
-- **Non è la banda dell'host.** Misurato: 46,6 MB/s disponibili contro 6,5 MB/s effettivi.
-- **Non è ghcr.io.** Serve alla velocità che la rete permette.
-- **Non è la dimensione in sé.** 7,8 GB a 46 MB/s sono tre minuti. Il tempo se ne va altrove.
+Il tempo fra il noleggio e il primo messaggio del worker **non è il tempo del download**. Chi vuole il tempo del
+download lo misura, e lo misura con uno strumento che affitta la macchina **nello stesso modo** in cui la affitta
+la produzione (`runtype: "ssh"`); altrimenti misura una macchina che la produzione non affitta mai.
