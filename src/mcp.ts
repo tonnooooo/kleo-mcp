@@ -120,7 +120,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     });
     return ok(
       { templates, credits_available: fresh.credits, pricing: "1 credit per Short (up to 90 seconds), 3 credits up to 5 minutes, +1 credit per extra minute", account_url: await accountUrl(env, user.id, base) },
-      `Kleo has ${TEMPLATES.length} templates. You have ${plural(fresh.credits, "credit")} left.\n${lines.join("\n")}\nPrices: 1 credit per Short (up to 90 seconds), 3 credits up to 5 minutes, +1 credit per extra minute.`,
+      `Kleo has ${TEMPLATES.length} templates. You have ${plural(fresh.credits, "credit")} left. NEXT STEP: if the user has not told you what the video is about, ASK THEM and wait — do not pick a subject for them. A render costs them a credit and about twenty minutes, and neither comes back.\n${lines.join("\n")}\nPrices: 1 credit per Short (up to 90 seconds), 3 credits up to 5 minutes, +1 credit per extra minute.`,
     );
   });
 
@@ -145,15 +145,21 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     // The guide is built in src/guide.ts from the contract\u2019s own constants, so the numbers it prints are the numbers
     // the validator enforces \u2014 the shot range used to be 1-4 here, 2-4 in the planner and "two to four" on the website.
     const text = guideText({ template, templateName: t?.name, duration_s: dur, style: style ?? null, languages: JOB_LANGUAGES, format: fmt });
-    return ok({ guide: text, template: t?.id ?? null, duration_s: dur, format: fmt, words_target: words, credits: creditsFor(dur), styles: [...KLEO_STYLES], style: style ?? null }, text);
+    // The guide is where an assistant is most likely to start inventing: it has just been handed the shape of a
+    // storyboard and nothing to put in it. So the sentence that leaves with it is the one that says whose idea it
+    // has to be — a model follows the last instruction it read far more reliably than a tool description.
+    const askFirst = "\n\nBEFORE YOU WRITE THIS: the subject has to come from the user, not from you. If they have not "
+      + "said what the video is about, ask them now and wait for the answer. If they gave you a subject, however short, "
+      + "that is enough — write the storyboard and do not interrogate them.";
+    return ok({ guide: text, template: t?.id ?? null, duration_s: dur, format: fmt, words_target: words, credits: creditsFor(dur), styles: [...KLEO_STYLES], style: style ?? null }, text + askFirst);
   });
 
   server.registerTool("kleo_create_video", {
     title: "Create a video",
-    description: "Step 3. Starts rendering a video or Short from a template, a prompt and a visual style (cartoon or realistic pictures, cyber or stickman; plus your storyboard from kleo_storyboard_guide, if you wrote one). Returns at once with the video number (job_id), the estimated minutes (eta_min) and the credits used; the render runs on a GPU in the background. Tell the user the number and the estimate, then offer to check progress with kleo_get_job. If the tool returns an error, nothing was charged: fix what it says and call again.",
+    description: "Step 3. ASK FIRST, THEN CALL. Do not call this until the user has said, in their own words, what the video should be about. If the subject is YOUR idea and not theirs — you suggested a topic, or you filled a vague request in with your own guess — stop and ask them, and wait for the answer. A render spends a credit they cannot get back once it starts and takes about twenty minutes, so a video nobody asked for is not a fast answer, it is a wasted one. When their request is short but clear (\"a Short about pirates\"), that is enough: do not interrogate them. When it is missing the subject entirely, ask for the subject and nothing else. Starts rendering a video or Short from a template, a prompt and a visual style (cartoon or realistic pictures, cyber or stickman; plus your storyboard from kleo_storyboard_guide, if you wrote one). Returns at once with the video number (job_id), the estimated minutes (eta_min) and the credits used; the render runs on a GPU in the background. Tell the user the number and the estimate, then offer to check progress with kleo_get_job. If the tool returns an error, nothing was charged: fix what it says and call again.",
     inputSchema: z.object({
       template: z.string().optional().describe(`Required. Template id from kleo_list_templates: ${TEMPLATE_IDS.join(", ")}.`),
-      prompt: z.string().describe("What the video is about, in the user's words (8 to 4000 characters): topic, angle, facts, names, tone, anything that must appear on screen."),
+      prompt: z.string().describe("What the video is about, IN THE USER'S OWN WORDS (8 to 4000 characters): topic, angle, facts, names, tone, anything that must appear on screen. If you are about to write this field out of an idea of your own, that is the sign to ask them instead: the credit and the twenty minutes are theirs, so the subject has to be theirs too."),
       duration_s: z.number().optional().describe("Target length in seconds. Defaults to the template default and must stay inside the template's range."),
       format: z.enum(["16:9", "9:16"]).optional().describe("16:9 for YouTube videos, 9:16 for Shorts. Defaults to the template's first format."),
       language: z.enum(JOB_LANGUAGES).default("en").describe("Voice and caption language. A storyboard you pass must declare this same language."),
