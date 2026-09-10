@@ -317,6 +317,7 @@ class EngineProgress:
         self.n_scenes, self.workers = max(1, n_scenes), max(1, workers)
         self.voiced = self.segments = 0
         self.max_frame = 0
+        self.frames = {}          # worker id -> its latest ABSOLUTE frame; see the FRAME branch
         self.total = None
         self.render_started = None
         self.last_post = 0.0
@@ -354,14 +355,22 @@ class EngineProgress:
             self.post("clips", 22, "layout checked", force=True)
         elif head == "FRAME" and len(parts) >= 5:            # FRAME <worker> <frame> / <total>
             try:
-                f, total = int(parts[2]), int(parts[4])
+                wid, f, total = int(parts[1]), int(parts[2]), int(parts[4])
                 self.total = total
                 self.max_frame = max(self.max_frame, f)
-                frac = min(1.0, self.max_frame / total) if total else 0
+                # EACH WORKER DRAWS ITS OWN BLOCK, and the frame number it prints is ABSOLUTE. So the highest
+                # number seen belongs to the LAST worker, who reaches the end of the film first — while five
+                # others are still in the middle of theirs. Reading it as progress put the bar at the top of its
+                # band, and the ETA at nearly zero, for minutes of real work: measured on the first 4K render,
+                # where the bar sat at 57% while the slowest worker was at 300 of its 341 frames.
+                # The blocks are render.mjs's own: first = floor(total * id / workers).
+                self.frames[wid] = f
+                done = sum(v - (total * k // max(1, self.workers)) + 1 for k, v in self.frames.items())
+                frac = min(1.0, max(0.0, done / total)) if total else 0
                 eta = None
                 if self.render_started and frac > 0.02:
                     eta = round((time.time() - self.render_started) * (1 - frac) / frac / 60, 1)
-                self.post("clips", 22 + 36 * frac, f"frame {self.max_frame}/{total}", eta_min=eta)
+                self.post("clips", 22 + 36 * frac, f"frame {done}/{total}", eta_min=eta)
             except ValueError:
                 pass
         elif head in ("SEGMENT_OK", "RESUME_VALIDATED"):

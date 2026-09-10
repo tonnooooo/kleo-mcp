@@ -15,7 +15,7 @@ stills when the shooting failed.
 
 Run: python3 -m unittest worker.test_kleo_worker_video       (from the repo root)
 """
-import copy, importlib.util, json, os, shutil, tempfile, unittest
+import copy, importlib.util, json, os, shutil, tempfile, time, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ENGINE = os.path.join(HERE, "keou")
@@ -331,6 +331,48 @@ class ShotPlanTest(unittest.TestCase):
         _, seconds = kw.shot_plan(self.write({"width": 1920, "height": 1080, "fps": 60, "scenes": [
             {"id": "01-hook", "shots": [{"index": 0, "start": 0, "end": 2}, {"index": 1, "start": 2, "end": 2}]}]}))
         self.assertEqual(sorted(seconds), ["01-hook-s1"])
+
+
+class ProgressTest(unittest.TestCase):
+    """What the person waiting is told, which is the only number they ever see.
+
+    Every render worker draws its own block of the film and prints ABSOLUTE frame numbers. So the highest number
+    ever printed belongs to the LAST worker — the one whose block ends at the end of the film — and it reaches
+    that end while everybody else is still in the middle. Reading the highest as progress puts the bar at the top
+    of its band, and the ETA at nearly zero, for minutes of real work.
+
+    Measured on the first 4K render, 2046 frames over six workers: the bar said 2040/2046 while the slowest worker
+    was at 300 of its 341. It stayed there for over a minute saying "almost done"."""
+
+    def setUp(self):
+        self.saved = kw.progress
+        self.seen = []
+        kw.progress = lambda track, pc, eta_min=None, message=None: self.seen.append((track, pc, message, eta_min))
+        self.addCleanup(lambda: setattr(kw, "progress", self.saved))
+
+    def test_the_bar_counts_every_worker_and_not_just_the_luckiest(self):
+        p = kw.EngineProgress(5, 6)
+        p.render_started = time.time() - 60
+        # Exactly the six lines the first 4K render printed, in the order it printed them.
+        for line in ["FRAME 5 2040 / 2046", "FRAME 0 300 / 2046", "FRAME 1 630 / 2046",
+                     "FRAME 2 990 / 2046", "FRAME 3 1320 / 2046", "FRAME 4 1680 / 2046"]:
+            p.line(line)
+        track, pc, message, eta = self.seen[-1]
+        self.assertEqual(track, "clips")
+        self.assertIn("1851/2046", message,
+                      "the six blocks together hold 1851 finished frames; 2040 is one worker's position")
+        self.assertLess(pc, 57, "the old reading put this at the top of the band")
+        self.assertGreater(eta or 0, 0, "an ETA of zero with 195 frames left is a lie to whoever is waiting")
+
+    def test_one_worker_finishing_does_not_finish_the_film(self):
+        p = kw.EngineProgress(5, 4)
+        p.line("FRAME 3 999 / 1000")          # the last worker reaches the last frame of the film
+        _, pc, message, _ = self.seen[-1]
+        # Its block is [750, 1000), so 250 frames of 1000 are done. The band runs 22..58, so a quarter of the
+        # work reads as 31: near the FLOOR of the band, where it belongs, and not at the top where the old
+        # reading put it the moment any single worker touched the last frame.
+        self.assertIn("250/1000", message)
+        self.assertLess(pc, 35, f"one worker of four is not a finished film: {message}")
 
 
 class ContractTest(unittest.TestCase):
