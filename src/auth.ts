@@ -1,6 +1,6 @@
 import { AuthorizationError, type AuthRequest } from "@cloudflare/workers-oauth-provider";
 import type { Env, AuthProps } from "./env";
-import { type User, getUser, createUser, getInvite, useInvite, applyBonusToUser, touchUser, countUsersCreatedToday, countUsersCreatedTodayForIp, audit } from "./db";
+import { type User, getUser, createUserIfUnderCaps, getInvite, useInvite, applyBonusToUser, touchUser, audit } from "./db";
 import { accountCookie, cookieHandle, ipFingerprint, makeHandle, signupRateKey, verifyHandle, verifyTurnstile } from "./accounts";
 import { html, escapeHtml, rid, int } from "./util";
 
@@ -75,7 +75,7 @@ type Resolved = { user: User } | { error: string; status: number };
  * The key comes first on purpose: typing one is an explicit "this is my account", while a cookie is merely what this
  * browser happens to hold, and the very case the key exists for (an account left on another computer) is the case
  * where this browser already has a cookie of its own. Whichever branch wins, a gift code typed alongside is applied.
- * The daily caps are checked before createUser, so a day that is over creates neither a user nor credits.
+ * The daily caps are part of the INSERT itself, so a day that is over creates neither a user nor credits.
  */
 async function resolveAccount(env: Env, o: { cookie: string | null; key: string; bonus: string; ip: string | null }): Promise<Resolved> {
   const accountFor = async (handle: string | null) => {
@@ -92,23 +92,26 @@ async function resolveAccount(env: Env, o: { cookie: string | null; key: string;
   const known = await accountFor(o.cookie);
   if (known) return { user: await applyBonus(env, known, o.bonus) };
 
-  if ((await countUsersCreatedToday(env)) >= int(env.MAX_NEW_USERS_PER_DAY, 25))
-    return { error: "Kleo has handed out today's free Shorts. Come back tomorrow and this button will work again.", status: 429 };
-  // Without this, 25 requests from one address close the free tier for everybody until midnight UTC, at no cost to
-  // whoever sent them. Deliberately soft, and worded so it never accuses: whole offices share one address.
+  // Both daily caps live inside the INSERT (db.ts createUserIfUnderCaps): the day cap, and the per-address one that
+  // stops 25 requests from one place closing the free tier for everybody until midnight. The address is stored only
+  // as a fingerprint, and the refusal is worded so it never accuses anybody — whole offices share one address.
   const ip = await ipFingerprint(env, o.ip);
-  if (ip && (await countUsersCreatedTodayForIp(env, ip)) >= int(env.MAX_NEW_USERS_PER_IP_DAY, 5))
-    return { error: "Kleo is giving out its free Shorts slowly today. Try again in a little while, and your account will be waiting.", status: 429 };
-
-  const bonus = o.bonus ? await claimBonus(env, o.bonus) : 0;
-  const credits = int(env.FREE_CREDITS, 2) + bonus;
   const id = rid("u", 12);
   // users.email is NOT NULL UNIQUE and an anonymous account has no address: this synthetic one satisfies the
-  // constraint, so the open door needs no migration and no new column. .invalid can never be a real domain (RFC 2606).
-  const user = await createUser(env, { id, email: `${id}@anon.kleo.invalid`, credits, inviteCode: bonus ? o.bonus : null });
-  if (o.bonus && !bonus) await audit(env, user.id, null, "bonus.rejected", { code: o.bonus, reason: "unknown code, or every use of it is gone" });
-  await audit(env, user.id, null, "user.created", { source: "open", credits, bonus, ip });
-  return { user };
+  // constraint. .invalid can never be a real domain (RFC 2606).
+  const { verdict, user } = await createUserIfUnderCaps(
+    env,
+    { id, email: `${id}@anon.kleo.invalid`, credits: int(env.FREE_CREDITS, 2), ipHash: ip },
+    { perDay: int(env.MAX_NEW_USERS_PER_DAY, 25), perAddressDay: int(env.MAX_NEW_USERS_PER_IP_DAY, 5) },
+  );
+  if (!user)
+    return verdict === "day_full"
+      ? { error: "Kleo has handed out today's free Shorts. Come back tomorrow and this button will work again.", status: 429 }
+      : { error: "Kleo is giving out its free Shorts slowly today. Try again in a little while, and your account will be waiting.", status: 429 };
+  await audit(env, user.id, null, "user.created", { source: "open", credits: user.credits, ip });
+  // The gift is applied only now, to an account that exists: a sign-up a cap refused must never burn one of the
+  // code's uses, which is what claiming it before the INSERT did.
+  return { user: await applyBonus(env, user, o.bonus) };
 }
 
 /**

@@ -95,17 +95,42 @@ export async function countUsersCreatedToday(env: Env): Promise<number> {
   const r = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE created_at >= strftime('%Y-%m-%dT00:00:00.000Z','now')").first<{ n: number }>();
   return r?.n ?? 0;
 }
-/**
- * Accounts created today from one hashed address. There is no ip column yet (Phase 2), so the count is taken from
- * the fingerprint the user.created audit row carries: enough to stop one address from eating the whole day's
- * allowance, and it stores no address, only an HMAC of one.
- */
+/** Accounts created today from one hashed address (users.ip_hash, never an address). */
 export async function countUsersCreatedTodayForIp(env: Env, ipHash: string): Promise<number> {
   const r = await env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM audit WHERE event = 'user.created'
-       AND at >= strftime('%Y-%m-%dT00:00:00.000Z','now') AND detail LIKE '%"ip":"' || ? || '"%'`
+    "SELECT COUNT(*) AS n FROM users WHERE ip_hash = ? AND created_at >= strftime('%Y-%m-%dT00:00:00.000Z','now')",
   ).bind(ipHash).first<{ n: number }>();
   return r?.n ?? 0;
+}
+
+/** Why an account was not created, so the page can say the true thing: the day is over, or this address has had its share. */
+export type CapVerdict = "created" | "day_full" | "address_full";
+
+/**
+ * Creates the account ONLY while both daily caps still allow it, as ONE statement: the counts live in the INSERT's
+ * own WHERE, so there is no window between checking and writing. Checking first and inserting after — which is what
+ * this replaced — lets a burst of simultaneous sign-ups all read "24 so far" and all get in.
+ * A cap that was hit is reported by counting again afterwards; that second read is only there to choose the wording,
+ * and being a moment stale cannot let anybody in.
+ */
+export async function createUserIfUnderCaps(
+  env: Env,
+  u: { id: string; email: string; credits: number; inviteCode?: string | null; ipHash: string | null },
+  caps: { perDay: number; perAddressDay: number },
+): Promise<{ verdict: CapVerdict; user?: User }> {
+  const midnight = "strftime('%Y-%m-%dT00:00:00.000Z','now')";
+  // The address clause is skipped for a request that arrives without one (local dev, an odd proxy): a missing
+  // fingerprint must not become a free pass past the day cap, nor a wall in front of an honest visitor.
+  const r = await env.DB.prepare(
+    `INSERT INTO users (id, email, credits, invite_code, ip_hash)
+     SELECT ?, ?, ?, ?, ?
+     WHERE (SELECT COUNT(*) FROM users WHERE created_at >= ${midnight}) < ?
+       AND (? IS NULL OR (SELECT COUNT(*) FROM users WHERE ip_hash = ? AND created_at >= ${midnight}) < ?)`,
+  ).bind(u.id, u.email.toLowerCase(), u.credits, u.inviteCode ?? null, u.ipHash,
+         caps.perDay, u.ipHash, u.ipHash, caps.perAddressDay).run();
+  if ((r.meta.changes ?? 0) === 1) return { verdict: "created", user: (await getUser(env, u.id))! };
+  const today = await countUsersCreatedToday(env);
+  return { verdict: today >= caps.perDay ? "day_full" : "address_full" };
 }
 /**
  * Credits a gift code onto an account that already exists, at most once in its life: the UPDATE applies only while

@@ -30,6 +30,15 @@ const COLUMNS: [table: string, column: string, definition: string][] = [
   // When the job entered the QUEUE (reset on every requeue), so the queue-wait reaper measures the wait for a GPU
   // and not the age of the job — a requeued job would otherwise be failed at once for a wait it never made.
   ["jobs", "queued_at", "TEXT"],
+  // HMAC of the address a new account was opened from — never the address itself. It is what the daily per-address
+  // cap counts, inside the INSERT that creates the account (src/db.ts createUserIfUnderCaps).
+  ["users", "ip_hash", "TEXT"],
+];
+
+/** Indexes over columns from COLUMNS. They belong here and NOT in STATEMENTS: that batch runs before the ALTERs, so
+ *  an index naming a column added above would fail on every request against a database that predates it. */
+const COLUMN_INDEXES = [
+  "CREATE INDEX IF NOT EXISTS users_ip_created ON users(ip_hash, created_at)",
 ];
 
 async function ensureColumns(env: Env): Promise<void> {
@@ -40,6 +49,7 @@ async function ensureColumns(env: Env): Promise<void> {
       if (!/duplicate column/i.test(String(e))) throw e;
     }
   }
+  for (const sql of COLUMN_INDEXES) await env.DB.prepare(sql).run();
 }
 
 let ready: Promise<void> | null = null;

@@ -76,11 +76,16 @@ async function newEnv(extra = {}) {
   return env;
 }
 
-/** One press of the button. `cookie` is the browser's kleo_id, `form` the two optional fields. */
-const press = (env, { cookie, form } = {}) =>
+/** One press of the button. `cookie` is the browser's kleo_id, `form` the two optional fields, `ip` the address
+ *  Cloudflare would put on the request (only its fingerprint ever reaches the database). */
+const press = (env, { cookie, form, ip } = {}) =>
   m.handleAuthorize(new Request("http://kleo.test/authorize", {
     method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded", ...(cookie ? { cookie } : {}) },
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      ...(cookie ? { cookie } : {}),
+      ...(ip ? { "CF-Connecting-IP": ip } : {}),
+    },
     body: new URLSearchParams({ oauth_query: OAUTH_QUERY, ...form }),
   }), env);
 
@@ -145,7 +150,7 @@ test("sign-in: one press creates an anonymous account with FREE_CREDITS credits 
   assert.equal(await m.verifyHandle(env, handleOf(res)), rows[0].id);
   const created = audits(env, "user.created");
   assert.equal(created.length, 1);
-  assert.deepEqual(created[0].detail, { source: "open", credits: 2, bonus: 0, ip: null }, "no CF-Connecting-IP in a test, and an address is never stored raw anyway");
+  assert.deepEqual(created[0].detail, { source: "open", credits: 2, ip: null }, "no CF-Connecting-IP in this request, and an address is never stored raw anyway");
   assert.equal(env.OAUTH_PROVIDER.granted[0].userId, rows[0].id, "and the OAuth grant is completed for that same account");
 });
 
@@ -236,7 +241,7 @@ test("sign-in: a bonus code adds credits on top of the free ones; an unknown one
   assert.equal(withBonus.credits, 3, "2 free + 1 bonus");
   assert.equal(withBonus.invite_code, "MARCO-1");
   assert.equal(env.DB.db.prepare("SELECT uses FROM invites WHERE code = 'MARCO-1'").get().uses, 1);
-  assert.equal(audits(env, "user.created")[0].detail.bonus, 1);
+  assert.equal(audits(env, "bonus.applied").length, 1, "the gift is applied after the account exists, so it is its own audit row");
 
   // A code is a gift, never a gate: an unknown or spent one must still let the person in.
   const plain = await press(env, { form: { bonus: "NOT-A-CODE" } });
@@ -259,7 +264,7 @@ test("sign-in: past MAX_NEW_USERS_PER_DAY no account and no credits are created,
   // The message is escaped into the page, so "today's" arrives as "today&#39;s": match around the apostrophe.
   assert.match(body, /Kleo has handed out today/);
   assert.match(body, /free Shorts\. Come back tomorrow/);
-  assert.equal(users(env).length, 1, "the cap is checked BEFORE createUser: no user, no credits, no audit row");
+  assert.equal(users(env).length, 1, "the cap is inside the INSERT: no user, no credits, no audit row");
   assert.equal(audits(env, "user.created").length, 1);
 
   // The cap is about NEW accounts: somebody who already has one still gets in.
@@ -267,6 +272,36 @@ test("sign-in: past MAX_NEW_USERS_PER_DAY no account and no credits are created,
   const back = await press(env, { cookie: `kleo_id=${await m.makeHandle(env, known.id)}` });
   assert.equal(back.status, 302);
   assert.equal((await m.getUser(env, "u_known")).credits, 5);
+});
+
+test("sign-in: one address cannot eat the whole day, and everybody else still gets in", async () => {
+  const env = await newEnv({ MAX_NEW_USERS_PER_DAY: "25", MAX_NEW_USERS_PER_IP_DAY: "2" });
+  assert.equal((await press(env, { ip: "203.0.113.7" })).status, 302);
+  assert.equal((await press(env, { ip: "203.0.113.7" })).status, 302);
+
+  const third = await press(env, { ip: "203.0.113.7" });
+  assert.equal(third.status, 429);
+  assert.match(await third.text(), /giving out its free Shorts slowly today/, "soft wording: whole offices share one address");
+  assert.equal(users(env).length, 2, "and no third account was written");
+
+  // The wall is per address, not global: the day is not over for anybody else.
+  assert.equal((await press(env, { ip: "198.51.100.4" })).status, 302);
+  assert.equal(users(env).length, 3);
+
+  const stored = users(env).map((u) => u.ip_hash);
+  assert.equal(new Set(stored).size, 2, "two addresses, two fingerprints");
+  assert.ok(stored.every((h) => h && !h.includes("203.0.113") && !h.includes("198.51.100")), "the address itself is never stored");
+});
+
+test("sign-in: a press a cap refuses does not burn a use of the gift code that came with it", async () => {
+  const env = await newEnv({ MAX_NEW_USERS_PER_DAY: "1" });
+  env.DB.db.exec("INSERT INTO invites (code, credits, max_uses, note) VALUES ('CRISTIANO-1', 5, 1, 'Cristiano')");
+  assert.equal((await press(env)).status, 302);
+
+  const refused = await press(env, { form: { bonus: "CRISTIANO-1" } });
+  assert.equal(refused.status, 429);
+  assert.equal(env.DB.db.prepare("SELECT uses FROM invites WHERE code = 'CRISTIANO-1'").get().uses, 0,
+    "the code is claimed only after the account exists, so a refused day cannot swallow somebody's gift");
 });
 
 test("sign-in: the rate limit binding, when there is one, answers before any account is touched", async () => {
