@@ -81,6 +81,20 @@ cd - && git worktree remove /tmp/kleo-deploy
 
 Il `--message` finisce nella lista dei deploy (`npx wrangler deployments list`): scriverci dentro il commit è l'unico modo per sapere, mesi dopo, quale codice stava girando.
 
+**Prima di deployare, guarda se la CI è verde su quel commit.** `tests.yml` gira su GitHub a ogni push, su qualunque ramo, e fa gli stessi tre controlli che altrimenti si pagano noleggiando una macchina: `tsc --noEmit`, i test Node e i test Python del worker. Costa zero e ci mette quaranta secondi.
+
+```bash
+gh run list --repo tonnooooo/kleo-mcp --branch main --workflow tests --limit 1
+```
+
+Se il commit che stai per deployare non è quello che la CI ha passato, la differenza si legge in una riga — e se sono solo documenti, la verifica vale lo stesso:
+
+```bash
+git diff --stat <commit-verde> <commit-da-deployare>
+```
+
+La macchina noleggiata serve solo per quello che la CI non può fare: un render vero, un'immagine disegnata davvero, il tempo che ci mette. Per i tipi e i test, noleggiare è buttare soldi.
+
 Codici regalo (facoltativi, non servono per entrare): `npx wrangler d1 execute kleo-db --remote --command "INSERT INTO invites (code,credits,max_uses,note) VALUES ('NOME-1',3,1,'Nome')"`. Chi scrive `NOME-1` nel campo facoltativo della pagina di accesso riceve quei crediti **in più** ai 2 gratuiti; chi non scrive niente entra lo stesso.
 
 ## 5. GPU vere: come funzionano, come spegnerle, la riserva gratuita
