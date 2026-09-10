@@ -12,14 +12,23 @@
  "music": "bed",
  "max_duration": 70,
  "description": "A stickman explainer of the relay attack: two thieves, one key inside the house, one car on the drive.",
- "tags": ["security", "cars", "explainer"],
+ "tags": [
+  "security",
+  "cars",
+  "explainer"
+ ],
  "scenes": [
   {
    "id": "01-key",
    "kind": "story",
    "act": "idle",
-   "cast": ["hero"],
-   "props": ["keyfob", "house"],
+   "cast": [
+    "hero"
+   ],
+   "props": [
+    "keyfob",
+    "house"
+   ],
    "accent": "green",
    "title": "the key never leaves the house",
    "hl": "never",
@@ -29,8 +38,14 @@
    "id": "02-listen",
    "kind": "story",
    "act": "crouch",
-   "cast": ["hero", "thief"],
-   "props": ["amplifier", "house"],
+   "cast": [
+    "hero",
+    "thief"
+   ],
+   "props": [
+    "amplifier",
+    "house"
+   ],
    "fx": "signal",
    "accent": "amber",
    "title": "one of them listens at the door",
@@ -42,8 +57,15 @@
    "id": "03-relay",
    "kind": "story",
    "act": "hold",
-   "cast": ["thief", "thief2"],
-   "props": ["amplifier", "car"],
+   "cast": [
+    "hero",
+    "thief",
+    "thief2"
+   ],
+   "props": [
+    "amplifier",
+    "car"
+   ],
    "fx": "relay",
    "accent": "red",
    "title": "the second one holds the car door",
@@ -54,8 +76,13 @@
    "id": "04-drive",
    "kind": "story",
    "act": "run",
-   "cast": ["thief2"],
-   "props": ["car"],
+   "cast": [
+    "hero",
+    "thief2"
+   ],
+   "props": [
+    "car"
+   ],
    "fx": "drive-off",
    "accent": "red",
    "title": "gone in twenty seconds",
@@ -66,8 +93,13 @@
    "id": "05-pouch",
    "kind": "story",
    "act": "drop",
-   "cast": ["hero"],
-   "props": ["pouch", "keyfob"],
+   "cast": [
+    "hero"
+   ],
+   "props": [
+    "pouch",
+    "keyfob"
+   ],
    "fx": "relay-fail",
    "accent": "green",
    "title": "a five euro pouch stops it",
