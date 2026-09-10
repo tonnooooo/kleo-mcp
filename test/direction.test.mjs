@@ -322,3 +322,42 @@ test("every picture of a storyboard can be checked against the direction in one 
   assert.deepEqual(forbiddenInPrompts(sb.direction.forbidden, pics), [], "the fixture asks for nothing it forbids");
   for (const p of pics) assert.ok(p.accent === null || CINEMA_ACCENTS.includes(p.accent), p.accent);
 });
+
+/* ------------------------------------------------------------------ the guide's promise, made true on the client's path */
+
+// The guide tells an assistant "THE DIRECTION — write this FIRST, before a single scene" and then "Kleo enforces
+// it". Until requireDirection existed that sentence was false: a storyboard with no direction was accepted, and the
+// film it produced had no colour law, no fidelity gate and no forbidden list — silently, for the same money. These
+// tests hold both halves: the flag refuses, and the flag stays off everywhere the planner works.
+
+test("without the flag a storyboard needs no direction, which is what every planner draft depends on", () => {
+  const r = validateStoryboard(pirates(), { format: "9:16", language: "en" });
+  assert.equal(r.ok, true, "the fixture has no direction and must still validate for the planner");
+});
+
+test("with the flag a storyboard that carries no direction is refused, and told what to add", () => {
+  const r = validateStoryboard(pirates(), { format: "9:16", language: "en", requireDirection: true });
+  assert.equal(r.ok, false, "an assistant's storyboard without a direction may not be rendered");
+  const said = r.errors.join("\n");
+  assert.match(said, /direction is required/, "the error names the missing thing");
+  assert.match(said, /kleo_storyboard_guide/, "and tells the assistant where the answer is written");
+  assert.match(said, /sections/, "and lists the fields, so the fix needs no second call");
+});
+
+test("with the flag a storyboard that carries a direction passes exactly as before", () => {
+  const r = validateStoryboard(withDirection(), { format: "9:16", language: "en", requireDirection: true });
+  assert.deepEqual(r.ok ? [] : r.errors, [], "the flag adds no rule beyond presence");
+});
+
+test("the missing direction is reported together with the other problems, not instead of them", () => {
+  // The check sits BEFORE the scene guard on purpose. A storyboard whose scenes are also wrong would otherwise
+  // return early, hide the missing direction, and cost the assistant a second round trip after it had already
+  // rewritten the scenes.
+  const broken = pirates();
+  broken.scenes = [];
+  const r = validateStoryboard(broken, { format: "9:16", language: "en", requireDirection: true });
+  assert.equal(r.ok, false);
+  const said = r.errors.join("\n");
+  assert.match(said, /direction is required/, "the direction error survives the scene guard");
+  assert.match(said, /2–240 scenes/, "and the scene error is there too: one call learns everything");
+});

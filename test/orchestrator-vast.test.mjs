@@ -783,3 +783,16 @@ test("vast: a machine that no longer exists is not the same answer as not being 
   const loading = await withVast(fakeVast({ instances: [{ id: 777, actual_status: "loading" }] }), () => m.vastStatus(env, job));
   assert.equal(loading, "loading", "a live machine still answers plainly");
 });
+
+test("an assistant's storyboard without a direction is refused by createJob, and nothing is charged", async () => {
+  // The rule lives in the validator, but this is the path that matters: the one a real client walks. The guide has
+  // told the assistant to write the direction first and promised Kleo enforces it; here is where that becomes true.
+  const env = await newEnv();
+  const u = await user(env);
+  const before = (await m.getUser(env, u.id)).credits;
+  const sb = pirates();
+  delete sb.direction;
+  await assert.rejects(() => short(env, u, { storyboard: sb }), /direction is required/,
+    "the refusal names the missing block");
+  assert.equal((await m.getUser(env, u.id)).credits, before, "and the user still has every credit");
+});

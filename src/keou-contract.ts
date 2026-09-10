@@ -228,6 +228,18 @@ export interface ValidateOptions {
   language: string;
   /** Maximum number of errors collected (default 10). */
   maxErrors?: number;
+  /**
+   * Refuse a storyboard that carries no direction. OFF by default, and on only for a storyboard an assistant wrote
+   * (src/jobs.ts): the planner writes its own direction in phase 0 and validates the draft several times on the way
+   * there, so the same rule would refuse Kleo's own half-built work.
+   *
+   * It exists because the guide promises it. `kleo_storyboard_guide` says "THE DIRECTION — write this FIRST, before
+   * a single scene" and then "Kleo enforces it"; without this flag that sentence was false on the one path it was
+   * written for, and an assistant that skipped the block got a film with no colour law, no fidelity gate and no
+   * forbidden list, silently, for the same money. The refusal costs nothing — no model call, no GPU, no credit —
+   * and the message says what to add, so the assistant fixes it in the same conversation.
+   */
+  requireDirection?: boolean;
 }
 /**
  * The result always carries the NORMALISED object, whether or not it is legal: validation and normalisation are the
@@ -708,10 +720,15 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
   e.finite(c.speed ?? 1, 0.8, 1.3, "speed");
   if ("music" in c && c.music !== "bed" && c.music !== "none") e.add("music must be bed or none");
   e.finite(c.max_duration ?? 600, 5, 1800, "max_duration");
+  // BEFORE the scene check on purpose. A storyboard with malformed scenes would otherwise return here and hide the
+  // missing direction, so the assistant would learn about it only on the second call — two round trips for one
+  // storyboard, and the second one after it had already rewritten the scenes.
+  if (opts.requireDirection && !("direction" in c))
+    e.add('direction is required: call kleo_storyboard_guide and write the DIRECTION block first (subject, goal, audience, tone, must_keep, world, cast, objects, forbidden, sections). It is what keeps a character the same person across shots and gives every scene the colour of its section.');
   const scenes = c.scenes;
   if (!Array.isArray(scenes) || scenes.length < 2 || scenes.length > 240) { e.add("A project needs 2–240 scenes"); return; }
-  // The direction is optional so that every storyboard written before it still validates, but a storyboard that
-  // carries one is held to it: the sections must tile the film and every scene must wear the colour of its section.
+  // The direction is optional for the planner's own drafts, but a storyboard that carries one is held to it: the
+  // sections must tile the film and every scene must wear the colour of its section.
   // Checking it here, on the free Worker, is the whole point — a colour law discovered on a rented GPU is a colour
   // law nobody enforced.
   const direction = "direction" in c ? c.direction : undefined;

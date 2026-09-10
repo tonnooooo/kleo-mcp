@@ -110,7 +110,10 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
         throw new JobError(`The style argument says "${style}" but the storyboard's kleo_style says "${String(sb.kleo_style)}". Make them agree (or drop one of them). Nothing was charged.`);
       if (style && !("kleo_style" in sb)) sb.kleo_style = style;
     }
-    const r = validateStoryboard(sbIn, { format, language });
+    // requireDirection only here: this is the assistant's storyboard, and the guide already told it to write the
+    // direction first. The planner (src/storyboard.ts) validates its own drafts with the flag off, because it is
+    // still building the direction when the first of those calls happens.
+    const r = validateStoryboard(sbIn, { format, language, requireDirection: true });
     if (!r.ok) {
       const n = r.errors.length;
       throw new JobError(`The storyboard has ${plural(n, "problem")} (nothing was charged). Fix ${n === 1 ? "it" : "them"} and call kleo_create_video again:\n- ${r.errors.join("\n- ")}`);
