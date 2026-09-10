@@ -95,10 +95,12 @@ export const findTemplate = (id: string): Template | undefined => TEMPLATES.find
  * A style that generates motion is 7, which also puts it out of reach of the free credits by construction — the
  * same thing that already keeps long videos out of the free tier.
  *
- * 7 is the TYPICAL cost, not the ceiling: measured 11 September, about a quarter of generated clips come back frozen
- * and have to be regenerated with another seed, and the generator gives up after two attempts per shot. So the worst
- * case is three times the base, around 10 credits' worth of GPU, and the price is charged up front at the typical
- * figure. What bounds the bad day is not the price list but DAILY_GPU_BUDGET_USD, which is exactly what it is for.
+ * 7 is the TYPICAL cost, not the ceiling. A generated clip sometimes comes back frozen and has to be redrawn with
+ * another seed, and the generator gives up after two attempts per shot, so the worst case is three times the base —
+ * around 10 credits' worth of GPU. How often that happens was first put at a quarter of clips, from isolated trials;
+ * on the first real film (eight 16:9 shots, 28 minutes of generation, 11 September) it was one shot in eight, 12%.
+ * So the typical figure holds and 7 is the price, charged up front; 10 stays the number to reason about for a bad
+ * day. What actually bounds a bad day is not the price list but DAILY_GPU_BUDGET_USD, which is exactly its job.
  */
 export const STYLE_CREDITS: Record<string, number> = {
   cartoon: 1,     // AI pictures + Ken Burns
