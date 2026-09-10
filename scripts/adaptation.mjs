@@ -290,14 +290,18 @@ let collapsed = 0;
 for (const a of h3.filter((x) => x.pair)) {
   const b = byId.get(a.pair);
   if (!b) continue;
-  const same = a.got === b.got;
-  if (same) collapsed++;
-  line(`  ${same ? "COLLAPSED" : "told apart"}  "${a.p.slice(0, 44)}" -> ${a.got}`);
-  line(`                 "${b.p.slice(0, 44)}" -> ${b.got}`);
+  // Told apart is only told apart when it is told apart CORRECTLY. Two requests that get different answers, both
+  // wrong, are not a distinction: they are two errors that happen not to coincide, and counting them as a success is
+  // the same mistake as counting a lucky default as a decision.
+  const differ = a.got !== b.got;
+  const verdict = !differ ? "COLLAPSED" : a.ok && b.ok ? "told apart" : "differ, both wrong";
+  if (!differ || !(a.ok && b.ok)) collapsed++;
+  line(`  ${verdict.padEnd(19)} "${a.p.slice(0, 42)}" -> ${a.got}${a.ok ? "" : "  (wanted " + a.accept.join("/") + ")"}`);
+  line(`  ${" ".repeat(19)} "${b.p.slice(0, 42)}" -> ${b.got}${b.ok ? "" : "  (wanted " + b.accept.join("/") + ")"}`);
 }
 const independent = h3.find((x) => x.p.startsWith("Spiega in un minuto perché l'acqua"));
 line(`  independence: a request with no technical word at all -> ${independent ? independent.got : "?"}${independent && independent.got === "cyber" ? "" : "   (the drawn explainer is not reachable without technical vocabulary)"}`);
-line(`  ${collapsed} of 3 pairs got the SAME answer: a classifier of topics cannot see a difference of form.`);
+line(`  ${collapsed} of 3 pairs are not a distinction: a classifier of topics cannot see a difference of FORM.`);
 line();
 
 const allHeld = [...h1, ...h2, ...h3];
