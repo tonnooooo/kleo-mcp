@@ -194,12 +194,20 @@ def generate_clips(shots, look, fmt, out_dir, seconds_of=None):
         t0 = time.time()
         try:
             from diffusers.utils import export_to_video
-            g = torch.Generator(device="cuda").manual_seed(seed_for(sid))
-            out = pipe(prompt=prompt, negative_prompt=NEGATIVE, height=h, width=w, num_frames=n,
-                       num_inference_steps=STEPS, guidance_scale=GUIDANCE, generator=g)
-            export_to_video(out.frames[0], path, fps=FPS_SRC)
-            if not (os.path.isfile(path) and os.path.getsize(path) > 0):
-                raise RuntimeError("empty file written")
+            base = seed_for(sid)
+            for attempt in range(RETRIES + 1):
+                g = torch.Generator(device="cuda").manual_seed(base + attempt * 7919)
+                out = pipe(prompt=prompt, negative_prompt=NEGATIVE, height=h, width=w, num_frames=n,
+                           num_inference_steps=STEPS, guidance_scale=GUIDANCE, generator=g)
+                export_to_video(out.frames[0], path, fps=FPS_SRC)
+                if not (os.path.isfile(path) and os.path.getsize(path) > 0):
+                    raise RuntimeError("empty file written")
+                moved = travel_px(path)
+                if moved is None or moved >= MIN_TRAVEL_PX or attempt == RETRIES:
+                    if moved is not None and moved < MIN_TRAVEL_PX:
+                        log(f"{sid}: still {moved:.0f} px after {attempt + 1} tries, keeping it")
+                    break
+                log(f"{sid}: only {moved:.0f} px of travel, that is a still — regenerating with another seed")
             done[sid] = path
             log(f"{sid}: {n} frames ({n / FPS_SRC:.1f} s) in {time.time() - t0:.0f} s")
         except Exception as e:
@@ -216,6 +224,59 @@ def generate_clips(shots, look, fmt, out_dir, seconds_of=None):
     log(f"{len(done)}/{len(want)} clips ({look}, {fmt}) in {time.time() - t_all:.0f} s")
     release()
     return done
+
+
+# ---- did it actually move? ------------------------------------------------------------------------------------------
+# The measured failure of this model is not a bad clip, it is a STILL one: 5 of 21 probe clips came back frozen
+# (travel 4-15 px against 30-106 for a healthy one). Two things are now known about it and both are in this code:
+#   · it is stochastic. The same description of a compass on a table gave 0.27 px with one seed and 1.63 with another,
+#     and no prompt wording fixed it reliably: adding life helped one case, made another worse; raising guidance did
+#     nothing. So the gate cannot live in the text alone — it has to look at the result.
+#   · it is cheap to detect. Eight frame pairs of optical flow on a 720p clip take under a second, against the ~125 s
+#     the clip cost to make, so measuring every clip and regenerating the dead ones is nearly free.
+# Calibrated against 21 probe clips whose motion was also judged by eye and by a full-resolution optical-flow
+# pass: everything a viewer calls frozen lands at 1.8-13.6 here, the weakest clip anyone called alive at 17.5.
+MIN_TRAVEL_PX = float(os.environ.get("KLEO_VIDEO_MIN_TRAVEL", "18"))
+RETRIES = int(os.environ.get("KLEO_VIDEO_RETRIES", "2"))
+
+
+def travel_px(path, samples=8):
+    """How far the frame travelled from the first to the last shot, in pixels: the median per-pair optical flow
+    times the number of pairs. Per-pair flow alone lies — the same camera move spread over more frames reads as
+    less motion — so a longer clip would look stiller than it is. Returns None when it cannot be measured."""
+    try:
+        import cv2, numpy as np
+    except Exception:
+        return None
+    try:
+        cap = cv2.VideoCapture(path)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        if total < 3:
+            cap.release(); return None
+        idx = {int(round(i)) for i in (np.linspace(0, total - 1, min(samples, total)))}
+        got, i = [], 0
+        while True:
+            ok, fr = cap.read()
+            if not ok:
+                break
+            if i in idx:
+                got.append(cv2.cvtColor(cv2.resize(fr, (320, 176)), cv2.COLOR_BGR2GRAY))
+            i += 1
+        cap.release()
+        if len(got) < 2:
+            return None
+        mags = []
+        for a, b in zip(got[:-1], got[1:]):
+            fl = cv2.calcOpticalFlowFarneback(a, b, None, .5, 3, 15, 3, 5, 1.2, 0)
+            mags.append(float(np.sqrt(fl[..., 0] ** 2 + fl[..., 1] ** 2).mean()))
+        # The frames sampled are far apart in time, so each pair already carries the travel of the whole gap
+        # between them: the total is the median gap times the number of gaps, not times the frame count.
+        # Measured on a 320-wide frame, reported in the pixels of the real one.
+        gaps = len(got) - 1
+        return float(sorted(mags)[len(mags) // 2]) * gaps * (1280.0 / 320.0)
+    except Exception as e:
+        log("could not measure:", e)
+        return None
 
 
 # ---- post: what turns a 24 fps 720p clip into something that belongs in a 4K film ----------------------------------
