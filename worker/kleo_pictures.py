@@ -71,7 +71,12 @@ def full_prompt(image_prompt, style, context=""):
     if len(base) > BASE_MAX:
         base = base[:BASE_MAX].rsplit(" ", 1)[0] if " " in base[:BASE_MAX] else base[:BASE_MAX]
     base = base.strip().rstrip(",.;")
-    ctx = " ".join(str(context or "").split())[:CONTEXT_MAX].strip().rstrip(",.;")
+    # The context arrives already fitted by context_for(); this is the last guard, and it cuts on a word boundary so
+    # nothing can reach CLIP as a fragment.
+    ctx = " ".join(str(context or "").split()).strip()
+    if len(ctx) > CONTEXT_MAX:
+        ctx = ctx[:CONTEXT_MAX].rsplit(" ", 1)[0] if " " in ctx[:CONTEXT_MAX] else ""
+    ctx = ctx.rstrip(",.;")
     suffix = STYLE_SUFFIX[style]
     return ", ".join([x for x in (base, ctx, suffix) if x])
 
@@ -94,23 +99,37 @@ def negative_for(direction):
     return joined
 
 
-def context_for(direction, image_prompt, accent):
+def context_for(direction, image_prompt, accent, budget=None):
     """The direction's extra sentences for ONE picture: the look of whichever cast members it names, then the light of
-    its section. Mirrors src/direction.ts pictureContext(), minus the world sentence the CLIP budget cannot afford."""
+    its section. Mirrors src/direction.ts pictureContext(), minus the world sentence the CLIP budget cannot afford.
+
+    `budget` is the room the prompt has for all of this. Each sentence goes in WHOLE or not at all: a real render on a
+    rented GPU showed the old blind cut turning "a single cool green light source" into "a si", and four characters of
+    a chopped word are not a light, they are noise fed to CLIP. The cast comes first because a face that changes is
+    what a viewer notices; the light is dropped before a character ever is."""
     if not isinstance(direction, dict):
         return ""
     lowered = str(image_prompt or "").lower()
-    bits = []
+    room = CONTEXT_MAX if budget is None else int(budget)
+    bits, used = [], 0
+    def add(text):
+        nonlocal used
+        text = " ".join(str(text or "").split()).strip().rstrip(",.;")
+        if not text:
+            return
+        cost = len(text) + (2 if bits else 0)          # ". " between sentences
+        if used + cost > room:
+            return                                      # whole or not at all
+        bits.append(text)
+        used += cost
     for m in direction.get("cast") or []:
         if not isinstance(m, dict):
             continue
         name = " ".join(str(m.get("name") or "").split()).strip()
         look = " ".join(str(m.get("look") or "").split()).strip()
         if name and look and name.lower() in lowered:
-            bits.append(f"{name}: {look}")
-    light = ACCENT_LIGHT.get(accent)
-    if light:
-        bits.append(light)
+            add(f"{name}: {look}")
+    add(ACCENT_LIGHT.get(accent))
     return ". ".join(bits)
 
 

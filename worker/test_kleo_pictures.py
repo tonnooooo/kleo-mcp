@@ -579,6 +579,31 @@ class DirectionTest(unittest.TestCase):
         many = {"forbidden": ["x" * 40 for _ in range(12)]}
         self.assertLessEqual(len(kp.negative_for(many)), kp.NEGATIVE_MAX)
 
+    def test_a_sentence_goes_in_whole_or_not_at_all(self):
+        """A real render on a rented GPU sent CLIP "...weathered face. a si," — the blind cut had turned
+        "a single cool green light source" into four characters of noise. Every sentence is now whole or absent."""
+        long_cast = {"cast": [{"name": "the keeper",
+                               "look": "an older man with a short white beard, a heavy dark wool coat and a flat cap, weathered face"}]}
+        ip = "The keeper climbing the spiral stairs of a lighthouse at dusk"
+        ctx = kp.context_for(long_cast, ip, "green")
+        self.assertIn("weathered face", ctx)
+        self.assertNotIn("a si", ctx.replace("a single", ""))
+        for word in ctx.replace(".", " ").split():
+            self.assertNotEqual(word, "si")
+        self.assertLessEqual(len(ctx), kp.CONTEXT_MAX)
+
+        # With room to spare both sentences arrive, and the light is the one that gives way when they do not fit.
+        short_cast = {"cast": [{"name": "the keeper", "look": "an older man in a wool coat"}]}
+        both = kp.context_for(short_cast, ip, "green")
+        self.assertIn("the keeper:", both)
+        self.assertIn(kp.ACCENT_LIGHT["green"], both)
+        self.assertNotIn(kp.ACCENT_LIGHT["green"], ctx, "the character survives, the light does not")
+
+        # And the last guard in full_prompt never cuts a word either.
+        cut = kp.full_prompt("a beach", "cartoon", "x" * 40 + " " + "y" * 200)
+        self.assertTrue(cut.endswith(kp.STYLE_SUFFIX["cartoon"]), cut)
+        self.assertNotIn("y" * 5, cut, "an oversized context is dropped at a word boundary, not chopped")
+
     def test_the_prompt_keeps_the_authors_sentence_first_and_the_style_suffix_last(self):
         plain = kp.full_prompt("a pirate captain on a sandy beach", "cartoon")
         self.assertTrue(plain.startswith("a pirate captain on a sandy beach"), plain)
