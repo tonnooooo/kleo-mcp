@@ -7,6 +7,7 @@ import { resultLinks, FILE_NAMES } from "./jobs";
 import { notifyDone } from "./notify";
 import { putFile, deleteFile } from "./storage";
 import { acquireLock, releaseLock, holdLock, setFlagUntil, isFlagActive } from "./schema";
+import { poolWaitingJobs } from "./db";
 import { generateStoryboard, StoryboardError, isTransientAiError } from "./storyboard";
 
 const MAX_ATTEMPTS = 3;
@@ -151,6 +152,8 @@ async function tickInner(env: Env, stats: Stats) {
     }
   }
 
+  await dispatchPoolRunner(env, providerDown || backend.name === "pool");
+
   for (const job of await expiredJobs(env)) {
     for (const f of await listFiles(env, job.id)) await deleteFile(env, f.key);
     await deleteFiles(env, job.id);
@@ -240,4 +243,28 @@ async function advanceMock(env: Env, job: Job): Promise<void> {
 function mockThumb(template: string, prompt: string): string {
   const esc = (s: string) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c] as string);
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" width="1280" height="720"><rect width="1280" height="720" fill="#0F1216"/><rect x="60" y="60" width="1160" height="600" rx="24" fill="none" stroke="#F3B53F" stroke-width="6" stroke-dasharray="18 12"/><text x="640" y="330" font-family="Helvetica,Arial,sans-serif" font-size="64" font-weight="700" fill="#ECEAE4" text-anchor="middle">${esc(template)}</text><text x="640" y="410" font-family="Helvetica,Arial,sans-serif" font-size="30" fill="#B9BEC8" text-anchor="middle">${esc(prompt.slice(0, 70))}</text><text x="640" y="600" font-family="monospace" font-size="24" fill="#F3B53F" text-anchor="middle">mock render · Kleo</text></svg>`;
+}
+
+/**
+ * GitHub's own 5-minute schedule for render-pool.yml is unreliable (often delayed or skipped), so when a planned job is
+ * waiting for the pool we start a runner ourselves through the GitHub API (workflow_dispatch), at most once every 4 minutes.
+ * Needs the GITHUB_TOKEN secret (fine-grained token, repo kleo-mcp, Actions: read and write). Without it, only the schedule runs.
+ */
+async function dispatchPoolRunner(env: Env, poolMode: boolean): Promise<void> {
+  if (!env.GITHUB_TOKEN) return;
+  const waiting = await poolWaitingJobs(env, poolMode ? 0 : int(env.POOL_AFTER_MIN, 3));
+  if (!waiting) return;
+  if (await isFlagActive(env, "pool_dispatch")) return;
+  await setFlagUntil(env, "pool_dispatch", 4 * 60);
+  const repo = env.GITHUB_REPO ?? "tonnooooo/kleo-mcp";
+  try {
+    const r = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/render-pool.yml/dispatches`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${env.GITHUB_TOKEN}`, accept: "application/vnd.github+json", "content-type": "application/json", "user-agent": "kleo-mcp/1.0", "x-github-api-version": "2022-11-28" },
+      body: JSON.stringify({ ref: "main" }),
+    });
+    await audit(env, null, null, r.status === 204 ? "pool.dispatched" : "pool.dispatch.error", { status: r.status, waiting, body: r.status === 204 ? undefined : (await r.text()).slice(0, 200) });
+  } catch (e) {
+    await audit(env, null, null, "pool.dispatch.error", String(e).slice(0, 200));
+  }
 }

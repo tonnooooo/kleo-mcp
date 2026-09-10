@@ -207,3 +207,10 @@ export async function claimQueuedJob(env: Env, instanceId: string, minQueuedMin:
   }
   return null;
 }
+
+/** How many planned jobs have been waiting in the queue for at least minQueuedMin minutes (pool demand). */
+export async function poolWaitingJobs(env: Env, minQueuedMin: number): Promise<number> {
+  const cutoff = new Date(Date.now() - minQueuedMin * 60_000).toISOString();
+  const r = await env.DB.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state = 'queued' AND storyboard IS NOT NULL AND created_at <= ?").bind(cutoff).first<{ n: number }>();
+  return r?.n ?? 0;
+}

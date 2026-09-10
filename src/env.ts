@@ -14,7 +14,9 @@ export interface Env {
 
   PUBLIC_URL: string;
   RENDER_BACKEND: "mock" | "vast" | "manual" | "pool";
-  POOL_SECRET?: string;      // shared secret for external runners (GitHub Actions) that claim queued jobs
+  POOL_SECRET?: string;
+  GITHUB_TOKEN?: string;     // fine-grained token (Actions: write on the repo) so the server can start a pool runner itself
+  GITHUB_REPO?: string;      // owner/repo of the render-pool workflow (default tonnooooo/kleo-mcp)      // shared secret for external runners (GitHub Actions) that claim queued jobs
   POOL_AFTER_MIN?: string;   // in vast mode, runners may take a job that waited this long (default 3)
   VAST_RETRY_MIN?: string;   // after "no credit"/"no offer", leave Vast alone this long (default 30)
   MAX_CONCURRENT_GPUS: string;
