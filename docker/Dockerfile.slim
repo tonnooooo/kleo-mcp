@@ -1,0 +1,178 @@
+# Kleo worker image, slim candidate: the same worker as worker/Dockerfile.keou, on a bare CUDA base.
+#   Built only by .github/workflows/worker-image-slim.yml (workflow_dispatch) → ghcr.io/tonnooooo/kleo-worker:slim
+#
+# Why this file is NOT in worker/: worker-image.yml triggers on "worker/**", so *any* new file under worker/ —
+# a second Dockerfile included — re-runs the production build and re-pushes :keou from a fresh apt/npm/pip
+# resolve. This candidate must never touch production, so it lives here. The build context is still the
+# repository root, so every COPY path below is byte-identical to Dockerfile.keou.
+#
+# What is different from Dockerfile.keou, and nothing else:
+#   * The base. pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime is 4.25 GB compressed (8.1 GB of /opt/conda) and
+#     that image installs torch with plain pip anyway — its own pip freeze, read out of the published :keou
+#     image, says torch==2.8.0+cu128 / torchvision==0.23.0+cu128 / torchaudio==2.8.0+cu128 plus the nvidia-*
+#     wheels. So here the same three wheels come from the same cu128 index on top of
+#     nvidia/cuda:12.8.1-base-ubuntu22.04 (0.10 GB): identical torch, identical CUDA, identical cuDNN, minus
+#     conda, conda-build, cmake, ninja, ipython, hypothesis, lief, onnxruntime and the rest of the pytorch
+#     image's build furniture, which nothing in this worker imports.
+#   * ubuntu22.04, not 24.04, on purpose: 22.04 ships ffmpeg 4.4.2, the exact ffmpeg production renders with
+#     today (runtime-ffmpeg.txt inside :keou reads "ffmpeg version 4.4.2-0ubuntu0.22.04.1"). 24.04 would put
+#     ffmpeg 6.1 under a hand-tuned x264 / loudnorm / blackdetect pipeline to save about 30 MB. Not worth it.
+#   * CUDA payload no code path here can reach is deleted in the layer that installs it (PRUNE_CUDA below).
+#   * pip writes no .pyc at build time (--no-compile); python still writes them at run time.
+#   * Playwright installs the headless shell alone when that satisfies engine/render.mjs (headless:true) and
+#     falls back to the full chromium by itself if it does not.
+# Everything else — layer order, ARGs, model prewarm, the two pinned OFL fonts, CMD — is unchanged.
+ARG BASE_IMAGE=nvidia/cuda:12.8.1-base-ubuntu22.04
+FROM ${BASE_IMAGE}
+ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    HF_HOME=/opt/kleo/hf HF_HUB_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/kleo/ms-playwright \
+    KEOU_ROOT=/opt/kleo/keou VIRTUAL_ENV=/opt/venv PATH=/opt/venv/bin:/usr/local/bin:$PATH
+
+# --- system packages (mirrors keou/bootstrap.sh) plus what the conda base used to provide for free:
+#     python itself, libgomp (libtorch_global_deps.so links it) and libstdc++ (every cuDNN sub-library links it). ---
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends fonts-noto-color-emoji \
+      ffmpeg espeak-ng curl xz-utils ca-certificates rsync util-linux fonts-dejavu-core \
+      python3 python3-venv libgomp1 libstdc++6 \
+    && python3 -m venv /opt/venv \
+    && pip install --no-compile --upgrade pip setuptools wheel \
+    && rm -rf /var/lib/apt/lists/* \
+    && /opt/venv/bin/python3 -VV && ffmpeg -version | head -1
+
+# --- Node 22 from the official tarball, checksum verified like bootstrap.sh ---
+ARG NODE_VERSION=22.23.2
+RUN cd /tmp && curl -fsSL https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz -o node.tar.xz \
+    && curl -fsSL https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt -o node-sha.txt \
+    && grep " node-v${NODE_VERSION}-linux-x64.tar.xz\$" node-sha.txt | sed 's/  .*/  node.tar.xz/' | sha256sum -c - \
+    && tar -xJf node.tar.xz -C /usr/local --strip-components=1 && rm -f node.tar.xz node-sha.txt \
+    && node --version && npm --version
+
+# --- torch, the layer this whole file exists for. The wheels are the ones the pytorch base image installs
+#     itself; the deletions happen in the same RUN, or the bytes would still ship in the layer:
+#       triton (565 MB)              torch.compile's JIT backend, with ptxas and two CUPTI static archives.
+#                                    Nothing here compiles: diffusers runs the SD1.5 UNet eagerly and kokoro is
+#                                    a plain nn.Module. torch keeps a stale "requires triton" in its metadata;
+#                                    the import test below is the check that matters.
+#       libcudnn_adv.so.9 (285 MB)   cuDNN's RNN / CTC / multi-head-attention engines. libcudnn.so.9 is a 100 KB
+#                                    dispatcher that dlopens its sub-libraries on demand, and libcudnn_cnn.so.9
+#                                    (the convolutions SD1.5 runs) has DT_NEEDED on _ops and _graph only, so
+#                                    _adv is unreachable unless torch.nn.RNN or the cuDNN MHA API is called.
+#       libcusolverMg.so.11 (161 MB) multi-GPU cuSOLVER. One GPU, one process.
+#       libnvrtc.alt.so.12 (111 MB)  the alternate NVRTC, only ever selected through CUDA_NVRTC_ALT.
+#       torch/include, torch/bin (48 MB) C++ headers and protoc: for building extensions, not for running them.
+#       nccl (430 MB) + cusparselt (452 MB) torch.distributed and torch._cslt_sparse_mm: one GPU, dense fp16.
+#                                    These two are moved aside and put straight back if `import torch` turns out
+#                                    to need them at load time, so a wrong guess costs a log line, not an image.
+#     PRUNE_CUDA=0 keeps every byte, for a like-for-like comparison against :keou. ---
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
+ARG TORCH_VERSION=2.8.0+cu128
+ARG TORCHVISION_VERSION=0.23.0+cu128
+ARG TORCHAUDIO_VERSION=2.8.0+cu128
+ARG PRUNE_CUDA=1
+RUN set -eu; \
+    pip install --no-compile --index-url "${TORCH_INDEX_URL}" \
+        "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}" "torchaudio==${TORCHAUDIO_VERSION}"; \
+    SITE="$(python3 -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"; \
+    echo "=== torch stack as installed"; du -sh "$SITE"; du -sh "$SITE"/nvidia/* "$SITE"/torch "$SITE"/triton 2>/dev/null | sort -h; \
+    echo "=== libtorch_cuda.so links"; ldd "$SITE/torch/lib/libtorch_cuda.so" | sed 's/^[[:space:]]*//' | sort; \
+    if [ "${PRUNE_CUDA}" = "1" ]; then \
+      pip uninstall -y triton pytorch-triton 2>/dev/null || true; \
+      rm -rf "$SITE"/triton "$SITE"/nvidia/cudnn/lib/libcudnn_adv.so.9 \
+             "$SITE"/nvidia/cusolver/lib/libcusolverMg.so.11 \
+             "$SITE"/nvidia/cuda_nvrtc/lib/libnvrtc.alt.so.12 \
+             "$SITE"/nvidia/cuda_nvrtc/lib/libnvrtc-builtins.alt.so.* \
+             "$SITE"/torch/include "$SITE"/torch/bin "$SITE"/torch/test; \
+      for lib in nccl cusparselt; do \
+        d="$SITE/nvidia/$lib"; \
+        if [ -d "$d" ]; then \
+          mv "$d" "/tmp/pruned-$lib"; \
+          if python3 -c 'import torch' >/dev/null 2>&1; then \
+            echo "PRUNE $lib: dropped $(du -sh /tmp/pruned-$lib | cut -f1)"; rm -rf "/tmp/pruned-$lib"; \
+          else \
+            echo "PRUNE $lib: KEPT, torch needs it at load time"; mv "/tmp/pruned-$lib" "$d"; \
+          fi; \
+        fi; \
+      done; \
+    fi; \
+    find "$SITE" -name '__pycache__' -type d -prune -exec rm -rf {} +; \
+    python3 -c "import torch, torchvision, torchaudio; print('TORCH_OK', torch.__version__, torchvision.__version__, torchaudio.__version__, 'cuda', torch.version.cuda)"; \
+    echo "=== torch stack after prune"; du -sh "$SITE"; du -sh "$SITE"/nvidia/* "$SITE"/torch 2>/dev/null | sort -h
+
+# --- JS deps + Chromium (only package*.json here, so source edits keep this layer).
+#     npm's own postinstall is told to download nothing (PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD) so the browser set is
+#     exactly what the next line asks for and nothing else. engine/render.mjs launches chromium with
+#     headless:true and no channel, which Playwright serves from chromium-headless-shell — a few hundred MB less
+#     than the full browser. If this version of Playwright wants the full chromium instead, the launch probe
+#     below fails and the full browser is installed on the spot, so the saving is taken only when it is real. ---
+WORKDIR /opt/kleo/keou
+COPY worker/keou/package.json worker/keou/package-lock.json ./
+ARG PLAYWRIGHT_BROWSER=chromium-headless-shell
+RUN set -eu; \
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund; \
+    npx playwright install-deps chromium; \
+    printf '%s\n' \
+      "import {chromium} from 'playwright';" \
+      "const b = await chromium.launch({headless:true, args:['--no-sandbox','--disable-dev-shm-usage']});" \
+      "const p = await b.newPage();" \
+      "await p.setContent('<h1>kleo</h1>');" \
+      "console.log('PLAYWRIGHT_LAUNCH_OK', b.version(), await p.textContent('h1'));" \
+      "await b.close();" > /tmp/plaunch.mjs; \
+    if npx playwright install "${PLAYWRIGHT_BROWSER}" && node /tmp/plaunch.mjs; then \
+      echo "BROWSER=${PLAYWRIGHT_BROWSER}"; \
+    else \
+      echo "BROWSER=chromium (the headless shell was not enough)"; \
+      npx playwright install chromium; \
+      node /tmp/plaunch.mjs; \
+    fi; \
+    rm -f /tmp/plaunch.mjs; \
+    du -sh /opt/kleo/ms-playwright/* /opt/kleo/keou/node_modules; \
+    rm -rf /var/lib/apt/lists/* /root/.npm
+
+# --- Python deps + the spaCy model misaki would otherwise download on first run ---
+COPY worker/keou/requirements.txt ./
+RUN pip install --no-compile -r requirements.txt \
+    && pip install --no-compile https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+
+# --- Python deps for local picture generation (diffusers on the torch installed above; see worker/kleo_pictures.py).
+#     `pip check` may complain about the deliberately removed triton and about nothing else; the import line under
+#     it is the real check, and it covers more than pip check ever did. ---
+COPY worker/requirements-pictures.txt /opt/kleo/requirements-pictures.txt
+RUN set -eu; \
+    pip install --no-compile -r /opt/kleo/requirements-pictures.txt; \
+    pip check > /tmp/pipcheck.txt 2>&1 || true; cat /tmp/pipcheck.txt; \
+    if grep -vi triton /tmp/pipcheck.txt | grep -q '[^[:space:]]'; then echo "pip check found a real problem"; exit 1; fi; \
+    python3 -c "import torch, torchvision, diffusers, transformers, accelerate, safetensors, numpy, PIL, kokoro, misaki, faster_whisper, ctranslate2, spacy, soundfile, huggingface_hub; print('IMPORTS_OK diffusers', diffusers.__version__, 'transformers', transformers.__version__, 'torch', torch.__version__)"; \
+    find /opt/venv -name '__pycache__' -type d -prune -exec rm -rf {} +; \
+    rm -f /tmp/pipcheck.txt
+
+# --- Models: Kokoro-82M + every contract voice, faster-whisper small/int8, and the SD1.5 picture checkpoint
+#     (dreamshaper-8 for cartoon: fp16 safetensors + configs, ~2 GB), all in the HF cache inside the image.
+#     Unchanged from Dockerfile.keou, PREWARM_PICTURES included: =all bakes the realistic checkpoint too, =0 none. ---
+ARG PREWARM_PICTURES=1
+COPY worker/keou/contract.py /opt/kleo/prewarm/contract.py
+COPY worker/prewarm_models.py /opt/kleo/prewarm/prewarm_models.py
+RUN HF_HUB_OFFLINE=0 PREWARM_PICTURES=${PREWARM_PICTURES} python3 /opt/kleo/prewarm/prewarm_models.py /opt/kleo/prewarm/contract.py \
+    && rm -rf /root/.cache/pip \
+    && find /opt/venv -name '__pycache__' -type d -prune -exec rm -rf {} + \
+    && du -sh /opt/kleo/hf
+
+# --- Engine source + worker (last: cheapest layers to rebuild) ---
+COPY worker/keou /opt/kleo/keou
+
+# --- Kleo picture-style fonts (OFL, google/fonts), byte-for-byte the step from Dockerfile.keou: Baloo 2 for the
+#     cartoon look, Oswald for the realistic one, pinned to one commit and verified by exact length and git blob
+#     id. Stays after the engine COPY because engine/assets/ lives inside worker/keou. ---
+ARG GOOGLE_FONTS_REF=b6f0fe1740573b70ee367fbaba04b7586be85af3
+RUN curl -fsSL --retry 3 --max-time 180 "https://raw.githubusercontent.com/google/fonts/${GOOGLE_FONTS_REF}/ofl/baloo2/Baloo2%5Bwght%5D.ttf" -o /opt/kleo/keou/engine/assets/cartoon.ttf \
+    && curl -fsSL --retry 3 --max-time 180 "https://raw.githubusercontent.com/google/fonts/${GOOGLE_FONTS_REF}/ofl/oswald/Oswald%5Bwght%5D.ttf" -o /opt/kleo/keou/engine/assets/real.ttf \
+    && python3 -c 'import hashlib,sys;A="/opt/kleo/keou/engine/assets/";W=[("cartoon.ttf",683200,"bc1b9f1191c0d6d23cb2ce0af66aba82ddbf8d6c"),("real.ttf",172088,"d1a3b9cb1325bf20b3a06ef9849d21c411212a3b")];D={n:open(A+n,"rb").read() for n,_,_ in W};B={n:hashlib.sha1(("blob %d"%len(d)).encode()+bytes(1)+d).hexdigest() for n,d in D.items()};bad=["%s: got %d bytes blob %s, want %d bytes blob %s"%(n,len(D[n]),B[n],s,h) for n,s,h in W if len(D[n])!=s or B[n]!=h];bad and sys.exit("Font verification failed: "+"; ".join(bad));print("FONTS_OK",[(n,len(d)) for n,d in D.items()])'
+
+COPY worker/kleo_pictures.py /opt/kleo/kleo_pictures.py
+COPY worker/kleo_worker.py /opt/kleo/kleo_worker.py
+RUN node --version > runtime-node.txt && ffmpeg -version | head -1 > runtime-ffmpeg.txt \
+    && pip freeze > runtime-python.txt && python3 -c "import contract; print('contract', contract.VERSION, sorted(contract.VOICES))" \
+    && echo "=== what the image is made of" \
+    && du -sh /opt/venv /opt/kleo/hf /opt/kleo/ms-playwright /opt/kleo/keou/node_modules /usr/local/lib/node_modules /usr/local/bin 2>/dev/null
+
+WORKDIR /opt/kleo
+CMD ["python3", "/opt/kleo/kleo_worker.py"]

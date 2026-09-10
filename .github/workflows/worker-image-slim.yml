@@ -1,0 +1,119 @@
+# Slim candidate for the GPU worker image. By hand only, and it touches nothing production uses: it builds
+# docker/Dockerfile.slim and pushes ghcr.io/tonnooooo/kleo-worker:slim, while worker-image.yml keeps building
+# :keou from worker/Dockerfile.keou. VAST_IMAGE still points at :keou until someone changes it on purpose.
+# The point of the run is the numbers it prints at the end: compressed pull size (what a rented Vast machine
+# actually downloads), uncompressed image size, and the per-layer breakdown of both, next to :keou for comparison.
+name: worker-image-slim
+on:
+  workflow_dispatch:
+    inputs:
+      base_image:
+        description: "Base image (22.04 keeps ffmpeg 4.4.2, the one production renders with)"
+        default: "nvidia/cuda:12.8.1-base-ubuntu22.04"
+      prune_cuda:
+        description: "1 = delete the CUDA payload nothing here can reach, 0 = keep every byte"
+        default: "1"
+      playwright_browser:
+        description: "chromium-headless-shell (falls back to chromium by itself if it is not enough)"
+        default: "chromium-headless-shell"
+      prewarm_pictures:
+        description: "1 = bake dreamshaper-8 only (as production does), all = both checkpoints, 0 = none"
+        default: "1"
+      tag:
+        description: "Tag to push under ghcr.io/tonnooooo/kleo-worker"
+        default: "slim"
+concurrency: { group: worker-image-slim, cancel-in-progress: true }
+permissions:
+  contents: read
+  packages: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      IMAGE: ghcr.io/tonnooooo/kleo-worker
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Free disk space (the image is several GB and it gets pulled back at the end to be measured)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift \
+                      /usr/local/.ghcup /usr/lib/jvm /usr/local/julia* /opt/az /usr/share/miniconda /opt/microsoft /usr/local/share/chromium || true
+          sudo apt-get remove -y --purge '^aspnetcore-.*' '^dotnet-.*' '^llvm-.*' 'php.*' '^mongodb-.*' '^mysql-.*' google-cloud-cli azure-cli firefox powershell mono-devel >/dev/null 2>&1 || true
+          sudo apt-get autoremove -y >/dev/null 2>&1 || true; sudo apt-get clean || true
+          sudo docker image prune -af || true
+          sudo swapoff -a || true; sudo rm -f /mnt/swapfile /swapfile || true
+          df -h / | tail -1
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Login to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push the slim candidate
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.slim
+          push: true
+          tags: ${{ env.IMAGE }}:${{ inputs.tag }}
+          build-args: |
+            BASE_IMAGE=${{ inputs.base_image }}
+            PRUNE_CUDA=${{ inputs.prune_cuda }}
+            PLAYWRIGHT_BROWSER=${{ inputs.playwright_browser }}
+            PREWARM_PICTURES=${{ inputs.prewarm_pictures }}
+          cache-from: type=gha,scope=slim
+          cache-to: type=gha,mode=max,scope=slim
+          labels: |
+            org.opencontainers.image.source=https://github.com/tonnooooo/kleo-mcp
+            org.opencontainers.image.description=Kleo GPU worker (Keou engine), slim candidate
+      - name: Compressed pull size, slim vs keou
+        run: |
+          set -e
+          cat > /tmp/layers.py <<'PY'
+          import json, subprocess, sys
+          def manifest(ref):
+              raw = subprocess.run(["docker","buildx","imagetools","inspect",ref,"--raw"],
+                                   capture_output=True, text=True, check=True).stdout
+              m = json.loads(raw)
+              if "manifests" in m:
+                  d = [x for x in m["manifests"] if x.get("platform",{}).get("architecture") == "amd64"][0]
+                  return manifest(ref.split(":")[0] + "@" + d["digest"])
+              return m
+          out = {}
+          for ref in sys.argv[1:]:
+              try:
+                  m = manifest(ref)
+              except Exception as e:
+                  print(f"{ref}: could not read ({e})"); continue
+              layers = m["layers"]
+              total = sum(l["size"] for l in layers)
+              out[ref] = total
+              print(f"\n=== {ref}: {len(layers)} layers, COMPRESSED PULL {total/1e9:.2f} GB")
+              for i, l in enumerate(layers):
+                  if l["size"] > 1e6:
+                      print(f"    {i:2d} {l['size']/1e6:9.1f} MB")
+          if len(out) == 2:
+              a, b = out.values()
+              print(f"\nCOMPRESSED DELTA: {(a-b)/1e9:+.2f} GB ({100*(a-b)/b:+.1f}% vs keou)")
+          PY
+          python3 /tmp/layers.py "$IMAGE:$TAG" "$IMAGE:keou"
+      - name: Uncompressed image size and per-layer history
+        run: |
+          set -e
+          docker buildx prune -af >/dev/null 2>&1 || true
+          docker builder prune -af >/dev/null 2>&1 || true
+          df -h / | tail -1
+          docker pull "$IMAGE:$TAG"
+          echo "=== docker image inspect --format '{{.Size}}'"
+          SIZE=$(docker image inspect "$IMAGE:$TAG" --format '{{.Size}}')
+          echo "$SIZE bytes"
+          python3 -c "print('UNCOMPRESSED IMAGE SIZE: %.2f GB  (production :keou is about 11.5 GB)' % ($SIZE/1e9))"
+          echo "=== docker images"
+          docker images "$IMAGE"
+          echo "=== docker history (uncompressed, per layer)"
+          docker history --human=false --format '{{.Size}}\t{{.CreatedBy}}' "$IMAGE:$TAG" | \
+            awk -F'\t' '{ printf "%10.1f MB  %.140s\n", $1/1000000, $2 }'
+      - name: Report
+        run: echo "pushed $IMAGE:$TAG from docker/Dockerfile.slim (${{ github.sha }}); production :keou untouched"
