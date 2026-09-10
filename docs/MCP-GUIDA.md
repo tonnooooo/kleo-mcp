@@ -23,7 +23,7 @@ Tutto questo funziona uguale in ogni client, perché lo standard è lo stesso. C
 
 Un tool MCP ha lo stesso tempo di una pagina web: i client aspettano al massimo qualche decina di secondi. Un render dura 10–20 minuti per uno Short e fino a un'ora per un video lungo. La regola è quindi: **nessuno strumento fa aspettare la chat**. `kleo_create_video` mette il lavoro in coda e torna subito; il lavoro vero lo fa l'orchestratore (un cron ogni minuto) su una macchina noleggiata. Lo standard MCP (revisione 2026-07-28) prevede anche l'estensione **Tasks**: la useremo quando i client la supportano; `kleo_get_job` resta comunque, perché funziona ovunque.
 
-## 4. I sette strumenti, con le descrizioni che legge il modello
+## 4. Gli otto strumenti, con le descrizioni che legge il modello
 
 Le descrizioni sono il manuale del modello: se sono scritte bene, il modello sceglie lo strumento giusto e compila i parametri giusti senza che l'utente sappia nulla di tecnico. Le descrizioni vere e complete stanno in `src/mcp.ts`; qui il riassunto.
 
@@ -82,6 +82,12 @@ Regole che il server applica sempre, indipendentemente da cosa chiede il modello
 - ogni chiamata registrata nella tabella `audit` con utente, strumento, costo.
 
 Se la quota giornaliera gratuita di Workers AI finisce, `kleo_create_video` non fallisce in silenzio: risponde chiedendo all'assistente di scrivere lo storyboard con `kleo_storyboard_guide` e riprovare.
+
+### 4.1 L'attesa automatica e gli stili (aggiunti il 10 settembre)
+
+`kleo_wait_for_video` è lo strumento che tiene l'assistente "in attesa con la rotella": lo chiama subito dopo `kleo_create_video` e resta appeso per il tempo massimo che quel client tollera (ChatGPT e Grok circa 45 secondi, Claude circa 3 minuti, Claude Code 2 minuti, OpenCode 5 minuti), poi torna con "ancora in corso, richiamami" oppure con i link finiti. Il modello lo richiama da solo finché il video non è pronto, così l'utente non deve scrivere "a che punto è?". Il server riconosce il client dal nome che dichiara (`clientInfo`) o dallo User-Agent e regola l'attesa; ogni chiamata viene registrata nell'audit come `wait.call` con il nome del client.
+
+`kleo_create_video` accetta anche `style`: **cartoon** (illustrazioni piatte disegnate per l'argomento), **realistic** (look fotografico cinematografico), **cyber** (il look Keou originale, sfondo scuro e icone luminose) e **stickman** (l'omino disegnato a mano, solo 9:16). Con cartoon e realistic ogni scena dello storyboard porta un `image_prompt` (una frase che descrive l'immagine): il server prova a disegnarla con Workers AI e, se la quota è finita, la disegna la GPU noleggiata su Vast (Stable Diffusion 1.5: Dreamshaper per il cartoon, Realistic Vision per il realistico, circa 2 secondi a immagine). Il motore mette l'immagine a tutto schermo dietro la scena, con un lento movimento e una sfumatura scura in basso per tenere leggibili i testi. Così un video sui pirati mostra spiagge, sabbia e velieri; uno sullo spazio razzi e stazioni.
 
 ## 5. Il lato server, pezzo per pezzo
 

@@ -11,6 +11,7 @@ The server runs entirely on Cloudflare (Workers + KV + D1 + R2 + Workers AI + Cr
 | `kleo_list_templates` | The ten templates (format, length range, voices, credit cost) and the credits left on the account. |
 | `kleo_storyboard_guide` | The storyboard format Kleo renders (styles, scene kinds, beats, icons, voices, rules) with examples, so the assistant can write an original storyboard. Optional: without one, Kleo plans the video from the prompt. |
 | `kleo_create_video` | Queues a render from a template, a prompt and (optionally) a storyboard. Returns `job_id`, `eta_min` and the credits charged at once; nothing is charged on error. |
+| `kleo_wait_for_video` | Waits (as long as the calling client allows: 45 s for ChatGPT/Grok, up to 5 min for OpenCode) and returns the links as soon as the video is ready, so the assistant keeps its spinner and delivers on its own. |
 | `kleo_get_job` | State, current track, percent and minutes left; without `job_id`, the recent videos of the account. |
 | `kleo_get_result` | Signed download links for a finished job. |
 | `kleo_generate_thumbnail` | Not enabled yet in the beta (every render already includes a thumbnail): records the request and returns a notice. |
