@@ -45,9 +45,13 @@ ma va deciso, non subìto.
 
 | | pixel per fotogramma |
 |---|---|
-| 9:16 oggi | 2160×3840 = **8,29 M** |
-| 16:9 oggi | 1920×1080 = **2,07 M** (quattro volte meno) |
-| 16:9 a 4K | 3840×2160 = **8,29 M** |
+| 9:16, ieri e oggi | 2160×3840 = **8,29 M** |
+| 16:9 *prima* del cambio | 1920×1080 = **2,07 M** (quattro volte meno) |
+| 16:9 **adesso** | 3840×2160 = **8,29 M** |
+
+**Il cambio è avvenuto** (commit `7264060`, immagine del worker ricostruita l'11 settembre alle 16:04 UTC):
+`KLEO_WIDTH_LANDSCAPE` è 3840 e i due formati consegnano lo stesso numero di pixel. La riga qui sopra sul 1920
+resta perché descrive il **prima**, ed è la ragione per cui è cambiato — non perché sia ancora vero.
 
 Alzare il 16:9 **pareggia i due formati**: il rapporto passa da 4,0 a 1,0 e la falla di questa
 sezione si chiude da sé. E il costo per fotogramma a 8,29 M non è un salto nel buio — **ogni Short
@@ -55,6 +59,12 @@ verticale che Kleo ha già consegnato lo paga**, a 1 credito. Resta vero che la 
 quadruplica in valore assoluto, e che il rischio da misurare non è il costo ma **l'orologio**: un
 16:9 lungo a quattro volte i pixel può sfondare `RENDER_TIMEOUT_MIN`. Quella misura manca; il
 costo per fotogramma no, è già misurato da ogni verticale mai fatto.
+
+**E "manca" va preso alla lettera.** Contati sul database di produzione l'11 settembre: **3 video 16:9 in tutta la
+storia di Kleo, contro 26 verticali, e tutti e tre PRIMA del cambio** (l'ultimo il 10 settembre alle 03:27). Quindi
+il 16:9 a 4K non è poco misurato: è misurato **zero volte**. Il costo per fotogramma regge perché è lo stesso di
+ogni Short verticale mai consegnato; quanto ci mette un orizzontale *lungo* non lo sa nessuno, e il primo che ne
+chiederà uno sarà la misura.
 
 ### 2. Il numero di immagini non ha tetto sullo storyboard del client
 
