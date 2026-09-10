@@ -479,11 +479,6 @@ function validateBeats(c: Record<string, unknown>, s: Record<string, unknown>, l
 }
 
 /**
- * Picture style: a scene is a run of full-screen pictures ("shots") cut on the narration. No beats, no icons.
- * Normalises the old shorthand (a scene-level image_prompt) into shots[0] in place, so what the caller stores and
- * what the engine receives never carries a scene-level image_prompt.
- */
-/**
  * A legal `at` for the n-th of `count` shots: an unbroken run of whole words, quoted verbatim from this scene's own
  * voice, that no other shot has taken, starting near where that cut falls in the line. Null when the line is too
  * short or too odd to yield one.
@@ -528,6 +523,12 @@ export function anchorShots(scene: Record<string, unknown>): void {
   });
 }
 
+/**
+ * Picture style: a scene is a run of full-screen pictures ("shots") cut on the narration. No beats, no icons.
+ * Folds the old shorthand (a scene-level image_prompt) into shots[0], so what the caller stores and what the engine
+ * receives never carries a scene-level image_prompt. It writes into the COPY validateStoryboard made, never into the
+ * caller's own object.
+ */
 function validateShots(s: Record<string, unknown>, label: string, kind: "cinema" | "closing", e: Collector, fmt: Format, seq: SeqShot[]): void {
   if ("beats" in s) e.add(`${label}: beats belong to the cinema style; the picture style cuts between "shots" instead`);
   if (typeof s.image_prompt === "string" && !("shots" in s)) { s.shots = [{ image_prompt: s.image_prompt.trim() }]; delete s.image_prompt; }
