@@ -256,9 +256,23 @@ const allHeld = [...h1, ...h2];
 line(`HELD-OUT TOTAL  ${allHeld.filter((h) => h.ok).length}/${allHeld.length} = ${pct(allHeld.filter((h) => h.ok).length, allHeld.length)} on requests this code never saw`);
 line();
 
-/** The floor. Not a target — a line under which the reasoning is not reasoning. */
-const FLOOR = 0.75;
-const ok = right.length / rows.length >= FLOOR;
-line(ok ? `PASS — ${pct(right.length, rows.length)} is at or above the ${pct(FLOOR, 1)} floor`
-        : `FAIL — ${pct(right.length, rows.length)} is under the ${pct(FLOOR, 1)} floor`);
+/**
+ * THE GATE. It watches the HELD-OUT number, not the corpus written here: 100% on requests written by the same hand
+ * that wrote the vocabularies means nothing, and 35% on twenty requests from two other sessions is what this
+ * actually does. The floor is the measured baseline, so a change that makes it worse fails the build — but 35% is
+ * NOT an acceptable score and this line is not permission to leave it there. It is the number to beat.
+ *
+ * The failure is not a missing word, and the fix is not more words. Thirteen of the twenty misses read "nothing in
+ * the request names a subject": ordinary sentences do not contain the vocabulary, and every list long enough to
+ * catch them would be longer than the language. A word list cannot read a sentence. What can is the direction —
+ * src/direction.ts, step zero of the planner — which is why the honest role of this function is a LAST RESORT for
+ * when there is no model to ask, and why what it needs next is to say "I do not know" instead of guessing a look
+ * that costs money.
+ */
+const BASELINE = 0.35;
+const heldScore = allHeld.filter((h) => h.ok).length / allHeld.length;
+const ok = heldScore >= BASELINE;
+line(ok
+  ? `PASS — ${pct(allHeld.filter((h) => h.ok).length, allHeld.length)} held-out, at or above the ${pct(BASELINE, 1)} baseline. The baseline is what this scores today, not what it should score.`
+  : `FAIL — ${pct(allHeld.filter((h) => h.ok).length, allHeld.length)} held-out is BELOW the ${pct(BASELINE, 1)} baseline: a change made the reasoning worse on requests it never saw.`);
 process.exit(ok ? 0 : 1);
