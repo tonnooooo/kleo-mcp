@@ -46,7 +46,8 @@ async function main() {
 
   step("create_video → the orchestrator rents a GPU on the next tick");
   const spec = { template: process.env.TEMPLATE ?? "did-you-know", prompt: process.env.PROMPT ?? "Three surprising facts about octopuses, fast and cheerful", duration_s: parseInt(process.env.DURATION ?? "20", 10), format: process.env.FORMAT ?? "9:16", language: process.env.LANGUAGE ?? "en" };
-  console.log("  spec:", JSON.stringify(spec));
+  if (process.env.STORYBOARD_FILE) { spec.storyboard = JSON.parse(fs.readFileSync(process.env.STORYBOARD_FILE, "utf8")); console.log("  storyboard from", process.env.STORYBOARD_FILE, "scenes:", spec.storyboard.scenes.length); }
+  console.log("  spec:", JSON.stringify({ ...spec, storyboard: spec.storyboard ? "(file)" : undefined }));
   const job = await call("kleo_create_video", spec);
   jobId = job.job_id; assert(jobId, "no job id");
   console.log("  job", jobId);

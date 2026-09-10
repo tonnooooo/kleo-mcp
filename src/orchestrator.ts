@@ -6,7 +6,7 @@ import { TINY_MP4_B64 } from "./assets";
 import { resultLinks, FILE_NAMES } from "./jobs";
 import { notifyDone } from "./notify";
 import { putFile, deleteFile } from "./storage";
-import { acquireLock, releaseLock, holdLock } from "./schema";
+import { acquireLock, releaseLock, holdLock, setFlagUntil } from "./schema";
 import { generateStoryboard, StoryboardError, isTransientAiError } from "./storyboard";
 
 const MAX_ATTEMPTS = 3;
@@ -26,7 +26,9 @@ export async function tick(env: Env, opts: { plan?: boolean } = {}): Promise<Sta
   const stats: Stats = { planned: 0, started: 0, advanced: 0, failed: 0, purged: 0 };
   if (opts.plan && (await acquireLock(env, "plan", 600))) {
     let pause = 0;
-    try { pause = await planOne(env, stats); } finally { await (pause ? holdLock(env, "plan", pause) : releaseLock(env, "plan")); }
+    try { pause = await planOne(env, stats); } finally {
+      if (pause) { await holdLock(env, "plan", pause); await setFlagUntil(env, "plan_pause", pause); } else { await releaseLock(env, "plan"); }
+    }
   }
   if (!(await acquireLock(env, "tick", 50))) return { ...stats, skipped: true };
   try {

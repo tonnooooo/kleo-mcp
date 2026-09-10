@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "editorial_status": "ready",
+  "title": "The Island That Was Never on Any Map",
+  "brand": "Kleo",
+  "style": "cinema",
+  "format": "9:16",
+  "language": "en",
+  "voice": "am_michael",
+  "speed": 1.1,
+  "music": "bed",
+  "max_duration": 72,
+  "description": "A pirate crew finds an island that no map has ever shown. Three days later, it is gone.",
+  "tags": ["shorts", "pirates", "mystery", "history"],
+  "scenes": [
+    { "id": "01-hook", "kind": "cinema", "chapter": "01 HOOK", "accent": "red", "title": "not on any map", "hl": "map",
+      "voice": "In 1743, a pirate crew found an island that was not on any map. Three days later, it was gone.",
+      "beats": [
+        { "kind": "type", "text": "NOT ON ANY MAP", "hl": "MAP", "slam": true, "at": "not on any map" },
+        { "kind": "icon", "name": "radar", "fx": "alarm", "label": "day 3", "at": "three days later" }
+      ] },
+    { "id": "02-crew", "kind": "cinema", "chapter": "02 THE CREW", "accent": "amber", "title": "forty men", "hl": "forty",
+      "voice": "Forty men rowed ashore at dawn. Only nine came back, and none of them agreed on what they saw.",
+      "beats": [
+        { "kind": "people", "total": 12, "lit": 3, "label": "9 of 40 returned", "at": "only nine" },
+        { "kind": "dialog", "text": "What did you see?", "count": 3, "at": "none of them agreed" }
+      ] },
+    { "id": "03-stories", "kind": "cinema", "chapter": "03 THE STORIES", "accent": "cyan", "title": "three stories", "hl": "three",
+      "voice": "One said the sand was warm like a living thing. One said the trees moved against the wind. One never spoke again.",
+      "beats": [
+        { "kind": "steps", "items": ["warm sand", "moving trees", "silence"], "lit": 1, "at": "warm like" },
+        { "kind": "type", "text": "ONE NEVER SPOKE AGAIN", "hl": "NEVER", "slam": true, "at": "never spoke again" }
+      ] },
+    { "id": "04-return", "kind": "cinema", "chapter": "04 THE RETURN", "accent": "red", "title": "open water", "hl": "water",
+      "voice": "When they sailed back with a second ship, they found open water. No island. No wreck. Not even birds.",
+      "beats": [
+        { "kind": "timeline", "labels": ["day 1", "day 3", "day 9"], "icons": ["radar", "wave", "cross"], "at": "sailed back" },
+        { "kind": "icon", "name": "wave", "fx": "dead", "label": "nothing", "at": "not even birds" }
+      ] },
+    { "id": "05-closing", "kind": "closing", "chapter": "05 END", "accent": "cyan", "title": "Follow for part two",
+      "voice": "Was it a mirage, a trick of the tide, or something the sea wanted to keep? Follow for part two.",
+      "beats": [ { "kind": "cta", "label": "PART TWO", "toggles": ["follow", "share"], "at": "follow" } ] }
+  ]
+}

@@ -30,7 +30,7 @@
     "MAX_CONCURRENT_GPUS": "5",
     "MAX_JOBS_PER_USER": "2",
     "JOB_TIMEOUT_MIN": "120",
-    "FREE_CREDITS": "3",
+    "FREE_CREDITS": "10",
     "RESULT_TTL_DAYS": "7",
     "VAST_GPU_NAME": "RTX 4090",
     "VAST_MAX_DPH": "0.60",

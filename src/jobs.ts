@@ -2,6 +2,7 @@ import type { Env } from "./env";
 import { type Job, type JobParams, type User, countOpenForUser, debitCredits, creditCredits, insertJob, updateJob, audit, getUserJob, listFiles } from "./db";
 import { findTemplate, creditsFor, etaFor, type Format } from "./templates";
 import { rid, nowIso, int, hmacHex } from "./util";
+import { isFlagActive } from "./schema";
 import { getBackend } from "./backends";
 import { validateStoryboard } from "./keou-contract";
 
@@ -47,13 +48,15 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     storyboard = JSON.stringify(r.storyboard);
   }
 
+  if (!input.storyboard && (await isFlagActive(env, "plan_pause")))
+    throw new JobError("Kleo's automatic storyboard planner is paused right now (its daily AI quota is used up). Call kleo_storyboard_guide, write the storyboard yourself, then call kleo_create_video again with the storyboard argument. Nothing was charged.");
   const maxOpen = int(env.MAX_JOBS_PER_USER, 2);
   const open = await countOpenForUser(env, user.id);
   if (open >= maxOpen) throw new JobError(`You already have ${open} video${open > 1 ? "s" : ""} in progress (limit ${maxOpen}). Wait for one to finish or cancel it with cancel_job.`);
 
   const credits = creditsFor(duration);
   if (!(await debitCredits(env, user.id, credits)))
-    throw new JobError(`Not enough credits: this video costs ${credits}, you have ${user.credits}. Ask for more credits at the address in the footer of the site.`);
+    throw new JobError(`Not enough credits: this video costs ${credits} credit${credits > 1 ? "s" : ""} and you have ${user.credits}. A Short (up to 90 s) costs 1 credit; ask the Kleo team for more credits. Nothing was charged.`);
 
   const params: JobParams = { duration_s: duration, format, language, voice };
   const job: Job = {

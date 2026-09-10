@@ -54,3 +54,14 @@ export const holdLock = (env: Env, name: string, seconds: number) =>
   env.DB.prepare("UPDATE locks SET until = ? WHERE name = ?").bind(new Date(Date.now() + seconds * 1000).toISOString(), name).run();
 export const releaseLock = (env: Env, name: string) =>
   env.DB.prepare("UPDATE locks SET until = '1970-01-01T00:00:00Z' WHERE name = ?").bind(name).run();
+
+/** A named time flag in the locks table (e.g. "plan_pause"): set for N seconds, then check. */
+export async function setFlagUntil(env: Env, name: string, seconds: number): Promise<void> {
+  const until = new Date(Date.now() + seconds * 1000).toISOString();
+  await env.DB.prepare("INSERT OR IGNORE INTO locks (name, until) VALUES (?, '1970-01-01T00:00:00Z')").bind(name).run();
+  await env.DB.prepare("UPDATE locks SET until = ? WHERE name = ?").bind(until, name).run();
+}
+export async function isFlagActive(env: Env, name: string): Promise<boolean> {
+  const r = await env.DB.prepare("SELECT until FROM locks WHERE name = ? AND until > strftime('%Y-%m-%dT%H:%M:%fZ','now')").bind(name).first<{ until: string }>();
+  return !!r;
+}
