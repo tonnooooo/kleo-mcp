@@ -19,7 +19,7 @@
  * Run: node scripts/adaptation.mjs          (prints a report; exits 1 if accuracy falls under the floor)
  * It reads src/storyboard.ts and changes nothing.
  */
-import { planFor, pickKleoStyle } from "../src/storyboard.ts";
+import { planFor, pickKleoStyle, pickKleoStyleWhy } from "../src/storyboard.ts";
 import { TEMPLATES, findTemplate } from "../src/templates.ts";
 
 /**
@@ -170,8 +170,11 @@ line(`              different meaning, different plan: ${diff.filter((d) => !d.i
 for (const d of diff.filter((x) => x.identical)) line(`                COLLAPSED "${d.a.slice(0, 40)}…" and "${d.b.slice(0, 40)}…" get the same plan`);
 line();
 if (wrong.length) {
-  line("EVERY REQUEST THAT GOT THE WRONG LOOK");
-  for (const r of wrong) line(`  [${r.lang}] want ${r.want.padEnd(9)} got ${r.got.look.padEnd(9)} "${r.p.slice(0, 72)}"`);
+  line("EVERY REQUEST THAT GOT THE WRONG LOOK, with the reason it gave");
+  for (const r of wrong) {
+    line(`  [${r.lang}] want ${r.want.padEnd(9)} got ${r.got.look.padEnd(9)} "${r.p.slice(0, 62)}"`);
+    line(`         because: ${pickKleoStyleWhy(TEMPLATE, r.p).why}`);
+  }
   line();
 }
 

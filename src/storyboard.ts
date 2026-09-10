@@ -300,26 +300,102 @@ export function keouStyleFor(kleo: KleoStyle, template: string, format: Format):
   return styleFor(template, format);
 }
 
-const CYBER_WORDS = /\b(cyber|security|hacker|hacking|malware|phishing|scam(?:mer)?s?|ransomware|password|vpn|encryption|crypto(?:currency)?|bitcoin|blockchain|\bai\b|artificial intelligence|machine learning|llm|chatgpt|neural|algorithm|software|coding|programming|developer|javascript|python|linux|database|cloud|startup|tech|gadget|smartphone|app|api|server|network|wifi|bluetooth|data breach|privacy|surveillance|drone|robot|quantum|computer|gpu|chip|semiconductor|keyless|relay attack)\b/i;
-const REALISTIC_WORDS = /\b(product|review|unboxing|specs?|price|buy|brand|camera|laptop|headphones|car|cars|bike|watch|sneakers?|restaurant|hotel|city|cities|street|beach|mountain|travel guide|itinerary|destination|landscape|nature|photograph|news|headline|election|economy|market|stocks?|inflation|company|ceo|launch|sport|match|championship|recipe|cooking|food|fitness|workout|real estate|apartment)\b/i;
-const CARTOON_WORDS = /\b(story|stories|tale|fairy|kids?|children|bedtime|cartoon|animated|pirates?|dragons?|knights?|castle|princess|wizard|monster|animals?|cats?|dogs?|dinosaurs?|space|rocket|planet|history|ancient|medieval|legend|myth|fable|adventure|treasure|island|jungle|ocean|magic|school|funny|joke)\b/i;
-const REALISTIC_TEMPLATES = new Set(["product-review", "weekly-news"]);
-const CYBER_TEMPLATES = new Set(["explainer"]);
-const EXPLAINER_TEMPLATES = new Set(["explainer-short", "explainer-long"]);
+/**
+ * THE FALLBACK THAT PICKS THE LOOK WHEN NO MODEL DOES.
+ *
+ * This is not the main decision — the direction (src/direction.ts, step zero of the planner) reads the request and
+ * says which look it wants and why. This runs when there is no model to ask: createJob calls it the moment a client
+ * sends a prompt with no style and no storyboard, and that answer decides real things (whether the job needs a GPU
+ * at all, what it costs). So it has to be honest on its own.
+ *
+ * MEASURED BEFORE THIS WAS WRITTEN (scripts/adaptation.mjs, 28 ordinary requests, run 34494645061):
+ *   68% of requests never moved the answer at all — they landed on the default "cartoon" whatever they said, and
+ *   the 68% accuracy was explained entirely by that default being lucky. When the words really did decide, they were
+ *   right 6 times out of 9. Every one of the three word lists was ENGLISH ONLY, so an Italian request — the language
+ *   of this product's first users — could not trigger a single rule.
+ *
+ * Three things changed, and each one is a rule you can argue with rather than an accident:
+ *   1. IT COUNTS, it does not stop at the first hit. "The history of hacking told as a bedtime story" used to be
+ *      cyber, because "hacking" was tested before "story": one word beat three.
+ *   2. IT SPEAKS ITALIAN. The same vocabularies in both languages, because a request is not less of a request for
+ *      being written in the language the owner speaks.
+ *   3. THE TEMPLATE IS A STATED PRIOR, not a silent default. When the words say nothing, the answer comes from the
+ *      template and says so, instead of pretending "cartoon" was a decision.
+ *
+ * The vocabularies are written from what each look IS FOR, not from the requests in the measurement corpus: tuning
+ * them against the corpus would make the number grade itself.
+ */
+type Look = Extract<KleoStyle, "cartoon" | "realistic" | "cyber">;
+
+/** Drawn: stories, characters, history, anything a person pictures rather than photographs. */
+const CARTOON_WORDS = /\b(stor(?:y|ies)|tale|fairy|kids?|children|child|bedtime|cartoon|animated|pirates?|dragons?|knights?|castle|princess|wizard|monster|animals?|cats?|dogs?|dinosaurs?|space|rocket|planet|history|historical|ancient|medieval|legend|myth|fable|adventure|treasure|island|jungle|magic|funny|joke|humou?r|mistakes?|habits?|advice|tips?|lesson|imagine|once upon|storia|storie|racconta(?:re|no)?|racconto|favola|fiaba|leggenda|mito|bambin[io]|ragazz[io]|buonanotte|cartone|pirat[ai]|dragh?[oi]|cavalier[ei]|castello|principessa|mago|mostro|animal[ei]|gatt[oi]|can[ei]|dinosaur[oi]|spazio|razzo|pianeta|storico|antico|medievale|avventura|tesoro|isola|giungla|magia|divertente|ironia|scherzo|errori?|abitudin[ei]|consigli?|lezione|immagina)\b/gi;
+
+/** Photographed: things that exist and can be filmed — places, products, news, sport, food. */
+const REALISTIC_WORDS = /\b(product|review|unboxing|specs?|price|buy|brand|camera|laptop|headphones|phone|drone|gadget|smartphone|car|cars|bike|watch|sneakers?|restaurant|hotel|city|cities|street|beach|mountain|travel|trip|visit|weekend|itinerary|destination|landscape|nature|photograph|news|headline|election|economy|market|stocks?|inflation|company|ceo|launch|sport|match|championship|recipe|cooking|food|fitness|workout|gym|real estate|apartment|train|flight|airport|museum|what to see|what to eat|sources?|prodotto|recensione|prezzo|comprare|marca|fotocamera|portatile|cuffie|telefono|drone|auto|macchina|bici|orologio|scarpe|ristorante|albergo|citt[àa]|strada|spiaggia|montagna|viaggio|viaggiare|visitare|itinerario|meta|paesaggio|natura|fotografia|notizie?|titolo|elezioni|economia|mercato|azioni|inflazione|azienda|lancio|partita|campionato|ricetta|cucina|cibo|palestra|allenamento|immobiliare|appartamento|treno|volo|aeroporto|museo|cosa vedere|cosa mangiare|font[ei])\b/gi;
+
+/** Diagrammed: how something invisible works — systems, security, abstractions. */
+const CYBER_WORDS = /\b(cyber|security|hacker|hacking|malware|phishing|scam(?:mer)?s?|ransomware|password|vpn|encryption|encrypted|crypto(?:currency)?|bitcoin|blockchain|ai|artificial intelligence|machine learning|llm|chatgpt|neural|algorithm|software|coding|programming|developer|javascript|python|linux|database|server|network|wifi|bluetooth|data breach|privacy|surveillance|protocol|api|firewall|two.factor|sicurezza|informatica|hacker|violazion[ei]|truffa|truffe|riscatto|password|crittografia|criptat[oi]|intelligenza artificiale|apprendimento automatico|algoritmo|programmazione|sviluppatore|banca dati|rete|protocollo|firewall|privacy|sorveglianza|autenticazione)\b/gi;
+
+const VOCAB: Record<Look, RegExp> = { cartoon: CARTOON_WORDS, realistic: REALISTIC_WORDS, cyber: CYBER_WORDS };
 
 /**
- * The Kleo style when the client picked none: cyber for tech/security/AI topics, realistic for products, places and news,
- * cartoon for stories, kids, travel, animals and history; otherwise the template's natural look. Never stickman (on request only).
+ * The look a template leans towards when the words settle nothing. A prior, not a default: it is reported as the
+ * reason, so "the template chose it" and "the request chose it" are never the same sentence.
+ */
+const TEMPLATE_PRIOR: Record<string, Look> = {
+  "product-review": "realistic", "weekly-news": "realistic", "story-documentary": "realistic",
+  "explainer": "cyber",
+  "viral-short": "cartoon", "did-you-know": "cartoon", "reddit-story": "cartoon",
+  "motivational": "cartoon", "top-10": "cartoon", "cinematic-trailer": "cartoon",
+};
+const EXPLAINER_TEMPLATES = new Set(["explainer-short", "explainer-long"]);
+
+/** Distinct terms of a vocabulary the request uses. Distinct, so one word repeated is not an argument. */
+function score(text: string, re: RegExp): string[] {
+  const seen = new Set<string>();
+  for (const m of text.matchAll(re)) seen.add(m[0].toLowerCase());
+  return [...seen];
+}
+
+export interface StylePick {
+  style: KleoStyle;
+  /** One sentence a person can disagree with: which words decided, or that the words decided nothing. */
+  why: string;
+  /** The terms each look found, so the decision can be argued with rather than trusted. */
+  hits: Record<Look, string[]>;
+}
+
+/** The look, and why. `pickKleoStyle` keeps the old signature for callers that only want the answer. */
+export function pickKleoStyleWhy(template: string, prompt: string): StylePick {
+  const text = prompt.slice(0, 1500);
+  const empty: Record<Look, string[]> = { cartoon: [], realistic: [], cyber: [] };
+  if (EXPLAINER_TEMPLATES.has(template))
+    return { style: "explainer", why: "the template is the explainer, so there is nothing to guess", hits: empty };
+
+  const hits: Record<Look, string[]> = {
+    cartoon: score(text, VOCAB.cartoon), realistic: score(text, VOCAB.realistic), cyber: score(text, VOCAB.cyber),
+  };
+  const prior = TEMPLATE_PRIOR[template] ?? "cartoon";
+  const looks: Look[] = ["cartoon", "realistic", "cyber"];
+  const best = looks.reduce((a, b) => (hits[b].length > hits[a].length ? b : a), prior);
+  const top = hits[best].length;
+  if (top === 0)
+    return { style: prior, why: `nothing in the request names a subject, so the ${template} template decides: ${prior}`, hits };
+  // A tie is not a decision either: the prior breaks it, and says so.
+  const tied = looks.filter((l) => hits[l].length === top);
+  if (tied.length > 1 && !tied.includes(prior))
+    return { style: tied[0], why: `${tied.join(" and ")} are level on ${top}, and the template leans elsewhere; taking ${tied[0]}`, hits };
+  if (tied.length > 1)
+    return { style: prior, why: `${tied.join(" and ")} are level on ${top}, so the ${template} template breaks the tie: ${prior}`, hits };
+  return { style: best, why: `the request says ${hits[best].slice(0, 4).join(", ")}`, hits };
+}
+
+/**
+ * The Kleo look when the client picked none. Counting, bilingual, and template-aware; never stickman, which is only
+ * ever chosen on request.
  */
 export function pickKleoStyle(template: string, prompt: string): KleoStyle {
-  const text = prompt.slice(0, 1500);
-  if (EXPLAINER_TEMPLATES.has(template)) return "explainer";   // the template IS the look: there is nothing to guess
-  if (CYBER_WORDS.test(text)) return "cyber";
-  if (CARTOON_WORDS.test(text)) return "cartoon";
-  if (REALISTIC_WORDS.test(text)) return "realistic";
-  if (REALISTIC_TEMPLATES.has(template)) return "realistic";
-  if (CYBER_TEMPLATES.has(template)) return "cyber";
-  return "cartoon";
+  return pickKleoStyleWhy(template, prompt).style;
 }
 
 function sceneRange(words: number, wps: [number, number]): [number, number] {
