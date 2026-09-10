@@ -34,6 +34,7 @@ WIDTH_PORTRAIT = int(os.environ.get("KLEO_WIDTH_PORTRAIT", "2160"))
 WIDTH_LANDSCAPE = int(os.environ.get("KLEO_WIDTH_LANDSCAPE", "1920"))
 KEOU_WORKERS = int(os.environ.get("KLEO_KEOU_WORKERS", "0") or 0)  # 0 → min(8, cpu count)
 PART = 50 * 1024 * 1024
+UA = "kleo-worker/1.0 (+https://github.com/tonnooooo/kleo-mcp)"
 
 # Mirrors contract.VOICES; the engine's own contract.py overrides it at run time (see load_voices()).
 DEFAULT_VOICES = {"fr": ["ff_siwis"], "en": ["af_heart", "am_michael", "bf_emma"], "it": ["if_sara", "im_nicola"]}
@@ -57,6 +58,7 @@ def api(method, path, data=None, raw=None, ctype="application/json", retries=3):
     body = raw if raw is not None else (json.dumps(data).encode() if data is not None else None)
     req = urllib.request.Request(f"{API}{path}", data=body, method=method)
     req.add_header("Authorization", f"Bearer {SECRET}")
+    req.add_header("User-Agent", UA)  # workers.dev refuses Python's default user agent (Cloudflare error 1010)
     if body is not None:
         req.add_header("Content-Type", ctype)
     for attempt in range(retries):
@@ -109,6 +111,7 @@ def self_destruct(reason):
         try:
             req = urllib.request.Request(f"https://console.vast.ai/api/v0/instances/{cid}/", method="DELETE")
             req.add_header("Authorization", f"Bearer {key}")
+            req.add_header("User-Agent", UA)
             urllib.request.urlopen(req, timeout=30).read()
             return
         except Exception as e:
