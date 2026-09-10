@@ -97,6 +97,7 @@ SHOT: {"image_prompt":"ONE sentence <=${IMAGE_PROMPT_MAX} chars","caption"?:"2-5
  EVERY SCENE SHOWS AT LEAST ${SHOTS_MIN_CINEMA} PICTURES. ${SHOTS_MIN_CINEMA}-3 is the usual rhythm. One picture held for a whole narrated line is a slideshow, and Kleo refuses it: split the line into its moments and give each moment its own picture.
  EVERY PICTURE AFTER THE FIRST CARRIES "at". "at" is an unbroken run of whole words copied character for character out of THAT scene's own "voice" — punctuation included, case ignored. The picture cuts the instant those words are spoken. From "only one cabin boy swam back to shore" take "swam back"; never a fragment ("wam bac"), never a paraphrase ("he swam"), never a jump across punctuation. The first shot of a scene opens with the scene and must NOT carry "at". Place the anchors along the line in reading order.
  image_prompt describes ONE ${kind}: a concrete subject, a place, an action, the light and the mood. Consecutive shots of one scene are the next moment or a new angle of the same place. Everything you write must come from the direction's world and objects; anything on the direction's forbidden list is refused. Never ask for text, letters, numbers, logos or captions inside the picture, and never a real person.
+ SOMETHING IN EVERY PICTURE MUST BE DOING SOMETHING. Name a subject and give it an action, in the -ing form: "mist DRIFTING fast across the tarmac", "the flame GUTTERING", "waves BREAKING against the hull", "sand BLOWING across the road". Naming the thing is not enough — "low mist" and "dust in the air" are states, and a shot with only those in it comes back as a frozen frame; it was measured at 0.03 pixels of movement. The one exception is a person or an animal: they breathe and turn their head on their own, so a picture that shows someone needs nothing added. Write the action yourself — if you leave it out, Kleo adds one for you, and it will not be the one you would have chosen.
  caption is optional and rare: 2-5 strong words on the shot that carries the idea (the first shot falls back to the scene title).
 
  shot_kind says what the shot is FOR. NEVER write a camera move, a zoom, a pan or a direction anywhere — Kleo owns the camera and picks the move from the kind; a hand-written move is refused.
@@ -285,15 +286,15 @@ export const EXAMPLE_SCENES = [
     id: "01-burial", kind: "cinema", chapter: "01 THE BURIAL", accent: "amber", title: "she never came back", hl: "never",
     voice: "In 1720, the captain buried her treasure on Skull Beach. She never came back for it.", hold: 0.2,
     shots: [
-      { image_prompt: "The captain burying a wooden chest on a golden beach at sunset, palm trees, her red-sailed ship anchored in the bay", caption: "SHE NEVER CAME BACK", hl: "NEVER", shot_kind: "hook" },
-      { image_prompt: "The captain walking away along the shoreline at dusk, deep footprints in the wet sand, the beach empty behind her", at: "never came back", shot_kind: "action" },
+      { image_prompt: "The captain burying a wooden chest on a golden beach at sunset, palm trees swaying, her red-sailed ship anchored in the bay", caption: "SHE NEVER CAME BACK", hl: "NEVER", shot_kind: "hook" },
+      { image_prompt: "The captain walking away along the shoreline at dusk, waves breaking behind her, deep footprints in the wet sand", at: "never came back", shot_kind: "action" },
     ],
   },
   {
     id: "02-storm", kind: "cinema", chapter: "02 THE STORM", accent: "red", title: "three days later", hl: "three",
     voice: "Three days later a storm took her ship, and only one cabin boy swam back to shore.", hold: 0.2,
     shots: [
-      { image_prompt: "A red-sailed ship tossed by huge black waves at night, lightning splitting the sky, torn sails, rain across the deck", caption: "THREE DAYS LATER", hl: "THREE", shot_kind: "tension" },
+      { image_prompt: "A red-sailed ship tossed by huge black waves at night, lightning splitting the sky, torn sails flapping, rain falling across the deck", caption: "THREE DAYS LATER", hl: "THREE", shot_kind: "tension" },
       { image_prompt: "The cabin boy clinging to a broken plank in the dark water, the ship going down behind him", at: "one cabin boy", shot_kind: "establish" },
       { image_prompt: "The cabin boy lying exhausted on an empty beach at dawn, calm turquoise water, palm trees, soft pink sky", at: "swam back", shot_kind: "face" },
     ],

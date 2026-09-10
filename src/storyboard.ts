@@ -26,7 +26,7 @@ import {
  * the world of the video was never written down, nothing said what must NOT appear, and no colour meant anything.
  */
 import {
-  directionProblems, missingFacts, sectionOfScene, D as DL,
+  directionProblems, missingFacts, sectionOfScene, enliven, D as DL,
   type Direction, type Section,
 } from "./direction.ts";
 // The shot grammar: the ten story kinds and the one preset table that turns a kind into a camera move.
@@ -808,8 +808,13 @@ const fitPrompt = (p: string): string => (p.length <= IMAGE_PROMPT_MAX ? p : p.s
  * and an "hl" that does not colour a word of this shot's caption is meaningless, so it goes too.
  */
 function repairShot(sh: Record<string, unknown>, voice: string, first: boolean): Record<string, unknown> | null {
-  const prompt = typeof sh.image_prompt === "string" ? fitPrompt(sh.image_prompt.trim()) : "";
-  if (prompt.length < IMAGE_PROMPT_MIN) return null;
+  const written = typeof sh.image_prompt === "string" ? fitPrompt(sh.image_prompt.trim()) : "";
+  if (written.length < IMAGE_PROMPT_MIN) return null;
+  // NOTHING IN THE FRAME MAY BE DEAD. A picture with no subject doing anything comes back frozen once the shot is a
+  // generated clip and not a photograph — measured at 0.03 px of movement on an RTX 6000 Ada, which is a still image
+  // with a timestamp. So a still description has one movement added to it, built from what it already shows. It is
+  // repaired and not refused, for the same reason the camera is: a refusal costs a round trip, a repair costs nothing.
+  const prompt = enliven(written, IMAGE_PROMPT_MAX);
   const out: Record<string, unknown> = { image_prompt: prompt };
   if (typeof sh.caption === "string" && sh.caption.trim() && sh.caption.length <= SHOT_CAPTION_MAX && printableStr(sh.caption)) out.caption = sh.caption.trim();
   if (typeof sh.hl === "string" && sh.hl.trim() && sh.hl.length <= SHOT_HL_MAX && typeof out.caption === "string" && String(out.caption).toLowerCase().includes(sh.hl.trim().toLowerCase())) out.hl = sh.hl.trim();

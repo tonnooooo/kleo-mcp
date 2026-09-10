@@ -262,6 +262,103 @@ export function forbiddenInPrompts(
 }
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+/* ------------------------------------------------------------------ nothing in the frame may be dead */
+
+/**
+ * SOMETHING IN THE SHOT MUST MOVE BY ITSELF.
+ *
+ * Measured, not guessed. Nine clips at 1280x704, 49 frames, 30 steps, Wan 2.2 TI2V-5B on an RTX 6000 Ada
+ * (median optical flow in pixels; the share of it a pure zoom explains):
+ *
+ *   face, crane down        4.35 px   alive        landscape, crane down   0.38 px   DEAD
+ *   face, push in           1.74 px   alive        landscape, push in      0.89 px   alive
+ *   face, track sideways    8.17 px   alive        object,    crane down   0.27 px   DEAD
+ *   landscape, track        1.20 px   alive        object,    push in      0.03 px   DEAD
+ *   object,    track        2.36 px   alive
+ *
+ * Two findings decide the shape of this rule, and both are counter-intuitive.
+ *
+ * 1. NAMING THE THING IS NOT ENOUGH. Both failing descriptions ALREADY contained the words a keyword check would
+ *    look for: "low mist" and "dust in the air". They still froze, because those are STATES, not actions. So this
+ *    does not hunt for nouns like mist, dust or smoke. It demands a subject that is DOING something — a present
+ *    participle from a small, deliberate list. "low mist" is dead; "mist drifting fast across the tarmac" is alive.
+ *
+ * 2. A PERSON IS ALWAYS ALIVE. Every face clip moved, none of them because the prompt asked: a person in frame
+ *    breathes and turns their head on their own. So a shot that shows someone is never asked for more.
+ *
+ * And it REPAIRS rather than refuses, exactly like the static_forced routing rule: a refusal sends the model back to
+ * rewrite and costs a whole round trip, a repair costs nothing. The clause it adds is built from what the picture
+ * already names, so the subject of the shot never changes — only its stillness does.
+ */
+
+/** Anything that moves without being told to: it breathes, it turns its head, it fidgets. */
+const LIVING_SUBJECT = /\b(man|men|woman|women|boy|boys|girl|girls|child|children|kid|kids|person|people|crowd|figure|figures|face|faces|hand|hands|rider|driver|worker|workers|sailor|sailors|captain|soldier|dancer|runner|dog|dogs|cat|cats|bird|birds|horse|horses|animal|animals|fish|whale|dolphin|insect|bee|butterfly)\b/i;
+
+/**
+ * Present participles that describe real movement. Kept small and specific on purpose: "-ing" alone matches
+ * "building", "lighting" and "morning", none of which move anything.
+ */
+const MOTION_VERB = /\b(drifting|swirling|blowing|streaming|pouring|spilling|dripping|splashing|surging|breaking|crashing|rolling|tumbling|falling|rising|climbing|sinking|floating|hovering|gliding|soaring|flying|sailing|running|walking|marching|striding|riding|racing|charging|turning|spinning|circling|orbiting|swaying|rippling|flapping|snapping|whipping|waving|flickering|guttering|flaring|burning|smouldering|steaming|smoking|curling|boiling|bubbling|scattering|bursting|erupting|collapsing|crumbling|sliding|slipping|creeping|spreading|shaking|trembling|swinging|bouncing|leaping|jumping|chasing|opening|closing|reaching|pointing|throwing|catching|lifting|dropping)\b/i;
+
+/** What the picture already names, and the movement that belongs to it. Order matters: the first match wins. */
+const ENLIVEN: readonly { of: RegExp; clause: string }[] = [
+  { of: /\b(mist|fog|haze)\b/i, clause: "the mist drifting fast across the frame" },
+  { of: /\b(dust|motes|particles)\b/i, clause: "dust swirling through the light" },
+  { of: /\b(candle|candlelight|lantern|torch|fire|flame|campfire)\b/i, clause: "the flame guttering" },
+  { of: /\b(wave|waves|sea|ocean|surf|tide)\b/i, clause: "waves breaking in the background" },
+  { of: /\b(rain|downpour|storm)\b/i, clause: "rain falling hard through the shot" },
+  { of: /\b(snow|blizzard)\b/i, clause: "snow blowing sideways" },
+  { of: /\b(smoke|steam|vapour|vapor)\b/i, clause: "smoke curling upward" },
+  { of: /\b(sand|desert|dune)\b/i, clause: "sand blowing across the ground" },
+  { of: /\b(leaf|leaves|tree|trees|grass|field|forest)\b/i, clause: "leaves moving in the wind" },
+  { of: /\b(flag|sail|sails|curtain|cloth|banner|cape|scarf)\b/i, clause: "the cloth snapping in the wind" },
+  { of: /\b(cloud|clouds|sky)\b/i, clause: "clouds moving across the sky" },
+  { of: /\b(water|river|stream|waterfall|rain)\b/i, clause: "water running past" },
+  { of: /\b(road|street|traffic|car|cars|train)\b/i, clause: "a vehicle passing through the frame" },
+  { of: /\b(bird|birds|gull|gulls)\b/i, clause: "birds crossing the frame" },
+];
+/** When the picture names nothing that can be set moving, this is what a cinematographer adds: it works anywhere. */
+const ENLIVEN_FALLBACK = "dust drifting through the light";
+
+export interface Stillness {
+  /** True when something in the shot moves on its own, so a generated clip will not come back frozen. */
+  alive: boolean;
+  /** Why, in one phrase, so a message to the author says something useful. */
+  reason: string;
+}
+
+export function stillness(imagePrompt: string): Stillness {
+  const p = String(imagePrompt || "");
+  if (LIVING_SUBJECT.test(p)) return { alive: true, reason: "someone in frame moves on their own" };
+  const verb = p.match(MOTION_VERB);
+  if (verb) return { alive: true, reason: `something is ${verb[1].toLowerCase()}` };
+  return { alive: false, reason: "nothing in it is doing anything" };
+}
+
+/** The movement to add to a still picture, chosen from what the picture already shows. Deterministic. */
+export function livingClause(imagePrompt: string): string {
+  const p = String(imagePrompt || "");
+  for (const e of ENLIVEN) if (e.of.test(p)) return e.clause;
+  return ENLIVEN_FALLBACK;
+}
+
+/**
+ * The picture, with something in it moving. Returns the prompt unchanged when it is already alive, and never grows
+ * past `max` — a clause that would not fit takes the room from the end of the description instead of being dropped,
+ * because a picture that is one adjective shorter is worth far more than one that comes back frozen.
+ */
+export function enliven(imagePrompt: string, max: number): string {
+  const base = String(imagePrompt || "").trim();
+  if (!base || stillness(base).alive) return base;
+  const clause = livingClause(base);
+  const tail = `, ${clause}`;
+  if (base.length + tail.length <= max) return base + tail;
+  const room = max - tail.length;
+  if (room < 20) return base;                      // too tight to say both: leave the author's words alone
+  const cut = base.slice(0, room);
+  return (cut.includes(" ") ? cut.slice(0, cut.lastIndexOf(" ")) : cut).replace(/[,\s]+$/, "") + tail;
+}
+
 /* ------------------------------------------------------------------ the direction reaches the picture */
 
 /**

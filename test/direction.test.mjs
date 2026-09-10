@@ -11,7 +11,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor,
-  castFor, conformity, ACCENT_LIGHT, D,
+  castFor, conformity, ACCENT_LIGHT, stillness, enliven, livingClause, D,
 } from "../src/direction.ts";
 import { validateStoryboard, qualityProblems, directionOf, narrationOf, pictureScenes, CINEMA_ACCENTS, SHOTS_MIN_CINEMA, shotRangeText } from "../src/keou-contract.ts";
 import { fullPrompt, modelInputs, NEGATIVE_PROMPT, STYLE_SUFFIX, DEFAULT_IMAGE_MODELS } from "../src/images.ts";
@@ -236,6 +236,59 @@ test("one picture per scene is refused, and every picture after the first cuts o
   // Neither rule touches a look that has no shots at all.
   assert.deepEqual(qualityProblems({ style: "cinema", scenes: [{ id: "01-a", kind: "cinema" }] }), []);
   assert.deepEqual(qualityProblems(null), []);
+});
+
+/* ------------------------------------------------------------------ nothing in the frame may be dead */
+
+test("stillness: a state is not an action, and a person is always alive", () => {
+  // The two descriptions that came back frozen on a real GPU. Both already contain the noun a keyword check hunts for.
+  const deadLandscape = "a wide empty coastal road cutting through black volcanic rock at dawn, low mist, cold blue light, distant ocean, cinematic, 35mm";
+  const deadObject = "a brass ship compass on a worn wooden table, candlelight from the left, dust in the air, macro detail, warm shadows, cinematic";
+  assert.equal(stillness(deadLandscape).alive, false, "'low mist' is a state, not an action");
+  assert.equal(stillness(deadObject).alive, false, "'dust in the air' is a state, not an action");
+
+  // The same shots, with the subject given something to do.
+  assert.equal(stillness("a coastal road at dawn, mist drifting fast across the tarmac").alive, true);
+  assert.equal(stillness("a brass compass on a table, the candle flame guttering").alive, true);
+
+  // A person or an animal in frame moves on its own: nothing more is asked of the description.
+  assert.equal(stillness("a woman standing at a window in cold morning light").alive, true);
+  assert.equal(stillness("a dog asleep on a doorstep").alive, true);
+  assert.match(stillness("a crowd on a platform").reason, /on their own/);
+
+  // "-ing" alone proves nothing: a building is not moving.
+  assert.equal(stillness("a tall building at night, lighting from below, morning haze").alive, false);
+  assert.equal(stillness("").alive, false);
+});
+
+test("enliven repairs the shot instead of refusing it, using what the picture already shows", () => {
+  const road = "a wide empty coastal road through black volcanic rock at dawn, low mist, cold blue light";
+  const fixed = enliven(road, 240);
+  assert.ok(fixed.startsWith(road), fixed);
+  assert.ok(stillness(fixed).alive, fixed);
+  assert.match(fixed, /mist drifting/, "the movement comes from what the picture already names");
+
+  const compass = "a brass ship compass on a worn wooden table, candlelight from the left, dust in the air";
+  assert.match(enliven(compass, 240), /flame guttering/, "the candle is the thing that can move here");
+
+  // A picture that names nothing movable still gets the clause a cinematographer would add.
+  assert.match(enliven("a closed wooden door, flat even light", 240), /dust drifting through the light/);
+
+  // Already alive: left exactly as written.
+  const alive = "waves breaking over a stone pier at dusk";
+  assert.equal(enliven(alive, 240), alive);
+  assert.equal(enliven("", 240), "");
+
+  // The cap is never exceeded: the description gives up its tail rather than the movement.
+  const long = "a brass ship compass on a worn wooden table with low mist around it, " + "carved detail ".repeat(14);
+  const cut = enliven(long.trim(), 240);
+  assert.ok(cut.length <= 240, cut.length);
+  assert.ok(stillness(cut).alive, cut);
+  assert.ok(!/\s,/.test(cut), "no dangling space before the added clause");
+
+  // Too tight to say both: the author's words win, and nothing is truncated into nonsense.
+  const tight = "a compass on a table with low mist";
+  assert.equal(enliven(tight, tight.length + 5), tight);
 });
 
 test("conformity reports what was asked against what was planned", () => {
