@@ -58,21 +58,14 @@ ART (2-8 per scene): {"name":<drawing>,"at":<words>,"until"?:<words>,"x"?:${Math
   Drawings: ${SKETCH_ART.join(", ")}.
   Extras: tint/led/beam/chip = an accent colour on the drawing or one part of it; mood (${quoted(SKETCH_MOODS)}) on "face"; count 1-12 on crowd/footprints/blank/chain; text (≤24, the only drawing that carries words) on "tag"; open/open_to on "door" and "lock"; reach on "figure"; flags no (crossed out or broken), sweat, xray, flash, flip, leader.
   Accents: ${quoted(SKETCH_ACCENTS)} — one per scene, never two in a frame.
-THE LINE IS A SENTENCE, NOT A CAPTION. The caption on screen is made FROM the line automatically, word by word: you never write one. A line of three or four words is refused every time, and it is the single most common way this look is written wrongly.
+THE LINE IS A SENTENCE, NOT A CAPTION. The caption on screen is made FROM the line automatically, word by word: you never write one. A line of three or four words is refused every time, and it is the single most common way this look is written wrongly. Count the words in the language you are writing in, not in English.
   GOOD  "This looks like a normal hotel key card. It isn't."   (10 words)
   GOOD  "Read one card once, and the lock gives up its secret." (11 words)
   BAD   "Websites don't see passwords"                          (4 words - a caption, not a line)
-  BAD   "Your password is safe"                                 (4 words - says nothing the next line can follow)
-COUNT THE WORDS IN THE LANGUAGE YOU ARE WRITING IN, not in English. A line translated from a short English one is a short line.
-  GOOD (it)  "Questo sembra un normale badge d'albergo. E invece no."      (9 parole)
-  BAD  (it)  "Il badge non e sicuro"                                       (5 parole - una didascalia)
-Every line must carry a fact, a name or a number that the line before it did not have.
-ONE OF THE FIRST THREE LINES MUST TURN. Say the thing the viewer expects, then take it away in the same breath: the words "but", "except", "actually", "it turns out" and "never" are where a turn lives. A film that only states facts in order is a list, and a list does not hold anyone.
-  TURNS  "You lend a charging cable, but it is not what you think."
-  TURNS  "The website checks your password, except it has never seen it."
-  FLAT   "A charging cable can contain a chip."   (true, and nothing has turned)
-EVERY SCENE MUST DRAW SOMETHING ITS OWN LINE NAMES. If the line says "cable", one of its drawings is the cable; if it says "airport", one of them is the suitcase. A scene whose drawings are none of the things its words mention is a caption over a stock picture, and it is refused.
-ONE DRAWING FOR EVERY FOUR OR FIVE WORDS OF THE LINE. A ${lo}-${hi} word line therefore carries two or three drawings, never one: a scene with a single drawing holds a still picture for the whole sentence, and it is refused.`;
+Every line must carry a fact, a name or a number that the line before it did not have, and no line may repeat what an earlier one said.
+One of the first three lines must TURN: say what the viewer expects, then take it away — "but", "except", "it turns out", "never".
+Every scene must draw at least one thing its own line NAMES. If the line says "cable", one drawing is the cable.
+`;
 }
 
 /* ------------------------------------------------------------------ the schema it decodes into */

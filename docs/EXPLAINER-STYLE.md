@@ -100,6 +100,12 @@ them, because nothing measures whether they happened. Here each is a function ov
 storyboard. What arithmetic can fix is fixed (`repairExplainer`); the rest comes back as `feedback` on
 the next attempt, in the words the model has to act on.
 
+Seventeen of them. The last four exist because three independent readers were asked to score eight films
+that had already passed the first thirteen, and every complaint they made was about something no rule
+looked at: "the script says the same sentence four different ways", "lock and key repeat four times and
+nothing draws the mechanism", "line 1 opens a real gap and line 2 fills it with a platitude". The first
+thirteen measure FORM. A film can satisfy all of it and be four sentences over one picture.
+
 | rule | what it measures |
 |---|---|
 | `hook-shape` | the first line speaks to the viewer **and** contradicts, asks, or counts |
@@ -115,6 +121,22 @@ the next attempt, in the words the model has to act on.
 | `payoff` | the last line asks a question or hands the viewer one thing to do |
 | `word-window` | every line inside the template's window |
 | `colour` | ≥2 accents (Short) / ≥3 (long) |
+| `draws-what-it-says` | every scene draws at least one thing its own line names — the founding rule, made mechanical |
+| `echo` | no line repeats what an earlier line already said |
+| `promise` | a word the hook named comes back after the halfway point |
+| `variety` (2/2) | no drawing opens two scenes running; no film drawn with fewer drawings than it has scenes |
+
+`draws-what-it-says` reads `SKETCH_WORDS`: for each of the fifty-nine drawings, the words a narrator would
+actually SAY that mean "draw this", in all three languages — 2,878 of them, drafted family by family and
+then repaired against nine real films. A word may belong to two drawings when both are right answers, so
+the check can only be kinder, never wrong; function words ("when", "who", "now", "chi", "quando") are
+refused, because a rule that matches every sentence measures nothing.
+
+**The shipped film is the arbiter of every rule here.** `worker/keou/examples/explainer-hotel` passes all
+seventeen with nothing broken. That is the only thing that separates a rule which finds a defect from a
+rule which enforces a preference — and it is what caught two rules of mine that were wrong: one could not
+see that "hotel" and "hotels" are the same word, and one called two `figure` drawings for "two people" a
+mistake.
 
 `test/explainer-planner.test.mjs` runs twenty-four deliberately unlike prompts — bread, volcanoes,
 mortgages, aqueducts — as Short and long, in three languages, against a model that answers badly on
