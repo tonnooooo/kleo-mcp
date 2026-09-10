@@ -450,6 +450,31 @@ export function styleOfJob(job: Pick<Job, "params">): string | null {
   try { return (JSON.parse(job.params) as JobParams).style ?? null; } catch { return null; }
 }
 
+/**
+ * How long a RUNNING render may legitimately say nothing, which is not one number: it grows with the video.
+ *
+ * Silence means last_report_at, written only when the worker parses a line out of the engine's stdout. Between
+ * frames that is FRAME, often enough to be safe. But AFTER the last frame the master is decoded four times over,
+ * and every one of those passes is mute: two ffprobe -count_frames, one ffmpeg blackdetect, and the small preview
+ * that decodes at 4K to re-encode at 540px. The mux itself is not the problem — it is -c:v copy and fast.
+ *
+ * Those four passes scale with the length of the video, so the silence they produce does too. A Short keeps the
+ * tight limit — 27 of the 29 jobs ever made are Shorts, and a tenth of a minute per pass is nothing — and only
+ * what runs longer buys the room it actually needs. Raising the floor for everybody instead would buy patience for
+ * workers that are genuinely dead, which is paying in money for what a line of log should cost.
+ *
+ * This is a STOPGAP and should be read as one. The cure is to make those passes speak (`ffmpeg -progress pipe:1`,
+ * and a decoding ffmpeg instead of a mute ffprobe for the frame count); the estimate of how long they take is not
+ * measured on a rented machine yet, only reasoned about. Until it is, the room here is generous on purpose.
+ */
+export function renderSilenceMin(env: Env, job: Pick<Job, "params">): number {
+  const base = int(env.RENDER_SILENCE_MIN, 20);
+  let seconds = 0;
+  try { seconds = (JSON.parse(job.params) as JobParams).duration_s; } catch { /* unreadable rows keep the floor */ }
+  // Nothing extra up to a Short; past that, three minutes of tolerated silence per minute of video.
+  return base + Math.round((Math.max(0, seconds - 90) / 60) * 3);
+}
+
 export function jobTimeoutMin(env: Env, job: Pick<Job, "params">): number {
   let seconds = 0;
   try { seconds = (JSON.parse(job.params) as JobParams).duration_s; } catch { /* an unreadable row just gets the flat value */ }

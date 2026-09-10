@@ -732,6 +732,24 @@ test("timeout: a worker that goes quiet mid-render gives the GPU back, and the c
   assert.equal(silent[0].detail.percent, 40);
 });
 
+test("silence: what a render may legitimately not say grows with the video, and a Short keeps the tight limit", () => {
+  // After the last frame the master is decoded four times over — two ffprobe -count_frames, one blackdetect, one
+  // 4K-decode for the small preview — and every pass is mute. Those passes scale with the video, so the silence
+  // does. 27 of the 29 jobs ever made are Shorts and must not buy patience for workers that are actually dead.
+  const env = { RENDER_SILENCE_MIN: "20" };
+  const at = (d) => m.renderSilenceMin(env, { params: JSON.stringify({ duration_s: d }) });
+  assert.equal(at(45), 20, "a Short keeps the floor exactly");
+  assert.equal(at(90), 20, "and so does the longest thing that is still a Short");
+  // 31, not 30: (300-90)/60*3 is 10.5, and Math.round takes .5 upwards while Python's round() takes it to even.
+  // These expectations were first worked out in a python one-liner and asserted in JavaScript, which is the same
+  // two-things-that-agree-until-they-do-not that every real defect tonight turned out to be.
+  assert.equal(at(300), 31);
+  assert.equal(at(480), 40, "an eight-minute video really does have more silence to be patient with");
+  assert.equal(m.renderSilenceMin({}, { params: "{not json" }), 20, "an unreadable row falls back to the floor, never to zero");
+  assert.ok(at(480) < m.jobTimeoutMin(env, { params: JSON.stringify({ duration_s: 480 }) }),
+    "and the silence rule must always fire BEFORE the wall clock, or it can never do anything");
+});
+
 test("timeout: a worker that is still talking is left alone, however slow it is", async () => {
   const env = await newEnv({ RENDER_SILENCE_MIN: "20", MAX_JOBS_PER_USER: "10" });
   const u = await user(env, 10);

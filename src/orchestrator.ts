@@ -5,7 +5,7 @@ import { vastStatus, listKleoInstances, destroyInstance } from "./backends/vast"
 import { int, num, nowIso, minutesSince, secondsSince, addDays, base64ToBytes, rid } from "./util";
 import { TINY_MP4_B64 } from "./assets";
 import { resultLinks, FILE_NAMES } from "./jobs";
-import { jobTimeoutMin, isVideoStyle, styleOfJob } from "./templates";
+import { jobTimeoutMin, renderSilenceMin, isVideoStyle, styleOfJob } from "./templates";
 import { notifyDone } from "./notify";
 import { putFile, deleteFile } from "./storage";
 import { acquireLock, releaseLock, holdLock, setFlagUntil, isFlagActive } from "./schema";
@@ -126,8 +126,8 @@ async function tickInner(env: Env, stats: Stats) {
       // this number is racing that cadence, and a healthy render that loses the race is killed and requeued — the very
       // bug this sensor exists to prevent, coming back through the other door. There is a test on the engine side
       // holding the two together; do not move this one without reading it.
-      const renderSilenceMin = int(env.RENDER_SILENCE_MIN, 20);
-      if (job.state !== "starting" && job.last_report_at && minutesSince(job.last_report_at) > renderSilenceMin) {
+      const renderSilence = renderSilenceMin(env, job);
+      if (job.state !== "starting" && job.last_report_at && minutesSince(job.last_report_at) > renderSilence) {
         const quiet = Math.round(minutesSince(job.last_report_at));
         await audit(env, job.user_id, job.id, "worker.silent", { minutes: quiet, percent: job.percent, state: job.state });
         await failJob(env, job, `the worker stopped reporting ${quiet} min ago, at ${job.percent}%`, true);
