@@ -19,6 +19,9 @@ on:
       prewarm_pictures:
         description: "1 = bake dreamshaper-8 only (as production does), all = both checkpoints, 0 = none"
         default: "1"
+      compression:
+        description: "Layer compression: gzip (what docker has always used) or zstd (unpacks 3-5x faster on the rented machine)"
+        default: "gzip"
       tag:
         description: "Tag to push under ghcr.io/tonnooooo/kleo-worker"
         default: "slim"
@@ -58,6 +61,11 @@ jobs:
           file: docker/Dockerfile.slim
           push: true
           tags: ${{ env.IMAGE }}:${{ inputs.tag }}
+          # A Vast machine spends far more time unpacking this image than downloading it (measured: 7.85 GB pulled in
+          # 13 min on a host that fetches 46 MB/s from ghcr, i.e. under 11% of what the wire could do). zstd decompresses
+          # several times faster than gzip, so it is the lever that actually shortens time-to-first-frame — provided the
+          # docker on the rented machine understands it, which is what the :zstd tag exists to find out.
+          outputs: type=registry,compression=${{ inputs.compression }},force-compression=true,oci-mediatypes=true
           build-args: |
             BASE_IMAGE=${{ inputs.base_image }}
             PRUNE_CUDA=${{ inputs.prune_cuda }}
