@@ -122,11 +122,13 @@ const byLang = (l) => {
 // pickKleoStyle falls through to a default when none of its three word lists matches. Detected by asking it for a
 // prompt that certainly matches nothing and seeing what comes back, then counting the prompts that give the same.
 const DEFAULT_LOOK = pickKleoStyle(TEMPLATE, "zzzz qqqq wwww");
-const fellBack = rows.filter((r) => {
-  // A prompt "fell back" when emptying it changes nothing: the words contributed no decision.
-  return pickKleoStyle(TEMPLATE, r.p) === DEFAULT_LOOK && pickKleoStyle(TEMPLATE, "") === DEFAULT_LOOK
-    && pickKleoStyle(TEMPLATE, r.p) === pickKleoStyle(TEMPLATE, "");
-});
+// A request is DECIDED only when its words moved the answer away from what an empty request gets. Anything else is
+// indistinguishable from the default landing on the right answer by luck — and that is not a rounding error, it is
+// the flaw: while the default is itself one of the real categories, a decision and a coincidence look identical from
+// the outside. Every prompt whose expected look IS the default therefore proves nothing either way.
+const decided = rows.filter((r) => pickKleoStyle(TEMPLATE, r.p) !== pickKleoStyle(TEMPLATE, ""));
+const undecided = rows.filter((r) => !decided.includes(r));
+const fellBack = undecided;
 
 /* ---------------------------------------------------------------- 3. influence */
 const varies = FIELDS.filter((f) => new Set(rows.map((r) => String(r.got[f]))).size > 1);
@@ -152,7 +154,11 @@ line();
 line(`1. ACCURACY   ${right.length}/${rows.length} = ${pct(right.length, rows.length)} of requests get the look a person would expect`);
 line(`              English ${byLang("en").ok}/${byLang("en").n} = ${pct(byLang("en").ok, byLang("en").n)}   Italian ${byLang("it").ok}/${byLang("it").n} = ${pct(byLang("it").ok, byLang("it").n)}`);
 line();
-line(`2. FALLBACK   ${fellBack.length}/${rows.length} = ${pct(fellBack.length, rows.length)} of requests decide nothing: the words match no rule and the default "${DEFAULT_LOOK}" fires`);
+line(`2. FALLBACK   ${fellBack.length}/${rows.length} = ${pct(fellBack.length, rows.length)} of requests never move the answer: they land on the default "${DEFAULT_LOOK}" whatever they say`);
+const rightDecided = decided.filter((r) => r.got.look === r.want).length;
+const rightUndecided = undecided.filter((r) => r.got.look === r.want).length;
+line(`              when the words DO decide: ${rightDecided}/${decided.length} right${decided.length ? ` = ${pct(rightDecided, decided.length)}` : ""}`);
+line(`              when they do not:        ${rightUndecided}/${undecided.length} right${undecided.length ? ` = ${pct(rightUndecided, undecided.length)}` : ""} — the default landing on it, not a decision`);
 line();
 line(`3. INFLUENCE  ${varies.length}/${FIELDS.length} of the plan's fields move with the prompt: [${varies.join(", ") || "none"}]`);
 line(`              fixed by the template whatever is asked: [${FIELDS.filter((f) => !varies.includes(f)).join(", ") || "none"}]`);
