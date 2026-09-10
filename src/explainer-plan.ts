@@ -63,7 +63,15 @@ THE LINE IS A SENTENCE, NOT A CAPTION. The caption on screen is made FROM the li
   GOOD  "Read one card once, and the lock gives up its secret." (11 words)
   BAD   "Websites don't see passwords"                          (4 words - a caption, not a line)
   BAD   "Your password is safe"                                 (4 words - says nothing the next line can follow)
-Every line must carry a fact, a name or a number that the line before it did not have.`;
+COUNT THE WORDS IN THE LANGUAGE YOU ARE WRITING IN, not in English. A line translated from a short English one is a short line.
+  GOOD (it)  "Questo sembra un normale badge d'albergo. E invece no."      (9 parole)
+  BAD  (it)  "Il badge non e sicuro"                                       (5 parole - una didascalia)
+Every line must carry a fact, a name or a number that the line before it did not have.
+ONE OF THE FIRST THREE LINES MUST TURN. Say the thing the viewer expects, then take it away in the same breath: the words "but", "except", "actually", "it turns out" and "never" are where a turn lives. A film that only states facts in order is a list, and a list does not hold anyone.
+  TURNS  "You lend a charging cable, but it is not what you think."
+  TURNS  "The website checks your password, except it has never seen it."
+  FLAT   "A charging cable can contain a chip."   (true, and nothing has turned)
+ONE DRAWING FOR EVERY FOUR OR FIVE WORDS OF THE LINE. A ${lo}-${hi} word line therefore carries two or three drawings, never one: a scene with a single drawing holds a still picture for the whole sentence, and it is refused.`;
 }
 
 /* ------------------------------------------------------------------ the schema it decodes into */
@@ -263,9 +271,9 @@ const HOOK: Record<string, RegExp[]> = {
 };
 /** The sentence that turns the film: without one somewhere early, a Short is a list of facts. */
 const TURN: Record<string, RegExp> = {
-  en: /\b(but|actually|except|until|however|instead|isn't|wasn't|turns out|the problem)\b/i,
-  it: /\b(ma|però|invece|tranne|finché|in realtà|il problema)\b/i,
-  fr: /\b(mais|sauf|jusqu'à|en fait|pourtant|le problème)\b/i,
+  en: /\b(but|actually|except|until|however|instead|isn't|wasn't|turns out|the problem|never|nobody|nothing|no longer)\b/i,
+  it: /\b(ma|però|invece|tranne|finché|in realtà|il problema|mai|nessuno|niente|non è|non ha)\b/i,
+  fr: /\b(mais|sauf|jusqu'à|en fait|pourtant|le problème|jamais|personne|rien|n'est pas)\b/i,
 };
 /** What the last line owes the viewer: a question that sends them back, or something to do. */
 const PAYOFF: Record<string, RegExp> = {
@@ -274,6 +282,50 @@ const PAYOFF: Record<string, RegExp> = {
   fr: /\?|\b(tu|ton|ta|votre|vérifie|change|éteins|arrête|demande|jamais|toujours)\b/i,
 };
 const pat = <T,>(m: Record<string, T>, lang: string): T => m[lang] ?? m.en;
+/**
+ * Words carried by every second sentence, in all three languages. They are dropped before two lines are
+ * compared, because "the", "your" and "is" in common says nothing about whether two lines say the same thing.
+ */
+const COMMON = new Set([
+  "the", "a", "an", "and", "or", "but", "of", "to", "in", "on", "at", "for", "with", "from", "by", "is", "are",
+  "was", "were", "be", "been", "it", "its", "this", "that", "these", "those", "you", "your", "yours", "they",
+  "them", "their", "we", "our", "he", "she", "his", "her", "not", "no", "can", "will", "would", "could", "has",
+  "have", "had", "do", "does", "did", "so", "if", "when", "what", "who", "how", "why", "all", "every", "any",
+  "one", "two", "into", "out", "up", "down", "then", "than", "just", "very", "more", "most", "some", "there",
+  "il", "lo", "la", "i", "gli", "le", "un", "uno", "una", "e", "ed", "o", "di", "del", "della", "dei", "delle",
+  "da", "dal", "in", "nel", "nella", "con", "su", "sul", "per", "tra", "fra", "che", "chi", "cosa", "come",
+  "non", "ma", "però", "se", "ci", "si", "ti", "mi", "tuo", "tua", "tuoi", "tue", "suo", "sua", "è", "sono",
+  "era", "essere", "ha", "hanno", "avere", "fa", "fare", "puo", "può", "quando", "poi", "già", "anche", "solo",
+  "questo", "questa", "quello", "quella", "ogni", "tutto", "tutti",
+  "le", "les", "un", "une", "des", "du", "de", "et", "ou", "dans", "sur", "pour", "avec", "que", "qui", "quoi",
+  "ne", "pas", "est", "sont", "était", "être", "a", "ont", "avoir", "fait", "peut", "quand", "puis", "déjà",
+  "aussi", "seulement", "ce", "cet", "cette", "ces", "tout", "tous", "votre", "vos", "ton", "ta", "tes",
+]);
+/** The words of a line that carry its meaning: everything else is grammar. */
+const content = (line: string): Set<string> =>
+  new Set(words(line.toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, " "))
+    .map((w) => w.replace(/^'+|'+$/g, ""))
+    .filter((w) => w.length > 2 && !COMMON.has(w)));
+/**
+ * Whether two content words are the same word. Not stemming — a stemmer per language is a dependency this
+ * does not need — but the one case that matters: a singular and its plural. The shipped hotel film says
+ * "hotel key card" in its first line and "thirteen thousand hotels" in its fifth, and a comparison that
+ * cannot see those as the same word accuses the reference film of changing the subject.
+ */
+const same = (a: string, b: string): boolean => {
+  if (a === b) return true;
+  const [s1, s2] = a.length <= b.length ? [a, b] : [b, a];
+  return s1.length >= 4 && s2.startsWith(s1) && s2.length - s1.length <= 2;
+};
+const has = (bag: Set<string>, w: string): boolean => { for (const x of bag) if (same(x, w)) return true; return false };
+/** How much of the shorter line is inside the longer one: 1 means it says nothing new at all. */
+const overlap = (a: Set<string>, b: Set<string>): number => {
+  if (!a.size || !b.size) return 0;
+  let shared = 0;
+  for (const w of a) if (has(b, w)) shared++;
+  return shared / Math.min(a.size, b.size);
+};
+
 /** The drawings that stand for an idea rather than a thing: fine in the middle, wrong as the opening image. */
 const ABSTRACT = new Set(["question", "warning", "blank", "tag", "chart", "graph", "scale"]);
 
@@ -350,10 +402,17 @@ export const EXPLAINER_RULES: ExplainerRule[] = [
     why: "The same picture three scenes running reads as a stuck video.",
     check: ({ scenes }) => {
       const out: Violation[] = [];
-      for (let i = 2; i < scenes.length; i++) {
-        const n = [i - 2, i - 1, i].map((j) => artOf(scenes[j])[0]?.name);
-        if (n[0] && n[0] === n[1] && n[1] === n[2]) out.push({ rule: "variety", scene: i + 1, message: `scenes ${i - 1}, ${i} and ${i + 1} all open on "${n[0]}". Change one of them: the drawings are the only thing the viewer is watching.` });
+      // Two in a row is already a stuck video: the drawing IS the cut, so repeating it means the film did
+      // not cut. Measured on the real model, a film with seven scenes came back drawing a lock and a key
+      // four times each and read as one long still.
+      for (let i = 1; i < scenes.length; i++) {
+        const a = artOf(scenes[i - 1])[0]?.name, b = artOf(scenes[i])[0]?.name;
+        if (a && a === b) out.push({ rule: "variety", scene: i + 1, message: `scene ${i} and scene ${i + 1} both open on "${a}". The drawing is the cut: repeating it means the film never cut. Draw the thing THIS line names.` });
       }
+      const first = scenes.map((s) => artOf(s)[0]?.name).filter(Boolean);
+      const distinct = new Set(scenes.flatMap((s) => artOf(s).map((a) => a.name)));
+      if (first.length >= 4 && distinct.size < Math.max(4, Math.ceil(scenes.length * 0.9)))
+        out.push({ rule: "variety", scene: null, message: `the whole film is drawn with only ${distinct.size} different drawings across ${scenes.length} scenes. A film that recycles a lock and a key is a film with one picture in it — give each line the thing it actually names.` });
       return out;
     },
   },
@@ -385,6 +444,34 @@ export const EXPLAINER_RULES: ExplainerRule[] = [
         const n = words(voiceOf(s)).length;
         return n >= lo && n <= hi ? [] : [{ rule: "word-window", scene: i + 1, message: `scene ${i + 1} is ${n} words; every line must be ${lo}-${hi}. ${n < lo ? "Say more in it" : "Split it or cut it"}.` }];
       });
+    },
+  },
+  {
+    id: "echo",
+    why: "A line that repeats the one before it spends three seconds telling the viewer something they already have.",
+    check: ({ scenes }) => {
+      const out: Violation[] = [];
+      const bags = scenes.map((s) => content(voiceOf(s)));
+      for (let i = 1; i < scenes.length; i++)
+        for (let j = 0; j < i; j++) {
+          if (overlap(bags[i], bags[j]) < 0.6) continue;
+          out.push({ rule: "echo", scene: i + 1, message: `scene ${i + 1} says what scene ${j + 1} already said: "${voiceOf(scenes[j])}" then "${voiceOf(scenes[i])}". Every line must add a fact, a name or a number the film does not have yet — rewrite it or cut the scene.` });
+          break;
+        }
+      return out;
+    },
+  },
+  {
+    id: "promise",
+    why: "The hook names a thing and owes the viewer that thing. A film that changes subject after the hook was a different film's opening.",
+    check: ({ scenes }) => {
+      if (scenes.length < 4) return [];
+      const hook = content(voiceOf(scenes[0]));
+      if (hook.size < 2) return [];
+      const half = scenes.slice(Math.ceil(scenes.length / 2));
+      const later = new Set(half.flatMap((s) => [...content(voiceOf(s))]));
+      const kept = [...hook].filter((w) => has(later, w));
+      return kept.length ? [] : [{ rule: "promise", scene: null, message: `nothing the hook named comes back after the halfway point. The first line promises "${voiceOf(scenes[0])}"; the second half of the film has to pay that off by name, not change the subject.` }];
     },
   },
   {

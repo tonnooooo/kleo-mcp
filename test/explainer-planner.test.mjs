@@ -316,3 +316,58 @@ test("a repair is recognised by the rule that asked for it, and a second pass ch
     for (const s of scenes) for (const a of s.art) if (typeof a.at === "string") assert.ok(quotesVoice(a.at, s.voice), `"${a.at}" is not in "${s.voice}"`);
   }
 });
+
+/* ------------------------------------------------------------------ what a validator cannot see */
+
+/**
+ * Three rules that exist because of what three independent readers said about films that had already
+ * passed every other rule. The films were contract-valid, inside every word window, correctly paced and
+ * correctly coloured, and they were bad in ways no rule looked at: "the script says the same sentence
+ * four different ways", "lock and key repeat four times and nothing draws the mechanism", "the hook opens
+ * a real gap and line two fills it with a platitude".
+ *
+ * The reference for all three is the film the channel actually shipped: it must pass them, or the rules
+ * are measuring taste instead of a defect.
+ */
+test("echo, promise and variety catch what thirteen rules did not, and the shipped film passes all of them", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { resolve } = await import("node:path");
+  const hotel = JSON.parse(readFileSync(resolve(import.meta.dirname, "../worker/keou/examples/explainer-hotel/project.json"), "utf8"));
+  assert.deepEqual(checkExplainer(hotel.scenes, { duration: 25, language: "en" }).map((v) => v.rule), [],
+    "the film the channel shipped must survive every rule, or the rule set is wrong and not the film");
+
+  // A line that says what an earlier line already said, in different words.
+  const echoed = [
+    good({ voice: "Your hotel door is not locked the way you think." }),
+    good({ id: "02-x", accent: "blue", voice: "But the hotel door you think is locked is not." }),
+    good({ id: "03-x", accent: "green", voice: "So who else has been walking into your room lately?" }),
+  ];
+  assert.ok(film(echoed).includes("echo"), "a line repeating an earlier one in other words must fire");
+
+  // The hook names a thing and the film changes the subject.
+  const drifted = [
+    good({ voice: "Your hotel door is not locked the way you think." }),
+    good({ id: "02-x", accent: "blue", voice: "But nobody checked that chip for eleven whole years." }),
+    good({ id: "03-x", accent: "green", voice: "Cameras record every corridor in most modern buildings." }),
+    good({ id: "04-x", accent: "yellow", voice: "So what do you check tonight before you sleep?", art: [{ name: "bell", drawn: true }, { name: "clock", at: "before you sleep" }] }),
+  ];
+  assert.ok(film(drifted).includes("promise"), "a film that drops what its hook named must fire");
+
+  // Two scenes opening on the same drawing: the drawing IS the cut.
+  const stuck = [
+    good(),
+    good({ id: "02-x", accent: "blue", voice: "But nobody checked that door for eleven whole years.", art: [{ name: "door", at: "that door" }, { name: "clock", at: "eleven whole years" }] }),
+    good({ id: "03-x", accent: "green", voice: "So what do you check tonight before you sleep?" }),
+  ];
+  assert.ok(film(stuck).includes("variety"), "two scenes in a row opening on the same drawing must fire");
+
+  // Singular and plural are the same word: the shipped film says "hotel key card" and "thirteen thousand
+  // hotels", and a comparison that cannot see that accuses the reference of changing the subject.
+  const plural = [
+    good({ voice: "This looks like a normal hotel key card. It isn't." }),
+    good({ id: "02-x", accent: "blue", voice: "But nobody checked that chip for eleven whole years." }),
+    good({ id: "03-x", accent: "green", voice: "Three million doors, thirteen thousand hotels, everywhere you sleep.", art: [{ name: "hotels", drawn: true }, { name: "globe", at: "everywhere you sleep" }] }),
+    good({ id: "04-x", accent: "yellow", voice: "So which hotel card opened your door last night?", art: [{ name: "keycard", drawn: true }, { name: "door", at: "your door" }] }),
+  ];
+  assert.ok(!film(plural).includes("promise"), "hotel and hotels are the same word");
+});
