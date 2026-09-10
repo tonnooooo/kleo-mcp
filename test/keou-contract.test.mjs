@@ -120,7 +120,11 @@ test("text limits: voice ≤ 350, title ≤ 90, type text ≤ 40, hl ≤ 20", ()
 test("unknown voice for the language; language/format must match the job", () => {
   const sb = editorial();
   sb.voice = "ff_siwis";
-  assert.ok(errorsOf(sb, { format: "9:16", language: "en" }).includes("Unsupported language/voice combination"));
+  // The message must name the voices that would work, or the model just guesses again on the next call.
+  const voiceErr = errorsOf(sb, { format: "9:16", language: "en" }).find((e) => e.startsWith('voice "ff_siwis"'));
+  assert.ok(voiceErr, "the rejected voice is named");
+  assert.match(voiceErr, /does not speak en/);
+  for (const v of ["af_heart", "am_michael", "bf_emma"]) assert.ok(voiceErr.includes(v), `suggests ${v}`);
   const sb2 = editorial();
   sb2.language = "it"; sb2.voice = "if_sara";
   assert.ok(errorsOf(sb2, { format: "9:16", language: "en" }).some((e) => e.startsWith("language must be en for this job")));

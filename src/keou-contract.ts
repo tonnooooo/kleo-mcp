@@ -310,7 +310,9 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
   if (c.style === "stickman" && c.format !== "9:16" && kleo !== "stickman") e.add("The stickman style is laid out for 9:16 only");
   if ("width" in c && !(WIDTHS[c.format as string] ?? []).includes(c.width as number)) e.add("Invalid width for aspect ratio");
   const voices = VOICES[c.language as string];
-  if (!voices || !voices.includes(c.voice as string)) e.add("Unsupported language/voice combination");
+  // Name the voices that would work: "Unsupported language/voice combination" sends the model round the loop guessing.
+  if (!voices || !voices.includes(c.voice as string))
+    e.add(`voice "${String(c.voice)}" does not speak ${String(c.language)}. Use one of ${(voices ?? []).join(", ") || sorted(LANGUAGES)}`);
   else if (c.language !== opts.language) e.add(`language must be ${opts.language} for this job, not ${String(c.language)}`);
   e.finite(c.speed ?? 1, 0.8, 1.3, "speed");
   if ("music" in c && c.music !== "bed" && c.music !== "none") e.add("music must be bed or none");

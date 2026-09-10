@@ -13,6 +13,28 @@ export interface Template {
 
 const EN_IT = ["narrator-en-m", "narrator-en-f", "narrator-it-m", "narrator-it-f"];
 
+/**
+ * The storyboard guide names the voices the engine actually speaks with (Kokoro ids: am_michael, af_heart, …), and a
+ * model that has just read the guide naturally passes one of those to kleo_create_video as well. Refusing it there
+ * ("There is no voice called af_heart") is a pointless wall between two of our own names for the same voice, so the
+ * tool accepts either spelling and normalises to the friendly one.
+ */
+const KOKORO_TO_FRIENDLY: Record<string, string> = {
+  am_michael: "narrator-en-m", bf_emma: "narrator-en-f", af_heart: "narrator-en-f",
+  im_nicola: "narrator-it-m", if_sara: "narrator-it-f",
+};
+
+/** The friendly voice id for whatever the caller wrote: a friendly id passes through, a Kokoro id is translated. */
+export function normalizeVoice(voice: string | null | undefined): string | null {
+  if (!voice) return null;
+  const v = String(voice).trim();
+  return KOKORO_TO_FRIENDLY[v] ?? v;
+}
+
+/** Every spelling a caller may legitimately use, for the "available voices" message. */
+export const voiceSpellings = (friendly: readonly string[]): string[] =>
+  [...friendly, ...Object.entries(KOKORO_TO_FRIENDLY).filter(([, f]) => friendly.includes(f)).map(([k]) => k)];
+
 export const TEMPLATES: Template[] = [
   { id: "story-documentary", name: "Story / Documentary", formats: ["16:9"], minSeconds: 300, maxSeconds: 720, defaultSeconds: 480,
     description: "Calm narration over cinematic clips, chapter titles, a map or a date when it helps. History, science, true stories.", voices: EN_IT },

@@ -1,6 +1,6 @@
 import type { Env } from "./env";
 import { type Job, type JobParams, type JobState, type User, OPEN_STATES, countOpenForUser, debitCredits, refundCredits, insertJob, transitionJob, audit, getUserJob, listFiles } from "./db";
-import { findTemplate, creditsFor, etaFor, type Format } from "./templates";
+import { findTemplate, creditsFor, etaFor, normalizeVoice, voiceSpellings, type Format } from "./templates";
 import { rid, nowIso, int, hmacHex } from "./util";
 import { isFlagActive } from "./schema";
 import { backendFor } from "./backends";
@@ -62,8 +62,8 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   if (prompt.length < 8) throw new JobError("The description is too short (at least 8 characters). Say what the video is about: topic, angle, tone, anything that must appear on screen. Nothing was charged.");
   if (prompt.length > 4000) throw new JobError(`The description is too long (${prompt.length} characters, the maximum is 4000). Shorten it and call again. Nothing was charged.`);
   if (moderationBlocks(prompt)) throw new JobError("This request goes against the content policy, so the video was not started. Nothing was charged.");
-  const voice = input.voice ?? null;
-  if (voice && !t.voices.includes(voice)) throw new JobError(`There is no voice called "${voice}". Available voices: ${t.voices.join(", ")}. Nothing was charged.`);
+  const voice = normalizeVoice(input.voice);   // a Kokoro id from the storyboard guide is the same voice, not an error
+  if (voice && !t.voices.includes(voice)) throw new JobError(`There is no voice called "${input.voice}". Available voices: ${voiceSpellings(t.voices).join(", ")}. Nothing was charged.`);
   const language = input.language ?? "en";
   if (input.style !== undefined && !(KLEO_STYLES as readonly string[]).includes(input.style))
     throw new JobError(`There is no style called "${input.style}". Pick one of cartoon, realistic, cyber or stickman. Nothing was charged.`);
