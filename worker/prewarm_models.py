@@ -9,7 +9,10 @@ PICTURE_MODELS is a copy of kleo_pictures.MODELS on purpose: importing kleo_pict
 import importlib.util, os, sys, time
 from pathlib import Path
 
-PICTURE_MODELS = {"cartoon": "Lykon/dreamshaper-8", "realistic": "SG161222/Realistic_Vision_V5.1_noVAE"}
+PICTURE_MODELS = {"cartoon": "Lykon/dreamshaper-8", "realistic": "stabilityai/stable-diffusion-xl-base-1.0"}
+# La famiglia decide la classe di pipeline con cui il modello si carica: SDXL non si apre con
+# StableDiffusionPipeline. Copia deliberata di kleo_pictures.FAMILY, verificata dal test che confronta le tabelle.
+PICTURE_FAMILY = {"cartoon": "sd15", "realistic": "sdxl"}
 # Which of them are baked into the image. Every gigabyte here is downloaded again by every rented instance before
 # it can start (a 15 GB image took 16 minutes to pull on a 900 Mbit host), while the same weights come from
 # Hugging Face at ~2 GB in half a minute, once, on the instance itself. So only the common look travels in the
@@ -75,14 +78,17 @@ if os.environ.get('PREWARM_PICTURES', '1') != '0':
     # Load once on the CPU, offline, exactly as kleo_pictures.load_pipeline does at run time: proves the cached files are
     # enough (no weights are run: KLEO_PICTURES_CPU is not set, so no picture is drawn here).
     import torch
-    from diffusers import StableDiffusionPipeline
+    from diffusers import StableDiffusionPipeline, StableDiffusionXLPipeline
     for style, repo in sorted(picture_models().items()):
+        sdxl = PICTURE_FAMILY.get(style) == 'sdxl'
+        Pipe = StableDiffusionXLPipeline if sdxl else StableDiffusionPipeline
+        extra = {} if sdxl else dict(safety_checker=None, requires_safety_checker=False)
         try:
-            _pipe = StableDiffusionPipeline.from_pretrained(repo, torch_dtype=torch.float16, variant='fp16', safety_checker=None,
-                                                            requires_safety_checker=False, use_safetensors=True, local_files_only=True)
+            _pipe = Pipe.from_pretrained(repo, torch_dtype=torch.float16, variant='fp16',
+                                         use_safetensors=True, local_files_only=True, **extra)
         except Exception:
-            _pipe = StableDiffusionPipeline.from_pretrained(repo, torch_dtype=torch.float16, safety_checker=None,
-                                                            requires_safety_checker=False, use_safetensors=True, local_files_only=True)
+            _pipe = Pipe.from_pretrained(repo, torch_dtype=torch.float16,
+                                         use_safetensors=True, local_files_only=True, **extra)
         print(f'PREWARM picture pipeline {style} loads offline', flush=True)
         del _pipe; import gc; gc.collect()
 print(f'PREWARM_DONE {time.time()-t0:.0f}s HF_HOME={os.environ.get("HF_HOME")}', flush=True)

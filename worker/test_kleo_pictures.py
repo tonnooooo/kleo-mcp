@@ -100,6 +100,9 @@ def install_fakes(cuda=True, load_error=None):
 
     diffusers = types.ModuleType("diffusers")
     diffusers.StableDiffusionPipeline = StableDiffusionPipeline
+    # SDXL si apre con una classe diversa, e non accetta safety_checker: senza questo la strada realistic non ha
+    # nessuna pipeline da trovare e ogni prova che la tocca esplode invece di misurare qualcosa.
+    diffusers.StableDiffusionXLPipeline = StableDiffusionPipeline
     diffusers.DPMSolverMultistepScheduler = DPMSolverMultistepScheduler
     hub = types.ModuleType("huggingface_hub")
     hub_constants = types.ModuleType("huggingface_hub.constants")
@@ -166,9 +169,10 @@ class GeneratePicturesTest(unittest.TestCase):
         made = kp.generate_pictures(scenes, "realistic", "16:9", os.path.join(self.tmp, "img"))
         self.assertEqual(sorted(made), MADE)
         self.assertEqual(len(state["calls"]), 3)
-        self.assertEqual(state["loads"][0][0], "SG161222/Realistic_Vision_V5.1_noVAE")
+        self.assertEqual(state["loads"][0][0], kp.MODELS["realistic"], "il modello e quello della tabella, non un nome scritto qui")
         with open(made["01-hook-s1"], "rb") as f:
-            self.assertEqual(struct.unpack(">II", f.read(24)[16:24]), (896, 512), "16:9 → 896x512")
+            self.assertEqual(struct.unpack(">II", f.read(24)[16:24]), kp.size_for("16:9", "realistic"),
+                             "la misura viene dalla famiglia del modello")
 
     def test_picture_ids_from_the_worker_are_accepted(self):
         """kleo_worker sends `<sceneId>-s<n>`: the slug rule here must accept it, up to the longest legal scene id."""
@@ -218,7 +222,14 @@ class GeneratePicturesTest(unittest.TestCase):
         call = state["calls"][0]
         self.assertTrue(call["prompt"].endswith(", " + kp.STYLE_SUFFIX["realistic"]))
         self.assertIn("cinematic photograph, 35mm lens", call["prompt"])
-        self.assertEqual((call["width"], call["height"], call["num_inference_steps"], call["guidance_scale"]), (896, 512, 22, 5.5))
+        # Tutti e quattro dalla famiglia del modello, non scritti qui: cambiare modello deve muovere il test con se.
+        self.assertEqual((call["width"], call["height"]), kp.size_for("16:9", "realistic"))
+        self.assertEqual(call["num_inference_steps"], kp.steps_for("realistic"))
+        self.assertEqual(call["guidance_scale"], kp.guidance_for("realistic"))
+        # E la misura deve essere quella comoda del modello, non una qualunque: sotto il megapixel SDXL perde il
+        # dettaglio che e' la ragione per cui e stato scelto, sopra i 768 SD1.5 si sfalda.
+        w, h = kp.size_for("16:9", "realistic")
+        self.assertGreaterEqual(w * h, 700_000, "una misura troppo piccola vanifica il modello")
         # long / messy prompts: trimmed to the contract limit, suffix always kept, punctuation tidy
         p = kp.full_prompt("  a   very " + "long " * 80 + "prompt.  ", "cartoon")
         self.assertTrue(p.endswith(", " + kp.STYLE_SUFFIX["cartoon"]))

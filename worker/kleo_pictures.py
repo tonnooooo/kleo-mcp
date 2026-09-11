@@ -24,7 +24,17 @@ machines without them (the tests inject fakes through sys.modules).
 """
 import hashlib, os, re, sys, time
 
-MODELS = {"cartoon": "Lykon/dreamshaper-8", "realistic": "SG161222/Realistic_Vision_V5.1_noVAE"}
+# UN MODELLO PER STILE, E LA SUA FAMIGLIA, perche' la famiglia decide la classe di pipeline, la misura e i passi.
+# 11 settembre 2026, misurato su una 3090 noleggiata con le stesse sei descrizioni e lo stesso seme:
+# SD1.5 (Realistic_Vision) a 896x512 contro SDXL base a 1344x768. SDXL vince sui due difetti che il proprietario
+# ha nominato -- il dettaglio (la venatura del legno e i mattoni si vedono) e la fedelta' alla descrizione (l'unica
+# inquadratura che chiedeva "un palo pietrificato tirato sulla banchina" usciva come assi sparse con una cascata
+# inventata, e con SDXL esce come un trave con le crepe). Costa 16 s per immagine invece di 7, cioe' 6,5 minuti
+# invece di 3 per le 24 di uno Short, dentro un video che ne dura quaranta.
+# Il CARTOON resta su dreamshaper-8 perche' NON e' stato misurato: SD1.5 regge molto meglio l'illustrazione del
+# fotorealismo, e cambiare per analogia e' esattamente il modo in cui oggi ci siamo fatti male quattro volte.
+MODELS = {"cartoon": "Lykon/dreamshaper-8", "realistic": "stabilityai/stable-diffusion-xl-base-1.0"}
+FAMILY = {"cartoon": "sd15", "realistic": "sdxl"}
 # EXACTLY src/images.ts STYLE_SUFFIX / NEGATIVE_PROMPT, character for character: the two sides draw pictures for the
 # SAME video, so a difference between them is a film in two looks. test/images.test.mjs reads these three literals
 # out of this file and fails if they drift. They used to differ already, and nobody had noticed: the negative here
@@ -38,7 +48,15 @@ STYLE_SUFFIX = {
 NEGATIVE_PROMPT = "text, letters, words, watermark, logo, signature, caption, subtitles, blurry, deformed, low quality, worst quality"
 GUIDANCE = {"cartoon": 6.5, "realistic": 5.5}
 STEPS = 22
-SIZES = {"9:16": (512, 896), "16:9": (896, 512)}  # (width, height): SD1.5 is trained at 512, ~1.75:1 still holds together
+# La misura comoda di ciascuna famiglia, non un desiderio: SD1.5 e' addestrato a 512 e si sfalda sopra ~768;
+# SDXL e' addestrato attorno al megapixel. Il fotogramma consegnato e' 2160x3840, quindi anche 1344x768 resta un
+# ingrandimento -- ma di 2,9 volte lineari invece di 4,3, cioe' 2,2 volte i pixel veri.
+SIZES = {
+    "sd15": {"9:16": (512, 896), "16:9": (896, 512)},
+    "sdxl": {"9:16": (768, 1344), "16:9": (1344, 768)},
+}
+STEPS_BY_FAMILY = {"sd15": 22, "sdxl": 30}
+GUIDANCE_BY_FAMILY = {"sd15": None, "sdxl": 6.0}   # None = usa GUIDANCE[style], la taratura di SD1.5
 PROMPT_MAX = 240                                    # src/keou-contract.ts IMAGE_PROMPT_MAX
 BASE_MAX = 150                                      # scene text kept in the SD prompt (CLIP: 77 tokens in total)
 CONTEXT_MAX = 110                                   # the film's direction (cast look + section light) inside that budget
@@ -149,8 +167,22 @@ def context_for(direction, image_prompt, accent, budget=None):
     return ". ".join(bits)
 
 
-def size_for(fmt):
-    return SIZES.get(fmt, SIZES["9:16"])
+def family_of(style):
+    return FAMILY.get(style, "sd15")
+
+
+def size_for(fmt, style="realistic"):
+    per = SIZES.get(family_of(style), SIZES["sd15"])
+    return per.get(fmt, per["9:16"])
+
+
+def steps_for(style):
+    return int(os.environ.get("KLEO_PICTURES_STEPS") or STEPS_BY_FAMILY.get(family_of(style), STEPS))
+
+
+def guidance_for(style):
+    g = GUIDANCE_BY_FAMILY.get(family_of(style))
+    return GUIDANCE[style] if g is None else g
 
 
 def cpu_allowed():
@@ -214,11 +246,18 @@ def load_pipeline(style, device=None):
     if style in _pipelines:
         return _pipelines[style]
     import torch
-    from diffusers import StableDiffusionPipeline
+    # La classe di pipeline segue la famiglia. SDXL non ha safety_checker fra i suoi argomenti: passarglielo solleva.
+    fam = family_of(style)
+    if fam == "sdxl":
+        from diffusers import StableDiffusionXLPipeline as Pipe
+    else:
+        from diffusers import StableDiffusionPipeline as Pipe
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.float16 if device == "cuda" else torch.float32
     model = MODELS[style]
-    common = dict(torch_dtype=dtype, safety_checker=None, requires_safety_checker=False, use_safetensors=True)
+    common = dict(torch_dtype=dtype, use_safetensors=True)
+    if fam != "sdxl":
+        common.update(safety_checker=None, requires_safety_checker=False)
     attempts = [("fp16", True), (None, True)]
     if os.environ.get("KLEO_PICTURES_DOWNLOAD", "1").strip() != "0":
         attempts += [("fp16", False), (None, False)]
@@ -230,7 +269,7 @@ def load_pipeline(style, device=None):
         prev = _hf_offline(local_only)
         try:
             t0 = time.time()
-            pipe = StableDiffusionPipeline.from_pretrained(model, **kw)
+            pipe = Pipe.from_pretrained(model, **kw)
             log(f"loaded {model} variant={variant or 'default'} local_files_only={local_only} in {time.time() - t0:.1f} s")
             break
         except Exception as e:
@@ -286,7 +325,7 @@ def generate_pictures(scenes, style, fmt, out_dir, device=None, direction=None):
         log(f"model for {style} unavailable: {e}")
         return {}
     import torch
-    width, height = size_for(fmt)
+    width, height = size_for(fmt, style)
     negative = negative_for(direction)
     os.makedirs(out_dir, exist_ok=True)
     done = {}
@@ -299,7 +338,7 @@ def generate_pictures(scenes, style, fmt, out_dir, device=None, direction=None):
             gen = torch.Generator(device=device).manual_seed(seed)
             prompt = full_prompt(s["image_prompt"], style, context_for(direction, s["image_prompt"], s.get("accent")))
             result = pipe(prompt=prompt, negative_prompt=negative, width=width, height=height,
-                          num_inference_steps=STEPS, guidance_scale=GUIDANCE[style], generator=gen)
+                          num_inference_steps=steps_for(style), guidance_scale=guidance_for(style), generator=gen)
             image = result.images[0]
             image.save(path, format="PNG")
             if not os.path.isfile(path) or os.path.getsize(path) == 0:
