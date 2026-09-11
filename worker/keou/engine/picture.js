@@ -17,7 +17,13 @@
      narration, the shot grammar and the cover-fit + Ken Burns rect it plays, and caption line
      fitting against a measure function supplied by the caller. test/engine-picture.test.mjs evaluates this block
      on its own, so nothing in here may touch the page, the drawing surface or the project. */
-  const SHOT_FADE = .35;                       // crossfade between two pictures of the same scene
+  // UNA DISSOLVENZA FRA DUE IMMAGINI GENERATE SEPARATAMENTE E' UNA DOPPIA ESPOSIZIONE, non una transizione.
+  // Due shot della stessa scena non condividono composizione, orizzonte ne' soggetto: incrociarli mostra due
+  // quadri diversi sovrapposti, ed e' letteralmente illeggibile. Misurato sul campione consegnato del sito
+  // (samples/cartoon.mp4, t=12,0 s): una nave a vele rosse e una nave a strisce con due pappagalli, insieme.
+  // A .35 s, con da 5 a 27 stacchi in uno Short da 45 s, si arrivava fino al 21% del video in doppia esposizione.
+  // A .12 s l'occhio legge uno stacco morbido invece di una sovrapposizione, e il totale scende sotto il 7%.
+  const SHOT_FADE = .12;                       // crossfade between two pictures of the same scene
   const PUNCH = .03, PUNCH_IN = .3;            // 3% scale punch on the incoming picture, gone in 0.3 s
   const MIN_SHOT = .8;                         // a picture nobody can see is not a picture
   const MOTIONS = ['in', 'out', 'left', 'right'];   // deprecated shot.motion, kept as an alias
@@ -258,7 +264,18 @@
     const left = o.align === 'center' ? x - total / 2 : o.align === 'right' ? x - total : x;
     const at = []; let cx = left; for (const w of each) { at.push(cx); cx += w + sp }
     const hot = ws.map((w, i) => o.hot ? !!o.hot(w, i) : false);
-    const grew = i => hot[i] && o.grow > 1 ? o.grow : 1;
+    // LA PAROLA CALDA CRESCE DENTRO LO SPAZIO DELLA VICINA. Le posizioni in at[] sono calcolate a scala 1 e non
+    // vengono ricalcolate; la parola parlata viene poi ingrandita attorno al proprio centro, quindi sborda di
+    // each[i]*(g-1)/2 per lato. Quando quello supera mezzo spazio, le due parole si toccano: nel campione
+    // consegnato si legge "in theCaribbean." e "Fortypirates,". Succede sulla parola che lo spettatore sta
+    // leggendo IN QUEL MOMENTO, in ogni video e in ogni stile.
+    // La crescita viene limitata a quanto lo spazio permette davvero. Non sposta nessuna posizione, quindi la
+    // riga non balla mentre le parole si accendono, e una parola larga cresce un po' meno invece di sovrapporsi.
+    const grew = i => {
+      if (!hot[i] || !(o.grow > 1)) return 1;
+      const room = each[i] > 0 ? 1 + sp / each[i] : o.grow;   // sborda al massimo mezzo spazio per lato
+      return Math.max(1, Math.min(o.grow, room));
+    };
     if (o.band > 0) {                                     // a dark plate no larger than the line itself
       const pad = o.size * .30; ctx.save(); ctx.fillStyle = `rgba(0,0,0,${o.band})`;
       rr(left - pad, y - o.size * .92, total + pad * 2, o.size * 1.34, o.size * .26); ctx.fill(); ctx.restore();

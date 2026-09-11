@@ -54,14 +54,24 @@ function fakeCtx(rec) {
     globalAlpha: 1, fillStyle: "", strokeStyle: "", font: "800 100px X", letterSpacing: "0px",
     textAlign: "left", textBaseline: "alphabetic", lineJoin: "", lineCap: "", miterLimit: 0, lineWidth: 0,
     shadowColor: "", shadowBlur: 0, shadowOffsetY: 0, imageSmoothingEnabled: false, imageSmoothingQuality: "",
-    save() { stack.push(this.globalAlpha) },
-    restore() { this.globalAlpha = stack.length ? stack.pop() : 1 },
+    // Lo zoom viene registrato: la parola del karaoke viene ingrandita con scale() attorno al proprio centro, e
+    // senza tracciarlo non si puo' vedere se invade lo spazio della vicina. E' il difetto che si legge come
+    // "in theCaribbean." nel campione consegnato.
+    save() { stack.push([this.globalAlpha, this._sx ?? 1]) },
+    restore() { const p = stack.pop(); this.globalAlpha = p ? p[0] : 1; this._sx = p ? p[1] : 1 },
     fillRect() { }, beginPath() { }, roundRect() { }, fill() { }, stroke() { },
-    translate() { }, scale() { }, rotate() { },
+    translate() { }, scale(x) { this._sx = (this._sx ?? 1) * (Number(x) || 1) }, rotate() { },
     createLinearGradient: grad, createRadialGradient: grad,
-    measureText(t) { return { width: String(t).length * (Number(/(\d+(?:\.\d+)?)px/.exec(this.font)?.[1]) || 100) * .5 } },
+    // Lo SPAZIO e' piu' stretto di una lettera: 0,28 em contro 0,5. Finche' valevano uguale, nessun test poteva
+    // vedere la parola del karaoke invadere lo spazio della vicina, perche' nel finto contesto lo spazio era
+    // largo il doppio del vero e ci stava sempre. Il difetto era nel prodotto consegnato e invisibile qui.
+    measureText(t) {
+      const size = Number(/(\d+(?:\.\d+)?)px/.exec(this.font)?.[1]) || 100;
+      const str = String(t), spazi = (str.match(/ /g) || []).length;
+      return { width: (str.length - spazi) * size * .5 + spazi * size * .28 };
+    },
     strokeText() { },
-    fillText(t, x, y) { rec.text.push({ text: String(t), x, y, alpha: this.globalAlpha, fill: this.fillStyle }) },
+    fillText(t, x, y) { rec.text.push({ text: String(t), x, y, alpha: this.globalAlpha, fill: this.fillStyle, scale: this._sx ?? 1, font: this.font }) },
     // The veil is blitted as drawImage(canvas, 0, 0); only the five-argument calls are pictures.
     drawImage(img, x, y, w, h) { if (arguments.length >= 5) rec.draw.push({ img, x, y, w, h, alpha: this.globalAlpha }) },
   };
@@ -78,6 +88,15 @@ function drawScene(scene, u, { look = "cartoon", images = {}, brand = "Kleo", W 
   const M = pictureModule();
   M.attach({ ctx, W, H, project: { look, brand, style: "picture" }, images, issues: [], frameTime: scene.start + u });
   M.scene(scene, u, scene.start + u, 0);
+  return rec;
+}
+// I sottotitoli sono una funzione a parte da S.scene, quindi drawScene non li disegna mai: senza questo, il
+// karaoke - cioe' l'unico testo che si muove e l'unico che puo' sovrapporsi - non e' verificabile da nessun test.
+function drawSubtitle(scene, t, { look = "cartoon", images = {}, W = 1080, H = 1920 } = {}) {
+  const rec = { text: [], draw: [] }, ctx = fakeCtx(rec);
+  const M = pictureModule();
+  M.attach({ ctx, W, H, project: { look, brand: "Kleo", style: "picture" }, images, issues: [], frameTime: t });
+  M.subtitle(scene, t);
   return rec;
 }
 const COVER = (iw, ih, W, H) => Math.max(W / iw, H / ih);
@@ -101,7 +120,13 @@ test("the pure block is self-contained: no canvas, no page, no engine globals", 
   // so two workers drawing the same frame must draw the same pixels.
   for (const impure of ["Math.random", "Date.now", "new Date", "performance.now"])
     assert.ok(!pictureSource.includes(impure), `picture.js must stay deterministic: no ${impure}`);
-  assert.equal(P.SHOT_FADE, .35, "the crossfade is 0.35 s");
+  // NON un valore preciso: un TETTO, perche' la ragione e' "abbastanza corta". Due shot della stessa scena sono
+  // due generazioni separate che non condividono composizione: incrociarle a lungo mostra due quadri sovrapposti,
+  // cioe' una doppia esposizione. Misurata nel campione consegnato a .35 s (samples/cartoon.mp4, t=12 s: una nave
+  // a vele rosse dentro una nave a strisce con due pappagalli). Sopra ~.15 s l'occhio legge "sovrapposizione"
+  // invece di "stacco". Zero e' comunque escluso: un taglio netto fra due immagini in movimento strappa.
+  assert.ok(P.SHOT_FADE > 0 && P.SHOT_FADE <= .15,
+    `the crossfade must be a soft cut, not a double exposure (0 < ${P.SHOT_FADE} <= 0.15)`);
   assert.equal(P.PUNCH, .03, "the incoming shot gets a 3% scale punch");
   assert.ok(P.PUNCH_IN >= .18 && P.PUNCH_IN <= .35, "the punch settles in 0.18–0.35 s");
   assert.deepEqual(P.MOTIONS, ["in", "out", "left", "right"]);
@@ -677,9 +702,11 @@ test("a resolved crash zoom opens harder than the old index rotation, which stil
 test("the outgoing picture keeps its Ken Burns running through the crossfade", () => {
   const s = cinema(), images = { a: SQUARE, b: SQUARE };
   const at = u => drawScene(s, u, { images }).draw;
-  const [w0, w1, w2] = [at(5)[0].w, at(5.15)[0].w, at(5.3)[0].w];
+  // I campioni stanno DENTRO la dissolvenza, qualunque sia la sua durata: prima erano tre istanti fissi tarati
+  // su .35 s, e accorciandola finivano oltre la fine, dove l'immagine uscente non viene piu' disegnata affatto.
+  const [w0, w1, w2] = [at(5)[0].w, at(5 + P.SHOT_FADE * .4)[0].w, at(5 + P.SHOT_FADE * .8)[0].w];
   assert.ok(w1 > w0 && w2 > w1, `the picture being faded out must not freeze (${w0} ${w1} ${w2})`);
-  assert.ok(at(5)[1].alpha < at(5.3)[1].alpha, "while the incoming one fades in over it");
+  assert.ok(at(5)[1].alpha < at(5 + P.SHOT_FADE * .8)[1].alpha, "while the incoming one fades in over it");
   assert.equal(at(5)[0].alpha, 1, "the outgoing picture stays fully opaque underneath");
 });
 
@@ -812,4 +839,48 @@ test("Dockerfile.keou pins the two OFL fonts to a commit and verifies what it do
   // engine/assets/ lives inside worker/keou, so the fonts have to land after that COPY.
   assert.ok(df.indexOf("COPY worker/keou /opt/kleo/keou") < df.indexOf("# --- Kleo picture-style fonts"),
     "the fonts layer stays after the engine COPY");
+});
+
+test("the karaoke word grows into its own room, never into the next word's space", () => {
+  // Il difetto, letto nel campione consegnato: samples/cartoon.mp4 a t=12 s mostra "in theCaribbean." e
+  // samples/realistic.mp4 a t=3 s "someoneis awake". Le posizioni delle parole sono calcolate a scala 1 e non
+  // ricalcolate; poi la parola parlata viene ingrandita attorno al proprio centro, e sborda each*(g-1)/2 per
+  // lato. Quando quello supera lo spazio, tocca la vicina - sulla parola che si sta leggendo in quel momento.
+  // Lo sbordo cresce con la lunghezza mentre lo spazio resta fisso, quindi il pareggio cade attorno alle nove
+  // lettere: serve una parola lunga per vederlo, e nei copioni veri ce ne sono a ogni scena.
+  // Controlla TUTTA la finestra della didascalia, non un istante: la crescita e' animata e il colmo di ogni
+  // parola cade in un momento diverso.
+  const testo = "the Mediterranean sea";
+  const ws = testo.split(" ");
+  const s = {
+    id: "01-hook", kind: "cinema", accent: "amber", start: 0, end: 12,
+    captions: [{ text: testo, start: 1, end: 6 }],
+    words: ws.map((w, i) => ({ text: w, start: 1 + i * .7 })),
+    shots: [{ image: "a" }],
+  };
+  const misura = (t) => {
+    const size = Number(/(\d+(?:\.\d+)?)px/.exec(t.font)?.[1]) || 100;
+    const spazi = (t.text.match(/ /g) || []).length;
+    const w = (t.text.length - spazi) * size * .5 + spazi * size * .28;   // la stessa regola del finto contesto
+    const mid = t.x + w / 2;                                             // picture.js scala attorno al centro
+    return { t: t.text, a: mid - (w * t.scale) / 2, b: mid + (w * t.scale) / 2, y: t.y, g: t.scale };
+  };
+  let coppie = 0, crescita = 0;
+  for (const look of ["cartoon", "realistic"]) {
+    for (let k = 0; k <= 120; k++) {
+      const box = drawSubtitle(s, 1 + k * .02, { look }).text.map(misura);
+      crescita = Math.max(crescita, ...box.map((b) => b.g));
+      for (const y of new Set(box.map((b) => b.y))) {
+        const riga = box.filter((b) => b.y === y).sort((p, q) => p.a - q.a);
+        for (let j = 1; j < riga.length; j++) {
+          assert.ok(riga[j].a >= riga[j - 1].b - 1e-6,
+            `${look}: "${riga[j - 1].t}" e "${riga[j].t}" si toccano a t=${(1 + k * .02).toFixed(2)} ` +
+            `(${riga[j - 1].b.toFixed(1)} > ${riga[j].a.toFixed(1)}, crescita ${riga[j - 1].g.toFixed(3)}/${riga[j].g.toFixed(3)})`);
+          coppie++;
+        }
+      }
+    }
+  }
+  assert.ok(coppie >= 100, `poche coppie controllate (${coppie}): il karaoke non si e' disegnato`);
+  assert.ok(crescita > 1.05, `la parola calda non e' mai cresciuta (max ${crescita.toFixed(3)}): il test non prova niente`);
 });
