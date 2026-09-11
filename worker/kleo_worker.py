@@ -185,18 +185,31 @@ def ffmpeg(*args):
     subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", *args], check=True)
 
 
+THUMB_AT_S = float(os.environ.get("KLEO_THUMB_AT_S", "1.5"))   # oltre l'entrata del titolo, dentro la prima scena
+
+
 def thumbnail_from(video, out_path, png=None):
-    """JPEG thumbnail: the engine's QA still of the first scene when present, else the frame at 1 s."""
-    if png and os.path.isfile(png):
+    """JPEG thumbnail, PRESA DAL MASTER e non dal provino della pagina di controllo.
+
+    Le immagini in out/qa/ sono disegnate su un canvas largo 540 px (render.mjs le fa nel passaggio di layout),
+    mentre il video esce a 2160x3840: la miniatura usciva a 540x960, cioe' un sedicesimo del fotogramma, sotto il
+    minimo consigliato da YouTube. Ed e' la sola cosa che una persona vede PRIMA di decidere se guardare il video.
+    Il provino resta come ultima spiaggia, se il master non si lascia leggere.
+
+    Il momento non e' l'inizio: a un secondo e mezzo il titolo della prima scena ha finito di entrare, quindi la
+    miniatura mostra una scritta ferma invece di una a meta' animazione."""
+    for args in (("-ss", str(THUMB_AT_S), "-i", video), ("-i", video)):
         try:
-            ffmpeg("-i", png, "-frames:v", "1", "-q:v", "3", out_path)
+            ffmpeg(*args, "-frames:v", "1", "-q:v", "2", out_path)
             return out_path
         except subprocess.CalledProcessError:
-            log("thumbnail from QA still failed, falling back to the video frame")
-    try:
-        ffmpeg("-ss", "1", "-i", video, "-frames:v", "1", "-q:v", "3", out_path)
-    except subprocess.CalledProcessError:  # shorter than 1 s: take the first frame
-        ffmpeg("-i", video, "-frames:v", "1", "-q:v", "3", out_path)
+            continue
+    if png and os.path.isfile(png):
+        log("thumbnail: the master could not be read, falling back to the 540 px QA still")
+        try:
+            ffmpeg("-i", png, "-frames:v", "1", "-q:v", "2", out_path)
+        except subprocess.CalledProcessError:
+            log("thumbnail: the QA still failed too; the video ships without one")
     return out_path
 
 
