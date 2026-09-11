@@ -59,6 +59,14 @@ export interface Env {
   VAST_MIN_RAM_GB?: string;
   VAST_BOOTSTRAP_URL?: string; // raw URL of worker/kleo_worker.py, for images that do not ship it
 
+  // Selling credits. All optional: without them sellingOpen() is false and the account page says "not open yet",
+  // the same way notify.ts stays silent without RESEND_API_KEY. The secret is pasted by the owner into the
+  // Cloudflare dashboard and never lives in a file.
+  STRIPE_WEBHOOK_SECRET?: string;
+  STRIPE_LINK_5?: string;
+  STRIPE_LINK_15?: string;
+  STRIPE_LINK_40?: string;
+
   RESEND_API_KEY?: string;
   NOTIFY_FROM?: string;
 }

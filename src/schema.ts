@@ -15,6 +15,18 @@ const STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS job_files (job_id TEXT NOT NULL REFERENCES jobs(id), name TEXT NOT NULL, key TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, content_type TEXT NOT NULL DEFAULT 'application/octet-stream', PRIMARY KEY (job_id, name))`,
   `CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), user_id TEXT, job_id TEXT, event TEXT NOT NULL, detail TEXT)`,
   `CREATE TABLE IF NOT EXISTS locks (name TEXT PRIMARY KEY, until TEXT NOT NULL)`,
+  // One successful payment per row. The Stripe Checkout Session id is the PRIMARY KEY, and that key is the whole
+  // idempotency: Stripe redelivers an event until it gets a 200 and retries for days, so without it a slow webhook
+  // or a lost answer credits the same purchase again and again.
+  //
+  // Two column choices that look wrong and are not:
+  //  · user_id is NULLABLE and carries no REFERENCES. A payment whose client_reference_id matches no account is
+  //    still a payment somebody made: it has to be written down, or the money exists and the record does not.
+  //  · payment_intent is the only handle a refund or a dispute arrives with — those events carry a CHARGE, never
+  //    the session — so without it, tracing a chargeback back to an account is not hard, it is impossible.
+  `CREATE TABLE IF NOT EXISTS payments (session_id TEXT PRIMARY KEY, user_id TEXT, credits INTEGER NOT NULL DEFAULT 0, amount_cent INTEGER NOT NULL, currency TEXT NOT NULL, email TEXT, payment_intent TEXT, status TEXT NOT NULL DEFAULT 'paid', country TEXT, event_id TEXT, event_type TEXT, raw_ref TEXT, at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
+  `CREATE INDEX IF NOT EXISTS payments_user ON payments(user_id, at)`,
+  `CREATE INDEX IF NOT EXISTS payments_pi ON payments(payment_intent)`,
 ];
 
 /** Columns added after 0001 (mirrors migrations/0003_storyboard.sql + 0004_last_report.sql — one migration per column,
