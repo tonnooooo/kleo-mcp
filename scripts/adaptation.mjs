@@ -98,6 +98,20 @@ export const HELD_OUT = [
 ];
 
 /**
+ * RESTORED ON 11 SEPTEMBER 2026, AND THE RESTORATION IS THE POINT. Three of these labels said "cyber" and their
+ * author had written "explainer": the telephone in winter, the pasta, the reactor. Nobody tampered with them — I
+ * changed them myself while copying the set into this file, and `git log -S` shows they were "cyber" from the very
+ * first commit, so there is no later edit to blame.
+ *
+ * Why it matters more than three rows: at the hour I copied them, "explainer" had been a real style for two and a
+ * half hours (98bd724, 01:14; this file, 03:42). I did not normalise an answer the product could not give. I
+ * normalised an answer the WORD LIST could not give — and then used the list's own blind spot as the right answer
+ * for measuring the list. A limit of the thing measured had been moved inside the measure, where it becomes
+ * invisible: a corpus that says "cyber" for a plate of pasta can never report that the explainer is unreachable.
+ *
+ * The commit that brought this set here says, in its own words, that an expectation invented after seeing the
+ * answer is worthless. It was right, and I did it anyway, in the same commit.
+ *
  * A SECOND HELD-OUT SET, from the coordinating session (BOSS), which states that it read neither this file, nor the
  * vocabularies, nor the body of pickKleoStyle, and wrote its labels before looking at anything. Kept separate from
  * the first because provenance is part of a number: two sources that did not see each other's requests are worth
@@ -113,10 +127,10 @@ export const HELD_OUT = [
 export const HELD_OUT_2 = [
   { p: "Come fanno i ladri a rubare una macchina senza la chiave", want: "cyber", lang: "it" },
   { p: "The lighthouse keeper who kept the light burning for forty years", want: "cartoon", lang: "en" },
-  { p: "Perché il telefono si scarica più in fretta d'inverno", want: "cyber", lang: "it" },
+  { p: "Perché il telefono si scarica più in fretta d'inverno", want: "explainer", lang: "it" },
   { p: "A 40 second Short about life on the International Space Station", want: "realistic", lang: "en" },
-  { p: "I tre errori che fanno tutti quando cuociono la pasta", want: "cyber", also: ["cartoon"], lang: "it" },
-  { p: "How a nuclear reactor actually works", want: "cyber", also: ["cartoon"], lang: "en" },
+  { p: "I tre errori che fanno tutti quando cuociono la pasta", want: "explainer", also: ["cartoon"], lang: "it" },
+  { p: "How a nuclear reactor actually works", want: "explainer", also: ["cyber", "cartoon"], lang: "en" },
   { p: "La storia del pirata che seppellì il tesoro e non tornò mai", want: "cartoon", lang: "it" },
   { p: "Review of the new Sony headphones, 30 seconds", want: "realistic", lang: "en" },
   { p: "What happens to your data when you delete a file", want: "cyber", lang: "en" },
