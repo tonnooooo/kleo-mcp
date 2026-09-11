@@ -19,36 +19,37 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { directionPrompt, directionSchema, planFor, pickKleoStyle } from "../src/storyboard.ts";
 
+const root = resolve(import.meta.dirname, "..");
+
 /**
- * HELD OUT. Written without reading the vocabularies, by sessions that then handed them over. The author of
- * the first seventeen had read the OLD English word lists earlier in the same session and said so, and
- * chose prompts that avoid the words it remembered — which is the condition every real sentence lives in,
- * so it makes the set harder rather than easier. "expect" is what a person would want; where two answers
- * are defensible the second is listed in "also", and either counts.
+ * HELD OUT, AND NOT OWNED BY THIS FILE.
+ *
+ * The prompts and their expected answers live in scripts/adaptation.mjs, which is where the corpus is kept.
+ * They are read from there rather than copied, and the reason is a mistake made twice in one night.
+ *
+ * The session that keeps the corpus normalised three of another session's labels from "explainer" to
+ * "cyber" while transcribing them — not out of carelessness, but toward what the tool being measured could
+ * actually produce, which turns the measurement into the tool agreeing with itself. Then this file did the
+ * same thing: written from the author's own message a few hours later, it had quietly moved "how does a
+ * traffic light know a car is waiting" and "what happens to the money when I tap my card" from cyber to
+ * explainer, both toward the style this session owns, and loosened two others with an extra accepted
+ * answer that was never offered.
+ *
+ * Whoever can edit the answers will drift them toward what their own tool does well. The fix is not to be
+ * more careful: it is to have one copy, owned by someone who is not measuring themselves with it.
  */
-const PROMPTS = [
-  { lang: "it", text: "Mia nonna diceva che il pane di una volta durava una settimana e adesso ammuffisce in due giorni. Fammi un video che spiega perché.", expect: "realistic", also: "explainer" },
-  { lang: "it", text: "Mio nonno partì in nave a diciassette anni e non tornò più al paese. Voglio raccontarlo in un minuto.", expect: "cartoon" },
-  { lang: "it", text: "Come fa il semaforo a sapere che c'è una macchina che aspetta?", expect: "explainer", also: "cyber" },
-  { lang: "it", text: "Ho comprato un materasso da ottocento euro e dormo peggio di prima. Fammi un video su come si sceglie.", expect: "realistic" },
-  { lang: "it", text: "Cosa succede al corpo quando smetti di bere alcol per trenta giorni?", expect: "explainer", also: "realistic" },
-  { lang: "en", text: "My landlord says the boiler is fine but the radiators are cold on the top floor only. Make a video explaining what's actually happening.", expect: "explainer" },
-  { lang: "en", text: "I want to tell people what happened the night the lights went out across half the country in 2003.", expect: "realistic", also: "cartoon" },
-  { lang: "en", text: "Explain what actually happens to the money when I tap my card.", expect: "explainer", also: "cyber" },
-  { lang: "en", text: "A short about the woman who sold the Eiffel Tower twice.", expect: "cartoon", also: "realistic" },
-  { lang: "en", text: "Why does my sourdough smell like nail polish?", expect: "explainer" },
-  // The boundary pairs: identical vocabulary, opposite correct answers. These are the ones that count.
-  { lang: "it", text: "Spiegami cos'è una VPN a mia madre.", expect: "explainer", pair: "vpn" },
-  { lang: "it", text: "Fammi un video sui cinque attacchi informatici più costosi della storia.", expect: "cyber", pair: "vpn" },
-  { lang: "it", text: "Perché il wi-fi dell'hotel è pericoloso? Voglio una cosa corta che capisca chiunque.", expect: "explainer", pair: "wifi" },
-  { lang: "it", text: "Spiega in un minuto perché l'acqua bollente in freezer a volte ghiaccia prima di quella fredda.", expect: "explainer", pair: "indep" },
-  { lang: "en", text: "Explain why a password manager is safer than remembering them, to someone who is sure it is less safe.", expect: "explainer", pair: "pw" },
-  { lang: "en", text: "Show how our data goes from the app to the servers to the third parties nobody reads about.", expect: "cyber", pair: "pw" },
-  { lang: "en", text: "Break down how much of a phone bill is actually the network and how much is everything else.", expect: "cyber", pair: "wifi" },
-];
+const SRC = readFileSync(resolve(root, "scripts/adaptation.mjs"), "utf8");
+/** The corpus is kept in three named sets — one per session that wrote prompts blind. All of them count. */
+const set = (name) => {
+  const at = SRC.indexOf(`export const ${name} = [`);
+  if (at < 0) return [];
+  const from = SRC.indexOf("[", at), to = SRC.indexOf("\n];", from) + 2;
+  return new Function(`return ${SRC.slice(from, to)}`)();
+};
+const PROMPTS = ["HELD_OUT", "HELD_OUT_2", "HELD_OUT_3"].flatMap((n) => set(n).map((x) => ({ set: n, lang: x.lang, text: x.p, expect: x.want, also: x.also, pair: x.pair })));
+if (PROMPTS.length < 20) { console.error(`only ${PROMPTS.length} prompts read from the corpus — the sets moved, fix the reader before trusting a number`); process.exit(2) }
 
 const words = process.argv.includes("--words");
-const root = resolve(import.meta.dirname, "..");
 const account = /"account_id"\s*:\s*"([0-9a-f]+)"/.exec(readFileSync(resolve(root, "wrangler.jsonc"), "utf8"))?.[1];
 const token = /oauth_token\s*=\s*"([^"]+)"/.exec(readFileSync(`${process.env.HOME}/.wrangler/config/default.toml`, "utf8"))?.[1];
 
@@ -78,7 +79,7 @@ async function modelPick(p) {
   return { style: raw?.style ?? null, why: String(raw?.why ?? "").slice(0, 80) };
 }
 
-const ok = (p, got) => got === p.expect || got === p.also;
+const ok = (p, got) => got === p.expect || (Array.isArray(p.also) ? p.also.includes(got) : got === p.also);
 const rows = [];
 for (const p of PROMPTS) {
   const kw = pickKleoStyle("viral-short", p.text);
