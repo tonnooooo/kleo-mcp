@@ -194,7 +194,15 @@ def main():
             atomic_json(meta, timing)
             print('VOICE_NEW',s['id'],round(len(audio)/sr,2),'seconds',round(score,3),flush=True)
         duration = len(audio)/sr
+        # IL PRIMO SECONDO DECIDE SE QUALCUNO GUARDA. `lead` e' il silenzio prima che una scena cominci a parlare,
+        # e serve: un attacco esattamente sul fotogramma zero fa uno scatto e le scene attaccate si accavallano.
+        # Ma sulla PRIMA scena quel silenzio e' il gancio, ed era lungo quanto quello di tutte le altre. Su uno
+        # Short 0,22 s di nero muto all'inizio sono il momento in cui il pollice scorre. Il primo attacco tiene
+        # solo quel tanto che basta a non fare clic; tutte le altre scene restano come sono, perche' li il silenzio
+        # separa due frasi invece di ritardare la prima.
         lead = c.get('lead', .15 if c['style'] == 'sketch' else .22)
+        if index == 0:
+            lead = min(lead, float(c.get('lead_first', .06)))
         # Landscape keeps the editorial floor; a Short cuts on the word, so its scenes keep
         # the hold the project asked for (the last one still leaves a beat before the loop).
         # The explainer ends on its last drawn frame in both formats: no tail, no loop pad.
