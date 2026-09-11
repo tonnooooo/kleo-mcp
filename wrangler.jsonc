@@ -48,7 +48,7 @@
   ],
   "triggers": { "crons": ["* * * * *"] }, // ogni minuto: storyboard dei video in coda, noleggio GPU, controllo dei render, pulizia dei file scaduti
   "vars": {
-    "PUBLIC_URL": "https://kleo-mcp.plural-juice.workers.dev", // indirizzo pubblico del server; l'indirizzo MCP da dare ai client è PUBLIC_URL + /mcp
+    "PUBLIC_URL": "https://mcp.kleooai.com", // indirizzo pubblico del server; l'indirizzo MCP da dare ai client è PUBLIC_URL + /mcp
     "STRIPE_LINK_5": "https://buy.stripe.com/5kQ5kDfTB19681jgZf9ws03", // 5 EUR · 10 crediti · Payment Link live
     "STRIPE_LINK_15": "https://buy.stripe.com/5kQ9AT6j1bNKa9r7oF9ws04", // 15 EUR · 35 crediti · Payment Link live
     "STRIPE_LINK_40": "https://buy.stripe.com/7sY14nbDlaJG6XfdN39ws05", // 40 EUR · 100 crediti · Payment Link live
