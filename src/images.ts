@@ -39,11 +39,22 @@ export const DEFAULT_IMAGE_MODELS: Record<"cartoon" | "realistic", string> = {
   cartoon: "@cf/black-forest-labs/flux-1-schnell",
   realistic: "@cf/leonardo/phoenix-1.0",
 };
+/**
+ * THE POSITIVE PROMPT CARRIES NO NEGATION. Both suffixes used to end in "no text" (cartoon also "no letters"), and
+ * both were wrong twice over: CLIP does not read negation in the positive prompt — in SD1.5 "no text" is a known way
+ * of getting MORE text, not less — and those ~5 tokens sat at the very end, which is the end CLIP truncates first.
+ * The ban is already enforced on the side where negation is structural, in NEGATIVE_PROMPT below. Removing them
+ * hands the direction back the margin it needs: measured on the 23 real image prompts of the three cartoon films
+ * delivered so far, a direction pushes them from 46-54 tokens to 69-77, and 3 of the 23 crossed the 75 usable ones.
+ *
+ * These two constants are mirrored in worker/kleo_pictures.py, and test/images.test.mjs now fails if they drift:
+ * the two sides draw pictures for the SAME video, so a difference between them is a film in two looks.
+ */
 export const STYLE_SUFFIX: Record<"cartoon" | "realistic", string> = {
-  cartoon: "flat vector cartoon illustration, bold clean outlines, vivid warm colors, simple shapes, no text, no letters",
-  realistic: "cinematic photograph, 35mm lens, dramatic natural light, high detail, no text",
+  cartoon: "flat vector cartoon illustration, bold clean outlines, vivid warm colors, simple shapes",
+  realistic: "cinematic photograph, 35mm lens, dramatic natural light, high detail",
 };
-export const NEGATIVE_PROMPT = "text, letters, words, watermark, logo, signature, caption, subtitles, blurry, deformed";
+export const NEGATIVE_PROMPT = "text, letters, words, watermark, logo, signature, caption, subtitles, blurry, deformed, low quality, worst quality";
 /** Pictures the server itself draws per job (env IMAGE_SERVER_MAX); the worker draws the rest on the GPU. */
 export const DEFAULT_SERVER_MAX = 10;
 /** Signed picture links stay valid this long (the worker downloads them right away). */

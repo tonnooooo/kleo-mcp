@@ -202,7 +202,12 @@ class GeneratePicturesTest(unittest.TestCase):
         call = state["calls"][0]
         self.assertEqual(call["prompt"], SCENES[0]["image_prompt"] + ", " + kp.STYLE_SUFFIX["cartoon"])
         self.assertIn("flat vector cartoon illustration", call["prompt"])
-        self.assertIn("no text, no letters", call["prompt"])
+        # The positive prompt used to end in "no text, no letters" and must never again: CLIP does not read negation
+        # there (in SD1.5 "no text" is a documented way of getting MORE text), and those tokens sat at the very end,
+        # which is the end CLIP truncates first — the end the film's direction needs. The ban lives in the negative
+        # prompt below, where negation is structural. This asserts the absence, because an absence nobody checks is
+        # an absence that comes back.
+        self.assertNotIn(" no ", " " + call["prompt"] + " ", "no negation inside the positive prompt")
         self.assertEqual(call["negative_prompt"], kp.NEGATIVE_PROMPT)
         for word in ("text", "watermark", "letters", "deformed", "low quality"):
             self.assertIn(word, call["negative_prompt"])

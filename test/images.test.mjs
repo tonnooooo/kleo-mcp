@@ -6,10 +6,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { inflateSync } from "node:zlib";
+import { readFileSync } from "node:fs";
 import {
   encodePng, placeholderPng, crc32, fnv1a, pickImageScenes, sizeFor, acceptsSize, modelInputs, readImageResult, sniffImage, fullPrompt,
   generateJobImages, DEFAULT_IMAGE_MODELS, DEFAULT_SERVER_MAX, IMAGE_NAME_RE, STYLE_SUFFIX, MAX_PICTURES, imageFileName,
-  isQuotaError, isTransientError,
+  isQuotaError, isTransientError, NEGATIVE_PROMPT,
 } from "../src/images.ts";
 import { handleDownload } from "../src/dl.ts";
 
@@ -322,4 +323,38 @@ test("quota exhaustion is not a picture's one attempt: it is retried later, a re
   assert.deepEqual(Object.keys(r3.images), ["01-sc-s1"]); assert.deepEqual(r3.missing, ["02-sc-s1"]);
   const r4 = await generateJobImages(env, job(), "http://kleo.test");
   assert.equal(r4.reused, 1); assert.equal(calls.length, 3, "a stored picture is reused and a genuine error is never retried");
+});
+
+/* ------------------------------------------------------------------ the two sides draw for the same video */
+
+test("the GPU's style suffix and negative prompt are the server's, character for character", () => {
+  // Kleo can draw a scene's pictures in two places — the server (Workers AI) and the rented GPU — and both can
+  // happen inside ONE video, which is why a difference between them is not a detail: it is a film in two looks.
+  // Nothing enforced it until now, and they had already drifted without anyone noticing: the GPU's negative prompt
+  // carried "low quality, worst quality" and the server's did not.
+  const py = readFileSync(new URL("../worker/kleo_pictures.py", import.meta.url), "utf8");
+  const lit = (re, what) => {
+    const m = py.match(re);
+    assert.ok(m, `worker/kleo_pictures.py no longer declares ${what} in the shape this test reads: check by hand`);
+    return m[1];
+  };
+  // Scoped to the STYLE_SUFFIX block on purpose: "cartoon" is also a key of the MODELS table a few lines above,
+  // and an unanchored search happily compared the suffix against "Lykon/dreamshaper-8".
+  const block = py.match(/STYLE_SUFFIX\s*=\s*\{([\s\S]*?)\}/);
+  assert.ok(block, "worker/kleo_pictures.py no longer declares STYLE_SUFFIX as a dict literal");
+  const suffix = (look) => {
+    const m = block[1].match(new RegExp(`"${look}":\\s*"([^"]+)"`));
+    assert.ok(m, `STYLE_SUFFIX has no ${look} entry`);
+    return m[1];
+  };
+  assert.equal(suffix("cartoon"), STYLE_SUFFIX.cartoon);
+  assert.equal(suffix("realistic"), STYLE_SUFFIX.realistic);
+  assert.equal(lit(/^NEGATIVE_PROMPT\s*=\s*"([^"]+)"/m, "the negative prompt"), NEGATIVE_PROMPT);
+});
+
+test("no style suffix asks for something by forbidding it", () => {
+  // CLIP does not read negation in the positive prompt: in SD1.5 "no text" is a documented way of getting MORE
+  // text. Anything to be kept out belongs in NEGATIVE_PROMPT, where negation is structural and works.
+  for (const [look, suffix] of Object.entries(STYLE_SUFFIX))
+    assert.ok(!/\bno\s+\w/.test(suffix), `${look} suffix negates inside the positive prompt: "${suffix}"`);
 });

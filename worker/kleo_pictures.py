@@ -25,10 +25,15 @@ machines without them (the tests inject fakes through sys.modules).
 import hashlib, os, re, sys, time
 
 MODELS = {"cartoon": "Lykon/dreamshaper-8", "realistic": "SG161222/Realistic_Vision_V5.1_noVAE"}
-# Same spirit as src/images.ts STYLE_SUFFIX / NEGATIVE_PROMPT so server and GPU pictures look alike within one video.
+# EXACTLY src/images.ts STYLE_SUFFIX / NEGATIVE_PROMPT, character for character: the two sides draw pictures for the
+# SAME video, so a difference between them is a film in two looks. test/images.test.mjs reads these three literals
+# out of this file and fails if they drift. They used to differ already, and nobody had noticed: the negative here
+# carried "low quality, worst quality" and the server's did not.
+# No negation in the positive prompt: CLIP does not read it there (in SD1.5 "no text" is a documented way of getting
+# more text), and those tokens sat at the end, which is the end CLIP truncates first.
 STYLE_SUFFIX = {
-    "cartoon": "flat vector cartoon illustration, bold clean outlines, vivid warm colors, simple shapes, no text, no letters",
-    "realistic": "cinematic photograph, 35mm lens, dramatic natural light, high detail, no text",
+    "cartoon": "flat vector cartoon illustration, bold clean outlines, vivid warm colors, simple shapes",
+    "realistic": "cinematic photograph, 35mm lens, dramatic natural light, high detail",
 }
 NEGATIVE_PROMPT = "text, letters, words, watermark, logo, signature, caption, subtitles, blurry, deformed, low quality, worst quality"
 GUIDANCE = {"cartoon": 6.5, "realistic": 5.5}
