@@ -16,10 +16,34 @@ import type { Env } from "../../src/env.ts";
 
 const DEFAULT_MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct";
 
+/** The sentence in directionPrompt that tells the model how to choose a look. Copied verbatim; the bench refuses to
+ *  run a variant if it can no longer find it, so a change to the real prompt cannot be measured as if it were this. */
+const BASELINE_RULE =
+  "- Choose the style from the request, not from a keyword: cartoon = drawn stories, kids, history, animals, travel; realistic = products, places, news, sport, documentary; cyber = motion design with no pictures at all, only for tech and security topics that want diagrams rather than scenes; stickman = only if the user asked for a stickman.";
+
+/**
+ * What the bench is here to settle.
+ *
+ * The schema offers the model FIVE looks (KLEO_STYLES) and the sentence above describes FOUR: "explainer" is in the
+ * enum with no word said about it, so a model that answers it answers blind. Four of the twenty-seven held-out
+ * requests want exactly that look, and the border set scores 0 of 7 today.
+ *
+ * Two coherent answers, and the measurement decides between them rather than an argument:
+ *   described — tell the model what the explainer is, using the distinction the product already writes in mcp.ts:
+ *               "cyber wants something to diagram, the explainer wants one thing explained".
+ *   hidden    — take it out of the enum, matching the stated rule that the explainer is asked for by name only.
+ */
+const VARIANTS: Record<string, string> = {
+  described:
+    "- Choose the style from the request, not from a keyword: cartoon = drawn stories, kids, history, animals, travel; realistic = products, places, news, sport, documentary; cyber = motion design with no pictures, for tech and security topics that want something DIAGRAMMED; explainer = hand-drawn line art, for a request that wants ONE idea taken apart and the viewer's mind changed (\"explain why\", \"how does X really work\", \"spiegami\") — cyber and explainer share their subjects, so choose by what the viewer is meant to end up with, a picture of the system or an understanding; stickman = only if the user asked for a stickman.",
+  hidden:
+    "- Choose the style from the request, not from a keyword: cartoon = drawn stories, kids, history, animals, travel; realistic = products, places, news, sport, documentary; cyber = motion design with no pictures at all, only for tech and security topics that want diagrams rather than scenes; stickman = only if the user asked for a stickman. Never answer \"explainer\": that look is chosen by name only, and answering it here is an error.",
+};
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     if (request.method !== "POST") return new Response("POST {template, prompt, duration_s, format, language}", { status: 405 });
-    const b = (await request.json()) as { template?: string; prompt?: string; duration_s?: number; format?: string; language?: string; model?: string };
+    const b = (await request.json()) as { template?: string; prompt?: string; duration_s?: number; format?: string; language?: string; model?: string; variant?: string };
     const job = {
       id: "bench",
       template: b.template ?? "viral-short",
@@ -30,8 +54,21 @@ export default {
     const plan = planFor(job);
     const model = b.model || env.AI_MODEL || DEFAULT_MODEL;
     const t0 = Date.now();
+    // VARIANTS. The bench must be able to compare two wordings on the same requests in one sitting, because a
+    // prompt changed without a baseline is a prompt nobody can say anything about — which is how four correct
+    // instructions made every other rule work worse tonight, in a different session, caught only by the number
+    // from before. Each variant is a replacement of ONE sentence of the real prompt, never a copy of it.
+    let text = directionPrompt(job, plan);
+    const variant = b.variant ?? "baseline";
+    if (variant !== "baseline") {
+      const rule = VARIANTS[variant];
+      if (!rule) return Response.json({ ok: false, error: `unknown variant ${variant}`, prior: plan.kleo }, { status: 400 });
+      const before = text;
+      text = text.replace(BASELINE_RULE, rule);
+      if (text === before) return Response.json({ ok: false, error: "the sentence this variant replaces is no longer in the prompt: the bench is measuring something else", prior: plan.kleo }, { status: 500 });
+    }
     try {
-      const { raw, usage } = await callModel(env, model, [{ role: "user", content: directionPrompt(job, plan) }], directionSchema(), 900);
+      const { raw, usage } = await callModel(env, model, [{ role: "user", content: text }], directionSchema(), 900);
       const r = (typeof raw === "string" ? JSON.parse(raw) : raw) as { style?: string; why?: string; direction?: Record<string, unknown> };
       return Response.json({
         ok: true,
@@ -41,7 +78,7 @@ export default {
         subject: (r?.direction as { subject?: string } | undefined)?.subject ?? null,
         sections: ((r?.direction as { sections?: { name: string; accent: string }[] } | undefined)?.sections ?? []).map((s) => `${s.name}:${s.accent}`),
         prior: plan.kleo,           // what the word list would have said on its own
-        usage, ms: Date.now() - t0, model,
+        usage, ms: Date.now() - t0, model, variant,
       });
     } catch (e) {
       return Response.json({ ok: false, error: String(e).slice(0, 300), prior: plan.kleo, ms: Date.now() - t0 }, { status: 200 });

@@ -17,6 +17,7 @@ import { HELD_OUT, HELD_OUT_2, HELD_OUT_3 } from "../adaptation.mjs";
 const BENCH = process.env.BENCH || "http://127.0.0.1:8799";
 const limit = Number(process.argv[process.argv.indexOf("--limit") + 1]) || Infinity;
 const outFile = process.argv.includes("--out") ? process.argv[process.argv.indexOf("--out") + 1] : null;
+const variant = process.argv.includes("--variant") ? process.argv[process.argv.indexOf("--variant") + 1] : "baseline";
 
 const SETS = [
   ["A — ordinary requests, written by another session", HELD_OUT],
@@ -28,7 +29,7 @@ const ask = async (item) => {
   const r = await fetch(BENCH, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ prompt: item.p, template: item.t || "viral-short", language: item.lang || "en", duration_s: item.duration_s || 45 }),
+    body: JSON.stringify({ prompt: item.p, template: item.t || "viral-short", language: item.lang || "en", duration_s: item.duration_s || 45, variant }),
   });
   return r.json();
 };
@@ -56,6 +57,7 @@ const right = rows.filter((r) => r.ok).length;
 const priorRight = rows.filter((r) => r.prior === r.want).length;
 const neurons = rows.reduce((a, r) => a + (r.neurons || 0), 0);
 console.log(`\n${"=".repeat(70)}`);
+console.log(`  variante:        ${variant}`);
 console.log(`  IL MODELLO:      ${right}/${done} = ${done ? Math.round((100 * right) / done) : 0}%`);
 console.log(`  LA LISTA SOLA:   ${priorRight}/${done} = ${done ? Math.round((100 * priorRight) / done) : 0}%   (quello che si misurava finora)`);
 console.log(`  neuroni spesi:   ~${neurons} dei 10.000 giornalieri`);
