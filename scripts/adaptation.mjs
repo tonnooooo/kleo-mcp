@@ -84,7 +84,7 @@ const CORPUS = [
  * scene, one drawing per phrase, karaoke captions) and nobody asking for a viral Short should be handed it by
  * accident. For a Short, the right answer to "explain this invisible mechanism" is the diagram look, cyber.
  */
-const HELD_OUT = [
+export const HELD_OUT = [
   { p: "Mia nonna diceva che il pane di una volta durava una settimana e adesso ammuffisce in due giorni. Fammi un video che spiega perché.", want: "realistic", lang: "it" },
   { p: "Mio nonno partì in nave a diciassette anni e non tornò più al paese. Voglio raccontarlo in un minuto.", want: "cartoon", lang: "it" },
   { p: "Come fa il semaforo a sapere che c'è una macchina che aspetta?", want: "cyber", lang: "it" },
@@ -110,7 +110,7 @@ const HELD_OUT = [
  * It also named the pair that matters: 3 and 9 are both "how does this work", one domestic and one computing. The
  * same answer for both is where the mechanism still cannot tell them apart.
  */
-const HELD_OUT_2 = [
+export const HELD_OUT_2 = [
   { p: "Come fanno i ladri a rubare una macchina senza la chiave", want: "cyber", lang: "it" },
   { p: "The lighthouse keeper who kept the light burning for forty years", want: "cartoon", lang: "en" },
   { p: "Perché il telefono si scarica più in fretta d'inverno", want: "cyber", lang: "it" },
@@ -140,7 +140,7 @@ const HELD_OUT_2 = [
  * should be handed it by accident. What the request really shows is that if the prompt is not a road to it, the
  * TEMPLATE is the only road, and one road with no guard is a single point of failure. That guard now exists.
  */
-const HELD_OUT_3 = [
+export const HELD_OUT_3 = [
   { p: "Spiegami cos'è una VPN a mia madre.", want: "explainer", lang: "it", pivotal: true, pair: "attacchi" },
   { p: "Fammi un video sui cinque attacchi informatici più costosi della storia.", want: "cyber", lang: "it", id: "attacchi" },
   { p: "Perché il wi-fi dell'hotel è pericoloso? Voglio una cosa corta che capisca chiunque.", want: "explainer", lang: "it", pivotal: true, pair: "flusso" },

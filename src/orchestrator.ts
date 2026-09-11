@@ -15,7 +15,14 @@ import { generateStoryboard, StoryboardError, isTransientAiError } from "./story
 const MAX_ATTEMPTS = 3;
 /** Storyboard generation attempts per job (each one may call the model twice). */
 const MAX_PLAN_ATTEMPTS = 2;
-/** After a Workers AI quota/outage error, planning pauses this long (the daily free allocation resets at 00:00 UTC). */
+/**
+ * After a Workers AI quota/outage error, planning pauses this long and then tries again. The retry is what makes it
+ * correct: the comment here used to say the free allocation resets at 00:00 UTC, and that is NOT what the API does.
+ * Measured on 11 September 2026: the allocation was exhausted the evening before and a call at 00:15 UTC still came
+ * back "4006: you have used up your daily free allocation of 10,000 neurons". So nobody here knows the reset hour,
+ * and no code may depend on knowing it — which this one does not, because it just asks again every quarter hour.
+ * A refused call costs no neurons and answers in milliseconds, so asking is free.
+ */
 const PLAN_PAUSE_SECONDS = 15 * 60;
 /** Minutes between two Vast orphan sweeps: one full instance listing each, so not every tick. */
 const SWEEP_MIN = 10;

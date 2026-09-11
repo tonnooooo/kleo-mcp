@@ -1,0 +1,12 @@
+{
+  // Il banco di misura della fase 0. Non e' Kleo: nessun D1, nessun R2, nessun cron, nessuna rotta pubblica.
+  // Si avvia SOLO con `npx wrangler dev --remote -c scripts/direction-measure/wrangler.jsonc`, cosi' il modello
+  // gira sul bordo di Cloudflare e non sul computer di casa. Non va mai deployato.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "kleo-direction-bench",
+  "main": "worker.ts",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "ai": { "binding": "AI" },
+  "vars": { "AI_MODEL": "@cf/meta/llama-4-scout-17b-16e-instruct" }
+}

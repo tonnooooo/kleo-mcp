@@ -552,7 +552,10 @@ export function sectionSkeleton(template: string, scenes: number): { name: strin
   return sections.map((sec, i) => ({ name: sec.name, role: sec.role, accent: sec.accent, scenes: split[i] ?? 1 }));
 }
 
-function directionPrompt(job: PlanJob, plan: Plan): string {
+/* Exported for scripts/direction-measure, the bench that asks the real model to choose a look and counts how often
+   it is right. Nothing else imports these three, and nothing about them changed to make them exportable: a number
+   measured on a copy of the prompt is a number about the copy. */
+export function directionPrompt(job: PlanJob, plan: Plan): string {
   const t = findTemplate(job.template);
   const scenes = Math.max(plan.scenes[0], Math.min(plan.scenes[1], Math.round((plan.scenes[0] + plan.scenes[1]) / 2)));
   const skeleton = sectionSkeleton(job.template, scenes);
@@ -588,7 +591,7 @@ RULES
 - Everything you write here is in ${lang} except the enum values (style, accent), which stay in English.`;
 }
 
-const directionSchema = (): Record<string, unknown> => ({
+export const directionSchema = (): Record<string, unknown> => ({
   type: "object",
   additionalProperties: false,
   required: ["style", "direction"],
@@ -1152,7 +1155,7 @@ function extractJson(text: string): unknown {
   throw new Error(`the model did not return JSON: ${t.slice(0, 200)}`);
 }
 
-async function callModel(env: Env, model: string, messages: { role: string; content: string }[], schema: Record<string, unknown>, maxTokens: number): Promise<{ raw: unknown; usage: Usage }> {
+export async function callModel(env: Env, model: string, messages: { role: string; content: string }[], schema: Record<string, unknown>, maxTokens: number): Promise<{ raw: unknown; usage: Usage }> {
   const ai = env.AI as unknown as AiRunner;
   const base = { messages, max_tokens: maxTokens, temperature: 0.3 };
   let res: unknown;
