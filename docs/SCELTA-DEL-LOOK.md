@@ -24,12 +24,22 @@ riparazioni diverse e prima non si sapeva quale servisse.
 
 | | giuste | ha detto "non lo so" |
 |---|---|---|
-| istruzione di oggi | 15/27 = **56%** | 16 su 27 |
-| con l'explainer descritto | 17/27 = **63%** | 7 su 27 |
+| istruzione di allora | 18/27 = **67%** | 16 su 27 |
+| con l'explainer descritto | 22/27 = **81%** | 7 su 27 |
 
 Sull'insieme di confine — le richieste che stanno fra il diagramma e lo spiegone disegnato — la descrizione
-dell'explainer porta da **3/7 a 6/7**. Oggi `directionSchema` offre al modello cinque look e l'istruzione ne
-descrive quattro: `explainer` sta nell'elenco delle risposte possibili senza che una parola lo definisca.
+dell'explainer porta da **3/7 a 6/7**.
+
+Il primo giro di questi stessi numeri diceva 56% e 63%. La differenza, quattordici e diciotto punti, non e' stata
+una riformulazione: erano **etichette che avevo corrotto io**, ripristinate dopo (sezione sotto). La misura giusta
+esisteva da subito e il metro storto la nascondeva.
+
+Delle cinque che restano sbagliate, **quattro portano gia' scritto "non lo so"**: l'unico errore detto con
+sicurezza e' il pane della nonna. Il sistema sbaglia soprattutto dove sa di non sapere.
+
+La formulazione misurata qui e' **la mia**, non quella spedita: la sessione dell'explainer ha mandato in produzione
+la propria (`8a09921`), che descrive tutti e cinque i look per la FORMA della risposta invece che per l'argomento.
+Va rimisurata sopra quella.
 
 ## Il dato che vale piu' della precisione
 
@@ -39,30 +49,38 @@ Quando dichiara di **non sapere**, ha ragione 5 volte su 16.
 L'incertezza e' informativa: chi sceglie sa quando non sa. Un sistema che chiede invece di indovinare, o che
 almeno lo dice, guadagna piu' di qualunque ritocco alle parole.
 
-## E la misura ha trovato un difetto nella misura
+## E la misura ha trovato un difetto nella misura, che avevo messo io
 
-Otto dei dieci errori della formulazione migliore sono "voleva cyber, ha risposto explainer". Le motivazioni
-del lettore sono buone, e il motivo e' che **le etichette attese non reggono la definizione che il prodotto da'
-di cyber**: *"the dark motion-design look with glowing icons and big type, no pictures (tech, security, AI,
-code)"* (`src/mcp.ts`).
+Otto dei dieci errori della formulazione migliore erano "voleva cyber, ha risposto explainer". Le motivazioni del
+lettore erano buone, e il motivo e' che **sei etichette su ventisette erano sbagliate, e le avevo cambiate io**
+copiando i due insiemi dentro `scripts/adaptation.mjs`.
 
-Sei delle tredici richieste etichettate `cyber` non parlano ne' di tecnologia, ne' di sicurezza, ne' di codice:
+Non e' stata una svista di trascrizione: e' una trasformazione sistematica, `explainer` -> `cyber`, applicata a
+tutte e sole le richieste in cui i loro autori avevano scritto `explainer`.
 
-| | richiesta | di cosa parla |
-|---|---|---|
-| A5 | cosa succede al corpo quando smetti di bere alcol | biologia |
-| A6 | i termosifoni sono freddi solo all'ultimo piano | impianti |
-| A10 | perche' il lievito madre sa di solvente | chimica |
-| B5 | i tre errori quando si cuoce la pasta | cucina |
-| B6 | come funziona davvero un reattore nucleare | fisica |
-| C7 | quanto della bolletta e' davvero la rete | economia |
+| | richiesta | scritta dall'autore | nel file |
+|---|---|---|---|
+| A5 | cosa succede al corpo se smetti di bere alcol | explainer | cyber |
+| A6 | i termosifoni freddi solo all'ultimo piano | explainer | cyber |
+| A10 | perche' il lievito madre sa di solvente | explainer | cyber |
+| B3 | perche' il telefono si scarica d'inverno | explainer | cyber |
+| B5 | i tre errori quando si cuoce la pasta | explainer | cyber |
+| B6 | come funziona davvero un reattore nucleare | explainer | cyber |
 
-Queste richieste sono state etichettate `cyber` quando l'explainer non esisteva ancora come scelta descrivibile:
-era l'unica casella per "spiegami una cosa". Cioe' **Kleo non aveva un look per la domanda piu' comune che
-esista**, e la lista delle risposte giuste porta ancora quel buco dentro.
+E non vale la scusa che l'explainer non esistesse: era uno stile vero da due ore e mezza (`98bd724` all'01:14,
+la copia alle 03:42). Quello che ho normalizzato non e' una risposta che il PRODOTTO non sapeva dare — e' una
+risposta che la LISTA DI PAROLE non sapeva dare. Poi ho usato il punto cieco della lista come risposta giusta
+per misurare la lista.
 
-Non e' una scusa per il 56%: e' la ragione per cui il 100% non e' raggiungibile contro queste etichette. Un
-esame con le risposte sbagliate non si supera studiando.
+**La forma generale, e vale oltre questo file:** chi scrive il metro non puo' anche riscrivere le risposte, o il
+metro converge su se stesso e il numero non misura piu' il prodotto ma la propria coerenza interna. Un corpus che
+dice `cyber` per un piatto di pasta non potra' mai riferire che l'explainer e' irraggiungibile. Le etichette sono
+immutabili dopo la consegna: se sembrano sbagliate si chiede a chi le ha scritte, che e' come sono state
+ripristinate — MAIN e la sessione dell'explainer hanno riletto i propri verbali, riga per riga.
+
+Una sola e' rimasta com'era: il pane della nonna, etichettato `realistic` dal suo autore che l'ha confermato. Se
+avessi ripristinato anche quella per simmetria avrei gonfiato il numero — ed e' esattamente lo stesso errore in
+direzione opposta.
 
 ## Cosa si fa, in ordine
 

@@ -89,12 +89,12 @@ export const HELD_OUT = [
   { p: "Mio nonno partì in nave a diciassette anni e non tornò più al paese. Voglio raccontarlo in un minuto.", want: "cartoon", lang: "it" },
   { p: "Come fa il semaforo a sapere che c'è una macchina che aspetta?", want: "cyber", lang: "it" },
   { p: "Ho comprato un materasso da ottocento euro e dormo peggio di prima. Fammi un video su come si sceglie.", want: "realistic", lang: "it" },
-  { p: "Cosa succede al corpo quando smetti di bere alcol per trenta giorni?", want: "cyber", also: ["realistic"], lang: "it" },
-  { p: "My landlord says the boiler is fine but the radiators are cold on the top floor only. Make a video explaining what's actually happening.", want: "cyber", lang: "en" },
+  { p: "Cosa succede al corpo quando smetti di bere alcol per trenta giorni?", want: "explainer", also: ["realistic"], lang: "it" },
+  { p: "My landlord says the boiler is fine but the radiators are cold on the top floor only. Make a video explaining what's actually happening.", want: "explainer", lang: "en" },
   { p: "I want to tell people what happened the night the lights went out across half the country in 2003.", want: "realistic", lang: "en" },
   { p: "Explain what actually happens to the money when I tap my card.", want: "cyber", lang: "en" },
   { p: "A short about the woman who sold the Eiffel Tower twice.", want: "cartoon", also: ["realistic"], lang: "en" },
-  { p: "Why does my sourdough smell like nail polish?", want: "cyber", lang: "en" },
+  { p: "Why does my sourdough smell like nail polish?", want: "explainer", lang: "en" },
 ];
 
 /**
