@@ -347,7 +347,7 @@ test("the deprecated motion names render exactly as they always did", () => {
     same(P.kenBurns(motion, 720, 1280, 1080, 1920, p, 1), P.kenBurns(move, 720, 1280, 1080, 1920, p, 1, 1));
   assert.equal(P.kenBurns("in", 720, 1280, 1080, 1920, 1, 1).zoom, 1.1);
   assert.equal(P.kenBurns("out", 720, 1280, 1080, 1920, 0, 1).zoom, 1.1);
-  assert.equal(P.kenBurns("left", 720, 1280, 1080, 1920, .5, 1).zoom, 1.04);
+  assert.equal(P.kenBurns("left", 720, 1280, 1080, 1920, .5, 1).zoom, 1 + P.MOVES.track_left.hold, "il ritaglio fisso del laterale, preso dalla tabella e non scritto qui");
   assert.equal(P.kenBurns("in", 720, 1280, 1080, 1920, 0, 1).move, "push_in", "and they carry their new name");
   assert.equal(P.kenBurns("nonsense", 720, 1280, 1080, 1920, 0, 1).move, "push_in", "an unknown move pushes in");
 });
@@ -374,17 +374,22 @@ test("Ken Burns: the picture covers the whole frame for every shape, frame, move
     }
 });
 
-test("Ken Burns: in 1.00→1.10, out 1.10→1.00, left/right hold 1.04 and pan at most 6%", () => {
+test("Ken Burns: in 1.00→1.10, out 1.10→1.00, left/right hold a steady crop and pan the width the table asks", () => {
   const [W, H] = FRAMES[0], [iw, ih] = IMAGES[0];
   const z = (m, p) => P.kenBurns(m, iw, ih, W, H, p, 1).zoom;
   assert.ok(Math.abs(z("in", 0) - 1) < EPS && Math.abs(z("in", 1) - 1.1) < EPS);
   assert.ok(Math.abs(z("out", 0) - 1.1) < EPS && Math.abs(z("out", 1) - 1) < EPS);
-  for (const m of ["left", "right"]) for (const p of STEPS) assert.ok(Math.abs(z(m, p) - 1.04) < EPS, `${m} keeps a steady 1.04 zoom`);
+  // Il numero non e' scritto qui: viene dalla tabella. Un ritaglio fisso e' quello che un movimento laterale ha
+  // bisogno per avere dove andare, e prima era troppo stretto per la corsa che la tabella stessa chiedeva.
+  const fermo = 1 + P.MOVES.track_left.hold;
+  for (const m of ["left", "right"]) for (const p of STEPS)
+    assert.ok(Math.abs(z(m, p) - fermo) < EPS, `${m} keeps a steady ${fermo.toFixed(2)} zoom`);
   for (const [WW, HH] of FRAMES) for (const [w2, h2] of IMAGES) for (const m of P.MOTIONS) {
     const all = STEPS.map(p => P.kenBurns(m, w2, h2, WW, HH, p, 1));
-    for (const r of all) { assert.ok(Math.abs(r.panX) <= WW * .03 + EPS, "half of the 6% travel on each side"); assert.equal(r.panY, 0) }
+    const chiesta = Math.abs(P.MOVES[{ in: "push_in", out: "pull_out", left: "track_left", right: "track_right" }[m]].dx);
+    for (const r of all) { assert.ok(Math.abs(r.panX) <= WW * chiesta / 2 + EPS, "half of the travel on each side"); assert.equal(r.panY, 0) }
     const travel = Math.max(...all.map(r => r.panX)) - Math.min(...all.map(r => r.panX));
-    assert.ok(travel <= WW * .06 + EPS, "the total pan never exceeds 6% of the width");
+    assert.ok(travel <= WW * chiesta + EPS, "the total pan never exceeds what the table asks");
     if (m === "in" || m === "out") assert.equal(travel, 0, "a zoom move does not pan");
   }
   const left = STEPS.map(p => P.kenBurns("left", 720, 1280, 1080, 1920, p, 1).panX);
@@ -695,7 +700,7 @@ test("a resolved crash zoom opens harder than the old index rotation, which stil
   const hook = [0, .5].map(u => at([{ image: "a", motion: "crash_zoom_in", strength: .85 }, { image: "b" }], u));
   assert.ok(hook[1] > legacy[1], `a hook opens harder than the deprecated rotation (${hook[1]} vs ${legacy[1]})`);
   const kept = [0, .5].map(u => at([{ image: "a", motion: "left" }, { image: "b" }], u));
-  assert.ok(Math.abs(kept[0] - 1024 * COVER(1024, 1024, 1080, 1920) * 1.04) < 1e-6,
+  assert.ok(Math.abs(kept[0] - 1024 * COVER(1024, 1024, 1080, 1920) * (1 + P.MOVES.track_left.hold)) < 1e-6,
     "and a storyboard written before the grammar still renders its `motion`");
 });
 

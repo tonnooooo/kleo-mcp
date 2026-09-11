@@ -87,16 +87,24 @@ unused **`trajectory`** field reserved for real camera conditioning in the gener
 | `shot_kind` | what it is for | camera move | class | duration | strength | Ken Burns today (at that strength) |
 |---|---|---|---|---|---|---|
 | `hook` | the first second: grab, do not explain | `crash_zoom_in` | PUSH | 1.6–2.2 s | 0.85 | zoom 1.00 → 1.15, front-loaded |
-| `establish` | where we are | `crane_down` | VERTICAL | 3.5–4.5 s | 0.35 | a steady 1.05 crop, the picture drifts down |
+| `establish` | where we are | `crane_down` | VERTICAL | 3.5–4.5 s | 0.35 | a steady 1.10 crop, the picture drifts down |
 | `face` | a person, held long enough to read | `push_in` | PUSH | 2.5–3.5 s | 0.25 | zoom 1.00 → 1.025, barely there |
-| `detail` | one object, one fact | `track_right` | LATERAL | 2.0–3.0 s | 0.30 | a steady 1.04 crop, drifts right |
-| `detail_orbit` | the same object, given weight | `orbit_left` | LATERAL | 2.5–3.5 s | 0.45 | drifts left inside a 1.03 crop while zooming to 1.06 |
-| `action` | something happening, followed | `track_alongside` | LATERAL | 2.0–3.0 s | 0.55 | a steady 1.05 crop, a longer drift right |
+| `detail` | one object, one fact | `track_right` | LATERAL | 2.0–3.0 s | 0.30 | a steady 1.06 crop, drifts right |
+| `detail_orbit` | the same object, given weight | `orbit_left` | LATERAL | 2.5–3.5 s | 0.45 | drifts left inside a 1.08 crop while zooming to 1.06 |
+| `action` | something happening, followed | `track_alongside` | LATERAL | 2.0–3.0 s | 0.55 | a steady 1.10 crop, a longer drift right |
 | `reveal` | the thing was bigger than you thought | `pull_out` | PUSH | 2.8–3.8 s | 0.40 | zoom 1.04 → 1.00 |
 | `tension` | something is wrong | `push_in_dutch` | PUSH | 2.2–3.0 s | 0.60 | zoom 1.01 → 1.08 with a slight lean (the roll waits for generated motion) |
 | `closing` | the last breath before the button | `pull_out` | PUSH | 3.0–4.0 s | 0.15 | zoom 1.015 → 1.00 |
 | `static_forced` | the picture cannot survive a move | `static_hold` | STILL | 2.0–3.0 s | 0.00 | nothing moves, not even the 3 % cut punch |
 
+**Perche' i ritagli sono piu' larghi di prima (11 settembre 2026).** `kenBurns` limita la corsa all'eccedenza che
+lo zoom lascia: `pan = min(over, |t|/2)`. Con una sorgente che ha quasi le stesse proporzioni del fotogramma
+quell'eccedenza vale circa `(hold + z)/2`, quindi **serve `hold >= |dx|`** o la corsa viene tagliata a meta'.
+Misurato: `track_left/right` consegnava il 67% della corsa che chiede, `crane_down` e `track_alongside` il 50%,
+`orbit_left` il 38%, `push_in_dutch` il 20%. Il commento sopra la tabella diceva gia' a cosa serve `hold` -- il
+ritaglio che un movimento ha bisogno per avere dove andare -- ma i numeri non lo mantenevano. Il prezzo di
+alzarli e' un'inquadratura piu' stretta sull'immagine, che e' il compromesso che il cinema fa da sempre per avere
+una camera che si muove.
 - **Durations** are multiplied by **0.7** and capped at **3.0 s** for 9:16.
 - **Universal negative**, appended to every shot in the vendor dialect:
   `no morphing, no extra fingers, no warping faces, no floating objects, no camera shake beyond the specified move, no zoom, no text, no watermark, no logo`.

@@ -40,16 +40,27 @@
      does NOT scale with strength: the strength scales the movement, not the framing. `cls` is the
      move class the sequencing rules count on (PUSH / LATERAL / VERTICAL / STILL) and `loud` marks
      the moves the validator allows at most twice per 40 s and never side by side. */
+  // HOLD DEVE ESSERE ALMENO LA CORSA CHE IL MOVIMENTO CHIEDE, altrimenti il movimento non esce dallo schermo.
+  // Il commento qui sopra dice gia' a cosa serve hold - "il ritaglio che un movimento laterale o verticale ha
+  // bisogno semplicemente per avere dove andare" - ma i numeri non lo mantenevano. kenBurns limita la corsa
+  // all'eccedenza che lo zoom lascia: pan = min(over, |t|/2), e con una sorgente che ha quasi le stesse
+  // proporzioni del fotogramma l'eccedenza vale circa (hold + z)/2. Quindi serve hold >= |dx| (o |dy|), e sotto
+  // quella soglia meta' del movimento veniva buttata via da un limite che nessuno aveva mai calcolato:
+  //   track_left/right  consegnava il 67% della sua corsa      orbit_left        il 38%
+  //   track_alongside   il 50%                                  push_in_dutch     il 20%
+  //   crane_down        il 50%
+  // Il prezzo e' un ritaglio piu' stretto sull'immagine, che e' il compromesso che il cinema fa da sempre per
+  // avere una camera che si muove. E' esattamente la differenza fra "una foto con lo zoom" e un'inquadratura.
   const MOVES = {
     crash_zoom_in:   { hold: 0,   z: [0, .18], dx: 0,    dy: 0,   ease: 'crash', cls: 'PUSH',     loud: true,  legacy: 'in' },
     push_in:         { hold: 0,   z: [0, .10], dx: 0,    dy: 0,   ease: 'ease',  cls: 'PUSH',     loud: false, legacy: 'in' },
-    push_in_dutch:   { hold: .01, z: [0, .12], dx: .05,  dy: 0,   ease: 'ease',  cls: 'PUSH',     loud: true,  legacy: 'in' },
+    push_in_dutch:   { hold: .05, z: [0, .12], dx: .05,  dy: 0,   ease: 'ease',  cls: 'PUSH',     loud: true,  legacy: 'in' },
     pull_out:        { hold: 0,   z: [.10, 0], dx: 0,    dy: 0,   ease: 'ease',  cls: 'PUSH',     loud: false, legacy: 'out' },
-    track_left:      { hold: .04, z: [0, 0],   dx: -.06, dy: 0,   ease: 'ease',  cls: 'LATERAL',  loud: false, legacy: 'left' },
-    track_right:     { hold: .04, z: [0, 0],   dx: .06,  dy: 0,   ease: 'ease',  cls: 'LATERAL',  loud: false, legacy: 'right' },
-    track_alongside: { hold: .05, z: [0, 0],   dx: .10,  dy: 0,   ease: 'ease',  cls: 'LATERAL',  loud: false, legacy: 'right' },
-    orbit_left:      { hold: .03, z: [0, .06], dx: -.08, dy: 0,   ease: 'ease',  cls: 'LATERAL',  loud: true,  legacy: 'left' },
-    crane_down:      { hold: .05, z: [0, 0],   dx: 0,    dy: .10, ease: 'ease',  cls: 'VERTICAL', loud: false, legacy: null },
+    track_left:      { hold: .06, z: [0, 0],   dx: -.06, dy: 0,   ease: 'ease',  cls: 'LATERAL',  loud: false, legacy: 'left' },
+    track_right:     { hold: .06, z: [0, 0],   dx: .06,  dy: 0,   ease: 'ease',  cls: 'LATERAL',  loud: false, legacy: 'right' },
+    track_alongside: { hold: .10, z: [0, 0],   dx: .10,  dy: 0,   ease: 'ease',  cls: 'LATERAL',  loud: false, legacy: 'right' },
+    orbit_left:      { hold: .08, z: [0, .06], dx: -.08, dy: 0,   ease: 'ease',  cls: 'LATERAL',  loud: true,  legacy: 'left' },
+    crane_down:      { hold: .10, z: [0, 0],   dx: 0,    dy: .10, ease: 'ease',  cls: 'VERTICAL', loud: false, legacy: null },
     static_hold:     { hold: 0,   z: [0, 0],   dx: 0,    dy: 0,   ease: 'ease',  cls: 'STILL',    loud: false, legacy: null },
   };
   // The ten kinds. `static_forced` is a routing rule, not a taste: the planner forces it whenever
