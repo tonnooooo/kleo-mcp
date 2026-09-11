@@ -1,5 +1,5 @@
 import type { Env } from "./env";
-import { getUser, creditPurchase, audit } from "./db";
+import { getUser, creditPurchase, paymentByIntent, setPaymentStatus, takeBackCredits, audit } from "./db";
 import { json, hmacHex, safeEqual } from "./util";
 
 /**
@@ -19,7 +19,23 @@ export const PACKS: { cents: number; credits: number; label: string; linkVar: "S
 /** True when the owner has actually configured selling: three links and a webhook secret. Everything degrades to
  *  "not open yet" until then, the same way notify.ts stays silent without RESEND_API_KEY. */
 export const sellingOpen = (env: Env): boolean =>
-  !!env.STRIPE_WEBHOOK_SECRET && PACKS.every((p) => (env[p.linkVar] ?? "").startsWith("https://"));
+  !!env.STRIPE_WEBHOOK_SECRET && PACKS.every((p) => {
+    const link = env[p.linkVar] ?? "";
+    // Must be a real Stripe Payment Link, and NOT a test one. This is the second half of the livemode check, at the
+    // other end of the road: a test dashboard hands out /test_ links, and a page that offers them takes nobody's
+    // money while looking exactly as if it does.
+    return link.startsWith("https://buy.stripe.com/") && !link.includes("/test_");
+  });
+
+/**
+ * The Payment Link for one pack, with the account tied to it. `client_reference_id` is what comes back in the
+ * webhook and is the only way a payment knows whose credits it is: Stripe passes it through untouched.
+ * The buyer can edit it in the address bar — and all that does is give THEIR credits to somebody else, which is
+ * their money and their choice, so it is not a hole. What it must never do is reach the database unchecked, and it
+ * does not: the webhook looks the account up before crediting anything.
+ */
+export const buyUrl = (env: Env, pack: (typeof PACKS)[number], userId: string): string =>
+  `${env[pack.linkVar]}?client_reference_id=${encodeURIComponent(userId)}`;
 
 /** The pack an amount bought, or null. Matched on the amount Stripe reports, never on what the page displayed. */
 export const packForAmount = (cents: number): (typeof PACKS)[number] | null =>
@@ -88,7 +104,12 @@ export async function handleStripeWebhook(request: Request, env: Env): Promise<R
     await audit(env, null, null, "stripe.testmode", { type: event.type ?? null, event: event.id ?? null });
     return json({ ok: true, ignored: "test-mode event" });
   }
-  if (event.type !== "checkout.session.completed") return json({ ok: true, ignored: event.type ?? "unknown" });
+  // A payment method that settles later (bank debits) completes as async_payment_succeeded, not as the session
+  // event. Ignoring it means the money arrives and the credits never do.
+  const BUYS = ["checkout.session.completed", "checkout.session.async_payment_succeeded"];
+  if (event.type === "charge.refunded" || event.type === "charge.dispute.created")
+    return handleChargeTrouble(env, event.type, event.data?.object ?? {});
+  if (!BUYS.includes(event.type ?? "")) return json({ ok: true, ignored: event.type ?? "unknown" });
 
   const s = event.data?.object ?? {};
   const sessionId = typeof s.id === "string" ? s.id : "";
@@ -117,4 +138,40 @@ export async function handleStripeWebhook(request: Request, env: Env): Promise<R
     country: typeof country === "string" ? country : null, rawRef: userId || null,
   });
   return json({ ok: true, credits: known ? pack.credits : 0, orphan: !known, already: !credited });
+}
+
+
+/**
+ * What happens after a payment: a refund, or a chargeback. Both arrive on a CHARGE and carry `payment_intent`,
+ * never the session id — which is why payments.payment_intent exists.
+ *
+ * They are deliberately NOT treated the same, and the asymmetry is the whole point.
+ *
+ * A REFUND is only marked, never subtracted. A refund can still FAIL up to thirty days later (closed card, closed
+ * account) and arrive back as refund.failed; taking the credits away the moment it starts would leave somebody
+ * with neither their money nor their credits — robbed by an automatism. Marking it makes the case findable, and
+ * the owner decides with the facts in front of him.
+ *
+ * A DISPUTE is subtracted at once. There the money is already gone: the card network pulls the amount plus a
+ * non-refundable fee, and it stays gone for the months the case takes. Leaving the credits spendable on top of that
+ * is paying twice for the same purchase. The balance is allowed to go negative — that is an honest record of what
+ * happened, and every spend path already refuses to start a video without enough credits.
+ */
+async function handleChargeTrouble(env: Env, type: string, charge: Record<string, unknown>): Promise<Response> {
+  const pi = typeof charge.payment_intent === "string" ? charge.payment_intent : null;
+  if (!pi) return json({ ok: true, ignored: "charge without a payment intent" });
+  const row = await paymentByIntent(env, pi);
+  if (!row) return json({ ok: true, ignored: "no payment of ours matches that charge" });
+
+  if (type === "charge.refunded") {
+    await setPaymentStatus(env, row.session_id, "refunded");
+    await audit(env, row.user_id, null, "stripe.refunded", { payment_intent: pi, session: row.session_id, credits: row.credits, note: "credits deliberately NOT removed: a refund can still fail" });
+    return json({ ok: true, marked: "refunded" });
+  }
+
+  if (row.status === "disputed") return json({ ok: true, already: "disputed" });
+  if (row.user_id && row.credits > 0) await takeBackCredits(env, row.user_id, row.credits, row.session_id);
+  await setPaymentStatus(env, row.session_id, "disputed");
+  await audit(env, row.user_id, null, "stripe.disputed", { payment_intent: pi, session: row.session_id, credits_taken: row.credits });
+  return json({ ok: true, marked: "disputed", credits_taken: row.credits });
 }

@@ -227,6 +227,19 @@ export async function creditPurchase(env: Env, p: {
   return first;
 }
 
+/**
+ * Takes back the credits of a purchase that was charged back. Unlike debitCredits this is NOT conditional on the
+ * balance being enough, and it is allowed to go negative on purpose: the money is already gone from the Stripe
+ * balance, plus a fee, and the alternative — refusing because the credits were already spent — would be paying for
+ * the same purchase twice. A negative balance is an honest record, and every spend path already refuses to start a
+ * video without enough credits, so it blocks nothing else.
+ */
+export async function takeBackCredits(env: Env, userId: string, amount: number, sessionId: string): Promise<void> {
+  if (amount <= 0) return;
+  await env.DB.prepare("UPDATE users SET credits = credits - ? WHERE id = ?").bind(amount, userId).run();
+  await audit(env, userId, null, "credits.chargeback", { amount, session: sessionId, balance: await balanceOf(env, userId) });
+}
+
 /** The account a refund or a dispute belongs to. Those events carry a CHARGE, so the payment intent is the only way back. */
 export const paymentByIntent = (env: Env, paymentIntent: string) =>
   env.DB.prepare("SELECT * FROM payments WHERE payment_intent = ?").bind(paymentIntent).first<{ session_id: string; user_id: string | null; credits: number; status: string }>();

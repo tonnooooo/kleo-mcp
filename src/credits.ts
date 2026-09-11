@@ -1,13 +1,12 @@
 import type { Env } from "./env";
 import { getUser, type User } from "./db";
 import { cookieHandle, makeHandle, verifyHandle, verifyViewToken } from "./accounts";
+import { PACKS, sellingOpen, buyUrl } from "./stripe";
 import { html, escapeHtml } from "./util";
 
 /** The one address a stranger can write to. It is also in the site footer; both must always say the same thing. */
 const CONTACT = "kleooai@gmail.com";
 
-/** The packs the /credits page shows as "not open yet", the same three the site advertises. */
-const PACKS: [price: string, credits: string][] = [["5 EUR", "10 credits"], ["15 EUR", "35 credits"], ["40 EUR", "100 credits"]];
 
 /**
  * GET /credits?k=<view token> — the account page an assistant links to when the credits run out.
@@ -21,16 +20,24 @@ export async function handleCredits(request: Request, env: Env): Promise<Respons
   const ownerId = await verifyHandle(env, cookieHandle(request.headers.get("cookie")));
   const userId = (await verifyViewToken(env, url.searchParams.get("k"))) ?? ownerId;
   const user = userId ? await getUser(env, userId) : null;
-  if (!user) return html(page(null, ""), 404);
+  if (!user) return html(page(null, "", env), 404);
   // Only the browser that IS this account sees the key; a shared link shows the balance and nothing worth stealing.
   const key = ownerId === user.id ? await makeHandle(env, user.id) : "";
-  return html(page(user, key));
+  return html(page(user, key, env));
 }
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-function page(user: User | null, handle: string): string {
-  const packs = PACKS.map(([price, credits]) => `<li><b>${price}</b> - ${credits}</li>`).join("");
+function page(user: User | null, handle: string, env: Env): string {
+  const open_ = sellingOpen(env);
+  // The buttons exist only when selling is actually configured. Until then the same three packs are shown as plain
+  // text with an honest badge: a page that offers a button nobody can pay through is worse than one that says wait.
+  const packs = PACKS.map((p) => {
+    const href = open_ && user ? buyUrl(env, p, user.id) : null;
+    return href
+      ? `<li><a class="buy" href="${escapeHtml(href)}"><b>${p.label}</b> - ${p.credits} credits</a></li>`
+      : `<li><b>${p.label}</b> - ${p.credits} credits</li>`;
+  }).join("");
   const key = handle
     ? `<h2>Your Kleo key</h2>
 <p>This is your account. Paste it on the Kleo sign-in page of another browser or another computer to come back to these same credits. Anyone who has it can use your credits, so keep it to yourself.</p>
@@ -42,9 +49,9 @@ function page(user: User | null, handle: string): string {
     ? `<h1>${escapeHtml(plural(user.credits, "credit"))} left</h1>
 <p>1 credit per Short (up to 90 seconds), 3 credits up to 5 minutes, +1 credit per extra minute. The credits come back in full if a render fails, or if you cancel it before it starts; cancelling part-way through gives back the part that was not rendered.</p>
 <h2>Credit packs</h2>
-<div class="badge">Card payments are not open yet - Kleo is free while it is in beta.</div>
+${open_ ? `<p>Payment is handled by Stripe: Kleo never sees your card. Credits land on this account within a few seconds of paying, and the page shows the new balance when you reload it.</p>` : `<div class="badge">Card payments are not open yet - Kleo is free while it is in beta.</div>`}
 <ul class="packs">${packs}</ul>
-<p>These are the prices the packs will have. When they open, this page is where you will buy them - nothing else about Kleo changes.</p>
+${open_ ? `<p>One payment, no subscription, nothing renews. Credits do not expire.</p>` : `<p>These are the prices the packs will have. When they open, this page is where you will buy them - nothing else about Kleo changes.</p>`}
 <div class="foot">Out of credits, or something went wrong? Write to <a href="mailto:${CONTACT}">${CONTACT}</a>.</div>
 ${key}`
     : `<h1>This account link is not valid</h1>
@@ -63,6 +70,9 @@ p{margin:0 0 14px;color:var(--mute);font-size:.95rem}
 .badge{border:1px solid var(--amber);color:var(--amber);border-radius:8px;padding:10px 12px;font-size:.9rem}
 .packs{list-style:none;margin:12px 0 14px;padding:0}.packs li{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:6px;font-size:.95rem}
 .packs b{color:var(--amber)}a{color:var(--amber)}
+.packs a.buy{display:block;text-decoration:none;color:var(--s-ink,var(--ink))}
+.packs li:has(a.buy){border-color:var(--amber);cursor:pointer}
+.packs li:has(a.buy):hover{background:rgba(243,181,63,.08)}
 .key{display:block;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px 14px;font:.85rem/1.5 monospace;word-break:break-all;color:var(--ink)}
 .foot{margin-top:16px;font-size:.8rem;color:var(--mute)}
 </style></head><body><main class="card">

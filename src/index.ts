@@ -5,6 +5,7 @@ import { mcpHandlerFor } from "./mcp";
 import { handleAuthorize } from "./auth";
 import { handleInternal, handleDevPlan, handleAdmin } from "./internal";
 import { handleCredits } from "./credits";
+import { handleStripeWebhook } from "./stripe";
 import { handleDownload } from "./dl";
 import { tick } from "./orchestrator";
 import { json } from "./util";
@@ -42,6 +43,10 @@ const app: ExportedHandler<Env> = {
     if (p.startsWith("/internal/admin/")) return handleAdmin(request, env);
     if (p === "/authorize") return handleAuthorize(request, env);
     if (p === "/credits") return handleCredits(request, env);
+    // Deliberately OUTSIDE the /internal/ branch below: that one fires ctx.waitUntil(tick(env)), and a payment
+    // webhook must not have the power to start renting a GPU. It also needs no auth of its own — the Stripe
+    // signature IS the authentication, checked before anything is parsed.
+    if (p === "/stripe/webhook") return handleStripeWebhook(request, env);
     if (p.startsWith("/internal/")) {
       const r = await handleInternal(request, env);
       // Progress also without the cron, but only for a call that proved it is one of ours: /internal/ is open to the
