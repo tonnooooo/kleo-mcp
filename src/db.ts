@@ -182,6 +182,59 @@ async function balanceOf(env: Env, userId: string): Promise<number | null> {
   return r?.credits ?? null;
 }
 
+/**
+ * Credits a purchase, exactly once, whatever Stripe does.
+ *
+ * Stripe says out loud that its fulfilment function "may be called multiple times, even concurrently, for the same
+ * Checkout Session", and the Dashboard can resend an event by hand for days. So the guard cannot be a SELECT
+ * followed by an UPDATE — two simultaneous deliveries both read "not there yet" and both credit, which is 200
+ * credits for one 40 EUR payment. The guard has to be the database constraint itself.
+ *
+ * Two statements, one D1 batch (which is a transaction), and the ORDER MATTERS: the UPDATE goes first, because its
+ * NOT EXISTS has to read the payments table before the INSERT beside it fills it in. And the INSERT is OR IGNORE,
+ * never a plain INSERT: a duplicate is a NORMAL event here, and letting it throw would answer 500, which Stripe
+ * reads as failure — it would retry for three days and then switch the endpoint off. A harmless duplicate would
+ * have killed the only way anybody can pay.
+ *
+ * Returns true when this call is the one that credited; false when the purchase was already recorded. An orphan
+ * payment (userId null: the client_reference_id matched no account) still writes its row, because money that
+ * arrived has to be written down even when nobody can be credited for it.
+ */
+export async function creditPurchase(env: Env, p: {
+  sessionId: string; userId: string | null; credits: number; cents: number; currency: string;
+  email: string | null; paymentIntent: string | null; eventId: string | null; eventType: string | null;
+  country: string | null; rawRef: string | null;
+}): Promise<boolean> {
+  const rows = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE users SET credits = credits + ? WHERE id = ? AND NOT EXISTS (SELECT 1 FROM payments WHERE session_id = ?)`,
+    ).bind(p.credits, p.userId ?? "", p.sessionId),
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO payments (session_id, user_id, credits, amount_cent, currency, email, payment_intent, event_id, event_type, country, raw_ref)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(p.sessionId, p.userId, p.userId ? p.credits : 0, p.cents, p.currency, p.email, p.paymentIntent, p.eventId, p.eventType, p.country, p.rawRef),
+  ]);
+  // The INSERT is the authority on "was this the first time", not the UPDATE: an orphan payment credits nobody and
+  // still has to be recorded exactly once.
+  const first = (rows[1]?.meta.changes ?? 0) === 1;
+  if (first) {
+    await audit(env, p.userId, null, "credits.purchased", {
+      credits: p.userId ? p.credits : 0, amount_cent: p.cents, currency: p.currency,
+      session: p.sessionId, payment_intent: p.paymentIntent, orphan: !p.userId,
+      balance: p.userId ? await balanceOf(env, p.userId) : null,
+    });
+  }
+  return first;
+}
+
+/** The account a refund or a dispute belongs to. Those events carry a CHARGE, so the payment intent is the only way back. */
+export const paymentByIntent = (env: Env, paymentIntent: string) =>
+  env.DB.prepare("SELECT * FROM payments WHERE payment_intent = ?").bind(paymentIntent).first<{ session_id: string; user_id: string | null; credits: number; status: string }>();
+
+/** Marks what happened to a payment afterwards ("refunded", "disputed"). Never touches the balance by itself. */
+export const setPaymentStatus = (env: Env, sessionId: string, status: string) =>
+  env.DB.prepare("UPDATE payments SET status = ? WHERE session_id = ?").bind(status, sessionId).run();
+
 export const getInvite = (env: Env, code: string) => env.DB.prepare("SELECT * FROM invites WHERE code = ?").bind(code).first<Invite>();
 export const useInvite = (env: Env, code: string) =>
   env.DB.prepare("UPDATE invites SET uses = uses + 1 WHERE code = ? AND uses < max_uses").bind(code).run();
@@ -380,6 +433,28 @@ export const GPU_ONLY_WAIT = "waiting for a free GPU: this visual style draws ev
  */
 const GPU_WAIT_EXPLAINED = "error LIKE ?";
 const gpuWaitPattern = `${GPU_ONLY_WAIT}%`;
+
+/**
+ * Left on `error` when a job cannot even be PLANNED: Kleo writes the storyboard with Workers AI, whose free daily
+ * allowance runs out, and a job with no storyboard is never given a GPU. Until today that job simply sat at
+ * "queued, 0%, about 18 minutes" for ever, while the reason was sitting in plan_error where no user can see it.
+ * A status that repeats a promise it cannot keep is worse than an error: the person keeps waiting.
+ */
+export const PLAN_WAIT =
+  "waiting: Kleo cannot write the storyboard itself right now, because its daily free AI allowance is used up (it comes back after midnight UTC). Nothing else is wrong, and no GPU is running. Two ways out, both immediate: your assistant can write the storyboard itself with kleo_storyboard_guide and call kleo_create_video again passing it — that path never needs Kleo's AI and costs the same — or cancel this one with kleo_cancel_job and get the credits straight back";
+
+const PLAN_WAIT_EXPLAINED = "error LIKE ?";
+const planWaitPattern = `${PLAN_WAIT}%`;
+
+/**
+ * Queued jobs with no storyboard that have not been told why yet. Oldest first, and only while planning is actually
+ * paused — a job waiting its normal turn in the planner is not stuck and must not be told that it is.
+ */
+export async function unexplainedUnplannedJobs(env: Env, limit = 20): Promise<Job[]> {
+  return (await env.DB.prepare(
+    `SELECT * FROM jobs WHERE state = 'queued' AND storyboard IS NULL AND NOT (error IS NOT NULL AND ${PLAN_WAIT_EXPLAINED}) ORDER BY created_at LIMIT ?`,
+  ).bind(planWaitPattern, limit).all<Job>()).results;
+}
 
 /**
  * Queued planned jobs the pool will never take (cartoon / realistic) and that have not been told why yet: they can

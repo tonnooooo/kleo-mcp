@@ -1,5 +1,5 @@
 import type { Env } from "./env";
-import { type Job, type JobState, ACTIVE_STATES, OPEN_STATES, GPU_ONLY_WAIT, activeJobs, queuedJobs, queuedPictureJobs, staleQueuedJobs, jobInstances, unplannedJobs, claimPlanAttempt, countRunning, runningPaidJobs, spentTodayUsd, addJobCost, rememberTriedMachine, updateJob, transitionJob, audit, refundCredits, expiredJobs, listFiles, deleteFiles, setFile, getJob, reserveJob, unreserveJob } from "./db";
+import { type Job, type JobState, ACTIVE_STATES, OPEN_STATES, GPU_ONLY_WAIT, PLAN_WAIT, unexplainedUnplannedJobs, activeJobs, queuedJobs, queuedPictureJobs, staleQueuedJobs, jobInstances, unplannedJobs, claimPlanAttempt, countRunning, runningPaidJobs, spentTodayUsd, addJobCost, rememberTriedMachine, updateJob, transitionJob, audit, refundCredits, expiredJobs, listFiles, deleteFiles, setFile, getJob, reserveJob, unreserveJob } from "./db";
 import { backendFor, getBackend } from "./backends";
 import { vastStatus, GONE, listKleoInstances, destroyInstance } from "./backends/vast";
 import { int, num, nowIso, minutesSince, secondsSince, addDays, base64ToBytes, rid } from "./util";
@@ -32,7 +32,8 @@ export async function tick(env: Env, opts: { plan?: boolean } = {}): Promise<Sta
   if (opts.plan && (await acquireLock(env, "plan", 600))) {
     let pause = 0;
     try { pause = await planOne(env, stats); } finally {
-      if (pause) { await holdLock(env, "plan", pause); await setFlagUntil(env, "plan_pause", pause); } else { await releaseLock(env, "plan"); }
+      if (pause) { await holdLock(env, "plan", pause); await setFlagUntil(env, "plan_pause", pause); await explainPlanWait(env); }
+      else { await releaseLock(env, "plan"); }
     }
   }
   // Longer than tickInner can plausibly run: every active job costs a Vast round trip or two, and a lock that expires
@@ -338,6 +339,22 @@ async function budgetGate(env: Env, running: number): Promise<boolean> {
  * later start attempt overwrites `error` with a new failure, the job comes back here once and is explained again,
  * this time quoting the new failure: one audit line per piece of news, not one per minute.
  */
+/**
+ * Says out loud why a job is not moving when the planner is paused. Same shape as explainGpuWait: written once into
+ * `error`, which is the one field a queued job's status shows, so kleo_get_job and kleo_wait_for_video repeat it
+ * instead of repeating an ETA that nothing is working towards.
+ */
+async function explainPlanWait(env: Env): Promise<void> {
+  for (const job of await unexplainedUnplannedJobs(env)) {
+    const previous = job.error?.trim();
+    const message = previous ? `${PLAN_WAIT} (last attempt: ${previous.slice(0, 300)})` : PLAN_WAIT;
+    if (!(await transitionJob(env, job.id, ["queued"], { error: message, eta_min: null }, { error: job.error }))) continue;
+    await audit(env, job.user_id, job.id, "job.waiting_for_planner", {
+      queued_min: Math.round(minutesSince(job.created_at)), plan_attempts: job.plan_attempts, plan_error: job.plan_error?.slice(0, 200) ?? null,
+    });
+  }
+}
+
 async function explainGpuWait(env: Env, reason: string): Promise<void> {
   for (const job of await queuedPictureJobs(env)) {
     const previous = job.error?.trim();
