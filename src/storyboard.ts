@@ -444,7 +444,12 @@ interface Plan { style: StyleId; kleo: KleoStyle; pictures: boolean; brief: Brie
 export function planFor(job: PlanJob, chosen?: KleoStyle | null): Plan {
   const p = JSON.parse(job.params) as JobParams;
   const format = p.format;
-  const brief = BRIEFS[job.template] ?? BRIEFS.explainer;
+  // THE LOOK OWNS THE LANGUAGE, THE TEMPLATE OWNS THE LENGTH. Since step zero may now choose the drawn
+  // explainer for a request that came in on any template, the brief has to follow the LOOK when the two
+  // disagree — otherwise a film planned as "sketch" is written to the viral-short brief: a 10-18 word
+  // window instead of 8-14, and guidance describing beats and a closing scene that this look does not have.
+  // Only the drawn look needs this: cartoon and realistic share the cinema scene shapes, sketch does not.
+  const templateBrief = BRIEFS[job.template] ?? BRIEFS.explainer;
   // NAMING A STYLE IS A DECISION; NOT NAMING ONE IS A BET. A decision is honoured whatever it costs. A bet is exactly
   // what the direction exists to improve on, so it yields — and until this line it could not: createJob writes
   // params.style on every job, guessed or chosen, and this took p.style over `chosen` in every case. The look the
@@ -456,6 +461,9 @@ export function planFor(job: PlanJob, chosen?: KleoStyle | null): Plan {
     : (KLEO_STYLES as readonly string[]).includes(p.style ?? "") ? (p.style as KleoStyle)
     : pickKleoStyle(job.template, job.prompt);
   const style = keouStyleFor(kleo, job.template, format);
+  const brief = style === "sketch" && templateBrief.style !== "sketch"
+    ? briefOf(p.duration_s <= 90 ? "explainer-short" : "explainer-long")
+    : templateBrief;
   const speed = 1.1;
   const words = wordBudget(p.duration_s, speed);
   // Cinema/picture/stickman scenes carry one spoken line each in Shorts; long videos in those styles use longer lines so the scene count stays sane.
@@ -566,7 +574,7 @@ TEMPLATE: ${t?.name ?? job.template}. LENGTH: ${plan.duration} seconds, about ${
 
 TASK: write the DIRECTION of this one film, before any scene exists. Return one JSON object:
 
-{"style":"cartoon|realistic|cyber|stickman","why":"<=90 chars, why that look fits THIS request",
+{"style":"cartoon|realistic|cyber|explainer|stickman","why":"<=90 chars, why that look fits THIS request",
  "direction":{
   "subject":"<=${DL.subject}, the one thing the video is about, in the user's own terms",
   "goal":"<=${DL.goal}, what the viewer should understand or feel by the end",
@@ -587,7 +595,13 @@ RULES
 - must_keep is quoted from the request. If the user wrote "5 mistakes", "in Naples", "for beginners" or a number, it goes in must_keep and the narration must still contain it.
 - Do not invent sections, drop them or reorder them: the shape above is the one this kind of film has. Colour means a new part of the story, nothing else.
 - forbidden is what makes a film its own. A pirate film forbids modern objects, wifi symbols, phones, screens and logos; a film about a city forbids the objects of every other city. Write it for THIS video.
-- Choose the style from the request, not from a keyword: cartoon = drawn stories, kids, history, animals, travel; realistic = products, places, news, sport, documentary; cyber = motion design with no pictures at all, only for tech and security topics that want diagrams rather than scenes; stickman = only if the user asked for a stickman.
+- CHOOSE THE STYLE BY THE SHAPE OF THE ANSWER THE REQUEST IS ASKING FOR, never by its topic. The same subject can want two different looks, so asking "is this about security" answers nothing.
+  · cartoon — the answer is a STORY with people in it, told in order: someone did something and here is what happened. Kids, history, animals, travel, tales.
+  · realistic — the answer is a PLACE or a THING you could photograph: products, cities, news events, sport, a documentary about something that exists.
+  · cyber — the answer has STRUCTURE TO DIAGRAM: a flow with steps, a comparison of two things, a list, a set of numbers. Icons and big type, no pictures at all.
+  · explainer — the answer is ONE IDEA TAKEN APART until the viewer believes something different at the end. Hand-drawn line art where every spoken phrase has its own literal drawing. Choose it when the request says "explain", "why does", "how does", "what actually happens", or when it asks you to correct something the viewer takes for granted. It is the strongest look for teaching one thing fast.
+  · stickman — only if the user asked for a stickman by name.
+  THE LINE BETWEEN cyber AND explainer IS THE ONE THAT MATTERS, and it is not the subject: "the five costliest cyberattacks in history" is cyber, because five items with figures are a table; "explain what a VPN is to my mother" is explainer, because it is one idea, taken apart, for someone who will end up believing something new. Decide which of those two the request looks like before you decide anything else about it.
 - Everything you write here is in ${lang} except the enum values (style, accent), which stay in English.`;
 }
 

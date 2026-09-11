@@ -133,3 +133,39 @@ test("the explainer templates reach the drawn look on their own, with no style n
   const named = planFor({ ...job("explainer-short", "9:16", 45, PLAIN[0]), params: JSON.stringify({ duration_s: 45, format: "9:16", language: "en", voice: null, style: "cartoon" }) });
   assert.equal(named.kleo, "cartoon", "the caller's own choice is never overridden by the template");
 });
+
+test("when the look is chosen by the reader, the brief follows the look and not the template", async () => {
+  // Step zero may now choose the drawn explainer for a request that arrived on any template. Before this,
+  // the engine switched to "sketch" and the BRIEF stayed the template's: a film planned as drawn line art
+  // was written to the viral-short brief — a 10-18 word window instead of 8-14, and guidance describing
+  // beats and a closing scene, neither of which this look has. Autonomy without this is autonomy that
+  // produces the wrong film.
+  const { planFor } = await import("../src/storyboard.ts");
+  const job = (template, duration_s, format) =>
+    ({ id: "gt_t", template, prompt: "Explain what actually happens to the money when I tap my card.",
+       params: JSON.stringify({ duration_s, format, language: "en", voice: null }) });
+
+  for (const [template, dur, format, want] of [
+    ["viral-short", 45, "9:16", "explainer-short"],
+    ["did-you-know", 30, "9:16", "explainer-short"],
+    ["story-documentary", 300, "16:9", "explainer-long"],
+    ["top-10", 420, "16:9", "explainer-long"],
+  ]) {
+    const chosen = planFor(job(template, dur, format), "explainer");
+    assert.equal(chosen.style, "sketch", `${template}: the reader's choice must reach the engine`);
+    assert.deepEqual(chosen.brief.wordsPerScene, narrativeFor(want).wordsPerScene,
+      `${template} at ${dur}s must be planned to the ${want} window, not the template's`);
+    assert.equal(chosen.brief.guidance, narrativeFor(want).guidance,
+      `${template}: the brief must describe the look that will be drawn`);
+    // And the template still decides the length, which is the half it owns.
+    const untouched = planFor(job(template, dur, format));
+    assert.notEqual(untouched.style, "sketch", `${template} must not become drawn on its own`);
+  }
+
+  // A template that IS the drawn look is unaffected either way.
+  for (const chosen of [null, "explainer"]) {
+    const p = planFor(job("explainer-short", 45, "9:16"), chosen);
+    assert.equal(p.style, "sketch");
+    assert.deepEqual(p.brief.wordsPerScene, narrativeFor("explainer-short").wordsPerScene);
+  }
+});
