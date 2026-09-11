@@ -279,10 +279,14 @@ test("normalizeStoryboard turns another look's scene into an explainer scene ins
   assert.ok(s.shot.zoom[1] > s.shot.zoom[0], "the camera was made to move again");
   assert.deepEqual(s.shot.focus, [540, 864]);
   assert.equal(s.hold, 0.6);
-  assert.equal(s.art.length, 1, "the drawing nobody can draw is dropped");
   assert.equal(s.art[0].name, "phone", "smartphone is a phone");
   assert.equal(s.art[0].drawn, true, "the first drawing of the first scene is on the page at frame zero");
   assert.ok(!("at" in s.art[0]));
+  // The drawing nobody can draw is dropped — and the scene is not left with one picture for a whole line.
+  // The repair reads the line, asks the word index what it named, and puts that on the page instead.
+  assert.ok(!s.art.some((a) => a.name === "not-a-drawing"), "the drawing nobody can draw is dropped");
+  assert.equal(s.art.length, 2, "a scene left with one drawing gets a second, chosen from its own line");
+  assert.ok(s.art[1].at === undefined || quotesVoice(s.art[1].at, s.voice), "and its cue quotes that line");
   const r = validateStoryboard({ schema_version: 1, editorial_status: "ready", title: "Why bread rises", style: "sketch", format: "9:16", language: "en", voice: "am_michael", music: "none", scenes: [s, { ...s, id: "02-x" }] }, { format: "9:16", language: "en" });
   assert.deepEqual(r.errors ?? [], []);
 });
@@ -409,4 +413,41 @@ test("every drawing has words in all three languages, or the rule is blind in tw
       assert.ok(n >= 4, `${name} has only ${n} ${lang} words: the rule cannot see it in that language`);
     });
   }
+});
+
+test("the repair chooses the drawing the line asked for, and leaves a good film alone", async () => {
+  const { repairExplainer } = await import("../src/explainer-plan.ts");
+  // A scene that draws none of the things it names. The word index knows which drawing the line wanted,
+  // and the anchor comes from the same word that chose it, so the cut lands where the thing is named.
+  const scenes = [
+    good({ voice: "You lend someone a charging cable for ten minutes.", art: [{ name: "crowd", drawn: true }] }),
+    good({ id: "02-x", accent: "blue", voice: "But that cable is never just a cable, it turns out.", art: [{ name: "chip", at: "just a cable" }, { name: "warning", at: "never" }] }),
+    good({ id: "03-x", accent: "green", voice: "So which cable did you plug in this morning?", art: [{ name: "clock", drawn: true }, { name: "hand", at: "plug in" }] }),
+  ];
+  assert.ok(film(scenes).includes("draws-what-it-says"));
+  repairExplainer(scenes, "9:16", "en");
+  assert.ok(!film(scenes).includes("draws-what-it-says"), "the line said 'charging cable' and the index knows what draws one");
+  const added = scenes[0].art.find((a) => a.name !== "crowd");
+  assert.ok(added, "a drawing must have been added to the first scene");
+  assert.ok(added.at === undefined || quotesVoice(added.at, scenes[0].voice), "its cue must quote the line");
+
+  // Two scenes opening on the same drawing: the scene already owns another one, so rotate rather than retry.
+  const stuck = [
+    good({ voice: "Your hotel door is not locked the way you think.", art: [{ name: "door", drawn: true }, { name: "lock", at: "the way you" }] }),
+    good({ id: "02-x", accent: "blue", voice: "But the door was never the part that mattered here.", art: [{ name: "door", drawn: true }, { name: "chip", at: "never the part" }] }),
+    good({ id: "03-x", accent: "green", voice: "So who else has been walking into your room lately?", art: [{ name: "room", drawn: true }, { name: "footprints", at: "walking into" }] }),
+  ];
+  assert.ok(film(stuck).includes("variety"));
+  repairExplainer(stuck, "9:16", "en");
+  assert.ok(!film(stuck).includes("variety"), "the second scene owned another drawing: it opens on that one now");
+
+  // THE ONE THAT MATTERS: a film that is already right must come out byte for byte identical, twice.
+  const { readFileSync } = await import("node:fs");
+  const { resolve } = await import("node:path");
+  const hotel = JSON.parse(readFileSync(resolve(import.meta.dirname, "../worker/keou/examples/explainer-hotel/project.json"), "utf8"));
+  const before = JSON.stringify(hotel.scenes);
+  repairExplainer(hotel.scenes, "9:16", "en");
+  assert.equal(JSON.stringify(hotel.scenes), before, "the shipped film must not be touched by a repair");
+  repairExplainer(hotel.scenes, "9:16", "en");
+  assert.equal(JSON.stringify(hotel.scenes), before, "and repairing twice must equal repairing once");
 });

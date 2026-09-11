@@ -586,14 +586,81 @@ export function checkExplainer(scenes: unknown, opts: { duration: number; langua
 }
 
 /**
- * What arithmetic can fix, before anyone is asked to write again: the opening drawing that is not on the
- * page at frame zero, and the scene whose drawings all land in the first half of its own line.
+ * The drawing this line is asking for, and the words that asked. Returns the most SPECIFIC match — the
+ * longest word that hit — because a line saying "charging cable" wants the cable, not whatever else a
+ * shorter word in it happens to name. Drawings already in the scene are skipped: the point is to add
+ * something the scene is missing, not to say what it already says.
  */
-export function repairExplainer(scenes: unknown, format: string): void {
+function drawingFor(line: string, language: string, taken: Set<string>): { name: string; word: string } | null {
+  const hay = " " + line.toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, " ").replace(/\s+/g, " ") + " ";
+  let best: { name: string; word: string } | null = null;
+  for (const [name, w] of Object.entries(SKETCH_WORDS)) {
+    if (taken.has(name)) continue;
+    const list = [...((w as Record<string, string[]>)[language] ?? w.en), ...(language === "en" ? [] : w.en)];
+    for (const word of list) {
+      if (!hay.includes(" " + word + " ") && !hay.includes(" " + word + "s ")) continue;
+      if (!best || word.length > best.word.length) best = { name, word };
+    }
+  }
+  return best;
+}
+
+/**
+ * What arithmetic can fix, before anyone is asked to write again.
+ *
+ * Three of these repairs exist because the word index made them possible. Until there was a table saying
+ * which spoken words name which drawing, a scene that drew the wrong thing could only be sent back to the
+ * model; now the line itself says what it wanted, and the anchor comes from the same word that chose the
+ * drawing — the cut lands exactly where the thing is named. A retry costs a model call and comes back
+ * wrong about half the time; this costs nothing and cannot.
+ */
+export function repairExplainer(scenes: unknown, format: string, language = "en"): void {
   const list = Array.isArray(scenes) ? (scenes.filter(isObj) as Record<string, unknown>[]) : [];
   if (!list.length) return;
   const first = artOf(list[0]);
   if (first.length && !first.some((a) => a.drawn === true)) { first[0].drawn = true; delete first[0].at }
+
+  // 1. A scene that draws none of the things its line names, and 2. a scene with a single drawing holding
+  //    the whole sentence. Both are answered from the line: it already said what it wanted drawn.
+  for (const s of list) {
+    const line = voiceOf(s);
+    if (line.split(/\s+/).filter(Boolean).length < 4) continue;
+    const art = artOf(s);
+    const taken = new Set(art.map((a) => String(a.name)));
+    const hay = " " + line.toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, " ").replace(/\s+/g, " ") + " ";
+    const named = art.some((a) => {
+      const w = SKETCH_WORDS[a.name as string];
+      if (!w) return false;
+      const l = [...((w as Record<string, string[]>)[language] ?? w.en), ...(language === "en" ? [] : w.en)];
+      return l.some((x) => hay.includes(" " + x + " ") || hay.includes(" " + x + "s "));
+    });
+    if (named && art.length >= 2) continue;
+    const pick = drawingFor(line, language, taken);
+    if (!pick) continue;
+    // The anchor comes from the same word that chose the drawing, so the cut lands where the thing is named.
+    const at = quotesVoice(pick.word, line) ? pick.word : anchorAt(line, 0.5);
+    const el: Record<string, unknown> = { name: pick.name };
+    if (at) el.at = at; else el.drawn = true;
+    art.push(el);
+    s.art = art.slice(0, 8);
+  }
+
+  // 3. Two scenes in a row opening on the same drawing. The scene already owns another one: put it first.
+  //    The drawing IS the cut in this look, so this is the difference between a cut and a still.
+  for (let i = 1; i < list.length; i++) {
+    const prev = artOf(list[i - 1])[0]?.name, art = artOf(list[i]);
+    if (!prev || art[0]?.name !== prev) continue;
+    const other = art.findIndex((a, k) => k > 0 && a.name !== prev);
+    if (other < 0) continue;
+    const [moved] = art.splice(other, 1);
+    // The opener is what is on the page when the scene starts; whatever it displaces takes its cue.
+    if (art[0] && typeof art[0].at !== "string" && art[0].drawn === true) { delete art[0].drawn; const a = anchorAt(voiceOf(list[i]), 0.45); if (a) art[0].at = a }
+    if (typeof moved.at === "string") delete moved.at;
+    moved.drawn = true;
+    art.unshift(moved);
+    list[i].art = art;
+  }
+
   for (const s of list) {
     const v = voiceOf(s), w = words(v), art = artOf(s);
     if (art.length < 2 || w.length < 6) continue;

@@ -1138,7 +1138,7 @@ export function normalizeStoryboard(raw: unknown, plan: Plan): unknown {
     });
     // No closing at all: the last scene becomes the closing (content kept).
     const scenes = c.scenes as Record<string, unknown>[];
-    if (plan.style === "sketch") repairExplainer(scenes, plan.format);
+    if (plan.style === "sketch") repairExplainer(scenes, plan.format, plan.language);
     else if (scenes.length && !scenes.some((s) => s.kind === "closing")) {
       const last = scenes[scenes.length - 1];
       last.kind = "closing";
@@ -1517,7 +1517,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
       // every model that has ever read them, because nothing measures whether they happened. checkExplainer measures
       // it on the scenes that came back, and what it finds is what the next attempt is asked to fix — in its words.
       if (plan.style === "sketch") {
-        repairExplainer(chunkScenes, plan.format);
+        repairExplainer(chunkScenes, plan.format, plan.language);
         for (const v of checkExplainer(chunkScenes, { duration: plan.duration, language: plan.language })) problems.push(v.message);
       }
       if (plan.style === "picture") {
