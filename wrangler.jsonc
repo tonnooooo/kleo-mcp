@@ -49,6 +49,9 @@
   "triggers": { "crons": ["* * * * *"] }, // ogni minuto: storyboard dei video in coda, noleggio GPU, controllo dei render, pulizia dei file scaduti
   "vars": {
     "PUBLIC_URL": "https://kleo-mcp.plural-juice.workers.dev", // indirizzo pubblico del server; l'indirizzo MCP da dare ai client è PUBLIC_URL + /mcp
+    "STRIPE_LINK_5": "https://buy.stripe.com/5kQ5kDfTB19681jgZf9ws03", // 5 EUR · 10 crediti · Payment Link live
+    "STRIPE_LINK_15": "https://buy.stripe.com/5kQ9AT6j1bNKa9r7oF9ws04", // 15 EUR · 35 crediti · Payment Link live
+    "STRIPE_LINK_40": "https://buy.stripe.com/7sY14nbDlaJG6XfdN39ws05", // 40 EUR · 100 crediti · Payment Link live
     "RENDER_BACKEND": "vast", // chi fa i render: "vast" = GPU vere a pagamento (produzione) · "mock" = finto, gratis, 1 minuto (test) · "pool" = solo i runner GitHub · "manual" = un container avviato a mano
     "POOL_AFTER_MIN": "3", // in modalità vast: un video fermo in coda da tanti minuti può essere preso dal runner gratuito di GitHub Actions (render-pool.yml)
     "VAST_RETRY_MIN": "30", // se Vast.ai risponde "nessuna offerta" o "credito finito", non lo si interpella per tanti minuti (intanto lavorano i runner)

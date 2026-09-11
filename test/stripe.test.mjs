@@ -112,6 +112,14 @@ test("un importo che non corrisponde a nessun pacchetto non compra niente", asyn
   assert.equal(balance(env, "u_buyer"), 0);
 });
 
+test("una valuta diversa da EUR non accredita, anche se l'importo coincide", async () => {
+  const env = newEnv(); user(env, "u_buyer");
+  const r = await post(env, session({ currency: "usd" }));
+  assert.equal(r.status, 200);
+  assert.equal(balance(env, "u_buyer"), 0);
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM payments").get().n, 0);
+});
+
 test("un pagamento senza account viene comunque registrato", async () => {
   const env = newEnv();
   const r = await post(env, session({ client_reference_id: "u_non_esiste" }));

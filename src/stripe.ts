@@ -122,6 +122,12 @@ export async function handleStripeWebhook(request: Request, env: Env): Promise<R
 
   // Everything below is a reason to accept the event and do nothing — never a reason to make Stripe retry.
   if (!sessionId || !paid) return json({ ok: true, ignored: "not a completed payment" });
+  // The live catalogue is EUR-only. Amounts alone are not enough here: the old USD links must never be able to
+  // mint credits if one of them is still reachable from a cached page or an old message.
+  if (currency !== "eur") {
+    await audit(env, null, null, "stripe.wrong_currency", { session: sessionId, currency: currency || null });
+    return json({ ok: true, ignored: `unsupported currency ${currency || "unknown"}` });
+  }
   const pack = packForAmount(cents);
   if (!pack) return json({ ok: true, ignored: `no pack costs ${cents} ${currency}` });
 
