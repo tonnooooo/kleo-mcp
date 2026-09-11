@@ -223,3 +223,21 @@ The pass costs a minute: extract one frame from the middle of every scene of a f
 at them. `ffmpeg -ss <t> -i master.mp4 -frames:v 1 frame.png`, with `<t>` read from `build/timeline.json`.
 Do it before calling a render good. The suite proves that what somebody thought to check still works; it
 says nothing about what nobody thought of.
+
+## 7. One repair that was measured and then not built
+
+Two drawings landing on top of each other is the last visible defect class in this look — a lock over a
+crowd reads as a lock standing on a row of little legs, because the nearer drawing paints an opaque black
+body over the other. It looks like something a repair could fix: `scripts/sketch-extent.mjs` now measures
+the full bounding box of all fifty-nine drawings, so overlap is arithmetic.
+
+It was not built, because the discriminator does not exist. In the film the channel shipped, `hand` at
+(506, 938) and `keycard` at (700, 900) **overlap by 75 % of the hand's height** — deliberately, because a
+hand holding a card is the whole point of that shot. Every candidate signal that would separate that from
+the accidental case was tried against it and failed: overlap fraction, size ratio, whether the nearer
+drawing has an opaque body. Any rule strict enough to catch the lock refuses the reference.
+
+So the numbers go in the guide instead, where they help the author decide, and nothing refuses anything:
+a drawing is about 420 × 383 at size 1, so two want ~450 pixels between centres; the big ones
+(`crowbar` 949 × 840, `door` 761 tall, `bell` 680 × 684) want more, the small ones (`tag` 178 × 107)
+far less. Written here so the attempt is not repeated: the measurement exists, the rule cannot.
