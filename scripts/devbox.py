@@ -111,7 +111,7 @@ def up(tries=None):
     # apart returned nothing, an A100 at 0.68, and nothing again. A single search that gives up is a coin toss,
     # so keep asking for a while (a 429 from Vast lands here too and is retried the same way).
     deadline = time.time() + float(os.environ.get("DEVBOX_OFFER_WAIT_MIN", "10")) * 60
-    tried, last = set(), None
+    tried, last = set(bad_hosts()), None
     for n in range(tries):
         # A FRESH search for every attempt. The list is stale within minutes: on 13 September the second and
         # third offers were eight minutes old by the time the first host had failed to answer, and both had gone
@@ -145,9 +145,31 @@ def up(tries=None):
                     print(f"  destroyed {st['id']} (never answered)", flush=True)
                 except SystemExit:
                     pass
+                bad_hosts(add=off.get("machine_id"))
             if os.path.exists(STATE):
                 os.remove(STATE)
     raise SystemExit(f"no machine answered after {tries} tries ({last})")
+
+
+BAD = STATE + ".badhosts"
+BAD_TTL_S = float(os.environ.get("DEVBOX_BADHOST_HOURS", "3")) * 3600
+
+
+def bad_hosts(add=None):
+    """Machines that were rented and never answered, remembered ACROSS processes for a few hours. Within one
+    process `tried` already skips them; the 13 September relaunch was a new process, and it rented the very host
+    the previous one had just destroyed for silence — seven more minutes of a card doing nothing."""
+    try:
+        bad = json.load(open(BAD)) if os.path.exists(BAD) else {}
+    except Exception:
+        bad = {}
+    now = time.time()
+    bad = {k: t for k, t in bad.items() if now - t < BAD_TTL_S}
+    if add is not None:
+        bad[str(add)] = now
+    if add is not None or os.path.exists(BAD):
+        json.dump(bad, open(BAD, "w"))
+    return {int(k) for k in bad}
 
 
 def rent_and_wait(off):
