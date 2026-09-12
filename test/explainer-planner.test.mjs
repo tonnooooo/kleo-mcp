@@ -500,3 +500,20 @@ test("a drawing that is both drawn and cued is on the page from frame one, not w
   assert.equal(first.drawn, true);
   assert.ok(!("at" in first), "drawn wins: the cue is dropped so the drawing does not wait for its word");
 });
+
+test("an empty tag is dropped and a still drawing is kept inside the frame", () => {
+  // Both seen on the first film the planner wrote and a card rendered: the closing line played over a small
+  // yellow rectangle with no text in it, and a laptop and a router were each cut in half by the right edge.
+  const plan = planFor(job("explainer-short", 45, "9:16", "en", "x"));
+  const out = normalizeStoryboard({ scenes: [{
+    id: "01-a", kind: "sketch", accent: "yellow", voice: "Check the network before you connect to it tonight.",
+    shot: { zoom: [1, 1.3], focus: [540, 860] },
+    art: [{ name: "tag", drawn: true }, { name: "laptop", x: 900, y: 1000, at: "the network" }, { name: "router", x: 60, y: 700, at: "connect", motion: "slide" }],
+  }] }, plan);
+  const art = out.scenes[0].art;
+  assert.ok(!art.some((a) => a.name === "tag"), "a tag with no words is an empty box and is dropped");
+  const laptop = art.find((a) => a.name === "laptop");
+  assert.ok(laptop.x + 493 / 2 <= 1080, `a still laptop at x=900 is half off the page; it is now at ${laptop.x}`);
+  const router = art.find((a) => a.name === "router");
+  assert.equal(router.x, 60, "a drawing with a motion may start off the page: that is what the motion is for");
+});

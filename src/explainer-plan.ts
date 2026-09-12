@@ -215,8 +215,14 @@ export function repairExplainerScene(s: Record<string, unknown>, format: string,
     // "drawn" and "at" together are a contradiction the engine used to resolve in favour of the cue, so a
     // scene whose opening drawing carried both opened on nothing. Drawn means on the page from frame one.
     if (a.drawn === true) delete a.at;
-    if ("x" in a) a.x = num(a.x, -fw * 0.4, fw * 1.4, fw / 2);
     if ("size" in a) a.size = num(a.size, 0.1, 6, 1);
+    if ("x" in a) {
+      a.x = num(a.x, -fw * 0.4, fw * 1.4, fw / 2);
+      // The contract lets a drawing sit off the page so a motion can bring it in. A drawing with no motion
+      // that sits across the edge is simply clipped: the first real render cut a laptop and a router in half.
+      const half = ((SKETCH_W[a.name as string] ?? 420) * (typeof a.size === "number" ? a.size : 1)) / 2;
+      if (!a.motion && half * 2 < fw) a.x = Math.min(Math.floor(fw - half), Math.max(Math.ceil(half), a.x as number));
+    }
     if ("y" in a) {
       a.y = num(a.y, -fh * 0.25, fh * 1.25, Math.round(fh * 0.45));
       // The caption owns the bottom of the frame and the validator refuses a drawing that sits under it.
@@ -234,6 +240,10 @@ export function repairExplainerScene(s: Record<string, unknown>, format: string,
     for (const key of ["open", "open_to"] as const) if (key in a) a[key] = num(a[key], 0, 1, 0.5);
     if ("swing_over" in a) a.swing_over = num(a.swing_over, 0.2, 3, 1);
     if ("text" in a) { const tx = String(a.text ?? "").slice(0, 24).trim(); if (tx && a.name === "tag") a.text = tx; else delete a.text }
+    // A tag is a label: without words it is an empty box, and the closing line of the first film the planner
+    // wrote played over exactly that — a small yellow rectangle with nothing in it. It is dropped, and the
+    // scene falls through to the repair that draws what the line names.
+    if (a.name === "tag" && !a.text) return;
     for (const flag of ["no", "sweat", "xray", "flash", "flip", "leader"] as const) if (flag in a && typeof a[flag] !== "boolean") delete a[flag];
     if ("reach" in a && !(Array.isArray(a.reach) && a.reach.length === 2)) delete a.reach;
     art.push(a);
