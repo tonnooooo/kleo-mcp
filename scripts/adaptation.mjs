@@ -19,6 +19,7 @@
  * Run: node scripts/adaptation.mjs          (prints a report; exits 1 if accuracy falls under the floor)
  * It reads src/storyboard.ts and changes nothing.
  */
+import { pathToFileURL } from "node:url";
 import { planFor, pickKleoStyle, pickKleoStyleWhy } from "../src/storyboard.ts";
 import { TEMPLATES, findTemplate } from "../src/templates.ts";
 
@@ -201,6 +202,13 @@ function decide(prompt, template, language) {
   };
 }
 
+// RUNS ONLY AS THE ENTRY POINT. The three held-out sets above are exported so that other measurements (the phase-0
+// bench in scripts/direction-measure, the explainer session's look-benchmark) read ONE corpus instead of keeping
+// copies that drift. But exporting them made this file importable, and until this guard existed, importing it ran
+// the whole word-list measurement and then called process.exit — which killed the importer before its first line.
+// The bench's first real run on the model died exactly that way, printing this file's report in its place.
+const isMain = !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMain) {
 const FIELDS = ["look", "engine", "scenes", "words", "brief"];
 const TEMPLATE = "viral-short";   // one template throughout, so anything that moves moved because of the PROMPT
 
@@ -350,3 +358,4 @@ line(ok
   ? `PASS — ${pct(allHeld.filter((h) => h.ok).length, allHeld.length)} held-out, at or above the ${pct(BASELINE, 1)} baseline. The baseline is what this scores today, not what it should score.`
   : `FAIL — ${pct(allHeld.filter((h) => h.ok).length, allHeld.length)} held-out is BELOW the ${pct(BASELINE, 1)} baseline: a change made the reasoning worse on requests it never saw.`);
 process.exit(ok ? 0 : 1);
+}
