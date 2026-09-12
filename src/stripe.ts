@@ -1,6 +1,7 @@
 import type { Env } from "./env";
 import { getUser, creditPurchase, paymentByIntent, setPaymentStatus, takeBackCredits, audit } from "./db";
 import { json, hmacHex, safeEqual } from "./util";
+import { isFlagActive } from "./schema";
 
 /**
  * The credit packs. ONE list, and it is the only place a price and a number of credits are tied together: the
@@ -37,7 +38,22 @@ export const sellingOpen = (env: Env): boolean =>
 export const buyUrl = (env: Env, pack: (typeof PACKS)[number], userId: string): string =>
   `${env[pack.linkVar]}?client_reference_id=${encodeURIComponent(userId)}`;
 
-/** The pack an amount bought, or null. Matched on the amount Stripe reports, never on what the page displayed. */
+/**
+ * Whether the buttons should be SHOWN right now: selling is configured AND Kleo can currently deliver what it sells.
+ * The second half is a flag the orchestrator raises when the Vast balance falls under VAST_MIN_BALANCE_TO_SELL, and
+ * lets expire on its own when money comes back. On 12 September the shop was open with the balance at $0.00: two
+ * paying customers would have bought credits for a service that could not render a single frame.
+ *
+ * Only the BUTTONS follow this. The webhook does not: anyone who already paid — from a cached page, an old
+ * message, a link opened just before the balance fell — is credited regardless. Not showing the door is a
+ * kindness; refusing somebody who already walked through it is theft.
+ */
+export async function sellingAvailable(env: Env): Promise<boolean> {
+  return sellingOpen(env) && !(await isFlagActive(env, SELLING_PAUSE));
+}
+export const SELLING_PAUSE = "selling_pause";
+
+/** The pack an amount bought, or null./** The pack an amount bought, or null. Matched on the amount Stripe reports, never on what the page displayed. */
 export const packForAmount = (cents: number): (typeof PACKS)[number] | null =>
   PACKS.find((p) => p.cents === cents) ?? null;
 

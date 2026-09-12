@@ -1,11 +1,12 @@
 import type { Env } from "./env";
 import { type Job, type JobState, ACTIVE_STATES, OPEN_STATES, GPU_ONLY_WAIT, PLAN_WAIT, unexplainedUnplannedJobs, activeJobs, queuedJobs, queuedPictureJobs, staleQueuedJobs, jobInstances, unplannedJobs, claimPlanAttempt, countRunning, runningPaidJobs, spentTodayUsd, addJobCost, rememberTriedMachine, updateJob, transitionJob, audit, refundCredits, expiredJobs, listFiles, deleteFiles, setFile, getJob, reserveJob, unreserveJob } from "./db";
 import { backendFor, getBackend } from "./backends";
-import { vastStatus, GONE, listKleoInstances, destroyInstance } from "./backends/vast";
+import { vastStatus, GONE, vastCredit, listKleoInstances, destroyInstance } from "./backends/vast";
 import { int, num, nowIso, minutesSince, secondsSince, addDays, base64ToBytes, rid } from "./util";
 import { TINY_MP4_B64 } from "./assets";
 import { resultLinks, FILE_NAMES } from "./jobs";
 import { jobTimeoutMin, renderSilenceMin, isVideoStyle, styleOfJob } from "./templates";
+import { sellingOpen, SELLING_PAUSE } from "./stripe";
 import { notifyDone } from "./notify";
 import { putFile, deleteFile } from "./storage";
 import { acquireLock, releaseLock, holdLock, setFlagUntil, isFlagActive } from "./schema";
@@ -188,6 +189,7 @@ async function tickInner(env: Env, stats: Stats) {
   // Both are read exactly where vast_unavailable is read, so pressing either really does stop GPU rentals.
   const paused = await isFlagActive(env, "paused");
   const overBudget = backend.name === "vast" && !paused && (await budgetGate(env, running));
+  if (backend.name === "vast") await guardSelling(env);
   const noGpu = providerDown || paused || overBudget;
   if (backend.name !== "pool" && !noGpu) for (const job of await queuedJobs(env, max - running)) {
     // Re-read, per rental and not per tick: the tick lock can expire under a slow Vast, and a second tick that
@@ -351,6 +353,26 @@ async function budgetGate(env: Env, running: number): Promise<boolean> {
  * `error`, which is the one field a queued job's status shows, so kleo_get_job and kleo_wait_for_video repeat it
  * instead of repeating an ETA that nothing is working towards.
  */
+/**
+ * Closes the shop when there is nothing to sell. Not the payments — the BUTTONS. The balance is read once per tick
+ * and the pause is raised for fifteen minutes and renewed while the money stays low, so it clears itself within a
+ * quarter of an hour of a top-up with nobody pressing anything. A balance that cannot be read (null) changes
+ * nothing: one Vast hiccup must not close the shop.
+ */
+async function guardSelling(env: Env): Promise<void> {
+  if (!sellingOpen(env)) return; // nothing to guard
+  const credit = await vastCredit(env);
+  if (credit === null) return;
+  const floor = num(env.VAST_MIN_BALANCE_TO_SELL, 1);
+  const paused = await isFlagActive(env, SELLING_PAUSE);
+  if (credit < floor) {
+    await setFlagUntil(env, SELLING_PAUSE, 15 * 60);
+    if (!paused) await audit(env, null, null, "selling.paused", { credit, floor });
+  } else if (paused) {
+    await audit(env, null, null, "selling.resumed", { credit, floor, note: "flag left to expire on its own" });
+  }
+}
+
 async function explainPlanWait(env: Env): Promise<void> {
   for (const job of await unexplainedUnplannedJobs(env)) {
     const previous = job.error?.trim();

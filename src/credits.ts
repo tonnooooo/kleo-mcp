@@ -1,7 +1,7 @@
 import type { Env } from "./env";
 import { getUser, type User } from "./db";
 import { cookieHandle, makeHandle, verifyHandle, verifyViewToken } from "./accounts";
-import { PACKS, sellingOpen, buyUrl } from "./stripe";
+import { PACKS, sellingOpen, sellingAvailable, buyUrl } from "./stripe";
 import { html, escapeHtml } from "./util";
 
 /** The one address a stranger can write to. It is also in the site footer; both must always say the same thing. */
@@ -20,16 +20,16 @@ export async function handleCredits(request: Request, env: Env): Promise<Respons
   const ownerId = await verifyHandle(env, cookieHandle(request.headers.get("cookie")));
   const userId = (await verifyViewToken(env, url.searchParams.get("k"))) ?? ownerId;
   const user = userId ? await getUser(env, userId) : null;
-  if (!user) return html(page(null, "", env), 404);
+  if (!user) return html(page(null, "", env, false), 404);
   // Only the browser that IS this account sees the key; a shared link shows the balance and nothing worth stealing.
   const key = ownerId === user.id ? await makeHandle(env, user.id) : "";
-  return html(page(user, key, env));
+  return html(page(user, key, env, await sellingAvailable(env)));
 }
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-function page(user: User | null, handle: string, env: Env): string {
-  const open_ = sellingOpen(env);
+function page(user: User | null, handle: string, env: Env, open_: boolean): string {
+  const configured = sellingOpen(env);
   // The buttons exist only when selling is actually configured. Until then the same three packs are shown as plain
   // text with an honest badge: a page that offers a button nobody can pay through is worse than one that says wait.
   const packs = PACKS.map((p) => {
@@ -49,7 +49,7 @@ function page(user: User | null, handle: string, env: Env): string {
     ? `<h1>${escapeHtml(plural(user.credits, "credit"))} left</h1>
 <p>1 credit per Short (up to 90 seconds), 3 credits up to 5 minutes, +1 credit per extra minute. The credits come back in full if a render fails, or if you cancel it before it starts; cancelling part-way through gives back the part that was not rendered.</p>
 <h2>Credit packs</h2>
-${open_ ? `<p>Payment is handled by Stripe: Kleo never sees your card. Credits land on this account within a few seconds of paying, and the page shows the new balance when you reload it.</p>` : `<div class="badge">Card payments are not open yet - Kleo is free while it is in beta.</div>`}
+${open_ ? `<p>Payment is handled by Stripe: Kleo never sees your card. Credits land on this account within a few seconds of paying, and the page shows the new balance when you reload it.</p>` : configured ? `<div class="badge">Credit packs are paused for a moment: Kleo is topping up its rendering capacity so that every credit sold can actually be rendered. Try again in a little while - nothing is wrong with your account.</div>` : `<div class="badge">Card payments are not open yet - Kleo is free while it is in beta.</div>`}
 <ul class="packs">${packs}</ul>
 ${open_ ? `<p>One payment, no subscription, nothing renews. Credits do not expire.</p>` : `<p>These are the prices the packs will have. When they open, this page is where you will buy them - nothing else about Kleo changes.</p>`}
 <div class="foot">Out of credits, or something went wrong? Write to <a href="mailto:${CONTACT}">${CONTACT}</a>.</div>

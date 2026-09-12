@@ -162,3 +162,22 @@ test("senza configurazione la vendita e' chiusa, e il webhook chiede di riprovar
   const r = await post(env, session());
   assert.equal(r.status, 503, "503 e non 404: Stripe ritenta per tre giorni e il pagamento si accredita da solo quando il segreto arriva");
 });
+
+/* ------------------------------------------------------------------ do not sell what cannot be rendered */
+
+test("i bottoni spariscono quando la bandiera 'selling_pause' e' alzata, e il webhook accredita lo stesso", async () => {
+  const env = newEnv(); user(env, "u_buyer");
+  env.DB.db.exec("CREATE TABLE IF NOT EXISTS locks (name TEXT PRIMARY KEY, until TEXT NOT NULL)");
+  assert.equal(await m.sellingAvailable(env), true, "configurata e con benzina: si vende");
+
+  // Il 12 settembre: vendita aperta, saldo Vast 0,00 $. L'orchestratore alza la bandiera per 15 minuti.
+  await m.setFlagUntil(env, m.SELLING_PAUSE, 900);
+  assert.equal(await m.sellingAvailable(env), false, "senza benzina i bottoni non si mostrano");
+  assert.equal(m.sellingOpen(env), true, "ma la configurazione resta: e' una pausa, non una chiusura");
+
+  // Chi ha gia' pagato — da una pagina in cache, un vecchio messaggio, un link aperto un attimo prima — viene
+  // accreditato comunque. Non mostrare la porta e' una cortesia; rifiutare chi l'ha gia' attraversata e' un furto.
+  const r = await post(env, session());
+  assert.equal(r.status, 200);
+  assert.equal(balance(env, "u_buyer"), 10, "pagato = accreditato, bandiera o no");
+});

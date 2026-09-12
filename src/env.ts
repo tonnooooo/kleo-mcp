@@ -66,6 +66,7 @@ export interface Env {
   STRIPE_LINK_5?: string;
   STRIPE_LINK_15?: string;
   STRIPE_LINK_40?: string;
+  VAST_MIN_BALANCE_TO_SELL?: string; // dollars of Vast balance under which the buy buttons hide themselves (default 1.00); the webhook still honours anyone who already paid
 
   RESEND_API_KEY?: string;
   NOTIFY_FROM?: string;

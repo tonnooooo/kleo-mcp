@@ -334,6 +334,19 @@ export const vastBackend: RenderBackend = {
  */
 export const GONE = "gone";
 
+/**
+ * The Vast.ai balance, in dollars, or null when it could not be read. Null is not zero: a failed call must not be
+ * read as "the money is gone", or one API hiccup would close the shop.
+ */
+export async function vastCredit(env: Env): Promise<number | null> {
+  try {
+    const r = await vast<{ credit?: number }>(env, "GET", "/users/current/");
+    return typeof r.credit === "number" ? r.credit : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function vastStatus(env: Env, job: Job): Promise<string | null> {
   if (!job.instance_id) return null;
   try {
