@@ -6,7 +6,7 @@ worker-configuration.d.ts
 .secrets.local
 __pycache__/
 *.pyc
-scripts/.devbox.json
+scripts/.devbox.json*
 
 # The engine writes every render here: project.json, build/ and out/ for each job. Untracked and never
 # committed, but not ignored either — so a run interrupted before its cleanup left a whole rendered video sitting
