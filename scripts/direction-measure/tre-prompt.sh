@@ -6,7 +6,8 @@
 #   1. 0a30b4a  (in produzione)   due volte di fila: la prima e' il numero, la seconda e' la soglia di rumore
 #   2. 111c205  (ramo parts-first) una volta
 #   3. 6f153e1  (il "prima")       una volta, se i neuroni bastano
-# ~5.600 neuroni su 10.000: si lancia a quota piena e da UNA sessione sola, con la riga in QUOTA.md prima
+#   4. d9d8216  (ramo confident)   una volta: aggiunge una frase al prompt, e un prompt diverso si misura
+# ~7.000 neuroni su 10.000: si lancia a quota piena e da UNA sessione sola, con la riga in QUOTA.md prima
 # (lo script la scrive lui, e run.mjs scrive quella a fine corsa).
 #
 # Ogni prompt gira nel suo worktree staccato sul suo commit, con il suo banco su una porta sua. Mai dalla cartella
@@ -30,14 +31,15 @@ LOTTO=(
   "0a30b4a|produzione|8791|2"
   "111c205|parts-first|8792|1"
   "6f153e1|prima|8793|1"
+  "d9d8216|confident|8794|1"     # ramo regia/confident: una frase in piu' nel prompt, quindi un prompt diverso
 )
 
 cd "$ROOT"; git fetch -q origin 'refs/heads/*:refs/remotes/origin/*' 2>/dev/null || true
 PIDS=()
-cleanup() { for riga in "${LOTTO[@]}"; do IFS='|' read -r _ _ PORTA _ <<<"$riga"; fuser -k -KILL "$PORTA/tcp" >/dev/null 2>&1 || true; done; for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done; }
+cleanup() { for riga in "${LOTTO[@]}"; do IFS='|' read -r _ _ PORTA _ <<<"$riga"; fuser -k -KILL "$PORTA/tcp" >/dev/null 2>&1 || true; done; for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done; sleep 1; }
 trap cleanup EXIT
 
-echo "    $(date -u +%Y-%m-%dT%H:%MZ) | $KLEO_SESSION | tre-prompt.sh: lotto 0a30b4a x2, 111c205, 6f153e1 su scout | 108 | ~5600 stimati | IN CORSO" >> "$LEDGER"
+echo "    $(date -u +%Y-%m-%dT%H:%MZ) | $KLEO_SESSION | tre-prompt.sh: lotto 0a30b4a x2, 111c205, 6f153e1, d9d8216 su scout | 135 | ~7000 stimati | IN CORSO" >> "$LEDGER"
 
 for riga in "${LOTTO[@]}"; do
   IFS='|' read -r COMMIT NOME PORTA REP <<<"$riga"
