@@ -7,7 +7,7 @@
 | chi sceglie | quando | precisione misurata |
 |---|---|---|
 | **L'assistente dell'utente** | scrive lui lo storyboard con la regia | non misurabile da qui: e' il suo modello, non il nostro |
-| **Il modello di Kleo** (fase 0) | l'utente non manda uno storyboard | **70%** (19/27) sul prompt `6f153e1`, misurato il 12 settembre |
+| **Il modello di Kleo** (fase 0) | l'utente non manda uno storyboard | **nessun numero valido**: l'unica corsa sul modello vero non e' attribuibile a un commit (sotto) |
 | **La lista di parole** (`pickKleoStyle`) | solo se la chiamata al modello fallisce | **26%** su richieste mai viste |
 
 Il 26% e' stato citato per ore come "la precisione di Kleo". Non lo e': da quando `planFor` preferisce la
@@ -41,50 +41,27 @@ La formulazione misurata qui e' **la mia**, non quella spedita: la sessione dell
 la propria (`8a09921`), che descrive tutti e cinque i look per la FORMA della risposta invece che per l'argomento.
 Va rimisurata sopra quella.
 
-## Il modello vero, misurato (12 settembre, prompt `6f153e1`)
+## Il modello vero: una corsa fatta, e da buttare (12 settembre)
 
-Ventisette richieste mai viste, una chiamata di fase 0 ciascuna a llama-4-scout, ~50 neuroni l'una, dal banco
-`scripts/direction-measure` (risultato riga per riga in `results/`).
+Ventisette richieste, una chiamata di fase 0 ciascuna a llama-4-scout — il modello di produzione, riconoscibile
+dal costo, ~55 neuroni l'una — 19/27. E' l'unica corsa mai fatta sul modello vero, e **non vale come numero di
+nessun prompt**: il banco era stato avviato dalla cartella condivisa, un'altra sessione stava scrivendo proprio
+quel prompt in quella cartella durante la corsa (il testo `PARTS` era nell'albero alle 22:31 UTC e nel commit
+`0a30b4a` alle 22:33), e `wrangler dev` ricarica il Worker a ogni salvataggio. Le 27 risposte possono appartenere
+a due testi diversi. Il file dei risultati resta in `results/` con "NON ATTRIBUIBILE" nel nome, perche' la forma
+dell'errore e' piu' utile del numero: **il banco impacchetta l'albero come il deploy, e si avvia da un worktree
+staccato o non misura niente**.
 
-| | giuste |
-|---|---|
-| totale | **19/27 = 70%** |
-| insieme A (altra sessione) | 5/10 |
-| insieme B (MAIN) | 7/10 |
-| insieme C (confine, scritto dall'autore del prompt) | **7/7** |
-| italiano / inglese | 10/14 / 9/13 |
+Quello che quella corsa mostra comunque, come indizio e non come misura: explainer scelto 17 volte dove ne erano
+attese 10, con la ragione "e' la scelta migliore per spiegare" — il modello sceglie per il verbo, cioe' fa cio'
+che la riga gli vietava. Un modello da 17 miliardi non esegue una negazione; serve un bivio positivo prima delle
+definizioni. E' la diagnosi da cui e' nato il ramo `explainer/parts-first`.
 
-**Sette degli otto errori sono "-> explainer".** Il modello ha risposto explainer 17 volte su 27; le attese erano
-10. E la ragione che scrive e' sempre la stessa: *"e' la scelta migliore per SPIEGARE come funziona un semaforo /
-come si sceglie un materasso"* — sceglie per il verbo, che e' esattamente quello che la riga gli vietava ("the
-words explain, why, how do NOT choose it"). Un modello da 17 miliardi non esegue una negazione: legge "explain"
-e "explainer" e li unisce. Serve un test positivo che lo porti altrove, messo PRIMA delle definizioni.
-
-E l'insieme C, scritto dalla stessa sessione che ha scritto il prompt, fa 100% mentre gli altri due fanno 60%.
-Non e' una prova che il prompt sia stato tarato su C; e' la forma che un prompt tarato avrebbe, e la controprova
-e' proprio A e B.
-
-Il prompt e' stato riscritto (`0a30b4a`: le PARTI come primo bivio, i verbi non scelgono) dalla sessione
-dell'explainer, ed e' in produzione da `ed310a8`. **Sul modello di produzione non e' ancora misurato.**
-
-**Il modello conta quanto il prompt, e per un giro nessuno l'ha guardato.** Il benchmark della sessione
-dell'explainer nominava a mano un modello da 70 miliardi (`llama-3.3-70b`) mentre la produzione pianifica con
-quello da 17 (`llama-4-scout`, `wrangler.jsonc`). I suoi numeri — 63% sul prompt vecchio, 81% sul nuovo — dicono
-quanto la riscrittura ha aiutato **un modello che non spedisce nulla**. Sul modello vero esiste un solo numero:
-**70% sul prompt vecchio** (il banco qui, 55 neuroni a chiamata, che e' il prezzo di scout). Il benchmark ora
-legge `AI_MODEL` dallo stesso file di produzione e stampa quale modello ha usato (`6c56675`).
-
-Questa pagina, per dieci minuti, ha riportato l'81% come "stesso corpus, stesso modello" e ha chiamato "rumore fra
-due corse" la differenza fra 17/27 e 19/27 — che erano due MODELLI, non due corse. Tutte e due le frasi erano
-scritte sulla fede del titolo di un commit. Corrette qui; il commit che le ha introdotte e' `5553a43`.
-
-**Quanto balla il numero fra due corse dello stesso prompt sullo stesso modello: non lo sa nessuno.** Non
-esistono ancora due corse uguali. Prima cosa quando la quota torna: `0a30b4a` su scout, due volte di fila —
-una per il numero e una per la soglia sotto la quale due prompt non sono diversi. Costa ~2.800 neuroni e va
-scritta in `QUOTA.md` prima di partire.
-
-Il registro `scripts/direction-measure/QUOTA.md` esiste perche' la seconda corsa di questa sessione e' morta alla
-prima richiesta: la quota era stata consumata da un'altra, e nessuna delle due vedeva l'altra.
+**Tre prompt, zero numeri validi sul modello vero.** `6f153e1` (verbi), `0a30b4a` (parti, in produzione),
+`111c205` (parti come primo bivio, ramo). Il piano, gia' concordato e da fare da una sola sessione con la riga
+in `QUOTA.md` prima: `0a30b4a` su scout due volte di fila (numero + soglia di rumore), poi `111c205`, poi
+`6f153e1` come "prima" se i neuroni bastano. ~5.600 neuroni. Bloccato finche' la quota gratuita non torna: oggi
+l'hanno svuotata due sessioni in parallelo.
 
 ## Il dato che vale piu' della precisione
 

@@ -13,7 +13,7 @@ cancellato. Un file che git ignora non e' condiviso, e' privato per sbaglio.
 
     UTC | sessione | cosa | richieste | neuroni (~50 su scout, ~130 sul 70B) | esito
 
-    2026-09-12T22:25Z | BOSS/regia | fase 0, prompt 6f153e1, scout, 27 held-out | 28 | ~1550 | 19/27 = 70%
+    2026-09-12T22:25Z | BOSS/regia | fase 0, prompt NON ATTRIBUIBILE (banco avviato dalla cartella condivisa mentre un'altra sessione ci scriveva il prompt; wrangler dev ricarica a ogni salvataggio), scout | 28 | ~1550 | 19/27, DA BUTTARE
     2026-09-12T22:33Z | BOSS/regia | fase 0, prompt 0a30b4a, scout, ripetizione | 0 | 0 | RIFIUTATA 4006: quota finita da altri
 
 ## 2026-09-12/13 — KLEO-3 explainer (aggiunto a posteriori: il registro non esisteva ancora)
