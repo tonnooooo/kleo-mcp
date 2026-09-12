@@ -440,12 +440,18 @@ const POOL_SKIP = `NOT (${PICTURE_JOB})`;
 export const GPU_ONLY_WAIT = "waiting for a free GPU: this visual style draws every picture on a GPU, so the free pool cannot render it";
 
 /**
- * SQL for "this job already carries the wait explanation". The message contains no LIKE wildcard (% or _), so it is
- * its own pattern. Without this filter queuedPictureJobs kept handing back the same first twenty explained jobs and
- * every job past them stayed silent forever; explaining is one-shot, so the already-explained belong out of the page.
+ * SQL for "this job already carries the wait explanation": the explanation is the START of `error`. Without this
+ * filter queuedPictureJobs kept handing back the same first twenty explained jobs and every job past them stayed
+ * silent forever; explaining is one-shot, so the already-explained belong out of the page.
+ *
+ * NOT `error LIKE ?` with the sentence plus "%". D1 refuses any LIKE pattern longer than 50 bytes ("LIKE or GLOB
+ * pattern too complex", measured 12 September: 40 bytes pass, 60 fail) and this sentence is 110. SQLite evaluates
+ * the LIKE only when `error` is not NULL, so the query worked exactly once — while the job had no error yet — and
+ * from the tick after, once the explanation was written, every tick died with cron.error at this line: 445 of them
+ * in two days, and everything after explainGpuWait in the tick (the pool runners) never ran. instr() has no limit.
  */
-const GPU_WAIT_EXPLAINED = "error LIKE ?";
-const gpuWaitPattern = `${GPU_ONLY_WAIT}%`;
+const GPU_WAIT_EXPLAINED = "instr(error, ?) = 1";
+const gpuWaitPattern = GPU_ONLY_WAIT;
 
 /**
  * Left on `error` when a job cannot even be PLANNED: Kleo writes the storyboard with Workers AI, whose free daily
@@ -460,8 +466,8 @@ const gpuWaitPattern = `${GPU_ONLY_WAIT}%`;
 export const PLAN_WAIT =
   "waiting: Kleo cannot write the storyboard itself right now, because its daily free AI allowance is used up (it comes back within a day; the exact hour is not published and was measured to NOT be midnight UTC). Nothing else is wrong, and no GPU is running. Two ways out, both immediate: your assistant can write the storyboard itself with kleo_storyboard_guide and call kleo_create_video again passing it — that path never needs Kleo's AI and costs the same — or cancel this one with kleo_cancel_job and get the credits straight back";
 
-const PLAN_WAIT_EXPLAINED = "error LIKE ?";
-const planWaitPattern = `${PLAN_WAIT}%`;
+const PLAN_WAIT_EXPLAINED = "instr(error, ?) = 1"; // same reason as GPU_WAIT_EXPLAINED: 530 bytes, LIKE would refuse it
+const planWaitPattern = PLAN_WAIT;
 
 /**
  * Queued jobs with no storyboard that have not been told why yet. Oldest first, and only while planning is actually

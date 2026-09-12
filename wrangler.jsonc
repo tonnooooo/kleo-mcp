@@ -54,7 +54,7 @@
     "STRIPE_LINK_40": "https://buy.stripe.com/7sY14nbDlaJG6XfdN39ws05", // 40 EUR · 100 crediti · Payment Link live
     "RENDER_BACKEND": "vast", // chi fa i render: "vast" = GPU vere a pagamento (produzione) · "mock" = finto, gratis, 1 minuto (test) · "pool" = solo i runner GitHub · "manual" = un container avviato a mano
     "POOL_AFTER_MIN": "3", // in modalità vast: un video fermo in coda da tanti minuti può essere preso dal runner gratuito di GitHub Actions (render-pool.yml)
-    "VAST_RETRY_MIN": "30", // se Vast.ai risponde "nessuna offerta" o "credito finito", non lo si interpella per tanti minuti (intanto lavorano i runner)
+    "VAST_RETRY_MIN": "5", // se Vast.ai risponde "nessuna offerta" o "credito finito", non lo si interpella per tanti minuti (intanto lavorano i runner). Era 30: sabato 12 settembre alle 23:23 UTC una ricerca a vuoto ha spento il noleggio per mezz'ora, e nel frattempo nel mercato una macchina buona era comparsa e sparita due volte — le offerte cambiano di minuto in minuto, e una ricerca costa una chiamata
     "AI_MODEL": "@cf/meta/llama-4-scout-17b-16e-instruct", // modello Workers AI che scrive lo storyboard
     "IMAGE_MODEL_CARTOON": "@cf/black-forest-labs/flux-1-schnell", // Workers AI: immagini dello stile "cartoon" (≈58 neuroni ≈ $0.0006 a immagine, 1024², max 10 per video)
     "IMAGE_MODEL_REALISTIC": "@cf/leonardo/phoenix-1.0", // Workers AI: immagini dello stile "realistic" (≈2.300 neuroni ≈ $0.025 a immagine a 768x1344; alternativa gratuita in beta: @cf/bytedance/stable-diffusion-xl-lightning)

@@ -229,7 +229,7 @@ export const vastBackend: RenderBackend = {
     const offers = await searchOffers(env, styleOfJob(job));
     if (!offers.length) {
       const need = machineFor(styleOfJob(job));
-      throw new Error(`no Vast.ai offer matches the filters: ${need.minVramGb} GB of VRAM, compute ${need.minComputeCap / 100}, at most $${need.maxDph}/h`);
+      throw new Error(`no Vast.ai offer matches the filters: ${need.minVramGb} GB of VRAM, compute ${need.minComputeCap / 100}, at most $${Math.max(num(env.VAST_MAX_DPH, 0.4), need.maxDph)}/h`); // the ceiling really used: the audit of 12 September said "$0.4" while the search ran at 1.00, and the number was chased for nothing
     }
     // A retry must move HOST, which is the whole point of retrying a job that was still downloading after 23 minutes.
     // It could not: the requeue clears instance_id and instance_meta, and the search orders by price, so the machine
