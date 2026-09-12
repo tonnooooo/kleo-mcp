@@ -64,7 +64,7 @@ test("the boundary that cannot be guessed from the topic is spelled out", () => 
   // so the prompt has to say that, in those terms, or the model falls back to matching the topic.
   const text = directionPrompt(job(), planFor(job()));
   assert.match(text, /shape of the answer/i, "the discriminator has to be named as the shape of the answer");
-  assert.match(text, /never by its topic|not by (its )?topic/i, "and the topic has to be ruled out explicitly");
+  assert.match(text, /never by (its |the )?topic|not by (its |the )?topic/i, "and the topic has to be ruled out explicitly");
   const cyberAt = text.search(/cyber/i), explAt = text.search(/explainer/i);
   assert.ok(cyberAt > 0 && explAt > 0, "both sides of the boundary must appear");
   assert.ok(Math.abs(cyberAt - explAt) < 1200, "they must be described together, where the choice is actually made");
