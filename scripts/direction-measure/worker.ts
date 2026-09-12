@@ -42,6 +42,10 @@ const VARIANTS: Record<string, string> = {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    // GET / answers without touching the model: the readiness probe of tre-prompt.sh. Before this route the only
+    // way to ask "is the bench up?" was a real request, which cost ~50 neurons when the quota was there and made the
+    // ledger lie by one call when it was not.
+    if (request.method === "GET") return Response.json({ ok: true, bench: true, model: env.AI_MODEL ?? DEFAULT_MODEL });
     if (request.method !== "POST") return new Response("POST {template, prompt, duration_s, format, language}", { status: 405 });
     const b = (await request.json()) as { template?: string; prompt?: string; duration_s?: number; format?: string; language?: string; model?: string; variant?: string };
     const job = {
