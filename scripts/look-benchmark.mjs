@@ -50,7 +50,13 @@ const PROMPTS = ["HELD_OUT", "HELD_OUT_2", "HELD_OUT_3"].flatMap((n) => set(n).m
 if (PROMPTS.length < 20) { console.error(`only ${PROMPTS.length} prompts read from the corpus — the sets moved, fix the reader before trusting a number`); process.exit(2) }
 
 const words = process.argv.includes("--words");
-const account = /"account_id"\s*:\s*"([0-9a-f]+)"/.exec(readFileSync(resolve(root, "wrangler.jsonc"), "utf8"))?.[1];
+const WRANGLER = readFileSync(resolve(root, "wrangler.jsonc"), "utf8");
+const account = /"account_id"\s*:\s*"([0-9a-f]+)"/.exec(WRANGLER)?.[1];
+/** The model production plans with, read from the same file production reads. The first version of this
+ *  file named a 70B model by hand and scored 81 % on it; production runs a 17B model and scored 70 % on the
+ *  same prompt. A benchmark that measures a different model than the one shipping measures nothing. */
+const MODEL = /"AI_MODEL"\s*:\s*"([^"]+)"/.exec(WRANGLER)?.[1] ?? "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+console.error(`modello: ${MODEL}`);
 const token = /oauth_token\s*=\s*"([^"]+)"/.exec(readFileSync(`${process.env.HOME}/.wrangler/config/default.toml`, "utf8"))?.[1];
 
 const AI = {
@@ -69,7 +75,7 @@ const job = (p) => ({ id: "gt_bench", template: "viral-short", prompt: p.text, p
 /** Just step zero: one call, the direction, and the look it chose with its reason. */
 async function modelPick(p) {
   const plan = planFor(job(p));
-  const out = await AI.run("@cf/meta/llama-3.3-70b-instruct-fp8-fast", {
+  const out = await AI.run(MODEL, {
     messages: [{ role: "system", content: "You plan short videos. Answer with JSON only." }, { role: "user", content: directionPrompt(job(p), plan) }],
     max_tokens: 900, temperature: 0.3,
     response_format: { type: "json_schema", json_schema: directionSchema() },
