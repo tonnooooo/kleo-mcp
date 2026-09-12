@@ -30,6 +30,9 @@ $DB bg "cd /opt/kleo/repo && HF_HUB_OFFLINE=0 HF_HOME=/opt/kleo/hf python3 scrip
 $DB wait /opt/kleo/wan.log SCARICATO Traceback 25
 $DB run "du -sh /opt/kleo/hf"
 
+# Until the image is rebuilt with requirements-pictures.txt of 13 September: the still gate needs OpenCV.
+$DB run "python3 -c 'import cv2' 2>/dev/null && echo 'cv2 ok' || pip install -q opencv-python-headless==4.11.0.86 && python3 -c 'import cv2; print(\"cv2\", cv2.__version__)'"
+
 echo "== RENDER, detached =="
 $DB bg "cd /opt/kleo/repo && HF_HUB_OFFLINE=0 HF_HOME=/opt/kleo/hf KLEO_PICTURES=local KLEO_KEOU_DIR=/opt/kleo/keou KLEO_ENGINE=keou KLEO_KEOU_WORKERS=6 KLEO_RENDER_TIMEOUT_MIN=15 KLEO_VIDEO_STEPS=22 PYTHONUNBUFFERED=1 python3 scripts/motion-demo/gira.py" /opt/kleo/gira.log
 $DB wait /opt/kleo/gira.log "== FATTO ==" "== FALLITO" 45

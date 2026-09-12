@@ -165,6 +165,35 @@ def release():
         pass
 
 
+def write_clip(frames, path, fps=FPS_SRC):
+    """frames (HxWx3 each: numpy float in [0,1], numpy uint8, or PIL) -> an H.264 mp4, written by ffmpeg over a
+    raw RGB pipe. No imageio, no OpenCV. diffusers' export_to_video needs one of those two and the worker image
+    ships neither: on 13 September all four shots of a film were generated — thirteen minutes of an A100 — and
+    then lost at that one line, and the unit test never noticed because it had replaced export_to_video with a
+    fake that wrote 64 zero bytes. ffmpeg is the one dependency the engine cannot run without, so it is the one
+    the writer may rely on."""
+    import numpy as np
+    arr = []
+    for f in frames:
+        a = np.asarray(f)
+        if a.dtype != np.uint8:
+            a = (np.clip(a.astype(np.float32), 0, 1) * 255).round().astype(np.uint8)
+        if a.ndim == 2:
+            a = np.stack([a] * 3, -1)
+        arr.append(np.ascontiguousarray(a[..., :3]))
+    if not arr:
+        raise RuntimeError("no frames to write")
+    h, w = arr[0].shape[:2]
+    w2, h2 = w - w % 2, h - h % 2          # yuv420p wants even sides
+    cmd = ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", str(fps),
+           "-i", "-", "-vf", f"crop={w2}:{h2}:0:0", "-c:v", "libx264", "-preset", "medium", "-crf", "10",
+           "-pix_fmt", "yuv420p", "-movflags", "+faststart", path]
+    p = subprocess.run(cmd, input=b"".join(a.tobytes() for a in arr), capture_output=True)
+    if p.returncode != 0 or not os.path.isfile(path) or os.path.getsize(path) == 0:
+        raise RuntimeError("ffmpeg could not write the clip: " + p.stderr.decode(errors="replace")[-300:])
+    return path
+
+
 def generate_clips(shots, look, fmt, out_dir, seconds_of=None):
     """shots: [{"id", "image_prompt", "motion", "strength"}] -> {shot_id: mp4 path} for the ones that were made.
     Never raises for one shot: a clip that fails is simply absent and the caller falls back to the still."""
@@ -193,13 +222,12 @@ def generate_clips(shots, look, fmt, out_dir, seconds_of=None):
         path = os.path.join(out_dir, f"{sid}.mp4")
         t0 = time.time()
         try:
-            from diffusers.utils import export_to_video
             base = seed_for(sid)
             for attempt in range(RETRIES + 1):
                 g = torch.Generator(device="cuda").manual_seed(base + attempt * 7919)
                 out = pipe(prompt=prompt, negative_prompt=NEGATIVE, height=h, width=w, num_frames=n,
                            num_inference_steps=STEPS, guidance_scale=GUIDANCE, generator=g)
-                export_to_video(out.frames[0], path, fps=FPS_SRC)
+                write_clip(out.frames[0], path, fps=FPS_SRC)
                 if not (os.path.isfile(path) and os.path.getsize(path) > 0):
                     raise RuntimeError("empty file written")
                 moved = travel_px(path)
@@ -247,6 +275,10 @@ def travel_px(path, samples=8):
     try:
         import cv2, numpy as np
     except Exception:
+        if not getattr(travel_px, "warned", False):
+            travel_px.warned = True
+            log("travel gate OFF: OpenCV is not installed here, so a frozen clip will pass as filmed "
+                "(pip install opencv-python-headless; it is in requirements-pictures.txt from 13 September)")
         return None
     try:
         cap = cv2.VideoCapture(path)

@@ -106,8 +106,77 @@ class TimingTest(unittest.TestCase):
         self.assertIn(kv.alive("03-storm"), kv.ALIVE)
 
 
+def frames(n, w=16, h=16):
+    """n small frames with a moving stripe, float32 in [0, 1], the way the pipeline returns them."""
+    import numpy as np
+    out = np.zeros((n, h, w, 3), np.float32)
+    for t in range(n):
+        out[t, :, (t * 2) % w, :] = 1.0
+    return out
+
+
+def probe_frames(path):
+    import json, subprocess
+    r = subprocess.run(["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0",
+                        "-show_entries", "stream=nb_read_frames,width,height,codec_name", "-of", "json", path],
+                       capture_output=True, text=True, check=True)
+    st = json.loads(r.stdout)["streams"][0]
+    return int(st["nb_read_frames"]), int(st["width"]), int(st["height"]), st["codec_name"]
+
+
+class WriterTest(unittest.TestCase):
+    """The clip writer, with the two libraries diffusers' exporter needs made unimportable: the worker image ships
+    neither, and on 13 September every generated shot of a film was lost at export."""
+
+    def setUp(self):
+        import tempfile, shutil
+        self.tmp = tempfile.mkdtemp(prefix="kleo-writer-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.saved = {k: sys.modules.get(k) for k in ("cv2", "imageio", "imageio_ffmpeg", "diffusers.utils")}
+        for k in self.saved:
+            sys.modules[k] = None          # `import cv2` now raises ImportError, as on the box
+        self.addCleanup(lambda: [sys.modules.__setitem__(k, v) if v else sys.modules.pop(k, None)
+                                 for k, v in self.saved.items()])
+
+    def test_writes_a_playable_h264_clip_with_every_frame_and_no_opencv_or_imageio(self):
+        path = os.path.join(self.tmp, "a.mp4")
+        kv.write_clip(frames(13, 20, 18), path, fps=24)
+        n, w, h, codec = probe_frames(path)
+        self.assertEqual((n, w, h, codec), (13, 20, 18, "h264"))
+
+    def test_odd_sides_are_trimmed_to_even_not_refused(self):
+        path = os.path.join(self.tmp, "odd.mp4")
+        kv.write_clip(frames(5, 17, 15), path)
+        self.assertEqual(probe_frames(path)[1:3], (16, 14))
+
+    def test_uint8_and_pil_frames_are_accepted_too(self):
+        import numpy as np
+        from PIL import Image
+        u8 = (frames(5) * 255).astype(np.uint8)
+        kv.write_clip(list(u8), os.path.join(self.tmp, "u8.mp4"))
+        kv.write_clip([Image.fromarray(f) for f in u8], os.path.join(self.tmp, "pil.mp4"))
+        self.assertEqual(probe_frames(os.path.join(self.tmp, "u8.mp4"))[0], 5)
+        self.assertEqual(probe_frames(os.path.join(self.tmp, "pil.mp4"))[0], 5)
+
+    def test_no_frames_is_an_error_not_an_empty_file(self):
+        path = os.path.join(self.tmp, "none.mp4")
+        with self.assertRaises(RuntimeError):
+            kv.write_clip([], path)
+        self.assertFalse(os.path.exists(path))
+
+    def test_the_still_gate_says_it_is_off_when_it_cannot_look(self):
+        kv.travel_px.warned = False
+        said = []
+        orig = kv.log; kv.log = lambda *a: said.append(" ".join(str(x) for x in a))
+        self.addCleanup(lambda: setattr(kv, "log", orig))
+        path = os.path.join(self.tmp, "g.mp4"); kv.write_clip(frames(5), path)
+        self.assertIsNone(kv.travel_px(path))
+        self.assertTrue(any("travel gate OFF" in m for m in said), said)
+
+
 class GenerateTest(unittest.TestCase):
-    """generate_clips with a fake pipeline: no torch, no CUDA, no file the model wrote."""
+    """generate_clips with a fake pipeline: no torch, no CUDA. The frames are fake; the file is real — written by
+    the real writer through ffmpeg — because the file is where the 13 September run died."""
 
     def setUp(self):
         self.saved = {k: sys.modules.get(k) for k in ("torch", "diffusers", "diffusers.utils")}
@@ -123,9 +192,12 @@ class GenerateTest(unittest.TestCase):
         calls = self.calls
 
         class FakePipe:
+            # What the real pipeline hands back: frames[0] is T x H x W x 3, float32 in [0, 1]. Tiny, so that the
+            # REAL writer runs on them: the earlier fake replaced export_to_video with a stub that wrote 64 zero
+            # bytes, and the suite stayed green while the worker image could not save a single clip.
             def __call__(self, **kw):
                 calls.append(kw)
-                return types.SimpleNamespace(frames=[["frame"] * kw["num_frames"]])
+                return types.SimpleNamespace(frames=[frames(kw["num_frames"])])
             def to(self, d): return self
             def set_progress_bar_config(self, **kw): pass
             vae = types.SimpleNamespace(enable_tiling=lambda: None)
@@ -133,14 +205,9 @@ class GenerateTest(unittest.TestCase):
         diff = types.ModuleType("diffusers")
         diff.AutoencoderKLWan = types.SimpleNamespace(from_pretrained=staticmethod(lambda *a, **k: "vae"))
         diff.WanPipeline = types.SimpleNamespace(from_pretrained=staticmethod(lambda *a, **k: FakePipe()))
-        utils = types.ModuleType("diffusers.utils")
-
-        def export(frames, path, fps=24):
-            with open(path, "wb") as f:
-                f.write(b"\0" * 64)
-        utils.export_to_video = export
-        diff.utils = utils
-        sys.modules.update({"torch": torch, "diffusers": diff, "diffusers.utils": utils})
+        # No diffusers.utils on purpose: a writer that reaches for export_to_video again must fail here, loudly.
+        sys.modules.update({"torch": torch, "diffusers": diff})
+        sys.modules.pop("diffusers.utils", None)
         kv.release()
         import tempfile, shutil
         self.tmp = tempfile.mkdtemp(prefix="kleo-video-test-")
@@ -156,7 +223,7 @@ class GenerateTest(unittest.TestCase):
         self.assertEqual(sorted(made), ["01-hook", "02-sea"])
         for sid, path in made.items():
             self.assertEqual(path, os.path.join(self.tmp, sid + ".mp4"))
-            self.assertTrue(os.path.isfile(path))
+            self.assertEqual(probe_frames(path)[0], kv.frames_for(3.0), "every generated frame must reach the file")
         self.assertEqual([c["width"] for c in self.calls], [1280, 1280])
         self.assertEqual([c["height"] for c in self.calls], [704, 704])
 
@@ -184,7 +251,7 @@ class GenerateTest(unittest.TestCase):
                 boom["n"] += 1
                 if boom["n"] == 1:
                     raise RuntimeError("CUDA hiccup")
-                return types.SimpleNamespace(frames=[["f"] * kw["num_frames"]])
+                return types.SimpleNamespace(frames=[frames(kw["num_frames"])])
             def to(self, d): return self
             def set_progress_bar_config(self, **kw): pass
             vae = types.SimpleNamespace(enable_tiling=lambda: None)
