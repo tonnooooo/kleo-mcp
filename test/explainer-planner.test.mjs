@@ -210,10 +210,11 @@ test("every rule has an id, a reason and finds nothing on a film that obeys it",
   const ids = EXPLAINER_RULES.map((r) => r.id);
   assert.equal(new Set(ids).size, ids.length, "rule ids must be unique");
   for (const r of EXPLAINER_RULES) assert.ok(r.why.length > 20, `${r.id} has no reason written down`);
+  // Every scene opens on a drawing already on the page, as the shipped film does in all six of its scenes.
   const clean = [
     good(),
-    good({ id: "02-x", accent: "blue", voice: "But the card in your pocket is a radio, quietly.", art: [{ name: "keycard", at: "the card" }, { name: "signal", at: "is a radio", tint: "blue" }] }),
-    good({ id: "03-x", accent: "green", voice: "So who else has been walking into your room lately?", art: [{ name: "room", at: "who else" }, { name: "footprints", at: "into your room" }] }),
+    good({ id: "02-x", accent: "blue", voice: "But the card in your pocket is a radio, quietly.", art: [{ name: "keycard", drawn: true }, { name: "signal", at: "is a radio", tint: "blue" }] }),
+    good({ id: "03-x", accent: "green", voice: "So who else has been walking into your room lately?", art: [{ name: "room", drawn: true }, { name: "footprints", at: "into your room" }] }),
   ];
   assert.deepEqual(film(clean), []);
 });
