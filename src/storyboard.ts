@@ -463,7 +463,7 @@ function styleNamedBy(job: PlanJob): string {
 export function planNoteFor(r: Pick<PlanResult, "style" | "confident" | "blocked_upgrade" | "missing_facts">): string | null {
   const bits: string[] = [];
   if (r.confident === false)
-    bits.push(`Kleo chose the "${r.style}" look for this video but was not sure it is what you meant: if you wanted another, say cartoon, realistic, cyber or explainer next time and it will be honoured.`);
+    bits.push(`Kleo chose the "${r.style}" look for this video but was not sure it is what you meant. It is still in the queue: if you wanted another look, cancel it now with kleo_cancel_job (a full refund while it has not started) and create it again naming the style — cartoon, realistic, cyber or explainer.`);
   if (r.blocked_upgrade) bits.push(r.blocked_upgrade);
   if (r.missing_facts?.length)
     bits.push(`The narration never says ${r.missing_facts.map((f) => `"${f}"`).join(", ")}, which the plan had promised to keep.`);
@@ -630,8 +630,8 @@ RULES
   · cyber — the answer has STRUCTURE TO DIAGRAM: a flow with steps, a comparison of two things, a list, a set of numbers. Icons and big type, no pictures at all.
   · explainer — the answer is ONE IDEA TAKEN APART until the viewer believes something different at the end: one mechanism, one object, one misconception, and nothing to list or compare. Hand-drawn line art where every spoken phrase has its own literal drawing. The words "explain", "why", "how" in a request do NOT choose it — most requests for cyber and realistic say "explain" too. What chooses it is that the answer is a single thing and the viewer's belief about it changes.
   · stickman — only if the user asked for a stickman by name.
-  confident is your honesty about this choice. true only when the shape of the answer left ONE look standing; false when two looks were both defensible and you picked one. A false is not a failure: it is shown to the person, who then names the look they meant. A confident guess that is wrong is the only outcome that costs them a video.
   THE LINE BETWEEN cyber AND explainer IS THE ONE THAT MATTERS, and it is not the subject and not the verb. Ask: does the answer have PARTS? A flow from one named thing to the next, a breakdown into shares or percentages, several items, two things compared, a set of steps or numbers — that is cyber, whatever the request calls it. "Show how our data goes from the app to the servers to third parties" is cyber: three named parts and a flow between them. "Break down how much of a phone bill is the network" is cyber: shares of a whole. "The five costliest cyberattacks in history" is cyber: five items with figures. "Explain what a VPN is to my mother" is explainer: one thing, no parts, and she ends up believing something new. And a photographable subject with no mechanism in it — bread going mouldy, choosing a mattress, a place, a product — is realistic even when the request says "explain why". Decide which of these the request looks like before you decide anything else about it.
+  confident: after choosing, say whether the shape of the answer left ONE look standing (true) or whether two looks were both defensible and you picked one (false). Report what happened, nothing else: the choice is made the same way either way, and the person is told the look either way.
 - Everything you write here is in ${lang} except the enum values (style, accent), which stay in English.`;
 }
 
@@ -642,8 +642,10 @@ export const directionSchema = (): Record<string, unknown> => ({
   properties: {
     style: { type: "string", enum: [...KLEO_STYLES] },
     why: str,
-    // The model's own honesty about the look: measured, a reader that says it is sure is right 10 times in 11 and one
-    // that says it is not is right 5 in 16. That signal was being thrown away; now it travels to the user.
+    // The model's own honesty about the look. Measured on six independent READERS (not the production model,
+    // docs/SCELTA-DEL-LOOK.md and scripts/direction-measure/results/2026-09-11-sei-lettori-istruzione.json): a reader
+    // that says it is sure is right 10 times in 11, one that says it is not 5 in 16. Whether the model is calibrated the
+    // same way is what tre-prompt.sh measures (it records this field per answer). The signal used to be thrown away.
     confident: { type: "boolean" },
     direction: {
       type: "object",
@@ -1449,7 +1451,10 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     // Only meaningful when the model was the one choosing: a look the client named is not a bet, so its confidence
     // is nobody's business. Same rule planFor uses to tell a named look from a guessed one.
     if (!styleNamedBy(job)) { confident = typeof o.confident === "boolean" ? o.confident : null; chosenWhy = typeof o.why === "string" ? o.why.trim().slice(0, 200) || null : null; }
-    if (wanted && wanted !== plan.kleo) {
+    // Same guard as confident: a look the client NAMED is honoured by planFor whatever the model answered, so a
+    // "would have used X" note on it would scold the person for their own decision. Latent today (every look costs
+    // the same, so samePrice is always true) and wrong the day realistic costs seven.
+    if (wanted && wanted !== plan.kleo && !styleNamedBy(job)) {
       if (samePrice(wanted, plan.kleo, plan.duration)) { plan = planFor(job, wanted); system = systemPrompt(plan); }
       else {
         // NEVER A MUTE SUBSTITUTION, in either direction. Refusing the upgrade saves the money and loses the video:

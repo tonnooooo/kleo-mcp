@@ -68,7 +68,7 @@ async function planOne(env: Env, stats: Stats): Promise<number> {
         await audit(env, job.user_id, job.id, "job.plan.ignored", { reason: "job is no longer queued" });
         continue;
       }
-      await audit(env, job.user_id, job.id, "job.planned", { model: r.model, attempt: attempts, model_calls: r.attempts, ms: r.ms, usage: r.usage, est_neurons: r.est_neurons, words: r.words, scenes: r.scenes, fixture: r.fixture });
+      await audit(env, job.user_id, job.id, "job.planned", { model: r.model, attempt: attempts, model_calls: r.attempts, ms: r.ms, usage: r.usage, est_neurons: r.est_neurons, look: r.style, confident: r.confident, why: r.chosen_why, words: r.words, scenes: r.scenes, fixture: r.fixture });
       stats.planned++;
     } catch (e) {
       const msg = (e instanceof StoryboardError ? e.errors.join("; ") : String(e)).slice(0, 2000);

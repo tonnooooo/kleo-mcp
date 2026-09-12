@@ -76,7 +76,11 @@ async function resultPayload(env: Env, base: string, job: Job) {
   const sim = job.backend === "mock" ? "\nNOTE: this video was rendered in SIMULATED mode: the MP4 is a 1-second placeholder, not a real video." : "";
   const text = `Your ${what} ${job.id} is ready. The links work until ${niceDate(job.expires_at)}:\n` +
     Object.entries(links).sort(([a], [b]) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99)).map(([k, v]) => `${label[k] ?? k.replace("_url", "")}: ${v}`).join("\n") + sim;
-  return { data: { job_id: job.id, state: "done", expires_at: job.expires_at, mode: job.backend === "mock" ? "simulated" : "gpu", ...links }, text };
+  // The planner's note rides along with the links: this is the answer the assistant hands over, and the two that
+  // matter (kleo_get_result, the "done" branch of kleo_wait_for_video) came from here without jobView — so a look
+  // Kleo was not sure of was confessed everywhere except where the person was listening.
+  const note = job.plan_note ? `\n${job.plan_note}` : "";
+  return { data: { job_id: job.id, state: "done", expires_at: job.expires_at, mode: job.backend === "mock" ? "simulated" : "gpu", ...links, plan_note: job.plan_note ?? null }, text: text + note };
 }
 
 
@@ -211,7 +215,10 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     return ok({ ...view, credits_left: fresh.credits - job.credits, mode: simulated ? "simulated" : "gpu", message: summary }, summary);
   }));
 
-  const statusLine = (job: Job): string => {
+  /** The planner's note, as a sentence the assistant will actually repeat: data alone is data the instructions tell it not to comment on. */
+  const noteOf = (job: Job): string => (job.plan_note ? ` ${job.plan_note}` : "");
+  const statusLine = (job: Job): string => `${statusCore(job)}${noteOf(job)}`;
+  const statusCore = (job: Job): string => {
     const view = jobView(job);
     const what = kindOf(view.format);
     switch (job.state) {
@@ -292,10 +299,10 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     if (job.state === "cancelled") return ok({ ...jobView(job), next: "stop" }, `${what[0].toUpperCase() + what.slice(1)} ${job.id} was cancelled.`);
     const again = "Call kleo_wait_for_video again now to keep waiting; the links will come back from that call as soon as it is ready.";
     if (gpuOnlyWait(job))
-      return ok({ ...jobView(job), next: "call kleo_wait_for_video again" }, `Still waiting: ${what} ${job.id} has not started yet. ${gpuWaitText(what)} ${again}`);
+      return ok({ ...jobView(job), next: "call kleo_wait_for_video again" }, `Still waiting: ${what} ${job.id} has not started yet. ${gpuWaitText(what)}${noteOf(job)} ${again}`);
     const eta = job.eta_min ? ` About ${plural(job.eta_min, "minute")} to go.` : "";
     const where = job.state === "queued" ? "waiting for a renderer" : `${job.percent}% done (${trackLabel(job.track)})`;
-    return ok({ ...jobView(job), next: "call kleo_wait_for_video again" }, `Still rendering: ${what} ${job.id} is ${where}.${eta} ${again}`);
+    return ok({ ...jobView(job), next: "call kleo_wait_for_video again" }, `Still rendering: ${what} ${job.id} is ${where}.${eta}${noteOf(job)} ${again}`);
   }));
 
   server.registerTool("kleo_get_result", {
