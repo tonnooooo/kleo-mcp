@@ -65,17 +65,23 @@ Non e' una prova che il prompt sia stato tarato su C; e' la forma che un prompt 
 e' proprio A e B.
 
 Il prompt e' stato riscritto (`0a30b4a`: le PARTI come primo bivio, i verbi non scelgono) dalla sessione
-dell'explainer, che l'ha misurato con il proprio benchmark sullo stesso corpus e sullo stesso modello:
-**22/27 = 81%**, tutte e tre le coppie di confine giuste da entrambi i lati. E' in produzione da `ed310a8`.
+dell'explainer, ed e' in produzione da `ed310a8`. **Sul modello di produzione non e' ancora misurato.**
 
-**Quanto balla il numero fra due corse.** Lo stesso prompt `6f153e1` e' stato misurato due volte, da due banchi
-diversi, a temperatura 0.3: 17/27 e 19/27. **Due risposte su ventisette, sette punti, senza cambiare una
-virgola.** Quindi una differenza fra due prompt sotto i sette punti non e' una differenza: e' rumore. Il salto
-da 63-70 a 81 sta sopra quella soglia; un salto da 81 a 85 no, e non va creduto senza piu' corse.
+**Il modello conta quanto il prompt, e per un giro nessuno l'ha guardato.** Il benchmark della sessione
+dell'explainer nominava a mano un modello da 70 miliardi (`llama-3.3-70b`) mentre la produzione pianifica con
+quello da 17 (`llama-4-scout`, `wrangler.jsonc`). I suoi numeri — 63% sul prompt vecchio, 81% sul nuovo — dicono
+quanto la riscrittura ha aiutato **un modello che non spedisce nulla**. Sul modello vero esiste un solo numero:
+**70% sul prompt vecchio** (il banco qui, 55 neuroni a chiamata, che e' il prezzo di scout). Il benchmark ora
+legge `AI_MODEL` dallo stesso file di produzione e stampa quale modello ha usato (`6c56675`).
 
-Le cinque sbagliate che restano sono tutte "explainer dove era attesa cyber o realistic", e su almeno una la
-risposta del modello e' difendibile. L'etichetta resta: e' stata scritta prima della misura, e cambiare le
-risposte dopo aver visto i risultati e' il difetto che questa misura e' stata rifatta per rifiutare.
+Questa pagina, per dieci minuti, ha riportato l'81% come "stesso corpus, stesso modello" e ha chiamato "rumore fra
+due corse" la differenza fra 17/27 e 19/27 — che erano due MODELLI, non due corse. Tutte e due le frasi erano
+scritte sulla fede del titolo di un commit. Corrette qui; il commit che le ha introdotte e' `5553a43`.
+
+**Quanto balla il numero fra due corse dello stesso prompt sullo stesso modello: non lo sa nessuno.** Non
+esistono ancora due corse uguali. Prima cosa quando la quota torna: `0a30b4a` su scout, due volte di fila —
+una per il numero e una per la soglia sotto la quale due prompt non sono diversi. Costa ~2.800 neuroni e va
+scritta in `QUOTA.log` prima di partire.
 
 Il registro `scripts/direction-measure/QUOTA.log` esiste perche' la seconda corsa di questa sessione e' morta alla
 prima richiesta: la quota era stata consumata da un'altra, e nessuna delle due vedeva l'altra.
