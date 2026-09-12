@@ -21,7 +21,10 @@ import { pathToFileURL } from "node:url";
 import { HELD_OUT, HELD_OUT_2, HELD_OUT_3 } from "../adaptation.mjs";
 
 const arg = (k, d = null) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : d; };
-const SRC = arg("--src"); if (!SRC) { console.error("--src <worktree con src/storyboard.ts del commit da misurare>"); process.exit(2); }
+// --probe: ONE tiny request (a few tokens, ~1 neuron) to ask "is the free allocation back?". Exit 0 = yes, 3 = still
+// 4006, 2 = something else (auth, network). A scheduled run polls this for hours at no cost before spending 7,000.
+const PROBE = process.argv.includes("--probe");
+if (!PROBE && !SRC) { console.error("--src <worktree con src/storyboard.ts del commit da misurare>"); process.exit(2); }
 const LABEL = arg("--label", "senza-nome");
 const REPEAT = Number(arg("--repeat", "1")) || 1;
 const OUTDIR = arg("--out", resolve(import.meta.dirname, "results"));
@@ -29,6 +32,18 @@ const WHO = process.env.KLEO_SESSION || "sconosciuta";
 const ROOT = resolve(import.meta.dirname, "../..");
 const LEDGER = resolve(import.meta.dirname, "QUOTA.md");
 
+const wranglerEarly = readFileSync(resolve(ROOT, "wrangler.jsonc"), "utf8");
+if (PROBE) {
+  const acc = process.env.CLOUDFLARE_ACCOUNT_ID || /"account_id"\s*:\s*"([0-9a-f]+)"/.exec(wranglerEarly)?.[1];
+  const mdl = /"AI_MODEL"\s*:\s*"([^"]+)"/.exec(wranglerEarly)?.[1];
+  const tok = /oauth_token\s*=\s*"([^"]+)"/.exec(readFileSync(`${process.env.HOME}/.wrangler/config/default.toml`, "utf8"))?.[1];
+  const r = await fetch(`https://api.cloudflare.com/client/v4/accounts/${acc}/ai/run/${mdl}`, { method: "POST", headers: { Authorization: `Bearer ${tok}`, "content-type": "application/json" }, body: JSON.stringify({ messages: [{ role: "user", content: "ok" }], max_tokens: 2 }) });
+  const j = await r.json().catch(() => ({}));
+  const msg = JSON.stringify(j.errors ?? "").slice(0, 160);
+  if (r.ok && j.success) { console.log(`probe: quota disponibile (${j.result?.usage?.neurons ?? "?"} neuroni spesi per chiederlo)`); process.exit(0); }
+  if (/4006|daily free allocation/.test(msg)) { console.log("probe: ancora 4006, quota esaurita (0 neuroni)"); process.exit(3); }
+  console.log(`probe: risposta inattesa ${r.status} ${msg}`); process.exit(2);
+}
 const sb = await import(pathToFileURL(resolve(SRC, "src/storyboard.ts")).href);
 const commit = (await import("node:child_process")).execSync("git rev-parse --short HEAD", { cwd: SRC }).toString().trim();
 const wrangler = readFileSync(resolve(ROOT, "wrangler.jsonc"), "utf8");
