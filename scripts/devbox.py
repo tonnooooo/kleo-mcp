@@ -104,7 +104,18 @@ def up(tries=None):
         print("devbox already up:", st["id"])
         return wait_ssh(st["id"])
     tries = int(os.environ.get("DEVBOX_TRIES", "3")) if tries is None else tries
-    offers = search(tries)
+    # "No offer" is a statement about this second, not about the market: on 13 September three searches a minute
+    # apart returned nothing, an A100 at 0.68, and nothing again. A single search that gives up is a coin toss,
+    # so keep asking for a while (a 429 from Vast lands here too and is retried the same way).
+    deadline = time.time() + float(os.environ.get("DEVBOX_OFFER_WAIT_MIN", "10")) * 60
+    while True:
+        try:
+            offers = search(tries); break
+        except SystemExit as e:
+            if time.time() > deadline:
+                raise
+            print(f"  {e} — asking again in 30 s", flush=True)
+            time.sleep(30)
     last = None
     for n, off in enumerate(offers):
         try:

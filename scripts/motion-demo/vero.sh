@@ -13,7 +13,12 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/../.." && pwd); cd "$ROOT"
 DB="python3 scripts/devbox.py"
 OUT=${MOTION_OUT:-$ROOT/scripts/motion-demo/out}; mkdir -p "$OUT"
-export DEVBOX_MIN_VRAM_GB=32 DEVBOX_MAX_DPH=0.55 DEVBOX_MIN_CPU=12 DEVBOX_MIN_RAM_GB=32 DEVBOX_MIN_CC=800 DEVBOX_DISK_GB=90
+# Defaults, each overridable from the environment. The price cap is the one filter that decides whether there is
+# a machine at all: on 13 September no ≥32 GB card sat under 0.55 $/h and the cheapest was an L40S at 0.825 —
+# still under the owner's ceiling of one dollar an hour. The first version hard-coded 0.55 here and silently
+# overrode the cap passed on the command line, so the run died twice on "no Vast offer matches".
+export DEVBOX_MIN_VRAM_GB=${DEVBOX_MIN_VRAM_GB:-32} DEVBOX_MAX_DPH=${DEVBOX_MAX_DPH:-0.90} DEVBOX_MIN_CPU=${DEVBOX_MIN_CPU:-12} \
+       DEVBOX_MIN_RAM_GB=${DEVBOX_MIN_RAM_GB:-32} DEVBOX_MIN_CC=${DEVBOX_MIN_CC:-800} DEVBOX_DISK_GB=${DEVBOX_DISK_GB:-90}
 
 $DB up
 $DB sync
