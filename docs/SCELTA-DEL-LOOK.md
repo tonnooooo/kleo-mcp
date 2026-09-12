@@ -64,9 +64,21 @@ E l'insieme C, scritto dalla stessa sessione che ha scritto il prompt, fa 100% m
 Non e' una prova che il prompt sia stato tarato su C; e' la forma che un prompt tarato avrebbe, e la controprova
 e' proprio A e B.
 
-Il prompt e' gia' stato riscritto (`0a30b4a`, test delle PARTI come primo bivio) ed e' in produzione, non ancora
-misurato: la seconda corsa e' morta alla prima richiesta perche' la quota era stata consumata da un'altra sessione.
-Da qui `QUOTA.log`.
+Il prompt e' stato riscritto (`0a30b4a`: le PARTI come primo bivio, i verbi non scelgono) dalla sessione
+dell'explainer, che l'ha misurato con il proprio benchmark sullo stesso corpus e sullo stesso modello:
+**22/27 = 81%**, tutte e tre le coppie di confine giuste da entrambi i lati. E' in produzione da `ed310a8`.
+
+**Quanto balla il numero fra due corse.** Lo stesso prompt `6f153e1` e' stato misurato due volte, da due banchi
+diversi, a temperatura 0.3: 17/27 e 19/27. **Due risposte su ventisette, sette punti, senza cambiare una
+virgola.** Quindi una differenza fra due prompt sotto i sette punti non e' una differenza: e' rumore. Il salto
+da 63-70 a 81 sta sopra quella soglia; un salto da 81 a 85 no, e non va creduto senza piu' corse.
+
+Le cinque sbagliate che restano sono tutte "explainer dove era attesa cyber o realistic", e su almeno una la
+risposta del modello e' difendibile. L'etichetta resta: e' stata scritta prima della misura, e cambiare le
+risposte dopo aver visto i risultati e' il difetto che questa misura e' stata rifatta per rifiutare.
+
+Il registro `scripts/direction-measure/QUOTA.log` esiste perche' la seconda corsa di questa sessione e' morta alla
+prima richiesta: la quota era stata consumata da un'altra, e nessuna delle due vedeva l'altra.
 
 ## Il dato che vale piu' della precisione
 
