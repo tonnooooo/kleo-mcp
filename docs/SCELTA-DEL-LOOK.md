@@ -81,9 +81,9 @@ scritte sulla fede del titolo di un commit. Corrette qui; il commit che le ha in
 **Quanto balla il numero fra due corse dello stesso prompt sullo stesso modello: non lo sa nessuno.** Non
 esistono ancora due corse uguali. Prima cosa quando la quota torna: `0a30b4a` su scout, due volte di fila —
 una per il numero e una per la soglia sotto la quale due prompt non sono diversi. Costa ~2.800 neuroni e va
-scritta in `QUOTA.log` prima di partire.
+scritta in `QUOTA.md` prima di partire.
 
-Il registro `scripts/direction-measure/QUOTA.log` esiste perche' la seconda corsa di questa sessione e' morta alla
+Il registro `scripts/direction-measure/QUOTA.md` esiste perche' la seconda corsa di questa sessione e' morta alla
 prima richiesta: la quota era stata consumata da un'altra, e nessuna delle due vedeva l'altra.
 
 ## Il dato che vale piu' della precisione
