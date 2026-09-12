@@ -431,15 +431,30 @@ test("the repair chooses the drawing the line asked for, and leaves a good film 
   assert.ok(added, "a drawing must have been added to the first scene");
   assert.ok(added.at === undefined || quotesVoice(added.at, scenes[0].voice), "its cue must quote the line");
 
-  // Two scenes opening on the same drawing: the scene already owns another one, so rotate rather than retry.
+  // Two scenes opening on the same drawing, where the other drawing is FREE: rotate rather than retry.
   const stuck = [
     good({ voice: "Your hotel door is not locked the way you think.", art: [{ name: "door", drawn: true }, { name: "lock", at: "the way you" }] }),
-    good({ id: "02-x", accent: "blue", voice: "But the door was never the part that mattered here.", art: [{ name: "door", drawn: true }, { name: "chip", at: "never the part" }] }),
+    good({ id: "02-x", accent: "blue", voice: "But the door was never the part that mattered here.", art: [{ name: "door", drawn: true }, { name: "chip", drawn: true }] }),
     good({ id: "03-x", accent: "green", voice: "So who else has been walking into your room lately?", art: [{ name: "room", drawn: true }, { name: "footprints", at: "walking into" }] }),
   ];
   assert.ok(film(stuck).includes("variety"));
   repairExplainer(stuck, "9:16", "en");
-  assert.ok(!film(stuck).includes("variety"), "the second scene owned another drawing: it opens on that one now");
+  assert.ok(!film(stuck).includes("variety"), "the second scene owned a free drawing: it opens on that one now");
+
+  // And where the other drawing is CUED TO A WORD, it must refuse to rotate and let the model try again.
+  // Promoting a cued drawing to the opening frame destroys its cue, so it arrives a beat behind its own
+  // sentence — three blind readers out of three preferred the unrepaired cut for exactly that.
+  const cued = [
+    good({ voice: "Your hotel door is not locked the way you think.", art: [{ name: "door", drawn: true }, { name: "lock", at: "the way you" }] }),
+    good({ id: "02-x", accent: "blue", voice: "But the door was never the part that mattered here.", art: [{ name: "door", drawn: true }, { name: "chip", at: "never the part" }] }),
+    good({ id: "03-x", accent: "green", voice: "So who else has been walking into your room lately?", art: [{ name: "room", drawn: true }, { name: "footprints", at: "walking into" }] }),
+  ];
+  repairExplainer(cued, "9:16", "en");
+  assert.equal(cued[1].art[0].name, "door", "a cued drawing must not be dragged into the opening frame");
+  assert.equal(cued[1].art[1].name, "chip", "and it must still be the one that arrives on a word");
+  assert.ok(typeof cued[1].art[1].at === "string" && quotesVoice(cued[1].art[1].at, cued[1].voice),
+    "it keeps a cue quoting its own line — cue-spread may move it later in the sentence, which is its job, but it may never become a drawing that is simply there from the first frame");
+  assert.ok(cued[1].art[1].drawn !== true, "promoting it to the opening frame is the damage this guard exists to prevent");
 
   // THE ONE THAT MATTERS: a film that is already right must come out byte for byte identical, twice.
   const { readFileSync } = await import("node:fs");

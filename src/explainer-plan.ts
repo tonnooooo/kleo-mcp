@@ -586,6 +586,34 @@ export function checkExplainer(scenes: unknown, opts: { duration: number; langua
 }
 
 /**
+ * How wide each drawing is at size 1, measured the same way as SKETCH_DROP (scripts/sketch-extent.mjs).
+ * Needed for one thing only: when a repair ADDS a drawing, it has to put it somewhere that is not on top
+ * of what the scene already has. The first version pushed the new element with no coordinates at all, so
+ * it landed on the stage default and covered the drawing underneath — a blind reading caught it three
+ * times in one session ("it arrives while the figure is still parked at 540,864").
+ */
+/** How far each drawing reaches ABOVE its centre; SKETCH_DROP is the other half of the box. */
+const SKETCH_UP: Record<string, number> = {
+  bell: 351, blank: 627, book: 132, box: 157, brain: 161, bug: 211, bulb: 263, calendar: 211, camera: 201,
+  car: 95, chain: 106, chart: 187, chip: 184, city: 210, clock: 203, cloud: 143, code: 181, coin: 145,
+  corridor: 473, crowbar: 400, crowd: 228, door: 381, envelope: 152, eye: 133, face: 311, figure: 316,
+  fingerprint: 193, folder: 150, footprints: 105, gear: 184, globe: 260, graph: 208, hand: 90, handshake: 81,
+  hotels: 430, intruder: 356, key: 83, keycard: 194, laptop: 191, lock: 104, magnifier: 203, phone: 259,
+  question: 204, reader: 566, robot: 267, rocket: 239, room: 523, router: 116, satellite: 80, scale: 214,
+  server: 241, shield: 182, signal: 235, suitcase: 198, tag: 54, tree: 209, usb: 52, warning: 192, writer: 331,
+};
+
+const SKETCH_W: Record<string, number> = {
+  bell: 680, blank: 3130, book: 502, box: 377, brain: 351, bug: 368, bulb: 455, calendar: 449, camera: 334,
+  car: 518, chain: 750, chart: 483, chip: 367, city: 669, clock: 406, cloud: 422, code: 522, coin: 257,
+  corridor: 1162, crowbar: 949, crowd: 565, door: 492, envelope: 463, eye: 477, face: 619, figure: 263,
+  fingerprint: 382, folder: 464, footprints: 619, gear: 372, globe: 520, graph: 476, hand: 313, handshake: 521,
+  hotels: 951, intruder: 347, key: 453, keycard: 357, laptop: 493, lock: 245, magnifier: 422, phone: 495,
+  question: 212, reader: 680, robot: 353, rocket: 333, room: 1048, router: 340, satellite: 421, scale: 588,
+  server: 302, shield: 322, signal: 544, suitcase: 458, tag: 178, tree: 412, usb: 372, warning: 421, writer: 472,
+};
+
+/**
  * The drawing this line is asking for, and the words that asked. Returns the most SPECIFIC match — the
  * longest word that hit — because a line saying "charging cable" wants the cable, not whatever else a
  * shorter word in it happens to name. Drawings already in the scene are skipped: the point is to add
@@ -606,6 +634,38 @@ function drawingFor(line: string, language: string, taken: Set<string>): { name:
 }
 
 /**
+ * Somewhere the new drawing does not land on top of the old ones.
+ *
+ * An added element with no coordinates goes to the stage default, which is where most authored drawings
+ * already are — so the repair covered what it was meant to complete. This walks outward from the centre in
+ * half-width steps and takes the first place that clears every drawing already in the scene and still fits
+ * the frame. It returns nothing when the scene is already full, and nothing is better than on top.
+ */
+function place(name: string, art: Record<string, unknown>[], format: string): { x?: number; y?: number } {
+  const [fw, fh] = format === "9:16" ? [1080, 1920] : [1920, 1080];
+  const w = (SKETCH_W[name] ?? 420) / 2, up = SKETCH_UP[name] ?? 200, down = SKETCH_DROP[name] ?? 200;
+  const mid = fw / 2, eye = Math.round(fh * 0.45);
+  const boxes = art.map((a) => {
+    const sz = typeof a.size === "number" ? a.size : 1;
+    const ax = typeof a.x === "number" ? a.x : mid, ay = typeof a.y === "number" ? a.y : eye;
+    const aw = ((SKETCH_W[a.name as string] ?? 420) * sz) / 2;
+    return { x0: ax - aw, x1: ax + aw, y0: ay - (SKETCH_UP[a.name as string] ?? 200) * sz, y1: ay + (SKETCH_DROP[a.name as string] ?? 200) * sz };
+  });
+  // The caption owns the bottom of the frame, so a repair may not push a drawing into it either.
+  const floor = fh * 0.78 - down * 0.75;
+  const clear = (x: number, y: number) =>
+    x - w >= 8 && x + w <= fw - 8 && y - up >= 8 && y <= floor &&
+    boxes.every((b) => x + w <= b.x0 + 12 || x - w >= b.x1 - 12 || y + down <= b.y0 + 12 || y - up >= b.y1 - 12);
+  // Sideways first — two drawings side by side read as two things — then above and below, which is where
+  // a 1080-wide frame actually has the room. A portrait frame usually cannot fit two objects across it.
+  for (let step = 0; step <= 5; step++)
+    for (const y of step === 0 ? [eye] : [eye, eye - step * 190, eye + step * 150])
+      for (const x of step === 0 ? [mid] : [mid, mid - step * w * 0.9, mid + step * w * 0.9])
+        if (clear(Math.round(x), Math.round(y))) return { x: Math.round(x), y: Math.round(y) };
+  return {};
+}
+
+/**
  * What arithmetic can fix, before anyone is asked to write again.
  *
  * Three of these repairs exist because the word index made them possible. Until there was a table saying
@@ -619,6 +679,10 @@ export function repairExplainer(scenes: unknown, format: string, language = "en"
   if (!list.length) return;
   const first = artOf(list[0]);
   if (first.length && !first.some((a) => a.drawn === true)) { first[0].drawn = true; delete first[0].at }
+
+  // Everything the film already draws: a repair that hands back a picture the viewer has seen three times
+  // has added nothing, whatever the rule counter says.
+  const used = new Set(list.flatMap((s) => artOf(s).map((a) => String(a.name))));
 
   // 1. A scene that draws none of the things its line names, and 2. a scene with a single drawing holding
   //    the whole sentence. Both are answered from the line: it already said what it wanted drawn.
@@ -635,13 +699,17 @@ export function repairExplainer(scenes: unknown, format: string, language = "en"
       return l.some((x) => hay.includes(" " + x + " ") || hay.includes(" " + x + "s "));
     });
     if (named && art.length >= 2) continue;
-    const pick = drawingFor(line, language, taken);
+    // A drawing the film has already used twice is not new information. A blind reading of this repair
+    // found it handing back "the same key I have already memorised" on the two lines that decide whether
+    // the viewer stays, so anything already on screen elsewhere is the last resort, not the first.
+    const pick = drawingFor(line, language, new Set([...taken, ...used])) ?? drawingFor(line, language, taken);
     if (!pick) continue;
     // The anchor comes from the same word that chose the drawing, so the cut lands where the thing is named.
     const at = quotesVoice(pick.word, line) ? pick.word : anchorAt(line, 0.5);
-    const el: Record<string, unknown> = { name: pick.name };
+    const el: Record<string, unknown> = { name: pick.name, ...place(pick.name, art, format) };
     if (at) el.at = at; else el.drawn = true;
     art.push(el);
+    used.add(pick.name);
     s.art = art.slice(0, 8);
   }
 
@@ -650,7 +718,11 @@ export function repairExplainer(scenes: unknown, format: string, language = "en"
   for (let i = 1; i < list.length; i++) {
     const prev = artOf(list[i - 1])[0]?.name, art = artOf(list[i]);
     if (!prev || art[0]?.name !== prev) continue;
-    const other = art.findIndex((a, k) => k > 0 && a.name !== prev);
+    // Only rotate when the opener is just sitting there. If the author cued it to a word, moving it makes
+    // the drawing arrive a beat behind its own sentence — a blind reading preferred the UNREPAIRED cut
+    // three times out of three for exactly that, on the line that paid off the hook.
+    if (typeof art[0]?.at === "string") continue;
+    const other = art.findIndex((a, k) => k > 0 && a.name !== prev && typeof a.at !== "string");
     if (other < 0) continue;
     const [moved] = art.splice(other, 1);
     // The opener is what is on the page when the scene starts; whatever it displaces takes its cue.
