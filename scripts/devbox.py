@@ -24,7 +24,10 @@ import json, os, signal, subprocess, sys, time
 import urllib.request, urllib.error
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-STATE = os.path.join(ROOT, "scripts", ".devbox.json")
+# One state file per box. Tests and dry runs MUST point DEVBOX_STATE elsewhere: on 13 September a local test of
+# `guarded` (no card of its own) ran its `finally`, read THIS file, and destroyed the live L40S of a render that
+# was four minutes in. The state is shared by every process in this working tree, including the other sessions'.
+STATE = os.environ.get("DEVBOX_STATE") or os.path.join(ROOT, "scripts", ".devbox.json")
 KEY = os.path.expanduser("~/.ssh/id_ed25519_keou")
 LABEL = "kleo-devbox"
 IMAGE = os.environ.get("DEVBOX_IMAGE", "ghcr.io/tonnooooo/kleo-worker:keou")
@@ -109,6 +112,10 @@ def up(tries=None):
     # so keep asking for a while (a 429 from Vast lands here too and is retried the same way).
     deadline = time.time() + float(os.environ.get("DEVBOX_OFFER_WAIT_MIN", "10")) * 60
     while True:
+        st = state()                      # someone else (or an earlier self) rented meanwhile: never buy a second one
+        if st.get("id") and instance(st["id"]):
+            print("devbox appeared while searching:", st["id"])
+            return wait_ssh(st["id"])
         try:
             offers = search(tries); break
         except SystemExit as e:
@@ -309,9 +316,20 @@ def guarded(script):
     signal.signal(signal.SIGINT, bye)
     signal.signal(signal.SIGTERM, bye)
     rc = 1
+    proc = None
     try:
-        rc = subprocess.run(["bash", script], cwd=ROOT).returncode
+        # Its own session: on the way out the WHOLE tree gets the signal. The first version killed only the
+        # script's bash; its child `devbox.py up`, mid offer-search, lived on as an orphan, found a card a few
+        # minutes later, rented it, and nobody was left to use it or to destroy it (13 September, an A100, ~$0.09).
+        proc = subprocess.Popen(["bash", script], cwd=ROOT, start_new_session=True)
+        rc = proc.wait()
     finally:
+        if proc is not None and proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM); proc.wait(timeout=10)
+            except Exception:
+                try: os.killpg(proc.pid, signal.SIGKILL)
+                except Exception: pass
         try:
             down()
         except SystemExit as e:
