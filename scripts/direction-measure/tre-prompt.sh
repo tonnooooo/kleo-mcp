@@ -9,7 +9,7 @@
 #   1. 0a30b4a  produzione       due volte: la prima e' il numero, la seconda la soglia di rumore fra due corse
 #   2. 111c205  parts-first      ramo di chat 3
 #   3. 6f153e1  prima            il "prima"
-#   4. d9d8216  confident        ramo con una frase in piu' nel prompt
+#   4. 46cbba5  confident        ramo con una frase in piu' nel prompt (dopo la revisione avversaria)
 # ~7.000 neuroni su 10.000: a quota piena, da UNA sessione, con la riga in QUOTA.md (la scrive run-rest.mjs).
 # A quota finita ogni chiamata torna 4006 a costo zero: e' il modo per provare l'intera catena gratis.
 #
@@ -23,7 +23,7 @@ LOTTO=(
   "0a30b4a|produzione|2"
   "111c205|parts-first|1"
   "6f153e1|prima|1"
-  "d9d8216|confident|1"
+  "46cbba5|confident|1"
 )
 cd "$ROOT"; git fetch -q origin 'refs/heads/*:refs/remotes/origin/*' 2>/dev/null || true
 for riga in "${LOTTO[@]}"; do
