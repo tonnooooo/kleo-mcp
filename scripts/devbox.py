@@ -8,11 +8,19 @@ Kleo dev box on Vast.ai — every heavy command runs on a rented machine, never 
     python3 scripts/devbox.py pull <remote> <local>   copy a file back (a rendered mp4, a frame)
     python3 scripts/devbox.py status        show the box and its price
     python3 scripts/devbox.py down          destroy it (always do this when finished)
+    python3 scripts/devbox.py bg "<cmd>" <log>            start a LONG job detached, survives an ssh drop
+    python3 scripts/devbox.py wait <log> <ok> [<fail> [min]]  poll the log until a sentinel appears
+    python3 scripts/devbox.py guarded <script.sh>         run a local script and DESTROY the box whatever happens
+
+THE RULE (11 September 2026): drive a box only through `guarded`, and run anything longer than a minute with
+`bg` + `wait`. A render held open in one ssh session dropped at the worst moment, `set -e` skipped the final
+`down`, and an RTX A6000 idled for 45 hours until the credit went negative; a user's video died in the queue for
+lack of credit that day. `guarded` puts the destroy in a `finally` and on the signals, so no exit path skips it.
 
 The box is labelled kleo-devbox. Its ssh key is ~/.ssh/id_ed25519_keou (added by the onstart script, so the
 account key the owner uses by hand is never touched). State: scripts/.devbox.json (gitignored).
 """
-import json, os, subprocess, sys, time
+import json, os, signal, subprocess, sys, time
 import urllib.request, urllib.error
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -233,6 +241,73 @@ def down():
         os.remove(STATE)
 
 
+def bg(cmd, log):
+    """Start a LONG job on the box detached from this ssh session, writing to `log`. Returns at once.
+
+    The 11 September orphan: a render was run through a single ssh session held open for twenty minutes, the
+    connection dropped ("exit 255") the moment the video model finished loading, `set -e` aborted the script before
+    its final `down`, and an RTX A6000 sat idle for 45 hours until the credit hit zero and went negative. A user's
+    video died in the queue that day for lack of credit. setsid+nohup makes the job survive the session; the caller
+    then polls with `wait`, where every poll is a fresh, short ssh and a drop is just a retry."""
+    st = need()
+    quoted = cmd.replace("'", "'\\''")
+    rc = run(f"mkdir -p $(dirname {log}); setsid nohup bash -lc '{quoted}' > {log} 2>&1 < /dev/null & "
+             f"echo started pid $!")
+    if rc:
+        raise SystemExit("could not start the job on the box")
+
+
+def wait(log, ok, fail, minutes=float(os.environ.get("DEVBOX_WAIT_MIN", "40"))):
+    """Poll `log` on the box until it contains `ok` (return 0) or `fail` (return 1), or `minutes` pass (return 2).
+    Prints new lines as they appear. Each poll is its own short ssh: a dropped connection costs one poll, not the
+    job. Never rents: waiting for a log on a box that does not exist is an error, not a reason to buy one."""
+    if not state().get("host"):
+        raise SystemExit("no devbox to wait on")
+    deadline, shown, misses = time.time() + minutes * 60, 0, 0
+    while time.time() < deadline:
+        p = run(f"cat {log} 2>/dev/null || true", capture=True)
+        if p.returncode == 255:                       # ssh itself failed; the remote command cannot return 255
+            misses += 1
+            print(f"  (ssh did not answer, {misses}/8)", flush=True)
+            if misses >= 8:
+                raise SystemExit("the box stopped answering on ssh for eight polls in a row")
+            time.sleep(15); continue
+        misses = 0
+        lines = p.stdout.splitlines()
+        for line in lines[shown:]:
+            print("  |", line[:160], flush=True)
+        shown = len(lines)
+        if ok and ok in p.stdout:
+            return 0
+        if fail and fail in p.stdout:
+            return 1
+        time.sleep(20)
+    print(f"  timed out after {minutes:g} min without `{ok}` or `{fail}` in {log}", flush=True)
+    return 2
+
+
+def guarded(script):
+    """Run a LOCAL shell script that drives the box, and DESTROY THE BOX WHATEVER HAPPENS: the script fails, it is
+    killed, this process is interrupted, or it simply finishes. The destroy is in a `finally` of this very process
+    and on the signal handlers, not at the end of somebody's script. This is the only way a session may drive a
+    rented machine from now on; a bare `up` followed by a script that ends with `down` is exactly what left a card
+    running for 45 hours."""
+    def bye(sig, _):
+        print(f"\nsignal {sig}: the box will be destroyed", flush=True)
+        raise SystemExit(130)                          # unwinds into the finally below, which destroys once
+    signal.signal(signal.SIGINT, bye)
+    signal.signal(signal.SIGTERM, bye)
+    rc = 1
+    try:
+        rc = subprocess.run(["bash", script], cwd=ROOT).returncode
+    finally:
+        try:
+            down()
+        except SystemExit as e:
+            print("COULD NOT DESTROY THE BOX:", e, "-- run: python3 scripts/devbox.py down", flush=True)
+    return rc
+
+
 def status():
     st = state()
     if not st.get("id"):
@@ -250,5 +325,9 @@ if __name__ == "__main__":
     elif cmd == "run": sys.exit(run(" ".join(sys.argv[2:])))
     elif cmd == "pull": pull(sys.argv[2], sys.argv[3])
     elif cmd == "down": down()
+    elif cmd == "bg": bg(sys.argv[2], sys.argv[3])
+    elif cmd == "wait": sys.exit(wait(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else "",
+                                      float(sys.argv[5]) if len(sys.argv) > 5 else float(os.environ.get("DEVBOX_WAIT_MIN", "40"))))
+    elif cmd == "guarded": sys.exit(guarded(sys.argv[2]))
     elif cmd == "status": status()
     else: raise SystemExit(__doc__)
