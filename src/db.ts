@@ -452,9 +452,13 @@ const gpuWaitPattern = `${GPU_ONLY_WAIT}%`;
  * allowance runs out, and a job with no storyboard is never given a GPU. Until today that job simply sat at
  * "queued, 0%, about 18 minutes" for ever, while the reason was sitting in plan_error where no user can see it.
  * A status that repeats a promise it cannot keep is worse than an error: the person keeps waiting.
+ *
+ * It used to say the allowance "comes back after midnight UTC". Measured on 11 September 2026: exhausted the evening
+ * before, still refused at 00:15 UTC. A user told "after midnight" who is still waiting at 01:00 has been lied to
+ * by the status line — which is the exact thing this sentence exists to stop.
  */
 export const PLAN_WAIT =
-  "waiting: Kleo cannot write the storyboard itself right now, because its daily free AI allowance is used up (it comes back after midnight UTC). Nothing else is wrong, and no GPU is running. Two ways out, both immediate: your assistant can write the storyboard itself with kleo_storyboard_guide and call kleo_create_video again passing it — that path never needs Kleo's AI and costs the same — or cancel this one with kleo_cancel_job and get the credits straight back";
+  "waiting: Kleo cannot write the storyboard itself right now, because its daily free AI allowance is used up (it comes back within a day; the exact hour is not published and was measured to NOT be midnight UTC). Nothing else is wrong, and no GPU is running. Two ways out, both immediate: your assistant can write the storyboard itself with kleo_storyboard_guide and call kleo_create_video again passing it — that path never needs Kleo's AI and costs the same — or cancel this one with kleo_cancel_job and get the credits straight back";
 
 const PLAN_WAIT_EXPLAINED = "error LIKE ?";
 const planWaitPattern = `${PLAN_WAIT}%`;
