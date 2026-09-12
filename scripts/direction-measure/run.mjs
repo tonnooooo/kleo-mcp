@@ -63,3 +63,13 @@ console.log(`  LA LISTA SOLA:   ${priorRight}/${done} = ${done ? Math.round((100
 console.log(`  neuroni spesi:   ~${neurons} dei 10.000 giornalieri`);
 if (quotaOut && !done) console.log(`  NIENTE MISURATO: quota esaurita prima del primo tentativo.`);
 if (outFile) { (await import("node:fs")).writeFileSync(outFile, JSON.stringify(rows, null, 2)); console.log(`  righe salvate in ${outFile}`); }
+// The ledger. The free allocation is one bucket for every session on the account and none of them can see the
+// others: on 12 September two sessions measured at once, each believing it was alone, and the second run of one
+// of them died on its first request. A line here costs nothing and says who spent what.
+{
+  const fs = await import("node:fs");
+  const ledger = new URL("./QUOTA.log", import.meta.url);
+  const who = process.env.KLEO_SESSION || "sconosciuta";
+  const esito = quotaOut && !done ? "RIFIUTATA 4006" : `${right}/${done}`;
+  fs.appendFileSync(ledger, `${new Date().toISOString().slice(0, 16)}Z | ${who} | fase 0, variante ${variant} | ${done} | ~${neurons} | ${esito}\n`);
+}

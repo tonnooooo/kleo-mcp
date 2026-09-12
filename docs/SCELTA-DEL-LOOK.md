@@ -7,7 +7,7 @@
 | chi sceglie | quando | precisione misurata |
 |---|---|---|
 | **L'assistente dell'utente** | scrive lui lo storyboard con la regia | non misurabile da qui: e' il suo modello, non il nostro |
-| **Il modello di Kleo** (fase 0) | l'utente non manda uno storyboard | **mai misurata**: quota gratuita esaurita |
+| **Il modello di Kleo** (fase 0) | l'utente non manda uno storyboard | **70%** (19/27) sul prompt `6f153e1`, misurato il 12 settembre |
 | **La lista di parole** (`pickKleoStyle`) | solo se la chiamata al modello fallisce | **26%** su richieste mai viste |
 
 Il 26% e' stato citato per ore come "la precisione di Kleo". Non lo e': da quando `planFor` preferisce la
@@ -40,6 +40,33 @@ sicurezza e' il pane della nonna. Il sistema sbaglia soprattutto dove sa di non 
 La formulazione misurata qui e' **la mia**, non quella spedita: la sessione dell'explainer ha mandato in produzione
 la propria (`8a09921`), che descrive tutti e cinque i look per la FORMA della risposta invece che per l'argomento.
 Va rimisurata sopra quella.
+
+## Il modello vero, misurato (12 settembre, prompt `6f153e1`)
+
+Ventisette richieste mai viste, una chiamata di fase 0 ciascuna a llama-4-scout, ~50 neuroni l'una, dal banco
+`scripts/direction-measure` (risultato riga per riga in `results/`).
+
+| | giuste |
+|---|---|
+| totale | **19/27 = 70%** |
+| insieme A (altra sessione) | 5/10 |
+| insieme B (MAIN) | 7/10 |
+| insieme C (confine, scritto dall'autore del prompt) | **7/7** |
+| italiano / inglese | 10/14 / 9/13 |
+
+**Sette degli otto errori sono "-> explainer".** Il modello ha risposto explainer 17 volte su 27; le attese erano
+10. E la ragione che scrive e' sempre la stessa: *"e' la scelta migliore per SPIEGARE come funziona un semaforo /
+come si sceglie un materasso"* — sceglie per il verbo, che e' esattamente quello che la riga gli vietava ("the
+words explain, why, how do NOT choose it"). Un modello da 17 miliardi non esegue una negazione: legge "explain"
+e "explainer" e li unisce. Serve un test positivo che lo porti altrove, messo PRIMA delle definizioni.
+
+E l'insieme C, scritto dalla stessa sessione che ha scritto il prompt, fa 100% mentre gli altri due fanno 60%.
+Non e' una prova che il prompt sia stato tarato su C; e' la forma che un prompt tarato avrebbe, e la controprova
+e' proprio A e B.
+
+Il prompt e' gia' stato riscritto (`0a30b4a`, test delle PARTI come primo bivio) ed e' in produzione, non ancora
+misurato: la seconda corsa e' morta alla prima richiesta perche' la quota era stata consumata da un'altra sessione.
+Da qui `QUOTA.log`.
 
 ## Il dato che vale piu' della precisione
 
