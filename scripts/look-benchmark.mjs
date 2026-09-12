@@ -98,10 +98,15 @@ console.log(`\nparole chiave: ${pct(rows.filter((r) => ok(r.p, r.kw)).length)}`)
 if (!words) console.log(`modello:       ${pct(rows.filter((r) => ok(r.p, r.model)).length)}`);
 
 // The pairs are the real test: same words, opposite answers. A picker that gets both is reading the
-// request; one that collapses them onto one look is reading the topic.
+// request; one that collapses them onto one look is reading the topic. The corpus does not carry a pair
+// field, so the pairs are named here by content — the first version read a field that did not exist and
+// reported 0/3 on a run where all three were right.
+const PAIR_OF = (t) => /VPN a mia madre|attacchi informatici/i.test(t) ? "vpn"
+  : /wi-fi dell'hotel|phone bill/i.test(t) ? "wifi"
+  : /password manager|third parties/i.test(t) ? "pw" : null;
 const pairs = {};
-for (const r of rows) if (r.p.pair && r.p.pair !== "indep") (pairs[r.p.pair] ??= []).push(r);
+for (const r of rows) { const k = PAIR_OF(r.p.text); if (k) (pairs[k] ??= []).push(r) }
 const told = Object.values(pairs).filter((g) => g.length === 2 && g.every((r) => ok(r.p, r.model)));
 if (!words) console.log(`coppie distinte (entrambe giuste): ${told.length}/${Object.keys(pairs).length}`);
-const indep = rows.find((r) => r.p.pair === "indep");
+const indep = rows.find((r) => /acqua bollente/i.test(r.p.text));
 if (!words && indep) console.log(`indipendenza (nessuna parola tecnica): ${ok(indep.p, indep.model) ? "explainer raggiungibile senza vocabolario informatico" : `FALLITA -> ${indep.model}`}`);

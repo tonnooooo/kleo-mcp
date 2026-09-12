@@ -183,6 +183,19 @@ rented, and the video comes back in the wrong style with nothing anywhere report
 
 A caller who names a style still wins over the template, as everywhere else.
 
+**And the model channel, measured.** Step zero of the planner — a model reading the request — offered
+four looks and described four; the schema allowed five. Once the explainer was described **by the shape
+of the answer**, the same twenty-seven held-out prompts scored:
+
+| picker | held-out accuracy |
+|---|---|
+| keyword lists (the fallback) | 7/27 = **26 %** |
+| model, explainer described with trigger verbs ("explain", "why does", "how does") | 17/27 = **63 %** — and every miss was explainer chosen for something else: the verbs made it the sink |
+| model, explainer described as *one thing with no parts* vs cyber as *parts, flow, shares, items* | 22/27 = **81 %** — all three boundary pairs right on both sides |
+
+`scripts/look-benchmark.mjs` runs both channels over the corpus in `scripts/adaptation.mjs`, which is the
+one copy of the prompts and their answers, owned by a session that does not measure itself with it.
+
 ## 5. What the real model does, and the two things that had to change for it
 
 Everything above is checkable offline. What is not checkable offline is whether a real model, handed
