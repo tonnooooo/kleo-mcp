@@ -642,10 +642,10 @@ export const directionSchema = (): Record<string, unknown> => ({
   properties: {
     style: { type: "string", enum: [...KLEO_STYLES] },
     why: str,
-    // The model's own honesty about the look. Measured on six independent READERS (not the production model,
-    // docs/SCELTA-DEL-LOOK.md and scripts/direction-measure/results/2026-09-11-sei-lettori-istruzione.json): a reader
-    // that says it is sure is right 10 times in 11, one that says it is not 5 in 16. Whether the model is calibrated the
-    // same way is what tre-prompt.sh measures (it records this field per answer). The signal used to be thrown away.
+    // The model's own honesty about the look. Measured on six independent READERS, not the production model
+    // (docs/SCELTA-DEL-LOOK.md; the repo keeps the numbers, not the artefact — it was lost with the session): a reader
+    // that says it is sure is right 10 times in 11, one that says it is not 5 in 16. Whether the MODEL is calibrated the
+    // same way is what tre-prompt.sh measures — it records this field per answer. The signal used to be thrown away.
     confident: { type: "boolean" },
     direction: {
       type: "object",
