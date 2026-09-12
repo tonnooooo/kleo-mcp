@@ -117,5 +117,14 @@ direzione opposta.
 ## Come rifare questa misura
 
 Le 27 richieste stanno in `scripts/adaptation.mjs` (`HELD_OUT`, `HELD_OUT_2`, `HELD_OUT_3`, esportate apposta
-perche' due copie degli stessi prompt sono due misure che divergono al primo ritocco). Il banco sul modello vero
-e' `scripts/direction-measure/`, con le due formulazioni gia' dentro come varianti confrontabili.
+perche' due copie degli stessi prompt sono due misure che divergono al primo ritocco; il file misura solo quando e'
+lanciato da solo, importato sta zitto).
+
+Sul modello vero: `KLEO_SESSION="chi-sei" bash scripts/direction-measure/tre-prompt.sh`. Per ogni commit del lotto
+crea un worktree staccato, `run-rest.mjs` importa `src/storyboard.ts` **da quel worktree**, costruisce il prompt in
+processo e lo manda a Workers AI via REST con la sessione OAuth di wrangler (il modello gira su Cloudflare; qui non
+gira niente). Niente `wrangler dev`, niente porte: la prima versione faceva partire un Worker per commit, e il dev
+server impacchetta la cartella in cui parte e ricarica a ogni salvataggio — e' cosi' che una corsa ha misurato un
+prompt di nessun commit. Ogni corsa scrive il suo file in `results/` e due righe in `QUOTA.md`, prima e dopo.
+A quota finita ogni chiamata torna `4006` a costo zero: e' il modo di provare la catena intera gratis, ed e' stato
+fatto su tutti e quattro i commit del lotto.

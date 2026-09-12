@@ -9,7 +9,7 @@ Il file si chiamava QUOTA.log ed e' stato annunciato con quel nome a due session
 `git add -A` l'ha saltato senza dire niente, e per venti minuti il registro e' esistito solo in un worktree gia'
 cancellato. Un file che git ignora non e' condiviso, e' privato per sbaglio.
 
-`run.mjs` aggiunge la sua riga da solo a fine corsa (`KLEO_SESSION` nell'ambiente dice chi).
+`run-rest.mjs` scrive una riga prima di partire e una a fine corsa (`KLEO_SESSION` nell'ambiente dice chi).
 
     UTC | sessione | cosa | richieste | neuroni (~50 su scout, ~130 sul 70B) | esito
 
