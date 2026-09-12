@@ -77,6 +77,11 @@ export interface PlanResult {
    * choice and nobody told you". Whoever surfaces a job's progress owes the user this line.
    */
   blocked_upgrade: string | null;
+  /** What the model said about its own choice of look: true = the shape of the answer left one look, false = it
+   *  picked between two defensible ones, null = the client named the look or the model did not say. */
+  confident: boolean | null;
+  /** The model's one-line reason for the look, kept so a wrong look can be read instead of guessed at. */
+  chosen_why: string | null;
 }
 
 /** Errors that say nothing about the storyboard: quota, rate limit, upstream outage. The job should wait, not fail. */
@@ -441,6 +446,30 @@ interface Plan { style: StyleId; kleo: KleoStyle; pictures: boolean; brief: Brie
  * `chosen` is the look the DIRECTION picked after reading the request. It only applies when the client did not name a
  * style itself: the user's own choice always wins, and the keyword fallback is what is left when there is no model.
  */
+/** The look the CLIENT named, or "" — the rule planFor uses: named means present in params and not marked guessed. */
+function styleNamedBy(job: PlanJob): string {
+  try { const p = JSON.parse(job.params) as JobParams; return (KLEO_STYLES as readonly string[]).includes(p.style ?? "") && !p.style_guessed ? String(p.style) : ""; }
+  catch { return ""; }
+}
+
+/**
+ * THE NOTE THAT TRAVELS WITH THE JOB. Three things the planner knew and nobody was told, until this:
+ *   - the look was a bet the model itself was not sure of (confident === false);
+ *   - a dearer look was wanted and refused (blocked_upgrade) — computed since the price rule, then dropped by planOne;
+ *   - facts the direction promised and the narration never says (missing_facts) — same fate.
+ * One sentence each, in the user's terms, or null when there is nothing to say. Stored in jobs.plan_note and shown
+ * by the status tools: "never a mute substitution" was a rule about the storyboard, and it now holds for the answer.
+ */
+export function planNoteFor(r: Pick<PlanResult, "style" | "confident" | "blocked_upgrade" | "missing_facts">): string | null {
+  const bits: string[] = [];
+  if (r.confident === false)
+    bits.push(`Kleo chose the "${r.style}" look for this video but was not sure it is what you meant: if you wanted another, say cartoon, realistic, cyber or explainer next time and it will be honoured.`);
+  if (r.blocked_upgrade) bits.push(r.blocked_upgrade);
+  if (r.missing_facts?.length)
+    bits.push(`The narration never says ${r.missing_facts.map((f) => `"${f}"`).join(", ")}, which the plan had promised to keep.`);
+  return bits.length ? bits.join(" ") : null;
+}
+
 export function planFor(job: PlanJob, chosen?: KleoStyle | null): Plan {
   const p = JSON.parse(job.params) as JobParams;
   const format = p.format;
@@ -574,7 +603,7 @@ TEMPLATE: ${t?.name ?? job.template}. LENGTH: ${plan.duration} seconds, about ${
 
 TASK: write the DIRECTION of this one film, before any scene exists. Return one JSON object:
 
-{"style":"cartoon|realistic|cyber|explainer|stickman","why":"<=90 chars, why that look fits THIS request",
+{"style":"cartoon|realistic|cyber|explainer|stickman","why":"<=90 chars, why that look fits THIS request","confident":<true when the shape of the answer left ONE look standing, false when two were defensible and you picked one>,
  "direction":{
   "subject":"<=${DL.subject}, the one thing the video is about, in the user's own terms",
   "goal":"<=${DL.goal}, what the viewer should understand or feel by the end",
@@ -601,6 +630,7 @@ RULES
   · cyber — the answer has STRUCTURE TO DIAGRAM: a flow with steps, a comparison of two things, a list, a set of numbers. Icons and big type, no pictures at all.
   · explainer — the answer is ONE IDEA TAKEN APART until the viewer believes something different at the end: one mechanism, one object, one misconception, and nothing to list or compare. Hand-drawn line art where every spoken phrase has its own literal drawing. The words "explain", "why", "how" in a request do NOT choose it — most requests for cyber and realistic say "explain" too. What chooses it is that the answer is a single thing and the viewer's belief about it changes.
   · stickman — only if the user asked for a stickman by name.
+  confident is your honesty about this choice. true only when the shape of the answer left ONE look standing; false when two looks were both defensible and you picked one. A false is not a failure: it is shown to the person, who then names the look they meant. A confident guess that is wrong is the only outcome that costs them a video.
   THE LINE BETWEEN cyber AND explainer IS THE ONE THAT MATTERS, and it is not the subject and not the verb. Ask: does the answer have PARTS? A flow from one named thing to the next, a breakdown into shares or percentages, several items, two things compared, a set of steps or numbers — that is cyber, whatever the request calls it. "Show how our data goes from the app to the servers to third parties" is cyber: three named parts and a flow between them. "Break down how much of a phone bill is the network" is cyber: shares of a whole. "The five costliest cyberattacks in history" is cyber: five items with figures. "Explain what a VPN is to my mother" is explainer: one thing, no parts, and she ends up believing something new. And a photographable subject with no mechanism in it — bread going mouldy, choosing a mattress, a place, a product — is realistic even when the request says "explain why". Decide which of these the request looks like before you decide anything else about it.
 - Everything you write here is in ${lang} except the enum values (style, accent), which stay in English.`;
 }
@@ -608,10 +638,13 @@ RULES
 export const directionSchema = (): Record<string, unknown> => ({
   type: "object",
   additionalProperties: false,
-  required: ["style", "direction"],
+  required: ["style", "confident", "direction"],
   properties: {
     style: { type: "string", enum: [...KLEO_STYLES] },
     why: str,
+    // The model's own honesty about the look: measured, a reader that says it is sure is right 10 times in 11 and one
+    // that says it is not is right 5 in 16. That signal was being thrown away; now it travels to the user.
+    confident: { type: "boolean" },
     direction: {
       type: "object",
       additionalProperties: false,
@@ -1363,7 +1396,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   let plan = planFor(job);
   if (useFixture(env)) {
     const sb = fixtureStoryboard(job);
-    return { storyboard: sb, model: "fixture", attempts: 0, ms: Date.now() - t0, usage: {}, est_neurons: 0, words: countWords(sb), scenes: sb.scenes.length, fixture: true, history: [], style: kleoStyleOf(sb), direction: (sb as { direction?: Direction }).direction ?? null, missing_facts: [], blocked_upgrade: null };
+    return { storyboard: sb, model: "fixture", attempts: 0, ms: Date.now() - t0, usage: {}, est_neurons: 0, words: countWords(sb), scenes: sb.scenes.length, fixture: true, history: [], style: kleoStyleOf(sb), direction: (sb as { direction?: Direction }).direction ?? null, missing_facts: [], blocked_upgrade: null, confident: null, chosen_why: null };
   }
   const model = opts.model || env.AI_MODEL || DEFAULT_MODEL;
   const usage: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
@@ -1390,6 +1423,8 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   let direction: Direction | null = null;
   /** Set when the direction wanted a dearer look than the job was priced for: the user is told, never substituted in silence. */
   let blockedUpgrade: string | null = null;
+  let confident: boolean | null = null;
+  let chosenWhy: string | null = null;
   // The explainer plans at the FEWEST scenes its budget allows. The midpoint left every line at the very
   // bottom of the 8-14 word window, and a model that is one word short of the bottom writes a caption
   // instead of a sentence — measured, on the real model: ten scenes for ninety-two words produced lines of
@@ -1411,6 +1446,9 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     // times dearer the day its shots are generated video, and a silent switch across that line would either bill a
     // user for a video they did not ask for or hand out a dollar of GPU for one credit.
     const wanted = inSet(o.style, KLEO_STYLES) ? (o.style as KleoStyle) : null;
+    // Only meaningful when the model was the one choosing: a look the client named is not a bet, so its confidence
+    // is nobody's business. Same rule planFor uses to tell a named look from a guessed one.
+    if (!styleNamedBy(job)) { confident = typeof o.confident === "boolean" ? o.confident : null; chosenWhy = typeof o.why === "string" ? o.why.trim().slice(0, 200) || null : null; }
     if (wanted && wanted !== plan.kleo) {
       if (samePrice(wanted, plan.kleo, plan.duration)) { plan = planFor(job, wanted); system = systemPrompt(plan); }
       else {
@@ -1557,5 +1595,5 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   // and refuses the hidden kind, and this is the one number that says whether the video is about what was asked.
   const missing = direction ? missingFacts(direction.must_keep, narrationOf(ok.storyboard)) : [];
   if (missing.length) history.push(missing.map((f) => `narration never says "${f}"`));
-  return { storyboard: ok.storyboard, model, attempts: calls, ms: Date.now() - t0, usage, est_neurons: est, words: countWords(ok.storyboard), scenes: ok.storyboard.scenes.length, fixture: false, history, style: plan.kleo, direction, missing_facts: missing, blocked_upgrade: blockedUpgrade };
+  return { storyboard: ok.storyboard, model, attempts: calls, ms: Date.now() - t0, usage, est_neurons: est, words: countWords(ok.storyboard), scenes: ok.storyboard.scenes.length, fixture: false, history, style: plan.kleo, direction, missing_facts: missing, blocked_upgrade: blockedUpgrade, confident, chosen_why: chosenWhy };
 }

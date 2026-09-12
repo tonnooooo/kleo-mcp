@@ -48,6 +48,8 @@ export interface Job {
   storyboard: string | null; // JSON: Keou project without id/script_file/music_quiet/image scenes (see keou-contract.ts)
   plan_attempts: number;
   plan_error: string | null;
+  /** See planNoteFor() in storyboard.ts. */
+  plan_note: string | null;
 }
 
 export interface JobParams {

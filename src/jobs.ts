@@ -165,7 +165,7 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     backend: null, instance_id: null, instance_meta: null, worker_secret: rid("wk", 32), attempts: 0,
     error: null, notify_email: input.notify_email ?? null, created_at: nowIso(), started_at: null, finished_at: null,
     expires_at: null, purged_at: null, cost_usd: null,
-    storyboard, plan_attempts: 0, plan_error: null,
+    storyboard, plan_attempts: 0, plan_error: null, plan_note: null,
   };
   try {
     await insertJob(env, job);
@@ -255,5 +255,8 @@ export function jobView(job: Job) {
     finished_at: job.finished_at,
     expires_at: job.expires_at,
     error: job.error,
+    // The planner's note to the person (unsure look, refused upgrade, dropped fact). Data first: every status tool
+    // returns this view, and the assistant is told to repeat only what the tools return.
+    plan_note: job.plan_note ?? null,
   };
 }

@@ -35,6 +35,10 @@ const COLUMNS: [table: string, column: string, definition: string][] = [
   ["jobs", "storyboard", "TEXT"],
   ["jobs", "plan_attempts", "INTEGER NOT NULL DEFAULT 0"],
   ["jobs", "plan_error", "TEXT"],
+  // What the planner wanted the user to know and had no place to say: an unsure look, a refused dearer look, a
+  // promised fact the narration dropped. Written once by planOne, read by the status tools. Mirrors
+  // migrations/0010_plan_note.sql; ensureColumns adds it at boot on a database the migration never reached.
+  ["jobs", "plan_note", "TEXT"],
   // Last time the worker on the instance said anything. The start timeout measures silence from here, not wall
   // clock since the GPU was rented: pulling a 15 GB image plus drawing 24 pictures keeps a healthy job under 8%
   // (state "starting") for well over fifteen minutes.

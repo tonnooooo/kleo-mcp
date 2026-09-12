@@ -10,7 +10,7 @@ import { notifyDone } from "./notify";
 import { putFile, deleteFile } from "./storage";
 import { acquireLock, releaseLock, holdLock, setFlagUntil, isFlagActive } from "./schema";
 import { poolWaitingJobs } from "./db";
-import { generateStoryboard, StoryboardError, isTransientAiError } from "./storyboard";
+import { generateStoryboard, StoryboardError, isTransientAiError, planNoteFor } from "./storyboard";
 
 const MAX_ATTEMPTS = 3;
 /** Storyboard generation attempts per job (each one may call the model twice). */
@@ -64,7 +64,7 @@ async function planOne(env: Env, stats: Stats): Promise<number> {
     try {
       const r = await generateStoryboard(env, job);
       // Planning takes minutes: the job may have been cancelled meanwhile, and a cancelled job must stay cancelled.
-      if (!(await transitionJob(env, job.id, ["queued"], { storyboard: JSON.stringify(r.storyboard), plan_error: null }))) {
+      if (!(await transitionJob(env, job.id, ["queued"], { storyboard: JSON.stringify(r.storyboard), plan_error: null, plan_note: planNoteFor(r) }))) {
         await audit(env, job.user_id, job.id, "job.plan.ignored", { reason: "job is no longer queued" });
         continue;
       }
