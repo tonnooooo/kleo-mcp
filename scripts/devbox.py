@@ -111,25 +111,33 @@ def up(tries=None):
     # apart returned nothing, an A100 at 0.68, and nothing again. A single search that gives up is a coin toss,
     # so keep asking for a while (a 429 from Vast lands here too and is retried the same way).
     deadline = time.time() + float(os.environ.get("DEVBOX_OFFER_WAIT_MIN", "10")) * 60
-    while True:
-        st = state()                      # someone else (or an earlier self) rented meanwhile: never buy a second one
-        if st.get("id") and instance(st["id"]):
-            print("devbox appeared while searching:", st["id"])
-            return wait_ssh(st["id"])
-        try:
-            offers = search(tries); break
-        except SystemExit as e:
-            if time.time() > deadline:
-                raise
-            print(f"  {e} — asking again in 30 s", flush=True)
-            time.sleep(30)
-    last = None
-    for n, off in enumerate(offers):
+    tried, last = set(), None
+    for n in range(tries):
+        # A FRESH search for every attempt. The list is stale within minutes: on 13 September the second and
+        # third offers were eight minutes old by the time the first host had failed to answer, and both had gone
+        # ("no_such_ask"). Machines already tried are skipped, so a host that never answers is not rented twice.
+        off = None
+        while off is None:
+            st = state()                  # someone else (or an earlier self) rented meanwhile: never buy a second one
+            if st.get("id") and instance(st["id"]):
+                print("devbox appeared while searching:", st["id"])
+                return wait_ssh(st["id"])
+            try:
+                fresh = [o for o in search(tries + len(tried)) if o.get("machine_id") not in tried]
+                if fresh:
+                    off = fresh[0]; break
+                raise SystemExit("every matching offer has already been tried")
+            except SystemExit as e:
+                if time.time() > deadline:
+                    raise SystemExit(f"{e} (after {n} failed hosts: {last})") if n else e
+                print(f"  {e} — asking again in 30 s", flush=True)
+                time.sleep(30)
+        tried.add(off.get("machine_id"))
         try:
             return rent_and_wait(off)
         except SystemExit as e:
             last = e
-            print(f"  offer {n + 1}/{len(offers)} unusable: {e}", flush=True)
+            print(f"  offer {n + 1}/{tries} unusable: {e}", flush=True)
             st = state()
             if st.get("id"):
                 try:
@@ -139,7 +147,7 @@ def up(tries=None):
                     pass
             if os.path.exists(STATE):
                 os.remove(STATE)
-    raise SystemExit(f"no machine answered after {len(offers)} tries ({last})")
+    raise SystemExit(f"no machine answered after {tries} tries ({last})")
 
 
 def rent_and_wait(off):
