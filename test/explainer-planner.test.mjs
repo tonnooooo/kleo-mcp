@@ -174,7 +174,7 @@ function problemsWith(sb, plan) {
   });
   // The two rules arithmetic is allowed to fix must never survive to the finished film.
   for (const v of checkExplainer(sb.scenes, { duration: plan.duration, language: plan.language }))
-    if (v.rule === "hook-drawn" || v.rule === "cue-spread") bad.push(`repairable rule survived: ${v.rule} — ${v.message}`);
+    if (v.rule === "scene-drawn" || v.rule === "cue-spread") bad.push(`repairable rule survived: ${v.rule} — ${v.message}`);
   return bad;
 }
 
@@ -222,7 +222,7 @@ test("each rule fires on the film that breaks it, and only then", () => {
   const cases = {
     "hook-shape": [good({ voice: "The mechanism of the lock is described in the manual." }), good({ id: "02-x", accent: "blue", voice: "But nothing else about it works the way described." }), good({ id: "03-x", accent: "green", voice: "So what do you check tonight before you sleep?" })],
     "hook-length": [good({ voice: "Your hotel door is not locked the way you think it is, and that is because of a radio chip nobody looked at." }), good({ id: "02-x", accent: "blue", voice: "But nobody checked that chip for eleven whole years." }), good({ id: "03-x", accent: "green", voice: "So what do you check tonight before you sleep?" })],
-    "hook-drawn": [good({ art: [{ name: "door", at: "hotel door" }, { name: "lock", at: "the way you" }] }), good({ id: "02-x", accent: "blue", voice: "But nobody checked that chip for eleven whole years." }), good({ id: "03-x", accent: "green", voice: "So what do you check tonight before you sleep?" })],
+    "scene-drawn": [good({ art: [{ name: "door", at: "hotel door" }, { name: "lock", at: "the way you" }] }), good({ id: "02-x", accent: "blue", voice: "But nobody checked that chip for eleven whole years." }), good({ id: "03-x", accent: "green", voice: "So what do you check tonight before you sleep?" })],
     "hook-object": [good({ art: [{ name: "question", drawn: true }, { name: "warning", at: "the way you" }] }), good({ id: "02-x", accent: "blue", voice: "But nobody checked that chip for eleven whole years." }), good({ id: "03-x", accent: "green", voice: "So what do you check tonight before you sleep?" })],
     "art-count": [good(), good({ id: "02-x", accent: "blue", voice: "But nobody checked that chip for eleven whole years.", art: [{ name: "chip", at: "that chip" }] }), good({ id: "03-x", accent: "green", voice: "So what do you check tonight before you sleep?" })],
     "variety": [good(), good({ id: "02-x", accent: "blue", voice: "But nobody checked that door for eleven whole years.", art: [{ name: "door", at: "that door" }, { name: "clock", at: "eleven whole years" }] }), good({ id: "03-x", accent: "green", voice: "So what door do you check tonight before you sleep?", art: [{ name: "door", at: "what door" }, { name: "bell", at: "before you sleep" }] })],
@@ -245,11 +245,11 @@ test("what arithmetic can fix is fixed without asking the model again", () => {
     good({ id: "02-x", accent: "blue", voice: "But nobody checked that chip for eleven whole years.", art: [{ name: "chip", at: "But nobody" }, { name: "clock", at: "nobody checked" }] }),
     good({ id: "03-x", accent: "green", voice: "So what do you check tonight before you sleep?" }),
   ];
-  assert.ok(film(scenes).includes("hook-drawn"));
+  assert.ok(film(scenes).includes("scene-drawn"));
   assert.ok(film(scenes).includes("cue-spread"));
   repairExplainer(scenes, "9:16");
   const left = film(scenes);
-  assert.ok(!left.includes("hook-drawn"), "the opening drawing should now be on the page at frame zero");
+  assert.ok(!left.includes("scene-drawn"), "the opening drawing should now be on the page at frame zero");
   assert.ok(!left.includes("cue-spread"), `a late anchor should have been chosen (left: ${left.join(", ")})`);
 });
 
@@ -308,11 +308,11 @@ test("a repair is recognised by the rule that asked for it, and a second pass ch
         art: [{ name: "server", at: w.split(/\s+/).slice(0, 2).join(" ") }, { name: "eye", at: w.split(/\s+/).slice(1, 3).join(" ") }] },
     ];
     const before = checkExplainer(scenes, { duration: 45, language }).map((v) => v.rule);
-    assert.ok(before.includes("hook-drawn") && before.includes("cue-spread"), `${language}: the fixture should break both repairable rules`);
+    assert.ok(before.includes("scene-drawn") && before.includes("cue-spread"), `${language}: the fixture should break both repairable rules`);
 
     repairExplainer(scenes, "9:16");
     const after = checkExplainer(scenes, { duration: 45, language }).map((v) => v.rule);
-    for (const rule of ["hook-drawn", "cue-spread"])
+    for (const rule of ["scene-drawn", "cue-spread"])
       assert.ok(!after.includes(rule), `${language}: repairExplainer added something "${rule}" does not recognise — "${prompt.slice(0, 40)}…"`);
 
     const once = JSON.stringify(scenes);
@@ -465,4 +465,24 @@ test("the repair chooses the drawing the line asked for, and leaves a good film 
   assert.equal(JSON.stringify(hotel.scenes), before, "the shipped film must not be touched by a repair");
   repairExplainer(hotel.scenes, "9:16", "en");
   assert.equal(JSON.stringify(hotel.scenes), before, "and repairing twice must equal repairing once");
+});
+
+test("every scene opens on a drawing, and a scene that does not is repaired", async () => {
+  // From a rented GPU, not a fixture: a planner film with a drawn element in 2 of 7 scenes produced three
+  // black intervals of 0.15 s, one at each scene that opened waiting for a cue, and qa.py refused it. The
+  // shipped hotel film has a drawing on the page in every one of its six scenes.
+  const { repairExplainer } = await import("../src/explainer-plan.ts");
+  const scenes = [
+    good(),
+    good({ id: "02-x", accent: "blue", voice: "But nobody checked that chip for eleven whole years.", art: [{ name: "chip", at: "that chip" }, { name: "clock", at: "eleven whole years" }] }),
+    good({ id: "03-x", accent: "green", voice: "So what do you check tonight before you sleep?", art: [{ name: "bell", at: "you check" }, { name: "clock", at: "before you sleep" }] }),
+  ];
+  const fired = film(scenes).filter((r) => r === "scene-drawn");
+  assert.equal(fired.length, 2, "scenes 2 and 3 open on nothing and both must be named");
+  repairExplainer(scenes, "9:16", "en");
+  assert.ok(!film(scenes).includes("scene-drawn"), "arithmetic puts the first drawing of each scene on the page");
+  assert.equal(scenes[1].art[0].drawn, true); assert.ok(!("at" in scenes[1].art[0]));
+  const { readFileSync } = await import("node:fs"); const { resolve } = await import("node:path");
+  const hotel = JSON.parse(readFileSync(resolve(import.meta.dirname, "../worker/keou/examples/explainer-hotel/project.json"), "utf8"));
+  assert.ok(hotel.scenes.every((s) => s.art.some((a) => a.drawn === true)), "the reference already does this in every scene");
 });

@@ -54,7 +54,7 @@ ART (2-8 per scene): {"name":<drawing>,"at":<words>,"until"?:<words>,"x"?:${Math
   x,y place it in this frame's pixels. A drawing is about 420 wide and 383 tall at size 1, so two of them want 450 pixels between their centres or they overlap and read as one broken object. Overlap only when you mean it, as a hand ON a card. room/corridor/blank/reader/city/hotels ARE the space the others stand in, and everything goes ON those. THE CAPTION OWNS THE BOTTOM OF THE FRAME — it is burned in from ${Math.round(fh * .78)} down — so keep y at or under ${Math.round(fh * .70)}: a drawing under the caption is a drawing the viewer reads words through.
   "at" is WHEN the drawing appears: quote 1-4 words copied EXACTLY from THAT scene's own voice line. Spread them across the line — the last drawing of a scene must land in the SECOND HALF of the sentence, or the picture stops moving while the voice keeps going.
   "until" (same form) is when it leaves; give one drawing an "until" and the next an "at" on the same words so they overlap and the frame is never empty.
-  "drawn":true means it is already on the page at the first frame. The FIRST drawing of the FIRST scene must have it, or the film opens on black.
+  "drawn":true means it is already on the page at the first frame. The first drawing of EVERY scene must have it: a scene whose drawings all wait for a word opens on an empty black frame, and the film is refused.
   Drawings: ${SKETCH_ART.join(", ")}.
   Extras: tint/led/beam/chip = an accent colour on the drawing or one part of it; mood (${quoted(SKETCH_MOODS)}) on "face"; count 1-12 on crowd/footprints/blank/chain; text (≤24, the only drawing that carries words) on "tag"; open/open_to on "door" and "lock"; reach on "figure"; flags no (crossed out or broken), sweat, xray, flash, flip, leader.
   Accents: ${quoted(SKETCH_ACCENTS)} — one per scene, never two in a frame.
@@ -424,9 +424,12 @@ export const EXPLAINER_RULES: ExplainerRule[] = [
     },
   },
   {
-    id: "hook-drawn",
-    why: "A film that fades in from black has already been swiped past.",
-    check: ({ scenes }) => (artOf(scenes[0] ?? {}).some((a) => a.drawn === true) ? [] : [{ rule: "hook-drawn", scene: 1, message: `the first drawing of scene 1 needs "drawn": true, or the video opens on an empty black frame.` }]),
+    id: "scene-drawn",
+    why: "A scene whose drawings all wait for a word opens on an empty black frame. The QA gate refuses the film for it, after the GPU is paid for.",
+    // Measured on a rented card: a planner film with a drawn element in 2 of 7 scenes came back with three
+    // black intervals, one per scene that opened on nothing. The shipped reference has one in every scene.
+    check: ({ scenes }) => scenes.flatMap((s, i) => (artOf(s).some((a) => a.drawn === true) ? []
+      : [{ rule: "scene-drawn", scene: i + 1, message: `scene ${i + 1} has no drawing on the page when it starts: give its first drawing "drawn": true, or the frame is black until the first cue lands.` }])),
   },
   {
     id: "hook-object",
@@ -677,8 +680,12 @@ function place(name: string, art: Record<string, unknown>[], format: string): { 
 export function repairExplainer(scenes: unknown, format: string, language = "en"): void {
   const list = Array.isArray(scenes) ? (scenes.filter(isObj) as Record<string, unknown>[]) : [];
   if (!list.length) return;
-  const first = artOf(list[0]);
-  if (first.length && !first.some((a) => a.drawn === true)) { first[0].drawn = true; delete first[0].at }
+  // Every scene, not only the first: the tableau's 0.26 s overlap covers handovers INSIDE a scene, and a
+  // cut to a scene whose drawings all wait for a word is a black frame the QA gate refuses.
+  for (const s of list) {
+    const art = artOf(s);
+    if (art.length && !art.some((a) => a.drawn === true)) { art[0].drawn = true; delete art[0].at }
+  }
 
   // Everything the film already draws: a repair that hands back a picture the viewer has seen three times
   // has added nothing, whatever the rule counter says.
