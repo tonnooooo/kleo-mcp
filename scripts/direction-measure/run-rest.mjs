@@ -70,8 +70,13 @@ for (let run = 1; run <= REPEAT; run++) {
   const out = resolve(OUTDIR, `${stamp}-${commit}-${LABEL}-corsa${run}.json`);
   writeFileSync(out, JSON.stringify({ label: LABEL, commit, model, run, rows }, null, 2));
   const line = quotaOut && !done ? "RIFIUTATA 4006 (0 neuroni)" : `${right}/${done}` + (quotaOut ? " (interrotta: quota)" : "");
-  summary.push(line);
-  console.log(`   corsa ${run}: ${line}   ${done ? `A ${rows.filter((r) => r.set === "A" && r.ok).length}/${rows.filter((r) => r.set === "A").length}  B ${rows.filter((r) => r.set === "B" && r.ok).length}/${rows.filter((r) => r.set === "B").length}  C ${rows.filter((r) => r.set === "C" && r.ok).length}/${rows.filter((r) => r.set === "C").length}` : ""}   -> ${out.split("/").pop()}`);
+  // CALIBRATION of the model's own "confident". The look score says whether a sentence in the prompt moved the
+  // choice; this says whether the field means anything: a model that is right as often when it says false as when
+  // it says true is not confessing, it is guessing twice. Only prompts that carry the field produce these numbers.
+  const sure = rows.filter((r) => r.confident === true), unsure = rows.filter((r) => r.confident === false);
+  const cal = sure.length + unsure.length ? `   sicuro ${sure.filter((r) => r.ok).length}/${sure.length} giuste, non-sicuro ${unsure.filter((r) => r.ok).length}/${unsure.length} giuste` : "";
+  summary.push(line + (cal ? ` [${cal.trim()}]` : ""));
+  console.log(`   corsa ${run}: ${line}${cal}   ${done ? `A ${rows.filter((r) => r.set === "A" && r.ok).length}/${rows.filter((r) => r.set === "A").length}  B ${rows.filter((r) => r.set === "B" && r.ok).length}/${rows.filter((r) => r.set === "B").length}  C ${rows.filter((r) => r.set === "C" && r.ok).length}/${rows.filter((r) => r.set === "C").length}` : ""}   -> ${out.split("/").pop()}`);
   if (quotaOut) break;
 }
 appendFileSync(LEDGER, `    ${stamp} | ${WHO} | fase 0 via REST, ${LABEL} (${commit}) | fine | ~${Math.round(spent)} spesi | ${summary.join("; ")}\n`);

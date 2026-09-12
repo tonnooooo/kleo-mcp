@@ -1,0 +1,372 @@
+{
+ "cosa": "Sei lettori indipendenti (agenti, NON il modello di produzione) scelgono il look per le 27 richieste held-out, con due formulazioni dell'istruzione di fase 0 (baseline / described); nessuno vedeva le risposte attese. 11 settembre 2026. Le etichette attese sono quelle di scripts/adaptation.mjs DOPO il ripristino delle sei corrotte (docs/SCELTA-DEL-LOOK.md). 'incerto' e' la dichiarazione del lettore.",
+ "avvertenza": "Misura l'ISTRUZIONE, non il modello: e' un tetto, non il numero di produzione. I numeri 10/11 (sicuro) e 5/16 (incerto) citati altrove vengono da qui, variante baseline. Ricostruito dal journal del workflow perche' il file di output originale e' stato azzerato al riavvio della sessione.",
+ "risposte": [
+  {
+   "label": "",
+   "result": {
+    "scelte": [
+     {
+      "n": 1,
+      "style": "explainer",
+      "perche": "\"Spiegami\" e' letteralmente nella regola: una sola idea smontata perche' la mamma la capisca, quindi comprensione, non schema.",
+      "incerto": false
+     },
+     {
+      "n": 2,
+      "style": "cyber",
+      "perche": "Tema sicurezza senza immagini possibili (attacchi storici): motion design con cifre; ma e' una classifica di eventi, non un sistema diagrammato.",
+      "incerto": true
+     },
+     {
+      "n": 3,
+      "style": "explainer",
+      "perche": "\"Perche'...\" + \"che capisca chiunque\": lo spettatore deve uscirne con una comprensione, non con la mappa della rete.",
+      "incerto": false
+     },
+     {
+      "n": 4,
+      "style": "explainer",
+      "perche": "\"Spiega... perche'\": una sola idea controintuitiva smontata, esattamente il caso explainer.",
+      "incerto": false
+     },
+     {
+      "n": 5,
+      "style": "explainer",
+      "perche": "\"Explain why\" rivolto a chi e' convinto del contrario: cambiare la testa dello spettatore, il criterio esplicito dell'explainer.",
+      "incerto": false
+     },
+     {
+      "n": 6,
+      "style": "cyber",
+      "perche": "Percorso dei dati app -> server -> terze parti: tema tech/privacy in cui si vuole il quadro del sistema, cioe' un diagramma in movimento.",
+      "incerto": false
+     },
+     {
+      "n": 7,
+      "style": "explainer",
+      "perche": "\"Break down... actually\" smonta una cosa sola e ribalta un'idea; ma non e' tema tech/sicurezza ed e' una ripartizione di numeri, che la regola non copre bene.",
+      "incerto": true
+     }
+    ]
+   }
+  },
+  {
+   "label": "",
+   "result": {
+    "scelte": [
+     {
+      "n": 1,
+      "style": "cyber",
+      "perche": "tema sicurezza (furto auto senza chiave) e quello che resta allo spettatore e' lo schema dell'attacco: chiave, ripetitore, macchina, quindi un sistema da diagrammare",
+      "incerto": true
+     },
+     {
+      "n": 2,
+      "style": "cartoon",
+      "perche": "e' una storia raccontata, il guardiano del faro per quarant'anni: drawn story",
+      "incerto": false
+     },
+     {
+      "n": 3,
+      "style": "explainer",
+      "perche": "\"perche' il telefono...\" e' esattamente un \"explain why\": una sola idea smontata e un'idea sbagliata corretta",
+      "incerto": false
+     },
+     {
+      "n": 4,
+      "style": "realistic",
+      "perche": "vita sulla ISS e' un luogo reale raccontato in chiave documentario",
+      "incerto": false
+     },
+     {
+      "n": 5,
+      "style": "realistic",
+      "perche": "cucina reale, gesti e riprese di cose vere; nessun segnale di storia disegnata ne' di sistema da diagrammare, ma la regola non nomina il food",
+      "incerto": true
+     },
+     {
+      "n": 6,
+      "style": "explainer",
+      "perche": "\"how X actually works\" e' la formula dell'explainer: lo spettatore deve uscire con la comprensione del meccanismo, e il nucleare non e' tech/security da cyber",
+      "incerto": false
+     },
+     {
+      "n": 7,
+      "style": "cartoon",
+      "perche": "storia del pirata: racconto disegnato",
+      "incerto": false
+     },
+     {
+      "n": 8,
+      "style": "realistic",
+      "perche": "recensione di un prodotto (cuffie Sony)",
+      "incerto": false
+     },
+     {
+      "n": 9,
+      "style": "explainer",
+      "perche": "tema tech condiviso con cyber, ma la richiesta punta al ribaltamento (il file non e' davvero cancellato): lo spettatore deve uscire con una comprensione, non con lo schema del disco",
+      "incerto": true
+     },
+     {
+      "n": 10,
+      "style": "realistic",
+      "perche": "un borgo italiano e' un luogo da mostrare",
+      "incerto": false
+     }
+    ]
+   }
+  },
+  {
+   "label": "",
+   "result": {
+    "scelte": [
+     {
+      "n": 1,
+      "style": "explainer",
+      "perche": "\"Fammi un video che spiega perche'\": una sola idea smontata e una convinzione della nonna da correggere, che e' il caso esplicito di explainer.",
+      "incerto": false
+     },
+     {
+      "n": 2,
+      "style": "cartoon",
+      "perche": "E' una storia raccontata, di famiglia e di un'epoca passata: cartoon copre drawn stories e history.",
+      "incerto": false
+     },
+     {
+      "n": 3,
+      "style": "explainer",
+      "perche": "Tema tecnico ma \"come fa X a sapere\": il viewer deve uscire con la comprensione di un meccanismo unico, non con la mappa di un sistema, quindi explainer e non cyber.",
+      "incerto": true
+     },
+     {
+      "n": 4,
+      "style": "realistic",
+      "perche": "E' un prodotto e come si sceglie: products sta nella lista realistic.",
+      "incerto": false
+     },
+     {
+      "n": 5,
+      "style": "explainer",
+      "perche": "Una sola domanda presa e smontata (cosa succede davvero al corpo), non un prodotto ne' una storia disegnata.",
+      "incerto": false
+     },
+     {
+      "n": 6,
+      "style": "explainer",
+      "perche": "\"Explaining what's actually happening\" contro quello che dice il padrone di casa: una idea sola e una testa da far cambiare.",
+      "incerto": false
+     },
+     {
+      "n": 7,
+      "style": "realistic",
+      "perche": "E' un fatto di cronaca del 2003 raccontato come accaduto: news/documentary stanno in realistic.",
+      "incerto": false
+     },
+     {
+      "n": 8,
+      "style": "cyber",
+      "perche": "Tema tech con piu' attori e un flusso (carta, terminale, circuito, banca): il viewer finisce con la mappa del sistema, quindi cyber e non explainer, anche se il verbo e' \"explain\".",
+      "incerto": true
+     },
+     {
+      "n": 9,
+      "style": "cartoon",
+      "perche": "Aneddoto storico raccontato come storia: cartoon = drawn stories, history.",
+      "incerto": false
+     },
+     {
+      "n": 10,
+      "style": "explainer",
+      "perche": "\"Why does...\": una curiosita' singola da spiegare e un'idea sbagliata da raddrizzare.",
+      "incerto": false
+     }
+    ]
+   }
+  },
+  {
+   "label": "",
+   "result": {
+    "scelte": [
+     {
+      "n": 1,
+      "style": "explainer",
+      "perche": "E' una spiegazione di come funziona una cosa di tutti i giorni (conservanti, umidita', muffa): la regola copre storie disegnate, prodotti/luoghi/news e tech-sicurezza, ma non la divulgazione quotidiana, quindi nessuna delle quattro voci le sta addosso.",
+      "incerto": true
+     },
+     {
+      "n": 2,
+      "style": "cartoon",
+      "perche": "Storia personale del passato da raccontare: cade in pieno nel 'drawn stories, history' della regola, e del nonno in nave non esistono immagini.",
+      "incerto": false
+     },
+     {
+      "n": 3,
+      "style": "cyber",
+      "perche": "Tema tecnico che si capisce con uno schema (la spira induttiva sotto l'asfalto) e non con scene girate; incerto perche' la regola limita cyber a 'tech and security' e non e' ovvio se un semaforo ci rientri.",
+      "incerto": true
+     },
+     {
+      "n": 4,
+      "style": "realistic",
+      "perche": "E' un prodotto da comprare e confrontare: 'realistic = products' senza ambiguita'.",
+      "incerto": false
+     },
+     {
+      "n": 5,
+      "style": "explainer",
+      "perche": "Divulgazione su cosa succede nel corpo: non e' prodotto/luogo/news/sport, non e' storia disegnata e non e' tech o sicurezza, quindi la regola non offre una casella.",
+      "incerto": true
+     },
+     {
+      "n": 6,
+      "style": "explainer",
+      "perche": "Vuole capire il meccanismo dell'impianto (circolazione e sfiato dei termosifoni) con uno schema, ma cyber e' riservato dalla regola a tech e sicurezza, quindi resto scoperto.",
+      "incerto": true
+     },
+     {
+      "n": 7,
+      "style": "realistic",
+      "perche": "Evento reale documentabile, il blackout del 2003: sta in 'news, documentary'; incerto perche' e' anche passato e la regola manda la 'history' su cartoon.",
+      "incerto": true
+     },
+     {
+      "n": 8,
+      "style": "cyber",
+      "perche": "Tema tecnico e di sicurezza dei pagamenti che si racconta con il percorso del dato fra terminale, circuito e banca: schemi, non scene.",
+      "incerto": false
+     },
+     {
+      "n": 9,
+      "style": "cartoon",
+      "perche": "Storia d'epoca da raccontare a immagini disegnate: 'drawn stories, history'.",
+      "incerto": false
+     },
+     {
+      "n": 10,
+      "style": "explainer",
+      "perche": "Chimica della fermentazione spiegata in casa: la regola non ha una voce per la divulgazione, e non e' ne' storia disegnata ne' prodotto ne' tema tech.",
+      "incerto": true
+     }
+    ]
+   }
+  },
+  {
+   "label": "",
+   "result": {
+    "scelte": [
+     {
+      "n": 1,
+      "style": "cyber",
+      "perche": "Tema tech/sicurezza e concetto astratto senza niente da riprendere: la VPN si capisce con uno schema, non con una scena; ma la regola non dice cosa fare quando il pubblico e' 'mia madre' e chiede una metafora disegnata.",
+      "incerto": true
+     },
+     {
+      "n": 2,
+      "style": "cyber",
+      "perche": "Attacchi informatici = tema sicurezza, e una classifica di costi vive di cifre e schemi in movimento, non di scene: 'della storia' qui vuol dire 'di sempre', non e' il racconto storico disegnato del cartoon.",
+      "incerto": false
+     },
+     {
+      "n": 3,
+      "style": "cartoon",
+      "perche": "E' sicurezza, ma la regola manda in cyber solo chi vuole schemi invece di scene: qui c'e' un luogo e una situazione (l'hotel, chi sta in mezzo) e si chiede una cosa che capisca chiunque; resto incerto perche' il tema tirerebbe verso cyber.",
+      "incerto": true
+     },
+     {
+      "n": 4,
+      "style": "explainer",
+      "perche": "Non e' storia disegnata ne' prodotto/luogo/documentario, e non e' tech ne' sicurezza quindi cyber e' escluso: la regola semplicemente non copre la divulgazione scientifica, quindi ho scelto l'unico valore rimasto.",
+      "incerto": true
+     },
+     {
+      "n": 5,
+      "style": "cyber",
+      "perche": "Tema sicurezza puro e confronto concettuale fra due modi di custodire le password: niente da fotografare, si spiega con uno schema.",
+      "incerto": false
+     },
+     {
+      "n": 6,
+      "style": "cyber",
+      "perche": "E' letteralmente un flusso di dati app -> server -> terze parti: tema tech e richiesta di uno schema, zero scene.",
+      "incerto": true
+     },
+     {
+      "n": 7,
+      "style": "explainer",
+      "perche": "E' una scomposizione di costi in grafico: non e' cartoon ne' realistic, e cyber chiede tech E sicurezza mentre qui la rete e' solo la voce di una bolletta; la regola non prevede questo caso.",
+      "incerto": true
+     }
+    ]
+   }
+  },
+  {
+   "label": "",
+   "result": {
+    "scelte": [
+     {
+      "n": 1,
+      "style": "realistic",
+      "perche": "La regola manda a cyber i temi di sicurezza solo se vogliono diagrammi e non scene: qui la scena c'e' (ladri, auto, notte) ed e' materia da cronaca/documentario, ma il richiamo a 'security' tira verso cyber.",
+      "incerto": true
+     },
+     {
+      "n": 2,
+      "style": "cartoon",
+      "perche": "E' una storia raccontata, e 'cartoon = drawn stories'.",
+      "incerto": false
+     },
+     {
+      "n": 3,
+      "style": "realistic",
+      "perche": "Il telefono e' un prodotto reale, ma la regola non ha una casella per la spiegazione di un fenomeno quotidiano: cyber chiede tech senza immagini e qui l'oggetto si vede.",
+      "incerto": true
+     },
+     {
+      "n": 4,
+      "style": "realistic",
+      "perche": "E' un luogo vero raccontato in chiave documentaria, e 'realistic = places, documentary'.",
+      "incerto": false
+     },
+     {
+      "n": 5,
+      "style": "realistic",
+      "perche": "Si mostra cibo vero, ma il consiglio pratico di cucina non rientra in nessuna delle categorie elencate: e' la scelta piu' vicina, non una scelta guidata.",
+      "incerto": true
+     },
+     {
+      "n": 6,
+      "style": "realistic",
+      "perche": "Un reattore e' un impianto fisico da documentario, ma il 'come funziona davvero' chiede uno spaccato/diagramma e la regola riserva i diagrammi a tech e security.",
+      "incerto": true
+     },
+     {
+      "n": 7,
+      "style": "cartoon",
+      "perche": "Storia narrata, per di piu' d'epoca: 'drawn stories, history'.",
+      "incerto": false
+     },
+     {
+      "n": 8,
+      "style": "realistic",
+      "perche": "E' la recensione di un prodotto, e 'realistic = products'.",
+      "incerto": false
+     },
+     {
+      "n": 9,
+      "style": "cyber",
+      "perche": "Tema tech puro senza nulla da filmare: il funzionamento della cancellazione vuole diagrammi, non scene.",
+      "incerto": false
+     },
+     {
+      "n": 10,
+      "style": "realistic",
+      "perche": "E' un luogo vero ('places'), ma la regola mette 'travel' sotto cartoon e le due voci si sovrappongono proprio qui.",
+      "incerto": true
+     }
+    ]
+   }
+  }
+ ]
+}

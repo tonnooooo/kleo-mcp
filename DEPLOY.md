@@ -114,6 +114,12 @@ git merge-base --is-ancestor <il tuo commit> <sha dell'ultima build riuscita> &&
 
 Un `FUORI` su una riparazione del motore significa che le GPU noleggiate da adesso in poi useranno ancora la versione vecchia, e nessun deploy lo cambierà.
 
+**Una colonna nuova ha due copie, e l'ordine fra loro conta.** Ogni colonna aggiunta a `jobs` sta sia in `migrations/` sia in `ensureColumns` (`src/schema.ts`), che la ripara al primo avvio del Worker e ingoia il "duplicate column". Quindi se il Worker nuovo va in produzione **prima** di `npm run db:migrate`, il cron la crea entro un minuto e la migrazione poi fallisce per colonna duplicata (SQLite non ha `ADD COLUMN IF NOT EXISTS`). Ordine giusto: migrazione, poi deploy. Se è andata al contrario, la migrazione va segnata come applicata a mano invece di riscriverla:
+
+```bash
+npx wrangler d1 execute kleo-db --remote --command "INSERT INTO d1_migrations (name, applied_at) VALUES ('0010_plan_note.sql', CURRENT_TIMESTAMP)"
+```
+
 Codici regalo (facoltativi, non servono per entrare): `npx wrangler d1 execute kleo-db --remote --command "INSERT INTO invites (code,credits,max_uses,note) VALUES ('NOME-1',3,1,'Nome')"`. Chi scrive `NOME-1` nel campo facoltativo della pagina di accesso riceve quei crediti **in più** ai 2 gratuiti; chi non scrive niente entra lo stesso.
 
 ## 5. GPU vere: come funzionano, come spegnerle, la riserva gratuita
