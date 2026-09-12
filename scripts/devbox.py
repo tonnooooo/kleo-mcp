@@ -321,7 +321,14 @@ def guarded(script):
         # Its own session: on the way out the WHOLE tree gets the signal. The first version killed only the
         # script's bash; its child `devbox.py up`, mid offer-search, lived on as an orphan, found a card a few
         # minutes later, rented it, and nobody was left to use it or to destroy it (13 September, an A100, ~$0.09).
-        proc = subprocess.Popen(["bash", script], cwd=ROOT, start_new_session=True)
+        # A SNAPSHOT of the script, never the file itself: bash reads a script by byte offset as it goes, so an
+        # edit to the live file lands in the running instance (13 September: one inserted line, "unexpected EOF"
+        # at line 49, a finished 4K render destroyed with its box one step before the pull).
+        import shutil, tempfile
+        snap = tempfile.NamedTemporaryFile("w", suffix=".sh", prefix="guarded-", delete=False)
+        shutil.copyfile(script, snap.name); snap.close()
+        proc = subprocess.Popen(["bash", snap.name], cwd=ROOT, start_new_session=True,
+                                env={**os.environ, "GUARDED_SCRIPT": os.path.abspath(script)})
         rc = proc.wait()
     finally:
         if proc is not None and proc.poll() is None:

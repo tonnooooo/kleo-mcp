@@ -10,7 +10,7 @@
 #
 # Expected: ~4 min for the box, ~4 min for the model, 15-25 min for the render on a ≥32 GB card at ~$0.45/h.
 set -eu
-ROOT=$(cd "$(dirname "$0")/../.." && pwd); cd "$ROOT"
+ROOT=$(cd "$(dirname "${GUARDED_SCRIPT:-$0}")/../.." && pwd); cd "$ROOT"   # guarded runs a snapshot of this file
 DB="python3 scripts/devbox.py"
 OUT=${MOTION_OUT:-$ROOT/scripts/motion-demo/out}; mkdir -p "$OUT"
 # Defaults, each overridable from the environment. The price cap is the one filter that decides whether there is
