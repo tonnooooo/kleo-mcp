@@ -36,7 +36,7 @@ LOTTO=(
 
 cd "$ROOT"; git fetch -q origin 'refs/heads/*:refs/remotes/origin/*' 2>/dev/null || true
 PIDS=()
-cleanup() { for riga in "${LOTTO[@]}"; do IFS='|' read -r _ _ PORTA _ <<<"$riga"; fuser -k -KILL "$PORTA/tcp" >/dev/null 2>&1 || true; done; for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done; sleep 1; }
+cleanup() { for p in "${PIDS[@]:-}"; do kill -TERM -- "-$p" 2>/dev/null || true; done; sleep 1; for p in "${PIDS[@]:-}"; do kill -KILL -- "-$p" 2>/dev/null || true; done; for riga in "${LOTTO[@]}"; do IFS='|' read -r _ _ PORTA _ <<<"$riga"; fuser -k -KILL "$PORTA/tcp" >/dev/null 2>&1 || true; done; sleep 1; }
 trap cleanup EXIT
 
 echo "    $(date -u +%Y-%m-%dT%H:%MZ) | $KLEO_SESSION | tre-prompt.sh: lotto 0a30b4a x2, 111c205, 6f153e1, d9d8216 su scout | 135 | ~7000 stimati | IN CORSO" >> "$LEDGER"
@@ -56,7 +56,9 @@ for riga in "${LOTTO[@]}"; do
   # TERM un workerd e' sopravvissuto. fuser uccide chi tiene la porta e nient'altro.
   fuser -k -KILL "$PORTA/tcp" >/dev/null 2>&1 || true; sleep 1
   (echo > "/dev/tcp/127.0.0.1/$PORTA") 2>/dev/null && { echo "porta $PORTA ancora occupata: mi fermo"; exit 1; }
-  ( cd "$W" && npx wrangler dev --remote -c scripts/direction-measure/wrangler.jsonc --port "$PORTA" --ip 127.0.0.1 >"$BASE/$COMMIT.log" 2>&1 ) &
+  # setsid: il banco e' un gruppo di processi a se' (npm -> sh -> node wrangler -> workerd). Uccidere il solo workerd
+  # non serve: wrangler lo supervisiona e lo RILANCIA. Il cleanup uccide il gruppo intero con kill -- -PGID.
+  setsid bash -c "cd '$W' && exec npx wrangler dev --remote -c scripts/direction-measure/wrangler.jsonc --port '$PORTA' --ip 127.0.0.1" >"$BASE/$COMMIT.log" 2>&1 &
   PIDS+=($!)
   for i in $(seq 1 40); do curl -sf -m 3 "http://127.0.0.1:$PORTA" >/dev/null 2>&1 && break; sleep 3; done
   curl -sf -m 3 "http://127.0.0.1:$PORTA" >/dev/null || { echo "banco $NOME ($COMMIT) non risponde: vedi $BASE/$COMMIT.log"; exit 1; }
