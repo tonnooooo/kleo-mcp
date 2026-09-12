@@ -692,7 +692,9 @@
   function tableau(s, u, t, dur) {
     const ctx = A.ctx, a0 = ctx.globalAlpha;
     for (const e of (s.art || [])) {
-      const at = cue(s, e.at ?? 0, dur, 0, e.name + ' at'), out = e.until == null ? dur : cue(s, e.until, dur, dur, e.name + ' until');
+      // "drawn" means on the page from the scene's first frame. A cue on a drawn element used to win over it and
+      // the scene opened on nothing until the word arrived — measured as a 0.15 s black on a rented card.
+      const at = e.drawn ? 0 : cue(s, e.at ?? 0, dur, 0, e.name + ' at'), out = e.until == null ? dur : cue(s, e.until, dur, dur, e.name + ' until');
       const gone = e.until == null ? dur : out + .26;                      // it overlaps its successor
       const eu = (u - at) / Math.max(out - at, .1);
       if (eu < 0 || u > gone) continue;                                   // frame zero already carries the drawing

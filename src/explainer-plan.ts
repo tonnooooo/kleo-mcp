@@ -212,6 +212,9 @@ export function repairExplainerScene(s: Record<string, unknown>, format: string,
       }
     }
     if (typeof a.at === "string" && typeof a.until === "string" && a.at === a.until) delete a.until;
+    // "drawn" and "at" together are a contradiction the engine used to resolve in favour of the cue, so a
+    // scene whose opening drawing carried both opened on nothing. Drawn means on the page from frame one.
+    if (a.drawn === true) delete a.at;
     if ("x" in a) a.x = num(a.x, -fw * 0.4, fw * 1.4, fw / 2);
     if ("size" in a) a.size = num(a.size, 0.1, 6, 1);
     if ("y" in a) {

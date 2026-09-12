@@ -487,3 +487,16 @@ test("every scene opens on a drawing, and a scene that does not is repaired", as
   const hotel = JSON.parse(readFileSync(resolve(import.meta.dirname, "../worker/keou/examples/explainer-hotel/project.json"), "utf8"));
   assert.ok(hotel.scenes.every((s) => s.art.some((a) => a.drawn === true)), "the reference already does this in every scene");
 });
+
+test("a drawing that is both drawn and cued is on the page from frame one, not waiting for its word", () => {
+  // Measured on a rented card: the planner's opening drawing carried "drawn": true AND "at": "airports",
+  // the engine honoured the cue, and the film opened on 0.15 s of black that qa.py refused.
+  const plan = planFor(job("explainer-short", 45, "9:16", "en", "x"));
+  const out = normalizeStoryboard({ scenes: [{
+    id: "01-a", kind: "sketch", accent: "red", voice: "You use public wifi at airports every day, but is it safe?",
+    shot: { zoom: [1, 1.3], focus: [540, 860] }, art: [{ name: "hotels", drawn: true, at: "airports" }, { name: "laptop", at: "public wifi" }],
+  }] }, plan);
+  const first = out.scenes[0].art[0];
+  assert.equal(first.drawn, true);
+  assert.ok(!("at" in first), "drawn wins: the cue is dropped so the drawing does not wait for its word");
+});
