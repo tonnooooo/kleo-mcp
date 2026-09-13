@@ -3,7 +3,7 @@
 # pinned by worker/keou/requirements.txt (transformers 5.16.1, huggingface-hub 1.30.0) and must stay satisfied.
 # 13 September: LTX-2.5 (Lightricks) is the generated-motion model the owner chose, and its pipelines (LTX2Pipeline,
 # LTX2LatentUpsamplePipeline) exist only on diffusers main — pinned to a commit that has them, not to "main".
-diffusers @ git+https://github.com/huggingface/diffusers@82e309a2b1b1
+diffusers @ https://github.com/huggingface/diffusers/archive/82e309a2b1b1.zip   # a tarball, not git+: the image has no git
 accelerate==1.15.0
 safetensors==0.8.0
 pillow>=10.4
