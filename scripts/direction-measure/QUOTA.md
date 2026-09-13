@@ -33,3 +33,4 @@ Da qui in poi: una riga qui PRIMA di lanciare.
     2026-09-13T13:06Z | BOSS/treatment | PIANO WORKERS PAID ATTIVO dal 13:06Z: il 4006 non torna piu; oltre i 10.000 gratis si paga 0,011 $/1.000. Da qui il registro conta la SPESA. Misura treatment: 5 richieste x 3 su scout + 5 x 2 su gpt-oss-120b e llama-3.3-70b | ~35 | ~84 a treatment su scout | in corso
 
     2026-09-13T13:35Z | BOSS/treatment | run2 dal terminale (prompt corretto dca9fc8): 5 richieste x 3 su scout + 5 x 2 su gpt-oss-120b | ~25 | ~2500 scout + ~3500 oss | in corso
+    2026-09-13T14:55Z | BOSS/treatment | run2/run3/run4 via /internal/admin/treatment (prompt corretto, 15 treatment ciascuna) + 10 su gpt-oss-120b (JSON troncato, inutilizzabile) | ~60 | ~9.700 in tutto (piano Paid: ~0,10 $) | FATTO: tabella prima/dopo in docs/ADAPT-PROMPT.md §6

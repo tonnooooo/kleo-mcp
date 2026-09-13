@@ -90,43 +90,66 @@ richiesta → kleo_create_video (senza treatment) → pianificatore: passo -1 sc
 
 ## 5. Costo
 
-Una chiamata in più per film. Stima sul modello di produzione (`llama-4-scout-17b`, 0,27 $/M in, 0,85 $/M out,
-1 neurone = 0,000011 $): circa 3.000 token in ingresso e 1.200 in uscita, **~170 neuroni** (~0,002 $). Il tetto
-gratuito è 10.000 neuroni al giorno: il treatment ne pesa il 2 %, un film intero (direction + outline + scene)
-1.000-1.500. `TREATMENT_MODEL` permette un modello diverso solo per questa chiamata (candidato:
-`@cf/openai/gpt-oss-120b`, 0,35/0,75 $/M, più adatto alla prosa lunga), ma **la scelta va misurata**, non
-decisa a tavolino.
+Una chiamata in più per film. Misurato sul modello di produzione (`llama-4-scout-17b`, 0,27 $/M in, 0,85 $/M out,
+1 neurone = 0,000011 $): **~90 neuroni** a treatment quando passa al primo tentativo, ~140 di media contando i
+secondi tentativi, cioè un decimo di centesimo. Dal 13 settembre alle 13:06 UTC l'account è sul piano Workers Paid:
+i primi 10.000 neuroni del giorno restano gratis, oltre si paga 0,011 $ ogni 1.000, quindi il muro giornaliero che
+fermava la pianificazione non c'è più. Un film intero (treatment + direction + outline + scene) resta sui
+1.000-1.500 neuroni, circa 2 centesimi. `TREATMENT_MODEL` permette un modello diverso solo per questa chiamata,
+ma la misura (§6) dice che oggi non conviene: la leva è il prompt.
 
-## 6. Cosa è provato e cosa no
+## 6. Cosa è provato, e cosa ha detto il modello vero
 
-Provato (CI, `test/treatment.test.mjs`): l'estrazione è deterministica e si distribuisce; il prompt porta richiesta
-e estrazione; la riparazione riscala gli atti e tiene la prosa nei limiti; il rifiuto nomina il campo; nel
-pianificatore il treatment è la prima chiamata, a 0,85 e sotto il master prompt, la direction e l'outline lo
-leggono con la prosa, le scene senza, lo storyboard lo porta; due risposte cattive non rompono il film; un errore
-di quota lo ferma; un treatment passato in `params` salta la chiamata.
+Provato in CI (`test/treatment.test.mjs`, `test/mcp-adapt.test.mjs`): l'estrazione è deterministica e si
+distribuisce; il prompt porta richiesta, estrazione e lingua; la riparazione riscala gli atti, taglia i nomi a una
+parola intera, toglie le decisioni vuote e tiene la prosa nei limiti; il rifiuto nomina il campo; nel pianificatore
+il treatment è la prima chiamata, a 0,85 e sotto il master prompt, la direction e l'outline lo leggono con la
+prosa, le scene senza, lo storyboard lo porta; due risposte cattive non rompono il film; un errore di quota lo
+ferma; un treatment passato in `params` salta la chiamata; gli strumenti MCP rispondono come devono, pilotati da
+un vero client.
 
-**Non ancora misurato: la qualità sul modello vero.** Il 13 settembre alle 12:16 UTC la quota gratuita era già
-finita (job di produzione di altre sessioni) e `scripts/treatment-make.mjs` è stato rifiutato con 4006. La misura
-da fare, con una riga in `scripts/direction-measure/QUOTA.md` prima di lanciare:
+### La misura sul modello di produzione (13 settembre, piano Workers Paid attivo dalle 13:06 UTC)
 
-```bash
-node scripts/treatment-make.mjs "Create a video about accuracy in medicine" --n 3 --duration 60 --format 16:9 --out /tmp/treat
-```
+Cinque richieste, metà in italiano (medicina 60 s, pirati 45 s 9:16, relay attack 60 s, Venezia 90 s, pane 30 s
+9:16), tre treatment ciascuna, `llama-4-scout-17b`, attraverso `POST /internal/admin/treatment`. Prima e dopo la
+correzione del master prompt (commit dca9fc8, cf2f98c, 1a143f9; l'ultima colonna è la quarta misura, sulla versione in produzione 7d2d05a4):
 
-Stampa i tre treatment, i neuroni spesi e una **distanza** fra le prose (quota di parole non condivise: 0 = lo
-stesso film, 1 = niente in comune; `proseDistance` in `src/treatment.ts`). Cosa guardare: che l'angolo sia
-un'idea e non il soggetto ripetuto; che gli atti sommino alla durata; che nella prosa non compaia una statistica
-che la richiesta non conteneva; che la distanza fra due corse sia sopra 0,5. Poi la stessa cosa con
-`--model @cf/openai/gpt-oss-120b`, e si sceglie.
+| difetto | prima | dopo |
+|---|---|---|
+| angolo = logline riscritta | 8 su 15 | 0 su 10 |
+| atti con nomi da scaletta (INTRO, SETUP, CONCLUSION) | 13 su 15 | 0 su 10 |
+| richieste italiane trattate in inglese | 6 su 6 | 0 su 4 |
+| angolo che apre con "the film explores/argues" | 6 | 0 |
+| "the narrator says / the camera cuts" per treatment | 4,9 | 4,3 (2,0 nella terza misura: oscilla, è il difetto che resta) |
+| numeri non presenti nella richiesta | 2 | 0 |
+| l'esempio del master prompt copiato nel film | 3 su 3 (radiologi) | 0 |
+| distanza minima fra due corse della stessa richiesta | 0,60 | 0,69 |
+| treatment consegnati | 15 su 15 | 13 su 15 (10 prima della regola del secondo tentativo) |
+| neuroni a treatment | 91 | 141 (i rifiuti costano un secondo tentativo) |
 
-**Senza PC**: la stessa misura si fa dal server, da qualunque terminale o telefono con `INTERNAL_SECRET`, sul
-modello che usa il Worker (niente conto utente, niente quota per account, finisce nell'audit come
-`admin.treatment`):
+L'ultima riga è il prezzo: il modello da 17B scrive circa 100 parole di prosa qualunque cifra gli si chieda,
+a volte 50, e il secondo tentativo non è più lungo del primo. Da qui la regola del secondo tentativo
+(`PROSE_LENIENT_MIN`): una prosa fra 60 e 100 parole con tutto il resto giusto passa, come il pianificatore
+tiene una scena valida dopo un solo ritentativo su un problema morbido. Il treatment passato dal client a
+`kleo_create_video` resta a regola stretta.
+
+Cosa NON è cambiato con un modello più grande: `llama-3.3-70b` (10 treatment) ha gli stessi difetti e inventa di
+più (sei numeri in sei treatment, una marca d'auto, una malattia rara). `gpt-oss-120b` risponde in forma
+chat-completions (ora letta da `callModel`) ma il suo JSON arriva troncato perché spende i token in ragionamento:
+0 su 10, non usabile senza un lavoro a parte sul budget di token. La leva è il prompt, non il modello.
+
+Come rifare la misura, da qualunque terminale con `INTERNAL_SECRET` (una riga in
+`scripts/direction-measure/QUOTA.md` prima; costa ~2 centesimi ogni 15 treatment):
 
 ```bash
 curl -s -X POST https://mcp.kleooai.com/internal/admin/treatment -H "Authorization: Bearer $INTERNAL_SECRET" -H "content-type: application/json" -d '{"prompt":"Create a video about accuracy in medicine","duration_s":60,"format":"16:9","language":"en","n":3}'
 ```
 
 Risponde con `written` su `asked`, i neuroni, `distance` (min e media), le logline, i treatment interi e, se il
-modello non ha risposto, `transient: true` col motivo. `"model":"@cf/openai/gpt-oss-120b"` nel corpo prova
-l'altro modello.
+modello non ha risposto, `transient: true` col motivo. `"model":"…"` nel corpo prova un altro modello.
+Attenzione: la WAF di Cloudflare risponde 403 allo User-Agent di `urllib` di Python; `curl` passa.
+`scripts/treatment-make.mjs` fa lo stesso dal terminale con il token di wrangler, che però scade.
+
+Cosa resta da migliorare, in ordine: la prosa (una seconda chiamata dedicata, "scrivi il treatment in prosa da
+queste decisioni", darebbe 200-300 parole vere invece di 100); le decisioni ancora banali in qualche caso; il
+mondo visivo scritto come elenco ("obiettivo standard, luce naturale") in tre casi su dieci.
