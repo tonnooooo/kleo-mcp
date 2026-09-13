@@ -1095,8 +1095,12 @@ def lay_footage(pdir, made, width, height, fps):
         progress("clips", 62 + int(14 * done / max(1, total)), message=f"track: {done}/{total} parts finished")
 
     try:
+        import inspect
+        # Only a build_footage that knows how to report gets the callback (the fakes in the tests, and any older
+        # kleo_video on a box, do not): the track is laid either way.
+        extra = {"progress_fn": report} if "progress_fn" in inspect.signature(mod.build_footage).parameters else {}
         track = mod.build_footage(os.path.join(build, "shots.json"), made, os.path.join(build, "footage.mp4"),
-                                  width, height, fps=fps, log_fn=log, progress_fn=report)
+                                  width, height, fps=fps, log_fn=log, **extra)
     except Exception as e:
         log("could not lay the track:", e)
         return False
