@@ -463,7 +463,7 @@ class RenderFilmTest(unittest.TestCase):
 
     def footage_that(self, seconds, filmed=True):
         kv = self.kv
-        def footage(project, pdir, engine, log_path, units):
+        def footage(project, pdir, engine, log_path, units, lay_track=True):
             import numpy as np
             build = os.path.join(pdir, "build"); os.makedirs(build, exist_ok=True)
             n = int(seconds * 24)
@@ -483,13 +483,12 @@ class RenderFilmTest(unittest.TestCase):
         kw.generate_footage = self.footage_that(3.0)
         out = os.path.join(self.tmp, "out"); os.makedirs(out)
         files = kw.render_film(job_for(storyboard()), out)
-        self.assertEqual(sorted(files), ["subtitles.srt", "thumbnail.jpg", "video.mp4"])
+        self.assertEqual(sorted(files), ["thumbnail.jpg", "video.mp4"], "the film and its thumbnail; no subtitles of any kind")
         probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type:format=duration", "-of", "json", files["video.mp4"]],
                                capture_output=True, text=True, check=True).stdout
         info = json.loads(probe)
         self.assertEqual(sorted(st["codec_type"] for st in info["streams"]), ["audio", "video"], "the narration must be on the film")
         self.assertAlmostEqual(float(info["format"]["duration"]), 3.0, delta=0.25)
-        self.assertIn("A lone figure runs.", open(files["subtitles.srt"]).read())
         self.assertGreater(os.path.getsize(files["thumbnail.jpg"]), 0)
 
     def test_render_routes_a_filmed_storyboard_to_the_film_and_a_plain_one_to_the_engine(self):
@@ -504,6 +503,63 @@ class RenderFilmTest(unittest.TestCase):
             kw.render_film(job_for(storyboard()), out)
         self.assertFalse(cm.exception.retry, "a second card would film the same: no retry")
         self.assertFalse(os.path.exists(os.path.join(out, "video.mp4")))
+
+
+class TwoPhaseTest(unittest.TestCase):
+    """The GPU phase ends in a bundle; the finish phase starts from it. What crosses is the plan, the timings, the
+    voice and the raw clips — and the finish box must be able to lay the track and mix the film from nothing else."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kleo-phase-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.saved = {k: getattr(kw, k) for k in ("progress", "KEOU_DIR", "JOB")}
+        kw.progress = lambda *a, **k: None
+        kw.KEOU_DIR = os.path.join(self.tmp, "engine"); os.makedirs(os.path.join(kw.KEOU_DIR, "projects"))
+        kw.JOB = "gt_phase"
+        self.addCleanup(lambda: [setattr(kw, k, v) for k, v in self.saved.items()])
+        self.kv = load_module("kleo_video_under_phase_test", os.path.join(HERE, "kleo_video.py"))
+
+    def gen_project(self, seconds=3.0):
+        """What the GPU phase leaves in its project dir: a plan, a timeline, a voice and one raw 24 fps clip."""
+        import numpy as np
+        pdir = os.path.join(self.tmp, "gen-project"); build = os.path.join(pdir, "build"); clips = os.path.join(pdir, "clips")
+        os.makedirs(build); os.makedirs(clips)
+        n = int(seconds * 24); frames = np.zeros((n, 36, 64, 3), np.float32)
+        for i in range(n):
+            frames[i, :, (i * 3) % 64, :] = 1.0; frames[i, :, :, 1] = 0.3
+        self.kv.write_clip(frames, os.path.join(clips, "01-hook-s1.mp4"), fps=24)
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}", "-ar", "24000", os.path.join(build, "voice.wav")], check=True)
+        json.dump({"duration": seconds, "fps": 24, "width": 128, "height": 72,
+                   "scenes": [{"id": "01-hook", "start": 0, "end": seconds, "shots": [{"index": 0, "start": 0, "end": seconds, "clip": None, "image": None}]}]},
+                  open(os.path.join(build, "shots.json"), "w"))
+        json.dump({"duration": seconds, "fps": 24, "scenes": [{"id": "01-hook", "start": 0, "end": seconds, "captions": []}]}, open(os.path.join(build, "timeline.json"), "w"))
+        json.dump({"id": "gt-phase", "scenes": []}, open(os.path.join(pdir, "project.json"), "w"))
+        return pdir
+
+    def test_the_bundle_carries_the_plan_the_voice_and_the_clips_and_the_finish_box_makes_the_film_from_it(self):
+        pdir = self.gen_project()
+        out1 = os.path.join(self.tmp, "out-gen"); os.makedirs(out1)
+        bundle = kw.pack_gen(pdir, out1)
+        names = subprocess.run(["tar", "tzf", bundle], capture_output=True, text=True, check=True).stdout.split()
+        for need in ("build/timeline.json", "build/shots.json", "build/voice.wav", "clips/01-hook-s1.mp4", "project.json"):
+            self.assertIn(need, names)
+        # the finish box: a fresh engine dir, the bundle, nothing else
+        pdir2 = kw.unpack_gen(bundle, kw.KEOU_DIR)
+        self.assertTrue(os.path.isfile(os.path.join(pdir2, "clips", "01-hook-s1.mp4")))
+        self.assertFalse(os.path.exists(os.path.join(pdir2, "build", "footage.mp4")), "the track is the finish box's job")
+        out2 = os.path.join(self.tmp, "out-finish"); os.makedirs(out2)
+        files = kw.film_finish(pdir2, out2, lay_track=True)
+        self.assertEqual(sorted(files), ["thumbnail.jpg", "video.mp4"])
+        probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type:format=duration", "-of", "json", files["video.mp4"]],
+                                          capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(sorted(st["codec_type"] for st in probe["streams"]), ["audio", "video"])
+        self.assertAlmostEqual(float(probe["format"]["duration"]), 3.0, delta=0.25)
+
+    def test_a_bundle_without_clips_is_refused_before_a_single_frame_is_touched(self):
+        pdir = self.gen_project()
+        shutil.rmtree(os.path.join(pdir, "clips"))
+        with self.assertRaises(kw.RenderError):
+            kw.pack_gen(pdir, os.path.join(self.tmp, "o"))
 
 
 class StillOfTest(unittest.TestCase):

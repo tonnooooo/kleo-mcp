@@ -255,154 +255,8 @@ class FreezeTest(unittest.TestCase):
 
 
 class GenerateTest(unittest.TestCase):
-    """generate_clips with a fake pipeline: no torch, no CUDA. The frames are fake; the file is real — written by
-    the real writer through ffmpeg — because the file is where the 13 September run died."""
-
-    def setUp(self):
-        self.saved = {k: sys.modules.get(k) for k in ("torch", "diffusers", "diffusers.utils")}
-        self.calls = []
-        torch = types.ModuleType("torch")
-        torch.cuda = types.SimpleNamespace(is_available=lambda: True, empty_cache=lambda: None)
-        torch.float32 = "f32"; torch.bfloat16 = "bf16"
-
-        class Gen:
-            def __init__(self, device=None): self.device = device
-            def manual_seed(self, s): self.seed = s; return self
-        torch.Generator = Gen
-        calls = self.calls
-
-        class FakePipe:
-            # What the real pipeline hands back: frames[0] is T x H x W x 3, float32 in [0, 1]. Tiny, so that the
-            # REAL writer runs on them: the earlier fake replaced export_to_video with a stub that wrote 64 zero
-            # bytes, and the suite stayed green while the worker image could not save a single clip.
-            def __call__(self, **kw):
-                calls.append(kw)
-                return types.SimpleNamespace(frames=[frames(kw["num_frames"])])
-            def to(self, d): return self
-            def set_progress_bar_config(self, **kw): pass
-            vae = types.SimpleNamespace(enable_tiling=lambda: None)
-
-        class FakeI2V(FakePipe):
-            def __call__(self, **kw):
-                assert "image" in kw, "the image-to-video pipeline was called without an image"
-                kw = dict(kw, kind="i2v")
-                return FakePipe.__call__(self, **kw)
-
-        diff = types.ModuleType("diffusers")
-        diff.AutoencoderKLWan = types.SimpleNamespace(from_pretrained=staticmethod(lambda *a, **k: "vae"))
-        diff.WanPipeline = types.SimpleNamespace(from_pretrained=staticmethod(lambda *a, **k: FakePipe()))
-        diff.WanImageToVideoPipeline = types.SimpleNamespace(from_pretrained=staticmethod(lambda *a, **k: FakeI2V()))
-        self.loads = []
-        for name in ("WanPipeline", "WanImageToVideoPipeline"):
-            orig = getattr(diff, name).from_pretrained
-            setattr(diff, name, types.SimpleNamespace(from_pretrained=(lambda o, n: staticmethod(
-                lambda *a, **k: (self.loads.append(n), o(*a, **k))[1]))(orig, name)))
-        # No diffusers.utils on purpose: a writer that reaches for export_to_video again must fail here, loudly.
-        sys.modules.update({"torch": torch, "diffusers": diff})
-        sys.modules.pop("diffusers.utils", None)
-        kv.release()
-        import tempfile, shutil
-        self.tmp = tempfile.mkdtemp(prefix="kleo-video-test-")
-        self.addCleanup(shutil.rmtree, self.tmp, True)
-        self.addCleanup(lambda: [sys.modules.__setitem__(k, v) if v else sys.modules.pop(k, None)
-                                 for k, v in self.saved.items()])
-        self.addCleanup(kv.release)
-
-    def test_one_clip_per_shot_named_after_it(self):
-        shots = [{"id": "01-hook", "image_prompt": "a harbour at dawn", "motion": "push_in"},
-                 {"id": "02-sea", "image_prompt": "waves breaking on rocks", "motion": "track_right"}]
-        made = kv.generate_clips(shots, "realistic", "16:9", self.tmp)
-        self.assertEqual(sorted(made), ["01-hook", "02-sea"])
-        for sid, path in made.items():
-            self.assertEqual(path, os.path.join(self.tmp, sid + ".mp4"))
-            self.assertEqual(probe_frames(path)[0], kv.frames_for(3.0), "every generated frame must reach the file")
-        self.assertEqual([c["width"] for c in self.calls], [1280, 1280])
-        self.assertEqual([c["height"] for c in self.calls], [704, 704])
-
-    def test_portrait_swaps_the_frame(self):
-        kv.generate_clips([{"id": "a", "image_prompt": "a street", "motion": "push_in"}], "realistic", "9:16", self.tmp)
-        self.assertEqual((self.calls[0]["width"], self.calls[0]["height"]), (704, 1280))
-
-    def test_the_duration_asked_for_reaches_the_model(self):
-        kv.generate_clips([{"id": "a", "image_prompt": "a street", "motion": "push_in"}], "realistic", "16:9",
-                          self.tmp, seconds_of={"a": 4.0})
-        self.assertEqual(self.calls[0]["num_frames"], kv.frames_for(4.0))
-
-    def test_a_shot_without_a_description_is_skipped_not_fatal(self):
-        made = kv.generate_clips([{"id": "a", "image_prompt": ""},
-                                  {"id": "b", "image_prompt": "a street", "motion": "push_in"}],
-                                 "realistic", "16:9", self.tmp)
-        self.assertEqual(sorted(made), ["b"])
-
-    def test_one_clip_failing_never_loses_the_others(self):
-        boom = {"n": 0}
-        orig = sys.modules["diffusers"].WanPipeline.from_pretrained
-
-        class Failing:
-            def __call__(self, **kw):
-                boom["n"] += 1
-                if boom["n"] == 1:
-                    raise RuntimeError("CUDA hiccup")
-                return types.SimpleNamespace(frames=[frames(kw["num_frames"])])
-            def to(self, d): return self
-            def set_progress_bar_config(self, **kw): pass
-            vae = types.SimpleNamespace(enable_tiling=lambda: None)
-        sys.modules["diffusers"].WanPipeline = types.SimpleNamespace(from_pretrained=staticmethod(lambda *a, **k: Failing()))
-        self.addCleanup(lambda: setattr(sys.modules["diffusers"], "WanPipeline", orig))
-        kv.release()
-        made = kv.generate_clips([{"id": "a", "image_prompt": "one", "motion": "push_in"},
-                                  {"id": "b", "image_prompt": "two", "motion": "push_in"}],
-                                 "realistic", "16:9", self.tmp)
-        self.assertEqual(sorted(made), ["b"])
-
-    def test_without_cuda_nothing_is_generated_and_nothing_raises(self):
-        sys.modules["torch"].cuda.is_available = lambda: False
-        self.assertEqual(kv.generate_clips([{"id": "a", "image_prompt": "x"}], "realistic", "16:9", self.tmp), {})
-
-    def still(self, name="still.png", size=(768, 1344)):
-        from PIL import Image
-        path = os.path.join(self.tmp, name)
-        Image.new("RGB", size, (200, 120, 40)).save(path)
-        return path
-
-    def test_a_shot_that_brings_its_still_is_animated_from_it_at_the_clip_size(self):
-        # The picture pass draws 768x1344 for 9:16; the clip is 704x1280. The frame handed to the model must be
-        # the still, resized to the clip — never cropped, never the raw 768x1344.
-        made = kv.generate_clips([{"id": "a", "image_prompt": "a harbour", "motion": "push_in", "image": self.still()}],
-                                 "realistic", "9:16", self.tmp)
-        self.assertEqual(sorted(made), ["a"])
-        self.assertEqual(self.calls[0].get("kind"), "i2v")
-        self.assertEqual(self.calls[0]["image"].size, (704, 1280))
-        self.assertEqual(self.loads, ["WanImageToVideoPipeline"])
-
-    def test_a_shot_without_a_still_is_invented_from_the_text(self):
-        kv.generate_clips([{"id": "a", "image_prompt": "a harbour", "motion": "push_in"}], "realistic", "9:16", self.tmp)
-        self.assertNotIn("image", self.calls[0]); self.assertIsNone(self.calls[0].get("kind"))
-        self.assertEqual(self.loads, ["WanPipeline"])
-
-    def test_a_still_that_is_not_on_disk_falls_back_to_the_text(self):
-        kv.generate_clips([{"id": "a", "image_prompt": "a harbour", "motion": "push_in",
-                            "image": os.path.join(self.tmp, "missing.png")}], "realistic", "9:16", self.tmp)
-        self.assertNotIn("image", self.calls[0])
-
-    def test_a_mixed_batch_swaps_the_pipeline_once_not_per_shot(self):
-        shots = [{"id": "t1", "image_prompt": "one", "motion": "push_in"},
-                 {"id": "i1", "image_prompt": "two", "motion": "push_in", "image": self.still("a.png")},
-                 {"id": "t2", "image_prompt": "three", "motion": "push_in"},
-                 {"id": "i2", "image_prompt": "four", "motion": "push_in", "image": self.still("b.png")}]
-        made = kv.generate_clips(shots, "realistic", "16:9", self.tmp)
-        self.assertEqual(sorted(made), ["i1", "i2", "t1", "t2"])
-        self.assertEqual([c.get("kind") for c in self.calls], ["i2v", "i2v", None, None], "stills first, then text")
-        self.assertEqual(self.loads, ["WanImageToVideoPipeline", "WanPipeline"], "one swap, not three")
-
-    def test_the_card_is_handed_back_when_the_batch_ends(self):
-        kv.generate_clips([{"id": "a", "image_prompt": "a street", "motion": "push_in"}], "realistic", "16:9", self.tmp)
-        self.assertIsNone(kv._pipe, "the Keou render needs the GPU next")
-
-
-class LtxTest(unittest.TestCase):
-    """The LTX-2.5 family, with diffusers replaced by a fake that records what it was asked: the module is loaded
-    a second time under KLEO_VIDEO_MODEL=Lightricks/LTX-2.5-Diffusers so the family switch is the real one."""
+    """generate_clips with LTX-2.5 replaced by a fake that records what it was asked: no torch, no CUDA, no weights.
+    The frames the fake returns are real (tiny) arrays and the file is written by the real writer through ffmpeg."""
 
     def setUp(self):
         import tempfile, shutil
@@ -437,6 +291,7 @@ class LtxTest(unittest.TestCase):
             def __init__(self, vae=None, latent_upsampler=None): pass
             def __call__(self, **kw):
                 calls.append(("upsample", kw)); return ("UP",)
+        self.FakeLtx = FakeLtx
         diff = types.ModuleType("diffusers")
         diff.LTX2Pipeline = types.SimpleNamespace(from_pretrained=staticmethod(lambda *a, **k: (calls.append(("load", k)), FakeLtx())[1]))
         diff.LTX2LatentUpsamplePipeline = FakeUp
@@ -449,17 +304,52 @@ class LtxTest(unittest.TestCase):
                             "diffusers.pipelines.ltx2.utils": utils, "diffusers.pipelines.ltx2.latent_upsampler": lu})
         sys.modules.pop("diffusers.utils", None)
         self.addCleanup(lambda: [sys.modules.__setitem__(k, v) if v else sys.modules.pop(k, None) for k, v in self.saved.items()])
-        os.environ["KLEO_VIDEO_MODEL"] = "Lightricks/LTX-2.5-Diffusers"
-        self.addCleanup(lambda: os.environ.pop("KLEO_VIDEO_MODEL", None))
-        self.kv = load("kleo_video_ltx", os.path.join(HERE, "kleo_video.py"))
-        self.addCleanup(self.kv.release)
+        self.kv = kv
+        kv.release()
+        self.addCleanup(kv.release)
 
-    def test_the_family_follows_the_model_id_and_brings_its_own_geometry(self):
-        self.assertEqual(self.kv.FAMILY, "ltx")
+    def test_the_geometry_is_ltx_and_frames_are_8n_plus_1(self):
         self.assertEqual(self.kv.SIZES["16:9"], (960, 544)); self.assertEqual(self.kv.SIZES["9:16"], (544, 960))
         for secs in [1, 2, 3, 5]:
             self.assertEqual((self.kv.frames_for(secs) - 1) % 8, 0, f"{secs}s must give 8n+1 frames")
         self.assertEqual(self.kv.frames_for(5.0), 121)
+
+    def test_one_clip_per_shot_named_after_it(self):
+        shots = [{"id": "01-hook", "image_prompt": "a harbour at dawn", "motion": "push_in"},
+                 {"id": "02-sea", "image_prompt": "waves breaking on rocks", "motion": "track_right"}]
+        made = self.kv.generate_clips(shots, "realistic", "16:9", self.tmp)
+        self.assertEqual(sorted(made), ["01-hook", "02-sea"])
+        for sid, path in made.items():
+            self.assertEqual(path, os.path.join(self.tmp, sid + ".mp4"))
+            self.assertEqual(probe_frames(path)[0], self.kv.frames_for(3.0), "every generated frame must reach the file")
+
+    def test_the_duration_asked_for_reaches_the_model(self):
+        self.kv.generate_clips([{"id": "a", "image_prompt": "a street", "motion": "push_in"}], "realistic", "16:9", self.tmp, seconds_of={"a": 4.0})
+        first = next(c for c in self.calls if c[0] == "pipe")[1]
+        self.assertEqual(first["num_frames"], self.kv.frames_for(4.0))
+
+    def test_a_shot_without_a_description_is_skipped_not_fatal(self):
+        made = self.kv.generate_clips([{"id": "a", "image_prompt": ""}, {"id": "b", "image_prompt": "a street", "motion": "push_in"}], "realistic", "16:9", self.tmp)
+        self.assertEqual(sorted(made), ["b"])
+
+    def test_one_clip_failing_never_loses_the_others(self):
+        boom = {"n": 0}; Fake = self.FakeLtx; orig = Fake.__call__
+        def flaky(inner, **kw):
+            if kw.get("output_type") == "latent":
+                boom["n"] += 1
+                if boom["n"] == 1: raise RuntimeError("CUDA hiccup")
+            return orig(inner, **kw)
+        Fake.__call__ = flaky; self.addCleanup(lambda: setattr(Fake, "__call__", orig))
+        made = self.kv.generate_clips([{"id": "a", "image_prompt": "one", "motion": "push_in"}, {"id": "b", "image_prompt": "two", "motion": "push_in"}], "realistic", "16:9", self.tmp)
+        self.assertEqual(sorted(made), ["b"])
+
+    def test_without_cuda_nothing_is_generated_and_nothing_raises(self):
+        sys.modules["torch"].cuda.is_available = lambda: False
+        self.assertEqual(self.kv.generate_clips([{"id": "a", "image_prompt": "x"}], "realistic", "16:9", self.tmp), {})
+
+    def test_the_card_is_handed_back_when_the_batch_ends(self):
+        self.kv.generate_clips([{"id": "a", "image_prompt": "a street", "motion": "push_in"}], "realistic", "16:9", self.tmp)
+        self.assertIsNone(self.kv._pipe, "the finish work needs the memory next")
 
     def test_a_shot_runs_two_stages_from_its_still_and_lands_in_a_real_file(self):
         from PIL import Image
@@ -467,7 +357,7 @@ class LtxTest(unittest.TestCase):
         made = self.kv.generate_clips([{"id": "a", "image_prompt": "a lagoon", "motion": "push_in", "image": still}], "realistic", "16:9", self.tmp)
         self.assertEqual(sorted(made), ["a"])
         kinds = [c[0] for c in self.calls]
-        self.assertEqual(kinds[:1], [("load")] if False else ["load"])
+        self.assertEqual(kinds[:1], ["load"])
         self.assertEqual([k for k in kinds if k != "load"], ["pipe", "upsample", "pipe"], "stage one, upsample, stage two")
         one = self.calls[1][1]; two = self.calls[3][1]
         self.assertEqual((one["width"], one["height"]), (960, 544)); self.assertEqual(one["output_type"], "latent")
@@ -478,9 +368,7 @@ class LtxTest(unittest.TestCase):
         self.assertEqual(probe_frames(made["a"])[1:3], (1920, 1088), "the file carries stage two's size")
 
     def test_without_the_upsampler_one_stage_at_stage_one_size(self):
-        os.environ["KLEO_VIDEO_LTX_UPSAMPLE"] = "0"
-        self.addCleanup(lambda: os.environ.pop("KLEO_VIDEO_LTX_UPSAMPLE", None))
-        kv = load("kleo_video_ltx_noup", os.path.join(HERE, "kleo_video.py")); self.addCleanup(kv.release)
+        kv = self.kv; kv.LTX_UPSAMPLE = False; self.addCleanup(lambda: setattr(kv, "LTX_UPSAMPLE", True))
         made = kv.generate_clips([{"id": "b", "image_prompt": "waves", "motion": "pull_out"}], "realistic", "9:16", self.tmp)
         kinds = [c[0] for c in self.calls]
         self.assertEqual([k for k in kinds if k != "load"], ["pipe"])

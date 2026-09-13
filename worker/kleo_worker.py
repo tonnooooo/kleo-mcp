@@ -125,6 +125,23 @@ def progress(track, percent, eta_min=None, message=None):
         log("progress report failed:", e)
 
 
+def download(name, path):
+    """A file of this job from R2, through the internal API (the finish box fetching the GPU phase's bundle)."""
+    req = urllib.request.Request(f"{API}/internal/jobs/{JOB}/files/{name}")
+    req.add_header("Authorization", f"Bearer {SECRET}")
+    req.add_header("User-Agent", UA)
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=600) as r, open(path, "wb") as f:
+                shutil.copyfileobj(r, f, 1 << 20)
+            if os.path.getsize(path) > 0:
+                return path
+        except Exception as e:
+            log("download error", e, "retrying")
+        time.sleep(3 * (attempt + 1))
+    raise RenderError(f"could not fetch {name}", retry=True)
+
+
 def upload(path, name):
     size = os.path.getsize(path)
     if size <= 90 * 1024 * 1024:
@@ -849,9 +866,11 @@ def still_of(shot, pdir):
     return path if os.path.isfile(path) else None
 
 
-def generate_footage(project, pdir, engine, log_path, units):
+def generate_footage(project, pdir, engine, log_path, units, lay_track=True):
     """Voice → cut times → film every shot → build/footage.mp4, with each shot's clip hung on the shot itself.
-    Returns True when the project keeps its video backdrop, False when the film falls back to the stills."""
+    Returns True when the project keeps its video backdrop, False when the film falls back to the stills.
+    With lay_track=False it stops after the clips (the GPU phase of a two-phase film): the track is laid on a
+    cheaper machine by lay_footage()."""
     mod = local_video_module()
     if mod is None:
         log("no generated motion: kleo_video is not in this image")
@@ -901,20 +920,31 @@ def generate_footage(project, pdir, engine, log_path, units):
         log(f"{len(missing)} of {n} shots did not film ({', '.join(missing[:6])}): drawing from the stills instead")
         return False
 
+    for u in units:
+        # contract.py validates this path: it must resolve inside the project's clips/ folder and exist.
+        u["shot"]["clip"] = f"{CLIPS_DIR}/{os.path.basename(made[u['id']])}"
+    if not lay_track:
+        progress("clips", 55, message=f"{n} shots filmed; the track is laid on the finish box")
+        return True
     progress("clips", 55, message=f"{n} shots filmed, laying the track")
+    if not lay_footage(pdir, made, width, height, fps):
+        return False
+    progress("clips", 62, message="the track is under the graphics")
+    return True
+
+
+def lay_footage(pdir, made, width, height, fps):
+    """build/footage.mp4 from the clips: the 60 fps 4K track. CPU work (minterpolate, Lanczos, the grade): the
+    finish phase of a two-phase film runs exactly this on a box that costs cents."""
+    mod = local_video_module()
+    build = os.path.join(pdir, "build")
     try:
         track = mod.build_footage(os.path.join(build, "shots.json"), made, os.path.join(build, "footage.mp4"),
                                   width, height, fps=fps, log_fn=log)
     except Exception as e:
         log("could not lay the track:", e)
         return False
-    if not track:
-        return False
-    for u in units:
-        # contract.py validates this path: it must resolve inside the project's clips/ folder and exist.
-        u["shot"]["clip"] = f"{CLIPS_DIR}/{os.path.basename(made[u['id']])}"
-    progress("clips", 62, message="the track is under the graphics")
-    return True
+    return bool(track)
 
 
 def strip_kleo_fields(project):
@@ -1081,12 +1111,13 @@ def film_checks(video, timeline):
     return dur, worst
 
 
-def render_film(job, out_dir):
-    """The film, pure (13 September): filmed shots under the narration, nothing drawn on top.
+GEN_BUNDLE = "gen.tgz"      # what the GPU phase hands to the finish phase, through R2
 
-    storyboard -> reference frame per shot -> clip per shot (image-to-video) -> 60 fps track -> narration on it.
-    The engine is used for the voice pass and the shot plan only; it draws nothing. Where render_keou falls back
-    to the stills when filming fails, this one refuses: a film that was not filmed is not this product."""
+
+def film_generate(job, out_dir, lay_track=True):
+    """Phase one of the film: reference frames, the voice pass, the shot plan, the clips (and the track when this
+    box also finishes). Returns (project, pdir). Where render_keou falls back to the stills when filming fails,
+    this refuses: a film that was not filmed is not this product."""
     engine = os.path.abspath(KEOU_DIR)
     if not os.path.isfile(os.path.join(engine, "run.py")):
         raise RenderError(f"Keou engine not found at {engine}", retry=False)
@@ -1095,11 +1126,58 @@ def render_film(job, out_dir):
     if not units:
         raise RenderError("no shot carries a description to film: a film needs shots", retry=False)
     log_path = os.path.join(out_dir, "log.txt")
-    if not generate_footage(project, pdir, engine, log_path, units):
+    if not generate_footage(project, pdir, engine, log_path, units, lay_track=lay_track):
         raise RenderError("the shots did not film (see log.txt); there is no film without them", retry=False)
+    return project, pdir
+
+
+def pack_gen(pdir, out_dir):
+    """gen.tgz: everything the finish box needs and nothing else — the plan, the timings, the voice and the raw
+    clips (tens of MB). Not the pictures, not the engine, not the model."""
+    bundle = os.path.join(out_dir, GEN_BUNDLE)
+    members = ["project.json", "build/timeline.json", "build/shots.json", "build/voice.wav", CLIPS_DIR]
+    present = [m for m in members if os.path.exists(os.path.join(pdir, m))]
+    for need in ("build/timeline.json", "build/shots.json", "build/voice.wav", CLIPS_DIR):
+        if need not in present:
+            raise RenderError(f"the GPU phase ended without {need}", retry=True)
+    r = subprocess.run(["tar", "czf", bundle, "-C", pdir, *present], capture_output=True, text=True)
+    if r.returncode != 0 or not os.path.isfile(bundle):
+        raise RenderError("could not pack the bundle: " + r.stderr[-300:], retry=True)
+    log(f"bundle: {os.path.getsize(bundle) / 1e6:.0f} MB ({', '.join(present)})")
+    return bundle
+
+
+def unpack_gen(bundle, engine):
+    """The finish box's project dir, rebuilt from the bundle. Returns pdir."""
+    pdir = os.path.join(os.path.abspath(engine), "projects", project_id_for(JOB))
+    shutil.rmtree(pdir, ignore_errors=True); os.makedirs(pdir)
+    r = subprocess.run(["tar", "xzf", bundle, "-C", pdir], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RenderError("could not unpack the bundle: " + r.stderr[-300:], retry=True)
+    return pdir
+
+
+def film_finish(pdir, out_dir, lay_track=False):
+    """Phase two: the track (when it is not there yet), the narration on it, the checks, the deliverables."""
     build = os.path.join(pdir, "build")
     footage, voice = os.path.join(build, "footage.mp4"), os.path.join(build, "voice.wav")
     timeline = json.load(open(os.path.join(build, "timeline.json")))
+    if lay_track or not os.path.isfile(footage):
+        plan, _ = shot_plan(build)
+        if not plan:
+            raise RenderError("the bundle carries no shot plan", retry=False)
+        made = {}
+        for sc in plan.get("scenes") or []:
+            for sh in sc.get("shots") or []:
+                cid = f"{sc['id']}-s{int(sh.get('index', 0)) + 1}"
+                path = os.path.join(pdir, CLIPS_DIR, cid + ".mp4")
+                if os.path.isfile(path):
+                    made[cid] = path
+        if not made:
+            raise RenderError("the bundle carries no clips", retry=False)
+        progress("clips", 62, message=f"laying the track from {len(made)} clips")
+        if not lay_footage(pdir, made, int(plan["width"]), int(round(plan["height"])), int(plan.get("fps") or 60)):
+            raise RenderError("could not lay the track", retry=True)
     for need in (footage, voice):
         if not os.path.isfile(need) or os.path.getsize(need) == 0:
             raise RenderError(f"missing {os.path.basename(need)} after the footage pass", retry=True)
@@ -1113,10 +1191,16 @@ def render_film(job, out_dir):
     dur, worst = film_checks(video, timeline)
     log(f"film: {dur:.1f} s, longest run without motion {worst:.1f} s, {os.path.getsize(video) / 1e6:.0f} MB")
     progress("finishing", 92, message="packaging")
-    srt = write_srt(timeline, os.path.join(out_dir, "subtitles.srt"))
     thumb = thumbnail_from(video, os.path.join(out_dir, "thumbnail.jpg"), None)
     progress("finishing", 95, message="encoded")
-    return {"video.mp4": video, "subtitles.srt": srt, "thumbnail.jpg": thumb}
+    # No subtitles, burnt or sidecar: the owner's reset of 13 September — the film and the narration, nothing else.
+    return {"video.mp4": video, "thumbnail.jpg": thumb}
+
+
+def render_film(job, out_dir):
+    """The film, pure, on ONE box: both phases here. Used when the server did not split the job (KLEO_PHASE unset)."""
+    project, pdir = film_generate(job, out_dir, lay_track=True)
+    return film_finish(pdir, out_dir)
 
 
 def wants_film(job):
@@ -1158,13 +1242,35 @@ def main():
         log("job", JOB, job.get("template"), job.get("params"), "engine", ENGINE, "storyboard" if job.get("storyboard") else "no storyboard")
         progress("script", 1, message="worker started")
         out_dir = tempfile.mkdtemp(prefix="kleo-")
-        files = render(job, out_dir)
+        phase = (os.environ.get("KLEO_PHASE") or job.get("phase") or "").strip().lower()
+        cost = None
+        dph = os.environ.get("KLEO_DPH")                      # optional: orchestrator can pass the hourly price
+        if phase == "gen" and wants_film(job):
+            # The GPU half of a two-phase film: frames, voice, plan, clips — then the bundle goes up, the card goes
+            # back, and a box that costs cents lays the track. Every minute this card spends on ffmpeg is a minute
+            # of the dearest machine on the account doing CPU work.
+            project, pdir = film_generate(job, out_dir, lay_track=False)
+            bundle = pack_gen(pdir, out_dir)
+            progress("clips", 58, message="uploading the clips for the finish box")
+            upload(bundle, GEN_BUNDLE)
+            upload_log(out_dir)
+            api("POST", f"/internal/jobs/{JOB}/phase", {"phase": "finish"})
+            log("gen phase done in %.0f s; handed over" % (time.time() - started))
+            self_destruct("gen phase done")
+            return
+        if phase == "finish":
+            engine = os.path.abspath(KEOU_DIR)
+            bundle = os.path.join(out_dir, GEN_BUNDLE)
+            progress("clips", 60, message="fetching the clips")
+            download(GEN_BUNDLE, bundle)
+            pdir = unpack_gen(bundle, engine)
+            files = film_finish(pdir, out_dir, lay_track=True)
+        else:
+            files = render(job, out_dir)
         for name, path in files.items():
             progress("finishing", 97, message=f"uploading {name}")
             upload(path, name)
         upload_log(out_dir)
-        cost = None
-        dph = os.environ.get("KLEO_DPH")                      # optional: orchestrator can pass the hourly price
         if dph:
             cost = round(float(dph) * (time.time() - started) / 3600, 4)
         api("POST", f"/internal/jobs/{JOB}/done", {"cost_usd": cost})

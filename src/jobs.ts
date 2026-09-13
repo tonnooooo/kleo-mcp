@@ -243,7 +243,7 @@ export const isSceneImage = (name: string): boolean => name.startsWith("img/");
 export async function resultLinks(env: Env, base: string, job: Job): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
   for (const f of await listFiles(env, job.id)) {
-    if (f.name === "log.txt") continue; // technical worker log: not for users
+    if (f.name === "log.txt" || f.name === "gen.tgz") continue; // the worker log and the GPU phase's bundle: not for users
     if (isSceneImage(f.name)) continue;
     const key = f.name.replace(/\.[a-z0-9]+$/i, "") + "_url";
     out[key] = await signedDownloadUrl(env, base, job, f.name);

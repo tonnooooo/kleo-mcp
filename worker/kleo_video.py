@@ -8,39 +8,31 @@ Run on the rented GPU by kleo_worker.py, next to kleo_pictures.py. The division 
     kleo_pictures.py   one still per shot          (what the frame contains)
     kleo_video.py      that still, set in motion    (what the frame does)
 
-Model: Wan 2.2 TI2V-5B (Apache 2.0, Alibaba). The licence is the reason it is this one and not a higher-scoring
-model: HunyuanVideo and MiniMax Hailuo both carry community licences whose territory excludes the European Union,
-and FLUX forbids commercial use of the output. A company that sells videos cannot be built on those.
+Model: LTX-2.5 (Lightricks, 22B, LTX-2.x community licence: commercial use free under $10M revenue, gated weights
+behind the owner's Hugging Face acceptance). Chosen on 13 September 2026 in place of Wan 2.2 5B, whose 704p films
+the owner measured against Higgsfield and rejected. Two stages per clip: 960x544 and, through the latent
+upsampler, 1920x1088; distilled eight-step schedule; the shot's own still as the first frame.
 
-MEASURED ON AN RTX 6000 Ada, 2026-09-11, nine probe clips at 1280x704, 49 frames, 30 steps:
-  · the share of motion explainable as a pure zoom was 0.00-0.03 on every clip. Whatever moves, moves in depth.
-    That is the whole point of this file: the Ken Burns it replaces scores ~1.0 on the same measure.
-  · six of nine had full motion; the three that did not had NOTHING ALIVE IN THE SCENE (an empty road, a compass on
-    a table) and froze at 0.03-0.38 px of flow. The camera instruction was not the problem, the subject was.
-    So `alive()` below is not decoration: a shot whose description contains no moving thing gets one, or the model
-    returns a still frame at video prices.
-  · ~125 s per 2 s clip at 30 steps. A 40 s video of twelve shots is therefore ~40 min of GPU, ~0.50 USD.
+The one measured failure mode of generated motion — a clip that comes back FROZEN — is guarded twice: `alive()`
+gives a shot with nothing moving in it something that moves (measured on the previous model: three of nine probe
+clips froze, all with nothing alive in the scene), and travel_px() measures every clip and regenerates a still one.
 
 Nothing here runs on the owner's computer, ever. torch and diffusers are imported inside the functions so the
 module can be imported (and unit-tested with fakes) on a machine that has neither.
 """
 import gc, hashlib, json, math, os, re, subprocess, sys, time
 
-MODEL_ID = os.environ.get("KLEO_VIDEO_MODEL", "Wan-AI/Wan2.2-TI2V-5B-Diffusers")
-MODEL_DIR = os.environ.get("KLEO_VIDEO_MODEL_DIR", "/workspace/models/wan22-ti2v-5b")
+# The generator: LTX-2.5 (Lightricks, 22B), the owner's choice of 13 September, and the only one. Stage one at
+# 960x544 (544x960 portrait), x2 latent upsample and a stage-two pass to 1920x1088, distilled eight-step schedule,
+# image conditioning with the same checkpoint. Gated weights (HF_TOKEN), 72 GB on disk, an 80 GB card in bf16 or
+# a 48 GB one with KLEO_VIDEO_OFFLOAD=1. Wan 2.2 5B, which shipped first at 704p, was removed the same day: the
+# owner judged its films against Higgsfield and there was no bridging that with a 5B model.
+MODEL_ID = os.environ.get("KLEO_VIDEO_MODEL", "Lightricks/LTX-2.5-Diffusers")
+MODEL_DIR = os.environ.get("KLEO_VIDEO_MODEL_DIR", "/workspace/models/ltx-2.5")
 FPS_SRC = 24                                  # what the model generates at
-
-# Two generator families behind the same shot -> clip contract. "wan": Wan 2.2 TI2V-5B, 704p, 32 GB, what shipped
-# first. "ltx": LTX-2.5 (Lightricks, 22B, the owner's choice of 13 September): 960x544 in stage one, x2 latent
-# upsample to 1920x1088 in stage two, distilled eight-step schedule, image conditioning with the same checkpoint;
-# gated weights (HF_TOKEN), 72 GB on disk, an 80 GB card or fp8. The family is read off the model id so that
-# switching is one env var, KLEO_VIDEO_MODEL, and nothing else has to know.
-FAMILY = "ltx" if "ltx" in MODEL_ID.lower() else "wan"
-SIZES = {"16:9": (1280, 704), "9:16": (704, 1280)} if FAMILY == "wan" else {"16:9": (960, 544), "9:16": (544, 960)}
+SIZES = {"16:9": (960, 544), "9:16": (544, 960)}
 LTX_UPSAMPLE = os.environ.get("KLEO_VIDEO_LTX_UPSAMPLE", "1").strip() != "0"    # stage two: x2 latent upsample
 LTX_OFFLOAD = os.environ.get("KLEO_VIDEO_OFFLOAD", "0").strip() == "1"        # cpu offload for a 48 GB card
-STEPS = int(os.environ.get("KLEO_VIDEO_STEPS", "30"))
-GUIDANCE = float(os.environ.get("KLEO_VIDEO_GUIDANCE", "5.0"))
 MAX_S = float(os.environ.get("KLEO_VIDEO_MAX_S", "5.0"))       # past this a generated clip starts to drift
 MIN_S = 1.2
 
@@ -108,11 +100,10 @@ def alive(shot_id):
 
 
 def frames_for(seconds):
-    """Wan wants 4n+1 frames, LTX 8n+1. Clamped to what stays coherent: past ~5 s a generated clip drifts."""
+    """LTX wants 8n+1 frames. Clamped to what stays coherent: past ~5 s a generated clip drifts."""
     s = min(MAX_S, max(MIN_S, float(seconds or 3.0)))
     n = int(round(s * FPS_SRC))
-    step = 8 if FAMILY == "ltx" else 4
-    return max(17, (n // step) * step + 1)
+    return max(17, (n // 8) * 8 + 1)
 
 
 def build_prompt(shot, look):
@@ -173,7 +164,6 @@ def _hf_restore(prev):
             pass
 
 
-KINDS = {"t2v": "WanPipeline", "i2v": "WanImageToVideoPipeline"}
 _kind = None
 _upsampler = None   # LTX stage two, built once next to the pipeline
 
@@ -239,41 +229,6 @@ def ltx_clip(pipe, prompt, still, w, h, n, generator):
     return video[0]
 
 
-def load_pipeline(kind="t2v"):
-    global _pipe, _kind
-    if _pipe is not None and _kind == kind:
-        return _pipe
-    if _pipe is not None:
-        release()                          # the two pipelines do not fit on a 40 GB card together
-    import torch, diffusers
-    from diffusers import AutoencoderKLWan
-    cls = getattr(diffusers, KINDS[kind])
-    src = MODEL_DIR if os.path.isdir(os.path.join(MODEL_DIR, "model_index.json")) else MODEL_ID
-    t0 = time.time()
-    # The image sets HF_HUB_OFFLINE=1 (for Kokoro) and does not bake this model — on purpose: every gigabyte in the
-    # image is pulled again by every rented instance, and the 10 GB come from Hugging Face in about three minutes
-    # on the instance itself. So the download must be allowed HERE, at run time, the way kleo_pictures does for the
-    # realistic checkpoint; until 13 September production could never have filmed a shot: the worker inherited
-    # offline mode, the model "was unavailable", and every video backdrop fell back to the stills.
-    prev = _hf_offline(False)
-    try:
-        vae = AutoencoderKLWan.from_pretrained(src, subfolder="vae", torch_dtype=torch.float32)
-        pipe = cls.from_pretrained(src, vae=vae, torch_dtype=torch.bfloat16).to("cuda")
-    finally:
-        _hf_restore(prev)
-    try:
-        pipe.vae.enable_tiling()          # the VAE is what runs out of memory first at 720p
-    except Exception as e:
-        log("vae tiling unavailable:", e)
-    try:
-        pipe.set_progress_bar_config(disable=True)
-    except Exception:
-        pass
-    log(f"{kind} pipeline ready in {time.time() - t0:.0f} s from {src}")
-    _pipe, _kind = pipe, kind
-    return pipe
-
-
 def first_frame(path, w, h):
     """The shot's still, as the frame the clip must start from: resized to the clip's own size (the still is
     1344x768 or 768x1344, the clip 1280x704 or 704x1280 — same aspect, a small resample, no crop)."""
@@ -337,12 +292,11 @@ def generate_clips(shots, look, fmt, out_dir, seconds_of=None):
         return {}
     os.makedirs(out_dir, exist_ok=True)
     w, h = SIZES.get(fmt, SIZES["16:9"])
-    # A shot that brings its still is animated from it; one without is invented from the text. Shots are grouped
-    # by that, so the card swaps pipelines at most once instead of once per shot.
-    def kind_of(s):
+    # A shot that brings its still is animated from it; one without is invented from the text. Same checkpoint,
+    # same pipeline: LTX conditions on an image through the `image` argument.
+    def has_still(s):
         im = s.get("image")
-        return "i2v" if isinstance(im, str) and os.path.isfile(im) else "t2v"
-    want.sort(key=lambda s: kind_of(s) != "i2v")
+        return isinstance(im, str) and os.path.isfile(im)
     import torch
     done, t_all = {}, time.time()
     for s in want:
@@ -350,9 +304,8 @@ def generate_clips(shots, look, fmt, out_dir, seconds_of=None):
         prompt = build_prompt(s, look)
         if not prompt:
             continue
-        kind = kind_of(s)
         try:
-            pipe = load_ltx() if FAMILY == "ltx" else load_pipeline(kind)
+            pipe = load_ltx()
         except Exception as e:
             log("model unavailable:", e)
             break
@@ -362,17 +315,10 @@ def generate_clips(shots, look, fmt, out_dir, seconds_of=None):
         t0 = time.time()
         try:
             base = seed_for(sid)
-            still = first_frame(s["image"], w, h) if kind == "i2v" else None
+            still = first_frame(s["image"], w, h) if has_still(s) else None
             for attempt in range(RETRIES + 1):
                 g = torch.Generator(device="cuda").manual_seed(base + attempt * 7919)
-                if FAMILY == "ltx":
-                    frames = ltx_clip(pipe, prompt, still, w, h, n, g)
-                else:
-                    args = dict(prompt=prompt, negative_prompt=NEGATIVE, height=h, width=w, num_frames=n,
-                                num_inference_steps=STEPS, guidance_scale=GUIDANCE, generator=g)
-                    if still is not None:
-                        args["image"] = still
-                    frames = pipe(**args).frames[0]
+                frames = ltx_clip(pipe, prompt, still, w, h, n, g)
                 write_clip(frames, path, fps=FPS_SRC)
                 if not (os.path.isfile(path) and os.path.getsize(path) > 0):
                     raise RuntimeError("empty file written")
@@ -458,7 +404,7 @@ def travel_px(path, samples=8):
         # between them: the total is the median gap times the number of gaps, not times the frame count.
         # Measured on a 320-wide frame, reported in the pixels of the real one.
         gaps = len(got) - 1
-        return float(sorted(mags)[len(mags) // 2]) * gaps * (1280.0 / 320.0)   # long side: 1280 real px over 320 measured
+        return float(sorted(mags)[len(mags) // 2]) * gaps * (max(w_, h_) / 320.0)   # long side, real px over 320 measured
     except Exception as e:
         log("could not measure:", e)
         return None

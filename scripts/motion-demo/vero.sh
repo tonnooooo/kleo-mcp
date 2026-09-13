@@ -17,8 +17,8 @@ OUT=${MOTION_OUT:-$ROOT/scripts/motion-demo/out}; mkdir -p "$OUT"
 # a machine at all: on 13 September no ≥32 GB card sat under 0.55 $/h and the cheapest was an L40S at 0.825 —
 # still under the owner's ceiling of one dollar an hour. The first version hard-coded 0.55 here and silently
 # overrode the cap passed on the command line, so the run died twice on "no Vast offer matches".
-export DEVBOX_MIN_VRAM_GB=${DEVBOX_MIN_VRAM_GB:-32} DEVBOX_MAX_DPH=${DEVBOX_MAX_DPH:-0.90} DEVBOX_MIN_CPU=${DEVBOX_MIN_CPU:-12} \
-       DEVBOX_MIN_RAM_GB=${DEVBOX_MIN_RAM_GB:-32} DEVBOX_MIN_CC=${DEVBOX_MIN_CC:-800} DEVBOX_DISK_GB=${DEVBOX_DISK_GB:-90}
+export DEVBOX_MIN_VRAM_GB=${DEVBOX_MIN_VRAM_GB:-80} DEVBOX_MAX_DPH=${DEVBOX_MAX_DPH:-2.60} DEVBOX_MIN_CPU=${DEVBOX_MIN_CPU:-12} \
+       DEVBOX_MIN_RAM_GB=${DEVBOX_MIN_RAM_GB:-32} DEVBOX_MIN_CC=${DEVBOX_MIN_CC:-800} DEVBOX_DISK_GB=${DEVBOX_DISK_GB:-150}
 
 $DB up
 $DB sync
@@ -28,7 +28,7 @@ $DB run "rsync -a --exclude node_modules /opt/kleo/repo/worker/keou/ /opt/kleo/k
 echo "== the video model downloads now, detached, while nothing else is waiting on it =="
 # The generator is chosen per run: KLEO_VIDEO_MODEL (default Wan 2.2 5B; Lightricks/LTX-2.5-Diffusers is the owner's
 # choice of 13 September, gated: HF_TOKEN from .secrets.local travels to the box for the download only).
-MODEL=${KLEO_VIDEO_MODEL:-Wan-AI/Wan2.2-TI2V-5B-Diffusers}
+MODEL=${KLEO_VIDEO_MODEL:-Lightricks/LTX-2.5-Diffusers}
 HFTOK=$(grep '^HF_TOKEN=' "$ROOT/.secrets.local" 2>/dev/null | cut -d= -f2- | tr -d '"' || true)
 $DB bg "cd /opt/kleo/repo && HF_HUB_OFFLINE=0 HF_HOME=/opt/kleo/hf HF_TOKEN='$HFTOK' KLEO_VIDEO_MODEL='$MODEL' python3 scripts/motion-demo/scarica.py" /opt/kleo/wan.log
 $DB wait /opt/kleo/wan.log SCARICATO Traceback 40
