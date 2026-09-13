@@ -35,7 +35,8 @@ RUN pip install -r requirements.txt \
 # --- Python deps for local picture generation (diffusers on the base image's torch; see worker/kleo_pictures.py) ---
 COPY worker/requirements-pictures.txt /opt/kleo/requirements-pictures.txt
 RUN pip install -r /opt/kleo/requirements-pictures.txt && pip check \
-    && python3 -c "import diffusers, transformers, accelerate, safetensors; print('diffusers', diffusers.__version__, 'transformers', transformers.__version__)"
+    && python3 -c "import diffusers, transformers, accelerate, safetensors; print('diffusers', diffusers.__version__, 'transformers', transformers.__version__)" \
+    && python3 -c "from diffusers import LTX2Pipeline, LTX2LatentUpsamplePipeline, WanImageToVideoPipeline; import cv2, ftfy; print('video pipelines: ltx2 + wan, cv2', cv2.__version__)"
 
 # --- Models: Kokoro-82M + every contract voice, faster-whisper small/int8, and the two SD1.5 picture checkpoints
 #     (dreamshaper-8 for cartoon, Realistic_Vision_V5.1 for realistic: fp16 safetensors + configs, ~2 GB each), all in
