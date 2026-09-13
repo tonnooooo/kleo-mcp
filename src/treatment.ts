@@ -279,7 +279,16 @@ export const wordCount = (s: string): number => s.split(/\s+/).filter(Boolean).l
  * The reasons a treatment is refused, in words the model (or the assistant that wrote it) can act on. Empty means
  * it is a treatment. Used on the model's answer before the repair, and on a client's object at kleo_create_video.
  */
-export function treatmentProblems(raw: unknown, duration_s?: number, language?: string): string[] {
+/**
+ * `lenient` is the second attempt's rule, the one the planner already uses for its scenes: a soft problem is asked
+ * to be fixed once, and then a valid answer is kept. Here the only soft problem is a short prose — measured, the
+ * production model writes about a hundred words whatever it is asked for, and sometimes fifty, and its second
+ * attempt is no longer than its first (10 of 15 delivered with the floor at 100). The structured fields are the
+ * substance; a treatment with everything right and a thin prose is a treatment, not a rejection.
+ */
+export const PROSE_LENIENT_MIN = 60;
+
+export function treatmentProblems(raw: unknown, duration_s?: number, language?: string, opts: { lenient?: boolean } = {}): string[] {
   const out: string[] = [];
   if (!isObj(raw)) return ["the treatment must be a JSON object"];
   const need = (k: string, min: number, max: number) => {
@@ -306,7 +315,7 @@ export function treatmentProblems(raw: unknown, duration_s?: number, language?: 
   if (raw.decisions !== undefined && !Array.isArray(raw.decisions)) out.push("decisions: must be a list of strings");
   const prose = typeof raw.prose === "string" ? raw.prose : "";
   const words = wordCount(prose);
-  if (words < T.prose.minWords) out.push(`prose: ${words} words, it needs at least ${T.prose.minWords} — the treatment told from the first image to the last`);
+  if (words < (opts.lenient ? PROSE_LENIENT_MIN : T.prose.minWords)) out.push(`prose: ${words} words, it needs at least ${T.prose.minWords} — the treatment told from the first image to the last`);
   else if (words > T.prose.maxWords * 1.3 || prose.length > T.prose.maxChars * 1.3) out.push(`prose: ${words} words, the limit is ${T.prose.maxWords}`);
   // THE DEFECTS THE PRODUCTION MODEL ACTUALLY HAS, measured on fifteen treatments on 13 September and sent back in
   // words: an angle that is the logline again, acts named for their function, the device said out loud, and an
@@ -329,8 +338,8 @@ export function treatmentProblems(raw: unknown, duration_s?: number, language?: 
  * acts are rescaled to the film's length — a model that wrote 70 seconds for a 60-second film wrote the right
  * proportions and the wrong sum, and a sum is not what a retry is for. The device falls back to the draw.
  */
-export function repairTreatment(raw: unknown, duration_s: number, v: Variation, language?: string): Treatment | null {
-  if (!isObj(raw) || treatmentProblems(raw, duration_s, language).length) return null;
+export function repairTreatment(raw: unknown, duration_s: number, v: Variation, language?: string, opts: { lenient?: boolean } = {}): Treatment | null {
+  if (!isObj(raw) || treatmentProblems(raw, duration_s, language, opts).length) return null;
   // An act name longer than the limit is cut at a word, never inside one: "A LAB TECHNICIAN EXAMINING SAMPL" was
   // measured, and a name the outline copies is a name the viewer's chapter pill shows.
   const nameOf = (v: unknown) => { const s = clip(v, T.acts.name + 40).toUpperCase(); if (s.length <= T.acts.name) return s; const cut = s.slice(0, T.acts.name + 1); const at = cut.lastIndexOf(" "); return (at > 8 ? cut.slice(0, at) : cut.slice(0, T.acts.name)).trim(); };

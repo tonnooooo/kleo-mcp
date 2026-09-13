@@ -1426,7 +1426,8 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
       let raw: unknown;
       try { raw = clean(await call(treatmentPrompt({ prompt: job.prompt, duration_s: plan.duration, format: plan.format, language: plan.language }, v, feedback), treatmentSchema(), TREATMENT_MAX_TOKENS, { system: MASTER_PROMPT, temperature: TREATMENT_TEMPERATURE, model: env.TREATMENT_MODEL || undefined })); }
       catch (e) { history.push([`treatment: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) { transient = e; break; } continue; }
-      const t = repairTreatment(raw, plan.duration, v, plan.language);
+      // The second answer is held to the lenient rule: a short prose is asked to be fixed once, then kept.
+      const t = repairTreatment(raw, plan.duration, v, plan.language, { lenient: attempt > 1 });
       if (!t) { feedback = treatmentProblems(raw, plan.duration, plan.language); history.push([`treatment: rejected (${feedback.slice(0, 3).join("; ")})`]); continue; }
       treatment = t;
     }
@@ -1659,7 +1660,7 @@ export async function writeTreatment(env: Env, input: { prompt: string; duration
       if (isTransientAiError(e)) { transient = true; break; }
       continue;
     }
-    const t = repairTreatment(raw, input.duration_s, v, input.language);
+    const t = repairTreatment(raw, input.duration_s, v, input.language, { lenient: attempt > 1 });
     if (!t) { feedback = treatmentProblems(raw, input.duration_s, input.language); history.push(`rejected: ${feedback.slice(0, 4).join("; ")}`); continue; }
     treatment = t;
   }

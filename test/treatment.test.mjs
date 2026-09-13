@@ -84,6 +84,12 @@ test("a good treatment is fitted: acts rescaled to the film, names uppercase, li
   // The prompt asks for more prose than the floor refuses: the floor is what a small model aims at.
   assert.match(treatmentPrompt({ prompt: "x y z", duration_s: 30, format: "9:16", language: "en" }, v), /"prose":"180-350 words/);
   assert.ok(T.prose.target[0] > T.prose.minWords);
+  // The second attempt's rule: a prose between 60 and 100 words is kept, under it still refused, and nothing else softens.
+  const thin = { ...TREATMENT_FIXTURE(60), prose: Array.from({ length: 80 }, (_, i) => `w${i}`).join(" ") };
+  assert.equal(repairTreatment(thin, 60, v), null, "strict: 80 words is refused");
+  assert.ok(repairTreatment(thin, 60, v, "en", { lenient: true }), "lenient: 80 words is kept");
+  assert.equal(repairTreatment({ ...thin, prose: "ten words only, a caption, not a film at all here" }, 60, v, "en", { lenient: true }), null);
+  assert.equal(repairTreatment({ ...thin, acts: [{ ...thin.acts[0], name: "INTRO" }, ...thin.acts.slice(1)] }, 60, v, "en", { lenient: true }), null, "lenient softens the prose only");
 });
 
 test("what is not a treatment is refused in words, and the words name the field", () => {
@@ -214,6 +220,17 @@ test("the treatment is written first, hot, under the master prompt; the directio
   assert.equal(r.treatment.variation, variationFor("gt_plantest").key, "the draw is the job's own");
   assert.equal(r.storyboard.treatment.logline, r.treatment.logline, "the storyboard carries it, like the direction");
   assert.ok(validateStoryboard(r.storyboard, { format: "9:16", language: "en" }).ok, "and stays a valid storyboard with it on");
+});
+
+test("a thin prose is asked to be fixed once, then kept: the second answer is read under the lenient rule", async () => {
+  const thin = { ...TREATMENT_FIXTURE(45), prose: Array.from({ length: 75 }, (_, i) => `w${i}`).join(" ") };
+  const { env, calls } = planner({ treatment: () => thin });
+  const r = await generateStoryboard(env, job("A Short about relay car theft"));
+  const tcalls = calls.filter((c) => c.kind === "treatment");
+  assert.equal(tcalls.length, 2, "the first answer is sent back for its prose");
+  assert.match(tcalls[1].user, /REJECTED[\s\S]*prose: 75 words, it needs at least 100/);
+  assert.ok(r.treatment, "the identical second answer is kept");
+  assert.equal(wordCount(r.treatment.prose), 75);
 });
 
 test("a treatment that never comes is not a failed film: two rejected answers, then the planner carries on without one", async () => {
