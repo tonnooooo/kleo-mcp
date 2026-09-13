@@ -154,15 +154,18 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     const activeTemplate = ACTIVE_TEMPLATE;
     const templates = [activeTemplate].map((t) => ({
       id: t.id, name: t.name, formats: t.formats, duration_s: { min: t.minSeconds, max: t.maxSeconds, default: t.defaultSeconds },
-      credits: creditsFor(t.defaultSeconds), voices: t.voices, description: t.description,
+      credits: creditsFor(t.defaultSeconds, "realistic"), voices: t.voices, description: t.description,
     }));
+    const pricing = `${plural(creditsFor(90, "realistic"), "credit")} per film up to 90 seconds, ${creditsFor(300, "realistic")} up to 5 minutes; in between it scales with the length`;
     const lines = [activeTemplate].map((t) => {
       const shape = t.formats.map((f) => (f === "9:16" ? "Short (9:16)" : "YouTube video (16:9)")).join(" or ");
-      return `- ${t.name} (id: ${t.id}): ${shape}, ${t.minSeconds}–${t.maxSeconds} seconds, ${plural(creditsFor(t.defaultSeconds), "credit")}. ${t.description}`;
+      return `- ${t.name} (id: ${t.id}): ${shape}, ${t.minSeconds}–${t.maxSeconds} seconds, ${plural(creditsFor(t.defaultSeconds, "realistic"), "credit")}. ${t.description}`;
     });
     return ok(
-      { templates, credits_available: fresh.credits, pricing: "1 credit per Short (up to 90 seconds), 3 credits up to 5 minutes, +1 credit per extra minute", account_url: await accountUrl(env, user.id, base) },
-      `Kleo has one active workflow (realistic-film). You have ${plural(fresh.credits, "credit")} left. Ask for the subject, duration and format when they are missing; then call kleo_adapt_prompt before creating the video.\n${lines.join("\n")}\nPrices: 7 credits per film up to 90 seconds; longer films scale with the duration.`,
+      // The prices are the ones creditsFor charges, read from it: this line used to quote the pre-film tariff (one
+      // credit a Short) next to a description that said seven.
+      { templates, credits_available: fresh.credits, pricing, account_url: await accountUrl(env, user.id, base) },
+      `Kleo has one active workflow (realistic-film). You have ${plural(fresh.credits, "credit")} left. Ask for the subject, duration and format when they are missing; then call kleo_adapt_prompt before creating the video.\n${lines.join("\n")}\nPrices: ${pricing}.`,
     );
   });
 
