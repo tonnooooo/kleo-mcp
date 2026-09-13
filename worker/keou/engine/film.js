@@ -2,10 +2,13 @@
 // The canvas is opaque by default: it is faster, and every style but one paints its own background. A project
 // that declares `backdrop: "video"` is the exception — under the graphics there is a real video track that ffmpeg
 // composites afterwards, so this layer has to come out with a transparent hole where the picture would have been.
-// A 2D context cannot change its alpha after creation, so the context is made inside init(), once the project is
-// known. That is also why `backdrop` lives on the project and never on a shot.
+// A 2D context cannot change its alpha after creation — and a canvas hands back its FIRST context forever, whatever
+// attributes a later getContext() asks for. So the context is made inside init() and nowhere else: until 13
+// September it was also made here at load, opaque, and init()'s request for alpha was silently answered with that
+// same opaque context. Every filmed film came out as its graphics on black, the footage composited under a lid.
+// That is also why `backdrop` lives on the project and never on a shot.
 const canvas = document.getElementById('film');
-let ctx = canvas.getContext('2d', {alpha:false});
+let ctx = null;   // made in init(), see above
 let project, timeline, W, H, portrait, C, fontFamily='Manrope', frameTime=0, issues=[], images={}, imageIssues=[], land;
 const themes = {
   terminal:{ink:'#010503',deep:'#061109',white:'#c9ffd7',muted:'#74a680',accent:'#3cff81',second:'#18ab52'},
