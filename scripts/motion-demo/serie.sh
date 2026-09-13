@@ -24,7 +24,9 @@ if grep -lq '"backdrop": *"video"' $(for n in $STORYBOARDS; do echo scripts/moti
   $DB bg "cd /opt/kleo/repo && HF_HUB_OFFLINE=0 HF_HOME=/opt/kleo/hf python3 scripts/motion-demo/scarica.py" /opt/kleo/wan.log
   $DB wait /opt/kleo/wan.log SCARICATO Traceback 25
 fi
-$DB run "python3 -c 'import cv2' 2>/dev/null && echo 'cv2 ok' || pip install -q opencv-python-headless==4.11.0.86 && python3 -c 'import cv2; print(\"cv2\", cv2.__version__)'"
+# Until the image is rebuilt with requirements-pictures.txt of 13 September: the still gate needs OpenCV and the
+# image-to-video pipeline needs ftfy (diffusers imports it lazily: six clips died in nine seconds on NameError).
+$DB run "pip install -q opencv-python-headless==4.11.0.86 ftfy==6.3.1 && python3 -c 'import cv2, ftfy; from diffusers import WanImageToVideoPipeline, WanPipeline; print(\"video deps ok\", cv2.__version__)'"
 
 for name in $STORYBOARDS; do
   echo; echo "==================== $name ===================="

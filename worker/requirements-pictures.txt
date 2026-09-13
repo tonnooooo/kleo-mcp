@@ -8,3 +8,5 @@ pillow>=10.4
 # The still gate in worker/kleo_video.py (travel_px) reads clips with OpenCV; without it the gate is silently off.
 # Found on 13 September when a run's log said nothing and four generated clips could not even be saved.
 opencv-python-headless==4.11.0.86
+# The Wan pipelines clean prompts with ftfy and import it lazily: without it every clip dies on NameError.
+ftfy==6.3.1
