@@ -32,6 +32,11 @@ lays the clips into build/footage.mp4 exactly as long as the timeline, hangs eac
 with --skip-voice over the alignment already on disk. That order is forced: the cut times come from the engine,
 the engine needs the word alignment, and the alignment comes from the voice pass. If even ONE shot does not film,
 the backdrop comes off and the film is drawn from the stills — see the note above generate_footage().
+Kleo footage over an API: with KLEO_FOOTAGE_BACKEND=kie (set by the server on the box) the clips are NOT made here.
+The worker uploads each shot's reference frame (PUT /internal/jobs/{id}/stills/{pictureId}.png), sends the shot plan
+(POST /internal/jobs/{id}/footage), polls (GET /internal/jobs/{id}/footage) while the SERVER runs one kie.ai task per
+shot (Kling, Veo...) and stores the clips on R2, then downloads them (GET /internal/jobs/{id}/clips/{shotId}). The rest —
+the track, the narration, the 4K 60 fps finish — is exactly the same as for locally filmed clips (src/footage.ts).
 Tuning: KLEO_WIDTH_PORTRAIT (2160) / KLEO_WIDTH_LANDSCAPE (3840): both formats deliver 4K, KLEO_RENDER_TIMEOUT_MIN (100),
         KLEO_VOICE_TIMEOUT_MIN (25) / KLEO_SHOTS_TIMEOUT_MIN (5): the two passes that precede the filming,
         KLEO_IMAGES_TIMEOUT_S (300: the images call, the server generates on the first request), KLEO_IMAGES_RETRY_WAIT_S (20),
@@ -77,6 +82,13 @@ IMAGE_MAX_BYTES = 25 * 1024 * 1024
 SCENE_ID = re.compile(r"[a-z0-9-]{1,50}")                                       # contract.py scene id slug → safe file name
 PICTURE_ID = re.compile(r"[a-z0-9-]{1,56}")                                     # <sceneId>-s<n>: the slug plus the shot suffix
 IMAGE_KINDS = ("image", "cinema", "story", "closing")                          # contract.py: the only kinds that accept scene.image
+# Kleo footage over an API (kie.ai). The SERVER talks to kie.ai and keeps the key; this box only uploads the reference
+# frames, asks for the clips, waits, and downloads them. KLEO_FOOTAGE_BACKEND is set by the server on the box (vast.ts)
+# and repeated in the job spec ("footage": {"backend": ...}) for runners that get no env from Vast.
+FOOTAGE_BACKEND = (os.environ.get("KLEO_FOOTAGE_BACKEND", "").strip().lower())
+FOOTAGE_WAIT_MIN = float(os.environ.get("KLEO_FOOTAGE_WAIT_MIN", "14"))     # how long the box waits for kie.ai before giving up
+FOOTAGE_POLL_S = float(os.environ.get("KLEO_FOOTAGE_POLL_S", "12"))         # between two status calls
+CLIP_MAX_BYTES = 400 * 1024 * 1024
 
 # Mirrors contract.VOICES; the engine's own contract.py overrides it at run time (see load_voices()).
 DEFAULT_VOICES = {"fr": ["ff_siwis"], "en": ["af_heart", "am_michael", "bf_emma"], "it": ["if_sara", "im_nicola"]}
@@ -731,6 +743,141 @@ def generate_local_pictures(project, pdir, ids):
     return done
 
 
+# ---- Kleo footage over the API: the server films, this box waits -----------------------------------------------------
+def footage_backend():
+    """"kie" when the server said the clips come from kie.ai through it, else "local" (this box's own model)."""
+    return "kie" if FOOTAGE_BACKEND == "kie" else "local"
+
+
+def set_footage_backend(job):
+    """The env wins (vast.ts writes it on the box); a job spec's "footage" fills in for runners without one."""
+    global FOOTAGE_BACKEND
+    if FOOTAGE_BACKEND in ("kie", "local"):
+        return FOOTAGE_BACKEND
+    spec = job.get("footage") if isinstance(job, dict) else None
+    if isinstance(spec, dict) and spec.get("backend") in ("kie", "local"):
+        FOOTAGE_BACKEND = spec["backend"]
+    return footage_backend()
+
+
+def upload_still(path, picture_id):
+    """PUT the shot's reference frame to the server so kie.ai can read it (image-to-video). Returns the stored name."""
+    ext = os.path.splitext(path)[1].lower().lstrip(".") or "png"
+    with open(path, "rb") as f:
+        r = api("PUT", f"/internal/jobs/{JOB}/stills/{picture_id}.{ext}", raw=f.read(),
+                ctype={"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}.get(ext, "application/octet-stream"))
+    return r.get("name") if isinstance(r, dict) else None
+
+
+def request_remote_footage(plan):
+    """POST the shots to film (id, prompt, camera, seconds, still) → the server creates one kie.ai task per shot
+    that has none yet. Idempotent: calling it twice creates nothing twice. Raises on a 4xx (budget, config)."""
+    return api("POST", f"/internal/jobs/{JOB}/footage", plan)
+
+
+def poll_remote_footage():
+    """GET the state of every shot: {"clips": {id: state}, "ready": [...], "pending": [...], "failed": {id: why}}."""
+    return api("GET", f"/internal/jobs/{JOB}/footage")
+
+
+def download_clip(shot_id, path):
+    """One finished clip, streamed from the server (R2) with the job secret. Returns path or None; never raises."""
+    req = urllib.request.Request(f"{API}/internal/jobs/{JOB}/clips/{shot_id}")
+    req.add_header("Authorization", f"Bearer {SECRET}")
+    req.add_header("User-Agent", UA)
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=600) as r, open(path, "wb") as f:
+                shutil.copyfileobj(r, f, 1 << 20)
+            size = os.path.getsize(path)
+            with open(path, "rb") as f:
+                head = f.read(12)
+            if 0 < size <= CLIP_MAX_BYTES and head[4:8] == b"ftyp":
+                return path
+            log(f"clip {shot_id}: not an mp4 ({size} bytes), discarded")
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            return None
+        except urllib.error.HTTPError as e:
+            if 400 <= e.code < 500:
+                log(f"clip {shot_id}: server answered {e.code}")
+                return None
+            log(f"clip {shot_id}: download error {e.code}, retrying")
+        except Exception as e:
+            log(f"clip {shot_id}: download error {e}, retrying")
+        time.sleep(3 * (attempt + 1))
+    return None
+
+
+def remote_clips(units, look, fmt, out_dir, seconds_of=None, wait_min=None, poll_s=None):
+    """The kie.ai road: same contract as kleo_video.generate_clips ({shot_id: mp4 path} for the shots that were made),
+    but the filming happens on the server's account and this box only waits. A shot that fails is simply absent, so
+    the caller's rule still holds: one missing clip and the film is not a film."""
+    os.makedirs(out_dir, exist_ok=True)
+    shots = []
+    for u in units:
+        sid = u.get("id")
+        if not sid or not str(u.get("image_prompt") or "").strip():
+            continue
+        still = u.get("image")
+        name = None
+        if isinstance(still, str) and os.path.isfile(still):
+            try:
+                name = upload_still(still, sid)
+            except Exception as e:
+                log(f"{sid}: could not upload the reference frame ({e}); kie.ai will invent the frame from the text")
+        secs = (seconds_of or {}).get(sid) or u.get("dur") or 3.0
+        shots.append({"id": sid, "image_prompt": u["image_prompt"], "motion": u.get("motion"), "strength": u.get("strength"),
+                      "seconds": round(float(secs), 3), "still": name})
+    if not shots:
+        return {}
+    try:
+        reply = request_remote_footage({"shots": shots, "look": look, "format": fmt})
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read(300).decode("utf-8", "replace")
+        except Exception:
+            detail = ""
+        log(f"footage: the server refused the request ({e.code} {detail!r})")
+        return {}
+    except Exception as e:
+        log("footage: the request failed:", e)
+        return {}
+    log(f"footage: {len(shots)} shots sent to the server ({reply.get('model') if isinstance(reply, dict) else '?'})")
+    wait = FOOTAGE_WAIT_MIN if wait_min is None else wait_min
+    step = FOOTAGE_POLL_S if poll_s is None else poll_s
+    deadline, done, last = time.time() + wait * 60, {}, None
+    wanted = [s["id"] for s in shots]
+    while True:
+        try:
+            st = poll_remote_footage()
+        except Exception as e:
+            log("footage: status call failed:", e)
+            st = None
+        if isinstance(st, dict):
+            ready = [i for i in (st.get("ready") or []) if i in wanted and i not in done]
+            for sid in ready:
+                path = download_clip(sid, os.path.join(out_dir, f"{sid}.mp4"))
+                if path:
+                    done[sid] = path
+            failed = st.get("failed") or {}
+            pending = [i for i in (st.get("pending") or []) if i in wanted]
+            summary = f"{len(done)} ready, {len(pending)} pending, {len(failed)} failed"
+            if summary != last:
+                log("footage:", summary, *(f"{k}: {v}" for k, v in list(failed.items())[:4]))
+                progress("clips", 12 + int(40 * len(done) / max(1, len(wanted))), message=f"kie.ai: {summary}")
+                last = summary
+            if not pending or all(i in done or i in failed for i in wanted):
+                break
+        if time.time() > deadline:
+            log(f"footage: gave up after {wait:g} min with {len(done)}/{len(wanted)} clips")
+            break
+        time.sleep(step)
+    return done
+
+
 # ---- Kleo video: the shot is filmed, not photographed ---------------------------------------------------------
 # A storyboard asks for generated motion by declaring backdrop "video". src/keou-contract.ts lets that ask through
 # and, in the same breath, forbids a storyboard from carrying the clips themselves — they are made here, on the
@@ -875,13 +1022,15 @@ def generate_footage(project, pdir, engine, log_path, units, lay_track=True):
     if mod is None:
         log("no generated motion: kleo_video is not in this image")
         return False
-    try:
-        if not mod.can_generate():
-            log("no generated motion: this machine has no usable GPU")
+    remote = footage_backend() == "kie"
+    if not remote:
+        try:
+            if not mod.can_generate():
+                log("no generated motion: this machine has no usable GPU")
+                return False
+        except Exception as e:
+            log("no generated motion:", e)
             return False
-    except Exception as e:
-        log("no generated motion:", e)
-        return False
     if not units:
         log("no generated motion: no shot carries a description to film")
         return False
@@ -902,14 +1051,16 @@ def generate_footage(project, pdir, engine, log_path, units, lay_track=True):
     width, height, fps = int(plan["width"]), int(round(plan["height"])), int(plan.get("fps") or 60)
     look, fmt, n = project.get("look") or "realistic", project.get("format") or "9:16", len(units)
 
-    progress("clips", 12, eta_min=round(n * 2.6) or None, message=f"filming {n} shots ({look}, {width}x{height})")
+    progress("clips", 12, eta_min=(round(n * 0.4) + 2) if remote else (round(n * 2.6) or None),
+             message=f"filming {n} shots ({'kie.ai' if remote else look}, {width}x{height})")
     try:
         # Each shot brings its own still when the picture pass drew one (shot.image = "img/<file>" under the
         # project): the video model animates THAT frame instead of inventing the scene from the text again.
-        made = mod.generate_clips([{"id": u["id"], "image_prompt": u["image_prompt"],
-                                    "motion": u["motion"], "strength": u["strength"],
-                                    "image": still_of(u["shot"], pdir)} for u in units],
-                                  look, fmt, os.path.join(pdir, CLIPS_DIR), seconds_of=seconds)
+        shots = [{"id": u["id"], "image_prompt": u["image_prompt"], "motion": u["motion"], "strength": u["strength"],
+                  "image": still_of(u["shot"], pdir)} for u in units]
+        # Two roads to the same dict: kie.ai through the server, or this box's own model.
+        made = (remote_clips(shots, look, fmt, os.path.join(pdir, CLIPS_DIR), seconds_of=seconds) if remote
+                else mod.generate_clips(shots, look, fmt, os.path.join(pdir, CLIPS_DIR), seconds_of=seconds))
     except Exception as e:
         log("filming failed:", e)
         return False
@@ -1241,6 +1392,7 @@ def main():
         job = api("GET", f"/internal/jobs/{JOB}")
         log("job", JOB, job.get("template"), job.get("params"), "engine", ENGINE, "storyboard" if job.get("storyboard") else "no storyboard")
         progress("script", 1, message="worker started")
+        log("footage backend:", set_footage_backend(job))
         out_dir = tempfile.mkdtemp(prefix="kleo-")
         phase = (os.environ.get("KLEO_PHASE") or job.get("phase") or "").strip().lower()
         cost = None

@@ -7,6 +7,7 @@
  *   INTERNAL_SECRET  firma i link di download, l'identita' dell'account (cookie e "chiave Kleo") e protegge le rotte /internal
  *                    ATTENZIONE: se lo cambi, tutti gli account anonimi diventano irraggiungibili (vedi DEPLOY.md)
  *   VAST_API_KEY     chiave Vast.ai per noleggiare le GPU
+ *   KIE_API_KEY      chiave kie.ai (kie.ai/api-key) per le clip dei film (src/footage.ts); resta sul server, la scheda non la vede mai
  *   POOL_SECRET      (facoltativo) chiave con cui i runner GitHub Actions (render-pool.yml) prendono i video in attesa
  *   RESEND_API_KEY, NOTIFY_FROM  (facoltativi, oggi non impostati) email con i link a fine render
  *   TURNSTILE_SECRET (facoltativo, oggi NON impostato) controllo anti-robot della pagina di accesso: finche' manca il
@@ -77,6 +78,10 @@
     "VAST_MIN_INET": "1200", // Mbit/s in discesa richiesti alla macchina (il predefinito è 800): dei 23 minuti misurati, 13 erano solo lo scaricamento dell'immagine, cioè più della metà del conto
     "IMAGE_SERVER_MAX": "0", // immagini disegnate dal server con Workers AI: nessuna. Le disegna tutte la GPU noleggiata (circa 0,004 $ per 24), così la quota gratuita giornaliera di Workers AI resta intera per gli storyboard, che è ciò che limita davvero quanti video Kleo sa progettare in un giorno
     "VAST_DISK_GB": "80", // disco richiesto alla macchina (l'immagine del worker pesa circa 11 GB); un job filmato con LTX ne chiede 150 da solo (src/templates.ts videoDiskGb)
+    "KLEO_FOOTAGE_BACKEND": "kie", // da dove arrivano le CLIP di un film (13 set, src/footage.ts): "kie" = l'API di kie.ai (Kling, Veo, Wan, Seedance) chiamata dal server; la scheda noleggiata diventa quella economica da 16 GB e carica solo i fotogrammi di riferimento. "local" = il modello qui sotto sulla scheda da 80 GB. Vale solo se il segreto KIE_API_KEY e' caricato (`npx wrangler secret put KIE_API_KEY`), altrimenti resta "local" da solo. Si cambia anche senza deploy: POST /internal/admin/footage {"backend":"kie"|"local","model":"..."}
+    "KLEO_FOOTAGE_MODEL": "kling-3.0", // modello kie.ai (nomi in src/footage.ts KIE_MODELS): kling-3.0 (pro, 1080p, il default), kling-3.0-std, kling-3.0-4k, kling-v3-turbo, veo-3.1, wan-2.7, seedance-2.0
+    "KIE_MAX_VIDEO_S": "20", // fase di prova: un film piu' lungo di tanti secondi NON va su kie.ai e prende la strada locale. 0 = nessun tetto
+    "DAILY_FOOTAGE_BUDGET_USD": "5.00", // tetto giornaliero (UTC) della spesa STIMATA su kie.ai, contata alla creazione di ogni task dal listino in src/footage.ts; oltre, la richiesta di clip viene rifiutata e il film fallisce con la frase esatta. Un film da 20 s costa circa 1,5-2 $ su Kling 3.0 pro
     "KLEO_VIDEO_MODEL": "Lightricks/LTX-2.5-Diffusers", // il generatore delle riprese (13 set: LTX-2.5, 22B, pesi gated -> secret HF_TOKEN; scheda da 80 GB, tetto 2,60 $/h). Wan-AI/Wan2.2-TI2V-5B-Diffusers per tornare al modello piccolo
     "VAST_IMAGE": "ghcr.io/tonnooooo/kleo-worker:keou" // immagine Docker del worker (motore Keou + modelli), costruita da GitHub Actions (worker-image.yml); deve restare pubblica
   },

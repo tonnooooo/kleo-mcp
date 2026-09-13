@@ -27,6 +27,11 @@ const STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS payments (session_id TEXT PRIMARY KEY, user_id TEXT, credits INTEGER NOT NULL DEFAULT 0, amount_cent INTEGER NOT NULL, currency TEXT NOT NULL, email TEXT, payment_intent TEXT, status TEXT NOT NULL DEFAULT 'paid', country TEXT, event_id TEXT, event_type TEXT, raw_ref TEXT, at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
   `CREATE INDEX IF NOT EXISTS payments_user ON payments(user_id, at)`,
   `CREATE INDEX IF NOT EXISTS payments_pi ON payments(payment_intent)`,
+  // One row per shot filmed through kie.ai (src/footage.ts): the task id is what the poll asks kie.ai about, `state`
+  // is ours (queued → generating → ready | failed), `key` is the clip on R2 once downloaded. cost_usd is the price
+  // list's estimate, written when the task is CREATED, so the daily budget counts money the moment it is committed.
+  `CREATE TABLE IF NOT EXISTS footage (job_id TEXT NOT NULL, shot_id TEXT NOT NULL, model TEXT NOT NULL, task_id TEXT, state TEXT NOT NULL DEFAULT 'queued', seconds REAL NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0, result_url TEXT, key TEXT, error TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), updated_at TEXT, PRIMARY KEY (job_id, shot_id))`,
+  `CREATE INDEX IF NOT EXISTS footage_created ON footage(created_at)`,
 ];
 
 /** Columns added after 0001 (mirrors migrations/0003_storyboard.sql + 0004_last_report.sql — one migration per column,

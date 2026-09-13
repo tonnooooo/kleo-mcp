@@ -64,6 +64,17 @@ export interface Env {
   /** Disk for the finish box (default 40 GB: the image, the clips, the 4K film). */
   FINISH_DISK_GB?: string;
   VIDEO_MAX_DPH?: string;
+  /** kie.ai (https://kie.ai): the clips of a filmed video come from its API instead of a model on the rented card.
+   *  KIE_API_KEY is a Cloudflare SECRET (wrangler secret put): it never reaches the box, the audit or a job row. */
+  KIE_API_KEY?: string;
+  /** "kie" routes the clips through kie.ai (needs KIE_API_KEY); anything else, or unset, keeps the local model. */
+  KLEO_FOOTAGE_BACKEND?: string;
+  /** kie.ai model id for the clips (src/footage.ts KIE_MODELS); the admin route can override it without a deploy. */
+  KLEO_FOOTAGE_MODEL?: string;
+  /** A video longer than this (seconds) is NOT sent to kie.ai and takes the local road (default 20: the test cap). */
+  KIE_MAX_VIDEO_S?: string;
+  /** Hard ceiling on estimated kie.ai dollars per UTC day (default 5.00); over it the footage call refuses. */
+  DAILY_FOOTAGE_BUDGET_USD?: string;
   VAST_MIN_INET?: string;   // Mbit/s down the host must have (default 800): the image pull is the slowest part of a job
   VAST_MIN_CPU?: string;      // effective cores required (the Keou renderer is CPU-bound)
   VAST_MIN_RAM_GB?: string;

@@ -2,6 +2,7 @@ import type { Env } from "./env";
 import { type Job, type JobParams, type JobState, type User, OPEN_STATES, countOpenForUser, countJobsTodayForUser, addJobCost, debitCredits, refundCredits, insertJob, transitionJob, audit, getUserJob, listFiles } from "./db";
 import { accountUrl } from "./accounts";
 import { findTemplate, affordableGuess, creditsFor, etaFor, normalizeVoice, voiceSpellings, isVideoStyle, videoModelIsGated, isPublicTemplate, FILM_TEMPLATE_ID, FILM_LONG_TEMPLATE_ID, filmTemplateFor, type Format } from "./templates";
+import { footageBackendFor, footageConfig } from "./footage";
 import { rid, nowIso, int, hmacHex } from "./util";
 import { isFlagActive } from "./schema";
 import { backendFor } from "./backends";
@@ -140,7 +141,10 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   // A filmed style needs the generator's weights on the box. When the configured model is gated on Hugging Face
   // and no token is configured, the download would fail after the card was rented and paid for — so the job is
   // refused here, in words that say what is missing, and nothing is charged.
-  if (isVideoStyle(style) && videoModelIsGated(env.KLEO_VIDEO_MODEL) && !(env.HF_TOKEN && env.HF_TOKEN.trim()))
+  // On the kie.ai road (footage.ts) no weights are fetched, so the token is not needed: the same decision the
+  // renter will make, taken here on the same params, so a job is never refused for a token it will not use.
+  const onKie = footageBackendFor(env, { params: JSON.stringify({ duration_s: duration, format, language, voice, style }) }, await footageConfig(env)) === "kie";
+  if (isVideoStyle(style) && !onKie && videoModelIsGated(env.KLEO_VIDEO_MODEL) && !(env.HF_TOKEN && env.HF_TOKEN.trim()))
     throw new JobError(`Kleo's video model (${env.KLEO_VIDEO_MODEL}) needs a Hugging Face token that is not configured on the server yet. Nothing was charged; try again later.`);
   const maxOpen = int(env.MAX_JOBS_PER_USER, 2);
   const open = await countOpenForUser(env, user.id);

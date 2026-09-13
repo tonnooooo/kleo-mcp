@@ -8,7 +8,8 @@ import { FILE_NAMES } from "./jobs";
 import { putFile, getFile } from "./storage";
 import { generateStoryboard, StoryboardError } from "./storyboard";
 import { findTemplate } from "./templates";
-import { generateJobImages } from "./images";
+import { generateJobImages, IMAGE_NAME_RE } from "./images";
+import { footageBackendFor, footageConfig, setFootageConfig, kieModelFor, requestFootage, footageStatus, footageSpentTodayUsd, clipKey, footageRows, KIE_MODELS, SHOT_ID_RE, STILL_NAME_RE, type ShotRequest } from "./footage";
 
 const ALLOWED_FILES = new Set([FILE_NAMES.video.name, FILE_NAMES.subtitles.name, FILE_NAMES.thumbnail.name, "thumbnail.svg", "log.txt", "gen.tgz"]);
 const TYPES: Record<string, string> = { mp4: "video/mp4", srt: "application/x-subrip", jpg: "image/jpeg", svg: "image/svg+xml", txt: "text/plain" };
@@ -24,6 +25,9 @@ const TYPES: Record<string, string> = { mp4: "video/mp4", srt: "application/x-su
  *   PUT  /internal/jobs/:id/files/:name/uploads/:uid/parts/:n upload one part (≥ 5 MB except last) → {etag}
  *   POST /internal/jobs/:id/files/:name/uploads/:uid/complete {parts:[{partNumber, etag}]}
  *   POST /internal/jobs/:id/images     (empty body) → {images: {pictureId: url}, missing: [pictureId]}  scene pictures (cartoon/realistic)
+ *   PUT  /internal/jobs/:id/stills/:pictureId.png             a shot's reference frame, for kie.ai to animate (footage.ts)
+ *   POST /internal/jobs/:id/footage    {shots, look, format}  order the clips from kie.ai; GET polls them (footage.ts)
+ *   GET  /internal/jobs/:id/clips/:shotId                     a finished clip, streamed from R2
  *   POST /internal/jobs/:id/done       {cost_usd?}
  *   POST /internal/jobs/:id/failed     {error, retry?}
  *   POST /internal/jobs/:id/selfdestruct                      ask the server to destroy the GPU (fallback)
@@ -45,7 +49,10 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
 
   if (rest === "" && request.method === "GET") {
     const params = JSON.parse(job.params) as { style?: string };
+    const cfg = await footageConfig(env);
     return json({ job_id: job.id, template: job.template, prompt: job.prompt, params, state: job.state, style: params.style ?? null, phase: job.phase ?? "gen",
+      // Where the clips come from: repeated here for runners that get no env from Vast (the box's env wins when set).
+      footage: { backend: footageBackendFor(env, job, cfg), model: kieModelFor(env, cfg).name },
       storyboard: job.storyboard ? JSON.parse(job.storyboard) : null, brand: env.BRAND || "Kleo",
       files: { video: FILE_NAMES.video.name, subtitles: FILE_NAMES.subtitles.name, thumbnail: FILE_NAMES.thumbnail.name }, part_size_bytes: 50 * 1024 * 1024 });
   }
@@ -76,6 +83,39 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
     const f = await getFile(env, `renders/${job.id}/${g[1]}`, null);
     if (!f) return json({ error: "not uploaded" }, 404);
     return new Response(f.body as ReadableStream | ArrayBuffer, { status: 200, headers: { "content-type": f.contentType, "content-length": String(f.size), etag: f.etag } });
+  }
+
+  // The kie.ai road (footage.ts). The still lands under the same img/ name rule as the server-drawn pictures, so
+  // dl.ts can sign a link to it for kie.ai without learning a new name.
+  const st = rest.match(/^stills\/([a-z0-9-]{1,56}\.(?:png|jpg|webp))$/);
+  if (st && request.method === "PUT") {
+    const name = `img/${st[1]}`;
+    if (!IMAGE_NAME_RE.test(name) && !STILL_NAME_RE.test(st[1])) return json({ error: "bad still name" }, 400);
+    const ctype = st[1].endsWith(".png") ? "image/png" : st[1].endsWith(".webp") ? "image/webp" : "image/jpeg";
+    const buf = await request.arrayBuffer();
+    if (buf.byteLength < 64 || buf.byteLength > 25 * 1024 * 1024) return json({ error: `still is ${buf.byteLength} bytes` }, 400);
+    const key = `renders/${job.id}/${name}`;
+    const size = await putFile(env, key, buf, ctype);
+    await setFile(env, { job_id: job.id, name, key, size, content_type: ctype });
+    return json({ ok: true, name: st[1], size });
+  }
+  if (rest === "footage" && request.method === "POST") {
+    const b = (await request.json().catch(() => ({}))) as { shots?: ShotRequest[]; look?: string; format?: string };
+    const r = await requestFootage(env, job, url.origin, { shots: b.shots ?? [], look: b.look, format: b.format });
+    return json(r.reply, r.status);
+  }
+  if (rest === "footage" && request.method === "GET") {
+    const r = await footageStatus(env, job, true);
+    return json(r.reply, r.status);
+  }
+  const cl = rest.match(/^clips\/([a-z0-9-]{1,56})$/);
+  if (cl && request.method === "GET") {
+    if (!SHOT_ID_RE.test(cl[1])) return json({ error: "bad shot id" }, 400);
+    const row = (await footageRows(env, job.id)).find((r) => r.shot_id === cl[1]);
+    if (!row || row.state !== "ready" || !row.key) return json({ error: "clip is not ready" }, 404);
+    const f = await getFile(env, row.key ?? clipKey(job.id, cl[1]), null);
+    if (!f) return json({ error: "clip is missing from storage" }, 404);
+    return new Response(f.body as ReadableStream | ArrayBuffer, { status: 200, headers: { "content-type": "video/mp4", "content-length": String(f.size), etag: f.etag } });
   }
 
   if (rest === "images" && request.method === "POST") {
@@ -201,6 +241,29 @@ export async function handleAdmin(request: Request, env: Env): Promise<Response>
     budget_usd: num(env.DAILY_GPU_BUDGET_USD, 1),
   });
   if (request.method === "GET" && path === "/internal/admin/pause") return json(await state());
+  // The kie.ai switch and model, changeable from a phone between two test videos, no deploy:
+  //   GET  /internal/admin/footage                      what is on, the models Kleo knows, today's kie.ai spend
+  //   POST /internal/admin/footage {"backend":"kie","model":"kling-3.0"}   ({"reset":true} goes back to the config)
+  if (path === "/internal/admin/footage") {
+    const view = async () => {
+      const cfg = await footageConfig(env);
+      const probe = { params: JSON.stringify({ duration_s: 1 }) };
+      return { backend: footageBackendFor(env, probe, cfg), model: kieModelFor(env, cfg).name, override: cfg,
+        key_configured: !!(env.KIE_API_KEY && env.KIE_API_KEY.trim()), max_video_s: int(env.KIE_MAX_VIDEO_S, 20),
+        spend_today_usd: Math.round((await footageSpentTodayUsd(env)) * 1000) / 1000, budget_usd: num(env.DAILY_FOOTAGE_BUDGET_USD, 5),
+        models: Object.fromEntries(Object.entries(KIE_MODELS).map(([k, m]) => [k, { usd_per_s: m.usdPerSecond, seconds: m.seconds, verified: m.verified, note: m.note }])) };
+    };
+    if (request.method === "GET") return json(await view());
+    if (request.method !== "POST") return json({ error: "method" }, 405);
+    const b = (await request.json().catch(() => ({}))) as { backend?: string; model?: string; reset?: boolean };
+    if (b.reset) { await setFootageConfig(env, null); await audit(env, null, null, "admin.footage", { reset: true }); return json({ ok: true, ...(await view()) }); }
+    const o: { backend?: "kie" | "local"; model?: string } = { ...(await footageConfig(env)) };
+    if (b.backend !== undefined) { if (b.backend !== "kie" && b.backend !== "local") return json({ error: "backend must be kie or local" }, 400); o.backend = b.backend; }
+    if (b.model !== undefined) { if (!KIE_MODELS[b.model]) return json({ error: `unknown model; one of ${Object.keys(KIE_MODELS).join(", ")}` }, 400); o.model = b.model; }
+    await setFootageConfig(env, o);
+    await audit(env, null, null, "admin.footage", o);
+    return json({ ok: true, ...(await view()) });
+  }
   if (request.method !== "POST") return json({ error: "method" }, 405);
   if (path === "/internal/admin/pause") {
     const b = (await request.json().catch(() => ({}))) as { hours?: number; everything?: boolean };
