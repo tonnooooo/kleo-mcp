@@ -840,6 +840,15 @@ def shot_plan(build):
     return plan, seconds
 
 
+def still_of(shot, pdir):
+    """Absolute path of the shot's picture if it exists on disk, else None."""
+    im = shot.get("image") if isinstance(shot, dict) else None
+    if not isinstance(im, str) or not im:
+        return None
+    path = os.path.join(pdir, im)
+    return path if os.path.isfile(path) else None
+
+
 def generate_footage(project, pdir, engine, log_path, units):
     """Voice → cut times → film every shot → build/footage.mp4, with each shot's clip hung on the shot itself.
     Returns True when the project keeps its video backdrop, False when the film falls back to the stills."""
@@ -876,8 +885,11 @@ def generate_footage(project, pdir, engine, log_path, units):
 
     progress("clips", 12, eta_min=round(n * 2.6) or None, message=f"filming {n} shots ({look}, {width}x{height})")
     try:
+        # Each shot brings its own still when the picture pass drew one (shot.image = "img/<file>" under the
+        # project): the video model animates THAT frame instead of inventing the scene from the text again.
         made = mod.generate_clips([{"id": u["id"], "image_prompt": u["image_prompt"],
-                                    "motion": u["motion"], "strength": u["strength"]} for u in units],
+                                    "motion": u["motion"], "strength": u["strength"],
+                                    "image": still_of(u["shot"], pdir)} for u in units],
                                   look, fmt, os.path.join(pdir, CLIPS_DIR), seconds_of=seconds)
     except Exception as e:
         log("filming failed:", e)

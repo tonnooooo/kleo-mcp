@@ -202,9 +202,21 @@ class GenerateTest(unittest.TestCase):
             def set_progress_bar_config(self, **kw): pass
             vae = types.SimpleNamespace(enable_tiling=lambda: None)
 
+        class FakeI2V(FakePipe):
+            def __call__(self, **kw):
+                assert "image" in kw, "the image-to-video pipeline was called without an image"
+                kw = dict(kw, kind="i2v")
+                return FakePipe.__call__(self, **kw)
+
         diff = types.ModuleType("diffusers")
         diff.AutoencoderKLWan = types.SimpleNamespace(from_pretrained=staticmethod(lambda *a, **k: "vae"))
         diff.WanPipeline = types.SimpleNamespace(from_pretrained=staticmethod(lambda *a, **k: FakePipe()))
+        diff.WanImageToVideoPipeline = types.SimpleNamespace(from_pretrained=staticmethod(lambda *a, **k: FakeI2V()))
+        self.loads = []
+        for name in ("WanPipeline", "WanImageToVideoPipeline"):
+            orig = getattr(diff, name).from_pretrained
+            setattr(diff, name, types.SimpleNamespace(from_pretrained=(lambda o, n: staticmethod(
+                lambda *a, **k: (self.loads.append(n), o(*a, **k))[1]))(orig, name)))
         # No diffusers.utils on purpose: a writer that reaches for export_to_video again must fail here, loudly.
         sys.modules.update({"torch": torch, "diffusers": diff})
         sys.modules.pop("diffusers.utils", None)
@@ -266,6 +278,42 @@ class GenerateTest(unittest.TestCase):
     def test_without_cuda_nothing_is_generated_and_nothing_raises(self):
         sys.modules["torch"].cuda.is_available = lambda: False
         self.assertEqual(kv.generate_clips([{"id": "a", "image_prompt": "x"}], "realistic", "16:9", self.tmp), {})
+
+    def still(self, name="still.png", size=(768, 1344)):
+        from PIL import Image
+        path = os.path.join(self.tmp, name)
+        Image.new("RGB", size, (200, 120, 40)).save(path)
+        return path
+
+    def test_a_shot_that_brings_its_still_is_animated_from_it_at_the_clip_size(self):
+        # The picture pass draws 768x1344 for 9:16; the clip is 704x1280. The frame handed to the model must be
+        # the still, resized to the clip — never cropped, never the raw 768x1344.
+        made = kv.generate_clips([{"id": "a", "image_prompt": "a harbour", "motion": "push_in", "image": self.still()}],
+                                 "realistic", "9:16", self.tmp)
+        self.assertEqual(sorted(made), ["a"])
+        self.assertEqual(self.calls[0].get("kind"), "i2v")
+        self.assertEqual(self.calls[0]["image"].size, (704, 1280))
+        self.assertEqual(self.loads, ["WanImageToVideoPipeline"])
+
+    def test_a_shot_without_a_still_is_invented_from_the_text(self):
+        kv.generate_clips([{"id": "a", "image_prompt": "a harbour", "motion": "push_in"}], "realistic", "9:16", self.tmp)
+        self.assertNotIn("image", self.calls[0]); self.assertIsNone(self.calls[0].get("kind"))
+        self.assertEqual(self.loads, ["WanPipeline"])
+
+    def test_a_still_that_is_not_on_disk_falls_back_to_the_text(self):
+        kv.generate_clips([{"id": "a", "image_prompt": "a harbour", "motion": "push_in",
+                            "image": os.path.join(self.tmp, "missing.png")}], "realistic", "9:16", self.tmp)
+        self.assertNotIn("image", self.calls[0])
+
+    def test_a_mixed_batch_swaps_the_pipeline_once_not_per_shot(self):
+        shots = [{"id": "t1", "image_prompt": "one", "motion": "push_in"},
+                 {"id": "i1", "image_prompt": "two", "motion": "push_in", "image": self.still("a.png")},
+                 {"id": "t2", "image_prompt": "three", "motion": "push_in"},
+                 {"id": "i2", "image_prompt": "four", "motion": "push_in", "image": self.still("b.png")}]
+        made = kv.generate_clips(shots, "realistic", "16:9", self.tmp)
+        self.assertEqual(sorted(made), ["i1", "i2", "t1", "t2"])
+        self.assertEqual([c.get("kind") for c in self.calls], ["i2v", "i2v", None, None], "stills first, then text")
+        self.assertEqual(self.loads, ["WanImageToVideoPipeline", "WanPipeline"], "one swap, not three")
 
     def test_the_card_is_handed_back_when_the_batch_ends(self):
         kv.generate_clips([{"id": "a", "image_prompt": "a street", "motion": "push_in"}], "realistic", "16:9", self.tmp)

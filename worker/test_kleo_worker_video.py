@@ -444,5 +444,20 @@ class ContractTest(unittest.TestCase):
         self.assertIn("clip", str(e.exception))
 
 
+class StillOfTest(unittest.TestCase):
+    """The still handed to the video model is the shot's own picture, as an absolute path, and only when it exists."""
+
+    def test_the_shot_picture_reaches_the_model_as_a_path_that_exists(self):
+        import tempfile, shutil
+        pdir = tempfile.mkdtemp(prefix="kleo-still-"); self.addCleanup(shutil.rmtree, pdir, True)
+        os.makedirs(os.path.join(pdir, "img"))
+        with open(os.path.join(pdir, "img", "01-hook-s1.png"), "wb") as f:
+            f.write(b"\x89PNG")
+        self.assertEqual(kw.still_of({"image": "img/01-hook-s1.png"}, pdir), os.path.join(pdir, "img", "01-hook-s1.png"))
+        self.assertIsNone(kw.still_of({"image": "img/missing.png"}, pdir), "a picture that was never drawn is not a frame")
+        self.assertIsNone(kw.still_of({}, pdir))
+        self.assertIsNone(kw.still_of("not a shot", pdir))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

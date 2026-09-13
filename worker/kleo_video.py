@@ -129,16 +129,28 @@ def can_generate():
         return False
 
 
-def load_pipeline():
-    global _pipe
-    if _pipe is not None:
+# Two ways to ask the same weights for a clip. "t2v" invents the scene from the text; "i2v" ANIMATES A GIVEN
+# FRAME — the shot's own still, which the picture model drew at 1344x768 with the composition the storyboard asked
+# for. The frame arrives sharp and on purpose; the video model only has to make it move. That is how the
+# commercial tools the owner measures against work (image first, motion second), and it is the difference
+# between a scene the model half-imagined at 704 px and one it was handed.
+KINDS = {"t2v": "WanPipeline", "i2v": "WanImageToVideoPipeline"}
+_kind = None
+
+
+def load_pipeline(kind="t2v"):
+    global _pipe, _kind
+    if _pipe is not None and _kind == kind:
         return _pipe
-    import torch
-    from diffusers import AutoencoderKLWan, WanPipeline
+    if _pipe is not None:
+        release()                          # the two pipelines do not fit on a 40 GB card together
+    import torch, diffusers
+    from diffusers import AutoencoderKLWan
+    cls = getattr(diffusers, KINDS[kind])
     src = MODEL_DIR if os.path.isdir(os.path.join(MODEL_DIR, "model_index.json")) else MODEL_ID
     t0 = time.time()
     vae = AutoencoderKLWan.from_pretrained(src, subfolder="vae", torch_dtype=torch.float32)
-    pipe = WanPipeline.from_pretrained(src, vae=vae, torch_dtype=torch.bfloat16).to("cuda")
+    pipe = cls.from_pretrained(src, vae=vae, torch_dtype=torch.bfloat16).to("cuda")
     try:
         pipe.vae.enable_tiling()          # the VAE is what runs out of memory first at 720p
     except Exception as e:
@@ -147,15 +159,25 @@ def load_pipeline():
         pipe.set_progress_bar_config(disable=True)
     except Exception:
         pass
-    log(f"pipeline ready in {time.time() - t0:.0f} s from {src}")
-    _pipe = pipe
+    log(f"{kind} pipeline ready in {time.time() - t0:.0f} s from {src}")
+    _pipe, _kind = pipe, kind
     return pipe
+
+
+def first_frame(path, w, h):
+    """The shot's still, as the frame the clip must start from: resized to the clip's own size (the still is
+    1344x768 or 768x1344, the clip 1280x704 or 704x1280 — same aspect, a small resample, no crop)."""
+    from PIL import Image
+    im = Image.open(path).convert("RGB")
+    if im.size != (w, h):
+        im = im.resize((w, h), Image.LANCZOS)
+    return im
 
 
 def release():
     """Give the card back before the Keou render starts: Chromium workers and Kokoro want it too."""
-    global _pipe
-    _pipe = None
+    global _pipe, _kind
+    _pipe, _kind = None, None
     gc.collect()
     try:
         import torch
@@ -205,11 +227,12 @@ def generate_clips(shots, look, fmt, out_dir, seconds_of=None):
         return {}
     os.makedirs(out_dir, exist_ok=True)
     w, h = SIZES.get(fmt, SIZES["16:9"])
-    try:
-        pipe = load_pipeline()
-    except Exception as e:
-        log("model unavailable:", e)
-        return {}
+    # A shot that brings its still is animated from it; one without is invented from the text. Shots are grouped
+    # by that, so the card swaps pipelines at most once instead of once per shot.
+    def kind_of(s):
+        im = s.get("image")
+        return "i2v" if isinstance(im, str) and os.path.isfile(im) else "t2v"
+    want.sort(key=lambda s: kind_of(s) != "i2v")
     import torch
     done, t_all = {}, time.time()
     for s in want:
@@ -217,16 +240,26 @@ def generate_clips(shots, look, fmt, out_dir, seconds_of=None):
         prompt = build_prompt(s, look)
         if not prompt:
             continue
+        kind = kind_of(s)
+        try:
+            pipe = load_pipeline(kind)
+        except Exception as e:
+            log("model unavailable:", e)
+            break
         secs = (seconds_of or {}).get(sid) or s.get("dur") or 3.0
         n = frames_for(secs)
         path = os.path.join(out_dir, f"{sid}.mp4")
         t0 = time.time()
         try:
             base = seed_for(sid)
+            still = first_frame(s["image"], w, h) if kind == "i2v" else None
             for attempt in range(RETRIES + 1):
                 g = torch.Generator(device="cuda").manual_seed(base + attempt * 7919)
-                out = pipe(prompt=prompt, negative_prompt=NEGATIVE, height=h, width=w, num_frames=n,
-                           num_inference_steps=STEPS, guidance_scale=GUIDANCE, generator=g)
+                args = dict(prompt=prompt, negative_prompt=NEGATIVE, height=h, width=w, num_frames=n,
+                            num_inference_steps=STEPS, guidance_scale=GUIDANCE, generator=g)
+                if still is not None:
+                    args["image"] = still
+                out = pipe(**args)
                 write_clip(out.frames[0], path, fps=FPS_SRC)
                 if not (os.path.isfile(path) and os.path.getsize(path) > 0):
                     raise RuntimeError("empty file written")
@@ -237,7 +270,8 @@ def generate_clips(shots, look, fmt, out_dir, seconds_of=None):
                     break
                 log(f"{sid}: only {moved:.0f} px of travel, that is a still — regenerating with another seed")
             done[sid] = path
-            log(f"{sid}: {n} frames ({n / FPS_SRC:.1f} s) in {time.time() - t0:.0f} s")
+            log(f"{sid}: {n} frames ({n / FPS_SRC:.1f} s) in {time.time() - t0:.0f} s, "
+                f"{'animated from its still' if still is not None else 'invented from the text'}")
         except Exception as e:
             log(f"{sid}: generation failed: {type(e).__name__}: {str(e)[:200]}")
             try:
