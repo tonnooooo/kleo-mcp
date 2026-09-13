@@ -3,11 +3,11 @@ import { z } from "zod";
 import type { Env } from "./env";
 import type { User, Job, JobParams } from "./db";
 import { getUserJob, getUser, recentJobsForUser, countOpenForUser, GPU_ONLY_WAIT } from "./db";
-import { TEMPLATES, TEMPLATE_IDS, findTemplate, creditsFor } from "./templates";
+import { PUBLIC_TEMPLATES as TEMPLATES, PUBLIC_TEMPLATE_IDS as TEMPLATE_IDS, findTemplate, creditsFor } from "./templates";
 import { createJob, cancelJob, jobView, resultLinks, JobError, FILE_NAMES } from "./jobs";
 import { accountUrl, makeHandle } from "./accounts";
 import { audit } from "./db";
-import { KLEO_STYLES, FORMATS, wordBudget, shotRangeText } from "./keou-contract";
+import { FORMATS, wordBudget, shotRangeText } from "./keou-contract";
 import { guideText } from "./guide.ts";
 import { pickKleoStyleWhy } from "./storyboard.ts";
 import { int } from "./util";
@@ -105,7 +105,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
 
   server.registerTool("kleo_list_templates", {
     title: "List video templates",
-    description: "Step 1. Lists the templates Kleo can render (id, name, format, length range, voices) and the credits left on the account. Call it when the user has not named a template, then pick the closest match yourself. Prices: 1 credit per Short (up to 90 seconds), 3 credits up to 5 minutes, +1 credit per extra minute.",
+    description: "Step 1. Lists what Kleo makes — one kind of video, the realistic film, in two lengths (\"film\" up to 90 seconds, \"film-long\" up to 5 minutes), the formats (16:9 for YouTube, 9:16 for Shorts), the voices — and the credits left on the account. Price: 7 credits up to 90 seconds; longer films scale with the length.",
     inputSchema: z.object({}),
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   }, async () => {
@@ -127,11 +127,11 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
 
   server.registerTool("kleo_storyboard_guide", {
     title: "Storyboard guide (write your own video)",
-    description: "Step 2 (recommended). Returns how to write a storyboard Kleo renders, in the order it should be written: first the DIRECTION of the film (subject, goal, audience, tone, the facts from the request that the narration must still say, the world it is drawn in, what must never appear, and one accent colour per section), then the scene and shot shapes, the limits Kleo enforces before anything is billed, and one worked example. Pass \"style\" to get that look\u2019s vocabulary alone instead of all four. Call it once per conversation, before kleo_create_video. Without a storyboard Kleo plans a more generic one from the prompt.",
+    description: "Step 2 (recommended). Returns how to write a storyboard Kleo renders, in the order it should be written: first the DIRECTION of the film (subject, goal, audience, tone, the facts from the request that the narration must still say, the world it is drawn in, what must never appear, and one accent colour per section), then the scene and shot shapes, the limits Kleo enforces before anything is billed, and one worked example. Kleo has one look: a realistic film, every shot generated as moving footage from its own frame. Call it once per conversation, before kleo_create_video. Without a storyboard Kleo plans a more generic one from the prompt.",
     inputSchema: z.object({
       template: z.enum(TEMPLATE_IDS).optional().describe("The template you intend to use; tailors the target length."),
       duration_s: z.number().int().min(15).max(900).optional().describe("Target length in seconds, if the user chose one."),
-      style: z.enum(KLEO_STYLES).optional().describe("The look this storyboard is for. Naming it returns that look only: cartoon or realistic (full-screen generated pictures cut on the narration), cyber (motion design with icons and big type, no pictures), explainer (the cyber explainer: hand-drawn white marker line art on black, one drawing per spoken phrase, karaoke captions), stickman (a hand-drawn stickman, 9:16, on request). Omit it for the picture looks plus a line about the others."),
+      style: z.enum(["realistic"]).optional().describe("Kleo has one look: realistic — a film whose every shot is generated footage from its own frame, under the narration. Omit it or pass \"realistic\"."),
       format: z.enum(FORMATS).optional().describe("The frame the video will be in. The explainer authors its drawings in the frame's own pixels, so its guide prints different coordinates for 9:16 and 16:9; the template's own format is used when this is omitted."),
     }),
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
@@ -144,27 +144,27 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     const words = wordBudget(dur, 1.1).target;
     // The guide is built in src/guide.ts from the contract\u2019s own constants, so the numbers it prints are the numbers
     // the validator enforces \u2014 the shot range used to be 1-4 here, 2-4 in the planner and "two to four" on the website.
-    const text = guideText({ template, templateName: t?.name, duration_s: dur, style: style ?? null, languages: JOB_LANGUAGES, format: fmt });
+    const text = guideText({ template, templateName: t?.name, duration_s: dur, style: "realistic", languages: JOB_LANGUAGES, format: fmt });
     // The guide is where an assistant is most likely to start inventing: it has just been handed the shape of a
     // storyboard and nothing to put in it. So the sentence that leaves with it is the one that says whose idea it
     // has to be — a model follows the last instruction it read far more reliably than a tool description.
     const askFirst = "\n\nBEFORE YOU WRITE THIS: the subject has to come from the user, not from you. If they have not "
       + "said what the video is about, ask them now and wait for the answer. If they gave you a subject, however short, "
       + "that is enough — write the storyboard and do not interrogate them.";
-    return ok({ guide: text, template: t?.id ?? null, duration_s: dur, format: fmt, words_target: words, credits: creditsFor(dur), styles: [...KLEO_STYLES], style: style ?? null }, text + askFirst);
+    return ok({ guide: text, template: t?.id ?? null, duration_s: dur, format: fmt, words_target: words, credits: creditsFor(dur, "realistic"), styles: ["realistic"], style: "realistic" }, text + askFirst);
   });
 
   server.registerTool("kleo_create_video", {
     title: "Create a video",
-    description: "Step 3. ASK FIRST, THEN CALL. Do not call this until the user has said, in their own words, what the video should be about. If the subject is YOUR idea and not theirs — you suggested a topic, or you filled a vague request in with your own guess — stop and ask them, and wait for the answer. A render spends a credit they cannot get back once it starts and takes about twenty minutes, so a video nobody asked for is not a fast answer, it is a wasted one. When their request is short but clear (\"a Short about pirates\"), that is enough: do not interrogate them. When it is missing the subject entirely, ask for the subject and nothing else. Starts rendering a video or Short from a template, a prompt and a visual style (cartoon or realistic pictures, cyber or stickman; plus your storyboard from kleo_storyboard_guide, if you wrote one). Returns at once with the video number (job_id), the estimated minutes (eta_min) and the credits used; the render runs on a GPU in the background. Tell the user the number and the estimate, then offer to check progress with kleo_get_job. If the tool returns an error, nothing was charged: fix what it says and call again.",
+    description: "Step 3. ASK FIRST, THEN CALL. Do not call this until the user has said, in their own words, what the video should be about. If the subject is YOUR idea and not theirs — you suggested a topic, or you filled a vague request in with your own guess — stop and ask them, and wait for the answer. A render spends a credit they cannot get back once it starts and takes about twenty minutes, so a video nobody asked for is not a fast answer, it is a wasted one. When their request is short but clear (\"a Short about pirates\"), that is enough: do not interrogate them. When it is missing the subject entirely, ask for the subject and nothing else. Starts rendering a realistic film — every shot generated as moving footage from its own frame, narrated, no captions, no music, 4K 60 fps — from a prompt, a length and a format (plus your storyboard from kleo_storyboard_guide, if you wrote one). It costs 7 credits up to 90 seconds and takes 25-35 minutes on a rented GPU. Returns at once with the video number (job_id), the estimated minutes (eta_min) and the credits used; the render runs on a GPU in the background. Tell the user the number and the estimate, then offer to check progress with kleo_get_job. If the tool returns an error, nothing was charged: fix what it says and call again.",
     inputSchema: z.object({
-      template: z.string().optional().describe(`Required. Template id from kleo_list_templates: ${TEMPLATE_IDS.join(", ")}.`),
+      template: z.string().optional().describe(`Optional; the only one is "film" (a realistic film, 16:9 for YouTube or 9:16 for Shorts, 15 to 300 seconds). Omit it.`),
       prompt: z.string().describe("What the video is about, IN THE USER'S OWN WORDS (8 to 4000 characters): topic, angle, facts, names, tone, anything that must appear on screen. If you are about to write this field out of an idea of your own, that is the sign to ask them instead: the credit and the twenty minutes are theirs, so the subject has to be theirs too."),
       duration_s: z.number().optional().describe("Target length in seconds. Defaults to the template default and must stay inside the template's range."),
       format: z.enum(["16:9", "9:16"]).optional().describe("16:9 for YouTube videos, 9:16 for Shorts. Defaults to the template's first format."),
       language: z.enum(JOB_LANGUAGES).default("en").describe("Voice and caption language. A storyboard you pass must declare this same language."),
       voice: z.string().optional().describe("Voice id from kleo_list_templates (narrator-en-m, narrator-en-f, narrator-it-m, narrator-it-f). The engine ids used inside a storyboard (am_michael, af_heart, bf_emma, im_nicola, if_sara) are accepted too. Optional."),
-      style: z.enum(KLEO_STYLES).optional().describe("What the viewer sees. cartoon: illustrated full-screen shots drawn for the topic and cut on the narration — pirates get beaches and ships, space gets rockets and stations (stories, kids, travel, animals, history). realistic: the same, with cinematic photo shots (products, places, news, sport). cyber: the dark motion-design look with glowing icons and big type, no pictures (tech, security, AI, code). explainer: the cyber explainer — hand-drawn white marker line art on pure black, one drawing for every spoken phrase, the narration burned in as karaoke captions and no end card — the strongest look for taking ONE idea apart and changing what the viewer believes. It is not cyber with a different palette: cyber wants something to diagram, the explainer wants one thing explained, and the same subject can want either. stickman: a hand-drawn stickman acting the story, 9:16 Shorts only. Omit it and Kleo picks one from the topic (never stickman, never explainer: those two are asked for by name)."),
+      style: z.enum(["realistic"]).optional().describe("Kleo has one look: realistic — a cinematic film, every shot generated as moving footage from its own frame, narrated, no captions and no music. Omit it or pass \"realistic\"."),
       notify_email: z.string().email().optional().describe("Optional: email the download links when the render finishes."),
       storyboard: z.looseObject({}).optional().describe("Optional but recommended: the storyboard you wrote following kleo_storyboard_guide (a Keou project object without id, script_file, music_quiet or image scenes). IT MUST INCLUDE THE \"direction\" BLOCK the guide asks for first — a storyboard without one is refused, because the direction is what keeps a character the same person across shots and gives every scene the colour of its section. Its format and language must equal the ones you pass here, and its voice must belong to that language. When omitted entirely, Kleo plans the whole storyboard, direction included, from the prompt. Checked before anything is charged; on error the tool lists the problems so you can fix them and call again."),
     }),
@@ -199,7 +199,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     const styleNote = !view.style ? ""
       : !guessed ? ` Style: ${view.style}.`
       : pick?.confident ? ` Style: ${view.style}, chosen from what you asked for.`
-      : ` Style: ${view.style} — but Kleo could not tell which look fits from the description, so it used the one this template usually takes. If you wanted a different one (${KLEO_STYLES.filter((k) => k !== view.style).join(", ")}), cancel with kleo_cancel_job — the credits come back while it is still queued — and call again with "style". Tell the user this: nothing has been drawn yet.`;
+      : ``;
     // A guessed look that was replaced because it costs more has to be SAID: the user would otherwise receive a
     // different video from the one Kleo understood, with nothing anywhere explaining why. Naming the style is always
     // honoured, so the way to get it is one argument, and the sentence says which one.

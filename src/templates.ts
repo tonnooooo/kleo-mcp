@@ -285,12 +285,37 @@ export const TEMPLATES: Template[] = [
     description: "The same drawn look across a full subject: chapters, one picture per phrase, and a camera that never stops moving. Landscape.", voices: EN_IT,
     // Same language, five minutes instead of forty seconds: only what the length forces changes.
     family: "drawn", override: { wordsPerScene: [12, 20], shotSeconds: 2.6, guidance: LONG_DRAWN } },
+  // THE ONE PUBLIC TEMPLATE. A film: short, 9:16 or 16:9, chaptered narration, every shot filmed. Length is the
+  // user's; the planner decides the scenes from it (see BRIEFS / FAMILIES: the "chaptered" language, which handles
+  // both a thirty-second piece and five minutes).
+  { id: "film", name: "Film", formats: ["16:9", "9:16"], minSeconds: 15, maxSeconds: 90, defaultSeconds: 30,
+    description: "A realistic film under ninety seconds: a hook in the first two seconds, every shot generated as moving footage from its own frame, narrated, no captions, no music, 4K 60 fps. Say what it is about and how long; Kleo decides the shots.", voices: EN_IT,
+    family: "short-hook" },
+  { id: "film-long", name: "Film (long)", formats: ["16:9", "9:16"], minSeconds: 90, maxSeconds: 300, defaultSeconds: 120,
+    description: "The same film in chapters, from a minute and a half to five minutes. Chosen on its own when the length asks for it.", voices: EN_IT,
+    family: "chaptered" },
   { id: "did-you-know", name: "Did You Know", formats: ["9:16"], minSeconds: 20, maxSeconds: 40, defaultSeconds: 30,
     description: "One fact per scene, karaoke captions, the image changes on every sentence.", voices: EN_IT,
     family: "short-hook", override: { wordsPerScene: [10, 16], guidance: DID_YOU_KNOW } },
 ];
 
 export const TEMPLATE_IDS = TEMPLATES.map((t) => t.id) as [string, ...string[]];
+
+/**
+ * THE PRODUCT HAS ONE TEMPLATE AND ONE LOOK (the owner's reset of 13 September 2026): a realistic film, 16:9 or 9:16,
+ * filmed shot by shot under the narration. The table above still holds the narrative families the planner uses
+ * internally (and the rows old jobs were made with), but none of them is offered, accepted or guessed any more.
+ * `film` is what kleo_list_templates lists and what kleo_create_video takes; it is also the default when the
+ * template is omitted. The adapt-prompt planner that replaces the families lands in a later step.
+ */
+export const FILM_TEMPLATE_ID = "film";
+export const FILM_LONG_TEMPLATE_ID = "film-long";
+export const PUBLIC_TEMPLATE_IDS = [FILM_TEMPLATE_ID, FILM_LONG_TEMPLATE_ID] as [string, ...string[]];
+/** The film template for a length: the short arc up to ninety seconds, chapters beyond. One product, two shapes. */
+export const filmTemplateFor = (seconds: number | undefined | null): string =>
+  typeof seconds === "number" && seconds > 90 ? FILM_LONG_TEMPLATE_ID : FILM_TEMPLATE_ID;
+export const PUBLIC_TEMPLATES: Template[] = TEMPLATES.filter((t) => (PUBLIC_TEMPLATE_IDS as readonly string[]).includes(t.id));
+export const isPublicTemplate = (id: string | undefined | null): boolean => !!id && (PUBLIC_TEMPLATE_IDS as readonly string[]).includes(id);
 export const findTemplate = (id: string): Template | undefined => TEMPLATES.find((t) => t.id === id);
 
 /**

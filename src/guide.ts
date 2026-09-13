@@ -246,7 +246,8 @@ ${directionSection(scenes)}
 2. THE TOP-LEVEL OBJECT
 {"schema_version":1,"editorial_status":"ready","title":"<=120","brand":"<=28","direction":{…as above…},
  "kleo_style":${quoted(look ? [look] : KLEO_STYLES)},"style":"${keou}","format":"9:16"|"16:9","language":${quoted(o.languages)},
- "voice":"${voiceLine}","speed":1.1,"music":"bed"|"none","max_duration":${Math.round(dur * 1.6)},"description":"<=180","tags":["…"],"scenes":[…]}
+ "voice":"${voiceLine}","speed":1.1,"music":"none","max_duration":${Math.round(dur * 1.6)},"description":"<=180","tags":["…"],"scenes":[…]}
+(music is always "none": the film is the narration over the footage, nothing else — 13 September 2026)
 "format" and "language" are not free choices: they must equal what you pass to kleo_create_video, and "voice" must be one of that language's voices. Never write a storyboard in any other language.
 ${look ? `This guide is for kleo_style "${look}", which needs style "${keou}".` : `kleo_style cartoon and realistic need style "picture"; cyber keeps the template's look; stickman needs style "stickman" and 9:16.`}
 
@@ -292,7 +293,7 @@ Notice: every phrase has its own drawing and the drawing is the thing the words 
   // The picture example carries a direction, because the direction is the part people skip. It is a real object, not
   // prose: test/keou-contract.test.mjs validates it through the contract, so the guide cannot teach an illegal shape.
   const d = EXAMPLE_DIRECTION;
-  return `EXAMPLE (cartoon Short, 9:16, 40s, en — the direction plus the first two scenes of six):
+  return `EXAMPLE (a realistic film, 9:16, 40s, en — the direction plus the first two scenes of six; the same shape, drawn as film):
 "direction":${JSON.stringify(d)}
 "scenes":${JSON.stringify(EXAMPLE_SCENES)}
 Notice: every scene has ${SHOTS_MIN_CINEMA} or more pictures; every picture after the first carries "at" quoted from its own voice line; the accents come from the sections, not from the mood; "${d.cast[0].name}" and "${d.cast[1].name}" are named exactly as the direction names them, so Kleo appends their look to every picture that shows them; nothing on the forbidden list appears anywhere.`;

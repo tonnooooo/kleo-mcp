@@ -1,12 +1,11 @@
 import type { Env } from "./env";
 import { type Job, type JobParams, type JobState, type User, OPEN_STATES, countOpenForUser, countJobsTodayForUser, addJobCost, debitCredits, refundCredits, insertJob, transitionJob, audit, getUserJob, listFiles } from "./db";
 import { accountUrl } from "./accounts";
-import { findTemplate, affordableGuess, creditsFor, etaFor, normalizeVoice, voiceSpellings, isVideoStyle, videoModelIsGated, type Format } from "./templates";
+import { findTemplate, affordableGuess, creditsFor, etaFor, normalizeVoice, voiceSpellings, isVideoStyle, videoModelIsGated, isPublicTemplate, FILM_TEMPLATE_ID, FILM_LONG_TEMPLATE_ID, filmTemplateFor, type Format } from "./templates";
 import { rid, nowIso, int, hmacHex } from "./util";
 import { isFlagActive } from "./schema";
 import { backendFor } from "./backends";
 import { validateStoryboard, kleoStyleOf, pictureScenes, narrationOf, MAX_PICTURES, wordBudget, KLEO_STYLES, type KleoStyle } from "./keou-contract";
-import { pickKleoStyle } from "./storyboard";
 
 /** An error whose message is shown to the user as-is: plain English, always says whether something was charged. */
 export class JobError extends Error {}
@@ -19,7 +18,7 @@ export interface CreateInput {
   language?: string;
   voice?: string;
   notify_email?: string;
-  /** Kleo visual style (cartoon | realistic | cyber | stickman). Omitted: the storyboard's kleo_style, else the planner picks one from the prompt. */
+  /** Kleo has one look, "realistic"; anything else is refused. Optional. */
   style?: string;
   /** Optional client-authored Keou storyboard (see keou-contract.ts); validated here, stored as JSON. */
   storyboard?: unknown;
@@ -80,8 +79,11 @@ export function overPaidFor(sb: unknown, duration: number): string[] {
 }
 
 export async function createJob(env: Env, user: User, input: CreateInput): Promise<Job> {
-  const t = findTemplate(input.template);
+  const t = findTemplate(input.template || filmTemplateFor(input.duration_s));
   if (!t) throw new JobError(`There is no template called "${input.template}". Call kleo_list_templates for the valid ids. Nothing was charged.`);
+  // One product (13 September 2026): the film. The old templates stay readable for the rows made with them and
+  // for the planner's families, but a new video is not made with them.
+  if (!isPublicTemplate(t.id)) throw new JobError(`Kleo makes one kind of video now: a realistic film, 16:9 or 9:16 ("${FILM_TEMPLATE_ID}" up to 90 seconds, "${FILM_LONG_TEMPLATE_ID}" up to 300). Omit the template and say the length. Nothing was charged.`);
   const format = (input.format ?? t.formats[0]) as Format;
   if (!t.formats.includes(format))
     throw new JobError(`The "${t.name}" template only makes ${formatWords(t.formats[0])}, not ${formatWords(format)}. Pick ${t.formats[0]} or another template. Nothing was charged.`);
@@ -95,20 +97,19 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   const voice = normalizeVoice(input.voice);   // a Kokoro id from the storyboard guide is the same voice, not an error
   if (voice && !t.voices.includes(voice)) throw new JobError(`There is no voice called "${input.voice}". Available voices: ${voiceSpellings(t.voices).join(", ")}. Nothing was charged.`);
   const language = input.language ?? "en";
-  if (input.style !== undefined && !(KLEO_STYLES as readonly string[]).includes(input.style))
-    throw new JobError(`There is no style called "${input.style}". Pick one of cartoon, realistic, cyber, stickman or explainer. Nothing was charged.`);
-  let style = input.style as KleoStyle | undefined;
-  if (style === "stickman" && format !== "9:16")
-    throw new JobError("The stickman style makes 9:16 Shorts only. Use format 9:16, or pick cartoon, realistic or cyber for a 16:9 video. Nothing was charged.");
+  // One look (13 September 2026): realistic. Naming another is refused in words; omitting it means realistic.
+  if (input.style !== undefined && input.style !== "realistic")
+    throw new JobError(`Kleo has one look now: "realistic" (a filmed, cinematic video). Omit "style" or pass "realistic". Nothing was charged.`);
+  let style: KleoStyle | undefined = "realistic";
   let cappedFrom: string | null = null; // set only when a guessed look was replaced by a cheaper one
   let storyboard: string | null = null;
   if (input.storyboard !== undefined && input.storyboard !== null) {
     const sbIn = input.storyboard;
     if (typeof sbIn === "object" && !Array.isArray(sbIn)) {
       const sb = sbIn as Record<string, unknown>;
-      if (style && "kleo_style" in sb && sb.kleo_style !== style)
-        throw new JobError(`The style argument says "${style}" but the storyboard's kleo_style says "${String(sb.kleo_style)}". Make them agree (or drop one of them). Nothing was charged.`);
-      if (style && !("kleo_style" in sb)) sb.kleo_style = style;
+      if ("kleo_style" in sb && sb.kleo_style !== "realistic")
+        throw new JobError(`Kleo has one look now: "realistic", but the storyboard's kleo_style says "${String(sb.kleo_style)}". Use realistic or omit kleo_style. Nothing was charged.`);
+      sb.kleo_style = "realistic";
     }
     // requireDirection only here: this is the assistant's storyboard, and the guide already told it to write the
     // direction first. The planner (src/storyboard.ts) validates its own drafts with the flag off, because it is
@@ -131,22 +132,8 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     else delete (r.storyboard as Record<string, unknown>).backdrop;
     storyboard = JSON.stringify(r.storyboard);
   }
-  let styleGuessed = false;
-  if (!style) {
-    // Nobody named the look, so it is a bet, and the planner may overturn it once the direction has actually read
-    // the request. Until this flag existed it could not: every job carried a params.style indistinguishable from one
-    // the user chose, and planFor took that over the direction's answer in all cases.
-    styleGuessed = true;
-    // Half of "a guess never changes the price", and the rule itself lives in templates.ts so that the other half —
-    // the direction refining a guessed look at PLANNING time — derives from the same table instead of a second copy.
-    // Naming a style is a decision and is honoured whatever it costs; not naming one is a bet, and bets are not paid
-    // for with somebody else's credits. A no-op today: every style is priced 1.
-    const guess = pickKleoStyle(t.id, prompt);
-    style = affordableGuess(guess, duration) as KleoStyle;
-    // Never a mute substitution. The user would otherwise get a different video from the one Kleo understood, with
-    // no line anywhere saying so: mcp.ts turns this into a sentence in the answer.
-    if (style !== guess) cappedFrom = guess;
-  }
+  // No guess and no cap any more: there is one look, and its price is its price.
+  const styleGuessed = false;
 
   if (!input.storyboard && (await isFlagActive(env, "plan_pause")))
     throw new JobError("Kleo cannot write the storyboard itself right now: it has used up today's free planning. You can still make the video, and it costs the same: call kleo_storyboard_guide, write the storyboard yourself, then call kleo_create_video again with the storyboard argument. Nothing was charged.");

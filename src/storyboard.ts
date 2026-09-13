@@ -455,11 +455,14 @@ export function planFor(job: PlanJob, chosen?: KleoStyle | null): Plan {
   // params.style on every job, guessed or chosen, and this took p.style over `chosen` in every case. The look the
   // direction read out of the request was computed and then thrown away, on every job that has ever run.
   const named = (KLEO_STYLES as readonly string[]).includes(p.style ?? "") && !p.style_guessed;
+  // ONE LOOK (13 September 2026): every new job is realistic, and neither the direction's choice nor the keyword
+  // guess can move it. A row that carries another style — an old job, or an internal test of the planner's
+  // families — is still planned in its own look, so nothing already made becomes unreadable.
   const kleo: KleoStyle = named
     ? (p.style as KleoStyle)
-    : chosen && (KLEO_STYLES as readonly string[]).includes(chosen) ? chosen
     : (KLEO_STYLES as readonly string[]).includes(p.style ?? "") ? (p.style as KleoStyle)
-    : pickKleoStyle(job.template, job.prompt);
+    : "realistic";
+  void chosen;
   const style = keouStyleFor(kleo, job.template, format);
   const brief = style === "sketch" && templateBrief.style !== "sketch"
     ? briefOf(p.duration_s <= 90 ? "explainer-short" : "explainer-long")

@@ -60,11 +60,13 @@ async function newEnv(backend = "manual") {
   for (const f of readdirSync(join(ROOT, "migrations")).sort()) env.DB.db.exec(readFileSync(join(ROOT, "migrations", f), "utf8"));
   return env;
 }
-const user = (env, credits = 10) => m.createUser(env, { id: "u_test", email: "t@example.com", credits, inviteCode: null });
+/** Price units (13 September: one look, priced as a film): P = a Short, PL = a five-minute film. */
+const P = 7, PL = 21;
+const user = (env, credits = 10 * P) => m.createUser(env, { id: "u_test", email: "t@example.com", credits, inviteCode: null });
 const balance = async (env, id = "u_test") => (await m.getUser(env, id)).credits;
 const events = async (env, jobId, name) => (await env.DB.prepare("SELECT event, detail FROM audit WHERE job_id = ? AND event = ? ORDER BY id").bind(jobId, name).all()).results.map((r) => ({ ...r, detail: r.detail ? JSON.parse(r.detail) : null }));
-const short = (env, u, extra = {}) => m.createJob(env, u, { template: "viral-short", prompt: "Pirates find an island missing from every map", duration_s: 45, format: "9:16", ...extra });
-const long = (env, u) => m.createJob(env, u, { template: "story-documentary", prompt: "The story of the island that was never on any map", duration_s: 300 });
+const short = (env, u, extra = {}) => m.createJob(env, u, { template: "film", prompt: "Pirates find an island missing from every map", duration_s: 45, format: "9:16", ...extra });
+const long = (env, u) => m.createJob(env, u, { template: "film-long", prompt: "The story of the island that was never on any map", duration_s: 300 });
 const internal = (env, job, path, body, secret = job.worker_secret) =>
   m.handleInternal(new Request(`http://kleo.test/internal/jobs/${job.id}/${path}`, { method: "POST", headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" }, body: JSON.stringify(body ?? {}) }), env);
 
@@ -88,15 +90,15 @@ test("refundFor: full refund before rendering, rounded proportional refund while
 /* ------------------------------------------------------------------ debit */
 test("create: one atomic debit with a credits.debit audit row; a refused create charges nothing", async () => {
   const env = await newEnv();
-  const u = await user(env, 1);
+  const u = await user(env, 1 * P);
   const job = await short(env, u);
-  assert.equal(job.credits, 1);
-  assert.equal(await balance(env), 0);
+  assert.equal(job.credits, 1 * P);
+  assert.equal(await balance(env), 0 * P);
   const debits = await events(env, job.id, "credits.debit");
   assert.equal(debits.length, 1);
-  assert.deepEqual(debits[0].detail, { amount: 1, balance: 0 });
-  await assert.rejects(short(env, await m.getUser(env, "u_test")), (e) => e instanceof m.JobError && /Not enough credits: this Short costs 1 credit and you have 0 credits/.test(e.message));
-  assert.equal(await balance(env), 0);
+  assert.deepEqual(debits[0].detail, { amount: P, balance: 0 });
+  await assert.rejects(short(env, await m.getUser(env, "u_test")), (e) => e instanceof m.JobError && new RegExp(`Not enough credits: this Short costs ${P} credits and you have 0 credits`).test(e.message));
+  assert.equal(await balance(env), 0 * P);
   assert.equal((await env.DB.prepare("SELECT COUNT(*) AS n FROM audit WHERE event = 'credits.debit'").first()).n, 1);
 });
 
@@ -104,41 +106,40 @@ test("create: a client storyboard for a filmed style is stored asking to be film
   // 13 September, a real job: realistic had become a filmed style (7 credits, the big card), the assistant passed
   // its own storyboard, the validator stripped the backdrop and nothing put it back on this road — the worker saw
   // no backdrop and drew the stills with the graphics on top. Seven credits for the old product.
-  const env = await newEnv(); const u = await user(env, 20);
+  const env = await newEnv(); const u = await user(env, 20 * P);
   const sb = JSON.parse(readFileSync(join(ROOT, "scripts", "motion-demo", "samples", "venezia-16x9.json"), "utf8"));
-  const job = await m.createJob(env, u, { template: "motivational", prompt: "L'acqua alta a Venezia, cento volte l'anno", duration_s: 30,
+  const job = await m.createJob(env, u, { template: "film", prompt: "L'acqua alta a Venezia, cento volte l'anno", duration_s: 30,
     format: "16:9", language: "it", style: "realistic", storyboard: sb });
   const stored = JSON.parse((await m.getJob(env, job.id)).storyboard);
   assert.equal(stored.backdrop, "video", "the plan says filmed, so the stored storyboard must ask to be filmed");
   assert.equal(stored.kleo_style, "realistic");
-  assert.equal(job.credits, 7, "and it is charged as a filmed video");
-  // and a style that is not filmed never carries one, even if the caller wrote it in
+  assert.equal(job.credits, P, "and it is charged as a filmed video");
+  // and no other look can be bought at all — with or without a backdrop written in by the caller
   const c = JSON.parse(JSON.stringify(sb)); c.kleo_style = "cartoon"; c.backdrop = "video";
-  const job2 = await m.createJob(env, u, { template: "motivational", prompt: "Pirati e tesori", duration_s: 30, format: "16:9", language: "it", style: "cartoon", storyboard: c });
-  assert.equal("backdrop" in JSON.parse((await m.getJob(env, job2.id)).storyboard), false, "a caller cannot buy the film at the picture price");
-  assert.equal(job2.credits, 1);
+  await assert.rejects(() => m.createJob(env, u, { template: "film", prompt: "Pirati e tesori", duration_s: 30, format: "16:9", language: "it", style: "cartoon", storyboard: c }), /one look now/);
+  await assert.rejects(() => m.createJob(env, u, { template: "film", prompt: "Pirati e tesori", duration_s: 30, format: "16:9", language: "it", storyboard: c }), /one look now/);
 });
 
 test("create: a filmed job on a gated model with no token on the server is refused before anything is charged", async () => {
   const env = { ...(await newEnv()), KLEO_VIDEO_MODEL: "Lightricks/LTX-2.5-Diffusers" };   // no HF_TOKEN
-  const u = await user(env, 20);
+  const u = await user(env, 20 * P);
   const sb = JSON.parse(readFileSync(join(ROOT, "scripts", "motion-demo", "samples", "venezia-16x9.json"), "utf8"));
   await assert.rejects(
-    () => m.createJob(env, u, { template: "motivational", prompt: "L'acqua alta a Venezia", duration_s: 30, format: "16:9", language: "it", style: "realistic", storyboard: sb }),
+    () => m.createJob(env, u, { template: "film", prompt: "L'acqua alta a Venezia", duration_s: 30, format: "16:9", language: "it", style: "realistic", storyboard: sb }),
     /Hugging Face token.*Nothing was charged/);
-  assert.equal(await balance(env), 20, "nothing was charged");
+  assert.equal(await balance(env), 20 * P, "nothing was charged");
   env.HF_TOKEN = "hf_x";
-  const job = await m.createJob(env, u, { template: "motivational", prompt: "L'acqua alta a Venezia", duration_s: 30, format: "16:9", language: "it", style: "realistic", storyboard: sb });
-  assert.equal(job.credits, 7, "with the token configured the same request goes through");
+  const job = await m.createJob(env, u, { template: "film", prompt: "L'acqua alta a Venezia", duration_s: 30, format: "16:9", language: "it", style: "realistic", storyboard: sb });
+  assert.equal(job.credits, P, "with the token configured the same request goes through");
 });
 
 test("create: validation errors say nothing was charged and move no credits", async () => {
   const env = await newEnv();
-  const u = await user(env, 10);
+  const u = await user(env, 10 * P);
   const cases = [
     [{ template: "gatto" }, /There is no template called "gatto"/],
-    [{ format: "16:9" }, /only makes 9:16 Shorts, not 16:9 videos/],
-    [{ duration_s: 600 }, /makes videos of 30 to 60 seconds; 600 seconds is outside that range/],
+    [{ style: "cyber" }, /one look now/],
+    [{ duration_s: 600 }, /makes videos of 15 to 90 seconds; 600 seconds is outside that range/],
     [{ prompt: "short" }, /The description is too short/],
     [{ voice: "morgan" }, /There is no voice called "morgan". Available voices: narrator-en-m/],
     [{ storyboard: { scenes: [] } }, /The storyboard has \d+ problems? \(nothing was charged\)/],
@@ -146,35 +147,35 @@ test("create: validation errors say nothing was charged and move no credits", as
   for (const [extra, re] of cases) {
     await assert.rejects(short(env, u, extra), (e) => { assert.match(e.message, re); assert.match(e.message, /Nothing was charged|nothing was charged/); return true; });
   }
-  assert.equal(await balance(env), 10);
+  assert.equal(await balance(env), 10 * P);
 });
 
 test("create: the open-jobs limit is enforced before the debit", async () => {
   const env = await newEnv();
-  const u = await user(env, 10);
+  const u = await user(env, 10 * P);
   await short(env, u); await short(env, u);
   await assert.rejects(short(env, u), /You already have 2 videos in progress, and the limit is 2 at a time/);
-  assert.equal(await balance(env), 8);
+  assert.equal(await balance(env), 8 * P);
 });
 
 test("create: the daily limit counts videos STARTED today, not only the ones still running", async () => {
   // The open-jobs limit above lets one account queue as fast as jobs finish; this is the one that does not.
   const env = await newEnv();
   env.MAX_JOBS_PER_DAY = "2";
-  const u = await user(env, 10);
+  const u = await user(env, 10 * P);
   const a = await short(env, u), b = await short(env, u);
   await m.updateJob(env, a.id, { state: "done" });
   await m.updateJob(env, b.id, { state: "done" }); // nothing is running any more, and still:
   await assert.rejects(short(env, u), (e) => e instanceof m.JobError && /You have already started 2 videos today, and the limit is 2 a day/.test(e.message) && /Nothing was charged/.test(e.message));
-  assert.equal(await balance(env), 8, "the cap is checked before the debit");
+  assert.equal(await balance(env), 8 * P, "the cap is checked before the debit");
 });
 
 test("create: with no credits left the message hands over the signed account link, not a team to ask", async () => {
   const env = await newEnv();
-  const u = await user(env, 1);
+  const u = await user(env, 1 * P);
   await short(env, u);
   await assert.rejects(short(env, await m.getUser(env, "u_test")), (e) => {
-    assert.match(e.message, /Not enough credits: this Short costs 1 credit and you have 0 credits/);
+    assert.match(e.message, new RegExp(`Not enough credits: this Short costs ${P} credits and you have 0 credits`));
     const url = e.message.match(/http:\/\/kleo\.test\/credits\?k=(\S+)/);
     assert.ok(url, "the user is given somewhere to go: " + e.message);
     return true;
@@ -184,21 +185,21 @@ test("create: with no credits left the message hands over the signed account lin
 /* ------------------------------------------------------------------ cancel */
 test("cancel queued: full refund, audited once; a second cancel refunds nothing", async () => {
   const env = await newEnv();
-  const u = await user(env, 3);
+  const u = await user(env, 3 * P);
   const job = await short(env, u);
   const r = await m.cancelJob(env, u, job.id);
-  assert.equal(r.refunded, 1);
-  assert.equal(await balance(env), 3);
+  assert.equal(r.refunded, 1 * P);
+  assert.equal(await balance(env), 3 * P);
   assert.equal((await m.getJob(env, job.id)).state, "cancelled");
   assert.equal((await events(env, job.id, "credits.refund")).length, 1);
   await assert.rejects(m.cancelJob(env, u, job.id), /Short gt_\w+ was already cancelled/);
   await assert.rejects(m.cancelJob(env, u, "gt_nope"), /There is no video number "gt_nope" on this account/);
-  assert.equal(await balance(env), 3);
+  assert.equal(await balance(env), 3 * P);
 });
 
 test("cancel while starting at 0%: full refund and the GPU is destroyed", async () => {
   const env = await newEnv();
-  const u = await user(env, 3);
+  const u = await user(env, 3 * P);
   const job = await short(env, u);
   await m.updateJob(env, job.id, { state: "starting", backend: "manual", instance_id: "gpu-1", started_at: new Date().toISOString(), percent: 0 });
   const destroyed = [];
@@ -206,47 +207,48 @@ test("cancel while starting at 0%: full refund and the GPU is destroyed", async 
   m.manualBackend.destroy = async (_e, j) => { destroyed.push(j.instance_id); return 0; };
   try {
     const r = await m.cancelJob(env, u, job.id);
-    assert.equal(r.refunded, 1);
+    assert.equal(r.refunded, 1 * P);
     assert.deepEqual(destroyed, ["gpu-1"]);
-    assert.equal(await balance(env), 3);
+    assert.equal(await balance(env), 3 * P);
   } finally { m.manualBackend.destroy = orig; }
 });
 
-test("cancel while rendering: refund proportional to the work left (3 credits at 60% → 1)", async () => {
+test("cancel while rendering: refund proportional to the work left (a five-minute film at 60% → 40% back, rounded)", async () => {
   const env = await newEnv();
-  const u = await user(env, 3);
+  const u = await user(env, PL);
   const job = await long(env, u);
-  assert.equal(job.credits, 3);
+  assert.equal(job.credits, PL);
   assert.equal(await balance(env), 0);
   await m.updateJob(env, job.id, { state: "rendering", backend: "manual", instance_id: "gpu-2", started_at: new Date().toISOString(), percent: 60 });
   const r = await m.cancelJob(env, u, job.id);
-  assert.equal(r.refunded, 1);
-  assert.equal(await balance(env), 1);
-  assert.deepEqual((await events(env, job.id, "credits.refund"))[0].detail, { amount: 1, reason: "cancelled at 60% (rendering)", balance: 1 });
+  const back = Math.round(PL * 0.4);
+  assert.equal(r.refunded, back);
+  assert.equal(await balance(env), back);
+  assert.deepEqual((await events(env, job.id, "credits.refund"))[0].detail, { amount: back, reason: "cancelled at 60% (rendering)", balance: back });
 });
 
 test("cancel on a finished job refunds nothing and points to the links", async () => {
   const env = await newEnv();
-  const u = await user(env, 3);
+  const u = await user(env, 3 * P);
   const job = await short(env, u);
   await m.updateJob(env, job.id, { state: "rendering", backend: "manual", instance_id: "gpu-3", started_at: new Date().toISOString(), percent: 50 });
   assert.equal(await m.finishJob(env, await m.getJob(env, job.id), 0.4), true);
   await assert.rejects(m.cancelJob(env, u, job.id), /Short gt_\w+ is already finished, so there is nothing to cancel. Call kleo_get_result/);
-  assert.equal(await balance(env), 2);
+  assert.equal(await balance(env), 2 * P);
 });
 
 /* ------------------------------------------------------------------ failures */
 test("final failure refunds once; failing an already failed job refunds nothing", async () => {
   const env = await newEnv();
-  const u = await user(env, 3);
+  const u = await user(env, 3 * P);
   const job = await short(env, u);
   await m.updateJob(env, job.id, { state: "rendering", backend: "manual", instance_id: "gpu-4", started_at: new Date().toISOString(), percent: 40, attempts: 3 });
   const j = await m.getJob(env, job.id);
   assert.equal(await m.failJob(env, j, "worker: engine crashed", true), "failed", "retry asked but attempts exhausted → final");
-  assert.equal(await balance(env), 3);
+  assert.equal(await balance(env), 3 * P);
   assert.equal(await m.failJob(env, j, "timeout after 120 min", true), "ignored");
   assert.equal(await m.failJob(env, j, "GPU instance disappeared", false), "ignored");
-  assert.equal(await balance(env), 3);
+  assert.equal(await balance(env), 3 * P);
   assert.equal((await events(env, job.id, "credits.refund")).length, 1);
   assert.equal((await events(env, job.id, "job.failed")).length, 1);
   assert.equal((await events(env, job.id, "job.fail.ignored")).length, 2);
@@ -254,16 +256,16 @@ test("final failure refunds once; failing an already failed job refunds nothing"
 
 test("planner / start failure of a queued job (no GPU) refunds in full", async () => {
   const env = await newEnv();
-  const u = await user(env, 3);
+  const u = await user(env, 3 * P);
   const job = await short(env, u);
   assert.equal(await m.failJob(env, { ...job, attempts: 3 }, "could not start a GPU: no offers", false), "failed");
-  assert.equal(await balance(env), 3);
+  assert.equal(await balance(env), 3 * P);
   assert.equal((await m.getJob(env, job.id)).state, "failed");
 });
 
 test("requeue: no refund, fresh worker secret, backend cleared; the later final failure refunds exactly once", async () => {
   const env = await newEnv();
-  const u = await user(env, 3);
+  const u = await user(env, 3 * P);
   const job = await short(env, u);
   await m.updateJob(env, job.id, { state: "starting", backend: "manual", instance_id: "gpu-5", started_at: new Date().toISOString(), attempts: 1 });
   const before = await m.getJob(env, job.id);
@@ -275,7 +277,7 @@ test("requeue: no refund, fresh worker secret, backend cleared; the later final 
   assert.equal(after.started_at, null);
   assert.equal(after.percent, 0);
   assert.notEqual(after.worker_secret, before.worker_secret, "the secret rotates on requeue");
-  assert.equal(await balance(env), 2, "no refund on requeue");
+  assert.equal(await balance(env), 2 * P, "no refund on requeue");
   // the old GPU can no longer talk about this job
   assert.equal((await internal(env, before, "progress", { percent: 50 })).status, 401);
   // second attempt also dies, third dies for good
@@ -283,30 +285,30 @@ test("requeue: no refund, fresh worker secret, backend cleared; the later final 
   assert.equal(await m.failJob(env, await m.getJob(env, job.id), "GPU instance disappeared", true), "requeued");
   await m.updateJob(env, job.id, { state: "rendering", backend: "manual", instance_id: "gpu-7", started_at: new Date().toISOString(), attempts: 3, percent: 33 });
   assert.equal(await m.failJob(env, await m.getJob(env, job.id), "timeout after 120 min", true), "failed");
-  assert.equal(await balance(env), 3);
+  assert.equal(await balance(env), 3 * P);
   const refunds = await events(env, job.id, "credits.refund");
   assert.equal(refunds.length, 1);
-  assert.equal(refunds[0].detail.amount, 1);
+  assert.equal(refunds[0].detail.amount, P);
   assert.equal((await events(env, job.id, "job.requeued")).length, 2);
 });
 
 test("failure after cancel: no second refund (the race the planner and the timeouts can hit)", async () => {
   const env = await newEnv();
-  const u = await user(env, 3);
+  const u = await user(env, 3 * P);
   const job = await short(env, u);
   const stale = await m.getJob(env, job.id); // what a slow planner/tick still holds
   await m.cancelJob(env, u, job.id);
-  assert.equal(await balance(env), 3);
+  assert.equal(await balance(env), 3 * P);
   assert.equal(await m.failJob(env, { ...stale, plan_attempts: 2 }, "could not plan the video", false), "ignored");
   assert.equal(await m.failJob(env, { ...stale, state: "rendering", attempts: 1 }, "timeout", true), "ignored");
-  assert.equal(await balance(env), 3);
+  assert.equal(await balance(env), 3 * P);
   assert.equal((await m.getJob(env, job.id)).state, "cancelled");
   assert.equal((await m.getJob(env, job.id)).worker_secret, stale.worker_secret, "an ignored requeue does not touch the job");
 });
 
 test("done then failed, or done twice: the job stays done and nothing is refunded", async () => {
   const env = await newEnv();
-  const u = await user(env, 3);
+  const u = await user(env, 3 * P);
   const job = await short(env, u);
   await m.updateJob(env, job.id, { state: "finishing", backend: "manual", instance_id: "gpu-8", started_at: new Date().toISOString(), percent: 95 });
   const j = await m.getJob(env, job.id);
@@ -316,20 +318,20 @@ test("done then failed, or done twice: the job stays done and nothing is refunde
   const now = await m.getJob(env, job.id);
   assert.equal(now.state, "done");
   assert.equal(now.cost_usd, 0.5);
-  assert.equal(await balance(env), 2);
+  assert.equal(await balance(env), 2 * P);
   assert.equal((await events(env, job.id, "job.done")).length, 1);
   assert.equal((await events(env, job.id, "credits.refund")).length, 0);
 });
 
 test("cancel racing with done: whichever transition lands first wins, the other is ignored", async () => {
   const env = await newEnv();
-  const u = await user(env, 3);
+  const u = await user(env, 3 * P);
   const job = await short(env, u);
   await m.updateJob(env, job.id, { state: "finishing", backend: "manual", instance_id: "gpu-9", started_at: new Date().toISOString(), percent: 95 });
   const j = await m.getJob(env, job.id);
   const [c, d] = await Promise.all([m.cancelJob(env, u, j.id).catch((e) => e), m.finishJob(env, j, 0)]);
   const now = await m.getJob(env, job.id);
-  if (now.state === "done") { assert.ok(c instanceof m.JobError); assert.equal(d, true); assert.equal(await balance(env), 2); }
+  if (now.state === "done") { assert.ok(c instanceof m.JobError); assert.equal(d, true); assert.equal(await balance(env), 2 * P); }
   else { assert.equal(now.state, "cancelled"); assert.equal(d, false); assert.equal(await balance(env), 2 + c.refunded); }
   assert.ok((await events(env, job.id, "credits.refund")).length <= 1);
 });
@@ -337,7 +339,7 @@ test("cancel racing with done: whichever transition lands first wins, the other 
 /* ------------------------------------------------------------------ worker API */
 test("internal API: done twice → 200/200 (already), failed after done → 409, progress after cancel → 409, wrong secret → 401", async () => {
   const env = await newEnv();
-  const u = await user(env, 3);
+  const u = await user(env, 3 * P);
   const a = await short(env, u);
   await m.updateJob(env, a.id, { state: "starting", backend: "manual", instance_id: "gpu-10", started_at: new Date().toISOString() });
   let r = await internal(env, a, "progress", { percent: 56, track: "clips" });
@@ -353,20 +355,20 @@ test("internal API: done twice → 200/200 (already), failed after done → 409,
   assert.equal(r.status, 409);
   assert.equal((await m.getJob(env, a.id)).state, "done");
   assert.equal((await m.getJob(env, a.id)).percent, 100);
-  assert.equal(await balance(env), 2);
+  assert.equal(await balance(env), 2 * P);
   assert.equal((await events(env, a.id, "job.done")).length, 1);
 
   const b = await short(env, u);
   await m.updateJob(env, b.id, { state: "rendering", backend: "manual", instance_id: "gpu-11", started_at: new Date().toISOString(), percent: 20 });
   await m.cancelJob(env, u, b.id);
-  assert.equal(await balance(env), 2);
+  assert.equal(await balance(env), P + Math.round(P * 0.8), "cancelled at 20% of rendering: 80% of the film's price comes back");
   for (const [path, body] of [["progress", { percent: 30 }], ["done", {}], ["failed", { error: "x" }]]) {
     r = await internal(env, b, path, body);
     assert.equal(r.status, 409, path);
   }
   const bb = await m.getJob(env, b.id);
   assert.equal(bb.state, "cancelled"); assert.equal(bb.percent, 20);
-  assert.equal(await balance(env), 2);
+  assert.equal(await balance(env), P + Math.round(P * 0.8), "still the proportional refund: no later call moves credits");
   assert.equal((await internal(env, b, "progress", { percent: 1 }, "wk_wrong")).status, 401);
   // "failed" twice with retry:false → 200 then 200 already, one refund
   const c = await short(env, u);
@@ -375,14 +377,14 @@ test("internal API: done twice → 200/200 (already), failed after done → 409,
   assert.equal(r.status, 200); assert.deepEqual(await r.json(), { ok: true, state: "failed", outcome: "failed" });
   r = await internal(env, c, "failed", { error: "bad storyboard", retry: false });
   assert.equal(r.status, 200); assert.deepEqual(await r.json(), { ok: true, state: "failed", already: true });
-  assert.equal(await balance(env), 2);
+  assert.equal(await balance(env), P + Math.round(P * 0.8), "a final failure refunds the film in full: back to what b left");
   assert.equal((await events(env, c.id, "credits.refund")).length, 1);
 });
 
 /* ------------------------------------------------------------------ orchestrator */
 test("tick never leaves a GPU rented for a job cancelled while it was being started", async () => {
   const env = await newEnv();
-  const u = await user(env, 3);
+  const u = await user(env, 3 * P);
   const job = await short(env, u);
   await m.updateJob(env, job.id, { storyboard: "{}" }); // "planned": only a planned job may get a GPU
   const destroyed = [];
@@ -396,14 +398,14 @@ test("tick never leaves a GPU rented for a job cancelled while it was being star
   assert.equal(j.state, "cancelled");
   assert.equal(j.instance_id, null);
   assert.deepEqual(destroyed, ["gpu-late"]);
-  assert.equal(await balance(env), 3);
+  assert.equal(await balance(env), 3 * P);
   assert.equal((await events(env, job.id, "job.started.orphan")).length, 1);
   assert.equal((await events(env, job.id, "job.started")).length, 0);
 });
 
 test("tick: a cancelled or failed job is never picked up for a GPU; a queued job is started once with attempts=1", async () => {
   const env = await newEnv();
-  const u = await user(env, 3);
+  const u = await user(env, 3 * P);
   const a = await short(env, u), b = await short(env, u);
   await m.updateJob(env, a.id, { storyboard: "{}" });
   await m.cancelJob(env, u, a.id);
@@ -420,12 +422,12 @@ test("tick: a cancelled or failed job is never picked up for a GPU; a queued job
   assert.equal(bb.state, "starting"); assert.equal(bb.attempts, 1); assert.equal(bb.instance_id, "gpu-" + b.id);
   assert.equal((await m.getJob(env, a.id)).state, "cancelled");
   assert.equal((await events(env, a.id, "job.started")).length, 0);
-  assert.equal(await balance(env), 2);
+  assert.equal(await balance(env), 2 * P);
 });
 
 test("mock progress does not resurrect a cancelled job", async () => {
   const env = await newEnv("mock");
-  const u = await user(env, 3);
+  const u = await user(env, 3 * P);
   const job = await short(env, u);
   await m.updateJob(env, job.id, { state: "rendering", backend: "mock", instance_id: "mock-1", started_at: new Date(Date.now() - 30_000).toISOString(), percent: 40 });
   const stale = await m.getJob(env, job.id);
@@ -435,6 +437,6 @@ test("mock progress does not resurrect a cancelled job", async () => {
   const now = await m.getJob(env, job.id);
   assert.equal(now.state, "cancelled");
   assert.equal(now.percent, 40);
-  assert.equal(await balance(env), 3);
+  assert.equal(await balance(env), 2 * P + Math.round(P * 0.6), "cancelled at 40%: 60% back");
   assert.equal(stale.state, "rendering");
 });

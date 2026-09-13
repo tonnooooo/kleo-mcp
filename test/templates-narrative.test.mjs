@@ -118,20 +118,17 @@ test("the explainer templates reach the drawn look on their own, with no style n
     "Perché il pane di una volta durava una settimana.",
     "What actually happens in the first ten minutes of a cold shower.",
   ];
+  // One look (13 September): the explainer templates are no longer offered, and even planned by name they come
+  // out realistic — the keyword guess still knows them, the plan does not follow it.
   for (const [template, format, dur] of [["explainer-short", "9:16", 45], ["explainer-long", "16:9", 300]]) {
     for (const prompt of PLAIN) {
       const j = job(template, format, dur, prompt);
-      assert.equal(pickKleoStyle(template, prompt), "explainer",
-        `${template} must be the look itself: "${prompt.slice(0, 40)}…" has nothing for a keyword to find`);
+      assert.equal(pickKleoStyle(template, prompt), "explainer", "the old guess is still readable for old rows");
       const plan = planFor(j);
-      assert.equal(plan.kleo, "explainer");
-      assert.equal(plan.style, "sketch", `${template} planned ${plan.style}: the drawn engine would never be loaded`);
-      assert.deepEqual(plan.brief.wordsPerScene, narrativeFor(template).wordsPerScene);
+      assert.equal(plan.kleo, "realistic", `${template} planned ${plan.kleo}: there is one look now`);
+      assert.equal(plan.style, "picture", "and it is filmed from pictures, never drawn");
     }
   }
-  // And a style the caller names still wins over the template, which is the rule everywhere else.
-  const named = planFor({ ...job("explainer-short", "9:16", 45, PLAIN[0]), params: JSON.stringify({ duration_s: 45, format: "9:16", language: "en", voice: null, style: "cartoon" }) });
-  assert.equal(named.kleo, "cartoon", "the caller's own choice is never overridden by the template");
 });
 
 test("when the look is chosen by the reader, the brief follows the look and not the template", async () => {
@@ -145,27 +142,12 @@ test("when the look is chosen by the reader, the brief follows the look and not 
     ({ id: "gt_t", template, prompt: "Explain what actually happens to the money when I tap my card.",
        params: JSON.stringify({ duration_s, format, language: "en", voice: null }) });
 
-  for (const [template, dur, format, want] of [
-    ["viral-short", 45, "9:16", "explainer-short"],
-    ["did-you-know", 30, "9:16", "explainer-short"],
-    ["story-documentary", 300, "16:9", "explainer-long"],
-    ["top-10", 420, "16:9", "explainer-long"],
-  ]) {
+  // One look (13 September): a reader's choice of the drawn look no longer reaches the engine — every plan is the
+  // realistic film in the template's own window.
+  for (const [template, dur, format] of [["viral-short", 45, "9:16"], ["did-you-know", 30, "9:16"], ["story-documentary", 300, "16:9"], ["top-10", 420, "16:9"]]) {
     const chosen = planFor(job(template, dur, format), "explainer");
-    assert.equal(chosen.style, "sketch", `${template}: the reader's choice must reach the engine`);
-    assert.deepEqual(chosen.brief.wordsPerScene, narrativeFor(want).wordsPerScene,
-      `${template} at ${dur}s must be planned to the ${want} window, not the template's`);
-    assert.equal(chosen.brief.guidance, narrativeFor(want).guidance,
-      `${template}: the brief must describe the look that will be drawn`);
-    // And the template still decides the length, which is the half it owns.
-    const untouched = planFor(job(template, dur, format));
-    assert.notEqual(untouched.style, "sketch", `${template} must not become drawn on its own`);
-  }
-
-  // A template that IS the drawn look is unaffected either way.
-  for (const chosen of [null, "explainer"]) {
-    const p = planFor(job("explainer-short", 45, "9:16"), chosen);
-    assert.equal(p.style, "sketch");
-    assert.deepEqual(p.brief.wordsPerScene, narrativeFor("explainer-short").wordsPerScene);
+    assert.equal(chosen.style, "picture", `${template}: the reader's choice is ignored, there is one look`);
+    assert.equal(chosen.kleo, "realistic");
+    assert.deepEqual(chosen.brief.wordsPerScene, narrativeFor(template).wordsPerScene, `${template}: the template's own window`);
   }
 });

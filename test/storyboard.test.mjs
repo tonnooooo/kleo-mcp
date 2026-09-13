@@ -161,7 +161,10 @@ test("cinema: defective beats are repaired, not fatal", async () => {
   assert.ok(r.attempts >= 3 && r.words > 0 && r.history.length >= 1, "soft problems were fed back once");
 });
 
-test("editorial: garbled JSON is retried, under-specified scenes are downgraded, junk fields removed", async () => {
+// 13 September: the editorial (cyber) look was removed from the product; every new job is the realistic film and the
+// planner no longer reaches this path. The normalisation it guarded goes with the editorial planner when that code
+// is deleted; until then the test is retired, not deleted, so the removal stays visible.
+test("editorial: garbled JSON is retried, under-specified scenes are downgraded, junk fields removed", { skip: "the editorial look was removed from the product on 13 September 2026" }, async () => {
   let garbled = 0;
   const env = fakeEnv((kind, user, attempt) => {
     if (kind === "outline") return outlineFor(user, false);
@@ -316,7 +319,7 @@ test("picture: the schema asks for shots, a lone shot is fed back once, the resu
   const r = await generateStoryboard(env, job("viral-short", 45, "9:16", "en", "The pirates who found an island missing from every map"));
   const sb = r.storyboard;
   assert.deepEqual(validateStoryboard(sb, { format: "9:16", language: "en" }).ok ? [] : validateStoryboard(sb, { format: "9:16", language: "en" }).errors, []);
-  assert.equal(sb.kleo_style, "cartoon"); assert.equal(sb.style, "picture"); assert.equal(r.style, "cartoon");
+  assert.equal(sb.kleo_style, "realistic"); assert.equal(sb.style, "picture"); assert.equal(r.style, "realistic");   // one look (13 September)
   assert.ok(feedback >= 1, "a scene with a single picture was fed back to the model");
   for (const s of sb.scenes) {
     assert.ok(!("beats" in s) && !("image" in s) && !("image_prompt" in s), "no beats and no scene-level picture survive");
@@ -626,8 +629,9 @@ test("the direction is step zero: it reaches the storyboard, the colour law is a
   // The direction the film was planned under travels with it.
   assert.equal(sb.direction.subject, "The crew that sailed away and never came back");
   assert.deepEqual(r.direction.must_keep, ["1720"]);
-  assert.equal(r.style, "cartoon", "the direction chose the look, not a keyword match on the prompt");
-  assert.equal(sb.kleo_style, "cartoon"); assert.equal(sb.style, "picture");
+  // One look (13 September): the direction may say what it likes, the film is realistic.
+  assert.equal(r.style, "realistic", "the direction's look is read and ignored: there is one look");
+  assert.equal(sb.kleo_style, "realistic"); assert.equal(sb.style, "picture");
   assert.ok(sawDirectionBlock === chunkCalls && chunkCalls >= 1, "every scene-writing call carried the direction");
 
   // The colour law: every scene wears its section's accent, whatever the model wrote.
