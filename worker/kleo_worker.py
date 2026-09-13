@@ -1035,11 +1035,106 @@ def render_keou(job, out_dir):
     return {"video.mp4": video, "subtitles.srt": srt, "thumbnail.jpg": thumb}
 
 
+# The narration alone, cleaned and normalised to -16 LUFS: run.py's voice chain without the music bus.
+VOICE_CHAIN = ("aresample=48000,highpass=f=75,lowpass=f=12000,acompressor=threshold=0.15:ratio=2:attack=15:release=180,"
+               "volume=1.6,loudnorm=I=-16:TP=-1.5:LRA=7,aresample=48000,aformat=channel_layouts=stereo")
+
+
+def srt_time(t):
+    ms = int(round(max(0.0, t) * 1000))
+    return f"{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d},{ms % 1000:03d}"
+
+
+def write_srt(timeline, path):
+    """A sidecar .srt from the caption groups the voice pass aligned. Nothing is burnt into the film; the file is
+    for whoever wants captions on the platform's side."""
+    n, lines = 0, []
+    for sc in timeline.get("scenes") or []:
+        for c in sc.get("captions") or []:
+            text = str(c.get("text") or "").strip()
+            if not text:
+                continue
+            n += 1
+            lines += [str(n), f"{srt_time(float(c['start']))} --> {srt_time(float(c['end']))}", text, ""]
+    with open(path, "w") as f:
+        f.write("\n".join(lines))
+    return path
+
+
+def film_checks(video, timeline):
+    """The delivery checks that matter for a film with nothing drawn on it: its length is the narration's, no
+    black interval, no second without motion. Raises RenderError (no retry: a second card would film the same)."""
+    dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", video],
+                               capture_output=True, text=True).stdout.strip() or 0)
+    want = float(timeline.get("duration") or 0)
+    if abs(dur - want) > 0.25:
+        raise RenderError(f"the film is {dur:.2f} s, the narration {want:.2f} s", retry=False)
+    dec = subprocess.run(["ffmpeg", "-nostdin", "-v", "info", "-i", video, "-vf", "scale=270:-2,blackdetect=d=0.15:pic_th=0.98:pix_th=0.02",
+                          "-an", "-f", "null", "-"], capture_output=True, text=True).stderr
+    black = re.findall(r"black_start:([\d.]+) black_end:([\d.]+)", dec)
+    if black:
+        raise RenderError(f"black interval in the film: {black[:3]}", retry=False)
+    mod = local_video_module()
+    worst = max((secs for _, secs in mod.frozen_runs(video)), default=0.0) if mod and hasattr(mod, "frozen_runs") else 0.0
+    if worst >= 1.0:
+        raise RenderError(f"{worst:.1f} s of the film without motion", retry=False)
+    return dur, worst
+
+
+def render_film(job, out_dir):
+    """The film, pure (13 September): filmed shots under the narration, nothing drawn on top.
+
+    storyboard -> reference frame per shot -> clip per shot (image-to-video) -> 60 fps track -> narration on it.
+    The engine is used for the voice pass and the shot plan only; it draws nothing. Where render_keou falls back
+    to the stills when filming fails, this one refuses: a film that was not filmed is not this product."""
+    engine = os.path.abspath(KEOU_DIR)
+    if not os.path.isfile(os.path.join(engine, "run.py")):
+        raise RenderError(f"Keou engine not found at {engine}", retry=False)
+    progress("script", 3, message="preparing the storyboard")
+    project, pdir, units = prepare_project(job, engine, os.path.join(engine, "projects"))
+    if not units:
+        raise RenderError("no shot carries a description to film: a film needs shots", retry=False)
+    log_path = os.path.join(out_dir, "log.txt")
+    if not generate_footage(project, pdir, engine, log_path, units):
+        raise RenderError("the shots did not film (see log.txt); there is no film without them", retry=False)
+    build = os.path.join(pdir, "build")
+    footage, voice = os.path.join(build, "footage.mp4"), os.path.join(build, "voice.wav")
+    timeline = json.load(open(os.path.join(build, "timeline.json")))
+    for need in (footage, voice):
+        if not os.path.isfile(need) or os.path.getsize(need) == 0:
+            raise RenderError(f"missing {os.path.basename(need)} after the footage pass", retry=True)
+    progress("film", 80, message="the narration goes on the film")
+    video = os.path.join(out_dir, "video.mp4")
+    r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", footage, "-i", voice, "-filter_complex", f"[1:a]{VOICE_CHAIN}[a]",
+                        "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
+                        "-t", f"{float(timeline['duration']):.3f}", video], capture_output=True, text=True)
+    if r.returncode != 0 or not os.path.isfile(video):
+        raise RenderError("could not put the narration on the film: " + r.stderr[-300:], retry=True)
+    dur, worst = film_checks(video, timeline)
+    log(f"film: {dur:.1f} s, longest run without motion {worst:.1f} s, {os.path.getsize(video) / 1e6:.0f} MB")
+    progress("finishing", 92, message="packaging")
+    srt = write_srt(timeline, os.path.join(out_dir, "subtitles.srt"))
+    thumb = thumbnail_from(video, os.path.join(out_dir, "thumbnail.jpg"), None)
+    progress("finishing", 95, message="encoded")
+    return {"video.mp4": video, "subtitles.srt": srt, "thumbnail.jpg": thumb}
+
+
+def wants_film(job):
+    """A storyboard that asks to be filmed gets the film, pure; everything else still goes through the engine."""
+    sb = job.get("storyboard")
+    if isinstance(sb, str):
+        try: sb = json.loads(sb)
+        except ValueError: sb = None
+    return isinstance(sb, dict) and sb.get("backdrop") == "video"
+
+
 def render(job, out_dir):
     if ENGINE == "placeholder":
         return render_placeholder(job, out_dir)
     if ENGINE != "keou":
         raise RenderError(f"unknown KLEO_ENGINE {ENGINE!r} (keou or placeholder)", retry=False)
+    if wants_film(job):
+        return render_film(job, out_dir)
     return render_keou(job, out_dir)
 
 

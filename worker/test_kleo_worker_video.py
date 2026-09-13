@@ -15,7 +15,7 @@ stills when the shooting failed.
 
 Run: python3 -m unittest worker.test_kleo_worker_video       (from the repo root)
 """
-import copy, importlib.util, json, os, shutil, tempfile, time, unittest
+import copy, importlib.util, json, os, shutil, subprocess, tempfile, time, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ENGINE = os.path.join(HERE, "keou")
@@ -442,6 +442,68 @@ class ContractTest(unittest.TestCase):
         with self.assertRaises(ValueError) as e:
             contract.validate(os.path.join(pdir, "project.json"))
         self.assertIn("clip", str(e.exception))
+
+
+class RenderFilmTest(unittest.TestCase):
+    """render_film: filmed shots under the narration, nothing drawn. The footage pass is stubbed, but the FILE it
+    leaves behind is real (a tiny clip written by kleo_video.write_clip) and so is the voice (a sine), because the
+    narration mix, the length check and the thumbnail are the part under test."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kleo-render-film-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.saved = {k: getattr(kw, k) for k in ("progress", "wants_pictures", "generate_footage", "KEOU_DIR", "local_pictures_available")}
+        kw.progress = lambda *a, **k: None
+        kw.wants_pictures = lambda sb: False
+        kw.local_pictures_available = lambda: False
+        kw.KEOU_DIR = os.path.join(self.tmp, "engine")
+        os.makedirs(kw.KEOU_DIR); open(os.path.join(kw.KEOU_DIR, "run.py"), "w").write("")
+        self.addCleanup(lambda: [setattr(kw, k, v) for k, v in self.saved.items()])
+        self.kv = load_module("kleo_video_under_film_test", os.path.join(HERE, "kleo_video.py"))
+
+    def footage_that(self, seconds, filmed=True):
+        kv = self.kv
+        def footage(project, pdir, engine, log_path, units):
+            import numpy as np
+            build = os.path.join(pdir, "build"); os.makedirs(build, exist_ok=True)
+            n = int(seconds * 24)
+            frames = np.zeros((n, 36, 64, 3), np.float32)
+            for i in range(n):
+                frames[i, :, (i * 3) % 64, :] = 1.0; frames[i, :, :, 1] = 0.3     # something moves, nothing is black
+            kv.write_clip(frames, os.path.join(build, "footage.mp4"), fps=24)
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
+                            "-ar", "24000", os.path.join(build, "voice.wav")], check=True)
+            json.dump({"duration": seconds, "fps": 24, "scenes": [
+                {"id": "01-hook", "start": 0, "end": seconds, "captions": [{"text": "A lone figure runs.", "start": 0.2, "end": seconds - 0.2}]}]},
+                open(os.path.join(build, "timeline.json"), "w"))
+            return filmed
+        return footage
+
+    def test_a_filmed_storyboard_becomes_a_film_with_the_narration_and_no_engine_render(self):
+        kw.generate_footage = self.footage_that(3.0)
+        out = os.path.join(self.tmp, "out"); os.makedirs(out)
+        files = kw.render_film(job_for(storyboard()), out)
+        self.assertEqual(sorted(files), ["subtitles.srt", "thumbnail.jpg", "video.mp4"])
+        probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type:format=duration", "-of", "json", files["video.mp4"]],
+                               capture_output=True, text=True, check=True).stdout
+        info = json.loads(probe)
+        self.assertEqual(sorted(st["codec_type"] for st in info["streams"]), ["audio", "video"], "the narration must be on the film")
+        self.assertAlmostEqual(float(info["format"]["duration"]), 3.0, delta=0.25)
+        self.assertIn("A lone figure runs.", open(files["subtitles.srt"]).read())
+        self.assertGreater(os.path.getsize(files["thumbnail.jpg"]), 0)
+
+    def test_render_routes_a_filmed_storyboard_to_the_film_and_a_plain_one_to_the_engine(self):
+        self.assertTrue(kw.wants_film(job_for(storyboard(backdrop="video"))))
+        self.assertFalse(kw.wants_film(job_for(storyboard(backdrop=None))))
+        self.assertTrue(kw.wants_film({"storyboard": json.dumps(storyboard(backdrop="video"))}), "a storyboard may arrive as a string")
+
+    def test_a_film_that_did_not_film_is_refused_not_drawn_from_the_stills(self):
+        kw.generate_footage = self.footage_that(3.0, filmed=False)
+        out = os.path.join(self.tmp, "out"); os.makedirs(out)
+        with self.assertRaises(kw.RenderError) as cm:
+            kw.render_film(job_for(storyboard()), out)
+        self.assertFalse(cm.exception.retry, "a second card would film the same: no retry")
+        self.assertFalse(os.path.exists(os.path.join(out, "video.mp4")))
 
 
 class StillOfTest(unittest.TestCase):
