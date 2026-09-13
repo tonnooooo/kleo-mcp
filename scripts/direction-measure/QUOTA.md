@@ -27,3 +27,5 @@ Lezione: ~8.400 dei 10.000 neuroni del giorno li ha presi questa sessione senza 
 Da qui in poi: una riga qui PRIMA di lanciare.
 
     2026-09-13T12:20Z | BOSS/treatment | treatment-make.mjs: 2 treatment su scout + 1 su gpt-oss-120b, richiesta "accuracy in medicine" 60 s | 3 | 0 | RIFIUTATA 4006 alle 12:16Z: quota gia' finita (job di produzione di altre sessioni); la misura sul modello vero resta da fare
+
+    2026-09-13T13:05Z | BOSS/treatment | POST /internal/admin/treatment in produzione, "accuracy in medicine" 60 s, n=2, scout | 2 | ~350 se risponde | RIFIUTATA 4006 (quota ancora finita alle 13:05Z); la rotta funziona, la misura resta da fare dopo le 00:00Z
