@@ -61,7 +61,7 @@
     "MAX_CONCURRENT_GPUS": "2", // massimo GPU accese in totale. Il caso peggiore teorico e' 2 x VAST_MAX_DPH = 1,20 $/h, ma non e' quello che si spende: la ricerca prende sempre la piu' economica (0,169 $/h misurati), e sopra a tutto c'e' DAILY_GPU_BUDGET_USD, che e' il muro vero
     "MAX_CONCURRENT_VIDEO_GPUS": "1", // di quelle GPU, quante possono fare un video GENERATO insieme: una. Sono le schede piu' care e sono quelle il cui conto triplica quando una clip torna ferma e va rifatta: due in parallelo sono l'unico modo in cui il credito puo' sparire senza che nessuno se ne accorga
     "MAX_JOBS_PER_USER": "1", // massimo video in corso per ogni utente: con solo 2 GPU un account non deve occuparle tutte e due
-    "MAX_JOBS_PER_DAY": "4", // massimo video AVVIATI in un giorno (UTC) da uno stesso account: il limite qui sopra conta solo quelli in corso. 2→4 il 13 set: due bastavano a chiudere fuori il proprietario che prova il prodotto
+    "MAX_JOBS_PER_DAY": "8", // massimo video AVVIATI in un giorno (UTC) da uno stesso account: il limite qui sopra conta solo quelli in corso. 2→4→8 il 13 set: quattro bastavano a chiudere fuori il proprietario che prova il prodotto
     "START_TIMEOUT_MIN": "25",
     "LOADING_RETRY_MIN": "22", // dopo tanti minuti di solo download il lavoro passa a un'altra macchina
     "LOADING_TIMEOUT_MIN": "40", // oltre questo un noleggio che non parte viene chiuso
