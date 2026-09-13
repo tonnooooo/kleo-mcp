@@ -362,8 +362,15 @@ export function sceneSplit(f: Family, scenes: number): number[] {
  * (DAILY_GPU_BUDGET_USD) spent by one stranger.
  *
  * So the multiplier follows the dollar. Every style that draws still pictures, or draws itself live, is 1.
- * A style that generates motion is 7, which also puts it out of reach of the free credits by construction — the
- * same thing that already keeps long videos out of the free tier.
+ * A style that generates motion is 7, which — while cartoon was still sold — also put it out of reach of the two
+ * free credits by construction, the same thing that already kept long videos out of the free tier.
+ *
+ * Since the reset of 13 September the film is the ONLY product, so FREE_CREDITS has to be read against THIS number
+ * and not against the old 1-credit Short. At 2 it bought nothing: a stranger was told "start free, 2 Shorts
+ * included", could not render (7 > 2) and was told by kleo_account that card payments were closed — while the
+ * account page was already selling packs. Found 13 September 12:28Z on a friend's account, zero videos made.
+ * FREE_CREDITS is now one film (7); test/style-price.test.mjs reads wrangler.jsonc and fails if the free tier ever
+ * stops affording a film again.
  *
  * 7 is the TYPICAL cost, not the ceiling. A generated clip sometimes comes back frozen and has to be redrawn with
  * another seed, and the generator gives up after two attempts per shot, so the worst case is three times the base —
@@ -488,6 +495,18 @@ const priceOf = (style: string | null | undefined): number =>
 /** Credits: 1 for a Short (≤ 90 s), 3 for up to 5 minutes, +1 per extra minute — times what the style costs. */
 export const creditsFor = (seconds: number, style?: string | null): number =>
   (seconds <= 90 ? 1 : seconds <= 300 ? 3 : 3 + Math.ceil((seconds - 300) / 60)) * priceOf(style);
+
+/** The one look the product sells (the reset of 13 September); every price quoted to a user is this style's. */
+export const FILM_STYLE = "realistic";
+/** What a film of this length costs; with no length, the template's default. */
+export const filmCredits = (seconds: number = ACTIVE_TEMPLATE.defaultSeconds): number => creditsFor(seconds, FILM_STYLE);
+/**
+ * The tariff in one sentence, computed from creditsFor itself, so the sign-in page, the account page and the tools
+ * all quote the price that is actually charged. Three hand-written copies of it said "1 credit = 1 Short" for a
+ * day after the film became the only product at 7.
+ */
+export const tariffSentence = (): string =>
+  `${filmCredits(90)} credits per film up to 90 seconds, ${filmCredits(300)} up to 5 minutes, +${filmCredits(360) - filmCredits(300)} per extra minute`;
 
 /** Rough wall-clock estimate on one RTX 4090 at 4K 60 fps: ~25 min for a Short, ~12 min per minute of long-form. */
 export const etaFor = (seconds: number): number => (seconds <= 90 ? 18 : Math.max(30, Math.round((seconds / 60) * 10)));

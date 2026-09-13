@@ -263,7 +263,7 @@ test("sign-in: past MAX_NEW_USERS_PER_DAY no account and no credits are created,
   const body = await full.text();
   // The message is escaped into the page, so "today's" arrives as "today&#39;s": match around the apostrophe.
   assert.match(body, /Kleo has handed out today/);
-  assert.match(body, /free Shorts\. Come back tomorrow/);
+  assert.match(body, /free credits\. Come back tomorrow/);
   assert.equal(users(env).length, 1, "the cap is inside the INSERT: no user, no credits, no audit row");
   assert.equal(audits(env, "user.created").length, 1);
 
@@ -281,7 +281,7 @@ test("sign-in: one address cannot eat the whole day, and everybody else still ge
 
   const third = await press(env, { ip: "203.0.113.7" });
   assert.equal(third.status, 429);
-  assert.match(await third.text(), /giving out its free Shorts slowly today/, "soft wording: whole offices share one address");
+  assert.match(await third.text(), /giving out its free credits slowly today/, "soft wording: whole offices share one address");
   assert.equal(users(env).length, 2, "and no third account was written");
 
   // The wall is per address, not global: the day is not over for anybody else.
@@ -319,7 +319,8 @@ test("page: one button and nothing to fill in; a returning browser is greeted wi
   const env = await newEnv();
   const first = await openPage(env);
   const fresh = await first.text();
-  assert.match(fresh, /Start free - 2 Shorts included/);
+  assert.match(fresh, /Start free - 2 credits included/);
+  assert.match(fresh, /A film costs 7 credits \(up to 90 seconds\)\. You start with 2: not yet enough for a film/, "the page quotes the film's real price and does not promise a render the credits cannot pay for");
   assert.match(fresh, /No email\. No password\. No card\. No invite code\./);
   assert.ok(!/type="email"/.test(fresh), "there is no email field any more");
   assert.ok(!/type="checkbox"/.test(fresh), "and no consent box: pressing the button is the consent");

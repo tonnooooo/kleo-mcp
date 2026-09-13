@@ -82,6 +82,27 @@ test("the tools an assistant sees: adapt first, and create_video takes the treat
   assert.match(create.inputSchema.properties.treatment.description, /kleo_adapt_prompt/);
 });
 
+test("kleo_account quotes the film's price and the real state of the shop, never a sentence typed by hand", async () => {
+  // 13 September: a new account with 2 free credits was told "1 credit = 1 Short" and "card payments are not open
+  // yet" while a film cost 7 and the account page was selling packs. An assistant repeated both to the user.
+  const closed = await studio(fakeAi(() => TREATMENT_FIXTURE(60)));
+  const a = await closed.call("kleo_account", {});
+  const d = a.structuredContent;
+  assert.equal(d.film_credits, 7);
+  assert.equal(d.free_tier, "10 credits on sign-up, no signup form: 1 free film");
+  assert.equal(d.payments_open, false, "no Stripe links configured: the shop is closed and the tool says so");
+  assert.match(a.text, /A film costs 7 credits up to 90 seconds/);
+  assert.match(a.text, /7 credits per film up to 90 seconds, 21 up to 5 minutes, \+7 per extra minute/);
+  assert.doesNotMatch(a.text, /1 credit = 1 Short|free while it is in beta/);
+  assert.match(a.text, /payments are paused/);
+
+  const live = { STRIPE_WEBHOOK_SECRET: "whsec_x", STRIPE_LINK_5: "https://buy.stripe.com/a", STRIPE_LINK_15: "https://buy.stripe.com/b", STRIPE_LINK_40: "https://buy.stripe.com/c" };
+  const open = await studio(fakeAi(() => TREATMENT_FIXTURE(60)), live);
+  const b = await open.call("kleo_account", {});
+  assert.match(b.text, /Credit packs are on the account page, paid through Stripe \(from 5 EUR for 10 credits/);
+  assert.equal(b.structuredContent.payments_open, true, "with live links and a webhook secret the tool reports the shop open");
+});
+
 test("a request with no length is answered with the question and no model call", async () => {
   const ai = fakeAi(() => { throw new Error("must not be called"); });
   const s = await studio(ai);

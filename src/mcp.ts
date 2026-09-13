@@ -6,7 +6,8 @@ import { getUserJob, getUser, recentJobsForUser, countOpenForUser, countAuditTod
 import { isFlagActive } from "./schema";
 import { writeTreatment } from "./storyboard.ts";
 import { treatmentText } from "./treatment.ts";
-import { ACTIVE_TEMPLATE, PUBLIC_TEMPLATES as TEMPLATES, PUBLIC_TEMPLATE_IDS as ACTIVE_TEMPLATE_IDS, findTemplate, creditsFor } from "./templates";
+import { ACTIVE_TEMPLATE, PUBLIC_TEMPLATES as TEMPLATES, PUBLIC_TEMPLATE_IDS as ACTIVE_TEMPLATE_IDS, findTemplate, creditsFor, filmCredits, tariffSentence } from "./templates";
+import { PACKS, sellingAvailable } from "./stripe";
 import { createJob, cancelJob, jobView, resultLinks, JobError, FILE_NAMES } from "./jobs";
 import { accountUrl, makeHandle } from "./accounts";
 import { audit } from "./db";
@@ -156,7 +157,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       id: t.id, name: t.name, formats: t.formats, duration_s: { min: t.minSeconds, max: t.maxSeconds, default: t.defaultSeconds },
       credits: creditsFor(t.defaultSeconds, "realistic"), voices: t.voices, description: t.description,
     }));
-    const pricing = `${plural(creditsFor(90, "realistic"), "credit")} per film up to 90 seconds, ${creditsFor(300, "realistic")} up to 5 minutes; in between it scales with the length`;
+    const pricing = tariffSentence();
     const lines = [activeTemplate].map((t) => {
       const shape = t.formats.map((f) => (f === "9:16" ? "Short (9:16)" : "YouTube video (16:9)")).join(" or ");
       return `- ${t.name} (id: ${t.id}): ${shape}, ${t.minSeconds}–${t.maxSeconds} seconds, ${plural(creditsFor(t.defaultSeconds, "realistic"), "credit")}. ${t.description}`;
@@ -400,14 +401,28 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
   }, async () => {
     const fresh = (await getUser(env, user.id)) ?? user;
     const url = await accountUrl(env, user.id, base);
+    // Every number here is read from where it is charged or sold, never written by hand: this tool used to say
+    // "1 credit = 1 Short" and "card payments are not open yet" for a day after the film became the only product
+    // at 7 credits and the account page had started selling packs. A new account with its free credits was told it
+    // could neither render nor buy, and an assistant repeated it word for word.
+    const free = int(env.FREE_CREDITS, 2);
+    const price = filmCredits(90);
+    const open = await sellingAvailable(env);
+    const cheapest = PACKS[0];
     const data = {
       credits_available: fresh.credits,
-      free_tier: `${int(env.FREE_CREDITS, 2)} Shorts, no signup`,
+      film_credits: price,
+      pricing: tariffSentence(),
+      free_tier: `${plural(free, "credit")} on sign-up, no signup form: ${plural(Math.floor(free / price), "free film")}`,
       account_key: await makeHandle(env, user.id),
       account_url: url,
-      payments_open: false,
+      payments_open: open,
     };
-    return ok(data, `You have ${plural(fresh.credits, "credit")} (1 credit = 1 Short of up to 90 seconds). Card payments are not open yet: Kleo is free while it is in beta. Your account page, which also shows the key that carries this account to another browser: ${url}`);
+    const enough = fresh.credits >= price ? "" : ` That is not enough for a film yet.`;
+    const buy = open
+      ? `Credit packs are on the account page, paid through Stripe (from ${cheapest.label} for ${cheapest.credits} credits; one payment, nothing renews)`
+      : `Card payments are paused right now; the account page says when they reopen`;
+    return ok(data, `You have ${plural(fresh.credits, "credit")}. A film costs ${plural(price, "credit")} up to 90 seconds (${tariffSentence()}).${enough} ${buy}. Your account page, which also shows the key that carries this account to another browser: ${url}`);
   });
 
   return server;

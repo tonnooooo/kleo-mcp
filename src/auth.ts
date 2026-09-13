@@ -3,6 +3,7 @@ import type { Env, AuthProps } from "./env";
 import { type User, getUser, createUserIfUnderCaps, getInvite, useInvite, applyBonusToUser, touchUser, audit } from "./db";
 import { accountCookie, cookieHandle, ipFingerprint, makeHandle, signupRateKey, verifyHandle, verifyTurnstile } from "./accounts";
 import { html, escapeHtml, rid, int } from "./util";
+import { filmCredits } from "./templates";
 
 /**
  * /authorize: the page an MCP client (Claude, ChatGPT, Grok, Cursor…) opens in the browser.
@@ -106,8 +107,8 @@ async function resolveAccount(env: Env, o: { cookie: string | null; key: string;
   );
   if (!user)
     return verdict === "day_full"
-      ? { error: "Kleo has handed out today's free Shorts. Come back tomorrow and this button will work again.", status: 429 }
-      : { error: "Kleo is giving out its free Shorts slowly today. Try again in a little while, and your account will be waiting.", status: 429 };
+      ? { error: "Kleo has handed out today's free credits. Come back tomorrow and this button will work again.", status: 429 }
+      : { error: "Kleo is giving out its free credits slowly today. Try again in a little while, and your account will be waiting.", status: 429 };
   await audit(env, user.id, null, "user.created", { source: "open", credits: user.credits, ip });
   // The gift is applied only now, to an account that exists: a sign-up a cap refused must never burn one of the
   // code's uses, which is what claiming it before the INSERT did.
@@ -161,7 +162,11 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 function page(o: { clientName: string; oauthQuery: string; freeCredits: number; error?: string; returning?: User }): string {
   const client = escapeHtml(o.clientName || "your assistant");
-  const shorts = plural(o.freeCredits, "Short");
+  // The price is the table's, not a number typed here: this page said "1 credit = 1 Short" for a day after the
+  // film became the only product at 7 credits.
+  const price = filmCredits(90);
+  const films = Math.floor(o.freeCredits / price);
+  const onTheHouse = films > 0 ? `${plural(films, "film")} on the house` : "not yet enough for a film";
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Connect to Kleo</title>
 <style>
@@ -187,13 +192,13 @@ summary{cursor:pointer;font-size:.85rem;color:var(--mute)}
 ${o.error ? `<div class="err" role="alert">${escapeHtml(o.error)}</div>` : ""}
 ${o.returning ? `<div class="back">Welcome back - ${plural(o.returning.credits, "credit")} left.</div>` : ""}
 <input type="hidden" name="oauth_query" value="${escapeHtml(o.oauthQuery)}">
-<button type="submit">${o.returning ? "Continue" : `Start free - ${shorts} included`}</button>
+<button type="submit">${o.returning ? "Continue" : `Start free - ${plural(o.freeCredits, "credit")} included`}</button>
 <p class="note">No email. No password. No card. No invite code. Your Kleo account lives in this browser.</p>
 <details><summary>Have a bonus code, or a Kleo key?</summary>
 <label for="bonus">Bonus code</label><input id="bonus" name="bonus" type="text" autocomplete="off" placeholder="Leave empty" style="text-transform:uppercase">
 <label for="account_key">Kleo key</label><input id="account_key" name="account_key" type="text" autocomplete="off" placeholder="Leave empty">
 <p class="note">A bonus code adds credits, to a new account or to the one this browser already has. A Kleo key brings an account you already have on another browser: ask your assistant for kleo_account to see yours.</p>
 </details>
-<div class="foot">1 credit = 1 Short. You start with ${o.freeCredits}. When they run out, Kleo gives you a link in the chat.</div>
+<div class="foot">A film costs ${plural(price, "credit")} (up to 90 seconds). You start with ${o.freeCredits}: ${onTheHouse}. When they run out, Kleo gives you a link in the chat.</div>
 </form></body></html>`;
 }

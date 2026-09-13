@@ -10,7 +10,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { STYLE_CREDITS, STYLE_MACHINE, VIDEO, creditsFor, machineFor, isVideoStyle } from "../src/templates.ts";
+import { readFileSync } from "node:fs";
+import { STYLE_CREDITS, STYLE_MACHINE, VIDEO, creditsFor, filmCredits, machineFor, isVideoStyle } from "../src/templates.ts";
 import { KLEO_STYLES } from "../src/keou-contract.ts";
 
 test("every style Kleo can render has a declared price", () => {
@@ -47,15 +48,17 @@ test("an unpriced style is charged the DEAREST price, never the cheapest", () =>
     "forgetting a price must cost the user a loud complaint, not cost the owner a silent bill");
 });
 
-test("two free credits cannot reach a style that costs more than a picture", () => {
-  // The whole point of pricing by style: FREE_CREDITS is 2, so anything above 2 credits is out of reach of a brand
-  // new account by construction — the same guard that already keeps long videos out of the free tier.
-  const FREE = 2;
-  for (const [style, price] of Object.entries(STYLE_CREDITS)) {
-    if (price === 1) continue;
-    assert.ok(creditsFor(45, style) > FREE,
-      `${style} costs ${price} per Short, which a free account can still afford: the free tier would pay for it`);
-  }
+test("the free tier in wrangler.jsonc buys exactly one film: not zero, not two", () => {
+  // Read from the production config, not from a number typed here: FREE_CREDITS stayed at 2 (two 1-credit Shorts)
+  // after the reset of 13 September made the 7-credit film the only product, so a new account was invited to
+  // "start free" and could render nothing. The free tier follows the price of the one thing that is sold.
+  const cfg = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
+  const free = Number(/"FREE_CREDITS":\s*"(\d+)"/.exec(cfg)?.[1]);
+  const film = filmCredits(90);
+  assert.ok(Number.isInteger(free), "wrangler.jsonc declares FREE_CREDITS");
+  assert.ok(free >= film, `FREE_CREDITS is ${free} and a film costs ${film}: a brand-new account could not render anything`);
+  assert.ok(free < 2 * film, `FREE_CREDITS is ${free}: two free films per stranger is more GPU than the free tier is meant to give`);
+  assert.ok(free < filmCredits(300), "and never a long film");
 });
 
 /* ------------------------------------------------------------------ what a style needs of a machine */
