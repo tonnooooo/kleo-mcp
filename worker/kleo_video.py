@@ -40,8 +40,8 @@ MIN_S = 1.2
 # from how Higgsfield prompts its own presets.
 MOVES = {
     "crash_zoom_in": "the camera rushes forward toward the subject and stops hard, a fast dolly on the axis. NOT a digital zoom, NOT a pull-back.",
-    "push_in": "the camera pushes slowly forward toward the subject at a constant lens height, decelerating into a static hold. NOT a zoom, NOT a pull-back.",
-    "push_in_dutch": "the camera pushes slowly forward while the horizon tilts a few degrees off level. NOT a zoom, NOT a roll in place.",
+    "push_in": "the camera pushes slowly forward toward the subject at a constant lens height, still moving when the shot ends. NOT a zoom, NOT a pull-back.",
+    "push_in_dutch": "the camera pushes slowly forward while the horizon tilts a few degrees off level, still moving when the shot ends. NOT a zoom, NOT a roll in place.",
     "pull_out": "the camera pulls slowly backward away from the subject, more of the place entering the frame. NOT a zoom out, NOT a push in.",
     "track_left": "the camera tracks laterally to the left at a constant speed, the foreground passing faster than the background. NOT a pan, NOT a zoom.",
     "track_right": "the camera tracks laterally to the right at a constant speed, the foreground passing faster than the background. NOT a pan, NOT a zoom.",
@@ -389,6 +389,50 @@ def finish_clip(src, dst, width, height, fps=60, grade=True, trim=0.12):
     return dst
 
 
+MAX_STRETCH = float(os.environ.get("KLEO_VIDEO_MAX_STRETCH", "1.6"))   # slow motion up to this before a frame is held
+FROZEN_S = float(os.environ.get("KLEO_VIDEO_FROZEN_S", "0.6"))          # a run this long is repaired; QA rejects at 1.0
+
+
+def frozen_runs(path, sample_fps=6):
+    """Where the picture stops changing, measured with the DELIVERY QA's own ruler (qa.py: 6 fps, 270 px wide,
+    frame md5): every run of identical sampled frames as (start_s, seconds). The master is rejected at one second
+    of them, after thirty minutes of GPU; measuring each part with the same ruler before it is cut in is what
+    makes that rejection unreachable from here. The 13 September film died exactly there: a push-in the model was
+    told to 'decelerate into a static hold', a held tail on top, and the grain averaged away at 270 px."""
+    r = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-an", "-vf", f"fps={sample_fps},scale=270:-2",
+                        "-f", "framemd5", "-"], capture_output=True, text=True)
+    vals = [l.split(",")[-1].strip() for l in r.stdout.splitlines() if l and not l.startswith("#")]
+    runs, k = [], 0
+    while k < len(vals):
+        j = k
+        while j + 1 < len(vals) and vals[j + 1] == vals[k]:
+            j += 1
+        if j > k:
+            runs.append((k / sample_fps, (j - k) / sample_fps))
+        k = j + 1
+    return runs
+
+
+def finish_vf(width, height, fps, want, stretch=1.0):
+    """The one filter chain that turns a 24 fps clip into `want` seconds of delivery-size footage: slow it by
+    `stretch` (before the motion compensation, so slow motion stays smooth), interpolate to `fps`, scale, hold on
+    the last frame only for whatever is still missing, grade."""
+    slow = f"setpts={stretch:.4f}*PTS," if stretch > 1.0005 else ""
+    return (f"{slow}minterpolate=fps={fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1,"
+            f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
+            f"crop={width}:{height},tpad=stop_mode=clone:stop_duration={want:.3f},{GRADE}")
+
+
+def plan_fill(want, have, frozen_tail=0.0):
+    """How to make `want` seconds from a clip of `have` whose last `frozen_tail` seconds do not move:
+    (stretch, usable_seconds, held_seconds). The frozen tail is dropped, the rest is slowed up to MAX_STRETCH,
+    and only what is still missing is a held frame — said out loud by the caller."""
+    usable = max(0.5, have - max(0.0, frozen_tail))
+    stretch = min(MAX_STRETCH, max(1.0, want / usable))
+    held = max(0.0, want - usable * stretch)
+    return stretch, usable, held
+
+
 def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=None):
     """One continuous video track for the whole film, exactly as long as the timeline, from the clips generated per
     shot. Built from build/shots.json — the cut times the ENGINE itself computed — so the footage and the graphics
@@ -414,25 +458,30 @@ def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=Non
             dst = os.path.join(work, f"{n:03d}.mp4")
             n += 1
             if src and os.path.isfile(src):
-                # A generated clip is capped at MAX_S because it drifts past that, so a shot longer than one take
-                # is filled by holding the last frame. That hold is a freeze on screen and it is invisible in every
-                # log unless it is said out loud here: a viewer sees it, and nothing else ever reports it.
-                have = seconds_of(src)
-                if have and want - have > 0.35:
-                    say(f"{scene['id']} shot {int(sh.get('index', 0)) + 1}: {want:.1f} s of film from a {have:.1f} s "
-                        f"clip — the last {want - have:.1f} s is a held frame")
-                # ONE encode per shot does the entire finish. 24 fps becomes 60 with real motion compensation at
-                # the size the model produced, then Lanczos to the delivery size, then the film's own grade — a
-                # separate finishing pass would encode every frame a second time for nothing. `fps=` on its own
-                # would merely duplicate frames, which is the judder that makes generated footage look cheap.
-                # The clip is trimmed, or held on its last frame, to fill exactly the time the shot occupies; the
-                # grade comes after that hold so a held tail still gets its own grain instead of a frozen one.
-                # The curve is fixed, so grading each shot with it is the same film-wide grade as grading the
-                # finished track once — what is forbidden is a grade that reacts to each clip's own contents.
-                vf = (f"minterpolate=fps={fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1,"
-                      f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
-                      f"crop={width}:{height},tpad=stop_mode=clone:stop_duration={want:.3f},{GRADE}")
-                cmd = ["ffmpeg", "-v", "error", "-y", "-i", src, "-vf", vf, "-t", f"{want:.3f}",
+                # ONE encode per shot does the entire finish (finish_vf). 24 fps becomes 60 with real motion
+                # compensation at the size the model produced, then Lanczos to the delivery size, then the film's
+                # own grade — `fps=` on its own would merely duplicate frames, the judder that makes generated
+                # footage look cheap. The curve is fixed, so grading each shot with it is the same film-wide grade
+                # as grading the finished track once.
+                #
+                # A shot longer than its clip (a take is capped at MAX_S) is NOT filled by holding the last frame:
+                # the clip is slowed, up to MAX_STRETCH, and only the remainder is held. And the clip's own frozen
+                # tail — a model told to decelerate obeys — is dropped first, measured with the delivery QA's ruler.
+                label = f"{scene['id']} shot {int(sh.get('index', 0)) + 1}"
+                have = seconds_of(src) or want
+                tail = 0.0
+                for start, secs in frozen_runs(src):
+                    if secs >= FROZEN_S and start + secs >= have - 0.25:
+                        tail = have - start
+                stretch, usable, held = plan_fill(want, have, tail)
+                if tail:
+                    say(f"{label}: the clip's last {tail:.1f} s do not move — dropped before the cut")
+                if stretch > 1.0005:
+                    say(f"{label}: {want:.1f} s of film from {usable:.1f} s of clip — slowed x{stretch:.2f}")
+                if held > 0.15:
+                    say(f"{label}: even slowed, the last {held:.1f} s is a held frame (the shot is too long for one take)")
+                vf = finish_vf(width, height, fps, want, stretch)
+                cmd = ["ffmpeg", "-v", "error", "-y", "-t", f"{usable:.3f}", "-i", src, "-vf", vf, "-t", f"{want:.3f}",
                        "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p", dst]
             else:
                 say(f"{scene['id']} shot {sh.get('index')}: no clip, that stretch stays black")
@@ -442,6 +491,10 @@ def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=Non
             if subprocess.run(cmd, capture_output=True, text=True).returncode != 0 or not os.path.isfile(dst):
                 say(f"could not prepare {os.path.basename(dst)}")
                 return None
+            # The same ruler the master will be judged by, on the finished part: what freezes here freezes there.
+            worst = max((secs for _, secs in frozen_runs(dst)), default=0.0)
+            if worst >= FROZEN_S:
+                say(f"{os.path.basename(dst)}: STILL has {worst:.1f} s without motion after the finish — the master may be rejected")
             parts.append(dst)
             total += want
     if not parts:

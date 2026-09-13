@@ -35,7 +35,15 @@ $DB run "python3 -c 'import cv2' 2>/dev/null && echo 'cv2 ok' || pip install -q 
 
 echo "== RENDER, detached =="
 $DB bg "cd /opt/kleo/repo && HF_HUB_OFFLINE=0 HF_HOME=/opt/kleo/hf KLEO_PICTURES=local KLEO_KEOU_DIR=/opt/kleo/keou KLEO_ENGINE=keou KLEO_KEOU_WORKERS=6 KLEO_RENDER_TIMEOUT_MIN=15 KLEO_VIDEO_STEPS=22 PYTHONUNBUFFERED=1 python3 scripts/motion-demo/gira.py" /opt/kleo/gira.log
-$DB wait /opt/kleo/gira.log "== FATTO ==" "== FALLITO" 45
+if ! $DB wait /opt/kleo/gira.log "== FATTO ==" "== FALLITO" 45; then
+  # A failed film is the most valuable thing on the box — the first one was destroyed unread (13 September:
+  # "one second of identical frames", master never seen). Pull what there is before the guard destroys it.
+  $DB pull /opt/kleo/gira.log "$OUT/gira.log" || true
+  $DB run "cd /opt/kleo/keou/projects && tar czf /opt/kleo/failed.tgz --exclude='*.wav' --exclude='clips' --exclude='footage-parts' */out */build 2>/dev/null; ls -la /opt/kleo/failed.tgz" || true
+  $DB pull /opt/kleo/failed.tgz "$OUT/failed.tgz" || true
+  $DB run "ls /opt/kleo/keou/projects/*/out/master.mp4 2>/dev/null" && $DB pull "/opt/kleo/keou/projects/gt-demo/out/master.mp4" "$OUT/MOTO-FAILED-master.mp4" || true
+  exit 1
+fi
 $DB pull /opt/kleo/gira.log "$OUT/gira.log"
 
 echo "== measure the motion ON THE BOX with a meter the generator does not optimise =="

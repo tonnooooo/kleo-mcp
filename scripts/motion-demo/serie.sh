@@ -30,7 +30,11 @@ for name in $STORYBOARDS; do
   echo; echo "==================== $name ===================="
   $DB bg "cd /opt/kleo/repo && env $ENV STORYBOARD=scripts/motion-demo/samples/$name.json OUT=/opt/kleo/out/$name JOB_ID=gt_$name python3 scripts/motion-demo/gira.py" /opt/kleo/gira-$name.log
   if ! $DB wait /opt/kleo/gira-$name.log "== FATTO ==" "== FALLITO" 75; then
-    echo "!! $name did not finish; on to the next one"; $DB pull /opt/kleo/gira-$name.log "$OUT/$name.log" || true; continue
+    echo "!! $name did not finish; keeping its evidence, on to the next one"
+    $DB pull /opt/kleo/gira-$name.log "$OUT/$name.log" || true
+    $DB pull "/opt/kleo/keou/projects/gt-$name/out/master.mp4" "$OUT/$name.FAILED-master.mp4" || true
+    $DB pull "/opt/kleo/keou/projects/gt-$name/out/decode.log" "$OUT/$name.decode.log" || true
+    continue
   fi
   $DB pull /opt/kleo/gira-$name.log "$OUT/$name.log"
   TL=$(grep '== TIMELINE' "$OUT/$name.log" | tail -1 | awk '{print $3}')

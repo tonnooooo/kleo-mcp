@@ -174,6 +174,86 @@ class WriterTest(unittest.TestCase):
         self.assertTrue(any("travel gate OFF" in m for m in said), said)
 
 
+def moving_then_frozen(n_moving, n_frozen, w=64, h=36):
+    """A clip whose picture moves for n_moving frames and then stops dead — what a model told to 'decelerate
+    into a static hold' produces, and what a held tail produces."""
+    import numpy as np
+    out = np.zeros((n_moving + n_frozen, h, w, 3), np.float32)
+    rng = np.random.default_rng(3)
+    base = rng.random((h, w, 3)).astype(np.float32)
+    for t in range(n_moving):
+        out[t] = np.roll(base, t * 2, axis=1)
+    out[n_moving:] = out[n_moving - 1]
+    return out
+
+
+class FreezeTest(unittest.TestCase):
+    """The delivery QA rejects a master with one second of identical sampled frames — after thirty minutes of GPU.
+    The 13 September film died there. These tests pin the ruler that now runs on every part BEFORE the master."""
+
+    def setUp(self):
+        import tempfile, shutil
+        self.tmp = tempfile.mkdtemp(prefix="kleo-freeze-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def clip(self, name, moving, frozen, fps=24):
+        path = os.path.join(self.tmp, name)
+        kv.write_clip(moving_then_frozen(moving, frozen), path, fps=fps)
+        return path
+
+    def test_the_ruler_sees_a_frozen_tail_and_where_it_starts(self):
+        # 2 s moving, 1.5 s frozen at 24 fps. Sampled at 6 fps the frozen run is ~1.5 s at ~2.0 s.
+        runs = kv.frozen_runs(self.clip("a.mp4", 48, 36))
+        self.assertEqual(len(runs), 1, runs)
+        start, secs = runs[0]
+        self.assertAlmostEqual(start, 2.0, delta=0.34)
+        self.assertGreaterEqual(secs, 1.0)
+
+    def test_a_clip_that_never_stops_has_no_runs(self):
+        self.assertEqual(kv.frozen_runs(self.clip("b.mp4", 60, 0)), [])
+
+    def test_the_fill_drops_the_frozen_tail_and_slows_the_rest_instead_of_holding(self):
+        # 5.6 s wanted from a 5.0 s clip whose last 0.8 s is frozen: 4.2 s usable, slowed x1.33, nothing held.
+        stretch, usable, held = kv.plan_fill(5.6, 5.0, 0.8)
+        self.assertAlmostEqual(usable, 4.2, places=6)
+        self.assertAlmostEqual(stretch, 5.6 / 4.2, places=4)
+        self.assertLess(stretch, kv.MAX_STRETCH)
+        self.assertAlmostEqual(held, 0.0, places=6)
+
+    def test_a_shot_far_longer_than_a_take_is_slowed_to_the_cap_and_the_rest_is_held_and_said(self):
+        stretch, usable, held = kv.plan_fill(10.0, 5.0, 0.0)
+        self.assertEqual(stretch, kv.MAX_STRETCH)
+        self.assertAlmostEqual(held, 10.0 - 5.0 * kv.MAX_STRETCH, places=6)
+
+    def test_a_clip_long_enough_is_neither_slowed_nor_cut(self):
+        self.assertEqual(kv.plan_fill(3.0, 3.0, 0.0), (1.0, 3.0, 0.0))
+
+    def test_the_filter_chain_slows_before_interpolating_and_never_holds_when_nothing_is_missing(self):
+        vf = kv.finish_vf(1280, 704, 60, 5.6, stretch=1.12)
+        self.assertTrue(vf.startswith("setpts=1.1200*PTS,minterpolate="), vf[:60])
+        self.assertIn("tpad=stop_mode=clone:stop_duration=5.600", vf)
+        self.assertNotIn("setpts", kv.finish_vf(1280, 704, 60, 3.0))
+
+    def test_build_footage_measures_each_part_with_the_delivery_ruler(self):
+        # A real (tiny) track: one shot of 3.0 s from a clip that moves 2 s and freezes 1.2 s. Without the repair
+        # the part would carry ~1.2 s of identical frames and the master would be rejected; with it the frozen
+        # tail is dropped, the 2 s slowed x1.5, and the finished part has no run of a second.
+        import json
+        src = self.clip("c.mp4", 48, 29)
+        plan = {"width": 128, "height": 72, "fps": 24, "duration": 3.0,
+                "scenes": [{"id": "s1", "shots": [{"index": 0, "start": 0.0, "end": 3.0}]}]}
+        pj = os.path.join(self.tmp, "shots.json"); json.dump(plan, open(pj, "w"))
+        said = []
+        out = kv.build_footage(pj, {"s1-s1": src}, os.path.join(self.tmp, "footage.mp4"), 128, 72, fps=24,
+                               log_fn=lambda *a: said.append(" ".join(str(x) for x in a)))
+        self.assertTrue(out and os.path.isfile(out), said)
+        self.assertTrue(any("do not move" in m for m in said), said)
+        self.assertTrue(any("slowed x1.50" in m for m in said), said)
+        self.assertFalse(any("STILL has" in m for m in said), said)
+        worst = max((secs for _, secs in kv.frozen_runs(out)), default=0.0)
+        self.assertLess(worst, 1.0, f"the track still freezes for {worst} s")
+
+
 class GenerateTest(unittest.TestCase):
     """generate_clips with a fake pipeline: no torch, no CUDA. The frames are fake; the file is real — written by
     the real writer through ffmpeg — because the file is where the 13 September run died."""

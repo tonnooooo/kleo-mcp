@@ -1,38 +1,90 @@
 {
-  "schema_version": 1,
-  "editorial_status": "ready",
-  "title": "L'acqua alta a Venezia",
-  "style": "picture",
-  "kleo_style": "realistic",
-  "backdrop": "video",
-  "format": "16:9",
-  "language": "it",
-  "voice": "im_nicola",
-  "music": "bed",
-  "scenes": [
+ "schema_version": 1,
+ "editorial_status": "ready",
+ "title": "L'acqua alta a Venezia",
+ "style": "picture",
+ "kleo_style": "realistic",
+ "backdrop": "video",
+ "format": "16:9",
+ "language": "it",
+ "voice": "im_nicola",
+ "music": "bed",
+ "scenes": [
+  {
+   "id": "01-hook",
+   "kind": "cinema",
+   "chapter": "01 CENTO VOLTE",
+   "accent": "red",
+   "title": "Cento volte l'anno",
+   "hold": 0.3,
+   "voice": "L'acqua alta a Venezia adesso arriva cento volte l'anno.",
+   "shots": [
     {
-      "id": "01-hook", "kind": "cinema", "chapter": "01 CENTO VOLTE", "accent": "red",
-      "title": "Cento volte l'anno", "hold": 0.3,
-      "voice": "L'acqua alta a Venezia adesso arriva cento volte l'anno.",
-      "shots": [{"image_prompt": "flood water surging across a sunlit Venetian square at midday, people in tall boots wading through it, spray and ripples spreading outward, bright reflections", "motion": "track_alongside", "strength": 0.9}]
-    },
-    {
-      "id": "02-mare", "kind": "cinema", "chapter": "02 IL MARE SALE", "accent": "cyan",
-      "title": "Non e' la citta' che scende", "hold": 0.3,
-      "voice": "Non e' la citta' che affonda: e' il mare che sale.",
-      "shots": [{"image_prompt": "a fast boat cutting across the Venice lagoon at midday, white spray thrown up behind it, water rushing past the hull, the low skyline far behind", "motion": "track_alongside", "strength": 0.9}]
-    },
-    {
-      "id": "03-pali", "kind": "cinema", "chapter": "03 MILIONI DI PALI", "accent": "amber",
-      "title": "Mille anni sotto l'acqua", "hold": 0.3,
-      "voice": "Sotto ci sono milioni di pali di legno, piantati mille anni fa.",
-      "shots": [{"image_prompt": "underwater shot of ancient wooden piles in clear turquoise water, silt swirling around them, small fish darting between, sunlight rippling down from the surface", "motion": "push_in", "strength": 0.8}]
-    },
-    {
-      "id": "04-closing", "kind": "closing", "chapter": "04 REGGONO ANCORA", "accent": "cyan",
-      "title": "Il problema e' sopra", "hold": 0.6,
-      "voice": "Reggono ancora. Il problema e' l'acqua sopra di loro.",
-      "shots": [{"image_prompt": "waves rolling in against the Venice sea barrier at golden hour, water churning white and breaking over the gates, gulls wheeling above the spray", "motion": "pull_out", "strength": 0.8}]
+     "image_prompt": "flood water surging across a sunlit Venetian square at midday, people in tall boots wading through it, spray and ripples spreading outward, bright reflections",
+     "motion": "track_alongside",
+     "strength": 0.9
     }
-  ]
+   ]
+  },
+  {
+   "id": "02-mare",
+   "kind": "cinema",
+   "chapter": "02 IL MARE SALE",
+   "accent": "cyan",
+   "title": "Non e' la citta' che scende",
+   "hold": 0.3,
+   "voice": "Non e' la citta' che affonda: e' il mare che sale.",
+   "shots": [
+    {
+     "image_prompt": "a fast boat cutting across the Venice lagoon at midday, white spray thrown up behind it, water rushing past the hull, the low skyline far behind",
+     "motion": "track_alongside",
+     "strength": 0.9
+    }
+   ]
+  },
+  {
+   "id": "03-pali",
+   "kind": "cinema",
+   "chapter": "03 MILIONI DI PALI",
+   "accent": "amber",
+   "title": "Mille anni sotto l'acqua",
+   "hold": 0.3,
+   "voice": "Sotto ci sono milioni di pali di legno, piantati mille anni fa.",
+   "shots": [
+    {
+     "image_prompt": "underwater shot of ancient wooden piles in clear turquoise water, silt swirling around them, sunlight rippling down from the surface",
+     "motion": "push_in",
+     "strength": 0.8
+    },
+    {
+     "image_prompt": "small silver fish darting between old wooden piles underwater, bubbles rising, shafts of sunlight moving across the sand",
+     "motion": "track_left",
+     "strength": 0.7,
+     "at": "mille"
+    }
+   ]
+  },
+  {
+   "id": "04-closing",
+   "kind": "closing",
+   "chapter": "04 REGGONO ANCORA",
+   "accent": "cyan",
+   "title": "Il problema e' sopra",
+   "hold": 0.6,
+   "voice": "Reggono ancora. Il problema e' l'acqua sopra di loro.",
+   "shots": [
+    {
+     "image_prompt": "waves rolling in against the Venice sea barrier at golden hour, water churning white and breaking over the gates",
+     "motion": "pull_out",
+     "strength": 0.8
+    },
+    {
+     "image_prompt": "gulls wheeling above spray at the Venice sea barrier at golden hour, waves breaking below, wind in the light",
+     "motion": "crane_up",
+     "strength": 0.7,
+     "at": "sopra"
+    }
+   ]
+  }
+ ]
 }
