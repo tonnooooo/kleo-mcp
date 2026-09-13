@@ -167,10 +167,10 @@ def load_pipeline(kind="t2v"):
 def first_frame(path, w, h):
     """The shot's still, as the frame the clip must start from: resized to the clip's own size (the still is
     1344x768 or 768x1344, the clip 1280x704 or 704x1280 — same aspect, a small resample, no crop)."""
-    from PIL import Image
+    from PIL import Image, ImageOps
     im = Image.open(path).convert("RGB")
     if im.size != (w, h):
-        im = im.resize((w, h), Image.LANCZOS)
+        im = ImageOps.fit(im, (w, h), Image.LANCZOS)   # cover and centre-crop: the aspects differ by a few percent, never squeeze
     return im
 
 
@@ -326,7 +326,13 @@ def travel_px(path, samples=8):
             if not ok:
                 break
             if i in idx:
-                got.append(cv2.cvtColor(cv2.resize(fr, (320, 176)), cv2.COLOR_BGR2GRAY))
+                # The ruler was calibrated on 1280x704 clips shrunk to 320x176: long side to 320. A portrait clip
+                # (704x1280) squeezed into the same 320x176 box read its vertical travel at ~0.55x and its horizontal
+                # at ~1.8x, so every push/crane/crash move in a 9:16 film tripped the still gate for nothing (13 Sep:
+                # 5 of 13 shots retried, 4 kept as "stills"). Same box, turned with the frame.
+                h_, w_ = fr.shape[:2]
+                small = (320, 176) if w_ >= h_ else (176, 320)
+                got.append(cv2.cvtColor(cv2.resize(fr, small), cv2.COLOR_BGR2GRAY))
             i += 1
         cap.release()
         if len(got) < 2:
@@ -339,7 +345,7 @@ def travel_px(path, samples=8):
         # between them: the total is the median gap times the number of gaps, not times the frame count.
         # Measured on a 320-wide frame, reported in the pixels of the real one.
         gaps = len(got) - 1
-        return float(sorted(mags)[len(mags) // 2]) * gaps * (1280.0 / 320.0)
+        return float(sorted(mags)[len(mags) // 2]) * gaps * (1280.0 / 320.0)   # long side: 1280 real px over 320 measured
     except Exception as e:
         log("could not measure:", e)
         return None
