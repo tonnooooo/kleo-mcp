@@ -27,7 +27,7 @@ prompt → MCP → storyboard + immagini (Workers AI o GPU) → Vast 16 GB: voce
   vede mai: parla solo con il server, col segreto del proprio job. I fotogrammi arrivano a kie.ai attraverso gli
   stessi link firmati `/dl/` che le immagini usano già (`dl.ts`).
 - Ogni task viene **prezzato alla creazione** dal listino `KIE_MODELS` e scritto nella tabella `footage`. Il tetto
-  giornaliero `DAILY_FOOTAGE_BUDGET_USD` (5 $) somma le righe di oggi PRIMA di ordinare: oltre, la richiesta è
+  giornaliero `DAILY_FOOTAGE_BUDGET_USD` (15 $ dal 13 set sera, prima 5) somma le righe di oggi PRIMA di ordinare: oltre, la richiesta è
   rifiutata con la frase esatta e nessuna clip viene ordinata. Il listino è quello **vero**, letto il 13 settembre
   dall'API del listino di kie.ai (la pagina HTML rifiuta i fetcher, l'API no):
   `curl -X POST https://api.kie.ai/client/v1/model-pricing/page -H 'content-type: application/json' -H 'origin: https://kie.ai' -d '{"pageNum":1,"pageSize":100}'`
@@ -40,9 +40,9 @@ prompt → MCP → storyboard + immagini (Workers AI o GPU) → Vast 16 GB: voce
 | dove | cosa | valore oggi |
 |---|---|---|
 | `KLEO_FOOTAGE_BACKEND` | `kie` o `local` | `kie` (vale solo con la chiave caricata) |
-| `KLEO_FOOTAGE_MODEL` | uno dei nomi di `KIE_MODELS` | `kling-3.0` (pro, 1080p) |
-| `KIE_MAX_VIDEO_S` | oltre tanti secondi il film prende la strada locale | `20` (fase di prova; `0` = nessun tetto) |
-| `DAILY_FOOTAGE_BUDGET_USD` | tetto di spesa stimata al giorno | `5.00` |
+| `KLEO_FOOTAGE_MODEL` | uno dei nomi di `KIE_MODELS` | `minimax-h3` (2K; `kling-3.0` pro è la riserva collaudata) |
+| `KIE_MAX_VIDEO_S` | oltre tanti secondi il film prende la strada locale | `0` = nessun tetto (dal 13 set sera). Era `20` (fase di prova): uno Short da 30 s lo superava, andava sulla strada locale LTX-2.5 (scheda da 80 GB, 1,5 $/h) e moriva con "the shots did not film" (job `gt_5b8r3hna`); quella strada non ha mai consegnato un film in produzione |
+| `DAILY_FOOTAGE_BUDGET_USD` | tetto di spesa stimata al giorno | `15.00` (era 5: un solo film al giorno; uno Short da 30 s = ~15 shot da 4 s ≈ 3,9 $ su MiniMax H3 2K) |
 
 Senza deploy, dal telefono, con `Authorization: Bearer <INTERNAL_SECRET>`:
 
