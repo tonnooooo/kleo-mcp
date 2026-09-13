@@ -100,6 +100,25 @@ test("create: one atomic debit with a credits.debit audit row; a refused create 
   assert.equal((await env.DB.prepare("SELECT COUNT(*) AS n FROM audit WHERE event = 'credits.debit'").first()).n, 1);
 });
 
+test("create: a client storyboard for a filmed style is stored asking to be filmed, at the filmed price", async () => {
+  // 13 September, a real job: realistic had become a filmed style (7 credits, the big card), the assistant passed
+  // its own storyboard, the validator stripped the backdrop and nothing put it back on this road — the worker saw
+  // no backdrop and drew the stills with the graphics on top. Seven credits for the old product.
+  const env = await newEnv(); const u = await user(env, 20);
+  const sb = JSON.parse(readFileSync(join(ROOT, "scripts", "motion-demo", "samples", "venezia-16x9.json"), "utf8"));
+  const job = await m.createJob(env, u, { template: "motivational", prompt: "L'acqua alta a Venezia, cento volte l'anno", duration_s: 30,
+    format: "16:9", language: "it", style: "realistic", storyboard: sb });
+  const stored = JSON.parse((await m.getJob(env, job.id)).storyboard);
+  assert.equal(stored.backdrop, "video", "the plan says filmed, so the stored storyboard must ask to be filmed");
+  assert.equal(stored.kleo_style, "realistic");
+  assert.equal(job.credits, 7, "and it is charged as a filmed video");
+  // and a style that is not filmed never carries one, even if the caller wrote it in
+  const c = JSON.parse(JSON.stringify(sb)); c.kleo_style = "cartoon"; c.backdrop = "video";
+  const job2 = await m.createJob(env, u, { template: "motivational", prompt: "Pirati e tesori", duration_s: 30, format: "16:9", language: "it", style: "cartoon", storyboard: c });
+  assert.equal("backdrop" in JSON.parse((await m.getJob(env, job2.id)).storyboard), false, "a caller cannot buy the film at the picture price");
+  assert.equal(job2.credits, 1);
+});
+
 test("create: validation errors say nothing was charged and move no credits", async () => {
   const env = await newEnv();
   const u = await user(env, 10);

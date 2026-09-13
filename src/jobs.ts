@@ -1,7 +1,7 @@
 import type { Env } from "./env";
 import { type Job, type JobParams, type JobState, type User, OPEN_STATES, countOpenForUser, countJobsTodayForUser, addJobCost, debitCredits, refundCredits, insertJob, transitionJob, audit, getUserJob, listFiles } from "./db";
 import { accountUrl } from "./accounts";
-import { findTemplate, affordableGuess, creditsFor, etaFor, normalizeVoice, voiceSpellings, type Format } from "./templates";
+import { findTemplate, affordableGuess, creditsFor, etaFor, normalizeVoice, voiceSpellings, isVideoStyle, type Format } from "./templates";
 import { rid, nowIso, int, hmacHex } from "./util";
 import { isFlagActive } from "./schema";
 import { backendFor } from "./backends";
@@ -120,8 +120,16 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     }
     const overpaid = overPaidFor(r.storyboard, duration);
     if (overpaid.length) throw new JobError(overpaid.join("\n"));
-    storyboard = JSON.stringify(r.storyboard);
     style = kleoStyleOf(r.storyboard);
+    // Whether the shots get FILMED is the plan's decision (the machine table), never the caller's: the validator
+    // strips any backdrop the storyboard arrived with, and until 13 September nothing put it back on this path —
+    // the planner's own drafts got it in normalizeStoryboard, a client's storyboard did not. A realistic job paid
+    // seven credits, the worker saw no backdrop and drew the stills with the graphics on top: the old product at
+    // the new price. Same rule as storyboard.ts:1036, on the other road into the queue.
+    const filmed = isVideoStyle(style) && (r.storyboard as Record<string, unknown>).style === "picture";
+    if (filmed) (r.storyboard as Record<string, unknown>).backdrop = "video";
+    else delete (r.storyboard as Record<string, unknown>).backdrop;
+    storyboard = JSON.stringify(r.storyboard);
   }
   let styleGuessed = false;
   if (!style) {
