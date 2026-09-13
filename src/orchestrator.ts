@@ -477,7 +477,9 @@ export async function failJob(env: Env, job: Job, reason: string, retry: boolean
     const failedKey = machineKeyOf(job);
     if (failedKey) await rememberTriedMachine(env, job.id, failedKey);
     const requeued = await transitionJob(env, job.id, OPEN_STATES, {
-      state: "queued", backend: null, instance_id: null, instance_meta: null, started_at: null, queued_at: nowIso(), percent: 0, track: null, error: reason, worker_secret: rid("wk", 32),
+      // last_report_at goes too: it is the OLD worker's last word, and the next attempt's box was being killed as
+      // "quiet for 25 minutes" before it had finished booting (13 September, gt_d2td9fb9, attempts 2 and 3).
+      state: "queued", backend: null, instance_id: null, instance_meta: null, started_at: null, last_report_at: null, queued_at: nowIso(), percent: 0, track: null, error: reason, worker_secret: rid("wk", 32),
     });
     if (!requeued) { await audit(env, job.user_id, job.id, "job.requeue.ignored", { reason, note: "job was no longer open" }); return "ignored"; }
     await audit(env, job.user_id, job.id, "job.requeued", { reason, attempts: job.attempts });

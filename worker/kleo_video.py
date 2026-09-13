@@ -498,24 +498,30 @@ def plan_fill(want, have, frozen_tail=0.0):
     return stretch, usable, held
 
 
-def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=None):
+def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=None, progress_fn=None, workers=None):
     """One continuous video track for the whole film, exactly as long as the timeline, from the clips generated per
     shot. Built from build/shots.json — the cut times the ENGINE itself computed — so the footage and the graphics
     can never disagree about where a shot begins.
 
     A shot with no clip becomes black for its own length: a hole in the picture, never a hole in the timing, because
     a track that is even a frame short desynchronises everything after it. Returns out_path, or None.
-    """
+
+    THE PARTS ARE FINISHED IN PARALLEL AND EACH ONE IS REPORTED. minterpolate is the cost of this stage and it is
+    mostly one thread per file: seven 2K clips one after the other took the finish box past the twenty minutes of
+    silence the server tolerates (13 September, gt_d2td9fb9: killed at 62% twice, the clips already paid for). Now
+    `workers` files run at once (default: a quarter of the cores, at least 2) and progress_fn(done, total) is called
+    as each part lands, which is what the worker turns into a progress report — the silence sensor stays at its
+    number, the stage stops looking dead."""
     say = log_fn or log
     try:
         plan = json.load(open(shots_json))
     except Exception as e:
         say("no shot plan:", e)
         return None
-    parts, total = [], 0.0
     work = os.path.join(os.path.dirname(out_path), "footage-parts")
     os.makedirs(work, exist_ok=True)
-    n = 0
+    # Pass one, serial and cheap: decide every part (what to cut, how much to slow, what stays black).
+    jobs, total, n = [], 0.0, 0
     for scene in plan.get("scenes") or []:
         for sh in scene.get("shots") or []:
             want = max(0.04, float(sh.get("end", 0)) - float(sh.get("start", 0)))
@@ -553,17 +559,41 @@ def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=Non
                 cmd = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
                        f"color=c=black:s={width}x{height}:r={fps}:d={want:.3f}",
                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p", dst]
-            if subprocess.run(cmd, capture_output=True, text=True).returncode != 0 or not os.path.isfile(dst):
-                say(f"could not prepare {os.path.basename(dst)}")
-                return None
-            # The same ruler the master will be judged by, on the finished part: what freezes here freezes there.
-            worst = max((secs for _, secs in frozen_runs(dst)), default=0.0)
-            if worst >= FROZEN_S:
-                say(f"{os.path.basename(dst)}: STILL has {worst:.1f} s without motion after the finish — the master may be rejected")
-            parts.append(dst)
+            jobs.append((dst, cmd))
             total += want
-    if not parts:
+    if not jobs:
         return None
+    # Pass two, parallel: the encodes. Order is kept by index; a failure anywhere fails the track.
+    from concurrent.futures import ThreadPoolExecutor
+    n_workers = max(1, int(workers)) if workers else max(2, (os.cpu_count() or 4) // 4)
+    n_workers = min(n_workers, len(jobs))
+    say(f"finishing {len(jobs)} parts, {n_workers} at a time, {width}x{height} {fps} fps")
+    done, failed = 0, []
+
+    def run(item):
+        dst, cmd = item
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        return dst, (r.returncode == 0 and os.path.isfile(dst))
+
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        for dst, ok in pool.map(run, jobs):
+            done += 1
+            if not ok:
+                failed.append(dst)
+                say(f"could not prepare {os.path.basename(dst)}")
+            if progress_fn:
+                try:
+                    progress_fn(done, len(jobs))
+                except Exception:
+                    pass
+    if failed:
+        return None
+    parts = [dst for dst, _ in jobs]
+    for dst in parts:
+        # The same ruler the master will be judged by, on the finished part: what freezes here freezes there.
+        worst = max((secs for _, secs in frozen_runs(dst)), default=0.0)
+        if worst >= FROZEN_S:
+            say(f"{os.path.basename(dst)}: STILL has {worst:.1f} s without motion after the finish — the master may be rejected")
     listing = os.path.join(work, "list.txt")
     with open(listing, "w") as f:
         for p in parts:

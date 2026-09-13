@@ -253,6 +253,25 @@ class FreezeTest(unittest.TestCase):
         worst = max((secs for _, secs in kv.frozen_runs(out)), default=0.0)
         self.assertLess(worst, 1.0, f"the track still freezes for {worst} s")
 
+    def test_build_footage_finishes_parts_in_parallel_and_reports_each_one(self):
+        """Seven 2K clips finished one after the other took the finish box past the server's silence limit; now the
+        parts run side by side and every finished part is reported, in order, so the stage never looks dead."""
+        import json
+        src = self.clip("c.mp4", 48, 29)
+        plan = {"width": 128, "height": 72, "fps": 24, "duration": 3.0,
+                "scenes": [{"id": "s1", "shots": [{"index": 0, "start": 0.0, "end": 1.0}, {"index": 1, "start": 1.0, "end": 2.0}]},
+                           {"id": "s2", "shots": [{"index": 0, "start": 2.0, "end": 3.0}]}]}
+        pj = os.path.join(self.tmp, "shots.json"); json.dump(plan, open(pj, "w"))
+        seen, said = [], []
+        out = kv.build_footage(pj, {"s1-s1": src, "s1-s2": src}, os.path.join(self.tmp, "footage.mp4"), 128, 72, fps=24,
+                               log_fn=lambda *a: said.append(" ".join(str(x) for x in a)),
+                               progress_fn=lambda d, t: seen.append((d, t)), workers=3)
+        self.assertTrue(out and os.path.isfile(out), said)
+        self.assertEqual(seen, [(1, 3), (2, 3), (3, 3)], "one report per part, in order, out of the total")
+        self.assertTrue(any("3 parts, 3 at a time" in m for m in said), said)
+        self.assertTrue(any("stays black" in m for m in said), "the shot without a clip is black, not missing")
+        self.assertAlmostEqual(kv.seconds_of(out), 3.0, delta=0.15)
+
 
 class GenerateTest(unittest.TestCase):
     """generate_clips with LTX-2.5 replaced by a fake that records what it was asked: no torch, no CUDA, no weights.

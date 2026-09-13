@@ -267,11 +267,12 @@ test("requeue: no refund, fresh worker secret, backend cleared; the later final 
   const env = await newEnv();
   const u = await user(env, 3 * P);
   const job = await short(env, u);
-  await m.updateJob(env, job.id, { state: "starting", backend: "manual", instance_id: "gpu-5", started_at: new Date().toISOString(), attempts: 1 });
+  await m.updateJob(env, job.id, { state: "starting", backend: "manual", instance_id: "gpu-5", started_at: new Date().toISOString(), attempts: 1, last_report_at: new Date(Date.now() - 30 * 60_000).toISOString() });
   const before = await m.getJob(env, job.id);
   assert.equal(await m.failJob(env, before, "worker never started within 15 min", true), "requeued");
   const after = await m.getJob(env, job.id);
   assert.equal(after.state, "queued");
+  assert.equal(after.last_report_at, null, "the old worker's last word must not count against the next box");
   assert.equal(after.backend, null);
   assert.equal(after.instance_id, null);
   assert.equal(after.started_at, null);

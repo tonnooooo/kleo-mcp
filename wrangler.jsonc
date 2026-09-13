@@ -64,6 +64,7 @@
     "MAX_JOBS_PER_USER": "1", // massimo video in corso per ogni utente: con solo 2 GPU un account non deve occuparle tutte e due
     "MAX_JOBS_PER_DAY": "8", // massimo video AVVIATI in un giorno (UTC) da uno stesso account: il limite qui sopra conta solo quelli in corso. 2→4→8 il 13 set: quattro bastavano a chiudere fuori il proprietario che prova il prodotto
     "START_TIMEOUT_MIN": "25",
+    "RENDER_SILENCE_MIN": "45", // minuti di silenzio tollerati a un render in corso (predefinito 20). 13 set: la stesura della traccia 4K da sette clip 2K di kie.ai ha superato i 20 minuti muta sulla macchina di finitura e il film e' stato ucciso al 62% due volte. Il worker ora riferisce ogni parte finita: quando l'immagine nuova e' in produzione si puo' tornare a 20
     "LOADING_RETRY_MIN": "22", // dopo tanti minuti di solo download il lavoro passa a un'altra macchina
     "LOADING_TIMEOUT_MIN": "40", // oltre questo un noleggio che non parte viene chiuso
     "JOB_TIMEOUT_MIN": "60", // minuti di vita di un render prima di essere considerato fallito (GPU distrutta, crediti restituiti). È un MINIMO, non un massimo: per i video lunghi il limite si alza da solo (stima del video + LOADING_TIMEOUT_MIN, src/templates.ts), altrimenti un video da 8 minuti — che il server stesso annuncia in 80 — verrebbe ucciso a 60 e non potrebbe mai finire. Per uno Short (23 minuti misurati) vale questo 60

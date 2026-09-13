@@ -1089,9 +1089,14 @@ def lay_footage(pdir, made, width, height, fps):
     finish phase of a two-phase film runs exactly this on a box that costs cents."""
     mod = local_video_module()
     build = os.path.join(pdir, "build")
+
+    def report(done, total):
+        # One report per finished part: the server's silence sensor (RENDER_SILENCE_MIN) must hear this stage.
+        progress("clips", 62 + int(14 * done / max(1, total)), message=f"track: {done}/{total} parts finished")
+
     try:
         track = mod.build_footage(os.path.join(build, "shots.json"), made, os.path.join(build, "footage.mp4"),
-                                  width, height, fps=fps, log_fn=log)
+                                  width, height, fps=fps, log_fn=log, progress_fn=report)
     except Exception as e:
         log("could not lay the track:", e)
         return False
