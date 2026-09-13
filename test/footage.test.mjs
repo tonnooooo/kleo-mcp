@@ -117,11 +117,24 @@ test("footageBackendFor: off unless the switch says kie AND a key exists AND the
 });
 
 test("kieModelFor: config, override, and an unknown name falls back to the default", () => {
-  assert.equal(m.kieModelFor({}).name, "kling-3.0");
+  assert.equal(m.kieModelFor({}).name, "minimax-h3", "the default is MiniMax H3 2K since 13 September");
   assert.equal(m.kieModelFor({ KLEO_FOOTAGE_MODEL: "wan-2.7" }).name, "wan-2.7");
   assert.equal(m.kieModelFor({ KLEO_FOOTAGE_MODEL: "wan-2.7" }, { model: "seedance-2.0" }).name, "seedance-2.0");
-  assert.equal(m.kieModelFor({ KLEO_FOOTAGE_MODEL: "does-not-exist" }).name, "kling-3.0");
+  assert.equal(m.kieModelFor({ KLEO_FOOTAGE_MODEL: "does-not-exist" }).name, "minimax-h3");
   for (const [k, spec] of Object.entries(m.KIE_MODELS)) assert.ok(spec.model && spec.usdPerSecond > 0 && spec.note, k);
+});
+
+test("the price table is the real kie.ai list of 13 September 2026, not the summer guesses", () => {
+  const usd = (k) => m.KIE_MODELS[k].usdPerSecond;
+  assert.equal(usd("minimax-h3"), 0.065); assert.equal(usd("kling-3.0"), 0.09); assert.equal(usd("kling-3.0-std"), 0.07);
+  assert.equal(usd("kling-3.0-4k"), 0.335, "was guessed at 0.18"); assert.equal(usd("kling-v3-turbo"), 0.1125, "was guessed at 0.05");
+  assert.equal(usd("wan-2.7"), 0.12, "was guessed at 0.05"); assert.equal(usd("seedance-2.0"), 0.51, "was guessed at 0.08");
+  for (const [k, spec] of Object.entries(m.KIE_MODELS)) {
+    if (!spec.usdPerClip) continue;
+    assert.ok(Array.isArray(spec.seconds), `${k}: a per-clip model lists its clip lengths`);
+    for (const d of spec.seconds) assert.ok(spec.usdPerClip[d] > 0, `${k}: a price for a ${d} s clip`);
+    assert.equal(spec.usdPerSecond, Math.round(Math.max(...spec.seconds.map((d) => spec.usdPerClip[d] / d)) * 1e5) / 1e5, `${k}: usdPerSecond is the dearest per-second equivalent`);
+  }
 });
 
 test("clipSecondsFor: the shortest length the model offers that covers the shot", () => {
@@ -136,6 +149,11 @@ test("clipSecondsFor: the shortest length the model offers that covers the shot"
   assert.equal(m.clipSecondsFor(veo, 9), 8);
   assert.equal(m.clipSecondsFor(wan, 1.5), 2);
   assert.equal(m.clipCostUsd(kling, 4), 0.36);
+  const mm = m.KIE_MODELS["minimax-h3"], gem = m.KIE_MODELS["gemini-omni-flash"];
+  assert.equal(m.clipSecondsFor(mm, 3.2), 4, "MiniMax starts at 4 s"); assert.equal(m.clipCostUsd(mm, 4), 0.26);
+  assert.equal(m.clipSecondsFor(gem, 9), 10); assert.equal(m.clipCostUsd(gem, 4), 0.315, "per clip, not per second"); assert.equal(m.clipCostUsd(gem, 10), 0.63);
+  assert.equal(m.clipCostUsd(gem, 7), 0.63, "a length the clip table does not list is charged at the dearest clip");
+  assert.equal(m.clipCostUsd(veo, 8), 1.275, "Veo counts the Quality tier until the route is exercised");
 });
 
 /* ------------------------------------------------------------------ the words */
@@ -163,13 +181,20 @@ test("kieInput speaks each model's dialect: Kling strings, Veo generation_type, 
   assert.equal(w.first_frame_url, p.imageUrl); assert.equal(w.seed, 42); assert.equal(w.duration, 4); assert.ok(w.negative_prompt.includes("watermark"));
   const s = m.kieInput("seedance-2.0", m.KIE_MODELS["seedance-2.0"], p);
   assert.equal(s.first_frame_url, p.imageUrl); assert.equal(s.generate_audio, false); assert.equal(s.duration, 4); assert.equal(s.aspect_ratio, "9:16");
+  const mm = m.kieInput("minimax-h3", m.KIE_MODELS["minimax-h3"], p);
+  assert.deepEqual(mm, { prompt: "x", first_frame_url: p.imageUrl, duration: 4, resolution: "2K" }, "MiniMax: integer duration, 2K, no aspect ratio (the frame decides), no audio field");
+  assert.equal(m.kieInput("minimax-h3-768p", m.KIE_MODELS["minimax-h3-768p"], p).resolution, "768P");
+  assert.equal(m.kieInput("minimax-h3", m.KIE_MODELS["minimax-h3"], { ...p, imageUrl: null }).first_frame_url, undefined, "no still: no frame field, kie.ai refuses, the shot fails honestly");
+  const g = m.kieInput("gemini-omni-flash", m.KIE_MODELS["gemini-omni-flash"], p);
+  assert.deepEqual(g, { prompt: "x", first_frame_url: p.imageUrl, duration: 4, resolution: "1080p", aspect_ratio: "9:16" });
+  assert.equal(m.kieInput("gemini-omni-flash-4k", m.KIE_MODELS["gemini-omni-flash-4k"], { ...p, seconds: 9 }).resolution, "4k");
   assert.equal(m.seedFor("01-hook-s1"), m.seedFor("01-hook-s1")); assert.notEqual(m.seedFor("01-hook-s1"), m.seedFor("01-hook-s2"));
 });
 
 /* ------------------------------------------------------------------ the money and the rows */
 
 test("requestFootage: one task per shot, priced at creation, the still as a signed link, and never twice", async () => {
-  const env = await newEnv();
+  const env = await newEnv({ KLEO_FOOTAGE_MODEL: "kling-3.0" }); // Kling's dialect (string duration, image_urls) is what this test reads
   const job = await filmJob(env);
   const kie = fakeKie(); globalThis.fetch = kie.fetch;
   const r = await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS, look: "realistic", format: "9:16" });
@@ -195,7 +220,7 @@ test("requestFootage: one task per shot, priced at creation, the still as a sign
 });
 
 test("requestFootage refuses BEFORE ordering when today's ceiling would be crossed, and when the job is not on the kie road", async () => {
-  const env = await newEnv({ DAILY_FOOTAGE_BUDGET_USD: "1.00" });
+  const env = await newEnv({ DAILY_FOOTAGE_BUDGET_USD: "1.00", KLEO_FOOTAGE_MODEL: "kling-3.0" });
   const job = await filmJob(env);
   const kie = fakeKie(); globalThis.fetch = kie.fetch;
   const r = await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS, format: "9:16" });
@@ -260,7 +285,7 @@ test("footageStatus: success is copied to R2 once and served to the box; fail is
   // The worker's own view through the route.
   const view = await (await get("footage")).json();
   assert.deepEqual(view.ready, ["01-hook-s1"]);
-  assert.equal(view.cost_usd, 1.35);
+  assert.equal(view.cost_usd, 1.04, "the default model, MiniMax H3: 4 s + 4 s (floor) + 8 s at 0.065 $/s");
 });
 
 test("PUT stills: the reference frame lands under the img/ name the download route signs; junk is refused", async () => {
@@ -282,10 +307,11 @@ test("the job spec tells the box which road and which model; the admin route swi
   const env = await newEnv();
   const job = await filmJob(env);
   const spec = await (await m.handleInternal(new Request(`http://kleo.test/internal/jobs/${job.id}`, { headers: { authorization: "Bearer wsecret" } }), env)).json();
-  assert.deepEqual(spec.footage, { backend: "kie", model: "kling-3.0" });
+  assert.deepEqual(spec.footage, { backend: "kie", model: "minimax-h3" }, "the default of the file is MiniMax H3");
   const admin = (method, body) => m.handleAdmin(new Request("http://kleo.test/internal/admin/footage", { method, headers: { authorization: "Bearer s3cret" }, body: body && JSON.stringify(body) }), env);
   let v = await (await admin("GET")).json();
   assert.equal(v.backend, "kie"); assert.equal(v.key_configured, true); assert.equal(v.max_video_s, 20); assert.equal(v.budget_usd, 5); assert.ok(v.models["wan-2.7"]);
+  assert.equal(v.model, "minimax-h3"); assert.deepEqual(v.models["gemini-omni-flash"].usd_per_clip, { 4: 0.315, 6: 0.42, 8: 0.525, 10: 0.63 }, "per-clip prices are shown to the admin");
   v = await (await admin("POST", { model: "seedance-2.0" })).json();
   assert.equal(v.model, "seedance-2.0");
   assert.equal((await (await m.handleInternal(new Request(`http://kleo.test/internal/jobs/${job.id}`, { headers: { authorization: "Bearer wsecret" } }), env)).json()).footage.model, "seedance-2.0");
@@ -293,6 +319,6 @@ test("the job spec tells the box which road and which model; the admin route swi
   v = await (await admin("POST", { backend: "local" })).json();
   assert.equal(v.backend, "local"); assert.equal(v.model, "seedance-2.0", "the model survives a backend switch");
   v = await (await admin("POST", { reset: true })).json();
-  assert.equal(v.backend, "kie"); assert.equal(v.model, "kling-3.0"); assert.equal(v.override, null);
+  assert.equal(v.backend, "kie"); assert.equal(v.model, "minimax-h3"); assert.equal(v.override, null);
   assert.equal((await m.handleAdmin(new Request("http://kleo.test/internal/admin/footage", { headers: { authorization: "Bearer wrong" } }), env)).status, 401);
 });

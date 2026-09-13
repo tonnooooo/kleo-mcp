@@ -39,31 +39,48 @@ export type FootageBackend = "kie" | "local";
 
 /**
  * The kie.ai models Kleo knows how to ask, keyed by the short name the config and the admin route use. `model` is the
- * identifier kie.ai's unified jobs API takes (read from docs.kie.ai on 13 September 2026, page by page, not assumed);
- * `seconds` is what the model accepts for one clip — a range of whole seconds, or a fixed list — and a shot is filmed
- * at the shortest length that covers it, then trimmed on the box. `usdPerSecond` is the ESTIMATE the daily budget
- * gate prices a task with: kie.ai's price page could not be read by a machine, so Kling's figure is the one quoted
- * on every comparison of the summer (std $0.07/s, pro $0.09/s) and the others are their neighbours' prices rounded
- * UP. The gate is only as honest as this column: re-read kie.ai/pricing and correct it before the beta opens.
+ * identifier kie.ai's unified jobs API takes (read from docs.kie.ai, page by page, not assumed); `seconds` is what the
+ * model accepts for one clip — a range of whole seconds, or a fixed list — and a shot is filmed at the shortest length
+ * that covers it, then trimmed on the box.
+ *
+ * PRICES ARE THE REAL ONES, read on 13 September 2026 from kie.ai's own price list (the HTML page refuses fetchers,
+ * its API does not: `POST https://api.kie.ai/client/v1/model-pricing/page {"pageNum":1,"pageSize":100}` with an
+ * `origin: https://kie.ai` header; 1 credit = $0.005). Image-to-video rows, audio off. Two shapes: most models bill
+ * `usdPerSecond`; Gemini and Veo bill PER CLIP whatever its length (`usdPerClip`, keyed by the clip seconds, and
+ * `usdPerSecond` is then the dearest per-second equivalent, the shortest clip, so the admin view stays comparable).
+ * The daily budget gate prices a task from these columns — an estimate below the truth lets it spend past the ceiling,
+ * which is exactly what the first table (guessed from summer comparisons) did: Seedance sat at 0.08 against 0.51.
+ *
+ * Why MiniMax H3 is the default (analysis of 13 September, docs/FOOTAGE-KIE.md §4): third of the world in the blind
+ * image-to-video arena (Artificial Analysis, no audio: 1351), above Kling 3.0 pro (1302), Veo 3.1 (1304) and Wan 2.7
+ * (1275); native 2K, so the box's 4K upscale starts from twice Kling's pixels; 0.065 $/s against Kling's 0.09.
  */
-export interface KieModel { model: string; usdPerSecond: number; seconds: { min: number; max: number } | number[]; note: string; verified: boolean }
+export interface KieModel { model: string; usdPerSecond: number; usdPerClip?: Record<number, number>; seconds: { min: number; max: number } | number[]; note: string; verified: boolean }
 export const KIE_MODELS: Record<string, KieModel> = {
+  "minimax-h3":     { model: "minimax-h3/image-to-video", usdPerSecond: 0.065, seconds: { min: 4, max: 15 }, verified: false,
+                      note: "MiniMax H3 image-to-video, 2K: the default since 13 September — arena rank 3 (Elo 1351), native 2K, 0.065 $/s. First frame conditioning, whole seconds 4-15. Not yet exercised end to end." },
+  "minimax-h3-768p": { model: "minimax-h3/image-to-video", usdPerSecond: 0.04, seconds: { min: 4, max: 15 }, verified: false,
+                      note: "MiniMax H3 at 768P: the same model, 0.04 $/s, fewer pixels for the 4K upscale." },
+  "gemini-omni-flash": { model: "google/gemini-omni-flash-1-1", usdPerSecond: 0.07875, usdPerClip: { 4: 0.315, 6: 0.42, 8: 0.525, 10: 0.63 }, seconds: [4, 6, 8, 10], verified: false,
+                      note: "Google Gemini Omni Flash 1.1, 1080p: arena rank 1 (Elo 1365). Billed per clip (0.315 $ for 4 s ... 0.63 $ for 10 s), so long shots are the better deal. First frame conditioning. Not yet exercised." },
+  "gemini-omni-flash-4k": { model: "google/gemini-omni-flash-1-1", usdPerSecond: 0.18375, usdPerClip: { 4: 0.735, 6: 0.84, 8: 0.945, 10: 1.05 }, seconds: [4, 6, 8, 10], verified: false,
+                      note: "Gemini Omni Flash 1.1 at native 4K: the cheapest native-4K clip on the list (0.735 $ for 4 s ... 1.05 $ for 10 s). For hero shots if the upscaled 4K does not convince." },
   "kling-3.0":      { model: "kling-3.0/video", usdPerSecond: 0.09, seconds: { min: 3, max: 15 }, verified: true,
-                      note: "Kling 3.0, mode pro (1920x1080 / 1080x1920). The default: strong, faithful camera moves, any length 3-15 s." },
+                      note: "Kling 3.0, mode pro (1920x1080 / 1080x1920), 0.09 $/s: the verified fallback — strong, faithful camera moves, any length 3-15 s; arena rank 15 (Elo 1302)." },
   "kling-3.0-std":  { model: "kling-3.0/video", usdPerSecond: 0.07, seconds: { min: 3, max: 15 }, verified: true,
-                      note: "Kling 3.0, mode std (1280x720): the same model, cheaper, less pixel for the 4K upscale." },
-  "kling-3.0-4k":   { model: "kling-3.0/video", usdPerSecond: 0.18, seconds: { min: 3, max: 15 }, verified: true,
-                      note: "Kling 3.0, mode 4K (3840x2160): native delivery size, no upscale; the dearest Kling." },
-  "kling-v3-turbo": { model: "kling/v3-turbo-image-to-video", usdPerSecond: 0.05, seconds: { min: 3, max: 15 }, verified: true,
-                      note: "Kling V3 turbo image-to-video, 1080p: the fast, cheap Kling." },
-  "veo-3.1":        { model: "veo-3-1", usdPerSecond: 0.16, seconds: [4, 6, 8], verified: false,
-                      note: "Google Veo 3.1 through the jobs API (model veo-3-1, generation_type FIRST_AND_LAST_FRAMES_2_VIDEO with one frame). Strict safety filter; the field names of this route are the ones its doc page shows but the route itself has not been exercised yet." },
-  "wan-2.7":        { model: "wan/2-7-image-to-video", usdPerSecond: 0.05, seconds: { min: 2, max: 15 }, verified: true,
-                      note: "Wan 2.7, 1080p, first-frame conditioning, negative prompt and seed: the budget option." },
-  "seedance-2.0":   { model: "bytedance/seedance-2", usdPerSecond: 0.08, seconds: { min: 4, max: 15 }, verified: true,
-                      note: "ByteDance Seedance 2.0, 1080p, first-frame conditioning: fluid motion, good with people." },
+                      note: "Kling 3.0, mode std (1280x720), 0.07 $/s: the same model, cheaper, less pixel for the 4K upscale." },
+  "kling-3.0-4k":   { model: "kling-3.0/video", usdPerSecond: 0.335, seconds: { min: 3, max: 15 }, verified: true,
+                      note: "Kling 3.0, mode 4K (3840x2160), 0.335 $/s: native delivery size, no upscale; 3.7x the pro price." },
+  "kling-v3-turbo": { model: "kling/v3-turbo-image-to-video", usdPerSecond: 0.1125, seconds: { min: 3, max: 15 }, verified: true,
+                      note: "Kling 3.0 turbo image-to-video, 1080p, 0.1125 $/s: faster than pro, not cheaper." },
+  "veo-3.1":        { model: "veo-3-1", usdPerSecond: 0.31875, usdPerClip: { 4: 1.275, 6: 1.275, 8: 1.275 }, seconds: [4, 6, 8], verified: false,
+                      note: "Google Veo 3.1 through the jobs API (model veo-3-1, generation_type FIRST_AND_LAST_FRAMES_2_VIDEO with one frame). Billed per clip; which tier this route bills is unknown, so the gate counts the Quality one (1.275 $ a clip; Fast is 0.325, Lite 0.175). Strict safety filter; the route has not been exercised yet." },
+  "wan-2.7":        { model: "wan/2-7-image-to-video", usdPerSecond: 0.12, seconds: { min: 2, max: 15 }, verified: true,
+                      note: "Wan 2.7, 1080p, 0.12 $/s, first-frame conditioning, negative prompt and seed. Arena rank 15 (Elo 1275), dearer than Kling pro." },
+  "seedance-2.0":   { model: "bytedance/seedance-2", usdPerSecond: 0.51, seconds: { min: 4, max: 15 }, verified: true,
+                      note: "ByteDance Seedance 2.0, 1080p image-to-video, 0.51 $/s on kie.ai (720p is 0.205): fluid with people, arena rank 4 at 720p (Elo 1342), but 5.7x the price of Kling pro here. Keep for comparisons, not for production." },
 };
-export const DEFAULT_KIE_MODEL = "kling-3.0";
+export const DEFAULT_KIE_MODEL = "minimax-h3";
 
 /** The kie.ai unified API (docs.kie.ai/market/common): one endpoint creates a task for any market model, one reads it. */
 export const KIE_BASE = "https://api.kie.ai";
@@ -105,7 +122,14 @@ export function clipSecondsFor(spec: KieModel, seconds: number): number {
   return Math.min(spec.seconds.max, Math.max(spec.seconds.min, want));
 }
 
-export const clipCostUsd = (spec: KieModel, clipSeconds: number): number => Math.round(spec.usdPerSecond * clipSeconds * 10000) / 10000;
+/** What one clip costs: the per-clip figure when the model bills that way, else seconds times the rate. A clip length
+ *  the per-clip table does not list (it cannot happen after clipSecondsFor, but the gate must never under-count) is
+ *  charged at the dearest listed clip. */
+export function clipCostUsd(spec: KieModel, clipSeconds: number): number {
+  const perClip = spec.usdPerClip;
+  const usd = perClip ? (perClip[clipSeconds] ?? Math.max(...Object.values(perClip))) : spec.usdPerSecond * clipSeconds;
+  return Math.round(usd * 10000) / 10000;
+}
 
 /* ------------------------------------------------------------------ live override (no deploy) */
 
@@ -213,8 +237,12 @@ async function kie<T>(env: Env, method: "GET" | "POST", url: string, body?: unkn
  *  veo-3-1                   prompt, image_urls[], generation_type, aspect_ratio, resolution, duration 4|6|8
  *  wan/2-7-image-to-video    prompt, negative_prompt, first_frame_url, resolution, duration (int), seed
  *  bytedance/seedance-2      prompt, first_frame_url, duration (int), aspect_ratio, resolution, generate_audio
+ *  minimax-h3/image-to-video prompt (≤7000 chars), first_frame_url | last_frame_url (one required), duration (int 4-15), resolution 768P|2K
+ *  google/gemini-omni-flash-1-1  prompt, first_frame_url, duration 4|6|8|10 (int), resolution 360p|720p|1080p|4k, aspect_ratio 16:9|9:16
  * Audio is always off: the narration is Kleo's. Without a still the same call becomes text-to-video where the model
- * allows it (Kling, Veo) — the box always sends one, this is the fallback for a still that failed to upload.
+ * allows it (Kling, Veo) — the box always sends one, this is the fallback for a still that failed to upload. MiniMax
+ * has no text-to-video on this model id: without a still the input carries no frame and kie.ai refuses the task, which
+ * is the right outcome (a clip without its reference frame is not the shot that was planned).
  */
 export function kieInput(name: string, spec: KieModel, p: { prompt: string; imageUrl: string | null; seconds: number; format: string; seed: number }): Record<string, unknown> {
   const aspect = p.format === "16:9" ? "16:9" : "9:16";
@@ -227,6 +255,8 @@ export function kieInput(name: string, spec: KieModel, p: { prompt: string; imag
   if (name.startsWith("veo")) return { prompt: p.prompt, ...(p.imageUrl ? { image_urls: [p.imageUrl], generation_type: "FIRST_AND_LAST_FRAMES_2_VIDEO" } : { generation_type: "TEXT_2_VIDEO" }), aspect_ratio: aspect, resolution: "1080p", duration };
   if (name.startsWith("wan")) return { prompt: p.prompt, negative_prompt: KIE_NEGATIVE, ...(p.imageUrl ? { first_frame_url: p.imageUrl } : {}), resolution: "1080p", duration, seed: p.seed, prompt_extend: false, watermark: false };
   if (name.startsWith("seedance")) return { prompt: p.prompt, ...(p.imageUrl ? { first_frame_url: p.imageUrl } : {}), duration, aspect_ratio: aspect, resolution: "1080p", generate_audio: false };
+  if (name.startsWith("minimax")) return { prompt: p.prompt.slice(0, 7000), ...(p.imageUrl ? { first_frame_url: p.imageUrl } : {}), duration, resolution: name.endsWith("-768p") ? "768P" : "2K" };
+  if (name.startsWith("gemini")) return { prompt: p.prompt, ...(p.imageUrl ? { first_frame_url: p.imageUrl } : {}), duration, resolution: name.endsWith("-4k") ? "4k" : "1080p", aspect_ratio: aspect };
   return { prompt: p.prompt, ...(p.imageUrl ? { image_urls: [p.imageUrl] } : {}), duration: String(duration), aspect_ratio: aspect };
 }
 

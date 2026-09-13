@@ -251,7 +251,7 @@ export async function handleAdmin(request: Request, env: Env): Promise<Response>
       return { backend: footageBackendFor(env, probe, cfg), model: kieModelFor(env, cfg).name, override: cfg,
         key_configured: !!(env.KIE_API_KEY && env.KIE_API_KEY.trim()), max_video_s: int(env.KIE_MAX_VIDEO_S, 20),
         spend_today_usd: Math.round((await footageSpentTodayUsd(env)) * 1000) / 1000, budget_usd: num(env.DAILY_FOOTAGE_BUDGET_USD, 5),
-        models: Object.fromEntries(Object.entries(KIE_MODELS).map(([k, m]) => [k, { usd_per_s: m.usdPerSecond, seconds: m.seconds, verified: m.verified, note: m.note }])) };
+        models: Object.fromEntries(Object.entries(KIE_MODELS).map(([k, m]) => [k, { usd_per_s: m.usdPerSecond, ...(m.usdPerClip ? { usd_per_clip: m.usdPerClip } : {}), seconds: m.seconds, verified: m.verified, note: m.note }])) };
     };
     if (request.method === "GET") return json(await view());
     if (request.method !== "POST") return json({ error: "method" }, 405);

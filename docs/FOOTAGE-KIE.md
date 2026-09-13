@@ -28,10 +28,12 @@ prompt → MCP → storyboard + immagini (Workers AI o GPU) → Vast 16 GB: voce
   stessi link firmati `/dl/` che le immagini usano già (`dl.ts`).
 - Ogni task viene **prezzato alla creazione** dal listino `KIE_MODELS` e scritto nella tabella `footage`. Il tetto
   giornaliero `DAILY_FOOTAGE_BUDGET_USD` (5 $) somma le righe di oggi PRIMA di ordinare: oltre, la richiesta è
-  rifiutata con la frase esatta e nessuna clip viene ordinata. Il listino è una **stima** (la pagina prezzi di
-  kie.ai non è leggibile da macchina): Kling 3.0 pro 0,09 $/s, std 0,07 $/s; gli altri sono arrotondati per
-  eccesso. Va riletto su kie.ai/pricing prima di aprire la beta.
-- Un film da 20 s su Kling 3.0 pro: 6-8 inquadrature da 3-4 s → ~1,5-2,5 $ di clip, più ~0,10 $ di scheda.
+  rifiutata con la frase esatta e nessuna clip viene ordinata. Il listino è quello **vero**, letto il 13 settembre
+  dall'API del listino di kie.ai (la pagina HTML rifiuta i fetcher, l'API no):
+  `curl -X POST https://api.kie.ai/client/v1/model-pricing/page -H 'content-type: application/json' -H 'origin: https://kie.ai' -d '{"pageNum":1,"pageSize":100}'`
+  (5 pagine, 482 righe; 1 credito kie.ai = 0,005 $). Le stime di prima erano sbagliate in peggio fino a 6 volte
+  (Seedance 0,08 contro 0,51 $/s): un tetto che somma stime basse non è un tetto.
+- Un film da 20 s: 6-8 inquadrature da 4 s → ~1,3 $ su MiniMax H3, ~1,8 $ su Kling 3.0 pro, più ~0,10 $ di scheda.
 
 ## 3. Gli interruttori
 
@@ -54,20 +56,32 @@ curl -s -X POST https://mcp.kleooai.com/internal/admin/footage -H "Authorization
 
 `{"backend":"local"}` spegne kie.ai per i prossimi film; `{"reset":true}` torna alla configurazione del file.
 
-## 4. I modelli (letti da docs.kie.ai il 13 settembre, pagina per pagina)
+## 4. I modelli (schede lette su docs.kie.ai, prezzi dal listino, classifica Artificial Analysis i2v senza audio)
 
-| nome Kleo | modello kie.ai | durate | note |
-|---|---|---|---|
-| `kling-3.0` | `kling-3.0/video`, mode `pro` | 3-15 s interi | 1920×1080; il default |
-| `kling-3.0-std` | idem, mode `std` | 3-15 | 1280×720, più economico |
-| `kling-3.0-4k` | idem, mode `4K` | 3-15 | 3840×2160 nativo, il più caro |
-| `kling-v3-turbo` | `kling/v3-turbo-image-to-video` | 3-15 | veloce, 1080p |
-| `veo-3.1` | `veo-3-1` (jobs API) | 4, 6, 8 | filtro di sicurezza severo; **rotta non ancora provata** |
-| `wan-2.7` | `wan/2-7-image-to-video` | 2-15 | seed, negative prompt; l'economico |
-| `seedance-2.0` | `bytedance/seedance-2` | 4-15 | fluido con le persone |
+| nome Kleo | modello kie.ai | prezzo | durate | Elo | note |
+|---|---|---|---|---|---|
+| **`minimax-h3`** | `minimax-h3/image-to-video`, 2K | 0,065 $/s | 4-15 s interi | 1351 (3º) | **il default dal 13 settembre**; first_frame_url, niente aspect ratio (decide il fotogramma) |
+| `minimax-h3-768p` | idem, 768P | 0,04 $/s | 4-15 | — | stesso modello, meno pixel per l'upscale |
+| `gemini-omni-flash` | `google/gemini-omni-flash-1-1`, 1080p | **a clip**: 0,315 $ (4 s) · 0,42 (6) · 0,525 (8) · 0,63 (10) | 4/6/8/10 | 1365 (1º) | lo sfidante; conviene con inquadrature lunghe |
+| `gemini-omni-flash-4k` | idem, 4k nativo | a clip: 0,735 · 0,84 · 0,945 · 1,05 $ | 4/6/8/10 | — | il 4K nativo meno caro del listino |
+| `kling-3.0` | `kling-3.0/video`, mode `pro` | 0,09 $/s | 3-15 | 1302 | 1920×1080; la riserva collaudata |
+| `kling-3.0-std` | idem, mode `std` | 0,07 $/s | 3-15 | 1292 | 1280×720 |
+| `kling-3.0-4k` | idem, mode `4K` | 0,335 $/s | 3-15 | — | 3840×2160 nativo, 3,7 volte il pro |
+| `kling-v3-turbo` | `kling/v3-turbo-image-to-video` | 0,1125 $/s | 3-15 | — | più veloce, non più economico |
+| `veo-3.1` | `veo-3-1` (jobs API) | a clip, tetto Quality 1,275 $ (Fast 0,325, Lite 0,175) | 4, 6, 8 | 1304 | filtro severo; **rotta non provata**, il gate conta il caso caro |
+| `wan-2.7` | `wan/2-7-image-to-video` | 0,12 $/s | 2-15 | 1275 | seed, negative prompt; più caro di Kling pro |
+| `seedance-2.0` | `bytedance/seedance-2`, 1080p | 0,51 $/s | 4-15 | 1342 (a 720p) | fluido con le persone, ma 5,7 volte Kling: solo confronti |
+
+Perché MiniMax H3 è il default: terzo al mondo nella classifica a voti ciechi, sopra Kling pro, Veo 3.1 e Wan 2.7;
+nativo 2K, quindi l'upscale a 4K sulla macchina parte da il doppio dei pixel di Kling 1080p; il 28 % meno di Kling.
+Con i 7 crediti dello stile realistic (2,80-3,50 €) è l'unico modello di fascia alta che almeno pareggia a 60 s.
+Uno Short da 60 s costa ~4 $ su MiniMax, ~5,5 $ su Kling pro, ~30 $ su Seedance 1080p. Il prezzo a lunghezza
+(1 credito ogni 5 s di film) è la strada per il margine; la decisione è del proprietario.
 
 Ogni inquadratura viene girata alla durata intera più corta che la copre (3,2 s → 4 s) e tagliata sulla macchina
 da `build_footage`, che già sapeva gestire clip più lunghe dello stacco. L'audio è sempre spento: la voce è nostra.
+MiniMax e Gemini senza fotogramma di riferimento non hanno una strada text-to-video su questo id: la task viene
+rifiutata da kie.ai e l'inquadratura resta assente, che è l'esito giusto.
 
 ## 5. La rinuncia resta la stessa
 
@@ -78,8 +92,10 @@ task). Gli URL dei risultati di kie.ai scadono in ~24 h: la clip viene copiata s
 
 ## 6. Cosa manca
 
-- Il listino va confermato sulla pagina prezzi ufficiale.
-- La rotta Veo 3.1 usa i nomi dei campi della sua pagina di documentazione ma non è stata esercitata.
+- MiniMax H3 e Gemini Omni Flash hanno i campi delle loro pagine di documentazione ma **non sono ancora stati
+  esercitati** da un film vero: il primo test da ≤ 20 s (~1,3 $) dice se il default regge.
+- La rotta Veo 3.1 usa i nomi dei campi della sua pagina di documentazione ma non è stata esercitata; il gate la
+  conta al prezzo Quality finché non si sa quale livello fattura.
 - Nessun callback: il server interroga kie.ai a ogni poll della macchina (ogni 12 s, N task). Basta per la prova;
   un callback verso `/internal/kie/callback` farebbe risparmiare qualche chiamata, non minuti.
 - La misura del movimento (flusso ottico) non viene applicata alle clip API: rigenerare costa soldi veri, e i
