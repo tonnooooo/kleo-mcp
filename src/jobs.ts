@@ -150,11 +150,11 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   // not add up), before anything is charged; kept exactly, so the film the user read about is the film planned.
   let treatment: Record<string, unknown> | null = null;
   if (input.treatment !== undefined && input.treatment !== null) {
-    const problems = treatmentProblems(input.treatment, duration);
+    const problems = treatmentProblems(input.treatment, duration, language);
     if (problems.length)
       throw new JobError(`The treatment has ${plural(problems.length, "problem")} (nothing was charged). Fix ${problems.length === 1 ? "it" : "them"} and call kleo_create_video again, or leave the treatment out and Kleo writes one:\n- ${problems.join("\n- ")}`);
     const tIn = input.treatment as Record<string, unknown>;
-    const fitted = repairTreatment(tIn, duration, variationFor(typeof tIn.variation === "string" ? tIn.variation : ""));
+    const fitted = repairTreatment(tIn, duration, variationFor(typeof tIn.variation === "string" ? tIn.variation : ""), language);
     treatment = fitted as unknown as Record<string, unknown>;
     // With a client storyboard the planner never runs, so the treatment is attached to the storyboard here: it is
     // how the finished video can be read back to the film it was meant to be, on either road into the queue.

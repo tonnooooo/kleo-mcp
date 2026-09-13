@@ -29,3 +29,5 @@ Da qui in poi: una riga qui PRIMA di lanciare.
     2026-09-13T12:20Z | BOSS/treatment | treatment-make.mjs: 2 treatment su scout + 1 su gpt-oss-120b, richiesta "accuracy in medicine" 60 s | 3 | 0 | RIFIUTATA 4006 alle 12:16Z: quota gia' finita (job di produzione di altre sessioni); la misura sul modello vero resta da fare
 
     2026-09-13T13:05Z | BOSS/treatment | POST /internal/admin/treatment in produzione, "accuracy in medicine" 60 s, n=2, scout | 2 | ~350 se risponde | RIFIUTATA 4006 (quota ancora finita alle 13:05Z); la rotta funziona, la misura resta da fare dopo le 00:00Z
+
+    2026-09-13T13:06Z | BOSS/treatment | PIANO WORKERS PAID ATTIVO dal 13:06Z: il 4006 non torna piu; oltre i 10.000 gratis si paga 0,011 $/1.000. Da qui il registro conta la SPESA. Misura treatment: 5 richieste x 3 su scout + 5 x 2 su gpt-oss-120b e llama-3.3-70b | ~35 | ~84 a treatment su scout | in corso

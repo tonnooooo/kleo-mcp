@@ -1206,6 +1206,12 @@ export async function callModel(env: Env, model: string, messages: { role: strin
   const r = isObj(res) ? res : {};
   const usage = (isObj(r.usage) ? r.usage : {}) as Usage;
   let raw: unknown = r.response;
+  // Chat-completions shaped models: gpt-oss-120b on Workers AI answers {choices:[{message:{content}}]} (measured
+  // 13 September with a JSON schema; ten treatments came back "not a JSON object" because this branch was missing).
+  if (raw === undefined && Array.isArray(r.choices)) {
+    const msg = (r.choices[0] as Record<string, unknown> | undefined)?.message as Record<string, unknown> | undefined;
+    if (typeof msg?.content === "string") raw = msg.content;
+  }
   if (raw === undefined && Array.isArray(r.output)) { // Responses-API shaped models (gpt-oss)
     const msg = (r.output as Record<string, unknown>[]).find((o) => o.type === "message");
     const content = Array.isArray(msg?.content) ? (msg!.content as Record<string, unknown>[]).find((x) => typeof x.text === "string") : null;
@@ -1420,8 +1426,8 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
       let raw: unknown;
       try { raw = clean(await call(treatmentPrompt({ prompt: job.prompt, duration_s: plan.duration, format: plan.format, language: plan.language }, v, feedback), treatmentSchema(), TREATMENT_MAX_TOKENS, { system: MASTER_PROMPT, temperature: TREATMENT_TEMPERATURE, model: env.TREATMENT_MODEL || undefined })); }
       catch (e) { history.push([`treatment: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) { transient = e; break; } continue; }
-      const t = repairTreatment(raw, plan.duration, v);
-      if (!t) { feedback = treatmentProblems(raw, plan.duration); history.push([`treatment: rejected (${feedback.slice(0, 3).join("; ")})`]); continue; }
+      const t = repairTreatment(raw, plan.duration, v, plan.language);
+      if (!t) { feedback = treatmentProblems(raw, plan.duration, plan.language); history.push([`treatment: rejected (${feedback.slice(0, 3).join("; ")})`]); continue; }
       treatment = t;
     }
     if (transient) throw transient;
@@ -1653,8 +1659,8 @@ export async function writeTreatment(env: Env, input: { prompt: string; duration
       if (isTransientAiError(e)) { transient = true; break; }
       continue;
     }
-    const t = repairTreatment(raw, input.duration_s, v);
-    if (!t) { feedback = treatmentProblems(raw, input.duration_s); history.push(`rejected: ${feedback.slice(0, 4).join("; ")}`); continue; }
+    const t = repairTreatment(raw, input.duration_s, v, input.language);
+    if (!t) { feedback = treatmentProblems(raw, input.duration_s, input.language); history.push(`rejected: ${feedback.slice(0, 4).join("; ")}`); continue; }
     treatment = t;
   }
   const price = PRICES[model];

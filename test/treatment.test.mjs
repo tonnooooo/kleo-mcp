@@ -6,9 +6,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   T, DEVICES, DEVICE_IDS, OPENING_IDS, MASTER_PROMPT, variationFor, treatmentPrompt, treatmentSchema,
-  repairTreatment, treatmentProblems, treatmentOf, treatmentBlock, treatmentText, wordCount,
+  repairTreatment, treatmentProblems, treatmentOf, treatmentBlock, treatmentText, wordCount, languageOf,
 } from "../src/treatment.ts";
-import { generateStoryboard, TREATMENT_TEMPERATURE, writeTreatment } from "../src/storyboard.ts";
+import { generateStoryboard, TREATMENT_TEMPERATURE, writeTreatment, callModel } from "../src/storyboard.ts";
 import { validateStoryboard } from "../src/keou-contract.ts";
 import { ACTIVE_TEMPLATE, PUBLIC_TEMPLATES, filmTemplateFor, isPublicTemplate } from "../src/templates.ts";
 import { TREATMENT_FIXTURE } from "./fixtures/treatment.mjs";
@@ -40,6 +40,9 @@ test("the master prompt is a method for a film Kleo can render, and the user mes
   const p = treatmentPrompt({ prompt: "Crea un video sulla precisione delle diagnosi mediche", duration_s: 90, format: "16:9", language: "it" }, v);
   assert.match(p, /precisione delle diagnosi mediche/);
   assert.match(p, /90 seconds, narrated in Italian/);
+  assert.match(p, /LANGUAGE OF THIS TREATMENT: ITALIAN/, "an Italian film is told its language up front, not only in the master prompt");
+  assert.match(p, /Everything in Italian\.$/);
+  assert.ok(!/LANGUAGE OF THIS TREATMENT/.test(treatmentPrompt({ prompt: "x y z", duration_s: 30, format: "9:16", language: "en" }, v)));
   assert.match(p, new RegExp(`narrative device: ${v.device} — ${DEVICES[v.device].slice(0, 20)}`));
   assert.match(p, /TASK: write the TREATMENT/);
   assert.match(p, new RegExp(`"device":"${v.device}"`));
@@ -81,7 +84,7 @@ test("what is not a treatment is refused in words, and the words name the field"
   assert.ok(p.some((m) => /act 1: needs a purpose/.test(m)));
   assert.ok(p.some((m) => /act 1: needs seconds/.test(m)));
   assert.ok(p.some((m) => /^motifs: 1/.test(m)));
-  assert.ok(p.some((m) => /^prose: \d+ words, it needs at least 100/.test(m)));
+  assert.ok(p.some((m) => /^prose: \d+ words, it needs at least 140/.test(m)));
   assert.equal(repairTreatment(bad, 45, v), null);
   assert.deepEqual(treatmentProblems("nope"), ["the treatment must be a JSON object"]);
   // A wrong device is a problem for a client (it is told), and falls back to the draw once the rest is fine.
@@ -90,6 +93,32 @@ test("what is not a treatment is refused in words, and the words name the field"
   // Acts that add up to a different film are refused, not rescaled: the author chose those seconds for this length.
   const wrongSum = { ...TREATMENT_FIXTURE(45), acts: [{ name: "A", purpose: "the viewer learns a thing", seconds: 300 }, { name: "B", purpose: "the viewer learns another", seconds: 300 }] };
   assert.ok(treatmentProblems(wrongSum, 45).some((m) => /^acts: their seconds add up to 600, the film is 45/.test(m)));
+});
+
+test("the defects the production model really has are sent back in words: angle = logline, function names, the device said out loud, the wrong language", () => {
+  const good = TREATMENT_FIXTURE(45);
+  assert.deepEqual(treatmentProblems(good, 45, "en"), []);
+  // 1. The angle restates the logline (measured: three out of three on the relay request).
+  const restated = { ...good, logline: "A relay attack steals a keyless car in under a minute, but a cheap fix can prevent it", angle: "A relay attack can steal a keyless car in under a minute, but there is a cheap fix" };
+  assert.ok(treatmentProblems(restated, 45).some((m) => /^angle: it restates the logline/.test(m)));
+  // 2. Acts named for their function (measured: INTRO, SETUP, CONCLUSION, RESOLUTION, THE_CHALLENGE, INTRO 3 s).
+  for (const name of ["INTRO", "Setup", "THE CONCLUSION", "THE_CHALLENGE", "RESOLUTION", "PART 2", "Introduzione"]) {
+    const acts = [{ ...good.acts[0], name }, ...good.acts.slice(1)];
+    assert.ok(treatmentProblems({ ...good, acts }, 45).some((m) => new RegExp(`^act 1: "${name}" is a function, not a name`).test(m)), name);
+  }
+  assert.deepEqual(treatmentProblems({ ...good, acts: [{ ...good.acts[0], name: "THE SECOND READING" }, ...good.acts.slice(1)] }, 45), []);
+  // 3. The device named out loud ("A witness explains why bread rises").
+  const told = { ...good, device: "the-witness", logline: "A witness explains why bread rises in a small bakery before dawn." };
+  assert.ok(treatmentProblems(told, 45).some((m) => /names the narrative device \("witness"\)/.test(m)));
+  assert.deepEqual(treatmentProblems({ ...good, device: "the-witness" }, 45), [], "the same device, unnamed, is fine");
+  // 4. An Italian film treated in English (measured: five out of six Italian requests).
+  assert.ok(treatmentProblems(good, 45, "it").some((m) => /^language: the treatment is written in English, the film is in Italian/.test(m)));
+  const italian = { ...good, logline: "Una nave pirata trova un'isola che non è su nessuna mappa e il suo capitano decide di non segnarla.", angle: "Un'isola che non esiste sulle mappe vale più di una che c'è: la storia di chi sceglie di tacere.",
+    prose: Array.from({ length: 12 }, (_, i) => `Frase ${i + 1}: la nave scivola nella nebbia mentre il capitano guarda la costa che non dovrebbe esserci, e nessuno della ciurma parla. `).join("") };
+  assert.deepEqual(treatmentProblems(italian, 45, "it"), []);
+  assert.equal(languageOf(italian.prose), "it"); assert.equal(languageOf(good.prose), "en"); assert.equal(languageOf("ok"), null);
+  assert.ok(repairTreatment(italian, 45, v, "it"));
+  assert.equal(repairTreatment(good, 45, v, "it"), null, "and the repair refuses what the check refuses");
 });
 
 test("treatmentOf reads a treatment back from params or a storyboard, and nothing from anything else", () => {
@@ -215,6 +244,17 @@ test("the public film template spans both internal rows: the length picks the ro
   assert.ok(isPublicTemplate("film") && isPublicTemplate("film-long"), "a job row planned as film-long is still a public film");
   assert.ok(!isPublicTemplate("viral-short") && !isPublicTemplate(undefined));
   assert.deepEqual(PUBLIC_TEMPLATES.map((t) => t.id), ["film"], "but the user is shown one template");
+});
+
+/* ------------------------------------------------------------------ the shapes a model answers in */
+
+test("callModel reads the three answer shapes Workers AI models use: response, chat choices, responses output", async () => {
+  const schema = { type: "object", properties: { a: { type: "number" } }, required: ["a"], additionalProperties: false };
+  const env = (result) => ({ AI: { async run() { return result; } } });
+  assert.deepEqual((await callModel(env({ response: { a: 1 }, usage: {} }), "m", [], schema, 10)).raw, { a: 1 });
+  // gpt-oss-120b on Workers AI (measured 13 September): chat-completions, the JSON as a string in message.content.
+  assert.deepEqual((await callModel(env({ choices: [{ message: { content: "{\n \"a\": 2\n}", reasoning: "…" } }], usage: {} }), "m", [], schema, 10)).raw, { a: 2 });
+  assert.deepEqual((await callModel(env({ output: [{ type: "reasoning" }, { type: "message", content: [{ type: "output_text", text: '{"a":3}' }] }], usage: {} }), "m", [], schema, 10)).raw, { a: 3 });
 });
 
 /* ------------------------------------------------------------------ on its own, for kleo_adapt_prompt */
