@@ -71,6 +71,9 @@ RUN curl -fsSL --retry 3 --max-time 180 "https://raw.githubusercontent.com/googl
     && python3 -c 'import hashlib,sys;A="/opt/kleo/keou/engine/assets/";W=[("cartoon.ttf",683200,"bc1b9f1191c0d6d23cb2ce0af66aba82ddbf8d6c"),("real.ttf",172088,"d1a3b9cb1325bf20b3a06ef9849d21c411212a3b")];D={n:open(A+n,"rb").read() for n,_,_ in W};B={n:hashlib.sha1(("blob %d"%len(d)).encode()+bytes(1)+d).hexdigest() for n,d in D.items()};bad=["%s: got %d bytes blob %s, want %d bytes blob %s"%(n,len(D[n]),B[n],s,h) for n,s,h in W if len(D[n])!=s or B[n]!=h];bad and sys.exit("Font verification failed: "+"; ".join(bad));print("FONTS_OK",[(n,len(d)) for n,d in D.items()])'
 
 COPY worker/kleo_pictures.py /opt/kleo/kleo_pictures.py
+# The generated-motion module. It was never copied: in production every storyboard that asked to be filmed fell
+# back to the stills with "kleo_video is not in this image" in a log nobody read (found 13 September).
+COPY worker/kleo_video.py /opt/kleo/kleo_video.py
 COPY worker/kleo_worker.py /opt/kleo/kleo_worker.py
 RUN node --version > runtime-node.txt && ffmpeg -version | head -1 > runtime-ffmpeg.txt \
     && pip freeze > runtime-python.txt && python3 -c "import contract; print('contract', contract.VERSION, sorted(contract.VOICES))"

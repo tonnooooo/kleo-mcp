@@ -134,6 +134,35 @@ def can_generate():
 # for. The frame arrives sharp and on purpose; the video model only has to make it move. That is how the
 # commercial tools the owner measures against work (image first, motion second), and it is the difference
 # between a scene the model half-imagined at 704 px and one it was handed.
+def _hf_offline(enabled):
+    """Flip huggingface_hub's offline mode at run time (same as kleo_pictures: the constant is read at import, so the
+    module attribute is patched as well). Returns the previous (env, constant) pair for _hf_restore."""
+    prev_env = os.environ.get("HF_HUB_OFFLINE")
+    os.environ["HF_HUB_OFFLINE"] = "1" if enabled else "0"
+    prev_const = None
+    try:
+        from huggingface_hub import constants
+        prev_const = getattr(constants, "HF_HUB_OFFLINE", None)
+        constants.HF_HUB_OFFLINE = bool(enabled)
+    except Exception:
+        pass
+    return prev_env, prev_const
+
+
+def _hf_restore(prev):
+    prev_env, prev_const = prev
+    if prev_env is None:
+        os.environ.pop("HF_HUB_OFFLINE", None)
+    else:
+        os.environ["HF_HUB_OFFLINE"] = prev_env
+    if prev_const is not None:
+        try:
+            from huggingface_hub import constants
+            constants.HF_HUB_OFFLINE = prev_const
+        except Exception:
+            pass
+
+
 KINDS = {"t2v": "WanPipeline", "i2v": "WanImageToVideoPipeline"}
 _kind = None
 
@@ -149,8 +178,17 @@ def load_pipeline(kind="t2v"):
     cls = getattr(diffusers, KINDS[kind])
     src = MODEL_DIR if os.path.isdir(os.path.join(MODEL_DIR, "model_index.json")) else MODEL_ID
     t0 = time.time()
-    vae = AutoencoderKLWan.from_pretrained(src, subfolder="vae", torch_dtype=torch.float32)
-    pipe = cls.from_pretrained(src, vae=vae, torch_dtype=torch.bfloat16).to("cuda")
+    # The image sets HF_HUB_OFFLINE=1 (for Kokoro) and does not bake this model — on purpose: every gigabyte in the
+    # image is pulled again by every rented instance, and the 10 GB come from Hugging Face in about three minutes
+    # on the instance itself. So the download must be allowed HERE, at run time, the way kleo_pictures does for the
+    # realistic checkpoint; until 13 September production could never have filmed a shot: the worker inherited
+    # offline mode, the model "was unavailable", and every video backdrop fell back to the stills.
+    prev = _hf_offline(False)
+    try:
+        vae = AutoencoderKLWan.from_pretrained(src, subfolder="vae", torch_dtype=torch.float32)
+        pipe = cls.from_pretrained(src, vae=vae, torch_dtype=torch.bfloat16).to("cuda")
+    finally:
+        _hf_restore(prev)
     try:
         pipe.vae.enable_tiling()          # the VAE is what runs out of memory first at 720p
     except Exception as e:
