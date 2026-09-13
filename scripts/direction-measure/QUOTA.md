@@ -25,3 +25,5 @@ cancellato. Un file che git ignora non e' condiviso, e' privato per sbaglio.
 
 Lezione: ~8.400 dei 10.000 neuroni del giorno li ha presi questa sessione senza che l'altra potesse vederlo.
 Da qui in poi: una riga qui PRIMA di lanciare.
+
+    2026-09-13T12:20Z | BOSS/treatment | treatment-make.mjs: 2 treatment su scout + 1 su gpt-oss-120b, richiesta "accuracy in medicine" 60 s | 3-6 | ~600 | in corso

@@ -71,6 +71,11 @@ export interface JobParams {
    * the user a different video from the one the system understood, with no way to find out why.
    */
   style_capped_from?: string;
+  /**
+   * The treatment the caller wrote or approved through kleo_adapt_prompt (src/treatment.ts). When present the
+   * planner plans under it instead of writing its own: the user saw this film, so this is the film that gets made.
+   */
+  treatment?: Record<string, unknown>;
 }
 
 export interface JobFile {
@@ -289,6 +294,13 @@ export async function countOpenForUser(env: Env, userId: string): Promise<number
  * Failed and cancelled videos are NOT counted: their credits were given back, and a limit that counted them would
  * lock a user out of the day with credits they cannot spend — exactly the two failures a first visit is likeliest to hit.
  */
+/** Audit rows of one event for one user in this UTC day: the counter behind per-account daily caps that are not jobs. */
+export async function countAuditTodayForUser(env: Env, userId: string, event: string): Promise<number> {
+  const r = await env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM audit WHERE user_id = ? AND event = ? AND at >= strftime('%Y-%m-%dT00:00:00.000Z','now')"
+  ).bind(userId, event).first<{ n: number }>();
+  return r?.n ?? 0;
+}
 export async function countJobsTodayForUser(env: Env, userId: string): Promise<number> {
   const r = await env.DB.prepare(
     "SELECT COUNT(*) AS n FROM jobs WHERE user_id = ? AND created_at >= strftime('%Y-%m-%dT00:00:00.000Z','now') AND state NOT IN ('failed','cancelled')"

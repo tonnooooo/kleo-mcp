@@ -35,6 +35,12 @@ import {
   SHOT_KINDS, presetFor, durationFor, moveClassOf, directionOf, isLoud, resolveKind, LOUD_MAX_PER_WINDOW, LOUD_WINDOW_S,
   type ShotKind,
 } from "./shot-grammar.ts";
+// The treatment: the request expanded into a film by a producer, before the direction. Its words, shape, repair and
+// variation live in src/treatment.ts; this file owns only the call (the model, the price, the retry).
+import {
+  MASTER_PROMPT, treatmentPrompt, treatmentSchema, repairTreatment, treatmentProblems, treatmentBlock, treatmentOf, variationFor,
+  type Treatment,
+} from "./treatment.ts";
 import cinemaExample from "../worker/keou/examples/short-relay-cinema/project.json" with { type: "json" };
 import {
   EXPLAINER_GUIDANCE, EXPLAINER_WORDS, checkExplainer, explainerRules, explainerSceneSchema, lengthOf,
@@ -69,6 +75,8 @@ export interface PlanResult {
   style: KleoStyle;
   /** The art direction the film was planned under, or null when the model could not produce a valid one. */
   direction: Direction | null;
+  /** The treatment the film was planned under (written here, or handed in through params.treatment), or null. */
+  treatment: Treatment | null;
   /** Facts the user asked for that the finished narration still does not say. Empty is the normal case. */
   missing_facts: string[];
   /**
@@ -506,11 +514,15 @@ Enums (use these exact strings, nothing else): ${enums}
 Never use scene kind "image", never reference files or URLs. Scene ids are unique lowercase slugs like "01-hook". Text limits are hard limits, count characters. Narration and all on-screen text are in ${lang}; enum values stay in English. Write the narration as spoken language: no emojis, no hashtags, no URLs, no stage directions. Do not invent quotes from real people.`;
 }
 
-function contextBlock(job: PlanJob, plan: Plan): string {
+/**
+ * The request as every stage sees it — and, when the film has one, the treatment under it. `full` adds the prose
+ * for the two stages that shape the film (direction, outline); the scene chunks get the structured block only.
+ */
+function contextBlock(job: PlanJob, plan: Plan, treatment?: Treatment | null, full = false): string {
   const t = findTemplate(job.template);
   return `TEMPLATE: ${t?.name ?? job.template} (${job.template}). BRIEF: ${plan.brief.guidance}
 USER REQUEST (the video is about this; keep every fact, name and constraint from it):
-"""${job.prompt.trim()}"""`;
+"""${job.prompt.trim()}"""${treatment ? `\n${treatmentBlock(treatment, full)}` : ""}`;
 }
 
 /* ------------------------------------------------------------------ the direction: step zero of the reasoning */
@@ -566,15 +578,18 @@ export function sectionSkeleton(template: string, scenes: number): { name: strin
 /* Exported for scripts/direction-measure, the bench that asks the real model to choose a look and counts how often
    it is right. Nothing else imports these three, and nothing about them changed to make them exportable: a number
    measured on a copy of the prompt is a number about the copy. */
-export function directionPrompt(job: PlanJob, plan: Plan): string {
+export function directionPrompt(job: PlanJob, plan: Plan, treatment?: Treatment | null): string {
   const t = findTemplate(job.template);
   const scenes = Math.max(plan.scenes[0], Math.min(plan.scenes[1], Math.round((plan.scenes[0] + plan.scenes[1]) / 2)));
   const skeleton = sectionSkeleton(job.template, scenes);
   const lang = LANG_NAMES[plan.language] ?? plan.language;
+  // With a treatment, the direction is no longer the first reader of the request: the angle, the world and the
+  // narrator have been decided, and the direction writes the cast, the objects and the exclusions INSIDE them.
+  const under = treatment ? `\n${treatmentBlock(treatment, true)}\nThe direction is written UNDER this treatment: its subject is the treatment's angle, its world is the treatment's visual language, its tone is the narrator's register, and its sections are the treatment's acts fitted to the shape below.\n` : "";
   return `USER REQUEST (read it as a request, not as raw material):
 """${job.prompt.trim()}"""
 TEMPLATE: ${t?.name ?? job.template}. LENGTH: ${plan.duration} seconds, about ${scenes} scenes, narrated in ${lang}.
-
+${under}
 TASK: write the DIRECTION of this one film, before any scene exists. Return one JSON object:
 
 {"style":"cartoon|realistic|cyber|explainer|stickman","why":"<=90 chars, why that look fits THIS request",
@@ -704,7 +719,7 @@ function bestSceneFor(fact: string, outline: OutlineEntry[]): number {
 /** Outline entry: what the model plans for one scene before writing it. */
 interface OutlineEntry { id: string; kind: string; label: string; accent?: string; summary: string; words: number; keeps: number[] }
 
-function outlinePrompt(job: PlanJob, plan: Plan, n: number, d: Direction | null): string {
+function outlinePrompt(job: PlanJob, plan: Plan, n: number, d: Direction | null, treatment?: Treatment | null): string {
   const perScene = Math.round(plan.words.target / n);
   const cin = plan.style === "cinema" || plan.style === "picture", stick = plan.style === "stickman", sk = plan.style === "sketch";
   const kind = cin ? "cinema" : stick ? "story" : sk ? "sketch" : "<kind>";
@@ -719,12 +734,12 @@ function outlinePrompt(job: PlanJob, plan: Plan, n: number, d: Direction | null)
   const keeps = d?.must_keep.length
     ? `\nFACTS TO PLACE (from the user's own request; every one must be said out loud somewhere in the video):\n${d.must_keep.map((f, i) => `  [${i}] ${f}`).join("\n")}\nGive each scene a "keeps" array with the indexes of the facts THAT scene will state. Every index must appear on exactly one scene.`
     : "";
-  return `${contextBlock(job, plan)}${d ? `\n${directionBlock(d)}` : ""}${sectionMap}${keeps}
-TASK: plan the whole video as an outline of exactly ${n} scenes, in order. The narration will total about ${plan.words.target} words (${perScene} per scene on average; the hook and the closing may be shorter, key scenes longer). Return {"title":"<video title ≤120>","description":"<YouTube description, one paragraph>","tags":["…"],"scenes":[{"id":"01-slug","kind":"${kind}","label":"<${label}>",${cin ? '"accent":"<accent>",' : ""}"summary":"<what this scene says, ≤25 words>","words":<narration words for this scene>${d?.must_keep.length ? ',"keeps":[<fact indexes>]' : ""}}, …]}.
+  return `${contextBlock(job, plan, treatment, true)}${d ? `\n${directionBlock(d)}` : ""}${sectionMap}${keeps}
+TASK: plan the whole video as an outline of exactly ${n} scenes, in order.${treatment ? " The outline follows the treatment's acts in order: the opening image is scene 1, each act gets scenes in proportion to its seconds, and the last scene is the treatment's ending." : ""} The narration will total about ${plan.words.target} words (${perScene} per scene on average; the hook and the closing may be shorter, key scenes longer). Return {"title":"<video title ≤120>","description":"<YouTube description, one paragraph>","tags":["…"],"scenes":[{"id":"01-slug","kind":"${kind}","label":"<${label}>",${cin ? '"accent":"<accent>",' : ""}"summary":"<what this scene says, ≤25 words>","words":<narration words for this scene>${d?.must_keep.length ? ',"keeps":[<fact indexes>]' : ""}}, …]}.
 ${cin ? `Chapters group scenes (several scenes may share a chapter label)${d ? "; copy each scene's accent from the section table above" : "; accents follow the mood"}.` : stick ? "Each scene is one situation the stickman can act out." : sk ? "Every scene is one drawn moment, and each one has to make the next one necessary." : "Vary the kinds: never more than two of the same kind in a row, at least four different kinds overall; use metric for numbers, compare for two-sided points, steps/list for three-part points, quote for a memorable line, hero for openings and transitions."} ${sk ? "There is NO closing scene: the film ends on its last drawing, so the last scene is the payoff itself." : `The last scene has kind "closing".`} The first scene is the hook.`;
 }
 
-function chunkPrompt(job: PlanJob, plan: Plan, outline: OutlineEntry[], from: number, to: number, prevVoice: string | null, feedback?: string[], d?: Direction | null): string {
+function chunkPrompt(job: PlanJob, plan: Plan, outline: OutlineEntry[], from: number, to: number, prevVoice: string | null, feedback?: string[], d?: Direction | null, treatment?: Treatment | null): string {
   const entries = outline.slice(from, to);
   const words = entries.reduce((n, e) => n + e.words, 0);
   const total = outline.length;
@@ -739,7 +754,7 @@ function chunkPrompt(job: PlanJob, plan: Plan, outline: OutlineEntry[], from: nu
     : sk ? `Each voice line is ONE spoken sentence of ${EXPLAINER_WORDS[lengthOf(plan.duration)].join("-")} words; every scene needs 2-8 drawings, each with an "at" quoting words from its OWN line, and the last of them must land in the second half of that line. One phrase, one drawing, and the drawing is literally what the words say.`
     : stick ? `Each voice line is one spoken sentence of ${lineWords} words; every scene has an act, a cast with hero, an accent and a title; add a bubble when the character says something.`
     : "Fill the kind-specific fields exactly as the shapes show: list/steps need 3 items, compare 2 items, metric needs value and unit, quote needs quote, hero needs visual.";
-  let msg = `${contextBlock(job, plan)}${d ? `\n${directionBlock(d)}` : ""}${owed.length ? `\nTHESE SCENES OWE THESE FACTS — say each one out loud in a "voice" line:\n${owed.map((i) => `  - ${d!.must_keep[i]}`).join("\n")}` : ""}
+  let msg = `${contextBlock(job, plan, treatment)}${d ? `\n${directionBlock(d)}` : ""}${owed.length ? `\nTHESE SCENES OWE THESE FACTS — say each one out loud in a "voice" line:\n${owed.map((i) => `  - ${d!.must_keep[i]}`).join("\n")}` : ""}
 VIDEO OUTLINE (${total} scenes; you write scenes ${from + 1}–${to} now):
 ${outline.map((e, i) => `${i + 1}. [${e.id}] ${e.kind} · ${e.label}${e.accent ? ` · ${e.accent}` : ""} — ${e.summary} (${e.words} words)`).join("\n")}
 ${prevVoice ? `The previous scene ended with this narration, continue naturally from it: "${prevVoice}"` : "This is the start of the video."}
@@ -1172,9 +1187,14 @@ function extractJson(text: string): unknown {
   throw new Error(`the model did not return JSON: ${t.slice(0, 200)}`);
 }
 
-export async function callModel(env: Env, model: string, messages: { role: string; content: string }[], schema: Record<string, unknown>, maxTokens: number): Promise<{ raw: unknown; usage: Usage }> {
+/**
+ * One model call. 0.3 is the temperature of everything that must be a valid document (the direction, the outline,
+ * the scenes); the treatment call passes its own, because a treatment written at 0.3 is the same treatment every
+ * time, and being different every time is half of what it is for.
+ */
+export async function callModel(env: Env, model: string, messages: { role: string; content: string }[], schema: Record<string, unknown>, maxTokens: number, temperature = 0.3): Promise<{ raw: unknown; usage: Usage }> {
   const ai = env.AI as unknown as AiRunner;
-  const base = { messages, max_tokens: maxTokens, temperature: 0.3 };
+  const base = { messages, max_tokens: maxTokens, temperature };
   let res: unknown;
   try {
     res = await ai.run(model, { ...base, response_format: { type: "json_schema", json_schema: schema } });
@@ -1345,13 +1365,15 @@ const TEMP_CLOSING = (plan: Plan): Record<string, unknown> =>
     ? { id: "zz-temp-closing", kind: "sketch", accent: "white", voice: "and that is the end of it.", shot: { zoom: [1, 1.2], focus: [540, 860] }, art: [{ name: "blank", drawn: true }] }
     : { id: "zz-temp-closing", kind: "closing", title: "end", voice: "the end" };
 
-function header(plan: Plan, outline: { title?: unknown; description?: unknown; tags?: unknown }, direction?: Direction | null): Record<string, unknown> {
+function header(plan: Plan, outline: { title?: unknown; description?: unknown; tags?: unknown }, direction?: Direction | null, treatment?: Treatment | null): Record<string, unknown> {
   return {
     schema_version: 1, editorial_status: "ready", title: outline.title, description: outline.description, tags: outline.tags,
     style: plan.style, kleo_style: plan.kleo, format: plan.format, language: plan.language, voice: plan.voice, speed: plan.speed, music: "bed", max_duration: plan.maxDuration,
     // The direction travels with the storyboard: the picture prompts read it (src/images.ts), the validator holds the
     // scenes to it, and the worker passes it through untouched, so a render can only ever ignore it, never trip on it.
     ...(direction ? { direction } : {}),
+    // So does the treatment: it is how a finished video can be read back to the film it was meant to be.
+    ...(treatment ? { treatment } : {}),
   };
 }
 
@@ -1366,7 +1388,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   let plan = planFor(job);
   if (useFixture(env)) {
     const sb = fixtureStoryboard(job);
-    return { storyboard: sb, model: "fixture", attempts: 0, ms: Date.now() - t0, usage: {}, est_neurons: 0, words: countWords(sb), scenes: sb.scenes.length, fixture: true, history: [], style: kleoStyleOf(sb), direction: (sb as { direction?: Direction }).direction ?? null, missing_facts: [], blocked_upgrade: null };
+    return { storyboard: sb, model: "fixture", attempts: 0, ms: Date.now() - t0, usage: {}, est_neurons: 0, words: countWords(sb), scenes: sb.scenes.length, fixture: true, history: [], style: kleoStyleOf(sb), direction: (sb as { direction?: Direction }).direction ?? null, treatment: null, missing_facts: [], blocked_upgrade: null };
   }
   const model = opts.model || env.AI_MODEL || DEFAULT_MODEL;
   const usage: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
@@ -1375,14 +1397,35 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   // The system prompt is rebuilt whenever the plan changes, because the direction is allowed to change the look and
   // the system prompt is where the look's rules live: a cartoon storyboard written under the cyber rules is garbage.
   let system = systemPrompt(plan);
-  const call = async (user: string, schema: Record<string, unknown>, maxTokens: number) => {
+  const call = async (user: string, schema: Record<string, unknown>, maxTokens: number, over: { system?: string; temperature?: number; model?: string } = {}) => {
     calls++;
-    const out = await callModel(env, model, [{ role: "system", content: system }, { role: "user", content: user }], schema, maxTokens);
+    const out = await callModel(env, over.model ?? model, [{ role: "system", content: over.system ?? system }, { role: "user", content: user }], schema, maxTokens, over.temperature);
     usage.prompt_tokens! += out.usage.prompt_tokens ?? 0; usage.completion_tokens! += out.usage.completion_tokens ?? 0; usage.total_tokens! += out.usage.total_tokens ?? 0;
     return out.raw;
   };
   const fail = (errors: string[], draft?: unknown): never => { throw new StoryboardError(`storyboard invalid (${model}, ${calls} calls): ${errors.join("; ")}`, errors, draft); };
   let transient: unknown = null; // the last quota/outage error: reported instead of a storyboard problem
+
+  // -1. THE TREATMENT. Before the direction, before anything: the request expanded into the film a producer would
+  //     make of it (src/treatment.ts). A caller that wrote or approved one through kleo_adapt_prompt hands it in as
+  //     params.treatment and it is used as it is — the user saw THAT film, so that is the film that gets planned.
+  //     Otherwise it is written here, at a temperature that lets two identical requests come out as two films, under
+  //     a draw taken from the job id. Like the direction it is allowed to fail: a film without a treatment is what
+  //     Kleo made until 14 September, not a broken film.
+  let treatment: Treatment | null = treatmentOf(JSON.parse(job.params));
+  if (!treatment) {
+    const v = variationFor(job.id);
+    let feedback: string[] | undefined;
+    for (let attempt = 1; attempt <= 2 && !treatment; attempt++) {
+      let raw: unknown;
+      try { raw = clean(await call(treatmentPrompt({ prompt: job.prompt, duration_s: plan.duration, format: plan.format, language: plan.language }, v, feedback), treatmentSchema(), TREATMENT_MAX_TOKENS, { system: MASTER_PROMPT, temperature: TREATMENT_TEMPERATURE, model: env.TREATMENT_MODEL || undefined })); }
+      catch (e) { history.push([`treatment: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) { transient = e; break; } continue; }
+      const t = repairTreatment(raw, plan.duration, v);
+      if (!t) { feedback = treatmentProblems(raw, plan.duration); history.push([`treatment: rejected (${feedback.slice(0, 3).join("; ")})`]); continue; }
+      treatment = t;
+    }
+    if (transient) throw transient;
+  }
 
   // 0. THE DIRECTION. One call, before anything exists, that reads the request as a request: subject, goal, audience,
   //    tone, the facts that must survive, the world the film is drawn in, what must never appear, and which colour
@@ -1402,7 +1445,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     : Math.max(plan.scenes[0], Math.min(plan.scenes[1], Math.round((plan.scenes[0] + plan.scenes[1]) / 2)));
   for (let attempt = 1; attempt <= 2 && !direction; attempt++) {
     let raw: unknown;
-    try { raw = clean(await call(directionPrompt(job, plan), directionSchema(), 900)); }
+    try { raw = clean(await call(directionPrompt(job, plan, treatment), directionSchema(), 900)); }
     catch (e) { history.push([`direction: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) { transient = e; break; } continue; }
     const o = isObj(raw) ? raw : {};
     const d = repairDirection(o.direction, job.template, sceneGuess);
@@ -1434,7 +1477,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   let meta: { title?: unknown; description?: unknown; tags?: unknown } = {};
   for (let attempt = 1; attempt <= 2 && !outline.length; attempt++) {
     let raw: unknown;
-    try { raw = clean(await call(outlinePrompt(job, plan, n, direction), outlineSchema(plan, direction?.must_keep.length ?? 0), 400 + n * 90)); }
+    try { raw = clean(await call(outlinePrompt(job, plan, n, direction, treatment), outlineSchema(plan, direction?.must_keep.length ?? 0), 400 + n * 90)); }
     catch (e) { history.push([`outline: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) { transient = e; break; } continue; }
     const o = isObj(raw) ? raw : {};
     const entries = Array.isArray(o.scenes) ? o.scenes.filter(isObj) : [];
@@ -1470,7 +1513,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
 
   // 2. Scenes, chunk by chunk
   const scenes: Record<string, unknown>[] = [];
-  const head = header(plan, meta, direction);
+  const head = header(plan, meta, direction, treatment);
   // A chunk is validated as a project of its own, so it holds only some of the scenes — and the direction's sections
   // are sized for the WHOLE film. Handing it the direction would fail every chunk on "the sections cover N scenes but
   // the video has M". The colour law is applied and checked once, on the assembled storyboard, where it means something.
@@ -1487,7 +1530,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     for (let attempt = 1; attempt <= 3 && !accepted; attempt++) {
       let raw: unknown;
       const maxTokens = plan.style === "cinema" ? 700 * (to - from) : plan.style === "picture" ? 600 * (to - from) : 350 * (to - from);
-      try { raw = await call(chunkPrompt(job, plan, outline, from, to, prevVoice, feedback, direction), chunkSchema(plan), 400 + maxTokens); }
+      try { raw = await call(chunkPrompt(job, plan, outline, from, to, prevVoice, feedback, direction, treatment), chunkSchema(plan), 400 + maxTokens); }
       catch (e) { history.push([`scenes ${from + 1}–${to}: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) throw e; feedback = undefined; continue; }
       const got = isObj(raw) && Array.isArray(raw.scenes) ? raw.scenes.filter(isObj) : [];
       // Validated in context (the scenes accepted so far + this chunk + a temporary closing unless it is the last chunk);
@@ -1560,5 +1603,61 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   // and refuses the hidden kind, and this is the one number that says whether the video is about what was asked.
   const missing = direction ? missingFacts(direction.must_keep, narrationOf(ok.storyboard)) : [];
   if (missing.length) history.push(missing.map((f) => `narration never says "${f}"`));
-  return { storyboard: ok.storyboard, model, attempts: calls, ms: Date.now() - t0, usage, est_neurons: est, words: countWords(ok.storyboard), scenes: ok.storyboard.scenes.length, fixture: false, history, style: plan.kleo, direction, missing_facts: missing, blocked_upgrade: blockedUpgrade };
+  return { storyboard: ok.storyboard, model, attempts: calls, ms: Date.now() - t0, usage, est_neurons: est, words: countWords(ok.storyboard), scenes: ok.storyboard.scenes.length, fixture: false, history, style: plan.kleo, direction, treatment, missing_facts: missing, blocked_upgrade: blockedUpgrade };
+}
+
+/* ------------------------------------------------------------------ the treatment on its own */
+
+/** The treatment call's own knobs: hot enough to differ, bounded enough to stay a document. */
+export const TREATMENT_TEMPERATURE = 0.85;
+export const TREATMENT_MAX_TOKENS = 1800;
+
+export interface TreatmentResult {
+  treatment: Treatment | null;
+  model: string;
+  attempts: number;
+  ms: number;
+  usage: Usage;
+  est_neurons: number | null;
+  /** Why an attempt was rejected, or why the call failed; empty when the first answer was a treatment. */
+  history: string[];
+  /** True when the model could not be reached (quota, outage): the caller should say so, not retry. */
+  transient: boolean;
+}
+
+/**
+ * The treatment alone, for kleo_adapt_prompt: the same call the planner makes at step -1, without a job. `seed`
+ * decides the draw; a random one is right when no job exists yet, because the treatment then travels with the job
+ * and the planner never draws again. Never throws on a model problem: the tool has to answer either way.
+ */
+export async function writeTreatment(env: Env, input: { prompt: string; duration_s: number; format: Format; language: string }, opts: { seed?: string; model?: string } = {}): Promise<TreatmentResult> {
+  const t0 = Date.now();
+  const model = opts.model || env.TREATMENT_MODEL || env.AI_MODEL || DEFAULT_MODEL;
+  const usage: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  const history: string[] = [];
+  const v = variationFor(opts.seed ?? crypto.randomUUID());
+  let treatment: Treatment | null = null;
+  let attempts = 0;
+  let transient = false;
+  let feedback: string[] | undefined;
+  if (!env.AI) return { treatment: null, model, attempts, ms: 0, usage, est_neurons: 0, history: ["no AI binding"], transient: true };
+  for (let attempt = 1; attempt <= 2 && !treatment; attempt++) {
+    attempts++;
+    let raw: unknown;
+    try {
+      const out = await callModel(env, model, [{ role: "system", content: MASTER_PROMPT }, { role: "user", content: treatmentPrompt(input, v, feedback) }], treatmentSchema(), TREATMENT_MAX_TOKENS, TREATMENT_TEMPERATURE);
+      usage.prompt_tokens! += out.usage.prompt_tokens ?? 0; usage.completion_tokens! += out.usage.completion_tokens ?? 0; usage.total_tokens! += out.usage.total_tokens ?? 0;
+      raw = clean(out.raw);
+    } catch (e) {
+      history.push(`model call failed: ${String(e).slice(0, 200)}`);
+      if (isTransientAiError(e)) { transient = true; break; }
+      continue;
+    }
+    const t = repairTreatment(raw, input.duration_s, v);
+    if (!t) { feedback = treatmentProblems(raw, input.duration_s); history.push(`rejected: ${feedback.slice(0, 4).join("; ")}`); continue; }
+    treatment = t;
+  }
+  const price = PRICES[model];
+  const est = price ? Math.round((((usage.prompt_tokens ?? 0) * price.in + (usage.completion_tokens ?? 0) * price.out) / 1e6) / 0.000011) : null;
+  return { treatment, model, attempts, ms: Date.now() - t0, usage, est_neurons: est, history, transient };
 }

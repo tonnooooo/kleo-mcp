@@ -2,15 +2,18 @@ import { McpServer, createMcpHandler } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { Env } from "./env";
 import type { User, Job, JobParams } from "./db";
-import { getUserJob, getUser, recentJobsForUser, countOpenForUser, GPU_ONLY_WAIT } from "./db";
-import { PUBLIC_TEMPLATES as TEMPLATES, PUBLIC_TEMPLATE_IDS as TEMPLATE_IDS, findTemplate, creditsFor } from "./templates";
+import { getUserJob, getUser, recentJobsForUser, countOpenForUser, countAuditTodayForUser, GPU_ONLY_WAIT } from "./db";
+import { isFlagActive } from "./schema";
+import { writeTreatment } from "./storyboard.ts";
+import { treatmentText } from "./treatment.ts";
+import { ACTIVE_TEMPLATE, PUBLIC_TEMPLATES as TEMPLATES, PUBLIC_TEMPLATE_IDS as ACTIVE_TEMPLATE_IDS, findTemplate, creditsFor } from "./templates";
 import { createJob, cancelJob, jobView, resultLinks, JobError, FILE_NAMES } from "./jobs";
 import { accountUrl, makeHandle } from "./accounts";
 import { audit } from "./db";
 import { FORMATS, wordBudget, shotRangeText } from "./keou-contract";
 import { guideText } from "./guide.ts";
-import { pickKleoStyleWhy } from "./storyboard.ts";
 import { int } from "./util";
+import { adaptPrompt, adaptivePromptText } from "./adaptive.ts";
 
 /**
  * Languages a job can be created in. The engine ships more Kokoro voices (keou-contract VOICES still knows fr),
@@ -21,10 +24,9 @@ const JOB_LANGUAGES = ["en", "it"] as const;
 /** "2-4" / "1-2": the shot count Kleo really enforces, from the contract, so no two texts can quote different numbers. */
 const shotRange = shotRangeText;
 
-const INSTRUCTIONS = `This server is Kleo (the kleo_* tools): the video studio the user connected. It is not kie-mcp or any other product. Kleo renders YouTube videos and Shorts (4K, 60 fps) from a template and a prompt. When the user mentions Kleo, a video, a Short or a YouTube clip, use these tools; never answer from memory.
-DELIVERY RULE: the user expects the finished video in this same conversation, without coming back later. After kleo_create_video, call kleo_wait_for_video repeatedly (each call waits up to 50 seconds and returns progress) until it returns the download links, then hand them over. Tell the user once that the render is running and the estimated time; do not ask "shall I keep waiting?"; keep calling until done unless the user says stop.
-Order of calls: 1) kleo_list_templates if the user has not named a template (Shorts → viral-short unless the content is clearly a Reddit story, a quote or a list of facts). 2) kleo_storyboard_guide once per conversation, then write an original storyboard for this conversation (hook, scenes, narration, visuals, and for the cartoon/realistic styles the "shots": ${shotRange("cinema")} pictures per scene, each described in one sentence) and pass it as the "storyboard" argument of kleo_create_video; if you skip it, Kleo plans a more generic storyboard from the prompt. Every video has a visual style (cartoon, realistic, cyber, explainer or stickman): pass "style" when the user has a preference, otherwise Kleo picks one from the topic. The explainer look is the exception and is never picked for you: ask for it by name, or use the explainer-short / explainer-long templates, which are that look. 3) kleo_create_video: it returns at once with a video number (job_id) and an estimate in minutes. 4) kleo_get_job when the user asks how it is going. 5) kleo_get_result for the download links once it is done.
-Rendering runs on a GPU in the background: a Short usually takes about 15–25 minutes (the rented machine downloads the renderer first), long videos longer. The estimate to quote is the eta_min the server returns, never your own guess; never block or loop waiting. Never invent progress, files or links: only repeat what these tools return. Call the video by its number (for example "video gt_ab12cd34"), not "job".`;
+const INSTRUCTIONS = `This server is Kleo (the kleo_* tools): the video studio the user connected. Kleo makes one kind of video: a realistic film — every shot generated as moving footage, one narrator, no music, no captions, no on-screen text — 4K 60 fps, 16:9 for YouTube or 9:16 for a Short, 15 seconds to 5 minutes. When the user mentions Kleo, a video, a film, a Short or a YouTube clip, use these tools; never answer from memory.
+ORDER OF CALLS: 1) If the user has not said what the video is about, ask them and wait; never pick a subject for them. Infer 16:9 unless they ask for a Short or a vertical video. 2) kleo_adapt_prompt with their request: it returns the TREATMENT of the film Kleo will make (logline, angle, opening image, acts, ending, look, pacing, narrator) and the decisions it took that the user did not ask for. Tell the user the logline and those decisions in one or two sentences; if they want changes, edit the treatment's fields. If it asks for the length or the subject, ask the user and call it again. 3) kleo_create_video with the prompt, the length, the format and the treatment object. 4) kleo_wait_for_video again and again until it returns the links, then hand them over.
+DELIVERY RULE: the user expects the finished video in this same conversation. After kleo_create_video, call kleo_wait_for_video repeatedly (each call waits up to about a minute and returns progress) until it returns the MP4 and thumbnail links. Tell the user once that the render is running and the estimated minutes — the eta_min the server returns, never your own guess — and do not ask "shall I keep waiting?". Never invent progress, files or links: only repeat what these tools return. Call the video by its number (for example "video gt_ab12cd34"), not "job".`;
 
 const ok = (data: unknown, text?: string) => ({
   content: [{ type: "text" as const, text: text ?? JSON.stringify(data, null, 2) }],
@@ -71,8 +73,8 @@ const noSuchVideo = (id: string) =>
 async function resultPayload(env: Env, base: string, job: Job) {
   const what = kindOf(jobView(job).format);
   const links = await resultLinks(env, base, job);
-  const label: Record<string, string> = { video_url: "Video (MP4)", subtitles_url: "Subtitles (.srt)", thumbnail_url: "Thumbnail" };
-  const order = ["video_url", "subtitles_url", "thumbnail_url"];
+  const label: Record<string, string> = { video_url: "Video (MP4)", thumbnail_url: "Thumbnail" };
+  const order = ["video_url", "thumbnail_url"];
   const sim = job.backend === "mock" ? "\nNOTE: this video was rendered in SIMULATED mode: the MP4 is a 1-second placeholder, not a real video." : "";
   const text = `Your ${what} ${job.id} is ready. The links work until ${niceDate(job.expires_at)}:\n` +
     Object.entries(links).sort(([a], [b]) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99)).map(([k, v]) => `${label[k] ?? k.replace("_url", "")}: ${v}`).join("\n") + sim;
@@ -103,24 +105,64 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     : "";
   const server = new McpServer({ name: "Kleo", version: "0.1.0" }, { instructions: modeNote + INSTRUCTIONS });
 
+  server.registerTool("kleo_adapt_prompt", {
+    title: "Adapt a video request into the film's treatment",
+    description: "Step 1 (recommended). Turns the user's request into the TREATMENT of the film: Kleo's producer reads the request, keeps every fact in it, and decides the angle, the opening image, the acts with their seconds, the ending, the visual language, the pacing, the narrator's register and the recurring motifs — and lists every decision it took that the user did not ask for. Two identical requests get two different treatments on purpose. It reads language, length and format off the request first and asks only for what is missing (the subject, the length) before spending anything. Nothing is charged and no GPU is rented; it spends a little of Kleo's daily planning quota, so call it once per video. Then tell the user the logline and the decisions, and pass the returned \"treatment\" object — unchanged, or edited as the user asked — to kleo_create_video. Without it Kleo writes a treatment itself while planning, and the user never sees it first.",
+    inputSchema: z.object({
+      prompt: z.string().min(1).max(4000).describe("The user's request in their own words."),
+      duration_s: z.number().int().min(15).max(300).optional().describe("Length in seconds, when the user said one or agreed one with you. Read off the request when omitted; asked for when it is nowhere."),
+      format: z.enum(FORMATS).optional().describe("16:9 for YouTube/film, 9:16 for vertical Shorts. Read off the request when omitted (16:9 unless it says Short, vertical, TikTok or Reel)."),
+      language: z.enum(JOB_LANGUAGES).optional().describe("Language of the narration; detected from the request when omitted."),
+      audience: z.string().max(160).optional(),
+      tone: z.string().max(160).optional(),
+    }),
+    annotations: { readOnlyHint: true, idempotentHint: false, openWorldHint: false },
+  }, async ({ prompt, duration_s, format, language, audience, tone }) => guarded(async () => {
+    const brief = adaptPrompt(prompt, { duration_s, format, audience, tone });
+    const base = { workflow: ACTIVE_TEMPLATE.id, style: "realistic", brief };
+    // Missing subject or length: ask, spend nothing. The questions are the tool's answer.
+    if (brief.questions.length || brief.duration_s === null) return ok({ ...base, treatment: null, ready_to_render: false }, adaptivePromptText(brief));
+    const t = ACTIVE_TEMPLATE;
+    if (brief.duration_s < t.minSeconds || brief.duration_s > t.maxSeconds)
+      throw new JobError(`Kleo makes films of ${t.minSeconds} to ${t.maxSeconds} seconds; ${brief.duration_s} seconds is outside that range. Agree a length in range with the user and call again. Nothing was charged.`);
+    const lang = language ?? brief.language;
+    // Each treatment is a model call on the free planning quota, so an account gets a day's worth and no more:
+    // past it the video is still possible, and the planner writes the treatment itself when it plans.
+    const cap = int(env.ADAPT_MAX_PER_DAY, 12);
+    const used = await countAuditTodayForUser(env, user.id, "treatment.adapt");
+    const fallback = "You can still make the video: call kleo_create_video with the prompt and Kleo writes the treatment itself while planning it.";
+    if (used >= cap) throw new JobError(`This account has asked for ${plural(used, "treatment")} today, and the limit is ${cap} a day while Kleo is in beta. ${fallback} Nothing was charged.`);
+    if (await isFlagActive(env, "plan_pause"))
+      return ok({ ...base, treatment: null, ready_to_render: true, note: "planning quota exhausted" }, `${adaptivePromptText(brief)}\n\nKleo cannot write the treatment right now: it has used up today's free planning. ${fallback}`);
+    const r = await writeTreatment(env, { prompt: prompt.trim(), duration_s: brief.duration_s, format: brief.format, language: lang });
+    void audit(env, user.id, null, "treatment.adapt", { model: r.model, attempts: r.attempts, ms: r.ms, usage: r.usage, est_neurons: r.est_neurons, ok: !!r.treatment, transient: r.transient, history: r.history.slice(0, 3), variation: r.treatment?.variation ?? null });
+    if (!r.treatment)
+      return ok({ ...base, treatment: null, ready_to_render: true, note: r.transient ? "model unavailable" : "no valid treatment in two attempts", problems: r.history },
+        `${adaptivePromptText(brief)}\n\nKleo could not write the treatment just now (${r.transient ? "its planning model did not answer" : "two attempts came back incomplete"}). ${fallback} Or call this tool once more.`);
+    return ok({ ...base, treatment: r.treatment, ready_to_render: true, next: 'Show the user the logline and the decisions; then call kleo_create_video with prompt, duration_s, format, language and this same object as "treatment".' },
+      `${adaptivePromptText(brief)}\n\n${treatmentText(r.treatment)}`);
+  }));
+
+
   server.registerTool("kleo_list_templates", {
-    title: "List video templates",
-    description: "Step 1. Lists what Kleo makes — one kind of video, the realistic film, in two lengths (\"film\" up to 90 seconds, \"film-long\" up to 5 minutes), the formats (16:9 for YouTube, 9:16 for Shorts), the voices — and the credits left on the account. Price: 7 credits up to 90 seconds; longer films scale with the length.",
+    title: "List active workflow",
+    description: "Lists the only active workflow: Realistic Film, adaptive shot-by-shot planning, real motion clips, 16:9 or 9:16, no music and no subtitles.",
     inputSchema: z.object({}),
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   }, async () => {
     const fresh = (await getUser(env, user.id)) ?? user;
-    const templates = TEMPLATES.map((t) => ({
+    const activeTemplate = ACTIVE_TEMPLATE;
+    const templates = [activeTemplate].map((t) => ({
       id: t.id, name: t.name, formats: t.formats, duration_s: { min: t.minSeconds, max: t.maxSeconds, default: t.defaultSeconds },
       credits: creditsFor(t.defaultSeconds), voices: t.voices, description: t.description,
     }));
-    const lines = TEMPLATES.map((t) => {
+    const lines = [activeTemplate].map((t) => {
       const shape = t.formats.map((f) => (f === "9:16" ? "Short (9:16)" : "YouTube video (16:9)")).join(" or ");
       return `- ${t.name} (id: ${t.id}): ${shape}, ${t.minSeconds}–${t.maxSeconds} seconds, ${plural(creditsFor(t.defaultSeconds), "credit")}. ${t.description}`;
     });
     return ok(
       { templates, credits_available: fresh.credits, pricing: "1 credit per Short (up to 90 seconds), 3 credits up to 5 minutes, +1 credit per extra minute", account_url: await accountUrl(env, user.id, base) },
-      `Kleo has ${TEMPLATES.length} templates. You have ${plural(fresh.credits, "credit")} left. NEXT STEP: if the user has not told you what the video is about, ASK THEM and wait — do not pick a subject for them. A render costs them a credit and about twenty minutes, and neither comes back.\n${lines.join("\n")}\nPrices: 1 credit per Short (up to 90 seconds), 3 credits up to 5 minutes, +1 credit per extra minute.`,
+      `Kleo has one active workflow (realistic-film). You have ${plural(fresh.credits, "credit")} left. Ask for the subject, duration and format when they are missing; then call kleo_adapt_prompt before creating the video.\n${lines.join("\n")}\nPrices: 7 credits per film up to 90 seconds; longer films scale with the duration.`,
     );
   });
 
@@ -129,14 +171,14 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     title: "Storyboard guide (write your own video)",
     description: "Step 2 (recommended). Returns how to write a storyboard Kleo renders, in the order it should be written: first the DIRECTION of the film (subject, goal, audience, tone, the facts from the request that the narration must still say, the world it is drawn in, what must never appear, and one accent colour per section), then the scene and shot shapes, the limits Kleo enforces before anything is billed, and one worked example. Kleo has one look: a realistic film, every shot generated as moving footage from its own frame. Call it once per conversation, before kleo_create_video. Without a storyboard Kleo plans a more generic one from the prompt.",
     inputSchema: z.object({
-      template: z.enum(TEMPLATE_IDS).optional().describe("The template you intend to use; tailors the target length."),
+      template: z.literal(ACTIVE_TEMPLATE.id).optional().describe("Optional: Kleo uses the only active workflow, film."),
       duration_s: z.number().int().min(15).max(900).optional().describe("Target length in seconds, if the user chose one."),
       style: z.enum(["realistic"]).optional().describe("Kleo has one look: realistic — a film whose every shot is generated footage from its own frame, under the narration. Omit it or pass \"realistic\"."),
       format: z.enum(FORMATS).optional().describe("The frame the video will be in. The explainer authors its drawings in the frame's own pixels, so its guide prints different coordinates for 9:16 and 16:9; the template's own format is used when this is omitted."),
     }),
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   }, async ({ template, duration_s, style, format }) => {
-    const t = TEMPLATES.find((x) => x.id === template) ?? null;
+    const t = template === ACTIVE_TEMPLATE.id ? ACTIVE_TEMPLATE : null;
     const dur = duration_s ?? t?.defaultSeconds ?? 45;
     // The explainer writes coordinates, so the guide has to know the frame before it prints them: a storyboard
     // authored against 1080x1920 and rendered at 1920x1080 puts every drawing off the page.
@@ -144,14 +186,14 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     const words = wordBudget(dur, 1.1).target;
     // The guide is built in src/guide.ts from the contract\u2019s own constants, so the numbers it prints are the numbers
     // the validator enforces \u2014 the shot range used to be 1-4 here, 2-4 in the planner and "two to four" on the website.
-    const text = guideText({ template, templateName: t?.name, duration_s: dur, style: "realistic", languages: JOB_LANGUAGES, format: fmt });
+    const text = guideText({ template: ACTIVE_TEMPLATE.id, templateName: ACTIVE_TEMPLATE.name, duration_s: dur, style: "realistic", languages: JOB_LANGUAGES, format: fmt });
     // The guide is where an assistant is most likely to start inventing: it has just been handed the shape of a
     // storyboard and nothing to put in it. So the sentence that leaves with it is the one that says whose idea it
     // has to be — a model follows the last instruction it read far more reliably than a tool description.
     const askFirst = "\n\nBEFORE YOU WRITE THIS: the subject has to come from the user, not from you. If they have not "
       + "said what the video is about, ask them now and wait for the answer. If they gave you a subject, however short, "
       + "that is enough — write the storyboard and do not interrogate them.";
-    return ok({ guide: text, template: t?.id ?? null, duration_s: dur, format: fmt, words_target: words, credits: creditsFor(dur, "realistic"), styles: ["realistic"], style: "realistic" }, text + askFirst);
+      return ok({ guide: text, template: t?.id ?? ACTIVE_TEMPLATE.id, duration_s: dur, format: fmt, words_target: words, credits: creditsFor(dur, "realistic"), styles: ["realistic"], style: "realistic" }, text + askFirst);
   });
 
   server.registerTool("kleo_create_video", {
@@ -166,19 +208,19 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       voice: z.string().optional().describe("Voice id from kleo_list_templates (narrator-en-m, narrator-en-f, narrator-it-m, narrator-it-f). The engine ids used inside a storyboard (am_michael, af_heart, bf_emma, im_nicola, if_sara) are accepted too. Optional."),
       style: z.enum(["realistic"]).optional().describe("Kleo has one look: realistic — a cinematic film, every shot generated as moving footage from its own frame, narrated, no captions and no music. Omit it or pass \"realistic\"."),
       notify_email: z.string().email().optional().describe("Optional: email the download links when the render finishes."),
+      treatment: z.looseObject({}).optional().describe("The treatment object kleo_adapt_prompt returned for this request, unchanged or edited as the user asked (logline, angle, device, opening, ending, acts, visual, pacing, narrator, motifs, decisions, prose, variation). Kleo plans the direction and every scene under it. Checked before anything is charged; on error the tool lists the problems. Omit it and Kleo writes a treatment itself while planning — the user just never sees it first."),
       storyboard: z.looseObject({}).optional().describe("Optional but recommended: the storyboard you wrote following kleo_storyboard_guide (a Keou project object without id, script_file, music_quiet or image scenes). IT MUST INCLUDE THE \"direction\" BLOCK the guide asks for first — a storyboard without one is refused, because the direction is what keeps a character the same person across shots and gives every scene the colour of its section. Its format and language must equal the ones you pass here, and its voice must belong to that language. When omitted entirely, Kleo plans the whole storyboard, direction included, from the prompt. Checked before anything is charged; on error the tool lists the problems so you can fix them and call again."),
     }),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   }, async (args) => guarded(async () => {
-    if (!args.template) throw new JobError("Choose a template first: call kleo_list_templates and pass its id as \"template\" (for a Short, viral-short is the usual choice). Nothing was charged.");
-    const t = findTemplate(args.template);
-    if (!t) throw new JobError(`There is no template called "${args.template}". Call kleo_list_templates and use one of these ids: ${TEMPLATE_IDS.join(", ")}. Nothing was charged.`);
+    if (!args.template) args.template = ACTIVE_TEMPLATE.id;
     const fresh = (await getUser(env, user.id)) ?? user;
+    const t = ACTIVE_TEMPLATE;
     const duration = Math.round(args.duration_s ?? t.defaultSeconds);
     // Priced on the style the caller NAMED. When none is named, createJob picks one from the topic and debits that
     // price instead, so this figure is an early courtesy ("you cannot afford this"), never the charge itself: the
     // authoritative debit is one conditional UPDATE in createJob, and it refuses with its own accurate message.
-    const cost = creditsFor(duration, args.style);
+    const cost = creditsFor(duration, "realistic");
     if (duration >= t.minSeconds && duration <= t.maxSeconds && fresh.credits < cost)
       throw new JobError(`Not enough credits: this ${kindOf(args.format ?? t.formats[0])} costs ${plural(cost, "credit")} and you have ${plural(fresh.credits, "credit")}. Nothing was charged. Your account and how to get more: ${await accountUrl(env, user.id, base)}`);
     const maxOpen = int(env.MAX_JOBS_PER_USER, 2);
@@ -194,12 +236,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     // subject the word lists know, and the whole set scored 26%. A guess that presents itself as a decision is the
     // bug — the user sees a video in the wrong look and cannot tell why. A guess that admits it is a conversation:
     // the assistant reads this line, tells the user, and the user fixes it while the credits can still come back.
-    const guessed = !args.style && !(args.storyboard as Record<string, unknown> | undefined)?.kleo_style;
-    const pick = guessed && view.style ? pickKleoStyleWhy(t.id, args.prompt) : null;
-    const styleNote = !view.style ? ""
-      : !guessed ? ` Style: ${view.style}.`
-      : pick?.confident ? ` Style: ${view.style}, chosen from what you asked for.`
-      : ``;
+    const styleNote = " Style: realistic cinematic.";
     // A guessed look that was replaced because it costs more has to be SAID: the user would otherwise receive a
     // different video from the one Kleo understood, with nothing anywhere explaining why. Naming the style is always
     // honoured, so the way to get it is one argument, and the sentence says which one.
@@ -207,7 +244,10 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     const cappedNote = jp.style_capped_from
       ? ` Kleo would have chosen the "${jp.style_capped_from}" look for this, but it costs ${plural(creditsFor(view.duration_s, jp.style_capped_from), "credit")} instead of ${plural(job.credits, "credit")}, and Kleo never spends the dearer ones on a guess: it used "${jp.style}". Ask again with style: "${jp.style_capped_from}" if that is the one you want.`
       : "";
-    const summary = `Your ${what} is in the queue. Video number: ${job.id}.${cappedNote} Template: ${t.name}, ${view.format}, ${view.duration_s} seconds.${styleNote} It should be ready in ${eta}. ${plural(job.credits, "credit")} used, ${plural(fresh.credits - job.credits, "credit")} left. NEXT STEP, do it now: call kleo_wait_for_video with job_id "${job.id}", and when it answers that the video is still rendering call it again, and again, until it answers that the video is ready. Do not end your turn and do not ask the user anything in between: they are waiting for the finished video in this conversation.${sim}`;
+    // Which film is being made has to be said: the one the user read about, or one Kleo will write on its own.
+    const logline = typeof jp.treatment?.logline === "string" ? jp.treatment.logline : null;
+    const treatNote = logline ? ` Planned under your treatment: "${logline}".` : " Kleo writes the film's treatment itself while planning (call kleo_adapt_prompt first next time to show it to the user before rendering).";
+    const summary = `Your ${what} is in the queue. Video number: ${job.id}.${cappedNote} Template: ${t.name}, ${view.format}, ${view.duration_s} seconds.${styleNote}${treatNote} It should be ready in ${eta}. ${plural(job.credits, "credit")} used, ${plural(fresh.credits - job.credits, "credit")} left. NEXT STEP, do it now: call kleo_wait_for_video with job_id "${job.id}", and when it answers that the video is still rendering call it again, and again, until it answers that the video is ready. Do not end your turn and do not ask the user anything in between: they are waiting for the finished video in this conversation.${sim}`;
     return ok({ ...view, credits_left: fresh.credits - job.credits, mode: simulated ? "simulated" : "gpu", message: summary }, summary);
   }));
 
@@ -300,7 +340,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
 
   server.registerTool("kleo_get_result", {
     title: "Get download links",
-    description: "Step 5. Download links for a finished video: the MP4, the subtitles (.srt) and the thumbnail. Only works when kleo_get_job says the state is done. Links stop working after 7 days. Share them with the user exactly as returned, as plain URLs; never make up a link.",
+    description: "Step 5. Download links for a finished realistic film: the MP4 and thumbnail. No subtitles or music are delivered.",
     inputSchema: z.object({ job_id: z.string().describe("The video number returned by kleo_create_video.") }),
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   }, async ({ job_id }) => guarded(async () => {

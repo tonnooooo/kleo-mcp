@@ -15,6 +15,7 @@ import { directionProblems, CINEMA_ACCENTS } from "../src/keou-contract.ts";
 import { validateStoryboard, pictureScenes, quotesVoice, BEAT_ICONS, STORY_ACTS } from "../src/keou-contract.ts";
 import { assignShotKinds } from "../src/storyboard.ts";
 import { SHOT_KINDS, presetFor, moveClassOf, isLoud, needsStaticHold, LOUD_MAX_PER_WINDOW } from "../src/shot-grammar.ts";
+import { TREATMENT_FIXTURE } from "./fixtures/treatment.mjs";
 
 const moveOfKind = (k) => presetFor(k).move;
 const classOfKind = (k) => moveClassOf(moveOfKind(k));
@@ -106,12 +107,16 @@ function fakeEnv(respond, opts = {}) {
   return {
     AI: { async run(_model, inputs) {
       const user = inputs.messages.at(-1).content;
-      const kind = /TASK: write the DIRECTION/.test(user) ? "direction"
+      // The treatment call (step -1 since 14 September) is answered by the fixture unless a test passes
+      // `opts.treatment`, the same way the direction is: no test here has to know the step exists.
+      const kind = /TASK: write the TREATMENT/.test(user) ? "treatment"
+        : /TASK: write the DIRECTION/.test(user) ? "direction"
         : /TASK: plan the whole video/.test(user) ? "outline" : "chunk";
       const key = kind === "chunk" ? `chunk-${chunkRange(user).join("-")}` : kind;
       const a = (attempts.get(key) ?? 0) + 1; attempts.set(key, a);
-      const handler = kind === "direction" ? (opts.direction ?? directionFor) : respond;
-      const out = kind === "direction" && !opts.direction ? handler(user) : await handler(kind, user, a, inputs);
+      const handler = kind === "treatment" ? (opts.treatment ?? (() => TREATMENT_FIXTURE(Number(/THE FILM: .*?, (\d+) seconds/.exec(user)?.[1] ?? 45))))
+        : kind === "direction" ? (opts.direction ?? directionFor) : respond;
+      const out = (kind === "treatment" && !opts.treatment) || (kind === "direction" && !opts.direction) ? handler(user) : await handler(kind, user, a, inputs);
       return { response: out, usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 } };
     } },
     INTERNAL_SECRET: "x",

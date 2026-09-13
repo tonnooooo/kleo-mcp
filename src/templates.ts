@@ -309,13 +309,17 @@ export const TEMPLATE_IDS = TEMPLATES.map((t) => t.id) as [string, ...string[]];
  * template is omitted. The adapt-prompt planner that replaces the families lands in a later step.
  */
 export const FILM_TEMPLATE_ID = "film";
+/** Legacy id retained only so old database rows can still be read. New requests always use `film`. */
 export const FILM_LONG_TEMPLATE_ID = "film-long";
-export const PUBLIC_TEMPLATE_IDS = [FILM_TEMPLATE_ID, FILM_LONG_TEMPLATE_ID] as [string, ...string[]];
-/** The film template for a length: the short arc up to ninety seconds, chapters beyond. One product, two shapes. */
-export const filmTemplateFor = (seconds: number | undefined | null): string =>
-  typeof seconds === "number" && seconds > 90 ? FILM_LONG_TEMPLATE_ID : FILM_TEMPLATE_ID;
-export const PUBLIC_TEMPLATES: Template[] = TEMPLATES.filter((t) => (PUBLIC_TEMPLATE_IDS as readonly string[]).includes(t.id));
-export const isPublicTemplate = (id: string | undefined | null): boolean => !!id && (PUBLIC_TEMPLATE_IDS as readonly string[]).includes(id);
+export const PUBLIC_TEMPLATE_IDS = [FILM_TEMPLATE_ID] as [string];
+/** One public workflow: duration changes the plan, never the template shown to the user. */
+export const filmTemplateFor = (_seconds: number | undefined | null): string => FILM_TEMPLATE_ID;
+export const ACTIVE_TEMPLATE: Template = {
+  id: FILM_TEMPLATE_ID, name: "Realistic Film", formats: ["16:9", "9:16"], minSeconds: 15, maxSeconds: 300, defaultSeconds: 60,
+  description: "Adaptive realistic film: shot-by-shot direction, real motion clips, continuity, narration only, no music or subtitles.", voices: EN_IT, family: "chaptered",
+};
+export const PUBLIC_TEMPLATES: Template[] = [ACTIVE_TEMPLATE];
+export const isPublicTemplate = (id: string | undefined | null): boolean => id === FILM_TEMPLATE_ID;
 export const findTemplate = (id: string): Template | undefined => TEMPLATES.find((t) => t.id === id);
 
 /**

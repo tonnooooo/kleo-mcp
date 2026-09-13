@@ -16,6 +16,10 @@ export interface Env {
   IMAGE_FIXTURE?: string;         // "1" (dev only): placeholder PNGs instead of Workers AI pictures
 
   AI_MODEL?: string; // default: storyboard.ts DEFAULT_MODEL
+  /** The model that writes the TREATMENT (src/treatment.ts) when it should differ from AI_MODEL; unset = AI_MODEL. */
+  TREATMENT_MODEL?: string;
+  /** Treatments one account may ask kleo_adapt_prompt for in a UTC day (default 12): each one spends Workers AI quota. */
+  ADAPT_MAX_PER_DAY?: string;
   STORYBOARD_FIXTURE?: string; // "example" (dev only): use the bundled cinema example instead of calling AI
   DEV_ROUTES?: string; // "1" enables GET /internal/dev/plan (bearer INTERNAL_SECRET)
   BRAND?: string; // on-screen brand handed to the render worker (default "Kleo")

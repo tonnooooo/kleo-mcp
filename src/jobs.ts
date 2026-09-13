@@ -7,6 +7,7 @@ import { rid, nowIso, int, hmacHex } from "./util";
 import { isFlagActive } from "./schema";
 import { backendFor } from "./backends";
 import { validateStoryboard, kleoStyleOf, pictureScenes, narrationOf, MAX_PICTURES, wordBudget, KLEO_STYLES, type KleoStyle } from "./keou-contract";
+import { treatmentProblems, repairTreatment, variationFor } from "./treatment.ts";
 
 /** An error whose message is shown to the user as-is: plain English, always says whether something was charged. */
 export class JobError extends Error {}
@@ -23,6 +24,11 @@ export interface CreateInput {
   style?: string;
   /** Optional client-authored Keou storyboard (see keou-contract.ts); validated here, stored as JSON. */
   storyboard?: unknown;
+  /**
+   * Optional treatment (src/treatment.ts), the object kleo_adapt_prompt returned, possibly edited by the user.
+   * Checked here in words; the planner then plans under it instead of writing its own.
+   */
+  treatment?: unknown;
 }
 
 /** Minimal safety gate before any GPU money is spent. Replace with a real moderation API before opening to the public. */
@@ -133,6 +139,20 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     else delete (r.storyboard as Record<string, unknown>).backdrop;
     storyboard = JSON.stringify(r.storyboard);
   }
+  // The treatment the caller saw and approved. Refused in words when it is not one (a missing field, acts that do
+  // not add up), before anything is charged; kept exactly, so the film the user read about is the film planned.
+  let treatment: Record<string, unknown> | null = null;
+  if (input.treatment !== undefined && input.treatment !== null) {
+    const problems = treatmentProblems(input.treatment, duration);
+    if (problems.length)
+      throw new JobError(`The treatment has ${plural(problems.length, "problem")} (nothing was charged). Fix ${problems.length === 1 ? "it" : "them"} and call kleo_create_video again, or leave the treatment out and Kleo writes one:\n- ${problems.join("\n- ")}`);
+    const tIn = input.treatment as Record<string, unknown>;
+    const fitted = repairTreatment(tIn, duration, variationFor(typeof tIn.variation === "string" ? tIn.variation : ""));
+    treatment = fitted as unknown as Record<string, unknown>;
+    // With a client storyboard the planner never runs, so the treatment is attached to the storyboard here: it is
+    // how the finished video can be read back to the film it was meant to be, on either road into the queue.
+    if (storyboard) storyboard = JSON.stringify({ ...(JSON.parse(storyboard) as Record<string, unknown>), treatment });
+  }
   // No guess and no cap any more: there is one look, and its price is its price.
   const styleGuessed = false;
 
@@ -162,7 +182,7 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   if (!(await debitCredits(env, user.id, credits, jobId)))
     throw new JobError(`Not enough credits: this ${kindOf(format)} costs ${plural(credits, "credit")} and you have ${plural(Math.max(0, user.credits), "credit")}. Nothing was charged. Your account and how to get more: ${await accountUrl(env, user.id)}`);
 
-  const params: JobParams = { duration_s: duration, format, language, voice, style, ...(styleGuessed ? { style_guessed: true } : {}), ...(cappedFrom ? { style_capped_from: cappedFrom } : {}) };
+  const params: JobParams = { duration_s: duration, format, language, voice, style, ...(styleGuessed ? { style_guessed: true } : {}), ...(cappedFrom ? { style_capped_from: cappedFrom } : {}), ...(treatment ? { treatment } : {}) };
   const job: Job = {
     id: jobId, user_id: user.id, template: t.id, prompt, params: JSON.stringify(params),
     state: "queued", track: null, percent: 0, eta_min: etaFor(duration), credits,
@@ -179,7 +199,7 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     await audit(env, user.id, jobId, "job.create.error", String(e).slice(0, 500));
     throw new JobError("Kleo could not save the video request. Nothing was charged; please try again in a moment.");
   }
-  await audit(env, user.id, job.id, "job.created", { template: t.id, credits, duration, format, style, storyboard: storyboard ? "client" : "auto" });
+  await audit(env, user.id, job.id, "job.created", { template: t.id, credits, duration, format, style, storyboard: storyboard ? "client" : "auto", treatment: treatment ? "client" : "auto" });
   return job;
 }
 
