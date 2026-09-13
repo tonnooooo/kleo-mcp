@@ -227,7 +227,8 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     const open = await countOpenForUser(env, user.id);
     if (open >= maxOpen)
       throw new JobError(`You already have ${plural(open, "video")} in progress, and the limit is ${maxOpen} at a time. Wait for one to finish (kleo_get_job) or cancel one with kleo_cancel_job. Nothing was charged.`);
-    const job = await createJob(env, fresh, { ...args, template: t.id });
+    // The length is passed as computed here, so the courtesy check above and the debit below price the same film.
+    const job = await createJob(env, fresh, { ...args, template: t.id, duration_s: duration });
     const view = jobView(job);
     const what = kindOf(view.format);
     const sim = simulated ? " SIMULATED MODE: this is a test render; it finishes in about a minute and the files are placeholders, not a real video." : "";

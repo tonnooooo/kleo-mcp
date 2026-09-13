@@ -28,7 +28,17 @@ Un tool MCP ha lo stesso tempo di una pagina web: i client aspettano al massimo 
 Le descrizioni sono il manuale del modello: se sono scritte bene, il modello sceglie lo strumento giusto e compila i parametri giusti senza che l'utente sappia nulla di tecnico. Le descrizioni vere e complete stanno in `src/mcp.ts`; qui il riassunto.
 
 ```jsonc
-// kleo_list_templates — passo 1. "Lists the templates Kleo can render and the credits left on the account.
+// kleo_adapt_prompt — passo 1 (14 settembre). "Turns the user's request into the TREATMENT of the film: Kleo's
+//                     producer reads the request, keeps every fact in it, and decides the angle, the opening image,
+//                     the acts with their seconds, the ending, the visual language, the pacing, the narrator and the
+//                     motifs — and lists every decision it took that the user did not ask for."
+{ "prompt": "…", "duration_s": 60, "format": "16:9", "language": "en" } // solo prompt obbligatorio; lingua, durata e formato letti dalla richiesta
+// → { brief, treatment: { logline, angle, device, opening, ending, acts, visual, pacing, narrator, motifs, decisions, prose, variation }, ready_to_render }
+//   Se manca il soggetto o la durata risponde con la domanda e non spende niente. L'assistente dice all'utente
+//   logline e decisioni, poi passa l'oggetto tale e quale (o modificato) a kleo_create_video come "treatment".
+//   Dettagli: docs/ADAPT-PROMPT.md
+
+// kleo_list_templates — "Lists the templates Kleo can render and the credits left on the account.
 //                        Call it when the user has not named a template, then pick the closest match."
 { } // nessun parametro
 // → { templates: [{ id, name, formats, duration_s: {min, max, default}, credits, voices, description }], credits_available, pricing }
@@ -51,7 +61,8 @@ Le descrizioni sono il manuale del modello: se sono scritte bene, il modello sce
   "language":     { "enum": ["en", "it"], "default": "en" },
   "voice":        { "type": "string" },                                      // facoltativo, dalla lista dei template
   "notify_email": { "type": "string", "format": "email" },                   // facoltativo (oggi l'email non parte: manca RESEND_API_KEY)
-  "storyboard":   { "type": "object" }                                       // facoltativo: lo storyboard scritto dall'assistente, validato dal server
+  "storyboard":   { "type": "object" },                                      // facoltativo: lo storyboard scritto dall'assistente, validato dal server
+  "treatment":    { "type": "object" }                                       // facoltativo: l'oggetto restituito da kleo_adapt_prompt; il pianificatore scrive direction e scene sotto di lui
 }
 // → { job_id: "gt_ab12cd34", state: "queued", eta_min: 25, credits: 1, message }
 

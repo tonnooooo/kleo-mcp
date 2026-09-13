@@ -10,6 +10,7 @@ import {
 } from "../src/treatment.ts";
 import { generateStoryboard, TREATMENT_TEMPERATURE, writeTreatment } from "../src/storyboard.ts";
 import { validateStoryboard } from "../src/keou-contract.ts";
+import { ACTIVE_TEMPLATE, PUBLIC_TEMPLATES, filmTemplateFor, isPublicTemplate } from "../src/templates.ts";
 import { TREATMENT_FIXTURE } from "./fixtures/treatment.mjs";
 
 const v = variationFor("gt_test0001");
@@ -200,6 +201,19 @@ test("a treatment handed in through params is planned under as it is, and the mo
   assert.equal(r.treatment.logline, given.logline);
   assert.match(calls.find((c) => c.kind === "direction").user, /Logline: The film the user already read about/);
   assert.equal(r.storyboard.treatment.logline, given.logline);
+});
+
+/* ------------------------------------------------------------------ one public template, two rows */
+
+test("the public film template spans both internal rows: the length picks the row, and both ids stay accepted", () => {
+  assert.equal(ACTIVE_TEMPLATE.id, "film");
+  assert.equal(ACTIVE_TEMPLATE.minSeconds, 15); assert.equal(ACTIVE_TEMPLATE.maxSeconds, 300);
+  assert.equal(filmTemplateFor(45), "film"); assert.equal(filmTemplateFor(90), "film");
+  assert.equal(filmTemplateFor(91), "film-long"); assert.equal(filmTemplateFor(300), "film-long");
+  assert.equal(filmTemplateFor(undefined), "film");
+  assert.ok(isPublicTemplate("film") && isPublicTemplate("film-long"), "a job row planned as film-long is still a public film");
+  assert.ok(!isPublicTemplate("viral-short") && !isPublicTemplate(undefined));
+  assert.deepEqual(PUBLIC_TEMPLATES.map((t) => t.id), ["film"], "but the user is shown one template");
 });
 
 /* ------------------------------------------------------------------ on its own, for kleo_adapt_prompt */

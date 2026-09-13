@@ -1,7 +1,7 @@
 import type { Env } from "./env";
 import { type Job, type JobParams, type JobState, type User, OPEN_STATES, countOpenForUser, countJobsTodayForUser, addJobCost, debitCredits, refundCredits, insertJob, transitionJob, audit, getUserJob, listFiles } from "./db";
 import { accountUrl } from "./accounts";
-import { findTemplate, affordableGuess, creditsFor, etaFor, normalizeVoice, voiceSpellings, isVideoStyle, videoModelIsGated, isPublicTemplate, FILM_TEMPLATE_ID, FILM_LONG_TEMPLATE_ID, filmTemplateFor, type Format } from "./templates";
+import { findTemplate, affordableGuess, creditsFor, etaFor, normalizeVoice, voiceSpellings, isVideoStyle, videoModelIsGated, isPublicTemplate, FILM_TEMPLATE_ID, FILM_LONG_TEMPLATE_ID, filmTemplateFor, ACTIVE_TEMPLATE, type Format } from "./templates";
 import { footageBackendFor, footageConfig } from "./footage";
 import { rid, nowIso, int, hmacHex } from "./util";
 import { isFlagActive } from "./schema";
@@ -86,7 +86,14 @@ export function overPaidFor(sb: unknown, duration: number): string[] {
 }
 
 export async function createJob(env: Env, user: User, input: CreateInput): Promise<Job> {
-  const t = findTemplate(input.template || filmTemplateFor(input.duration_s));
+  // The public template is "film", 15 to 300 seconds; the length decides which internal row plans it (the short
+  // arc or the chapters). The range is checked on the PUBLIC template first, so the message names the range the
+  // user was offered, not the row's half of it.
+  const active = ACTIVE_TEMPLATE;
+  const asked = input.duration_s ?? active.defaultSeconds;
+  if ((!input.template || input.template === FILM_TEMPLATE_ID) && (asked < active.minSeconds || asked > active.maxSeconds))
+    throw new JobError(`Kleo makes films of ${active.minSeconds} to ${active.maxSeconds} seconds; ${Math.round(asked)} seconds is outside that range. Choose a length in range. Nothing was charged.`);
+  const t = findTemplate(!input.template || input.template === FILM_TEMPLATE_ID ? filmTemplateFor(asked) : input.template);
   if (!t) throw new JobError(`There is no template called "${input.template}". Call kleo_list_templates for the valid ids. Nothing was charged.`);
   // One product (13 September 2026): the film. The old templates stay readable for the rows made with them and
   // for the planner's families, but a new video is not made with them.
