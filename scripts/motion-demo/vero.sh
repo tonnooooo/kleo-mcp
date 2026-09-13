@@ -27,9 +27,6 @@ $DB run "rsync -a --exclude node_modules /opt/kleo/repo/worker/keou/ /opt/kleo/k
 
 echo "== the video model downloads now, detached, while nothing else is waiting on it =="
 $DB bg "cd /opt/kleo/repo && HF_HUB_OFFLINE=0 HF_HOME=/opt/kleo/hf python3 scripts/motion-demo/scarica.py" /opt/kleo/wan.log
-# While the model downloads: is the footage visible under the graphics at all? One real composite of colour
-# bars through the real engine, ~1 min. Two lids were found on 13 September only by looking at a finished film.
-$DB run "cd /opt/kleo/repo && KLEO_KEOU_DIR=/opt/kleo/keou KLEO_KEOU_PYTHON=\$(test -x /opt/kleo/keou/.venv/bin/python && echo /opt/kleo/keou/.venv/bin/python || echo python3) python3 scripts/motion-demo/lid-probe.py" || { echo "!! LID: the graphics layer is opaque — nothing is filmed until it is fixed"; exit 1; }
 $DB wait /opt/kleo/wan.log SCARICATO Traceback 25
 $DB run "du -sh /opt/kleo/hf"
 
@@ -38,7 +35,7 @@ $DB run "du -sh /opt/kleo/hf"
 $DB run "pip install -q opencv-python-headless==4.11.0.86 ftfy==6.3.1 && python3 -c 'import cv2, ftfy; from diffusers import WanImageToVideoPipeline, WanPipeline; print(\"video deps ok\", cv2.__version__)'"
 
 echo "== RENDER, detached =="
-$DB bg "cd /opt/kleo/repo && HF_HUB_OFFLINE=0 HF_HOME=/opt/kleo/hf KLEO_PICTURES=local KLEO_KEOU_DIR=/opt/kleo/keou KLEO_ENGINE=keou KLEO_KEOU_WORKERS=6 KLEO_RENDER_TIMEOUT_MIN=15 KLEO_VIDEO_STEPS=22 PYTHONUNBUFFERED=1 python3 scripts/motion-demo/gira.py" /opt/kleo/gira.log
+$DB bg "cd /opt/kleo/repo && HF_HUB_OFFLINE=0 HF_HOME=/opt/kleo/hf KLEO_PICTURES=local KLEO_KEOU_DIR=/opt/kleo/keou KLEO_ENGINE=keou KLEO_KEOU_WORKERS=6 KLEO_RENDER_TIMEOUT_MIN=15 KLEO_VIDEO_STEPS=22 PYTHONUNBUFFERED=1 python3 scripts/motion-demo/film.py" /opt/kleo/gira.log
 if ! $DB wait /opt/kleo/gira.log "== FATTO ==" "== FALLITO" 45; then
   # A failed film is the most valuable thing on the box — the first one was destroyed unread (13 September:
   # "one second of identical frames", master never seen). Pull what there is before the guard destroys it.
