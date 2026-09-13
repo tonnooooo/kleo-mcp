@@ -98,6 +98,39 @@ def search(n=1):
     return out[:max(1, n)]
 
 
+def credit():
+    """Vast credit in dollars, or None when the API does not answer."""
+    try:
+        return float(api("GET", "/users/current/").get("credit") or 0.0)
+    except SystemExit:
+        return None
+
+
+def burning():
+    """(dollars per hour, count) of every instance on the account right now — ours, another session's, and
+    production's. A rental that ignores them is how the credit reached zero on 13 September with two films one
+    step from the file: Vast stops EVERY machine the instant the credit is gone."""
+    try:
+        inst = api("GET", "/instances/").get("instances") or []
+    except SystemExit:
+        return 0.0, 0
+    live = [i for i in inst if (i.get("actual_status") or i.get("cur_state")) not in ("exited", "stopped", None)]
+    return sum(float(i.get("dph_total") or 0) for i in live), len(live)
+
+
+def affordable(dph, minutes=float(os.environ.get("DEVBOX_RUN_MIN", "60")), reserve=float(os.environ.get("DEVBOX_RESERVE_USD", "0.50"))):
+    """Whether renting `dph` for `minutes` leaves the reserve intact while everything already running keeps
+    running for the same time. Says the sum out loud either way."""
+    c = credit()
+    if c is None:
+        print("  could not read the credit; renting anyway", flush=True)
+        return True
+    rate, n = burning()
+    need = (dph + rate) * minutes / 60 + reserve
+    print(f"  credit ${c:.2f}; this box ${dph:.3f}/h + {n} running at ${rate:.3f}/h for {minutes:.0f} min + ${reserve:.2f} reserve = ${need:.2f}", flush=True)
+    return c >= need
+
+
 def up(tries=None):
     """Rent a machine and wait for it to answer. A host whose ssh proxy never lets us in (it happens: the key is
     registered, the instance says running, the proxy still refuses) is destroyed and the next offer is taken — an
@@ -133,6 +166,9 @@ def up(tries=None):
                 print(f"  {e} — asking again in 30 s", flush=True)
                 time.sleep(30)
         tried.add(off.get("machine_id"))
+        if not affordable(float(off.get("dph_total") or 0)):
+            raise SystemExit("NOT RENTED: the credit does not cover this run with what is already running. Top up, "
+                             "or stop a machine (python3 scripts/vast-ls.py), or lower DEVBOX_RUN_MIN")
         try:
             return rent_and_wait(off)
         except SystemExit as e:
@@ -271,12 +307,19 @@ def sync():
     print("synced:", ", ".join(have))
 
 
-def pull(remote, local):
-    st = need()
-    rc = subprocess.run(["scp", *SSH_OPTS, "-P", str(st["port"]), f"root@{st['host']}:{remote}", local]).returncode
-    if rc:
-        raise SystemExit("scp failed")
-    print("pulled", remote, "->", local)
+def pull(remote, local, tries=int(os.environ.get("DEVBOX_PULL_TRIES", "6"))):
+    """Copy a file back, retrying: the finished film is the one thing on the box worth waiting for."""
+    st = state()
+    if not st.get("host"):
+        raise SystemExit("no devbox to pull from")
+    for n in range(1, tries + 1):
+        rc = subprocess.run(["scp", *SSH_OPTS, "-P", str(st["port"]), f"root@{st['host']}:{remote}", local]).returncode
+        if rc == 0 and os.path.isfile(local) and os.path.getsize(local) > 0:
+            print("pulled", remote, "->", local, f"({os.path.getsize(local) / 1e6:.1f} MB)")
+            return
+        print(f"  pull {n}/{tries} failed", flush=True)
+        time.sleep(20)
+    raise SystemExit("scp failed")
 
 
 def down():
@@ -305,6 +348,9 @@ def bg(cmd, log):
         raise SystemExit("could not start the job on the box")
 
 
+MAX_MISSES = int(os.environ.get("DEVBOX_MAX_MISSES", "40"))   # ~15 min of silence before giving up on a live box
+
+
 def wait(log, ok, fail, minutes=float(os.environ.get("DEVBOX_WAIT_MIN", "40"))):
     """Poll `log` on the box until it contains `ok` (return 0) or `fail` (return 1), or `minutes` pass (return 2).
     Prints new lines as they appear. Each poll is its own short ssh: a dropped connection costs one poll, not the
@@ -316,10 +362,18 @@ def wait(log, ok, fail, minutes=float(os.environ.get("DEVBOX_WAIT_MIN", "40"))):
         p = run(f"cat {log} 2>/dev/null || true", capture=True)
         if p.returncode == 255:                       # ssh itself failed; the remote command cannot return 255
             misses += 1
-            print(f"  (ssh did not answer, {misses}/8)", flush=True)
-            if misses >= 8:
-                raise SystemExit("the box stopped answering on ssh for eight polls in a row")
-            time.sleep(15); continue
+            print(f"  (ssh did not answer, {misses}/{MAX_MISSES})", flush=True)
+            if misses in (3, 8, 20):
+                c = credit()
+                if c is not None and c <= 0.01:
+                    raise SystemExit("CREDIT EXHAUSTED: Vast has stopped every machine on the account. The job on "
+                                     "the box is gone with it. Top up before renting again.")
+                st = state()
+                if st.get("id") and not instance(st["id"]):
+                    raise SystemExit("the instance no longer exists on Vast (host failure, or destroyed elsewhere)")
+            if misses >= MAX_MISSES:
+                raise SystemExit(f"the box stopped answering on ssh for {MAX_MISSES} polls in a row")
+            time.sleep(15 if misses < 8 else 30); continue
         misses = 0
         lines = p.stdout.splitlines()
         for line in lines[shown:]:

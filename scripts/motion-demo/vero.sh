@@ -45,7 +45,11 @@ if ! $DB wait /opt/kleo/gira.log "== FATTO ==" "== FALLITO" 45; then
   $DB run "ls /opt/kleo/keou/projects/*/out/master.mp4 2>/dev/null" && $DB pull "/opt/kleo/keou/projects/gt-demo/out/master.mp4" "$OUT/MOTO-FAILED-master.mp4" || true
   exit 1
 fi
-$DB pull /opt/kleo/gira.log "$OUT/gira.log"
+# THE MASTER FIRST. On 13 September a finished 4K film sat on the box while the driver measured and transcoded,
+# the credit ran out, Vast stopped the machine, and the film was never downloaded.
+$DB pull /opt/kleo/out/video.mp4 "$OUT/MOTO-4K.mp4"
+$DB pull /opt/kleo/out/thumbnail.jpg "$OUT/MOTO-thumb.jpg" || true
+$DB pull /opt/kleo/gira.log "$OUT/gira.log" || true
 
 echo "== measure the motion ON THE BOX with a meter the generator does not optimise =="
 $DB run "cd /opt/kleo/repo && python3 scripts/motion-demo/misura.py /opt/kleo/out/video.mp4 /opt/kleo/keou/projects" | tee "$OUT/misura.txt"
@@ -54,6 +58,4 @@ echo "== web copy, made on the box =="
 $DB bg "cd /opt/kleo/out && ffmpeg -v error -y -i video.mp4 -vf scale=1280:-2 -c:v libx264 -preset slow -crf 21 -pix_fmt yuv420p -movflags +faststart -c:a aac -b:a 128k web.mp4 && echo WEB_FATTO" /opt/kleo/web.log
 $DB wait /opt/kleo/web.log WEB_FATTO Error 10
 $DB pull /opt/kleo/out/web.mp4 "$OUT/MOTO-web.mp4"
-$DB pull /opt/kleo/out/video.mp4 "$OUT/MOTO-4K.mp4"
-$DB pull /opt/kleo/out/thumbnail.jpg "$OUT/MOTO-thumb.jpg" || true
 ls -la "$OUT"

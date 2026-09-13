@@ -38,14 +38,15 @@ for name in $STORYBOARDS; do
     $DB pull "/opt/kleo/keou/projects/gt-$name/out/decode.log" "$OUT/$name.decode.log" || true
     continue
   fi
-  $DB pull /opt/kleo/gira-$name.log "$OUT/$name.log"
+  # THE MASTER FIRST (see vero.sh): a finished film was lost on 13 September one step before its download.
+  $DB pull /opt/kleo/out/$name/video.mp4 "$OUT/$name.4K.mp4" || { echo "!! $name: could not pull the master"; continue; }
+  $DB pull /opt/kleo/out/$name/thumbnail.jpg "$OUT/$name.jpg" || true
+  $DB pull /opt/kleo/gira-$name.log "$OUT/$name.log" || true
   TL=$(grep '== TIMELINE' "$OUT/$name.log" | tail -1 | awk '{print $3}')
   $DB run "cd /opt/kleo/repo && python3 scripts/motion-demo/misura.py /opt/kleo/out/$name/video.mp4 $TL" | tee "$OUT/$name.misura.txt" || true
   # web copy at real quality: 1080x1920 or 1920x1080, crf 20, voice kept. The old samples were 608x1080 at 67-255 kbps.
   $DB bg "cd /opt/kleo/out/$name && ffmpeg -v error -y -i video.mp4 -vf \"scale='min(1920,iw)':'min(1920,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2\" -c:v libx264 -preset slow -crf 20 -pix_fmt yuv420p -movflags +faststart -c:a aac -b:a 160k web.mp4 && echo WEB_FATTO" /opt/kleo/web-$name.log
-  $DB wait /opt/kleo/web-$name.log WEB_FATTO Error 15 || { echo "!! $name: web copy failed"; continue; }
-  $DB pull /opt/kleo/out/$name/web.mp4 "$OUT/$name.web.mp4"
-  $DB pull /opt/kleo/out/$name/video.mp4 "$OUT/$name.4K.mp4"
-  $DB pull /opt/kleo/out/$name/thumbnail.jpg "$OUT/$name.jpg" || true
+  $DB wait /opt/kleo/web-$name.log WEB_FATTO Error 15 || { echo "!! $name: web copy failed (the 4K is home)"; continue; }
+  $DB pull /opt/kleo/out/$name/web.mp4 "$OUT/$name.web.mp4" || true
 done
 ls -la "$OUT"
