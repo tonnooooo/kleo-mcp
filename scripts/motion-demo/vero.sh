@@ -27,6 +27,9 @@ $DB run "rsync -a --exclude node_modules /opt/kleo/repo/worker/keou/ /opt/kleo/k
 
 echo "== the video model downloads now, detached, while nothing else is waiting on it =="
 $DB bg "cd /opt/kleo/repo && HF_HUB_OFFLINE=0 HF_HOME=/opt/kleo/hf python3 scripts/motion-demo/scarica.py" /opt/kleo/wan.log
+# While the model downloads: is the footage visible under the graphics at all? One real composite of colour
+# bars through the real engine, ~1 min. Two lids were found on 13 September only by looking at a finished film.
+$DB run "cd /opt/kleo/repo && KLEO_KEOU_DIR=/opt/kleo/keou KLEO_KEOU_PYTHON=\$(test -x /opt/kleo/keou/.venv/bin/python && echo /opt/kleo/keou/.venv/bin/python || echo python3) python3 scripts/motion-demo/lid-probe.py" || { echo "!! LID: the graphics layer is opaque — nothing is filmed until it is fixed"; exit 1; }
 $DB wait /opt/kleo/wan.log SCARICATO Traceback 25
 $DB run "du -sh /opt/kleo/hf"
 
