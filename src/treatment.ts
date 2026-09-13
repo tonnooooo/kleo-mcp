@@ -296,6 +296,22 @@ export function treatmentOf(x: unknown): Treatment | null {
   return repairTreatment(t, sum > 0 ? sum : 60, v);
 }
 
+/* ------------------------------------------------------------------ how different two treatments are */
+
+/**
+ * The share of words (four letters and more) two texts do NOT have in common, over the union: 0 is the same film
+ * written twice, 1 is nothing shared. The one number the variation is measured by (scripts/treatment-make.mjs and
+ * the admin route both read it from here, so they cannot disagree).
+ */
+export function proseDistance(a: string, b: string): number {
+  const bag = (s: string) => new Set((s.toLowerCase().match(/[\p{L}]{4,}/gu) ?? []));
+  const A = bag(a), B = bag(b);
+  let both = 0;
+  for (const w of A) if (B.has(w)) both++;
+  const union = new Set([...A, ...B]).size;
+  return union ? 1 - both / union : 0;
+}
+
 /* ------------------------------------------------------------------ what the other stages read */
 
 /**

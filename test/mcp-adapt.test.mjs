@@ -40,7 +40,7 @@ class FakeKV {
 let m;
 before(async () => {
   const r = await esbuild.build({
-    stdin: { contents: `export { buildServer } from "./src/mcp.ts"; export * from "./src/db.ts";`, resolveDir: ROOT, loader: "ts" },
+    stdin: { contents: `export { buildServer } from "./src/mcp.ts"; export { handleAdmin } from "./src/internal.ts"; export * from "./src/db.ts";`, resolveDir: ROOT, loader: "ts" },
     bundle: true, write: false, format: "esm", platform: "node", target: "es2022", logLevel: "silent",
   });
   m = await import("data:text/javascript;base64," + Buffer.from(r.outputFiles[0].text).toString("base64"));
@@ -157,4 +157,28 @@ test("kleo_create_video keeps the treatment the user approved and says so; a bro
   const plain = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers", duration_s: 45, format: "9:16" });
   assert.ok(!plain.isError, plain.text);
   assert.match(plain.text, /Kleo writes the film's treatment itself while planning \(call kleo_adapt_prompt first/);
+});
+
+/* ------------------------------------------------------------------ the admin route: the measurement without a laptop */
+
+test("POST /internal/admin/treatment writes N treatments on the Worker's own model and measures their distance", async () => {
+  let n = 0;
+  const ai = fakeAi(() => { n++; const t = TREATMENT_FIXTURE(60); if (n === 2) { t.logline = "A lighthouse keeper counts the ships that never come back."; t.prose = Array.from({ length: 14 }, (_, i) => `Line ${i + 1}: fog, brass, salt, a lamp turning over black water and a man who writes the names down. `).join(""); } return t; });
+  const s = await studio(ai);
+  const post = (body, secret = "s3cret") => m.handleAdmin(new Request("http://kleo.test/internal/admin/treatment", { method: "POST", headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" }, body: JSON.stringify(body) }), s.env);
+  assert.equal((await post({ prompt: "A film about lighthouse keepers", n: 2 }, "wrong")).status, 401);
+  assert.equal((await post({ prompt: "short" })).status, 400);
+  const r = await (await post({ prompt: "A film about lighthouse keepers", duration_s: 60, n: 2 })).json();
+  assert.equal(r.ok, true); assert.equal(r.written, 2); assert.equal(ai.calls.length, 2);
+  assert.equal(r.treatments.length, 2);
+  assert.ok(r.distance.min > 0.3 && r.distance.min <= 1, `two different proses are far apart, got ${JSON.stringify(r.distance)}`);
+  assert.equal(r.draws.length, 2);
+  assert.ok(r.neurons > 0);
+  const rows = await s.audit("admin.treatment");
+  assert.equal(rows.length, 1); assert.equal(rows[0].written, 2);
+  assert.deepEqual(await s.audit("treatment.adapt"), [], "never counted against an account");
+  // The model down: the answer says so, with the reason, and is not an HTTP error.
+  const down = await studio(fakeAi(() => { throw new Error("429 4006 daily free allocation"); }));
+  const dr = await (await m.handleAdmin(new Request("http://kleo.test/internal/admin/treatment", { method: "POST", headers: { authorization: "Bearer s3cret", "content-type": "application/json" }, body: JSON.stringify({ prompt: "A film about lighthouse keepers" }) }), down.env)).json();
+  assert.equal(dr.ok, false); assert.equal(dr.written, 0); assert.equal(dr.transient, true); assert.match(dr.problems[0][0], /4006/);
 });

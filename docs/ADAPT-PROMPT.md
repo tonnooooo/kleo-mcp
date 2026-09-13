@@ -114,6 +114,19 @@ node scripts/treatment-make.mjs "Create a video about accuracy in medicine" --n 
 ```
 
 Stampa i tre treatment, i neuroni spesi e una **distanza** fra le prose (quota di parole non condivise: 0 = lo
-stesso film, 1 = niente in comune). Cosa guardare: che l'angolo sia un'idea e non il soggetto ripetuto; che gli
-atti sommino alla durata; che nella prosa non compaia una statistica che la richiesta non conteneva; che la
-distanza fra due corse sia sopra 0,5. Poi la stessa cosa con `--model @cf/openai/gpt-oss-120b`, e si sceglie.
+stesso film, 1 = niente in comune; `proseDistance` in `src/treatment.ts`). Cosa guardare: che l'angolo sia
+un'idea e non il soggetto ripetuto; che gli atti sommino alla durata; che nella prosa non compaia una statistica
+che la richiesta non conteneva; che la distanza fra due corse sia sopra 0,5. Poi la stessa cosa con
+`--model @cf/openai/gpt-oss-120b`, e si sceglie.
+
+**Senza PC**: la stessa misura si fa dal server, da qualunque terminale o telefono con `INTERNAL_SECRET`, sul
+modello che usa il Worker (niente conto utente, niente quota per account, finisce nell'audit come
+`admin.treatment`):
+
+```bash
+curl -s -X POST https://mcp.kleooai.com/internal/admin/treatment -H "Authorization: Bearer $INTERNAL_SECRET" -H "content-type: application/json" -d '{"prompt":"Create a video about accuracy in medicine","duration_s":60,"format":"16:9","language":"en","n":3}'
+```
+
+Risponde con `written` su `asked`, i neuroni, `distance` (min e media), le logline, i treatment interi e, se il
+modello non ha risposto, `transient: true` col motivo. `"model":"@cf/openai/gpt-oss-120b"` nel corpo prova
+l'altro modello.

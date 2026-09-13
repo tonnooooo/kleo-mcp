@@ -15,7 +15,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { writeTreatment } from "../src/storyboard.ts";
-import { treatmentText } from "../src/treatment.ts";
+import { treatmentText, proseDistance as distance } from "../src/treatment.ts";
 
 const root = resolve(import.meta.dirname, "..");
 const args = process.argv.slice(2);
@@ -48,10 +48,6 @@ const env = {
     },
   },
 };
-
-/** Words two texts do NOT share, as a share of the union: 0 = the same film, 1 = nothing in common. */
-const bag = (s) => new Set((s.toLowerCase().match(/[\p{L}]{4,}/gu) ?? []));
-const distance = (a, b) => { const A = bag(a), B = bag(b); let both = 0; for (const w of A) if (B.has(w)) both++; return 1 - both / (new Set([...A, ...B]).size || 1); };
 
 if (outDir) mkdirSync(outDir, { recursive: true });
 const results = [];

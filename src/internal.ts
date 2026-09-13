@@ -6,7 +6,8 @@ import { finishJob, failJob, trackFor, budgetSpentUsd, handoverToFinish } from "
 import { backendFor } from "./backends";
 import { FILE_NAMES } from "./jobs";
 import { putFile, getFile } from "./storage";
-import { generateStoryboard, StoryboardError } from "./storyboard";
+import { generateStoryboard, StoryboardError, writeTreatment } from "./storyboard";
+import { proseDistance } from "./treatment.ts";
 import { findTemplate } from "./templates";
 import { generateJobImages, IMAGE_NAME_RE } from "./images";
 import { footageBackendFor, footageConfig, setFootageConfig, kieModelFor, requestFootage, footageStatus, footageSpentTodayUsd, clipKey, footageRows, KIE_MODELS, SHOT_ID_RE, STILL_NAME_RE, type ShotRequest } from "./footage";
@@ -263,6 +264,36 @@ export async function handleAdmin(request: Request, env: Env): Promise<Response>
     await setFootageConfig(env, o);
     await audit(env, null, null, "admin.footage", o);
     return json({ ok: true, ...(await view()) });
+  }
+  // The treatment on its own, from anywhere with the secret and no laptop: N treatments of one request on the
+  // Worker's own AI binding, with the distance between their proses. It is how the adapt-prompt gets MEASURED
+  // (docs/ADAPT-PROMPT.md §6) once the Workers AI quota is back — the same call kleo_adapt_prompt makes, minus the
+  // account, so it is never billed to a user and never counted against one.
+  //   POST /internal/admin/treatment {"prompt":"…","duration_s":60,"format":"16:9","language":"en","n":2,"model":"<optional>"}
+  if (path === "/internal/admin/treatment") {
+    if (request.method !== "POST") return json({ error: "method" }, 405);
+    const b = (await request.json().catch(() => ({}))) as { prompt?: unknown; duration_s?: unknown; format?: unknown; language?: unknown; n?: unknown; model?: unknown };
+    const prompt = String(b.prompt ?? "").trim();
+    if (prompt.length < 8 || prompt.length > 4000) return json({ error: "prompt: 8 to 4000 characters" }, 400);
+    const n = Math.min(5, Math.max(1, Math.round(Number(b.n ?? 1)) || 1));
+    const duration_s = Math.min(300, Math.max(15, Math.round(Number(b.duration_s ?? 60)) || 60));
+    const format = b.format === "9:16" ? "9:16" : "16:9";
+    const language = b.language === "it" ? "it" : "en";
+    const model = typeof b.model === "string" && b.model.trim() ? b.model.trim() : undefined;
+    const results = [];
+    for (let i = 0; i < n; i++) results.push(await writeTreatment(env, { prompt, duration_s, format, language }, { model }));
+    const written = results.filter((r) => r.treatment);
+    const d: number[] = [];
+    for (let i = 0; i < written.length; i++) for (let j = i + 1; j < written.length; j++)
+      d.push(proseDistance(`${written[i].treatment!.logline} ${written[i].treatment!.prose}`, `${written[j].treatment!.logline} ${written[j].treatment!.prose}`));
+    const neurons = results.reduce((s, r) => s + (r.est_neurons ?? 0), 0);
+    const distance = d.length ? { min: Math.round(Math.min(...d) * 100) / 100, mean: Math.round((d.reduce((a, x) => a + x, 0) / d.length) * 100) / 100 } : null;
+    await audit(env, null, null, "admin.treatment", { n, written: written.length, neurons, model: results[0]?.model, distance, transient: results.some((r) => r.transient) });
+    return json({
+      ok: written.length === n, model: results[0]?.model ?? null, asked: n, written: written.length, neurons, distance,
+      draws: written.map((r) => r.treatment!.variation), loglines: written.map((r) => r.treatment!.logline),
+      treatments: results.map((r) => r.treatment), problems: results.map((r) => r.history), transient: results.some((r) => r.transient),
+    });
   }
   if (request.method !== "POST") return json({ error: "method" }, 405);
   if (path === "/internal/admin/pause") {
