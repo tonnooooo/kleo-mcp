@@ -40,12 +40,8 @@ def sh(cmd):
 def main():
     sb = json.load(open(os.environ.get("STORYBOARD", os.path.join(HERE, "moto.json"))))
     sb["backdrop"] = "video"                                    # this pipeline films, always
-    for s in sb.get("scenes", []):                              # nothing drawn: no chapter plates, no captions
-        for k in ("chapter", "title", "hl", "button"):
-            s.pop(k, None)
-        for sh_ in s.get("shots") or []:
-            sh_.pop("caption", None); sh_.pop("hl", None)
-    sb["music"] = "none"
+    sb["music"] = "none"                                        # titles/captions stay in the data (the contract wants
+                                                                # them); nothing here draws them
     job_id = os.environ.get("JOB_ID", "gt_film")
     job = {"job_id": job_id, "storyboard": sb, "brand": "Kleo",
            "params": {"format": sb["format"], "duration_s": 60, "language": sb["language"]}, "prompt": sb["title"]}
