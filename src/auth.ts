@@ -3,17 +3,17 @@ import type { Env, AuthProps } from "./env";
 import { type User, getUser, createUserIfUnderCaps, getInvite, useInvite, applyBonusToUser, touchUser, audit } from "./db";
 import { accountCookie, cookieHandle, ipFingerprint, makeHandle, signupRateKey, verifyHandle, verifyTurnstile } from "./accounts";
 import { html, escapeHtml, rid, int } from "./util";
-import { filmCredits } from "./templates";
+import { filmCredits, freeCreditsFor } from "./templates";
 
 /**
  * /authorize: the page an MCP client (Claude, ChatGPT, Grok, Cursor…) opens in the browser.
- * One button, nothing to type: the click creates an anonymous account with FREE_CREDITS credits and
+ * One button, nothing to type: the click creates an anonymous account with FREE_FILMS films' worth of credits and
  * remembers it in a signed cookie (src/accounts.ts). A returning browser keeps its balance instead of
  * being given free credits again, which is also the main defence against multiplying the free tier.
  */
 export async function handleAuthorize(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
-  const freeCredits = int(env.FREE_CREDITS, 2);
+  const freeCredits = freeCreditsFor(env);
   if (request.method === "GET") {
     const parsed = await parseOrError(request, env);
     if (parsed instanceof Response) return parsed;
@@ -102,7 +102,7 @@ async function resolveAccount(env: Env, o: { cookie: string | null; key: string;
   // constraint. .invalid can never be a real domain (RFC 2606).
   const { verdict, user } = await createUserIfUnderCaps(
     env,
-    { id, email: `${id}@anon.kleo.invalid`, credits: int(env.FREE_CREDITS, 2), ipHash: ip },
+    { id, email: `${id}@anon.kleo.invalid`, credits: freeCreditsFor(env), ipHash: ip },
     { perDay: int(env.MAX_NEW_USERS_PER_DAY, 25), perAddressDay: int(env.MAX_NEW_USERS_PER_IP_DAY, 5) },
   );
   if (!user)
@@ -148,7 +148,7 @@ async function parseOrError(request: Request, env: Env): Promise<AuthRequest | R
     return await env.OAUTH_PROVIDER.parseAuthRequest(request);
   } catch (error) {
     if (!(error instanceof AuthorizationError)) throw error;
-    if (!error.redirectUri) return html(page({ error: error.description ?? "This connection request is not valid. Please try connecting Kleo again from your assistant.", clientName: "", oauthQuery: "", freeCredits: int(env.FREE_CREDITS, 2) }), 400);
+    if (!error.redirectUri) return html(page({ error: error.description ?? "This connection request is not valid. Please try connecting Kleo again from your assistant.", clientName: "", oauthQuery: "", freeCredits: freeCreditsFor(env) }), 400);
     const redirect = new URL(error.redirectUri);
     redirect.searchParams.set("error", error.code);
     if (error.description) redirect.searchParams.set("error_description", error.description);

@@ -55,7 +55,7 @@ function fakeAi(answer) {
 async function studio(ai, extra = {}) {
   const env = {
     DB: new FakeD1(), OAUTH_KV: new FakeKV(), AI: ai, RENDER_BACKEND: "manual", PUBLIC_URL: "http://kleo.test", INTERNAL_SECRET: "s3cret",
-    MAX_CONCURRENT_GPUS: "5", MAX_JOBS_PER_USER: "2", MAX_JOBS_PER_DAY: "500", JOB_TIMEOUT_MIN: "120", FREE_CREDITS: "10", RESULT_TTL_DAYS: "7",
+    MAX_CONCURRENT_GPUS: "5", MAX_JOBS_PER_USER: "2", MAX_JOBS_PER_DAY: "500", JOB_TIMEOUT_MIN: "120", FREE_FILMS: "1", RESULT_TTL_DAYS: "7",
     AI_MODEL: "@cf/meta/llama-4-scout-17b-16e-instruct", ...extra,
   };
   for (const f of readdirSync(join(ROOT, "migrations")).sort()) env.DB.db.exec(readFileSync(join(ROOT, "migrations", f), "utf8"));
@@ -89,7 +89,7 @@ test("kleo_account quotes the film's price and the real state of the shop, never
   const a = await closed.call("kleo_account", {});
   const d = a.structuredContent;
   assert.equal(d.film_credits, 7);
-  assert.equal(d.free_tier, "10 credits on sign-up, no signup form: 1 free film");
+  assert.equal(d.free_tier, "1 free film on sign-up (7 credits), no signup form");
   assert.equal(d.payments_open, false, "no Stripe links configured: the shop is closed and the tool says so");
   assert.match(a.text, /A film costs 7 credits up to 90 seconds/);
   assert.match(a.text, /7 credits per film up to 90 seconds, 21 up to 5 minutes, \+7 per extra minute/);

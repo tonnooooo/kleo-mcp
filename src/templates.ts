@@ -508,6 +508,17 @@ export const filmCredits = (seconds: number = ACTIVE_TEMPLATE.defaultSeconds): n
 export const tariffSentence = (): string =>
   `${filmCredits(90)} credits per film up to 90 seconds, ${filmCredits(300)} up to 5 minutes, +${filmCredits(360) - filmCredits(300)} per extra minute`;
 
+/**
+ * THE FREE TIER IS COUNTED IN FILMS, NOT IN CREDITS. FREE_FILMS (wrangler.jsonc) says how many films a brand-new
+ * account may make for nothing; the credits it is given are computed HERE from the film's price, so a price change
+ * moves the free tier with it and nobody has to remember a second number. The old FREE_CREDITS was that second
+ * number: it stayed at 2 when the film went to 7, and for a day every new account was invited to "start free" and
+ * could render nothing. That shape of bug — a config value that must be kept in step with a code value by hand —
+ * is the one this function removes.
+ */
+export const freeFilms = (env: { FREE_FILMS?: string }): number => Math.max(0, int(env.FREE_FILMS, 1));
+export const freeCreditsFor = (env: { FREE_FILMS?: string }): number => freeFilms(env) * filmCredits(90);
+
 /** Rough wall-clock estimate on one RTX 4090 at 4K 60 fps: ~25 min for a Short, ~12 min per minute of long-form. */
 export const etaFor = (seconds: number): number => (seconds <= 90 ? 18 : Math.max(30, Math.round((seconds / 60) * 10)));
 

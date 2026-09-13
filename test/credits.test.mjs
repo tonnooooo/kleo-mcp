@@ -51,7 +51,7 @@ before(async () => {
 async function newEnv(backend = "manual") {
   const env = {
     DB: new FakeD1(), OAUTH_KV: new FakeKV(), RENDER_BACKEND: backend, PUBLIC_URL: "http://kleo.test", INTERNAL_SECRET: "s3cret",
-    MAX_CONCURRENT_GPUS: "5", MAX_JOBS_PER_USER: "2", JOB_TIMEOUT_MIN: "120", FREE_CREDITS: "10", RESULT_TTL_DAYS: "7", MOCK_TOTAL_SECONDS: "60",
+    MAX_CONCURRENT_GPUS: "5", MAX_JOBS_PER_USER: "2", JOB_TIMEOUT_MIN: "120", FREE_FILMS: "1", RESULT_TTL_DAYS: "7", MOCK_TOTAL_SECONDS: "60",
     // The daily caps have their own tests (test/accounts.test.mjs); here they must never be what stops a job.
     MAX_JOBS_PER_DAY: "500",
     STORYBOARD_FIXTURE: "example",

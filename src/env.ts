@@ -42,7 +42,7 @@ export interface Env {
   RENDER_SILENCE_MIN?: string; // minutes a RENDERING worker may stay silent before the GPU is taken back (default 20)
   LOADING_TIMEOUT_MIN?: string; // max minutes an instance may stay in "loading" (image pull) before it is destroyed // minutes a GPU may stay silent after rental before it is destroyed and the job requeued
   LOADING_RETRY_MIN?: string;   // minutes of image pull after which the job moves to another host (default 14)
-  FREE_CREDITS: string;         // credits a brand-new anonymous account is given; read it against filmCredits() (7 = one film), never against the old 1-credit Short
+  FREE_FILMS: string;           // films a brand-new anonymous account may make for nothing; the credits follow from the price (templates.ts freeCreditsFor)
   MAX_NEW_USERS_PER_DAY?: string; // new accounts created in a UTC day (default 25); past it the page says come back tomorrow
   MAX_NEW_USERS_PER_IP_DAY?: string; // new accounts in a UTC day from one hashed address (default 5), so 25 requests
                                      // from a single visitor cannot consume the whole day's allowance

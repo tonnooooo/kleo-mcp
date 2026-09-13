@@ -6,7 +6,7 @@ import { getUserJob, getUser, recentJobsForUser, countOpenForUser, countAuditTod
 import { isFlagActive } from "./schema";
 import { writeTreatment } from "./storyboard.ts";
 import { treatmentText } from "./treatment.ts";
-import { ACTIVE_TEMPLATE, PUBLIC_TEMPLATES as TEMPLATES, PUBLIC_TEMPLATE_IDS as ACTIVE_TEMPLATE_IDS, findTemplate, creditsFor, filmCredits, tariffSentence } from "./templates";
+import { ACTIVE_TEMPLATE, PUBLIC_TEMPLATES as TEMPLATES, PUBLIC_TEMPLATE_IDS as ACTIVE_TEMPLATE_IDS, findTemplate, creditsFor, filmCredits, freeCreditsFor, freeFilms, tariffSentence } from "./templates";
 import { PACKS, sellingAvailable } from "./stripe";
 import { createJob, cancelJob, jobView, resultLinks, JobError, FILE_NAMES } from "./jobs";
 import { accountUrl, makeHandle } from "./accounts";
@@ -405,7 +405,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     // "1 credit = 1 Short" and "card payments are not open yet" for a day after the film became the only product
     // at 7 credits and the account page had started selling packs. A new account with its free credits was told it
     // could neither render nor buy, and an assistant repeated it word for word.
-    const free = int(env.FREE_CREDITS, 2);
+    const free = freeCreditsFor(env);
     const price = filmCredits(90);
     const open = await sellingAvailable(env);
     const cheapest = PACKS[0];
@@ -413,7 +413,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       credits_available: fresh.credits,
       film_credits: price,
       pricing: tariffSentence(),
-      free_tier: `${plural(free, "credit")} on sign-up, no signup form: ${plural(Math.floor(free / price), "free film")}`,
+      free_tier: `${plural(freeFilms(env), "free film")} on sign-up (${plural(free, "credit")}), no signup form`,
       account_key: await makeHandle(env, user.id),
       account_url: url,
       payments_open: open,
