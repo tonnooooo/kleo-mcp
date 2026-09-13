@@ -400,5 +400,98 @@ class GenerateTest(unittest.TestCase):
         self.assertIsNone(kv._pipe, "the Keou render needs the GPU next")
 
 
+class LtxTest(unittest.TestCase):
+    """The LTX-2.5 family, with diffusers replaced by a fake that records what it was asked: the module is loaded
+    a second time under KLEO_VIDEO_MODEL=Lightricks/LTX-2.5-Diffusers so the family switch is the real one."""
+
+    def setUp(self):
+        import tempfile, shutil
+        self.tmp = tempfile.mkdtemp(prefix="kleo-ltx-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.saved = {k: sys.modules.get(k) for k in ("torch", "diffusers", "diffusers.utils", "diffusers.pipelines",
+                                                        "diffusers.pipelines.ltx2", "diffusers.pipelines.ltx2.utils",
+                                                        "diffusers.pipelines.ltx2.latent_upsampler", "huggingface_hub", "huggingface_hub.constants")}
+        self.calls = calls = []
+        torch = types.ModuleType("torch")
+        torch.cuda = types.SimpleNamespace(is_available=lambda: True, empty_cache=lambda: None)
+        torch.bfloat16 = "bf16"; torch.float32 = "f32"
+        class Gen:
+            def __init__(self, device=None): pass
+            def manual_seed(self, s): return self
+        torch.Generator = Gen
+
+        class FakeLtx:
+            vae = types.SimpleNamespace(enable_tiling=lambda: None)
+            def to(self, d): return self
+            def enable_model_cpu_offload(self): calls.append(("offload",))
+            def set_progress_bar_config(self, **kw): pass
+            def __call__(self, **kw):
+                calls.append(("pipe", kw))
+                n = kw["num_frames"]
+                if kw.get("output_type") == "latent":
+                    return ("LAT", "AUD")
+                h, w = kw.get("height", 1088), kw.get("width", 1920)
+                if "latents" in kw: h, w = 1088, 1920           # stage two decodes the upsampled latents
+                return (frames(n, w, h)[None], ["audio"])
+        class FakeUp:
+            def __init__(self, vae=None, latent_upsampler=None): pass
+            def __call__(self, **kw):
+                calls.append(("upsample", kw)); return ("UP",)
+        diff = types.ModuleType("diffusers")
+        diff.LTX2Pipeline = types.SimpleNamespace(from_pretrained=staticmethod(lambda *a, **k: (calls.append(("load", k)), FakeLtx())[1]))
+        diff.LTX2LatentUpsamplePipeline = FakeUp
+        pl = types.ModuleType("diffusers.pipelines"); ltx2 = types.ModuleType("diffusers.pipelines.ltx2")
+        utils = types.ModuleType("diffusers.pipelines.ltx2.utils")
+        utils.DEFAULT_NEGATIVE_PROMPT = "neg"; utils.DISTILLED_SIGMA_VALUES = [1.0, 0.5, 0.0]; utils.STAGE_2_DISTILLED_SIGMA_VALUES = [0.9, 0.0]
+        lu = types.ModuleType("diffusers.pipelines.ltx2.latent_upsampler")
+        lu.LTX2LatentUpsamplerModel = types.SimpleNamespace(from_pretrained=staticmethod(lambda *a, **k: types.SimpleNamespace(to=lambda d: "UPMODEL")))
+        sys.modules.update({"torch": torch, "diffusers": diff, "diffusers.pipelines": pl, "diffusers.pipelines.ltx2": ltx2,
+                            "diffusers.pipelines.ltx2.utils": utils, "diffusers.pipelines.ltx2.latent_upsampler": lu})
+        sys.modules.pop("diffusers.utils", None)
+        self.addCleanup(lambda: [sys.modules.__setitem__(k, v) if v else sys.modules.pop(k, None) for k, v in self.saved.items()])
+        os.environ["KLEO_VIDEO_MODEL"] = "Lightricks/LTX-2.5-Diffusers"
+        self.addCleanup(lambda: os.environ.pop("KLEO_VIDEO_MODEL", None))
+        self.kv = load("kleo_video_ltx", os.path.join(HERE, "kleo_video.py"))
+        self.addCleanup(self.kv.release)
+
+    def test_the_family_follows_the_model_id_and_brings_its_own_geometry(self):
+        self.assertEqual(self.kv.FAMILY, "ltx")
+        self.assertEqual(self.kv.SIZES["16:9"], (960, 544)); self.assertEqual(self.kv.SIZES["9:16"], (544, 960))
+        for secs in [1, 2, 3, 5]:
+            self.assertEqual((self.kv.frames_for(secs) - 1) % 8, 0, f"{secs}s must give 8n+1 frames")
+        self.assertEqual(self.kv.frames_for(5.0), 121)
+
+    def test_a_shot_runs_two_stages_from_its_still_and_lands_in_a_real_file(self):
+        from PIL import Image
+        still = os.path.join(self.tmp, "s.png"); Image.new("RGB", (1344, 768), (10, 120, 200)).save(still)
+        made = self.kv.generate_clips([{"id": "a", "image_prompt": "a lagoon", "motion": "push_in", "image": still}], "realistic", "16:9", self.tmp)
+        self.assertEqual(sorted(made), ["a"])
+        kinds = [c[0] for c in self.calls]
+        self.assertEqual(kinds[:1], [("load")] if False else ["load"])
+        self.assertEqual([k for k in kinds if k != "load"], ["pipe", "upsample", "pipe"], "stage one, upsample, stage two")
+        one = self.calls[1][1]; two = self.calls[3][1]
+        self.assertEqual((one["width"], one["height"]), (960, 544)); self.assertEqual(one["output_type"], "latent")
+        self.assertEqual(one["image"].size, (960, 544), "the still is fitted to stage one's frame")
+        self.assertEqual(one["guidance_scale"], 1.0, "distilled schedule: no classifier-free guidance")
+        self.assertEqual(one["sigmas"], [1.0, 0.5, 0.0])
+        self.assertEqual(two["latents"], "UP"); self.assertEqual(two["sigmas"], [0.9, 0.0]); self.assertEqual(two["output_type"], "np")
+        self.assertEqual(probe_frames(made["a"])[1:3], (1920, 1088), "the file carries stage two's size")
+
+    def test_without_the_upsampler_one_stage_at_stage_one_size(self):
+        os.environ["KLEO_VIDEO_LTX_UPSAMPLE"] = "0"
+        self.addCleanup(lambda: os.environ.pop("KLEO_VIDEO_LTX_UPSAMPLE", None))
+        kv = load("kleo_video_ltx_noup", os.path.join(HERE, "kleo_video.py")); self.addCleanup(kv.release)
+        made = kv.generate_clips([{"id": "b", "image_prompt": "waves", "motion": "pull_out"}], "realistic", "9:16", self.tmp)
+        kinds = [c[0] for c in self.calls]
+        self.assertEqual([k for k in kinds if k != "load"], ["pipe"])
+        self.assertEqual(probe_frames(made["b"])[1:3], (544, 960))
+        self.assertNotIn("image", self.calls[1][1], "no still, invented from the text")
+
+    def test_the_gated_weights_are_asked_for_with_the_token(self):
+        os.environ["HF_TOKEN"] = "hf_test_token"; self.addCleanup(lambda: os.environ.pop("HF_TOKEN", None))
+        self.kv.generate_clips([{"id": "c", "image_prompt": "piles", "motion": "push_in"}], "realistic", "16:9", self.tmp)
+        self.assertEqual(self.calls[0][1].get("token"), "hf_test_token")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

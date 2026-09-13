@@ -29,7 +29,16 @@ import gc, hashlib, json, math, os, re, subprocess, sys, time
 MODEL_ID = os.environ.get("KLEO_VIDEO_MODEL", "Wan-AI/Wan2.2-TI2V-5B-Diffusers")
 MODEL_DIR = os.environ.get("KLEO_VIDEO_MODEL_DIR", "/workspace/models/wan22-ti2v-5b")
 FPS_SRC = 24                                  # what the model generates at
-SIZES = {"16:9": (1280, 704), "9:16": (704, 1280)}
+
+# Two generator families behind the same shot -> clip contract. "wan": Wan 2.2 TI2V-5B, 704p, 32 GB, what shipped
+# first. "ltx": LTX-2.5 (Lightricks, 22B, the owner's choice of 13 September): 960x544 in stage one, x2 latent
+# upsample to 1920x1088 in stage two, distilled eight-step schedule, image conditioning with the same checkpoint;
+# gated weights (HF_TOKEN), 72 GB on disk, an 80 GB card or fp8. The family is read off the model id so that
+# switching is one env var, KLEO_VIDEO_MODEL, and nothing else has to know.
+FAMILY = "ltx" if "ltx" in MODEL_ID.lower() else "wan"
+SIZES = {"16:9": (1280, 704), "9:16": (704, 1280)} if FAMILY == "wan" else {"16:9": (960, 544), "9:16": (544, 960)}
+LTX_UPSAMPLE = os.environ.get("KLEO_VIDEO_LTX_UPSAMPLE", "1").strip() != "0"    # stage two: x2 latent upsample
+LTX_OFFLOAD = os.environ.get("KLEO_VIDEO_OFFLOAD", "0").strip() == "1"        # cpu offload for a 48 GB card
 STEPS = int(os.environ.get("KLEO_VIDEO_STEPS", "30"))
 GUIDANCE = float(os.environ.get("KLEO_VIDEO_GUIDANCE", "5.0"))
 MAX_S = float(os.environ.get("KLEO_VIDEO_MAX_S", "5.0"))       # past this a generated clip starts to drift
@@ -99,10 +108,11 @@ def alive(shot_id):
 
 
 def frames_for(seconds):
-    """Wan wants 4n+1 frames. Clamped to what stays coherent: past ~5 s a generated clip starts to drift."""
+    """Wan wants 4n+1 frames, LTX 8n+1. Clamped to what stays coherent: past ~5 s a generated clip drifts."""
     s = min(MAX_S, max(MIN_S, float(seconds or 3.0)))
     n = int(round(s * FPS_SRC))
-    return max(17, (n // 4) * 4 + 1)
+    step = 8 if FAMILY == "ltx" else 4
+    return max(17, (n // step) * step + 1)
 
 
 def build_prompt(shot, look):
@@ -165,6 +175,68 @@ def _hf_restore(prev):
 
 KINDS = {"t2v": "WanPipeline", "i2v": "WanImageToVideoPipeline"}
 _kind = None
+_upsampler = None   # LTX stage two, built once next to the pipeline
+
+
+def load_ltx():
+    """LTX-2.5 through diffusers: one pipeline for text and image conditioning, plus the x2 latent upsampler for
+    stage two. Read from the model card on 13 September, not assumed: LTX2Pipeline(image=..., prompt=...,
+    sigmas=DISTILLED_SIGMA_VALUES, guidance_scale=1.0, ...) -> (video, audio); LTX2LatentUpsamplePipeline(vae,
+    latent_upsampler) between the two stages."""
+    global _pipe, _kind, _upsampler
+    if _pipe is not None and _kind == "ltx":
+        return _pipe
+    if _pipe is not None:
+        release()
+    import torch, diffusers
+    from diffusers import LTX2Pipeline
+    src = MODEL_DIR if os.path.isdir(os.path.join(MODEL_DIR, "model_index.json")) else MODEL_ID
+    t0 = time.time()
+    prev = _hf_offline(False)
+    try:
+        pipe = LTX2Pipeline.from_pretrained(src, dtype=torch.bfloat16, token=os.environ.get("HF_TOKEN") or None)
+        if LTX_OFFLOAD:
+            pipe.enable_model_cpu_offload()
+        else:
+            pipe = pipe.to("cuda")
+        if LTX_UPSAMPLE:
+            from diffusers import LTX2LatentUpsamplePipeline
+            from diffusers.pipelines.ltx2.latent_upsampler import LTX2LatentUpsamplerModel
+            up = LTX2LatentUpsamplerModel.from_pretrained(src, subfolder="latent_upsampler", dtype=torch.bfloat16,
+                                                          token=os.environ.get("HF_TOKEN") or None).to("cuda")
+            _upsampler = LTX2LatentUpsamplePipeline(vae=pipe.vae, latent_upsampler=up)
+    finally:
+        _hf_restore(prev)
+    try:
+        pipe.vae.enable_tiling()
+    except Exception as e:
+        log("vae tiling unavailable:", e)
+    try:
+        pipe.set_progress_bar_config(disable=True)
+    except Exception:
+        pass
+    log(f"ltx pipeline ready in {time.time() - t0:.0f} s from {src} (upsample {'on' if LTX_UPSAMPLE else 'off'})")
+    _pipe, _kind = pipe, "ltx"
+    return pipe
+
+
+def ltx_clip(pipe, prompt, still, w, h, n, generator):
+    """One shot with LTX-2.5: stage one at (w, h), then the x2 latent upsample and stage two when enabled.
+    Returns frames T x H x W x 3 in [0, 1]. The audio the model also makes is dropped: the narration is ours."""
+    from diffusers.pipelines.ltx2.utils import DEFAULT_NEGATIVE_PROMPT, DISTILLED_SIGMA_VALUES, STAGE_2_DISTILLED_SIGMA_VALUES
+    shared = dict(prompt=prompt, negative_prompt=DEFAULT_NEGATIVE_PROMPT, frame_rate=float(FPS_SRC), guidance_scale=1.0,
+                  audio_guidance_scale=1.0, stg_scale=0.0, audio_stg_scale=0.0, modality_scale=1.0, audio_modality_scale=1.0,
+                  generator=generator, return_dict=False)
+    if still is not None:
+        shared["image"] = still
+    if not (LTX_UPSAMPLE and _upsampler is not None):
+        video, _audio = pipe(height=h, width=w, num_frames=n, sigmas=DISTILLED_SIGMA_VALUES, output_type="np", **shared)
+        return video[0]
+    latents, audio_latents = pipe(height=h, width=w, num_frames=n, sigmas=DISTILLED_SIGMA_VALUES, output_type="latent", **shared)
+    up = _upsampler(latents=latents, output_type="latent", return_dict=False)[0]
+    video, _audio = pipe(num_frames=n, sigmas=STAGE_2_DISTILLED_SIGMA_VALUES, latents=up, audio_latents=audio_latents,
+                         noise_scale=STAGE_2_DISTILLED_SIGMA_VALUES[0], output_type="np", **shared)
+    return video[0]
 
 
 def load_pipeline(kind="t2v"):
@@ -214,8 +286,8 @@ def first_frame(path, w, h):
 
 def release():
     """Give the card back before the Keou render starts: Chromium workers and Kokoro want it too."""
-    global _pipe, _kind
-    _pipe, _kind = None, None
+    global _pipe, _kind, _upsampler
+    _pipe, _kind, _upsampler = None, None, None
     gc.collect()
     try:
         import torch
@@ -280,7 +352,7 @@ def generate_clips(shots, look, fmt, out_dir, seconds_of=None):
             continue
         kind = kind_of(s)
         try:
-            pipe = load_pipeline(kind)
+            pipe = load_ltx() if FAMILY == "ltx" else load_pipeline(kind)
         except Exception as e:
             log("model unavailable:", e)
             break
@@ -293,12 +365,15 @@ def generate_clips(shots, look, fmt, out_dir, seconds_of=None):
             still = first_frame(s["image"], w, h) if kind == "i2v" else None
             for attempt in range(RETRIES + 1):
                 g = torch.Generator(device="cuda").manual_seed(base + attempt * 7919)
-                args = dict(prompt=prompt, negative_prompt=NEGATIVE, height=h, width=w, num_frames=n,
-                            num_inference_steps=STEPS, guidance_scale=GUIDANCE, generator=g)
-                if still is not None:
-                    args["image"] = still
-                out = pipe(**args)
-                write_clip(out.frames[0], path, fps=FPS_SRC)
+                if FAMILY == "ltx":
+                    frames = ltx_clip(pipe, prompt, still, w, h, n, g)
+                else:
+                    args = dict(prompt=prompt, negative_prompt=NEGATIVE, height=h, width=w, num_frames=n,
+                                num_inference_steps=STEPS, guidance_scale=GUIDANCE, generator=g)
+                    if still is not None:
+                        args["image"] = still
+                    frames = pipe(**args).frames[0]
+                write_clip(frames, path, fps=FPS_SRC)
                 if not (os.path.isfile(path) and os.path.getsize(path) > 0):
                     raise RuntimeError("empty file written")
                 moved = travel_px(path)
