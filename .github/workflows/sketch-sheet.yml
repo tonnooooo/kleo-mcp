@@ -1,0 +1,25 @@
+# Contact sheet of every sketch drawing, rendered on GitHub's machine so the art can be looked at without
+# renting a card. Nothing runs on the owner's computer. Manual: Actions → sketch-sheet → Run workflow.
+name: sketch-sheet
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  sheet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - name: Playwright (the same version the worker image renders with)
+        run: |
+          npm install --no-save --no-audit --no-fund playwright@1.63.0
+          npx playwright install --with-deps chromium
+      - run: node scripts/sketch-sheet.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sketch-sheet-${{ github.sha }}
+          path: out/sketch-sheet/
+          retention-days: 7
