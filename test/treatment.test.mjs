@@ -73,6 +73,17 @@ test("a good treatment is fitted: acts rescaled to the film, names uppercase, li
   assert.ok(wordCount(t.prose) <= T.prose.maxWords);
   assert.equal(t.device, "cold-open-mystery");
   assert.equal(t.variation, v.key, "a treatment written by the planner records its own draw");
+  // Measured on the production model: an act named as a shot description is cut at a word, never inside one, and
+  // "the period is contemporary" is dropped from the decisions because it decides nothing.
+  const long = { ...TREATMENT_FIXTURE(60), acts: [{ name: "a lab technician examining samples under the lamp", purpose: "the viewer sees the sample", seconds: 30 }, { name: "the second reading", purpose: "the viewer sees the second reading", seconds: 30 }],
+    decisions: ["The period is contemporary.", "The tone is informative and calm.", "The setting is a small bakery at dawn", "Ai giorni nostri", "The narrator is the baker's daughter"] };
+  const fitted = repairTreatment(long, 60, v);
+  assert.equal(fitted.acts[0].name, "A LAB TECHNICIAN EXAMINING", `cut at a word: ${fitted.acts[0].name}`);
+  assert.ok(fitted.acts[0].name.length <= T.acts.name);
+  assert.deepEqual(fitted.decisions, ["The setting is a small bakery at dawn", "The narrator is the baker's daughter"]);
+  // The prompt asks for more prose than the floor refuses: the floor is what a small model aims at.
+  assert.match(treatmentPrompt({ prompt: "x y z", duration_s: 30, format: "9:16", language: "en" }, v), /"prose":"180-350 words/);
+  assert.ok(T.prose.target[0] > T.prose.minWords);
 });
 
 test("what is not a treatment is refused in words, and the words name the field", () => {
@@ -84,7 +95,7 @@ test("what is not a treatment is refused in words, and the words name the field"
   assert.ok(p.some((m) => /act 1: needs a purpose/.test(m)));
   assert.ok(p.some((m) => /act 1: needs seconds/.test(m)));
   assert.ok(p.some((m) => /^motifs: 1/.test(m)));
-  assert.ok(p.some((m) => /^prose: \d+ words, it needs at least 140/.test(m)));
+  assert.ok(p.some((m) => /^prose: \d+ words, it needs at least 100/.test(m)));
   assert.equal(repairTreatment(bad, 45, v), null);
   assert.deepEqual(treatmentProblems("nope"), ["the treatment must be a JSON object"]);
   // A wrong device is a problem for a client (it is told), and falls back to the draw once the rest is fine.

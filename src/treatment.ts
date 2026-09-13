@@ -39,12 +39,21 @@ export const T = {
   motifs: { min: 2, max: 5, len: 60 },
   decisions: { max: 8, len: 120 },
   /**
-   * The prose treatment, in words. Below the floor it is a caption, not a treatment. Measured on the production
-   * model on 13 September: with the floor at 100 the model wrote 111-198 words and once 97; the floor is what it
-   * aims at, so the floor is where a film starts being told rather than listed.
+   * The prose treatment, in words. `target` is what the prompt ASKS for; `minWords` is where the answer is refused.
+   * The two are different on purpose, measured twice on the production model on 13 September: asked for "100-520"
+   * it wrote 111-198 (the floor is what it aims at); refused under 140 it failed 7 of 15 (71-121 words, and the
+   * second attempt no longer). So it is asked for 180-350 and refused under 100: a caption is still refused, and a
+   * 17B model that lands short of its target still delivers a film.
    */
-  prose: { minWords: 140, maxWords: 520, maxChars: 3600 },
+  prose: { minWords: 100, target: [180, 350] as const, maxWords: 520, maxChars: 3600 },
 } as const;
+
+/**
+ * A decision that decides nothing. Measured: "The period is contemporary" and "The tone is informative" in most
+ * treatments even after the method said they are not decisions; a 17B model keeps them, so the repair drops them.
+ * A real period ("the 18th century") or a real setting stays.
+ */
+const NON_DECISION = /\b(contemporary|present[- ]day|modern[- ]day|nowadays|contemporane[oa]|ai giorni nostri|giorni nostri|oggi)\b|^\s*(the )?tone\b|^\s*il tono\b|\btone is\b|\btono è\b/i;
 
 /**
  * Act names that are a FUNCTION, not a name. Measured on the production model: "INTRO", "SETUP", "CONCLUSION",
@@ -189,10 +198,10 @@ WHAT KLEO CAN RENDER (write only what can be shot):
 - 4K, 60 frames per second, 16:9 for YouTube or 9:16 for a Short. Fifteen seconds to five minutes.
 
 THE METHOD — answer these in order, each for THIS request:
-1. ANGLE. A subject is not a film. Find the one idea the film argues, small enough to be true and specific enough to be filmed: one place, one person or one object, one moment, and something at stake in it. The logline says what HAPPENS; the angle says what the film CLAIMS because of it, and the two must not be the same sentence in other words. If your angle could sit under any film on this subject ("the film explores how X works"), it is the subject again, not an angle. If the request is one word, choose the most filmable human-scale story inside it.
+1. ANGLE. A subject is not a film. Find the one idea the film argues, small enough to be true and specific enough to be filmed: one place, one person or one object, one moment, and something at stake in it. The logline says what HAPPENS; the angle says what the film CLAIMS because of it, and the two must not be the same sentence in other words. Write the claim itself, as a sentence a person could disagree with, never "the film argues that" or "the film explores": not "the film argues that bread rises because of yeast" but "bread does not rise because of heat; it rises because something alive has been eating for an hour". If your angle could sit under any film on this subject, it is the subject again, not an angle. If the request is one word, choose the most filmable human-scale story inside it.
 2. DEVICE. Tell the film with the narrative device assigned to it (it is given in the request). Make it work for this subject and keep it invisible: the words "witness", "countdown", "mystery", "a day in the life" never appear in the logline, the angle or the narration. If the request itself dictates a structure (a list, a countdown, a comparison, a how-to), that structure wins and the device becomes a flavour.
 3. OPENING. The first three seconds are an image, not a sentence: something the camera holds before the subject is named. The opening family assigned in the request says how it behaves.
-4. ACTS. Divide the length into two to seven acts. Each act's UPPERCASE name is a moment or an image of THIS film — the thing on screen when it starts — never its function: not INTRO, SETUP, THE PROBLEM, THE SOLUTION, CONCLUSION, RESOLUTION. Each act has a purpose (what the viewer knows or feels at its end that they did not before) and its seconds; the seconds add up to the film's length, and no act is shorter than five seconds. A film under a minute has two or three acts; five minutes has five to seven.
+4. ACTS. Divide the length into two to seven acts. Each act's UPPERCASE name is two to four words, a moment or an image of THIS film — the thing on screen when it starts ("THE EMPTY DRIVEWAY", "FLOUR ON THE COUNTER") — never a shot description and never its function: not INTRO, SETUP, THE PROBLEM, THE SOLUTION, CONCLUSION, RESOLUTION. Each act has a purpose (what the viewer knows or feels at its end that they did not before) and its seconds; the seconds add up to the film's length, and no act is shorter than five seconds. A film under a minute has two or three acts; five minutes has five to seven.
 5. ENDING. The last image is earned by everything before it: a return to the first image changed, the answer to the opening question, the object at rest. Never a summary, never "and that is why", never a call to action.
 6. VISUAL LANGUAGE. One world, written as one sentence a cinematographer could shoot from, not a checklist ("the lens is standard, the light is fluorescent"): the lens (long and compressed, or wide and close), the light (source, colour, time of day), the palette (three colours at most), the camera's temperament (does it drift, hold, follow). Every shot of the film is filmed inside this sentence.
 7. PACING. The cut rhythm in seconds, act by act, and the one place where the film slows down on purpose. A film that cuts at the same speed throughout is wallpaper.
@@ -204,7 +213,7 @@ THE BAR: the discipline of a good documentary sequence — concrete, human-scale
 
 THE PROSE is the film described from the first image to the last, act by act, in the present tense: what we see, what we hear, what changes. It is not a shot list: never "the camera cuts to", never "the narrator says" before every line. Quote the narrator at most once per act; the rest is what is on screen.
 
-BANNED WORDS AND MOVES, because a model reaches for them when it has nothing to say: stunning, breathtaking, epic, journey, delve, unleash, tapestry, testament, nestled, bustling, vibrant, "in a world where", "imagine a", "join us", "let's dive", "the film explores", rhetorical questions in a row, a montage of the subject "from around the world", drone shots of cities at sunset, the same sentence rewritten as the ending.
+BANNED WORDS AND MOVES, because a model reaches for them when it has nothing to say: stunning, breathtaking, epic, journey, delve, unleash, tapestry, testament, nestled, bustling, vibrant, "in a world where", "imagine a", "join us", "let's dive", "the film explores", "the film argues", rhetorical questions in a row, a montage of the subject "from around the world", drone shots of cities at sunset, the same sentence rewritten as the ending.
 
 THE LANGUAGE: every field is written in the language the request names as the language of the film — the logline, the angle, the acts' names, the decisions, the prose, all of it. Only "device" stays in English. Return the JSON object only: no prose before it, no markdown fences.`;
 
@@ -230,13 +239,13 @@ TASK: write the TREATMENT of this film, following the method. Return one JSON ob
  "device":"${v.device}",
  "opening":"<=${T.opening}, the first three seconds as an image",
  "ending":"<=${T.ending}, the last image and what the viewer is left holding",
- "acts":[${actsHint} objects {"name":"<=${T.acts.name} UPPERCASE","purpose":"<=${T.acts.purpose}","seconds":<whole number>} — the seconds add up to ${input.duration_s}],
+ "acts":[${actsHint} objects {"name":"2-4 words UPPERCASE, <=${T.acts.name} chars, the image on screen when the act starts","purpose":"<=${T.acts.purpose}","seconds":<whole number, 5 or more>} — the seconds add up to ${input.duration_s}],
  "visual":"<=${T.visual}, lens, light, palette, time of day, camera temperament: one world",
  "pacing":"<=${T.pacing}, cut rhythm in seconds act by act, and where it slows",
  "narrator":"<=${T.narrator}, person, tense, sentence length, what they never say",
  "motifs":[${T.motifs.min}-${T.motifs.max} strings <=${T.motifs.len}],
  "decisions":[up to ${T.decisions.max} strings <=${T.decisions.len}: every choice the request did not ask for],
- "prose":"${T.prose.minWords}-${T.prose.maxWords} words: the treatment a director could shoot from — the film told from the first image to the last, act by act, in the present tense, with what we see and what the narrator says over it. Not a list: prose."}${input.language === "en" ? "" : `\nEverything in ${lang}.`}`;
+ "prose":"${T.prose.target[0]}-${T.prose.target[1]} words: the treatment a director could shoot from — the film told from the first image to the last, act by act, in the present tense, with what we see and what the narrator says over it. Not a list: prose."}${input.language === "en" ? "" : `\nEverything in ${lang}.`}`;
   return feedback?.length
     ? `${base}\n\nYOUR PREVIOUS ANSWER WAS REJECTED for these reasons; fix every one and return the whole object again:\n- ${feedback.join("\n- ")}`
     : base;
@@ -322,8 +331,11 @@ export function treatmentProblems(raw: unknown, duration_s?: number, language?: 
  */
 export function repairTreatment(raw: unknown, duration_s: number, v: Variation, language?: string): Treatment | null {
   if (!isObj(raw) || treatmentProblems(raw, duration_s, language).length) return null;
+  // An act name longer than the limit is cut at a word, never inside one: "A LAB TECHNICIAN EXAMINING SAMPL" was
+  // measured, and a name the outline copies is a name the viewer's chapter pill shows.
+  const nameOf = (v: unknown) => { const s = clip(v, T.acts.name + 40).toUpperCase(); if (s.length <= T.acts.name) return s; const cut = s.slice(0, T.acts.name + 1); const at = cut.lastIndexOf(" "); return (at > 8 ? cut.slice(0, at) : cut.slice(0, T.acts.name)).trim(); };
   const acts0 = (raw.acts as Record<string, unknown>[]).map((a) => ({
-    name: clip(a.name, T.acts.name).toUpperCase(), purpose: clip(a.purpose, T.acts.purpose), seconds: Number(a.seconds),
+    name: nameOf(a.name), purpose: clip(a.purpose, T.acts.purpose), seconds: Number(a.seconds),
   }));
   const sum = acts0.reduce((n, a) => n + a.seconds, 0) || 1;
   const acts: Act[] = acts0.map((a) => ({ ...a, seconds: Math.max(3, Math.round((a.seconds * duration_s) / sum)) }));
@@ -338,7 +350,8 @@ export function repairTreatment(raw: unknown, duration_s: number, v: Variation, 
     logline: clip(raw.logline, T.logline), angle: clip(raw.angle, T.angle), device,
     opening: clip(raw.opening, T.opening), ending: clip(raw.ending, T.ending), acts,
     visual: clip(raw.visual, T.visual), pacing: clip(raw.pacing, T.pacing), narrator: clip(raw.narrator, T.narrator),
-    motifs: clipList(raw.motifs, T.motifs.max, T.motifs.len), decisions: clipList(raw.decisions, T.decisions.max, T.decisions.len),
+    motifs: clipList(raw.motifs, T.motifs.max, T.motifs.len),
+    decisions: clipList(raw.decisions, T.decisions.max + 4, T.decisions.len).filter((d) => !NON_DECISION.test(d)).slice(0, T.decisions.max),
     prose, variation: typeof raw.variation === "string" && raw.variation ? clip(raw.variation, 80) : v.key,
   };
 }
