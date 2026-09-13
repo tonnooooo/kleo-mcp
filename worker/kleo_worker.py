@@ -782,11 +782,11 @@ def poll_remote_footage():
 
 def download_clip(shot_id, path):
     """One finished clip, streamed from the server (R2) with the job secret. Returns path or None; never raises."""
-    req = urllib.request.Request(f"{API}/internal/jobs/{JOB}/clips/{shot_id}")
-    req.add_header("Authorization", f"Bearer {SECRET}")
-    req.add_header("User-Agent", UA)
     for attempt in range(3):
         try:
+            req = urllib.request.Request(f"{API}/internal/jobs/{JOB}/clips/{shot_id}")
+            req.add_header("Authorization", f"Bearer {SECRET}")
+            req.add_header("User-Agent", UA)
             with urllib.request.urlopen(req, timeout=600) as r, open(path, "wb") as f:
                 shutil.copyfileobj(r, f, 1 << 20)
             size = os.path.getsize(path)

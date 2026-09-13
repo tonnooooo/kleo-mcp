@@ -67,10 +67,10 @@ class FootageRoadTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="kleo-footage-")
         self.addCleanup(shutil.rmtree, self.tmp, True)
-        self.saved = {k: getattr(kw, k) for k in ("api", "progress", "FOOTAGE_BACKEND", "SECRET")}
+        self.saved = {k: getattr(kw, k) for k in ("api", "progress", "FOOTAGE_BACKEND", "SECRET", "API", "JOB")}
         self.saved_urlopen = kw.urllib.request.urlopen
         kw.progress = lambda *a, **k: None
-        kw.SECRET = "wsecret"
+        kw.SECRET, kw.API, kw.JOB = "wsecret", "http://kleo.test", "gt_test1234"
         kw.FOOTAGE_BACKEND = "kie"
         self.addCleanup(lambda: [setattr(kw, k, v) for k, v in self.saved.items()])
         self.addCleanup(lambda: setattr(kw.urllib.request, "urlopen", self.saved_urlopen))
