@@ -278,10 +278,10 @@ export const TEMPLATES: Template[] = [
   // The explainer look (kleo_style "explainer"): one drawing per phrase, karaoke captions, a camera
   // that only pushes in. Two rows because the two lengths are different films: a Short is one idea
   // told in under a minute — past that people stop following — and a video is a subject with chapters.
-  { id: "explainer-short", name: "Explainer Short (drawn)", formats: ["9:16"], minSeconds: 20, maxSeconds: 60, defaultSeconds: 45,
+  { id: "explainer-short", name: "Cyber Explainer Short (drawn)", formats: ["9:16"], minSeconds: 20, maxSeconds: 60, defaultSeconds: 45,
     description: "Hand-drawn white line art on black. One picture for every phrase, a hard hook in the first second, karaoke captions. Under a minute on purpose.", voices: EN_IT,
     family: "drawn" },
-  { id: "explainer-long", name: "Explainer Video (drawn)", formats: ["16:9"], minSeconds: 180, maxSeconds: 480, defaultSeconds: 300,
+  { id: "explainer-long", name: "Cyber Explainer Video (drawn)", formats: ["16:9"], minSeconds: 180, maxSeconds: 480, defaultSeconds: 300,
     description: "The same drawn look across a full subject: chapters, one picture per phrase, and a camera that never stops moving. Landscape.", voices: EN_IT,
     // Same language, five minutes instead of forty seconds: only what the length forces changes.
     family: "drawn", override: { wordsPerScene: [12, 20], shotSeconds: 2.6, guidance: LONG_DRAWN } },

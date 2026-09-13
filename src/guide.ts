@@ -140,7 +140,7 @@ The closing scene keeps beats (a "type" beat with the loop question, then a "cta
 function explainerSection(dur: number, format: string): string {
   const [fw, fh] = format === "9:16" ? [1080, 1920] : [1920, 1080];
   const short = dur <= 90;
-  return `THE EXPLAINER LOOK (style "explainer", ${format})
+  return `THE CYBER EXPLAINER LOOK (style "explainer", ${format})
 Hand-drawn white marker line art on pure black. Rough, pressure-varying stroke, never clean vector.
 Objects in three-quarter view with a soft grey interior; everything else is outline. White dust drifts.
 The ONLY text on screen is the caption line, burned in, ALL CAPS, one word lit green as it is spoken.
@@ -228,7 +228,7 @@ export function buildGuide(o: GuideOptions): string {
   const scenesSection = !look
     ? `${pictureSection("cartoon", dur)}
 
-OTHER LOOKS: call kleo_storyboard_guide again with style "cyber" (motion design with icons and big type, no pictures — tech and security topics that want diagrams), style "explainer" (hand-drawn white marker line art on pure black, one drawing per phrase, karaoke captions — the strongest look for teaching one idea fast) or style "stickman" (a hand-drawn stickman acting the story, 9:16 only, on request) to get that look's vocabulary instead of this one.`
+OTHER LOOKS: call kleo_storyboard_guide again with style "cyber" (motion design with icons and big type, no pictures — tech and security topics that want diagrams), style "explainer" (the cyber explainer: hand-drawn white marker line art on pure black, one drawing per phrase, karaoke captions — the strongest look for teaching one idea fast) or style "stickman" (a hand-drawn stickman acting the story, 9:16 only, on request) to get that look's vocabulary instead of this one.`
     : PICTURE_LOOKS.includes(look)
     ? pictureSection(look as "cartoon" | "realistic", dur)
     : look === "cyber"
