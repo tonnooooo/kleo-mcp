@@ -45,15 +45,18 @@ const withMachine = (style, machine, fn) => {
   try { fn(); } finally { STYLE_MACHINE[style] = before; }
 };
 
-test("the switch is off: nothing is filmed today, and no storyboard asks to be", () => {
-  for (const style of KLEO_STYLES) {
-    assert.equal(isVideoStyle(style), false, `${style} must still render pictures`);
-    assert.equal(STYLE_CREDITS[style], 1, `${style} is still priced as a picture style`);
+test("the switch is ON for realistic and only realistic: it is filmed, priced and carded as such, and asks to be", () => {
+  // 13 September: the owner's reset — one style, realistic, and it is a film. The other styles still exist in the
+  // tables but are not filmed; they are on their way out of the product, not into the video tier.
+  assert.equal(isVideoStyle("realistic"), true, "realistic must be filmed");
+  assert.equal(STYLE_CREDITS.realistic, 7, "a filmed style is priced as one");
+  assert.deepEqual(STYLE_MACHINE.realistic, VIDEO, "and needs the big card");
+  for (const style of KLEO_STYLES.filter((s) => s !== "realistic")) {
+    assert.equal(isVideoStyle(style), false, `${style} is not filmed`);
+    assert.equal(STYLE_CREDITS[style], 1, `${style} keeps the picture price`);
   }
-  for (const style of ["cartoon", "realistic"]) {
-    const { sb } = normalized(style);
-    assert.equal("backdrop" in sb, false, `${style} must not ask to be filmed while it is not`);
-  }
+  assert.equal(normalized("realistic").sb.backdrop, "video", "a realistic storyboard asks to be filmed");
+  assert.equal("backdrop" in normalized("cartoon").sb, false, "a cartoon one does not");
 });
 
 test("flipping one entry to VIDEO moves the price, the card, the limit and the storyboard together", () => {
@@ -68,10 +71,10 @@ test("flipping one entry to VIDEO moves the price, the card, the limit and the s
     assert.equal(sb.kleo_style, "realistic");
 
     // The one thing that does NOT follow on its own, and must not: the price is a separate line in the same commit.
-    assert.equal(creditsFor(40, "realistic"), 1,
+    assert.equal(creditsFor(40, "realistic"), 7,
       "the price is deliberately not derived from the machine — it is the human decision of the same commit");
   });
-  assert.equal(isVideoStyle("realistic"), false, "the table is restored");
+  assert.equal(isVideoStyle("realistic"), true, "the table is restored to what it is today: filmed");
 });
 
 test("cartoon is filmed too the day its machine says so", () => {
@@ -93,17 +96,15 @@ test("a style that is not the picture style is never filmed, whatever its machin
 
 test("a storyboard that arrived already asking to be filmed does not get filmed for free", () => {
   // Without the deletion this is a seven-credit render sold at the price of a one-credit one: the field simply
-  // travels in on a storyboard the caller wrote, and the worker obeys it.
-  const { sb } = normalized("realistic", { backdrop: "video" });
+  // travels in on a storyboard the caller wrote, and the worker obeys it. Cartoon is the style that is not filmed.
+  const { sb } = normalized("cartoon", { backdrop: "video" });
   assert.equal("backdrop" in sb, false, "the plan decides what is filmed, never the incoming storyboard");
 });
 
 test("the fixture describes the same product as the real path", () => {
-  assert.equal("backdrop" in fixtureStoryboard(job("realistic")), false);
-  withMachine("realistic", VIDEO, () => {
-    assert.equal(fixtureStoryboard(job("realistic")).backdrop, "video",
-      "a fixture that skipped this would test a product we do not ship");
-  });
+  assert.equal(fixtureStoryboard(job("realistic")).backdrop, "video",
+    "a fixture that skipped this would test a product we do not ship");
+  assert.equal("backdrop" in fixtureStoryboard(job("cartoon")), false);
 });
 
 test("what the switch produces still passes the validator that guards the render", () => {

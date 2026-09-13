@@ -297,12 +297,15 @@ def sync():
              "wrangler.jsonc", "migrations", "docs"]
     have = [p for p in paths if os.path.exists(os.path.join(ROOT, p))]
     run("mkdir -p /opt/kleo/repo")
+    # Never the rendered films and the evidence pulled from earlier boxes: hundreds of megabytes that no box
+    # needs, and on 13 September a run died because they were being deleted locally while rsync read them.
     rsync = ["rsync", "-az", "--delete", "--exclude", "node_modules", "--exclude", ".wrangler",
-             "--exclude", "__pycache__", "--exclude", "*.pyc", "--exclude", ".devbox.json",
+             "--exclude", "__pycache__", "--exclude", "*.pyc", "--exclude", ".devbox.json*",
+             "--exclude", "motion-demo/out", "--exclude", "*.mp4", "--exclude", "*.tgz",
              "-e", "ssh " + " ".join(SSH_OPTS) + f" -p {st['port']}",
              *[os.path.join(ROOT, p) for p in have], f"root@{st['host']}:/opt/kleo/repo/"]
     rc = subprocess.run(rsync).returncode
-    if rc:
+    if rc and rc != 24:                    # 24: a file vanished while it was being read — a warning, not a failure
         raise SystemExit("rsync failed")
     print("synced:", ", ".join(have))
 

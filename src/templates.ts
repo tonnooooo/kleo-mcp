@@ -340,7 +340,7 @@ export function sceneSplit(f: Family, scenes: number): number[] {
  */
 export const STYLE_CREDITS: Record<string, number> = {
   cartoon: 1,     // AI pictures + Ken Burns
-  realistic: 1,   // idem, cinematic look — becomes ~7 the day its shots are generated video, not pictures
+  realistic: 7,   // FILMED since 13 September: a reference frame per shot, animated by Wan 2.2, under the narration
   cyber: 1,       // no pictures at all, drawn live by the engine
   stickman: 1,    // idem
   explainer: 1,   // one drawing per phrase
@@ -374,11 +374,11 @@ const PICTURES: Machine = { minVramGb: 16, minComputeCap: 800, maxDph: 0.40 };
  * Turning it on is one line here — realistic: VIDEO — and it must happen in the SAME commit as its price in
  * STYLE_CREDITS (7) and as the engine change, because the three are the same decision seen from three sides.
  */
-export const VIDEO: Machine = { minVramGb: 32, minComputeCap: 800, maxDph: 0.90 };
+export const VIDEO: Machine = { minVramGb: 32, minComputeCap: 800, maxDph: 1.20 };   // 1.20: the owner's ceiling, and where the ≥32 GB market sat on 13 September
 
 export const STYLE_MACHINE: Record<string, Machine> = {
   cartoon: PICTURES,    // Stable Diffusion 1.5, about 6 GB
-  realistic: PICTURES,  // becomes VIDEO the day Wan 2.2 draws its shots
+  realistic: VIDEO,     // since 13 September: Wan 2.2 films its shots (worker/kleo_worker.py render_film)
   cyber: PICTURES,      // draws itself live, no model at all
   stickman: PICTURES,
   explainer: PICTURES,
