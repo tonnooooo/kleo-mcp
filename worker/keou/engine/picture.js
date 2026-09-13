@@ -307,7 +307,11 @@
   }
 
   /* ---- chrome -------------------------------------------------------------- */
-  S.background = function (t) { const ctx = A.ctx, G = geo(); ctx.fillStyle = INK; ctx.fillRect(0, 0, G.W, G.H) };
+  // Over a real video track (backdrop "video") the background is the footage: painting INK here would put an
+  // opaque black under every caption and hide the film. It did, on every footage film of 13 September — the
+  // master passed QA because the karaoke kept the frames changing, and the motion meter read 0.000. (Found by
+  // the account session, reading this file against film.js:78 and render.mjs:75.)
+  S.background = function (t) { if (external()) return; const ctx = A.ctx, G = geo(); ctx.fillStyle = INK; ctx.fillRect(0, 0, G.W, G.H) };
   // No progress bar in this style: the pictures give the pace.
   S.progress = function (t) { };
   // Optional chapter label, top left inside the safe area. Cartoon: an accent pill that pops in.
