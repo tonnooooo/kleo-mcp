@@ -1,0 +1,251 @@
+{
+  "schema_version": 1,
+  "editorial_status": "ready",
+  "title": "Kleo: One URL, Plain Words, a Film",
+  "brand": "Kleo",
+  "direction": {
+    "subject": "Kleo, the MCP server that turns a plain request in your chat into a finished 4K video",
+    "goal": "Believe that one URL and plain words are enough, and click for the two free Shorts",
+    "audience": "Creators and founders landing on the Kleo homepage",
+    "tone": "terse, cinematic, confident, every line a true promise",
+    "must_keep": [
+      "one URL",
+      "plain words",
+      "a 4K video with narration, captions and music",
+      "five looks",
+      "rendered on a GPU while you wait in the chat",
+      "two free Shorts"
+    ],
+    "world": "A creator's studio at dusk: a dark room, one desk, a laptop's cool glow beside a warm desk lamp, rain on a tall window over city lights, shot like a moody product film.",
+    "cast": [
+      {
+        "name": "the creator",
+        "look": "woman in her thirties, dark hair tied back, grey hoodie, calm focused face, lit by the laptop's cool glow"
+      }
+    ],
+    "objects": [
+      "laptop",
+      "phone",
+      "wide monitor",
+      "glowing cable",
+      "coffee cup",
+      "tall window over city lights",
+      "server racks",
+      "cinema screen",
+      "studio headphones",
+      "studio microphone",
+      "paper storyboard frames",
+      "tall screens in a row"
+    ],
+    "forbidden": [
+      "text",
+      "letters",
+      "numbers",
+      "logo",
+      "watermark",
+      "extra fingers",
+      "real person",
+      "film crew",
+      "clapperboard",
+      "camera rig",
+      "daylight office"
+    ],
+    "sections": [
+      {
+        "name": "THE ASK",
+        "accent": "cyan",
+        "means": "one address, plain words",
+        "scenes": 2
+      },
+      {
+        "name": "THE MAKING",
+        "accent": "amber",
+        "means": "Kleo at work on a rented GPU",
+        "scenes": 2
+      },
+      {
+        "name": "THE FILM",
+        "accent": "green",
+        "means": "what comes back",
+        "scenes": 1
+      },
+      {
+        "name": "THE OFFER",
+        "accent": "cyan",
+        "means": "two free Shorts, the door is open",
+        "scenes": 1
+      }
+    ]
+  },
+  "kleo_style": "realistic",
+  "style": "picture",
+  "format": "16:9",
+  "language": "en",
+  "voice": "am_michael",
+  "speed": 1.1,
+  "music": "bed",
+  "max_duration": 36,
+  "description": "Thirty-second 16:9 homepage trailer for Kleo: one URL, plain words, a 4K video with narration, captions and music, five looks, rendered on a GPU while you wait in the chat.",
+  "tags": [
+    "kleo",
+    "trailer",
+    "cinematic-trailer",
+    "mcp",
+    "homepage"
+  ],
+  "scenes": [
+    {
+      "id": "01-hook",
+      "kind": "cinema",
+      "chapter": "01 THE ASK",
+      "accent": "cyan",
+      "title": "One URL. Plain words.",
+      "hl": "Plain",
+      "voice": "One URL. Plain words. That is all it takes.",
+      "hold": 0.2,
+      "shots": [
+        {
+          "image_prompt": "A dark studio desk at dusk, one laptop glowing cool cyan in the gloom, dust motes drifting slowly through the beam of a warm desk lamp.",
+          "shot_kind": "hook"
+        },
+        {
+          "image_prompt": "The creator's eyes filling the frame, the laptop's cool glow flickering across them, her lashes blinking slowly.",
+          "at": "Plain words.",
+          "shot_kind": "detail"
+        },
+        {
+          "image_prompt": "The whole studio opening up around the creator, small at her desk by the tall window, rain streaking down the glass over city lights at dusk.",
+          "at": "all it takes.",
+          "shot_kind": "reveal"
+        }
+      ]
+    },
+    {
+      "id": "02-plug",
+      "kind": "cinema",
+      "chapter": "02 THE ASK",
+      "accent": "cyan",
+      "title": "Works with Claude, ChatGPT, Grok and Cursor",
+      "hl": "Works",
+      "voice": "Plug Kleo into Claude, ChatGPT, Grok or Cursor. Ask for a Short, or a full video.",
+      "hold": 0.2,
+      "shots": [
+        {
+          "image_prompt": "A lone glowing cable running across the dark desk and into the side of the laptop, a pulse of cool light travelling along it toward the port.",
+          "shot_kind": "establish"
+        },
+        {
+          "image_prompt": "A phone propped upright beside the laptop, a bright vertical clip of ocean waves playing on its screen, its colour spilling across the dark desk.",
+          "at": "Ask for a Short,",
+          "shot_kind": "detail"
+        },
+        {
+          "image_prompt": "A wide monitor above the desk lighting the whole dark room with a widescreen shot of a canyon at golden hour, the glow washing over an empty chair.",
+          "at": "or a full video.",
+          "caption": "SHORT OR FULL VIDEO",
+          "hl": "FULL",
+          "shot_kind": "reveal"
+        }
+      ]
+    },
+    {
+      "id": "03-craft",
+      "kind": "cinema",
+      "chapter": "03 THE MAKING",
+      "accent": "amber",
+      "title": "Written. Drawn. Narrated. Cut on the voice.",
+      "hl": "voice",
+      "voice": "It writes, draws, narrates, and cuts every shot on the voice.",
+      "hold": 0.2,
+      "shots": [
+        {
+          "image_prompt": "A grid of paper storyboard frames pinned across a dark studio wall, each sheet catching a different colour of warm light, the edges fluttering in a draft.",
+          "shot_kind": "detail"
+        },
+        {
+          "image_prompt": "The wide monitor in the dark room, a photograph of a lighthouse on a cliff blooming across it from the centre, warm colour flooding the desk below.",
+          "at": "draws,",
+          "shot_kind": "reveal"
+        },
+        {
+          "image_prompt": "A studio microphone in a dark booth, a warm ring of amber light on its mesh, the pop filter trembling as the air moves.",
+          "at": "narrates,",
+          "shot_kind": "detail"
+        }
+      ]
+    },
+    {
+      "id": "04-render",
+      "kind": "cinema",
+      "chapter": "04 THE MAKING",
+      "accent": "amber",
+      "title": "Rendered on a GPU while you wait",
+      "hl": "GPU",
+      "voice": "Rendered on a GPU while you wait in the chat. Then the links arrive.",
+      "hold": 0.2,
+      "shots": [
+        {
+          "image_prompt": "A data hall at night, long rows of server racks blinking amber, cold air shimmering above the floor, thick cables sweeping overhead into the dark.",
+          "shot_kind": "establish"
+        },
+        {
+          "image_prompt": "The creator leaning back in her chair in the warm lamp light, steam rising from a coffee cup beside the laptop, the room quiet around her.",
+          "at": "while you wait",
+          "caption": "WAIT IN THE CHAT",
+          "hl": "CHAT",
+          "shot_kind": "face"
+        },
+        {
+          "image_prompt": "The laptop screen blooming to life on the dark desk, warm light spreading across the wood and the coffee cup, steam curling up into the glow.",
+          "at": "Then the links arrive.",
+          "shot_kind": "detail"
+        }
+      ]
+    },
+    {
+      "id": "05-film",
+      "kind": "cinema",
+      "chapter": "05 THE FILM",
+      "accent": "green",
+      "title": "4K. Captions. Music. Five looks.",
+      "hl": "Five",
+      "voice": "A 4K video with narration, captions and music. Five looks, cartoon to photoreal.",
+      "hold": 0.2,
+      "shots": [
+        {
+          "image_prompt": "A huge cinema screen in an empty dark hall filling with a crisp shot of a green mountain valley at dawn, its light washing over rows of empty seats.",
+          "shot_kind": "reveal"
+        },
+        {
+          "image_prompt": "A pair of studio headphones resting on the dark desk, a soft green level light pulsing beside them, the cable trailing off into the shadow.",
+          "at": "captions and music.",
+          "shot_kind": "detail"
+        },
+        {
+          "image_prompt": "Five tall screens in a row in a dark gallery, each glowing with a different picture of the same lighthouse, their reflections shimmering on the wet black floor.",
+          "at": "Five looks,",
+          "caption": "FIVE LOOKS",
+          "hl": "FIVE",
+          "shot_kind": "establish"
+        }
+      ]
+    },
+    {
+      "id": "06-closing",
+      "kind": "closing",
+      "chapter": "06 THE OFFER",
+      "accent": "cyan",
+      "title": "Two free Shorts. No sign-up.",
+      "hl": "free",
+      "voice": "Two free Shorts. No sign-up. One click at kleooai dot com.",
+      "hold": 0.2,
+      "detail": "kleooai.com — two free Shorts, no sign-up, one click",
+      "shots": [
+        {
+          "image_prompt": "The creator standing at the tall window with the laptop glowing behind her, city lights flickering through the rain, the studio dark and calm.",
+          "shot_kind": "closing"
+        }
+      ]
+    }
+  ]
+}

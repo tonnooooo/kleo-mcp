@@ -1,0 +1,243 @@
+{
+  "schema_version": 1,
+  "editorial_status": "ready",
+  "title": "Kleo: one chat message, one finished video",
+  "brand": "Kleo",
+  "direction": {
+    "subject": "What Kleo does: a person asks for a video in a chat and gets a finished 4K Short back in the same chat",
+    "goal": "The viewer understands that one URL and one plain-words request in Claude or ChatGPT produce a finished Short",
+    "audience": "creators and founders new to Kleo who want videos without editing",
+    "tone": "calm, cinematic and factual, like a product trailer",
+    "must_keep": [
+      "connect it to Claude or ChatGPT with one URL",
+      "ask for a video in plain words",
+      "get a 4K Short with narration and captions back in the same chat",
+      "two free Shorts at kleooai.com"
+    ],
+    "world": "A quiet home studio at dusk: a wooden desk by a tall window, a laptop and a phone, a warm desk lamp against cool blue evening light, shallow depth of field, cinematic photograph",
+    "cast": [
+      {
+        "name": "the creator",
+        "look": "a woman in her thirties with short dark hair, plain charcoal sweater, calm focused expression, no glasses, no jewellery"
+      }
+    ],
+    "objects": [
+      "wooden desk",
+      "laptop",
+      "phone",
+      "desk lamp",
+      "tall window",
+      "office chair",
+      "headphones",
+      "server rack",
+      "status lights",
+      "city lights at dusk",
+      "glowing chat window",
+      "vertical video on a phone"
+    ],
+    "forbidden": [
+      "readable text",
+      "letters",
+      "logo",
+      "logos",
+      "watermark",
+      "extra fingers",
+      "film camera",
+      "clapperboard",
+      "green screen",
+      "cartoon style",
+      "real brand marks"
+    ],
+    "sections": [
+      {
+        "name": "THE ASK",
+        "accent": "cyan",
+        "means": "one message in a chat",
+        "scenes": 2
+      },
+      {
+        "name": "THE MAKING",
+        "accent": "amber",
+        "means": "Kleo at work on a rented GPU",
+        "scenes": 2
+      },
+      {
+        "name": "THE DELIVERY",
+        "accent": "green",
+        "means": "the finished Short comes back",
+        "scenes": 2
+      }
+    ]
+  },
+  "kleo_style": "realistic",
+  "style": "picture",
+  "format": "9:16",
+  "language": "en",
+  "voice": "af_heart",
+  "speed": 1.1,
+  "music": "bed",
+  "max_duration": 64,
+  "description": "A realistic Short showing what Kleo does: connect it to Claude or ChatGPT with one URL, ask for a video in plain words, and get a 4K Short back in the same chat.",
+  "tags": [
+    "kleo",
+    "mcp server",
+    "youtube shorts",
+    "claude",
+    "chatgpt",
+    "narrated video"
+  ],
+  "scenes": [
+    {
+      "id": "01-hook",
+      "kind": "cinema",
+      "chapter": "01 THE ASK",
+      "accent": "cyan",
+      "title": "One message. One video.",
+      "hl": "video",
+      "voice": "One chat message. That is the whole job. Watch someone ask for a video and get it back.",
+      "hold": 0.2,
+      "shots": [
+        {
+          "image_prompt": "Close on the creator's face lit by the laptop glow in a dark home studio, eyes fixed on the screen, steam rising from a mug beside her, a thin curtain stirring in the cool blue dusk light behind her",
+          "shot_kind": "hook"
+        },
+        {
+          "image_prompt": "High view of the home studio at dusk, a wooden desk by the tall window, the laptop glowing on it, city lights flickering beyond the glass",
+          "at": "That is the whole job.",
+          "shot_kind": "establish"
+        },
+        {
+          "image_prompt": "Extreme close-up of the phone on the wooden desk, one soft glowing message bubble blurred on its screen, warm lamp light spilling across the wood grain",
+          "at": "get it back",
+          "shot_kind": "detail"
+        }
+      ]
+    },
+    {
+      "id": "02-connect",
+      "kind": "cinema",
+      "chapter": "02 ONE URL",
+      "accent": "cyan",
+      "title": "Connect Kleo with one URL",
+      "hl": "URL",
+      "voice": "Kleo is an MCP server. Connect it to Claude or ChatGPT with one URL, then ask for a video in plain words.",
+      "hold": 0.2,
+      "shots": [
+        {
+          "image_prompt": "The creator at her desk leaning toward the laptop with a calm half-smile, the chat window's glow flickering across her face, dust drifting in the warm beam of the desk lamp",
+          "shot_kind": "face"
+        },
+        {
+          "image_prompt": "The creator's hand resting on the laptop trackpad, one finger pressing down, the glowing chat window blurred on the screen, the room dark around it",
+          "at": "Connect it to Claude",
+          "shot_kind": "static_forced"
+        },
+        {
+          "image_prompt": "Extreme close-up across the laptop keyboard toward the glowing chat window, soft blurred message bubbles drifting up the screen, warm lamp light on the keys",
+          "at": "in plain words",
+          "caption": "PLAIN WORDS",
+          "hl": "PLAIN",
+          "shot_kind": "detail"
+        }
+      ]
+    },
+    {
+      "id": "03-making",
+      "kind": "cinema",
+      "chapter": "03 THE MAKING",
+      "accent": "amber",
+      "title": "Kleo writes, draws and narrates",
+      "hl": "narrates",
+      "voice": "Kleo writes the storyboard, draws every picture for the topic, and records the narration.",
+      "hold": 0.2,
+      "shots": [
+        {
+          "image_prompt": "The laptop screen filling with a grid of small glowing photographs sliding into place, the dark studio around it lit by a warm amber desk lamp",
+          "shot_kind": "reveal"
+        },
+        {
+          "image_prompt": "Extreme close-up of one photograph on the screen, a sunlit mountain road in soft focus with clouds moving across its sky, amber light on the glass",
+          "at": "draws every picture",
+          "shot_kind": "detail"
+        },
+        {
+          "image_prompt": "High view of the desk, a glowing audio waveform rippling across the laptop screen, headphones resting beside it, city lights flickering in the tall window",
+          "at": "records the narration",
+          "shot_kind": "establish"
+        }
+      ]
+    },
+    {
+      "id": "04-render",
+      "kind": "cinema",
+      "chapter": "04 THE RENDER",
+      "accent": "amber",
+      "title": "Rendered on a rented GPU",
+      "hl": "GPU",
+      "voice": "A rented GPU renders it in the background, fifteen to twenty-five minutes for a Short.",
+      "hold": 0.2,
+      "shots": [
+        {
+          "image_prompt": "A dark server room, a rack of graphics cards glowing amber, status lights flickering along the rails, cold air moving through the narrow aisle",
+          "shot_kind": "tension"
+        },
+        {
+          "image_prompt": "Wide view down the server aisle, rows of racks receding into the dark, amber status lights flickering, thin mist drifting low along the floor",
+          "at": "in the background",
+          "caption": "RENDERED IN THE BACKGROUND",
+          "hl": "BACKGROUND",
+          "shot_kind": "establish"
+        },
+        {
+          "image_prompt": "The creator leaning back in her office chair watching the laptop with quiet patience, steam curling up from the mug on the desk, rain streaking down the tall blue window behind her",
+          "at": "for a Short",
+          "shot_kind": "face"
+        }
+      ]
+    },
+    {
+      "id": "05-delivery",
+      "kind": "cinema",
+      "chapter": "05 THE DELIVERY",
+      "accent": "green",
+      "title": "A 4K Short, back in your chat",
+      "hl": "4K",
+      "voice": "Then the links arrive: a 4K Short with narration and captions, back in the same chat.",
+      "hold": 0.2,
+      "shots": [
+        {
+          "image_prompt": "Extreme close-up of the phone lighting up on the wooden desk, a soft green glow spreading across the wood grain, the laptop blurred in the background",
+          "shot_kind": "detail"
+        },
+        {
+          "image_prompt": "The phone propped upright on the desk, a bright crisp vertical video glowing on it, a sunlit mountain road with clouds moving across its sky inside the frame",
+          "at": "a 4K Short",
+          "caption": "4K AT 60 FPS",
+          "hl": "4K",
+          "shot_kind": "reveal"
+        },
+        {
+          "image_prompt": "The creator's hands lifting the phone from the desk, the bright vertical video playing on it with clouds moving across a sunlit road, a smile breaking across her face in the soft green light",
+          "at": "back in the same chat",
+          "shot_kind": "static_forced"
+        }
+      ]
+    },
+    {
+      "id": "06-closing",
+      "kind": "closing",
+      "chapter": "06 TRY IT FREE",
+      "accent": "green",
+      "title": "Two free Shorts, no sign-up",
+      "hl": "free",
+      "voice": "Two free Shorts, no sign-up. Try it at kleooai dot com.",
+      "detail": "kleooai.com — two free Shorts, no sign-up, one click",
+      "shots": [
+        {
+          "image_prompt": "The home studio at night seen from the doorway, the desk lamp glowing warm, the laptop and phone resting on the wooden desk, city lights flickering beyond the tall window",
+          "shot_kind": "closing"
+        }
+      ]
+    }
+  ]
+}

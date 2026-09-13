@@ -1,0 +1,621 @@
+{
+  "schema_version": 1,
+  "editorial_status": "ready",
+  "title": "How Kleo Works in Three Steps",
+  "brand": "Kleo",
+  "direction": {
+    "subject": "How Kleo works in three steps: connect with one URL, ask in plain words, receive a 4K video in the same chat",
+    "goal": "The viewer understands that making a video with Kleo is three steps and wants to try the two free Shorts",
+    "audience": "Creators and founders who already use Claude, ChatGPT, Grok or Cursor",
+    "tone": "calm and confident, a product trailer drawn by hand",
+    "must_keep": [
+      "three steps",
+      "connect with one URL",
+      "ask in plain words",
+      "receive a 4K video in the same chat",
+      "five looks",
+      "two free Shorts"
+    ],
+    "world": "Hand-drawn white marker line art on pure black: rough pressure-varying strokes, soft grey interiors, white dust drifting, one accent colour per scene",
+    "cast": [
+      {
+        "name": "the viewer",
+        "look": "a simple hand-drawn white marker stick figure, reaching toward the screen in front of it"
+      }
+    ],
+    "objects": [
+      "laptop",
+      "phone",
+      "usb plug",
+      "chain link",
+      "brain",
+      "envelope",
+      "hand",
+      "gear",
+      "server rack",
+      "clock",
+      "globe",
+      "coin"
+    ],
+    "forbidden": [
+      "text or letters in the picture",
+      "logos",
+      "brand names",
+      "watermark",
+      "real person",
+      "extra fingers",
+      "photographs",
+      "colour fills",
+      "clean vector lines",
+      "second accent colour",
+      "camera equipment",
+      "film reels"
+    ],
+    "sections": [
+      {
+        "name": "01 THE HOOK",
+        "accent": "cyan",
+        "means": "the chat you already use",
+        "scenes": 1
+      },
+      {
+        "name": "02 CONNECT",
+        "accent": "green",
+        "means": "the link is live",
+        "scenes": 1
+      },
+      {
+        "name": "03 ASK",
+        "accent": "cyan",
+        "means": "your words go in",
+        "scenes": 1
+      },
+      {
+        "name": "04 THE MAKING",
+        "accent": "amber",
+        "means": "the machine at work",
+        "scenes": 2
+      },
+      {
+        "name": "05 RECEIVE",
+        "accent": "cyan",
+        "means": "back in the same chat",
+        "scenes": 1
+      },
+      {
+        "name": "06 THE OFFER",
+        "accent": "green",
+        "means": "go, it is free",
+        "scenes": 1
+      }
+    ]
+  },
+  "kleo_style": "explainer",
+  "style": "sketch",
+  "format": "9:16",
+  "language": "en",
+  "voice": "bf_emma",
+  "speed": 1.1,
+  "music": "bed",
+  "max_duration": 64,
+  "description": "How Kleo works in three steps: connect one URL to your chat assistant, ask in plain words, receive a 4K video in the same chat. Five looks, two free Shorts at kleooai.com.",
+  "tags": [
+    "kleo",
+    "mcp",
+    "explainer",
+    "shorts",
+    "how it works",
+    "youtube"
+  ],
+  "scenes": [
+    {
+      "id": "01-hook",
+      "kind": "sketch",
+      "accent": "blue",
+      "enter": "cut",
+      "exit": "cut",
+      "voice": "Add one address, and the chat you already use makes videos. Three steps.",
+      "shot": {
+        "zoom": [
+          1.0,
+          1.3
+        ],
+        "focus": [
+          620,
+          860
+        ]
+      },
+      "art": [
+        {
+          "name": "figure",
+          "x": 300,
+          "y": 1140,
+          "size": 0.95,
+          "drawn": true,
+          "reach": [
+            190,
+            -140
+          ],
+          "until": "Three steps"
+        },
+        {
+          "name": "laptop",
+          "x": 620,
+          "y": 860,
+          "size": 1.25,
+          "drawn": true,
+          "led": "blue",
+          "until": "Three steps"
+        },
+        {
+          "name": "chain",
+          "x": 620,
+          "y": 520,
+          "size": 0.7,
+          "at": "one address",
+          "until": "makes videos",
+          "tint": "blue",
+          "motion": "drift",
+          "motion_over": 1.2
+        },
+        {
+          "name": "phone",
+          "x": 620,
+          "y": 500,
+          "size": 0.85,
+          "at": "makes videos",
+          "until": "Three steps",
+          "tint": "blue",
+          "motion": "rise",
+          "motion_over": 0.7
+        },
+        {
+          "name": "footprints",
+          "x": 540,
+          "y": 960,
+          "size": 1.1,
+          "at": "Three steps",
+          "count": 3,
+          "tint": "blue",
+          "motion": "walk",
+          "motion_over": 0.8
+        }
+      ],
+      "hold": 0.05
+    },
+    {
+      "id": "02-connect",
+      "kind": "sketch",
+      "accent": "green",
+      "enter": "whip",
+      "exit": "cut",
+      "voice": "Step one: connect. One URL, pasted into Claude, ChatGPT, Grok or Cursor.",
+      "shot": {
+        "zoom": [
+          1.0,
+          1.32
+        ],
+        "focus": [
+          560,
+          880
+        ]
+      },
+      "art": [
+        {
+          "name": "laptop",
+          "x": 580,
+          "y": 880,
+          "size": 1.2,
+          "drawn": true,
+          "led": "green",
+          "until": "pasted into"
+        },
+        {
+          "name": "usb",
+          "x": 230,
+          "y": 960,
+          "size": 0.95,
+          "drawn": true,
+          "until": "pasted into",
+          "motion": "slide",
+          "motion_over": 0.8
+        },
+        {
+          "name": "chain",
+          "x": 540,
+          "y": 520,
+          "size": 0.7,
+          "at": "One URL",
+          "until": "pasted into",
+          "tint": "green",
+          "motion": "drift",
+          "motion_over": 1.0
+        },
+        {
+          "name": "brain",
+          "x": 580,
+          "y": 860,
+          "size": 1.15,
+          "at": "pasted into",
+          "until": "Grok or",
+          "tint": "green",
+          "motion": "pulse",
+          "motion_over": 0.8
+        },
+        {
+          "name": "usb",
+          "x": 220,
+          "y": 960,
+          "size": 0.95,
+          "at": "pasted into",
+          "motion": "slide",
+          "motion_over": 0.7
+        },
+        {
+          "name": "brain",
+          "x": 580,
+          "y": 860,
+          "size": 1.25,
+          "at": "Grok or",
+          "tint": "green",
+          "motion": "pulse",
+          "motion_over": 0.6
+        }
+      ],
+      "hold": 0.05
+    },
+    {
+      "id": "03-ask",
+      "kind": "sketch",
+      "accent": "blue",
+      "enter": "whip",
+      "exit": "cut",
+      "voice": "Step two: ask, in plain words, for a Short or a long YouTube video.",
+      "shot": {
+        "zoom": [
+          1.0,
+          1.34
+        ],
+        "focus": [
+          540,
+          880
+        ]
+      },
+      "art": [
+        {
+          "name": "figure",
+          "x": 320,
+          "y": 1120,
+          "size": 0.95,
+          "drawn": true,
+          "reach": [
+            200,
+            -150
+          ],
+          "until": "a Short"
+        },
+        {
+          "name": "envelope",
+          "x": 640,
+          "y": 780,
+          "size": 1.0,
+          "at": "ask",
+          "until": "a Short",
+          "tint": "blue",
+          "motion": "rise",
+          "motion_over": 0.7
+        },
+        {
+          "name": "phone",
+          "x": 330,
+          "y": 880,
+          "size": 1.0,
+          "at": "a Short",
+          "tint": "blue",
+          "motion": "rise",
+          "motion_over": 0.6
+        },
+        {
+          "name": "laptop",
+          "x": 740,
+          "y": 900,
+          "size": 1.05,
+          "at": "a long YouTube",
+          "tint": "blue",
+          "motion": "rise",
+          "motion_over": 0.6
+        }
+      ],
+      "hold": 0.05
+    },
+    {
+      "id": "04-make",
+      "kind": "sketch",
+      "accent": "yellow",
+      "enter": "cut",
+      "exit": "cut",
+      "voice": "Kleo writes the storyboard, draws every picture, narrates it, and cuts to the words.",
+      "shot": {
+        "zoom": [
+          1.0,
+          1.3
+        ],
+        "focus": [
+          540,
+          860
+        ]
+      },
+      "art": [
+        {
+          "name": "code",
+          "x": 540,
+          "y": 820,
+          "size": 1.1,
+          "drawn": true,
+          "tint": "yellow",
+          "until": "draws every",
+          "motion": "drift",
+          "motion_over": 1.0
+        },
+        {
+          "name": "hand",
+          "x": 540,
+          "y": 1000,
+          "size": 1.1,
+          "at": "draws every",
+          "until": "narrates it",
+          "motion": "slide",
+          "motion_over": 0.8
+        },
+        {
+          "name": "signal",
+          "x": 540,
+          "y": 800,
+          "size": 1.05,
+          "at": "narrates it",
+          "until": "cuts to",
+          "tint": "yellow",
+          "motion": "pulse",
+          "motion_over": 0.7
+        },
+        {
+          "name": "gear",
+          "x": 540,
+          "y": 880,
+          "size": 1.15,
+          "at": "cuts to",
+          "tint": "yellow",
+          "motion": "turn",
+          "motion_over": 1.0
+        },
+        {
+          "name": "envelope",
+          "x": 540,
+          "y": 520,
+          "size": 0.8,
+          "at": "the words",
+          "tint": "yellow",
+          "motion": "drift",
+          "motion_over": 0.8
+        }
+      ],
+      "hold": 0.05
+    },
+    {
+      "id": "05-render",
+      "kind": "sketch",
+      "accent": "yellow",
+      "enter": "whip",
+      "exit": "cut",
+      "voice": "Step three: receive. A rented GPU renders in the background, fifteen to twenty-five minutes.",
+      "shot": {
+        "zoom": [
+          1.0,
+          1.36
+        ],
+        "focus": [
+          600,
+          880
+        ]
+      },
+      "art": [
+        {
+          "name": "figure",
+          "x": 230,
+          "y": 1140,
+          "size": 0.9,
+          "drawn": true,
+          "reach": [
+            200,
+            -140
+          ],
+          "until": "fifteen"
+        },
+        {
+          "name": "server",
+          "x": 640,
+          "y": 860,
+          "size": 1.15,
+          "drawn": true,
+          "led": "yellow",
+          "until": "fifteen",
+          "motion": "pulse",
+          "motion_over": 0.9
+        },
+        {
+          "name": "chip",
+          "x": 300,
+          "y": 500,
+          "size": 0.8,
+          "at": "rented GPU",
+          "until": "fifteen",
+          "tint": "yellow",
+          "motion": "drift",
+          "motion_over": 1.0
+        },
+        {
+          "name": "clock",
+          "x": 540,
+          "y": 840,
+          "size": 1.15,
+          "at": "fifteen",
+          "tint": "yellow",
+          "motion": "turn",
+          "motion_over": 1.2
+        }
+      ],
+      "hold": 0.05
+    },
+    {
+      "id": "06-receive",
+      "kind": "sketch",
+      "accent": "blue",
+      "enter": "whip",
+      "exit": "flare",
+      "voice": "Then the links land in the same chat: a 4K video and its subtitles.",
+      "shot": {
+        "zoom": [
+          1.0,
+          1.4
+        ],
+        "focus": [
+          540,
+          900
+        ]
+      },
+      "art": [
+        {
+          "name": "laptop",
+          "x": 540,
+          "y": 980,
+          "size": 1.2,
+          "drawn": true,
+          "led": "blue"
+        },
+        {
+          "name": "chain",
+          "x": 540,
+          "y": 560,
+          "size": 0.7,
+          "at": "the links",
+          "until": "a 4K video",
+          "tint": "blue",
+          "motion": "drift",
+          "motion_over": 0.8
+        },
+        {
+          "name": "phone",
+          "x": 360,
+          "y": 520,
+          "size": 0.9,
+          "at": "a 4K video",
+          "tint": "blue",
+          "motion": "rise",
+          "motion_over": 0.5
+        },
+        {
+          "name": "code",
+          "x": 730,
+          "y": 580,
+          "size": 0.85,
+          "at": "its subtitles",
+          "tint": "blue",
+          "motion": "rise",
+          "motion_over": 0.5
+        }
+      ],
+      "hold": 0.05
+    },
+    {
+      "id": "07-free",
+      "kind": "sketch",
+      "accent": "green",
+      "enter": "cut",
+      "exit": "cut",
+      "voice": "Five looks. Two free Shorts, no sign-up, one click, at kleooai dot com.",
+      "shot": {
+        "zoom": [
+          1.0,
+          1.36
+        ],
+        "focus": [
+          540,
+          900
+        ]
+      },
+      "art": [
+        {
+          "name": "blank",
+          "x": 540,
+          "y": 860,
+          "size": 0.75,
+          "drawn": true,
+          "count": 5,
+          "chip": "green",
+          "until": "Two free"
+        },
+        {
+          "name": "phone",
+          "x": 360,
+          "y": 860,
+          "size": 0.9,
+          "at": "Two free",
+          "until": "kleooai dot com",
+          "tint": "green",
+          "motion": "rise",
+          "motion_over": 0.6
+        },
+        {
+          "name": "phone",
+          "x": 720,
+          "y": 860,
+          "size": 0.9,
+          "at": "Two free",
+          "until": "one click",
+          "tint": "green",
+          "motion": "rise",
+          "motion_over": 0.6
+        },
+        {
+          "name": "coin",
+          "x": 540,
+          "y": 1250,
+          "size": 0.7,
+          "at": "free Shorts",
+          "until": "no sign-up",
+          "no": true
+        },
+        {
+          "name": "fingerprint",
+          "x": 540,
+          "y": 1220,
+          "size": 0.75,
+          "at": "no sign-up",
+          "until": "one click",
+          "no": true
+        },
+        {
+          "name": "hand",
+          "x": 420,
+          "y": 1020,
+          "size": 1.0,
+          "at": "one click",
+          "until": "kleooai dot com",
+          "motion": "tap",
+          "motion_over": 0.5
+        },
+        {
+          "name": "globe",
+          "x": 540,
+          "y": 880,
+          "size": 1.15,
+          "at": "kleooai dot com",
+          "led": "green",
+          "motion": "turn",
+          "motion_over": 1.5
+        }
+      ],
+      "hold": 0.05
+    }
+  ]
+}
