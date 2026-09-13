@@ -30,16 +30,16 @@ SKETCH_ART = {'figure', 'hand', 'keycard', 'door', 'reader', 'phone', 'corridor'
 # what makes the caption safe area a fact rather than a guess: a tag is 53 pixels tall and a figure is
 # 246, so one rule for both is either useless or wrong. The five drawings at 0 are backdrops — the
 # space the others stand in — and the caption is meant to sit over them.
-SKETCH_DROP = {'figure': 246, 'hand': 117, 'keycard': 104, 'door': 380, 'reader': 472, 'phone': 260,
-                 'corridor': 0, 'tag': 53, 'room': 0, 'writer': 150, 'blank': 0, 'crowbar': 440, 'bell': 333,
-                 'hotels': 0, 'globe': 259, 'face': 308, 'intruder': 246, 'footprints': 295, 'suitcase': 198,
-                 'crowd': 342, 'handshake': 62, 'eye': 135, 'brain': 124, 'robot': 166, 'laptop': 137,
-                 'server': 241, 'router': 127, 'camera': 0, 'chip': 184, 'usb': 165, 'car': 126, 'lock': 182,
-                 'key': 84, 'shield': 210, 'bug': 106, 'fingerprint': 190, 'envelope': 152, 'signal': 235,
-                 'chart': 179, 'graph': 219, 'folder': 162, 'cloud': 35, 'code': 182, 'scale': 190, 'warning': 180,
-                 'question': 199, 'city': 0, 'coin': 198, 'clock': 203, 'calendar': 192, 'box': 200, 'book': 141,
-                 'rocket': 173, 'bulb': 195, 'magnifier': 202, 'gear': 187, 'chain': 105, 'tree': 238,
-                 'satellite': 327}
+SKETCH_DROP = {'figure': 335, 'hand': 242, 'keycard': 237, 'door': 399, 'reader': 374, 'phone': 392,
+                 'corridor': 0, 'tag': 53, 'room': 0, 'writer': 254, 'blank': 0, 'crowbar': 334, 'bell': 399,
+                 'hotels': 0, 'globe': 413, 'face': 400, 'intruder': 349, 'footprints': 361, 'suitcase': 245,
+                 'crowd': 152, 'handshake': 168, 'eye': 220, 'brain': 336, 'robot': 368, 'laptop': 220,
+                 'server': 356, 'router': 210, 'camera': 0, 'chip': 331, 'usb': 156, 'car': 155, 'lock': 370,
+                 'key': 161, 'shield': 367, 'bug': 315, 'fingerprint': 356, 'envelope': 296, 'signal': 365,
+                 'chart': 239, 'graph': 303, 'folder': 284, 'cloud': 220, 'code': 276, 'scale': 371,
+                 'warning': 289, 'question': 328, 'city': 0, 'coin': 300, 'clock': 400, 'calendar': 342,
+                 'box': 350, 'book': 250, 'rocket': 401, 'bulb': 308, 'magnifier': 334, 'gear': 348,
+                 'chain': 126, 'tree': 358, 'satellite': 390}
 SKETCH_MOODS = {'worried', 'scared', 'calm'}
 SKETCH_MOTION = {'turn', 'slide', 'rise', 'tap', 'shake', 'walk', 'pulse', 'drift'}
 SKETCH_ENTER = {'whip', 'cut'}

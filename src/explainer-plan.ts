@@ -610,23 +610,25 @@ export function checkExplainer(scenes: unknown, opts: { duration: number; langua
  */
 /** How far each drawing reaches ABOVE its centre; SKETCH_DROP is the other half of the box. */
 const SKETCH_UP: Record<string, number> = {
-  bell: 351, blank: 627, book: 132, box: 157, brain: 161, bug: 211, bulb: 263, calendar: 211, camera: 201,
-  car: 95, chain: 106, chart: 187, chip: 184, city: 210, clock: 203, cloud: 143, code: 181, coin: 145,
-  corridor: 473, crowbar: 400, crowd: 228, door: 381, envelope: 152, eye: 133, face: 311, figure: 316,
-  fingerprint: 193, folder: 150, footprints: 105, gear: 184, globe: 260, graph: 208, hand: 90, handshake: 81,
-  hotels: 430, intruder: 356, key: 83, keycard: 194, laptop: 191, lock: 104, magnifier: 203, phone: 259,
-  question: 204, reader: 566, robot: 267, rocket: 239, room: 523, router: 116, satellite: 80, scale: 214,
-  server: 241, shield: 182, signal: 235, suitcase: 198, tag: 54, tree: 209, usb: 52, warning: 192, writer: 331,
+  bell: 433, blank: 295, book: 193, box: 218, brain: 281, bug: 412, bulb: 418, calendar: 260, camera: 338,
+  car: 178, chain: 81, chart: 287, chip: 295, city: 428, clock: 354, cloud: 199, code: 251, coin: 148,
+  corridor: 386, crowbar: 432, crowd: 320, door: 382, envelope: 408, eye: 355, face: 348, figure: 406,
+  fingerprint: 356, folder: 226, footprints: 340, gear: 279, globe: 318, graph: 309, hand: 135,
+  handshake: 167, hotels: 436, intruder: 408, key: 129, keycard: 231, laptop: 308, lock: 430, magnifier: 292,
+  phone: 363, question: 412, reader: 377, robot: 424, rocket: 415, room: 428, router: 239, satellite: 218,
+  scale: 357, server: 342, shield: 311, signal: 391, suitcase: 307, tag: 54, tree: 387, usb: 108,
+  warning: 287, writer: 394,
 };
 
 const SKETCH_W: Record<string, number> = {
-  bell: 680, blank: 3130, book: 502, box: 377, brain: 351, bug: 368, bulb: 455, calendar: 449, camera: 334,
-  car: 518, chain: 750, chart: 483, chip: 367, city: 669, clock: 406, cloud: 422, code: 522, coin: 257,
-  corridor: 1162, crowbar: 949, crowd: 565, door: 492, envelope: 463, eye: 477, face: 619, figure: 263,
-  fingerprint: 382, folder: 464, footprints: 619, gear: 372, globe: 520, graph: 476, hand: 313, handshake: 521,
-  hotels: 951, intruder: 347, key: 453, keycard: 357, laptop: 493, lock: 245, magnifier: 422, phone: 495,
-  question: 212, reader: 680, robot: 353, rocket: 333, room: 1048, router: 340, satellite: 421, scale: 588,
-  server: 302, shield: 322, signal: 544, suitcase: 458, tag: 178, tree: 412, usb: 372, warning: 421, writer: 472,
+  bell: 831, blank: 855, book: 793, box: 681, brain: 674, bug: 646, bulb: 609, calendar: 682, camera: 613,
+  car: 753, chain: 876, chart: 708, chip: 590, city: 875, clock: 637, cloud: 752, code: 744, coin: 742,
+  corridor: 878, crowbar: 790, crowd: 685, door: 662, envelope: 666, eye: 753, face: 652, figure: 350,
+  fingerprint: 538, folder: 712, footprints: 798, gear: 763, globe: 596, graph: 711, hand: 762,
+  handshake: 759, hotels: 846, intruder: 433, key: 715, keycard: 728, laptop: 764, lock: 500, magnifier: 627,
+  phone: 583, question: 477, reader: 765, robot: 462, rocket: 575, room: 892, router: 720, satellite: 763,
+  scale: 741, server: 543, shield: 537, signal: 570, suitcase: 749, tag: 254, tree: 724, usb: 773,
+  warning: 596, writer: 757,
 };
 
 /**
