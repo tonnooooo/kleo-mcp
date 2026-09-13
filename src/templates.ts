@@ -374,7 +374,21 @@ const PICTURES: Machine = { minVramGb: 16, minComputeCap: 800, maxDph: 0.40 };
  * Turning it on is one line here — realistic: VIDEO — and it must happen in the SAME commit as its price in
  * STYLE_CREDITS (7) and as the engine change, because the three are the same decision seen from three sides.
  */
-export const VIDEO: Machine = { minVramGb: 32, minComputeCap: 800, maxDph: 1.20 };   // 1.20: the owner's ceiling, and where the ≥32 GB market sat on 13 September
+export const VIDEO: Machine = { minVramGb: 32, minComputeCap: 800, maxDph: 1.20 };   // Wan 2.2 5B: 1.20 was the owner's ceiling, and where the ≥32 GB market sat on 13 September
+
+/** The video profile for a given model id: LTX-2.5 (22B, bf16) wants an 80 GB card, and those start near $1.9/h. */
+export function videoMachineFor(modelId: string | undefined, over: { minVramGb?: string; maxDph?: string } = {}): Machine {
+  const ltx = /ltx/i.test(modelId ?? "");
+  const base: Machine = ltx ? { minVramGb: 80, minComputeCap: 800, maxDph: 2.60 } : VIDEO;
+  const vram = Number(over.minVramGb), dph = Number(over.maxDph);
+  return { ...base, minVramGb: Number.isFinite(vram) && vram > 0 ? vram : base.minVramGb, maxDph: Number.isFinite(dph) && dph > 0 ? dph : base.maxDph };
+}
+
+/** True when the model's weights are gated on Hugging Face and the worker needs a token to fetch them. */
+export const videoModelIsGated = (modelId: string | undefined): boolean => /ltx/i.test(modelId ?? "");
+
+/** Disk the box needs for the model: LTX-2.5 is 72 GB of weights on top of the 15 GB image and the film. */
+export const videoDiskGb = (modelId: string | undefined, base: number): number => Math.max(base, /ltx/i.test(modelId ?? "") ? 150 : base);
 
 export const STYLE_MACHINE: Record<string, Machine> = {
   cartoon: PICTURES,    // Stable Diffusion 1.5, about 6 GB

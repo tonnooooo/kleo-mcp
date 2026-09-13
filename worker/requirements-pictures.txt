@@ -1,7 +1,9 @@
 # Local picture generation on the GPU (worker/kleo_pictures.py): Stable Diffusion 1.5 through diffusers.
 # torch comes from the base image (pytorch/pytorch 2.8.0+cu128); transformers / tokenizers / huggingface-hub are
 # pinned by worker/keou/requirements.txt (transformers 5.16.1, huggingface-hub 1.30.0) and must stay satisfied.
-diffusers==0.40.0
+# 13 September: LTX-2.5 (Lightricks) is the generated-motion model the owner chose, and its pipelines (LTX2Pipeline,
+# LTX2LatentUpsamplePipeline) exist only on diffusers main — pinned to a commit that has them, not to "main".
+diffusers @ git+https://github.com/huggingface/diffusers@82e309a2b1b1
 accelerate==1.15.0
 safetensors==0.8.0
 pillow>=10.4

@@ -122,6 +122,40 @@ const count = (state, needle) => state.calls.filter((c) => c.startsWith(needle))
 const listCalls = (state, version) => state.rawCalls.filter((c) => c.startsWith(`GET /api/v${version}/instances/`) && !/\/instances\/\d+\//.test(c)).length;
 
 /* ------------------------------------------------------------------ lost create answer */
+/* ------------------------------------------------------------------ the generator model shapes the rental */
+test("start: a filmed job on LTX-2.5 asks for an 80 GB card, 150 GB of disk, and hands the box the model and the token", async () => {
+  // 13 September: the owner replaced Wan 2.2 with LTX-2.5. The weights are gated (HF_TOKEN), 72 GB on disk, and the
+  // 22B transformer needs an 80 GB card. Every one of those is a fact the RENTAL has to know, or the card is paid
+  // for and the download fails on it.
+  const env = { ...(await newEnv()), KLEO_VIDEO_MODEL: "Lightricks/LTX-2.5-Diffusers", HF_TOKEN: "hf_secret_xyz" };
+  const job = { id: "gt_ltx1", worker_secret: "wk_1", params: JSON.stringify({ style: "realistic", format: "16:9" }) };
+  let query = null, body = null;
+  const v = fakeVast({ onCreate: (offer, b) => { body = b; return { create: 501 }; } });
+  const origFetch = v.fetch;
+  v.fetch = async (url, init = {}) => { if (init.method === "POST" && String(url).endsWith("/bundles/")) query = JSON.parse(init.body); return origFetch(url, init); };
+  await withVast(v, () => m.vastBackend.start(env, job));
+  assert.equal(query.gpu_ram.gte, 80 * 1024, "an 80 GB card");
+  assert.equal(query.disk_space.gte, 150, "room for 72 GB of weights");
+  assert.ok(query.dph_total.lte >= 1.9, `a ceiling that 80 GB cards exist under (${query.dph_total.lte})`);
+  assert.equal(body.disk, 150);
+  assert.equal(body.env.KLEO_VIDEO_MODEL, "Lightricks/LTX-2.5-Diffusers");
+  assert.equal(body.env.HF_TOKEN, "hf_secret_xyz", "the token reaches the box, which is the only place it may go");
+});
+
+test("start: the same filmed job on Wan keeps the 32 GB profile and gets no token", async () => {
+  const env = { ...(await newEnv()), HF_TOKEN: "hf_secret_xyz" };   // no KLEO_VIDEO_MODEL: Wan 2.2 5B
+  const job = { id: "gt_wan1", worker_secret: "wk_1", params: JSON.stringify({ style: "realistic", format: "16:9" }) };
+  let query = null, body = null;
+  const v = fakeVast({ onCreate: (offer, b) => { body = b; return { create: 502 }; } });
+  const origFetch = v.fetch;
+  v.fetch = async (url, init = {}) => { if (init.method === "POST" && String(url).endsWith("/bundles/")) query = JSON.parse(init.body); return origFetch(url, init); };
+  await withVast(v, () => m.vastBackend.start(env, job));
+  assert.equal(query.gpu_ram.gte, 32 * 1024);
+  assert.equal(query.disk_space.gte, 80);
+  assert.equal(body.env.KLEO_VIDEO_MODEL, undefined);
+  assert.equal(body.env.HF_TOKEN, undefined, "a token is never sent where no gated model needs it");
+});
+
 test("start: a create whose answer is lost is adopted by its label, not left orphaned", async () => {
   const env = await newEnv();
   const job = { id: "gt_lost1", worker_secret: "wk_1" };

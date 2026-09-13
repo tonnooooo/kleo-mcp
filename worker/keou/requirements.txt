@@ -4,7 +4,7 @@ faster-whisper==1.2.1
 misaki[en]==0.9.4
 transformers==5.16.1
 tokenizers==0.23.2
-huggingface-hub==1.30.0
+huggingface-hub==1.31.0   # 1.31: diffusers main (LTX-2.5) requires >=1.31; kokoro/faster-whisper only need the 1.x API
 ctranslate2==4.8.2
 phonemizer-fork==3.3.2
 spacy==3.8.16

@@ -119,6 +119,19 @@ test("create: a client storyboard for a filmed style is stored asking to be film
   assert.equal(job2.credits, 1);
 });
 
+test("create: a filmed job on a gated model with no token on the server is refused before anything is charged", async () => {
+  const env = { ...(await newEnv()), KLEO_VIDEO_MODEL: "Lightricks/LTX-2.5-Diffusers" };   // no HF_TOKEN
+  const u = await user(env, 20);
+  const sb = JSON.parse(readFileSync(join(ROOT, "scripts", "motion-demo", "samples", "venezia-16x9.json"), "utf8"));
+  await assert.rejects(
+    () => m.createJob(env, u, { template: "motivational", prompt: "L'acqua alta a Venezia", duration_s: 30, format: "16:9", language: "it", style: "realistic", storyboard: sb }),
+    /Hugging Face token.*Nothing was charged/);
+  assert.equal(await balance(env), 20, "nothing was charged");
+  env.HF_TOKEN = "hf_x";
+  const job = await m.createJob(env, u, { template: "motivational", prompt: "L'acqua alta a Venezia", duration_s: 30, format: "16:9", language: "it", style: "realistic", storyboard: sb });
+  assert.equal(job.credits, 7, "with the token configured the same request goes through");
+});
+
 test("create: validation errors say nothing was charged and move no credits", async () => {
   const env = await newEnv();
   const u = await user(env, 10);

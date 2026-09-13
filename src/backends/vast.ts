@@ -3,7 +3,7 @@ import type { Env } from "../env";
 import type { Job } from "../db";
 import { triedMachines } from "../db";
 import { int, num, minutesSince } from "../util";
-import { jobTimeoutMin, machineFor, styleOfJob } from "../templates";
+import { jobTimeoutMin, machineFor, styleOfJob, isVideoStyle, videoMachineFor, videoModelIsGated, videoDiskGb } from "../templates";
 
 /**
  * Vast.ai backend: one ephemeral instance per job.
@@ -158,11 +158,13 @@ export const machineKey = (o: { machine_id?: number; id: number }): string =>
   o.machine_id ? `m:${o.machine_id}` : `o:${o.id}`;
 
 export async function searchOffers(env: Env, style?: string | null): Promise<Offer[]> {
-  const disk = int(env.VAST_DISK_GB, 80);
   // What this style needs of a machine (src/templates.ts): memory, architecture and its own price ceiling. The
   // global VAST_MAX_DPH stays the ceiling for everything ordinary — a cyber video must never pay for a card rented
-  // to generate motion — and a style only ever raises it for itself.
-  const need = machineFor(style);
+  // to generate motion — and a style only ever raises it for itself. A filmed style's card and disk follow the
+  // generator model (13 September: LTX-2.5 wants 80 GB and 150 GB of disk, Wan 2.2 5B 32 GB and 80 GB).
+  const filmed = isVideoStyle(style);
+  const need = filmed ? videoMachineFor(env.KLEO_VIDEO_MODEL, { minVramGb: env.VIDEO_MIN_VRAM_GB, maxDph: env.VIDEO_MAX_DPH }) : machineFor(style);
+  const disk = filmed ? videoDiskGb(env.KLEO_VIDEO_MODEL, int(env.VAST_DISK_GB, 80)) : int(env.VAST_DISK_GB, 80);
   const query = {
     verified: { eq: true },
     rentable: { eq: true },
@@ -252,7 +254,7 @@ export const vastBackend: RenderBackend = {
         const body: Record<string, unknown> = {
           client_id: "me",
           image: env.VAST_IMAGE,
-          disk: int(env.VAST_DISK_GB, 80),
+          disk: isVideoStyle(styleOfJob(job)) ? videoDiskGb(env.KLEO_VIDEO_MODEL, int(env.VAST_DISK_GB, 80)) : int(env.VAST_DISK_GB, 80),
           label: jobLabel(job.id), // never inline the prefix: create and sweep must read the same label
           runtype: "ssh",
           cancel_unavail: true,
@@ -269,6 +271,10 @@ export const vastBackend: RenderBackend = {
             KLEO_DPH: String(offer.dph_total),
             KLEO_KEOU_WORKERS: String(Math.min(16, Math.max(2, Math.floor(offer.cpu_cores_effective ?? 8)))), // whole box, but the engine caps render workers at 16
             ...renderEnv(env),
+            // The generator and, when its weights are gated, the token that fetches them. HF_TOKEN is a Cloudflare
+            // secret: it reaches the box's environment and nothing else — not the audit, not the job row.
+            ...(env.KLEO_VIDEO_MODEL ? { KLEO_VIDEO_MODEL: env.KLEO_VIDEO_MODEL } : {}),
+            ...(env.HF_TOKEN && videoModelIsGated(env.KLEO_VIDEO_MODEL) ? { HF_TOKEN: env.HF_TOKEN } : {}),
           },
         };
         const r = await vast<{ success: boolean; new_contract?: number; msg?: string; error?: string }>(env, "PUT", `/asks/${offer.id}/`, body);

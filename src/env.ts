@@ -54,6 +54,14 @@ export interface Env {
   VAST_IMAGE?: string;
   VAST_MAX_DPH?: string;
   VAST_DISK_GB?: string;
+  /** The generated-motion model the worker runs (KLEO_VIDEO_MODEL). Default Wan-AI/Wan2.2-TI2V-5B-Diffusers (32 GB card);
+   *  Lightricks/LTX-2.5-Diffusers is the owner's choice of 13 September (80 GB card, 150 GB disk, gated: needs HF_TOKEN). */
+  KLEO_VIDEO_MODEL?: string;
+  /** Hugging Face token (secret) for gated video weights. Passed to the worker only; never logged. */
+  HF_TOKEN?: string;
+  /** Optional overrides for the video machine profile (see templates.ts VIDEO): VRAM floor and price ceiling. */
+  VIDEO_MIN_VRAM_GB?: string;
+  VIDEO_MAX_DPH?: string;
   VAST_MIN_INET?: string;   // Mbit/s down the host must have (default 800): the image pull is the slowest part of a job
   VAST_MIN_CPU?: string;      // effective cores required (the Keou renderer is CPU-bound)
   VAST_MIN_RAM_GB?: string;
