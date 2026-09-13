@@ -1,0 +1,154 @@
+{
+ "schema_version": 1,
+ "editorial_status": "ready",
+ "title": "Somebody Has Been Awake Up There for 25 Years",
+ "brand": "Kleo",
+ "style": "picture",
+ "kleo_style": "realistic",
+ "format": "9:16",
+ "language": "en",
+ "voice": "bf_emma",
+ "speed": 1.1,
+ "music": "bed",
+ "max_duration": 72,
+ "description": "Four hundred kilometres above your head there is a room that has never been empty: how people live, sleep and work in orbit.\n\n#shorts #space #iss #orbit",
+ "tags": [
+  "shorts",
+  "space",
+  "space station",
+  "orbit",
+  "realistic"
+ ],
+ "scenes": [
+  {
+   "id": "01-hook",
+   "kind": "cinema",
+   "chapter": "01 ABOVE YOU",
+   "accent": "cyan",
+   "title": "someone is awake up there",
+   "hl": "awake",
+   "voice": "Right now, four hundred kilometres above your head, someone is awake and working. That has been true for twenty-five years.",
+   "shots": [
+    {
+     "image_prompt": "The Earth seen at night from low orbit, glowing city lights under thin clouds, the black curve of the horizon and a faint blue band of airglow",
+     "caption": "SOMEONE IS AWAKE",
+     "hl": "AWAKE",
+     "motion": "in"
+    },
+    {
+     "image_prompt": "A space station with long gold solar panels drifting over the night side of Earth, its small windows lit warm against the dark",
+     "at": "above your head",
+     "motion": "left"
+    },
+    {
+     "image_prompt": "An astronaut in a blue flight suit floating beside a laptop in a cramped module, cables and handrails all around, cool white light",
+     "at": "twenty-five years",
+     "motion": "out"
+    }
+   ],
+   "hold": 0.2
+  },
+  {
+   "id": "02-speed",
+   "kind": "cinema",
+   "chapter": "02 EIGHT PER SECOND",
+   "accent": "amber",
+   "title": "a sunrise every ninety minutes",
+   "hl": "sunrise",
+   "voice": "The station falls around the planet at nearly eight kilometres a second, so the crew sees a sunrise every ninety minutes.",
+   "shots": [
+    {
+     "image_prompt": "Sunrise seen from orbit, a blade of orange light along the curved edge of the Earth, the dark truss of the station in the foreground",
+     "caption": "A SUNRISE EVERY 90 MINUTES",
+     "hl": "SUNRISE",
+     "motion": "in"
+    },
+    {
+     "image_prompt": "A long exposure photograph of Earth from orbit, city lights drawn into bright streaks beneath the station's gold solar panels",
+     "at": "kilometres a second",
+     "motion": "right"
+    },
+    {
+     "image_prompt": "The curved horizon of Earth glowing blue and white beneath a wing of solar panels, deep black space above, hard sunlight",
+     "at": "every ninety minutes",
+     "motion": "out"
+    }
+   ],
+   "hold": 0.2
+  },
+  {
+   "id": "03-inside",
+   "kind": "cinema",
+   "chapter": "03 INSIDE",
+   "accent": "cyan",
+   "title": "no up and no down",
+   "hl": "down",
+   "voice": "Inside there is no up and no down. Tools float, water floats, and the sleeping bags are strapped to the wall.",
+   "shots": [
+    {
+     "image_prompt": "The inside of a station module packed with equipment, cables and handrails, a pen and a notebook caught floating in mid air, cool light",
+     "caption": "NO UP, NO DOWN",
+     "hl": "DOWN",
+     "motion": "in"
+    },
+    {
+     "image_prompt": "A perfect sphere of water floating in the air of the module, bending the reflection of the astronaut watching it, soft highlights",
+     "at": "water floats",
+     "motion": "left"
+    },
+    {
+     "image_prompt": "A sleeping bag strapped upright to a padded wall in a narrow crew cabin, a laptop and taped photographs beside it, dim warm light",
+     "at": "strapped to the wall",
+     "motion": "out"
+    }
+   ],
+   "hold": 0.2
+  },
+  {
+   "id": "04-outside",
+   "kind": "cinema",
+   "chapter": "04 OUTSIDE",
+   "accent": "red",
+   "title": "one suit, and the vacuum",
+   "hl": "vacuum",
+   "voice": "Outside, one layered suit is all that stands between a person and the vacuum, and every spacewalk is rehearsed for months.",
+   "shots": [
+    {
+     "image_prompt": "An astronaut in a white suit tethered to the station truss high above the blue Earth, harsh sunlight on the gold visor, black space behind",
+     "caption": "ONE SUIT",
+     "hl": "SUIT",
+     "motion": "in"
+    },
+    {
+     "image_prompt": "Close view of a gloved hand gripping a metal handrail on the station hull, the curved Earth reflected in the helmet visor",
+     "at": "and the vacuum",
+     "motion": "right"
+    },
+    {
+     "image_prompt": "Two astronauts training underwater in a huge pool beside a full-size mock-up of a station module, safety divers watching nearby",
+     "at": "rehearsed for months",
+     "motion": "out"
+    }
+   ],
+   "hold": 0.2
+  },
+  {
+   "id": "05-closing",
+   "kind": "closing",
+   "chapter": "05 LOOK UP",
+   "accent": "green",
+   "title": "Look up tonight",
+   "hl": "tonight",
+   "voice": "Tonight it will cross your sky as a bright, silent point of light. Follow, and I will show you when.",
+   "button": "Follow",
+   "shots": [
+    {
+     "image_prompt": "A single bright point of light drawing a straight line across a deep blue night sky above a quiet field, scattered stars, no moon",
+     "motion": "out"
+    }
+   ],
+   "hold": 0.4
+  }
+ ],
+ "backdrop": "video"
+}

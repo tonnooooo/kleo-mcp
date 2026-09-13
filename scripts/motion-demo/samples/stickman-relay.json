@@ -1,0 +1,119 @@
+{
+ "schema_version": 1,
+ "editorial_status": "ready",
+ "title": "How Thieves Steal a Car Without the Key",
+ "brand": "Kleo",
+ "kleo_style": "stickman",
+ "style": "stickman",
+ "format": "9:16",
+ "language": "en",
+ "voice": "am_michael",
+ "speed": 1.1,
+ "music": "bed",
+ "max_duration": 70,
+ "description": "A stickman explainer of the relay attack: two thieves, one key inside the house, one car on the drive.",
+ "tags": [
+  "security",
+  "cars",
+  "explainer"
+ ],
+ "scenes": [
+  {
+   "id": "01-key",
+   "kind": "story",
+   "act": "idle",
+   "cast": [
+    "hero"
+   ],
+   "props": [
+    "keyfob",
+    "house"
+   ],
+   "accent": "green",
+   "title": "the key never leaves the house",
+   "hl": "never",
+   "voice": "Your car key is on the hallway table, inside the house, where it is safe. It is also still talking."
+  },
+  {
+   "id": "02-listen",
+   "kind": "story",
+   "act": "crouch",
+   "cast": [
+    "hero",
+    "thief"
+   ],
+   "props": [
+    "amplifier",
+    "house"
+   ],
+   "fx": "signal",
+   "accent": "amber",
+   "title": "one of them listens at the door",
+   "hl": "listens",
+   "bubble": "I can hear it",
+   "voice": "One thief stands at your front door with an amplifier and listens for the key. The wall is not a problem."
+  },
+  {
+   "id": "03-relay",
+   "kind": "story",
+   "act": "hold",
+   "cast": [
+    "hero",
+    "thief",
+    "thief2"
+   ],
+   "props": [
+    "amplifier",
+    "car"
+   ],
+   "fx": "relay",
+   "accent": "red",
+   "title": "the second one holds the car door",
+   "hl": "second",
+   "voice": "He passes the signal to a second thief standing at your car. The car believes the key is right there."
+  },
+  {
+   "id": "04-drive",
+   "kind": "story",
+   "act": "run",
+   "cast": [
+    "hero",
+    "thief2"
+   ],
+   "props": [
+    "car"
+   ],
+   "fx": "drive-off",
+   "accent": "red",
+   "title": "gone in twenty seconds",
+   "hl": "twenty",
+   "voice": "The door unlocks, the engine starts, and the car is gone in about twenty seconds. Nothing was broken."
+  },
+  {
+   "id": "05-pouch",
+   "kind": "story",
+   "act": "drop",
+   "cast": [
+    "hero"
+   ],
+   "props": [
+    "pouch",
+    "keyfob"
+   ],
+   "fx": "relay-fail",
+   "accent": "green",
+   "title": "a five euro pouch stops it",
+   "hl": "pouch",
+   "voice": "Drop the key in a signal blocking pouch and the amplifier hears nothing at all. Five euros, problem over."
+  },
+  {
+   "id": "06-closing",
+   "kind": "closing",
+   "accent": "green",
+   "title": "Follow for the next one",
+   "hl": "Follow",
+   "button": "Follow",
+   "voice": "Check your own key tonight. Follow, and next time we open a car with a laptop."
+  }
+ ]
+}

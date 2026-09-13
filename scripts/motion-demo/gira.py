@@ -24,13 +24,15 @@ def progress(track, percent, eta_min=None, message=None):
 kw.progress = progress
 
 sb = json.load(open(os.environ.get("STORYBOARD", os.path.join(HERE, "moto.json"))))
-job = {"job_id": "gt_demo", "storyboard": sb, "brand": "Kleo",
+job_id = os.environ.get("JOB_ID", "gt_demo")          # one id per storyboard: the project dir is derived from it
+job = {"job_id": job_id, "storyboard": sb, "brand": "Kleo",
        "params": {"format": sb["format"], "duration_s": 35, "language": sb["language"]},
        "prompt": sb["title"]}
 out = os.environ.get("OUT", "/opt/kleo/out")
 shutil.rmtree(out, ignore_errors=True); os.makedirs(out)
 
-print(f"== {sb['title']} · {sb['format']} · {sum(len(s['shots']) for s in sb['scenes'])} inquadrature ==", flush=True)
+print(f"== {sb['title']} · {sb['format']} · {sum(len(s.get('shots') or []) for s in sb['scenes'])} inquadrature ==", flush=True)
+print(f"== TIMELINE {os.path.join(os.path.abspath(kw.KEOU_DIR), 'projects', kw.project_id_for(job_id), 'build', 'timeline.json')} ==", flush=True)
 try:
     files = kw.render_keou(job, out)
     print("\n== FATTO ==", flush=True)

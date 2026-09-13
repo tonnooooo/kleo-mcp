@@ -1,0 +1,153 @@
+{
+ "schema_version": 1,
+ "editorial_status": "ready",
+ "title": "The Pirate Treasure Nobody Came Back For",
+ "brand": "Kleo",
+ "style": "picture",
+ "kleo_style": "cartoon",
+ "format": "9:16",
+ "language": "en",
+ "voice": "am_michael",
+ "speed": 1.1,
+ "music": "bed",
+ "max_duration": 75,
+ "description": "Captain Mara buried her treasure on Skull Beach in 1720 and never came back. One cabin boy kept the map his whole life.\n\n#shorts #pirates #treasure #story",
+ "tags": [
+  "shorts",
+  "pirates",
+  "treasure",
+  "story",
+  "cartoon"
+ ],
+ "scenes": [
+  {
+   "id": "01-hook",
+   "kind": "cinema",
+   "chapter": "01 THE CAPTAIN",
+   "accent": "red",
+   "title": "she never came back",
+   "hl": "never",
+   "voice": "Captain Mara buried her treasure on Skull Beach in 1720. She never came back for it. Nobody knows why.",
+   "shots": [
+    {
+     "image_prompt": "Pirate captain Mara, red bandana and long dark braid, burying a wooden treasure chest on a golden beach at sunset, palm trees, her red-sailed ship anchored in the turquoise bay",
+     "caption": "SHE NEVER CAME BACK",
+     "hl": "NEVER",
+     "motion": "in"
+    },
+    {
+     "image_prompt": "The same pirate captain Mara in her red bandana walking away along the shoreline at dusk, deep footprints in the wet sand, the beach empty behind her",
+     "at": "never came back",
+     "motion": "left"
+    },
+    {
+     "image_prompt": "The same golden beach at night, empty under a big moon, silver light on the sand and one low mound where the chest is buried, calm dark waves",
+     "at": "Nobody knows",
+     "motion": "out"
+    }
+   ],
+   "hold": 0.2
+  },
+  {
+   "id": "02-ship",
+   "kind": "cinema",
+   "chapter": "02 THE RED GULL",
+   "accent": "amber",
+   "title": "the fastest ship",
+   "hl": "fastest",
+   "voice": "Her ship, the Red Gull, was the fastest in the Caribbean. Forty pirates, one parrot, and a map that only Mara could read.",
+   "shots": [
+    {
+     "image_prompt": "The Red Gull, a pirate ship with bright red sails, racing over turquoise waves under a clear sky, captain Mara in her red bandana at the wheel",
+     "caption": "THE RED GULL",
+     "hl": "RED",
+     "motion": "in"
+    },
+    {
+     "image_prompt": "Pirates in striped shirts hauling ropes on the deck of the same red-sailed ship, a green parrot on the rail, spray flying over the side",
+     "at": "Forty pirates",
+     "motion": "right"
+    },
+    {
+     "image_prompt": "Captain Mara in her red bandana studying a hand-drawn map in her lantern-lit cabin, the green parrot watching from the back of a chair",
+     "at": "only Mara could read",
+     "motion": "in"
+    }
+   ],
+   "hold": 0.2
+  },
+  {
+   "id": "03-storm",
+   "kind": "cinema",
+   "chapter": "03 THE STORM",
+   "accent": "red",
+   "title": "three days of storm",
+   "hl": "storm",
+   "voice": "Then came the storm. Three days of black waves and lightning. The Red Gull went down with everyone on board, except one cabin boy.",
+   "shots": [
+    {
+     "image_prompt": "The red-sailed pirate ship Red Gull tossed by huge black waves in a night storm, lightning splitting the purple sky, torn sails",
+     "caption": "THREE DAYS OF STORM",
+     "hl": "STORM",
+     "motion": "in"
+    },
+    {
+     "image_prompt": "Huge black waves breaking over the deck of the same ship at night, pirates clinging to the ropes, rain sheeting across the lanterns",
+     "at": "black waves",
+     "motion": "left"
+    },
+    {
+     "image_prompt": "A young cabin boy in a striped shirt alone on a broken plank in the dark sea at first light, wreckage and a torn red sail floating nearby",
+     "at": "one cabin boy",
+     "motion": "out"
+    }
+   ],
+   "hold": 0.2
+  },
+  {
+   "id": "04-treasure",
+   "kind": "cinema",
+   "chapter": "04 THE MAP",
+   "accent": "green",
+   "title": "the same beach",
+   "hl": "same",
+   "voice": "That boy grew old with the map in his pocket. He drew it a hundred times, and every copy pointed to the same beach.",
+   "shots": [
+    {
+     "image_prompt": "An old sailor with a white beard, the grown-up cabin boy, unrolling a worn treasure map on a table in a lantern-lit room, warm candlelight",
+     "caption": "A HUNDRED COPIES",
+     "hl": "HUNDRED",
+     "motion": "in"
+    },
+    {
+     "image_prompt": "A wooden table covered with dozens of hand-drawn copies of the same treasure map, ink pot and quill, the old sailor's hands over them",
+     "at": "a hundred times",
+     "motion": "left"
+    },
+    {
+     "image_prompt": "Close view of one worn map in candlelight, a curved golden beach with three palm trees and a black cross inked into the sand",
+     "at": "the same beach",
+     "motion": "out"
+    }
+   ],
+   "hold": 0.2
+  },
+  {
+   "id": "05-closing",
+   "kind": "closing",
+   "chapter": "05 SKULL BEACH",
+   "accent": "cyan",
+   "title": "still there?",
+   "hl": "still",
+   "voice": "So is the treasure still there? Follow, and next time we dig up Skull Beach.",
+   "button": "Follow",
+   "shots": [
+    {
+     "image_prompt": "Golden beach at dawn with a half-buried wooden treasure chest spilling gold coins into the sand, a shovel beside it, palm trees, calm turquoise sea",
+     "motion": "in"
+    }
+   ],
+   "hold": 0.4
+  }
+ ]
+}
