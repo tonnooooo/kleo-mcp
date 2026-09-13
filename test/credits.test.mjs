@@ -139,7 +139,8 @@ test("create: validation errors say nothing was charged and move no credits", as
   const cases = [
     [{ template: "gatto" }, /There is no template called "gatto"/],
     [{ style: "cyber" }, /one look now/],
-    [{ duration_s: 600 }, /makes videos of 15 to 90 seconds; 600 seconds is outside that range/],
+    // The range is the PUBLIC template's (15-300), not the internal row's half of it (14 September).
+    [{ duration_s: 600 }, /makes films of 15 to 300 seconds; 600 seconds is outside that range/],
     [{ prompt: "short" }, /The description is too short/],
     [{ voice: "morgan" }, /There is no voice called "morgan". Available voices: narrator-en-m/],
     [{ storyboard: { scenes: [] } }, /The storyboard has \d+ problems? \(nothing was charged\)/],

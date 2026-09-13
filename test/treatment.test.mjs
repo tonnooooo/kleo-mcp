@@ -60,9 +60,10 @@ test("a good treatment is fitted: acts rescaled to the film, names uppercase, li
   const raw = TREATMENT_FIXTURE(60);
   raw.acts = raw.acts.map((a) => ({ ...a, name: a.name.toLowerCase(), seconds: a.seconds * 2 })); // right proportions, wrong sum
   raw.motifs = [...raw.motifs, "four", "five", "six", "seven"];
-  raw.prose = Array.from({ length: 700 }, (_, i) => `w${i}`).join(" ");
+  raw.prose = Array.from({ length: 600 }, (_, i) => `w${i}`).join(" "); // a little over the limit: fitted, not refused
   const t = repairTreatment(raw, 60, v);
   assert.ok(t, `accepted: ${treatmentProblems(raw, 60).join("; ")}`);
+  assert.ok(treatmentProblems({ ...raw, prose: Array.from({ length: 900 }, (_, i) => `w${i}`).join(" ") }, 60).some((m) => /^prose: 900 words, the limit is/.test(m)), "far over it is refused and sent back");
   assert.equal(t.acts.reduce((n, a) => n + a.seconds, 0), 60, "the acts add up to the film's length");
   assert.ok(t.acts.every((a) => a.name === a.name.toUpperCase()));
   assert.equal(t.motifs.length, T.motifs.max);
