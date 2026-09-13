@@ -45,6 +45,8 @@ export interface Job {
   queued_at?: string | null;
   /** JSON array of machine keys already tried for this job ("m:<machine_id>" / "o:<offer_id>"); see migration 0008. */
   tried_machines?: string | null;
+  /** Which of the two render phases the job is in: "gen" (GPU) or "finish" (cheap CPU box). See migration 0010. */
+  phase?: "gen" | "finish" | null;
   storyboard: string | null; // JSON: Keou project without id/script_file/music_quiet/image scenes (see keou-contract.ts)
   plan_attempts: number;
   plan_error: string | null;

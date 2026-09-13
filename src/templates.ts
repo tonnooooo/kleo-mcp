@@ -384,6 +384,13 @@ export function videoMachineFor(modelId: string | undefined, over: { minVramGb?:
   return { ...base, minVramGb: Number.isFinite(vram) && vram > 0 ? vram : base.minVramGb, maxDph: Number.isFinite(dph) && dph > 0 ? dph : base.maxDph };
 }
 
+/**
+ * The box for the FINISH phase of a filmed video: no model, no picture, only ffmpeg on the clips the GPU made —
+ * the 60 fps 4K track, the narration, the checks, the upload. Any card will do; what matters is cores and price.
+ * Ten to twelve minutes a film at these prices is a cent, against a third of the GPU bill it replaces.
+ */
+export const FINISH: Machine = { minVramGb: 0, minComputeCap: 0, maxDph: 0.12 };
+
 /** True when the model's weights are gated on Hugging Face and the worker needs a token to fetch them. */
 export const videoModelIsGated = (modelId: string | undefined): boolean => /ltx/i.test(modelId ?? "");
 

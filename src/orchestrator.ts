@@ -199,7 +199,7 @@ async function tickInner(env: Env, stats: Stats) {
     // dearest cards and the ones whose bill triples when clips come back frozen and have to be regenerated, so two
     // of them overlapping is the one way this can empty the balance with nobody watching. `continue`, not `break`:
     // an ordinary job further down the queue is cheap and must not be held hostage by a video one at the front.
-    if (isVideoStyle(styleOfJob(job)) && (await runningVideoJobs(env)) >= int(env.MAX_CONCURRENT_VIDEO_GPUS, 1)) continue;
+    if (isVideoStyle(styleOfJob(job)) && job.phase !== "finish" && (await runningVideoJobs(env)) >= int(env.MAX_CONCURRENT_VIDEO_GPUS, 1)) continue;
     if (!(await reserveJob(env, job.id, backend.name))) continue; // a pool runner took it first
     try {
       const r = await backend.start(env, job);
@@ -291,7 +291,24 @@ function machineKeyOf(job: Job): string | null {
 
 /** Generated-video renders on a paid GPU right now (their style is what says so, src/templates.ts). */
 async function runningVideoJobs(env: Env): Promise<number> {
-  return (await runningPaidJobs(env)).filter((j) => isVideoStyle(styleOfJob(j))).length;
+  // A job in its finish phase holds a cent-an-hour box, not a video card: it does not count against the limit.
+  return (await runningPaidJobs(env)).filter((j) => isVideoStyle(styleOfJob(j)) && j.phase !== "finish").length;
+}
+
+/**
+ * The GPU phase is over: the worker packed frames, clips, voice and timings into gen.tgz on R2 and is about to
+ * destroy its card. Release the card (its cost is booked), and put the job back in the queue in phase "finish",
+ * where the next tick rents the cheapest box that runs ffmpeg. The attempt counters start again: the expensive
+ * part succeeded, and a finish box that fails must not burn the GPU's retries. Returns whether it applied.
+ */
+export async function handoverToFinish(env: Env, job: Job): Promise<boolean> {
+  await releaseGpu(env, job);
+  const ok = await transitionJob(env, job.id, ACTIVE_STATES, {
+    state: "queued", phase: "finish", backend: null, instance_id: null, instance_meta: null, started_at: null, queued_at: nowIso(),
+    attempts: 0, tried_machines: null, percent: 60, track: "clips", error: null, worker_secret: rid("wk", 32),
+  });
+  await audit(env, job.user_id, job.id, ok ? "job.phase.finish" : "job.phase.finish.ignored", { note: ok ? "GPU released; a finish box will lay the track" : "job was no longer active" });
+  return ok;
 }
 
 export async function budgetSpentUsd(env: Env): Promise<number> {
@@ -518,10 +535,8 @@ async function advanceMock(env: Env, job: Job): Promise<void> {
   const p = JSON.parse(job.params) as { duration_s: number; format: string };
   const prefix = `renders/${job.id}/`;
   const video = base64ToBytes(TINY_MP4_B64);
-  const srt = `1\n00:00:00,000 --> 00:00:04,000\n${job.prompt.slice(0, 80)}\n\n2\n00:00:04,000 --> 00:00:08,000\n(mock render · ${job.template} · ${p.format} · ${p.duration_s}s)\n`;
   const files: { name: string; type: string; body: Uint8Array | string }[] = [
     { name: FILE_NAMES.video.name, type: FILE_NAMES.video.type, body: video },
-    { name: FILE_NAMES.subtitles.name, type: FILE_NAMES.subtitles.type, body: srt },
     { name: "thumbnail.svg", type: "image/svg+xml", body: mockThumb(job.template, job.prompt) },
   ];
   for (const f of files) {

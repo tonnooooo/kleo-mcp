@@ -61,6 +61,8 @@ export interface Env {
   HF_TOKEN?: string;
   /** Optional overrides for the video machine profile (see templates.ts VIDEO): VRAM floor and price ceiling. */
   VIDEO_MIN_VRAM_GB?: string;
+  /** Disk for the finish box (default 40 GB: the image, the clips, the 4K film). */
+  FINISH_DISK_GB?: string;
   VIDEO_MAX_DPH?: string;
   VAST_MIN_INET?: string;   // Mbit/s down the host must have (default 800): the image pull is the slowest part of a job
   VAST_MIN_CPU?: string;      // effective cores required (the Keou renderer is CPU-bound)

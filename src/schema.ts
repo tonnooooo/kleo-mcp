@@ -48,6 +48,7 @@ const COLUMNS: [table: string, column: string, definition: string][] = [
   // Machines already tried for THIS job, so a retry moves host instead of renting the one that just failed: the
   // requeue clears instance_id and instance_meta, which is exactly the memory the next attempt needed.
   ["jobs", "tried_machines", "TEXT"],
+  ["jobs", "phase", "TEXT NOT NULL DEFAULT 'gen'"],   // gen (GPU: frames + clips) | finish (cheap box: track, voice, upload)
 ];
 
 /** Indexes over columns from COLUMNS. They belong here and NOT in STATEMENTS: that batch runs before the ALTERs, so

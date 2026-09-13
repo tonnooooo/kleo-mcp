@@ -3,7 +3,7 @@ import type { Env } from "../env";
 import type { Job } from "../db";
 import { triedMachines } from "../db";
 import { int, num, minutesSince } from "../util";
-import { jobTimeoutMin, machineFor, styleOfJob, isVideoStyle, videoMachineFor, videoModelIsGated, videoDiskGb } from "../templates";
+import { jobTimeoutMin, machineFor, styleOfJob, isVideoStyle, videoMachineFor, videoModelIsGated, videoDiskGb, FINISH, type Machine } from "../templates";
 
 /**
  * Vast.ai backend: one ephemeral instance per job.
@@ -157,7 +157,9 @@ async function adoptOrphan(env: Env, job: Job, offer: Offer, notBefore: number):
 export const machineKey = (o: { machine_id?: number; id: number }): string =>
   o.machine_id ? `m:${o.machine_id}` : `o:${o.id}`;
 
-export async function searchOffers(env: Env, style?: string | null): Promise<Offer[]> {
+/** The machine a job needs right now: its phase first (a finish box is the cheapest thing that runs ffmpeg), then its style. */
+export function profileFor(env: Env, style: string | null | undefined, phase?: string | null): { need: Machine; disk: number } {
+  if (phase === "finish") return { need: FINISH, disk: int(env.FINISH_DISK_GB, 40) };
   // What this style needs of a machine (src/templates.ts): memory, architecture and its own price ceiling. The
   // global VAST_MAX_DPH stays the ceiling for everything ordinary — a cyber video must never pay for a card rented
   // to generate motion — and a style only ever raises it for itself. A filmed style's card and disk follow the
@@ -165,6 +167,11 @@ export async function searchOffers(env: Env, style?: string | null): Promise<Off
   const filmed = isVideoStyle(style);
   const need = filmed ? videoMachineFor(env.KLEO_VIDEO_MODEL, { minVramGb: env.VIDEO_MIN_VRAM_GB, maxDph: env.VIDEO_MAX_DPH }) : machineFor(style);
   const disk = filmed ? videoDiskGb(env.KLEO_VIDEO_MODEL, int(env.VAST_DISK_GB, 80)) : int(env.VAST_DISK_GB, 80);
+  return { need, disk };
+}
+
+export async function searchOffers(env: Env, style?: string | null, phase?: string | null): Promise<Offer[]> {
+  const { need, disk } = profileFor(env, style, phase);
   const query = {
     verified: { eq: true },
     rentable: { eq: true },
@@ -228,7 +235,7 @@ export const vastBackend: RenderBackend = {
 
   async start(env: Env, job: Job): Promise<StartResult> {
     if (!env.VAST_IMAGE || env.VAST_IMAGE.includes("REPLACE_ME")) throw new Error("VAST_IMAGE is not configured");
-    const offers = await searchOffers(env, styleOfJob(job));
+    const offers = await searchOffers(env, styleOfJob(job), job.phase);
     if (!offers.length) {
       const need = machineFor(styleOfJob(job));
       throw new Error(`no Vast.ai offer matches the filters: ${need.minVramGb} GB of VRAM, compute ${need.minComputeCap / 100}, at most $${Math.max(num(env.VAST_MAX_DPH, 0.4), need.maxDph)}/h`); // the ceiling really used: the audit of 12 September said "$0.4" while the search ran at 1.00, and the number was chased for nothing
@@ -254,7 +261,7 @@ export const vastBackend: RenderBackend = {
         const body: Record<string, unknown> = {
           client_id: "me",
           image: env.VAST_IMAGE,
-          disk: isVideoStyle(styleOfJob(job)) ? videoDiskGb(env.KLEO_VIDEO_MODEL, int(env.VAST_DISK_GB, 80)) : int(env.VAST_DISK_GB, 80),
+          disk: profileFor(env, styleOfJob(job), job.phase).disk,
           label: jobLabel(job.id), // never inline the prefix: create and sweep must read the same label
           runtype: "ssh",
           cancel_unavail: true,
@@ -274,7 +281,9 @@ export const vastBackend: RenderBackend = {
             // The generator and, when its weights are gated, the token that fetches them. HF_TOKEN is a Cloudflare
             // secret: it reaches the box's environment and nothing else — not the audit, not the job row.
             ...(env.KLEO_VIDEO_MODEL ? { KLEO_VIDEO_MODEL: env.KLEO_VIDEO_MODEL } : {}),
-            ...(env.HF_TOKEN && videoModelIsGated(env.KLEO_VIDEO_MODEL) ? { HF_TOKEN: env.HF_TOKEN } : {}),
+            ...(env.HF_TOKEN && videoModelIsGated(env.KLEO_VIDEO_MODEL) && job.phase !== "finish" ? { HF_TOKEN: env.HF_TOKEN } : {}),
+            // Which phase this box is for. A finish box never loads a model and never gets the token.
+            KLEO_PHASE: job.phase === "finish" ? "finish" : "gen",
           },
         };
         const r = await vast<{ success: boolean; new_contract?: number; msg?: string; error?: string }>(env, "PUT", `/asks/${offer.id}/`, body);

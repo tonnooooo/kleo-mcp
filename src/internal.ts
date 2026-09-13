@@ -1,16 +1,16 @@
 import type { Env } from "./env";
-import { getJob, setFile, audit, type Job, claimQueuedJob, countRunning, transitionJob, ACTIVE_STATES, OPEN_STATES } from "./db";
+import { getJob, setFile, listFiles, audit, type Job, claimQueuedJob, countRunning, transitionJob, ACTIVE_STATES, OPEN_STATES } from "./db";
 import { json, safeEqual, nowIso, int, num } from "./util";
 import { isFlagActive, setFlagUntil, releaseLock } from "./schema";
-import { finishJob, failJob, trackFor, budgetSpentUsd } from "./orchestrator";
+import { finishJob, failJob, trackFor, budgetSpentUsd, handoverToFinish } from "./orchestrator";
 import { backendFor } from "./backends";
 import { FILE_NAMES } from "./jobs";
-import { putFile } from "./storage";
+import { putFile, getFile } from "./storage";
 import { generateStoryboard, StoryboardError } from "./storyboard";
 import { findTemplate } from "./templates";
 import { generateJobImages } from "./images";
 
-const ALLOWED_FILES = new Set([FILE_NAMES.video.name, FILE_NAMES.subtitles.name, FILE_NAMES.thumbnail.name, "thumbnail.svg", "log.txt"]);
+const ALLOWED_FILES = new Set([FILE_NAMES.video.name, FILE_NAMES.subtitles.name, FILE_NAMES.thumbnail.name, "thumbnail.svg", "log.txt", "gen.tgz"]);
 const TYPES: Record<string, string> = { mp4: "video/mp4", srt: "application/x-subrip", jpg: "image/jpeg", svg: "image/svg+xml", txt: "text/plain" };
 
 /**
@@ -45,7 +45,7 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
 
   if (rest === "" && request.method === "GET") {
     const params = JSON.parse(job.params) as { style?: string };
-    return json({ job_id: job.id, template: job.template, prompt: job.prompt, params, state: job.state, style: params.style ?? null,
+    return json({ job_id: job.id, template: job.template, prompt: job.prompt, params, state: job.state, style: params.style ?? null, phase: job.phase ?? "gen",
       storyboard: job.storyboard ? JSON.parse(job.storyboard) : null, brand: env.BRAND || "Kleo",
       files: { video: FILE_NAMES.video.name, subtitles: FILE_NAMES.subtitles.name, thumbnail: FILE_NAMES.thumbnail.name }, part_size_bytes: 50 * 1024 * 1024 });
   }
@@ -59,6 +59,23 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
     // Repeats of the final call the job already took are fine (the worker may retry after a network hiccup); anything else is a conflict.
     if (request.method === "POST" && ((rest === "done" && job.state === "done") || (rest === "failed" && job.state === "failed"))) return json({ ok: true, state: job.state, already: true });
     return json({ error: `job is ${job.state}`, state: job.state }, 409);
+  }
+
+  // The GPU phase hands over: gen.tgz is on R2, the card goes back, a finish box takes the rest of the film.
+  if (rest === "phase" && request.method === "POST") {
+    const b = (await request.json().catch(() => ({}))) as { phase?: string };
+    if (b.phase !== "finish") return json({ error: "phase must be 'finish'" }, 400);
+    if (!(await listFiles(env, job.id)).some((f) => f.name === "gen.tgz")) return json({ error: "gen.tgz was not uploaded" }, 409);
+    const ok = await handoverToFinish(env, job);
+    return ok ? json({ ok: true, phase: "finish" }) : json({ error: `job is ${(await getJob(env, job.id))?.state}` }, 409);
+  }
+  // The finish box fetches what the GPU left: the bundle, streamed from R2 with the worker's own secret.
+  const g = rest.match(/^files\/([A-Za-z0-9._-]+)$/);
+  if (g && request.method === "GET") {
+    if (!ALLOWED_FILES.has(g[1])) return json({ error: "no such file" }, 404);
+    const f = await getFile(env, `renders/${job.id}/${g[1]}`, null);
+    if (!f) return json({ error: "not uploaded" }, 404);
+    return new Response(f.body as ReadableStream | ArrayBuffer, { status: 200, headers: { "content-type": f.contentType, "content-length": String(f.size), etag: f.etag } });
   }
 
   if (rest === "images" && request.method === "POST") {
