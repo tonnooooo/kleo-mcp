@@ -23,8 +23,17 @@ function durationFrom(text: string): number | null {
   return null;
 }
 
+/**
+ * Italian when the request has more Italian-only words than English ones. It used to be one regular expression
+ * that counted "video" as Italian, so "Create a video about accuracy in medicine" was answered in Italian and its
+ * treatment would have been written in Italian (found by test/mcp-adapt.test.mjs). Words both languages share
+ * ("video", "film") decide nothing.
+ */
+const IT_WORDS = /\b(il|lo|gli|le|un|una|uno|della|dello|degli|delle|che|crea|creami|fammi|voglio|vorrei|minuti|secondi|realistico|realistica|sulla|sul|sui|sugli|perch[eé]|storia|filmato|cortometraggio|racconta|spiega|documentario)\b/gi;
+const EN_WORDS = /\b(the|a|an|about|make|create|minutes?|seconds?|with|for|and|that|story|explain|tell|show|how|why|what|realistic|documentary)\b/gi;
 function languageFrom(text: string): "en" | "it" {
-  return /\b(il|la|gli|video|crea|fammi|voglio|minuti|realistico|realistica|automobilistica)\b/i.test(text) ? "it" : "en";
+  const it = (text.match(IT_WORDS) ?? []).length, en = (text.match(EN_WORDS) ?? []).length;
+  return it > en ? "it" : "en";
 }
 
 /**
