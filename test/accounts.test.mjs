@@ -158,13 +158,13 @@ test("sign-in: the same browser comes back to the same account and is given NO n
   const env = await newEnv();
   const first = await press(env);
   const id = await m.verifyHandle(env, handleOf(first));
-  await m.debitCredits(env, id, 1, null); // one Short already made
+  await m.debitCredits(env, id, 7, null); // the free film already made
 
   const again = await press(env, { cookie: cookieOf(first) });
   assert.equal(again.status, 302);
   assert.equal(await m.verifyHandle(env, handleOf(again)), id, "same account");
   assert.equal(users(env).length, 1, "connecting a second assistant must not mint a second account");
-  assert.equal((await m.getUser(env, id)).credits, 1, "and must not refill the free credits either");
+  assert.equal((await m.getUser(env, id)).credits, 0, "and must not refill the free credits either");
   assert.equal(audits(env, "user.created").length, 1);
 });
 
@@ -172,7 +172,7 @@ test("sign-in: a Kleo key carries the account to a browser that has no cookie", 
   const env = await newEnv();
   const first = await press(env);
   const id = await m.verifyHandle(env, handleOf(first));
-  await m.debitCredits(env, id, 2, null);
+  await m.debitCredits(env, id, 7, null);
 
   const moved = await press(env, { form: { account_key: handleOf(first) } });
   assert.equal(moved.status, 302);
@@ -222,12 +222,12 @@ test("sign-in: a bonus code works on the account this browser already has, and o
   const uses = () => env.DB.db.prepare("SELECT uses FROM invites WHERE code = 'MARCO-1'").get().uses;
 
   await press(env, { cookie: cookieOf(first), form: { bonus: "marco-1" } });
-  assert.equal((await m.getUser(env, id)).credits, 3, "a gift handed out at a meet-up must reach a person who is already in");
+  assert.equal((await m.getUser(env, id)).credits, 8, "a gift handed out at a meet-up must reach a person who is already in");
   assert.equal(uses(), 1);
   assert.equal(audits(env, "bonus.applied").length, 1);
 
   await press(env, { cookie: cookieOf(first), form: { bonus: "MARCO-1" } });
-  assert.equal((await m.getUser(env, id)).credits, 3, "and cannot be typed again on every reconnection");
+  assert.equal((await m.getUser(env, id)).credits, 8, "and cannot be typed again on every reconnection");
   assert.equal(uses(), 1, "a refused gift does not spend a use either");
   assert.equal(audits(env, "bonus.rejected").length, 1, "but it IS written down, so a lost gift can be traced");
 });
@@ -329,7 +329,7 @@ test("page: one button and nothing to fill in; a returning browser is greeted wi
 
   const res = await press(env);
   const back = await (await openPage(env, cookieOf(res))).text();
-  assert.match(back, /Welcome back - 2 credits left/);
+  assert.match(back, /Welcome back - 7 credits left/);
   assert.match(back, />Continue</);
   assert.ok(!/Start free/.test(back));
 });
@@ -345,7 +345,7 @@ test("/credits: the link is read-only, is not the Kleo key, and never binds this
   const page = await m.handleCredits(new Request(`http://kleo.test/credits?k=${encodeURIComponent(link)}`), env);
   assert.equal(page.status, 200);
   const body = await page.text();
-  assert.match(body, /2 credits left/);
+  assert.match(body, /7 credits left/);
   assert.match(body, /not open yet/, "the page is honest about payments while there are none");
   assert.match(body, /5 EUR/, "and it does say how to get more, which is what the chat message promised");
   assert.match(body, /kleooai@gmail\.com/, "there is a human to write to");
