@@ -26,7 +26,7 @@ import {
  * the world of the video was never written down, nothing said what must NOT appear, and no colour meant anything.
  */
 import {
-  directionProblems, missingFacts, sectionOfScene, enliven, D as DL,
+  directionProblems, missingFacts, sectionOfScene, enliven, screenTextProblems, D as DL,
   type Direction, type Section,
 } from "./direction.ts";
 // The shot grammar: the ten story kinds and the one preset table that turns a kind into a camera move.
@@ -1602,6 +1602,10 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
         // A cinema scene that ends up with one picture holds it for the whole line: ask for the missing cuts once.
         const thin = chunkScenes.map((s, i) => (s.kind !== "closing" && (!Array.isArray(s.shots) || s.shots.length < 2) ? i + 1 : 0)).filter(Boolean);
         if (thin.length) problems.push(`scene${thin.length > 1 ? "s" : ""} ${thin.join(", ")}: only one picture; every scene needs 2–4 "shots", each with its own "image_prompt", and every shot after the first anchored with "at" to words of that scene's voice`);
+        // A picture asked to draw a diagram, a screen with words or a quoted caption is sent back once: the layer
+        // is where numbers and words live; the picture shows a real place, object or person (measured 14 September).
+        const drawn = chunkScenes.flatMap((s, i) => (Array.isArray(s.shots) ? s.shots : []).map((sh, j) => ({ id: `scene ${i + 1} shot ${j + 1}`, image_prompt: String((sh as Record<string, unknown>).image_prompt ?? "") })));
+        for (const hit of screenTextProblems(drawn)) problems.push(`${hit.id}: asks the picture to draw "${hit.term}" — no diagrams, charts, screens with words or quoted captions in a picture (numbers and words belong to the layer); describe a real place, object or person instead`);
       } else if (plan.style === "cinema") {
         const thin = chunkScenes.map((s, i) => (!Array.isArray(s.beats) || s.beats.length < 3 ? i + 1 : 0)).filter(Boolean);
         if (thin.length) problems.push(`scene${thin.length > 1 ? "s" : ""} ${thin.join(", ")}: only 1–2 beats; every scene needs 4–8 beats of different kinds, each anchored with "at"`);

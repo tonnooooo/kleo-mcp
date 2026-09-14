@@ -42,3 +42,5 @@ Da qui in poi: una riga qui PRIMA di lanciare.
     2026-09-14T00:34Z | programmato/regia | fase 0 via REST, prima (6f153e1) | fine | ~1394 spesi | 17/27
     2026-09-14T00:37Z | programmato/regia | fase 0 via REST, confident (dc54fd7), llama-4-scout-17b-16e-instruct, x1 | 27 | ~1485 stimati | IN CORSO
     2026-09-14T00:37Z | programmato/regia | fase 0 via REST, confident (dc54fd7) | fine | ~1682 spesi | 19/27 [sicuro 7/9 giuste, non-sicuro 12/17 giuste]
+
+    2026-09-14T03:00Z | BOSS/treatment | film-make.mjs: 2 film interi (treatment+direction+outline+scene) su scout, Voyager 45 s + pane 30 s | ~50 | ~3000 (piano Paid, ~3 cent) | in corso

@@ -262,6 +262,31 @@ export function forbiddenInPrompts(
 }
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+/**
+ * WHAT A PICTURE MAY NEVER BE ASKED TO DRAW, whatever the film: a diagram, a chart, a screen with words on it, a
+ * readout, a quoted caption. Measured on a whole planned film on 14 September (Voyager, production model): five of
+ * eight scenes asked for "a diagram showing the signal loss", "a screen displaying '24 billion kilometres'", "a
+ * readout 'VOYAGER ONLINE'" — the explainer's habit dressed as photography, and the one thing an image model draws
+ * worst. Numbers and words belong to the layer (src/graphics.ts); the picture shows a real place, object or person.
+ */
+const SCREEN_TEXT = [
+  /\b(diagram|infographic|flowchart|chart|graph|schematic|blueprint|readout|dashboard|hud|overlay|subtitle|caption|label|logo|icon)s?\b/i,
+  /\b(text|words?|letters|numbers|digits|font|typography)\b/i,
+  /\b(on|onto|across) (?:a |the )?(?:screen|monitor|display)\b/i,
+  /\b(screen|monitor|display|terminal)s? (?:displaying|showing|reading|that reads|that says|with the words?)\b/i,
+  /['"‘’“”][^'"‘’“”]{2,40}['"‘’“”]/,   // a quoted string is a caption asking to be drawn
+];
+export function screenTextIn(prompt: string): string | null {
+  for (const re of SCREEN_TEXT) { const m = re.exec(prompt); if (m) return m[0]; }
+  return null;
+}
+/** The pictures that ask for a diagram, a screen with text or a quoted caption, with the words that gave them away. */
+export function screenTextProblems(prompts: readonly { id: string; image_prompt: string }[]): { id: string; term: string }[] {
+  const out: { id: string; term: string }[] = [];
+  for (const p of prompts) { const term = screenTextIn(p.image_prompt); if (term) out.push({ id: p.id, term }); }
+  return out;
+}
+
 /* ------------------------------------------------------------------ nothing in the frame may be dead */
 
 /**

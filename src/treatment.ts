@@ -209,7 +209,7 @@ THE METHOD — answer these in order, each for THIS request:
 5. ENDING. The last image is earned by everything before it: a return to the first image changed, the answer to the opening question, the object at rest. Never a summary, never "and that is why", never a call to action.
 6. VISUAL LANGUAGE. One world, written as one sentence a cinematographer could shoot from, not a checklist ("the lens is standard, the light is fluorescent"): the lens (long and compressed, or wide and close), the light (source, colour, time of day), the palette (three colours at most), the camera's temperament (does it drift, hold, follow). Every shot of the film is filmed inside this sentence. CONCRETE AND SHARP: name real surfaces the camera can hold in focus — wet tarmac, wood grain, brushed metal, skin, paper, frost — and one plane in focus per shot. Nothing smooth, glossy or computer-generated: a frame that looks rendered is a frame the viewer stops believing.
 7. PACING. The cut rhythm in seconds, act by act, and the one place where the film slows down on purpose. A film that cuts at the same speed throughout is wallpaper.
-8. NARRATOR. Person (second person is a tool, not a default), tense, sentence length, what they never do. The narrator is a person who knows this subject and is talking to one viewer, not a voice reading a brochure.
+8. NARRATOR. Person (second person is a tool, not a default: "you" only for what the viewer themselves does or feels, never for what engineers, pirates or a spacecraft did), tense, sentence length, what they never do. The narrator is a person who knows this subject and is talking to one viewer, not a voice reading a brochure.
 9. MOTIFS. Two to five images the film returns to. A motif seen three times is what makes eight independently generated shots feel like one film.
 10. DECISIONS. List every choice you made that the request did not ask for, one per line, so the person who asked can see it and change it. A decision names something that could have been otherwise and that the viewer will SEE: the place, the period, who is in it, the object that carries it, how it ends. "The tone is informative", "the period is contemporary" and "the setting is a hospital" repeated from the angle are not decisions.
 11. ${LAYER_METHOD}
@@ -250,7 +250,7 @@ TASK: write the TREATMENT of this film, following the method. Return one JSON ob
  "narrator":"<=${T.narrator}, person, tense, sentence length, what they never say",
  "motifs":[${T.motifs.min}-${T.motifs.max} strings <=${T.motifs.len}],
  "decisions":[up to ${T.decisions.max} strings <=${T.decisions.len}: every choice the request did not ask for],
- "prose":"${T.prose.target[0]}-${T.prose.target[1]} words: the treatment a director could shoot from — the film told from the first image to the last, act by act, in the present tense, with what we see and what the narrator says over it. Not a list: prose.",
+ "prose":"${proseTarget(input.duration_s)[0]}-${proseTarget(input.duration_s)[1]} words: the treatment a director could shoot from — the film told from the first image to the last, act by act, in the present tense, with what we see and what the narrator says over it. Not a list: prose.",
  "graphics":{"layer":"none" — or "layer" with: "accent":"#rrggbb from the film's palette","subtitles":"${SUBTITLE_MODES.join("|")}","chapters":"${CHAPTER_MODES.join("|")}","hud":[0-3 of {"id":"short slug","kind":"${HUD_KINDS.join("|")}","edge":"${EDGES.join("|")}" (line only),"corner":"${CORNERS.join("|")}" (readout, stamp),"rows":["LABEL", …] (readout only, 1-4),"means":"what it stands for, <=60"}]}}${input.language === "en" ? "" : `\nEverything in ${lang}.`}`;
   return feedback?.length
     ? `${base}\n\nYOUR PREVIOUS ANSWER WAS REJECTED for these reasons; fix every one and return the whole object again:\n- ${feedback.join("\n- ")}`
@@ -304,6 +304,13 @@ export const wordCount = (s: string): number => s.split(/\s+/).filter(Boolean).l
  * substance; a treatment with everything right and a thin prose is a treatment, not a rejection.
  */
 export const PROSE_LENIENT_MIN = 60;
+/**
+ * The prose a film's length deserves. A 30-second Short does not need the 180 words a five-minute film does, and
+ * the production model does not write them for it: measured on 14 September, an Italian 30-second film got 65 and
+ * 87 words twice and no treatment at all. The floor and the target scale with the length, inside the table's bounds.
+ */
+export const proseFloor = (duration_s?: number): number => duration_s ? Math.round(Math.min(T.prose.minWords, Math.max(PROSE_LENIENT_MIN, duration_s * 1.6))) : T.prose.minWords;
+export const proseTarget = (duration_s: number): [number, number] => [Math.round(Math.min(T.prose.target[0], Math.max(120, duration_s * 4))), T.prose.target[1]];
 
 export function treatmentProblems(raw: unknown, duration_s?: number, language?: string, opts: { lenient?: boolean } = {}): string[] {
   const out: string[] = [];
@@ -332,8 +339,13 @@ export function treatmentProblems(raw: unknown, duration_s?: number, language?: 
   if (raw.decisions !== undefined && !Array.isArray(raw.decisions)) out.push("decisions: must be a list of strings");
   const prose = typeof raw.prose === "string" ? raw.prose : "";
   const words = wordCount(prose);
-  if (words < (opts.lenient ? PROSE_LENIENT_MIN : T.prose.minWords)) out.push(`prose: ${words} words, it needs at least ${T.prose.minWords} — the treatment told from the first image to the last`);
+  const floor = proseFloor(duration_s);
+  if (words < (opts.lenient ? Math.min(PROSE_LENIENT_MIN, floor) : floor)) out.push(`prose: ${words} words, it needs at least ${floor} — the treatment told from the first image to the last`);
   else if (words > T.prose.maxWords * 1.3 || prose.length > T.prose.maxChars * 1.3) out.push(`prose: ${words} words, the limit is ${T.prose.maxWords}`);
+  // The checklist visual ("The lens is standard, the light is fluorescent, the palette is …"): asked not to, the
+  // production model still wrote it in a whole planned film on 14 September, and the direction copied it as the world.
+  if (typeof raw.visual === "string" && (raw.visual.match(/\b(?:the |il |la )?(?:lens|light|lighting|palette|camera|obiettivo|luce|palette|camera)(?:'s temperament)? (?:is|are|è|sono)\b/gi) ?? []).length >= 2)
+    out.push("visual: a checklist (\"the lens is X, the light is Y\"); write ONE sentence a cinematographer could shoot from — the place, the hour, the light on real surfaces, how the camera behaves");
   // THE DEFECTS THE PRODUCTION MODEL ACTUALLY HAS, measured on fifteen treatments on 13 September and sent back in
   // words: an angle that is the logline again, acts named for their function, the device said out loud, and an
   // Italian film treated in English. Each of these was in most of the fifteen; none is caught by a schema.

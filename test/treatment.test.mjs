@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   T, DEVICES, DEVICE_IDS, OPENING_IDS, MASTER_PROMPT, variationFor, treatmentPrompt, treatmentSchema,
-  repairTreatment, treatmentProblems, treatmentOf, treatmentBlock, treatmentText, wordCount, languageOf,
+  repairTreatment, treatmentProblems, treatmentOf, treatmentBlock, treatmentText, wordCount, languageOf, proseFloor,
 } from "../src/treatment.ts";
 import { generateStoryboard, TREATMENT_TEMPERATURE, writeTreatment, callModel } from "../src/storyboard.ts";
 import { validateStoryboard } from "../src/keou-contract.ts";
@@ -83,8 +83,10 @@ test("a good treatment is fitted: acts rescaled to the film, names uppercase, li
   assert.ok(fitted.acts[0].name.length <= T.acts.name);
   assert.deepEqual(fitted.decisions, ["The setting is a small bakery at dawn", "The narrator is the baker's daughter"]);
   // The prompt asks for more prose than the floor refuses: the floor is what a small model aims at.
-  assert.match(treatmentPrompt({ prompt: "x y z", duration_s: 30, format: "9:16", language: "en" }, v), /"prose":"180-350 words/);
+  assert.match(treatmentPrompt({ prompt: "x y z", duration_s: 60, format: "9:16", language: "en" }, v), /"prose":"180-350 words/);
+  assert.match(treatmentPrompt({ prompt: "x y z", duration_s: 30, format: "9:16", language: "en" }, v), /"prose":"120-350 words/, "a 30-second film is asked for less prose");
   assert.ok(T.prose.target[0] > T.prose.minWords);
+  assert.equal(proseFloor(30), 60); assert.equal(proseFloor(45), 72); assert.equal(proseFloor(120), 100); assert.equal(proseFloor(undefined), 100);
   // The second attempt's rule: a prose between 60 and 100 words is kept, under it still refused, and nothing else softens.
   const thin = { ...TREATMENT_FIXTURE(60), prose: Array.from({ length: 80 }, (_, i) => `w${i}`).join(" ") };
   assert.equal(repairTreatment(thin, 60, v), null, "strict: 80 words is refused");
@@ -102,7 +104,7 @@ test("what is not a treatment is refused in words, and the words name the field"
   assert.ok(p.some((m) => /act 1: needs a purpose/.test(m)));
   assert.ok(p.some((m) => /act 1: needs seconds/.test(m)));
   assert.ok(p.some((m) => /^motifs: 1/.test(m)));
-  assert.ok(p.some((m) => /^prose: \d+ words, it needs at least 100/.test(m)));
+  assert.ok(p.some((m) => /^prose: \d+ words, it needs at least \d+/.test(m)));
   assert.equal(repairTreatment(bad, 45, v), null);
   assert.deepEqual(treatmentProblems("nope"), ["the treatment must be a JSON object"]);
   // A wrong device is a problem for a client (it is told), and falls back to the draw once the rest is fine.
@@ -224,14 +226,14 @@ test("the treatment is written first, hot, under the master prompt; the directio
 });
 
 test("a thin prose is asked to be fixed once, then kept: the second answer is read under the lenient rule", async () => {
-  const thin = { ...TREATMENT_FIXTURE(45), prose: Array.from({ length: 75 }, (_, i) => `w${i}`).join(" ") };
+  const thin = { ...TREATMENT_FIXTURE(45), prose: Array.from({ length: 65 }, (_, i) => `w${i}`).join(" ") };   // under the 45-second floor (72), over the lenient one (60)
   const { env, calls } = planner({ treatment: () => thin });
   const r = await generateStoryboard(env, job("A Short about relay car theft"));
   const tcalls = calls.filter((c) => c.kind === "treatment");
   assert.equal(tcalls.length, 2, "the first answer is sent back for its prose");
-  assert.match(tcalls[1].user, /REJECTED[\s\S]*prose: 75 words, it needs at least 100/);
+  assert.match(tcalls[1].user, /REJECTED[\s\S]*prose: 65 words, it needs at least 72/);
   assert.ok(r.treatment, "the identical second answer is kept");
-  assert.equal(wordCount(r.treatment.prose), 75);
+  assert.equal(wordCount(r.treatment.prose), 65);
 });
 
 test("a treatment that never comes is not a failed film: two rejected answers, then the planner carries on without one", async () => {

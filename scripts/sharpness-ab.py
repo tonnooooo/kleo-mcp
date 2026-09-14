@@ -27,12 +27,13 @@ def main():
     sys.path.insert(0, "/opt/kleo")
     import kleo_pictures as kp
     sb = json.load(open(a.storyboard if os.path.isabs(a.storyboard) else os.path.join(REPO, a.storyboard)))
-    # The first N shots of the film, scene ids kept (the picture ids are "<scene>-s<n>" and the seed comes from them).
-    scenes, n = [], 0
+    # generate_pictures takes PICTURES, one per shot, named "<scene>-s<n>" (the seed comes from that id): the first
+    # N shots of the film, flattened the way kleo_worker.py flattens them.
+    scenes = []
     for s in sb["scenes"]:
-        keep = (s.get("shots") or [])[:max(0, a.shots - n)]
-        if not keep: break
-        scenes.append({"id": s["id"], "shots": [dict(sh) for sh in keep], "accent": s.get("accent")}); n += len(keep)
+        for i, sh in enumerate(s.get("shots") or []):
+            if len(scenes) >= a.shots: break
+            scenes.append({"id": f"{s['id']}-s{i + 1}", "image_prompt": sh.get("image_prompt", ""), "accent": s.get("accent")})
     direction = sb.get("direction")
     fmt, style = sb.get("format", "9:16"), "realistic"
     results = {}
