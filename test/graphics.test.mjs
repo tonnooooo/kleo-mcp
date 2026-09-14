@@ -275,6 +275,9 @@ test("hud.js: the pure block plans where things sit, what a line looks like, whe
   const rp = H.layout("readout", "top-right", 2160, 3840);
   assert.equal(rp.align, "right"); assert.ok(rp.y > 180 && rp.x === 2160 - 60);
   assert.ok(H.layout("stamp", "bottom-left", 3840, 2160).up, "a bottom corner grows upward");
+  // Measured on the first render: the stamp sat on the chapter title. With film chapters a top-left element steps down.
+  assert.ok(H.layout("stamp", "top-left", 2160, 3840, "film").y > H.layout("stamp", "top-left", 2160, 3840).y + 60);
+  assert.equal(H.layout("readout", "top-right", 2160, 3840, "film").y, H.layout("readout", "top-right", 2160, 3840).y, "the right corner has no chapter to avoid");
   // The line's shapes: straight when steady or flat, a travelling bump when pulsing, a 1 0 1 0 wave when square,
   // jags when broken — and the same jags on every worker, because they come from a hash, not a clock.
   const n = 40;

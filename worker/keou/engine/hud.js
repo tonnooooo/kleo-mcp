@@ -27,12 +27,15 @@
   // Safe areas: the same numbers the picture style keeps clear of platform chrome (portrait 180/420, landscape 90/150).
   function safe(W, H) { const p = H > W; return { p, top: p ? 180 : 90, bottom: p ? 420 : 150, side: p ? 60 : 96 } }
   // Where an element lives, in frame pixels. Sizes scale with the height so 1080p and 4K draw the same picture.
-  function layout(kind, where, W, H) {
+  // `chapters` is the layer's chapter mode: with "film" the picture style writes the scene's chapter at the top
+  // left, so a top-left element steps down one line (measured on the first render: the stamp sat on the title).
+  function layout(kind, where, W, H, chapters) {
     const s = safe(W, H), u = H / 2160;
     if (kind === 'line') return { x0: s.side, x1: W - s.side, y: where === 'top' ? s.top + 46 * u : H - s.bottom * .58, amp: 26 * u, width: Math.max(2, Math.round(3.4 * u)) };
     const size = Math.round((kind === 'readout' ? 40 : 34) * u), lead = Math.round(size * 1.45);
     const right = /right$/.test(where), bottom = /^bottom/.test(where);
-    return { size, lead, x: right ? W - s.side : s.side, align: right ? 'right' : 'left', y: bottom ? H - s.bottom - 12 * u : s.top + size * 1.3, up: bottom };
+    const underChapter = !bottom && !right && chapters === 'film' ? size * 1.9 : 0;
+    return { size, lead, x: right ? W - s.side : s.side, align: right ? 'right' : 'left', y: bottom ? H - s.bottom - 12 * u : s.top + size * 1.3 + underChapter, up: bottom };
   }
   // The shape of a line in one state at one moment: n samples of vertical offset (-1..1, times amp).
   function lineShape(state, t, n) {
@@ -82,27 +85,28 @@
     ctx.stroke(); ctx.restore();
   }
   /* ---- the readout and the stamp ------------------------------------------- */
-  function drawReadout(el, values, before, u, accent) {
-    const ctx = A.ctx, L = layout('readout', el.corner, A.W, A.H), rows = el.rows || [];
+  // The rows form ONE block: labels in a column, values in a column, the block hung from its corner. The first
+  // render right-aligned each row on its own and the labels wandered with the length of their values.
+  function drawReadout(el, values, before, u, accent, chapters) {
+    const ctx = A.ctx, L = layout('readout', el.corner, A.W, A.H, chapters), rows = el.rows || [];
     if (!rows.length) return;
     setFont(MONO, L.size, 400, 0);
+    const val = r => Array.isArray(values) ? String(values[r] == null ? '' : values[r]) : '';
     const labelW = Math.max(...rows.map(r => ctx.measureText(r + '  ').width));
+    const valueW = Math.max(...rows.map((_, r) => ctx.measureText(val(r)).width));
+    const x0 = L.align === 'right' ? L.x - labelW - valueW : L.x;
     const total = rows.length * L.lead, y0 = L.up ? L.y - total + L.lead : L.y;
-    ctx.save(); ctx.shadowColor = 'rgba(0,0,0,.7)'; ctx.shadowBlur = L.size * .5;
+    ctx.save(); ctx.shadowColor = 'rgba(0,0,0,.7)'; ctx.shadowBlur = L.size * .5; ctx.textAlign = 'left';
     rows.forEach((label, r) => {
-      const v = Array.isArray(values) ? String(values[r] == null ? '' : values[r]) : '';
-      const was = Array.isArray(before) ? String(before[r] == null ? '' : before[r]) : v;
-      const y = y0 + r * L.lead;
-      ctx.textAlign = 'left';
-      const width = labelW + ctx.measureText(v).width, x = L.align === 'right' ? L.x - width : L.x;
-      ctx.globalAlpha = .78; ctx.fillStyle = accent; ctx.fillText(label, x, y);
-      ctx.globalAlpha = v === was ? .96 : .96 * fade(u); ctx.fillStyle = '#ffffff'; ctx.fillText(v, x + labelW, y);
+      const v = val(r), was = Array.isArray(before) ? String(before[r] == null ? '' : before[r]) : v, y = y0 + r * L.lead;
+      ctx.globalAlpha = .78; ctx.fillStyle = accent; ctx.fillText(label, x0, y);
+      ctx.globalAlpha = v === was ? .96 : .96 * fade(u); ctx.fillStyle = '#ffffff'; ctx.fillText(v, x0 + labelW, y);
     });
     ctx.restore(); spacingOff();
   }
-  function drawStamp(el, text, before, u, accent) {
+  function drawStamp(el, text, before, u, accent, chapters) {
     if (!text) return;
-    const ctx = A.ctx, L = layout('stamp', el.corner, A.W, A.H);
+    const ctx = A.ctx, L = layout('stamp', el.corner, A.W, A.H, chapters);
     setFont(CAPS, L.size, 500, L.size * .16);
     ctx.save(); ctx.globalAlpha *= (text === before ? .85 : .85 * fade(u));
     ctx.shadowColor = 'rgba(0,0,0,.7)'; ctx.shadowBlur = L.size * .5;
@@ -126,7 +130,7 @@
     const ctx = A.ctx, W = A.W, H = A.H, u = H / 2160;
     ctx.save(); ctx.globalAlpha *= card.a;
     ctx.fillStyle = 'rgba(0,0,0,.58)'; ctx.fillRect(0, 0, W, H);
-    let size = Math.round(150 * u); const maxW = W * .78, text = card.text.toUpperCase();
+    let size = Math.round(176 * u); const maxW = W * .82, text = card.text.toUpperCase();
     setFont(CAPS, size, 600, size * .14);
     while (ctx.measureText(text).width > maxW && size > 40 * u) { size = Math.round(size * .92); setFont(CAPS, size, 600, size * .14) }
     ctx.textAlign = 'center'; ctx.shadowColor = 'rgba(0,0,0,.8)'; ctx.shadowBlur = size * .25;
@@ -150,8 +154,8 @@
           const prev = typeof before === 'string' ? before : state;
           if (prev !== state && u < .35) { drawLine(el, prev, t, 1 - fade(u), accent); drawLine(el, state, t, fade(u), accent) }
           else drawLine(el, state, t, 1, accent);
-        } else if (el.kind === 'readout') drawReadout(el, Array.isArray(now) ? now : (Array.isArray(before) ? before : []), Array.isArray(before) ? before : null, u, accent);
-        else if (el.kind === 'stamp') drawStamp(el, typeof now === 'string' ? now : (typeof before === 'string' ? before : ''), typeof before === 'string' ? before : null, u, accent);
+        } else if (el.kind === 'readout') drawReadout(el, Array.isArray(now) ? now : (Array.isArray(before) ? before : []), Array.isArray(before) ? before : null, u, accent, g.chapters);
+        else if (el.kind === 'stamp') drawStamp(el, typeof now === 'string' ? now : (typeof before === 'string' ? before : ''), typeof before === 'string' ? before : null, u, accent, g.chapters);
       }
       if (card) { A.ctx.save(); A.ctx.globalAlpha = 1; drawCard({ ...card }, accent); A.ctx.restore() }
     },
