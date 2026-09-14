@@ -60,9 +60,12 @@ function fakeKie(script = {}) {
     if (u.endsWith("/api/v1/jobs/createTask")) {
       const body = JSON.parse(init.body);
       calls.create.push({ body, auth: init.headers.authorization });
-      if (script.createFails) return new Response(JSON.stringify({ code: 402, msg: "insufficient credits" }), { status: 200 });
+      if (script.createFails) return new Response(JSON.stringify({ code: 422, msg: "first_frame_url: unreachable" }), { status: 200 });
+      // The real answer of 13 September 2026 once the account is empty: code 500, not the documented 402.
+      if (typeof script.createNoCreditAfter === "number" && n >= script.createNoCreditAfter) return new Response(JSON.stringify({ code: 500, msg: "Credits insufficient : Your current balance isn’t enough to run this request. Please top up to continue." }), { status: 200 });
       return new Response(JSON.stringify({ code: 200, msg: "success", data: { taskId: `task_${++n}` } }), { status: 200 });
     }
+    if (u.endsWith("/api/v1/chat/credit")) { calls.credit = (calls.credit ?? 0) + 1; return new Response(JSON.stringify({ code: 200, msg: "success", data: script.credits ?? 100000 }), { status: 200 }); }
     if (u.includes("/api/v1/jobs/recordInfo")) {
       const taskId = new URL(u).searchParams.get("taskId");
       calls.record.push(taskId);
@@ -243,8 +246,62 @@ test("a task kie.ai refuses is a failed row that costs nothing; the others still
   const r = await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS.slice(0, 1), format: "9:16" });
   assert.equal(r.status, 200);
   assert.deepEqual(Object.keys(r.reply.failed), ["01-hook-s1"]);
-  assert.match(r.reply.failed["01-hook-s1"], /402/);
+  assert.match(r.reply.failed["01-hook-s1"], /422/);
   assert.equal(await m.footageSpentTodayUsd(env), 0, "a refused task is not money spent");
+});
+
+test("kie.ai out of money: the film stops at the first refusal, the route fails the job with the sentence and refunds, a top-up re-orders the refused shots", async () => {
+  // 1. Halfway through: the first task goes in, the second is refused → no third call, 402 with the sentence.
+  const env = await newEnv();
+  const job = await filmJob(env);
+  const kie = fakeKie({ createNoCreditAfter: 1 }); globalThis.fetch = kie.fetch;
+  const r = await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS, format: "9:16" });
+  assert.equal(r.status, 402);
+  assert.equal(r.reply.no_credit, true);
+  assert.match(r.reply.error, /kie\.ai balance is empty: 1 of 3 shots/);
+  assert.equal(kie.calls.create.length, 2, "the third shot was never asked for");
+  let rows = await m.footageRows(env, job.id);
+  assert.deepEqual(rows.map((x) => [x.shot_id, x.state, !!x.task_id]), [["01-hook-s1", "generating", true], ["01-hook-s2", "failed", false]], "the refused row has no task; the third has no row");
+  assert.ok(m.isNoCredit(new m.KieError("kie.ai POST x → code 500: Credits insufficient : Your current balance isn’t enough", 500, true)));
+  assert.ok(m.isNoCredit(new m.KieError("kie.ai POST x → code 402: insufficient credits", 402, false)));
+  assert.ok(!m.isNoCredit(new m.KieError("kie.ai POST x → code 422: bad input", 422, false)));
+  // 2. The account is topped up: the same request orders exactly the two shots that were never billed.
+  const again = fakeKie(); globalThis.fetch = again.fetch;
+  const r2 = await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS, format: "9:16" });
+  assert.equal(r2.status, 200);
+  assert.equal(r2.reply.ordered, 2);
+  assert.deepEqual(again.calls.create.map((c) => c.body.input.first_frame_url ? "still" : "text").length, 2);
+  rows = await m.footageRows(env, job.id);
+  assert.deepEqual(rows.map((x) => x.state), ["generating", "generating", "generating"]);
+  assert.equal(rows.find((x) => x.shot_id === "01-hook-s2").error, null, "the old refusal is gone from the row");
+  assert.equal(await m.footageSpentTodayUsd(env), 1.04, "4 s + 4 s + 8 s of MiniMax H3 at 0.065 $/s, each clip priced once");
+  // 3. Through the worker's route: the job is failed on the spot with the sentence and the credits come back.
+  const env2 = await newEnv();
+  const job2 = await filmJob(env2);
+  globalThis.fetch = fakeKie({ createNoCreditAfter: 0 }).fetch;
+  const res = await m.handleInternal(new Request(`http://kleo.test/internal/jobs/${job2.id}/footage`, { method: "POST", headers: { authorization: "Bearer wsecret", "content-type": "application/json" }, body: JSON.stringify({ shots: SHOTS, format: "9:16" }) }), env2);
+  assert.equal(res.status, 402);
+  const after = env2.DB.db.prepare("SELECT state, error FROM jobs WHERE id = ?").get(job2.id);
+  assert.equal(after.state, "failed");
+  assert.match(after.error, /kie\.ai balance is empty: 0 of 3 shots/);
+  assert.equal(env2.DB.db.prepare("SELECT credits FROM users WHERE id = 'u1'").get().credits, 107, "the 7 credits of the film are back");
+});
+
+test("the balance is read before the first task: an account that cannot pay the film orders nothing", async () => {
+  const env = await newEnv();
+  const job = await filmJob(env);
+  const kie = fakeKie({ credits: 100 }); globalThis.fetch = kie.fetch; // 100 credits = 0.50 $, the film needs 1.04 $
+  const r = await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS, format: "9:16" });
+  assert.equal(r.status, 402);
+  assert.equal(r.reply.no_credit, true);
+  assert.equal(r.reply.balance_usd, 0.5);
+  assert.equal(kie.calls.create.length, 0, "no task, no money");
+  assert.equal((await m.footageRows(env, job.id)).length, 0);
+  // kie.ai not answering the balance call is not a refusal: the order goes through and createTask decides.
+  const mute = fakeKie(); const inner = mute.fetch;
+  globalThis.fetch = async (u, i) => { if (String(u).endsWith("/api/v1/chat/credit")) throw new Error("ECONNRESET"); return inner(u, i); };
+  assert.equal((await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS, format: "9:16" })).status, 200);
+  assert.equal(mute.calls.create.length, 3);
 });
 
 test("footageStatus: success is copied to R2 once and served to the box; fail is a failed row; transient errors keep polling", async () => {
@@ -309,8 +366,10 @@ test("the job spec tells the box which road and which model; the admin route swi
   const spec = await (await m.handleInternal(new Request(`http://kleo.test/internal/jobs/${job.id}`, { headers: { authorization: "Bearer wsecret" } }), env)).json();
   assert.deepEqual(spec.footage, { backend: "kie", model: "minimax-h3" }, "the default of the file is MiniMax H3");
   const admin = (method, body) => m.handleAdmin(new Request("http://kleo.test/internal/admin/footage", { method, headers: { authorization: "Bearer s3cret" }, body: body && JSON.stringify(body) }), env);
+  globalThis.fetch = fakeKie({ credits: 2000 }).fetch;
   let v = await (await admin("GET")).json();
   assert.equal(v.backend, "kie"); assert.equal(v.key_configured, true); assert.equal(v.max_video_s, 20); assert.equal(v.budget_usd, 5); assert.ok(v.models["wan-2.7"]);
+  assert.equal(v.balance_usd, 10, "2000 kie.ai credits at 0.005 $ each");
   assert.equal(v.model, "minimax-h3"); assert.deepEqual(v.models["gemini-omni-flash"].usd_per_clip, { 4: 0.315, 6: 0.42, 8: 0.525, 10: 0.63 }, "per-clip prices are shown to the admin");
   v = await (await admin("POST", { model: "seedance-2.0" })).json();
   assert.equal(v.model, "seedance-2.0");

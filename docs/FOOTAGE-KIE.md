@@ -26,6 +26,16 @@ prompt → MCP → storyboard + immagini (Workers AI o GPU) → Vast 16 GB: voce
 - `KIE_API_KEY` è un **segreto Cloudflare**: `npx wrangler secret put KIE_API_KEY`. La macchina noleggiata non la
   vede mai: parla solo con il server, col segreto del proprio job. I fotogrammi arrivano a kie.ai attraverso gli
   stessi link firmati `/dl/` che le immagini usano già (`dl.ts`).
+- **Conto kie.ai vuoto** (dal 13 set sera, dopo il job `gt_sw48sch9`: 13 clip pagate, poi `Credits insufficient` sulle
+  ultime 3 e film morto lo stesso). Prima di ordinare, il server legge il saldo (`GET /api/v1/chat/credit`, 1 credito =
+  0,005 $): se non copre il film risponde 402 con la frase "kie.ai balance is empty: 0 of N shots could be ordered…"
+  e non crea nessun task; se kie.ai non risponde al saldo si procede lo stesso. Se il rifiuto arriva a metà (codice
+  402, o il 500 "Credits insufficient" che kie.ai manda davvero), il server **si ferma alla prima clip rifiutata**:
+  gli shot dopo non vengono chiesti e non hanno riga. In entrambi i casi la rotta `/footage` **fallisce subito il
+  job** con quella frase e rimborsa i crediti (`failJob`, nessun tentativo su un'altra scheda), invece di lasciare la
+  macchina ad aspettare le clip e morire con il generico "the shots did not film". Dopo la ricarica, una nuova
+  richiesta riordina solo gli shot mai fatturati (righe `failed` senza `task_id`, e quelli senza riga). Il saldo si
+  legge anche in `GET /internal/admin/footage` (`balance_usd`, `null` se kie.ai non ha risposto).
 - Ogni task viene **prezzato alla creazione** dal listino `KIE_MODELS` e scritto nella tabella `footage`. Il tetto
   giornaliero `DAILY_FOOTAGE_BUDGET_USD` (15 $ dal 13 set sera, prima 5) somma le righe di oggi PRIMA di ordinare: oltre, la richiesta è
   rifiutata con la frase esatta e nessuna clip viene ordinata. Il listino è quello **vero**, letto il 13 settembre

@@ -10,7 +10,7 @@ import { generateStoryboard, StoryboardError, writeTreatment } from "./storyboar
 import { proseDistance } from "./treatment.ts";
 import { findTemplate } from "./templates";
 import { generateJobImages, IMAGE_NAME_RE } from "./images";
-import { footageBackendFor, footageConfig, setFootageConfig, kieModelFor, requestFootage, footageStatus, footageSpentTodayUsd, clipKey, footageRows, KIE_MODELS, SHOT_ID_RE, STILL_NAME_RE, type ShotRequest } from "./footage";
+import { footageBackendFor, footageConfig, setFootageConfig, kieModelFor, requestFootage, footageStatus, footageSpentTodayUsd, kieBalanceUsd, clipKey, footageRows, KIE_MODELS, SHOT_ID_RE, STILL_NAME_RE, type ShotRequest } from "./footage";
 
 const ALLOWED_FILES = new Set([FILE_NAMES.video.name, FILE_NAMES.subtitles.name, FILE_NAMES.thumbnail.name, "thumbnail.svg", "log.txt", "gen.tgz"]);
 const TYPES: Record<string, string> = { mp4: "video/mp4", srt: "application/x-subrip", jpg: "image/jpeg", svg: "image/svg+xml", txt: "text/plain" };
@@ -103,6 +103,9 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
   if (rest === "footage" && request.method === "POST") {
     const b = (await request.json().catch(() => ({}))) as { shots?: ShotRequest[]; look?: string; format?: string };
     const r = await requestFootage(env, job, url.origin, { shots: b.shots ?? [], look: b.look, format: b.format });
+    // 402 is definitive (no kie.ai money, or today's ceiling): the box cannot film without the clips and would only
+    // report the generic "the shots did not film" later. Fail the job here, with the sentence, and refund at once.
+    if (r.status === 402) await failJob(env, job, String(r.reply.error ?? "the clips could not be ordered from kie.ai"), false);
     return json(r.reply, r.status);
   }
   if (rest === "footage" && request.method === "GET") {
@@ -252,6 +255,7 @@ export async function handleAdmin(request: Request, env: Env): Promise<Response>
       return { backend: footageBackendFor(env, probe, cfg), model: kieModelFor(env, cfg).name, override: cfg,
         key_configured: !!(env.KIE_API_KEY && env.KIE_API_KEY.trim()), max_video_s: int(env.KIE_MAX_VIDEO_S, 20),
         spend_today_usd: Math.round((await footageSpentTodayUsd(env)) * 1000) / 1000, budget_usd: num(env.DAILY_FOOTAGE_BUDGET_USD, 5),
+        balance_usd: await kieBalanceUsd(env), // what the kie.ai account can still spend (null when kie.ai did not answer)
         models: Object.fromEntries(Object.entries(KIE_MODELS).map(([k, m]) => [k, { usd_per_s: m.usdPerSecond, ...(m.usdPerClip ? { usd_per_clip: m.usdPerClip } : {}), seconds: m.seconds, verified: m.verified, note: m.note }])) };
     };
     if (request.method === "GET") return json(await view());

@@ -86,6 +86,9 @@ export const DEFAULT_KIE_MODEL = "minimax-h3";
 export const KIE_BASE = "https://api.kie.ai";
 export const KIE_CREATE = `${KIE_BASE}/api/v1/jobs/createTask`;
 export const KIE_RECORD = `${KIE_BASE}/api/v1/jobs/recordInfo`;
+/** GET: the account's remaining credits as a bare number in `data` (docs.kie.ai/common-api/get-account-credits); 1 credit = 0.005 $. */
+export const KIE_CREDIT = `${KIE_BASE}/api/v1/chat/credit`;
+export const USD_PER_KIE_CREDIT = 0.005;
 
 /* ------------------------------------------------------------------ the decision */
 
@@ -231,6 +234,36 @@ async function kie<T>(env: Env, method: "GET" | "POST", url: string, body?: unkn
 }
 
 /**
+ * kie.ai's own words for an empty account. The unified API documents HTTP 200 + code 402; on 13 September 2026 it
+ * answered code 500 with "Credits insufficient : Your current balance isn't enough to run this request" instead
+ * (job gt_sw48sch9, 13 tasks in, 3 refused). Both mean the same thing and neither is worth a second try.
+ */
+export function isNoCredit(e: unknown): boolean {
+  if (!(e instanceof KieError)) return false;
+  return e.status === 402 || /credits? insufficient|insufficient credits?|balance isn.t enough|not enough (credits?|balance)|top up/i.test(e.message);
+}
+
+/**
+ * What the account can still spend, in dollars, or null when kie.ai did not say (network, a changed endpoint, a bad
+ * key): a monitoring call must never be the thing that stops a film, so null means "go ahead and let createTask
+ * decide". Six seconds at most: this sits in front of every order.
+ */
+export async function kieBalanceUsd(env: Env): Promise<number | null> {
+  if (!env.KIE_API_KEY) return null;
+  try {
+    const res = await fetch(KIE_CREDIT, { headers: { accept: "application/json", authorization: `Bearer ${env.KIE_API_KEY.trim()}` }, signal: AbortSignal.timeout(6000) });
+    const data = (await res.json().catch(() => null)) as { code?: number; data?: unknown } | null;
+    if (!res.ok || !data || data.code !== 200 || typeof data.data !== "number" || !Number.isFinite(data.data)) return null;
+    return Math.round(data.data * USD_PER_KIE_CREDIT * 1000) / 1000;
+  } catch { return null; }
+}
+
+/** The sentence the user reads when kie.ai has no money left. Plain, and it says what happens to their credits. */
+export function noCreditSentence(ordered: number, wanted: number): string {
+  return `kie.ai balance is empty: ${ordered} of ${wanted} shots could be ordered before it ran out. Top up the kie.ai account and ask for the video again; this video was not made and its credits are refunded`;
+}
+
+/**
  * The `input` the unified API takes, per model family — the dialects differ and each is read off its own doc page:
  *  kling-3.0/video           prompt, image_urls[], duration "3".."15" (string), aspect_ratio, mode std|pro|4K, sound
  *  kling/v3-turbo-image-to-video  prompt, image_urls[], duration (string), resolution 720p|1080p
@@ -282,7 +315,10 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
   if (!shots.length) return { status: 400, reply: { error: "no shots to film" } };
   if (shots.length > 40) return { status: 400, reply: { error: `${shots.length} shots is more than one film may ask for (40)` } };
   const have = new Map((await footageRows(env, job.id)).map((r) => [r.shot_id, r]));
-  const fresh = shots.filter((s) => !have.has(s.id));
+  // Fresh: no row yet, or a row that failed BEFORE kie.ai gave it a task (refused, never billed). Ordering that one
+  // again is how a topped-up account rescues a film that ran out of money halfway through the previous request.
+  const retryable = (r: FootageRow | undefined) => !!r && r.state === "failed" && !r.task_id;
+  const fresh = shots.filter((s) => !have.has(s.id) || retryable(have.get(s.id)));
   const budget = num(env.DAILY_FOOTAGE_BUDGET_USD, 5);
   const planned = fresh.reduce((a, s) => a + clipCostUsd(spec, clipSecondsFor(spec, Number(s.seconds) || 3)), 0);
   const spent = await footageSpentTodayUsd(env);
@@ -290,7 +326,17 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
     await audit(env, job.user_id, job.id, "footage.budget", { spent_usd: spent, planned_usd: planned, budget_usd: budget, model: name });
     return { status: 402, reply: { error: `today's kie.ai budget is spent ($${spent.toFixed(2)} committed + $${planned.toFixed(2)} for this film > $${budget.toFixed(2)}, DAILY_FOOTAGE_BUDGET_USD)` } };
   }
+  // The account itself, before the first task: kie.ai bills per task, so a film that runs out of money on shot 14
+  // has paid for 13 clips it will never use (13 September, 3.38 $). Silence from the balance call does not refuse.
+  if (fresh.length) {
+    const balance = await kieBalanceUsd(env);
+    if (balance !== null && balance < planned) {
+      await audit(env, job.user_id, job.id, "footage.no_credit", { balance_usd: balance, planned_usd: Math.round(planned * 1000) / 1000, model: name, ordered: 0, wanted: fresh.length });
+      return { status: 402, reply: { error: noCreditSentence(0, fresh.length), no_credit: true, balance_usd: balance, planned_usd: Math.round(planned * 1000) / 1000 } };
+    }
+  }
   const exp = Math.floor(Date.now() / 1000) + 6 * 60 * 60;
+  let ordered = 0, outOfCredit = false;
   for (const s of fresh) {
     const seconds = Math.max(1, Math.min(30, Number(s.seconds) || 3));
     const clipSeconds = clipSecondsFor(spec, seconds);
@@ -302,21 +348,32 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
     }
     const prompt = kiePrompt(s);
     // The row goes in BEFORE the call, with no task id: a second request while the first is in flight orders nothing twice.
-    await env.DB.prepare("INSERT OR IGNORE INTO footage (job_id, shot_id, model, state, seconds, cost_usd, updated_at) VALUES (?, ?, ?, 'queued', ?, ?, ?)")
+    // A refused row from an earlier request is reset in place instead (same key, new price, no error).
+    if (retryable(have.get(s.id))) await updateRow(env, job.id, s.id, { state: "queued", model: name, seconds, cost_usd: cost, error: null });
+    else await env.DB.prepare("INSERT OR IGNORE INTO footage (job_id, shot_id, model, state, seconds, cost_usd, updated_at) VALUES (?, ?, ?, 'queued', ?, ?, ?)")
       .bind(job.id, s.id, name, seconds, cost, nowIso()).run();
     try {
       const r = await kie<{ taskId?: string }>(env, "POST", KIE_CREATE, { model: spec.model, input: kieInput(name, spec, { prompt, imageUrl, seconds, format, seed: seedFor(s.id) }) });
       if (!r?.taskId) throw new KieError("kie.ai answered without a taskId", 0, false);
       await updateRow(env, job.id, s.id, { task_id: r.taskId, state: "generating" });
       await audit(env, job.user_id, job.id, "footage.task", { shot: s.id, model: name, task: r.taskId, clip_s: clipSeconds, want_s: seconds, usd: cost, still: !!imageUrl });
+      ordered++;
     } catch (e) {
       const msg = String(e).slice(0, 300);
       await updateRow(env, job.id, s.id, { state: "failed", error: msg, cost_usd: 0 });
       await audit(env, job.user_id, job.id, "footage.task.error", { shot: s.id, model: name, error: msg });
+      // No money left: every further task would be refused the same way, and every clip already ordered is money
+      // spent on a film that cannot be finished. Stop here; the shots after this one get no row, so a later request
+      // (after a top-up) orders them and the refused one afresh.
+      if (isNoCredit(e)) { outOfCredit = true; break; }
     }
   }
   const reply = await footageStatus(env, job, false);
-  return { status: 200, reply: { ...reply.reply, ordered: fresh.length } };
+  if (outOfCredit) {
+    await audit(env, job.user_id, job.id, "footage.no_credit", { model: name, ordered, wanted: fresh.length });
+    return { status: 402, reply: { ...reply.reply, ordered, no_credit: true, error: noCreditSentence(ordered, fresh.length) } };
+  }
+  return { status: 200, reply: { ...reply.reply, ordered } };
 }
 
 /** What kie.ai's recordInfo answers for one task (the fields Kleo reads; the rest is ignored). state is one of
