@@ -110,7 +110,9 @@ def main():
     projects = os.path.join(IMAGE_ENGINE, "projects")
     shutil.rmtree(os.path.join(projects, sb.get("id", "devrender")), ignore_errors=True)
     t0 = time.time()
-    project, pdir = kw.prepare_project(job, IMAGE_ENGINE, projects)
+    # prepare_project also returns the shots it would film (the `units` of the film road); a dev render draws the
+    # stills and ignores them — the layer and the pictures are what there is to look at here.
+    project, pdir, _units = kw.prepare_project(job, IMAGE_ENGINE, projects)
     print(f"  project {project['id']}: {len(project['scenes'])} scenes, style {project.get('style')}, "
           f"look {project.get('look')}, {time.time() - t0:.0f}s", flush=True)
     if a.no_render:
