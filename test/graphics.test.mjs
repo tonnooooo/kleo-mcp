@@ -159,7 +159,8 @@ base = json.loads(${JSON.stringify(JSON.stringify(sb))})
 base.update(id="layer-test", brand="Kleo", width=1080, fps=60, look="realistic")
 for s in base["scenes"]:
     for sh in s.get("shots") or []:
-        sh.pop("clip", None); sh.pop("image", None)
+        # what the worker strips before the engine sees a shot (strip_kleo_fields): the prompt and the story kind
+        for k in ("clip", "image", "image_prompt", "shot_kind", "dur"): sh.pop(k, None)
 def check(mutate):
     c = copy.deepcopy(base); mutate(c)
     d = tempfile.mkdtemp(); p = os.path.join(d, "project.json")

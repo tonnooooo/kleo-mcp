@@ -32,7 +32,8 @@ test("the draw is deterministic for a job and spreads across jobs", () => {
 
 test("the master prompt is a method for a film Kleo can render, and the user message carries the request and the draw", () => {
   assert.match(MASTER_PROMPT, /NO music/i);
-  assert.match(MASTER_PROMPT, /NO on-screen text/i);
+  assert.match(MASTER_PROMPT, /NO karaoke captions, NO icons, NO logos/i);
+  assert.match(MASTER_PROMPT, /there may be a LAYER, decided in step 11/, "the layer is the treatment's to decide, from a closed grammar (14 September)");
   assert.match(MASTER_PROMPT, /never a named living person/i);
   for (const n of [1, 5, 10]) assert.match(MASTER_PROMPT, new RegExp(`^${n}\\. [A-Z]`, "m"), `step ${n} of the method is numbered`);
   assert.match(MASTER_PROMPT, /BANNED WORDS/);

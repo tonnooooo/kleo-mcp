@@ -51,7 +51,7 @@
       const toks = keys(c && c.at); let at = 0;
       if (toks.length) for (let j = 0; j + toks.length <= said.length; j++)
         if (toks.every((tk, m) => said[j + m].k === tk) && said[j].start !== null) { at = Math.max(0, said[j].start - base - .08); break }
-      const hold = pclamp(c && c.hold, 1.2, 4) || 2.2;
+      const hold = (c && Number.isFinite(Number(c.hold)) && c.hold !== null && c.hold !== '') ? pclamp(c.hold, 1.2, 4) : 2.2;
       return { at: Math.min(at, Math.max(0, span - .6)), hold: Math.min(hold, Math.max(.6, span - at)) };
     });
   }
