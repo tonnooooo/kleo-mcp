@@ -79,10 +79,12 @@ richiesta → kleo_create_video (senza treatment) → pianificatore: passo -1 sc
   strutturato (otto copie di quattrocento parole non comprano niente che una scena usi). Il treatment viaggia in
   cima allo storyboard come `direction`, arriva al worker e il motore lo ignora.
 - **`kleo_adapt_prompt`**: prima legge lingua, durata e formato dalla richiesta senza modello (`src/adaptive.ts`)
-  e, se manca il soggetto o la durata, risponde con la domanda e non spende niente. Poi chiede il treatment a
-  Workers AI (`writeTreatment`, un'estrazione casuale perché il job non esiste ancora) e lo restituisce con la
-  frase da dire all'utente e l'ordine di passarlo a `kleo_create_video` tale e quale, o modificato come l'utente
-  chiede. Ogni chiamata finisce nell'audit come `treatment.adapt` (modello, tentativi, neuroni, estrazione).
+  e, se manca il soggetto o la durata, risponde con la domanda e non spende niente. Poi, **per impostazione
+  predefinita (14 settembre, `author: "assistant"`), consegna all'assistente il master prompt, la forma e
+  l'estrazione e gli chiede di scrivere lui il treatment**: la strada gratuita, perché il modello che legge lo
+  strumento (Claude, GPT) scrive meglio del 17B del server, misurato su due film interi (§6). Con
+  `author: "server"` chiede il treatment a Workers AI (`writeTreatment`) come prima e lo restituisce con la frase
+  da dire all'utente. In entrambi i casi l'oggetto va passato a `kleo_create_video`, che lo controlla. Ogni chiamata finisce nell'audit come `treatment.adapt` (modello, tentativi, neuroni, estrazione).
   Tetto per account: `ADAPT_MAX_PER_DAY` (12 al giorno); con `plan_pause` attivo (quota finita) o modello muto
   risponde onestamente e rimanda a `kleo_create_video`, che scriverà il treatment da sé quando pianifica.
 - **`kleo_create_video`** accetta `treatment`; `createJob` lo controlla con `treatmentProblems` (rifiuto in
@@ -154,3 +156,17 @@ Attenzione: la WAF di Cloudflare risponde 403 allo User-Agent di `urllib` di Pyt
 Cosa resta da migliorare, in ordine: la prosa (una seconda chiamata dedicata, "scrivi il treatment in prosa da
 queste decisioni", darebbe 200-300 parole vere invece di 100); le decisioni ancora banali in qualche caso; il
 mondo visivo scritto come elenco ("obiettivo standard, luce naturale") in tre casi su dieci.
+
+### Due film interi sul modello del server (14 settembre, `scripts/film-make.mjs`)
+
+Non basta misurare il treatment da solo: `film-make.mjs` pianifica un film intero (treatment → direction →
+outline → scene) sul modello di produzione senza job. Le prime due corse: su Voyager (date, distanza) il treatment
+ha scelto **nessun livello**, ha scritto il mondo visivo come elenco e la direction l'ha copiato, e cinque scene su
+otto chiedevano all'immagine diagrammi, schermi con "24 miliardi di chilometri", un readout "VOYAGER ONLINE"; su un
+film italiano da 30 s il treatment è stato rifiutato due volte (65 e 87 parole) e il film è andato con la vecchia
+catena. Correzioni: la regola del livello (una richiesta con date, distanze, durate o quantità HA un livello, e le
+immagini non disegnano mai la cifra), il rimando delle immagini che chiedono diagrammi o schermi con parole
+(`screenTextProblems`), il rifiuto del mondo visivo a elenco, la prosa dimensionata sulla durata (60-100 parole di
+soglia). La seconda corsa: il film italiano ha avuto il suo treatment (angolo "non è il calore, è un processo
+biologico"); Voyager no, due rifiuti (elenco, poi angolo = logline): il 17B non regge il metodo su un soggetto
+tecnico. Da qui la strada gratuita come impostazione predefinita di `kleo_adapt_prompt`.
