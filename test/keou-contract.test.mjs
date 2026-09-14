@@ -217,7 +217,7 @@ test("the picture style belongs to cartoon/realistic only, and shots need it", (
   const cyberPic = pirates(); cyberPic.kleo_style = "cyber";
   assert.ok(errorsOf(cyberPic, { format: "9:16", language: "en" }).some((e) => /the Keou style "picture" is the cartoon\/realistic\/animation look: set kleo_style to one of cartoon, realistic, animation, not "cyber"/.test(e)));
   const noStyle = pirates(); delete noStyle.kleo_style;
-  assert.ok(errorsOf(noStyle, { format: "9:16", language: "en" }).some((e) => /the Keou style "picture" is the cartoon\/realistic look/.test(e)));
+  assert.ok(errorsOf(noStyle, { format: "9:16", language: "en" }).some((e) => /the Keou style "picture" is the cartoon\/realistic\/animation look/.test(e)));
   const shotsInCinema = cinema();
   shotsInCinema.scenes[0].shots = [{ image_prompt: "a car in a driveway at night" }];
   assert.ok(errorsOf(shotsInCinema, { format: "9:16", language: "en" }).includes("scene 1: shots need the picture style (kleo_style cartoon or realistic)"));
