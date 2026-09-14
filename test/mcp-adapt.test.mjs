@@ -118,7 +118,7 @@ test("a request with no length is answered with the question and no model call",
 test("a complete request gets a treatment written under the master prompt, hot, and the assistant is told what to do with it", async () => {
   const ai = fakeAi(() => TREATMENT_FIXTURE(60));
   const s = await studio(ai);
-  const r = await s.call("kleo_adapt_prompt", { prompt: "Create a video about accuracy in medicine", duration_s: 60, format: "16:9" });
+  const r = await s.call("kleo_adapt_prompt", { prompt: "Create a video about accuracy in medicine", duration_s: 60, format: "16:9", author: "server" });
   assert.ok(!r.isError, r.text);
   assert.equal(ai.calls.length, 1);
   assert.equal(ai.calls[0].inputs.messages[0].content, MASTER_PROMPT);
@@ -136,9 +136,25 @@ test("a complete request gets a treatment written under the master prompt, hot, 
   assert.equal(rows.length, 1); assert.equal(rows[0].ok, true); assert.ok(rows[0].est_neurons > 0);
 });
 
+test("by default the tool hands the assistant the method and spends nothing: the assistant writes the treatment (the free road)", async () => {
+  const ai = fakeAi(() => { throw new Error("must not be called"); });
+  const s = await studio(ai);
+  const r = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers, 45 seconds", format: "9:16" });
+  assert.ok(!r.isError, r.text);
+  assert.equal(ai.calls.length, 0, "no model call on the server");
+  assert.equal(r.structuredContent.author, "assistant"); assert.equal(r.structuredContent.treatment, null); assert.equal(r.structuredContent.ready_to_render, true);
+  assert.match(r.structuredContent.variation, /^[a-z-]+\/[a-z-]+$/);
+  assert.match(r.text, /WRITE THE TREATMENT YOURSELF/);
+  assert.match(r.text, /You are the producer and showrunner of Kleo/, "the master prompt travels whole");
+  assert.match(r.text, /TASK: write the TREATMENT/); assert.match(r.text, /45 seconds, narrated in English/);
+  assert.match(r.text, new RegExp(`"variation":"${r.structuredContent.variation}"`));
+  assert.deepEqual(await s.audit("treatment.adapt"), [], "nothing counted against the day's cap");
+  assert.equal((await s.audit("treatment.method")).length, 1);
+});
+
 test("when the model is down the tool says so and points at kleo_create_video; it never throws", async () => {
   const s = await studio(fakeAi(() => { throw new Error("429 4006 you have used up your daily free allocation"); }));
-  const r = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers, 45 seconds" });
+  const r = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers, 45 seconds", author: "server" });
   assert.ok(!r.isError, "not an error: the video can still be made");
   assert.equal(r.structuredContent.treatment, null);
   assert.equal(r.structuredContent.note, "model unavailable");
@@ -149,16 +165,16 @@ test("when the model is down the tool says so and points at kleo_create_video; i
 
 test("the daily cap refuses the next call in words and leaves the road to kleo_create_video open", async () => {
   const s = await studio(fakeAi(() => TREATMENT_FIXTURE(45)), { ADAPT_MAX_PER_DAY: "1" });
-  const first = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers, 45 seconds" });
+  const first = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers, 45 seconds", author: "server" });
   assert.ok(!first.isError && first.structuredContent.treatment);
-  const second = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers, 45 seconds" });
+  const second = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers, 45 seconds", author: "server" });
   assert.ok(second.isError);
   assert.match(second.text, /asked for 1 treatment today, and the limit is 1 a day[\s\S]*kleo_create_video[\s\S]*Nothing was charged/);
 });
 
 test("kleo_create_video keeps the treatment the user approved and says so; a broken one is refused before any charge", async () => {
   const s = await studio(fakeAi(() => TREATMENT_FIXTURE(45)));
-  const a = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers, 45 seconds", format: "9:16" });
+  const a = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers, 45 seconds", format: "9:16", author: "server" });
   const t = a.structuredContent.treatment;
   const bad = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers", duration_s: 45, format: "9:16", treatment: { ...t, logline: "no", acts: [] } });
   assert.ok(bad.isError);

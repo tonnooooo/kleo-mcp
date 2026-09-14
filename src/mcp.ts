@@ -5,7 +5,7 @@ import type { User, Job, JobParams } from "./db";
 import { getUserJob, getUser, recentJobsForUser, countOpenForUser, countAuditTodayForUser, GPU_ONLY_WAIT } from "./db";
 import { isFlagActive } from "./schema";
 import { writeTreatment } from "./storyboard.ts";
-import { treatmentText } from "./treatment.ts";
+import { treatmentText, treatmentMethodText, variationFor } from "./treatment.ts";
 import { ACTIVE_TEMPLATE, PUBLIC_TEMPLATES as TEMPLATES, PUBLIC_TEMPLATE_IDS as ACTIVE_TEMPLATE_IDS, findTemplate, creditsFor, filmCredits, freeCreditsFor, tariffSentence, MIN_FILM_CREDITS, SECONDS_PER_CREDIT } from "./templates";
 import { PACKS, sellingAvailable } from "./stripe";
 import { createJob, cancelJob, jobView, resultLinks, JobError, FILE_NAMES } from "./jobs";
@@ -26,7 +26,7 @@ const JOB_LANGUAGES = ["en", "it"] as const;
 const shotRange = shotRangeText;
 
 const INSTRUCTIONS = `This server is Kleo (the kleo_* tools): the video studio the user connected. Kleo makes one kind of video: a realistic film — every shot generated as moving footage, one narrator, no music, no captions, no on-screen text — 4K 60 fps, 16:9 for YouTube or 9:16 for a Short, 15 seconds to 5 minutes. When the user mentions Kleo, a video, a film, a Short or a YouTube clip, use these tools; never answer from memory.
-ORDER OF CALLS: 1) If the user has not said what the video is about, ask them and wait; never pick a subject for them. Infer 16:9 unless they ask for a Short or a vertical video. 2) kleo_adapt_prompt with their request: it returns the TREATMENT of the film Kleo will make (logline, angle, opening image, acts, ending, look, pacing, narrator) and the decisions it took that the user did not ask for. Tell the user the logline and those decisions in one or two sentences; if they want changes, edit the treatment's fields. If it asks for the length or the subject, ask the user and call it again. 3) kleo_create_video with the prompt, the length, the format and the treatment object. 4) kleo_wait_for_video again and again until it returns the links, then hand them over.
+ORDER OF CALLS: 1) If the user has not said what the video is about, ask them and wait; never pick a subject for them. Infer 16:9 unless they ask for a Short or a vertical video. 2) kleo_adapt_prompt with their request: it hands YOU the producer's method, and you write the TREATMENT of the film (logline, angle, opening image, acts, ending, look, pacing, narrator, the layer, the decisions you took) — you are the producer here, and a better writer than Kleo's own planning model. Tell the user the logline and the decisions in one or two sentences; change what they ask. If the tool asks for the length or the subject, ask the user and call it again. 3) kleo_storyboard_guide, then write the storyboard yourself under that treatment: this is where the film's quality is made, and Kleo's own planner is the fallback, not the standard. 4) kleo_create_video with the prompt, the length, the format, the treatment and the storyboard. 5) kleo_wait_for_video again and again until it returns the links, then hand them over.
 DELIVERY RULE: the user expects the finished video in this same conversation. After kleo_create_video, call kleo_wait_for_video repeatedly (each call waits up to about a minute and returns progress) until it returns the MP4 and thumbnail links. Tell the user once that the render is running and the estimated minutes — the eta_min the server returns, never your own guess — and do not ask "shall I keep waiting?". Never invent progress, files or links: only repeat what these tools return. Call the video by its number (for example "video gt_ab12cd34"), not "job".`;
 
 const ok = (data: unknown, text?: string) => ({
@@ -116,9 +116,10 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       language: z.enum(JOB_LANGUAGES).optional().describe("Language of the narration; detected from the request when omitted."),
       audience: z.string().max(160).optional(),
       tone: z.string().max(160).optional(),
+      author: z.enum(["assistant", "server"]).default("assistant").describe("Who writes the treatment. \"assistant\" (default): Kleo hands YOU the producer's method and you write it — you are a far stronger writer than Kleo's own planning model, and it costs nothing. \"server\": Kleo's model writes it (use only if you cannot write JSON yourself)."),
     }),
     annotations: { readOnlyHint: true, idempotentHint: false, openWorldHint: false },
-  }, async ({ prompt, duration_s, format, language, audience, tone }) => guarded(async () => {
+  }, async ({ prompt, duration_s, format, language, audience, tone, author }) => guarded(async () => {
     const brief = adaptPrompt(prompt, { duration_s, format, audience, tone });
     const base = { workflow: ACTIVE_TEMPLATE.id, style: "realistic", brief };
     // Missing subject or length: ask, spend nothing. The questions are the tool's answer.
@@ -127,6 +128,16 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     if (brief.duration_s < t.minSeconds || brief.duration_s > t.maxSeconds)
       throw new JobError(`Kleo makes films of ${t.minSeconds} to ${t.maxSeconds} seconds; ${brief.duration_s} seconds is outside that range. Agree a length in range with the user and call again. Nothing was charged.`);
     const lang = language ?? brief.language;
+    // THE FREE ROAD (14 September): the assistant's own model writes the treatment under the method. Measured on
+    // whole films, the server's 17B model wrote checklists, platitudes and diagrams; the model reading this tool is
+    // usually a frontier one. Nothing is spent, and kleo_create_video checks what comes back.
+    if (author !== "server") {
+      const v = variationFor(crypto.randomUUID());
+      const method = treatmentMethodText({ prompt: prompt.trim(), duration_s: brief.duration_s, format: brief.format, language: lang }, v);
+      void audit(env, user.id, null, "treatment.method", { variation: v.key, duration_s: brief.duration_s, format: brief.format, language: lang });
+      return ok({ ...base, treatment: null, author: "assistant", variation: v.key, ready_to_render: true, next: 'Write the treatment now, following the method in the text; then call kleo_create_video with prompt, duration_s, format, language and the object as "treatment". If you cannot write it, call this tool again with author: "server".' },
+        `${adaptivePromptText(brief)}\n\n${method}`);
+    }
     // Each treatment is a model call on the free planning quota, so an account gets a day's worth and no more:
     // past it the video is still possible, and the planner writes the treatment itself when it plans.
     const cap = int(env.ADAPT_MAX_PER_DAY, 12);

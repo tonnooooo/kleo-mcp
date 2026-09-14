@@ -445,6 +445,24 @@ Narrator: ${t.narrator}
 Motifs (return to these): ${t.motifs.join("; ")}${t.graphics ? `\n${graphicsBlock(t.graphics)}` : "\nThe layer: none — nothing is drawn over the film."}${full ? `\nThe treatment, in prose:\n${t.prose}` : ""}`;
 }
 
+/**
+ * THE FREE ROAD: the method handed to the assistant that called kleo_adapt_prompt, so that the assistant's own
+ * model — Claude, GPT — writes the treatment instead of the 17B model on the server. Measured on 14 September on
+ * two whole films: the server's model wrote a checklist for a world, a platitude for an angle, no layer for a
+ * request full of dates and distances, and diagrams into the pictures; a frontier model writing under the same
+ * method is the difference between that and the owner's own packages. The server still checks what comes back
+ * (treatmentProblems, at kleo_create_video), and still writes its own when nothing comes.
+ */
+export function treatmentMethodText(input: { prompt: string; duration_s: number; format: "16:9" | "9:16"; language: string }, v: Variation): string {
+  return `WRITE THE TREATMENT YOURSELF, NOW, following this method exactly; then pass the JSON object as "treatment" to kleo_create_video. Do not paraphrase the method to the user: tell them the logline and the decisions once it is written.
+
+${MASTER_PROMPT}
+
+${treatmentPrompt(input, v)}
+
+Add "variation":"${v.key}" to the object. Kleo checks it before anything is charged and answers with the field to fix if something is off.`;
+}
+
 /** The treatment for the assistant that called kleo_adapt_prompt: what to tell the user, and what to do next. */
 export function treatmentText(t: Treatment): string {
   const acts = t.acts.map((a, i) => `${i + 1}. ${a.name} (${a.seconds}s): ${a.purpose}`).join(" · ");

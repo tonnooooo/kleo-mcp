@@ -43,9 +43,9 @@ FAMILY = {"cartoon": "sd15", "realistic": "sdxl"}
 # more text), and those tokens sat at the end, which is the end CLIP truncates first.
 STYLE_SUFFIX = {
     "cartoon": "flat vector cartoon illustration, bold clean outlines, vivid warm colors, simple shapes",
-    "realistic": "cinematic photograph, 35mm lens, natural light, sharp focus, fine surface texture, high detail, photographic realism",
+    "realistic": "cinematic photograph, RAW photo, 35mm lens, natural light, sharp focus on the subject, real skin and fabric texture, high detail",
 }
-NEGATIVE_PROMPT = "text, letters, words, watermark, logo, signature, caption, subtitles, blurry, soft focus, out of focus, cgi, 3d render, illustration, painting, plastic skin, oversmooth, low detail, deformed, low quality, worst quality"
+NEGATIVE_PROMPT = "text, letters, watermark, logo, caption, subtitles, blurry, soft focus, cgi, 3d render, illustration, drawing, comic, anime, manga, line art, cartoon, painting, plastic skin, oversmooth, low detail, deformed, low quality"
 GUIDANCE = {"cartoon": 6.5, "realistic": 5.5}
 STEPS = 22
 # La misura comoda di ciascuna famiglia, non un desiderio: SD1.5 e' addestrato a 512 e si sfalda sopra ~768;
