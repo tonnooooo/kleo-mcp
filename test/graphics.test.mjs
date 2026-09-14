@@ -157,6 +157,7 @@ sys.path.insert(0, ${JSON.stringify(join(ROOT, "worker", "keou"))})
 import contract
 base = json.loads(${JSON.stringify(JSON.stringify(sb))})
 base.update(id="layer-test", brand="Kleo", width=1080, fps=60, look="realistic")
+base.pop("backdrop", None)   # the engine sees the backdrop only once every clip is on disk (the worker puts it back)
 for s in base["scenes"]:
     for sh in s.get("shots") or []:
         # what the worker strips before the engine sees a shot (strip_kleo_fields): the prompt and the story kind
