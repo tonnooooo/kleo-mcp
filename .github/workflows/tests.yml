@@ -48,7 +48,7 @@ jobs:
         # fails here the day it stops producing a playable file. torch and the model stay fakes.
       - name: Worker tests (no torch, no GPU; ffmpeg only for the clip writer)
         working-directory: worker
-        run: python3 -m unittest test_kleo_pictures test_kleo_worker_images test_kleo_video test_kleo_worker_video test_kleo_worker_footage -v
+        run: python3 -m unittest test_kleo_pictures test_kleo_worker_images test_kleo_video test_kleo_worker_video test_kleo_worker_footage test_kleo_worker_graphics -v
         # test_kleo_video and test_kleo_worker_video cover the generated-motion chain: the prompt the model is
         # given, the file the clip lands in, and whether the worker may attach a video backdrop at all. Neither
         # loads torch or touches a GPU (the pipeline is a fake), and both belong here because the failure they

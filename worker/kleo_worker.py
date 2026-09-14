@@ -1341,13 +1341,25 @@ def film_finish(pdir, out_dir, lay_track=False):
     for need in (footage, voice):
         if not os.path.isfile(need) or os.path.getsize(need) == 0:
             raise RenderError(f"missing {os.path.basename(need)} after the footage pass", retry=True)
-    progress("film", 80, message="the narration goes on the film")
     video = os.path.join(out_dir, "video.mp4")
-    r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", footage, "-i", voice, "-filter_complex", f"[1:a]{VOICE_CHAIN}[a]",
-                        "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
-                        "-t", f"{float(timeline['duration']):.3f}", video], capture_output=True, text=True)
-    if r.returncode != 0 or not os.path.isfile(video):
-        raise RenderError("could not put the narration on the film: " + r.stderr[-300:], retry=True)
+    project_json = os.path.join(pdir, "project.json")
+    try:
+        project = json.load(open(project_json))
+    except (OSError, ValueError):
+        project = {}
+    if isinstance(project.get("graphics"), dict):
+        # THE LAYER (src/graphics.ts): this film has something drawn over it, decided by its treatment. The engine
+        # draws it on a transparent canvas and render.mjs composites it onto build/footage.mp4 inside the encoder;
+        # the mix (voice, no music) comes out of the same run. Nothing else in this function changes for such a film.
+        progress("film", 80, message="drawing the layer over the film")
+        film_overlay(pdir, project, timeline, out_dir, video)
+    else:
+        progress("film", 80, message="the narration goes on the film")
+        r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", footage, "-i", voice, "-filter_complex", f"[1:a]{VOICE_CHAIN}[a]",
+                            "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
+                            "-t", f"{float(timeline['duration']):.3f}", video], capture_output=True, text=True)
+        if r.returncode != 0 or not os.path.isfile(video):
+            raise RenderError("could not put the narration on the film: " + r.stderr[-300:], retry=True)
     dur, worst = film_checks(video, timeline)
     log(f"film: {dur:.1f} s, longest run without motion {worst:.1f} s, {os.path.getsize(video) / 1e6:.0f} MB")
     progress("finishing", 92, message="packaging")
@@ -1355,6 +1367,32 @@ def film_finish(pdir, out_dir, lay_track=False):
     progress("finishing", 95, message="encoded")
     # No subtitles, burnt or sidecar: the owner's reset of 13 September — the film and the narration, nothing else.
     return {"video.mp4": video, "thumbnail.jpg": thumb}
+
+
+def film_overlay(pdir, project, timeline, out_dir, video):
+    """The engine over the footage: project.json gets its backdrop back (the track is on disk now) and no music, the
+    bundle's missing music.wav becomes silence of the film's length (run.py's mix expects the file), and run.py
+    renders with --skip-voice: hud.js draws the layer on a transparent canvas, render.mjs composites it onto
+    build/footage.mp4 and muxes the mix. out/master.mp4 is the film."""
+    engine = os.path.abspath(KEOU_DIR)
+    build = os.path.join(pdir, "build")
+    project = dict(project)
+    project["backdrop"] = "video"
+    project["music"] = "none"
+    with open(os.path.join(pdir, "project.json"), "w") as f:
+        json.dump(project, f, ensure_ascii=False, indent=2)
+    music = os.path.join(build, "music.wav")
+    if not os.path.isfile(music):
+        r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+                            "-t", f"{float(timeline['duration']):.3f}", "-c:a", "pcm_s24le", music], capture_output=True, text=True)
+        if r.returncode != 0 or not os.path.isfile(music):
+            raise RenderError("could not make the silent music track for the layer: " + r.stderr[-300:], retry=True)
+    run_keou(engine, os.path.join(pdir, "project.json"), len(project.get("scenes") or []), os.path.join(out_dir, "log.txt"), skip_voice=True)
+    master = os.path.join(pdir, "out", "master.mp4")
+    if not os.path.isfile(master) or os.path.getsize(master) == 0:
+        raise RenderError("the engine finished the layer without out/master.mp4", retry=True)
+    shutil.copy2(master, video)
+    return video
 
 
 def render_film(job, out_dir):

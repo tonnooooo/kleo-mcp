@@ -488,6 +488,14 @@
     // The punch belongs to a cut *inside* a scene: the first picture of a scene arrives on a hard
     // cut from the scene before and must not be shoved 3% out of frame on its opening frame.
     paint(s, shots[k], k, shotProgress(ub, span(k), !last), a, k ? shotPunch(ub) : 1);
+    // A film with a LAYER (project.graphics, src/graphics.ts) draws that layer and nothing of the picture look: no
+    // veil, no fitted words, no button. The layer was decided for this film by its treatment; hud.js draws it.
+    if (A.project && A.project.graphics && window.KEOU_HUD) {
+      const g = A.project.graphics;
+      if (g.chapters === 'film') S.chrome(s, i, t);
+      window.KEOU_HUD.attach(A); window.KEOU_HUD.draw(s, u, t, i, G, g);
+      spacingOff(); return;
+    }
     const cap = s.kind === 'closing' ? null : captionOf(s, shots[k], k);
     veil(G, !!(cap || s.chapter));
     S.chrome(s, i, t);
@@ -508,6 +516,11 @@
   // just above the bottom safe area. Cartoon: outlined type, the spoken word pops in the Kleo
   // yellow. Realistic: lighter type on a plate no wider than the line, spoken word in the accent.
   S.subtitle = function (s, t) {
+    // With a layer, the subtitles are the layer's: cinema (thin, lowercase, no karaoke) or none at all.
+    if (A.project && A.project.graphics) {
+      if (A.project.graphics.subtitles === 'cinema' && window.KEOU_HUD) { window.KEOU_HUD.attach(A); window.KEOU_HUD.subtitle(s, t, geo()) }
+      return;
+    }
     const group = (s.captions || []).find(c => t >= c.start && t < c.end); if (!group) return;
     const ctx = A.ctx, G = geo(), real = isReal(), acc = accent(s);
     const weight = real ? 600 : 800, track = real ? .02 : 0;

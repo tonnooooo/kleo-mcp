@@ -27,6 +27,8 @@
 /* ------------------------------------------------------------------ limits, in one table */
 
 /** Character limits, printed in the prompt, enforced by the repair and checked by the tests. */
+import { LAYER_METHOD, graphicsProblems, repairGraphics, graphicsBlock, isNoLayer, HUD_KINDS, EDGES, CORNERS, SUBTITLE_MODES, CHAPTER_MODES, type Graphics } from "./graphics.ts";
+
 export const T = {
   logline: 200,
   angle: 240,
@@ -178,6 +180,8 @@ export interface Treatment {
   prose: string;
   /** The draw this film was written under ("cold-open-mystery/the-detail-first"), so identical requests can be told apart. */
   variation: string;
+  /** The layer drawn over the film (src/graphics.ts), decided for this film; null when the film has none. */
+  graphics: Graphics | null;
 }
 
 /* ------------------------------------------------------------------ the master prompt */
@@ -194,7 +198,7 @@ export const MASTER_PROMPT = `You are the producer and showrunner of Kleo, a stu
 
 WHAT KLEO CAN RENDER (write only what can be shot):
 - Every shot is a piece of moving footage generated from one still frame: a real place, a real object, weather, light, a person seen as a person (never a named living person, never a celebrity, never a logo, a brand or a product name: "a family car", not a make). Four to twelve seconds per shot. Human scale beats spectacle: a hand on a cold door handle renders better than a city exploding.
-- One narrator, a text-to-speech voice, reads short spoken sentences. There is NO music, NO on-screen text, NO captions, NO titles, NO interviews, NO archive footage, NO animation, NO graphics, NO split screens. The picture and the voice are the whole film.
+- One narrator, a text-to-speech voice, reads short spoken sentences. There is NO music, NO interviews, NO archive footage, NO animation, NO split screens, NO karaoke captions, NO icons, NO logos. Over the film there may be a LAYER, decided in step 11 and drawn from a closed grammar (a line, a readout, a stamp, cards, cinema subtitles, chapter titles) — or nothing, which is the usual answer.
 - 4K, 60 frames per second, 16:9 for YouTube or 9:16 for a Short. Fifteen seconds to five minutes.
 
 THE METHOD — answer these in order, each for THIS request:
@@ -208,6 +212,7 @@ THE METHOD — answer these in order, each for THIS request:
 8. NARRATOR. Person (second person is a tool, not a default), tense, sentence length, what they never do. The narrator is a person who knows this subject and is talking to one viewer, not a voice reading a brochure.
 9. MOTIFS. Two to five images the film returns to. A motif seen three times is what makes eight independently generated shots feel like one film.
 10. DECISIONS. List every choice you made that the request did not ask for, one per line, so the person who asked can see it and change it. A decision names something that could have been otherwise and that the viewer will SEE: the place, the period, who is in it, the object that carries it, how it ends. "The tone is informative", "the period is contemporary" and "the setting is a hospital" repeated from the angle are not decisions.
+11. ${LAYER_METHOD}
 
 THE BAR: the discipline of a good documentary sequence — concrete, human-scale, one strong image per beat, nothing decorative. Facts and names and numbers written in the request are kept, all of them. Nothing else is invented: no statistics, no quotes, no dates, no named people, no diagnoses, no makes of car that the request did not give; where the film needs a fact the request did not supply, use only what is common knowledge and prefer a concrete observation over a number.
 
@@ -245,7 +250,8 @@ TASK: write the TREATMENT of this film, following the method. Return one JSON ob
  "narrator":"<=${T.narrator}, person, tense, sentence length, what they never say",
  "motifs":[${T.motifs.min}-${T.motifs.max} strings <=${T.motifs.len}],
  "decisions":[up to ${T.decisions.max} strings <=${T.decisions.len}: every choice the request did not ask for],
- "prose":"${T.prose.target[0]}-${T.prose.target[1]} words: the treatment a director could shoot from — the film told from the first image to the last, act by act, in the present tense, with what we see and what the narrator says over it. Not a list: prose."}${input.language === "en" ? "" : `\nEverything in ${lang}.`}`;
+ "prose":"${T.prose.target[0]}-${T.prose.target[1]} words: the treatment a director could shoot from — the film told from the first image to the last, act by act, in the present tense, with what we see and what the narrator says over it. Not a list: prose.",
+ "graphics":{"layer":"none" — or "layer" with: "accent":"#rrggbb from the film's palette","subtitles":"${SUBTITLE_MODES.join("|")}","chapters":"${CHAPTER_MODES.join("|")}","hud":[0-3 of {"id":"short slug","kind":"${HUD_KINDS.join("|")}","edge":"${EDGES.join("|")}" (line only),"corner":"${CORNERS.join("|")}" (readout, stamp),"rows":["LABEL", …] (readout only, 1-4),"means":"what it stands for, <=60"}]}}${input.language === "en" ? "" : `\nEverything in ${lang}.`}`;
   return feedback?.length
     ? `${base}\n\nYOUR PREVIOUS ANSWER WAS REJECTED for these reasons; fix every one and return the whole object again:\n- ${feedback.join("\n- ")}`
     : base;
@@ -258,11 +264,22 @@ export const treatmentSchema = (): Record<string, unknown> => {
   return {
     type: "object",
     additionalProperties: false,
-    required: ["logline", "angle", "device", "opening", "ending", "acts", "visual", "pacing", "narrator", "motifs", "decisions", "prose"],
+    required: ["logline", "angle", "device", "opening", "ending", "acts", "visual", "pacing", "narrator", "motifs", "decisions", "prose", "graphics"],
     properties: {
       logline: str, angle: str, device: { type: "string", enum: [...DEVICE_IDS] }, opening: str, ending: str,
       acts: { type: "array", items: { type: "object", additionalProperties: false, required: ["name", "purpose", "seconds"], properties: { name: str, purpose: str, seconds: { type: "number" } } } },
       visual: str, pacing: str, narrator: str, motifs: strArr, decisions: strArr, prose: str,
+      // The layer: every field required and closed, because a grammar-constrained decoder cannot skip a property.
+      // "layer": "none" is the usual answer; the rest is then ignored.
+      graphics: {
+        type: "object", additionalProperties: false, required: ["layer", "accent", "subtitles", "chapters", "hud"],
+        properties: {
+          layer: { type: "string", enum: ["none", "layer"] }, accent: str,
+          subtitles: { type: "string", enum: [...SUBTITLE_MODES] }, chapters: { type: "string", enum: [...CHAPTER_MODES] },
+          hud: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "kind", "edge", "corner", "rows", "means"],
+            properties: { id: str, kind: { type: "string", enum: [...HUD_KINDS] }, edge: { type: "string", enum: [...EDGES] }, corner: { type: "string", enum: [...CORNERS] }, rows: strArr, means: str } } },
+        },
+      },
     },
   };
 };
@@ -330,6 +347,8 @@ export function treatmentProblems(raw: unknown, duration_s?: number, language?: 
     const written = languageOf(`${prose} ${String(raw.logline ?? "")} ${String(raw.angle ?? "")}`);
     if (written && written !== language) out.push(`language: the treatment is written in ${written === "it" ? "Italian" : "English"}, the film is in ${language === "it" ? "Italian" : "English"} — write every field in ${language === "it" ? "Italian" : "English"}`);
   }
+  // The layer: "none" in any spelling is fine and needs no more; a layer is held to the grammar of src/graphics.ts.
+  if (raw.graphics !== undefined && !isNoLayer(raw.graphics)) for (const p of graphicsProblems(raw.graphics)) out.push(p);
   return out;
 }
 
@@ -362,6 +381,7 @@ export function repairTreatment(raw: unknown, duration_s: number, v: Variation, 
     motifs: clipList(raw.motifs, T.motifs.max, T.motifs.len),
     decisions: clipList(raw.decisions, T.decisions.max + 4, T.decisions.len).filter((d) => !NON_DECISION.test(d)).slice(0, T.decisions.max),
     prose, variation: typeof raw.variation === "string" && raw.variation ? clip(raw.variation, 80) : v.key,
+    graphics: raw.graphics === undefined ? null : repairGraphics(raw.graphics),
   };
 }
 
@@ -410,7 +430,7 @@ ${acts}
 Visual language (every shot lives inside this): ${t.visual}
 Pacing: ${t.pacing}
 Narrator: ${t.narrator}
-Motifs (return to these): ${t.motifs.join("; ")}${full ? `\nThe treatment, in prose:\n${t.prose}` : ""}`;
+Motifs (return to these): ${t.motifs.join("; ")}${t.graphics ? `\n${graphicsBlock(t.graphics)}` : "\nThe layer: none — nothing is drawn over the film."}${full ? `\nThe treatment, in prose:\n${t.prose}` : ""}`;
 }
 
 /** The treatment for the assistant that called kleo_adapt_prompt: what to tell the user, and what to do next. */
@@ -426,7 +446,8 @@ Acts: ${acts}
 Look: ${t.visual}
 Pacing: ${t.pacing}
 Narrator: ${t.narrator}
-Motifs: ${t.motifs.join("; ")}${decisions}
+Motifs: ${t.motifs.join("; ")}
+Layer over the film: ${t.graphics ? `${t.graphics.hud.map((h) => `${h.kind} "${h.id}" (${h.means})`).join(", ") || "no persistent element"}; subtitles ${t.graphics.subtitles}; chapters ${t.graphics.chapters}; accent ${t.graphics.accent}` : "none"}${decisions}
 
 ${t.prose}
 

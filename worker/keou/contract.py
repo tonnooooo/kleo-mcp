@@ -122,6 +122,82 @@ def local_clip(project, value):
         raise ValueError(f'Unsupported clip format: {p.suffix} (one of {sorted(CLIP_FORMATS)})')
     return p
 
+# THE LAYER — the grammar of src/graphics.ts, mirrored: kinds, states, places, limits. The engine's hud.js draws
+# exactly these and nothing else, so anything outside them is refused before a frame is rendered.
+HUD_KINDS = {'line', 'readout', 'stamp'}
+LINE_STATES = {'steady', 'pulse', 'square', 'broken', 'flat', 'off'}
+EDGES = {'bottom', 'top'}
+CORNERS = {'top-left', 'top-right', 'bottom-left', 'bottom-right'}
+HUD_MAX, ROW_MAX, ROW_LEN, VALUE_LEN, STAMP_LEN, CARD_TEXT, CARD_AT, CARDS_PER_SCENE = 3, 4, 14, 24, 32, 28, 24, 1
+
+def validate_graphics(g):
+    if not isinstance(g, dict):
+        raise ValueError('graphics: must be an object')
+    if not re.fullmatch(r'#[0-9a-fA-F]{6}', str(g.get('accent', ''))):
+        raise ValueError('graphics.accent: a hex colour like #ffb347')
+    if g.get('subtitles', 'none') not in {'none', 'cinema'}:
+        raise ValueError('graphics.subtitles: none or cinema')
+    if g.get('chapters', 'none') not in {'none', 'film'}:
+        raise ValueError('graphics.chapters: none or film')
+    hud = g.get('hud', [])
+    if not isinstance(hud, list) or len(hud) > HUD_MAX:
+        raise ValueError(f'graphics.hud: a list of 0-{HUD_MAX} elements')
+    ids = set()
+    for i, h in enumerate(hud):
+        hl = f'graphics.hud[{i + 1}]'
+        if not isinstance(h, dict) or not re.fullmatch(r'[a-z0-9-]{1,16}', str(h.get('id', ''))):
+            raise ValueError(hl + ': needs a slug id')
+        if h['id'] in ids:
+            raise ValueError(hl + f': id "{h["id"]}" is used twice')
+        ids.add(h['id'])
+        if h.get('kind') not in HUD_KINDS:
+            raise ValueError(hl + f': kind must be one of {sorted(HUD_KINDS)}')
+        text(h.get('means'), hl + ' means', 60)
+        if h['kind'] == 'line' and h.get('edge') not in EDGES:
+            raise ValueError(hl + ': a line runs along an edge: bottom or top')
+        if h['kind'] in {'readout', 'stamp'} and h.get('corner') not in CORNERS:
+            raise ValueError(hl + f': a {h["kind"]} sits in a corner: {sorted(CORNERS)}')
+        if h['kind'] == 'readout':
+            rows = h.get('rows')
+            if not isinstance(rows, list) or not 1 <= len(rows) <= ROW_MAX:
+                raise ValueError(hl + f': a readout has 1-{ROW_MAX} rows')
+            for r in rows:
+                text(r, hl + ' row', ROW_LEN)
+
+def validate_scene_layer(g, s, label):
+    by_id = {h['id']: h for h in g.get('hud', [])}
+    hud = s.get('hud')
+    if hud is not None:
+        if not isinstance(hud, dict):
+            raise ValueError(label + ' hud: an object keyed by element id')
+        for k, v in hud.items():
+            h = by_id.get(k)
+            if h is None:
+                raise ValueError(label + f' hud: "{k}" is not an element of this film\'s layer')
+            if h['kind'] == 'line':
+                if v not in LINE_STATES:
+                    raise ValueError(label + f' hud.{k}: a line state is one of {sorted(LINE_STATES)}')
+            elif h['kind'] == 'readout':
+                if not isinstance(v, list) or len(v) != len(h['rows']) or any(not isinstance(x, str) or len(x) > VALUE_LEN for x in v):
+                    raise ValueError(label + f' hud.{k}: {len(h["rows"])} values of at most {VALUE_LEN} characters')
+            elif not isinstance(v, str) or len(v) > STAMP_LEN:
+                raise ValueError(label + f' hud.{k}: a stamp is one line of at most {STAMP_LEN} characters')
+    cards = s.get('cards')
+    if cards is not None:
+        if not isinstance(cards, list) or len(cards) > CARDS_PER_SCENE:
+            raise ValueError(label + f' cards: at most {CARDS_PER_SCENE} per scene')
+        for j, card in enumerate(cards):
+            cl = f'{label} card {j + 1}'
+            if not isinstance(card, dict):
+                raise ValueError(cl + ': must be an object')
+            text(card.get('text'), cl + ' text', CARD_TEXT)
+            if 'at' in card:
+                text(card['at'], cl + ' at', CARD_AT)
+                if card['at'].lower() not in str(s.get('voice') or '').lower():
+                    raise ValueError(cl + ": at must quote words from this scene's voice")
+            if 'hold' in card:
+                finite(card['hold'], 1.2, 4, cl + ' hold')
+
 def validate(path, approved=True):
     path = Path(path).resolve()
     c = json.loads(path.read_text())
@@ -167,6 +243,12 @@ def validate(path, approved=True):
     if 'music' in c and c['music'] not in {'bed', 'none'}:
         raise ValueError('music must be bed or none')
     finite(c.get('max_duration', 600), 5, 1800, 'max_duration')
+    # The layer drawn over a filmed picture (src/graphics.ts, engine/hud.js). Mirrors keou-contract.ts.
+    graphics = c.get('graphics')
+    if graphics is not None:
+        if c.get('style') != 'picture':
+            raise ValueError('graphics: the layer is drawn over a filmed picture only (the picture style)')
+        validate_graphics(graphics)
     scenes = c.get('scenes')
     if not isinstance(scenes, list) or not 2 <= len(scenes) <= 240:
         raise ValueError('A project needs 2–240 scenes')
@@ -298,6 +380,12 @@ def validate(path, approved=True):
                 text(s['chapter'], label + ' chapter', 32)
             if 'accent' in s and s['accent'] not in CINEMA_ACCENTS:
                 raise ValueError(label + ': accent must be green, cyan, red or amber')
+            # The layer (src/graphics.ts): what this scene says to the film's own elements. A state for an element
+            # the film does not have would be drawn as nothing, on a machine already paid for; refused here instead.
+            if graphics is not None:
+                validate_scene_layer(graphics, s, label)
+            elif 'hud' in s or 'cards' in s:
+                raise ValueError(label + ': hud and cards belong to a film with a layer (top-level "graphics")')
             if 'hl' in s:
                 text(s['hl'], label + ' hl', 24)
             if s['kind'] == 'closing' and 'button' in s:

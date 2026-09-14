@@ -29,6 +29,7 @@ decisi per QUESTA richiesta:
 | `motifs` | 2-5 immagini a cui il film torna |
 | `decisions` | ogni scelta che la richiesta non chiedeva, in parole semplici, perché l'utente la veda e la cambi |
 | `prose` | il treatment vero e proprio: 100-520 parole, dal primo fotogramma all'ultimo |
+| `graphics` | il livello disegnato sopra il film, o `none`: accento, sottotitoli, capitoli e fino a tre elementi (una linea, un readout, un timbro) con il loro significato (dal 14 settembre, `docs/GRAPHICS.md`) |
 
 Più `variation`, l'estrazione con cui è stato scritto (§3), così due video dalla stessa richiesta si distinguono.
 

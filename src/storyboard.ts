@@ -41,6 +41,10 @@ import {
   MASTER_PROMPT, treatmentPrompt, treatmentSchema, repairTreatment, treatmentProblems, treatmentBlock, treatmentOf, variationFor,
   type Treatment,
 } from "./treatment.ts";
+// The layer (src/graphics.ts): the treatment decides it, the scenes fill it in, the storyboard carries it.
+import { graphicsBlock, sceneHudSchema, repairGraphics, repairSceneHud, repairCards, type Graphics } from "./graphics.ts";
+/** The layer this film is planned with: the treatment's, and only over a filmed picture. */
+const layerOf = (plan: Plan, treatment?: Treatment | null): Graphics | null => (plan.style === "picture" && treatment?.graphics) ? treatment.graphics : null;
 import cinemaExample from "../worker/keou/examples/short-relay-cinema/project.json" with { type: "json" };
 import {
   EXPLAINER_GUIDANCE, EXPLAINER_WORDS, checkExplainer, explainerRules, explainerSceneSchema, lengthOf,
@@ -754,7 +758,11 @@ function chunkPrompt(job: PlanJob, plan: Plan, outline: OutlineEntry[], from: nu
     : sk ? `Each voice line is ONE spoken sentence of ${EXPLAINER_WORDS[lengthOf(plan.duration)].join("-")} words; every scene needs 2-8 drawings, each with an "at" quoting words from its OWN line, and the last of them must land in the second half of that line. One phrase, one drawing, and the drawing is literally what the words say.`
     : stick ? `Each voice line is one spoken sentence of ${lineWords} words; every scene has an act, a cast with hero, an accent and a title; add a bubble when the character says something.`
     : "Fill the kind-specific fields exactly as the shapes show: list/steps need 3 items, compare 2 items, metric needs value and unit, quote needs quote, hero needs visual.";
-  let msg = `${contextBlock(job, plan, treatment)}${d ? `\n${directionBlock(d)}` : ""}${owed.length ? `\nTHESE SCENES OWE THESE FACTS — say each one out loud in a "voice" line:\n${owed.map((i) => `  - ${d!.must_keep[i]}`).join("\n")}` : ""}
+  const layer = layerOf(plan, treatment);
+  const layerAsk = layer
+    ? `\n${graphicsBlock(layer)}\nEvery scene you write carries "hud": [${layer.hud.map((h) => h.kind === "line" ? `{"id":"${h.id}","state":"<one of the line states>"}` : h.kind === "readout" ? `{"id":"${h.id}","values":[${h.rows.map((r) => `"<${r}>"`).join(",")}]}` : `{"id":"${h.id}","value":"<one short line>"}`).join(", ")}] — the state or the values of each element AT THIS SCENE, changing only when the story changes them — and "cards": [] or one card {"at":"<words copied from this scene's voice>","text":"<the figure or date, <=28 chars>"} when a number in this scene must be read, not only heard.`
+    : "";
+  let msg = `${contextBlock(job, plan, treatment)}${layerAsk}${d ? `\n${directionBlock(d)}` : ""}${owed.length ? `\nTHESE SCENES OWE THESE FACTS — say each one out loud in a "voice" line:\n${owed.map((i) => `  - ${d!.must_keep[i]}`).join("\n")}` : ""}
 VIDEO OUTLINE (${total} scenes; you write scenes ${from + 1}–${to} now):
 ${outline.map((e, i) => `${i + 1}. [${e.id}] ${e.kind} · ${e.label}${e.accent ? ` · ${e.accent}` : ""} — ${e.summary} (${e.words} words)`).join("\n")}
 ${prevVoice ? `The previous scene ended with this narration, continue naturally from it: "${prevVoice}"` : "This is the start of the video."}
@@ -770,7 +778,7 @@ const strArr = { type: "array", items: str };
 
 /** Every property the contract knows, closed with additionalProperties:false (open objects let the grammar accept
  * garbled keys). Junk the model puts in irrelevant properties is removed per kind by normalizeStoryboard. */
-function sceneSchema(plan: Plan): Record<string, unknown> {
+function sceneSchema(plan: Plan, layer: Graphics | null = null): Record<string, unknown> {
   if (plan.style === "sketch") return explainerSceneSchema();
   if (plan.style === "picture") {
     const shot = {
@@ -784,8 +792,11 @@ function sceneSchema(plan: Plan): Record<string, unknown> {
       properties: {
         id: str, kind: { type: "string", enum: ["cinema", "closing"] }, chapter: str, accent: { type: "string", enum: [...CINEMA_ACCENTS] },
         title: str, hl: str, voice: str, hold: { type: "number" }, shots: { type: "array", items: shot }, button: str,
+        // The layer's per-scene fields exist in the schema only when the film has a layer: a grammar that offers
+        // "hud" to a film with no elements decodes into states for nothing.
+        ...(layer ? sceneHudSchema(layer) : {}),
       },
-      required: ["id", "kind", "chapter", "accent", "title", "hl", "voice", "shots"],
+      required: ["id", "kind", "chapter", "accent", "title", "hl", "voice", "shots", ...(layer ? ["hud", "cards"] : [])],
       additionalProperties: false,
     };
   }
@@ -855,8 +866,8 @@ function outlineSchema(plan: Plan, facts = 0): Record<string, unknown> {
   };
 }
 
-const chunkSchema = (plan: Plan): Record<string, unknown> => ({
-  type: "object", properties: { scenes: { type: "array", items: sceneSchema(plan) } }, required: ["scenes"], additionalProperties: false,
+const chunkSchema = (plan: Plan, layer: Graphics | null = null): Record<string, unknown> => ({
+  type: "object", properties: { scenes: { type: "array", items: sceneSchema(plan, layer) } }, required: ["scenes"], additionalProperties: false,
 });
 
 /* ------------------------------------------------------------------ normalisation */
@@ -1043,6 +1054,11 @@ export function normalizeStoryboard(raw: unknown, plan: Plan): unknown {
   delete c.width; delete c.fps; delete c.brand;
   c.style = plan.style;
   c.kleo_style = plan.kleo;
+  // The layer: kept only over a filmed picture and only when it is a layer; a film with one takes no music bed.
+  if (isObj(c.graphics)) {
+    const layer = plan.style === "picture" ? repairGraphics(c.graphics) : null;
+    if (layer) { c.graphics = layer; c.music = "none"; } else delete c.graphics;
+  } else delete c.graphics;
   // THE FOURTH SIDE OF ONE DECISION. templates.ts already decides what a style costs, what card it needs and how
   // many may run at once; this is where the storyboard asks the worker to go and FILM the shots instead of drawing
   // one picture and moving a window over it. It is derived from that same table, never from a second list, so the
@@ -1111,6 +1127,12 @@ export function normalizeStoryboard(raw: unknown, plan: Plan): unknown {
         // Every cut lands on a spoken word, including the ones whose anchor the author quoted wrongly and repairShot
         // dropped. Filling them here is what makes the rule affordable: the alternative was a retry per bad quote.
         anchorShots(s);
+        // The layer's per-scene fields, fitted to the film's own elements; without a layer they cannot exist.
+        const layer = isObj(c.graphics) ? repairGraphics(c.graphics) : null;
+        if (layer) {
+          const hud = repairSceneHud(layer, s.hud); if (Object.keys(hud).length) s.hud = hud; else delete s.hud;
+          const cards = repairCards(s.cards, spoken); if (cards.length) s.cards = cards; else delete s.cards;
+        } else { delete s.hud; delete s.cards; }
       } else {
         delete s.shots; delete s.image_prompt; // only the picture style draws pictures, and it keeps them on its shots
       }
@@ -1380,6 +1402,9 @@ function header(plan: Plan, outline: { title?: unknown; description?: unknown; t
     ...(direction ? { direction } : {}),
     // So does the treatment: it is how a finished video can be read back to the film it was meant to be.
     ...(treatment ? { treatment } : {}),
+    // And the layer the treatment decided, when the film is a picture to draw it over. A film with a layer goes
+    // through the engine's mix (worker film_overlay), which would put the old music bed under the narration: none.
+    ...(layerOf(plan, treatment) ? { graphics: layerOf(plan, treatment), music: "none" } : {}),
   };
 }
 
@@ -1537,7 +1562,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     for (let attempt = 1; attempt <= 3 && !accepted; attempt++) {
       let raw: unknown;
       const maxTokens = plan.style === "cinema" ? 700 * (to - from) : plan.style === "picture" ? 600 * (to - from) : 350 * (to - from);
-      try { raw = await call(chunkPrompt(job, plan, outline, from, to, prevVoice, feedback, direction, treatment), chunkSchema(plan), 400 + maxTokens); }
+      try { raw = await call(chunkPrompt(job, plan, outline, from, to, prevVoice, feedback, direction, treatment), chunkSchema(plan, layerOf(plan, treatment)), 400 + maxTokens); }
       catch (e) { history.push([`scenes ${from + 1}–${to}: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) throw e; feedback = undefined; continue; }
       const got = isObj(raw) && Array.isArray(raw.scenes) ? raw.scenes.filter(isObj) : [];
       // Validated in context (the scenes accepted so far + this chunk + a temporary closing unless it is the last chunk);

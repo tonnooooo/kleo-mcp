@@ -57,6 +57,11 @@ export type { Move, ShotKind } from "./shot-grammar.ts";
 import { directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, type Direction, type Section } from "./direction.ts";
 export { directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor, conformity, GENRES, D as DIRECTION_LIMITS } from "./direction.ts";
 export type { Direction, Section, CastMember, Genre, Conformity } from "./direction.ts";
+// The layer (src/graphics.ts): what is drawn over the film, decided per film by its treatment. The validator holds
+// a storyboard to the grammar exactly as it holds it to the direction; the engine's hud.js draws only that grammar.
+import { graphicsProblems, repairGraphics, sceneHudProblems, cardProblems, type Graphics } from "./graphics.ts";
+export { graphicsProblems, repairGraphics, graphicsOf, sceneHudProblems, repairSceneHud, cardProblems, repairCards, graphicsBlock, sceneHudSchema, isNoLayer, LAYER_METHOD, HUD_KINDS, LINE_STATES, GL as GRAPHICS_LIMITS } from "./graphics.ts";
+export type { Graphics, HudElement, SceneHud, Card } from "./graphics.ts";
 
 export const STYLES = ["editorial", "technical", "illustrated", "terminal", "stickman", "cinema", "picture", "sketch"] as const;
 export const KINDS = ["hero", "list", "compare", "steps", "metric", "image", "quote", "closing", "story", "cinema", "sketch"] as const;
@@ -725,6 +730,16 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
   // storyboard, and the second one after it had already rewritten the scenes.
   if (opts.requireDirection && !("direction" in c))
     e.add('direction is required: call kleo_storyboard_guide and write the DIRECTION block first (subject, goal, audience, tone, must_keep, world, cast, objects, forbidden, sections). It is what keeps a character the same person across shots and gives every scene the colour of its section.');
+  // THE LAYER. Optional, and only over a filmed picture (there is nothing else for it to be drawn over); when it is
+  // there, the scenes are held to it below: a state for an element that does not exist is a typo the engine would
+  // draw as nothing, silently, on a machine that has been paid for.
+  let graphics: Graphics | null = null;
+  if ("graphics" in c && c.graphics !== null && c.graphics !== undefined) {
+    if (c.style !== "picture") e.add("graphics: the layer is drawn over a filmed picture only (the picture style)");
+    for (const p of graphicsProblems(c.graphics)) e.add(p);
+    graphics = repairGraphics(c.graphics);
+    if (graphics) c.graphics = graphics; else if (!graphicsProblems(c.graphics).length) delete c.graphics;   // a layer with nothing on it is no layer
+  }
   const scenes = c.scenes;
   if (!Array.isArray(scenes) || scenes.length < 2 || scenes.length > 240) { e.add("A project needs 2–240 scenes"); return; }
   // The direction is optional for the planner's own drafts, but a storyboard that carries one is held to it: the
@@ -764,6 +779,11 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
     if (c.style === "picture") {
       if (kind !== "cinema" && kind !== "closing") e.add(`${label}: the picture style only draws cinema and closing scenes`);
       else validateShots(s, label, kind, e, fmt, seq);
+      // What this scene says to the layer. Refused against the film's own elements, never against a template.
+      if (graphics) {
+        for (const p of sceneHudProblems(graphics, s.hud, label)) e.add(p);
+        for (const p of cardProblems(s.cards, typeof s.voice === "string" ? s.voice : "", label)) e.add(p);
+      } else if ("hud" in s || "cards" in s) e.add(`${label}: hud and cards belong to a film with a layer — add "graphics" at the top of the storyboard first, or drop them`);
     } else {
       if ("shots" in s) e.add(`${label}: shots need the picture style (kleo_style cartoon or realistic)`);
       if ("image_prompt" in s) e.text(s.image_prompt, `${label} image_prompt`, IMAGE_PROMPT_MAX);
