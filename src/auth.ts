@@ -163,8 +163,8 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 function page(o: { clientName: string; oauthQuery: string; freeCredits: number; error?: string; returning?: User }): string {
   const client = escapeHtml(o.clientName || "your assistant");
   // The price is the table's, not a number typed here: this page said "1 credit = 1 Short" for a day after the
-  // film became the only product at 7 credits. Since 14 September a new account starts at zero: the sentence
-  // below says so in as many words, instead of promising a film the credits cannot buy.
+  // film became the only product at 7 credits. Since 14 September the gift (7) sits under the shortest film (10):
+  // the sentence below says so in as many words, instead of promising a film the credits cannot buy.
   const films = Math.floor(o.freeCredits / MIN_FILM_CREDITS);
   const start = o.freeCredits > 0
     ? `You start with ${plural(o.freeCredits, "credit")}: ${films > 0 ? `${plural(films, "film")} on the house` : `not yet a film (the shortest is ${MIN_FILM_CREDITS}); the 5 EUR pack takes you to ${o.freeCredits + 10}, a 30-second Short`}.`
