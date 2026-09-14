@@ -55,7 +55,7 @@ MOVES = {
     "static_hold": "the camera does not move at all: a locked-off frame on a tripod. The scene moves, the camera does not.",
 }
 LOOK = {
-    "realistic": "cinematic live-action photography, 35mm anamorphic, shallow depth of field, natural light, film grain",
+    "realistic": "cinematic live-action photography, 35mm anamorphic, subject in sharp focus, fine real surface texture, natural light, film grain",
     "cartoon": "hand-painted 2D animation, bold clean linework, flat vivid colour, animated the way a feature cartoon moves",
 }
 NEGATIVE = ("blurry, low quality, worst quality, jpeg artifacts, watermark, text, letters, logo, subtitles, "
@@ -412,6 +412,7 @@ def travel_px(path, samples=8):
 
 # ---- post: what turns a 24 fps 720p clip into something that belongs in a 4K film ----------------------------------
 
+SHARPEN = float(os.environ.get("KLEO_SHARPEN", "0.45"))   # luma unsharp amount on the 4K track; 0 = off
 GRADE = ("curves=r='0/0.02 0.25/0.22 0.75/0.80 1/0.98':g='0/0.02 0.25/0.22 0.75/0.80 1/0.98':"
          "b='0/0.035 0.25/0.235 0.75/0.79 1/0.97',eq=saturation=0.92:contrast=1.06,noise=alls=6:allf=t+u")
 
@@ -483,9 +484,12 @@ def finish_vf(width, height, fps, want, stretch=1.0):
     `stretch` (before the motion compensation, so slow motion stays smooth), interpolate to `fps`, scale, hold on
     the last frame only for whatever is still missing, grade."""
     slow = f"setpts={stretch:.4f}*PTS," if stretch > 1.0005 else ""
+    # A mild unsharp mask on the luma after the 2K -> 4K lanczos upscale (14 September, the owner's direction:
+    # sharp, concrete): it restores the edge contrast the upscale softens, without ringing (0.45 is well under the
+    # halo threshold), and never touches chroma.
     return (f"{slow}minterpolate=fps={fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1,"
             f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
-            f"crop={width}:{height},tpad=stop_mode=clone:stop_duration={want:.3f},{GRADE}")
+            f"crop={width}:{height},unsharp=5:5:{SHARPEN:.2f}:5:5:0.0,tpad=stop_mode=clone:stop_duration={want:.3f},{GRADE}")
 
 
 def plan_fill(want, have, frozen_tail=0.0):

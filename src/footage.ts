@@ -173,8 +173,11 @@ export const KIE_MOVES: Record<string, string> = {
   whip_pan: "the camera whips sideways in a fast blurred pan and settles",
   static_hold: "the camera is locked off on a tripod; only the scene moves",
 };
-export const KIE_LOOK = "Cinematic live-action film, 35mm, shallow depth of field, natural light, realistic physics, subtle film grain. No text, no captions, no logos.";
-export const KIE_NEGATIVE = "text, letters, watermark, logo, subtitles, blurry, low quality, deformed, morphing, extra fingers, static image, frozen, slideshow";
+// SHARP AND CONCRETE (the owner's direction of 14 September): the look asks the clip model for one plane in sharp
+// focus and real surface texture, and the negative names the two looks a generated clip drifts into — the soft
+// out-of-focus wash and the glossy CGI render.
+export const KIE_LOOK = "Cinematic live-action film, 35mm, shallow depth of field with the subject in sharp focus, natural light, fine real surface texture, realistic physics, subtle film grain. No text, no captions, no logos.";
+export const KIE_NEGATIVE = "text, letters, watermark, logo, subtitles, blurry, soft focus, out of focus, cgi, 3d render, plastic, oversmooth, low quality, deformed, morphing, extra fingers, static image, frozen, slideshow";
 
 /** subject first, then the camera, then the look — the order every model reads with the most weight at the front. */
 export function kiePrompt(shot: { image_prompt: string; motion?: string | null; strength?: number | null }): string {
