@@ -88,7 +88,7 @@ test("kleo_account quotes the film's price and the real state of the shop, never
   const closed = await studio(fakeAi(() => TREATMENT_FIXTURE(60)));
   const a = await closed.call("kleo_account", {});
   const d = a.structuredContent;
-  assert.equal(d.film_credits, 15, "the template's default film: 30 s");
+  assert.equal(d.film_credits, 30, "the active template's default film: 60 s");
   assert.equal(d.min_film_credits, 10);
   assert.equal(d.free_tier, "no free credits: connecting is free, every film is paid (no subscription, credit packs only)");
   assert.equal(d.payments_open, false, "no Stripe links configured: the shop is closed and the tool says so");

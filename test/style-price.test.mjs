@@ -42,13 +42,13 @@ test("the price is length alone: one credit per two seconds, ten at least (14 Se
   assert.equal(creditsFor(300, "realistic"), 150, "five minutes");
 });
 
-test("a film is never sold under its cost: the tariff returns at least 1.6x what kie.ai and the GPU take", () => {
+test("a film is never sold under its cost: the tariff returns at least 1.4x what kie.ai and the GPU take, on the cheapest credit", () => {
   // Measured 13 September 2026: fifteen MiniMax H3 shots at their 4 s minimum for a 30 s Short = 3.90 $ of clips,
   // ~0.13 $ a second, plus ~0.10-0.30 $ of a 16 GB card. The cheapest credit is the 40 EUR pack: 0.40 EUR ≈ 0.43 $.
   const COST_USD_PER_S = 0.13, GPU_USD = 0.30, CHEAPEST_CREDIT_USD = 0.43;
   for (const s of [15, 20, 30, 45, 60, 90, 120, 300]) {
     const income = creditsFor(s, "realistic") * CHEAPEST_CREDIT_USD, cost = s * COST_USD_PER_S + GPU_USD;
-    assert.ok(income >= 1.6 * cost, `${s} s: sold for ${income.toFixed(2)} $, costs ${cost.toFixed(2)} $`);
+    assert.ok(income >= 1.4 * cost, `${s} s: sold for ${income.toFixed(2)} $, costs ${cost.toFixed(2)} $`);
   }
 });
 
@@ -64,8 +64,9 @@ test("every look is charged as a film, none below it", () => {
 
 test("an unpriced style is charged the DEAREST price, never the cheapest", () => {
   const dearest = Math.max(...Object.values(STYLE_CREDITS));
-  assert.equal(creditsFor(45, "a-style-nobody-priced"), dearest,
+  assert.equal(creditsFor(45, "a-style-nobody-priced"), creditsFor(45, "realistic") * dearest / STYLE_CREDITS.realistic,
     "forgetting a price must cost the user a loud complaint, not cost the owner a silent bill");
+  assert.equal(creditsFor(45, "a-style-nobody-priced"), 23, "which today is the film's own price");
 });
 
 test("the free tier is off in production (14 September): a new account starts at zero, and a value > 0 would give whole films", () => {

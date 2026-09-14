@@ -501,8 +501,9 @@ const priceOf = (style: string | null | undefined): number =>
  * Why length and nothing else: the film's real cost is per second — about 0.13 $ of kie.ai clips a second (fifteen
  * MiniMax H3 shots at their 4 s minimum for a 30 s Short = 3.90 $), plus a few cents of GPU. The old ladder
  * (7 credits up to 90 s) sold a 90 s film for 3.50 EUR that cost 11 $ to make, and the free tier gave one away to
- * every stranger. At 0.40-0.50 EUR a credit (the packs in stripe.ts) this rule returns 1.7-2x the cost at every
- * length, and the floor of ten is exactly the smallest pack: 5 EUR buys a 20-second film, nothing buys one for free.
+ * every stranger. At 0.40-0.50 EUR a credit (the packs in stripe.ts) this rule returns 1.5-1.9x the cost at every
+ * length (test/style-price.test.mjs guards 1.4x on the cheapest credit), and the floor of ten is exactly the smallest
+ * pack: 5 EUR buys a 20-second film, nothing buys one for free.
  *   20 s = 10 · 30 s = 15 · 60 s = 30 · 90 s = 45 · 5 min = 150
  */
 export const SECONDS_PER_CREDIT = 2;

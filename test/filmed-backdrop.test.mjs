@@ -49,7 +49,7 @@ test("the switch is ON for realistic and only realistic: it is filmed, priced an
   // 13 September: the owner's reset — one style, realistic, and it is a film. The other styles still exist in the
   // tables but are not filmed; they are on their way out of the product, not into the video tier.
   assert.equal(isVideoStyle("realistic"), true, "realistic must be filmed");
-  assert.equal(STYLE_CREDITS.realistic, 7, "a filmed style is priced as one");
+  assert.equal(STYLE_CREDITS.realistic, 1, "since 14 September the price is length alone: the multiplier is 1 for every look");
   assert.deepEqual(STYLE_MACHINE.realistic, VIDEO, "and needs the big card");
   for (const style of KLEO_STYLES.filter((s) => s !== "realistic")) {
     assert.equal(isVideoStyle(style), false, `${style} is not filmed`);
