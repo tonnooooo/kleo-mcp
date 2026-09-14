@@ -34,3 +34,11 @@ Da qui in poi: una riga qui PRIMA di lanciare.
 
     2026-09-13T13:35Z | BOSS/treatment | run2 dal terminale (prompt corretto dca9fc8): 5 richieste x 3 su scout + 5 x 2 su gpt-oss-120b | ~25 | ~2500 scout + ~3500 oss | in corso
     2026-09-13T14:55Z | BOSS/treatment | run2/run3/run4 via /internal/admin/treatment (prompt corretto, 15 treatment ciascuna) + 10 su gpt-oss-120b (JSON troncato, inutilizzabile) | ~60 | ~9.700 in tutto (piano Paid: ~0,10 $) | FATTO: tabella prima/dopo in docs/ADAPT-PROMPT.md §6
+    2026-09-14T00:27Z | programmato/regia | fase 0 via REST, produzione (0a30b4a), llama-4-scout-17b-16e-instruct, x2 | 54 | ~2970 stimati | IN CORSO
+    2026-09-14T00:27Z | programmato/regia | fase 0 via REST, produzione (0a30b4a) | fine | ~3044 spesi | 20/27; 21/27
+    2026-09-14T00:32Z | programmato/regia | fase 0 via REST, parts-first (111c205), llama-4-scout-17b-16e-instruct, x1 | 27 | ~1485 stimati | IN CORSO
+    2026-09-14T00:32Z | programmato/regia | fase 0 via REST, parts-first (111c205) | fine | ~1445 spesi | 18/27
+    2026-09-14T00:34Z | programmato/regia | fase 0 via REST, prima (6f153e1), llama-4-scout-17b-16e-instruct, x1 | 27 | ~1485 stimati | IN CORSO
+    2026-09-14T00:34Z | programmato/regia | fase 0 via REST, prima (6f153e1) | fine | ~1394 spesi | 17/27
+    2026-09-14T00:37Z | programmato/regia | fase 0 via REST, confident (dc54fd7), llama-4-scout-17b-16e-instruct, x1 | 27 | ~1485 stimati | IN CORSO
+    2026-09-14T00:37Z | programmato/regia | fase 0 via REST, confident (dc54fd7) | fine | ~1682 spesi | 19/27 [sicuro 7/9 giuste, non-sicuro 12/17 giuste]
