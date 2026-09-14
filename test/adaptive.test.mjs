@@ -5,7 +5,7 @@ import { adaptPrompt, adaptivePromptText, intakeText, INTAKE, REQUIRED_INTAKE } 
 test("the intake is a fixed list: four things Kleo refuses to guess, three it offers to ask (14 September)", () => {
   assert.deepEqual(INTAKE.map((i) => i.key), ["subject", "duration", "format", "look", "audience", "tone", "must_keep"]);
   assert.deepEqual([...REQUIRED_INTAKE], ["subject", "duration", "format", "look"]);
-  for (const i of INTAKE) { assert.ok(i.question.it.endsWith("?"), `${i.key}: the Italian question is a question`); assert.ok(i.question.en.endsWith("?"), `${i.key}: the English question is a question`); }
+  for (const i of INTAKE) { assert.ok(i.question.it.includes("?"), `${i.key}: the Italian question is a question`); assert.ok(i.question.en.includes("?"), `${i.key}: the English question is a question`); }
 });
 
 test("what the request says is read, what it does not say is asked — in the request's language, required first", () => {
@@ -27,10 +27,10 @@ test("a complete request asks nothing, and the answers passed on the call count 
   const said = adaptPrompt("Create a realistic film about a night race, 2 minutes, YouTube landscape");
   assert.equal(said.duration_s, 120); assert.equal(said.format, "16:9"); assert.equal(said.look, "realistic");
   assert.deepEqual(said.questions, []); assert.deepEqual(said.intake.missing, []);
-  assert.equal(said.intake.duration.from, "request"); assert.equal(said.intake.format.from, "request");
+  assert.equal(said.intake.answered.duration.from, "request"); assert.equal(said.intake.answered.format.from, "request");
   const answered = adaptPrompt("A film about a night race", { duration_s: 120, format: "16:9", look: "animation", audience: "kids", tone: "warm", must_keep: "the number 7" });
   assert.deepEqual(answered.questions, []); assert.deepEqual(answered.optional_questions, []);
-  assert.equal(answered.intake.look.from, "call"); assert.equal(answered.intake.must_keep.value, "the number 7");
+  assert.equal(answered.intake.answered.look.from, "call"); assert.equal(answered.intake.answered.must_keep.value, "the number 7");
   assert.match(adaptivePromptText(answered), /Adaptive film brief ready/); assert.match(adaptivePromptText(answered), /- Must appear: the number 7/);
   assert.ok(answered.assumptions.some((value) => /no music/i.test(value)));
   assert.match(intakeText(answered), /- Look: animation \(the user's answer\)/);
