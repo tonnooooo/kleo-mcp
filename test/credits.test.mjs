@@ -117,8 +117,23 @@ test("create: a client storyboard for a filmed style is stored asking to be film
   assert.equal(job.credits, P30, "and it is charged as a filmed video");
   // and no other look can be bought at all — with or without a backdrop written in by the caller
   const c = JSON.parse(JSON.stringify(sb)); c.kleo_style = "cartoon"; c.backdrop = "video";
-  await assert.rejects(() => m.createJob(env, u, { template: "film", prompt: "Pirati e tesori", duration_s: 30, format: "16:9", language: "it", style: "cartoon", storyboard: c }), /one look now/);
-  await assert.rejects(() => m.createJob(env, u, { template: "film", prompt: "Pirati e tesori", duration_s: 30, format: "16:9", language: "it", storyboard: c }), /one look now/);
+  await assert.rejects(() => m.createJob(env, u, { template: "film", prompt: "Pirati e tesori", duration_s: 30, format: "16:9", language: "it", style: "cartoon", storyboard: c }), /two looks/);
+  await assert.rejects(() => m.createJob(env, u, { template: "film", prompt: "Pirati e tesori", duration_s: 30, format: "16:9", language: "it", storyboard: c }), /film's look is "realistic", but the storyboard's kleo_style says "cartoon"/);
+});
+
+test("create: the animation look is the same film in the drawn look — filmed, same price, its own kleo_style (14 September)", async () => {
+  const env = await newEnv(); const u = await user(env, 20 * P);
+  const sb = JSON.parse(readFileSync(join(ROOT, "scripts", "motion-demo", "samples", "venezia-16x9.json"), "utf8"));
+  const a = JSON.parse(JSON.stringify(sb)); a.kleo_style = "animation";
+  const job = await m.createJob(env, u, { template: "film", prompt: "L'acqua alta a Venezia, raccontata come un film animato", duration_s: 30, format: "16:9", language: "it", style: "animation", storyboard: a });
+  const stored = JSON.parse((await m.getJob(env, job.id)).storyboard);
+  assert.equal(stored.kleo_style, "animation"); assert.equal(stored.backdrop, "video", "filmed like the realistic look");
+  assert.equal(job.credits, P30, "the price is the length's, whatever the look");
+  assert.equal(JSON.parse(job.params).style, "animation");
+  // The look named in style and the storyboard's kleo_style must agree; unnamed, the storyboard's decides.
+  await assert.rejects(() => m.createJob(env, u, { template: "film", prompt: "L'acqua alta a Venezia", duration_s: 30, format: "16:9", language: "it", style: "realistic", storyboard: JSON.parse(JSON.stringify(a)) }), /film's look is "realistic", but the storyboard's kleo_style says "animation"/);
+  const unnamed = await m.createJob(env, u, { template: "film", prompt: "L'acqua alta a Venezia", duration_s: 30, format: "16:9", language: "it", storyboard: JSON.parse(JSON.stringify(a)) });
+  assert.equal(JSON.parse(unnamed.params).style, "animation", "no style named: the storyboard's kleo_style is the look");
 });
 
 test("create: a filmed job on a gated model with no token on the server is refused before anything is charged", async () => {
@@ -139,7 +154,7 @@ test("create: validation errors say nothing was charged and move no credits", as
   const u = await user(env, 10 * P);
   const cases = [
     [{ template: "gatto" }, /There is no template called "gatto"/],
-    [{ style: "cyber" }, /one look now/],
+    [{ style: "cyber" }, /two looks/],
     // The range is the PUBLIC template's (15-300), not the internal row's half of it (14 September).
     [{ duration_s: 600 }, /makes films of 15 to 300 seconds; 600 seconds is outside that range/],
     [{ prompt: "short" }, /The description is too short/],

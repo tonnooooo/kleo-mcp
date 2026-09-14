@@ -289,7 +289,7 @@ export const TEMPLATES: Template[] = [
   // user's; the planner decides the scenes from it (see BRIEFS / FAMILIES: the "chaptered" language, which handles
   // both a thirty-second piece and five minutes).
   { id: "film", name: "Film", formats: ["16:9", "9:16"], minSeconds: 15, maxSeconds: 90, defaultSeconds: 30,
-    description: "A realistic film under ninety seconds: a hook in the first two seconds, every shot generated as moving footage from its own frame, narrated, no captions, no music, 4K 60 fps. Say what it is about and how long; Kleo decides the shots.", voices: EN_IT,
+    description: "A film, realistic or animated, under ninety seconds: a hook in the first two seconds, every shot generated as moving footage from its own frame, narrated, no captions, no music, 4K 60 fps. Say what it is about and how long; Kleo decides the shots.", voices: EN_IT,
     family: "short-hook" },
   { id: "film-long", name: "Film (long)", formats: ["16:9", "9:16"], minSeconds: 90, maxSeconds: 300, defaultSeconds: 120,
     description: "The same film in chapters, from a minute and a half to five minutes. Chosen on its own when the length asks for it.", voices: EN_IT,
@@ -302,7 +302,7 @@ export const TEMPLATES: Template[] = [
 export const TEMPLATE_IDS = TEMPLATES.map((t) => t.id) as [string, ...string[]];
 
 /**
- * THE PRODUCT HAS ONE TEMPLATE AND ONE LOOK (the owner's reset of 13 September 2026): a realistic film, 16:9 or 9:16,
+ * THE PRODUCT HAS ONE TEMPLATE AND TWO LOOKS (the owner's reset of 13 September 2026; animation added on the 14th): a film, realistic or animated, 16:9 or 9:16,
  * filmed shot by shot under the narration. The table above still holds the narrative families the planner uses
  * internally (and the rows old jobs were made with), but none of them is offered, accepted or guessed any more.
  * `film` is what kleo_list_templates lists and what kleo_create_video takes; it is also the default when the
@@ -321,7 +321,7 @@ export const filmTemplateFor = (seconds: number | undefined | null): string =>
   typeof seconds === "number" && seconds > 90 ? FILM_LONG_TEMPLATE_ID : FILM_TEMPLATE_ID;
 export const ACTIVE_TEMPLATE: Template = {
   id: FILM_TEMPLATE_ID, name: "Realistic Film", formats: ["16:9", "9:16"], minSeconds: 15, maxSeconds: 300, defaultSeconds: 60,
-  description: "Adaptive realistic film: shot-by-shot direction, real motion clips, continuity, narration only, no music or subtitles.", voices: EN_IT, family: "chaptered",
+  description: "Adaptive film, realistic or animated: shot-by-shot direction, real motion clips, continuity, narration only, no music or subtitles.", voices: EN_IT, family: "chaptered",
 };
 export const PUBLIC_TEMPLATES: Template[] = [ACTIVE_TEMPLATE];
 export const isPublicTemplate = (id: string | undefined | null): boolean => id === FILM_TEMPLATE_ID || id === FILM_LONG_TEMPLATE_ID;
@@ -385,6 +385,7 @@ export const STYLE_CREDITS: Record<string, number> = {
   // again, are charged as a film and never below it: a picture Short at 1 credit was the loophole this closes.
   cartoon: 1,
   realistic: 1,   // FILMED: a reference frame per shot, animated by kie.ai (MiniMax H3) under the narration
+  animation: 1,   // FILMED the same way, in the drawn look (14 September): the price is the length's
   cyber: 1,
   stickman: 1,
   explainer: 1,
@@ -444,6 +445,7 @@ export const videoDiskGb = (modelId: string | undefined, base: number): number =
 export const STYLE_MACHINE: Record<string, Machine> = {
   cartoon: PICTURES,    // Stable Diffusion 1.5, about 6 GB
   realistic: VIDEO,     // since 13 September: Wan 2.2 films its shots (worker/kleo_worker.py render_film)
+  animation: VIDEO,     // since 14 September: the same road, the stills drawn as animation frames
   cyber: PICTURES,      // draws itself live, no model at all
   stickman: PICTURES,
   explainer: PICTURES,

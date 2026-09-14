@@ -9,10 +9,10 @@ PICTURE_MODELS is a copy of kleo_pictures.MODELS on purpose: importing kleo_pict
 import importlib.util, os, sys, time
 from pathlib import Path
 
-PICTURE_MODELS = {"cartoon": "Lykon/dreamshaper-8", "realistic": "stabilityai/stable-diffusion-xl-base-1.0"}
+PICTURE_MODELS = {"cartoon": "Lykon/dreamshaper-8", "realistic": "stabilityai/stable-diffusion-xl-base-1.0", "animation": "stabilityai/stable-diffusion-xl-base-1.0"}
 # La famiglia decide la classe di pipeline con cui il modello si carica: SDXL non si apre con
 # StableDiffusionPipeline. Copia deliberata di kleo_pictures.FAMILY, verificata dal test che confronta le tabelle.
-PICTURE_FAMILY = {"cartoon": "sd15", "realistic": "sdxl"}
+PICTURE_FAMILY = {"cartoon": "sd15", "realistic": "sdxl", "animation": "sdxl"}
 # Which of them are baked into the image. Every gigabyte here is downloaded again by every rented instance before
 # it can start (a 15 GB image took 16 minutes to pull on a 900 Mbit host), while the same weights come from
 # Hugging Face at ~2 GB in half a minute, once, on the instance itself. So only the common look travels in the

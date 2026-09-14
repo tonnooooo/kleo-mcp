@@ -305,3 +305,37 @@ test("writeTreatment answers either way: a treatment, or the reason there is non
   const none = await writeTreatment({}, { prompt: "x", duration_s: 60, format: "16:9", language: "en" });
   assert.equal(none.treatment, null); assert.equal(none.transient, true);
 });
+
+/* ------------------------------------------------------------------ the look (14 September): realistic or animation */
+
+test("the method decides the look in step 0, and the treatment carries it as a closed field", () => {
+  assert.match(MASTER_PROMPT, /^0\. LOOK\. "realistic" or "animation"/m, "step 0 of the method is the look");
+  assert.match(MASTER_PROMPT, /REALISTIC \(live-action photography\) or ANIMATION \(a 2D animated feature/);
+  assert.match(MASTER_PROMPT, /IN ANIMATION the same sentence names the drawn world/, "the visual language has an animation reading");
+  assert.doesNotMatch(MASTER_PROMPT, /NO animation,/, "animation is no longer on the list of what Kleo cannot render");
+  const schema = treatmentSchema();
+  assert.deepEqual(schema.properties.look, { type: "string", enum: ["realistic", "animation"] });
+  assert.ok(schema.required.includes("look"));
+  const v = variationFor("look-test");
+  const p = treatmentPrompt({ prompt: "A fox who learns to swim", duration_s: 45, format: "9:16", language: "en", look: "animation" }, v);
+  assert.match(p, /THE LOOK: ANIMATION, fixed by the request or the tool call — write "look":"animation"/);
+  assert.match(p, /"look":"realistic\|animation"/, "the shape names the field");
+  const open = treatmentPrompt({ prompt: "A fox who learns to swim", duration_s: 45, format: "9:16", language: "en" }, v);
+  assert.match(open, /THE LOOK: not named — decide it in step 0/);
+});
+
+test("the look is checked, forced by the call, and read back by every stage", () => {
+  const v = variationFor("look-test");
+  const raw = TREATMENT_FIXTURE(60);
+  assert.deepEqual(treatmentProblems({ ...raw, look: "3d" }, 60, "en"), ['look: "3d" is not one of realistic, animation']);
+  assert.deepEqual(treatmentProblems({ ...raw, look: "animation" }, 60, "en", { look: "realistic" }), ['look: the treatment says "animation" but the film was asked in "realistic" — write it for that look, or pass style "animation"']);
+  assert.deepEqual(treatmentProblems({ ...raw, look: "animation" }, 60, "en", { look: "animation" }), []);
+  assert.equal(repairTreatment(raw, 60, v, "en").look, "realistic", "a treatment written before the field existed is realistic");
+  assert.equal(repairTreatment({ ...raw, look: "animation" }, 60, v, "en").look, "animation");
+  assert.equal(repairTreatment(raw, 60, v, "en", { look: "animation" }).look, "animation", "the call's look wins over an absent field");
+  const t = repairTreatment({ ...raw, look: "animation" }, 60, v, "en");
+  assert.match(treatmentBlock(t), /^Look: ANIMATION — a 2D animated film: every picture is a drawn frame/m, "the direction and the scenes read the look first");
+  assert.match(treatmentText(t), /^Look: animation \(a 2D animated film\)/m);
+  assert.match(treatmentText(repairTreatment(raw, 60, v, "en")), /^Look: realistic \(filmed\)/m);
+  assert.equal(treatmentOf({ treatment: { ...t } }).look, "animation", "read back from a job's params");
+});

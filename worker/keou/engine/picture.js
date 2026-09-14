@@ -222,7 +222,8 @@
   }
   /* @end picture-plan */
 
-  const isReal = () => (A.project && A.project.look) === 'realistic';
+  // The cinema typography serves both filmed looks (realistic, animation); the cartoon family is the old drawn Short's.
+  const isReal = () => { const l = A.project && A.project.look; return l === 'realistic' || l === 'animation'; };
   const family = () => isReal() ? REAL : CARTOON;
   const accent = s => COL[s && s.accent] || COL.green;
 

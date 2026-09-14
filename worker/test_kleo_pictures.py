@@ -635,5 +635,38 @@ class DirectionTest(unittest.TestCase):
         self.assertLessEqual(len(long) - len(kp.STYLE_SUFFIX["cartoon"]), kp.BASE_MAX + kp.CONTEXT_MAX + 8)
 
 
+class AnimationLookTest(unittest.TestCase):
+    """The animation look (14 September): an SDXL-class model, its own suffix and negative, per-look sampler knobs."""
+
+    def test_tables_know_the_look(self):
+        self.assertEqual(kp.family_of("animation"), "sdxl")
+        self.assertEqual(kp.size_for("16:9", "animation"), (1344, 768))
+        self.assertEqual(kp.size_for("9:16", "animation"), (768, 1344))
+        self.assertIn("animation", kp.MODELS); self.assertIn("animation", kp.STYLE_SUFFIX); self.assertIn("animation", kp.GUIDANCE)
+        self.assertIn("2D animated", kp.STYLE_SUFFIX["animation"])
+
+    def test_negative_follows_the_look(self):
+        self.assertEqual(kp.negative_for(None), kp.NEGATIVE_PROMPT)
+        self.assertEqual(kp.negative_for(None, "realistic"), kp.NEGATIVE_PROMPT)
+        self.assertEqual(kp.negative_for(None, "animation"), kp.STYLE_NEGATIVE["animation"])
+        self.assertIn("photograph", kp.STYLE_NEGATIVE["animation"])
+        for banned in ("anime", "cartoon", "drawing", "illustration"):
+            self.assertNotIn(banned, kp.STYLE_NEGATIVE["animation"], f"the animation look must not ban the drawing ({banned})")
+        neg = kp.negative_for({"forbidden": ["a wifi symbol"]}, "animation")
+        self.assertTrue(neg.startswith(kp.STYLE_NEGATIVE["animation"]) and neg.endswith(", a wifi symbol"))
+
+    def test_per_look_overrides_fall_through_to_the_family(self):
+        os.environ.pop("KLEO_PICTURES_STEPS", None)
+        self.assertEqual(kp.steps_for("animation"), kp.STEPS_BY_FAMILY["sdxl"])
+        self.assertEqual(kp.guidance_for("animation"), kp.GUIDANCE_BY_FAMILY["sdxl"])
+        old = dict(kp.STEPS_BY_STYLE), dict(kp.GUIDANCE_BY_STYLE)
+        try:
+            kp.STEPS_BY_STYLE["animation"] = 8; kp.GUIDANCE_BY_STYLE["animation"] = 2.0
+            self.assertEqual(kp.steps_for("animation"), 8); self.assertEqual(kp.guidance_for("animation"), 2.0)
+            self.assertEqual(kp.steps_for("realistic"), kp.STEPS_BY_FAMILY["sdxl"], "another look is untouched")
+        finally:
+            kp.STEPS_BY_STYLE.clear(); kp.STEPS_BY_STYLE.update(old[0]); kp.GUIDANCE_BY_STYLE.clear(); kp.GUIDANCE_BY_STYLE.update(old[1])
+
+
 if __name__ == "__main__":
     unittest.main()

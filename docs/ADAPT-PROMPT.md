@@ -170,3 +170,11 @@ immagini non disegnano mai la cifra), il rimando delle immagini che chiedono dia
 soglia). La seconda corsa: il film italiano ha avuto il suo treatment (angolo "non è il calore, è un processo
 biologico"); Voyager no, due rifiuti (elenco, poi angolo = logline): il 17B non regge il metodo su un soggetto
 tecnico. Da qui la strada gratuita come impostazione predefinita di `kleo_adapt_prompt`.
+
+## 7. Il look: realistic o animation (14 settembre)
+
+Il metodo ha un passo 0: **LOOK**, `"realistic"` o `"animation"`, scritto nel campo `look` del treatment (chiuso
+nello schema, controllato da `treatmentProblems`, riparato da `repairTreatment`). La richiesta o la chiamata
+(`style`) lo fissano; altrimenti il produttore decide, e la scelta finisce fra le decisioni. La sezione VISUAL
+LANGUAGE ha una lettura per ciascun look, il blocco che direzione e scene leggono si apre con «Look: …», e il
+planner, i prompt delle immagini e delle clip seguono quello. Tutto in `docs/ANIMAZIONE.md`.

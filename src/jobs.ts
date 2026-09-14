@@ -6,7 +6,7 @@ import { footageBackendFor, footageConfig } from "./footage";
 import { rid, nowIso, int, hmacHex } from "./util";
 import { isFlagActive } from "./schema";
 import { backendFor } from "./backends";
-import { validateStoryboard, kleoStyleOf, pictureScenes, narrationOf, MAX_PICTURES, wordBudget, KLEO_STYLES, type KleoStyle } from "./keou-contract";
+import { validateStoryboard, kleoStyleOf, pictureScenes, narrationOf, MAX_PICTURES, wordBudget, KLEO_STYLES, FILM_LOOKS, type KleoStyle, type FilmLook } from "./keou-contract";
 import { treatmentProblems, repairTreatment, variationFor } from "./treatment.ts";
 
 /** An error whose message is shown to the user as-is: plain English, always says whether something was charged. */
@@ -97,7 +97,7 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   if (!t) throw new JobError(`There is no template called "${input.template}". Call kleo_list_templates for the valid ids. Nothing was charged.`);
   // One product (13 September 2026): the film. The old templates stay readable for the rows made with them and
   // for the planner's families, but a new video is not made with them.
-  if (!isPublicTemplate(t.id)) throw new JobError(`Kleo makes one kind of video now: a realistic film, 16:9 or 9:16 ("${FILM_TEMPLATE_ID}" up to 90 seconds, "${FILM_LONG_TEMPLATE_ID}" up to 300). Omit the template and say the length. Nothing was charged.`);
+  if (!isPublicTemplate(t.id)) throw new JobError(`Kleo makes one kind of video now: a film, realistic or animated, 16:9 or 9:16 ("${FILM_TEMPLATE_ID}" up to 90 seconds, "${FILM_LONG_TEMPLATE_ID}" up to 300). Omit the template and say the length. Nothing was charged.`);
   const format = (input.format ?? t.formats[0]) as Format;
   if (!t.formats.includes(format))
     throw new JobError(`The "${t.name}" template only makes ${formatWords(t.formats[0])}, not ${formatWords(format)}. Pick ${t.formats[0]} or another template. Nothing was charged.`);
@@ -111,19 +111,24 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   const voice = normalizeVoice(input.voice);   // a Kokoro id from the storyboard guide is the same voice, not an error
   if (voice && !t.voices.includes(voice)) throw new JobError(`There is no voice called "${input.voice}". Available voices: ${voiceSpellings(t.voices).join(", ")}. Nothing was charged.`);
   const language = input.language ?? "en";
-  // One look (13 September 2026): realistic. Naming another is refused in words; omitting it means realistic.
-  if (input.style !== undefined && input.style !== "realistic")
-    throw new JobError(`Kleo has one look now: "realistic" (a filmed, cinematic video). Omit "style" or pass "realistic". Nothing was charged.`);
-  let style: KleoStyle | undefined = "realistic";
+  // Two looks (14 September 2026): realistic or animation, filmed the same way. Any other name is refused in
+  // words. When none is named, the treatment's own "look" decides (step 0 of the method), then the storyboard's
+  // kleo_style, and failing both, realistic.
+  if (input.style !== undefined && !(FILM_LOOKS as readonly string[]).includes(input.style))
+    throw new JobError(`Kleo has two looks: "realistic" (a filmed, cinematic video) and "animation" (a 2D animated film). Omit "style" or pass one of them. Nothing was charged.`);
+  const asLook = (x: unknown): FilmLook | null => ((FILM_LOOKS as readonly string[]).includes(String(x)) ? (x as FilmLook) : null);
+  const field = (o: unknown, k: string): unknown => (o && typeof o === "object" && !Array.isArray(o) ? (o as Record<string, unknown>)[k] : undefined);
+  const look: FilmLook = (input.style as FilmLook | undefined) ?? asLook(field(input.treatment, "look")) ?? asLook(field(input.storyboard, "kleo_style")) ?? "realistic";
+  let style: KleoStyle | undefined = look;
   let cappedFrom: string | null = null; // set only when a guessed look was replaced by a cheaper one
   let storyboard: string | null = null;
   if (input.storyboard !== undefined && input.storyboard !== null) {
     const sbIn = input.storyboard;
     if (typeof sbIn === "object" && !Array.isArray(sbIn)) {
       const sb = sbIn as Record<string, unknown>;
-      if ("kleo_style" in sb && sb.kleo_style !== "realistic")
-        throw new JobError(`Kleo has one look now: "realistic", but the storyboard's kleo_style says "${String(sb.kleo_style)}". Use realistic or omit kleo_style. Nothing was charged.`);
-      sb.kleo_style = "realistic";
+      if ("kleo_style" in sb && sb.kleo_style !== look)
+        throw new JobError(`The film's look is "${look}", but the storyboard's kleo_style says "${String(sb.kleo_style)}". Write the storyboard for the look you pass as style (realistic or animation), or omit kleo_style. Nothing was charged.`);
+      sb.kleo_style = look;
     }
     // requireDirection only here: this is the assistant's storyboard, and the guide already told it to write the
     // direction first. The planner (src/storyboard.ts) validates its own drafts with the flag off, because it is
@@ -150,11 +155,11 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   // not add up), before anything is charged; kept exactly, so the film the user read about is the film planned.
   let treatment: Record<string, unknown> | null = null;
   if (input.treatment !== undefined && input.treatment !== null) {
-    const problems = treatmentProblems(input.treatment, duration, language);
+    const problems = treatmentProblems(input.treatment, duration, language, { look });
     if (problems.length)
       throw new JobError(`The treatment has ${plural(problems.length, "problem")} (nothing was charged). Fix ${problems.length === 1 ? "it" : "them"} and call kleo_create_video again, or leave the treatment out and Kleo writes one:\n- ${problems.join("\n- ")}`);
     const tIn = input.treatment as Record<string, unknown>;
-    const fitted = repairTreatment(tIn, duration, variationFor(typeof tIn.variation === "string" ? tIn.variation : ""), language);
+    const fitted = repairTreatment(tIn, duration, variationFor(typeof tIn.variation === "string" ? tIn.variation : ""), language, { look });
     treatment = fitted as unknown as Record<string, unknown>;
     // With a client storyboard the planner never runs, so the treatment is attached to the storyboard here: it is
     // how the finished video can be read back to the film it was meant to be, on either road into the queue.

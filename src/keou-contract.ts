@@ -124,10 +124,13 @@ export const VOICES: Record<string, readonly string[]> = {
 export const LANGUAGES = Object.keys(VOICES);
 export const FORMATS = ["9:16", "16:9"] as const;
 /** Kleo visual styles. cartoon/realistic cut between generated pictures (Keou style "picture"); cyber is the plain Keou look; stickman is Keou's stickman. */
-export const KLEO_STYLES = ["cartoon", "realistic", "cyber", "stickman", "explainer"] as const;
+export const KLEO_STYLES = ["cartoon", "realistic", "animation", "cyber", "stickman", "explainer"] as const;
 export type KleoStyle = (typeof KLEO_STYLES)[number];
 /** Styles whose shots get a generated picture; they are exactly the styles that use the Keou style "picture". */
-export const PICTURE_STYLES: readonly KleoStyle[] = ["cartoon", "realistic"];
+export const PICTURE_STYLES: readonly KleoStyle[] = ["cartoon", "realistic", "animation"];
+/** The looks a film is sold in (14 September 2026): filmed, or drawn as a 2D animated film. Both are "picture" projects whose stills kie.ai animates. */
+export const FILM_LOOKS = ["realistic", "animation"] as const;
+export type FilmLook = (typeof FILM_LOOKS)[number];
 export const IMAGE_PROMPT_MAX = 240;
 /**
  * The deprecated shot field: `motion` named the camera move by hand, and when it was missing the engine picked a
@@ -711,10 +714,10 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
   if (kleo !== undefined && !(KLEO_STYLES as readonly string[]).includes(kleo as string)) e.add(`kleo_style must be one of ${sorted(KLEO_STYLES)}`);
   else if (kleo === "stickman" && c.format !== "9:16") e.add("The stickman style makes 9:16 Shorts only: use format 9:16, or pick another style (cartoon, realistic or cyber) for 16:9");
   else if (kleo === "stickman" && c.style !== "stickman") e.add(`kleo_style stickman needs the Keou style "stickman" (story scenes), not "${String(c.style)}"`);
-  else if ((kleo === "cartoon" || kleo === "realistic") && c.style !== "picture") e.add(`kleo_style ${kleo} needs the Keou style "picture" (full-screen shots cut on the narration), not "${String(c.style)}"`);
+  else if (PICTURE_STYLES.includes(kleo as KleoStyle) && c.style !== "picture") e.add(`kleo_style ${kleo} needs the Keou style "picture" (full-screen shots cut on the narration), not "${String(c.style)}"`);
   else if (kleo === "cyber" && c.style === "stickman") e.add('kleo_style cyber does not draw the stickman: set kleo_style to "stickman" or change the style');
-  if (c.style === "picture" && kleo !== "cartoon" && kleo !== "realistic")
-    e.add(`the Keou style "picture" is the cartoon/realistic look: set kleo_style to "cartoon" or "realistic"${kleo === undefined ? "" : `, not "${String(kleo)}"`}`);
+  if (c.style === "picture" && !PICTURE_STYLES.includes(kleo as KleoStyle))
+    e.add(`the Keou style "picture" is the cartoon/realistic/animation look: set kleo_style to one of ${PICTURE_STYLES.join(", ")}${kleo === undefined ? "" : `, not "${String(kleo)}"`}`);
   if (c.style === "stickman" && c.format !== "9:16" && kleo !== "stickman") e.add("The stickman style is laid out for 9:16 only");
   if ("width" in c && !(WIDTHS[c.format as string] ?? []).includes(c.width as number)) e.add("Invalid width for aspect ratio");
   const voices = VOICES[c.language as string];

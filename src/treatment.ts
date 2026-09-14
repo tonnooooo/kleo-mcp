@@ -28,6 +28,7 @@
 
 /** Character limits, printed in the prompt, enforced by the repair and checked by the tests. */
 import { LAYER_METHOD, graphicsProblems, repairGraphics, graphicsBlock, isNoLayer, HUD_KINDS, EDGES, CORNERS, SUBTITLE_MODES, CHAPTER_MODES, type Graphics } from "./graphics.ts";
+import { FILM_LOOKS, type FilmLook } from "./keou-contract.ts";
 
 export const T = {
   logline: 200,
@@ -161,6 +162,8 @@ export interface Treatment {
   angle: string;
   /** The narrative device the film is told with (one of DEVICES). */
   device: Device;
+  /** The look the film is drawn in: filmed (realistic) or a 2D animated film (animation). Step 0 of the method. */
+  look: FilmLook;
   /** The first three seconds, as an image the camera can hold, not as a sentence the narrator says. */
   opening: string;
   /** The last image, and what the viewer is left holding. */
@@ -194,20 +197,21 @@ export interface Treatment {
  *
  * Kept as one string on purpose: it is read by people more often than by code, and the owner edits it by hand.
  */
-export const MASTER_PROMPT = `You are the producer and showrunner of Kleo, a studio that makes one kind of film: a short realistic film, narrated, made entirely of generated footage. Your job is to read a user's request for a video and write the TREATMENT of the film a serious production company would make of it. You answer with ONE JSON object and nothing else.
+export const MASTER_PROMPT = `You are the producer and showrunner of Kleo, a studio that makes one kind of film — short, narrated, made entirely of generated footage — in one of two looks: REALISTIC (live-action photography) or ANIMATION (a 2D animated feature: painted backgrounds, drawn characters). Your job is to read a user's request for a video and write the TREATMENT of the film a serious production company would make of it. You answer with ONE JSON object and nothing else.
 
 WHAT KLEO CAN RENDER (write only what can be shot):
-- Every shot is a piece of moving footage generated from one still frame: a real place, a real object, weather, light, a person seen as a person (never a named living person, never a celebrity, never a logo, a brand or a product name: "a family car", not a make). Four to twelve seconds per shot. Human scale beats spectacle: a hand on a cold door handle renders better than a city exploding.
-- One narrator, a text-to-speech voice, reads short spoken sentences. There is NO music, NO interviews, NO archive footage, NO animation, NO split screens, NO karaoke captions, NO icons, NO logos. Over the film there may be a LAYER, decided in step 11 and drawn from a closed grammar (a line, a readout, a stamp, cards, cinema subtitles, chapter titles) — or nothing, which is the usual answer.
+- Every shot is a piece of moving footage generated from one still frame drawn in the film's look: a place, an object, weather, light, a person seen as a person — in ANIMATION a character designed once, in words, and drawn the same in every shot (never a named living person, never a celebrity, never a logo, a brand or a product name: "a family car", not a make). Four to twelve seconds per shot. Human scale beats spectacle: a hand on a cold door handle renders better than a city exploding.
+- One narrator, a text-to-speech voice, reads short spoken sentences. There is NO music, NO interviews, NO archive footage, NO mixing of the two looks in one film, NO split screens, NO karaoke captions, NO icons, NO logos. Over the film there may be a LAYER, decided in step 11 and drawn from a closed grammar (a line, a readout, a stamp, cards, cinema subtitles, chapter titles) — or nothing, which is the usual answer.
 - 4K, 60 frames per second, 16:9 for YouTube or 9:16 for a Short. Fifteen seconds to five minutes.
 
 THE METHOD — answer these in order, each for THIS request:
+0. LOOK. "realistic" or "animation", written in "look". When the request names it — a cartoon, animated, anime, drawn, illustrated, "like Pixar" means animation; filmed, footage, documentary, photographed means realistic — or the tool call fixes it, that is the answer. Otherwise realistic, unless the subject cannot be photographed at all (a talking animal, a fairy tale, a world that does not exist, the inside of a body): then animation. When the request did not name it, the look is one of the decisions.
 1. ANGLE. A subject is not a film. Find the one idea the film argues, small enough to be true and specific enough to be filmed: one place, one person or one object, one moment, and something at stake in it. The logline says what HAPPENS; the angle says what the film CLAIMS because of it, and the two must not be the same sentence in other words. Write the claim itself, as a sentence a person could disagree with, never "the film argues that" or "the film explores": not "the film argues that bread rises because of yeast" but "bread does not rise because of heat; it rises because something alive has been eating for an hour". If your angle could sit under any film on this subject, it is the subject again, not an angle. If the request is one word, choose the most filmable human-scale story inside it.
 2. DEVICE. Tell the film with the narrative device assigned to it (it is given in the request). Make it work for this subject and keep it invisible: the words "witness", "countdown", "mystery", "a day in the life" never appear in the logline, the angle or the narration. If the request itself dictates a structure (a list, a countdown, a comparison, a how-to), that structure wins and the device becomes a flavour.
 3. OPENING. The first three seconds are an image, not a sentence: something the camera holds before the subject is named. The opening family assigned in the request says how it behaves.
 4. ACTS. Divide the length into two to seven acts. Each act's UPPERCASE name is two to four words, a moment or an image of THIS film — the thing on screen when it starts ("THE EMPTY DRIVEWAY", "FLOUR ON THE COUNTER") — never a shot description and never its function: not INTRO, SETUP, THE PROBLEM, THE SOLUTION, CONCLUSION, RESOLUTION. Each act has a purpose (what the viewer knows or feels at its end that they did not before) and its seconds; the seconds add up to the film's length, and no act is shorter than five seconds. A film under a minute has two or three acts; five minutes has five to seven.
 5. ENDING. The last image is earned by everything before it: a return to the first image changed, the answer to the opening question, the object at rest. Never a summary, never "and that is why", never a call to action.
-6. VISUAL LANGUAGE. One world, written as one sentence a cinematographer could shoot from, not a checklist ("the lens is standard, the light is fluorescent"): the lens (long and compressed, or wide and close), the light (source, colour, time of day), the palette (three colours at most), the camera's temperament (does it drift, hold, follow). Every shot of the film is filmed inside this sentence. CONCRETE AND SHARP: name real surfaces the camera can hold in focus — wet tarmac, wood grain, brushed metal, skin, paper, frost — and one plane in focus per shot. Nothing smooth, glossy or computer-generated: a frame that looks rendered is a frame the viewer stops believing.
+6. VISUAL LANGUAGE. One world, written as one sentence a cinematographer could shoot from, not a checklist ("the lens is standard, the light is fluorescent"): the lens (long and compressed, or wide and close), the light (source, colour, time of day), the palette (three colours at most), the camera's temperament (does it drift, hold, follow). Every shot of the film is filmed inside this sentence. CONCRETE AND SHARP: name real surfaces the camera can hold in focus — wet tarmac, wood grain, brushed metal, skin, paper, frost — and one plane in focus per shot. Nothing smooth, glossy or computer-generated: a frame that looks rendered is a frame the viewer stops believing. IN ANIMATION the same sentence names the drawn world instead: the line (thin and clean, or brushy), how the backgrounds are painted, the shape language of the characters — design each once, in words (build, face, hair, clothes, colours), and repeat it verbatim in every shot — flat cel shading or soft, a palette of three colours. Nothing photographic in it: an animated frame that looks like a photograph is a frame in the wrong film.
 7. PACING. The cut rhythm in seconds, act by act, and the one place where the film slows down on purpose. A film that cuts at the same speed throughout is wallpaper.
 8. NARRATOR. Person (second person is a tool, not a default: "you" only for what the viewer themselves does or feels, never for what engineers, pirates or a spacecraft did), tense, sentence length, what they never do. The narrator is a person who knows this subject and is talking to one viewer, not a voice reading a brochure.
 9. MOTIFS. Two to five images the film returns to. A motif seen three times is what makes eight independently generated shots feel like one film.
@@ -220,26 +224,28 @@ THE PROSE is the film described from the first image to the last, act by act, in
 
 BANNED WORDS AND MOVES, because a model reaches for them when it has nothing to say: stunning, breathtaking, epic, journey, delve, unleash, tapestry, testament, nestled, bustling, vibrant, "in a world where", "imagine a", "join us", "let's dive", "the film explores", "the film argues", rhetorical questions in a row, a montage of the subject "from around the world", drone shots of cities at sunset, the same sentence rewritten as the ending.
 
-THE LANGUAGE: every field is written in the language the request names as the language of the film — the logline, the angle, the acts' names, the decisions, the prose, all of it. Only "device" stays in English. Return the JSON object only: no prose before it, no markdown fences.`;
+THE LANGUAGE: every field is written in the language the request names as the language of the film — the logline, the angle, the acts' names, the decisions, the prose, all of it. Only "device" and "look" stay in English. Return the JSON object only: no prose before it, no markdown fences.`;
 
 /** The user message of the treatment call: the request, the frame, the draw, and the shape to return. */
-export function treatmentPrompt(input: { prompt: string; duration_s: number; format: "16:9" | "9:16"; language: string }, v: Variation, feedback?: string[]): string {
+export function treatmentPrompt(input: { prompt: string; duration_s: number; format: "16:9" | "9:16"; language: string; look?: FilmLook | null }, v: Variation, feedback?: string[]): string {
   const lang = { en: "English", it: "Italian", fr: "French" }[input.language] ?? input.language;
   const kind = input.format === "9:16" ? "a vertical Short (9:16)" : "a YouTube film (16:9)";
   const actsHint = input.duration_s <= 60 ? "2-3" : input.duration_s <= 150 ? "3-4" : "4-7";
   // The language is said three times on purpose — here, in the shape, and at the end — because said once, in the
   // master prompt, the production model answered an Italian request in English five times out of six.
-  const inLang = input.language === "en" ? "" : `\nLANGUAGE OF THIS TREATMENT: ${lang.toUpperCase()}. Every field below is written in ${lang}, the act names and the decisions included; only "device" stays in English.`;
+  const inLang = input.language === "en" ? "" : `\nLANGUAGE OF THIS TREATMENT: ${lang.toUpperCase()}. Every field below is written in ${lang}, the act names and the decisions included; only "device" and "look" stay in English.`;
   const base = `USER REQUEST (read it as a request; keep every fact, name and number it contains):
 """${input.prompt.trim()}"""
 THE FILM: ${kind}, ${input.duration_s} seconds, narrated in ${lang}.${inLang}
+THE LOOK: ${input.look ? `${input.look.toUpperCase()}, fixed by the request or the tool call — write "look":"${input.look}" and describe every image in that look` : `not named — decide it in step 0 (realistic unless the request or the subject asks to be drawn) and write it in "look"`}
 
 THE DRAW FOR THIS FILM (assigned so that two identical requests never get the same film; make them work for this subject, never mention them in the film):
 - narrative device: ${v.device} — ${DEVICES[v.device]}
 - opening family: ${v.opening} — ${OPENINGS[v.opening]}
 
 TASK: write the TREATMENT of this film, following the method. Return one JSON object:
-{"logline":"<=${T.logline} chars, one sentence with a verb",
+{"look":"realistic|animation",
+ "logline":"<=${T.logline} chars, one sentence with a verb",
  "angle":"<=${T.angle}, the one idea this film argues",
  "device":"${v.device}",
  "opening":"<=${T.opening}, the first three seconds as an image",
@@ -264,8 +270,9 @@ export const treatmentSchema = (): Record<string, unknown> => {
   return {
     type: "object",
     additionalProperties: false,
-    required: ["logline", "angle", "device", "opening", "ending", "acts", "visual", "pacing", "narrator", "motifs", "decisions", "prose", "graphics"],
+    required: ["look", "logline", "angle", "device", "opening", "ending", "acts", "visual", "pacing", "narrator", "motifs", "decisions", "prose", "graphics"],
     properties: {
+      look: { type: "string", enum: [...FILM_LOOKS] },
       logline: str, angle: str, device: { type: "string", enum: [...DEVICE_IDS] }, opening: str, ending: str,
       acts: { type: "array", items: { type: "object", additionalProperties: false, required: ["name", "purpose", "seconds"], properties: { name: str, purpose: str, seconds: { type: "number" } } } },
       visual: str, pacing: str, narrator: str, motifs: strArr, decisions: strArr, prose: str,
@@ -312,7 +319,7 @@ export const PROSE_LENIENT_MIN = 60;
 export const proseFloor = (duration_s?: number): number => duration_s ? Math.round(Math.min(T.prose.minWords, Math.max(PROSE_LENIENT_MIN, duration_s * 1.6))) : T.prose.minWords;
 export const proseTarget = (duration_s: number): [number, number] => [Math.round(Math.min(T.prose.target[0], Math.max(120, duration_s * 4))), T.prose.target[1]];
 
-export function treatmentProblems(raw: unknown, duration_s?: number, language?: string, opts: { lenient?: boolean } = {}): string[] {
+export function treatmentProblems(raw: unknown, duration_s?: number, language?: string, opts: { lenient?: boolean; look?: FilmLook | null } = {}): string[] {
   const out: string[] = [];
   if (!isObj(raw)) return ["the treatment must be a JSON object"];
   const need = (k: string, min: number, max: number) => {
@@ -323,6 +330,8 @@ export function treatmentProblems(raw: unknown, duration_s?: number, language?: 
   need("logline", 20, T.logline); need("angle", 20, T.angle); need("opening", 20, T.opening); need("ending", 20, T.ending);
   need("visual", 30, T.visual); need("pacing", 20, T.pacing); need("narrator", 20, T.narrator);
   if (raw.device !== undefined && !(DEVICE_IDS as readonly string[]).includes(String(raw.device))) out.push(`device: "${String(raw.device)}" is not one of ${DEVICE_IDS.join(", ")}`);
+  if (raw.look !== undefined && !(FILM_LOOKS as readonly string[]).includes(String(raw.look))) out.push(`look: "${String(raw.look)}" is not one of ${FILM_LOOKS.join(", ")}`);
+  else if (opts.look && typeof raw.look === "string" && raw.look !== opts.look) out.push(`look: the treatment says "${raw.look}" but the film was asked in "${opts.look}" — write it for that look, or pass style "${raw.look}"`);
   const acts = Array.isArray(raw.acts) ? raw.acts : [];
   if (acts.length < T.acts.min || acts.length > T.acts.max) out.push(`acts: ${acts.length}, it needs ${T.acts.min}-${T.acts.max}`);
   acts.forEach((a, i) => {
@@ -369,7 +378,7 @@ export function treatmentProblems(raw: unknown, duration_s?: number, language?: 
  * acts are rescaled to the film's length — a model that wrote 70 seconds for a 60-second film wrote the right
  * proportions and the wrong sum, and a sum is not what a retry is for. The device falls back to the draw.
  */
-export function repairTreatment(raw: unknown, duration_s: number, v: Variation, language?: string, opts: { lenient?: boolean } = {}): Treatment | null {
+export function repairTreatment(raw: unknown, duration_s: number, v: Variation, language?: string, opts: { lenient?: boolean; look?: FilmLook | null } = {}): Treatment | null {
   if (!isObj(raw) || treatmentProblems(raw, duration_s, language, opts).length) return null;
   // An act name longer than the limit is cut at a word, never inside one: "A LAB TECHNICIAN EXAMINING SAMPL" was
   // measured, and a name the outline copies is a name the viewer's chapter pill shows.
@@ -387,6 +396,7 @@ export function repairTreatment(raw: unknown, duration_s: number, v: Variation, 
   if (words.length > T.prose.maxWords) prose = words.slice(0, T.prose.maxWords).join(" ");
   const device = (DEVICE_IDS as readonly string[]).includes(String(raw.device)) ? (raw.device as Device) : v.device;
   return {
+    look: opts.look ?? ((FILM_LOOKS as readonly string[]).includes(String(raw.look)) ? (raw.look as FilmLook) : "realistic"),
     logline: clip(raw.logline, T.logline), angle: clip(raw.angle, T.angle), device,
     opening: clip(raw.opening, T.opening), ending: clip(raw.ending, T.ending), acts,
     visual: clip(raw.visual, T.visual), pacing: clip(raw.pacing, T.pacing), narrator: clip(raw.narrator, T.narrator),
@@ -429,9 +439,16 @@ export function proseDistance(a: string, b: string): number {
  * The treatment as the direction, the outline and the scenes read it. `full` adds the prose, which the two stages
  * that shape the film get and the scene chunks do not: eight copies of four hundred words buy nothing a scene needs.
  */
+/** The look as the other stages read it: one line that says what every picture IS. */
+export const LOOK_LINES: Record<FilmLook, string> = {
+  realistic: "REALISTIC — live-action photography: every picture is a photograph the camera could take",
+  animation: "ANIMATION — a 2D animated film: every picture is a drawn frame, the characters designed once and drawn the same in every shot, nothing photographic",
+};
+
 export function treatmentBlock(t: Treatment, full = false): string {
   const acts = t.acts.map((a, i) => `  ${i + 1}. ${a.name} · ${a.seconds}s — ${a.purpose}`).join("\n");
   return `TREATMENT OF THIS FILM (the request as a producer expanded it; the direction and every scene follow it):
+Look: ${LOOK_LINES[t.look] ?? LOOK_LINES.realistic}
 Logline: ${t.logline}
 Angle: ${t.angle}
 Device: ${t.device} — ${DEVICES[t.device] ?? ""}
@@ -453,7 +470,7 @@ Motifs (return to these): ${t.motifs.join("; ")}${t.graphics ? `\n${graphicsBloc
  * method is the difference between that and the owner's own packages. The server still checks what comes back
  * (treatmentProblems, at kleo_create_video), and still writes its own when nothing comes.
  */
-export function treatmentMethodText(input: { prompt: string; duration_s: number; format: "16:9" | "9:16"; language: string }, v: Variation): string {
+export function treatmentMethodText(input: { prompt: string; duration_s: number; format: "16:9" | "9:16"; language: string; look?: FilmLook | null }, v: Variation): string {
   return `WRITE THE TREATMENT YOURSELF, NOW, following this method exactly; then pass the JSON object as "treatment" to kleo_create_video. Do not paraphrase the method to the user: tell them the logline and the decisions once it is written.
 
 ${MASTER_PROMPT}
@@ -473,7 +490,8 @@ Angle: ${t.angle}
 Opens on: ${t.opening}
 Ends on: ${t.ending}
 Acts: ${acts}
-Look: ${t.visual}
+Look: ${t.look === "animation" ? "animation (a 2D animated film)" : "realistic (filmed)"}
+Visual world: ${t.visual}
 Pacing: ${t.pacing}
 Narrator: ${t.narrator}
 Motifs: ${t.motifs.join("; ")}

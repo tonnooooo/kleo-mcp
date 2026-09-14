@@ -15,7 +15,7 @@ Engines (KLEO_ENGINE):
   keou (default)  the real motion-design renderer shipped in KLEO_KEOU_DIR (default /opt/kleo/keou);
                   the job must carry a "storyboard" (a Keou project without id/script_file/music_quiet/image scenes).
   placeholder     ffmpeg-only dark frame with the prompt as text; no storyboard needed (container contract tests).
-Kleo pictures (keou engine only): a storyboard may carry "kleo_style" (cartoon | realistic | cyber | stickman); for
+Kleo pictures (keou engine only): a storyboard may carry "kleo_style" (cartoon | realistic | animation | cyber | stickman); for
 cartoon/realistic (style "picture", see docs/PICTURE-STYLE.md) every scene carries "shots", each shot one full-screen
 picture described by an "image_prompt". Picture id = "<sceneId>-s<n>" (1-based shot index). The worker asks
 POST /internal/jobs/{id}/images for the pictures the server generated, downloads them into
@@ -23,7 +23,7 @@ POST /internal/jobs/{id}/images for the pictures the server generated, downloads
 compatibility); the pictures the server could not make are then drawn on the instance's own GPU by kleo_pictures.py
 (Stable Diffusion 1.5, diffusers, weights baked into the image) when one is present. KLEO_PICTURES=auto (default:
 server first, GPU for the rest) | server (never generate locally) | local (never ask the server). kleo_style and every
-image_prompt are stripped before project.json is written, and the engine's own "look" (cartoon | realistic) is written
+image_prompt are stripped before project.json is written, and the engine's own "look" (cartoon | realistic | animation) is written
 at the top level. A missing or broken picture is never fatal: the shot simply renders as a flat gradient.
 Kleo video (keou engine only): a storyboard may also declare backdrop "video", which asks for shots that were
 FILMED instead of photographs with a zoom on them. The worker then voices the script itself, asks the engine when
@@ -73,7 +73,7 @@ KEOU_WORKERS = min(16, int(os.environ.get("KLEO_KEOU_WORKERS", "0") or 0))  # 0 
 PART = 50 * 1024 * 1024
 UA = "kleo-worker/1.0 (+https://github.com/tonnooooo/kleo-mcp)"
 # Kleo pictures: kleo_style values that come with server-generated pictures, and the knobs of the images call.
-PICTURE_STYLES = ("cartoon", "realistic")
+PICTURE_STYLES = ("cartoon", "realistic", "animation")
 IMAGES_TIMEOUT_S = float(os.environ.get("KLEO_IMAGES_TIMEOUT_S", "300"))      # the server generates the pictures on the first call
 IMAGES_RETRY_WAIT_S = float(os.environ.get("KLEO_IMAGES_RETRY_WAIT_S", "20"))  # one retry after this long on 5xx / network errors
 IMAGE_DOWNLOAD_TIMEOUT_S = 60
@@ -1109,7 +1109,7 @@ def lay_footage(pdir, made, width, height, fps):
 
 def strip_kleo_fields(project):
     """Turns a Kleo storyboard into an engine project: drops kleo_style and every image_prompt (scene and shot level;
-    the pictures stay as shot.image / scene.image) and writes the engine's own top-level "look" (cartoon | realistic)
+    the pictures stay as shot.image / scene.image) and writes the engine's own top-level "look" (cartoon | realistic | animation)
     for the picture style, so the engine knows which typography to draw. cyber / stickman never get a look."""
     style = project.pop("kleo_style", None)
     if style in PICTURE_STYLES and project.get("style") == "picture":

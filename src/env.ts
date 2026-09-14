@@ -7,6 +7,7 @@ export interface Env {
   RENDERS?: R2Bucket; // optional: temporary accounts have no R2; files then go to KV (mock sizes only)
   AI?: Ai; // Workers AI (storyboard generation, scene pictures); absent in local dev without a login → fixtures
 
+  IMAGE_MODEL_ANIMATION?: string; // Workers AI text-to-image model for the animation look (falls back to the cartoon one)
   IMAGE_MODEL_CARTOON?: string;   // Workers AI text-to-image model for the cartoon style (default images.ts DEFAULT_IMAGE_MODELS)
   IMAGE_MODEL_REALISTIC?: string; // idem for the realistic style
   // Pictures the SERVER draws with Workers AI per video; the rest is left to the GPU worker. Unset (or unreadable)

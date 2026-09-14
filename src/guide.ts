@@ -31,8 +31,8 @@ import {
 import { GL, LINE_STATES } from "./graphics.ts";
 
 /** The looks a job can be written in, and which schema section each one needs. */
-export type GuideStyle = "cartoon" | "realistic" | "cyber" | "stickman" | "explainer";
-const PICTURE_LOOKS: readonly GuideStyle[] = ["cartoon", "realistic"];
+export type GuideStyle = "cartoon" | "realistic" | "animation" | "cyber" | "stickman" | "explainer";
+const PICTURE_LOOKS: readonly GuideStyle[] = ["cartoon", "realistic", "animation"];
 
 export interface GuideOptions {
   /** The template the caller intends to use; only tailors the target length. */
@@ -101,8 +101,8 @@ Kleo refuses a scene that speaks to an element the film does not have, a card th
 
 /* ------------------------------------------------------------------ per-look sections */
 
-function pictureSection(look: "cartoon" | "realistic", dur: number): string {
-  const kind = look === "cartoon" ? "flat vector cartoon illustration" : "cinematic photograph";
+function pictureSection(look: "cartoon" | "realistic" | "animation", dur: number): string {
+  const kind = look === "cartoon" ? "flat vector cartoon illustration" : look === "animation" ? "frame of a 2D animated feature film (a painted background; drawn characters designed once in the direction's cast and described the same way in every shot; cel colour; nothing photographic)" : "cinematic photograph";
   return `3. THE SCENES — ${look}: full-screen pictures cut on the narration
 The whole video is these pictures, cut like a short documentary. No icons, no cards, no beats, no HUD.
 
@@ -248,7 +248,7 @@ export function buildGuide(o: GuideOptions): string {
 
 OTHER LOOKS: call kleo_storyboard_guide again with style "cyber" (motion design with icons and big type, no pictures — tech and security topics that want diagrams), style "explainer" (the cyber explainer: hand-drawn white marker line art on pure black, one drawing per phrase, karaoke captions — the strongest look for teaching one idea fast) or style "stickman" (a hand-drawn stickman acting the story, 9:16 only, on request) to get that look's vocabulary instead of this one.`
     : PICTURE_LOOKS.includes(look)
-    ? pictureSection(look as "cartoon" | "realistic", dur)
+    ? pictureSection(look as "cartoon" | "realistic" | "animation", dur)
     : look === "cyber"
     ? cyberSection()
     : look === "explainer"
@@ -312,7 +312,7 @@ Notice: every phrase has its own drawing and the drawing is the thing the words 
   // The picture example carries a direction, because the direction is the part people skip. It is a real object, not
   // prose: test/keou-contract.test.mjs validates it through the contract, so the guide cannot teach an illegal shape.
   const d = EXAMPLE_DIRECTION;
-  return `EXAMPLE (a realistic film, 9:16, 40s, en — the direction plus the first two scenes of six; the same shape, drawn as film):
+  return `EXAMPLE (a realistic film, 9:16, 40s, en — the direction plus the first two scenes of six; the same shape, drawn as film${style === "animation" ? "; an ANIMATED film keeps this exact shape, with every image_prompt describing a drawn frame instead of a photograph" : ""}):
 "direction":${JSON.stringify(d)}
 "scenes":${JSON.stringify(EXAMPLE_SCENES)}
 Notice: every scene has ${SHOTS_MIN_CINEMA} or more pictures; every picture after the first carries "at" quoted from its own voice line; the accents come from the sections, not from the mood; "${d.cast[0].name}" and "${d.cast[1].name}" are named exactly as the direction names them, so Kleo appends their look to every picture that shows them; nothing on the forbidden list appears anywhere.`;

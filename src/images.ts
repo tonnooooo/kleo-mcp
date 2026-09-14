@@ -35,9 +35,13 @@ export { MAX_PICTURES };
  *  cartoon   @cf/black-forest-labs/flux-1-schnell  4.8 neurons per 512² tile + 9.6 per step → 1024² at 4 steps ≈ 58 neurons (≈ $0.0006) per picture; square only.
  *  realistic @cf/leonardo/phoenix-1.0              530 neurons per 512² tile + 10 per step → 768x1344 at 20 steps ≈ 2,300 neurons (≈ $0.025) per picture.
  *  Cheaper realistic alternative: @cf/bytedance/stable-diffusion-xl-lightning (listed at $0.00 per step, beta). */
-export const DEFAULT_IMAGE_MODELS: Record<"cartoon" | "realistic", string> = {
+/** The three looks a picture is drawn in. The two film looks are their own; every other Kleo style draws as cartoon. */
+export type PictureLook = "cartoon" | "realistic" | "animation";
+export const pictureLook = (s: KleoStyle): PictureLook => (s === "realistic" || s === "animation" ? s : "cartoon");
+export const DEFAULT_IMAGE_MODELS: Record<PictureLook, string> = {
   cartoon: "@cf/black-forest-labs/flux-1-schnell",
   realistic: "@cf/leonardo/phoenix-1.0",
+  animation: "@cf/black-forest-labs/flux-1-schnell",   // the illustration-friendly one; the GPU draws every film picture in production (IMAGE_SERVER_MAX 0)
 };
 /**
  * THE POSITIVE PROMPT CARRIES NO NEGATION. Both suffixes used to end in "no text" (cartoon also "no letters"), and
@@ -50,11 +54,18 @@ export const DEFAULT_IMAGE_MODELS: Record<"cartoon" | "realistic", string> = {
  * These two constants are mirrored in worker/kleo_pictures.py, and test/images.test.mjs now fails if they drift:
  * the two sides draw pictures for the SAME video, so a difference between them is a film in two looks.
  */
-export const STYLE_SUFFIX: Record<"cartoon" | "realistic", string> = {
+export const STYLE_SUFFIX: Record<PictureLook, string> = {
   cartoon: "flat vector cartoon illustration, bold clean outlines, vivid warm colors, simple shapes",
   realistic: "cinematic photograph, RAW photo, 35mm lens, natural light, sharp focus on the subject, real skin and fabric texture, high detail",
+  animation: "frame from a 2D animated feature film, hand-painted background, clean expressive character design, cel shading, rich colour, cinematic composition, high detail",
 };
 export const NEGATIVE_PROMPT = "text, letters, watermark, logo, caption, subtitles, blurry, soft focus, cgi, 3d render, illustration, drawing, comic, anime, manga, line art, cartoon, painting, plastic skin, oversmooth, low detail, deformed, low quality";
+/** The negative per look: the photographic looks share NEGATIVE_PROMPT; ANIMATION bans the photograph instead of the drawing. Mirrored in worker/kleo_pictures.py STYLE_NEGATIVE. */
+export const STYLE_NEGATIVE: Record<PictureLook, string> = {
+  cartoon: NEGATIVE_PROMPT,
+  realistic: NEGATIVE_PROMPT,
+  animation: "text, letters, watermark, logo, caption, subtitles, photograph, photorealistic, live action, real skin, 3d render, cgi, blurry, low detail, deformed, extra fingers, low quality",
+};
 /** Pictures the server itself draws per job (env IMAGE_SERVER_MAX); the worker draws the rest on the GPU. */
 export const DEFAULT_SERVER_MAX = 10;
 /** Signed picture links stay valid this long (the worker downloads them right away). */
@@ -219,7 +230,9 @@ export function sniffImage(bytes: Uint8Array): "png" | "jpg" | null {
   return null;
 }
 export function modelFor(env: Env, style: KleoStyle): string {
-  return (style === "realistic" ? env.IMAGE_MODEL_REALISTIC : env.IMAGE_MODEL_CARTOON) || DEFAULT_IMAGE_MODELS[style === "realistic" ? "realistic" : "cartoon"];
+  const look = pictureLook(style);
+  const chosen = look === "realistic" ? env.IMAGE_MODEL_REALISTIC : look === "animation" ? env.IMAGE_MODEL_ANIMATION || env.IMAGE_MODEL_CARTOON : env.IMAGE_MODEL_CARTOON;
+  return chosen || DEFAULT_IMAGE_MODELS[look];
 }
 /**
  * The prompt one picture is drawn from: the author's sentence first (a diffusion model weights the opening most),
@@ -232,7 +245,7 @@ export function modelFor(env: Env, style: KleoStyle): string {
 export function fullPrompt(style: KleoStyle, imagePrompt: string, direction: Direction | null = null, accent: string | null = null): string {
   const base = imagePrompt.trim().replace(/[.\s]+$/, "");
   const ctx = pictureContext(direction, imagePrompt, accent);
-  return `${base}. ${ctx ? `${ctx.replace(/[.\s]+$/, "")}. ` : ""}${STYLE_SUFFIX[style === "realistic" ? "realistic" : "cartoon"]}`;
+  return `${base}. ${ctx ? `${ctx.replace(/[.\s]+$/, "")}. ` : ""}${STYLE_SUFFIX[pictureLook(style)]}`;
 }
 export function modelInputs(model: string, style: KleoStyle, imagePrompt: string, format: string, seed: number, direction: Direction | null = null, accent: string | null = null): Record<string, unknown> {
   const inputs: Record<string, unknown> = { prompt: fullPrompt(style, imagePrompt, direction, accent) };
@@ -240,7 +253,7 @@ export function modelInputs(model: string, style: KleoStyle, imagePrompt: string
   if (!acceptsSize(model)) { inputs.steps = 4; return inputs; }
   // The film's own exclusion list rides on the product-wide one. This is what stands between a pirate storm and a
   // wifi icon: a negative prompt written for THIS video, not one written once for every video Kleo will ever make.
-  Object.assign(inputs, sizeFor(format), { negative_prompt: negativeFor(direction, NEGATIVE_PROMPT) });
+  Object.assign(inputs, sizeFor(format), { negative_prompt: negativeFor(direction, STYLE_NEGATIVE[pictureLook(style)]) });
   if (/stable-diffusion|dreamshaper/.test(model)) inputs.seed = seed; // only SD-family models document a seed input
   if (/phoenix|lucid-origin/.test(model)) Object.assign(inputs, { num_steps: 20, guidance: style === "realistic" ? 4 : 5 });
   else if (/stable-diffusion|dreamshaper/.test(model)) Object.assign(inputs, { num_steps: 20, guidance: 7.5 });

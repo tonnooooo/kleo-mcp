@@ -381,3 +381,14 @@ test("the job spec tells the box which road and which model; the admin route swi
   assert.equal(v.backend, "kie"); assert.equal(v.model, "minimax-h3"); assert.equal(v.override, null);
   assert.equal((await m.handleAdmin(new Request("http://kleo.test/internal/admin/footage", { headers: { authorization: "Bearer wrong" } }), env)).status, 401);
 });
+
+test("kiePrompt: the animated film asks the clip model for drawn motion, never for 35mm photography (14 September)", () => {
+  const real = m.kiePrompt(SHOTS[0]), anim = m.kiePrompt(SHOTS[0], "animation");
+  assert.ok(real.endsWith(m.KIE_LOOKS.realistic) && real.includes("35mm"));
+  assert.ok(anim.endsWith(m.KIE_LOOKS.animation), anim);
+  assert.ok(!anim.includes("35mm") && !anim.includes("live-action"), "the animation look carries no photography");
+  assert.match(anim, /^.+\. .+\. .*2D animated feature film/, "subject, camera, then the look — same order as the realistic one");
+  assert.equal(m.filmLookOf("animation"), "animation"); assert.equal(m.filmLookOf("cartoon"), "realistic"); assert.equal(m.filmLookOf(undefined), "realistic");
+  assert.match(m.KIE_NEGATIVES.animation, /photograph/); assert.ok(!/anime|cartoon|drawing/.test(m.KIE_NEGATIVES.animation));
+  assert.equal(m.KIE_NEGATIVES.realistic, m.KIE_NEGATIVE);
+});

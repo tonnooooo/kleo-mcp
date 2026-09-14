@@ -33,8 +33,8 @@ import hashlib, os, re, sys, time
 # invece di 3 per le 24 di uno Short, dentro un video che ne dura quaranta.
 # Il CARTOON resta su dreamshaper-8 perche' NON e' stato misurato: SD1.5 regge molto meglio l'illustrazione del
 # fotorealismo, e cambiare per analogia e' esattamente il modo in cui oggi ci siamo fatti male quattro volte.
-MODELS = {"cartoon": "Lykon/dreamshaper-8", "realistic": "stabilityai/stable-diffusion-xl-base-1.0"}
-FAMILY = {"cartoon": "sd15", "realistic": "sdxl"}
+MODELS = {"cartoon": "Lykon/dreamshaper-8", "realistic": "stabilityai/stable-diffusion-xl-base-1.0", "animation": "stabilityai/stable-diffusion-xl-base-1.0"}
+FAMILY = {"cartoon": "sd15", "realistic": "sdxl", "animation": "sdxl"}
 # EXACTLY src/images.ts STYLE_SUFFIX / NEGATIVE_PROMPT, character for character: the two sides draw pictures for the
 # SAME video, so a difference between them is a film in two looks. test/images.test.mjs reads these three literals
 # out of this file and fails if they drift. They used to differ already, and nobody had noticed: the negative here
@@ -44,9 +44,17 @@ FAMILY = {"cartoon": "sd15", "realistic": "sdxl"}
 STYLE_SUFFIX = {
     "cartoon": "flat vector cartoon illustration, bold clean outlines, vivid warm colors, simple shapes",
     "realistic": "cinematic photograph, RAW photo, 35mm lens, natural light, sharp focus on the subject, real skin and fabric texture, high detail",
+    "animation": "frame from a 2D animated feature film, hand-painted background, clean expressive character design, cel shading, rich colour, cinematic composition, high detail",
 }
 NEGATIVE_PROMPT = "text, letters, watermark, logo, caption, subtitles, blurry, soft focus, cgi, 3d render, illustration, drawing, comic, anime, manga, line art, cartoon, painting, plastic skin, oversmooth, low detail, deformed, low quality"
-GUIDANCE = {"cartoon": 6.5, "realistic": 5.5}
+# The negative side per look: the photographic looks share the product-wide one; ANIMATION bans the photograph instead
+# of the drawing. EXACTLY src/images.ts STYLE_NEGATIVE, read by the same drift test.
+STYLE_NEGATIVE = {
+    "cartoon": NEGATIVE_PROMPT,
+    "realistic": NEGATIVE_PROMPT,
+    "animation": "text, letters, watermark, logo, caption, subtitles, photograph, photorealistic, live action, real skin, 3d render, cgi, blurry, low detail, deformed, extra fingers, low quality",
+}
+GUIDANCE = {"cartoon": 6.5, "realistic": 5.5, "animation": 6.0}
 STEPS = 22
 # La misura comoda di ciascuna famiglia, non un desiderio: SD1.5 e' addestrato a 512 e si sfalda sopra ~768;
 # SDXL e' addestrato attorno al megapixel. Il fotogramma consegnato e' 2160x3840, quindi anche 1344x768 resta un
@@ -57,6 +65,11 @@ SIZES = {
 }
 STEPS_BY_FAMILY = {"sd15": 22, "sdxl": 30}
 GUIDANCE_BY_FAMILY = {"sd15": None, "sdxl": 6.0}   # None = usa GUIDANCE[style], la taratura di SD1.5
+# Per-look overrides of the family defaults, for a fine-tune that samples differently from its base (a turbo model
+# wants few steps, low guidance and the SDE sampler). An absent entry falls through to the family.
+STEPS_BY_STYLE = {}
+GUIDANCE_BY_STYLE = {}
+SCHEDULER_BY_STYLE = {}   # "sde" = DPM++ SDE Karras, "euler_a" = Euler ancestral; otherwise DPM++ 2M Karras
 PROMPT_MAX = 240                                    # src/keou-contract.ts IMAGE_PROMPT_MAX
 BASE_MAX = 150                                      # scene text kept in the SD prompt (CLIP: 77 tokens in total)
 CONTEXT_MAX = 110                                   # the film's direction (cast look + section light) inside that budget
@@ -115,17 +128,18 @@ def full_prompt(image_prompt, style, context=""):
     return ", ".join([x for x in (base, ctx, suffix) if x])
 
 
-def negative_for(direction):
+def negative_for(direction, style="realistic"):
     """The product-wide negative prompt plus everything THIS film's direction forbids, capped so the negative side of
     CLIP cannot overflow either. One fixed ten-word negative for every video Kleo will ever make is what let a wifi
     symbol into a pirate storm; an exclusion list written for one film is what stops it."""
+    base = STYLE_NEGATIVE.get(style, NEGATIVE_PROMPT)
     terms = []
     if isinstance(direction, dict):
         for t in direction.get("forbidden") or []:
             t = " ".join(str(t).split()).strip().rstrip(",.;")
-            if t and t.lower() not in NEGATIVE_PROMPT.lower():
+            if t and t.lower() not in base.lower():
                 terms.append(t)
-    joined = NEGATIVE_PROMPT
+    joined = base
     for t in terms:
         if len(joined) + len(t) + 2 > NEGATIVE_MAX:
             break
@@ -177,11 +191,13 @@ def size_for(fmt, style="realistic"):
 
 
 def steps_for(style):
-    return int(os.environ.get("KLEO_PICTURES_STEPS") or STEPS_BY_FAMILY.get(family_of(style), STEPS))
+    return int(os.environ.get("KLEO_PICTURES_STEPS") or STEPS_BY_STYLE.get(style) or STEPS_BY_FAMILY.get(family_of(style), STEPS))
 
 
 def guidance_for(style):
-    g = GUIDANCE_BY_FAMILY.get(family_of(style))
+    g = GUIDANCE_BY_STYLE.get(style)
+    if g is None:
+        g = GUIDANCE_BY_FAMILY.get(family_of(style))
     return GUIDANCE[style] if g is None else g
 
 
@@ -280,7 +296,14 @@ def load_pipeline(style, device=None):
         raise RuntimeError(f"could not load {model}: " + " | ".join(errors))
     try:  # DPM++ 2M Karras: SD1.5 looks finished at ~22 steps (the default PNDM/DDIM needs 30-50)
         from diffusers import DPMSolverMultistepScheduler
-        pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config, use_karras_sigmas=True)
+        kind = SCHEDULER_BY_STYLE.get(style)
+        if kind == "euler_a":
+            from diffusers import EulerAncestralDiscreteScheduler
+            pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
+        elif kind == "sde":
+            pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config, use_karras_sigmas=True, algorithm_type="sde-dpmsolver++")
+        else:
+            pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config, use_karras_sigmas=True)
     except Exception as e:
         log("keeping the default scheduler:", e)
     pipe = pipe.to(device)
@@ -299,7 +322,7 @@ def load_pipeline(style, device=None):
 
 def generate_pictures(scenes, style, fmt, out_dir, device=None, direction=None):
     """scenes: [{"id": <pictureId>, "image_prompt": <text>, "accent": <accent | None>}, ...] → {pictureId: absolute PNG
-    path} for the pictures made. style: cartoon | realistic; fmt: 9:16 | 16:9; out_dir is created. `direction` is the
+    path} for the pictures made. style: cartoon | realistic | animation; fmt: 9:16 | 16:9; out_dir is created. `direction` is the
     storyboard's art direction (src/direction.ts): its cast, its accents and its exclusion list shape every prompt.
     Returns {} without CUDA (unless KLEO_PICTURES_CPU=1), for an unknown style, or when the model cannot be loaded;
     a failing scene is logged and skipped."""
@@ -326,7 +349,7 @@ def generate_pictures(scenes, style, fmt, out_dir, device=None, direction=None):
         return {}
     import torch
     width, height = size_for(fmt, style)
-    negative = negative_for(direction)
+    negative = negative_for(direction, style)
     os.makedirs(out_dir, exist_ok=True)
     done = {}
     t_all = time.time()

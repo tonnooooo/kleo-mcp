@@ -16,7 +16,7 @@ import { TEMPLATES, findTemplate, isVideoStyle, narrativeFor, sceneSplit, credit
 import {
   validateStoryboard, defaultVoice, wordBudget, type Storyboard, type Format, type KleoStyle,
   KINDS, BEAT_KINDS, BEAT_ICONS, BEAT_FX, CINEMA_ACCENTS, VISUALS, FORBIDDEN_FIELDS,
-  KLEO_STYLES, PICTURE_STYLES, IMAGE_PROMPT_MAX, kleoStyleOf, STORY_ACTS, STORY_CAST, STORY_PROPS, STORY_FX, STORY_ACCENTS,
+  KLEO_STYLES, PICTURE_STYLES, FILM_LOOKS, type FilmLook, IMAGE_PROMPT_MAX, kleoStyleOf, STORY_ACTS, STORY_CAST, STORY_PROPS, STORY_FX, STORY_ACCENTS,
   SHOTS_PER_SCENE, SHOT_CAPTION_MAX, SHOT_HL_MAX, SHOT_AT_MAX, IMAGE_PROMPT_MIN, CLOSING_BUTTON_MAX,
   SHOT_ID_SUFFIX_RE, quotesVoice, SHOTS_MIN_CINEMA, shotRangeText, narrationOf, anchorShots,
 } from "./keou-contract.ts";
@@ -269,9 +269,10 @@ Shot shape ("?" marks optional keys; WORDS = 1–4 consecutive words copied EXAC
 The FIRST shot of a scene starts with the scene and must NOT carry "at"; every other shot carries "at": the picture cuts when that word is spoken, so spread the anchors over the line in reading order. A caption is optional and rare: 2–5 strong words on the shot that carries the key idea (the first shot falls back to the scene title). The closing scene has ONE shot and may carry "button" (≤${CLOSING_BUTTON_MAX}, e.g. "Follow", default "Subscribe").
 "shot_kind" says what the shot is FOR. NEVER write a camera move, a zoom, a pan or any other direction: Kleo owns the camera and picks the move from the kind. hook = the opening jolt, first shot of the video. establish = where we are. face = one face or animal carrying the feeling. detail = one object, close. detail_orbit = one object worth circling. action = something moving through the frame. reveal = the frame opens on the answer. tension = the moment before it goes wrong. closing = the last picture of the video. static_forced = the picture must NOT move (visible hands doing something, a crowd, readable signs or writing, a mechanism with moving parts, two people interacting) — those break under any move, so pin them. Leave shot_kind out and Kleo chooses it.`;
 
-const PICTURE_RULES: Record<"cartoon" | "realistic", string> = {
+const PICTURE_RULES: Record<"cartoon" | "realistic" | "animation", string> = {
   cartoon: `PICTURES: this is a CARTOON video, so every "image_prompt" describes a flat vector cartoon illustration: concrete subjects and setting from the story (pirates → a beach, sand, a ship at anchor; space → a rocket, a station, planets), the SAME characters described the same way in every shot (hair, clothes, colours), bright simple shapes, one clear action per picture, a clear mood. Consecutive shots of one scene show the same place from a new angle or the next moment of the action. Never mention text, letters, numbers, logos, captions or the style itself; never name real people.`,
   realistic: `PICTURES: this is a REALISTIC video, so every "image_prompt" describes a cinematic photograph: the concrete subject and place (a rocket on the pad at dawn, a control room, a mountain road in rain), the lens feel, the light and the mood, the SAME subject described the same way in every shot, one clear action per picture. Consecutive shots of one scene show the same place from a new angle or the next moment. Never mention text, letters, numbers, logos or captions; never name or depict real people.`,
+  animation: `PICTURES: this is an ANIMATED film, so every "image_prompt" describes one frame of a 2D animated feature: a painted background with depth, drawn characters designed once (build, face, hair, clothes, colours) and described the same way in every shot, clean linework, cel colour, one clear action per picture, the light and the mood painted rather than photographed. Consecutive shots of one scene show the same place from a new angle or the next moment. Never mention text, letters, numbers, logos, captions or the word "cartoon"; never name or depict real people; nothing photographic.`,
 };
 
 const STICKMAN_RULES = `Scenes are "story" (last one "closing"): a hand-drawn stickman acts out the narration, one situation per scene.
@@ -314,7 +315,7 @@ export function styleFor(template: string, format: Format): StyleId {
 export function keouStyleFor(kleo: KleoStyle, template: string, format: Format): StyleId {
   if (kleo === "stickman") return "stickman";
   if (kleo === "explainer") return "sketch";
-  if (kleo === "cartoon" || kleo === "realistic") return "picture";
+  if (PICTURE_STYLES.includes(kleo)) return "picture";
   return styleFor(template, format);
 }
 
@@ -504,7 +505,7 @@ function systemPrompt(plan: Plan): string {
   const lang = LANG_NAMES[plan.language] ?? plan.language;
   const rules = plan.style === "picture" ? SHOT_RULES : plan.style === "cinema" ? CINEMA_RULES : plan.style === "stickman" ? STICKMAN_RULES
     : plan.style === "sketch" ? explainerRules(plan.format, plan.duration) : EDITORIAL_RULES;
-  const pictures = plan.style === "picture" ? `\n${PICTURE_RULES[plan.kleo as "cartoon" | "realistic"]}` : "";
+  const pictures = plan.style === "picture" ? `\n${PICTURE_RULES[plan.kleo as keyof typeof PICTURE_RULES]}` : "";
   const enums = plan.style === "picture"
     ? `shot kinds: ${list(SHOT_KINDS)}. accents: ${list(CINEMA_ACCENTS)}.`
     : plan.style === "stickman"
@@ -1336,7 +1337,7 @@ export function fixtureStoryboard(job: PlanJob): Storyboard {
   const sb = structuredClone(cinemaExample) as Record<string, unknown>;
   for (const f of FORBIDDEN_FIELDS) delete sb[f];
   delete sb.width; delete sb.fps; delete sb.brand;
-  const kleo: KleoStyle = p.style === "realistic" || p.style === "cyber" ? p.style : "cartoon"; // the example is a cinema project: stickman cannot be faked
+  const kleo: KleoStyle = p.style === "realistic" || p.style === "animation" || p.style === "cyber" ? p.style : "cartoon"; // the example is a cinema project: stickman cannot be faked
   sb.kleo_style = kleo;
   const pictures = PICTURE_STYLES.includes(kleo);
   if (pictures) sb.style = "picture";
@@ -1444,16 +1445,18 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   //     a draw taken from the job id. Like the direction it is allowed to fail: a film without a treatment is what
   //     Kleo made until 14 September, not a broken film.
   let treatment: Treatment | null = treatmentOf(JSON.parse(job.params));
+  // The look the job was made in: the treatment is written for it, and refused if it names the other one.
+  const planLook: FilmLook | null = (FILM_LOOKS as readonly string[]).includes(plan.kleo) ? (plan.kleo as FilmLook) : null;
   if (!treatment) {
     const v = variationFor(job.id);
     let feedback: string[] | undefined;
     for (let attempt = 1; attempt <= 2 && !treatment; attempt++) {
       let raw: unknown;
-      try { raw = clean(await call(treatmentPrompt({ prompt: job.prompt, duration_s: plan.duration, format: plan.format, language: plan.language }, v, feedback), treatmentSchema(), TREATMENT_MAX_TOKENS, { system: MASTER_PROMPT, temperature: TREATMENT_TEMPERATURE, model: env.TREATMENT_MODEL || undefined })); }
+      try { raw = clean(await call(treatmentPrompt({ prompt: job.prompt, duration_s: plan.duration, format: plan.format, language: plan.language, look: planLook }, v, feedback), treatmentSchema(), TREATMENT_MAX_TOKENS, { system: MASTER_PROMPT, temperature: TREATMENT_TEMPERATURE, model: env.TREATMENT_MODEL || undefined })); }
       catch (e) { history.push([`treatment: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) { transient = e; break; } continue; }
       // The second answer is held to the lenient rule: a short prose is asked to be fixed once, then kept.
-      const t = repairTreatment(raw, plan.duration, v, plan.language, { lenient: attempt > 1 });
-      if (!t) { feedback = treatmentProblems(raw, plan.duration, plan.language); history.push([`treatment: rejected (${feedback.slice(0, 3).join("; ")})`]); continue; }
+      const t = repairTreatment(raw, plan.duration, v, plan.language, { lenient: attempt > 1, look: planLook });
+      if (!t) { feedback = treatmentProblems(raw, plan.duration, plan.language, { look: planLook }); history.push([`treatment: rejected (${feedback.slice(0, 3).join("; ")})`]); continue; }
       treatment = t;
     }
     if (transient) throw transient;
@@ -1666,7 +1669,7 @@ export interface TreatmentResult {
  * decides the draw; a random one is right when no job exists yet, because the treatment then travels with the job
  * and the planner never draws again. Never throws on a model problem: the tool has to answer either way.
  */
-export async function writeTreatment(env: Env, input: { prompt: string; duration_s: number; format: Format; language: string }, opts: { seed?: string; model?: string } = {}): Promise<TreatmentResult> {
+export async function writeTreatment(env: Env, input: { prompt: string; duration_s: number; format: Format; language: string; look?: FilmLook | null }, opts: { seed?: string; model?: string } = {}): Promise<TreatmentResult> {
   const t0 = Date.now();
   const model = opts.model || env.TREATMENT_MODEL || env.AI_MODEL || DEFAULT_MODEL;
   const usage: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
@@ -1689,8 +1692,8 @@ export async function writeTreatment(env: Env, input: { prompt: string; duration
       if (isTransientAiError(e)) { transient = true; break; }
       continue;
     }
-    const t = repairTreatment(raw, input.duration_s, v, input.language, { lenient: attempt > 1 });
-    if (!t) { feedback = treatmentProblems(raw, input.duration_s, input.language); history.push(`rejected: ${feedback.slice(0, 4).join("; ")}`); continue; }
+    const t = repairTreatment(raw, input.duration_s, v, input.language, { lenient: attempt > 1, look: input.look ?? null });
+    if (!t) { feedback = treatmentProblems(raw, input.duration_s, input.language, { look: input.look ?? null }); history.push(`rejected: ${feedback.slice(0, 4).join("; ")}`); continue; }
     treatment = t;
   }
   const price = PRICES[model];

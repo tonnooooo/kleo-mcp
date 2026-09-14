@@ -188,7 +188,7 @@ test("helpers: defaultVoice and wordBudget", () => {
 /* ------------------------------------------------------------------ Kleo styles and pictures (docs/PICTURE-STYLE.md) */
 
 test("kleo_style: enum, default cyber, cartoon/realistic need the picture style, stickman needs stickman", () => {
-  assert.deepEqual([...KLEO_STYLES], ["cartoon", "realistic", "cyber", "stickman", "explainer"]);
+  assert.deepEqual([...KLEO_STYLES], ["cartoon", "realistic", "animation", "cyber", "stickman", "explainer"]);
   const plain = cinema();
   assert.equal(validateStoryboard(plain, { format: "9:16", language: "en" }).ok, true);
   assert.equal(kleoStyleOf(plain), "cyber");
@@ -686,7 +686,7 @@ test("the storyboard guide's examples validate against this contract", () => {
   assert.deepEqual(r.ok ? [] : r.errors, [], "the guide's own example must validate");
   assert.ok(pictureScenes(sb).length >= sb.scenes.length, "every scene of the example carries at least one shot");
   // And the text a caller receives really contains it, so the guide cannot drift from the data it claims to show.
-  for (const style of ["cartoon", "realistic"]) {
+  for (const style of ["cartoon", "realistic", "animation"]) {
     const text = guideFor(style);
     assert.ok(text.includes(EXAMPLE_DIRECTION.world), `${style}: the example's world is in the guide`);
     assert.ok(text.includes(EXAMPLE_SCENES[0].shots[0].image_prompt), `${style}: the example's first picture is in the guide`);
@@ -697,7 +697,7 @@ test("the guide only offers languages and voices kleo_create_video accepts", () 
   const jobLangs = ["en", "it"];
   assert.match(MCP_SRC, /const JOB_LANGUAGES = \["en", "it"\] as const;/, "the job languages are declared once");
   assert.match(MCP_SRC, /z\.enum\(JOB_LANGUAGES\)/, "the tool schema and the guide read the same list");
-  for (const style of [null, "cartoon", "realistic", "cyber", "stickman", "explainer"]) {
+  for (const style of [null, "cartoon", "realistic", "animation", "cyber", "stickman", "explainer"]) {
     const guide = guideFor(style);
     for (const lang of Object.keys(VOICES).filter((l) => !jobLangs.includes(l)))
       for (const v of VOICES[lang]) assert.ok(!guide.includes(v), `${style}: the guide must not offer ${v} (${lang} is not a job language)`);

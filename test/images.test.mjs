@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import {
   encodePng, placeholderPng, crc32, fnv1a, pickImageScenes, sizeFor, acceptsSize, modelInputs, readImageResult, sniffImage, fullPrompt,
   generateJobImages, DEFAULT_IMAGE_MODELS, DEFAULT_SERVER_MAX, IMAGE_NAME_RE, STYLE_SUFFIX, MAX_PICTURES, imageFileName,
-  isQuotaError, isTransientError, NEGATIVE_PROMPT,
+  isQuotaError, isTransientError, NEGATIVE_PROMPT, STYLE_NEGATIVE,
 } from "../src/images.ts";
 import { handleDownload } from "../src/dl.ts";
 
@@ -349,7 +349,16 @@ test("the GPU's style suffix and negative prompt are the server's, character for
   };
   assert.equal(suffix("cartoon"), STYLE_SUFFIX.cartoon);
   assert.equal(suffix("realistic"), STYLE_SUFFIX.realistic);
+  assert.equal(suffix("animation"), STYLE_SUFFIX.animation);
   assert.equal(lit(/^NEGATIVE_PROMPT\s*=\s*"([^"]+)"/m, "the negative prompt"), NEGATIVE_PROMPT);
+  // The per-look negative (14 September): the two photographic looks share the product-wide one, animation has its own.
+  const neg = py.match(/STYLE_NEGATIVE\s*=\s*\{([\s\S]*?)\}/);
+  assert.ok(neg, "worker/kleo_pictures.py no longer declares STYLE_NEGATIVE as a dict literal");
+  assert.match(neg[1], /"cartoon":\s*NEGATIVE_PROMPT/); assert.match(neg[1], /"realistic":\s*NEGATIVE_PROMPT/);
+  assert.equal(neg[1].match(/"animation":\s*"([^"]+)"/)?.[1], STYLE_NEGATIVE.animation);
+  assert.equal(STYLE_NEGATIVE.realistic, NEGATIVE_PROMPT); assert.equal(STYLE_NEGATIVE.cartoon, NEGATIVE_PROMPT);
+  assert.match(STYLE_NEGATIVE.animation, /photograph/); assert.ok(!/anime|cartoon|drawing/.test(STYLE_NEGATIVE.animation), "the animation look must not ban the drawing");
+  assert.ok(!/photograph/.test(NEGATIVE_PROMPT), "the realistic look must not ban the photograph");
 });
 
 test("no style suffix asks for something by forbidding it", () => {

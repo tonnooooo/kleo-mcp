@@ -219,3 +219,34 @@ test("POST /internal/admin/treatment writes N treatments on the Worker's own mod
   const dr = await (await m.handleAdmin(new Request("http://kleo.test/internal/admin/treatment", { method: "POST", headers: { authorization: "Bearer s3cret", "content-type": "application/json" }, body: JSON.stringify({ prompt: "A film about lighthouse keepers" }) }), down.env)).json();
   assert.equal(dr.ok, false); assert.equal(dr.written, 0); assert.equal(dr.transient, true); assert.match(dr.problems[0][0], /4006/);
 });
+
+/* ------------------------------------------------------------------ the two looks (14 September) */
+
+test("style names the look on every tool: the method is written for it, the guide draws it, create_video keeps it", async () => {
+  const ai = fakeAi(() => { throw new Error("must not be called"); });
+  const s = await studio(ai);
+  const r = await s.call("kleo_adapt_prompt", { prompt: "A fox who learns to swim, 45 seconds", format: "9:16", style: "animation" });
+  assert.ok(!r.isError, r.text);
+  assert.equal(r.structuredContent.style, "animation");
+  assert.match(r.text, /THE LOOK: ANIMATION, fixed by the request or the tool call/);
+  assert.match(r.text, /style \(the look the treatment names\)/, "the assistant is told to pass the look on");
+  const open = await s.call("kleo_adapt_prompt", { prompt: "A fox who learns to swim, 45 seconds", format: "9:16" });
+  assert.equal(open.structuredContent.style, null, "no look named: the treatment decides in step 0");
+  assert.match(open.text, /THE LOOK: not named — decide it in step 0/);
+  const g = await s.call("kleo_storyboard_guide", { duration_s: 45, style: "animation", format: "9:16" });
+  assert.ok(!g.isError, g.text);
+  assert.equal(g.structuredContent.style, "animation"); assert.deepEqual(g.structuredContent.styles, ["realistic", "animation"]);
+  assert.match(g.text, /KLEO STORYBOARD GUIDE — animation/); assert.match(g.text, /frame of a 2D animated feature film/);
+  assert.match(g.text, /an ANIMATED film keeps this exact shape/);
+  const t = { ...TREATMENT_FIXTURE(45), look: "animation" };
+  const bad = await s.call("kleo_create_video", { prompt: "A fox who learns to swim", duration_s: 45, format: "9:16", style: "realistic", treatment: t });
+  assert.ok(bad.isError); assert.match(bad.text, /look: the treatment says "animation" but the film was asked in "realistic"/);
+  const ok = await s.call("kleo_create_video", { prompt: "A fox who learns to swim", duration_s: 45, format: "9:16", style: "animation", treatment: t });
+  assert.ok(!ok.isError, ok.text);
+  assert.match(ok.text, /Look: animation, a 2D animated film\./);
+  const job = await m.getUserJob(s.env, "u_test", ok.structuredContent.job_id);
+  assert.equal(JSON.parse(job.params).style, "animation"); assert.equal(JSON.parse(job.params).treatment.look, "animation");
+  const byTreatment = await s.call("kleo_create_video", { prompt: "A fox who learns to swim", duration_s: 45, format: "9:16", treatment: t });
+  assert.ok(!byTreatment.isError, byTreatment.text);
+  assert.equal(JSON.parse((await m.getUserJob(s.env, "u_test", byTreatment.structuredContent.job_id)).params).style, "animation", "no style passed: the treatment's look is the film's");
+});

@@ -46,7 +46,7 @@ SKETCH_ENTER = {'whip', 'cut'}
 SKETCH_EXIT = {'flare', 'cut'}
 # Kleo picture style (docs/PICTURE-STYLE.md): full-screen pictures cut on the narration, no beats
 # and no icons. `look` picks the typography; every shot is one generated picture in img/.
-LOOKS = {'cartoon', 'realistic'}
+LOOKS = {'cartoon', 'realistic', 'animation'}
 # The camera moves the server resolves a shot_kind into (src/shot-grammar.ts). The engine never sees shot_kind:
 # the server writes the resolved move here, so the grammar lives in one place and this file only has to draw it.
 # The first four are the old hand-written vocabulary, still accepted so a storyboard written before the grammar renders.

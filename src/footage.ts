@@ -32,6 +32,7 @@ import type { Job, JobParams } from "./db";
 import { audit } from "./db.ts";
 import { putFile } from "./storage.ts";
 import { hmacHex, int, num, nowIso } from "./util.ts";
+import { FILM_LOOKS, type FilmLook } from "./keou-contract.ts";
 
 /* ------------------------------------------------------------------ models and prices */
 
@@ -178,13 +179,23 @@ export const KIE_MOVES: Record<string, string> = {
 // out-of-focus wash and the glossy CGI render.
 export const KIE_LOOK = "Cinematic live-action film, 35mm, shallow depth of field with the subject in sharp focus, natural light, fine real surface texture, realistic physics, subtle film grain. No text, no captions, no logos.";
 export const KIE_NEGATIVE = "text, letters, watermark, logo, subtitles, blurry, soft focus, out of focus, cgi, 3d render, plastic, oversmooth, low quality, deformed, morphing, extra fingers, static image, frozen, slideshow";
+/** The look per film (14 September): the animated film asks the clip model for drawn motion and bans the photograph instead of the drawing. */
+export const KIE_LOOKS: Record<FilmLook, string> = {
+  realistic: KIE_LOOK,
+  animation: "2D animated feature film, hand-drawn character animation over painted backgrounds, clean consistent linework, flat cel colour, the characters and the world exactly as drawn in the frame, smooth animated motion. No text, no captions, no logos.",
+};
+export const KIE_NEGATIVES: Record<FilmLook, string> = {
+  realistic: KIE_NEGATIVE,
+  animation: "text, letters, watermark, logo, subtitles, blurry, photograph, photorealistic, live action, real skin, 3d render, cgi, low quality, deformed, morphing, extra fingers, static image, frozen, slideshow",
+};
+export const filmLookOf = (x: unknown): FilmLook => ((FILM_LOOKS as readonly string[]).includes(String(x)) ? (x as FilmLook) : "realistic");
 
 /** subject first, then the camera, then the look — the order every model reads with the most weight at the front. */
-export function kiePrompt(shot: { image_prompt: string; motion?: string | null; strength?: number | null }): string {
+export function kiePrompt(shot: { image_prompt: string; motion?: string | null; strength?: number | null }, look: FilmLook = "realistic"): string {
   const subject = String(shot.image_prompt ?? "").trim().replace(/\s+/g, " ").replace(/[.\s]+$/, "");
   const move = KIE_MOVES[String(shot.motion ?? "")] ?? KIE_MOVES.push_in;
   const pace = typeof shot.strength === "number" && shot.strength < 0.4 ? " Gentle, slow motion of the camera." : "";
-  return `${subject}. ${move.charAt(0).toUpperCase()}${move.slice(1)}.${pace} ${KIE_LOOK}`.replace(/\s+/g, " ").trim();
+  return `${subject}. ${move.charAt(0).toUpperCase()}${move.slice(1)}.${pace} ${KIE_LOOKS[look]}`.replace(/\s+/g, " ").trim();
 }
 
 /* ------------------------------------------------------------------ rows */
@@ -280,7 +291,7 @@ export function noCreditSentence(ordered: number, wanted: number): string {
  * has no text-to-video on this model id: without a still the input carries no frame and kie.ai refuses the task, which
  * is the right outcome (a clip without its reference frame is not the shot that was planned).
  */
-export function kieInput(name: string, spec: KieModel, p: { prompt: string; imageUrl: string | null; seconds: number; format: string; seed: number }): Record<string, unknown> {
+export function kieInput(name: string, spec: KieModel, p: { prompt: string; imageUrl: string | null; seconds: number; format: string; seed: number; look?: FilmLook }): Record<string, unknown> {
   const aspect = p.format === "16:9" ? "16:9" : "9:16";
   const duration = clipSecondsFor(spec, p.seconds);
   if (name.startsWith("kling-3.0")) {
@@ -289,7 +300,7 @@ export function kieInput(name: string, spec: KieModel, p: { prompt: string; imag
   }
   if (name.startsWith("kling-v3-turbo")) return { prompt: p.prompt, ...(p.imageUrl ? { image_urls: [p.imageUrl] } : {}), duration: String(duration), resolution: "1080p" };
   if (name.startsWith("veo")) return { prompt: p.prompt, ...(p.imageUrl ? { image_urls: [p.imageUrl], generation_type: "FIRST_AND_LAST_FRAMES_2_VIDEO" } : { generation_type: "TEXT_2_VIDEO" }), aspect_ratio: aspect, resolution: "1080p", duration };
-  if (name.startsWith("wan")) return { prompt: p.prompt, negative_prompt: KIE_NEGATIVE, ...(p.imageUrl ? { first_frame_url: p.imageUrl } : {}), resolution: "1080p", duration, seed: p.seed, prompt_extend: false, watermark: false };
+  if (name.startsWith("wan")) return { prompt: p.prompt, negative_prompt: KIE_NEGATIVES[p.look ?? "realistic"], ...(p.imageUrl ? { first_frame_url: p.imageUrl } : {}), resolution: "1080p", duration, seed: p.seed, prompt_extend: false, watermark: false };
   if (name.startsWith("seedance")) return { prompt: p.prompt, ...(p.imageUrl ? { first_frame_url: p.imageUrl } : {}), duration, aspect_ratio: aspect, resolution: "1080p", generate_audio: false };
   if (name.startsWith("minimax")) return { prompt: p.prompt.slice(0, 7000), ...(p.imageUrl ? { first_frame_url: p.imageUrl } : {}), duration, resolution: name.endsWith("-768p") ? "768P" : "2K" };
   if (name.startsWith("gemini")) return { prompt: p.prompt, ...(p.imageUrl ? { first_frame_url: p.imageUrl } : {}), duration, resolution: name.endsWith("-4k") ? "4k" : "1080p", aspect_ratio: aspect };
@@ -314,6 +325,9 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
   if (footageBackendFor(env, job, cfg) !== "kie") return { status: 409, reply: { error: "this job does not film through kie.ai (switch off, no key, or the video is longer than KIE_MAX_VIDEO_S)" } };
   const { name, spec } = kieModelFor(env, cfg);
   const format = body.format === "16:9" ? "16:9" : "9:16";
+  // The look the worker read off the project, or the job's own style: the clip prompt and the negative follow it.
+  let look: FilmLook = filmLookOf(body.look);
+  if (!body.look) { try { look = filmLookOf((JSON.parse(job.params) as JobParams).style); } catch { /* unreadable params: realistic */ } }
   const shots = (Array.isArray(body.shots) ? body.shots : []).filter((s) => s && typeof s === "object" && SHOT_ID_RE.test(String(s.id ?? "")) && String(s.image_prompt ?? "").trim());
   if (!shots.length) return { status: 400, reply: { error: "no shots to film" } };
   if (shots.length > 40) return { status: 400, reply: { error: `${shots.length} shots is more than one film may ask for (40)` } };
@@ -349,14 +363,14 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
       const stillName = `img/${s.still}`;
       imageUrl = `${base}/dl/${job.id}/${encodeURIComponent(stillName)}?exp=${exp}&sig=${await hmacHex(env.INTERNAL_SECRET, `${job.id}/${stillName}/${exp}`)}`;
     }
-    const prompt = kiePrompt(s);
+    const prompt = kiePrompt(s, look);
     // The row goes in BEFORE the call, with no task id: a second request while the first is in flight orders nothing twice.
     // A refused row from an earlier request is reset in place instead (same key, new price, no error).
     if (retryable(have.get(s.id))) await updateRow(env, job.id, s.id, { state: "queued", model: name, seconds, cost_usd: cost, error: null });
     else await env.DB.prepare("INSERT OR IGNORE INTO footage (job_id, shot_id, model, state, seconds, cost_usd, updated_at) VALUES (?, ?, ?, 'queued', ?, ?, ?)")
       .bind(job.id, s.id, name, seconds, cost, nowIso()).run();
     try {
-      const r = await kie<{ taskId?: string }>(env, "POST", KIE_CREATE, { model: spec.model, input: kieInput(name, spec, { prompt, imageUrl, seconds, format, seed: seedFor(s.id) }) });
+      const r = await kie<{ taskId?: string }>(env, "POST", KIE_CREATE, { model: spec.model, input: kieInput(name, spec, { prompt, imageUrl, seconds, format, seed: seedFor(s.id), look }) });
       if (!r?.taskId) throw new KieError("kie.ai answered without a taskId", 0, false);
       await updateRow(env, job.id, s.id, { task_id: r.taskId, state: "generating" });
       await audit(env, job.user_id, job.id, "footage.task", { shot: s.id, model: name, task: r.taskId, clip_s: clipSeconds, want_s: seconds, usd: cost, still: !!imageUrl });

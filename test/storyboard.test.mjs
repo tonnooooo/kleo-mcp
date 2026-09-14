@@ -705,3 +705,11 @@ test("the shape of the film comes from the template, and it is legal before the 
     }
   }
 });
+
+test("the animation look (14 September) is a picture project planned in its own look, named or read off the row", () => {
+  assert.equal(keouStyleFor("animation", "viral-short", "9:16"), "picture");
+  assert.equal(keouStyleFor("animation", "youtube-long", "16:9"), "picture");
+  const plan = planFor(job("viral-short", 45, "9:16", "en", "A fox who learns to swim, told as an animated film", "animation"));
+  assert.equal(plan.kleo, "animation"); assert.equal(plan.style, "picture");
+  assert.equal(planFor(job("viral-short", 45, "9:16", "en", "A fox who learns to swim")).kleo, "realistic", "unnamed stays realistic");
+});
