@@ -33,7 +33,7 @@ import hashlib, os, re, sys, time
 # invece di 3 per le 24 di uno Short, dentro un video che ne dura quaranta.
 # Il CARTOON resta su dreamshaper-8 perche' NON e' stato misurato: SD1.5 regge molto meglio l'illustrazione del
 # fotorealismo, e cambiare per analogia e' esattamente il modo in cui oggi ci siamo fatti male quattro volte.
-MODELS = {"cartoon": "Lykon/dreamshaper-8", "realistic": "stabilityai/stable-diffusion-xl-base-1.0", "animation": "stabilityai/stable-diffusion-xl-base-1.0"}
+MODELS = {"cartoon": "Lykon/dreamshaper-8", "realistic": "stabilityai/stable-diffusion-xl-base-1.0", "animation": "Lykon/dreamshaper-xl-v2-turbo"}
 FAMILY = {"cartoon": "sd15", "realistic": "sdxl", "animation": "sdxl"}
 # EXACTLY src/images.ts STYLE_SUFFIX / NEGATIVE_PROMPT, character for character: the two sides draw pictures for the
 # SAME video, so a difference between them is a film in two looks. test/images.test.mjs reads these three literals
@@ -67,9 +67,13 @@ STEPS_BY_FAMILY = {"sd15": 22, "sdxl": 30}
 GUIDANCE_BY_FAMILY = {"sd15": None, "sdxl": 6.0}   # None = usa GUIDANCE[style], la taratura di SD1.5
 # Per-look overrides of the family defaults, for a fine-tune that samples differently from its base (a turbo model
 # wants few steps, low guidance and the SDE sampler). An absent entry falls through to the family.
-STEPS_BY_STYLE = {}
-GUIDANCE_BY_STYLE = {}
-SCHEDULER_BY_STYLE = {}   # "sde" = DPM++ SDE Karras, "euler_a" = Euler ancestral; otherwise DPM++ 2M Karras
+# ANIMATION = DreamShaper XL v2 Turbo, chosen on a rented box on 14 September against SDXL base and Animagine XL 3.1 on
+# the same prompts and seeds: the only one whose characters read as a painted animated feature and stay themselves
+# from shot to shot, and the fastest (8 steps: 5 pictures in 30 s against 83 for SDXL base). A turbo model wants few
+# steps, low guidance and the SDE sampler; anything else washes it out.
+STEPS_BY_STYLE = {"animation": 8}
+GUIDANCE_BY_STYLE = {"animation": 2.0}
+SCHEDULER_BY_STYLE = {"animation": "sde"}   # "sde" = DPM++ SDE Karras, "euler_a" = Euler ancestral; otherwise DPM++ 2M Karras
 PROMPT_MAX = 240                                    # src/keou-contract.ts IMAGE_PROMPT_MAX
 BASE_MAX = 150                                      # scene text kept in the SD prompt (CLIP: 77 tokens in total)
 CONTEXT_MAX = 110                                   # the film's direction (cast look + section light) inside that budget

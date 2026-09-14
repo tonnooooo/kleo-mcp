@@ -43,8 +43,7 @@ prompt. Candidati: SDXL base (30 passi, guidance 6), DreamShaper XL v2 Turbo (8 
 Animagine XL 3.1 (28 passi, guidance 7, Euler a, con i suoi tag di qualità). Il giudizio è a occhio, del
 proprietario: nessun numero distingue un bel fotogramma animato da uno brutto. Il modello scelto sta in
 `worker/kleo_pictures.py MODELS["animation"]` e nella copia di `worker/prewarm_models.py`; i suoi passi, guidance e
-sampler in `STEPS_BY_STYLE` / `GUIDANCE_BY_STYLE` / `SCHEDULER_BY_STYLE`. Il risultato del confronto è in fondo a
-questo file quando c'è.
+sampler in `STEPS_BY_STYLE` / `GUIDANCE_BY_STYLE` / `SCHEDULER_BY_STYLE`. Il risultato del confronto è qui sotto.
 
 ## Cosa manca
 
@@ -52,3 +51,16 @@ questo file quando c'è.
 - Il sito: `styles.html` mostra ancora la riga "Cartoon" del vecchio look. Va sostituita da una riga "Animation"
   con un campione vero, quando ci sarà il primo film animato.
 - L'unsharp della finitura 4K (`KLEO_SHARPEN`) è tarato sulla fotografia; su linee e colori piatti va misurato.
+
+## Risultato del confronto (14 settembre, RTX 3090, 5 fotogrammi per modello, stesso seme)
+
+| modello | caricamento | 5 fotogrammi | a occhio |
+|---|---|---|---|
+| SDXL base (30 passi, guidance 6) | 76 s | 83 s | fumetto piatto, l'astronauta è uno schizzo, la capitana una figurina |
+| **DreamShaper XL v2 Turbo** (8 passi, guidance 2, DPM++ SDE Karras) | 50 s | **30 s** | **film animato dipinto: personaggi espressivi e coerenti, sfondi con profondità; scelto** |
+| Animagine XL 3.1 (28 passi, guidance 7, Euler a) | 51 s | 72 s | anime forte ma instabile: composizioni che esplodono, la Terra diventa astratta |
+
+Scelto DreamShaper XL v2 Turbo: `MODELS["animation"]`, `STEPS_BY_STYLE`/`GUIDANCE_BY_STYLE`/`SCHEDULER_BY_STYLE` in
+`worker/kleo_pictures.py`. Un'avvertenza vista nei fogli: su un paesaggio senza personaggi (la città di notte) il
+turbo scivola verso il dipinto quasi fotografico; il suffisso «2D animated feature film, cel shading» lo tiene
+disegnato, e se non bastasse il prossimo passo è rafforzare il suffisso, non cambiare modello.

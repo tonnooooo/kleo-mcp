@@ -119,7 +119,7 @@ async function main() {
   assert(tampered.status === 403, "tampered link should be refused");
 
   step("second job then cancel → refund");
-  const cv2 = await call("kleo_create_video", { template: "did-you-know", prompt: "Five surprising facts about octopuses in thirty seconds", duration_s: 30 });
+  const cv2 = await call("kleo_create_video", { template: "did-you-know", prompt: "Five surprising facts about octopuses in thirty seconds", duration_s: 30, format: "9:16" });
   assert(!cv2.r.isError, "second create failed: " + cv2.r.content?.[0]?.text);
   const cj = await call("kleo_cancel_job", { job_id: cv2.data.job_id });
   assert(cj.data.state === "cancelled" && cj.data.refunded === 1, "cancel/refund failed: " + JSON.stringify(cj.data));

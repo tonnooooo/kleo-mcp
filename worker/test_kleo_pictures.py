@@ -655,17 +655,20 @@ class AnimationLookTest(unittest.TestCase):
         neg = kp.negative_for({"forbidden": ["a wifi symbol"]}, "animation")
         self.assertTrue(neg.startswith(kp.STYLE_NEGATIVE["animation"]) and neg.endswith(", a wifi symbol"))
 
-    def test_per_look_overrides_fall_through_to_the_family(self):
+    def test_the_turbo_model_samples_its_own_way_and_the_other_looks_keep_the_family(self):
         os.environ.pop("KLEO_PICTURES_STEPS", None)
-        self.assertEqual(kp.steps_for("animation"), kp.STEPS_BY_FAMILY["sdxl"])
-        self.assertEqual(kp.guidance_for("animation"), kp.GUIDANCE_BY_FAMILY["sdxl"])
+        self.assertEqual(kp.MODELS["animation"], "Lykon/dreamshaper-xl-v2-turbo")
+        self.assertEqual(kp.steps_for("animation"), 8); self.assertEqual(kp.guidance_for("animation"), 2.0)
+        self.assertEqual(kp.SCHEDULER_BY_STYLE.get("animation"), "sde")
+        self.assertEqual(kp.steps_for("realistic"), kp.STEPS_BY_FAMILY["sdxl"], "another look is untouched")
+        self.assertEqual(kp.guidance_for("realistic"), kp.GUIDANCE_BY_FAMILY["sdxl"])
         old = dict(kp.STEPS_BY_STYLE), dict(kp.GUIDANCE_BY_STYLE)
         try:
-            kp.STEPS_BY_STYLE["animation"] = 8; kp.GUIDANCE_BY_STYLE["animation"] = 2.0
-            self.assertEqual(kp.steps_for("animation"), 8); self.assertEqual(kp.guidance_for("animation"), 2.0)
-            self.assertEqual(kp.steps_for("realistic"), kp.STEPS_BY_FAMILY["sdxl"], "another look is untouched")
+            kp.STEPS_BY_STYLE.clear(); kp.GUIDANCE_BY_STYLE.clear()
+            self.assertEqual(kp.steps_for("animation"), kp.STEPS_BY_FAMILY["sdxl"], "without an override the family decides")
+            self.assertEqual(kp.guidance_for("animation"), kp.GUIDANCE_BY_FAMILY["sdxl"])
         finally:
-            kp.STEPS_BY_STYLE.clear(); kp.STEPS_BY_STYLE.update(old[0]); kp.GUIDANCE_BY_STYLE.clear(); kp.GUIDANCE_BY_STYLE.update(old[1])
+            kp.STEPS_BY_STYLE.update(old[0]); kp.GUIDANCE_BY_STYLE.update(old[1])
 
 
 if __name__ == "__main__":

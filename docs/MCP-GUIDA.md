@@ -28,7 +28,7 @@ Un tool MCP ha lo stesso tempo di una pagina web: i client aspettano al massimo 
 Le descrizioni sono il manuale del modello: se sono scritte bene, il modello sceglie lo strumento giusto e compila i parametri giusti senza che l'utente sappia nulla di tecnico. Le descrizioni vere e complete stanno in `src/mcp.ts`; qui il riassunto.
 
 ```jsonc
-// kleo_adapt_prompt — passo 1 (14 settembre). "Turns the user's request into the TREATMENT of the film: Kleo's
+// kleo_adapt_prompt — passo 1 (14 settembre). Legge la richiesta contro la scaletta (soggetto, durata, formato, look obbligatori; pubblico, tono, cose da far comparire facoltativi) e chiede quel che manca, tutto in un messaggio, prima di qualunque modello (docs/ADAPT-PROMPT.md §8). "Turns the user's request into the TREATMENT of the film: Kleo's
 //                     producer reads the request, keeps every fact in it, and decides the angle, the opening image,
 //                     the acts with their seconds, the ending, the visual language, the pacing, the narrator and the
 //                     motifs — and lists every decision it took that the user did not ask for."

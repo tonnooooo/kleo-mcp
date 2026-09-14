@@ -178,3 +178,26 @@ nello schema, controllato da `treatmentProblems`, riparato da `repairTreatment`)
 (`style`) lo fissano; altrimenti il produttore decide, e la scelta finisce fra le decisioni. La sezione VISUAL
 LANGUAGE ha una lettura per ciascun look, il blocco che direzione e scene leggono si apre con «Look: …», e il
 planner, i prompt delle immagini e delle clip seguono quello. Tutto in `docs/ANIMAZIONE.md`.
+
+## 8. La scaletta: cosa Kleo chiede quando la richiesta non lo dice (14 settembre)
+
+Direzione del proprietario: «se l'utente non scrive determinate cose, Kleo deve chiedere». La scaletta sta in
+`src/adaptive.ts` (`INTAKE`) e la legge `kleo_adapt_prompt`, prima di qualunque modello:
+
+| voce | obbligatoria | letta dalla richiesta quando… | domanda (it) |
+|---|---|---|---|
+| soggetto | sì | c'è una frase di almeno 8 caratteri | Di cosa parla il video, in una frase? |
+| durata | sì | dice «30 secondi», «2 minuti» | Quanto deve durare? (da 15 secondi a 5 minuti) |
+| formato | sì | dice YouTube / orizzontale / 16:9, oppure Short / TikTok / Reel / verticale / 9:16 | Per dove è: YouTube (orizzontale, 16:9) o Short / TikTok / Reel (verticale, 9:16)? |
+| look | sì | dice cartone / animato / anime / disegnato, oppure realistico / documentario / girato | Come lo vuoi: realistico (girato) o animazione (film animato 2D)? |
+| pubblico | no | solo se passato nella chiamata | Per chi è? |
+| tono | no | idem | Che tono deve avere? |
+| deve esserci | no | idem | C'è qualcosa che deve comparire per forza, o che non vuoi vedere? |
+
+Le voci obbligatorie mancanti bloccano (`ready_to_render: false`) e tornano come domande nella lingua della
+richiesta; quelle facoltative si aggiungono nello stesso messaggio, mai da sole. Le istruzioni del server dicono
+all'assistente di fare tutte le domande in un solo messaggio e di richiamare lo strumento con le risposte
+(`duration_s`, `format`, `style`, `audience`, `tone`, `must_keep`); `kleo_create_video` non ha più un valore
+predefinito per durata e formato: sono obbligatori, perché sono risposte dell'utente e non scelte di Kleo. Il
+testo restituito apre con la scaletta stessa («INTAKE — …»), voce per voce, con il valore e la sua provenienza
+(dalla richiesta o dalla risposta dell'utente) o la parola MISSING.

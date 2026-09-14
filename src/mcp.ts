@@ -26,7 +26,7 @@ const JOB_LANGUAGES = ["en", "it"] as const;
 const shotRange = shotRangeText;
 
 const INSTRUCTIONS = `This server is Kleo (the kleo_* tools): the video studio the user connected. Kleo makes one kind of video, a narrated film in one of two looks, realistic (generated live-action footage) or animation (a 2D animated film) — every shot generated as moving footage, one narrator, no music, no captions, no on-screen text — 4K 60 fps, 16:9 for YouTube or 9:16 for a Short, 15 seconds to 5 minutes. When the user mentions Kleo, a video, a film, a Short or a YouTube clip, use these tools; never answer from memory.
-ORDER OF CALLS: 1) If the user has not said what the video is about, ask them and wait; never pick a subject for them. Infer 16:9 unless they ask for a Short or a vertical video. 2) kleo_adapt_prompt with their request: it hands YOU the producer's method, and you write the TREATMENT of the film (logline, angle, opening image, acts, ending, look, pacing, narrator, the layer, the decisions you took) — you are the producer here, and a better writer than Kleo's own planning model. Tell the user the logline and the decisions in one or two sentences; change what they ask. If the tool asks for the length or the subject, ask the user and call it again. 3) kleo_storyboard_guide, then write the storyboard yourself under that treatment: this is where the film's quality is made, and Kleo's own planner is the fallback, not the standard. 4) kleo_create_video with the prompt, the length, the format, the treatment and the storyboard. 5) kleo_wait_for_video again and again until it returns the links, then hand them over.
+ORDER OF CALLS: 1) kleo_adapt_prompt with the user's request, FIRST, before anything else: it reads the request against Kleo's intake — subject, length, format, look (required); audience, tone, what must appear (optional) — and answers with the questions for whatever the request does not say. Ask the user ALL of them in ONE message, in their language, wait for the answers, and call it again with them (duration_s, format, style, audience, tone, must_keep). Never pick a subject, a length, a format or a look for them: what the request does not say is asked, not assumed. 2) Once it answers ready_to_render, the same tool it hands YOU the producer's method, and you write the TREATMENT of the film (logline, angle, opening image, acts, ending, look, pacing, narrator, the layer, the decisions you took) — you are the producer here, and a better writer than Kleo's own planning model. Tell the user the logline and the decisions in one or two sentences; change what they ask. 3) kleo_storyboard_guide, then write the storyboard yourself under that treatment: this is where the film's quality is made, and Kleo's own planner is the fallback, not the standard. 4) kleo_create_video with the prompt, the length, the format, the treatment and the storyboard. 5) kleo_wait_for_video again and again until it returns the links, then hand them over.
 DELIVERY RULE: the user expects the finished video in this same conversation. After kleo_create_video, call kleo_wait_for_video repeatedly (each call waits up to about a minute and returns progress) until it returns the MP4 and thumbnail links. Tell the user once that the render is running and the estimated minutes — the eta_min the server returns, never your own guess — and do not ask "shall I keep waiting?". Never invent progress, files or links: only repeat what these tools return. Call the video by its number (for example "video gt_ab12cd34"), not "job".`;
 
 const ok = (data: unknown, text?: string) => ({
@@ -111,32 +111,35 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     description: "Step 1 (recommended). Turns the user's request into the TREATMENT of the film: Kleo's producer reads the request, keeps every fact in it, and decides the angle, the opening image, the acts with their seconds, the ending, the visual language, the pacing, the narrator's register and the recurring motifs — and lists every decision it took that the user did not ask for. Two identical requests get two different treatments on purpose. It reads language, length and format off the request first and asks only for what is missing (the subject, the length) before spending anything. Nothing is charged and no GPU is rented; it spends a little of Kleo's daily planning quota, so call it once per video. Then tell the user the logline and the decisions, and pass the returned \"treatment\" object — unchanged, or edited as the user asked — to kleo_create_video. Without it Kleo writes a treatment itself while planning, and the user never sees it first.",
     inputSchema: z.object({
       prompt: z.string().min(1).max(4000).describe("The user's request in their own words."),
-      duration_s: z.number().int().min(15).max(300).optional().describe("Length in seconds, when the user said one or agreed one with you. Read off the request when omitted; asked for when it is nowhere."),
-      format: z.enum(FORMATS).optional().describe("16:9 for YouTube/film, 9:16 for vertical Shorts. Read off the request when omitted (16:9 unless it says Short, vertical, TikTok or Reel)."),
+      duration_s: z.number().int().min(15).max(300).optional().describe("Length in seconds. Read off the request when its words say it; otherwise the tool asks the user for it — pass their answer here, never a guess."),
+      format: z.enum(FORMATS).optional().describe("16:9 for YouTube/landscape, 9:16 for a Short/TikTok/Reel. Read off the request when its words say it; otherwise the tool asks the user for it — pass their answer here, never a guess."),
       language: z.enum(JOB_LANGUAGES).optional().describe("Language of the narration; detected from the request when omitted."),
-      audience: z.string().max(160).optional(),
-      tone: z.string().max(160).optional(),
-      style: z.enum(FILM_LOOKS).optional().describe("The look, when the user named it: \"realistic\" (filmed, cinematic) or \"animation\" (a 2D animated film). Omit it and the treatment decides in step 0 of the method, from the request."),
+      audience: z.string().max(160).optional().describe("Who the video is for, when the user said it."),
+      tone: z.string().max(160).optional().describe("The tone the user asked for, when they said it."),
+      must_keep: z.string().max(400).optional().describe("What the user said must appear (names, numbers, places, a message) or must not, when they answered that question."),
+      style: z.enum(FILM_LOOKS).optional().describe("The look: \"realistic\" (filmed, cinematic) or \"animation\" (a 2D animated film). Read off the request when its words say it; otherwise the tool asks the user for it — pass their answer here."),
       author: z.enum(["assistant", "server"]).default("assistant").describe("Who writes the treatment. \"assistant\" (default): Kleo hands YOU the producer's method and you write it — you are a far stronger writer than Kleo's own planning model, and it costs nothing. \"server\": Kleo's model writes it (use only if you cannot write JSON yourself)."),
     }),
     annotations: { readOnlyHint: true, idempotentHint: false, openWorldHint: false },
-  }, async ({ prompt, duration_s, format, language, audience, tone, style, author }) => guarded(async () => {
-    const brief = adaptPrompt(prompt, { duration_s, format, audience, tone, look: style ?? null });
-    const look = style ?? brief.look;   // named on the call, or read off the request; null leaves it to the treatment
+  }, async ({ prompt, duration_s, format, language, audience, tone, must_keep, style, author }) => guarded(async () => {
+    const brief = adaptPrompt(prompt, { duration_s, format, audience, tone, must_keep, look: style ?? null });
+    const look = style ?? brief.look;   // the user's answer on the call, or read off the request
     const base = { workflow: ACTIVE_TEMPLATE.id, style: look, brief };
-    // Missing subject or length: ask, spend nothing. The questions are the tool's answer.
-    if (brief.questions.length || brief.duration_s === null) return ok({ ...base, treatment: null, ready_to_render: false }, adaptivePromptText(brief));
+    // THE INTAKE (14 September): a required item the request does not say — subject, length, format, look — is asked,
+    // never guessed. The questions are the tool's answer, and nothing is spent.
+    const fmt = brief.format, dur = brief.duration_s;
+    if (brief.questions.length || dur === null || fmt === null || look === null) return ok({ ...base, treatment: null, ready_to_render: false, questions: brief.questions, optional_questions: brief.optional_questions }, adaptivePromptText(brief));
     const t = ACTIVE_TEMPLATE;
-    if (brief.duration_s < t.minSeconds || brief.duration_s > t.maxSeconds)
-      throw new JobError(`Kleo makes films of ${t.minSeconds} to ${t.maxSeconds} seconds; ${brief.duration_s} seconds is outside that range. Agree a length in range with the user and call again. Nothing was charged.`);
+    if (dur < t.minSeconds || dur > t.maxSeconds)
+      throw new JobError(`Kleo makes films of ${t.minSeconds} to ${t.maxSeconds} seconds; ${dur} seconds is outside that range. Agree a length in range with the user and call again. Nothing was charged.`);
     const lang = language ?? brief.language;
     // THE FREE ROAD (14 September): the assistant's own model writes the treatment under the method. Measured on
     // whole films, the server's 17B model wrote checklists, platitudes and diagrams; the model reading this tool is
     // usually a frontier one. Nothing is spent, and kleo_create_video checks what comes back.
     if (author !== "server") {
       const v = variationFor(crypto.randomUUID());
-      const method = treatmentMethodText({ prompt: prompt.trim(), duration_s: brief.duration_s, format: brief.format, language: lang, look }, v);
-      void audit(env, user.id, null, "treatment.method", { variation: v.key, duration_s: brief.duration_s, format: brief.format, language: lang });
+      const method = treatmentMethodText({ prompt: prompt.trim(), duration_s: dur, format: fmt, language: lang, look }, v);
+      void audit(env, user.id, null, "treatment.method", { variation: v.key, duration_s: dur, format: fmt, language: lang, look });
       return ok({ ...base, treatment: null, author: "assistant", variation: v.key, ready_to_render: true, next: 'Write the treatment now, following the method in the text; then call kleo_create_video with prompt, duration_s, format, language, style (the look the treatment names) and the object as "treatment". If you cannot write it, call this tool again with author: "server".' },
         `${adaptivePromptText(brief)}\n\n${method}`);
     }
@@ -148,7 +151,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     if (used >= cap) throw new JobError(`This account has asked for ${plural(used, "treatment")} today, and the limit is ${cap} a day while Kleo is in beta. ${fallback} Nothing was charged.`);
     if (await isFlagActive(env, "plan_pause"))
       return ok({ ...base, treatment: null, ready_to_render: true, note: "planning quota exhausted" }, `${adaptivePromptText(brief)}\n\nKleo cannot write the treatment right now: it has used up today's free planning. ${fallback}`);
-    const r = await writeTreatment(env, { prompt: prompt.trim(), duration_s: brief.duration_s, format: brief.format, language: lang, look });
+    const r = await writeTreatment(env, { prompt: prompt.trim(), duration_s: dur, format: fmt, language: lang, look });
     void audit(env, user.id, null, "treatment.adapt", { model: r.model, attempts: r.attempts, ms: r.ms, usage: r.usage, est_neurons: r.est_neurons, ok: !!r.treatment, transient: r.transient, history: r.history.slice(0, 3), variation: r.treatment?.variation ?? null });
     if (!r.treatment)
       return ok({ ...base, treatment: null, ready_to_render: true, note: r.transient ? "model unavailable" : "no valid treatment in two attempts", problems: r.history },
@@ -220,8 +223,8 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     inputSchema: z.object({
       template: z.string().optional().describe(`Optional; the only one is "film" (a film, realistic or animated, 16:9 for YouTube or 9:16 for Shorts, 15 to 300 seconds). Omit it.`),
       prompt: z.string().describe("What the video is about, IN THE USER'S OWN WORDS (8 to 4000 characters): topic, angle, facts, names, tone, anything that must appear on screen. If you are about to write this field out of an idea of your own, that is the sign to ask them instead: the credit and the twenty minutes are theirs, so the subject has to be theirs too."),
-      duration_s: z.number().optional().describe("Target length in seconds. Defaults to the template default and must stay inside the template's range."),
-      format: z.enum(["16:9", "9:16"]).optional().describe("16:9 for YouTube videos, 9:16 for Shorts. Defaults to the template's first format."),
+      duration_s: z.number().int().min(15).max(300).describe("Length in seconds, as the user said or answered it (kleo_adapt_prompt asks when the request does not say). Required: Kleo never picks a length for the user."),
+      format: z.enum(["16:9", "9:16"]).describe("16:9 for YouTube/landscape, 9:16 for a Short/TikTok/Reel, as the user said or answered it. Required: Kleo never picks a frame for the user."),
       language: z.enum(JOB_LANGUAGES).default("en").describe("Voice and caption language. A storyboard you pass must declare this same language."),
       voice: z.string().optional().describe("Voice id from kleo_list_templates (narrator-en-m, narrator-en-f, narrator-it-m, narrator-it-f). The engine ids used inside a storyboard (am_michael, af_heart, bf_emma, im_nicola, if_sara) are accepted too. Optional."),
       style: z.enum(FILM_LOOKS).optional().describe("The look: \"realistic\" (a cinematic, filmed video) or \"animation\" (a 2D animated film); both narrated, no captions, no music, every shot generated as moving footage from its own frame. Pass the treatment's \"look\"; when omitted the treatment decides, and realistic when nothing says."),
