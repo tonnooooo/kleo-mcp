@@ -6,7 +6,7 @@ import { getUserJob, getUser, recentJobsForUser, countOpenForUser, countAuditTod
 import { isFlagActive } from "./schema";
 import { writeTreatment } from "./storyboard.ts";
 import { treatmentText } from "./treatment.ts";
-import { ACTIVE_TEMPLATE, PUBLIC_TEMPLATES as TEMPLATES, PUBLIC_TEMPLATE_IDS as ACTIVE_TEMPLATE_IDS, findTemplate, creditsFor, filmCredits, freeCreditsFor, freeFilms, tariffSentence, MIN_FILM_CREDITS, SECONDS_PER_CREDIT } from "./templates";
+import { ACTIVE_TEMPLATE, PUBLIC_TEMPLATES as TEMPLATES, PUBLIC_TEMPLATE_IDS as ACTIVE_TEMPLATE_IDS, findTemplate, creditsFor, filmCredits, freeCreditsFor, tariffSentence, MIN_FILM_CREDITS, SECONDS_PER_CREDIT } from "./templates";
 import { PACKS, sellingAvailable } from "./stripe";
 import { createJob, cancelJob, jobView, resultLinks, JobError, FILE_NAMES } from "./jobs";
 import { accountUrl, makeHandle } from "./accounts";
@@ -415,7 +415,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       min_film_credits: MIN_FILM_CREDITS,
       pricing: tariffSentence(),
       free_tier: free > 0
-        ? `${plural(freeFilms(env), "free film")} on sign-up (${plural(free, "credit")}), no signup form`
+        ? `${plural(free, "credit")} on sign-up, no signup form; the shortest film is ${MIN_FILM_CREDITS} credits, so the first film needs a pack (from ${cheapest.label}: ${free} + ${cheapest.credits} = ${free + cheapest.credits} credits, a 30-second Short)`
         : "no free credits: connecting is free, every film is paid (no subscription, credit packs only)",
       account_key: await makeHandle(env, user.id),
       account_url: url,

@@ -526,17 +526,14 @@ export const tariffSentence = (): string =>
   `1 credit buys ${SECONDS_PER_CREDIT} seconds of film, ${MIN_FILM_CREDITS} credits minimum: ${filmCredits(30)} credits for a 30-second Short, ${filmCredits(60)} for a minute, ${filmCredits(300)} for five minutes`;
 
 /**
- * THE FREE TIER IS COUNTED IN FILMS, NOT IN CREDITS. FREE_FILMS (wrangler.jsonc) says how many films a brand-new
- * account may make for nothing; the credits it is given are computed HERE from the film's price, so a price change
- * moves the free tier with it and nobody has to remember a second number. The old FREE_CREDITS was that second
- * number: it stayed at 2 when the film went to 7, and for a day every new account was invited to "start free" and
- * could render nothing. That shape of bug — a config value that must be kept in step with a code value by hand —
- * is the one this function removes.
+ * THE SIGN-UP GIFT, 14 September 2026: FREE_CREDITS (wrangler.jsonc, 7) credits on a brand-new account — and the
+ * shortest film costs MIN_FILM_CREDITS (10). That gap is the owner's decision, not an oversight: the free tier
+ * exists (0 EUR, nothing to type) but it cannot buy a kie.ai film by itself; the smallest pack (5 EUR, 10 credits)
+ * takes it to 17, a 30-second Short. The earlier FREE_FILMS (a film count turned into credits at the film's price)
+ * is gone: it was built to keep the gift equal to a film, which is the one thing it must no longer be.
+ * test/style-price.test.mjs pins both facts: gift < film, gift + smallest pack ≥ a 30 s Short.
  */
-export const freeFilms = (env: { FREE_FILMS?: string }): number => Math.max(0, int(env.FREE_FILMS, 0));
-/** The credits a new account is given: FREE_FILMS films at the smallest film's price. 0 since 14 September (owner's
- *  decision: a film is paid from the first one; a missing value now means none, not one). */
-export const freeCreditsFor = (env: { FREE_FILMS?: string }): number => freeFilms(env) * MIN_FILM_CREDITS;
+export const freeCreditsFor = (env: { FREE_CREDITS?: string }): number => Math.max(0, int(env.FREE_CREDITS, 0));
 
 /** Rough wall-clock estimate on one RTX 4090 at 4K 60 fps: ~25 min for a Short, ~12 min per minute of long-form. */
 export const etaFor = (seconds: number): number => (seconds <= 90 ? 18 : Math.max(30, Math.round((seconds / 60) * 10)));

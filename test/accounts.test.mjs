@@ -68,7 +68,7 @@ function fakeProvider() {
 async function newEnv(extra = {}) {
   const env = {
     DB: new FakeD1(), OAUTH_PROVIDER: fakeProvider(), RENDER_BACKEND: "mock", PUBLIC_URL: "http://kleo.test",
-    INTERNAL_SECRET: "s3cret", FREE_FILMS: "0", MAX_NEW_USERS_PER_DAY: "25", RESULT_TTL_DAYS: "7",
+    INTERNAL_SECRET: "s3cret", FREE_CREDITS: "7", MAX_NEW_USERS_PER_DAY: "25", RESULT_TTL_DAYS: "7",
     MAX_CONCURRENT_GPUS: "2", MAX_JOBS_PER_USER: "1", JOB_TIMEOUT_MIN: "60",
     ...extra,
   };
@@ -128,7 +128,7 @@ test("handle: the cookie value is found among other cookies, and only when it is
 });
 
 /* ------------------------------------------------------------------ the one button */
-test("sign-in: one press creates an anonymous account with one film's worth of credits (FREE_FILMS) and remembers it", async () => {
+test("sign-in: one press creates an anonymous account with the FREE_CREDITS gift (below a film on purpose) and remembers it", async () => {
   const env = await newEnv();
   const res = await press(env);
   assert.equal(res.status, 302);
@@ -144,13 +144,13 @@ test("sign-in: one press creates an anonymous account with one film's worth of c
 
   const rows = users(env);
   assert.equal(rows.length, 1);
-  assert.equal(rows[0].credits, 0, "FREE_FILMS=0 since 14 September: a new account starts at zero, and the number is computed, never typed");
+  assert.equal(rows[0].credits, 7, "FREE_CREDITS=7 since 14 September: a gift that cannot buy the 10-credit film by itself");
   assert.equal(rows[0].email, `${rows[0].id}@anon.kleo.invalid`, "the synthetic address satisfies NOT NULL UNIQUE, so no migration was needed");
   assert.equal(rows[0].invite_code, null);
   assert.equal(await m.verifyHandle(env, handleOf(res)), rows[0].id);
   const created = audits(env, "user.created");
   assert.equal(created.length, 1);
-  assert.deepEqual(created[0].detail, { source: "open", credits: 0, ip: null }, "no CF-Connecting-IP in this request, and an address is never stored raw anyway");
+  assert.deepEqual(created[0].detail, { source: "open", credits: 7, ip: null }, "no CF-Connecting-IP in this request, and an address is never stored raw anyway");
   assert.equal(env.OAUTH_PROVIDER.granted[0].userId, rows[0].id, "and the OAuth grant is completed for that same account");
 });
 
@@ -163,7 +163,7 @@ test("sign-in: the same browser comes back to the same account and is given NO n
   assert.equal(again.status, 302);
   assert.equal(await m.verifyHandle(env, handleOf(again)), id, "same account");
   assert.equal(users(env).length, 1, "connecting a second assistant must not mint a second account");
-  assert.equal((await m.getUser(env, id)).credits, 0, "and must not refill the free credits either");
+  assert.equal((await m.getUser(env, id)).credits, 7, "and must not refill the free credits either");
   assert.equal(audits(env, "user.created").length, 1);
 });
 
@@ -176,7 +176,7 @@ test("sign-in: a Kleo key carries the account to a browser that has no cookie", 
   assert.equal(moved.status, 302);
   assert.equal(await m.verifyHandle(env, handleOf(moved)), id);
   assert.equal(users(env).length, 1);
-  assert.equal((await m.getUser(env, id)).credits, 0, "the balance travels with the key, including an empty one");
+  assert.equal((await m.getUser(env, id)).credits, 7, "the balance travels with the key");
 });
 
 test("sign-in: a Kleo key that is not valid is refused, and no account is created for it", async () => {
@@ -199,7 +199,7 @@ test("sign-in: a typed Kleo key wins over the cookie this browser already has", 
   assert.equal(moved.status, 302);
   assert.equal(await m.verifyHandle(env, handleOf(moved)), "u_other", "the account that was typed in is the one that comes back");
   assert.equal(env.OAUTH_PROVIDER.granted.at(-1).userId, "u_other", "and the OAuth grant follows it, not the cookie");
-  assert.equal((await m.getUser(env, mineId)).credits, 0, "the browser's own account is left untouched");
+  assert.equal((await m.getUser(env, mineId)).credits, 7, "the browser's own account is left untouched");
   assert.equal(users(env).length, 2, "and no third account is created");
 });
 
@@ -220,12 +220,12 @@ test("sign-in: a bonus code works on the account this browser already has, and o
   const uses = () => env.DB.db.prepare("SELECT uses FROM invites WHERE code = 'MARCO-1'").get().uses;
 
   await press(env, { cookie: cookieOf(first), form: { bonus: "marco-1" } });
-  assert.equal((await m.getUser(env, id)).credits, 1, "a gift handed out at a meet-up must reach a person who is already in");
+  assert.equal((await m.getUser(env, id)).credits, 8, "a gift handed out at a meet-up must reach a person who is already in");
   assert.equal(uses(), 1);
   assert.equal(audits(env, "bonus.applied").length, 1);
 
   await press(env, { cookie: cookieOf(first), form: { bonus: "MARCO-1" } });
-  assert.equal((await m.getUser(env, id)).credits, 1, "and cannot be typed again on every reconnection");
+  assert.equal((await m.getUser(env, id)).credits, 8, "and cannot be typed again on every reconnection");
   assert.equal(uses(), 1, "a refused gift does not spend a use either");
   assert.equal(audits(env, "bonus.rejected").length, 1, "but it IS written down, so a lost gift can be traced");
 });
@@ -236,7 +236,7 @@ test("sign-in: a bonus code adds credits on top of the free ones; an unknown one
 
   await press(env, { form: { bonus: "marco-1" } }); // typed in lower case, like a person would
   const withBonus = users(env)[0];
-  assert.equal(withBonus.credits, 1, "0 free + 1 bonus");
+  assert.equal(withBonus.credits, 8, "7 free + 1 bonus");
   assert.equal(withBonus.invite_code, "MARCO-1");
   assert.equal(env.DB.db.prepare("SELECT uses FROM invites WHERE code = 'MARCO-1'").get().uses, 1);
   assert.equal(audits(env, "bonus.applied").length, 1, "the gift is applied after the account exists, so it is its own audit row");
@@ -245,12 +245,12 @@ test("sign-in: a bonus code adds credits on top of the free ones; an unknown one
   const plain = await press(env, { form: { bonus: "NOT-A-CODE" } });
   assert.equal(plain.status, 302);
   const second = users(env).find((u) => u.id !== withBonus.id);
-  assert.equal(second.credits, 0);
+  assert.equal(second.credits, 7);
   assert.equal(second.invite_code, null, "a code that gave nothing is not recorded as if it had");
 
   const spent = await press(env, { form: { bonus: "MARCO-1" } });
   assert.equal(spent.status, 302, "an exhausted code is not an error either");
-  assert.equal(users(env).find((u) => u.id !== withBonus.id && u.id !== second.id).credits, 0);
+  assert.equal(users(env).find((u) => u.id !== withBonus.id && u.id !== second.id).credits, 7);
 });
 
 test("sign-in: past MAX_NEW_USERS_PER_DAY no account and no credits are created, and nobody is accused", async () => {
@@ -317,8 +317,8 @@ test("page: one button and nothing to fill in; a returning browser is greeted wi
   const env = await newEnv();
   const first = await openPage(env);
   const fresh = await first.text();
-  assert.match(fresh, /<button type="submit">Start<\/button>/, "no free credits: the button promises nothing");
-  assert.match(fresh, /1 credit buys 2 seconds of film, 10 credits minimum: 15 credits for a 30-second Short, 30 for a minute, 150 for five minutes\. A new account starts at zero credits: connecting is free, the first film is paid\./, "the page quotes the tariff and says plainly that nothing is free, both computed");
+  assert.match(fresh, /Start free - 7 credits included/);
+  assert.match(fresh, /1 credit buys 2 seconds of film, 10 credits minimum: 15 credits for a 30-second Short, 30 for a minute, 150 for five minutes\. You start with 7 credits: not yet a film \(the shortest is 10\); the 5 EUR pack takes you to 17, a 30-second Short\./, "the page quotes the tariff and says plainly that the gift alone buys no film, both computed");
   assert.match(fresh, /No email\. No password\. No card\. No invite code\./);
   assert.ok(!/type="email"/.test(fresh), "there is no email field any more");
   assert.ok(!/type="checkbox"/.test(fresh), "and no consent box: pressing the button is the consent");
@@ -327,7 +327,7 @@ test("page: one button and nothing to fill in; a returning browser is greeted wi
 
   const res = await press(env);
   const back = await (await openPage(env, cookieOf(res))).text();
-  assert.match(back, /Welcome back - 0 credits left/);
+  assert.match(back, /Welcome back - 7 credits left/);
   assert.match(back, />Continue</);
   assert.ok(!/Start free/.test(back));
 });
@@ -343,7 +343,7 @@ test("/credits: the link is read-only, is not the Kleo key, and never binds this
   const page = await m.handleCredits(new Request(`http://kleo.test/credits?k=${encodeURIComponent(link)}`), env);
   assert.equal(page.status, 200);
   const body = await page.text();
-  assert.match(body, /0 credits left/, "a new account starts at zero since 14 September");
+  assert.match(body, /7 credits left/);
   assert.match(body, /not open yet/, "the page is honest about payments while there are none");
   assert.match(body, /5 EUR/, "and it does say how to get more, which is what the chat message promised");
   assert.match(body, /kleooai@gmail\.com/, "there is a human to write to");

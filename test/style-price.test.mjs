@@ -11,7 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { STYLE_CREDITS, STYLE_MACHINE, VIDEO, creditsFor, filmCredits, freeCreditsFor, machineFor, isVideoStyle } from "../src/templates.ts";
+import { STYLE_CREDITS, STYLE_MACHINE, VIDEO, creditsFor, filmCredits, freeCreditsFor, machineFor, isVideoStyle, MIN_FILM_CREDITS } from "../src/templates.ts";
 import { KLEO_STYLES } from "../src/keou-contract.ts";
 
 test("every style Kleo can render has a declared price", () => {
@@ -69,18 +69,20 @@ test("an unpriced style is charged the DEAREST price, never the cheapest", () =>
   assert.equal(creditsFor(45, "a-style-nobody-priced"), 23, "which today is the film's own price");
 });
 
-test("the free tier is off in production (14 September): a new account starts at zero, and a value > 0 would give whole films", () => {
-  // FREE_CREDITS stayed at 2 (two 1-credit Shorts) after the reset of 13 September made the 7-credit film the only
-  // product, so a new account was invited to "start free" and could render nothing. The fix is the unit: the
-  // config says FILMS, the code turns them into credits at the price it charges, and there is no second number.
+test("the sign-up gift is a fixed 7 credits, below the shortest film on purpose; with the 5 EUR pack it is a 30 s Short", () => {
+  // 14 September: the owner keeps the free tier (0 EUR, one button) but a kie.ai film must never be free. So the
+  // gift is a credit count again, and the test pins the two facts that make it work: it cannot buy the 10-credit
+  // film by itself, and together with the smallest pack (5 EUR = 10 credits, src/stripe.ts) it buys a 30 s Short.
   const cfg = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
-  assert.ok(!/"FREE_CREDITS"/.test(cfg), "FREE_CREDITS is gone from the config: a credit count would drift from the price again");
-  const films = Number(/"FREE_FILMS":\s*"(\d+)"/.exec(cfg)?.[1]);
-  assert.equal(films, 0, "production gives NO free film: a film costs 2-4 $ of kie.ai clips and the owner decided it is paid from the first one");
-  assert.equal(freeCreditsFor({ FREE_FILMS: String(films) }), 0);
-  assert.equal(freeCreditsFor({}), 0, "a missing value means none, not the old one film");
-  assert.equal(freeCreditsFor({ FREE_FILMS: "1" }), filmCredits(20), "a value > 0 gives whole films at the shortest film's price");
-  assert.ok(freeCreditsFor({ FREE_FILMS: "1" }) < filmCredits(30), "and never a 30-second Short");
+  assert.ok(!/"FREE_FILMS"/.test(cfg), "FREE_FILMS is gone: it tied the gift to the film's price, the one thing it must not be");
+  const gift = Number(/"FREE_CREDITS":\s*"(\d+)"/.exec(cfg)?.[1]);
+  assert.equal(gift, 7, "production gives 7 credits");
+  assert.equal(freeCreditsFor({ FREE_CREDITS: String(gift) }), gift);
+  assert.equal(freeCreditsFor({}), 0, "a missing value means no gift");
+  assert.ok(gift < MIN_FILM_CREDITS, "the gift alone never buys a film");
+  const SMALLEST_PACK = 10;
+  assert.ok(gift + SMALLEST_PACK >= filmCredits(30), "gift + 5 EUR pack = a 30-second Short");
+  assert.ok(gift + SMALLEST_PACK < filmCredits(40), "and not more than that");
 });
 
 /* ------------------------------------------------------------------ what a style needs of a machine */

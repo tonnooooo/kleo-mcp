@@ -55,7 +55,7 @@ function fakeAi(answer) {
 async function studio(ai, extra = {}) {
   const env = {
     DB: new FakeD1(), OAUTH_KV: new FakeKV(), AI: ai, RENDER_BACKEND: "manual", PUBLIC_URL: "http://kleo.test", INTERNAL_SECRET: "s3cret",
-    MAX_CONCURRENT_GPUS: "5", MAX_JOBS_PER_USER: "2", MAX_JOBS_PER_DAY: "500", JOB_TIMEOUT_MIN: "120", FREE_FILMS: "0", RESULT_TTL_DAYS: "7",
+    MAX_CONCURRENT_GPUS: "5", MAX_JOBS_PER_USER: "2", MAX_JOBS_PER_DAY: "500", JOB_TIMEOUT_MIN: "120", FREE_CREDITS: "7", RESULT_TTL_DAYS: "7",
     AI_MODEL: "@cf/meta/llama-4-scout-17b-16e-instruct", ...extra,
   };
   for (const f of readdirSync(join(ROOT, "migrations")).sort()) env.DB.db.exec(readFileSync(join(ROOT, "migrations", f), "utf8"));
@@ -90,7 +90,7 @@ test("kleo_account quotes the film's price and the real state of the shop, never
   const d = a.structuredContent;
   assert.equal(d.film_credits, 30, "the active template's default film: 60 s");
   assert.equal(d.min_film_credits, 10);
-  assert.equal(d.free_tier, "no free credits: connecting is free, every film is paid (no subscription, credit packs only)");
+  assert.equal(d.free_tier, "7 credits on sign-up, no signup form; the shortest film is 10 credits, so the first film needs a pack (from 5 EUR: 7 + 10 = 17 credits, a 30-second Short)");
   assert.equal(d.payments_open, false, "no Stripe links configured: the shop is closed and the tool says so");
   assert.match(a.text, /1 credit buys 2 seconds of film, 10 credits minimum: 15 credits for a 30-second Short, 30 for a minute, 150 for five minutes/);
   assert.doesNotMatch(a.text, /1 credit = 1 Short|free while it is in beta/);

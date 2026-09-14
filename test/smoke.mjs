@@ -51,7 +51,7 @@ async function main() {
   const challenge = b64url(crypto.createHash("sha256").update(verifier).digest());
   const q = new URLSearchParams({ response_type: "code", client_id: reg.client_id, redirect_uri: "http://localhost:9999/cb", scope: "video:create video:read", state: "xyz", code_challenge: challenge, code_challenge_method: "S256" });
   const page = await fetch(`${BASE}/authorize?${q}`);
-  assert(page.status === 200 && (await page.text()).includes("Connect") && (await page.text()).includes("Start"), "login page not rendered");
+  assert(page.status === 200 && (await page.text()).includes("Start free"), "login page not rendered");
   // Nothing to type: the whole form is the hidden oauth_query and the button.
   const form = new URLSearchParams({ oauth_query: q.toString() });
   const post = await fetch(`${BASE}/authorize`, { method: "POST", body: form, redirect: "manual" });

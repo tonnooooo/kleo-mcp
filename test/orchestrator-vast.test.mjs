@@ -46,7 +46,7 @@ async function newEnv(extra = {}) {
   const env = {
     DB: new FakeD1(), RENDER_BACKEND: "vast", PUBLIC_URL: "http://kleo.test", INTERNAL_SECRET: "s3cret",
     VAST_API_KEY: "k".repeat(64), VAST_IMAGE: "ghcr.io/kleo/worker:test", JOB_TIMEOUT_MIN: "120",
-    MAX_CONCURRENT_GPUS: "5", MAX_JOBS_PER_USER: "2", FREE_FILMS: "1", RESULT_TTL_DAYS: "7",
+    MAX_CONCURRENT_GPUS: "5", MAX_JOBS_PER_USER: "2", FREE_CREDITS: "7", RESULT_TTL_DAYS: "7",
     // Out of the way unless a test is about them: the daily job cap and the GPU budget have their own tests below.
     MAX_JOBS_PER_DAY: "500", DAILY_GPU_BUDGET_USD: "1000",
     ...extra,

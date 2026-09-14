@@ -7,7 +7,7 @@ import { MIN_FILM_CREDITS, freeCreditsFor, tariffSentence } from "./templates";
 
 /**
  * /authorize: the page an MCP client (Claude, ChatGPT, Grok, Cursor…) opens in the browser.
- * One button, nothing to type: the click creates an anonymous account with FREE_FILMS films' worth of credits and
+ * One button, nothing to type: the click creates an anonymous account with FREE_CREDITS credits (below a film on purpose) and
  * remembers it in a signed cookie (src/accounts.ts). A returning browser keeps its balance instead of
  * being given free credits again, which is also the main defence against multiplying the free tier.
  */
@@ -167,7 +167,7 @@ function page(o: { clientName: string; oauthQuery: string; freeCredits: number; 
   // below says so in as many words, instead of promising a film the credits cannot buy.
   const films = Math.floor(o.freeCredits / MIN_FILM_CREDITS);
   const start = o.freeCredits > 0
-    ? `You start with ${plural(o.freeCredits, "credit")}: ${films > 0 ? `${plural(films, "film")} on the house` : "not yet enough for a film"}.`
+    ? `You start with ${plural(o.freeCredits, "credit")}: ${films > 0 ? `${plural(films, "film")} on the house` : `not yet a film (the shortest is ${MIN_FILM_CREDITS}); the 5 EUR pack takes you to ${o.freeCredits + 10}, a 30-second Short`}.`
     : "A new account starts at zero credits: connecting is free, the first film is paid. Credit packs (from 5 EUR) are on your account page, one click away in the chat.";
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Connect to Kleo</title>
