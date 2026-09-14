@@ -28,6 +28,7 @@ import {
   DIRECTION_LIMITS as DL, SHOT_KINDS,
   SKETCH_ACCENTS, SKETCH_ART, SKETCH_MOODS, SKETCH_MOTION, SKETCH_ENTER, SKETCH_EXIT,
 } from "./keou-contract.ts";
+import { GL, LINE_STATES } from "./graphics.ts";
 
 /** The looks a job can be written in, and which schema section each one needs. */
 export type GuideStyle = "cartoon" | "realistic" | "cyber" | "stickman" | "explainer";
@@ -79,6 +80,23 @@ Read the user's request as a request, not as raw material, and answer these ten 
  objects is the vocabulary of THIS film and nothing else. Pirates: beach, sand, wooden chest, red-sailed ship, rope, lantern. Space: launch pad, rocket, orbital station, visor, cable.
  forbidden is what makes a film its own, and it is the field most people skip. Name (a) the things an image generator adds by habit — text in the picture, logos, watermarks, extra fingers — and (b) the things that belong to a DIFFERENT subject than this one. A pirate film forbids wifi symbols, phones, screens and modern clothing. Kleo sends this to the image model as a negative prompt and refuses any picture description that asks for something on the list.
  sections are the colour law. They tile the video in order, and their "scenes" add up to EXACTLY the number of scenes you write — you choose that number (${scenes} is the range for this length), then make the sections sum to the number you chose, not to the range. Two sections in a row NEVER share an accent. Every scene then wears its section's accent — you do not pick accents per scene, and Kleo refuses a scene wearing the wrong one. One colour, one part of the story, one meaning: that is the whole of it.`;
+}
+
+/* ------------------------------------------------------------------ the layer (optional) */
+
+/**
+ * What may be drawn OVER the film, decided for THIS film and never by a look: src/graphics.ts is the grammar, and
+ * this prints it from the same constants. Most films have no layer; the ones about a number, a date, a delay or a
+ * state that holds through the film get one, and every element on it means one thing.
+ */
+function layerSection(): string {
+  return `3b. THE LAYER — optional, and "none" is the usual answer
+A film that is about something the viewer must READ (a number that keeps changing, a date, a delay, a distance, a state that holds through the film) may carry a layer over the footage. Decide it for this film; write it at the top level and speak to it from every scene. Nothing outside this grammar exists: no icons, no logos, no lower thirds, no sentences on cards, no music.
+"graphics": {"accent":"#rrggbb from the film's own palette, the layer's only ink","subtitles":"none"|"cinema" (thin, white, lowercase, no karaoke),"chapters":"none"|"film" (the scene's chapter in light capitals),
+ "hud":[up to ${GL.hud.max} of: {"id":"<slug>","kind":"line","edge":"bottom"|"top","means":"<=${GL.means}, the one thing it stands for"} · {"id":"<slug>","kind":"readout","corner":"top-left"|"top-right"|"bottom-left"|"bottom-right","rows":["LABEL" x${GL.rows.min}-${GL.rows.max}, <=${GL.rows.len} chars],"means":"…"} · {"id":"<slug>","kind":"stamp","corner":"…","means":"…"}]}
+Then on every scene: "hud":{"<line id>":${LINE_STATES.map((s) => `"${s}"`).join("|")}, "<readout id>":["<value per row, <=${GL.value}>", …], "<stamp id>":"<=${GL.stamp}"} — the state or the values AT THAT SCENE, changing only when the story changes them — and, at most ${GL.card.perScene} per scene, "cards":[{"at":"<words copied from this scene's voice>","text":"<=${GL.card.text}, a figure or a date, never a sentence","hold":${GL.card.defaultHold}}].
+Kleo refuses a scene that speaks to an element the film does not have, a card that is not a figure, and hud or cards on a film with no "graphics".
+`;
 }
 
 /* ------------------------------------------------------------------ per-look sections */
@@ -253,6 +271,7 @@ ${look ? `This guide is for kleo_style "${look}", which needs style "${keou}".` 
 
 ${scenesSection}
 
+${!look || PICTURE_LOOKS.includes(look) ? layerSection() : ""}
 4. WHAT KLEO REFUSES, BEFORE ANYTHING IS BILLED
  2-240 scenes; ids are unique lowercase slugs and must not end in "-s" + a number; the last scene is "closing"; every scene needs "title" and "voice".
  The direction's sections must add up to the scene count, no two neighbouring sections share an accent, and every scene wears its section's accent.
