@@ -55,7 +55,7 @@ function fakeAi(answer) {
 async function studio(ai, extra = {}) {
   const env = {
     DB: new FakeD1(), OAUTH_KV: new FakeKV(), AI: ai, RENDER_BACKEND: "manual", PUBLIC_URL: "http://kleo.test", INTERNAL_SECRET: "s3cret",
-    MAX_CONCURRENT_GPUS: "5", MAX_JOBS_PER_USER: "2", MAX_JOBS_PER_DAY: "500", JOB_TIMEOUT_MIN: "120", FREE_FILMS: "1", RESULT_TTL_DAYS: "7",
+    MAX_CONCURRENT_GPUS: "5", MAX_JOBS_PER_USER: "2", MAX_JOBS_PER_DAY: "500", JOB_TIMEOUT_MIN: "120", FREE_FILMS: "0", RESULT_TTL_DAYS: "7",
     AI_MODEL: "@cf/meta/llama-4-scout-17b-16e-instruct", ...extra,
   };
   for (const f of readdirSync(join(ROOT, "migrations")).sort()) env.DB.db.exec(readFileSync(join(ROOT, "migrations", f), "utf8"));
