@@ -201,7 +201,7 @@ test("kleo_style: enum, default cyber, cartoon/realistic need the picture style,
     assert.equal(sb.style, "picture");
   }
   const bad = cinema(); bad.kleo_style = "anime";
-  assert.ok(errorsOf(bad, { format: "9:16", language: "en" }).some((e) => e.startsWith("kleo_style must be one of ['cartoon', 'cyber', 'explainer', 'realistic', 'stickman']")));
+  assert.ok(errorsOf(bad, { format: "9:16", language: "en" }).some((e) => e.startsWith("kleo_style must be one of ['animation', 'cartoon', 'cyber', 'explainer', 'realistic', 'stickman']")));
   const ed = editorial(); ed.kleo_style = "cartoon";
   assert.ok(errorsOf(ed, { format: "9:16", language: "en" }).some((e) => /kleo_style cartoon needs the Keou style "picture"/.test(e)), "the message names the picture style");
   const asCinema = pirates(); asCinema.style = "cinema";
@@ -215,7 +215,7 @@ test("kleo_style: enum, default cyber, cartoon/realistic need the picture style,
 
 test("the picture style belongs to cartoon/realistic only, and shots need it", () => {
   const cyberPic = pirates(); cyberPic.kleo_style = "cyber";
-  assert.ok(errorsOf(cyberPic, { format: "9:16", language: "en" }).some((e) => /the Keou style "picture" is the cartoon\/realistic look: set kleo_style to "cartoon" or "realistic", not "cyber"/.test(e)));
+  assert.ok(errorsOf(cyberPic, { format: "9:16", language: "en" }).some((e) => /the Keou style "picture" is the cartoon\/realistic\/animation look: set kleo_style to one of cartoon, realistic, animation, not "cyber"/.test(e)));
   const noStyle = pirates(); delete noStyle.kleo_style;
   assert.ok(errorsOf(noStyle, { format: "9:16", language: "en" }).some((e) => /the Keou style "picture" is the cartoon\/realistic look/.test(e)));
   const shotsInCinema = cinema();

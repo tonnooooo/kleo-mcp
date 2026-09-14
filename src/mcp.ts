@@ -121,8 +121,9 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     }),
     annotations: { readOnlyHint: true, idempotentHint: false, openWorldHint: false },
   }, async ({ prompt, duration_s, format, language, audience, tone, style, author }) => guarded(async () => {
-    const brief = adaptPrompt(prompt, { duration_s, format, audience, tone });
-    const base = { workflow: ACTIVE_TEMPLATE.id, style: style ?? null, brief };
+    const brief = adaptPrompt(prompt, { duration_s, format, audience, tone, look: style ?? null });
+    const look = style ?? brief.look;   // named on the call, or read off the request; null leaves it to the treatment
+    const base = { workflow: ACTIVE_TEMPLATE.id, style: look, brief };
     // Missing subject or length: ask, spend nothing. The questions are the tool's answer.
     if (brief.questions.length || brief.duration_s === null) return ok({ ...base, treatment: null, ready_to_render: false }, adaptivePromptText(brief));
     const t = ACTIVE_TEMPLATE;
@@ -134,7 +135,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     // usually a frontier one. Nothing is spent, and kleo_create_video checks what comes back.
     if (author !== "server") {
       const v = variationFor(crypto.randomUUID());
-      const method = treatmentMethodText({ prompt: prompt.trim(), duration_s: brief.duration_s, format: brief.format, language: lang, look: style ?? null }, v);
+      const method = treatmentMethodText({ prompt: prompt.trim(), duration_s: brief.duration_s, format: brief.format, language: lang, look }, v);
       void audit(env, user.id, null, "treatment.method", { variation: v.key, duration_s: brief.duration_s, format: brief.format, language: lang });
       return ok({ ...base, treatment: null, author: "assistant", variation: v.key, ready_to_render: true, next: 'Write the treatment now, following the method in the text; then call kleo_create_video with prompt, duration_s, format, language, style (the look the treatment names) and the object as "treatment". If you cannot write it, call this tool again with author: "server".' },
         `${adaptivePromptText(brief)}\n\n${method}`);
@@ -147,7 +148,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     if (used >= cap) throw new JobError(`This account has asked for ${plural(used, "treatment")} today, and the limit is ${cap} a day while Kleo is in beta. ${fallback} Nothing was charged.`);
     if (await isFlagActive(env, "plan_pause"))
       return ok({ ...base, treatment: null, ready_to_render: true, note: "planning quota exhausted" }, `${adaptivePromptText(brief)}\n\nKleo cannot write the treatment right now: it has used up today's free planning. ${fallback}`);
-    const r = await writeTreatment(env, { prompt: prompt.trim(), duration_s: brief.duration_s, format: brief.format, language: lang, look: style ?? null });
+    const r = await writeTreatment(env, { prompt: prompt.trim(), duration_s: brief.duration_s, format: brief.format, language: lang, look });
     void audit(env, user.id, null, "treatment.adapt", { model: r.model, attempts: r.attempts, ms: r.ms, usage: r.usage, est_neurons: r.est_neurons, ok: !!r.treatment, transient: r.transient, history: r.history.slice(0, 3), variation: r.treatment?.variation ?? null });
     if (!r.treatment)
       return ok({ ...base, treatment: null, ready_to_render: true, note: r.transient ? "model unavailable" : "no valid treatment in two attempts", problems: r.history },

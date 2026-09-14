@@ -229,10 +229,13 @@ test("style names the look on every tool: the method is written for it, the guid
   assert.ok(!r.isError, r.text);
   assert.equal(r.structuredContent.style, "animation");
   assert.match(r.text, /THE LOOK: ANIMATION, fixed by the request or the tool call/);
-  assert.match(r.text, /style \(the look the treatment names\)/, "the assistant is told to pass the look on");
+  assert.match(r.structuredContent.next, /style \(the look the treatment names\)/, "the assistant is told to pass the look on");
+  assert.match(r.text, /- Look: animation, a 2D animated film/, "the brief says the look");
   const open = await s.call("kleo_adapt_prompt", { prompt: "A fox who learns to swim, 45 seconds", format: "9:16" });
   assert.equal(open.structuredContent.style, null, "no look named: the treatment decides in step 0");
-  assert.match(open.text, /THE LOOK: not named — decide it in step 0/);
+  assert.match(open.text, /THE LOOK: not named — decide it in step 0/); assert.match(open.text, /- Look: decided by the treatment/);
+  const drawn = await s.call("kleo_adapt_prompt", { prompt: "Un cartone animato su una volpe che impara a nuotare, 45 secondi", format: "9:16" });
+  assert.equal(drawn.structuredContent.style, "animation", "the request named it: a cartoon is the animation look"); assert.match(drawn.text, /THE LOOK: ANIMATION/);
   const g = await s.call("kleo_storyboard_guide", { duration_s: 45, style: "animation", format: "9:16" });
   assert.ok(!g.isError, g.text);
   assert.equal(g.structuredContent.style, "animation"); assert.deepEqual(g.structuredContent.styles, ["realistic", "animation"]);

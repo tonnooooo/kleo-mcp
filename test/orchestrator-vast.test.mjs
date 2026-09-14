@@ -731,7 +731,7 @@ test("price: there is no guessed look any more — every video is the film, pric
   assert.equal(JSON.parse(unnamed.params).style_guessed, undefined, "and nothing was guessed");
   const named = await short(env, u, { style: "realistic" });
   assert.equal(named.credits, unnamed.credits, "naming the one look costs the same as not naming it");
-  await assert.rejects(() => short(env, u, { style: "cartoon" }), /one look now/);
+  await assert.rejects(() => short(env, u, { style: "cartoon" }), /two looks/);
 });
 
 /* ------------------------------------------------------------------ a clock cannot tell dead from slow */

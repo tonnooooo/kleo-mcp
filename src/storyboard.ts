@@ -597,7 +597,7 @@ TEMPLATE: ${t?.name ?? job.template}. LENGTH: ${plan.duration} seconds, about ${
 ${under}
 TASK: write the DIRECTION of this one film, before any scene exists. Return one JSON object:
 
-{"style":"cartoon|realistic|cyber|explainer|stickman","why":"<=90 chars, why that look fits THIS request",
+{"style":"cartoon|realistic|animation|cyber|explainer|stickman","why":"<=90 chars, why that look fits THIS request",
  "direction":{
   "subject":"<=${DL.subject}, the one thing the video is about, in the user's own terms",
   "goal":"<=${DL.goal}, what the viewer should understand or feel by the end",
@@ -621,6 +621,7 @@ RULES
 - CHOOSE THE STYLE BY THE SHAPE OF THE ANSWER THE REQUEST IS ASKING FOR, never by its topic. The same subject can want two different looks, so asking "is this about security" answers nothing.
   · cartoon — the answer is a STORY with people in it, told in order: someone did something and here is what happened. Kids, history, animals, travel, tales.
   · realistic — the answer is a PLACE or a THING you could photograph: products, cities, news events, sport, a documentary about something that exists.
+  · animation — the answer wants to be DRAWN as a 2D animated film: a fairy tale, a talking animal, a world that does not exist, the inside of something no camera enters, or the user asked for animation, a cartoon or anime by name.
   · cyber — the answer has STRUCTURE TO DIAGRAM: a flow with steps, a comparison of two things, a list, a set of numbers. Icons and big type, no pictures at all.
   · explainer — the answer is ONE IDEA TAKEN APART until the viewer believes something different at the end: one mechanism, one object, one misconception, and nothing to list or compare. Hand-drawn line art where every spoken phrase has its own literal drawing. The words "explain", "why", "how" in a request do NOT choose it — most requests for cyber and realistic say "explain" too. What chooses it is that the answer is a single thing and the viewer's belief about it changes.
   · stickman — only if the user asked for a stickman by name.
