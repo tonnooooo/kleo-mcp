@@ -32,14 +32,34 @@ test("a price is a whole number of credits, and at least one", () => {
   }
 });
 
-test("length still sets the base price, and the style multiplies it", () => {
+test("the price is length alone: one credit per two seconds, ten at least (14 September)", () => {
+  assert.equal(creditsFor(15, "realistic"), 10, "the floor: the shortest film is the 5 EUR pack");
+  assert.equal(creditsFor(20, "realistic"), 10);
+  assert.equal(creditsFor(30, "realistic"), 15, "a 30-second Short");
+  assert.equal(creditsFor(31, "realistic"), 16, "an odd second rounds up, never down");
+  assert.equal(creditsFor(60, "realistic"), 30);
+  assert.equal(creditsFor(90, "realistic"), 45);
+  assert.equal(creditsFor(300, "realistic"), 150, "five minutes");
+});
+
+test("a film is never sold under its cost: the tariff returns at least 1.6x what kie.ai and the GPU take", () => {
+  // Measured 13 September 2026: fifteen MiniMax H3 shots at their 4 s minimum for a 30 s Short = 3.90 $ of clips,
+  // ~0.13 $ a second, plus ~0.10-0.30 $ of a 16 GB card. The cheapest credit is the 40 EUR pack: 0.40 EUR ≈ 0.43 $.
+  const COST_USD_PER_S = 0.13, GPU_USD = 0.30, CHEAPEST_CREDIT_USD = 0.43;
+  for (const s of [15, 20, 30, 45, 60, 90, 120, 300]) {
+    const income = creditsFor(s, "realistic") * CHEAPEST_CREDIT_USD, cost = s * COST_USD_PER_S + GPU_USD;
+    assert.ok(income >= 1.6 * cost, `${s} s: sold for ${income.toFixed(2)} $, costs ${cost.toFixed(2)} $`);
+  }
+});
+
+test("every look is charged as a film, none below it", () => {
   // The three lengths the pricing has always had, at the cheapest style.
-  assert.equal(creditsFor(45, "cartoon"), 1, "a Short");
-  assert.equal(creditsFor(300, "cartoon"), 3, "up to five minutes");
-  assert.equal(creditsFor(480, "cartoon"), 6, "and one more credit per extra minute");
+  assert.equal(creditsFor(45, "cartoon"), 23, "a picture Short costs what the film costs: the 1-credit Short was the loophole");
+  assert.equal(creditsFor(300, "cartoon"), 150);
+  assert.equal(creditsFor(480, "cartoon"), 240);
   // No style named: the caller is quoted the base price, which is what an unstyled request has always cost.
-  assert.equal(creditsFor(45), 1);
-  assert.equal(creditsFor(480), 6);
+  assert.equal(creditsFor(45), 23);
+  assert.equal(creditsFor(480), 240);
 });
 
 test("an unpriced style is charged the DEAREST price, never the cheapest", () => {
@@ -48,18 +68,18 @@ test("an unpriced style is charged the DEAREST price, never the cheapest", () =>
     "forgetting a price must cost the user a loud complaint, not cost the owner a silent bill");
 });
 
-test("the free tier is counted in films and computed from the price: one film in production, whatever it costs", () => {
+test("the free tier is off in production (14 September): a new account starts at zero, and a value > 0 would give whole films", () => {
   // FREE_CREDITS stayed at 2 (two 1-credit Shorts) after the reset of 13 September made the 7-credit film the only
   // product, so a new account was invited to "start free" and could render nothing. The fix is the unit: the
   // config says FILMS, the code turns them into credits at the price it charges, and there is no second number.
   const cfg = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
   assert.ok(!/"FREE_CREDITS"/.test(cfg), "FREE_CREDITS is gone from the config: a credit count would drift from the price again");
   const films = Number(/"FREE_FILMS":\s*"(\d+)"/.exec(cfg)?.[1]);
-  assert.equal(films, 1, "production gives one free film: not zero (a dead trial), not two (twice the GPU per stranger)");
-  assert.equal(freeCreditsFor({ FREE_FILMS: String(films) }), filmCredits(90), "and the credits handed out are exactly that film's price");
-  assert.equal(freeCreditsFor({}), filmCredits(90), "a missing value means one film, never the old two credits");
-  assert.equal(freeCreditsFor({ FREE_FILMS: "0" }), 0, "0 switches the trial off");
-  assert.ok(freeCreditsFor({ FREE_FILMS: String(films) }) < filmCredits(300), "and never a long film");
+  assert.equal(films, 0, "production gives NO free film: a film costs 2-4 $ of kie.ai clips and the owner decided it is paid from the first one");
+  assert.equal(freeCreditsFor({ FREE_FILMS: String(films) }), 0);
+  assert.equal(freeCreditsFor({}), 0, "a missing value means none, not the old one film");
+  assert.equal(freeCreditsFor({ FREE_FILMS: "1" }), filmCredits(20), "a value > 0 gives whole films at the shortest film's price");
+  assert.ok(freeCreditsFor({ FREE_FILMS: "1" }) < filmCredits(30), "and never a 30-second Short");
 });
 
 /* ------------------------------------------------------------------ what a style needs of a machine */
@@ -86,15 +106,13 @@ test("no profile asks for a card older than Ampere, whatever its memory", () => 
   }
 });
 
-test("a style that needs the dear card is also priced above the free credits", () => {
-  // The two tables are one decision seen twice. A style that rents a $0.90/h card while costing 1 credit is a
-  // machine bought with the owner's money and sold for a seventh of it — to an account that got its credits free.
-  const FREE = 2;
+test("no look is priced under the film, whatever machine it rents", () => {
+  // The two tables are one decision seen twice. A style that rents a dear card while costing less than the film is
+  // a machine bought with the owner's money and sold under cost. Since 14 September every look is the film's price.
   for (const [style, m] of Object.entries(STYLE_MACHINE)) {
-    if (!isVideoStyle(style)) continue;
-    assert.ok(creditsFor(45, style) > FREE,
-      `${style} rents a ${m.minVramGb} GB card at up to $${m.maxDph}/h but a free account can still afford it`);
-    assert.ok(STYLE_CREDITS[style] > 1, `${style} needs the dear machine and is still priced as if it did not`);
+    assert.equal(creditsFor(45, style), creditsFor(45, "realistic"),
+      `${style} rents a ${m.minVramGb} GB card at up to $${m.maxDph}/h and is priced differently from the film`);
+    assert.equal(STYLE_CREDITS[style], 1, `${style}: the multipliers are retired, length is the price`);
   }
 });
 

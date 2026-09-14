@@ -380,11 +380,14 @@ export function sceneSplit(f: Family, scenes: number): number[] {
  * day. What actually bounds a bad day is not the price list but DAILY_GPU_BUDGET_USD, which is exactly its job.
  */
 export const STYLE_CREDITS: Record<string, number> = {
-  cartoon: 1,     // AI pictures + Ken Burns
-  realistic: 7,   // FILMED since 13 September: a reference frame per shot, animated by Wan 2.2, under the narration
-  cyber: 1,       // no pictures at all, drawn live by the engine
-  stickman: 1,    // idem
-  explainer: 1,   // one drawing per phrase
+  // Since the reset of 13 September there is ONE product, the realistic film, and since 14 September its price is
+  // set by LENGTH alone (filmBase below). The multipliers stay at 1 so the old looks, should one ever be rendered
+  // again, are charged as a film and never below it: a picture Short at 1 credit was the loophole this closes.
+  cartoon: 1,
+  realistic: 1,   // FILMED: a reference frame per shot, animated by kie.ai (MiniMax H3) under the narration
+  cyber: 1,
+  stickman: 1,
+  explainer: 1,
 };
 
 /**
@@ -492,9 +495,22 @@ export const machineFor = (style: string | null | undefined): Machine =>
 const priceOf = (style: string | null | undefined): number =>
   style ? STYLE_CREDITS[style] ?? Math.max(...Object.values(STYLE_CREDITS)) : 1;
 
-/** Credits: 1 for a Short (≤ 90 s), 3 for up to 5 minutes, +1 per extra minute — times what the style costs. */
-export const creditsFor = (seconds: number, style?: string | null): number =>
-  (seconds <= 90 ? 1 : seconds <= 300 ? 3 : 3 + Math.ceil((seconds - 300) / 60)) * priceOf(style);
+/**
+ * THE TARIFF, 14 September 2026: one credit buys two seconds of film, ten credits at least.
+ *
+ * Why length and nothing else: the film's real cost is per second — about 0.13 $ of kie.ai clips a second (fifteen
+ * MiniMax H3 shots at their 4 s minimum for a 30 s Short = 3.90 $), plus a few cents of GPU. The old ladder
+ * (7 credits up to 90 s) sold a 90 s film for 3.50 EUR that cost 11 $ to make, and the free tier gave one away to
+ * every stranger. At 0.40-0.50 EUR a credit (the packs in stripe.ts) this rule returns 1.7-2x the cost at every
+ * length, and the floor of ten is exactly the smallest pack: 5 EUR buys a 20-second film, nothing buys one for free.
+ *   20 s = 10 · 30 s = 15 · 60 s = 30 · 90 s = 45 · 5 min = 150
+ */
+export const SECONDS_PER_CREDIT = 2;
+export const MIN_FILM_CREDITS = 10;
+export const filmBase = (seconds: number): number =>
+  Math.max(MIN_FILM_CREDITS, Math.ceil(Math.max(0, Number(seconds) || 0) / SECONDS_PER_CREDIT));
+/** Credits for a video of this length in this look: the film base times the look's multiplier (1 for every look today). */
+export const creditsFor = (seconds: number, style?: string | null): number => filmBase(seconds) * priceOf(style);
 
 /** The one look the product sells (the reset of 13 September); every price quoted to a user is this style's. */
 export const FILM_STYLE = "realistic";
@@ -506,7 +522,7 @@ export const filmCredits = (seconds: number = ACTIVE_TEMPLATE.defaultSeconds): n
  * day after the film became the only product at 7.
  */
 export const tariffSentence = (): string =>
-  `${filmCredits(90)} credits per film up to 90 seconds, ${filmCredits(300)} up to 5 minutes, +${filmCredits(360) - filmCredits(300)} per extra minute`;
+  `1 credit buys ${SECONDS_PER_CREDIT} seconds of film, ${MIN_FILM_CREDITS} credits minimum: ${filmCredits(30)} credits for a 30-second Short, ${filmCredits(60)} for a minute, ${filmCredits(300)} for five minutes`;
 
 /**
  * THE FREE TIER IS COUNTED IN FILMS, NOT IN CREDITS. FREE_FILMS (wrangler.jsonc) says how many films a brand-new
@@ -516,8 +532,10 @@ export const tariffSentence = (): string =>
  * could render nothing. That shape of bug — a config value that must be kept in step with a code value by hand —
  * is the one this function removes.
  */
-export const freeFilms = (env: { FREE_FILMS?: string }): number => Math.max(0, int(env.FREE_FILMS, 1));
-export const freeCreditsFor = (env: { FREE_FILMS?: string }): number => freeFilms(env) * filmCredits(90);
+export const freeFilms = (env: { FREE_FILMS?: string }): number => Math.max(0, int(env.FREE_FILMS, 0));
+/** The credits a new account is given: FREE_FILMS films at the smallest film's price. 0 since 14 September (owner's
+ *  decision: a film is paid from the first one; a missing value now means none, not one). */
+export const freeCreditsFor = (env: { FREE_FILMS?: string }): number => freeFilms(env) * MIN_FILM_CREDITS;
 
 /** Rough wall-clock estimate on one RTX 4090 at 4K 60 fps: ~25 min for a Short, ~12 min per minute of long-form. */
 export const etaFor = (seconds: number): number => (seconds <= 90 ? 18 : Math.max(30, Math.round((seconds / 60) * 10)));

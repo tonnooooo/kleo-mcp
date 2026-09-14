@@ -6,7 +6,7 @@ import { getUserJob, getUser, recentJobsForUser, countOpenForUser, countAuditTod
 import { isFlagActive } from "./schema";
 import { writeTreatment } from "./storyboard.ts";
 import { treatmentText } from "./treatment.ts";
-import { ACTIVE_TEMPLATE, PUBLIC_TEMPLATES as TEMPLATES, PUBLIC_TEMPLATE_IDS as ACTIVE_TEMPLATE_IDS, findTemplate, creditsFor, filmCredits, freeCreditsFor, freeFilms, tariffSentence } from "./templates";
+import { ACTIVE_TEMPLATE, PUBLIC_TEMPLATES as TEMPLATES, PUBLIC_TEMPLATE_IDS as ACTIVE_TEMPLATE_IDS, findTemplate, creditsFor, filmCredits, freeCreditsFor, freeFilms, tariffSentence, MIN_FILM_CREDITS, SECONDS_PER_CREDIT } from "./templates";
 import { PACKS, sellingAvailable } from "./stripe";
 import { createJob, cancelJob, jobView, resultLinks, JobError, FILE_NAMES } from "./jobs";
 import { accountUrl, makeHandle } from "./accounts";
@@ -406,23 +406,26 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     // at 7 credits and the account page had started selling packs. A new account with its free credits was told it
     // could neither render nor buy, and an assistant repeated it word for word.
     const free = freeCreditsFor(env);
-    const price = filmCredits(90);
     const open = await sellingAvailable(env);
     const cheapest = PACKS[0];
     const data = {
       credits_available: fresh.credits,
-      film_credits: price,
+      film_credits: filmCredits(), // the template's default length (30 s)
+      seconds_per_credit: SECONDS_PER_CREDIT,
+      min_film_credits: MIN_FILM_CREDITS,
       pricing: tariffSentence(),
-      free_tier: `${plural(freeFilms(env), "free film")} on sign-up (${plural(free, "credit")}), no signup form`,
+      free_tier: free > 0
+        ? `${plural(freeFilms(env), "free film")} on sign-up (${plural(free, "credit")}), no signup form`
+        : "no free credits: connecting is free, every film is paid (no subscription, credit packs only)",
       account_key: await makeHandle(env, user.id),
       account_url: url,
       payments_open: open,
     };
-    const enough = fresh.credits >= price ? "" : ` That is not enough for a film yet.`;
+    const enough = fresh.credits >= MIN_FILM_CREDITS ? "" : ` That is not enough for a film yet (the shortest is ${MIN_FILM_CREDITS} credits).`;
     const buy = open
       ? `Credit packs are on the account page, paid through Stripe (from ${cheapest.label} for ${cheapest.credits} credits; one payment, nothing renews)`
       : `Card payments are paused right now; the account page says when they reopen`;
-    return ok(data, `You have ${plural(fresh.credits, "credit")}. A film costs ${plural(price, "credit")} up to 90 seconds (${tariffSentence()}).${enough} ${buy}. Your account page, which also shows the key that carries this account to another browser: ${url}`);
+    return ok(data, `You have ${plural(fresh.credits, "credit")}. ${tariffSentence()}.${enough} ${buy}. Your account page, which also shows the key that carries this account to another browser: ${url}`);
   });
 
   return server;

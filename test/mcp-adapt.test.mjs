@@ -88,11 +88,11 @@ test("kleo_account quotes the film's price and the real state of the shop, never
   const closed = await studio(fakeAi(() => TREATMENT_FIXTURE(60)));
   const a = await closed.call("kleo_account", {});
   const d = a.structuredContent;
-  assert.equal(d.film_credits, 7);
-  assert.equal(d.free_tier, "1 free film on sign-up (7 credits), no signup form");
+  assert.equal(d.film_credits, 15, "the template's default film: 30 s");
+  assert.equal(d.min_film_credits, 10);
+  assert.equal(d.free_tier, "no free credits: connecting is free, every film is paid (no subscription, credit packs only)");
   assert.equal(d.payments_open, false, "no Stripe links configured: the shop is closed and the tool says so");
-  assert.match(a.text, /A film costs 7 credits up to 90 seconds/);
-  assert.match(a.text, /7 credits per film up to 90 seconds, 21 up to 5 minutes, \+7 per extra minute/);
+  assert.match(a.text, /1 credit buys 2 seconds of film, 10 credits minimum: 15 credits for a 30-second Short, 30 for a minute, 150 for five minutes/);
   assert.doesNotMatch(a.text, /1 credit = 1 Short|free while it is in beta/);
   assert.match(a.text, /payments are paused/);
 

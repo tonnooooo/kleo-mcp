@@ -54,8 +54,8 @@ async function newEnv(extra = {}) {
   for (const f of readdirSync(join(ROOT, "migrations")).sort()) env.DB.db.exec(readFileSync(join(ROOT, "migrations", f), "utf8"));
   return env;
 }
-/** Price units (13 September: one look, priced as a film): P = a Short, PL = a five-minute film. */
-const P = 7, PL = 21;
+/** Price units (14 September: one credit per two seconds, ten at least): P = the 45 s Short below, PL = a five-minute film. */
+const P = 23, PL = 150;
 const user = (env, credits = 10 * P) => m.createUser(env, { id: "u_test", email: "t@example.com", credits, inviteCode: null });
 const short = (env, u, extra = {}) => m.createJob(env, u, { template: "film", prompt: "Pirates find an island missing from every map", duration_s: 45, format: "9:16", ...extra });
 const events = async (env, name) => (await env.DB.prepare("SELECT job_id, event, detail FROM audit WHERE event = ? ORDER BY id").bind(name).all()).results.map((r) => ({ ...r, detail: r.detail ? JSON.parse(r.detail) : null }));

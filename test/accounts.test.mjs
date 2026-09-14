@@ -144,13 +144,13 @@ test("sign-in: one press creates an anonymous account with one film's worth of c
 
   const rows = users(env);
   assert.equal(rows.length, 1);
-  assert.equal(rows[0].credits, 7, "FREE_FILMS=1 at the film's price of 7: the free tier is computed, never typed");
+  assert.equal(rows[0].credits, 0, "FREE_FILMS=0 since 14 September: a new account starts at zero, and the number is computed, never typed");
   assert.equal(rows[0].email, `${rows[0].id}@anon.kleo.invalid`, "the synthetic address satisfies NOT NULL UNIQUE, so no migration was needed");
   assert.equal(rows[0].invite_code, null);
   assert.equal(await m.verifyHandle(env, handleOf(res)), rows[0].id);
   const created = audits(env, "user.created");
   assert.equal(created.length, 1);
-  assert.deepEqual(created[0].detail, { source: "open", credits: 7, ip: null }, "no CF-Connecting-IP in this request, and an address is never stored raw anyway");
+  assert.deepEqual(created[0].detail, { source: "open", credits: 0, ip: null }, "no CF-Connecting-IP in this request, and an address is never stored raw anyway");
   assert.equal(env.OAUTH_PROVIDER.granted[0].userId, rows[0].id, "and the OAuth grant is completed for that same account");
 });
 
@@ -238,7 +238,7 @@ test("sign-in: a bonus code adds credits on top of the free ones; an unknown one
 
   await press(env, { form: { bonus: "marco-1" } }); // typed in lower case, like a person would
   const withBonus = users(env)[0];
-  assert.equal(withBonus.credits, 8, "7 free + 1 bonus");
+  assert.equal(withBonus.credits, 1, "0 free + 1 bonus");
   assert.equal(withBonus.invite_code, "MARCO-1");
   assert.equal(env.DB.db.prepare("SELECT uses FROM invites WHERE code = 'MARCO-1'").get().uses, 1);
   assert.equal(audits(env, "bonus.applied").length, 1, "the gift is applied after the account exists, so it is its own audit row");
@@ -247,12 +247,12 @@ test("sign-in: a bonus code adds credits on top of the free ones; an unknown one
   const plain = await press(env, { form: { bonus: "NOT-A-CODE" } });
   assert.equal(plain.status, 302);
   const second = users(env).find((u) => u.id !== withBonus.id);
-  assert.equal(second.credits, 7);
+  assert.equal(second.credits, 0);
   assert.equal(second.invite_code, null, "a code that gave nothing is not recorded as if it had");
 
   const spent = await press(env, { form: { bonus: "MARCO-1" } });
   assert.equal(spent.status, 302, "an exhausted code is not an error either");
-  assert.equal(users(env).find((u) => u.id !== withBonus.id && u.id !== second.id).credits, 7);
+  assert.equal(users(env).find((u) => u.id !== withBonus.id && u.id !== second.id).credits, 0);
 });
 
 test("sign-in: past MAX_NEW_USERS_PER_DAY no account and no credits are created, and nobody is accused", async () => {
@@ -319,8 +319,8 @@ test("page: one button and nothing to fill in; a returning browser is greeted wi
   const env = await newEnv();
   const first = await openPage(env);
   const fresh = await first.text();
-  assert.match(fresh, /Start free - 7 credits included/);
-  assert.match(fresh, /A film costs 7 credits \(up to 90 seconds\)\. You start with 7: 1 film on the house/, "the page quotes the film's real price and the films the free credits buy, both computed");
+  assert.match(fresh, /<button type="submit">Start<\/button>/, "no free credits: the button promises nothing");
+  assert.match(fresh, /1 credit buys 2 seconds of film, 10 credits minimum: 15 credits for a 30-second Short, 30 for a minute, 150 for five minutes\. A new account starts at zero credits: connecting is free, the first film is paid\./, "the page quotes the tariff and says plainly that nothing is free, both computed");
   assert.match(fresh, /No email\. No password\. No card\. No invite code\./);
   assert.ok(!/type="email"/.test(fresh), "there is no email field any more");
   assert.ok(!/type="checkbox"/.test(fresh), "and no consent box: pressing the button is the consent");

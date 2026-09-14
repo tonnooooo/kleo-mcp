@@ -71,8 +71,8 @@ test("flipping one entry to VIDEO moves the price, the card, the limit and the s
     assert.equal(sb.kleo_style, "realistic");
 
     // The one thing that does NOT follow on its own, and must not: the price is a separate line in the same commit.
-    assert.equal(creditsFor(40, "realistic"), 7,
-      "the price is deliberately not derived from the machine — it is the human decision of the same commit");
+    assert.equal(creditsFor(40, "realistic"), 20,
+      "the price is deliberately not derived from the machine — it is length alone, one credit per two seconds (14 September)");
   });
   assert.equal(isVideoStyle("realistic"), true, "the table is restored to what it is today: filmed");
 });

@@ -60,8 +60,9 @@ async function newEnv(backend = "manual") {
   for (const f of readdirSync(join(ROOT, "migrations")).sort()) env.DB.db.exec(readFileSync(join(ROOT, "migrations", f), "utf8"));
   return env;
 }
-/** Price units (13 September: one look, priced as a film): P = a Short, PL = a five-minute film. */
-const P = 7, PL = 21;
+/** Price units (14 September: one credit per two seconds, ten at least): P = the 45 s Short below, P30 = a 30 s film,
+ *  PL = a five-minute film. */
+const P = 23, P30 = 15, PL = 150;
 const user = (env, credits = 10 * P) => m.createUser(env, { id: "u_test", email: "t@example.com", credits, inviteCode: null });
 const balance = async (env, id = "u_test") => (await m.getUser(env, id)).credits;
 const events = async (env, jobId, name) => (await env.DB.prepare("SELECT event, detail FROM audit WHERE job_id = ? AND event = ? ORDER BY id").bind(jobId, name).all()).results.map((r) => ({ ...r, detail: r.detail ? JSON.parse(r.detail) : null }));
@@ -113,7 +114,7 @@ test("create: a client storyboard for a filmed style is stored asking to be film
   const stored = JSON.parse((await m.getJob(env, job.id)).storyboard);
   assert.equal(stored.backdrop, "video", "the plan says filmed, so the stored storyboard must ask to be filmed");
   assert.equal(stored.kleo_style, "realistic");
-  assert.equal(job.credits, P, "and it is charged as a filmed video");
+  assert.equal(job.credits, P30, "and it is charged as a filmed video");
   // and no other look can be bought at all — with or without a backdrop written in by the caller
   const c = JSON.parse(JSON.stringify(sb)); c.kleo_style = "cartoon"; c.backdrop = "video";
   await assert.rejects(() => m.createJob(env, u, { template: "film", prompt: "Pirati e tesori", duration_s: 30, format: "16:9", language: "it", style: "cartoon", storyboard: c }), /one look now/);
@@ -130,7 +131,7 @@ test("create: a filmed job on a gated model with no token on the server is refus
   assert.equal(await balance(env), 20 * P, "nothing was charged");
   env.HF_TOKEN = "hf_x";
   const job = await m.createJob(env, u, { template: "film", prompt: "L'acqua alta a Venezia", duration_s: 30, format: "16:9", language: "it", style: "realistic", storyboard: sb });
-  assert.equal(job.credits, P, "with the token configured the same request goes through");
+  assert.equal(job.credits, P30, "with the token configured the same request goes through");
 });
 
 test("create: validation errors say nothing was charged and move no credits", async () => {
