@@ -107,7 +107,8 @@ test("the treatment carries the layer: 'none' stays none, a layer is fitted, a b
   const withLayer = repairTreatment({ ...TREATMENT_FIXTURE(60), graphics: { layer: "layer", ...LAYER } }, 60, v);
   assert.equal(withLayer.graphics.hud.length, 3);
   assert.match(treatmentBlock(withLayer), /THE LAYER OF THIS FILM \(accent #ffb347/);
-  const broken = treatmentProblems({ ...TREATMENT_FIXTURE(60), graphics: { layer: "layer", accent: "amber", hud: [] } }, 60);
+  const broken = treatmentProblems({ ...TREATMENT_FIXTURE(60), graphics: { layer: "layer", accent: "amber", hud: [{ id: "signal", kind: "line", edge: "top", means: "the link" }] } }, 60);
+  assert.equal(repairTreatment({ ...TREATMENT_FIXTURE(60), graphics: { layer: "layer", accent: "#ffb347", subtitles: "none", chapters: "none", hud: [] } }, 60, v).graphics, null, "a layer with nothing on it is no layer, not a problem");
   assert.ok(broken.some((m) => /^graphics\.accent/.test(m)), broken.join(" | "));
   assert.equal(repairTreatment(TREATMENT_FIXTURE(60), 60, v).graphics, null, "a treatment written before the layer existed has none");
   const s = treatmentSchema();
@@ -155,7 +156,7 @@ import json, sys, tempfile, os, copy
 sys.path.insert(0, ${JSON.stringify(join(ROOT, "worker", "keou"))})
 import contract
 base = json.loads(${JSON.stringify(JSON.stringify(sb))})
-base.update(id="layer-test", brand="Kleo", width=1080, fps=60)
+base.update(id="layer-test", brand="Kleo", width=1080, fps=60, look="realistic")
 for s in base["scenes"]:
     for sh in s.get("shots") or []:
         sh.pop("clip", None); sh.pop("image", None)

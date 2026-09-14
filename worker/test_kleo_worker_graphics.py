@@ -36,7 +36,10 @@ class FilmFinishWithALayer(unittest.TestCase):
             open(os.path.join(self.pdir, "out", "master.mp4"), "wb").write(b"MASTER")
         kw.run_keou = run_keou
         kw.film_checks = lambda video, timeline: (12.0, 0.0)
-        kw.thumbnail_from = lambda video, out_path, png=None: open(out_path, "wb").write(b"jpg") or out_path
+        def thumbnail_from(video, out_path, png=None):
+            open(out_path, "wb").write(b"jpg")
+            return out_path
+        kw.thumbnail_from = thumbnail_from
         kw.progress = lambda *a, **k: None
         self.real_run = kw.subprocess.run
 
