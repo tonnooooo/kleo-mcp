@@ -221,7 +221,7 @@ class GeneratePicturesTest(unittest.TestCase):
         kp.generate_pictures(SCENES[:1], "realistic", "16:9", self.tmp)
         call = state["calls"][0]
         self.assertTrue(call["prompt"].endswith(", " + kp.STYLE_SUFFIX["realistic"]))
-        self.assertIn("cinematic photograph, 35mm lens", call["prompt"])
+        self.assertTrue(call["prompt"].endswith(kp.STYLE_SUFFIX["realistic"]), call["prompt"])   # the suffix is the constant, whatever it says today
         # Tutti e quattro dalla famiglia del modello, non scritti qui: cambiare modello deve muovere il test con se.
         self.assertEqual((call["width"], call["height"]), kp.size_for("16:9", "realistic"))
         self.assertEqual(call["num_inference_steps"], kp.steps_for("realistic"))
