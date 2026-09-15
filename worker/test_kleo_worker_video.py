@@ -628,3 +628,30 @@ class LayerPicturesTravelTest(unittest.TestCase):
         # the picture that was there is untouched, and a second pass has nothing left to do
         self.assertEqual(open(os.path.join(pdir, "img", "01-a-s1.png"), "rb").read(), kw.BLANK_PNG)
         self.assertEqual(kw.ensure_shot_pictures(pdir, project), [])
+
+
+class LayerClipsBoundTest(unittest.TestCase):
+    """With a video backdrop the contract wants a clip on every shot; the bundle's project.json never had them."""
+
+    def setUp(self):
+        import tempfile, shutil
+        self.tmp = tempfile.mkdtemp(prefix="kleo-clips-"); self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.pdir = os.path.join(self.tmp, "p"); os.makedirs(os.path.join(self.pdir, "clips"))
+        self.project = {"id": "gt-x", "scenes": [{"id": "01-a", "shots": [{"image": "img/01-a-s1.png"}, {"image": "img/01-a-s2.png"}]},
+                                                  {"id": "02-closing", "shots": [{"image": "img/02-closing-s1.png"}]}]}
+
+    def clip(self, name):
+        open(os.path.join(self.pdir, "clips", name), "wb").write(b"\x00")
+
+    def test_every_shot_is_bound_to_the_clip_the_gpu_box_named_after_it(self):
+        for n in ("01-a-s1.mp4", "01-a-s2.mp4", "02-closing-s1.mp4"):
+            self.clip(n)
+        self.assertEqual(kw.bind_shot_clips(self.pdir, self.project), 3)
+        self.assertEqual(self.project["scenes"][0]["shots"][1]["clip"], "clips/01-a-s2.mp4")
+        self.assertEqual(self.project["scenes"][1]["shots"][0]["clip"], "clips/02-closing-s1.mp4")
+
+    def test_a_missing_clip_is_refused_in_one_sentence_not_by_the_contract(self):
+        self.clip("01-a-s1.mp4"); self.clip("02-closing-s1.mp4")
+        with self.assertRaises(kw.RenderError) as cm:
+            kw.bind_shot_clips(self.pdir, self.project)
+        self.assertIn("01-a-s2", str(cm.exception))

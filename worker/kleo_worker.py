@@ -1390,6 +1390,32 @@ def project_has_layer(pdir):
     return isinstance(project, dict) and isinstance(project.get("graphics"), dict)
 
 
+def bind_shot_clips(pdir, project):
+    """Every shot gets its clip path before the engine looks: with a video backdrop the contract wants "clip" on
+    each shot, and the bundle's project.json was written before the GPU box filmed anything (the one-box path sets
+    shot.clip in memory after filming; the two-phase path never wrote it back — video gt_645zn2k8, 15 September:
+    "every shot needs a 'clip' when the project has a video backdrop" at 80%). The clip of shot n of a scene is
+    clips/<scene id>-s<n>.mp4, the name the GPU box gave it. A shot whose clip is not on disk is a hole in the
+    track, so it is refused here in one sentence instead of by the contract. Returns the number of shots bound."""
+    clips_dir = os.path.join(pdir, CLIPS_DIR)
+    on_disk = sorted(n for n in os.listdir(clips_dir) if n.endswith(".mp4")) if os.path.isdir(clips_dir) else []
+    if not on_disk:
+        # A track laid from the stills (no clip was ever filmed): nothing to bind, the engine decides what it accepts.
+        return 0
+    bound = 0
+    for sc in project.get("scenes") or []:
+        for i, sh in enumerate(sc.get("shots") or []):
+            if not isinstance(sh, dict):
+                continue
+            cid = f"{sc.get('id')}-s{i + 1}"
+            rel = f"{CLIPS_DIR}/{cid}.mp4"
+            if not os.path.isfile(os.path.join(pdir, rel)):
+                raise RenderError(f"the bundle carries no clip for shot {cid}; the layer cannot be drawn over a hole", retry=False)
+            sh["clip"] = rel
+            bound += 1
+    return bound
+
+
 def ensure_shot_pictures(pdir, project):
     """Every shot.image / scene.image the project names exists under <pdir> before the engine checks it. Pictures the
     bundle carried are left alone; a missing one becomes BLANK_PNG (never drawn: the backdrop is the video). Returns
@@ -1417,12 +1443,14 @@ def film_overlay(pdir, project, timeline, out_dir, video):
     build/footage.mp4 and muxes the mix. out/master.mp4 is the film."""
     engine = os.path.abspath(KEOU_DIR)
     build = os.path.join(pdir, "build")
-    project = dict(project)
+    project = json.loads(json.dumps(project))   # a deep copy: the shots below are edited in place
     project["backdrop"] = "video"
     project["music"] = "none"
+    bound = bind_shot_clips(pdir, project)
+    missing = ensure_shot_pictures(pdir, project)
     with open(os.path.join(pdir, "project.json"), "w") as f:
         json.dump(project, f, ensure_ascii=False, indent=2)
-    missing = ensure_shot_pictures(pdir, project)
+    log(f"layer: {bound} shot(s) bound to their clips")
     if missing:
         log(f"layer: {len(missing)} picture(s) not in the bundle, blank stand-ins written ({', '.join(missing[:3])}{', …' if len(missing) > 3 else ''})")
     music = os.path.join(build, "music.wav")
