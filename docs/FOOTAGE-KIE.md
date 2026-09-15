@@ -36,6 +36,19 @@ prompt → MCP → storyboard + immagini (Workers AI o GPU) → Vast 16 GB: voce
   macchina ad aspettare le clip e morire con il generico "the shots did not film". Dopo la ricarica, una nuova
   richiesta riordina solo gli shot mai fatturati (righe `failed` senza `task_id`, e quelli senza riga). Il saldo si
   legge anche in `GET /internal/admin/footage` (`balance_usd`, `null` se kie.ai non ha risposto).
+- **Pre-volo alla creazione (15 set).** Il controllo qui sopra stava DOPO il noleggio: la mattina del 15 quattro film
+  (`gt_wduqqahb`, `gt_wachuyzg`, `gt_wrbfg8sv`, `gt_dsqacdbp`) hanno noleggiato una RTX 3090, disegnato i fotogrammi
+  e doppiato lo script per scoprire alle clip che il saldo era 0,07 $ (fermo dal 13): ~20 minuti dell'utente e quattro
+  noleggi per imparare un numero che il server sapeva già. Ora `createJob` chiama `kiePreflight` (`src/footage.ts`)
+  per ogni film sulla strada kie: stima il costo (inquadrature dello storyboard × secondi/inquadratura × prezzo del
+  modello; senza storyboard circa un'inquadratura ogni 3 s, minimo 6, massimo il tetto delle immagini) e legge il
+  saldo; se non basta rifiuta **prima di addebitare e di noleggiare**, con la frase che dice i due numeri e offre
+  l'animatic (`product: "animatic"`, 5 crediti, nessuna clip), e scrive `footage.preflight` nell'audit con
+  `owner_action: "top up kie.ai"`. Il silenzio di kie.ai non rifiuta. Il negozio non si chiude per questo: regola del
+  proprietario, kie.ai si ricarica quando qualcuno paga — e il film è comunque solo per chi ha pagato (`hasPaid`).
+- **Un animatic non ordina clip.** `requestFootage` risponde 409 a un job con `params.product = "animatic"` qualunque
+  cosa chieda la macchina: i suoi fotogrammi vanno al motore con la camera sopra (`picture.js`), e il conto kie.ai
+  non lo vede mai.
 - Ogni task viene **prezzato alla creazione** dal listino `KIE_MODELS` e scritto nella tabella `footage`. Il tetto
   giornaliero `DAILY_FOOTAGE_BUDGET_USD` (15 $ dal 13 set sera, prima 5) somma le righe di oggi PRIMA di ordinare: oltre, la richiesta è
   rifiutata con la frase esatta e nessuna clip viene ordinata. Il listino è quello **vero**, letto il 13 settembre

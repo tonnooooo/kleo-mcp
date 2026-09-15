@@ -19,6 +19,7 @@ import assert from "node:assert/strict";
 import { planFor, normalizeStoryboard, fixtureStoryboard } from "../src/storyboard.ts";
 import { STYLE_MACHINE, STYLE_CREDITS, VIDEO, isVideoStyle, machineFor, creditsFor } from "../src/templates.ts";
 import { validateStoryboard } from "../src/keou-contract.ts";
+import { profileFor } from "../src/backends/vast.ts";
 
 const KLEO_STYLES = ["cartoon", "realistic", "cyber", "stickman", "explainer"];
 
@@ -121,4 +122,38 @@ test("the two machine profiles really do differ, or none of this means anything"
   const ordinary = machineFor("stickman");
   assert.ok(VIDEO.minVramGb > ordinary.minVramGb,
     `the video profile must ask for more memory than the ordinary one (${VIDEO.minVramGb} vs ${ordinary.minVramGb})`);
+});
+
+test("the animatic (15 September) is the same plan, drawn: no backdrop on either road, no music bed, a layer that draws nothing", () => {
+  // The product is a job parameter, not a template, so planFor keeps the film's brief and family; only the three
+  // places that write `backdrop` see the third term, through templates.ts filmedStoryboard.
+  const animatic = (style) => ({ ...job(style), params: JSON.stringify({ ...JSON.parse(job(style).params), product: "animatic" }) });
+  for (const style of ["realistic", "animation"]) {
+    const plan = planFor(animatic(style), style);
+    assert.equal(plan.product, "animatic");
+    assert.equal(plan.kleo, style);
+    assert.equal(plan.style, "picture", "same engine style as the film: the stills ARE the frames");
+    const sb = normalizeStoryboard({ title: "Night run", description: "d", tags: ["a"], scenes: scenesFor(), backdrop: "video" }, plan);
+    assert.equal("backdrop" in sb, false, `an animatic in ${style} never asks the worker to film, even when the draft asked`);
+    const fx = fixtureStoryboard(animatic(style));
+    assert.equal("backdrop" in fx, false, "the fixture describes the same product");
+    assert.equal(fx.music, "none", "no music bed on the stills");
+    assert.deepEqual(fx.graphics, { accent: "#ffffff", subtitles: "none", chapters: "none", hud: [] }, "a bare layer: the engine draws nothing of the old picture look");
+    const r = validateStoryboard(fx, { format: "16:9", maxDuration: 90, style: "picture", kleo: style });
+    assert.ok(!r.errors?.some((e) => /backdrop|music/i.test(e)), "still a valid project for the render: " + JSON.stringify(r.errors));
+  }
+  assert.equal(planFor(job("realistic"), "realistic").product, "film", "no product on the row means film");
+  assert.equal(fixtureStoryboard(job("realistic")).backdrop, "video", "and the film still asks to be filmed");
+});
+
+test("an animatic rents the pictures card whatever the footage switch says: never the 80 GB video card for stills", () => {
+  const env = { KLEO_VIDEO_MODEL: "Lightricks/LTX-2.5", VAST_DISK_GB: "80" };
+  const film = profileFor(env, "realistic", null, "local");
+  assert.equal(film.need.minVramGb, 80, "a filmed realistic job on the local road wants the LTX card");
+  const kie = profileFor(env, "realistic", null, "kie");
+  assert.equal(kie.need.minVramGb, machineFor("cartoon").minVramGb, "on the kie road the box only draws frames");
+  const drawn = profileFor(env, "realistic", null, "local", true);
+  assert.deepEqual(drawn.need, machineFor("cartoon"), "an animatic is that same pictures job");
+  assert.equal(drawn.disk, 80, "and the ordinary disk, not the model's 150 GB");
+  assert.equal(profileFor(env, "realistic", "finish", "local", true).need.minVramGb, 0, "the finish profile still wins over everything");
 });

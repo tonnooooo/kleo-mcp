@@ -12,7 +12,7 @@
  */
 import type { Env } from "./env";
 import type { Job, JobParams } from "./db";
-import { TEMPLATES, findTemplate, isVideoStyle, narrativeFor, sceneSplit, creditsFor, samePrice, type Family } from "./templates.ts";
+import { TEMPLATES, findTemplate, narrativeFor, sceneSplit, creditsFor, samePrice, filmedStoryboard, finishForProduct, productOf, type Family, type Product } from "./templates.ts";
 import {
   validateStoryboard, defaultVoice, wordBudget, type Storyboard, type Format, type KleoStyle,
   KINDS, BEAT_KINDS, BEAT_ICONS, BEAT_FX, CINEMA_ACCENTS, VISUALS, FORBIDDEN_FIELDS,
@@ -448,7 +448,7 @@ function sceneRange(words: number, wps: [number, number]): [number, number] {
 
 /* ------------------------------------------------------------------ prompt */
 
-interface Plan { style: StyleId; kleo: KleoStyle; pictures: boolean; brief: Brief; format: Format; language: string; voice: string; duration: number; speed: number; words: ReturnType<typeof wordBudget>; scenes: [number, number]; maxDuration: number; chunk: number }
+interface Plan { style: StyleId; kleo: KleoStyle; pictures: boolean; product: Product; brief: Brief; format: Format; language: string; voice: string; duration: number; speed: number; words: ReturnType<typeof wordBudget>; scenes: [number, number]; maxDuration: number; chunk: number }
 
 /**
  * `chosen` is the look the DIRECTION picked after reading the request. It only applies when the client did not name a
@@ -490,7 +490,7 @@ export function planFor(job: PlanJob, chosen?: KleoStyle | null): Plan {
     : shortLine ? (brief.style === "cinema" && p.duration_s <= 120 ? brief.wordsPerScene : perLine)
     : (brief.style === "cinema" ? [25, 40] : brief.wordsPerScene);
   return {
-    style, kleo, pictures: PICTURE_STYLES.includes(kleo), brief, format, language: p.language, voice: defaultVoice(p.language, job.template, p.voice), duration: p.duration_s, speed, words,
+    style, kleo, pictures: PICTURE_STYLES.includes(kleo), product: productOf(p), brief, format, language: p.language, voice: defaultVoice(p.language, job.template, p.voice), duration: p.duration_s, speed, words,
     scenes: sceneRange(words.target, wps), maxDuration: Math.min(1800, Math.max(5, Math.round(p.duration_s * 1.6))),
     chunk: style === "cinema" || style === "picture" ? 4 : style === "sketch" ? 4 : 5, // scenes per model call: keeps every call under ~2k output tokens (Workers AI times out on long generations)
   };
@@ -1069,7 +1069,8 @@ export function normalizeStoryboard(raw: unknown, plan: Plan): unknown {
   // shot will not film, and delivers the stills instead.
   // The deletion is not tidiness. Without it a storyboard that arrived with `backdrop: "video"` already on it would
   // be filmed at the price of a style that is not, which is a seven-credit render sold for one.
-  if (isVideoStyle(plan.kleo) && plan.style === "picture") c.backdrop = "video";
+  // The product is the third term (15 September): an animatic is the same plan, drawn, and never asks to be filmed.
+  if (filmedStoryboard(plan.kleo, plan.style, plan.product)) c.backdrop = "video";
   else delete c.backdrop;
   // THE COLOUR LAW IS ARITHMETIC, SO IT IS REPAIRED, NOT REFUSED. Every scene wears the accent of the section it sits
   // in; a model that wrote a different one is corrected here rather than bounced back, because a retry spent on
@@ -1343,7 +1344,7 @@ export function fixtureStoryboard(job: PlanJob): Storyboard {
   const pictures = PICTURE_STYLES.includes(kleo);
   if (pictures) sb.style = "picture";
   // Same rule as the planned path, so the fixture cannot quietly describe a different product from the real one.
-  if (pictures && isVideoStyle(kleo)) sb.backdrop = "video";
+  if (pictures && filmedStoryboard(kleo, "picture", productOf(p))) sb.backdrop = "video";
   else delete sb.backdrop;
   for (const s of sb.scenes as Record<string, unknown>[]) {
     delete s.image; delete s.image_credit;
@@ -1376,7 +1377,7 @@ export function fixtureStoryboard(job: PlanJob): Storyboard {
   if (pictures) assignShotKinds(sb.scenes as Record<string, unknown>[], p.format);
   const r = validateStoryboard(sb, { format: p.format, language: p.language });
   if (!r.ok) throw new StoryboardError("fixture storyboard is invalid: " + r.errors.join("; "), r.errors);
-  return r.storyboard;
+  return finishForProduct(r.storyboard as unknown as Record<string, unknown>, productOf(p)) as unknown as Storyboard;
 }
 
 /* ------------------------------------------------------------------ entry point */
@@ -1643,7 +1644,9 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   // and refuses the hidden kind, and this is the one number that says whether the video is about what was asked.
   const missing = direction ? missingFacts(direction.must_keep, narrationOf(ok.storyboard)) : [];
   if (missing.length) history.push(missing.map((f) => `narration never says "${f}"`));
-  return { storyboard: ok.storyboard, model, attempts: calls, ms: Date.now() - t0, usage, est_neurons: est, words: countWords(ok.storyboard), scenes: ok.storyboard.scenes.length, fixture: false, history, style: plan.kleo, direction, treatment, missing_facts: missing, blocked_upgrade: blockedUpgrade };
+  // The product's last touch goes on AFTER the validation above: an animatic's empty layer is exactly what the
+  // validator deletes as "no layer", and it has to reach the worker (templates.ts finishForProduct).
+  return { storyboard: finishForProduct(ok.storyboard as unknown as Record<string, unknown>, plan.product) as unknown as Storyboard, model, attempts: calls, ms: Date.now() - t0, usage, est_neurons: est, words: countWords(ok.storyboard), scenes: ok.storyboard.scenes.length, fixture: false, history, style: plan.kleo, direction, treatment, missing_facts: missing, blocked_upgrade: blockedUpgrade };
 }
 
 /* ------------------------------------------------------------------ the treatment on its own */

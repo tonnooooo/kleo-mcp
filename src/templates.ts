@@ -525,7 +525,59 @@ export const filmCredits = (seconds: number = ACTIVE_TEMPLATE.defaultSeconds): n
  * day after the film became the only product at 7.
  */
 export const tariffSentence = (): string =>
-  `1 credit buys ${SECONDS_PER_CREDIT} seconds of film, ${MIN_FILM_CREDITS} credits minimum: ${filmCredits(30)} credits for a 30-second Short, ${filmCredits(60)} for a minute, ${filmCredits(300)} for five minutes`;
+  `1 credit buys ${SECONDS_PER_CREDIT} seconds of film, ${MIN_FILM_CREDITS} credits minimum: ${filmCredits(30)} credits for a 30-second Short, ${filmCredits(60)} for a minute, ${filmCredits(300)} for five minutes; an animatic of the same storyboard (the drawn frames with camera moves and the narration, no generated clip, up to ${ANIMATIC_MAX_S} seconds) costs ${ANIMATIC_CREDITS} credits flat`;
+
+/**
+ * THE TWO PRODUCTS, 15 September 2026. The owner's rule that day: the clips are bought from kie.ai with his money, so
+ * a FILM is made only for an account that has actually paid (src/db.ts hasPaid: one Stripe payment on record),
+ * never with the free credits, a bonus row or a balance typed in by hand — his own test account included. And the
+ * free tier still has to make something: the ANIMATIC is the same treatment, direction, storyboard and stills, the
+ * camera moving over each frame (worker/keou/engine/picture.js kenBurns) under the same layer and narration, at 4K
+ * 60 fps — everything but the generated motion, so nothing of it is bought from kie.ai. It costs ANIMATIC_CREDITS
+ * flat, under the sign-up gift on purpose (test/style-price.test.mjs pins gift ≥ animatic < shortest film), and it
+ * doubles as the preview of the film: same storyboard, then the film at the film's price.
+ *
+ * The product is a job PARAMETER (JobParams.product), not a template: the template is what owns the length and the
+ * brief, and an "animatic" template id would fall to BRIEFS.explainer in planFor. Absent means film, so every row
+ * made before this day reads as what it was.
+ */
+export type Product = "film" | "animatic";
+export const PRODUCTS = ["film", "animatic"] as const;
+export const ANIMATIC_CREDITS = 5;
+/** The longest animatic: it is a preview and a free-tier product, not a five-minute film drawn on the cheap. */
+export const ANIMATIC_MAX_S = 60;
+export const productOf = (p: { product?: string } | null | undefined): Product => (p?.product === "animatic" ? "animatic" : "film");
+export const isAnimatic = (p: { product?: string } | null | undefined): boolean => productOf(p) === "animatic";
+/** What a job costs: the film's tariff, or the animatic's flat price. The ONE place a product's price is decided. */
+export const creditsForProduct = (seconds: number, style: string | null | undefined, product: Product | string | null | undefined): number =>
+  product === "animatic" ? ANIMATIC_CREDITS : creditsFor(seconds, style);
+/**
+ * Whether a storyboard asks to be FILMED (backdrop "video" → the worker orders the clips) or drawn (no backdrop → the
+ * stills with the camera over them). Three places used to compute it from the look alone; the product is the third
+ * term, and this is the one function all three call so an animatic can never be filmed by one of them.
+ */
+export const filmedStoryboard = (kleo: string | null | undefined, style: string | null | undefined, product: Product | string | null | undefined): boolean =>
+  isVideoStyle(kleo) && style === "picture" && product !== "animatic";
+/**
+ * What the worker draws over an animatic when its storyboard carries no layer: a layer with NOTHING on it. Without
+ * one, picture.js draws the picture look of before the 13 September reset — fitted words on the first shot, karaoke
+ * subtitles, a veil, the chapter pill, a closing button — and run.py mixes a music bed: the product the owner sent
+ * back four times. With any `graphics` object the engine draws the layer and only the layer (picture.js "A film with
+ * a LAYER draws that layer and nothing of the picture look"), and an empty hud draws nothing. The validators delete
+ * an empty layer as "no layer" on purpose, so this is put on AFTER the last validation, by finishForProduct, and
+ * worker/keou/contract.py accepts it (0-3 hud elements).
+ */
+export const BARE_LAYER = { accent: "#ffffff", subtitles: "none", chapters: "none", hud: [] as never[] };
+/** The last touch on a storyboard before it is stored: an animatic takes no music bed and a layer that draws nothing when it has none. */
+export function finishForProduct<T extends Record<string, unknown>>(sb: T, product: Product | string | null | undefined): T {
+  if (product !== "animatic") return sb;
+  const c = sb as Record<string, unknown>;
+  c.music = "none";
+  if (!(c.graphics && typeof c.graphics === "object" && !Array.isArray(c.graphics))) c.graphics = { ...BARE_LAYER, hud: [] };
+  return sb;
+}
+/** Minutes an animatic takes on the pictures card: the stills, the voice pass and the 4K 60 fps render, no clip to wait for. */
+export const animaticEtaFor = (seconds: number): number => Math.max(8, Math.round(6 + seconds / 10));
 
 /**
  * THE SIGN-UP GIFT, 14 September 2026: FREE_CREDITS (wrangler.jsonc, 7) credits on a brand-new account — and the
@@ -551,6 +603,15 @@ export const etaFor = (seconds: number): number => (seconds <= 90 ? 18 : Math.ma
 /** The Kleo style stored on a job, or null for a row written before styles existed / an unreadable one. */
 export function styleOfJob(job: Pick<Job, "params">): string | null {
   try { return (JSON.parse(job.params) as JobParams).style ?? null; } catch { return null; }
+}
+
+/**
+ * Whether this job's shots get FILMED — a video look AND the film product. The animatic of a realistic or animated
+ * storyboard is drawn, so it takes the pictures card, never counts as a generated-video render, and orders no clip:
+ * every place that used to ask isVideoStyle(styleOfJob(job)) about a JOB asks this instead.
+ */
+export function filmedJob(job: Pick<Job, "params">): boolean {
+  try { const p = JSON.parse(job.params) as JobParams; return isVideoStyle(p.style) && !isAnimatic(p); } catch { return false; }
 }
 
 /**

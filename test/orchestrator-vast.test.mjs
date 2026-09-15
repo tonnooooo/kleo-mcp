@@ -56,7 +56,10 @@ async function newEnv(extra = {}) {
 }
 /** Price units (14 September: one credit per two seconds, ten at least): P = the 45 s Short below, PL = a five-minute film. */
 const P = 23, PL = 150;
-const user = (env, credits = 10 * P) => m.createUser(env, { id: "u_test", email: "t@example.com", credits, inviteCode: null });
+// Since 15 September a FILM is made only for an account with a payment on record (src/db.ts hasPaid): these suites
+// test a paying customer, so the user carries one Stripe row — the way a tester is let in on production too.
+const markPaid = (env, id) => env.DB.prepare("INSERT INTO payments (session_id, user_id, credits, amount_cent, currency, status, raw_ref) VALUES (?, ?, 10, 500, 'eur', 'paid', 'test')").bind(`cs_test_${id}`, id).run();
+const user = async (env, credits = 10 * P) => { const u = await m.createUser(env, { id: "u_test", email: "t@example.com", credits, inviteCode: null }); await markPaid(env, u.id); return u; };
 const short = (env, u, extra = {}) => m.createJob(env, u, { template: "film", prompt: "Pirates find an island missing from every map", duration_s: 45, format: "9:16", ...extra });
 const events = async (env, name) => (await env.DB.prepare("SELECT job_id, event, detail FROM audit WHERE event = ? ORDER BY id").bind(name).all()).results.map((r) => ({ ...r, detail: r.detail ? JSON.parse(r.detail) : null }));
 

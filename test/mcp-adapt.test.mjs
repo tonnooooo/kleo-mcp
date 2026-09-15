@@ -52,7 +52,7 @@ function fakeAi(answer) {
   return { calls, async run(model, inputs) { calls.push({ model, inputs }); const out = await answer(inputs, calls.length); return { response: out, usage: { prompt_tokens: 3000, completion_tokens: 1200, total_tokens: 4200 } }; } };
 }
 
-async function studio(ai, extra = {}) {
+async function studio(ai, extra = {}, opts = {}) {
   const env = {
     DB: new FakeD1(), OAUTH_KV: new FakeKV(), AI: ai, RENDER_BACKEND: "manual", PUBLIC_URL: "http://kleo.test", INTERNAL_SECRET: "s3cret",
     MAX_CONCURRENT_GPUS: "5", MAX_JOBS_PER_USER: "2", MAX_JOBS_PER_DAY: "500", JOB_TIMEOUT_MIN: "120", FREE_CREDITS: "7", RESULT_TTL_DAYS: "7",
@@ -60,6 +60,8 @@ async function studio(ai, extra = {}) {
   };
   for (const f of readdirSync(join(ROOT, "migrations")).sort()) env.DB.db.exec(readFileSync(join(ROOT, "migrations", f), "utf8"));
   const user = await m.createUser(env, { id: "u_test", email: "t@example.com", credits: 70, inviteCode: null });
+  // A paying customer (15 September: films are for accounts with a payment on record), unless a test says otherwise.
+  if (opts.paid !== false) await env.DB.prepare("INSERT INTO payments (session_id, user_id, credits, amount_cent, currency, status, raw_ref) VALUES ('cs_test_u_test', 'u_test', 10, 500, 'eur', 'paid', 'test')").run();
   const server = m.buildServer(env, user, "http://kleo.test");
   const [ct, st] = InMemoryTransport.createLinkedPair();
   await server.connect(st);
@@ -90,7 +92,9 @@ test("kleo_account quotes the film's price and the real state of the shop, never
   const d = a.structuredContent;
   assert.equal(d.film_credits, 30, "the active template's default film: 60 s");
   assert.equal(d.min_film_credits, 10);
-  assert.equal(d.free_tier, "7 credits on sign-up, no signup form; the shortest film is 10 credits, so the first film needs a pack (from 5 EUR: 7 + 10 = 17 credits, a 30-second Short)");
+  assert.equal(d.free_tier, "7 credits on sign-up, no signup form; they buy an animatic (5 credits, up to 60 s), and the shortest film is 10 credits and needs a pack (from 5 EUR: 7 + 10 = 17 credits, a 30-second Short)");
+  assert.equal(d.has_paid, true, "this harness marks the tester as a paying customer");
+  assert.equal(d.animatic_credits, 5);
   assert.equal(d.payments_open, false, "no Stripe links configured: the shop is closed and the tool says so");
   assert.match(a.text, /1 credit buys 2 seconds of film, 10 credits minimum: 15 credits for a 30-second Short, 30 for a minute, 150 for five minutes/);
   assert.doesNotMatch(a.text, /1 credit = 1 Short|free while it is in beta/);
@@ -271,4 +275,29 @@ test("style names the look on every tool: the method is written for it, the guid
   const byTreatment = await s.call("kleo_create_video", { prompt: "A fox who learns to swim", duration_s: 45, format: "9:16", treatment: t });
   assert.ok(!byTreatment.isError, byTreatment.text);
   assert.equal(JSON.parse((await m.getUserJob(s.env, "u_test", byTreatment.structuredContent.job_id)).params).style, "animation", "no style passed: the treatment's look is the film's");
+});
+
+test("an account that never paid is told it can order the animatic and not a film, by kleo_account and by kleo_create_video", async () => {
+  // 15 September: the owner's rule — kie.ai clips are bought with his money, so a film is for accounts with a payment
+  // on record; his own test account (48 credits typed in by hand) must be refused in words and offered the animatic.
+  const s = await studio(fakeAi(() => TREATMENT_FIXTURE(60)), {}, { paid: false });
+  const a = await s.call("kleo_account", {});
+  assert.equal(a.structuredContent.has_paid, false);
+  assert.equal(a.structuredContent.can_order_film, false);
+  assert.match(a.structuredContent.products, /^animatic only/);
+  assert.match(a.text, /has not bought a pack yet, so it can order the ANIMATIC \(5 credits, up to 60 seconds/);
+  const film = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers", duration_s: 45, format: "9:16" });
+  assert.equal(film.isError, true);
+  assert.match(film.text, /A film is made only for accounts that have bought a credit pack[\s\S]*product: "animatic"[\s\S]*Nothing was charged/);
+  const jobs = (await s.env.DB.prepare("SELECT COUNT(*) AS n FROM jobs").first()).n;
+  assert.equal(jobs, 0, "nothing was created");
+  assert.equal((await s.env.DB.prepare("SELECT credits FROM users WHERE id = 'u_test'").first()).credits, 70, "nothing was charged");
+  const anim = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers", duration_s: 45, format: "9:16", product: "animatic" });
+  assert.equal(anim.isError, undefined, anim.text);
+  assert.equal(anim.structuredContent.credits, 5, "the animatic is 5 credits flat");
+  assert.match(anim.text, /This is the ANIMATIC/);
+  assert.equal((await s.env.DB.prepare("SELECT credits FROM users WHERE id = 'u_test'").first()).credits, 65);
+  const tooLong = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers", duration_s: 90, format: "9:16", product: "animatic" });
+  assert.equal(tooLong.isError, true);
+  assert.match(tooLong.text, /An animatic is at most 60 seconds long/);
 });

@@ -5,7 +5,7 @@ import { vastStatus, GONE, vastCredit, listKleoInstances, destroyInstance } from
 import { int, num, nowIso, minutesSince, secondsSince, addDays, base64ToBytes, rid } from "./util";
 import { TINY_MP4_B64 } from "./assets";
 import { resultLinks, FILE_NAMES } from "./jobs";
-import { jobTimeoutMin, renderSilenceMin, isVideoStyle, styleOfJob } from "./templates";
+import { jobTimeoutMin, renderSilenceMin, filmedJob } from "./templates";
 import { sellingOpen, SELLING_PAUSE } from "./stripe";
 import { notifyDone } from "./notify";
 import { putFile, deleteFile } from "./storage";
@@ -199,7 +199,7 @@ async function tickInner(env: Env, stats: Stats) {
     // dearest cards and the ones whose bill triples when clips come back frozen and have to be regenerated, so two
     // of them overlapping is the one way this can empty the balance with nobody watching. `continue`, not `break`:
     // an ordinary job further down the queue is cheap and must not be held hostage by a video one at the front.
-    if (isVideoStyle(styleOfJob(job)) && job.phase !== "finish" && (await runningVideoJobs(env)) >= int(env.MAX_CONCURRENT_VIDEO_GPUS, 1)) continue;
+    if (filmedJob(job) && job.phase !== "finish" && (await runningVideoJobs(env)) >= int(env.MAX_CONCURRENT_VIDEO_GPUS, 1)) continue;
     if (!(await reserveJob(env, job.id, backend.name))) continue; // a pool runner took it first
     try {
       const r = await backend.start(env, job);
@@ -292,7 +292,7 @@ function machineKeyOf(job: Job): string | null {
 /** Generated-video renders on a paid GPU right now (their style is what says so, src/templates.ts). */
 async function runningVideoJobs(env: Env): Promise<number> {
   // A job in its finish phase holds a cent-an-hour box, not a video card: it does not count against the limit.
-  return (await runningPaidJobs(env)).filter((j) => isVideoStyle(styleOfJob(j)) && j.phase !== "finish").length;
+  return (await runningPaidJobs(env)).filter((j) => filmedJob(j) && j.phase !== "finish").length;
 }
 
 /**
@@ -386,7 +386,10 @@ async function guardSelling(env: Env): Promise<void> {
     await setFlagUntil(env, SELLING_PAUSE, 15 * 60);
     if (!paused) await audit(env, null, null, "selling.paused", { credit, floor });
   } else if (paused) {
-    await audit(env, null, null, "selling.resumed", { credit, floor, note: "flag left to expire on its own" });
+    // Released here, not left to expire: on 15 September the flag lingered for a quarter of an hour after the top-up
+    // and this line wrote "resumed" on every tick of it — twenty-three rows for one event.
+    await releaseLock(env, SELLING_PAUSE);
+    await audit(env, null, null, "selling.resumed", { credit, floor });
   }
 }
 

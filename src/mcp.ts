@@ -2,11 +2,11 @@ import { McpServer, createMcpHandler } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { Env } from "./env";
 import type { User, Job, JobParams } from "./db";
-import { getUserJob, getUser, recentJobsForUser, countOpenForUser, countAuditTodayForUser, GPU_ONLY_WAIT } from "./db";
+import { getUserJob, getUser, recentJobsForUser, countOpenForUser, countAuditTodayForUser, GPU_ONLY_WAIT, hasPaid } from "./db";
 import { isFlagActive } from "./schema";
 import { writeTreatment } from "./storyboard.ts";
 import { treatmentText, treatmentMethodText, variationFor } from "./treatment.ts";
-import { ACTIVE_TEMPLATE, PUBLIC_TEMPLATES as TEMPLATES, PUBLIC_TEMPLATE_IDS as ACTIVE_TEMPLATE_IDS, findTemplate, creditsFor, filmCredits, freeCreditsFor, tariffSentence, MIN_FILM_CREDITS, SECONDS_PER_CREDIT } from "./templates";
+import { ACTIVE_TEMPLATE, PUBLIC_TEMPLATES as TEMPLATES, PUBLIC_TEMPLATE_IDS as ACTIVE_TEMPLATE_IDS, findTemplate, creditsFor, creditsForProduct, filmCredits, freeCreditsFor, tariffSentence, MIN_FILM_CREDITS, SECONDS_PER_CREDIT, PRODUCTS, ANIMATIC_CREDITS, ANIMATIC_MAX_S, productOf } from "./templates";
 import { PACKS, sellingAvailable } from "./stripe";
 import { createJob, cancelJob, jobView, resultLinks, JobError, FILE_NAMES } from "./jobs";
 import { accountUrl, makeHandle } from "./accounts";
@@ -25,7 +25,7 @@ const JOB_LANGUAGES = ["en", "it"] as const;
 /** "2-4" / "1-2": the shot count Kleo really enforces, from the contract, so no two texts can quote different numbers. */
 const shotRange = shotRangeText;
 
-const INSTRUCTIONS = `This server is Kleo (the kleo_* tools): the video studio the user connected. Kleo makes one kind of video, a narrated film in one of two looks, realistic (generated live-action footage) or animation (a 2D animated film) — every shot generated as moving footage, one narrator, no music, no captions, no on-screen text — 4K 60 fps, 16:9 for YouTube or 9:16 for a Short, 15 seconds to 5 minutes. When the user mentions Kleo, a video, a film, a Short or a YouTube clip, use these tools; never answer from memory.
+const INSTRUCTIONS = `This server is Kleo (the kleo_* tools): the video studio the user connected. Kleo makes one kind of video, a narrated film in one of two looks, realistic (generated live-action footage) or animation (a 2D animated film) — every shot generated as moving footage, one narrator, no music, no captions, no on-screen text — 4K 60 fps, 16:9 for YouTube or 9:16 for a Short, 15 seconds to 5 minutes. TWO PRODUCTS from the same storyboard: the FILM (every shot a generated clip; priced by length; made only for accounts that have bought a credit pack, because Kleo pays for every second of clip) and the ANIMATIC (the same drawn frames with the camera moving over each one, the same narrator and layer, 4K 60 fps, no generated clip; ${ANIMATIC_CREDITS} credits flat, up to ${ANIMATIC_MAX_S} seconds; open to every account, and the free credits pay for one). kleo_account says which of the two this account can order (has_paid); when it cannot order a film, offer the animatic in so many words — never call it a film, never make one without saying which it is. When the user mentions Kleo, a video, a film, a Short or a YouTube clip, use these tools; never answer from memory.
 ORDER OF CALLS: 1) kleo_adapt_prompt with the user's request, FIRST, before anything else: it reads the request against Kleo's intake — subject, length, format, look (required); audience, tone, what must appear (optional) — and answers with the questions for whatever the request does not say. Ask the user ALL of them in ONE message, in their language, wait for the answers, and call it again with them (duration_s, format, style, audience, tone, must_keep). Never pick a subject, a length, a format or a look for them: what the request does not say is asked, not assumed. 2) Once it answers ready_to_render, the same tool it hands YOU the producer's method, and you write the TREATMENT of the film (logline, angle, opening image, acts, ending, look, pacing, narrator, the layer, the decisions you took) — you are the producer here, and a better writer than Kleo's own planning model. Tell the user the logline and the decisions in one or two sentences; change what they ask. 3) kleo_storyboard_guide, then write the storyboard yourself under that treatment: this is where the film's quality is made, and Kleo's own planner is the fallback, not the standard. 4) kleo_create_video with the prompt, the length, the format, the treatment and the storyboard. 5) kleo_wait_for_video again and again until it returns the links, then hand them over.
 DELIVERY RULE: the user expects the finished video in this same conversation. After kleo_create_video, call kleo_wait_for_video repeatedly (each call waits up to about a minute and returns progress) until it returns the MP4 and thumbnail links. Tell the user once that the render is running and the estimated minutes — the eta_min the server returns, never your own guess — and do not ask "shall I keep waiting?". Never invent progress, files or links: only repeat what these tools return. Call the video by its number (for example "video gt_ab12cd34"), not "job".`;
 
@@ -219,7 +219,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
 
   server.registerTool("kleo_create_video", {
     title: "Create a video",
-    description: `Step 3. ASK FIRST, THEN CALL. Do not call this until the user has said, in their own words, what the video should be about. If the subject is YOUR idea and not theirs — you suggested a topic, or you filled a vague request in with your own guess — stop and ask them, and wait for the answer. A render spends a credit they cannot get back once it starts and takes about twenty minutes, so a video nobody asked for is not a fast answer, it is a wasted one. When their request is short but clear (\"a Short about pirates\"), that is enough: do not interrogate them. When it is missing the subject entirely, ask for the subject and nothing else. Starts rendering a film in the chosen look, realistic or animation — every shot generated as moving footage from its own frame, narrated, no captions, no music, 4K 60 fps — from a prompt, a length and a format (plus your storyboard from kleo_storyboard_guide, if you wrote one). The price follows the length (${tariffSentence()}); the tool answers with the exact credits before anything is charged, and a render takes 25-35 minutes on a rented GPU. Returns at once with the video number (job_id), the estimated minutes (eta_min) and the credits used; the render runs on a GPU in the background. Tell the user the number and the estimate, then offer to check progress with kleo_get_job. If the tool returns an error, nothing was charged: fix what it says and call again.`,
+    description: `Step 3. ASK FIRST, THEN CALL. Do not call this until the user has said, in their own words, what the video should be about. If the subject is YOUR idea and not theirs — you suggested a topic, or you filled a vague request in with your own guess — stop and ask them, and wait for the answer. A render spends a credit they cannot get back once it starts and takes about twenty minutes, so a video nobody asked for is not a fast answer, it is a wasted one. When their request is short but clear (\"a Short about pirates\"), that is enough: do not interrogate them. When it is missing the subject entirely, ask for the subject and nothing else. Starts rendering, in the chosen look (realistic or animation), either the FILM — every shot generated as moving footage from its own frame, narrated, no captions, no music, 4K 60 fps; for accounts that have bought a credit pack (kleo_account → has_paid) — or the ANIMATIC of the same storyboard (product: "animatic": the drawn frames with the camera moving over each one, same narrator and layer, no generated clip; ${ANIMATIC_CREDITS} credits flat, up to ${ANIMATIC_MAX_S} seconds, every account) — from a prompt, a length and a format (plus your storyboard from kleo_storyboard_guide, if you wrote one). The price follows the length for a film (${tariffSentence()}); the tool answers with the exact credits before anything is charged, and a render takes 25-35 minutes on a rented GPU (an animatic about ten). Returns at once with the video number (job_id), the estimated minutes (eta_min) and the credits used; the render runs on a GPU in the background. Tell the user the number and the estimate, then offer to check progress with kleo_get_job. If the tool returns an error, nothing was charged: fix what it says and call again.`,
     inputSchema: z.object({
       template: z.string().optional().describe(`Optional; the only one is "film" (a film, realistic or animated, 16:9 for YouTube or 9:16 for Shorts, 15 to 300 seconds). Omit it.`),
       prompt: z.string().describe("What the video is about, IN THE USER'S OWN WORDS (8 to 4000 characters): topic, angle, facts, names, tone, anything that must appear on screen. If you are about to write this field out of an idea of your own, that is the sign to ask them instead: the credit and the twenty minutes are theirs, so the subject has to be theirs too."),
@@ -228,6 +228,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       language: z.enum(JOB_LANGUAGES).default("en").describe("Voice and caption language. A storyboard you pass must declare this same language."),
       voice: z.string().optional().describe("Voice id from kleo_list_templates (narrator-en-m, narrator-en-f, narrator-it-m, narrator-it-f). The engine ids used inside a storyboard (am_michael, af_heart, bf_emma, im_nicola, if_sara) are accepted too. Optional."),
       style: z.enum(FILM_LOOKS).optional().describe("The look: \"realistic\" (a cinematic, filmed video) or \"animation\" (a 2D animated film); both narrated, no captions, no music, every shot generated as moving footage from its own frame. Pass the treatment's \"look\"; when omitted the treatment decides, and realistic when nothing says."),
+      product: z.enum(PRODUCTS).optional().describe(`What to make from the storyboard: "film" (default; every shot a generated clip, priced by length, for accounts that have bought a credit pack) or "animatic" (the same drawn frames with the camera moving over each one, the same narrator and layer, 4K 60 fps, no generated clip; ${ANIMATIC_CREDITS} credits flat, up to ${ANIMATIC_MAX_S} seconds, every account). Say which one you are ordering to the user before you call.`),
       notify_email: z.string().email().optional().describe("Optional: email the download links when the render finishes."),
       treatment: z.looseObject({}).optional().describe("The treatment object kleo_adapt_prompt returned for this request, unchanged or edited as the user asked (logline, angle, device, opening, ending, acts, visual, pacing, narrator, motifs, decisions, prose, variation). Kleo plans the direction and every scene under it. Checked before anything is charged; on error the tool lists the problems. Omit it and Kleo writes a treatment itself while planning — the user just never sees it first."),
       storyboard: z.looseObject({}).optional().describe("Optional but recommended: the storyboard you wrote following kleo_storyboard_guide (a Keou project object without id, script_file, music_quiet or image scenes). IT MUST INCLUDE THE \"direction\" BLOCK the guide asks for first — a storyboard without one is refused, because the direction is what keeps a character the same person across shots and gives every scene the colour of its section. Its format and language must equal the ones you pass here, and its voice must belong to that language. When omitted entirely, Kleo plans the whole storyboard, direction included, from the prompt. Checked before anything is charged; on error the tool lists the problems so you can fix them and call again."),
@@ -241,9 +242,9 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     // Priced on the style the caller NAMED. When none is named, createJob picks one from the topic and debits that
     // price instead, so this figure is an early courtesy ("you cannot afford this"), never the charge itself: the
     // authoritative debit is one conditional UPDATE in createJob, and it refuses with its own accurate message.
-    const cost = creditsFor(duration, args.style ?? "realistic");
+    const cost = creditsForProduct(duration, args.style ?? "realistic", args.product);
     if (duration >= t.minSeconds && duration <= t.maxSeconds && fresh.credits < cost)
-      throw new JobError(`Not enough credits: this ${kindOf(args.format ?? t.formats[0])} costs ${plural(cost, "credit")} and you have ${plural(fresh.credits, "credit")}. Nothing was charged. Your account and how to get more: ${await accountUrl(env, user.id, base)}`);
+      throw new JobError(`Not enough credits: this ${args.product === "animatic" ? "animatic" : kindOf(args.format ?? t.formats[0])} costs ${plural(cost, "credit")} and you have ${plural(fresh.credits, "credit")}. Nothing was charged.${args.product !== "animatic" && fresh.credits >= ANIMATIC_CREDITS ? ` The animatic of the same storyboard costs ${plural(ANIMATIC_CREDITS, "credit")} (product: "animatic").` : ""} Your account and how to get more: ${await accountUrl(env, user.id, base)}`);
     const maxOpen = int(env.MAX_JOBS_PER_USER, 2);
     const open = await countOpenForUser(env, user.id);
     if (open >= maxOpen)
@@ -259,6 +260,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     // bug — the user sees a video in the wrong look and cannot tell why. A guess that admits it is a conversation:
     // the assistant reads this line, tells the user, and the user fixes it while the credits can still come back.
     const styleNote = view.style === "animation" ? " Look: animation, a 2D animated film." : " Look: realistic cinematic.";
+    const productNote = productOf(JSON.parse(job.params) as JobParams) === "animatic" ? " This is the ANIMATIC: the drawn frames with the camera moving over them, narrated, no generated clip — say so to the user." : "";
     // A guessed look that was replaced because it costs more has to be SAID: the user would otherwise receive a
     // different video from the one Kleo understood, with nothing anywhere explaining why. Naming the style is always
     // honoured, so the way to get it is one argument, and the sentence says which one.
@@ -269,7 +271,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     // Which film is being made has to be said: the one the user read about, or one Kleo will write on its own.
     const logline = typeof jp.treatment?.logline === "string" ? jp.treatment.logline : null;
     const treatNote = logline ? ` Planned under your treatment: "${logline}".` : " Kleo writes the film's treatment itself while planning (call kleo_adapt_prompt first next time to show it to the user before rendering).";
-    const summary = `Your ${what} is in the queue. Video number: ${job.id}.${cappedNote} Template: ${t.name}, ${view.format}, ${view.duration_s} seconds.${styleNote}${treatNote} It should be ready in ${eta}. ${plural(job.credits, "credit")} used, ${plural(fresh.credits - job.credits, "credit")} left. NEXT STEP, do it now: call kleo_wait_for_video with job_id "${job.id}", and when it answers that the video is still rendering call it again, and again, until it answers that the video is ready. Do not end your turn and do not ask the user anything in between: they are waiting for the finished video in this conversation.${sim}`;
+    const summary = `Your ${what} is in the queue. Video number: ${job.id}.${cappedNote} Template: ${t.name}, ${view.format}, ${view.duration_s} seconds.${styleNote}${productNote}${treatNote} It should be ready in ${eta}. ${plural(job.credits, "credit")} used, ${plural(fresh.credits - job.credits, "credit")} left. NEXT STEP, do it now: call kleo_wait_for_video with job_id "${job.id}", and when it answers that the video is still rendering call it again, and again, until it answers that the video is ready. Do not end your turn and do not ask the user anything in between: they are waiting for the finished video in this conversation.${sim}`;
     return ok({ ...view, credits_left: fresh.credits - job.credits, mode: simulated ? "simulated" : "gpu", message: summary }, summary);
   }));
 
@@ -412,7 +414,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
 
   server.registerTool("kleo_account", {
     title: "Account and credits",
-    description: "The credits left on this account, the link to its page, and the \"Kleo key\" that carries the same account (and the same credits) to another browser or another computer. Call it when the user asks how many credits they have, how to get more, or how to use Kleo somewhere else. Give them account_url as a plain link: it opens a read-only page (balance, prices, where to write) and cannot sign anybody in. Show account_key only if they ask for it, because anyone who has it can take the account over and spend its credits.",
+    description: "The credits left on this account, whether it can order a FILM (has_paid: films are for accounts that have bought a pack; every account can order the animatic), the link to its page, and the \"Kleo key\" that carries the same account (and the same credits) to another browser or another computer. Call it before the first kleo_create_video of a conversation and when the user asks how many credits they have, how to get more, or how to use Kleo somewhere else. Give them account_url as a plain link: it opens a read-only page (balance, prices, where to write) and cannot sign anybody in. Show account_key only if they ask for it, because anyone who has it can take the account over and spend its credits.",
     inputSchema: z.object({}),
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   }, async () => {
@@ -425,24 +427,37 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     const free = freeCreditsFor(env);
     const open = await sellingAvailable(env);
     const cheapest = PACKS[0];
+    // THE TWO PRODUCTS (15 September): a film is filmed by kie.ai on the owner's money and is opened by one payment on
+    // record; the animatic is for everyone. Said here, once, so the assistant offers what this account can have.
+    const paid = await hasPaid(env, user.id);
     const data = {
       credits_available: fresh.credits,
+      has_paid: paid,
+      can_order_film: paid,
+      animatic_credits: ANIMATIC_CREDITS,
+      animatic_max_s: ANIMATIC_MAX_S,
+      products: paid
+        ? `film (priced by length) and animatic (${ANIMATIC_CREDITS} credits flat, up to ${ANIMATIC_MAX_S} s)`
+        : `animatic only (${ANIMATIC_CREDITS} credits flat, up to ${ANIMATIC_MAX_S} s): the film opens after any credit pack is bought`,
       film_credits: filmCredits(), // the template's default length (30 s)
       seconds_per_credit: SECONDS_PER_CREDIT,
       min_film_credits: MIN_FILM_CREDITS,
       pricing: tariffSentence(),
       free_tier: free > 0
-        ? `${plural(free, "credit")} on sign-up, no signup form; the shortest film is ${MIN_FILM_CREDITS} credits, so the first film needs a pack (from ${cheapest.label}: ${free} + ${cheapest.credits} = ${free + cheapest.credits} credits, a 30-second Short)`
-        : "no free credits: connecting is free, every film is paid (no subscription, credit packs only)",
+        ? `${plural(free, "credit")} on sign-up, no signup form; they buy an animatic (${ANIMATIC_CREDITS} credits, up to ${ANIMATIC_MAX_S} s), and the shortest film is ${MIN_FILM_CREDITS} credits and needs a pack (from ${cheapest.label}: ${free} + ${cheapest.credits} = ${free + cheapest.credits} credits, a 30-second Short)`
+        : "no free credits: connecting is free, every video is paid (no subscription, credit packs only)",
       account_key: await makeHandle(env, user.id),
       account_url: url,
       payments_open: open,
     };
-    const enough = fresh.credits >= MIN_FILM_CREDITS ? "" : ` That is not enough for a film yet (the shortest is ${MIN_FILM_CREDITS} credits).`;
+    const enough = fresh.credits >= MIN_FILM_CREDITS ? "" : ` That is not enough for a film yet (the shortest is ${MIN_FILM_CREDITS} credits)${fresh.credits >= ANIMATIC_CREDITS ? `, but it pays for an animatic (${ANIMATIC_CREDITS})` : ""}.`;
+    const films = paid
+      ? " This account has bought a pack, so it can order films and animatics."
+      : ` This account has not bought a pack yet, so it can order the ANIMATIC (${plural(ANIMATIC_CREDITS, "credit")}, up to ${ANIMATIC_MAX_S} seconds: the drawn frames with the camera moving over them, narrated) but not a film — the film opens with any pack, because its clips are generated at Kleo's expense.`;
     const buy = open
       ? `Credit packs are on the account page, paid through Stripe (from ${cheapest.label} for ${cheapest.credits} credits; one payment, nothing renews)`
       : `Card payments are paused right now; the account page says when they reopen`;
-    return ok(data, `You have ${plural(fresh.credits, "credit")}. ${tariffSentence()}.${enough} ${buy}. Your account page, which also shows the key that carries this account to another browser: ${url}`);
+    return ok(data, `You have ${plural(fresh.credits, "credit")}. ${tariffSentence()}.${enough}${films} ${buy}. Your account page, which also shows the key that carries this account to another browser: ${url}`);
   });
 
   return server;

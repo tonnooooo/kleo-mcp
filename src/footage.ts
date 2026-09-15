@@ -33,6 +33,7 @@ import { audit } from "./db.ts";
 import { putFile } from "./storage.ts";
 import { hmacHex, int, num, nowIso } from "./util.ts";
 import { FILM_LOOKS, type FilmLook } from "./keou-contract.ts";
+import { isAnimatic } from "./templates.ts";
 
 /* ------------------------------------------------------------------ models and prices */
 
@@ -133,6 +134,33 @@ export function clipCostUsd(spec: KieModel, clipSeconds: number): number {
   const perClip = spec.usdPerClip;
   const usd = perClip ? (perClip[clipSeconds] ?? Math.max(...Object.values(perClip))) : spec.usdPerSecond * clipSeconds;
   return Math.round(usd * 10000) / 10000;
+}
+
+/**
+ * What a film of `seconds` will cost in clips BEFORE anything exists of it: the shots the storyboard names when the
+ * caller wrote one (each clip covers duration/shots seconds), else the planner's usual density — about a shot every
+ * three seconds, never fewer than six, never more than the storyboard cap. Read off the same model table and the same
+ * clipSecondsFor/clipCostUsd as the order itself, so the two figures can only differ by what the voice pass does to
+ * the cut times. On 15 September four films rented a card, drew their frames and voiced their script before learning
+ * kie.ai held 0.07 $: this is the number that lets createJob say so first.
+ */
+export function plannedFilmUsd(env: Env, cfg: FootageOverride | null, seconds: number, shots: number | null, maxShots: number): { usd: number; shots: number; model: string } {
+  const { name, spec } = kieModelFor(env, cfg);
+  const n = shots && shots > 0 ? shots : Math.min(maxShots, Math.max(6, Math.round(seconds / 3)));
+  const each = clipCostUsd(spec, clipSecondsFor(spec, seconds / n));
+  return { usd: Math.round(each * n * 1000) / 1000, shots: n, model: name };
+}
+
+/**
+ * The pre-flight of a film: can kie.ai pay for it right now? `null` when kie.ai did not answer (a monitoring call
+ * never refuses a film: the order gate in requestFootage decides then), otherwise the balance and the plan so the
+ * caller can refuse in numbers. Six seconds at most, like kieBalanceUsd.
+ */
+export async function kiePreflight(env: Env, seconds: number, shots: number | null, maxShots: number): Promise<{ ok: boolean; balance_usd: number | null; planned_usd: number; shots: number; model: string }> {
+  const cfg = await footageConfig(env);
+  const plan = plannedFilmUsd(env, cfg, seconds, shots, maxShots);
+  const balance = await kieBalanceUsd(env);
+  return { ok: balance === null || balance >= plan.usd, balance_usd: balance, planned_usd: plan.usd, shots: plan.shots, model: plan.model };
 }
 
 /* ------------------------------------------------------------------ live override (no deploy) */
@@ -323,6 +351,8 @@ export interface ShotRequest { id: string; image_prompt: string; motion?: string
 export async function requestFootage(env: Env, job: Job, base: string, body: { shots: ShotRequest[]; look?: string; format?: string }): Promise<{ status: number; reply: Record<string, unknown> }> {
   const cfg = await footageConfig(env);
   if (footageBackendFor(env, job, cfg) !== "kie") return { status: 409, reply: { error: "this job does not film through kie.ai (switch off, no key, or the video is longer than KIE_MAX_VIDEO_S)" } };
+  // An animatic is drawn, never filmed: whatever a box asks, no clip is bought for it (templates.ts, the two products).
+  try { if (isAnimatic(JSON.parse(job.params) as JobParams)) return { status: 409, reply: { error: "this job is an animatic: it is drawn from its frames and orders no clip" } }; } catch { /* unreadable params: the film rules apply */ }
   const { name, spec } = kieModelFor(env, cfg);
   const format = body.format === "16:9" ? "16:9" : "9:16";
   // The look the worker read off the project, or the job's own style: the clip prompt and the negative follow it.

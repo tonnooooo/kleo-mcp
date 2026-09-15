@@ -87,13 +87,14 @@ Le descrizioni sono il manuale del modello: se sono scritte bene, il modello sce
 // kleo_account — "The credits left, the link to the account page and the Kleo key that carries the same account
 //                 to another browser."
 { } // nessun parametro
-// → { credits_available, free_tier, account_key, account_url, payments_open }
+// → { credits_available, has_paid, can_order_film, animatic_credits, animatic_max_s, products, free_tier, account_key, account_url, payments_open }
 ```
 
 `account_key` è la "chiave Kleo": è la stessa stringa del cookie, quindi chi ce l'ha prende l'account e ne spende i crediti. Il modello la mostra solo se l'utente la chiede; la pagina `/credits` la mostra solo al browser che quell'account ce l'ha già. Il link `account_url` invece lo può dare sempre: porta a una pagina di sola lettura (saldo, prezzi, indirizzo a cui scrivere) che non fa entrare nessuno, ed è quello che `kleo_create_video` restituisce quando i crediti sono finiti.
 
 Regole che il server applica sempre, indipendentemente da cosa chiede il modello:
-- i crediti (1 credito = 2 secondi di film, minimo 10: 20 s = 10, 30 s = 15, 60 s = 30, 5 minuti = 150; 7 crediti regalati all'iscrizione, che da soli non bastano per un film: il primo film richiede il pacchetto da 5 EUR) si scalano quando il video entra in coda e tornano indietro per intero se fallisce o se viene annullato prima di partire; annullato a render iniziato torna solo la parte non ancora renderizzata;
+- due prodotti dallo stesso storyboard (15 set): il **film** (ogni inquadratura una clip generata) e l'**animatic** (gli stessi fotogrammi disegnati con la camera che si muove su ciascuno, narrato, 4K 60 fps, senza clip generate: 5 crediti fissi, fino a 60 s, `product: "animatic"` in `kleo_create_video`). Il film si fa **solo a chi ha comprato un pacchetto** (`has_paid` in `kleo_account`): i crediti regalati o scritti a mano comprano l'animatic, mai un film;
+- i crediti (1 credito = 2 secondi di film, minimo 10: 20 s = 10, 30 s = 15, 60 s = 30, 5 minuti = 150; animatic 5 fissi; 7 crediti regalati all'iscrizione, che bastano per un animatic e non per un film: il primo film richiede il pacchetto da 5 EUR) si scalano quando il video entra in coda e tornano indietro per intero se fallisce o se viene annullato prima di partire; annullato a render iniziato torna solo la parte non ancora renderizzata;
 - 1 video alla volta per utente e 2 al giorno (contano solo quelli riusciti o in corso: uno fallito o annullato viene rimborsato e non occupa il posto), massimo 2 GPU accese in totale, e sopra a tutto un tetto di spesa giornaliero (`DAILY_GPU_BUDGET_USD`, oggi 1,00 $): oltre quella cifra Kleo smette di noleggiare GPU per un'ora e i video restano in coda;
 - lo storyboard, scritto dall'assistente o da Workers AI, passa il validatore (`src/keou-contract.ts`) prima di accendere una GPU: uno storyboard sbagliato torna indietro con l'elenco dei problemi e niente viene addebitato;
 - prompt controllati per contenuti vietati prima di spendere;

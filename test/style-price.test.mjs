@@ -11,7 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { STYLE_CREDITS, STYLE_MACHINE, VIDEO, creditsFor, filmCredits, freeCreditsFor, machineFor, isVideoStyle, MIN_FILM_CREDITS } from "../src/templates.ts";
+import { STYLE_CREDITS, STYLE_MACHINE, VIDEO, creditsFor, creditsForProduct, filmCredits, freeCreditsFor, machineFor, isVideoStyle, filmedStoryboard, filmedJob, finishForProduct, BARE_LAYER, tariffSentence, MIN_FILM_CREDITS, ANIMATIC_CREDITS, ANIMATIC_MAX_S, animaticEtaFor } from "../src/templates.ts";
 import { KLEO_STYLES } from "../src/keou-contract.ts";
 
 test("every style Kleo can render has a declared price", () => {
@@ -83,6 +83,39 @@ test("the sign-up gift is a fixed 7 credits, below the shortest film on purpose;
   const SMALLEST_PACK = 10;
   assert.ok(gift + SMALLEST_PACK >= filmCredits(30), "gift + 5 EUR pack = a 30-second Short");
   assert.ok(gift + SMALLEST_PACK < filmCredits(40), "and not more than that");
+});
+
+test("the animatic (15 September): 5 credits flat, under the gift and under the shortest film; drawn, never filmed; its price sits in one function", () => {
+  // The owner's rule: kie.ai clips are bought with his money, so the film is for paying accounts and the free
+  // credits have to buy SOMETHING — the animatic, the same storyboard drawn. Two facts pinned: the gift covers one,
+  // and an animatic never costs more than the shortest film, at any length or look.
+  const cfg = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
+  const gift = Number(/"FREE_CREDITS":\s*"(\d+)"/.exec(cfg)?.[1]);
+  assert.ok(ANIMATIC_CREDITS <= gift, "the sign-up gift pays for an animatic");
+  assert.ok(ANIMATIC_CREDITS < MIN_FILM_CREDITS, "and an animatic is cheaper than the shortest film");
+  for (const s of [15, 30, 45, ANIMATIC_MAX_S]) for (const look of ["realistic", "animation"]) {
+    assert.equal(creditsForProduct(s, look, "animatic"), ANIMATIC_CREDITS, `flat at ${s} s in ${look}`);
+    assert.equal(creditsForProduct(s, look, "film"), creditsFor(s, look), "the film keeps the tariff");
+    assert.equal(creditsForProduct(s, look, undefined), creditsFor(s, look), "no product means film, as on every row before this day");
+  }
+  assert.equal(ANIMATIC_MAX_S, 60, "a preview, not a five-minute film drawn on the cheap");
+  assert.match(tariffSentence(), /animatic[^.]*costs 5 credits flat/, "the one tariff sentence names it");
+  // filmed or drawn: the look, the engine style and the product — the third term is what this day added
+  assert.equal(filmedStoryboard("realistic", "picture", "film"), true);
+  assert.equal(filmedStoryboard("realistic", "picture", undefined), true);
+  assert.equal(filmedStoryboard("animation", "picture", "animatic"), false, "an animatic is never filmed");
+  assert.equal(filmedStoryboard("cartoon", "picture", "film"), false, "a picture look is not filmed either way");
+  assert.equal(filmedJob({ params: JSON.stringify({ style: "realistic" }) }), true);
+  assert.equal(filmedJob({ params: JSON.stringify({ style: "realistic", product: "animatic" }) }), false, "so it takes the pictures card and no video-GPU slot");
+  assert.equal(filmedJob({ params: "not json" }), false);
+  // the last touch: no music bed, and a layer that draws nothing when the storyboard has none
+  const a = finishForProduct({ music: "bed" }, "animatic");
+  assert.equal(a.music, "none");
+  assert.deepEqual(a.graphics, { ...BARE_LAYER, hud: [] });
+  const kept = finishForProduct({ music: "bed", graphics: { accent: "#ffb347", subtitles: "cinema", chapters: "none", hud: [] } }, "animatic");
+  assert.equal(kept.graphics.subtitles, "cinema", "a real layer stays the film's own");
+  assert.deepEqual(finishForProduct({ music: "bed" }, "film"), { music: "bed" }, "a film is left alone");
+  assert.ok(animaticEtaFor(60) >= 8 && animaticEtaFor(60) <= 15, "an animatic is minutes, not the film's twenty");
 });
 
 /* ------------------------------------------------------------------ what a style needs of a machine */

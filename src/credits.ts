@@ -48,7 +48,7 @@ function page(user: User | null, handle: string, env: Env, open_: boolean): stri
 <p>This page is read-only, so it does not show the key that carries the account to another browser: ask your assistant for kleo_account and it will show it to you there.</p>`;
   const body = user
     ? `<h1>${escapeHtml(plural(user.credits, "credit"))} left</h1>
-<p>${tariffSentence()}. The credits come back in full if a render fails, or if you cancel it before it starts; cancelling part-way through gives back the part that was not rendered.</p>
+<p>${tariffSentence()}. A film (every shot a generated clip) is made for accounts that have bought a pack; the animatic is open to every account. The credits come back in full if a render fails, or if you cancel it before it starts; cancelling part-way through gives back the part that was not rendered.</p>
 <h2>Credit packs</h2>
 ${open_ ? `<p>Payment is handled by Stripe: Kleo never sees your card. Credits land on this account within a few seconds of paying, and the page shows the new balance when you reload it.</p>` : configured ? `<div class="badge">Credit packs are paused for a moment: Kleo is topping up its rendering capacity so that every credit sold can actually be rendered. Try again in a little while - nothing is wrong with your account.</div>` : `<div class="badge">Card payments are not open yet - Kleo is free while it is in beta.</div>`}
 <ul class="packs">${packs}</ul>

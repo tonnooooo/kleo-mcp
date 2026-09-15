@@ -63,7 +63,10 @@ async function newEnv(backend = "manual") {
 /** Price units (14 September: one credit per two seconds, ten at least): P = the 45 s Short below, P30 = a 30 s film,
  *  PL = a five-minute film. */
 const P = 23, P30 = 15, PL = 150;
-const user = (env, credits = 10 * P) => m.createUser(env, { id: "u_test", email: "t@example.com", credits, inviteCode: null });
+// Since 15 September a FILM is made only for an account with a payment on record (src/db.ts hasPaid): these suites
+// test a paying customer, so the user carries one Stripe row — the way a tester is let in on production too.
+const markPaid = (env, id) => env.DB.prepare("INSERT INTO payments (session_id, user_id, credits, amount_cent, currency, status, raw_ref) VALUES (?, ?, 10, 500, 'eur', 'paid', 'test')").bind(`cs_test_${id}`, id).run();
+const user = async (env, credits = 10 * P) => { const u = await m.createUser(env, { id: "u_test", email: "t@example.com", credits, inviteCode: null }); await markPaid(env, u.id); return u; };
 const balance = async (env, id = "u_test") => (await m.getUser(env, id)).credits;
 const events = async (env, jobId, name) => (await env.DB.prepare("SELECT event, detail FROM audit WHERE job_id = ? AND event = ? ORDER BY id").bind(jobId, name).all()).results.map((r) => ({ ...r, detail: r.detail ? JSON.parse(r.detail) : null }));
 const short = (env, u, extra = {}) => m.createJob(env, u, { template: "film", prompt: "Pirates find an island missing from every map", duration_s: 45, format: "9:16", ...extra });
@@ -119,6 +122,41 @@ test("create: a client storyboard for a filmed style is stored asking to be film
   const c = JSON.parse(JSON.stringify(sb)); c.kleo_style = "cartoon"; c.backdrop = "video";
   await assert.rejects(() => m.createJob(env, u, { template: "film", prompt: "Pirati e tesori", duration_s: 30, format: "16:9", language: "it", style: "cartoon", storyboard: c }), /two looks/);
   await assert.rejects(() => m.createJob(env, u, { template: "film", prompt: "Pirati e tesori", duration_s: 30, format: "16:9", language: "it", storyboard: c }), /film's look is "realistic", but the storyboard's kleo_style says "cartoon"/);
+});
+
+test("create: the two products (15 September) — a film is for paying accounts only, the animatic is 5 credits, drawn, no music, no clip", async () => {
+  // The owner's rule, said on his own test account (48 credits typed in by hand, never a payment): kie.ai clips are
+  // bought with his money, so a FILM needs a payment on record; the free credits buy the ANIMATIC — the same
+  // storyboard as drawn frames with the camera over them — and nothing filmed.
+  const env = await newEnv();
+  const stranger = await m.createUser(env, { id: "u_free", email: "f@example.com", credits: 48, inviteCode: null }); // no payments row
+  const sb = JSON.parse(readFileSync(join(ROOT, "scripts", "motion-demo", "samples", "venezia-16x9.json"), "utf8"));
+  const film = { template: "film", prompt: "L'acqua alta a Venezia, cento volte l'anno", duration_s: 30, format: "16:9", language: "it", style: "realistic", storyboard: sb };
+  await assert.rejects(() => m.createJob(env, stranger, film), (e) => e instanceof m.JobError && /A film is made only for accounts that have bought a credit pack/.test(e.message) && /product: "animatic"/.test(e.message) && /Nothing was charged/.test(e.message));
+  assert.equal(await balance(env, "u_free"), 48, "the refusal charged nothing");
+  await assert.rejects(() => m.createJob(env, stranger, { ...film, product: "animatic", duration_s: 90 }), /An animatic is at most 60 seconds long/);
+  await assert.rejects(() => m.createJob(env, stranger, { ...film, product: "trailer" }), /Pass product: "film" or "animatic"/);
+  const anim = await m.createJob(env, stranger, { ...film, product: "animatic" });
+  assert.equal(anim.credits, 5, "flat, under the 7-credit gift");
+  assert.equal(await balance(env, "u_free"), 43);
+  const p = JSON.parse(anim.params);
+  assert.equal(p.product, "animatic");
+  const stored = JSON.parse((await m.getJob(env, anim.id)).storyboard);
+  assert.equal("backdrop" in stored, false, "an animatic never asks the worker to film");
+  assert.equal(stored.kleo_style, "realistic", "same look, drawn");
+  assert.equal(stored.music, "none", "no music bed on the stills");
+  assert.deepEqual(stored.graphics, { accent: "#ffffff", subtitles: "none", chapters: "none", hud: [] }, "a bare layer, so the engine draws nothing of the old picture look");
+  assert.equal((await events(env, anim.id, "job.created"))[0].detail.product, "animatic");
+  // the same request from a paying account is the film, filmed and priced by length
+  const u = await user(env, 20 * P);
+  const paidFilm = await m.createJob(env, u, film);
+  assert.equal(JSON.parse((await m.getJob(env, paidFilm.id)).storyboard).backdrop, "video");
+  assert.equal(paidFilm.credits, P30);
+  assert.equal("product" in JSON.parse(paidFilm.params), false, "a film carries no product field: absent means film, as on every row before this day");
+  // a refunded or disputed payment is not a payment
+  await env.DB.prepare("UPDATE payments SET status = 'refunded' WHERE user_id = 'u_test'").run();
+  const refunded = await m.getUser(env, "u_test");
+  await assert.rejects(() => m.createJob(env, refunded, { ...film, prompt: "Ancora Venezia, l'acqua alta" }), /bought a credit pack/);
 });
 
 test("create: the animation look is the same film in the drawn look — filmed, same price, its own kleo_style (14 September)", async () => {

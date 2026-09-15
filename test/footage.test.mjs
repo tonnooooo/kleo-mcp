@@ -304,6 +304,41 @@ test("the balance is read before the first task: an account that cannot pay the 
   assert.equal(mute.calls.create.length, 3);
 });
 
+test("an animatic orders no clip whatever the box asks: the route answers 409 and kie.ai is never called (15 September)", async () => {
+  const env = await newEnv({ KIE_MAX_VIDEO_S: "0" });
+  const job = await filmJob(env, 30);
+  job.params = JSON.stringify({ ...JSON.parse(job.params), product: "animatic" });
+  await env.DB.prepare("UPDATE jobs SET params = ? WHERE id = ?").bind(job.params, job.id).run();
+  const kie = fakeKie(); globalThis.fetch = kie.fetch;
+  const r = await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS, format: "9:16" });
+  assert.equal(r.status, 409);
+  assert.match(r.reply.error, /animatic/);
+  assert.equal(kie.calls.create.length, 0);
+  assert.equal(kie.calls.credit ?? 0, 0, "not even the balance is read");
+  assert.equal((await m.footageRows(env, job.id)).length, 0);
+});
+
+test("the pre-flight prices a film before any card is rented: the storyboard's shots when there is one, the planner's density when not; silence never refuses", async () => {
+  // 15 September, four films in a row: card rented, frames drawn, script voiced, then "kie.ai balance is empty" at
+  // 0.07 $. The three audit rows all said planned 3.90 $ for ten 6-second clips on MiniMax H3 2K — this is that number.
+  const env = await newEnv({ KIE_MAX_VIDEO_S: "0", KLEO_FOOTAGE_MODEL: "minimax-h3" });
+  const ten = m.plannedFilmUsd(env, null, 60, 10, 24);
+  assert.deepEqual(ten, { usd: 3.9, shots: 10, model: "minimax-h3" }, "10 shots of 6 s at 0.065 $/s");
+  const guess = m.plannedFilmUsd(env, null, 60, null, 24);
+  assert.equal(guess.shots, 20, "no storyboard: about a shot every three seconds");
+  assert.equal(m.plannedFilmUsd(env, null, 15, null, 24).shots, 6, "never fewer than six");
+  assert.equal(m.plannedFilmUsd(env, null, 300, null, 48).shots, 48, "never more than the storyboard cap");
+  const empty = fakeKie({ credits: 14 }); globalThis.fetch = empty.fetch; // 14 credits = 0.07 $, the balance of that morning
+  const pre = await m.kiePreflight(env, 60, 10, 24);
+  assert.deepEqual(pre, { ok: false, balance_usd: 0.07, planned_usd: 3.9, shots: 10, model: "minimax-h3" });
+  const rich = fakeKie({ credits: 1000 }); globalThis.fetch = rich.fetch; // 5 $
+  assert.equal((await m.kiePreflight(env, 60, 10, 24)).ok, true);
+  globalThis.fetch = async (u, i) => { if (String(u).endsWith("/api/v1/chat/credit")) throw new Error("ECONNRESET"); return rich.fetch(u, i); };
+  const mute = await m.kiePreflight(env, 60, 10, 24);
+  assert.equal(mute.ok, true, "kie.ai not answering is not a refusal");
+  assert.equal(mute.balance_usd, null);
+});
+
 test("footageStatus: success is copied to R2 once and served to the box; fail is a failed row; transient errors keep polling", async () => {
   const env = await newEnv();
   const job = await filmJob(env);

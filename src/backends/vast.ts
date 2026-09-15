@@ -3,7 +3,7 @@ import type { Env } from "../env";
 import type { Job } from "../db";
 import { triedMachines } from "../db";
 import { int, num, minutesSince } from "../util";
-import { jobTimeoutMin, machineFor, styleOfJob, isVideoStyle, videoMachineFor, videoModelIsGated, videoDiskGb, FINISH, type Machine } from "../templates";
+import { jobTimeoutMin, machineFor, styleOfJob, isVideoStyle, filmedJob, videoMachineFor, videoModelIsGated, videoDiskGb, FINISH, type Machine } from "../templates";
 import { footageBackendFor, footageConfig, kieModelFor, type FootageBackend } from "../footage";
 
 /**
@@ -159,11 +159,12 @@ export const machineKey = (o: { machine_id?: number; id: number }): string =>
   o.machine_id ? `m:${o.machine_id}` : `o:${o.id}`;
 
 /** The machine a job needs right now: its phase first (a finish box is the cheapest thing that runs ffmpeg), then its style. */
-export function profileFor(env: Env, style: string | null | undefined, phase?: string | null, footage: FootageBackend = "local"): { need: Machine; disk: number } {
+export function profileFor(env: Env, style: string | null | undefined, phase?: string | null, footage: FootageBackend = "local", drawn = false): { need: Machine; disk: number } {
   if (phase === "finish") return { need: FINISH, disk: int(env.FINISH_DISK_GB, 40) };
   // On the kie.ai road the box never loads a video model: it draws the frames, voices, times the cuts and waits.
-  // That is the pictures job, on the pictures card — 16 GB at $0.40/h instead of 80 GB at $2.60/h.
-  if (footage === "kie") return { need: machineFor("cartoon"), disk: int(env.VAST_DISK_GB, 80) };
+  // That is the pictures job, on the pictures card — 16 GB at $0.40/h instead of 80 GB at $2.60/h. An ANIMATIC
+  // (`drawn`: the stills with the camera over them, no clip at all) is that same job whatever the footage switch says.
+  if (footage === "kie" || drawn) return { need: machineFor("cartoon"), disk: int(env.VAST_DISK_GB, 80) };
   // What this style needs of a machine (src/templates.ts): memory, architecture and its own price ceiling. The
   // global VAST_MAX_DPH stays the ceiling for everything ordinary — a cyber video must never pay for a card rented
   // to generate motion — and a style only ever raises it for itself. A filmed style's card and disk follow the
@@ -174,8 +175,8 @@ export function profileFor(env: Env, style: string | null | undefined, phase?: s
   return { need, disk };
 }
 
-export async function searchOffers(env: Env, style?: string | null, phase?: string | null, footage: FootageBackend = "local"): Promise<Offer[]> {
-  const { need, disk } = profileFor(env, style, phase, footage);
+export async function searchOffers(env: Env, style?: string | null, phase?: string | null, footage: FootageBackend = "local", drawn = false): Promise<Offer[]> {
+  const { need, disk } = profileFor(env, style, phase, footage, drawn);
   const query = {
     verified: { eq: true },
     rentable: { eq: true },
@@ -241,8 +242,12 @@ export const vastBackend: RenderBackend = {
     if (!env.VAST_IMAGE || env.VAST_IMAGE.includes("REPLACE_ME")) throw new Error("VAST_IMAGE is not configured");
     // Decided ONCE per rental and written on the box: the machine, the env and the job spec must tell the same story.
     const footageCfg = await footageConfig(env);
-    const footage = isVideoStyle(styleOfJob(job)) ? footageBackendFor(env, job, footageCfg) : "local";
-    const offers = await searchOffers(env, styleOfJob(job), job.phase, footage);
+    // A filmed job orders its clips on the footage road; an animatic (a video look, drawn) orders none and is a
+    // pictures job on the pictures card, so `drawn` says so to the profile whatever the switch is set to.
+    const filmed = filmedJob(job);
+    const footage = filmed ? footageBackendFor(env, job, footageCfg) : "local";
+    const drawn = !filmed && isVideoStyle(styleOfJob(job));
+    const offers = await searchOffers(env, styleOfJob(job), job.phase, footage, drawn);
     if (!offers.length) {
       const need = machineFor(styleOfJob(job));
       throw new Error(`no Vast.ai offer matches the filters: ${need.minVramGb} GB of VRAM, compute ${need.minComputeCap / 100}, at most $${Math.max(num(env.VAST_MAX_DPH, 0.4), need.maxDph)}/h`); // the ceiling really used: the audit of 12 September said "$0.4" while the search ran at 1.00, and the number was chased for nothing
@@ -268,7 +273,7 @@ export const vastBackend: RenderBackend = {
         const body: Record<string, unknown> = {
           client_id: "me",
           image: env.VAST_IMAGE,
-          disk: profileFor(env, styleOfJob(job), job.phase, footage).disk,
+          disk: profileFor(env, styleOfJob(job), job.phase, footage, drawn).disk,
           label: jobLabel(job.id), // never inline the prefix: create and sweep must read the same label
           runtype: "ssh",
           cancel_unavail: true,

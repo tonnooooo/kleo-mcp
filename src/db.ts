@@ -76,6 +76,12 @@ export interface JobParams {
    * planner plans under it instead of writing its own: the user saw this film, so this is the film that gets made.
    */
   treatment?: Record<string, unknown>;
+  /**
+   * What is being made (src/templates.ts Product, 15 September 2026): "film" — every shot filmed by kie.ai, paid
+   * accounts only — or "animatic" — the same stills with the camera over them and no generated clip, 5 credits flat.
+   * Absent on every row made before that day, which means film.
+   */
+  product?: "film" | "animatic";
 }
 
 export interface JobFile {
@@ -254,6 +260,17 @@ export const paymentByIntent = (env: Env, paymentIntent: string) =>
 /** Marks what happened to a payment afterwards ("refunded", "disputed"). Never touches the balance by itself. */
 export const setPaymentStatus = (env: Env, sessionId: string, status: string) =>
   env.DB.prepare("UPDATE payments SET status = ? WHERE session_id = ?").bind(status, sessionId).run();
+
+/**
+ * Whether this account has ever PAID: one Stripe payment on record that still stands (a refund or a dispute takes
+ * it back). This is what opens the FILM (src/templates.ts, the two products of 15 September 2026): the clips are
+ * bought from kie.ai with the owner's money, so gifted credits, bonus rows and balances typed in by hand may buy an
+ * animatic and nothing filmed. A tester is let in the same way a customer is — one row in `payments` — never by a
+ * flag on the user: `INSERT INTO payments (session_id, user_id, credits, amount_cent, currency, status, raw_ref)
+ * VALUES ('manual_<who>_<date>', '<user id>', 0, 0, 'eur', 'paid', 'tester')`, and the audit trail keeps its shape.
+ */
+export const hasPaid = async (env: Env, userId: string): Promise<boolean> =>
+  !!(await env.DB.prepare("SELECT 1 AS one FROM payments WHERE user_id = ? AND status = 'paid' LIMIT 1").bind(userId).first<{ one: number }>());
 
 export const getInvite = (env: Env, code: string) => env.DB.prepare("SELECT * FROM invites WHERE code = ?").bind(code).first<Invite>();
 export const useInvite = (env: Env, code: string) =>
