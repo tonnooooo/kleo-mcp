@@ -1293,9 +1293,15 @@ def film_generate(job, out_dir, lay_track=True):
 
 def pack_gen(pdir, out_dir):
     """gen.tgz: everything the finish box needs and nothing else — the plan, the timings, the voice and the raw
-    clips (tens of MB). Not the pictures, not the engine, not the model."""
+    clips (tens of MB). Not the engine, not the model. The pictures travel ONLY when the film carries a layer:
+    film_overlay runs the engine over the footage, and contract.py refuses a project whose shot.image is not on
+    disk (video gt_rvhmhx55, 15 September 2026: five clips filmed and paid, then "Asset must exist inside the
+    project: img/01-whale-s1.png" at 80%). A film with no layer never opens the engine again, so it keeps the
+    bundle small."""
     bundle = os.path.join(out_dir, GEN_BUNDLE)
     members = ["project.json", "build/timeline.json", "build/shots.json", "build/voice.wav", CLIPS_DIR]
+    if project_has_layer(pdir):
+        members.append(IMG_DIR)
     present = [m for m in members if os.path.exists(os.path.join(pdir, m))]
     for need in ("build/timeline.json", "build/shots.json", "build/voice.wav", CLIPS_DIR):
         if need not in present:
@@ -1369,6 +1375,41 @@ def film_finish(pdir, out_dir, lay_track=False):
     return {"video.mp4": video, "thumbnail.jpg": thumb}
 
 
+IMG_DIR = "img"                           # the pictures the shots were filmed from; contract.py wants shot.image on disk
+# A 1x1 transparent PNG: the stand-in for a picture the finish box does not have. The layer is drawn on a transparent
+# canvas over build/footage.mp4, so the picture behind it is never seen — but the contract still wants a file.
+BLANK_PNG = bytes.fromhex("89504e470d0a1a0a0000000d4948445200000001000000010806000000" "1f15c4890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082")
+
+
+def project_has_layer(pdir):
+    """True when <pdir>/project.json carries a graphics object: the finish box will run the engine over the film."""
+    try:
+        project = json.load(open(os.path.join(pdir, "project.json")))
+    except (OSError, ValueError):
+        return False
+    return isinstance(project, dict) and isinstance(project.get("graphics"), dict)
+
+
+def ensure_shot_pictures(pdir, project):
+    """Every shot.image / scene.image the project names exists under <pdir> before the engine checks it. Pictures the
+    bundle carried are left alone; a missing one becomes BLANK_PNG (never drawn: the backdrop is the video). Returns
+    the list of paths it had to stand in for."""
+    stood_in = []
+    for sc in project.get("scenes") or []:
+        refs = [sc.get("image")] + [sh.get("image") for sh in (sc.get("shots") or []) if isinstance(sh, dict)]
+        for ref in refs:
+            if not isinstance(ref, str) or not ref.strip():
+                continue
+            path = os.path.join(pdir, ref)
+            if os.path.isfile(path):
+                continue
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as f:
+                f.write(BLANK_PNG)
+            stood_in.append(ref)
+    return stood_in
+
+
 def film_overlay(pdir, project, timeline, out_dir, video):
     """The engine over the footage: project.json gets its backdrop back (the track is on disk now) and no music, the
     bundle's missing music.wav becomes silence of the film's length (run.py's mix expects the file), and run.py
@@ -1381,6 +1422,9 @@ def film_overlay(pdir, project, timeline, out_dir, video):
     project["music"] = "none"
     with open(os.path.join(pdir, "project.json"), "w") as f:
         json.dump(project, f, ensure_ascii=False, indent=2)
+    missing = ensure_shot_pictures(pdir, project)
+    if missing:
+        log(f"layer: {len(missing)} picture(s) not in the bundle, blank stand-ins written ({', '.join(missing[:3])}{', …' if len(missing) > 3 else ''})")
     music = os.path.join(build, "music.wav")
     if not os.path.isfile(music):
         r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",

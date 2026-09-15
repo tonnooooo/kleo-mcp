@@ -579,3 +579,52 @@ class StillOfTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class LayerPicturesTravelTest(unittest.TestCase):
+    """The finish box runs the engine over the film only when there is a layer, and the engine refuses a shot whose
+    picture is not on disk: so the pictures ride in the bundle for such a film, and any still missing gets a blank
+    stand-in before the engine looks (video gt_rvhmhx55, 15 September 2026)."""
+
+    def setUp(self):
+        import tempfile, shutil
+        self.tmp = tempfile.mkdtemp(prefix="kleo-layer-"); self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def project(self, graphics):
+        pdir = os.path.join(self.tmp, "p"); os.makedirs(os.path.join(pdir, "build")); os.makedirs(os.path.join(pdir, "clips")); os.makedirs(os.path.join(pdir, "img"))
+        for name in ("build/timeline.json", "build/shots.json"):
+            json.dump({}, open(os.path.join(pdir, name), "w"))
+        open(os.path.join(pdir, "build", "voice.wav"), "wb").write(b"RIFF")
+        open(os.path.join(pdir, "clips", "01-a-s1.mp4"), "wb").write(b"\x00")
+        open(os.path.join(pdir, "img", "01-a-s1.png"), "wb").write(kw.BLANK_PNG)
+        proj = {"id": "gt-layer", "scenes": [{"id": "01-a", "image": "img/01-a-s1.png", "shots": [{"image": "img/01-a-s1.png"}, {"image": "img/01-a-s2.png"}]}]}
+        if graphics:
+            proj["graphics"] = {"accent": "#ffffff", "subtitles": "cinema", "chapters": "none", "hud": []}
+        json.dump(proj, open(os.path.join(pdir, "project.json"), "w"))
+        return pdir
+
+    def members(self, pdir):
+        out = os.path.join(self.tmp, "out"); os.makedirs(out, exist_ok=True)
+        return subprocess.run(["tar", "tzf", kw.pack_gen(pdir, out)], capture_output=True, text=True, check=True).stdout.split()
+
+    def test_a_film_with_a_layer_carries_its_pictures_in_the_bundle(self):
+        names = self.members(self.project(graphics=True))
+        self.assertIn("img/01-a-s1.png", names)
+        self.assertIn("clips/01-a-s1.mp4", names)
+
+    def test_a_film_without_a_layer_leaves_the_pictures_behind(self):
+        names = self.members(self.project(graphics=False))
+        self.assertNotIn("img/01-a-s1.png", names)
+        self.assertFalse(any(n.startswith("img/") for n in names))
+
+    def test_a_picture_the_bundle_lost_becomes_a_blank_stand_in_before_the_engine_looks(self):
+        pdir = self.project(graphics=True)
+        project = json.load(open(os.path.join(pdir, "project.json")))
+        missing = kw.ensure_shot_pictures(pdir, project)
+        self.assertEqual(missing, ["img/01-a-s2.png"])
+        stand_in = os.path.join(pdir, "img", "01-a-s2.png")
+        self.assertTrue(os.path.isfile(stand_in))
+        self.assertEqual(open(stand_in, "rb").read()[:8], b"\x89PNG\r\n\x1a\n")
+        # the picture that was there is untouched, and a second pass has nothing left to do
+        self.assertEqual(open(os.path.join(pdir, "img", "01-a-s1.png"), "rb").read(), kw.BLANK_PNG)
+        self.assertEqual(kw.ensure_shot_pictures(pdir, project), [])
