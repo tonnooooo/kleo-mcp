@@ -15,7 +15,7 @@ test("what the request says is read, what it does not say is asked — in the re
   assert.equal(brief.duration_s, null); assert.equal(brief.format, null, "nothing says where it goes: asked, not assumed 16:9");
   assert.deepEqual(brief.intake.missing, ["duration", "format"]);
   assert.deepEqual(brief.intake.optional, ["audience", "tone", "must_keep"]);
-  assert.deepEqual(brief.questions, ["Quanto deve durare? (da 15 secondi a 5 minuti)", "Per dove è: YouTube (orizzontale, 16:9) o Short / TikTok / Reel (verticale, 9:16)?"]);
+  assert.deepEqual(brief.questions, ["Quanto deve durare? (da 15 secondi a 5 minuti per un film; un animatic dura al massimo 60 secondi)", "Per dove è: YouTube (orizzontale, 16:9) o Short / TikTok / Reel (verticale, 9:16)?"]);
   assert.equal(brief.optional_questions.length, 3); assert.match(brief.optional_questions[0], /Per chi è\?/);
   const text = adaptivePromptText(brief);
   assert.match(text, /- Length: MISSING — ask/); assert.match(text, /- Look: realistic \(from the request\)/);

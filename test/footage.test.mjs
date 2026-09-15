@@ -85,8 +85,10 @@ async function newEnv(extra = {}) {
   for (const f of readdirSync(join(ROOT, "migrations")).sort()) env.DB.db.exec(readFileSync(join(ROOT, "migrations", f), "utf8"));
   return env;
 }
-async function filmJob(env, seconds = 18) {
+async function filmJob(env, seconds = 18, paid = true) {
   await m.createUser(env, { id: "u1", email: "u1@example.com", credits: 100, inviteCode: null });
+  // A paying customer (15 September: a film's clips are bought only for accounts with a payment on record).
+  if (paid) await env.DB.prepare("INSERT INTO payments (session_id, user_id, credits, amount_cent, currency, status, raw_ref) VALUES ('cs_test_u1', 'u1', 10, 500, 'eur', 'paid', 'test')").run();
   const job = { id: "gt_test1234", user_id: "u1", template: "film", prompt: "a night run", params: JSON.stringify({ duration_s: seconds, format: "9:16", language: "en", voice: null, style: "realistic" }),
     state: "rendering", track: "clips", percent: 12, eta_min: 5, credits: 7, backend: "manual", instance_id: null, instance_meta: null, worker_secret: "wsecret", attempts: 1, error: null,
     notify_email: null, created_at: new Date().toISOString(), started_at: new Date().toISOString(), finished_at: null, expires_at: null, purged_at: null, cost_usd: null, storyboard: null, plan_attempts: 0, plan_error: null };
@@ -316,6 +318,21 @@ test("an animatic orders no clip whatever the box asks: the route answers 409 an
   assert.equal(kie.calls.create.length, 0);
   assert.equal(kie.calls.credit ?? 0, 0, "not even the balance is read");
   assert.equal((await m.footageRows(env, job.id)).length, 0);
+});
+
+test("a film whose account never paid orders no clip on the box road either: 402 with the sentence, before the balance is read", async () => {
+  // A job queued before the rule of 15 September, or reaching the box by any other road, meets the rule here.
+  const env = await newEnv({ KIE_MAX_VIDEO_S: "0" });
+  const job = await filmJob(env, 18, false);
+  const kie = fakeKie(); globalThis.fetch = kie.fetch;
+  const r = await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS, format: "9:16" });
+  assert.equal(r.status, 402);
+  assert.equal(r.reply.unpaid, true);
+  assert.match(r.reply.error, /bought a credit pack[\s\S]*credits are refunded[\s\S]*animatic/);
+  assert.equal(kie.calls.create.length, 0);
+  assert.equal(kie.calls.credit ?? 0, 0);
+  assert.equal((await m.footageRows(env, job.id)).length, 0);
+  assert.equal((await env.DB.prepare("SELECT COUNT(*) AS n FROM audit WHERE event = 'footage.unpaid'").first()).n, 1);
 });
 
 test("the pre-flight prices a film before any card is rented: the storyboard's shots when there is one, the planner's density when not; silence never refuses", async () => {
