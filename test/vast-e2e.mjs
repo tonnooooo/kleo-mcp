@@ -45,7 +45,9 @@ async function main() {
   const call = async (name, args) => { const r = await client.callTool({ name, arguments: args }); return r.structuredContent ?? JSON.parse(r.content[0].text); };
 
   step("create_video → the orchestrator rents a GPU on the next tick");
-  const spec = { template: process.env.TEMPLATE ?? "did-you-know", prompt: process.env.PROMPT ?? "Three surprising facts about octopuses, fast and cheerful", duration_s: parseInt(process.env.DURATION ?? "20", 10), format: process.env.FORMAT ?? "9:16", language: process.env.LANGUAGE ?? "en" };
+  // A brand-new anonymous account has never paid, so the film is refused for it (15 September): the default is the
+  // animatic, the product the free credits buy. PRODUCT=film needs a payments row for the account first.
+  const spec = { prompt: process.env.PROMPT ?? "Three surprising facts about octopuses, fast and cheerful", duration_s: parseInt(process.env.DURATION ?? "20", 10), format: process.env.FORMAT ?? "9:16", language: process.env.LANGUAGE ?? "en", product: process.env.PRODUCT ?? "animatic", ...(process.env.TEMPLATE ? { template: process.env.TEMPLATE } : {}) };
   if (process.env.STORYBOARD_FILE) { spec.storyboard = JSON.parse(fs.readFileSync(process.env.STORYBOARD_FILE, "utf8")); console.log("  storyboard from", process.env.STORYBOARD_FILE, "scenes:", spec.storyboard.scenes.length); }
   console.log("  spec:", JSON.stringify({ ...spec, storyboard: spec.storyboard ? "(file)" : undefined }));
   const job = await call("kleo_create_video", spec);

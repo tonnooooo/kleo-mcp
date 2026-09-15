@@ -1,9 +1,9 @@
 import type { Env } from "./env";
-import { getUser, type User } from "./db";
+import { getUser, hasPaid, type User } from "./db";
 import { cookieHandle, makeHandle, verifyHandle, verifyViewToken } from "./accounts";
 import { PACKS, sellingOpen, sellingAvailable, buyUrl } from "./stripe";
 import { html, escapeHtml } from "./util";
-import { tariffSentence } from "./templates";
+import { tariffSentence, ANIMATIC_CREDITS, ANIMATIC_MAX_S } from "./templates";
 
 /** The one address a stranger can write to. It is also in the site footer; both must always say the same thing. */
 const CONTACT = "kleooai@gmail.com";
@@ -21,15 +21,15 @@ export async function handleCredits(request: Request, env: Env): Promise<Respons
   const ownerId = await verifyHandle(env, cookieHandle(request.headers.get("cookie")));
   const userId = (await verifyViewToken(env, url.searchParams.get("k"))) ?? ownerId;
   const user = userId ? await getUser(env, userId) : null;
-  if (!user) return html(page(null, "", env, false), 404);
+  if (!user) return html(page(null, "", env, false, false), 404);
   // Only the browser that IS this account sees the key; a shared link shows the balance and nothing worth stealing.
   const key = ownerId === user.id ? await makeHandle(env, user.id) : "";
-  return html(page(user, key, env, await sellingAvailable(env)));
+  return html(page(user, key, env, await sellingAvailable(env), await hasPaid(env, user.id)));
 }
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-function page(user: User | null, handle: string, env: Env, open_: boolean): string {
+function page(user: User | null, handle: string, env: Env, open_: boolean, paid: boolean): string {
   const configured = sellingOpen(env);
   // The buttons exist only when selling is actually configured. Until then the same three packs are shown as plain
   // text with an honest badge: a page that offers a button nobody can pay through is worse than one that says wait.
@@ -48,7 +48,7 @@ function page(user: User | null, handle: string, env: Env, open_: boolean): stri
 <p>This page is read-only, so it does not show the key that carries the account to another browser: ask your assistant for kleo_account and it will show it to you there.</p>`;
   const body = user
     ? `<h1>${escapeHtml(plural(user.credits, "credit"))} left</h1>
-<p>${tariffSentence()}. A film (every shot a generated clip) is made for accounts that have bought a pack; the animatic is open to every account. The credits come back in full if a render fails, or if you cancel it before it starts; cancelling part-way through gives back the part that was not rendered.</p>
+<p>${tariffSentence()}. A film (every shot a generated clip) is made for accounts that have bought a pack; the animatic is open to every account. ${paid ? "This account has bought a pack: it can order films and animatics." : `This account has not bought a pack yet: it can order animatics (${ANIMATIC_CREDITS} credits, up to ${ANIMATIC_MAX_S} s); the film opens with any pack.`} The credits come back in full if a render fails, or if you cancel it before it starts; cancelling part-way through gives back the part that was not rendered.</p>
 <h2>Credit packs</h2>
 ${open_ ? `<p>Payment is handled by Stripe: Kleo never sees your card. Credits land on this account within a few seconds of paying, and the page shows the new balance when you reload it.</p>` : configured ? `<div class="badge">Credit packs are paused for a moment: Kleo is topping up its rendering capacity so that every credit sold can actually be rendered. Try again in a little while - nothing is wrong with your account.</div>` : `<div class="badge">Card payments are not open yet - Kleo is free while it is in beta.</div>`}
 <ul class="packs">${packs}</ul>

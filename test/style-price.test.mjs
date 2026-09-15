@@ -115,7 +115,13 @@ test("the animatic (15 September): 5 credits flat, under the gift and under the 
   const kept = finishForProduct({ music: "bed", graphics: { accent: "#ffb347", subtitles: "cinema", chapters: "none", hud: [] } }, "animatic");
   assert.equal(kept.graphics.subtitles, "cinema", "a real layer stays the film's own");
   assert.deepEqual(finishForProduct({ music: "bed" }, "film"), { music: "bed" }, "a film is left alone");
-  assert.ok(animaticEtaFor(60) >= 8 && animaticEtaFor(60) <= 15, "an animatic is minutes, not the film's twenty");
+  // a locked-off shot would be a frozen frame over a still, and the engine's QA refuses a second of those
+  const drifted = finishForProduct({ scenes: [{ id: "01", shots: [{ id: "01-s1", motion: "static_hold", strength: 0 }, { id: "01-s2", motion: "crane_down", strength: 0.5 }] }] }, "animatic");
+  assert.deepEqual(drifted.scenes[0].shots[0], { id: "01-s1", motion: "push_in", strength: 0.35 }, "static_hold drifts in the animatic");
+  assert.deepEqual(drifted.scenes[0].shots[1], { id: "01-s2", motion: "crane_down", strength: 0.5 }, "every other move is the grammar's");
+  const filmStill = finishForProduct({ scenes: [{ id: "01", shots: [{ id: "01-s1", motion: "static_hold", strength: 0 }] }] }, "film");
+  assert.equal(filmStill.scenes[0].shots[0].motion, "static_hold", "the film keeps its lock-off: the clip model moves the subject, not the camera");
+  assert.ok(animaticEtaFor(60) >= 15 && animaticEtaFor(60) <= 25, "an animatic is a quarter of an hour or so, said as such");
 });
 
 /* ------------------------------------------------------------------ what a style needs of a machine */

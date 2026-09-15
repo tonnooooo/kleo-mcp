@@ -29,7 +29,7 @@
  */
 import type { Env } from "./env";
 import type { Job, JobParams } from "./db";
-import { audit } from "./db.ts";
+import { audit, hasPaid } from "./db.ts";
 import { putFile } from "./storage.ts";
 import { hmacHex, int, num, nowIso } from "./util.ts";
 import { FILM_LOOKS, type FilmLook } from "./keou-contract.ts";
@@ -147,20 +147,30 @@ export function clipCostUsd(spec: KieModel, clipSeconds: number): number {
 export function plannedFilmUsd(env: Env, cfg: FootageOverride | null, seconds: number, shots: number | null, maxShots: number): { usd: number; shots: number; model: string } {
   const { name, spec } = kieModelFor(env, cfg);
   const n = shots && shots > 0 ? shots : Math.min(maxShots, Math.max(6, Math.round(seconds / 3)));
+  // Each clip covers the average shot; on the box the voice decides the real cut times, so some shots run longer
+  // than the average and are billed a whole second more (the 15 s film of 15 September: estimate 1.82 $, order
+  // 1.885 $). The margin below keeps the estimate on the upper side: a pre-flight that passes a film the box then
+  // cannot pay for is the rental this exists to prevent, while one that refuses a marginal balance costs nothing.
   const each = clipCostUsd(spec, clipSecondsFor(spec, seconds / n));
-  return { usd: Math.round(each * n * 1000) / 1000, shots: n, model: name };
+  return { usd: Math.round(each * n * PREFLIGHT_MARGIN * 1000) / 1000, shots: n, model: name };
 }
+export const PREFLIGHT_MARGIN = 1.2;
 
 /**
  * The pre-flight of a film: can kie.ai pay for it right now? `null` when kie.ai did not answer (a monitoring call
  * never refuses a film: the order gate in requestFootage decides then), otherwise the balance and the plan so the
  * caller can refuse in numbers. Six seconds at most, like kieBalanceUsd.
  */
-export async function kiePreflight(env: Env, seconds: number, shots: number | null, maxShots: number): Promise<{ ok: boolean; balance_usd: number | null; planned_usd: number; shots: number; model: string }> {
+export async function kiePreflight(env: Env, seconds: number, shots: number | null, maxShots: number): Promise<{ ok: boolean; reason: "balance" | "budget" | null; balance_usd: number | null; planned_usd: number; spent_today_usd: number; budget_usd: number; shots: number; model: string }> {
   const cfg = await footageConfig(env);
   const plan = plannedFilmUsd(env, cfg, seconds, shots, maxShots);
+  // The same two gates the order itself will meet on the box (requestFootage): today's ceiling first, then the account.
+  const budget = num(env.DAILY_FOOTAGE_BUDGET_USD, 5);
+  const spent = await footageSpentTodayUsd(env);
+  if (spent + plan.usd > budget) return { ok: false, reason: "budget", balance_usd: null, planned_usd: plan.usd, spent_today_usd: spent, budget_usd: budget, shots: plan.shots, model: plan.model };
   const balance = await kieBalanceUsd(env);
-  return { ok: balance === null || balance >= plan.usd, balance_usd: balance, planned_usd: plan.usd, shots: plan.shots, model: plan.model };
+  const ok = balance === null || balance >= plan.usd;
+  return { ok, reason: ok ? null : "balance", balance_usd: balance, planned_usd: plan.usd, spent_today_usd: spent, budget_usd: budget, shots: plan.shots, model: plan.model };
 }
 
 /* ------------------------------------------------------------------ live override (no deploy) */
@@ -353,6 +363,12 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
   if (footageBackendFor(env, job, cfg) !== "kie") return { status: 409, reply: { error: "this job does not film through kie.ai (switch off, no key, or the video is longer than KIE_MAX_VIDEO_S)" } };
   // An animatic is drawn, never filmed: whatever a box asks, no clip is bought for it (templates.ts, the two products).
   try { if (isAnimatic(JSON.parse(job.params) as JobParams)) return { status: 409, reply: { error: "this job is an animatic: it is drawn from its frames and orders no clip" } }; } catch { /* unreadable params: the film rules apply */ }
+  // The paid rule holds on this road too (a film queued before the rule, or created by any other road): the clips
+  // are the owner's money, and a 402 here fails the job at once with the sentence and refunds it (internal.ts).
+  if (!(await hasPaid(env, job.user_id))) {
+    await audit(env, job.user_id, job.id, "footage.unpaid", { note: "film for an account with no payment on record; refused before any task" });
+    return { status: 402, reply: { error: "this film is for accounts that have bought a credit pack, and this account has not: no clip was ordered and the credits are refunded. The animatic of the same storyboard (product: \"animatic\") is open to every account", unpaid: true } };
+  }
   const { name, spec } = kieModelFor(env, cfg);
   const format = body.format === "16:9" ? "16:9" : "9:16";
   // The look the worker read off the project, or the job's own style: the clip prompt and the negative follow it.

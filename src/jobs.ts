@@ -1,7 +1,7 @@
 import type { Env } from "./env";
 import { type Job, type JobParams, type JobState, type User, OPEN_STATES, countOpenForUser, countJobsTodayForUser, addJobCost, debitCredits, refundCredits, insertJob, transitionJob, audit, getUserJob, listFiles, hasPaid } from "./db";
 import { accountUrl } from "./accounts";
-import { findTemplate, affordableGuess, creditsFor, creditsForProduct, etaFor, animaticEtaFor, normalizeVoice, voiceSpellings, isVideoStyle, videoModelIsGated, isPublicTemplate, FILM_TEMPLATE_ID, FILM_LONG_TEMPLATE_ID, filmTemplateFor, ACTIVE_TEMPLATE, PRODUCTS, ANIMATIC_CREDITS, ANIMATIC_MAX_S, filmedStoryboard, finishForProduct, type Format, type Product } from "./templates";
+import { findTemplate, affordableGuess, creditsFor, creditsForProduct, etaFor, animaticEtaFor, normalizeVoice, voiceSpellings, isVideoStyle, videoModelIsGated, isPublicTemplate, FILM_TEMPLATE_ID, FILM_LONG_TEMPLATE_ID, filmTemplateFor, ACTIVE_TEMPLATE, PRODUCTS, ANIMATIC_CREDITS, ANIMATIC_MAX_S, filmedStoryboard, finishForProduct, productOf, type Format, type Product } from "./templates";
 import { footageBackendFor, footageConfig, kiePreflight } from "./footage";
 import { rid, nowIso, int, hmacHex } from "./util";
 import { isFlagActive } from "./schema";
@@ -101,9 +101,9 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     throw new JobError(`Kleo makes films of ${active.minSeconds} to ${active.maxSeconds} seconds; ${Math.round(asked)} seconds is outside that range. Choose a length in range. Nothing was charged.`);
   const t = findTemplate(!input.template || input.template === FILM_TEMPLATE_ID ? filmTemplateFor(asked) : input.template);
   if (!t) throw new JobError(`There is no template called "${input.template}". Call kleo_list_templates for the valid ids. Nothing was charged.`);
-  // One product (13 September 2026): the film. The old templates stay readable for the rows made with them and
-  // for the planner's families, but a new video is not made with them.
-  if (!isPublicTemplate(t.id)) throw new JobError(`Kleo makes one kind of video now: a film, realistic or animated, 16:9 or 9:16 ("${FILM_TEMPLATE_ID}" up to 90 seconds, "${FILM_LONG_TEMPLATE_ID}" up to 300). Omit the template and say the length. Nothing was charged.`);
+  // One template, two products (13 and 15 September 2026): the film, and the animatic of the same storyboard. The old
+  // templates stay readable for the rows made with them and for the planner's families, but a new video is not made with them.
+  if (!isPublicTemplate(t.id)) throw new JobError(`Kleo has one template, "${FILM_TEMPLATE_ID}" (realistic or animated, 16:9 or 9:16, 15 to 300 seconds; "${FILM_LONG_TEMPLATE_ID}" is the same over 90), in two products: the film and, with product: "animatic", the animatic (${plural(ANIMATIC_CREDITS, "credit")}, up to ${ANIMATIC_MAX_S} seconds). Omit the template and say the length. Nothing was charged.`);
   const format = (input.format ?? t.formats[0]) as Format;
   if (!t.formats.includes(format))
     throw new JobError(`The "${t.name}" template only makes ${formatWords(t.formats[0])}, not ${formatWords(format)}. Pick ${t.formats[0]} or another template. Nothing was charged.`);
@@ -116,10 +116,14 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   if (input.product !== undefined && !(PRODUCTS as readonly string[]).includes(input.product))
     throw new JobError(`Kleo makes two things: a "film" (every shot filmed) and an "animatic" (the same frames with the camera moving over them, ${plural(ANIMATIC_CREDITS, "credit")} flat). Pass product: "film" or "animatic", or omit it for the film. Nothing was charged.`);
   const product: Product = input.product === "animatic" ? "animatic" : "film";
+  const paid = await hasPaid(env, user.id);
+  // Every way out named below is one THIS account can take: an animatic is offered with its length cap when the film
+  // asked is longer than it, and "order the film" only to an account the film is open to.
+  const animaticWayOut = `call again with product: "animatic"${duration > ANIMATIC_MAX_S ? ` and a length of at most ${ANIMATIC_MAX_S} seconds` : ""} (${plural(ANIMATIC_CREDITS, "credit")} flat)`;
   if (product === "animatic" && duration > ANIMATIC_MAX_S)
-    throw new JobError(`An animatic is at most ${ANIMATIC_MAX_S} seconds long (${duration} asked): it is the preview of a film, not the film. Ask for ${ANIMATIC_MAX_S} seconds or less, or order the film itself. Nothing was charged.`);
-  if (product === "film" && !(await hasPaid(env, user.id)))
-    throw new JobError(`A film is made only for accounts that have bought a credit pack: its shots are generated clips that Kleo pays for per second, and the credits on this account were not paid for (a gift, a bonus or a test balance). Two ways on: call again with product: "animatic" — the same storyboard as drawn frames with the camera moving over them, narrated, 4K 60 fps, ${plural(ANIMATIC_CREDITS, "credit")} for up to ${ANIMATIC_MAX_S} seconds — or buy any pack (from 5 EUR) on the account page and the film opens: ${await accountUrl(env, user.id)}. Nothing was charged.`);
+    throw new JobError(`An animatic is at most ${ANIMATIC_MAX_S} seconds long (${duration} asked): it is the preview of a film, not the film. Ask for ${ANIMATIC_MAX_S} seconds or less${paid ? ", or order the film itself" : `, or buy any pack (from 5 EUR) on the account page and order the film: ${await accountUrl(env, user.id)}`}. Nothing was charged.`);
+  if (product === "film" && !paid)
+    throw new JobError(`A film is made only for accounts that have bought a credit pack: its shots are generated clips that Kleo pays for per second, and the credits on this account were not paid for (a gift, a bonus or a test balance). Two ways on: ${animaticWayOut} — the same storyboard as drawn frames with the camera moving over them, narrated, 4K 60 fps, up to ${ANIMATIC_MAX_S} seconds — or buy any pack (from 5 EUR) on the account page and the film opens: ${await accountUrl(env, user.id)}. Nothing was charged.`);
   const prompt = input.prompt.trim();
   if (prompt.length < 8) throw new JobError("The description is too short (at least 8 characters). Say what the video is about: topic, angle, tone, anything that must appear on screen. Nothing was charged.");
   if (prompt.length > 4000) throw new JobError(`The description is too long (${prompt.length} characters, the maximum is 4000). Shorten it and call again. Nothing was charged.`);
@@ -181,7 +185,8 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     // how the finished video can be read back to the film it was meant to be, on either road into the queue.
     if (storyboard) storyboard = JSON.stringify({ ...(JSON.parse(storyboard) as Record<string, unknown>), treatment });
   }
-  // No guess and no cap any more: there is one look, and its price is its price.
+  // No guess and no cap any more: the look is named or read off the treatment/storyboard, and its price is its price
+  // (the product decides the flat animatic price, creditsForProduct).
   const styleGuessed = false;
 
   if (!input.storyboard && (await isFlagActive(env, "plan_pause")))
@@ -212,15 +217,18 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     const shots = storyboard ? pictureScenes(JSON.parse(storyboard)).length : null;
     const pre = await kiePreflight(env, duration, shots, MAX_PICTURES(duration));
     if (!pre.ok) {
-      await audit(env, user.id, null, "footage.preflight", { balance_usd: pre.balance_usd, planned_usd: pre.planned_usd, shots: pre.shots, model: pre.model, duration, owner_action: "top up kie.ai" });
-      throw new JobError(`Kleo cannot film right now: the account it buys the clips from is empty (it holds $${(pre.balance_usd ?? 0).toFixed(2)} and this film needs about $${pre.planned_usd.toFixed(2)} of clips), and the owner has been alerted. Nothing was charged. Meanwhile the animatic of the same storyboard can be made — call again with product: "animatic" (${plural(ANIMATIC_CREDITS, "credit")}, up to ${ANIMATIC_MAX_S} seconds) — or ask for the film again later.`);
+      await audit(env, user.id, null, "footage.preflight", { balance_usd: pre.balance_usd, planned_usd: pre.planned_usd, spent_today_usd: pre.spent_today_usd, budget_usd: pre.budget_usd, shots: pre.shots, model: pre.model, duration, owner_action: pre.reason === "budget" ? "raise DAILY_FOOTAGE_BUDGET_USD or wait for tomorrow" : "top up kie.ai" });
+      const why = pre.reason === "budget"
+        ? `today's filming budget is used up ($${pre.spent_today_usd.toFixed(2)} of $${pre.budget_usd.toFixed(2)} committed, and this film needs about $${pre.planned_usd.toFixed(2)} of clips)`
+        : `the account it buys the clips from is empty (it holds $${(pre.balance_usd ?? 0).toFixed(2)} and this film needs about $${pre.planned_usd.toFixed(2)} of clips)`;
+      throw new JobError(`Kleo cannot film right now: ${why}. The request has been logged for the operator. Nothing was charged. Meanwhile the animatic of the same storyboard can be made — ${animaticWayOut}, the drawn frames with the camera moving over them — or ask for the film again later.`);
     }
   }
   const credits = creditsForProduct(duration, style, product); // the product first, then the length and the look
   const jobId = rid("gt", 8);
   // The debit is one conditional UPDATE: it either takes the credits for this job or does nothing.
   if (!(await debitCredits(env, user.id, credits, jobId)))
-    throw new JobError(`Not enough credits: this ${kindOf(format)} costs ${plural(credits, "credit")} and you have ${plural(Math.max(0, user.credits), "credit")}. Nothing was charged. Your account and how to get more: ${await accountUrl(env, user.id)}`);
+    throw new JobError(`Not enough credits: this ${product === "animatic" ? "animatic" : kindOf(format)} costs ${plural(credits, "credit")} and you have ${plural(Math.max(0, user.credits), "credit")}. Nothing was charged.${product === "film" && user.credits >= ANIMATIC_CREDITS ? ` The animatic of the same storyboard costs ${plural(ANIMATIC_CREDITS, "credit")}: ${animaticWayOut}.` : ""} Your account and how to get more: ${await accountUrl(env, user.id)}`);
 
   const params: JobParams = { duration_s: duration, format, language, voice, style, ...(product === "animatic" ? { product } : {}), ...(styleGuessed ? { style_guessed: true } : {}), ...(cappedFrom ? { style_capped_from: cappedFrom } : {}), ...(treatment ? { treatment } : {}) };
   const job: Job = {
@@ -311,6 +319,7 @@ export function jobView(job: Job) {
     format: p.format,
     duration_s: p.duration_s,
     style: p.style ?? null,
+    product: productOf(p), // "film" or "animatic" (15 September): the finished video is called by what it is
     track: job.track,
     percent: job.percent,
     eta_min: job.state === "done" || job.state === "failed" || job.state === "cancelled" ? 0 : job.eta_min,

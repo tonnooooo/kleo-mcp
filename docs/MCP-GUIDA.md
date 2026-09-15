@@ -11,7 +11,7 @@ La tua azienda quindi non vende un'app: vende un indirizzo. Tutta l'interfaccia 
 ## 2. Cosa succede quando Cristiano incolla l'indirizzo
 
 1. Il client chiama l'indirizzo e trova `/.well-known/oauth-protected-resource`, che dice "per usarmi serve un token, l'accesso lo gestisce questo authorization server".
-2. Il client si registra come applicazione presso Kleo (in automatico, standard OAuth 2.1) e apre nel browser la **pagina di accesso di Kleo**. Cristiano non scrive niente: c'è un solo bottone, "Start free", e premerlo è il consenso. In quel momento nasce un account anonimo con 2 crediti, ricordato da un cookie firmato di quel browser. Se un domani collega Kleo anche a ChatGPT dallo stesso computer, ritrova lo stesso account e gli stessi crediti, non altri due gratis.
+2. Il client si registra come applicazione presso Kleo (in automatico, standard OAuth 2.1) e apre nel browser la **pagina di accesso di Kleo**. Cristiano non scrive niente: c'è un solo bottone, "Start free", e premerlo è il consenso. In quel momento nasce un account anonimo con 7 crediti (un animatic), ricordato da un cookie firmato di quel browser. Se un domani collega Kleo anche a ChatGPT dallo stesso computer, ritrova lo stesso account e gli stessi crediti, non altri sette gratis.
 3. Kleo rilascia un token. Da quel momento ogni richiesta del client porta quel token e Kleo sa che è Cristiano, quanti crediti ha, quanti video ha in corso.
 4. Il client chiama `tools/list` e mostra al modello i nove strumenti con le loro descrizioni.
 5. Cristiano scrive "fammi uno Short sui pirati". Il modello legge i template (`kleo_list_templates`), di solito chiede la guida (`kleo_storyboard_guide`) e scrive lui lo storyboard, poi chiama `kleo_create_video`. Kleo risponde in meno di un secondo con un numero di video (`job_id`) e una stima. Il modello lo dice a Cristiano: "avviato, ci vogliono circa 15 minuti".
@@ -38,28 +38,29 @@ Le descrizioni sono il manuale del modello: se sono scritte bene, il modello sce
 //   logline e decisioni, poi passa l'oggetto tale e quale (o modificato) a kleo_create_video come "treatment".
 //   Dettagli: docs/ADAPT-PROMPT.md
 
-// kleo_list_templates — "Lists the templates Kleo can render and the credits left on the account.
-//                        Call it when the user has not named a template, then pick the closest match."
+// kleo_list_templates — l'unico template ("film", look realistic o animation) e i due prodotti (film / animatic).
 { } // nessun parametro
-// → { templates: [{ id, name, formats, duration_s: {min, max, default}, credits, voices, description }], credits_available, pricing }
+// → { templates: [{ id, name, formats, duration_s: {min, max, default}, credits, animatic_credits, animatic_max_s, voices, description }], credits_available, pricing }
 
 // kleo_storyboard_guide — passo 2, consigliato. "Returns the storyboard format Kleo renders (styles, scene kinds,
 //                          beats, icons, effects, voices, limits, rules) with two examples, so you can write an
 //                          original storyboard and pass it to kleo_create_video. Call it once per conversation."
-{ "template": "viral-short", "duration_s": 45 } // entrambi facoltativi
-// → il testo della guida, più { words_target, credits }
+{ "duration_s": 45, "format": "9:16", "style": "animation" } // tutti facoltativi
+// → il testo della guida, più { words_target, credits (il film), animatic_credits, animatic_max_s }
 
 // kleo_create_video — passo 3. "Starts rendering a video or Short from a template and a prompt (plus your storyboard,
 //                      if you wrote one). Returns at once with the job_id, the estimated minutes and the credits used.
 //                      If the tool returns an error, nothing was charged."
 {
-  "template":     { "enum": ["story-documentary","top-10","viral-short","reddit-story","motivational",
-                             "explainer","weekly-news","cinematic-trailer","product-review","did-you-know"] },
+  "template":     { "type": "string" },                                      // facoltativo: l'unico e' "film" (si omette)
   "prompt":       { "type": "string", "minLength": 8, "maxLength": 4000 },   // il video, con le parole dell'utente
-  "duration_s":   { "type": "integer", "minimum": 15, "maximum": 900 },      // dentro il range del template
-  "format":       { "enum": ["16:9", "9:16"] },                              // default: primo formato del template
+  "duration_s":   { "type": "integer", "minimum": 15, "maximum": 300 },      // film 15-300 s; animatic 15-60 s
+  "format":       { "enum": ["16:9", "9:16"] },                              // obbligatorio: Kleo non sceglie il formato per l'utente
   "language":     { "enum": ["en", "it"], "default": "en" },
   "voice":        { "type": "string" },                                      // facoltativo, dalla lista dei template
+  "style":        { "enum": ["realistic", "animation"] },                    // il look; se manca decide il treatment
+  "product":      { "enum": ["film", "animatic"], "default": "film" },       // 15 set: il film solo con has_paid (kleo_account); l'animatic (5 crediti fissi, <=60 s, niente clip generate) per tutti
+  "treatment":    { "type": "object" },                                      // facoltativo: il treatment restituito da kleo_adapt_prompt
   "notify_email": { "type": "string", "format": "email" },                   // facoltativo (oggi l'email non parte: manca RESEND_API_KEY)
   "storyboard":   { "type": "object" },                                      // facoltativo: lo storyboard scritto dall'assistente, validato dal server
   "treatment":    { "type": "object" }                                       // facoltativo: l'oggetto restituito da kleo_adapt_prompt; il pianificatore scrive direction e scene sotto di lui

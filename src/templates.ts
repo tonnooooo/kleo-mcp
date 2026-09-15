@@ -289,7 +289,7 @@ export const TEMPLATES: Template[] = [
   // user's; the planner decides the scenes from it (see BRIEFS / FAMILIES: the "chaptered" language, which handles
   // both a thirty-second piece and five minutes).
   { id: "film", name: "Film", formats: ["16:9", "9:16"], minSeconds: 15, maxSeconds: 90, defaultSeconds: 30,
-    description: "A film, realistic or animated, under ninety seconds: a hook in the first two seconds, every shot generated as moving footage from its own frame, narrated, no captions, no music, 4K 60 fps. Say what it is about and how long; Kleo decides the shots.", voices: EN_IT,
+    description: "A film, realistic or animated, under ninety seconds: a hook in the first two seconds, every shot generated as moving footage from its own frame (the film) or that frame with a camera move over it (the animatic, 5 credits, up to 60 s), narrated, no captions, no music, 4K 60 fps. Say what it is about and how long; Kleo decides the shots.", voices: EN_IT,
     family: "short-hook" },
   { id: "film-long", name: "Film (long)", formats: ["16:9", "9:16"], minSeconds: 90, maxSeconds: 300, defaultSeconds: 120,
     description: "The same film in chapters, from a minute and a half to five minutes. Chosen on its own when the length asks for it.", voices: EN_IT,
@@ -568,16 +568,32 @@ export const filmedStoryboard = (kleo: string | null | undefined, style: string 
  * worker/keou/contract.py accepts it (0-3 hud elements).
  */
 export const BARE_LAYER = { accent: "#ffffff", subtitles: "none", chapters: "none", hud: [] as never[] };
-/** The last touch on a storyboard before it is stored: an animatic takes no music bed and a layer that draws nothing when it has none. */
+/**
+ * The camera an animatic gives a shot the grammar LOCKED OFF. `static_forced` (hands at work, a crowd, signage, a
+ * mechanism) resolves to `static_hold` at strength 0 because those subjects come apart when a VIDEO model moves the
+ * camera — a rule about the clip generator, which an animatic never calls. Over a still, a locked-off camera is a
+ * frozen frame: the engine's QA (worker/keou/qa.py) refuses a second of identical frames and the whole render dies.
+ * So the animatic drifts instead: a push in at ANIMATIC_DRIFT of the engine's 10 % zoom — about 3 % over the shot,
+ * enough for every sampled frame to differ, not enough to read as a move.
+ */
+export const ANIMATIC_DRIFT = { motion: "push_in", strength: 0.35 } as const;
+/** The last touch on a storyboard before it is stored: an animatic takes no music bed, a layer that draws nothing when it has none, and no locked-off shot. */
 export function finishForProduct<T extends Record<string, unknown>>(sb: T, product: Product | string | null | undefined): T {
   if (product !== "animatic") return sb;
   const c = sb as Record<string, unknown>;
   c.music = "none";
   if (!(c.graphics && typeof c.graphics === "object" && !Array.isArray(c.graphics))) c.graphics = { ...BARE_LAYER, hud: [] };
+  if (Array.isArray(c.scenes)) for (const s of c.scenes as Record<string, unknown>[]) {
+    if (!s || !Array.isArray(s.shots)) continue;
+    for (const sh of s.shots as Record<string, unknown>[]) {
+      if (sh && sh.motion === "static_hold") { sh.motion = ANIMATIC_DRIFT.motion; sh.strength = ANIMATIC_DRIFT.strength; }
+    }
+  }
   return sb;
 }
-/** Minutes an animatic takes on the pictures card: the stills, the voice pass and the 4K 60 fps render, no clip to wait for. */
-export const animaticEtaFor = (seconds: number): number => Math.max(8, Math.round(6 + seconds / 10));
+/** Minutes an animatic takes on the pictures card: the still model's download and its frames (the two XL checkpoints
+ *  are not baked in the image), the voice pass and the 4K 60 fps render — no clip to wait for. ~13 min at 15 s, ~20 at 60. */
+export const animaticEtaFor = (seconds: number): number => Math.max(12, Math.round(10 + seconds / 6));
 
 /**
  * THE SIGN-UP GIFT, 14 September 2026: FREE_CREDITS (wrangler.jsonc, 7) credits on a brand-new account — and the

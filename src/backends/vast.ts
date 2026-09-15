@@ -249,7 +249,7 @@ export const vastBackend: RenderBackend = {
     const drawn = !filmed && isVideoStyle(styleOfJob(job));
     const offers = await searchOffers(env, styleOfJob(job), job.phase, footage, drawn);
     if (!offers.length) {
-      const need = machineFor(styleOfJob(job));
+      const { need } = profileFor(env, styleOfJob(job), job.phase, footage, drawn); // the card that was really searched for
       throw new Error(`no Vast.ai offer matches the filters: ${need.minVramGb} GB of VRAM, compute ${need.minComputeCap / 100}, at most $${Math.max(num(env.VAST_MAX_DPH, 0.4), need.maxDph)}/h`); // the ceiling really used: the audit of 12 September said "$0.4" while the search ran at 1.00, and the number was chased for nothing
     }
     // A retry must move HOST, which is the whole point of retrying a job that was still downloading after 23 minutes.
@@ -293,7 +293,7 @@ export const vastBackend: RenderBackend = {
             // The generator and, when its weights are gated, the token that fetches them. HF_TOKEN is a Cloudflare
             // secret: it reaches the box's environment and nothing else — not the audit, not the job row.
             ...(env.KLEO_VIDEO_MODEL ? { KLEO_VIDEO_MODEL: env.KLEO_VIDEO_MODEL } : {}),
-            ...(env.HF_TOKEN && videoModelIsGated(env.KLEO_VIDEO_MODEL) && job.phase !== "finish" && footage !== "kie" ? { HF_TOKEN: env.HF_TOKEN } : {}),
+            ...(env.HF_TOKEN && videoModelIsGated(env.KLEO_VIDEO_MODEL) && job.phase !== "finish" && footage !== "kie" && !drawn ? { HF_TOKEN: env.HF_TOKEN } : {}),
             // Where the clips come from. "kie": the box uploads the frames and waits for the server (footage.ts);
             // the kie.ai key itself never travels. The model name is for the log only.
             KLEO_FOOTAGE_BACKEND: footage,

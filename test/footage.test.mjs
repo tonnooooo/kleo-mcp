@@ -323,16 +323,23 @@ test("the pre-flight prices a film before any card is rented: the storyboard's s
   // 0.07 $. The three audit rows all said planned 3.90 $ for ten 6-second clips on MiniMax H3 2K — this is that number.
   const env = await newEnv({ KIE_MAX_VIDEO_S: "0", KLEO_FOOTAGE_MODEL: "minimax-h3" });
   const ten = m.plannedFilmUsd(env, null, 60, 10, 24);
-  assert.deepEqual(ten, { usd: 3.9, shots: 10, model: "minimax-h3" }, "10 shots of 6 s at 0.065 $/s");
+  assert.deepEqual(ten, { usd: Math.round(3.9 * m.PREFLIGHT_MARGIN * 1000) / 1000, shots: 10, model: "minimax-h3" }, "10 shots of 6 s at 0.065 $/s = 3.90 $ on the box, kept on the upper side by the margin");
+  assert.equal(m.PREFLIGHT_MARGIN, 1.2);
   const guess = m.plannedFilmUsd(env, null, 60, null, 24);
   assert.equal(guess.shots, 20, "no storyboard: about a shot every three seconds");
   assert.equal(m.plannedFilmUsd(env, null, 15, null, 24).shots, 6, "never fewer than six");
   assert.equal(m.plannedFilmUsd(env, null, 300, null, 48).shots, 48, "never more than the storyboard cap");
   const empty = fakeKie({ credits: 14 }); globalThis.fetch = empty.fetch; // 14 credits = 0.07 $, the balance of that morning
   const pre = await m.kiePreflight(env, 60, 10, 24);
-  assert.deepEqual(pre, { ok: false, balance_usd: 0.07, planned_usd: 3.9, shots: 10, model: "minimax-h3" });
+  assert.deepEqual(pre, { ok: false, reason: "balance", balance_usd: 0.07, planned_usd: 4.68, spent_today_usd: 0, budget_usd: 5, shots: 10, model: "minimax-h3" });
   const rich = fakeKie({ credits: 1000 }); globalThis.fetch = rich.fetch; // 5 $
   assert.equal((await m.kiePreflight(env, 60, 10, 24)).ok, true);
+  // today's ceiling is the first gate, and it needs no call to kie.ai
+  const tight = { ...env, DAILY_FOOTAGE_BUDGET_USD: "4" };
+  const overBudget = await m.kiePreflight(tight, 60, 10, 24);
+  assert.equal(overBudget.ok, false);
+  assert.equal(overBudget.reason, "budget");
+  assert.equal(overBudget.balance_usd, null, "the balance was not even read");
   globalThis.fetch = async (u, i) => { if (String(u).endsWith("/api/v1/chat/credit")) throw new Error("ECONNRESET"); return rich.fetch(u, i); };
   const mute = await m.kiePreflight(env, 60, 10, 24);
   assert.equal(mute.ok, true, "kie.ai not answering is not a refusal");

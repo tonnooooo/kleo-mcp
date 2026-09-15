@@ -18,7 +18,7 @@ export const INTAKE: readonly IntakeItem[] = [
   { key: "subject", required: true, label: { en: "Subject", it: "Soggetto" },
     question: { en: "What is the video about, in one sentence?", it: "Di cosa parla il video, in una frase?" } },
   { key: "duration", required: true, label: { en: "Length", it: "Durata" },
-    question: { en: "How long should it be? (15 seconds to 5 minutes)", it: "Quanto deve durare? (da 15 secondi a 5 minuti)" } },
+    question: { en: "How long should it be? (15 seconds to 5 minutes for a film; an animatic is at most 60 seconds)", it: "Quanto deve durare? (da 15 secondi a 5 minuti per un film; un animatic dura al massimo 60 secondi)" } },
   { key: "format", required: true, label: { en: "Format", it: "Formato" },
     question: { en: "Where is it for: YouTube (landscape, 16:9) or a Short / TikTok / Reel (vertical, 9:16)?", it: "Per dove è: YouTube (orizzontale, 16:9) o Short / TikTok / Reel (verticale, 9:16)?" } },
   { key: "look", required: true, label: { en: "Look", it: "Look" },
