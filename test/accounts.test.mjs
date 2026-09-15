@@ -318,7 +318,7 @@ test("page: one button and nothing to fill in; a returning browser is greeted wi
   const first = await openPage(env);
   const fresh = await first.text();
   assert.match(fresh, /Start free - 7 credits included/);
-  assert.match(fresh, /1 credit buys 2 seconds of film, 10 credits minimum: 15 credits for a 30-second Short, 30 for a minute, 150 for five minutes\. You start with 7 credits: not yet a film \(the shortest is 10\); the 5 EUR pack takes you to 17, a 30-second Short\./, "the page quotes the tariff and says plainly that the gift alone buys no film, both computed");
+  assert.match(fresh, /1 credit buys 2 seconds of film, 10 credits minimum: 15 credits for a 30-second Short, 30 for a minute, 150 for five minutes; an animatic of the same storyboard \([^)]*\) costs 5 credits flat\. You start with 7 credits: 1 animatic on the house \(5 credits each, up to 60 seconds[^)]*\)\. A film — every shot a generated clip — starts at 10 credits and is made for accounts that have bought a pack: the 5 EUR pack takes you to 17, a 20-second film or a 30-second Short with what you have\./, "the page quotes the tariff, says the gift buys an animatic and that a film needs a pack, all computed");
   assert.match(fresh, /No email\. No password\. No card\. No invite code\./);
   assert.ok(!/type="email"/.test(fresh), "there is no email field any more");
   assert.ok(!/type="checkbox"/.test(fresh), "and no consent box: pressing the button is the consent");

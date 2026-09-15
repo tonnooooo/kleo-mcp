@@ -34,7 +34,7 @@ before(async () => {
     stdin: {
       contents: `export * from "./src/jobs.ts"; export * from "./src/orchestrator.ts"; export * from "./src/db.ts";
         export * from "./src/schema.ts"; export * from "./src/templates.ts";
-        export { vastBackend, listKleoInstances, vastStatus, GONE, jobLabel } from "./src/backends/vast.ts";`,
+        export { vastBackend, listKleoInstances, vastStatus, GONE, jobLabel, profileFor } from "./src/backends/vast.ts";`,
       resolveDir: ROOT, loader: "ts",
     },
     bundle: true, write: false, format: "esm", platform: "neutral", target: "es2022", logLevel: "silent",
@@ -834,4 +834,16 @@ test("an assistant's storyboard without a direction is refused by createJob, and
   await assert.rejects(() => short(env, u, { storyboard: sb }), /direction is required/,
     "the refusal names the missing block");
   assert.equal((await m.getUser(env, u.id)).credits, before, "and the user still has every credit");
+});
+
+test("an animatic rents the pictures card whatever the footage switch says: never the 80 GB video card for stills", () => {
+  const env = { KLEO_VIDEO_MODEL: "Lightricks/LTX-2.5", VAST_DISK_GB: "80" };
+  const film = m.profileFor(env, "realistic", null, "local");
+  assert.equal(film.need.minVramGb, 80, "a filmed realistic job on the local road wants the LTX card");
+  const kie = m.profileFor(env, "realistic", null, "kie");
+  assert.equal(kie.need.minVramGb, m.machineFor("cartoon").minVramGb, "on the kie road the box only draws frames");
+  const drawn = m.profileFor(env, "realistic", null, "local", true);
+  assert.deepEqual(drawn.need, m.machineFor("cartoon"), "an animatic is that same pictures job");
+  assert.equal(drawn.disk, 80, "and the ordinary disk, not the model's 150 GB");
+  assert.equal(m.profileFor(env, "realistic", "finish", "local", true).need.minVramGb, 0, "the finish profile still wins over everything");
 });

@@ -19,7 +19,6 @@ import assert from "node:assert/strict";
 import { planFor, normalizeStoryboard, fixtureStoryboard } from "../src/storyboard.ts";
 import { STYLE_MACHINE, STYLE_CREDITS, VIDEO, isVideoStyle, machineFor, creditsFor } from "../src/templates.ts";
 import { validateStoryboard } from "../src/keou-contract.ts";
-import { profileFor } from "../src/backends/vast.ts";
 
 const KLEO_STYLES = ["cartoon", "realistic", "cyber", "stickman", "explainer"];
 
@@ -146,14 +145,3 @@ test("the animatic (15 September) is the same plan, drawn: no backdrop on either
   assert.equal(fixtureStoryboard(job("realistic")).backdrop, "video", "and the film still asks to be filmed");
 });
 
-test("an animatic rents the pictures card whatever the footage switch says: never the 80 GB video card for stills", () => {
-  const env = { KLEO_VIDEO_MODEL: "Lightricks/LTX-2.5", VAST_DISK_GB: "80" };
-  const film = profileFor(env, "realistic", null, "local");
-  assert.equal(film.need.minVramGb, 80, "a filmed realistic job on the local road wants the LTX card");
-  const kie = profileFor(env, "realistic", null, "kie");
-  assert.equal(kie.need.minVramGb, machineFor("cartoon").minVramGb, "on the kie road the box only draws frames");
-  const drawn = profileFor(env, "realistic", null, "local", true);
-  assert.deepEqual(drawn.need, machineFor("cartoon"), "an animatic is that same pictures job");
-  assert.equal(drawn.disk, 80, "and the ordinary disk, not the model's 150 GB");
-  assert.equal(profileFor(env, "realistic", "finish", "local", true).need.minVramGb, 0, "the finish profile still wins over everything");
-});
