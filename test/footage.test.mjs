@@ -341,14 +341,18 @@ test("the pre-flight prices a film before any card is rented: the storyboard's s
   const env = await newEnv({ KIE_MAX_VIDEO_S: "0", KLEO_FOOTAGE_MODEL: "minimax-h3" });
   const ten = m.plannedFilmUsd(env, null, 60, 10, 24);
   assert.deepEqual(ten, { usd: Math.round(3.9 * m.PREFLIGHT_MARGIN * 1000) / 1000, shots: 10, model: "minimax-h3" }, "10 shots of 6 s at 0.065 $/s = 3.90 $ on the box, kept on the upper side by the margin");
-  assert.equal(m.PREFLIGHT_MARGIN, 1.2);
+  assert.equal(m.PREFLIGHT_MARGIN, 1.25);
   const guess = m.plannedFilmUsd(env, null, 60, null, 24);
-  assert.equal(guess.shots, 20, "no storyboard: about a shot every three seconds");
+  assert.equal(guess.shots, 24, "no storyboard: the Short density, capped by the storyboard");
   assert.equal(m.plannedFilmUsd(env, null, 15, null, 24).shots, 6, "never fewer than six");
   assert.equal(m.plannedFilmUsd(env, null, 300, null, 48).shots, 48, "never more than the storyboard cap");
+  // an upper bound: never under the films the audit recorded (30 s Short = 15 × 4 s = 3.90 $; 15 s = 1.885 $; 60 s = 3.90 $)
+  assert.ok(m.plannedFilmUsd(env, null, 30, null, 24).usd >= 3.9, "a 30 s Short is not under-estimated");
+  assert.ok(m.plannedFilmUsd(env, null, 15, null, 24).usd >= 1.885, "nor a 15 s one");
+  assert.ok(m.plannedFilmUsd(env, null, 60, null, 24).usd >= 3.9, "nor a 60 s film");
   const empty = fakeKie({ credits: 14 }); globalThis.fetch = empty.fetch; // 14 credits = 0.07 $, the balance of that morning
   const pre = await m.kiePreflight(env, 60, 10, 24);
-  assert.deepEqual(pre, { ok: false, reason: "balance", balance_usd: 0.07, planned_usd: 4.68, spent_today_usd: 0, budget_usd: 5, shots: 10, model: "minimax-h3" });
+  assert.deepEqual(pre, { ok: false, reason: "balance", balance_usd: 0.07, planned_usd: 4.875, spent_today_usd: 0, budget_usd: 5, shots: 10, model: "minimax-h3" });
   const rich = fakeKie({ credits: 1000 }); globalThis.fetch = rich.fetch; // 5 $
   assert.equal((await m.kiePreflight(env, 60, 10, 24)).ok, true);
   // today's ceiling is the first gate, and it needs no call to kie.ai

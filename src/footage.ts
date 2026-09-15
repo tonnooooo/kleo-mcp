@@ -137,24 +137,24 @@ export function clipCostUsd(spec: KieModel, clipSeconds: number): number {
 }
 
 /**
- * What a film of `seconds` will cost in clips BEFORE anything exists of it: the shots the storyboard names when the
- * caller wrote one (each clip covers duration/shots seconds), else the planner's usual density — about a shot every
- * three seconds, never fewer than six, never more than the storyboard cap. Read off the same model table and the same
- * clipSecondsFor/clipCostUsd as the order itself, so the two figures can only differ by what the voice pass does to
- * the cut times. On 15 September four films rented a card, drew their frames and voiced their script before learning
- * kie.ai held 0.07 $: this is the number that lets createJob say so first.
+ * What a film of `seconds` will cost in clips BEFORE anything exists of it — an UPPER bound, on purpose. The shots
+ * are the storyboard's when the caller wrote one, else the planner's Short density (a shot every PREFLIGHT_SHOT_S,
+ * never fewer than six, never more than the storyboard cap: the audited 30 s Short was 15 shots, a 60 s film 10);
+ * each clip covers the average shot through the same clipSecondsFor/clipCostUsd as the order itself, and the total
+ * carries PREFLIGHT_MARGIN because the voice decides the real cut times and some shots are billed a whole second
+ * more (the 15 s film of 15 September: average 1.82 $, order 1.885 $). A pre-flight that passes a film the box then
+ * cannot pay for is the rental this exists to prevent; one that refuses a marginal balance costs nothing, and the
+ * exact gate is still requestFootage on the box. Four films rented a card, drew their frames and voiced their
+ * script on 15 September before learning kie.ai held 0.07 $: this is the number that lets createJob say so first.
  */
 export function plannedFilmUsd(env: Env, cfg: FootageOverride | null, seconds: number, shots: number | null, maxShots: number): { usd: number; shots: number; model: string } {
   const { name, spec } = kieModelFor(env, cfg);
-  const n = shots && shots > 0 ? shots : Math.min(maxShots, Math.max(6, Math.round(seconds / 3)));
-  // Each clip covers the average shot; on the box the voice decides the real cut times, so some shots run longer
-  // than the average and are billed a whole second more (the 15 s film of 15 September: estimate 1.82 $, order
-  // 1.885 $). The margin below keeps the estimate on the upper side: a pre-flight that passes a film the box then
-  // cannot pay for is the rental this exists to prevent, while one that refuses a marginal balance costs nothing.
+  const n = shots && shots > 0 ? shots : Math.min(maxShots, Math.max(6, Math.ceil(seconds / PREFLIGHT_SHOT_S)));
   const each = clipCostUsd(spec, clipSecondsFor(spec, seconds / n));
   return { usd: Math.round(each * n * PREFLIGHT_MARGIN * 1000) / 1000, shots: n, model: name };
 }
-export const PREFLIGHT_MARGIN = 1.2;
+export const PREFLIGHT_SHOT_S = 2.5;
+export const PREFLIGHT_MARGIN = 1.25;
 
 /**
  * The pre-flight of a film: can kie.ai pay for it right now? `null` when kie.ai did not answer (a monitoring call
