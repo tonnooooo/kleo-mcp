@@ -10,7 +10,7 @@
  *   (the server draws the pictures, images.ts), no beats and no icons; cyber is the plain Keou look of the template;
  *   stickman is Keou's stickman (story scenes, 9:16 only). See docs/PICTURE-STYLE.md.
  */
-import Anthropic from "@anthropic-ai/sdk";
+import type Anthropic from "@anthropic-ai/sdk";
 import type { Env } from "./env";
 import type { Job, JobParams } from "./db";
 import { TEMPLATES, findTemplate, narrativeFor, sceneSplit, creditsFor, samePrice, filmedStoryboard, finishForProduct, productOf, type Family, type Product } from "./templates.ts";
@@ -1259,7 +1259,10 @@ export function setAnthropicFetch(f: typeof fetch | undefined): void { anthropic
 /** One planning call on the Anthropic API: the same messages, the answer read back as JSON, the usage in the same shape. */
 async function callClaude(env: Env, model: string, messages: { role: string; content: string }[], maxTokens: number, timeoutMs: number): Promise<{ raw: unknown; usage: Usage }> {
   if (!env.ANTHROPIC_API_KEY) throw new Error(`PLAN_MODEL ${model} needs the ANTHROPIC_API_KEY secret`);
-  const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, maxRetries: 1, timeout: timeoutMs, ...(anthropicFetch ? { fetch: anthropicFetch } : {}) });
+  // Loaded when first needed, not at module load: the test bundles (esbuild, platform neutral, a data: URL) keep
+  // the SDK external and never call this, and the Worker bundles it in like any other import.
+  const { default: SDK } = await import("@anthropic-ai/sdk");
+  const client = new SDK({ apiKey: env.ANTHROPIC_API_KEY, maxRetries: 1, timeout: timeoutMs, ...(anthropicFetch ? { fetch: anthropicFetch } : {}) });
   const system = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
   const turns: Anthropic.MessageParam[] = messages.filter((m) => m.role !== "system").map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content }));
   let res: Anthropic.Message;
@@ -1269,7 +1272,7 @@ async function callClaude(env: Env, model: string, messages: { role: string; con
     res = await client.messages.create({ model, max_tokens: Math.max(8000, maxTokens + 4000), ...(system ? { system } : {}), messages: turns, output_config: { effort: "medium" } });
   } catch (e) {
     // The status goes into the message so isTransientAiError() reads 429 / 5xx the way it reads Workers AI's.
-    if (e instanceof Anthropic.APIError) throw new Error(`anthropic ${e.status ?? ""}: ${e.message}`);
+    if (e instanceof SDK.APIError) throw new Error(`anthropic ${e.status ?? ""}: ${e.message}`);
     throw e;
   }
   if (res.stop_reason === "refusal") throw new Error(`anthropic refused the request (${res.stop_details?.category ?? "no category"})`);

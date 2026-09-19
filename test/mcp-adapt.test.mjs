@@ -41,7 +41,7 @@ let m;
 before(async () => {
   const r = await esbuild.build({
     stdin: { contents: `export { buildServer } from "./src/mcp.ts"; export { handleAdmin } from "./src/internal.ts"; export * from "./src/db.ts";`, resolveDir: ROOT, loader: "ts" },
-    bundle: true, write: false, format: "esm", platform: "node", target: "es2022", logLevel: "silent",
+    bundle: true, write: false, format: "esm", platform: "node", target: "es2022", logLevel: "silent", external: ["@anthropic-ai/sdk"],
   });
   m = await import("data:text/javascript;base64," + Buffer.from(r.outputFiles[0].text).toString("base64"));
 });

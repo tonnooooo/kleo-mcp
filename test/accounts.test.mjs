@@ -38,7 +38,7 @@ before(async () => {
     },
     // The OAuth library cannot be bundled outside the Workers runtime; see the stub's own comment.
     alias: { "@cloudflare/workers-oauth-provider": join(ROOT, "test/fixtures/oauth-provider-stub.mjs") },
-    bundle: true, write: false, format: "esm", platform: "neutral", target: "es2022", logLevel: "silent",
+    bundle: true, write: false, format: "esm", platform: "neutral", target: "es2022", logLevel: "silent", external: ["@anthropic-ai/sdk"], // the planner on Claude (20 September) loads the SDK only when called, which no test here does
   });
   m = await import("data:text/javascript;base64," + Buffer.from(r.outputFiles[0].text).toString("base64"));
 });
