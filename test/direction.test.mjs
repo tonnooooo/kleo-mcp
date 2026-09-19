@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor, notEnglish, foreignPictureFields, lightsPictures,
+  directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor, notEnglish, foreignPictureFields, lightsPictures, headNounIn,
   castFor, conformity, ACCENT_LIGHT, stillness, enliven, livingClause, ENLIVEN_CLAUSES, D,
 } from "../src/direction.ts";
 import { validateStoryboard, qualityProblems, directionOf, narrationOf, pictureScenes, CINEMA_ACCENTS, SHOTS_MIN_CINEMA, shotRangeText } from "../src/keou-contract.ts";
@@ -149,6 +149,30 @@ test("the animation look gets no light in its pictures, and the cast still leads
   assert.equal(lightsPictures("animation"), false);
   assert.equal(lightsPictures("realistic"), true);
   assert.equal(lightsPictures(null), true, "an unknown look keeps the light");
+});
+
+test("castFor: the cast name, its head noun, or — with one character — a pronoun, attaches the look", () => {
+  // Job gt_7f7aaac6 (19 September 2026): "She holds a spoon and mixes a bowl of batter" carried no look and was drawn
+  // as a brunette in a red apron, between eight pictures of the blonde pastry chef in lilac.
+  const chef = [{ name: "the pastry chef", look: "a thin woman with short blonde hair tied up, in a lilac apron" }];
+  const names = (cast, p) => castFor(cast, p).map((m) => m.name);
+  assert.deepEqual(names(chef, "The pastry chef decorates a cake"), ["the pastry chef"], "the whole name");
+  assert.deepEqual(names(chef, "The chef decorates a cake with colorful frosting"), ["the pastry chef"], "the head noun of the name");
+  assert.deepEqual(names(chef, "She holds a spoon and mixes a bowl of batter"), ["the pastry chef"], "a pronoun, when the film has one character");
+  assert.deepEqual(names(chef, "Children gather around her, happy and excited"), ["the pastry chef"]);
+  assert.deepEqual(names(chef, "A colorful party scene with balloons and streamers"), [], "nobody named, nobody drawn");
+  assert.deepEqual(names(chef, "The families of the children are whispering to each other"), [], "'their' and 'they' are not her");
+  assert.deepEqual(names(chef, "A chefs' hat on the counter"), [], "'chefs' is not the whole word 'chef'");
+  // Two characters: a pronoun could be either, so only a name attaches a look.
+  const two = [...chef, { name: "the baker", look: "a tall man in a white apron" }];
+  assert.deepEqual(names(two, "She holds a spoon"), []);
+  assert.deepEqual(names(two, "The baker and the pastry chef at the oven"), ["the pastry chef", "the baker"]);
+  assert.deepEqual(names(two, "The chef at the oven"), ["the pastry chef"]);
+  assert.equal(headNounIn("the man", "a man at the window"), false, "a three-letter head is never matched (manuscript)");
+  assert.equal(headNounIn("the captain", "the captain's chair"), true);
+  // pictureContext follows the same rule, so the worker (its mirror) and the server draw the same picture.
+  const d = { ...good(), cast: chef };
+  assert.ok(pictureContext(d, "She turns the cake out of its tin", null, "animation").startsWith("the pastry chef: a thin woman"));
 });
 
 test("notEnglish reads Italian and French off their function words; foreignPictureFields names what must be English", () => {

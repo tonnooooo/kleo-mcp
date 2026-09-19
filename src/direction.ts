@@ -418,7 +418,25 @@ export const ACCENT_LIGHT: Record<string, string> = {
  */
 export function castFor(cast: readonly CastMember[], imagePrompt: string): CastMember[] {
   const p = imagePrompt.toLowerCase();
-  return cast.filter((m) => m.name.trim() && p.includes(m.name.trim().toLowerCase()));
+  const named = cast.filter((m) => m.name.trim() && (p.includes(m.name.trim().toLowerCase()) || headNounIn(m.name, imagePrompt)));
+  if (named.length || cast.length !== 1) return named;
+  // A film with ONE recurring character: a picture that says "she", "her", "he" or "the character" shows that
+  // character, whatever the planner called her in that sentence. Measured on job gt_7f7aaac6 (19 September 2026):
+  // "She holds a spoon and mixes a bowl of batter" carried no look and came back as a brunette in a red apron,
+  // between eight pictures of the blonde pastry chef in lilac the direction described.
+  return PRONOUN_HINTS.test(imagePrompt) ? [cast[0]] : [];
+}
+/** The pronouns and generic words that can only mean the film's one character. Mirrored in worker/kleo_pictures.py. */
+export const PRONOUN_HINTS = /(?<![\p{L}])(?:she|her|hers|herself|he|him|his|himself|the character|the protagonist)(?![\p{L}])/iu;
+/**
+ * The head noun of a cast name — "chef" of "the pastry chef", "captain" of "the captain" — as a whole word of the
+ * prompt: a planner that writes "the chef decorates a cake" means the pastry chef of the cast. Four letters or more,
+ * so "the man" does not fire on "manuscript" and a two-letter tail matches nothing.
+ */
+export function headNounIn(name: string, imagePrompt: string): boolean {
+  const head = name.trim().toLowerCase().split(/\s+/).pop() ?? "";
+  if (head.length < 4) return false;
+  return new RegExp(`(?<![\\p{L}])${escapeRe(head)}(?![\\p{L}])`, "iu").test(imagePrompt);
 }
 
 /**

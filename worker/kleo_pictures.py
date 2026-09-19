@@ -172,6 +172,42 @@ def negative_for(direction, style="realistic"):
     return joined
 
 
+# The pronouns and generic words that can only mean the film's one character. Mirrors src/direction.ts PRONOUN_HINTS.
+PRONOUN_HINTS = re.compile(r"(?<![^\W\d_])(?:she|her|hers|herself|he|him|his|himself|the character|the protagonist)(?![^\W\d_])", re.IGNORECASE)
+
+
+def head_noun_in(name, image_prompt):
+    """The head noun of a cast name ("chef" of "the pastry chef") as a whole word of the prompt, four letters or more.
+    Mirrors src/direction.ts headNounIn()."""
+    parts = name.strip().lower().split()
+    head = parts[-1] if parts else ""
+    if len(head) < 4:
+        return False
+    return re.search(r"(?<![^\W\d_])" + re.escape(head) + r"(?![^\W\d_])", image_prompt, re.IGNORECASE) is not None
+
+
+def cast_in(direction, image_prompt):
+    """The cast members this picture shows, as [{"name", "look"}]: named in the prompt (whole name or its head noun),
+    or — when the film has ONE recurring character — meant by "she", "her", "he", "the character". Measured on job
+    gt_7f7aaac6 (19 September 2026): "She holds a spoon and mixes a bowl of batter" carried no look and came back as
+    a brunette in a red apron between eight pictures of the blonde pastry chef in lilac. Mirrors src/direction.ts castFor()."""
+    if not isinstance(direction, dict):
+        return []
+    lowered = str(image_prompt or "").lower()
+    cast = []
+    for m in direction.get("cast") or []:
+        if not isinstance(m, dict):
+            continue
+        name = " ".join(str(m.get("name") or "").split()).strip()
+        look = " ".join(str(m.get("look") or "").split()).strip()
+        if name and look:
+            cast.append({"name": name, "look": look})
+    named = [m for m in cast if m["name"].lower() in lowered or head_noun_in(m["name"], str(image_prompt or ""))]
+    if named or len(cast) != 1:
+        return named
+    return cast if PRONOUN_HINTS.search(str(image_prompt or "")) else []
+
+
 def cast_for(direction, image_prompt, budget=None):
     """The look of whichever cast members this picture names — "the pastry chef: a thin woman with short blonde hair
     tied up, lilac apron" — whole sentences inside `budget`, or "". It is what generate_pictures() puts FIRST."""
@@ -207,13 +243,8 @@ def context_for(direction, image_prompt, accent, budget=None, style=None):
             return                                      # whole or not at all
         bits.append(text)
         used += cost
-    for m in direction.get("cast") or []:
-        if not isinstance(m, dict):
-            continue
-        name = " ".join(str(m.get("name") or "").split()).strip()
-        look = " ".join(str(m.get("look") or "").split()).strip()
-        if name and look and name.lower() in lowered:
-            add(f"{name}: {look}")
+    for m in cast_in(direction, image_prompt):
+        add(f"{m['name']}: {m['look']}")
     if lights_pictures(style):
         add(ACCENT_LIGHT.get(accent))
     return ". ".join(bits)

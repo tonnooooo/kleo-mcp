@@ -630,6 +630,27 @@ class DirectionTest(unittest.TestCase):
         self.assertIn("red bandana", rich)
         self.assertTrue(rich.endswith(kp.STYLE_SUFFIX["cartoon"]), rich)
 
+    def test_one_character_is_meant_by_a_pronoun_or_the_head_noun_of_her_name(self):
+        """Job gt_7f7aaac6 (19 September 2026): "She holds a spoon and mixes a bowl of batter" carried no look and was
+        drawn as a brunette in a red apron, between eight pictures of the blonde pastry chef in lilac. Mirrors
+        src/direction.ts castFor(): the whole name, its head noun, or — with one character — a pronoun."""
+        chef = {"cast": [{"name": "the pastry chef", "look": "a thin woman with short blonde hair, lilac apron"}]}
+        names = lambda d, p: [m["name"] for m in kp.cast_in(d, p)]
+        self.assertEqual(names(chef, "The pastry chef decorates a cake"), ["the pastry chef"])
+        self.assertEqual(names(chef, "The chef decorates a cake with frosting"), ["the pastry chef"])
+        self.assertEqual(names(chef, "She holds a spoon and mixes a bowl of batter"), ["the pastry chef"])
+        self.assertEqual(names(chef, "Children gather around her, happy and excited"), ["the pastry chef"])
+        self.assertEqual(names(chef, "A colorful party scene with balloons and streamers"), [])
+        self.assertEqual(names(chef, "The families are whispering to each other"), [])
+        self.assertEqual(names(chef, "A chefs' hat on the counter"), [])
+        two = {"cast": chef["cast"] + [{"name": "the baker", "look": "a tall man in a white apron"}]}
+        self.assertEqual(names(two, "She holds a spoon"), [])
+        self.assertEqual(names(two, "The baker and the pastry chef at the oven"), ["the pastry chef", "the baker"])
+        self.assertFalse(kp.head_noun_in("the man", "a man at the window"))
+        self.assertTrue(kp.head_noun_in("the captain", "the captain's chair"))
+        self.assertTrue(kp.cast_for(chef, "She turns the cake out of its tin").startswith("the pastry chef: a thin woman"))
+        self.assertEqual(kp.cast_in(None, "she"), [])
+
     def test_the_cast_leads_the_prompt_and_the_light_follows_the_scene(self):
         """A face that changes is what a viewer notices across ten pictures, and what comes first weighs most: the
         cast's look goes in FRONT of the author's sentence (job gt_ad2musq5: three different pastry chefs), the light
