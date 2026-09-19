@@ -54,8 +54,8 @@ export type { Move, ShotKind } from "./shot-grammar.ts";
  * what must never appear, and the colour law. It is a leaf module on purpose: it imports nothing from here, so this
  * file can import it without a cycle, and it takes the accent list as an argument instead of reaching for it.
  */
-import { directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, type Direction, type Section } from "./direction.ts";
-export { directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor, conformity, GENRES, D as DIRECTION_LIMITS } from "./direction.ts";
+import { directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, notEnglish, foreignPictureFields, type Direction, type Section } from "./direction.ts";
+export { directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor, conformity, notEnglish, foreignPictureFields, lightsPictures, GENRES, D as DIRECTION_LIMITS } from "./direction.ts";
 export type { Direction, Section, CastMember, Genre, Conformity } from "./direction.ts";
 // The layer (src/graphics.ts): what is drawn over the film, decided per film by its treatment. The validator holds
 // a storyboard to the grammar exactly as it holds it to the direction; the engine's hud.js draws only that grammar.
@@ -255,9 +255,16 @@ export interface ValidateOptions {
  * chosen), and a caller that has to report on a rejected draft needs to see what the draft became. `ok` says whether
  * it may be rendered; `storyboard` and `normalised` are the same object under two names, honestly typed.
  */
+/**
+ * `warnings` are the problems that do NOT refuse the storyboard: the rhythm of the shots (src/shot-grammar.ts rules 3-6)
+ * and a picture prompt written in the narration's language instead of English. The planner feeds them back to the
+ * model once and then keeps the scenes; a client is told them and the job is created. They used to be errors, and a
+ * story about a pastry chef — hands at work in every shot, so every shot a forced static hold, so every pair a
+ * "STILL repeats" refusal no shot_kind could fix — died twice in planning on 19 September 2026, thirteen minutes each.
+ */
 export type ValidateResult =
-  | { ok: true; storyboard: Storyboard }
-  | { ok: false; errors: string[]; normalised: unknown };
+  | { ok: true; storyboard: Storyboard; warnings: string[] }
+  | { ok: false; errors: string[]; normalised: unknown; warnings: string[] };
 
 const MAX_ERRORS = 10;
 class TooMany extends Error {}
@@ -308,12 +315,15 @@ type SeqShot = PlanShot & { label: string | null };
 
 class Collector {
   errors: string[] = [];
+  /** Problems worth fixing that do not refuse the storyboard (ValidateResult.warnings). Never counted against `max`. */
+  warnings: string[] = [];
   private max: number;
   constructor(max: number) { this.max = max; }
   add(msg: string): void {
     this.errors.push(msg);
     if (this.errors.length >= this.max) throw new TooMany();
   }
+  warn(msg: string): void { this.warnings.push(msg); }
   /** contract.py text(): required non-blank string up to `maximum` chars. Returns true when valid. */
   text(value: unknown, label: string, maximum = 180): value is string {
     if (typeof value !== "string" || !value.trim() || value.length > maximum) {
@@ -549,7 +559,7 @@ export function anchorShots(scene: Record<string, unknown>): void {
  * receives never carries a scene-level image_prompt. It writes into the COPY validateStoryboard made, never into the
  * caller's own object.
  */
-function validateShots(s: Record<string, unknown>, label: string, kind: "cinema" | "closing", e: Collector, fmt: Format, seq: SeqShot[]): void {
+function validateShots(s: Record<string, unknown>, label: string, kind: "cinema" | "closing", e: Collector, fmt: Format, seq: SeqShot[], language = "en"): void {
   if ("beats" in s) e.add(`${label}: beats belong to the cinema style; the picture style cuts between "shots" instead`);
   if (typeof s.image_prompt === "string" && !("shots" in s)) { s.shots = [{ image_prompt: s.image_prompt.trim() }]; delete s.image_prompt; }
   else if ("image_prompt" in s) { e.add(`${label}: put the picture on a shot ("shots": [{"image_prompt": "…"}]), not on the scene`); delete s.image_prompt; }
@@ -602,6 +612,12 @@ function validateShots(s: Record<string, unknown>, label: string, kind: "cinema"
     }
     if ("strength" in sh) e.finite(sh.strength, SHOT_STRENGTH_MIN, SHOT_STRENGTH_MAX, `${sl} strength`);
     const prompt = typeof sh.image_prompt === "string" ? sh.image_prompt : "";
+    // THE PICTURE IS DESCRIBED IN ENGLISH WHATEVER THE FILM SPEAKS. Every model the GPU draws with reads its prompt
+    // through an English text encoder; an Italian sentence reaches it as noise, and "capelli biondi corti, grembiule
+    // lilla" was drawn as brown curls and a red apron (job gt_ad2musq5, 19 September 2026). A warning, not a refusal:
+    // the planner translates what the model would not (storyboard.ts), and a client is told and asked to rewrite.
+    if (prompt && language !== "en" && notEnglish(prompt))
+      e.warn(`${sl}: image_prompt must be in English (the picture model reads English only; only the narration is in ${language})`);
     // Repaired, never refused: the author asked for a picture of hands at work, and the answer to that is a locked
     // frame, not an error message. It has to happen BEFORE the duration window is read, because the repair changes the
     // kind and therefore how long the shot may run. Refusing here also made two such shots in a row unsatisfiable: the
@@ -643,10 +659,17 @@ function validateShots(s: Record<string, unknown>, label: string, kind: "cinema"
 
 /**
  * The sequencing rules. Every one of them lives in src/shot-grammar.ts as a pure function over a list of shots; this
- * is where their answers become job-blocking errors, relabelled ("shot 4" → "scene 2 shot 1") and finished with the
- * one thing a pure rule cannot know: what the model should change. They are errors and not warnings because a run of
- * shots that all push in is exactly the "images with zoom" the grammar exists to kill, and by the time a human sees
- * the video the GPU is already paid for.
+ * is where their answers become problems, relabelled ("shot 4" → "scene 2 shot 1") and finished with the one thing a
+ * pure rule cannot know: what the model should change.
+ *
+ * Only the rules that protect the RENDER are errors (`blocking`): a move that is a list, a shot that runs past the
+ * ceiling a generated clip melts at. The RHYTHM rules — alternating move classes, not repeating a scale, holding
+ * screen direction, spending the loud moves sparingly — are warnings: the planner repairs them itself
+ * (storyboard.ts assignShotKinds), feeds what is left back to the model once, and then keeps the scenes. They were
+ * errors until 19 September 2026, and refusing on them produced storyboards with no legal answer at all: two shots
+ * that both show hands at work are both forced to a static hold, the pair is then "move class STILL repeats", and the
+ * only fix on offer is to stop showing the hands the user asked for. A story about a pastry chef failed twice that
+ * way, four planning attempts, thirteen minutes of waiting, and the user's credits went back and forth.
  *
  * The grammar only judges the shots that speak it. A shot still written the old way (bare `motion`, or nothing at
  * all) is a gap: it breaks the run in two and the rules are applied to each side on its own, so a storyboard written
@@ -658,9 +681,9 @@ function validateShots(s: Record<string, unknown>, label: string, kind: "cinema"
 // Rhythm — alternating move classes, not repeating a scale, holding screen direction, spending the loud moves sparingly —
 // is the planner's job to get right (src/storyboard.ts repairs it) and not a reason to refuse a video someone is waiting
 // for. Refusing on rhythm also produced storyboards with no legal answer at all.
-const SEQUENCE_RULES: { check: (shots: PlanShot[]) => string[]; fix: (msg: string) => string }[] = [
-  { check: checkOneMovePerShot, fix: () => `name the shot once with shot_kind — one of ${sorted(SHOT_KINDS)} — and let the grammar pick the move` },
-  { check: checkDurations, fix: () => "shorten dur, or cut the shot in two" },
+const SEQUENCE_RULES: { check: (shots: PlanShot[]) => string[]; fix: (msg: string) => string; blocking?: boolean }[] = [
+  { blocking: true, check: checkOneMovePerShot, fix: () => `name the shot once with shot_kind — one of ${sorted(SHOT_KINDS)} — and let the grammar pick the move` },
+  { blocking: true, check: checkDurations, fix: () => "shorten dur, or cut the shot in two" },
   {
     check: checkLoudBudget,
     fix: (msg) => (/adjacent/.test(msg) ? "put a quiet shot between them" : `keep ${LOUD_MAX_PER_WINDOW} loud moves per ${secs(LOUD_WINDOW_S)} s and let the rest be quiet`),
@@ -686,7 +709,16 @@ function validateSequence(seq: SeqShot[], e: Collector): void {
     if (run.length < 1) continue;
     const labels = run.map((sh) => sh.label as string);
     const shots: PlanShot[] = run.map(({ label: _label, ...plan }) => plan);
-    for (const { check, fix } of SEQUENCE_RULES) for (const msg of check(shots)) e.add(`${relabel(msg, labels)} — ${fix(msg)}`);
+    // Two forced static holds in a row are the routing rule's own answer to two pictures of hands, a crowd, signage
+    // or a mechanism: nothing about the pair is a mistake, so no rule is quoted about it. (Rule messages start with
+    // the 1-based index of the SECOND shot of the pair, before relabel() renames them.)
+    const forcedPair = new Set<number>();
+    for (let i = 1; i < shots.length; i++) if (shots[i].kind === "static_forced" && shots[i - 1].kind === "static_forced") forcedPair.add(i + 1);
+    for (const { check, fix, blocking } of SEQUENCE_RULES) for (const msg of check(shots)) {
+      if (!blocking && forcedPair.has(Number(/^shot (\d+):/.exec(msg)?.[1]))) continue;
+      const text = `${relabel(msg, labels)} — ${fix(msg)}`;
+      if (blocking) e.add(text); else e.warn(text);
+    }
   }
 }
 
@@ -752,6 +784,11 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
   const direction = "direction" in c ? c.direction : undefined;
   if (direction !== undefined) {
     for (const p of directionProblems(direction, { accents: CINEMA_ACCENTS, scenes: scenes.length })) e.add(p);
+    // The fields of the direction that are PASTED INTO PICTURE PROMPTS — the world, the cast's names and looks, the
+    // objects, the forbidden list that becomes the negative prompt — are English whatever the narration speaks, for
+    // the reason the image_prompt check above gives. The story fields (subject, goal, must_keep…) stay in the film's language.
+    if (opts.language !== "en" && isObj(direction))
+      for (const f of foreignPictureFields(direction as Partial<Direction>)) e.warn(`direction.${f} must be in English: it is pasted into every picture prompt, and the picture model reads English only`);
     const sections = isObj(direction) && Array.isArray(direction.sections) ? (direction.sections as Section[]) : [];
     // The colour law is written in CINEMA_ACCENTS, which are the accents of the picture and cinema looks. The
     // stickman has its own smaller palette (STORY_ACCENTS), so a section accent must never be pressed onto it.
@@ -781,7 +818,7 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
     for (const f of FORBIDDEN_SCENE_FIELDS) if (f in s) e.add(`${label}: ${f} is not allowed in a storyboard${f === "image" ? " (describe the picture in image_prompt instead; Kleo generates it)" : ""}`);
     if (c.style === "picture") {
       if (kind !== "cinema" && kind !== "closing") e.add(`${label}: the picture style only draws cinema and closing scenes`);
-      else validateShots(s, label, kind, e, fmt, seq);
+      else validateShots(s, label, kind, e, fmt, seq, opts.language);
       // What this scene says to the layer. Refused against the film's own elements, never against a template.
       if (graphics) {
         for (const p of sceneHudProblems(graphics, s.hud, label)) e.add(p);
@@ -864,8 +901,8 @@ export function validateStoryboard(sb: unknown, opts: ValidateOptions): Validate
   const draft = clone(sb);
   const e = new Collector(opts.maxErrors ?? MAX_ERRORS);
   try { validateInner(draft, opts, e); if (!e.errors.length) for (const p of qualityProblems(draft)) e.add(p); } catch (err) { if (!(err instanceof TooMany)) throw err; }
-  if (e.errors.length) return { ok: false, errors: e.errors, normalised: draft };
-  return { ok: true, storyboard: draft as Storyboard };
+  if (e.errors.length) return { ok: false, errors: e.errors, normalised: draft, warnings: e.warnings };
+  return { ok: true, storyboard: draft as Storyboard, warnings: e.warnings };
 }
 
 /** A deep copy that survives a storyboard's shapes (plain objects, arrays, strings, numbers, booleans, null). */

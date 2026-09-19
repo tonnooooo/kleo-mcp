@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor,
+  directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor, notEnglish, foreignPictureFields, lightsPictures,
   castFor, conformity, ACCENT_LIGHT, stillness, enliven, livingClause, ENLIVEN_CLAUSES, D,
 } from "../src/direction.ts";
 import { validateStoryboard, qualityProblems, directionOf, narrationOf, pictureScenes, CINEMA_ACCENTS, SHOTS_MIN_CINEMA, shotRangeText } from "../src/keou-contract.ts";
@@ -135,6 +135,33 @@ test("pictureContext appends the cast look, the world and the section light — 
   assert.equal(pictureContext(null, "anything", "red"), "");
   assert.deepEqual(castFor(d.cast, "the captain looks out to sea").map((m) => m.name), ["the captain"]);
   assert.deepEqual(castFor(d.cast, "an empty deck"), []);
+});
+
+test("the animation look gets no light in its pictures, and the cast still leads", () => {
+  // On the turbo SDXL model "a single warm red light source" is a colour cast: a pastel story about a pastry chef
+  // opened on a red kitchen, a red apron and a red sauce (job gt_ad2musq5, 19 September 2026).
+  const d = good();
+  const drawn = pictureContext(d, "The captain walks along the shoreline at dusk", "red", "animation");
+  assert.ok(drawn.startsWith("the captain: a pirate captain with a red bandana"), drawn);
+  assert.ok(!drawn.includes("light source"), drawn);
+  assert.ok(pictureContext(d, "The captain walks along the shoreline at dusk", "red", "realistic").endsWith(ACCENT_LIGHT.red));
+  assert.ok(pictureContext(d, "The captain walks along the shoreline at dusk", "red", "cartoon").endsWith(ACCENT_LIGHT.red));
+  assert.equal(lightsPictures("animation"), false);
+  assert.equal(lightsPictures("realistic"), true);
+  assert.equal(lightsPictures(null), true, "an unknown look keeps the light");
+});
+
+test("notEnglish reads Italian and French off their function words; foreignPictureFields names what must be English", () => {
+  assert.equal(notEnglish("una dolce pasticcera magra con i capelli biondi corti e raccolti, con il grembiule lilla"), true);
+  assert.equal(notEnglish("le grand phare au bord de la mer, avec une lumière chaude"), true);
+  assert.equal(notEnglish("a thin pastry chef with short blonde hair tied up, in a lilac apron, in her warm kitchen"), false);
+  assert.equal(notEnglish("the captain"), false, "one name is not a sentence");
+  assert.equal(notEnglish("grembiule lilla"), false, "two nouns cannot be told apart; the direction pass translates them anyway");
+  assert.equal(notEnglish(""), false); assert.equal(notEnglish(null), false);
+  const d = { world: "Un paesino di campagna con case piccole e strade sterrate", cast: [{ name: "la pasticcera", look: "una donna magra con i capelli biondi corti e il grembiule lilla" }, { name: "the baker", look: "a tall man in a white apron" }], objects: ["cucina", "grembiule", "torta"], forbidden: ["uomini d'affari", "computer", "telefono"] };
+  assert.deepEqual(foreignPictureFields(d), ["world", "cast[0]"], "single words cannot be judged; sentences can");
+  assert.deepEqual(foreignPictureFields({ world: "A country village of small houses and dirt roads", cast: [{ name: "the pastry chef", look: "a thin woman with short blonde hair tied up and a lilac apron" }], objects: ["kitchen"], forbidden: ["phone"] }), []);
+  assert.deepEqual(foreignPictureFields(null), []);
 });
 
 test("negativeFor puts this film's exclusion list behind the product-wide one", () => {

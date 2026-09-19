@@ -1,5 +1,5 @@
 import type { Env } from "./env";
-import { type Job, type JobParams, type JobState, type User, OPEN_STATES, countOpenForUser, countJobsTodayForUser, addJobCost, debitCredits, refundCredits, insertJob, transitionJob, audit, getUserJob, listFiles, hasPaid } from "./db";
+import { type Job, type JobParams, type JobState, type User, OPEN_STATES, countOpenForUser, countJobsTodayForUser, addJobCost, debitCredits, refundCredits, insertJob, transitionJob, audit, getUserJob, listFiles, hasPaid, recentJobsForUser } from "./db";
 import { accountUrl } from "./accounts";
 import { findTemplate, affordableGuess, creditsFor, creditsForProduct, etaFor, animaticEtaFor, normalizeVoice, voiceSpellings, isVideoStyle, videoModelIsGated, isPublicTemplate, FILM_TEMPLATE_ID, FILM_LONG_TEMPLATE_ID, filmTemplateFor, ACTIVE_TEMPLATE, PRODUCTS, ANIMATIC_CREDITS, ANIMATIC_MAX_S, filmedStoryboard, finishForProduct, productOf, type Format, type Product } from "./templates";
 import { footageBackendFor, footageConfig, kiePreflight } from "./footage";
@@ -158,6 +158,11 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
       const n = r.errors.length;
       throw new JobError(`The storyboard has ${plural(n, "problem")} (nothing was charged). Fix ${n === 1 ? "it" : "them"} and call kleo_create_video again:\n- ${r.errors.join("\n- ")}`);
     }
+    // A picture described in the narration's language is a warning for the planner (it translates) and a refusal
+    // here: the assistant that wrote this storyboard can rewrite the prompts, and the pictures would be drawn wrong.
+    const english = r.warnings.filter((w) => /must be in English/.test(w));
+    if (english.length)
+      throw new JobError(`The storyboard has ${plural(english.length, "problem")} (nothing was charged): the picture model reads English only, so every image_prompt and the direction's world, cast names and looks, objects and forbidden terms are written in English — only the narration (voice, title, chapter) stays in ${language}. Fix ${english.length === 1 ? "it" : "them"} and call kleo_create_video again:\n- ${english.join("\n- ")}`);
     const overpaid = overPaidFor(r.storyboard, duration);
     if (overpaid.length) throw new JobError(overpaid.join("\n"));
     style = kleoStyleOf(r.storyboard);
@@ -184,6 +189,21 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     // With a client storyboard the planner never runs, so the treatment is attached to the storyboard here: it is
     // how the finished video can be read back to the film it was meant to be, on either road into the queue.
     if (storyboard) storyboard = JSON.stringify({ ...(JSON.parse(storyboard) as Record<string, unknown>), treatment });
+  }
+  // A RETRY KEEPS ITS TREATMENT. The assistant that wrote a treatment through kleo_adapt_prompt does not always hand
+  // it in again when it retries a video that failed: on 19 September 2026 the third attempt at one animatic arrived
+  // with no treatment, the planner wrote its own, flat one, and the user got a film she had never read the logline
+  // of. When the same account asks for the same words again within three hours, in the same length, language and
+  // look, the treatment of that earlier job is planned under — unless the caller brought one, or a storyboard.
+  let treatmentFrom: string | null = null;
+  if (!treatment && !storyboard) {
+    const since = Date.now() - 3 * 3600_000;
+    for (const prev of await recentJobsForUser(env, user.id, 8)) {
+      if (Date.parse(prev.created_at) < since || prev.prompt.trim() !== prompt) continue;
+      let pp: JobParams; try { pp = JSON.parse(prev.params) as JobParams; } catch { continue; }
+      if (!pp.treatment || pp.duration_s !== duration || pp.language !== language || pp.style !== look) continue;
+      treatment = pp.treatment; treatmentFrom = prev.id; break;
+    }
   }
   // No guess and no cap any more: the look is named or read off the treatment/storyboard, and its price is its price
   // (the product decides the flat animatic price, creditsForProduct).
@@ -247,7 +267,7 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     await audit(env, user.id, jobId, "job.create.error", String(e).slice(0, 500));
     throw new JobError("Kleo could not save the video request. Nothing was charged; please try again in a moment.");
   }
-  await audit(env, user.id, job.id, "job.created", { template: t.id, product, credits, duration, format, style, storyboard: storyboard ? "client" : "auto", treatment: treatment ? "client" : "auto" });
+  await audit(env, user.id, job.id, "job.created", { template: t.id, product, credits, duration, format, style, storyboard: storyboard ? "client" : "auto", treatment: treatment ? (treatmentFrom ? "reused" : "client") : "auto", ...(treatmentFrom ? { treatment_from: treatmentFrom } : {}) });
   return job;
 }
 

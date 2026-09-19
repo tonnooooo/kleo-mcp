@@ -7,11 +7,11 @@
 import { test } from "node:test";
 import { readFile } from "node:fs/promises";
 import assert from "node:assert/strict";
-import { sectionSkeleton, generateStoryboard, fixtureStoryboard, isTransientAiError, StoryboardError, styleFor, keouStyleFor, pickKleoStyle, planFor, normalizeStoryboard } from "../src/storyboard.ts";
+import { sectionSkeleton, generateStoryboard, fixtureStoryboard, isTransientAiError, StoryboardError, styleFor, keouStyleFor, pickKleoStyle, planFor, normalizeStoryboard, callModel, withTimeout, PlanBudgetError, TRANSLATOR_SYSTEM } from "../src/storyboard.ts";
 import { guideText, EXAMPLE_SCENES } from "../src/guide.ts";
 import { stillness } from "../src/direction.ts";
 import { TEMPLATE_IDS } from "../src/templates.ts";
-import { directionProblems, CINEMA_ACCENTS } from "../src/keou-contract.ts";
+import { directionProblems, CINEMA_ACCENTS, notEnglish } from "../src/keou-contract.ts";
 import { validateStoryboard, pictureScenes, quotesVoice, BEAT_ICONS, STORY_ACTS } from "../src/keou-contract.ts";
 import { assignShotKinds } from "../src/storyboard.ts";
 import { SHOT_KINDS, presetFor, moveClassOf, isLoud, needsStaticHold, LOUD_MAX_PER_WINDOW } from "../src/shot-grammar.ts";
@@ -111,7 +111,11 @@ function fakeEnv(respond, opts = {}) {
       // `opts.treatment`, the same way the direction is: no test here has to know the step exists.
       const kind = /TASK: write the TREATMENT/.test(user) ? "treatment"
         : /TASK: write the DIRECTION/.test(user) ? "direction"
-        : /TASK: plan the whole video/.test(user) ? "outline" : "chunk";
+        : /TASK: plan the whole video/.test(user) ? "outline"
+        // The English pass (19 September): the direction's picture fields, then the picture prompts, come back in
+        // English. Answered as the identity unless a test cares (`respond` sees the kind like any other).
+        : /TASK: return the same object with every value in natural English/.test(user) ? "english-fields"
+        : /TASK: return \{"prompts":/.test(user) ? "english-prompts" : "chunk";
       const key = kind === "chunk" ? `chunk-${chunkRange(user).join("-")}` : kind;
       const a = (attempts.get(key) ?? 0) + 1; attempts.set(key, a);
       const handler = kind === "treatment" ? (opts.treatment ?? (() => TREATMENT_FIXTURE(Number(/THE FILM: .*?, (\d+) seconds/.exec(user)?.[1] ?? 45))))
@@ -712,4 +716,109 @@ test("the animation look (14 September) is a picture project planned in its own 
   const plan = planFor(job("viral-short", 45, "9:16", "en", "A fox who learns to swim, told as an animated film", "animation"));
   assert.equal(plan.kleo, "animation"); assert.equal(plan.style, "picture");
   assert.equal(planFor(job("viral-short", 45, "9:16", "en", "A fox who learns to swim")).kleo, "realistic", "unnamed stays realistic");
+});
+
+
+/* ------------------------------------------------------------------ the pictures speak English (19 September 2026) */
+
+test("an Italian film: the direction's picture fields and every picture prompt come out in English, whatever the model wrote", async () => {
+  // Job gt_ad2musq5: an Italian animatic whose cast look ("capelli biondi corti e raccolti, grembiule lilla") and
+  // picture prompts reached the GPU in Italian, and came back as three different women in red aprons. The planner
+  // now asks for English, and then makes sure of it: one call for the direction's picture fields, one for the
+  // prompts the chunks still wrote in Italian.
+  const asked = { fields: 0, prompts: [] };
+  let chunkSystemSaidEnglish = 0;
+  const env = fakeEnv((kind, user, attempt, inputs) => {
+    if (kind === "outline") return outlineFor(user, true);
+    if (kind === "english-fields") {
+      asked.fields++;
+      const f = JSON.parse(/^\{.*\}$/m.exec(user)[0]);
+      assert.equal(f.cast[0].name, "la pasticcera", "the fields go out as the direction wrote them");
+      return { world: "A country village of small houses and dirt roads", cast: [{ name: "the pastry chef", look: "a thin woman with short blonde hair tied up, in a lilac apron" }], objects: f.objects.map((_, i) => ["kitchen", "cake", "apron"][i]), forbidden: f.forbidden.map((_, i) => ["phone", "computer", "logos"][i]) };
+    }
+    if (kind === "english-prompts") {
+      const { prompts } = JSON.parse(/^\{"prompts":.*\}$/m.exec(user)[0]);
+      asked.prompts.push(...prompts);
+      return { prompts: prompts.map((_, i) => `The pastry chef in her lilac apron setting a golden cake on the kitchen counter, picture ${i + 1}`) };
+    }
+    if (/IS WRITTEN IN ENGLISH/.test(inputs.messages[0].content)) chunkSystemSaidEnglish++;
+    assert.match(user, /WRITTEN IN ENGLISH \(only the voice is in the narration's language\)/, "the chunk task says it too");
+    const [from, to] = chunkRange(user);
+    const total = Number(/VIDEO OUTLINE \((\d+) scenes/.exec(user)[1]);
+    const scenes = [];
+    for (let i = from; i < to; i++) {
+      const closing = i === total - 1;
+      scenes.push({
+        id: `${String(i + 1).padStart(2, "0")}-parte`, kind: closing ? "closing" : "cinema", chapter: `0${i + 1} PARTE`,
+        accent: "cyan", title: `Parte ${i + 1}`, hl: "Parte", hold: 0.2,
+        voice: `Nella scena ${i + 1} la pasticcera prepara una torta dorata nella sua cucina calda e la porta ai bambini del paese.`,
+        shots: closing ? [{ image_prompt: "La pasticcera seduta a un lungo tavolo all'aperto, circondata dai bambini e dalle famiglie" }]
+          : [{ image_prompt: `La pasticcera con il grembiule lilla sistema una torta sul banco della cucina, scena ${i + 1}` }, { image_prompt: "I bambini del paese ricevono le torte sulla porta di casa, sorridendo" }],
+      });
+    }
+    return { scenes };
+  }, {
+    direction: (kind, user) => {
+      assert.match(user, /THE PICTURE FIELDS — "world", every cast "name" and "look", "objects" and "forbidden" — which are written in ENGLISH/);
+      const n = (user.match(/^ {2}\d+\. /gm) || []).length;
+      return {
+        style: "animation", why: "a tale wants drawing",
+        direction: {
+          subject: "la storia di una pasticcera che aiuta i bambini poveri", goal: "capire il valore della generosità", audience: "bambini e adulti", tone: "dolce e gentile",
+          must_keep: [], world: "Un paesino di campagna con case piccole e strade sterrate",
+          cast: [{ name: "la pasticcera", look: "una donna magra con i capelli biondi corti e raccolti e il grembiule lilla" }],
+          objects: ["cucina", "torta", "grembiule"], forbidden: ["telefono", "computer", "loghi"],
+          sections: Array.from({ length: n }, (_, i) => ({ name: `0${i + 1} DELLA STORIA`, means: "a cosa serve questa parte" })),
+        },
+      };
+    },
+  });
+  const r = await generateStoryboard(env, job("viral-short", 30, "9:16", "it", "Una dolce pasticcera magra con i capelli biondi corti e raccolti, con il grembiule lilla, prepara torte per i bambini poveri del paese.", "animation"));
+  const sb = r.storyboard;
+  const v = validateStoryboard(sb, { format: "9:16", language: "it" });
+  assert.deepEqual(v.ok ? [] : v.errors, []);
+  assert.deepEqual(v.warnings.filter((w) => /must be in English/.test(w)), [], v.warnings.join("\n"));
+  assert.equal(asked.fields, 1, "one call for the direction's picture fields");
+  assert.equal(sb.direction.world, "A country village of small houses and dirt roads");
+  assert.deepEqual(sb.direction.cast, [{ name: "the pastry chef", look: "a thin woman with short blonde hair tied up, in a lilac apron" }]);
+  assert.deepEqual(sb.direction.objects, ["kitchen", "cake", "apron"]);
+  assert.deepEqual(sb.direction.forbidden, ["phone", "computer", "logos"]);
+  assert.equal(sb.direction.subject, "la storia di una pasticcera che aiuta i bambini poveri", "the story fields stay in the film's language");
+  const prompts = sb.scenes.flatMap((s) => s.shots.map((sh) => sh.image_prompt));
+  assert.ok(prompts.length >= 5, `${prompts.length} pictures`);
+  for (const p of prompts) { assert.ok(!notEnglish(p), p); assert.match(p, /^The pastry chef in her lilac apron/); }
+  assert.equal(asked.prompts.length, prompts.length, "every Italian prompt went through the one translating call");
+  assert.ok(sb.scenes.every((s) => /pasticcera/.test(s.voice)), "the narration is untouched");
+  assert.ok(chunkSystemSaidEnglish >= 1, "the system prompt asked for English pictures");
+  assert.ok(!r.history.flat().some((m) => /english pass/.test(m)), JSON.stringify(r.history));
+  // Every shot still carries a resolved move: the translated prompts were routed again, nothing was left half-done.
+  for (const s of sb.scenes) for (const sh of s.shots) assert.ok(typeof sh.motion === "string" && sh.shot_kind, JSON.stringify(sh));
+});
+
+test("an English film never pays for the English pass", async () => {
+  let passes = 0;
+  const env = fakeEnv((kind, user) => {
+    if (kind === "english-fields" || kind === "english-prompts") { passes++; return {}; }
+    if (kind === "outline") return outlineFor(user, true);
+    const [from, to] = chunkRange(user);
+    const total = Number(/VIDEO OUTLINE \((\d+) scenes/.exec(user)[1]);
+    const scenes = [];
+    for (let i = from; i < to; i++) {
+      const closing = i === total - 1;
+      scenes.push({ id: `${String(i + 1).padStart(2, "0")}-part`, kind: closing ? "closing" : "cinema", chapter: `0${i + 1} PART`, accent: "cyan", title: `Part ${i + 1}`, hl: "Part", hold: 0.2,
+        voice: `Scene ${i + 1} of the story, told in one line with a concrete detail in it.`,
+        shots: closing ? [{ image_prompt: "An empty beach at noon" }] : [{ image_prompt: `A ship at anchor, scene ${i + 1}` }, { image_prompt: "The same bay from the cliff above" }] });
+    }
+    return { scenes };
+  });
+  await generateStoryboard(env, job("viral-short", 45, "9:16", "en", "The crew that sailed away"));
+  assert.equal(passes, 0);
+});
+
+test("a model call that never answers times out, and the timeout is not a quota error", async () => {
+  const env = { AI: { run: () => new Promise(() => {}) } };
+  await assert.rejects(callModel(env, "m", [{ role: "user", content: "x" }], {}, 10, 0.3, 40), /model call \(m\) timed out after 0 s/);
+  assert.equal(isTransientAiError(new Error("model call (m) timed out after 90 s")), false, "a stuck call retries the attempt, it does not pause planning for a quarter of an hour");
+  assert.equal(await withTimeout(Promise.resolve(7), 1000, "x"), 7);
+  assert.ok(new PlanBudgetError("x", ["y"]) instanceof StoryboardError, "the budget error is a planning error the orchestrator already knows how to fail");
 });

@@ -244,7 +244,7 @@ export function modelFor(env: Env, style: KleoStyle): string {
  */
 export function fullPrompt(style: KleoStyle, imagePrompt: string, direction: Direction | null = null, accent: string | null = null): string {
   const base = imagePrompt.trim().replace(/[.\s]+$/, "");
-  const ctx = pictureContext(direction, imagePrompt, accent);
+  const ctx = pictureContext(direction, imagePrompt, accent, pictureLook(style));
   return `${base}. ${ctx ? `${ctx.replace(/[.\s]+$/, "")}. ` : ""}${STYLE_SUFFIX[pictureLook(style)]}`;
 }
 export function modelInputs(model: string, style: KleoStyle, imagePrompt: string, format: string, seed: number, direction: Direction | null = null, accent: string | null = null): Record<string, unknown> {

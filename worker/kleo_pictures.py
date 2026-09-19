@@ -85,6 +85,17 @@ ACCENT_LIGHT = {
     "green": "a single cool green light source",
     "cyan": "a single cold cyan light source",
 }
+
+
+def lights_pictures(style):
+    """Whether the section's accent goes into the prompt as a light source. Not for the ANIMATION look: on the turbo
+    SDXL model that draws it (8 steps, guidance 2) "a single warm red light source" is not a light but a colour cast —
+    the first frame of a pastel story about a pastry chef came back as a red kitchen, a red apron and a red sauce
+    (job gt_ad2musq5, 19 September 2026), and the apron asked for was lilac. A drawn film keeps its colour law on the
+    layer; the photographic looks keep the light. Mirrors src/direction.ts lightsPictures()."""
+    return style != "animation"
+
+
 SCENE_ID = re.compile(r"[a-z0-9-]{1,56}")           # picture id "<sceneId>-s<n>" (contract.py slug ≤ 50 + shot suffix) → safe file name
 _pipelines = {}                                     # style → loaded pipeline (one job per instance, but a job may need one style only)
 
@@ -98,8 +109,14 @@ def seed_for(scene_id):
     return int.from_bytes(hashlib.sha256(str(scene_id).encode("utf-8")).digest()[:4], "big") & 0x7FFFFFFF
 
 
-def full_prompt(image_prompt, style, context=""):
-    """<scene prompt>, <direction context>, <style suffix>. SD1.5's CLIP encoder reads 77 tokens only.
+def full_prompt(image_prompt, style, context="", lead=""):
+    """<lead>, <scene prompt>, <direction context>, <style suffix>. SD1.5's CLIP encoder reads 77 tokens only.
+
+    THE LEAD IS THE CAST. What comes first weighs most for a diffusion model, and the one thing a viewer notices
+    across ten independently drawn pictures is a face that changes: a thin blonde pastry chef in a lilac apron was
+    drawn as three different women (job gt_ad2musq5, 19 September 2026) with her look appended AFTER the scene. So
+    generate_pictures() passes the look of whoever the picture shows as `lead`, in front of the author's sentence;
+    the light of the section (the `context`) stays behind it, where a light belongs.
 
     THE STYLE SUFFIX IS LAST, SO IT IS WHAT FALLS. An earlier version of this comment claimed the character budget
     protected it; it does not, because CLIP truncates from the tail and the tail is the suffix. Measured on the 23
@@ -128,8 +145,12 @@ def full_prompt(image_prompt, style, context=""):
     if len(ctx) > CONTEXT_MAX:
         ctx = ctx[:CONTEXT_MAX].rsplit(" ", 1)[0] if " " in ctx[:CONTEXT_MAX] else ""
     ctx = ctx.rstrip(",.;")
+    head = " ".join(str(lead or "").split()).strip()
+    if len(head) > CONTEXT_MAX:
+        head = head[:CONTEXT_MAX].rsplit(" ", 1)[0] if " " in head[:CONTEXT_MAX] else ""
+    head = head.rstrip(",.;")
     suffix = STYLE_SUFFIX[style]
-    return ", ".join([x for x in (base, ctx, suffix) if x])
+    return ", ".join([x for x in (head, base, ctx, suffix) if x])
 
 
 def negative_for(direction, style="realistic"):
@@ -151,9 +172,21 @@ def negative_for(direction, style="realistic"):
     return joined
 
 
-def context_for(direction, image_prompt, accent, budget=None):
+def cast_for(direction, image_prompt, budget=None):
+    """The look of whichever cast members this picture names — "the pastry chef: a thin woman with short blonde hair
+    tied up, lilac apron" — whole sentences inside `budget`, or "". It is what generate_pictures() puts FIRST."""
+    return context_for(direction, image_prompt, None, budget)
+
+
+def light_for(accent, style=None):
+    """The section's light as a prompt sentence, or "" — never for a look lights_pictures() excludes."""
+    return (ACCENT_LIGHT.get(accent) or "") if lights_pictures(style) else ""
+
+
+def context_for(direction, image_prompt, accent, budget=None, style=None):
     """The direction's extra sentences for ONE picture: the look of whichever cast members it names, then the light of
-    its section. Mirrors src/direction.ts pictureContext(), minus the world sentence the CLIP budget cannot afford.
+    its section (none for a look lights_pictures() excludes). Mirrors src/direction.ts pictureContext(), minus the
+    world sentence the CLIP budget cannot afford.
 
     `budget` is the room the prompt has for all of this. Each sentence goes in WHOLE or not at all: a real render on a
     rented GPU showed the old blind cut turning "a single cool green light source" into "a si", and four characters of
@@ -181,7 +214,8 @@ def context_for(direction, image_prompt, accent, budget=None):
         look = " ".join(str(m.get("look") or "").split()).strip()
         if name and look and name.lower() in lowered:
             add(f"{name}: {look}")
-    add(ACCENT_LIGHT.get(accent))
+    if lights_pictures(style):
+        add(ACCENT_LIGHT.get(accent))
     return ". ".join(bits)
 
 
@@ -363,7 +397,7 @@ def generate_pictures(scenes, style, fmt, out_dir, device=None, direction=None):
         t0 = time.time()
         try:
             gen = torch.Generator(device=device).manual_seed(seed)
-            prompt = full_prompt(s["image_prompt"], style, context_for(direction, s["image_prompt"], s.get("accent")))
+            prompt = full_prompt(s["image_prompt"], style, light_for(s.get("accent"), style), lead=cast_for(direction, s["image_prompt"]))
             result = pipe(prompt=prompt, negative_prompt=negative, width=width, height=height,
                           num_inference_steps=steps_for(style), guidance_scale=guidance_for(style), generator=gen)
             image = result.images[0]

@@ -26,7 +26,7 @@ import {
  * the world of the video was never written down, nothing said what must NOT appear, and no colour meant anything.
  */
 import {
-  directionProblems, missingFacts, sectionOfScene, enliven, screenTextProblems, D as DL,
+  directionProblems, missingFacts, sectionOfScene, enliven, screenTextProblems, notEnglish, D as DL,
   type Direction, type Section,
 } from "./direction.ts";
 // The shot grammar: the ten story kinds and the one preset table that turns a kind into a camera move.
@@ -99,6 +99,24 @@ export class StoryboardError extends Error {
   /** The last normalised (but invalid) storyboard, for debugging. */
   draft: unknown;
   constructor(message: string, errors: string[], draft?: unknown) { super(message); this.errors = errors; this.draft = draft; }
+}
+/**
+ * PLANNING IS BOUNDED. One model call may take MODEL_CALL_TIMEOUT_MS, one planning attempt PLAN_BUDGET_MS in all;
+ * past either the attempt fails like any other (the orchestrator retries it once) instead of hanging. On 19 September
+ * 2026 a 15-second animatic sat thirteen minutes in planning: its first attempt left no trace at all — no audit row,
+ * no error — which is what an invocation cut off from outside looks like, and the plan lock then held the second
+ * attempt back for the ten minutes of its own TTL. A normal attempt is 7 calls and about a minute (job gt_ad2musq5:
+ * 54 s); the budget is four times that, so it only ever cuts a call that is not answering.
+ */
+export const MODEL_CALL_TIMEOUT_MS = 90_000;
+export const PLAN_BUDGET_MS = 4 * 60_000;
+/** Thrown by the planner's own clock, never by the model: every stage lets it through instead of retrying on it. */
+export class PlanBudgetError extends StoryboardError {}
+/** The promise, or an error after `ms` — the timer is cleared either way, so a Worker never keeps a dead timer alive. */
+export function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const clock = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} timed out after ${Math.round(ms / 1000)} s`)), ms); });
+  return Promise.race([p, clock]).finally(() => { if (timer !== null) clearTimeout(timer); });
 }
 
 /* ------------------------------------------------------------------ shot grammar */
@@ -516,7 +534,7 @@ The video is a Keou project in the "${plan.style}" style (Kleo look: ${plan.kleo
 Allowed scene kinds for this style: ${kinds}. The LAST scene of the video must have kind "closing".
 ${rules}${pictures}
 Enums (use these exact strings, nothing else): ${enums}
-Never use scene kind "image", never reference files or URLs. Scene ids are unique lowercase slugs like "01-hook". Text limits are hard limits, count characters. Narration and all on-screen text are in ${lang}; enum values stay in English. Write the narration as spoken language: no emojis, no hashtags, no URLs, no stage directions. Do not invent quotes from real people.`;
+Never use scene kind "image", never reference files or URLs. Scene ids are unique lowercase slugs like "01-hook". Text limits are hard limits, count characters. Narration and all on-screen text are in ${lang}; enum values stay in English.${plan.style === "picture" ? ` EVERY "image_prompt" IS WRITTEN IN ENGLISH whatever the narration's language: the picture model reads English only, and a prompt in ${lang} is drawn wrong.` : ""} Write the narration as spoken language: no emojis, no hashtags, no URLs, no stage directions. Do not invent quotes from real people.`;
 }
 
 /**
@@ -626,7 +644,7 @@ RULES
   · explainer — the answer is ONE IDEA TAKEN APART until the viewer believes something different at the end: one mechanism, one object, one misconception, and nothing to list or compare. Hand-drawn line art where every spoken phrase has its own literal drawing. The words "explain", "why", "how" in a request do NOT choose it — most requests for cyber and realistic say "explain" too. What chooses it is that the answer is a single thing and the viewer's belief about it changes.
   · stickman — only if the user asked for a stickman by name.
   THE LINE BETWEEN cyber AND explainer IS THE ONE THAT MATTERS, and it is not the subject and not the verb. Ask: does the answer have PARTS? A flow from one named thing to the next, a breakdown into shares or percentages, several items, two things compared, a set of steps or numbers — that is cyber, whatever the request calls it. "Show how our data goes from the app to the servers to third parties" is cyber: three named parts and a flow between them. "Break down how much of a phone bill is the network" is cyber: shares of a whole. "The five costliest cyberattacks in history" is cyber: five items with figures. "Explain what a VPN is to my mother" is explainer: one thing, no parts, and she ends up believing something new. And a photographable subject with no mechanism in it — bread going mouldy, choosing a mattress, a place, a product — is realistic even when the request says "explain why". Decide which of these the request looks like before you decide anything else about it.
-- Everything you write here is in ${lang} except the enum values (style, accent), which stay in English.`;
+- Everything you write here is in ${lang} except the enum values (style, accent) and THE PICTURE FIELDS — "world", every cast "name" and "look", "objects" and "forbidden" — which are written in ENGLISH whatever the film speaks: they are pasted into every picture prompt, and the picture model reads English only ("la pasticcera" becomes "the pastry chef").`;
 }
 
 export const directionSchema = (): Record<string, unknown> => ({
@@ -768,7 +786,7 @@ function chunkPrompt(job: PlanJob, plan: Plan, outline: OutlineEntry[], from: nu
 VIDEO OUTLINE (${total} scenes; you write scenes ${from + 1}–${to} now):
 ${outline.map((e, i) => `${i + 1}. [${e.id}] ${e.kind} · ${e.label}${e.accent ? ` · ${e.accent}` : ""} — ${e.summary} (${e.words} words)`).join("\n")}
 ${prevVoice ? `The previous scene ended with this narration, continue naturally from it: "${prevVoice}"` : "This is the start of the video."}
-TASK: write scenes ${from + 1}–${to} in full, in order, keeping their ids, kinds${cin ? ", chapters (as \"chapter\") and accents" : stick ? " and titles" : sk ? " and accents" : " and eyebrows"} from the outline. Their narration together totals about ${words} words (${entries.map((e) => `${e.id}: ${e.words}`).join(", ")}). ${how}${pic ? ` Each "image_prompt" is one sentence, ≤${IMAGE_PROMPT_MAX} characters, with no text in the picture.` : ""}
+TASK: write scenes ${from + 1}–${to} in full, in order, keeping their ids, kinds${cin ? ", chapters (as \"chapter\") and accents" : stick ? " and titles" : sk ? " and accents" : " and eyebrows"} from the outline. Their narration together totals about ${words} words (${entries.map((e) => `${e.id}: ${e.words}`).join(", ")}). ${how}${pic ? ` Each "image_prompt" is one sentence, ≤${IMAGE_PROMPT_MAX} characters, with no text in the picture${plan.language !== "en" ? ", WRITTEN IN ENGLISH (only the voice is in the narration's language)" : ""}.` : ""}
 Return {"scenes":[…]} with exactly ${entries.length} scene objects and nothing else.`;
   if (feedback?.length) msg += `\n\nYOUR PREVIOUS ANSWER WAS REJECTED by the validator with these problems (scene numbers count within the scenes you returned, "beat n" counts inside that scene). Fix every one of them and return all ${entries.length} scenes again:\n- ${feedback.join("\n- ")}`;
   return msg;
@@ -1217,16 +1235,16 @@ function extractJson(text: string): unknown {
  * the scenes); the treatment call passes its own, because a treatment written at 0.3 is the same treatment every
  * time, and being different every time is half of what it is for.
  */
-export async function callModel(env: Env, model: string, messages: { role: string; content: string }[], schema: Record<string, unknown>, maxTokens: number, temperature = 0.3): Promise<{ raw: unknown; usage: Usage }> {
+export async function callModel(env: Env, model: string, messages: { role: string; content: string }[], schema: Record<string, unknown>, maxTokens: number, temperature = 0.3, timeoutMs = MODEL_CALL_TIMEOUT_MS): Promise<{ raw: unknown; usage: Usage }> {
   const ai = env.AI as unknown as AiRunner;
   const base = { messages, max_tokens: maxTokens, temperature };
   let res: unknown;
   try {
-    res = await ai.run(model, { ...base, response_format: { type: "json_schema", json_schema: schema } });
+    res = await withTimeout(ai.run(model, { ...base, response_format: { type: "json_schema", json_schema: schema } }), timeoutMs, `model call (${model})`);
   } catch (e) {
     // Models without JSON mode (or a schema the grammar engine rejects): plain call, lenient parse.
     if (!/json|schema|response_format|unsupported|invalid/i.test(String(e))) throw e;
-    res = await ai.run(model, base);
+    res = await withTimeout(ai.run(model, base), timeoutMs, `model call (${model})`);
   }
   const r = isObj(res) ? res : {};
   const usage = (isObj(r.usage) ? r.usage : {}) as Usage;
@@ -1245,6 +1263,56 @@ export async function callModel(env: Env, model: string, messages: { role: strin
   if (typeof raw === "string") raw = extractJson(raw);
   return { raw, usage };
 }
+
+/* ------------------------------------------------------------------ the English pass */
+
+/** The translator's own system prompt: a JSON object and nothing else, like every other stage. */
+export const TRANSLATOR_SYSTEM = `You translate the art direction of a film into plain English for an image generator. You output ONE JSON object and nothing else: no prose, no markdown fences, standard JSON with double-quoted keys and strings.`;
+
+/** The picture fields of a direction, to be returned in English with the same shape (same array lengths and order). */
+export function englishFieldsPrompt(d: Direction, language: string): string {
+  const fields = { world: d.world, cast: (d.cast ?? []).map((m) => ({ name: m.name, look: m.look })), objects: d.objects ?? [], forbidden: d.forbidden ?? [] };
+  return `These fields of a film's art direction are pasted into the prompts of an image generator that reads English only. They may be written in ${LANG_NAMES[language] ?? language} or already in English.
+${JSON.stringify(fields)}
+TASK: return the same object with every value in natural English: "world" as one sentence, each cast "name" as the English way of naming that character (e.g. "la pasticcera" → "the pastry chef"), each cast "look" as a plain visual description, "objects" and "forbidden" as English nouns. Keep a value that is already English exactly as it is. Keep every array the same length and order, add nothing, explain nothing.`;
+}
+export const englishFieldsSchema = (): Record<string, unknown> => ({
+  type: "object", additionalProperties: false,
+  properties: {
+    world: { type: "string" },
+    cast: { type: "array", items: { type: "object", additionalProperties: false, properties: { name: { type: "string" }, look: { type: "string" } }, required: ["name", "look"] } },
+    objects: { type: "array", items: { type: "string" } },
+    forbidden: { type: "array", items: { type: "string" } },
+  },
+  required: ["world", "cast", "objects", "forbidden"],
+});
+/**
+ * Writes the translated picture fields into the direction, field by field, keeping what it had wherever the answer
+ * is missing, empty, not English after all, or of another length. Exported for the test; pure apart from `d`.
+ */
+export function applyEnglishFields(d: Direction, raw: unknown): void {
+  if (!isObj(raw)) return;
+  const text = (v: unknown, max: number): string | null => (typeof v === "string" && v.trim() && !notEnglish(v) ? v.trim().slice(0, max) : null);
+  const list = (v: unknown, was: readonly string[], len: number): string[] | null => {
+    if (!Array.isArray(v) || v.length !== was.length) return null;
+    const out = v.map((x, i) => text(x, len) ?? was[i]);
+    return out;
+  };
+  const world = text(raw.world, DL.world); if (world) d.world = world;
+  const cast: unknown[] = Array.isArray(raw.cast) ? raw.cast : [];
+  if (Array.isArray(raw.cast) && cast.length === (d.cast ?? []).length)
+    d.cast = (d.cast ?? []).map((m, i) => { const c: Record<string, unknown> = isObj(cast[i]) ? (cast[i] as Record<string, unknown>) : {}; return { name: text(c.name, DL.cast.name) ?? m.name, look: text(c.look, DL.cast.look) ?? m.look }; });
+  const objects = list(raw.objects, d.objects ?? [], DL.objects.len); if (objects) d.objects = objects;
+  const forbidden = list(raw.forbidden, d.forbidden ?? [], DL.forbidden.len); if (forbidden) d.forbidden = forbidden;
+}
+
+/** The picture prompts a chunk wrote in the narration's language, to come back in English, one for one. */
+export function englishPromptsPrompt(prompts: readonly string[], language: string): string {
+  return `These are descriptions of pictures for an image generator that reads English only. They are written in ${LANG_NAMES[language] ?? language}.
+${JSON.stringify({ prompts })}
+TASK: return {"prompts":[…]} with each description translated into natural English, one sentence each, same meaning, same order, exactly ${prompts.length} strings. Keep a description that is already English exactly as it is. Translate the words, never the picture: add nothing, drop nothing, no text or letters in the picture.`;
+}
+export const englishPromptsSchema = (): Record<string, unknown> => ({ type: "object", additionalProperties: false, properties: { prompts: { type: "array", items: { type: "string" } } }, required: ["prompts"] });
 
 /* ------------------------------------------------------------------ fixture */
 
@@ -1431,9 +1499,12 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   // The system prompt is rebuilt whenever the plan changes, because the direction is allowed to change the look and
   // the system prompt is where the look's rules live: a cartoon storyboard written under the cyber rules is garbage.
   let system = systemPrompt(plan);
+  const deadline = t0 + PLAN_BUDGET_MS;
   const call = async (user: string, schema: Record<string, unknown>, maxTokens: number, over: { system?: string; temperature?: number; model?: string } = {}) => {
+    const left = deadline - Date.now();
+    if (left < 5_000) throw new PlanBudgetError(`planning ran past its ${PLAN_BUDGET_MS / 60_000}-minute budget after ${calls} model calls`, [`planning took longer than ${PLAN_BUDGET_MS / 60_000} minutes (${calls} model calls): the planning model is slow right now, and the attempt is retried`]);
     calls++;
-    const out = await callModel(env, over.model ?? model, [{ role: "system", content: over.system ?? system }, { role: "user", content: user }], schema, maxTokens, over.temperature);
+    const out = await callModel(env, over.model ?? model, [{ role: "system", content: over.system ?? system }, { role: "user", content: user }], schema, maxTokens, over.temperature, Math.min(MODEL_CALL_TIMEOUT_MS, left));
     usage.prompt_tokens! += out.usage.prompt_tokens ?? 0; usage.completion_tokens! += out.usage.completion_tokens ?? 0; usage.total_tokens! += out.usage.total_tokens ?? 0;
     return out.raw;
   };
@@ -1455,7 +1526,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     for (let attempt = 1; attempt <= 2 && !treatment; attempt++) {
       let raw: unknown;
       try { raw = clean(await call(treatmentPrompt({ prompt: job.prompt, duration_s: plan.duration, format: plan.format, language: plan.language, look: planLook }, v, feedback), treatmentSchema(), TREATMENT_MAX_TOKENS, { system: MASTER_PROMPT, temperature: TREATMENT_TEMPERATURE, model: env.TREATMENT_MODEL || undefined })); }
-      catch (e) { history.push([`treatment: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) { transient = e; break; } continue; }
+      catch (e) { if (e instanceof PlanBudgetError) throw e; history.push([`treatment: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) { transient = e; break; } continue; }
       // The second answer is held to the lenient rule: a short prose is asked to be fixed once, then kept.
       const t = repairTreatment(raw, plan.duration, v, plan.language, { lenient: attempt > 1, look: planLook });
       if (!t) { feedback = treatmentProblems(raw, plan.duration, plan.language, { look: planLook }); history.push([`treatment: rejected (${feedback.slice(0, 3).join("; ")})`]); continue; }
@@ -1483,7 +1554,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   for (let attempt = 1; attempt <= 2 && !direction; attempt++) {
     let raw: unknown;
     try { raw = clean(await call(directionPrompt(job, plan, treatment), directionSchema(), 900)); }
-    catch (e) { history.push([`direction: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) { transient = e; break; } continue; }
+    catch (e) { if (e instanceof PlanBudgetError) throw e; history.push([`direction: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) { transient = e; break; } continue; }
     const o = isObj(raw) ? raw : {};
     const d = repairDirection(o.direction, job.template, sceneGuess);
     if (!d) { history.push([`direction: rejected (${directionProblems(isObj(o.direction) ? o.direction : {}, { accents: CINEMA_ACCENTS, scenes: sceneGuess }).slice(0, 3).join("; ")})`]); continue; }
@@ -1508,6 +1579,17 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   }
   if (transient) throw transient;
 
+  // 0b. THE PICTURE FIELDS OF THE DIRECTION ARE ENGLISH. The world, the cast's names and looks, the objects and the
+  //     forbidden list are pasted into every picture prompt and the negative prompt, and every model the GPU draws
+  //     with reads English only: a look written in Italian was drawn as another woman (job gt_ad2musq5, 19 September
+  //     2026). The direction prompt asks for English; this call makes sure of it on every non-English film, at
+  //     temperature 0, and a field that comes back empty or too long keeps what it had. The cast NAME is translated
+  //     too, because it is what castFor() looks for inside the (English) picture prompts.
+  if (direction && plan.style === "picture" && plan.language !== "en") {
+    try { applyEnglishFields(direction, clean(await call(englishFieldsPrompt(direction, plan.language), englishFieldsSchema(), 700, { system: TRANSLATOR_SYSTEM, temperature: 0 }))); }
+    catch (e) { if (e instanceof PlanBudgetError) throw e; history.push([`english pass (direction): ${String(e).slice(0, 200)}`]); }
+  }
+
   // 1. Outline
   const n = sceneGuess;
   let outline: OutlineEntry[] = [];
@@ -1515,7 +1597,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   for (let attempt = 1; attempt <= 2 && !outline.length; attempt++) {
     let raw: unknown;
     try { raw = clean(await call(outlinePrompt(job, plan, n, direction, treatment), outlineSchema(plan, direction?.must_keep.length ?? 0), 400 + n * 90)); }
-    catch (e) { history.push([`outline: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) { transient = e; break; } continue; }
+    catch (e) { if (e instanceof PlanBudgetError) throw e; history.push([`outline: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) { transient = e; break; } continue; }
     const o = isObj(raw) ? raw : {};
     const entries = Array.isArray(o.scenes) ? o.scenes.filter(isObj) : [];
     if (entries.length < 2 || typeof o.title !== "string") { history.push([`outline: expected ${n} scenes and a title, got ${entries.length} scenes`]); continue; }
@@ -1568,7 +1650,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
       let raw: unknown;
       const maxTokens = plan.style === "cinema" ? 700 * (to - from) : plan.style === "picture" ? 600 * (to - from) : 350 * (to - from);
       try { raw = await call(chunkPrompt(job, plan, outline, from, to, prevVoice, feedback, direction, treatment), chunkSchema(plan, layerOf(plan, treatment)), 400 + maxTokens); }
-      catch (e) { history.push([`scenes ${from + 1}–${to}: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) throw e; feedback = undefined; continue; }
+      catch (e) { if (e instanceof PlanBudgetError) throw e; history.push([`scenes ${from + 1}–${to}: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) throw e; feedback = undefined; continue; }
       const got = isObj(raw) && Array.isArray(raw.scenes) ? raw.scenes.filter(isObj) : [];
       // Validated in context (the scenes accepted so far + this chunk + a temporary closing unless it is the last chunk);
       // error labels are remapped so "scene n" counts within the scenes the model just returned.
@@ -1576,7 +1658,12 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
       const problems: string[] = [];
       if (got.length !== to - from) problems.push(`expected exactly ${to - from} scenes, got ${got.length}`);
       const r = validateStoryboard(draft, { format: plan.format, language: plan.language });
-      if (!r.ok) problems.push(...r.errors.map((m) => m.replace(/^scene (\d+)/, (_, n) => `scene ${Number(n) - scenes.length}`)).filter((m) => !/^scene (-\d+|0)\b/.test(m)));
+      const local = (m: string) => m.replace(/^scene (\d+)/, (_, n) => `scene ${Number(n) - scenes.length}`);
+      const ofThisChunk = (m: string) => !/^scene (-\d+|0)\b/.test(m);
+      if (!r.ok) problems.push(...r.errors.map(local).filter(ofThisChunk));
+      // The validator's warnings (rhythm, a picture prompt not in English) are soft problems: asked to be fixed once,
+      // then the valid chunk is kept — a video someone is waiting for is never refused on them.
+      problems.push(...r.warnings.map(local).filter(ofThisChunk));
       // The scenes this chunk contributes, read from what the VALIDATOR normalised — not from the object handed to
       // it. validateStoryboard no longer writes into its input, so the shots it repaired (the anchors it chose, a
       // scene-level prompt folded into shots[0]) exist only in what it returns. Reading `draft` here would keep the
@@ -1633,10 +1720,33 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     scenes.push(...accepted!);
   }
 
+  // 2b. THE PICTURES SPEAK ENGLISH. Whatever prompt the chunks still wrote in the narration's language is translated
+  //     here, all of them in one call, before the plan is assembled: the routing rule (hands, a crowd… → a locked
+  //     frame) and the forbidden-term check read English words, so they run on the translated text below, and the
+  //     move the validator had resolved on the old text is dropped so it is resolved again on the new one.
+  if (plan.style === "picture" && plan.language !== "en") {
+    const slots: { shot: Record<string, unknown>; text: string }[] = [];
+    for (const sc of scenes) if (Array.isArray(sc.shots)) for (const sh of sc.shots) if (isObj(sh) && typeof sh.image_prompt === "string" && notEnglish(sh.image_prompt)) slots.push({ shot: sh, text: sh.image_prompt });
+    if (slots.length) {
+      try {
+        const raw = clean(await call(englishPromptsPrompt(slots.map((x) => x.text), plan.language), englishPromptsSchema(), 100 + 120 * slots.length, { system: TRANSLATOR_SYSTEM, temperature: 0 }));
+        const got = isObj(raw) && Array.isArray(raw.prompts) ? raw.prompts : [];
+        if (got.length !== slots.length) history.push([`english pass (pictures): expected ${slots.length} prompts, got ${got.length}`]);
+        else slots.forEach((x, i) => {
+          const t = got[i];
+          if (typeof t !== "string" || t.trim().length < IMAGE_PROMPT_MIN || notEnglish(t)) return;
+          x.shot.image_prompt = fitPrompt(t.trim());
+          delete x.shot.motion; delete x.shot.strength;
+        });
+      } catch (e) { if (e instanceof PlanBudgetError) throw e; history.push([`english pass (pictures): ${String(e).slice(0, 200)}`]); }
+    }
+  }
+
   // 3. Assemble and validate the whole project once more (ids are re-deduplicated across chunks).
   const sb = normalizeStoryboard({ ...head, scenes }, plan);
   const r = validateStoryboard(sb, { format: plan.format, language: plan.language });
   if (!r.ok) fail(r.errors, sb);
+  if (r.warnings.length) history.push(r.warnings.map((w) => `warning: ${w}`));
   const price = PRICES[model];
   const est = price ? Math.round((((usage.prompt_tokens ?? 0) * price.in + (usage.completion_tokens ?? 0) * price.out) / 1e6) / 0.000011) : null;
   const ok = r as { ok: true; storyboard: Storyboard };

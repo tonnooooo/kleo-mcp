@@ -475,6 +475,8 @@ const WIDE = { format: "16:9", language: "en" };
 /** A legal run: the class alternates, the scale cuts, screen direction holds, no loud move anywhere. */
 const LEGAL = [["establish", "face", "detail"], ["reveal", "detail", "establish"], ["closing"]];
 const errsOf = (sb, o = G) => { const r = validateStoryboard(sb, o); return r.ok ? [] : r.errors; };
+/** The rhythm rules and the English rule answer here since 19 September 2026: they never refuse a storyboard. */
+const warnsOf = (sb, o = G) => validateStoryboard(sb, o).warnings;
 const has = (errors, re) => errors.some((e) => re.test(e));
 
 test("shot_kind is the story term: ten kinds, one per shot, never camera language", () => {
@@ -590,35 +592,78 @@ test("static_forced is routing, not taste: hands, a crowd, signage or a mechanis
   assert.deepEqual(errsOf(grammar(LEGAL)), [], "an empty beach is routed nowhere");
 });
 
-test("sequencing: the move class alternates, across the cut too", () => {
-  const same = grammar([["establish", "face", "reveal"], ["detail"], ["closing"]]);
-  assert.deepEqual(errsOf(same), ["scene 1 shot 3: move class PUSH repeats scene 1 shot 2 ('push_in' then 'pull_out') — change one of the two shot_kinds so the class alternates (PUSH / LATERAL / VERTICAL / STILL)"]);
+// THE RHYTHM RULES WARN, THEY DO NOT REFUSE (19 September 2026). A storyboard that breaks one is still ok:true, the
+// planner feeds the warning back once and keeps the scenes, a client is told. Refusing on them had produced plans with
+// no legal answer at all, and a user's animatic died twice in planning on "STILL repeats".
+test("sequencing: the move class alternates, across the cut too — as a warning", () => {
+  const same = grammar([["establish", "face", "reveal"], ["detail", "establish"], ["closing"]]);
+  assert.deepEqual(errsOf(same), [], "rhythm never refuses");
+  assert.deepEqual(warnsOf(same), ["scene 1 shot 3: move class PUSH repeats scene 1 shot 2 ('push_in' then 'pull_out') — change one of the two shot_kinds so the class alternates (PUSH / LATERAL / VERTICAL / STILL)"]);
   const across = grammar([["establish", "face", "detail"], ["action", "face", "establish"], ["closing"]]);
-  assert.deepEqual(errsOf(across), ["scene 2 shot 1: move class LATERAL repeats scene 1 shot 3 ('track_right' then 'track_alongside') — change one of the two shot_kinds so the class alternates (PUSH / LATERAL / VERTICAL / STILL)"], "a scene cut does not reset the rule");
+  assert.deepEqual(errsOf(across), []);
+  assert.deepEqual(warnsOf(across), ["scene 2 shot 1: move class LATERAL repeats scene 1 shot 3 ('track_right' then 'track_alongside') — change one of the two shot_kinds so the class alternates (PUSH / LATERAL / VERTICAL / STILL)"], "a scene cut does not reset the rule");
 });
 
-test("sequencing: two shots in a row never sit at the same scale on the same subject", () => {
+test("sequencing: two shots in a row never sit at the same scale on the same subject — as a warning", () => {
   const twice = grammar([["establish", "face", "detail_orbit"], ["closing"]]);
-  assert.deepEqual(errsOf(twice), ["scene 1 shot 3: scale 'close' repeats scene 1 shot 2 on the same subject '01-scene' — change shot_kind so the cut changes the scale"]);
+  assert.deepEqual(errsOf(twice), []);
+  assert.deepEqual(warnsOf(twice), ["scene 1 shot 3: scale 'close' repeats scene 1 shot 2 on the same subject '01-scene' — change shot_kind so the cut changes the scale"]);
   // Across a scene cut the subject changes, and the same scale is allowed there.
   const cut = grammar([["establish", "detail", "face"], ["detail_orbit", "establish"], ["closing"]]);
-  assert.deepEqual(errsOf(cut), [], "the rule is about one subject, not about the whole video");
+  assert.deepEqual(warnsOf(cut), [], "the rule is about one subject, not about the whole video");
 });
 
-test("sequencing: at most two loud moves per 40 s, and never two in a row", () => {
+test("sequencing: at most two loud moves per 40 s, and never two in a row — as a warning", () => {
   const pair = grammar([["tension", "detail_orbit", "establish"], ["closing"]]);
-  assert.deepEqual(errsOf(pair), ["scene 1 shot 2: loud move 'orbit_left' is adjacent to the loud move at scene 1 shot 1 — put a quiet shot between them"]);
+  assert.deepEqual(errsOf(pair), []);
+  assert.deepEqual(warnsOf(pair), ["scene 1 shot 2: loud move 'orbit_left' is adjacent to the loud move at scene 1 shot 1 — put a quiet shot between them"]);
   const three = grammar([["hook", "establish", "tension", "establish"], ["detail_orbit", "establish"], ["closing"]]);
-  assert.deepEqual(errsOf(three), [`scene 2 shot 1: more than ${LOUD_MAX_PER_WINDOW} loud moves within ${LOUD_WINDOW_S}s (scene 1 shot 1, scene 1 shot 3, scene 2 shot 1) — keep ${LOUD_MAX_PER_WINDOW} loud moves per ${LOUD_WINDOW_S} s and let the rest be quiet`]);
+  assert.deepEqual(warnsOf(three), [`scene 2 shot 1: more than ${LOUD_MAX_PER_WINDOW} loud moves within ${LOUD_WINDOW_S}s (scene 1 shot 1, scene 1 shot 3, scene 2 shot 1) — keep ${LOUD_MAX_PER_WINDOW} loud moves per ${LOUD_WINDOW_S} s and let the rest be quiet`]);
   const two = grammar([["hook", "establish", "tension", "establish"], ["face", "detail"], ["closing"]]);
-  assert.deepEqual(errsOf(two), [], "two loud moves are the budget, not the limit");
+  assert.deepEqual(warnsOf(two), [], "two loud moves are the budget, not the limit");
 });
 
-test("sequencing: screen direction stays the same inside a scene", () => {
+test("sequencing: screen direction stays the same inside a scene — as a warning", () => {
   const flip = grammar([["detail", "establish", "detail_orbit"], ["closing"]]);
-  assert.deepEqual(errsOf(flip), ["scene 1 shot 3: screen direction flips inside scene '01-scene' (right at scene 1 shot 1, left here) — keep one direction inside a scene: flip the shot, not the camera"]);
+  assert.deepEqual(errsOf(flip), []);
+  assert.deepEqual(warnsOf(flip), ["scene 1 shot 3: screen direction flips inside scene '01-scene' (right at scene 1 shot 1, left here) — keep one direction inside a scene: flip the shot, not the camera"]);
   const own = grammar([["detail", "establish", "face"], ["detail_orbit", "establish"], ["closing"]]);
-  assert.deepEqual(errsOf(own), [], "each scene keeps its own direction");
+  assert.deepEqual(warnsOf(own), [], "each scene keeps its own direction");
+});
+
+test("sequencing: the render rules still refuse — a listed move, a shot past the ceiling", () => {
+  const long = grammar([["establish", "face", "detail"], ["closing"]]);
+  long.scenes[0].shots[0].dur = 9;
+  assert.ok(has(errsOf(long), /scene 1 shot 1: duration 9s is over the 5s maximum/), errsOf(long).join("\n"));
+});
+
+test("two forced static holds in a row are the routing rule's own answer: no error and no warning", () => {
+  // The whole subject of a story film is people doing things: a pastry chef's hands, the children she feeds, the
+  // families around her. Every picture of that trips the routing rule, every pair was "STILL repeats", and the only
+  // advice was to stop showing what the user asked for. A 15-second animatic failed twice this way on 19 September 2026.
+  const hands = grammar([["establish", "face", "detail"], ["action", "detail"], ["closing"]]);
+  hands.scenes[0].shots[1].image_prompt = "Her floured hands turning a golden cake out of its tin onto the counter";
+  hands.scenes[0].shots[2].image_prompt = "Two hands wrapping the cake in a cloth, crumbs on the wooden board";
+  hands.scenes[1].shots[0].image_prompt = "A crowd of children at the door of the bakery, all reaching for the basket";
+  const r = validateStoryboard(hands, G);
+  assert.equal(r.ok, true, (r.errors ?? []).join("\n"));
+  assert.deepEqual(r.storyboard.scenes[0].shots.map((s) => s.shot_kind), ["establish", "static_forced", "static_forced"]);
+  assert.equal(r.storyboard.scenes[1].shots[0].shot_kind, "static_forced");
+  assert.deepEqual(r.warnings.filter((w) => /STILL repeats|scale 'medium' repeats/.test(w)), [], r.warnings.join("\n"));
+});
+
+test("the pictures speak English: a prompt or a cast look in the narration's language is a warning, never for an English film", () => {
+  const it = grammar([["establish", "face", "detail"], ["closing"]]);
+  it.language = "it"; it.voice = "if_sara";
+  it.scenes[0].shots[0].image_prompt = "Una dolce pasticcera magra con i capelli biondi corti e raccolti, con il grembiule lilla, nella sua cucina";
+  const r = validateStoryboard(it, { format: "9:16", language: "it" });
+  assert.equal(r.ok, true, (r.errors ?? []).join("\n"));
+  assert.ok(has(r.warnings, /^scene 1 shot 1: image_prompt must be in English/), r.warnings.join("\n"));
+  assert.ok(!has(r.warnings, /^scene 1 shot 2/), "an English prompt is not flagged");
+  // The same words in an English film are not read as another language (the rule only runs when the film is not English).
+  const en = grammar([["establish", "face", "detail"], ["closing"]]);
+  en.scenes[0].shots[0].image_prompt = it.scenes[0].shots[0].image_prompt;
+  assert.ok(!has(warnsOf(en), /must be in English/));
 });
 
 test("motion is the deprecated alias: accepted silently, normalised away, and it says so", () => {

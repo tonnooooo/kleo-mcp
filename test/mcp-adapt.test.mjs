@@ -212,10 +212,28 @@ test("kleo_create_video keeps the treatment the user approved and says so; a bro
   assert.equal(params.treatment.variation, t.variation, "the draw travels with the job");
   const created = (await s.audit("job.created")).at(-1);
   assert.equal(created.treatment, "client");
-  // Without one, the answer says Kleo writes it and how to see it next time.
-  const plain = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers", duration_s: 45, format: "9:16" });
+  // A RETRY KEEPS ITS TREATMENT (19 September 2026): the same words again, same length, language and look, within
+  // three hours and with no treatment handed in, is planned under the treatment of the job above — an assistant that
+  // retries a failed video does not always send the treatment again, and the planner's own is the flat fallback.
+  // (Two videos at a time per account: the earlier one is cancelled before each new one, which refunds it too.)
+  await s.call("kleo_cancel_job", { job_id: ok.structuredContent.job_id });
+  const again = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers", duration_s: 45, format: "9:16" });
+  assert.ok(!again.isError, again.text);
+  assert.match(again.text, /Planned under your treatment: "A stolen car/);
+  const reused = (await s.audit("job.created")).at(-1);
+  assert.equal(reused.treatment, "reused");
+  assert.equal(reused.treatment_from, ok.structuredContent.job_id);
+  assert.equal(JSON.parse((await m.getUserJob(s.env, "u_test", again.structuredContent.job_id)).params).treatment.logline, t.logline);
+  // Other words, or another length: nothing to reuse, and the answer says Kleo writes it and how to see it next time.
+  await s.call("kleo_cancel_job", { job_id: again.structuredContent.job_id });
+  const plain = await s.call("kleo_create_video", { prompt: "A film about the keepers of a very different lighthouse", duration_s: 45, format: "9:16" });
   assert.ok(!plain.isError, plain.text);
   assert.match(plain.text, /Kleo writes the film's treatment itself while planning \(call kleo_adapt_prompt first/);
+  assert.equal((await s.audit("job.created")).at(-1).treatment, "auto");
+  await s.call("kleo_cancel_job", { job_id: plain.structuredContent.job_id });
+  const longer = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers", duration_s: 60, format: "9:16" });
+  assert.ok(!longer.isError, longer.text);
+  assert.equal((await s.audit("job.created")).at(-1).treatment, "auto", "a treatment written for 45 seconds is not planned under at 60");
 });
 
 /* ------------------------------------------------------------------ the admin route: the measurement without a laptop */

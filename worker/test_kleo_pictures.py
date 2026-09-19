@@ -629,6 +629,30 @@ class DirectionTest(unittest.TestCase):
         self.assertTrue(rich.startswith("the captain on a sandy beach"), rich)
         self.assertIn("red bandana", rich)
         self.assertTrue(rich.endswith(kp.STYLE_SUFFIX["cartoon"]), rich)
+
+    def test_the_cast_leads_the_prompt_and_the_light_follows_the_scene(self):
+        """A face that changes is what a viewer notices across ten pictures, and what comes first weighs most: the
+        cast's look goes in FRONT of the author's sentence (job gt_ad2musq5: three different pastry chefs), the light
+        of the section behind it, and the animation look gets no light at all (the same job: a red kitchen)."""
+        ip = "the captain on a sandy beach"
+        lead = kp.cast_for(self.DIRECTION, ip)
+        self.assertTrue(lead.startswith("the captain: a pirate captain with a red bandana"), lead)
+        self.assertNotIn("light source", lead)
+        self.assertEqual(kp.cast_for(self.DIRECTION, "an empty beach"), "")
+        self.assertEqual(kp.light_for("amber", "cartoon"), kp.ACCENT_LIGHT["amber"])
+        self.assertEqual(kp.light_for("amber", "realistic"), kp.ACCENT_LIGHT["amber"])
+        self.assertEqual(kp.light_for("amber", "animation"), "", "a drawn film keeps its colour law on the layer")
+        self.assertEqual(kp.light_for(None, "cartoon"), "")
+        self.assertTrue(kp.lights_pictures("realistic") and not kp.lights_pictures("animation"))
+        self.assertEqual(kp.context_for(self.DIRECTION, ip, "red", style="animation"), lead, "no light in the animation context either")
+        full = kp.full_prompt(ip, "cartoon", kp.light_for("amber", "cartoon"), lead=lead)
+        self.assertTrue(full.startswith(lead + ", " + ip + ", " + kp.ACCENT_LIGHT["amber"] + ", "), full)
+        self.assertTrue(full.endswith(kp.STYLE_SUFFIX["cartoon"]), full)
+        # An oversized lead is dropped at a word boundary, never chopped into noise, and the suffix always survives.
+        cut = kp.full_prompt(ip, "cartoon", "", lead="x" * 40 + " " + "y" * 200)
+        self.assertTrue(cut.startswith("x" * 40 + ", " + ip), cut)
+        self.assertNotIn("y" * 5, cut)
+        self.assertTrue(cut.endswith(kp.STYLE_SUFFIX["cartoon"]), cut)
         # The context is cut before it can push the style suffix out of CLIP's window.
         long = kp.full_prompt("a beach", "cartoon", "y" * 400)
         self.assertTrue(long.endswith(kp.STYLE_SUFFIX["cartoon"]), long)

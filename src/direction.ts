@@ -428,14 +428,56 @@ export function castFor(cast: readonly CastMember[], imagePrompt: string): CastM
  * Order matters for a diffusion model — what comes first weighs most — so the author's own sentence stays in front and
  * everything here follows it.
  */
-export function pictureContext(d: Direction | null, imagePrompt: string, accent: string | null): string {
+export function pictureContext(d: Direction | null, imagePrompt: string, accent: string | null, look: string | null = null): string {
   if (!d) return "";
   const bits: string[] = [];
   for (const m of castFor(d.cast ?? [], imagePrompt)) bits.push(`${m.name}: ${m.look}`);
   if (d.world) bits.push(d.world);
-  const light = accent ? ACCENT_LIGHT[accent] : null;
+  const light = accent && lightsPictures(look) ? ACCENT_LIGHT[accent] : null;
   if (light) bits.push(light);
   return bits.join(". ");
+}
+
+/**
+ * Whether the section's accent is written into the picture prompt as a light source. Not for the ANIMATION look: on
+ * the turbo SDXL model that draws it (8 steps, guidance 2) "a single warm red light source" is not a light, it is a
+ * colour cast — the first frame of a pastel story about a pastry chef came back as a red kitchen, a red apron and a
+ * red sauce (job gt_ad2musq5, 19 September 2026), and the apron the user had asked for was lilac. A drawn film keeps
+ * its colour law on the layer, where the accent was born; the photographic looks keep the light.
+ * Mirrored in worker/kleo_pictures.py lights_pictures().
+ */
+export const lightsPictures = (look: string | null | undefined): boolean => look !== "animation";
+
+/**
+ * Function words of the languages a film can be narrated in other than English. A picture prompt, a cast look or a
+ * world sentence written in one of them reaches a text encoder trained on English (CLIP, for every model the GPU
+ * draws with) and is read as noise: "capelli biondi corti e raccolti, grembiule lilla" came back as brown curls and a
+ * red apron (job gt_ad2musq5). Two hits in one sentence is already a sentence in that language; one can be a name.
+ */
+const FOREIGN_WORDS = new RegExp(
+  "(?<![\\p{L}])(?:" +
+  // Italian
+  "una|uno|un|della|delle|degli|dei|del|nella|nel|nelle|negli|nei|sulla|sul|sulle|sugli|sui|dalla|dalle|dagli|dai|dal|alla|alle|agli|ai|al|" +
+  "che|gli|il|lo|la|le|di|con|col|coi|e|ed|i|da|su|tra|fra|ne|si|ma|più|senza|verso|contro|quando|poi|ancora|sempre|mentre|dove|sono|" +
+  "tutti|tutte|tutto|tutta|suo|sua|suoi|sue|loro|questo|questa|questi|queste|quella|quelli|quelle|ogni|molto|molti|molte|" +
+  "grande|grandi|piccolo|piccola|piccoli|piccole|sotto|sopra|dentro|accanto|vicino|davanti|dietro|" +
+  // French
+  "dans|avec|une|des|les|sur|pour|qui|est|et|au|aux|du|chez|sous|devant|derrière|à|où|ou|pas|très|tout|toute|tous|toutes|ses|leur|leurs|cette|ce|ces|vers|entre|pendant|avant|après|puis|encore" +
+  ")(?![\\p{L}])", "giu");
+/** True when `text` reads as Italian or French rather than English: at least `min` of its words are function words of those languages. */
+export function notEnglish(text: unknown, min = 2): boolean {
+  const hits = [...String(text ?? "").matchAll(FOREIGN_WORDS)].length;
+  return hits >= min;
+}
+/** The cast names, looks, world, objects and forbidden terms of a direction that are not written in English. */
+export function foreignPictureFields(d: Partial<Direction> | null | undefined): string[] {
+  if (!d) return [];
+  const out: string[] = [];
+  if (notEnglish(d.world)) out.push("world");
+  (d.cast ?? []).forEach((m, i) => { if (notEnglish(`${m?.name ?? ""} ${m?.look ?? ""}`)) out.push(`cast[${i}]`); });
+  if (notEnglish((d.objects ?? []).join(" "), 3)) out.push("objects");
+  if (notEnglish((d.forbidden ?? []).join(" "), 3)) out.push("forbidden");
+  return out;
 }
 
 /** The negative prompt for this video: the product-wide one, plus everything this film's direction forbids. */
