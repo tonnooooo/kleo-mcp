@@ -58,7 +58,7 @@ async function main() {
   step("kleo_wait_for_video until the links");
   const t0 = Date.now(); let last = "";
   while (Date.now() - t0 < MAX_MIN * 60_000) {
-    const w = await call("kleo_wait_for_video", { job_id: jobId, max_wait_s: 60 });
+    const w = await call("kleo_wait_for_video", { job_id: jobId, max_wait_s: 45 }); // under the SDK's own 60 s request timeout: at 60 the client timed out on itself (19 September)
     const line = w.text.split("\n")[0].slice(0, 160);
     if (line !== last) { console.log(`  ${now()} ${line}`); last = line; }
     if (w.data?.state === "done" || /is ready/.test(w.text)) { console.log(w.text); return; }
