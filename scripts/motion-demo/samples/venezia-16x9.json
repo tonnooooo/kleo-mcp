@@ -30,28 +30,28 @@
    "mille anni fa",
    "reggono ancora"
   ],
-  "world": "Venezia oggi, luce vera di mezzogiorno e tramonto, acqua ovunque: campi allagati, laguna aperta, fondale con i pali, la barriera al mare — girata come un documentario in 35 mm",
+  "world": "Venice today, true midday and sunset light, water everywhere: flooded squares, the open lagoon, the seabed with its wooden piles, the sea barrier — shot like a 35 mm documentary",
   "cast": [],
   "objects": [
-   "acqua alta",
-   "campo allagato",
-   "stivali",
-   "motoscafo",
-   "scia",
-   "pali di legno",
-   "limo",
-   "pesci",
-   "barriera",
-   "onde",
-   "gabbiani"
+   "acqua alta flood water",
+   "flooded square",
+   "rubber boots",
+   "motorboat",
+   "boat wake",
+   "wooden piles",
+   "silt",
+   "small fish",
+   "sea barrier",
+   "waves",
+   "gulls"
   ],
   "forbidden": [
-   "testo",
-   "loghi",
-   "insegne moderne",
-   "cartoni",
-   "persone riconoscibili",
-   "gondole da cartolina"
+   "text",
+   "logos",
+   "modern signs",
+   "cartoons",
+   "recognisable people",
+   "postcard gondolas"
   ],
   "sections": [
    {
