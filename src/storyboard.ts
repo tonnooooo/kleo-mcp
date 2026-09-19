@@ -10,6 +10,7 @@
  *   (the server draws the pictures, images.ts), no beats and no icons; cyber is the plain Keou look of the template;
  *   stickman is Keou's stickman (story scenes, 9:16 only). See docs/PICTURE-STYLE.md.
  */
+import Anthropic from "@anthropic-ai/sdk";
 import type { Env } from "./env";
 import type { Job, JobParams } from "./db";
 import { TEMPLATES, findTemplate, narrativeFor, sceneSplit, creditsFor, samePrice, filmedStoryboard, finishForProduct, productOf, type Family, type Product } from "./templates.ts";
@@ -54,6 +55,10 @@ import {
 export const DEFAULT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 /** USD per million tokens (developers.cloudflare.com/workers-ai/platform/pricing, Sept 2026); 1 neuron = $0.000011. */
 const PRICES: Record<string, { in: number; out: number }> = {
+  // Claude, through the Anthropic API (PLAN_MODEL + ANTHROPIC_API_KEY): USD per million tokens, June 2026 rates.
+  "claude-opus-5": { in: 5, out: 25 },
+  "claude-sonnet-5": { in: 2, out: 10 },
+  "claude-haiku-4-5": { in: 1, out: 5 },
   "@cf/meta/llama-3.3-70b-instruct-fp8-fast": { in: 0.293, out: 2.253 },
   "@cf/meta/llama-4-scout-17b-16e-instruct": { in: 0.27, out: 0.85 },
   "@cf/openai/gpt-oss-120b": { in: 0.35, out: 0.75 },
@@ -1237,7 +1242,44 @@ function extractJson(text: string): unknown {
  * the scenes); the treatment call passes its own, because a treatment written at 0.3 is the same treatment every
  * time, and being different every time is half of what it is for.
  */
+/**
+ * THE PLANNER'S MODEL. Workers AI (AI_MODEL, llama-4-scout 17B) writes flat films: 43-word narrations, act names
+ * from a checklist, "La dolce pasticcera lavora nella sua cucina" (job gt_7f7aaac6, 19 September 2026). When the
+ * owner sets PLAN_MODEL to a Claude model and ANTHROPIC_API_KEY as a secret, every planning call — treatment,
+ * direction, outline, scenes, the English pass — goes to the Anthropic API instead; without the key PLAN_MODEL is
+ * ignored and nothing changes. Cost per 15-30 s film at ~20k prompt + ~4k answer tokens: about 0.30 $ on
+ * claude-opus-5, 0.10 $ on claude-sonnet-5, against ~0.01 $ on the 17B.
+ */
+export const planModel = (env: Env): string | undefined => (env.ANTHROPIC_API_KEY && env.PLAN_MODEL ? env.PLAN_MODEL : undefined);
+export const isClaudeModel = (model: string): boolean => /^claude-/.test(model);
+/** Tests replace the transport; production uses the Worker's own fetch. */
+let anthropicFetch: typeof fetch | undefined;
+export function setAnthropicFetch(f: typeof fetch | undefined): void { anthropicFetch = f; }
+
+/** One planning call on the Anthropic API: the same messages, the answer read back as JSON, the usage in the same shape. */
+async function callClaude(env: Env, model: string, messages: { role: string; content: string }[], maxTokens: number, timeoutMs: number): Promise<{ raw: unknown; usage: Usage }> {
+  if (!env.ANTHROPIC_API_KEY) throw new Error(`PLAN_MODEL ${model} needs the ANTHROPIC_API_KEY secret`);
+  const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, maxRetries: 1, timeout: timeoutMs, ...(anthropicFetch ? { fetch: anthropicFetch } : {}) });
+  const system = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
+  const turns: Anthropic.MessageParam[] = messages.filter((m) => m.role !== "system").map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content }));
+  let res: Anthropic.Message;
+  try {
+    // No sampling parameters (removed on the 5-family), thinking left adaptive; the answer is asked as one JSON
+    // object by every planner prompt already, and max_tokens leaves room for the thinking that counts against it.
+    res = await client.messages.create({ model, max_tokens: Math.max(8000, maxTokens + 4000), ...(system ? { system } : {}), messages: turns, output_config: { effort: "medium" } });
+  } catch (e) {
+    // The status goes into the message so isTransientAiError() reads 429 / 5xx the way it reads Workers AI's.
+    if (e instanceof Anthropic.APIError) throw new Error(`anthropic ${e.status ?? ""}: ${e.message}`);
+    throw e;
+  }
+  if (res.stop_reason === "refusal") throw new Error(`anthropic refused the request (${res.stop_details?.category ?? "no category"})`);
+  const text = res.content.filter((b): b is Anthropic.TextBlock => b.type === "text").map((b) => b.text).join("");
+  const usage: Usage = { prompt_tokens: res.usage.input_tokens, completion_tokens: res.usage.output_tokens, total_tokens: res.usage.input_tokens + res.usage.output_tokens };
+  return { raw: extractJson(text), usage };
+}
+
 export async function callModel(env: Env, model: string, messages: { role: string; content: string }[], schema: Record<string, unknown>, maxTokens: number, temperature = 0.3, timeoutMs = MODEL_CALL_TIMEOUT_MS): Promise<{ raw: unknown; usage: Usage }> {
+  if (isClaudeModel(model)) return withTimeout(callClaude(env, model, messages, maxTokens, timeoutMs), timeoutMs, `model call (${model})`);
   const ai = env.AI as unknown as AiRunner;
   const base = { messages, max_tokens: maxTokens, temperature };
   let res: unknown;
@@ -1494,7 +1536,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     const sb = fixtureStoryboard(job);
     return { storyboard: sb, model: "fixture", attempts: 0, ms: Date.now() - t0, usage: {}, est_neurons: 0, words: countWords(sb), scenes: sb.scenes.length, fixture: true, history: [], style: kleoStyleOf(sb), direction: (sb as { direction?: Direction }).direction ?? null, treatment: null, missing_facts: [], blocked_upgrade: null };
   }
-  const model = opts.model || env.AI_MODEL || DEFAULT_MODEL;
+  const model = opts.model || planModel(env) || env.AI_MODEL || DEFAULT_MODEL;
   const usage: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   const history: string[][] = [];
   let calls = 0;
@@ -1787,7 +1829,7 @@ export interface TreatmentResult {
  */
 export async function writeTreatment(env: Env, input: { prompt: string; duration_s: number; format: Format; language: string; look?: FilmLook | null }, opts: { seed?: string; model?: string } = {}): Promise<TreatmentResult> {
   const t0 = Date.now();
-  const model = opts.model || env.TREATMENT_MODEL || env.AI_MODEL || DEFAULT_MODEL;
+  const model = opts.model || env.TREATMENT_MODEL || planModel(env) || env.AI_MODEL || DEFAULT_MODEL;
   const usage: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   const history: string[] = [];
   const v = variationFor(opts.seed ?? crypto.randomUUID());

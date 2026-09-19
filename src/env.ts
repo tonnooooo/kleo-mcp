@@ -17,6 +17,10 @@ export interface Env {
   IMAGE_FIXTURE?: string;         // "1" (dev only): placeholder PNGs instead of Workers AI pictures
 
   AI_MODEL?: string; // default: storyboard.ts DEFAULT_MODEL
+  /** A Claude model for every planning call (claude-opus-5, claude-sonnet-5); used only when ANTHROPIC_API_KEY is set. */
+  PLAN_MODEL?: string;
+  /** Secret: the Anthropic API key that turns PLAN_MODEL on. */
+  ANTHROPIC_API_KEY?: string;
   /** The model that writes the TREATMENT (src/treatment.ts) when it should differ from AI_MODEL; unset = AI_MODEL. */
   TREATMENT_MODEL?: string;
   /** Treatments one account may ask kleo_adapt_prompt for in a UTC day (default 12): each one spends Workers AI quota. */

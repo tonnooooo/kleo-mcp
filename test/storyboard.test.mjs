@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import { readFile } from "node:fs/promises";
 import assert from "node:assert/strict";
-import { sectionSkeleton, generateStoryboard, fixtureStoryboard, isTransientAiError, StoryboardError, styleFor, keouStyleFor, pickKleoStyle, planFor, normalizeStoryboard, callModel, withTimeout, PlanBudgetError, TRANSLATOR_SYSTEM } from "../src/storyboard.ts";
+import { sectionSkeleton, generateStoryboard, fixtureStoryboard, isTransientAiError, StoryboardError, styleFor, keouStyleFor, pickKleoStyle, planFor, normalizeStoryboard, callModel, withTimeout, PlanBudgetError, TRANSLATOR_SYSTEM, planModel, setAnthropicFetch, isClaudeModel } from "../src/storyboard.ts";
 import { guideText, EXAMPLE_SCENES } from "../src/guide.ts";
 import { stillness } from "../src/direction.ts";
 import { TEMPLATE_IDS } from "../src/templates.ts";
@@ -821,4 +821,37 @@ test("a model call that never answers times out, and the timeout is not a quota 
   assert.equal(isTransientAiError(new Error("model call (m) timed out after 90 s")), false, "a stuck call retries the attempt, it does not pause planning for a quarter of an hour");
   assert.equal(await withTimeout(Promise.resolve(7), 1000, "x"), 7);
   assert.ok(new PlanBudgetError("x", ["y"]) instanceof StoryboardError, "the budget error is a planning error the orchestrator already knows how to fail");
+});
+
+
+/* ------------------------------------------------------------------ the planner on Claude (20 September 2026) */
+
+test("PLAN_MODEL sends every planning call to the Anthropic API — only when the key is there", async () => {
+  assert.equal(planModel({ PLAN_MODEL: "claude-opus-5" }), undefined, "no key, no Claude: the 17B keeps planning");
+  assert.equal(planModel({ PLAN_MODEL: "claude-opus-5", ANTHROPIC_API_KEY: "sk-test" }), "claude-opus-5");
+  assert.equal(isClaudeModel("claude-sonnet-5"), true); assert.equal(isClaudeModel("@cf/meta/llama-4-scout-17b-16e-instruct"), false);
+  const seen = [];
+  setAnthropicFetch(async (url, init) => {
+    const body = JSON.parse(init.body);
+    seen.push({ url: String(url), auth: init.headers?.get?.("x-api-key") ?? init.headers?.["x-api-key"], body });
+    return new Response(JSON.stringify({ id: "msg_1", type: "message", role: "assistant", model: body.model, stop_reason: "end_turn", stop_details: null,
+      content: [{ type: "text", text: "Here it is:\n```json\n{\"title\":\"Test\",\"scenes\":[]}\n```" }], usage: { input_tokens: 120, output_tokens: 30 } }), { status: 200, headers: { "content-type": "application/json" } });
+  });
+  try {
+    const env = { ANTHROPIC_API_KEY: "sk-test", PLAN_MODEL: "claude-opus-5", AI: { run() { throw new Error("Workers AI must not be called"); } } };
+    const out = await callModel(env, "claude-opus-5", [{ role: "system", content: "You output JSON." }, { role: "user", content: "Plan it." }], { type: "object" }, 700, 0.3, 5000);
+    assert.deepEqual(out.raw, { title: "Test", scenes: [] }, "the JSON is read out of the text, fences and all");
+    assert.deepEqual(out.usage, { prompt_tokens: 120, completion_tokens: 30, total_tokens: 150 });
+    assert.equal(seen.length, 1);
+    assert.match(seen[0].url, /api\.anthropic\.com\/v1\/messages$/);
+    assert.equal(seen[0].body.model, "claude-opus-5");
+    assert.equal(seen[0].body.system, "You output JSON.");
+    assert.deepEqual(seen[0].body.messages, [{ role: "user", content: "Plan it." }]);
+    assert.equal(seen[0].body.temperature, undefined, "no sampling parameters on the 5-family");
+    assert.ok(seen[0].body.max_tokens >= 8000, "room for the thinking that counts against max_tokens");
+    // A refusal or an API error is an error the planner already knows how to retry or pause on.
+    setAnthropicFetch(async () => new Response(JSON.stringify({ type: "error", error: { type: "rate_limit_error", message: "slow down" } }), { status: 429, headers: { "content-type": "application/json" } }));
+    await assert.rejects(callModel(env, "claude-opus-5", [{ role: "user", content: "x" }], {}, 100, 0.3, 5000), (e) => /anthropic 429/.test(String(e)) && isTransientAiError(e));
+    await assert.rejects(callModel({}, "claude-opus-5", [{ role: "user", content: "x" }], {}, 100), /needs the ANTHROPIC_API_KEY secret/);
+  } finally { setAnthropicFetch(undefined); }
 });
