@@ -5,7 +5,7 @@
  * the treatment's angle and layer, the direction's subject and world, the acts against the sections, the narration
  * scene by scene, the layer states the scenes wrote, and the cost.
  *
- *   node scripts/film-make.mjs "<request>" [--duration 45] [--format 9:16] [--lang it] [--out file.json]
+ *   node scripts/film-make.mjs "<request>" [--duration 45] [--format 9:16] [--lang it] [--out file.json] [--model <workers-ai id>]
  *
  * Reads the Cloudflare account from wrangler.jsonc and the token from the wrangler OAuth session (the same Workers AI
  * the deployed worker uses; the token expires, `npx wrangler whoami` refreshes it). Renders nothing, rents nothing.
@@ -25,7 +25,7 @@ const duration_s = Number(opt("--duration", 45)), format = opt("--format", "9:16
 const jsonc = readFileSync(resolve(root, "wrangler.jsonc"), "utf8");
 const account = /"account_id"\s*:\s*"([0-9a-f]+)"/.exec(jsonc)?.[1];
 const token = /oauth_token\s*=\s*"([^"]+)"/.exec(readFileSync(`${process.env.HOME}/.wrangler/config/default.toml`, "utf8"))?.[1];
-const model = /"AI_MODEL"\s*:\s*"([^"]+)"/.exec(jsonc)?.[1];
+const model = opt("--model", /"AI_MODEL"\s*:\s*"([^"]+)"/.exec(jsonc)?.[1]);   // --model @cf/openai/gpt-oss-120b to try another Workers AI model
 if (!account || !token) { console.error("no Cloudflare account or wrangler session"); process.exit(2); }
 
 const env = {

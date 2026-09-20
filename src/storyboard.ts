@@ -1284,7 +1284,11 @@ async function callClaude(env: Env, model: string, messages: { role: string; con
 export async function callModel(env: Env, model: string, messages: { role: string; content: string }[], schema: Record<string, unknown>, maxTokens: number, temperature = 0.3, timeoutMs = MODEL_CALL_TIMEOUT_MS): Promise<{ raw: unknown; usage: Usage }> {
   if (isClaudeModel(model)) return withTimeout(callClaude(env, model, messages, maxTokens, timeoutMs), timeoutMs, `model call (${model})`);
   const ai = env.AI as unknown as AiRunner;
-  const base = { messages, max_tokens: maxTokens, temperature };
+  // gpt-oss on Workers AI reasons before it answers, and the reasoning is billed against max_tokens: at the planner's
+  // budgets its JSON came back cut off mid-string every time (0/10 on 13 September, 0/2 again on 20 September, both
+  // "broken JSON at position ~1500"). Low effort and four times the room; the answer itself is the same size.
+  const oss = /^@cf\/openai\/gpt-oss/.test(model);
+  const base = oss ? { messages, max_tokens: maxTokens * 4, temperature, reasoning: { effort: "low" } } : { messages, max_tokens: maxTokens, temperature };
   let res: unknown;
   try {
     res = await withTimeout(ai.run(model, { ...base, response_format: { type: "json_schema", json_schema: schema } }), timeoutMs, `model call (${model})`);
