@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import { readFile } from "node:fs/promises";
 import assert from "node:assert/strict";
-import { sectionSkeleton, generateStoryboard, fixtureStoryboard, isTransientAiError, StoryboardError, styleFor, keouStyleFor, pickKleoStyle, planFor, normalizeStoryboard, callModel, withTimeout, PlanBudgetError, TRANSLATOR_SYSTEM, planModel, setAnthropicFetch, isClaudeModel } from "../src/storyboard.ts";
+import { sectionSkeleton, generateStoryboard, fixtureStoryboard, isTransientAiError, StoryboardError, styleFor, keouStyleFor, pickKleoStyle, planFor, normalizeStoryboard, callModel, withTimeout, PlanBudgetError, TRANSLATOR_SYSTEM, planModel, setAnthropicFetch, isClaudeModel, setPlanFetch } from "../src/storyboard.ts";
 import { guideText, EXAMPLE_SCENES } from "../src/guide.ts";
 import { stillness } from "../src/direction.ts";
 import { TEMPLATE_IDS } from "../src/templates.ts";
@@ -833,7 +833,7 @@ test("gpt-oss on Workers AI is called with low reasoning, six times the room and
 
 test("a model call that never answers times out, and the timeout is not a quota error", async () => {
   const env = { AI: { run: () => new Promise(() => {}) } };
-  await assert.rejects(callModel(env, "m", [{ role: "user", content: "x" }], {}, 10, 0.3, 40), /model call \(m\) timed out after 0 s/);
+  await assert.rejects(callModel(env, "@cf/meta/test", [{ role: "user", content: "x" }], {}, 10, 0.3, 40), /model call \(@cf\/meta\/test\) timed out after 0 s/);
   assert.equal(isTransientAiError(new Error("model call (m) timed out after 90 s")), false, "a stuck call retries the attempt, it does not pause planning for a quarter of an hour");
   assert.equal(await withTimeout(Promise.resolve(7), 1000, "x"), 7);
   assert.ok(new PlanBudgetError("x", ["y"]) instanceof StoryboardError, "the budget error is a planning error the orchestrator already knows how to fail");
@@ -844,6 +844,9 @@ test("a model call that never answers times out, and the timeout is not a quota 
 
 test("PLAN_MODEL sends every planning call to the Anthropic API — only when the key is there", async () => {
   assert.equal(planModel({ PLAN_MODEL: "claude-opus-5" }), undefined, "no key, no Claude: the 17B keeps planning");
+  assert.equal(planModel({ PLAN_MODEL: "anthropic/claude-sonnet-5", PLAN_API_URL: "https://openrouter.ai/api/v1" }), undefined, "an endpoint without its key is no road");
+  assert.equal(planModel({ PLAN_MODEL: "anthropic/claude-sonnet-5", PLAN_API_URL: "https://openrouter.ai/api/v1", PLAN_API_KEY: "or-test" }), "anthropic/claude-sonnet-5");
+  assert.equal(planModel({ PLAN_MODEL: "anthropic/claude-sonnet-5", ANTHROPIC_API_KEY: "sk" }), undefined, "an OpenRouter-named model cannot go down the Anthropic road");
   assert.equal(planModel({ PLAN_MODEL: "claude-opus-5", ANTHROPIC_API_KEY: "sk-test" }), "claude-opus-5");
   assert.equal(isClaudeModel("claude-sonnet-5"), true); assert.equal(isClaudeModel("@cf/meta/llama-4-scout-17b-16e-instruct"), false);
   const seen = [];
@@ -912,4 +915,35 @@ test("a narration that describes the video is sent back once; a thin cast look i
   assert.ok(r.history.some((h) => h.some((m) => /scene 1: the narration talks about the video itself \("30-second"\)/.test(m))), JSON.stringify(r.history));
   assert.equal(chunkAttempts.get(0), 2, "the first chunk was asked again");
   assert.doesNotMatch(r.storyboard.scenes[0].voice, /30-second|Short/, "and the finished narration tells the story");
+});
+
+
+test("PLAN_API_URL + PLAN_API_KEY: every planning call goes to an OpenAI-compatible endpoint (OpenRouter), the JSON read out of the text", async () => {
+  const seen = [];
+  setPlanFetch(async (url, init) => {
+    const body = JSON.parse(init.body);
+    seen.push({ url: String(url), auth: init.headers.authorization, body });
+    if (body.model === "broken/model") return new Response(JSON.stringify({ error: { message: "model not found", code: 404 } }), { status: 200, headers: { "content-type": "application/json" } });
+    if (body.model === "slow/model") return new Response("overloaded", { status: 503 });
+    return new Response(JSON.stringify({ id: "gen-1", model: body.model, choices: [{ finish_reason: "stop", message: { role: "assistant", content: "Here you go:\n```json\n{\"title\":\"Test\",\"scenes\":[]}\n```" } }], usage: { prompt_tokens: 200, completion_tokens: 40, total_tokens: 240 } }), { status: 200, headers: { "content-type": "application/json" } });
+  });
+  try {
+    const env = { PLAN_API_URL: "https://openrouter.ai/api/v1/", PLAN_API_KEY: "or-test", PLAN_MODEL: "anthropic/claude-sonnet-5", AI: { run() { throw new Error("Workers AI must not be called"); } } };
+    const out = await callModel(env, "anthropic/claude-sonnet-5", [{ role: "system", content: "You output JSON." }, { role: "user", content: "Plan it." }], { type: "object" }, 700, 0.3, 5000);
+    assert.deepEqual(out.raw, { title: "Test", scenes: [] });
+    assert.deepEqual(out.usage, { prompt_tokens: 200, completion_tokens: 40, total_tokens: 240 });
+    assert.equal(seen[0].url, "https://openrouter.ai/api/v1/chat/completions", "one slash, whatever the base ends with");
+    assert.equal(seen[0].auth, "Bearer or-test");
+    assert.deepEqual(seen[0].body.messages, [{ role: "system", content: "You output JSON." }, { role: "user", content: "Plan it." }]);
+    assert.equal(seen[0].body.temperature, undefined, "no sampling parameters for a Claude model, OpenRouter passes them through");
+    assert.ok(seen[0].body.max_tokens >= 8000);
+    const gpt = await callModel(env, "openai/gpt-5-mini", [{ role: "user", content: "x" }], {}, 700, 0.3, 5000);
+    assert.deepEqual(gpt.raw, { title: "Test", scenes: [] });
+    assert.equal(seen[1].body.temperature, 0.3, "other models keep the planner's temperature");
+    // An error in a 200 body, and a real 5xx: both errors, the second one transient.
+    await assert.rejects(callModel(env, "broken/model", [{ role: "user", content: "x" }], {}, 100, 0.3, 5000), /plan api: model not found/);
+    await assert.rejects(callModel(env, "slow/model", [{ role: "user", content: "x" }], {}, 100, 0.3, 5000), (e) => /plan api 503/.test(String(e)) && isTransientAiError(e));
+    // Without the road, an external model is refused in words; a Workers AI model never touches the endpoint.
+    await assert.rejects(callModel({ AI: env.AI }, "openai/gpt-5-mini", [{ role: "user", content: "x" }], {}, 100), /no road to model openai\/gpt-5-mini/);
+  } finally { setPlanFetch(undefined); }
 });

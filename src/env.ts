@@ -19,9 +19,13 @@ export interface Env {
   AI_MODEL?: string; // default: storyboard.ts DEFAULT_MODEL
   /** Minutes one planning attempt may take (default 4, storyboard.ts PLAN_BUDGET_MS): a slower, better model needs more. */
   PLAN_BUDGET_MIN?: string;
-  /** A Claude model for every planning call (claude-opus-5, claude-sonnet-5); used only when ANTHROPIC_API_KEY is set. */
+  /** The model for every planning call when a road to it exists (PLAN_API_URL + PLAN_API_KEY, or ANTHROPIC_API_KEY for claude-…). */
   PLAN_MODEL?: string;
-  /** Secret: the Anthropic API key that turns PLAN_MODEL on. */
+  /** An OpenAI-compatible endpoint base ("https://openrouter.ai/api/v1"): OpenRouter, OpenAI, DeepSeek, xAI, Mistral, Groq. */
+  PLAN_API_URL?: string;
+  /** Secret: the key for PLAN_API_URL. */
+  PLAN_API_KEY?: string;
+  /** Secret: the Anthropic API key, the direct road for a claude-… PLAN_MODEL. */
   ANTHROPIC_API_KEY?: string;
   /** The model that writes the TREATMENT (src/treatment.ts) when it should differ from AI_MODEL; unset = AI_MODEL. */
   TREATMENT_MODEL?: string;

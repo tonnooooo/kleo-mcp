@@ -59,6 +59,14 @@ const PRICES: Record<string, { in: number; out: number }> = {
   "claude-opus-5": { in: 5, out: 25 },
   "claude-sonnet-5": { in: 2, out: 10 },
   "claude-haiku-4-5": { in: 1, out: 5 },
+  // Through OpenRouter (same rates as the labs', June 2026).
+  "anthropic/claude-sonnet-5": { in: 2, out: 10 },
+  "anthropic/claude-opus-5": { in: 5, out: 25 },
+  "openai/gpt-5": { in: 1.25, out: 10 },
+  "openai/gpt-5-mini": { in: 0.25, out: 2 },
+  "google/gemini-3-pro": { in: 2, out: 12 },
+  "google/gemini-3-flash": { in: 0.3, out: 2.5 },
+  "deepseek/deepseek-v3.2": { in: 0.27, out: 0.4 },
   "@cf/meta/llama-3.3-70b-instruct-fp8-fast": { in: 0.293, out: 2.253 },
   "@cf/meta/llama-4-scout-17b-16e-instruct": { in: 0.27, out: 0.85 },
   "@cf/openai/gpt-oss-120b": { in: 0.35, out: 0.75 },
@@ -1253,13 +1261,55 @@ function extractJson(text: string): unknown {
  * ignored and nothing changes. Cost per 15-30 s film at ~20k prompt + ~4k answer tokens: about 0.30 $ on
  * claude-opus-5, 0.10 $ on claude-sonnet-5, against ~0.01 $ on the 17B.
  */
-export const planModel = (env: Env): string | undefined => (env.ANTHROPIC_API_KEY && env.PLAN_MODEL ? env.PLAN_MODEL : undefined);
-/** Models that think before they answer, and are told not to count. */
-export const isReasoningModel = (model: string): boolean => /^@cf\/openai\/gpt-oss/.test(model) || /^claude-/.test(model);
+/**
+ * PLAN_MODEL is honoured when a road to it exists: an OpenAI-compatible endpoint (PLAN_API_URL + secret PLAN_API_KEY —
+ * OpenRouter, OpenAI, DeepSeek, xAI, Mistral, Groq all speak it) or the Anthropic API (ANTHROPIC_API_KEY, for a
+ * model named claude-…). Without either, AI_MODEL on Workers AI plans as before.
+ */
+export const planModel = (env: Env): string | undefined => {
+  if (!env.PLAN_MODEL) return undefined;
+  if (env.PLAN_API_URL && env.PLAN_API_KEY) return env.PLAN_MODEL;
+  if (env.ANTHROPIC_API_KEY && isClaudeModel(env.PLAN_MODEL)) return env.PLAN_MODEL;
+  return undefined;
+};
+/** Every model that is not Workers AI's, plus gpt-oss: they think before they answer, and are told not to count. */
+export const isReasoningModel = (model: string): boolean => /^@cf\/openai\/gpt-oss/.test(model) || !/^@cf\//.test(model);
 export const isClaudeModel = (model: string): boolean => /^claude-/.test(model);
+/** A model that is not Workers AI's goes over HTTP: the OpenAI-compatible road first, the Anthropic API for a claude-… model. */
+const isExternalModel = (model: string): boolean => !/^@cf\//.test(model);
+
+/**
+ * One planning call on an OpenAI-compatible chat-completions endpoint (OpenRouter and the rest). Plain fetch, no SDK:
+ * the wire format is the same everywhere, and the answer is read out of the text like every other model's. No
+ * temperature for a Claude model (the 5-family refuses sampling parameters and OpenRouter passes them through);
+ * max_tokens leaves room for the reasoning a thinking model bills against it. HTTP status in the error message, so
+ * isTransientAiError() pauses planning on 429/5xx exactly as it does for Workers AI.
+ */
+async function callOpenAICompat(env: Env, model: string, messages: { role: string; content: string }[], maxTokens: number, temperature: number, timeoutMs: number): Promise<{ raw: unknown; usage: Usage }> {
+  if (!env.PLAN_API_URL || !env.PLAN_API_KEY) throw new Error(`PLAN_MODEL ${model} needs PLAN_API_URL and the PLAN_API_KEY secret`);
+  const url = `${env.PLAN_API_URL.replace(/\/+$/, "")}/chat/completions`;
+  const claude = /claude/i.test(model);
+  const body: Record<string, unknown> = { model, messages, max_tokens: Math.max(8000, maxTokens + 4000), ...(claude ? {} : { temperature }) };
+  const doFetch = anthropicFetch ?? fetch;
+  const r = await doFetch(url, { method: "POST", headers: { authorization: `Bearer ${env.PLAN_API_KEY}`, "content-type": "application/json", "HTTP-Referer": "https://mcp.kleooai.com", "X-Title": "Kleo" }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
+  const text = await r.text();
+  if (!r.ok) throw new Error(`plan api ${r.status}: ${text.slice(0, 300)}`);
+  let j: Record<string, unknown>;
+  try { j = JSON.parse(text) as Record<string, unknown>; } catch { throw new Error(`plan api: not JSON: ${text.slice(0, 200)}`); }
+  if (isObj(j.error)) throw new Error(`plan api: ${String((j.error as Record<string, unknown>).message ?? JSON.stringify(j.error)).slice(0, 300)}`);
+  const choice = Array.isArray(j.choices) ? (j.choices[0] as Record<string, unknown> | undefined) : undefined;
+  const msg = isObj(choice?.message) ? (choice!.message as Record<string, unknown>) : {};
+  const content = typeof msg.content === "string" ? msg.content : Array.isArray(msg.content) ? (msg.content as Record<string, unknown>[]).map((c) => (typeof c.text === "string" ? c.text : "")).join("") : "";
+  if (!content.trim()) throw new Error(`plan api: empty answer (finish_reason ${String(choice?.finish_reason ?? "?")})`);
+  const u = isObj(j.usage) ? (j.usage as Record<string, unknown>) : {};
+  const usage: Usage = { prompt_tokens: Number(u.prompt_tokens ?? 0), completion_tokens: Number(u.completion_tokens ?? 0), total_tokens: Number(u.total_tokens ?? 0) };
+  return { raw: extractJson(content), usage };
+}
 /** Tests replace the transport; production uses the Worker's own fetch. */
 let anthropicFetch: typeof fetch | undefined;
+/** Tests replace the transport of both external roads (the Anthropic SDK and the OpenAI-compatible fetch). */
 export function setAnthropicFetch(f: typeof fetch | undefined): void { anthropicFetch = f; }
+export const setPlanFetch = setAnthropicFetch;
 
 /** One planning call on the Anthropic API: the same messages, the answer read back as JSON, the usage in the same shape. */
 async function callClaude(env: Env, model: string, messages: { role: string; content: string }[], maxTokens: number, timeoutMs: number): Promise<{ raw: unknown; usage: Usage }> {
@@ -1287,7 +1337,11 @@ async function callClaude(env: Env, model: string, messages: { role: string; con
 }
 
 export async function callModel(env: Env, model: string, messages: { role: string; content: string }[], schema: Record<string, unknown>, maxTokens: number, temperature = 0.3, timeoutMs = MODEL_CALL_TIMEOUT_MS): Promise<{ raw: unknown; usage: Usage }> {
-  if (isClaudeModel(model)) return withTimeout(callClaude(env, model, messages, maxTokens, timeoutMs), timeoutMs, `model call (${model})`);
+  if (isExternalModel(model)) {
+    if (env.PLAN_API_URL && env.PLAN_API_KEY) return withTimeout(callOpenAICompat(env, model, messages, maxTokens, temperature, timeoutMs), timeoutMs, `model call (${model})`);
+    if (isClaudeModel(model)) return withTimeout(callClaude(env, model, messages, maxTokens, timeoutMs), timeoutMs, `model call (${model})`);
+    throw new Error(`no road to model ${model}: set PLAN_API_URL + PLAN_API_KEY, or ANTHROPIC_API_KEY for a claude- model`);
+  }
   const ai = env.AI as unknown as AiRunner;
   // gpt-oss on Workers AI reasons before it answers, and the reasoning is billed against max_tokens: at the planner's
   // budgets its JSON came back cut off mid-string every time (0/10 on 13 September, 0/2 again on 20 September, both
