@@ -462,7 +462,12 @@ export const ACCENT_LIGHT: Record<string, string> = {
  */
 export function castFor(cast: readonly CastMember[], imagePrompt: string): CastMember[] {
   const p = imagePrompt.toLowerCase();
-  const named = cast.filter((m) => m.name.trim() && (p.includes(m.name.trim().toLowerCase()) || headNounIn(m.name, imagePrompt)));
+  // The head noun stands for a character only when no other character shares it: "the warrior" and "the dark
+  // warrior" both end in "warrior", and matching on it dressed the hero as the villain in every shot of job
+  // gt_jm5btrj8 (20 September 2026). With a shared head noun only the whole name counts.
+  const heads = cast.map((m) => headNoun(m.name));
+  const unique = (i: number) => heads[i] !== "" && heads.filter((h) => h === heads[i]).length === 1;
+  const named = cast.filter((m, i) => m.name.trim() && (p.includes(m.name.trim().toLowerCase()) || (unique(i) && headNounIn(m.name, imagePrompt))));
   if (named.length || cast.length !== 1) return named;
   // A film with ONE recurring character: a picture that says "she", "her", "he" or "the character" shows that
   // character, whatever the planner called her in that sentence. Measured on job gt_7f7aaac6 (19 September 2026):
@@ -477,8 +482,9 @@ export const PRONOUN_HINTS = /(?<![\p{L}])(?:she|her|hers|herself|he|him|his|him
  * prompt: a planner that writes "the chef decorates a cake" means the pastry chef of the cast. Four letters or more,
  * so "the man" does not fire on "manuscript" and a two-letter tail matches nothing.
  */
+export const headNoun = (name: string): string => name.trim().toLowerCase().split(/\s+/).pop() ?? "";
 export function headNounIn(name: string, imagePrompt: string): boolean {
-  const head = name.trim().toLowerCase().split(/\s+/).pop() ?? "";
+  const head = headNoun(name);
   if (head.length < 4) return false;
   return new RegExp(`(?<![\\p{L}])${escapeRe(head)}(?![\\p{L}])`, "iu").test(imagePrompt);
 }

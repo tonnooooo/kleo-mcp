@@ -207,7 +207,11 @@ def cast_in(direction, image_prompt):
         look = " ".join(str(m.get("look") or "").split()).strip()
         if name and look:
             cast.append({"name": name, "look": look})
-    named = [m for m in cast if m["name"].lower() in lowered or head_noun_in(m["name"], str(image_prompt or ""))]
+    # A head noun stands for a character only when no other character shares it ("the warrior" / "the dark warrior":
+    # matching on "warrior" dressed the hero as the villain in every shot of job gt_jm5btrj8). Mirrors castFor().
+    heads = [(m["name"].strip().lower().split() or [""])[-1] for m in cast]
+    unique = [h != "" and heads.count(h) == 1 for h in heads]
+    named = [m for i, m in enumerate(cast) if m["name"].lower() in lowered or (unique[i] and head_noun_in(m["name"], str(image_prompt or "")))]
     if named or len(cast) != 1:
         return named
     return cast if PRONOUN_HINTS.search(str(image_prompt or "")) else []

@@ -199,6 +199,12 @@ test("castFor: the cast name, its head noun, or — with one character — a pro
   assert.deepEqual(names(two, "She holds a spoon"), []);
   assert.deepEqual(names(two, "The baker and the pastry chef at the oven"), ["the pastry chef", "the baker"]);
   assert.deepEqual(names(two, "The chef at the oven"), ["the pastry chef"]);
+  // A head noun two characters share stands for neither: "the warrior" and "the dark warrior" (job gt_jm5btrj8, the
+  // hero drawn as the hooded villain in every shot). Only the whole name attaches a look then.
+  const duel = [{ name: "the warrior", look: "a young man in a brown leather jacket" }, { name: "the dark warrior", look: "a hooded figure in a dark robe and a mask" }];
+  assert.deepEqual(names(duel, "The warrior walks towards the ruins"), ["the warrior"], "the whole name of the hero, not the villain's head noun");
+  assert.deepEqual(names(duel, "A warrior walks towards the ruins"), [], "the bare shared noun names nobody");
+  assert.deepEqual(names(duel, "The dark warrior emerges from the shadows"), ["the warrior", "the dark warrior"].filter((n) => n === "the dark warrior" || "the dark warrior emerges from the shadows".includes("the warrior")), "the villain's whole name; 'the warrior' is not a substring of it");
   assert.equal(headNounIn("the man", "a man at the window"), false, "a three-letter head is never matched (manuscript)");
   assert.equal(headNounIn("the captain", "the captain's chair"), true);
   // pictureContext follows the same rule, so the worker (its mirror) and the server draw the same picture.

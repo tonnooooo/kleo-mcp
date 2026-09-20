@@ -646,6 +646,10 @@ class DirectionTest(unittest.TestCase):
         two = {"cast": chef["cast"] + [{"name": "the baker", "look": "a tall man in a white apron"}]}
         self.assertEqual(names(two, "She holds a spoon"), [])
         self.assertEqual(names(two, "The baker and the pastry chef at the oven"), ["the pastry chef", "the baker"])
+        duel = {"cast": [{"name": "the warrior", "look": "a young man in a brown leather jacket"}, {"name": "the dark warrior", "look": "a hooded figure in a dark robe and a mask"}]}
+        self.assertEqual(names(duel, "The warrior walks towards the ruins"), ["the warrior"], "a shared head noun stands for neither: only the whole name")
+        self.assertEqual(names(duel, "A warrior walks towards the ruins"), [])
+        self.assertEqual(names(duel, "The dark warrior emerges from the shadows"), ["the dark warrior"])
         self.assertFalse(kp.head_noun_in("the man", "a man at the window"))
         self.assertTrue(kp.head_noun_in("the captain", "the captain's chair"))
         self.assertTrue(kp.cast_for(chef, "She turns the cake out of its tin").startswith("the pastry chef: a thin woman"))
