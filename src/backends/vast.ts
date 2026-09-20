@@ -204,7 +204,21 @@ export async function searchOffers(env: Env, style?: string | null, phase?: stri
     limit: 10,
   };
   const r = await vast<{ offers?: Offer[] }>(env, "POST", "/bundles/", query);
-  return r.offers ?? [];
+  return (r.offers ?? []).filter((o) => !geoExcluded(env.VAST_GEO_EXCLUDE ?? DEFAULT_GEO_EXCLUDE, o.geolocation));
+}
+
+/**
+ * Countries whose hosts cannot reach ghcr.io at speed: the worker image is 15 GB and every rental pulls it. Measured
+ * 20 September 2026 — rental to the worker's first message was 0.6-6.6 min on 19 US/CA/EU/JP hosts, and a Shanghai
+ * RTX 3090 with 1360 Mbit/s "down" was still pulling layers after 25 minutes (job gt_ebtbsbq4): the bandwidth figure
+ * is measured to somewhere else. Vast's geolocation is "City, CC" on an offer and "CC" alone on some; both are read.
+ */
+export const DEFAULT_GEO_EXCLUDE = "CN";
+export function geoExcluded(list: string, geo: string | null | undefined): boolean {
+  const codes = list.split(",").map((c) => c.trim().toUpperCase()).filter(Boolean);
+  if (!codes.length || !geo) return false;
+  const cc = geo.trim().split(",").pop()?.trim().toUpperCase() ?? "";
+  return codes.includes(cc);
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

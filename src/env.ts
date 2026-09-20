@@ -91,6 +91,7 @@ export interface Env {
   /** Hard ceiling on estimated kie.ai dollars per UTC day (default 5.00); over it the footage call refuses. */
   DAILY_FOOTAGE_BUDGET_USD?: string;
   VAST_MIN_INET?: string;   // Mbit/s down the host must have (default 800): the image pull is the slowest part of a job
+  VAST_GEO_EXCLUDE?: string; // country codes never rented, comma-separated (default "CN": ghcr.io crawls from there, 25+ min pulls)
   VAST_MIN_CPU?: string;      // effective cores required (the Keou renderer is CPU-bound)
   VAST_MIN_RAM_GB?: string;
   VAST_BOOTSTRAP_URL?: string; // raw URL of worker/kleo_worker.py, for images that do not ship it

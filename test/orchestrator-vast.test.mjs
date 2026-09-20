@@ -34,7 +34,7 @@ before(async () => {
     stdin: {
       contents: `export * from "./src/jobs.ts"; export * from "./src/orchestrator.ts"; export * from "./src/db.ts";
         export * from "./src/schema.ts"; export * from "./src/templates.ts";
-        export { vastBackend, listKleoInstances, vastStatus, GONE, jobLabel, profileFor } from "./src/backends/vast.ts";`,
+        export { vastBackend, listKleoInstances, vastStatus, GONE, jobLabel, profileFor, geoExcluded, DEFAULT_GEO_EXCLUDE } from "./src/backends/vast.ts";`,
       resolveDir: ROOT, loader: "ts",
     },
     bundle: true, write: false, format: "esm", platform: "neutral", target: "es2022", logLevel: "silent", external: ["@anthropic-ai/sdk"], // the planner on Claude (20 September) loads the SDK only when called, which no test here does
@@ -846,4 +846,15 @@ test("an animatic rents the pictures card whatever the footage switch says: neve
   assert.deepEqual(drawn.need, m.machineFor("cartoon"), "an animatic is that same pictures job");
   assert.equal(drawn.disk, 80, "and the ordinary disk, not the model's 150 GB");
   assert.equal(m.profileFor(env, "realistic", "finish", "local", true).need.minVramGb, 0, "the finish profile still wins over everything");
+});
+
+
+test("a host in an excluded country is never rented: ghcr.io crawls from there (20 September 2026, gt_ebtbsbq4)", async () => {
+  assert.equal(m.DEFAULT_GEO_EXCLUDE, "CN");
+  assert.equal(m.geoExcluded("CN", "Shanghai, CN"), true);
+  assert.equal(m.geoExcluded("CN", "CN"), true);
+  assert.equal(m.geoExcluded("CN, RU", "Moscow, RU"), true);
+  assert.equal(m.geoExcluded("CN", "Arizona, US"), false);
+  assert.equal(m.geoExcluded("", "Shanghai, CN"), false, "an empty list excludes nobody");
+  assert.equal(m.geoExcluded("CN", undefined), false, "an offer with no location is not judged");
 });
