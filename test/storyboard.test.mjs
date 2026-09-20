@@ -934,12 +934,14 @@ test("PLAN_API_URL + PLAN_API_KEY: every planning call goes to an OpenAI-compati
     assert.deepEqual(out.usage, { prompt_tokens: 200, completion_tokens: 40, total_tokens: 240 });
     assert.equal(seen[0].url, "https://openrouter.ai/api/v1/chat/completions", "one slash, whatever the base ends with");
     assert.equal(seen[0].auth, "Bearer or-test");
-    assert.deepEqual(seen[0].body.messages, [{ role: "system", content: "You output JSON." }, { role: "user", content: "Plan it." }]);
+    assert.deepEqual(seen[0].body.messages, [{ role: "system", content: [{ type: "text", text: "You output JSON.", cache_control: { type: "ephemeral" } }] }, { role: "user", content: "Plan it." }], "the system prompt is cached on a Claude model");
     assert.equal(seen[0].body.temperature, undefined, "no sampling parameters for a Claude model, OpenRouter passes them through");
+    assert.deepEqual(seen[0].body.reasoning, { effort: "low" }, "measured: 0 reasoning tokens, same JSON, 40% cheaper");
     assert.ok(seen[0].body.max_tokens >= 8000);
     const gpt = await callModel(env, "openai/gpt-5-mini", [{ role: "user", content: "x" }], {}, 700, 0.3, 5000);
     assert.deepEqual(gpt.raw, { title: "Test", scenes: [] });
     assert.equal(seen[1].body.temperature, 0.3, "other models keep the planner's temperature");
+    assert.deepEqual(seen[1].body.messages, [{ role: "user", content: "x" }], "no cache block for a non-Claude model");
     // An error in a 200 body, and a real 5xx: both errors, the second one transient.
     await assert.rejects(callModel(env, "broken/model", [{ role: "user", content: "x" }], {}, 100, 0.3, 5000), /plan api: model not found/);
     await assert.rejects(callModel(env, "slow/model", [{ role: "user", content: "x" }], {}, 100, 0.3, 5000), (e) => /plan api 503/.test(String(e)) && isTransientAiError(e));

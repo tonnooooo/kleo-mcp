@@ -1292,7 +1292,12 @@ async function callOpenAICompat(env: Env, model: string, messages: { role: strin
   if (!env.PLAN_API_URL || !env.PLAN_API_KEY) throw new Error(`PLAN_MODEL ${model} needs PLAN_API_URL and the PLAN_API_KEY secret`);
   const url = `${env.PLAN_API_URL.replace(/\/+$/, "")}/chat/completions`;
   const claude = /claude/i.test(model);
-  const body: Record<string, unknown> = { model, messages, max_tokens: Math.max(8000, maxTokens + 4000), ...(claude ? {} : { temperature }) };
+  // Measured on the direction call through OpenRouter (20 September 2026, Sonnet 5): default = 1024 reasoning tokens,
+  // 22 s, 0.026 $; reasoning effort low = 0 reasoning tokens, 11 s, 0.015 $, same valid JSON. Low effort for every
+  // external model (OpenRouter drops the field for models without reasoning), and the system prompt marked for
+  // Anthropic's prompt cache: it is the same 3-4k tokens on all seven calls of a film.
+  const wire = messages.map((m) => (claude && m.role === "system" ? { role: "system", content: [{ type: "text", text: m.content, cache_control: { type: "ephemeral" } }] } : m));
+  const body: Record<string, unknown> = { model, messages: wire, max_tokens: Math.max(8000, maxTokens + 4000), reasoning: { effort: "low" }, ...(claude ? {} : { temperature }) };
   const doFetch = anthropicFetch ?? fetch;
   const r = await doFetch(url, { method: "POST", headers: { authorization: `Bearer ${env.PLAN_API_KEY}`, "content-type": "application/json", "HTTP-Referer": "https://mcp.kleooai.com", "X-Title": "Kleo" }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
   const text = await r.text();
