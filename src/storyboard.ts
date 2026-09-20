@@ -27,7 +27,7 @@ import {
  * the world of the video was never written down, nothing said what must NOT appear, and no colour meant anything.
  */
 import {
-  directionProblems, missingFacts, sectionOfScene, enliven, screenTextProblems, notEnglish, formatTalk, D as DL,
+  directionProblems, missingFacts, sectionOfScene, enliven, screenTextProblems, notEnglish, formatTalk, storyRequest, D as DL,
   type Direction, type Section,
 } from "./direction.ts";
 // The shot grammar: the ten story kinds and the one preset table that turns a kind into a camera move.
@@ -552,7 +552,7 @@ function contextBlock(job: PlanJob, plan: Plan, treatment?: Treatment | null, fu
   const t = findTemplate(job.template);
   return `TEMPLATE: ${t?.name ?? job.template} (${job.template}). BRIEF: ${plan.brief.guidance}
 USER REQUEST (the video is about this; keep every fact, name and constraint from it):
-"""${job.prompt.trim()}"""${treatment ? `\n${treatmentBlock(treatment, full)}` : ""}`;
+"""${storyRequest(job.prompt)}"""${treatment ? `\n${treatmentBlock(treatment, full)}` : ""}`;
 }
 
 /* ------------------------------------------------------------------ the direction: step zero of the reasoning */
@@ -617,7 +617,7 @@ export function directionPrompt(job: PlanJob, plan: Plan, treatment?: Treatment 
   // narrator have been decided, and the direction writes the cast, the objects and the exclusions INSIDE them.
   const under = treatment ? `\n${treatmentBlock(treatment, true)}\nThe direction is written UNDER this treatment: its subject is the treatment's angle, its world is the treatment's visual language, its tone is the narrator's register, and its sections are the treatment's acts fitted to the shape below.\n` : "";
   return `USER REQUEST (read it as a request, not as raw material):
-"""${job.prompt.trim()}"""
+"""${storyRequest(job.prompt)}"""
 TEMPLATE: ${t?.name ?? job.template}. LENGTH: ${plan.duration} seconds, about ${scenes} scenes, narrated in ${lang}.
 ${under}
 TASK: write the DIRECTION of this one film, before any scene exists. Return one JSON object:
@@ -1572,7 +1572,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     let feedback: string[] | undefined;
     for (let attempt = 1; attempt <= 2 && !treatment; attempt++) {
       let raw: unknown;
-      try { raw = clean(await call(treatmentPrompt({ prompt: job.prompt, duration_s: plan.duration, format: plan.format, language: plan.language, look: planLook }, v, feedback), treatmentSchema(), TREATMENT_MAX_TOKENS, { system: MASTER_PROMPT, temperature: TREATMENT_TEMPERATURE, model: env.TREATMENT_MODEL || undefined })); }
+      try { raw = clean(await call(treatmentPrompt({ prompt: storyRequest(job.prompt), duration_s: plan.duration, format: plan.format, language: plan.language, look: planLook }, v, feedback), treatmentSchema(), TREATMENT_MAX_TOKENS, { system: MASTER_PROMPT, temperature: TREATMENT_TEMPERATURE, model: env.TREATMENT_MODEL || undefined })); }
       catch (e) { if (e instanceof PlanBudgetError) throw e; history.push([`treatment: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) { transient = e; break; } continue; }
       // The second answer is held to the lenient rule: a short prose is asked to be fixed once, then kept.
       const t = repairTreatment(raw, plan.duration, v, plan.language, { lenient: attempt > 1, look: planLook });

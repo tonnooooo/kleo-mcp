@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor, notEnglish, foreignPictureFields, lightsPictures, headNounIn, thinLook, formatTalk,
+  directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor, notEnglish, foreignPictureFields, lightsPictures, headNounIn, thinLook, formatTalk, storyRequest,
   castFor, conformity, ACCENT_LIGHT, stillness, enliven, livingClause, ENLIVEN_CLAUSES, D,
 } from "../src/direction.ts";
 import { validateStoryboard, qualityProblems, directionOf, narrationOf, pictureScenes, CINEMA_ACCENTS, SHOTS_MIN_CINEMA, shotRangeText } from "../src/keou-contract.ts";
@@ -170,6 +170,16 @@ test("a cast look is a description a painter can draw twice, never a name; the n
   assert.equal(formatTalk("A young warrior receives a transmission from a planet that no longer exists."), null);
   assert.equal(formatTalk("She waits thirty seconds before she answers."), null, "spelled-out time in the story is the story");
   assert.equal(formatTalk("The ship shorts out and falls silent."), null, "'shorts' as a verb is not the format");
+  // The request itself loses its sentences about the video before the planner reads it (gt_jm5btrj8: told once
+  // to drop "30-second", the 17B wrote it into the narration again — because the request still said it).
+  const req = "A 30-second vertical YouTube Short set in an original space-fantasy universe. A young warrior receives a transmission saying the enemy survived. Make it cinematic and tense. Use original characters, not copyrighted Star Wars characters.";
+  const story = storyRequest(req);
+  assert.equal(formatTalk(story), null, story);
+  assert.match(story, /^A young warrior receives a transmission/);
+  assert.match(story, /Use original characters/);
+  assert.match(story, /set in an original space-fantasy universe\.$/, "the subject half of the format sentence is rescued");
+  assert.equal(storyRequest("Una pasticcera prepara torte per i bambini poveri del paese."), "Una pasticcera prepara torte per i bambini poveri del paese.", "nothing to cut, nothing changes");
+  assert.equal(storyRequest("A 30-second vertical Short."), "A 30-second vertical Short.", "a request that is only format is kept, not emptied");
 });
 
 test("castFor: the cast name, its head noun, or — with one character — a pronoun, attaches the look", () => {

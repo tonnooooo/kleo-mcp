@@ -422,6 +422,25 @@ export function formatTalk(voice: string): string | null {
   return m ? m[0] : null;
 }
 
+/**
+ * The request with its sentences ABOUT THE VIDEO taken out — "A 30-second vertical YouTube Short set in…", "Make it
+ * cinematic", "Use original characters" stay if they carry no format word; "narrated in Italian, 9:16" goes. The
+ * planner's prompts paste the request verbatim, and the 17B copies a sentence about the format straight into the
+ * narration and the direction's subject (job gt_jm5btrj8: told once to drop "30-second", it wrote it again). The
+ * length, format and language reach every prompt as parameters, so nothing is lost. When every sentence would go,
+ * the request stays as written: a request that is nothing but format still has to be planned.
+ */
+export function storyRequest(prompt: string): string {
+  const text = prompt.trim();
+  const sentences = text.split(/(?<=[.!?])\s+/);
+  const kept = sentences.filter((x) => !formatTalk(x));
+  if (!kept.length || kept.length === sentences.length) return text;
+  // A sentence that carried the subject as well as the format keeps its subject: cut the leading "In a 30-second
+  // vertical YouTube Short," style clause and keep what follows when it still reads as a sentence.
+  const rescued = sentences.filter((x) => formatTalk(x)).map((x) => x.replace(/^.*?\b(?:short|shorts|video|reel|clip|film|animatic)\b[,:]?\s*/iu, "").trim()).filter((x) => x.split(/\s+/).length >= 4 && !formatTalk(x));
+  return [...kept, ...rescued].join(" ");
+}
+
 /* ------------------------------------------------------------------ the direction reaches the picture */
 
 /**
