@@ -27,7 +27,7 @@ import {
  * the world of the video was never written down, nothing said what must NOT appear, and no colour meant anything.
  */
 import {
-  directionProblems, missingFacts, sectionOfScene, enliven, screenTextProblems, notEnglish, D as DL,
+  directionProblems, missingFacts, sectionOfScene, enliven, screenTextProblems, notEnglish, formatTalk, D as DL,
   type Direction, type Section,
 } from "./direction.ts";
 // The shot grammar: the ten story kinds and the one preset table that turns a kind into a camera move.
@@ -608,7 +608,7 @@ export function sectionSkeleton(template: string, scenes: number): { name: strin
 /* Exported for scripts/direction-measure, the bench that asks the real model to choose a look and counts how often
    it is right. Nothing else imports these three, and nothing about them changed to make them exportable: a number
    measured on a copy of the prompt is a number about the copy. */
-export function directionPrompt(job: PlanJob, plan: Plan, treatment?: Treatment | null): string {
+export function directionPrompt(job: PlanJob, plan: Plan, treatment?: Treatment | null, feedback?: string[]): string {
   const t = findTemplate(job.template);
   const scenes = Math.max(plan.scenes[0], Math.min(plan.scenes[1], Math.round((plan.scenes[0] + plan.scenes[1]) / 2)));
   const skeleton = sectionSkeleton(job.template, scenes);
@@ -630,7 +630,7 @@ TASK: write the DIRECTION of this one film, before any scene exists. Return one 
   "tone":"<=${DL.tone}, e.g. calm and factual / playful / ominous",
   "must_keep":[up to ${DL.mustKeep.max} strings <=${DL.mustKeep.len}: facts, names, numbers and constraints COPIED FROM THE REQUEST that the finished narration must still say. Use [] if the request states none. Never invent one.],
   "world":"<=${DL.world}, the place, period and material everything is drawn in — one sentence a picture can be built from",
-  "cast":[up to ${DL.cast.max} {"name":"<=${DL.cast.name}, how the narration refers to them","look":"<=${DL.cast.look}, the ONE description reused word for word in every picture that shows them"}],
+  "cast":[up to ${DL.cast.max} {"name":"<=${DL.cast.name}, how the narration refers to them","look":"<=${DL.cast.look}, the ONE description reused word for word in every picture that shows them: one sentence a painter could work from — age or build, face, hair, clothes with their colours, one distinctive item. Never a name or a role ('a young warrior' is not a look)"}],
   "objects":[${DL.objects.min}-${DL.objects.max} strings <=${DL.objects.len}: the object vocabulary of THIS film and nothing else — pirates: beach, sand, chest, red-sailed ship; space: rocket, launch pad, orbital station],
   "forbidden":[${DL.forbidden.min}-${DL.forbidden.max} strings <=${DL.forbidden.len}: what must NEVER appear. Name the things a picture generator adds by habit and the things that belong to a DIFFERENT subject than this one],
   "sections":[${skeleton.length} objects, ONE PER SECTION BELOW, in the same order: {"name":"<=${DL.sections.name} UPPERCASE, the section's name FOR THIS FILM","means":"<=${DL.sections.means}, what its colour stands for in this story"}]}}
@@ -651,7 +651,7 @@ RULES
   · explainer — the answer is ONE IDEA TAKEN APART until the viewer believes something different at the end: one mechanism, one object, one misconception, and nothing to list or compare. Hand-drawn line art where every spoken phrase has its own literal drawing. The words "explain", "why", "how" in a request do NOT choose it — most requests for cyber and realistic say "explain" too. What chooses it is that the answer is a single thing and the viewer's belief about it changes.
   · stickman — only if the user asked for a stickman by name.
   THE LINE BETWEEN cyber AND explainer IS THE ONE THAT MATTERS, and it is not the subject and not the verb. Ask: does the answer have PARTS? A flow from one named thing to the next, a breakdown into shares or percentages, several items, two things compared, a set of steps or numbers — that is cyber, whatever the request calls it. "Show how our data goes from the app to the servers to third parties" is cyber: three named parts and a flow between them. "Break down how much of a phone bill is the network" is cyber: shares of a whole. "The five costliest cyberattacks in history" is cyber: five items with figures. "Explain what a VPN is to my mother" is explainer: one thing, no parts, and she ends up believing something new. And a photographable subject with no mechanism in it — bread going mouldy, choosing a mattress, a place, a product — is realistic even when the request says "explain why". Decide which of these the request looks like before you decide anything else about it.
-- Everything you write here is in ${lang} except the enum values (style, accent) and THE PICTURE FIELDS — "world", every cast "name" and "look", "objects" and "forbidden" — which are written in ENGLISH whatever the film speaks: they are pasted into every picture prompt, and the picture model reads English only ("la pasticcera" becomes "the pastry chef").`;
+- Everything you write here is in ${lang} except the enum values (style, accent) and THE PICTURE FIELDS — "world", every cast "name" and "look", "objects" and "forbidden" — which are written in ENGLISH whatever the film speaks: they are pasted into every picture prompt, and the picture model reads English only ("la pasticcera" becomes "the pastry chef").${feedback?.length ? `\n\nYOUR PREVIOUS ANSWER WAS REJECTED with these problems. Fix every one of them and return the whole object again:\n- ${feedback.join("\n- ")}` : ""}`;
 }
 
 export const directionSchema = (): Record<string, unknown> => ({
@@ -1598,13 +1598,16 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   const sceneGuess = plan.style === "sketch"
     ? plan.scenes[0]
     : Math.max(plan.scenes[0], Math.min(plan.scenes[1], Math.round((plan.scenes[0] + plan.scenes[1]) / 2)));
+  let directionFeedback: string[] | undefined;
   for (let attempt = 1; attempt <= 2 && !direction; attempt++) {
     let raw: unknown;
-    try { raw = clean(await call(directionPrompt(job, plan, treatment), directionSchema(), 900)); }
+    try { raw = clean(await call(directionPrompt(job, plan, treatment, directionFeedback), directionSchema(), 900)); }
     catch (e) { if (e instanceof PlanBudgetError) throw e; history.push([`direction: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) { transient = e; break; } continue; }
     const o = isObj(raw) ? raw : {};
     const d = repairDirection(o.direction, job.template, sceneGuess);
-    if (!d) { history.push([`direction: rejected (${directionProblems(isObj(o.direction) ? o.direction : {}, { accents: CINEMA_ACCENTS, scenes: sceneGuess }).slice(0, 3).join("; ")})`]); continue; }
+    // The second attempt is told what was wrong with the first: a direction refused twice on the same thin cast look
+    // (the model had no way to know) left the film with no direction at all, and no direction is the worst outcome.
+    if (!d) { directionFeedback = directionProblems(isObj(o.direction) ? o.direction : {}, { accents: CINEMA_ACCENTS, scenes: sceneGuess }); history.push([`direction: rejected (${directionFeedback.slice(0, 3).join("; ")})`]); continue; }
     direction = d;
     // The look the direction chose, unless the client named one: planFor() keeps the user's choice above everything.
     // The look the direction chose, unless the client named one — and never at a different price. The job was
@@ -1752,6 +1755,15 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
         got.forEach((g, i) => {
           const k = chunkScenes[i]?.kind;
           if (typeof g.kind === "string" && k && g.kind !== k) problems.push(`scene ${i + 1}: kind "${g.kind}" was missing its fields (${SCENE_KEYS[g.kind]?.join(", ") ?? "see the shapes"}) and was downgraded to hero; fill them in`);
+        });
+      }
+      // THE NARRATOR TELLS THE STORY, NEVER DESCRIBES THE VIDEO. The model copies the request's words about the
+      // format into the narration ("In a 30-second vertical YouTube Short, a young warrior receives a transmission…",
+      // job gt_6xchnk99) and the voice reads them out. Every look, every product.
+      if (plan.style !== "sketch") {
+        chunkScenes.forEach((sc, i) => {
+          const talk = formatTalk(String(sc.voice ?? ""));
+          if (talk) problems.push(`scene ${i + 1}: the narration talks about the video itself ("${talk}") — the viewer hears the story, never its length, format or platform: rewrite the "voice" line without it`);
         });
       }
       // Contract errors always retry; soft problems retry once, then the valid chunk is kept.

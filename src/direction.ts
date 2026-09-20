@@ -154,6 +154,8 @@ export function directionProblems(d: unknown, opts: DirectionOptions): string[] 
     if (!isObj(m)) { out.push(`direction.cast[${i}] must be {name, look}`); return; }
     add(badText(m.name, `cast[${i}].name`, D.cast.name));
     add(badText(m.look, `cast[${i}].look`, D.cast.look));
+    if (typeof m.look === "string" && thinLook(m.look))
+      out.push(`direction.cast[${i}].look "${m.look.trim()}" is a name, not a look: describe the character in one sentence a painter could work from — age or build, face, hair, clothes with their colours, one distinctive item (a 30-second Short about a warrior was drawn with a different face in every picture because its look was "a young Jedi-like warrior")`);
   });
 
   if (!Array.isArray(d.sections) || d.sections.length < D.sections.min || d.sections.length > D.sections.max) {
@@ -395,6 +397,29 @@ export function enliven(imagePrompt: string, max: number): string {
   if (room < 20) return base;                      // too tight to say both: leave the author's words alone
   const cut = base.slice(0, room);
   return (cut.includes(" ") ? cut.slice(0, cut.lastIndexOf(" ")) : cut).replace(/[,\s]+$/, "") + tail;
+}
+
+/**
+ * A cast look too short to draw the same person twice. Job gt_6xchnk99 (20 September 2026): "a young Jedi-like
+ * warrior" was the whole look, so the picture model invented a new face for every shot and the viewer saw a warped
+ * one. Six words is the floor: "a tall grey-bearded man in a red coat" passes, "the captain" and "a young Jedi-like warrior" do not.
+ */
+export function thinLook(look: string): boolean {
+  // A hyphenated word is one word ("Jedi-like", "grey-bearded"): fewer than six of them is a role, not a look.
+  return (look.trim().match(/[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*/gu) ?? []).length < 6;
+}
+
+/**
+ * Narration that describes the video instead of telling the story. The planning model copies the request's own
+ * words about the format into the first line ("In a 30-second vertical YouTube Short, a young warrior receives…",
+ * job gt_6xchnk99) and the narrator reads them out. Returns the offending words, or null. English and Italian.
+ */
+const FORMAT_TALK = /(?<![\p{L}])(?:\d+[- ]?(?:second|seconds|sec|secondi)(?![\p{L}])|\d+ ?s(?![\p{L}])|youtube shorts?|tiktok|vertical|horizontal|verticale|orizzontale|9:16|16:9|animatic|storyboard|voice-?over|narrat(?:or|ion|ore|azione)|in this (?:video|film|short)|in questo (?:video|film))(?![\p{L}])/iu;
+/** "Short" as YouTube's noun is capitalised; "the ship shorts out" is the story. */
+const SHORT_NOUN = /(?<![\p{L}])Shorts?(?![\p{L}])/u;
+export function formatTalk(voice: string): string | null {
+  const m = FORMAT_TALK.exec(voice) ?? SHORT_NOUN.exec(voice);
+  return m ? m[0] : null;
 }
 
 /* ------------------------------------------------------------------ the direction reaches the picture */

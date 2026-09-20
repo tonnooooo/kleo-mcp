@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor, notEnglish, foreignPictureFields, lightsPictures, headNounIn,
+  directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor, notEnglish, foreignPictureFields, lightsPictures, headNounIn, thinLook, formatTalk,
   castFor, conformity, ACCENT_LIGHT, stillness, enliven, livingClause, ENLIVEN_CLAUSES, D,
 } from "../src/direction.ts";
 import { validateStoryboard, qualityProblems, directionOf, narrationOf, pictureScenes, CINEMA_ACCENTS, SHOTS_MIN_CINEMA, shotRangeText } from "../src/keou-contract.ts";
@@ -149,6 +149,27 @@ test("the animation look gets no light in its pictures, and the cast still leads
   assert.equal(lightsPictures("animation"), false);
   assert.equal(lightsPictures("realistic"), true);
   assert.equal(lightsPictures(null), true, "an unknown look keeps the light");
+});
+
+test("a cast look is a description a painter can draw twice, never a name; the narration never describes the video", () => {
+  // Job gt_6xchnk99 (20 September 2026): look "a young Jedi-like warrior", narration "In a 30-second vertical YouTube
+  // Short, a young warrior receives a transmission…" — a new face in every picture, and the format read out loud.
+  assert.equal(thinLook("a young Jedi-like warrior"), true);
+  assert.equal(thinLook("the captain"), true);
+  assert.equal(thinLook("a tall grey-bearded man in a red coat"), false);
+  assert.equal(thinLook("a young man in his twenties, short dark hair, light stubble, sand-coloured hooded robe"), false);
+  const d = { ...good(), cast: [{ name: "the young warrior", look: "a young Jedi-like warrior" }] };
+  const p = directionProblems(d, { accents: CINEMA_ACCENTS, scenes: d.sections.reduce((n, s) => n + s.scenes, 0) });
+  assert.ok(p.some((m) => /cast\[0\]\.look "a young Jedi-like warrior" is a name, not a look/.test(m)), p.join("\n"));
+  assert.deepEqual(directionProblems(good(), { accents: CINEMA_ACCENTS, scenes: good().sections.reduce((n, s) => n + s.scenes, 0) }), []);
+  assert.equal(formatTalk("In a 30-second vertical YouTube Short, a young warrior receives a transmission."), "30-second");
+  assert.equal(formatTalk("A young warrior receives a transmission in this video about a lost temple."), "in this video");
+  assert.equal(formatTalk("Il narratore racconta la storia di una pasticcera."), "narratore");
+  assert.ok(formatTalk("In uno Short verticale di 30 secondi, la pasticcera prepara una torta."), "Italian format words are caught too");
+  assert.equal(formatTalk("Il primo Short della serie apre sulla cucina."), "Short");
+  assert.equal(formatTalk("A young warrior receives a transmission from a planet that no longer exists."), null);
+  assert.equal(formatTalk("She waits thirty seconds before she answers."), null, "spelled-out time in the story is the story");
+  assert.equal(formatTalk("The ship shorts out and falls silent."), null, "'shorts' as a verb is not the format");
 });
 
 test("castFor: the cast name, its head noun, or — with one character — a pronoun, attaches the look", () => {

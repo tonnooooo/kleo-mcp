@@ -855,3 +855,45 @@ test("PLAN_MODEL sends every planning call to the Anthropic API — only when th
     await assert.rejects(callModel({}, "claude-opus-5", [{ role: "user", content: "x" }], {}, 100), /needs the ANTHROPIC_API_KEY secret/);
   } finally { setAnthropicFetch(undefined); }
 });
+
+
+test("a narration that describes the video is sent back once; a thin cast look is rejected with the reason and fixed on the second try", async () => {
+  // Job gt_6xchnk99 (20 September 2026): the 17B copied the request into the first line ("In a 30-second vertical
+  // YouTube Short…") and wrote "a young Jedi-like warrior" as the whole look of the cast.
+  const chunkAttempts = new Map();
+  let directionCalls = 0;
+  const env = fakeEnv((kind, user, attempt) => {
+    if (kind === "outline") return outlineFor(user, true);
+    const [from, to] = chunkRange(user);
+    const total = Number(/VIDEO OUTLINE \((\d+) scenes/.exec(user)[1]);
+    chunkAttempts.set(from, attempt);
+    const scenes = [];
+    for (let i = from; i < to; i++) {
+      const closing = i === total - 1;
+      const first = i === 0 && attempt === 1;
+      scenes.push({ id: `${String(i + 1).padStart(2, "0")}-part`, kind: closing ? "closing" : "cinema", chapter: `0${i + 1} PART`, accent: "cyan", title: `Part ${i + 1}`, hl: "Part", hold: 0.2,
+        voice: first ? "In a 30-second vertical YouTube Short, the young warrior receives a transmission from a dead planet." : `Scene ${i + 1}: the young warrior walks deeper into the ruined temple, one hand on the hilt.`,
+        shots: closing ? [{ image_prompt: "The young warrior alone in the dark temple, the blade lighting his face" }] : [{ image_prompt: `The young warrior crossing the desert ruins, scene ${i + 1}` }, { image_prompt: "The young warrior reading a flickering hologram in the cockpit" }] });
+    }
+    return { scenes };
+  }, {
+    direction: (kind, user) => {
+      directionCalls++;
+      const n = (user.match(/^ {2}\d+\. /gm) || []).length;
+      const thin = directionCalls === 1;
+      if (!thin) assert.match(user, /YOUR PREVIOUS ANSWER WAS REJECTED[\s\S]*is a name, not a look/, "the second try is told why the first was refused");
+      return { style: "realistic", why: "a place you could film", direction: {
+        subject: "A young warrior finds the enemy alive", goal: "Dread", audience: "Sci-fi fans", tone: "Tense", must_keep: [],
+        world: "A ruined desert planet under a twin sun, ancient stone temples", objects: ["temple", "energy sword", "spaceship", "hologram"], forbidden: ["logos", "text", "phones"],
+        cast: [{ name: "the young warrior", look: thin ? "a young Jedi-like warrior" : "a young man in his twenties with short dark hair and light stubble, in a sand-coloured hooded robe" }],
+        sections: Array.from({ length: n }, (_, i) => ({ name: `0${i + 1} OF THE STORY`, means: "what this part is for" })) } };
+    },
+  });
+  const r = await generateStoryboard(env, job("viral-short", 30, "9:16", "en", "A 30-second vertical YouTube Short: a young warrior receives a transmission saying the enemy survived.", "realistic"));
+  assert.equal(directionCalls, 2, "refused once, accepted once");
+  assert.match(r.direction.cast[0].look, /^a young man in his twenties/);
+  assert.ok(r.history.some((h) => h.some((m) => /direction: rejected \(direction\.cast\[0\]\.look "a young Jedi-like warrior" is a name/.test(m))), JSON.stringify(r.history));
+  assert.ok(r.history.some((h) => h.some((m) => /scene 1: the narration talks about the video itself \("30-second"\)/.test(m))), JSON.stringify(r.history));
+  assert.equal(chunkAttempts.get(0), 2, "the first chunk was asked again");
+  assert.doesNotMatch(r.storyboard.scenes[0].voice, /30-second|Short/, "and the finished narration tells the story");
+});
