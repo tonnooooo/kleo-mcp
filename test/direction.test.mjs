@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor, notEnglish, foreignPictureFields, lightsPictures, headNounIn, thinLook, formatTalk, storyRequest,
+  directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor, notEnglish, foreignPictureFields, lightsPictures, headNounIn, thinLook, formatTalk, storyRequest, dropLookFacts,
   castFor, conformity, ACCENT_LIGHT, stillness, enliven, livingClause, ENLIVEN_CLAUSES, D,
 } from "../src/direction.ts";
 import { validateStoryboard, qualityProblems, directionOf, narrationOf, pictureScenes, CINEMA_ACCENTS, SHOTS_MIN_CINEMA, shotRangeText } from "../src/keou-contract.ts";
@@ -180,6 +180,11 @@ test("a cast look is a description a painter can draw twice, never a name; the n
   assert.match(story, /set in an original space-fantasy universe\.$/, "the subject half of the format sentence is rescued");
   assert.equal(storyRequest("Una pasticcera prepara torte per i bambini poveri del paese."), "Una pasticcera prepara torte per i bambini poveri del paese.", "nothing to cut, nothing changes");
   assert.equal(storyRequest("A 30-second vertical Short."), "A 30-second vertical Short.", "a request that is only format is kept, not emptied");
+  // A must_keep item that is really the character's look is dropped: the narrator never reads a description aloud.
+  const cast = [{ name: "the pastry chef", look: "a thin woman with short blonde hair tied up, in a lilac apron" }];
+  assert.deepEqual(dropLookFacts(["short blonde hair tied up", "lilac apron", "festa a sorpresa", "the children of the village", "five mistakes"], cast), ["festa a sorpresa", "the children of the village", "five mistakes"]);
+  assert.deepEqual(dropLookFacts(["capelli biondi corti e raccolti", "grembiule lilla", "durata 30 secondi, circa 6 scene", "festa a sorpresa"], cast), ["festa a sorpresa"], "an appearance in Italian and the film's own length never reach the narrator");
+  assert.deepEqual(dropLookFacts(["lilac apron", "the harbour at dawn"], []), ["the harbour at dawn"], "an appearance is dropped even with no cast to compare");
 });
 
 test("castFor: the cast name, its head noun, or — with one character — a pronoun, attaches the look", () => {
@@ -286,8 +291,12 @@ test("a storyboard is held to the direction it carries", () => {
 
 test("a storyboard that contradicts its own direction is refused", () => {
   const facts = withDirection({ must_keep: ["a fact this narration never states anywhere at all"] });
-  const problems = qualityProblems(facts);
-  assert.ok(problems.some((p) => /direction\.must_keep says .* but the narration never says it/.test(p)), problems.join("\n"));
+  // The fidelity gate warns (20 September 2026): the planner feeds it back and reports what is left, and only a
+  // client-written storyboard is refused on it (jobs.ts) — a whole film died at the final assembly on one phrase.
+  assert.deepEqual(qualityProblems(facts).filter((p) => /must_keep/.test(p)), []);
+  const rf = validateStoryboard(facts, { format: facts.format, language: facts.language });
+  assert.equal(rf.ok, true, (rf.errors ?? []).join("\n"));
+  assert.ok(rf.warnings.some((p) => /direction\.must_keep says .* but the narration never says it/.test(p)), rf.warnings.join("\n"));
 
   const banned = withDirection();
   banned.direction.forbidden = ["treasure chest", "phone", "logo", "text in the picture"];

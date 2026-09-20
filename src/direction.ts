@@ -441,6 +441,27 @@ export function storyRequest(prompt: string): string {
   return [...kept, ...rescued].join(" ");
 }
 
+/**
+ * must_keep items that are really a character's LOOK. "capelli biondi corti e raccolti, grembiule lilla" was copied
+ * from the request into must_keep, the fidelity gate then forced the narrator to read it aloud, and the film opened
+ * on "Capelli biondi raccolti, grembiule lilla, la pasticcera prepara…" (film-make, 20 September 2026). An item is a
+ * look when three fifths of its content words are in some cast member's look; the appearance lives there, said once
+ * to the picture model and never to the viewer.
+ */
+export function dropLookFacts(mustKeep: readonly string[], cast: readonly CastMember[]): string[] {
+  const looks = cast.map((m) => new Set(words(m.look).filter((w) => !STOP.has(w))));
+  return mustKeep.filter((item) => {
+    // Never the film's own format ("durata 30 secondi, circa 6 scene" was copied out of the prompt's LENGTH line and
+    // read aloud in scene 5 of a pastry-chef film, 20 September 2026), never an appearance in any language.
+    if (formatTalk(item) || APPEARANCE.test(item)) return false;
+    const content = words(item).filter((w) => !STOP.has(w));
+    if (content.length < 2) return true;
+    return !looks.some((look) => content.filter((w) => look.has(w)).length / content.length >= 0.6);
+  });
+}
+/** Words that describe how someone looks, in the three narration languages: hair, clothes, build, colours on a person. */
+const APPEARANCE = /(?<![\p{L}])(?:hair|haired|blonde?|brunette|curly|beard(?:ed)?|moustache|apron|jacket|coat|dress|robe|cloak|hooded|boots|hat|cap|glasses|freckles|scar(?:red)?|slim|slender|thin|tall|short|stocky|athletic|build|capelli|biond[oaie]|castan[oaie]|ricci[oaie]?|barba|baffi|grembiule|giacca|cappotto|vestit[oaie]|mantell[oi]|stivali|cappell[oi]|occhiali|lentiggini|cicatric[ei]|magr[oaie]|snell[oaie]|alt[oaie]|bass[oaie]|robust[oaie]|cheveux|blond[es]?|barbe|tablier|veste|manteau|robe|capuche|bottes|chapeau|lunettes|mince|grand[es]?)(?![\p{L}])/iu;
+
 /* ------------------------------------------------------------------ the direction reaches the picture */
 
 /**

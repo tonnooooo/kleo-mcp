@@ -17,6 +17,8 @@ export interface Env {
   IMAGE_FIXTURE?: string;         // "1" (dev only): placeholder PNGs instead of Workers AI pictures
 
   AI_MODEL?: string; // default: storyboard.ts DEFAULT_MODEL
+  /** Minutes one planning attempt may take (default 4, storyboard.ts PLAN_BUDGET_MS): a slower, better model needs more. */
+  PLAN_BUDGET_MIN?: string;
   /** A Claude model for every planning call (claude-opus-5, claude-sonnet-5); used only when ANTHROPIC_API_KEY is set. */
   PLAN_MODEL?: string;
   /** Secret: the Anthropic API key that turns PLAN_MODEL on. */

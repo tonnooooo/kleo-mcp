@@ -27,7 +27,7 @@ import {
  * the world of the video was never written down, nothing said what must NOT appear, and no colour meant anything.
  */
 import {
-  directionProblems, missingFacts, sectionOfScene, enliven, screenTextProblems, notEnglish, formatTalk, storyRequest, D as DL,
+  directionProblems, missingFacts, sectionOfScene, enliven, screenTextProblems, notEnglish, formatTalk, storyRequest, dropLookFacts, D as DL,
   type Direction, type Section,
 } from "./direction.ts";
 // The shot grammar: the ten story kinds and the one preset table that turns a kind into a camera move.
@@ -115,6 +115,8 @@ export class StoryboardError extends Error {
  */
 export const MODEL_CALL_TIMEOUT_MS = 90_000;
 export const PLAN_BUDGET_MS = 4 * 60_000;
+/** The attempt's budget for this deployment: PLAN_BUDGET_MIN (minutes) when set, else PLAN_BUDGET_MS. A slower, better model needs more. */
+export const planBudgetMs = (env: Env): number => { const m = Number(env.PLAN_BUDGET_MIN); return Number.isFinite(m) && m > 0 ? m * 60_000 : PLAN_BUDGET_MS; };
 /** Thrown by the planner's own clock, never by the model: every stage lets it through instead of retrying on it. */
 export class PlanBudgetError extends StoryboardError {}
 /** The promise, or an error after `ms` — the timer is cleared either way, so a Worker never keeps a dead timer alive. */
@@ -525,7 +527,7 @@ const LANG_NAMES: Record<string, string> = { en: "English", it: "Italian", fr: "
 const list = (a: readonly string[]) => a.join(", ");
 const editorialKinds = () => KINDS.filter((k) => !["image", "story", "cinema"].includes(k));
 
-function systemPrompt(plan: Plan): string {
+export function systemPrompt(plan: Plan, reasoning = false): string {
   const kinds = plan.style === "cinema" || plan.style === "picture" ? "cinema, closing" : plan.style === "stickman" ? "story, closing" : plan.style === "sketch" ? "sketch" : list(editorialKinds());
   const lang = LANG_NAMES[plan.language] ?? plan.language;
   const rules = plan.style === "picture" ? SHOT_RULES : plan.style === "cinema" ? CINEMA_RULES : plan.style === "stickman" ? STICKMAN_RULES
@@ -541,7 +543,7 @@ The video is a Keou project in the "${plan.style}" style (Kleo look: ${plan.kleo
 Allowed scene kinds for this style: ${kinds}. The LAST scene of the video must have kind "closing".
 ${rules}${pictures}
 Enums (use these exact strings, nothing else): ${enums}
-Never use scene kind "image", never reference files or URLs. Scene ids are unique lowercase slugs like "01-hook". Text limits are hard limits, count characters. Narration and all on-screen text are in ${lang}; enum values stay in English.${plan.style === "picture" ? ` EVERY "image_prompt" IS WRITTEN IN ENGLISH whatever the narration's language: the picture model reads English only, and a prompt in ${lang} is drawn wrong.` : ""} Write the narration as spoken language: no emojis, no hashtags, no URLs, no stage directions. Do not invent quotes from real people.`;
+Never use scene kind "image", never reference files or URLs. Scene ids are unique lowercase slugs like "01-hook". ${reasoning ? "Text limits are approximate: stay short and NEVER count characters or words in your head — Kleo trims what runs over. Think briefly, answer at once." : "Text limits are hard limits, count characters."} Narration and all on-screen text are in ${lang}; enum values stay in English.${plan.style === "picture" ? ` EVERY "image_prompt" IS WRITTEN IN ENGLISH whatever the narration's language: the picture model reads English only, and a prompt in ${lang} is drawn wrong.` : ""} Write the narration as spoken language: no emojis, no hashtags, no URLs, no stage directions. Do not invent quotes from real people.`;
 }
 
 /**
@@ -640,7 +642,7 @@ ${skeleton.map((x, i) => `  ${i + 1}. ${x.name} · ${x.scenes} scene${x.scenes =
 Return exactly ${skeleton.length} sections, in that order. The scene counts and the colours are not yours to choose: they come from the ${t?.name ?? job.template} shape and they already add up to ${scenes}. Give each one the name it deserves in THIS story and say what its colour stands for here.
 
 RULES
-- must_keep is quoted from the request. If the user wrote "5 mistakes", "in Naples", "for beginners" or a number, it goes in must_keep and the narration must still contain it.
+- must_keep is quoted from the USER REQUEST above and from nothing else: never the LENGTH line, the template or these instructions. If the user wrote "5 mistakes", "in Naples", "for beginners" or a number, it goes in must_keep and the narration must still contain it. NEVER a character's appearance (hair, build, clothes, colours): that is cast.look, the narrator does not read descriptions aloud.
 - Do not invent sections, drop them or reorder them: the shape above is the one this kind of film has. Colour means a new part of the story, nothing else.
 - forbidden is what makes a film its own. A pirate film forbids modern objects, wifi symbols, phones, screens and logos; a film about a city forbids the objects of every other city. Write it for THIS video.
 - CHOOSE THE STYLE BY THE SHAPE OF THE ANSWER THE REQUEST IS ASKING FOR, never by its topic. The same subject can want two different looks, so asking "is this about security" answers nothing.
@@ -705,14 +707,15 @@ function repairDirection(raw: unknown, template: string, scenes: number): Direct
       scenes: bone.scenes,
     };
   });
+  const cast = (Array.isArray(raw.cast) ? raw.cast : []).filter(isObj).slice(0, DL.cast.max)
+    .map((m) => ({ name: cut(m.name, DL.cast.name), look: cut(m.look, DL.cast.look) })).filter((m) => m.name && m.look);
   const d: Direction = {
     subject: cut(raw.subject, DL.subject), goal: cut(raw.goal, DL.goal), audience: cut(raw.audience, DL.audience),
     tone: cut(raw.tone, DL.tone), world: cut(raw.world, DL.world),
-    must_keep: cutList(raw.must_keep, DL.mustKeep.max, DL.mustKeep.len),
+    must_keep: dropLookFacts(cutList(raw.must_keep, DL.mustKeep.max, DL.mustKeep.len), cast),
     objects: cutList(raw.objects, DL.objects.max, DL.objects.len),
     forbidden: cutList(raw.forbidden, DL.forbidden.max, DL.forbidden.len),
-    cast: (Array.isArray(raw.cast) ? raw.cast : []).filter(isObj).slice(0, DL.cast.max)
-      .map((m) => ({ name: cut(m.name, DL.cast.name), look: cut(m.look, DL.cast.look) })).filter((m) => m.name && m.look),
+    cast,
     sections,
   };
   return directionProblems(d, { accents: CINEMA_ACCENTS, scenes }).length ? null : d;
@@ -1251,6 +1254,8 @@ function extractJson(text: string): unknown {
  * claude-opus-5, 0.10 $ on claude-sonnet-5, against ~0.01 $ on the 17B.
  */
 export const planModel = (env: Env): string | undefined => (env.ANTHROPIC_API_KEY && env.PLAN_MODEL ? env.PLAN_MODEL : undefined);
+/** Models that think before they answer, and are told not to count. */
+export const isReasoningModel = (model: string): boolean => /^@cf\/openai\/gpt-oss/.test(model) || /^claude-/.test(model);
 export const isClaudeModel = (model: string): boolean => /^claude-/.test(model);
 /** Tests replace the transport; production uses the Worker's own fetch. */
 let anthropicFetch: typeof fetch | undefined;
@@ -1286,12 +1291,15 @@ export async function callModel(env: Env, model: string, messages: { role: strin
   const ai = env.AI as unknown as AiRunner;
   // gpt-oss on Workers AI reasons before it answers, and the reasoning is billed against max_tokens: at the planner's
   // budgets its JSON came back cut off mid-string every time (0/10 on 13 September, 0/2 again on 20 September, both
-  // "broken JSON at position ~1500"). Low effort and four times the room; the answer itself is the same size.
+  // "broken JSON at position ~1500"). Low effort and six times the room; the answer itself is the same size. And NO
+  // json_schema: with one, the same direction call spent all 3600 tokens and returned an empty string (measured
+  // 20 September: 43 s, 0 chars; without the schema 29 s and a clean object). Every prompt already asks for one JSON
+  // object, and extractJson() reads it out of the text.
   const oss = /^@cf\/openai\/gpt-oss/.test(model);
-  const base = oss ? { messages, max_tokens: maxTokens * 4, temperature, reasoning: { effort: "low" } } : { messages, max_tokens: maxTokens, temperature };
+  const base = oss ? { messages, max_tokens: maxTokens * 6, temperature, reasoning: { effort: "low" } } : { messages, max_tokens: maxTokens, temperature };
   let res: unknown;
   try {
-    res = await withTimeout(ai.run(model, { ...base, response_format: { type: "json_schema", json_schema: schema } }), timeoutMs, `model call (${model})`);
+    res = await withTimeout(ai.run(model, oss ? base : { ...base, response_format: { type: "json_schema", json_schema: schema } }), timeoutMs, `model call (${model})`);
   } catch (e) {
     // Models without JSON mode (or a schema the grammar engine rejects): plain call, lenient parse.
     if (!/json|schema|response_format|unsupported|invalid/i.test(String(e))) throw e;
@@ -1549,11 +1557,15 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   let calls = 0;
   // The system prompt is rebuilt whenever the plan changes, because the direction is allowed to change the look and
   // the system prompt is where the look's rules live: a cartoon storyboard written under the cyber rules is garbage.
-  let system = systemPrompt(plan);
-  const deadline = t0 + PLAN_BUDGET_MS;
+  // A reasoning model told "count characters" counts them, letter by letter, until the token budget is gone: two of
+  // three direction calls on gpt-oss-120b came back empty that way (20 September 2026). It is told not to.
+  const reasons = isReasoningModel(model);
+  let system = systemPrompt(plan, reasons);
+  const budget = planBudgetMs(env);
+  const deadline = t0 + budget;
   const call = async (user: string, schema: Record<string, unknown>, maxTokens: number, over: { system?: string; temperature?: number; model?: string } = {}) => {
     const left = deadline - Date.now();
-    if (left < 5_000) throw new PlanBudgetError(`planning ran past its ${PLAN_BUDGET_MS / 60_000}-minute budget after ${calls} model calls`, [`planning took longer than ${PLAN_BUDGET_MS / 60_000} minutes (${calls} model calls): the planning model is slow right now, and the attempt is retried`]);
+    if (left < 5_000) throw new PlanBudgetError(`planning ran past its ${budget / 60_000}-minute budget after ${calls} model calls`, [`planning took longer than ${budget / 60_000} minutes (${calls} model calls): the planning model is slow right now, and the attempt is retried`]);
     calls++;
     const out = await callModel(env, over.model ?? model, [{ role: "system", content: over.system ?? system }, { role: "user", content: user }], schema, maxTokens, over.temperature, Math.min(MODEL_CALL_TIMEOUT_MS, left));
     usage.prompt_tokens! += out.usage.prompt_tokens ?? 0; usage.completion_tokens! += out.usage.completion_tokens ?? 0; usage.total_tokens! += out.usage.total_tokens ?? 0;
@@ -1620,7 +1632,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     // user for a video they did not ask for or hand out a dollar of GPU for one credit.
     const wanted = inSet(o.style, KLEO_STYLES) ? (o.style as KleoStyle) : null;
     if (wanted && wanted !== plan.kleo) {
-      if (samePrice(wanted, plan.kleo, plan.duration)) { plan = planFor(job, wanted); system = systemPrompt(plan); }
+      if (samePrice(wanted, plan.kleo, plan.duration)) { plan = planFor(job, wanted); system = systemPrompt(plan, reasons); }
       else {
         // NEVER A MUTE SUBSTITUTION, in either direction. Refusing the upgrade saves the money and loses the video:
         // the viewer gets the second-best look and is never told a better one existed. So the refusal speaks, and it

@@ -160,6 +160,11 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     }
     // A picture described in the narration's language is a warning for the planner (it translates) and a refusal
     // here: the assistant that wrote this storyboard can rewrite the prompts, and the pictures would be drawn wrong.
+    // A promise the storyboard breaks to itself — a must_keep fact the narration never says — is a warning for the
+    // planner (it reports what is left) and a refusal here: this author wrote both halves and can fix one.
+    const broken = r.warnings.filter((w) => /must_keep says/.test(w));
+    if (broken.length)
+      throw new JobError(`The storyboard has ${plural(broken.length, "problem")} (nothing was charged): it contradicts its own direction. Fix ${broken.length === 1 ? "it" : "them"} and call kleo_create_video again:\n- ${broken.join("\n- ")}`);
     const english = r.warnings.filter((w) => /must be in English/.test(w));
     if (english.length)
       throw new JobError(`The storyboard has ${plural(english.length, "problem")} (nothing was charged): the picture model reads English only, so every image_prompt and the direction's world, cast names and looks, objects and forbidden terms are written in English — only the narration (voice, title, chapter) stays in ${language}. Fix ${english.length === 1 ? "it" : "them"} and call kleo_create_video again:\n- ${english.join("\n- ")}`);

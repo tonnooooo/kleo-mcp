@@ -5,7 +5,7 @@
  * the treatment's angle and layer, the direction's subject and world, the acts against the sections, the narration
  * scene by scene, the layer states the scenes wrote, and the cost.
  *
- *   node scripts/film-make.mjs "<request>" [--duration 45] [--format 9:16] [--lang it] [--out file.json] [--model <workers-ai id>]
+ *   node scripts/film-make.mjs "<request>" [--duration 45] [--format 9:16] [--lang it] [--out file.json] [--model <workers-ai id>] [--budget <minutes>]
  *
  * Reads the Cloudflare account from wrangler.jsonc and the token from the wrangler OAuth session (the same Workers AI
  * the deployed worker uses; the token expires, `npx wrangler whoami` refreshes it). Renders nothing, rents nothing.
@@ -29,7 +29,7 @@ const model = opt("--model", /"AI_MODEL"\s*:\s*"([^"]+)"/.exec(jsonc)?.[1]);   /
 if (!account || !token) { console.error("no Cloudflare account or wrangler session"); process.exit(2); }
 
 const env = {
-  INTERNAL_SECRET: "x", AI_MODEL: model,
+  INTERNAL_SECRET: "x", AI_MODEL: model, PLAN_BUDGET_MIN: opt("--budget", undefined),
   AI: { async run(m, inputs) {
     const r = await fetch(`https://api.cloudflare.com/client/v4/accounts/${account}/ai/run/${m}`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(inputs) });
     const j = await r.json().catch(() => ({}));

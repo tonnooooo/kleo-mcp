@@ -815,6 +815,22 @@ test("an English film never pays for the English pass", async () => {
   assert.equal(passes, 0);
 });
 
+test("gpt-oss on Workers AI is called with low reasoning, six times the room and no json_schema", async () => {
+  // Measured 20 September 2026: with a json_schema the direction call spent all 3600 tokens and returned an empty
+  // string; without it, 29 s and a clean object. The 17B and every other model keep the schema.
+  const seen = [];
+  const env = { AI: { async run(model, inputs) { seen.push({ model, inputs }); return { choices: [{ message: { content: "Sure:\n{\"ok\":1}" } }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }; } } };
+  const out = await callModel(env, "@cf/openai/gpt-oss-120b", [{ role: "user", content: "x" }], { type: "object" }, 900);
+  assert.deepEqual(out.raw, { ok: 1 });
+  assert.equal(seen[0].inputs.response_format, undefined, "no constrained decoding for gpt-oss");
+  assert.deepEqual(seen[0].inputs.reasoning, { effort: "low" });
+  assert.equal(seen[0].inputs.max_tokens, 5400);
+  await callModel(env, "@cf/meta/llama-4-scout-17b-16e-instruct", [{ role: "user", content: "x" }], { type: "object" }, 900);
+  assert.ok(seen[1].inputs.response_format, "the 17B keeps the schema");
+  assert.equal(seen[1].inputs.max_tokens, 900);
+  assert.equal(seen[1].inputs.reasoning, undefined);
+});
+
 test("a model call that never answers times out, and the timeout is not a quota error", async () => {
   const env = { AI: { run: () => new Promise(() => {}) } };
   await assert.rejects(callModel(env, "m", [{ role: "user", content: "x" }], {}, 10, 0.3, 40), /model call \(m\) timed out after 0 s/);

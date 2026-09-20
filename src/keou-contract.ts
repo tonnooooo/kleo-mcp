@@ -900,7 +900,7 @@ export function validateStoryboard(sb: unknown, opts: ValidateOptions): Validate
   // to be safe gets a different answer the second time. It works on a copy now, and the copy is what comes out.
   const draft = clone(sb);
   const e = new Collector(opts.maxErrors ?? MAX_ERRORS);
-  try { validateInner(draft, opts, e); if (!e.errors.length) for (const p of qualityProblems(draft)) e.add(p); } catch (err) { if (!(err instanceof TooMany)) throw err; }
+  try { validateInner(draft, opts, e); if (!e.errors.length) { for (const p of qualityProblems(draft)) e.add(p); for (const w of fidelityWarnings(draft)) e.warn(w); } } catch (err) { if (!(err instanceof TooMany)) throw err; }
   if (e.errors.length) return { ok: false, errors: e.errors, normalised: draft, warnings: e.warnings };
   return { ok: true, storyboard: draft as Storyboard, warnings: e.warnings };
 }
@@ -924,6 +924,19 @@ function clone<T>(v: T): T {
  *     then fell by arithmetic, near the right words instead of on them. The product promise is the opposite — "Kleo
  *     times the cut to a word you actually hear" — so a shot without an anchor is now a problem, not a default.
  */
+/**
+ * The fidelity gate as WARNINGS: every must_keep fact the narration never says. It was an error until 20 September
+ * 2026, and a whole Star Wars Short planned by gpt-oss died at the final assembly on "abandoned temple", a phrase the
+ * viewer would not have missed. The planner feeds these back chunk by chunk (storyboard.ts) and reports what is left
+ * as missing_facts; kleo_create_video refuses a client storyboard on them (jobs.ts), because that author can fix it.
+ */
+export function fidelityWarnings(sb: unknown): string[] {
+  const c = (typeof sb === "object" && sb !== null ? sb : {}) as Record<string, unknown>;
+  const d = directionOf(c);
+  if (!d) return [];
+  return missingFacts(d.must_keep ?? [], narrationOf(c)).map((fact) => `direction.must_keep says "${fact}" but the narration never says it: put it in a scene's "voice", in the words the viewer will hear.`);
+}
+
 export function qualityProblems(sb: unknown): string[] {
   const c = (typeof sb === "object" && sb !== null ? sb : {}) as Record<string, unknown>;
   const out: string[] = [];
@@ -933,8 +946,6 @@ export function qualityProblems(sb: unknown): string[] {
   //    leave (it is how a wifi icon ended up in a pirate storm). Both checks are free and neither needs the GPU.
   const d = directionOf(c);
   if (d) {
-    for (const fact of missingFacts(d.must_keep ?? [], narrationOf(c)))
-      out.push(`direction.must_keep says "${fact}" but the narration never says it: put it in a scene's "voice", in the words the viewer will hear.`);
     for (const hit of forbiddenInPrompts(d.forbidden ?? [], pictureScenes(c)))
       out.push(`picture ${hit.id}: its image_prompt asks for "${hit.term}", which direction.forbidden rules out of this video.`);
   }
