@@ -872,6 +872,25 @@ test("PLAN_MODEL sends every planning call to the Anthropic API — only when th
     setAnthropicFetch(async () => new Response(JSON.stringify({ type: "error", error: { type: "rate_limit_error", message: "slow down" } }), { status: 429, headers: { "content-type": "application/json" } }));
     await assert.rejects(callModel(env, "claude-opus-5", [{ role: "user", content: "x" }], {}, 100, 0.3, 5000), (e) => /anthropic 429/.test(String(e)) && isTransientAiError(e));
     await assert.rejects(callModel({}, "claude-opus-5", [{ role: "user", content: "x" }], {}, 100), /needs the ANTHROPIC_API_KEY secret/);
+    // The same road through a proxy that speaks the Messages API (kie.ai): its base URL, the key as a Bearer token,
+    // and only the documented request fields — no output_config.
+    seen.length = 0;
+    setAnthropicFetch(async (url, init) => {
+      const body = JSON.parse(init.body);
+      const h = init.headers; const get = (k) => (h?.get ? h.get(k) : h?.[k] ?? h?.[k.toLowerCase()]);
+      seen.push({ url: String(url), auth: get("authorization"), xkey: get("x-api-key"), body });
+      return new Response(JSON.stringify({ id: "msg_2", type: "message", role: "assistant", model: body.model, stop_reason: "end_turn", stop_details: null, credits_consumed: 0.25,
+        content: [{ type: "text", text: "{\"ok\":2}" }], usage: { input_tokens: 50, output_tokens: 10 } }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    const kie = { ANTHROPIC_API_KEY: "kie-key", ANTHROPIC_BASE_URL: "https://api.kie.ai/claude", ANTHROPIC_AUTH: "bearer", PLAN_MODEL: "claude-sonnet-5", AI: env.AI };
+    assert.equal(planModel(kie), "claude-sonnet-5");
+    const viaKie = await callModel(kie, "claude-sonnet-5", [{ role: "system", content: "S" }, { role: "user", content: "U" }], {}, 700, 0.3, 5000);
+    assert.deepEqual(viaKie.raw, { ok: 2 });
+    assert.equal(seen[0].url, "https://api.kie.ai/claude/v1/messages");
+    assert.equal(seen[0].auth, "Bearer kie-key");
+    assert.ok(!seen[0].xkey, "no x-api-key on the bearer road");
+    assert.equal(seen[0].body.output_config, undefined, "a proxy gets only the documented fields");
+    assert.equal(seen[0].body.system, "S");
   } finally { setAnthropicFetch(undefined); }
 });
 

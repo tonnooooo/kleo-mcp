@@ -1325,14 +1325,19 @@ async function callClaude(env: Env, model: string, messages: { role: string; con
   // Loaded when first needed, not at module load: the test bundles (esbuild, platform neutral, a data: URL) keep
   // the SDK external and never call this, and the Worker bundles it in like any other import.
   const { default: SDK } = await import("@anthropic-ai/sdk");
-  const client = new SDK({ apiKey: env.ANTHROPIC_API_KEY, maxRetries: 1, timeout: timeoutMs, ...(anthropicFetch ? { fetch: anthropicFetch } : {}) });
+  // The same Messages API through a proxy that speaks it (kie.ai: ANTHROPIC_BASE_URL https://api.kie.ai/claude, and
+  // the key as a Bearer token — ANTHROPIC_AUTH "bearer"; the official API takes x-api-key, the default).
+  const proxied = !!env.ANTHROPIC_BASE_URL;
+  const auth = env.ANTHROPIC_AUTH === "bearer" ? { authToken: env.ANTHROPIC_API_KEY } : { apiKey: env.ANTHROPIC_API_KEY };
+  const client = new SDK({ ...auth, ...(proxied ? { baseURL: env.ANTHROPIC_BASE_URL } : {}), maxRetries: 1, timeout: timeoutMs, ...(anthropicFetch ? { fetch: anthropicFetch } : {}) });
   const system = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
   const turns: Anthropic.MessageParam[] = messages.filter((m) => m.role !== "system").map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content }));
   let res: Anthropic.Message;
   try {
     // No sampling parameters (removed on the 5-family), thinking left adaptive; the answer is asked as one JSON
     // object by every planner prompt already, and max_tokens leaves room for the thinking that counts against it.
-    res = await client.messages.create({ model, max_tokens: Math.max(8000, maxTokens + 4000), ...(system ? { system } : {}), messages: turns, output_config: { effort: "medium" } });
+    // output_config is the official API's; a proxy is sent only what its documented request carries.
+    res = await client.messages.create({ model, max_tokens: Math.max(8000, maxTokens + 4000), ...(system ? { system } : {}), messages: turns, ...(proxied ? {} : { output_config: { effort: "medium" } }) });
   } catch (e) {
     // The status goes into the message so isTransientAiError() reads 429 / 5xx the way it reads Workers AI's.
     if (e instanceof SDK.APIError) throw new Error(`anthropic ${e.status ?? ""}: ${e.message}`);

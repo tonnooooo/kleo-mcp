@@ -32,7 +32,8 @@ const env = {
   INTERNAL_SECRET: "x", AI_MODEL: model, PLAN_BUDGET_MIN: opt("--budget", undefined),
   // An external model (--model anthropic/claude-sonnet-5) needs the road: PLAN_API_URL and PLAN_API_KEY from the shell
   // (`set -a; . ./.secrets.local; set +a`) or ANTHROPIC_API_KEY for a claude-… model.
-  PLAN_API_URL: process.env.PLAN_API_URL, PLAN_API_KEY: process.env.PLAN_API_KEY, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+  PLAN_API_URL: process.env.PLAN_API_URL, PLAN_API_KEY: process.env.PLAN_API_KEY,
+  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL, ANTHROPIC_AUTH: process.env.ANTHROPIC_AUTH,
   AI: { async run(m, inputs) {
     const r = await fetch(`https://api.cloudflare.com/client/v4/accounts/${account}/ai/run/${m}`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(inputs) });
     const j = await r.json().catch(() => ({}));

@@ -25,8 +25,12 @@ export interface Env {
   PLAN_API_URL?: string;
   /** Secret: the key for PLAN_API_URL. */
   PLAN_API_KEY?: string;
-  /** Secret: the Anthropic API key, the direct road for a claude-… PLAN_MODEL. */
+  /** Secret: the Anthropic API key, the direct road for a claude-… PLAN_MODEL (or the key of the proxy below). */
   ANTHROPIC_API_KEY?: string;
+  /** A proxy that speaks the Anthropic Messages API (kie.ai: "https://api.kie.ai/claude"); unset = api.anthropic.com. */
+  ANTHROPIC_BASE_URL?: string;
+  /** "bearer" when the proxy wants the key as Authorization: Bearer (kie.ai); unset = x-api-key. */
+  ANTHROPIC_AUTH?: string;
   /** The model that writes the TREATMENT (src/treatment.ts) when it should differ from AI_MODEL; unset = AI_MODEL. */
   TREATMENT_MODEL?: string;
   /** Treatments one account may ask kleo_adapt_prompt for in a UTC day (default 12): each one spends Workers AI quota. */
