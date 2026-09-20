@@ -1273,10 +1273,13 @@ export const planModel = (env: Env): string | undefined => {
   return undefined;
 };
 /** Every model that is not Workers AI's, plus gpt-oss: they think before they answer, and are told not to count. */
-export const isReasoningModel = (model: string): boolean => /^@cf\/openai\/gpt-oss/.test(model) || !/^@cf\//.test(model);
+export const isReasoningModel = (model: string): boolean => /^@cf\/openai\/gpt-oss/.test(model) || isExternalModel(model);
 export const isClaudeModel = (model: string): boolean => /^claude-/.test(model);
-/** A model that is not Workers AI's goes over HTTP: the OpenAI-compatible road first, the Anthropic API for a claude-… model. */
-const isExternalModel = (model: string): boolean => !/^@cf\//.test(model);
+/**
+ * A model that is not Workers AI's goes over HTTP: the OpenAI-compatible road first, the Anthropic API for a claude-…
+ * model. Named by shape — "vendor/model" (OpenRouter's spelling) or "claude-…" — so a bare test name stays on Workers AI.
+ */
+const isExternalModel = (model: string): boolean => !/^@cf\//.test(model) && (/^[a-z0-9-]+\/[a-z0-9]/i.test(model) || isClaudeModel(model));
 
 /**
  * One planning call on an OpenAI-compatible chat-completions endpoint (OpenRouter and the rest). Plain fetch, no SDK:
