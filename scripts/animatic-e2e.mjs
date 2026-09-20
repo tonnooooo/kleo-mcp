@@ -61,7 +61,9 @@ async function main() {
     const w = await call("kleo_wait_for_video", { job_id: jobId, max_wait_s: 45 }); // under the SDK's own 60 s request timeout: at 60 the client timed out on itself (19 September)
     const line = w.text.split("\n")[0].slice(0, 160);
     if (line !== last) { console.log(`  ${now()} ${line}`); last = line; }
-    if (w.data?.state === "done" || /is ready/.test(w.text)) { console.log(w.text); return; }
+    // The state, never the words: the "still rendering" sentence itself says "as soon as it is ready", and a text
+    // match on it ended the proof after one poll on 20 September 2026 with the job still queued.
+    if (w.data?.state === "done") { console.log(w.text); return; }
     if (w.data?.state === "failed" || w.data?.state === "cancelled" || /could not be rendered|was cancelled/.test(w.text)) { console.log(w.text); throw new Error("the animatic did not finish"); }
   }
   throw new Error(`still not done after ${MAX_MIN} min`);
