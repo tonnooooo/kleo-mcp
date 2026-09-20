@@ -33,3 +33,13 @@ altrove, in quest'ordine:
 2. **La finitura.** L'unsharp sulla traccia 4K è in produzione ma non ancora misurato su un film vero (serve
    kie.ai).
 3. **Il prompt delle clip.** Idem: si giudica sul film.
+
+## 20 settembre 2026: la leva 1 misurata, RealVisXL V5.0 in produzione
+
+Sulle quattro immagini del job gt_6xchnk99 (lo Short "Star Wars" di un tester: volto sfocato e un uomo diverso in ogni
+inquadratura), stessi prompt e stessi semi, 768x1344, 30 passi, su una RTX 3090 noleggiata (`scripts` di sessione,
+box distrutta): SDXL base = pelle cerosa, spada un blob; **RealVisXL V5.0** = pelle vera, stesso uomo nei due
+ritratti, "sand-coloured hooded robe" e "glowing blue energy sword" disegnati davvero; Juggernaut XL v9 = grading
+piu' cinematografico ma capelli diversi tra i due ritratti e tuta spaziale al posto del mantello. Scelto RealVisXL
+(`worker/kleo_pictures.py` MODELS, `worker/prewarm_models.py`): stessa famiglia SDXL, stessi passi, ~7 GB fp16
+scaricati sulla macchina come prima il base. Da rimisurare con `scripts/sharpness-ab.py` quando serve un numero.

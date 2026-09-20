@@ -9,7 +9,7 @@ PICTURE_MODELS is a copy of kleo_pictures.MODELS on purpose: importing kleo_pict
 import importlib.util, os, sys, time
 from pathlib import Path
 
-PICTURE_MODELS = {"cartoon": "Lykon/dreamshaper-8", "realistic": "stabilityai/stable-diffusion-xl-base-1.0", "animation": "Lykon/dreamshaper-xl-v2-turbo"}
+PICTURE_MODELS = {"cartoon": "Lykon/dreamshaper-8", "realistic": "SG161222/RealVisXL_V5.0", "animation": "Lykon/dreamshaper-xl-v2-turbo"}
 # La famiglia decide la classe di pipeline con cui il modello si carica: SDXL non si apre con
 # StableDiffusionPipeline. Copia deliberata di kleo_pictures.FAMILY, verificata dal test che confronta le tabelle.
 PICTURE_FAMILY = {"cartoon": "sd15", "realistic": "sdxl", "animation": "sdxl"}

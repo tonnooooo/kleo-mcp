@@ -6,7 +6,7 @@ The server draws the shot pictures with Cloudflare Workers AI; when its quota is
 and this module fills the gap with Stable Diffusion 1.5 checkpoints (diffusers, fp16 on CUDA):
 
     cartoon    Lykon/dreamshaper-8                    illustration-friendly SD1.5 fine-tune
-    realistic  SG161222/Realistic_Vision_V5.1_noVAE   photo-look SD1.5 fine-tune (SD1.5's own VAE is fine)
+    realistic  SG161222/RealVisXL_V5.0                photoreal SDXL fine-tune (20 September 2026; was SDXL base)
 
 Sizes 512x896 (9:16) / 896x512 (16:9), 22 DPM++ steps, guidance 6.5 (cartoon) / 5.5 (realistic), the same style suffix
 and negative prompt the server uses, a deterministic seed per picture id ("<sceneId>-s<n>", one per shot), the safety
@@ -33,7 +33,12 @@ import hashlib, os, re, sys, time
 # invece di 3 per le 24 di uno Short, dentro un video che ne dura quaranta.
 # Il CARTOON resta su dreamshaper-8 perche' NON e' stato misurato: SD1.5 regge molto meglio l'illustrazione del
 # fotorealismo, e cambiare per analogia e' esattamente il modo in cui oggi ci siamo fatti male quattro volte.
-MODELS = {"cartoon": "Lykon/dreamshaper-8", "realistic": "stabilityai/stable-diffusion-xl-base-1.0", "animation": "Lykon/dreamshaper-xl-v2-turbo"}
+# REALISTIC = RealVisXL V5.0 (20 September 2026), chosen on a rented RTX 3090 against SDXL base and Juggernaut XL v9 on
+# the four pictures of job gt_6xchnk99 (same prompts, same seeds, 768x1344, 30 steps): real skin instead of the base
+# model's waxy faces, the same man in the two portraits, the "sand-coloured hooded robe" and the "glowing blue energy
+# sword" actually drawn; Juggernaut graded more cinematically but changed the hair between portraits and put the hero
+# in a spacesuit twice. Same SDXL family, same steps and guidance, ~7 GB fp16, downloaded on the box like the base was.
+MODELS = {"cartoon": "Lykon/dreamshaper-8", "realistic": "SG161222/RealVisXL_V5.0", "animation": "Lykon/dreamshaper-xl-v2-turbo"}
 FAMILY = {"cartoon": "sd15", "realistic": "sdxl", "animation": "sdxl"}
 # EXACTLY src/images.ts STYLE_SUFFIX / NEGATIVE_PROMPT, character for character: the two sides draw pictures for the
 # SAME video, so a difference between them is a film in two looks. test/images.test.mjs reads these three literals
