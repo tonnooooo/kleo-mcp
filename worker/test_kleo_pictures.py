@@ -576,7 +576,7 @@ class DirectionTest(unittest.TestCase):
     def test_cast_look_is_repeated_only_where_the_character_appears(self):
         shown = kp.context_for(self.DIRECTION, "The captain walks along the shoreline at dusk", "red")
         self.assertIn("red bandana", shown)
-        self.assertTrue(shown.endswith(kp.ACCENT_LIGHT["red"]), shown)
+        self.assertNotIn("light source", shown, "the section's accent is the layer's, never the picture's (22 September)")
         absent = kp.context_for(self.DIRECTION, "An empty beach at dawn", None)
         self.assertNotIn("red bandana", absent)
         self.assertEqual(absent, "")
@@ -612,7 +612,7 @@ class DirectionTest(unittest.TestCase):
         short_cast = {"cast": [{"name": "the keeper", "look": "an older man in a wool coat"}]}
         both = kp.context_for(short_cast, ip, "green")
         self.assertIn("the keeper:", both)
-        self.assertIn(kp.ACCENT_LIGHT["green"], both)
+        self.assertNotIn("light source", both, "no light on any look since 22 September")
         self.assertNotIn(kp.ACCENT_LIGHT["green"], ctx, "the character survives, the light does not")
 
         # And the last guard in full_prompt never cuts a word either.
@@ -664,11 +664,10 @@ class DirectionTest(unittest.TestCase):
         self.assertTrue(lead.startswith("the captain: a pirate captain with a red bandana"), lead)
         self.assertNotIn("light source", lead)
         self.assertEqual(kp.cast_for(self.DIRECTION, "an empty beach"), "")
-        self.assertEqual(kp.light_for("amber", "cartoon"), kp.ACCENT_LIGHT["amber"])
-        self.assertEqual(kp.light_for("amber", "realistic"), kp.ACCENT_LIGHT["amber"])
-        self.assertEqual(kp.light_for("amber", "animation"), "", "a drawn film keeps its colour law on the layer")
+        for style in ("cartoon", "realistic", "animation"):
+            self.assertEqual(kp.light_for("amber", style), "", f"{style}: the colour law lives on the layer (gt_hxed87em, 22 September)")
+            self.assertFalse(kp.lights_pictures(style))
         self.assertEqual(kp.light_for(None, "cartoon"), "")
-        self.assertTrue(kp.lights_pictures("realistic") and not kp.lights_pictures("animation"))
         self.assertEqual(kp.context_for(self.DIRECTION, ip, "red", style="animation"), lead, "no light in the animation context either")
         full = kp.full_prompt(ip, "cartoon", kp.light_for("amber", "cartoon"), lead=lead)
         self.assertTrue(full.startswith(lead + ", " + ip + ", " + kp.ACCENT_LIGHT["amber"] + ", "), full)
@@ -718,6 +717,25 @@ class AnimationLookTest(unittest.TestCase):
             self.assertEqual(kp.guidance_for("animation"), kp.GUIDANCE_BY_FAMILY["sdxl"])
         finally:
             kp.STEPS_BY_STYLE.update(old[0]); kp.GUIDANCE_BY_STYLE.update(old[1])
+
+
+
+
+class NegatedLookTest(unittest.TestCase):
+    """What a cast look denies ("no visible face") is a description the model reads as "face" on the positive side
+    (gt_hxed87em, 22 September 2026: a man's face in a film whose only character was a hand). It goes to the negative."""
+
+    def test_negated_clauses_of_the_cast_and_the_world_reach_the_negative_prompt(self):
+        self.assertEqual(kp.negated_terms("a middle-aged hand and forearm, pale skin, no visible face"), ["visible face", "face", "portrait"])
+        self.assertEqual(kp.negated_terms("a room with one window, never a logo or a screen"), ["logo"])
+        self.assertEqual(kp.negated_terms("a pirate captain with a red bandana"), [])
+        self.assertEqual(kp.negated_terms("she is no longer young, without a hat"), ["hat"])
+        d = {"cast": [{"name": "the writer", "look": "a hand and a forearm, no visible face"}], "world": "A desk by one window, without a single screen", "forbidden": ["wifi symbol"]}
+        neg = kp.negative_for(d, "realistic")
+        self.assertTrue(neg.startswith(kp.NEGATIVE_PROMPT), neg)
+        for t in ("wifi symbol", "visible face", "face", "portrait", "single screen"):
+            self.assertIn(t, neg)
+        self.assertLessEqual(len(neg), kp.NEGATIVE_MAX)
 
 
 if __name__ == "__main__":

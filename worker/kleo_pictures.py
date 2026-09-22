@@ -93,12 +93,34 @@ ACCENT_LIGHT = {
 
 
 def lights_pictures(style):
-    """Whether the section's accent goes into the prompt as a light source. Not for the ANIMATION look: on the turbo
-    SDXL model that draws it (8 steps, guidance 2) "a single warm red light source" is not a light but a colour cast —
-    the first frame of a pastel story about a pastry chef came back as a red kitchen, a red apron and a red sauce
-    (job gt_ad2musq5, 19 September 2026), and the apron asked for was lilac. A drawn film keeps its colour law on the
-    layer; the photographic looks keep the light. Mirrors src/direction.ts lightsPictures()."""
-    return style != "animation"
+    """Whether the section's accent goes into the prompt as a light source: no look any more. On the turbo SDXL model
+    of the animation look it was a colour cast (job gt_ad2musq5, 19 September 2026: a red kitchen, a red apron, a red
+    sauce for a pastel story); on 22 September the realistic look, drawn by RealVisXL V5 (SDXL too), did the same on
+    gt_hxed87em: red graphite dust in the "red" section, a glowing green pencil line and a green lamp in the "green"
+    one, against the treatment's own palette. The accent lives on the layer only. Mirrors src/direction.ts."""
+    return False
+
+
+NEGATION = re.compile(r"\b(?:no|never|without|not)\s+(?:a |an |the |any )?([^,.;:()]{3,40}?)(?=[,.;:()]|\s+(?:and|but|or|is|are|ever|shown|seen|visible)\b|$)", re.IGNORECASE)
+
+
+def negated_terms(text):
+    """The clauses a cast look or the world NEGATES ("no visible face", "never a logo"), for the negative prompt: a
+    diffusion model reads "no visible face" on the positive side as "face" (gt_hxed87em, 22 September 2026: a man's face
+    in the sixth picture of a film whose only character was a hand). Plus "face, portrait" whenever a face is denied.
+    Mirrors src/direction.ts negatedTerms()."""
+    out = []
+    for m in NEGATION.finditer(str(text or "")):
+        t = " ".join(m.group(1).split())
+        if not t or re.match(r"(?:one|longer|more|less|matter|way)\b", t, re.IGNORECASE):
+            continue
+        if t.lower() not in [x.lower() for x in out]:
+            out.append(t)
+        if re.search(r"\bfaces?\b", t, re.IGNORECASE):
+            for f in ("face", "portrait"):
+                if f not in out:
+                    out.append(f)
+    return out
 
 
 SCENE_ID = re.compile(r"[a-z0-9-]{1,56}")           # picture id "<sceneId>-s<n>" (contract.py slug ≤ 50 + shot suffix) → safe file name
@@ -165,9 +187,10 @@ def negative_for(direction, style="realistic"):
     base = STYLE_NEGATIVE.get(style, NEGATIVE_PROMPT)
     terms = []
     if isinstance(direction, dict):
-        for t in direction.get("forbidden") or []:
+        negated = negated_terms(". ".join([str(m.get("look") or "") for m in (direction.get("cast") or []) if isinstance(m, dict)] + [str(direction.get("world") or "")]))
+        for t in list(direction.get("forbidden") or []) + negated:
             t = " ".join(str(t).split()).strip().rstrip(",.;")
-            if t and t.lower() not in base.lower():
+            if t and t.lower() not in base.lower() and t.lower() not in [x.lower() for x in terms]:
                 terms.append(t)
     joined = base
     for t in terms:

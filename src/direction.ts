@@ -528,14 +528,17 @@ export function pictureContext(d: Direction | null, imagePrompt: string, accent:
 }
 
 /**
- * Whether the section's accent is written into the picture prompt as a light source. Not for the ANIMATION look: on
- * the turbo SDXL model that draws it (8 steps, guidance 2) "a single warm red light source" is not a light, it is a
- * colour cast — the first frame of a pastel story about a pastry chef came back as a red kitchen, a red apron and a
- * red sauce (job gt_ad2musq5, 19 September 2026), and the apron the user had asked for was lilac. A drawn film keeps
- * its colour law on the layer, where the accent was born; the photographic looks keep the light.
+ * Whether the section's accent is written into the picture prompt as a light source: NO LOOK any more. On the turbo
+ * SDXL model of the animation look "a single warm red light source" was a colour cast (job gt_ad2musq5, 19 September
+ * 2026: a red kitchen, a red apron, a red sauce for a pastel story), so the animation lost it on 20 September. On 22
+ * September the REALISTIC look, drawn by RealVisXL V5 since the 20th (an SDXL model too), did the same on the first
+ * animatic with music (gt_hxed87em): red graphite dust on the paper in the "red" section, a glowing green pencil line
+ * and a green lamp in the "green" one — the treatment's own palette (slate blue, brass, cream) overruled by the
+ * colour law of the layer. The accent stays where it was born, on the layer (hud.js); the pictures follow the
+ * treatment's visual language and nothing else. Kept as a function so both sides keep one switch (and one test).
  * Mirrored in worker/kleo_pictures.py lights_pictures().
  */
-export const lightsPictures = (look: string | null | undefined): boolean => look !== "animation";
+export const lightsPictures = (_look: string | null | undefined): boolean => false;
 
 /**
  * Function words of the languages a film can be narrated in other than English. A picture prompt, a cast look or a
@@ -572,7 +575,30 @@ export function foreignPictureFields(d: Partial<Direction> | null | undefined): 
 /** The negative prompt for this video: the product-wide one, plus everything this film's direction forbids. */
 export function negativeFor(d: Direction | null, base: string): string {
   const extra = (d?.forbidden ?? []).map((s) => s.trim()).filter(Boolean);
+  // What the cast looks and the world say in the NEGATIVE ("no visible face", "never a full face", "without a
+  // logo") is not a description the picture model can draw from: measured on gt_hxed87em (22 September 2026), a cast
+  // look of "no visible face" and a decision "only a hand and a forearm are ever seen" still drew a man's face in
+  // the sixth picture. The negated clause belongs on the negative side, where the model reads a "no".
+  for (const t of negatedTerms([...(d?.cast ?? []).map((m) => m.look), d?.world ?? ""].join(". "))) if (!extra.some((e) => e.toLowerCase() === t.toLowerCase())) extra.push(t);
   return extra.length ? `${base}, ${extra.join(", ")}` : base;
+}
+
+/**
+ * The clauses a sentence NEGATES ("no visible face", "never a logo", "without other people"): the words after the
+ * negation up to the next punctuation, at most 40 characters, plus "face, portrait" whenever a face is what is
+ * denied — the two words a diffusion model actually reads as "do not draw a face". Mirrored in
+ * worker/kleo_pictures.py negated_terms().
+ */
+export function negatedTerms(text: string): string[] {
+  const out: string[] = [];
+  const re = /\b(?:no|never|without|not)\s+(?:a |an |the |any )?([^,.;:()]{3,40}?)(?=[,.;:()]|\s+(?:and|but|or|is|are|ever|shown|seen|visible)\b|$)/gi;
+  for (const m of text.matchAll(re)) {
+    const t = m[1].trim().replace(/\s+/g, " ");
+    if (!t || /^(?:one|longer|more|less|matter|way)\b/i.test(t)) continue;
+    if (!out.some((x) => x.toLowerCase() === t.toLowerCase())) out.push(t);
+    if (/\bfaces?\b/i.test(t)) for (const f of ["face", "portrait"]) if (!out.includes(f)) out.push(f);
+  }
+  return out;
 }
 
 /* ------------------------------------------------------------------ what Kleo tells the user it decided */

@@ -11,7 +11,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor, notEnglish, foreignPictureFields, lightsPictures, headNounIn, thinLook, formatTalk, storyRequest, dropLookFacts,
-  castFor, conformity, ACCENT_LIGHT, stillness, enliven, livingClause, ENLIVEN_CLAUSES, D,
+  castFor, conformity, ACCENT_LIGHT, negatedTerms, stillness, enliven, livingClause, ENLIVEN_CLAUSES, D,
 } from "../src/direction.ts";
 import { validateStoryboard, qualityProblems, directionOf, narrationOf, pictureScenes, CINEMA_ACCENTS, SHOTS_MIN_CINEMA, shotRangeText } from "../src/keou-contract.ts";
 import { fullPrompt, modelInputs, NEGATIVE_PROMPT, STYLE_SUFFIX, DEFAULT_IMAGE_MODELS } from "../src/images.ts";
@@ -124,12 +124,12 @@ test("forbiddenInPrompts catches the wrong world, on whole words only", () => {
 
 /* ------------------------------------------------------------------ the direction reaches the picture */
 
-test("pictureContext appends the cast look, the world and the section light — in that order", () => {
+test("pictureContext appends the cast look and the world — and no section light, on any look (22 September)", () => {
   const d = good();
   const ctx = pictureContext(d, "The captain walks along the shoreline at dusk", "red");
   assert.ok(ctx.startsWith("the captain: a pirate captain with a red bandana"), ctx);
   assert.ok(ctx.includes("A tropical island in 1720"), ctx);
-  assert.ok(ctx.endsWith(ACCENT_LIGHT.red), ctx);
+  assert.ok(!ctx.includes("light source"), ctx);
   // A picture that shows nobody carries no cast description.
   assert.ok(!pictureContext(d, "An empty beach at dawn", null).includes("red bandana"));
   assert.equal(pictureContext(null, "anything", "red"), "");
@@ -137,18 +137,29 @@ test("pictureContext appends the cast look, the world and the section light — 
   assert.deepEqual(castFor(d.cast, "an empty deck"), []);
 });
 
-test("the animation look gets no light in its pictures, and the cast still leads", () => {
-  // On the turbo SDXL model "a single warm red light source" is a colour cast: a pastel story about a pastry chef
-  // opened on a red kitchen, a red apron and a red sauce (job gt_ad2musq5, 19 September 2026).
+test("no look gets the section's light in its pictures any more, and the cast still leads", () => {
+  // On the turbo SDXL model "a single warm red light source" was a colour cast (gt_ad2musq5, 19 September: a red
+  // kitchen for a pastel story); on RealVisXL, the realistic model since the 20th, the same (gt_hxed87em, 22
+  // September: red graphite dust, a glowing green pencil line, a green lamp). The accent stays on the layer.
   const d = good();
-  const drawn = pictureContext(d, "The captain walks along the shoreline at dusk", "red", "animation");
-  assert.ok(drawn.startsWith("the captain: a pirate captain with a red bandana"), drawn);
-  assert.ok(!drawn.includes("light source"), drawn);
-  assert.ok(pictureContext(d, "The captain walks along the shoreline at dusk", "red", "realistic").endsWith(ACCENT_LIGHT.red));
-  assert.ok(pictureContext(d, "The captain walks along the shoreline at dusk", "red", "cartoon").endsWith(ACCENT_LIGHT.red));
-  assert.equal(lightsPictures("animation"), false);
-  assert.equal(lightsPictures("realistic"), true);
-  assert.equal(lightsPictures(null), true, "an unknown look keeps the light");
+  for (const look of ["animation", "realistic", "cartoon", null]) {
+    const drawn = pictureContext(d, "The captain walks along the shoreline at dusk", "red", look);
+    assert.ok(drawn.startsWith("the captain: a pirate captain with a red bandana"), drawn);
+    assert.ok(!drawn.includes("light source"), `${look}: ${drawn}`);
+    assert.equal(lightsPictures(look), false);
+  }
+  assert.ok(ACCENT_LIGHT.red, "the table stays for the layer's own words");
+});
+
+test("what a cast look or the world denies goes to the negative prompt, with face and portrait when a face is denied", () => {
+  assert.deepEqual(negatedTerms("a middle-aged hand and forearm, pale skin, a frayed cream shirt cuff, no visible face"), ["visible face", "face", "portrait"]);
+  assert.deepEqual(negatedTerms("a room with one window, never a logo or a screen"), ["logo"]);
+  assert.deepEqual(negatedTerms("a pirate captain with a red bandana"), []);
+  assert.deepEqual(negatedTerms("she is no longer young, without a hat"), ["hat"]);
+  const d = { ...good(), cast: [{ name: "the writer", look: "a hand and a forearm, no visible face" }], world: "A desk by one window before dawn, without a single screen" };
+  const neg = negativeFor(d, NEGATIVE_PROMPT);
+  assert.ok(neg.includes("visible face") && neg.includes("face, portrait") && neg.includes("single screen"), neg);
+  assert.ok(neg.startsWith(NEGATIVE_PROMPT) && neg.includes("wifi symbol"), "the forbidden list still comes first");
 });
 
 test("a cast look is a description a painter can draw twice, never a name; the narration never describes the video", () => {
@@ -249,7 +260,7 @@ test("the image call carries the direction: prompt context and per-film negative
 
   const inputs = modelInputs(DEFAULT_IMAGE_MODELS.realistic, "realistic", "The captain on the deck", "9:16", 7, d, "red");
   assert.ok(String(inputs.negative_prompt).includes("wifi symbol"), String(inputs.negative_prompt));
-  assert.ok(String(inputs.prompt).includes(ACCENT_LIGHT.red), String(inputs.prompt));
+  assert.ok(!String(inputs.prompt).includes("light source"), String(inputs.prompt));
 });
 
 /* ------------------------------------------------------------------ the validator holds a storyboard to its direction */

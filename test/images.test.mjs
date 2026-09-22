@@ -98,10 +98,10 @@ test("model inputs: style suffix, size only for models that take one, negative p
   const sdxl = modelInputs("@cf/bytedance/stable-diffusion-xl-lightning", "realistic", "x", "9:16", 1);
   assert.equal(sdxl.width, 768); assert.equal(sdxl.guidance, 7.5);
   assert.equal(fullPrompt("cartoon", "no trailing dot"), `no trailing dot. ${STYLE_SUFFIX.cartoon}`);
-  // The section's light is written into the photographic looks and never into the animation look (a colour cast on
-  // its turbo model: the red kitchen of job gt_ad2musq5). Same rule as worker/kleo_pictures.py lights_pictures().
+  // The section's light is written into no look's pictures any more (a colour cast on the animation's turbo model,
+  // gt_ad2musq5, and on the realistic RealVisXL, gt_hxed87em). Same rule as worker/kleo_pictures.py lights_pictures().
   const d = { world: "A country village at dawn", cast: [{ name: "the pastry chef", look: "a thin woman with short blonde hair tied up, lilac apron" }], objects: [], forbidden: [] };
-  assert.ok(fullPrompt("realistic", "the pastry chef at her oven", d, "red").includes("a single warm red light source"));
+  assert.ok(!fullPrompt("realistic", "the pastry chef at her oven", d, "red").includes("light source"));
   assert.ok(!fullPrompt("animation", "the pastry chef at her oven", d, "red").includes("light source"));
   assert.ok(fullPrompt("animation", "the pastry chef at her oven", d, "red").includes("the pastry chef: a thin woman"), "the cast look still travels");
 });

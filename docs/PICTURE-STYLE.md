@@ -237,3 +237,16 @@ Two findings from job `gt_ad2musq5` (19 September, an Italian animatic about a t
 2. **The section's accent is not a light in a drawn film.** `ACCENT_LIGHT` ("a single warm red light source") is appended for the photographic looks only; on the turbo SDXL model of the animation look it is a colour cast — a red kitchen, a red apron, a red sauce for a pastel story. `lightsPictures(look)` / `lights_pictures(style)` decide, on both sides. And on the GPU the cast's look now goes **in front** of the author's sentence (`cast_for()` → `full_prompt(lead=…)`): what comes first weighs most, and a face that changes is what a viewer notices.
 
 The rhythm rules of the shot grammar (move class alternation, scale repetition, screen direction, loud budget) became warnings the same day: refusing on them produced storyboards with no legal answer (two forced static holds in a row), and two of this user's jobs died in planning on exactly that.
+
+## 8. The section's accent leaves every picture (22 September 2026)
+
+The first animatic with music and subtitles (`gt_hxed87em`, realistic look on RealVisXL V5) showed the colour law of §7 on
+the photographic look too: red graphite dust in the "red" section, a glowing green pencil line and a green lamp in the
+"green" one, against a treatment whose palette was slate blue, brass and cream. RealVisXL is an SDXL model like the
+animation's turbo one, and "a single cool green light source" is a colour cast on it as well. `lightsPictures()` /
+`lights_pictures()` now answer false for every look: the accent lives on the layer (`hud.js`) and nowhere else; the
+pictures follow the treatment's visual language. Same film, second finding: the only character was "a middle-aged
+hand and forearm … no visible face", and a man's face appeared in the sixth picture — a diffusion model reads "no
+visible face" on the positive side as "face". `negatedTerms()` / `negated_terms()` move the clauses a cast look or
+the world denies ("no visible face", "never a logo", "without a screen") to the negative prompt, with "face,
+portrait" added whenever a face is what is denied.
