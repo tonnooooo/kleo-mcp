@@ -168,14 +168,15 @@ export const SHOTS_MIN_CINEMA = 2;
  * twelve shots, eleven of them about one second long: every one billed by kie.ai at its four-second minimum (0.26 $),
  * 3.25 $ of clips for fifteen seconds of film — five times the tariff's assumption — and a cut every second that
  * nobody reads. A shot is about three seconds of voice at the least, so a line of `words` words (2.7 a second)
- * carries at most round(words / 7) shots, one to four; and the two-picture floor holds only for a line long
- * enough for two (14 words, about five seconds). SHOTS_WORDS_PER_SHOT is the one number.
+ * carries at most floor(words / 7) shots, one to four (floor, not round: the verification film gt_nyhb8aj9 gave an
+ * eleven-word line two shots of 1.4 s, each still a four-second clip); and the two-picture floor holds only for a
+ * line long enough for two (14 words, about five seconds). SHOTS_WORDS_PER_SHOT is the one number.
  */
 export const SHOTS_WORDS_PER_SHOT = 7;
 export const SHOTS_MIN_WORDS_FOR_TWO = 14;
 export function shotBudget(words: number): { min: number; max: number } {
   const w = Math.max(0, Number(words) || 0);
-  return { min: w >= SHOTS_MIN_WORDS_FOR_TWO ? SHOTS_MIN_CINEMA : 1, max: Math.max(1, Math.min(SHOTS_PER_SCENE.cinema[1], Math.round(w / SHOTS_WORDS_PER_SHOT))) };
+  return { min: w >= SHOTS_MIN_WORDS_FOR_TWO ? SHOTS_MIN_CINEMA : 1, max: Math.max(1, Math.min(SHOTS_PER_SCENE.cinema[1], Math.floor(w / SHOTS_WORDS_PER_SHOT))) };
 }
 const voiceWords = (s: unknown): number => (isObj(s) && typeof s.voice === "string" ? s.voice.trim().split(/\s+/).filter(Boolean).length : 0);
 /**

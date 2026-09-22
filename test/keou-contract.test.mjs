@@ -192,8 +192,8 @@ test("helpers: defaultVoice and wordBudget", () => {
 
 test("shotBudget and trimShots: a line carries one shot per seven words, at most four; two are required only from fourteen words (22 September)", () => {
   assert.deepEqual(shotBudget(6), { min: 1, max: 1 }); assert.deepEqual(shotBudget(10), { min: 1, max: 1 });
-  assert.deepEqual(shotBudget(12), { min: 1, max: 2 }); assert.deepEqual(shotBudget(14), { min: 2, max: 2 });
-  assert.deepEqual(shotBudget(24), { min: 2, max: 3 }); assert.deepEqual(shotBudget(40), { min: 2, max: 4 }); assert.deepEqual(shotBudget(0), { min: 1, max: 1 });
+  assert.deepEqual(shotBudget(12), { min: 1, max: 1 }, "eleven or twelve words are one shot, not two of a second and a half"); assert.deepEqual(shotBudget(14), { min: 2, max: 2 });
+  assert.deepEqual(shotBudget(24), { min: 2, max: 3 }); assert.deepEqual(shotBudget(28), { min: 2, max: 4 }); assert.deepEqual(shotBudget(40), { min: 2, max: 4 }); assert.deepEqual(shotBudget(0), { min: 1, max: 1 });
   const line = (n) => Array.from({ length: n }, (_, i) => `w${i}`).join(" ");
   const sb = { scenes: [
     { id: "a", kind: "cinema", voice: line(10), shots: [{ image_prompt: "1" }, { image_prompt: "2", at: "w3" }, { image_prompt: "3", at: "w6" }] },
