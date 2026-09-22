@@ -70,10 +70,18 @@ function fakeKie(script = {}) {
       const taskId = new URL(u).searchParams.get("taskId");
       calls.record.push(taskId);
       const state = script.state?.[taskId] ?? script.defaultState ?? "generating";
-      const data = { taskId, state, resultJson: state === "success" ? JSON.stringify({ resultUrls: [`https://cdn.kie.test/${taskId}.mp4`] }) : "", failCode: state === "fail" ? "500" : "", failMsg: state === "fail" ? "content policy" : "" };
+      // Suno's answer (measured 22 September 2026): resultJson is {"code":200,"data":[{"audio_url":…},{…}]}, two tracks.
+      const resultJson = state !== "success" ? "" : script.suno
+        ? JSON.stringify({ code: 200, msg: "success", data: [{ audio_url: `https://cdn.kie.test/${taskId}-a.mp3`, duration: 38.4, title: "t" }, { audio_url: `https://cdn.kie.test/${taskId}-b.mp3`, duration: 38.4, title: "t" }], task_id: taskId })
+        : JSON.stringify({ resultUrls: [`https://cdn.kie.test/${taskId}.mp4`] });
+      const data = { taskId, state, resultJson, failCode: state === "fail" ? "500" : "", failMsg: state === "fail" ? "content policy" : "" };
       return new Response(JSON.stringify({ code: 200, msg: "success", data }), { status: 200 });
     }
-    if (u.startsWith("https://cdn.kie.test/")) { calls.downloads++; return new Response(mp4, { status: 200, headers: { "content-length": String(mp4.length) } }); }
+    if (u.startsWith("https://cdn.kie.test/")) {
+      calls.downloads++;
+      if (u.endsWith(".mp3")) { const mp3 = new Uint8Array(6000); mp3.set([0x49, 0x44, 0x33], 0); return new Response(mp3, { status: 200, headers: { "content-length": String(mp3.length) } }); }   // "ID3"
+      return new Response(mp4, { status: 200, headers: { "content-length": String(mp4.length) } });
+    }
     throw new Error(`unexpected fetch ${u}`);
   };
   return { calls, fetch };
@@ -464,11 +472,11 @@ test("requestMusic: one Suno task on the same road, $0.06 on the day's ceiling, 
   const kie = fakeKie({ defaultState: "success" }); globalThis.fetch = kie.fetch;
   const r = await m.requestMusic(env, job, { brief: "sparse felt piano over a low pad, 60 bpm, patient", seconds: 39.4, title: "The Birth of a Brilliant Idea" });
   assert.equal(r.status, 200, JSON.stringify(r.reply));
-  assert.equal(r.reply.state, "generating"); assert.equal(r.reply.cost_usd, 0.06); assert.equal(r.reply.model, "suno-v5");
+  assert.equal(r.reply.state, "generating"); assert.equal(r.reply.cost_usd, 0.06); assert.equal(r.reply.model, "suno-v6");
   assert.equal(kie.calls.create.length, 1);
   const body = kie.calls.create[0].body;
   assert.equal(body.model, "ai-music-api/generate");
-  assert.equal(body.input.instrumental, true); assert.equal(body.input.custom_mode, true); assert.equal(body.input.model, "V5");
+  assert.equal(body.input.instrumental, true); assert.equal(body.input.custom_mode, true); assert.equal(body.input.model, "V6", "duration is accepted only with V5_5 or a V6 (measured 22 September)");
   assert.match(body.input.style, /^sparse felt piano over a low pad, 60 bpm, patient\. Instrumental score for a narrated short film: no vocals/);
   assert.equal(body.input.title, "The Birth of a Brilliant Idea"); assert.equal(body.input.duration, 47, "the film's length plus a tail to cut on");
   assert.match(body.input.negative_tags, /vocals/);
@@ -522,4 +530,19 @@ test("music refusals are soft and cost nothing: no key → 409, the ceiling or a
   assert.equal((await m.handleInternal(new Request(`http://kleo.test/internal/jobs/${j3.id}/music/file`, { headers: { authorization: "Bearer wsecret" } }), env)).status, 404);
   const none = await newEnv();
   assert.equal((await m.musicStatus(none, await filmJob(none), true)).status, 404, "no track ordered: none");
+});
+
+test("the real Suno answer shape: two tracks under data[].audio_url, the first is the film's, as an mp3", async () => {
+  const env = await newEnv();
+  const job = await filmJob(env);
+  const kie = fakeKie({ defaultState: "success", suno: true }); globalThis.fetch = kie.fetch;
+  await m.requestMusic(env, job, { brief: "warm strings", seconds: 30 });
+  const st = await m.musicStatus(env, job, true);
+  assert.equal(st.reply.state, "ready", JSON.stringify(st.reply));
+  assert.equal(kie.calls.downloads, 1, "one track downloaded, the first");
+  const stored = env.RENDERS.m.get(`renders/${job.id}/music.mp3`);
+  assert.equal(stored.type, "audio/mpeg"); assert.equal(stored.buf.byteLength, 6000);
+  assert.deepEqual(m.audioUrls({ resultJson: JSON.stringify({ code: 200, data: [{ audio_url: "https://x/a.mp3" }, { audio_url: "https://x/b.mp3" }] }) }), ["https://x/a.mp3", "https://x/b.mp3"]);
+  assert.deepEqual(m.audioUrls({ resultJson: JSON.stringify({ resultUrls: ["https://x/c.mp4"] }) }), ["https://x/c.mp4"], "the clips' shape still reads");
+  assert.deepEqual(m.audioUrls({ resultJson: "" }), []);
 });

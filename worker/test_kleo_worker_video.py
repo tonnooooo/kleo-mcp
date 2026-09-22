@@ -483,7 +483,7 @@ class RenderFilmTest(unittest.TestCase):
         kw.generate_footage = self.footage_that(3.0)
         out = os.path.join(self.tmp, "out"); os.makedirs(out)
         files = kw.render_film(job_for(storyboard()), out)
-        self.assertEqual(sorted(files), ["thumbnail.jpg", "video.mp4"], "the film and its thumbnail; no subtitles of any kind")
+        self.assertEqual(sorted(files), ["subtitles.srt", "thumbnail.jpg", "video.mp4"], "the film, its thumbnail and the .srt sidecar (22 September: always delivered; burned in only when the user said yes)")
         probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type:format=duration", "-of", "json", files["video.mp4"]],
                                capture_output=True, text=True, check=True).stdout
         info = json.loads(probe)
@@ -549,7 +549,7 @@ class TwoPhaseTest(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(pdir2, "build", "footage.mp4")), "the track is the finish box's job")
         out2 = os.path.join(self.tmp, "out-finish"); os.makedirs(out2)
         files = kw.film_finish(pdir2, out2, lay_track=True)
-        self.assertEqual(sorted(files), ["thumbnail.jpg", "video.mp4"])
+        self.assertEqual(sorted(files), ["subtitles.srt", "thumbnail.jpg", "video.mp4"])
         probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type:format=duration", "-of", "json", files["video.mp4"]],
                                           capture_output=True, text=True, check=True).stdout)
         self.assertEqual(sorted(st["codec_type"] for st in probe["streams"]), ["audio", "video"])

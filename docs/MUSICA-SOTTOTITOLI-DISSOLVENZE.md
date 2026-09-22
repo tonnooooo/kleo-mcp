@@ -43,7 +43,7 @@ Sulla macchina: dopo il passo della voce (che per `track` scrive **silenzio** in
 letto sinusoidale), `fetch_music` chiede al server `POST /internal/jobs/:id/music {brief, seconds, title}`; il
 server (`requestMusic`) crea **un task** su `https://api.kie.ai/api/v1/jobs/createTask` con modello
 `ai-music-api/generate`, `custom_mode: true`, `instrumental: true`, `style` = brief + «no vocals, no lyrics…»,
-`duration` = durata del film + 8 s, versione Suno da `KIE_MUSIC_VERSION` (default `V5`). Prezzo letto dal listino
+`duration` = durata del film + 8 s, versione Suno da `KIE_MUSIC_VERSION` (default `V6`: `duration` è accettato solo con V5_5 o una V6, misurato il 22 settembre con una chiamata vera, 22 s per una traccia di 38,4 s; la risposta è nella forma di Suno, `data[].audio_url`, due tracce, si usa la prima). Prezzo letto dal listino
 kie.ai: **12 crediti = 0,06 $ a richiesta**, scritti nella tabella `footage` con `shot_id = "music"` così il tetto
 giornaliero li conta al momento dell'impegno (la riga è tolta dalle liste delle clip che la macchina legge). La
 macchina fa `GET /music` finché `ready`, scarica `GET /music/file` (la traccia è copiata su R2 in
@@ -100,5 +100,5 @@ fotogramma del cambio). Nel film `render.mjs` scrive `transition` e `dissolve_s`
 Il primo film con traccia e sottotitoli renderizzato dopo il deploy è la prova che manca: il test Node prova la
 strada del server con un kie.ai finto, i test Python provano il mix, la forma della traccia e la dissolvenza su
 clip di 128×72 con ffmpeg vero, il test del motore prova le due immagini sotto la dissolvenza su un contesto 2D
-registrato. Il formato del `input` di Suno su kie.ai è letto dalla documentazione (`docs.kie.ai/suno-api`), non
-ancora esercitato con una chiamata vera.
+registrato. Il formato del `input` di Suno e della risposta è stato esercitato con una chiamata vera (task `03d4a341…`,
+0,06 $): `duration` vuole V5_5 o V6, la risposta è `data[].audio_url`.

@@ -519,7 +519,9 @@ async function downloadClip(env: Env, job: Job, row: FootageRow, url: string): P
  * the composer and the storyboard says `music: "track"`; the box asks for the track here, waits, and ducks it under
  * the narration (kleo_worker.py fetch_music). The composer is Suno through kie.ai's unified API — the same
  * createTask / recordInfo pair the clips use, model "ai-music-api/generate", read off its pricing page: 12 kie
- * credits = $0.06 a request, whatever the length, two tracks back (the first is used). One row in the footage table
+ * credits = $0.06 a request, whatever the length, two tracks back (the first is used). Exercised once for real on
+ * 22 September (task 03d4a341…): 22 seconds to a 38.4 s instrumental, the answer's resultJson is Suno's own shape —
+ * {"code":200,"data":[{"audio_url":…,"duration":38.4,…},{…}]} — not the clips' {"resultUrls":[…]}; audioUrls reads both. One row in the footage table
  * under the shot id MUSIC_ID, so today's ceiling (DAILY_FOOTAGE_BUDGET_USD) counts the dollar the moment it is
  * committed, exactly like a clip; it is left out of the clip lists the box reads.
  *
@@ -529,7 +531,8 @@ async function downloadClip(env: Env, job: Job, row: FootageRow, url: string): P
 export const MUSIC_ID = "music";
 export const MUSIC_MODEL = "ai-music-api/generate";
 export const MUSIC_USD = 0.06;
-export const DEFAULT_MUSIC_VERSION = "V5";
+/** Suno V6: `duration` is accepted only with V5_5, V6, V6_WILD or V6_MINI (the API said so on 22 September: code 422 on V5). */
+export const DEFAULT_MUSIC_VERSION = "V6";
 export const musicKey = (jobId: string) => `renders/${jobId}/music.mp3`;
 
 export function musicOn(env: Pick<Env, "KIE_API_KEY" | "KLEO_MUSIC">): boolean {
@@ -609,7 +612,7 @@ export async function musicStatus(env: Env, job: Job, poll = true): Promise<{ st
       const rec = await kie<KieRecord>(env, "GET", `${KIE_RECORD}?taskId=${encodeURIComponent(row.task_id)}`);
       const state = String(rec?.state ?? "").toLowerCase();
       if (state === "success") {
-        const urls = resultUrls(rec);
+        const urls = audioUrls(rec);
         if (!urls.length) throw new KieError("task succeeded without a result url", 0, false);
         await downloadMusic(env, job, row, urls[0]);
       } else if (state === "fail" || state === "failed" || state === "error") {
@@ -632,12 +635,27 @@ export async function musicStatus(env: Env, job: Job, poll = true): Promise<{ st
 
 const MUSIC_MAX_BYTES = 40 * 1024 * 1024;
 
+/** The track URLs of a finished music task: Suno's data[].audio_url (the shape measured), or the clips' resultUrls. */
+export function audioUrls(rec: KieRecord & { response?: unknown }): string[] {
+  const fromResult = resultUrls(rec);
+  if (fromResult.length) return fromResult;
+  let rj: unknown = rec.resultJson;
+  if (typeof rj === "string") { try { rj = JSON.parse(rj); } catch { rj = null; } }
+  const lists = [rj, rec.response].map((x) => (x && typeof x === "object" ? (x as { data?: unknown }).data : undefined));
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue;
+    const urls = list.map((t) => (t && typeof t === "object" ? (t as { audio_url?: unknown }).audio_url : undefined)).filter((u): u is string => typeof u === "string" && /^https?:\/\//.test(u));
+    if (urls.length) return urls;
+  }
+  return [];
+}
+
 /** The finished track, from kie.ai's (temporary) URL to R2 under the job, once. An mp3 or an mp4/m4a container is accepted. */
 async function downloadMusic(env: Env, job: Job, row: FootageRow, url: string): Promise<void> {
   const res = await fetch(url, { headers: { "user-agent": "kleo-mcp/1.0" } });
   if (!res.ok) throw new KieError(`track download → ${res.status}`, res.status, res.status >= 500 || res.status === 429);
   const buf = await res.arrayBuffer();
-  if (buf.byteLength < 8 * 1024 || buf.byteLength > MUSIC_MAX_BYTES) throw new KieError(`track download is ${buf.byteLength} bytes`, 0, false);
+  if (buf.byteLength < 1024 || buf.byteLength > MUSIC_MAX_BYTES) throw new KieError(`track download is ${buf.byteLength} bytes`, 0, false);
   const head = new Uint8Array(buf.slice(0, 12));
   const isMp3 = (head[0] === 0x49 && head[1] === 0x44 && head[2] === 0x33) || (head[0] === 0xff && (head[1] & 0xe0) === 0xe0);
   const isMp4 = new TextDecoder().decode(buf.slice(4, 8)) === "ftyp";

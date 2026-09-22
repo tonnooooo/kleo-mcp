@@ -94,7 +94,7 @@ export interface Env {
   KIE_MAX_VIDEO_S?: string;
   /** Hard ceiling on estimated kie.ai dollars per UTC day (default 5.00); over it the footage call refuses. */
   DAILY_FOOTAGE_BUDGET_USD?: string;
-  /** The Suno version kie.ai's "ai-music-api/generate" is asked for (default V5): the user's optional music track (src/footage.ts). */
+  /** The Suno version kie.ai's "ai-music-api/generate" is asked for (default V6; `duration` needs V5_5 or a V6): the user's optional music track (src/footage.ts). */
   KIE_MUSIC_VERSION?: string;
   /** "off" refuses every music order (the film is made without its track); anything else, or unset, orders it when KIE_API_KEY is set. */
   KLEO_MUSIC?: string;

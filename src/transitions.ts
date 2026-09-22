@@ -70,7 +70,7 @@ export function placeTransitions<T extends { scenes?: unknown }>(sb: T, duration
     for (const i of boundaries) {
       if (chosen.has(i)) continue;
       const d = Math.abs(starts[i] - target);
-      if (d < dist) { dist = d; best = i; }
+      if (d < dist - 1e-9) { dist = d; best = i; }   // a tie goes to the earlier boundary, never to floating-point noise
     }
     if (best >= 0) chosen.add(best);
   }
