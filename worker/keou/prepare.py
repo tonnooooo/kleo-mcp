@@ -133,9 +133,29 @@ def caption_groups(script, heard, duration, defer=False, portrait=False, compact
                         g['start'] = prev['end'] = max(prev['start'] + .05, g['start'] - span)
                         moved = True; break
             if not moved: break
-    for g in groups:
-        if g['end']-g['start'] < (.25 if compact else .55):
-            raise ValueError('Caption too brief; shorten the sentence or adjust the voice speed')
+    # A GROUP TOO BRIEF TO READ IS REPAIRED, NEVER FATAL (22 September 2026). Until this line a last group of one
+    # word could kill a paid render: the trimmed tail (trim_edges) leaves the last word ~0.3 s of audio, the group
+    # ends where the audio ends, and `raise` failed the voice pass three times on gt_xrnffqsx — five credits, a
+    # rented card, no video, for a caption nobody had asked to be that short. In every mode: merge it into the
+    # group before it when the line stays readable, else move the boundary with a neighbour that has time to
+    # spare, else let it run a little past the sound (the scene's hold covers it).
+    floor = .25 if compact else brief_floor
+    limit_words, limit_chars = max_words + (0 if compact else 2), max_chars + (0 if compact else 12)
+    for _ in range(len(groups) + 1):
+        brief = next((k for k, g in enumerate(groups) if g['end'] - g['start'] < floor), None)
+        if brief is None: break
+        g, prev = groups[brief], groups[brief - 1] if brief else None
+        nxt = groups[brief + 1] if brief + 1 < len(groups) else None
+        joined = (prev['text'] + ' ' + g['text']) if prev else ''
+        if prev and len(joined.split()) <= limit_words and len(joined) <= limit_chars:
+            groups[brief - 1] = {'text': joined, 'start': prev['start'], 'end': g['end']}; del groups[brief]
+        elif prev and prev['end'] - prev['start'] > floor + .3:
+            g['start'] = prev['end'] = max(prev['start'] + floor, g['end'] - floor)
+        elif nxt and nxt['end'] - nxt['start'] > floor + .3:
+            g['end'] = nxt['start'] = min(nxt['end'] - floor, g['start'] + floor)
+        else:
+            g['end'] = g['start'] + floor
+        print('CAPTION_REPAIRED', repr(g['text']), flush=True)
     return groups, score
 
 def trim_edges(audio, sr, keep_head=.12, keep_tail=.18, floor=.02):

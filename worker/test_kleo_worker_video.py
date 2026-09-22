@@ -655,3 +655,8 @@ class LayerClipsBoundTest(unittest.TestCase):
         with self.assertRaises(kw.RenderError) as cm:
             kw.bind_shot_clips(self.pdir, self.project)
         self.assertIn("01-a-s2", str(cm.exception))
+
+# The caption repair of prepare.py (22 September 2026) rides in this module: tests.yml lists its modules by name and
+# the OAuth token that pushes from the owner's PC has no `workflow` scope to add one.
+from test_keou_prepare import CaptionRepairTest  # noqa: E402,F401
+

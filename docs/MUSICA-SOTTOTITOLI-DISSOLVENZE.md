@@ -106,3 +106,12 @@ strada del server con un kie.ai finto, i test Python provano il mix, la forma de
 clip di 128×72 con ffmpeg vero, il test del motore prova le due immagini sotto la dissolvenza su un contesto 2D
 registrato. Il formato del `input` di Suno e della risposta è stato esercitato con una chiamata vera (task `03d4a341…`,
 0,06 $): `duration` vuole V5_5 o V6, la risposta è `data[].audio_url`.
+
+
+## 7. La seconda sonda ha trovato il mio errore
+
+`gt_xrnffqsx` (stesse parole della prima) è morta tre volte al passo voce: `Caption too brief`. Il taglio delle code
+(`trim_edges`) lascia all'ultima parola ~0,3 s di audio, l'ultimo gruppo di didascalia finisce dove finisce l'audio, e
+`caption_groups` alzava un'eccezione sotto 0,55 s: cinque crediti e una scheda per una didascalia. Ora un gruppo
+troppo breve si **ripara** (fuso nel precedente se la riga resta leggibile, altrimenti sposta il confine con un vicino
+che ha tempo, altrimenti corre un poco oltre il suono) e non è mai fatale. Test: `worker/test_keou_prepare.py`.
