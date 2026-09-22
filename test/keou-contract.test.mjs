@@ -8,7 +8,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildGuide, guideText, EXAMPLE_DIRECTION, EXAMPLE_SCENES } from "../src/guide.ts";
-import { validateStoryboard, defaultVoice, wordBudget, kleoStyleOf, pictureScenes, directionProblems, sectionOfScene, CINEMA_ACCENTS, SHOTS_MIN_CINEMA, shotRangeText, VOICES, FORBIDDEN_FIELDS, FORBIDDEN_KINDS, FORBIDDEN_SCENE_FIELDS, KLEO_STYLES, IMAGE_PROMPT_MAX, MAX_PICTURES, SHOT_MOTION, SHOT_FIELDS, SHOTS_PER_SCENE, SHOT_KINDS, SHOT_GRAMMAR, durationFor, MOTION_ALIASES, MOTION_MOVES, MAX_SHOT_S, MAX_PERSON_SHOT_S, LOUD_WINDOW_S, LOUD_MAX_PER_WINDOW } from "../src/keou-contract.ts";
+import { validateStoryboard, defaultVoice, wordBudget, speedFor, kleoStyleOf, pictureScenes, directionProblems, sectionOfScene, CINEMA_ACCENTS, SHOTS_MIN_CINEMA, shotRangeText, VOICES, FORBIDDEN_FIELDS, FORBIDDEN_KINDS, FORBIDDEN_SCENE_FIELDS, KLEO_STYLES, IMAGE_PROMPT_MAX, MAX_PICTURES, SHOT_MOTION, SHOT_FIELDS, SHOTS_PER_SCENE, SHOT_KINDS, SHOT_GRAMMAR, durationFor, MOTION_ALIASES, MOTION_MOVES, MAX_SHOT_S, MAX_PERSON_SHOT_S, LOUD_WINDOW_S, LOUD_MAX_PER_WINDOW } from "../src/keou-contract.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const EXAMPLES = join(ROOT, "worker", "keou", "examples");
@@ -183,6 +183,11 @@ test("helpers: defaultVoice and wordBudget", () => {
   assert.ok(b.target >= 118 && b.target <= 124, `45 s ≈ 121 words since the silent edges are trimmed (22 September), got ${b.target}`);
   assert.ok(wordBudget(300).target >= 800 && wordBudget(300).target <= 820);
   assert.ok(b.min < b.target && b.target < b.max);
+  // The speed servo (22 September): the words the storyboard carries set the voice's speed, inside 1.0-1.3.
+  assert.equal(speedFor(99, 30), 1.3, "99 words in 30 s: the ceiling (gt_b2campbw ran 35.6 s at 1.1)");
+  assert.equal(speedFor(81, 30), 1.1, "the budget's own target at the calibrated speed");
+  assert.equal(speedFor(69, 30), 1.0, "too few words: never slower than 1.0, the film is a little short instead");
+  assert.equal(speedFor(0, 30), 1.1); assert.equal(speedFor(50, 0), 1.1);
 });
 
 /* ------------------------------------------------------------------ Kleo styles and pictures (docs/PICTURE-STYLE.md) */

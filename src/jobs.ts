@@ -6,7 +6,7 @@ import { footageBackendFor, footageConfig, kiePreflight } from "./footage";
 import { rid, nowIso, int, hmacHex } from "./util";
 import { isFlagActive } from "./schema";
 import { backendFor } from "./backends";
-import { validateStoryboard, kleoStyleOf, pictureScenes, narrationOf, MAX_PICTURES, wordBudget, KLEO_STYLES, FILM_LOOKS, type KleoStyle, type FilmLook } from "./keou-contract";
+import { validateStoryboard, kleoStyleOf, pictureScenes, narrationOf, MAX_PICTURES, wordBudget, speedFor, KLEO_STYLES, FILM_LOOKS, type KleoStyle, type FilmLook } from "./keou-contract";
 import { treatmentProblems, repairTreatment, variationFor, applySoundOptions, musicOf, type Treatment, type SoundOptions } from "./treatment.ts";
 import { musicAnswer, subtitlesAnswer } from "./adaptive.ts";
 import { repairGraphics } from "./graphics.ts";
@@ -189,7 +189,10 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     const filmed = filmedStoryboard(style, String((r.storyboard as Record<string, unknown>).style ?? ""), product);
     if (filmed) (r.storyboard as Record<string, unknown>).backdrop = "video";
     else delete (r.storyboard as Record<string, unknown>).backdrop;
-    storyboard = JSON.stringify(finishForProduct(r.storyboard as Record<string, unknown>, product, duration));
+    const finished = finishForProduct(r.storyboard as Record<string, unknown>, product, duration);
+    // The voice's speed follows the words the storyboard carries (keou-contract.ts speedFor), on this road too.
+    finished.speed = speedFor(narrationOf(finished).trim().split(/\s+/).filter(Boolean).length, duration);
+    storyboard = JSON.stringify(finished);
   }
   // THE USER'S TWO ANSWERS (22 September 2026), read once here and applied to everything below: the treatment (its
   // music brief and its layer's subtitles), a client storyboard (its music and its graphics) and the job's params, so

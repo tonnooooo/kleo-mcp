@@ -152,13 +152,14 @@ test("no look gets the section's light in its pictures any more, and the cast st
 });
 
 test("what a cast look or the world denies goes to the negative prompt, with face and portrait when a face is denied", () => {
-  assert.deepEqual(negatedTerms("a middle-aged hand and forearm, pale skin, a frayed cream shirt cuff, no visible face"), ["visible face", "face", "portrait"]);
+  assert.deepEqual(negatedTerms("a middle-aged hand and forearm, pale skin, a frayed cream shirt cuff, no visible face"), ["visible face", "face", "portrait", "person"]);
+  assert.deepEqual(negatedTerms("Only a hand and a forearm are ever seen, never a face"), ["face", "portrait", "person"], "a treatment decision, the shape gt_b2campbw wrote it in");
   assert.deepEqual(negatedTerms("a room with one window, never a logo or a screen"), ["logo"]);
   assert.deepEqual(negatedTerms("a pirate captain with a red bandana"), []);
   assert.deepEqual(negatedTerms("she is no longer young, without a hat"), ["hat"]);
   const d = { ...good(), cast: [{ name: "the writer", look: "a hand and a forearm, no visible face" }], world: "A desk by one window before dawn, without a single screen" };
   const neg = negativeFor(d, NEGATIVE_PROMPT);
-  assert.ok(neg.includes("visible face") && neg.includes("face, portrait") && neg.includes("single screen"), neg);
+  assert.ok(neg.includes("visible face") && neg.includes("face, portrait, person") && neg.includes("single screen"), neg);
   assert.ok(neg.startsWith(NEGATIVE_PROMPT) && neg.includes("wifi symbol"), "the forbidden list still comes first");
 });
 

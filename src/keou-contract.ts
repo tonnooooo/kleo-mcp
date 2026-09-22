@@ -1007,3 +1007,17 @@ export function wordBudget(duration_s: number, speed = 1.1): { target: number; m
   const target = Math.round(duration_s * wps);
   return { target, min: Math.round(target * 0.8), max: Math.round(target * 1.1), wordsPerSecond: Math.round(wps * 100) / 100 };
 }
+
+/**
+ * THE SPEED SERVO (22 September 2026). The planner is told the word budget and writes past it anyway: the fourth
+ * probe of the day (gt_b2campbw) got 99 words for a 30-second order whose target was 81, and ran 35.6 s. The voice
+ * decides how long the film really is, so the voice's speed is set from the words the storyboard actually carries:
+ * the speed at which they fit the length, never slower than 1.0 (a film that is a little short is better than a
+ * narrator who drags) and never faster than 1.3 (the contract's ceiling, and Kokoro's limit of clarity). At 1.3 a
+ * 99-word 30-second film runs about 31 s instead of 36.
+ */
+export function speedFor(words: number, duration_s: number): number {
+  if (!(words > 0) || !(duration_s > 0)) return 1.1;
+  const speed = words / (2.45 * duration_s);
+  return Math.round(Math.min(1.3, Math.max(1.0, speed)) * 100) / 100;
+}

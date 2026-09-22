@@ -125,3 +125,14 @@ treatment rispettata; nessun volto, solo mani; musica sotto, sottotitoli, dissol
 il `loudnorm` a un passaggio è un normalizzatore dinamico e alza le pause; `run.py` ora fa i due passaggi (misura,
 poi `linear=true`) per ogni stile. Resta da vedere: oggetti strani (un pennello-soffione al posto della matita,
 un segno azzurro come vernice) — la frase "dust drifting through the light" aggiunta ai prompt fermi va sondata.
+
+## 9. La quarta sonda: musica a posto, parole e volto
+
+`gt_b2campbw` (immagine con §8): musica nelle pause a −24/−29 dB contro −18 di voce (era −23: i due passaggi di
+`loudnorm` funzionano). Ma 35,6 s per 30: il planner ha scritto 99 parole con obiettivo 81 e tetto 89. Il budget
+non basta a un modello che scrive lungo: ora la **velocità della voce segue le parole** (`speedFor` in
+`src/keou-contract.ts`, ultimo tocco su entrambe le strade, 1,0-1,3): 99 parole in 30 s → 1,3 → ~31 s. E un
+uomo alla scrivania nell'undicesima immagine con la decisione «only a hand and a forearm are ever seen, never a
+face»: la decisione non arrivava al cast né al negative. Ora le negazioni di `decisions`, `visual` e `opening` del
+treatment entrano nella lista `forbidden` della direction (= negative prompt su entrambi i lati), e «face» porta
+con sé «portrait» e «person».

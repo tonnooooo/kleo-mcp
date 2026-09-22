@@ -15,7 +15,7 @@ import type { Env } from "./env";
 import type { Job, JobParams } from "./db";
 import { TEMPLATES, findTemplate, narrativeFor, sceneSplit, creditsFor, samePrice, filmedStoryboard, finishForProduct, productOf, type Family, type Product } from "./templates.ts";
 import {
-  validateStoryboard, defaultVoice, wordBudget, type Storyboard, type Format, type KleoStyle,
+  validateStoryboard, defaultVoice, wordBudget, speedFor, type Storyboard, type Format, type KleoStyle,
   KINDS, BEAT_KINDS, BEAT_ICONS, BEAT_FX, CINEMA_ACCENTS, VISUALS, FORBIDDEN_FIELDS,
   KLEO_STYLES, PICTURE_STYLES, FILM_LOOKS, type FilmLook, IMAGE_PROMPT_MAX, kleoStyleOf, STORY_ACTS, STORY_CAST, STORY_PROPS, STORY_FX, STORY_ACCENTS,
   SHOTS_PER_SCENE, SHOT_CAPTION_MAX, SHOT_HL_MAX, SHOT_AT_MAX, IMAGE_PROMPT_MIN, CLOSING_BUTTON_MAX,
@@ -27,7 +27,7 @@ import {
  * the world of the video was never written down, nothing said what must NOT appear, and no colour meant anything.
  */
 import {
-  directionProblems, missingFacts, sectionOfScene, enliven, screenTextProblems, notEnglish, formatTalk, storyRequest, dropLookFacts, D as DL,
+  directionProblems, missingFacts, sectionOfScene, enliven, screenTextProblems, notEnglish, formatTalk, storyRequest, dropLookFacts, negatedTerms, D as DL,
   type Direction, type Section,
 } from "./direction.ts";
 // The shot grammar: the ten story kinds and the one preset table that turns a kind into a camera move.
@@ -1707,6 +1707,15 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     // (the model had no way to know) left the film with no direction at all, and no direction is the worst outcome.
     if (!d) { directionFeedback = directionProblems(isObj(o.direction) ? o.direction : {}, { accents: CINEMA_ACCENTS, scenes: sceneGuess }); history.push([`direction: rejected (${directionFeedback.slice(0, 3).join("; ")})`]); continue; }
     direction = d;
+    // WHAT THE TREATMENT DENIES IS FORBIDDEN (22 September 2026). "Only a hand and a forearm are ever seen, never a
+    // face" was a decision of gt_b2campbw's treatment; the direction wrote a cast look with no such words, the
+    // pictures were drawn from the direction, and a man appeared at the desk in the eleventh picture. The negated
+    // clauses of the decisions and the visual language join the forbidden list, which is the negative prompt on
+    // both drawing sides — and "face" brings "portrait" and "person" with it.
+    if (treatment) {
+      const denied = negatedTerms([...(treatment.decisions ?? []), treatment.visual ?? "", treatment.opening ?? ""].join(". "));
+      for (const t of denied) if (t.length <= 36 && direction.forbidden.length < 12 && !direction.forbidden.some((f) => f.toLowerCase() === t.toLowerCase())) direction.forbidden.push(t);
+    }
     // The look the direction chose, unless the client named one: planFor() keeps the user's choice above everything.
     // The look the direction chose, unless the client named one — and never at a different price. The job was
     // charged at createJob on the look guessed then; every style costs the same today, but realistic becomes seven
@@ -1913,7 +1922,11 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   if (missing.length) history.push(missing.map((f) => `narration never says "${f}"`));
   // The product's last touch goes on AFTER the validation above: an animatic's empty layer is exactly what the
   // validator deletes as "no layer", and it has to reach the worker (templates.ts finishForProduct).
-  return { storyboard: finishForProduct(ok.storyboard as unknown as Record<string, unknown>, plan.product, plan.duration) as unknown as Storyboard, model, attempts: calls, ms: Date.now() - t0, usage, est_neurons: est, words: countWords(ok.storyboard), scenes: ok.storyboard.scenes.length, fixture: false, history, style: plan.kleo, direction, treatment, missing_facts: missing, blocked_upgrade: blockedUpgrade };
+  // THE SPEED FOLLOWS THE WORDS (keou-contract.ts speedFor): the last touch, after the last validation, because the
+  // planner writes past its budget and the voice decides how long the film really is.
+  const finished = finishForProduct(ok.storyboard as unknown as Record<string, unknown>, plan.product, plan.duration);
+  finished.speed = speedFor(countWords(finished), plan.duration);
+  return { storyboard: finished as unknown as Storyboard, model, attempts: calls, ms: Date.now() - t0, usage, est_neurons: est, words: countWords(ok.storyboard), scenes: ok.storyboard.scenes.length, fixture: false, history, style: plan.kleo, direction, treatment, missing_facts: missing, blocked_upgrade: blockedUpgrade };
 }
 
 /* ------------------------------------------------------------------ the treatment on its own */
