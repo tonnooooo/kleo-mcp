@@ -288,7 +288,7 @@ test("kleo style: explicit or picked from the prompt; keou style follows it", ()
   assert.equal(keouStyleFor("cyber", "motivational", "16:9"), "editorial");
   assert.equal(keouStyleFor("stickman", "viral-short", "9:16"), "stickman");
   const p = planFor(job("story-documentary", 480, "16:9", "en", "The pirates who found an island", "cartoon"));
-  assert.equal(p.style, "picture"); assert.equal(p.pictures, true); assert.ok(p.scenes[1] <= 36, `long cartoon videos keep a sane scene count, got ${p.scenes}`);
+  assert.equal(p.style, "picture"); assert.equal(p.pictures, true); assert.ok(p.scenes[1] <= 42, `long cartoon videos keep a sane scene count (≈13 s a scene at the 2.45 w/s budget of 22 September), got ${p.scenes}`);
 });
 
 test("picture: the schema asks for shots, a lone shot is fed back once, the result is a valid picture storyboard", async () => {
