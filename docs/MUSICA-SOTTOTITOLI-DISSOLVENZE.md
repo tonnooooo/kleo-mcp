@@ -115,3 +115,13 @@ registrato. Il formato del `input` di Suno e della risposta è stato esercitato 
 `caption_groups` alzava un'eccezione sotto 0,55 s: cinque crediti e una scheda per una didascalia. Ora un gruppo
 troppo breve si **ripara** (fuso nel precedente se la riga resta leggibile, altrimenti sposta il confine con un vicino
 che ha tempo, altrimenti corre un poco oltre il suono) e non è mai fatale. Test: `worker/test_keou_prepare.py`.
+
+## 8. La terza sonda: accento e volto spariti, due tarature
+
+`gt_z6v5w35q` (stesse parole, immagine con le correzioni di §5 e §7): nessun color cast rosso/verde, palette del
+treatment rispettata; nessun volto, solo mani; musica sotto, sottotitoli, dissolvenza. Due numeri da tarare:
+**25,9 s per 30 s chiesti** (senza le code mute la voce parla ~2,7 parole/s di film: `wordBudget` passa da 2,1 a
+2,45 × velocità, cioè 81 parole per 30 s invece di 69) e **musica nelle pause ancora a −23 dB** anche col letto a −30:
+il `loudnorm` a un passaggio è un normalizzatore dinamico e alza le pause; `run.py` ora fa i due passaggi (misura,
+poi `linear=true`) per ogni stile. Resta da vedere: oggetti strani (un pennello-soffione al posto della matita,
+un segno azzurro come vernice) — la frase "dust drifting through the light" aggiunta ai prompt fermi va sondata.

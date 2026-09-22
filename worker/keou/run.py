@@ -35,9 +35,13 @@ def produce(project,workers=2,stills=False,skip_voice=False):
             if not stills:
                 target=c.get('loudness',-16)
                 chain='[0:a]aresample=48000,highpass=f=75,lowpass=f=12000,acompressor=threshold=0.15:ratio=2:attack=15:release=180,volume=1.6,asplit=2[v][s];[1:a][s]sidechaincompress=threshold=0.025:ratio=5:attack=15:release=320[bed];[v][bed]amix=inputs=2:duration=longest:normalize=0'
-                if c['style']=='sketch':
-                    # Two passes: a track that is mostly silence lands about 2 dB under the target on
-                    # one pass, and the feed plays a quiet Short at half the volume of everything else.
+                if True:
+                    # Two passes, for EVERY style (22 September 2026). One-pass loudnorm is a dynamic normaliser: it
+                    # lifts whatever is quiet, and with the user's music under the narration that is the music in
+                    # every pause between two sentences — measured at -23 dB RMS against a -20 dB voice on
+                    # gt_hxed87em, and unchanged on gt_z6v5w35q after the bed itself had been lowered by 3 dB, which
+                    # is how the pumping was found. The measured pass (linear=true) is one gain for the whole film.
+                    # (And a track that is mostly silence used to land 2 dB under the target on one pass.)
                     probe=subprocess.run([ffmpeg,'-nostdin','-hide_banner','-y','-i',str(build/'voice.wav'),'-i',str(build/'music.wav'),'-filter_complex',chain+f',loudnorm=I={target:.1f}:TP=-1.5:LRA=7:print_format=json[a]','-map','[a]','-t',str(timeline['duration']),'-f','null','-'],capture_output=True,text=True,check=True)
                     m=re.search(r'\{[^{]*"input_i".*?\}',probe.stderr,re.S)
                     if not m:raise ValueError('Loudness measurement failed')

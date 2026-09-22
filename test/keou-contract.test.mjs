@@ -180,8 +180,8 @@ test("helpers: defaultVoice and wordBudget", () => {
   assert.equal(defaultVoice("en", "explainer", "narrator-it-m"), "am_michael", "keeps the gender, switches the language");
   assert.equal(defaultVoice("en", "explainer", "bf_emma"), "bf_emma");
   const b = wordBudget(45);
-  assert.ok(b.target >= 100 && b.target <= 108, `45 s ≈ 104 words, got ${b.target}`);
-  assert.ok(wordBudget(300).target >= 680 && wordBudget(300).target <= 700);
+  assert.ok(b.target >= 118 && b.target <= 124, `45 s ≈ 121 words since the silent edges are trimmed (22 September), got ${b.target}`);
+  assert.ok(wordBudget(300).target >= 800 && wordBudget(300).target <= 820);
   assert.ok(b.min < b.target && b.target < b.max);
 });
 

@@ -693,7 +693,7 @@ test("price cap: narration far past the length is refused — the voice decides 
   sb.scenes = sb.scenes.map((s) => ({ ...s, voice: Array.from({ length: 60 }, () => "word").join(" ") }));
   const problem = m.overPaidFor(sb, 45).find((p) => /words of narration/.test(p));
   assert.ok(problem, "300 words in a 45-second Short must not pass");
-  assert.match(problem, /fits about 114/, "wordBudget(45).max — the ceiling, not the target of 104");
+  assert.match(problem, /fits about 133/, "wordBudget(45).max — the ceiling, not the target of 121");
   assert.match(problem, /shorten the narration, or ask for a longer video/);
 });
 

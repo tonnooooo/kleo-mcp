@@ -996,9 +996,14 @@ export function defaultVoice(language: string, templateId?: string, preferred?: 
   return voices[0];
 }
 
-/** Words of narration a duration can carry: ≈2.3 words/s at speed 1.1 (≈2.1 w/s at speed 1). */
+/**
+ * Words of narration a duration can carry: ≈2.7 words/s at speed 1.1 (≈2.45 w/s at speed 1). Recalibrated on
+ * 22 September 2026, when prepare.py stopped keeping Kokoro's silent edges: at the old 2.3 w/s the same 30-second
+ * order that had run 39 s with the padding ran 25.9 s without it (gt_z6v5w35q, 6 scenes), while 89 words had run
+ * 32.9 s (gt_hxed87em) — 2.7 words a second of FILM, pauses included, on both.
+ */
 export function wordBudget(duration_s: number, speed = 1.1): { target: number; min: number; max: number; wordsPerSecond: number } {
-  const wps = 2.1 * speed;
+  const wps = 2.45 * speed;
   const target = Math.round(duration_s * wps);
   return { target, min: Math.round(target * 0.8), max: Math.round(target * 1.1), wordsPerSecond: Math.round(wps * 100) / 100 };
 }
