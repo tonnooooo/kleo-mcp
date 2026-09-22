@@ -1,13 +1,26 @@
 # Kleo MCP server
 
-Kleo is a remote [Model Context Protocol](https://modelcontextprotocol.io) server that renders YouTube videos and Shorts. A user connects one URL to Claude, ChatGPT, Grok, Claude Code, Cursor, VS Code, OpenCode or Gemini CLI, presses one button to get in (no email, no password, no invite code) and asks for a video in plain language. The render runs on a GPU machine rented for that job only (Vast.ai) with the Keou motion-design engine; the result comes back as signed download links (MP4, `.srt` subtitles, thumbnail) that last 7 days.
+Kleo is a remote [Model Context Protocol](https://modelcontextprotocol.io) server that renders YouTube videos and Shorts. A user connects one URL to Claude, ChatGPT, Grok, Claude Code, Cursor, VS Code, OpenCode or Gemini CLI, presses one button to get in (no email, no password, no invite code) and asks for a video in plain language. The render runs on a GPU machine rented for that job only (Vast.ai) with the Keou motion-design engine, every shot a generated clip bought from kie.ai; the result comes back as signed download links (MP4, `.srt` subtitles, thumbnail) that last 7 days.
 
-The server runs entirely on Cloudflare (Workers + KV + D1 + R2 + Workers AI + Cron), free plan. Production address: `https://kleo-mcp.plural-juice.workers.dev/mcp`. The public site (`../kleo-site`) reads that address from its `config.json`.
+The server runs entirely on Cloudflare (Workers + KV + D1 + R2 + Workers AI + Cron), free plan. Production address: `https://mcp.kleooai.com/mcp` (Streamable HTTP, OAuth 2.1; the Worker itself answers at `https://kleo-mcp.plural-juice.workers.dev/mcp`). The public site (`../kleo-site`) reads that address from its `config.json`.
+
+## Connect
+
+| Where | How |
+|---|---|
+| Claude (web/desktop) | Settings → Connectors → Add custom connector → `https://mcp.kleooai.com/mcp` |
+| Claude Code | `claude mcp add --transport http kleo https://mcp.kleooai.com/mcp` |
+| ChatGPT | Settings → Connectors → Developer mode → Create → `https://mcp.kleooai.com/mcp`, OAuth |
+| Cursor / VS Code / OpenCode / Gemini CLI | an `http` server named `kleo` with the same URL |
+| MCP Registry | `com.kleooai/kleo` (see `server.json`) |
+
+One button signs you in (no email, no password); 7 credits arrive with the account. Guides with screenshots: https://kleooai.com/connect/
 
 ## Tools
 
 | Tool | What it does |
 |---|---|
+| `kleo_adapt_prompt` | Called first. Reads the request against Kleo's intake (subject, length, format, look; audience, tone, what must appear), answers with the questions the request leaves open, and once everything is known hands the assistant the producer's method for writing the treatment. |
 | `kleo_list_templates` | The ten templates (format, length range, voices, credit cost) and the credits left on the account. |
 | `kleo_storyboard_guide` | The storyboard format Kleo renders (styles, scene kinds, beats, icons, voices, rules) with examples, so the assistant can write an original storyboard. Optional: without one, Kleo plans the video from the prompt. |
 | `kleo_create_video` | Queues a render from a template, a prompt and (optionally) a storyboard. Returns `job_id`, `eta_min` and the credits charged at once; nothing is charged on error. |
@@ -18,7 +31,7 @@ The server runs entirely on Cloudflare (Workers + KV + D1 + R2 + Workers AI + Cr
 | `kleo_cancel_job` | Cancels a queued or running job and refunds the unused credits. |
 | `kleo_account` | Credits left, the read-only link to the account page (`/credits`) and the "Kleo key" that carries the account to another browser. The link is safe to paste anywhere; the key is the account. |
 
-Credits (`src/templates.ts`): the film is the one product, at 7 credits up to 90 s, 21 up to 5 minutes, +7 per extra minute (`tariffSentence()` is the sentence every page quotes). A new account starts with `FREE_FILMS` (1) films' worth of credits, computed from the film's price (`freeCreditsFor`), so the free tier follows the price instead of being a second number to keep in step. Accounts are anonymous: no email and no password, just an HMAC-signed handle (`src/accounts.ts`) kept in a cookie, which doubles as the pasteable "Kleo key". The D1 table `invites` survives only as an optional gift: a code typed into the collapsed field of the sign-in page adds credits on top of the free ones, and an unknown code never blocks anyone. Output: 2160×3840 for 9:16, 1920×1080 for 16:9, 60 fps, H.264 + AAC. A Short takes about 10–20 minutes including the machine boot; a long video takes proportionally longer, and the timeout a render is given follows the length it was quoted (`jobTimeoutMin`), never a flat number below it.
+Credits (`src/templates.ts`): 1 credit = 2 seconds of film, rounded up, 10 credits minimum; the film is made for accounts that bought a credit pack (€5 = 10 credits, €15 = 35, €40 = 100, one-off, no subscription). The animatic (the same storyboard with the camera moving over drawn frames, no generated clip, 15–60 s) costs 5 credits and is open to every account: the 7 credits that come with a new account pay for one. `tariffSentence()` is the sentence every page quotes. Accounts are anonymous: no email and no password, just an HMAC-signed handle (`src/accounts.ts`) kept in a cookie, which doubles as the pasteable "Kleo key". The D1 table `invites` survives only as an optional gift: a code typed into the collapsed field of the sign-in page adds credits on top of the free ones, and an unknown code never blocks anyone. Output: 2160×3840 for 9:16, 1920×1080 for 16:9, 60 fps, H.264 + AAC. A Short takes about 10–20 minutes including the machine boot; a long video takes proportionally longer, and the timeout a render is given follows the length it was quoted (`jobTimeoutMin`), never a flat number below it.
 
 ## How a job flows
 
