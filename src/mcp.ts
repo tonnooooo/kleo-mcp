@@ -12,6 +12,7 @@ import { createJob, cancelJob, jobView, resultLinks, JobError, FILE_NAMES } from
 import { accountUrl, makeHandle } from "./accounts";
 import { audit } from "./db";
 import { FORMATS, FILM_LOOKS, wordBudget, shotRangeText } from "./keou-contract";
+import { musicNote } from "./footage";
 import { guideText } from "./guide.ts";
 import { int } from "./util";
 import { adaptPrompt, adaptivePromptText } from "./adaptive.ts";
@@ -78,9 +79,11 @@ async function resultPayload(env: Env, base: string, job: Job) {
   const label: Record<string, string> = { video_url: "Video (MP4)", thumbnail_url: "Thumbnail" };
   const order = ["video_url", "thumbnail_url"];
   const sim = job.backend === "mock" ? "\nNOTE: this video was rendered in SIMULATED mode: the MP4 is a 1-second placeholder, not a real video." : "";
+  // The music the user asked for, when it is not on the film (footage.ts musicNote): said here, where the links are.
+  const music = await musicNote(env, job);
   const text = `Your ${what} ${job.id} is ready. The links work until ${niceDate(job.expires_at)}:\n` +
-    Object.entries(links).sort(([a], [b]) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99)).map(([k, v]) => `${label[k] ?? k.replace("_url", "")}: ${v}`).join("\n") + sim;
-  return { data: { job_id: job.id, state: "done", expires_at: job.expires_at, mode: job.backend === "mock" ? "simulated" : "gpu", ...links }, text };
+    Object.entries(links).sort(([a], [b]) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99)).map(([k, v]) => `${label[k] ?? k.replace("_url", "")}: ${v}`).join("\n") + sim + (music ? `\n${music}` : "");
+  return { data: { job_id: job.id, state: "done", expires_at: job.expires_at, mode: job.backend === "mock" ? "simulated" : "gpu", ...(music ? { music_missing: true } : {}), ...links }, text };
 }
 
 

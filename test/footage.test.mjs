@@ -546,3 +546,18 @@ test("the real Suno answer shape: two tracks under data[].audio_url, the first i
   assert.deepEqual(m.audioUrls({ resultJson: JSON.stringify({ resultUrls: ["https://x/c.mp4"] }) }), ["https://x/c.mp4"], "the clips' shape still reads");
   assert.deepEqual(m.audioUrls({ resultJson: "" }), []);
 });
+
+test("musicNote: a film ordered with music and delivered without it says so; one with the track, or none asked, says nothing", async () => {
+  const env = await newEnv();
+  const job = await filmJob(env);
+  const asked = { ...job, params: JSON.stringify({ ...JSON.parse(job.params), music: "sparse piano" }) };
+  assert.equal(await m.musicNote(env, job), null, "no music asked");
+  assert.match(await m.musicNote(env, asked), /NOT on this video \(the track could not be ordered/, "asked, never ordered (an empty kie.ai account refuses before a row exists)");
+  const kie = fakeKie({ defaultState: "fail" }); globalThis.fetch = kie.fetch;
+  await m.requestMusic(env, job, { brief: "x", seconds: 30 }); await m.musicStatus(env, job, true);
+  assert.match(await m.musicNote(env, asked), /NOT on this video: 500 content policy/, "a failed task, with kie.ai's reason");
+  const env2 = await newEnv(); const job2 = await filmJob(env2);
+  const ok = fakeKie({ defaultState: "success", suno: true }); globalThis.fetch = ok.fetch;
+  await m.requestMusic(env2, job2, { brief: "x", seconds: 30 }); await m.musicStatus(env2, job2, true);
+  assert.equal(await m.musicNote(env2, { ...job2, params: JSON.stringify({ ...JSON.parse(job2.params), music: "x" }) }), null, "the track is on the film: nothing to say");
+});

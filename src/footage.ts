@@ -665,3 +665,20 @@ async function downloadMusic(env: Env, job: Job, row: FootageRow, url: string): 
   await updateRow(env, job.id, MUSIC_ID, { state: "ready", key, result_url: url });
   await audit(env, job.user_id, job.id, "music.ready", { task: row.task_id, bytes: size });
 }
+
+/**
+ * WHAT THE USER IS TOLD ABOUT THEIR MUSIC (22 September 2026). The fifth probe of the day (gt_tr4hfj5r) was ordered
+ * with music, kie.ai's balance was $0.02, the route refused softly as designed — and the finished video was handed
+ * over as if nothing had happened: silence between the sentences and no sentence about it anywhere the user could
+ * read. A film without the music it asked for is a film with a defect the user must hear about, in words that say
+ * whose action it is (the owner's: top up kie.ai). Null when no music was asked, or it is on the film.
+ */
+export async function musicNote(env: Env, job: Pick<Job, "id" | "params">): Promise<string | null> {
+  let asked: unknown = undefined;
+  try { asked = (JSON.parse(job.params) as { music?: unknown }).music; } catch { return null; }
+  if (!asked) return null;
+  const row = (await footageRows(env, job.id)).find((r) => r.shot_id === MUSIC_ID);
+  if (row?.state === "ready") return null;
+  const why = row?.error ? `: ${row.error.replace(/\s+/g, " ").slice(0, 160)}` : row ? ` (the track was ${row.state})` : " (the track could not be ordered: kie.ai's balance was empty or the service was off)";
+  return `NOTE: the music the user asked for is NOT on this video${why}. Tell them so plainly; the rest of the video is as ordered. The operator has been logged (the fix is on Kleo's side: a kie.ai top-up), and they can ask for the video again later with the music.`;
+}
