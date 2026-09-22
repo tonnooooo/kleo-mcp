@@ -16,8 +16,16 @@ def main(project):
     p=json.loads(run([probe,'-v','error','-count_frames','-show_streams','-show_format','-of','json',str(movie)]))
     v=next(s for s in p['streams'] if s['codec_type']=='video'); a=next(s for s in p['streams'] if s['codec_type']=='audio')
     expected=(c['width'],round(c['width']*(16/9 if c['format']=='9:16' else 9/16)),c['fps'])
-    if (v['width'],v['height'],v['r_frame_rate'])!=(expected[0],expected[1],str(expected[2])+'/1'):
-        raise ValueError('Master geometry or frame rate mismatch')
+    # The rate is compared as a NUMBER within a hundredth, never as ffprobe's string (22 September 2026): a master
+    # concatenated from parts drawn over a 59.94 footage track (kie.ai's MiniMax clips) is probed as "60000/1001"
+    # with exactly the right frames at exactly the right size, and six finish rentals of gt_nyhb8aj9 died here after
+    # the render had already succeeded. The frame count below is the check that means something. Mirrors
+    # engine/render.mjs validPart().
+    num,_,den=str(v.get('r_frame_rate') or '0/1').partition('/')
+    rate=float(num)/float(den or 1) if den or num else 0.0
+    if (v['width'],v['height'])!=(expected[0],expected[1]) or abs(rate-expected[2])>.1:
+        raise ValueError(f"Master geometry or frame rate mismatch: {v['width']}x{v['height']} at {v.get('r_frame_rate')} "
+                         f"(wanted {expected[0]}x{expected[1]} at {expected[2]})")
     if int(v['nb_read_frames'])!=round(tl['duration']*c['fps']) or abs(float(p['format']['duration'])-tl['duration'])>.05:
         raise ValueError('Master duration or frame count mismatch')
     if a['channels']!=2 or a['sample_rate']!='48000':raise ValueError('Expected stereo 48 kHz')
@@ -43,7 +51,7 @@ def main(project):
     if longest>=6:raise ValueError('At least one second of identical sampled frames')
     speech=min(s['speech_match'] for s in tl['scenes'])
     if speech<.85:raise ValueError('Speech mismatch')
-    report={'status':'PASS','version':'1.0.0','master':'master.mp4','sha256':digest(movie),'width':v['width'],'height':v['height'],'fps':c['fps'],'frames':int(v['nb_read_frames']),'duration':float(p['format']['duration']),'full_decode':'PASS','black_intervals':black,'audio_lufs':lufs,'audio_true_peak_db':peak,'minimum_scene_speech_match':speech,'longest_identical_sample_run':longest,'limitations':['Layout bounds checked at render time; aesthetic and pronunciation review remains with Pearl.','ASR agreement is a content check, not a guarantee of perfect pronunciation.']}
+    report={'status':'PASS','version':'1.0.0','master':'master.mp4','sha256':digest(movie),'width':v['width'],'height':v['height'],'fps':c['fps'],'probed_rate':v.get('r_frame_rate'),'frames':int(v['nb_read_frames']),'duration':float(p['format']['duration']),'full_decode':'PASS','black_intervals':black,'audio_lufs':lufs,'audio_true_peak_db':peak,'minimum_scene_speech_match':speech,'longest_identical_sample_run':longest,'limitations':['Layout bounds checked at render time; aesthetic and pronunciation review remains with Pearl.','ASR agreement is a content check, not a guarantee of perfect pronunciation.']}
     atomic_json(out/'FINAL-QA.json',report);print('QA_PASS',json.dumps(report),flush=True)
     return report
 
