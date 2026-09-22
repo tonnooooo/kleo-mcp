@@ -94,7 +94,10 @@ CLIP_MAX_BYTES = 400 * 1024 * 1024
 # the mix ducks it further under every spoken word. A track that never comes is silence, never the old sine bed.
 MUSIC_WAIT_MIN = float(os.environ.get("KLEO_MUSIC_WAIT_MIN", "8"))
 MUSIC_POLL_S = float(os.environ.get("KLEO_MUSIC_POLL_S", "10"))
-MUSIC_LUFS = float(os.environ.get("KLEO_MUSIC_LUFS", "-27"))     # integrated, before the sidechain; the voice lands at -16
+# -30, not -27: on the first real animatic (gt_hxed87em, 22 September) the track sat only 3 dB under the voice in the
+# gaps between sentences (-23.4 dB RMS against -20.3), because the final loudnorm lifts the whole mix; -30 puts it
+# 6 dB under there, and the sidechain still takes it further down under every word.
+MUSIC_LUFS = float(os.environ.get("KLEO_MUSIC_LUFS", "-30"))     # integrated, before the sidechain; the voice lands at -16
 MUSIC_MAX_BYTES = 40 * 1024 * 1024
 
 # Mirrors contract.VOICES; the engine's own contract.py overrides it at run time (see load_voices()).

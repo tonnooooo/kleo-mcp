@@ -48,7 +48,7 @@ kie.ai: **12 crediti = 0,06 $ a richiesta**, scritti nella tabella `footage` con
 giornaliero li conta al momento dell'impegno (la riga è tolta dalle liste delle clip che la macchina legge). La
 macchina fa `GET /music` finché `ready`, scarica `GET /music/file` (la traccia è copiata su R2 in
 `renders/<job>/music.mp3` una volta sola), la **taglia alla durata del film** (loop se corta, fade in 1,2 s, fade
-out fino a 3 s), la porta a `KLEO_MUSIC_LUFS` (default −27) e la scrive su `build/music.wav`. Il mix è quello di
+out fino a 3 s), la porta a `KLEO_MUSIC_LUFS` (default −30: a −27, sulla prima animatic vera `gt_hxed87em`, la traccia stava solo 3 dB sotto la voce nelle pause) e la scrive su `build/music.wav`. Il mix è quello di
 sempre di `run.py`: la voce pulita, la musica **abbassata sotto ogni parola** dal sidechain, il tutto a −16 LUFS.
 Il film senza livello passa per `MIX_CHAIN` in `kleo_worker.py`, che è la stessa catena.
 
@@ -95,9 +95,13 @@ fotogramma del cambio). Nel film `render.mjs` scrive `transition` e `dissolve_s`
   matita» diventa fiori d'acquerello blu. È il limite noto degli still (RealVisXL, cast look): non è toccato qui.
 - **Stima dei minuti incoerente** («15 minuti» al 22 %, «1 minuto» al 54 %, finito in 20). Non toccata.
 
-## 6. Cosa non è ancora provato
+## 6. La prova
 
-Il primo film con traccia e sottotitoli renderizzato dopo il deploy è la prova che manca: il test Node prova la
+Prima animatic vera dopo il deploy: `gt_hxed87em` (22 set, 02:31-02:42 UTC, 5 crediti, 0,05 $ di GPU + 0,06 $ di
+Suno): 32,9 s per 30 s chiesti (era 39,4), nessun silenzio ≥0,8 s, sottotitoli cinema impressi, una dissolvenza
+fra la scena 4 e la 5 (0,8 s, l'immagine che esce continua a muoversi). Difetto visto e NON di questo lavoro: gli
+accenti di sezione (rosso, verde) finiscono nelle immagini (grafite rossa, riga verde luminosa, lampada verde).
+Prima di quella prova valeva: il test Node prova la
 strada del server con un kie.ai finto, i test Python provano il mix, la forma della traccia e la dissolvenza su
 clip di 128×72 con ffmpeg vero, il test del motore prova le due immagini sotto la dissolvenza su un contesto 2D
 registrato. Il formato del `input` di Suno e della risposta è stato esercitato con una chiamata vera (task `03d4a341…`,
