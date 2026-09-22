@@ -8,6 +8,7 @@ import { isFlagActive } from "./schema";
 import { backendFor } from "./backends";
 import { validateStoryboard, kleoStyleOf, pictureScenes, narrationOf, MAX_PICTURES, wordBudget, speedFor, KLEO_STYLES, FILM_LOOKS, type KleoStyle, type FilmLook } from "./keou-contract";
 import { treatmentProblems, repairTreatment, variationFor, applySoundOptions, musicOf, type Treatment, type SoundOptions } from "./treatment.ts";
+import { denyInPictures } from "./storyboard";
 import { musicAnswer, subtitlesAnswer } from "./adaptive.ts";
 import { repairGraphics } from "./graphics.ts";
 
@@ -193,6 +194,7 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     // The voice's speed follows the words the storyboard carries (keou-contract.ts speedFor), on this road too.
     finished.speed = speedFor(narrationOf(finished).trim().split(/\s+/).filter(Boolean).length, duration);
     storyboard = JSON.stringify(finished);
+    // (the treatment's denials join its forbidden list below, once the treatment itself is known)
   }
   // THE USER'S TWO ANSWERS (22 September 2026), read once here and applied to everything below: the treatment (its
   // music brief and its layer's subtitles), a client storyboard (its music and its graphics) and the job's params, so
@@ -213,7 +215,7 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     treatment = (fitted ? applySoundOptions(fitted, sound) : fitted) as unknown as Record<string, unknown>;
     // With a client storyboard the planner never runs, so the treatment is attached to the storyboard here: it is
     // how the finished video can be read back to the film it was meant to be, on either road into the queue.
-    if (storyboard) storyboard = JSON.stringify({ ...(JSON.parse(storyboard) as Record<string, unknown>), treatment });
+    if (storyboard) { const withT = { ...(JSON.parse(storyboard) as Record<string, unknown>), treatment }; denyInPictures(withT, treatment as unknown as Treatment); storyboard = JSON.stringify(withT); }
   }
   // The same two answers on a client storyboard, which the planner never touches: its music and its subtitles are
   // the user's, whatever the assistant wrote at the top of it.

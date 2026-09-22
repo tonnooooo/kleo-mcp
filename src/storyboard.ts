@@ -1234,6 +1234,25 @@ export function normalizeStoryboard(raw: unknown, plan: Plan): unknown {
   return c;
 }
 
+/**
+ * WHAT THE TREATMENT DENIES IS FORBIDDEN IN THE PICTURES (22 September 2026). "Only a hand and a forearm are ever
+ * seen, never a face" was a decision of gt_b2campbw's treatment; the direction wrote a cast look without those
+ * words, the pictures were drawn from the direction, and a man sat at the desk in the eleventh picture. The negated
+ * clauses of the decisions, the visual language and the opening join the direction's forbidden list — which is the
+ * negative prompt on both drawing sides — AFTER the last validation, so the prompt check (forbiddenInPrompts) never
+ * refuses a finished plan for a word a decision denied; and a denied face brings "portrait" with it.
+ */
+export function denyInPictures(sb: Record<string, unknown>, treatment: Treatment | null | undefined): string[] {
+  if (!treatment || !isObj(sb.direction) || !Array.isArray((sb.direction as unknown as Direction).forbidden)) return [];
+  const forbidden = (sb.direction as unknown as Direction).forbidden;
+  const added: string[] = [];
+  for (const t of negatedTerms([...(treatment.decisions ?? []), treatment.visual ?? "", treatment.opening ?? ""].join(". "))) {
+    if (t.length > 36 || forbidden.some((f) => f.toLowerCase() === t.toLowerCase())) continue;
+    forbidden.push(t); added.push(t);
+  }
+  return added;
+}
+
 export const countWords = (sb: unknown): number =>
   isObj(sb) && Array.isArray(sb.scenes) ? sb.scenes.reduce((n: number, s) => n + (isObj(s) && typeof s.voice === "string" ? s.voice.split(/\s+/).filter(Boolean).length : 0), 0) : 0;
 
@@ -1707,15 +1726,6 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     // (the model had no way to know) left the film with no direction at all, and no direction is the worst outcome.
     if (!d) { directionFeedback = directionProblems(isObj(o.direction) ? o.direction : {}, { accents: CINEMA_ACCENTS, scenes: sceneGuess }); history.push([`direction: rejected (${directionFeedback.slice(0, 3).join("; ")})`]); continue; }
     direction = d;
-    // WHAT THE TREATMENT DENIES IS FORBIDDEN (22 September 2026). "Only a hand and a forearm are ever seen, never a
-    // face" was a decision of gt_b2campbw's treatment; the direction wrote a cast look with no such words, the
-    // pictures were drawn from the direction, and a man appeared at the desk in the eleventh picture. The negated
-    // clauses of the decisions and the visual language join the forbidden list, which is the negative prompt on
-    // both drawing sides — and "face" brings "portrait" and "person" with it.
-    if (treatment) {
-      const denied = negatedTerms([...(treatment.decisions ?? []), treatment.visual ?? "", treatment.opening ?? ""].join(". "));
-      for (const t of denied) if (t.length <= 36 && direction.forbidden.length < 12 && !direction.forbidden.some((f) => f.toLowerCase() === t.toLowerCase())) direction.forbidden.push(t);
-    }
     // The look the direction chose, unless the client named one: planFor() keeps the user's choice above everything.
     // The look the direction chose, unless the client named one — and never at a different price. The job was
     // charged at createJob on the look guessed then; every style costs the same today, but realistic becomes seven
@@ -1926,6 +1936,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   // planner writes past its budget and the voice decides how long the film really is.
   const finished = finishForProduct(ok.storyboard as unknown as Record<string, unknown>, plan.product, plan.duration);
   finished.speed = speedFor(countWords(finished), plan.duration);
+  denyInPictures(finished, treatment);
   return { storyboard: finished as unknown as Storyboard, model, attempts: calls, ms: Date.now() - t0, usage, est_neurons: est, words: countWords(ok.storyboard), scenes: ok.storyboard.scenes.length, fixture: false, history, style: plan.kleo, direction, treatment, missing_facts: missing, blocked_upgrade: blockedUpgrade };
 }
 

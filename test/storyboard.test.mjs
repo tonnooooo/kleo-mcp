@@ -156,7 +156,7 @@ test("cinema: defective beats are repaired, not fatal", async () => {
   const r = await generateStoryboard(env, job("viral-short", 45, "9:16", "en", undefined, "cyber"));
   const sb = r.storyboard;
   assert.equal(validateStoryboard(sb, { format: "9:16", language: "en" }).ok, true);
-  assert.equal(sb.style, "cinema"); assert.equal(sb.kleo_style, "cyber"); assert.equal(r.style, "cyber"); assert.equal(sb.voice, "am_michael"); assert.equal(sb.speed, 1.1); assert.equal(sb.music, "none", "the procedural bed is never written under a film any more (22 September); music is the user's track or nothing"); assert.equal(sb.max_duration, 72);
+  assert.equal(sb.style, "cinema"); assert.equal(sb.kleo_style, "cyber"); assert.equal(r.style, "cyber"); assert.equal(sb.voice, "am_michael"); assert.ok(sb.speed >= 1.0 && sb.speed <= 1.3, `the speed follows the words (22 September), got ${sb.speed}`); assert.equal(sb.music, "none", "the procedural bed is never written under a film any more (22 September); music is the user's track or nothing"); assert.equal(sb.max_duration, 72);
   assert.ok(sb.scenes.length >= 4 && sb.scenes.at(-1).kind === "closing");
   assert.ok(sb.scenes[0].voice.length <= 350 && /\.$/.test(sb.scenes[0].voice), "voice fitted at a sentence boundary");
   const b = sb.scenes[1].beats;
@@ -967,4 +967,15 @@ test("PLAN_API_URL + PLAN_API_KEY: every planning call goes to an OpenAI-compati
     // Without the road, an external model is refused in words; a Workers AI model never touches the endpoint.
     await assert.rejects(callModel({ AI: env.AI }, "openai/gpt-5-mini", [{ role: "user", content: "x" }], {}, 100), /no road to model openai\/gpt-5-mini/);
   } finally { setPlanFetch(undefined); }
+});
+
+test("denyInPictures: the treatment's denials join the direction's forbidden list after validation, never twice", async () => {
+  const { denyInPictures } = await import("../src/storyboard.ts");
+  const sb = { direction: { forbidden: ["logos", "face"] }, scenes: [] };
+  const t = { decisions: ["Only a hand and a forearm are ever seen, never a face", "One desk, no city"], visual: "A long lens, without a single screen", opening: "A pencil on a page" };
+  assert.deepEqual(denyInPictures(sb, t), ["portrait", "city", "single screen"], "face was already there; portrait, city and the screen join");
+  assert.deepEqual(sb.direction.forbidden, ["logos", "face", "portrait", "city", "single screen"]);
+  assert.deepEqual(denyInPictures(sb, t), [], "idempotent");
+  assert.deepEqual(denyInPictures({ scenes: [] }, t), [], "no direction: nothing to add to");
+  assert.deepEqual(denyInPictures(sb, null), []);
 });

@@ -117,7 +117,7 @@ def negated_terms(text):
         if t.lower() not in [x.lower() for x in out]:
             out.append(t)
         if re.search(r"\bfaces?\b", t, re.IGNORECASE):
-            for f in ("face", "portrait", "person"):
+            for f in ("face", "portrait"):
                 if f not in out:
                     out.append(f)
     return out

@@ -729,14 +729,14 @@ class NegatedLookTest(unittest.TestCase):
     (gt_hxed87em, 22 September 2026: a man's face in a film whose only character was a hand). It goes to the negative."""
 
     def test_negated_clauses_of_the_cast_and_the_world_reach_the_negative_prompt(self):
-        self.assertEqual(kp.negated_terms("a middle-aged hand and forearm, pale skin, no visible face"), ["visible face", "face", "portrait", "person"])
+        self.assertEqual(kp.negated_terms("a middle-aged hand and forearm, pale skin, no visible face"), ["visible face", "face", "portrait"])
         self.assertEqual(kp.negated_terms("a room with one window, never a logo or a screen"), ["logo"])
         self.assertEqual(kp.negated_terms("a pirate captain with a red bandana"), [])
         self.assertEqual(kp.negated_terms("she is no longer young, without a hat"), ["hat"])
         d = {"cast": [{"name": "the writer", "look": "a hand and a forearm, no visible face"}], "world": "A desk by one window, without a single screen", "forbidden": ["wifi symbol"]}
         neg = kp.negative_for(d, "realistic")
         self.assertTrue(neg.startswith(kp.NEGATIVE_PROMPT), neg)
-        for t in ("wifi symbol", "visible face", "face", "portrait", "person", "single screen"):
+        for t in ("wifi symbol", "visible face", "face", "portrait", "single screen"):
             self.assertIn(t, neg)
         self.assertLessEqual(len(neg), kp.NEGATIVE_MAX)
 

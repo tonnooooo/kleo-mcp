@@ -596,7 +596,7 @@ export function negatedTerms(text: string): string[] {
     const t = m[1].trim().replace(/\s+/g, " ");
     if (!t || /^(?:one|longer|more|less|matter|way)\b/i.test(t)) continue;
     if (!out.some((x) => x.toLowerCase() === t.toLowerCase())) out.push(t);
-    if (/\bfaces?\b/i.test(t)) for (const f of ["face", "portrait", "person"]) if (!out.includes(f)) out.push(f);
+    if (/\bfaces?\b/i.test(t)) for (const f of ["face", "portrait"]) if (!out.includes(f)) out.push(f);
   }
   return out;
 }
