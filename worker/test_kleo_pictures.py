@@ -670,7 +670,10 @@ class DirectionTest(unittest.TestCase):
         self.assertEqual(kp.light_for(None, "cartoon"), "")
         self.assertEqual(kp.context_for(self.DIRECTION, ip, "red", style="animation"), lead, "no light in the animation context either")
         full = kp.full_prompt(ip, "cartoon", kp.light_for("amber", "cartoon"), lead=lead)
-        self.assertTrue(full.startswith(lead + ", " + ip + ", " + kp.ACCENT_LIGHT["amber"] + ", "), full)
+        self.assertTrue(full.startswith(lead + ", " + ip + ", "), full)
+        self.assertNotIn("light source", full, "the light is gone from the prompt itself too")
+        with_ctx = kp.full_prompt(ip, "cartoon", kp.ACCENT_LIGHT["amber"], lead=lead)
+        self.assertTrue(with_ctx.startswith(lead + ", " + ip + ", " + kp.ACCENT_LIGHT["amber"] + ", "), "a context handed in still sits behind the sentence")
         self.assertTrue(full.endswith(kp.STYLE_SUFFIX["cartoon"]), full)
         # An oversized lead is dropped at a word boundary, never chopped into noise, and the suffix always survives.
         cut = kp.full_prompt(ip, "cartoon", "", lead="x" * 40 + " " + "y" * 200)
