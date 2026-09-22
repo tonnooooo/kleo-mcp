@@ -15,11 +15,11 @@ import type { Env } from "./env";
 import type { Job, JobParams } from "./db";
 import { TEMPLATES, findTemplate, narrativeFor, sceneSplit, creditsFor, samePrice, filmedStoryboard, finishForProduct, productOf, type Family, type Product } from "./templates.ts";
 import {
-  validateStoryboard, defaultVoice, wordBudget, speedFor, type Storyboard, type Format, type KleoStyle,
+  validateStoryboard, defaultVoice, wordBudget, speedFor, trimShots, type Storyboard, type Format, type KleoStyle,
   KINDS, BEAT_KINDS, BEAT_ICONS, BEAT_FX, CINEMA_ACCENTS, VISUALS, FORBIDDEN_FIELDS,
   KLEO_STYLES, PICTURE_STYLES, FILM_LOOKS, type FilmLook, IMAGE_PROMPT_MAX, kleoStyleOf, STORY_ACTS, STORY_CAST, STORY_PROPS, STORY_FX, STORY_ACCENTS,
   SHOTS_PER_SCENE, SHOT_CAPTION_MAX, SHOT_HL_MAX, SHOT_AT_MAX, IMAGE_PROMPT_MIN, CLOSING_BUTTON_MAX,
-  SHOT_ID_SUFFIX_RE, quotesVoice, SHOTS_MIN_CINEMA, shotRangeText, narrationOf, anchorShots,
+  SHOT_ID_SUFFIX_RE, quotesVoice, SHOTS_MIN_CINEMA, SHOTS_WORDS_PER_SHOT, SHOTS_MIN_WORDS_FOR_TWO, shotRangeText, narrationOf, anchorShots,
 } from "./keou-contract.ts";
 /**
  * The direction: the art direction of ONE film, decided before a single scene exists. It is the step this planner
@@ -791,7 +791,7 @@ function chunkPrompt(job: PlanJob, plan: Plan, outline: OutlineEntry[], from: nu
   const pic = plan.style === "picture";
   const cin = plan.style === "cinema" || pic, stick = plan.style === "stickman", sk = plan.style === "sketch";
   const lineWords = plan.duration > 120 ? "35–50" : "10–18";
-  const how = pic ? `Each voice line is ${plan.duration > 120 ? "two or three spoken sentences" : "one spoken sentence"} of ${lineWords} words; every scene needs ${shotRangeText("cinema")} shots (the closing exactly one), each with its own "image_prompt"; every shot after the first carries "at" with words copied from its own voice line. One picture per scene is refused: a still held for a whole line is a slideshow.`
+  const how = pic ? `Each voice line is ${plan.duration > 120 ? "two or three spoken sentences" : "one spoken sentence"} of ${lineWords} words; every scene has ${shotRangeText("cinema")} shots (the closing exactly one), each with its own "image_prompt" — and NEVER more than one shot per ${SHOTS_WORDS_PER_SHOT} words of voice: a shot is three seconds of film at the least, so a line of 10 words carries one shot, 14 two, 21 three (Kleo cuts the extra ones); every shot after the first carries "at" with words copied from its own voice line. One picture for a line of ${SHOTS_MIN_WORDS_FOR_TWO} words or more is refused: a still held for a whole long line is a slideshow.`
     : cin ? `Each voice line is ${plan.duration > 120 ? "two or three spoken sentences" : "one spoken sentence"} of ${lineWords} words; every scene needs 4–8 beats of different kinds, each anchored with "at" to words of its own voice line.`
     : sk ? `Each voice line is ONE spoken sentence of ${EXPLAINER_WORDS[lengthOf(plan.duration)].join("-")} words; every scene needs 2-8 drawings, each with an "at" quoting words from its OWN line, and the last of them must land in the second half of that line. One phrase, one drawing, and the drawing is literally what the words say.`
     : stick ? `Each voice line is one spoken sentence of ${lineWords} words; every scene has an act, a cast with hero, an accent and a title; add a bubble when the character says something.`
@@ -1935,6 +1935,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   // THE SPEED FOLLOWS THE WORDS (keou-contract.ts speedFor): the last touch, after the last validation, because the
   // planner writes past its budget and the voice decides how long the film really is.
   const finished = finishForProduct(ok.storyboard as unknown as Record<string, unknown>, plan.product, plan.duration);
+  trimShots(finished);
   finished.speed = speedFor(countWords(finished), plan.duration);
   denyInPictures(finished, treatment);
   return { storyboard: finished as unknown as Storyboard, model, attempts: calls, ms: Date.now() - t0, usage, est_neurons: est, words: countWords(ok.storyboard), scenes: ok.storyboard.scenes.length, fixture: false, history, style: plan.kleo, direction, treatment, missing_facts: missing, blocked_upgrade: blockedUpgrade };

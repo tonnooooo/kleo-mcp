@@ -136,3 +136,12 @@ uomo alla scrivania nell'undicesima immagine con la decisione «only a hand and 
 face»: la decisione non arrivava al cast né al negative. Ora le negazioni di `decisions`, `visual` e `opening` del
 treatment entrano nella lista `forbidden` della direction (= negative prompt su entrambi i lati), e «face» porta
 con sé «portrait» e «person».
+
+## 10. Il primo film vero: dodici shot per quindici secondi
+
+`gt_378ce9xp` (15 s, kie.ai MiniMax H3): il planner ha scritto 5 scene da 2-3 shot, undici shot da ~1 s, ognuno
+fatturato al minimo di 4 s (0,26 $): **3,25 $ di clip per 15 s**, cinque volte l'ipotesi del listino, e uno stacco
+al secondo che nessuno legge. La regola «almeno 2 immagini per scena» valeva per ogni riga, anche da sei parole.
+Ora `shotBudget(words)` in `src/keou-contract.ts`: al più `round(parole / 7)` shot (1-4), il pavimento di due solo
+da 14 parole; `trimShots` taglia gli shot in più come ultimo tocco su entrambe le strade, e il prompt del planner
+dice la regola. Un film da 15 s ne porta quattro o cinque, ~1,1-1,3 $.

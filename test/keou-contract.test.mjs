@@ -8,7 +8,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildGuide, guideText, EXAMPLE_DIRECTION, EXAMPLE_SCENES } from "../src/guide.ts";
-import { validateStoryboard, defaultVoice, wordBudget, speedFor, kleoStyleOf, pictureScenes, directionProblems, sectionOfScene, CINEMA_ACCENTS, SHOTS_MIN_CINEMA, shotRangeText, VOICES, FORBIDDEN_FIELDS, FORBIDDEN_KINDS, FORBIDDEN_SCENE_FIELDS, KLEO_STYLES, IMAGE_PROMPT_MAX, MAX_PICTURES, SHOT_MOTION, SHOT_FIELDS, SHOTS_PER_SCENE, SHOT_KINDS, SHOT_GRAMMAR, durationFor, MOTION_ALIASES, MOTION_MOVES, MAX_SHOT_S, MAX_PERSON_SHOT_S, LOUD_WINDOW_S, LOUD_MAX_PER_WINDOW } from "../src/keou-contract.ts";
+import { validateStoryboard, defaultVoice, wordBudget, speedFor, shotBudget, trimShots, kleoStyleOf, pictureScenes, directionProblems, sectionOfScene, CINEMA_ACCENTS, SHOTS_MIN_CINEMA, shotRangeText, VOICES, FORBIDDEN_FIELDS, FORBIDDEN_KINDS, FORBIDDEN_SCENE_FIELDS, KLEO_STYLES, IMAGE_PROMPT_MAX, MAX_PICTURES, SHOT_MOTION, SHOT_FIELDS, SHOTS_PER_SCENE, SHOT_KINDS, SHOT_GRAMMAR, durationFor, MOTION_ALIASES, MOTION_MOVES, MAX_SHOT_S, MAX_PERSON_SHOT_S, LOUD_WINDOW_S, LOUD_MAX_PER_WINDOW } from "../src/keou-contract.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const EXAMPLES = join(ROOT, "worker", "keou", "examples");
@@ -188,6 +188,25 @@ test("helpers: defaultVoice and wordBudget", () => {
   assert.equal(speedFor(81, 30), 1.1, "the budget's own target at the calibrated speed");
   assert.equal(speedFor(69, 30), 1.0, "too few words: never slower than 1.0, the film is a little short instead");
   assert.equal(speedFor(0, 30), 1.1); assert.equal(speedFor(50, 0), 1.1);
+});
+
+test("shotBudget and trimShots: a line carries one shot per seven words, at most four; two are required only from fourteen words (22 September)", () => {
+  assert.deepEqual(shotBudget(6), { min: 1, max: 1 }); assert.deepEqual(shotBudget(10), { min: 1, max: 1 });
+  assert.deepEqual(shotBudget(12), { min: 1, max: 2 }); assert.deepEqual(shotBudget(14), { min: 2, max: 2 });
+  assert.deepEqual(shotBudget(24), { min: 2, max: 3 }); assert.deepEqual(shotBudget(40), { min: 2, max: 4 }); assert.deepEqual(shotBudget(0), { min: 1, max: 1 });
+  const line = (n) => Array.from({ length: n }, (_, i) => `w${i}`).join(" ");
+  const sb = { scenes: [
+    { id: "a", kind: "cinema", voice: line(10), shots: [{ image_prompt: "1" }, { image_prompt: "2", at: "w3" }, { image_prompt: "3", at: "w6" }] },
+    { id: "b", kind: "cinema", voice: line(24), shots: [{ image_prompt: "1" }, { image_prompt: "2", at: "w8" }, { image_prompt: "3", at: "w16" }] },
+    { id: "end", kind: "closing", voice: line(4), shots: [{ image_prompt: "1" }, { image_prompt: "2", at: "w2" }] },
+  ] };
+  assert.equal(trimShots(sb), 2, "the ten-word line keeps one shot of three; the rest stay");
+  assert.equal(sb.scenes[0].shots.length, 1); assert.equal(sb.scenes[1].shots.length, 3); assert.equal(sb.scenes[2].shots.length, 2, "a closing is never trimmed");
+  assert.equal(trimShots(sb), 0, "idempotent");
+  // A short line with one picture is no longer refused as a slideshow: it is a three-second shot.
+  const short = pirates(); short.scenes[1].voice = "Below deck it is pitch black."; short.scenes[1].shots = [short.scenes[1].shots[0]];
+  const r = validateStoryboard(short, { format: "9:16", language: "en" });
+  assert.ok(!r.errors.some((e) => /a scene needs at least 2/.test(e)), r.errors.join("\n"));
 });
 
 /* ------------------------------------------------------------------ Kleo styles and pictures (docs/PICTURE-STYLE.md) */

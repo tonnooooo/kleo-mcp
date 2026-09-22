@@ -163,6 +163,35 @@ export const SHOT_FIELDS = ["image_prompt", "caption", "hl", "at", "shot_kind", 
 export const SHOTS_PER_SCENE: Record<"cinema" | "closing", [number, number]> = { cinema: [1, 4], closing: [1, 2] };
 /** The real floor for a cinema scene, server-side. One picture per narrated line is a slideshow; two is a cut. */
 export const SHOTS_MIN_CINEMA = 2;
+/**
+ * THE SHOTS A LINE CAN CARRY (22 September 2026). The first real film of the day (gt_378ce9xp, 15 s) was planned as
+ * twelve shots, eleven of them about one second long: every one billed by kie.ai at its four-second minimum (0.26 $),
+ * 3.25 $ of clips for fifteen seconds of film — five times the tariff's assumption — and a cut every second that
+ * nobody reads. A shot is about three seconds of voice at the least, so a line of `words` words (2.7 a second)
+ * carries at most round(words / 7) shots, one to four; and the two-picture floor holds only for a line long
+ * enough for two (14 words, about five seconds). SHOTS_WORDS_PER_SHOT is the one number.
+ */
+export const SHOTS_WORDS_PER_SHOT = 7;
+export const SHOTS_MIN_WORDS_FOR_TWO = 14;
+export function shotBudget(words: number): { min: number; max: number } {
+  const w = Math.max(0, Number(words) || 0);
+  return { min: w >= SHOTS_MIN_WORDS_FOR_TWO ? SHOTS_MIN_CINEMA : 1, max: Math.max(1, Math.min(SHOTS_PER_SCENE.cinema[1], Math.round(w / SHOTS_WORDS_PER_SHOT))) };
+}
+const voiceWords = (s: unknown): number => (isObj(s) && typeof s.voice === "string" ? s.voice.trim().split(/\s+/).filter(Boolean).length : 0);
+/**
+ * Every cinema scene keeps at most the shots its line can carry (shotBudget), the first ones: the last touch on a
+ * storyboard before it is stored, on both roads into the queue, because the planner writes the shot count it is
+ * told and not the one the seconds allow. Returns the number of shots dropped.
+ */
+export function trimShots(sb: { scenes?: unknown }): number {
+  let dropped = 0;
+  for (const s of Array.isArray(sb.scenes) ? sb.scenes : []) {
+    if (!isObj(s) || s.kind === "closing" || !Array.isArray(s.shots)) continue;
+    const { max } = shotBudget(voiceWords(s));
+    if (s.shots.length > max) { dropped += s.shots.length - max; s.shots = s.shots.slice(0, max); }
+  }
+  return dropped;
+}
 /** The shot range the guide, the planner and the website all quote, so the three can never say three different things. */
 export const shotRangeText = (kind: "cinema" | "closing"): string =>
   kind === "closing" ? `${SHOTS_PER_SCENE.closing[0]}-${SHOTS_PER_SCENE.closing[1]}` : `${SHOTS_MIN_CINEMA}-${SHOTS_PER_SCENE.cinema[1]}`;
@@ -961,7 +990,7 @@ export function qualityProblems(sb: unknown): string[] {
     if (!isObj(s) || !Array.isArray(s.shots)) return;
     const label = `scene ${i + 1}${typeof s.id === "string" ? ` (${s.id})` : ""}`;
     const shots = s.shots as unknown[];
-    if (s.kind !== "closing" && shots.length < SHOTS_MIN_CINEMA)
+    if (s.kind !== "closing" && shots.length < shotBudget(voiceWords(s)).min)
       out.push(`${label}: ${shots.length} picture${shots.length === 1 ? "" : "s"}, a scene needs at least ${SHOTS_MIN_CINEMA} — one picture held for a whole line is a slideshow, not a video. Split the line into ${SHOTS_MIN_CINEMA} moments and give each its own image_prompt and "at".`);
     shots.forEach((sh, n) => {
       if (n === 0 || !isObj(sh)) return;
