@@ -15,3 +15,6 @@ worker/keou/projects/
 
 # rendered films and evidence pulled from boxes: never in git (GitHub refuses >100 MB, and they are not source)
 scripts/motion-demo/out/
+
+# private key that proves kleooai.com to the MCP Registry (mcp-publisher login http)
+.mcp-registry-key.pem
