@@ -77,7 +77,11 @@ try{
    // setpts=PTS-STARTPTS: the composited part starts at 0 like a drawn one. With the seeked underlay as the main input
    // the first frame kept its seek offset, the concat of sixteen such parts drifted by a frame or two, and the master's
    // `-t` cut the last frame: "Invalid master" on two of three finish boxes of gt_nyhb8aj9 (22 September 2026).
-   const lay=underlay?['-filter_complex',`[1:v]scale=${width}:${height},setsar=1[bg];[bg][0:v]overlay=format=auto,setpts=PTS-STARTPTS[v]`,'-map','[v]']:[];
+   // fps=${fps} on the underlay: the footage track arrives with the clips' own rate (kie.ai's MiniMax writes 59.94,
+   // 60000/1001) and the overlay keeps the rate of its FIRST input, so every composited part carried 60000/1001, the
+   // concat copied it into the master, and validPart refused a master of exactly 1089 frames at 3840x2160 because its
+   // rate was not "60/1" (gt_nyhb8aj9, 22 September 2026: four finish rentals lost to it). The part is 60/1 by construction.
+   const lay=underlay?['-filter_complex',`[1:v]fps=${fps},scale=${width}:${height},setsar=1[bg];[bg][0:v]overlay=format=auto,setpts=PTS-STARTPTS,fps=${fps}[v]`,'-map','[v]']:[];
    const tmp=part+'.partial.mp4';const proc=spawn(ffmpeg,['-nostdin','-v','error','-y','-f','image2pipe','-vcodec','png','-framerate',String(fps),'-i','pipe:0',...under,...lay,'-an','-c:v','libx264','-preset','veryfast','-crf','17','-threads','4','-pix_fmt','yuv420p','-r',String(fps),'-frames:v',String(last-first),'-movflags','+faststart',tmp],{stdio:['pipe','ignore','pipe']});children.add(proc);let err='';proc.stderr.on('data',d=>err=(err+d).slice(-8000));proc.stdin.on('error',e=>fatal=e);proc.on('error',e=>fatal=e);const done=once(proc,'close');const page=await pageAt(width);
    // FRAME every 30, not every 180. This line is the only thing that says the render is alive: the worker turns it
    // into a progress report, and the server now destroys a GPU that has said nothing for RENDER_SILENCE_MIN. At
