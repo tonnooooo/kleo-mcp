@@ -1,6 +1,6 @@
 import type { Env } from "./env";
 import { getJob, setFile, listFiles, audit, type Job, claimQueuedJob, countRunning, transitionJob, ACTIVE_STATES, OPEN_STATES } from "./db";
-import { json, safeEqual, nowIso, int, num } from "./util";
+import { json, safeEqual, nowIso, int, num, rid } from "./util";
 import { isFlagActive, setFlagUntil, releaseLock } from "./schema";
 import { finishJob, failJob, trackFor, budgetSpentUsd, handoverToFinish } from "./orchestrator";
 import { backendFor } from "./backends";
@@ -321,6 +321,23 @@ export async function handleAdmin(request: Request, env: Env): Promise<Response>
     });
   }
   if (request.method !== "POST") return json({ error: "method" }, 405);
+  //   POST /internal/admin/retry {"job_id":"gt_…"}   a film that failed in its FINISH phase goes back in the queue with
+  //   everything it already paid for: the gen bundle, the clip rows (ready), the music. Only a finish box is rented again;
+  //   the credits refunded on failure are NOT taken back (the failure was Kleo's). 22 September 2026: gt_nyhb8aj9 died
+  //   three times on "Invalid master" with 1.68 $ of clips and music bought, and the fix was already on the image.
+  if (path === "/internal/admin/retry") {
+    const b = (await request.json().catch(() => ({}))) as { job_id?: unknown };
+    const id = String(b.job_id ?? "").trim();
+    const job = id ? await getJob(env, id) : null;
+    if (!job) return json({ error: "job_id: no such video" }, 404);
+    if (job.state !== "failed" || (job.phase ?? "gen") !== "finish") return json({ error: `only a film that failed in its finish phase can be retried (this one is ${job.state}, phase ${job.phase ?? "gen"})` }, 409);
+    const ok = await transitionJob(env, job.id, ["failed"], {
+      state: "queued", backend: null, instance_id: null, instance_meta: null, started_at: null, finished_at: null, last_report_at: null, queued_at: nowIso(),
+      percent: 58, track: "clips", error: null, attempts: 0, worker_secret: rid("wk", 32),
+    });
+    await audit(env, job.user_id, job.id, "admin.retry", { from: "failed", phase: job.phase, previous_error: (job.error ?? "").slice(0, 200), ok });
+    return json({ ok, job_id: job.id, state: ok ? "queued" : job.state, phase: "finish", note: "the finish box is rented again; clips and music are reused, no credit is charged" });
+  }
   if (path === "/internal/admin/pause") {
     const b = (await request.json().catch(() => ({}))) as { hours?: number; everything?: boolean };
     const hours = Math.min(168, Math.max(1, Math.round(Number(b.hours ?? 12)) || 12));
