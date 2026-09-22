@@ -19,7 +19,8 @@ function scenes(n, acts, words = 12) {
   return Array.from({ length: n }, (_, i) => ({
     id: `s${i + 1}`, kind: "cinema", chapter: `0${Math.floor((i * acts) / n) + 1} ACT`, accent: "cyan", title: `t${i}`, hl: "t",
     voice: Array.from({ length: words }, (_, k) => `w${k}`).join(" "),
-    shots: [{ image_prompt: `picture ${i}` }],
+    // Two pictures a scene, the second cut on a word: the contract refuses a one-picture scene as a slideshow.
+    shots: [{ image_prompt: `picture ${i} opens` }, { image_prompt: `picture ${i} closes`, at: "w2" }],
   }));
 }
 
@@ -48,8 +49,9 @@ test("a dissolve sits only where an act begins, never on the first scene, and ne
   assert.deepEqual(placeTransitions({ scenes: [] }, 60), []);
   // Idempotent: finished twice, the same marks.
   placeTransitions(sb, 30); assert.deepEqual(sb.scenes.map(transitionOf), ["cut", "cut", "dissolve", "cut", "cut", "cut"]);
-  // Spread over the film's length, not over the scene count: a long first act pushes the single dissolve to the later change.
-  const uneven = { scenes: [...scenes(2, 1, 40), ...scenes(2, 1, 4).map((s, i) => ({ ...s, id: `m${i}`, chapter: "02 ACT" })), ...scenes(2, 1, 4).map((s, i) => ({ ...s, id: `e${i}`, chapter: "03 ACT" }))] };
+  // Spread over the film's LENGTH, not over the scene count: with a long last act the middle of the words falls
+  // nearer the second act change (counted by scene index the two changes would tie and the first would win).
+  const uneven = { scenes: [...scenes(2, 1, 4), ...scenes(2, 1, 4).map((s, i) => ({ ...s, id: `m${i}`, chapter: "02 ACT" })), ...scenes(2, 1, 40).map((s, i) => ({ ...s, id: `e${i}`, chapter: "03 ACT" }))] };
   assert.deepEqual(placeTransitions(uneven, 30), [4], "the boundary nearest the middle of the WORDS, which is the film's clock here");
 });
 
@@ -63,7 +65,7 @@ test("finishForProduct places them for both products when it knows the length, a
   assert.deepEqual(finishForProduct({ music: "bed", scenes: scenes(4, 2) }, "film").scenes.map(transitionOf), ["cut", "cut", "cut", "cut"], "no length known: nothing placed");
   const sb = {
     schema_version: 1, editorial_status: "ready", title: "t", style: "picture", kleo_style: "realistic", format: "16:9", language: "en", voice: "am_michael", speed: 1.1, music: "track", music_brief: "sparse felt piano", max_duration: 96,
-    scenes: [...scenes(3, 1), { id: "end", kind: "closing", chapter: "02 END", accent: "green", title: "end", hl: "end", voice: "the end of it", shots: [{ image_prompt: "an empty desk" }] }],
+    scenes: [...scenes(3, 1), { id: "end", kind: "closing", chapter: "02 END", accent: "green", title: "end", hl: "end", voice: "the end of it all", shots: [{ image_prompt: "an empty desk" }, { image_prompt: "the desk lamp off", at: "all" }] }],
   };
   placeTransitions(sb, 30);
   assert.equal(transitionOf(sb.scenes[3]), "dissolve", "the ending is an act too, and the most cinematic place for the one dissolve");
