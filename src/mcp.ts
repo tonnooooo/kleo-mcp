@@ -52,7 +52,7 @@ function niceDate(iso: string | null | undefined): string {
 const kindOf = (format: string | null | undefined) => (format === "9:16" ? "Short" : "video");
 const templateName = (id: string) => findTemplate(id)?.name ?? id;
 const TRACK_LABEL: Record<string, string> = {
-  script: "writing the script", voice: "recording the narration", clips: "drawing the scenes", edit: "editing", finishing: "finishing up",
+  script: "writing the script", voice: "recording the narration", music: "adding the music", clips: "drawing the scenes", film: "finishing the film", edit: "editing", finishing: "finishing up",
 };
 const trackLabel = (track: string | null) => (track && TRACK_LABEL[track]) || "working";
 /**

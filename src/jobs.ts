@@ -194,7 +194,8 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   // THE USER'S TWO ANSWERS (22 September 2026), read once here and applied to everything below: the treatment (its
   // music brief and its layer's subtitles), a client storyboard (its music and its graphics) and the job's params, so
   // the planner and the worker read the same answer the user gave in the chat.
-  const musicIn = musicAnswer(input.music);
+  // An explicit null is the tool's own spelling of "no music" (the schema says so); undefined means not asked.
+  const musicIn = input.music === null ? { wanted: false, brief: null } : musicAnswer(input.music);
   const subsIn = subtitlesAnswer(input.subtitles);
   const sound: SoundOptions = { music: musicIn, subtitles: subsIn };
   // The treatment the caller saw and approved. Refused in words when it is not one (a missing field, acts that do
