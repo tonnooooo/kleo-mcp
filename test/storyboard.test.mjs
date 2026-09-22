@@ -336,7 +336,7 @@ test("picture: the schema asks for shots, a lone shot is fed back once, the resu
     for (const sh of s.shots) assert.ok(sh.image_prompt.length >= 2 && sh.image_prompt.length <= 240);
   }
   const first = sb.scenes[0];
-  assert.equal(first.shots.length, 4, "the shot without a picture is dropped, the rest kept");
+  assert.equal(first.shots.length, 2, "the shot without a picture is dropped, and a 16-word line keeps two of the rest (one shot per seven words, 22 September)");
   assert.equal(first.shots[0].at, undefined, "the first shot cannot carry at");
   assert.equal(first.shots[0].caption, "PIRATES AHEAD"); assert.equal(first.shots[0].hl, "PIRATES");
   assert.ok(first.shots[1].image_prompt.length <= 240 && !/\s$/.test(first.shots[1].image_prompt), "an over-long prompt is cut at a word boundary");
@@ -400,8 +400,7 @@ test("picture: normalizeStoryboard turns a scene image_prompt into shots and kee
   ] }, plan);
   assert.deepEqual(bare.scenes[0].shots, [{ image_prompt: "A quiet street at dawn", shot_kind: "hook" }]);
   const rescued = validateStoryboard(bare, { format: "9:16", language: "en" });
-  assert.equal(rescued.ok, false, "it renders, but it is still one picture for a whole line");
-  assert.deepEqual(rescued.errors.filter((e) => !/a scene needs at least 2/.test(e)), []);
+  assert.equal(rescued.ok, true, "it renders: an eleven-word line is one three-second shot, not a slideshow (22 September)");
   // An "at" the engine could not anchor is dropped here, quietly: it would otherwise cost a whole model round trip.
   const cuts = normalizeStoryboard({ title: "T", scenes: [
     { id: "01-part-s2", kind: "cinema", chapter: 7, hl: "   ", title: "The morning after", voice: "Whatever came next, nobody saw it coming.", shots: [

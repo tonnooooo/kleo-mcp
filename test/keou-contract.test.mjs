@@ -206,7 +206,7 @@ test("shotBudget and trimShots: a line carries one shot per seven words, at most
   // A short line with one picture is no longer refused as a slideshow: it is a three-second shot.
   const short = pirates(); short.scenes[1].voice = "Below deck it is pitch black."; short.scenes[1].shots = [short.scenes[1].shots[0]];
   const r = validateStoryboard(short, { format: "9:16", language: "en" });
-  assert.ok(!r.errors.some((e) => /a scene needs at least 2/.test(e)), r.errors.join("\n"));
+  assert.ok(!(r.ok ? [] : r.errors).some((e) => /a scene needs at least 2/.test(e)), (r.ok ? [] : r.errors).join("\n"));
 });
 
 /* ------------------------------------------------------------------ Kleo styles and pictures (docs/PICTURE-STYLE.md) */
