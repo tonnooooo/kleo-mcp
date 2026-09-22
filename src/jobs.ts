@@ -7,7 +7,9 @@ import { rid, nowIso, int, hmacHex } from "./util";
 import { isFlagActive } from "./schema";
 import { backendFor } from "./backends";
 import { validateStoryboard, kleoStyleOf, pictureScenes, narrationOf, MAX_PICTURES, wordBudget, KLEO_STYLES, FILM_LOOKS, type KleoStyle, type FilmLook } from "./keou-contract";
-import { treatmentProblems, repairTreatment, variationFor } from "./treatment.ts";
+import { treatmentProblems, repairTreatment, variationFor, applySoundOptions, musicOf, type Treatment, type SoundOptions } from "./treatment.ts";
+import { musicAnswer, subtitlesAnswer } from "./adaptive.ts";
+import { repairGraphics } from "./graphics.ts";
 
 /** An error whose message is shown to the user as-is: plain English, always says whether something was charged. */
 export class JobError extends Error {}
@@ -35,6 +37,14 @@ export interface CreateInput {
    * Checked here in words; the planner then plans under it instead of writing its own.
    */
   treatment?: unknown;
+  /**
+   * THE TWO OPTIONS THE USER IS ALWAYS ASKED (22 September 2026). `music`: what they answered — "no" in any spelling
+   * means none; "yes" or a kind (a mood, a genre) means an instrumental track under the narration, the treatment's
+   * own brief first, their words otherwise. `subtitles`: true for burned-in cinema subtitles, false for none.
+   * Either left out means the question was not asked on this road, and the treatment stands as written.
+   */
+  music?: string | null;
+  subtitles?: boolean | string | null;
 }
 
 /** Minimal safety gate before any GPU money is spent. Replace with a real moderation API before opening to the public. */
@@ -179,8 +189,14 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     const filmed = filmedStoryboard(style, String((r.storyboard as Record<string, unknown>).style ?? ""), product);
     if (filmed) (r.storyboard as Record<string, unknown>).backdrop = "video";
     else delete (r.storyboard as Record<string, unknown>).backdrop;
-    storyboard = JSON.stringify(finishForProduct(r.storyboard as Record<string, unknown>, product));
+    storyboard = JSON.stringify(finishForProduct(r.storyboard as Record<string, unknown>, product, duration));
   }
+  // THE USER'S TWO ANSWERS (22 September 2026), read once here and applied to everything below: the treatment (its
+  // music brief and its layer's subtitles), a client storyboard (its music and its graphics) and the job's params, so
+  // the planner and the worker read the same answer the user gave in the chat.
+  const musicIn = musicAnswer(input.music);
+  const subsIn = subtitlesAnswer(input.subtitles);
+  const sound: SoundOptions = { music: musicIn, subtitles: subsIn };
   // The treatment the caller saw and approved. Refused in words when it is not one (a missing field, acts that do
   // not add up), before anything is charged; kept exactly, so the film the user read about is the film planned.
   let treatment: Record<string, unknown> | null = null;
@@ -190,10 +206,20 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
       throw new JobError(`The treatment has ${plural(problems.length, "problem")} (nothing was charged). Fix ${problems.length === 1 ? "it" : "them"} and call kleo_create_video again, or leave the treatment out and Kleo writes one:\n- ${problems.join("\n- ")}`);
     const tIn = input.treatment as Record<string, unknown>;
     const fitted = repairTreatment(tIn, duration, variationFor(typeof tIn.variation === "string" ? tIn.variation : ""), language, { look });
-    treatment = fitted as unknown as Record<string, unknown>;
+    treatment = (fitted ? applySoundOptions(fitted, sound) : fitted) as unknown as Record<string, unknown>;
     // With a client storyboard the planner never runs, so the treatment is attached to the storyboard here: it is
     // how the finished video can be read back to the film it was meant to be, on either road into the queue.
     if (storyboard) storyboard = JSON.stringify({ ...(JSON.parse(storyboard) as Record<string, unknown>), treatment });
+  }
+  // The same two answers on a client storyboard, which the planner never touches: its music and its subtitles are
+  // the user's, whatever the assistant wrote at the top of it.
+  if (storyboard) {
+    const sb = JSON.parse(storyboard) as Record<string, unknown>;
+    const brief = musicIn ? (musicIn.wanted ? (musicOf((treatment as Treatment | null)?.music) ?? musicIn.brief ?? "a quiet instrumental bed that fits the film's mood, under the narration") : null) : undefined;
+    if (brief !== undefined) { if (brief) { sb.music = "track"; sb.music_brief = brief; } else { sb.music = "none"; delete sb.music_brief; } }
+    if (subsIn === true) sb.graphics = repairGraphics({ accent: "#ffffff", chapters: "none", hud: [], ...((sb.graphics as Record<string, unknown> | undefined) ?? {}), subtitles: "cinema" });
+    else if (subsIn === false && sb.graphics) { const g = repairGraphics({ ...(sb.graphics as Record<string, unknown>), subtitles: "none" }); if (g) sb.graphics = g; else if (product === "animatic") sb.graphics = { accent: "#ffffff", subtitles: "none", chapters: "none", hud: [] }; else delete sb.graphics; }
+    storyboard = JSON.stringify(sb);
   }
   // A RETRY KEEPS ITS TREATMENT. The assistant that wrote a treatment through kleo_adapt_prompt does not always hand
   // it in again when it retries a video that failed: on 19 September 2026 the third attempt at one animatic arrived
@@ -255,7 +281,10 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   if (!(await debitCredits(env, user.id, credits, jobId)))
     throw new JobError(`Not enough credits: this ${product === "animatic" ? "animatic" : kindOf(format)} costs ${plural(credits, "credit")} and you have ${plural(Math.max(0, user.credits), "credit")}. Nothing was charged.${product === "film" && user.credits >= ANIMATIC_CREDITS ? ` The animatic of the same storyboard costs ${plural(ANIMATIC_CREDITS, "credit")}: ${animaticWayOut}.` : ""} Your account and how to get more: ${await accountUrl(env, user.id)}`);
 
-  const params: JobParams = { duration_s: duration, format, language, voice, style, ...(product === "animatic" ? { product } : {}), ...(styleGuessed ? { style_guessed: true } : {}), ...(cappedFrom ? { style_capped_from: cappedFrom } : {}), ...(treatment ? { treatment } : {}) };
+  // The two answers travel on the row: the planner reads them when it writes its own treatment, the worker reads the
+  // storyboard they shaped. A "yes" to music with no brief yet gets the treatment's brief, or the user's own words.
+  const musicParam = musicIn === null ? undefined : musicIn.wanted ? (musicOf((treatment as Treatment | null)?.music) ?? musicIn.brief ?? "a quiet instrumental bed that fits the film's mood, under the narration") : null;
+  const params: JobParams = { duration_s: duration, format, language, voice, style, ...(product === "animatic" ? { product } : {}), ...(styleGuessed ? { style_guessed: true } : {}), ...(cappedFrom ? { style_capped_from: cappedFrom } : {}), ...(treatment ? { treatment } : {}), ...(musicParam !== undefined ? { music: musicParam } : {}), ...(subsIn !== null ? { subtitles: subsIn } : {}) };
   const job: Job = {
     id: jobId, user_id: user.id, template: t.id, prompt, params: JSON.stringify(params),
     state: "queued", track: null, percent: 0, eta_min: product === "animatic" ? animaticEtaFor(duration) : etaFor(duration), credits,

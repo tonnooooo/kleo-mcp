@@ -502,6 +502,17 @@ def plan_fill(want, have, frozen_tail=0.0):
     return stretch, usable, held
 
 
+def xfade_parts(a, b, out, offset, seconds, fps=60):
+    """A cross-dissolve of `seconds` between two finished parts: `a` runs `seconds` longer than its slot, `b` starts
+    under it at `offset` (a's nominal length), and the result is exactly a_nominal + b long. Same size, same frame
+    rate, same encode as every other part, so the concat that follows copies it without a second thought."""
+    fc = f"[0:v][1:v]xfade=transition=fade:duration={seconds:.3f}:offset={offset:.3f},format=yuv420p[v]"
+    r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", a, "-i", b, "-filter_complex", fc, "-map", "[v]", "-r", str(fps),
+                        "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p", out],
+                       capture_output=True, text=True)
+    return r.returncode == 0 and os.path.isfile(out) and os.path.getsize(out) > 0
+
+
 def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=None, progress_fn=None, workers=None):
     """One continuous video track for the whole film, exactly as long as the timeline, from the clips generated per
     shot. Built from build/shots.json — the cut times the ENGINE itself computed — so the footage and the graphics
@@ -524,11 +535,22 @@ def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=Non
         return None
     work = os.path.join(os.path.dirname(out_path), "footage-parts")
     os.makedirs(work, exist_ok=True)
+    # THE DISSOLVE BETWEEN TWO ACTS (22 September 2026, src/transitions.ts). The plan marks the scene that dissolves
+    # IN; the LAST shot of the scene before it is cut `dissolve_s` longer than its slot, and after the encodes the two
+    # parts are cross-faded with xfade over exactly that overlap — so the track keeps the timeline's length to the
+    # frame and the film breathes where the animatic does (picture.js draws the same dissolve from the same plan).
+    dissolve_s = float(plan.get("dissolve_s") or 0.8)
+    scenes_in = plan.get("scenes") or []
+    dissolves_out = {k for k in range(len(scenes_in) - 1) if (scenes_in[k + 1] or {}).get("transition") == "dissolve"}
     # Pass one, serial and cheap: decide every part (what to cut, how much to slow, what stays black).
     jobs, total, n = [], 0.0, 0
-    for scene in plan.get("scenes") or []:
-        for sh in scene.get("shots") or []:
+    for si, scene in enumerate(scenes_in):
+        shots_in = scene.get("shots") or []
+        for sj, sh in enumerate(shots_in):
             want = max(0.04, float(sh.get("end", 0)) - float(sh.get("start", 0)))
+            extended = si in dissolves_out and sj == len(shots_in) - 1
+            if extended:
+                want += dissolve_s
             src = clips.get(f"{scene['id']}-s{int(sh.get('index', 0)) + 1}") or sh.get("clip")
             dst = os.path.join(work, f"{n:03d}.mp4")
             n += 1
@@ -563,8 +585,8 @@ def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=Non
                 cmd = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
                        f"color=c=black:s={width}x{height}:r={fps}:d={want:.3f}",
                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p", dst]
-            jobs.append((dst, cmd))
-            total += want
+            jobs.append((dst, cmd, want - (dissolve_s if extended else 0.0), extended))
+            total += want - (dissolve_s if extended else 0.0)
     if not jobs:
         return None
     # Pass two, parallel: the encodes. Order is kept by index; a failure anywhere fails the track.
@@ -575,7 +597,7 @@ def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=Non
     done, failed = 0, []
 
     def run(item):
-        dst, cmd = item
+        dst, cmd = item[0], item[1]
         r = subprocess.run(cmd, capture_output=True, text=True)
         return dst, (r.returncode == 0 and os.path.isfile(dst))
 
@@ -592,7 +614,31 @@ def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=Non
                     pass
     if failed:
         return None
-    parts = [dst for dst, _ in jobs]
+    # Pass three: the dissolves. A part that was cut long dissolves into the part after it; the two become one file
+    # of their nominal length, and that file may dissolve on into the next (a chain re-encodes what it has folded).
+    parts, cur, cur_len, cur_ext = [], None, 0.0, False
+    for k, (dst, _, nominal, extended) in enumerate(jobs):
+        if cur is None:
+            cur, cur_len, cur_ext = dst, nominal, extended
+            continue
+        if cur_ext:
+            merged = os.path.join(work, f"x{k:03d}.mp4")
+            if not xfade_parts(cur, dst, merged, cur_len, dissolve_s, fps):
+                say(f"could not dissolve into {os.path.basename(dst)}; a hard cut instead")
+                # The long tail must not stay: the part is cut back to its slot before it is joined.
+                trimmed = os.path.join(work, f"t{k:03d}.mp4")
+                r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", cur, "-t", f"{cur_len:.3f}", "-c:v", "libx264",
+                                    "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p", trimmed], capture_output=True, text=True)
+                parts.append(trimmed if r.returncode == 0 and os.path.isfile(trimmed) else cur)
+                cur, cur_len, cur_ext = dst, nominal, extended
+            else:
+                cur, cur_len, cur_ext = merged, cur_len + nominal, extended
+        else:
+            parts.append(cur)
+            cur, cur_len, cur_ext = dst, nominal, extended
+    parts.append(cur)
+    if dissolves_out:
+        say(f"{len(dissolves_out)} dissolve(s) between acts, {dissolve_s:.1f} s each")
     for dst in parts:
         # The same ruler the master will be judged by, on the finished part: what freezes here freezes there.
         worst = max((secs for _, secs in frozen_runs(dst)), default=0.0)

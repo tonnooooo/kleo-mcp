@@ -758,7 +758,9 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
     e.add(`voice "${String(c.voice)}" does not speak ${String(c.language)}. Use one of ${(voices ?? []).join(", ") || sorted(LANGUAGES)}`);
   else if (c.language !== opts.language) e.add(`language must be ${opts.language} for this job, not ${String(c.language)}`);
   e.finite(c.speed ?? 1, 0.8, 1.3, "speed");
-  if ("music" in c && c.music !== "bed" && c.music !== "none") e.add("music must be bed or none");
+  // "track" (22 September 2026): an instrumental track the worker orders from kie.ai, described by `music_brief`.
+  if ("music" in c && c.music !== "bed" && c.music !== "none" && c.music !== "track") e.add("music must be bed, none or track");
+  if ("music_brief" in c && c.music_brief !== undefined && c.music_brief !== null) e.text(c.music_brief, "music_brief", 300);
   e.finite(c.max_duration ?? 600, 5, 1800, "max_duration");
   // BEFORE the scene check on purpose. A storyboard with malformed scenes would otherwise return here and hide the
   // missing direction, so the assistant would learn about it only on the second call — two round trips for one
@@ -816,6 +818,11 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
     if (!(KINDS as readonly string[]).includes(kind)) { e.add(`${label}: unknown composition`); return; }
     if ((FORBIDDEN_KINDS as readonly string[]).includes(kind)) e.add(`${label}: image scenes are not allowed in a storyboard (no assets); use another composition`);
     for (const f of FORBIDDEN_SCENE_FIELDS) if (f in s) e.add(`${label}: ${f} is not allowed in a storyboard${f === "image" ? " (describe the picture in image_prompt instead; Kleo generates it)" : ""}`);
+    // The dissolve between two acts (src/transitions.ts): one word on the incoming scene, and the first scene has nothing to dissolve from.
+    if ("transition" in s && s.transition !== undefined) {
+      if (s.transition !== "cut" && s.transition !== "dissolve") e.add(`${label}: transition must be "cut" or "dissolve"`);
+      else if (i === 0 && s.transition === "dissolve") e.add(`${label}: the first scene cannot dissolve in (nothing comes before it)`);
+    }
     if (c.style === "picture") {
       if (kind !== "cinema" && kind !== "closing") e.add(`${label}: the picture style only draws cinema and closing scenes`);
       else validateShots(s, label, kind, e, fmt, seq, opts.language);

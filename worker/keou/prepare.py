@@ -138,6 +138,24 @@ def caption_groups(script, heard, duration, defer=False, portrait=False, compact
             raise ValueError('Caption too brief; shorten the sentence or adjust the voice speed')
     return groups, score
 
+def trim_edges(audio, sr, keep_head=.12, keep_tail=.18, floor=.02):
+    """The synthesised sentence without the silence Kokoro pads it with: everything below `floor` of the peak at
+    the head and the tail is cut, `keep_head` / `keep_tail` seconds of it are kept so the first and the last word
+    are never clipped. A sentence with nothing above the floor is returned as it is."""
+    import numpy as np
+    a = np.asarray(audio)
+    if not len(a):
+        return a
+    peak = float(np.abs(a).max())
+    if peak <= 0:
+        return a
+    loud = np.flatnonzero(np.abs(a) > peak * floor)
+    if not len(loud):
+        return a
+    start = max(0, int(loud[0]) - int(keep_head * sr))
+    end = min(len(a), int(loud[-1]) + 1 + int(keep_tail * sr))
+    return a[start:end]
+
 def main():
     p = argparse.ArgumentParser(); p.add_argument('project'); args = p.parse_args()
     project = Path(args.project).resolve(); c = validate(project)
@@ -164,7 +182,7 @@ def main():
     scenes, wavs, cursor, speech_failures = [], [], 0, []
     fps = c['fps']; sr = 24000
     for index, source in enumerate(c['scenes']):
-        s = dict(source); key = hashlib.sha256(json.dumps({'v':VERSION,'script':s['voice'],'voice':c['voice'],'speed':c.get('speed',1),'language':c['language'],'align':'small-v2'},sort_keys=True).encode()).hexdigest()
+        s = dict(source); key = hashlib.sha256(json.dumps({'v':VERSION,'script':s['voice'],'voice':c['voice'],'speed':c.get('speed',1),'language':c['language'],'align':'small-v2','trim':1},sort_keys=True).encode()).hexdigest()
         wav, meta = cache/(key+'.wav'), cache/(key+'.json')
         if wav.exists() and meta.exists():
             audio, rate = sf.read(wav); timing = json.loads(meta.read_text())
@@ -177,6 +195,12 @@ def main():
             audio = np.concatenate([np.asarray(chunk.audio) for chunk in chunks])
             if not np.isfinite(audio).all() or len(audio) < sr*.3:
                 raise ValueError('Speech synthesis failed')
+            # THE SILENCE AT THE EDGES OF A SENTENCE (22 September 2026). Kokoro hands back each sentence with
+            # about half a second of nothing before the first word and after the last; with the lead and the hold
+            # on top, a 30-second animatic (gt_w4tuqvgh) had six pauses of 1.8 s and ran 39 s. The edges are cut
+            # here, BEFORE the alignment and the cache, so every word time downstream is measured on what is kept:
+            # 0.12 s kept before the first sound, 0.18 s after the last, the breath between sentences is the hold's.
+            audio = trim_edges(audio, sr)
             sf.write(wav, audio, sr, subtype='PCM_24')
             segments, _ = asr.transcribe(str(wav), language=c['language'], beam_size=5, word_timestamps=True, vad_filter=False)
             segments = list(segments)
@@ -206,7 +230,10 @@ def main():
         # Landscape keeps the editorial floor; a Short cuts on the word, so its scenes keep
         # the hold the project asked for (the last one still leaves a beat before the loop).
         # The explainer ends on its last drawn frame in both formats: no tail, no loop pad.
-        floor = (.05, .05) if c['style'] == 'sketch' else (.15, .4) if c['format'] == '9:16' else (.65, 1.5)
+        # The picture style (Kleo's films and animatics) keeps a beat between two sentences in landscape too, not
+        # the editorial floor of the cinema style: 0.65 s of hold on top of Kokoro's own tail was the dead air
+        # measured on 22 September. The last scene still leaves a longer beat before the film ends.
+        floor = (.05, .05) if c['style'] == 'sketch' else (.15, .4) if c['format'] == '9:16' else (.3, .9) if c['style'] == 'picture' else (.65, 1.5)
         hold = max(s.get('hold',.65), floor[1] if index == len(c['scenes'])-1 else floor[0])
         end = math.ceil((cursor+lead+duration+hold)*fps)/fps
         audio_start = cursor+lead
@@ -247,7 +274,9 @@ def main():
         dip=np.minimum(np.clip((t-(a-fade))/fade,0,1),np.clip(((b+fade)-t)/fade,0,1))
         bed*=1-.94*dip
         print('MUSIC_QUIET',round(a,2),'->',round(b,2),'seconds',flush=True)
-    if c.get('music')=='none':bed=np.zeros_like(bed);print('MUSIC_NONE',flush=True)   # voice only
+    # 'track' (22 September 2026) is the user's own music: the Kleo worker writes it over this file after this pass,
+    # so what is written here is silence — a track that never arrives leaves a quiet film, never the sine bed.
+    if c.get('music') in ('none','track'):bed=np.zeros_like(bed);print('MUSIC_NONE' if c.get('music')=='none' else 'MUSIC_TRACK_PENDING',flush=True)   # voice only
     sf.write(out/'music.wav',np.column_stack([bed,np.roll(bed,151)*.97]),sr,subtype='PCM_24')
     atomic_json(out/'timeline.json',{'duration':cursor,'fps':fps,'scenes':scenes,'tts':'Kokoro-82M','device':device,'version':VERSION})
     print('PREPARED',round(cursor,3),'seconds',len(scenes),'scenes',flush=True)

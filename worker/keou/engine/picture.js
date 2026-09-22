@@ -24,6 +24,14 @@
   // A .35 s, con da 5 a 27 stacchi in uno Short da 45 s, si arrivava fino al 21% del video in doppia esposizione.
   // A .12 s l'occhio legge uno stacco morbido invece di una sovrapposizione, e il totale scende sotto il 7%.
   const SHOT_FADE = .12;                       // crossfade between two pictures of the same scene
+  // THE DISSOLVE BETWEEN TWO ACTS (22 September 2026, src/transitions.ts). Not the shot crossfade above, and not a
+  // contradiction of the note above it: this one is a punctuation mark the planner places once per 25 seconds, only
+  // where an act ends, and it is long enough (0.8 s) and rare enough to read as a transition and not as a double
+  // exposure. The outgoing scene's last picture keeps travelling under the incoming one for the whole dissolve.
+  // The number is the server's DISSOLVE_S; test/transitions.test.mjs holds the two equal.
+  const DISSOLVE = .8;
+  // Seconds the scene at index `i` dissolves IN over the scene before it; 0 means a hard cut (and the first scene always cuts).
+  function sceneTransition(s, i) { return i > 0 && s && s.transition === 'dissolve' ? DISSOLVE : 0 }
   const PUNCH = .03, PUNCH_IN = .3;            // 3% scale punch on the incoming picture, gone in 0.3 s
   const MIN_SHOT = .8;                         // a picture nobody can see is not a picture
   const MOTIONS = ['in', 'out', 'left', 'right'];   // deprecated shot.motion, kept as an alias
@@ -480,15 +488,29 @@
   }
 
   /* ---- scene --------------------------------------------------------------- */
+  // The last picture of a scene that dissolves OUT keeps moving for the dissolve's length past its own end, so
+  // its Ken Burns runs over span + DISSOLVE — the same denominator whether it is drawn by its own scene or under the
+  // next one, or the picture would jump on the frame the scenes change hands.
+  const outFade = (i) => { const next = A && A.timeline && A.timeline.scenes ? A.timeline.scenes[i + 1] : null; return next ? sceneTransition(next, i + 1) : 0 };
+  // The outgoing scene's last picture, drawn under the incoming scene's first for `uIn` seconds into the dissolve.
+  function paintOutgoing(prev, pi, uIn) {
+    const pdur = Math.max(prev.end - prev.start, .1), pshots = sceneShots(prev), pstarts = shotStarts(prev, pshots, pdur);
+    const k = pstarts.length - 1, ub = pdur - pstarts[k] + uIn, span = Math.max(pdur - pstarts[k], .1);
+    paint(prev, pshots[k], k, pclamp(ub / (span + DISSOLVE)), 1, 1);
+  }
+
   S.scene = function (s, u, t, i) {
     const G = geo(), dur = Math.max(s.end - s.start, .1), shots = sceneShots(s), starts = shotStarts(s, shots, dur);
     let k = 0; for (let j = 0; j < starts.length; j++) if (u >= starts[j]) k = j;
     const span = j => Math.max((j + 1 < starts.length ? starts[j + 1] : dur) - starts[j], .1);
-    const ub = u - starts[k], a = k ? shotFade(ub) : 1, last = k + 1 >= starts.length;
+    const fadeIn = sceneTransition(s, i), fadeOut = outFade(i);
+    const ub = u - starts[k], last = k + 1 >= starts.length;
+    const a = k ? shotFade(ub) : (fadeIn && u < fadeIn ? smooth(u / fadeIn) : 1);
+    if (!k && fadeIn && u < fadeIn && A.timeline && A.timeline.scenes && A.timeline.scenes[i - 1]) paintOutgoing(A.timeline.scenes[i - 1], i - 1, u);   // the act before, still moving, under the dissolve
     if (k && a < 1) paint(s, shots[k - 1], k - 1, shotProgress(u - starts[k - 1], span(k - 1), true), 1, 1);   // the outgoing picture stays underneath, still moving
     // The punch belongs to a cut *inside* a scene: the first picture of a scene arrives on a hard
     // cut from the scene before and must not be shoved 3% out of frame on its opening frame.
-    paint(s, shots[k], k, shotProgress(ub, span(k), !last), a, k ? shotPunch(ub) : 1);
+    paint(s, shots[k], k, last && fadeOut ? pclamp(ub / (span(k) + fadeOut)) : shotProgress(ub, span(k), !last), a, k ? shotPunch(ub) : 1);
     // A film with a LAYER (project.graphics, src/graphics.ts) draws that layer and nothing of the picture look: no
     // veil, no fitted words, no button. The layer was decided for this film by its treatment; hud.js draws it.
     if (A.project && A.project.graphics && window.KEOU_HUD) {

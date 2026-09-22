@@ -3,6 +3,7 @@ import type { Job, JobParams } from "./db";
 // ".ts" on purpose: storyboard.ts imports this file and is loaded straight from source by the test runner
 // (node type stripping), whose resolver has no extension search. Wrangler bundles either form.
 import { int } from "./util.ts";
+import { placeTransitions } from "./transitions.ts";
 
 export type Format = "16:9" | "9:16";
 
@@ -289,7 +290,7 @@ export const TEMPLATES: Template[] = [
   // user's; the planner decides the scenes from it (see BRIEFS / FAMILIES: the "chaptered" language, which handles
   // both a thirty-second piece and five minutes).
   { id: "film", name: "Film", formats: ["16:9", "9:16"], minSeconds: 15, maxSeconds: 90, defaultSeconds: 30,
-    description: "A film, realistic or animated, under ninety seconds: a hook in the first two seconds, every shot generated as moving footage from its own frame (the film) or that frame with a camera move over it (the animatic, 5 credits, up to 60 s), narrated, no captions, no music, 4K 60 fps. Say what it is about and how long; Kleo decides the shots.", voices: EN_IT,
+    description: "A film, realistic or animated, under ninety seconds: a hook in the first two seconds, every shot generated as moving footage from its own frame (the film) or that frame with a camera move over it (the animatic, 5 credits, up to 60 s), narrated, music and burned-in subtitles only when the user asks, 4K 60 fps. Say what it is about and how long; Kleo decides the shots.", voices: EN_IT,
     family: "short-hook" },
   { id: "film-long", name: "Film (long)", formats: ["16:9", "9:16"], minSeconds: 90, maxSeconds: 300, defaultSeconds: 120,
     description: "The same film in chapters, from a minute and a half to five minutes. Chosen on its own when the length asks for it.", voices: EN_IT,
@@ -321,7 +322,7 @@ export const filmTemplateFor = (seconds: number | undefined | null): string =>
   typeof seconds === "number" && seconds > 90 ? FILM_LONG_TEMPLATE_ID : FILM_TEMPLATE_ID;
 export const ACTIVE_TEMPLATE: Template = {
   id: FILM_TEMPLATE_ID, name: "Realistic Film", formats: ["16:9", "9:16"], minSeconds: 15, maxSeconds: 300, defaultSeconds: 60,
-  description: "Adaptive film, realistic or animated: shot-by-shot direction, real motion clips, continuity, narration only, no music or subtitles.", voices: EN_IT, family: "chaptered",
+  description: "Adaptive film, realistic or animated: shot-by-shot direction, real motion clips, continuity, narration; music and burned-in subtitles when the user asks.", voices: EN_IT, family: "chaptered",
 };
 export const PUBLIC_TEMPLATES: Template[] = [ACTIVE_TEMPLATE];
 export const isPublicTemplate = (id: string | undefined | null): boolean => id === FILM_TEMPLATE_ID || id === FILM_LONG_TEMPLATE_ID;
@@ -577,11 +578,16 @@ export const BARE_LAYER = { accent: "#ffffff", subtitles: "none", chapters: "non
  * enough for every sampled frame to differ, not enough to read as a move.
  */
 export const ANIMATIC_DRIFT = { motion: "push_in", strength: 0.35 } as const;
-/** The last touch on a storyboard before it is stored: an animatic takes no music bed, a layer that draws nothing when it has none, and no locked-off shot. */
-export function finishForProduct<T extends Record<string, unknown>>(sb: T, product: Product | string | null | undefined): T {
+/**
+ * The last touch on a storyboard before it is stored. For BOTH products, when the film's length is known: the
+ * dissolves between acts (src/transitions.ts, 22 September 2026). For the animatic: no music BED (the user's track,
+ * "track", stays), a layer that draws nothing when it has none, and no locked-off shot.
+ */
+export function finishForProduct<T extends Record<string, unknown>>(sb: T, product: Product | string | null | undefined, duration_s?: number | null): T {
+  if (duration_s && duration_s > 0) placeTransitions(sb as { scenes?: unknown }, duration_s);
   if (product !== "animatic") return sb;
   const c = sb as Record<string, unknown>;
-  c.music = "none";
+  if (c.music !== "track") c.music = "none";
   if (!(c.graphics && typeof c.graphics === "object" && !Array.isArray(c.graphics))) c.graphics = { ...BARE_LAYER, hud: [] };
   if (Array.isArray(c.scenes)) for (const s of c.scenes as Record<string, unknown>[]) {
     if (!s || !Array.isArray(s.shots)) continue;

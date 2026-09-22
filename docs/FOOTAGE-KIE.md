@@ -123,3 +123,10 @@ task). Gli URL dei risultati di kie.ai scadono in ~24 h: la clip viene copiata s
   un callback verso `/internal/kie/callback` farebbe risparmiare qualche chiamata, non minuti.
 - La misura del movimento (flusso ottico) non viene applicata alle clip API: rigenerare costa soldi veri, e i
   modelli hosted non hanno il difetto del fermo immagine. Si può riaccendere come solo log.
+
+## La traccia musicale sulla stessa strada (22 settembre 2026)
+
+Quando l'utente risponde sì alla domanda sulla musica, la stessa API (`createTask` / `recordInfo`) ordina **una** traccia
+Suno (`ai-music-api/generate`, strumentale, custom mode, 12 crediti = 0,06 $), scritta nella tabella `footage` con
+`shot_id = "music"` per il tetto giornaliero e servita alla macchina da `/internal/jobs/:id/music/file`. Rifiuti
+morbidi: il film esce senza traccia. Tutto in `docs/MUSICA-SOTTOTITOLI-DISSOLVENZE.md`.

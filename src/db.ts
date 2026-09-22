@@ -82,6 +82,14 @@ export interface JobParams {
    * Absent on every row made before that day, which means film.
    */
   product?: "film" | "animatic";
+  /**
+   * THE TWO OPTIONS THE USER IS ALWAYS ASKED (22 September 2026). `music`: the composer's brief for an instrumental
+   * track under the narration, or null when the user said no; absent on rows made before that day (= none).
+   * `subtitles`: true when the user asked for burned-in cinema subtitles, false when they said no; absent = the
+   * treatment's own layer decides, as before.
+   */
+  music?: string | null;
+  subtitles?: boolean;
 }
 
 export interface JobFile {

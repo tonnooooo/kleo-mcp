@@ -240,8 +240,12 @@ def validate(path, approved=True):
     if c.get('language') not in VOICES or c.get('voice') not in VOICES[c['language']]:
         raise ValueError('Unsupported language/voice combination')
     finite(c.get('speed', 1), .8, 1.3, 'speed')
-    if 'music' in c and c['music'] not in {'bed', 'none'}:
-        raise ValueError('music must be bed or none')
+    # 'track' (22 September 2026): an instrumental track the Kleo worker fetches (kie.ai) and writes over
+    # build/music.wav before the mix; prepare.py writes silence for it, so a track that never arrives is silence.
+    if 'music' in c and c['music'] not in {'bed', 'none', 'track'}:
+        raise ValueError('music must be bed, none or track')
+    if c.get('music_brief') is not None:
+        text(c['music_brief'], 'music_brief', 300)
     finite(c.get('max_duration', 600), 5, 1800, 'max_duration')
     # The layer drawn over a filmed picture (src/graphics.ts, engine/hud.js). Mirrors keou-contract.ts.
     graphics = c.get('graphics')
@@ -261,6 +265,12 @@ def validate(path, approved=True):
         ids.add(s['id'])
         if s.get('kind') not in KINDS:
             raise ValueError(label + ': unknown composition')
+        # The dissolve between two acts (src/transitions.ts): one word on the incoming scene; the first scene cuts in.
+        if s.get('transition') is not None:
+            if s['transition'] not in {'cut', 'dissolve'}:
+                raise ValueError(label + ': transition must be cut or dissolve')
+            if i == 0 and s['transition'] == 'dissolve':
+                raise ValueError(label + ': the first scene cannot dissolve in')
         if c['style'] == 'cinema' and s['kind'] not in {'cinema', 'closing'}:
             raise ValueError(label + ': the cinema style only draws cinema and closing scenes')
         if c['style'] != 'picture' and (s['kind'] == 'cinema' or (s['kind'] == 'closing' and c['style'] == 'cinema' and 'beats' in s)):

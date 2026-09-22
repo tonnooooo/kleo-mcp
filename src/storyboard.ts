@@ -39,8 +39,8 @@ import {
 // The treatment: the request expanded into a film by a producer, before the direction. Its words, shape, repair and
 // variation live in src/treatment.ts; this file owns only the call (the model, the price, the retry).
 import {
-  MASTER_PROMPT, treatmentPrompt, treatmentSchema, repairTreatment, treatmentProblems, treatmentBlock, treatmentOf, variationFor,
-  type Treatment,
+  MASTER_PROMPT, treatmentPrompt, treatmentSchema, repairTreatment, treatmentProblems, treatmentBlock, treatmentOf, variationFor, applySoundOptions,
+  type Treatment, type SoundOptions,
 } from "./treatment.ts";
 // The layer (src/graphics.ts): the treatment decides it, the scenes fill it in, the storyboard carries it.
 import { graphicsBlock, sceneHudSchema, repairGraphics, repairSceneHud, repairCards, type Graphics } from "./graphics.ts";
@@ -1087,15 +1087,18 @@ export function normalizeStoryboard(raw: unknown, plan: Plan): unknown {
   c.language = plan.language;
   c.voice = plan.voice;
   c.speed = plan.speed;
-  if (c.music !== "none") c.music = "bed";
+  // "track" is the user's music (22 September 2026) and travels with its brief; anything else the model wrote is the bed.
+  if (c.music !== "none" && c.music !== "track") c.music = "bed";
+  if (c.music !== "track") delete c.music_brief;
   c.max_duration = plan.maxDuration;
   delete c.width; delete c.fps; delete c.brand;
   c.style = plan.style;
   c.kleo_style = plan.kleo;
-  // The layer: kept only over a filmed picture and only when it is a layer; a film with one takes no music bed.
+  // The layer: kept only over a filmed picture and only when it is a layer; a film with one takes no music BED (the
+  // user's track stays: the engine's mix ducks it under the voice exactly as it did the bed).
   if (isObj(c.graphics)) {
     const layer = plan.style === "picture" ? repairGraphics(c.graphics) : null;
-    if (layer) { c.graphics = layer; c.music = "none"; } else delete c.graphics;
+    if (layer) { c.graphics = layer; if (c.music === "bed") c.music = "none"; } else delete c.graphics;
   } else delete c.graphics;
   // THE FOURTH SIDE OF ONE DECISION. templates.ts already decides what a style costs, what card it needs and how
   // many may run at once; this is where the storyboard asks the worker to go and FILM the shots instead of drawing
@@ -1571,7 +1574,7 @@ export function fixtureStoryboard(job: PlanJob): Storyboard {
   if (pictures) assignShotKinds(sb.scenes as Record<string, unknown>[], p.format);
   const r = validateStoryboard(sb, { format: p.format, language: p.language });
   if (!r.ok) throw new StoryboardError("fixture storyboard is invalid: " + r.errors.join("; "), r.errors);
-  return finishForProduct(r.storyboard as unknown as Record<string, unknown>, productOf(p)) as unknown as Storyboard;
+  return finishForProduct(r.storyboard as unknown as Record<string, unknown>, productOf(p), p.duration_s) as unknown as Storyboard;
 }
 
 /* ------------------------------------------------------------------ entry point */
@@ -1593,15 +1596,18 @@ const TEMP_CLOSING = (plan: Plan): Record<string, unknown> =>
 function header(plan: Plan, outline: { title?: unknown; description?: unknown; tags?: unknown }, direction?: Direction | null, treatment?: Treatment | null): Record<string, unknown> {
   return {
     schema_version: 1, editorial_status: "ready", title: outline.title, description: outline.description, tags: outline.tags,
-    style: plan.style, kleo_style: plan.kleo, format: plan.format, language: plan.language, voice: plan.voice, speed: plan.speed, music: "bed", max_duration: plan.maxDuration,
+    style: plan.style, kleo_style: plan.kleo, format: plan.format, language: plan.language, voice: plan.voice, speed: plan.speed,
+    // THE MUSIC IS THE USER'S (22 September 2026): a track when the treatment carries the composer's brief they asked
+    // for, none otherwise. The procedural bed of the early styles is never put under a film any more.
+    ...(treatment?.music ? { music: "track", music_brief: treatment.music } : { music: "none" }),
+    max_duration: plan.maxDuration,
     // The direction travels with the storyboard: the picture prompts read it (src/images.ts), the validator holds the
     // scenes to it, and the worker passes it through untouched, so a render can only ever ignore it, never trip on it.
     ...(direction ? { direction } : {}),
     // So does the treatment: it is how a finished video can be read back to the film it was meant to be.
     ...(treatment ? { treatment } : {}),
-    // And the layer the treatment decided, when the film is a picture to draw it over. A film with a layer goes
-    // through the engine's mix (worker film_overlay), which would put the old music bed under the narration: none.
-    ...(layerOf(plan, treatment) ? { graphics: layerOf(plan, treatment), music: "none" } : {}),
+    // And the layer the treatment decided, when the film is a picture to draw it over (its subtitles included).
+    ...(layerOf(plan, treatment) ? { graphics: layerOf(plan, treatment) } : {}),
   };
 }
 
@@ -1647,15 +1653,23 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   //     Otherwise it is written here, at a temperature that lets two identical requests come out as two films, under
   //     a draw taken from the job id. Like the direction it is allowed to fail: a film without a treatment is what
   //     Kleo made until 14 September, not a broken film.
-  let treatment: Treatment | null = treatmentOf(JSON.parse(job.params));
+  const jobParams = JSON.parse(job.params) as JobParams;
+  let treatment: Treatment | null = treatmentOf(jobParams);
   // The look the job was made in: the treatment is written for it, and refused if it names the other one.
   const planLook: FilmLook | null = (FILM_LOOKS as readonly string[]).includes(plan.kleo) ? (plan.kleo as FilmLook) : null;
+  // The user's two answers (22 September 2026): the method is told them when the treatment is written here, and they
+  // are applied to whatever treatment the film ends up planned under, so a "yes" to music or subtitles is never lost
+  // between kleo_adapt_prompt and the render.
+  const sound: SoundOptions = {
+    music: jobParams.music === undefined ? null : jobParams.music ? { wanted: true, brief: jobParams.music } : { wanted: false, brief: null },
+    subtitles: jobParams.subtitles === undefined ? null : jobParams.subtitles,
+  };
   if (!treatment) {
     const v = variationFor(job.id);
     let feedback: string[] | undefined;
     for (let attempt = 1; attempt <= 2 && !treatment; attempt++) {
       let raw: unknown;
-      try { raw = clean(await call(treatmentPrompt({ prompt: storyRequest(job.prompt), duration_s: plan.duration, format: plan.format, language: plan.language, look: planLook }, v, feedback), treatmentSchema(), TREATMENT_MAX_TOKENS, { system: MASTER_PROMPT, temperature: TREATMENT_TEMPERATURE, model: env.TREATMENT_MODEL || undefined })); }
+      try { raw = clean(await call(treatmentPrompt({ prompt: storyRequest(job.prompt), duration_s: plan.duration, format: plan.format, language: plan.language, look: planLook, sound }, v, feedback), treatmentSchema(), TREATMENT_MAX_TOKENS, { system: MASTER_PROMPT, temperature: TREATMENT_TEMPERATURE, model: env.TREATMENT_MODEL || undefined })); }
       catch (e) { if (e instanceof PlanBudgetError) throw e; history.push([`treatment: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) { transient = e; break; } continue; }
       // The second answer is held to the lenient rule: a short prose is asked to be fixed once, then kept.
       const t = repairTreatment(raw, plan.duration, v, plan.language, { lenient: attempt > 1, look: planLook });
@@ -1664,6 +1678,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     }
     if (transient) throw transient;
   }
+  if (treatment) treatment = applySoundOptions(treatment, sound);
 
   // 0. THE DIRECTION. One call, before anything exists, that reads the request as a request: subject, goal, audience,
   //    tone, the facts that must survive, the world the film is drawn in, what must never appear, and which colour
@@ -1898,7 +1913,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   if (missing.length) history.push(missing.map((f) => `narration never says "${f}"`));
   // The product's last touch goes on AFTER the validation above: an animatic's empty layer is exactly what the
   // validator deletes as "no layer", and it has to reach the worker (templates.ts finishForProduct).
-  return { storyboard: finishForProduct(ok.storyboard as unknown as Record<string, unknown>, plan.product) as unknown as Storyboard, model, attempts: calls, ms: Date.now() - t0, usage, est_neurons: est, words: countWords(ok.storyboard), scenes: ok.storyboard.scenes.length, fixture: false, history, style: plan.kleo, direction, treatment, missing_facts: missing, blocked_upgrade: blockedUpgrade };
+  return { storyboard: finishForProduct(ok.storyboard as unknown as Record<string, unknown>, plan.product, plan.duration) as unknown as Storyboard, model, attempts: calls, ms: Date.now() - t0, usage, est_neurons: est, words: countWords(ok.storyboard), scenes: ok.storyboard.scenes.length, fixture: false, history, style: plan.kleo, direction, treatment, missing_facts: missing, blocked_upgrade: blockedUpgrade };
 }
 
 /* ------------------------------------------------------------------ the treatment on its own */
@@ -1925,7 +1940,7 @@ export interface TreatmentResult {
  * decides the draw; a random one is right when no job exists yet, because the treatment then travels with the job
  * and the planner never draws again. Never throws on a model problem: the tool has to answer either way.
  */
-export async function writeTreatment(env: Env, input: { prompt: string; duration_s: number; format: Format; language: string; look?: FilmLook | null }, opts: { seed?: string; model?: string } = {}): Promise<TreatmentResult> {
+export async function writeTreatment(env: Env, input: { prompt: string; duration_s: number; format: Format; language: string; look?: FilmLook | null; sound?: SoundOptions }, opts: { seed?: string; model?: string } = {}): Promise<TreatmentResult> {
   const t0 = Date.now();
   const model = opts.model || env.TREATMENT_MODEL || planModel(env) || env.AI_MODEL || DEFAULT_MODEL;
   const usage: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };

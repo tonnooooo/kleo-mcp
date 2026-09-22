@@ -190,6 +190,8 @@ Direzione del proprietario: «se l'utente non scrive determinate cose, Kleo deve
 | durata | sì | dice «30 secondi», «2 minuti» | Quanto deve durare? (da 15 secondi a 5 minuti) |
 | formato | sì | dice YouTube / orizzontale / 16:9, oppure Short / TikTok / Reel / verticale / 9:16 | Per dove è: YouTube (orizzontale, 16:9) o Short / TikTok / Reel (verticale, 9:16)? |
 | look | sì | dice cartone / animato / anime / disegnato, oppure realistico / documentario / girato | Come lo vuoi: realistico (girato) o animazione (film animato 2D)? |
+| musica | sì (dal 22 set) | dice «senza musica» / «con musica» / «no music» / «with music» | Vuoi la musica sotto la voce? Se sì, di che tipo; se no, dì no. |
+| sottotitoli | sì (dal 22 set) | dice «senza sottotitoli» / «con i sottotitoli» / «no subtitles» / «with subtitles» | Vuoi i sottotitoli impressi nel video (sì o no)? |
 | pubblico | no | solo se passato nella chiamata | Per chi è? |
 | tono | no | idem | Che tono deve avere? |
 | deve esserci | no | idem | C'è qualcosa che deve comparire per forza, o che non vuoi vedere? |
@@ -197,7 +199,7 @@ Direzione del proprietario: «se l'utente non scrive determinate cose, Kleo deve
 Le voci obbligatorie mancanti bloccano (`ready_to_render: false`) e tornano come domande nella lingua della
 richiesta; quelle facoltative si aggiungono nello stesso messaggio, mai da sole. Le istruzioni del server dicono
 all'assistente di fare tutte le domande in un solo messaggio e di richiamare lo strumento con le risposte
-(`duration_s`, `format`, `style`, `audience`, `tone`, `must_keep`); `kleo_create_video` non ha più un valore
+(`duration_s`, `format`, `style`, `music`, `subtitles`, `audience`, `tone`, `must_keep`; le due nuove voci e la delega «stupiscimi» sono in `docs/MUSICA-SOTTOTITOLI-DISSOLVENZE.md`); `kleo_create_video` non ha più un valore
 predefinito per durata e formato: sono obbligatori, perché sono risposte dell'utente e non scelte di Kleo. Il
 testo restituito apre con la scaletta stessa («INTAKE — …»), voce per voce, con il valore e la sua provenienza
 (dalla richiesta o dalla risposta dell'utente) o la parola MISSING.

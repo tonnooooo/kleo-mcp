@@ -273,6 +273,48 @@ class FreezeTest(unittest.TestCase):
         self.assertAlmostEqual(kv.seconds_of(out), 3.0, delta=0.15)
 
 
+class DissolveTest(FreezeTest):
+    """The dissolve between two acts (22 September 2026): the plan marks the scene that dissolves in, the part before
+    it is cut longer, and xfade folds the two — the track stays exactly as long as the timeline."""
+
+    def plan_of(self, transition):
+        import json
+        plan = {"width": 128, "height": 72, "fps": 24, "duration": 4.0, "dissolve_s": 0.5,
+                "scenes": [{"id": "s1", "transition": "cut", "shots": [{"index": 0, "start": 0.0, "end": 2.0}]},
+                           {"id": "s2", "transition": transition, "shots": [{"index": 0, "start": 2.0, "end": 4.0}]}]}
+        pj = os.path.join(self.tmp, "shots.json"); json.dump(plan, open(pj, "w"))
+        return pj
+
+    def test_a_dissolve_keeps_the_track_length_and_folds_the_two_parts(self):
+        src = self.clip("d.mp4", 72, 0)
+        said = []
+        out = kv.build_footage(self.plan_of("dissolve"), {"s1-s1": src, "s2-s1": src}, os.path.join(self.tmp, "footage.mp4"), 128, 72, fps=24,
+                               log_fn=lambda *a: said.append(" ".join(str(x) for x in a)))
+        self.assertTrue(out and os.path.isfile(out), said)
+        self.assertAlmostEqual(kv.seconds_of(out), 4.0, delta=0.15, msg="the dissolve borrows from the part before, never from the timeline")
+        self.assertTrue(any("1 dissolve(s) between acts, 0.5 s each" in m for m in said), said)
+        parts = os.path.join(self.tmp, "footage-parts")
+        self.assertTrue(any(n.startswith("x") for n in os.listdir(parts)), "the folded part is on disk")
+        self.assertAlmostEqual(kv.seconds_of(os.path.join(parts, "000.mp4")), 2.5, delta=0.15, msg="the outgoing part was cut dissolve_s longer")
+
+    def test_a_cut_changes_nothing(self):
+        src = self.clip("e.mp4", 72, 0)
+        said = []
+        out = kv.build_footage(self.plan_of("cut"), {"s1-s1": src, "s2-s1": src}, os.path.join(self.tmp, "footage.mp4"), 128, 72, fps=24,
+                               log_fn=lambda *a: said.append(" ".join(str(x) for x in a)))
+        self.assertTrue(out and os.path.isfile(out), said)
+        self.assertAlmostEqual(kv.seconds_of(out), 4.0, delta=0.15)
+        self.assertFalse(any("dissolve" in m for m in said), said)
+        self.assertFalse(any(n.startswith("x") for n in os.listdir(os.path.join(self.tmp, "footage-parts"))))
+
+    def test_xfade_of_two_parts_is_their_nominal_length(self):
+        a = self.clip("f.mp4", 60, 0)   # 2.5 s: a 2.0 s slot cut 0.5 s long
+        b = self.clip("g.mp4", 48, 0)   # 2.0 s
+        out = os.path.join(self.tmp, "x.mp4")
+        self.assertTrue(kv.xfade_parts(a, b, out, offset=2.0, seconds=0.5, fps=24))
+        self.assertAlmostEqual(kv.seconds_of(out), 4.0, delta=0.15)
+
+
 class GenerateTest(unittest.TestCase):
     """generate_clips with LTX-2.5 replaced by a fake that records what it was asked: no torch, no CUDA, no weights.
     The frames the fake returns are real (tiny) arrays and the file is written by the real writer through ffmpeg."""

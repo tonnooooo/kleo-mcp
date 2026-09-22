@@ -41,7 +41,7 @@ function pureBlock() {
 const P = new Function(pureBlock() + `
   return { shotStarts, shotMotion, shotGrammar, sceneShots, kenBurns, fitLines, groupWords, keyWord,
            flatten, shotFade, shotPunch, shotProgress, MOTIONS, SHOT_FADE, PUNCH, PUNCH_IN, MIN_SHOT,
-           MOVES, LEGACY_MOVE };`)();
+           MOVES, LEGACY_MOVE, sceneTransition, DISSOLVE };`)();
 
 /* A recording 2D context. Enough of the canvas API for picture.js to draw a whole scene into it,
    so the timing that only shows up in S.scene (which picture is moving, how large it comes in,
@@ -888,4 +888,41 @@ test("the karaoke word grows into its own room, never into the next word's space
   }
   assert.ok(coppie >= 100, `poche coppie controllate (${coppie}): il karaoke non si e' disegnato`);
   assert.ok(crescita > 1.05, `la parola calda non e' mai cresciuta (max ${crescita.toFixed(3)}): il test non prova niente`);
+});
+
+/* ---- the dissolve between two acts (22 September) --------------------------- */
+
+test("a scene marked 'dissolve' fades in over the last picture of the act before it, which keeps moving; a cut does not", () => {
+  assert.equal(P.DISSOLVE, .8);
+  assert.equal(P.sceneTransition({ transition: "dissolve" }, 3), .8);
+  assert.equal(P.sceneTransition({ transition: "dissolve" }, 0), 0, "the first scene has nothing to dissolve from");
+  assert.equal(P.sceneTransition({}, 3), 0); assert.equal(P.sceneTransition({ transition: "cut" }, 3), 0);
+  const img = (w, h) => ({ width: w, height: h });
+  const images = { "a.png": img(1280, 720), "b.png": img(1280, 720) };
+  const prev = { id: "01", kind: "cinema", start: 0, end: 6, chapter: "01 A", shots: [{ image: "a.png", motion: "push_in", strength: .5 }], captions: [], words: [] };
+  const next = { id: "02", kind: "cinema", start: 6, end: 12, chapter: "02 B", transition: "dissolve", shots: [{ image: "b.png", motion: "push_in", strength: .5 }], captions: [], words: [] };
+  const frame = (scene, i, u, timeline) => {
+    const rec = { text: [], draw: [] }, ctx = fakeCtx(rec);
+    const M = pictureModule();
+    M.attach({ ctx, W: 1920, H: 1080, project: { look: "realistic", brand: "Kleo", style: "picture" }, images, timeline, issues: [], frameTime: scene.start + u });
+    M.scene(scene, u, scene.start + u, i);
+    return rec.draw;
+  };
+  const tl = { scenes: [prev, next] };
+  const mid = frame(next, 1, .3, tl);
+  assert.equal(mid.length, 2, "two pictures on the frame: the act before, under, and the new one over it");
+  assert.equal(mid[0].img, images["a.png"]); assert.equal(mid[0].alpha, 1, "the outgoing picture is opaque underneath");
+  assert.equal(mid[1].img, images["b.png"]); assert.ok(mid[1].alpha > 0 && mid[1].alpha < 1, `the incoming picture is mid-fade, got ${mid[1].alpha}`);
+  const late = frame(next, 1, 1.2, tl);
+  assert.equal(late.length, 1, "past the dissolve only the new act is drawn"); assert.equal(late[0].alpha, 1);
+  const cut = frame({ ...next, transition: undefined }, 1, .3, tl);
+  assert.equal(cut.length, 1, "a hard cut draws one picture from its first frame"); assert.equal(cut[0].alpha, 1);
+  // The outgoing picture does not jump on the frame the scenes change hands: its rect at the end of its own scene
+  // and its rect at the start of the dissolve are the same rect, and it keeps travelling.
+  const own = frame(prev, 0, 5.99, tl)[0], under0 = frame(next, 1, 0.001, tl)[0], under1 = frame(next, 1, .6, tl)[0];
+  assert.ok(Math.abs(own.w - under0.w) < 1 && Math.abs(own.x - under0.x) < 1, `no jump on the cut: ${own.w} vs ${under0.w}`);
+  assert.ok(under1.w > under0.w, "the push-in keeps going under the dissolve");
+  // A scene that dissolves OUT lets its last picture run to the end of the dissolve, so it is not at rest on the cut.
+  const noOut = frame(prev, 0, 5.99, { scenes: [prev, { ...next, transition: undefined }] })[0];
+  assert.ok(noOut.w > own.w, "with a hard cut after it the same picture has finished its move by the cut; with a dissolve it has not");
 });

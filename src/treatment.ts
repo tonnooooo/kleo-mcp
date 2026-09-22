@@ -41,6 +41,8 @@ export const T = {
   narrator: 260,
   motifs: { min: 2, max: 5, len: 60 },
   decisions: { max: 8, len: 120 },
+  /** The composer's brief (22 September 2026): one line, instrumental, written only when the user asked for music. */
+  music: 200,
   /**
    * The prose treatment, in words. `target` is what the prompt ASKS for; `minWords` is where the answer is refused.
    * The two are different on purpose, measured twice on the production model on 13 September: asked for "100-520"
@@ -185,6 +187,28 @@ export interface Treatment {
   variation: string;
   /** The layer drawn over the film (src/graphics.ts), decided for this film; null when the film has none. */
   graphics: Graphics | null;
+  /**
+   * The composer's brief: one line for an instrumental track under the narration (genre, instruments, tempo, mood,
+   * how it follows the acts), written when the user asked for music; null when they did not. Never a known song or
+   * artist. The worker orders the track from kie.ai (Suno) and ducks it under the voice.
+   */
+  music: string | null;
+}
+
+/** What the user answered about the sound and the subtitles: the two options the method is told to honour. */
+export interface SoundOptions {
+  /** null: not asked (an internal call); otherwise wanted or not, with the user's words for the kind when given. */
+  music?: { wanted: boolean; brief: string | null } | null;
+  /** null: not asked; true: cinema subtitles burned in; false: none. */
+  subtitles?: boolean | null;
+}
+
+/** "none" in every spelling a model or a person writes for no music. */
+export function musicOf(raw: unknown): string | null {
+  if (raw === null || raw === undefined || raw === false) return null;
+  const s = clip(raw, T.music);
+  if (!s || /^(none|no|null|nessuna|nessuno|niente|senza musica|no music|off|-)$/i.test(s)) return null;
+  return s;
 }
 
 /* ------------------------------------------------------------------ the master prompt */
@@ -201,7 +225,8 @@ export const MASTER_PROMPT = `You are the producer and showrunner of Kleo, a stu
 
 WHAT KLEO CAN RENDER (write only what can be shot):
 - Every shot starts as one still frame drawn in the film's look — in the film it becomes a piece of moving footage generated from that frame, in the animatic the camera moves over the frame itself, so every frame must read as a picture on its own: a place, an object, weather, light, a person seen as a person — in ANIMATION a character designed once, in words, and drawn the same in every shot (never a named living person, never a celebrity, never a logo, a brand or a product name: "a family car", not a make). Four to twelve seconds per shot. Human scale beats spectacle: a hand on a cold door handle renders better than a city exploding.
-- One narrator, a text-to-speech voice, reads short spoken sentences. There is NO music, NO interviews, NO archive footage, NO mixing of the two looks in one film, NO split screens, NO karaoke captions, NO icons, NO logos. Over the film there may be a LAYER, decided in step 11 and drawn from a closed grammar (a line, a readout, a stamp, cards, cinema subtitles, chapter titles) — or nothing, which is the usual answer.
+- One narrator, a text-to-speech voice, reads short spoken sentences. MUSIC exists only when the user asked for it (step 12): one instrumental track, ducked under the voice, never a known song or artist; when they did not ask, there is none. There are NO interviews, NO archive footage, NO mixing of the two looks in one film, NO split screens, NO karaoke captions, NO icons, NO logos. Over the film there may be a LAYER, decided in step 11 and drawn from a closed grammar (a line, a readout, a stamp, cards, cinema subtitles, chapter titles) — or nothing, which is the usual answer; SUBTITLES on it are the user's decision, not yours (step 11 says which).
+- Between two ACTS the film may DISSOLVE (a clean 0.8-second cross-dissolve, one per 25 seconds of film, never inside an act): Kleo places them from the acts you write, so the act boundaries are where the film breathes.
 - 4K, 60 frames per second, 16:9 for YouTube or 9:16 for a Short. Fifteen seconds to five minutes for a film; an animatic is at most sixty seconds.
 
 THE METHOD — answer these in order, each for THIS request:
@@ -217,6 +242,7 @@ THE METHOD — answer these in order, each for THIS request:
 9. MOTIFS. Two to five images the film returns to. A motif seen three times is what makes eight independently generated shots feel like one film.
 10. DECISIONS. List every choice you made that the request did not ask for, one per line, so the person who asked can see it and change it. A decision names something that could have been otherwise and that the viewer will SEE: the place, the period, who is in it, the object that carries it, how it ends. "The tone is informative", "the period is contemporary" and "the setting is a hospital" repeated from the angle are not decisions.
 11. ${LAYER_METHOD}
+12. MUSIC. Only when the request says the user wants music (THE SOUND, below): write "music", ONE line for a composer — instrumental, the genre or the palette of instruments, the tempo, the mood, and how it moves with the acts ("sparse felt piano over a low synth pad, 60 bpm, patient; swells once in act two, thins to a single note at the end"). Never a known song, never an artist's name, never lyrics. When the user did not ask for music, "music" is null and nothing else is written about it.
 
 THE BAR: the discipline of a good documentary sequence — concrete, human-scale, one strong image per beat, nothing decorative. Facts and names and numbers written in the request are kept, all of them. Nothing else is invented: no statistics, no quotes, no dates, no named people, no diagnoses, no makes of car that the request did not give; where the film needs a fact the request did not supply, use only what is common knowledge and prefer a concrete observation over a number.
 
@@ -227,7 +253,25 @@ BANNED WORDS AND MOVES, because a model reaches for them when it has nothing to 
 THE LANGUAGE: every field is written in the language the request names as the language of the film — the logline, the angle, the acts' names, the decisions, the prose, all of it. Only "device" and "look" stay in English. Return the JSON object only: no prose before it, no markdown fences.`;
 
 /** The user message of the treatment call: the request, the frame, the draw, and the shape to return. */
-export function treatmentPrompt(input: { prompt: string; duration_s: number; format: "16:9" | "9:16"; language: string; look?: FilmLook | null }, v: Variation, feedback?: string[]): string {
+export interface TreatmentInput { prompt: string; duration_s: number; format: "16:9" | "9:16"; language: string; look?: FilmLook | null; sound?: SoundOptions }
+
+/** THE SOUND and THE SUBTITLES as the method prints them: what the user answered, and what the treatment must write. */
+export function soundText(sound: SoundOptions | undefined): string {
+  const m = sound?.music, s = sound?.subtitles;
+  const music = m === undefined || m === null
+    ? `THE SOUND: the user was not asked about music — write "music": null.`
+    : m.wanted
+    ? `THE SOUND: the user WANTS MUSIC${m.brief ? ` and asked for "${m.brief}"` : " and named no kind"} — write "music": one line for the composer (step 12)${m.brief ? ", built on their words" : ", chosen for this film"}.`
+    : `THE SOUND: the user wants NO music — write "music": null.`;
+  const subs = s === undefined || s === null
+    ? `SUBTITLES: not asked — leave "subtitles" to the layer's rule.`
+    : s
+    ? `SUBTITLES: the user WANTS them — "graphics" MUST be a layer with "subtitles":"cinema" (a layer with subtitles alone and an empty hud is a legal layer; keep any other element the film earns).`
+    : `SUBTITLES: the user wants NONE — "subtitles":"none" whatever else the layer carries.`;
+  return `${music}\n${subs}`;
+}
+
+export function treatmentPrompt(input: TreatmentInput, v: Variation, feedback?: string[]): string {
   const lang = { en: "English", it: "Italian", fr: "French" }[input.language] ?? input.language;
   const kind = input.format === "9:16" ? "a vertical Short (9:16)" : "a YouTube film (16:9)";
   const actsHint = input.duration_s <= 60 ? "2-3" : input.duration_s <= 150 ? "3-4" : "4-7";
@@ -238,6 +282,7 @@ export function treatmentPrompt(input: { prompt: string; duration_s: number; for
 """${input.prompt.trim()}"""
 THE FILM: ${kind}, ${input.duration_s} seconds, narrated in ${lang}.${inLang}
 THE LOOK: ${input.look ? `${input.look.toUpperCase()}, fixed by the request or the tool call — write "look":"${input.look}" and describe every image in that look` : `not named — decide it in step 0 (realistic unless the request or the subject asks to be drawn) and write it in "look"`}
+${soundText(input.sound)}
 
 THE DRAW FOR THIS FILM (assigned so that two identical requests never get the same film; make them work for this subject, never mention them in the film):
 - narrative device: ${v.device} — ${DEVICES[v.device]}
@@ -257,7 +302,8 @@ TASK: write the TREATMENT of this film, following the method. Return one JSON ob
  "motifs":[${T.motifs.min}-${T.motifs.max} strings <=${T.motifs.len}],
  "decisions":[up to ${T.decisions.max} strings <=${T.decisions.len}: every choice the request did not ask for],
  "prose":"${proseTarget(input.duration_s)[0]}-${proseTarget(input.duration_s)[1]} words: the treatment a director could shoot from — the film told from the first image to the last, act by act, in the present tense, with what we see and what the narrator says over it. Not a list: prose.",
- "graphics":{"layer":"none" — or "layer" with: "accent":"#rrggbb from the film's palette","subtitles":"${SUBTITLE_MODES.join("|")}","chapters":"${CHAPTER_MODES.join("|")}","hud":[0-3 of {"id":"short slug","kind":"${HUD_KINDS.join("|")}","edge":"${EDGES.join("|")}" (line only),"corner":"${CORNERS.join("|")}" (readout, stamp),"rows":["LABEL", …] (readout only, 1-4),"means":"what it stands for, <=60"}]}}${input.language === "en" ? "" : `\nEverything in ${lang}.`}`;
+ "graphics":{"layer":"none" — or "layer" with: "accent":"#rrggbb from the film's palette","subtitles":"${SUBTITLE_MODES.join("|")}","chapters":"${CHAPTER_MODES.join("|")}","hud":[0-3 of {"id":"short slug","kind":"${HUD_KINDS.join("|")}","edge":"${EDGES.join("|")}" (line only),"corner":"${CORNERS.join("|")}" (readout, stamp),"rows":["LABEL", …] (readout only, 1-4),"means":"what it stands for, <=60"}]},
+ "music":"<=${T.music} chars, the composer's brief (step 12) — or null when the user wants no music"}${input.language === "en" ? "" : `\nEverything in ${lang}.`}`;
   return feedback?.length
     ? `${base}\n\nYOUR PREVIOUS ANSWER WAS REJECTED for these reasons; fix every one and return the whole object again:\n- ${feedback.join("\n- ")}`
     : base;
@@ -270,9 +316,11 @@ export const treatmentSchema = (): Record<string, unknown> => {
   return {
     type: "object",
     additionalProperties: false,
-    required: ["look", "logline", "angle", "device", "opening", "ending", "acts", "visual", "pacing", "narrator", "motifs", "decisions", "prose", "graphics"],
+    required: ["look", "logline", "angle", "device", "opening", "ending", "acts", "visual", "pacing", "narrator", "motifs", "decisions", "prose", "graphics", "music"],
     properties: {
       look: { type: "string", enum: [...FILM_LOOKS] },
+      // The composer's brief, or the word "none": a constrained decoder cannot write null, musicOf reads "none" as null.
+      music: str,
       logline: str, angle: str, device: { type: "string", enum: [...DEVICE_IDS] }, opening: str, ending: str,
       acts: { type: "array", items: { type: "object", additionalProperties: false, required: ["name", "purpose", "seconds"], properties: { name: str, purpose: str, seconds: { type: "number" } } } },
       visual: str, pacing: str, narrator: str, motifs: strArr, decisions: strArr, prose: str,
@@ -404,7 +452,29 @@ export function repairTreatment(raw: unknown, duration_s: number, v: Variation, 
     decisions: clipList(raw.decisions, T.decisions.max + 4, T.decisions.len).filter((d) => !NON_DECISION.test(d)).slice(0, T.decisions.max),
     prose, variation: typeof raw.variation === "string" && raw.variation ? clip(raw.variation, 80) : v.key,
     graphics: raw.graphics === undefined ? null : repairGraphics(raw.graphics),
+    music: musicOf(raw.music),
   };
+}
+
+/**
+ * THE USER'S TWO ANSWERS, applied to a treatment (22 September 2026). Whoever wrote the treatment — the assistant
+ * under the method, the server's model, or a treatment reused from an earlier job — the film carries what the user
+ * answered: music yes/no (with their words when the treatment wrote no brief), subtitles yes/no. A "yes" to subtitles
+ * on a film with no layer makes the layer (subtitles alone, an empty hud), which the engine draws as subtitles and
+ * nothing else. Nothing is asked here: what is undefined was not asked and stays as written.
+ */
+export function applySoundOptions(t: Treatment, sound: SoundOptions | undefined): Treatment {
+  if (!sound) return t;
+  const out: Treatment = { ...t };
+  if (sound.music !== undefined && sound.music !== null) {
+    out.music = sound.music.wanted ? (t.music ?? sound.music.brief ?? "a quiet instrumental bed that fits the film's mood, under the narration") : null;
+  }
+  if (sound.subtitles === true) {
+    out.graphics = repairGraphics({ accent: "#ffffff", chapters: "none", hud: [], ...(t.graphics ?? {}), subtitles: "cinema" });
+  } else if (sound.subtitles === false && t.graphics) {
+    out.graphics = repairGraphics({ ...t.graphics, subtitles: "none" });   // null when the layer had nothing else on it
+  }
+  return out;
 }
 
 /** A treatment read back from a job's params or a storyboard: the shape is trusted only after this. */
@@ -459,7 +529,8 @@ ${acts}
 Visual language (every shot lives inside this): ${t.visual}
 Pacing: ${t.pacing}
 Narrator: ${t.narrator}
-Motifs (return to these): ${t.motifs.join("; ")}${t.graphics ? `\n${graphicsBlock(t.graphics)}` : "\nThe layer: none — nothing is drawn over the film."}${full ? `\nThe treatment, in prose:\n${t.prose}` : ""}`;
+Motifs (return to these): ${t.motifs.join("; ")}${t.graphics ? `\n${graphicsBlock(t.graphics)}` : "\nThe layer: none — nothing is drawn over the film."}
+Music: ${t.music ? `${t.music} (an instrumental track under the narration, ducked under the voice; the narration leaves it room between the acts)` : "none — narration only."}${full ? `\nThe treatment, in prose:\n${t.prose}` : ""}`;
 }
 
 /**
@@ -470,7 +541,7 @@ Motifs (return to these): ${t.motifs.join("; ")}${t.graphics ? `\n${graphicsBloc
  * method is the difference between that and the owner's own packages. The server still checks what comes back
  * (treatmentProblems, at kleo_create_video), and still writes its own when nothing comes.
  */
-export function treatmentMethodText(input: { prompt: string; duration_s: number; format: "16:9" | "9:16"; language: string; look?: FilmLook | null }, v: Variation): string {
+export function treatmentMethodText(input: TreatmentInput, v: Variation): string {
   return `WRITE THE TREATMENT YOURSELF, NOW, following this method exactly; then pass the JSON object as "treatment" to kleo_create_video. Do not paraphrase the method to the user: tell them the logline and the decisions once it is written.
 
 ${MASTER_PROMPT}
@@ -495,7 +566,8 @@ Visual world: ${t.visual}
 Pacing: ${t.pacing}
 Narrator: ${t.narrator}
 Motifs: ${t.motifs.join("; ")}
-Layer over the film: ${t.graphics ? `${t.graphics.hud.map((h) => `${h.kind} "${h.id}" (${h.means})`).join(", ") || "no persistent element"}; subtitles ${t.graphics.subtitles}; chapters ${t.graphics.chapters}; accent ${t.graphics.accent}` : "none"}${decisions}
+Layer over the film: ${t.graphics ? `${t.graphics.hud.map((h) => `${h.kind} "${h.id}" (${h.means})`).join(", ") || "no persistent element"}; subtitles ${t.graphics.subtitles}; chapters ${t.graphics.chapters}; accent ${t.graphics.accent}` : "none"}
+Music: ${t.music ?? "none"}${decisions}
 
 ${t.prose}
 

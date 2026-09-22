@@ -10,7 +10,7 @@ import { generateStoryboard, StoryboardError, writeTreatment } from "./storyboar
 import { proseDistance } from "./treatment.ts";
 import { findTemplate } from "./templates";
 import { generateJobImages, IMAGE_NAME_RE } from "./images";
-import { footageBackendFor, footageConfig, setFootageConfig, kieModelFor, requestFootage, footageStatus, footageSpentTodayUsd, kieBalanceUsd, clipKey, footageRows, KIE_MODELS, SHOT_ID_RE, STILL_NAME_RE, type ShotRequest } from "./footage";
+import { footageBackendFor, footageConfig, setFootageConfig, kieModelFor, requestFootage, footageStatus, footageSpentTodayUsd, kieBalanceUsd, clipKey, footageRows, KIE_MODELS, SHOT_ID_RE, STILL_NAME_RE, type ShotRequest, requestMusic, musicStatus, musicOn, musicKey, MUSIC_ID, type MusicRequest } from "./footage";
 
 const ALLOWED_FILES = new Set([FILE_NAMES.video.name, FILE_NAMES.subtitles.name, FILE_NAMES.thumbnail.name, "thumbnail.svg", "log.txt", "gen.tgz"]);
 const TYPES: Record<string, string> = { mp4: "video/mp4", srt: "application/x-subrip", jpg: "image/jpeg", svg: "image/svg+xml", txt: "text/plain" };
@@ -29,6 +29,8 @@ const TYPES: Record<string, string> = { mp4: "video/mp4", srt: "application/x-su
  *   PUT  /internal/jobs/:id/stills/:pictureId.png             a shot's reference frame, for kie.ai to animate (footage.ts)
  *   POST /internal/jobs/:id/footage    {shots, look, format}  order the clips from kie.ai; GET polls them (footage.ts)
  *   GET  /internal/jobs/:id/clips/:shotId                     a finished clip, streamed from R2
+ *   POST /internal/jobs/:id/music      {brief, seconds, title}  order the user's music track from kie.ai (Suno); GET polls it (footage.ts)
+ *   GET  /internal/jobs/:id/music/file                        the finished track, streamed from R2
  *   POST /internal/jobs/:id/done       {cost_usd?}
  *   POST /internal/jobs/:id/failed     {error, retry?}
  *   POST /internal/jobs/:id/selfdestruct                      ask the server to destroy the GPU (fallback)
@@ -54,6 +56,8 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
     return json({ job_id: job.id, template: job.template, prompt: job.prompt, params, state: job.state, style: params.style ?? null, phase: job.phase ?? "gen",
       // Where the clips come from: repeated here for runners that get no env from Vast (the box's env wins when set).
       footage: { backend: footageBackendFor(env, job, cfg), model: kieModelFor(env, cfg).name },
+      // Whether the user's music track can be ordered here at all (22 September): the box skips the road when it cannot.
+      music: { available: musicOn(env) },
       storyboard: job.storyboard ? JSON.parse(job.storyboard) : null, brand: env.BRAND || "Kleo",
       files: { video: FILE_NAMES.video.name, subtitles: FILE_NAMES.subtitles.name, thumbnail: FILE_NAMES.thumbnail.name }, part_size_bytes: 50 * 1024 * 1024 });
   }
@@ -111,6 +115,23 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
   if (rest === "footage" && request.method === "GET") {
     const r = await footageStatus(env, job, true);
     return json(r.reply, r.status);
+  }
+  // The user's music (footage.ts, 22 September 2026). Refusals are soft: the box makes the film without the track.
+  if (rest === "music" && request.method === "POST") {
+    const b = (await request.json().catch(() => ({}))) as Partial<MusicRequest>;
+    const r = await requestMusic(env, job, { brief: String(b.brief ?? ""), seconds: Number(b.seconds) || 30, title: typeof b.title === "string" ? b.title : undefined });
+    return json(r.reply, r.status);
+  }
+  if (rest === "music" && request.method === "GET") {
+    const r = await musicStatus(env, job, true);
+    return json(r.reply, r.status);
+  }
+  if (rest === "music/file" && request.method === "GET") {
+    const row = (await footageRows(env, job.id)).find((r) => r.shot_id === MUSIC_ID);
+    if (!row || row.state !== "ready") return json({ error: "the track is not ready" }, 404);
+    const f = await getFile(env, row.key ?? musicKey(job.id), null);
+    if (!f) return json({ error: "the track is missing from storage" }, 404);
+    return new Response(f.body as ReadableStream | ArrayBuffer, { status: 200, headers: { "content-type": f.contentType || "audio/mpeg", "content-length": String(f.size), etag: f.etag } });
   }
   const cl = rest.match(/^clips\/([a-z0-9-]{1,56})$/);
   if (cl && request.method === "GET") {

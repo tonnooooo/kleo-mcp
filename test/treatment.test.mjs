@@ -31,7 +31,9 @@ test("the draw is deterministic for a job and spreads across jobs", () => {
 /* ------------------------------------------------------------------ the words */
 
 test("the master prompt is a method for a film Kleo can render, and the user message carries the request and the draw", () => {
-  assert.match(MASTER_PROMPT, /NO music/i);
+  assert.match(MASTER_PROMPT, /MUSIC exists only when the user asked for it \(step 12\)/, "music is the user's option since 22 September, never the studio's default");
+  assert.match(MASTER_PROMPT, /^12\. MUSIC\./m);
+  assert.match(MASTER_PROMPT, /may DISSOLVE \(a clean 0\.8-second cross-dissolve, one per 25 seconds of film, never inside an act\)/);
   assert.match(MASTER_PROMPT, /NO karaoke captions, NO icons, NO logos/i);
   assert.match(MASTER_PROMPT, /there may be a LAYER, decided in step 11/, "the layer is the treatment's to decide, from a closed grammar (14 September)");
   assert.match(MASTER_PROMPT, /never a named living person/i);
@@ -55,7 +57,12 @@ test("the master prompt is a method for a film Kleo can render, and the user mes
   const schema = treatmentSchema();
   assert.deepEqual(schema.properties.device.enum, [...DEVICE_IDS]);
   assert.equal(schema.additionalProperties, false);
-  assert.ok(schema.required.includes("prose") && schema.required.includes("acts"));
+  assert.ok(schema.required.includes("prose") && schema.required.includes("acts") && schema.required.includes("music"));
+  assert.match(p, /THE SOUND: the user was not asked about music — write "music": null\./, "an internal call without the answers leaves music off");
+  const asked = treatmentPrompt({ prompt: "x y z", duration_s: 30, format: "9:16", language: "en", sound: { music: { wanted: true, brief: "warm strings" }, subtitles: true } }, v);
+  assert.match(asked, /THE SOUND: the user WANTS MUSIC and asked for "warm strings"/); assert.match(asked, /SUBTITLES: the user WANTS them/);
+  const declined = treatmentPrompt({ prompt: "x y z", duration_s: 30, format: "9:16", language: "en", sound: { music: { wanted: false, brief: null }, subtitles: false } }, v);
+  assert.match(declined, /the user wants NO music/); assert.match(declined, /SUBTITLES: the user wants NONE/);
 });
 
 /* ------------------------------------------------------------------ repair and check */

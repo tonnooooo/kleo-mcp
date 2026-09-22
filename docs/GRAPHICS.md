@@ -22,7 +22,7 @@ girato).
 | **readout** | un blocco monospazio in un angolo, 1-4 righe con etichetta fissa e valore | i **valori**, uno per riga (`EARTH 2023-11-14 · VOYAGER 2023-11-13 · ONE-WAY 22h 34m`) |
 | **stamp** | una riga di maiuscole spaziate in un angolo (luogo, data, ora) | il **testo** |
 | **cards** | un numero o una data che lo spettatore deve LEGGERE, da solo, al centro, su un velo scuro, per circa due secondi | al massimo **una per scena**, agganciata a una parola della voce come uno shot (`at`) |
-| **subtitles** | `cinema` (sottili, bianchi, minuscoli, due righe al massimo, niente karaoke) o `none` | — |
+| **subtitles** | `cinema` (sottili, bianchi, minuscoli, due righe al massimo, niente karaoke) o `none` — dal 22 settembre li decide **l'utente** (la scaletta li chiede sempre; un sì crea il livello anche vuoto, vedi `docs/MUSICA-SOTTOTITOLI-DISSOLVENZE.md`) | — |
 | **chapters** | `film` (il capitolo della scena in maiuscole leggere dietro una riga d'accento) o `none` | — |
 | **accent** | un colore esadecimale preso dalla palette del film: l'unico inchiostro del livello | — |
 

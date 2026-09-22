@@ -23,15 +23,17 @@ mkdirSync(resolve(out,'qa'),{recursive:true});
 if(shotsOnly){
  const src=readFileSync(resolve(engine,'picture.js'),'utf8');
  const block=src.slice(src.indexOf('/* @kleo-pure picture-plan'),src.indexOf('/* @end picture-plan'));
- const plan=new Function(block+';return {shotStarts,sceneShots}')();
- const scenes=timeline.scenes.map(s=>{
+ const plan=new Function(block+';return {shotStarts,sceneShots,sceneTransition,DISSOLVE}')();
+ // The dissolve between two acts (src/transitions.ts) travels with the plan: build_footage cross-fades the two clips
+ // for exactly the seconds picture.js dissolves the two pictures, so the film and the animatic breathe the same way.
+ const scenes=timeline.scenes.map((s,i)=>{
   const shots=plan.sceneShots(s),dur=Math.max(s.end-s.start,.1);
   const starts=plan.shotStarts(s,shots,dur);
-  return {id:s.id,start:s.start,end:s.end,
+  return {id:s.id,start:s.start,end:s.end,transition:plan.sceneTransition(s,i)>0?'dissolve':'cut',
    shots:shots.map((sh,i)=>({index:i,start:s.start+starts[i],end:s.start+(i+1<starts.length?starts[i+1]:dur),
     clip:sh&&sh.clip||null,image:sh&&sh.image||null}))};
  });
- writeFileSync(resolve(build,'shots.json'),JSON.stringify({duration:timeline.duration,fps,width,height,scenes},null,1));
+ writeFileSync(resolve(build,'shots.json'),JSON.stringify({duration:timeline.duration,fps,width,height,dissolve_s:plan.DISSOLVE,scenes},null,1));
  console.log('SHOTS_WRITTEN',scenes.reduce((n,s)=>n+s.shots.length,0));
  process.exit(0);
 }

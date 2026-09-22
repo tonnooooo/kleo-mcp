@@ -455,3 +455,71 @@ test("kiePrompt: the animated film asks the clip model for drawn motion, never f
   assert.match(m.KIE_NEGATIVES.animation, /photograph/); assert.ok(!/anime|cartoon|drawing/.test(m.KIE_NEGATIVES.animation));
   assert.equal(m.KIE_NEGATIVES.realistic, m.KIE_NEGATIVE);
 });
+
+/* ------------------------------------------------------------------ the user's music (22 September) */
+
+test("requestMusic: one Suno task on the same road, $0.06 on the day's ceiling, instrumental in custom mode; then the track lands in R2 and the box streams it", async () => {
+  const env = await newEnv();
+  const job = await filmJob(env);
+  const kie = fakeKie({ defaultState: "success" }); globalThis.fetch = kie.fetch;
+  const r = await m.requestMusic(env, job, { brief: "sparse felt piano over a low pad, 60 bpm, patient", seconds: 39.4, title: "The Birth of a Brilliant Idea" });
+  assert.equal(r.status, 200, JSON.stringify(r.reply));
+  assert.equal(r.reply.state, "generating"); assert.equal(r.reply.cost_usd, 0.06); assert.equal(r.reply.model, "suno-v5");
+  assert.equal(kie.calls.create.length, 1);
+  const body = kie.calls.create[0].body;
+  assert.equal(body.model, "ai-music-api/generate");
+  assert.equal(body.input.instrumental, true); assert.equal(body.input.custom_mode, true); assert.equal(body.input.model, "V5");
+  assert.match(body.input.style, /^sparse felt piano over a low pad, 60 bpm, patient\. Instrumental score for a narrated short film: no vocals/);
+  assert.equal(body.input.title, "The Birth of a Brilliant Idea"); assert.equal(body.input.duration, 47, "the film's length plus a tail to cut on");
+  assert.match(body.input.negative_tags, /vocals/);
+  // Never twice: a second request while the first is in flight orders nothing.
+  const again = await m.requestMusic(env, job, { brief: "anything", seconds: 39.4 });
+  assert.equal(again.status, 200); assert.equal(kie.calls.create.length, 1);
+  // The row is a footage row for the money and invisible to the clip lists the box reads.
+  const rows = await m.footageRows(env, job.id);
+  assert.deepEqual(rows.map((x) => x.shot_id), ["music"]); assert.equal(rows[0].cost_usd, 0.06);
+  assert.equal(Math.round((await m.footageSpentTodayUsd(env)) * 100) / 100, 0.06, "counted the moment it is committed");
+  const clips = await m.footageStatus(env, job, false);
+  assert.deepEqual(clips.reply.pending, []); assert.deepEqual(clips.reply.clips, {}, "the track is not a clip");
+  // The poll: success → the file is copied to R2 once, and the box is given its own route, never kie.ai's URL.
+  const st = await m.musicStatus(env, job, true);
+  assert.equal(st.reply.state, "ready"); assert.equal(st.reply.url, `/internal/jobs/${job.id}/music/file`);
+  assert.equal(kie.calls.downloads, 1);
+  assert.ok(env.RENDERS.m.has(`renders/${job.id}/music.mp3`));
+  const file = await m.handleInternal(new Request(`http://kleo.test/internal/jobs/${job.id}/music/file`, { headers: { authorization: "Bearer wsecret" } }), env);
+  assert.equal(file.status, 200); assert.equal((await file.arrayBuffer()).byteLength, 4096);
+  const spec = await (await m.handleInternal(new Request(`http://kleo.test/internal/jobs/${job.id}`, { headers: { authorization: "Bearer wsecret" } }), env)).json();
+  assert.deepEqual(spec.music, { available: true }, "the job spec says the road is open");
+  const events = (await env.DB.prepare("SELECT event FROM audit WHERE job_id = ? ORDER BY id").bind(job.id).all()).results.map((x) => x.event);
+  assert.deepEqual(events.filter((e) => e.startsWith("music.")), ["music.task", "music.ready"]);
+});
+
+test("music refusals are soft and cost nothing: no key → 409, the ceiling or an empty account → 402, a failed task → failed; the film goes on without it", async () => {
+  const off = await newEnv({ KIE_API_KEY: undefined });
+  const j0 = await filmJob(off);
+  assert.equal((await m.requestMusic(off, j0, { brief: "x", seconds: 30 })).status, 409);
+  assert.equal(m.musicOn({ KIE_API_KEY: "k", KLEO_MUSIC: "off" }), false); assert.equal(m.musicOn({ KIE_API_KEY: "k" }), true);
+  const route = await m.handleInternal(new Request(`http://kleo.test/internal/jobs/${j0.id}/music`, { method: "POST", headers: { authorization: "Bearer wsecret", "content-type": "application/json" }, body: JSON.stringify({ brief: "x", seconds: 30 }) }), off);
+  assert.equal(route.status, 409); assert.equal((await route.json()).state, "off");
+  assert.equal((await m.getJob(off, j0.id)).state, "rendering", "the route never fails the job for its music");
+  const tight = await newEnv({ DAILY_FOOTAGE_BUDGET_USD: "0.05" });
+  const j1 = await filmJob(tight);
+  const kie = fakeKie(); globalThis.fetch = kie.fetch;
+  const r = await m.requestMusic(tight, j1, { brief: "x", seconds: 30 });
+  assert.equal(r.status, 402); assert.match(String(r.reply.error), /budget is spent/); assert.equal(kie.calls.create.length, 0);
+  assert.deepEqual(await m.footageRows(tight, j1.id), [], "refused before a row exists");
+  const poor = await newEnv();
+  const j2 = await filmJob(poor);
+  const empty = fakeKie({ credits: 2 }); globalThis.fetch = empty.fetch;   // 2 kie credits = $0.01
+  const p = await m.requestMusic(poor, j2, { brief: "x", seconds: 30 });
+  assert.equal(p.status, 402); assert.equal(p.reply.no_credit, true); assert.equal(empty.calls.create.length, 0);
+  const env = await newEnv();
+  const j3 = await filmJob(env);
+  const failing = fakeKie({ defaultState: "fail" }); globalThis.fetch = failing.fetch;
+  assert.equal((await m.requestMusic(env, j3, { brief: "x", seconds: 30 })).reply.state, "generating");
+  const st = await m.musicStatus(env, j3, true);
+  assert.equal(st.reply.state, "failed"); assert.match(st.reply.error, /content policy/);
+  assert.equal((await m.handleInternal(new Request(`http://kleo.test/internal/jobs/${j3.id}/music/file`, { headers: { authorization: "Bearer wsecret" } }), env)).status, 404);
+  const none = await newEnv();
+  assert.equal((await m.musicStatus(none, await filmJob(none), true)).status, 404, "no track ordered: none");
+});

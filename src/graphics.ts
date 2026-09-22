@@ -249,7 +249,7 @@ export const LAYER_METHOD = `THE LAYER (what is drawn over the film). Decide it 
 - a READOUT in a corner: ${GL.rows.min}-${GL.rows.max} monospace rows, each a short label the film keeps and a value the scenes update ("EARTH · VOYAGER · ONE-WAY").
 - a STAMP in a corner: one short line the scenes may change (a place, a date, a time).
 - CARDS: a number or a date the viewer must read, alone, centred, held two seconds on a dim; at most one per scene, cut on a spoken word.
-- SUBTITLES "cinema" (thin, white, lowercase, no karaoke) or "none"; CHAPTERS "film" (the scene's chapter in light capitals) or "none".
+- SUBTITLES "cinema" (thin, white, lowercase, no karaoke) or "none" — the USER decides them (the request says what they answered; when they said yes, the layer exists and carries "cinema" even with nothing else on it); CHAPTERS "film" (the scene's chapter in light capitals) or "none".
 - the ACCENT: one hex colour from the film's own palette, the only ink the layer uses.
 At most ${GL.hud.max} elements. Every element means one thing and is named for it. No icons, no logos, no lower thirds, no sentences on cards, no music.`;
 

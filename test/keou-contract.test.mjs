@@ -156,7 +156,7 @@ test("metric, quote, hold, speed, music, scene count and duplicate ids", () => {
   assert.ok(errors.some((e) => /value: required text, maximum 12 characters$/.test(e)), errors.join("\n"));
   assert.ok(errors.includes("scene 1 hold: expected a number between 0.15 and 3"));
   assert.ok(errors.includes("speed: expected a number between 0.8 and 1.3"));
-  assert.ok(errors.includes("music must be bed or none"));
+  assert.ok(errors.includes("music must be bed, none or track"));
   assert.ok(errors.includes("Scene IDs must be unique slugs"));
   const one = editorial(); one.scenes = [one.scenes.at(-1)];
   assert.ok(errorsOf(one, { format: "9:16", language: "en" }).includes("A project needs 2–240 scenes"));

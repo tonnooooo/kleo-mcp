@@ -89,6 +89,13 @@ FOOTAGE_BACKEND = (os.environ.get("KLEO_FOOTAGE_BACKEND", "").strip().lower())
 FOOTAGE_WAIT_MIN = float(os.environ.get("KLEO_FOOTAGE_WAIT_MIN", "14"))     # how long the box waits for kie.ai before giving up
 FOOTAGE_POLL_S = float(os.environ.get("KLEO_FOOTAGE_POLL_S", "12"))         # between two status calls
 CLIP_MAX_BYTES = 400 * 1024 * 1024
+# THE USER'S MUSIC (22 September 2026): when the storyboard says music "track", the box asks the server for the track
+# (kie.ai / Suno, src/footage.ts), waits at most MUSIC_WAIT_MIN, and lays it under the narration at MUSIC_LUFS before
+# the mix ducks it further under every spoken word. A track that never comes is silence, never the old sine bed.
+MUSIC_WAIT_MIN = float(os.environ.get("KLEO_MUSIC_WAIT_MIN", "8"))
+MUSIC_POLL_S = float(os.environ.get("KLEO_MUSIC_POLL_S", "10"))
+MUSIC_LUFS = float(os.environ.get("KLEO_MUSIC_LUFS", "-27"))     # integrated, before the sidechain; the voice lands at -16
+MUSIC_MAX_BYTES = 40 * 1024 * 1024
 
 # Mirrors contract.VOICES; the engine's own contract.py overrides it at run time (see load_voices()).
 DEFAULT_VOICES = {"fr": ["ff_siwis"], "en": ["af_heart", "am_michael", "bf_emma"], "it": ["if_sara", "im_nicola"]}
@@ -1203,6 +1210,16 @@ def render_keou(job, out_dir):
             log("no track: this film is drawn from the stills")
         write_project(project, pdir)
 
+    # THE USER'S MUSIC (22 September): the voice pass first (it writes the timeline the track is cut to, and a silent
+    # music.wav), then the track over that file, then the render with the voice already on disk. A track that does
+    # not come leaves the silence the voice pass wrote: the film is never late or lost for its music.
+    if wants_music(project):
+        build = os.path.join(pdir, "build")
+        if not os.path.isfile(os.path.join(build, "timeline.json")):
+            progress("voice", 8, message="voicing the script")
+            engine_step([keou_python(engine), os.path.join(engine, "prepare.py"), os.path.join(pdir, "project.json")],
+                        engine, log_path, "the voice pass", VOICE_TIMEOUT_MIN)
+        fetch_music(project, build, log_path)
     # If anything above needed the shot times, the script is already voiced; run.py checks that alignment itself
     # against the script before it trusts it.
     run_keou(engine, os.path.join(pdir, "project.json"), len(project["scenes"]), log_path,
@@ -1228,6 +1245,87 @@ def render_keou(job, out_dir):
 # The narration alone, cleaned and normalised to -16 LUFS: run.py's voice chain without the music bus.
 VOICE_CHAIN = ("aresample=48000,highpass=f=75,lowpass=f=12000,acompressor=threshold=0.15:ratio=2:attack=15:release=180,"
                "volume=1.6,loudnorm=I=-16:TP=-1.5:LRA=7,aresample=48000,aformat=channel_layouts=stereo")
+# The narration WITH the user's track: run.py's own mix (the voice cleaned, the music ducked under every spoken word by
+# the sidechain, the two summed and normalised to -16 LUFS). Inputs: [1:a] the voice, [2:a] the shaped track.
+MIX_CHAIN = ("[1:a]aresample=48000,highpass=f=75,lowpass=f=12000,acompressor=threshold=0.15:ratio=2:attack=15:release=180,"
+             "volume=1.6,asplit=2[v][s];[2:a]aresample=48000[m];[m][s]sidechaincompress=threshold=0.025:ratio=5:attack=15:release=320[bed];"
+             "[v][bed]amix=inputs=2:duration=first:normalize=0,loudnorm=I=-16:TP=-1.5:LRA=7,aresample=48000,aformat=channel_layouts=stereo[a]")
+
+
+def wants_music(project):
+    """True when the storyboard asked for the user's track (music "track", src/storyboard.ts header)."""
+    return isinstance(project, dict) and project.get("music") == "track"
+
+
+def shape_music(src, dst, duration):
+    """The composer's track cut to the film: looped if shorter, trimmed to `duration`, a soft fade in and a longer fade
+    out, levelled to MUSIC_LUFS as a 48 kHz stereo wav — the file run.py's mix (and MIX_CHAIN) reads as build/music.wav."""
+    dur = max(1.0, float(duration))
+    fade_out = min(3.0, dur / 4)
+    af = (f"afade=t=in:st=0:d=1.2,afade=t=out:st={dur - fade_out:.3f}:d={fade_out:.3f},"
+          f"loudnorm=I={MUSIC_LUFS:.1f}:TP=-3:LRA=9,aresample=48000,aformat=channel_layouts=stereo")
+    r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-stream_loop", "-1", "-i", src, "-t", f"{dur:.3f}", "-af", af,
+                        "-ac", "2", "-ar", "48000", "-c:a", "pcm_s24le", dst], capture_output=True, text=True)
+    return r.returncode == 0 and os.path.isfile(dst) and os.path.getsize(dst) > 0
+
+
+def fetch_music(project, build, log_path=None):
+    """The user's track from the server (POST /music orders it from kie.ai, GET /music polls, GET /music/file streams
+    it), shaped over build/music.wav. Returns True when the track is under the film, False when the film goes on
+    without it — the reason is in the log, and nothing here raises: music is never worth the film."""
+    brief = str(project.get("music_brief") or "").strip() or "a quiet instrumental bed that fits the film's mood, under the narration"
+    try:
+        timeline = json.load(open(os.path.join(build, "timeline.json")))
+        duration = float(timeline["duration"])
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        log("music: no timeline to cut the track to:", e)
+        return False
+    progress("music", 9, message="ordering the music track")
+    try:
+        st = api("POST", f"/internal/jobs/{JOB}/music", {"brief": brief, "seconds": round(duration, 2), "title": str(project.get("title") or "")[:72]})
+    except urllib.error.HTTPError as e:
+        log(f"music: the server refused the track ({e.code}); the film goes on without it")
+        return False
+    except Exception as e:
+        log("music: the request failed:", e, "; the film goes on without it")
+        return False
+    deadline = time.time() + MUSIC_WAIT_MIN * 60
+    state = (st or {}).get("state") if isinstance(st, dict) else None
+    while state not in ("ready", "failed", "off", "none"):
+        if time.time() > deadline:
+            log(f"music: not ready after {MUSIC_WAIT_MIN:.0f} min; the film goes on without it")
+            return False
+        time.sleep(MUSIC_POLL_S)
+        try:
+            st = api("GET", f"/internal/jobs/{JOB}/music")
+        except Exception as e:
+            log("music: status call failed:", e)
+            continue
+        state = (st or {}).get("state") if isinstance(st, dict) else None
+    if state != "ready":
+        log(f"music: {state}: {(st or {}).get('error', '')}; the film goes on without it")
+        return False
+    src = os.path.join(build, "music.src")
+    try:
+        req = urllib.request.Request(f"{API}/internal/jobs/{JOB}/music/file")
+        req.add_header("Authorization", f"Bearer {SECRET}")
+        req.add_header("User-Agent", UA)
+        with urllib.request.urlopen(req, timeout=300) as r, open(src, "wb") as f:
+            shutil.copyfileobj(r, f, 1 << 20)
+        if not 0 < os.path.getsize(src) <= MUSIC_MAX_BYTES:
+            raise ValueError(f"track is {os.path.getsize(src)} bytes")
+    except Exception as e:
+        log("music: could not download the track:", e, "; the film goes on without it")
+        return False
+    dst = os.path.join(build, "music.wav")
+    if not shape_music(src, dst, duration):
+        log("music: could not shape the track; the film goes on without it")
+        try: os.remove(dst)
+        except OSError: pass
+        return False
+    log(f"music: the track is under the film ({duration:.1f} s, {MUSIC_LUFS:.0f} LUFS before the duck)")
+    progress("music", 10, message="the music is under the film")
+    return True
 
 
 def srt_time(t):
@@ -1353,17 +1451,24 @@ def film_finish(pdir, out_dir, lay_track=False):
         project = json.load(open(project_json))
     except (OSError, ValueError):
         project = {}
+    # THE USER'S MUSIC (22 September): fetched here, on the finish box, over build/music.wav; a layer's engine run
+    # mixes that file, the plain mux below takes it as its third input.
+    music = os.path.join(build, "music.wav")
+    with_music = wants_music(project) and fetch_music(project, build)
     if isinstance(project.get("graphics"), dict):
         # THE LAYER (src/graphics.ts): this film has something drawn over it, decided by its treatment. The engine
         # draws it on a transparent canvas and render.mjs composites it onto build/footage.mp4 inside the encoder;
-        # the mix (voice, no music) comes out of the same run. Nothing else in this function changes for such a film.
+        # the mix (the voice, and the user's track when there is one) comes out of the same run.
         progress("film", 80, message="drawing the layer over the film")
         film_overlay(pdir, project, timeline, out_dir, video)
     else:
-        progress("film", 80, message="the narration goes on the film")
-        r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", footage, "-i", voice, "-filter_complex", f"[1:a]{VOICE_CHAIN}[a]",
-                            "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
-                            "-t", f"{float(timeline['duration']):.3f}", video], capture_output=True, text=True)
+        progress("film", 80, message="the narration goes on the film" + (" with the music" if with_music else ""))
+        if with_music and os.path.isfile(music):
+            cmd = ["ffmpeg", "-v", "error", "-y", "-i", footage, "-i", voice, "-i", music, "-filter_complex", MIX_CHAIN]
+        else:
+            cmd = ["ffmpeg", "-v", "error", "-y", "-i", footage, "-i", voice, "-filter_complex", f"[1:a]{VOICE_CHAIN}[a]"]
+        r = subprocess.run(cmd + ["-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
+                                  "-t", f"{float(timeline['duration']):.3f}", video], capture_output=True, text=True)
         if r.returncode != 0 or not os.path.isfile(video):
             raise RenderError("could not put the narration on the film: " + r.stderr[-300:], retry=True)
     dur, worst = film_checks(video, timeline)
@@ -1371,8 +1476,10 @@ def film_finish(pdir, out_dir, lay_track=False):
     progress("finishing", 92, message="packaging")
     thumb = thumbnail_from(video, os.path.join(out_dir, "thumbnail.jpg"), None)
     progress("finishing", 95, message="encoded")
-    # No subtitles, burnt or sidecar: the owner's reset of 13 September — the film and the narration, nothing else.
-    return {"video.mp4": video, "thumbnail.jpg": thumb}
+    # The subtitles as a sidecar, always (22 September): burned in only when the user said yes (then they are the
+    # layer's cinema subtitles, drawn by the engine); the .srt is for the platform's own caption track either way.
+    srt = write_srt(timeline, os.path.join(out_dir, "subtitles.srt"))
+    return {"video.mp4": video, "subtitles.srt": srt, "thumbnail.jpg": thumb}
 
 
 IMG_DIR = "img"                           # the pictures the shots were filmed from; contract.py wants shot.image on disk
@@ -1437,15 +1544,18 @@ def ensure_shot_pictures(pdir, project):
 
 
 def film_overlay(pdir, project, timeline, out_dir, video):
-    """The engine over the footage: project.json gets its backdrop back (the track is on disk now) and no music, the
-    bundle's missing music.wav becomes silence of the film's length (run.py's mix expects the file), and run.py
-    renders with --skip-voice: hud.js draws the layer on a transparent canvas, render.mjs composites it onto
-    build/footage.mp4 and muxes the mix. out/master.mp4 is the film."""
+    """The engine over the footage: project.json gets its backdrop back (the track is on disk now), the user's music
+    stays "track" when fetch_music laid it over build/music.wav (else none, and a missing music.wav becomes silence
+    of the film's length: run.py's mix expects the file), and run.py renders with --skip-voice: hud.js draws the
+    layer on a transparent canvas, render.mjs composites it onto build/footage.mp4 and muxes the mix. out/master.mp4
+    is the film."""
     engine = os.path.abspath(KEOU_DIR)
     build = os.path.join(pdir, "build")
     project = json.loads(json.dumps(project))   # a deep copy: the shots below are edited in place
     project["backdrop"] = "video"
-    project["music"] = "none"
+    if not (wants_music(project) and os.path.isfile(os.path.join(build, "music.wav"))):
+        project["music"] = "none"
+        project.pop("music_brief", None)
     bound = bind_shot_clips(pdir, project)
     missing = ensure_shot_pictures(pdir, project)
     with open(os.path.join(pdir, "project.json"), "w") as f:

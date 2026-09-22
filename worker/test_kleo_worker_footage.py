@@ -49,10 +49,25 @@ class FakeServer:
             ready = self.ready if self.polls >= self.polls_before_ready else []
             pending = [i for i in ids if i not in ready and i not in self.failed]
             return {"model": "kling-3.0", "clips": {}, "ready": ready, "pending": pending, "failed": self.failed}
+        if method == "POST" and path.endswith("/music"):
+            self.music_orders = getattr(self, "music_orders", []) + [data]
+            if getattr(self, "music_refuse", None):
+                raise urllib.error.HTTPError(path, self.music_refuse, "refused", {}, io.BytesIO(b'{"error":"off"}'))
+            return {"state": "generating", "model": "suno-v5", "cost_usd": 0.06}
+        if method == "GET" and path.endswith("/music"):
+            self.music_polls = getattr(self, "music_polls", 0) + 1
+            state = getattr(self, "music_state", "ready")
+            return {"state": state, "model": "suno-v5", "cost_usd": 0.06, **({"url": f"/internal/jobs/{kw.JOB}/music/file"} if state == "ready" else {})}
         raise AssertionError(f"unexpected call {method} {path}")
 
     def urlopen(self, req, timeout=0):
         url = req.full_url
+        if url.endswith("/music/file"):
+            assert req.get_header("Authorization") == f"Bearer {kw.SECRET}", "the track download carries the job secret"
+            r = io.BytesIO(getattr(self, "music_bytes", b""))
+            r.__enter__ = lambda: r
+            r.__exit__ = lambda *a: None
+            return r
         sid = url.rsplit("/", 1)[1]
         assert req.get_header("Authorization") == f"Bearer {kw.SECRET}", "the clip download carries the job secret"
         self.clips_served.append(sid)
@@ -203,6 +218,79 @@ class FootageRoadTest(unittest.TestCase):
         self.serve(srv)
         self.assertEqual(kw.footage_backend(), "local")
         self.assertEqual(srv.plans, [])
+
+
+class MusicRoadTest(unittest.TestCase):
+    """The user's track (22 September 2026): ordered from the server, polled, downloaded with the job secret, shaped
+    over build/music.wav (looped, faded, levelled) — and every refusal leaves the film without it, never without a film."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kleo-music-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.saved = {k: getattr(kw, k) for k in ("api", "progress", "SECRET", "API", "JOB", "MUSIC_POLL_S")}
+        self.saved_urlopen = kw.urllib.request.urlopen
+        kw.progress = lambda *a, **k: None
+        kw.SECRET, kw.API, kw.JOB, kw.MUSIC_POLL_S = "wsecret", "http://kleo.test", "gt_test1234", 0
+        self.addCleanup(lambda: [setattr(kw, k, v) for k, v in self.saved.items()])
+        self.addCleanup(lambda: setattr(kw.urllib.request, "urlopen", self.saved_urlopen))
+        self.build = os.path.join(self.tmp, "build"); os.makedirs(self.build)
+        with open(os.path.join(self.build, "timeline.json"), "w") as f:
+            json.dump({"duration": 3.0, "scenes": []}, f)
+        # A two-second "track": a real wav made by ffmpeg, so shape_music has something real to loop and fade.
+        self.track = os.path.join(self.tmp, "track.wav")
+        import subprocess
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000", "-t", "2", "-ac", "2", self.track], check=True)
+
+    def serve(self, server):
+        kw.api = server.api
+        kw.urllib.request.urlopen = server.urlopen
+
+    def test_wants_music_reads_the_storyboard_word(self):
+        self.assertTrue(kw.wants_music({"music": "track"}))
+        self.assertFalse(kw.wants_music({"music": "none"})); self.assertFalse(kw.wants_music({})); self.assertFalse(kw.wants_music(None))
+
+    def test_the_track_is_ordered_with_the_brief_polled_downloaded_and_shaped_to_the_film(self):
+        srv = FakeServer(); srv.music_state = "ready"
+        with open(self.track, "rb") as f: srv.music_bytes = f.read()
+        self.serve(srv)
+        ok = kw.fetch_music({"music": "track", "music_brief": "sparse felt piano", "title": "The Empty Page"}, self.build)
+        self.assertTrue(ok)
+        self.assertEqual(srv.music_orders, [{"brief": "sparse felt piano", "seconds": 3.0, "title": "The Empty Page"}])
+        wav = os.path.join(self.build, "music.wav")
+        self.assertTrue(os.path.isfile(wav))
+        import subprocess
+        dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", wav], capture_output=True, text=True).stdout.strip())
+        self.assertAlmostEqual(dur, 3.0, delta=0.1, msg="a two-second track loops to the film's three seconds and stops there")
+
+    def test_a_brief_the_storyboard_did_not_write_becomes_the_plain_bed_sentence(self):
+        srv = FakeServer(); srv.music_state = "ready"
+        with open(self.track, "rb") as f: srv.music_bytes = f.read()
+        self.serve(srv)
+        self.assertTrue(kw.fetch_music({"music": "track"}, self.build))
+        self.assertIn("quiet instrumental bed", srv.music_orders[0]["brief"])
+
+    def test_a_refusal_a_failure_and_a_timeout_leave_the_film_without_music_and_without_an_error(self):
+        srv = FakeServer(); srv.music_refuse = 409
+        self.serve(srv)
+        self.assertFalse(kw.fetch_music({"music": "track", "music_brief": "x"}, self.build))
+        self.assertFalse(os.path.exists(os.path.join(self.build, "music.wav")))
+        srv = FakeServer(); srv.music_state = "failed"
+        self.serve(srv)
+        self.assertFalse(kw.fetch_music({"music": "track", "music_brief": "x"}, self.build))
+        srv = FakeServer(); srv.music_state = "generating"
+        self.serve(srv)
+        saved = kw.MUSIC_WAIT_MIN; kw.MUSIC_WAIT_MIN = 0.0005
+        try:
+            self.assertFalse(kw.fetch_music({"music": "track", "music_brief": "x"}, self.build))
+        finally:
+            kw.MUSIC_WAIT_MIN = saved
+        self.assertGreaterEqual(srv.music_polls, 1)
+
+    def test_a_download_that_is_not_audio_is_thrown_away(self):
+        srv = FakeServer(); srv.music_state = "ready"; srv.music_bytes = b"not audio at all"
+        self.serve(srv)
+        self.assertFalse(kw.fetch_music({"music": "track", "music_brief": "x"}, self.build))
+        self.assertFalse(os.path.exists(os.path.join(self.build, "music.wav")))
 
 
 if __name__ == "__main__":

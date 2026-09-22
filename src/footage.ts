@@ -452,7 +452,7 @@ interface KieRecord { taskId?: string; state?: string; resultJson?: string | { r
 export async function footageStatus(env: Env, job: Job, poll = true): Promise<{ status: number; reply: Record<string, unknown> }> {
   const rows = await footageRows(env, job.id);
   if (poll) for (const row of rows) {
-    if (row.state !== "generating" || !row.task_id) continue;
+    if (row.state !== "generating" || !row.task_id || row.shot_id === MUSIC_ID) continue;
     try {
       const rec = await kie<KieRecord>(env, "GET", `${KIE_RECORD}?taskId=${encodeURIComponent(row.task_id)}`);
       const state = String(rec?.state ?? "").toLowerCase();
@@ -475,7 +475,8 @@ export async function footageStatus(env: Env, job: Job, poll = true): Promise<{ 
       await audit(env, job.user_id, job.id, "footage.poll.error", { shot: row.shot_id, error: msg });
     }
   }
-  const now = await footageRows(env, job.id);
+  // The music row (MUSIC_ID, below) is a task like the others for the money, but not a clip: the box's lists never see it.
+  const now = (await footageRows(env, job.id)).filter((r) => r.shot_id !== MUSIC_ID);
   const cfg = await footageConfig(env);
   return { status: 200, reply: {
     model: now[0]?.model ?? kieModelFor(env, cfg).name,
@@ -509,4 +510,140 @@ async function downloadClip(env: Env, job: Job, row: FootageRow, url: string): P
   const size = await putFile(env, key, buf, "video/mp4");
   await updateRow(env, job.id, row.shot_id, { state: "ready", key, result_url: url });
   await audit(env, job.user_id, job.id, "footage.ready", { shot: row.shot_id, task: row.task_id, bytes: size });
+}
+
+/* ------------------------------------------------------------------ the music track (22 September 2026) */
+
+/**
+ * THE USER'S MUSIC. When they said yes (src/adaptive.ts asks every time), the treatment carries a one-line brief for
+ * the composer and the storyboard says `music: "track"`; the box asks for the track here, waits, and ducks it under
+ * the narration (kleo_worker.py fetch_music). The composer is Suno through kie.ai's unified API — the same
+ * createTask / recordInfo pair the clips use, model "ai-music-api/generate", read off its pricing page: 12 kie
+ * credits = $0.06 a request, whatever the length, two tracks back (the first is used). One row in the footage table
+ * under the shot id MUSIC_ID, so today's ceiling (DAILY_FOOTAGE_BUDGET_USD) counts the dollar the moment it is
+ * committed, exactly like a clip; it is left out of the clip lists the box reads.
+ *
+ * Refusals are soft: a film is never lost for its music. No key, KLEO_MUSIC=off, the ceiling, an empty account —
+ * the route answers 409/402 and the box makes the film without the track (and says so in its log).
+ */
+export const MUSIC_ID = "music";
+export const MUSIC_MODEL = "ai-music-api/generate";
+export const MUSIC_USD = 0.06;
+export const DEFAULT_MUSIC_VERSION = "V5";
+export const musicKey = (jobId: string) => `renders/${jobId}/music.mp3`;
+
+export function musicOn(env: Pick<Env, "KIE_API_KEY" | "KLEO_MUSIC">): boolean {
+  return !!(env.KIE_API_KEY && env.KIE_API_KEY.trim()) && (env.KLEO_MUSIC ?? "").trim().toLowerCase() !== "off";
+}
+export const musicVersion = (env: Pick<Env, "KIE_MUSIC_VERSION">): string => (env.KIE_MUSIC_VERSION ?? "").trim() || DEFAULT_MUSIC_VERSION;
+
+/** What the box sends: the brief the treatment wrote, the film's length and its title (Suno wants one in custom mode). */
+export interface MusicRequest { brief: string; seconds: number; title?: string }
+
+/** The `input` of the generate call: custom mode (a style and a title, no lyrics), instrumental, a length that covers the film. */
+export function musicInput(req: MusicRequest, version: string): Record<string, unknown> {
+  const brief = String(req.brief ?? "").trim().replace(/\s+/g, " ").slice(0, 900) || "a quiet instrumental bed under a narration";
+  const seconds = Math.max(15, Math.min(360, Math.round(Number(req.seconds) || 30) + 8));
+  const title = String(req.title ?? "").trim().replace(/\s+/g, " ").slice(0, 72) || "Kleo film score";
+  return {
+    custom_mode: true, instrumental: true, model: version,
+    // The words a composer reads: the brief, then what a score under a voice must be. No vocals is said twice
+    // (the flag and the words): a track with a singer under a narrator is a ruined film.
+    style: `${brief}. Instrumental score for a narrated short film: no vocals, no lyrics, no drops, leaves room for a speaking voice, steady dynamics, cinematic.`,
+    title, negative_tags: "vocals, lyrics, singing, rap, choir, spoken word, drum solo",
+    duration: seconds,
+  };
+}
+
+/**
+ * POST /music: one task, once. Idempotent on the row (a second call while the first is in flight orders nothing).
+ * 409 when the road is closed (no key, switched off), 402 when the money says no; 200 with the row's state otherwise.
+ */
+export async function requestMusic(env: Env, job: Job, req: MusicRequest): Promise<{ status: number; reply: Record<string, unknown> }> {
+  if (!musicOn(env)) return { status: 409, reply: { error: "music is not available on this server (no kie.ai key, or KLEO_MUSIC=off)", state: "off" } };
+  const brief = String(req.brief ?? "").trim();
+  if (!brief) return { status: 400, reply: { error: "a music request carries the composer's brief" } };
+  const have = (await footageRows(env, job.id)).find((r) => r.shot_id === MUSIC_ID);
+  if (have && !(have.state === "failed" && !have.task_id)) return musicStatus(env, job, false);
+  const version = musicVersion(env);
+  const model = `suno-${version.toLowerCase()}`;
+  const budget = num(env.DAILY_FOOTAGE_BUDGET_USD, 5);
+  const spent = await footageSpentTodayUsd(env);
+  if (spent + MUSIC_USD > budget) {
+    await audit(env, job.user_id, job.id, "music.budget", { spent_usd: spent, planned_usd: MUSIC_USD, budget_usd: budget });
+    return { status: 402, reply: { error: `today's kie.ai budget is spent ($${spent.toFixed(2)} committed + $${MUSIC_USD.toFixed(2)} for the track > $${budget.toFixed(2)})`, state: "failed" } };
+  }
+  const balance = await kieBalanceUsd(env);
+  if (balance !== null && balance < MUSIC_USD) {
+    await audit(env, job.user_id, job.id, "music.no_credit", { balance_usd: balance, planned_usd: MUSIC_USD });
+    return { status: 402, reply: { error: `kie.ai balance ($${balance.toFixed(2)}) does not cover the track ($${MUSIC_USD.toFixed(2)})`, state: "failed", no_credit: true } };
+  }
+  const seconds = Math.max(1, Math.min(360, Number(req.seconds) || 30));
+  if (have) await updateRow(env, job.id, MUSIC_ID, { state: "queued", model, seconds, cost_usd: MUSIC_USD, error: null });
+  else await env.DB.prepare("INSERT OR IGNORE INTO footage (job_id, shot_id, model, state, seconds, cost_usd, updated_at) VALUES (?, ?, ?, 'queued', ?, ?, ?)")
+    .bind(job.id, MUSIC_ID, model, seconds, MUSIC_USD, nowIso()).run();
+  try {
+    const r = await kie<{ taskId?: string }>(env, "POST", KIE_CREATE, { model: MUSIC_MODEL, input: musicInput({ ...req, seconds }, version) });
+    if (!r?.taskId) throw new KieError("kie.ai answered without a taskId", 0, false);
+    await updateRow(env, job.id, MUSIC_ID, { task_id: r.taskId, state: "generating" });
+    await audit(env, job.user_id, job.id, "music.task", { model, task: r.taskId, seconds, usd: MUSIC_USD, brief: brief.slice(0, 200) });
+  } catch (e) {
+    const msg = String(e).slice(0, 300);
+    await updateRow(env, job.id, MUSIC_ID, { state: "failed", error: msg, cost_usd: 0 });
+    await audit(env, job.user_id, job.id, "music.task.error", { model, error: msg });
+    return { status: isNoCredit(e) ? 402 : 502, reply: { error: msg, state: "failed", ...(isNoCredit(e) ? { no_credit: true } : {}) } };
+  }
+  return musicStatus(env, job, false);
+}
+
+/**
+ * GET /music: asks kie.ai about the task when it is still generating, copies the finished track to R2 once, and
+ * answers {state, url?}: `url` is the route the box downloads it from (/internal/jobs/:id/music/file), never kie.ai's
+ * own link (which expires and is not the box's to know).
+ */
+export async function musicStatus(env: Env, job: Job, poll = true): Promise<{ status: number; reply: Record<string, unknown> }> {
+  let row = (await footageRows(env, job.id)).find((r) => r.shot_id === MUSIC_ID);
+  if (!row) return { status: 404, reply: { state: "none", error: "no track was ordered for this video" } };
+  if (poll && row.state === "generating" && row.task_id) {
+    try {
+      const rec = await kie<KieRecord>(env, "GET", `${KIE_RECORD}?taskId=${encodeURIComponent(row.task_id)}`);
+      const state = String(rec?.state ?? "").toLowerCase();
+      if (state === "success") {
+        const urls = resultUrls(rec);
+        if (!urls.length) throw new KieError("task succeeded without a result url", 0, false);
+        await downloadMusic(env, job, row, urls[0]);
+      } else if (state === "fail" || state === "failed" || state === "error") {
+        const msg = `${rec.failCode ?? ""} ${rec.failMsg ?? "kie.ai reported a failure"}`.trim().slice(0, 300);
+        await updateRow(env, job.id, MUSIC_ID, { state: "failed", error: msg });
+        await audit(env, job.user_id, job.id, "music.failed", { task: row.task_id, error: msg });
+      } else if (minutesSinceIso(row.created_at) > 15) {
+        await updateRow(env, job.id, MUSIC_ID, { state: "failed", error: `still ${state || "pending"} after 15 minutes` });
+        await audit(env, job.user_id, job.id, "music.failed", { task: row.task_id, error: "timeout" });
+      }
+    } catch (e) {
+      const msg = String(e).slice(0, 300);
+      if (e instanceof KieError && !e.retryable && e.status !== 0) await updateRow(env, job.id, MUSIC_ID, { state: "failed", error: msg });
+      await audit(env, job.user_id, job.id, "music.poll.error", { error: msg });
+    }
+    row = (await footageRows(env, job.id)).find((r) => r.shot_id === MUSIC_ID) ?? row;
+  }
+  return { status: 200, reply: { state: row.state, model: row.model, cost_usd: row.cost_usd, ...(row.error ? { error: row.error } : {}), ...(row.state === "ready" ? { url: `/internal/jobs/${job.id}/music/file` } : {}) } };
+}
+
+const MUSIC_MAX_BYTES = 40 * 1024 * 1024;
+
+/** The finished track, from kie.ai's (temporary) URL to R2 under the job, once. An mp3 or an mp4/m4a container is accepted. */
+async function downloadMusic(env: Env, job: Job, row: FootageRow, url: string): Promise<void> {
+  const res = await fetch(url, { headers: { "user-agent": "kleo-mcp/1.0" } });
+  if (!res.ok) throw new KieError(`track download → ${res.status}`, res.status, res.status >= 500 || res.status === 429);
+  const buf = await res.arrayBuffer();
+  if (buf.byteLength < 8 * 1024 || buf.byteLength > MUSIC_MAX_BYTES) throw new KieError(`track download is ${buf.byteLength} bytes`, 0, false);
+  const head = new Uint8Array(buf.slice(0, 12));
+  const isMp3 = (head[0] === 0x49 && head[1] === 0x44 && head[2] === 0x33) || (head[0] === 0xff && (head[1] & 0xe0) === 0xe0);
+  const isMp4 = new TextDecoder().decode(buf.slice(4, 8)) === "ftyp";
+  if (!isMp3 && !isMp4) throw new KieError("track download is not an audio file", 0, false);
+  const key = musicKey(job.id);
+  const size = await putFile(env, key, buf, isMp3 ? "audio/mpeg" : "audio/mp4");
+  await updateRow(env, job.id, MUSIC_ID, { state: "ready", key, result_url: url });
+  await audit(env, job.user_id, job.id, "music.ready", { task: row.task_id, bytes: size });
 }

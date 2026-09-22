@@ -94,6 +94,10 @@ export interface Env {
   KIE_MAX_VIDEO_S?: string;
   /** Hard ceiling on estimated kie.ai dollars per UTC day (default 5.00); over it the footage call refuses. */
   DAILY_FOOTAGE_BUDGET_USD?: string;
+  /** The Suno version kie.ai's "ai-music-api/generate" is asked for (default V5): the user's optional music track (src/footage.ts). */
+  KIE_MUSIC_VERSION?: string;
+  /** "off" refuses every music order (the film is made without its track); anything else, or unset, orders it when KIE_API_KEY is set. */
+  KLEO_MUSIC?: string;
   VAST_MIN_INET?: string;   // Mbit/s down the host must have (default 800): the image pull is the slowest part of a job
   VAST_GEO_EXCLUDE?: string; // country codes never rented, comma-separated (default "CN": ghcr.io crawls from there, 25+ min pulls)
   VAST_MIN_CPU?: string;      // effective cores required (the Keou renderer is CPU-bound)
