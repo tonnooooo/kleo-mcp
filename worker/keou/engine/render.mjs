@@ -74,7 +74,10 @@ try{
    // to this worker's own frame range. No file with an alpha channel is ever written — at 4K those are gigabytes
    // per part — and the 4K text lands straight onto the 4K footage.
    const under=underlay?['-ss',String(first/fps),'-i',underlay]:[];
-   const lay=underlay?['-filter_complex',`[1:v]scale=${width}:${height},setsar=1[bg];[bg][0:v]overlay=format=auto[v]`,'-map','[v]']:[];
+   // setpts=PTS-STARTPTS: the composited part starts at 0 like a drawn one. With the seeked underlay as the main input
+   // the first frame kept its seek offset, the concat of sixteen such parts drifted by a frame or two, and the master's
+   // `-t` cut the last frame: "Invalid master" on two of three finish boxes of gt_nyhb8aj9 (22 September 2026).
+   const lay=underlay?['-filter_complex',`[1:v]scale=${width}:${height},setsar=1[bg];[bg][0:v]overlay=format=auto,setpts=PTS-STARTPTS[v]`,'-map','[v]']:[];
    const tmp=part+'.partial.mp4';const proc=spawn(ffmpeg,['-nostdin','-v','error','-y','-f','image2pipe','-vcodec','png','-framerate',String(fps),'-i','pipe:0',...under,...lay,'-an','-c:v','libx264','-preset','veryfast','-crf','17','-threads','4','-pix_fmt','yuv420p','-r',String(fps),'-frames:v',String(last-first),'-movflags','+faststart',tmp],{stdio:['pipe','ignore','pipe']});children.add(proc);let err='';proc.stderr.on('data',d=>err=(err+d).slice(-8000));proc.stdin.on('error',e=>fatal=e);proc.on('error',e=>fatal=e);const done=once(proc,'close');const page=await pageAt(width);
    // FRAME every 30, not every 180. This line is the only thing that says the render is alive: the worker turns it
    // into a progress report, and the server now destroys a GPU that has said nothing for RENDER_SILENCE_MIN. At
@@ -85,7 +88,7 @@ try{
    try{for(let f=first;f<last;f++){const data=await frame(page,f/fps);if(proc.exitCode!==null)throw Error('Encoder exited: '+err);if(!proc.stdin.write(Buffer.from(data,'base64')))await once(proc.stdin,'drain');if(f%30===0)console.log('FRAME',id,f,'/',total)}proc.stdin.end();const [code]=await done;if(code!==0)throw Error('FFmpeg failed: '+err);if(!validPart(tmp,last-first))throw Error('Invalid encoded segment');renameSync(tmp,part);writeFileSync(marker,JSON.stringify({fingerprint,first,last}));console.log('SEGMENT_OK',id)}finally{await page.close();if(proc.exitCode===null)proc.kill('SIGTERM');children.delete(proc)}
   }));
   const concat=resolve(build,'concat.txt');writeFileSync(concat,paths.map(p=>`file '${p.replace(/'/g,"'\\''")}'`).join('\n')+'\n');
-  const temp=resolve(out,'master.partial.mp4');execFileSync(ffmpeg,['-nostdin','-v','error','-y','-f','concat','-safe','0','-i',concat,'-i',resolve(build,'mix.wav'),'-map','0:v:0','-map','1:a:0','-c:v','copy','-c:a','aac','-b:a','256k','-ar','48000','-ac','2','-t',String(timeline.duration),'-metadata','title='+project.title,'-movflags','+faststart',temp],{maxBuffer:2e6});
+  const temp=resolve(out,'master.partial.mp4');execFileSync(ffmpeg,['-nostdin','-v','error','-y','-f','concat','-safe','0','-i',concat,'-i',resolve(build,'mix.wav'),'-map','0:v:0','-map','1:a:0','-c:v','copy','-c:a','aac','-b:a','256k','-ar','48000','-ac','2','-frames:v',String(total),'-metadata','title='+project.title,'-movflags','+faststart',temp],{maxBuffer:2e6});   // the master is cut by FRAMES, never by a time the parts' timestamps may not agree on; the mix is already the timeline's length
   // The master is said in numbers when it is refused (22 September 2026: gt_nyhb8aj9's finish box lost a rental to
   // "Invalid master" with sixteen valid segments behind it and nothing in the log to say which of frames, size or
   // rate had gone wrong; the retry passed, so the next time this fires the numbers are the whole investigation).
