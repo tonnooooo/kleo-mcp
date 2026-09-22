@@ -86,7 +86,10 @@ try{
   }));
   const concat=resolve(build,'concat.txt');writeFileSync(concat,paths.map(p=>`file '${p.replace(/'/g,"'\\''")}'`).join('\n')+'\n');
   const temp=resolve(out,'master.partial.mp4');execFileSync(ffmpeg,['-nostdin','-v','error','-y','-f','concat','-safe','0','-i',concat,'-i',resolve(build,'mix.wav'),'-map','0:v:0','-map','1:a:0','-c:v','copy','-c:a','aac','-b:a','256k','-ar','48000','-ac','2','-t',String(timeline.duration),'-metadata','title='+project.title,'-movflags','+faststart',temp],{maxBuffer:2e6});
-  if(!validPart(temp,total))throw Error('Invalid master');const q=probe(temp);if(!q.streams.some(s=>s.codec_type==='audio')||Math.abs(Number(q.format.duration)-timeline.duration)>1/fps+.015)throw Error('Invalid audio or duration');renameSync(temp,resolve(out,'master.mp4'));
+  // The master is said in numbers when it is refused (22 September 2026: gt_nyhb8aj9's finish box lost a rental to
+  // "Invalid master" with sixteen valid segments behind it and nothing in the log to say which of frames, size or
+  // rate had gone wrong; the retry passed, so the next time this fires the numbers are the whole investigation).
+  if(!validPart(temp,total)){let d='';try{const v=probe(temp).streams.find(s=>s.codec_type==='video');d=` (frames ${v&&v.nb_read_frames} of ${total}, ${v&&v.width}x${v&&v.height} wanted ${width}x${height}, rate ${v&&v.r_frame_rate} wanted ${fps}/1, parts ${paths.length})`}catch(e){d=' (probe failed: '+e+')'}throw Error('Invalid master'+d)}const q=probe(temp);if(!q.streams.some(s=>s.codec_type==='audio')||Math.abs(Number(q.format.duration)-timeline.duration)>1/fps+.015)throw Error('Invalid audio or duration');renameSync(temp,resolve(out,'master.mp4'));
   writeFileSync(resolve(out,'render.json'),JSON.stringify({status:'PASS',fingerprint,width,height,fps,frames:total,duration:timeline.duration,version:'1.0.0'},null,2));console.log('RENDER_COMPLETE',timeline.duration,'seconds');
  }
 }finally{for(const p of children)p.kill('SIGTERM');await browser.close();server.close()}
