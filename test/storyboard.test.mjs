@@ -308,7 +308,7 @@ test("picture: the schema asks for shots, a lone shot is fed back once, the resu
     const scenes = [];
     for (let i = from; i < to; i++) {
       const closing = i === total - 1;
-      const voice = `Scene ${i + 1} tells one small piece of the pirate story with a concrete detail and a twist.`;
+      const voice = `Scene ${i + 1} tells one small piece of the pirate story with a concrete detail and a twist, then holds on the harbour while the crew argues about the map and the tide turns against them.`;   // 34 words: room for four shots (one per seven words, 22 September)
       const shots = closing
         ? [{ image_prompt: "A treasure chest half buried in the sand at dawn" }, { image_prompt: "The same beach empty at noon" }, { image_prompt: "A third one, over the cap" }]
         : [
@@ -336,7 +336,7 @@ test("picture: the schema asks for shots, a lone shot is fed back once, the resu
     for (const sh of s.shots) assert.ok(sh.image_prompt.length >= 2 && sh.image_prompt.length <= 240);
   }
   const first = sb.scenes[0];
-  assert.equal(first.shots.length, 2, "the shot without a picture is dropped, and a 16-word line keeps two of the rest (one shot per seven words, 22 September)");
+  assert.equal(first.shots.length, 4, "the shot without a picture is dropped, the rest kept (a 34-word line carries four)");
   assert.equal(first.shots[0].at, undefined, "the first shot cannot carry at");
   assert.equal(first.shots[0].caption, "PIRATES AHEAD"); assert.equal(first.shots[0].hl, "PIRATES");
   assert.ok(first.shots[1].image_prompt.length <= 240 && !/\s$/.test(first.shots[1].image_prompt), "an over-long prompt is cut at a word boundary");
