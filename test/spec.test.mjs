@@ -122,8 +122,16 @@ test("repairSpec: strict refuses an invented item, lenient drops it; the shape i
   const lenient = repairSpec(invented, REQ, { lenient: true });
   assert.deepEqual(lenient.items.map((i) => i.id), ["R1", "R2", "R3", "R4", "R5", "R6"], "lenient: the invention is dropped, the rest kept");
   assert.equal(repairSpec(RAW({ items: [item("R1", "object", "a red dragon", "un drago rosso sul tetto")] }), REQ, { lenient: true }), null, "nothing of the user's left: no spec");
-  // Lenient forgives only the quotes: a structural problem still refuses.
-  assert.equal(repairSpec(RAW({ items: RAW().items.map((it) => (it.id === "R1" ? { ...it, who: "c9" } : it)) }), REQ, { lenient: true }), null);
+  // Lenient REPAIRS what can be repaired (24 September 2026: kimi lost whole specs on one stray field): a "who" that
+  // names nobody is cleared, a thin cast look is completed from the character's own look items, events are numbered.
+  const strayWho = RAW({ items: RAW().items.map((it) => (it.id === "R1" ? { ...it, who: "c9" } : it)) });
+  assert.equal(repairSpec(strayWho, REQ), null, "strict: a who that names nobody refuses the spec");
+  assert.equal(repairSpec(strayWho, REQ, { lenient: true }).items.find((i) => i.id === "R1").who, null);
+  const thin = repairSpec(RAW({ cast: [{ id: "c1", name: "Mara", look: "baker" }] }), REQ, { lenient: true });
+  assert.ok(thin, "a thin look is completed, not refused");
+  assert.ok(thin.cast[0].look.split(/\s+/).length >= 3, thin.cast[0].look);
+  // Only a spec with nothing of the user's in it, or no items at all, still refuses.
+  assert.equal(repairSpec({ items: [] }, REQ, { lenient: true }), null);
   assert.equal(repairSpec("nope", REQ), null);
   // The writer's claim of the mode does not matter: the items decide.
   assert.equal(repairSpec(RAW({ mode: "open" }), REQ).mode, "faithful");

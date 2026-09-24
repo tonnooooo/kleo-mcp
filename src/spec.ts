@@ -258,12 +258,20 @@ export function specProblems(raw: unknown, request: string, opts: { handles?: re
 export function repairSpec(raw: unknown, request: string, opts: { lenient?: boolean; handles?: readonly string[] } = {}): RequestSpec | null {
   if (!isObj(raw)) return null;
   const problems = specProblems(raw, request, opts);
-  const hard = opts.lenient ? problems.filter((p) => !/is not in the user's request/.test(p)) : problems;
+  // THE LENIENT ATTEMPT REPAIRS WHAT CAN BE REPAIRED (24 September 2026). On the fidelity bench kimi-k2.6 lost the whole
+  // spec of the desert-warrior Short twice, for one paraphrased quote and a cast look that said only "young warrior";
+  // without a spec the film was planned with no coverage checks and no judge, and scored 8 points lower. A spec with an
+  // invented item dropped, a thin look completed from the user's own look items, a stray "who" cleared and the events
+  // numbered in the order written is still the user's spec — only a spec with nothing of the user's in it is refused.
+  const SOFT = /is not in the user's request|"look" must describe how they look|names the cast member it describes in "who"|"who" is ".*", which is not a cast id|carries its "order"/;
+  const hard = opts.lenient ? problems.filter((p) => !SOFT.test(p)) : problems;
   if (hard.length) return null;
   const cast: SpecCast[] = (Array.isArray(raw.cast) ? raw.cast.filter(isObj) : []).slice(0, S.cast).map((c, i) => ({
     id: clip(c.id, 12) || `c${i + 1}`, name: clip(c.name, S.name), look: clip(c.look, S.look), ref: clip(c.ref, 24) || null,
-  }));
+  })).filter((c) => c.name);
   const castIds = new Set(cast.map((c) => c.id));
+  // A look item whose "who" is missing belongs to the only character when there is one.
+  const soleCast = cast.length === 1 ? cast[0].id : null;
   const items: SpecItem[] = (raw.items as unknown[]).filter(isObj)
     .filter((it) => inSet(it.kind, SPEC_KINDS) && typeof it.text === "string" && typeof it.quote === "string" && quoteInRequest(it.quote, request))
     .slice(0, S.items)
@@ -273,10 +281,21 @@ export function repairSpec(raw: unknown, request: string, opts: { lenient?: bool
       text: clip(it.text, S.text),
       quote: clip(it.quote, S.quote),
       must: it.must !== false,
-      who: castIds.has(String(it.who ?? "")) ? String(it.who) : null,
+      who: castIds.has(String(it.who ?? "")) ? String(it.who) : it.kind === "look" ? soleCast : null,
       order: it.kind === "event" && typeof it.order === "number" && it.order > 0 ? Math.round(it.order) : null,
-    }));
+    }))
+    // A look item that belongs to nobody cannot be drawn on anybody: dropped (only the lenient road gets here with one).
+    .filter((it) => it.kind !== "look" || it.who);
   if (!items.length) return null;
+  // Events with no order are numbered after the ordered ones, in the order they were written.
+  let next = Math.max(0, ...items.filter((i) => i.kind === "event" && i.order).map((i) => i.order ?? 0));
+  for (const it of items) if (it.kind === "event" && !it.order) it.order = ++next;
+  // A cast look too thin to draw from is completed from that character's own look items, then from their name.
+  for (const c of cast) {
+    if (c.look.split(/\s+/).filter(Boolean).length >= 3) continue;
+    const own = items.filter((i) => i.kind === "look" && i.who === c.id).map((i) => i.text.replace(/[.\s]+$/, ""));
+    c.look = clip([c.look || c.name, ...own].filter(Boolean).join("; "), S.look) || c.name;
+  }
   const refs: SpecRef[] = (Array.isArray(raw.refs) ? raw.refs.filter(isObj) : []).slice(0, S.refs)
     .filter((r) => inSet(r.role, REF_ROLES) && typeof r.handle === "string" && r.handle.trim() && (!opts.handles || opts.handles.includes(r.handle)))
     .map((r, i) => ({ id: clip(r.id, 12) || `ref${i + 1}`, handle: clip(r.handle, 40), role: r.role as RefRole, for: clip(r.for, 12) || null, description: clip(r.description, 600) || null }));
