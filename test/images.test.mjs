@@ -223,7 +223,9 @@ test("Workers AI: binary and base64 answers are stored with the right extension;
     if (inputs.prompt.startsWith("picture 3.")) throw new Error("AiError: 3010: model overloaded");
     throw new Error("AiError: 4006: you have used up your daily free allocation of 10,000 neurons");
   } };
-  const { env, files, auditRows } = fakeEnv({ AI: ai, IMAGE_MODEL_REALISTIC: "@cf/leonardo/lucid-origin" });
+  // STILLS_ENGINE "legacy": since 24 September a realistic film with an AI binding has its stills drawn by the server
+  // engine (src/stills.ts, tested below and in test/stills.test.mjs); this test pins the legacy one-shot road.
+  const { env, files, auditRows } = fakeEnv({ AI: ai, IMAGE_MODEL_REALISTIC: "@cf/leonardo/lucid-origin", STILLS_ENGINE: "legacy" });
   const r = await generateJobImages(env, jobFor("realistic", 6), "http://kleo.test");
   assert.equal(r.fixture, false);
   assert.deepEqual(Object.keys(r.images), ["01-sc-s1", "02-sc-s1"]);
@@ -329,6 +331,56 @@ test("quota exhaustion is not a picture's one attempt: it is retried later, a re
   assert.deepEqual(Object.keys(r3.images), ["01-sc-s1"]); assert.deepEqual(r3.missing, ["02-sc-s1"]);
   const r4 = await generateJobImages(env, job(), "http://kleo.test");
   assert.equal(r4.reused, 1); assert.equal(calls.length, 3, "a stored picture is reused and a genuine error is never retried");
+});
+
+/* ------------------------------------------------------------------ the stills engine (24 September 2026) */
+
+/** A fake FLUX.2 + vision binding: draws answer {image: base64 jpeg} (distinct bytes per draw), the judge says yes to
+ *  everything a good picture shows and no to "is there text / anything excluded". */
+function fakeFluxAi() {
+  const calls = { draws: [], judges: 0 };
+  const ai = { async run(model, inputs) {
+    if (inputs.multipart) {
+      const fd = await new Response(inputs.multipart.body, { headers: { "content-type": inputs.multipart.contentType } }).formData();
+      calls.draws.push({ model, prompt: fd.get("prompt"), width: Number(fd.get("width")), height: Number(fd.get("height")) });
+      return { image: Buffer.from([0xff, 0xd8, 0xff, 0xe0, calls.draws.length, 1, 2, 3]).toString("base64") };
+    }
+    if (inputs.messages) {
+      calls.judges++;
+      const text = inputs.messages[0].content[0].text;
+      const ans = {};
+      for (const m of text.matchAll(/^(q\d+): (.*)$/gm)) ans[m[1]] = /any written text|any of this/i.test(m[2]) ? "no" : "yes";
+      return { response: JSON.stringify(ans) };
+    }
+    throw new Error("unexpected AI call");
+  } };
+  return { ai, calls };
+}
+
+test("stills engine: a realistic film's pictures are drawn on the server whatever IMAGE_SERVER_MAX says, then reused; a failed engine only serves what is stored", async () => {
+  const { ai, calls } = fakeFluxAi();
+  const { env, files } = fakeEnv({ AI: ai, IMAGE_SERVER_MAX: "0" });
+  const r = await generateJobImages(env, jobFor("realistic", 3), "http://kleo.test");
+  assert.deepEqual(Object.keys(r.images).sort(), idsOf(3, 1), "IMAGE_SERVER_MAX=0 bounds the legacy road, not the engine");
+  assert.deepEqual(r.missing, []); assert.equal(r.generated, 3); assert.equal(r.reused, 0);
+  assert.equal(calls.draws.length, 3, "one FLUX.2 draw per picture: the judge passed each at the first try");
+  assert.equal(calls.draws[0].model, "@cf/black-forest-labs/flux-2-klein-9b");
+  assert.deepEqual([calls.draws[0].width, calls.draws[0].height], [896, 1600], "portrait still for a 9:16 job");
+  assert.equal(files.get("img/01-sc-s1.jpg").content_type, "image/jpeg");
+  assert.ok(files.has("fidelity.json"), "every judgement lands in the job's fidelity report");
+  const again = await generateJobImages(env, jobFor("realistic", 3), "http://kleo.test");
+  assert.equal(again.reused, 3); assert.equal(again.generated, 0); assert.equal(calls.draws.length, 3, "stored stills are never drawn twice");
+  // The engine gave up on this job (quota, an outage): what is stored is served, the rest is the GPU's, at once.
+  const failed = jobFor("realistic", 4);
+  failed.params = JSON.stringify({ ...JSON.parse(failed.params), stills: { state: "failed", at: new Date().toISOString() } });
+  const f = await generateJobImages(env, failed, "http://kleo.test");
+  assert.equal(Object.keys(f.images).length, 3); assert.deepEqual(f.missing, ["04-sc-s1"]);
+  assert.equal(calls.draws.length, 3, "a failed engine is not asked again while the GPU waits");
+  // cartoon and the legacy switch keep the old road
+  const { ai: ai2, calls: calls2 } = fakeFluxAi();
+  const { env: legacy } = fakeEnv({ AI: ai2, STILLS_ENGINE: "legacy", IMAGE_SERVER_MAX: "0" });
+  assert.deepEqual((await generateJobImages(legacy, jobFor("realistic", 2), "http://kleo.test")).images, {});
+  assert.equal(calls2.draws.length, 0);
 });
 
 /* ------------------------------------------------------------------ the two sides draw for the same video */

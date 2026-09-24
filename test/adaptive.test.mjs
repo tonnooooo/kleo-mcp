@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { adaptPrompt, adaptivePromptText, intakeText, INTAKE, REQUIRED_INTAKE } from "../src/adaptive.ts";
+import { adaptPrompt, adaptivePromptText, intakeText, lookFromText, INTAKE, REQUIRED_INTAKE } from "../src/adaptive.ts";
 
 test("the intake is a fixed list: six things Kleo settles every time (music and subtitles since 22 September), three it offers to ask", () => {
   assert.deepEqual(INTAKE.map((i) => i.key), ["subject", "duration", "format", "look", "music", "subtitles", "audience", "tone", "must_keep"]);
@@ -94,4 +94,71 @@ test("'stupiscimi' delegates the subject: the answer is a list to pick from, nev
   assert.equal(en.delegated, true); assert.match(en.questions[0], /Propose 3-5 concrete, filmable, human-scale subjects/);
   const plain = adaptPrompt("Un video sui pirati", { duration_s: 30, format: "16:9", look: "realistic", music: "no", subtitles: "no" });
   assert.equal(plain.delegated, false); assert.deepEqual(plain.questions, []);
+});
+
+/* ------------------------------------------------------------------ the whole request, the video's length, platform words (24 September) */
+
+test("the whole request is read: what the user says at the end of a long story is not asked again", () => {
+  // Detection used to stop at the first 240 characters: a story told first and "vertical, 30 seconds, animated, no
+  // music, no subtitles" said last was asked all five again. The subject stays a capped label.
+  const story = "Mara is a thin pastry chef with short blonde hair tied up and a lilac apron. Every morning she opens her tiny shop before dawn, "
+    + "sweeps the floor, lights the old oven and waits for the first customer, an old man who always buys the same croissant and never says a word. "
+    + "One day he does not come. ";
+  const brief = adaptPrompt(`${story}Make it a vertical animated video of 30 seconds, no music, no subtitles.`);
+  assert.ok(story.length > 240, "the answers are past the old 240-character window");
+  assert.equal(brief.duration_s, 30); assert.equal(brief.format, "9:16"); assert.equal(brief.look, "animation");
+  assert.deepEqual(brief.music, { wanted: false, brief: null }); assert.equal(brief.subtitles, false);
+  assert.deepEqual(brief.questions, []);
+  assert.ok(brief.subject.length <= 240, "the subject is still a capped label");
+});
+
+test("the length is the VIDEO's, never the time inside the story", () => {
+  // Story time: a number next to "dopo", "later", "ago", "every", "for the last"… is not the film's length (it used
+  // to be: "dopo 30 secondi la bomba esplode" made a 30-second film, and priced it).
+  assert.equal(adaptPrompt("Un film su una bomba: dopo 30 secondi esplode e tutti scappano").duration_s, null);
+  assert.equal(adaptPrompt("The bomb goes off 30 seconds later and everybody runs").duration_s, null);
+  assert.equal(adaptPrompt("A story about a man who waited for the last 20 minutes of his life").duration_s, null);
+  assert.equal(adaptPrompt("Ogni 5 minuti passa un treno davanti alla casa della nonna").duration_s, null);
+  assert.equal(adaptPrompt("Mio nonno è arrivato 10 minuti fa e racconta la guerra").duration_s, null);
+  // The video's length, said in any of the usual ways.
+  assert.equal(adaptPrompt("Un video di 30 secondi sui pirati").duration_s, 30);
+  assert.equal(adaptPrompt("A 30-second video about pirates").duration_s, 30);
+  assert.equal(adaptPrompt("A 2-minute animated film about a fox").duration_s, 120);
+  assert.equal(adaptPrompt("Fammi un filmato lungo 45 secondi sul mare").duration_s, 45);
+  assert.equal(adaptPrompt("Un cortometraggio, durata: 1 minuto, sul mare").duration_s, 60);
+  assert.equal(adaptPrompt("A film about the sea, 30s, vertical").duration_s, 30);
+  assert.equal(adaptPrompt("Un video di un minuto sul mare").duration_s, 60);
+  assert.equal(adaptPrompt("Un video di 1 minuto e 30 secondi sul mare").duration_s, 90);
+  assert.equal(adaptPrompt("Five surprising facts about octopuses in thirty seconds").duration_s, 30);
+  // Bare, with no story word next to it: still the length (the tests above this block rely on it).
+  assert.equal(adaptPrompt("Fammi un video sui pirati, 30 secondi").duration_s, 30);
+  assert.equal(adaptPrompt("A realistic film about lighthouse keepers, 45 seconds").duration_s, 45);
+  // Both in one request: the video's own length wins over the story's time, wherever each one is.
+  assert.equal(adaptPrompt("Dopo 5 minuti il treno parte. Voglio un video di 40 secondi").duration_s, 40);
+  // A decade is not a length.
+  assert.equal(adaptPrompt("A film about my grandmother in the 30s and her radio").duration_s, null);
+});
+
+test("Shorts, reels, stories and Instagram frame the video only as platform words", () => {
+  // Measured bug: "bedtime stories", "a short film", "a man in shorts" and "a video about Instagram" all made a vertical video.
+  assert.equal(adaptPrompt("Bedtime stories about a dragon who is afraid of the dark").format, null);
+  assert.equal(adaptPrompt("A short film about a stray dog that walked home").format, null);
+  assert.equal(adaptPrompt("A man in shorts runs across the beach").format, null);
+  assert.equal(adaptPrompt("A video about the history of Instagram").format, null);
+  assert.equal(adaptPrompt("A reel of old film found in an attic").format, null);
+  // The platform said: vertical.
+  assert.equal(adaptPrompt("A YouTube Short about pirates").format, "9:16", "YouTube Shorts is vertical, not YouTube's 16:9");
+  assert.equal(adaptPrompt("Make a Short about pirates").format, "9:16");
+  assert.equal(adaptPrompt("Un video per gli shorts sui pirati").format, "9:16");
+  assert.equal(adaptPrompt("An Instagram Reel about coffee").format, "9:16");
+  assert.equal(adaptPrompt("Un video per Instagram sul caffè").format, "9:16");
+  assert.equal(adaptPrompt("Something for my stories about the weekend").format, "9:16");
+  assert.equal(adaptPrompt("A TikTok about coffee").format, "9:16");
+  assert.equal(adaptPrompt("A film about coffee for YouTube").format, "16:9");
+});
+
+test("lookFromText names the look a request's words name, and nothing else (createJob's default)", () => {
+  assert.equal(lookFromText("Un cartone animato sui pirati"), "animation");
+  assert.equal(lookFromText("A documentary about the lagoon"), "realistic");
+  assert.equal(lookFromText("Pirati e tesori"), null);
 });

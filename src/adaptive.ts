@@ -79,17 +79,115 @@ export interface AdaptiveBrief {
 
 const first = (value: string, max = 240) => value.trim().replace(/\s+/g, " ").slice(0, max);
 
-function durationFrom(text: string): number | null {
-  const t = text.toLowerCase();
-  const minute = t.match(/(\d+(?:[.,]\d+)?)\s*(?:minutes?|minuti|minuto|min\b)/i);
-  if (minute) return Math.round(Number(minute[1].replace(",", ".")) * 60);
-  const second = t.match(/(\d+)\s*(?:seconds?|secondi|secondo|sec\b)/i);
-  if (second) return Number(second[1]);
-  return null;
+/* ------------------------------------------------------------------ the length */
+
+/**
+ * THE LENGTH OF THE VIDEO, NOT THE TIME IN THE STORY (24 September 2026). The first number of minutes or seconds in a
+ * request used to be the film's length, whatever it measured: "dopo 30 secondi la bomba esplode" made a 30-second film,
+ * "ogni 5 minuti passa un treno" a five-minute one, and the price followed. A length is now read only where the words
+ * say it is the VIDEO's: next to a video word ("video di 30 secondi", "a 30-second video", "2-minute film", "30 secondi
+ * di video"), after a length word ("lungo 30 secondi", "durata: 1 minuto", "it should be 45 seconds", "30s"), or bare
+ * ("…, 45 seconds") only when no story word is next to it ("dopo", "prima", "before", "after", "later", "ago", "fa",
+ * "for the last", "ogni"…). When nothing qualifies the length is ASKED, which is what the intake does with any gap.
+ */
+const NUM_WORDS: Record<string, number> = {
+  un: 1, uno: 1, una: 1, one: 1, a: 1, an: 1, due: 2, two: 2, tre: 3, three: 3, quattro: 4, four: 4, cinque: 5, five: 5,
+  quindici: 15, fifteen: 15, venti: 20, twenty: 20, trenta: 30, thirty: 30, quaranta: 40, forty: 40, quarantacinque: 45,
+  "forty-five": 45, cinquanta: 50, fifty: 50, sessanta: 60, sixty: 60, novanta: 90, ninety: 90,
+};
+const NUM_ALT = Object.keys(NUM_WORDS).sort((a, b) => b.length - a.length).map((w) => w.replace(/[- ]/g, "[- ]")).join("|");
+const MIN_UNIT = "minut[oi]|minutes?|mins?";
+const SEC_UNIT = "second[oi]|seconds?|secs?";
+const LEN_RE = new RegExp(`(?<![\\w.,'’])(\\d{1,4}(?:[.,]\\d+)?|(?:${NUM_ALT})(?![\\w]))\\s*-?\\s*(${MIN_UNIT}|${SEC_UNIT})\\b`, "gi");
+/** "30s": seconds in the compact form, never a decade ("the 90s", "in her 30s", "'80s") — the guards are below. */
+const COMPACT_RE = /(?<![\w'’.,])(\d{1,3})s\b/gi;
+const HALF_MINUTE_RE = /\b(?:mezzo minuto|half a minute|half[- ]minute)\b/gi;
+const VIDEO_WORDS = "videos?|film|short|clip|animatic|filmato|cortometraggio|corto|reel|spot|trailer|movie|documentario|documentary|animazione|animation|cartone(?: animato)?";
+/** The words that may stand between a length and its video word: articles, "of", and what kind of video it is. */
+const LEN_GLUE = "(?:of|di|de|del|dello|della|a|an|the|il|lo|un|uno|una|vertical[ei]?|horizontal|orizzontale|animated|animat[oa]|realistic|realistic[oa]|cinematic|cinematografico|youtube|long|lung[oaie]|narrated|narrato)";
+/** The number measures the video: "30-second video", "2 minute animated film", "30 secondi di video". */
+const VIDEO_AFTER_RE = new RegExp(`^\\s*-?\\s*(?:${LEN_GLUE}\\s+){0,2}(?:${VIDEO_WORDS})\\b`, "i");
+/** "video di 30 secondi", "a film of 2 minutes", "clip: 30s", "Short (45 seconds", "video verticale di 30 secondi". */
+const VIDEO_BEFORE_RE = new RegExp(`\\b(?:${VIDEO_WORDS})\\s*(?:${LEN_GLUE}\\s+)?(?:(?:of|di|da|lasting|lungo|lunga|long|that lasts|che dura|in|:|,|-|–|—|\\()\\s*)?(?:(?:about|circa|around|max|massimo|at most|al massimo)\\s+)?$`, "i");
+/** "lungo 30 secondi", "durata: 1 minuto", "length 90 seconds", "it should be 45 seconds". */
+const LENGTH_BEFORE_RE = /\b(?:lung[oaie]|long|lasting|durata(?: di)?|duration|length|lunghezza|runtime|run time|deve durare|che duri|should (?:be|last)|must (?:be|last)|to last|da durare)\s*(?:[:=]\s*)?(?:(?:about|circa|around|di|of|max|massimo|esattamente|exactly)\s+)?$/i;
+/** Story time: a number that measures something IN the film ("dopo 30 secondi", "for the last 20 minutes"). */
+const STORY_BEFORE_RE = /\b(?:dopo|after|before|prima(?: di)?|every|ogni|each|for the (?:last|next|first)|negli ultimi|nei primi|nei prossimi|in the (?:last|first|next)|within|since|da|tra|fra|until|fino a|waited|aspett\w*|wait|lasted|took|ci mis[eo]|ci vollero|impieg\w*|for|per|another|altri|last|ultimi|next|prossimi)\s+(?:(?:the|i|gli|le|about|circa|almost|quasi|over|oltre|nearly|some|qualche)\s+)?$/i;
+const STORY_AFTER_RE = /^\s*(?:later|ago|earlier|after(?:wards)?|before|dopo|prima|fa\b|più tardi|piu tardi|of silence|di silenzio|of (?:his|her|their|my|our|your)\b|passed|pass\b|went by|go by|passano|passarono|passati|to (?:go|live|midnight|spare)\b|of fame|di fama|remaining|rimast\w*|left\b|away|di distanza|from (?:here|home|the)\b|da (?:qui|casa)\b)/i;
+/** What stands before a decade: "the 90s", "in her 30s", "early 20s", "anni 80". */
+const DECADE_BEFORE_RE = /\b(?:the|his|her|their|my|your|our|its|early|late|mid|anni|years|gli|negli|nei)\s*$/i;
+
+interface LenHit { at: number; end: number; seconds: number }
+
+/** Every "number + unit" in the text, as seconds, with where it sits. "1 minuto e 30 secondi" is one hit of 90. */
+function lengthHits(t: string): LenHit[] {
+  const hits: LenHit[] = [];
+  for (const m of t.matchAll(LEN_RE)) {
+    const rawN = m[1].toLowerCase();
+    const word: number | undefined = NUM_WORDS[rawN.replace(/[-\s]+/g, "-")];
+    const n = word ?? Number(rawN.replace(",", "."));
+    if (!Number.isFinite(n) || n <= 0) continue;
+    const isMin = new RegExp(`^(?:${MIN_UNIT})$`, "i").test(m[2]);
+    // "un secondo" / "a second" is "a moment", never a length; a spelled number of seconds is fifteen or more.
+    if (!isMin && word !== undefined && n < 15) continue;
+    let seconds = Math.round(isMin ? n * 60 : n);
+    let end = (m.index ?? 0) + m[0].length;
+    if (isMin) {
+      const rest = t.slice(end);
+      const half = rest.match(/^\s*(?:e|and)\s+(?:mezzo|a half)\b/i);
+      const secs = rest.match(new RegExp(`^\\s*(?:e|and|,)?\\s*(\\d{1,2})\\s*(?:${SEC_UNIT})\\b`, "i"));
+      if (half) { seconds += 30; end += half[0].length; }
+      else if (secs) { seconds += Number(secs[1]); end += secs[0].length; }
+    }
+    hits.push({ at: m.index ?? 0, end, seconds });
+  }
+  for (const m of t.matchAll(HALF_MINUTE_RE)) hits.push({ at: m.index ?? 0, end: (m.index ?? 0) + m[0].length, seconds: 30 });
+  for (const m of t.matchAll(COMPACT_RE)) {
+    const at = m.index ?? 0, n = Number(m[1]);
+    if (n < 5 || n > 600 || DECADE_BEFORE_RE.test(t.slice(Math.max(0, at - 12), at))) continue;
+    hits.push({ at, end: at + m[0].length, seconds: n });
+  }
+  hits.sort((a, b) => a.at - b.at);
+  // A seconds part folded into the minutes before it is not a hit of its own.
+  return hits.filter((h, i) => !hits.slice(0, i).some((p) => h.at >= p.at && h.at < p.end));
 }
 
-/** Where the video goes, read off the words that say it; null when nothing does (then it is asked). */
-const PORTRAIT_RE = /\b(9\s*:\s*16|vertical(?:e)?|portrait|verticale|shorts?|tiktok|reels?|stories|instagram)\b/i;
+function durationFrom(text: string): number | null {
+  const t = text.toLowerCase();
+  let bare: number | null = null;
+  for (const h of lengthHits(t)) {
+    const before = t.slice(Math.max(0, h.at - 48), h.at);
+    const after = t.slice(h.end, h.end + 48);
+    // Said to be the video's length: taken at once, whatever else the request measures.
+    if (VIDEO_AFTER_RE.test(after) || VIDEO_BEFORE_RE.test(before) || LENGTH_BEFORE_RE.test(before)) return h.seconds;
+    // Time inside the story: never the length.
+    if (STORY_BEFORE_RE.test(before) || STORY_AFTER_RE.test(after)) continue;
+    if (bare === null) bare = h.seconds;
+  }
+  return bare;
+}
+
+/* ------------------------------------------------------------------ the frame */
+
+/**
+ * Where the video goes, read off the words that say it; null when nothing does (then it is asked). "Shorts", "reels",
+ * "stories" and "Instagram" count only as PLATFORM words (24 September 2026): "bedtime stories" is a genre, "a short
+ * film" is an adjective, "a man in shorts" is clothing and "a video about Instagram" is a topic — each used to turn a
+ * YouTube film vertical. They count as "YouTube Shorts", "a Short", "for Shorts", "Instagram Reel", "un reel", "for my
+ * stories", "for Instagram".
+ */
+const NOT_A_SHORT = "(?:film|films|video|videos|movie|story|stories|clip|documentar\\w*|animat\\w*|cartoon|piece|explainer|explanation|intro(?:duction)?|guide|tale|essay|history|sequence|scene|version|poem|text|summary|overview|storia|racconto|filmato|spot|ad|advert\\w*|commercial|trailer|answer|note|list|while|time|walk|distance|break|trip|drive|term|cut|circuit|supply|notice)";
+const PORTRAIT_RE = new RegExp([
+  "\\b9\\s*:\\s*16\\b", "\\bvertical[ei]?\\b", "\\bportrait\\b", "\\btik\\s?tok\\b",
+  "\\b(?:youtube|yt)\\s+shorts?\\b",
+  `\\b(?:a|an|the|my|our|this|one|un|uno|lo|questo|nuovo|new)\\s+short\\b(?!\\s*-)(?!\\s+${NOT_A_SHORT}\\b)`,
+  "\\b(?:for|per|as|come|on|su|sui|sugli|negli|nei|gli)\\s+(?:(?:the|my|our|youtube|i|gli|miei|nostri)\\s+)?shorts\\b",
+  "\\bshorts?\\s+(?:format|formato|verticale?|vertical)\\b",
+  "\\b(?:instagram|ig|facebook|fb)\\s+(?:reels?|stor(?:y|ies))\\b",
+  "\\b(?:a|an|the|un|uno|il|lo|my|our|for|per|as|come|i|gli|nei|in)\\s+reels?\\b(?!\\s+(?:of|di)\\b)",
+  "\\b(?:for|per|on|su|sul|to|in)\\s+(?:(?:my|our|the|mio|nostro|il)\\s+)?instagram\\b",
+  "\\b(?:for|per|on|in|nelle|sulle|nei|alle)\\s+(?:(?:my|our|le mie|mie|le)\\s+)?stories\\b",
+].join("|"), "i");
 const LANDSCAPE_RE = /\b(16\s*:\s*9|youtube|landscape|orizzontale|widescreen|televisione|tv|schermo)\b/i;
 function formatFrom(lower: string): Format | null {
   if (PORTRAIT_RE.test(lower)) return "9:16";
@@ -105,6 +203,13 @@ function lookFrom(lower: string): Look | null {
   if (REALISTIC_RE.test(lower)) return "realistic";
   return null;
 }
+/**
+ * The look a request's own words name, or null. Exported for createJob (src/jobs.ts): a job created with no style,
+ * no treatment and no storyboard used to be realistic whatever it said, so "un cartone animato sui pirati" sent
+ * straight to kleo_create_video became a live-action film (24 September 2026). Now the request is read first, and
+ * realistic is only what nothing names.
+ */
+export const lookFromText = (text: string): Look | null => lookFrom(text.toLowerCase());
 
 /**
  * Music and subtitles, when the request itself says so. "senza musica" / "no music" is an answer (no), "con musica"
@@ -185,7 +290,10 @@ export type AdaptOverrides = Partial<Pick<AdaptiveBrief, "duration_s" | "format"
  * and it costs nothing: the questions come back before any model or GPU is touched.
  */
 export function adaptPrompt(prompt: string, overrides: AdaptOverrides = {}): AdaptiveBrief {
-  const text = first(prompt);
+  // THE WHOLE REQUEST IS READ (24 September 2026). Detection used to run on the first 240 characters only, so a user
+  // who told her story first and said "vertical, 30 seconds, no music" at the end was asked all three again — and a
+  // look named in the last line was never seen. Only the SUBJECT stays capped: it is a label, not the request.
+  const text = prompt.trim().replace(/\s+/g, " ");
   const lower = text.toLowerCase();
   const language = languageFrom(text);
   const delegated = DELEGATE_RE.test(text);

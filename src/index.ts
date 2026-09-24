@@ -7,6 +7,7 @@ import { handleInternal, handleDevPlan, handleAdmin } from "./internal";
 import { handleCredits } from "./credits";
 import { handleStripeWebhook } from "./stripe";
 import { handleDownload } from "./dl";
+import { handleUpload } from "./upload.ts";
 import { tick } from "./orchestrator";
 import { json } from "./util";
 import { ensureSchema } from "./schema";
@@ -55,6 +56,9 @@ const app: ExportedHandler<Env> = {
       return r;
     }
     if (p.startsWith("/dl/")) return handleDownload(request, env);
+    // The upload page (24 September 2026, src/upload.ts): signed links from kleo_upload_link, where a user drops the
+    // pictures Kleo should draw from. Outside /internal/ on purpose: an upload must never be able to start a tick.
+    if (p.startsWith("/upload/")) return handleUpload(request, env);
     if (p === "/health") return json({ ok: true, backend: env.RENDER_BACKEND, time: new Date().toISOString() });
     if (p === "/mcp") return json({ error: "unauthorized" }, 401, { "www-authenticate": `Bearer resource_metadata="${url.origin}/.well-known/oauth-protected-resource"` });
     if (p === "/") {

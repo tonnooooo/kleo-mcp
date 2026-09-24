@@ -27,6 +27,7 @@ import {
   MAX_PICTURES, SHOTS_MIN_CINEMA, shotRangeText, SHOTS_PER_SCENE, wordBudget,
   DIRECTION_LIMITS as DL, SHOT_KINDS,
   SKETCH_ACCENTS, SKETCH_ART, SKETCH_MOODS, SKETCH_MOTION, SKETCH_ENTER, SKETCH_EXIT,
+  SHOT_ACTION_MAX, SHOT_COVERS_MAX, SHOT_CAST_MAX, SHOT_TAG_MAX,
 } from "./keou-contract.ts";
 import { GL, LINE_STATES } from "./graphics.ts";
 
@@ -74,12 +75,34 @@ Read the user's request as a request, not as raw material, and answer these ten 
  "sections":  [${DL.sections.min}-${DL.sections.max} {"name":"<=${DL.sections.name} UPPERCASE","accent":${quoted(CINEMA_ACCENTS)},"means":"<=${DL.sections.means}","scenes":<whole number>}]
 }
 
- must_keep is QUOTED FROM THE REQUEST, never invented. If the user wrote "5 mistakes", "in Naples", "for beginners", "under 300 euros" or any number, it goes here — and Kleo checks that the finished narration still says it. A fact listed here and missing from the narration is a rejected storyboard, not a warning.
+ must_keep is QUOTED FROM THE REQUEST, never invented. If the user wrote "5 mistakes", "in Naples", "for beginners", "under 300 euros" or any number, it goes here — and Kleo checks that the finished narration still says it. A fact listed here and missing from the narration is a rejected storyboard, not a warning. An APPEARANCE the user asked for ("a lilac apron", "short blonde hair") is kept here too, but it is proven by the pictures, never read aloud: write it into the cast look, not into a voice line.
  world is what stops twelve independently drawn pictures from looking like twelve different films. Write it once, concretely.
- cast is the reason a character stays the same character: the "look" string is repeated word for word in every picture that shows them. Give a name the narration would actually use ("the captain", "the cabin boy"), not a proper name.
+ cast is the reason a character stays the same character: the "look" string is repeated word for word in every picture that shows them. Write the FULL look, up to ${DL.cast.look} characters — every attribute the user gave (age, build, face, hair, clothes and their colours, what they carry), plus whatever a painter still needs; never shortened to a role. The name is the one the user gave: a fictional character the user named keeps that name ("Mara", "Captain Oyelaran"); a character they did not name is called by their role ("the captain", "the cabin boy"). Never a real living person or a celebrity. Every shot then says who is in its picture with "cast" (below): that list, not a guess from the words, is what attaches each look to the picture.
  objects is the vocabulary of THIS film and nothing else. Pirates: beach, sand, wooden chest, red-sailed ship, rope, lantern. Space: launch pad, rocket, orbital station, visor, cable.
  forbidden is what makes a film its own, and it is the field most people skip. Name (a) the things an image generator adds by habit — text in the picture, logos, watermarks, extra fingers — and (b) the things that belong to a DIFFERENT subject than this one. A pirate film forbids wifi symbols, phones, screens and modern clothing. Kleo sends this to the image model as a negative prompt and refuses any picture description that asks for something on the list.
  sections are the colour law. They tile the video in order, and their "scenes" add up to EXACTLY the number of scenes you write — you choose that number (${scenes} is the range for this length), then make the sections sum to the number you chose, not to the range. Two sections in a row NEVER share an accent. Every scene then wears its section's accent — you do not pick accents per scene, and Kleo refuses a scene wearing the wrong one. One colour, one part of the story, one meaning: that is the whole of it.`;
+}
+
+/* ------------------------------------------------------------------ the user's requirements (the spec) */
+
+/**
+ * THE SPEC (24 September 2026): when kleo_adapt_prompt took the user's request apart into requirements (src/spec.ts),
+ * the storyboard is written against them and says, shot by shot, which ones it shows. This is how a film stops being
+ * "about the subject" and becomes the film the user described: the planner, the stills engine and the fidelity judge
+ * all read the same three shot fields, and the numbers here are the contract's.
+ */
+function specSection(): string {
+  return `1b. THE USER'S REQUIREMENTS — when the job has a SPEC
+When kleo_adapt_prompt gave you a spec for this film (requirements R1, R2… and a cast c1, c2…), it is the brief and the storyboard is checked against it before anything is billed:
+ Every MUST requirement is in the film: a VISUAL one (a character, a look, a place, an object, an action, an event, a framing, a text) is shown by at least one shot that lists its id in "covers"; a LINE the narrator must say is said in a scene's "voice", in the user's words. None is dropped or made generic.
+ The user's EVENTS keep the user's ORDER: the first shot that covers event #2 comes after the first one that covers event #1.
+ The CAST: one direction cast member per spec cast member, with the spec's name and its full look; every shot lists the characters in its picture in "cast" (their spec id "c1" or their cast name).
+ A shot that covers a "text" requirement may, and must, draw THOSE EXACT WORDS in the picture (in quotes in its image_prompt) — the one exception to "no text in the picture". Nothing else in any picture is written.
+ FAITHFUL mode: the story is the user's — their characters, their events in their order, their place, their style; add only what the spec leaves open. Spectacle the user asked for is shown; human scale is the rule only where they left it to you.
+The three shot fields (Kleo reads them on the server; the engine never sees them):
+ "covers": [up to ${SHOT_COVERS_MAX} spec item ids this picture SHOWS] — only what a viewer could point at in the frame.
+ "cast":   [up to ${SHOT_CAST_MAX} spec cast ids or cast names, each <=${SHOT_TAG_MAX} chars] — who is in the picture; [] or absent when nobody is.
+ "action": "<=${SHOT_ACTION_MAX} chars, English: what moves or happens during the shot" — the clip is generated from it; the picture is drawn from image_prompt alone.`;
 }
 
 /* ------------------------------------------------------------------ the layer (optional) */
@@ -110,13 +133,13 @@ The same storyboard serves the FILM (each frame becomes a generated clip) and th
 SCENE: {"id":"01-hook","kind":"cinema","chapter":"01 THE CAPTAIN <=32","accent":<its section's accent>,"title":"<=90, the line shown on the first picture","hl":"<=24, ONE word of the title","voice":"1-3 sentences <=350 chars","hold":0.2,"shots":[${shotRangeText("cinema")} pictures]}
 CLOSING (always the last scene): {"id":"…","kind":"closing", …, "shots":[${shotRangeText("closing")}, one is the norm], "button":"<=${CLOSING_BUTTON_MAX}, default Subscribe" OR "detail":"<=110", never both}
 
-SHOT: {"image_prompt":"ONE sentence <=${IMAGE_PROMPT_MAX} chars","caption"?:"2-5 BIG WORDS <=${SHOT_CAPTION_MAX}","hl"?:"ONE WORD OF caption <=${SHOT_HL_MAX}","at"?:"<=${SHOT_AT_MAX} chars","shot_kind"?:${quoted(SHOT_KINDS)}}
- A shot carries these five keys and no others.
+SHOT: {"image_prompt":"ONE sentence <=${IMAGE_PROMPT_MAX} chars","caption"?:"2-5 BIG WORDS <=${SHOT_CAPTION_MAX}","hl"?:"ONE WORD OF caption <=${SHOT_HL_MAX}","at"?:"<=${SHOT_AT_MAX} chars","shot_kind"?:${quoted(SHOT_KINDS)},"cast"?:["c1" or a cast name, up to ${SHOT_CAST_MAX}],"covers"?:["R1", up to ${SHOT_COVERS_MAX}],"action"?:"<=${SHOT_ACTION_MAX}, English, what moves during the shot"}
+ A shot carries these eight keys and no others. "cast" names who is in the picture, "covers" the spec requirements it shows (when the job has a spec, 1b), "action" what moves in it.
 
  EVERY SCENE SHOWS AT LEAST ${SHOTS_MIN_CINEMA} PICTURES. ${SHOTS_MIN_CINEMA}-3 is the usual rhythm. One picture held for a whole narrated line is a slideshow, and Kleo refuses it: split the line into its moments and give each moment its own picture.
  EVERY PICTURE AFTER THE FIRST CARRIES "at". "at" is an unbroken run of whole words copied character for character out of THAT scene's own "voice" — punctuation included, case ignored. The picture cuts the instant those words are spoken. From "only one cabin boy swam back to shore" take "swam back"; never a fragment ("wam bac"), never a paraphrase ("he swam"), never a jump across punctuation. The first shot of a scene opens with the scene and must NOT carry "at". Place the anchors along the line in reading order.
- image_prompt is ALWAYS WRITTEN IN ENGLISH, whatever language the film is narrated in: the picture model reads English only, and a prompt in another language is drawn wrong (Kleo refuses it). It describes ONE ${kind}: a concrete subject, a place, an action, the light and the mood. A recurring character is called by their cast name in every picture that shows them ("the pastry chef", never "she"): the name is what attaches their one description to the picture. Consecutive shots of one scene are the next moment or a new angle of the same place. Everything you write must come from the direction's world and objects; anything on the direction's forbidden list is refused. Never ask for text, letters, numbers, logos or captions inside the picture, and never a real person.
- SOMETHING IN EVERY PICTURE MUST BE DOING SOMETHING. Name a subject and give it an action, in the -ing form: "mist DRIFTING fast across the tarmac", "the flame GUTTERING", "waves BREAKING against the hull", "sand BLOWING across the road". Naming the thing is not enough — "low mist" and "dust in the air" are states, and a shot with only those in it comes back (in the film) as a frozen frame; it was measured at 0.03 pixels of movement. The one exception is a person or an animal: they breathe and turn their head on their own, so a picture that shows someone needs nothing added. Write the action yourself — if you leave it out, Kleo adds one for you, and it will not be the one you would have chosen.
+ image_prompt is ALWAYS WRITTEN IN ENGLISH, whatever language the film is narrated in: the picture model reads English only, and a prompt in another language is drawn wrong (Kleo refuses it). It describes ONE ${kind}: a concrete subject, a place, an action, the light and the mood. A recurring character is called by their cast name in every picture that shows them ("the pastry chef" or "Mara", never "she") AND listed in the shot's "cast": that is what attaches their one full description to the picture. Consecutive shots of one scene are the next moment or a new angle of the same place. Everything you write must come from the direction's world and objects; anything on the direction's forbidden list is refused. Never ask for text, letters, numbers, logos or captions inside the picture — except the exact words of a spec "text" requirement on the shot that covers it — and never a real person.
+ SOMETHING IN EVERY PICTURE MUST BE DOING SOMETHING. Name a subject and give it an action, in the -ing form: "mist DRIFTING fast across the tarmac", "the flame GUTTERING", "waves BREAKING against the hull", "sand BLOWING across the road" — and say it again, for the clip, in the shot's "action". Naming the thing is not enough — "low mist" and "dust in the air" are states, and a shot with only those in it comes back (in the film) as a frozen frame; it was measured at 0.03 pixels of movement. The one exception is a person or an animal: they breathe and turn their head on their own, so a picture that shows someone needs nothing added. Write the action yourself — if you leave it out, Kleo writes one into "action" for you (never into your image_prompt), and it will not be the one you would have chosen.
  caption is optional and rare: 2-5 strong words on the shot that carries the idea (the first shot falls back to the scene title).
 
  shot_kind says what the shot is FOR. NEVER write a camera move, a zoom, a pan or a direction anywhere — Kleo owns the camera and picks the move from the kind; a hand-written move is refused.
@@ -261,7 +284,7 @@ Engine: Keou, canvas motion design, 4K 60 fps, local text-to-speech. Target ${du
 Write the storyboard in three passes, in this order: the DIRECTION, then the OUTLINE, then the SCENES. The direction is the pass Kleo cannot do for you and the one the finished video is judged on.
 
 ${directionSection(scenes)}
-
+${!look || PICTURE_LOOKS.includes(look) ? `\n${specSection()}\n` : ""}
 2. THE TOP-LEVEL OBJECT
 {"schema_version":1,"editorial_status":"ready","title":"<=120","brand":"<=28","direction":{…as above…},
  "kleo_style":${quoted(look ? [look] : KLEO_STYLES)},"style":"${keou}","format":"9:16"|"16:9","language":${quoted(o.languages)},
@@ -276,15 +299,16 @@ ${!look || PICTURE_LOOKS.includes(look) ? layerSection() : ""}
 4. WHAT KLEO REFUSES, BEFORE ANYTHING IS BILLED
  2-240 scenes; ids are unique lowercase slugs and must not end in "-s" + a number; the last scene is "closing"; every scene needs "title" and "voice".
  The direction's sections must add up to the scene count, no two neighbouring sections share an accent, and every scene wears its section's accent.
- Every fact in direction.must_keep must appear in the narration; no image_prompt may ask for anything in direction.forbidden.
+ Every fact in direction.must_keep must appear in the narration (an appearance is proven by the pictures instead); no image_prompt may ask for anything in direction.forbidden.
+ With a spec: every MUST requirement covered by a shot's "covers" or said in a voice, the user's events in the user's order, and "covers"/"cast" naming only the spec's own ids.
  THE PICTURES SPEAK ENGLISH whatever the film speaks: every image_prompt, and the direction's world, cast names and looks, objects and forbidden terms, are written in English (they are pasted into the picture prompts, and the picture model reads English only). Subject, goal, audience, tone, must_keep, the narration, titles and chapters stay in the film's language.
  Picture looks: only cinema and closing scenes, ${shotRangeText("cinema")} shots each (closing ${shotRangeText("closing")}), "at" on every shot after the first, no "beats".
- A shot carries only image_prompt, caption, hl, at and shot_kind. A hand-written camera move is refused.
+ A shot carries only image_prompt, caption, hl, at, shot_kind, cast, covers and action. A hand-written camera move is refused.
  scene.image, scene.motion and shot.image are refused (Kleo generates the pictures; no asset travels with a job).
  Total narration must fit the length: never more than about ${Math.round(words * 1.25)} words for ${dur}s.
 
 5. WRITING IT WELL
- Open with the hook in the FIRST sentence — a surprising claim, a number, or a fear. One idea per scene. End on a question or a promise that sends the viewer back to the start.
+ When the job has a spec, the user's story is the structure: open where they open, tell their events in their order, end where they end. Otherwise open with the hook in the FIRST sentence — a surprising claim, a number, or a fear. One idea per scene. End on a question or a promise that sends the viewer back to the start.
  Write the narration as speech: no emojis, no hashtags, no URLs, no stage directions, no invented quotes from real people.
  Do not copy the example below. Take its shape and write the user's subject, in the user's tone, for the user's audience.`;
 }
@@ -317,7 +341,7 @@ Notice: every phrase has its own drawing and the drawing is the thing the words 
   return `EXAMPLE (a realistic film, 9:16, 40s, en — the direction plus the first two scenes of six; the same shape, drawn as film${style === "animation" ? "; an ANIMATED film keeps this exact shape, with every image_prompt describing a drawn frame instead of a photograph" : ""}):
 "direction":${JSON.stringify(d)}
 "scenes":${JSON.stringify(EXAMPLE_SCENES)}
-Notice: every scene has ${SHOTS_MIN_CINEMA} or more pictures; every picture after the first carries "at" quoted from its own voice line; the accents come from the sections, not from the mood; "${d.cast[0].name}" and "${d.cast[1].name}" are named exactly as the direction names them, so Kleo appends their look to every picture that shows them; nothing on the forbidden list appears anywhere.`;
+Notice: every scene has ${SHOTS_MIN_CINEMA} or more pictures; every picture after the first carries "at" quoted from its own voice line; the accents come from the sections, not from the mood; "${d.cast[0].name}" and "${d.cast[1].name}" are named exactly as the direction names them and listed in each shot's "cast", so Kleo appends their look to every picture that shows them; the moving shots say what moves in "action"; nothing on the forbidden list appears anywhere. (This example has no spec, so no shot carries "covers"; with one, each shot lists the requirement ids it shows.)`;
 }
 
 /**
@@ -373,8 +397,8 @@ export const EXAMPLE_SCENES = [
     id: "01-burial", kind: "cinema", chapter: "01 THE BURIAL", accent: "amber", title: "she never came back", hl: "never",
     voice: "In 1720, the captain buried her treasure on Skull Beach. She never came back for it.", hold: 0.2,
     shots: [
-      { image_prompt: "The captain burying a wooden chest on a golden beach at sunset, palm trees swaying, her red-sailed ship anchored in the bay", caption: "SHE NEVER CAME BACK", hl: "NEVER", shot_kind: "hook" },
-      { image_prompt: "The captain walking away along the shoreline at dusk, waves breaking behind her, deep footprints in the wet sand", at: "never came back", shot_kind: "action" },
+      { image_prompt: "The captain burying a wooden chest on a golden beach at sunset, palm trees swaying, her red-sailed ship anchored in the bay", caption: "SHE NEVER CAME BACK", hl: "NEVER", shot_kind: "hook", cast: ["the captain"], action: "the captain shovels sand over the chest while the palms sway in the warm wind" },
+      { image_prompt: "The captain walking away along the shoreline at dusk, waves breaking behind her, deep footprints in the wet sand", at: "never came back", shot_kind: "action", cast: ["the captain"], action: "she walks out of frame as the waves wash over her footprints" },
     ],
   },
   {
@@ -382,8 +406,8 @@ export const EXAMPLE_SCENES = [
     voice: "Three days later a storm took her ship, and only one cabin boy swam back to shore.", hold: 0.2,
     shots: [
       { image_prompt: "A red-sailed ship tossed by huge black waves at night, lightning splitting the sky, torn sails flapping, rain falling across the deck", caption: "THREE DAYS LATER", hl: "THREE", shot_kind: "tension" },
-      { image_prompt: "The cabin boy clinging to a broken plank in the dark water, the ship going down behind him", at: "one cabin boy", shot_kind: "establish" },
-      { image_prompt: "The cabin boy lying exhausted on an empty beach at dawn, calm turquoise water, palm trees, soft pink sky", at: "swam back", shot_kind: "face" },
+      { image_prompt: "The cabin boy clinging to a broken plank in the dark water, the ship going down behind him", at: "one cabin boy", shot_kind: "establish", cast: ["the cabin boy"] },
+      { image_prompt: "The cabin boy lying exhausted on an empty beach at dawn, calm turquoise water, palm trees, soft pink sky", at: "swam back", shot_kind: "face", cast: ["the cabin boy"] },
     ],
   },
 ];

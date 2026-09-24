@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import {
   directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor, notEnglish, foreignPictureFields, lightsPictures, headNounIn, thinLook, formatTalk, storyRequest, dropLookFacts,
   castFor, conformity, ACCENT_LIGHT, negatedTerms, stillness, enliven, livingClause, ENLIVEN_CLAUSES, D,
+  motionHint, spokenFacts, lookFact, formatOnly, screenTextProblems,
 } from "../src/direction.ts";
 import { validateStoryboard, qualityProblems, directionOf, narrationOf, pictureScenes, CINEMA_ACCENTS, SHOTS_MIN_CINEMA, shotRangeText } from "../src/keou-contract.ts";
 import { fullPrompt, modelInputs, NEGATIVE_PROMPT, STYLE_SUFFIX, DEFAULT_IMAGE_MODELS } from "../src/images.ts";
@@ -182,21 +183,42 @@ test("a cast look is a description a painter can draw twice, never a name; the n
   assert.equal(formatTalk("A young warrior receives a transmission from a planet that no longer exists."), null);
   assert.equal(formatTalk("She waits thirty seconds before she answers."), null, "spelled-out time in the story is the story");
   assert.equal(formatTalk("The ship shorts out and falls silent."), null, "'shorts' as a verb is not the format");
-  // The request itself loses its sentences about the video before the planner reads it (gt_jm5btrj8: told once
-  // to drop "30-second", the 17B wrote it into the narration again — because the request still said it).
-  const req = "A 30-second vertical YouTube Short set in an original space-fantasy universe. A young warrior receives a transmission saying the enemy survived. Make it cinematic and tense. Use original characters, not copyrighted Star Wars characters.";
+  // THE REQUEST REACHES THE PLANNER WHOLE (24 September 2026). storyRequest() used to delete every sentence with a
+  // format word (gt_jm5btrj8), and with them "the narrator says 'festa a sorpresa'", "a vertical blind in a 1990s
+  // bedroom" — what the user asked for. It is non-destructive now: whitespace folded, nothing removed. The narration
+  // is still protected where the damage was, by formatTalk() on every voice line.
+  const req = "A 30-second vertical YouTube Short set in an original space-fantasy universe. A young warrior receives a transmission saying the enemy survived.\n\n  Make it cinematic and tense. Use original characters, not copyrighted Star Wars characters.";
   const story = storyRequest(req);
-  assert.equal(formatTalk(story), null, story);
-  assert.match(story, /^A young warrior receives a transmission/);
-  assert.match(story, /Use original characters/);
-  assert.match(story, /set in an original space-fantasy universe\.$/, "the subject half of the format sentence is rescued");
-  assert.equal(storyRequest("Una pasticcera prepara torte per i bambini poveri del paese."), "Una pasticcera prepara torte per i bambini poveri del paese.", "nothing to cut, nothing changes");
-  assert.equal(storyRequest("A 30-second vertical Short."), "A 30-second vertical Short.", "a request that is only format is kept, not emptied");
-  // A must_keep item that is really the character's look is dropped: the narrator never reads a description aloud.
+  assert.equal(story, req.replace(/\s+/g, " ").trim(), "the whole request, whitespace folded");
+  assert.match(story, /^A 30-second vertical YouTube Short set in an original space-fantasy universe\. A young warrior/, "the format sentence is no longer cut");
+  assert.equal(storyRequest("  Una pasticcera prepara torte per i bambini poveri del paese.  "), "Una pasticcera prepara torte per i bambini poveri del paese.");
+  assert.equal(storyRequest("Il narratore dice 'festa a sorpresa'. Una stanza anni '90 con una tenda verticale."), "Il narratore dice 'festa a sorpresa'. Una stanza anni '90 con una tenda verticale.", "a sentence with a format word that IS the story stays");
+  assert.equal(storyRequest(""), "");
+  // must_keep KEEPS the look now: it is something the user asked for, and the pictures are checked for it. Only an
+  // item that is nothing but the film's own format goes ("durata 30 secondi, circa 6 scene" was read aloud in scene 5).
   const cast = [{ name: "the pastry chef", look: "a thin woman with short blonde hair tied up, in a lilac apron" }];
-  assert.deepEqual(dropLookFacts(["short blonde hair tied up", "lilac apron", "festa a sorpresa", "the children of the village", "five mistakes"], cast), ["festa a sorpresa", "the children of the village", "five mistakes"]);
-  assert.deepEqual(dropLookFacts(["capelli biondi corti e raccolti", "grembiule lilla", "durata 30 secondi, circa 6 scene", "festa a sorpresa"], cast), ["festa a sorpresa"], "an appearance in Italian and the film's own length never reach the narrator");
-  assert.deepEqual(dropLookFacts(["lilac apron", "the harbour at dawn"], []), ["the harbour at dawn"], "an appearance is dropped even with no cast to compare");
+  assert.deepEqual(dropLookFacts(["short blonde hair tied up", "lilac apron", "festa a sorpresa", "the children of the village", "five mistakes"], cast), ["short blonde hair tied up", "lilac apron", "festa a sorpresa", "the children of the village", "five mistakes"]);
+  assert.deepEqual(dropLookFacts(["capelli biondi corti e raccolti", "grembiule lilla", "durata 30 secondi, circa 6 scene", "festa a sorpresa"], cast), ["capelli biondi corti e raccolti", "grembiule lilla", "festa a sorpresa"], "the appearance stays, the film's own length goes");
+  assert.deepEqual(dropLookFacts(["a 30-second vertical Short", "narrated in Italian, 9:16", "the narrator must say festa a sorpresa"], []), ["the narrator must say festa a sorpresa"], "a format word beside real content is content");
+  // …and the narrator is never held to the look: spokenFacts() is what missingFacts() reads.
+  assert.deepEqual(spokenFacts(["short blonde hair tied up", "lilac apron", "grembiule lilla", "festa a sorpresa", "the children of the village"], cast), ["festa a sorpresa", "the children of the village"]);
+  assert.deepEqual(spokenFacts(["lilac apron", "the harbour at dawn"], []), ["the harbour at dawn"], "an appearance word is a look even with no cast to compare");
+  assert.deepEqual(spokenFacts(undefined, undefined), []);
+  assert.equal(lookFact("a thin woman with blonde hair", []), true);
+  assert.equal(lookFact("festa a sorpresa", cast), false);
+  assert.equal(formatOnly("durata 30 secondi, circa 6 scene"), true);
+  assert.equal(formatOnly("the narrator must say festa a sorpresa"), false);
+  assert.equal(formatOnly("the harbour at dawn"), false, "no format word, never format-only");
+});
+
+test("the validator holds the narration to the spoken facts only: a look in must_keep is never demanded aloud (24 September)", () => {
+  const sb = withDirection({ must_keep: ["lilac apron", "short blonde hair tied up"], cast: [{ name: "the captain", look: "a pirate captain with a red bandana and a long dark braid, brown coat, wide belt" }] });
+  const r = validateStoryboard(sb, { format: sb.format, language: sb.language });
+  assert.equal(r.ok, true, (r.errors ?? []).join("\n"));
+  assert.ok(!r.warnings.some((w) => /must_keep says/.test(w)), r.warnings.join("\n"));
+  const said = withDirection({ must_keep: ["a fact this narration never states anywhere at all", "lilac apron"] });
+  const r2 = validateStoryboard(said, { format: said.format, language: said.language });
+  assert.deepEqual(r2.warnings.filter((w) => /must_keep says/.test(w)).map((w) => /says "([^"]+)"/.exec(w)[1]), ["a fact this narration never states anywhere at all"]);
 });
 
 test("castFor: the cast name, its head noun, or — with one character — a pronoun, attaches the look", () => {
@@ -227,6 +249,49 @@ test("castFor: the cast name, its head noun, or — with one character — a pro
   // pictureContext follows the same rule, so the worker (its mirror) and the server draw the same picture.
   const d = { ...good(), cast: chef };
   assert.ok(pictureContext(d, "She turns the cake out of its tin", null, "animation").startsWith("the pastry chef: a thin woman"));
+});
+
+test("castFor: a shot's explicit cast decides before any guess from the words (24 September)", () => {
+  const two = [
+    { name: "Mara", look: "a thin woman in her thirties with short blonde hair tied up, a lilac apron, round glasses", id: "c1" },
+    { name: "the baker", look: "a tall bald man in his fifties, flour on his forearms, a white apron" },
+  ];
+  const names = (shotCast, p, spec) => castFor(two, p, shotCast, spec).map((m) => m.name);
+  // A pronoun in a two-character film attaches nobody by itself; the shot's cast says who it is.
+  assert.deepEqual(names(undefined, "She turns the cake out of its tin"), [], "the old guess, for a shot with no cast");
+  assert.deepEqual(names(["c1"], "She turns the cake out of its tin"), ["Mara"], "by the member's spec id");
+  assert.deepEqual(names(["mara"], "She turns the cake out of its tin"), ["Mara"], "by name, case ignored");
+  assert.deepEqual(names(["Baker"], "Hands on the counter"), ["the baker"], "a leading article is not part of the name");
+  assert.deepEqual(names(["c2"], "Hands on the counter", [{ id: "c2", name: "The Baker" }]), ["the baker"], "by a spec id whose spec name is the member's name");
+  assert.deepEqual(names(["c2", "c1"], "The baker and Mara at the oven", [{ id: "c2", name: "the baker" }]), ["the baker", "Mara"], "in the shot's order");
+  // The explicit cast wins over a name the prompt happens to contain ("the baker's shop" with Mara alone in it).
+  assert.deepEqual(names(["c1"], "Mara alone in the baker's shop at dawn"), ["Mara"]);
+  // A cast that names nobody known, or an empty one, falls back to reading the prompt.
+  assert.deepEqual(names(["c9"], "The baker at the oven"), ["the baker"]);
+  assert.deepEqual(names([], "The baker at the oven"), ["the baker"]);
+  // A direction may be passed whole, and pictureContext takes the same shot cast.
+  assert.deepEqual(castFor({ cast: two }, "She waits", ["c1"]).map((m) => m.name), ["Mara"]);
+  const d = { ...good(), cast: two };
+  const ctx = pictureContext(d, "She turns the cake out of its tin", null, "realistic", ["c1"]);
+  assert.ok(ctx.startsWith("Mara: a thin woman in her thirties"), ctx);
+  assert.ok(!ctx.includes("bald man"), ctx);
+  // The direction's cast is as roomy as the spec's: six people, a 40-character name, a 420-character look.
+  assert.equal(D.cast.max, 6); assert.equal(D.cast.name, 40); assert.equal(D.cast.look, 420);
+  const six = Array.from({ length: 6 }, (_, i) => ({ name: `Character number ${i + 1}`, look: `a person of about ${20 + i} years with dark hair, a green coat and a leather satchel, ${"x".repeat(300)}` }));
+  assert.deepEqual(directionProblems(good({ cast: six }), { ...opts, scenes: 5 }), []);
+  assert.ok(directionProblems(good({ cast: [...six, six[0]] }), opts).some((p) => /cast has 7 entries, the limit is 6/.test(p)));
+  assert.ok(directionProblems(good({ cast: [{ ...six[0], id: 42 }] }), opts).some((p) => /cast\[0\]\.id must be the spec's cast id/.test(p)));
+});
+
+test("screenTextProblems skips the shots that must carry words: those covering a spec \"text\" item (24 September)", () => {
+  const prompts = [
+    { id: "01-a-s1", image_prompt: "A bakery front at dawn, the painted sign reading 'Da Mara' above the door" },
+    { id: "01-a-s2", image_prompt: "A screen displaying the words of the recipe" },
+    { id: "02-b-s1", image_prompt: "A wooden counter with flour and eggs" },
+  ];
+  assert.deepEqual(screenTextProblems(prompts).map((h) => h.id), ["01-a-s1", "01-a-s2"]);
+  assert.deepEqual(screenTextProblems(prompts, new Set(["01-a-s1"])).map((h) => h.id), ["01-a-s2"], "the covered sign is allowed, the stray screen is not");
+  assert.deepEqual(screenTextProblems(prompts, new Set()), screenTextProblems(prompts));
 });
 
 test("notEnglish reads Italian and French off their function words; foreignPictureFields names what must be English", () => {
@@ -370,50 +435,37 @@ test("stillness: a state is not an action, and a person is always alive", () => 
   assert.equal(stillness("").alive, false);
 });
 
-test("every repair the table offers is one the detector accepts", () => {
-  // The rule has to recognise its own repair. It did not: "clouds moving across the sky" was added to a still
+test("every movement the table offers is one the detector accepts", () => {
+  // The rule has to recognise its own repair. It did not: "clouds moving across the sky" was offered for a still
   // picture and then still read as still, because "moving" was missing from the verb list. This is the invariant
-  // that catches the next one, and it also proves enliven() converges in a single pass.
+  // that catches the next one: a picture that names the clause's own thing, with the clause added, needs nothing more.
   assert.ok(ENLIVEN_CLAUSES.length >= 10, ENLIVEN_CLAUSES.length);
   for (const clause of ENLIVEN_CLAUSES)
-    assert.ok(stillness(clause).alive, `the repair "${clause}" does not read as alive`);
-  for (const clause of ENLIVEN_CLAUSES) {
-    const once = enliven("a closed wooden door, flat even light with " + clause.split(" ")[0], 240);
-    assert.equal(enliven(once, 240), once, "a repaired picture is never repaired twice");
-  }
+    assert.ok(stillness(clause).alive, `the movement "${clause}" does not read as alive`);
+  for (const clause of ENLIVEN_CLAUSES)
+    assert.equal(motionHint(`a closed wooden door, flat even light, ${clause}`), null, "a picture that already moves is given no movement");
 });
 
-test("enliven repairs the shot instead of refusing it, using what the picture already shows", () => {
+test("motionHint names the movement for the clip, from what the picture already shows — and the picture is never rewritten (24 September)", () => {
+  // Until 24 September enliven() appended this clause to the image_prompt and, near the length limit, CUT the
+  // author's words to make room ("dust drifting through the light" replaced the end of what the user dictated). The
+  // clause now travels in the shot's "action" for the clip model; the still is drawn from the author's words alone.
   const road = "a wide empty coastal road through black volcanic rock at dawn, low mist, cold blue light";
-  const fixed = enliven(road, 240);
-  assert.ok(fixed.startsWith(road), fixed);
-  assert.ok(stillness(fixed).alive, fixed);
-  assert.match(fixed, /mist drifting/, "the movement comes from what the picture already names");
-
+  assert.match(motionHint(road), /mist drifting/, "the movement comes from what the picture already names");
   const compass = "a brass ship compass on a worn wooden table, candlelight from the left, dust in the air";
-  assert.match(enliven(compass, 240), /flame guttering/, "the candle is the thing that can move here");
-
+  assert.match(motionHint(compass), /flame guttering/, "the candle is the thing that can move here");
   // A picture that names nothing movable still gets the clause a cinematographer would add.
-  assert.match(enliven("a closed wooden door, flat even light", 240), /dust drifting through the light/);
-
-  const ship = "A wooden ship at anchor in a turquoise bay under a stormy sky";
-  assert.ok(stillness(enliven(ship, 240)).alive, "the sky is the thing that can move in this one");
-
-  // Already alive: left exactly as written.
-  const alive = "waves breaking over a stone pier at dusk";
-  assert.equal(enliven(alive, 240), alive);
-  assert.equal(enliven("", 240), "");
-
-  // The cap is never exceeded: the description gives up its tail rather than the movement.
+  assert.equal(motionHint("a closed wooden door, flat even light"), "dust drifting through the light");
+  assert.ok(stillness(motionHint("A wooden ship at anchor in a turquoise bay under a stormy sky")).alive, "the sky is the thing that can move in this one");
+  // Already alive, or empty: nothing to add.
+  assert.equal(motionHint("waves breaking over a stone pier at dusk"), null);
+  assert.equal(motionHint("a woman standing at a window in cold morning light"), null, "a person moves on their own");
+  assert.equal(motionHint(""), null);
+  // enliven() is kept for old callers and changes nothing but the surrounding whitespace, whatever the limit.
   const long = "a brass ship compass on a worn wooden table with low mist around it, " + "carved detail ".repeat(14);
-  const cut = enliven(long.trim(), 240);
-  assert.ok(cut.length <= 240, cut.length);
-  assert.ok(stillness(cut).alive, cut);
-  assert.ok(!/\s,/.test(cut), "no dangling space before the added clause");
-
-  // Too tight to say both: the author's words win, and nothing is truncated into nonsense.
-  const tight = "a compass on a table with low mist";
-  assert.equal(enliven(tight, tight.length + 5), tight);
+  assert.equal(enliven(`  ${long}  `, 240), long.trim(), "the author's words are never cut to make room");
+  assert.equal(enliven(road, 240), road, "and never grown");
+  assert.equal(enliven("", 240), "");
 });
 
 test("conformity reports what was asked against what was planned", () => {

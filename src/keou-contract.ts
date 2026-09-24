@@ -12,6 +12,9 @@
  *     identified by `<sceneId>-s<n>`; the old per-scene "image_prompt" is accepted as shorthand for a single shot and
  *     normalised away here, so what is stored (and what the engine sees) always carries shots.
  * Clients never set scene.image or shot.image themselves: the server generates the pictures and the worker attaches them.
+ *   - shot fields "covers", "cast", "action" (24 September 2026, AUTHORING_SHOT_FIELDS): what a shot shows of the
+ *     user's request spec, who is in it, what moves in it. Server-side only: stripForWorker() removes them (and a
+ *     top-level "spec") where src/internal.ts hands the storyboard to the worker.
  *
  * Shot grammar (src/shot-grammar.ts): a shot says what it is FOR — `shot_kind` in story terms — and the preset table
  * turns that into a camera move, a duration window, a motion strength and a prompt suffix. Nobody writes camera
@@ -54,9 +57,15 @@ export type { Move, ShotKind } from "./shot-grammar.ts";
  * what must never appear, and the colour law. It is a leaf module on purpose: it imports nothing from here, so this
  * file can import it without a cycle, and it takes the accent list as an argument instead of reaching for it.
  */
-import { directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, notEnglish, foreignPictureFields, type Direction, type Section } from "./direction.ts";
-export { directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor, conformity, notEnglish, foreignPictureFields, lightsPictures, GENRES, D as DIRECTION_LIMITS } from "./direction.ts";
-export type { Direction, Section, CastMember, Genre, Conformity } from "./direction.ts";
+import { directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, notEnglish, foreignPictureFields, spokenFacts, D as DL, type Direction, type Section } from "./direction.ts";
+export { directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor, conformity, notEnglish, foreignPictureFields, lightsPictures, spokenFacts, motionHint, GENRES, D as DIRECTION_LIMITS } from "./direction.ts";
+export type { Direction, Section, CastMember, CastRef, Genre, Conformity } from "./direction.ts";
+/**
+ * The request spec (src/spec.ts, 24 September 2026): the user's request taken apart into checkable items. A leaf
+ * module with no imports, so the contract can read it without a cycle: trimShots() protects the only shot that shows
+ * a must item, and fidelityWarnings() runs the deterministic coverage check on a storyboard that carries its spec.
+ */
+import { coverage, specOf, type RequestSpec } from "./spec.ts";
 // The layer (src/graphics.ts): what is drawn over the film, decided per film by its treatment. The validator holds
 // a storyboard to the grammar exactly as it holds it to the direction; the engine's hud.js draws only that grammar.
 import { graphicsProblems, repairGraphics, sceneHudProblems, cardProblems, type Graphics } from "./graphics.ts";
@@ -156,6 +165,27 @@ export const SHOT_AT_MAX = 24;
  */
 export const SHOT_FIELDS = ["image_prompt", "caption", "hl", "at", "shot_kind", "strength", "dur", "motion"] as const;
 /**
+ * THE AUTHORING FIELDS (24 September 2026, the fidelity engine): what a shot says about the USER'S REQUEST, read only
+ * on the server and removed before the storyboard reaches the worker (stripForWorker, called where src/internal.ts
+ * hands it over — worker/keou/contract.py refuses any shot key outside its SHOT_FIELDS, and it would refuse these on a
+ * GPU that has already been paid for).
+ *   - covers: the spec item ids this shot SHOWS ("R3", "R7"). The coverage check (src/spec.ts coverage) counts them,
+ *     the vision judge asks one question per id about the drawn still, and trimShots() never drops the only shot
+ *     that covers a must item.
+ *   - cast:   the characters IN THE PICTURE, by spec cast id ("c1") or by the direction's cast name. castFor() uses it
+ *     before it guesses from the prompt's words, and the stills engine passes those characters' sheets as references.
+ *   - action: what moves or happens during the shot, in English, for the clip model (the still is drawn from
+ *     image_prompt alone; the movement no longer rides on it — src/direction.ts motionHint()).
+ * They are not in SHOT_FIELDS, which stays the mirror of what the engine accepts.
+ */
+export const AUTHORING_SHOT_FIELDS = ["covers", "cast", "action"] as const;
+export const SHOT_ACTION_MAX = 240;
+export const SHOT_COVERS_MAX = 12;
+/** One entry of covers or cast: a spec id ("R12", "c3") or a cast name, at most the direction's name length. */
+export const SHOT_TAG_MAX = DL.cast.name;
+/** Characters one picture can name in its cast: the direction's own ceiling. */
+export const SHOT_CAST_MAX = DL.cast.max;
+/**
  * Shots per scene: a cinema scene cuts up to four times, a closing shows one picture (two at most).
  * The contract's floor stays 1 because worker/keou/contract.py has the same floor and the two must not drift; the
  * floor a NEW storyboard is actually held to is SHOTS_MIN_CINEMA, enforced by qualityProblems() on the server alone.
@@ -179,17 +209,47 @@ export function shotBudget(words: number): { min: number; max: number } {
   return { min: w >= SHOTS_MIN_WORDS_FOR_TWO ? SHOTS_MIN_CINEMA : 1, max: Math.max(1, Math.min(SHOTS_PER_SCENE.cinema[1], Math.floor(w / SHOTS_WORDS_PER_SHOT))) };
 }
 const voiceWords = (s: unknown): number => (isObj(s) && typeof s.voice === "string" ? s.voice.trim().split(/\s+/).filter(Boolean).length : 0);
+/** The spec ids a shot claims in `covers`, whatever the shot is. */
+const coversOf = (sh: unknown): string[] => (isObj(sh) && Array.isArray(sh.covers) ? sh.covers.filter((x): x is string => typeof x === "string") : []);
 /**
- * Every cinema scene keeps at most the shots its line can carry (shotBudget), the first ones: the last touch on a
- * storyboard before it is stored, on both roads into the queue, because the planner writes the shot count it is
- * told and not the one the seconds allow. Returns the number of shots dropped.
+ * Every cinema scene keeps at most the shots its line can carry (shotBudget): the last touch on a storyboard before it
+ * is stored, on both roads into the queue, because the planner writes the shot count it is told and not the one the
+ * seconds allow. Returns the number of shots dropped.
+ *
+ * WHICH shots go (24 September 2026). It used to keep the first ones and drop the rest blindly — and the rest were
+ * often the point: the second shot of a scene is where the user's "close-up of her hands on the letter" was, and it
+ * was cut for being second. With a spec, a shot that is the ONLY one covering a must item is never dropped; the shots
+ * that cover no must item go first (from the end of the scene), then the ones whose items another shot also shows.
+ * When every shot left is the sole witness of something the user asked for, the scene keeps them all, over budget:
+ * a scene a second too dense is a smaller fault than a film without the thing it was ordered for. Without a spec the
+ * order is the old one — the last shots go first.
  */
-export function trimShots(sb: { scenes?: unknown }): number {
+export function trimShots(sb: { scenes?: unknown }, spec?: RequestSpec | null): number {
+  const scenes = Array.isArray(sb.scenes) ? (sb.scenes as unknown[]) : [];
+  const must = new Set((spec?.items ?? []).filter((i) => i && i.must).map((i) => i.id));
+  // How many shots of the whole film claim each must item: a shot is the sole witness when its item's count is 1.
+  const count = new Map<string, number>();
+  for (const s of scenes) if (isObj(s) && Array.isArray(s.shots)) for (const sh of s.shots) for (const id of new Set(coversOf(sh))) if (must.has(id)) count.set(id, (count.get(id) ?? 0) + 1);
+  const claims = (sh: unknown) => coversOf(sh).some((id) => must.has(id));
+  const sole = (sh: unknown) => coversOf(sh).some((id) => must.has(id) && (count.get(id) ?? 0) <= 1);
   let dropped = 0;
-  for (const s of Array.isArray(sb.scenes) ? sb.scenes : []) {
+  for (const s of scenes) {
     if (!isObj(s) || s.kind === "closing" || !Array.isArray(s.shots)) continue;
-    const { max } = shotBudget(voiceWords(s));
-    if (s.shots.length > max) { dropped += s.shots.length - max; s.shots = s.shots.slice(0, max); }
+    const shots = s.shots as unknown[];
+    let over = shots.length - shotBudget(voiceWords(s)).max;
+    if (over <= 0) continue;
+    // Pass 0: the shots that claim no must item. Pass 1: the ones whose must items another shot also shows. Each pass
+    // walks from the end of the scene, so without a spec (nothing claims anything) this is exactly the old order.
+    for (const pass of [0, 1] as const) {
+      for (let i = shots.length - 1; i >= 0 && over > 0; i--) {
+        const sh = shots[i];
+        if (pass === 0 ? claims(sh) : sole(sh)) continue;
+        for (const id of new Set(coversOf(sh))) if (must.has(id)) count.set(id, (count.get(id) ?? 1) - 1);
+        shots.splice(i, 1); over--; dropped++;
+      }
+    }
+    // The first picture opens the scene and may not carry "at": when the old first shot went, the new one loses its anchor.
+    if (isObj(shots[0]) && "at" in shots[0]) delete shots[0].at;
   }
   return dropped;
 }
@@ -227,7 +287,18 @@ export function kleoStyleOf(sb: unknown): KleoStyle {
  * Only the styles that draw pictures (cartoon/realistic) have any; a cyber or stickman storyboard returns [].
  * A scene-level image_prompt without shots (old format, not yet normalised) counts as the single shot 1.
  */
-export function pictureScenes(sb: unknown): { id: string; image_prompt: string; accent: string | null }[] {
+export interface PictureScene {
+  id: string;
+  image_prompt: string;
+  accent: string | null;
+  /** The shot's kind as written (or as the validator resolved it), null when it has none. */
+  shot_kind: string | null;
+  /** The authoring fields (AUTHORING_SHOT_FIELDS), always present: empty lists and null when the shot has none. */
+  covers: string[];
+  cast: string[];
+  action: string | null;
+}
+export function pictureScenes(sb: unknown): PictureScene[] {
   const c = (typeof sb === "object" && sb !== null ? sb : {}) as Record<string, unknown>;
   if (!PICTURE_STYLES.includes(kleoStyleOf(c)) || !Array.isArray(c.scenes)) return [];
   return (c.scenes as unknown[]).flatMap((s) => {
@@ -240,7 +311,10 @@ export function pictureScenes(sb: unknown): { id: string; image_prompt: string; 
     return shots.flatMap((sh, i) => {
       const o = (typeof sh === "object" && sh !== null ? sh : {}) as Record<string, unknown>;
       const p = typeof o.image_prompt === "string" ? o.image_prompt.trim() : "";
-      return p ? [{ id: `${sc.id}-s${i + 1}`, image_prompt: p, accent }] : []; // a shot without a prompt keeps its index: ids follow the shot number
+      if (!p) return []; // a shot without a prompt keeps its index: ids follow the shot number
+      const tags = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && !!x.trim()).map((x) => x.trim()) : []);
+      const action = typeof o.action === "string" && o.action.trim() ? o.action.trim() : null;
+      return [{ id: `${sc.id}-s${i + 1}`, image_prompt: p, accent, shot_kind: typeof o.shot_kind === "string" ? o.shot_kind : null, covers: tags(o.covers), cast: tags(o.cast), action }];
     });
   });
 }
@@ -583,6 +657,12 @@ export function anchorShots(scene: Record<string, unknown>): void {
   });
 }
 
+/** A shot's covers or cast: a list of at most `max` short non-blank strings. One message per list, naming what it is for. */
+function tagList(v: unknown, label: string, max: number, what: string, e: Collector): void {
+  if (!Array.isArray(v) || v.length > max || !v.every((x) => typeof x === "string" && x.trim() && x.length <= SHOT_TAG_MAX && printable(x)))
+    e.add(`${label}: a list of at most ${max} short strings (each <=${SHOT_TAG_MAX} characters) — ${what}`);
+}
+
 /**
  * Picture style: a scene is a run of full-screen pictures ("shots") cut on the narration. No beats, no icons.
  * Folds the old shorthand (a scene-level image_prompt) into shots[0], so what the caller stores and what the engine
@@ -606,8 +686,17 @@ function validateShots(s: Record<string, unknown>, label: string, kind: "cinema"
     if ("clip" in sh) e.add(`${sl}: clip is not allowed in a storyboard (Kleo generates the video track on the GPU and attaches it there)`);
     // contract.py: `unknown = set(shot) - SHOT_FIELDS` → same wording, same sorted list. A stray "note" or "seed"
     // costs a whole rendered job otherwise. `image` keeps the dedicated message above.
-    const unknown = Object.keys(sh).filter((k) => k !== "image" && k !== "clip" && !(SHOT_FIELDS as readonly string[]).includes(k));
+    const unknown = Object.keys(sh).filter((k) => k !== "image" && k !== "clip" && !(SHOT_FIELDS as readonly string[]).includes(k) && !(AUTHORING_SHOT_FIELDS as readonly string[]).includes(k));
     if (unknown.length) e.add(`${sl}: unknown shot fields ${sorted(unknown)}`);
+    // The authoring fields: optional (every storyboard written before 24 September 2026 has none, and a shot with
+    // nobody in it has no cast), null read as absent and dropped from the stored copy, a wrong type refused.
+    for (const f of AUTHORING_SHOT_FIELDS) {
+      const v = sh[f];
+      if (f in sh && (v === null || v === undefined || (f === "action" && typeof v === "string" && !v.trim()))) delete sh[f];
+    }
+    if ("covers" in sh) tagList(sh.covers, `${sl} covers`, SHOT_COVERS_MAX, 'the spec item ids this shot shows ("R1", "R2"…)', e);
+    if ("cast" in sh) tagList(sh.cast, `${sl} cast`, SHOT_CAST_MAX, 'the characters in this picture, by spec cast id ("c1") or by their cast name', e);
+    if ("action" in sh) e.text(sh.action, `${sl} action`, SHOT_ACTION_MAX);
     if (e.text(sh.image_prompt, `${sl} image_prompt`, IMAGE_PROMPT_MAX) && (sh.image_prompt as string).trim().length < IMAGE_PROMPT_MIN)
       e.add(`${sl} image_prompt: required text, minimum ${IMAGE_PROMPT_MIN} characters`);
     if ("caption" in sh) e.text(sh.caption, `${sl} caption`, SHOT_CAPTION_MAX);
@@ -949,6 +1038,25 @@ function clone<T>(v: T): T {
 }
 
 /**
+ * The storyboard as the WORKER receives it: a deep copy without the server's authoring fields — covers, cast and
+ * action on every shot (AUTHORING_SHOT_FIELDS) and a top-level "spec". worker/keou/contract.py closes the shot field
+ * set and refuses a job whose shot carries anything else, on a GPU that is already rented; the worker itself only
+ * strips image_prompt, shot_kind and dur. A scene's own "cast" (the stickman's STORY_CAST) is an engine field and is
+ * left alone: only shots lose theirs. The stored storyboard (jobs.storyboard) keeps everything; this runs where
+ * src/internal.ts hands it over.
+ */
+export function stripForWorker<T>(sb: T): T {
+  const out = clone(sb);
+  if (!isObj(out)) return out;
+  delete out.spec;
+  if (Array.isArray(out.scenes))
+    for (const s of out.scenes as unknown[])
+      if (isObj(s) && Array.isArray(s.shots))
+        for (const sh of s.shots as unknown[]) if (isObj(sh)) for (const f of AUTHORING_SHOT_FIELDS) delete sh[f];
+  return out;
+}
+
+/**
  * The two rules that separate a video from a slideshow. They live HERE and not in worker/keou/contract.py on purpose:
  * the server may be stricter than the worker (nothing reaches a rented GPU that the GPU would then refuse), never the
  * other way round, so tightening here costs nothing and no python change can fall out of step with it.
@@ -969,9 +1077,18 @@ function clone<T>(v: T): T {
  */
 export function fidelityWarnings(sb: unknown): string[] {
   const c = (typeof sb === "object" && sb !== null ? sb : {}) as Record<string, unknown>;
+  const out: string[] = [];
   const d = directionOf(c);
-  if (!d) return [];
-  return missingFacts(d.must_keep ?? [], narrationOf(c)).map((fact) => `direction.must_keep says "${fact}" but the narration never says it: put it in a scene's "voice", in the words the viewer will hear.`);
+  // Only the facts a narrator can SAY (24 September 2026): a look kept in must_keep is proven by the pictures, and
+  // holding the narration to it is what made a film open on "capelli biondi raccolti, grembiule lilla" read aloud.
+  if (d) for (const fact of missingFacts(spokenFacts(d.must_keep ?? [], Array.isArray(d.cast) ? d.cast : []), narrationOf(c)))
+    out.push(`direction.must_keep says "${fact}" but the narration never says it: put it in a scene's "voice", in the words the viewer will hear.`);
+  // A storyboard that carries the user's spec is held to it the same way: what the shots claim (covers), what the
+  // narration says, the order of the events. Warnings, like must_keep — the planner feeds them back and the semantic
+  // judge (src/fidelity.ts) decides what is really missing.
+  const spec = specOf(c);
+  if (spec) for (const p of coverage(spec, c).problems) out.push(`spec: ${p}`);
+  return out;
 }
 
 export function qualityProblems(sb: unknown): string[] {

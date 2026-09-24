@@ -13,9 +13,11 @@ import { stillness } from "../src/direction.ts";
 import { TEMPLATE_IDS } from "../src/templates.ts";
 import { directionProblems, CINEMA_ACCENTS, notEnglish } from "../src/keou-contract.ts";
 import { validateStoryboard, pictureScenes, quotesVoice, BEAT_ICONS, STORY_ACTS } from "../src/keou-contract.ts";
-import { assignShotKinds } from "../src/storyboard.ts";
+import { assignShotKinds, writeSpec, actSkeleton, splitScript, applySpecToDirection, isOutOfCredit, REPAIR_MIN_MS } from "../src/storyboard.ts";
 import { SHOT_KINDS, presetFor, moveClassOf, isLoud, needsStaticHold, LOUD_MAX_PER_WINDOW } from "../src/shot-grammar.ts";
 import { TREATMENT_FIXTURE } from "./fixtures/treatment.mjs";
+import { JUDGE_SYSTEM } from "../src/fidelity.ts";
+import { SPEC_METHOD, coverage } from "../src/spec.ts";
 
 const moveOfKind = (k) => presetFor(k).move;
 const classOfKind = (k) => moveClassOf(moveOfKind(k));
@@ -109,15 +111,27 @@ function fakeEnv(respond, opts = {}) {
       const user = inputs.messages.at(-1).content;
       // The treatment call (step -1 since 14 September) is answered by the fixture unless a test passes
       // `opts.treatment`, the same way the direction is: no test here has to know the step exists.
-      const kind = /TASK: write the TREATMENT/.test(user) ? "treatment"
+      // The spec (step -2 since 24 September) is answered with something that is not a spec unless a test passes
+      // `opts.spec`: the film is then planned without one, exactly as before — which is what every older test here
+      // is about. The judge (src/fidelity.ts) fails unless a test passes `opts.judge`, and the planner falls back on
+      // the deterministic coverage, as it does in production when the judge cannot be reached.
+      const kind = /TASK: take this request apart into the spec/.test(user) ? "spec"
+        : inputs.messages[0].content === JUDGE_SYSTEM ? "judge"
+        : /TASK: write the TREATMENT/.test(user) ? "treatment"
         : /TASK: write the DIRECTION/.test(user) ? "direction"
         : /TASK: plan the whole video/.test(user) ? "outline"
+        : /TASK: correct these scenes/.test(user) ? "repair"
         // The English pass (19 September): the direction's picture fields, then the picture prompts, come back in
         // English. Answered as the identity unless a test cares (`respond` sees the kind like any other).
         : /TASK: return the same object with every value in natural English/.test(user) ? "english-fields"
-        : /TASK: return \{"prompts":/.test(user) ? "english-prompts" : "chunk";
+        : /TASK: return \{"prompts":/.test(user) ? "english-prompts"
+        : /write scenes (\d+)–(\d+)/.test(user) ? "chunk" : "other";
       const key = kind === "chunk" ? `chunk-${chunkRange(user).join("-")}` : kind;
       const a = (attempts.get(key) ?? 0) + 1; attempts.set(key, a);
+      if (kind === "other") throw new Error(`the fake model does not know this call: ${user.slice(0, 80)}`);
+      if (kind === "spec") return { response: opts.spec ? await opts.spec(user, a, inputs) : { note: "no spec in this test" }, usage: {} };
+      if (kind === "judge") { if (!opts.judge) throw new Error("no judge in this test"); return { response: await opts.judge(user, a, inputs), usage: {} }; }
+      if (kind === "repair" && opts.repair) return { response: await opts.repair(user, a, inputs), usage: {} };
       const handler = kind === "treatment" ? (opts.treatment ?? (() => TREATMENT_FIXTURE(Number(/THE FILM: .*?, (\d+) seconds/.exec(user)?.[1] ?? 45))))
         : kind === "direction" ? (opts.direction ?? directionFor) : respond;
       const out = (kind === "treatment" && !opts.treatment) || (kind === "direction" && !opts.direction) ? handler(user) : await handler(kind, user, a, inputs);
@@ -377,11 +391,15 @@ test("picture: normalizeStoryboard turns a scene image_prompt into shots and kee
   const a = sb.scenes[0];
   assert.equal(a.id, "01-hook", "ids are slugged");
   // The shorthand becomes shot 1 — and, having named nothing that moves, it is given something: a still description
-  // comes back as a frozen frame once the shot is a generated clip (measured at 0.03 px), so the planner repairs it.
+  // comes back as a frozen frame once the shot is a generated clip (measured at 0.03 px). Until 24 September 2026 the
+  // movement was appended to the image_prompt, and the prompt was cut to make room for it (the author's "lilac apron"
+  // was the clause that fell off); now the picture prompt stays the author's words and the movement is the shot's
+  // "action", which the clip model reads.
   assert.equal(a.shots.length, 1);
   assert.equal(a.shots[0].shot_kind, "hook", "the first picture of the video opens it");
-  assert.ok(a.shots[0].image_prompt.startsWith("A wooden ship at anchor in a turquoise bay under a stormy sky"), a.shots[0].image_prompt);
-  assert.ok(stillness(a.shots[0].image_prompt).alive, "something in it is doing something");
+  assert.equal(a.shots[0].image_prompt, "A wooden ship at anchor in a turquoise bay under a stormy sky", "the author's words, untouched");
+  assert.ok(typeof a.shots[0].action === "string" && a.shots[0].action.length > 0, "the movement lives in the action");
+  assert.ok(stillness(`${a.shots[0].image_prompt}, ${a.shots[0].action}`).alive, "and with it something in the shot is doing something");
   assert.ok(!("image_prompt" in a) && !("beats" in a) && !("eyebrow" in a) && !("visual" in a) && !("items" in a));
   const z = sb.scenes[1];
   assert.equal(z.shots.length, 2, "a closing shows one picture, two at most");
@@ -977,4 +995,250 @@ test("denyInPictures: the treatment's denials join the direction's forbidden lis
   assert.deepEqual(denyInPictures(sb, t), [], "idempotent");
   assert.deepEqual(denyInPictures({ scenes: [] }, t), [], "no direction: nothing to add to");
   assert.deepEqual(denyInPictures(sb, null), []);
+});
+
+
+/* ------------------------------------------------------------------ the spec and the fidelity gate (24 September 2026) */
+
+/** A request the user told scene by scene: a named character with a look, two events in order. */
+const MARA_REQUEST = "Mara, a thin pastry chef with short blonde hair and a lilac apron, bakes a lemon cake, then carries it to the village square.";
+/** The spec a good writer returns for it: every quote is the user's, the events carry their order. */
+const MARA_SPEC = () => ({
+  v: 1, mode: "faithful", summary: "Mara the pastry chef bakes a lemon cake and carries it to the village square.",
+  cast: [{ id: "c1", name: "Mara", look: "a thin woman with short blonde hair tied up, wearing a lilac apron" }],
+  items: [
+    { id: "R1", kind: "character", text: "Mara, a thin pastry chef", quote: "Mara, a thin pastry chef", must: true, who: "c1" },
+    { id: "R2", kind: "look", text: "Mara wears a lilac apron", quote: "a lilac apron", must: true, who: "c1" },
+    { id: "R3", kind: "event", text: "Mara bakes a lemon cake", quote: "bakes a lemon cake", must: true, order: 1 },
+    { id: "R4", kind: "event", text: "Mara carries the cake to the village square", quote: "carries it to the village square", must: true, order: 2 },
+  ],
+  refs: [], open: ["the ending"], narration: "free", script: null,
+});
+const maraJob = (spec, extra = {}) => ({ id: "gt_mara", template: "viral-short", prompt: MARA_REQUEST, params: JSON.stringify({ duration_s: 30, format: "9:16", language: "en", voice: null, style: "realistic", ...(spec ? { spec } : {}), ...extra }) });
+
+/**
+ * One chunk of the Mara film. The first shot of the chunk's first scene claims `claim(owed, attempt)` — `owed` being
+ * the requirement ids the prompt says these scenes owe (the "THESE SCENES MUST SHOW OR SAY" block) — and every shot
+ * names Mara (c1) in its cast.
+ */
+function maraScenes(user, attempt, claim) {
+  const [from, to] = chunkRange(user);
+  const total = Number(/VIDEO OUTLINE \((\d+) scenes/.exec(user)[1]);
+  const owed = [...user.matchAll(/^ {2}(R\d+) \[/gm)].map((m) => m[1]);
+  const scenes = [];
+  for (let i = from; i < to; i++) scenes.push(maraScene(i, total, i === from ? claim(owed, attempt) : []));
+  return { scenes };
+}
+function maraScene(i, total, covers) {
+  const closing = i === total - 1;
+  return {
+    id: `${String(i + 1).padStart(2, "0")}-part`, kind: closing ? "closing" : "cinema", chapter: `0${i + 1} PART`, accent: "cyan", title: `Part ${i + 1}`, hl: "Part", hold: 0.2,
+    voice: `Scene ${i + 1}: Mara bakes a lemon cake in her small kitchen, then carries it across the village square.`,
+    shots: closing
+      ? [{ image_prompt: "The village square at dusk, an empty cake stand under lanterns swaying on a string", action: "lanterns swaying in the evening wind" }]
+      : [
+          { image_prompt: "Mara, a thin pastry chef with short blonde hair and a lilac apron, lifts a lemon cake from the oven in a small kitchen", covers, cast: ["c1"], action: "Mara lifts the cake and turns towards the door" },
+          { image_prompt: "Mara crossing the sunny village square with the lemon cake held high", at: "carries it", cast: ["c1"], action: "Mara walking across the square" },
+        ],
+    ...(closing ? { button: "Follow" } : {}),
+  };
+}
+
+test("writeSpec: a valid answer is the spec, at temperature 0 under the spec method", async () => {
+  const seen = [];
+  const env = { AI_MODEL: "@cf/meta/llama-4-scout-17b-16e-instruct", AI: { async run(model, inputs) { seen.push({ model, inputs }); return { response: MARA_SPEC(), usage: { prompt_tokens: 900, completion_tokens: 400 } }; } } };
+  const r = await writeSpec(env, { prompt: MARA_REQUEST, language: "en" });
+  assert.ok(r.spec, JSON.stringify(r.history));
+  assert.equal(r.spec.mode, "faithful", "two events and a described character: the user's film");
+  assert.deepEqual(r.spec.items.map((i) => i.id), ["R1", "R2", "R3", "R4"]);
+  assert.equal(r.attempts, 1); assert.equal(r.transient, false); assert.deepEqual(r.history, []);
+  assert.equal(seen[0].inputs.messages[0].content, SPEC_METHOD);
+  assert.equal(seen[0].inputs.temperature, 0, "extraction, not creation");
+  assert.match(seen[0].inputs.messages[1].content, /TASK: take this request apart into the spec/);
+  assert.equal(r.model, "@cf/meta/llama-4-scout-17b-16e-instruct");
+  assert.ok(r.usage.prompt_tokens > 0);
+});
+
+test("writeSpec: an invented item refuses the first answer with the reason, and is dropped from the second", async () => {
+  const users = [];
+  const invented = () => { const s = MARA_SPEC(); s.items.push({ id: "R5", kind: "object", text: "a golden trophy on the counter", quote: "a golden trophy", must: true }); return s; };
+  const env = { AI: { async run(_m, inputs) { users.push(inputs.messages[1].content); return { response: invented(), usage: {} }; } } };
+  const r = await writeSpec(env, { prompt: MARA_REQUEST, language: "en" });
+  assert.equal(r.attempts, 2);
+  assert.match(users[1], /YOUR PREVIOUS ANSWER WAS REJECTED[\s\S]*a golden trophy[\s\S]*is not in the user's request/, "the second attempt is told which quote was invented");
+  assert.ok(r.spec, "the second answer is read under the lenient rule");
+  assert.deepEqual(r.spec.items.map((i) => i.id), ["R1", "R2", "R3", "R4"], "the invention is gone, the user's items stay");
+  assert.ok(r.history.some((h) => /^spec: rejected/.test(h)));
+  // A reference image Kleo does not hold is an invention too: it goes before the spec is checked.
+  const withRef = { AI: { async run() { const s = MARA_SPEC(); s.refs = [{ id: "ref1", handle: "kref_deadbeef", role: "character", for: "c1" }]; return { response: s, usage: {} }; } } };
+  const noRef = await writeSpec(withRef, { prompt: MARA_REQUEST, language: "en" });
+  assert.deepEqual(noRef.spec.refs, [], "no image was given, so no image is referenced");
+  const held = await writeSpec(withRef, { prompt: MARA_REQUEST, language: "en", refs: [{ handle: "kref_deadbeef", description: "a woman in a lilac apron" }] });
+  assert.equal(held.spec.refs[0].handle, "kref_deadbeef", "an image Kleo holds is kept");
+});
+
+test("writeSpec never throws: an outage is transient, nonsense is two rejections, no binding is said", async () => {
+  const down = await writeSpec({ AI: { async run() { throw new Error("503 capacity"); } } }, { prompt: MARA_REQUEST, language: "en" });
+  assert.equal(down.spec, null); assert.equal(down.transient, true); assert.equal(down.attempts, 1);
+  const bad = await writeSpec({ AI: { async run() { return { response: "not a spec at all" }; } } }, { prompt: MARA_REQUEST, language: "en" });
+  assert.equal(bad.spec, null); assert.equal(bad.transient, false); assert.equal(bad.attempts, 2);
+  const none = await writeSpec({}, { prompt: MARA_REQUEST, language: "en" });
+  assert.equal(none.spec, null); assert.equal(none.transient, true);
+});
+
+test("a faithful spec: no device is drawn, the treatment runs cool, the direction is held to the spec and shaped by the treatment's acts", async () => {
+  const seen = { treatment: [], direction: [], shotSchema: null };
+  const env = fakeEnv((kind, user, attempt, inputs) => {
+    if (kind === "outline") { assert.match(user, /REQUIREMENTS TO PLACE/); return outlineFor(user, true); }
+    seen.shotSchema ??= inputs.response_format.json_schema.properties.scenes.items.properties.shots.items;
+    return maraScenes(user, attempt, (owed) => owed);
+  }, {
+    spec: () => { throw new Error("the spec came with the job: it must not be written again"); },
+    treatment: (kind, user, a, inputs) => { seen.treatment.push({ user, temperature: inputs.temperature }); return TREATMENT_FIXTURE(Number(/THE FILM: .*?, (\d+) seconds/.exec(user)?.[1] ?? 30)); },
+    direction: (kind, user) => { seen.direction.push(user); return directionFor(user); },
+  });
+  const r = await generateStoryboard(env, maraJob(MARA_SPEC()));
+  const sb = r.storyboard;
+  assert.deepEqual(validateStoryboard(sb, { format: "9:16", language: "en" }).ok ? [] : validateStoryboard(sb, { format: "9:16", language: "en" }).errors, []);
+  assert.equal(r.spec.mode, "faithful"); assert.equal(sb.spec.summary, r.spec.summary, "the spec travels with the stored storyboard");
+  // No draw: the device is the user's own sequence, the opening is where their request starts.
+  assert.equal(seen.treatment[0].temperature, 0.4, "a faithful treatment is arranged, not invented");
+  assert.match(seen.treatment[0].user, /as-told/);
+  assert.equal(r.treatment.variation, "as-told/as-asked");
+  assert.equal(r.treatment.device, "as-told");
+  // The direction is written under the requirements, and its sections are the treatment's acts, not HOOK/REVEAL/PROOF/TURN.
+  assert.match(seen.direction[0], /THE USER'S REQUEST, AS REQUIREMENTS/);
+  assert.match(seen.direction[0], /one section per act/);
+  const bones = actSkeleton(r.treatment.acts, sb.scenes.length);
+  assert.deepEqual(sb.direction.sections.map((s) => [s.accent, s.scenes]), bones.map((b) => [b.accent, b.scenes]));
+  assert.deepEqual(sb.scenes.map((s) => s.accent), bones.flatMap((b) => Array.from({ length: b.scenes }, () => b.accent)), "the colour law follows the acts");
+  // The cast is the user's, with every look item folded in.
+  assert.equal(sb.direction.cast.length, 1); assert.equal(sb.direction.cast[0].name, "Mara");
+  assert.match(sb.direction.cast[0].look, /short blonde hair/); assert.match(sb.direction.cast[0].look, /lilac apron/);
+  // The shot schema offers exactly the spec's ids, and every shot comes back with its action.
+  assert.ok(seen.shotSchema.properties.covers.items.enum.includes("R2"));
+  assert.deepEqual(seen.shotSchema.properties.cast.items.enum, ["c1"]);
+  assert.ok("action" in seen.shotSchema.properties);
+  for (const s of sb.scenes) for (const sh of s.shots) assert.ok(typeof sh.action === "string" && sh.action.length, JSON.stringify(sh));
+  // Everything the user asked for is claimed, and the (deterministic) judge says so.
+  assert.deepEqual(coverage(r.spec, sb).uncovered, []);
+  assert.equal(r.fidelity.judge, "deterministic"); assert.equal(r.fidelity.score, 1);
+  assert.ok(r.history.some((h) => h.some((m) => /^fidelity: 100%/.test(m))), JSON.stringify(r.history));
+});
+
+test("the spec's coverage problems reach the next attempt of the chunk that owes them", async () => {
+  const users = [];
+  const env = fakeEnv((kind, user, attempt) => {
+    if (kind === "outline") return outlineFor(user, true);
+    users.push({ user, attempt });
+    // The first answer claims nothing; the second claims what it was told it owes.
+    return maraScenes(user, attempt, (owed, a) => (a === 1 ? [] : owed));
+  });
+  const r = await generateStoryboard(env, maraJob(MARA_SPEC()));
+  const second = users.find((u) => u.attempt === 2 && /THESE SCENES MUST SHOW OR SAY/.test(u.user));
+  assert.ok(second, "the chunk that owes the requirements was asked again");
+  assert.match(second.user, /YOUR PREVIOUS ANSWER WAS REJECTED[\s\S]*R2 \(look\): no shot shows/);
+  assert.match(second.user, /R3 \(event\): no shot shows/);
+  assert.deepEqual(coverage(r.spec, r.storyboard).uncovered, [], "and the film it made covers them");
+  assert.ok(r.history.some((h) => h.some((m) => /R2 \(look\): no shot shows/.test(m))));
+});
+
+test("the fidelity repair round keeps a plan that covers more, and discards one that covers less", async () => {
+  // Every chunk attempt forgets the apron (R2): three tries, then the chunk is kept, and the gate finds R2 lost.
+  const forgetful = (kind, user, attempt) => (kind === "outline" ? outlineFor(user, true) : maraScenes(user, attempt, (owed) => owed.filter((id) => id !== "R2")));
+  const asked = (user) => [...(/^TASK: correct these scenes.*$/m.exec(user)?.[0] ?? "").matchAll(/scene (\d+) \[([^\]]+)\]/g)].map((m) => ({ i: Number(m[1]) - 1, id: m[2] }));
+  const total = (user) => JSON.parse(/^THE PLANNED FILM \(every scene, in order\):\n(.*)$/m.exec(user)[1]).length;
+
+  let repairUser = null;
+  const better = fakeEnv(forgetful, { repair: (user) => { repairUser = user; const n = total(user); return { scenes: asked(user).map(({ i }) => maraScene(i, n, ["R1", "R2", "R3", "R4"])) }; } });
+  const kept = await generateStoryboard(better, maraJob(MARA_SPEC()));
+  assert.ok(repairUser, "a lost must item with the budget left asks for one repair round");
+  assert.match(repairUser, /R2 \(look\) "Mara wears a lilac apron"[\s\S]*is missing/, "the round is told what was lost, in the judge's words");
+  assert.deepEqual(asked(repairUser).map((x) => x.id), ["01-part"], "only the scene the item was handed to is rewritten");
+  assert.ok(kept.history.some((h) => h.some((m) => /^fidelity repair: kept/.test(m))), JSON.stringify(kept.history));
+  assert.deepEqual(coverage(kept.spec, kept.storyboard).uncovered, [], "the repaired plan shows the apron");
+  assert.equal(kept.fidelity.score, 1, "and the verdict is the repaired plan's");
+  assert.ok(validateStoryboard(kept.storyboard, { format: "9:16", language: "en" }).ok);
+
+  const worse = fakeEnv(forgetful, { repair: (user) => { const n = total(user); return { scenes: asked(user).map(({ i }) => maraScene(i, n, [])) }; } });
+  const discarded = await generateStoryboard(worse, maraJob(MARA_SPEC()));
+  assert.ok(discarded.history.some((h) => h.some((m) => /^fidelity repair: discarded, it covers less/.test(m))), JSON.stringify(discarded.history));
+  assert.deepEqual(coverage(discarded.spec, discarded.storyboard).uncovered, ["R2"], "the plan that was better stays: only the apron is missing");
+  assert.equal(discarded.fidelity.verdicts.find((v) => v.id === "R2").status, "lost", "and the verdict says so");
+  assert.ok(REPAIR_MIN_MS >= 60_000);
+});
+
+test("402 from the external road: the same call once on Workers AI, and never a pause", async () => {
+  const seen = [];
+  setPlanFetch(async () => new Response(JSON.stringify({ error: { message: "Insufficient credits. This request requires more credits, or fewer max_tokens. You requested up to 8000 tokens, but can only afford 5123." } }), { status: 402, headers: { "content-type": "application/json" } }));
+  try {
+    const env = { PLAN_API_URL: "https://openrouter.ai/api/v1", PLAN_API_KEY: "or-test", PLAN_MODEL: "anthropic/claude-sonnet-5", AI_MODEL: "@cf/meta/llama-4-scout-17b-16e-instruct",
+      AI: { async run(model, inputs) { seen.push({ model, inputs }); return { response: { ok: 3 }, usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } }; } } };
+    const out = await callModel(env, "anthropic/claude-sonnet-5", [{ role: "system", content: "S" }, { role: "user", content: "U" }], { type: "object" }, 700, 0.3, 5000);
+    assert.deepEqual(out.raw, { ok: 3 });
+    assert.equal(out.fallback, "@cf/meta/llama-4-scout-17b-16e-instruct");
+    assert.equal(seen[0].model, "@cf/meta/llama-4-scout-17b-16e-instruct");
+    assert.deepEqual(seen[0].inputs.messages, [{ role: "system", content: "S" }, { role: "user", content: "U" }], "the same call, word for word");
+    // PLAN_FALLBACK_MODEL wins over AI_MODEL.
+    await callModel({ ...env, PLAN_FALLBACK_MODEL: "@cf/openai/gpt-oss-120b" }, "anthropic/claude-sonnet-5", [{ role: "user", content: "U" }], {}, 100, 0.3, 5000);
+    assert.equal(seen[1].model, "@cf/openai/gpt-oss-120b");
+    // Without Workers AI there is nowhere to fall back to: the refusal itself comes back, and it is not a pause.
+    const e = await callModel({ ...env, AI: undefined }, "anthropic/claude-sonnet-5", [{ role: "user", content: "U" }], {}, 100, 0.3, 5000).then(() => null, (x) => x);
+    assert.match(String(e), /plan api 402/);
+    assert.equal(isOutOfCredit(e), true); assert.equal(isTransientAiError(e), false, "a 402 carrying the number 5123 is not a 5xx");
+  } finally { setPlanFetch(undefined); }
+  assert.equal(isOutOfCredit(new Error("anthropic 401: invalid x-api-key")), true);
+  assert.equal(isOutOfCredit(new Error("anthropic 429: slow down")), false);
+  assert.equal(isTransientAiError(new Error("anthropic 429: slow down")), true, "a rate limit still pauses");
+  assert.equal(isTransientAiError(new Error("AiError: 4006: you have used up your daily free allocation of 10,000 neurons")), true, "Workers AI's own quota still pauses");
+  assert.equal(isOutOfCredit(new Error("AiError: 4006: daily free allocation, quota")), false, "only the external road falls back");
+});
+
+test("actSkeleton: the treatment's acts tile the film, neighbours never share a colour, the first and the last act survive", () => {
+  const acts = [
+    { name: "The kitchen at dawn", purpose: "Mara bakes", seconds: 8 },
+    { name: "The oven door", purpose: "the cake is ready", seconds: 4 },
+    { name: "The long walk", purpose: "she carries it", seconds: 12 },
+    { name: "The square", purpose: "the village gathers", seconds: 6 },
+  ];
+  for (const scenes of [2, 3, 4, 5, 6, 9, 12, 30]) {
+    const bones = actSkeleton(acts, scenes);
+    assert.equal(bones.reduce((a, b) => a + b.scenes, 0), scenes, `${scenes}: the sections tile the film`);
+    assert.ok(bones.every((b) => b.scenes >= 1));
+    bones.forEach((b, i) => { if (i) assert.notEqual(b.accent, bones[i - 1].accent, `${scenes}: sections ${i} and ${i + 1} share a colour`); });
+    assert.equal(bones[0].name, "THE KITCHEN AT DAWN"); assert.equal(bones.at(-1).name, "THE SQUARE");
+    const d = { subject: "x", goal: "y", audience: "z", tone: "w", world: "a place", must_keep: [], cast: [], objects: ["a", "b", "c"], forbidden: ["x1", "x2", "x3"],
+      sections: bones.map((b) => ({ name: b.name, means: b.role.slice(0, 40), accent: b.accent, scenes: b.scenes })) };
+    assert.deepEqual(directionProblems(d, { accents: CINEMA_ACCENTS, scenes }), [], `${scenes} scenes`);
+  }
+  assert.deepEqual(actSkeleton(acts, 3).map((b) => b.name), ["THE KITCHEN AT DAWN", "THE LONG WALK", "THE SQUARE"], "too few scenes: the longest middle act stays");
+  const twelve = actSkeleton(acts, 12);
+  assert.ok(twelve[2].scenes > twelve[1].scenes, "scenes follow the seconds");
+});
+
+test("applySpecToDirection: the user's cast, lines and exclusions win, and never at the cost of a valid direction", () => {
+  const spec = { ...MARA_SPEC(), items: [...MARA_SPEC().items,
+    { id: "R5", kind: "line", text: "the narrator says 'a cake for everyone'", quote: "a cake for everyone", must: true },
+    { id: "R6", kind: "exclude", text: "no dogs", quote: "no dogs", must: true },
+    { id: "R7", kind: "object", text: "a wicker basket", quote: "wicker basket", must: true }] };
+  const d = { subject: "Mara", goal: "g", audience: "a", tone: "t", world: "a village", must_keep: ["the village square"], cast: [{ name: "the baker", look: "a kind woman in a white apron and a straw hat" }],
+    objects: ["oven", "cake", "square"], forbidden: ["logos", "phones", "cars"], sections: [{ name: "ONE", accent: "cyan", means: "m", scenes: 2 }, { name: "TWO", accent: "green", means: "m", scenes: 2 }] };
+  const changed = applySpecToDirection(d, spec, 4);
+  assert.deepEqual(changed.sort(), ["cast", "forbidden", "must_keep", "objects"]);
+  assert.deepEqual(d.cast.map((c) => c.name), ["Mara"]);
+  assert.match(d.cast[0].look, /lilac apron/);
+  assert.equal(d.must_keep[0], "a cake for everyone"); assert.ok(d.must_keep.includes("the village square"), "the direction's own facts stay after the user's");
+  assert.equal(d.forbidden[0], "dogs"); assert.equal(d.objects[0], "a wicker basket");
+  assert.deepEqual(directionProblems(d, { accents: CINEMA_ACCENTS, scenes: 4 }), []);
+});
+
+test("splitScript: the user's words in order, nothing lost, never an empty scene", () => {
+  const script = "Mara wakes before the sun. She measures the flour twice. The lemons are cold from the night. The oven ticks as it warms. By noon the cake is done. She carries it to the square, and the whole village turns.";
+  for (const n of [1, 2, 3, 4, 6, 9]) {
+    const parts = splitScript(script, n);
+    assert.equal(parts.length, n);
+    assert.ok(parts.every((p) => p.trim().length), `${n}: no empty part`);
+    assert.equal(parts.join(" "), script, `${n}: the parts are the script, in order`);
+  }
+  assert.deepEqual(splitScript(script, 2), ["Mara wakes before the sun. She measures the flour twice. The lemons are cold from the night.", "The oven ticks as it warms. By noon the cake is done. She carries it to the square, and the whole village turns."]);
 });

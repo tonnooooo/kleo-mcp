@@ -8,6 +8,7 @@ import { FILE_NAMES } from "./jobs";
 import { putFile, getFile } from "./storage";
 import { generateStoryboard, StoryboardError, writeTreatment } from "./storyboard";
 import { proseDistance } from "./treatment.ts";
+import { stripForWorker } from "./keou-contract.ts";
 import { findTemplate } from "./templates";
 import { generateJobImages, IMAGE_NAME_RE } from "./images";
 import { footageBackendFor, footageConfig, setFootageConfig, kieModelFor, requestFootage, footageStatus, footageSpentTodayUsd, kieBalanceUsd, clipKey, footageRows, KIE_MODELS, SHOT_ID_RE, STILL_NAME_RE, type ShotRequest, requestMusic, musicStatus, musicOn, musicKey, MUSIC_ID, type MusicRequest } from "./footage";
@@ -51,14 +52,18 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
   const rest = m[2] ?? "";
 
   if (rest === "" && request.method === "GET") {
-    const params = JSON.parse(job.params) as { style?: string };
+    // The spec, the reference handles and the intake answers are the server's (planner, stills engine): the box never
+    // reads them, and a spec is kilobytes the worker would print into every log line that shows the params.
+    const { spec: _spec, refs: _refs, brief: _brief, stills: _stills, ...params } = JSON.parse(job.params) as { style?: string; spec?: unknown; refs?: unknown; brief?: unknown; stills?: unknown };
     const cfg = await footageConfig(env);
     return json({ job_id: job.id, template: job.template, prompt: job.prompt, params, state: job.state, style: params.style ?? null, phase: job.phase ?? "gen",
       // Where the clips come from: repeated here for runners that get no env from Vast (the box's env wins when set).
       footage: { backend: footageBackendFor(env, job, cfg), model: kieModelFor(env, cfg).name },
       // Whether the user's music track can be ordered here at all (22 September): the box skips the road when it cannot.
       music: { available: musicOn(env) },
-      storyboard: job.storyboard ? JSON.parse(job.storyboard) : null, brand: env.BRAND || "Kleo",
+      // The worker gets the storyboard WITHOUT the server's authoring fields (covers, cast, action on the shots; a
+      // top-level spec): worker/keou/contract.py refuses any shot key it does not know, on a card already paid for.
+      storyboard: job.storyboard ? stripForWorker(JSON.parse(job.storyboard)) : null, brand: env.BRAND || "Kleo",
       files: { video: FILE_NAMES.video.name, subtitles: FILE_NAMES.subtitles.name, thumbnail: FILE_NAMES.thumbnail.name }, part_size_bytes: 50 * 1024 * 1024 });
   }
   if (rest === "selfdestruct" && request.method === "POST") { // allowed in any state: it is the worker's last call

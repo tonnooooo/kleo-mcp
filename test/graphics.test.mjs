@@ -207,10 +207,13 @@ test("the planner writes the layer from the treatment: the scenes are asked for 
     INTERNAL_SECRET: "x",
     AI: { async run(_m, inputs) {
       const user = inputs.messages.at(-1).content;
-      const kind = /TASK: write the TREATMENT/.test(user) ? "treatment" : /TASK: write the DIRECTION/.test(user) ? "direction" : /TASK: plan the whole video/.test(user) ? "outline" : "chunk";
+      const kind = /TASK: take this request apart into the spec/.test(user) ? "spec" : /TASK: write the TREATMENT/.test(user) ? "treatment" : /TASK: write the DIRECTION/.test(user) ? "direction" : /TASK: plan the whole video/.test(user) ? "outline" : "chunk";
       calls.push({ kind, user, schema: inputs.response_format?.json_schema });
       let out;
-      if (kind === "treatment") out = treatment;
+      // The spec call (24 September 2026) is answered with something that is not a spec: the plan goes on without one,
+      // which is the path these tests pin.
+      if (kind === "spec") out = {};
+      else if (kind === "treatment") out = treatment;
       else if (kind === "direction") {
         const n = (user.match(/^ {2}\d+\. /gm) || []).length || 3;
         out = { direction: { subject: "Voyager 1", goal: "how a 1977 computer was fixed from far away", audience: "space viewers", tone: "calm", must_keep: [], world: "JPL at night, amber phosphor, deep space", cast: [], objects: ["dish", "printout", "terminal", "probe", "chart"], forbidden: ["text in the picture", "logo", "real person", "flare"], sections: Array.from({ length: n }, (_, i) => ({ name: `0${i + 1} PART`, means: "a part" })) } };

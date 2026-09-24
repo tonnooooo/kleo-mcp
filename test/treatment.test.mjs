@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import {
   T, DEVICES, DEVICE_IDS, OPENING_IDS, MASTER_PROMPT, variationFor, treatmentPrompt, treatmentSchema,
   repairTreatment, treatmentProblems, treatmentOf, treatmentBlock, treatmentText, wordCount, languageOf, proseFloor,
+  faithfulVariation, DRAWN_DEVICES, DRAWN_OPENINGS, treatmentTemperature, treatmentMethodText,
 } from "../src/treatment.ts";
 import { generateStoryboard, TREATMENT_TEMPERATURE, writeTreatment, callModel } from "../src/storyboard.ts";
 import { validateStoryboard } from "../src/keou-contract.ts";
@@ -181,10 +182,13 @@ function planner(opts = {}) {
     INTERNAL_SECRET: "x",
     AI: { async run(model, inputs) {
       const user = inputs.messages.at(-1).content, system = inputs.messages[0].content;
-      const kind = /TASK: write the TREATMENT/.test(user) ? "treatment" : /TASK: write the DIRECTION/.test(user) ? "direction" : /TASK: plan the whole video/.test(user) ? "outline" : "chunk";
+      const kind = /TASK: take this request apart into the spec/.test(user) ? "spec" : /TASK: write the TREATMENT/.test(user) ? "treatment" : /TASK: write the DIRECTION/.test(user) ? "direction" : /TASK: plan the whole video/.test(user) ? "outline" : "chunk";
       calls.push({ kind, user, system, temperature: inputs.temperature, model });
       let out;
-      if (kind === "treatment") out = opts.treatment ? opts.treatment(calls.filter((c) => c.kind === "treatment").length) : TREATMENT_FIXTURE(45);
+      // The spec call (24 September 2026) is answered with something that is not a spec: the plan goes on without one,
+      // which is the path these tests pin.
+      if (kind === "spec") out = {};
+      else if (kind === "treatment") out = opts.treatment ? opts.treatment(calls.filter((c) => c.kind === "treatment").length) : TREATMENT_FIXTURE(45);
       else if (kind === "direction") {
         const n = (user.match(/^ {2}\d+\. /gm) || []).length || 3;
         out = { direction: { subject: "A relay car theft", goal: "The viewer keeps their key in a pouch", audience: "Car owners", tone: "Calm and factual", must_keep: [],
@@ -212,14 +216,17 @@ function planner(opts = {}) {
 test("the treatment is written first, hot, under the master prompt; the direction and the scenes are written under it; the storyboard carries it", async () => {
   const { env, calls } = planner();
   const r = await generateStoryboard(env, job("A Short about relay car theft"));
-  assert.equal(calls[0].kind, "treatment", "step -1 comes before the direction");
-  assert.equal(calls[0].system, MASTER_PROMPT);
-  assert.equal(calls[0].temperature, TREATMENT_TEMPERATURE);
-  assert.equal(calls[1].kind, "direction");
-  assert.equal(calls[1].temperature, 0.3, "everything after the treatment stays a document");
-  assert.match(calls[1].user, /TREATMENT OF THIS FILM[\s\S]*Logline: A stolen car/);
-  assert.match(calls[1].user, /The treatment, in prose:/, "the direction reads the prose");
-  assert.match(calls[1].user, /The direction is written UNDER this treatment/);
+  // The spec (step -2, 24 September 2026) is asked first; the treatment is the first creative call after it.
+  const first = calls.find((c) => c.kind !== "spec");
+  assert.equal(first.kind, "treatment", "step -1 comes before the direction");
+  assert.equal(first.system, MASTER_PROMPT);
+  assert.equal(first.temperature, TREATMENT_TEMPERATURE);
+  const second = calls.filter((c) => c.kind !== "spec")[1];
+  assert.equal(second.kind, "direction");
+  assert.equal(second.temperature, 0.3, "everything after the treatment stays a document");
+  assert.match(second.user, /TREATMENT OF THIS FILM[\s\S]*Logline: A stolen car/);
+  assert.match(second.user, /The treatment, in prose:/, "the direction reads the prose");
+  assert.match(second.user, /The direction is written UNDER this treatment/);
   const outline = calls.find((c) => c.kind === "outline");
   assert.match(outline.user, /The treatment, in prose:/, "so does the outline");
   assert.match(outline.user, /The outline follows the treatment's acts/);
@@ -345,4 +352,90 @@ test("the look is checked, forced by the call, and read back by every stage", ()
   assert.match(treatmentText(t), /^Look: animation \(a 2D animated film\)/m);
   assert.match(treatmentText(repairTreatment(raw, 60, v, "en")), /^Look: realistic \(filmed\)/m);
   assert.equal(treatmentOf({ treatment: { ...t } }).look, "animation", "read back from a job's params");
+});
+
+/* ------------------------------------------------------------------ faithful mode (24 September 2026) */
+
+/** A faithful spec as src/spec.ts repairSpec() returns it: a named character, her look, two events in order. */
+const FAITHFUL_SPEC = () => ({
+  v: 1, mode: "faithful", summary: "Mara, a pastry chef, bakes a lemon cake for the village children, who then throw her a surprise party.",
+  cast: [{ id: "c1", name: "Mara", look: "a thin woman in her thirties with short blonde hair tied up and a lilac apron" }],
+  items: [
+    { id: "R1", kind: "character", text: "Mara, a pastry chef", quote: "Mara, una pasticcera", must: true, who: "c1", order: null },
+    { id: "R2", kind: "look", text: "Mara wears a lilac apron", quote: "grembiule lilla", must: true, who: "c1", order: null },
+    { id: "R3", kind: "event", text: "Mara bakes a lemon cake for the village children", quote: "prepara una torta al limone per i bambini", must: true, who: "c1", order: 1 },
+    { id: "R4", kind: "event", text: "the children throw Mara a surprise party", quote: "le fanno una festa a sorpresa", must: true, who: null, order: 2 },
+  ],
+  refs: [], open: ["the ending"], narration: "free", script: null,
+});
+const OPEN_SPEC = () => ({ ...FAITHFUL_SPEC(), mode: "open" });
+
+test("a faithful film is not drawn: as-told/as-asked, never handed out by variationFor", () => {
+  assert.deepEqual(faithfulVariation(), { device: "as-told", opening: "as-asked", key: "as-told/as-asked" });
+  assert.ok(DEVICE_IDS.includes("as-told") && OPENING_IDS.includes("as-asked"), "both are legal values of a treatment");
+  assert.ok(!DRAWN_DEVICES.includes("as-told") && !DRAWN_OPENINGS.includes("as-asked"), "neither is ever drawn");
+  assert.equal(DRAWN_DEVICES.length, 8); assert.equal(DRAWN_OPENINGS.length, 5);
+  for (let i = 0; i < 300; i++) { const d = variationFor(`gt_${i}`); assert.ok(d.device !== "as-told" && d.opening !== "as-asked", d.key); }
+  assert.equal(variationFor("gt_test0001").key, v.key, "an open film's draw is exactly the one it was before");
+  assert.ok(treatmentSchema().properties.device.enum.includes("as-told"), "the schema lets the model write it");
+  assert.equal(treatmentTemperature(FAITHFUL_SPEC()), 0.4);
+  assert.equal(treatmentTemperature(OPEN_SPEC()), 0.85);
+  assert.equal(treatmentTemperature(null), 0.85); assert.equal(treatmentTemperature(undefined), 0.85);
+});
+
+test("the master prompt has a FIDELITY section: the request is the brief", () => {
+  assert.match(MASTER_PROMPT, /FIDELITY — THE REQUEST IS THE BRIEF/);
+  assert.match(MASTER_PROMPT, /Every MUST item is in the film: SEEN .* or HEARD/);
+  assert.match(MASTER_PROMPT, /The user's EVENTS happen in the user's ORDER/);
+  assert.match(MASTER_PROMPT, /called by the names the user gave them/);
+  assert.match(MASTER_PROMPT, /every addition is one line in "decisions"/);
+  assert.match(MASTER_PROMPT, /FAITHFUL mode .* the ANGLE \(step 1\) is the point of the user's own story/);
+  assert.match(MASTER_PROMPT, /^1\. ANGLE\. In FAITHFUL mode: the point of the user's own story/m);
+  assert.match(MASTER_PROMPT, /Where the user did not ask for spectacle, human scale beats spectacle/, "spectacle the user asked for is shown");
+  assert.match(MASTER_PROMPT, /a FICTIONAL character the user named keeps the user's name/);
+  assert.match(MASTER_PROMPT, /never a named living person/i, "and still never a real one");
+});
+
+test("the treatment prompt prints the spec above everything; a faithful one replaces the draw", () => {
+  const input = { prompt: "Mara, una pasticcera con il grembiule lilla, prepara una torta al limone per i bambini; poi le fanno una festa a sorpresa.", duration_s: 45, format: "9:16", language: "it" };
+  const p = treatmentPrompt({ ...input, spec: FAITHFUL_SPEC() }, v);
+  assert.ok(p.startsWith("THE USER'S REQUEST, AS REQUIREMENTS"), p.slice(0, 80));
+  assert.ok(p.indexOf("R3 [event #1, MUST]") < p.indexOf("USER REQUEST (read it as a request"), "the requirements come before the request's prose");
+  assert.match(p, /THE DRAW FOR THIS FILM: as-told\/as-asked — nothing is drawn/);
+  assert.match(p, /"device":"as-told"/);
+  assert.ok(!p.includes(`narrative device: ${v.device}`), "the caller's random draw is not printed");
+  assert.match(p, /"angle":"<=\d+, the point of the user's own story in one sentence/);
+  assert.match(p, /only what LEFT TO KLEO allows/);
+  // An open spec is printed too, and keeps the draw.
+  const o = treatmentPrompt({ ...input, spec: OPEN_SPEC() }, v);
+  assert.match(o, /^THE USER'S REQUEST, AS REQUIREMENTS \(the brief — OPEN/);
+  assert.match(o, new RegExp(`narrative device: ${v.device}`));
+  // No spec: exactly the prompt it was.
+  const none = treatmentPrompt(input, v);
+  assert.ok(none.startsWith("USER REQUEST (read it as a request"));
+  assert.ok(!/REQUIREMENTS/.test(none));
+  // The method handed to an assistant carries the same spec and the same (non-)draw.
+  const m = treatmentMethodText({ ...input, spec: FAITHFUL_SPEC() }, variationFor("random-uuid"));
+  assert.match(m, /THE USER'S REQUEST, AS REQUIREMENTS/);
+  assert.match(m, /Add "variation":"as-told\/as-asked"/);
+  assert.match(m, /This is the user's film \(FAITHFUL\)/);
+  assert.ok(!/This is the user's film/.test(treatmentMethodText(input, v)));
+});
+
+test("a faithful treatment may restate the logline in its angle and is told as-told; an open one may not claim as-told", () => {
+  const faithful = { ...TREATMENT_FIXTURE(45), logline: "Mara bakes a lemon cake for the village children, and the children throw her a surprise party.", angle: "Mara bakes for the village children, and the children throw her a surprise party in return." };
+  assert.ok(treatmentProblems(faithful, 45, "en").some((m) => /^angle: it restates the logline/.test(m)), "open: the overlap rule stands");
+  assert.deepEqual(treatmentProblems(faithful, 45, "en", { faithful: true }), [], "faithful: the angle is the point of the user's own story");
+  // A treatment that says "as-told" is read as faithful when nobody says otherwise (a client's, or one read back)…
+  assert.deepEqual(treatmentProblems({ ...faithful, device: "as-told" }, 45, "en"), []);
+  // …and refused when the film was left open and given a draw.
+  assert.ok(treatmentProblems({ ...faithful, device: "as-told" }, 45, "en", { faithful: false }).some((m) => /^device: "as-told" is the device of a film the user described/.test(m)));
+  // The repair tells a faithful film as-told whatever the model wrote, and records no random draw.
+  const t = repairTreatment({ ...faithful, device: "countdown", variation: "countdown/the-face" }, 45, v, "en", { faithful: true });
+  assert.equal(t.device, "as-told"); assert.equal(t.variation, "as-told/as-asked");
+  assert.match(treatmentBlock(t), /Device: as-told — tell it the way the user told it/);
+  // Read back from a job's params, it stays a treatment.
+  const back = treatmentOf({ treatment: t });
+  assert.ok(back, "a faithful treatment is not refused on the way back for its angle");
+  assert.equal(back.device, "as-told"); assert.equal(back.variation, "as-told/as-asked");
 });

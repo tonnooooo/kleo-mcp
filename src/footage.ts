@@ -32,8 +32,10 @@ import type { Job, JobParams } from "./db";
 import { audit, hasPaid } from "./db.ts";
 import { putFile } from "./storage.ts";
 import { hmacHex, int, num, nowIso } from "./util.ts";
-import { FILM_LOOKS, type FilmLook } from "./keou-contract.ts";
+import { FILM_LOOKS, directionOf, type FilmLook } from "./keou-contract.ts";
 import { isAnimatic } from "./templates.ts";
+import { specOf, itemById, type RequestSpec, type SpecItem } from "./spec.ts";
+import { stillCast, stillShotsOf } from "./stills.ts";
 
 /* ------------------------------------------------------------------ models and prices */
 
@@ -228,12 +230,48 @@ export const KIE_NEGATIVES: Record<FilmLook, string> = {
 };
 export const filmLookOf = (x: unknown): FilmLook => ((FILM_LOOKS as readonly string[]).includes(String(x)) ? (x as FilmLook) : "realistic");
 
+/**
+ * The camera sentence of one shot: its move in plain words, and a calm pace for a gentle shot. The pace used to read
+ * "Gentle, slow motion of the camera." — and a video model reads "slow motion" as SLOW-MO (24 September 2026, the
+ * fidelity review): people moving underwater in a shot that only wanted a steady camera. It now says what it means.
+ */
+export function cameraSentence(shot: { motion?: string | null; strength?: number | null }): string {
+  const move = KIE_MOVES[String(shot.motion ?? "")] ?? KIE_MOVES.push_in;
+  const pace = typeof shot.strength === "number" && shot.strength < 0.4 ? " The camera moves slowly and steadily." : "";
+  return `${move.charAt(0).toUpperCase()}${move.slice(1)}.${pace}`;
+}
+
 /** subject first, then the camera, then the look — the order every model reads with the most weight at the front. */
 export function kiePrompt(shot: { image_prompt: string; motion?: string | null; strength?: number | null }, look: FilmLook = "realistic"): string {
   const subject = String(shot.image_prompt ?? "").trim().replace(/\s+/g, " ").replace(/[.\s]+$/, "");
-  const move = KIE_MOVES[String(shot.motion ?? "")] ?? KIE_MOVES.push_in;
-  const pace = typeof shot.strength === "number" && shot.strength < 0.4 ? " Gentle, slow motion of the camera." : "";
-  return `${subject}. ${move.charAt(0).toUpperCase()}${move.slice(1)}.${pace} ${KIE_LOOKS[look]}`.replace(/\s+/g, " ").trim();
+  return `${subject}. ${cameraSentence(shot)} ${KIE_LOOKS[look]}`.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * THE CLIP PROMPT, composed from the STORED storyboard (24 September 2026, the fidelity engine). The box sends only
+ * the shot's image_prompt and its camera, and that is all the clip model ever read: not what happens during the shot,
+ * not who the characters are, not where. Now the server finds the shot by its picture id in job.storyboard and writes:
+ *   1. what MOVES during the shot — the planner's `action` (the image_prompt when the shot has none): the first frame
+ *      already shows the picture, the clip model needs the motion;
+ *   2. every character in it with their full look (the spec's, uncut), so a turn of the head keeps the face;
+ *   3. the place (the direction's world, or the spec's place items the shot covers);
+ *   4. the camera sentence, then the look paragraph — minus its "No text" when the shot carries a text the user asked
+ *      to be read on screen, which the clip must keep, not erase.
+ * A shot that is not in the stored storyboard (a box that sends one the server never planned) keeps kiePrompt.
+ */
+export function clipPrompt(shot: { id: string; image_prompt: string; motion?: string | null; strength?: number | null }, look: FilmLook, stored: { storyboard: unknown; spec: RequestSpec | null } | null): string {
+  const pic = stored ? stillShotsOf(stored.storyboard).find((p) => p.id === shot.id) : undefined;
+  if (!pic || !stored) return kiePrompt(shot, look);
+  const spec = stored.spec;
+  const direction = directionOf(stored.storyboard);
+  const tidy = (s: unknown) => String(s ?? "").trim().replace(/\s+/g, " ").replace(/[.;,\s]+$/, "");
+  const covered = spec ? (pic.covers ?? []).map((id) => itemById(spec, id)).filter((x): x is SpecItem => !!x) : [];
+  const what = tidy(pic.action || pic.image_prompt || shot.image_prompt);
+  const cast = stillCast(pic, spec, direction).map((m) => `${tidy(m.name)}: ${tidy(m.look)}`);
+  const place = tidy(direction?.world) || covered.filter((i) => i.kind === "place").map((i) => tidy(i.text)).join("; ");
+  const keepsText = covered.some((i) => i.kind === "text");
+  const lookText = keepsText ? KIE_LOOKS[look].replace(/\s*No text, no captions, no logos\.?/i, "") : KIE_LOOKS[look];
+  return [what, ...cast, place ? `Setting: ${place}` : ""].filter(Boolean).map((s) => `${s}.`).concat([cameraSentence(shot), lookText]).join(" ").replace(/\s+/g, " ").trim();
 }
 
 /* ------------------------------------------------------------------ rows */
@@ -399,6 +437,9 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
     }
   }
   const exp = Math.floor(Date.now() / 1000) + 6 * 60 * 60;
+  // The stored storyboard and spec the clip prompts are written from (clipPrompt); a job without one keeps kiePrompt.
+  let stored: { storyboard: unknown; spec: RequestSpec | null } | null = null;
+  try { if (job.storyboard) stored = { storyboard: JSON.parse(job.storyboard) as unknown, spec: specOf(JSON.parse(job.params)) }; } catch { stored = null; }
   let ordered = 0, outOfCredit = false;
   for (const s of fresh) {
     const seconds = Math.max(1, Math.min(30, Number(s.seconds) || 3));
@@ -409,7 +450,7 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
       const stillName = `img/${s.still}`;
       imageUrl = `${base}/dl/${job.id}/${encodeURIComponent(stillName)}?exp=${exp}&sig=${await hmacHex(env.INTERNAL_SECRET, `${job.id}/${stillName}/${exp}`)}`;
     }
-    const prompt = kiePrompt(s, look);
+    const prompt = clipPrompt(s, look, stored);
     // The row goes in BEFORE the call, with no task id: a second request while the first is in flight orders nothing twice.
     // A refused row from an earlier request is reset in place instead (same key, new price, no error).
     if (retryable(have.get(s.id))) await updateRow(env, job.id, s.id, { state: "queued", model: name, seconds, cost_usd: cost, error: null });

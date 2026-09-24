@@ -1,0 +1,388 @@
+{
+ "about": "Fidelity bench cases, 24 September 2026. Each gold list was written by hand from the prompt's words only, independently of any model and of Kleo's own spec writer: it is what a person who read the request would check the film against. Kinds are src/spec.ts SPEC_KINDS. 'visual' = the pictures must show it (or, for kind exclude, must NOT show it); 'must' = the user said it (false = only hinted). Events carry 'order' (the user's order). 'stress' names the loss type the case is there to catch; 'source' production = a real request that went wrong in production (9-22 September). Look items carry 'who' (the gold id of the character or object they describe); 'group': true marks a crowd (no identity check); 'at': first|last pins a shot item to the film's first or last picture.",
+ "cases": [
+  {
+   "id": "pastry-chef",
+   "source": "production",
+   "stress": "character look dropped (appearance facts), a line the narration must say, the old HOOK/REVEAL skeleton over a story",
+   "prompt": "Una dolce pasticcera magra, capelli biondi corti e raccolti, grembiule lilla, organizza una festa a sorpresa per la sua migliore amica: prepara la torta di nascosto nel suo laboratorio, decora la pasticceria con i palloncini e quando l'amica entra tutti gridano sorpresa. La narrazione deve dire \"festa a sorpresa\".",
+   "duration_s": 30,
+   "format": "9:16",
+   "language": "it",
+   "style": "animation",
+   "mode": "faithful",
+   "gold": [
+    { "id": "G1", "kind": "character", "text": "a woman pastry chef is the main character", "must": true, "visual": true },
+    { "id": "G2", "kind": "look", "text": "the pastry chef is thin / slim", "must": true, "visual": true, "who": "G1" },
+    { "id": "G3", "kind": "look", "text": "the pastry chef has short blonde hair", "must": true, "visual": true, "who": "G1" },
+    { "id": "G4", "kind": "look", "text": "the pastry chef's hair is tied up (bun or ponytail)", "must": true, "visual": true, "who": "G1" },
+    { "id": "G5", "kind": "look", "text": "the pastry chef wears a lilac (light purple) apron", "must": true, "visual": true, "who": "G1" },
+    { "id": "G6", "kind": "character", "text": "her best friend (a second woman) appears", "must": true, "visual": true },
+    { "id": "G7", "kind": "event", "text": "she secretly prepares a cake in her kitchen/workshop", "must": true, "visual": true, "order": 1 },
+    { "id": "G8", "kind": "event", "text": "she decorates the pastry shop with balloons", "must": true, "visual": true, "order": 2 },
+    { "id": "G9", "kind": "event", "text": "the friend walks in and everyone shouts surprise", "must": true, "visual": true, "order": 3 },
+    { "id": "G10", "kind": "place", "text": "the story takes place in her pastry shop / bakery", "must": true, "visual": true },
+    { "id": "G11", "kind": "object", "text": "balloons are visible", "must": true, "visual": true },
+    { "id": "G12", "kind": "line", "text": "the narration says the words \"festa a sorpresa\"", "must": true, "visual": false },
+    { "id": "G13", "kind": "mood", "text": "the pastry chef comes across as sweet and gentle", "must": false, "visual": false }
+   ]
+  },
+  {
+   "id": "desert-warrior",
+   "source": "production",
+   "stress": "an invented 'angle' replacing the story, events out of order, the hero drawn in the villain's clothes, the hood lost",
+   "prompt": "Uno Short in stile Star Wars: un giovane guerriero incappucciato su un pianeta desertico riceve una trasmissione, il nemico è sopravvissuto. Attraversa delle rovine antiche fino a un tempio, una voce lo chiama per nome, lui abbassa il cappuccio e accende una spada di energia blu.",
+   "duration_s": 30,
+   "format": "9:16",
+   "language": "it",
+   "style": "realistic",
+   "mode": "faithful",
+   "gold": [
+    { "id": "G1", "kind": "character", "text": "a young warrior is the main character", "must": true, "visual": true },
+    { "id": "G2", "kind": "look", "text": "the warrior wears a hood (hooded robe or cloak)", "must": true, "visual": true, "who": "G1" },
+    { "id": "G3", "kind": "place", "text": "a desert planet (sand, dunes, alien sky)", "must": true, "visual": true },
+    { "id": "G4", "kind": "event", "text": "the warrior receives a transmission (a message, hologram or signal)", "must": true, "visual": true, "order": 1 },
+    { "id": "G5", "kind": "event", "text": "the transmission tells that the enemy has survived (said in the narration or shown)", "must": true, "visual": false, "order": 2 },
+    { "id": "G6", "kind": "event", "text": "the warrior crosses ancient ruins", "must": true, "visual": true, "order": 3 },
+    { "id": "G7", "kind": "event", "text": "the warrior reaches a temple", "must": true, "visual": true, "order": 4 },
+    { "id": "G8", "kind": "event", "text": "a voice calls the warrior by name", "must": true, "visual": false, "order": 5 },
+    { "id": "G9", "kind": "event", "text": "the warrior lowers the hood, revealing the face", "must": true, "visual": true, "order": 6 },
+    { "id": "G10", "kind": "event", "text": "the warrior ignites a blue energy sword", "must": true, "visual": true, "order": 7 },
+    { "id": "G11", "kind": "object", "text": "a glowing blue energy sword is visible", "must": true, "visual": true },
+    { "id": "G12", "kind": "style", "text": "space-opera look in the spirit of Star Wars (without logos or real actors)", "must": true, "visual": true }
+   ]
+  },
+  {
+   "id": "coastal-race",
+   "source": "production",
+   "stress": "the two cars' colours swapped or lost, the climax (last curve) replaced by an invented ending",
+   "prompt": "A red car and a blue car race wheel to wheel on a coastal circuit at dawn, all the way to the last curve.",
+   "duration_s": 30,
+   "format": "16:9",
+   "language": "en",
+   "style": "realistic",
+   "mode": "faithful",
+   "gold": [
+    { "id": "G1", "kind": "object", "text": "a red race car", "must": true, "visual": true },
+    { "id": "G2", "kind": "object", "text": "a blue race car", "must": true, "visual": true },
+    { "id": "G3", "kind": "action", "text": "the red car and the blue car race side by side, wheel to wheel, in the same picture", "must": true, "visual": true },
+    { "id": "G4", "kind": "place", "text": "a racing circuit along the coast, with the sea visible", "must": true, "visual": true },
+    { "id": "G5", "kind": "place", "text": "it is dawn: low early sun, dawn light", "must": true, "visual": true },
+    { "id": "G6", "kind": "event", "text": "the race goes on neck and neck through the circuit", "must": true, "visual": true, "order": 1 },
+    { "id": "G7", "kind": "event", "text": "the race builds to the last curve, still wheel to wheel", "must": true, "visual": true, "order": 2 }
+   ]
+  },
+  {
+   "id": "venice-whale",
+   "source": "production",
+   "stress": "spectacle requested; the gondoliers' reaction (frozen) replaced by action; sunset light lost",
+   "prompt": "Una balena emerge in una Venezia allagata al tramonto, mentre i gondolieri restano immobili a guardarla.",
+   "duration_s": 20,
+   "format": "16:9",
+   "language": "it",
+   "style": "realistic",
+   "mode": "faithful",
+   "gold": [
+    { "id": "G1", "kind": "character", "text": "a whale", "must": true, "visual": true },
+    { "id": "G2", "kind": "action", "text": "the whale surfaces / breaches out of the water", "must": true, "visual": true },
+    { "id": "G3", "kind": "place", "text": "Venice (canals, recognisable Venetian buildings)", "must": true, "visual": true },
+    { "id": "G4", "kind": "place", "text": "Venice is flooded (water high over streets or squares)", "must": true, "visual": true },
+    { "id": "G5", "kind": "place", "text": "it is sunset: warm low sun, sunset sky", "must": true, "visual": true },
+    { "id": "G6", "kind": "character", "text": "gondoliers in their gondolas", "must": true, "visual": true, "group": true },
+    { "id": "G7", "kind": "action", "text": "the gondoliers stay frozen, motionless, watching the whale", "must": true, "visual": true }
+   ]
+  },
+  {
+   "id": "treehouse-friends",
+   "source": "new",
+   "stress": "multi-character with distinct looks: identities swapped or merged, the dog's markings lost",
+   "prompt": "An animated short: three friends build a treehouse. Lena is a tall girl with curly red hair and green overalls; Omar is a short boy with round glasses and a yellow raincoat; Pip is an old grey dog with one white ear. It starts raining just as they finish, and they all squeeze inside laughing.",
+   "duration_s": 45,
+   "format": "16:9",
+   "language": "en",
+   "style": "animation",
+   "mode": "faithful",
+   "gold": [
+    { "id": "G1", "kind": "character", "text": "Lena, a girl", "must": true, "visual": true },
+    { "id": "G2", "kind": "look", "text": "Lena is tall with curly red hair", "must": true, "visual": true, "who": "G1" },
+    { "id": "G3", "kind": "look", "text": "Lena wears green overalls", "must": true, "visual": true, "who": "G1" },
+    { "id": "G4", "kind": "character", "text": "Omar, a boy", "must": true, "visual": true },
+    { "id": "G5", "kind": "look", "text": "Omar is short and wears round glasses", "must": true, "visual": true, "who": "G4" },
+    { "id": "G6", "kind": "look", "text": "Omar wears a yellow raincoat", "must": true, "visual": true, "who": "G4" },
+    { "id": "G7", "kind": "character", "text": "Pip, an old grey dog", "must": true, "visual": true },
+    { "id": "G8", "kind": "look", "text": "Pip has one white ear (the other is grey)", "must": true, "visual": true, "who": "G7" },
+    { "id": "G9", "kind": "event", "text": "the three friends build a treehouse together", "must": true, "visual": true, "order": 1 },
+    { "id": "G10", "kind": "event", "text": "it starts raining just as they finish", "must": true, "visual": true, "order": 2 },
+    { "id": "G11", "kind": "event", "text": "they all squeeze inside the treehouse, laughing", "must": true, "visual": true, "order": 3 },
+    { "id": "G12", "kind": "style", "text": "an animated film (drawn, not live action)", "must": true, "visual": true }
+   ]
+  },
+  {
+   "id": "old-fisherman",
+   "source": "new",
+   "stress": "a five-event story told in order: events dropped, merged or reordered by a skeleton",
+   "prompt": "Un vecchio pescatore esce in barca prima dell'alba. Getta la rete in un mare calmo. All'improvviso arriva una tempesta. La rete si impiglia e lui rischia di cadere in acqua. Torna al porto al tramonto con una sola cassa di pesce, e sorride.",
+   "duration_s": 60,
+   "format": "16:9",
+   "language": "it",
+   "style": "realistic",
+   "mode": "faithful",
+   "gold": [
+    { "id": "G1", "kind": "character", "text": "an old fisherman", "must": true, "visual": true },
+    { "id": "G2", "kind": "object", "text": "his small fishing boat", "must": true, "visual": true },
+    { "id": "G3", "kind": "event", "text": "he goes out in the boat before dawn (dark sky)", "must": true, "visual": true, "order": 1 },
+    { "id": "G4", "kind": "event", "text": "he casts the net into a calm sea", "must": true, "visual": true, "order": 2 },
+    { "id": "G5", "kind": "event", "text": "a sudden storm arrives", "must": true, "visual": true, "order": 3 },
+    { "id": "G6", "kind": "event", "text": "the net gets snagged and he nearly falls into the water", "must": true, "visual": true, "order": 4 },
+    { "id": "G7", "kind": "event", "text": "he returns to the harbour at sunset", "must": true, "visual": true, "order": 5 },
+    { "id": "G8", "kind": "object", "text": "a single crate of fish (only one)", "must": true, "visual": true },
+    { "id": "G9", "kind": "action", "text": "at the end he smiles", "must": true, "visual": true }
+   ]
+  },
+  {
+   "id": "verbatim-bakery",
+   "source": "new",
+   "stress": "a user-dictated narration (verbatim) rewritten by the planner",
+   "prompt": "Use this narration, word for word: \"Every morning at six, Maria opens the bakery. The street is still dark. The first loaf is always for Mr. Rossi, who never says thank you. Today, he leaves a flower on the counter.\" Show the bakery on a narrow cobbled street; Maria is in her sixties and wears a white headscarf.",
+   "duration_s": 30,
+   "format": "9:16",
+   "language": "en",
+   "style": "realistic",
+   "mode": "faithful",
+   "gold": [
+    { "id": "G1", "kind": "line", "text": "the narration says \"Every morning at six, Maria opens the bakery.\"", "must": true, "visual": false },
+    { "id": "G2", "kind": "line", "text": "the narration says \"The street is still dark.\"", "must": true, "visual": false },
+    { "id": "G3", "kind": "line", "text": "the narration says \"The first loaf is always for Mr. Rossi, who never says thank you.\"", "must": true, "visual": false },
+    { "id": "G4", "kind": "line", "text": "the narration says \"Today, he leaves a flower on the counter.\"", "must": true, "visual": false },
+    { "id": "G5", "kind": "line", "text": "the narration contains nothing but those four sentences (no added lines)", "must": true, "visual": false },
+    { "id": "G6", "kind": "character", "text": "Maria, a woman in her sixties", "must": true, "visual": true },
+    { "id": "G7", "kind": "look", "text": "Maria wears a white headscarf", "must": true, "visual": true, "who": "G6" },
+    { "id": "G8", "kind": "place", "text": "a bakery on a narrow cobbled street", "must": true, "visual": true },
+    { "id": "G9", "kind": "place", "text": "the street is still dark (early morning)", "must": true, "visual": true },
+    { "id": "G10", "kind": "character", "text": "Mr. Rossi, an older man, a customer", "must": true, "visual": true },
+    { "id": "G11", "kind": "event", "text": "Maria gives Mr. Rossi the first loaf", "must": true, "visual": true, "order": 1 },
+    { "id": "G12", "kind": "event", "text": "Mr. Rossi leaves a flower on the counter", "must": true, "visual": true, "order": 2 }
+   ]
+  },
+  {
+   "id": "lighthouse-opening",
+   "source": "new",
+   "stress": "a described opening shot replaced by a random opening family",
+   "prompt": "Il film si apre con un'inquadratura dall'alto di un faro solitario su uno scoglio, di notte, con il fascio di luce che taglia la nebbia. Poi la guardiana del faro, una donna anziana con un maglione rosso, sale la scala a chiocciola per riaccendere la lampada che si è spenta.",
+   "duration_s": 30,
+   "format": "16:9",
+   "language": "it",
+   "style": "animation",
+   "mode": "faithful",
+   "gold": [
+    { "id": "G1", "kind": "shot", "text": "the FIRST shot is a high overhead (top-down or aerial) view of a lonely lighthouse on a rock", "must": true, "visual": true, "order": 1, "at": "first" },
+    { "id": "G2", "kind": "place", "text": "it is night", "must": true, "visual": true },
+    { "id": "G3", "kind": "object", "text": "the lighthouse beam cuts through fog", "must": true, "visual": true },
+    { "id": "G4", "kind": "character", "text": "the lighthouse keeper, an old woman", "must": true, "visual": true },
+    { "id": "G5", "kind": "look", "text": "the keeper wears a red sweater", "must": true, "visual": true, "who": "G4" },
+    { "id": "G6", "kind": "event", "text": "she climbs a spiral staircase", "must": true, "visual": true, "order": 2 },
+    { "id": "G7", "kind": "event", "text": "she relights the lamp that had gone out", "must": true, "visual": true, "order": 3 }
+   ]
+  },
+  {
+   "id": "diner-sign",
+   "source": "new",
+   "stress": "on-screen text asked by the user refused by the no-text rule",
+   "prompt": "A lonely diner on a desert highway at night, rain on the asphalt, a flickering neon sign reading OPEN 24H. A waitress wipes the counter; a single truck pulls in.",
+   "duration_s": 15,
+   "format": "9:16",
+   "language": "en",
+   "style": "realistic",
+   "mode": "faithful",
+   "gold": [
+    { "id": "G1", "kind": "place", "text": "a lonely diner beside a desert highway at night", "must": true, "visual": true },
+    { "id": "G2", "kind": "object", "text": "rain falling on / wet asphalt", "must": true, "visual": true },
+    { "id": "G3", "kind": "text", "text": "a neon sign that reads exactly \"OPEN 24H\"", "must": true, "visual": true },
+    { "id": "G4", "kind": "object", "text": "the neon sign flickers (partly lit)", "must": false, "visual": true },
+    { "id": "G5", "kind": "character", "text": "a waitress", "must": true, "visual": true },
+    { "id": "G6", "kind": "action", "text": "the waitress wipes the counter", "must": true, "visual": true },
+    { "id": "G7", "kind": "event", "text": "a single truck pulls into the lot", "must": true, "visual": true }
+   ]
+  },
+  {
+   "id": "flooded-town",
+   "source": "new",
+   "stress": "exclusions (no people, no blood) ignored",
+   "prompt": "Una città abbandonata dopo un'alluvione: strade coperte di fango, auto rovesciate, un semaforo che lampeggia ancora giallo. Nessuna persona visibile, niente sangue.",
+   "duration_s": 30,
+   "format": "16:9",
+   "language": "it",
+   "style": "realistic",
+   "mode": "faithful",
+   "gold": [
+    { "id": "G1", "kind": "place", "text": "an abandoned town after a flood", "must": true, "visual": true },
+    { "id": "G2", "kind": "object", "text": "streets covered in mud", "must": true, "visual": true },
+    { "id": "G3", "kind": "object", "text": "overturned cars", "must": true, "visual": true },
+    { "id": "G4", "kind": "object", "text": "a traffic light still blinking yellow", "must": true, "visual": true },
+    { "id": "G5", "kind": "exclude", "text": "no people visible anywhere (no person, body or silhouette)", "must": true, "visual": true },
+    { "id": "G6", "kind": "exclude", "text": "no blood", "must": true, "visual": true }
+   ]
+  },
+  {
+   "id": "kodachrome-fair",
+   "source": "new",
+   "stress": "a style reference with a decade ('1970s') deleted as a format word",
+   "prompt": "A summer day at a 1970s seaside amusement park, like a 1970s Kodachrome photo: a boy holds a huge pink cotton candy in front of a Ferris wheel while his father, in a striped shirt, takes his picture with a little instamatic camera.",
+   "duration_s": 30,
+   "format": "16:9",
+   "language": "en",
+   "style": "realistic",
+   "mode": "faithful",
+   "gold": [
+    { "id": "G1", "kind": "style", "text": "the look of a 1970s Kodachrome photograph (warm saturated colours, film grain)", "must": true, "visual": true },
+    { "id": "G2", "kind": "place", "text": "a seaside amusement park in the 1970s, on a summer day", "must": true, "visual": true },
+    { "id": "G3", "kind": "character", "text": "a boy", "must": true, "visual": true },
+    { "id": "G4", "kind": "object", "text": "a huge pink cotton candy held by the boy", "must": true, "visual": true },
+    { "id": "G5", "kind": "object", "text": "a Ferris wheel behind the boy", "must": true, "visual": true },
+    { "id": "G6", "kind": "character", "text": "the boy's father", "must": true, "visual": true },
+    { "id": "G7", "kind": "look", "text": "the father wears a striped shirt", "must": true, "visual": true, "who": "G6" },
+    { "id": "G8", "kind": "action", "text": "the father takes a picture with a small instamatic camera", "must": true, "visual": true }
+   ]
+  },
+  {
+   "id": "octopus-open",
+   "source": "new",
+   "stress": "a bare subject (OPEN mode): Kleo may invent; the subject must survive",
+   "prompt": "Surprise me with a short film about octopuses.",
+   "duration_s": 30,
+   "format": "9:16",
+   "language": "en",
+   "style": "animation",
+   "mode": "open",
+   "gold": [
+    { "id": "G1", "kind": "character", "text": "an octopus is the subject of the film", "must": true, "visual": true },
+    { "id": "G2", "kind": "style", "text": "an animated film (drawn, not live action)", "must": true, "visual": true }
+   ]
+  },
+  {
+   "id": "lumo-bottle",
+   "source": "new",
+   "stress": "a named fictional product and its end card text refused as a brand/text",
+   "prompt": "Uno spot per \"Lumo\", una borraccia termica verde menta con il tappo di bambù: una ragazza in bici in città la tira fuori dallo zaino e beve; chiusura con la borraccia sul tavolo e la scritta LUMO.",
+   "duration_s": 20,
+   "format": "9:16",
+   "language": "it",
+   "style": "realistic",
+   "mode": "faithful",
+   "gold": [
+    { "id": "G1", "kind": "object", "text": "an insulated bottle in mint green", "must": true, "visual": true },
+    { "id": "G2", "kind": "look", "text": "the bottle has a bamboo cap", "must": true, "visual": true, "who": "G1" },
+    { "id": "G3", "kind": "character", "text": "a young woman riding a bicycle", "must": true, "visual": true },
+    { "id": "G4", "kind": "place", "text": "a city", "must": true, "visual": true },
+    { "id": "G5", "kind": "event", "text": "she takes the bottle out of her backpack and drinks", "must": true, "visual": true, "order": 1 },
+    { "id": "G6", "kind": "shot", "text": "the final shot shows the bottle on a table", "must": true, "visual": true, "order": 2, "at": "last" },
+    { "id": "G7", "kind": "text", "text": "the word \"LUMO\" is written on screen", "must": true, "visual": true },
+    { "id": "G8", "kind": "line", "text": "the product is called Lumo (the name is said)", "must": false, "visual": false }
+   ]
+  },
+  {
+   "id": "odd-eyed-cat",
+   "source": "new",
+   "stress": "an animal with specific markings drawn generic",
+   "prompt": "A black cat with a white star-shaped patch on its forehead, one green eye and one blue eye, sneaks into a library at night and knocks a single red book off the shelf; the book falls open on a map.",
+   "duration_s": 30,
+   "format": "16:9",
+   "language": "en",
+   "style": "animation",
+   "mode": "faithful",
+   "gold": [
+    { "id": "G1", "kind": "character", "text": "a black cat", "must": true, "visual": true },
+    { "id": "G2", "kind": "look", "text": "the cat has a white star-shaped patch on its forehead", "must": true, "visual": true, "who": "G1" },
+    { "id": "G3", "kind": "look", "text": "the cat has one green eye and one blue eye", "must": true, "visual": true, "who": "G1" },
+    { "id": "G4", "kind": "place", "text": "a library at night", "must": true, "visual": true },
+    { "id": "G5", "kind": "event", "text": "the cat sneaks into the library", "must": true, "visual": true, "order": 1 },
+    { "id": "G6", "kind": "event", "text": "the cat knocks a single red book off a shelf", "must": true, "visual": true, "order": 2 },
+    { "id": "G7", "kind": "event", "text": "the red book falls open on a map", "must": true, "visual": true, "order": 3 }
+   ]
+  },
+  {
+   "id": "space-battle",
+   "source": "new",
+   "stress": "spectacle asked for, replaced by 'human scale beats spectacle'",
+   "prompt": "An epic space battle above a ringed gas giant: hundreds of small silver fighters swarm around a huge black flagship, explosions everywhere, then the flagship's main cannon charges with a white glow and fires, splitting a moon in half.",
+   "duration_s": 45,
+   "format": "16:9",
+   "language": "en",
+   "style": "realistic",
+   "mode": "faithful",
+   "gold": [
+    { "id": "G1", "kind": "place", "text": "space above a gas giant planet with rings", "must": true, "visual": true },
+    { "id": "G2", "kind": "object", "text": "hundreds of small silver fighter ships", "must": true, "visual": true },
+    { "id": "G3", "kind": "object", "text": "a huge black flagship", "must": true, "visual": true },
+    { "id": "G4", "kind": "action", "text": "the fighters swarm around the flagship", "must": true, "visual": true },
+    { "id": "G5", "kind": "object", "text": "explosions everywhere", "must": true, "visual": true },
+    { "id": "G6", "kind": "event", "text": "the flagship's main cannon charges with a white glow", "must": true, "visual": true, "order": 1 },
+    { "id": "G7", "kind": "event", "text": "the cannon fires", "must": true, "visual": true, "order": 2 },
+    { "id": "G8", "kind": "event", "text": "a moon splits in half", "must": true, "visual": true, "order": 3 },
+    { "id": "G9", "kind": "mood", "text": "epic scale: the battle is shown big, not reduced to one person's close-up", "must": true, "visual": true }
+   ]
+  },
+  {
+   "id": "rusty-robot",
+   "source": "new",
+   "stress": "a line in the user's language that must be said; a one-eyed robot drawn two-eyed",
+   "prompt": "Un vecchio robot arrugginito, con un solo occhio giallo, pianta un seme in un deserto di rottami; il seme diventa un piccolo albero con fiori rosa. La voce deve dire: \"Non è mai troppo tardi.\"",
+   "duration_s": 30,
+   "format": "9:16",
+   "language": "it",
+   "style": "animation",
+   "mode": "faithful",
+   "gold": [
+    { "id": "G1", "kind": "character", "text": "an old rusty robot", "must": true, "visual": true },
+    { "id": "G2", "kind": "look", "text": "the robot has a single yellow eye (only one)", "must": true, "visual": true, "who": "G1" },
+    { "id": "G3", "kind": "place", "text": "a desert of scrap metal / junk", "must": true, "visual": true },
+    { "id": "G4", "kind": "event", "text": "the robot plants a seed", "must": true, "visual": true, "order": 1 },
+    { "id": "G5", "kind": "event", "text": "the seed grows into a small tree", "must": true, "visual": true, "order": 2 },
+    { "id": "G6", "kind": "object", "text": "the small tree has pink flowers", "must": true, "visual": true },
+    { "id": "G7", "kind": "line", "text": "the narration says \"Non è mai troppo tardi\"", "must": true, "visual": false }
+   ]
+  },
+  {
+   "id": "etna-beekeeper",
+   "source": "new",
+   "stress": "a described close-up (shot) and a real place (Etna) generalised",
+   "prompt": "Un piccolo documentario su un apicoltore dell'Etna: ha la barba bianca e una tuta bianca con la maschera; si vedono le arnie dipinte di azzurro e giallo sul fianco del vulcano che fuma. Voglio un primo piano delle sue mani che tengono un favo pieno di miele.",
+   "duration_s": 45,
+   "format": "16:9",
+   "language": "it",
+   "style": "realistic",
+   "mode": "faithful",
+   "gold": [
+    { "id": "G1", "kind": "character", "text": "a beekeeper", "must": true, "visual": true },
+    { "id": "G2", "kind": "look", "text": "the beekeeper has a white beard", "must": true, "visual": true, "who": "G1" },
+    { "id": "G3", "kind": "look", "text": "the beekeeper wears a white bee suit with a veil / mask", "must": true, "visual": true, "who": "G1" },
+    { "id": "G4", "kind": "place", "text": "the slopes of Mount Etna, a volcano with smoke rising", "must": true, "visual": true },
+    { "id": "G5", "kind": "object", "text": "beehives painted light blue and yellow", "must": true, "visual": true },
+    { "id": "G6", "kind": "shot", "text": "a close-up of the beekeeper's hands holding a honeycomb full of honey", "must": true, "visual": true },
+    { "id": "G7", "kind": "style", "text": "documentary register (observational, factual)", "must": true, "visual": false }
+   ]
+  },
+  {
+   "id": "fox-mask-market",
+   "source": "new",
+   "stress": "a gentle mood and an exclusion (no monsters) against a drawn twist; an accessory (mask) lost",
+   "prompt": "A girl wearing a paper fox mask gets lost in a lantern-lit night market in an old Japanese-style town, follows a firefly through the stalls, and finds her grandmother waiting at a noodle stand. Keep it gentle, no monsters.",
+   "duration_s": 60,
+   "format": "9:16",
+   "language": "en",
+   "style": "animation",
+   "mode": "faithful",
+   "gold": [
+    { "id": "G1", "kind": "character", "text": "a young girl", "must": true, "visual": true },
+    { "id": "G2", "kind": "look", "text": "the girl wears a paper fox mask", "must": true, "visual": true, "who": "G1" },
+    { "id": "G3", "kind": "place", "text": "a night market lit by lanterns in an old Japanese-style town", "must": true, "visual": true },
+    { "id": "G4", "kind": "event", "text": "the girl gets lost in the market", "must": true, "visual": true, "order": 1 },
+    { "id": "G5", "kind": "event", "text": "she follows a firefly through the stalls", "must": true, "visual": true, "order": 2 },
+    { "id": "G6", "kind": "event", "text": "she finds her grandmother waiting at a noodle stand", "must": true, "visual": true, "order": 3 },
+    { "id": "G7", "kind": "character", "text": "the girl's grandmother", "must": true, "visual": true },
+    { "id": "G8", "kind": "mood", "text": "the tone is gentle (no threat, no fright)", "must": true, "visual": false },
+    { "id": "G9", "kind": "exclude", "text": "no monsters or creatures", "must": true, "visual": true }
+   ]
+  }
+ ]
+}

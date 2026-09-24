@@ -14,6 +14,7 @@ import * as esbuild from "esbuild";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { TREATMENT_FIXTURE } from "./fixtures/treatment.mjs";
 import { MASTER_PROMPT } from "../src/treatment.ts";
+import { SPEC_METHOD } from "../src/spec.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -50,6 +51,37 @@ before(async () => {
 function fakeAi(answer) {
   const calls = [];
   return { calls, async run(model, inputs) { calls.push({ model, inputs }); const out = await answer(inputs, calls.length); return { response: out, usage: { prompt_tokens: 3000, completion_tokens: 1200, total_tokens: 4200 } }; } };
+}
+
+/** The spec the server's spec call writes for "Create a video about accuracy in medicine": a bare subject, so OPEN. */
+const SPEC_FIXTURE = {
+  v: 1, mode: "open", summary: "A video about accuracy in medicine.", cast: [], refs: [], open: ["the angle", "the story"], narration: "free", script: null,
+  items: [{ id: "R1", kind: "object", text: "accuracy in medicine is what the film is about", quote: "accuracy in medicine", must: true }],
+};
+/** A fake that answers the spec call (system message = SPEC_METHOD) with `spec` and every other call with `other()`. */
+const specAware = (spec, other) => fakeAi((inputs, n) => (inputs.messages?.[0]?.content === SPEC_METHOD ? spec : other(inputs, n)));
+/** A vision-model answer for a reference picture. */
+const DESCRIBED = "A thin woman in her thirties with short blonde hair tied up and a lilac apron over a white shirt.";
+
+/** An R2 bucket in memory: what src/refs.ts reads and writes. */
+class FakeR2 {
+  constructor() { this.m = new Map(); }
+  async put(key, value, opts) {
+    const bytes = typeof value === "string" ? new TextEncoder().encode(value) : new Uint8Array(value);
+    this.m.set(key, { bytes, type: opts?.httpMetadata?.contentType ?? null });
+    return { size: bytes.byteLength };
+  }
+  async get(key) {
+    const e = this.m.get(key);
+    if (!e) return null;
+    return { size: e.bytes.byteLength, body: e.bytes, httpEtag: '"x"', httpMetadata: { contentType: e.type }, text: async () => new TextDecoder().decode(e.bytes), arrayBuffer: async () => e.bytes.slice().buffer };
+  }
+}
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 7, 7, 0, 0]);
+async function withFetch(fake, fn) {
+  const real = globalThis.fetch;
+  globalThis.fetch = fake;
+  try { return await fn(); } finally { globalThis.fetch = real; }
 }
 
 async function studio(ai, extra = {}, opts = {}) {
@@ -138,15 +170,27 @@ test("a request with no length is answered with the question and no model call",
   assert.deepEqual(await s.audit("treatment.adapt"), [], "nothing is counted against the day");
 });
 
-test("a complete request gets a treatment written under the master prompt, hot, and the assistant is told what to do with it", async () => {
-  const ai = fakeAi(() => TREATMENT_FIXTURE(60));
+test("a complete request gets a spec (cold) and a treatment written under it (hot), and the assistant is told what to do with them", async () => {
+  // 24 September 2026: the server's road writes the SPEC first — extraction at temperature 0, SPEC_METHOD as the
+  // system message — and the treatment under it. It used to be one call (the treatment alone); the test pinned that.
+  const ai = specAware(SPEC_FIXTURE, () => TREATMENT_FIXTURE(60));
   const s = await studio(ai);
   const r = await s.call("kleo_adapt_prompt", { prompt: "Create a video about accuracy in medicine", duration_s: 60, format: "16:9", style: "realistic", music: "no", subtitles: "no", author: "server" });
   assert.ok(!r.isError, r.text);
-  assert.equal(ai.calls.length, 1);
-  assert.equal(ai.calls[0].inputs.messages[0].content, MASTER_PROMPT);
-  assert.equal(ai.calls[0].inputs.temperature, 0.85);
-  assert.match(ai.calls[0].inputs.messages[1].content, /accuracy in medicine[\s\S]*60 seconds, narrated in English/);
+  assert.equal(ai.calls.length, 2, "one spec call, one treatment call");
+  assert.equal(ai.calls[0].inputs.messages[0].content, SPEC_METHOD);
+  assert.equal(ai.calls[0].inputs.temperature, 0, "the spec is extraction: no creativity");
+  assert.match(ai.calls[0].inputs.messages[1].content, /Create a video about accuracy in medicine/);
+  assert.equal(ai.calls[1].inputs.messages[0].content, MASTER_PROMPT);
+  assert.equal(ai.calls[1].inputs.temperature, 0.85, "an OPEN spec keeps the producer's temperature");
+  assert.match(ai.calls[1].inputs.messages[1].content, /accuracy in medicine[\s\S]*60 seconds, narrated in English/);
+  assert.match(ai.calls[1].inputs.messages[1].content, /AS REQUIREMENTS/, "the treatment is written under the spec");
+  assert.equal(r.structuredContent.spec.items[0].id, "R1"); assert.equal(r.structuredContent.spec.mode, "open");
+  assert.match(r.structuredContent.spec_text, /^What Kleo understood/);
+  assert.match(r.text, /What Kleo understood \(a subject Kleo will develop\)/);
+  assert.match(r.structuredContent.next, /this same "spec"/);
+  const specRows = await s.audit("spec.adapt");
+  assert.equal(specRows.length, 1); assert.equal(specRows[0].ok, true); assert.equal(specRows[0].mode, "open");
   const t = r.structuredContent.treatment;
   assert.equal(t.logline, TREATMENT_FIXTURE(60).logline);
   assert.equal(t.acts.reduce((n, a) => n + a.seconds, 0), 60);
@@ -173,6 +217,175 @@ test("by default the tool hands the assistant the method and spends nothing: the
   assert.match(r.text, new RegExp(`"variation":"${r.structuredContent.variation}"`));
   assert.deepEqual(await s.audit("treatment.adapt"), [], "nothing counted against the day's cap");
   assert.equal((await s.audit("treatment.method")).length, 1);
+  // THE SPEC FIRST (24 September 2026): the requirements are extracted before anybody is creative with them, so the
+  // spec method comes before the producer's, and the next step says to show the user what Kleo understood.
+  const specAt = r.text.indexOf("STEP A — WRITE THE SPEC FIRST"), treatAt = r.text.indexOf("WRITE THE TREATMENT YOURSELF");
+  assert.ok(specAt > 0 && treatAt > specAt, "the spec method, then the treatment method");
+  assert.match(r.text, /You are Kleo's script supervisor/, "the spec method travels whole");
+  assert.equal(r.structuredContent.spec, null);
+  assert.match(r.structuredContent.next, /^STEP A: write the SPEC/);
+  assert.match(r.structuredContent.next, /show them what Kleo understood[\s\S]*wait for their yes or their corrections/);
+  assert.match(r.structuredContent.next, /"as-told\/as-asked"/, "a faithful spec is told the user's way, with no drawn device");
+  assert.match(r.structuredContent.next, /the object as "spec", the object as "treatment"/);
+});
+
+/* ------------------------------------------------------------------ the spec and the pictures (24 September) */
+
+test("the intake's answers travel: the spec method quotes them and the next step hands them to kleo_create_video", async () => {
+  const s = await studio(fakeAi(() => { throw new Error("must not be called"); }));
+  const r = await s.call("kleo_adapt_prompt", { prompt: "A realistic film about lighthouse keepers, 45 seconds", format: "9:16", music: "no", subtitles: "no", audience: "children", tone: "warm", must_keep: "the red lamp" });
+  assert.ok(!r.isError, r.text);
+  assert.match(r.text, /THE USER ALSO ANSWERED[\s\S]*must appear, or must never appear: "the red lamp"[\s\S]*the film is for: "children"[\s\S]*the tone: "warm"/);
+  assert.equal(r.structuredContent.must_keep, "the red lamp"); assert.equal(r.structuredContent.audience, "children"); assert.equal(r.structuredContent.tone, "warm");
+  assert.match(r.structuredContent.next, /must_keep: "the red lamp"/); assert.match(r.structuredContent.next, /audience: "children"/);
+});
+
+test("reference pictures: a URL is taken in, described and handed back as a handle; an upload link is this account's own", async () => {
+  const ai = fakeAi(() => DESCRIBED);   // the only model call on this road is the vision model's description
+  const s = await studio(ai, { RENDERS: new FakeR2() });
+  const r = await withFetch(async () => new Response(PNG, { status: 200 }),
+    () => s.call("kleo_adapt_prompt", { prompt: "A realistic film about Mara, a pastry chef, 45 seconds", format: "9:16", music: "no", subtitles: "no", references: [{ url: "https://example.com/mara.png", role: "character", name: "Mara" }] }));
+  assert.ok(!r.isError, r.text);
+  const ref = r.structuredContent.references[0];
+  assert.match(ref.handle, /^kref_[0-9a-f]{8}$/); assert.equal(ref.role, "character"); assert.equal(ref.name, "Mara"); assert.equal(ref.description, DESCRIBED);
+  assert.equal(ai.calls.length, 1, "described once, by the vision model");
+  assert.match(r.text, new RegExp(`REFERENCE PICTURES KLEO HOLDS FOR THIS FILM[\\s\\S]*${ref.handle} \\(character: Mara\\): A thin woman`));
+  assert.match(r.text, new RegExp(`IMAGES KLEO HOLDS FOR THIS FILM: ${ref.handle}`), "the spec method lists it for the spec's refs");
+  assert.match(r.structuredContent.next, new RegExp(`references \\["${ref.handle}"\\]`));
+  // A link that is not https is refused in words before anything else.
+  const http = await s.call("kleo_adapt_prompt", { prompt: "A realistic film about Mara, 45 seconds", references: [{ url: "http://example.com/mara.png" }] });
+  assert.ok(http.isError); assert.match(http.text, /only fetches pictures over https/);
+  // The upload link: signed, on this server, and empty until the user uploads through it.
+  const link = await s.call("kleo_upload_link", {});
+  assert.ok(!link.isError, link.text);
+  assert.match(link.structuredContent.upload_url, /^http:\/\/kleo\.test\/upload\/[A-Za-z0-9_-]+\.[0-9a-f]{32}$/);
+  assert.equal(link.structuredContent.upload_url, `http://kleo.test/upload/${link.structuredContent.token}`);
+  assert.equal(link.structuredContent.max_images, 8);
+  assert.match(link.text, /Give it to the user as a plain link/);
+  const early = await s.call("kleo_adapt_prompt", { prompt: "A realistic film about Mara, 45 seconds", references: [{ upload: link.structuredContent.token }] });
+  assert.ok(early.isError); assert.match(early.text, /Nothing has been uploaded through that link yet/);
+  const forged = await s.call("kleo_adapt_prompt", { prompt: "A realistic film about Mara, 45 seconds", references: [{ upload: "e30.00000000000000000000000000000000" }] });
+  assert.ok(forged.isError); assert.match(forged.text, /not an upload link of this account/);
+});
+
+const MARA = "Mara, a thin pastry chef with short blonde hair and a lilac apron, opens her tiny shop at dawn and waits for the old man who never comes; no dogs in the shop.";
+const maraSpec = (extra = {}) => ({
+  v: 1, mode: "faithful", summary: "Mara the pastry chef opens her shop at dawn and waits for an old man who never comes.",
+  cast: [{ id: "c1", name: "Mara", look: "a thin woman with short blonde hair and a lilac apron", ref: null }],
+  items: [
+    { id: "R1", kind: "character", text: "Mara, a thin pastry chef", quote: "Mara, a thin pastry chef", must: true, who: "c1" },
+    { id: "R2", kind: "look", text: "Mara's apron is lilac", quote: "a lilac apron", must: true, who: "c1" },
+    { id: "R3", kind: "event", text: "Mara opens her tiny shop at dawn", quote: "opens her tiny shop at dawn", must: true, order: 1 },
+    { id: "R4", kind: "exclude", text: "no dogs in the shop", quote: "no dogs in the shop", must: true },
+    { id: "R5", kind: "mood", text: "made for children", quote: "children", must: true },
+  ],
+  refs: [], open: ["the ending"], narration: "free", script: null, ...extra,
+});
+
+test("kleo_create_video takes the spec: an invented quote is refused before any charge; a good one is stored with the answers", async () => {
+  const s = await studio(fakeAi(() => { throw new Error("must not be called"); }));
+  const bad = await s.call("kleo_create_video", { prompt: MARA, duration_s: 45, format: "9:16", style: "animation", audience: "children", spec: maraSpec({ items: [...maraSpec().items, { id: "R6", kind: "object", text: "a black cat on the counter", quote: "un gatto nero", must: true }] }) });
+  assert.ok(bad.isError);
+  assert.match(bad.text, /The spec has 1 problem \(nothing was charged\)[\s\S]*R6: the quote "un gatto nero" is not in the user's request/);
+  assert.equal((await m.getUser(s.env, "u_test")).credits, 70, "a refused spec moves no credits");
+  // R5 quotes the user's AUDIENCE answer, not the prompt: the answers are part of what the user said.
+  const noAnswer = await s.call("kleo_create_video", { prompt: MARA, duration_s: 45, format: "9:16", style: "animation", spec: maraSpec() });
+  assert.ok(noAnswer.isError, "without the audience answer, \"children\" is nobody's words"); assert.match(noAnswer.text, /R5: the quote "children"/);
+  const ok = await s.call("kleo_create_video", { prompt: MARA, duration_s: 45, format: "9:16", style: "animation", audience: "children", must_keep: "the lilac apron", spec: maraSpec() });
+  assert.ok(!ok.isError, ok.text);
+  assert.match(ok.text, /Kleo will check the film against your 5 requirements \(your film, as you described it\)/);
+  const params = JSON.parse((await m.getUserJob(s.env, "u_test", ok.structuredContent.job_id)).params);
+  assert.equal(params.spec.mode, "faithful"); assert.deepEqual(params.spec.items.map((i) => i.id), ["R1", "R2", "R3", "R4", "R5"]);
+  assert.deepEqual(params.brief, { must_keep: "the lilac apron", audience: "children", tone: null });
+  assert.equal(params.refs, undefined, "no pictures, no refs");
+  assert.equal((await s.audit("job.created")).at(-1).spec, "faithful");
+});
+
+test("kleo_create_video: references resolve to this account's handles; the look is read off the request when nothing names it", async () => {
+  const ai = fakeAi(() => DESCRIBED);
+  const s = await studio(ai, { RENDERS: new FakeR2() });
+  const a = await withFetch(async () => new Response(PNG, { status: 200 }),
+    () => s.call("kleo_adapt_prompt", { prompt: MARA, duration_s: 45, format: "9:16", style: "animation", music: "no", subtitles: "no", references: [{ url: "https://example.com/mara.png", role: "character", name: "Mara" }] }));
+  const handle = a.structuredContent.references[0].handle;
+  const unknown = await s.call("kleo_create_video", { prompt: MARA, duration_s: 45, format: "9:16", references: ["kref_00000000"] });
+  assert.ok(unknown.isError); assert.match(unknown.text, /not a picture Kleo received from this account[\s\S]*Nothing was charged/);
+  const spec = maraSpec({ cast: [{ id: "c1", name: "Mara", look: "a thin woman with short blonde hair and a lilac apron", ref: "ref1" }], refs: [{ id: "ref1", handle, role: "character", for: "c1", description: DESCRIBED }] });
+  const ok = await s.call("kleo_create_video", { prompt: MARA, duration_s: 45, format: "9:16", audience: "children", references: [handle], spec });
+  assert.ok(!ok.isError, ok.text);
+  assert.match(ok.text, /It draws from 1 reference picture\./);
+  const params = JSON.parse((await m.getUserJob(s.env, "u_test", ok.structuredContent.job_id)).params);
+  assert.deepEqual(params.refs, [handle]); assert.equal(params.spec.refs[0].handle, handle);
+  await s.call("kleo_cancel_job", { job_id: ok.structuredContent.job_id });
+  // No style, no treatment, no storyboard: the request's own words name the look (it used to be realistic, always).
+  const drawn = await s.call("kleo_create_video", { prompt: "Un cartone animato su una volpe che impara a nuotare", duration_s: 45, format: "9:16", language: "it" });
+  assert.ok(!drawn.isError, drawn.text);
+  assert.equal(JSON.parse((await m.getUserJob(s.env, "u_test", drawn.structuredContent.job_id)).params).style, "animation");
+});
+
+test("with the assistant's own storyboard, the spec is checked against it: an item no shot claims is refused before any charge", async () => {
+  const s = await studio(fakeAi(() => { throw new Error("must not be called"); }));
+  const sb = JSON.parse(readFileSync(join(ROOT, "scripts", "motion-demo", "samples", "venezia-16x9.json"), "utf8"));
+  const prompt = "L'acqua alta a Venezia, cento volte l'anno";
+  const spec = { v: 1, mode: "faithful", summary: "Venice's high water, a hundred times a year.", cast: [], refs: [], open: [], narration: "lines", script: null,
+    items: [
+      { id: "R1", kind: "place", text: "Venice flooded by high water", quote: "L'acqua alta a Venezia", must: true },
+      { id: "R2", kind: "line", text: "the narrator says it happens a hundred times a year", quote: "cento volte l'anno", must: true },
+    ] };
+  const args = { prompt, duration_s: 30, format: "16:9", language: "it", style: "realistic" };
+  const bad = await s.call("kleo_create_video", { ...args, spec, storyboard: JSON.parse(JSON.stringify(sb)) });
+  assert.ok(bad.isError);
+  assert.match(bad.text, /The storyboard does not show everything the spec asks for: 1 problem \(nothing was charged\)[\s\S]*R1 \(place\): no shot shows "Venice flooded by high water"/);
+  assert.doesNotMatch(bad.text, /R2/, "the line is said in the voice: covered");
+  assert.equal((await m.getUser(s.env, "u_test")).credits, 70);
+  const fixed = JSON.parse(JSON.stringify(sb)); fixed.scenes[0].shots[0].covers = ["R1"];
+  const ok = await s.call("kleo_create_video", { ...args, spec, storyboard: fixed });
+  assert.ok(!ok.isError, ok.text);
+  assert.equal(JSON.parse((await m.getUserJob(s.env, "u_test", ok.structuredContent.job_id)).params).spec.mode, "faithful");
+});
+
+test("kleo_get_result reads the fidelity report: how many of the user's requirements the pictures show, and which they miss", async () => {
+  const s = await studio(fakeAi(() => { throw new Error("must not be called"); }));
+  const made = await s.call("kleo_create_video", { prompt: MARA, duration_s: 45, format: "9:16", style: "animation", audience: "children", spec: maraSpec() });
+  assert.ok(!made.isError, made.text);
+  const id = made.structuredContent.job_id;
+  const report = { v: 1, stills: {
+    "01-open-s1": { score: 0.95, checks: ["style", "R1", "R3", "no-text"], failed: [] },
+    "01-open-s2": { score: 0.6, checks: ["style", "R2", "cast:c1"], failed: [{ id: "R2", question: "Does the image show this: Mara's apron is lilac?" }, { id: "cast:c1" }] },
+    "02-wait-s1": { score: 1, answers: { style: "yes", R2: "yes", "exclude:R4": "no" }, failed: [] },
+    "02-wait-s2": { score: 0.5, answers: { style: "yes", R3: "yes", "cast:c1": "no" }, failed: ["cast:c1"] },
+  } };
+  const bytes = new TextEncoder().encode(JSON.stringify(report));
+  await s.env.OAUTH_KV.put(`file:renders/${id}/fidelity.json`, bytes.buffer, { metadata: { contentType: "application/json", size: bytes.byteLength } });
+  await s.env.DB.prepare("INSERT INTO job_files (job_id, name, key, size, content_type) VALUES (?, 'fidelity.json', ?, ?, 'application/json')").bind(id, `renders/${id}/fidelity.json`, bytes.byteLength).run();
+  await s.env.DB.prepare("INSERT INTO job_files (job_id, name, key, size, content_type) VALUES (?, 'video.mp4', ?, 10, 'video/mp4')").bind(id, `renders/${id}/video.mp4`).run();
+  await s.env.DB.prepare("UPDATE jobs SET state = 'done', percent = 100, finished_at = ?, expires_at = ? WHERE id = ?").bind(new Date().toISOString(), new Date(Date.now() + 7 * 86400_000).toISOString(), id).run();
+  const r = await s.call("kleo_get_result", { job_id: id });
+  assert.ok(!r.isError, r.text);
+  // Checked: R1, R3, R2, cast:c1, R4 (the style and the no-text questions are not the user's requirements). R2 failed
+  // on one picture and showed on another: kept. The cast look failed wherever it was asked: a miss, said by name.
+  assert.match(r.text, /Fidelity: 4 of 5 requirements checked on the pictures; misses: cast:c1 \(Mara looking as described\)\./);
+  assert.deepEqual(r.structuredContent.fidelity, { checked: 5, kept: 4, misses: [{ id: "cast:c1", text: "Mara looking as described" }], pictures: 4, plan_score: null });
+  assert.ok(r.structuredContent.video_url, "the links are still there");
+  assert.equal(r.structuredContent.fidelity_url, undefined, "the report is summarised, not handed over as a file");
+
+  // The stills engine's own shape (src/stills.ts): per picture only what FAILED, no list of what was asked. The
+  // questions are recomputed from the spec and the stored shots (src/spec.ts visualChecks), the same ones the judge got.
+  const sb = { kleo_style: "animation", scenes: [{ id: "01-open", voice: "Mara opens the shop.", shots: [
+    { image_prompt: "Mara unlocks her tiny pastry shop at dawn", covers: ["R1", "R3"], cast: ["c1"] },
+    { image_prompt: "Close on Mara's lilac apron", covers: ["R2"], cast: ["c1"] },
+  ] }] };
+  const engine = { v: 1, plan: { score: 0.9 }, summary: { pictures: 2, drawn: 2, model: "@cf/black-forest-labs/flux-2-klein-9b", mean_score: 0.75, must_failed_pictures: 1 }, stills: {
+    "01-open-s1": { score: 1, mustFailed: 0, failed: [], tries: [], judged: true },
+    "01-open-s2": { score: 0.5, mustFailed: 1, failed: ["cast:c1"], tries: [], judged: true },
+  } };
+  const eb = new TextEncoder().encode(JSON.stringify(engine));
+  await s.env.OAUTH_KV.put(`file:renders/${id}/fidelity.json`, eb.buffer, { metadata: { contentType: "application/json", size: eb.byteLength } });
+  await s.env.DB.prepare("UPDATE jobs SET storyboard = ? WHERE id = ?").bind(JSON.stringify(sb), id).run();
+  const r2 = await s.call("kleo_get_result", { job_id: id });
+  assert.ok(!r2.isError, r2.text);
+  // Asked: R1, R3, R2 (Mara's look item, folded in by the cast), exclude R4 on the first; R2, Mara's look, R4 on the second.
+  assert.deepEqual(r2.structuredContent.fidelity, { checked: 5, kept: 4, misses: [{ id: "cast:c1", text: "Mara looking as described" }], pictures: 2, plan_score: 0.9 });
+  assert.match(r2.text, /Fidelity: 4 of 5 requirements checked on the pictures; misses: cast:c1/);
 });
 
 test("when the model is down the tool says so and points at kleo_create_video; it never throws", async () => {

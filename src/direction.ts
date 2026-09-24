@@ -38,18 +38,34 @@ export const D = {
   tone: 60,
   mustKeep: { max: 8, len: 90 },
   world: 180,
-  cast: { max: 4, name: 24, look: 140 },
+  /**
+   * The cast (24 September 2026, the fidelity engine): six characters, a 40-character name and a 420-character look,
+   * the same room the request spec (src/spec.ts S.cast/S.name/S.look) gives them. At 140 characters the look was cut
+   * before the second half of what the user wrote — "short blonde hair tied up, a lilac apron, round glasses, a
+   * flour-dusted grey jumper" lost its glasses and jumper — and at four characters the fifth person of a family story
+   * was drawn with no description at all. The stills are drawn on the server by FLUX.2 now, which reads the whole
+   * sentence; the 77-token CLIP ceiling that justified the short look no longer applies to them.
+   */
+  cast: { max: 6, name: 40, look: 420 },
   objects: { min: 3, max: 12, len: 36 },
   forbidden: { min: 3, max: 12, len: 36 },
   sections: { min: 2, max: 8, name: 32, means: 40 },
 } as const;
 
 export interface CastMember {
-  /** How the narration and the image prompts refer to this character: "the captain", "the cabin boy". */
+  /**
+   * How the narration and the image prompts refer to this character: the name the user gave a fictional character
+   * ("Mara", "Captain Oyelaran") or, when they gave none, the role ("the captain", "the cabin boy").
+   */
   name: string;
   /** The ONE description reused verbatim in every picture that shows them. This is what keeps a face a face. */
   look: string;
+  /** The request spec's cast id ("c1") this character is, when the film has a spec. Lets a shot's `cast` name them by id. */
+  id?: string | null;
 }
+
+/** A spec cast entry as castFor reads it: the id a shot may name, and the name that ties it to the direction's cast. */
+export interface CastRef { id: string; name: string }
 
 export interface Section {
   /** The narrative name of this stretch of film: "THE PLUG", "THE REMOTE ATTACKER". */
@@ -154,6 +170,7 @@ export function directionProblems(d: unknown, opts: DirectionOptions): string[] 
     if (!isObj(m)) { out.push(`direction.cast[${i}] must be {name, look}`); return; }
     add(badText(m.name, `cast[${i}].name`, D.cast.name));
     add(badText(m.look, `cast[${i}].look`, D.cast.look));
+    if (m.id !== undefined && m.id !== null && (typeof m.id !== "string" || m.id.length > 12)) out.push(`direction.cast[${i}].id must be the spec's cast id ("c1"), a short string`);
     if (typeof m.look === "string" && thinLook(m.look))
       out.push(`direction.cast[${i}].look "${m.look.trim()}" is a name, not a look: describe the character in one sentence a painter could work from — age or build, face, hair, clothes with their colours, one distinctive item (a 30-second Short about a warrior was drawn with a different face in every picture because its look was "a young Jedi-like warrior")`);
   });
@@ -282,10 +299,21 @@ export function screenTextIn(prompt: string): string | null {
   for (const re of SCREEN_TEXT) { const m = re.exec(prompt); if (m) return m[0]; }
   return null;
 }
-/** The pictures that ask for a diagram, a screen with text or a quoted caption, with the words that gave them away. */
-export function screenTextProblems(prompts: readonly { id: string; image_prompt: string }[]): { id: string; term: string }[] {
+/**
+ * The pictures that ask for a diagram, a screen with text or a quoted caption, with the words that gave them away.
+ *
+ * `allowedIds` are the pictures that MUST carry words: the shots that cover a spec "text" item (24 September 2026).
+ * A user who asked for a shop sign reading "Da Mara" or a note that says "sorry" asked for words in the picture, and
+ * FLUX.2 draws readable text — so the rule that kept captions out of every picture would otherwise refuse the one
+ * thing the user described. Those shots are skipped; every other picture is still held to the rule.
+ */
+export function screenTextProblems(prompts: readonly { id: string; image_prompt: string }[], allowedIds?: ReadonlySet<string>): { id: string; term: string }[] {
   const out: { id: string; term: string }[] = [];
-  for (const p of prompts) { const term = screenTextIn(p.image_prompt); if (term) out.push({ id: p.id, term }); }
+  for (const p of prompts) {
+    if (allowedIds?.has(p.id)) continue;
+    const term = screenTextIn(p.image_prompt);
+    if (term) out.push({ id: p.id, term });
+  }
   return out;
 }
 
@@ -314,8 +342,9 @@ export function screenTextProblems(prompts: readonly { id: string; image_prompt:
  *    breathes and turns their head on their own. So a shot that shows someone is never asked for more.
  *
  * And it REPAIRS rather than refuses, exactly like the static_forced routing rule: a refusal sends the model back to
- * rewrite and costs a whole round trip, a repair costs nothing. The clause it adds is built from what the picture
- * already names, so the subject of the shot never changes — only its stillness does.
+ * rewrite and costs a whole round trip, a repair costs nothing. The clause is built from what the picture already
+ * names, so the subject of the shot never changes — only its stillness does. Since 24 September 2026 the clause goes
+ * into the shot's "action" (motionHint), never into the image_prompt the still is drawn from.
  */
 
 /** Anything that moves without being told to: it breathes, it turns its head, it fidgets. */
@@ -383,20 +412,27 @@ export function livingClause(imagePrompt: string): string {
 }
 
 /**
- * The picture, with something in it moving. Returns the prompt unchanged when it is already alive, and never grows
- * past `max` — a clause that would not fit takes the room from the end of the description instead of being dropped,
- * because a picture that is one adjective shorter is worth far more than one that comes back frozen.
+ * The movement a still picture's CLIP should carry, or null when something in the picture already moves by itself.
+ *
+ * Until 24 September 2026 this clause was appended to the image_prompt itself (enliven), and when the prompt was near
+ * its limit the AUTHOR'S WORDS were cut to make room: the end of a description the user dictated was replaced by
+ * "dust drifting through the light", and the still model drew dust instead of what was asked. The movement belongs to
+ * the clip, not to the still: the planner writes it into the shot's "action" (src/keou-contract.ts AUTHORING_SHOT_FIELDS)
+ * when the author gave none, and the clip prompt reads it from there. The picture is drawn from the author's words only.
  */
-export function enliven(imagePrompt: string, max: number): string {
+export function motionHint(imagePrompt: string): string | null {
   const base = String(imagePrompt || "").trim();
-  if (!base || stillness(base).alive) return base;
-  const clause = livingClause(base);
-  const tail = `, ${clause}`;
-  if (base.length + tail.length <= max) return base + tail;
-  const room = max - tail.length;
-  if (room < 20) return base;                      // too tight to say both: leave the author's words alone
-  const cut = base.slice(0, room);
-  return (cut.includes(" ") ? cut.slice(0, cut.lastIndexOf(" ")) : cut).replace(/[,\s]+$/, "") + tail;
+  if (!base || stillness(base).alive) return null;
+  return livingClause(base);
+}
+
+/**
+ * DEPRECATED (24 September 2026): the picture is never rewritten any more — see motionHint(), which returns the clause
+ * this used to append so it can travel in the shot's "action" instead. Kept, returning the author's prompt trimmed and
+ * otherwise untouched, so a caller that still runs every image_prompt through it changes nothing and cuts nothing.
+ */
+export function enliven(imagePrompt: string, _max?: number): string {
+  return String(imagePrompt || "").trim();
 }
 
 /**
@@ -423,41 +459,74 @@ export function formatTalk(voice: string): string | null {
 }
 
 /**
- * The request with its sentences ABOUT THE VIDEO taken out — "A 30-second vertical YouTube Short set in…", "Make it
- * cinematic", "Use original characters" stay if they carry no format word; "narrated in Italian, 9:16" goes. The
- * planner's prompts paste the request verbatim, and the 17B copies a sentence about the format straight into the
- * narration and the direction's subject (job gt_jm5btrj8: told once to drop "30-second", it wrote it again). The
- * length, format and language reach every prompt as parameters, so nothing is lost. When every sentence would go,
- * the request stays as written: a request that is nothing but format still has to be planned.
+ * The request as the planner's prompts paste it: THE WHOLE REQUEST, whitespace folded, nothing taken out.
+ *
+ * From 20 to 24 September 2026 this deleted every sentence that contained a format word, because the 17B copied
+ * "In a 30-second vertical YouTube Short…" into the narration (job gt_jm5btrj8). It deleted far more than the format:
+ * "the narrator says 'festa a sorpresa'", "a 1990s bedroom with a vertical blind", "a woman walking down a vertical
+ * street" all lost the sentence that carried them, and the film lost what the user asked for (measured on 18 jobs:
+ * 10% of the users' requirements contradicted, a share of them never reaching the planner at all). The narration is
+ * protected where the damage happened instead — formatTalk() on every voice line, in the planner and the validator —
+ * and the request reaches the model as the user wrote it.
  */
 export function storyRequest(prompt: string): string {
-  const text = prompt.trim();
-  const sentences = text.split(/(?<=[.!?])\s+/);
-  const kept = sentences.filter((x) => !formatTalk(x));
-  if (!kept.length || kept.length === sentences.length) return text;
-  // A sentence that carried the subject as well as the format keeps its subject: cut the leading "In a 30-second
-  // vertical YouTube Short," style clause and keep what follows when it still reads as a sentence.
-  const rescued = sentences.filter((x) => formatTalk(x)).map((x) => x.replace(/^.*?\b(?:short|shorts|video|reel|clip|film|animatic)\b[,:]?\s*/iu, "").trim()).filter((x) => x.split(/\s+/).length >= 4 && !formatTalk(x));
-  return [...kept, ...rescued].join(" ");
+  return String(prompt ?? "").trim().replace(/\s+/g, " ");
+}
+
+/** The words a must_keep item about the FILM ITSELF is made of, beside the ones formatTalk() finds (all three languages). */
+const FORMAT_VOCAB = new Set(
+  ("duration durata durée length lunghezza long lungo lunga seconds second secondi secondo secondes sec minutes minute minuti minuto min " +
+   "scene scenes scena scène scènes shot shots inquadrature inquadratura circa about around approximately environ format formato " +
+   "video film short shorts reel clip youtube tiktok vertical horizontal verticale orizzontale narrated narrato narrata narrator narration " +
+   "narrazione narratore narrateur voiceover voice over italian english french italiano inglese francese italien anglais language lingua " +
+   "langue animatic storyboard subtitles sottotitoli music musica aspect ratio")
+    .split(" "),
+);
+
+/**
+ * True when a must_keep item is ONLY about the video — its length, format, language, narrator — and says nothing about
+ * what is in it: "durata 30 secondi, circa 6 scene" (copied out of the prompt's LENGTH line and read aloud in scene 5
+ * of a pastry-chef film, 20 September 2026), "a 30-second vertical Short", "narrated in Italian". An item that names
+ * the format AND carries content — "the narrator must say 'festa a sorpresa'" — is content, and stays.
+ */
+export function formatOnly(item: string): boolean {
+  if (!formatTalk(item)) return false;
+  const content = words(item).filter((w) => !STOP.has(w) && !/^\d+s?$/.test(w) && !FORMAT_VOCAB.has(w));
+  return content.length < 2;
 }
 
 /**
- * must_keep items that are really a character's LOOK. "capelli biondi corti e raccolti, grembiule lilla" was copied
- * from the request into must_keep, the fidelity gate then forced the narrator to read it aloud, and the film opened
- * on "Capelli biondi raccolti, grembiule lilla, la pasticcera prepara…" (film-make, 20 September 2026). An item is a
- * look when three fifths of its content words are in some cast member's look; the appearance lives there, said once
- * to the picture model and never to the viewer.
+ * Whether a must_keep item is a character's LOOK: an appearance word in any of the three languages, or three fifths of
+ * its content words inside some cast member's look. A look is proven by the pictures, not by the narration.
  */
-export function dropLookFacts(mustKeep: readonly string[], cast: readonly CastMember[]): string[] {
-  const looks = cast.map((m) => new Set(words(m.look).filter((w) => !STOP.has(w))));
-  return mustKeep.filter((item) => {
-    // Never the film's own format ("durata 30 secondi, circa 6 scene" was copied out of the prompt's LENGTH line and
-    // read aloud in scene 5 of a pastry-chef film, 20 September 2026), never an appearance in any language.
-    if (formatTalk(item) || APPEARANCE.test(item)) return false;
-    const content = words(item).filter((w) => !STOP.has(w));
-    if (content.length < 2) return true;
-    return !looks.some((look) => content.filter((w) => look.has(w)).length / content.length >= 0.6);
-  });
+export function lookFact(item: string, cast: readonly CastMember[]): boolean {
+  if (APPEARANCE.test(item)) return true;
+  const content = words(item).filter((w) => !STOP.has(w));
+  if (content.length < 2) return false;
+  return cast.some((m) => { const look = new Set(words(m.look).filter((w) => !STOP.has(w))); return content.filter((w) => look.has(w)).length / content.length >= 0.6; });
+}
+
+/**
+ * The must_keep items the NARRATOR is held to: every item but the looks. "capelli biondi corti e raccolti, grembiule
+ * lilla" was copied into must_keep, the fidelity gate forced the narrator to read it aloud, and the film opened on
+ * "Capelli biondi raccolti, grembiule lilla, la pasticcera prepara…" (film-make, 20 September 2026). The look stays in
+ * must_keep — it is something the user asked for, and the pictures are checked for it — but missingFacts() is run on
+ * this list, so the viewer never hears a description read out.
+ */
+export function spokenFacts(mustKeep: readonly string[] | undefined, cast: readonly CastMember[] | undefined): string[] {
+  const facts: readonly string[] = Array.isArray(mustKeep) ? mustKeep.filter((x): x is string => typeof x === "string") : [];
+  return facts.filter((f) => !lookFact(f, Array.isArray(cast) ? cast : []));
+}
+
+/**
+ * must_keep as the direction keeps it: EVERYTHING the user asked for, except an item that is only about the video's
+ * own format (formatOnly). Until 24 September 2026 this also dropped every item that described an appearance, in any
+ * language — so the user's "lilac apron" vanished from the one list the finished film was checked against, and nothing
+ * noticed when the picture showed a red one. The appearance stays now; the narration is held to spokenFacts() only.
+ * The name is kept because the planner calls it where the direction is repaired.
+ */
+export function dropLookFacts(mustKeep: readonly string[], _cast?: readonly CastMember[]): string[] {
+  return mustKeep.filter((item) => typeof item === "string" && !formatOnly(item));
 }
 /** Words that describe how someone looks, in the three narration languages: hair, clothes, build, colours on a person. */
 const APPEARANCE = /(?<![\p{L}])(?:hair|haired|blonde?|brunette|curly|beard(?:ed)?|moustache|apron|jacket|coat|dress|robe|cloak|hooded|boots|hat|cap|glasses|freckles|scar(?:red)?|slim|slender|thin|tall|short|stocky|athletic|build|capelli|biond[oaie]|castan[oaie]|ricci[oaie]?|barba|baffi|grembiule|giacca|cappotto|vestit[oaie]|mantell[oi]|stivali|cappell[oi]|occhiali|lentiggini|cicatric[ei]|magr[oaie]|snell[oaie]|alt[oaie]|bass[oaie]|robust[oaie]|cheveux|blond[es]?|barbe|tablier|veste|manteau|robe|capuche|bottes|chapeau|lunettes|mince|grand[es]?)(?![\p{L}])/iu;
@@ -481,7 +550,19 @@ export const ACCENT_LIGHT: Record<string, string> = {
  * the name as a whole phrase keeps "the captain" from firing on "the captain's chair" of a scene she is not in — it
  * does fire, and that is the right side to err on: repeating her look costs a few tokens, losing her face costs the film.
  */
-export function castFor(cast: readonly CastMember[], imagePrompt: string): CastMember[] {
+export function castFor(
+  castOrDirection: readonly CastMember[] | Pick<Direction, "cast"> | null | undefined,
+  imagePrompt: string,
+  shotCast?: readonly string[] | null,
+  specCast?: readonly CastRef[] | null,
+): CastMember[] {
+  const cast: readonly CastMember[] = Array.isArray(castOrDirection) ? castOrDirection : ((castOrDirection as Pick<Direction, "cast"> | null | undefined)?.cast ?? []);
+  // THE SHOT SAYS WHO IS IN IT (24 September 2026). Every rule below guesses the cast from the words of the prompt,
+  // and a guess is wrong exactly when it matters most: two women in one scene, a pronoun in a two-character film, a
+  // name the prompt paraphrased. The planner now writes "cast" on every shot (the ids or names of the characters in
+  // the picture); when it did, that list decides, and the guessing is only the fallback for shots written before it.
+  const explicit = explicitCast(cast, shotCast, specCast);
+  if (explicit.length) return explicit;
   const p = imagePrompt.toLowerCase();
   // The head noun stands for a character only when no other character shares it: "the warrior" and "the dark
   // warrior" both end in "warrior", and matching on it dressed the hero as the villain in every shot of job
@@ -496,6 +577,28 @@ export function castFor(cast: readonly CastMember[], imagePrompt: string): CastM
   // between eight pictures of the blonde pastry chef in lilac the direction described.
   return PRONOUN_HINTS.test(imagePrompt) ? [cast[0]] : [];
 }
+/** A cast name as two spellings of it share: case, accents, a leading article and extra spaces folded away. */
+const castKey = (s: string): string =>
+  String(s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim().replace(/^(?:(?:the|a|an|il|lo|la|le|un|una|uno)\s+|l['’])/, "").replace(/\s+/g, " ");
+
+/**
+ * The direction's cast members a shot's explicit `cast` names, in the shot's order: by the member's spec id ("c1"), by
+ * name (case, accents and a leading article ignored), or by a spec cast id whose spec name is the member's name.
+ * Entries that name nobody are ignored; an empty answer sends castFor() back to reading the prompt.
+ */
+function explicitCast(cast: readonly CastMember[], shotCast: readonly string[] | null | undefined, specCast: readonly CastRef[] | null | undefined): CastMember[] {
+  const out: CastMember[] = [];
+  if (!Array.isArray(shotCast) || !shotCast.length) return out;
+  for (const raw of shotCast) {
+    const key = typeof raw === "string" ? raw.trim() : "";
+    if (!key) continue;
+    const viaSpec = (specCast ?? []).find((c) => c && c.id === key);
+    const hit = cast.find((m) => (typeof m.id === "string" && m.id === key) || castKey(m.name) === castKey(key) || (!!viaSpec && castKey(m.name) === castKey(viaSpec.name)));
+    if (hit && !out.includes(hit)) out.push(hit);
+  }
+  return out;
+}
+
 /** The pronouns and generic words that can only mean the film's one character. Mirrored in worker/kleo_pictures.py. */
 export const PRONOUN_HINTS = /(?<![\p{L}])(?:she|her|hers|herself|he|him|his|himself|the character|the protagonist)(?![\p{L}])/iu;
 /**
@@ -517,10 +620,17 @@ export function headNounIn(name: string, imagePrompt: string): boolean {
  * Order matters for a diffusion model — what comes first weighs most — so the author's own sentence stays in front and
  * everything here follows it.
  */
-export function pictureContext(d: Direction | null, imagePrompt: string, accent: string | null, look: string | null = null): string {
+export function pictureContext(
+  d: Direction | null,
+  imagePrompt: string,
+  accent: string | null,
+  look: string | null = null,
+  shotCast?: readonly string[] | null,
+  specCast?: readonly CastRef[] | null,
+): string {
   if (!d) return "";
   const bits: string[] = [];
-  for (const m of castFor(d.cast ?? [], imagePrompt)) bits.push(`${m.name}: ${m.look}`);
+  for (const m of castFor(d.cast ?? [], imagePrompt, shotCast, specCast)) bits.push(`${m.name}: ${m.look}`);
   if (d.world) bits.push(d.world);
   const light = accent && lightsPictures(look) ? ACCENT_LIGHT[accent] : null;
   if (light) bits.push(light);

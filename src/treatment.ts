@@ -15,6 +15,9 @@
  *     THIS request, under a stated quality bar and a stated set of things Kleo cannot render;
  *   - the VARIATION: a narrative device and an opening family are drawn for each film from its own id, so the same
  *     request never gets the same film twice, and the draw is written into the treatment so it can be read back.
+ *     Only for a film the user LEFT OPEN (24 September 2026): a request the user described is a FAITHFUL spec
+ *     (src/spec.ts), its treatment is written under the spec's requirements at a cooler temperature, and its draw is
+ *     "as-told/as-asked" — the user's events in the user's order, opening on the image the request opens on.
  *
  * It travels three ways: as `treatment` at the top level of the storyboard (the direction, the outline and every
  * scene are written under it; the worker passes it through untouched like `direction`), as `params.treatment` on a
@@ -29,6 +32,7 @@
 /** Character limits, printed in the prompt, enforced by the repair and checked by the tests. */
 import { LAYER_METHOD, graphicsProblems, repairGraphics, graphicsBlock, isNoLayer, HUD_KINDS, EDGES, CORNERS, SUBTITLE_MODES, CHAPTER_MODES, type Graphics } from "./graphics.ts";
 import { FILM_LOOKS, type FilmLook } from "./keou-contract.ts";
+import { specBlock, type RequestSpec } from "./spec.ts";
 
 export const T = {
   logline: 200,
@@ -111,9 +115,19 @@ export const DEVICES = {
   "question-and-reveal": "ask one plain question in the first line and refuse to answer it until the last act",
   "the-witness": "tell it from the point of view of someone who was there and saw only part of it",
   "cause-to-consequence": "one cause, followed downstream through everything it changes",
+  /**
+   * NOT DRAWN (24 September 2026): the device of a FAITHFUL film, the one the user already told. Drawing a device for
+   * a story the user described is how "a pastry chef bakes a cake for the village children, then they throw her a
+   * surprise party" came back as a countdown to a party nobody had planned, told by a witness who was not in the
+   * request. faithfulVariation() hands this one out; variationFor() never does.
+   */
+  "as-told": "tell it the way the user told it: their events, in their order",
 } as const;
 export type Device = keyof typeof DEVICES;
+/** Every device a treatment may carry (the schema's enum): the drawn ones and "as-told". */
 export const DEVICE_IDS = Object.keys(DEVICES) as Device[];
+/** The devices a draw picks from: every one but "as-told", so an OPEN film's draw is exactly what it was before 24 September. */
+export const DRAWN_DEVICES = DEVICE_IDS.filter((d) => d !== "as-told");
 
 /** The opening families: how the first three seconds behave. Drawn with the device. */
 export const OPENINGS = {
@@ -122,9 +136,13 @@ export const OPENINGS = {
   "the-wide-silence": "a wide, still place with nobody in it, and the narration waits a beat",
   "the-contradiction": "an image that contradicts what the first line says",
   "the-face": "one person, close, doing something ordinary, before the subject is named",
+  /** NOT DRAWN: the opening of a FAITHFUL film, where the user already said what the film opens on. */
+  "as-asked": "the first image is the one the user's request starts with",
 } as const;
 export type Opening = keyof typeof OPENINGS;
 export const OPENING_IDS = Object.keys(OPENINGS) as Opening[];
+/** The openings a draw picks from: every one but "as-asked". */
+export const DRAWN_OPENINGS = OPENING_IDS.filter((o) => o !== "as-asked");
 
 export interface Variation { device: Device; opening: Opening; key: string }
 
@@ -141,9 +159,36 @@ function fnv1a(s: string): number {
  */
 export function variationFor(seed: string): Variation {
   const h = fnv1a(seed);
-  const device = DEVICE_IDS[h % DEVICE_IDS.length];
-  const opening = OPENING_IDS[Math.floor(h / DEVICE_IDS.length) % OPENING_IDS.length];
+  const device = DRAWN_DEVICES[h % DRAWN_DEVICES.length];
+  const opening = DRAWN_OPENINGS[Math.floor(h / DRAWN_DEVICES.length) % DRAWN_OPENINGS.length];
   return { device, opening, key: `${device}/${opening}` };
+}
+
+/**
+ * THE DRAW OF A FAITHFUL FILM (24 September 2026): no draw. The owner, measuring 18 production jobs: "Kleo makes
+ * videos at random". The random device and opening were written into the treatment of films the user had described
+ * scene by scene, and the treatment then bent the user's story to fit them. A film whose spec is FAITHFUL is told as
+ * the user told it and opens where the user's request opens; the key says so, so a treatment can be read back.
+ */
+export function faithfulVariation(): Variation {
+  return { device: "as-told", opening: "as-asked", key: "as-told/as-asked" };
+}
+
+/** True when the request spec says this is the user's own film (src/spec.ts modeFor). */
+export const isFaithful = (spec: RequestSpec | null | undefined): boolean => !!spec && spec.mode === "faithful";
+
+/**
+ * The treatment call's temperature. 0.85 is the producer's heat for a subject left to Kleo — two identical requests
+ * should not get the same film. A FAITHFUL film is extraction and arrangement of what the user said, and heat there
+ * is invention: 0.4 keeps the prose alive and the facts where the user put them.
+ */
+export function treatmentTemperature(spec: RequestSpec | null | undefined): number {
+  return isFaithful(spec) ? 0.4 : 0.85;
+}
+
+/** The variation a treatment is written under: the caller's draw, or no draw at all when the spec is faithful. */
+function effectiveVariation(input: { spec?: RequestSpec | null }, v: Variation): Variation {
+  return isFaithful(input.spec) ? faithfulVariation() : v;
 }
 
 /* ------------------------------------------------------------------ the shape */
@@ -224,23 +269,30 @@ export function musicOf(raw: unknown): string | null {
 export const MASTER_PROMPT = `You are the producer and showrunner of Kleo, a studio that makes short narrated films in two products from one treatment — the FILM, every shot a generated clip, and the ANIMATIC, the same frames with the camera moving over each one — in one of two looks: REALISTIC (live-action photography) or ANIMATION (a 2D animated feature: painted backgrounds, drawn characters). Your job is to read a user's request for a video and write the TREATMENT of the film a serious production company would make of it. You answer with ONE JSON object and nothing else.
 
 WHAT KLEO CAN RENDER (write only what can be shot):
-- Every shot starts as one still frame drawn in the film's look — in the film it becomes a piece of moving footage generated from that frame, in the animatic the camera moves over the frame itself, so every frame must read as a picture on its own: a place, an object, weather, light, a person seen as a person — in ANIMATION a character designed once, in words, and drawn the same in every shot (never a named living person, never a celebrity, never a logo, a brand or a product name: "a family car", not a make). Four to twelve seconds per shot. Human scale beats spectacle: a hand on a cold door handle renders better than a city exploding.
+- Every shot starts as one still frame drawn in the film's look — in the film it becomes a piece of moving footage generated from that frame, in the animatic the camera moves over the frame itself, so every frame must read as a picture on its own: a place, an object, weather, light, a person seen as a person — in ANIMATION a character designed once, in words, and drawn the same in every shot (never a named living person, never a celebrity, never a logo, a brand or a product name: "a family car", not a make; a FICTIONAL character the user named keeps the user's name). Four to twelve seconds per shot. Where the user did not ask for spectacle, human scale beats spectacle: a hand on a cold door handle renders better than a city exploding. Where the user DID ask for it — a battle, a storm at sea, a city at night, an explosion — the film shows it.
 - One narrator, a text-to-speech voice, reads short spoken sentences. MUSIC exists only when the user asked for it (step 12): one instrumental track, ducked under the voice, never a known song or artist; when they did not ask, there is none. There are NO interviews, NO archive footage, NO mixing of the two looks in one film, NO split screens, NO karaoke captions, NO icons, NO logos. Over the film there may be a LAYER, decided in step 11 and drawn from a closed grammar (a line, a readout, a stamp, cards, cinema subtitles, chapter titles) — or nothing, which is the usual answer; SUBTITLES on it are the user's decision, not yours (step 11 says which).
 - Between two ACTS the film may DISSOLVE (a clean 0.8-second cross-dissolve, one per 25 seconds of film, never inside an act): Kleo places them from the acts you write, so the act boundaries are where the film breathes.
 - 4K, 60 frames per second, 16:9 for YouTube or 9:16 for a Short. Fifteen seconds to five minutes for a film; an animatic is at most sixty seconds.
 
+FIDELITY — THE REQUEST IS THE BRIEF. When the request comes with THE USER'S REQUEST, AS REQUIREMENTS (printed above it, items R1, R2… and a cast c1, c2…), those requirements are the film and everything below serves them:
+- Every MUST item is in the film: SEEN (a picture shows it) or HEARD (the narrator says it). None is dropped, none is softened into something generic, none is replaced by an idea you like better.
+- The user's EVENTS happen in the user's ORDER. The film starts where the user's story starts and ends where it ends, unless the ending is left to you.
+- The user's CHARACTERS look exactly as described — every attribute, the colours included — and are called by the names the user gave them.
+- You ADD only what the requirements leave open (LEFT TO KLEO), and every addition is one line in "decisions". Nothing you add contradicts an item: not a colour, not a person, not a place, not the order, not the ending.
+- FAITHFUL mode (the user described the film): the ANGLE (step 1) is the point of the user's own story in one sentence, never a thesis that replaces it; the DEVICE is "as-told" (step 2); the OPENING is "as-asked" (step 3); the acts follow the user's events. OPEN mode (the user gave a subject, or asked to be surprised): steps 1-3 apply as written, and the requirements still hold.
+
 THE METHOD — answer these in order, each for THIS request:
 0. LOOK. "realistic" or "animation", written in "look". When the request names it — a cartoon, animated, anime, drawn, illustrated, "like Pixar" means animation; filmed, footage, documentary, photographed means realistic — or the tool call fixes it, that is the answer. Otherwise realistic, unless the subject cannot be photographed at all (a talking animal, a fairy tale, a world that does not exist, the inside of a body): then animation. When the request did not name it, the look is one of the decisions.
-1. ANGLE. A subject is not a film. Find the one idea the film argues, small enough to be true and specific enough to be filmed: one place, one person or one object, one moment, and something at stake in it. The logline says what HAPPENS; the angle says what the film CLAIMS because of it, and the two must not be the same sentence in other words. Write the claim itself, as a sentence a person could disagree with, never "the film argues that" or "the film explores": not "the film argues that bread rises because of yeast" but "bread does not rise because of heat; it rises because something alive has been eating for an hour". If your angle could sit under any film on this subject, it is the subject again, not an angle. If the request is one word, choose the most filmable human-scale story inside it.
-2. DEVICE. Tell the film with the narrative device assigned to it (it is given in the request). Make it work for this subject and keep it invisible: the words "witness", "countdown", "mystery", "a day in the life" never appear in the logline, the angle or the narration. If the request itself dictates a structure (a list, a countdown, a comparison, a how-to), that structure wins and the device becomes a flavour.
-3. OPENING. The first three seconds are an image, not a sentence: something the camera holds before the subject is named. The opening family assigned in the request says how it behaves.
+1. ANGLE. In FAITHFUL mode: the point of the user's own story, in one sentence, in their terms — what it is about, never a new claim that changes what happens. In OPEN mode: a subject is not a film. Find the one idea the film argues, small enough to be true and specific enough to be filmed: one place, one person or one object, one moment, and something at stake in it. The logline says what HAPPENS; the angle says what the film CLAIMS because of it, and the two must not be the same sentence in other words. Write the claim itself, as a sentence a person could disagree with, never "the film argues that" or "the film explores": not "the film argues that bread rises because of yeast" but "bread does not rise because of heat; it rises because something alive has been eating for an hour". If your angle could sit under any film on this subject, it is the subject again, not an angle. If the request is one word, choose the most filmable human-scale story inside it.
+2. DEVICE. Tell the film with the narrative device assigned to it (it is given in the request). "as-told" means the user's own sequence of events IS the structure: tell it that way, nothing rearranged. Any other device: make it work for this subject and keep it invisible: the words "witness", "countdown", "mystery", "a day in the life" never appear in the logline, the angle or the narration. If the request itself dictates a structure (a list, a countdown, a comparison, a how-to), that structure wins and the device becomes a flavour.
+3. OPENING. The first three seconds are an image, not a sentence: something the camera holds before the subject is named. The opening family assigned in the request says how it behaves; "as-asked" means the first image is the one the user's request starts with.
 4. ACTS. Divide the length into two to seven acts. Each act's UPPERCASE name is two to four words, a moment or an image of THIS film — the thing on screen when it starts ("THE EMPTY DRIVEWAY", "FLOUR ON THE COUNTER") — never a shot description and never its function: not INTRO, SETUP, THE PROBLEM, THE SOLUTION, CONCLUSION, RESOLUTION. Each act has a purpose (what the viewer knows or feels at its end that they did not before) and its seconds; the seconds add up to the film's length, and no act is shorter than five seconds. A film under a minute has two or three acts; five minutes has five to seven.
 5. ENDING. The last image is earned by everything before it: a return to the first image changed, the answer to the opening question, the object at rest. Never a summary, never "and that is why", never a call to action.
 6. VISUAL LANGUAGE. One world, written as one sentence a cinematographer could shoot from, not a checklist ("the lens is standard, the light is fluorescent"): the lens (long and compressed, or wide and close), the light (source, colour, time of day), the palette (three colours at most), the camera's temperament (does it drift, hold, follow). Every shot of the film is filmed inside this sentence. CONCRETE AND SHARP: name real surfaces the camera can hold in focus — wet tarmac, wood grain, brushed metal, skin, paper, frost — and one plane in focus per shot. Nothing smooth, glossy or computer-generated: a frame that looks rendered is a frame the viewer stops believing. IN ANIMATION the same sentence names the drawn world instead: the line (thin and clean, or brushy), how the backgrounds are painted, the shape language of the characters — design each once, in words (build, face, hair, clothes, colours), and repeat it verbatim in every shot — flat cel shading or soft, a palette of three colours. Nothing photographic in it: an animated frame that looks like a photograph is a frame in the wrong film.
 7. PACING. The cut rhythm in seconds, act by act, and the one place where the film slows down on purpose. A film that cuts at the same speed throughout is wallpaper.
 8. NARRATOR. Person (second person is a tool, not a default: "you" only for what the viewer themselves does or feels, never for what engineers, pirates or a spacecraft did), tense, sentence length, what they never do. The narrator is a person who knows this subject and is talking to one viewer, not a voice reading a brochure.
 9. MOTIFS. Two to five images the film returns to. A motif seen three times is what makes eight independently generated shots feel like one film.
-10. DECISIONS. List every choice you made that the request did not ask for, one per line, so the person who asked can see it and change it. A decision names something that could have been otherwise and that the viewer will SEE: the place, the period, who is in it, the object that carries it, how it ends. "The tone is informative", "the period is contemporary" and "the setting is a hospital" repeated from the angle are not decisions.
+10. DECISIONS. List every choice you made that the request did not ask for, one per line, so the person who asked can see it and change it. With requirements, these are exactly the things LEFT TO KLEO that you decided — and nothing that contradicts an item. A decision names something that could have been otherwise and that the viewer will SEE: the place, the period, who is in it, the object that carries it, how it ends. "The tone is informative", "the period is contemporary" and "the setting is a hospital" repeated from the angle are not decisions.
 11. ${LAYER_METHOD}
 12. MUSIC. Only when the request says the user wants music (THE SOUND, below): write "music", ONE line for a composer — instrumental, the genre or the palette of instruments, the tempo, the mood, and how it moves with the acts ("sparse felt piano over a low synth pad, 60 bpm, patient; swells once in act two, thins to a single note at the end"). Never a known song, never an artist's name, never lyrics. When the user did not ask for music, "music" is null and nothing else is written about it.
 
@@ -253,7 +305,16 @@ BANNED WORDS AND MOVES, because a model reaches for them when it has nothing to 
 THE LANGUAGE: every field is written in the language the request names as the language of the film — the logline, the angle, the acts' names, the decisions, the prose, all of it. Only "device" and "look" stay in English. Return the JSON object only: no prose before it, no markdown fences.`;
 
 /** The user message of the treatment call: the request, the frame, the draw, and the shape to return. */
-export interface TreatmentInput { prompt: string; duration_s: number; format: "16:9" | "9:16"; language: string; look?: FilmLook | null; sound?: SoundOptions }
+export interface TreatmentInput {
+  prompt: string; duration_s: number; format: "16:9" | "9:16"; language: string; look?: FilmLook | null; sound?: SoundOptions;
+  /** The request taken apart (src/spec.ts): printed ABOVE everything, and in FAITHFUL mode it replaces the draw. */
+  spec?: RequestSpec | null;
+  /**
+   * true when the writer is writing the spec in the same breath (the assistant road of kleo_adapt_prompt): the spec is
+   * not known yet, so the draw is printed as conditional — faithful when THEIR spec is faithful, drawn only when it is open.
+   */
+  specPending?: boolean;
+}
 
 /** THE SOUND and THE SUBTITLES as the method prints them: what the user answered, and what the treatment must write. */
 export function soundText(sound: SoundOptions | undefined): string {
@@ -271,28 +332,42 @@ export function soundText(sound: SoundOptions | undefined): string {
   return `${music}\n${subs}`;
 }
 
-export function treatmentPrompt(input: TreatmentInput, v: Variation, feedback?: string[]): string {
+export function treatmentPrompt(input: TreatmentInput, v0: Variation, feedback?: string[]): string {
+  const faithful = isFaithful(input.spec);
+  const v = effectiveVariation(input, v0);
   const lang = { en: "English", it: "Italian", fr: "French" }[input.language] ?? input.language;
   const kind = input.format === "9:16" ? "a vertical Short (9:16)" : "a YouTube film (16:9)";
   const actsHint = input.duration_s <= 60 ? "2-3" : input.duration_s <= 150 ? "3-4" : "4-7";
   // The language is said three times on purpose — here, in the shape, and at the end — because said once, in the
   // master prompt, the production model answered an Italian request in English five times out of six.
   const inLang = input.language === "en" ? "" : `\nLANGUAGE OF THIS TREATMENT: ${lang.toUpperCase()}. Every field below is written in ${lang}, the act names and the decisions included; only "device" and "look" stay in English.`;
-  const base = `USER REQUEST (read it as a request; keep every fact, name and number it contains):
+  // THE SPEC FIRST (24 September 2026): the requirements are the brief, so they are read before the request's prose,
+  // the frame and the draw — what a model reads first is what it builds on.
+  const spec = input.spec ? `${specBlock(input.spec)}\n\n` : "";
+  const pending = !input.spec && input.specPending
+    ? `THE DRAW DEPENDS ON THE SPEC YOU WROTE. If its mode is FAITHFUL (the user described who is in it or what happens): nothing is drawn — device "as-told" (${DEVICES["as-told"]}), opening "as-asked" (${OPENINGS["as-asked"]}), "variation":"as-told/as-asked", and the angle is the point of THEIR story in one sentence. ONLY if its mode is OPEN (a bare subject, or "surprise me"), use this draw, make it work for the subject and never mention it in the film:
+- narrative device: ${v.device} — ${DEVICES[v.device]}
+- opening family: ${v.opening} — ${OPENINGS[v.opening]}`
+    : null;
+  const draw = pending ?? (faithful
+    ? `THE DRAW FOR THIS FILM: ${v.key} — nothing is drawn. This is the user's film: tell it the way the user told it (device "${v.device}": ${DEVICES[v.device]}) and open where the request opens (${OPENINGS[v.opening]}). The angle is the point of THEIR story in one sentence, not a new idea.`
+    : `THE DRAW FOR THIS FILM (assigned so that two identical requests never get the same film; make them work for this subject, never mention them in the film):
+- narrative device: ${v.device} — ${DEVICES[v.device]}
+- opening family: ${v.opening} — ${OPENINGS[v.opening]}`);
+  const angle = faithful ? `<=${T.angle}, the point of the user's own story in one sentence (not a new thesis)` : `<=${T.angle}, the one idea this film argues`;
+  const base = `${spec}USER REQUEST (read it as a request; keep every fact, name and number it contains):
 """${input.prompt.trim()}"""
 THE FILM: ${kind}, ${input.duration_s} seconds, narrated in ${lang}.${inLang}
 THE LOOK: ${input.look ? `${input.look.toUpperCase()}, fixed by the request or the tool call — write "look":"${input.look}" and describe every image in that look` : `not named — decide it in step 0 (realistic unless the request or the subject asks to be drawn) and write it in "look"`}
 ${soundText(input.sound)}
 
-THE DRAW FOR THIS FILM (assigned so that two identical requests never get the same film; make them work for this subject, never mention them in the film):
-- narrative device: ${v.device} — ${DEVICES[v.device]}
-- opening family: ${v.opening} — ${OPENINGS[v.opening]}
+${draw}
 
 TASK: write the TREATMENT of this film, following the method. Return one JSON object:
 {"look":"realistic|animation",
  "logline":"<=${T.logline} chars, one sentence with a verb",
- "angle":"<=${T.angle}, the one idea this film argues",
- "device":"${v.device}",
+ "angle":"${angle}",
+ "device":"${pending ? `as-told" (faithful spec) or "${v.device}" (open spec)` : `${v.device}"`},
  "opening":"<=${T.opening}, the first three seconds as an image",
  "ending":"<=${T.ending}, the last image and what the viewer is left holding",
  "acts":[${actsHint} objects {"name":"2-4 words UPPERCASE, <=${T.acts.name} chars, the image on screen when the act starts","purpose":"<=${T.acts.purpose}","seconds":<whole number, 5 or more>} — the seconds add up to ${input.duration_s}],
@@ -300,7 +375,7 @@ TASK: write the TREATMENT of this film, following the method. Return one JSON ob
  "pacing":"<=${T.pacing}, cut rhythm in seconds act by act, and where it slows",
  "narrator":"<=${T.narrator}, person, tense, sentence length, what they never say",
  "motifs":[${T.motifs.min}-${T.motifs.max} strings <=${T.motifs.len}],
- "decisions":[up to ${T.decisions.max} strings <=${T.decisions.len}: every choice the request did not ask for],
+ "decisions":[up to ${T.decisions.max} strings <=${T.decisions.len}: every choice the request did not ask for${input.spec ? " — only what LEFT TO KLEO allows, never a change to a requirement" : ""}],
  "prose":"${proseTarget(input.duration_s)[0]}-${proseTarget(input.duration_s)[1]} words: the treatment a director could shoot from — the film told from the first image to the last, act by act, in the present tense, with what we see and what the narrator says over it. Not a list: prose.",
  "graphics":{"layer":"none" — or "layer" with: "accent":"#rrggbb from the film's palette","subtitles":"${SUBTITLE_MODES.join("|")}","chapters":"${CHAPTER_MODES.join("|")}","hud":[0-3 of {"id":"short slug","kind":"${HUD_KINDS.join("|")}","edge":"${EDGES.join("|")}" (line only),"corner":"${CORNERS.join("|")}" (readout, stamp),"rows":["LABEL", …] (readout only, 1-4),"means":"what it stands for, <=60"}]},
  "music":"<=${T.music} chars, the composer's brief (step 12) — or null when the user wants no music"}${input.language === "en" ? "" : `\nEverything in ${lang}.`}`;
@@ -367,9 +442,21 @@ export const PROSE_LENIENT_MIN = 60;
 export const proseFloor = (duration_s?: number): number => duration_s ? Math.round(Math.min(T.prose.minWords, Math.max(PROSE_LENIENT_MIN, duration_s * 1.6))) : T.prose.minWords;
 export const proseTarget = (duration_s: number): [number, number] => [Math.round(Math.min(T.prose.target[0], Math.max(120, duration_s * 4))), T.prose.target[1]];
 
-export function treatmentProblems(raw: unknown, duration_s?: number, language?: string, opts: { lenient?: boolean; look?: FilmLook | null } = {}): string[] {
+/**
+ * `faithful` (24 September 2026): the treatment of a film the user described (spec mode "faithful"). Its angle is
+ * the point of the user's own story and may say what the logline says — the overlap rule, written to stop a producer
+ * restating the subject, would send back exactly the treatment that stays with the user — and its device is "as-told".
+ * Left undefined, a treatment that carries device "as-told" is read as faithful (a client's, or one read back); passed
+ * false, "as-told" is refused, because a draw was assigned.
+ */
+export interface TreatmentCheckOptions { lenient?: boolean; look?: FilmLook | null; faithful?: boolean }
+
+export function treatmentProblems(raw: unknown, duration_s?: number, language?: string, opts: TreatmentCheckOptions = {}): string[] {
   const out: string[] = [];
   if (!isObj(raw)) return ["the treatment must be a JSON object"];
+  const faithful = opts.faithful ?? raw.device === "as-told";
+  if (opts.faithful === false && raw.device === "as-told")
+    out.push(`device: "as-told" is the device of a film the user described; this one was left to Kleo — use the device assigned in the draw`);
   const need = (k: string, min: number, max: number) => {
     const v = raw[k];
     if (typeof v !== "string" || v.trim().length < min) out.push(`${k}: missing or shorter than ${min} characters`);
@@ -406,7 +493,7 @@ export function treatmentProblems(raw: unknown, duration_s?: number, language?: 
   // THE DEFECTS THE PRODUCTION MODEL ACTUALLY HAS, measured on fifteen treatments on 13 September and sent back in
   // words: an angle that is the logline again, acts named for their function, the device said out loud, and an
   // Italian film treated in English. Each of these was in most of the fifteen; none is caught by a schema.
-  if (typeof raw.logline === "string" && typeof raw.angle === "string" && overlap(raw.logline, raw.angle) >= 0.6)
+  if (!faithful && typeof raw.logline === "string" && typeof raw.angle === "string" && overlap(raw.logline, raw.angle) >= 0.6)
     out.push("angle: it restates the logline in other words; the logline is what happens, the angle is what the film claims because of it — write the claim");
   acts.forEach((a, i) => { if (isObj(a) && typeof a.name === "string" && GENERIC_ACT.test(a.name.trim())) out.push(`act ${i + 1}: "${a.name.trim()}" is a function, not a name; name the moment or the image on screen when this act starts`); });
   const tell = DEVICE_TELLS[raw.device as Device];
@@ -426,8 +513,10 @@ export function treatmentProblems(raw: unknown, duration_s?: number, language?: 
  * acts are rescaled to the film's length — a model that wrote 70 seconds for a 60-second film wrote the right
  * proportions and the wrong sum, and a sum is not what a retry is for. The device falls back to the draw.
  */
-export function repairTreatment(raw: unknown, duration_s: number, v: Variation, language?: string, opts: { lenient?: boolean; look?: FilmLook | null } = {}): Treatment | null {
+export function repairTreatment(raw: unknown, duration_s: number, v: Variation, language?: string, opts: TreatmentCheckOptions = {}): Treatment | null {
   if (!isObj(raw) || treatmentProblems(raw, duration_s, language, opts).length) return null;
+  // A faithful film is told as the user told it whatever device the model wrote: the draw is not the model's to redo.
+  if (opts.faithful) v = faithfulVariation();
   // An act name longer than the limit is cut at a word, never inside one: "A LAB TECHNICIAN EXAMINING SAMPL" was
   // measured, and a name the outline copies is a name the viewer's chapter pill shows.
   const nameOf = (v: unknown) => { const s = clip(v, T.acts.name + 40).toUpperCase(); if (s.length <= T.acts.name) return s; const cut = s.slice(0, T.acts.name + 1); const at = cut.lastIndexOf(" "); return (at > 8 ? cut.slice(0, at) : cut.slice(0, T.acts.name)).trim(); };
@@ -442,7 +531,7 @@ export function repairTreatment(raw: unknown, duration_s: number, v: Variation, 
   let prose = clip(raw.prose, T.prose.maxChars);
   const words = prose.split(/\s+/);
   if (words.length > T.prose.maxWords) prose = words.slice(0, T.prose.maxWords).join(" ");
-  const device = (DEVICE_IDS as readonly string[]).includes(String(raw.device)) ? (raw.device as Device) : v.device;
+  const device = opts.faithful ? "as-told" : (DEVICE_IDS as readonly string[]).includes(String(raw.device)) ? (raw.device as Device) : v.device;
   return {
     look: opts.look ?? ((FILM_LOOKS as readonly string[]).includes(String(raw.look)) ? (raw.look as FilmLook) : "realistic"),
     logline: clip(raw.logline, T.logline), angle: clip(raw.angle, T.angle), device,
@@ -450,7 +539,7 @@ export function repairTreatment(raw: unknown, duration_s: number, v: Variation, 
     visual: clip(raw.visual, T.visual), pacing: clip(raw.pacing, T.pacing), narrator: clip(raw.narrator, T.narrator),
     motifs: clipList(raw.motifs, T.motifs.max, T.motifs.len),
     decisions: clipList(raw.decisions, T.decisions.max + 4, T.decisions.len).filter((d) => !NON_DECISION.test(d)).slice(0, T.decisions.max),
-    prose, variation: typeof raw.variation === "string" && raw.variation ? clip(raw.variation, 80) : v.key,
+    prose, variation: !opts.faithful && typeof raw.variation === "string" && raw.variation ? clip(raw.variation, 80) : v.key,
     graphics: raw.graphics === undefined ? null : repairGraphics(raw.graphics),
     music: musicOf(raw.music),
   };
@@ -483,8 +572,10 @@ export function treatmentOf(x: unknown): Treatment | null {
   const t = x.treatment;
   const acts = Array.isArray(t.acts) ? t.acts.filter(isObj) : [];
   const sum = acts.reduce((n, a) => n + (typeof a.seconds === "number" ? a.seconds : 0), 0);
-  const v = variationFor(typeof t.variation === "string" ? t.variation : "");
-  return repairTreatment(t, sum > 0 ? sum : 60, v);
+  // A treatment told "as-told" is read back as the faithful treatment it is: the angle-overlap rule was never its rule.
+  const faithful = t.device === "as-told" || (typeof t.variation === "string" && t.variation.startsWith("as-told"));
+  const v = faithful ? faithfulVariation() : variationFor(typeof t.variation === "string" ? t.variation : "");
+  return repairTreatment(t, sum > 0 ? sum : 60, v, undefined, faithful ? { faithful: true } : {});
 }
 
 /* ------------------------------------------------------------------ how different two treatments are */
@@ -541,14 +632,20 @@ Music: ${t.music ? `${t.music} (an instrumental track under the narration, ducke
  * method is the difference between that and the owner's own packages. The server still checks what comes back
  * (treatmentProblems, at kleo_create_video), and still writes its own when nothing comes.
  */
-export function treatmentMethodText(input: TreatmentInput, v: Variation): string {
+export function treatmentMethodText(input: TreatmentInput, v0: Variation): string {
+  // With a spec the requirements are printed by treatmentPrompt() above the request (specBlock), and a FAITHFUL spec
+  // replaces the caller's random draw with "as-told/as-asked" — so the assistant's treatment and the server's agree.
+  const v = effectiveVariation(input, v0);
+  const faithful = isFaithful(input.spec)
+    ? `\nThis is the user's film (FAITHFUL): every MUST requirement above is seen or heard, their events keep their order, their characters look exactly as written; list in "decisions" only what LEFT TO KLEO allowed you to decide.`
+    : "";
   return `WRITE THE TREATMENT YOURSELF, NOW, following this method exactly; then pass the JSON object as "treatment" to kleo_create_video. Do not paraphrase the method to the user: tell them the logline and the decisions once it is written.
 
 ${MASTER_PROMPT}
 
 ${treatmentPrompt(input, v)}
 
-Add "variation":"${v.key}" to the object. Kleo checks it before anything is charged and answers with the field to fix if something is off.`;
+Add "variation":"${!input.spec && input.specPending ? `as-told/as-asked" when your spec is faithful, "${v.key}" when it is open` : `${v.key}"`} to the object. Kleo checks it before anything is charged and answers with the field to fix if something is off.${faithful}`;
 }
 
 /** The treatment for the assistant that called kleo_adapt_prompt: what to tell the user, and what to do next. */

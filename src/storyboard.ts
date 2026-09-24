@@ -9,6 +9,10 @@
  *   realistic are "picture" projects: every scene cuts between 2–4 full-screen shots, each with its own image_prompt
  *   (the server draws the pictures, images.ts), no beats and no icons; cyber is the plain Keou look of the template;
  *   stickman is Keou's stickman (story scenes, 9:16 only). See docs/PICTURE-STYLE.md.
+ * - The fidelity engine (24 September 2026): the request is first taken apart into a spec (src/spec.ts, step -2,
+ *   writeSpec), every stage is written under it, every shot says which requirements it shows ("covers"), who is in it
+ *   ("cast") and what moves ("action"), each chunk is held to the requirements it owes, and the finished plan is
+ *   judged against the spec (src/fidelity.ts) with one repair round when something the user asked for is lost.
  */
 import type Anthropic from "@anthropic-ai/sdk";
 import type { Env } from "./env";
@@ -20,14 +24,26 @@ import {
   KLEO_STYLES, PICTURE_STYLES, FILM_LOOKS, type FilmLook, IMAGE_PROMPT_MAX, kleoStyleOf, STORY_ACTS, STORY_CAST, STORY_PROPS, STORY_FX, STORY_ACCENTS,
   SHOTS_PER_SCENE, SHOT_CAPTION_MAX, SHOT_HL_MAX, SHOT_AT_MAX, IMAGE_PROMPT_MIN, CLOSING_BUTTON_MAX,
   SHOT_ID_SUFFIX_RE, quotesVoice, SHOTS_MIN_CINEMA, SHOTS_WORDS_PER_SHOT, SHOTS_MIN_WORDS_FOR_TWO, shotRangeText, narrationOf, anchorShots,
+  SHOT_ACTION_MAX, SHOT_COVERS_MAX, SHOT_CAST_MAX, SHOT_TAG_MAX,
 } from "./keou-contract.ts";
+/**
+ * THE SPEC (24 September 2026): the user's request taken apart into checkable requirements (src/spec.ts). It is
+ * written here at step -2 when the job did not bring one, every later stage is written under it, and the finished plan
+ * is checked against it — deterministically (coverage) and by a judge model (src/fidelity.ts).
+ */
+import {
+  specOf, specBlock, owedBlock, coverage, lineSaid, fullLook, specPrompt, specSchema, specProblems, repairSpec, SPEC_METHOD,
+  mustItems, eventsInOrder, itemById, SHOT_KINDS_TO_COVER,
+  type RequestSpec, type SpecItem,
+} from "./spec.ts";
+import { judgePlan, fidelityFeedback, type PlanFidelity } from "./fidelity.ts";
 /**
  * The direction: the art direction of ONE film, decided before a single scene exists. It is the step this planner
  * never had — it went straight from the user's sentence to a list of scenes, so the style came from a keyword match,
  * the world of the video was never written down, nothing said what must NOT appear, and no colour meant anything.
  */
 import {
-  directionProblems, missingFacts, sectionOfScene, enliven, screenTextProblems, notEnglish, formatTalk, storyRequest, dropLookFacts, negatedTerms, D as DL,
+  directionProblems, missingFacts, spokenFacts, lookFact, sectionOfScene, motionHint, screenTextProblems, notEnglish, formatTalk, storyRequest, dropLookFacts, negatedTerms, D as DL,
   type Direction, type Section,
 } from "./direction.ts";
 // The shot grammar: the ten story kinds and the one preset table that turns a kind into a camera move.
@@ -40,7 +56,8 @@ import {
 // variation live in src/treatment.ts; this file owns only the call (the model, the price, the retry).
 import {
   MASTER_PROMPT, treatmentPrompt, treatmentSchema, repairTreatment, treatmentProblems, treatmentBlock, treatmentOf, variationFor, applySoundOptions,
-  type Treatment, type SoundOptions,
+  faithfulVariation, treatmentTemperature,
+  type Treatment, type SoundOptions, type Variation,
 } from "./treatment.ts";
 // The layer (src/graphics.ts): the treatment decides it, the scenes fill it in, the storyboard carries it.
 import { graphicsBlock, sceneHudSchema, repairGraphics, repairSceneHud, repairCards, type Graphics } from "./graphics.ts";
@@ -102,10 +119,30 @@ export interface PlanResult {
    * choice and nobody told you". Whoever surfaces a job's progress owes the user this line.
    */
   blocked_upgrade: string | null;
+  /**
+   * The user's request as requirements (src/spec.ts): handed in through params.spec, or written at step -2. Null when
+   * no spec could be written — the film is then planned the way it was before 24 September, and says so in history.
+   */
+  spec: RequestSpec | null;
+  /** The finished plan checked against the spec (src/fidelity.ts): per must item kept/paraphrased/lost/contradicted. */
+  fidelity: PlanFidelity | null;
 }
 
+/**
+ * THE EXTERNAL ROAD RAN OUT OF MONEY (24 September 2026). OpenRouter held $0.69 that day: the next film would have
+ * failed every planning call with a 402, and the orchestrator would have read the error as a problem with the
+ * storyboard. A 401/402/403 from the external road, or any message about credits, quota or balance from it, is not a
+ * storyboard problem and not a pause either (a pause waits for a quota that nobody is going to top up): the same call
+ * goes once to Workers AI instead (callModel). Only errors of the external road qualify — they are the ones whose
+ * message starts "plan api" or "anthropic" — so Workers AI's own daily-allocation error (4006) is still a pause.
+ */
+export const isOutOfCredit = (e: unknown): boolean => {
+  const s = String(e);
+  return /\b(?:plan api|anthropic)\b/i.test(s) && /\b(?:plan api|anthropic) 40[123]\b|insufficient|credits?\b|quota|balance|payment required|billing/i.test(s);
+};
+
 /** Errors that say nothing about the storyboard: quota, rate limit, upstream outage. The job should wait, not fail. */
-export const isTransientAiError = (e: unknown): boolean => /4006|daily free allocation|429|rate limit|too many requests|5\d\d\b|ECONNRESET|fetch failed|capacity|overloaded/i.test(String(e));
+export const isTransientAiError = (e: unknown): boolean => !isOutOfCredit(e) && /4006|daily free allocation|429|rate limit|too many requests|5\d\d\b|ECONNRESET|fetch failed|capacity|overloaded/i.test(String(e));
 
 export class StoryboardError extends Error {
   errors: string[];
@@ -615,18 +652,89 @@ export function sectionSkeleton(template: string, scenes: number): { name: strin
   return sections.map((sec, i) => ({ name: sec.name, role: sec.role, accent: sec.accent, scenes: split[i] ?? 1 }));
 }
 
+export type Bone = { name: string; role: string; accent: string; scenes: number };
+/** The accents a faithful film's acts wear, in turn: neutral, warning, tension, resolution — and the last act green. */
+const ACT_ACCENTS = ["cyan", "amber", "red", "green"] as const;
+
+/**
+ * THE SHAPE OF A FAITHFUL FILM IS THE USER'S STORY, NOT THE TEMPLATE'S (24 September 2026). Every film of 90 seconds
+ * or less was cut into HOOK / REVEAL / PROOF / TURN — the explainer skeleton of the short-hook family — whatever the
+ * user had described: a bedtime story about a pastry chef became a hook, a reveal and a proof. When the spec is
+ * FAITHFUL the sections are the treatment's acts instead, one per act and in their order, each with scenes in
+ * proportion to its seconds (largest remainder, never an empty section). The two rules the direction is validated
+ * against hold by construction here too: the counts add up to `scenes`, and the accents rotate so no two neighbours
+ * share one. A film with fewer scenes than acts keeps the first and the last act and the longest of the middle ones,
+ * the same rule sectionSkeleton follows for the same reason: the opening and the ending are the ones a viewer feels.
+ */
+export function actSkeleton(acts: readonly { name: string; purpose: string; seconds: number }[], scenes: number): Bone[] {
+  let kept = acts.map((a, i) => ({ a, i }));
+  const room = Math.min(scenes, DL.sections.max);
+  if (room < kept.length) {
+    const middle = kept.slice(1, -1).sort((x, y) => y.a.seconds - x.a.seconds).slice(0, Math.max(0, room - 2)).sort((x, y) => x.i - y.i);
+    kept = room <= 1 ? [kept[0]] : [kept[0], ...middle, kept[kept.length - 1]];
+  }
+  const n = Math.max(1, scenes);
+  const weights = kept.map((k) => Math.max(1, Number(k.a.seconds) || 1));
+  const total = weights.reduce((a, b) => a + b, 0);
+  // One scene each first, then the rest by the largest remainder of each act's share.
+  const counts = kept.map(() => 1);
+  let left = n - counts.reduce((a, b) => a + b, 0);
+  if (left > 0) {
+    const share = weights.map((w) => (w / total) * n - 1);
+    const base = share.map((s) => Math.max(0, Math.floor(s)));
+    let given = base.reduce((a, b) => a + b, 0);
+    // Floors can overshoot only when a share is below one scene; trim from the widest until they fit.
+    while (given > left) { const k = base.indexOf(Math.max(...base)); base[k]--; given--; }
+    base.forEach((b, i) => { counts[i] += b; });
+    left -= given;
+    const order = share.map((s, i) => ({ i, r: s - Math.floor(s) })).sort((x, y) => y.r - x.r || x.i - y.i);
+    for (let k = 0; left > 0; k = (k + 1) % order.length) { counts[order[k].i]++; left--; }
+  }
+  const accents: string[] = kept.map((_, i) => ACT_ACCENTS[i % ACT_ACCENTS.length]);
+  // The resolution wears green when it can, and never the colour of the act before it.
+  const last = accents.length - 1;
+  if (last >= 1 && accents[last - 1] !== "green") accents[last] = "green";
+  return kept.map((k, i) => ({
+    name: (k.a.name || `ACT ${k.i + 1}`).toUpperCase().slice(0, DL.sections.name).trim(),
+    role: k.a.purpose || "this part of the user's story",
+    accent: accents[i],
+    scenes: counts[i],
+  }));
+}
+
+/**
+ * The shape the direction is written into: the treatment's acts when the spec is faithful and the treatment has at
+ * least two of them, the template's family otherwise.
+ */
+export function skeletonFor(template: string, scenes: number, treatment?: Treatment | null, spec?: RequestSpec | null): Bone[] {
+  if (spec?.mode === "faithful" && treatment && Array.isArray(treatment.acts) && treatment.acts.length >= 2) return actSkeleton(treatment.acts, scenes);
+  return sectionSkeleton(template, scenes);
+}
+
 /* Exported for scripts/direction-measure, the bench that asks the real model to choose a look and counts how often
    it is right. Nothing else imports these three, and nothing about them changed to make them exportable: a number
    measured on a copy of the prompt is a number about the copy. */
-export function directionPrompt(job: PlanJob, plan: Plan, treatment?: Treatment | null, feedback?: string[]): string {
+export function directionPrompt(job: PlanJob, plan: Plan, treatment?: Treatment | null, feedback?: string[], spec?: RequestSpec | null): string {
   const t = findTemplate(job.template);
   const scenes = Math.max(plan.scenes[0], Math.min(plan.scenes[1], Math.round((plan.scenes[0] + plan.scenes[1]) / 2)));
-  const skeleton = sectionSkeleton(job.template, scenes);
+  const skeleton = skeletonFor(job.template, scenes, treatment, spec);
+  const faithful = spec?.mode === "faithful";
+  const fromActs = faithful && !!treatment && treatment.acts.length >= 2;
   const lang = LANG_NAMES[plan.language] ?? plan.language;
   // With a treatment, the direction is no longer the first reader of the request: the angle, the world and the
   // narrator have been decided, and the direction writes the cast, the objects and the exclusions INSIDE them.
-  const under = treatment ? `\n${treatmentBlock(treatment, true)}\nThe direction is written UNDER this treatment: its subject is the treatment's angle, its world is the treatment's visual language, its tone is the narrator's register, and its sections are the treatment's acts fitted to the shape below.\n` : "";
-  return `USER REQUEST (read it as a request, not as raw material):
+  // FAITHFUL (24 September 2026): the subject is the user's story, never the treatment's angle — the direction took
+  // the angle as its subject, and a film about a pastry chef baking for the village children became a film about
+  // "the quiet economics of generosity".
+  const under = treatment
+    ? `\n${treatmentBlock(treatment, true)}\nThe direction is written UNDER this treatment: ${faithful ? "its subject is the USER'S story as the requirements above state it (the treatment's angle is only the point of that story)" : "its subject is the treatment's angle"}, its world is the treatment's visual language, its tone is the narrator's register, and its sections are the treatment's acts ${fromActs ? "— one section per act, in their order, exactly as listed below" : "fitted to the shape below"}.\n`
+    : "";
+  // The requirements are printed ABOVE everything: they are the brief, the rest is how it is told.
+  const brief = spec ? `${specBlock(spec)}\n\n` : "";
+  const specRules = spec
+    ? `\n- THE REQUIREMENTS ABOVE ARE THE FILM. The cast is the requirements' CAST: the same characters, the same names, never one more or one less, their looks exactly as written (Kleo pastes them in). must_keep starts with every "line" requirement, in the user's words. forbidden starts with every "NEVER" requirement. objects include every "must be seen" requirement.${faithful ? " Do not add a character, a place or an event the requirements do not have, unless it is LEFT TO KLEO." : ""}`
+    : "";
+  return `${brief}USER REQUEST (read it as a request, not as raw material):
 """${storyRequest(job.prompt)}"""
 TEMPLATE: ${t?.name ?? job.template}. LENGTH: ${plan.duration} seconds, about ${scenes} scenes, narrated in ${lang}.
 ${under}
@@ -647,9 +755,9 @@ TASK: write the DIRECTION of this one film, before any scene exists. Return one 
 
 THE SHAPE OF THIS FILM IS ALREADY DECIDED — you write what goes in it, not how many parts it has:
 ${skeleton.map((x, i) => `  ${i + 1}. ${x.name} · ${x.scenes} scene${x.scenes === 1 ? "" : "s"} · accent ${x.accent} — ${x.role}`).join("\n")}
-Return exactly ${skeleton.length} sections, in that order. The scene counts and the colours are not yours to choose: they come from the ${t?.name ?? job.template} shape and they already add up to ${scenes}. Give each one the name it deserves in THIS story and say what its colour stands for here.
+Return exactly ${skeleton.length} sections, in that order. The scene counts and the colours are not yours to choose: they come from ${fromActs ? "the treatment's acts" : `the ${t?.name ?? job.template} shape`} and they already add up to ${scenes}. Give each one the name it deserves in THIS story and say what its colour stands for here.
 
-RULES
+RULES${specRules}
 - must_keep is quoted from the USER REQUEST above and from nothing else: never the LENGTH line, the template or these instructions. If the user wrote "5 mistakes", "in Naples", "for beginners" or a number, it goes in must_keep and the narration must still contain it. NEVER a character's appearance (hair, build, clothes, colours): that is cast.look, the narrator does not read descriptions aloud.
 - Do not invent sections, drop them or reorder them: the shape above is the one this kind of film has. Colour means a new part of the story, nothing else.
 - forbidden is what makes a film its own. A pirate film forbids modern objects, wifi symbols, phones, screens and logos; a film about a city forbids the objects of every other city. Write it for THIS video.
@@ -698,7 +806,7 @@ export const directionSchema = (): Record<string, unknown> => ({
  * for each section and put them on it. A model that returns too few sections gets the skeleton's own names for the
  * rest; one that returns too many has the extras ignored.
  */
-function repairDirection(raw: unknown, template: string, scenes: number): Direction | null {
+function repairDirection(raw: unknown, skeleton: readonly Bone[], scenes: number): Direction | null {
   if (!isObj(raw)) return null;
   const cut = (v: unknown, max: number): string => (typeof v === "string" ? v.trim().replace(/\s+/g, " ").slice(0, max) : "");
   const cutList = (v: unknown, max: number, len: number): string[] => {
@@ -706,7 +814,7 @@ function repairDirection(raw: unknown, template: string, scenes: number): Direct
     return strs(v, 10_000).map((x) => cut(x, len)).filter((x) => { const k = x.toLowerCase(); if (!x || seen.has(k)) return false; seen.add(k); return true; }).slice(0, max);
   };
   const written = (Array.isArray(raw.sections) ? raw.sections : []).filter(isObj);
-  const sections: Section[] = sectionSkeleton(template, scenes).map((bone, i) => {
+  const sections: Section[] = skeleton.map((bone, i) => {
     const w = written[i] ?? {};
     return {
       name: cut(w.name, DL.sections.name) || bone.name,
@@ -740,17 +848,66 @@ NEVER show: ${d.forbidden.join(", ")}
 ${d.must_keep.length ? `The narration MUST still say all of this, in the viewer's hearing:\n${d.must_keep.map((f) => `  - ${f}`).join("\n")}` : ""}`;
 }
 
+/** A phrase cut to `max` characters at a word boundary, without the trailing full stop a sentence carries. */
+const shortPhrase = (s: string, max: number): string => {
+  const t = s.trim().replace(/\s+/g, " ").replace(/[.\s]+$/, "");
+  return t.length <= max ? t : (t.slice(0, max).replace(/\s+\S*$/, "").trim() || t.slice(0, max));
+};
+
+/**
+ * THE DIRECTION IS WRITTEN UNDER THE SPEC, AND THEN HELD TO IT (24 September 2026). Whatever the direction model wrote,
+ * the parts of it the user decided are overwritten with the user's decision:
+ *   - the cast IS the spec's cast — same names, and the FULL look (every "look" item folded in by fullLook), up to the
+ *     contract's limits. The direction used to re-describe the characters in 140 characters of its own words, and
+ *     dropLookFacts then deleted every must_keep that mentioned how someone looks: "short blonde hair tied up, lilac
+ *     apron" reached the painter as "a kind baker".
+ *   - must_keep starts with the lines the narrator must say (and the words that must be read on screen, unless the
+ *     narration is the user's own script, which already says what it says), in the user's words.
+ *   - forbidden starts with the user's exclusions; objects start with the objects the user asked to see.
+ * Field by field, and only when the result is still a valid direction: a spec is never allowed to turn a direction
+ * the validator accepts into one it refuses. Pure apart from `d`; returns the fields it changed.
+ */
+export function applySpecToDirection(d: Direction, spec: RequestSpec, scenes: number): string[] {
+  const changed: string[] = [];
+  const tryField = <K extends keyof Direction>(key: K, value: Direction[K]): void => {
+    const was = d[key];
+    if (JSON.stringify(was) === JSON.stringify(value)) return;
+    const before = directionProblems(d, { accents: CINEMA_ACCENTS, scenes }).length;
+    d[key] = value;
+    if (directionProblems(d, { accents: CINEMA_ACCENTS, scenes }).length > before) d[key] = was;
+    else changed.push(String(key));
+  };
+  const uniq = (xs: string[], max: number): string[] => {
+    const seen = new Set<string>();
+    return xs.filter((x) => { const k = x.toLowerCase(); if (!x || seen.has(k)) return false; seen.add(k); return true; }).slice(0, max);
+  };
+  if (spec.cast.length) {
+    // The spec id rides along (CastMember.id), so a shot whose "cast" says ["c1"] finds its character in castFor()
+    // even after the English pass has renamed "la pasticcera" to "the pastry chef".
+    tryField("cast", spec.cast.slice(0, DL.cast.max).map((c) => ({ id: c.id, name: shortPhrase(c.name, DL.cast.name), look: shortPhrase(fullLook(spec, c.id) || c.look, DL.cast.look) })));
+  }
+  const said = spec.items.filter((i) => i.kind === "line").map((i) => shortPhrase(i.quote || i.text, DL.mustKeep.len));
+  const read = spec.narration === "verbatim" ? [] : spec.items.filter((i) => i.kind === "text" && i.must).map((i) => shortPhrase(i.quote || i.text, DL.mustKeep.len));
+  if (said.length || read.length) tryField("must_keep", uniq([...said, ...read, ...d.must_keep], DL.mustKeep.max));
+  const never = spec.items.filter((i) => i.kind === "exclude").map((i) => shortPhrase(i.text.replace(/^(?:there is |there are )?(?:no|never|not|without|nothing like|the film (?:must|should) not (?:show|have|contain))\s+/i, ""), DL.forbidden.len));
+  if (never.length) tryField("forbidden", uniq([...never, ...d.forbidden], DL.forbidden.max));
+  const seen = spec.items.filter((i) => i.kind === "object").map((i) => shortPhrase(i.text, DL.objects.len));
+  if (seen.length) tryField("objects", uniq([...seen, ...d.objects], DL.objects.max));
+  return changed;
+}
+
 /**
  * The scene an unplaced fact belongs to: the one whose summary shares the most content words with it, never the
  * closing (a fact stated for the first time in the sign-off is a fact the video never really made). Ties go to the
  * earliest scene, so a forgotten fact lands early enough to be built on rather than tacked on.
  */
-function bestSceneFor(fact: string, outline: OutlineEntry[]): number {
+function bestSceneFor(fact: string, outline: OutlineEntry[], lo = 0, hi = outline.length - 1): number {
   const wordsOf = (t: string) => new Set((t.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter((w) => w.length > 3));
   const want = wordsOf(fact);
-  let best = 0, bestScore = -1;
+  let best = Math.max(0, Math.min(lo, outline.length - 1)), bestScore = -1;
   outline.forEach((e, i) => {
-    if (e.kind === "closing" && outline.length > 1) return;
+    if (i < lo || i > hi) return;
+    if (e.kind === "closing" && outline.length > 1 && hi > lo) return;
     let score = 0;
     for (const w of wordsOf(`${e.summary} ${e.label}`)) if (want.has(w)) score++;
     if (score > bestScore) { bestScore = score; best = i; }
@@ -759,9 +916,48 @@ function bestSceneFor(fact: string, outline: OutlineEntry[]): number {
 }
 
 /** Outline entry: what the model plans for one scene before writing it. */
-interface OutlineEntry { id: string; kind: string; label: string; accent?: string; summary: string; words: number; keeps: number[] }
+interface OutlineEntry {
+  id: string; kind: string; label: string; accent?: string; summary: string; words: number; keeps: number[];
+  /** The spec items this scene shows or says (24 September 2026); [] without a spec. */
+  covers: string[];
+  /** The user's own words this scene speaks, when the narration is theirs word for word (spec.narration "verbatim"). */
+  script?: string;
+}
 
-function outlinePrompt(job: PlanJob, plan: Plan, n: number, d: Direction | null, treatment?: Treatment | null): string {
+/** The spec items a scene is ever asked to cover: everything a picture shows, and the lines the narrator says. */
+const coverable = (spec: RequestSpec): SpecItem[] => spec.items.filter((i) => i.kind === "line" || (SHOT_KINDS_TO_COVER as readonly string[]).includes(i.kind));
+
+/**
+ * The user's script cut into `n` consecutive parts at sentence boundaries, each about the same number of words, never
+ * an empty one (a script with fewer sentences than scenes is cut between words). Deterministic, so the chunk that
+ * writes scene 3 is handed the exact words scene 3 must say instead of being asked to find them.
+ */
+export function splitScript(script: string, n: number): string[] {
+  const text = script.trim().replace(/\s+/g, " ");
+  if (n <= 1 || !text) return [text];
+  let units = (text.match(/[^.!?…]+(?:[.!?…]+["'”’»)]*|$)/g) ?? []).map((s) => s.trim()).filter(Boolean);
+  if (units.length < n) units = text.split(" ");
+  const sizes = units.map((u) => u.split(" ").length);
+  const total = sizes.reduce((a, b) => a + b, 0);
+  const parts: string[][] = Array.from({ length: n }, () => []);
+  let before = 0;
+  units.forEach((u, i) => {
+    const k = Math.min(n - 1, Math.floor(((before + sizes[i] / 2) / total) * n));
+    parts[k].push(u);
+    before += sizes[i];
+  });
+  // A long sentence can swallow its neighbour's share: then cut between words, which always fills every part.
+  if (parts.some((p) => !p.length)) return splitWords(text, n);
+  return parts.map((p) => p.join(" "));
+}
+function splitWords(text: string, n: number): string[] {
+  const w = text.split(" ");
+  const parts: string[][] = Array.from({ length: n }, () => []);
+  w.forEach((x, i) => { parts[Math.min(n - 1, Math.floor(((i + 0.5) / w.length) * n))].push(x); });
+  return parts.map((p) => p.join(" ")).map((p, i, all) => p || all.find(Boolean) || "");
+}
+
+function outlinePrompt(job: PlanJob, plan: Plan, n: number, d: Direction | null, treatment?: Treatment | null, spec?: RequestSpec | null, feedback?: string[]): string {
   const perScene = Math.round(plan.words.target / n);
   const cin = plan.style === "cinema" || plan.style === "picture", stick = plan.style === "stickman", sk = plan.style === "sketch";
   const kind = cin ? "cinema" : stick ? "story" : sk ? "sketch" : "<kind>";
@@ -776,12 +972,26 @@ function outlinePrompt(job: PlanJob, plan: Plan, n: number, d: Direction | null,
   const keeps = d?.must_keep.length
     ? `\nFACTS TO PLACE (from the user's own request; every one must be said out loud somewhere in the video):\n${d.must_keep.map((f, i) => `  [${i}] ${f}`).join("\n")}\nGive each scene a "keeps" array with the indexes of the facts THAT scene will state. Every index must appear on exactly one scene.`
     : "";
-  return `${contextBlock(job, plan, treatment, true)}${d ? `\n${directionBlock(d)}` : ""}${sectionMap}${keeps}
-TASK: plan the whole video as an outline of exactly ${n} scenes, in order.${treatment ? " The outline follows the treatment's acts in order: the opening image is scene 1, each act gets scenes in proportion to its seconds, and the last scene is the treatment's ending." : ""} The narration will total about ${plan.words.target} words (${perScene} per scene on average; the hook and the closing may be shorter, key scenes longer). Return {"title":"<video title ≤120>","description":"<YouTube description, one paragraph>","tags":["…"],"scenes":[{"id":"01-slug","kind":"${kind}","label":"<${label}>",${cin ? '"accent":"<accent>",' : ""}"summary":"<what this scene says, ≤25 words>","words":<narration words for this scene>${d?.must_keep.length ? ',"keeps":[<fact indexes>]' : ""}}, …]}.
-${cin ? `Chapters group scenes (several scenes may share a chapter label)${d ? "; copy each scene's accent from the section table above" : "; accents follow the mood"}.` : stick ? "Each scene is one situation the stickman can act out." : sk ? "Every scene is one drawn moment, and each one has to make the next one necessary." : "Vary the kinds: never more than two of the same kind in a row, at least four different kinds overall; use metric for numbers, compare for two-sided points, steps/list for three-part points, quote for a memorable line, hero for openings and transitions."} ${sk ? "There is NO closing scene: the film ends on its last drawing, so the last scene is the payoff itself." : `The last scene has kind "closing".`} The first scene is the hook.`;
+  // THE REQUIREMENTS ARE PLACED BEFORE A SCENE IS WRITTEN (24 September 2026). The outline says which scene shows or
+  // says which requirement, exactly as it says which scene states which fact: a requirement no scene is handed is a
+  // requirement no chunk is ever asked for, and it disappears without anyone deciding to drop it.
+  const covers = spec && plan.style === "picture" ? coverable(spec) : [];
+  const place = spec && covers.length
+    ? `\nREQUIREMENTS TO PLACE: give each scene a "covers" array with the ids of the requirements above (${covers.map((i) => i.id).join(", ")}) that the scene SHOWS in its pictures or SAYS in its narration. Every MUST requirement is covered by at least one scene${eventsInOrder(spec).length >= 2 ? `; the events are covered in the user's order (${eventsInOrder(spec).map((e) => e.id).join(" → ")}), never reordered` : ""}.`
+    : "";
+  const told = spec?.mode === "faithful"
+    ? `\nThis is the USER'S film: the scenes tell their events in their order, with their characters and their places; scene 1 is where their story starts. Add only what the requirements leave to Kleo.`
+    : "";
+  const verbatim = spec?.narration === "verbatim" && spec.script
+    ? `\nTHE NARRATION IS THE USER'S SCRIPT, word for word (printed above): plan the scenes so they tell it in its order — Kleo splits the script across your scenes, so each summary says which part of the script that scene carries.`
+    : "";
+  const again = feedback?.length ? `\n\nYOUR PREVIOUS OUTLINE WAS REJECTED with these problems. Fix every one of them and return the whole outline again:\n- ${feedback.join("\n- ")}` : "";
+  return `${spec ? `${specBlock(spec)}\n` : ""}${contextBlock(job, plan, treatment, true)}${d ? `\n${directionBlock(d)}` : ""}${sectionMap}${keeps}${place}${told}${verbatim}
+TASK: plan the whole video as an outline of exactly ${n} scenes, in order.${treatment ? " The outline follows the treatment's acts in order: the opening image is scene 1, each act gets scenes in proportion to its seconds, and the last scene is the treatment's ending." : ""} The narration will total about ${plan.words.target} words (${perScene} per scene on average; the hook and the closing may be shorter, key scenes longer). Return {"title":"<video title ≤120>","description":"<YouTube description, one paragraph>","tags":["…"],"scenes":[{"id":"01-slug","kind":"${kind}","label":"<${label}>",${cin ? '"accent":"<accent>",' : ""}"summary":"<what this scene says, ≤25 words>","words":<narration words for this scene>${d?.must_keep.length ? ',"keeps":[<fact indexes>]' : ""}${place ? ',"covers":[<requirement ids>]' : ""}}, …]}.
+${cin ? `Chapters group scenes (several scenes may share a chapter label)${d ? "; copy each scene's accent from the section table above" : "; accents follow the mood"}.` : stick ? "Each scene is one situation the stickman can act out." : sk ? "Every scene is one drawn moment, and each one has to make the next one necessary." : "Vary the kinds: never more than two of the same kind in a row, at least four different kinds overall; use metric for numbers, compare for two-sided points, steps/list for three-part points, quote for a memorable line, hero for openings and transitions."} ${sk ? "There is NO closing scene: the film ends on its last drawing, so the last scene is the payoff itself." : `The last scene has kind "closing".`} The first scene is ${spec?.mode === "faithful" ? "the opening of the user's story" : "the hook"}.${again}`;
 }
 
-function chunkPrompt(job: PlanJob, plan: Plan, outline: OutlineEntry[], from: number, to: number, prevVoice: string | null, feedback?: string[], d?: Direction | null, treatment?: Treatment | null): string {
+function chunkPrompt(job: PlanJob, plan: Plan, outline: OutlineEntry[], from: number, to: number, prevVoice: string | null, feedback?: string[], d?: Direction | null, treatment?: Treatment | null, spec?: RequestSpec | null): string {
   const entries = outline.slice(from, to);
   const words = entries.reduce((n, e) => n + e.words, 0);
   const total = outline.length;
@@ -800,11 +1010,28 @@ function chunkPrompt(job: PlanJob, plan: Plan, outline: OutlineEntry[], from: nu
   const layerAsk = layer
     ? `\n${graphicsBlock(layer)}\nEvery scene you write carries "hud": [${layer.hud.map((h) => h.kind === "line" ? `{"id":"${h.id}","state":"<one of the line states>"}` : h.kind === "readout" ? `{"id":"${h.id}","values":[${h.rows.map((r) => `"<${r}>"`).join(",")}]}` : `{"id":"${h.id}","value":"<one short line>"}`).join(", ")}] — the state or the values of each element AT THIS SCENE, changing only when the story changes them — and "cards": [] or one card {"at":"<words copied from this scene's voice>","text":"<the figure or date, <=28 chars>"} when a number in this scene must be read, not only heard.`
     : "";
-  let msg = `${contextBlock(job, plan, treatment)}${layerAsk}${d ? `\n${directionBlock(d)}` : ""}${owed.length ? `\nTHESE SCENES OWE THESE FACTS — say each one out loud in a "voice" line:\n${owed.map((i) => `  - ${d!.must_keep[i]}`).join("\n")}` : ""}
+  // THE REQUIREMENTS THESE SCENES OWE (24 September 2026), the cast with the ids a shot names, and — when the narration
+  // is the user's — the exact words each scene says. A chunk is only ever asked for what the outline handed it.
+  const owedIds = spec && pic ? [...new Set(entries.flatMap((e) => e.covers))] : [];
+  const owedSpec = spec && owedIds.length ? `\n${owedBlock(spec, owedIds)}` : "";
+  const castList = spec && pic && spec.cast.length
+    ? `\nCAST (put their ids in each shot's "cast"; call them by these names in every image_prompt that shows them, with their key looks):\n${spec.cast.map((c) => `  ${c.id} ${c.name}: ${fullLook(spec, c.id)}`).join("\n")}`
+    : "";
+  const script = entries.some((e) => e.script)
+    ? `\nTHE VOICE LINES ARE THE USER'S OWN WORDS — copy each one EXACTLY as the "voice" of its scene, never rewritten, shortened, translated or added to:\n${entries.map((e, k) => `  scene ${from + k + 1} [${e.id}]: "${e.script ?? ""}"`).join("\n")}`
+    : "";
+  const faithful = spec?.mode === "faithful" ? `\nThis is the USER'S film: their characters exactly as described, their events in their order, their places. Nothing you add replaces what they asked for.` : "";
+  const shotFields = pic
+    ? spec
+      ? ` Every shot also carries "covers" — the ids of the requirements it SHOWS ([] when none) — "cast" — the ids of the characters in the picture (${spec.cast.map((c) => c.id).join(", ") || "none in this film"}; [] when nobody) — and "action": one English sentence, ≤${SHOT_ACTION_MAX} characters, saying what moves or happens during the shot (the clip is animated from it). The "image_prompt" describes what the shot covers explicitly: each character by the cast name with their key look, the place, what they are doing.`
+      : ` Every shot also carries "action": one English sentence, ≤${SHOT_ACTION_MAX} characters, saying what moves or happens during the shot (the clip is animated from it).`
+    : "";
+  const owedSaid = owed.map((i) => d?.must_keep[i]).filter((f): f is string => !!f && !lookFact(f, d?.cast ?? []));
+  let msg = `${contextBlock(job, plan, treatment)}${layerAsk}${d ? `\n${directionBlock(d)}` : ""}${owedSaid.length ? `\nTHESE SCENES OWE THESE FACTS — say each one out loud in a "voice" line:\n${owedSaid.map((f) => `  - ${f}`).join("\n")}` : ""}${castList}${owedSpec}${script}${faithful}
 VIDEO OUTLINE (${total} scenes; you write scenes ${from + 1}–${to} now):
-${outline.map((e, i) => `${i + 1}. [${e.id}] ${e.kind} · ${e.label}${e.accent ? ` · ${e.accent}` : ""} — ${e.summary} (${e.words} words)`).join("\n")}
+${outline.map((e, i) => `${i + 1}. [${e.id}] ${e.kind} · ${e.label}${e.accent ? ` · ${e.accent}` : ""} — ${e.summary} (${e.words} words)${e.covers.length && owedIds.length ? ` · covers ${e.covers.join(", ")}` : ""}`).join("\n")}
 ${prevVoice ? `The previous scene ended with this narration, continue naturally from it: "${prevVoice}"` : "This is the start of the video."}
-TASK: write scenes ${from + 1}–${to} in full, in order, keeping their ids, kinds${cin ? ", chapters (as \"chapter\") and accents" : stick ? " and titles" : sk ? " and accents" : " and eyebrows"} from the outline. Their narration together totals about ${words} words (${entries.map((e) => `${e.id}: ${e.words}`).join(", ")}). ${how}${pic ? ` Each "image_prompt" is one sentence, ≤${IMAGE_PROMPT_MAX} characters, with no text in the picture${plan.language !== "en" ? ", WRITTEN IN ENGLISH (only the voice is in the narration's language)" : ""}.` : ""}
+TASK: write scenes ${from + 1}–${to} in full, in order, keeping their ids, kinds${cin ? ", chapters (as \"chapter\") and accents" : stick ? " and titles" : sk ? " and accents" : " and eyebrows"} from the outline. Their narration together totals about ${words} words (${entries.map((e) => `${e.id}: ${e.words}`).join(", ")}). ${how}${pic ? ` Each "image_prompt" is one sentence, ≤${IMAGE_PROMPT_MAX} characters, with no text in the picture${spec?.items.some((i) => i.kind === "text") ? " unless the shot covers a requirement that must be read on screen (then the exact words, in quotes)" : ""}${plan.language !== "en" ? ", WRITTEN IN ENGLISH (only the voice is in the narration's language)" : ""}.${shotFields}` : ""}
 Return {"scenes":[…]} with exactly ${entries.length} scene objects and nothing else.`;
   if (feedback?.length) msg += `\n\nYOUR PREVIOUS ANSWER WAS REJECTED by the validator with these problems (scene numbers count within the scenes you returned, "beat n" counts inside that scene). Fix every one of them and return all ${entries.length} scenes again:\n- ${feedback.join("\n- ")}`;
   return msg;
@@ -816,12 +1043,20 @@ const strArr = { type: "array", items: str };
 
 /** Every property the contract knows, closed with additionalProperties:false (open objects let the grammar accept
  * garbled keys). Junk the model puts in irrelevant properties is removed per kind by normalizeStoryboard. */
-function sceneSchema(plan: Plan, layer: Graphics | null = null): Record<string, unknown> {
+function sceneSchema(plan: Plan, layer: Graphics | null = null, spec: RequestSpec | null = null): Record<string, unknown> {
   if (plan.style === "sketch") return explainerSceneSchema();
   if (plan.style === "picture") {
+    // The authoring fields (24 September 2026): "action" on every picture film, "covers" and "cast" only under a spec,
+    // as enums of its own ids — a grammar that can only decode real ids cannot invent one.
+    const ids = spec ? coverable(spec).map((i) => i.id) : [];
+    const castIds = spec ? spec.cast.map((c) => c.id) : [];
     const shot = {
       type: "object",
-      properties: { image_prompt: str, caption: str, hl: str, at: str, shot_kind: { type: "string", enum: [...SHOT_KINDS] } },
+      properties: {
+        image_prompt: str, caption: str, hl: str, at: str, shot_kind: { type: "string", enum: [...SHOT_KINDS] }, action: str,
+        ...(ids.length ? { covers: { type: "array", items: { type: "string", enum: ids } } } : {}),
+        ...(castIds.length ? { cast: { type: "array", items: { type: "string", enum: castIds } } } : {}),
+      },
       required: ["image_prompt"],
       additionalProperties: false,
     };
@@ -883,7 +1118,7 @@ function sceneSchema(plan: Plan, layer: Graphics | null = null): Record<string, 
   };
 }
 
-function outlineSchema(plan: Plan, facts = 0): Record<string, unknown> {
+function outlineSchema(plan: Plan, facts = 0, covers: readonly string[] = []): Record<string, unknown> {
   const cin = plan.style === "cinema" || plan.style === "picture"; // both plan chapters and accents, scene kinds cinema/closing
   const entry: Record<string, unknown> = {
     type: "object",
@@ -892,6 +1127,7 @@ function outlineSchema(plan: Plan, facts = 0): Record<string, unknown> {
       ...(cin ? { accent: { type: "string", enum: [...CINEMA_ACCENTS] } } : {}), summary: str, words: { type: "integer" },
       // "keeps" only exists when the direction listed facts to place: an empty enum is not a schema a grammar can decode.
       ...(facts ? { keeps: { type: "array", items: { type: "integer" } } } : {}),
+      ...(covers.length ? { covers: { type: "array", items: { type: "string", enum: [...covers] } } } : {}),
     },
     required: ["id", "kind", "label", "summary", "words", ...(cin ? ["accent"] : [])],
     additionalProperties: false,
@@ -904,8 +1140,8 @@ function outlineSchema(plan: Plan, facts = 0): Record<string, unknown> {
   };
 }
 
-const chunkSchema = (plan: Plan, layer: Graphics | null = null): Record<string, unknown> => ({
-  type: "object", properties: { scenes: { type: "array", items: sceneSchema(plan, layer) } }, required: ["scenes"], additionalProperties: false,
+const chunkSchema = (plan: Plan, layer: Graphics | null = null, spec: RequestSpec | null = null): Record<string, unknown> => ({
+  type: "object", properties: { scenes: { type: "array", items: sceneSchema(plan, layer, spec) } }, required: ["scenes"], additionalProperties: false,
 });
 
 /* ------------------------------------------------------------------ normalisation */
@@ -1056,14 +1292,23 @@ const fitPrompt = (p: string): string => (p.length <= IMAGE_PROMPT_MAX ? p : p.s
  * and an "hl" that does not colour a word of this shot's caption is meaningless, so it goes too.
  */
 function repairShot(sh: Record<string, unknown>, voice: string, first: boolean): Record<string, unknown> | null {
-  const written = typeof sh.image_prompt === "string" ? fitPrompt(sh.image_prompt.trim()) : "";
-  if (written.length < IMAGE_PROMPT_MIN) return null;
-  // NOTHING IN THE FRAME MAY BE DEAD. A picture with no subject doing anything comes back frozen once the shot is a
-  // generated clip and not a photograph — measured at 0.03 px of movement on an RTX 6000 Ada, which is a still image
-  // with a timestamp. So a still description has one movement added to it, built from what it already shows. It is
-  // repaired and not refused, for the same reason the camera is: a refusal costs a round trip, a repair costs nothing.
-  const prompt = enliven(written, IMAGE_PROMPT_MAX);
+  const prompt = typeof sh.image_prompt === "string" ? fitPrompt(sh.image_prompt.trim()) : "";
+  if (prompt.length < IMAGE_PROMPT_MIN) return null;
   const out: Record<string, unknown> = { image_prompt: prompt };
+  // NOTHING IN THE FRAME MAY BE DEAD — but the movement no longer eats the author's words (24 September 2026). A
+  // picture with no subject doing anything comes back frozen once the shot is a generated clip (measured at 0.03 px
+  // of movement on an RTX 6000 Ada), so enliven() used to append "dust drifting through the light" to the image_prompt
+  // and cut the prompt to make room: the user's "lilac apron" was the clause that fell off. The movement is now the
+  // shot's own "action" — what the author wrote, or the clause enliven used to append when they wrote none — and the
+  // picture prompt stays exactly what was written. The clip model reads the action; the still model reads the picture.
+  const action = typeof sh.action === "string" ? shortPhrase(sh.action, SHOT_ACTION_MAX) : "";
+  const hint = action || motionHint(prompt);
+  if (hint) out.action = hint;
+  // What the shot claims to show, and who is in it: short strings, no repeats, bounded. Whether the ids are real is
+  // the coverage check's to say (src/spec.ts), in words the model can act on — not this repair's to hide.
+  const ids = (v: unknown, len: number, max: number): string[] => [...new Set((Array.isArray(v) ? v : []).filter((x): x is string => typeof x === "string").map((x) => x.trim()).filter((x) => x && x.length <= len))].slice(0, max);
+  const covers = ids(sh.covers, SHOT_TAG_MAX, SHOT_COVERS_MAX); if (covers.length) out.covers = covers;
+  const cast = ids(sh.cast, SHOT_TAG_MAX, SHOT_CAST_MAX); if (cast.length) out.cast = cast;
   if (typeof sh.caption === "string" && sh.caption.trim() && sh.caption.length <= SHOT_CAPTION_MAX && printableStr(sh.caption)) out.caption = sh.caption.trim();
   if (typeof sh.hl === "string" && sh.hl.trim() && sh.hl.length <= SHOT_HL_MAX && typeof out.caption === "string" && String(out.caption).toLowerCase().includes(sh.hl.trim().toLowerCase())) out.hl = sh.hl.trim();
   // The cut has to be whole words of the narration (quotesVoice, the way engine/picture.js aligns a shot): a fragment
@@ -1371,12 +1616,31 @@ async function callClaude(env: Env, model: string, messages: { role: string; con
   return { raw: extractJson(text), usage };
 }
 
-export async function callModel(env: Env, model: string, messages: { role: string; content: string }[], schema: Record<string, unknown>, maxTokens: number, temperature = 0.3, timeoutMs = MODEL_CALL_TIMEOUT_MS): Promise<{ raw: unknown; usage: Usage }> {
+/**
+ * One model call, on whichever road the model name asks for. `fallback` is set when the external road refused for
+ * money (isOutOfCredit) and the same call was answered by Workers AI instead: the caller records it, so a film planned
+ * on the fallback says so in its history rather than passing for a film planned on the model the owner chose.
+ */
+export async function callModel(env: Env, model: string, messages: { role: string; content: string }[], schema: Record<string, unknown>, maxTokens: number, temperature = 0.3, timeoutMs = MODEL_CALL_TIMEOUT_MS): Promise<{ raw: unknown; usage: Usage; fallback?: string }> {
   if (isExternalModel(model)) {
-    if (env.PLAN_API_URL && env.PLAN_API_KEY) return withTimeout(callOpenAICompat(env, model, messages, maxTokens, temperature, timeoutMs), timeoutMs, `model call (${model})`);
-    if (isClaudeModel(model)) return withTimeout(callClaude(env, model, messages, maxTokens, timeoutMs), timeoutMs, `model call (${model})`);
+    try {
+      if (env.PLAN_API_URL && env.PLAN_API_KEY) return await withTimeout(callOpenAICompat(env, model, messages, maxTokens, temperature, timeoutMs), timeoutMs, `model call (${model})`);
+      if (isClaudeModel(model)) return await withTimeout(callClaude(env, model, messages, maxTokens, timeoutMs), timeoutMs, `model call (${model})`);
+    } catch (e) {
+      // OUT OF CREDIT IS NOT A BROKEN STORYBOARD (24 September 2026, OpenRouter at $0.69): the same call, once, on
+      // Workers AI — PLAN_FALLBACK_MODEL, else AI_MODEL, else the default. Any other error is the caller's as before.
+      const fallback = env.PLAN_FALLBACK_MODEL || env.AI_MODEL || DEFAULT_MODEL;
+      if (!isOutOfCredit(e) || !env.AI || isExternalModel(fallback)) throw e;
+      const out = await callWorkersAi(env, fallback, messages, schema, maxTokens, temperature, timeoutMs);
+      return { ...out, fallback };
+    }
     throw new Error(`no road to model ${model}: set PLAN_API_URL + PLAN_API_KEY, or ANTHROPIC_API_KEY for a claude- model`);
   }
+  return callWorkersAi(env, model, messages, schema, maxTokens, temperature, timeoutMs);
+}
+
+/** One call on Workers AI (env.AI): JSON mode where the model has it, the answer read out of whichever shape it returns. */
+async function callWorkersAi(env: Env, model: string, messages: { role: string; content: string }[], schema: Record<string, unknown>, maxTokens: number, temperature: number, timeoutMs: number): Promise<{ raw: unknown; usage: Usage }> {
   const ai = env.AI as unknown as AiRunner;
   // gpt-oss on Workers AI reasons before it answers, and the reasoning is billed against max_tokens: at the planner's
   // budgets its JSON came back cut off mid-string every time (0/10 on 13 September, 0/2 again on 20 September, both
@@ -1449,7 +1713,7 @@ export function applyEnglishFields(d: Direction, raw: unknown): void {
   const world = text(raw.world, DL.world); if (world) d.world = world;
   const cast: unknown[] = Array.isArray(raw.cast) ? raw.cast : [];
   if (Array.isArray(raw.cast) && cast.length === (d.cast ?? []).length)
-    d.cast = (d.cast ?? []).map((m, i) => { const c: Record<string, unknown> = isObj(cast[i]) ? (cast[i] as Record<string, unknown>) : {}; return { name: text(c.name, DL.cast.name) ?? m.name, look: text(c.look, DL.cast.look) ?? m.look }; });
+    d.cast = (d.cast ?? []).map((m, i) => { const c: Record<string, unknown> = isObj(cast[i]) ? (cast[i] as Record<string, unknown>) : {}; return { ...(m.id ? { id: m.id } : {}), name: text(c.name, DL.cast.name) ?? m.name, look: text(c.look, DL.cast.look) ?? m.look }; });
   const objects = list(raw.objects, d.objects ?? [], DL.objects.len); if (objects) d.objects = objects;
   const forbidden = list(raw.forbidden, d.forbidden ?? [], DL.forbidden.len); if (forbidden) d.forbidden = forbidden;
 }
@@ -1632,18 +1896,204 @@ function header(plan: Plan, outline: { title?: unknown; description?: unknown; t
 
 export interface GenerateOptions { model?: string }
 
+/* ------------------------------------------------------------------ the spec: step -2 */
+
+/** The spec call's knobs: temperature 0 (it extracts, it does not create), room for forty items and six looks. */
+export const SPEC_MAX_TOKENS = 2400;
+/** What the spec writer reads: the request, the intake's answers, and the images Kleo already holds for the film. */
+export interface SpecInput {
+  prompt: string;
+  language: string;
+  must_keep?: string | null;
+  audience?: string | null;
+  tone?: string | null;
+  refs?: { handle: string; description?: string | null; role?: string | null; name?: string | null }[];
+}
+export interface SpecResult {
+  spec: RequestSpec | null;
+  model: string;
+  attempts: number;
+  ms: number;
+  /** Why an attempt was rejected, or why the call failed; empty when the first answer was a spec. */
+  history: string[];
+  /** True when the model could not be reached (quota, outage): the caller should say so, not retry. */
+  transient: boolean;
+  usage: Usage;
+}
+/** One model call as the spec writer sees it, so the planner (with its budget) and writeSpec (without) share one loop. */
+type Ask = (system: string, user: string, schema: Record<string, unknown>, maxTokens: number, temperature: number) => Promise<unknown>;
+
+/** A reference image the writer listed that Kleo does not hold is an invention, and goes before the spec is checked. */
+function onlyKnownRefs(raw: unknown, handles: readonly string[]): unknown {
+  if (!isObj(raw) || !Array.isArray(raw.refs)) return raw;
+  return { ...raw, refs: raw.refs.filter((r) => isObj(r) && handles.includes(String(r.handle ?? ""))) };
+}
+
 /**
- * Outline first (title, description, one entry per scene), then the scenes in chunks of 4–5, each chunk
- * validated on its own and retried (up to 3 tries) with the validator's feedback; the assembled project is validated last.
+ * THE SPEC LOOP: two attempts at temperature 0 under SPEC_METHOD; the first answer is held to the strict rule (an item
+ * whose quote is not in the request refuses the spec, and the refusal is sent back in words), the second to the lenient
+ * one (the invented item is dropped and the rest is the user's spec). The quotes may come from the request or from the
+ * user's intake answers, so both are what they are checked against. Never throws on a model problem; a planner budget
+ * error goes through, and a transient one is handed back for the caller to pause on.
+ */
+async function draftSpec(ask: Ask, input: SpecInput): Promise<{ spec: RequestSpec | null; attempts: number; history: string[]; transient: unknown }> {
+  const request = [input.prompt, input.must_keep, input.audience, input.tone].filter((x): x is string => typeof x === "string" && !!x.trim()).join("\n");
+  const handles = (input.refs ?? []).map((r) => r.handle);
+  const history: string[] = [];
+  let feedback: string[] | undefined;
+  let attempts = 0;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    attempts++;
+    let raw: unknown;
+    try { raw = clean(await ask(SPEC_METHOD, specPrompt(input, feedback), specSchema(), SPEC_MAX_TOKENS, 0)); }
+    catch (e) {
+      if (e instanceof PlanBudgetError) throw e;
+      history.push(`spec: model call failed: ${String(e).slice(0, 200)}`);
+      if (isTransientAiError(e)) return { spec: null, attempts, history, transient: e };
+      continue;
+    }
+    const answer = onlyKnownRefs(raw, handles);
+    const spec = repairSpec(answer, request, { lenient: attempt > 1, handles });
+    if (spec) return { spec, attempts, history, transient: null };
+    feedback = specProblems(answer, request, { handles });
+    history.push(`spec: rejected (${feedback.slice(0, 3).join("; ") || "not a spec"})`);
+  }
+  return { spec: null, attempts, history, transient: null };
+}
+
+/**
+ * The spec alone, for kleo_adapt_prompt and for step -2 of the planner: the user's request taken apart into the
+ * requirements the film is checked against (src/spec.ts). Model: SPEC_MODEL, else the planning model. Never throws:
+ * the tool has to answer either way, and a film without a spec is still a film.
+ */
+export async function writeSpec(env: Env, input: SpecInput, opts: { model?: string } = {}): Promise<SpecResult> {
+  const t0 = Date.now();
+  const model = opts.model || env.SPEC_MODEL || planModel(env) || env.AI_MODEL || DEFAULT_MODEL;
+  const usage: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  if (!env.AI && !isExternalModel(model)) return { spec: null, model, attempts: 0, ms: 0, history: ["no AI binding"], transient: true, usage };
+  const notes: string[] = [];
+  const ask: Ask = async (system, user, schema, maxTokens, temperature) => {
+    const out = await callModel(env, model, [{ role: "system", content: system }, { role: "user", content: user }], schema, maxTokens, temperature);
+    usage.prompt_tokens! += out.usage.prompt_tokens ?? 0; usage.completion_tokens! += out.usage.completion_tokens ?? 0; usage.total_tokens! += out.usage.total_tokens ?? 0;
+    if (out.fallback) notes.push(`${model} refused for credit; the spec was written by ${out.fallback} on Workers AI`);
+    return out.raw;
+  };
+  try {
+    const r = await draftSpec(ask, input);
+    return { spec: r.spec, model, attempts: r.attempts, ms: Date.now() - t0, history: [...notes, ...r.history], transient: !!r.transient, usage };
+  } catch (e) {
+    return { spec: null, model, attempts: 0, ms: Date.now() - t0, history: [...notes, `spec: ${String(e).slice(0, 200)}`], transient: isTransientAiError(e), usage };
+  }
+}
+
+/* ------------------------------------------------------------------ the outline under the spec */
+
+/**
+ * The events the outline placed out of the user's order, as sentences for its second attempt. An event's place is
+ * the first scene that covers it.
+ */
+function eventOrderProblems(outline: OutlineEntry[], spec: RequestSpec): string[] {
+  const out: string[] = [];
+  let last = -1, lastId = "";
+  for (const e of eventsInOrder(spec)) {
+    const at = outline.findIndex((o) => o.covers.includes(e.id));
+    if (at < 0) continue;
+    if (at < last) out.push(`${e.id} (event #${e.order}) is placed in scene ${at + 1}, before ${lastId} in scene ${last + 1}, but the user told it after: cover the events in the user's order`);
+    else { last = at; lastId = e.id; }
+  }
+  return out;
+}
+
+/** The last resort for an outline that reorders the story twice: the events are handed out in order, evenly over the body scenes. */
+function spreadEvents(outline: OutlineEntry[], spec: RequestSpec): void {
+  const events = eventsInOrder(spec);
+  if (!events.length) return;
+  const ids = new Set(events.map((e) => e.id));
+  for (const o of outline) o.covers = o.covers.filter((c) => !ids.has(c));
+  const body = outline.map((o, i) => (o.kind === "closing" && outline.length > 1 ? -1 : i)).filter((i) => i >= 0);
+  events.forEach((e, k) => { outline[body[Math.min(body.length - 1, Math.floor((k * body.length) / events.length))]].covers.push(e.id); });
+}
+
+/**
+ * Every must requirement no scene claimed is handed to the scene closest to it, the way a forgotten fact is: an
+ * unplaced requirement is one no chunk is ever asked for. An event is placed between the scenes of the events around
+ * it, so placing it can never reorder the story.
+ */
+function placeRequirements(outline: OutlineEntry[], spec: RequestSpec): void {
+  const claimed = new Set(outline.flatMap((o) => o.covers));
+  const sceneOf = (id: string) => outline.findIndex((o) => o.covers.includes(id));
+  const events = eventsInOrder(spec);
+  for (const it of coverable(spec)) {
+    if (!it.must || claimed.has(it.id)) continue;
+    let lo = 0, hi = outline.length - 1;
+    const k = events.findIndex((e) => e.id === it.id);
+    if (k >= 0) {
+      for (let j = k - 1; j >= 0; j--) { const s = sceneOf(events[j].id); if (s >= 0) { lo = s; break; } }
+      for (let j = k + 1; j < events.length; j++) { const s = sceneOf(events[j].id); if (s >= 0) { hi = Math.max(lo, s); break; } }
+    }
+    outline[bestSceneFor(`${it.text} ${it.quote}`, outline, lo, hi)].covers.push(it.id);
+    claimed.add(it.id);
+  }
+}
+
+/**
+ * The coverage problems a chunk is answerable for: the requirements its scenes owe (uncovered, or shown out of the
+ * user's order) and every unknown id or cast member it wrote. Coverage is computed on the chunk alone, so a
+ * requirement owed by a later chunk is never held against this one.
+ */
+function chunkCoverage(spec: RequestSpec, scenes: Record<string, unknown>[], owed: ReadonlySet<string>): string[] {
+  const cov = coverage(spec, { scenes });
+  const mine = (p: string) => /^"(?:covers|cast)" names/.test(p) || [...owed].some((id) => p.startsWith(`${id}:`) || p.startsWith(`${id} (`));
+  return cov.problems.filter(mine);
+}
+
+/* ------------------------------------------------------------------ the fidelity repair round */
+
+/** A repair round needs at least this much of the planning budget left: one call, one validation, one judge. */
+export const REPAIR_MIN_MS = 60_000;
+/** The most scenes one repair call rewrites: the size of a chunk and a half, so the answer stays one Workers AI call. */
+const REPAIR_MAX_SCENES = 6;
+
+/** The prompt of the one repair round: the spec, the whole plan, what the check found, and the scenes to rewrite. */
+function repairPrompt(spec: RequestSpec, plan: Plan, d: Direction | null, sb: Storyboard, pick: number[], feedback: string[]): string {
+  const lang = LANG_NAMES[plan.language] ?? plan.language;
+  const compact = sb.scenes.map((s, i) => ({
+    n: i + 1, id: s.id, kind: s.kind, chapter: s.chapter, accent: s.accent, title: s.title, voice: s.voice,
+    shots: (Array.isArray(s.shots) ? s.shots : []).filter(isObj).map((sh) => ({ image_prompt: sh.image_prompt, covers: sh.covers ?? [], cast: sh.cast ?? [], action: sh.action, at: sh.at })),
+  }));
+  return `${specBlock(spec)}
+${d ? `${directionBlock(d)}\n` : ""}THE PLANNED FILM (every scene, in order):
+${JSON.stringify(compact)}
+A CHECK OF THIS PLAN AGAINST THE USER'S REQUEST FOUND:
+- ${feedback.join("\n- ")}
+TASK: correct these scenes so that the film shows and says what the user asked for: ${pick.map((i) => `scene ${i + 1} [${String(sb.scenes[i].id)}]`).join(", ")}. Return {"scenes":[…]} with exactly ${pick.length} scene objects, in that order, each one complete and keeping its id, kind, chapter and accent: the voice in ${lang}; ${shotRangeText("cinema")} shots for a cinema scene (the closing one), each with "image_prompt" (one English sentence, ≤${IMAGE_PROMPT_MAX} characters), "covers", "cast" and "action", and every shot after the first anchored with "at" to words copied from its own voice. Change only what the problems above require; keep everything else as it was.`;
+}
+
+/** One line for the history: the score, the judge, and what was lost or contradicted. */
+function fidelitySummary(f: PlanFidelity): string {
+  const by = (s: string) => f.verdicts.filter((v) => v.status === s).map((v) => v.id);
+  const lost = by("lost"), contra = by("contradicted");
+  return `fidelity: ${Math.round(f.score * 100)}% of the must items kept (${f.judge})${lost.length ? `; lost ${lost.join(", ")}` : ""}${contra.length ? `; contradicted ${contra.join(", ")}` : ""}${f.inventions.length ? `; ${f.inventions.length} invention${f.inventions.length === 1 ? "" : "s"}` : ""}`;
+}
+
+/* ------------------------------------------------------------------ the planner */
+
+/**
+ * Spec (step -2), treatment (-1), direction (0), then the outline (title, description, one entry per scene), then the
+ * scenes in chunks of 4–5, each chunk validated on its own and retried (up to 3 tries) with the validator's feedback;
+ * the assembled project is validated last, checked against the spec, and repaired once when it lost what was asked.
  */
 export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateOptions = {}): Promise<PlanResult> {
   const t0 = Date.now();
   let plan = planFor(job);
+  const jobParams = JSON.parse(job.params) as JobParams;
   if (useFixture(env)) {
     const sb = fixtureStoryboard(job);
-    return { storyboard: sb, model: "fixture", attempts: 0, ms: Date.now() - t0, usage: {}, est_neurons: 0, words: countWords(sb), scenes: sb.scenes.length, fixture: true, history: [], style: kleoStyleOf(sb), direction: (sb as { direction?: Direction }).direction ?? null, treatment: null, missing_facts: [], blocked_upgrade: null };
+    return { storyboard: sb, model: "fixture", attempts: 0, ms: Date.now() - t0, usage: {}, est_neurons: 0, words: countWords(sb), scenes: sb.scenes.length, fixture: true, history: [], style: kleoStyleOf(sb), direction: (sb as { direction?: Direction }).direction ?? null, treatment: null, missing_facts: [], blocked_upgrade: null, spec: specOf(jobParams), fidelity: null };
   }
   const model = opts.model || planModel(env) || env.AI_MODEL || DEFAULT_MODEL;
+  /** The model the planner is actually on: `model`, until the external road refuses for credit and Workers AI takes over. */
+  let current = model;
   const usage: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   const history: string[][] = [];
   let calls = 0;
@@ -1659,20 +2109,45 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     const left = deadline - Date.now();
     if (left < 5_000) throw new PlanBudgetError(`planning ran past its ${budget / 60_000}-minute budget after ${calls} model calls`, [`planning took longer than ${budget / 60_000} minutes (${calls} model calls): the planning model is slow right now, and the attempt is retried`]);
     calls++;
-    const out = await callModel(env, over.model ?? model, [{ role: "system", content: over.system ?? system }, { role: "user", content: user }], schema, maxTokens, over.temperature, Math.min(MODEL_CALL_TIMEOUT_MS, left));
+    const asked = over.model ?? current;
+    const out = await callModel(env, asked, [{ role: "system", content: over.system ?? system }, { role: "user", content: user }], schema, maxTokens, over.temperature, Math.min(MODEL_CALL_TIMEOUT_MS, left));
     usage.prompt_tokens! += out.usage.prompt_tokens ?? 0; usage.completion_tokens! += out.usage.completion_tokens ?? 0; usage.total_tokens! += out.usage.total_tokens ?? 0;
+    // The external road refused for credit and Workers AI answered: said once, and the rest of the film goes straight
+    // to the fallback instead of knocking on a door that is known to be shut.
+    if (out.fallback && !over.model && current !== out.fallback) { history.push([`${asked} refused for credit: the rest of the plan is written by ${out.fallback} on Workers AI`]); current = out.fallback; }
     return out.raw;
   };
-  const fail = (errors: string[], draft?: unknown): never => { throw new StoryboardError(`storyboard invalid (${model}, ${calls} calls): ${errors.join("; ")}`, errors, draft); };
+  const fail = (errors: string[], draft?: unknown): never => { throw new StoryboardError(`storyboard invalid (${current}, ${calls} calls): ${errors.join("; ")}`, errors, draft); };
   let transient: unknown = null; // the last quota/outage error: reported instead of a storyboard problem
+
+  // -2. THE SPEC (24 September 2026). Before any creative decision, the request taken apart into the requirements the
+  //     film will be checked against (src/spec.ts). A spec the intake wrote (kleo_adapt_prompt, params.spec) is used as
+  //     it is: the user read THAT back. Otherwise it is written here, at temperature 0, from the request and the
+  //     intake's answers. It is allowed to fail — a film without a spec is what Kleo made until today — but a quota
+  //     error pauses the job like every other stage's.
+  let spec: RequestSpec | null = specOf(jobParams);
+  if (!spec) {
+    const brief = jobParams.brief ?? {};
+    const r = await draftSpec(
+      (sys, user, schema, maxTokens, temperature) => call(user, schema, maxTokens, { system: sys, temperature, model: env.SPEC_MODEL || undefined }),
+      { prompt: job.prompt, language: plan.language, must_keep: brief.must_keep ?? null, audience: brief.audience ?? null, tone: brief.tone ?? null },
+    );
+    if (r.history.length) history.push(r.history);
+    if (r.transient) throw r.transient;
+    spec = r.spec;
+  }
+  if (spec) history.push([`spec: ${spec.mode}, ${spec.items.length} items (${mustItems(spec).length} must), ${spec.cast.length} in the cast, narration ${spec.narration}`]);
+  const faithful = spec?.mode === "faithful";
+  /** The spec's machinery (covers, cast, coverage, the judge) runs on the films made of pictures: they are what it checks. */
+  const specShots = !!spec && plan.style === "picture";
 
   // -1. THE TREATMENT. Before the direction, before anything: the request expanded into the film a producer would
   //     make of it (src/treatment.ts). A caller that wrote or approved one through kleo_adapt_prompt hands it in as
   //     params.treatment and it is used as it is — the user saw THAT film, so that is the film that gets planned.
-  //     Otherwise it is written here, at a temperature that lets two identical requests come out as two films, under
-  //     a draw taken from the job id. Like the direction it is allowed to fail: a film without a treatment is what
-  //     Kleo made until 14 September, not a broken film.
-  const jobParams = JSON.parse(job.params) as JobParams;
+  //     Otherwise it is written here, under the spec. OPEN: at a temperature that lets two identical requests come out
+  //     as two films, under a draw taken from the job id. FAITHFUL: no draw at all — the device is "as-told" and the
+  //     opening "as-asked", at 0.4, because a random narrative device laid over a story the user already told is how
+  //     a bedtime story became a cold-open mystery. Like the direction it is allowed to fail.
   let treatment: Treatment | null = treatmentOf(jobParams);
   // The look the job was made in: the treatment is written for it, and refused if it names the other one.
   const planLook: FilmLook | null = (FILM_LOOKS as readonly string[]).includes(plan.kleo) ? (plan.kleo as FilmLook) : null;
@@ -1684,15 +2159,15 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     subtitles: jobParams.subtitles === undefined ? null : jobParams.subtitles,
   };
   if (!treatment) {
-    const v = variationFor(job.id);
+    const v: Variation = faithful ? faithfulVariation() : variationFor(job.id);
     let feedback: string[] | undefined;
     for (let attempt = 1; attempt <= 2 && !treatment; attempt++) {
       let raw: unknown;
-      try { raw = clean(await call(treatmentPrompt({ prompt: storyRequest(job.prompt), duration_s: plan.duration, format: plan.format, language: plan.language, look: planLook, sound }, v, feedback), treatmentSchema(), TREATMENT_MAX_TOKENS, { system: MASTER_PROMPT, temperature: TREATMENT_TEMPERATURE, model: env.TREATMENT_MODEL || undefined })); }
+      try { raw = clean(await call(treatmentPrompt({ prompt: storyRequest(job.prompt), duration_s: plan.duration, format: plan.format, language: plan.language, look: planLook, sound, spec }, v, feedback), treatmentSchema(), TREATMENT_MAX_TOKENS, { system: MASTER_PROMPT, temperature: treatmentTemperature(spec), model: env.TREATMENT_MODEL || undefined })); }
       catch (e) { if (e instanceof PlanBudgetError) throw e; history.push([`treatment: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) { transient = e; break; } continue; }
       // The second answer is held to the lenient rule: a short prose is asked to be fixed once, then kept.
-      const t = repairTreatment(raw, plan.duration, v, plan.language, { lenient: attempt > 1, look: planLook });
-      if (!t) { feedback = treatmentProblems(raw, plan.duration, plan.language, { look: planLook }); history.push([`treatment: rejected (${feedback.slice(0, 3).join("; ")})`]); continue; }
+      const t = repairTreatment(raw, plan.duration, v, plan.language, { lenient: attempt > 1, look: planLook, faithful });
+      if (!t) { feedback = treatmentProblems(raw, plan.duration, plan.language, { look: planLook, faithful }); history.push([`treatment: rejected (${feedback.slice(0, 3).join("; ")})`]); continue; }
       treatment = t;
     }
     if (transient) throw transient;
@@ -1705,6 +2180,8 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   //    used to make: a list of scenes with nothing holding them together.
   //    It is allowed to fail. A direction is a large improvement, not a precondition — when the model cannot produce a
   //    valid one in two tries the planner carries on exactly as it did before, and the video still ships.
+  //    Under a spec it is written below the requirements, and then held to them (applySpecToDirection): the cast, the
+  //    lines, the exclusions and the objects are the user's, whatever the model wrote.
   let direction: Direction | null = null;
   /** Set when the direction wanted a dearer look than the job was priced for: the user is told, never substituted in silence. */
   let blockedUpgrade: string | null = null;
@@ -1715,17 +2192,20 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   const sceneGuess = plan.style === "sketch"
     ? plan.scenes[0]
     : Math.max(plan.scenes[0], Math.min(plan.scenes[1], Math.round((plan.scenes[0] + plan.scenes[1]) / 2)));
+  // FAITHFUL: the sections are the treatment's acts (actSkeleton); otherwise the template's family, as before.
+  const skeleton = skeletonFor(job.template, sceneGuess, treatment, spec);
   let directionFeedback: string[] | undefined;
   for (let attempt = 1; attempt <= 2 && !direction; attempt++) {
     let raw: unknown;
-    try { raw = clean(await call(directionPrompt(job, plan, treatment, directionFeedback), directionSchema(), 900)); }
+    try { raw = clean(await call(directionPrompt(job, plan, treatment, directionFeedback, spec), directionSchema(), 900 + (spec?.cast.length ?? 0) * 120)); }
     catch (e) { if (e instanceof PlanBudgetError) throw e; history.push([`direction: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) { transient = e; break; } continue; }
     const o = isObj(raw) ? raw : {};
-    const d = repairDirection(o.direction, job.template, sceneGuess);
+    const d = repairDirection(o.direction, skeleton, sceneGuess);
     // The second attempt is told what was wrong with the first: a direction refused twice on the same thin cast look
     // (the model had no way to know) left the film with no direction at all, and no direction is the worst outcome.
     if (!d) { directionFeedback = directionProblems(isObj(o.direction) ? o.direction : {}, { accents: CINEMA_ACCENTS, scenes: sceneGuess }); history.push([`direction: rejected (${directionFeedback.slice(0, 3).join("; ")})`]); continue; }
     direction = d;
+    if (spec) applySpecToDirection(direction, spec, sceneGuess);
     // The look the direction chose, unless the client named one: planFor() keeps the user's choice above everything.
     // The look the direction chose, unless the client named one — and never at a different price. The job was
     // charged at createJob on the look guessed then; every style costs the same today, but realistic becomes seven
@@ -1755,26 +2235,50 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   if (direction && plan.style === "picture" && plan.language !== "en") {
     try { applyEnglishFields(direction, clean(await call(englishFieldsPrompt(direction, plan.language), englishFieldsSchema(), 700, { system: TRANSLATOR_SYSTEM, temperature: 0 }))); }
     catch (e) { if (e instanceof PlanBudgetError) throw e; history.push([`english pass (direction): ${String(e).slice(0, 200)}`]); }
+    // The spec's cast keeps the spec's names (castFor matches a picture to its character through them, and the shots
+    // name their cast by the spec's ids): the translation of the rest of the direction stands, the cast goes back.
+    if (spec) applySpecToDirection(direction, spec, sceneGuess);
   }
 
   // 1. Outline
   const n = sceneGuess;
+  const coverIds = specShots ? coverable(spec!).map((i) => i.id) : [];
   let outline: OutlineEntry[] = [];
-  let meta: { title?: unknown; description?: unknown; tags?: unknown } = {};
-  for (let attempt = 1; attempt <= 2 && !outline.length; attempt++) {
+  let drafted: OutlineEntry[] | null = null;
+  let metaRaw: Record<string, unknown> = {};
+  /** An outline sent back only for its order of events: kept, in case the second attempt brings nothing at all. */
+  let heldBack: { entries: OutlineEntry[]; o: Record<string, unknown> } | null = null;
+  let outlineFeedback: string[] | undefined;
+  for (let attempt = 1; attempt <= 2 && !drafted; attempt++) {
     let raw: unknown;
-    try { raw = clean(await call(outlinePrompt(job, plan, n, direction, treatment), outlineSchema(plan, direction?.must_keep.length ?? 0), 400 + n * 90)); }
+    try { raw = clean(await call(outlinePrompt(job, plan, n, direction, treatment, spec, outlineFeedback), outlineSchema(plan, direction?.must_keep.length ?? 0, coverIds), 400 + n * 90 + (coverIds.length ? n * 30 : 0))); }
     catch (e) { if (e instanceof PlanBudgetError) throw e; history.push([`outline: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) { transient = e; break; } continue; }
     const o = isObj(raw) ? raw : {};
     const entries = Array.isArray(o.scenes) ? o.scenes.filter(isObj) : [];
     if (entries.length < 2 || typeof o.title !== "string") { history.push([`outline: expected ${n} scenes and a title, got ${entries.length} scenes`]); continue; }
     const seen = new Set<string>();
-    outline = entries.map((e, i) => {
+    const parsed: OutlineEntry[] = entries.map((e, i) => {
       let id = slug(e.id, i).slice(0, 50); if (seen.has(id)) id = `${id}-${i + 1}`; seen.add(id);
       const words = typeof e.words === "number" && e.words > 3 ? Math.round(e.words) : Math.round(plan.words.target / entries.length);
       const keeps = Array.isArray(e.keeps) ? e.keeps.filter(isInt).filter((k) => k >= 0 && k < (direction?.must_keep.length ?? 0)) : [];
-      return { id, kind: typeof e.kind === "string" ? e.kind : "hero", label: typeof e.label === "string" ? e.label.slice(0, plan.style === "cinema" || plan.style === "picture" ? 32 : 40) : `PART ${i + 1}`, accent: typeof e.accent === "string" ? e.accent : undefined, summary: typeof e.summary === "string" ? e.summary : "", words, keeps };
+      const covers = [...new Set(Array.isArray(e.covers) ? e.covers.filter((c): c is string => typeof c === "string" && coverIds.includes(c)) : [])];
+      return { id, kind: typeof e.kind === "string" ? e.kind : "hero", label: typeof e.label === "string" ? e.label.slice(0, plan.style === "cinema" || plan.style === "picture" ? 32 : 40) : `PART ${i + 1}`, accent: typeof e.accent === "string" ? e.accent : undefined, summary: typeof e.summary === "string" ? e.summary : "", words, keeps, covers };
     });
+    // THE USER'S ORDER IS NOT A SUGGESTION. An outline that tells the events in another order is sent back once with
+    // the reason; a second one that still does has its events handed out in order by arithmetic, not refused.
+    if (specShots) {
+      const order = eventOrderProblems(parsed, spec!);
+      if (order.length && attempt === 1) { heldBack = { entries: parsed, o }; outlineFeedback = order; history.push(order.map((m) => `outline: ${m}`)); continue; }
+      if (order.length) { spreadEvents(parsed, spec!); history.push([`outline: the events were placed in the user's order by Kleo (${order.length} out of order twice)`]); }
+    }
+    drafted = parsed;
+    metaRaw = o;
+  }
+  if (transient) throw transient;
+  if (!drafted && heldBack) { drafted = heldBack.entries; metaRaw = heldBack.o; spreadEvents(drafted, spec!); history.push([`outline: the events were placed in the user's order by Kleo`]); }
+  if (!drafted) fail(history.flat());
+  outline = drafted!;
+  {
     // A fact the outline forgot to hand to anyone is handed to the scene whose summary is closest to it, and failing
     // that to the first scene that is not the closing. An unassigned fact is a fact the chunk prompts never ask for,
     // and it is exactly the silent way a video stops being about what the user wrote.
@@ -1789,13 +2293,45 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     const bodyKind = plan.style === "cinema" || plan.style === "picture" ? "cinema" : plan.style === "sketch" ? "sketch" : "hero";
     outline.forEach((e, i) => { if (e.kind === "closing" && (plan.style === "sketch" || i < outline.length - 1)) e.kind = bodyKind; });
     if (plan.style !== "sketch") outline[outline.length - 1].kind = "closing";
+    // The same for the spec's requirements, once the closing is known: a must item nobody claimed goes to its scene.
+    if (specShots) placeRequirements(outline, spec!);
     // Scale the per-scene word plan to the budget.
     const sum = outline.reduce((a, e) => a + e.words, 0) || 1;
     outline.forEach((e) => { e.words = Math.max(5, Math.round((e.words * plan.words.target) / sum)); });
-    meta = { title: o.title, description: o.description, tags: o.tags };
+    // THE USER'S SCRIPT, WORD FOR WORD: cut into the scenes here, by arithmetic, so each chunk is handed the exact
+    // words its scenes say; the word plan is the script's, not the budget's.
+    if (spec?.narration === "verbatim" && spec.script) {
+      splitScript(spec.script, outline.length).forEach((part, i) => { outline[i].script = part; outline[i].words = Math.max(3, part.split(/\s+/).filter(Boolean).length); });
+    }
   }
-  if (transient) throw transient;
-  if (!outline.length) fail(history.flat());
+  const meta: { title?: unknown; description?: unknown; tags?: unknown } = { title: metaRaw.title, description: metaRaw.description, tags: metaRaw.tags };
+
+  /**
+   * 2b. THE PICTURES SPEAK ENGLISH. Whatever prompt the chunks still wrote in the narration's language is translated
+   *     here, all of them in one call, before the plan is assembled: the routing rule (hands, a crowd… → a locked
+   *     frame) and the forbidden-term check read English words, so they run on the translated text below, and the
+   *     move the validator had resolved on the old text is dropped so it is resolved again on the new one.
+   */
+  const toEnglish = async (list: Record<string, unknown>[]): Promise<void> => {
+    if (plan.style !== "picture" || plan.language === "en") return;
+    const slots: { shot: Record<string, unknown>; text: string }[] = [];
+    for (const sc of list) if (Array.isArray(sc.shots)) for (const sh of sc.shots) if (isObj(sh) && typeof sh.image_prompt === "string" && notEnglish(sh.image_prompt)) slots.push({ shot: sh, text: sh.image_prompt });
+    if (!slots.length) return;
+    try {
+      const raw = clean(await call(englishPromptsPrompt(slots.map((x) => x.text), plan.language), englishPromptsSchema(), 100 + 120 * slots.length, { system: TRANSLATOR_SYSTEM, temperature: 0 }));
+      const got = isObj(raw) && Array.isArray(raw.prompts) ? raw.prompts : [];
+      if (got.length !== slots.length) history.push([`english pass (pictures): expected ${slots.length} prompts, got ${got.length}`]);
+      else slots.forEach((x, i) => {
+        const t = got[i];
+        if (typeof t !== "string" || t.trim().length < IMAGE_PROMPT_MIN || notEnglish(t)) return;
+        x.shot.image_prompt = fitPrompt(t.trim());
+        delete x.shot.motion; delete x.shot.strength;
+        // An action Kleo derived from the untranslated words (motionHint reads English) is derived again from the
+        // English ones; an action the author wrote is theirs and stays.
+        if (x.shot.action === motionHint(x.text)) { const hint = motionHint(String(x.shot.image_prompt)); if (hint) x.shot.action = hint; else delete x.shot.action; }
+      });
+    } catch (e) { if (e instanceof PlanBudgetError) throw e; history.push([`english pass (pictures): ${String(e).slice(0, 200)}`]); }
+  };
 
   // 2. Scenes, chunk by chunk
   const scenes: Record<string, unknown>[] = [];
@@ -1805,6 +2341,9 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   // the video has M". The colour law is applied and checked once, on the assembled storyboard, where it means something.
   const chunkHead: Record<string, unknown> = { ...head };
   delete chunkHead.direction;
+  /** The spec items that must be READ on screen: a shot covering one is allowed words in its picture. */
+  const textIds = new Set(spec ? spec.items.filter((i) => i.kind === "text").map((i) => i.id) : []);
+  const verbatim = spec?.narration === "verbatim" && !!spec.script;
   const chunkSize = Math.ceil(outline.length / Math.ceil(outline.length / plan.chunk)); // even chunks: no 1-scene tail
   for (let from = 0; from < outline.length; from += chunkSize) {
     const to = Math.min(outline.length, from + chunkSize);
@@ -1815,8 +2354,8 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     let lastDraft: unknown;
     for (let attempt = 1; attempt <= 3 && !accepted; attempt++) {
       let raw: unknown;
-      const maxTokens = plan.style === "cinema" ? 700 * (to - from) : plan.style === "picture" ? 600 * (to - from) : 350 * (to - from);
-      try { raw = await call(chunkPrompt(job, plan, outline, from, to, prevVoice, feedback, direction, treatment), chunkSchema(plan, layerOf(plan, treatment)), 400 + maxTokens); }
+      const maxTokens = plan.style === "cinema" ? 700 * (to - from) : plan.style === "picture" ? (specShots ? 750 : 600) * (to - from) : 350 * (to - from);
+      try { raw = await call(chunkPrompt(job, plan, outline, from, to, prevVoice, feedback, direction, treatment, spec), chunkSchema(plan, layerOf(plan, treatment), specShots ? spec : null), 400 + maxTokens); }
       catch (e) { if (e instanceof PlanBudgetError) throw e; history.push([`scenes ${from + 1}–${to}: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) throw e; feedback = undefined; continue; }
       const got = isObj(raw) && Array.isArray(raw.scenes) ? raw.scenes.filter(isObj) : [];
       // Validated in context (the scenes accepted so far + this chunk + a temporary closing unless it is the last chunk);
@@ -1846,10 +2385,22 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
       // about what the user asked for. Checking it here rather than at the end means the fix costs one retry of four
       // scenes instead of a whole re-plan — and a fact that has already slipped through two chunks never comes back.
       if (direction?.must_keep.length) {
-        const owed = [...new Set(outline.slice(from, to).flatMap((e) => e.keeps))].map((i) => direction!.must_keep[i]).filter(Boolean);
+        const owed = [...new Set(outline.slice(from, to).flatMap((e) => e.keeps))].map((i) => direction!.must_keep[i]).filter((f) => f && !lookFact(f, direction!.cast));
+        // (only what can be SAID is owed to the narration: a look kept in must_keep since 24 September is owed to the
+        // pictures, and demanding it aloud is the 20 September bug, the narrator reading out a costume)
         const lost = missingFacts(owed, chunkScenes.map((x) => String(x.voice ?? "")).join(" "));
         for (const f of lost) problems.push(`the narration of these scenes never says "${f}", which the user asked for: put it in a "voice" line, in words the viewer will hear`);
       }
+      // THE SPEC, CHUNK BY CHUNK (24 September 2026): the requirements these scenes owe are shown (a shot lists them in
+      // "covers"), the events come in the user's order, every id named is a real one — and, when the narration is the
+      // user's own, each voice is their words. These are worth a third attempt: they are the film the user asked for.
+      const owedProblems: string[] = [];
+      if (specShots) owedProblems.push(...chunkCoverage(spec!, chunkScenes, new Set(outline.slice(from, to).flatMap((e) => e.covers))));
+      if (verbatim) chunkScenes.forEach((sc, i) => {
+        const words = outline[from + i]?.script;
+        if (words && !lineSaid(words, String(sc.voice ?? ""))) owedProblems.push(`scene ${i + 1}: the voice must be the user's own words, exactly as written: "${words}"`);
+      });
+      problems.push(...owedProblems);
       // THE RULES ARE FUNCTIONS, NOT ADVICE. A hook and "keep it entertaining" written into a prompt are ignored by
       // every model that has ever read them, because nothing measures whether they happened. checkExplainer measures
       // it on the scenes that came back, and what it finds is what the next attempt is asked to fix — in its words.
@@ -1863,8 +2414,13 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
         if (thin.length) problems.push(`scene${thin.length > 1 ? "s" : ""} ${thin.join(", ")}: only one picture; every scene needs 2–4 "shots", each with its own "image_prompt", and every shot after the first anchored with "at" to words of that scene's voice`);
         // A picture asked to draw a diagram, a screen with words or a quoted caption is sent back once: the layer
         // is where numbers and words live; the picture shows a real place, object or person (measured 14 September).
-        const drawn = chunkScenes.flatMap((s, i) => (Array.isArray(s.shots) ? s.shots : []).map((sh, j) => ({ id: `scene ${i + 1} shot ${j + 1}`, image_prompt: String((sh as Record<string, unknown>).image_prompt ?? "") })));
-        for (const hit of screenTextProblems(drawn)) problems.push(`${hit.id}: asks the picture to draw "${hit.term}" — no diagrams, charts, screens with words or quoted captions in a picture (numbers and words belong to the layer); describe a real place, object or person instead`);
+        // Except the words the USER asked to be read on screen: a shot that covers a "text" requirement may draw them.
+        const drawn = chunkScenes.flatMap((s, i) => (Array.isArray(s.shots) ? s.shots : []).map((sh, j) => {
+          const o = isObj(sh) ? sh : {};
+          return { id: `scene ${i + 1} shot ${j + 1}`, image_prompt: String(o.image_prompt ?? ""), text: Array.isArray(o.covers) && o.covers.some((c) => textIds.has(String(c))) };
+        }));
+        const allowed = new Set(drawn.filter((x) => x.text).map((x) => x.id));
+        for (const hit of screenTextProblems(drawn.map(({ id, image_prompt }) => ({ id, image_prompt })), allowed)) problems.push(`${hit.id}: asks the picture to draw "${hit.term}" — no diagrams, charts, screens with words or quoted captions in a picture (numbers and words belong to the layer); describe a real place, object or person instead`);
       } else if (plan.style === "cinema") {
         const thin = chunkScenes.map((s, i) => (!Array.isArray(s.beats) || s.beats.length < 3 ? i + 1 : 0)).filter(Boolean);
         if (thin.length) problems.push(`scene${thin.length > 1 ? "s" : ""} ${thin.join(", ")}: only 1–2 beats; every scene needs 4–8 beats of different kinds, each anchored with "at"`);
@@ -1876,8 +2432,9 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
       }
       // THE NARRATOR TELLS THE STORY, NEVER DESCRIBES THE VIDEO. The model copies the request's words about the
       // format into the narration ("In a 30-second vertical YouTube Short, a young warrior receives a transmission…",
-      // job gt_6xchnk99) and the voice reads them out. Every look, every product.
-      if (plan.style !== "sketch") {
+      // job gt_6xchnk99) and the voice reads them out. Every look, every product — except a narration the user wrote
+      // word for word, which says what they chose it to say.
+      if (plan.style !== "sketch" && !verbatim) {
         chunkScenes.forEach((sc, i) => {
           const talk = formatTalk(String(sc.voice ?? ""));
           if (talk) problems.push(`scene ${i + 1}: the narration talks about the video itself ("${talk}") — the viewer hears the story, never its length, format or platform: rewrite the "voice" line without it`);
@@ -1886,8 +2443,9 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
       // Contract errors always retry; soft problems retry once, then the valid chunk is kept.
       // A rule that is measured and then overruled is a rule the model learns to ignore. Every other look
       // takes the second answer to keep the retry budget for real errors; the explainer spends all three,
-      // because its problems are exactly the ones that decide whether the film holds a viewer.
-      const patient = plan.style === "sketch" ? 3 : 2;
+      // because its problems are exactly the ones that decide whether the film holds a viewer — and so do the
+      // spec's, because they are the difference between the user's film and another one.
+      const patient = plan.style === "sketch" || owedProblems.length ? 3 : 2;
       if (r.ok && got.length === to - from && (attempt >= patient || !problems.length)) { accepted = chunkScenes; break; }
       history.push(problems);
       feedback = problems;
@@ -1896,54 +2454,107 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     scenes.push(...accepted!);
   }
 
-  // 2b. THE PICTURES SPEAK ENGLISH. Whatever prompt the chunks still wrote in the narration's language is translated
-  //     here, all of them in one call, before the plan is assembled: the routing rule (hands, a crowd… → a locked
-  //     frame) and the forbidden-term check read English words, so they run on the translated text below, and the
-  //     move the validator had resolved on the old text is dropped so it is resolved again on the new one.
-  if (plan.style === "picture" && plan.language !== "en") {
-    const slots: { shot: Record<string, unknown>; text: string }[] = [];
-    for (const sc of scenes) if (Array.isArray(sc.shots)) for (const sh of sc.shots) if (isObj(sh) && typeof sh.image_prompt === "string" && notEnglish(sh.image_prompt)) slots.push({ shot: sh, text: sh.image_prompt });
-    if (slots.length) {
-      try {
-        const raw = clean(await call(englishPromptsPrompt(slots.map((x) => x.text), plan.language), englishPromptsSchema(), 100 + 120 * slots.length, { system: TRANSLATOR_SYSTEM, temperature: 0 }));
-        const got = isObj(raw) && Array.isArray(raw.prompts) ? raw.prompts : [];
-        if (got.length !== slots.length) history.push([`english pass (pictures): expected ${slots.length} prompts, got ${got.length}`]);
-        else slots.forEach((x, i) => {
-          const t = got[i];
-          if (typeof t !== "string" || t.trim().length < IMAGE_PROMPT_MIN || notEnglish(t)) return;
-          x.shot.image_prompt = fitPrompt(t.trim());
-          delete x.shot.motion; delete x.shot.strength;
-        });
-      } catch (e) { if (e instanceof PlanBudgetError) throw e; history.push([`english pass (pictures): ${String(e).slice(0, 200)}`]); }
-    }
-  }
+  await toEnglish(scenes);
 
   // 3. Assemble and validate the whole project once more (ids are re-deduplicated across chunks).
   const sb = normalizeStoryboard({ ...head, scenes }, plan);
   const r = validateStoryboard(sb, { format: plan.format, language: plan.language });
   if (!r.ok) fail(r.errors, sb);
   if (r.warnings.length) history.push(r.warnings.map((w) => `warning: ${w}`));
-  const price = PRICES[model];
+  let ok = r as { ok: true; storyboard: Storyboard };
+
+  // 4. THE FIDELITY GATE (24 September 2026). The plan is valid; is it the film the user asked for? The deterministic
+  //    coverage and a judge model (src/fidelity.ts: JUDGE_MODEL, else the planning model) read it against the spec,
+  //    item by item. When a must item is lost or contradicted — or the user's script is not what the narrator says —
+  //    and a minute of the budget is left, ONE repair round rewrites the scenes involved, and the repaired plan is kept
+  //    only if it still validates and covers no less of the request. The verdict travels with the result either way.
+  let fidelity: PlanFidelity | null = null;
+  if (specShots) {
+    const judgeModel = env.JUDGE_MODEL || current;
+    const judge = (sys: string, user: string, maxTokens: number): Promise<unknown> => call(user, { type: "object" }, maxTokens, { system: sys, temperature: 0, model: env.JUDGE_MODEL || undefined });
+    const scriptMissing = (x: Storyboard): boolean => verbatim && !lineSaid(spec!.script!, narrationOf(x));
+    const shortfall = (x: Storyboard): number => { const c = coverage(spec!, x); return c.uncovered.length + c.outOfOrder.length + (scriptMissing(x) ? 1 : 0); };
+    fidelity = await judgePlan(spec!, ok.storyboard, judge, judgeModel);
+    const musts = new Set(mustItems(spec!).map((i) => i.id));
+    const bad = fidelity.verdicts.filter((v) => musts.has(v.id) && (v.status === "lost" || v.status === "contradicted"));
+    const needed = bad.length > 0 || fidelity.coverage.uncovered.length > 0 || fidelity.coverage.outOfOrder.length > 0 || scriptMissing(ok.storyboard);
+    if (needed && deadline - Date.now() >= REPAIR_MIN_MS) {
+      const now = ok.storyboard;
+      const badIds = new Set([...bad.map((v) => v.id), ...fidelity.coverage.uncovered, ...fidelity.coverage.outOfOrder]);
+      // The scenes to rewrite: the ones the judge named for a bad item, the ones the outline handed it to, the ones
+      // whose voice is not the user's script — and, when nothing names a scene, the scene closest to the item.
+      const targets = new Set<number>();
+      const sceneOfShot = (shotId: string) => now.scenes.findIndex((s) => s.id === shotId || s.id === shotId.replace(SHOT_ID_SUFFIX_RE, ""));
+      for (const v of bad) for (const s of v.shots ?? []) { const i = sceneOfShot(s); if (i >= 0) targets.add(i); }
+      outline.forEach((e, i) => { if (i < now.scenes.length && e.covers.some((c) => badIds.has(c))) targets.add(i); });
+      if (verbatim) outline.forEach((e, i) => { if (e.script && now.scenes[i] && !lineSaid(e.script, String(now.scenes[i].voice ?? ""))) targets.add(i); });
+      if (!targets.size) for (const id of badIds) { const it = itemById(spec!, id); if (it) targets.add(bestSceneFor(`${it.text} ${it.quote}`, outline)); }
+      const pick = [...targets].filter((i) => i >= 0 && i < now.scenes.length).sort((a, b) => a - b).slice(0, REPAIR_MAX_SCENES);
+      const feedback = [...new Set([
+        ...fidelityFeedback(fidelity, spec!), ...fidelity.coverage.problems,
+        ...(scriptMissing(now) ? [`the narration is not the user's script: the voices, in order, must be exactly the user's words (${spec!.script!.slice(0, 160)}…)`] : []),
+      ])];
+      let repaired: { ok: true; storyboard: Storyboard } | null = null;
+      if (pick.length) {
+        try {
+          const raw = clean(await call(repairPrompt(spec!, plan, direction, now, pick, feedback), chunkSchema(plan, layerOf(plan, treatment), spec), 400 + 750 * pick.length));
+          const got = isObj(raw) && Array.isArray(raw.scenes) ? raw.scenes.filter(isObj) : [];
+          const byIndex = new Map<number, Record<string, unknown>>();
+          got.forEach((g, k) => {
+            const id = slug(g.id, 0);
+            let i = pick.find((p) => now.scenes[p].id === id);
+            if (i === undefined && got.length === pick.length) i = pick[k]; // an id the model renamed: its position says which
+            // The scene keeps its place in the film: id, kind, and the chapter and accent when the answer left them out.
+            if (i !== undefined) byIndex.set(i, { chapter: now.scenes[i].chapter, accent: now.scenes[i].accent, ...g, id: now.scenes[i].id, kind: now.scenes[i].kind });
+          });
+          if (!byIndex.size) history.push([`fidelity repair: the answer named none of the scenes it was asked to correct`]);
+          else {
+            const merged = now.scenes.map((s, i) => structuredClone(byIndex.get(i) ?? s));
+            await toEnglish(merged);
+            const r2 = validateStoryboard(normalizeStoryboard({ ...head, scenes: merged }, plan), { format: plan.format, language: plan.language });
+            if (!r2.ok) history.push([`fidelity repair: discarded, the corrected plan does not validate (${r2.errors.slice(0, 3).join("; ")})`]);
+            else if (shortfall(r2.storyboard as Storyboard) > shortfall(now)) history.push([`fidelity repair: discarded, it covers less of the request than the plan it was meant to fix`]);
+            else { repaired = r2 as { ok: true; storyboard: Storyboard }; history.push([`fidelity repair: kept (${byIndex.size} scene${byIndex.size === 1 ? "" : "s"} rewritten)`]); }
+          }
+        } catch (e) {
+          // The plan is valid already: a repair that cannot be made — a failed call, the clock — never costs the film.
+          history.push([`fidelity repair: ${String(e).slice(0, 200)}`]);
+        }
+      }
+      if (repaired) { ok = repaired; fidelity = await judgePlan(spec!, ok.storyboard, judge, judgeModel); }
+    } else if (needed) history.push([`fidelity repair: skipped, less than ${REPAIR_MIN_MS / 1000} s of the planning budget left`]);
+    if (scriptMissing(ok.storyboard)) history.push([`the narration does not say the user's script word for word`]);
+    history.push([fidelitySummary(fidelity)]);
+  }
+
+  const price = PRICES[current];
   const est = price ? Math.round((((usage.prompt_tokens ?? 0) * price.in + (usage.completion_tokens ?? 0) * price.out) / 1e6) / 0.000011) : null;
-  const ok = r as { ok: true; storyboard: Storyboard };
   // What the finished plan still does not say. It is reported, never hidden: the owner accepts declared uncertainty
   // and refuses the hidden kind, and this is the one number that says whether the video is about what was asked.
-  const missing = direction ? missingFacts(direction.must_keep, narrationOf(ok.storyboard)) : [];
+  const missing = direction ? missingFacts(spokenFacts(direction.must_keep, direction.cast), narrationOf(ok.storyboard)) : [];
   if (missing.length) history.push(missing.map((f) => `narration never says "${f}"`));
   // The product's last touch goes on AFTER the validation above: an animatic's empty layer is exactly what the
   // validator deletes as "no layer", and it has to reach the worker (templates.ts finishForProduct).
   // THE SPEED FOLLOWS THE WORDS (keou-contract.ts speedFor): the last touch, after the last validation, because the
   // planner writes past its budget and the voice decides how long the film really is.
   const finished = finishForProduct(ok.storyboard as unknown as Record<string, unknown>, plan.product, plan.duration);
-  trimShots(finished);
+  // Shots over a line's budget go — but never the only shot that shows a must requirement (trimShots under the spec).
+  trimShots(finished, spec);
   finished.speed = speedFor(countWords(finished), plan.duration);
   denyInPictures(finished, treatment);
-  return { storyboard: finished as unknown as Storyboard, model, attempts: calls, ms: Date.now() - t0, usage, est_neurons: est, words: countWords(ok.storyboard), scenes: ok.storyboard.scenes.length, fixture: false, history, style: plan.kleo, direction, treatment, missing_facts: missing, blocked_upgrade: blockedUpgrade };
+  // The spec travels with the stored storyboard, like the treatment and the direction, so the stills engine and a
+  // later reader can hold the pictures to it; stripForWorker (src/keou-contract.ts) takes it off before the GPU.
+  if (spec) finished.spec = spec;
+  return { storyboard: finished as unknown as Storyboard, model: current, attempts: calls, ms: Date.now() - t0, usage, est_neurons: est, words: countWords(ok.storyboard), scenes: ok.storyboard.scenes.length, fixture: false, history, style: plan.kleo, direction, treatment, missing_facts: missing, blocked_upgrade: blockedUpgrade, spec, fidelity };
 }
 
 /* ------------------------------------------------------------------ the treatment on its own */
 
-/** The treatment call's own knobs: hot enough to differ, bounded enough to stay a document. */
+/**
+ * The treatment call's own knobs: hot enough to differ, bounded enough to stay a document. Since 24 September 2026 the
+ * temperature actually used is treatmentTemperature(spec) (src/treatment.ts): this 0.85 for a film left to Kleo, 0.4
+ * for a faithful one. The constant stays as the open road's value, which is what the tests read.
+ */
 export const TREATMENT_TEMPERATURE = 0.85;
 export const TREATMENT_MAX_TOKENS = 1800;
 
@@ -1965,12 +2576,14 @@ export interface TreatmentResult {
  * decides the draw; a random one is right when no job exists yet, because the treatment then travels with the job
  * and the planner never draws again. Never throws on a model problem: the tool has to answer either way.
  */
-export async function writeTreatment(env: Env, input: { prompt: string; duration_s: number; format: Format; language: string; look?: FilmLook | null; sound?: SoundOptions }, opts: { seed?: string; model?: string } = {}): Promise<TreatmentResult> {
+export async function writeTreatment(env: Env, input: { prompt: string; duration_s: number; format: Format; language: string; look?: FilmLook | null; sound?: SoundOptions; spec?: RequestSpec | null }, opts: { seed?: string; model?: string } = {}): Promise<TreatmentResult> {
   const t0 = Date.now();
   const model = opts.model || env.TREATMENT_MODEL || planModel(env) || env.AI_MODEL || DEFAULT_MODEL;
   const usage: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   const history: string[] = [];
-  const v = variationFor(opts.seed ?? crypto.randomUUID());
+  // Under a FAITHFUL spec there is no draw: the user's story is told the way they told it (24 September 2026).
+  const faithful = input.spec?.mode === "faithful";
+  const v: Variation = faithful ? faithfulVariation() : variationFor(opts.seed ?? crypto.randomUUID());
   let treatment: Treatment | null = null;
   let attempts = 0;
   let transient = false;
@@ -1980,16 +2593,17 @@ export async function writeTreatment(env: Env, input: { prompt: string; duration
     attempts++;
     let raw: unknown;
     try {
-      const out = await callModel(env, model, [{ role: "system", content: MASTER_PROMPT }, { role: "user", content: treatmentPrompt(input, v, feedback) }], treatmentSchema(), TREATMENT_MAX_TOKENS, TREATMENT_TEMPERATURE);
+      const out = await callModel(env, model, [{ role: "system", content: MASTER_PROMPT }, { role: "user", content: treatmentPrompt(input, v, feedback) }], treatmentSchema(), TREATMENT_MAX_TOKENS, treatmentTemperature(input.spec));
       usage.prompt_tokens! += out.usage.prompt_tokens ?? 0; usage.completion_tokens! += out.usage.completion_tokens ?? 0; usage.total_tokens! += out.usage.total_tokens ?? 0;
+      if (out.fallback) history.push(`${model} refused for credit; the treatment was written by ${out.fallback} on Workers AI`);
       raw = clean(out.raw);
     } catch (e) {
       history.push(`model call failed: ${String(e).slice(0, 200)}`);
       if (isTransientAiError(e)) { transient = true; break; }
       continue;
     }
-    const t = repairTreatment(raw, input.duration_s, v, input.language, { lenient: attempt > 1, look: input.look ?? null });
-    if (!t) { feedback = treatmentProblems(raw, input.duration_s, input.language, { look: input.look ?? null }); history.push(`rejected: ${feedback.slice(0, 4).join("; ")}`); continue; }
+    const t = repairTreatment(raw, input.duration_s, v, input.language, { lenient: attempt > 1, look: input.look ?? null, faithful });
+    if (!t) { feedback = treatmentProblems(raw, input.duration_s, input.language, { look: input.look ?? null, faithful }); history.push(`rejected: ${feedback.slice(0, 4).join("; ")}`); continue; }
     treatment = t;
   }
   const price = PRICES[model];

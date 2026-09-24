@@ -17,6 +17,26 @@ export interface Env {
   IMAGE_FIXTURE?: string;         // "1" (dev only): placeholder PNGs instead of Workers AI pictures
 
   AI_MODEL?: string; // default: storyboard.ts DEFAULT_MODEL
+  /**
+   * THE FIDELITY ENGINE (24 September 2026, docs/FEDELTA.md). STILLS_ENGINE "flux2" (default) draws every still on the
+   * server with STILL_MODEL, the cast's reference sheets as input images, and has each one judged by VISION_MODEL
+   * against the spec before any GPU is rented (src/stills.ts); "legacy" leaves the stills to the rented GPU (SDXL).
+   */
+  STILLS_ENGINE?: string;
+  /** Workers AI model that draws the stills (default @cf/black-forest-labs/flux-2-klein-9b: long prompts, up to 4 reference images). */
+  STILL_MODEL?: string;
+  /** Draws per still before the best one is kept (default 3). */
+  STILL_ATTEMPTS?: string;
+  /** Weighted pass rate a still needs, with no must check failed, to be accepted at once (default 0.85). */
+  STILL_PASS?: string;
+  /** Workers AI vision model that judges the stills and describes reference images (src/vision.ts DEFAULT_VISION_MODEL). */
+  VISION_MODEL?: string;
+  /** The model that writes the SPEC (src/spec.ts) on the server; unset = the planning model. */
+  SPEC_MODEL?: string;
+  /** The model that judges a planned storyboard against the spec (src/fidelity.ts); unset = the planning model. */
+  JUDGE_MODEL?: string;
+  /** Workers AI model the planner falls back to when the external road refuses (no credit, bad key): unset = AI_MODEL. */
+  PLAN_FALLBACK_MODEL?: string;
   /** Minutes one planning attempt may take (default 4, storyboard.ts PLAN_BUDGET_MS): a slower, better model needs more. */
   PLAN_BUDGET_MIN?: string;
   /** The model for every planning call when a road to it exists (PLAN_API_URL + PLAN_API_KEY, or ANTHROPIC_API_KEY for claude-…). */

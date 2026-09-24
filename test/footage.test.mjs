@@ -177,7 +177,47 @@ test("kiePrompt: subject first, then the camera in plain words, then the look; n
   assert.ok(p.includes("Cinematic live-action film"));
   assert.ok(!/NOT /.test(p) && !/\s{2}/.test(p));
   assert.ok(m.kiePrompt({ image_prompt: "a compass on a table", motion: "unknown_move" }).includes("pushes slowly forward"), "an unknown move is a push-in");
-  assert.ok(m.kiePrompt({ image_prompt: "a compass", motion: "static_hold", strength: 0.2 }).includes("Gentle, slow motion"));
+  // A gentle shot asks for a steady camera. It used to say "Gentle, slow motion of the camera", and a video model reads
+  // "slow motion" as slow-mo (the fidelity review of 24 September 2026): the words now say what they mean.
+  const gentle = m.kiePrompt({ image_prompt: "a compass", motion: "static_hold", strength: 0.2 });
+  assert.ok(gentle.includes("The camera moves slowly and steadily.")); assert.ok(!/slow motion/i.test(gentle));
+});
+
+test("clipPrompt: the clip is asked from the STORED shot — what moves first, then the characters' full looks, the place, the camera, the look (24 September)", async () => {
+  const spec = {
+    v: 1, mode: "faithful", summary: "Mara decorates a cake at dawn.",
+    cast: [{ id: "c1", name: "Mara", look: "a thin woman with short blonde hair tied up", ref: null }],
+    items: [
+      { id: "R1", kind: "look", text: "Mara wears a lilac apron", quote: "grembiule lilla", must: true, who: "c1", order: null },
+      { id: "R2", kind: "text", text: "a shop sign reading \"Forno Mara\"", quote: "insegna Forno Mara", must: true, who: null, order: null },
+    ],
+    refs: [], open: [], narration: "free", script: null,
+  };
+  const sb = {
+    style: "picture", kleo_style: "realistic", direction: { subject: "cake", world: "A village bakery at dawn", cast: [{ name: "Mara", look: "a blonde woman" }], objects: [], forbidden: [], sections: [] },
+    scenes: [{ id: "01-hook", kind: "cinema", voice: "a line", shots: [
+      { image_prompt: "Mara at the counter with a cake", action: "Mara lifts the piping bag and draws a slow spiral of cream", cast: ["c1"], covers: ["R1"] },
+      { image_prompt: "The bakery sign above the door", covers: ["R2"] },
+    ] }],
+  };
+  const stored = { storyboard: sb, spec };
+  const p = m.clipPrompt({ id: "01-hook-s1", image_prompt: "ignored when the stored shot exists", motion: "push_in", strength: 0.2 }, "realistic", stored);
+  assert.ok(p.startsWith("Mara lifts the piping bag and draws a slow spiral of cream. Mara: a thin woman with short blonde hair tied up; Mara wears a lilac apron. Setting: A village bakery at dawn. The camera pushes slowly forward"), p);
+  assert.ok(p.includes("The camera moves slowly and steadily.")); assert.ok(p.endsWith(m.KIE_LOOKS.realistic));
+  const sign = m.clipPrompt({ id: "01-hook-s2", image_prompt: "x", motion: "static_hold" }, "realistic", stored);
+  assert.ok(sign.startsWith("The bakery sign above the door."), "no action: the image prompt");
+  assert.ok(!/No text/.test(sign), "a shot that carries the user's sign is not told to show no text");
+  assert.equal(m.clipPrompt({ id: "09-nope-s1", image_prompt: "a compass", motion: "push_in" }, "realistic", stored), m.kiePrompt({ image_prompt: "a compass", motion: "push_in" }), "a shot the server never planned keeps the old prompt");
+  assert.equal(m.clipPrompt(SHOTS[0], "realistic", null), m.kiePrompt(SHOTS[0]));
+  // Through the order itself: a job with a stored storyboard sends the composed prompt to kie.ai.
+  const env = await newEnv();
+  const job = await filmJob(env);
+  job.storyboard = JSON.stringify(sb);
+  job.params = JSON.stringify({ ...JSON.parse(job.params), spec });
+  const kie = fakeKie(); globalThis.fetch = kie.fetch;
+  const r = await m.requestFootage(env, job, "http://kleo.test", { shots: [{ id: "01-hook-s1", image_prompt: "Mara at the counter with a cake", motion: "push_in", strength: 0.5, seconds: 3, still: "01-hook-s1.png" }], format: "9:16" });
+  assert.equal(r.status, 200, JSON.stringify(r.reply));
+  assert.ok(kie.calls.create[0].body.input.prompt.startsWith("Mara lifts the piping bag"), kie.calls.create[0].body.input.prompt);
 });
 
 test("kieInput speaks each model's dialect: Kling strings, Veo generation_type, Wan first frame + seed, Seedance audio off", () => {

@@ -1,3 +1,4 @@
+import type { RequestSpec } from "./spec.ts";
 import type { Env } from "./env";
 
 export interface User {
@@ -90,6 +91,18 @@ export interface JobParams {
    */
   music?: string | null;
   subtitles?: boolean;
+  /**
+   * THE SPEC (24 September 2026, src/spec.ts): the user's request taken apart into checkable requirements, written by
+   * the assistant through kleo_adapt_prompt or by the server's planner. Everything after it is planned under it and
+   * checked against it. Absent on rows made before that day and on calls without one (the planner writes it then).
+   */
+  spec?: RequestSpec;
+  /** Handles of the reference images the user gave (src/refs.ts), in the order given. */
+  refs?: string[];
+  /** The intake's optional answers, as the user gave them: they used to die between kleo_adapt_prompt and the planner. */
+  brief?: { audience?: string | null; tone?: string | null; must_keep?: string | null };
+  /** Where the server-drawn stills are (src/stills.ts): drawing, done, or failed (the rented GPU draws them then). */
+  stills?: { state: "drawing" | "done" | "failed"; at: string; drawn?: number; total?: number; note?: string };
 }
 
 export interface JobFile {
@@ -559,4 +572,27 @@ export async function poolWaitingJobs(env: Env, minQueuedMin: number): Promise<n
   const cutoff = new Date(Date.now() - minQueuedMin * 60_000).toISOString();
   const r = await env.DB.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE state = 'queued' AND storyboard IS NOT NULL AND created_at <= ? AND ${POOL_SKIP}`).bind(cutoff).first<{ n: number }>();
   return r?.n ?? 0;
+}
+
+/**
+ * Merges `patch` into a job's params (shallow: a key of the patch replaces the whole key of the params) and returns
+ * the params as written, or null when the job does not exist (24 September 2026, the fidelity engine: the stills
+ * engine writes params.stills on every tick it draws, the planner params.spec once).
+ *
+ * A compare-and-set on the params text, retried three times: two writers of the SAME row (the cron drawing stills and
+ * the worker's POST /images asking for the ones still missing) must not erase each other's key with a stale copy of
+ * the rest. A write that loses three times in a row is dropped — params.stills is a progress note, and the next tick
+ * writes it again.
+ */
+export async function updateJobParams(env: Env, id: string, patch: Partial<JobParams>): Promise<JobParams | null> {
+  for (let i = 0; i < 3; i++) {
+    const row = await env.DB.prepare("SELECT params FROM jobs WHERE id = ?").bind(id).first<{ params: string }>();
+    if (!row) return null;
+    let cur: Record<string, unknown> = {};
+    try { const p = JSON.parse(row.params) as unknown; if (p && typeof p === "object" && !Array.isArray(p)) cur = p as Record<string, unknown>; } catch { /* unreadable params: rewritten from the patch */ }
+    const next = { ...cur, ...patch } as JobParams;
+    const r = await env.DB.prepare("UPDATE jobs SET params = ? WHERE id = ? AND params = ?").bind(JSON.stringify(next), id, row.params).run();
+    if ((r.meta.changes ?? 0) === 1) return next;
+  }
+  return null;
 }

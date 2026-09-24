@@ -15,6 +15,11 @@
  *   a store hiccup after a successful draw), which only holds the picture back for TRANSIENT_RETRY_MIN so a later call
  *   still draws it. Failures, quota exhaustion and a missing AI binding are never fatal: the shot lands in "missing"
  *   and the engine paints an accent gradient.
+ * - THE STILLS ENGINE (24 September 2026, src/stills.ts): for the two film looks (realistic, animation) with
+ *   STILLS_ENGINE not "legacy", the stills were already drawn by the server — FLUX.2 klein with the cast's reference
+ *   sheets, each judged against the spec — before the GPU was rented. This endpoint then answers every stored picture
+ *   (reuse, whatever IMAGE_SERVER_MAX says), draws what is still missing within ENGINE_SERVE_DRAW_MS, and leaves the
+ *   rest to the GPU (serveEngineStills). The caps and the one-attempt rule below are the legacy road.
  * - Dev/test hook: IMAGE_FIXTURE=1 → a deterministic placeholder PNG per picture id (flat colour from the id + a diagonal
  *   stripe), encoded here with CompressionStream("deflate"); no AI call.
  *
@@ -27,6 +32,9 @@ import { setFile, listFiles, audit } from "./db.ts";
 import { putFile } from "./storage.ts";
 import { hmacHex, int, minutesSince } from "./util.ts";
 import { kleoStyleOf, pictureScenes, directionOf, pictureContext, negativeFor, PICTURE_STYLES, MAX_PICTURES, type KleoStyle, type Direction } from "./keou-contract.ts";
+// A cycle on purpose (stills.ts reads the picture helpers below): both sides only use each other inside functions,
+// never at module load, so either module may be imported first.
+import { stillsEngineOn, stillsStateOf, drawJobStills, storedPictures, stillModel } from "./stills.ts";
 
 /** The whole-video cap lives in the contract (the guide and the worker read the same rule); re-exported for the endpoint's callers. */
 export { MAX_PICTURES };
@@ -282,6 +290,7 @@ export async function generateJobImages(env: Env, job: Job, base: string): Promi
   // The video's own cap first (a 40 s Short never carries more than 24 pictures), then what the server may draw itself.
   const wanted = pictureScenes(sb).slice(0, MAX_PICTURES(params.duration_s ?? 60));
   if (!wanted.length) return result;
+  if (stillsEngineOn(env, job)) return serveEngineStills(env, job, base, wanted, style, result);
   // int() keeps a configured 0 (a `|| DEFAULT_SERVER_MAX` turned it back into 10, so no operator could switch
   // server-side drawing off and leave every picture to the GPU worker); only an unset/unparsable value defaults.
   const max = Math.max(0, Math.min(40, int(env.IMAGE_SERVER_MAX ?? env.IMAGE_MAX_PER_JOB, DEFAULT_SERVER_MAX)));
@@ -357,5 +366,35 @@ export async function generateJobImages(env: Env, job: Job, base: string): Promi
     }
   }
   await audit(env, job.user_id, job.id, "images.generated", { style, model: result.fixture ? "fixture" : model, generated: result.generated, reused: result.reused, missing: result.missing.length, quota: quotaHit });
+  return result;
+}
+
+/** How long the worker's /images call may spend drawing what the cron left missing (the worker waits up to 300 s). */
+export const ENGINE_SERVE_DRAW_MS = 90_000;
+
+/**
+ * /images for a job whose stills the SERVER engine draws (src/stills.ts, 24 September 2026). Every picture already
+ * stored is answered — all of them, whatever IMAGE_SERVER_MAX says: that cap bounds what the old one-shot server
+ * drawing may spend, and these pictures were drawn, judged and paid for before the GPU was rented; answering "missing"
+ * for them would have the GPU draw worse copies over them. Pictures still missing (the cron ran out of time, or gave up
+ * after STILLS_GIVE_UP_MIN) are drawn now within ENGINE_SERVE_DRAW_MS — unless the engine already FAILED on this job
+ * (quota, an outage), in which case asking again only makes the GPU wait: they are answered missing at once, and the
+ * GPU draws them the legacy way, exactly as before the engine existed.
+ */
+async function serveEngineStills(env: Env, job: Job, base: string, wanted: { id: string }[], style: KleoStyle, result: ImagesResult): Promise<ImagesResult> {
+  let stored = await storedPictures(env, job.id);
+  const before = new Set(wanted.filter((p) => stored.has(p.id)).map((p) => p.id));
+  if (before.size < wanted.length && stillsStateOf(job)?.state !== "failed") {
+    try { await drawJobStills(env, job, { deadline: Date.now() + ENGINE_SERVE_DRAW_MS }); }
+    catch (e) { await audit(env, job.user_id, job.id, "images.error", { engine: "flux2", error: String(e).slice(0, 400), transient: true }); }
+    stored = await storedPictures(env, job.id);
+  }
+  for (const p of wanted) {
+    const name = stored.get(p.id);
+    if (!name) { result.missing.push(p.id); continue; }
+    result.images[p.id] = await signedImageUrl(env, base, job.id, name);
+    if (before.has(p.id)) result.reused++; else result.generated++;
+  }
+  await audit(env, job.user_id, job.id, "images.generated", { style, engine: "flux2", model: stillModel(env), generated: result.generated, reused: result.reused, missing: result.missing.length });
   return result;
 }

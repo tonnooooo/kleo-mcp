@@ -7,10 +7,12 @@ import { rid, nowIso, int, hmacHex } from "./util";
 import { isFlagActive } from "./schema";
 import { backendFor } from "./backends";
 import { validateStoryboard, kleoStyleOf, pictureScenes, narrationOf, MAX_PICTURES, wordBudget, speedFor, trimShots, KLEO_STYLES, FILM_LOOKS, type KleoStyle, type FilmLook } from "./keou-contract";
-import { treatmentProblems, repairTreatment, variationFor, applySoundOptions, musicOf, type Treatment, type SoundOptions } from "./treatment.ts";
+import { treatmentProblems, repairTreatment, variationFor, faithfulVariation, applySoundOptions, musicOf, type Treatment, type SoundOptions } from "./treatment.ts";
 import { denyInPictures } from "./storyboard";
-import { musicAnswer, subtitlesAnswer } from "./adaptive.ts";
+import { musicAnswer, subtitlesAnswer, lookFromText } from "./adaptive.ts";
 import { repairGraphics } from "./graphics.ts";
+import { specProblems, repairSpec, coverage, type RequestSpec } from "./spec.ts";
+import { resolveRefs, refsOf, RefError, REF_HANDLE_RE } from "./refs.ts";
 
 /** An error whose message is shown to the user as-is: plain English, always says whether something was charged. */
 export class JobError extends Error {}
@@ -46,6 +48,38 @@ export interface CreateInput {
    */
   music?: string | null;
   subtitles?: boolean | string | null;
+  /**
+   * THE SPEC (24 September 2026, src/spec.ts): the request taken apart into checkable requirements, written by the
+   * assistant under kleo_adapt_prompt's method. Refused in words when it is not one (a quote the user never wrote, a
+   * look with no character, a reference Kleo does not hold); stored repaired in params.spec, and the planner plans
+   * under it. Absent: the planner writes one.
+   */
+  spec?: unknown;
+  /** The user's reference pictures: handles (kref_…) or the token of an upload link (src/refs.ts). */
+  references?: string[];
+  /** The intake's optional answers, kept for the planner (they used to stop at kleo_adapt_prompt). */
+  must_keep?: string | null;
+  audience?: string | null;
+  tone?: string | null;
+}
+
+/**
+ * The references a job carries, resolved to the handles this account holds: a kref handle is looked up, anything
+ * else is read as an upload-link token and expanded to what was uploaded through it. Every refusal is a JobError that
+ * says nothing was charged. With no references it touches nothing (no R2 needed).
+ */
+async function jobRefs(env: Env, userId: string, refs: readonly string[] | undefined, specHandles: readonly string[]): Promise<string[]> {
+  const inputs = (refs ?? []).map((r) => String(r).trim()).filter(Boolean).map((r) => (REF_HANDLE_RE.test(r) ? { handle: r } : { upload: r }));
+  try {
+    const resolved = inputs.length ? (await resolveRefs(env, userId, inputs)).map((r) => r.handle) : [];
+    // A handle the spec names but the call forgot to list is still the user's picture when this account holds it.
+    const extra = specHandles.filter((h) => REF_HANDLE_RE.test(h) && !resolved.includes(h));
+    const held = extra.length ? (await refsOf(env, userId, extra, { skipMissing: true })).map((r) => r.handle) : [];
+    return [...resolved, ...held];
+  } catch (e) {
+    if (e instanceof RefError) throw new JobError(e.message);
+    throw e;
+  }
 }
 
 /** Minimal safety gate before any GPU money is spent. Replace with a real moderation API before opening to the public. */
@@ -142,14 +176,34 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   const voice = normalizeVoice(input.voice);   // a Kokoro id from the storyboard guide is the same voice, not an error
   if (voice && !t.voices.includes(voice)) throw new JobError(`There is no voice called "${input.voice}". Available voices: ${voiceSpellings(t.voices).join(", ")}. Nothing was charged.`);
   const language = input.language ?? "en";
+  const field = (o: unknown, k: string): unknown => (o && typeof o === "object" && !Array.isArray(o) ? (o as Record<string, unknown>)[k] : undefined);
+  // THE INTAKE'S OPTIONAL ANSWERS, THE PICTURES AND THE SPEC (24 September 2026). The answers are part of what the
+  // user said, so a spec item may quote them as well as the prompt; the pictures are resolved to the handles this
+  // account holds; the spec is checked in words — an item whose quote the user never wrote is an invention — and
+  // stored repaired, so the planner and every check after it read the same requirements the user approved.
+  const said = (v: string | null | undefined) => (typeof v === "string" && v.trim() ? v.trim().replace(/\s+/g, " ").slice(0, 400) : null);
+  const answers = { must_keep: said(input.must_keep), audience: said(input.audience), tone: said(input.tone) };
+  const requestText = [prompt, answers.must_keep, answers.audience, answers.tone].filter(Boolean).join("\n");
+  const specRefs = field(input.spec, "refs");
+  const specHandles = Array.isArray(specRefs) ? specRefs.map((r) => String(field(r, "handle") ?? "")).filter(Boolean) : [];
+  let refHandles = await jobRefs(env, user.id, input.references, specHandles);
+  let spec: RequestSpec | null = null;
+  if (input.spec !== undefined && input.spec !== null) {
+    const problems = specProblems(input.spec, requestText, { handles: refHandles });
+    if (problems.length)
+      throw new JobError(`The spec has ${plural(problems.length, "problem")} (nothing was charged). Fix ${problems.length === 1 ? "it" : "them"} and call kleo_create_video again, or leave the spec out and Kleo writes one:\n- ${problems.join("\n- ")}`);
+    spec = repairSpec(input.spec, requestText, { handles: refHandles });
+    if (!spec) throw new JobError("The spec lists nothing the user asked for: every item must quote the user's own words from the prompt. Write it again under kleo_adapt_prompt's method, or leave it out and Kleo writes one. Nothing was charged.");
+  }
+  const faithful = spec?.mode === "faithful";
   // Two looks (14 September 2026): realistic or animation, filmed the same way. Any other name is refused in
   // words. When none is named, the treatment's own "look" decides (step 0 of the method), then the storyboard's
-  // kleo_style, and failing both, realistic.
+  // kleo_style, then — since 24 September — the request's own words ("un cartone animato…" sent straight here used to
+  // become a live-action film), and failing all of them, realistic.
   if (input.style !== undefined && !(FILM_LOOKS as readonly string[]).includes(input.style))
     throw new JobError(`Kleo has two looks: "realistic" (a filmed, cinematic video) and "animation" (a 2D animated film). Omit "style" or pass one of them. Nothing was charged.`);
   const asLook = (x: unknown): FilmLook | null => ((FILM_LOOKS as readonly string[]).includes(String(x)) ? (x as FilmLook) : null);
-  const field = (o: unknown, k: string): unknown => (o && typeof o === "object" && !Array.isArray(o) ? (o as Record<string, unknown>)[k] : undefined);
-  const look: FilmLook = (input.style as FilmLook | undefined) ?? asLook(field(input.treatment, "look")) ?? asLook(field(input.storyboard, "kleo_style")) ?? "realistic";
+  const look: FilmLook = (input.style as FilmLook | undefined) ?? asLook(field(input.treatment, "look")) ?? asLook(field(input.storyboard, "kleo_style")) ?? lookFromText(prompt) ?? "realistic";
   let style: KleoStyle | undefined = look;
   let cappedFrom: string | null = null; // set only when a guessed look was replaced by a cheaper one
   let storyboard: string | null = null;
@@ -191,7 +245,18 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     if (filmed) (r.storyboard as Record<string, unknown>).backdrop = "video";
     else delete (r.storyboard as Record<string, unknown>).backdrop;
     const finished = finishForProduct(r.storyboard as Record<string, unknown>, product, duration);
-    trimShots(finished);   // no more shots than a line's seconds can carry (keou-contract.ts shotBudget)
+    // No more shots than a line's seconds can carry (keou-contract.ts shotBudget) — and never the only shot that
+    // shows something the spec asks for.
+    trimShots(finished, spec);
+    // THE SPEC AGAINST THE STORYBOARD, deterministic (src/spec.ts coverage): every must item claimed by a shot's
+    // "covers", every line said, the user's events in the user's order, no unknown item or character. A warning in
+    // the planner (it repairs); a refusal here, like the must_keep promise above: this author wrote both and can fix
+    // either before anything is charged.
+    if (spec) {
+      const cov = coverage(spec, finished);
+      if (cov.problems.length)
+        throw new JobError(`The storyboard does not show everything the spec asks for: ${plural(cov.problems.length, "problem")} (nothing was charged). Fix ${cov.problems.length === 1 ? "it" : "them"} — each shot lists the spec items it shows in "covers" and the characters in it in "cast" — and call kleo_create_video again:\n- ${cov.problems.join("\n- ")}`);
+    }
     // The voice's speed follows the words the storyboard carries (keou-contract.ts speedFor), on this road too.
     finished.speed = speedFor(narrationOf(finished).trim().split(/\s+/).filter(Boolean).length, duration);
     storyboard = JSON.stringify(finished);
@@ -208,11 +273,13 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   // not add up), before anything is charged; kept exactly, so the film the user read about is the film planned.
   let treatment: Record<string, unknown> | null = null;
   if (input.treatment !== undefined && input.treatment !== null) {
-    const problems = treatmentProblems(input.treatment, duration, language, { look });
+    // FAITHFUL (the user described their film): no drawn device, and the angle is the point of the user's own story,
+    // so the rule that an angle must not merely restate the request does not apply (src/treatment.ts).
+    const problems = treatmentProblems(input.treatment, duration, language, { look, faithful });
     if (problems.length)
       throw new JobError(`The treatment has ${plural(problems.length, "problem")} (nothing was charged). Fix ${problems.length === 1 ? "it" : "them"} and call kleo_create_video again, or leave the treatment out and Kleo writes one:\n- ${problems.join("\n- ")}`);
     const tIn = input.treatment as Record<string, unknown>;
-    const fitted = repairTreatment(tIn, duration, variationFor(typeof tIn.variation === "string" ? tIn.variation : ""), language, { look });
+    const fitted = repairTreatment(tIn, duration, faithful ? faithfulVariation() : variationFor(typeof tIn.variation === "string" ? tIn.variation : ""), language, { look, faithful });
     treatment = (fitted ? applySoundOptions(fitted, sound) : fitted) as unknown as Record<string, unknown>;
     // With a client storyboard the planner never runs, so the treatment is attached to the storyboard here: it is
     // how the finished video can be read back to the film it was meant to be, on either road into the queue.
@@ -240,7 +307,11 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
       if (Date.parse(prev.created_at) < since || prev.prompt.trim() !== prompt) continue;
       let pp: JobParams; try { pp = JSON.parse(prev.params) as JobParams; } catch { continue; }
       if (!pp.treatment || pp.duration_s !== duration || pp.language !== language || pp.style !== look) continue;
-      treatment = pp.treatment; treatmentFrom = prev.id; break;
+      treatment = pp.treatment; treatmentFrom = prev.id;
+      // The spec and the pictures of that attempt travel with its treatment: the retry is the same film.
+      if (!spec && pp.spec) spec = pp.spec;
+      if (!refHandles.length && pp.refs?.length) refHandles = pp.refs;
+      break;
     }
   }
   // No guess and no cap any more: the look is named or read off the treatment/storyboard, and its price is its price
@@ -291,7 +362,8 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   // The two answers travel on the row: the planner reads them when it writes its own treatment, the worker reads the
   // storyboard they shaped. A "yes" to music with no brief yet gets the treatment's brief, or the user's own words.
   const musicParam = musicIn === null ? undefined : musicIn.wanted ? (musicOf((treatment as Treatment | null)?.music) ?? musicIn.brief ?? "a quiet instrumental bed that fits the film's mood, under the narration") : null;
-  const params: JobParams = { duration_s: duration, format, language, voice, style, ...(product === "animatic" ? { product } : {}), ...(styleGuessed ? { style_guessed: true } : {}), ...(cappedFrom ? { style_capped_from: cappedFrom } : {}), ...(treatment ? { treatment } : {}), ...(musicParam !== undefined ? { music: musicParam } : {}), ...(subsIn !== null ? { subtitles: subsIn } : {}) };
+  const params: JobParams = { duration_s: duration, format, language, voice, style, ...(product === "animatic" ? { product } : {}), ...(styleGuessed ? { style_guessed: true } : {}), ...(cappedFrom ? { style_capped_from: cappedFrom } : {}), ...(treatment ? { treatment } : {}), ...(musicParam !== undefined ? { music: musicParam } : {}), ...(subsIn !== null ? { subtitles: subsIn } : {}),
+    ...(spec ? { spec } : {}), ...(refHandles.length ? { refs: refHandles } : {}), ...(answers.must_keep || answers.audience || answers.tone ? { brief: answers } : {}) };
   const job: Job = {
     id: jobId, user_id: user.id, template: t.id, prompt, params: JSON.stringify(params),
     state: "queued", track: null, percent: 0, eta_min: product === "animatic" ? animaticEtaFor(duration) : etaFor(duration), credits,
@@ -308,7 +380,7 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     await audit(env, user.id, jobId, "job.create.error", String(e).slice(0, 500));
     throw new JobError("Kleo could not save the video request. Nothing was charged; please try again in a moment.");
   }
-  await audit(env, user.id, job.id, "job.created", { template: t.id, product, credits, duration, format, style, storyboard: storyboard ? "client" : "auto", treatment: treatment ? (treatmentFrom ? "reused" : "client") : "auto", ...(treatmentFrom ? { treatment_from: treatmentFrom } : {}) });
+  await audit(env, user.id, job.id, "job.created", { template: t.id, product, credits, duration, format, style, storyboard: storyboard ? "client" : "auto", treatment: treatment ? (treatmentFrom ? "reused" : "client") : "auto", ...(treatmentFrom ? { treatment_from: treatmentFrom } : {}), spec: spec ? spec.mode : null, refs: refHandles.length });
   return job;
 }
 
@@ -364,6 +436,7 @@ export async function resultLinks(env: Env, base: string, job: Job): Promise<Rec
   const out: Record<string, string> = {};
   for (const f of await listFiles(env, job.id)) {
     if (f.name === "log.txt" || f.name === "gen.tgz") continue; // the worker log and the GPU phase's bundle: not for users
+    if (f.name === "fidelity.json") continue; // read and summarised in words by kleo_get_result, not handed over as a file
     if (isSceneImage(f.name)) continue;
     const key = f.name.replace(/\.[a-z0-9]+$/i, "") + "_url";
     out[key] = await signedDownloadUrl(env, base, job, f.name);

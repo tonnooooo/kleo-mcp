@@ -8,7 +8,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildGuide, guideText, EXAMPLE_DIRECTION, EXAMPLE_SCENES } from "../src/guide.ts";
-import { validateStoryboard, defaultVoice, wordBudget, speedFor, shotBudget, trimShots, kleoStyleOf, pictureScenes, directionProblems, sectionOfScene, CINEMA_ACCENTS, SHOTS_MIN_CINEMA, shotRangeText, VOICES, FORBIDDEN_FIELDS, FORBIDDEN_KINDS, FORBIDDEN_SCENE_FIELDS, KLEO_STYLES, IMAGE_PROMPT_MAX, MAX_PICTURES, SHOT_MOTION, SHOT_FIELDS, SHOTS_PER_SCENE, SHOT_KINDS, SHOT_GRAMMAR, durationFor, MOTION_ALIASES, MOTION_MOVES, MAX_SHOT_S, MAX_PERSON_SHOT_S, LOUD_WINDOW_S, LOUD_MAX_PER_WINDOW } from "../src/keou-contract.ts";
+import { validateStoryboard, defaultVoice, wordBudget, speedFor, shotBudget, trimShots, kleoStyleOf, pictureScenes, stripForWorker, AUTHORING_SHOT_FIELDS, SHOT_ACTION_MAX, SHOT_COVERS_MAX, fidelityWarnings, directionProblems, sectionOfScene, CINEMA_ACCENTS, SHOTS_MIN_CINEMA, shotRangeText, VOICES, FORBIDDEN_FIELDS, FORBIDDEN_KINDS, FORBIDDEN_SCENE_FIELDS, KLEO_STYLES, IMAGE_PROMPT_MAX, MAX_PICTURES, SHOT_MOTION, SHOT_FIELDS, SHOTS_PER_SCENE, SHOT_KINDS, SHOT_GRAMMAR, durationFor, MOTION_ALIASES, MOTION_MOVES, MAX_SHOT_S, MAX_PERSON_SHOT_S, LOUD_WINDOW_S, LOUD_MAX_PER_WINDOW } from "../src/keou-contract.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const EXAMPLES = join(ROOT, "worker", "keou", "examples");
@@ -456,7 +456,8 @@ test("pictureScenes flattens scene → shot in order, with `<sceneId>-s<n>` ids"
   assert.deepEqual(pictureScenes(null), []);
   assert.deepEqual(pictureScenes({ kleo_style: "cartoon", scenes: "nope" }), []);
   const shorthand = { kleo_style: "realistic", scenes: [{ id: "01-a", image_prompt: "a rocket on the pad at dawn" }] };
-  assert.deepEqual(pictureScenes(shorthand), [{ id: "01-a-s1", image_prompt: "a rocket on the pad at dawn", accent: null }], "the old shorthand still maps to shot 1");
+  // Since 24 September every picture also carries its kind and the authoring fields, empty when the shot has none.
+  assert.deepEqual(pictureScenes(shorthand), [{ id: "01-a-s1", image_prompt: "a rocket on the pad at dawn", accent: null, shot_kind: null, covers: [], cast: [], action: null }], "the old shorthand still maps to shot 1");
   const gap = { kleo_style: "cartoon", scenes: [{ id: "01-a", shots: [{ image_prompt: "a beach" }, { caption: "NO PICTURE" }, { image_prompt: "a ship" }] }] };
   assert.deepEqual(pictureScenes(gap).map((p) => p.id), ["01-a-s1", "01-a-s3"], "ids follow the shot number, not the position in the answer");
 });
@@ -799,4 +800,119 @@ test("every shot count the caller is told comes from the contract, and they all 
   }
   assert.match(rulesFor("cartoon"), /EVERY SCENE SHOWS AT LEAST 2 PICTURES/);
   assert.match(MCP_SRC, /const shotRange = shotRangeText;/, "the tool instructions read the contract, not a copy of it");
+});
+
+/* ------------------------------------------------------------------ the authoring fields (24 September 2026) */
+
+/** A spec as src/spec.ts repairSpec() returns it: two must items a picture shows, one it does not have to. */
+const SPEC = () => ({
+  v: 1, mode: "faithful", summary: "A pirate captain buries her treasure and a storm takes her ship.",
+  cast: [{ id: "c1", name: "the captain", look: "a pirate captain with a red bandana and a long dark braid, brown coat" }],
+  items: [
+    { id: "R1", kind: "character", text: "a pirate captain", quote: "una capitana pirata", must: true, who: "c1", order: null },
+    { id: "R2", kind: "object", text: "a wooden chest", quote: "un forziere", must: true, who: null, order: null },
+    { id: "R3", kind: "place", text: "a beach at sunset", quote: "spiaggia al tramonto", must: false, who: null, order: null },
+  ],
+  refs: [], open: [], narration: "free", script: null,
+});
+
+test("covers, cast and action: accepted on a shot, optional, typed — and kept in what the server stores", () => {
+  assert.deepEqual([...AUTHORING_SHOT_FIELDS], ["covers", "cast", "action"]);
+  assert.equal(SHOT_ACTION_MAX, 240); assert.equal(SHOT_COVERS_MAX, 12);
+  const sb = pirates();
+  Object.assign(sb.scenes[0].shots[0], { covers: ["R1", "R2"], cast: ["c1"], action: "the captain drives the spade into the wet sand" });
+  const r = validateStoryboard(sb, G);
+  assert.deepEqual(r.ok ? [] : r.errors, [], "the three fields are not unknown shot fields");
+  assert.deepEqual(r.storyboard.scenes[0].shots[0].covers, ["R1", "R2"]);
+  assert.equal(r.storyboard.scenes[0].shots[0].action, "the captain drives the spade into the wet sand");
+  // Absent is fine (every storyboard written before them); null or an empty action is read as absent and dropped.
+  assert.equal(validateStoryboard(pirates(), G).ok, true);
+  const nulls = pirates(); Object.assign(nulls.scenes[0].shots[0], { covers: null, cast: null, action: "  " });
+  const rn = validateStoryboard(nulls, G);
+  assert.equal(rn.ok, true, (rn.errors ?? []).join("\n"));
+  for (const f of AUTHORING_SHOT_FIELDS) assert.ok(!(f in rn.storyboard.scenes[0].shots[0]), `${f}: null is dropped from the stored copy`);
+  // Wrong types are refused, in words that say what the field is for.
+  const bad = pirates();
+  Object.assign(bad.scenes[0].shots[0], { covers: "R1", cast: [7], action: 12 });
+  const errors = errorsOf(bad, G);
+  assert.ok(errors.some((e) => /^scene 1 shot 1 covers: a list of at most 12 short strings/.test(e)), errors.join("\n"));
+  assert.ok(errors.some((e) => /^scene 1 shot 1 cast: a list of at most 6 short strings/.test(e)), errors.join("\n"));
+  assert.ok(errors.includes("scene 1 shot 1 action: required text, maximum 240 characters"), errors.join("\n"));
+  const many = pirates(); many.scenes[0].shots[0].covers = Array.from({ length: 13 }, (_, i) => `R${i + 1}`);
+  assert.ok(errorsOf(many, G).some((e) => /covers: a list of at most 12/.test(e)));
+  const long = pirates(); long.scenes[0].shots[0].action = "x".repeat(241);
+  assert.ok(errorsOf(long, G).includes("scene 1 shot 1 action: required text, maximum 240 characters"));
+  // The engine's own field list does not grow: contract.py never sees these.
+  assert.ok(AUTHORING_SHOT_FIELDS.every((f) => !SHOT_FIELDS.includes(f)));
+});
+
+test("pictureScenes carries the authoring fields, always present", () => {
+  const sb = pirates();
+  Object.assign(sb.scenes[0].shots[1], { covers: ["R1", " ", 3], cast: ["c1"], action: "  she walks away  ", shot_kind: "action" });
+  const pics = pictureScenes(sb);
+  assert.deepEqual(pics[1].covers, ["R1"], "blank and non-string entries are not ids");
+  assert.deepEqual(pics[1].cast, ["c1"]);
+  assert.equal(pics[1].action, "she walks away");
+  assert.equal(pics[1].shot_kind, "action");
+  assert.deepEqual([pics[0].covers, pics[0].cast, pics[0].action], [[], [], null]);
+});
+
+test("stripForWorker: the worker never sees covers, cast, action or the spec — and the stored storyboard keeps them", () => {
+  const sb = pirates();
+  sb.spec = SPEC();
+  Object.assign(sb.scenes[0].shots[0], { covers: ["R1"], cast: ["c1"], action: "the spade bites into the sand" });
+  const worker = stripForWorker(sb);
+  assert.ok(!("spec" in worker));
+  for (const s of worker.scenes) for (const sh of s.shots) for (const f of AUTHORING_SHOT_FIELDS) assert.ok(!(f in sh), `${s.id}: ${f} reached the worker`);
+  assert.deepEqual(sb.scenes[0].shots[0].covers, ["R1"], "the caller's object is untouched");
+  assert.ok(sb.spec);
+  assert.equal(worker.scenes[0].shots[0].image_prompt, sb.scenes[0].shots[0].image_prompt, "everything else travels as it was");
+  // A scene's own "cast" is the stickman's engine field and is left alone.
+  const stick = { style: "stickman", scenes: [{ id: "a", kind: "story", cast: ["hero", "thief"] }] };
+  assert.deepEqual(stripForWorker(stick).scenes[0].cast, ["hero", "thief"]);
+  assert.equal(stripForWorker(null), null);
+  assert.equal(stripForWorker("x"), "x");
+});
+
+test("trimShots never drops the only shot that shows a must item: uncovered shots go first (24 September)", () => {
+  const line = (n) => Array.from({ length: n }, (_, i) => `w${i}`).join(" ");
+  const sb = () => ({ scenes: [
+    { id: "a", kind: "cinema", voice: line(10), shots: [{ image_prompt: "1" }, { image_prompt: "2", at: "w3", covers: ["R2"] }, { image_prompt: "3", at: "w6" }] },
+    { id: "end", kind: "closing", voice: line(4), shots: [{ image_prompt: "1" }] },
+  ] });
+  // Without a spec: the old order, the last shots go.
+  const old = sb(); assert.equal(trimShots(old), 2); assert.deepEqual(old.scenes[0].shots.map((x) => x.image_prompt), ["1"]);
+  // With one: shot 2 is the only witness of R2 (a must), so it stays, and as the new first picture it loses its anchor.
+  const kept = sb(); assert.equal(trimShots(kept, SPEC()), 2);
+  assert.deepEqual(kept.scenes[0].shots.map((x) => x.image_prompt), ["2"]);
+  assert.ok(!("at" in kept.scenes[0].shots[0]), "the first picture of a scene carries no at");
+  // The shots that claim no must item go first, even beside one whose item another shot also shows.
+  const twice = sb(); twice.scenes[1].shots[0].covers = ["R2"];
+  assert.equal(trimShots(twice, SPEC()), 2); assert.deepEqual(twice.scenes[0].shots.map((x) => x.image_prompt), ["2"]);
+  // A nice-to-have protects nothing.
+  const soft = sb(); soft.scenes[0].shots[1].covers = ["R3"];
+  assert.equal(trimShots(soft, SPEC()), 2); assert.deepEqual(soft.scenes[0].shots.map((x) => x.image_prompt), ["1"]);
+  // When every shot claims something, a shot whose items another shot also shows goes before a sole witness.
+  const redundant = sb(); redundant.scenes[0].shots[0].covers = ["R1"]; redundant.scenes[0].shots[2].covers = ["R2"];
+  assert.equal(trimShots(redundant, SPEC()), 1, "shot 3 shares R2 with shot 2 and goes; 1 and 2 are then sole witnesses");
+  assert.deepEqual(redundant.scenes[0].shots.map((x) => x.image_prompt), ["1", "2"], "kept over budget rather than lose R1 or R2");
+  // Every shot left the sole witness of something: the scene keeps them, over budget.
+  const solo = sb(); solo.scenes[0].shots[0].covers = ["R1"];
+  assert.equal(trimShots(solo, SPEC()), 1, "shot 3 goes; shots 1 (R1) and 2 (R2) are each the only witness");
+  assert.deepEqual(solo.scenes[0].shots.map((x) => x.image_prompt), ["1", "2"]);
+  assert.equal(trimShots(solo, SPEC()), 0, "idempotent");
+});
+
+test("a storyboard that carries its spec is warned about what it does not cover, and never refused for it", () => {
+  const sb = pirates();
+  sb.spec = SPEC();
+  const r = validateStoryboard(sb, G);
+  assert.equal(r.ok, true, (r.errors ?? []).join("\n"));
+  assert.ok(r.warnings.some((w) => /^spec: R2 \(object\): no shot shows "a wooden chest"/.test(w)), r.warnings.join("\n"));
+  assert.ok(!r.warnings.some((w) => /^spec: R3/.test(w)), "a nice-to-have is not owed");
+  sb.scenes[0].shots[0].covers = ["R1", "R2"];
+  assert.deepEqual(fidelityWarnings(sb).filter((w) => /^spec:/.test(w)), []);
+  sb.scenes[0].shots[0].covers = ["R9"];
+  assert.ok(fidelityWarnings(sb).some((w) => /"covers" names "R9"/.test(w)));
+  assert.deepEqual(fidelityWarnings(pirates()), [], "no spec, no direction: nothing to hold it to");
 });

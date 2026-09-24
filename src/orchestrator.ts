@@ -12,6 +12,18 @@ import { putFile, deleteFile } from "./storage";
 import { acquireLock, releaseLock, holdLock, setFlagUntil, isFlagActive } from "./schema";
 import { poolWaitingJobs } from "./db";
 import { generateStoryboard, StoryboardError, isTransientAiError } from "./storyboard";
+import { updateJobParams } from "./db";
+import { specOf, type RequestSpec } from "./spec";
+import { drawJobStills, stillsEngineOn, stillsHold, stillsStateOf, mergeFidelity, castSheetKeys, STILLS_GIVE_UP_MIN } from "./stills";
+
+/** Jobs whose stills one cron tick draws, at most, and how long each may take (they run side by side). */
+const STILLS_JOBS_PER_TICK = 2;
+const STILLS_JOB_MS = 70_000;
+/** The stills lock: longer than one tick's drawing (STILLS_JOB_MS plus the last still in flight), so two ticks never draw the same job. */
+const STILLS_LOCK_S = 150;
+
+/** What the planner's fidelity judge returns (src/fidelity.ts PlanFidelity), as far as this module reads it. */
+interface PlanFidelityLike { verdicts?: { id: string; status: string; shots?: string[]; note?: string }[]; inventions?: string[]; score?: number; judge?: string; coverage?: unknown }
 
 const MAX_ATTEMPTS = 3;
 /** Storyboard generation attempts per job (each one may call the model twice). */
@@ -44,6 +56,11 @@ export async function tick(env: Env, opts: { plan?: boolean } = {}): Promise<Sta
       else { await releaseLock(env, "plan"); }
     }
   }
+  // The stills of planned jobs, before any GPU is rented for them (src/stills.ts). Cron only, like planning: a
+  // fetch-triggered tick runs under waitUntil, which may be cut short in the middle of a paid draw.
+  if (opts.plan) {
+    try { await drawStills(env); } catch (e) { await audit(env, null, null, "stills.tick.error", String(e).slice(0, 300)); }
+  }
   // Longer than tickInner can plausibly run: every active job costs a Vast round trip or two, and a lock that expires
   // mid-tick lets a second tick rent GPUs against the same `running` count (the per-rental re-read below is the belt).
   if (!(await acquireLock(env, "tick", 120))) return { ...stats, skipped: true };
@@ -64,12 +81,20 @@ async function planOne(env: Env, stats: Stats): Promise<number> {
     const attempts = job.plan_attempts + 1;
     try {
       const r = await generateStoryboard(env, job);
+      // THE SPEC AND THE FIDELITY OF THE PLAN (24 September 2026). When the planner wrote the spec itself (the call
+      // carried none), it is kept on the job in the same write as the storyboard: the stills engine judges every
+      // picture against it, the clip prompts read its looks, and a re-plan must not write a second, different one.
+      const fx = r as typeof r & { spec?: RequestSpec | null; fidelity?: PlanFidelityLike | null };
+      let params: Record<string, unknown> = {};
+      try { params = JSON.parse(job.params) as Record<string, unknown>; } catch { /* unreadable params: nothing to add the spec to */ }
+      const keepSpec = !!fx.spec && !specOf(params) && Object.keys(params).length > 0;
       // Planning takes minutes: the job may have been cancelled meanwhile, and a cancelled job must stay cancelled.
-      if (!(await transitionJob(env, job.id, ["queued"], { storyboard: JSON.stringify(r.storyboard), plan_error: null }))) {
+      if (!(await transitionJob(env, job.id, ["queued"], { storyboard: JSON.stringify(r.storyboard), plan_error: null, ...(keepSpec ? { params: JSON.stringify({ ...params, spec: fx.spec }) } : {}) }))) {
         await audit(env, job.user_id, job.id, "job.plan.ignored", { reason: "job is no longer queued" });
         continue;
       }
       await audit(env, job.user_id, job.id, "job.planned", { model: r.model, attempt: attempts, model_calls: r.attempts, ms: r.ms, usage: r.usage, est_neurons: r.est_neurons, words: r.words, scenes: r.scenes, fixture: r.fixture });
+      if (fx.fidelity) await recordPlanFidelity(env, job, fx.fidelity);
       stats.planned++;
     } catch (e) {
       const msg = (e instanceof StoryboardError ? e.errors.join("; ") : String(e)).slice(0, 2000);
@@ -88,6 +113,62 @@ async function planOne(env: Env, stats: Stats): Promise<number> {
     }
   }
   return 0;
+}
+
+/**
+ * The plan's fidelity verdict (src/fidelity.ts: per MUST item kept / paraphrased / lost / contradicted, plus the
+ * inventions that change the film) goes to the job's fidelity.json — the report the finished video is read back
+ * against — and to one audit row, so the owner can count, job by job, what the planner still drops. Best effort: a
+ * report that cannot be written never un-plans a job.
+ */
+async function recordPlanFidelity(env: Env, job: Job, f: PlanFidelityLike): Promise<void> {
+  const verdicts = Array.isArray(f.verdicts) ? f.verdicts : [];
+  const of = (s: string) => verdicts.filter((v) => v.status === s).map((v) => v.id);
+  try {
+    await mergeFidelity(env, job, { plan: { score: f.score ?? null, judge: f.judge ?? null, verdicts, inventions: f.inventions ?? [], coverage: f.coverage ?? null, at: nowIso() } });
+  } catch (e) { await audit(env, job.user_id, job.id, "job.fidelity.error", String(e).slice(0, 300)); }
+  await audit(env, job.user_id, job.id, "job.fidelity", { score: f.score ?? null, judge: f.judge ?? null, lost: of("lost"), contradicted: of("contradicted"), inventions: (f.inventions ?? []).slice(0, 10) });
+}
+
+/**
+ * THE STILLS STEP (24 September 2026, src/stills.ts): the queued, planned jobs of the two film looks get their stills
+ * drawn and judged on the server BEFORE the dispatcher may rent them a GPU (stillsHold). At most STILLS_JOBS_PER_TICK
+ * jobs, side by side, STILLS_JOB_MS each, under a lock of their own so an overlapping cron never draws the same job
+ * twice; what does not fit is resumed on the next tick. A job drawing for more than STILLS_GIVE_UP_MIN is marked
+ * "failed" here — and so is one whose drawing throws — which lets the GPU draw what is missing the legacy way: the
+ * engine may make a film more faithful, never strand it.
+ */
+async function drawStills(env: Env): Promise<void> {
+  if (!env.AI || (env.STILLS_ENGINE ?? "").trim().toLowerCase() === "legacy") return;
+  const todo: Job[] = [];
+  for (const job of await queuedJobs(env, 20)) {
+    if (job.phase === "finish" || !stillsEngineOn(env, job)) continue;
+    const st = stillsStateOf(job);
+    if (st?.state === "done" || st?.state === "failed") continue;
+    if (st?.state === "drawing" && st.at && minutesSince(st.at) > STILLS_GIVE_UP_MIN) {
+      await updateJobParams(env, job.id, { stills: { ...st, state: "failed", at: nowIso(), note: `gave up after ${STILLS_GIVE_UP_MIN} minutes of drawing; the GPU draws the rest` } });
+      await audit(env, job.user_id, job.id, "stills.gave_up", { minutes: Math.round(minutesSince(st.at)), drawn: st.drawn ?? null, total: st.total ?? null });
+      continue;
+    }
+    todo.push(job);
+  }
+  if (!todo.length) return;
+  if (!(await acquireLock(env, "stills", STILLS_LOCK_S))) return;
+  try {
+    const deadline = Date.now() + STILLS_JOB_MS;
+    await Promise.all(todo.slice(0, STILLS_JOBS_PER_TICK).map(async (job) => {
+      try {
+        const r = await drawJobStills(env, job, { deadline });
+        if (r.state !== "drawing") await audit(env, job.user_id, job.id, "stills.state", r);
+      } catch (e) {
+        const msg = String(e).slice(0, 300);
+        await updateJobParams(env, job.id, { stills: { state: "failed", at: nowIso(), note: msg } });
+        await audit(env, job.user_id, job.id, "stills.error", { error: msg, transient: true });
+      }
+    }));
+  } finally {
+    await releaseLock(env, "stills");
+  }
 }
 
 async function tickInner(env: Env, stats: Stats) {
@@ -195,6 +276,9 @@ async function tickInner(env: Env, stats: Stats) {
     // Re-read, per rental and not per tick: the tick lock can expire under a slow Vast, and a second tick that
     // read the same `running` would rent up to `max` GPUs of its own — twice the hourly ceiling the owner was promised.
     if ((await countRunning(env)) >= max) break;
+    // The server is still drawing this film's stills (src/stills.ts): renting now would have the GPU draw worse copies
+    // of pictures that are seconds away. The hold ends when they are done or failed, or after STILLS_GIVE_UP_MIN.
+    if (stillsHold(env, job)) continue;
     // At most MAX_CONCURRENT_VIDEO_GPUS generated-video renders at once, whatever `max` allows. Those are both the
     // dearest cards and the ones whose bill triples when clips come back frozen and have to be regenerated, so two
     // of them overlapping is the one way this can empty the balance with nobody watching. `continue`, not `break`:
@@ -259,6 +343,8 @@ async function tickInner(env: Env, stats: Stats) {
 
   for (const job of await expiredJobs(env)) {
     for (const f of await listFiles(env, job.id)) await deleteFile(env, f.key);
+    // The character sheets are not job files (they must not show up among the user's links): purged by their keys.
+    for (const k of castSheetKeys(job)) { try { await deleteFile(env, k); } catch { /* a sheet that is not there */ } }
     await deleteFiles(env, job.id);
     await updateJob(env, job.id, { purged_at: nowIso() });
     stats.purged++;
