@@ -88,6 +88,8 @@ test("compileStill: framing, then the author's sentence, then each character wit
   assert.deepEqual([c.width, c.height], [896, 1600]);
   const ids = c.checks.map((x) => x.id);
   for (const id of ["style", "R2", "R3", "R7", "exclude:R6", "no-text"]) assert.ok(ids.includes(id), `check ${id} in ${ids}`);
+  // The owner, 24 September 2026: "a whisk on a cake that is already finished". Every still is asked whether it makes sense.
+  assert.ok(ids.includes("logic")); assert.ok(c.prompt.includes("physically and logically plausible"), c.prompt);
   assert.equal(new Set(ids).size, ids.length, "no check is asked twice");
 });
 

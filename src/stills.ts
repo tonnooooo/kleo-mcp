@@ -119,6 +119,13 @@ export const STYLE_SENTENCE: Record<StillLook, string> = {
   animation: "A frame from a 2D animated feature film: hand-painted background, clean expressive character design, clean linework, cel shading, rich colour, cinematic composition, not a photograph, not a 3D render.",
 };
 export const NO_TEXT_SENTENCE = "There is no text, lettering, caption or watermark anywhere in the picture.";
+/**
+ * THE PICTURE MUST MAKE SENSE (24 September 2026). The owner, on the first new-engine still of the pastry chef: good,
+ * "but some things make no sense, like the whisk on a cake that is already finished". Said to the drawing model, and
+ * asked of the judge on every still (one more question in the same call, so it costs nothing).
+ */
+export const LOGIC_SENTENCE = "Everything is physically and logically plausible: every tool and object is used for its real purpose at the right moment of the action, nothing floats, merges or contradicts what is happening.";
+const logicCheck: VisualCheck = { id: "logic", question: "Does everything in the image make physical and logical sense (every tool used for its real purpose at the right moment, every action possible, nothing floating or merged)?", expect: "yes", must: true };
 
 /* ------------------------------------------------------------------ shapes */
 
@@ -248,6 +255,7 @@ function checksFor(input: StillInput, cast: StillCastMember[]): VisualCheck[] {
   // Without a spec, a picture whose sentence quotes words to be read ("a sign reading 'OPEN 24H'") is not held to
   // "no text": the bench's smoke run redrew exactly that sign twice for failing it (24 September 2026).
   if (!spec && !/["“”«»]|\b(?:reading|reads|says|labelled|labeled|titled|written)\b/i.test(shot.image_prompt)) checks.push(noTextCheck);
+  checks.push(logicCheck);
   const seen = new Set<string>();
   return checks.filter((c) => (seen.has(c.id) ? false : (seen.add(c.id), true)));
 }
@@ -260,6 +268,7 @@ export function feedbackFor(failed: readonly VisualCheck[], spec: RequestSpec | 
   return failed.map((c) => {
     if (c.id === "style") return look === "animation" ? "the picture is a drawn 2D animation frame, not a photograph and not a 3D render" : "the picture is a real photograph, not a drawing, a painting or a 3D render";
     if (c.id === "no-text") return "there is no text, lettering, caption or watermark anywhere";
+    if (c.id === "logic") return "everything in the picture makes physical and logical sense: every tool is used for its real purpose at the right moment (no whisk on a cake that is already finished), every action is possible, nothing floats or merges";
     if (c.id.startsWith("identity:")) {
       const name = c.question.split(`${identityQuestionPrefix} `)[1]?.replace(/\s*\(same face.*$/, "") || "the character";
       return `${name} is exactly the same person as in their reference image, with the same face, the same hair and the same clothes`;
@@ -322,6 +331,7 @@ export function compileStill(input: StillInput, feedback: string[] = []): { prom
     input.visual && lim.visual > 0 ? sentence(`Visual language: ${cut(clean(input.visual), lim.visual)}`) : "",
     ...texts.map((t) => sentence(`Written clearly and legibly in the picture, spelled exactly as given: ${t.text}`)),
     STYLE_SENTENCE[look],
+    LOGIC_SENTENCE,
     styleItems.length ? sentence(`Style: ${styleItems.join("; ")}`) : "",
     texts.length ? "" : NO_TEXT_SENTENCE,
     excludes.length ? sentence(`Without ${excludes.join(", without ")}`) : "",
