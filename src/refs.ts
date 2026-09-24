@@ -396,6 +396,17 @@ export async function refImage(env: Pick<Env, "RENDERS">, userId: string, handle
   } catch { return null; }
 }
 
+/**
+ * Where one of the account's pictures is stored, or null when it is not there (25 September 2026). The stills engine
+ * passes a kie.ai image model its references as signed /dl links (src/stills.ts referenceLinkKey), and the link
+ * resolves the handle to the stored object here — always under the job owner's own prefix, never a key from outside.
+ */
+export async function refFileKey(env: Pick<Env, "RENDERS">, userId: string, handle: string): Promise<string | null> {
+  if (!REF_HANDLE_RE.test(handle) || !env.RENDERS) return null;
+  const meta = await readJson<RefMeta>(env.RENDERS, metaKey(userId, handle));
+  return meta ? imageKey(userId, handle, meta.mime) : null;
+}
+
 /** A small data: URL of a stored picture (the upload page's thumbnails come from the browser; this is for tests and tools). */
 export const dataUrlOf = (img: VisionImage): string => `data:${img.mime ?? "image/jpeg"};base64,${toBase64(img.bytes)}`;
 

@@ -30,6 +30,16 @@
  * store hiccup) only PAUSES the drawing until the next tick (stillsErrorVerdict); the daily quota, a bug, or twenty
  * minutes gone marks params.stills "failed" and the GPU draws the rest: a job is never stranded by this engine.
  *
+ * WHICH MODEL DRAWS (25 September 2026). The owner decided the stills must reach Higgsfield quality, and klein-4B does
+ * not. Measured the same day: Nano Banana Pro (Google Gemini 3 Pro Image) through OpenRouter drew a clean, story-true
+ * two-character frame from the two character sheets, 768x1376 in 23 s for 0.138 $; kie.ai sells the same model for
+ * 0.09 $. So the model id now names its ROAD (drawImage): "@cf/…" is Workers AI as before, "openrouter:<vendor/model>"
+ * is OpenRouter's chat completions, "kie:<model>" is kie.ai's jobs API (references as signed public links, since kie.ai
+ * takes URLs, not bytes). The vision judge stays on Workers AI whatever draws. A provider that refuses for MONEY (no
+ * credit, unauthorized, payment required, no key) never costs a film its pictures: the job falls back to
+ * STILL_MODEL_FALLBACK (klein-4B) for the rest of its drawing, with a "stills.fallback" audit row; a 429, a 5xx or a
+ * timeout keeps the pause semantics above. What every still cost is summed into "stills.done" (usd).
+ *
  * Only imports plain TypeScript modules (with .ts extensions) and type-only dependencies, so the tests load it under
  * Node's type stripping (src/refs.ts included: it is written the same way).
  */
@@ -37,13 +47,14 @@ import type { Env } from "./env";
 import type { Job, JobParams } from "./db";
 import { audit, setFile, listFiles, updateJobParams } from "./db.ts";
 import { putFile, getFile } from "./storage.ts";
-import { int, num, nowIso, minutesSince } from "./util.ts";
+import { int, num, nowIso, minutesSince, hmacHex, base64ToBytes } from "./util.ts";
 import { pictureScenes, directionOf, kleoStyleOf, MAX_PICTURES } from "./keou-contract.ts";
 import { headNoun, headNounIn, PRONOUN_HINTS, type Direction } from "./direction.ts";
 import { specOf, castById, fullLook, itemById, visualChecks, norm, type RequestSpec, type SpecItem, type VisualCheck } from "./spec.ts";
-import { judgeImage, mimeOf, type VisionImage } from "./vision.ts";
+import { judgeImage, mimeOf, toBase64, type VisionImage } from "./vision.ts";
 import { readImageResult, sniffImage, imageFileName, IMAGE_NAME_RE, fnv1a, isTransientError, isQuotaError, isTransientStoreError } from "./images.ts";
-import { refImage, REF_HANDLE_RE } from "./refs.ts";
+import { refImage, refFileKey, readBodyCapped, REF_HANDLE_RE } from "./refs.ts";
+import { kie, KIE_CREATE, KIE_RECORD, KieError, isNoCredit, kieResultUrls, USD_PER_KIE_CREDIT, type KieRecord } from "./kie.ts";
 
 /* ------------------------------------------------------------------ constants */
 
@@ -63,11 +74,67 @@ export type StillFormat = "9:16" | "16:9";
 export const DEFAULT_STILL_MODEL = "@cf/black-forest-labs/flux-2-klein-4b";
 export const DEFAULT_STRONG_STILL_MODEL = "@cf/black-forest-labs/flux-2-klein-9b";
 export const stillModel = (env: Pick<Env, "STILL_MODEL">): string => (env.STILL_MODEL ?? "").trim() || DEFAULT_STILL_MODEL;
-/** The escalation model for the last try, or null when STILL_MODEL_STRONG is "none" (or the same model as STILL_MODEL). */
+/**
+ * The escalation model for the last try, or null when STILL_MODEL_STRONG is "none" (or the same model as STILL_MODEL).
+ * Unset, it is klein-9B only when STILL_MODEL is a Workers AI model (25 September 2026): the ladder exists because
+ * klein-4B is weak, and nothing on Workers AI draws better than Nano Banana Pro — a last try "escalated" from it to
+ * klein-9B would be a step down, paid for.
+ */
 export const strongStillModel = (env: Pick<Env, "STILL_MODEL" | "STILL_MODEL_STRONG">): string | null => {
-  const m = (env.STILL_MODEL_STRONG ?? "").trim() || DEFAULT_STRONG_STILL_MODEL;
-  return /^(none|off|-)$/i.test(m) || m === stillModel(env) ? null : m;
+  const main = stillModel(env);
+  const m = (env.STILL_MODEL_STRONG ?? "").trim() || (stillProviderOf(main).provider === "workers-ai" ? DEFAULT_STRONG_STILL_MODEL : "none");
+  return /^(none|off|-)$/i.test(m) || m === main ? null : m;
 };
+/** The model a job falls back to after a refusal for money (STILL_MODEL_FALLBACK, default klein-4B), or null when it is "none". */
+export const fallbackStillModel = (env: Pick<Env, "STILL_MODEL_FALLBACK">): string | null => {
+  const m = (env.STILL_MODEL_FALLBACK ?? "").trim() || DEFAULT_STILL_MODEL;
+  return /^(none|off|-)$/i.test(m) ? null : m;
+};
+
+/**
+ * THE ROAD A MODEL ID NAMES (25 September 2026): "openrouter:<vendor/model>" is OpenRouter's chat completions,
+ * "kie:<model>" is kie.ai's jobs API, and anything else — "@cf/…" above all — is Workers AI, as every id was before.
+ */
+export type StillProvider = "workers-ai" | "openrouter" | "kie";
+export function stillProviderOf(model: string): { provider: StillProvider; id: string } {
+  const m = String(model ?? "").trim();
+  if (/^openrouter:/i.test(m)) return { provider: "openrouter", id: m.slice("openrouter:".length).trim() };
+  if (/^kie:/i.test(m)) return { provider: "kie", id: m.slice("kie:".length).trim() };
+  return { provider: "workers-ai", id: m };
+}
+/** Where an "openrouter:…" model is drawn when neither IMAGE_API_URL nor PLAN_API_URL says otherwise. */
+export const DEFAULT_IMAGE_API_URL = "https://openrouter.ai/api/v1";
+
+/** The resolution tier a Gemini-class model is asked for: "2K" for a still (896x1600 and up), "1K" for a sheet (768x1024). */
+export type ImageTier = "1K" | "2K" | "4K";
+export const imageTierOf = (size: { width: number; height: number }): ImageTier => {
+  const long = Math.max(size.width, size.height);
+  return long <= 1024 ? "1K" : long <= 2048 ? "2K" : "4K";
+};
+const ASPECTS: [string, number][] = [["9:16", 9 / 16], ["16:9", 16 / 9], ["3:4", 3 / 4], ["4:3", 4 / 3], ["2:3", 2 / 3], ["3:2", 3 / 2], ["1:1", 1]];
+/** The named aspect ratio nearest to a size (every one listed is in both kie.ai's and OpenRouter's lists): 896x1600 is "9:16", a 768x1024 sheet "3:4". */
+export function aspectRatioOf(size: { width: number; height: number }): string {
+  const r = size.width / size.height;
+  return ASPECTS.reduce((best, a) => (Math.abs(Math.log(a[1] / r)) < Math.abs(Math.log(best[1] / r)) ? a : best))[0];
+}
+
+/**
+ * WHAT ONE DRAW COSTS when the provider does not say (25 September 2026), so the owner can read what each film's
+ * pictures cost ("stills.done" usd). A provider-reported figure always wins over this table: OpenRouter's usage.cost,
+ * kie.ai's creditsConsumed. The figures: kie.ai nano-banana-pro 0.09 $ at 1K and 2K (kie.ai's model page); OpenRouter
+ * google/gemini-3-pro-image-preview 0.138 $ (usage.cost measured on the 25th, 1K — Google bills 2K the same output
+ * tokens); kie.ai nano-banana-2 0.04 $ at 1K, 0.06 $ at 2K; Workers AI klein-4B 0.000287 $ per 512x512 output tile
+ * (0.0023 $ for a 896x1600 still); klein-9B about 0.016 $. Null for a model this table does not know (counted as 0).
+ */
+export function stillPriceUsd(model: string, size: { width: number; height: number }): number | null {
+  const { provider, id } = stillProviderOf(model);
+  const tier = imageTierOf(size);
+  if (provider === "kie") return id === "nano-banana-pro" ? 0.09 : id === "nano-banana-2" ? (tier === "1K" ? 0.04 : 0.06) : null;
+  if (provider === "openrouter") return /gemini-3-pro-image/.test(id) ? 0.138 : null;
+  if (/flux-2-klein-4b/.test(id)) return round4(Math.ceil(size.width / 512) * Math.ceil(size.height / 512) * 0.000287);
+  if (/flux-2-klein-9b/.test(id)) return 0.016;
+  return null;
+}
 /**
  * The size a still is drawn at: about 1.4 megapixels, multiples of 16, inside the 256-1920 px FLUX.2 accepts on
  * Workers AI (developers.cloudflare.com changelog of FLUX.2, 25 November 2025). The measured probe ran 768x1344 in
@@ -130,7 +197,12 @@ const logicCheck: VisualCheck = { id: "logic", question: "Does everything in the
 /* ------------------------------------------------------------------ shapes */
 
 export interface StillShot { id: string; image_prompt: string; shot_kind?: string | null; covers?: string[]; cast?: string[]; action?: string | null }
-export interface StillRef { label: string; image: VisionImage }
+/**
+ * A reference image: its bytes (what Workers AI, OpenRouter and the judge are given), and — since 25 September 2026 —
+ * a signed public `url` of the same file, for a provider that takes links, not bytes (kie.ai). drawJobStills signs
+ * one for every sheet, user picture and style anchor; a reference without one is not passed to such a provider.
+ */
+export interface StillRef { label: string; image: VisionImage; url?: string | null }
 export interface StillInput {
   shot: StillShot;
   spec: RequestSpec | null;
@@ -144,8 +216,8 @@ export interface StillInput {
 }
 export interface StillCastMember { id: string | null; name: string; look: string }
 /** One try of a still: the check ids it failed, or ["flagged"] (Workers AI refused the output) / ["unjudged"] (the judge was silent). */
-export interface StillTry { seed: number; score: number; failed: string[]; /** Set when the try was drawn by the escalation model. */ model?: string }
-export interface StillResult { bytes: Uint8Array; score: number; mustFailed: number; failed: string[]; tries: StillTry[]; judged?: boolean; /** The ids of every check the still was judged by (the report reads it). */ checks?: string[] }
+export interface StillTry { seed: number; score: number; failed: string[]; /** Set when the try was drawn by the escalation model, or by any model once the job fell back. */ model?: string; /** What the draw cost, in dollars (25 September 2026). */ usd?: number }
+export interface StillResult { bytes: Uint8Array; score: number; mustFailed: number; failed: string[]; tries: StillTry[]; judged?: boolean; /** The ids of every check the still was judged by (the report reads it). */ checks?: string[]; /** Dollars spent on every try of this still (25 September 2026). */ usd?: number }
 
 interface AiRunner { run(model: string, inputs: Record<string, unknown>): Promise<unknown> }
 
@@ -153,6 +225,7 @@ const clean = (s: unknown): string => String(s ?? "").trim().replace(/\s+/g, " "
 const sentence = (s: unknown): string => { const t = clean(s).replace(/[.;,:\s]+$/, ""); return t ? `${t}.` : ""; };
 const cut = (s: string, max: number): string => (s.length <= max ? s : `${s.slice(0, max).replace(/\s+\S*$/, "")}`);
 const round3 = (n: number): number => Math.round(n * 1000) / 1000;
+const round4 = (n: number): number => Math.round(n * 10000) / 10000;
 
 /**
  * The shots of a storyboard as the stills engine reads them: pictureScenes (id, image_prompt) plus the authoring
@@ -362,13 +435,74 @@ async function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<
   finally { if (t) clearTimeout(t); }
 }
 
+/** What a draw needs of the environment: the Workers AI binding, and the keys of the two external roads. */
+export type DrawEnv = Pick<Env, "AI" | "IMAGE_API_URL" | "IMAGE_API_KEY" | "PLAN_API_URL" | "PLAN_API_KEY" | "KIE_API_KEY">;
+/** A reference as a draw takes it: the bytes, and a public URL when one was signed (kie.ai takes nothing else). */
+export interface DrawRef extends VisionImage { url?: string | null }
+/** One picture drawn: its bytes, what it cost, and whether that figure came from the provider (else stillPriceUsd). */
+export interface DrawnImage { bytes: Uint8Array; usd: number; reported: boolean }
+
 /**
- * One FLUX.2 draw. The Workers AI binding takes these models as a MULTIPART body (Cloudflare's own example: a
- * FormData with prompt, width, height and input_image_0..3, turned into a stream and its content type through a
- * Request, then env.AI.run(model, { multipart: { body, contentType } })); the answer is {image: base64}. Throws on a
- * missing binding, a timeout, or an answer that is not a PNG/JPEG.
+ * An external road's refusal, with the HTTP (or unified-API) status it came with — which is what fallbackReason reads
+ * for money — and the dollars the provider billed for it when it said (a text-only answer is still billed tokens).
+ * The status is written into the message too, so isTransientError reads a 429 or a 5xx as "not now", as for Workers AI.
+ * Plain class fields, no parameter properties: the tests load this module under Node's type stripping.
  */
-export async function drawImage(env: Pick<Env, "AI">, model: string, prompt: string, size: { width: number; height: number }, refs: VisionImage[], seed: number): Promise<Uint8Array> {
+export class StillDrawError extends Error {
+  status: number;
+  provider: StillProvider;
+  usd: number;
+  constructor(message: string, status: number, provider: StillProvider, usd = 0) {
+    super(message);
+    this.name = "StillDrawError";
+    this.status = status;
+    this.provider = provider;
+    this.usd = usd;
+  }
+}
+
+/**
+ * WHETHER A REFUSAL IS ABOUT MONEY (25 September 2026), and which: "no credit" (HTTP or kie.ai code 402, or kie.ai's
+ * own "Credits insufficient" sentence, which came back as code 500 on 13 September — src/kie.ts isNoCredit),
+ * "unauthorized" (401/403, or no key configured for the road), "model unavailable" (OpenRouter's 404: the model id is
+ * not served). Such a refusal will not change within the minutes a film waits, so the job falls back
+ * (STILL_MODEL_FALLBACK) instead of pausing on it or giving the picture up. Null for anything else: a 429, a 5xx and a
+ * timeout keep the pause semantics (stillsErrorVerdict), a refusal of the prompt keeps the retry-without-references.
+ */
+export function fallbackReason(e: unknown): "no credit" | "unauthorized" | "model unavailable" | null {
+  if (isNoCredit(e)) return "no credit";
+  const status = e instanceof KieError || e instanceof StillDrawError ? e.status : 0;
+  if (status === 402) return "no credit";
+  if (status === 401 || status === 403) return "unauthorized";
+  if (e instanceof StillDrawError && status === 404) return "model unavailable";
+  if (e instanceof KieError && /KIE_API_KEY is not set/.test(e.message)) return "unauthorized";
+  return e instanceof KieError || e instanceof StillDrawError ? (/insufficient (?:credits?|balance|funds)|payment required|credits? insufficient/i.test(e.message) ? "no credit" : null) : null;
+}
+
+/** The dollars an error says were spent before it (StillDrawError.usd, or what drawJudged attached), else 0. */
+export const spentOn = (e: unknown): number => {
+  const u = e && typeof e === "object" ? (e as { usd?: unknown }).usd : undefined;
+  return typeof u === "number" && Number.isFinite(u) && u > 0 ? u : 0;
+};
+
+/**
+ * ONE DRAW, on the road its model id names (25 September 2026; see stillProviderOf):
+ *   - "@cf/…" (and any id without a prefix): Workers AI, as before — below;
+ *   - "openrouter:<vendor/model>": OpenRouter's chat completions (drawOpenRouter);
+ *   - "kie:<model>": kie.ai's createTask, then recordInfo every few seconds (drawKie).
+ * Every road answers a PNG or JPEG with what it cost, and throws on a refusal: fallbackReason says whether it was
+ * about money, isTransientError whether it was "not now", isFlaggedError whether the picture itself was refused.
+ * `until` is the caller's deadline (drawJudged's): only the kie.ai road, which waits on a task, reads it.
+ *
+ * WORKERS AI. The binding takes the FLUX.2 models as a MULTIPART body (Cloudflare's own example: a FormData with
+ * prompt, width, height and input_image_0..3, turned into a stream and its content type through a Request, then
+ * env.AI.run(model, { multipart: { body, contentType } })); the answer is {image: base64}. Throws on a missing binding,
+ * a timeout, or an answer that is not a PNG/JPEG.
+ */
+export async function drawImage(env: DrawEnv, model: string, prompt: string, size: { width: number; height: number }, refs: DrawRef[], seed: number, opts: { until?: number } = {}): Promise<DrawnImage> {
+  const road = stillProviderOf(model);
+  if (road.provider === "openrouter") return drawOpenRouter(env, model, road.id, prompt, size, refs, seed);
+  if (road.provider === "kie") return drawKie(env, model, road.id, prompt, size, refs, opts.until);
   const ai = env.AI as unknown as AiRunner | undefined;
   if (!ai) throw new Error("no Workers AI binding (env.AI)");
   const form = new FormData();
@@ -385,8 +519,244 @@ export async function drawImage(env: Pick<Env, "AI">, model: string, prompt: str
   const res = await withTimeout(ai.run(model, { multipart: { body: req.body, contentType: req.headers.get("content-type") ?? "multipart/form-data" } }), DRAW_TIMEOUT_MS, `still draw (${model})`);
   const bytes = await readImageResult(res);
   if (!sniffImage(bytes)) throw new Error(`model returned ${bytes.length} bytes that are neither PNG nor JPEG`);
+  return { bytes, usd: stillPriceUsd(model, size) ?? 0, reported: false };
+}
+
+/** A fetch that did not answer, in the words isTransientError reads as "not now": a timeout, or a network error. */
+function roadError(model: string, e: unknown, ms: number): Error {
+  const s = `${(e as { name?: unknown } | null)?.name ?? ""} ${String(e)}`;
+  return /abort|timeout/i.test(s) ? new Error(`still draw (${model}) timed out after ${ms} ms`) : new Error(`still draw (${model}): network error: ${String(e).slice(0, 200)}`);
+}
+const obj = (x: unknown): Record<string, unknown> => (x && typeof x === "object" && !Array.isArray(x) ? (x as Record<string, unknown>) : {});
+/** A finished picture never weighs more than this (a 2K PNG is 6-8 MB); past it the download is refused, not read. */
+const IMAGE_MAX_BYTES = 40 * 1024 * 1024;
+const IMAGE_DOWNLOAD_MS = 30_000;
+
+/** The bytes of a picture a road answered: a data: URL decoded, or an https URL downloaded (bounded in time and size). */
+async function pictureBytes(model: string, url: string): Promise<Uint8Array> {
+  const d = /^data:image\/[a-z0-9.+-]+;base64,(.*)$/is.exec(url);
+  if (d) return base64ToBytes(d[1].replace(/\s+/g, ""));
+  let res: Response;
+  try { res = await fetch(url, { headers: { "user-agent": "kleo-mcp/1.0" }, signal: AbortSignal.timeout(IMAGE_DOWNLOAD_MS) }); }
+  catch (e) { throw roadError(model, e, IMAGE_DOWNLOAD_MS); }
+  // A plain Error, not a StillDrawError: a 403 on an expired result link is not the account's money.
+  if (!res.ok) { try { await res.body?.cancel(); } catch { /* dropped */ } throw new Error(`still draw (${model}): the picture's download answered HTTP ${res.status}`); }
+  let bytes: Uint8Array | null;
+  try { bytes = await readBodyCapped(res.body, IMAGE_MAX_BYTES); } catch (e) { throw roadError(model, e, IMAGE_DOWNLOAD_MS); }
+  if (!bytes) throw new Error(`still draw (${model}): the picture is larger than ${IMAGE_MAX_BYTES} bytes`);
   return bytes;
 }
+
+/**
+ * Where OpenRouter put the picture in a chat answer: message.images[].image_url.url (the shape measured on 25
+ * September 2026, a data:image/png;base64 URL), else an image part of message.content, else a data URL written into
+ * the text. Null when the answer carries no picture at all (a refusal in words).
+ */
+export function openRouterImageUrl(message: Record<string, unknown>): string | null {
+  const pick = (x: unknown): string | null => {
+    const o = obj(x);
+    const u = typeof o.image_url === "string" ? o.image_url : obj(o.image_url).url ?? o.url;
+    if (typeof u === "string" && /^(?:data:image\/|https:\/\/)/i.test(u)) return u;
+    return typeof o.b64_json === "string" && o.b64_json ? `data:image/png;base64,${o.b64_json}` : null;
+  };
+  for (const list of [message.images, message.content]) if (Array.isArray(list)) for (const x of list) { const u = pick(x); if (u) return u; }
+  if (typeof message.content === "string") { const m = /data:image\/(?:png|jpe?g|webp);base64,[A-Za-z0-9+/=]+/.exec(message.content); if (m) return m[0]; }
+  return null;
+}
+
+/**
+ * THE OPENROUTER ROAD (25 September 2026): one chat completion with modalities ["image","text"], the prompt first and
+ * the references after it as data: URLs (in the order compileStill numbers them: "reference image 1" is the first),
+ * image_config.aspect_ratio from the size, and for a Gemini model image_config.image_size — "2K" for a still, "1K" for
+ * a sheet (imageTierOf; the tier Google's image models take on OpenRouter's chat road; Google bills 1K and 2K the same
+ * output tokens). Measured that day with google/gemini-3-pro-image-preview (Nano Banana Pro): 23 s, 768x1376 at 1K,
+ * usage.cost 0.138 $, the picture in choices[0].message.images[0].image_url.url. Base URL IMAGE_API_URL, then
+ * PLAN_API_URL, then OpenRouter's; key IMAGE_API_KEY, then PLAN_API_KEY (the same headers the planner sends).
+ * An answer with no picture is a refusal ("flagged": drawJudged draws the next seed, and after two drops the
+ * references, which is what a model that will not draw a real person's photo needs).
+ */
+async function drawOpenRouter(env: DrawEnv, model: string, id: string, prompt: string, size: { width: number; height: number }, refs: DrawRef[], seed: number): Promise<DrawnImage> {
+  const key = (env.IMAGE_API_KEY || env.PLAN_API_KEY || "").trim();
+  if (!key) throw new StillDrawError(`still draw (${model}): no IMAGE_API_KEY (nor PLAN_API_KEY) is set`, 401, "openrouter");
+  const base = (env.IMAGE_API_URL || env.PLAN_API_URL || DEFAULT_IMAGE_API_URL).trim().replace(/\/+$/, "");
+  const body = {
+    model: id,
+    modalities: ["image", "text"],
+    image_config: { aspect_ratio: aspectRatioOf(size), ...(/gemini/i.test(id) ? { image_size: imageTierOf(size) } : {}) },
+    messages: [{ role: "user", content: [
+      { type: "text", text: prompt },
+      ...refs.slice(0, MAX_INPUT_IMAGES).map((r) => ({ type: "image_url", image_url: { url: `data:${r.mime ?? mimeOf(r.bytes)};base64,${toBase64(r.bytes)}` } })),
+    ] }],
+    seed: Math.abs(Math.round(seed)) % 2_147_483_647,
+  };
+  let res: Response, text: string;
+  try {
+    res = await fetch(`${base}/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json", "HTTP-Referer": "https://mcp.kleooai.com", "X-Title": "Kleo" },
+      body: JSON.stringify(body), signal: AbortSignal.timeout(DRAW_TIMEOUT_MS),
+    });
+    text = await res.text();
+  } catch (e) { throw roadError(model, e, DRAW_TIMEOUT_MS); }
+  let j: Record<string, unknown> | null = null;
+  try { j = obj(JSON.parse(text)); } catch { /* read below */ }
+  const cost = typeof obj(j?.usage).cost === "number" && Number.isFinite(obj(j?.usage).cost) ? (obj(j?.usage).cost as number) : null;
+  const err = obj(j?.error);
+  if (!res.ok || !j || Object.keys(err).length) {
+    // A 200 with an error object carries its own code (OpenRouter's 402 arrives that way too); an unreadable 200 is a
+    // gateway hiccup, answered as one.
+    const status = !res.ok ? res.status : Number(err.code) || (j ? res.status : 502);
+    const say = String(err.message ?? (j ? JSON.stringify(j) : text)).replace(/\s+/g, " ").slice(0, 240);
+    throw new StillDrawError(`still draw (${model}) → openrouter ${status}: ${say}`, status, "openrouter", cost ?? 0);
+  }
+  const choice = obj(Array.isArray(j.choices) ? j.choices[0] : null);
+  const message = obj(choice.message);
+  const url = openRouterImageUrl(message);
+  if (!url) {
+    const said = typeof message.content === "string" ? message.content.replace(/\s+/g, " ").slice(0, 200) : "";
+    throw new StillDrawError(`still draw (${model}) answered without a picture, refused or flagged (finish_reason ${String(choice.finish_reason ?? "?")}): ${said}`, 200, "openrouter", cost ?? 0);
+  }
+  const bytes = await pictureBytes(model, url);
+  if (!sniffImage(bytes)) throw new Error(`model returned ${bytes.length} bytes that are neither PNG nor JPEG`);
+  return { bytes, usd: cost ?? stillPriceUsd(model, size) ?? 0, reported: cost !== null };
+}
+
+/**
+ * How the kie.ai road waits on a task (25 September 2026): a look every `everyMs`, for at least `minMs` — the
+ * DRAW_TIMEOUT_MS every other road gets, because a task abandoned early is a picture paid for and thrown away — and
+ * at most `maxMs`, stretched between the two as far as the caller's deadline (`until`) allows. Mutable for the tests only.
+ */
+export const KIE_STILL_POLL = { everyMs: 3_000, minMs: DRAW_TIMEOUT_MS, maxMs: 150_000 };
+/** One createTask or recordInfo call may take this long before it counts as a timeout. */
+const KIE_CALL_MS = 20_000;
+/** kie.ai's words for a picture its filters refused: marked "(flagged)" so drawJudged draws the next seed. */
+const KIE_FLAG_RE = /safety|policy|sensitive|nsfw|flagged|prohibited|violat|inappropriate|moderat/i;
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * The `input` of a kie.ai image task (docs.kie.ai/market/google/pro-image-to-image and …/nanobanana2, read 25
+ * September 2026): nano-banana-pro and nano-banana-2 take prompt (≤ 10,000 / 20,000 chars), image_input (URLs, up to
+ * 8 / 14), aspect_ratio, resolution 1K|2K|4K and output_format png|jpg; nano-banana-2-lite takes image_urls and no
+ * resolution. JPEG on purpose: a 2K PNG is 6-8 MB, and every still also goes to the vision judge (and back as a
+ * reference) inline; a 2K JPEG is a fraction of that, with no visible loss for the first frame of a clip.
+ */
+export function kieStillInput(id: string, p: { prompt: string; urls: string[]; size: { width: number; height: number } }): Record<string, unknown> {
+  const aspect = aspectRatioOf(p.size);
+  if (/-lite$/.test(id)) return { prompt: p.prompt, image_urls: p.urls, aspect_ratio: aspect };
+  return { prompt: p.prompt.slice(0, 10_000), image_input: p.urls, aspect_ratio: aspect, resolution: imageTierOf(p.size), output_format: "jpg" };
+}
+
+/**
+ * THE KIE.AI ROAD (25 September 2026): createTask, then recordInfo every KIE_STILL_POLL.everyMs until "success" (the
+ * picture downloaded from resultJson.resultUrls[0], its cost read off creditsConsumed at 0.005 $ a credit) or "fail"
+ * (failCode + failMsg; a safety refusal is marked flagged). A recordInfo call that fails for a transient reason is
+ * asked again, not counted against the task: the task is paid for either way. Out of time, the draw throws a timeout
+ * (a pause for the job, never a fallback).
+ *
+ * THE REFERENCES reach kie.ai only as public links: image_input takes "file URLs, not file content". drawJobStills
+ * signs one for every sheet, user picture and style anchor (signedFileUrl, through /dl). A reference with bytes only —
+ * the pure drawStill / drawCastSheet road the tests and the fidelity bench use — is simply not passed; drawJudged
+ * leaves it out of the prompt and of the identity checks as well (usableRefs), so the prompt never names an image the
+ * model does not get.
+ */
+async function drawKie(env: DrawEnv, model: string, id: string, prompt: string, size: { width: number; height: number }, refs: DrawRef[], until?: number): Promise<DrawnImage> {
+  if (!(env.KIE_API_KEY ?? "").trim()) throw new StillDrawError(`still draw (${model}): KIE_API_KEY is not set`, 401, "kie");
+  const urls = refs.map((r) => r.url).filter((u): u is string => typeof u === "string" && /^https:\/\//i.test(u)).slice(0, MAX_INPUT_IMAGES);
+  const t0 = Date.now();
+  const created = await kie<{ taskId?: string }>(env, "POST", KIE_CREATE, { model: id, input: kieStillInput(id, { prompt, urls, size }) }, { timeoutMs: KIE_CALL_MS });
+  const taskId = created?.taskId;
+  if (!taskId) throw new KieError(`still draw (${model}): kie.ai answered without a taskId`, 0, false);
+  const stopAt = Math.min(t0 + KIE_STILL_POLL.maxMs, Math.max(until ?? 0, t0 + KIE_STILL_POLL.minMs));
+  let state = "";
+  for (;;) {
+    const wait = Math.min(KIE_STILL_POLL.everyMs, stopAt - Date.now());
+    if (wait <= 0) break;
+    await sleep(wait);
+    let rec: KieRecord;
+    try { rec = await kie<KieRecord>(env, "GET", `${KIE_RECORD}?taskId=${encodeURIComponent(taskId)}`, undefined, { timeoutMs: KIE_CALL_MS }); }
+    catch (e) { if ((e instanceof KieError && e.retryable) || (!(e instanceof KieError) && isTransientError(e))) continue; throw e; }
+    state = String(rec?.state ?? "").toLowerCase();
+    if (state === "success") {
+      const results = kieResultUrls(rec);
+      if (!results.length) throw new KieError(`still draw (${model}): kie.ai task ${taskId} succeeded without a result url`, 0, false);
+      const bytes = await pictureBytes(model, results[0]);
+      if (!sniffImage(bytes)) throw new Error(`model returned ${bytes.length} bytes that are neither PNG nor JPEG`);
+      const credits = Number(rec.creditsConsumed);
+      const reported = Number.isFinite(credits) && credits > 0;
+      return { bytes, usd: reported ? round4(credits * USD_PER_KIE_CREDIT) : stillPriceUsd(model, size) ?? 0, reported };
+    }
+    if (state === "fail" || state === "failed" || state === "error") {
+      const why = `${rec.failCode ?? ""} ${rec.failMsg ?? "kie.ai reported a failure"}`.trim().replace(/\s+/g, " ").slice(0, 240);
+      throw new KieError(`still draw (${model}): kie.ai task ${taskId} failed: ${why}${KIE_FLAG_RE.test(why) ? " (flagged)" : ""}`, Number(rec.failCode) || 0, false);
+    }
+  }
+  throw new Error(`still draw (${model}) timed out after ${Date.now() - t0} ms (kie.ai task ${taskId} still ${state || "pending"})`);
+}
+
+/* ------------------------------------------------------------------ the route: which model, and what after a refusal for money */
+
+/**
+ * THE ROUTE of a job's pictures (25 September 2026): the model every try draws with, the escalation model of the last
+ * try, and what replaces a model whose provider refused for money. One object is shared by every sheet and still of a
+ * drawJobStills call (three draws run at once), so the first refusal switches the whole job and the others follow;
+ * the switch is an audit row, and the next tick replays those rows before it draws (the rest of the job stays on the
+ * fallback, it does not ask the empty account again on every tick). `ladder` is the escalation the fallback model
+ * brings with it (klein-4B → klein-9B, unless STILL_MODEL_STRONG says otherwise). A route built for a forced model
+ * (the bench's opts.model) has no fallback: a model under comparison is never swapped silently.
+ */
+export interface StillRoute {
+  model: string;
+  strong: string | null;
+  fallback: string | null;
+  ladder: string | null;
+  /** Providers that refused for money in this job: never asked again. */
+  dead: StillProvider[];
+  /** The switches made, in order. */
+  switches: { from: string; to: string; reason: string; error: string }[];
+  /** Called once per switch (drawJobStills writes the "stills.fallback" audit row). */
+  onFallback?: (f: { from: string; to: string; reason: string; error: string }) => unknown;
+}
+export function stillRoute(env: Pick<Env, "STILL_MODEL" | "STILL_MODEL_STRONG" | "STILL_MODEL_FALLBACK">, opts: { model?: string } = {}): StillRoute {
+  if (opts.model) return { model: opts.model, strong: null, fallback: null, ladder: null, dead: [], switches: [] };
+  const fallback = fallbackStillModel(env);
+  return {
+    model: stillModel(env), strong: strongStillModel(env), fallback,
+    ladder: fallback ? strongStillModel({ STILL_MODEL: fallback, STILL_MODEL_STRONG: env.STILL_MODEL_STRONG }) : null,
+    dead: [], switches: [],
+  };
+}
+
+/**
+ * Switches a route away from the provider of `failed` after a refusal for money, and answers the model to draw the
+ * failed try with now (null: no fallback — the error stands). The replacement is STILL_MODEL_FALLBACK, or klein-4B
+ * when the fallback sits on the same dead provider; an escalation model on that provider is dropped (and the fallback's
+ * own ladder takes its place). Idempotent: a second refusal from the same provider (another draw of the same tick, or
+ * the replay of the audit on the next tick) changes nothing more and writes no second row. `silent` replays.
+ */
+export async function switchRoute(route: StillRoute, failed: string, asStrong: boolean, reason: string, error: unknown, opts: { silent?: boolean } = {}): Promise<string | null> {
+  if (!route.fallback) return null;
+  const provider = stillProviderOf(failed).provider;
+  const first = !route.dead.includes(provider);
+  if (first) route.dead.push(provider);
+  const alive = (m: string | null): m is string => !!m && !route.dead.includes(stillProviderOf(m).provider);
+  const pick = [route.fallback, DEFAULT_STILL_MODEL].find(alive) ?? null;
+  if (!pick) return null;
+  if (!alive(route.model)) route.model = pick;
+  if (route.strong && !alive(route.strong)) route.strong = null;
+  if (!route.strong && route.model === pick && alive(route.ladder) && route.ladder !== pick) route.strong = route.ladder;
+  const to = asStrong ? route.strong ?? route.model : route.model;
+  if (first) {
+    const f = { from: failed, to, reason, error: String(error ?? "").slice(0, 300) };
+    route.switches.push(f);
+    if (!opts.silent && route.onFallback) { try { await route.onFallback(f); } catch { /* an audit row never costs a picture */ } }
+  }
+  return to;
+}
+
+/** The references a model can be given: all of them, except on kie.ai, which takes only the ones with a public link. */
+const usableRefs = (model: string, refs: StillRef[]): StillRef[] =>
+  stillProviderOf(model).provider === "kie" ? refs.filter((r) => typeof r.url === "string" && /^https:\/\//i.test(r.url)) : refs;
+const drawRefOf = (r: StillRef): DrawRef => ({ bytes: r.image.bytes, mime: r.image.mime, url: r.url ?? null });
 
 /* ------------------------------------------------------------------ draw, judge, redraw */
 
@@ -398,8 +768,18 @@ export async function drawImage(env: Pick<Env, "AI">, model: string, prompt: str
  *
  * `escalateOn` (24 September 2026): whether the failed musts of the last judged try are ones the strong model draws
  * better — a look, an identity, a written text (strongDrawsBetter). Unset, any failed must escalates.
+ *
+ * `route` (25 September 2026): the model and the escalation model, read afresh before every try, and switched by a
+ * refusal for money (switchRoute) — for this still and, the route being shared, for every other one of the job.
  */
-interface JudgedOptions { attempts: number; pass: number; seedBase: number; model: string; strongModel?: string | null; size: { width: number; height: number }; until?: number; escalateOn?: (failedMusts: VisualCheck[]) => boolean }
+interface JudgedOptions { attempts: number; pass: number; seedBase: number; route: StillRoute; size: { width: number; height: number }; until?: number; escalateOn?: (failedMusts: VisualCheck[]) => boolean }
+/** Everything drawJudged, drawStill and drawCastSheet read of the environment. */
+export type StillEnv = DrawEnv & Pick<Env, "VISION_MODEL" | "STILL_MODEL" | "STILL_MODEL_STRONG" | "STILL_MODEL_FALLBACK" | "STILL_ATTEMPTS" | "STILL_PASS">;
+/** Attaches the dollars spent so far to an error that ends a still, so the audit row of the loss still counts them. */
+const withSpend = (e: unknown, usd: number): unknown => {
+  if (usd > 0 && e && typeof e === "object") { try { (e as { usd?: number }).usd = round4(usd); } catch { /* a frozen error only loses the figure */ } }
+  return e;
+};
 
 /** A draw Workers AI refused as flagged ("AiError: 3030: Your output has been flagged. Please choose another prompt / input image combination"). */
 export const isFlaggedError = (e: unknown): boolean => /flagged|\b3030\b/i.test(String(e));
@@ -435,8 +815,15 @@ function strongDrawsBetter(failed: readonly VisualCheck[], spec: RequestSpec | n
  *       prompt / input image combination") — granted even when the tries are spent, to a still with no picture yet;
  *       only when every try is flagged does the still fail as before (the error thrown, drawJobStills gives the
  *       picture up).
+ *
+ * WHAT A REFUSAL FOR MONEY DOES (25 September 2026). An external road that answers "no credit", "unauthorized" or "no
+ * such model" (fallbackReason) is switched away from for the rest of the job (switchRoute) and the SAME try is drawn
+ * again at once on the fallback model, same seed, same prompt: the refusal costs a picture nothing but a second call.
+ * The prompt and the judge get only the references the model is actually given (usableRefs: kie.ai takes links, so a
+ * reference without one is left out of both), and every try carries what it cost; the still's `usd` is their sum.
  */
-async function drawJudged(env: Pick<Env, "AI" | "VISION_MODEL">, refs0: StillRef[], compile: (feedback: string[], refs: StillRef[]) => { prompt: string; checks: VisualCheck[] }, feedbackOf: (failed: VisualCheck[]) => string[], o: JudgedOptions): Promise<StillResult> {
+async function drawJudged(env: StillEnv, refs0: StillRef[], compile: (feedback: string[], refs: StillRef[]) => { prompt: string; checks: VisualCheck[] }, feedbackOf: (failed: VisualCheck[]) => string[], o: JudgedOptions): Promise<StillResult> {
+  const route = o.route;
   let refs = refs0.slice(0, MAX_INPUT_IMAGES);
   let feedback: string[] = [];
   type Best = { bytes: Uint8Array; score: number; mustFailed: number; failed: VisualCheck[] };
@@ -450,53 +837,81 @@ async function drawJudged(env: Pick<Env, "AI" | "VISION_MODEL">, refs0: StillRef
   let lastMustFailed: VisualCheck[] = [];
   let flaggedRun = 0, lastFlag: unknown = null, droppedForFlag = false;
   let budget = o.attempts;
+  let spent = 0;
+  // The references the last draw was given: the checks the result reports are the ones that could be asked of it.
+  let lastRefs = usableRefs(route.model, refs);
   for (let k = 0; k < budget; k++) {
     if (best && o.until !== undefined && Date.now() >= o.until) break; // out of time: the best try stands
     const seed = (o.seedBase + k) % 2_147_483_647;
-    let c = compile(feedback, refs);
-    let bytes: Uint8Array;
     // The last try of a still that failed a must on every try so far goes to the stronger (dearer) model — only when
     // the must it failed last is one that model draws better.
-    const escalate = !!o.strongModel && k > 0 && k === budget - 1 && !!best && best.mustFailed > 0 && lastMustFailed.length > 0 && (o.escalateOn ? o.escalateOn(lastMustFailed) : true);
-    const model = escalate ? o.strongModel! : o.model;
-    try {
-      try { bytes = await drawImage(env, model, c.prompt, o.size, refs.map((r) => r.image), seed); }
+    const escalate = !!route.strong && k > 0 && k === budget - 1 && !!best && best.mustFailed > 0 && lastMustFailed.length > 0 && (o.escalateOn ? o.escalateOn(lastMustFailed) : true);
+    let model = escalate ? route.strong! : route.model;
+    let drawn = usableRefs(model, refs);
+    let c = compile(feedback, drawn);
+    // One draw on model `m`: with the references it can take, then once without them when it refuses them (anything
+    // but a flagged output, a transient error or a refusal for money, which a missing reference does not cure).
+    const drawOn = async (m: string): Promise<DrawnImage> => {
+      drawn = usableRefs(m, refs);
+      c = compile(feedback, drawn);
+      try { return await drawImage(env, m, c.prompt, o.size, drawn.map(drawRefOf), seed, { until: o.until }); }
       catch (e) {
-        if (isFlaggedError(e) || !refs.length || isTransientError(e)) throw e;
-        refs = [];
-        c = compile(feedback, refs);
-        bytes = await drawImage(env, model, c.prompt, o.size, [], seed);
+        if (isFlaggedError(e) || !drawn.length || isTransientError(e) || fallbackReason(e)) throw e;
+        spent += spentOn(e);
+        refs = []; drawn = [];
+        c = compile(feedback, drawn);
+        return await drawImage(env, m, c.prompt, o.size, [], seed, { until: o.until });
+      }
+    };
+    let d: DrawnImage;
+    try {
+      for (let hop = 0; ; hop++) {
+        try { d = await drawOn(model); break; }
+        catch (e) {
+          // A refusal for money: the job moves to the fallback and this very try is drawn there (three hops at most:
+          // one per road).
+          const why = hop < 3 ? fallbackReason(e) : null;
+          const next = why ? await switchRoute(route, model, escalate, why, e) : null;
+          if (!next) throw e;
+          spent += spentOn(e);
+          model = next;
+        }
       }
     } catch (e) {
+      spent += spentOn(e);
       if (isFlaggedError(e)) {
         // A flagged draw is a failed try, not a lost still: the next seed is drawn.
         lastFlag = e; flaggedRun++;
-        tries.push({ seed, score: 0, failed: ["flagged"], ...(escalate ? { model } : {}) });
+        tries.push({ seed, score: 0, failed: ["flagged"], ...(escalate || route.switches.length ? { model } : {}) });
         // Two in a row: the rest go without the reference images, and a still with no picture yet gets that one try
         // even past its budget (one with a picture already keeps it rather than pay beyond its tries).
         if (flaggedRun >= 2 && refs.length && !droppedForFlag) { refs = []; droppedForFlag = true; if (!best) budget = Math.max(budget, k + 2); }
         continue;
       }
       if (best) break; // a picture already exists: keep it rather than lose the shot to a failed redraw
-      throw e;
+      throw withSpend(e, spent);
     }
     flaggedRun = 0;
-    const j = await judgeImage(env, { bytes, mime: mimeOf(bytes) }, c.checks, refs);
+    spent += d.usd;
+    lastRefs = drawn;
+    const bytes = d.bytes;
+    const tag = { ...(escalate || route.switches.length ? { model } : {}), usd: round4(d.usd) };
+    const j = await judgeImage(env, { bytes, mime: mimeOf(bytes) }, c.checks, drawn);
     const judged = !c.checks.length || c.checks.some((ch) => j.answers[ch.id] !== "?");
     if (!judged) {
-      tries.push({ seed, score: 0, failed: ["unjudged"] });
-      if (!best) return { bytes, score: 0, mustFailed: 0, failed: ["unjudged"], tries, judged: false };
+      tries.push({ seed, score: 0, failed: ["unjudged"], ...tag });
+      if (!best) return { bytes, score: 0, mustFailed: 0, failed: ["unjudged"], tries, judged: false, usd: round4(spent) };
       break;
     }
-    tries.push({ seed, score: round3(j.score), failed: j.failed.map((f) => f.id), ...(escalate ? { model } : {}) });
+    tries.push({ seed, score: round3(j.score), failed: j.failed.map((f) => f.id), ...tag });
     const cand: Best = { bytes, score: j.score, mustFailed: j.mustFailed, failed: j.failed };
     if (!best || better(cand, best)) best = cand;
     if (j.mustFailed === 0) break; // (a): no failed must, no redraw, whatever the soft answers
     lastMustFailed = j.failed.filter((f) => f.must);
     feedback = feedbackOf([...lastMustFailed, ...j.failed.filter((f) => !f.must)]);
   }
-  if (!best) throw lastFlag ?? new Error("no still was drawn");
-  return { bytes: best.bytes, score: round3(best.score), mustFailed: best.mustFailed, failed: best.failed.map((f) => f.id), tries, judged: true, checks: compile([], refs).checks.map((c) => c.id) };
+  if (!best) throw withSpend(lastFlag ?? new Error("no still was drawn"), spent);
+  return { bytes: best.bytes, score: round3(best.score), mustFailed: best.mustFailed, failed: best.failed.map((f) => f.id), tries, judged: true, checks: compile([], lastRefs.filter((r) => refs.includes(r))).checks.map((c) => c.id), usd: round4(spent) };
 }
 
 /**
@@ -508,12 +923,18 @@ async function drawJudged(env: Pick<Env, "AI" | "VISION_MODEL">, refs0: StillRef
 const attemptsOf = (env: Pick<Env, "STILL_ATTEMPTS">, given?: number): number => Math.max(1, Math.min(6, given ?? int(env.STILL_ATTEMPTS, 2)));
 const passOf = (env: Pick<Env, "STILL_PASS">, given?: number): number => Math.max(0, Math.min(1, given ?? num(env.STILL_PASS, 0.85)));
 
+/**
+ * What drawStill and drawCastSheet take besides the input. `model` forces one model (the bench: no escalation, no
+ * fallback); `route` is the job's shared route (drawJobStills), which wins over both the env and `model`.
+ */
+export interface DrawOptions { attempts?: number; pass?: number; seedBase?: number; model?: string; until?: number; route?: StillRoute }
+
 /** One still, drawn and judged against its checks, redrawn with the failures named while a must fails and tries remain. */
-export async function drawStill(env: Pick<Env, "AI" | "VISION_MODEL" | "STILL_MODEL" | "STILL_MODEL_STRONG" | "STILL_ATTEMPTS" | "STILL_PASS">, input: StillInput, opts: { attempts?: number; pass?: number; seedBase?: number; model?: string; until?: number } = {}): Promise<StillResult> {
+export async function drawStill(env: StillEnv, input: StillInput, opts: DrawOptions = {}): Promise<StillResult> {
   const size = STILL_SIZES[input.format === "16:9" ? "16:9" : "9:16"];
   return drawJudged(env, input.refs, (feedback, refs) => compileStill({ ...input, refs }, feedback), (failed) => feedbackFor(failed, input.spec, input.look), {
     attempts: attemptsOf(env, opts.attempts), pass: passOf(env, opts.pass), seedBase: opts.seedBase ?? fnv1a(input.shot.id) % 1_000_000,
-    model: opts.model ?? stillModel(env), strongModel: opts.model ? null : strongStillModel(env), size, until: opts.until,
+    route: opts.route ?? stillRoute(env, { model: opts.model }), size, until: opts.until,
     escalateOn: (failed) => strongDrawsBetter(failed, input.spec),
   });
 }
@@ -523,13 +944,14 @@ export async function drawStill(env: Pick<Env, "AI" | "VISION_MODEL" | "STILL_MO
  * of them is drawn FROM. From the user's own image when they gave one ("the same person as in reference image 1"),
  * otherwise from the full look alone. Judged against the character's look (attribute by attribute when the spec has
  * look items), so a sheet that draws the wrong hair does not become the reference for twenty wrong shots.
+ * `userRef.url` is the signed link of the user's photo, for a road that takes links (kie.ai); `usd` what the sheet cost.
  */
-export async function drawCastSheet(env: Pick<Env, "AI" | "VISION_MODEL" | "STILL_MODEL" | "STILL_MODEL_STRONG" | "STILL_ATTEMPTS" | "STILL_PASS">, spec: RequestSpec | null, cast: { id: string; name: string; look: string }, look: StillLook, userRef: VisionImage | null, opts: { attempts?: number; pass?: number; seedBase?: number; model?: string; until?: number } = {}): Promise<{ bytes: Uint8Array; score: number }> {
+export async function drawCastSheet(env: StillEnv, spec: RequestSpec | null, cast: { id: string; name: string; look: string }, look: StillLook, userRef: (VisionImage & { url?: string | null }) | null, opts: DrawOptions = {}): Promise<{ bytes: Uint8Array; score: number; usd: number }> {
   const inSpec = !!(spec && castById(spec, cast.id));
   const fl = clean((inSpec && spec ? fullLook(spec, cast.id) : "") || cast.look);
   const member: StillCastMember = { id: inSpec ? cast.id : null, name: cast.name, look: fl };
   const checks = inSpec && spec ? visualChecks(spec, { covers: [], cast: [cast.id] }, look) : [styleCheck(look), castCheck(member), noTextCheck];
-  const refs: StillRef[] = userRef ? [{ label: `${cast.name}, the user's own picture`, image: userRef }] : [];
+  const refs: StillRef[] = userRef ? [{ label: `${cast.name}, the user's own picture`, image: { bytes: userRef.bytes, mime: userRef.mime }, url: userRef.url ?? null }] : [];
   const compile = (feedback: string[], r: StillRef[]) => ({
     prompt: [
       feedback.length ? `It is essential that: ${feedback.map((f) => f.replace(/[.\s]+$/, "")).join("; ")}.` : "",
@@ -542,10 +964,10 @@ export async function drawCastSheet(env: Pick<Env, "AI" | "VISION_MODEL" | "STIL
   });
   const r = await drawJudged(env, refs, compile, (failed) => feedbackFor(failed, spec, look), {
     attempts: Math.min(attemptsOf(env, opts.attempts ?? SHEET_ATTEMPTS), 4), pass: passOf(env, opts.pass), seedBase: opts.seedBase ?? fnv1a(`sheet/${cast.id}`) % 1_000_000,
-    model: opts.model ?? stillModel(env), strongModel: opts.model ? null : strongStillModel(env), size: SHEET_SIZE, until: opts.until,
+    route: opts.route ?? stillRoute(env, { model: opts.model }), size: SHEET_SIZE, until: opts.until,
     escalateOn: (failed) => strongDrawsBetter(failed, inSpec ? spec : null),
   });
-  return { bytes: r.bytes, score: r.score };
+  return { bytes: r.bytes, score: r.score, usd: r.usd ?? 0 };
 }
 
 /* ------------------------------------------------------------------ the job */
@@ -606,6 +1028,38 @@ export function castSheetKeys(job: Pick<Job, "id" | "params" | "storyboard">): s
   return castMembersOf(specOf(paramsOf(job)), directionOf(storyboardOf(job))).map((m) => castSheetKey(job.id, m.id));
 }
 
+/**
+ * REFERENCE LINKS (25 September 2026). kie.ai's image models take their references as public URLs, never as bytes,
+ * so the pictures a still is drawn from must be reachable from outside for a few minutes: the character sheets
+ * (renders/<job>/cast/<id>.jpg), the user's own pictures (refs/<user>/<handle>.<ext>) and the film's style anchor (its
+ * first still, an ordinary img/ job file). They go out through the same signed, time-limited /dl links the pictures
+ * already use (src/dl.ts, HMAC with INTERNAL_SECRET over job/name/expiry) under two extra names — "ref/cast/<id>.jpg"
+ * and "ref/<kref_…>" — which dl.ts resolves here to the stored key: a sheet under the job's own prefix, a picture under
+ * the job OWNER's refs prefix, nothing else. Neither is a job file, so neither ever reaches the user's result links.
+ */
+export const REFERENCE_LINK_RE = /^ref\/(?:cast\/([a-z0-9-]{1,32})\.jpg|(kref_[0-9a-f]{8}))$/;
+export const sheetLinkName = (castId: string): string => `ref/cast/${safeId(castId) || "x"}.jpg`;
+export const userRefLinkName = (handle: string): string => `ref/${handle}`;
+/** How long a reference link lives: kie.ai fetches it within seconds of the task; each tick signs its own. */
+export const REFERENCE_LINK_TTL_S = 2 * 60 * 60;
+/** The stored key a reference link names, or null (dl.ts answers 404 then). */
+export async function referenceLinkKey(env: Pick<Env, "RENDERS">, job: Pick<Job, "id" | "user_id">, name: string): Promise<string | null> {
+  const m = REFERENCE_LINK_RE.exec(name);
+  if (!m) return null;
+  if (m[1]) return castSheetKey(job.id, m[1]);
+  return m[2] ? refFileKey(env, job.user_id, m[2]) : null;
+}
+/**
+ * A signed https /dl link to one of a job's files (an img/ picture, or a reference name above), or null when this
+ * server has no public https address (a dev or test server kie.ai could not reach anyway) or no signing secret.
+ */
+export async function signedFileUrl(env: Pick<Env, "PUBLIC_URL" | "INTERNAL_SECRET">, jobId: string, name: string, ttlS = REFERENCE_LINK_TTL_S): Promise<string | null> {
+  const base = String(env.PUBLIC_URL ?? "").trim().replace(/\/+$/, "");
+  if (!/^https:\/\//i.test(base) || !env.INTERNAL_SECRET) return null;
+  const exp = Math.floor(Date.now() / 1000) + ttlS;
+  return `${base}/dl/${jobId}/${encodeURIComponent(name)}?exp=${exp}&sig=${await hmacHex(env.INTERNAL_SECRET, `${jobId}/${name}/${exp}`)}`;
+}
+
 async function readStored(env: Env, key: string): Promise<VisionImage | null> {
   try {
     const f = await getFile(env, key, null);
@@ -615,10 +1069,15 @@ async function readStored(env: Env, key: string): Promise<VisionImage | null> {
   } catch { return null; }
 }
 
+/** The handle of one of the user's images, from the handle itself or the spec's ref id; null when it is not one. */
+function userRefHandle(spec: RequestSpec | null, ref: string): string | null {
+  const handle = spec?.refs.find((r) => r.id === ref || r.handle === ref)?.handle ?? ref;
+  return REF_HANDLE_RE.test(handle) ? handle : null;
+}
 /** One of the user's images, by the handle or the spec's ref id (src/refs.ts); null when it is gone or unreadable. */
 async function userImage(env: Env, userId: string, spec: RequestSpec | null, ref: string): Promise<VisionImage | null> {
-  const handle = spec?.refs.find((r) => r.id === ref || r.handle === ref)?.handle ?? ref;
-  if (!REF_HANDLE_RE.test(handle)) return null;
+  const handle = userRefHandle(spec, ref);
+  if (!handle) return null;
   try { return await refImage(env, userId, handle); } catch { return null; }
 }
 
@@ -669,13 +1128,32 @@ export async function storedPictures(env: Env, jobId: string): Promise<Map<strin
  */
 async function givenUp(env: Env, jobId: string): Promise<{ pictures: Set<string>; sheets: Set<string> }> {
   const pictures = new Set<string>(), sheets = new Set<string>();
-  const rowsOf = async (event: "stills.error" | "stills.sheet"): Promise<{ detail: string | null }[]> => {
-    try { return (await env.DB.prepare(`SELECT detail FROM audit WHERE job_id = ? AND event = '${event}'`).bind(jobId).all<{ detail: string | null }>()).results ?? []; }
-    catch { return []; } // an unreadable audit only costs a retry
-  };
-  for (const r of await rowsOf("stills.error")) { try { const d = JSON.parse(r.detail ?? "{}") as { picture?: string; transient?: boolean }; if (d.picture && !d.transient) pictures.add(d.picture); } catch { /* ignore */ } }
-  for (const r of await rowsOf("stills.sheet")) { try { const d = JSON.parse(r.detail ?? "{}") as { cast?: string; error?: string; transient?: boolean }; if (d.cast && d.error && !d.transient) sheets.add(d.cast); } catch { /* ignore */ } }
+  for (const d of await auditDetails(env, jobId, "stills.error")) if (typeof d.picture === "string" && d.picture && !d.transient) pictures.add(d.picture);
+  for (const d of await auditDetails(env, jobId, "stills.sheet")) if (typeof d.cast === "string" && d.cast && d.error && !d.transient) sheets.add(d.cast);
   return { pictures, sheets };
+}
+
+/** The engine's own audit events a job's rows are read back from (a fixed list: the name goes into the SQL as written). */
+type StillsEvent = "stills.error" | "stills.sheet" | "stills.judge" | "stills.store_error" | "stills.fallback";
+/** The parsed details of one event's audit rows for a job; [] when the audit cannot be read (that only costs a retry). */
+async function auditDetails(env: Env, jobId: string, event: StillsEvent): Promise<Record<string, unknown>[]> {
+  let rows: { detail: string | null }[];
+  try { rows = (await env.DB.prepare(`SELECT detail FROM audit WHERE job_id = ? AND event = '${event}'`).bind(jobId).all<{ detail: string | null }>()).results ?? []; }
+  catch { return []; }
+  return rows.map((r) => { try { return obj(JSON.parse(r.detail ?? "{}")); } catch { return {}; } });
+}
+
+/**
+ * WHAT A JOB'S PICTURES COST so far (25 September 2026), in dollars: the `usd` of every sheet, still, refused still
+ * and still drawn but not stored, across every tick — read back from the audit rows, which is the one record that
+ * survives the ticks. It is what "stills.done" and fidelity.json's summary report.
+ */
+async function stillsSpentUsd(env: Env, jobId: string): Promise<number> {
+  let usd = 0;
+  for (const ev of ["stills.sheet", "stills.judge", "stills.error", "stills.store_error"] as const) {
+    for (const d of await auditDetails(env, jobId, ev)) if (typeof d.usd === "number" && Number.isFinite(d.usd)) usd += d.usd;
+  }
+  return round4(usd);
 }
 
 /**
@@ -722,6 +1200,11 @@ export async function pauseStills(env: Env, job: Pick<Job, "id" | "user_id" | "p
  * and params.stills says the state for the dispatcher. No redraw starts past `deadline` (JudgedOptions.until), and
  * `stop` (the cron's lock heartbeat) ends the drawing early when the tick lost its lock: another tick draws this job
  * now. Never throws on a model problem.
+ *
+ * Since 25 September 2026 every sheet and still of the call draws through ONE route (stillRoute): the model the env
+ * names, switched to STILL_MODEL_FALLBACK at the first refusal for money with a "stills.fallback" audit row, which the
+ * next tick replays before it draws. Every reference carries a signed link (signedFileUrl) for a road that takes links,
+ * and every sheet, still and loss carries its `usd`; "stills.done" says what the job's pictures cost in all.
  */
 export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: number; stop?: () => boolean }): Promise<{ state: "drawing" | "done" | "failed"; drawn: number; total: number }> {
   const params = paramsOf(job);
@@ -750,26 +1233,38 @@ export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: nu
   if (prev?.state !== "drawing") await setState("drawing");
   const late = () => Date.now() > opts.deadline - EST_STILL_MS || !!opts.stop?.();
 
+  // 0. THE ROUTE (25 September 2026): what draws, shared by every draw of this call; a fallback an earlier tick made
+  //    (its "stills.fallback" row) holds for the rest of the job, so an empty account is not asked again every minute.
+  const route = stillRoute(env);
+  for (const f of await auditDetails(env, job.id, "stills.fallback")) {
+    if (typeof f.from === "string" && f.from) await switchRoute(route, f.from, false, String(f.reason ?? "an earlier tick"), f.error ?? "", { silent: true });
+  }
+  route.onFallback = (f) => audit(env, job.user_id, job.id, "stills.fallback", f);
+  const link = (name: string) => signedFileUrl(env, job.id, name);
+  type Linked = VisionImage & { url: string | null };
+
   // 1. THE SHEETS. What a tick drew is written to fidelity.json before it can return: a tick that ran out of time
   //    between two sheets used to drop the report of the sheets it had drawn, and the next tick found them on R2 and
   //    skipped them without reporting them (24 September 2026).
-  const sheets = new Map<string, VisionImage>();
+  const sheets = new Map<string, Linked>();
   const sheetReport: Record<string, unknown> = {};
   const flushSheets = async () => { if (Object.keys(sheetReport).length) await mergeFidelity(env, job, { sheets: sheetReport }); };
   for (const m of castMembersOf(spec, direction)) {
     const key = castSheetKey(job.id, m.id);
     const have = await readStored(env, key);
-    if (have) { sheets.set(norm(m.name), have); continue; }
+    if (have) { sheets.set(norm(m.name), { ...have, url: await link(sheetLinkName(m.id)) }); continue; }
     if (skip.sheets.has(m.id)) continue; // refused for good on an earlier tick: this character is drawn from the words
     if (late()) { await flushSheets(); return setState("drawing"); }
-    const userRef = m.ref ? await userImage(env, job.user_id, spec, m.ref) : null;
-    let r: { bytes: Uint8Array; score: number };
+    const photo = m.ref ? await userImage(env, job.user_id, spec, m.ref) : null;
+    const photoHandle = m.ref ? userRefHandle(spec, m.ref) : null;
+    const userRef = photo ? { ...photo, url: photoHandle ? await link(userRefLinkName(photoHandle)) : null } : null;
+    let r: { bytes: Uint8Array; score: number; usd: number };
     try {
-      r = await drawCastSheet(env, spec, m, look, userRef, { seedBase: fnv1a(`${job.id}/cast/${m.id}`) % 1_000_000, until: opts.deadline });
+      r = await drawCastSheet(env, spec, m, look, userRef, { seedBase: fnv1a(`${job.id}/cast/${m.id}`) % 1_000_000, until: opts.deadline, route });
     } catch (e) {
       const msg = String(e).slice(0, 300);
       const transient = isTransientError(e);
-      await audit(env, job.user_id, job.id, "stills.sheet", { cast: m.id, name: m.name, error: msg, transient });
+      await audit(env, job.user_id, job.id, "stills.sheet", { cast: m.id, name: m.name, error: msg, transient, usd: round4(spentOn(e)) });
       if (transient) {
         await flushSheets();
         return stillsErrorVerdict(e) === "failed" ? setState("failed", `sheet of ${m.name}: ${msg}`) : pause(`sheet of ${m.name}: ${msg}`);
@@ -782,16 +1277,16 @@ export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: nu
       // The sheet is drawn and paid for: a store that did not keep it is a hiccup unless it plainly says otherwise.
       await flushSheets();
       const msg = `storing the sheet of ${m.name}: ${String(e).slice(0, 260)}`;
-      await audit(env, job.user_id, job.id, "stills.store_error", { cast: m.id, error: msg });
+      await audit(env, job.user_id, job.id, "stills.store_error", { cast: m.id, error: msg, usd: r.usd });
       return isTransientStoreError(e) ? pause(msg) : setState("failed", msg);
     }
-    sheets.set(norm(m.name), { bytes: r.bytes, mime: mimeOf(r.bytes) });
-    sheetReport[m.id] = { name: m.name, score: r.score, user_ref: !!userRef };
-    await audit(env, job.user_id, job.id, "stills.sheet", { cast: m.id, name: m.name, score: r.score, user_ref: !!userRef });
+    sheets.set(norm(m.name), { bytes: r.bytes, mime: mimeOf(r.bytes), url: await link(sheetLinkName(m.id)) });
+    sheetReport[m.id] = { name: m.name, score: r.score, user_ref: !!userRef, usd: r.usd };
+    await audit(env, job.user_id, job.id, "stills.sheet", { cast: m.id, name: m.name, score: r.score, user_ref: !!userRef, usd: r.usd });
   }
 
   // 2. THE STILLS.
-  const refCache = new Map<string, VisionImage | null>();
+  const refCache = new Map<string, Linked | null>();
   const extraRefs = async (pic: StillShot): Promise<StillRef[]> => {
     if (!spec) return [];
     const out: StillRef[] = [];
@@ -799,9 +1294,13 @@ export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: nu
       if (r.role === "character") continue;
       const wanted = r.role === "style" || (r.for ? (pic.covers ?? []).includes(r.for) : r.role === "place");
       if (!wanted) continue;
-      if (!refCache.has(r.handle)) refCache.set(r.handle, await userImage(env, job.user_id, spec, r.handle));
+      if (!refCache.has(r.handle)) {
+        const img = await userImage(env, job.user_id, spec, r.handle);
+        const handle = userRefHandle(spec, r.handle);
+        refCache.set(r.handle, img ? { ...img, url: handle ? await link(userRefLinkName(handle)) : null } : null);
+      }
       const img = refCache.get(r.handle);
-      if (img) out.push({ label: `the ${r.role}${r.description ? ` (${clean(r.description).slice(0, 160)})` : ""}`, image: img });
+      if (img) out.push({ label: `the ${r.role}${r.description ? ` (${clean(r.description).slice(0, 160)})` : ""}`, image: { bytes: img.bytes, mime: img.mime }, url: img.url });
     }
     return out;
   };
@@ -812,7 +1311,9 @@ export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: nu
   // every later one as a reference for its line, shading and palette. It is drawn alone first when nothing is stored
   // yet; on a later tick it is read back from the store.
   const firstId = pics[0]?.id;
-  let anchor: VisionImage | null = firstId && stored.has(firstId) ? await readStored(env, `renders/${job.id}/${stored.get(firstId)}`) : null;
+  const anchorName = firstId ? stored.get(firstId) : undefined;
+  const anchorRead = anchorName ? await readStored(env, `renders/${job.id}/${anchorName}`) : null;
+  let anchor: Linked | null = anchorRead && anchorName ? { ...anchorRead, url: await link(anchorName) } : null;
   const ANCHOR_LABEL = "the drawing style of this film: match its line, shading, texture and palette exactly, never its content or composition";
   // The first error that stops this tick's drawing: "pause" (the next tick carries on) or "failed" (the GPU draws the
   // rest). A "failed" outranks a "pause" met by another worker in the same tick.
@@ -823,17 +1324,18 @@ export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: nu
       const pic = queue.shift()!;
       const cast = stillCast(pic, spec, direction);
       const refs: StillRef[] = [];
-      for (const m of cast) { const img = sheets.get(norm(m.name)); if (img && refs.length < MAX_INPUT_IMAGES) refs.push({ label: m.name, image: img }); }
+      const asRef = (label: string, img: Linked): StillRef => ({ label, image: { bytes: img.bytes, mime: img.mime }, url: img.url });
+      for (const m of cast) { const img = sheets.get(norm(m.name)); if (img && refs.length < MAX_INPUT_IMAGES) refs.push(asRef(m.name, img)); }
       for (const r of await extraRefs(pic)) if (refs.length < MAX_INPUT_IMAGES) refs.push(r);
-      if (anchor && pic.id !== firstId && refs.length < MAX_INPUT_IMAGES) refs.push({ label: ANCHOR_LABEL, image: anchor });
+      if (anchor && pic.id !== firstId && refs.length < MAX_INPUT_IMAGES) refs.push(asRef(ANCHOR_LABEL, anchor));
       let r: StillResult;
       try {
-        r = await drawStill(env, { shot: pic, spec, direction, look, format, visual, refs }, { seedBase: fnv1a(`${job.id}/${pic.id}`) % 1_000_000, until: opts.deadline });
+        r = await drawStill(env, { shot: pic, spec, direction, look, format, visual, refs }, { seedBase: fnv1a(`${job.id}/${pic.id}`) % 1_000_000, until: opts.deadline, route });
       } catch (e) {
         const msg = String(e).slice(0, 300);
         const transient = isTransientError(e);
         if (transient) { halt(stillsErrorVerdict(e), msg); queue.unshift(pic); }
-        await audit(env, job.user_id, job.id, "stills.error", { picture: pic.id, error: msg, transient });
+        await audit(env, job.user_id, job.id, "stills.error", { picture: pic.id, error: msg, transient, usd: round4(spentOn(e)) });
         continue;
       }
       // The picture is drawn and paid for: a store that fails to keep it pauses the drawing (the next tick draws it
@@ -846,28 +1348,31 @@ export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: nu
         const size = await putFile(env, key, r.bytes, ctype);
         await setFile(env, { job_id: job.id, name, key, size, content_type: ctype });
         stored.set(pic.id, name);
-        if (pic.id === firstId && !anchor) anchor = { bytes: r.bytes, mime: mimeOf(r.bytes) };
+        if (pic.id === firstId && !anchor) anchor = { bytes: r.bytes, mime: mimeOf(r.bytes), url: await link(name) };
       } catch (e) {
         const msg = `storing ${pic.id}: ${String(e).slice(0, 260)}`;
         halt(isTransientStoreError(e) ? "pause" : "failed", msg);
         queue.unshift(pic);
-        await audit(env, job.user_id, job.id, "stills.store_error", { picture: pic.id, error: msg });
+        await audit(env, job.user_id, job.id, "stills.store_error", { picture: pic.id, error: msg, usd: r.usd ?? 0 });
         continue;
       }
-      stillReport[pic.id] = { score: r.score, mustFailed: r.mustFailed, failed: r.failed, checks: r.checks ?? [], tries: r.tries, refs: refs.map((x) => x.label), judged: r.judged !== false };
-      await audit(env, job.user_id, job.id, "stills.judge", { picture: pic.id, tries: r.tries.length, score: r.score, must_failed: r.mustFailed, failed: r.failed, refs: refs.length });
+      stillReport[pic.id] = { score: r.score, mustFailed: r.mustFailed, failed: r.failed, checks: r.checks ?? [], tries: r.tries, refs: refs.map((x) => x.label), judged: r.judged !== false, usd: r.usd ?? 0 };
+      await audit(env, job.user_id, job.id, "stills.judge", { picture: pic.id, tries: r.tries.length, score: r.score, must_failed: r.mustFailed, failed: r.failed, refs: refs.length, usd: r.usd ?? 0 });
     }
   };
   // The first still alone, so that every other one can be drawn in its style; then the rest, STILLS_CONCURRENCY at a time.
   if (!anchor && queue[0]?.id === firstId) { const one = [queue.shift()!]; const rest = queue.splice(0); queue.push(...one); await worker(); queue.push(...rest); }
   await Promise.all(Array.from({ length: Math.min(STILLS_CONCURRENCY, queue.length) }, () => worker()));
 
-  const model = stillModel(env);
+  // What drew (the route's model: the fallback once there was one), and what the job's pictures cost so far.
+  const model = route.model;
+  const fallback = route.switches.map((s) => ({ from: s.from, to: s.to, reason: s.reason }));
+  const usd = await stillsSpentUsd(env, job.id);
   await mergeFidelity(env, job, { stills: stillReport, ...(Object.keys(sheetReport).length ? { sheets: sheetReport } : {}) }, (rep) => {
     const all = Object.values((rep.stills ?? {}) as Record<string, { score?: number; mustFailed?: number }>);
     const scores = all.map((s) => Number(s.score)).filter((n) => Number.isFinite(n));
     return {
-      pictures: total, drawn: countDrawn(), model, at: nowIso(),
+      pictures: total, drawn: countDrawn(), model, at: nowIso(), usd, ...(fallback.length ? { fallback } : {}),
       mean_score: scores.length ? round3(scores.reduce((a, b) => a + b, 0) / scores.length) : null,
       must_failed_pictures: all.filter((s) => (s.mustFailed ?? 0) > 0).length,
     };
@@ -876,6 +1381,6 @@ export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: nu
   if (halted?.verdict === "failed") return setState("failed", halted.note);
   if (halted) return pause(halted.note);
   if (queue.length) return setState("drawing");
-  await audit(env, job.user_id, job.id, "stills.done", { drawn: countDrawn(), total, model });
+  await audit(env, job.user_id, job.id, "stills.done", { drawn: countDrawn(), total, model, usd, ...(fallback.length ? { fallback } : {}) });
   return setState("done");
 }

@@ -23,10 +23,31 @@ export interface Env {
    * against the spec before any GPU is rented (src/stills.ts); "legacy" leaves the stills to the rented GPU (SDXL).
    */
   STILLS_ENGINE?: string;
-  /** Workers AI model that draws the stills (default @cf/black-forest-labs/flux-2-klein-4b: long prompts, up to 4 reference images, ~$0.002 a still). */
+  /**
+   * The model that draws the stills (default @cf/black-forest-labs/flux-2-klein-4b: long prompts, up to 4 reference
+   * images, ~$0.002 a still). Since 25 September 2026 (the owner: stills at Higgsfield quality) the id names its road:
+   * "@cf/…" is Workers AI; "openrouter:<vendor/model>" is OpenRouter's chat completions (IMAGE_API_URL, IMAGE_API_KEY),
+   * e.g. "openrouter:google/gemini-3-pro-image-preview" (Nano Banana Pro, ~$0.138 a still); "kie:<model>" is kie.ai's
+   * jobs API (KIE_API_KEY), e.g. "kie:nano-banana-pro" ($0.09) or "kie:nano-banana-2" ($0.06 at 2K). See src/stills.ts drawImage.
+   */
   STILL_MODEL?: string;
-  /** The model for the LAST try of a still that failed a must on every earlier try, when that must is a look, an identity or a text (default flux-2-klein-9b; "none" = never). */
+  /**
+   * The model for the LAST try of a still that failed a must on every earlier try, when that must is a look, an identity
+   * or a text (default flux-2-klein-9b when STILL_MODEL is a Workers AI model, none when it is an external one — nothing
+   * on Workers AI draws better than Nano Banana Pro; "none" = never). Same id syntax as STILL_MODEL.
+   */
   STILL_MODEL_STRONG?: string;
+  /**
+   * The model the stills engine falls back to, for the rest of the job, when STILL_MODEL's (or STILL_MODEL_STRONG's)
+   * provider refuses for money — no credit, unauthorized, payment required, a missing key — so a film is never lost
+   * to an empty account (default @cf/black-forest-labs/flux-2-klein-4b; "none" = no fallback: the pictures the
+   * provider refuses are left to the rented GPU, as any refused picture is). An audit row "stills.fallback" says when.
+   */
+  STILL_MODEL_FALLBACK?: string;
+  /** The OpenAI-compatible endpoint base an "openrouter:…" still model is drawn through (unset = PLAN_API_URL, then "https://openrouter.ai/api/v1"). */
+  IMAGE_API_URL?: string;
+  /** Secret: the key for IMAGE_API_URL (unset = PLAN_API_KEY). Never logged, never in an audit row. */
+  IMAGE_API_KEY?: string;
   /** Draws per still before the best one is kept (default 2 since 24 September 2026, was 3: the fidelity bench drew nearly every still three times, ≈ $0.027 a still). */
   STILL_ATTEMPTS?: string;
   /** Weighted pass rate, 0-1 (default 0.85). Since 24 September 2026 only a tie-breaker between failed tries: a try with no failed must is kept whatever its score. */

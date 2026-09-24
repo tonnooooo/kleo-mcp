@@ -6,15 +6,29 @@
  * same day: two tries, a must-free try is kept whatever its score, 9B only for a look, identity or text miss, an
  * identity question per character drawn from a sheet, a flagged draw moves to the next seed), and a whole job's stills
  * persisted the way /images and /dl read them (character sheets first, R2 names, audit rows, params.stills,
- * fidelity.json). No network, no Workers AI. Run: node --test test/stills.test.mjs
+ * fidelity.json). Since 25 September 2026 also the two external roads a still model id can name — OpenRouter's chat
+ * completions and kie.ai's jobs API, both behind a fake `fetch` (globalThis.fetch replaced, as test/footage.test.mjs
+ * does) — the signed reference links kie.ai is given, the fallback to klein-4B after a refusal for money, and the cost
+ * of a job's pictures. No network, no Workers AI. Run: node --test test/stills.test.mjs
  */
-import { test } from "node:test";
+import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   compileStill, feedbackFor, drawStill, drawCastSheet, drawJobStills, stillsEngineOn, stillsHold, stillCast, stillShotsOf,
   STILL_SIZES, STILL_PROMPT_MAX, STYLE_SENTENCE, NO_TEXT_SENTENCE, FRAMING, DEFAULT_FRAMING, DEFAULT_STILL_MODEL, DEFAULT_STRONG_STILL_MODEL, EST_STILL_MS, castSheetKey,
   stillsErrorVerdict, pauseStills,
+  drawImage, isFlaggedError, fallbackReason, stillProviderOf, strongStillModel, fallbackStillModel, stillPriceUsd, aspectRatioOf, imageTierOf,
+  openRouterImageUrl, kieStillInput, KIE_STILL_POLL, SHEET_SIZE, REFERENCE_LINK_RE, referenceLinkKey, sheetLinkName,
 } from "../src/stills.ts";
+import { isTransientError } from "../src/images.ts";
+import { handleDownload } from "../src/dl.ts";
+
+// The external roads' tests (25 September 2026) replace globalThis.fetch and shorten kie.ai's polling: both are put
+// back after every test, so no test sees another's network.
+const POLL0 = { ...KIE_STILL_POLL };
+let realFetch;
+beforeEach(() => { realFetch = globalThis.fetch; Object.assign(KIE_STILL_POLL, { everyMs: 2, minMs: 2_000, maxMs: 4_000 }); });
+afterEach(() => { globalThis.fetch = realFetch; Object.assign(KIE_STILL_POLL, POLL0); });
 
 /* ------------------------------------------------------------------ fixtures */
 
@@ -229,7 +243,10 @@ function fakeEnv(extra = {}) {
           if (sql.includes("FROM audit")) { const ev = sql.match(/event = '([^']+)'/)?.[1]; return { results: auditRows.filter((r) => r.event === ev).map((r) => ({ detail: r.detail, at: r.at })) }; }
           return { results: [] };
         },
-        async first() { return sql.startsWith("SELECT params FROM jobs") ? (jobs.has(this.args[0]) ? { params: jobs.get(this.args[0]).params } : null) : null; },
+        async first() {
+          if (sql.startsWith("SELECT * FROM jobs")) return jobs.get(this.args[0]) ?? null; // getJob, for the /dl round trip
+          return sql.startsWith("SELECT params FROM jobs") ? (jobs.has(this.args[0]) ? { params: jobs.get(this.args[0]).params } : null) : null;
+        },
       };
     },
   };
@@ -530,4 +547,312 @@ test("drawStill: a flagged draw is a failed try — the next seed is drawn; two 
   const bare = fakeAi({ draw: () => { throw new Error(FLAGGED); } });
   await assert.rejects(drawStill({ AI: bare.ai }, input({ refs: [] })), /3030/);
   assert.equal(bare.calls.draws.length, 2, "no reference to drop: the two tries, then the refusal");
+});
+
+/* ------------------------------------------------------------------ the external roads (25 September 2026) */
+
+// The owner, 25 September 2026: stills at Higgsfield quality. Nano Banana Pro through OpenRouter or kie.ai, klein-4B
+// the fallback when the account cannot pay. Every network call below goes to a fake `fetch` (restored after each test,
+// with the kie.ai poll timing, by the hooks at the top of this file).
+const PNG = () => { const b = new Uint8Array(64); b.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]); return b; };
+const JPG = (n = 1) => new Uint8Array([0xff, 0xd8, 0xff, 0xe0, n, 7, 7, 7]);
+const b64 = (bytes) => Buffer.from(bytes).toString("base64");
+const jsonRes = (x, status = 200) => new Response(JSON.stringify(x), { status, headers: { "content-type": "application/json" } });
+const NBP_OR = "openrouter:google/gemini-3-pro-image-preview";
+
+/** A fake OpenRouter: records every request, answers `reply(body, n)` (a Response), by default one PNG in message.images with usage.cost. */
+function fakeOpenRouter(reply) {
+  const calls = [];
+  const fetch = async (url, init = {}) => {
+    const body = JSON.parse(init.body);
+    calls.push({ url: String(url), headers: init.headers, body });
+    if (reply) return reply(body, calls.length);
+    return jsonRes({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: "", images: [{ type: "image_url", image_url: { url: `data:image/png;base64,${b64(PNG())}` } }] } }], usage: { cost: 0.138 } });
+  };
+  return { calls, fetch };
+}
+
+/**
+ * A fake kie.ai for the image models: createTask answers a task id (or what `script.create` returns), recordInfo says
+ * "generating" on a task's first look and "success" on the second (or what `script.state(taskId, n)` says), with
+ * creditsConsumed; the result file is a small JPEG.
+ */
+function fakeKieImages(script = {}) {
+  const calls = { create: [], record: 0, downloads: 0 };
+  const polls = new Map();
+  const fetch = async (url, init = {}) => {
+    const u = String(url);
+    if (u === "https://api.kie.ai/api/v1/jobs/createTask") {
+      const body = JSON.parse(init.body);
+      calls.create.push({ body, auth: init.headers.authorization });
+      const custom = script.create?.(body, calls.create.length);
+      if (custom) return custom;
+      return jsonRes({ code: 200, msg: "success", data: { taskId: `task_${calls.create.length}` } });
+    }
+    if (u.startsWith("https://api.kie.ai/api/v1/jobs/recordInfo?")) {
+      calls.record++;
+      const taskId = new URL(u).searchParams.get("taskId");
+      const n = (polls.get(taskId) ?? 0) + 1; polls.set(taskId, n);
+      const state = script.state?.(taskId, n) ?? (n < 2 ? "generating" : "success");
+      const done = state === "success";
+      return jsonRes({ code: 200, msg: "success", data: {
+        taskId, state, resultJson: done ? JSON.stringify({ resultUrls: [`https://tempfile.kie.test/${taskId}.jpg`] }) : "",
+        failCode: state === "fail" ? (script.failCode ?? "400") : "", failMsg: state === "fail" ? (script.failMsg ?? "bad input") : "",
+        creditsConsumed: done ? (script.credits === undefined ? 18 : script.credits) : null,
+      } });
+    }
+    if (u.startsWith("https://tempfile.kie.test/")) { calls.downloads++; return new Response(JPG(calls.downloads), { status: 200 }); }
+    throw new Error(`unexpected fetch ${u}`);
+  };
+  return { calls, fetch };
+}
+const rejection = async (p) => { try { await p; } catch (e) { return e; } assert.fail("expected a rejection"); };
+
+test("stillProviderOf / strongStillModel / fallbackStillModel / sizes / prices: the id names the road; an external main model has no klein-9B escalation", () => {
+  assert.deepEqual(stillProviderOf(DEFAULT_STILL_MODEL), { provider: "workers-ai", id: DEFAULT_STILL_MODEL });
+  assert.deepEqual(stillProviderOf(NBP_OR), { provider: "openrouter", id: "google/gemini-3-pro-image-preview" });
+  assert.deepEqual(stillProviderOf("kie:nano-banana-pro"), { provider: "kie", id: "nano-banana-pro" });
+  assert.equal(strongStillModel({}), DEFAULT_STRONG_STILL_MODEL, "the klein ladder is unchanged");
+  assert.equal(strongStillModel({ STILL_MODEL: "kie:nano-banana-pro" }), null, "nothing on Workers AI draws better than Nano Banana Pro");
+  assert.equal(strongStillModel({ STILL_MODEL: "kie:nano-banana-2", STILL_MODEL_STRONG: "kie:nano-banana-pro" }), "kie:nano-banana-pro", "an explicit escalation is honoured");
+  assert.equal(fallbackStillModel({}), DEFAULT_STILL_MODEL);
+  assert.equal(fallbackStillModel({ STILL_MODEL_FALLBACK: "none" }), null);
+  assert.equal(aspectRatioOf(STILL_SIZES["9:16"]), "9:16"); assert.equal(aspectRatioOf(STILL_SIZES["16:9"]), "16:9"); assert.equal(aspectRatioOf(SHEET_SIZE), "3:4");
+  assert.equal(imageTierOf(STILL_SIZES["9:16"]), "2K"); assert.equal(imageTierOf(SHEET_SIZE), "1K");
+  assert.equal(stillPriceUsd("kie:nano-banana-pro", STILL_SIZES["9:16"]), 0.09);
+  assert.equal(stillPriceUsd("kie:nano-banana-2", STILL_SIZES["9:16"]), 0.06); assert.equal(stillPriceUsd("kie:nano-banana-2", SHEET_SIZE), 0.04);
+  assert.equal(stillPriceUsd(NBP_OR, STILL_SIZES["9:16"]), 0.138);
+  assert.equal(stillPriceUsd(DEFAULT_STILL_MODEL, STILL_SIZES["9:16"]), 0.0023, "8 tiles of 512x512");
+  assert.equal(stillPriceUsd(DEFAULT_STRONG_STILL_MODEL, STILL_SIZES["9:16"]), 0.016);
+  assert.equal(stillPriceUsd("kie:some-other-model", STILL_SIZES["9:16"]), null);
+});
+
+test("drawImage on @cf/…: the Workers AI binding as before, never the network; the price from the table", async () => {
+  globalThis.fetch = async () => { throw new Error("no network on the Workers AI road"); };
+  const { ai, calls } = fakeAi();
+  const d = await drawImage({ AI: ai }, DEFAULT_STILL_MODEL, "a prompt", STILL_SIZES["9:16"], [{ ...IMG(1), url: "https://kleo.test/x" }], 5);
+  assert.equal(calls.draws.length, 1); assert.equal(calls.draws[0].refs, 1, "the bytes go as input_image_0; the url is not needed");
+  assert.deepEqual([calls.draws[0].width, calls.draws[0].height, calls.draws[0].seed], [896, 1600, 5]);
+  assert.equal(d.bytes[0], 0xff); assert.equal(d.usd, 0.0023); assert.equal(d.reported, false);
+});
+
+test("drawImage on openrouter:…: one chat completion — prompt, references as data URLs, aspect ratio and 2K — the picture from message.images, the cost from usage.cost", async () => {
+  const or = fakeOpenRouter(); globalThis.fetch = or.fetch;
+  const d = await drawImage({ IMAGE_API_KEY: "or-key", PLAN_API_KEY: "plan-key" }, NBP_OR, "Two friends at the bakery door", STILL_SIZES["9:16"], [{ ...IMG(1), url: "https://kleo.test/a" }, IMG(2)], 42);
+  assert.equal(or.calls.length, 1);
+  const { url, headers, body } = or.calls[0];
+  assert.equal(url, "https://openrouter.ai/api/v1/chat/completions");
+  assert.equal(headers.authorization, "Bearer or-key", "IMAGE_API_KEY wins over PLAN_API_KEY");
+  assert.equal(body.model, "google/gemini-3-pro-image-preview");
+  assert.deepEqual(body.modalities, ["image", "text"]);
+  assert.deepEqual(body.image_config, { aspect_ratio: "9:16", image_size: "2K" });
+  assert.equal(body.seed, 42);
+  const content = body.messages[0].content;
+  assert.equal(body.messages[0].role, "user");
+  assert.deepEqual(content[0], { type: "text", text: "Two friends at the bakery door" });
+  assert.equal(content.length, 3, "the prompt, then every reference in order");
+  assert.equal(content[1].type, "image_url"); assert.equal(content[1].image_url.url, `data:image/jpeg;base64,${b64(IMG(1).bytes)}`);
+  assert.equal(d.bytes[0], 0x89, "the PNG of message.images[0]"); assert.equal(d.usd, 0.138); assert.equal(d.reported, true);
+  // Another base URL and the planner's key; the picture as a content part, no usage: the price table says 0.138.
+  const alt = fakeOpenRouter(() => jsonRes({ choices: [{ message: { content: [{ type: "text", text: "here it is" }, { type: "image_url", image_url: { url: `data:image/jpeg;base64,${b64(JPG(9))}` } }] } }] }));
+  globalThis.fetch = alt.fetch;
+  const s = await drawImage({ IMAGE_API_URL: "https://proxy.test/v1/", PLAN_API_KEY: "plan-key" }, NBP_OR, "a sheet", SHEET_SIZE, [], 1);
+  assert.equal(alt.calls[0].url, "https://proxy.test/v1/chat/completions"); assert.equal(alt.calls[0].headers.authorization, "Bearer plan-key");
+  assert.deepEqual(alt.calls[0].body.image_config, { aspect_ratio: "3:4", image_size: "1K" }, "a sheet is asked at 1K, 3:4");
+  assert.equal(alt.calls[0].body.messages[0].content.length, 1);
+  assert.equal(s.bytes[4], 9); assert.equal(s.usd, 0.138); assert.equal(s.reported, false);
+  assert.equal(openRouterImageUrl({ content: `Sure! ![img](data:image/png;base64,${b64(PNG())})` }), `data:image/png;base64,${b64(PNG())}`, "a data URL written in the text");
+  assert.equal(openRouterImageUrl({ content: "I cannot draw that." }), null);
+  // A model that is not Gemini gets no image_size.
+  const flux = fakeOpenRouter(); globalThis.fetch = flux.fetch;
+  await drawImage({ IMAGE_API_KEY: "k" }, "openrouter:black-forest-labs/flux-2-pro", "p", STILL_SIZES["16:9"], [], 1);
+  assert.deepEqual(flux.calls[0].body.image_config, { aspect_ratio: "16:9" });
+});
+
+test("drawImage on openrouter:…: no key, 402 and a 200 carrying error 402 are money (fallback); 429 is 'not now' (pause); an answer without a picture is flagged, and billed", async () => {
+  const none = await rejection(drawImage({}, NBP_OR, "p", STILL_SIZES["9:16"], [], 1));
+  assert.equal(fallbackReason(none), "unauthorized");
+  globalThis.fetch = fakeOpenRouter(() => jsonRes({ error: { code: 402, message: "Insufficient credits. Add more using https://openrouter.ai/credits" } }, 402)).fetch;
+  const poor = await rejection(drawImage({ IMAGE_API_KEY: "k" }, NBP_OR, "p", STILL_SIZES["9:16"], [], 1));
+  assert.equal(fallbackReason(poor), "no credit"); assert.equal(isTransientError(poor), false);
+  globalThis.fetch = fakeOpenRouter(() => jsonRes({ error: { code: 402, message: "This request requires more credits" } }, 200)).fetch;
+  assert.equal(fallbackReason(await rejection(drawImage({ IMAGE_API_KEY: "k" }, NBP_OR, "p", STILL_SIZES["9:16"], [], 1))), "no credit");
+  globalThis.fetch = fakeOpenRouter(() => jsonRes({ error: { code: 401, message: "No auth credentials found" } }, 401)).fetch;
+  assert.equal(fallbackReason(await rejection(drawImage({ IMAGE_API_KEY: "k" }, NBP_OR, "p", STILL_SIZES["9:16"], [], 1))), "unauthorized");
+  globalThis.fetch = fakeOpenRouter(() => jsonRes({ error: { code: 429, message: "Rate limit exceeded" } }, 429)).fetch;
+  const busy = await rejection(drawImage({ IMAGE_API_KEY: "k" }, NBP_OR, "p", STILL_SIZES["9:16"], [], 1));
+  assert.equal(fallbackReason(busy), null); assert.equal(isTransientError(busy), true); assert.equal(stillsErrorVerdict(busy), "pause");
+  globalThis.fetch = fakeOpenRouter(() => jsonRes({ error: { code: 502, message: "Provider returned error" } }, 502)).fetch;
+  assert.equal(stillsErrorVerdict(await rejection(drawImage({ IMAGE_API_KEY: "k" }, NBP_OR, "p", STILL_SIZES["9:16"], [], 1))), "pause");
+  globalThis.fetch = fakeOpenRouter(() => jsonRes({ choices: [{ finish_reason: "stop", message: { content: "I can't generate images of real people." } }], usage: { cost: 0.01 } })).fetch;
+  const refused = await rejection(drawImage({ IMAGE_API_KEY: "k" }, NBP_OR, "p", STILL_SIZES["9:16"], [], 1));
+  assert.equal(isFlaggedError(refused), true, "drawJudged draws the next seed"); assert.equal(fallbackReason(refused), null); assert.equal(refused.usd, 0.01);
+  globalThis.fetch = async () => { throw new TypeError("fetch failed"); };
+  assert.equal(stillsErrorVerdict(await rejection(drawImage({ IMAGE_API_KEY: "k" }, NBP_OR, "p", STILL_SIZES["9:16"], [], 1))), "pause");
+});
+
+test("drawImage on kie:nano-banana-pro: createTask with the signed links only, 2K JPEG, polled until success; the cost from creditsConsumed", async () => {
+  const kie = fakeKieImages(); globalThis.fetch = kie.fetch;
+  const sheetUrl = "https://kleo.test/dl/gt_x/ref%2Fcast%2Fc1.jpg?exp=1&sig=ab";
+  const d = await drawImage({ KIE_API_KEY: "kie-key" }, "kie:nano-banana-pro", "Mara at the counter", STILL_SIZES["9:16"], [{ ...IMG(1), url: sheetUrl }, IMG(2)], 7);
+  assert.deepEqual(kie.calls.create[0].body, { model: "nano-banana-pro", input: { prompt: "Mara at the counter", image_input: [sheetUrl], aspect_ratio: "9:16", resolution: "2K", output_format: "jpg" } });
+  assert.equal(kie.calls.create[0].auth, "Bearer kie-key");
+  assert.equal(kie.calls.record, 2, "generating, then success"); assert.equal(kie.calls.downloads, 1);
+  assert.equal(d.bytes[0], 0xff); assert.equal(d.usd, 0.09, "18 credits of 0.005 $"); assert.equal(d.reported, true);
+  // Nano Banana 2, a sheet: 1K, 3:4; no creditsConsumed → the price table.
+  const nb2 = fakeKieImages({ credits: null }); globalThis.fetch = nb2.fetch;
+  const s = await drawImage({ KIE_API_KEY: "kie-key" }, "kie:nano-banana-2", "a sheet", SHEET_SIZE, [], 1);
+  assert.deepEqual(nb2.calls.create[0].body.input, { prompt: "a sheet", image_input: [], aspect_ratio: "3:4", resolution: "1K", output_format: "jpg" });
+  assert.equal(nb2.calls.create[0].body.model, "nano-banana-2");
+  assert.equal(s.usd, 0.04); assert.equal(s.reported, false);
+  assert.deepEqual(kieStillInput("nano-banana-2-lite", { prompt: "p", urls: ["https://a"], size: STILL_SIZES["16:9"] }), { prompt: "p", image_urls: ["https://a"], aspect_ratio: "16:9" });
+  // A recordInfo hiccup is asked again, not counted against the task (the task is paid for either way).
+  let hiccup = 0;
+  const flaky = fakeKieImages();
+  globalThis.fetch = async (u, i) => (String(u).includes("recordInfo") && hiccup++ === 0 ? jsonRes({ code: 503, msg: "busy" }, 503) : flaky.fetch(u, i));
+  assert.equal((await drawImage({ KIE_API_KEY: "k" }, "kie:nano-banana-pro", "p", STILL_SIZES["9:16"], [], 1)).usd, 0.09);
+});
+
+test("drawImage on kie:…: a failed task (flagged when kie.ai names a policy), a timeout that pauses, and a refusal for money", async () => {
+  globalThis.fetch = fakeKieImages({ state: () => "fail", failCode: "400", failMsg: "The content violates the content policy" }).fetch;
+  const flagged = await rejection(drawImage({ KIE_API_KEY: "k" }, "kie:nano-banana-pro", "p", STILL_SIZES["9:16"], [], 1));
+  assert.match(String(flagged), /failed: 400 The content violates the content policy \(flagged\)/); assert.equal(isFlaggedError(flagged), true);
+  globalThis.fetch = fakeKieImages({ state: () => "fail", failCode: "500", failMsg: "internal error" }).fetch;
+  const broke = await rejection(drawImage({ KIE_API_KEY: "k" }, "kie:nano-banana-pro", "p", STILL_SIZES["9:16"], [], 1));
+  assert.equal(isFlaggedError(broke), false); assert.equal(stillsErrorVerdict(broke), "pause");
+  // Never finished: polled until the window closes, then a timeout — a pause for the job, never a fallback.
+  Object.assign(KIE_STILL_POLL, { everyMs: 5, minMs: 40, maxMs: 80 });
+  const slow = fakeKieImages({ state: () => "generating" }); globalThis.fetch = slow.fetch;
+  const t0 = Date.now();
+  const late = await rejection(drawImage({ KIE_API_KEY: "k" }, "kie:nano-banana-pro", "p", STILL_SIZES["9:16"], [], 1));
+  assert.match(String(late), /timed out after \d+ ms \(kie\.ai task task_1 still generating\)/);
+  assert.ok(Date.now() - t0 >= 35, "it waited its minimum"); assert.ok(slow.calls.record >= 2);
+  assert.equal(isTransientError(late), true); assert.equal(stillsErrorVerdict(late), "pause"); assert.equal(fallbackReason(late), null);
+  // Money: code 402, and the code 500 "Credits insufficient" kie.ai really answered on 13 September.
+  globalThis.fetch = fakeKieImages({ create: () => jsonRes({ code: 402, msg: "insufficient credits" }) }).fetch;
+  assert.equal(fallbackReason(await rejection(drawImage({ KIE_API_KEY: "k" }, "kie:nano-banana-pro", "p", STILL_SIZES["9:16"], [], 1))), "no credit");
+  globalThis.fetch = fakeKieImages({ create: () => jsonRes({ code: 500, msg: "Credits insufficient : Your current balance isn’t enough to run this request." }) }).fetch;
+  assert.equal(fallbackReason(await rejection(drawImage({ KIE_API_KEY: "k" }, "kie:nano-banana-pro", "p", STILL_SIZES["9:16"], [], 1))), "no credit");
+  globalThis.fetch = fakeKieImages({ create: () => jsonRes({ code: 401, msg: "You do not have access permissions" }, 401) }).fetch;
+  assert.equal(fallbackReason(await rejection(drawImage({ KIE_API_KEY: "k" }, "kie:nano-banana-pro", "p", STILL_SIZES["9:16"], [], 1))), "unauthorized");
+  assert.equal(fallbackReason(await rejection(drawImage({}, "kie:nano-banana-pro", "p", STILL_SIZES["9:16"], [], 1))), "unauthorized", "no KIE_API_KEY");
+});
+
+test("drawStill on kie:…: a reference without a link is not passed, not named in the prompt, not asked about; after a 402 the same try is redrawn on klein-4B WITH it", async () => {
+  const kie = fakeKieImages(); globalThis.fetch = kie.fetch;
+  const { ai, calls } = fakeAi();
+  const env = { AI: ai, STILL_MODEL: "kie:nano-banana-pro", KIE_API_KEY: "k" };
+  const r = await drawStill(env, input());
+  assert.equal(calls.draws.length, 0, "drawn on kie.ai, judged on Workers AI");
+  assert.deepEqual(kie.calls.create[0].body.input.image_input, []);
+  assert.ok(!kie.calls.create[0].body.input.prompt.includes("(reference image 1)"), "the prompt never names an image the model does not get");
+  assert.ok(!calls.judges[0].qs.some((x) => /same individual/.test(x.q)), "no identity question against a sheet the model never saw");
+  assert.equal(calls.judges[0].images, 1);
+  assert.equal(r.usd, 0.09); assert.equal(r.tries[0].usd, 0.09); assert.equal(r.tries[0].model, undefined, "no escalation, no fallback: no model tag");
+  // With a signed link the sheet goes, and the identity question comes back.
+  const kie2 = fakeKieImages(); globalThis.fetch = kie2.fetch;
+  const judged = fakeAi();
+  await drawStill({ ...env, AI: judged.ai }, input({ refs: [{ label: "Mara", image: IMG(1), url: "https://kleo.test/dl/gt/ref%2Fcast%2Fc1.jpg?exp=1&sig=a" }] }));
+  assert.equal(kie2.calls.create[0].body.input.image_input.length, 1);
+  assert.ok(kie2.calls.create[0].body.input.prompt.includes("Mara (reference image 1)"));
+  assert.ok(judged.calls.judges[0].qs.some((x) => /same individual as the reference image of Mara/.test(x.q)));
+  // No credit: the same try, same seed, on klein-4B with the sheet's bytes; a forced model (the bench) is never swapped.
+  globalThis.fetch = fakeKieImages({ create: () => jsonRes({ code: 402, msg: "insufficient credits" }) }).fetch;
+  const poor = fakeAi();
+  const f = await drawStill({ ...env, AI: poor.ai }, input(), { seedBase: 300 });
+  assert.equal(poor.calls.draws.length, 1); assert.equal(poor.calls.draws[0].model, DEFAULT_STILL_MODEL); assert.equal(poor.calls.draws[0].seed, 300);
+  assert.equal(poor.calls.draws[0].refs, 1); assert.ok(poor.calls.draws[0].prompt.includes("Mara (reference image 1)"));
+  assert.equal(f.tries[0].model, DEFAULT_STILL_MODEL, "a try drawn after a fallback says by what"); assert.equal(f.usd, 0.0023);
+  const forced = await rejection(drawStill({ ...env, AI: fakeAi().ai }, input(), { model: "kie:nano-banana-pro" }));
+  assert.equal(fallbackReason(forced), "no credit");
+});
+
+test("drawJobStills on kie:nano-banana-pro: the sheet, then every still with its references as signed /dl links (the sheet, the first still as style anchor); /dl serves them, none is a job file; stills.done says 0.36 $", async () => {
+  const kie = fakeKieImages(); globalThis.fetch = kie.fetch;
+  const { ai, calls } = fakeAi();
+  const { env, jobs, files, auditRows, kv } = fakeEnv({ AI: ai, STILL_MODEL: "kie:nano-banana-pro", KIE_API_KEY: "kie-key", PUBLIC_URL: "https://kleo.test" });
+  const job = jobOf(jobs);
+  assert.deepEqual(await drawJobStills(env, job, { deadline: Date.now() + 120_000 }), { state: "done", drawn: 3, total: 3 });
+  assert.equal(calls.draws.length, 0, "no picture drawn on Workers AI");
+  const bodies = kie.calls.create.map((c) => c.body);
+  assert.equal(bodies.length, 4, "one sheet, three stills, one try each");
+  const sheet = bodies[0].input;
+  assert.ok(sheet.prompt.startsWith("Character reference sheet of Mara"), sheet.prompt);
+  assert.deepEqual([sheet.image_input, sheet.resolution, sheet.aspect_ratio, sheet.output_format], [[], "1K", "3:4", "jpg"]);
+  const link = (name) => new RegExp(`^https://kleo\\.test/dl/gt_stills/${encodeURIComponent(name).replace(/[.]/g, "\\.")}\\?exp=\\d+&sig=[0-9a-f]{64}$`);
+  const byPrompt = (s) => bodies.find((b) => b.input.prompt.includes(s)).input;
+  const apron = byPrompt("ties her lilac apron"), front = byPrompt("bakery front"), smile = byPrompt("smiles at the finished cake");
+  assert.equal(apron.image_input.length, 1); assert.match(apron.image_input[0], link(sheetLinkName("c1")), "Mara's shot is drawn from her sheet");
+  assert.deepEqual([apron.resolution, apron.aspect_ratio], ["2K", "9:16"]);
+  assert.equal(front.image_input.length, 1); assert.match(front.image_input[0], link("img/01-sc-s1.jpg"), "the first still is the style anchor");
+  assert.equal(smile.image_input.length, 2); assert.match(smile.image_input[0], link(sheetLinkName("c1"))); assert.match(smile.image_input[1], link("img/01-sc-s1.jpg"));
+  assert.ok(![...files.keys()].some((n) => n.startsWith("ref/") || n.startsWith("cast/")), "a reference link is never a job file");
+  // The links kie.ai was given are served by /dl: the sheet from its key, the anchor from the job files.
+  for (const url of [apron.image_input[0], front.image_input[0]]) {
+    const res = await handleDownload(new Request(url), env);
+    assert.equal(res.status, 200, url); assert.equal(res.headers.get("content-type"), "image/jpeg");
+    assert.equal(new Uint8Array(await res.arrayBuffer())[0], 0xff);
+  }
+  assert.equal((await handleDownload(new Request(apron.image_input[0].replace(/sig=[0-9a-f]{64}/, `sig=${"0".repeat(64)}`)), env)).status, 403, "the signature still guards it");
+  const done = auditRows.filter((a) => a.event === "stills.done").map((a) => JSON.parse(a.detail));
+  assert.equal(done.length, 1); assert.equal(done[0].model, "kie:nano-banana-pro"); assert.equal(done[0].usd, 0.36, "four pictures at 18 credits");
+  assert.equal(done[0].fallback, undefined);
+  const report = JSON.parse(new TextDecoder().decode(kv.get("file:renders/gt_stills/fidelity.json").v));
+  assert.equal(report.summary.usd, 0.36); assert.equal(report.sheets.c1.usd, 0.09); assert.equal(report.stills["01-sc-s1"].usd, 0.09);
+});
+
+test("referenceLinkKey: a sheet name maps under the job, a kref under the job OWNER's refs; anything else is refused", async () => {
+  assert.equal(await referenceLinkKey({}, { id: "gt_x", user_id: "u1" }, "ref/cast/c1.jpg"), castSheetKey("gt_x", "c1"));
+  const RENDERS = { async get(k) { return k === "refs/u1/kref_0a1b2c3d.json" ? { text: async () => JSON.stringify({ handle: "kref_0a1b2c3d", mime: "image/png" }) } : null; } };
+  assert.equal(await referenceLinkKey({ RENDERS }, { id: "gt_x", user_id: "u1" }, "ref/kref_0a1b2c3d"), "refs/u1/kref_0a1b2c3d.png");
+  assert.equal(await referenceLinkKey({ RENDERS }, { id: "gt_x", user_id: "u2" }, "ref/kref_0a1b2c3d"), null, "another account's picture is not there");
+  for (const bad of ["ref/cast/../x.jpg", "ref/cast/C1.jpg", "ref/kref_xyz", "cast/c1.jpg", "ref/refs/u1/kref_0a1b2c3d.png"]) assert.equal(REFERENCE_LINK_RE.test(bad), false, bad);
+});
+
+test("drawJobStills: kie.ai has no credit → one stills.fallback row, the job moves to klein-4B at once (the sheet redrawn there), and the next tick never asks kie.ai again", async () => {
+  const kie = fakeKieImages({ create: () => jsonRes({ code: 402, msg: "insufficient credits" }) }); globalThis.fetch = kie.fetch;
+  const { ai, calls } = fakeAi();
+  const { env, jobs, auditRows } = fakeEnv({ AI: ai, STILL_MODEL: "kie:nano-banana-pro", KIE_API_KEY: "kie-key", PUBLIC_URL: "https://kleo.test" });
+  const job = jobOf(jobs);
+  const r1 = await drawJobStills(env, job, { deadline: Date.now() + 120_000, stop: () => calls.draws.length >= 1 });
+  assert.equal(r1.state, "drawing", "the tick stopped after the sheet");
+  assert.equal(kie.calls.create.length, 1, "kie.ai was asked once");
+  const rows = () => auditRows.filter((a) => a.event === "stills.fallback").map((a) => JSON.parse(a.detail));
+  assert.equal(rows().length, 1);
+  assert.deepEqual({ ...rows()[0], error: undefined }, { from: "kie:nano-banana-pro", to: DEFAULT_STILL_MODEL, reason: "no credit", error: undefined });
+  assert.match(rows()[0].error, /code 402/);
+  assert.ok(calls.draws[0].prompt.startsWith("Character reference sheet of Mara")); assert.equal(calls.draws[0].model, DEFAULT_STILL_MODEL);
+  assert.ok(!auditRows.some((a) => a.event === "stills.paused"), "a refusal for money is not a pause");
+  const r2 = await drawJobStills(env, { ...job, params: jobs.get("gt_stills").params }, { deadline: Date.now() + 120_000 });
+  assert.deepEqual(r2, { state: "done", drawn: 3, total: 3 });
+  assert.equal(kie.calls.create.length, 1, "the fallback holds for the rest of the job");
+  assert.equal(rows().length, 1, "and is not written twice");
+  assert.ok(calls.draws.every((d) => d.model === DEFAULT_STILL_MODEL));
+  const done = JSON.parse(auditRows.find((a) => a.event === "stills.done").detail);
+  assert.equal(done.model, DEFAULT_STILL_MODEL);
+  assert.deepEqual(done.fallback, [{ from: "kie:nano-banana-pro", to: DEFAULT_STILL_MODEL, reason: "no credit" }]);
+  assert.equal(done.usd, 0.008, "a 4-tile sheet (0.0011) and three 8-tile stills (0.0023) on klein-4B");
+});
+
+test("drawJobStills: a kie.ai 503 is 'not now' — the drawing pauses, nothing falls back, nothing is given up", async () => {
+  const kie = fakeKieImages({ create: () => jsonRes({ code: 503, msg: "Service busy" }, 503) }); globalThis.fetch = kie.fetch;
+  const { ai, calls } = fakeAi();
+  const { env, jobs, auditRows } = fakeEnv({ AI: ai, STILL_MODEL: "kie:nano-banana-pro", KIE_API_KEY: "kie-key", PUBLIC_URL: "https://kleo.test" });
+  const r = await drawJobStills(env, jobOf(jobs), { deadline: Date.now() + 120_000 });
+  assert.equal(r.state, "drawing"); assert.equal(paramsNow(jobs).stills.pauses, 1);
+  assert.equal(calls.draws.length, 0); assert.equal(kie.calls.create.length, 1);
+  assert.ok(!auditRows.some((a) => a.event === "stills.fallback"));
+  const sheet = auditRows.filter((a) => a.event === "stills.sheet").map((a) => JSON.parse(a.detail));
+  assert.equal(sheet.length, 1); assert.equal(sheet[0].transient, true, "the sheet is asked for again next tick");
+});
+
+test("drawJobStills: STILL_MODEL_FALLBACK=none — no fallback; the refused sheet leaves Mara to the words and the stills to the GPU, as any refused picture", async () => {
+  globalThis.fetch = fakeKieImages({ create: () => jsonRes({ code: 402, msg: "insufficient credits" }) }).fetch;
+  const { ai, calls } = fakeAi();
+  const { env, jobs, auditRows } = fakeEnv({ AI: ai, STILL_MODEL: "kie:nano-banana-pro", STILL_MODEL_FALLBACK: "none", KIE_API_KEY: "kie-key", PUBLIC_URL: "https://kleo.test" });
+  const r = await drawJobStills(env, jobOf(jobs), { deadline: Date.now() + 120_000 });
+  assert.equal(r.state, "done"); assert.equal(r.drawn, 0, "every picture refused: the GPU draws them");
+  assert.equal(calls.draws.length, 0);
+  assert.ok(!auditRows.some((a) => a.event === "stills.fallback"));
+  assert.equal(auditRows.filter((a) => a.event === "stills.error").length, 3);
 });

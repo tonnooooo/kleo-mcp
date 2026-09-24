@@ -36,6 +36,7 @@ import { FILM_LOOKS, directionOf, type FilmLook } from "./keou-contract.ts";
 import { isAnimatic } from "./templates.ts";
 import { specOf, itemById, type RequestSpec, type SpecItem } from "./spec.ts";
 import { stillCast, stillShotsOf } from "./stills.ts";
+import { KIE_BASE, KIE_CREATE, KIE_RECORD, KIE_CREDIT, USD_PER_KIE_CREDIT, KieError, kie, isNoCredit, kieResultUrls, type KieRecord } from "./kie.ts";
 
 /* ------------------------------------------------------------------ models and prices */
 
@@ -86,13 +87,9 @@ export const KIE_MODELS: Record<string, KieModel> = {
 };
 export const DEFAULT_KIE_MODEL = "minimax-h3";
 
-/** The kie.ai unified API (docs.kie.ai/market/common): one endpoint creates a task for any market model, one reads it. */
-export const KIE_BASE = "https://api.kie.ai";
-export const KIE_CREATE = `${KIE_BASE}/api/v1/jobs/createTask`;
-export const KIE_RECORD = `${KIE_BASE}/api/v1/jobs/recordInfo`;
-/** GET: the account's remaining credits as a bare number in `data` (docs.kie.ai/common-api/get-account-credits); 1 credit = 0.005 $. */
-export const KIE_CREDIT = `${KIE_BASE}/api/v1/chat/credit`;
-export const USD_PER_KIE_CREDIT = 0.005;
+// The kie.ai client (the endpoints, KieError, the call itself, the no-credit test) lives in src/kie.ts since 25
+// September 2026, so the stills engine can draw through it too; every name this module used to export still is.
+export { KIE_BASE, KIE_CREATE, KIE_RECORD, KIE_CREDIT, USD_PER_KIE_CREDIT, KieError, isNoCredit };
 
 /* ------------------------------------------------------------------ the decision */
 
@@ -321,38 +318,7 @@ export const SHOT_ID_RE = /^[a-z0-9-]{1,56}$/;
 export const STILL_NAME_RE = /^[a-z0-9-]{1,56}\.(png|jpg|webp)$/;
 export const clipKey = (jobId: string, shotId: string) => `renders/${jobId}/clips/${shotId}.mp4`;
 
-/* ------------------------------------------------------------------ kie.ai client */
-
-export class KieError extends Error {
-  constructor(message: string, public status: number, public retryable: boolean) { super(message); this.name = "KieError"; }
-}
-
-async function kie<T>(env: Env, method: "GET" | "POST", url: string, body?: unknown): Promise<T> {
-  if (!env.KIE_API_KEY) throw new KieError("KIE_API_KEY is not set", 0, false);
-  const res = await fetch(url, {
-    method,
-    headers: { accept: "application/json", "content-type": "application/json", authorization: `Bearer ${env.KIE_API_KEY.trim()}` },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const text = await res.text();
-  let data: { code?: number; msg?: string; message?: string; data?: T } = {};
-  try { data = JSON.parse(text); } catch { throw new KieError(`kie.ai ${method} ${url} → ${res.status}: unreadable body ${text.slice(0, 120)}`, res.status, res.status >= 500); }
-  if (!res.ok) throw new KieError(`kie.ai ${method} ${url} → ${res.status}: ${(data.msg ?? data.message ?? text).toString().slice(0, 200)}`, res.status, res.status === 429 || res.status >= 500);
-  // The unified API answers HTTP 200 with its own code: 200 is fine, 402 is no credits, 4xx is our request, 5xx is
-  // theirs. A body that carries `data` is trusted whatever the code says (the doc's own example shows 505 + success).
-  if (typeof data.code === "number" && data.code !== 200 && !(data.data && typeof data.data === "object")) throw new KieError(`kie.ai ${method} ${url} → code ${data.code}: ${(data.msg ?? "").slice(0, 200)}`, data.code, data.code >= 500 || data.code === 429);
-  return data.data as T;
-}
-
-/**
- * kie.ai's own words for an empty account. The unified API documents HTTP 200 + code 402; on 13 September 2026 it
- * answered code 500 with "Credits insufficient : Your current balance isn't enough to run this request" instead
- * (job gt_sw48sch9, 13 tasks in, 3 refused). Both mean the same thing and neither is worth a second try.
- */
-export function isNoCredit(e: unknown): boolean {
-  if (!(e instanceof KieError)) return false;
-  return e.status === 402 || /credits? insufficient|insufficient credits?|balance isn.t enough|not enough (credits?|balance)|top up/i.test(e.message);
-}
+/* ------------------------------------------------------------------ kie.ai client (src/kie.ts) */
 
 /**
  * What the account can still spend, in dollars, or null when kie.ai did not say (network, a changed endpoint, a bad
@@ -501,11 +467,6 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
   return { status: 200, reply: { ...reply.reply, ordered } };
 }
 
-/** What kie.ai's recordInfo answers for one task (the fields Kleo reads; the rest is ignored). state is one of
- *  waiting | queuing | generating | success | fail; resultJson is a JSON STRING {"resultUrls":[...]}; the urls expire
- *  after about 24 hours, which is why the clip is copied to R2 the moment it is seen. */
-interface KieRecord { taskId?: string; state?: string; resultJson?: string | { resultUrls?: string[] }; failCode?: string | number; failMsg?: string; costTime?: number }
-
 /**
  * GET /footage: asks kie.ai about every generating shot, downloads the finished ones to R2 (one download per clip,
  * ever: the row's `key` says it is there), and answers the worker's view. `poll` false skips the network (right
@@ -550,12 +511,7 @@ export async function footageStatus(env: Env, job: Job, poll = true): Promise<{ 
   } };
 }
 
-function resultUrls(rec: KieRecord): string[] {
-  let rj: unknown = rec.resultJson;
-  if (typeof rj === "string") { try { rj = JSON.parse(rj); } catch { rj = null; } }
-  const urls = (rj as { resultUrls?: unknown } | null)?.resultUrls;
-  return Array.isArray(urls) ? urls.filter((u): u is string => typeof u === "string" && /^https?:\/\//.test(u)) : [];
-}
+const resultUrls = kieResultUrls;
 const minutesSinceIso = (iso: string): number => (Date.now() - new Date(iso).getTime()) / 60_000;
 
 const CLIP_MAX_BYTES = 400 * 1024 * 1024;
