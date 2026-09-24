@@ -25,11 +25,11 @@ export interface Env {
   STILLS_ENGINE?: string;
   /** Workers AI model that draws the stills (default @cf/black-forest-labs/flux-2-klein-4b: long prompts, up to 4 reference images, ~$0.002 a still). */
   STILL_MODEL?: string;
-  /** The model for the LAST try of a still that failed a must on every earlier try (default flux-2-klein-9b; "none" = never). */
+  /** The model for the LAST try of a still that failed a must on every earlier try, when that must is a look, an identity or a text (default flux-2-klein-9b; "none" = never). */
   STILL_MODEL_STRONG?: string;
-  /** Draws per still before the best one is kept (default 3). */
+  /** Draws per still before the best one is kept (default 2 since 24 September 2026, was 3: the fidelity bench drew nearly every still three times, ≈ $0.027 a still). */
   STILL_ATTEMPTS?: string;
-  /** Weighted pass rate a still needs, with no must check failed, to be accepted at once (default 0.85). */
+  /** Weighted pass rate, 0-1 (default 0.85). Since 24 September 2026 only a tie-breaker between failed tries: a try with no failed must is kept whatever its score. */
   STILL_PASS?: string;
   /** Workers AI vision model that judges the stills and describes reference images (src/vision.ts DEFAULT_VISION_MODEL). */
   VISION_MODEL?: string;

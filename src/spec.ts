@@ -580,11 +580,50 @@ export interface VisualCheck {
 }
 
 /**
+ * The cast member a "character" item is about: its `who` when it names one, otherwise the cast member whose name
+ * stands whole in the item's text or quote (a leading "the"/"a"/"an" of the name aside, so the cast name "the pastry
+ * chef" is found in "a pastry chef"). Undefined for a character the cast does not hold — a crowd, "a fisherman in the
+ * background" — which a picture can still be asked about as such.
+ */
+export function castOfItem(spec: RequestSpec, it: Pick<SpecItem, "text" | "quote" | "who">): SpecCast | undefined {
+  if (it.who) { const c = castById(spec, it.who); if (c) return c; }
+  const bare = (s: string) => norm(s).replace(/^(?:the|a|an)\s+/, "");
+  return spec.cast.find((c) => { const n = bare(c.name); return !!n && [it.text, it.quote].some((s) => ` ${norm(String(s ?? ""))} `.includes(` ${n} `)); });
+}
+
+/**
+ * BUILD, AGE AND BODY: the look words one frame cannot settle (24 September 2026). On the fidelity bench (4 cases, 35
+ * stills) "thin build" was asked as a must and failed on pictures of a plainly slender woman: how thin, how tall, how
+ * old a person is are judgements a vision model makes differently from one frame to the next, and every "no" bought a
+ * redraw. A look item that says only that (thin, slim, tall, short, young, old, elderly, in her thirties, muscular…)
+ * is asked softly; one that also names something concrete — hair, a garment, a colour, an accessory, a feature of the
+ * face — stays a must, because that is exactly what a picture proves ("short blonde hair" is hair, not height).
+ */
+const BODY_RE = /\b(?:thin(?:ner)?|slim|skinny|slender|lean|lanky|wiry|willowy|frail|tall(?:er)?|short(?:er)?|petite|small|tiny|little|big|large|huge|heavy|heavyset|stocky|stout|burly|chubby|plump|fat|overweight|muscular|athletic|build|built|young(?:er)?|youthful|old(?:er)?|elderly|aged?|teen(?:age|ager)?s?|middle[- ]aged|years?[- ]old|(?:twent|thirt|fort|fift|sixt|sevent|eight|ninet)ies)\b/i;
+const CONCRETE_RE = /\b(?:hair|haired|bun|ponytail|braids?|plaits?|curls|curly|fringe|bangs|bald|beard(?:ed)?|moustache|mustache|stubble|eyes?|eyebrows?|glasses|spectacles|freckles|scars?|tattoos?|face|nose|lips|skin|make-?up|apron|coat|jacket|shirt|t-shirt|blouse|dress|skirt|trousers|pants|jeans|shorts|hat|cap|beret|helmet|hood|hoodie|scarf|shawl|cloak|cape|robe|gown|uniform|suit|tie|vest|sweater|jumper|cardigan|gloves?|boots?|shoes?|sandals|sneakers|belt|necklace|earrings?|rings?|bracelet|watch|bag|backpack|sword|shield|armou?r|mask|crown|badge|collar|wears|wearing|dressed|red|orange|yellow|green|blue|purple|violet|lilac|lavender|pink|brown|black|white|grey|gray|blond|blonde|ginger|auburn|silver|golden|gold|beige|navy|teal|turquoise|crimson|striped|checked)\b/i;
+/** Whether a look item speaks only of build, age or body (asked softly), with nothing concrete a picture proves. */
+export const bodyOnlyLook = (text: string): boolean => BODY_RE.test(text) && !CONCRETE_RE.test(text);
+const lookMust = (it: SpecItem): boolean => it.must && !bodyOnlyLook(it.text);
+
+/**
  * The yes/no questions one picture is judged by (src/vision.ts asks them, src/stills.ts acts on the answers): one per
  * item the shot claims, one per cast member it shows (their look, attribute by attribute when the spec has look items),
  * the film's style, what must never appear, and — unless the shot is meant to carry words — no stray text.
  * Atomic yes/no questions, never a 1-10 score: measured in the literature (TIFA, DSG, VQAScore) they are what a vision
  * model answers reliably, and a failed one names exactly what to fix.
+ *
+ * ONLY WHAT ONE FRAME CAN PROVE IS A MUST (24 September 2026). The fidelity bench (4 cases, 35 stills) found almost
+ * every still drawn three times and escalated to the dearer model — 7 of 7 on the pastry chef, ≈ $0.027 a still
+ * against a $0.003-0.005 target — because the judge was asked, as musts, things no single picture can show:
+ *   - a CHARACTER by role: "Does the image show this: the pastry chef?" failed on every pastry still although the
+ *     woman in the lilac apron was there. A character of the cast now asks nothing of their own: they are checked
+ *     through their look attributes (asked here) and, when the still is drawn from their sheet, through an identity
+ *     question against it (src/stills.ts checksFor). A character the cast does not hold (a crowd, "a fisherman in the
+ *     background") is still asked, concretely: "Does the image show a fisherman in the background?".
+ *   - an EVENT or an ACTION: "organizes a surprise party for her best friend", "prepares the cake secretly" are story
+ *     beats; a frame can be a moment of one, never prove it. Asked softly: "Could this image be a moment of this: …?".
+ *   - BUILD and AGE: "thin build" (bodyOnlyLook above), asked softly.
+ * A soft question still counts in the score and still lands in fidelity.json; it just never buys a redraw.
  */
 export function visualChecks(spec: RequestSpec | null, shot: { covers?: readonly string[]; cast?: readonly string[] }, look: "realistic" | "animation"): VisualCheck[] {
   const out: VisualCheck[] = [];
@@ -598,15 +637,25 @@ export function visualChecks(spec: RequestSpec | null, shot: { covers?: readonly
   for (const it of claimed) {
     if (it.kind === "line" || it.kind === "mood" || it.kind === "style" || it.kind === "exclude") continue;
     if (it.kind === "look" && it.who) shows.add(it.who);
+    if (it.kind === "character") {
+      const c = castOfItem(spec, it);
+      if (c) { shows.add(c.id); continue; } // checked by their look and their identity, never by their role
+      out.push({ id: it.id, question: `Does the image show ${it.text.replace(/[.?\s]+$/, "")}?`, expect: "yes", must: it.must });
+      continue;
+    }
+    if (it.kind === "event" || it.kind === "action") { out.push({ id: it.id, question: `Could this image be a moment of this: ${it.text}?`, expect: "yes", must: false }); continue; }
     const q = it.kind === "text" ? `Is the following text clearly written and readable in the image: ${it.text}?` : `Does the image show this: ${it.text}?`;
-    out.push({ id: it.id, question: q, expect: "yes", must: it.must });
+    out.push({ id: it.id, question: q, expect: "yes", must: it.kind === "look" ? lookMust(it) : it.must });
   }
   for (const cid of shows) {
     const c = castById(spec, cid);
     if (!c) continue;
     const attrs = spec.items.filter((i) => i.kind === "look" && i.who === c.id && !claimed.includes(i));
-    if (attrs.length) for (const a of attrs) out.push({ id: `${a.id}`, question: `Does the image show this: ${a.text}?`, expect: "yes", must: a.must });
-    else out.push({ id: `cast:${c.id}`, question: `Is there a character matching this description: ${c.look}?`, expect: "yes", must: true });
+    if (attrs.length) for (const a of attrs) out.push({ id: `${a.id}`, question: `Does the image show this: ${a.text}?`, expect: "yes", must: lookMust(a) });
+    // The whole look is asked only of a character the spec has NO look items for: when the shot claimed them all they
+    // were asked one by one above, and the whole sentence ("a thin woman in her thirties…") fails on a body word the
+    // way "thin build" did on the bench (24 September 2026).
+    else if (!spec.items.some((i) => i.kind === "look" && i.who === c.id)) out.push({ id: `cast:${c.id}`, question: `Is there a character matching this description: ${c.look}?`, expect: "yes", must: true });
   }
   for (const it of spec.items.filter((i) => i.kind === "style" && i.must)) out.push({ id: it.id, question: `Is the image in this style: ${it.text}?`, expect: "yes", must: false });
   for (const it of spec.items.filter((i) => i.kind === "exclude")) out.push({ id: `exclude:${it.id}`, question: `Does the image show any of this: ${it.text.replace(/^(no|never|without|not)\s+/i, "")}?`, expect: "no", must: true });

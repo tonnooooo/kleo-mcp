@@ -93,7 +93,10 @@ export function summarizeFidelity(report: unknown, spec: RequestSpec | null, che
     return (spec && itemById(spec, id)?.text) || id;
   };
   const keyOf = (id: string) => id.replace(/^exclude:/, "");
-  const counted = (id: string) => !!id && id !== "style" && id !== "no-text";
+  // The identity question (24 September 2026, src/stills.ts checksFor: "the same individual as the reference image of
+  // Mara") compares a still with Kleo's own character sheet: a check of Kleo's consistency, not one of the user's
+  // requirements, so it is not counted either (the user's words about Mara are her look items, counted as such).
+  const counted = (id: string) => !!id && id !== "style" && id !== "no-text" && !id.startsWith("identity:");
   const plan = isObj(report.plan) && typeof report.plan.score === "number" ? report.plan.score : null;
   const s = report.summary;
   if (isObj(s) && typeof s.checked === "number" && (typeof s.kept === "number" || typeof s.passed === "number")) {

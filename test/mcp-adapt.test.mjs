@@ -387,9 +387,13 @@ test("kleo_get_result reads the fidelity report: how many of the user's requirem
   await s.env.DB.prepare("UPDATE jobs SET storyboard = ? WHERE id = ?").bind(JSON.stringify(sb), id).run();
   const r2 = await s.call("kleo_get_result", { job_id: id });
   assert.ok(!r2.isError, r2.text);
-  // Asked: R1, R3, R2 (Mara's look item, folded in by the cast), exclude R4 on the first; R2, Mara's look, R4 on the second.
-  assert.deepEqual(r2.structuredContent.fidelity, { checked: 5, kept: 4, misses: [{ id: "cast:c1", text: "Mara looking as described" }], pictures: 2, plan_score: 0.9 });
-  assert.match(r2.text, /Fidelity: 4 of 5 requirements checked on the pictures; misses: cast:c1/);
+  // Asked: R3, R2 (Mara's look item, folded in by the cast), exclude R4 on the first; R2, Mara's look, R4 on the second.
+  // R1 (Mara herself, a character of the cast) asks nothing of its own since 24 September: a role is not something a
+  // frame proves, she is checked by her look (src/spec.ts visualChecks).
+  assert.deepEqual(r2.structuredContent.fidelity, { checked: 4, kept: 3, misses: [{ id: "cast:c1", text: "Mara looking as described" }], pictures: 2, plan_score: 0.9 });
+  assert.match(r2.text, /Fidelity: 3 of 4 requirements checked on the pictures; misses: cast:c1/);
+  // The identity question against Kleo's own character sheet is not one of the user's requirements: never counted.
+  assert.deepEqual(m.summarizeFidelity({ v: 1, stills: { a: { checks: ["style", "R2", "identity:c1"], failed: ["identity:c1"] } } }, maraSpec()), { checked: 1, kept: 1, misses: [], pictures: 1, plan_score: null });
 });
 
 test("when the model is down the tool says so and points at kleo_create_video; it never throws", async () => {

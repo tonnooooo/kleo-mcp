@@ -2,7 +2,9 @@
  * Unit tests for src/stills.ts, the stills engine of 24 September 2026: the prompt compiler (what goes first, what
  * the picture model reads about each character, the text allowance, the sizes), the draw → judge → redraw loop
  * against a fake FLUX.2 + vision binding (a failed must is drawn again with the failure named first, the best try is
- * kept, a refused reference is dropped, an unanswering judge does not burn the quota), and a whole job's stills
+ * kept, a refused reference is dropped, an unanswering judge does not burn the quota; since the fidelity bench of the
+ * same day: two tries, a must-free try is kept whatever its score, 9B only for a look, identity or text miss, an
+ * identity question per character drawn from a sheet, a flagged draw moves to the next seed), and a whole job's stills
  * persisted the way /images and /dl read them (character sheets first, R2 names, audit rows, params.stills,
  * fidelity.json). No network, no Workers AI. Run: node --test test/stills.test.mjs
  */
@@ -142,6 +144,8 @@ test("drawStill: a failed must is drawn again with the failure named first and a
   const r = await drawStill({ AI: ai }, input(), { seedBase: 100 });
   assert.equal(calls.draws.length, 2);
   assert.equal(calls.draws[0].model, DEFAULT_STILL_MODEL);
+  // Two tries by default (24 September 2026): the second is the last, and a missed LOOK is what 9B draws better.
+  assert.equal(calls.draws[1].model, DEFAULT_STRONG_STILL_MODEL);
   assert.deepEqual(calls.draws.map((d) => d.seed), [100, 101]);
   assert.equal(calls.draws[0].refs, 1, "the character's sheet goes in as input_image_0");
   assert.equal(calls.judges[0].images, 2, "the judge sees the picture and the sheet it is compared with");
@@ -159,7 +163,8 @@ test("drawStill: when every try fails, the best one is kept — fewest failed mu
   assert.equal(drawnNo(r.bytes), 2, "the second try failed one must, the first three and the third four");
   assert.equal(r.mustFailed, 1); assert.deepEqual(r.failed, ["R3"]);
   assert.equal(r.tries.length, 3);
-  // Cost-neutral (24 September 2026): the cheap model draws, the strong one only the last try after failed musts.
+  // Cost-neutral (24 September 2026): the cheap model draws, the strong one only the last try after failed musts —
+  // here a look (the lilac apron), which 9B draws better.
   assert.deepEqual(calls.draws.map((d) => d.model), [DEFAULT_STILL_MODEL, DEFAULT_STILL_MODEL, DEFAULT_STRONG_STILL_MODEL]);
   assert.equal(r.tries[2].model, DEFAULT_STRONG_STILL_MODEL); assert.equal(r.tries[0].model, undefined);
   // "none" switches the escalation off.
@@ -382,12 +387,15 @@ test("drawJobStills: a sheet the model refuses is asked for once, not on every t
   const job = jobOf(jobs);
   const sheetDraws = () => calls.draws.filter((d) => d.prompt.startsWith("Character reference sheet")).length;
   assert.equal((await drawJobStills(env, job, { deadline: Date.now() + 120_000 })).state, "drawing");
-  assert.equal(sheetDraws(), 1);
+  // A flagged answer is a failed try, not a lost sheet (24 September 2026): both seeds of the sheet are drawn, and
+  // only when every try is flagged is the sheet given up.
+  assert.equal(sheetDraws(), 2);
+  assert.notEqual(calls.draws[0].seed, calls.draws[1].seed, "the second try is another seed");
   const refused = auditRows.filter((a) => a.event === "stills.sheet").map((a) => JSON.parse(a.detail));
   assert.equal(refused.length, 1); assert.equal(refused[0].transient, false); assert.match(refused[0].error, /5016/);
   const r2 = await drawJobStills(env, { ...job, params: jobs.get("gt_stills").params }, { deadline: Date.now() + 120_000 });
   assert.deepEqual(r2, { state: "done", drawn: 3, total: 3 });
-  assert.equal(sheetDraws(), 1, "the refused sheet is not asked for again");
+  assert.equal(sheetDraws(), 2, "the refused sheet is not asked for again");
   assert.ok(calls.draws.filter((d) => !d.prompt.startsWith("Character reference sheet")).every((d) => d.refs === 0), "no sheet, no reference image");
 });
 
@@ -412,4 +420,105 @@ test("drawStill: past `until` no redraw starts — the first try stands, so a st
   const early = fakeAi({ answer: () => "no" });
   await drawStill({ AI: early.ai }, input(), { attempts: 3, until: Date.now() + 60_000 });
   assert.equal(early.calls.draws.length, 3, "with time left the tries run as before");
+});
+
+/* ------------------------------------------------------------------ the fidelity bench fixes (24 September) */
+
+/** Fails the questions matching `re` on the first draw only: "no" to one that expects yes, "yes" to one that expects no. */
+const failFirst = (re) => (q, n) => {
+  const negative = /any written text|any of this/i.test(q);
+  const fail = n === 1 && re.test(q);
+  return negative ? (fail ? "yes" : "no") : (fail ? "no" : "yes");
+};
+const FLAGGED = "AiError: 3030: Your output has been flagged. Please choose another prompt / input image combination";
+
+test("checks: one identity question per character drawn from a sheet; none without the sheet, none on the sheet itself", async () => {
+  const c = compileStill(input());
+  assert.deepEqual(c.checks.find((x) => x.id === "identity:c1"), { id: "identity:c1", question: "Is the main character in the first image the same individual as the reference image of Mara (same face, hair and clothes)?", expect: "yes", must: true });
+  assert.equal(c.checks.filter((x) => x.id.startsWith("identity:")).length, 1);
+  assert.ok(!compileStill(input({ refs: [] })).checks.some((x) => x.id.startsWith("identity:")), "no sheet, no identity question");
+  assert.ok(!compileStill(input({ refs: [{ label: "the place (a bakery)", image: IMG(2) }] })).checks.some((x) => x.id.startsWith("identity:")), "a place is not a character");
+  // Two characters from two sheets: each is asked whether SOME character is them, not whether the main one is.
+  const two = compileStill(input({
+    direction: { ...DIRECTION, cast: [...DIRECTION.cast, { name: "Tomas", look: "a tall old baker with a grey beard" }] },
+    shot: shot({ cast: ["c1", "Tomas"] }), refs: [{ label: "Mara", image: IMG(1) }, { label: "Tomas", image: IMG(2) }],
+  }));
+  assert.deepEqual(two.checks.filter((x) => x.id.startsWith("identity:")).map((x) => [x.id, x.question]), [
+    ["identity:c1", "Does the first image show a character who is the same individual as the reference image of Mara (same face, hair and clothes)?"],
+    ["identity:tomas", "Does the first image show a character who is the same individual as the reference image of Tomas (same face, hair and clothes)?"],
+  ]);
+  // The judge is asked it with the sheet after the picture; a miss is written back as what the picture must do.
+  const { ai, calls } = fakeAi({ answer: failFirst(/same individual/) });
+  const r = await drawStill({ AI: ai }, input());
+  assert.ok(calls.judges[0].qs.some((x) => /same individual as the reference image of Mara/.test(x.q)));
+  assert.equal(calls.judges[0].images, 2);
+  assert.deepEqual(r.tries.map((t) => t.failed), [["identity:c1"], []]);
+  assert.ok(calls.draws[1].prompt.startsWith("It is essential that: Mara is exactly the same person as in their reference image, with the same face, the same hair and the same clothes."), calls.draws[1].prompt);
+  assert.ok(r.checks.includes("identity:c1"));
+  // The sheet IS the reference: it is never judged against itself, nor against the user's photo it was drawn from.
+  const sheet = fakeAi();
+  await drawCastSheet({ AI: sheet.ai }, SPEC, SPEC.cast[0], "realistic", IMG(5));
+  assert.ok(!sheet.calls.judges[0].qs.some((x) => /same individual/.test(x.q)));
+});
+
+test("drawStill: a try with no failed must is the still, whatever its score — a soft miss never buys a redraw", async () => {
+  // The bench: stills whose musts all passed were drawn again for a weighted score under STILL_PASS (0.85).
+  const spec = { ...SPEC, items: [...SPEC.items, { id: "R8", kind: "event", text: "Mara organizes a surprise party for her best friend", quote: "festa a sorpresa", must: true, who: "c1", order: 1 }] };
+  const soft = fakeAi({ answer: (q) => (/any of this/i.test(q) ? "no" : /any written text/i.test(q) ? "yes" : /moment of this|in this style/i.test(q) ? "no" : "yes") });
+  const r = await drawStill({ AI: soft.ai }, input({ spec, shot: shot({ covers: ["R2", "R3", "R8"] }) }));
+  assert.equal(soft.calls.draws.length, 1, "one draw: nothing a must asked for was missing");
+  assert.equal(r.mustFailed, 0); assert.ok(r.score < 0.85, String(r.score));
+  assert.deepEqual([...r.failed].sort(), ["R7", "R8", "no-text"]);
+  assert.equal(soft.calls.judges[0].qs.find((x) => /surprise party/.test(x.q)).q, "Could this image be a moment of this: Mara organizes a surprise party for her best friend?", "a story beat is asked softly");
+});
+
+test("drawStill: two tries by default (was three), the last on 9B after a missed look; STILL_ATTEMPTS still sets it", async () => {
+  const two = fakeAi({ answer: () => "no" });
+  const r = await drawStill({ AI: two.ai }, input());
+  assert.equal(two.calls.draws.length, 2); assert.ok(r.mustFailed > 0);
+  assert.deepEqual(two.calls.draws.map((d) => d.model), [DEFAULT_STILL_MODEL, DEFAULT_STRONG_STILL_MODEL]);
+  const three = fakeAi({ answer: () => "no" });
+  await drawStill({ AI: three.ai, STILL_ATTEMPTS: "3" }, input());
+  assert.equal(three.calls.draws.length, 3);
+});
+
+test("drawStill: the strong model redraws only a missed look, identity or text; a missed style, exclusion or place is redrawn on the cheap one", async () => {
+  const second = async (re, inp = input()) => {
+    const { ai, calls } = fakeAi({ answer: failFirst(re) });
+    const r = await drawStill({ AI: ai }, inp);
+    assert.equal(calls.draws.length, 2, String(re));
+    assert.equal(r.mustFailed, 0, String(re));
+    return calls.draws[1].model;
+  };
+  const sign = input({ shot: shot({ covers: ["R4", "R5"], shot_kind: "establish", cast: [], image_prompt: "The bakery front with its shop sign" }), refs: [] });
+  assert.equal(await second(/lilac apron/), DEFAULT_STRONG_STILL_MODEL, "a look");
+  assert.equal(await second(/same individual/), DEFAULT_STRONG_STILL_MODEL, "an identity");
+  assert.equal(await second(/character matching this description/, input({ spec: null })), DEFAULT_STRONG_STILL_MODEL, "a character's whole look");
+  assert.equal(await second(/clearly written and readable/, sign), DEFAULT_STRONG_STILL_MODEL, "a text");
+  assert.equal(await second(/real photograph/), DEFAULT_STILL_MODEL, "the style");
+  assert.equal(await second(/any of this/), DEFAULT_STILL_MODEL, "an exclusion");
+  assert.equal(await second(/village bakery/, sign), DEFAULT_STILL_MODEL, "a place");
+});
+
+test("drawStill: a flagged draw is a failed try — the next seed is drawn; two in a row, once without the sheets; only all flagged fails the still", async () => {
+  // The bench: "AiError: 3030: Your output has been flagged" (a warrior with a sword) lost the whole still as an error.
+  const once = fakeAi({ draw: (d, n) => { if (n === 1) throw new Error(FLAGGED); } });
+  const r = await drawStill({ AI: once.ai }, input(), { seedBase: 200 });
+  assert.deepEqual(once.calls.draws.map((d) => [d.seed, d.refs, d.model]), [[200, 1, DEFAULT_STILL_MODEL], [201, 1, DEFAULT_STILL_MODEL]], "the sheet kept, the seed changed, no escalation on a refusal");
+  assert.equal(once.calls.judges.length, 1); assert.equal(drawnNo(r.bytes), 2); assert.equal(r.mustFailed, 0);
+  assert.deepEqual(r.tries.map((t) => t.failed), [["flagged"], []]);
+  // Two flagged answers in a row: one more try WITHOUT the reference images, even past the two tries.
+  const twice = fakeAi({ draw: (d) => { if (d.refs) throw new Error(FLAGGED); } });
+  const t = await drawStill({ AI: twice.ai }, input(), { seedBase: 300 });
+  assert.deepEqual(twice.calls.draws.map((d) => [d.seed, d.refs]), [[300, 1], [301, 1], [302, 0]]);
+  assert.ok(!twice.calls.draws[2].prompt.includes("(reference image 1)"), "the prompt no longer names a reference it does not pass");
+  assert.equal(t.mustFailed, 0); assert.ok(!t.checks.some((id) => id.startsWith("identity:")), "no sheet passed, no identity asked");
+  // Every try flagged: the still fails as before, with the refusal's own message (drawJobStills gives the picture up).
+  const always = fakeAi({ draw: () => { throw new Error(FLAGGED); } });
+  await assert.rejects(drawStill({ AI: always.ai }, input()), /flagged/);
+  assert.equal(always.calls.draws.length, 3, "two seeds with the sheet, one without");
+  assert.equal(always.calls.judges.length, 0);
+  const bare = fakeAi({ draw: () => { throw new Error(FLAGGED); } });
+  await assert.rejects(drawStill({ AI: bare.ai }, input({ refs: [] })), /3030/);
+  assert.equal(bare.calls.draws.length, 2, "no reference to drop: the two tries, then the refusal");
 });

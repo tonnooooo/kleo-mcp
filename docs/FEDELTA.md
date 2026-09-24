@@ -60,9 +60,9 @@ Now: planner on Workers AI ≈ $0.03-0.06 + klein-4b stills ≈ $0.002 each (≈
 + a shorter Vast box (the GPU no longer draws) ≈ $0.035 = **≈ $0.12-0.15**.
 
 - `STILL_MODEL` = `@cf/black-forest-labs/flux-2-klein-4b` ($0.000287 per 512² output tile, ≈ $0.0023 for a 896x1600
-  still). `STILL_MODEL_STRONG` = klein-9b ($0.016) only for the last try of a still that failed a must; `none` = never.
-- `STILL_ATTEMPTS` (3), `STILL_PASS` (0.85), `VISION_MODEL` (llama-4-scout), `STILLS_ENGINE` (`flux2`; `legacy` = the
-  old SDXL on the GPU).
+  still). `STILL_MODEL_STRONG` = klein-9b ($0.016) only for the last try of a still that failed a look, identity or text must; `none` = never.
+- `STILL_ATTEMPTS` (2 since 24 Sep, was 3), `STILL_PASS` (0.85, only a tie-breaker between failed tries), `VISION_MODEL`
+  (llama-4-scout), `STILLS_ENGINE` (`flux2`; `legacy` = the old SDXL on the GPU).
 - An external planner that runs out of credit (401/402/403) falls back by itself to `PLAN_FALLBACK_MODEL` or
   `AI_MODEL` on Workers AI; a 429 stays a pause.
 

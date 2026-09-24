@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import {
   S, SPEC_KINDS, REF_ROLES, norm, quoteInRequest, modeFor, specProblems, repairSpec, specOf, mustItems, shotItems, eventsInOrder,
   itemById, castById, fullLook, specBlock, owedBlock, coverage, lineSaid, SPEC_METHOD, specPrompt, specMethodText, specText,
-  specSchema, visualChecks,
+  specSchema, visualChecks, castOfItem, bodyOnlyLook,
 } from "../src/spec.ts";
 
 /** The request every test below takes apart: an Italian story with a named character, her look, two events and a line. */
@@ -318,7 +318,8 @@ test("visualChecks: the style always, then one question per claimed item and per
   const s = SPEC();
   const checks = visualChecks(s, { covers: ["R4", "R6"], cast: ["c1"] }, "realistic");
   assert.deepEqual(checks.map((c) => c.id), ["style", "R4", "R2", "R3", "no-text"], "the line is heard, not seen; Mara's two look items are asked one by one");
-  assert.equal(checks[1].question, "Does the image show this: Mara bakes a lemon cake for the village children?");
+  assert.deepEqual(checks[1], { id: "R4", question: "Could this image be a moment of this: Mara bakes a lemon cake for the village children?", expect: "yes", must: false }, "an event is a story beat: asked softly");
+  assert.deepEqual(checks.filter((c) => c.must).map((c) => c.id), ["style", "R2", "R3"]);
   assert.deepEqual(checks.at(-1), { id: "no-text", question: "Is there any written text, lettering, caption or watermark in the image?", expect: "no", must: false });
   // A claimed look item brings its character in, and is not asked twice.
   assert.deepEqual(visualChecks(s, { covers: ["R3"] }, "realistic").map((c) => c.id), ["style", "R3", "R2", "no-text"]);
@@ -335,6 +336,34 @@ test("visualChecks: the style always, then one question per claimed item and per
   assert.deepEqual(sc.find((c) => c.id === "exclude:R9"), { id: "exclude:R9", question: "Does the image show any of this: adults?", expect: "no", must: true });
   // Unknown ids and cast are ignored, never asked about.
   assert.deepEqual(visualChecks(s, { covers: ["R99"], cast: ["c9"] }, "realistic").map((c) => c.id), ["style", "no-text"]);
+});
+
+test("visualChecks (24 September, the fidelity bench): only what one frame proves is a must — a cast character by her look, never her role; events, actions, build and age asked softly", () => {
+  const s = SPEC();
+  // R1 "Mara, a thin pastry chef" asks nothing of its own: Mara is in the cast, her look items are asked instead (and,
+  // when the still is drawn from her sheet, an identity question: src/stills.ts).
+  assert.deepEqual(visualChecks(s, { covers: ["R1"] }, "realistic").map((c) => c.id), ["style", "R2", "R3", "no-text"]);
+  assert.ok(!visualChecks(s, { covers: ["R1"], cast: ["c1"] }, "realistic").some((c) => /pastry chef/.test(c.question)), "a role is never asked about");
+  // Found by name when the writer left "who" empty; a role-named cast ("the pastry chef") is found in "a pastry chef".
+  const noWho = SPEC({ items: RAW().items.map((i) => (i.id === "R1" ? { ...i, who: null } : i)) });
+  assert.deepEqual(visualChecks(noWho, { covers: ["R1"] }, "realistic").map((c) => c.id), ["style", "R2", "R3", "no-text"]);
+  const role = SPEC({ cast: [{ id: "c1", name: "the pastry chef", look: "a woman with short blonde hair and a lilac apron" }], items: [item("R1", "character", "a pastry chef", "una pasticcera magra"), ...RAW().items.slice(1)] });
+  assert.equal(castOfItem(role, role.items[0]).id, "c1");
+  assert.deepEqual(visualChecks(role, { covers: ["R1"] }, "realistic").map((c) => c.id), ["style", "R2", "R3", "no-text"]);
+  assert.equal(castOfItem(s, { text: "a Marathon runner", quote: "x", who: null }), undefined, "a name inside another word is not the name");
+  // A character the cast does not hold (a crowd, a passer-by) is asked about concretely, and stays a must.
+  const crowd = SPEC({ items: [...RAW().items, item("R7", "character", "the village children.", "i bambini del paese")] });
+  assert.equal(castOfItem(crowd, crowd.items[6]), undefined);
+  assert.deepEqual(visualChecks(crowd, { covers: ["R7"] }, "realistic").find((c) => c.id === "R7"), { id: "R7", question: "Does the image show the village children?", expect: "yes", must: true });
+  // An action is a story beat like an event: a frame can be a moment of it, never prove it.
+  const act = SPEC({ items: [...RAW().items, item("R7", "action", "Mara pipes cream onto the cake", "prepara una torta", { who: "c1" })] });
+  assert.deepEqual(visualChecks(act, { covers: ["R7"] }, "realistic").find((c) => c.id === "R7"), { id: "R7", question: "Could this image be a moment of this: Mara pipes cream onto the cake?", expect: "yes", must: false });
+  // Build and age are soft, claimed or folded in by the cast; hair, clothes and colours stay musts.
+  const body = SPEC({ items: [...RAW().items, item("R7", "look", "Mara has a thin build", "pasticcera magra", { who: "c1" }), item("R8", "look", "Mara is in her thirties", "Mara", { who: "c1" })] });
+  assert.deepEqual(visualChecks(body, { cast: ["c1"] }, "realistic").filter((c) => /^R\d$/.test(c.id)).map((c) => [c.id, c.must]), [["R2", true], ["R3", true], ["R7", false], ["R8", false]]);
+  assert.equal(visualChecks(body, { covers: ["R7"] }, "realistic").find((c) => c.id === "R7").must, false);
+  for (const t of ["Mara is thin", "a thin build", "tall", "short in height", "an elderly man", "in her thirties", "a 70-year-old", "muscular", "slim and young"]) assert.equal(bodyOnlyLook(t), true, t);
+  for (const t of ["Mara has short blonde hair tied up", "Mara wears a lilac apron", "a tall man in a red coat", "an old-fashioned hat", "green eyes", "a scar on the left cheek", "a thin gold necklace"]) assert.equal(bodyOnlyLook(t), false, t);
 });
 
 /* ------------------------------------------------------------------ review fixes (24 September 2026) */

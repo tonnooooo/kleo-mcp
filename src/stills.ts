@@ -18,9 +18,11 @@
  *     member first gets a CHARACTER SHEET (drawn from their full look, or from the user's own photo when they gave
  *     one), and every shot that shows them is drawn with their sheet as a reference.
  *   - Every still is JUDGED (src/vision.ts, llama-4-scout: 8/8 right on a trap question set, 2.6 s) with one yes/no
- *     question per requirement the shot claims (src/spec.ts visualChecks). A failed must sends the picture back with
- *     the failure written FIRST in its prompt ("It is essential that: …") and a new seed, up to STILL_ATTEMPTS; the
- *     best try is kept (fewest failed musts, then the highest score) and every verdict lands in fidelity.json.
+ *     question per requirement the shot claims (src/spec.ts visualChecks), plus one identity question per character
+ *     drawn from a sheet. A failed must sends the picture back with the failure written FIRST in its prompt ("It is
+ *     essential that: …") and a new seed, up to STILL_ATTEMPTS (2); the first try with no failed must is the still,
+ *     whatever its soft answers; otherwise the best try is kept (fewest failed musts, then the score) and every
+ *     verdict lands in fidelity.json.
  *
  * WHERE IT RUNS. In the orchestrator's cron (drawJobStills, bounded per tick, resumed on the next one), before the
  * job may rent a GPU; the worker's POST /internal/jobs/:id/images then answers with the stored pictures (src/images.ts)
@@ -54,7 +56,9 @@ export type StillFormat = "9:16" | "16:9";
  * still is 8 tiles, $0.0023, seven times less. Measured on the pastry chef the same day: 4B drew the blonde bun, the
  * lilac apron and a clean "SORPRESA" at the first try and kept her face from a reference image; it was weaker than 9B
  * on a busy composition (two children for "three friends", no finger on the lips) — exactly what the vision judge
- * catches. So 4B draws every try, and 9B draws only the LAST try of a still whose earlier tries all failed a must.
+ * catches. So 4B draws every try, and 9B draws only the LAST try of a still whose earlier tries all failed a must —
+ * and, since the fidelity bench of the same day, only when the must it failed is one 9B draws better: a look, the
+ * identity against a character sheet, or a written text (drawJudged).
  */
 export const DEFAULT_STILL_MODEL = "@cf/black-forest-labs/flux-2-klein-4b";
 export const DEFAULT_STRONG_STILL_MODEL = "@cf/black-forest-labs/flux-2-klein-9b";
@@ -84,7 +88,7 @@ export const STILL_PROMPT_MAX = 1800;
 export const SHEET_ATTEMPTS = 2;
 /** Pictures drawn at once for one job. */
 export const STILLS_CONCURRENCY = 3;
-/** What one still may take (three tries of a draw and a judgement): nothing new starts closer than this to a deadline. */
+/** What one still may take (two tries of a draw and a judgement): nothing new starts closer than this to a deadline. */
 export const EST_STILL_MS = 20_000;
 /** Minutes of drawing after which the engine gives up on a job and lets the rented GPU draw the rest. */
 export const STILLS_GIVE_UP_MIN = 20;
@@ -132,6 +136,7 @@ export interface StillInput {
   refs: StillRef[];
 }
 export interface StillCastMember { id: string | null; name: string; look: string }
+/** One try of a still: the check ids it failed, or ["flagged"] (Workers AI refused the output) / ["unjudged"] (the judge was silent). */
 export interface StillTry { seed: number; score: number; failed: string[]; /** Set when the try was drawn by the escalation model. */ model?: string }
 export interface StillResult { bytes: Uint8Array; score: number; mustFailed: number; failed: string[]; tries: StillTry[]; judged?: boolean; /** The ids of every check the still was judged by (the report reads it). */ checks?: string[] }
 
@@ -208,13 +213,38 @@ const styleCheck = (look: StillLook): VisualCheck => visualChecks(null, {}, look
 const noTextCheck: VisualCheck = { id: "no-text", question: "Is there any written text, lettering, caption or watermark in the image?", expect: "no", must: false };
 const castCheck = (m: StillCastMember): VisualCheck => ({ id: `cast:${m.id ?? norm(m.name).replace(/ /g, "-")}`, question: `Is there a character matching this description: ${m.look}?`, expect: "yes", must: true });
 const stripNegation = (t: string): string => clean(t).replace(/^(?:no|never|without|not|nothing like)\s+/i, "").replace(/[.\s]+$/, "");
+/**
+ * THE IDENTITY QUESTION (24 September 2026): whether the character in the still is the same individual as the sheet
+ * it was drawn from. It is what replaced "Does the image show this: the pastry chef?" — a role no frame can prove,
+ * failed on every pastry still of the fidelity bench although the woman in the lilac apron was there (src/spec.ts
+ * visualChecks). The judge already sees the reference images after the picture, labelled with the characters' names
+ * (src/vision.ts judgeImage), so the comparison costs no extra call. With one referenced character the question is
+ * about "the main character"; with two or more it asks whether ANY character matches the named sheet, or the second
+ * character's question would fail on a picture whose main character is, rightly, the first.
+ */
+const identityQuestionPrefix = "the same individual as the reference image of";
+const identityCheck = (m: StillCastMember, among: number): VisualCheck => ({
+  id: `identity:${m.id ?? norm(m.name).replace(/ /g, "-")}`,
+  question: among > 1
+    ? `Does the first image show a character who is ${identityQuestionPrefix} ${m.name} (same face, hair and clothes)?`
+    : `Is the main character in the first image ${identityQuestionPrefix} ${m.name} (same face, hair and clothes)?`,
+  expect: "yes",
+  must: true,
+});
 
-/** The checks one still is judged by: the spec's (src/spec.ts visualChecks), plus the direction's characters the spec does not know. */
+/**
+ * The checks one still is judged by: the spec's (src/spec.ts visualChecks), plus the direction's characters the spec
+ * does not know, plus one identity question per character drawn from a sheet (a reference whose label is their name,
+ * as drawJobStills passes them). A reference dropped on the way (a refused or flagged input image) takes its identity
+ * question with it: compileStill is called again with the references actually passed.
+ */
 function checksFor(input: StillInput, cast: StillCastMember[]): VisualCheck[] {
   const { shot, spec, look } = input;
   const ids = [...(shot.cast ?? []), ...cast.map((m) => m.id).filter((x): x is string => !!x)];
   const checks = visualChecks(spec, { covers: shot.covers ?? [], cast: ids }, look);
   for (const m of cast) if (!m.id || !spec) checks.push(castCheck(m));
+  const drawnFrom = cast.filter((m) => input.refs.some((r) => norm(r.label) === norm(m.name)));
+  for (const m of drawnFrom) checks.push(identityCheck(m, drawnFrom.length));
   // Without a spec, a picture whose sentence quotes words to be read ("a sign reading 'OPEN 24H'") is not held to
   // "no text": the bench's smoke run redrew exactly that sign twice for failing it (24 September 2026).
   if (!spec && !/["“”«»]|\b(?:reading|reads|says|labelled|labeled|titled|written)\b/i.test(shot.image_prompt)) checks.push(noTextCheck);
@@ -230,6 +260,10 @@ export function feedbackFor(failed: readonly VisualCheck[], spec: RequestSpec | 
   return failed.map((c) => {
     if (c.id === "style") return look === "animation" ? "the picture is a drawn 2D animation frame, not a photograph and not a 3D render" : "the picture is a real photograph, not a drawing, a painting or a 3D render";
     if (c.id === "no-text") return "there is no text, lettering, caption or watermark anywhere";
+    if (c.id.startsWith("identity:")) {
+      const name = c.question.split(`${identityQuestionPrefix} `)[1]?.replace(/\s*\(same face.*$/, "") || "the character";
+      return `${name} is exactly the same person as in their reference image, with the same face, the same hair and the same clothes`;
+    }
     if (c.id.startsWith("exclude:")) {
       const it = spec ? itemById(spec, c.id.slice(8)) : undefined;
       return `none of this is visible anywhere: ${stripNegation(it?.text ?? c.question.replace(/^Does the image show any of this:\s*/i, "").replace(/\?$/, ""))}`;
@@ -242,7 +276,7 @@ export function feedbackFor(failed: readonly VisualCheck[], spec: RequestSpec | 
     if (it?.kind === "text") return `these words are written clearly and legibly, spelled exactly: ${it.text.replace(/[.\s]+$/, "")}`;
     if (it?.kind === "style") return `the picture is in this style: ${it.text.replace(/[.\s]+$/, "")}`;
     if (it) return `the picture clearly shows ${it.text.replace(/[.\s]+$/, "")}`;
-    return `the picture clearly shows ${c.question.replace(/^(?:Does the image show this|Is the image in this style):\s*/i, "").replace(/\?$/, "")}`;
+    return `the picture clearly shows ${c.question.replace(/^(?:Does the image show this|Is the image in this style|Could this image be a moment of this):\s*/i, "").replace(/^Does the image show\s+/i, "").replace(/\?$/, "")}`;
   }).filter(Boolean);
 }
 
@@ -345,43 +379,94 @@ export async function drawImage(env: Pick<Env, "AI">, model: string, prompt: str
 /**
  * `until` (24 September 2026): a wall-clock time (ms) after which no REDRAW starts — the best try so far is kept. The
  * first try always runs. It is what bounds the work a cron tick still has in flight at its deadline: without it a
- * still that started just before the deadline could run all its tries (three draws of up to 90 s, three judgements
- * of up to 60 s per call) and outlive the tick's lock, so the next tick paid for the same picture again.
+ * still that started just before the deadline could run all its tries (draws of up to 90 s, judgements of up to 60 s
+ * per call) and outlive the tick's lock, so the next tick paid for the same picture again.
+ *
+ * `escalateOn` (24 September 2026): whether the failed musts of the last judged try are ones the strong model draws
+ * better — a look, an identity, a written text (strongDrawsBetter). Unset, any failed must escalates.
  */
-interface JudgedOptions { attempts: number; pass: number; seedBase: number; model: string; strongModel?: string | null; size: { width: number; height: number }; until?: number }
+interface JudgedOptions { attempts: number; pass: number; seedBase: number; model: string; strongModel?: string | null; size: { width: number; height: number }; until?: number; escalateOn?: (failedMusts: VisualCheck[]) => boolean }
+
+/** A draw Workers AI refused as flagged ("AiError: 3030: Your output has been flagged. Please choose another prompt / input image combination"). */
+export const isFlaggedError = (e: unknown): boolean => /flagged|\b3030\b/i.test(String(e));
+
+/**
+ * What the strong model (klein-9B) draws better than the cheap one, measured on the pastry chef the 24th: the exact
+ * look of a character, the same face as a reference, and legible words. A picture that failed its style, an exclusion
+ * or a place is redrawn on the cheap model: 9B is not better at those, only seven times dearer.
+ */
+function strongDrawsBetter(failed: readonly VisualCheck[], spec: RequestSpec | null): boolean {
+  return failed.some((c) => c.id.startsWith("identity:") || c.id.startsWith("cast:") || (!!spec && ["look", "text"].includes(itemById(spec, c.id)?.kind ?? "")));
+}
 
 /**
  * The loop both a still and a sheet go through: draw (seed seedBase + k), judge, stop at the first try with no failed
- * must and a score of at least `pass`, otherwise write the failures into the next prompt; keep the best try. A model
- * that refuses the reference images (anything but a transient error) is asked once more WITHOUT them, and the tries
- * after that go without too — a still without its reference is still better than no still. When the judge could not
- * answer at all (every answer "?"), the first picture is kept as it is: redrawing blind only spends the quota.
+ * must, otherwise write the failures (the musts first) into the next prompt; keep the best try. A model that refuses
+ * the reference images (anything but a transient error or a flagged output) is asked once more WITHOUT them, and the
+ * tries after that go without too — a still without its reference is still better than no still. When the judge
+ * could not answer at all (every answer "?"), the first picture is kept as it is: redrawing blind only spends the quota.
+ *
+ * WHAT A REDRAW IS BOUGHT FOR (24 September 2026). The fidelity bench (4 cases, 35 stills) found almost every still
+ * drawn three times and its last try sent to klein-9B — 7 of 7 on the pastry chef, ≈ $0.027 a still against the
+ * owner's $0.003-0.005 — for three reasons fixed here and in src/spec.ts visualChecks:
+ *   (a) a still whose musts all passed was still redrawn when its weighted score was under STILL_PASS (0.85): a soft
+ *       miss (a story beat, "warm pastel colours", a stray letter) bought a whole draw. Now the first try with no
+ *       failed must IS the still, whatever its score; STILL_PASS only breaks ties when the best of several failed
+ *       tries is chosen (a try at or above it beats one below it with as many failed musts, then the higher score).
+ *   (b) the last try escalated to 9B whatever the must was. Now only when the failed musts include a look, an identity
+ *       question or a written text (`escalateOn`): a failed style or exclusion is redrawn on 4B.
+ *   (c) a draw Workers AI refused as FLAGGED (code 3030, a warrior with a sword) lost the whole still as an error,
+ *       though another seed usually passes. Now a flagged answer counts as a failed try and the next seed is drawn;
+ *       after two flagged answers in a row the next try goes once WITHOUT the reference images (the refusal names "the
+ *       prompt / input image combination") — granted even when the tries are spent, to a still with no picture yet;
+ *       only when every try is flagged does the still fail as before (the error thrown, drawJobStills gives the
+ *       picture up).
  */
 async function drawJudged(env: Pick<Env, "AI" | "VISION_MODEL">, refs0: StillRef[], compile: (feedback: string[], refs: StillRef[]) => { prompt: string; checks: VisualCheck[] }, feedbackOf: (failed: VisualCheck[]) => string[], o: JudgedOptions): Promise<StillResult> {
   let refs = refs0.slice(0, MAX_INPUT_IMAGES);
   let feedback: string[] = [];
-  let best: { bytes: Uint8Array; score: number; mustFailed: number; failed: VisualCheck[] } | null = null;
+  type Best = { bytes: Uint8Array; score: number; mustFailed: number; failed: VisualCheck[] };
+  let best: Best | null = null;
+  const better = (a: Best, b: Best): boolean => {
+    if (a.mustFailed !== b.mustFailed) return a.mustFailed < b.mustFailed;
+    const pa = a.score >= o.pass, pb = b.score >= o.pass;
+    return pa !== pb ? pa : a.score > b.score;
+  };
   const tries: StillTry[] = [];
-  for (let k = 0; k < o.attempts; k++) {
+  let lastMustFailed: VisualCheck[] = [];
+  let flaggedRun = 0, lastFlag: unknown = null, droppedForFlag = false;
+  let budget = o.attempts;
+  for (let k = 0; k < budget; k++) {
     if (best && o.until !== undefined && Date.now() >= o.until) break; // out of time: the best try stands
     const seed = (o.seedBase + k) % 2_147_483_647;
     let c = compile(feedback, refs);
     let bytes: Uint8Array;
-    // The last try of a still that failed a must on every try so far goes to the stronger (dearer) model.
-    const escalate = !!o.strongModel && k > 0 && k === o.attempts - 1 && !!best && best.mustFailed > 0;
+    // The last try of a still that failed a must on every try so far goes to the stronger (dearer) model — only when
+    // the must it failed last is one that model draws better.
+    const escalate = !!o.strongModel && k > 0 && k === budget - 1 && !!best && best.mustFailed > 0 && lastMustFailed.length > 0 && (o.escalateOn ? o.escalateOn(lastMustFailed) : true);
     const model = escalate ? o.strongModel! : o.model;
     try {
       try { bytes = await drawImage(env, model, c.prompt, o.size, refs.map((r) => r.image), seed); }
       catch (e) {
-        if (!refs.length || isTransientError(e)) throw e;
+        if (isFlaggedError(e) || !refs.length || isTransientError(e)) throw e;
         refs = [];
         c = compile(feedback, refs);
         bytes = await drawImage(env, model, c.prompt, o.size, [], seed);
       }
     } catch (e) {
+      if (isFlaggedError(e)) {
+        // A flagged draw is a failed try, not a lost still: the next seed is drawn.
+        lastFlag = e; flaggedRun++;
+        tries.push({ seed, score: 0, failed: ["flagged"], ...(escalate ? { model } : {}) });
+        // Two in a row: the rest go without the reference images, and a still with no picture yet gets that one try
+        // even past its budget (one with a picture already keeps it rather than pay beyond its tries).
+        if (flaggedRun >= 2 && refs.length && !droppedForFlag) { refs = []; droppedForFlag = true; if (!best) budget = Math.max(budget, k + 2); }
+        continue;
+      }
       if (best) break; // a picture already exists: keep it rather than lose the shot to a failed redraw
       throw e;
     }
+    flaggedRun = 0;
     const j = await judgeImage(env, { bytes, mime: mimeOf(bytes) }, c.checks, refs);
     const judged = !c.checks.length || c.checks.some((ch) => j.answers[ch.id] !== "?");
     if (!judged) {
@@ -390,23 +475,32 @@ async function drawJudged(env: Pick<Env, "AI" | "VISION_MODEL">, refs0: StillRef
       break;
     }
     tries.push({ seed, score: round3(j.score), failed: j.failed.map((f) => f.id), ...(escalate ? { model } : {}) });
-    if (!best || j.mustFailed < best.mustFailed || (j.mustFailed === best.mustFailed && j.score > best.score)) best = { bytes, score: j.score, mustFailed: j.mustFailed, failed: j.failed };
-    if (j.mustFailed === 0 && j.score >= o.pass) break;
-    feedback = feedbackOf(j.failed);
+    const cand: Best = { bytes, score: j.score, mustFailed: j.mustFailed, failed: j.failed };
+    if (!best || better(cand, best)) best = cand;
+    if (j.mustFailed === 0) break; // (a): no failed must, no redraw, whatever the soft answers
+    lastMustFailed = j.failed.filter((f) => f.must);
+    feedback = feedbackOf([...lastMustFailed, ...j.failed.filter((f) => !f.must)]);
   }
-  if (!best) throw new Error("no still was drawn");
+  if (!best) throw lastFlag ?? new Error("no still was drawn");
   return { bytes: best.bytes, score: round3(best.score), mustFailed: best.mustFailed, failed: best.failed.map((f) => f.id), tries, judged: true, checks: compile([], refs).checks.map((c) => c.id) };
 }
 
-const attemptsOf = (env: Pick<Env, "STILL_ATTEMPTS">, given?: number): number => Math.max(1, Math.min(6, given ?? int(env.STILL_ATTEMPTS, 3)));
+/**
+ * Tries per still: 2 by default since 24 September 2026 (was 3). With the unprovable musts gone (src/spec.ts
+ * visualChecks) and a must-free try kept at once, a still needs a second try only when it truly missed a look, a
+ * face, a word, its style or an exclusion; the fidelity bench's third try was nearly always a third answer to a
+ * question no frame could settle, drawn on 9B.
+ */
+const attemptsOf = (env: Pick<Env, "STILL_ATTEMPTS">, given?: number): number => Math.max(1, Math.min(6, given ?? int(env.STILL_ATTEMPTS, 2)));
 const passOf = (env: Pick<Env, "STILL_PASS">, given?: number): number => Math.max(0, Math.min(1, given ?? num(env.STILL_PASS, 0.85)));
 
-/** One still, drawn and judged against its checks, redrawn with the failures named until it passes or the tries run out. */
+/** One still, drawn and judged against its checks, redrawn with the failures named while a must fails and tries remain. */
 export async function drawStill(env: Pick<Env, "AI" | "VISION_MODEL" | "STILL_MODEL" | "STILL_MODEL_STRONG" | "STILL_ATTEMPTS" | "STILL_PASS">, input: StillInput, opts: { attempts?: number; pass?: number; seedBase?: number; model?: string; until?: number } = {}): Promise<StillResult> {
   const size = STILL_SIZES[input.format === "16:9" ? "16:9" : "9:16"];
   return drawJudged(env, input.refs, (feedback, refs) => compileStill({ ...input, refs }, feedback), (failed) => feedbackFor(failed, input.spec, input.look), {
     attempts: attemptsOf(env, opts.attempts), pass: passOf(env, opts.pass), seedBase: opts.seedBase ?? fnv1a(input.shot.id) % 1_000_000,
     model: opts.model ?? stillModel(env), strongModel: opts.model ? null : strongStillModel(env), size, until: opts.until,
+    escalateOn: (failed) => strongDrawsBetter(failed, input.spec),
   });
 }
 
@@ -435,6 +529,7 @@ export async function drawCastSheet(env: Pick<Env, "AI" | "VISION_MODEL" | "STIL
   const r = await drawJudged(env, refs, compile, (failed) => feedbackFor(failed, spec, look), {
     attempts: Math.min(attemptsOf(env, opts.attempts ?? SHEET_ATTEMPTS), 4), pass: passOf(env, opts.pass), seedBase: opts.seedBase ?? fnv1a(`sheet/${cast.id}`) % 1_000_000,
     model: opts.model ?? stillModel(env), strongModel: opts.model ? null : strongStillModel(env), size: SHEET_SIZE, until: opts.until,
+    escalateOn: (failed) => strongDrawsBetter(failed, inSpec ? spec : null),
   });
   return { bytes: r.bytes, score: r.score };
 }
