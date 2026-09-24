@@ -165,18 +165,35 @@ export function quoteInRequest(quote: string, request: string): boolean {
 const DELEGATE_RE = /\b(stupiscimi|sorprendimi|scegli tu|decidi tu|fai tu|inventa tu|a tua scelta|come vuoi tu|surprise me|you (?:choose|pick|decide)|your (?:choice|call|pick)|anything you (?:like|want)|whatever you (?:like|want|think))\b/i;
 
 /**
- * FAITHFUL or OPEN, decided by what the spec actually contains, whatever the writer claimed: a request with a
- * character plus anything about them, or two events, or a described shot, or a place and an action, is a film the user
- * already has in mind — FAITHFUL. A delegation, or a bare subject with at most two must items, is OPEN.
+ * The kinds that are the user's own story rather than a bare topic: someone in it, something that happens, a shot they
+ * described, words to be read or said. A writer's "faithful" standing on one of these is kept (modeFor).
  */
-export function modeFor(items: readonly SpecItem[], request: string): SpecMode {
+const STORY_KINDS: readonly SpecKind[] = ["character", "event", "shot", "text", "line"];
+
+/**
+ * FAITHFUL or OPEN, decided by what the spec actually contains: a request with a character plus anything about them,
+ * or two events, or a described shot, or a place and an action, is a film the user already has in mind — FAITHFUL. A
+ * delegation is OPEN whatever anybody claims, and so is a bare subject with at most two must items…
+ *
+ * …UNLESS THE WRITER CALLED IT FAITHFUL AND IT STANDS ON THE USER'S STORY (24 September 2026). The spec method (rule
+ * 9 below, and kleo_adapt_prompt's next step) tells the writer "faithful when the user described what happens or who
+ * is in it", and the same writer is told to write its treatment "as-told" under a faithful spec. This function used to
+ * ignore the claim, so "un film su mio nonno Pietro" (one character item, nothing about him) was re-decided OPEN after
+ * the assistant had written a faithful spec and an as-told treatment, and kleo_create_video refused the treatment it
+ * had been told to write. The writer read the request and Kleo did not; a writer's "faithful" is kept whenever it has
+ * at least one must item that is the user's own story (STORY_KINDS). An "open" claim is still overruled upwards by the
+ * contents: a film the user described is theirs whatever the writer thought.
+ */
+export function modeFor(items: readonly SpecItem[], request: string, claimed?: unknown): SpecMode {
   if (DELEGATE_RE.test(request)) return "open";
   const must = items.filter((i) => i.must);
   const count = (k: SpecKind) => must.filter((i) => i.kind === k).length;
   if (count("event") >= 2 || count("shot") >= 1 || count("line") >= 1 || count("text") >= 1) return "faithful";
   if (count("character") >= 1 && (count("look") + count("action") + count("place") + count("event")) >= 1) return "faithful";
   if (count("place") >= 1 && count("action") + count("event") >= 1) return "faithful";
-  return must.length >= 4 ? "faithful" : "open";
+  if (must.length >= 4) return "faithful";
+  if (claimed === "faithful" && must.some((i) => STORY_KINDS.includes(i.kind))) return "faithful";
+  return "open";
 }
 
 /* ------------------------------------------------------------------ repair and check */
@@ -217,7 +234,10 @@ export function specProblems(raw: unknown, request: string, opts: { handles?: re
     if (!inSet(it.kind, SPEC_KINDS)) out.push(`spec item ${id || i + 1}: kind "${String(it.kind)}" is not one of ${SPEC_KINDS.join(", ")}`);
     if (typeof it.text !== "string" || it.text.trim().length < 3) out.push(`spec item ${id || i + 1}: needs "text", the requirement in plain English`);
     if (typeof it.quote !== "string" || !it.quote.trim()) out.push(`spec item ${id || i + 1}: needs "quote", the user's own words it comes from`);
-    else if (!quoteInRequest(it.quote, request)) out.push(`spec item ${id || i + 1}: the quote "${clip(it.quote, 80)}" is not in the user's request — an item must come from what the user wrote (put what Kleo decides under "open", never in the items)`);
+    // What the user wrote is the prompt, their intake answers AND their corrections after the read-back (24 September
+    // 2026): the refusal used to say "put it under open", which turned a user's own correction ("add my dog Pepe") into
+    // one of Kleo's decisions, never checked again.
+    else if (!quoteInRequest(it.quote, request)) out.push(`spec item ${id || i + 1}: the quote "${clip(it.quote, 80)}" is not in the user's request — an item must come from what the user wrote: the prompt, their answers (must_keep, audience, tone), or the corrections they gave after the read-back, passed word for word as "corrections". What Kleo decides on its own goes under "open", never in the items`);
     if (it.kind === "look" && !castIds.has(String(it.who ?? ""))) out.push(`spec item ${id || i + 1}: a "look" item names the cast member it describes in "who" (one of ${[...castIds].join(", ") || "the cast ids"})`);
     if (it.who !== undefined && it.who !== null && it.who !== "" && !castIds.has(String(it.who))) out.push(`spec item ${id || i + 1}: "who" is "${String(it.who)}", which is not a cast id`);
   });
@@ -232,7 +252,8 @@ export function specProblems(raw: unknown, request: string, opts: { handles?: re
 /**
  * The writer's answer fitted to the limits, or null when it is not a spec (specProblems says why). Items whose quote is
  * not in the request are dropped rather than refused when `lenient` (the second attempt of the server's writer: a spec
- * with one invented item removed is still the user's spec). The mode is re-decided from the items (modeFor).
+ * with one invented item removed is still the user's spec). The mode is re-decided from the items and the writer's
+ * claim (modeFor).
  */
 export function repairSpec(raw: unknown, request: string, opts: { lenient?: boolean; handles?: readonly string[] } = {}): RequestSpec | null {
   if (!isObj(raw)) return null;
@@ -263,7 +284,7 @@ export function repairSpec(raw: unknown, request: string, opts: { lenient?: bool
   const script = narration === "verbatim" ? clip(raw.script, S.script) || null : null;
   return {
     v: 1,
-    mode: modeFor(items, request),
+    mode: modeFor(items, request, raw.mode),
     summary: clip(raw.summary, S.summary) || items[0].text,
     items, cast, refs,
     open: (Array.isArray(raw.open) ? raw.open : []).map((o) => clip(o, S.openLen)).filter(Boolean).slice(0, S.open),
@@ -393,11 +414,19 @@ export function lineSaid(quote: string, narration: string): boolean {
  * worth — whether the shot's picture really shows the item — is the semantic half (src/fidelity.ts, a judge model),
  * and the drawn pictures are checked again by the vision model (src/stills.ts).
  */
-export function coverage(spec: RequestSpec, sb: unknown): CoverageResult {
+export function coverage(spec: RequestSpec, sb: unknown, opts: { cast?: readonly string[] } = {}): CoverageResult {
   const shots = shotsOf(sb);
   const voice = voiceOf(sb);
   const ids = new Set(spec.items.map((i) => i.id));
-  const castIds = new Set(spec.cast.flatMap((c) => [c.id, norm(c.name)]));
+  // A shot's "cast" names the spec's cast (by id or name) OR the direction's own characters (24 September 2026). The
+  // guide tells the writer to list every recurring character in "cast" so its look is attached, and the stills engine
+  // looks those names up in direction.cast — but this check knew only the spec's cast, so an open film ("a Short about
+  // pirates", spec cast []) whose direction invented "Captain Rook" was refused with "use its ids (c1, c2…)", ids that
+  // do not exist. The direction's names are read off the storyboard itself, plus any the caller passes (a planner
+  // chunk carries only its scenes).
+  const directionCast = (isObj(sb) && isObj(sb.direction) && Array.isArray(sb.direction.cast) ? sb.direction.cast : [])
+    .filter(isObj).flatMap((c) => [c.name, c.id]).filter((x): x is string => typeof x === "string" && !!x.trim());
+  const castIds = new Set([...spec.cast.flatMap((c) => [c.id, norm(c.name)]), ...[...directionCast, ...(opts.cast ?? [])].flatMap((n) => [n, norm(n)])]);
   const res: CoverageResult = { uncovered: [], outOfOrder: [], unknownIds: [], unknownCast: [], problems: [] };
   for (const sh of shots) {
     for (const c of sh.covers) if (!ids.has(c) && !res.unknownIds.includes(c)) res.unknownIds.push(c);
@@ -426,7 +455,7 @@ export function coverage(spec: RequestSpec, sb: unknown): CoverageResult {
     else { last = first; lastId = e.id; }
   }
   if (res.unknownIds.length) res.problems.push(`"covers" names ${res.unknownIds.map((x) => `"${x}"`).join(", ")}, which ${res.unknownIds.length === 1 ? "is not an item" : "are not items"} of the spec — use the spec's ids (R1, R2…)`);
-  if (res.unknownCast.length) res.problems.push(`"cast" names ${res.unknownCast.map((x) => `"${x}"`).join(", ")}, which ${res.unknownCast.length === 1 ? "is not in" : "are not in"} the spec's cast — use its ids (c1, c2…)`);
+  if (res.unknownCast.length) res.problems.push(`"cast" names ${res.unknownCast.map((x) => `"${x}"`).join(", ")}, which ${res.unknownCast.length === 1 ? "is not" : "are not"} in the spec's cast or the direction's — use the spec's ids (${spec.cast.length ? spec.cast.map((c) => c.id).join(", ") : "it has none"}) or a name from direction.cast`);
   return res;
 }
 
@@ -459,7 +488,7 @@ RULES:
 6. "open": what the user left to Kleo, in English, one short phrase each ("the ending", "the setting", "the narrator's words"). If they described the whole story, "open" holds only presentation details.
 7. "narration": "verbatim" when the user wrote the narration itself (then "script" = that text, word for word), "lines" when they gave some lines the narrator must say, "free" otherwise.
 8. "summary": one English sentence — the film the user asked for, as they asked for it. Not a pitch, not an improvement.
-9. "mode": "faithful" when the user described what happens or who is in it; "open" when they gave only a subject or asked to be surprised.
+9. "mode": "faithful" when the user described what happens or who is in it (a character they named or described, an event, a shot, words to be read on screen or said); "open" when they gave only a subject or asked to be surprised. A faithful spec carries at least one such item with "must": true.
 
 SHAPE:
 {"v":1,"mode":"faithful|open","summary":"…","cast":[{"id":"c1","name":"…","look":"…","ref":null}],"items":[{"id":"R1","kind":"character|look|place|object|action|event|shot|style|text|line|mood|exclude","text":"…","quote":"…","must":true,"who":"c1"|null,"order":1|null}],"refs":[{"id":"ref1","handle":"kref_…","role":"character|object|place|style","for":"c1","description":"…"}],"open":["…"],"narration":"free|lines|verbatim","script":null}
@@ -467,11 +496,13 @@ SHAPE:
 Return the JSON object only: no prose before it, no markdown fences.`;
 
 /** The user message of the server's spec call: the request, the answers the intake collected, the images received. */
-export function specPrompt(input: { prompt: string; language: string; must_keep?: string | null; audience?: string | null; tone?: string | null; refs?: { handle: string; description?: string | null; role?: string | null; name?: string | null }[] }, feedback?: string[]): string {
+export function specPrompt(input: { prompt: string; language: string; must_keep?: string | null; audience?: string | null; tone?: string | null; corrections?: string | null; refs?: { handle: string; description?: string | null; role?: string | null; name?: string | null }[] }, feedback?: string[]): string {
   const answers = [
     input.must_keep ? `The user answered "what must appear or must not": "${input.must_keep}"` : "",
     input.audience ? `The user said the film is for: "${input.audience}"` : "",
     input.tone ? `The user asked for this tone: "${input.tone}"` : "",
+    // The user's corrections after the read-back (24 September 2026): part of what they asked, so items quote them too.
+    input.corrections ? `After reading back what Kleo understood, the user corrected it: "${input.corrections}"` : "",
   ].filter(Boolean);
   const refs = input.refs?.length
     ? `\nIMAGES THE USER GAVE (use the handles in "refs"; describe what they show in the cast looks or item texts):\n${input.refs.map((r) => `- ${r.handle}${r.role ? ` (the user says: ${r.role}${r.name ? ` — ${r.name}` : ""})` : ""}: ${r.description ?? "no description yet"}`).join("\n")}`
@@ -496,7 +527,8 @@ ${SPEC_METHOD}
 
 USER REQUEST (language: ${input.language}):
 """${input.prompt.trim()}"""${refs}
-If the user attached pictures in this conversation that Kleo does not hold yet, describe each one precisely in the cast "look" (or the item "text") it belongs to, and offer them kleo_upload_link so Kleo can draw from the picture itself.`;
+If the user attached pictures in this conversation that Kleo does not hold yet, describe each one precisely in the cast "look" (or the item "text") it belongs to, and offer them kleo_upload_link so Kleo can draw from the picture itself.
+If, after you read the spec back, the user corrects it or adds something ("add my dog Pepe with a red collar"), change the spec as they say — an item added may quote their correction — and pass their correction, in their own words, as "corrections" to kleo_create_video: the prompt itself stays unchanged.`;
 }
 
 /** The spec as the user reads it back: what Kleo understood, one line each, before anything is charged. */

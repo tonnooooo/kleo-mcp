@@ -24,8 +24,9 @@
  *
  * WHERE IT RUNS. In the orchestrator's cron (drawJobStills, bounded per tick, resumed on the next one), before the
  * job may rent a GPU; the worker's POST /internal/jobs/:id/images then answers with the stored pictures (src/images.ts)
- * and draws on the GPU, the legacy way, only what is still missing. A failure — quota, an outage, twenty minutes gone
- * — marks params.stills "failed" and the GPU draws the rest: a job is never stranded by this engine.
+ * and draws on the GPU, the legacy way, only what is still missing. A transient error (a 429, a 5xx, a timeout, a
+ * store hiccup) only PAUSES the drawing until the next tick (stillsErrorVerdict); the daily quota, a bug, or twenty
+ * minutes gone marks params.stills "failed" and the GPU draws the rest: a job is never stranded by this engine.
  *
  * Only imports plain TypeScript modules (with .ts extensions) and type-only dependencies, so the tests load it under
  * Node's type stripping (src/refs.ts included: it is written the same way).
@@ -39,7 +40,7 @@ import { pictureScenes, directionOf, kleoStyleOf, MAX_PICTURES } from "./keou-co
 import { headNoun, headNounIn, PRONOUN_HINTS, type Direction } from "./direction.ts";
 import { specOf, castById, fullLook, itemById, visualChecks, norm, type RequestSpec, type SpecItem, type VisualCheck } from "./spec.ts";
 import { judgeImage, mimeOf, type VisionImage } from "./vision.ts";
-import { readImageResult, sniffImage, imageFileName, IMAGE_NAME_RE, fnv1a, isTransientError } from "./images.ts";
+import { readImageResult, sniffImage, imageFileName, IMAGE_NAME_RE, fnv1a, isTransientError, isQuotaError, isTransientStoreError } from "./images.ts";
 import { refImage, REF_HANDLE_RE } from "./refs.ts";
 
 /* ------------------------------------------------------------------ constants */
@@ -327,7 +328,13 @@ export async function drawImage(env: Pick<Env, "AI">, model: string, prompt: str
 
 /* ------------------------------------------------------------------ draw, judge, redraw */
 
-interface JudgedOptions { attempts: number; pass: number; seedBase: number; model: string; size: { width: number; height: number } }
+/**
+ * `until` (24 September 2026): a wall-clock time (ms) after which no REDRAW starts — the best try so far is kept. The
+ * first try always runs. It is what bounds the work a cron tick still has in flight at its deadline: without it a
+ * still that started just before the deadline could run all its tries (three draws of up to 90 s, three judgements
+ * of up to 60 s per call) and outlive the tick's lock, so the next tick paid for the same picture again.
+ */
+interface JudgedOptions { attempts: number; pass: number; seedBase: number; model: string; size: { width: number; height: number }; until?: number }
 
 /**
  * The loop both a still and a sheet go through: draw (seed seedBase + k), judge, stop at the first try with no failed
@@ -342,6 +349,7 @@ async function drawJudged(env: Pick<Env, "AI" | "VISION_MODEL">, refs0: StillRef
   let best: { bytes: Uint8Array; score: number; mustFailed: number; failed: VisualCheck[] } | null = null;
   const tries: StillTry[] = [];
   for (let k = 0; k < o.attempts; k++) {
+    if (best && o.until !== undefined && Date.now() >= o.until) break; // out of time: the best try stands
     const seed = (o.seedBase + k) % 2_147_483_647;
     let c = compile(feedback, refs);
     let bytes: Uint8Array;
@@ -377,11 +385,11 @@ const attemptsOf = (env: Pick<Env, "STILL_ATTEMPTS">, given?: number): number =>
 const passOf = (env: Pick<Env, "STILL_PASS">, given?: number): number => Math.max(0, Math.min(1, given ?? num(env.STILL_PASS, 0.85)));
 
 /** One still, drawn and judged against its checks, redrawn with the failures named until it passes or the tries run out. */
-export async function drawStill(env: Pick<Env, "AI" | "VISION_MODEL" | "STILL_MODEL" | "STILL_ATTEMPTS" | "STILL_PASS">, input: StillInput, opts: { attempts?: number; pass?: number; seedBase?: number; model?: string } = {}): Promise<StillResult> {
+export async function drawStill(env: Pick<Env, "AI" | "VISION_MODEL" | "STILL_MODEL" | "STILL_ATTEMPTS" | "STILL_PASS">, input: StillInput, opts: { attempts?: number; pass?: number; seedBase?: number; model?: string; until?: number } = {}): Promise<StillResult> {
   const size = STILL_SIZES[input.format === "16:9" ? "16:9" : "9:16"];
   return drawJudged(env, input.refs, (feedback, refs) => compileStill({ ...input, refs }, feedback), (failed) => feedbackFor(failed, input.spec, input.look), {
     attempts: attemptsOf(env, opts.attempts), pass: passOf(env, opts.pass), seedBase: opts.seedBase ?? fnv1a(input.shot.id) % 1_000_000,
-    model: opts.model ?? stillModel(env), size,
+    model: opts.model ?? stillModel(env), size, until: opts.until,
   });
 }
 
@@ -391,7 +399,7 @@ export async function drawStill(env: Pick<Env, "AI" | "VISION_MODEL" | "STILL_MO
  * otherwise from the full look alone. Judged against the character's look (attribute by attribute when the spec has
  * look items), so a sheet that draws the wrong hair does not become the reference for twenty wrong shots.
  */
-export async function drawCastSheet(env: Pick<Env, "AI" | "VISION_MODEL" | "STILL_MODEL" | "STILL_ATTEMPTS" | "STILL_PASS">, spec: RequestSpec | null, cast: { id: string; name: string; look: string }, look: StillLook, userRef: VisionImage | null, opts: { attempts?: number; pass?: number; seedBase?: number; model?: string } = {}): Promise<{ bytes: Uint8Array; score: number }> {
+export async function drawCastSheet(env: Pick<Env, "AI" | "VISION_MODEL" | "STILL_MODEL" | "STILL_ATTEMPTS" | "STILL_PASS">, spec: RequestSpec | null, cast: { id: string; name: string; look: string }, look: StillLook, userRef: VisionImage | null, opts: { attempts?: number; pass?: number; seedBase?: number; model?: string; until?: number } = {}): Promise<{ bytes: Uint8Array; score: number }> {
   const inSpec = !!(spec && castById(spec, cast.id));
   const fl = clean((inSpec && spec ? fullLook(spec, cast.id) : "") || cast.look);
   const member: StillCastMember = { id: inSpec ? cast.id : null, name: cast.name, look: fl };
@@ -409,7 +417,7 @@ export async function drawCastSheet(env: Pick<Env, "AI" | "VISION_MODEL" | "STIL
   });
   const r = await drawJudged(env, refs, compile, (failed) => feedbackFor(failed, spec, look), {
     attempts: Math.min(attemptsOf(env, opts.attempts ?? SHEET_ATTEMPTS), 4), pass: passOf(env, opts.pass), seedBase: opts.seedBase ?? fnv1a(`sheet/${cast.id}`) % 1_000_000,
-    model: opts.model ?? stillModel(env), size: SHEET_SIZE,
+    model: opts.model ?? stillModel(env), size: SHEET_SIZE, until: opts.until,
   });
   return { bytes: r.bytes, score: r.score };
 }
@@ -525,26 +533,71 @@ export async function storedPictures(env: Env, jobId: string): Promise<Map<strin
   return new Map((await listFiles(env, jobId)).filter((f) => IMAGE_NAME_RE.test(f.name)).map((f) => [f.name.slice(4).replace(/\.(png|jpg)$/, ""), f.name]));
 }
 
-/** Pictures whose draw failed for a reason that will not change (a model error about the prompt): never retried. */
-async function givenUpPictures(env: Env, jobId: string): Promise<Set<string>> {
-  const out = new Set<string>();
-  try {
-    const rows = (await env.DB.prepare("SELECT detail FROM audit WHERE job_id = ? AND event = 'stills.error'").bind(jobId).all<{ detail: string | null }>()).results;
-    for (const r of rows ?? []) { try { const d = JSON.parse(r.detail ?? "{}") as { picture?: string; transient?: boolean }; if (d.picture && !d.transient) out.add(d.picture); } catch { /* ignore */ } }
-  } catch { /* an unreadable audit only costs a retry */ }
-  return out;
+/**
+ * What the engine gave up on for good: pictures whose draw failed for a reason that will not change (a model error
+ * about the prompt), never retried; and — since 24 September 2026 — character SHEETS the model refused the same way.
+ * A refused sheet used to leave no mark: its audit row names a cast member, not a picture, so every later tick (and
+ * every worker /images call) read the sheet as missing and asked the model again, with the same seed and the same
+ * prompt, for the same refusal. Now a "stills.sheet" row with an error that is not transient marks it, and it is
+ * skipped like a refused picture: that character's shots are drawn from the words alone.
+ */
+async function givenUp(env: Env, jobId: string): Promise<{ pictures: Set<string>; sheets: Set<string> }> {
+  const pictures = new Set<string>(), sheets = new Set<string>();
+  const rowsOf = async (event: "stills.error" | "stills.sheet"): Promise<{ detail: string | null }[]> => {
+    try { return (await env.DB.prepare(`SELECT detail FROM audit WHERE job_id = ? AND event = '${event}'`).bind(jobId).all<{ detail: string | null }>()).results ?? []; }
+    catch { return []; } // an unreadable audit only costs a retry
+  };
+  for (const r of await rowsOf("stills.error")) { try { const d = JSON.parse(r.detail ?? "{}") as { picture?: string; transient?: boolean }; if (d.picture && !d.transient) pictures.add(d.picture); } catch { /* ignore */ } }
+  for (const r of await rowsOf("stills.sheet")) { try { const d = JSON.parse(r.detail ?? "{}") as { cast?: string; error?: string; transient?: boolean }; if (d.cast && d.error && !d.transient) sheets.add(d.cast); } catch { /* ignore */ } }
+  return { pictures, sheets };
+}
+
+/**
+ * THE VERDICT ON AN ERROR of the engine (24 September 2026): "pause" — the drawing stops for this tick and the next
+ * tick carries on, the job still counted as drawing (and the GPU still waiting, up to STILLS_GIVE_UP_MIN) — or
+ * "failed" — the engine is done with this job and the rented GPU draws what is missing the legacy way.
+ *
+ * Until today every transient error failed the job's engine for good: one "3040: Capacity temporarily exceeded", one
+ * 90 s draw timeout, one R2 hiccup on picture 7 of 48, and the 41 others were drawn by the 77-token SDXL on the GPU —
+ * although the next cron minute would have worked. Now only two things fail it: the daily quota (a 4006 answer does
+ * not change within the minutes a GPU may wait, so waiting would only make the film late), and an error that is
+ * plainly a bug in the code (src/images.ts PERMANENT_STORE_RE: "is not a function", "of undefined", a missing
+ * binding), which no retry fixes. Everything else — a 429, a 5xx, a timeout, a dropped connection, a store write —
+ * pauses, is counted in params.stills.pauses, and is bounded by the twenty-minute give-up.
+ */
+export function stillsErrorVerdict(e: unknown): "pause" | "failed" {
+  if (isQuotaError(e)) return "failed";
+  if (isTransientError(e)) return "pause";
+  return isTransientStoreError(e) ? "pause" : "failed";
+}
+
+/**
+ * Writes a pause into params.stills: still "drawing", the start of the drawing kept (the give-up clock runs from it,
+ * so pauses never make the GPU wait longer than STILLS_GIVE_UP_MIN), one more pause counted, the error as the note;
+ * plus a "stills.paused" audit row. The orchestrator uses it too, for a throw out of drawJobStills.
+ */
+export async function pauseStills(env: Env, job: Pick<Job, "id" | "user_id" | "params">, note: string, progress: { drawn?: number; total?: number } = {}): Promise<{ state: "drawing"; drawn: number; total: number }> {
+  const prev = stillsStateOf(job);
+  const at = prev?.state === "drawing" && prev.at ? prev.at : nowIso();
+  const pauses = (prev?.pauses ?? 0) + 1;
+  const drawn = progress.drawn ?? prev?.drawn ?? 0, total = progress.total ?? prev?.total ?? 0;
+  await updateJobParams(env, job.id, { stills: { state: "drawing", at, drawn, total, pauses, note: note.slice(0, 300) } });
+  await audit(env, job.user_id, job.id, "stills.paused", { pauses, error: note.slice(0, 300), drawn, total });
+  return { state: "drawing", drawn, total };
 }
 
 /**
  * DRAWS A JOB'S STILLS, as far as `deadline` allows, and says where it stands: "done" (every picture stored or given
- * up on), "drawing" (resume on the next tick), "failed" (quota, an outage: the rented GPU draws the rest). The
- * character sheets first (reused from R2 when a previous tick drew them), then every picture not stored yet,
- * STILLS_CONCURRENCY at a time, each with the sheets of the characters it shows as reference images. Every picture is
- * stored under the same img/<pictureId> name the GPU's pictures use (so /images and /dl serve it unchanged), every
- * judgement is an audit row and a line of fidelity.json, and params.stills says the state for the dispatcher.
- * Never throws on a model problem.
+ * up on), "drawing" (resume on the next tick — also after a transient error, see stillsErrorVerdict), "failed" (the
+ * daily quota, or a bug: the rented GPU draws the rest). The character sheets first (reused from R2 when a previous
+ * tick drew them), then every picture not stored yet, STILLS_CONCURRENCY at a time, each with the sheets of the
+ * characters it shows as reference images. Every picture is stored under the same img/<pictureId> name the GPU's
+ * pictures use (so /images and /dl serve it unchanged), every judgement is an audit row and a line of fidelity.json,
+ * and params.stills says the state for the dispatcher. No redraw starts past `deadline` (JudgedOptions.until), and
+ * `stop` (the cron's lock heartbeat) ends the drawing early when the tick lost its lock: another tick draws this job
+ * now. Never throws on a model problem.
  */
-export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: number }): Promise<{ state: "drawing" | "done" | "failed"; drawn: number; total: number }> {
+export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: number; stop?: () => boolean }): Promise<{ state: "drawing" | "done" | "failed"; drawn: number; total: number }> {
   const params = paramsOf(job);
   const sb = storyboardOf(job);
   if (!sb || !stillsEngineOn(env, job)) return { state: "failed", drawn: 0, total: 0 };
@@ -560,39 +613,55 @@ export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: nu
   const stored = await storedPictures(env, job.id);
   const countDrawn = () => pics.filter((p) => stored.has(p.id)).length;
   const setState = async (state: "drawing" | "done" | "failed", note?: string) => {
-    await updateJobParams(env, job.id, { stills: { state, at: state === "drawing" ? startedAt : nowIso(), drawn: countDrawn(), total, ...(note ? { note: note.slice(0, 300) } : {}) } });
+    await updateJobParams(env, job.id, { stills: { state, at: state === "drawing" ? startedAt : nowIso(), drawn: countDrawn(), total, ...(prev?.pauses ? { pauses: prev.pauses } : {}), ...(note ? { note: note.slice(0, 300) } : {}) } });
     return { state, drawn: countDrawn(), total };
   };
-  const skip = await givenUpPictures(env, job.id);
-  const todo = pics.filter((p) => !stored.has(p.id) && !skip.has(p.id));
+  // A transient error: this tick stops, the next one carries on from what is stored, and the pause is counted.
+  const pause = (note: string) => pauseStills(env, { id: job.id, user_id: job.user_id, params: JSON.stringify({ stills: { ...(prev ?? {}), state: "drawing", at: startedAt } }) }, note, { drawn: countDrawn(), total });
+  const skip = await givenUp(env, job.id);
+  const todo = pics.filter((p) => !stored.has(p.id) && !skip.pictures.has(p.id));
   if (!todo.length) return setState("done");
   if (prev?.state !== "drawing") await setState("drawing");
-  const late = () => Date.now() > opts.deadline - EST_STILL_MS;
+  const late = () => Date.now() > opts.deadline - EST_STILL_MS || !!opts.stop?.();
 
-  // 1. THE SHEETS.
+  // 1. THE SHEETS. What a tick drew is written to fidelity.json before it can return: a tick that ran out of time
+  //    between two sheets used to drop the report of the sheets it had drawn, and the next tick found them on R2 and
+  //    skipped them without reporting them (24 September 2026).
   const sheets = new Map<string, VisionImage>();
   const sheetReport: Record<string, unknown> = {};
+  const flushSheets = async () => { if (Object.keys(sheetReport).length) await mergeFidelity(env, job, { sheets: sheetReport }); };
   for (const m of castMembersOf(spec, direction)) {
     const key = castSheetKey(job.id, m.id);
     const have = await readStored(env, key);
     if (have) { sheets.set(norm(m.name), have); continue; }
-    if (late()) return setState("drawing");
+    if (skip.sheets.has(m.id)) continue; // refused for good on an earlier tick: this character is drawn from the words
+    if (late()) { await flushSheets(); return setState("drawing"); }
     const userRef = m.ref ? await userImage(env, job.user_id, spec, m.ref) : null;
+    let r: { bytes: Uint8Array; score: number };
     try {
-      const r = await drawCastSheet(env, spec, m, look, userRef, { seedBase: fnv1a(`${job.id}/cast/${m.id}`) % 1_000_000 });
-      await putFile(env, key, r.bytes, sniffImage(r.bytes) === "png" ? "image/png" : "image/jpeg");
-      sheets.set(norm(m.name), { bytes: r.bytes, mime: mimeOf(r.bytes) });
-      sheetReport[m.id] = { name: m.name, score: r.score, user_ref: !!userRef };
-      await audit(env, job.user_id, job.id, "stills.sheet", { cast: m.id, name: m.name, score: r.score, user_ref: !!userRef });
+      r = await drawCastSheet(env, spec, m, look, userRef, { seedBase: fnv1a(`${job.id}/cast/${m.id}`) % 1_000_000, until: opts.deadline });
     } catch (e) {
       const msg = String(e).slice(0, 300);
-      await audit(env, job.user_id, job.id, "stills.sheet", { cast: m.id, name: m.name, error: msg, transient: isTransientError(e) });
-      if (isTransientError(e)) {
-        if (Object.keys(sheetReport).length) await mergeFidelity(env, job, { sheets: sheetReport });
-        return setState("failed", `sheet of ${m.name}: ${msg}`);
+      const transient = isTransientError(e);
+      await audit(env, job.user_id, job.id, "stills.sheet", { cast: m.id, name: m.name, error: msg, transient });
+      if (transient) {
+        await flushSheets();
+        return stillsErrorVerdict(e) === "failed" ? setState("failed", `sheet of ${m.name}: ${msg}`) : pause(`sheet of ${m.name}: ${msg}`);
       }
-      // a sheet the model refuses leaves that character without a reference; the shots are still drawn from the words
+      continue; // a sheet the model refuses leaves that character without a reference; the shots are still drawn from the words
     }
+    try {
+      await putFile(env, key, r.bytes, sniffImage(r.bytes) === "png" ? "image/png" : "image/jpeg");
+    } catch (e) {
+      // The sheet is drawn and paid for: a store that did not keep it is a hiccup unless it plainly says otherwise.
+      await flushSheets();
+      const msg = `storing the sheet of ${m.name}: ${String(e).slice(0, 260)}`;
+      await audit(env, job.user_id, job.id, "stills.store_error", { cast: m.id, error: msg });
+      return isTransientStoreError(e) ? pause(msg) : setState("failed", msg);
+    }
+    sheets.set(norm(m.name), { bytes: r.bytes, mime: mimeOf(r.bytes) });
+    sheetReport[m.id] = { name: m.name, score: r.score, user_ref: !!userRef };
+    await audit(env, job.user_id, job.id, "stills.sheet", { cast: m.id, name: m.name, score: r.score, user_ref: !!userRef });
   }
 
   // 2. THE STILLS.
@@ -612,16 +681,30 @@ export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: nu
   };
   const stillReport: Record<string, unknown> = {};
   const queue = [...todo];
-  let fatal: string | null = null;
+  // The first error that stops this tick's drawing: "pause" (the next tick carries on) or "failed" (the GPU draws the
+  // rest). A "failed" outranks a "pause" met by another worker in the same tick.
+  let stopped: { verdict: "pause" | "failed"; note: string } | null = null;
+  const halt = (verdict: "pause" | "failed", note: string) => { if (!stopped || (verdict === "failed" && stopped.verdict === "pause")) stopped = { verdict, note }; };
   const worker = async () => {
-    while (queue.length && !fatal && !late()) {
+    while (queue.length && !stopped && !late()) {
       const pic = queue.shift()!;
       const cast = stillCast(pic, spec, direction);
       const refs: StillRef[] = [];
       for (const m of cast) { const img = sheets.get(norm(m.name)); if (img && refs.length < MAX_INPUT_IMAGES) refs.push({ label: m.name, image: img }); }
       for (const r of await extraRefs(pic)) if (refs.length < MAX_INPUT_IMAGES) refs.push(r);
+      let r: StillResult;
       try {
-        const r = await drawStill(env, { shot: pic, spec, direction, look, format, visual, refs }, { seedBase: fnv1a(`${job.id}/${pic.id}`) % 1_000_000 });
+        r = await drawStill(env, { shot: pic, spec, direction, look, format, visual, refs }, { seedBase: fnv1a(`${job.id}/${pic.id}`) % 1_000_000, until: opts.deadline });
+      } catch (e) {
+        const msg = String(e).slice(0, 300);
+        const transient = isTransientError(e);
+        if (transient) { halt(stillsErrorVerdict(e), msg); queue.unshift(pic); }
+        await audit(env, job.user_id, job.id, "stills.error", { picture: pic.id, error: msg, transient });
+        continue;
+      }
+      // The picture is drawn and paid for: a store that fails to keep it pauses the drawing (the next tick draws it
+      // again, same seed); it is never a picture given up for good, which only a model refusal is.
+      try {
         const ext = sniffImage(r.bytes) ?? "jpg";
         const name = imageFileName(pic.id, ext);
         const key = `renders/${job.id}/${name}`;
@@ -629,14 +712,15 @@ export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: nu
         const size = await putFile(env, key, r.bytes, ctype);
         await setFile(env, { job_id: job.id, name, key, size, content_type: ctype });
         stored.set(pic.id, name);
-        stillReport[pic.id] = { score: r.score, mustFailed: r.mustFailed, failed: r.failed, checks: r.checks ?? [], tries: r.tries, refs: refs.map((x) => x.label), judged: r.judged !== false };
-        await audit(env, job.user_id, job.id, "stills.judge", { picture: pic.id, tries: r.tries.length, score: r.score, must_failed: r.mustFailed, failed: r.failed, refs: refs.length });
       } catch (e) {
-        const msg = String(e).slice(0, 300);
-        const transient = isTransientError(e);
-        if (transient) { fatal = msg; queue.unshift(pic); }
-        await audit(env, job.user_id, job.id, "stills.error", { picture: pic.id, error: msg, transient });
+        const msg = `storing ${pic.id}: ${String(e).slice(0, 260)}`;
+        halt(isTransientStoreError(e) ? "pause" : "failed", msg);
+        queue.unshift(pic);
+        await audit(env, job.user_id, job.id, "stills.store_error", { picture: pic.id, error: msg });
+        continue;
       }
+      stillReport[pic.id] = { score: r.score, mustFailed: r.mustFailed, failed: r.failed, checks: r.checks ?? [], tries: r.tries, refs: refs.map((x) => x.label), judged: r.judged !== false };
+      await audit(env, job.user_id, job.id, "stills.judge", { picture: pic.id, tries: r.tries.length, score: r.score, must_failed: r.mustFailed, failed: r.failed, refs: refs.length });
     }
   };
   await Promise.all(Array.from({ length: Math.min(STILLS_CONCURRENCY, todo.length) }, () => worker()));
@@ -651,7 +735,9 @@ export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: nu
       must_failed_pictures: all.filter((s) => (s.mustFailed ?? 0) > 0).length,
     };
   });
-  if (fatal) return setState("failed", fatal);
+  const halted = stopped as { verdict: "pause" | "failed"; note: string } | null;
+  if (halted?.verdict === "failed") return setState("failed", halted.note);
+  if (halted) return pause(halted.note);
   if (queue.length) return setState("drawing");
   await audit(env, job.user_id, job.id, "stills.done", { drawn: countDrawn(), total, model });
   return setState("done");

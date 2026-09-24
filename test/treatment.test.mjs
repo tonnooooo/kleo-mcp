@@ -202,7 +202,7 @@ function planner(opts = {}) {
         const total = Number(/VIDEO OUTLINE \((\d+) scenes/.exec(user)[1]);
         out = { scenes: Array.from({ length: to - from }, (_, k) => { const i = from + k, closing = i === total - 1; return {
           id: `${String(i + 1).padStart(2, "0")}-part`, kind: closing ? "closing" : "cinema", chapter: `0${i + 1} PART`, accent: "cyan", title: `Part ${i + 1}`, hl: "Part",
-          voice: `Scene ${i + 1} holds on the driveway and then on the window while the narrator says one plain thing.`,
+          voice: `Scene ${i + 1} holds on the driveway and then on the window while a dog barks once somewhere down the street.`,
           shots: closing ? [{ image_prompt: "The driveway at dusk, the car back, mist drifting across the tarmac" }]
             : [{ image_prompt: `An empty driveway at dawn, tyre marks glistening on wet tarmac, scene ${i + 1}` }, { image_prompt: "One kitchen window lit, curtains stirring in the draught", at: "on the window" }],
           ...(closing ? { button: "Follow" } : {}) }; }) };
@@ -438,4 +438,21 @@ test("a faithful treatment may restate the logline in its angle and is told as-t
   const back = treatmentOf({ treatment: t });
   assert.ok(back, "a faithful treatment is not refused on the way back for its angle");
   assert.equal(back.device, "as-told"); assert.equal(back.variation, "as-told/as-asked");
+});
+
+test("the assistant writes the spec and the treatment in one breath: the draw is conditional on the spec it wrote", () => {
+  // kleo_adapt_prompt hands the assistant both methods before any spec exists (24 September 2026). An unconditional
+  // draw told it "tell the film as the-witness" for a story the user had described scene by scene.
+  const v = variationFor("gt_draw1234");
+  const input = { prompt: "Una pasticcera bionda organizza una festa a sorpresa", duration_s: 30, format: "9:16", language: "it", look: "animation", specPending: true };
+  const text = treatmentMethodText(input, v);
+  assert.match(text, /THE DRAW DEPENDS ON THE SPEC YOU WROTE/);
+  assert.match(text, /If its mode is FAITHFUL[\s\S]*device "as-told"[\s\S]*ONLY if its mode is OPEN/);
+  assert.ok(text.includes(`narrative device: ${v.device}`), "the open draw is still offered");
+  assert.match(text, /"device":"as-told" \(faithful spec\) or "/);
+  assert.match(text, /"variation":"as-told\/as-asked" when your spec is faithful/);
+  // Without the flag (the server road, which knows its spec) the draw is printed as before.
+  const plain = treatmentMethodText({ ...input, specPending: false }, v);
+  assert.ok(!/THE DRAW DEPENDS ON THE SPEC/.test(plain));
+  assert.ok(plain.includes(`"variation":"${v.key}"`));
 });

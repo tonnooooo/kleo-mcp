@@ -6,7 +6,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { judgePlan, judgePrompt, fidelityFeedback, JUDGE_SYSTEM, VERDICT_STATUSES, JUDGE_LIMITS } from "../src/fidelity.ts";
+import { judgePlan, judgePrompt, fidelityFeedback, JUDGE_SYSTEM, VERDICT_STATUSES, JUDGE_LIMITS, shotIdsOf, renumberShots } from "../src/fidelity.ts";
+import { trimShots } from "../src/keou-contract.ts";
 import { repairSpec, specProblems } from "../src/spec.ts";
 
 const REQ = "Mara, una pasticcera magra con i capelli biondi corti e il grembiule lilla, prepara una torta al limone per i bambini del paese. Poi i bambini le fanno una festa a sorpresa. Il narratore dice: «la torta più buona del mondo».";
@@ -220,4 +221,28 @@ test("fidelityFeedback adds the deterministic problems no verdict already sends 
   assert.ok(fb.some((s) => /^R2 \(look\): no shot shows "Mara has short blonde hair".*list "R2" in its "covers"$/.test(s)), `the missing claim is still asked for, because the stills engine reads it:\n${fb.join("\n")}`);
   assert.ok(fb.some((s) => /^"covers" names "R99"/.test(s)), fb.join("\n"));
   assert.deepEqual(fidelityFeedback({ verdicts: [], inventions: [], score: 1, judge: "deterministic", coverage: { uncovered: [], outOfOrder: [], unknownIds: [], unknownCast: [], problems: [] } }, spec), []);
+});
+
+test("renumberShots: after trimShots drops a middle shot, the verdict names the pictures where they are now (24 September 2026)", () => {
+  const spec = SPEC();
+  // 14 words: two shots at most. The middle shot claims nothing, so trimShots drops it and the third becomes s2.
+  const sb = { scenes: [{ id: "01-x", kind: "cinema", voice: "Mara bakes a lemon cake for the children and then they throw her a party.",
+    shots: [
+      { image_prompt: "Mara lifting a lemon cake from the oven", covers: ["R4"] },
+      { image_prompt: "The empty kitchen at dawn", covers: [] },
+      { image_prompt: "The children throwing Mara a surprise party in the square", covers: ["R5"], at: "throw her a party" },
+    ] }] };
+  const f = { verdicts: [
+    { id: "R4", status: "kept", shots: ["01-x-s1"] },
+    { id: "R5", status: "kept", shots: ["01-x-s3"] },
+    { id: "R1", status: "paraphrased", shots: ["01-x-s2", "99-gone-s1"] },
+  ], inventions: [], score: 0.8, judge: "m", coverage: { uncovered: [], outOfOrder: [], unknownIds: [], unknownCast: [], problems: [] } };
+  const before = shotIdsOf(sb);
+  assert.equal(trimShots(sb, spec), 1);
+  assert.deepEqual(sb.scenes[0].shots.map((sh) => sh.covers), [["R4"], ["R5"]], "the middle shot went");
+  const out = renumberShots(f, before, shotIdsOf(sb));
+  assert.deepEqual(out.verdicts.map((v) => [v.id, v.shots]), [["R4", ["01-x-s1"]], ["R5", ["01-x-s2"]], ["R1", ["99-gone-s1"]]],
+    "s3 is now s2, the dropped s2 is gone, an id the plan never had is left as it was");
+  assert.equal(f.verdicts[1].shots[0], "01-x-s3", "the verdict it was given is not changed");
+  assert.equal(out.score, 0.8);
 });

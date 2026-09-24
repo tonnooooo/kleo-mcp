@@ -3,26 +3,43 @@
  * vision model and a fake fetch — no network, no Workers AI. What is pinned: the upload link's signature and expiry,
  * the magic-byte check (HEIC and GIF refused in words), the 12 MB limit, the handle's shape and stability, the
  * description written once per picture with the role the user gave, the account boundary (a handle or an upload link
- * is one account's own), and the page's round trip.
+ * is one account's own), and the page's round trip. Since the security pass of the same day: every redirect hop checked
+ * (https, public host, at most three), a slow or broken body answered in words, the upload POST bounded before it is
+ * buffered, the link's list an append that concurrent uploads cannot lose entries from and cannot push past eight,
+ * and the retention (REF_TTL_DAYS after the last use, a per-account cap, the purge).
  * Run: node --test test/refs.test.mjs
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
   imageKind, refHandle, ingestRef, refsOf, refImage, listUploads, recordUploads, resolveRefs, makeUploadToken, readUploadToken,
-  checkRefUrl, RefError, REF_HANDLE_RE, REF_MAX_BYTES, UPLOAD_MAX_FILES, UPLOAD_TTL_S,
+  checkRefUrl, fetchRefBytes, purgeOldRefs, RefError, REF_HANDLE_RE, REF_MAX_BYTES, REF_MAX_PER_USER, REF_MAX_REDIRECTS, REF_TTL_DAYS,
+  UPLOAD_MAX_FILES, UPLOAD_TTL_S,
 } from "../src/refs.ts";
-import { handleUpload } from "../src/upload.ts";
+import { handleUpload, UPLOAD_MAX_BODY } from "../src/upload.ts";
 
 /* ------------------------------------------------------------------ fakes */
 
+/**
+ * An R2 bucket in memory: put / get / list / delete. Every put gets its own `uploaded` date one millisecond after the
+ * last (R2's commit time, which the upload list orders by); `age` backdates an object for the retention tests.
+ */
 class FakeR2 {
-  constructor() { this.m = new Map(); }
+  constructor() { this.m = new Map(); this.t = Date.now(); }
   async put(key, value, opts) {
     const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value instanceof Uint8Array ? new Uint8Array(value) : new Uint8Array(value);
-    this.m.set(key, { bytes, type: opts?.httpMetadata?.contentType ?? null });
+    this.m.set(key, { bytes, type: opts?.httpMetadata?.contentType ?? null, uploaded: new Date(++this.t) });
     return { size: bytes.byteLength };
   }
+  async list({ prefix = "", cursor, limit = 1000 } = {}) {
+    const keys = [...this.m.keys()].filter((k) => k.startsWith(prefix)).sort();
+    const from = cursor ? Number(cursor) : 0;
+    const page = keys.slice(from, from + limit);
+    const truncated = from + limit < keys.length;
+    return { objects: page.map((key) => ({ key, uploaded: this.m.get(key).uploaded, size: this.m.get(key).bytes.byteLength })), truncated, cursor: truncated ? String(from + limit) : undefined, delimitedPrefixes: [] };
+  }
+  async delete(keys) { for (const k of [].concat(keys)) this.m.delete(k); }
+  age(key, days) { this.m.get(key).uploaded = new Date(Date.now() - days * 86_400_000); }
   async get(key) {
     const e = this.m.get(key);
     if (!e) return null;
@@ -236,4 +253,174 @@ test("the upload page: a phone-first page for a good link, a sentence for a bad 
   const late = await at(`/upload/${old.token}`, { method: "POST", body: fd });
   assert.equal(late.status, 410); assert.match((await late.json()).error, /expired/);
   assert.equal((await at("/upload/")).status, 404);
+});
+
+/* ------------------------------------------------------------------ security pass (24 September 2026) */
+
+/** A fake fetch that answers from a route table and records every hop it was asked for, with its redirect mode. */
+function routes(table) {
+  const seen = [];
+  const f = async (url, init) => {
+    seen.push({ url: String(url), redirect: init?.redirect });
+    const r = table[String(url)];
+    if (!r) throw new TypeError(`no route for ${url}`);
+    return r(init);
+  };
+  f.seen = seen;
+  return f;
+}
+const redirectTo = (to, status = 302) => () => new Response(null, { status, headers: to === null ? {} : { location: to } });
+const imageAnswer = (bytes) => () => new Response(bytes, { status: 200, headers: { "content-type": "image/jpeg" } });
+
+test("redirects are followed by hand: every hop must be https and public, at most three, and the origin stored is the user's link", async () => {
+  const ok = routes({
+    "https://short.example/m?sig=SECRET": redirectTo("/img/m.jpg", 301),
+    "https://short.example/img/m.jpg": redirectTo("https://cdn.example/m.jpg"),
+    "https://cdn.example/m.jpg": imageAnswer(jpeg(41)),
+  });
+  const got = await withFetch(ok, () => fetchRefBytes("https://short.example/m?sig=SECRET"));
+  assert.deepEqual([...got.bytes], [...jpeg(41)]);
+  assert.equal(got.origin, "https://short.example/m", "the link the user gave, without its query");
+  assert.deepEqual(ok.seen.map((s) => s.url), ["https://short.example/m?sig=SECRET", "https://short.example/img/m.jpg", "https://cdn.example/m.jpg"], "a relative Location is resolved against its hop");
+  assert.ok(ok.seen.every((s) => s.redirect === "manual"), "the runtime never follows a redirect on its own");
+
+  const plain = routes({ "https://a.example/p": redirectTo("http://b.example/p.jpg"), "http://b.example/p.jpg": imageAnswer(jpeg(42)) });
+  await withFetch(plain, () => assert.rejects(() => fetchRefBytes("https://a.example/p"), (e) => e instanceof RefError && /not https/.test(e.message) && /Nothing was charged/.test(e.message)));
+  assert.equal(plain.seen.length, 1, "the plaintext hop is never fetched");
+
+  const inside = routes({ "https://a.example/q": redirectTo("https://127.0.0.1/x.jpg"), "https://127.0.0.1/x.jpg": imageAnswer(jpeg(43)) });
+  await withFetch(inside, () => assert.rejects(() => fetchRefBytes("https://a.example/q"), (e) => e instanceof RefError && /127\.0\.0\.1/.test(e.message) && /not a public address/.test(e.message)));
+  assert.equal(inside.seen.length, 1, "a private host is never asked");
+
+  const chain = (n) => {
+    const t = {};
+    for (let i = 0; i < n; i++) t[`https://hop.example/${i}`] = redirectTo(`https://hop.example/${i + 1}`);
+    t[`https://hop.example/${n}`] = imageAnswer(jpeg(44));
+    return routes(t);
+  };
+  const three = chain(REF_MAX_REDIRECTS);
+  assert.equal((await withFetch(three, () => fetchRefBytes("https://hop.example/0"))).bytes.length, 16, "three redirects are fine");
+  const four = chain(REF_MAX_REDIRECTS + 1);
+  await withFetch(four, () => assert.rejects(() => fetchRefBytes("https://hop.example/0"), (e) => e instanceof RefError && /more than 3 times/.test(e.message)));
+  assert.equal(four.seen.length, REF_MAX_REDIRECTS + 1, "the fourth redirect is not followed");
+
+  await withFetch(routes({ "https://nowhere.example/a": redirectTo(null) }),
+    () => assert.rejects(() => fetchRefBytes("https://nowhere.example/a"), (e) => e instanceof RefError && /without saying where/.test(e.message)));
+});
+
+test("a host that stalls or breaks is answered in words: headers late, a body that trickles, a reset mid-body", async () => {
+  const aborted = () => new DOMException("The operation was aborted", "AbortError");
+  // Headers never come: the fetch itself is aborted.
+  await withFetch(async (url, init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(aborted()))),
+    () => assert.rejects(() => fetchRefBytes("https://slow.example/a.jpg", { timeoutMs: 30 }), (e) => e instanceof RefError && /did not send the picture within/.test(e.message)));
+  // Headers at once, then the body trickles past the timer: the pending read rejects with an AbortError.
+  await withFetch(async (url, init) => new Response(new ReadableStream({
+    start(c) { c.enqueue(jpeg(5)); init.signal.addEventListener("abort", () => c.error(aborted())); },
+  })), () => assert.rejects(() => fetchRefBytes("https://slow.example/b.jpg", { timeoutMs: 30 }), (e) => e instanceof RefError && /did not send the picture within/.test(e.message) && /Nothing was charged/.test(e.message)));
+  // A reset in the middle of the body.
+  await withFetch(async () => new Response(new ReadableStream({
+    start(c) { c.enqueue(jpeg(6)); },
+    pull(c) { c.error(new TypeError("network connection lost")); },
+  })), () => assert.rejects(() => fetchRefBytes("https://flaky.example/c.jpg"), (e) => e instanceof RefError && /could not finish downloading the picture from flaky\.example/.test(e.message)));
+  // Through ingestRef (what kleo_adapt_prompt calls) it is the same sentence, never a raw AbortError.
+  await withFetch(async () => new Response(new ReadableStream({ start(c) { c.enqueue(jpeg(7)); }, pull(c) { c.error(new TypeError("reset")); } })),
+    () => assert.rejects(() => ingestRef(envOf(), "u", { url: "https://flaky.example/d.jpg" }), RefError));
+});
+
+test("the upload POST is bounded before it is buffered: by content-length when sent, by counting the bytes when not", async () => {
+  const env = envOf();
+  const { token } = await makeUploadToken(env, "u_mara");
+  const url = `https://kleo.test/upload/${token}`;
+  // A plain object stands in for the Request, so the headers are exactly what a hand-built client would send.
+  const post = (headers, body) => handleUpload({ url, method: "POST", headers: new Headers(headers), body }, env);
+  const declared = await post({ "content-length": String(UPLOAD_MAX_BODY + 1), "content-type": "multipart/form-data; boundary=x" }, null);
+  assert.equal(declared.status, 413); assert.match((await declared.json()).error, /one picture at a time/);
+  assert.ok(UPLOAD_MAX_BODY < 2 * REF_MAX_BYTES, "one picture per request, not eight");
+  assert.equal((await post({ "content-length": "lots", "content-type": "multipart/form-data; boundary=x" }, null)).status, 400);
+  // No content-length at all (chunked, HTTP/2): the stream is counted and dropped at the cap, not read to its end.
+  let pulled = 0;
+  const endless = new ReadableStream({ pull(c) { pulled++; if (pulled > 40) c.close(); else c.enqueue(new Uint8Array(1024 * 1024)); } });
+  const chunked = await post({ "content-type": "multipart/form-data; boundary=x" }, endless);
+  assert.equal(chunked.status, 413);
+  assert.ok(pulled <= Math.ceil(UPLOAD_MAX_BODY / (1024 * 1024)) + 4, `stopped at the cap, not at 40 MB (pulled ${pulled} MB)`);
+  assert.equal(env.AI.calls.length, 0, "nothing reached the vision model");
+  assert.deepEqual(await listUploads(env, "u_mara", token), []);
+});
+
+test("concurrent uploads to one link lose no picture and never pass the cap", async () => {
+  const env = envOf();
+  const { token } = await makeUploadToken(env, "u_mara");
+  const handles = [];
+  for (let i = 0; i < UPLOAD_MAX_FILES + 2; i++) handles.push((await ingestRef(env, "u_mara", { bytes: png(400 + i), source: "upload" })).handle);
+  // Eight at once: the old read-add-put list kept only the last writer's picture.
+  const eight = await Promise.all(handles.slice(0, UPLOAD_MAX_FILES).map((h) => recordUploads(env, "u_mara", token, [h])));
+  assert.ok(eight.every((r) => r.full.length === 0));
+  assert.deepEqual(new Set(await listUploads(env, "u_mara", token)), new Set(handles.slice(0, UPLOAD_MAX_FILES)), "every picture is on the list");
+  // Two more at once on a full link: both are taken back, the list stays at eight.
+  const late = await Promise.all(handles.slice(UPLOAD_MAX_FILES).map((h) => recordUploads(env, "u_mara", token, [h])));
+  assert.deepEqual(late.map((r) => r.full.length), [1, 1]);
+  assert.equal((await listUploads(env, "u_mara", token)).length, UPLOAD_MAX_FILES);
+  assert.equal([...env.RENDERS.m.keys()].filter((k) => k.includes("/up/")).length, UPLOAD_MAX_FILES, "the refused entries are deleted, not just hidden");
+
+  // Through the page: seven on the link, two devices race for the last place; exactly one gets it.
+  const env2 = envOf();
+  const t2 = (await makeUploadToken(env2, "u_mara")).token;
+  const seven = [];
+  for (let i = 0; i < UPLOAD_MAX_FILES - 1; i++) seven.push((await ingestRef(env2, "u_mara", { bytes: png(500 + i) })).handle);
+  await recordUploads(env2, "u_mara", t2, seven);
+  const form = (n) => { const fd = new FormData(); fd.append("file", new File([png(n)], `p${n}.png`, { type: "image/png" })); return fd; };
+  const [a, b] = await Promise.all([600, 601].map((n) => handleUpload(new Request(`https://kleo.test/upload/${t2}`, { method: "POST", body: form(n) }), env2)));
+  const answers = [await a.json(), await b.json()];
+  assert.equal(answers.filter((j) => j.uploaded.length === 1).length, 1, "one device keeps the eighth place");
+  assert.equal(answers.filter((j) => j.errors.some((e) => /it is full/.test(e.error))).length, 1, "the other is told the link is full");
+  assert.equal((await listUploads(env2, "u_mara", t2)).length, UPLOAD_MAX_FILES);
+});
+
+test("retention: pictures go REF_TTL_DAYS after their last use, a use keeps them, the purge throttles itself, and an account holds at most REF_MAX_PER_USER", async () => {
+  const env = envOf();
+  const r2 = env.RENDERS;
+  const { token } = await makeUploadToken(env, "u_mara");
+  const old = await ingestRef(env, "u_mara", { bytes: png(701), source: "upload" });
+  const kept = await ingestRef(env, "u_mara", { bytes: png(702) });
+  const used = await ingestRef(env, "u_mara", { bytes: png(703) });
+  await recordUploads(env, "u_mara", token, [old.handle]);
+  for (const h of [old.handle, used.handle]) { r2.age(`refs/u_mara/${h}.json`, REF_TTL_DAYS + 1); r2.age(`refs/u_mara/${h}.png`, REF_TTL_DAYS + 5); }
+  // The sidecar remembers a use two days back; a use now (kleo_create_video naming it) rewrites it and so keeps it.
+  const usedMeta = JSON.parse(new TextDecoder().decode(r2.m.get(`refs/u_mara/${used.handle}.json`).bytes));
+  const back = new Date(Date.now() - 2 * 86_400_000).toISOString();
+  await r2.put(`refs/u_mara/${used.handle}.json`, JSON.stringify({ ...usedMeta, last_used_at: back }));
+  r2.age(`refs/u_mara/${used.handle}.json`, REF_TTL_DAYS + 1);
+  await refsOf(env, "u_mara", [used.handle]);
+  assert.notEqual(JSON.parse(new TextDecoder().decode(r2.m.get(`refs/u_mara/${used.handle}.json`).bytes)).last_used_at, back, "the use is written down");
+  // An old entry of another link, an image whose sidecar never landed, and a fresh orphan.
+  const oldEntry = `refs/u_mara/up/${"a".repeat(32)}/kref_0badf00d`;
+  await r2.put(oldEntry, ""); r2.age(oldEntry, REF_TTL_DAYS + 3);
+  await r2.put("refs/u_mara/kref_deadbeef.jpg", jpeg(1)); r2.age("refs/u_mara/kref_deadbeef.jpg", REF_TTL_DAYS + 9);
+  await r2.put("refs/u_mara/kref_cafebabe.jpg", jpeg(2));
+
+  const run = await purgeOldRefs(env, Date.now(), { force: true });
+  assert.deepEqual(run, { ran: true, refs: 2, links: 1 }, "the unused picture and the old orphan; one old link entry");
+  assert.ok(!r2.m.has(`refs/u_mara/${old.handle}.json`) && !r2.m.has(`refs/u_mara/${old.handle}.png`), "the picture and its description are gone");
+  assert.ok(r2.m.has(`refs/u_mara/${kept.handle}.png`) && r2.m.has(`refs/u_mara/${used.handle}.png`), "a fresh picture and a used one stay");
+  assert.ok(!r2.m.has("refs/u_mara/kref_deadbeef.jpg") && r2.m.has("refs/u_mara/kref_cafebabe.jpg"));
+  assert.ok(!r2.m.has(oldEntry));
+  // The link's own entry outlives the picture (48 h + REF_TTL_DAYS): the tool says what happened, in words.
+  await assert.rejects(() => resolveRefs(env, "u_mara", [{ upload: token }]), (e) => e instanceof RefError && /were deleted/.test(e.message) && new RegExp(`${REF_TTL_DAYS} days`).test(e.message));
+  // Throttled: a second call within six hours does nothing; later it runs again.
+  assert.equal((await purgeOldRefs(env, Date.now())).ran, false);
+  assert.equal((await purgeOldRefs(env, Date.now() + 7 * 3600_000)).ran, true);
+  assert.deepEqual(await purgeOldRefs({}, Date.now()), { ran: false, refs: 0, links: 0 }, "no store, nothing to do");
+
+  // The per-account cap: counted before the vision call, a known picture still passes.
+  const many = envOf();
+  for (let i = 0; i < REF_MAX_PER_USER; i++) await ingestRef(many, "u_many", { bytes: jpeg(1000 + i) });
+  const calls = many.AI.calls.length;
+  await assert.rejects(() => ingestRef(many, "u_many", { bytes: png(9999) }), (e) => e instanceof RefError && new RegExp(`already holds ${REF_MAX_PER_USER}`).test(e.message) && /Nothing was charged/.test(e.message));
+  assert.equal(many.AI.calls.length, calls, "no vision call for a refused picture");
+  assert.match((await ingestRef(many, "u_many", { bytes: jpeg(1000) })).handle, REF_HANDLE_RE, "a picture it already holds is fine");
+  assert.match((await ingestRef(many, "u_other", { bytes: png(9999) })).handle, REF_HANDLE_RE, "the cap is per account");
+
+  // The page tells the user how long the pictures stay.
+  const html = await (await handleUpload(new Request(`https://kleo.test/upload/${token}`), env)).text();
+  assert.match(html, new RegExp(`deleted ${REF_TTL_DAYS} days after Kleo last uses them`)); assert.match(html, new RegExp(`cancellate ${REF_TTL_DAYS} giorni`));
 });

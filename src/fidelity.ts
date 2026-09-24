@@ -203,6 +203,32 @@ export async function judgePlan(
 }
 
 /**
+ * Every shot object of a storyboard with the id the judge and coverage give it ("<sceneId>-s<n>"), so a later change of
+ * the shot lists (trimShots) can say which id became which.
+ */
+export function shotIdsOf(sb: unknown): Map<object, string> {
+  const out = new Map<object, string>();
+  const scenes = isObj(sb) && Array.isArray(sb.scenes) ? sb.scenes.filter(isObj) : [];
+  scenes.forEach((sc, i) => (Array.isArray(sc.shots) ? sc.shots.filter(isObj) : []).forEach((sh, j) => out.set(sh, `${String(sc.id ?? `scene-${i + 1}`)}-s${j + 1}`)));
+  return out;
+}
+
+/**
+ * THE VERDICT FOLLOWS THE SHOTS (24 September 2026). The judge names shots by position, on the plan it read; the
+ * planner then drops the shots over a line's budget (trimShots) — a middle one too, when it claims nothing — and every
+ * shot after it moves up one. The stored verdict (fidelity.json) said "01-x-s3" for a picture that had become s2, or
+ * was gone. `before` is shotIdsOf() of the storyboard the judge read, taken before the trim; `after` the same storyboard
+ * after it: each verdict's shots are renamed to where their picture is now, and a shot that no longer exists is dropped.
+ * Ids the map does not know are kept as they were. Pure: returns a new verdict.
+ */
+export function renumberShots(f: PlanFidelity, before: ReadonlyMap<object, string>, after: ReadonlyMap<object, string>): PlanFidelity {
+  const moved = new Map<string, string | null>();
+  for (const [sh, id] of before) moved.set(id, after.get(sh) ?? null);
+  const rename = (shots: readonly string[]) => [...new Set(shots.flatMap((s) => (moved.has(s) ? (moved.get(s) ? [moved.get(s)!] : []) : [s])))];
+  return { ...f, verdicts: f.verdicts.map((v) => ({ ...v, shots: rename(v.shots ?? []) })) };
+}
+
+/**
  * The judge's findings as sentences for ONE repair round of the planner: what is lost, what is contradicted and
  * where, what is only weakly there, what was invented, and what the deterministic check found that no verdict says
  * (a missing "covers" claim, an unknown id). Kept items say nothing. Deduplicated, in the spec's order.

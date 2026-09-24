@@ -37,6 +37,8 @@ export interface Env {
   JUDGE_MODEL?: string;
   /** Workers AI model the planner falls back to when the external road refuses (no credit, bad key): unset = AI_MODEL. */
   PLAN_FALLBACK_MODEL?: string;
+  /** New reference pictures one account may have described per UTC day (src/mcp.ts REFS_MAX_PER_DAY, default 30). */
+  REFS_MAX_PER_DAY?: string;
   /** Minutes one planning attempt may take (default 4, storyboard.ts PLAN_BUDGET_MS): a slower, better model needs more. */
   PLAN_BUDGET_MIN?: string;
   /** The model for every planning call when a road to it exists (PLAN_API_URL + PLAN_API_KEY, or ANTHROPIC_API_KEY for claude-…). */

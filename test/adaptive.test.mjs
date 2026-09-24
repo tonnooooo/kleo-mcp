@@ -162,3 +162,62 @@ test("lookFromText names the look a request's words name, and nothing else (crea
   assert.equal(lookFromText("A documentary about the lagoon"), "realistic");
   assert.equal(lookFromText("Pirati e tesori"), null);
 });
+
+/* ------------------------------------------------------------------ decades, "da 30 secondi", the look's words (24 September, review) */
+
+test("a decade is never the video's length: '90s fashion' asks the length instead of pricing a 90-second film", () => {
+  // Measured the day the compact "30s" arrived: each of these was planned and priced at the decade's number.
+  for (const p of ["A Short about 90s fashion", "a video about 80s music in Italy", "a film about 70s disco culture", "Make a video on 60s rock bands", "a YouTube video about 90s cartoons", "Un video sugli anni 80", "A documentary on the 1990s", "A video about the 80s", "90s"]) {
+    const b = adaptPrompt(p);
+    assert.equal(b.duration_s, null, p);
+    assert.ok(b.intake.missing.includes("duration"), `${p}: the length is asked`);
+  }
+  // The compact form still reads a length where only a length can be.
+  assert.equal(adaptPrompt("A film about the sea, 30s, vertical").duration_s, 30);
+  assert.equal(adaptPrompt("a 30s clip about rain").duration_s, 30);
+  assert.equal(adaptPrompt("A Short about rain. Clip: 45s").duration_s, 45);
+  assert.equal(adaptPrompt("Un video sul mare, lungo 30s").duration_s, 30);
+});
+
+test("'da 30 secondi' / 'for 30 seconds' in the video's own clause is its length; the story's time still is not", () => {
+  assert.equal(adaptPrompt("un video sui pirati da 30 secondi").duration_s, 30);
+  assert.equal(adaptPrompt("un cortometraggio sui pirati da 2 minuti").duration_s, 120);
+  assert.equal(adaptPrompt("Fammi un Short sui pirati da 45 secondi").duration_s, 45);
+  assert.equal(adaptPrompt("Video per YouTube da 2 minuti sulla storia di Roma").duration_s, 120);
+  assert.equal(adaptPrompt("un video sui pirati per 30 secondi").duration_s, 30);
+  assert.equal(adaptPrompt("a video about pirates for 30 seconds").duration_s, 30);
+  assert.equal(adaptPrompt("a video about the Titanic, for 60 seconds").duration_s, 60);
+  // Story time, even with a video word in the request: "tra", a relative clause, a verb of waiting or holding.
+  assert.equal(adaptPrompt("Un film su una bomba che esplode tra 30 secondi").duration_s, null);
+  assert.equal(adaptPrompt("un video di un uomo che corre per 30 secondi").duration_s, null);
+  assert.equal(adaptPrompt("Un video su un sub che trattiene il fiato per 30 secondi").duration_s, null);
+  assert.equal(adaptPrompt("Un video sul mare. Per 30 secondi nessuno parla").duration_s, null, "another sentence: the video word does not reach it");
+});
+
+test("'Short di…' at the start and 'i miei Reels' are platform words too", () => {
+  assert.equal(adaptPrompt("Short di 45 secondi sui delfini").format, "9:16");
+  assert.equal(adaptPrompt("Shorts sui gatti").format, "9:16");
+  assert.equal(adaptPrompt("Crea un video per i miei Reels sui gatti").format, "9:16");
+  assert.equal(adaptPrompt("Un video per le nostre stories sul mare").format, "9:16");
+  // Still not: a short film, clothing, a reel of film, being short of something.
+  assert.equal(adaptPrompt("Short film about a dog").format, null);
+  assert.equal(adaptPrompt("Short of breath, the runner stops at the top of the hill").format, null);
+  assert.equal(adaptPrompt("A reel of old film found in an attic").format, null);
+});
+
+test("the look is named by words that describe the video, never by a topic noun; both looks named outright is asked", () => {
+  // Measured: each of these used to become a 2D animation.
+  assert.equal(lookFromText("A realistic documentary about the history of Pixar"), "realistic");
+  assert.equal(lookFromText("a documentary about the Ghibli museum in Tokyo"), "realistic");
+  assert.equal(lookFromText("A cinematic film about how anime took over the world"), "realistic");
+  assert.equal(lookFromText("A story about a girl who rides in a horse-drawn carriage"), null);
+  // A studio or "anime" as a STYLE still names animation.
+  assert.equal(lookFromText("A film in the style of Pixar about a toaster"), "animation");
+  assert.equal(lookFromText("Un video in stile Ghibli sul mare"), "animation");
+  assert.equal(lookFromText("an anime-style short about robots"), "animation");
+  assert.equal(lookFromText("A hand-drawn film about a fox"), "animation");
+  assert.equal(lookFromText("An animated documentary about bees"), "animation", "an animation word beats a documentary");
+  // Both named outright: neither wins, the intake asks (and createJob falls back to realistic).
+  assert.equal(lookFromText("Un video realistico, tipo cartone animato"), null);
+  assert.equal(adaptPrompt("Un video realistico, tipo cartone animato").look, null);
+});

@@ -459,6 +459,41 @@ export function formatTalk(voice: string): string | null {
 }
 
 /**
+ * THE LAST DETERMINISTIC TOUCH ON A VOICE THAT STILL TALKS ABOUT THE VIDEO (24 September 2026). Since the request
+ * reaches every prompt whole (storyRequest), "Un Short verticale di 30 secondi su…" is in front of the scene writer
+ * every time, and the planner asks for a voice without it until its attempts run out (src/storyboard.ts). When the
+ * last answer still says it, what is removed here is only what is PURE format talk (formatOnly): a whole sentence
+ * ("This is a 30-second vertical Short."), or the leading or trailing clause of one ("In questo Short di 30 secondi,
+ * Mara sforna…" → "Mara sforna…"). A sentence that carries the format word inside its story ("the narrator's voice
+ * breaks") is left alone — cutting it would cut the story — and so is a line that would be left with fewer than four
+ * words. Returns the voice unchanged when there is nothing safe to take out.
+ */
+export function stripFormatTalk(voice: string): string {
+  const text = String(voice ?? "");
+  if (!formatTalk(text)) return text;
+  const pure = (s: string) => !!formatTalk(s) && formatOnly(s);
+  const upperFirst = (s: string) => s.replace(/^(\s*["«“']?)(\p{Ll})/u, (_, q: string, c: string) => q + c.toUpperCase());
+  const sentences = text.match(/[^.!?…]+(?:[.!?…]+["»”']?|$)\s*/gu) ?? [text];
+  const out: string[] = [];
+  for (const raw of sentences) {
+    const s = raw.trim();
+    if (!s) continue;
+    if (!formatTalk(s)) { out.push(s); continue; }
+    if (pure(s)) continue;
+    let kept = s;
+    // The leading clause: "In a 30-second vertical Short, …" / "Short di 30 secondi: …" / "… — …".
+    const lead = /^(.+?)(?:,|:|;|\s[—–-]\s)\s*(.+)$/su.exec(kept);
+    if (lead && pure(lead[1])) kept = upperFirst(lead[2]);
+    // The trailing clause: "…, in this vertical Short." — the sentence keeps its own full stop.
+    const tail = /^(.+)(?:,|;|:|\s[—–-]\s)\s*([^,;:]+?)([.!?…]+["»”']?)?$/su.exec(kept);
+    if (tail && pure(tail[2])) kept = `${tail[1].trim()}${tail[3] ?? "."}`;
+    out.push(kept);
+  }
+  const result = out.join(" ").replace(/\s+/g, " ").trim();
+  return result && (result.match(/[\p{L}\p{N}]+/gu) ?? []).length >= 4 ? result : text;
+}
+
+/**
  * The request as the planner's prompts paste it: THE WHOLE REQUEST, whitespace folded, nothing taken out.
  *
  * From 20 to 24 September 2026 this deleted every sentence that contained a format word, because the 17B copied
@@ -466,8 +501,10 @@ export function formatTalk(voice: string): string | null {
  * "the narrator says 'festa a sorpresa'", "a 1990s bedroom with a vertical blind", "a woman walking down a vertical
  * street" all lost the sentence that carried them, and the film lost what the user asked for (measured on 18 jobs:
  * 10% of the users' requirements contradicted, a share of them never reaching the planner at all). The narration is
- * protected where the damage happened instead — formatTalk() on every voice line, in the planner and the validator —
- * and the request reaches the model as the user wrote it.
+ * protected where the damage happened instead, and the request reaches the model as the user wrote it. That protection
+ * lives in the planner (src/storyboard.ts), not in validateStoryboard: formatTalk() on every voice line of every chunk
+ * is fed back to the model for as long as it has attempts left, stripFormatTalk() takes out what is still pure format
+ * talk from the answer that is kept, and the fidelity repair round is held to the same check on the voices it rewrites.
  */
 export function storyRequest(prompt: string): string {
   return String(prompt ?? "").trim().replace(/\s+/g, " ");

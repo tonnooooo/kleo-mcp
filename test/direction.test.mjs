@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import {
   directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor, notEnglish, foreignPictureFields, lightsPictures, headNounIn, thinLook, formatTalk, storyRequest, dropLookFacts,
   castFor, conformity, ACCENT_LIGHT, negatedTerms, stillness, enliven, livingClause, ENLIVEN_CLAUSES, D,
-  motionHint, spokenFacts, lookFact, formatOnly, screenTextProblems,
+  motionHint, spokenFacts, lookFact, formatOnly, screenTextProblems, stripFormatTalk,
 } from "../src/direction.ts";
 import { validateStoryboard, qualityProblems, directionOf, narrationOf, pictureScenes, CINEMA_ACCENTS, SHOTS_MIN_CINEMA, shotRangeText } from "../src/keou-contract.ts";
 import { fullPrompt, modelInputs, NEGATIVE_PROMPT, STYLE_SUFFIX, DEFAULT_IMAGE_MODELS } from "../src/images.ts";
@@ -533,4 +533,22 @@ test("the directed fixture is a complete client storyboard: what an assistant mu
   assert.deepEqual(r.ok ? [] : r.errors, [], "it must pass the rule it exists to demonstrate");
   assert.equal(sb.direction.sections.reduce((a, s) => a + s.scenes, 0), sb.scenes.length,
     "its sections tile the film exactly");
+});
+
+test("stripFormatTalk: only what is pure format talk leaves a kept voice, never the story around it (24 September 2026)", () => {
+  // The leading clause of the 20 September line, in both languages.
+  assert.equal(stripFormatTalk("In a 30-second vertical YouTube Short, the young warrior receives a transmission from a dead planet."), "The young warrior receives a transmission from a dead planet.");
+  assert.equal(stripFormatTalk("In questo Short di 30 secondi, Mara sforna una torta al limone nella sua cucina."), "Mara sforna una torta al limone nella sua cucina.");
+  // A whole sentence of it goes; the story sentence after it stays as it was.
+  assert.equal(stripFormatTalk("This is a 30-second vertical Short. The warrior wakes in the ruins."), "The warrior wakes in the ruins.");
+  // A trailing clause goes, and the sentence keeps its full stop.
+  assert.equal(stripFormatTalk("The warrior wakes in the ruins, in this vertical Short."), "The warrior wakes in the ruins.");
+  // A format word inside the story is the story: nothing is cut.
+  assert.equal(stripFormatTalk("The narrator's voice breaks as the warrior falls."), "The narrator's voice breaks as the warrior falls.");
+  // A line that would be left with nothing (or under four words) is left alone.
+  assert.equal(stripFormatTalk("A 30-second Short."), "A 30-second Short.");
+  // Nothing to do: the same string back.
+  const clean = "Mara carries the lemon cake across the square.";
+  assert.equal(stripFormatTalk(clean), clean);
+  assert.equal(formatTalk(stripFormatTalk("In a 30-second vertical YouTube Short, the young warrior receives a transmission from a dead planet.")), null);
 });

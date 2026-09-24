@@ -10,17 +10,32 @@ import { sellingOpen, SELLING_PAUSE } from "./stripe";
 import { notifyDone } from "./notify";
 import { putFile, deleteFile } from "./storage";
 import { acquireLock, releaseLock, holdLock, setFlagUntil, isFlagActive } from "./schema";
+import { acquireOwnedLock, renewOwnedLock, releaseOwnedLock } from "./db";
 import { poolWaitingJobs } from "./db";
 import { generateStoryboard, StoryboardError, isTransientAiError } from "./storyboard";
 import { updateJobParams } from "./db";
 import { specOf, type RequestSpec } from "./spec";
-import { drawJobStills, stillsEngineOn, stillsHold, stillsStateOf, mergeFidelity, castSheetKeys, STILLS_GIVE_UP_MIN } from "./stills";
+import { drawJobStills, stillsEngineOn, stillsHold, stillsStateOf, mergeFidelity, castSheetKeys, stillsErrorVerdict, pauseStills, STILLS_GIVE_UP_MIN } from "./stills";
+import { purgeOldRefs } from "./refs.ts";
 
 /** Jobs whose stills one cron tick draws, at most, and how long each may take (they run side by side). */
 const STILLS_JOBS_PER_TICK = 2;
-const STILLS_JOB_MS = 70_000;
-/** The stills lock: longer than one tick's drawing (STILLS_JOB_MS plus the last still in flight), so two ticks never draw the same job. */
-const STILLS_LOCK_S = 150;
+/**
+ * The drawing window of one tick, INSIDE the one-minute cron period (24 September 2026). It was 70 s: with the stills
+ * in flight at the deadline and the fidelity.json write, a tick that drew held the lock for 75-110 s, so the next cron
+ * found it held and skipped, and the engine drew in one minute of every two while the give-up clock (wall time) ran
+ * on. Now new stills start until 25 s in (deadline - EST_STILL_MS), no redraw starts past 45 s (drawJudged's `until`),
+ * and a typical tick is over before the next cron takes the lock.
+ */
+export const STILLS_JOB_MS = 45_000;
+/**
+ * The stills lock is OWNED (src/db.ts acquireOwnedLock) and kept alive by a heartbeat while the tick draws: a short
+ * lease renewed every STILLS_HEARTBEAT_MS, instead of one long guess of the worst case. A slow Workers AI can no
+ * longer outlive the lock (it used to expire mid-draw and let the next tick pay for the same pictures again), a tick
+ * whose invocation dies frees the job within STILLS_LOCK_S, and a tick only ever releases its own lock.
+ */
+export const STILLS_LOCK_S = 90;
+const STILLS_HEARTBEAT_MS = 20_000;
 
 /** What the planner's fidelity judge returns (src/fidelity.ts PlanFidelity), as far as this module reads it. */
 interface PlanFidelityLike { verdicts?: { id: string; status: string; shots?: string[]; note?: string }[]; inventions?: string[]; score?: number; judge?: string; coverage?: unknown }
@@ -133,13 +148,20 @@ async function recordPlanFidelity(env: Env, job: Job, f: PlanFidelityLike): Prom
 /**
  * THE STILLS STEP (24 September 2026, src/stills.ts): the queued, planned jobs of the two film looks get their stills
  * drawn and judged on the server BEFORE the dispatcher may rent them a GPU (stillsHold). At most STILLS_JOBS_PER_TICK
- * jobs, side by side, STILLS_JOB_MS each, under a lock of their own so an overlapping cron never draws the same job
- * twice; what does not fit is resumed on the next tick. A job drawing for more than STILLS_GIVE_UP_MIN is marked
- * "failed" here — and so is one whose drawing throws — which lets the GPU draw what is missing the legacy way: the
- * engine may make a film more faithful, never strand it.
+ * jobs, side by side, STILLS_JOB_MS each, under an owned lock of their own (heartbeat-renewed) so an overlapping cron
+ * never draws the same job twice; what does not fit is resumed on the next tick. A job drawing for more than
+ * STILLS_GIVE_UP_MIN is marked "failed" here, which lets the GPU draw what is missing the legacy way: the engine may
+ * make a film more faithful, never strand it. A throw out of drawJobStills (a D1 or R2 hiccup) PAUSES the job's
+ * drawing like a transient model error does (stillsErrorVerdict); only a bug fails it at once.
+ *
+ * THE OWNER'S PAUSE SWITCHES hold here too. "paused" and "budget_pause" stop every rental and "paused_all" stops the
+ * free pool as well (/internal/admin/pause: "stops the spending", "nothing renders at all"); this step spends Workers
+ * AI on FLUX.2 and the vision judge for every queued film — including the one whose content made the owner press the
+ * emergency switch — so it stops under any of the three. Until 24 September it ran on regardless, every minute.
  */
-async function drawStills(env: Env): Promise<void> {
+export async function drawStills(env: Env): Promise<void> {
   if (!env.AI || (env.STILLS_ENGINE ?? "").trim().toLowerCase() === "legacy") return;
+  for (const flag of ["paused_all", "paused", "budget_pause"]) if (await isFlagActive(env, flag)) return;
   const todo: Job[] = [];
   for (const job of await queuedJobs(env, 20)) {
     if (job.phase === "finish" || !stillsEngineOn(env, job)) continue;
@@ -153,21 +175,29 @@ async function drawStills(env: Env): Promise<void> {
     todo.push(job);
   }
   if (!todo.length) return;
-  if (!(await acquireLock(env, "stills", STILLS_LOCK_S))) return;
+  const lock = await acquireOwnedLock(env, "stills", STILLS_LOCK_S);
+  if (!lock) return;
+  let lost = false;
+  const heartbeat = setInterval(() => {
+    renewOwnedLock(env, lock, STILLS_LOCK_S).then((held) => { if (!held) lost = true; }, () => { /* a failed renewal is retried on the next beat */ });
+  }, STILLS_HEARTBEAT_MS);
   try {
     const deadline = Date.now() + STILLS_JOB_MS;
     await Promise.all(todo.slice(0, STILLS_JOBS_PER_TICK).map(async (job) => {
       try {
-        const r = await drawJobStills(env, job, { deadline });
+        const r = await drawJobStills(env, job, { deadline, stop: () => lost });
         if (r.state !== "drawing") await audit(env, job.user_id, job.id, "stills.state", r);
       } catch (e) {
         const msg = String(e).slice(0, 300);
-        await updateJobParams(env, job.id, { stills: { state: "failed", at: nowIso(), note: msg } });
-        await audit(env, job.user_id, job.id, "stills.error", { error: msg, transient: true });
+        const fresh = (await getJob(env, job.id).catch(() => null)) ?? job;
+        if (stillsErrorVerdict(e) === "pause") { await pauseStills(env, fresh, msg); return; }
+        await updateJobParams(env, job.id, { stills: { ...(stillsStateOf(fresh) ?? {}), state: "failed", at: nowIso(), note: msg } });
+        await audit(env, job.user_id, job.id, "stills.state", { state: "failed", error: msg });
       }
     }));
   } finally {
-    await releaseLock(env, "stills");
+    clearInterval(heartbeat);
+    await releaseOwnedLock(env, lock);
   }
 }
 
@@ -341,7 +371,10 @@ async function tickInner(env: Env, stats: Stats) {
     stats.failed++;
   }
 
-  for (const job of await expiredJobs(env)) {
+  // Done jobs past their links, failed jobs past the same TTL, cancelled jobs after an hour (src/db.ts expiredJobs):
+  // the stills engine writes stills, character sheets and fidelity.json while a job is still queued, so a job that
+  // never finished has files to purge too (24 September 2026).
+  for (const job of await expiredJobs(env, 20, { ttlDays: int(env.RESULT_TTL_DAYS, 7) })) {
     for (const f of await listFiles(env, job.id)) await deleteFile(env, f.key);
     // The character sheets are not job files (they must not show up among the user's links): purged by their keys.
     for (const k of castSheetKeys(job)) { try { await deleteFile(env, k); } catch { /* a sheet that is not there */ } }
@@ -349,6 +382,9 @@ async function tickInner(env: Env, stats: Stats) {
     await updateJob(env, job.id, { purged_at: nowIso() });
     stats.purged++;
   }
+  // The users' reference pictures (src/refs.ts) are kept REF_TTL_DAYS after their last use; the pass throttles itself
+  // to once every six hours, and a store hiccup never fails the tick.
+  try { await purgeOldRefs(env, Date.now()); } catch (e) { await audit(env, null, null, "refs.purge.error", String(e).slice(0, 300)); }
   return stats;
 }
 

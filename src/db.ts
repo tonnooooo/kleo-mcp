@@ -100,9 +100,13 @@ export interface JobParams {
   /** Handles of the reference images the user gave (src/refs.ts), in the order given. */
   refs?: string[];
   /** The intake's optional answers, as the user gave them: they used to die between kleo_adapt_prompt and the planner. */
-  brief?: { audience?: string | null; tone?: string | null; must_keep?: string | null };
+  brief?: { audience?: string | null; tone?: string | null; must_keep?: string | null; /** The user's corrections after the read-back, in their words. */ corrections?: string | null };
   /** Where the server-drawn stills are (src/stills.ts): drawing, done, or failed (the rented GPU draws them then). */
-  stills?: { state: "drawing" | "done" | "failed"; at: string; drawn?: number; total?: number; note?: string };
+  stills?: {
+    state: "drawing" | "done" | "failed"; at: string; drawn?: number; total?: number; note?: string;
+    /** Ticks that stopped on a transient Workers AI or store error and left the drawing to the next tick (24 September 2026). */
+    pauses?: number;
+  };
 }
 
 export interface JobFile {
@@ -399,10 +403,30 @@ export async function activeJobs(env: Env): Promise<Job[]> {
 export async function recentJobsForUser(env: Env, userId: string, limit = 10): Promise<Job[]> {
   return (await env.DB.prepare("SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ?").bind(userId, limit).all<Job>()).results;
 }
-export async function expiredJobs(env: Env, limit = 20): Promise<Job[]> {
+/**
+ * The jobs whose files are purged now: a DONE job once its links expired (expires_at), and — since 24 September 2026 —
+ * a job that ended without a film too. The stills engine draws up to 48 stills, six character sheets (from the user's
+ * own photo when there is one) and fidelity.json while the job is still QUEUED, before any GPU; a job cancelled while
+ * it waited, or failed (no GPU in time, a start error), never reached "done", so this query never returned it and those
+ * objects — likeness sheets of real people included — stayed on R2 for ever. A FAILED job keeps its files for the
+ * same RESULT_TTL_DAYS as a finished one (counted from finished_at): the owner's /internal/admin/retry re-queues a film
+ * that failed in its finish phase with the clips and music it already paid for, and that needs them. A CANCELLED job
+ * is kept `cancelledGraceMin` only: nothing reads its files again, the grace just lets a worker that was still
+ * uploading when the user cancelled finish before the files are listed (a file written after the purge would be kept
+ * for ever, purged_at is set once).
+ */
+export async function expiredJobs(env: Env, limit = 20, opts: { ttlDays?: number; cancelledGraceMin?: number } = {}): Promise<Job[]> {
+  const ttlDays = Math.max(1, Number.isFinite(opts.ttlDays) ? Number(opts.ttlDays) : 7);
+  const graceMin = Math.max(0, Number.isFinite(opts.cancelledGraceMin) ? Number(opts.cancelledGraceMin) : 60);
+  const failedBefore = new Date(Date.now() - ttlDays * 86_400_000).toISOString();
+  const cancelledBefore = new Date(Date.now() - graceMin * 60_000).toISOString();
   return (await env.DB.prepare(
-    "SELECT * FROM jobs WHERE state = 'done' AND purged_at IS NULL AND expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now') LIMIT ?"
-  ).bind(limit).all<Job>()).results;
+    `SELECT * FROM jobs WHERE purged_at IS NULL AND (
+       (state = 'done' AND expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+       OR (state = 'failed' AND finished_at IS NOT NULL AND finished_at < ?)
+       OR (state = 'cancelled' AND COALESCE(finished_at, created_at) < ?)
+     ) LIMIT ?`
+  ).bind(failedBefore, cancelledBefore, limit).all<Job>()).results;
 }
 
 export async function insertJob(env: Env, j: Job): Promise<void> {
@@ -595,4 +619,43 @@ export async function updateJobParams(env: Env, id: string, patch: Partial<JobPa
     if ((r.meta.changes ?? 0) === 1) return next;
   }
   return null;
+}
+
+/**
+ * AN OWNED LOCK (24 September 2026, the stills engine). The plain lock of src/schema.ts (acquireLock/releaseLock) has
+ * no owner: its release sets `until` to 1970 whoever holds it. For the stills lock that was a real double draw: a tick
+ * whose Workers AI answered slowly was still drawing when its lock expired, the next cron took the lock and — the first
+ * tick's pictures not stored yet — paid for the same pictures again, and when the first tick finished its release freed
+ * the SECOND tick's lock, so a third could enter too.
+ *
+ * The locks table has two columns (name, until) and its schema is not this module's, so the owner rides in `until`
+ * itself: "<ISO expiry>~<owner token>". The ISO part keeps the table's one rule working unchanged — `until < now` is
+ * a string comparison, and the suffix only decides a tie inside the same millisecond (as "not expired yet"). Every
+ * write of an owner is a compare-and-set on its own token: renew extends only a lock this owner still holds, release
+ * frees only that one, and both answer whether they did.
+ */
+export interface OwnedLock { name: string; owner: string }
+const LOCK_OWNER_SEP = "~";
+const lockUntil = (seconds: number, owner: string): string => `${new Date(Date.now() + seconds * 1000).toISOString()}${LOCK_OWNER_SEP}${owner}`;
+const lockSuffix = (owner: string): string => `${LOCK_OWNER_SEP}${owner}`;
+export async function acquireOwnedLock(env: Env, name: string, seconds: number, owner: string = crypto.randomUUID()): Promise<OwnedLock | null> {
+  await env.DB.prepare("INSERT OR IGNORE INTO locks (name, until) VALUES (?, '1970-01-01T00:00:00Z')").bind(name).run();
+  const r = await env.DB.prepare("UPDATE locks SET until = ? WHERE name = ? AND until < strftime('%Y-%m-%dT%H:%M:%fZ','now')").bind(lockUntil(seconds, owner), name).run();
+  return (r.meta.changes ?? 0) === 1 ? { name, owner } : null;
+}
+/**
+ * Extends the lock by `seconds` from now, only while `lock.owner` still holds it; false when it was lost. A lock that
+ * expired but that nobody took since still carries this owner's token and is renewed: the compare-and-set is on the
+ * token, so a tick that took it in between has already overwritten the token and this renew changes nothing.
+ */
+export async function renewOwnedLock(env: Env, lock: OwnedLock, seconds: number): Promise<boolean> {
+  const suffix = lockSuffix(lock.owner);
+  const r = await env.DB.prepare("UPDATE locks SET until = ? WHERE name = ? AND substr(until, -?) = ?").bind(lockUntil(seconds, lock.owner), lock.name, suffix.length, suffix).run();
+  return (r.meta.changes ?? 0) === 1;
+}
+/** Frees the lock only when `lock.owner` still holds it: a lock another tick took after this one expired is left alone. */
+export async function releaseOwnedLock(env: Env, lock: OwnedLock): Promise<boolean> {
+  const suffix = lockSuffix(lock.owner);
+  const r = await env.DB.prepare("UPDATE locks SET until = '1970-01-01T00:00:00Z' WHERE name = ? AND substr(until, -?) = ?").bind(lock.name, suffix.length, suffix).run();
+  return (r.meta.changes ?? 0) === 1;
 }

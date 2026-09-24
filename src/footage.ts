@@ -274,6 +274,27 @@ export function clipPrompt(shot: { id: string; image_prompt: string; motion?: st
   return [what, ...cast, place ? `Setting: ${place}` : ""].filter(Boolean).map((s) => `${s}.`).concat([cameraSentence(shot), lookText]).join(" ").replace(/\s+/g, " ").trim();
 }
 
+/**
+ * Whether the stored shot carries a text the user asked to be READ on screen (a spec item of kind "text" among its
+ * covers) — the same question clipPrompt asks before it drops its "No text" sentence. requestFootage asks it again
+ * for the NEGATIVE prompt (24 September 2026): on the Wan road kieInput always sent KIE_NEGATIVES, whose first words
+ * are "text, letters, … subtitles", so the positive prompt said keep the sign and the negative said erase it, and the
+ * shop sign the still was drawn with dissolved during the clip.
+ */
+export function clipKeepsText(shotId: string, stored: { storyboard: unknown; spec: RequestSpec | null } | null): boolean {
+  const spec = stored?.spec;
+  if (!stored || !spec) return false;
+  const pic = stillShotsOf(stored.storyboard).find((p) => p.id === shotId);
+  return !!pic && (pic.covers ?? []).some((id) => itemById(spec, id)?.kind === "text");
+}
+
+/** The negative prompt of a look, minus the words that ban lettering when the shot must keep a text on screen (watermark and logo stay banned). */
+export function kieNegativeFor(look: FilmLook, keepsText = false): string {
+  const neg = KIE_NEGATIVES[look];
+  if (!keepsText) return neg;
+  return neg.split(",").map((t) => t.trim()).filter((t) => t && !/^(?:text|letters|subtitles|captions?)$/i.test(t)).join(", ");
+}
+
 /* ------------------------------------------------------------------ rows */
 
 export interface FootageRow { job_id: string; shot_id: string; model: string; task_id: string | null; state: "queued" | "generating" | "ready" | "failed"; seconds: number; cost_usd: number; result_url: string | null; key: string | null; error: string | null; created_at: string; updated_at: string | null }
@@ -367,7 +388,7 @@ export function noCreditSentence(ordered: number, wanted: number): string {
  * has no text-to-video on this model id: without a still the input carries no frame and kie.ai refuses the task, which
  * is the right outcome (a clip without its reference frame is not the shot that was planned).
  */
-export function kieInput(name: string, spec: KieModel, p: { prompt: string; imageUrl: string | null; seconds: number; format: string; seed: number; look?: FilmLook }): Record<string, unknown> {
+export function kieInput(name: string, spec: KieModel, p: { prompt: string; imageUrl: string | null; seconds: number; format: string; seed: number; look?: FilmLook; keepsText?: boolean }): Record<string, unknown> {
   const aspect = p.format === "16:9" ? "16:9" : "9:16";
   const duration = clipSecondsFor(spec, p.seconds);
   if (name.startsWith("kling-3.0")) {
@@ -376,7 +397,7 @@ export function kieInput(name: string, spec: KieModel, p: { prompt: string; imag
   }
   if (name.startsWith("kling-v3-turbo")) return { prompt: p.prompt, ...(p.imageUrl ? { image_urls: [p.imageUrl] } : {}), duration: String(duration), resolution: "1080p" };
   if (name.startsWith("veo")) return { prompt: p.prompt, ...(p.imageUrl ? { image_urls: [p.imageUrl], generation_type: "FIRST_AND_LAST_FRAMES_2_VIDEO" } : { generation_type: "TEXT_2_VIDEO" }), aspect_ratio: aspect, resolution: "1080p", duration };
-  if (name.startsWith("wan")) return { prompt: p.prompt, negative_prompt: KIE_NEGATIVES[p.look ?? "realistic"], ...(p.imageUrl ? { first_frame_url: p.imageUrl } : {}), resolution: "1080p", duration, seed: p.seed, prompt_extend: false, watermark: false };
+  if (name.startsWith("wan")) return { prompt: p.prompt, negative_prompt: kieNegativeFor(p.look ?? "realistic", !!p.keepsText), ...(p.imageUrl ? { first_frame_url: p.imageUrl } : {}), resolution: "1080p", duration, seed: p.seed, prompt_extend: false, watermark: false };
   if (name.startsWith("seedance")) return { prompt: p.prompt, ...(p.imageUrl ? { first_frame_url: p.imageUrl } : {}), duration, aspect_ratio: aspect, resolution: "1080p", generate_audio: false };
   if (name.startsWith("minimax")) return { prompt: p.prompt.slice(0, 7000), ...(p.imageUrl ? { first_frame_url: p.imageUrl } : {}), duration, resolution: name.endsWith("-768p") ? "768P" : "2K" };
   if (name.startsWith("gemini")) return { prompt: p.prompt, ...(p.imageUrl ? { first_frame_url: p.imageUrl } : {}), duration, resolution: name.endsWith("-4k") ? "4k" : "1080p", aspect_ratio: aspect };
@@ -457,7 +478,7 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
     else await env.DB.prepare("INSERT OR IGNORE INTO footage (job_id, shot_id, model, state, seconds, cost_usd, updated_at) VALUES (?, ?, ?, 'queued', ?, ?, ?)")
       .bind(job.id, s.id, name, seconds, cost, nowIso()).run();
     try {
-      const r = await kie<{ taskId?: string }>(env, "POST", KIE_CREATE, { model: spec.model, input: kieInput(name, spec, { prompt, imageUrl, seconds, format, seed: seedFor(s.id), look }) });
+      const r = await kie<{ taskId?: string }>(env, "POST", KIE_CREATE, { model: spec.model, input: kieInput(name, spec, { prompt, imageUrl, seconds, format, seed: seedFor(s.id), look, keepsText: clipKeepsText(s.id, stored) }) });
       if (!r?.taskId) throw new KieError("kie.ai answered without a taskId", 0, false);
       await updateRow(env, job.id, s.id, { task_id: r.taskId, state: "generating" });
       await audit(env, job.user_id, job.id, "footage.task", { shot: s.id, model: name, task: r.taskId, clip_s: clipSeconds, want_s: seconds, usd: cost, still: !!imageUrl });

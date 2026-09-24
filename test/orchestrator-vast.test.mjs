@@ -858,3 +858,133 @@ test("a host in an excluded country is never rented: ghcr.io crawls from there (
   assert.equal(m.geoExcluded("", "Shanghai, CN"), false, "an empty list excludes nobody");
   assert.equal(m.geoExcluded("CN", undefined), false, "an offer with no location is not judged");
 });
+
+/* ------------------------------------------------------------------ the stills step (24 September 2026) */
+const STILLS_SB = {
+  style: "picture", kleo_style: "realistic",
+  direction: { subject: "a lighthouse", world: "A rocky coast at dusk", cast: [{ name: "Mara", look: "a keeper in a yellow oilskin" }], objects: [], forbidden: [], sections: [] },
+  scenes: [{ id: "01-sc", kind: "cinema", voice: "a line", shots: [{ image_prompt: "A lighthouse at dusk", shot_kind: "establish", covers: [], cast: [] }] }],
+};
+/** A fake Workers AI: FLUX.2 draws answer a JPEG, the vision judge answers what a faithful picture gets. */
+function stillsAi() {
+  const calls = { draws: 0, judges: 0 };
+  return { calls, ai: { async run(model, inputs) {
+    if (inputs.multipart) { calls.draws++; return { image: Buffer.from([0xff, 0xd8, 0xff, 0xe0, calls.draws, 1, 2, 3]).toString("base64") }; }
+    if (inputs.messages) {
+      calls.judges++;
+      const qs = [...inputs.messages[0].content[0].text.matchAll(/^(q\d+): (.*)$/gm)];
+      return { response: JSON.stringify(Object.fromEntries(qs.map((q) => [q[1], /any written text|any of this/i.test(q[2]) ? "no" : "yes"]))) };
+    }
+    throw new Error("unexpected AI call");
+  } } };
+}
+class MemKV {
+  constructor() { this.m = new Map(); }
+  async put(k, v, o) { this.m.set(k, { v, o }); }
+  async get(k) { return this.m.get(k)?.v ?? null; }
+  async getWithMetadata(k) { const e = this.m.get(k); return { value: e?.v ?? null, metadata: e?.o?.metadata ?? null }; }
+  async delete(k) { this.m.delete(k); }
+}
+async function stillsJob(env) {
+  const u = await user(env, 10 * P);
+  const job = await short(env, u);
+  await m.updateJob(env, job.id, { storyboard: JSON.stringify(STILLS_SB) });
+  return job;
+}
+const stillsOf = async (env, id) => JSON.parse((await m.getJob(env, id)).params).stills ?? null;
+
+test("stills: the owner's pause switches stop the server drawing too, not only the GPU rentals", async () => {
+  // 24 September: drawStills ran every cron minute whatever /internal/admin/pause said, spending Workers AI on FLUX.2
+  // and the judge for every queued film — including the one whose content made the owner press {"everything": true}.
+  for (const flag of ["paused", "paused_all", "budget_pause"]) {
+    const { ai, calls } = stillsAi();
+    const env = await newEnv({ AI: ai, OAUTH_KV: new MemKV() });
+    const job = await stillsJob(env);
+    await m.setFlagUntil(env, flag, 3600);
+    await m.drawStills(env);
+    assert.equal(calls.draws + calls.judges, 0, `${flag}: no Workers AI spent`);
+    assert.equal(await stillsOf(env, job.id), null, `${flag}: the job is not touched`);
+    await m.releaseLock(env, flag);
+    await m.drawStills(env);
+    assert.equal((await stillsOf(env, job.id)).state, "done", `${flag}: resuming draws again`);
+    assert.ok(calls.draws >= 2, "the sheet and the still");
+  }
+});
+
+test("stills lock: owned — a slow tick can neither release nor renew the lock a later tick took over", async () => {
+  const env = await newEnv();
+  const a = await m.acquireOwnedLock(env, "stills", -1); // taken, and already expired: a tick whose Workers AI is slow
+  assert.ok(a);
+  const b = await m.acquireOwnedLock(env, "stills", 90);
+  assert.ok(b, "an expired lock is taken over");
+  assert.equal(await m.acquireOwnedLock(env, "stills", 90), null, "held: a third tick waits");
+  assert.equal(await m.releaseOwnedLock(env, a), false, "the slow tick's release does not free the new owner's lock");
+  assert.equal(await m.renewOwnedLock(env, a, 90), false, "nor can it renew it");
+  assert.equal(await m.acquireOwnedLock(env, "stills", 90), null, "still held by the new owner");
+  assert.equal(await m.renewOwnedLock(env, b, 90), true);
+  assert.equal(await m.releaseOwnedLock(env, b), true);
+  assert.ok(await m.acquireOwnedLock(env, "stills", 90), "released by its owner: free again");
+});
+
+test("stills: a tick that finds the lock held draws nothing and leaves the holder's lock alone; its own lock it frees", async () => {
+  const { ai, calls } = stillsAi();
+  const env = await newEnv({ AI: ai, OAUTH_KV: new MemKV() });
+  const job = await stillsJob(env);
+  const other = await m.acquireOwnedLock(env, "stills", 90);
+  await m.drawStills(env);
+  assert.equal(calls.draws, 0);
+  assert.equal(await m.renewOwnedLock(env, other, 90), true, "the holder still holds it");
+  await m.releaseOwnedLock(env, other);
+  await m.drawStills(env);
+  assert.equal((await stillsOf(env, job.id)).state, "done");
+  assert.ok(await m.acquireOwnedLock(env, "stills", 90), "the tick released its own lock when it finished");
+});
+
+test("stills: a D1 hiccup thrown out of the drawing pauses the job's engine (counted); it does not hand the film to the GPU", async () => {
+  const { ai } = stillsAi();
+  const env = await newEnv({ AI: ai, OAUTH_KV: new MemKV() });
+  const job = await stillsJob(env);
+  const prepare = env.DB.prepare.bind(env.DB);
+  let fail = true;
+  env.DB.prepare = (sql) => { if (fail && sql.startsWith("SELECT * FROM job_files")) throw new Error("D1_ERROR: Network connection lost."); return prepare(sql); };
+  await m.drawStills(env);
+  const st = await stillsOf(env, job.id);
+  assert.equal(st.state, "drawing", "not failed"); assert.equal(st.pauses, 1); assert.match(st.note, /Network connection lost/);
+  assert.equal((await events(env, "stills.paused")).length, 1);
+  fail = false;
+  await m.drawStills(env);
+  assert.equal((await stillsOf(env, job.id)).state, "done", "the next tick draws with the engine");
+});
+
+test("purge: a cancelled job loses its stills, its character sheets and fidelity.json, not only a finished one", async () => {
+  const { ai } = stillsAi();
+  const kv = new MemKV();
+  const env = await newEnv({ AI: ai, OAUTH_KV: kv });
+  const job = await stillsJob(env);
+  await m.drawStills(env);
+  const keys = [`file:renders/${job.id}/img/01-sc-s1.jpg`, `file:renders/${job.id}/fidelity.json`, `file:renders/${job.id}/cast/d-mara.jpg`];
+  for (const k of keys) assert.ok(kv.m.has(k), `drawn while queued: ${k}`);
+  await m.updateJob(env, job.id, { state: "cancelled", finished_at: new Date(Date.now() - 2 * 3600_000).toISOString() });
+  await withVast(fakeVast(), () => m.tick(env));
+  for (const k of keys) assert.ok(!kv.m.has(k), `purged: ${k}`);
+  assert.equal((await m.listFiles(env, job.id)).length, 0);
+  assert.ok((await m.getJob(env, job.id)).purged_at);
+});
+
+test("purge: which jobs — done past their links, failed past RESULT_TTL_DAYS, cancelled past an hour; never an open or purged one", async () => {
+  const env = await newEnv({ MAX_JOBS_PER_USER: "50" });
+  const u = await user(env, 20 * P);
+  const ago = (min) => new Date(Date.now() - min * 60_000).toISOString();
+  const mk = async (fields) => { const j = await short(env, u); await m.updateJob(env, j.id, fields); return j.id; };
+  const want = [
+    await mk({ state: "done", finished_at: ago(8 * 1440), expires_at: ago(1440) }),
+    await mk({ state: "failed", finished_at: ago(8 * 1440) }),
+    await mk({ state: "cancelled", finished_at: ago(120) }),
+  ];
+  await mk({ state: "done", finished_at: ago(60), expires_at: new Date(Date.now() + 86_400_000).toISOString() }); // links still valid
+  await mk({ state: "failed", finished_at: ago(1440) }); // the owner may still retry it with its clips
+  await mk({ state: "cancelled", finished_at: ago(10) }); // a worker may still be uploading
+  await mk({ state: "failed", finished_at: ago(9 * 1440), purged_at: ago(1440) }); // already purged
+  await mk({ state: "queued" });
+  assert.deepEqual((await m.expiredJobs(env, 20, { ttlDays: 7 })).map((j) => j.id).sort(), want.sort());
+});

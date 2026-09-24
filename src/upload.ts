@@ -12,15 +12,25 @@
  *                                  through ingestRef under the token's account; answers with handles and thumbnails
  *   GET  /upload/<token>/<handle>  the thumbnail of a picture uploaded through THIS link (nothing else is reachable)
  *
- * The page sends one picture per request, so no request is ever larger than one picture (12 MB) whatever the Worker's
- * body limit is; the link takes UPLOAD_MAX_FILES pictures in all. An expired or forged link gets a page that says so
- * and how to get a new one, never a stack trace.
+ * The page sends one picture per request, and since 24 September 2026 the SERVER holds every request to that size:
+ * a POST whose body passes UPLOAD_MAX_BODY (one 12 MB picture plus the form around it) is refused, by its
+ * content-length when it sends one and by a running byte count when it does not, before formData() buffers anything.
+ * Until then the gate was 8 x 12 MB + 1 MB and a missing content-length read as 0, so one hand-built multipart POST of
+ * eight 12 MB files was buffered whole and copied again per file for the vision call, past the isolate's 128 MB: the
+ * isolate reset and took every other request it was serving with it. The link takes UPLOAD_MAX_FILES pictures in all,
+ * counted on the link's own R2 list after each picture (src/refs.ts recordUploads), so two tabs or two devices
+ * uploading at once cannot lose a picture or push the link past the cap. Pictures are kept REF_TTL_DAYS after their
+ * last use (src/refs.ts purgeOldRefs), and the page says so. An expired or forged link gets a page that says so and
+ * how to get a new one, never a stack trace.
  *
  * Plain TypeScript with .ts imports, so a test can drive it with a fake R2 and a fake vision model.
  */
 import type { Env } from "./env";
-import { ingestRef, listUploads, recordUploads, readUploadToken, refImage, RefError, REF_MAX_BYTES, UPLOAD_MAX_FILES } from "./refs.ts";
+import { ingestRef, listUploads, recordUploads, readBodyCapped, readUploadToken, refImage, RefError, REF_MAX_BYTES, REF_TTL_DAYS, UPLOAD_MAX_FILES } from "./refs.ts";
 import { REF_ROLES, type RefRole } from "./spec.ts";
+
+/** The largest upload POST: one picture at REF_MAX_BYTES plus 1 MB for the multipart envelope, the role and the name. */
+export const UPLOAD_MAX_BODY = REF_MAX_BYTES + 1024 * 1024;
 
 const CSP = "default-src 'none'; img-src 'self' blob: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 const page = (body: string, status = 200) => new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": CSP, "referrer-policy": "no-referrer", "x-robots-tag": "noindex" } });
@@ -30,14 +40,14 @@ const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&
 /** The two languages of the page. The script picks one from the browser; the server picks the same for its own pages. */
 const TEXT = {
   en: {
-    title: "Pictures for your Kleo film", lead: "Add the pictures Kleo should draw from: a person, a pet, an object, a place, or a style you like. They stay private to your account.",
+    title: "Pictures for your Kleo film", lead: `Add the pictures Kleo should draw from: a person, a pet, an object, a place, or a style you like. They stay private to your account and are deleted ${REF_TTL_DAYS} days after Kleo last uses them.`,
     drop: "Drop pictures here, or tap to choose", limits: `PNG, JPEG or WebP, up to 12 MB each, ${UPLOAD_MAX_FILES} pictures per link. iPhone HEIC photos: share them as JPEG.`,
     role: "What they show", roles: { "": "let Kleo decide", character: "a character", object: "an object", place: "a place", style: "a style" }, name: "Name (optional, e.g. Mara)",
     sending: "sending…", done: "Done. Go back to the chat and say you uploaded them.", full: "This link is full: ask for a new one in the chat.", failed: "not taken",
     expired: "This upload link has expired (they last 48 hours). Ask in the chat for a new one: the assistant calls kleo_upload_link.", bad: "This is not a valid Kleo upload link. Ask in the chat for a new one.",
   },
   it: {
-    title: "Immagini per il tuo film Kleo", lead: "Aggiungi le immagini da cui Kleo deve disegnare: una persona, un animale, un oggetto, un luogo o uno stile che ti piace. Restano private sul tuo account.",
+    title: "Immagini per il tuo film Kleo", lead: `Aggiungi le immagini da cui Kleo deve disegnare: una persona, un animale, un oggetto, un luogo o uno stile che ti piace. Restano private sul tuo account e vengono cancellate ${REF_TTL_DAYS} giorni dopo l'ultimo uso da parte di Kleo.`,
     drop: "Trascina qui le immagini, o tocca per sceglierle", limits: `PNG, JPEG o WebP, fino a 12 MB l'una, ${UPLOAD_MAX_FILES} immagini per link. Foto HEIC dell'iPhone: condividile come JPEG.`,
     role: "Cosa mostrano", roles: { "": "decide Kleo", character: "un personaggio", object: "un oggetto", place: "un luogo", style: "uno stile" }, name: "Nome (facoltativo, es. Mara)",
     sending: "invio…", done: "Fatto. Torna nella chat e scrivi che le hai caricate.", full: "Questo link è pieno: chiedine uno nuovo nella chat.", failed: "non accettata",
@@ -135,10 +145,20 @@ export async function handleUpload(request: Request, env: Env): Promise<Response
   if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
 
   if (!env.RENDERS) return answer({ ok: false, error: "Kleo cannot keep pictures on this server (no file store is configured)." }, 503);
-  const declared = Number(request.headers.get("content-length") ?? "");
-  if (Number.isFinite(declared) && declared > UPLOAD_MAX_FILES * REF_MAX_BYTES + 1024 * 1024) return answer({ ok: false, error: "Too much at once: send the pictures one by one." }, 413);
+  // The body is bounded BEFORE anything buffers it: first by the declared length (a lie or no header at all is not
+  // trusted), then by counting the bytes as they stream, and only a body inside UPLOAD_MAX_BODY reaches formData().
+  const tooBig = () => answer({ ok: false, error: `Too much at once: send one picture at a time, up to ${REF_MAX_BYTES / 1024 / 1024} MB.` }, 413);
+  const declared = request.headers.get("content-length");
+  if (declared !== null) {
+    if (!/^\s*\d+\s*$/.test(declared)) return answer({ ok: false, error: "The upload did not arrive as a form with pictures." }, 400);
+    if (Number(declared) > UPLOAD_MAX_BODY) return tooBig();
+  }
   let form: FormData;
-  try { form = await request.formData(); } catch { return answer({ ok: false, error: "The upload did not arrive as a form with pictures." }, 400); }
+  try {
+    const body = await readBodyCapped(request.body, UPLOAD_MAX_BODY);
+    if (!body) return tooBig();
+    form = await new Response(body, { headers: { "content-type": request.headers.get("content-type") ?? "" } }).formData();
+  } catch { return answer({ ok: false, error: "The upload did not arrive as a form with pictures." }, 400); }
   const files = form.getAll("file").filter((f): f is File => typeof f === "object" && f !== null && typeof (f as File).arrayBuffer === "function");
   if (!files.length) return answer({ ok: false, error: "No picture in the upload." }, 400);
   const roleIn = form.get("role");
@@ -146,22 +166,24 @@ export async function handleUpload(request: Request, env: Env): Promise<Response
   const nameIn = form.get("name");
   const name = typeof nameIn === "string" && nameIn.trim() ? nameIn.trim().slice(0, 60) : null;
 
-  const had = await listUploads(env, t.userId, token);
-  let room = UPLOAD_MAX_FILES - had.length;
+  // `all` is the link's list as the store last told it; the authoritative cap is recordUploads', after each picture.
+  let all = await listUploads(env, t.userId, token);
   const uploaded: { handle: string; description: string; thumb: string }[] = [];
   const errors: { name: string; error: string }[] = [];
+  const full = (fname: string) => errors.push({ name: fname, error: `This link takes ${UPLOAD_MAX_FILES} pictures, and it is full. Ask in the chat for a new link.` });
   for (const f of files) {
     const fname = String(f.name || "picture").slice(0, 80);
-    if (room <= 0) { errors.push({ name: fname, error: `This link takes ${UPLOAD_MAX_FILES} pictures, and it is full. Ask in the chat for a new link.` }); continue; }
+    if (all.length >= UPLOAD_MAX_FILES) { full(fname); continue; }   // no vision call for a picture that cannot stay
     if (f.size > REF_MAX_BYTES) { errors.push({ name: fname, error: `${fname} is larger than 12 MB. Send a smaller copy.` }); continue; }
     try {
       const r = await ingestRef(env, t.userId, { bytes: new Uint8Array(await f.arrayBuffer()), role, name, source: "upload" });
-      if (!had.includes(r.handle) && !uploaded.some((u) => u.handle === r.handle)) room--;
-      uploaded.push({ handle: r.handle, description: r.description, thumb: `/upload/${token}/${r.handle}` });
+      const rec = await recordUploads(env, t.userId, token, [r.handle]);
+      all = rec.all;
+      if (rec.full.includes(r.handle)) { full(fname); continue; }
+      if (!uploaded.some((u) => u.handle === r.handle)) uploaded.push({ handle: r.handle, description: r.description, thumb: `/upload/${token}/${r.handle}` });
     } catch (e) {
       errors.push({ name: fname, error: e instanceof RefError ? e.message.replace(/ Nothing was charged\.$/, "") : "Kleo could not take this picture just now. Try again in a moment." });
     }
   }
-  const all = uploaded.length ? await recordUploads(env, t.userId, token, uploaded.map((u) => u.handle)) : had;
   return answer({ ok: uploaded.length > 0, uploaded, errors, total: all.length, remaining: Math.max(0, UPLOAD_MAX_FILES - all.length) }, uploaded.length || !errors.length ? 200 : 422);
 }

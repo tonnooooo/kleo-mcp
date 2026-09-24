@@ -116,8 +116,34 @@ const STORY_BEFORE_RE = /\b(?:dopo|after|before|prima(?: di)?|every|ogni|each|fo
 const STORY_AFTER_RE = /^\s*(?:later|ago|earlier|after(?:wards)?|before|dopo|prima|fa\b|più tardi|piu tardi|of silence|di silenzio|of (?:his|her|their|my|our|your)\b|passed|pass\b|went by|go by|passano|passarono|passati|to (?:go|live|midnight|spare)\b|of fame|di fama|remaining|rimast\w*|left\b|away|di distanza|from (?:here|home|the)\b|da (?:qui|casa)\b)/i;
 /** What stands before a decade: "the 90s", "in her 30s", "early 20s", "anni 80". */
 const DECADE_BEFORE_RE = /\b(?:the|his|her|their|my|your|our|its|early|late|mid|anni|years|gli|negli|nei)\s*$/i;
+/**
+ * DECADES ARE NEVER A LENGTH (24 September 2026). The compact "30s" was added the same day and read "A Short about 90s
+ * fashion", "a video about 80s music", "Make a video on 60s rock bands" as 90, 80 and 60 seconds — no question asked,
+ * the film planned and priced at a length nobody chose. A compact "Ns" is now a length only where nothing but a length
+ * can be: right after a video word with nothing between but glue ("clip: 30s", "video di 30s"), after a length word
+ * ("lungo 30s"), before a video word ("a 30s clip"), or standing alone between commas ("…, 30s, vertical") — and never
+ * when a word follows it that is not a length word: "90s fashion" is an adjective, and that is what a decade is.
+ */
+const COMPACT_END_RE = /^(?:\s*$|\s*[.,;:!?)\]–—]|\s*-\s*(?:long|lung[oaie])\b|\s+(?:long|lung[oaie]|max|massimo|at most|al massimo|or less|o meno)\b)/i;
+/** VIDEO_BEFORE_RE without the "about/circa" tail: "a video about 90s cartoons" is a topic, not "about 90 seconds". */
+const VIDEO_TIGHT_BEFORE_RE = new RegExp(`\\b(?:${VIDEO_WORDS})\\s*(?:${LEN_GLUE}\\s+)?(?:(?:of|di|da|lasting|lungo|lunga|long|that lasts|che dura|in|:|,|-|–|—|\\()\\s*)?(?:(?:max|massimo|at most|al massimo)\\s+)?$`, "i");
+/** A clause of its own: the number follows a comma, a colon, a parenthesis or a dash ("A film about the sea, 30s"). */
+const CLAUSE_START_RE = /[,;:(–—-]\s*$/;
+/**
+ * "DA 30 SECONDI", "FOR 30 SECONDS" IN A VIDEO'S CLAUSE (24 September 2026). The story-time guard lists the bare
+ * prepositions "da", "per" and "for" ("per 30 secondi nessuno parla"), and the video word counted only when it stood
+ * right before the number — so "un video sui pirati da 30 secondi", "Fammi un Short sui pirati da 45 secondi" and "a
+ * video about pirates for 30 seconds", the commonest way to say a length in Italian and a common one in English, were
+ * asked again. A "da"/"per"/"for" is the video's length when a video word opens the same clause (no sentence break in
+ * between) and no relative clause stands between them ("un video di un uomo che corre per 30 secondi" is his running).
+ * "tra"/"fra" stay story time: "un film su una bomba che esplode tra 30 secondi".
+ */
+const VIDEO_CLAUSE_LENGTH_RE = new RegExp(`\\b(?:${VIDEO_WORDS})\\b(?:(?!\\b(?:che|chi|cui|dove|quando|mentre|who|which|that|where|when|while)\\b)[^.!?])*?\\b(?:da|per|for)\\s+(?:(?:about|circa|around|max|massimo)\\s+)?$`, "i");
 
-interface LenHit { at: number; end: number; seconds: number }
+/** A verb of waiting or lasting right before the "per"/"for": the time is the character's ("aspetta per 30 secondi"). */
+const STORY_VERB_BEFORE_RE = /\b(?:aspett\w*|attend\w*|wait\w*|rest[aoi]\w*|riman\w*|rimase|stays?|stayed|lasts?|lasted|dur[ao]\w*|took|takes?|ci mis[eo]|impieg\w*|corr[eo]\w*|runs?|ran|holds?|held|tiene|tenne|trattiene|breath\w*|respir\w*)\s+(?:(?:about|circa|around)\s+)?(?:per|for|da)\s+(?:(?:about|circa|around)\s+)?$/i;
+
+interface LenHit { at: number; end: number; seconds: number; compact?: boolean }
 
 /** Every "number + unit" in the text, as seconds, with where it sits. "1 minuto e 30 secondi" is one hit of 90. */
 function lengthHits(t: string): LenHit[] {
@@ -145,7 +171,7 @@ function lengthHits(t: string): LenHit[] {
   for (const m of t.matchAll(COMPACT_RE)) {
     const at = m.index ?? 0, n = Number(m[1]);
     if (n < 5 || n > 600 || DECADE_BEFORE_RE.test(t.slice(Math.max(0, at - 12), at))) continue;
-    hits.push({ at, end: at + m[0].length, seconds: n });
+    hits.push({ at, end: at + m[0].length, seconds: n, compact: true });
   }
   hits.sort((a, b) => a.at - b.at);
   // A seconds part folded into the minutes before it is not a hit of its own.
@@ -158,8 +184,19 @@ function durationFrom(text: string): number | null {
   for (const h of lengthHits(t)) {
     const before = t.slice(Math.max(0, h.at - 48), h.at);
     const after = t.slice(h.end, h.end + 48);
+    if (h.compact) {
+      // "30s": a length only where a decade cannot be (COMPACT_END_RE and the comment above it).
+      if (VIDEO_AFTER_RE.test(after) || LENGTH_BEFORE_RE.test(before)) return h.seconds;
+      if (!COMPACT_END_RE.test(after)) continue;
+      if (VIDEO_TIGHT_BEFORE_RE.test(before)) return h.seconds;
+      if (bare === null && CLAUSE_START_RE.test(before)) bare = h.seconds;
+      continue;
+    }
     // Said to be the video's length: taken at once, whatever else the request measures.
     if (VIDEO_AFTER_RE.test(after) || VIDEO_BEFORE_RE.test(before) || LENGTH_BEFORE_RE.test(before)) return h.seconds;
+    // "un video sui pirati da 30 secondi": the clause opens on the video, so its "da"/"per"/"for" is the video's.
+    const clause = t.slice(Math.max(0, h.at - 200), h.at).split(/[.!?]\s/).pop() ?? "";
+    if (VIDEO_CLAUSE_LENGTH_RE.test(clause) && !STORY_VERB_BEFORE_RE.test(before)) return h.seconds;
     // Time inside the story: never the length.
     if (STORY_BEFORE_RE.test(before) || STORY_AFTER_RE.test(after)) continue;
     if (bare === null) bare = h.seconds;
@@ -183,10 +220,15 @@ const PORTRAIT_RE = new RegExp([
   `\\b(?:a|an|the|my|our|this|one|un|uno|lo|questo|nuovo|new)\\s+short\\b(?!\\s*-)(?!\\s+${NOT_A_SHORT}\\b)`,
   "\\b(?:for|per|as|come|on|su|sui|sugli|negli|nei|gli)\\s+(?:(?:the|my|our|youtube|i|gli|miei|nostri)\\s+)?shorts\\b",
   "\\bshorts?\\s+(?:format|formato|verticale?|vertical)\\b",
+  // "Short di 45 secondi sui delfini", "Shorts sui gatti": the request (or a clause) that OPENS on "Short" and goes on
+  // with what it is about is the platform word, no article needed (24 September 2026). "Short film" and "shorts on the
+  // beach" stay what they are: only these prepositions follow.
+  "(?:^|[.!?,;:]\\s*)shorts?\\s+(?:di|da|su|sui|sul|sulla|sulle|sugli|about)\\b",
   "\\b(?:instagram|ig|facebook|fb)\\s+(?:reels?|stor(?:y|ies))\\b",
-  "\\b(?:a|an|the|un|uno|il|lo|my|our|for|per|as|come|i|gli|nei|in)\\s+reels?\\b(?!\\s+(?:of|di)\\b)",
+  // "per i miei Reels", "for our reels": a possessive between the article and the platform (24 September 2026).
+  "\\b(?:a|an|the|un|uno|il|lo|my|our|for|per|as|come|i|gli|nei|in)\\s+(?:(?:miei|mie|nostri|nostre|my|our)\\s+)?reels?\\b(?!\\s+(?:of|di)\\b)",
   "\\b(?:for|per|on|su|sul|to|in)\\s+(?:(?:my|our|the|mio|nostro|il)\\s+)?instagram\\b",
-  "\\b(?:for|per|on|in|nelle|sulle|nei|alle)\\s+(?:(?:my|our|le mie|mie|le)\\s+)?stories\\b",
+  "\\b(?:for|per|on|in|nelle|sulle|nei|alle)\\s+(?:(?:my|our|le mie|mie|le nostre|nostre|le|i miei|miei|i nostri|nostri)\\s+)?stories\\b",
 ].join("|"), "i");
 const LANDSCAPE_RE = /\b(16\s*:\s*9|youtube|landscape|orizzontale|widescreen|televisione|tv|schermo)\b/i;
 function formatFrom(lower: string): Format | null {
@@ -195,11 +237,25 @@ function formatFrom(lower: string): Format | null {
   return null;
 }
 
-/** The look, when the request names it: drawn words mean animation, filmed words mean realistic; otherwise null (asked). */
-const ANIMATION_RE = /\b(anima(?:to|ta|zione)|animated|animation|cartoon|cartone|anime|disegnat[oa]|drawn|illustrat(?:ed|o|a)|pixar|ghibli)\b/i;
-const REALISTIC_RE = /\b(realistic|realistico|realistica|filmed|girato|footage|documentary|documentario|photograph|fotograf|cinematografico|cinematic)/i;
+/**
+ * The look, when the request names it; otherwise null (asked). THE WORDS MUST DESCRIBE THE VIDEO, NOT ITS TOPIC (24
+ * September 2026). The list used to test bare "pixar", "ghibli", "anime" and "drawn" first, over the whole request, so
+ * "A realistic documentary about the history of Pixar", "a documentary about the Ghibli museum", "A cinematic film
+ * about how anime took over the world" and "a girl who rides in a horse-drawn carriage" all became 2D animations — the
+ * explicit "realistic" lost to a topic noun. Now a studio or "anime" names the look only as a style ("in the style of
+ * Pixar", "stile Ghibli", "anime-style", "like an anime"), "drawn" only as "hand-drawn" / "disegnato a mano", and the
+ * words that name a look outright decide first: when a request names BOTH looks outright, it is asked.
+ */
+const ANIMATION_RE = /\b(anima(?:to|ta|ti|te|zione)|animated|animation|cartoons?|cartone|cartoni|disegnat[oaie]|hand[- ]drawn|drawn by hand|illustrat(?:ed|o|a))\b|\b(?:(?:in (?:the )?style of|in stile|stile|alla|like|come|as|à la)\s+(?:(?:a|an|un|uno|the|lo|studio)\s+)?(?:pixar|ghibli|anime|disney|dreamworks)\b|\b(?:pixar|ghibli|anime|disney)[- ](?:style|stile|like)\b)/i;
+/** The words that name the realistic look outright; against an animation word in the same request, neither wins. */
+const REALISTIC_STRONG_RE = /\b(realistic|realistico|realistica|realistici|photorealistic|fotorealistic[oa]|live[- ]action|filmed|girato|dal vero)\b/i;
+/** Words that lean realistic but can be a topic ("a documentary", "cinematic"): they decide only when nothing else does. */
+const REALISTIC_RE = /\b(footage|documentary|documentario|photograph|fotograf|cinematografico|cinematic)/i;
 function lookFrom(lower: string): Look | null {
-  if (ANIMATION_RE.test(lower)) return "animation";
+  const drawn = ANIMATION_RE.test(lower), filmed = REALISTIC_STRONG_RE.test(lower);
+  if (drawn && filmed) return null;
+  if (filmed) return "realistic";
+  if (drawn) return "animation";
   if (REALISTIC_RE.test(lower)) return "realistic";
   return null;
 }

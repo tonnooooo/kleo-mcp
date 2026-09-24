@@ -41,7 +41,7 @@ class FakeKV {
 let m;
 before(async () => {
   const r = await esbuild.build({
-    stdin: { contents: `export { buildServer } from "./src/mcp.ts"; export { handleAdmin } from "./src/internal.ts"; export * from "./src/db.ts";`, resolveDir: ROOT, loader: "ts" },
+    stdin: { contents: `export { buildServer, summarizeFidelity } from "./src/mcp.ts"; export { handleAdmin } from "./src/internal.ts"; export * from "./src/db.ts";`, resolveDir: ROOT, loader: "ts" },
     bundle: true, write: false, format: "esm", platform: "node", target: "es2022", logLevel: "silent", external: ["@anthropic-ai/sdk"],
   });
   m = await import("data:text/javascript;base64," + Buffer.from(r.outputFiles[0].text).toString("base64"));
@@ -214,7 +214,11 @@ test("by default the tool hands the assistant the method and spends nothing: the
   assert.match(r.text, /WRITE THE TREATMENT YOURSELF/);
   assert.match(r.text, /You are the producer and showrunner of Kleo/, "the master prompt travels whole");
   assert.match(r.text, /TASK: write the TREATMENT/); assert.match(r.text, /45 seconds, narrated in English/);
-  assert.match(r.text, new RegExp(`"variation":"${r.structuredContent.variation}"`));
+  // The spec is written in the same breath, so the draw is conditional (24 September 2026): as-told/as-asked when the
+  // assistant's spec is FAITHFUL, the random draw only when it is OPEN.
+  assert.match(r.text, /"variation":"as-told\/as-asked" when your spec is faithful/);
+  assert.match(r.text, new RegExp(`"${r.structuredContent.variation}" when it is open`));
+  assert.match(r.text, /THE DRAW DEPENDS ON THE SPEC YOU WROTE/);
   assert.deepEqual(await s.audit("treatment.adapt"), [], "nothing counted against the day's cap");
   assert.equal((await s.audit("treatment.method")).length, 1);
   // THE SPEC FIRST (24 September 2026): the requirements are extracted before anybody is creative with them, so the
@@ -568,4 +572,104 @@ test("the user's two answers travel: the method is told them, and kleo_create_vi
   assert.ok(!bare.isError, bare.text);
   const p3 = JSON.parse((await m.getUserJob(s.env, "u_test", bare.structuredContent.job_id)).params);
   assert.match(p3.music, /quiet instrumental bed/); assert.equal(p3.subtitles, undefined, "not asked on this call: not written");
+});
+
+/* ------------------------------------------------------------------ review fixes (24 September 2026) */
+
+/** The fixture treatment told the user's way: what kleo_adapt_prompt tells the assistant to write under a faithful spec. */
+const AS_TOLD = () => ({ ...TREATMENT_FIXTURE(45), device: "as-told", variation: "as-told/as-asked" });
+const PIETRO = "A film about my grandfather Pietro, the lighthouse keeper of Capo Testa";
+const pietroSpec = (extra = {}) => ({
+  v: 1, mode: "faithful", summary: "A film about the user's grandfather Pietro, a lighthouse keeper.",
+  cast: [{ id: "c1", name: "Pietro", look: "an old man with a white beard and a wool cap", ref: null }],
+  items: [{ id: "R1", kind: "character", text: "the user's grandfather Pietro", quote: "my grandfather Pietro", must: true, who: "c1" }],
+  refs: [], open: ["the look of Pietro", "the story"], narration: "free", script: null, ...extra,
+});
+
+test("an as-told treatment is accepted with no spec or a faithful one, refused only under a spec that is OPEN", async () => {
+  const s = await studio(fakeAi(() => { throw new Error("must not be called"); }));
+  const args = { prompt: PIETRO, duration_s: 45, format: "9:16", style: "realistic" };
+  // No spec (the spec refusal says "leave the spec out"): the treatment's own device says it is the user's film.
+  const bare = await s.call("kleo_create_video", { ...args, treatment: AS_TOLD() });
+  assert.ok(!bare.isError, bare.text);
+  const p1 = JSON.parse((await m.getUserJob(s.env, "u_test", bare.structuredContent.job_id)).params);
+  assert.equal(p1.treatment.variation, "as-told/as-asked"); assert.equal(p1.treatment.device, "as-told");
+  await s.call("kleo_cancel_job", { job_id: bare.structuredContent.job_id });
+  // The writer's FAITHFUL on one character item ("my grandfather Pietro") is kept, and the as-told treatment with it.
+  const faithful = await s.call("kleo_create_video", { ...args, spec: pietroSpec(), treatment: AS_TOLD() });
+  assert.ok(!faithful.isError, faithful.text);
+  const p2 = JSON.parse((await m.getUserJob(s.env, "u_test", faithful.structuredContent.job_id)).params);
+  assert.equal(p2.spec.mode, "faithful"); assert.equal(p2.treatment.variation, "as-told/as-asked");
+  await s.call("kleo_cancel_job", { job_id: faithful.structuredContent.job_id });
+  // A spec that is OPEN (a topic, not the user's story): "as-told" is not its device.
+  const open = await s.call("kleo_create_video", { ...args, spec: pietroSpec({ mode: "open", cast: [], items: [{ id: "R1", kind: "place", text: "the lighthouse of Capo Testa", quote: "lighthouse keeper of Capo Testa", must: true }] }), treatment: AS_TOLD() });
+  assert.ok(open.isError);
+  assert.match(open.text, /device: "as-told" is the device of a film the user described/);
+  assert.equal((await m.getUser(s.env, "u_test")).credits, 70, "the refusals and the cancels leave the credits whole");
+});
+
+test("the user's corrections after the read-back travel in their own argument, and a spec item may quote them", async () => {
+  const s = await studio(fakeAi(() => { throw new Error("must not be called"); }));
+  const tools = (await s.client.listTools()).tools;
+  assert.match(tools.find((t) => t.name === "kleo_create_video").inputSchema.properties.corrections.description, /IN THEIR OWN WORDS/);
+  const adapt = await s.call("kleo_adapt_prompt", { prompt: "A realistic film about lighthouse keepers, 45 seconds", format: "9:16", music: "no", subtitles: "no" });
+  assert.match(adapt.structuredContent.next, /"corrections" \(their corrections, word for word\)/);
+  const pepe = { id: "R6", kind: "character", text: "the user's dog Pepe with a red collar", quote: "add my dog Pepe with a red collar", must: true };
+  const spec = maraSpec({ items: [...maraSpec().items, pepe] });
+  const args = { prompt: MARA, duration_s: 45, format: "9:16", style: "animation", audience: "children", spec };
+  const refused = await s.call("kleo_create_video", args);
+  assert.ok(refused.isError); assert.match(refused.text, /R6: the quote "add my dog Pepe with a red collar" is not in the user's request[\s\S]*"corrections"/);
+  const ok = await s.call("kleo_create_video", { ...args, corrections: "add my dog Pepe with a red collar" });
+  assert.ok(!ok.isError, ok.text);
+  const params = JSON.parse((await m.getUserJob(s.env, "u_test", ok.structuredContent.job_id)).params);
+  assert.ok(params.spec.items.some((i) => i.id === "R6"), "the correction is a checked requirement, not one of Kleo's decisions");
+  assert.deepEqual(params.brief, { must_keep: null, audience: "children", tone: null, corrections: "add my dog Pepe with a red collar" });
+});
+
+test("the fidelity report: an exclusion broken on one picture is a miss, whatever the other pictures say", () => {
+  const spec = { v: 1, mode: "faithful", summary: "s", cast: [], refs: [], open: [], narration: "free", script: null,
+    items: [{ id: "R3", kind: "object", text: "a lemon cake", quote: "q", must: true }, { id: "R5", kind: "exclude", text: "no dogs", quote: "q", must: true }] };
+  const stills = Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`p${i}`, { checks: ["style", "R3", "exclude:R5"], failed: i === 3 ? ["exclude:R5"] : [] }]));
+  const f = m.summarizeFidelity({ v: 1, stills }, spec);
+  assert.deepEqual(f.misses, [{ id: "R5", text: "no dogs" }], "nine clean pictures do not hide the one with a dog");
+  assert.equal(f.checked, 2); assert.equal(f.kept, 1);
+  // A positive item keeps the "some picture shows it" rule; an exclusion that never failed is kept.
+  const clean = m.summarizeFidelity({ v: 1, stills: { a: { checks: ["R3", "exclude:R5"], failed: ["R3"] }, b: { checks: ["R3", "exclude:R5"], failed: [] } } }, spec);
+  assert.deepEqual(clean.misses, []); assert.equal(clean.kept, 2);
+});
+
+test("reference pictures are metered: one link is fetched and described once per call, and the vision calls have a daily cap", async () => {
+  const ai = fakeAi(() => DESCRIBED);
+  const s = await studio(ai, { RENDERS: new FakeR2(), REFS_MAX_PER_DAY: "1" });
+  let fetches = 0;
+  const serve = (bytes) => async () => { fetches++; return new Response(bytes, { status: 200 }); };
+  const PNG2 = new Uint8Array(PNG); PNG2[15] = 9;
+  const ask = (references) => s.call("kleo_adapt_prompt", { prompt: "A realistic film about Mara, a pastry chef, 45 seconds", format: "9:16", music: "no", subtitles: "no", references });
+  // Eight entries of the same link with flipping roles: one fetch, one vision call, one handle (the first role kept).
+  const roles = ["character", "style", "character", "style", "character", "style", "character", "style"];
+  const r = await withFetch(serve(PNG), () => ask(roles.map((role) => ({ url: "https://example.com/mara.png", role, name: "Mara" }))));
+  assert.ok(!r.isError, r.text);
+  assert.equal(fetches, 1); assert.equal(ai.calls.length, 1);
+  assert.equal(r.structuredContent.references.length, 1); assert.equal(r.structuredContent.references[0].role, "character");
+  assert.equal((await s.audit("refs.describe")).length, 1);
+  // The same picture again in a new role, past the day's cap: kept with the description it has, no vision call.
+  const again = await withFetch(serve(PNG), () => ask([{ url: "https://example.com/mara-copy.png", role: "style" }]));
+  assert.ok(!again.isError, again.text);
+  assert.equal(ai.calls.length, 1, "no second description past the cap");
+  assert.equal(again.structuredContent.references[0].handle, r.structuredContent.references[0].handle, "named by its bytes, not its link");
+  assert.equal(again.structuredContent.references[0].description, DESCRIBED);
+  // A NEW picture past the cap is refused in words, before any vision call.
+  const fresh = await withFetch(serve(PNG2), () => ask([{ url: "https://example.com/other.png", role: "character" }]));
+  assert.ok(fresh.isError);
+  assert.match(fresh.text, /has had 1 picture described today, and the limit is 1 a day[\s\S]*Nothing was charged/);
+  assert.equal(ai.calls.length, 1);
+});
+
+test("upload links are counted per day too", async () => {
+  const s = await studio(fakeAi(() => { throw new Error("must not be called"); }), { UPLOAD_LINKS_MAX_PER_DAY: "1" });
+  const first = await s.call("kleo_upload_link", {});
+  assert.ok(!first.isError, first.text);
+  const second = await s.call("kleo_upload_link", {});
+  assert.ok(second.isError);
+  assert.match(second.text, /asked for 1 upload link today, and the limit is 1 a day[\s\S]*Nothing was charged/);
 });

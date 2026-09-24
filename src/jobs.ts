@@ -61,6 +61,12 @@ export interface CreateInput {
   must_keep?: string | null;
   audience?: string | null;
   tone?: string | null;
+  /**
+   * The user's corrections after the read-back of the spec (24 September 2026), in their own words ("add my dog Pepe
+   * with a red collar"). The prompt stays the user's first request, unchanged; a spec item added by a correction quotes
+   * this, and it is kept with the answers for the planner.
+   */
+  corrections?: string | null;
 }
 
 /**
@@ -181,9 +187,16 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   // user said, so a spec item may quote them as well as the prompt; the pictures are resolved to the handles this
   // account holds; the spec is checked in words — an item whose quote the user never wrote is an invention — and
   // stored repaired, so the planner and every check after it read the same requirements the user approved.
-  const said = (v: string | null | undefined) => (typeof v === "string" && v.trim() ? v.trim().replace(/\s+/g, " ").slice(0, 400) : null);
+  const said = (v: string | null | undefined, max = 400) => (typeof v === "string" && v.trim() ? v.trim().replace(/\s+/g, " ").slice(0, max) : null);
   const answers = { must_keep: said(input.must_keep), audience: said(input.audience), tone: said(input.tone) };
-  const requestText = [prompt, answers.must_keep, answers.audience, answers.tone].filter(Boolean).join("\n");
+  // THE USER'S CORRECTIONS (24 September 2026). kleo_adapt_prompt tells the assistant to read the spec back and wait
+  // for "their yes or their corrections", then to pass the prompt unchanged — so a correction that ADDED something
+  // ("add my dog Pepe with a red collar") became an item whose quote was nowhere in what Kleo had, and the job was
+  // refused. The corrections now travel in their own argument, in the user's words, and count as what the user said.
+  // They are the user's words like the prompt, so the same safety gate reads them.
+  const corrections = said(input.corrections, 1000);
+  if (corrections && moderationBlocks(corrections)) throw new JobError("This request goes against the content policy, so the video was not started. Nothing was charged.");
+  const requestText = [prompt, answers.must_keep, answers.audience, answers.tone, corrections].filter(Boolean).join("\n");
   const specRefs = field(input.spec, "refs");
   const specHandles = Array.isArray(specRefs) ? specRefs.map((r) => String(field(r, "handle") ?? "")).filter(Boolean) : [];
   let refHandles = await jobRefs(env, user.id, input.references, specHandles);
@@ -193,13 +206,20 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     if (problems.length)
       throw new JobError(`The spec has ${plural(problems.length, "problem")} (nothing was charged). Fix ${problems.length === 1 ? "it" : "them"} and call kleo_create_video again, or leave the spec out and Kleo writes one:\n- ${problems.join("\n- ")}`);
     spec = repairSpec(input.spec, requestText, { handles: refHandles });
-    if (!spec) throw new JobError("The spec lists nothing the user asked for: every item must quote the user's own words from the prompt. Write it again under kleo_adapt_prompt's method, or leave it out and Kleo writes one. Nothing was charged.");
+    if (!spec) throw new JobError("The spec lists nothing the user asked for: every item must quote the user's own words from the prompt, their answers or their corrections. Write it again under kleo_adapt_prompt's method, or leave it out and Kleo writes one. Nothing was charged.");
   }
-  const faithful = spec?.mode === "faithful";
+  // FAITHFUL, OPEN, OR NOT KNOWN (24 September 2026). With no spec this is undefined, not false: a treatment sent
+  // without a spec — a client that writes only the treatment, or an assistant that followed the spec refusal's own
+  // advice to "leave the spec out" and kept its faithful, as-told treatment — was refused a second time for the device
+  // kleo_adapt_prompt had told it to use. Only a spec that says OPEN refuses "as-told"; without one the treatment's own
+  // device says which it is (src/treatment.ts treatmentProblems reads undefined that way).
+  const faithful: boolean | undefined = spec ? spec.mode === "faithful" : undefined;
   // Two looks (14 September 2026): realistic or animation, filmed the same way. Any other name is refused in
   // words. When none is named, the treatment's own "look" decides (step 0 of the method), then the storyboard's
   // kleo_style, then — since 24 September — the request's own words ("un cartone animato…" sent straight here used to
-  // become a live-action film), and failing all of them, realistic.
+  // become a live-action film), and failing all of them, realistic. The request's words count only when they name the
+  // look without ambiguity (src/adaptive.ts lookFrom): "a realistic documentary about Pixar" and "a horse-drawn
+  // carriage" named animation for a day, and a request that names both looks is realistic here, as it always was.
   if (input.style !== undefined && !(FILM_LOOKS as readonly string[]).includes(input.style))
     throw new JobError(`Kleo has two looks: "realistic" (a filmed, cinematic video) and "animation" (a 2D animated film). Omit "style" or pass one of them. Nothing was charged.`);
   const asLook = (x: unknown): FilmLook | null => ((FILM_LOOKS as readonly string[]).includes(String(x)) ? (x as FilmLook) : null);
@@ -279,7 +299,9 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     if (problems.length)
       throw new JobError(`The treatment has ${plural(problems.length, "problem")} (nothing was charged). Fix ${problems.length === 1 ? "it" : "them"} and call kleo_create_video again, or leave the treatment out and Kleo writes one:\n- ${problems.join("\n- ")}`);
     const tIn = input.treatment as Record<string, unknown>;
-    const fitted = repairTreatment(tIn, duration, faithful ? faithfulVariation() : variationFor(typeof tIn.variation === "string" ? tIn.variation : ""), language, { look, faithful });
+    // No spec: the treatment says which it is, the same reading as the readback (treatment.ts treatmentOf).
+    const asTold = faithful ?? (tIn.device === "as-told" || String(tIn.variation ?? "").startsWith("as-told"));
+    const fitted = repairTreatment(tIn, duration, asTold ? faithfulVariation() : variationFor(typeof tIn.variation === "string" ? tIn.variation : ""), language, { look, faithful: asTold });
     treatment = (fitted ? applySoundOptions(fitted, sound) : fitted) as unknown as Record<string, unknown>;
     // With a client storyboard the planner never runs, so the treatment is attached to the storyboard here: it is
     // how the finished video can be read back to the film it was meant to be, on either road into the queue.
@@ -361,9 +383,12 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
 
   // The two answers travel on the row: the planner reads them when it writes its own treatment, the worker reads the
   // storyboard they shaped. A "yes" to music with no brief yet gets the treatment's brief, or the user's own words.
+  // The corrections ride with the answers (params.brief.corrections) so the planner's own spec writer can quote them
+  // when the caller brought no spec (src/spec.ts specPrompt takes them).
+  const brief: NonNullable<JobParams["brief"]> & { corrections?: string } = { ...answers, ...(corrections ? { corrections } : {}) };
   const musicParam = musicIn === null ? undefined : musicIn.wanted ? (musicOf((treatment as Treatment | null)?.music) ?? musicIn.brief ?? "a quiet instrumental bed that fits the film's mood, under the narration") : null;
   const params: JobParams = { duration_s: duration, format, language, voice, style, ...(product === "animatic" ? { product } : {}), ...(styleGuessed ? { style_guessed: true } : {}), ...(cappedFrom ? { style_capped_from: cappedFrom } : {}), ...(treatment ? { treatment } : {}), ...(musicParam !== undefined ? { music: musicParam } : {}), ...(subsIn !== null ? { subtitles: subsIn } : {}),
-    ...(spec ? { spec } : {}), ...(refHandles.length ? { refs: refHandles } : {}), ...(answers.must_keep || answers.audience || answers.tone ? { brief: answers } : {}) };
+    ...(spec ? { spec } : {}), ...(refHandles.length ? { refs: refHandles } : {}), ...(answers.must_keep || answers.audience || answers.tone || corrections ? { brief } : {}) };
   const job: Job = {
     id: jobId, user_id: user.id, template: t.id, prompt, params: JSON.stringify(params),
     state: "queued", track: null, percent: 0, eta_min: product === "animatic" ? animaticEtaFor(duration) : etaFor(duration), credits,

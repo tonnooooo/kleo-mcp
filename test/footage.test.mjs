@@ -601,3 +601,31 @@ test("musicNote: a film ordered with music and delivered without it says so; one
   await m.requestMusic(env2, job2, { brief: "x", seconds: 30 }); await m.musicStatus(env2, job2, true);
   assert.equal(await m.musicNote(env2, { ...job2, params: JSON.stringify({ ...JSON.parse(job2.params), music: "x" }) }), null, "the track is on the film: nothing to say");
 });
+
+test("Wan road: a shot that carries the user's sign is not told by the NEGATIVE prompt to erase it (24 September)", () => {
+  // clipPrompt drops "No text" from the positive prompt of a shot that covers a text item; kieInput used to send the
+  // whole KIE_NEGATIVES on Wan anyway — "text, letters, … subtitles" — so the sign the still was drawn with dissolved.
+  const spec = {
+    v: 1, mode: "faithful", summary: "A bakery at dawn.", cast: [],
+    items: [{ id: "R2", kind: "text", text: "a shop sign reading \"Forno Mara\"", quote: "insegna Forno Mara", must: true, who: null, order: null }],
+    refs: [], open: [], narration: "free", script: null,
+  };
+  const sb = { style: "picture", kleo_style: "realistic", direction: { subject: "bakery", world: "A village bakery", cast: [], objects: [], forbidden: [], sections: [] },
+    scenes: [{ id: "01-hook", kind: "cinema", voice: "a line", shots: [{ image_prompt: "The bakery at dawn" }, { image_prompt: "The bakery sign above the door", covers: ["R2"] }] }] };
+  const stored = { storyboard: sb, spec };
+  assert.equal(m.clipKeepsText("01-hook-s2", stored), true);
+  assert.equal(m.clipKeepsText("01-hook-s1", stored), false, "a shot without the text item keeps the no-text negative");
+  assert.equal(m.clipKeepsText("09-nope-s1", stored), false);
+  assert.equal(m.clipKeepsText("01-hook-s2", null), false);
+  assert.equal(m.clipKeepsText("01-hook-s2", { storyboard: sb, spec: null }), false);
+  for (const look of ["realistic", "animation"]) {
+    const keep = m.kieNegativeFor(look, true);
+    assert.ok(!/(^|, )(text|letters|subtitles)(,|$)/.test(keep), keep);
+    assert.ok(keep.includes("watermark") && keep.includes("logo"), "watermarks and logos stay banned");
+    assert.equal(m.kieNegativeFor(look, false), m.KIE_NEGATIVES[look]);
+  }
+  const p = { prompt: "x", imageUrl: "https://kleo.test/still.png", seconds: 3, format: "9:16", seed: 1, look: "realistic" };
+  assert.equal(m.kieInput("wan-2.7", m.KIE_MODELS["wan-2.7"], p).negative_prompt, m.KIE_NEGATIVES.realistic);
+  assert.equal(m.kieInput("wan-2.7", m.KIE_MODELS["wan-2.7"], { ...p, keepsText: true }).negative_prompt, m.kieNegativeFor("realistic", true));
+  assert.equal(m.kieInput("minimax-h3", m.KIE_MODELS["minimax-h3"], { ...p, keepsText: true }).negative_prompt, undefined, "only the Wan dialect has a negative prompt");
+});

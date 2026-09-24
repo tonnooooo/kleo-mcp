@@ -128,7 +128,7 @@ test("repairSpec: strict refuses an invented item, lenient drops it; the shape i
   // The writer's claim of the mode does not matter: the items decide.
   assert.equal(repairSpec(RAW({ mode: "open" }), REQ).mode, "faithful");
   const bare = repairSpec({ items: [item("R1", "character", "a pastry chef", "una pasticcera")], cast: [], refs: [], open: [] }, REQ);
-  assert.equal(bare.mode, "open", "a bare subject is an open film even when the writer said faithful");
+  assert.equal(bare.mode, "open", "a bare subject is an open film when the writer claimed nothing (a writer's \"faithful\" is kept: see the test below)");
   assert.equal(bare.summary, "a pastry chef", "no summary: the first item stands for it");
   assert.equal(bare.narration, "free");
   // Defaults and clipping.
@@ -335,4 +335,59 @@ test("visualChecks: the style always, then one question per claimed item and per
   assert.deepEqual(sc.find((c) => c.id === "exclude:R9"), { id: "exclude:R9", question: "Does the image show any of this: adults?", expect: "no", must: true });
   // Unknown ids and cast are ignored, never asked about.
   assert.deepEqual(visualChecks(s, { covers: ["R99"], cast: ["c9"] }, "realistic").map((c) => c.id), ["style", "no-text"]);
+});
+
+/* ------------------------------------------------------------------ review fixes (24 September 2026) */
+
+test("modeFor keeps the writer's FAITHFUL when it stands on the user's story; never on a bare topic, never on a delegation", () => {
+  // "un film su mio nonno Pietro": one character, nothing about him. The assistant was told "faithful when the user
+  // described who is in it" and wrote an as-told treatment; the spec used to be re-decided OPEN and the treatment refused.
+  const nonno = [item("R1", "character", "the user's grandfather Pietro", "mio nonno Pietro")];
+  assert.equal(modeFor(nonno, "un film su mio nonno Pietro"), "open", "no claim: the contents decide");
+  assert.equal(modeFor(nonno, "un film su mio nonno Pietro", "faithful"), "faithful", "the writer's claim, on a character");
+  for (const k of ["event", "shot", "text", "line"]) assert.equal(modeFor([item("R1", k, `a ${k}`, "q")], "x", "faithful"), "faithful", k);
+  // A claim on nothing of the user's story, or on hints only, or against a delegation: open.
+  assert.equal(modeFor([item("R1", "object", "a lighthouse", "q")], "x", "faithful"), "open", "a topic is not a story");
+  assert.equal(modeFor([item("R1", "character", "a cat", "q", { must: false })], "x", "faithful"), "open", "a hint is not a story");
+  assert.equal(modeFor(nonno, "Stupiscimi con un film su mio nonno Pietro", "faithful"), "open", "a delegation is open whatever anybody claims");
+  // An "open" claim is still overruled upwards by the contents.
+  assert.equal(modeFor([item("E1", "event", "a", "q", { order: 1 }), item("E2", "event", "b", "q", { order: 2 })], "x", "open"), "faithful");
+  // repairSpec passes the claim on.
+  const claimed = repairSpec({ mode: "faithful", items: [item("R1", "character", "a pastry chef", "una pasticcera")], cast: [], refs: [], open: [] }, REQ);
+  assert.equal(claimed.mode, "faithful");
+  const topic = repairSpec({ mode: "faithful", items: [item("R1", "object", "a lemon cake", "torta al limone")], cast: [], refs: [], open: [] }, REQ);
+  assert.equal(topic.mode, "open");
+  assert.match(SPEC_METHOD, /A faithful spec carries at least one such item with "must": true/);
+});
+
+test("the user's corrections are what the user said: the refusal names them, the server's writer is given them", () => {
+  const p = specProblems(RAW({ items: [...RAW().items, item("R7", "character", "the user's dog Pepe with a red collar", "il mio cane Pepe col collare rosso")] }), REQ);
+  assert.ok(p.some((x) => /R7: the quote "il mio cane Pepe col collare rosso" is not in the user's request — an item must come from what the user wrote: the prompt, their answers \(must_keep, audience, tone\), or the corrections they gave after the read-back, passed word for word as "corrections"/.test(x)), p.join("\n"));
+  assert.ok(!p.some((x) => /put what Kleo decides under "open"/.test(x)), "a user's correction is never sent to open");
+  // With the corrections in the request text, the same item is the user's.
+  assert.deepEqual(specProblems(RAW({ items: [...RAW().items, item("R7", "character", "the user's dog Pepe with a red collar", "il mio cane Pepe col collare rosso")] }), `${REQ}\naggiungi il mio cane Pepe col collare rosso`), []);
+  assert.match(specPrompt({ prompt: REQ, language: "it", corrections: "aggiungi il mio cane Pepe" }), /After reading back what Kleo understood, the user corrected it: "aggiungi il mio cane Pepe"/);
+  assert.ok(!/corrected it/.test(specPrompt({ prompt: REQ, language: "it" })));
+  assert.match(specMethodText({ prompt: REQ, language: "it" }), /pass their correction, in their own words, as "corrections" to kleo_create_video/);
+});
+
+test("coverage: a shot's cast may name the direction's own characters, not only the spec's", () => {
+  // An open request ("a Short about pirates"): the spec has no cast, the direction invents Captain Rook.
+  const open = repairSpec({ mode: "open", items: [item("R1", "object", "pirates", "pirates")], cast: [], refs: [], open: ["the characters"] }, "a Short about pirates");
+  const sb = { direction: { cast: [{ name: "Captain Rook", look: "a tall woman in a salt-stained blue coat" }] }, scenes: [
+    { id: "01-deck", voice: "The pirates sail at dawn.", shots: [{ image_prompt: "Captain Rook on the deck", covers: ["R1"], cast: ["Captain Rook"] }] },
+  ] };
+  assert.deepEqual(coverage(open, sb).problems, []);
+  assert.deepEqual(coverage(open, sb).unknownCast, []);
+  // A planner chunk carries only its scenes: the names can be passed.
+  assert.deepEqual(coverage(open, { scenes: sb.scenes }, { cast: ["Captain Rook"] }).unknownCast, []);
+  // A name nobody declared is still refused, and the message says where names come from.
+  const c = coverage(open, { scenes: sb.scenes });
+  assert.deepEqual(c.unknownCast, ["Captain Rook"]);
+  assert.ok(c.problems.some((x) => x === `"cast" names "Captain Rook", which is not in the spec's cast or the direction's — use the spec's ids (it has none) or a name from direction.cast`), c.problems.join("\n"));
+  // A faithful spec plus a direction sidekick: both known.
+  const s = SPEC();
+  const board = BOARD(); board.direction = { cast: [{ name: "Mara", look: "x", id: "c1" }, { name: "Nino the baker's boy", look: "a boy" }] };
+  board.scenes[1].shots[0].cast = ["c1", "Nino the baker's boy"];
+  assert.deepEqual(coverage(s, board).unknownCast, []);
 });

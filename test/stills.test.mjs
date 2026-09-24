@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import {
   compileStill, feedbackFor, drawStill, drawCastSheet, drawJobStills, stillsEngineOn, stillsHold, stillCast, stillShotsOf,
   STILL_SIZES, STILL_PROMPT_MAX, STYLE_SENTENCE, NO_TEXT_SENTENCE, FRAMING, DEFAULT_FRAMING, DEFAULT_STILL_MODEL, EST_STILL_MS, castSheetKey,
+  stillsErrorVerdict, pauseStills,
 } from "../src/stills.ts";
 
 /* ------------------------------------------------------------------ fixtures */
@@ -307,4 +308,101 @@ test("stillsEngineOn / stillsHold: the two film looks with an AI binding; the GP
   assert.equal(stillsHold({ AI: ai }, withStills({ state: "done", at: new Date().toISOString() })), false);
   assert.equal(stillsHold({ AI: ai }, withStills({ state: "failed", at: new Date().toISOString() })), false);
   assert.equal(stillsHold({ AI: ai }, { ...job, phase: "finish" }), false, "the finish box never waits for stills");
+});
+
+/* ------------------------------------------------------------------ pauses, refusals, deadlines (24 September) */
+
+test("stillsErrorVerdict: only the daily quota and a plain bug fail the engine; every other hiccup only pauses it", () => {
+  assert.equal(stillsErrorVerdict(new Error("AiError: 4006: you have used up your daily free allocation of 10,000 neurons")), "failed");
+  for (const msg of ["AiError: 3040: Capacity temporarily exceeded, please try again later.", "still draw (x) timed out after 90000 ms", "429 Too Many Requests", "AiError: 503 Service Unavailable", "TypeError: fetch failed", "Error: Network connection lost.", "D1_ERROR: internal error"])
+    assert.equal(stillsErrorVerdict(new Error(msg)), "pause", msg);
+  assert.equal(stillsErrorVerdict(new TypeError("env.RENDERS.put is not a function")), "failed");
+  assert.equal(stillsErrorVerdict(new TypeError("Cannot read properties of undefined (reading 'put')")), "failed");
+});
+
+test("pauseStills: still drawing, the start of the drawing kept (the give-up clock runs from it), one more pause counted", async () => {
+  const { env, jobs, auditRows } = fakeEnv();
+  const at = new Date(Date.now() - 5 * 60_000).toISOString();
+  const job = jobOf(jobs, { stills: { state: "drawing", at, drawn: 1, total: 3, pauses: 2 } });
+  const r = await pauseStills(env, job, "AiError: 3040: Capacity temporarily exceeded");
+  assert.deepEqual(r, { state: "drawing", drawn: 1, total: 3 });
+  const st = paramsNow(jobs).stills;
+  assert.equal(st.state, "drawing"); assert.equal(st.at, at); assert.equal(st.pauses, 3); assert.match(st.note, /3040/);
+  assert.equal(JSON.parse(auditRows.find((a) => a.event === "stills.paused").detail).pauses, 3);
+});
+
+test("drawJobStills: a transient error on one still PAUSES the drawing (counted) instead of handing the film to the GPU; the next tick draws the rest", async () => {
+  // 24 September: one "Capacity temporarily exceeded" on one picture of 48 used to mark the engine failed for the
+  // whole film, and the GPU drew the other 47 with the 77-token SDXL although the next minute would have worked.
+  let n = 0;
+  const { ai } = fakeAi({ draw: (d) => { if (!d.prompt.startsWith("Character reference sheet") && ++n === 1) throw new Error("AiError: 3040: Capacity temporarily exceeded, please try again later."); } });
+  const { env, jobs, auditRows } = fakeEnv({ AI: ai });
+  const job = jobOf(jobs);
+  const r = await drawJobStills(env, job, { deadline: Date.now() + 120_000 });
+  assert.equal(r.state, "drawing"); assert.ok(r.drawn < 3);
+  const st = paramsNow(jobs).stills;
+  assert.equal(st.state, "drawing", "not failed: the GPU keeps waiting for the engine"); assert.equal(st.pauses, 1); assert.match(st.note, /3040/);
+  assert.ok(auditRows.some((a) => a.event === "stills.paused"));
+  assert.ok(auditRows.some((a) => a.event === "stills.error" && JSON.parse(a.detail).transient === true), "the picture is not given up for good");
+  const r2 = await drawJobStills(env, { ...job, params: jobs.get("gt_stills").params }, { deadline: Date.now() + 120_000 });
+  assert.deepEqual(r2, { state: "done", drawn: 3, total: 3 });
+  assert.equal(paramsNow(jobs).stills.pauses, 1, "the count survives the end of the drawing, for the owner to read");
+});
+
+test("drawJobStills: a store that fails to keep a drawn still pauses too — the picture is drawn again next tick, never given up", async () => {
+  const { ai } = fakeAi();
+  const { env, jobs, auditRows } = fakeEnv({ AI: ai });
+  const put = env.OAUTH_KV.put;
+  let failures = 0;
+  env.OAUTH_KV.put = async (k, v, o) => { if (k.includes("/img/") && failures++ === 0) throw new Error("Network connection lost."); return put(k, v, o); };
+  const job = jobOf(jobs);
+  const r = await drawJobStills(env, job, { deadline: Date.now() + 120_000 });
+  assert.equal(r.state, "drawing");
+  assert.equal(paramsNow(jobs).stills.pauses, 1);
+  assert.ok(auditRows.some((a) => a.event === "stills.store_error"));
+  assert.ok(!auditRows.some((a) => a.event === "stills.error"), "no picture is marked as refused");
+  const r2 = await drawJobStills(env, { ...job, params: jobs.get("gt_stills").params }, { deadline: Date.now() + 120_000 });
+  assert.deepEqual(r2, { state: "done", drawn: 3, total: 3 });
+});
+
+test("drawJobStills: a sheet the model refuses is asked for once, not on every tick; that character's shots are drawn from the words", async () => {
+  let stillDraws = 0;
+  const { ai, calls } = fakeAi({ draw: (d) => {
+    if (d.prompt.startsWith("Character reference sheet")) throw new Error("AiError: 5016: the prompt was flagged by the safety filter");
+    if (++stillDraws === 1) throw new Error("AiError: 3040: Capacity temporarily exceeded"); // so a second tick is needed
+  } });
+  const { env, jobs, auditRows } = fakeEnv({ AI: ai });
+  const job = jobOf(jobs);
+  const sheetDraws = () => calls.draws.filter((d) => d.prompt.startsWith("Character reference sheet")).length;
+  assert.equal((await drawJobStills(env, job, { deadline: Date.now() + 120_000 })).state, "drawing");
+  assert.equal(sheetDraws(), 1);
+  const refused = auditRows.filter((a) => a.event === "stills.sheet").map((a) => JSON.parse(a.detail));
+  assert.equal(refused.length, 1); assert.equal(refused[0].transient, false); assert.match(refused[0].error, /5016/);
+  const r2 = await drawJobStills(env, { ...job, params: jobs.get("gt_stills").params }, { deadline: Date.now() + 120_000 });
+  assert.deepEqual(r2, { state: "done", drawn: 3, total: 3 });
+  assert.equal(sheetDraws(), 1, "the refused sheet is not asked for again");
+  assert.ok(calls.draws.filter((d) => !d.prompt.startsWith("Character reference sheet")).every((d) => d.refs === 0), "no sheet, no reference image");
+});
+
+test("drawJobStills: the sheets a tick drew are in fidelity.json even when the tick runs out of time before the next sheet", async () => {
+  const { ai, calls } = fakeAi();
+  const { env, jobs, kv } = fakeEnv({ AI: ai });
+  const job = jobOf(jobs);
+  job.storyboard = JSON.stringify({ ...STORYBOARD, direction: { ...DIRECTION, cast: [...DIRECTION.cast, { name: "Tomas", look: "a tall old baker with a grey beard" }] } });
+  const r = await drawJobStills(env, job, { deadline: Date.now() + 120_000, stop: () => calls.draws.length >= 1 });
+  assert.equal(r.state, "drawing"); assert.equal(calls.draws.length, 1, "Mara's sheet, then the tick stops");
+  const report = () => JSON.parse(new TextDecoder().decode(kv.get("file:renders/gt_stills/fidelity.json").v));
+  assert.deepEqual(Object.keys(report().sheets), ["c1"], "the sheet drawn before the stop is reported");
+  const r2 = await drawJobStills(env, { ...job, params: jobs.get("gt_stills").params }, { deadline: Date.now() + 120_000 });
+  assert.equal(r2.state, "done");
+  assert.deepEqual(Object.keys(report().sheets).sort(), ["c1", "d-tomas"]);
+});
+
+test("drawStill: past `until` no redraw starts — the first try stands, so a still in flight at a tick's deadline cannot outlive the tick", async () => {
+  const late = fakeAi({ answer: () => "no" }); // every must fails
+  const r = await drawStill({ AI: late.ai }, input(), { attempts: 3, until: Date.now() - 1 });
+  assert.equal(late.calls.draws.length, 1); assert.ok(r.mustFailed > 0);
+  const early = fakeAi({ answer: () => "no" });
+  await drawStill({ AI: early.ai }, input(), { attempts: 3, until: Date.now() + 60_000 });
+  assert.equal(early.calls.draws.length, 3, "with time left the tries run as before");
 });

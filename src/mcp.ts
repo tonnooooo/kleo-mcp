@@ -7,7 +7,7 @@ import { isFlagActive } from "./schema";
 import { writeTreatment, writeSpec } from "./storyboard.ts";
 import { treatmentText, treatmentMethodText, variationFor } from "./treatment.ts";
 import { specMethodText, specText, specOf, itemById, visualChecks, REF_ROLES, type RequestSpec } from "./spec.ts";
-import { resolveRefs, makeUploadToken, RefError, REF_HANDLE_RE, UPLOAD_MAX_FILES, UPLOAD_TTL_S, type ResolvedRef } from "./refs.ts";
+import { resolveRefs, makeUploadToken, fetchRefBytes, refHandle, refMeta, ingestRef, RefError, REF_HANDLE_RE, UPLOAD_MAX_FILES, UPLOAD_TTL_S, type ResolvedRef, type RefInput } from "./refs.ts";
 import { getFile } from "./storage";
 import { ACTIVE_TEMPLATE, PUBLIC_TEMPLATES as TEMPLATES, PUBLIC_TEMPLATE_IDS as ACTIVE_TEMPLATE_IDS, findTemplate, creditsFor, creditsForProduct, filmCredits, freeCreditsFor, tariffSentence, MIN_FILM_CREDITS, SECONDS_PER_CREDIT, PRODUCTS, ANIMATIC_CREDITS, ANIMATIC_MAX_S, productOf } from "./templates";
 import { PACKS, sellingAvailable } from "./stripe";
@@ -30,7 +30,7 @@ const JOB_LANGUAGES = ["en", "it"] as const;
 const shotRange = shotRangeText;
 
 const INSTRUCTIONS = `This server is Kleo (the kleo_* tools): the video studio the user connected. Kleo makes narrated videos in one of two looks, realistic (cinematic live action) or animation (a 2D animated film) — one narrator; MUSIC (an instrumental track under the voice) and burned-in SUBTITLES are options the user is ALWAYS asked about and gets only when they say yes; no other on-screen text; one clean dissolve between acts per 25 seconds — 4K 60 fps, 16:9 for YouTube or 9:16 for a Short, as TWO PRODUCTS from the same treatment and storyboard: the FILM (every shot a generated clip, 15 seconds to 5 minutes, priced by length, made only for accounts that have bought a credit pack, because Kleo pays for every second of clip) and the ANIMATIC (the same drawn frames with the camera moving over each one, the same narrator and layer, no generated clip; ${ANIMATIC_CREDITS} credits flat, 15 to ${ANIMATIC_MAX_S} seconds, open to every account — the free credits pay for one). Call kleo_account first: has_paid says which of the two this account can order; when it cannot order a film, offer the animatic in so many words and pass product: "animatic" — never call an animatic a film, never make one without saying which it is. When the user mentions Kleo, a video, a film, a Short or a YouTube clip, use these tools; never answer from memory.
-ORDER OF CALLS: 1) kleo_adapt_prompt with the user's request, FIRST, before anything else: it reads the request against Kleo's intake — subject, length, format, look, music, subtitles (required: music and subtitles are asked EVERY time, and "no" is an answer); audience, tone, what must appear (optional) — and answers with the questions for whatever the request does not say. Ask the user ALL of them in ONE message, in their language, wait for the answers, and call it again with them (duration_s, format, style, music, subtitles, audience, tone, must_keep). Never pick a subject, a length, a format, a look, music or subtitles for them: what the request does not say is asked, not assumed. When the user delegates the subject ("stupiscimi", "surprise me"), the tool says so: propose 3-5 concrete subjects in one message and let them pick — never ask the same question again, never render before they pick. 2) Once it answers ready_to_render, the same tool hands YOU two methods. FIRST the SPEC: the user's request taken apart into the requirements the film is checked against — who is in it and exactly how they look, where, what happens and in which order, what must be seen, read or said, what must never appear — extraction, not creativity: every item quotes the user's own words. THEN the producer's method, and you write the TREATMENT under the spec (logline, angle, opening image, acts, ending, look, pacing, narrator, the layer, the decisions you took): when the user described their film, it is THEIR film — their characters as described, their events in their order — and you add only what they left open. Show the user in ONE message what Kleo understood (the spec read back as a short list), the logline and the decisions, and wait for their yes or their corrections. 3) kleo_storyboard_guide, then write the storyboard yourself under that treatment (every shot lists the spec items it shows in "covers" and the characters in it in "cast"): this is where the film's quality is made, and Kleo's own planner is the fallback, not the standard. 4) kleo_create_video with the prompt, the length, the format, the spec, the treatment, the references and the storyboard. 5) kleo_wait_for_video again and again until it returns the links, then hand them over.
+ORDER OF CALLS: 1) kleo_adapt_prompt with the user's request, FIRST, before anything else: it reads the request against Kleo's intake — subject, length, format, look, music, subtitles (required: music and subtitles are asked EVERY time, and "no" is an answer); audience, tone, what must appear (optional) — and answers with the questions for whatever the request does not say. Ask the user ALL of them in ONE message, in their language, wait for the answers, and call it again with them (duration_s, format, style, music, subtitles, audience, tone, must_keep). Never pick a subject, a length, a format, a look, music or subtitles for them: what the request does not say is asked, not assumed. When the user delegates the subject ("stupiscimi", "surprise me"), the tool says so: propose 3-5 concrete subjects in one message and let them pick — never ask the same question again, never render before they pick. 2) Once it answers ready_to_render, the same tool hands YOU two methods. FIRST the SPEC: the user's request taken apart into the requirements the film is checked against — who is in it and exactly how they look, where, what happens and in which order, what must be seen, read or said, what must never appear — extraction, not creativity: every item quotes the user's own words. THEN the producer's method, and you write the TREATMENT under the spec (logline, angle, opening image, acts, ending, look, pacing, narrator, the layer, the decisions you took): when the user described their film, it is THEIR film — their characters as described, their events in their order — and you add only what they left open. Show the user in ONE message what Kleo understood (the spec read back as a short list), the logline and the decisions, and wait for their yes or their corrections. 3) kleo_storyboard_guide, then write the storyboard yourself under that treatment (every shot lists the spec items it shows in "covers" and the characters in it in "cast"): this is where the film's quality is made, and Kleo's own planner is the fallback, not the standard. 4) kleo_create_video with the prompt (unchanged), the length, the format, the spec, the treatment, the references, the storyboard and — when the user corrected what Kleo understood — their corrections in their own words as "corrections". 5) kleo_wait_for_video again and again until it returns the links, then hand them over.
 PICTURES: when the user attaches or links images (a person, a pet, an object, a place, a style they like), Kleo draws the characters and things FROM those pictures. Pass https links as "references" to kleo_adapt_prompt; for pictures attached to the chat, call kleo_upload_link, give the user the link, and when they say they uploaded, call kleo_adapt_prompt again with references [{upload: "<token>"}]. Describe every attached picture in the spec as well (the character's "look"), and pass the returned handles to kleo_create_video as "references".
 DELIVERY RULE: the user expects the finished video in this same conversation. After kleo_create_video, call kleo_wait_for_video repeatedly (each call waits up to about a minute and returns progress) until it returns the MP4 and thumbnail links. Tell the user once that the render is running and the estimated minutes — the eta_min the server returns, never your own guess — and do not ask "shall I keep waiting?". Never invent progress, files or links: only repeat what these tools return. Call the video by its number (for example "video gt_ab12cd34"), not "job".`;
 
@@ -107,8 +107,15 @@ export function summarizeFidelity(report: unknown, spec: RequestSpec | null, che
     : isObj(report.stills) ? Object.entries(report.stills).filter((e): e is [string, Record<string, unknown>] => isObj(e[1])) : [];
   const stills = entries.filter(([, st]) => st.judged !== false);
   const checked = new Set<string>(), shown = new Set<string>();
+  // AN EXCLUSION HOLDS ON EVERY PICTURE (24 September 2026). "Some picture shows it" is the rule for what the user
+  // asked to SEE; for what they asked NOT to see ("no dogs") it read one still with a dog among nine without as kept,
+  // and the report said "misses: none". An exclusion failed on any judged picture is a miss, whatever the others say.
+  const excluded = new Set(spec?.items.filter((i) => i.kind === "exclude").map((i) => i.id) ?? []);
+  const violated = new Set<string>();
   for (const [pid, st] of stills) {
-    const failed = new Set(listOf(st.failed).map(idOf).filter(counted).map(keyOf));
+    const failedRaw = listOf(st.failed).map(idOf).filter(counted);
+    for (const id of failedRaw) if (id.startsWith("exclude:") || excluded.has(id)) violated.add(keyOf(id));
+    const failed = new Set(failedRaw.map(keyOf));
     const listed = listOf(st.checks).map(idOf);
     const answered = Object.keys(isObj(st.answers) ? st.answers : {});
     // The stills engine records what FAILED; what was ASKED is recomputed from the spec and the shot, the same
@@ -118,6 +125,7 @@ export function summarizeFidelity(report: unknown, spec: RequestSpec | null, che
     for (const id of ids) { checked.add(id); if (!failed.has(id)) shown.add(id); }
     for (const id of failed) checked.add(id);
   }
+  for (const id of violated) shown.delete(id);
   if (!checked.size) return plan === null ? null : { checked: 0, kept: 0, misses: [], pictures: stills.length, plan_score: plan };
   const misses = [...checked].filter((id) => !shown.has(id)).map((id) => ({ id, text: label(id) }));
   return { checked: checked.size, kept: shown.size, misses, pictures: stills.length, plan_score: plan };
@@ -194,6 +202,70 @@ async function resultPayload(env: Env, base: string, job: Job) {
 }
 
 
+/* ------------------------------------------------------------------ the pictures, metered */
+
+/** Vision descriptions of reference pictures one account may cause per UTC day; env REFS_MAX_PER_DAY overrides it. */
+export const REFS_MAX_PER_DAY = 30;
+/** Upload links one account may mint per UTC day (each takes UPLOAD_MAX_FILES pictures); env UPLOAD_LINKS_MAX_PER_DAY. */
+export const UPLOAD_LINKS_MAX_PER_DAY = 10;
+/** A numeric setting the Env type does not declare yet (the caps above), read the same way as the others. */
+const envInt = (env: Env, key: string, d: number): number => int((env as unknown as Record<string, string | undefined>)[key], d);
+const asRole = (x: unknown): RefInput["role"] => ((REF_ROLES as readonly string[]).includes(String(x)) ? (x as RefInput["role"]) : null);
+
+/**
+ * THE PICTURES, METERED (24 September 2026). kleo_adapt_prompt takes pictures on every call, before any cap, and every
+ * https link was fetched and — whenever the role passed differed from the stored one — described again by the paid
+ * vision model. Eight entries of the SAME link with roles character/style/character/… deduplicated to one handle, so
+ * the per-film limit never fired, and each call still cost eight fetches of up to 12 MB and eight vision calls, as
+ * often as any free account cared to repeat it. Now, before anything reaches src/refs.ts:
+ *   - the entries are merged: one link, one upload token or one handle is taken once per call, its first role kept;
+ *   - each link is fetched once and named by its bytes (the same SHA-256 handle refs.ts gives it), so a second link
+ *     to the same picture is the same picture, and a picture this account already holds, with the description it
+ *     needs, is taken in without a vision call;
+ *   - every vision call — a new picture, or a known one asked in a new role — is one "refs.describe" audit row, and an
+ *     account gets REFS_MAX_PER_DAY of them a day: past it a NEW picture is refused in words (nothing is charged), and
+ *     a known one keeps the description it has.
+ * Upload tokens and handles are only looked up (no fetch, no vision), exactly as before.
+ */
+export async function meteredRefs(env: Env, userId: string, inputs: readonly RefInput[]): Promise<ResolvedRef[]> {
+  const merged = new Map<string, RefInput>();
+  inputs.forEach((x, i) => {
+    const key = x.url ? `url:${x.url.trim()}` : x.upload ? `upload:${x.upload.trim()}` : x.handle ? `handle:${x.handle.trim()}` : `none:${i}`;
+    const had = merged.get(key);
+    merged.set(key, had ? { ...had, role: had.role ?? x.role ?? null, name: had.name ?? x.name ?? null, note: had.note ?? x.note ?? null } : x);
+  });
+  const cap = envInt(env, "REFS_MAX_PER_DAY", REFS_MAX_PER_DAY);
+  let used: number | null = null;
+  const out: RefInput[] = [];
+  const fetched = new Set<string>();
+  for (const x of merged.values()) {
+    if (!x.url) { out.push(x); continue; }
+    const { bytes } = await fetchRefBytes(x.url);   // every failure is a RefError in words
+    const handle = await refHandle(bytes);
+    const role = asRole(x.role);
+    const keep: RefInput = { handle, role, name: x.name ?? null, note: x.note ?? null };
+    if (fetched.has(handle)) { out.push(keep); continue; }   // two links, one picture: resolveRefs merges the two
+    fetched.add(handle);
+    const known = await refMeta(env, userId, handle);
+    const needsVision = !known || !known.description || (role !== null && role !== known.role);
+    if (needsVision) {
+      used ??= await countAuditTodayForUser(env, userId, "refs.describe");
+      if (used >= cap) {
+        if (!known) throw new RefError(`This account has had ${plural(used, "picture")} described today, and the limit is ${cap} a day while Kleo is in beta. Pass the handles (kref_…) Kleo already returned for the pictures it holds, or add new pictures tomorrow. Nothing was charged.`);
+        out.push(keep);   // a picture Kleo holds keeps the description it has
+        continue;
+      }
+      used++;
+      await audit(env, userId, null, "refs.describe", { handle, role, known: !!known });
+    }
+    // The bytes already fetched are handed over, so the link is fetched once; with no vision call needed, ingestRef
+    // only refreshes the sidecar (the name and the note the user gave now).
+    await ingestRef(env, userId, { bytes, role, name: x.name ?? null, note: x.note ?? null });
+    out.push(keep);
+  }
+  return resolveRefs(env, userId, out);
+}
+
 /** Which assistant is calling, from the MCP clientInfo envelope (2026 protocol) or the HTTP user agent, and how long one wait call may safely last there. */
 function detectClient(ctx: unknown): { name: string; waitS: number; ua: string } {
   const c = ctx as { http?: { req?: Request }; mcpReq?: { _meta?: Record<string, unknown> } } | undefined;
@@ -242,7 +314,8 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     const look = style ?? brief.look;   // the user's answer on the call, or read off the request
     // THE PICTURES (24 September 2026, src/refs.ts): taken in on every call, so the handles and what the vision model
     // saw come back with the intake questions too, and a broken link is said before anything else is asked.
-    const refs = references?.length ? await resolveRefs(env, user.id, references) : [];
+    // Metered (meteredRefs above): this runs before every cap, so it carries its own.
+    const refs = references?.length ? await meteredRefs(env, user.id, references) : [];
     if (refs.length) void audit(env, user.id, null, "refs.adapt", { handles: refs.map((r) => r.handle), described: refs.filter((r) => r.description).length });
     const base = { workflow: ACTIVE_TEMPLATE.id, style: look, brief, ...(refs.length ? { references: refsData(refs) } : {}) };
     // THE INTAKE (14 September): a required item the request does not say — subject, length, format, look — is asked,
@@ -274,7 +347,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       const method = treatmentMethodText({ prompt: prompt.trim(), duration_s: dur, format: fmt, language: lang, look, sound, specPending: true }, v);
       void audit(env, user.id, null, "treatment.method", { variation: v.key, duration_s: dur, format: fmt, language: lang, look, music: brief.music?.wanted ?? null, subtitles: brief.subtitles, refs: handles.length, spec_method: true });
       return ok({ ...base, treatment: null, spec: null, author: "assistant", variation: v.key, ready_to_render: true, ...answers,
-        next: `STEP A: write the SPEC, following the spec method in the text (extraction: every item quotes the user). STEP B: write the TREATMENT under it, following the producer's method; when the spec is FAITHFUL (the user described who is in it or what happens), tell the story the user's way — their characters as described, their events in their order — set the treatment's "variation" to "as-told/as-asked", and put everything you added in "decisions". THEN, in ONE message in the user's language, show them what Kleo understood (the spec read back as a short list: the characters and how they look, where, what happens in order, what must be seen or said, what is left to Kleo), the logline and the decisions, and wait for their yes or their corrections. Only then call kleo_create_video with prompt (the user's words, unchanged), duration_s, format, language, style (the look the treatment names), music and subtitles (the user's answers, as you passed them here), the object as "spec", the object as "treatment"${passOn}. If you cannot write them, call this tool again with author: "server".` },
+        next: `STEP A: write the SPEC, following the spec method in the text (extraction: every item quotes the user). STEP B: write the TREATMENT under it, following the producer's method; when the spec is FAITHFUL (the user described who is in it or what happens), tell the story the user's way — their characters as described, their events in their order — set the treatment's "variation" to "as-told/as-asked", and put everything you added in "decisions". THEN, in ONE message in the user's language, show them what Kleo understood (the spec read back as a short list: the characters and how they look, where, what happens in order, what must be seen or said, what is left to Kleo), the logline and the decisions, and wait for their yes or their corrections. If they correct or add something, change the spec and the treatment as they say (an item they added quotes their correction) and keep their words for "corrections". Only then call kleo_create_video with prompt (the user's words, unchanged), duration_s, format, language, style (the look the treatment names), music and subtitles (the user's answers, as you passed them here), the object as "spec", the object as "treatment"${passOn}, and — when they corrected anything — "corrections" (their corrections, word for word). If you cannot write them, call this tool again with author: "server".` },
         `${adaptivePromptText(brief)}${refsBlock(refs)}\n\n${specMethod}${answersText}\n\nSTEP B — THEN THE TREATMENT, UNDER THE SPEC YOU JUST WROTE. ${method}`);
     }
     // Each treatment is a model call on the free planning quota, so an account gets a day's worth and no more:
@@ -302,7 +375,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       return ok({ ...base, treatment: null, spec, ready_to_render: true, ...answers, note: r.transient ? "model unavailable" : "no valid treatment in two attempts", problems: r.history },
         `${adaptivePromptText(brief)}${refsBlock(refs)}${understood}\n\nKleo could not write the treatment just now (${r.transient ? "its planning model did not answer" : "two attempts came back incomplete"}). ${fallback} Or call this tool once more.`);
     return ok({ ...base, style: r.treatment.look, spec, spec_text: spec ? specText(spec) : null, treatment: r.treatment, ready_to_render: true, ...answers,
-      next: `Show the user, in ONE message, what Kleo understood${spec ? " (the spec above, as a short list)" : ""}, the logline and the decisions, and wait for their yes or their corrections; then call kleo_create_video with prompt, duration_s, format, language, style (this treatment's "look"), music and subtitles (the user's answers)${spec ? ', this same "spec"' : ""} and this same object as "treatment"${passOn}.` },
+      next: `Show the user, in ONE message, what Kleo understood${spec ? " (the spec above, as a short list)" : ""}, the logline and the decisions, and wait for their yes or their corrections; then call kleo_create_video with prompt (unchanged), duration_s, format, language, style (this treatment's "look"), music and subtitles (the user's answers)${spec ? ', this same "spec" (corrected as they asked: an item they added quotes their correction)' : ""} and this same object as "treatment"${passOn}, and — when they corrected anything — "corrections" (their corrections, word for word).` },
       `${adaptivePromptText(brief)}${refsBlock(refs)}${understood}\n\n${treatmentText(r.treatment)}`);
   }));
 
@@ -312,9 +385,14 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     inputSchema: z.object({}),
     annotations: { readOnlyHint: true, idempotentHint: false, openWorldHint: false },
   }, async () => guarded(async () => {
+    // Each link takes UPLOAD_MAX_FILES new pictures, and each picture is a vision call: links are counted too (24
+    // September 2026), so the number of pictures an account can have described is bounded on this road as well.
+    const linkCap = envInt(env, "UPLOAD_LINKS_MAX_PER_DAY", UPLOAD_LINKS_MAX_PER_DAY);
+    const links = await countAuditTodayForUser(env, user.id, "refs.upload_link");
+    if (links >= linkCap) throw new JobError(`This account has asked for ${plural(links, "upload link")} today, and the limit is ${linkCap} a day while Kleo is in beta. Use a link you already gave the user (it lasts 48 hours), or pass the pictures as https:// links. Nothing was charged.`);
     const { token, expires_at } = await makeUploadToken(env, user.id);
     const url = `${base}/upload/${token}`;
-    void audit(env, user.id, null, "refs.upload_link", { expires_at });
+    await audit(env, user.id, null, "refs.upload_link", { expires_at });   // awaited: the row is the day's counter
     return ok({ upload_url: url, token, expires_at, max_images: UPLOAD_MAX_FILES, ttl_hours: UPLOAD_TTL_S / 3600, next: `Give the user this link now: ${url} — tell them to open it, add the pictures, and tell you when they are done. Then call kleo_adapt_prompt again with references [{upload: "${token}"}] (add role and name when they said what a picture shows).` },
       `Upload link for the user's pictures (valid 48 hours, up to ${UPLOAD_MAX_FILES} pictures, PNG/JPEG/WebP up to 12 MB each): ${url}\nGive it to the user as a plain link and ask them to say when they have uploaded. Then call kleo_adapt_prompt again with references [{upload: "${token}"}] — plus role (character, object, place, style) and name when they told you what a picture shows. Until then, describe the pictures you can see in the spec yourself.`);
   }));
@@ -378,7 +456,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
 
   server.registerTool("kleo_create_video", {
     title: "Create a video",
-    description: `Step 3. ASK FIRST, THEN CALL. Do not call this until the user has said, in their own words, what the video should be about. If the subject is YOUR idea and not theirs — you suggested a topic, or you filled a vague request in with your own guess — stop and ask them, and wait for the answer. A render spends a credit they cannot get back once it starts and takes about twenty minutes, so a video nobody asked for is not a fast answer, it is a wasted one. When their request is short but clear (\"a Short about pirates\"), that is enough: do not interrogate them. When it is missing the subject entirely, ask for the subject and nothing else. Starts rendering, in the chosen look (realistic or animation), either the FILM — every shot generated as moving footage from its own frame, narrated, 4K 60 fps; for accounts that have bought a credit pack (kleo_account → has_paid) — or the ANIMATIC of the same storyboard (product: "animatic": the drawn frames with the camera moving over each one, same narrator and layer, no generated clip; ${ANIMATIC_CREDITS} credits flat, up to ${ANIMATIC_MAX_S} seconds, every account) — from a prompt, a length, a format and the user's two answers about music and subtitles (plus your storyboard from kleo_storyboard_guide, if you wrote one). The price follows the length for a film (${tariffSentence()}); the tool answers with the exact credits before anything is charged, and a render takes 25-35 minutes on a rented GPU (an animatic fifteen to twenty). Returns at once with the video number (job_id), the estimated minutes (eta_min) and the credits used; the render runs on a GPU in the background. Tell the user the number and the estimate, then offer to check progress with kleo_get_job. Pass the "spec" and the "treatment" the user approved, the handles of their reference pictures as "references", and their must_keep / audience / tone answers: the film is planned under the spec and every picture is checked against it. If the tool returns an error, nothing was charged: fix what it says and call again.`,
+    description: `Step 3. ASK FIRST, THEN CALL. Do not call this until the user has said, in their own words, what the video should be about. If the subject is YOUR idea and not theirs — you suggested a topic, or you filled a vague request in with your own guess — stop and ask them, and wait for the answer. A render spends a credit they cannot get back once it starts and takes about twenty minutes, so a video nobody asked for is not a fast answer, it is a wasted one. When their request is short but clear (\"a Short about pirates\"), that is enough: do not interrogate them. When it is missing the subject entirely, ask for the subject and nothing else. Starts rendering, in the chosen look (realistic or animation), either the FILM — every shot generated as moving footage from its own frame, narrated, 4K 60 fps; for accounts that have bought a credit pack (kleo_account → has_paid) — or the ANIMATIC of the same storyboard (product: "animatic": the drawn frames with the camera moving over each one, same narrator and layer, no generated clip; ${ANIMATIC_CREDITS} credits flat, up to ${ANIMATIC_MAX_S} seconds, every account) — from a prompt, a length, a format and the user's two answers about music and subtitles (plus your storyboard from kleo_storyboard_guide, if you wrote one). The price follows the length for a film (${tariffSentence()}); the tool answers with the exact credits before anything is charged, and a render takes 25-35 minutes on a rented GPU (an animatic fifteen to twenty). Returns at once with the video number (job_id), the estimated minutes (eta_min) and the credits used; the render runs on a GPU in the background. Tell the user the number and the estimate, then offer to check progress with kleo_get_job. Pass the "spec" and the "treatment" the user approved, the handles of their reference pictures as "references", their must_keep / audience / tone answers, and their "corrections" after the read-back in their own words when they gave any: the film is planned under the spec and every picture is checked against it. If the tool returns an error, nothing was charged: fix what it says and call again.`,
     inputSchema: z.object({
       template: z.string().optional().describe(`Optional; the only one is "film" (realistic or animated, 16:9 for YouTube or 9:16 for Shorts; 15 to 300 seconds for a film, 15 to ${ANIMATIC_MAX_S} for an animatic). Omit it.`),
       prompt: z.string().describe("What the video is about, IN THE USER'S OWN WORDS (8 to 4000 characters): topic, angle, facts, names, tone, anything that must appear on screen. If you are about to write this field out of an idea of your own, that is the sign to ask them instead: the credit and the twenty minutes are theirs, so the subject has to be theirs too."),
@@ -391,11 +469,12 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       subtitles: z.union([z.boolean(), z.enum(["yes", "no"])]).optional().describe("The user's answer about burned-in subtitles: true/\"yes\" for thin cinema subtitles in the picture, false/\"no\" for none. An .srt file is delivered either way."),
       product: z.enum(PRODUCTS).optional().describe(`What to make from the storyboard: "film" (default; every shot a generated clip, priced by length, for accounts that have bought a credit pack) or "animatic" (the same drawn frames with the camera moving over each one, the same narrator and layer, 4K 60 fps, no generated clip; ${ANIMATIC_CREDITS} credits flat, up to ${ANIMATIC_MAX_S} seconds, every account). Say which one you are ordering to the user before you call.`),
       notify_email: z.string().email().optional().describe("Optional: email the download links when the render finishes."),
-      spec: z.looseObject({}).optional().describe("The SPEC you wrote under kleo_adapt_prompt's spec method (or the one it returned), corrected as the user asked: {v:1, mode, summary, cast, items, refs, open, narration, script}. Every item's \"quote\" must be the user's own words from the prompt (or from their must_keep/audience/tone answers). Checked before anything is charged; the film is planned under it and every picture is checked against it."),
+      spec: z.looseObject({}).optional().describe("The SPEC you wrote under kleo_adapt_prompt's spec method (or the one it returned), corrected as the user asked: {v:1, mode, summary, cast, items, refs, open, narration, script}. Every item's \"quote\" must be the user's own words from the prompt, from their must_keep/audience/tone answers, or from their \"corrections\" after the read-back (pass those too). Checked before anything is charged; the film is planned under it and every picture is checked against it."),
       references: z.array(z.string().max(400)).max(8).optional().describe("The user's reference pictures: the handles (kref_…) kleo_adapt_prompt returned, or the token of a kleo_upload_link link they uploaded through. Kleo draws the characters from them."),
       must_keep: z.string().max(400).optional().describe("The user's answer to \"what must appear, or must not\", as passed to kleo_adapt_prompt."),
       audience: z.string().max(160).optional().describe("Who the film is for, as the user said it."),
       tone: z.string().max(160).optional().describe("The tone the user asked for."),
+      corrections: z.string().max(1000).optional().describe("The user's corrections after you read back what Kleo understood, IN THEIR OWN WORDS (\"add my dog Pepe with a red collar\", \"she has red hair, not blonde\"). The prompt stays their first request, unchanged; a spec item added by a correction quotes these words. Omit it when they simply said yes."),
       treatment: z.looseObject({}).optional().describe("The treatment object kleo_adapt_prompt returned for this request, unchanged or edited as the user asked (logline, angle, device, opening, ending, acts, visual, pacing, narrator, motifs, decisions, prose, variation). Kleo plans the direction and every scene under it. Checked before anything is charged; on error the tool lists the problems. Omit it and Kleo writes a treatment itself while planning — the user just never sees it first."),
       storyboard: z.looseObject({}).optional().describe("Optional but recommended: the storyboard you wrote following kleo_storyboard_guide (a Keou project object without id, script_file, music_quiet or image scenes). IT MUST INCLUDE THE \"direction\" BLOCK the guide asks for first — a storyboard without one is refused, because the direction is what keeps a character the same person across shots and gives every scene the colour of its section. Its format and language must equal the ones you pass here, and its voice must belong to that language. When omitted entirely, Kleo plans the whole storyboard, direction included, from the prompt. Checked before anything is charged; on error the tool lists the problems so you can fix them and call again."),
     }),
