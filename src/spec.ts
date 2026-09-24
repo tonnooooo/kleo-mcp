@@ -663,14 +663,14 @@ export function visualChecks(spec: RequestSpec | null, shot: { covers?: readonly
       continue;
     }
     if (it.kind === "event" || it.kind === "action") { out.push({ id: it.id, question: `Could this image be a moment of this: ${it.text}?`, expect: "yes", must: false }); continue; }
-    const q = it.kind === "text" ? `Is the following text clearly written and readable in the image: ${it.text}?` : `Does the image show this: ${it.text}?`;
+    const q = it.kind === "text" ? `Is the following text clearly written and readable in the image: ${it.text}?` : it.kind === "look" ? lookQuestion(spec, it) : `Does the image show this: ${it.text}?`;
     out.push({ id: it.id, question: q, expect: "yes", must: it.kind === "look" ? lookMust(it) : it.must });
   }
   for (const cid of shows) {
     const c = castById(spec, cid);
     if (!c) continue;
     const attrs = spec.items.filter((i) => i.kind === "look" && i.who === c.id && !claimed.includes(i));
-    if (attrs.length) for (const a of attrs) out.push({ id: `${a.id}`, question: `Does the image show this: ${a.text}?`, expect: "yes", must: lookMust(a) });
+    if (attrs.length) for (const a of attrs) out.push({ id: `${a.id}`, question: lookQuestion(spec, a), expect: "yes", must: lookMust(a) });
     // The whole look is asked only of a character the spec has NO look items for: when the shot claimed them all they
     // were asked one by one above, and the whole sentence ("a thin woman in her thirties…") fails on a body word the
     // way "thin build" did on the bench (24 September 2026).
@@ -679,10 +679,20 @@ export function visualChecks(spec: RequestSpec | null, shot: { covers?: readonly
   for (const it of spec.items.filter((i) => i.kind === "style" && i.must)) out.push({ id: it.id, question: `Is the image in this style: ${it.text}?`, expect: "yes", must: false });
   for (const it of spec.items.filter((i) => i.kind === "exclude")) out.push({ id: `exclude:${it.id}`, question: `Does the image show any of this: ${it.text.replace(/^(no|never|without|not)\s+/i, "")}?`, expect: "no", must: true });
   if (!claimed.some((i) => i.kind === "text")) out.push({ id: "no-text", question: "Is there any written text, lettering, caption or watermark in the image?", expect: "no", must: false });
-  // TWO OR MORE CHARACTERS: their looks are asked softly (24 September 2026, first production probe gt_62bvh7ay). With
-  // the pastry chef and her friend in one frame the judge answered "no" to "curly red hair" and "tall" on pictures that
-  // plainly showed them — it could not tell whose attribute it was asked about — and every two-character still was drawn
-  // twice for nothing. The character sheets passed as reference images are what hold the looks there.
-  if (shows.size >= 2) for (const c of out) { const it = itemById(spec, c.id); if ((it && it.kind === "look") || c.id.startsWith("cast:")) c.must = false; }
+  // TWO OR MORE CHARACTERS (24 September 2026, production probes gt_62bvh7ay and gt_qv3t8jtr). With the pastry chef and
+  // her friend in one frame the judge answered "no" to a bare "curly red hair" on pictures that plainly showed it — it
+  // could not tell whose attribute was meant; softening every look then let the fisherman's dog lose the one white ear
+  // the user asked for. So a look is asked WITH its character's name (lookQuestion) and stays a must; only the
+  // whole-description question, which cannot name one attribute, is soft when several characters share the frame.
+  if (shows.size >= 2) for (const c of out) if (c.id.startsWith("cast:")) c.must = false;
   return out;
+}
+
+/** A look asked about its own character: "Does the black dog have or wear this: one white ear?" — never a bare attribute. */
+function lookQuestion(spec: RequestSpec, it: SpecItem): string {
+  const c = it.who ? castById(spec, it.who) : undefined;
+  const text = it.text.replace(/[.?\s]+$/, "");
+  if (!c) return `Does the image show this: ${text}?`;
+  const name = /^(the|a|an)\s/i.test(c.name) || /^\p{Lu}/u.test(c.name) ? c.name : `the ${c.name}`;
+  return norm(text).includes(norm(c.name)) ? `Does the image show this: ${text}?` : `Does ${name} have or wear this: ${text}?`;
 }

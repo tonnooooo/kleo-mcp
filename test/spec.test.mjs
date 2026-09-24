@@ -428,3 +428,17 @@ test("coverage: a shot's cast may name the direction's own characters, not only 
   board.scenes[1].shots[0].cast = ["c1", "Nino the baker's boy"];
   assert.deepEqual(coverage(s, board).unknownCast, []);
 });
+
+test("a look is asked with its character's name, and stays a must with two characters in the frame (24 September 2026)", () => {
+  // Production probes: a bare "curly red hair" was answered "no" on a picture that showed it (whose hair?), and softening
+  // every look with two characters let the fisherman's dog lose the one white ear the user asked for.
+  const base = SPEC();
+  const s = { ...base, cast: [...base.cast, { id: "c2", name: "black dog", look: "a black dog with one white ear", ref: null }], items: [...base.items, item("R7", "look", "one white ear", "orecchio bianco", { who: "c2" })] };
+  const two = visualChecks(s, { covers: ["R7"], cast: ["c1", "c2"] }, "realistic");
+  const ear = two.find((c) => c.id === "R7");
+  assert.equal(ear.question, "Does the black dog have or wear this: one white ear?");
+  assert.equal(ear.must, true, "a distinctive look stays a must with two characters");
+  // A look that already names its character is asked as written; a proper name takes no article.
+  const own = two.find((c) => c.id === "R2");
+  assert.ok(own && !/Does the Mara/.test(own.question), own && own.question);
+});
