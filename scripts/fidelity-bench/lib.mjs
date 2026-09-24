@@ -65,6 +65,8 @@ export const PRICES = {
 };
 export const IMAGE_PRICES = {
   "@cf/black-forest-labs/flux-2-klein-9b": { firstMp: 0.015, nextMp: 0.002, inputMp: 0.002 },
+  // klein-4b is billed per 512x512 tile (Workers AI price list, 24 September 2026): output and input tiles.
+  "@cf/black-forest-labs/flux-2-klein-4b": { tileOut: 0.000287, tileIn: 0.000059 },
   "@cf/bytedance/stable-diffusion-xl-lightning": { perImage: 0 },
 };
 
@@ -88,6 +90,7 @@ function imageCost(model, fields) {
   if (!p) return 0;
   if (p.perImage !== undefined) return p.perImage;
   const w = Number(fields?.width) || 1024, h = Number(fields?.height) || 1024;
+  if (p.tileOut !== undefined) return Math.ceil(w / 512) * Math.ceil(h / 512) * p.tileOut + (Number(fields?.inputTiles) || 0) * p.tileIn;
   const mp = (w * h) / 1e6;
   const inputs = Number(fields?.inputMp) || 0;
   return p.firstMp + Math.max(0, mp - 1) * p.nextMp + inputs * p.inputMp;
@@ -191,11 +194,12 @@ export async function runMultipart(model, fields, opts) {
 
 /** The width, height and input-image megapixels of a form, for the price (an image whose size cannot be read counts 1 MP). */
 async function formMeta(fd) {
-  const out = { width: fd.get("width"), height: fd.get("height"), inputMp: 0 };
+  const out = { width: fd.get("width"), height: fd.get("height"), inputMp: 0, inputTiles: 0 };
   for (const [k, v] of fd.entries()) {
     if (!/^input_image/.test(k) || !(v instanceof Blob)) continue;
     const dim = imageSize(new Uint8Array(await v.arrayBuffer()));
     out.inputMp += dim ? (dim.width * dim.height) / 1e6 : 1;
+    out.inputTiles += dim ? Math.ceil(dim.width / 512) * Math.ceil(dim.height / 512) : 4;
   }
   return out;
 }
