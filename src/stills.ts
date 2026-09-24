@@ -236,7 +236,9 @@ const identityCheck = (m: StillCastMember, among: number): VisualCheck => ({
     ? `Does the first image show a character who is ${identityQuestionPrefix} ${m.name} (same face, hair and clothes)?`
     : `Is the main character in the first image ${identityQuestionPrefix} ${m.name} (same face, hair and clothes)?`,
   expect: "yes",
-  must: true,
+  // A must only when one character is drawn from a sheet: with two, the judge mixes them up (probe gt_62bvh7ay,
+  // 24 September 2026: "not the same individual" on stills that matched both sheets exactly).
+  must: among <= 1,
 });
 
 /**
@@ -329,7 +331,9 @@ export function compileStill(input: StillInput, feedback: string[] = []): { prom
     ...otherRefs.map(({ r, i }) => sentence(`As in reference image ${i + 1}: ${clean(r.label)}`)),
     world && lim.world > 0 ? sentence(`Setting: ${cut(world, lim.world)}`) : "",
     input.visual && lim.visual > 0 ? sentence(`Visual language: ${cut(clean(input.visual), lim.visual)}`) : "",
-    ...texts.map((t) => sentence(`Written clearly and legibly in the picture, spelled exactly as given: ${t.text}`)),
+    // The words sit ON something (probe gt_62bvh7ay: "SURPRISE" floated in the air beside the friend instead of being
+    // written on the note he holds).
+    ...texts.map((t) => sentence(`Written clearly and legibly ON an object in the scene (a note, a sign, a label, a cake, a screen), spelled exactly as given, never floating in the air: ${t.text}`)),
     STYLE_SENTENCE[look],
     LOGIC_SENTENCE,
     styleItems.length ? sentence(`Style: ${styleItems.join("; ")}`) : "",
@@ -803,6 +807,13 @@ export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: nu
   };
   const stillReport: Record<string, unknown> = {};
   const queue = [...todo];
+  // THE STYLE ANCHOR (24 September 2026, probe gt_62bvh7ay): seven stills of one film came back in two drawing styles —
+  // watercolour for some, flat cel for others — from the same style sentence. The first still of the film is passed to
+  // every later one as a reference for its line, shading and palette. It is drawn alone first when nothing is stored
+  // yet; on a later tick it is read back from the store.
+  const firstId = pics[0]?.id;
+  let anchor: VisionImage | null = firstId && stored.has(firstId) ? await readStored(env, `renders/${job.id}/${stored.get(firstId)}`) : null;
+  const ANCHOR_LABEL = "the drawing style of this film: match its line, shading, texture and palette exactly, never its content or composition";
   // The first error that stops this tick's drawing: "pause" (the next tick carries on) or "failed" (the GPU draws the
   // rest). A "failed" outranks a "pause" met by another worker in the same tick.
   let stopped: { verdict: "pause" | "failed"; note: string } | null = null;
@@ -814,6 +825,7 @@ export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: nu
       const refs: StillRef[] = [];
       for (const m of cast) { const img = sheets.get(norm(m.name)); if (img && refs.length < MAX_INPUT_IMAGES) refs.push({ label: m.name, image: img }); }
       for (const r of await extraRefs(pic)) if (refs.length < MAX_INPUT_IMAGES) refs.push(r);
+      if (anchor && pic.id !== firstId && refs.length < MAX_INPUT_IMAGES) refs.push({ label: ANCHOR_LABEL, image: anchor });
       let r: StillResult;
       try {
         r = await drawStill(env, { shot: pic, spec, direction, look, format, visual, refs }, { seedBase: fnv1a(`${job.id}/${pic.id}`) % 1_000_000, until: opts.deadline });
@@ -834,6 +846,7 @@ export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: nu
         const size = await putFile(env, key, r.bytes, ctype);
         await setFile(env, { job_id: job.id, name, key, size, content_type: ctype });
         stored.set(pic.id, name);
+        if (pic.id === firstId && !anchor) anchor = { bytes: r.bytes, mime: mimeOf(r.bytes) };
       } catch (e) {
         const msg = `storing ${pic.id}: ${String(e).slice(0, 260)}`;
         halt(isTransientStoreError(e) ? "pause" : "failed", msg);
@@ -845,7 +858,9 @@ export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: nu
       await audit(env, job.user_id, job.id, "stills.judge", { picture: pic.id, tries: r.tries.length, score: r.score, must_failed: r.mustFailed, failed: r.failed, refs: refs.length });
     }
   };
-  await Promise.all(Array.from({ length: Math.min(STILLS_CONCURRENCY, todo.length) }, () => worker()));
+  // The first still alone, so that every other one can be drawn in its style; then the rest, STILLS_CONCURRENCY at a time.
+  if (!anchor && queue[0]?.id === firstId) { const one = [queue.shift()!]; const rest = queue.splice(0); queue.push(...one); await worker(); queue.push(...rest); }
+  await Promise.all(Array.from({ length: Math.min(STILLS_CONCURRENCY, queue.length) }, () => worker()));
 
   const model = stillModel(env);
   await mergeFidelity(env, job, { stills: stillReport, ...(Object.keys(sheetReport).length ? { sheets: sheetReport } : {}) }, (rep) => {

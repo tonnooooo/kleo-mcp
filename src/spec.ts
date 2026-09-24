@@ -679,5 +679,10 @@ export function visualChecks(spec: RequestSpec | null, shot: { covers?: readonly
   for (const it of spec.items.filter((i) => i.kind === "style" && i.must)) out.push({ id: it.id, question: `Is the image in this style: ${it.text}?`, expect: "yes", must: false });
   for (const it of spec.items.filter((i) => i.kind === "exclude")) out.push({ id: `exclude:${it.id}`, question: `Does the image show any of this: ${it.text.replace(/^(no|never|without|not)\s+/i, "")}?`, expect: "no", must: true });
   if (!claimed.some((i) => i.kind === "text")) out.push({ id: "no-text", question: "Is there any written text, lettering, caption or watermark in the image?", expect: "no", must: false });
+  // TWO OR MORE CHARACTERS: their looks are asked softly (24 September 2026, first production probe gt_62bvh7ay). With
+  // the pastry chef and her friend in one frame the judge answered "no" to "curly red hair" and "tall" on pictures that
+  // plainly showed them — it could not tell whose attribute it was asked about — and every two-character still was drawn
+  // twice for nothing. The character sheets passed as reference images are what hold the looks there.
+  if (shows.size >= 2) for (const c of out) { const it = itemById(spec, c.id); if ((it && it.kind === "look") || c.id.startsWith("cast:")) c.must = false; }
   return out;
 }

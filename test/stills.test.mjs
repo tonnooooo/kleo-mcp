@@ -269,7 +269,11 @@ test("drawJobStills: the sheet first, then every still with the sheet as referen
   assert.equal(shots.length, 3);
   const mara = shots.find((d) => d.prompt.includes("ties her lilac apron"));
   assert.equal(mara.refs, 1, "a shot that shows Mara is drawn from her sheet");
-  assert.equal(shots.find((d) => d.prompt.includes("bakery front")).refs, 0, "a shot without her carries no sheet");
+  // The style anchor (24 September 2026): the film's first still is drawn alone, then passed to every other one.
+  assert.ok(shots[0].prompt.includes("ties her lilac apron"), "the first still is drawn first, alone");
+  const front = shots.find((d) => d.prompt.includes("bakery front"));
+  assert.equal(front.refs, 1, "a shot without her carries no sheet, only the first still as the style anchor");
+  assert.ok(front.prompt.includes("the drawing style of this film"), front.prompt);
   for (const id of ["01-sc-s1", "01-sc-s2", "02-sc-s1"]) {
     const f = files.get(`img/${id}.jpg`);
     assert.equal(f.key, `renders/gt_stills/img/${id}.jpg`); assert.equal(f.content_type, "image/jpeg");
@@ -398,7 +402,8 @@ test("drawJobStills: a sheet the model refuses is asked for once, not on every t
   const r2 = await drawJobStills(env, { ...job, params: jobs.get("gt_stills").params }, { deadline: Date.now() + 120_000 });
   assert.deepEqual(r2, { state: "done", drawn: 3, total: 3 });
   assert.equal(sheetDraws(), 2, "the refused sheet is not asked for again");
-  assert.ok(calls.draws.filter((d) => !d.prompt.startsWith("Character reference sheet")).every((d) => d.refs === 0), "no sheet, no reference image");
+  const stills = calls.draws.filter((d) => !d.prompt.startsWith("Character reference sheet"));
+  assert.ok(stills.every((d) => d.refs === 0 || d.prompt.includes("the drawing style of this film")), "no sheet: the only reference is the style anchor");
 });
 
 test("drawJobStills: the sheets a tick drew are in fidelity.json even when the tick runs out of time before the next sheet", async () => {
@@ -449,6 +454,8 @@ test("checks: one identity question per character drawn from a sheet; none witho
     ["identity:c1", "Does the first image show a character who is the same individual as the reference image of Mara (same face, hair and clothes)?"],
     ["identity:tomas", "Does the first image show a character who is the same individual as the reference image of Tomas (same face, hair and clothes)?"],
   ]);
+  // With two characters the identity questions are soft: the judge mixed them up on the first production probe.
+  assert.ok(two.checks.filter((x) => x.id.startsWith("identity:")).every((x) => x.must === false));
   // The judge is asked it with the sheet after the picture; a miss is written back as what the picture must do.
   const { ai, calls } = fakeAi({ answer: failFirst(/same individual/) });
   const r = await drawStill({ AI: ai }, input());
