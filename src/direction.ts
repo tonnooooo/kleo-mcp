@@ -275,9 +275,39 @@ export function forbiddenInPrompts(
   prompts: readonly { id: string; image_prompt: string }[],
 ): { id: string; term: string }[] {
   const out: { id: string; term: string }[] = [];
-  const terms = (forbidden ?? []).map((t) => ({ term: t, re: new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(t.trim())}(?![\\p{L}\\p{N}])`, "iu") })).filter((t) => t.term.trim());
-  for (const p of prompts) for (const t of terms) if (t.re.test(p.image_prompt)) out.push({ id: p.id, term: t.term });
+  const terms = (forbidden ?? []).map((t) => ({ term: t, re: termRe(t) })).filter((t) => t.term.trim());
+  // A NEGATED mention is not a request (24 September 2026): "an empty street, no people visible" names the forbidden
+  // "people" only to exclude them. Counting it refused the planner's own plan twice on every exclusion case of the
+  // fidelity bench ("niente sangue", "no people visible"), on both planning models: the film the user asked for most
+  // precisely was the one Kleo could never plan.
+  for (const p of prompts) for (const t of terms) if (affirmed(p.image_prompt, t.re)) out.push({ id: p.id, term: t.term });
   return out;
+}
+const termRe = (t: string): RegExp => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(t.trim())}(?![\\p{L}\\p{N}])`, "giu");
+/** Words that turn the next few words into an exclusion: "no", "without", "never", "not", "free of", "devoid of", "nobody". */
+const NEGATOR = /\b(?:no|without|never|not|nor|free of|devoid of|absent|nobody|no one|none of|zero)\b(?:\s+[\p{L}\p{N}'-]+){0,3}\s*$/iu;
+/** Whether a prompt mentions a term outside a negation ("people walk by" yes, "no people visible" no). */
+function affirmed(prompt: string, re: RegExp): boolean {
+  re.lastIndex = 0;
+  for (let m = re.exec(prompt); m; m = re.exec(prompt)) {
+    const before = prompt.slice(Math.max(0, prompt.lastIndexOf(",", m.index - 1) + 1, m.index - 40), m.index);
+    if (!NEGATOR.test(before)) return true;
+  }
+  return false;
+}
+/**
+ * The last resort for a picture that still asks for something the direction forbids after the planner was told twice
+ * (24 September 2026): the clause that asks for it is taken out ("a crowd of people fleeing, rain on the tiles" loses
+ * "a crowd of people fleeing") instead of the whole plan being refused. A clause that only EXCLUDES the term goes too:
+ * an image model reads "no people" as "people". Returns the prompt unchanged when removing would leave under 4 words.
+ */
+export function dropForbiddenClauses(prompt: string, forbidden: readonly string[]): string {
+  const res = forbidden.filter((t) => t.trim()).map(termRe);
+  if (!res.length) return prompt;
+  const clauses = prompt.split(/(?<=[,;.])\s+|\s+(?=(?:and|while|with|as)\s)/i);
+  const keep = clauses.filter((c) => !res.some((re) => { re.lastIndex = 0; return re.test(c); }));
+  const out = keep.join(" ").replace(/\s+/g, " ").replace(/[,;]\s*$/, "").trim();
+  return out.split(/\s+/).filter(Boolean).length >= 4 ? out : prompt;
 }
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 

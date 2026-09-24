@@ -45,7 +45,7 @@ import { judgePlan, fidelityFeedback, shotIdsOf, renumberShots, type PlanFidelit
  * the world of the video was never written down, nothing said what must NOT appear, and no colour meant anything.
  */
 import {
-  directionProblems, missingFacts, spokenFacts, lookFact, sectionOfScene, motionHint, screenTextProblems, notEnglish, formatTalk, stripFormatTalk, storyRequest, dropLookFacts, negatedTerms, D as DL,
+  directionProblems, missingFacts, spokenFacts, lookFact, forbiddenInPrompts, dropForbiddenClauses, sectionOfScene, motionHint, screenTextProblems, notEnglish, formatTalk, stripFormatTalk, storyRequest, dropLookFacts, negatedTerms, D as DL,
   type Direction, type Section,
 } from "./direction.ts";
 // The shot grammar: the ten story kinds and the one preset table that turns a kind into a camera move.
@@ -88,6 +88,9 @@ const PRICES: Record<string, { in: number; out: number }> = {
   "deepseek/deepseek-v3.2": { in: 0.27, out: 0.4 },
   "@cf/meta/llama-3.3-70b-instruct-fp8-fast": { in: 0.293, out: 2.253 },
   "@cf/meta/llama-4-scout-17b-16e-instruct": { in: 0.27, out: 0.85 },
+  // Workers AI price list, 24 September 2026.
+  "@cf/moonshotai/kimi-k2.6": { in: 0.95, out: 4 },
+  "@cf/google/gemma-4-26b-a4b-it": { in: 0.1, out: 0.3 },
   "@cf/openai/gpt-oss-120b": { in: 0.35, out: 0.75 },
   "@cf/openai/gpt-oss-20b": { in: 0.2, out: 0.3 },
   "@cf/qwen/qwen3-30b-a3b-fp8": { in: 0.051, out: 0.335 },
@@ -1687,7 +1690,11 @@ async function callWorkersAi(env: Env, model: string, messages: { role: string; 
   // 20 September: 43 s, 0 chars; without the schema 29 s and a clean object). Every prompt already asks for one JSON
   // object, and extractJson() reads it out of the text.
   const oss = /^@cf\/openai\/gpt-oss/.test(model);
-  const base = oss ? { messages, max_tokens: maxTokens * 6, temperature, reasoning: { effort: "low" } } : { messages, max_tokens: maxTokens, temperature };
+  // HYBRID MODELS think unless told not to (24 September 2026): kimi-k2.6 with thinking on came back EMPTY on every
+  // planner call of the fidelity bench (the reasoning ate max_tokens) and a call given room outlasted the 90-second
+  // timeout; in instant mode the same title took 1 s and 30 tokens. gemma-4 and qwen3 read `enable_thinking`.
+  const noThink = /kimi/i.test(model) ? { chat_template_kwargs: { thinking: false } } : /gemma-4|qwen3/i.test(model) ? { chat_template_kwargs: { enable_thinking: false } } : {};
+  const base = oss ? { messages, max_tokens: maxTokens * 6, temperature, reasoning: { effort: "low" } } : { messages, max_tokens: maxTokens, temperature, ...noThink };
   let res: unknown;
   try {
     res = await withTimeout(ai.run(model, oss ? base : { ...base, response_format: { type: "json_schema", json_schema: schema } }), timeoutMs, `model call (${model})`);
@@ -2579,6 +2586,9 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
         }));
         const allowed = new Set(drawn.filter((x) => x.text).map((x) => x.id));
         for (const hit of screenTextProblems(drawn.map(({ id, image_prompt }) => ({ id, image_prompt })), allowed)) problems.push(`${hit.id}: asks the picture to draw "${hit.term}" — no diagrams, charts, screens with words or quoted captions in a picture (numbers and words belong to the layer); describe a real place, object or person instead`);
+        // What the direction forbids is asked for here, chunk by chunk, where the fix costs four scenes (24 September
+        // 2026): until then it was checked only on the assembled film, as an error that refused the whole plan.
+        if (direction?.forbidden?.length) for (const hit of forbiddenInPrompts(direction.forbidden, drawn)) problems.push(`${hit.id}: asks the picture to draw "${hit.term}", which this film must never show — describe the picture without it (an empty street, not "a street with no people"): an image model draws whatever a prompt names`);
       } else if (plan.style === "cinema") {
         const thin = chunkScenes.map((s, i) => (!Array.isArray(s.beats) || s.beats.length < 3 ? i + 1 : 0)).filter(Boolean);
         if (thin.length) problems.push(`scene${thin.length > 1 ? "s" : ""} ${thin.join(", ")}: only 1–2 beats; every scene needs 4–8 beats of different kinds, each anchored with "at"`);
@@ -2628,6 +2638,16 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   }
 
   await toEnglish(scenes);
+  // THE LAST RESORT FOR A FORBIDDEN WORD (24 September 2026): a picture that still asks for something the direction
+  // forbids loses the clause that asks for it, instead of the whole plan being refused on the validation below.
+  if (direction?.forbidden?.length && plan.style === "picture") {
+    for (const sc of scenes) for (const sh of Array.isArray(sc.shots) ? sc.shots : []) {
+      if (!isObj(sh) || typeof sh.image_prompt !== "string") continue;
+      if (!forbiddenInPrompts(direction.forbidden, [{ id: "x", image_prompt: sh.image_prompt }]).length) continue;
+      const cleaned = dropForbiddenClauses(sh.image_prompt, direction.forbidden);
+      if (cleaned !== sh.image_prompt) { history.push([`scene "${String(sc.id)}": a clause asking for a forbidden thing was taken out of a picture: "${sh.image_prompt}" became "${cleaned}"`]); sh.image_prompt = cleaned; }
+    }
+  }
 
   // 3. Assemble and validate the whole project once more (ids are re-deduplicated across chunks).
   const sb = normalizeStoryboard({ ...head, scenes }, plan);

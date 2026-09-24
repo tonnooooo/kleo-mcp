@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import {
   directionProblems, sectionOfScene, missingFacts, forbiddenInPrompts, pictureContext, negativeFor, notEnglish, foreignPictureFields, lightsPictures, headNounIn, thinLook, formatTalk, storyRequest, dropLookFacts,
   castFor, conformity, ACCENT_LIGHT, negatedTerms, stillness, enliven, livingClause, ENLIVEN_CLAUSES, D,
-  motionHint, spokenFacts, lookFact, formatOnly, screenTextProblems, stripFormatTalk,
+  motionHint, spokenFacts, lookFact, formatOnly, screenTextProblems, stripFormatTalk, dropForbiddenClauses,
 } from "../src/direction.ts";
 import { validateStoryboard, qualityProblems, directionOf, narrationOf, pictureScenes, CINEMA_ACCENTS, SHOTS_MIN_CINEMA, shotRangeText } from "../src/keou-contract.ts";
 import { fullPrompt, modelInputs, NEGATIVE_PROMPT, STYLE_SUFFIX, DEFAULT_IMAGE_MODELS } from "../src/images.ts";
@@ -121,6 +121,20 @@ test("forbiddenInPrompts catches the wrong world, on whole words only", () => {
   assert.deepEqual(hits, [{ id: "02-b-s1", term: "wifi symbol" }], "'text' must not fire on 'context'");
   assert.deepEqual(forbiddenInPrompts([], prompts), []);
   assert.deepEqual(forbiddenInPrompts(["WIFI SYMBOL"], prompts).map((h) => h.id), ["02-b-s1"], "case does not matter");
+});
+
+test("forbiddenInPrompts: a negated mention excludes, it does not ask; dropForbiddenClauses is the last resort", () => {
+  // 24 September 2026: "no people visible" refused the planner's own plan on every exclusion case of the bench.
+  const prompts = [
+    { id: "a", image_prompt: "A flooded town square at dawn, no people visible, water up to the doors" },
+    { id: "b", image_prompt: "A flooded square without any people, only drifting chairs" },
+    { id: "c", image_prompt: "A crowd of people wading through the flooded square" },
+    { id: "d", image_prompt: "Rain on the tiles, and people sheltering under an arch" },
+  ];
+  assert.deepEqual(forbiddenInPrompts(["people"], prompts).map((h) => h.id), ["c", "d"]);
+  assert.equal(dropForbiddenClauses("Rain on the tiles, and people sheltering under an arch", ["people"]), "Rain on the tiles,".replace(/,$/, ""));
+  assert.equal(dropForbiddenClauses("A flooded town square at dawn, no people visible, water up to the doors", ["people"]), "A flooded town square at dawn, water up to the doors");
+  assert.equal(dropForbiddenClauses("People everywhere", ["people"]), "People everywhere", "never leaves under four words");
 });
 
 /* ------------------------------------------------------------------ the direction reaches the picture */
