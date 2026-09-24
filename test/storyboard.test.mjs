@@ -1317,7 +1317,12 @@ test("format talk in a voice is fed back for as long as attempts remain, and wha
   assert.equal(chunkAttempts.get(0), 3, "not accepted on the second attempt while it still reads the format out");
   assert.equal(r.storyboard.scenes[0].voice, "The young warrior receives a faint transmission from a dead planet beyond the ruined temple walls.");
   assert.ok(r.history.some((h) => h.some((m) => /scene 1: the words about the video \("30-second"\) were taken out of the voice by Kleo/.test(m))), JSON.stringify(r.history));
-  assert.ok(validateStoryboard(r.storyboard, { format: "9:16", language: "en" }).ok);
+  // The stripped voice still validates: every "at" is words of its own voice. The finished storyboard is NOT re-checked
+  // for forbidden terms — denyInPictures() adds the treatment's denials to the forbidden list after the last validation
+  // on purpose (they are for the negative prompt), so a re-validation would refuse the planner's own finished plan.
+  const v = validateStoryboard(r.storyboard, { format: "9:16", language: "en" });
+  assert.deepEqual(v.ok ? [] : v.errors.filter((e) => !/forbidden/i.test(e)), []);
+  for (const sc of r.storyboard.scenes) for (const sh of sc.shots ?? []) if (sh.at) assert.ok(sc.voice.toLowerCase().includes(String(sh.at).toLowerCase()), `"${sh.at}" is not in "${sc.voice}"`);
 });
 
 test("stripTalk: the kept scenes lose only pure format talk, and say so", () => {
