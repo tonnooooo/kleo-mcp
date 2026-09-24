@@ -23,8 +23,10 @@ export interface Env {
    * against the spec before any GPU is rented (src/stills.ts); "legacy" leaves the stills to the rented GPU (SDXL).
    */
   STILLS_ENGINE?: string;
-  /** Workers AI model that draws the stills (default @cf/black-forest-labs/flux-2-klein-9b: long prompts, up to 4 reference images). */
+  /** Workers AI model that draws the stills (default @cf/black-forest-labs/flux-2-klein-4b: long prompts, up to 4 reference images, ~$0.002 a still). */
   STILL_MODEL?: string;
+  /** The model for the LAST try of a still that failed a must on every earlier try (default flux-2-klein-9b; "none" = never). */
+  STILL_MODEL_STRONG?: string;
   /** Draws per still before the best one is kept (default 3). */
   STILL_ATTEMPTS?: string;
   /** Weighted pass rate a still needs, with no must check failed, to be accepted at once (default 0.85). */

@@ -141,6 +141,9 @@ async function post(model, init, meta, { timeoutMs = 180_000, retries = 2 } = {}
         ledger.push(row);
         last = new AiRestError(model, r.status, detail);
         if (RETRY_STATUS.has(r.status) && attempt < retries) { await sleep(4000 * (attempt + 1)); continue; }
+        // The wrangler OAuth token lives about an hour; a run outlives it. On 401 the token file is read again
+        // (a `npx wrangler whoami` loop beside the run keeps it fresh) and the call is tried again, up to 6 times.
+        if (r.status === 401 && !process.env.CLOUDFLARE_API_TOKEN && (meta.auth = (meta.auth ?? 0) + 1) <= 6) { cachedToken = null; await sleep(30_000); attempt--; continue; }
         throw last;
       }
       const result = j.result;

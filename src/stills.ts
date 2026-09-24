@@ -48,8 +48,22 @@ import { refImage, REF_HANDLE_RE } from "./refs.ts";
 export type StillLook = "realistic" | "animation";
 export type StillFormat = "9:16" | "16:9";
 
-export const DEFAULT_STILL_MODEL = "@cf/black-forest-labs/flux-2-klein-9b";
+/**
+ * THE PRICE OF A STILL (24 September 2026, the owner: "a radical change, but spending no more than now"). Workers AI
+ * bills FLUX.2 klein 9B at $0.015 for the first megapixel; klein 4B at $0.000287 per output 512x512 tile — a 896x1600
+ * still is 8 tiles, $0.0023, seven times less. Measured on the pastry chef the same day: 4B drew the blonde bun, the
+ * lilac apron and a clean "SORPRESA" at the first try and kept her face from a reference image; it was weaker than 9B
+ * on a busy composition (two children for "three friends", no finger on the lips) — exactly what the vision judge
+ * catches. So 4B draws every try, and 9B draws only the LAST try of a still whose earlier tries all failed a must.
+ */
+export const DEFAULT_STILL_MODEL = "@cf/black-forest-labs/flux-2-klein-4b";
+export const DEFAULT_STRONG_STILL_MODEL = "@cf/black-forest-labs/flux-2-klein-9b";
 export const stillModel = (env: Pick<Env, "STILL_MODEL">): string => (env.STILL_MODEL ?? "").trim() || DEFAULT_STILL_MODEL;
+/** The escalation model for the last try, or null when STILL_MODEL_STRONG is "none" (or the same model as STILL_MODEL). */
+export const strongStillModel = (env: Pick<Env, "STILL_MODEL" | "STILL_MODEL_STRONG">): string | null => {
+  const m = (env.STILL_MODEL_STRONG ?? "").trim() || DEFAULT_STRONG_STILL_MODEL;
+  return /^(none|off|-)$/i.test(m) || m === stillModel(env) ? null : m;
+};
 /**
  * The size a still is drawn at: about 1.4 megapixels, multiples of 16, inside the 256-1920 px FLUX.2 accepts on
  * Workers AI (developers.cloudflare.com changelog of FLUX.2, 25 November 2025). The measured probe ran 768x1344 in
@@ -118,7 +132,7 @@ export interface StillInput {
   refs: StillRef[];
 }
 export interface StillCastMember { id: string | null; name: string; look: string }
-export interface StillTry { seed: number; score: number; failed: string[] }
+export interface StillTry { seed: number; score: number; failed: string[]; /** Set when the try was drawn by the escalation model. */ model?: string }
 export interface StillResult { bytes: Uint8Array; score: number; mustFailed: number; failed: string[]; tries: StillTry[]; judged?: boolean; /** The ids of every check the still was judged by (the report reads it). */ checks?: string[] }
 
 interface AiRunner { run(model: string, inputs: Record<string, unknown>): Promise<unknown> }
@@ -334,7 +348,7 @@ export async function drawImage(env: Pick<Env, "AI">, model: string, prompt: str
  * still that started just before the deadline could run all its tries (three draws of up to 90 s, three judgements
  * of up to 60 s per call) and outlive the tick's lock, so the next tick paid for the same picture again.
  */
-interface JudgedOptions { attempts: number; pass: number; seedBase: number; model: string; size: { width: number; height: number }; until?: number }
+interface JudgedOptions { attempts: number; pass: number; seedBase: number; model: string; strongModel?: string | null; size: { width: number; height: number }; until?: number }
 
 /**
  * The loop both a still and a sheet go through: draw (seed seedBase + k), judge, stop at the first try with no failed
@@ -353,13 +367,16 @@ async function drawJudged(env: Pick<Env, "AI" | "VISION_MODEL">, refs0: StillRef
     const seed = (o.seedBase + k) % 2_147_483_647;
     let c = compile(feedback, refs);
     let bytes: Uint8Array;
+    // The last try of a still that failed a must on every try so far goes to the stronger (dearer) model.
+    const escalate = !!o.strongModel && k > 0 && k === o.attempts - 1 && !!best && best.mustFailed > 0;
+    const model = escalate ? o.strongModel! : o.model;
     try {
-      try { bytes = await drawImage(env, o.model, c.prompt, o.size, refs.map((r) => r.image), seed); }
+      try { bytes = await drawImage(env, model, c.prompt, o.size, refs.map((r) => r.image), seed); }
       catch (e) {
         if (!refs.length || isTransientError(e)) throw e;
         refs = [];
         c = compile(feedback, refs);
-        bytes = await drawImage(env, o.model, c.prompt, o.size, [], seed);
+        bytes = await drawImage(env, model, c.prompt, o.size, [], seed);
       }
     } catch (e) {
       if (best) break; // a picture already exists: keep it rather than lose the shot to a failed redraw
@@ -372,7 +389,7 @@ async function drawJudged(env: Pick<Env, "AI" | "VISION_MODEL">, refs0: StillRef
       if (!best) return { bytes, score: 0, mustFailed: 0, failed: ["unjudged"], tries, judged: false };
       break;
     }
-    tries.push({ seed, score: round3(j.score), failed: j.failed.map((f) => f.id) });
+    tries.push({ seed, score: round3(j.score), failed: j.failed.map((f) => f.id), ...(escalate ? { model } : {}) });
     if (!best || j.mustFailed < best.mustFailed || (j.mustFailed === best.mustFailed && j.score > best.score)) best = { bytes, score: j.score, mustFailed: j.mustFailed, failed: j.failed };
     if (j.mustFailed === 0 && j.score >= o.pass) break;
     feedback = feedbackOf(j.failed);
@@ -385,11 +402,11 @@ const attemptsOf = (env: Pick<Env, "STILL_ATTEMPTS">, given?: number): number =>
 const passOf = (env: Pick<Env, "STILL_PASS">, given?: number): number => Math.max(0, Math.min(1, given ?? num(env.STILL_PASS, 0.85)));
 
 /** One still, drawn and judged against its checks, redrawn with the failures named until it passes or the tries run out. */
-export async function drawStill(env: Pick<Env, "AI" | "VISION_MODEL" | "STILL_MODEL" | "STILL_ATTEMPTS" | "STILL_PASS">, input: StillInput, opts: { attempts?: number; pass?: number; seedBase?: number; model?: string; until?: number } = {}): Promise<StillResult> {
+export async function drawStill(env: Pick<Env, "AI" | "VISION_MODEL" | "STILL_MODEL" | "STILL_MODEL_STRONG" | "STILL_ATTEMPTS" | "STILL_PASS">, input: StillInput, opts: { attempts?: number; pass?: number; seedBase?: number; model?: string; until?: number } = {}): Promise<StillResult> {
   const size = STILL_SIZES[input.format === "16:9" ? "16:9" : "9:16"];
   return drawJudged(env, input.refs, (feedback, refs) => compileStill({ ...input, refs }, feedback), (failed) => feedbackFor(failed, input.spec, input.look), {
     attempts: attemptsOf(env, opts.attempts), pass: passOf(env, opts.pass), seedBase: opts.seedBase ?? fnv1a(input.shot.id) % 1_000_000,
-    model: opts.model ?? stillModel(env), size, until: opts.until,
+    model: opts.model ?? stillModel(env), strongModel: opts.model ? null : strongStillModel(env), size, until: opts.until,
   });
 }
 
@@ -399,7 +416,7 @@ export async function drawStill(env: Pick<Env, "AI" | "VISION_MODEL" | "STILL_MO
  * otherwise from the full look alone. Judged against the character's look (attribute by attribute when the spec has
  * look items), so a sheet that draws the wrong hair does not become the reference for twenty wrong shots.
  */
-export async function drawCastSheet(env: Pick<Env, "AI" | "VISION_MODEL" | "STILL_MODEL" | "STILL_ATTEMPTS" | "STILL_PASS">, spec: RequestSpec | null, cast: { id: string; name: string; look: string }, look: StillLook, userRef: VisionImage | null, opts: { attempts?: number; pass?: number; seedBase?: number; model?: string; until?: number } = {}): Promise<{ bytes: Uint8Array; score: number }> {
+export async function drawCastSheet(env: Pick<Env, "AI" | "VISION_MODEL" | "STILL_MODEL" | "STILL_MODEL_STRONG" | "STILL_ATTEMPTS" | "STILL_PASS">, spec: RequestSpec | null, cast: { id: string; name: string; look: string }, look: StillLook, userRef: VisionImage | null, opts: { attempts?: number; pass?: number; seedBase?: number; model?: string; until?: number } = {}): Promise<{ bytes: Uint8Array; score: number }> {
   const inSpec = !!(spec && castById(spec, cast.id));
   const fl = clean((inSpec && spec ? fullLook(spec, cast.id) : "") || cast.look);
   const member: StillCastMember = { id: inSpec ? cast.id : null, name: cast.name, look: fl };
@@ -417,7 +434,7 @@ export async function drawCastSheet(env: Pick<Env, "AI" | "VISION_MODEL" | "STIL
   });
   const r = await drawJudged(env, refs, compile, (failed) => feedbackFor(failed, spec, look), {
     attempts: Math.min(attemptsOf(env, opts.attempts ?? SHEET_ATTEMPTS), 4), pass: passOf(env, opts.pass), seedBase: opts.seedBase ?? fnv1a(`sheet/${cast.id}`) % 1_000_000,
-    model: opts.model ?? stillModel(env), size: SHEET_SIZE, until: opts.until,
+    model: opts.model ?? stillModel(env), strongModel: opts.model ? null : strongStillModel(env), size: SHEET_SIZE, until: opts.until,
   });
   return { bytes: r.bytes, score: r.score };
 }

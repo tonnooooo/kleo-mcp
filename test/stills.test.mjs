@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   compileStill, feedbackFor, drawStill, drawCastSheet, drawJobStills, stillsEngineOn, stillsHold, stillCast, stillShotsOf,
-  STILL_SIZES, STILL_PROMPT_MAX, STYLE_SENTENCE, NO_TEXT_SENTENCE, FRAMING, DEFAULT_FRAMING, DEFAULT_STILL_MODEL, EST_STILL_MS, castSheetKey,
+  STILL_SIZES, STILL_PROMPT_MAX, STYLE_SENTENCE, NO_TEXT_SENTENCE, FRAMING, DEFAULT_FRAMING, DEFAULT_STILL_MODEL, DEFAULT_STRONG_STILL_MODEL, EST_STILL_MS, castSheetKey,
   stillsErrorVerdict, pauseStills,
 } from "../src/stills.ts";
 
@@ -159,6 +159,13 @@ test("drawStill: when every try fails, the best one is kept — fewest failed mu
   assert.equal(drawnNo(r.bytes), 2, "the second try failed one must, the first three and the third four");
   assert.equal(r.mustFailed, 1); assert.deepEqual(r.failed, ["R3"]);
   assert.equal(r.tries.length, 3);
+  // Cost-neutral (24 September 2026): the cheap model draws, the strong one only the last try after failed musts.
+  assert.deepEqual(calls.draws.map((d) => d.model), [DEFAULT_STILL_MODEL, DEFAULT_STILL_MODEL, DEFAULT_STRONG_STILL_MODEL]);
+  assert.equal(r.tries[2].model, DEFAULT_STRONG_STILL_MODEL); assert.equal(r.tries[0].model, undefined);
+  // "none" switches the escalation off.
+  const off = fakeAi({ answer: (q, n) => (fails[n].test(q) ? "no" : /any written text|any of this/i.test(q) ? "no" : "yes") });
+  await drawStill({ AI: off.ai, STILL_MODEL_STRONG: "none" }, input(), { attempts: 3 });
+  assert.ok(off.calls.draws.every((d) => d.model === DEFAULT_STILL_MODEL));
 });
 
 test("drawStill: a refused reference image is dropped and the still drawn without it; a quota answer with nothing drawn is thrown; a silent judge keeps the first picture", async () => {

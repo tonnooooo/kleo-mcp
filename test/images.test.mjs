@@ -364,7 +364,7 @@ test("stills engine: a realistic film's pictures are drawn on the server whateve
   assert.deepEqual(Object.keys(r.images).sort(), idsOf(3, 1), "IMAGE_SERVER_MAX=0 bounds the legacy road, not the engine");
   assert.deepEqual(r.missing, []); assert.equal(r.generated, 3); assert.equal(r.reused, 0);
   assert.equal(calls.draws.length, 3, "one FLUX.2 draw per picture: the judge passed each at the first try");
-  assert.equal(calls.draws[0].model, "@cf/black-forest-labs/flux-2-klein-9b");
+  assert.equal(calls.draws[0].model, "@cf/black-forest-labs/flux-2-klein-4b", "the cheap model draws first (24 September: cost-neutral)");
   assert.deepEqual([calls.draws[0].width, calls.draws[0].height], [896, 1600], "portrait still for a 9:16 job");
   assert.equal(files.get("img/01-sc-s1.jpg").content_type, "image/jpeg");
   assert.ok(files.has("fidelity.json"), "every judgement lands in the job's fidelity report");
