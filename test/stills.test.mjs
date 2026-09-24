@@ -98,7 +98,7 @@ test("compileStill: failures go FIRST, a text item lifts the no-text rule and is
   assert.ok(p.startsWith("It is essential that: the picture clearly shows Mara wears a lilac apron. Close-up"), p);
   const sign = compileStill(input({ shot: shot({ covers: ["R4", "R5"], shot_kind: "establish", cast: [] , image_prompt: "The bakery front with its shop sign" }) }));
   assert.ok(sign.prompt.startsWith(FRAMING.establish));
-  assert.ok(sign.prompt.includes('Written clearly and legibly in the picture, spelled exactly as given: a shop sign reading "Forno Mara".'));
+  assert.ok(sign.prompt.includes('Written clearly and legibly ON an object in the scene (a note, a sign, a label, a cake, a screen), spelled exactly as given, never floating in the air: a shop sign reading "Forno Mara".'), sign.prompt);
   assert.ok(!sign.prompt.includes(NO_TEXT_SENTENCE), "a shot that must carry words is not told to carry none");
   assert.ok(!sign.checks.some((x) => x.id === "no-text")); assert.ok(sign.checks.some((x) => x.id === "R5" && /readable/.test(x.question)));
   assert.ok(!sign.prompt.includes("(reference image 1)"), "a sheet whose character is not in the shot is not claimed as that character");
