@@ -970,10 +970,17 @@ const coverable = (spec: RequestSpec): SpecItem[] => spec.items.filter((i) => i.
  * an empty one (a script with fewer sentences than scenes is cut between words). Deterministic, so the chunk that
  * writes scene 3 is handed the exact words scene 3 must say instead of being asked to find them.
  */
+/** The sentences of a script, each with its closing punctuation (the unit splitScript cuts on). */
+export function sentencesOf(script: string): string[] {
+  // "Mr. Rossi" is one name, not two sentences: the dot of a title is hidden while the script is cut.
+  const DOT = "\u2024";
+  const text = script.trim().replace(/\s+/g, " ").replace(/\b(Mr|Mrs|Ms|Dr|St|Sig|Sr|Jr|Prof|Mt|No)\./g, `$1${DOT}`);
+  return (text.match(/[^.!?…]+(?:[.!?…]+["'”’»)]*|$)/g) ?? []).map((x) => x.trim().replaceAll(DOT, ".")).filter(Boolean);
+}
 export function splitScript(script: string, n: number): string[] {
   const text = script.trim().replace(/\s+/g, " ");
   if (n <= 1 || !text) return [text];
-  let units = (text.match(/[^.!?…]+(?:[.!?…]+["'”’»)]*|$)/g) ?? []).map((s) => s.trim()).filter(Boolean);
+  let units = sentencesOf(text);
   if (units.length < n) units = text.split(" ");
   const sizes = units.map((u) => u.split(" ").length);
   const total = sizes.reduce((a, b) => a + b, 0);
@@ -2341,7 +2348,13 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   // bottom of the 8-14 word window, and a model that is one word short of the bottom writes a caption
   // instead of a sentence — measured, on the real model: ten scenes for ninety-two words produced lines of
   // three and four words. Fewer scenes hand each line the top of the window.
-  const sceneGuess = plan.style === "sketch"
+  // THE USER'S SCRIPT DECIDES HOW MANY SCENES (24 September 2026): a narration dictated in four sentences is four
+  // scenes, one sentence each — the fidelity bench's verbatim case was cut into seven scenes of half-sentences and the
+  // planner padded them with lines of its own, the one thing the user had ruled out.
+  const scriptSentences = spec?.narration === "verbatim" && spec.script ? sentencesOf(spec.script).length : 0;
+  const sceneGuess = scriptSentences && plan.style !== "sketch"
+    ? Math.max(2, Math.min(plan.scenes[1], scriptSentences))
+    : plan.style === "sketch"
     ? plan.scenes[0]
     : Math.max(plan.scenes[0], Math.min(plan.scenes[1], Math.round((plan.scenes[0] + plan.scenes[1]) / 2)));
   // FAITHFUL: the sections are the treatment's acts (actSkeleton); otherwise the template's family, as before.
@@ -2634,6 +2647,9 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
       const stripped = stripTalk(accepted!);
       if (stripped.length) history.push(stripped.map((m) => `scenes ${from + 1}–${to}: ${m}`));
     }
+    // The user's own words ARE the voice: set by code, not copied by the model, so nothing is added, cut or reworded
+    // (the chunk above was already asked to say them; this makes it exact). normalizeStoryboard re-anchors the shots.
+    if (verbatim) accepted!.forEach((sc, i) => { const words = outline[from + i]?.script; if (words) sc.voice = words; });
     scenes.push(...accepted!);
   }
 

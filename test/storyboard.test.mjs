@@ -13,7 +13,7 @@ import { stillness } from "../src/direction.ts";
 import { TEMPLATE_IDS } from "../src/templates.ts";
 import { directionProblems, CINEMA_ACCENTS, notEnglish } from "../src/keou-contract.ts";
 import { validateStoryboard, pictureScenes, quotesVoice, BEAT_ICONS, STORY_ACTS } from "../src/keou-contract.ts";
-import { assignShotKinds, writeSpec, actSkeleton, splitScript, applySpecToDirection, isOutOfCredit, REPAIR_MIN_MS, REJUDGE_MIN_MS, spokenIndexes, directionBlock, stripTalk, keepUnsaid, withHeldRefs } from "../src/storyboard.ts";
+import { assignShotKinds, writeSpec, actSkeleton, splitScript, sentencesOf, applySpecToDirection, isOutOfCredit, REPAIR_MIN_MS, REJUDGE_MIN_MS, spokenIndexes, directionBlock, stripTalk, keepUnsaid, withHeldRefs } from "../src/storyboard.ts";
 import { SHOT_KINDS, presetFor, moveClassOf, isLoud, needsStaticHold, LOUD_MAX_PER_WINDOW } from "../src/shot-grammar.ts";
 import { TREATMENT_FIXTURE } from "./fixtures/treatment.mjs";
 import { JUDGE_SYSTEM } from "../src/fidelity.ts";
@@ -1230,6 +1230,12 @@ test("applySpecToDirection: the user's cast, lines and exclusions win, and never
   assert.equal(d.must_keep[0], "a cake for everyone"); assert.ok(d.must_keep.includes("the village square"), "the direction's own facts stay after the user's");
   assert.equal(d.forbidden[0], "dogs"); assert.equal(d.objects[0], "a wicker basket");
   assert.deepEqual(directionProblems(d, { accents: CINEMA_ACCENTS, scenes: 4 }), []);
+});
+
+test("sentencesOf: a dictated narration's sentences, punctuation kept — one scene each (24 September 2026)", () => {
+  assert.deepEqual(sentencesOf("Every morning at five, Maria lights the oven.  The street is still dark! Mr. Rossi is always first… He smiles."),
+    ["Every morning at five, Maria lights the oven.", "The street is still dark!", "Mr. Rossi is always first…", "He smiles."], "a title's dot is not a sentence end");
+  assert.deepEqual(sentencesOf("No punctuation at all"), ["No punctuation at all"]);
 });
 
 test("splitScript: the user's words in order, nothing lost, never an empty scene", () => {
