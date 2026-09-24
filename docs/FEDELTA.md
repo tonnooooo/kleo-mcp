@@ -72,6 +72,34 @@ Now: planner on Workers AI ≈ $0.03-0.06 + klein-4b stills ≈ $0.002 each (≈
 (`../wt-baseline`, dab7084) and by the new code on the same model, judged by a model different from the ones inside
 Kleo; then the stills of a subset, drawn the old way and the new way, judged question by question.
 
-## Benchmark results
+## Benchmark results (24 September 2026)
 
-(filled in when the measurement ends)
+**Plans** — 18 cases, 146 must requirements, independent judge (gemma-4, 3 votes), same planning model for both
+(gpt-oss-120b on Workers AI):
+
+| | old code (dab7084) | new code |
+|---|---|---|
+| plans that succeeded | 17/18 (the exclusion case failed twice) | 18/18 |
+| fidelity (kept + ½ paraphrased) | 90% | **99%** |
+| lost | 8% | 1% |
+| events out of the user's order | 2 of 34 | 0 of 35 |
+| major inventions | 2 | 0 |
+| quoted lines / texts present | 6/8 | 8/8 |
+| dictated narration (verbatim case) | 63% | 83%, then exact once the voice is set by code |
+| exclusions ("no people", "no blood") | 33% | 100% |
+
+Planning models on the 6 hardest cases (new code): gpt-oss-120b 97% at 481 s a film ($0.03); Kimi K2.6 94% at 172 s
+($0.07); **Kimi for the scenes + gpt-oss for the spec and the judge: 98%, no contradiction, 313 s, $0.06** — the
+production setting (`AI_MODEL`, `SPEC_MODEL`, `JUDGE_MODEL`). The old code on the same 6 cases: 80%.
+
+**Stills** — 5 cases, 43-53 stills, every still asked one question per visual requirement by a vision model that is not
+Kleo's in-loop judge:
+
+| | old (SDXL, 77-token prompt) | new, klein-4b + judge | new, + klein-9b escalation |
+|---|---|---|---|
+| visual must requirements shown somewhere in the film | 41% | 61% | 65% |
+| look attributes that hold when the character is in the picture | 38% (n 16) | 79% (n 42) | 75% (n 53) |
+| same character across pictures | 0% (4 pairs) | 94% (16 pairs) | 90% (20 pairs) |
+| cost per still, judge included | (GPU time) | ~$0.0086 | ~$0.016 |
+
+Escalation to klein-9b buys four points for twice the price: it is off in production (`STILL_MODEL_STRONG` = `none`).

@@ -175,7 +175,7 @@ async function drawLegacy(c, plan, shots, dir) {
 async function drawNew(mod, c, plan, shots, dir) {
   const sb = plan.storyboard, look = (sb.kleo_style ?? c.style) === "animation" ? "animation" : "realistic", format = (sb.format ?? c.format) === "16:9" ? "16:9" : "9:16";
   const spec = plan.spec ?? null, direction = sb.direction ?? plan.direction ?? null;
-  const env = makeEnv({ STILL_MODEL: args["still-model"], VISION_MODEL: args.vision, STILL_ATTEMPTS: args.attempts, STILL_PASS: args.pass });
+  const env = makeEnv({ STILL_MODEL: args["still-model"], STILL_MODEL_STRONG: args["still-model-strong"], VISION_MODEL: args.vision, STILL_ATTEMPTS: args.attempts, STILL_PASS: args.pass });
   const opts = { ...(args.attempts ? { attempts: Number(args.attempts) } : {}), ...(args.pass ? { pass: Number(args.pass) } : {}) };
   // THE SHEETS: the spec's cast when the plan has a spec, otherwise the direction's (an old plan drawn by the new engine).
   const members = spec?.cast?.length ? spec.cast.map((m) => ({ id: m.id, name: m.name, look: m.look })) : (direction?.cast ?? []).map((m) => ({ id: m.name, name: m.name, look: m.look }));
