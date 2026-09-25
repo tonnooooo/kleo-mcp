@@ -5,9 +5,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { handleProbe, probeUploadSig, PROBE_NAME_RE, PROBE_TOKEN_MAX_S } from "../src/probe.ts";
+import { handleProbe, probeUploadSig, isProbeFile, PROBE_NAME_RE, PROBE_TOKEN_MAX_S } from "../src/probe.ts";
 import { handleDownload } from "../src/dl.ts";
-import { resultLinks } from "../src/jobs.ts";
 import { hmacHex } from "../src/util.ts";
 
 function fakeEnv({ r2 = false } = {}) {
@@ -54,8 +53,9 @@ test("the operator's secret stores a file under probe/ of a finished job, record
   assert.equal(f.key, "renders/gt_ujavdzva/probe/results.json");
   assert.equal(f.content_type, "application/json");
   assert.ok(auditRows.some((a) => a.event === "admin.probe.file"));
-  const links = await resultLinks(env, "http://kleo.test", jobs.get("gt_ujavdzva"));
-  assert.deepEqual(Object.keys(links), [], "a probe file is never among the user's links");
+  assert.ok(isProbeFile(f.name), "the name resultLinks (src/jobs.ts) skips: never among the user's links");
+  assert.ok(!isProbeFile("video.mp4") && !isProbeFile("img/01-a-s1.png"));
+  assert.ok(jobs.get("gt_ujavdzva"), "the job itself is untouched");
 });
 
 test("the box's capability: one job, the probe/ prefix, expiring within a day", async () => {

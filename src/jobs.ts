@@ -4,6 +4,7 @@ import { accountUrl } from "./accounts";
 import { findTemplate, affordableGuess, creditsFor, creditsForProduct, etaFor, animaticEtaFor, normalizeVoice, voiceSpellings, isVideoStyle, videoModelIsGated, isPublicTemplate, FILM_TEMPLATE_ID, FILM_LONG_TEMPLATE_ID, filmTemplateFor, ACTIVE_TEMPLATE, PRODUCTS, ANIMATIC_CREDITS, ANIMATIC_MAX_S, filmedStoryboard, finishForProduct, productOf, type Format, type Product } from "./templates";
 import { footageBackendFor, footageConfig, kiePreflight, clipFloorFor } from "./footage";
 import { rid, nowIso, int, hmacHex } from "./util";
+import { isProbeFile } from "./probe.ts";
 import { isFlagActive } from "./schema";
 import { backendFor } from "./backends";
 import { validateStoryboard, kleoStyleOf, pictureScenes, narrationOf, MAX_PICTURES, wordBudget, speedFor, trimShots, KLEO_STYLES, FILM_LOOKS, type KleoStyle, type FilmLook } from "./keou-contract";
@@ -478,7 +479,7 @@ export async function resultLinks(env: Env, base: string, job: Job): Promise<Rec
     if (f.name === "log.txt" || f.name === "gen.tgz") continue; // the worker log and the GPU phase's bundle: not for users
     if (f.name === "fidelity.json") continue; // read and summarised in words by kleo_get_result, not handed over as a file
     if (isSceneImage(f.name)) continue;
-    if (f.name.startsWith("probe/")) continue; // an A/B probe's evidence (src/probe.ts): the operator's, not the user's
+    if (isProbeFile(f.name)) continue; // an A/B probe's evidence (src/probe.ts): the operator's, not the user's
     const key = f.name.replace(/\.[a-z0-9]+$/i, "") + "_url";
     out[key] = await signedDownloadUrl(env, base, job, f.name);
   }

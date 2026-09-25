@@ -27,6 +27,8 @@ import { putFile } from "./storage.ts";
  */
 export const PROBE_NAME_RE = /^probe\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
 export const PROBE_TOKEN_MAX_S = 24 * 3600;
+/** A probe's evidence among a job's files: the operator's, never one of the user's result links (jobs.ts resultLinks). */
+export const isProbeFile = (name: string): boolean => name.startsWith("probe/");
 const TYPES: Record<string, string> = { mp4: "video/mp4", jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", json: "application/json", txt: "text/plain", log: "text/plain" };
 
 /** The signature of an upload capability for one job's probe/ prefix, valid until `exp` (unix seconds). */
