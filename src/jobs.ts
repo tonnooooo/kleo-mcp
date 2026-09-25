@@ -1,5 +1,5 @@
 import type { Env } from "./env";
-import { type Job, type JobParams, type JobState, type User, OPEN_STATES, countOpenForUser, countJobsTodayForUser, addJobCost, debitCredits, refundCredits, insertJob, transitionJob, audit, getUserJob, listFiles, hasPaid, recentJobsForUser } from "./db";
+import { type Job, type JobParams, type JobState, type User, OPEN_STATES, countOpenForUser, countJobsTodayForUser, addJobCost, debitCredits, refundCredits, refundJobCredits, insertJob, transitionJob, audit, getUserJob, listFiles, hasPaid, recentJobsForUser } from "./db";
 import { accountUrl } from "./accounts";
 import { findTemplate, affordableGuess, creditsFor, creditsForProduct, aiUpscaleCredits, aiUpscaleOn, etaFor, animaticEtaFor, normalizeVoice, voiceSpellings, isVideoStyle, videoModelIsGated, isPublicTemplate, FILM_TEMPLATE_ID, FILM_LONG_TEMPLATE_ID, filmTemplateFor, ACTIVE_TEMPLATE, PRODUCTS, ANIMATIC_CREDITS, ANIMATIC_MAX_S, filmedStoryboard, finishForProduct, productOf, type Format, type Product } from "./templates";
 import { footageBackendFor, footageConfig, kiePreflight, clipFloorFor } from "./footage";
@@ -479,7 +479,7 @@ export async function cancelJob(env: Env, user: User, jobId: string): Promise<{ 
       if (typeof est === "number" && est > 0) await addJobCost(env, job.id, est);
     } catch (e) { await audit(env, user.id, job.id, "backend.destroy.error", String(e)); }
   }
-  const refunded = await refundCredits(env, user.id, refund, job.id, `cancelled at ${job.percent}% (${job.state})`);
+  const refunded = await refundJobCredits(env, user.id, job, refund, `cancelled at ${job.percent}% (${job.state})`);
   await audit(env, user.id, job.id, "job.cancelled", { refunded, percent: job.percent, state_before: job.state, ...(upscaleCredits ? { film_refund: filmRefund, ai_upscale_refund: upscaleCredits } : {}) });
   return { job: { ...job, state: "cancelled" }, refunded };
 }

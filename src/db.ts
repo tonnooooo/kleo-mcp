@@ -233,6 +233,53 @@ export async function refundCredits(env: Env, userId: string, amount: number, jo
   await audit(env, userId, jobId, "credits.refund", { amount, reason, balance: await balanceOf(env, userId) });
   return amount;
 }
+/**
+ * ONE REFUND PER JOB (26 September 2026, the owner's cost report). What a job has taken from its account and given
+ * back, read from its own credits.* audit rows: the job's debits (never less than job.credits, the debit that created
+ * it: a row written before these rows were read back still counts) and its refunds. A job whose credits came back
+ * once cannot give them back again: gt_645zn2k8 failed, was refunded, was restarted and was delivered, and a second
+ * failure after an admin retry would have refunded the same credits twice.
+ */
+export async function jobCreditsMoved(env: Env, job: Pick<Job, "id" | "credits">): Promise<{ debited: number; refunded: number; held: number }> {
+  let debited = 0, refunded = 0;
+  try {
+    const r = await env.DB.prepare(
+      "SELECT event, COALESCE(SUM(json_extract(detail, '$.amount')), 0) AS n FROM audit WHERE job_id = ? AND event IN ('credits.debit', 'credits.refund') GROUP BY event",
+    ).bind(job.id).all<{ event: string; n: number }>();
+    for (const row of r.results ?? []) {
+      if (row.event === "credits.debit") debited = Number(row.n) || 0;
+      else refunded = Number(row.n) || 0;
+    }
+  } catch { /* an unreadable audit: the job's own debit is the floor below */ }
+  debited = Math.max(debited, Math.max(0, job.credits));
+  return { debited, refunded, held: Math.max(0, debited - refunded) };
+}
+/**
+ * Gives a job's credits back, never more than the job still holds (jobCreditsMoved): a second refund of the same
+ * credits — a failure after a failure, a cancel racing a failure, the AI upscale's refund after the failure already
+ * gave it back — refunds only what is left, and writes a "credits.refund.capped" row saying what was refused.
+ */
+export async function refundJobCredits(env: Env, userId: string, job: Pick<Job, "id" | "credits">, amount: number, reason: string): Promise<number> {
+  if (amount <= 0) return 0;
+  const moved = await jobCreditsMoved(env, job);
+  const allowed = Math.min(amount, moved.held);
+  if (allowed < amount) await audit(env, userId, job.id, "credits.refund.capped", { asked: amount, allowed, debited: moved.debited, refunded: moved.refunded, reason });
+  return refundCredits(env, userId, allowed, job.id, reason);
+}
+/**
+ * Takes a job's credits again when it is delivered after they were given back (26 September 2026): the failure
+ * refunded them, something brought the job back and it reached done. The film was delivered, so it is paid; the debit
+ * is not conditional on the balance (like takeBackCredits: the film already exists, and a negative balance only stops
+ * the next video from starting). Returns what was taken; 0 when the job already holds its credits.
+ */
+export async function rechargeDeliveredJob(env: Env, userId: string, job: Pick<Job, "id" | "credits">, reason: string): Promise<number> {
+  const moved = await jobCreditsMoved(env, job);
+  const short = Math.max(0, job.credits - moved.held);
+  if (short <= 0) return 0;
+  await env.DB.prepare("UPDATE users SET credits = credits - ? WHERE id = ?").bind(short, userId).run();
+  await audit(env, userId, job.id, "credits.debit", { amount: short, reason, forced: true, balance: await balanceOf(env, userId) });
+  return short;
+}
 async function balanceOf(env: Env, userId: string): Promise<number | null> {
   const r = await env.DB.prepare("SELECT credits FROM users WHERE id = ?").bind(userId).first<{ credits: number }>();
   return r?.credits ?? null;

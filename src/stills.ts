@@ -196,7 +196,9 @@ export function stillsGiveUpMin(st: { road?: string; total?: number } | null | u
  * per film (default 5 $: a 30 s Short with redraws is about 2 $) and STILLS_DAILY_USD per UTC day across every film
  * (default 10 $). Past a cap the job's pictures move to STILL_MODEL_FALLBACK, like after a refusal for money, so a
  * runaway loop or a queue of free animatics can never empty the kie.ai balance the paid films' clips are bought from.
- * The clips keep their own ceiling (DAILY_FOOTAGE_BUDGET_USD, src/footage.ts).
+ * The clips keep their own ceiling (DAILY_FOOTAGE_BUDGET_USD, src/footage.ts), which counts the pictures' dollars too.
+ * Since 26 September 2026 both caps bound EVERY external road — a chat draw on ePhone AI or OpenRouter is booked on the
+ * same rows (drawBooked) — and only Workers AI, paid in neurons, stays outside them.
  */
 export const STILLS_JOB_MAX_USD = 5;
 export const STILLS_DAILY_USD = 10;
@@ -559,8 +561,8 @@ export const spentOn = (e: unknown): number => {
  */
 export async function drawImage(env: DrawEnv, model: string, prompt: string, size: { width: number; height: number }, refs: DrawRef[], seed: number, opts: { until?: number; ledger?: { key: string; book: KieLedger } } = {}): Promise<DrawnImage> {
   const road = stillProviderOf(model);
-  if (road.provider === "openrouter") return drawOpenRouter(env, model, road.id, prompt, size, refs, seed);
-  if (road.provider === "ephone") return drawOpenRouter(env, model, road.id, prompt, size, refs, seed, EPHONE_ROAD);
+  if (road.provider === "openrouter") return drawBooked(model, "openrouter", size, opts.ledger, () => drawOpenRouter(env, model, road.id, prompt, size, refs, seed));
+  if (road.provider === "ephone") return drawBooked(model, "ephone", size, opts.ledger, () => drawOpenRouter(env, model, road.id, prompt, size, refs, seed, EPHONE_ROAD));
   if (road.provider === "kie") return drawKie(env, model, road.id, prompt, size, refs, opts.until, opts.ledger);
   const ai = env.AI as unknown as AiRunner | undefined;
   if (!ai) throw new Error("no Workers AI binding (env.AI)");
@@ -579,6 +581,34 @@ export async function drawImage(env: DrawEnv, model: string, prompt: string, siz
   const bytes = await readImageResult(res);
   if (!sniffImage(bytes)) throw new Error(`model returned ${bytes.length} bytes that are neither PNG nor JPEG`);
   return { bytes, usd: stillPriceUsd(model, size) ?? 0, reported: false };
+}
+
+/**
+ * THE MONEY CAPS ON THE CHAT ROADS (26 September 2026, the owner's cost report). Until today STILLS_JOB_MAX_USD and
+ * STILLS_DAILY_USD bounded the kie.ai road only: a film drawing on ePhone AI (Nano Banana Pro, production since 25
+ * September) or on OpenRouter spent without a ceiling. Now every paid chat draw is booked on the same ledger (KieLedger)
+ * the kie.ai tasks use: the cap is checked and reserved BEFORE the call (`refuse`: past it the draw throws the same
+ * "stills budget" refusal, fallbackReason reads "budget" and the job moves to STILL_MODEL_FALLBACK), and what the call
+ * cost is written down after it as a "stills.task" row with no task id (nothing to collect: a chat answer is the
+ * picture). A refusal that says what it cost is booked at that; a call that may have been billed without answering (a
+ * timeout, a dropped connection) at the table's price, like kie.ai's lost createTask. No ledger: the draw as before.
+ */
+async function drawBooked(model: string, provider: StillProvider, size: { width: number; height: number }, ledger: { key: string; book: KieLedger } | undefined, draw: () => Promise<DrawnImage>): Promise<DrawnImage> {
+  if (!ledger) return draw();
+  const price = stillPriceUsd(model, size) ?? 0;
+  const no = ledger.book.refuse(price);
+  if (no) throw new StillDrawError(`still draw (${model}): stills budget: ${no}`, 402, provider);
+  const book = async (usd: number) => {
+    if (usd > 0) { try { await ledger.book.created(ledger.key, "", model, round4(usd)); } catch { /* the reservation of this call still holds it */ } }
+  };
+  let r: DrawnImage;
+  try { r = await draw(); }
+  catch (e) {
+    await book(spentOn(e) || (!(e instanceof StillDrawError) && isTransientError(e) ? price : 0));
+    throw e;
+  }
+  await book(r.usd);
+  return r;
 }
 
 /** A fetch that did not answer, in the words isTransientError reads as "not now": a timeout, or a network error. */
@@ -992,9 +1022,10 @@ async function drawJudged(env: StillEnv, refs0: StillRef[], compile: (feedback: 
     // the must it failed last is one that model draws better.
     const escalate = !!route.strong && k > 0 && k === budget - 1 && !!best && best.mustFailed > 0 && lastMustFailed.length > 0 && (o.escalateOn ? o.escalateOn(lastMustFailed) : true);
     let model = escalate ? route.strong! : route.model;
-    // The ledger key of a kie.ai task: this picture, this model, this seed, this exact prompt (a later tick that draws
-    // the same try again collects the task an earlier tick paid for).
-    const ledgerFor = (m: string, prompt: string) => (o.ledger && stillProviderOf(m).provider === "kie" ? { key: `${o.label ?? "still"}#${m}#${seed}#${fnv1a(prompt).toString(36)}`, book: o.ledger } : undefined);
+    // The ledger key of a paid draw: this picture, this model, this seed, this exact prompt (a later tick that draws
+    // the same try again collects the kie.ai task an earlier tick paid for). Every external road is booked against the
+    // money caps since 26 September 2026 (the chat roads, ePhone AI and OpenRouter, too): only Workers AI is not.
+    const ledgerFor = (m: string, prompt: string) => (o.ledger && isExternalStillModel(m) ? { key: `${o.label ?? "still"}#${m}#${seed}#${fnv1a(prompt).toString(36)}`, book: o.ledger } : undefined);
     let drawn = usableRefs(model, refs);
     let c = compile(feedback, drawn);
     // One draw on model `m`: with the references it can take, then once without them when it refuses them (anything
@@ -1320,10 +1351,10 @@ async function stillsSpentUsd(env: Env, jobId: string): Promise<number> {
 }
 
 /**
- * A job's kie.ai ledger (KieLedger): its "stills.task" rows (the tasks to collect, what the film's pictures have
- * spent on kie.ai) and the day's sum across every job. A cap is checked AND reserved in one step (`refuse`), so the
- * six draws of a tick cannot all pass the same last dollar; a reservation whose createTask then fails stays counted
- * for the rest of the call, which only errs on the careful side.
+ * A job's ledger of paid pictures (KieLedger): its "stills.task" rows (the kie.ai tasks to collect, and what the
+ * film's pictures have spent on every external road since 26 September 2026) and the day's sum across every job. A
+ * cap is checked AND reserved in one step (`refuse`), so the six draws of a tick cannot all pass the same last dollar;
+ * a reservation whose createTask then fails stays counted for the rest of the call, which only errs on the careful side.
  */
 async function jobLedger(env: Env, job: Pick<Job, "id" | "user_id">, minJobCap = 0): Promise<KieLedger> {
   const tasks = new Map<string, { task: string; at: number }>();
@@ -1343,8 +1374,8 @@ async function jobLedger(env: Env, job: Pick<Job, "id" | "user_id">, minJobCap =
   return {
     find: (key) => { const t = tasks.get(key); return t?.task && Date.now() - t.at < KIE_TASK_RESUME_MIN * 60_000 ? t.task : null; },
     refuse: (usd) => {
-      if (jobUsd + usd > jobCap + 1e-9) return `this film's pictures have spent $${jobUsd.toFixed(2)} on kie.ai (STILLS_JOB_MAX_USD $${jobCap.toFixed(2)})`;
-      if (dayUsd + usd > dayCap + 1e-9) return `today's pictures have spent $${dayUsd.toFixed(2)} on kie.ai (STILLS_DAILY_USD $${dayCap.toFixed(2)})`;
+      if (jobUsd + usd > jobCap + 1e-9) return `this film's pictures have spent $${jobUsd.toFixed(2)} (STILLS_JOB_MAX_USD $${jobCap.toFixed(2)})`;
+      if (dayUsd + usd > dayCap + 1e-9) return `today's pictures have spent $${dayUsd.toFixed(2)} (STILLS_DAILY_USD $${dayCap.toFixed(2)})`;
       jobUsd += usd; dayUsd += usd;
       return null;
     },
@@ -1453,10 +1484,11 @@ export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: nu
   const est = external ? EST_STILL_MS_EXTERNAL : EST_STILL_MS;
   const concurrency = external ? STILLS_CONCURRENCY_EXTERNAL : STILLS_CONCURRENCY;
   const late = () => Date.now() > deadline - est || !!opts.stop?.();
-  // The kie.ai ledger: the tasks earlier ticks paid for (collected, not bought again) and the money caps.
+  // The ledger: the kie.ai tasks earlier ticks paid for (collected, not bought again) and the money caps, which bound
+  // every external road since 26 September 2026 (ePhone AI and OpenRouter too: drawBooked), not kie.ai alone.
   // The film's own cap is at least every picture and sheet drawn twice (a film over 90 s has 48 pictures: about 9 $).
-  const kieModel = [route.model, route.strong].find((m): m is string => !!m && stillProviderOf(m).provider === "kie");
-  const ledger = kieModel ? await jobLedger(env, job, round3((total + castMembersOf(spec, direction).length) * 2 * (stillPriceUsd(kieModel, STILL_SIZES[format]) ?? 0))) : undefined;
+  const paidModel = [route.model, route.strong].find((m): m is string => !!m && isExternalStillModel(m));
+  const ledger = paidModel ? await jobLedger(env, job, round3((total + castMembersOf(spec, direction).length) * 2 * (stillPriceUsd(paidModel, STILL_SIZES[format]) ?? 0))) : undefined;
   const link = (name: string) => signedFileUrl(env, job.id, name);
   type Linked = VisionImage & { url: string | null };
 

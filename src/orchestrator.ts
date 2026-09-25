@@ -1,5 +1,5 @@
 import type { Env } from "./env";
-import { type Job, type JobParams, type JobState, ACTIVE_STATES, OPEN_STATES, GPU_ONLY_WAIT, PLAN_WAIT, unexplainedUnplannedJobs, activeJobs, queuedJobs, queuedPictureJobs, staleQueuedJobs, jobInstances, unplannedJobs, claimPlanAttempt, countRunning, runningPaidJobs, spentTodayUsd, addJobCost, rememberTriedMachine, updateJob, transitionJob, audit, refundCredits, expiredJobs, listFiles, deleteFiles, setFile, getJob, reserveJob, unreserveJob } from "./db";
+import { type Job, type JobParams, type JobState, ACTIVE_STATES, OPEN_STATES, GPU_ONLY_WAIT, PLAN_WAIT, unexplainedUnplannedJobs, activeJobs, queuedJobs, queuedPictureJobs, staleQueuedJobs, jobInstances, unplannedJobs, claimPlanAttempt, countRunning, runningPaidJobs, spentTodayUsd, addJobCost, rememberTriedMachine, updateJob, transitionJob, audit, refundJobCredits, rechargeDeliveredJob, expiredJobs, listFiles, deleteFiles, setFile, getJob, reserveJob, unreserveJob } from "./db";
 import { backendFor, getBackend } from "./backends";
 import { vastStatus, GONE, vastCredit, listKleoInstances, destroyInstance } from "./backends/vast";
 import { int, num, nowIso, minutesSince, secondsSince, addDays, base64ToBytes, rid } from "./util";
@@ -616,7 +616,8 @@ export async function failJob(env: Env, job: Job, reason: string, retry: boolean
   }
   const failed = await transitionJob(env, job.id, OPEN_STATES, { state: "failed", finished_at: nowIso(), error: reason, percent: job.percent });
   if (!failed) { await audit(env, job.user_id, job.id, "job.fail.ignored", { reason, note: "job was no longer open (already cancelled, done or failed)" }); return "ignored"; }
-  const refunded = await refundCredits(env, job.user_id, job.credits, job.id, `failed: ${reason.slice(0, 120)}`);
+  // At most what the job still holds (refundJobCredits): a job refunded once is not refunded again (26 September 2026).
+  const refunded = await refundJobCredits(env, job.user_id, job, job.credits, `failed: ${reason.slice(0, 120)}`);
   await audit(env, job.user_id, job.id, "job.failed", { reason, refunded });
   return "failed";
 }
@@ -637,8 +638,9 @@ async function recordAiUpscale(env: Env, job: Job, sr: unknown): Promise<void> {
   try { p = JSON.parse(fresh.params) as JobParams; } catch { return; }
   if (!p.ai_upscale || p.ai_upscale_result) return;
   const v = aiUpscaleVerdict(sr);
-  // A film the owner retried after a failure (POST /internal/admin/retry) had ALL its credits given back by failJob,
-  // the upscale's included, and the retry debits nothing: there is nothing left to refund a second time.
+  // A film the owner retried after a failure (POST /internal/admin/retry) BEFORE 26 September 2026 had ALL its credits
+  // given back by failJob, the upscale's included, and that retry debited nothing: nothing is left to refund a second
+  // time. A retry since then takes the credits again and clears the flag, so its finish settles the upscale as usual.
   const already = !v.applied && p.ai_upscale_refunded === true;
   const refunded = v.applied || already ? 0 : Math.max(0, Math.round(p.ai_upscale_credits ?? 0));
   const reason = already ? `${v.reason ?? "not applied"}; its credits were already given back when the film failed` : v.reason;
@@ -649,7 +651,7 @@ async function refundAiUpscale(env: Env, job: Job): Promise<void> {
   let r: JobParams["ai_upscale_result"];
   try { r = (JSON.parse(fresh?.params ?? job.params) as JobParams).ai_upscale_result; } catch { r = undefined; }
   if (!r) return;
-  const refunded = r.applied || r.refunded <= 0 ? 0 : await refundCredits(env, job.user_id, r.refunded, job.id, `AI upscale not applied: ${(r.reason ?? "no reason given").slice(0, 120)}`);
+  const refunded = r.applied || r.refunded <= 0 ? 0 : await refundJobCredits(env, job.user_id, job, r.refunded, `AI upscale not applied: ${(r.reason ?? "no reason given").slice(0, 120)}`);
   await audit(env, job.user_id, job.id, r.applied ? "ai_upscale.applied" : "ai_upscale.refunded",
     { applied: r.applied, parts: r.parts, upscaled: r.upscaled, model: r.model, gpu: r.gpu, reason: r.reason, refunded });
 }
@@ -666,6 +668,10 @@ export async function finishJob(env: Env, job: Job, costUsd: number | null, sr?:
   const expires = addDays(finished, int(env.RESULT_TTL_DAYS, 7));
   const done = await transitionJob(env, job.id, OPEN_STATES, { state: "done", percent: 100, track: null, eta_min: 0, finished_at: finished, expires_at: expires, error: null });
   if (!done) { await audit(env, job.user_id, job.id, "job.done.ignored", { note: "job was no longer open (already done, cancelled or failed)" }); return false; }
+  // A job delivered after its credits were given back is paid again (26 September 2026, gt_645zn2k8: failed and
+  // refunded, restarted, delivered for nothing). Before the AI upscale's own refund, which is measured against it.
+  const recharged = await rechargeDeliveredJob(env, job.user_id, job, "delivered after its credits were given back");
+  if (recharged) await audit(env, job.user_id, job.id, "job.done.recharged", { credits: recharged });
   if (upscale) await refundAiUpscale(env, job);
   // The worker's figure is a convenience; the server's own (start_date x dph_total, straight from the Vast API) is the
   // trustworthy one — the worker runs on a machine rented from a stranger who has root on it and could report 0 for

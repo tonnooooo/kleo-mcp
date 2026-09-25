@@ -522,3 +522,59 @@ test("mock progress does not resurrect a cancelled job", async () => {
   assert.equal(await balance(env), 2 * P + Math.round(P * 0.6), "cancelled at 40%: 60% back");
   assert.equal(stale.state, "rendering");
 });
+
+/* ------------------------------------------------------------------ one refund per job (26 September 2026) */
+test("one refund per job: an admin retry takes the credits again, a second failure gives them back once, a stale refund is capped, and a job delivered after its refund is paid", async () => {
+  const env = await newEnv();
+  const u = await user(env, 3 * P);
+  const job = await short(env, u);
+  assert.equal(await balance(env), 2 * P);
+  await env.DB.prepare("UPDATE jobs SET state = 'finishing', phase = 'finish', backend = 'manual', instance_id = 'gpu-1', percent = 80, attempts = 1 WHERE id = ?").bind(job.id).run();
+  assert.equal(await m.failJob(env, await m.getJob(env, job.id), "worker: Invalid master", false), "failed");
+  assert.equal(await balance(env), 3 * P, "the failure gives the credits back");
+  const retry = () => m.handleAdmin(new Request("http://kleo.test/internal/admin/retry", { method: "POST", headers: { authorization: "Bearer s3cret", "content-type": "application/json" }, body: JSON.stringify({ job_id: job.id }) }), env);
+  const r = await retry();
+  assert.equal(r.status, 200);
+  const rb = await r.json();
+  assert.equal(rb.ok, true); assert.equal(rb.credits_debited, P);
+  assert.equal(await balance(env), 2 * P, "the retry takes again what the failure gave back");
+  assert.equal((await m.getJob(env, job.id)).state, "queued");
+  assert.equal((await events(env, job.id, "admin.retry"))[0].detail.debited, P);
+  // The retry fails too: its credits come back once more — the job held them again — and never a third time.
+  await env.DB.prepare("UPDATE jobs SET state = 'finishing' WHERE id = ?").bind(job.id).run();
+  assert.equal(await m.failJob(env, await m.getJob(env, job.id), "worker: Invalid master again", false), "failed");
+  assert.equal(await balance(env), 3 * P);
+  assert.equal(await m.refundJobCredits(env, u.id, await m.getJob(env, job.id), P, "a stale second refund"), 0, "a job that holds nothing gives nothing back");
+  assert.equal(await balance(env), 3 * P);
+  const capped = await events(env, job.id, "credits.refund.capped");
+  assert.equal(capped.length, 1); assert.equal(capped[0].detail.asked, P); assert.equal(capped[0].detail.allowed, 0);
+  assert.deepEqual(await m.jobCreditsMoved(env, await m.getJob(env, job.id)), { debited: 2 * P, refunded: 2 * P, held: 0 });
+  // An account that can no longer pay the retry is refused: the job stays failed and nothing is rented or debited.
+  await env.DB.prepare("UPDATE users SET credits = 5 WHERE id = ?").bind(u.id).run();
+  const poor = await retry();
+  assert.equal(poor.status, 402);
+  assert.match((await poor.json()).error, new RegExp(`holds 5 credits and the retry needs ${P}`));
+  assert.equal((await m.getJob(env, job.id)).state, "failed"); assert.equal(await balance(env), 5);
+  assert.equal((await events(env, job.id, "admin.retry.refused")).length, 1);
+  // gt_645zn2k8: failed and refunded, brought back by hand, delivered. The film exists, so it is paid — even below zero.
+  await env.DB.prepare("UPDATE jobs SET state = 'finishing', finished_at = NULL WHERE id = ?").bind(job.id).run();
+  assert.equal(await m.finishJob(env, await m.getJob(env, job.id), 0.1), true);
+  assert.equal(await balance(env), 5 - P);
+  assert.equal((await events(env, job.id, "job.done.recharged"))[0].detail.credits, P);
+  const forced = (await events(env, job.id, "credits.debit")).at(-1).detail;
+  assert.equal(forced.amount, P); assert.equal(forced.forced, true);
+});
+
+test("one refund per job: an ordinary job delivered, failed or cancelled moves its credits exactly as before", async () => {
+  const env = await newEnv();
+  const u = await user(env, 4 * P);
+  const done = await short(env, u);
+  await m.updateJob(env, done.id, { state: "finishing", backend: "manual", instance_id: "gpu-2", started_at: new Date().toISOString(), percent: 95 });
+  assert.equal(await m.finishJob(env, await m.getJob(env, done.id), 0.2), true);
+  assert.equal((await events(env, done.id, "job.done.recharged")).length, 0, "a paid job is not charged again");
+  assert.equal(await balance(env), 3 * P);
+  const cancelled = await short(env, u);
+  await m.cancelJob(env, u, cancelled.id);
+  assert.equal(await balance(env), 3 * P, "a queued job cancelled: all of it back");
+  assert.equal((await events(env, cancelled.id, "credits.refund.capped")).length, 0);
+});

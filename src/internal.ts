@@ -1,5 +1,5 @@
 import type { Env } from "./env";
-import { getJob, setFile, listFiles, audit, type Job, claimQueuedJob, countRunning, transitionJob, updateJobParams, ACTIVE_STATES, OPEN_STATES } from "./db";
+import { getJob, getUser, setFile, listFiles, audit, type Job, claimQueuedJob, countRunning, transitionJob, updateJobParams, debitCredits, refundCredits, jobCreditsMoved, ACTIVE_STATES, OPEN_STATES } from "./db";
 import { json, safeEqual, nowIso, int, num, rid } from "./util";
 import { isFlagActive, setFlagUntil, releaseLock } from "./schema";
 import { finishJob, failJob, trackFor, budgetSpentUsd, handoverToFinish } from "./orchestrator";
@@ -117,7 +117,8 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
     const r = await requestFootage(env, job, url.origin, { shots: b.shots ?? [], look: b.look, format: b.format });
     // 402 is definitive (no kie.ai money, or today's ceiling): the box cannot film without the clips and would only
     // report the generic "the shots did not film" later. Fail the job here, with the sentence, and refund at once.
-    if (r.status === 402) await failJob(env, job, String(r.reply.error ?? "the clips could not be ordered from the video model"), false);
+    // A plan or pictures that did not pass (footageGate, 26 September 2026) are definitive too: nothing was bought.
+    if (r.status === 402 || r.reply.not_validated === true) await failJob(env, job, String(r.reply.error ?? "the clips could not be ordered from the video model"), false);
     return json(r.reply, r.status);
   }
   if (rest === "footage" && request.method === "GET") {
@@ -334,24 +335,37 @@ export async function handleAdmin(request: Request, env: Env): Promise<Response>
   }
   if (request.method !== "POST") return json({ error: "method" }, 405);
   //   POST /internal/admin/retry {"job_id":"gt_…"}   a film that failed in its FINISH phase goes back in the queue with
-  //   everything it already paid for: the gen bundle, the clip rows (ready), the music. Only a finish box is rented again;
-  //   the credits refunded on failure are NOT taken back (the failure was Kleo's). 22 September 2026: gt_nyhb8aj9 died
-  //   three times on "Invalid master" with 1.68 $ of clips and music bought, and the fix was already on the image.
+  //   everything it already paid for: the gen bundle, the clip rows (ready), the music. Only a finish box is rented again.
+  //   22 September 2026: gt_nyhb8aj9 died three times on "Invalid master" with 1.68 $ of clips and music bought, and the
+  //   fix was already on the image.
+  //   ONE REFUND PER JOB (26 September 2026, the owner's cost report): the failure gave the credits back, so the retry
+  //   takes them again — the film it delivers is paid, and a second failure refunds them once more, not twice. An
+  //   account that cannot pay them any more is refused (402) and the job stays failed; nothing is rented.
   if (path === "/internal/admin/retry") {
     const b = (await request.json().catch(() => ({}))) as { job_id?: unknown };
     const id = String(b.job_id ?? "").trim();
     const job = id ? await getJob(env, id) : null;
     if (!job) return json({ error: "job_id: no such video" }, 404);
     if (job.state !== "failed" || (job.phase ?? "gen") !== "finish") return json({ error: `only a film that failed in its finish phase can be retried (this one is ${job.state}, phase ${job.phase ?? "gen"})` }, 409);
+    // What the failure gave back and the job no longer holds: taken again BEFORE the job moves, atomically (debitCredits).
+    const moved = await jobCreditsMoved(env, job);
+    const owed = Math.max(0, job.credits - moved.held);
+    if (owed > 0 && !(await debitCredits(env, job.user_id, owed, job.id))) {
+      const balance = (await getUser(env, job.user_id))?.credits ?? 0;
+      await audit(env, job.user_id, job.id, "admin.retry.refused", { owed, balance, previous_error: (job.error ?? "").slice(0, 200) });
+      return json({ ok: false, job_id: job.id, state: job.state, error: `the account holds ${balance} credits and the retry needs ${owed} (its credits were given back when it failed): not retried` }, 402);
+    }
     const ok = await transitionJob(env, job.id, ["failed"], {
       state: "queued", backend: null, instance_id: null, instance_meta: null, started_at: null, finished_at: null, last_report_at: null, queued_at: nowIso(),
       percent: 58, track: "clips", error: null, attempts: 0, worker_secret: rid("wk", 32),
     });
-    // A film sold the AI upscale: its credits came back with the failure, so the retry's finish refunds nothing again,
-    // and a verdict a /done left on the failed row is not this attempt's (review, 25 September 2026).
-    if (ok && aiUpscaleJob(job)) await updateJobParams(env, job.id, { ai_upscale_result: undefined, ai_upscale_refunded: true });
-    await audit(env, job.user_id, job.id, "admin.retry", { from: "failed", phase: job.phase, previous_error: (job.error ?? "").slice(0, 200), ok });
-    return json({ ok, job_id: job.id, state: ok ? "queued" : job.state, phase: "finish", note: "the finish box is rented again; clips and music are reused, no credit is charged" });
+    // The job moved in the meantime (a second retry won the race): the credits just taken go back.
+    if (!ok && owed > 0) await refundCredits(env, job.user_id, owed, job.id, "admin retry did not apply");
+    // A film sold the AI upscale: its credits are held again with the film's, so the retry's finish refunds them if it
+    // cannot apply the upscale; a verdict a /done left on the failed row is not this attempt's (review, 25 September 2026).
+    if (ok && aiUpscaleJob(job)) await updateJobParams(env, job.id, { ai_upscale_result: undefined, ai_upscale_refunded: undefined });
+    await audit(env, job.user_id, job.id, "admin.retry", { from: "failed", phase: job.phase, previous_error: (job.error ?? "").slice(0, 200), ok, debited: ok ? owed : 0 });
+    return json({ ok, job_id: job.id, state: ok ? "queued" : job.state, phase: "finish", credits_debited: ok ? owed : 0, note: `the finish box is rented again; clips and music are reused, and the ${owed} credits the failure gave back are charged again` });
   }
   if (path === "/internal/admin/pause") {
     const b = (await request.json().catch(() => ({}))) as { hours?: number; everything?: boolean };

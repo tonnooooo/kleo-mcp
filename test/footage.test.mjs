@@ -923,3 +923,90 @@ test("the footage sentences a user can read name no provider and no dollar", asy
   const row = (await env.DB.prepare("SELECT detail FROM audit WHERE event = 'footage.budget'").first()).detail;
   assert.match(row, /budget_usd/, "the operator keeps the numbers");
 });
+
+/* ------------------------------------------------------------------ the owner's cost report (26 September 2026) */
+
+test("no clip before the plan and the pictures pass: the order is refused, the route fails the job, nothing is bought", async () => {
+  // gt_rvhmhx55 (15 September): five clips bought, then the film failed on its storyboard. The server's stills engine
+  // is on for a realistic film (a Workers AI binding and a stored storyboard): until its drawing is "done", no clip.
+  const env = await newEnv({ AI: {} });
+  const job = await filmJob(env);
+  const sb = JSON.stringify({ style: "picture", kleo_style: "realistic", scenes: [] });
+  const stillsAre = async (state) => {
+    const p = JSON.parse(job.params); delete p.stills;
+    if (state) p.stills = { state, at: new Date().toISOString(), drawn: 1, total: 3 };
+    job.storyboard = sb; job.params = JSON.stringify(p);
+    await env.DB.prepare("UPDATE jobs SET storyboard = ?, params = ? WHERE id = ?").bind(job.storyboard, job.params, job.id).run();
+  };
+  const kie = fakeKie(); globalThis.fetch = kie.fetch;
+  for (const state of [null, "drawing", "failed"]) {
+    await stillsAre(state);
+    const r = await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS, format: "9:16" });
+    assert.equal(r.status, 409, String(state)); assert.equal(r.reply.not_validated, true);
+    assert.match(r.reply.error, /pictures could not all be drawn and checked against the request, so no clip was ordered[\s\S]*credits are refunded/);
+  }
+  assert.equal(kie.calls.create.length, 0, "nothing bought"); assert.equal(kie.calls.credit ?? 0, 0, "not even the balance read");
+  assert.equal((await m.footageRows(env, job.id)).length, 0);
+  const rows = (await env.DB.prepare("SELECT detail FROM audit WHERE event = 'footage.not_validated'").all()).results.map((x) => JSON.parse(x.detail));
+  assert.deepEqual(rows.map((x) => x.why), ["stills not started", "stills drawing", "stills failed"]);
+  // A plan that never passed: no storyboard, the planner's error on the row.
+  const unplanned = { ...job, storyboard: null, plan_error: "the storyboard has 3 problems" };
+  const p = await m.requestFootage(env, unplanned, "http://kleo.test", { shots: SHOTS, format: "9:16" });
+  assert.equal(p.status, 409); assert.match(p.reply.error, /storyboard did not pass validation/);
+  // Through the worker's route: the job fails with the sentence on the spot, and its credits come back.
+  await stillsAre("drawing");
+  const res = await m.handleInternal(new Request(`http://kleo.test/internal/jobs/${job.id}/footage`, { method: "POST", headers: { authorization: "Bearer wsecret", "content-type": "application/json" }, body: JSON.stringify({ shots: SHOTS, format: "9:16" }) }), env);
+  assert.equal(res.status, 409);
+  const after = env.DB.db.prepare("SELECT state, error FROM jobs WHERE id = ?").get(job.id);
+  assert.equal(after.state, "failed"); assert.match(after.error, /pictures could not all be drawn/);
+  assert.equal(env.DB.db.prepare("SELECT credits FROM users WHERE id = 'u1'").get().credits, 107, "the 7 credits of the film are back");
+  assert.equal(kie.calls.create.length, 0);
+  // Pictures done: the same order goes through.
+  const env2 = await newEnv({ AI: {} });
+  const job2 = await filmJob(env2);
+  const p2 = JSON.parse(job2.params); p2.stills = { state: "done", at: new Date().toISOString(), drawn: 3, total: 3 };
+  job2.storyboard = sb; job2.params = JSON.stringify(p2);
+  const ok = fakeKie(); globalThis.fetch = ok.fetch;
+  const r2 = await m.requestFootage(env2, job2, "http://kleo.test", { shots: SHOTS, format: "9:16" });
+  assert.equal(r2.status, 200, JSON.stringify(r2.reply)); assert.equal(ok.calls.create.length, 3);
+  assert.equal(m.footageGate({ STILLS_ENGINE: "legacy", AI: {} }, { storyboard: sb, params: "{}", plan_error: null }), null, "the legacy engine draws on the GPU: no server stills to wait for");
+});
+
+test("a requeued job never buys a clip twice: the ready, generating and failed rows of the first box are reused", async () => {
+  const env = await newEnv();
+  const job = await filmJob(env);
+  const kie = fakeKie(); globalThis.fetch = kie.fetch;
+  const first = await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS, format: "9:16" });
+  assert.equal(first.reply.ordered, 3);
+  const byShot = Object.fromEntries((await m.footageRows(env, job.id)).map((r) => [r.shot_id, r.task_id]));
+  globalThis.fetch = fakeKie({ state: { [byShot["01-hook-s1"]]: "success", [byShot["01-hook-s2"]]: "fail" } }).fetch;
+  await m.footageStatus(env, job, true);
+  const spent = await m.footageSpentTodayUsd(env);
+  // The box dies; the job is requeued with a fresh worker secret (orchestrator failJob), and the next box asks again.
+  await env.DB.prepare("UPDATE jobs SET state = 'rendering', worker_secret = 'wsecret2', attempts = 2 WHERE id = ?").bind(job.id).run();
+  const again = fakeKie(); globalThis.fetch = again.fetch;
+  const res = await m.handleInternal(new Request(`http://kleo.test/internal/jobs/${job.id}/footage`, { method: "POST", headers: { authorization: "Bearer wsecret2", "content-type": "application/json" }, body: JSON.stringify({ shots: SHOTS, format: "9:16" }) }), env);
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.ordered, 0);
+  assert.equal(again.calls.create.length, 0, "no clip bought a second time");
+  assert.equal(again.calls.credit ?? 0, 0, "nothing to buy: the balance is not even read");
+  assert.deepEqual(body.ready, ["01-hook-s1"]); assert.deepEqual(body.pending, ["02-city-s1"]); assert.ok(body.failed["01-hook-s2"]);
+  assert.equal(await m.footageSpentTodayUsd(env), spent, "not a cent more");
+  assert.equal((await m.footageRows(env, job.id)).length, 3);
+});
+
+test("the day's ceiling counts the pictures' dollars: stills.task rows of today are spent money", async () => {
+  const env = await newEnv();
+  assert.equal(await m.footageSpentTodayUsd(env), 0);
+  await env.DB.prepare("INSERT INTO audit (user_id, job_id, event, detail) VALUES ('u1', 'gt_other', 'stills.task', ?)").bind(JSON.stringify({ key: "k", task: "", model: "ephone:gemini-3-pro-image-preview", usd: 4.5 })).run();
+  assert.equal(await m.picturesSpentTodayUsd(env), 4.5);
+  assert.equal(await m.footageSpentTodayUsd(env), 4.5);
+  const job = await filmJob(env);
+  globalThis.fetch = fakeKie().fetch;
+  const r = await m.requestFootage(env, { ...job }, "http://kleo.test", { shots: SHOTS, format: "9:16" });
+  assert.equal(r.status, 402, "1.04 $ of clips on top of 4.50 $ of pictures is over the default 5 $");
+  assert.match(r.reply.error, /filming capacity is fully booked/);
+  // The pre-flight sees them too, and on ePhone it asks the one account for the clips AND the pictures drawn there.
+  assert.equal(m.plannedStillsUsd({ STILL_MODEL: "ephone:gemini-3-pro-image-preview" }, 10) > 0, true);
+});

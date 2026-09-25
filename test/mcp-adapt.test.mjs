@@ -900,15 +900,19 @@ test("an upscale film retried by the owner after a failure is not refunded twice
   await s.env.DB.prepare("UPDATE jobs SET phase = 'finish', state = 'finishing', percent = 80 WHERE id = ?").bind(id).run();
   assert.equal((await post(id, "failed", { error: "Invalid master", retry: false })).status, 200);
   assert.equal(await credits(), 70, "the whole debit back, the upscale included");
-  // The owner retries it: nothing is debited, and the retry's finish must not refund the upscale a second time.
+  // The owner retries it (26 September 2026, one refund per job): the 30 credits the failure gave back are taken
+  // again, so the retry's finish settles the upscale like any other finish — and nothing is refunded twice.
   const r = await (await m.handleAdmin(new Request("http://kleo.test/internal/admin/retry", { method: "POST", headers: { authorization: "Bearer s3cret", "content-type": "application/json" }, body: JSON.stringify({ job_id: id }) }), s.env)).json();
-  assert.equal(r.ok, true);
-  assert.equal(JSON.parse((await m.getJob(s.env, id)).params).ai_upscale_refunded, true);
+  assert.equal(r.ok, true); assert.equal(r.credits_debited, 30);
+  assert.equal(await credits(), 40, "the retry is paid again");
+  assert.equal(JSON.parse((await m.getJob(s.env, id)).params).ai_upscale_refunded, undefined);
   assert.equal((await post(id, "done", { sr: { parts: 3, applied: 0, model: null, gpu: null, reason: "no card" } })).status, 200);
-  assert.equal(await credits(), 70, "not 85: the 15 upscale credits came back once, with the failure");
+  assert.equal(await credits(), 55, "the 15 upscale credits come back once, from the retry's own debit");
   const got = await s.call("kleo_get_result", { job_id: id });
-  assert.match(got.text, /AI upscale: not applied \(no card; its credits were already given back when the film failed\); the film is in the classic 4K 60 fps\./);
-  assert.doesNotMatch(got.text, /credits? refunded/);
+  assert.match(got.text, /AI upscale: not applied \(no card\), 15 credits refunded; the film is in the classic 4K 60 fps\./);
+  const refunds = await s.audit("credits.refund");
+  assert.deepEqual(refunds.map((x) => x.amount), [30, 15], "the failure's 30, then the upscale's 15: each credit given back once");
+  await s.env.DB.prepare("UPDATE users SET credits = 70 WHERE id = 'u_test'").run(); // the cancel below starts from 70
   // A cancel before the finish: the upscale (which only the finish runs) comes back whole, the film's part prorated.
   const c = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers at dawn", duration_s: 60, format: "9:16", language: "en", product: "film", ai_upscale: "yes" });
   assert.ok(!c.isError, c.text); assert.equal(c.structuredContent.credits, 60); assert.equal(await credits(), 10);

@@ -1003,3 +1003,44 @@ test("drawImage on ephone:…: ePhone's chat road — its base URL and key, offi
   assert.equal(fallbackReason(poor), "no credit", "the job falls back to klein-4B");
   assert.equal(fallbackReason(await rejection(drawImage({}, "ephone:gemini-3-pro-image-preview", "p", STILL_SIZES["16:9"], [], 1))), "unauthorized", "no EPHONE_API_KEY");
 });
+
+/* ------------------------------------------------------------------ the money caps on every road (26 September 2026) */
+
+test("drawJobStills on ephone:…: the money caps bound the chat road too — every paid draw is booked, and past STILLS_DAILY_USD the job moves to klein-4B", async () => {
+  const chat = [];
+  globalThis.fetch = async (url) => {
+    chat.push(String(url));
+    return jsonRes({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: `![image](data:image/jpeg;base64,${b64(JPG(5))})` } }], usage: { prompt_tokens: 60, completion_tokens: 1557 } });
+  };
+  const { ai, calls } = fakeAi();
+  // The film's own cap grows with the film (every picture and sheet twice: 0.59 $ here), so the day's cap is the one met.
+  const { env, jobs, auditRows } = fakeEnv({ AI: ai, STILL_MODEL: "ephone:gemini-3-pro-image-preview", EPHONE_API_KEY: "eph-key", PUBLIC_URL: "https://kleo.test", STILLS_JOB_MAX_USD: "0.1", STILLS_DAILY_USD: "0.1" });
+  const r = await drawJobStills(env, jobOf(jobs), { deadline: Date.now() + 120_000 });
+  assert.deepEqual(r, { state: "done", drawn: 3, total: 3 });
+  assert.equal(chat.length, 1, "the sheet fitted the cap (0.074 $), nothing after it");
+  assert.equal(calls.draws.length, 3, "the three stills on klein-4B");
+  const ev = (e) => auditRows.filter((a) => a.event === e).map((a) => JSON.parse(a.detail));
+  assert.equal(ev("stills.task").length, 1, "the chat draw is written down like a kie.ai task");
+  assert.equal(ev("stills.task")[0].usd, 0.074); assert.equal(ev("stills.task")[0].task, "", "nothing to collect: the answer was the picture");
+  const fb = ev("stills.fallback");
+  assert.equal(fb.length, 1); assert.equal(fb[0].reason, "budget"); assert.match(fb[0].error, /STILLS_DAILY_USD/); assert.doesNotMatch(fb[0].error, /kie\.ai/);
+});
+
+test("drawImage on a chat road with a ledger: refused before the call past a cap, booked after it at what it cost; no ledger, no booking", async () => {
+  const calls = [];
+  globalThis.fetch = async (url) => { calls.push(String(url)); return jsonRes({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: `![image](data:image/jpeg;base64,${b64(JPG(5))})` } }], usage: {} }); };
+  const rows = [];
+  const book = { find: () => null, refuse: () => null, created: async (key, task, model, usd) => { rows.push({ key, task, model, usd }); } };
+  const d = await drawImage({ EPHONE_API_KEY: "eph-key" }, "ephone:gemini-3-pro-image-preview", "p", STILL_SIZES["9:16"], [], 1, { ledger: { key: "k1", book } });
+  assert.equal(d.usd, 0.074);
+  assert.deepEqual(rows, [{ key: "k1", task: "", model: "ephone:gemini-3-pro-image-preview", usd: 0.074 }]);
+  const capped = { ...book, refuse: () => "this film's pictures have spent $5.00 (STILLS_JOB_MAX_USD $5.00)" };
+  const refused = await rejection(drawImage({ EPHONE_API_KEY: "eph-key" }, "ephone:gemini-3-pro-image-preview", "p", STILL_SIZES["9:16"], [], 1, { ledger: { key: "k2", book: capped } }));
+  assert.equal(fallbackReason(refused), "budget"); assert.equal(calls.length, 1, "ePhone was never asked");
+  // OpenRouter reports its own cost: that is what is booked.
+  globalThis.fetch = async () => jsonRes({ choices: [{ message: { images: [{ image_url: { url: `data:image/png;base64,${b64(JPG(6))}` } }] } }], usage: { cost: 0.138 } });
+  await drawImage({ IMAGE_API_KEY: "or-key" }, "openrouter:google/gemini-3-pro-image-preview", "p", STILL_SIZES["9:16"], [], 1, { ledger: { key: "k3", book } });
+  assert.equal(rows.at(-1).usd, 0.138);
+  await drawImage({ IMAGE_API_KEY: "or-key" }, "openrouter:google/gemini-3-pro-image-preview", "p", STILL_SIZES["9:16"], [], 1);
+  assert.equal(rows.length, 2, "without a ledger nothing is booked");
+});
