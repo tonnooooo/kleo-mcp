@@ -172,25 +172,60 @@ const POSSESSIVE_RE = /\b(?:my|our|mio|mia|miei|mie|nostr[oaie])\b|^\s*ma\s/i;
 const MANNER_KINDS: readonly SpecKind[] = ["style", "mood", "exclude"];
 
 /**
- * The capitalised words of a request that stand where no sentence starts: the names the user gave ("mio nonno
- * Pietro", "Captain Mara"). Nothing when more than half the words that open no sentence are capitalised (Title Case, caps):
+ * Capitalised without being anybody's name: a people or a feast ("a Viking raid", "a Roman legionary", "Danish",
+ * "a Christmas elf"). A cast name the writer gives as a proper name ("Brian") still counts (characterNamed).
+ */
+const NOT_A_NAME_RE = /^(?:\p{L}+(?:an|ese|ish)|vikings?|vichingh[io]|vichingo|christmas|easter|halloween|thanksgiving|natale|pasqua|capodanno|carnevale)$/u;
+/** A cast name that is a role, not a name: it opens with an article ("the pirates", "a Viking"). */
+const ARTICLE_START_RE = /^(?:the|a|an|il|lo|la|i|gli|le|un|una|uno)\s|^(?:l|un)['’]/i;
+
+/**
+ * The capitalised words of a request: `mid` stand where no sentence starts, the names the user gave ("mio nonno
+ * Pietro", "Captain Mara", 'a girl called "Lina"', "Protagonist: Mara"); `initial` open a sentence, where grammar
+ * capitalises every word and a capital proves a name only with the writer's cast behind it ("Mara bakes a cake.").
+ * Only . ! ? … and a new line start a sentence (25 September 2026 review: a quote mark or a colon used to hide the name
+ * after it). Both are empty when more than half the words that open no sentence are capitalised (Title Case, caps):
  * there a capital proves nothing.
  */
-function namesIn(request: string): Set<string> {
-  const out = new Set<string>();
+function namesIn(request: string): { mid: Set<string>; initial: Set<string> } {
+  const mid = new Set<string>(), initial = new Set<string>();
   let start = true, caps = 0, total = 0;
-  for (const m of request.matchAll(/([.!?…:;«"“(\n]+)|(\p{L}[\p{L}'’-]*)/gu)) {
+  for (const m of request.matchAll(/([.!?…\n]+)|(\p{L}[\p{L}'’-]*)/gu)) {
     if (m[1]) { start = true; continue; }
     const w = m[2];
-    // The first word of a sentence is capitalised by grammar: it neither proves a name nor counts towards Title Case.
-    if (start) { start = false; continue; }
+    const add = (to: Set<string>) => { if (/^\p{Lu}\p{Ll}/u.test(w) && !NAME_STOP.has(w.toLowerCase())) for (const p of norm(w).split(" ")) if (p.length >= 3) to.add(p); };
+    // The first word of a sentence is capitalised by grammar: it does not count towards Title Case.
+    if (start) { start = false; add(initial); continue; }
     total++;
     if (!/^\p{Lu}/u.test(w)) continue;
     caps++;
-    if (/^\p{Lu}\p{Ll}/u.test(w) && !NAME_STOP.has(w.toLowerCase())) for (const p of norm(w).split(" ")) if (p.length >= 3) out.add(p);
+    add(mid);
   }
-  return total && caps / total > 0.5 ? new Set() : out;
+  return total && caps / total > 0.5 ? { mid: new Set(), initial: new Set() } : { mid, initial };
 }
+
+/**
+ * Whether the user NAMED this character. A capitalised word of its quote counts when it stands mid-sentence and is not
+ * a people or a feast, or anywhere when the writer's cast gives it as the character's proper name. Never the role
+ * itself capitalised ("sui Pirati": the English text says "pirates" in lower case), and never for a character the cast
+ * calls by a role ("the fishermen" of "Genova").
+ */
+function characterNamed(c: SpecItem, names: ReturnType<typeof namesIn>, cast: SpecCast | null): boolean {
+  const castName = cast?.name.trim() ?? "";
+  const proper = !!castName && !ARTICLE_START_RE.test(castName)
+    && (castName.match(/\p{L}[\p{L}'’-]*/gu) ?? []).filter((w) => w.length >= 3).every((w) => /^\p{Lu}/u.test(w));
+  if (cast && !proper) return false;
+  const confirmed = new Set(proper ? wordsOf(castName) : []);
+  const role = new Set((c.text.match(/\p{L}[\p{L}'’-]*/gu) ?? []).filter((w) => /^\p{Ll}/u.test(w) && w.length >= 3).map((w) => norm(w).slice(0, 5)));
+  return wordsOf(c.quote).some((w) => !role.has(w.slice(0, 5))
+    && (confirmed.has(w) ? names.mid.has(w) || names.initial.has(w) : names.mid.has(w) && !NOT_A_NAME_RE.test(w)));
+}
+
+/** The same beat written twice, as an action and as an event: their quotes and their texts overlap. */
+const sameBeat = (a: SpecItem, b: SpecItem): boolean => {
+  const overlap = (x: string, y: string) => !!norm(x) && !!norm(y) && (quoteInRequest(x, y) || quoteInRequest(y, x));
+  return overlap(a.quote, b.quote) && overlap(a.text, b.text);
+};
 
 /** Why a spec is FAITHFUL or OPEN: the mode and the one rule that decided it, in words for the audit and the refusal. */
 export interface ModeWhy { mode: SpecMode; why: string }
@@ -201,7 +236,8 @@ export interface ModeWhy { mode: SpecMode; why: string }
  * the treatment was told as-told, and the film was a pirate at a rail. The mode is now decided from the items and the
  * request alone, in this order:
  *   1. a delegation ("stupiscimi", "surprise me") is OPEN;
- *   2. two or more things that happen (must events and actions together) are the user's story: FAITHFUL;
+ *   2. two or more things that happen (must events and actions together, one beat written as both counted once) are
+ *      the user's story: FAITHFUL;
  *   3. a shot the user described, words to be read on screen or said: FAITHFUL;
  *   4. a PARTICULAR character — theirs ("my dog", "mio nonno"), named ("Captain Mara", "Pietro"), or with a look the
  *      user gave them — is FAITHFUL; a genre, a topic or a generic role ("pirates", "a pastry chef") is not;
@@ -211,8 +247,9 @@ export interface ModeWhy { mode: SpecMode; why: string }
 export function modeWhy(items: readonly SpecItem[], request: string, opts: { cast?: readonly SpecCast[] } = {}): ModeWhy {
   if (DELEGATE_RE.test(request)) return { mode: "open", why: "a delegation: the user left the film to Kleo" };
   const must = items.filter((i) => i.must);
-  const count = (...k: SpecKind[]) => must.filter((i) => k.includes(i.kind)).length;
-  const happens = count("event", "action");
+  // Distinct beats: an action that restates an event ("bury a treasure" beside "the pirates bury a treasure") is one.
+  const events = must.filter((i) => i.kind === "event");
+  const happens = events.length + must.filter((i) => i.kind === "action" && !events.some((e) => sameBeat(e, i))).length;
   if (happens >= 2) return { mode: "faithful", why: `the user told what happens (${happens} events and actions)` };
   const described = must.find((i) => i.kind === "shot" || i.kind === "text" || i.kind === "line");
   if (described) return { mode: "faithful", why: `the user described a ${described.kind}: "${described.quote}"` };
@@ -220,8 +257,9 @@ export function modeWhy(items: readonly SpecItem[], request: string, opts: { cas
   const soleCast = opts.cast?.length === 1 ? opts.cast[0].id : null;
   for (const c of must.filter((i) => i.kind === "character")) {
     const castId = c.who || soleCast;
+    const cast = castId ? opts.cast?.find((x) => x.id === castId) ?? null : null;
     const reason = POSSESSIVE_RE.test(c.quote) ? "their own"
-      : norm(c.quote).split(" ").some((w) => names.has(w)) ? "named"
+      : characterNamed(c, names, cast) ? "named"
       : castId && must.some((i) => i.kind === "look" && i.who === castId) ? "described" : null;
     if (reason) return { mode: "faithful", why: `a particular character (${reason}): "${c.quote}"` };
   }
@@ -544,6 +582,7 @@ WHAT TO EXTRACT — every concrete thing the user wrote about the film's CONTENT
 - character: each person, animal or creature in the film ("a thin pastry chef", "Captain Mara", "my dog"). A generic role ("pirates", "a fisherman") is still a character item.
 - look: EACH visible attribute of a character as its own item — hair, age, build, clothes, colours, accessories — with "who" = that character's cast id. "short blonde hair tied up" and "lilac apron" are two items.
 - place: where it happens. object: a thing that must be seen. action: what someone does. mood: a feeling asked for.
+  A beat of the story is an event OR an action, never both: do not list the same beat twice.
 - event: each beat of the story, with "order" 1, 2, 3… in the order the user told them. A story told in five sentences is five events.
 - shot: a framing the user described ("close-up of her hands", "seen from above", "the film opens on the empty street").
 - style: a visual style or reference ("like Pixar", "black and white", "Wes Anderson colours", "anime").

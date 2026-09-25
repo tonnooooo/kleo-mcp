@@ -387,6 +387,16 @@ const SEEDANCE_STYLE_T2V: Record<FilmLook, string> = {
   realistic: "Style: live-action film look, natural light, real textures, subtle film grain.",
   animation: "Style: 2D hand-drawn animation, cel colour, clean linework, consistent character designs, nothing photographic, no 3D render.",
 };
+/**
+ * The shot's action without "fast" (rule 3 above), which reaches it from Kleo's own motion hint ("the mist drifting
+ * fast across the frame", direction.ts ENLIVEN) and from the guide: after a verb it becomes "steadily", before a noun
+ * or a participle it goes ("a fast car" is "a car", "fast-moving clouds" are "moving clouds").
+ */
+const VERB_BEFORE_FAST_RE = /(?:ing|ed|es|s)$|^(?:move|go|run|drift|flow|spin|turn|fall|blow|rush|walk|ride|swim|fly|roll|race)$/i;
+export const unhurried = (s: string): string =>
+  s.replace(/(\S+\s+)?\b(?:very\s+)?fast(?:er|est)?\b(-|\s*)/gi, (_m, prev: string | undefined, after: string) =>
+    prev && VERB_BEFORE_FAST_RE.test(prev.trim()) ? `${prev}steadily${after === "-" ? " " : after}` : prev ?? "").replace(/\s+/g, " ").trim();
+
 /** Seedance's prompt limit on ePhone AI is 2000 characters; the prompt stays under it with room to spare. */
 export const SEEDANCE_PROMPT_MAX = 1990;
 
@@ -402,7 +412,7 @@ export function seedancePrompt(
   const direction = stored ? directionOf(stored.storyboard) : null;
   const cast = pic ? stillCast(pic, spec, direction) : [];
   const covered = spec && pic ? (pic.covers ?? []).map((id) => itemById(spec, id)).filter((x): x is SpecItem => !!x) : [];
-  const action = tidy(pic?.action) || SEEDANCE_KIND_MOTION[pic?.shot_kind ?? ""] || SEEDANCE_KIND_MOTION.default;
+  const action = unhurried(tidy(pic?.action)) || SEEDANCE_KIND_MOTION[pic?.shot_kind ?? ""] || SEEDANCE_KIND_MOTION.default;
   const secs = (n: number) => `${Math.round(n * 10) / 10}s`;
   const used = Math.min(opts.usedSeconds, opts.clipSeconds);
   // What is on screen and what moves (parts 1), then how it is timed, shot and looked at (parts 2-4).

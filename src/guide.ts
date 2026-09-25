@@ -271,8 +271,16 @@ hero = the viewer, thief/thief2 = villains. The act follows the narration: alarm
 export function buildGuide(o: GuideOptions): string {
   const dur = o.duration_s ?? 45;
   const words = wordBudget(dur, 1.1).target;
-  const scenes = dur <= 90 ? "4-8" : dur <= 300 ? "10-20" : "18-30";
   const look = o.style && (KLEO_STYLES as readonly string[]).includes(o.style) ? o.style : null;
+  // THE CLIP FLOOR IN THE WHOLE GUIDE (25 September 2026 review). On the API road a scene is at least one paid clip, so
+  // there are never more scenes than the words can pay a clip for (storyboard.ts sceneRange: a 15 s film is three
+  // scenes of eleven words, not six of seven), and a line shorter than two clips' worth has one picture.
+  const floorS = !look || PICTURE_LOOKS.includes(look) ? o.clipFloorS ?? 0 : 0;
+  const per = clipWordsPerShot(floorS);
+  const [lo, hi] = dur <= 90 ? [4, 8] : dur <= 300 ? [10, 20] : [18, 30];
+  const most = floorS > 0 ? Math.max(1, Math.floor(words / per)) : Infinity;
+  const range = [Math.min(lo, most), Math.min(hi, most)];
+  const scenes = range[0] === range[1] ? `${range[0]}` : `${range[0]}-${range[1]}`;
   const keou = look ? (PICTURE_LOOKS.includes(look) ? "picture" : look === "stickman" ? "stickman" : look === "explainer" ? "sketch" : "cinema") : "picture";
   const voiceLine = o.languages.map((l) => `${l}: ${(VOICES[l] ?? []).join("|")}`).join(" · ");
 
@@ -311,7 +319,7 @@ ${!look || PICTURE_LOOKS.includes(look) ? layerSection() : ""}
  Every fact in direction.must_keep must appear in the narration (an appearance is proven by the pictures instead); no image_prompt may ask for anything in direction.forbidden.
  With a spec: every MUST requirement covered by a shot's "covers" or said in a voice, the user's events in the user's order, and "covers"/"cast" naming only the spec's own ids.
  THE PICTURES SPEAK ENGLISH whatever the film speaks: every image_prompt, and the direction's world, cast names and looks, objects and forbidden terms, are written in English (they are pasted into the picture prompts, and the picture model reads English only). Subject, goal, audience, tone, must_keep, the narration, titles and chapters stay in the film's language.
- Picture looks: only cinema and closing scenes, ${shotRangeText("cinema")} shots each (closing ${shotRangeText("closing")}), "at" on every shot after the first, no "beats".
+ Picture looks: only cinema and closing scenes, ${floorS > 0 ? `1-${SHOTS_PER_SCENE.cinema[1]} shots each, one per ${per} words of voice (one for a line under ${2 * per} words)` : `${shotRangeText("cinema")} shots each`} (closing ${shotRangeText("closing")}), "at" on every shot after the first, no "beats".
  A shot carries only image_prompt, caption, hl, at, shot_kind, cast, covers and action. A hand-written camera move is refused.
  scene.image, scene.motion and shot.image are refused (Kleo generates the pictures; no asset travels with a job).
  Total narration must fit the length: never more than about ${Math.round(words * 1.25)} words for ${dur}s.
@@ -323,7 +331,7 @@ ${!look || PICTURE_LOOKS.includes(look) ? layerSection() : ""}
 }
 
 /** The worked example, kept apart from the rules so a caller can be given the rules alone when context is tight. */
-export function guideExample(style: GuideStyle | null): string {
+export function guideExample(style: GuideStyle | null, clipFloorS = 0): string {
   if (style === "cyber") {
     return `EXAMPLE (cyber Short, 9:16, one scene of five):
 {"id":"02-relay","kind":"cinema","chapter":"02 THE METHOD","accent":"cyan","title":"they never touch the key","hl":"never","voice":"Two people, one at your door and one at your car, pass the signal between them.","hold":0.2,"beats":[
@@ -350,7 +358,7 @@ Notice: every phrase has its own drawing and the drawing is the thing the words 
   return `EXAMPLE (a realistic film, 9:16, 40s, en — the direction plus the first two scenes of six; the same shape, drawn as film${style === "animation" ? "; an ANIMATED film keeps this exact shape, with every image_prompt describing a drawn frame instead of a photograph" : ""}):
 "direction":${JSON.stringify(d)}
 "scenes":${JSON.stringify(EXAMPLE_SCENES)}
-Notice: every scene has ${SHOTS_MIN_CINEMA} or more pictures; every picture after the first carries "at" quoted from its own voice line; the accents come from the sections, not from the mood; "${d.cast[0].name}" and "${d.cast[1].name}" are named exactly as the direction names them and listed in each shot's "cast", so Kleo appends their look to every picture that shows them; the moving shots say what moves in "action"; nothing on the forbidden list appears anywhere. (This example has no spec, so no shot carries "covers"; with one, each shot lists the requirement ids it shows.)`;
+Notice: ${clipFloorS > 0 ? `the example's scenes have ${SHOTS_MIN_CINEMA} pictures because it is written for the local road; in THIS film a picture is a paid clip, so a scene has one picture per ${clipWordsPerShot(clipFloorS)} words of voice and a short line has one` : `every scene has ${SHOTS_MIN_CINEMA} or more pictures`}; every picture after the first carries "at" quoted from its own voice line; the accents come from the sections, not from the mood; "${d.cast[0].name}" and "${d.cast[1].name}" are named exactly as the direction names them and listed in each shot's "cast", so Kleo appends their look to every picture that shows them; the moving shots say what moves in "action"; nothing on the forbidden list appears anywhere. (This example has no spec, so no shot carries "covers"; with one, each shot lists the requirement ids it shows.)`;
 }
 
 /**
@@ -422,7 +430,7 @@ export const EXAMPLE_SCENES = [
 ];
 
 /** Everything a caller gets in one string: the rules, then the one example that matches the look they asked for. */
-export const guideText = (o: GuideOptions): string => `${buildGuide(o)}\n\n${guideExample(o.style ?? null)}`;
+export const guideText = (o: GuideOptions): string => `${buildGuide(o)}\n\n${guideExample(o.style ?? null, o.clipFloorS ?? 0)}`;
 
 /** Kept so a caller can still see which Keou styles exist without the guide having to list them all. */
 export const KEOU_STYLE_NAMES = STYLES;

@@ -446,6 +446,36 @@ test("a capital proves a name only where no sentence starts, never in Title Case
   assert.equal(modeWhy(pirates("Pirates"), "Sea. Pirates attack the harbour at night").mode, "open", "the first word of a sentence");
 });
 
+test("a name at the start of a sentence, after a quote mark or a colon is still a name; a people, a feast or a capitalised role is not (review, 25 September)", () => {
+  const mara = [item("R1", "character", "Mara", "Mara", { who: "c1" }), item("R2", "action", "Mara bakes a cake", "bakes a cake", { who: "c1" }), item("R3", "object", "a cake", "a cake")];
+  const cast = [{ id: "c1", name: "Mara", look: "a woman in a baker's apron", ref: null }];
+  assert.deepEqual(modeWhy(mara, "Mara bakes a cake for the village.", { cast }), { mode: "faithful", why: 'a particular character (named): "Mara"' }, "the writer's cast names the first word");
+  assert.equal(modeWhy(mara, "Mara bakes a cake for the village.").mode, "open", "a first word alone proves nothing");
+  assert.equal(modeWhy(mara, "Mara bakes a cake. The village loves Mara.").mode, "faithful", "the same word mid-sentence is a name");
+  const lina = [item("R1", "character", "a girl called Lina", "a girl called \"Lina\"")];
+  assert.equal(modeWhy(lina, 'a girl called "Lina" flies a kite').mode, "faithful", "a quote mark does not start a sentence");
+  assert.equal(modeWhy([item("R1", "character", "Mara, a baker", "Mara, a baker")], "Protagonist: Mara, a baker in a small town").mode, "faithful", "nor does a colon");
+  const open = [
+    ["Make a video about a Viking raid", [item("R1", "character", "a Viking", "a Viking")]],
+    ["A film about a Roman legionary", [item("R1", "character", "a Roman legionary", "a Roman legionary")]],
+    ["A short story about a Christmas elf", [item("R1", "character", "a Christmas elf", "a Christmas elf")]],
+    ["Fammi un video sui Pirati", [item("R1", "character", "pirates", "sui Pirati")]],
+  ];
+  for (const [request, items] of open) assert.equal(modeWhy(items, request).mode, "open", request);
+  const genova = [item("R1", "character", "the fishermen of Genoa", "i pescatori di Genova", { who: "c1" })];
+  assert.equal(modeWhy(genova, "un film sui pescatori di Genova", { cast: [{ id: "c1", name: "the fishermen", look: "weathered men in oilskins", ref: null }] }).mode, "open", "a cast called by its role is a role, whatever the capitals");
+});
+
+test("one beat written as an action and as an event is one beat, and one beat is a subject (review, 25 September)", () => {
+  const request = "fammi un video dei pirati che seppelliscono un tesoro";
+  const twice = [item("R1", "character", "pirates", "dei pirati"), item("R2", "action", "bury a treasure", "seppelliscono un tesoro"),
+    item("R3", "event", "the pirates bury a treasure", "pirati che seppelliscono un tesoro", { order: 1 })];
+  assert.equal(modeWhy(twice, request).mode, "open");
+  const two = [item("R1", "action", "the pirates bury a treasure", "seppelliscono un tesoro"), item("R2", "event", "a storm sinks their ship", "una tempesta affonda la nave", { order: 1 })];
+  assert.equal(modeWhy(two, `${request}, poi una tempesta affonda la nave`).mode, "faithful", "two different beats are a story");
+  assert.match(SPEC_METHOD, /A beat of the story is an event OR an action, never both/);
+});
+
 test("the user's corrections are what the user said: the refusal names them, the server's writer is given them", () => {
   const p = specProblems(RAW({ items: [...RAW().items, item("R7", "character", "the user's dog Pepe with a red collar", "il mio cane Pepe col collare rosso")] }), REQ);
   assert.ok(p.some((x) => /R7: the quote "il mio cane Pepe col collare rosso" is not in the user's request — an item must come from what the user wrote: the prompt, their answers \(must_keep, audience, tone\), or the corrections they gave after the read-back, passed word for word as "corrections"/.test(x)), p.join("\n"));

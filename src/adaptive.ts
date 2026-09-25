@@ -370,13 +370,29 @@ function languageFrom(text: string): "en" | "it" {
  * Italian Renaissance" say nothing about the narration.
  */
 const LANG_NAME = "(english|inglese|italian|italiano|italiana)";
+/**
+ * "in italiano" after a verb of speaking, writing or learning is how someone in the story speaks ("un bambino che
+ * impara a parlare in italiano"), not the narration (25 September 2026 review).
+ */
+const SPEAKING_BEFORE = "(?<!\\b(?:parl\\w*|speak\\w*|spoke|talk\\w*|impar\\w*|learn\\w*|stud\\w*|scri\\w*|writ\\w*|dice|dico|dicono|dicendo|diceva|dett[oa]|say\\w*|said|sing\\w*|sung|cant\\w*|tradu\\w*|translat\\w*|legg\\w*|read\\w*|pens\\w*|think\\w*|thought|sogn\\w*|dream\\w*|pregh\\w*|pray\\w*|insegn\\w*|teach\\w*|taught)\\s+)";
+/**
+ * Each phrase needs a narration word, or stands where only the video's own talk stands. A voice that is the topic
+ * stays the topic: "an Italian voice actor", "la voce italiana di Topolino", "the Italian voice of Mickey Mouse".
+ */
 const LANGUAGE_PHRASES: readonly RegExp[] = [
   new RegExp(`\\b(?:narrated|narrato|narrata|narrazione|told|raccontat[oa]|spoken|parlato|voiced)\\s+in\\s+${LANG_NAME}\\b`, "i"),
-  new RegExp(`\\bvoce(?:\\s+narrante)?\\s+(?:in\\s+)?${LANG_NAME}\\b`, "i"),
-  new RegExp(`\\b${LANG_NAME}\\s+(?:narration|voice[- ]?over|narrator|voice)\\b`, "i"),
+  new RegExp(`\\bvoce\\s+(?:narrante|fuori\\s+campo)\\s+(?:in\\s+)?${LANG_NAME}\\b`, "i"),
+  // A bare "voce inglese" only as an answer: at the start of a clause, or after "con", "e".
+  new RegExp(`(?:^|[,;:(]\\s*|\\b(?:con|e|ed)\\s+(?:(?:una|la)\\s+)?)voce\\s+(?:in\\s+)?${LANG_NAME}\\b`, "i"),
+  new RegExp(`\\b${LANG_NAME}\\s+(?:narration|voice[- ]?over|narrator|voice)\\b(?![-'’]\\w)(?!\\s+(?:actors?|actress(?:es)?|artists?|talents?|cast|dub\\w*|coach\\w*|lessons?|of|di)\\b)`, "i"),
   new RegExp(`\\b(?:lingua|language)\\s*:\\s*${LANG_NAME}\\b`, "i"),
-  new RegExp(`\\bin\\s+(?:lingua\\s+)?${LANG_NAME}(?=\\s*(?:$|[,.;:!?)]))`, "i"),
 ];
+/**
+ * "in English" at the end of a clause names the narration only in a clause that is the video's own ("un video sui
+ * pirati in inglese", "…, in inglese"): a clause with no video word in it is the story's.
+ */
+const LANGUAGE_AT_END = new RegExp(`${SPEAKING_BEFORE}\\bin\\s+(?:lingua\\s+)?${LANG_NAME}(?=\\s*(?:$|[,.;:!?)]))`, "gi");
+const VIDEO_WORD_RE = new RegExp(`\\b(?:${VIDEO_WORDS})\\b`, "i");
 const langOfName = (name: string): NarrationLanguage => (/^(?:english|inglese)$/i.test(name) ? "en" : "it");
 
 /** Where the request says the narration's language outright, and which it is; null when it does not. */
@@ -385,29 +401,42 @@ export function languageSpan(text: string): { value: NarrationLanguage; at: numb
     const m = re.exec(text);
     if (m) return { value: langOfName(m[1]), at: m.index, end: m.index + m[0].length };
   }
+  for (const m of text.matchAll(LANGUAGE_AT_END)) {
+    const clause = text.slice(0, m.index).split(/[,;.:!?]/).pop() ?? "";
+    if (!clause.trim() || VIDEO_WORD_RE.test(clause)) return { value: langOfName(m[1]), at: m.index ?? 0, end: (m.index ?? 0) + m[0].length };
+  }
   return null;
 }
 export const languageFromRequest = (text: string): NarrationLanguage | null => languageSpan(text)?.value ?? null;
 
-const LANG_EN_RE = /^(?:in\s+)?(?:en|eng|english|inglese|anglais|ingl[eé]s)$/i;
-const LANG_IT_RE = /^(?:in\s+)?(?:it|ita|italian|italiano|italiana|italien)$/i;
+/**
+ * The answer is read for its words, not matched whole (25 September 2026 review): "English please", "inglese,
+ * grazie", "en-US" and "nessuna preferenza" used to come back as languages Kleo does not speak. The two-letter codes
+ * count only as the whole answer ("it doesn't matter" is not Italian).
+ */
+const LANG_EN_RE = /\b(?:english|inglese|anglais|ingl[eé]s)\b|^(?:in\s+)?(?:en|eng)(?:[-_][a-z]{2})?$/i;
+const LANG_IT_RE = /\b(?:italian\w*|italiano|italiana|italien\w*)\b|^(?:in\s+)?(?:it|ita)(?:[-_][a-z]{2})?$/i;
 /** "Whatever", "fai tu": the user has no preference, and no preference means English (the owner's rule). */
-const LANG_ANY_RE = /^(?:whatever|any|anything|either|no preference|none|i don'?t care|don'?t care|(?:it )?doesn'?t matter|(?:it )?does not matter|you choose|you pick|you decide|your choice|up to you|(?:[eè] )?indifferente|fai tu|scegli tu|decidi tu|non importa|come vuoi(?: tu)?|(?:una )?qualsiasi|(?:per me )?[eè] uguale|uguale|va bene tutto|default)$/i;
+const LANG_ANY_RE = /\b(?:whatever|any|anything|either|no preference|none|don'?t (?:care|mind)|do not (?:care|mind)|doesn'?t matter|does not matter|you choose|you pick|you decide|your choice|up to you|indifferente|nessuna preferenza|fai tu|scegli tu|decidi tu|non (?:mi )?importa|fa lo stesso|come vuoi|qualsiasi|uguale|va bene tutto|default)\b/i;
+/** A language Kleo does not narrate in: only then is the answer quoted back ("you asked for …"). */
+const LANG_OTHER_RE = /\b(?:fran[cç]ais|french|francese|spanish|spagnolo|espa[nñ]ol|castellano|german|tedesco|deutsch|portugu[eê]s|portuguese|portoghese|chinese|cinese|mandarin|japanese|giapponese|russian|russo|arabic|arabo|hindi|korean|coreano|dutch|olandese|polish|polacco|turkish|turco|greek|greco|swedish|svedese|latin|latino)\b/i;
 
 /** The language answer as the call passes it. */
 export interface LanguageAnswer { value: NarrationLanguage | null; defaulted: boolean; unsupported: string | null }
 /**
  * The user's answer to the language question: English or Italian in any spelling; no preference is English
- * (`defaulted`); any other language is `unsupported` (Kleo narrates in two), and the question comes back naming both.
+ * (`defaulted`); another language Kleo knows by name is `unsupported` (Kleo narrates in two), and the question comes
+ * back naming both. Anything else (both languages and no preference, words Kleo cannot read) is asked again plainly.
  */
 export function languageAnswer(raw: string | null | undefined): LanguageAnswer | null {
   if (raw === undefined || raw === null) return null;
   const s = String(raw).trim().replace(/\s+/g, " ").replace(/^["'“”‘’]+|["'“”‘’.!?,;]+$/g, "").trim();
   if (!s) return null;
-  if (LANG_EN_RE.test(s)) return { value: "en", defaulted: false, unsupported: null };
-  if (LANG_IT_RE.test(s)) return { value: "it", defaulted: false, unsupported: null };
+  const en = LANG_EN_RE.test(s), it = LANG_IT_RE.test(s);
+  if (en !== it) return { value: en ? "en" : "it", defaulted: false, unsupported: null };
   if (LANG_ANY_RE.test(s)) return { value: "en", defaulted: true, unsupported: null };
-  return { value: null, defaulted: false, unsupported: s.slice(0, 40) };
+  if (!en && LANG_OTHER_RE.test(s)) return { value: null, defaulted: false, unsupported: s.slice(0, 40) };
+  return { value: null, defaulted: false, unsupported: null };
 }
 
 /* ------------------------------------------------------------------ the subject */
@@ -434,10 +463,24 @@ const SUBJECT_VIDEO_RE = new RegExp(`(?<lead>(?:\\b${SUBJECT_ART}\\s+|\\bun')?(?
 const TOPIC_BEFORE_RE = /\b(?:of|about|on|regarding|sul|sulla|sullo|sui|sugli|sulle|su|di|del|della|dello|dei|degli|delle|from|like)\s*$/i;
 /** A bare video word (no article, no kind) is the request's only at the start of a clause or after a request verb. */
 const BARE_VIDEO_START_RE = /(?:^|[.!?,;:(]|\b(?:fammi|creami|generami|crea|genera|make(?: me| it)?|create|generate|want|vorrei|voglio|fai))\s*$/i;
+/**
+ * A video phrase that opens the request or a clause with no request verb before it heads the topic when a content
+ * word follows it ("Film noir explained", "Il nuovo film di Nolan", "Animation history", "Documentary photography
+ * tips"; 25 September 2026 review). It is the request's only when what follows is a topic preposition, a length, a
+ * format, the end of the clause, or one Italian adjective before a topic preposition ("un video divertente sui gatti").
+ */
+const VIDEO_AT_START_RE = /(?:^|[.!?,;:(])\s*$/;
+const VIDEO_FOLLOW_RE = /^\s*(?:$|[,.;:!?()–—-]|\d|(?:about|on|of|regarding|sul|sulla|sullo|sui|sugli|sulle|su|della|dello|dei|degli|delle|del|da|in|per|for|con|with|without|senza|that|which|che|where|dove|showing|explaining|telling|mostrando|spiegando|raccontando|to|lungo|lunga|long|tutorial|explainer)\b|di\s+(?!\p{Lu})|\p{L}+[aeiouàèéìòù]\s+(?:sul|sulla|sullo|sui|sugli|sulle|su|di|del|della|dello|dei|degli|delle|per|che|con)\b)/u;
 const VERB_ANY_RE = /\b(?:fammi|creami|generami)\b/gi;
 const VERB_START_RE = /(?:^|(?<=[.!?,;:]\s*))(?:(?:please|per favore|ciao|hey)\s*,?\s*)?(?:crea|genera|voglio|vorrei|mi fai|make(?:\s+(?:me|it))?|create|generate|i want|i'd like|can you make|could you make|puoi fare|puoi creare)\b/gi;
 const FORMAT_WORD = "(?:youtube(?:\\s+shorts?)?|yt|tik\\s?tok|instagram(?:\\s+(?:reels?|stories))?|ig|facebook|reels?|shorts|short(?=\\s*(?:$|[.,;:!?)]))|stories|orizzontale|verticale|vertical|horizontal|landscape|portrait|widescreen|16\\s*:\\s*9|9\\s*:\\s*16|4k)";
-const FORMAT_PHRASE_RE = new RegExp(`\\b(?:in|per|for|as|come|formato|format)\\s+(?:(?:il|lo|la|i|gli|le|the|a|an|un|uno|una|my|our|miei|mie|nostri|nostre|formato|format)\\s+){0,2}${FORMAT_WORD}(?:\\s*(?:,|e|and|o|or|/)?\\s*${FORMAT_WORD}){0,2}(?![\\w:])`, "gi");
+/**
+ * A format phrase is the video's only where it ends its clause or another word about the video follows it ("per TikTok
+ * sulle api", "in orizzontale, dei pirati"). A platform inside the story stays: "come TikTok ha cambiato la musica",
+ * "tips for Instagram creators", "mistakes in YouTube history" (25 September 2026 review). "come" needs "un reel".
+ */
+const FORMAT_FOLLOW = `(?=\\s*(?:$|[,.;:!?)]|(?:(?:e|ed|and|o|or|&)\\s+)?(?:\\d|(?:${FORMAT_WORD}|(?:in|per|for|as|formato|format)\\s+(?:(?:il|lo|la|the|a|an|un|uno|una)\\s+)?${FORMAT_WORD}|con|with|senza|without|di\\s+\\d|da\\s+\\d|of\\s+\\d|lasting|lung[oa]|long|sul|sulla|sullo|sui|sugli|sulle|su|about|on|regarding|dei|degli|delle|della|dello|del|showing|explaining|mostrando|spiegando)\\b)))`;
+const FORMAT_PHRASE_RE = new RegExp(`\\b(?:in|per|for|as|come(?=\\s+(?:un|una|uno|a)\\s)|formato|format)\\s+(?:(?:il|lo|la|i|gli|le|the|a|an|un|uno|una|my|our|miei|mie|nostri|nostre|formato|format)\\s+){0,2}${FORMAT_WORD}(?:\\s*(?:,|e|and|o|or|/)?\\s*${FORMAT_WORD}){0,2}(?![\\w:])${FORMAT_FOLLOW}`, "gi");
 /** "con musica", "with music and subtitles": the yes answers with their preposition. A bare "soundtrack" may be a topic. */
 const SOUND_YES_RE = /\b(?:con|with)\s+(?:(?:la|una|le|i|a|the|some)\s+)?(?:background\s+)?(?:musica|music|soundtrack|score|colonna sonora|sottotitoli|subtitles|captions)(?:\s+di\s+sottofondo)?(?:\s*(?:,|e|and|&)\s*(?:(?:la|una|i|a|the|some|con|with)\s+)*(?:musica|music|sottotitoli|subtitles|captions))?\b/gi;
 /** The glue a length takes with it: "di 15 secondi", ", 30 secondi", "for 30 seconds", "in thirty seconds". */
@@ -456,6 +499,16 @@ export function hasContent(subject: string): boolean {
   if (ws.some((w) => letters(w) >= 3 && !STOP.has(w) && !INTAKE_VOCAB.has(w) && !PRONOUNS.has(w))) return true;
   return TOPIC_RE.test(subject);
 }
+
+/** Where a span was cut out of the request (subjectFrom); never typed by a user. */
+const CUT = "\u0000";
+/**
+ * The intake's words that can also be a topic in a list ("about wine, food, music"): kept when a topic came first and
+ * nothing was cut from their clause. The format, length and look words never are (", verticale" always goes).
+ */
+const TOPICAL = new Set(["music", "musica", "film", "films", "video", "videos", "movie", "cinema", "animation", "animazione", "documentary",
+  "documentario", "cartoon", "cartoons", "cartone", "cartoni", "soundtrack", "voce", "voice", "language", "lingua", "trailer", "spot",
+  "clip", "clips", "storyboard", "narration", "narrazione"]);
 
 /** A clause that only says how the video is made (", verticale"): no topic, and no word the intake does not own. */
 const pureIntake = (clause: string): boolean =>
@@ -480,9 +533,13 @@ export function subjectFrom(text: string, lengthSpan: { at: number; end: number 
     add(lengthSpan.at - (glue?.[0].length ?? 0), lengthSpan.end + (tail?.[0].length ?? 0));
   }
   all(SUBJECT_VIDEO_RE, (m) => {
-    const before = text.slice(0, m.index ?? 0);
+    const at = m.index ?? 0, before = text.slice(0, at), lead = !!m.groups?.lead?.trim();
     if (TOPIC_BEFORE_RE.test(before)) return false;
-    return !!m.groups?.lead?.trim() || BARE_VIDEO_START_RE.test(before);
+    // A bare video word after a comma, in a request that already named its topic, is an item of a list ("about
+    // cinema, film, and art").
+    if (!lead && /[,;]\s*$/.test(before) && TOPIC_RE.test(before)) return false;
+    if (VIDEO_AT_START_RE.test(before) && !VIDEO_FOLLOW_RE.test(text.slice(at + m[0].length))) return false;
+    return lead || BARE_VIDEO_START_RE.test(before);
   });
   all(FORMAT_PHRASE_RE);
   all(new RegExp(MUSIC_NO_RE.source, "gi"));
@@ -497,14 +554,21 @@ export function subjectFrom(text: string, lengthSpan: { at: number; end: number 
     const last = merged[merged.length - 1];
     if (last && sp[0] <= last[1]) last[1] = Math.max(last[1], sp[1]); else merged.push([sp[0], sp[1]]);
   }
+  // The cut is marked, so a clause knows whether talk about the video was taken out of it.
   let rest = text;
-  for (const [at, end] of merged.reverse()) rest = `${rest.slice(0, at)} ${rest.slice(end)}`;
-  // The clauses: one made only of the intake's words goes; the others keep the punctuation that followed them.
-  const parts = rest.split(/([,;]|[.:!?]+(?=\s|$))/);
+  for (const [at, end] of merged.reverse()) rest = `${rest.slice(0, at)} ${CUT} ${rest.slice(end)}`;
+  // The clauses (a comma inside a number, "1,000" or "2,5", splits nothing): one made only of the intake's words goes,
+  // unless it is an item of a list whose topic came first ("about wine, food, music"); the others keep the
+  // punctuation that followed them.
+  const parts = rest.split(/([,;](?=\s|$)|[.:!?]+(?=\s|$))/);
   const kept: { clause: string; delim: string }[] = [];
+  let topicBefore = false;
   for (let i = 0; i < parts.length; i += 2) {
-    const clause = parts[i].replace(/\s+/g, " ").replace(CONJ_EDGES_RE, "").trim();
-    if (!clause || pureIntake(clause)) continue;
+    const cut = parts[i].includes(CUT);
+    const clause = parts[i].split(CUT).join(" ").replace(/\s+/g, " ").replace(CONJ_EDGES_RE, "").trim();
+    if (!clause) continue;
+    if (pureIntake(clause) && (cut || !topicBefore || !words(clause).some((w) => TOPICAL.has(w)))) continue;
+    if (TOPIC_RE.test(clause)) topicBefore = true;
     kept.push({ clause, delim: (parts[i + 1] ?? "").trim() });
   }
   const out = kept.map((k, i) => (i < kept.length - 1 ? `${k.clause}${k.delim || ","} ` : k.clause)).join("");

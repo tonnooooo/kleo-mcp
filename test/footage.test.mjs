@@ -784,6 +784,18 @@ test("seedancePrompt: the frame is continued, not described again; the action is
   for (const move of Object.values(m.SEEDANCE_MOVES)) assert.doesNotMatch(move, /\bfast\b|camera/i, move);
 });
 
+test("seedancePrompt: 'fast' never reaches Seedance, not even from Kleo's own motion hint (review, 25 September)", () => {
+  const sb = SEED_SB(); sb.scenes[0].shots[0].action = "the mist drifting fast across the frame";
+  const p = m.seedancePrompt({ id: "01-hook-s1", image_prompt: "x", motion: "push_in" }, "realistic", { storyboard: sb, spec: SEED_SPEC() }, FRAME);
+  assert.ok(p.startsWith("Continue from the first frame: the mist drifting steadily across the frame."), p);
+  assert.doesNotMatch(p, /\bfast/i);
+  const t2v = m.seedancePrompt({ id: "01-hook-s1", image_prompt: "x", motion: "push_in" }, "realistic", { storyboard: sb, spec: SEED_SPEC() }, { ...FRAME, hasFrame: false });
+  assert.doesNotMatch(t2v, /\bfast/i);
+  for (const [a, b] of [["clouds race fast over the ridge", "clouds race steadily over the ridge"], ["a fast car crosses the bridge", "a car crosses the bridge"],
+    ["fast-moving clouds", "moving clouds"], ["the river moves very fast", "the river moves steadily"], ["she eats breakfast slowly", "she eats breakfast slowly"]])
+    assert.equal(m.unhurried(a), b, a);
+});
+
 test("seedancePrompt: the drawn look, a text the user asked for, the text-to-video fallback, and the limit", () => {
   const stored = { storyboard: SEED_SB(), spec: SEED_SPEC() };
   const anim = m.seedancePrompt({ id: "01-hook-s1", image_prompt: "x", motion: "push_in" }, "animation", stored, FRAME);

@@ -787,6 +787,22 @@ test("the storyboard guide's examples validate against this contract", () => {
   }
 });
 
+test("on the API road the whole guide teaches the clip floor: scenes the words can pay for, one picture per clip's worth (review, 25 September)", () => {
+  const per = clipWordsPerShot(4);
+  const api = guideText({ duration_s: 15, style: "realistic", languages: ["en", "it"], clipFloorS: 4 });
+  const words = wordBudget(15, 1.1).target;
+  assert.match(api, new RegExp(`about ${words} narrated words across ${Math.floor(words / per)} scenes`));
+  assert.ok(api.includes(`1-${SHOTS_PER_SCENE.cinema[1]} shots each, one per ${per} words of voice (one for a line under ${2 * per} words)`), "the refusal list says the floor's shot count");
+  assert.ok(!api.includes(`${shotRangeText("cinema")} shots each`), "and not the local road's");
+  assert.match(api, new RegExp(`in THIS film a picture is a paid clip, so a scene has one picture per ${per} words of voice`));
+  assert.doesNotMatch(api, /Notice: every scene has \d or more pictures/);
+  // A longer film keeps the local range where the words can pay for it; the local road is unchanged.
+  assert.match(guideText({ duration_s: 45, style: "realistic", languages: ["en", "it"], clipFloorS: 4 }), /across 4-8 scenes/);
+  const local = guideText({ duration_s: 15, style: "realistic", languages: ["en", "it"] });
+  assert.match(local, /across 4-8 scenes/); assert.ok(local.includes(`${shotRangeText("cinema")} shots each`));
+  assert.match(local, new RegExp(`Notice: every scene has ${SHOTS_MIN_CINEMA} or more pictures`));
+});
+
 test("the guide only offers languages and voices kleo_create_video accepts", () => {
   const jobLangs = ["en", "it"];
   assert.match(MCP_SRC, /const JOB_LANGUAGES = \["en", "it"\] as const;/, "the job languages are declared once");

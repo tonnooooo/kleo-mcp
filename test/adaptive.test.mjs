@@ -314,6 +314,72 @@ test("the request names the narration's language only in so many words; the chat
   assert.equal(adaptPrompt("un video sui pirati in inglese").subject, "sui pirati", "the language phrase is not the subject");
 });
 
+test("a language inside the story is not the narration's, and its words stay in the subject (review, 25 September)", () => {
+  const story = [
+    ["a documentary about an Italian voice actor, 30s vertical", "Italian voice actor"],
+    ["un film sulla voce italiana di Topolino", "sulla voce italiana di Topolino"],
+    ["un video su un bambino cinese che impara a parlare in italiano", "su un bambino cinese che impara a parlare in italiano"],
+    ["a film about the Italian voice of Mickey Mouse", "about the Italian voice of Mickey Mouse"],
+    ["a film about a boy who learns to speak in English", "about a boy who learns to speak in English"],
+    ["un bambino che sogna in inglese", "un bambino che sogna in inglese"],
+  ];
+  for (const [request, kept] of story) {
+    assert.equal(languageFromRequest(request), null, request);
+    assert.ok(adaptPrompt(request).subject.includes(kept), `${request}: "${adaptPrompt(request).subject}"`);
+    assert.ok(adaptPrompt(request).intake.missing.includes("language"), `${request}: the language is asked`);
+  }
+  // Said in so many words, it is still read.
+  for (const [request, lang] of [["Un video sui pirati, voce inglese", "en"], ["Un video sui pirati con voce narrante italiana", "it"], ["A film about bees with Italian narration", "it"],
+    ["un video sui pirati, in inglese", "en"], ["A film about bees, English voice-over", "en"], ["Un video sui pirati, lingua: inglese", "en"]])
+    assert.equal(languageFromRequest(request), lang, request);
+  assert.equal(adaptPrompt("Un video sui pirati, voce inglese").subject, "sui pirati");
+});
+
+test("a comma inside a number splits nothing, and a list of topics keeps its items (review, 25 September)", () => {
+  assert.equal(adaptPrompt("a video about 1,000 soldiers at Thermopylae").subject, "about 1,000 soldiers at Thermopylae");
+  assert.equal(adaptPrompt("un video su 2,5 milioni di anni fa").subject, "su 2,5 milioni di anni fa");
+  assert.equal(adaptPrompt("a video about wine, food, music").subject, "about wine, food, music");
+  assert.equal(adaptPrompt("un video su vino, musica, arte").subject, "su vino, musica, arte");
+  assert.equal(adaptPrompt("a video about cinema, film, and art").subject, "about cinema, film, art");
+  // A clause about the video still goes, list or not.
+  assert.equal(adaptPrompt("Un video sui pirati, verticale").subject, "sui pirati");
+  assert.equal(adaptPrompt("Un video sui pirati, 30 secondi, senza musica").subject, "sui pirati");
+});
+
+test("a video word that heads the topic stays, and a platform inside the story stays (review, 25 September)", () => {
+  const heads = [
+    ["Il nuovo film di Nolan spiegato in 60 secondi", "Il nuovo film di Nolan spiegato"],
+    ["Animation history in 60 seconds, vertical", "Animation history"],
+    ["Documentary photography tips, 30s", "Documentary photography tips"],
+    ["un video su come TikTok ha cambiato la musica", "su come TikTok ha cambiato la musica"],
+    ["la storia di come YouTube è nato, 30 secondi", "la storia di come YouTube è nato"],
+    ["a video with tips for Instagram creators", "with tips for Instagram creators"],
+    ["mistakes in YouTube history", "mistakes in YouTube history"],
+    // The request's own video phrase still goes.
+    ["a new video about pirates", "about pirates"],
+    ["un video divertente sui gatti", "divertente sui gatti"],
+    ["Un video per TikTok sui gatti", "sui gatti"],
+    ["Un video sui gatti per TikTok", "sui gatti"],
+    ["Un video sui gatti come un reel", "sui gatti"],
+  ];
+  for (const [request, subject] of heads) assert.equal(adaptPrompt(request).subject, subject, request);
+  assert.ok(adaptPrompt("Film noir explained in a 60-second video").subject.startsWith("Film noir explained"));
+});
+
+test("the language answer is read for its words: no preference is English, another language is named back, anything else is asked plainly (review, 25 September)", () => {
+  for (const a of ["nessuna preferenza", "per me è indifferente", "non mi importa", "fa lo stesso", "I don't mind", "either is fine", "it doesn't matter", "inglese o italiano, fai tu"])
+    assert.deepEqual(languageAnswer(a), { value: "en", defaulted: true, unsupported: null }, a);
+  for (const a of ["English please", "inglese, grazie", "en-US", "English narration", "in inglese per favore"])
+    assert.deepEqual(languageAnswer(a), { value: "en", defaulted: false, unsupported: null }, a);
+  for (const a of ["italiano grazie", "Italian narration", "it-IT"]) assert.deepEqual(languageAnswer(a), { value: "it", defaulted: false, unsupported: null }, a);
+  assert.deepEqual(languageAnswer("en français"), { value: null, defaulted: false, unsupported: "en français" });
+  for (const a of ["boh", "italiano o inglese?"]) assert.deepEqual(languageAnswer(a), { value: null, defaulted: false, unsupported: null }, a);
+  const plain = adaptPrompt("Un video sui pirati", { duration_s: 30, format: "16:9", look: "realistic", music: "no", subtitles: "no", language: "boh" });
+  assert.deepEqual(plain.intake.missing, ["language"]);
+  assert.match(plain.questions[0], /^In che lingua vuoi la voce narrante: inglese o italiano\?/); assert.doesNotMatch(plain.questions[0], /hai chiesto/);
+  assert.equal(adaptPrompt("Un video sui pirati", { duration_s: 30, format: "16:9", look: "realistic", music: "no", subtitles: "no", language: "nessuna preferenza" }).language, "en");
+});
+
 test("the live regression: an Italian chat asking for an English film gets an English film", () => {
   const b = adaptPrompt("fammi un video in orizzontale, dei pirati di 15 secondi", { duration_s: 15, format: "16:9", look: "animation", music: "yes", subtitles: false, language: "en" });
   assert.equal(b.language, "en"); assert.equal(b.intake.answered.language.from, "call");
