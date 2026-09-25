@@ -425,15 +425,17 @@ test("drawJobStills: a sheet the model refuses is asked for once, not on every t
   assert.ok(stills.every((d) => d.refs === 0 || d.prompt.includes("the drawing style of this film")), "no sheet: the only reference is the style anchor");
 });
 
-test("drawJobStills: the sheets a tick drew are in fidelity.json even when the tick runs out of time before the next sheet", async () => {
+test("drawJobStills: the sheets a tick drew are in fidelity.json even when the tick stops before the stills", async () => {
   const { ai, calls } = fakeAi();
   const { env, jobs, kv } = fakeEnv({ AI: ai });
   const job = jobOf(jobs);
   job.storyboard = JSON.stringify({ ...STORYBOARD, direction: { ...DIRECTION, cast: [...DIRECTION.cast, { name: "Tomas", look: "a tall old baker with a grey beard" }] } });
+  // Since 25 September 2026 the sheets are drawn side by side (STILLS_CONCURRENCY): both start before the stop.
   const r = await drawJobStills(env, job, { deadline: Date.now() + 120_000, stop: () => calls.draws.length >= 1 });
-  assert.equal(r.state, "drawing"); assert.equal(calls.draws.length, 1, "Mara's sheet, then the tick stops");
+  assert.equal(r.state, "drawing"); assert.equal(calls.draws.length, 2, "the two sheets, then the tick stops before any still");
+  assert.ok(calls.draws.every((d) => d.prompt.startsWith("Character reference sheet of")));
   const report = () => JSON.parse(new TextDecoder().decode(kv.get("file:renders/gt_stills/fidelity.json").v));
-  assert.deepEqual(Object.keys(report().sheets), ["c1"], "the sheet drawn before the stop is reported");
+  assert.deepEqual(Object.keys(report().sheets).sort(), ["c1", "d-tomas"], "the sheets drawn before the stop are reported");
   const r2 = await drawJobStills(env, { ...job, params: jobs.get("gt_stills").params }, { deadline: Date.now() + 120_000 });
   assert.equal(r2.state, "done");
   assert.deepEqual(Object.keys(report().sheets).sort(), ["c1", "d-tomas"]);
@@ -725,7 +727,7 @@ test("drawImage on kie:…: a failed task (flagged when kie.ai names a policy), 
   const broke = await rejection(drawImage({ KIE_API_KEY: "k" }, "kie:nano-banana-pro", "p", STILL_SIZES["9:16"], [], 1));
   assert.equal(isFlaggedError(broke), false); assert.equal(isTaskFailure(broke), true);
   assert.equal(isTransientError(broke), true, "the generic reader would have paused on it");
-  assert.equal(isTransientStillError(broke), false); assert.equal(stillsErrorVerdict(broke), "failed"); assert.equal(fallbackReason(broke), null);
+  assert.equal(isTransientStillError(broke), false, "so drawJobStills never pauses on it"); assert.equal(fallbackReason(broke), null);
   assert.match(String(broke), /\[code_500\]/);
   // Never finished: polled until the window closes, then a timeout — a pause for the job, never a fallback.
   Object.assign(KIE_STILL_POLL, { firstMs: 5, everyMs: 5, minMs: 40, maxMs: 80 });
