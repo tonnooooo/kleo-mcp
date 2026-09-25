@@ -9,7 +9,7 @@ import { treatmentText, treatmentMethodText, variationFor } from "./treatment.ts
 import { specMethodText, specText, specOf, itemById, visualChecks, specModeWhy, MODE_RULE, REF_ROLES, type RequestSpec } from "./spec.ts";
 import { resolveRefs, makeUploadToken, fetchRefBytes, refHandle, refMeta, ingestRef, RefError, REF_HANDLE_RE, UPLOAD_MAX_FILES, UPLOAD_TTL_S, type ResolvedRef, type RefInput } from "./refs.ts";
 import { getFile } from "./storage";
-import { ACTIVE_TEMPLATE, PUBLIC_TEMPLATES as TEMPLATES, PUBLIC_TEMPLATE_IDS as ACTIVE_TEMPLATE_IDS, findTemplate, creditsFor, creditsForProduct, filmCredits, freeCreditsFor, tariffSentence, MIN_FILM_CREDITS, SECONDS_PER_CREDIT, PRODUCTS, ANIMATIC_CREDITS, ANIMATIC_MAX_S, FILM_STYLE, productOf } from "./templates";
+import { ACTIVE_TEMPLATE, PUBLIC_TEMPLATES as TEMPLATES, PUBLIC_TEMPLATE_IDS as ACTIVE_TEMPLATE_IDS, findTemplate, creditsFor, creditsForProduct, filmCredits, freeCreditsFor, tariffSentence, MIN_FILM_CREDITS, SECONDS_PER_CREDIT, PRODUCTS, ANIMATIC_CREDITS, ANIMATIC_MAX_S, FILM_STYLE, productOf, aiUpscaleCredits, aiUpscaleRule, aiUpscaleOn } from "./templates";
 import { PACKS, sellingAvailable } from "./stripe";
 import { createJob, cancelJob, jobView, resultLinks, JobError, FILE_NAMES } from "./jobs";
 import { accountUrl, makeHandle } from "./accounts";
@@ -18,7 +18,7 @@ import { FORMATS, FILM_LOOKS, wordBudget, shotRangeText, pictureScenes } from ".
 import { musicNote, clipFloorFor, footageConfig } from "./footage";
 import { guideText } from "./guide.ts";
 import { int } from "./util";
-import { adaptPrompt, adaptivePromptText, durationFrom, lookFromText } from "./adaptive.ts";
+import { adaptPrompt, adaptivePromptText, durationFrom, lookFromText, aiUpscaleAnswer } from "./adaptive.ts";
 
 /**
  * Languages a job can be created in. The engine ships more Kokoro voices (keou-contract VOICES still knows fr),
@@ -30,7 +30,7 @@ const JOB_LANGUAGES = ["en", "it"] as const;
 const shotRange = shotRangeText;
 
 const INSTRUCTIONS = `This server is Kleo (the kleo_* tools): the video studio the user connected. Kleo makes narrated videos in one of two looks, realistic (cinematic live action) or animation (a 2D animated film) — one narrator; MUSIC (an instrumental track under the voice) and burned-in SUBTITLES are options the user is ALWAYS asked about and gets only when they say yes; no other on-screen text; one clean dissolve between acts per 25 seconds — 4K 60 fps, 16:9 for YouTube or 9:16 for a Short, as TWO PRODUCTS from the same treatment and storyboard: the FILM (every shot a generated clip, 15 seconds to 5 minutes, priced by length, made only for accounts that have bought a credit pack, because Kleo pays for every second of clip) and the ANIMATIC (the same drawn frames with the camera moving over each one, the same narrator and layer, no generated clip; ${ANIMATIC_CREDITS} credits flat, 15 to ${ANIMATIC_MAX_S} seconds, open to every account — the free credits pay for one). kleo_adapt_prompt asks the user which of the two they want, quoting the prices for their account (an account that has not bought a pack is offered the animatic in so many words): pass their answer as product — never call an animatic a film, never make one without saying which it is. When the user mentions Kleo, a video, a film, a Short or a YouTube clip, use these tools; never answer from memory.
-ORDER OF CALLS: 1) kleo_adapt_prompt with the user's request, FIRST, before anything else: it reads the request against Kleo's intake — subject, length, format, look, product (film or animatic, with the prices the intake quotes), music, subtitles and the LANGUAGE of the narration (English or Italian; "no preference" means English) (required: music, subtitles and the language are asked EVERY time, and "no" is an answer); audience, tone, what must appear (optional) — and answers with the questions for whatever the request does not say. Ask the user ALL of them in ONE message, in the user's language, wait for the answers, and call it again with them (duration_s, format, style, product, music, subtitles, language, audience, tone, must_keep). The film's language is their answer to the language question, never the language they write to you in. Never pick a subject, a length, a format, a look, the product, music, subtitles or the language for them: what the request does not say is asked, not assumed. When the user delegates the subject ("stupiscimi", "surprise me"), the tool says so: propose 3-5 concrete subjects in one message and let them pick — never ask the same question again, never render before they pick. 2) Once it answers ready_to_render, the same tool hands YOU two methods. FIRST the SPEC: the user's request taken apart into the requirements the film is checked against — who is in it and exactly how they look, where, what happens and in which order, what must be seen, read or said, what must never appear — extraction, not creativity: every item quotes the user's own words. THEN the producer's method, and you write the TREATMENT under the spec (logline, angle, opening image, acts, ending, look, pacing, narrator, the layer, the decisions you took): when the user described their film, it is THEIR film — their characters as described, their events in their order — and you add only what they left open. Show the user in ONE message what Kleo understood (the spec read back as a short list), the logline and the decisions, and wait for their yes or their corrections. 3) kleo_storyboard_guide, then write the storyboard yourself under that treatment (every shot lists the spec items it shows in "covers" and the characters in it in "cast"): this is where the film's quality is made, and Kleo's own planner is the fallback, not the standard. 4) kleo_create_video with the prompt (unchanged), the length, the format, the product and the language the user chose, the spec, the treatment, the references, the storyboard and — when the user corrected what Kleo understood — their corrections in their own words as "corrections". 5) kleo_wait_for_video again and again until it returns the links, then hand them over.
+ORDER OF CALLS: 1) kleo_adapt_prompt with the user's request, FIRST, before anything else: it reads the request against Kleo's intake — subject, length, format, look, product (film or animatic, with the prices the intake quotes), for a film the optional AI UPSCALE (Real-ESRGAN + RIFE, a sharper picture for many extra credits; the default is the classic 4K 60 fps, and the credits come back if the finish cannot apply it), music, subtitles and the LANGUAGE of the narration (English or Italian; "no preference" means English) (required: music, subtitles and the language are asked EVERY time, and "no" is an answer); audience, tone, what must appear (optional) — and answers with the questions for whatever the request does not say. Ask the user ALL of them in ONE message, in the user's language, wait for the answers, and call it again with them (duration_s, format, style, product, ai_upscale, music, subtitles, language, audience, tone, must_keep; an AI upscale question left unanswered is "no"). The film's language is their answer to the language question, never the language they write to you in. Never pick a subject, a length, a format, a look, the product, music, subtitles or the language for them: what the request does not say is asked, not assumed. When the user delegates the subject ("stupiscimi", "surprise me"), the tool says so: propose 3-5 concrete subjects in one message and let them pick — never ask the same question again, never render before they pick. 2) Once it answers ready_to_render, the same tool hands YOU two methods. FIRST the SPEC: the user's request taken apart into the requirements the film is checked against — who is in it and exactly how they look, where, what happens and in which order, what must be seen, read or said, what must never appear — extraction, not creativity: every item quotes the user's own words. THEN the producer's method, and you write the TREATMENT under the spec (logline, angle, opening image, acts, ending, look, pacing, narrator, the layer, the decisions you took): when the user described their film, it is THEIR film — their characters as described, their events in their order — and you add only what they left open. Show the user in ONE message what Kleo understood (the spec read back as a short list), the logline and the decisions, and wait for their yes or their corrections. 3) kleo_storyboard_guide, then write the storyboard yourself under that treatment (every shot lists the spec items it shows in "covers" and the characters in it in "cast"): this is where the film's quality is made, and Kleo's own planner is the fallback, not the standard. 4) kleo_create_video with the prompt (unchanged), the length, the format, the product, the AI upscale answer and the language the user chose, the spec, the treatment, the references, the storyboard and — when the user corrected what Kleo understood — their corrections in their own words as "corrections". 5) kleo_wait_for_video again and again until it returns the links, then hand them over.
 PICTURES: when the user attaches or links images (a person, a pet, an object, a place, a style they like), Kleo draws the characters and things FROM those pictures. Pass https links as "references" to kleo_adapt_prompt; for pictures attached to the chat, call kleo_upload_link, give the user the link, and when they say they uploaded, call kleo_adapt_prompt again with references [{upload: "<token>"}]. Describe every attached picture in the spec as well (the character's "look"), and pass the returned handles to kleo_create_video as "references".
 DELIVERY RULE: the user expects the finished video in this same conversation. After kleo_create_video, call kleo_wait_for_video repeatedly (each call waits up to about a minute and returns progress) until it returns the MP4 and thumbnail links. Tell the user once that the render is running and the estimated minutes — the eta_min the server returns, never your own guess — and do not ask "shall I keep waiting?". Never invent progress, files or links: only repeat what these tools return. Call the video by its number (for example "video gt_ab12cd34"), not "job".`;
 
@@ -186,6 +186,21 @@ const noSuchVideo = (id: string) =>
   new JobError(`There is no video number "${id}" on this account. Check the number, or call kleo_get_job without a number to see your recent videos.`);
 
 
+/**
+ * The AI upscale of a finished film, in words and as data: "applied", or "not applied" with the reason and the credits
+ * given back (src/orchestrator.ts settleAiUpscale wrote it on the row when the finish box reported). Null for a job
+ * that was not sold the option.
+ */
+export function upscaleOf(job: Pick<Job, "params">): { line: string; data: { applied: boolean; refunded: number; reason: string | null } } | null {
+  let p: JobParams;
+  try { p = JSON.parse(job.params) as JobParams; } catch { return null; }
+  if (!p.ai_upscale) return null;
+  const r = p.ai_upscale_result;
+  if (!r) return { line: "AI upscale: its report has not reached Kleo; if it was not applied, its credits are given back.", data: { applied: false, refunded: 0, reason: "no report yet" } };
+  if (r.applied) return { line: `AI upscale: applied (Real-ESRGAN + RIFE on all ${plural(r.parts, "shot")}).`, data: { applied: true, refunded: 0, reason: null } };
+  return { line: `AI upscale: not applied (${r.reason ?? "the finish could not run it"}), ${plural(r.refunded, "credit")} refunded; the film is in the classic 4K 60 fps. Tell the user.`, data: { applied: false, refunded: r.refunded, reason: r.reason } };
+}
+
 /** Download links for a finished job, as data + human text (shared by kleo_get_result and kleo_wait_for_video). */
 async function resultPayload(env: Env, base: string, job: Job) {
   const view = jobView(job);
@@ -199,9 +214,11 @@ async function resultPayload(env: Env, base: string, job: Job) {
   // THE FIDELITY REPORT (24 September 2026): what the pictures were checked for and what they did not show, said
   // where the links are, so the user hears about a miss from Kleo and not by finding it in the video.
   const fidelity = await fidelityOf(env, job);
+  // THE AI UPSCALE (25 September 2026): what the finish did with the option the user paid for, and the refund if not.
+  const upscale = upscaleOf(job);
   const text = `Your ${what} ${job.id} is ready. The links work until ${niceDate(job.expires_at)}:\n` +
-    Object.entries(links).sort(([a], [b]) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99)).map(([k, v]) => `${label[k] ?? k.replace("_url", "")}: ${v}`).join("\n") + sim + (music ? `\n${music}` : "") + (fidelity ? `\n${fidelityLine(fidelity)}` : "");
-  return { data: { job_id: job.id, state: "done", expires_at: job.expires_at, mode: job.backend === "mock" ? "simulated" : "gpu", ...(music ? { music_missing: true } : {}), ...(fidelity ? { fidelity } : {}), ...links }, text };
+    Object.entries(links).sort(([a], [b]) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99)).map(([k, v]) => `${label[k] ?? k.replace("_url", "")}: ${v}`).join("\n") + sim + (music ? `\n${music}` : "") + (fidelity ? `\n${fidelityLine(fidelity)}` : "") + (upscale ? `\n${upscale.line}` : "");
+  return { data: { job_id: job.id, state: "done", expires_at: job.expires_at, mode: job.backend === "mock" ? "simulated" : "gpu", ...(music ? { music_missing: true } : {}), ...(fidelity ? { fidelity } : {}), ...(upscale ? { ai_upscale: upscale.data } : {}), ...links }, text };
 }
 
 
@@ -301,6 +318,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       format: z.enum(FORMATS).optional().describe("16:9 for YouTube/landscape, 9:16 for a Short/TikTok/Reel. Read off the request when its words say it; otherwise the tool asks the user for it — pass their answer here, never a guess."),
       language: z.string().max(40).optional().describe("The user's answer to the question about the narration's language, in their words (\"en\", \"English\", \"italiano\"…): Kleo narrates in English or Italian, and \"whatever\" / \"no preference\" means English. Asked every time the request does not say it: pass their answer, never a guess, and never the language they write to you in."),
       product: z.enum(PRODUCTS).optional().describe(`The user's answer to the question film or animatic, which the tool asks with this account's prices: "film" (every shot a generated clip, for accounts that have bought a pack) or "animatic" (the drawn frames with camera moves, ${ANIMATIC_CREDITS} credits flat, up to ${ANIMATIC_MAX_S} seconds). Never a guess.`),
+      ai_upscale: z.string().max(80).optional().describe("The user's answer to the AI upscale question, in their words (\"yes\" / \"no\"): asked for a film only, with its price in extra credits. Only a clear yes buys it; \"no\", \"whatever\" or no answer means the classic 4K 60 fps finish. Never a guess."),
       audience: z.string().max(160).optional().describe("Who the video is for, when the user said it."),
       tone: z.string().max(160).optional().describe("The tone the user asked for, when they said it."),
       must_keep: z.string().max(400).optional().describe("What the user said must appear (names, numbers, places, a message) or must not, when they answered that question."),
@@ -311,7 +329,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       author: z.enum(["assistant", "server"]).default("assistant").describe("Who writes the spec and the treatment. \"assistant\" (default): Kleo hands YOU the two methods and you write them — you are a far stronger writer than Kleo's own planning model, and it costs nothing. \"server\": Kleo's model writes them (use only if you cannot write JSON yourself)."),
     }),
     annotations: { readOnlyHint: true, idempotentHint: false, openWorldHint: true },
-  }, async ({ prompt, duration_s, format, language, audience, tone, must_keep, style, music, subtitles, product, references, author }) => guarded(async () => {
+  }, async ({ prompt, duration_s, format, language, audience, tone, must_keep, style, music, subtitles, product, ai_upscale, references, author }) => guarded(async () => {
     // THE PRODUCT IS ASKED WITH THE PRICES (25 September 2026): film or animatic is one of the intake's questions, and
     // it quotes what each costs this user, so the account is read first. D1 reads only: nothing is written or charged.
     const paid = await hasPaid(env, user.id);
@@ -319,8 +337,12 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     const said = prompt.trim().replace(/\s+/g, " ");
     const lengthAsked = duration_s ?? durationFrom(said);
     const filmPrice = lengthAsked ? creditsForProduct(lengthAsked, style ?? lookFromText(said) ?? FILM_STYLE, "film") : null;
-    const account = { paid, credits: fresh.credits, filmCredits: filmPrice, animaticCredits: ANIMATIC_CREDITS, animaticMaxS: ANIMATIC_MAX_S, tariff: tariffSentence() };
-    const brief = adaptPrompt(prompt, { duration_s, format, audience, tone, must_keep, look: style ?? null, music, subtitles, language, product, account });
+    // THE AI UPSCALE (25 September 2026): offered with its price unless the Worker's KLEO_SR switches it off.
+    const upscaleOffered = aiUpscaleOn(env);
+    const upscalePrice = upscaleOffered && filmPrice ? aiUpscaleCredits(filmPrice, env) : null;
+    const account = { paid, credits: fresh.credits, filmCredits: filmPrice, animaticCredits: ANIMATIC_CREDITS, animaticMaxS: ANIMATIC_MAX_S, tariff: tariffSentence(),
+      ...(upscaleOffered ? { aiUpscale: { credits: upscalePrice, rule: aiUpscaleRule(env) } } : {}) };
+    const brief = adaptPrompt(prompt, { duration_s, format, audience, tone, must_keep, look: style ?? null, music, subtitles, language, product, ai_upscale, account });
     // The two answers, as the method and the server's model read them (src/treatment.ts SoundOptions).
     const sound = { music: brief.music, subtitles: brief.subtitles };
     const look = style ?? brief.look;   // the user's answer on the call, or read off the request
@@ -329,18 +351,21 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     // Metered (meteredRefs above): this runs before every cap, so it carries its own.
     const refs = references?.length ? await meteredRefs(env, user.id, references) : [];
     if (refs.length) void audit(env, user.id, null, "refs.adapt", { handles: refs.map((r) => r.handle), described: refs.filter((r) => r.description).length });
-    const head = { workflow: ACTIVE_TEMPLATE.id, style: look, brief, has_paid: paid, product: brief.product, prices: { film: filmPrice, animatic: ANIMATIC_CREDITS }, account_url: await accountUrl(env, user.id, base), ...(refs.length ? { references: refsData(refs) } : {}) };
+    const head = { workflow: ACTIVE_TEMPLATE.id, style: look, brief, has_paid: paid, product: brief.product, ai_upscale: brief.ai_upscale, prices: { film: filmPrice, animatic: ANIMATIC_CREDITS, ...(upscaleOffered ? { ai_upscale: upscalePrice } : {}) }, account_url: await accountUrl(env, user.id, base), ...(refs.length ? { references: refsData(refs) } : {}) };
     // THE INTAKE (14 September): a required item the request does not say — subject, length, format, look, and since
     // 25 September the product and the narration's language — is asked, never guessed. The questions are the tool's
     // answer, and nothing is spent.
     const fmt = brief.format, dur = brief.duration_s;
-    if (brief.questions.length || dur === null || fmt === null || look === null || brief.language === null || brief.product === null) return ok({ ...head, treatment: null, ready_to_render: false, questions: brief.questions, optional_questions: brief.optional_questions }, `${adaptivePromptText(brief)}${refsBlock(refs)}`);
+    if (brief.questions.length || dur === null || fmt === null || look === null || brief.language === null || brief.product === null || (brief.product === "film" && upscaleOffered && brief.ai_upscale === null)) return ok({ ...head, treatment: null, ready_to_render: false, questions: brief.questions, optional_questions: brief.optional_questions }, `${adaptivePromptText(brief)}${refsBlock(refs)}`);
     const t = ACTIVE_TEMPLATE;
     const maxS = brief.product === "animatic" ? ANIMATIC_MAX_S : t.maxSeconds;
     if (dur < t.minSeconds || dur > maxS)
       throw new JobError(`Kleo makes ${brief.product === "animatic" ? "animatics" : "films"} of ${t.minSeconds} to ${maxS} seconds; ${dur} seconds is outside that range. Agree a length in range with the user and call again. Nothing was charged.`);
     // The narration's language is the user's answer (the intake asked it), never the language of the chat.
     const lang = brief.language, chosen = brief.product;
+    // What kleo_create_video is told about the upscale: the user's answer, and what it adds to this film.
+    const upscaleYes = chosen === "film" && brief.ai_upscale === true;
+    const upscaleArg = chosen === "film" && upscaleOffered ? `, ai_upscale: "${upscaleYes ? "yes" : "no"}"${upscaleYes && upscalePrice ? ` (the user's AI upscale: +${upscalePrice} credits, ${(filmPrice ?? 0) + upscalePrice} in all)` : ""}` : "";
     // On the API road every shot is a paid clip of at least the model's shortest length: the treatment is told so.
     const clipFloorS = clipFloorFor(env, { product: chosen, duration_s: dur }, await footageConfig(env));
     // The intake's optional answers travel to kleo_create_video by name: until 24 September they died here, and the
@@ -364,7 +389,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       const method = treatmentMethodText({ prompt: prompt.trim(), duration_s: dur, format: fmt, language: lang, look, sound, specPending: true, clipFloorS }, v);
       void audit(env, user.id, null, "treatment.method", { variation: v.key, duration_s: dur, format: fmt, language: lang, product: chosen, look, music: brief.music?.wanted ?? null, subtitles: brief.subtitles, refs: handles.length, spec_method: true });
       return ok({ ...head, language: lang, treatment: null, spec: null, author: "assistant", variation: v.key, ready_to_render: true, ...answers,
-        next: `STEP A: write the SPEC, following the spec method in the text (extraction: every item quotes the user). STEP B: write the TREATMENT under it, following the producer's method. The spec is ${MODE_RULE}; Kleo re-decides the mode by this rule. When it is FAITHFUL, tell the story the user's way — their characters as described, their events in their order — set the treatment's "variation" to "as-told/as-asked", and put everything you added in "decisions". THEN, in ONE message in the user's language, show them what Kleo understood (the spec read back as a short list: the characters and how they look, where, what happens in order, what must be seen or said, what is left to Kleo), the logline and the decisions, and wait for their yes or their corrections. If they correct or add something, change the spec and the treatment as they say (an item they added quotes their correction) and keep their words for "corrections". Only then call kleo_create_video with prompt (the user's words, unchanged), duration_s, format, language: "${lang}" (the narration language the user chose, not the language of the chat), product: "${chosen}", style (the look the treatment names), music and subtitles (the user's answers, as you passed them here), the object as "spec", the object as "treatment"${passOn}, and — when they corrected anything — "corrections" (their corrections, word for word). If you cannot write them, call this tool again with author: "server".` },
+        next: `STEP A: write the SPEC, following the spec method in the text (extraction: every item quotes the user). STEP B: write the TREATMENT under it, following the producer's method. The spec is ${MODE_RULE}; Kleo re-decides the mode by this rule. When it is FAITHFUL, tell the story the user's way — their characters as described, their events in their order — set the treatment's "variation" to "as-told/as-asked", and put everything you added in "decisions". THEN, in ONE message in the user's language, show them what Kleo understood (the spec read back as a short list: the characters and how they look, where, what happens in order, what must be seen or said, what is left to Kleo), the logline and the decisions, and wait for their yes or their corrections. If they correct or add something, change the spec and the treatment as they say (an item they added quotes their correction) and keep their words for "corrections". Only then call kleo_create_video with prompt (the user's words, unchanged), duration_s, format, language: "${lang}" (the narration language the user chose, not the language of the chat), product: "${chosen}"${upscaleArg}, style (the look the treatment names), music and subtitles (the user's answers, as you passed them here), the object as "spec", the object as "treatment"${passOn}, and — when they corrected anything — "corrections" (their corrections, word for word). If you cannot write them, call this tool again with author: "server".` },
         `${adaptivePromptText(brief)}${refsBlock(refs)}\n\n${specMethod}${answersText}\n\nSTEP B — THEN THE TREATMENT, UNDER THE SPEC YOU JUST WROTE. ${method}`);
     }
     // Each treatment is a model call on the free planning quota, so an account gets a day's worth and no more:
@@ -393,7 +418,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       return ok({ ...head, language: lang, treatment: null, spec, ready_to_render: true, ...answers, note: r.transient ? "model unavailable" : "no valid treatment in two attempts", problems: r.history },
         `${adaptivePromptText(brief)}${refsBlock(refs)}${understood}\n\nKleo could not write the treatment just now (${r.transient ? "its planning model did not answer" : "two attempts came back incomplete"}). ${fallback} Or call this tool once more.`);
     return ok({ ...head, language: lang, style: r.treatment.look, spec, spec_text: spec ? specText(spec) : null, treatment: r.treatment, ready_to_render: true, ...answers,
-      next: `Show the user, in ONE message, what Kleo understood${spec ? " (the spec above, as a short list)" : ""}, the logline and the decisions, and wait for their yes or their corrections; then call kleo_create_video with prompt (unchanged), duration_s, format, language: "${lang}" (the narration language the user chose, not the language of the chat), product: "${chosen}", style (this treatment's "look"), music and subtitles (the user's answers)${spec ? ', this same "spec" (corrected as they asked: an item they added quotes their correction)' : ""} and this same object as "treatment"${passOn}, and — when they corrected anything — "corrections" (their corrections, word for word).` },
+      next: `Show the user, in ONE message, what Kleo understood${spec ? " (the spec above, as a short list)" : ""}, the logline and the decisions, and wait for their yes or their corrections; then call kleo_create_video with prompt (unchanged), duration_s, format, language: "${lang}" (the narration language the user chose, not the language of the chat), product: "${chosen}"${upscaleArg}, style (this treatment's "look"), music and subtitles (the user's answers)${spec ? ', this same "spec" (corrected as they asked: an item they added quotes their correction)' : ""} and this same object as "treatment"${passOn}, and — when they corrected anything — "corrections" (their corrections, word for word).` },
       `${adaptivePromptText(brief)}${refsBlock(refs)}${understood}\n\n${treatmentText(r.treatment)}`);
   }));
 
@@ -489,6 +514,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       music: z.string().max(200).nullable().optional().describe("The user's answer about music, exactly as you passed it to kleo_adapt_prompt: \"no\" (or null) for none; \"yes\" or the kind they want for an instrumental track under the narration (the treatment's \"music\" brief is used when it has one). Kleo orders the track from kie.ai and ducks it under the voice."),
       subtitles: z.union([z.boolean(), z.enum(["yes", "no"])]).optional().describe("The user's answer about burned-in subtitles: true/\"yes\" for thin cinema subtitles in the picture, false/\"no\" for none. An .srt file is delivered either way."),
       product: z.enum(PRODUCTS).optional().describe(`The product the user chose in the intake (kleo_adapt_prompt asks it, with the prices): pass it. What to make from the storyboard: "film" (default; every shot a generated clip, priced by length, for accounts that have bought a credit pack) or "animatic" (the same drawn frames with the camera moving over each one, the same narrator and layer, 4K 60 fps, no generated clip; ${ANIMATIC_CREDITS} credits flat, up to ${ANIMATIC_MAX_S} seconds, every account). Say which one you are ordering to the user before you call.`),
+      ai_upscale: z.union([z.boolean(), z.string().max(80)]).optional().describe("The user's answer to the AI upscale question kleo_adapt_prompt asked (film only): \"yes\" for Real-ESRGAN + RIFE on every shot, at the extra credits the intake quoted (refunded automatically if the finish cannot apply it); \"no\", or omitted, for the classic 4K 60 fps finish."),
       notify_email: z.string().email().optional().describe("Optional: email the download links when the render finishes."),
       spec: z.looseObject({}).optional().describe("The SPEC you wrote under kleo_adapt_prompt's spec method (or the one it returned), corrected as the user asked: {v:1, mode, summary, cast, items, refs, open, narration, script}. Every item's \"quote\" must be the user's own words from the prompt, from their must_keep/audience/tone answers, or from their \"corrections\" after the read-back (pass those too). Checked before anything is charged; the film is planned under it and every picture is checked against it."),
       references: z.array(z.string().max(400)).max(8).optional().describe("The user's reference pictures: the handles (kref_…) kleo_adapt_prompt returned, or the token of a kleo_upload_link link they uploaded through. Kleo draws the characters from them."),
@@ -508,7 +534,8 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     // Priced on the style the caller NAMED. When none is named, createJob picks one from the topic and debits that
     // price instead, so this figure is an early courtesy ("you cannot afford this"), never the charge itself: the
     // authoritative debit is one conditional UPDATE in createJob, and it refuses with its own accurate message.
-    const cost = creditsForProduct(duration, args.style ?? "realistic", args.product);
+    const base0 = creditsForProduct(duration, args.style ?? "realistic", args.product);
+    const cost = base0 + (args.product !== "animatic" && aiUpscaleAnswer(args.ai_upscale) === true && aiUpscaleOn(env) ? aiUpscaleCredits(base0, env) : 0);
     if (duration >= t.minSeconds && duration <= t.maxSeconds && fresh.credits < cost)
       throw new JobError(`Not enough credits: this ${args.product === "animatic" ? "animatic" : kindOf(args.format ?? t.formats[0])} costs ${plural(cost, "credit")} and you have ${plural(fresh.credits, "credit")}. Nothing was charged.${args.product !== "animatic" && fresh.credits >= ANIMATIC_CREDITS ? ` The animatic of the same storyboard costs ${plural(ANIMATIC_CREDITS, "credit")}: call again with product: "animatic"${duration > ANIMATIC_MAX_S ? ` and a length of at most ${ANIMATIC_MAX_S} seconds` : ""}.` : ""} Your account and how to get more: ${await accountUrl(env, user.id, base)}`);
     const maxOpen = int(env.MAX_JOBS_PER_USER, 2);
@@ -541,7 +568,11 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     const spec = specOf(jp);
     const specNote = spec ? ` Kleo will check the film against your ${plural(spec.items.filter((i) => i.must).length, "requirement")} (${spec.mode === "faithful" ? "your film, as you described it" : "a subject Kleo develops"}).` : "";
     const refsNote = jp.refs?.length ? ` It draws from ${plural(jp.refs.length, "reference picture")}.` : "";
-    const summary = `Your ${what} is in the queue. Video number: ${job.id}.${cappedNote} Template: ${t.name}, ${view.format}, ${view.duration_s} seconds.${styleNote}${productNote}${treatNote}${specNote}${refsNote} It should be ready in ${eta}. ${plural(job.credits, "credit")} used, ${plural(fresh.credits - job.credits, "credit")} left. NEXT STEP, do it now: call kleo_wait_for_video with job_id "${job.id}", and when it answers that the video is still rendering call it again, and again, until it answers that the video is ready. Do not end your turn and do not ask the user anything in between: they are waiting for the finished video in this conversation.${sim}`;
+    // The AI upscale, said with its price when the user answered the question (25 September 2026).
+    const upscaleNote = jp.ai_upscale
+      ? ` AI upscale: yes, Real-ESRGAN + RIFE on every shot, ${plural(jp.ai_upscale_credits ?? 0, "credit")} of the ${plural(job.credits, "credit")} (given back automatically if the finish cannot apply it).`
+      : args.ai_upscale !== undefined && productOf(jp) === "film" ? " AI upscale: no, the classic 4K 60 fps finish." : "";
+    const summary = `Your ${what} is in the queue. Video number: ${job.id}.${cappedNote} Template: ${t.name}, ${view.format}, ${view.duration_s} seconds.${styleNote}${productNote}${treatNote}${specNote}${refsNote}${upscaleNote} It should be ready in ${eta}. ${plural(job.credits, "credit")} used, ${plural(fresh.credits - job.credits, "credit")} left. NEXT STEP, do it now: call kleo_wait_for_video with job_id "${job.id}", and when it answers that the video is still rendering call it again, and again, until it answers that the video is ready. Do not end your turn and do not ask the user anything in between: they are waiting for the finished video in this conversation.${sim}`;
     return ok({ ...view, credits_left: fresh.credits - job.credits, mode: simulated ? "simulated" : "gpu", message: summary }, summary);
   }));
 
@@ -700,6 +731,11 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     // THE TWO PRODUCTS (15 September): a film is filmed by kie.ai on the owner's money and is opened by one payment on
     // record; the animatic is for everyone. Said here, once, so the assistant offers what this account can have.
     const paid = await hasPaid(env, user.id);
+    // The AI upscale (25 September 2026): a film's option at extra credits, unless the Worker switched it off.
+    const upscaleOffered = aiUpscaleOn(env);
+    const upscaleSentence = upscaleOffered
+      ? ` A film can have the optional AI upscale (Real-ESRGAN + RIFE, a sharper picture): ${aiUpscaleRule(env).en} (${aiUpscaleCredits(filmCredits(30), env)} for a 30-second Short), given back if the finish cannot apply it; the intake asks.`
+      : "";
     const data = {
       credits_available: fresh.credits,
       has_paid: paid,
@@ -710,6 +746,9 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
         ? `film (priced by length) and animatic (${ANIMATIC_CREDITS} credits flat, up to ${ANIMATIC_MAX_S} s)`
         : `animatic only (${ANIMATIC_CREDITS} credits flat, up to ${ANIMATIC_MAX_S} s): the film opens after any credit pack is bought`,
       film_credits: filmCredits(), // the template's default length (30 s)
+      ai_upscale: upscaleOffered
+        ? { available: true, rule: aiUpscaleRule(env).en, credits_30s: aiUpscaleCredits(filmCredits(30), env), credits_60s: aiUpscaleCredits(filmCredits(60), env) }
+        : { available: false },
       seconds_per_credit: SECONDS_PER_CREDIT,
       min_film_credits: MIN_FILM_CREDITS,
       pricing: tariffSentence(),
@@ -727,7 +766,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     const buy = open
       ? `Credit packs are on the account page, paid through Stripe (from ${cheapest.label} for ${cheapest.credits} credits; one payment, nothing renews)`
       : `Card payments are paused right now; the account page says when they reopen`;
-    return ok(data, `You have ${plural(fresh.credits, "credit")}. ${tariffSentence()}.${enough}${films} ${buy}. Your account page, which also shows the key that carries this account to another browser: ${url}`);
+    return ok(data, `You have ${plural(fresh.credits, "credit")}. ${tariffSentence()}.${enough}${films}${paid ? upscaleSentence : ""} ${buy}. Your account page, which also shows the key that carries this account to another browser: ${url}`);
   });
 
   return server;

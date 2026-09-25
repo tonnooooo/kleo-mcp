@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { adaptPrompt, adaptivePromptText, intakeText, lookFromText, INTAKE, REQUIRED_INTAKE, subjectFrom, lengthOf, languageAnswer, languageFromRequest } from "../src/adaptive.ts";
+import { adaptPrompt, adaptivePromptText, intakeText, lookFromText, INTAKE, REQUIRED_INTAKE, subjectFrom, lengthOf, languageAnswer, languageFromRequest, aiUpscaleAnswer } from "../src/adaptive.ts";
 import { words, STOP, INTAKE_VOCAB } from "../src/format-vocab.ts";
 
-test("the intake is a fixed list: eight things Kleo settles every time (music and subtitles since 22 September, the product and the narration's language since 25 September), three it offers to ask", () => {
-  assert.deepEqual(INTAKE.map((i) => i.key), ["subject", "duration", "format", "look", "product", "music", "subtitles", "language", "audience", "tone", "must_keep"]);
-  assert.deepEqual([...REQUIRED_INTAKE], ["subject", "duration", "format", "look", "product", "music", "subtitles", "language"]);
+test("the intake is a fixed list: nine things Kleo settles every time (music and subtitles since 22 September, the product, the film's AI upscale and the narration's language since 25 September), three it offers to ask", () => {
+  assert.deepEqual(INTAKE.map((i) => i.key), ["subject", "duration", "format", "look", "product", "ai_upscale", "music", "subtitles", "language", "audience", "tone", "must_keep"]);
+  assert.deepEqual([...REQUIRED_INTAKE], ["subject", "duration", "format", "look", "product", "ai_upscale", "music", "subtitles", "language"]);
   for (const i of INTAKE) { assert.ok(i.question.it.includes("?"), `${i.key}: the Italian question is a question`); assert.ok(i.question.en.includes("?"), `${i.key}: the English question is a question`); }
 });
 
@@ -447,4 +447,52 @@ test("the request names the product only with the word itself; the animatic's br
   assert.match(text, /- Product: animatic/); assert.match(text, /- Plan: the animatic: drawn frames with the camera moving over each one, no generated clip/);
   assert.doesNotMatch(text, /shot-by-shot real video clips/);
   assert.match(adaptivePromptText(adaptPrompt("A film about pirates", { ...ANSWERS, product: "film", account: ACCT() })), /- Plan: shot-by-shot real video clips/);
+});
+
+/* ------------------------------------------------------------------ the AI upscale, an option that costs (25 September) */
+
+/** A paying account the upscale is offered to: a 15-second film at 10 credits, the upscale at +10. */
+const UP = (over = {}, up = { credits: 10, rule: { en: "as many credits again as the film, at least 5", it: "tanti crediti quanti ne costa il film, almeno 5" } }) => ACCT({ aiUpscale: up, ...over });
+
+test("a film is asked about the AI upscale with its exact extra credits, in the chat's language and the same message", () => {
+  const en = adaptPrompt("A film about pirates", { ...ANSWERS, product: "film", account: UP() });
+  assert.deepEqual(en.intake.missing, ["ai_upscale"]); assert.equal(en.ai_upscale, null);
+  assert.equal(en.questions[0], "Do you want the AI upscale (Real-ESRGAN + RIFE: a sharper picture, +10 credits)? If not, the film comes out in classic 4K 60 fps.");
+  const it = adaptPrompt("Un video sui pirati", { ...ANSWERS, product: "film", account: UP() });
+  assert.equal(it.questions[0], "Vuoi l'ingrandimento AI (Real-ESRGAN + RIFE: immagine più nitida, +10 crediti)? Se no, il film esce in 4K 60 fps classico.");
+  // The product still open on a paying account: asked for the film it may choose, next to the product question.
+  const open = adaptPrompt("Un video sui pirati", { ...ANSWERS, account: UP() });
+  assert.deepEqual(open.intake.missing, ["product", "ai_upscale"]);
+  assert.match(open.questions[0], /L'ingrandimento AI facoltativo del film costa \+10 crediti\.$/, "the product question quotes it too");
+  assert.equal(open.questions[1], "Se scegli il film: Vuoi l'ingrandimento AI (Real-ESRGAN + RIFE: immagine più nitida, +10 crediti)? Se no, il film esce in 4K 60 fps classico.");
+  // No length yet: the rule instead of the number.
+  const noLen = adaptPrompt("A film about pirates", { ...ANSWERS, duration_s: undefined, product: "film", account: UP({ filmCredits: null }, { credits: null, rule: { en: "as many credits again as the film, at least 5", it: "x" } }) });
+  assert.match(noLen.questions[1], /\+as many credits again as the film, at least 5\)\?/);
+});
+
+test("the AI upscale is never asked for an animatic, of an account that cannot order a film, or when it is switched off", () => {
+  assert.ok(!adaptPrompt("A film about pirates", { ...ANSWERS, product: "animatic", account: UP() }).intake.missing.includes("ai_upscale"));
+  assert.equal(adaptPrompt("A film about pirates", { ...ANSWERS, product: "animatic", account: UP() }).ai_upscale, false);
+  assert.ok(!adaptPrompt("An animatic about pirates", { ...ANSWERS, account: UP() }).intake.missing.includes("ai_upscale"));
+  assert.deepEqual(adaptPrompt("A film about pirates", { ...ANSWERS, account: UP({ paid: false }) }).intake.missing, ["product"]);
+  // KLEO_SR "off": the caller passes no aiUpscale, and nothing about it is asked or shown.
+  const off = adaptPrompt("A film about pirates", { ...ANSWERS, product: "film", account: ACCT() });
+  assert.deepEqual(off.questions, []); assert.equal(off.ai_upscale, false);
+  assert.doesNotMatch(intakeText(off), /AI upscale/); assert.doesNotMatch(off.questions.join(" "), /upscale/i);
+});
+
+test("the answer: only a clear yes buys the upscale; no, whatever or no answer is the classic finish", () => {
+  for (const y of ["yes", "Yes please", "sì", "si, grazie", "ok", "certo", "voglio provarlo", "let's try it", true]) assert.equal(aiUpscaleAnswer(y), true, String(y));
+  for (const n of ["no", "No grazie", "nope", "classico", "whatever", "fai tu", "non lo so", "don't bother", "boh", false]) assert.equal(aiUpscaleAnswer(n), false, String(n));
+  for (const u of [undefined, null, "", "   "]) assert.equal(aiUpscaleAnswer(u), null);
+  const yes = adaptPrompt("A film about pirates", { ...ANSWERS, product: "film", ai_upscale: "sì", account: UP() });
+  assert.equal(yes.ai_upscale, true); assert.deepEqual(yes.questions, []);
+  assert.match(intakeText(yes), /- AI upscale: yes \(\+10 credits\) \(the user's answer\)/);
+  assert.match(adaptivePromptText(yes), /- AI upscale: yes — Real-ESRGAN \+ RIFE on every shot, \+10 credits on top of the film; refunded automatically if the finish cannot apply it/);
+  const no = adaptPrompt("A film about pirates", { ...ANSWERS, product: "film", ai_upscale: "whatever", account: UP() });
+  assert.equal(no.ai_upscale, false); assert.deepEqual(no.questions, []);
+  assert.match(adaptivePromptText(no), /- AI upscale: no — the classic 4K 60 fps finish/);
+  // Without an account (a pure caller) the answer is taken as passed, and nothing is asked.
+  assert.equal(adaptPrompt("A film about pirates", { ...ANSWERS, ai_upscale: "yes" }).ai_upscale, true);
+  assert.deepEqual(adaptPrompt("A film about pirates", ANSWERS).questions, []);
 });

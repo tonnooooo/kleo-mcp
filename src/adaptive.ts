@@ -20,7 +20,7 @@ import type { Format, Product } from "./templates.ts";
 import { words, STOP, INTAKE_VOCAB } from "./format-vocab.ts";
 
 export type Look = "realistic" | "animation";
-export type IntakeKey = "subject" | "duration" | "format" | "look" | "product" | "music" | "subtitles" | "language" | "audience" | "tone" | "must_keep";
+export type IntakeKey = "subject" | "duration" | "format" | "look" | "product" | "ai_upscale" | "music" | "subtitles" | "language" | "audience" | "tone" | "must_keep";
 /** The languages Kleo narrates in. */
 export type NarrationLanguage = "en" | "it";
 export interface IntakeItem { key: IntakeKey; required: boolean; label: { en: string; it: string }; question: { en: string; it: string } }
@@ -36,6 +36,9 @@ export const INTAKE: readonly IntakeItem[] = [
     question: { en: "How do you want it: realistic (filmed, cinematic photography) or animation (a 2D animated film)?", it: "Come lo vuoi: realistico (girato, fotografia cinematografica) o animazione (film animato 2D)?" } },
   { key: "product", required: true, label: { en: "Product", it: "Prodotto" },
     question: { en: "Film or animatic? The film makes every shot a generated clip and is priced by its length; the animatic is the same drawn frames with the camera moving over each one, no generated clip, at a flat price and a shorter length.", it: "Film o animatic? Il film fa di ogni inquadratura una clip generata e costa in base alla durata; l'animatic sono gli stessi fotogrammi disegnati con la camera che si muove su ognuno, nessuna clip generata, a prezzo fisso e più corto." } },
+  // THE AI UPSCALE (25 September 2026): asked only for a film, only with the account's price (upscaleQuestion below).
+  { key: "ai_upscale", required: true, label: { en: "AI upscale", it: "Ingrandimento AI" },
+    question: { en: "Do you want the AI upscale (Real-ESRGAN + RIFE: a sharper picture, for extra credits)? If not, the film comes out in classic 4K 60 fps.", it: "Vuoi l'ingrandimento AI (Real-ESRGAN + RIFE: immagine più nitida, per crediti in più)? Se no, il film esce in 4K 60 fps classico." } },
   { key: "music", required: true, label: { en: "Music", it: "Musica" },
     question: { en: "Do you want music under the narration? If yes, what kind (a mood or a genre: quiet piano, tense electronic, warm strings…); if not, say no.", it: "Vuoi la musica sotto la voce? Se sì, di che tipo (un'atmosfera o un genere: pianoforte quieto, elettronica tesa, archi caldi…); se no, dì no." } },
   { key: "subtitles", required: true, label: { en: "Subtitles", it: "Sottotitoli" },
@@ -87,6 +90,11 @@ export interface AdaptiveBrief {
    * passes the account (kleo_adapt_prompt), with that account's prices; null while it is not settled.
    */
   product: Product | null;
+  /**
+   * The AI upscale (25 September 2026): the user's yes or no, asked only for a film and only when the caller passes
+   * the account with the option's price (the Worker's KLEO_SR is not "off"); false for an animatic; null while asked.
+   */
+  ai_upscale: boolean | null;
   /** The intake as read: what was answered (and from where), what required item is missing, what optional one was not given. */
   intake: { answered: Partial<Record<IntakeKey, IntakeAnswer>>; missing: IntakeKey[]; optional: IntakeKey[] };
   /** The questions for the missing REQUIRED items, in the chat's language. Empty means nothing blocks. */
@@ -341,6 +349,24 @@ export function subtitlesAnswer(raw: boolean | string | null | undefined): boole
 }
 
 /**
+ * The AI upscale answer as the call passes it: a boolean, or the user's words. A yes in any common spelling ("sì",
+ * "yes please", "voglio provarlo") is yes; everything else — "no", "classic", "whatever", "fai tu", an empty shrug —
+ * is no: the upscale costs many credits, so only a clear yes buys it.
+ */
+const UPSCALE_END = "(?=$|[\\s,.;:!?)])";
+const UPSCALE_NO_RE = new RegExp(`^(?:no|non|not|nope|nah|niente|senza|without|meglio di no|classic|classico)${UPSCALE_END}`, "i");
+const UPSCALE_YES_RE = new RegExp(`^(?:yes|yeah|yep|yup|y|s[iì]|ok|okay|sure|certo|certamente|va bene|volentieri|dai|of course|please|per favore|vai|proviamo|provalo|let'?s try(?: it)?|try it|voglio|vorrei|i want|i'?d like|con|with|ai|upscale|ingrandimento)${UPSCALE_END}`, "i");
+const UPSCALE_NEG_RE = /\b(?:di no|don'?t|do not|no thanks|no grazie|non lo voglio|not now)\b/i;
+export function aiUpscaleAnswer(raw: boolean | string | null | undefined): boolean | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw === "boolean") return raw;
+  const s = String(raw).trim().replace(/\s+/g, " ").replace(/^["'“”‘’]+|["'“”‘’]+$/g, "");
+  if (!s) return null;
+  if (NO_WORDS.test(s) || UPSCALE_NO_RE.test(s) || UPSCALE_NEG_RE.test(s)) return false;
+  return YES_WORDS.test(s) || UPSCALE_YES_RE.test(s);
+}
+
+/**
  * "Stupiscimi": the user hands Kleo the subject. Kleo does not take it (the credit is theirs), but it does not send
  * the same question back either: it proposes. The phrase is also taken OUT of the subject before the subject is
  * measured, so "stupiscimi tu" is not mistaken for a subject of thirteen characters.
@@ -584,6 +610,8 @@ export type AdaptOverrides = Partial<Pick<AdaptiveBrief, "duration_s" | "format"
   language?: string | null;
   /** The user's answer to the film/animatic question. */
   product?: Product | null;
+  /** The user's answer to the AI upscale question: yes/no in words, or a boolean. */
+  ai_upscale?: boolean | string | null;
   /** The account the film is for, with its prices: when given, the film/animatic question is asked with them. */
   account?: IntakeAccount;
 };
@@ -594,7 +622,30 @@ export type AdaptOverrides = Partial<Pick<AdaptiveBrief, "duration_s" | "format"
  * film's price for the asked length (null while the length is unknown), the animatic's flat price and longest length,
  * and the tariff sentence for when the length is not known yet.
  */
-export interface IntakeAccount { paid: boolean; credits: number; filmCredits: number | null; animaticCredits: number; animaticMaxS: number; tariff: string }
+export interface IntakeAccount {
+  paid: boolean; credits: number; filmCredits: number | null; animaticCredits: number; animaticMaxS: number; tariff: string;
+  /**
+   * The AI upscale's price for this film (null while the length is unknown) and its rule in words; absent when the
+   * option is switched off (the Worker's KLEO_SR "off"): then it is never asked.
+   */
+  aiUpscale?: { credits: number | null; rule: { en: string; it: string } };
+}
+
+/** "+10 credits" / "+10 crediti", or the rule while the length is unknown. */
+const upscalePrice = (chat: NarrationLanguage, up: NonNullable<IntakeAccount["aiUpscale"]>): string =>
+  up.credits !== null ? (chat === "it" ? `+${up.credits} crediti` : `+${up.credits} credits`) : `+${up.rule[chat]}`;
+
+/**
+ * THE AI UPSCALE IS ASKED, WITH ITS PRICE (the owner, 25 September 2026: "fallo solo come opzione ... pero' fallo
+ * costare tanti crediti"). The classic 4K 60 fps finish is the default; this is one more question in the same
+ * message, only for a film. While the product is not chosen yet, it is asked for the case the user picks the film.
+ */
+function upscaleQuestion(chat: NarrationLanguage, up: NonNullable<IntakeAccount["aiUpscale"]>, productOpen: boolean): string {
+  const price = upscalePrice(chat, up);
+  return chat === "it"
+    ? `${productOpen ? "Se scegli il film: " : ""}Vuoi l'ingrandimento AI (Real-ESRGAN + RIFE: immagine più nitida, ${price})? Se no, il film esce in 4K 60 fps classico.`
+    : `${productOpen ? "If you choose the film: " : ""}Do you want the AI upscale (Real-ESRGAN + RIFE: a sharper picture, ${price})? If not, the film comes out in classic 4K 60 fps.`;
+}
 
 /** The product a request names: the literal word only. "Preview", "anteprima", "bozza" are not a product. */
 const ANIMATIC_WORD_RE = /\banimatic[oi]?\b/i;
@@ -619,9 +670,10 @@ function productQuestion(chat: NarrationLanguage, acct: IntakeAccount, duration:
   const film = acct.filmCredits !== null
     ? (it ? `Il film (ogni inquadratura è una clip generata) costa ${acct.filmCredits} crediti per ${duration} secondi` : `The film (every shot a generated clip) costs ${acct.filmCredits} credits for ${duration} seconds`)
     : (it ? `Il film (ogni inquadratura è una clip generata) costa in base alla durata (${acct.tariff})` : `The film (every shot a generated clip) is priced by its length (${acct.tariff})`);
+  const up = acct.aiUpscale ? (it ? ` L'ingrandimento AI facoltativo del film costa ${upscalePrice("it", acct.aiUpscale)}.` : ` The film's optional AI upscale costs ${upscalePrice("en", acct.aiUpscale)}.`) : "";
   return it
-    ? `Film o animatic? ${film}; l'animatic (gli stessi fotogrammi disegnati con la camera che si muove su ognuno, nessuna clip generata) ${anim}. Hai ${acct.credits} crediti${low ? ", non bastano per il film" : ""}.`
-    : `Film or animatic? ${film}; the animatic (the same drawn frames with the camera moving over each one, no generated clip) ${anim}. You have ${acct.credits} credits${low ? ", not enough for the film" : ""}.`;
+    ? `Film o animatic? ${film}; l'animatic (gli stessi fotogrammi disegnati con la camera che si muove su ognuno, nessuna clip generata) ${anim}. Hai ${acct.credits} crediti${low ? ", non bastano per il film" : ""}.${up}`
+    : `Film or animatic? ${film}; the animatic (the same drawn frames with the camera moving over each one, no generated clip) ${anim}. You have ${acct.credits} credits${low ? ", not enough for the film" : ""}.${up}`;
 }
 
 /**
@@ -664,6 +716,11 @@ export function adaptPrompt(prompt: string, overrides: AdaptOverrides = {}): Ada
   // The narration: the user's answer first, then what the request says outright. The chat's language is never it.
   const callLang = languageAnswer(overrides.language);
   const language = callLang?.value ?? languageFromRequest(text);
+  // The AI upscale: asked of an account the option is offered to (the price came with it), for a film — or, while the
+  // product is still open, for the film a paying account may choose. Never for an animatic.
+  const callUpscale = aiUpscaleAnswer(overrides.ai_upscale);
+  const upscaleAsked = !!acct?.aiUpscale && product !== "animatic" && productSaid !== "animatic" && (product === "film" || (product === null && acct.paid));
+  const ai_upscale = product === "animatic" || (acct && !acct.aiUpscale) ? false : callUpscale;
 
   const answered: Partial<Record<IntakeKey, IntakeAnswer>> = {};
   if (hasContent(subject)) answered.subject = { value: subject, from: "request" };
@@ -676,9 +733,10 @@ export function adaptPrompt(prompt: string, overrides: AdaptOverrides = {}): Ada
   if (audience) answered.audience = { value: audience, from: "call" };
   if (tone) answered.tone = { value: tone, from: "call" };
   if (must_keep) answered.must_keep = { value: must_keep, from: "call" };
+  if (upscaleAsked && callUpscale !== null) answered.ai_upscale = { value: callUpscale ? `yes${acct?.aiUpscale?.credits != null ? ` (+${acct.aiUpscale.credits} credits)` : ""}` : "no — classic 4K 60 fps", from: "call" };
   if (language) answered.language = { value: language === "it" ? "Italian" : callLang?.defaulted ? "English (no preference: the default)" : "English", from: callLang?.value ? "call" : "request" };
   // The product is not asked of a caller that did not pass the account: there is no price to quote.
-  const missing = INTAKE.filter((i) => i.required && !answered[i.key] && (i.key !== "product" || !!acct)).map((i) => i.key);
+  const missing = INTAKE.filter((i) => i.required && !answered[i.key] && (i.key !== "product" || !!acct) && (i.key !== "ai_upscale" || upscaleAsked)).map((i) => i.key);
   const optional = INTAKE.filter((i) => !i.required && !answered[i.key]).map((i) => i.key);
   const unsupported = callLang?.unsupported ?? null;
   const questions = INTAKE.filter((i) => missing.includes(i.key)).map((i) =>
@@ -692,6 +750,8 @@ export function adaptPrompt(prompt: string, overrides: AdaptOverrides = {}): Ada
           : `Kleo narrates in English or Italian only (you asked for "${unsupported}"): which of the two do you want?`)
         : i.key === "product" && acct
           ? productQuestion(chat, acct, duration_s ?? null, productSaid)
+          : i.key === "ai_upscale" && acct?.aiUpscale
+            ? upscaleQuestion(chat, acct.aiUpscale, product === null)
           : i.key === "duration" && animaticTooLong && acct
             ? (chat === "it"
               ? `Un animatic dura al massimo ${acct.animaticMaxS} secondi (ne hai chiesti ${duration_s}): quanto deve durare, fino a ${acct.animaticMaxS} secondi?`
@@ -715,16 +775,25 @@ export function adaptPrompt(prompt: string, overrides: AdaptOverrides = {}): Ada
   return {
     subject, look, goal, duration_s: animaticTooLong ? null : duration_s ?? null, format: format ?? null, music, subtitles,
     audience: audience ?? "the audience implied by the request", tone: tone ?? "cinematic, naturalistic, emotionally coherent", must_keep,
-    chat_language: chat, language, delegated, product, intake: { answered, missing, optional }, questions, optional_questions, assumptions,
+    chat_language: chat, language, delegated, product, ai_upscale: ai_upscale ?? null, intake: { answered, missing, optional }, questions, optional_questions, assumptions,
   };
+}
+
+/** The upscale line of the ready brief: the choice and its price, as the user will be charged. */
+function upscaleLine(b: AdaptiveBrief): string {
+  if (!b.ai_upscale) return "no — the classic 4K 60 fps finish (Lanczos + motion interpolation)";
+  const price = b.intake.answered.ai_upscale?.value.match(/\+(\d+) credits/)?.[1];
+  return `yes — Real-ESRGAN + RIFE on every shot${price ? `, +${price} credits on top of the film` : ""}; refunded automatically if the finish cannot apply it`;
 }
 
 const lang = (b: AdaptiveBrief) => (b.chat_language === "it" ? "Italian" : "English");
 
 /** The intake as a checklist the assistant reads: every item, its value and its source, or the fact that it is missing. */
 export function intakeText(brief: AdaptiveBrief): string {
-  const rows = INTAKE.map((i) => {
+  const rows = INTAKE.flatMap((i) => {
     const a = brief.intake.answered[i.key];
+    // The AI upscale is a line only where it was offered (a film, the option not switched off).
+    if (i.key === "ai_upscale" && !a && !brief.intake.missing.includes(i.key)) return [];
     if (a) return `- ${i.label.en}: ${a.value} (${a.from === "call" ? "the user's answer" : "from the request"})`;
     if (i.key === "subject" && brief.delegated) return `- ${i.label.en}: MISSING — the user delegated it ("surprise me"): propose 3-5 subjects and let them pick`;
     if (i.required && !brief.intake.missing.includes(i.key)) return `- ${i.label.en}: not asked here`;
@@ -745,8 +814,8 @@ export function adaptivePromptText(brief: AdaptiveBrief): string {
   if (brief.questions.length) {
     const q = brief.questions.map((s, i) => `${i + 1}. ${s}`).join("\n");
     const opt = brief.optional_questions.length ? `\nOptional, in the SAME message if it feels natural (never a message of their own): ${brief.optional_questions.join(" · ")}` : "";
-    return `${intakeText(brief)}\n\nASK THE USER NOW, in ONE message, in ${lang(brief)}, exactly these questions — then call kleo_adapt_prompt again with the same prompt and their answers (duration_s, format, style, music, subtitles, language, audience, tone, must_keep; if the user says the narration's language does not matter, pass language "en"). Do not write the treatment, do not call kleo_create_video, and do not fill any of these in yourself:\n${q}${opt}`;
+    return `${intakeText(brief)}\n\nASK THE USER NOW, in ONE message, in ${lang(brief)}, exactly these questions — then call kleo_adapt_prompt again with the same prompt and their answers (duration_s, format, style, product, ai_upscale, music, subtitles, language, audience, tone, must_keep; if the user says the narration's language does not matter, pass language "en"; if they leave the AI upscale question unanswered, pass ai_upscale "no"). Do not write the treatment, do not call kleo_create_video, and do not fill any of these in yourself:\n${q}${opt}`;
   }
   const lookLine = brief.look === "animation" ? "animation, a 2D animated film" : "realistic cinematic";
-  return `${intakeText(brief)}\n\nAdaptive film brief ready:\n- Subject: ${brief.subject}\n- Goal: ${brief.goal}\n- Duration: ${brief.duration_s}s\n- Format: ${brief.format}\n- Look: ${lookLine}\n- Narration: ${brief.language === "it" ? "Italian" : "English"}\n- Audience: ${brief.audience}\n- Tone: ${brief.tone}${brief.must_keep ? `\n- Must appear: ${brief.must_keep}` : ""}\n- Music: ${musicLine(brief.music)}\n- Subtitles: ${subtitlesLine(brief.subtitles)}${brief.product ? `\n- Product: ${brief.product}` : ""}\n- Plan: ${brief.product === "animatic" ? "the animatic: drawn frames with the camera moving over each one, no generated clip" : "shot-by-shot real video clips, continuity checks"}, one clean dissolve between acts (one per 25 seconds, never inside an act), then edit.`;
+  return `${intakeText(brief)}\n\nAdaptive film brief ready:\n- Subject: ${brief.subject}\n- Goal: ${brief.goal}\n- Duration: ${brief.duration_s}s\n- Format: ${brief.format}\n- Look: ${lookLine}\n- Narration: ${brief.language === "it" ? "Italian" : "English"}\n- Audience: ${brief.audience}\n- Tone: ${brief.tone}${brief.must_keep ? `\n- Must appear: ${brief.must_keep}` : ""}\n- Music: ${musicLine(brief.music)}\n- Subtitles: ${subtitlesLine(brief.subtitles)}${brief.product ? `\n- Product: ${brief.product}` : ""}${brief.intake.answered.ai_upscale ? `\n- AI upscale: ${upscaleLine(brief)}` : ""}\n- Plan: ${brief.product === "animatic" ? "the animatic: drawn frames with the camera moving over each one, no generated clip" : "shot-by-shot real video clips, continuity checks"}, one clean dissolve between acts (one per 25 seconds, never inside an act), then edit.`;
 }

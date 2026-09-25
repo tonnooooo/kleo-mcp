@@ -1,7 +1,7 @@
 import type { Env } from "./env";
 import { type Job, type JobParams, type JobState, type User, OPEN_STATES, countOpenForUser, countJobsTodayForUser, addJobCost, debitCredits, refundCredits, insertJob, transitionJob, audit, getUserJob, listFiles, hasPaid, recentJobsForUser } from "./db";
 import { accountUrl } from "./accounts";
-import { findTemplate, affordableGuess, creditsFor, creditsForProduct, etaFor, animaticEtaFor, normalizeVoice, voiceSpellings, isVideoStyle, videoModelIsGated, isPublicTemplate, FILM_TEMPLATE_ID, FILM_LONG_TEMPLATE_ID, filmTemplateFor, ACTIVE_TEMPLATE, PRODUCTS, ANIMATIC_CREDITS, ANIMATIC_MAX_S, filmedStoryboard, finishForProduct, productOf, type Format, type Product } from "./templates";
+import { findTemplate, affordableGuess, creditsFor, creditsForProduct, aiUpscaleCredits, aiUpscaleOn, etaFor, animaticEtaFor, normalizeVoice, voiceSpellings, isVideoStyle, videoModelIsGated, isPublicTemplate, FILM_TEMPLATE_ID, FILM_LONG_TEMPLATE_ID, filmTemplateFor, ACTIVE_TEMPLATE, PRODUCTS, ANIMATIC_CREDITS, ANIMATIC_MAX_S, filmedStoryboard, finishForProduct, productOf, type Format, type Product } from "./templates";
 import { footageBackendFor, footageConfig, kiePreflight, clipFloorFor } from "./footage";
 import { rid, nowIso, int, hmacHex } from "./util";
 import { isProbeFile } from "./probe.ts";
@@ -10,7 +10,7 @@ import { backendFor } from "./backends";
 import { validateStoryboard, kleoStyleOf, pictureScenes, narrationOf, MAX_PICTURES, wordBudget, speedFor, trimShots, mergeThinScenes, KLEO_STYLES, FILM_LOOKS, type KleoStyle, type FilmLook } from "./keou-contract";
 import { treatmentProblems, repairTreatment, variationFor, faithfulVariation, applySoundOptions, musicOf, type Treatment, type SoundOptions } from "./treatment.ts";
 import { denyInPictures } from "./storyboard";
-import { musicAnswer, subtitlesAnswer, lookFromText } from "./adaptive.ts";
+import { musicAnswer, subtitlesAnswer, lookFromText, aiUpscaleAnswer } from "./adaptive.ts";
 import { repairGraphics } from "./graphics.ts";
 import { specProblems, repairSpec, coverage, specModeWhy, MODE_RULE, type RequestSpec } from "./spec.ts";
 import { resolveRefs, refsOf, RefError, REF_HANDLE_RE } from "./refs.ts";
@@ -34,6 +34,12 @@ export interface CreateInput {
    * account). See templates.ts, the two products of 15 September 2026.
    */
   product?: string;
+  /**
+   * THE AI UPSCALE (25 September 2026): the user's answer to the intake's question, film only. A clear yes adds
+   * aiUpscaleCredits (src/templates.ts) to the debit and gives the finish box the SR card; anything else is the classic
+   * 4K 60 fps finish at the film's own price.
+   */
+  ai_upscale?: boolean | string | null;
   /** Optional client-authored Keou storyboard (see keou-contract.ts); validated here, stored as JSON. */
   storyboard?: unknown;
   /**
@@ -174,6 +180,13 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   const animaticWayOut = `call again with product: "animatic"${duration > ANIMATIC_MAX_S ? ` and a length of at most ${ANIMATIC_MAX_S} seconds` : ""} (${plural(ANIMATIC_CREDITS, "credit")} flat)`;
   if (product === "animatic" && duration > ANIMATIC_MAX_S)
     throw new JobError(`An animatic is at most ${ANIMATIC_MAX_S} seconds long (${duration} asked): it is the preview of a film, not the film. Ask for ${ANIMATIC_MAX_S} seconds or less${paid ? ", or order the film itself" : `, or buy any pack (from 5 EUR) on the account page and order the film: ${await accountUrl(env, user.id)}`}. Nothing was charged.`);
+  // THE AI UPSCALE is the film's option, and the Worker's KLEO_SR "off" switches it off for everybody: both are said
+  // before anything is charged, with the call that works.
+  const upscale = aiUpscaleAnswer(input.ai_upscale) === true;
+  if (upscale && product === "animatic")
+    throw new JobError(`The AI upscale (Real-ESRGAN + RIFE) is an option of the film only: an animatic is drawn frames with the camera moving over them, and there is no generated clip to upscale. Call again with ai_upscale: "no". Nothing was charged.`);
+  if (upscale && !aiUpscaleOn(env))
+    throw new JobError(`The AI upscale (Real-ESRGAN + RIFE) is switched off right now. Call again with ai_upscale: "no" for the classic 4K 60 fps finish, at the film's own price, or ask for the upscale later. Nothing was charged.`);
   if (product === "film" && !paid)
     throw new JobError(`A film is made only for accounts that have bought a credit pack: its shots are generated clips that Kleo pays for per second, and the credits on this account were not paid for (a gift, a bonus or a test balance). Two ways on: ${animaticWayOut} — the same storyboard as drawn frames with the camera moving over them, narrated, 4K 60 fps, up to ${ANIMATIC_MAX_S} seconds — or buy any pack (from 5 EUR) on the account page and the film opens: ${await accountUrl(env, user.id)}. Nothing was charged.`);
   const prompt = input.prompt.trim();
@@ -391,11 +404,14 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
       throw new JobError(`Kleo cannot film right now: ${why}. The request has been logged for the operator. Nothing was charged. Meanwhile the animatic of the same storyboard can be made — ${animaticWayOut}, the drawn frames with the camera moving over them — or ask for the film again later.`);
     }
   }
-  const credits = creditsForProduct(duration, style, product); // the product first, then the length and the look
+  const filmPrice = creditsForProduct(duration, style, product); // the product first, then the length and the look
+  // The AI upscale is paid with the film, in the same debit (so a failure or a cancel gives it back with the rest).
+  const upscaleCredits = upscale ? aiUpscaleCredits(filmPrice, env) : 0;
+  const credits = filmPrice + upscaleCredits;
   const jobId = rid("gt", 8);
   // The debit is one conditional UPDATE: it either takes the credits for this job or does nothing.
   if (!(await debitCredits(env, user.id, credits, jobId)))
-    throw new JobError(`Not enough credits: this ${product === "animatic" ? "animatic" : kindOf(format)} costs ${plural(credits, "credit")} and you have ${plural(Math.max(0, user.credits), "credit")}. Nothing was charged.${product === "film" && user.credits >= ANIMATIC_CREDITS ? ` The animatic of the same storyboard costs ${plural(ANIMATIC_CREDITS, "credit")}: ${animaticWayOut}.` : ""} Your account and how to get more: ${await accountUrl(env, user.id)}`);
+    throw new JobError(`Not enough credits: this ${product === "animatic" ? "animatic" : kindOf(format)} costs ${plural(credits, "credit")}${upscaleCredits ? ` (${filmPrice} for the film + ${upscaleCredits} for the AI upscale; with ai_upscale: "no" it costs ${filmPrice})` : ""} and you have ${plural(Math.max(0, user.credits), "credit")}. Nothing was charged.${product === "film" && user.credits >= ANIMATIC_CREDITS ? ` The animatic of the same storyboard costs ${plural(ANIMATIC_CREDITS, "credit")}: ${animaticWayOut}.` : ""} Your account and how to get more: ${await accountUrl(env, user.id)}`);
 
   // The two answers travel on the row: the planner reads them when it writes its own treatment, the worker reads the
   // storyboard they shaped. A "yes" to music with no brief yet gets the treatment's brief, or the user's own words.
@@ -405,7 +421,7 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   const musicParam = musicIn === null ? undefined : musicIn.wanted ? (musicOf((treatment as Treatment | null)?.music) ?? musicIn.brief ?? "a quiet instrumental bed that fits the film's mood, under the narration") : null;
   const params: JobParams = { duration_s: duration, format, language, voice, style, ...(product === "animatic" ? { product } : {}), ...(styleGuessed ? { style_guessed: true } : {}), ...(cappedFrom ? { style_capped_from: cappedFrom } : {}), ...(treatment ? { treatment } : {}), ...(musicParam !== undefined ? { music: musicParam } : {}), ...(subsIn !== null ? { subtitles: subsIn } : {}),
     ...(spec ? { spec } : {}), ...(refHandles.length ? { refs: refHandles } : {}), ...(answers.must_keep || answers.audience || answers.tone || corrections ? { brief } : {}),
-    ...(clipFloor > 0 ? { clip_floor_s: clipFloor } : {}) };
+    ...(clipFloor > 0 ? { clip_floor_s: clipFloor } : {}), ...(upscaleCredits ? { ai_upscale: true, ai_upscale_credits: upscaleCredits } : {}) };
   const job: Job = {
     id: jobId, user_id: user.id, template: t.id, prompt, params: JSON.stringify(params),
     state: "queued", track: null, percent: 0, eta_min: product === "animatic" ? animaticEtaFor(duration) : etaFor(duration), credits,
@@ -424,7 +440,7 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   }
   // language_defaulted (25 September 2026): the caller named no narration language and English was assumed; the intake
   // asks it, so these rows count the callers that went round it.
-  await audit(env, user.id, job.id, "job.created", { template: t.id, product, credits, duration, format, style, storyboard: storyboard ? "client" : "auto", treatment: treatment ? (treatmentFrom ? "reused" : "client") : "auto", ...(treatmentFrom ? { treatment_from: treatmentFrom } : {}), spec: spec ? spec.mode : null, refs: refHandles.length, ...(input.language === undefined ? { language_defaulted: true } : {}) });
+  await audit(env, user.id, job.id, "job.created", { template: t.id, product, credits, duration, format, style, storyboard: storyboard ? "client" : "auto", treatment: treatment ? (treatmentFrom ? "reused" : "client") : "auto", ...(treatmentFrom ? { treatment_from: treatmentFrom } : {}), spec: spec ? spec.mode : null, refs: refHandles.length, ...(input.language === undefined ? { language_defaulted: true } : {}), ...(upscaleCredits ? { ai_upscale_credits: upscaleCredits } : {}) });
   return job;
 }
 
