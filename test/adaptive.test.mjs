@@ -71,7 +71,7 @@ test("music and subtitles are asked every time, and 'no' is an answer that is ho
   assert.deepEqual(no.music, { wanted: false, brief: null }); assert.equal(no.subtitles, false); assert.deepEqual(no.questions, []);
   assert.match(adaptivePromptText(no), /- Music: none — narration only/); assert.match(adaptivePromptText(no), /- Subtitles: none burned in/);
   assert.match(intakeText(no), /- Music: none \(the user's answer\)/);
-  const yes = adaptPrompt("A realistic film about a night race, 2 minutes, YouTube", { music: "tense electronic, slow pulse", subtitles: "yes" });
+  const yes = adaptPrompt("A realistic film about a night race, 2 minutes, YouTube", { music: "tense electronic, slow pulse", subtitles: "yes", language: "en" });
   assert.deepEqual(yes.music, { wanted: true, brief: "tense electronic, slow pulse" }); assert.equal(yes.subtitles, true);
   assert.match(adaptivePromptText(yes), /- Music: yes — an instrumental track under the narration, ducked under the voice; the user asked for: tense electronic, slow pulse/);
   assert.match(adaptivePromptText(yes), /- Subtitles: cinema — thin white lowercase subtitles burned in/);
