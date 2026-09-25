@@ -467,9 +467,14 @@ def _to_tensor(raw, w, h, dev, half):
 
 
 def _sr_frame(d, s, x, tile):
-    """One frame through the upscaler, whole or in overlapping tiles."""
+    """One frame through the upscaler, whole or in overlapping tiles.
+
+    Inference mode, not no_grad (the first A/B probe, 25 September 2026): spandrel runs its model under
+    torch.inference_mode(), so what it returns is an inference tensor, and the in-place clamp_ that followed it under
+    no_grad raised "Inplace update to inference tensor outside InferenceMode" on the first frame — every film fell back
+    to Lanczos. Inside inference mode in-place ops on those tensors are allowed."""
     import torch
-    with torch.no_grad():
+    with torch.inference_mode():
         if not tile:
             return d(x).clamp_(0, 1)
         _, c, h, w = x.shape
@@ -492,9 +497,9 @@ def _rife_frame(net, a, b, t, scale):
     m = max(128, int(128 / scale))
     ph, pw = ((h - 1) // m + 1) * m, ((w - 1) // m + 1) * m
     pa, pb = F.pad(a.float(), (0, pw - w, 0, ph - h)), F.pad(b.float(), (0, pw - w, 0, ph - h))
-    with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16, enabled=a.is_cuda):
+    with torch.inference_mode(), torch.autocast("cuda", dtype=torch.float16, enabled=a.is_cuda):
         y = net(pa, pb, float(t), [16 / scale, 8 / scale, 4 / scale, 2 / scale, 1 / scale])
-    return y[:, :, :h, :w].float().clamp_(0, 1).to(a.dtype)
+        return y[:, :, :h, :w].float().clamp_(0, 1).to(a.dtype)
 
 
 def _sync():
@@ -623,7 +628,7 @@ def enhance(src, mid, usable, stretch, want, fps, factor, look, tile=None):
                 stats["rife_s"] += time.time() - t0
             else:
                 y = a
-            enc.stdin.write((y[0] * 255.0).round_().clamp_(0, 255).to(torch.uint8).permute(1, 2, 0).contiguous().cpu().numpy().tobytes())
+            enc.stdin.write((y[0] * 255.0).round().clamp(0, 255).to(torch.uint8).permute(1, 2, 0).contiguous().cpu().numpy().tobytes())
             n_out += 1
         # The map above trusted the clip's rate; the frames it really has in the window must agree with it, or the
         # part plays too fast or too slow for the same length and the checks downstream (size, rate, seconds) pass.
@@ -683,7 +688,7 @@ def benchmark(src, factor, look, n=12):
         y = _rife_frame(net, ups[k], ups[k + 1], 0.5, scale)
         _sync()
         t1 = time.time()
-        (y[0] * 255.0).round_().clamp_(0, 255).to(torch.uint8).permute(1, 2, 0).contiguous().cpu().numpy().tobytes()
+        (y[0] * 255.0).round().clamp(0, 255).to(torch.uint8).permute(1, 2, 0).contiguous().cpu().numpy().tobytes()
         t2 = time.time()
         if k:
             t_rife += t1 - t0

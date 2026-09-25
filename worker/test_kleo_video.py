@@ -887,3 +887,23 @@ class GenerateTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class SrInferenceModeTest(unittest.TestCase):
+    """The first A/B probe (25 September 2026) never upscaled a frame: spandrel returns inference tensors and the
+    code clamped them in place outside inference mode. The frame paths must stay inside torch.inference_mode and the
+    byte conversion must be out of place."""
+
+    def test_frame_paths_run_in_inference_mode(self):
+        import inspect
+        import kleo_sr
+        for fn in (kleo_sr._sr_frame, kleo_sr._rife_frame):
+            src = inspect.getsource(fn)
+            self.assertIn("torch.inference_mode()", src, fn.__name__)
+            self.assertNotIn("torch.no_grad()", src, fn.__name__)
+
+    def test_byte_conversion_is_out_of_place(self):
+        import inspect
+        import kleo_sr
+        src = inspect.getsource(kleo_sr)
+        self.assertNotIn(".round_().clamp_(0, 255)", src)
