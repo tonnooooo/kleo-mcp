@@ -723,6 +723,94 @@ test("ePhone AI: an empty account (RixAPI's 403 insufficient_user_quota) stops t
   assert.equal(pre.ok, false); assert.equal(pre.reason, "balance"); assert.equal(pre.balance_usd, 0.1);
 });
 
+/* ------------------------------------------------------------------ the Seedance prompt (25 September) */
+
+const SEED_SPEC = () => ({
+  v: 1, mode: "faithful", summary: "Mara decorates a cake at dawn.",
+  cast: [{ id: "c1", name: "Mara", look: "a thin woman with short blonde hair tied up", ref: null }],
+  items: [
+    { id: "R1", kind: "look", text: "Mara wears a lilac apron", quote: "grembiule lilla", must: true, who: "c1", order: null },
+    { id: "R2", kind: "text", text: "a shop sign reading \"Forno Mara\"", quote: "insegna Forno Mara", must: true, who: null, order: null },
+  ],
+  refs: [], open: [], narration: "free", script: null,
+});
+const SEED_SB = () => ({
+  style: "picture", kleo_style: "realistic", direction: { subject: "cake", world: "A village bakery at dawn", cast: [{ name: "Mara", look: "a blonde woman" }], objects: [], forbidden: [], sections: [] },
+  scenes: [{ id: "01-hook", kind: "cinema", voice: "a line", shots: [
+    { image_prompt: "Mara at the counter with a cake", action: "Mara lifts the piping bag and draws a slow spiral of cream", cast: ["c1"], covers: ["R1"] },
+    { image_prompt: "The bakery sign above the door", covers: ["R2"] },
+    { image_prompt: "Close on Mara's face in the warm light", shot_kind: "face", cast: ["c1"] },
+  ] }],
+});
+const FRAME = { clipSeconds: 4, usedSeconds: 3.2, keepsText: false, hasFrame: true };
+
+test("seedancePrompt: the frame is continued, not described again; the action is timed inside the kept seconds; one camera move; the look in positive words", () => {
+  const stored = { storyboard: SEED_SB(), spec: SEED_SPEC() };
+  const p = m.seedancePrompt({ id: "01-hook-s1", image_prompt: "ignored", motion: "push_in" }, "realistic", stored, FRAME);
+  assert.ok(p.startsWith("Continue from the first frame: Mara lifts the piping bag and draws a slow spiral of cream. Mara stays exactly as in the first frame."), p);
+  assert.match(p, /Timing: 0s-3\.2s the action above; 3\.2s-4s the motion settles and the move carries on gently\./);
+  assert.equal((p.match(/camera/gi) ?? []).length, 1, "exactly one camera sentence"); assert.match(p, /Camera: slow push-in toward the subject\./);
+  for (const bad of [/\bfast\b/i, /35mm/i, /shallow depth of field/i]) assert.doesNotMatch(p, bad);
+  assert.ok(!p.includes("a thin woman with short blonde hair tied up"), "a character in the frame is named, not re-described");
+  assert.match(p, /live-action film look/); assert.match(p, /no slow motion/); assert.match(p, /no text, subtitles, logos or watermark\.$/);
+  assert.ok(p.length >= 350 && p.length <= m.SEEDANCE_PROMPT_MAX, `${p.length} characters`);
+  // The whole clip is the shot: no settle, the action fills it.
+  const full = m.seedancePrompt({ id: "01-hook-s1", image_prompt: "x", motion: "push_in" }, "realistic", stored, { ...FRAME, usedSeconds: 4 });
+  assert.match(full, /Timing: 0s-4s the action above, in one continuous movement\./); assert.doesNotMatch(full, /settles/);
+  // No action: the shot's kind says what moves, never the image prompt again.
+  const face = m.seedancePrompt({ id: "01-hook-s3", image_prompt: "x", motion: "static_hold" }, "realistic", stored, FRAME);
+  assert.ok(face.startsWith(`Continue from the first frame: ${m.SEEDANCE_KIND_MOTION.face}.`), face);
+  assert.doesNotMatch(face, /warm light/);
+  assert.match(face, /Camera: locked off on a tripod, only the scene moves\./);
+  const bare = m.seedancePrompt({ id: "01-hook-s2", image_prompt: "x", motion: "crash_zoom_in" }, "realistic", stored, FRAME);
+  assert.ok(bare.startsWith(`Continue from the first frame: ${m.SEEDANCE_KIND_MOTION.default}.`), bare);
+  assert.match(bare, /Camera: sudden push-in that snaps to a close-up\./);
+  for (const move of Object.values(m.SEEDANCE_MOVES)) assert.doesNotMatch(move, /\bfast\b|camera/i, move);
+});
+
+test("seedancePrompt: the drawn look, a text the user asked for, the text-to-video fallback, and the limit", () => {
+  const stored = { storyboard: SEED_SB(), spec: SEED_SPEC() };
+  const anim = m.seedancePrompt({ id: "01-hook-s1", image_prompt: "x", motion: "push_in" }, "animation", stored, FRAME);
+  assert.match(anim, /nothing photographic/); assert.match(anim, /2D hand-drawn animation/); assert.doesNotMatch(anim, /live-action/);
+  // The shop sign the user asked for is kept, not erased.
+  const sign = m.seedancePrompt({ id: "01-hook-s2", image_prompt: "x", motion: "static_hold" }, "realistic", stored, { ...FRAME, keepsText: true });
+  assert.match(sign, /the lettering on a shop sign reading "Forno Mara" stays exactly as in the first frame\.$/); assert.doesNotMatch(sign, /no text/);
+  // No first frame: text-to-video, so the picture, every look in full and the setting are described.
+  const t2v = m.seedancePrompt({ id: "01-hook-s1", image_prompt: "x", motion: "push_in" }, "realistic", stored, { ...FRAME, hasFrame: false });
+  assert.ok(t2v.startsWith("Mara at the counter with a cake. Mara lifts the piping bag"), t2v);
+  assert.match(t2v, /Mara: a thin woman with short blonde hair tied up; Mara wears a lilac apron\./); assert.match(t2v, /Setting: A village bakery at dawn\./);
+  assert.doesNotMatch(t2v, /first frame/i);
+  // Long looks never take it past Seedance's limit.
+  const crowd = { ...SEED_SPEC(), cast: ["c1", "c2", "c3", "c4", "c5"].map((id) => ({ id, name: `Person ${id}`, look: `${"a very detailed description of a coat and a hat and a scarf ".repeat(12)}`, ref: null })) };
+  const sb = SEED_SB(); sb.scenes[0].shots[0].cast = ["c1", "c2", "c3", "c4", "c5"]; sb.scenes[0].shots[0].action = "they all walk across the square ".repeat(30);
+  const long = m.seedancePrompt({ id: "01-hook-s1", image_prompt: "x", motion: "push_in" }, "realistic", { storyboard: sb, spec: crowd }, { ...FRAME, hasFrame: false });
+  assert.ok(long.length <= m.SEEDANCE_PROMPT_MAX, `${long.length} characters`);
+});
+
+test("the ePhone road asks in Seedance's words; the kie.ai models keep clipPrompt byte for byte", async () => {
+  const sb = SEED_SB(), spec = SEED_SPEC();
+  const shot = { id: "01-hook-s1", image_prompt: "Mara at the counter with a cake", motion: "push_in", strength: 0.5, seconds: 3.2, still: "01-hook-s1.png" };
+  const env = await newEnv({ KIE_API_KEY: undefined, EPHONE_API_KEY: "eph-key", KLEO_FOOTAGE_MODEL: "seedance-2.5-480p", KIE_MAX_VIDEO_S: "0" });
+  const job = await filmJob(env);
+  job.storyboard = JSON.stringify(sb); job.params = JSON.stringify({ ...JSON.parse(job.params), spec });
+  const eph = fakeEphone(); globalThis.fetch = eph.fetch;
+  const r = await m.requestFootage(env, job, "http://kleo.test", { shots: [shot], format: "9:16" });
+  assert.equal(r.status, 200, JSON.stringify(r.reply));
+  const sent = eph.calls.submit[0].body.input.prompt;
+  assert.equal(sent, m.seedancePrompt(shot, "realistic", { storyboard: sb, spec }, { clipSeconds: 4, usedSeconds: 3.2, keepsText: false, hasFrame: true }));
+  assert.ok(sent.startsWith("Continue from the first frame:"));
+  assert.equal(m.ephoneInput("seedance-2.5-480p", m.KIE_MODELS["seedance-2.5-480p"], { prompt: sent, imageUrl: "https://kleo.test/a.png", seconds: 3.2, format: "9:16" }).prompt, sent, "no new fields, the prompt as written");
+  // MiniMax on kie.ai: exactly the prompt it had.
+  const env2 = await newEnv({ KLEO_FOOTAGE_MODEL: "minimax-h3" });
+  const job2 = await filmJob(env2);
+  job2.storyboard = JSON.stringify(sb); job2.params = JSON.stringify({ ...JSON.parse(job2.params), spec });
+  const kie = fakeKie(); globalThis.fetch = kie.fetch;
+  await m.requestFootage(env2, job2, "http://kleo.test", { shots: [shot], format: "9:16" });
+  assert.equal(kie.calls.create[0].body.input.prompt, m.clipPrompt(shot, "realistic", { storyboard: sb, spec }));
+  assert.equal(m.usesSeedancePrompt("seedance-2.0", m.KIE_MODELS["seedance-2.0"]), true, "Seedance on kie.ai reads the same words");
+  assert.equal(m.usesSeedancePrompt("kling-3.0", m.KIE_MODELS["kling-3.0"]), false);
+});
+
 test("ePhone AI music: Suno through the task API when KLEO_MUSIC_PROVIDER is ephone; the mp3 among the outputs is the track", async () => {
   const env = await newEnv({ KIE_API_KEY: undefined, EPHONE_API_KEY: "eph-key", KLEO_MUSIC_PROVIDER: "ephone" });
   const job = await filmJob(env);

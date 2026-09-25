@@ -317,6 +317,112 @@ export function clipPrompt(shot: { id: string; image_prompt: string; motion?: st
 }
 
 /**
+ * THE SEEDANCE PROMPT (25 September 2026). Seedance 2.5 on ePhone AI is given the shot's first frame, so the picture —
+ * who is there, what they wear, where — is already said; what it lacks is what HAPPENS, when, and how the camera moves.
+ * clipPrompt was written for the kie.ai models and re-describes the frame (every look, the setting) and ends on a look
+ * paragraph with "35mm" and "shallow depth of field", which Seedance reads as a second picture to morph towards. This
+ * prompt follows ByteDance's own guidance for image-to-video, in four parts, 350-900 characters, never over 1990:
+ *   1. MOTION: "Continue from the first frame: <action>." — the planner's action, or a motion that fits the shot's kind,
+ *      never the image prompt again; the characters in the frame are named, not re-described;
+ *   2. TIMING: the action inside the part of the clip the film keeps (0s-<used>s), and a settle after it when the clip
+ *      is longer than the shot, so the cut never lands mid-gesture;
+ *   3. CAMERA: exactly one move, in the words Seedance's examples use; the word "fast" never (it reads as sped-up);
+ *   4. STYLE AND CONSTRAINTS as positive words: the look of the frame, one continuous shot at real-time speed, stable
+ *      faces and hands, and no lettering — unless the shot keeps a text the user asked for.
+ * Without a first frame (a still that failed to upload) the call is text-to-video, and the picture is described as
+ * clipPrompt describes it: the image, every look in full, the setting.
+ */
+export const SEEDANCE_MOVES: Record<string, string> = {
+  push_in: "slow push-in toward the subject",
+  crash_zoom_in: "sudden push-in that snaps to a close-up",
+  push_in_dutch: "slow push-in while the horizon tilts a few degrees",
+  pull_out: "slow pull-out, more of the place entering the frame",
+  track_left: "smooth tracking shot moving to the left",
+  track_right: "smooth tracking shot moving to the right",
+  track_alongside: "smooth tracking shot alongside the subject, at its pace",
+  orbit_left: "slow arc around the subject to the left",
+  orbit_right: "slow arc around the subject to the right",
+  crane_down: "slow crane down from above to eye level",
+  crane_up: "slow crane up, the ground falling away",
+  whip_pan: "quick whip pan to the right that settles",
+  static_hold: "locked off on a tripod, only the scene moves",
+};
+/** What moves in a shot the planner gave no action, by what the shot is for (src/shot-grammar.ts SHOT_KINDS). */
+export const SEEDANCE_KIND_MOTION: Record<string, string> = {
+  hook: "the moment is already under way: the subject moves with intent and the scene around it reacts",
+  establish: "the place is alive: the light shifts, the air and small things move, people go about their business in the distance",
+  face: "the face moves subtly: a breath, the eyes shift, a small change of expression",
+  detail: "hands touch and handle the object with small, precise movements while the light plays on it",
+  detail_orbit: "the object stays still while the light glides slowly over its surface",
+  action: "the action carries on: the subject moves through it with natural weight and momentum",
+  reveal: "the subject moves and what was hidden behind it comes into view",
+  tension: "a held stillness with small nervous movements: a breath, a glance, fingers tightening",
+  closing: "the movement slows to a quiet stop and the moment is held",
+  static_forced: "the scene holds still with only small natural movements",
+  default: "the scene comes alive with natural movement that carries on from what the frame shows",
+};
+export const SEEDANCE_STYLE: Record<FilmLook, string> = {
+  realistic: "Style: live-action film look, natural light, real textures, subtle film grain; keep the first frame's composition, faces, costumes and colours.",
+  animation: "Style: 2D hand-drawn animation, cel colour, clean linework, exactly the first frame's drawn style and character designs, nothing photographic, no 3D render.",
+};
+/** The same looks with no first frame to keep (text-to-video). */
+const SEEDANCE_STYLE_T2V: Record<FilmLook, string> = {
+  realistic: "Style: live-action film look, natural light, real textures, subtle film grain.",
+  animation: "Style: 2D hand-drawn animation, cel colour, clean linework, consistent character designs, nothing photographic, no 3D render.",
+};
+/** Seedance's prompt limit on ePhone AI is 2000 characters; the prompt stays under it with room to spare. */
+export const SEEDANCE_PROMPT_MAX = 1990;
+
+export function seedancePrompt(
+  shot: { id: string; image_prompt: string; motion?: string | null; strength?: number | null },
+  look: FilmLook,
+  stored: { storyboard: unknown; spec: RequestSpec | null } | null,
+  opts: { clipSeconds: number; usedSeconds: number; keepsText: boolean; hasFrame: boolean },
+): string {
+  const tidy = (s: unknown) => String(s ?? "").trim().replace(/\s+/g, " ").replace(/[.;,\s]+$/, "");
+  const pic = stored ? stillShotsOf(stored.storyboard).find((p) => p.id === shot.id) : undefined;
+  const spec = stored?.spec ?? null;
+  const direction = stored ? directionOf(stored.storyboard) : null;
+  const cast = pic ? stillCast(pic, spec, direction) : [];
+  const covered = spec && pic ? (pic.covers ?? []).map((id) => itemById(spec, id)).filter((x): x is SpecItem => !!x) : [];
+  const action = tidy(pic?.action) || SEEDANCE_KIND_MOTION[pic?.shot_kind ?? ""] || SEEDANCE_KIND_MOTION.default;
+  const secs = (n: number) => `${Math.round(n * 10) / 10}s`;
+  const used = Math.min(opts.usedSeconds, opts.clipSeconds);
+  // What is on screen and what moves (parts 1), then how it is timed, shot and looked at (parts 2-4).
+  const head: string[] = [];
+  if (opts.hasFrame) {
+    head.push(`Continue from the first frame: ${action}.`);
+    const names = cast.map((m) => tidy(m.name)).filter(Boolean);
+    if (names.length) head.push(`${names.join(" and ")} ${names.length > 1 ? "stay" : "stays"} exactly as in the first frame.`);
+  } else {
+    // Text-to-video: nothing on screen yet, so the picture is described, looks and all (as clipPrompt does).
+    head.push(`${tidy(pic?.image_prompt || shot.image_prompt)}.`, `${action.charAt(0).toUpperCase()}${action.slice(1)}.`);
+    for (const m of cast) head.push(`${tidy(m.name)}: ${tidy(m.look).slice(0, 300)}.`);
+    const place = tidy(direction?.world) || covered.filter((i) => i.kind === "place").map((i) => tidy(i.text)).join("; ");
+    if (place) head.push(`Setting: ${place}.`);
+  }
+  const lettering = opts.keepsText ? covered.find((i) => i.kind === "text") : undefined;
+  const tail = [
+    opts.clipSeconds - used >= 0.3
+      ? `Timing: 0s-${secs(used)} the action above; ${secs(used)}-${secs(opts.clipSeconds)} the motion settles and the move carries on gently.`
+      : `Timing: 0s-${secs(opts.clipSeconds)} the action above, in one continuous movement.`,
+    `Camera: ${SEEDANCE_MOVES[String(shot.motion ?? "")] ?? SEEDANCE_MOVES.push_in}.`,
+    (opts.hasFrame ? SEEDANCE_STYLE : SEEDANCE_STYLE_T2V)[look],
+    `One continuous shot at natural real-time speed, no slow motion; faces, hands and bodies stay stable, no morphing; ${lettering ? `the lettering on ${tidy(lettering.text)} stays exactly as in the first frame` : opts.keepsText ? "the lettering on screen stays exactly as it is" : "no text, subtitles, logos or watermark"}.`,
+  ].join(" ");
+  const flat = (s: string) => s.replace(/\s+/g, " ").trim();
+  let first = flat(head.join(" "));
+  // Over the limit (only a text-to-video prompt with long looks gets near it): what is on screen is shortened, never
+  // the timing, the camera or the constraints.
+  const room = SEEDANCE_PROMPT_MAX - flat(tail).length - 1;
+  if (first.length > room) first = `${first.slice(0, room - 1).replace(/\s+\S*$/, "").replace(/[.;,:\s]+$/, "")}.`;
+  return `${first} ${flat(tail)}`;
+}
+
+/** Whether a model is asked in Seedance's words (seedancePrompt) rather than the kie.ai models' (clipPrompt). */
+export const usesSeedancePrompt = (name: string, spec: KieModel): boolean => clipProviderOf(spec) === "ephone" || name.startsWith("seedance");
+
+/**
  * Whether the stored shot carries a text the user asked to be READ on screen (a spec item of kind "text" among its
  * covers) — the same question clipPrompt asks before it drops its "No text" sentence. requestFootage asks it again
  * for the NEGATIVE prompt (24 September 2026): on the Wan road kieInput always sent KIE_NEGATIVES, whose first words
@@ -497,7 +603,10 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
       const stillName = `img/${s.still}`;
       imageUrl = `${base}/dl/${job.id}/${encodeURIComponent(stillName)}?exp=${exp}&sig=${await hmacHex(env.INTERNAL_SECRET, `${job.id}/${stillName}/${exp}`)}`;
     }
-    const prompt = clipPrompt(s, look, stored);
+    const keepsText = clipKeepsText(s.id, stored);
+    const prompt = usesSeedancePrompt(name, spec)
+      ? seedancePrompt(s, look, stored, { clipSeconds, usedSeconds: seconds, keepsText, hasFrame: !!imageUrl })
+      : clipPrompt(s, look, stored);
     // The row goes in BEFORE the call, with no task id: a second request while the first is in flight orders nothing twice.
     // A refused row from an earlier request is reset in place instead (same key, new price, no error).
     if (retryable(have.get(s.id))) await updateRow(env, job.id, s.id, { state: "queued", model: name, seconds, cost_usd: cost, error: null });
@@ -510,7 +619,7 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
         taskId = typeof r?.id === "string" && r.id ? r.id : undefined;
         if (!taskId) throw new KieError("ephone.ai answered without a task id", 0, false);
       } else {
-        const r = await kie<{ taskId?: string }>(env, "POST", KIE_CREATE, { model: spec.model, input: kieInput(name, spec, { prompt, imageUrl, seconds, format, seed: seedFor(s.id), look, keepsText: clipKeepsText(s.id, stored) }) });
+        const r = await kie<{ taskId?: string }>(env, "POST", KIE_CREATE, { model: spec.model, input: kieInput(name, spec, { prompt, imageUrl, seconds, format, seed: seedFor(s.id), look, keepsText }) });
         taskId = r?.taskId;
         if (!taskId) throw new KieError("kie.ai answered without a taskId", 0, false);
       }
