@@ -3,7 +3,7 @@ import type { Env } from "../env";
 import type { Job } from "../db";
 import { triedMachines } from "../db";
 import { int, num, minutesSince } from "../util";
-import { jobTimeoutMin, machineFor, styleOfJob, isVideoStyle, filmedJob, videoMachineFor, videoModelIsGated, videoDiskGb, FINISH, type Machine } from "../templates";
+import { jobTimeoutMin, machineFor, styleOfJob, isVideoStyle, filmedJob, videoMachineFor, videoModelIsGated, videoDiskGb, FINISH, FINISH_SR, aiUpscaleJob, aiUpscaleOn, type Machine } from "../templates";
 import { footageBackendFor, footageConfig, kieModelFor, type FootageBackend } from "../footage";
 
 /**
@@ -158,9 +158,12 @@ async function adoptOrphan(env: Env, job: Job, offer: Offer, notBefore: number):
 export const machineKey = (o: { machine_id?: number; id: number }): string =>
   o.machine_id ? `m:${o.machine_id}` : `o:${o.id}`;
 
-/** The machine a job needs right now: its phase first (a finish box is the cheapest thing that runs ffmpeg), then its style. */
-export function profileFor(env: Env, style: string | null | undefined, phase?: string | null, footage: FootageBackend = "local", drawn = false): { need: Machine; disk: number } {
-  if (phase === "finish") return { need: FINISH, disk: int(env.FINISH_DISK_GB, 40) };
+/**
+ * The machine a job needs right now: its phase first (a finish box is the cheapest thing that runs ffmpeg — or, for a
+ * film sold the AI upscale while the kill switch is not off, the cheapest card that can run SR + RIFE), then its style.
+ */
+export function profileFor(env: Env, style: string | null | undefined, phase?: string | null, footage: FootageBackend = "local", drawn = false, upscale = false): { need: Machine; disk: number } {
+  if (phase === "finish") return { need: upscale && aiUpscaleOn(env) ? FINISH_SR : FINISH, disk: int(env.FINISH_DISK_GB, 40) };
   // On the kie.ai road the box never loads a video model: it draws the frames, voices, times the cuts and waits.
   // That is the pictures job, on the pictures card — 16 GB at $0.40/h instead of 80 GB at $2.60/h. An ANIMATIC
   // (`drawn`: the stills with the camera over them, no clip at all) is that same job whatever the footage switch says.
@@ -175,8 +178,8 @@ export function profileFor(env: Env, style: string | null | undefined, phase?: s
   return { need, disk };
 }
 
-export async function searchOffers(env: Env, style?: string | null, phase?: string | null, footage: FootageBackend = "local", drawn = false): Promise<Offer[]> {
-  const { need, disk } = profileFor(env, style, phase, footage, drawn);
+export async function searchOffers(env: Env, style?: string | null, phase?: string | null, footage: FootageBackend = "local", drawn = false, upscale = false): Promise<Offer[]> {
+  const { need, disk } = profileFor(env, style, phase, footage, drawn, upscale);
   const query = {
     verified: { eq: true },
     rentable: { eq: true },
@@ -261,9 +264,11 @@ export const vastBackend: RenderBackend = {
     const filmed = filmedJob(job);
     const footage = filmed ? footageBackendFor(env, job, footageCfg) : "local";
     const drawn = !filmed && isVideoStyle(styleOfJob(job));
-    const offers = await searchOffers(env, styleOfJob(job), job.phase, footage, drawn);
+    // The AI upscale (25 September 2026) is the user's paid option: only such a job gets the SR card and KLEO_SR "auto".
+    const upscale = aiUpscaleJob(job);
+    const offers = await searchOffers(env, styleOfJob(job), job.phase, footage, drawn, upscale);
     if (!offers.length) {
-      const { need } = profileFor(env, styleOfJob(job), job.phase, footage, drawn); // the card that was really searched for
+      const { need } = profileFor(env, styleOfJob(job), job.phase, footage, drawn, upscale); // the card that was really searched for
       throw new Error(`no Vast.ai offer matches the filters: ${need.minVramGb} GB of VRAM, compute ${need.minComputeCap / 100}, at most $${Math.max(num(env.VAST_MAX_DPH, 0.4), need.maxDph)}/h`); // the ceiling really used: the audit of 12 September said "$0.4" while the search ran at 1.00, and the number was chased for nothing
     }
     // A retry must move HOST, which is the whole point of retrying a job that was still downloading after 23 minutes.
@@ -287,7 +292,7 @@ export const vastBackend: RenderBackend = {
         const body: Record<string, unknown> = {
           client_id: "me",
           image: env.VAST_IMAGE,
-          disk: profileFor(env, styleOfJob(job), job.phase, footage, drawn).disk,
+          disk: profileFor(env, styleOfJob(job), job.phase, footage, drawn, upscale).disk,
           label: jobLabel(job.id), // never inline the prefix: create and sweep must read the same label
           runtype: "ssh",
           cancel_unavail: true,
@@ -314,9 +319,9 @@ export const vastBackend: RenderBackend = {
             ...(footage === "kie" ? { KLEO_FOOTAGE_MODEL: kieModelFor(env, footageCfg).name } : {}),
             // Which phase this box is for. A finish box never loads a model and never gets the token.
             KLEO_PHASE: job.phase === "finish" ? "finish" : "gen",
-            // The neural finish of the footage track (worker/kleo_sr.py): "auto" uses the card when it can, "off" is
-            // the kill switch — a Worker secret or var, no image rebuild (25 September 2026).
-            KLEO_SR: (env.KLEO_SR ?? "").trim() || "auto",
+            // The neural finish of the footage track (worker/kleo_sr.py), the AI upscale the user paid for: "auto" on
+            // that job's boxes only, "off" on every other; the Worker's KLEO_SR "off" wins over all (25 September 2026).
+            KLEO_SR: upscale && aiUpscaleOn(env) ? "auto" : "off",
           },
         };
         const r = await vast<{ success: boolean; new_contract?: number; msg?: string; error?: string }>(env, "PUT", `/asks/${offer.id}/`, body);

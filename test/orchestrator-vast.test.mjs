@@ -162,7 +162,7 @@ test("start: with no model configured the filmed job still gets the LTX-2.5 prof
   assert.equal(body.env.KLEO_PHASE, "gen");
 });
 
-test("start: a job in its finish phase rents the cheapest box with a card that can finish the track, with no model and no token", async () => {
+test("start: a job in its finish phase rents the cheapest box that runs ffmpeg, with no model, no token and no neural finish", async () => {
   const env = { ...(await newEnv()), KLEO_VIDEO_MODEL: "Lightricks/LTX-2.5-Diffusers", HF_TOKEN: "hf_secret_xyz" };
   const job = { id: "gt_fin", worker_secret: "wk_1", phase: "finish", params: JSON.stringify({ style: "realistic", format: "16:9" }) };
   let query = null, body = null;
@@ -170,14 +170,38 @@ test("start: a job in its finish phase rents the cheapest box with a card that c
   const origFetch = v.fetch;
   v.fetch = async (url, init = {}) => { if (init.method === "POST" && String(url).endsWith("/bundles/")) query = JSON.parse(init.body); return origFetch(url, init); };
   await withVast(v, () => m.vastBackend.start(env, job));
-  // 25 September 2026: the footage is upscaled and interpolated on the card (worker/kleo_sr.py), so 8 GB of Turing or newer.
-  assert.equal(query.gpu_ram.gte, 8 * 1024, "8 GB for SR + RIFE");
-  assert.equal(query.compute_cap.gte, 750, "Turing or newer: the image's torch has no kernels below 7.5");
+  // 25 September 2026, the owner's decision: the classic 4K 60 fps finish is the default, on any card.
+  assert.equal(query.gpu_ram.gte, 0, "any card");
+  assert.equal(query.compute_cap.gte, 0, "any architecture");
   assert.ok(query.dph_total.lte <= 0.4, `cents an hour, not dollars (${query.dph_total.lte})`);
   assert.equal(body.disk, 40);
   assert.equal(body.env.KLEO_PHASE, "finish");
-  assert.equal(body.env.KLEO_SR, "auto", "the neural finish is on unless the Worker says off");
+  assert.equal(body.env.KLEO_SR, "off", "a film without the AI upscale is finished the classic way");
   assert.equal(body.env.HF_TOKEN, undefined, "a finish box never sees the token");
+});
+
+test("start: a film sold the AI upscale rents a card that can run SR + RIFE for its finish, and only it gets KLEO_SR auto", async () => {
+  const env = await newEnv();
+  const params = JSON.stringify({ style: "realistic", format: "16:9", ai_upscale: true, ai_upscale_credits: 15 });
+  const run = async (e, job) => {
+    let query = null, body = null;
+    const v = fakeVast({ onCreate: (offer, b) => { body = b; return { create: 503 }; } });
+    const origFetch = v.fetch;
+    v.fetch = async (url, init = {}) => { if (init.method === "POST" && String(url).endsWith("/bundles/")) query = JSON.parse(init.body); return origFetch(url, init); };
+    await withVast(v, () => m.vastBackend.start(e, job));
+    return { query, body };
+  };
+  const fin = await run(env, { id: "gt_fin_sr", worker_secret: "wk_1", phase: "finish", params });
+  assert.equal(fin.query.gpu_ram.gte, 8 * 1024, "8 GB for SR + RIFE");
+  assert.equal(fin.query.compute_cap.gte, 750, "Turing or newer: the image's torch has no kernels below 7.5");
+  assert.equal(fin.body.env.KLEO_SR, "auto");
+  // The same job's GPU phase keeps its own card; only the finish box changes.
+  const gen = await run(env, { id: "gt_gen_sr", worker_secret: "wk_1", params });
+  assert.notEqual(gen.query.compute_cap.gte, 750);
+  // The Worker's kill switch wins over everything: any card, and "off" on the box (the extra credits come back).
+  const off = await run({ ...env, KLEO_SR: " off " }, { id: "gt_fin_sr_off", worker_secret: "wk_1", phase: "finish", params });
+  assert.equal(off.query.gpu_ram.gte, 0);
+  assert.equal(off.body.env.KLEO_SR, "off");
 });
 
 test("start: KLEO_SR=off on the Worker reaches the box: the kill switch of the neural finish needs no new image", async () => {
@@ -857,7 +881,8 @@ test("an animatic rents the pictures card whatever the footage switch says: neve
   const drawn = m.profileFor(env, "realistic", null, "local", true);
   assert.deepEqual(drawn.need, m.machineFor("cartoon"), "an animatic is that same pictures job");
   assert.equal(drawn.disk, 80, "and the ordinary disk, not the model's 150 GB");
-  assert.equal(m.profileFor(env, "realistic", "finish", "local", true).need.minVramGb, 8, "the finish profile still wins over everything");
+  assert.equal(m.profileFor(env, "realistic", "finish", "local", true).need.minVramGb, 0, "the finish profile still wins over everything");
+  assert.equal(m.profileFor(env, "realistic", "finish", "kie", false, true).need.minVramGb, 8, "and the AI upscale's finish takes the SR card");
 });
 
 

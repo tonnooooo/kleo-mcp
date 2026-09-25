@@ -134,9 +134,15 @@ export interface Env {
   VIDEO_MIN_VRAM_GB?: string;
   /** Disk for the finish box (default 40 GB: the image, the clips, the 4K film). */
   FINISH_DISK_GB?: string;
-  /** The neural finish of the footage track on the rented card (worker/kleo_sr.py: Real-ESRGAN + RIFE): "auto" (default)
-   *  or "off", the kill switch. Passed to every box; `npx wrangler secret put KLEO_SR` flips it without a code change. */
+  /** The neural finish of the footage track on the rented card (worker/kleo_sr.py: Real-ESRGAN + RIFE), sold as the
+   *  optional AI upscale since 25 September 2026: "off" is the global kill switch (the intake stops asking, a create
+   *  with ai_upscale is refused, every box gets "off"); anything else, or unset, offers it. Only a job with ai_upscale
+   *  gets "auto" on its box. `npx wrangler secret put KLEO_SR` flips it without a code change. */
   KLEO_SR?: string;
+  /** The AI upscale's price (src/templates.ts aiUpscaleCredits): max(AI_UPSCALE_MIN_CREDITS, ceil(film credits x
+   *  AI_UPSCALE_FACTOR)) on top of the film. Defaults 5 and 1.0: the film costs double. */
+  AI_UPSCALE_MIN_CREDITS?: string;
+  AI_UPSCALE_FACTOR?: string;
   VIDEO_MAX_DPH?: string;
   /** kie.ai (https://kie.ai): the clips of a filmed video come from its API instead of a model on the rented card.
    *  KIE_API_KEY is a Cloudflare SECRET (wrangler secret put): it never reaches the box, the audit or a job row. */

@@ -2,7 +2,7 @@ import type { Env } from "./env";
 import type { Job, JobParams } from "./db";
 // ".ts" on purpose: storyboard.ts imports this file and is loaded straight from source by the test runner
 // (node type stripping), whose resolver has no extension search. Wrangler bundles either form.
-import { int } from "./util.ts";
+import { int, num } from "./util.ts";
 import { placeTransitions } from "./transitions.ts";
 
 export type Format = "16:9" | "9:16";
@@ -432,17 +432,23 @@ export function videoMachineFor(modelId: string | undefined, over: { minVramGb?:
 
 /**
  * The box for the FINISH phase of a filmed video: no model, no picture, only ffmpeg on the clips the GPU made —
- * the 60 fps 4K track, the narration, the checks, the upload. Ten to twelve minutes a film at these prices is a cent,
- * against a third of the GPU bill it replaces.
+ * the 60 fps 4K track, the narration, the checks, the upload. Any card will do; what matters is cores and price.
+ * Ten to twelve minutes a film at these prices is a cent, against a third of the GPU bill it replaces.
  *
- * Since 25 September 2026 the card is used: the footage track is upscaled (Real-ESRGAN) and interpolated to 60 fps
- * (RIFE 4.25) on it before the box destroys itself (worker/kleo_sr.py). That needs Turing or newer (the image's torch
- * has no kernels below compute 7.5) and 8 GB, so the finish box is no longer "any card". The search stays cheapest
- * first with 16 or more cores, and the price ceiling really applied is max(VAST_MAX_DPH, maxDph) — VAST_MAX_DPH (1.00)
- * in production, not the 0.12 written here. A box that still cannot run it finishes the old way (Lanczos +
- * minterpolate); KLEO_SR=off on the Worker turns it off without a new image.
+ * The neural finish (worker/kleo_sr.py: Real-ESRGAN + RIFE 4.25) is an OPTION since the owner's decision of 25
+ * September 2026, asked in the intake and paid for (aiUpscaleCredits below): only a film whose user said yes rents
+ * FINISH_SR for its finish box and gets KLEO_SR "auto"; every other film finishes the classic way (Lanczos +
+ * minterpolate) on any card, as before.
  */
-export const FINISH: Machine = { minVramGb: 8, minComputeCap: 750, maxDph: 0.12 };
+export const FINISH: Machine = { minVramGb: 0, minComputeCap: 0, maxDph: 0.12 };
+
+/**
+ * The finish box of a film with the AI upscale: 8 GB of Turing or newer (the image's torch has no kernels below
+ * compute 7.5, and SR + RIFE need the memory). The search stays cheapest first with 16 or more cores, and the price
+ * ceiling really applied is max(VAST_MAX_DPH, maxDph) — VAST_MAX_DPH (1.00) in production, not the 0.12 written here.
+ * A box that still cannot run it finishes the classic way, and the upscale's credits go back (settleAiUpscale).
+ */
+export const FINISH_SR: Machine = { minVramGb: 8, minComputeCap: 750, maxDph: 0.12 };
 
 /** True when the model's weights are gated on Hugging Face and the worker needs a token to fetch them. */
 export const videoModelIsGated = (modelId: string | undefined): boolean => /ltx/i.test(modelId ?? "");
@@ -559,6 +565,55 @@ export const isAnimatic = (p: { product?: string } | null | undefined): boolean 
 /** What a job costs: the film's tariff, or the animatic's flat price. The ONE place a product's price is decided. */
 export const creditsForProduct = (seconds: number, style: string | null | undefined, product: Product | string | null | undefined): number =>
   product === "animatic" ? ANIMATIC_CREDITS : creditsFor(seconds, style);
+/**
+ * THE AI UPSCALE, AN OPTION THAT COSTS (the owner's decision of 25 September 2026, after the A/B probe on an RTX 3060:
+ * Real-ESRGAN + RIFE 4.25 made the track 4.6x sharper for 1.29x the flicker and 1.4 more minutes per 15 s of film).
+ * The classic 4K 60 fps finish stays the default; the upscale is asked in the intake, for the film only, and adds
+ *   max(AI_UPSCALE_MIN_CREDITS, ceil(film credits x AI_UPSCALE_FACTOR))
+ * to the film's price — with the defaults (5, 1.0) the film costs double: 15 s = 10 + 10, 30 s = 15 + 15, 60 s = 30 + 30.
+ * The extra is refunded automatically when the finish could not upscale every shot (settleAiUpscale, src/orchestrator.ts).
+ */
+export const AI_UPSCALE_MIN_CREDITS = 5;
+export const AI_UPSCALE_FACTOR = 1.0;
+type UpscaleEnv = { AI_UPSCALE_MIN_CREDITS?: string; AI_UPSCALE_FACTOR?: string; KLEO_SR?: string };
+const upscaleKnobs = (env: UpscaleEnv) => ({
+  min: Math.max(0, int(env.AI_UPSCALE_MIN_CREDITS, AI_UPSCALE_MIN_CREDITS)),
+  factor: Math.max(0, num(env.AI_UPSCALE_FACTOR, AI_UPSCALE_FACTOR)),
+});
+/** The extra credits of the AI upscale on a film that costs `filmCredits`. */
+export function aiUpscaleCredits(filmCredits: number, env: UpscaleEnv = {}): number {
+  const { min, factor } = upscaleKnobs(env);
+  return Math.max(min, Math.ceil(Math.max(0, filmCredits) * factor - 1e-9));
+}
+/** The rule in words, for when the length (and so the exact number) is not known yet. */
+export function aiUpscaleRule(env: UpscaleEnv = {}): { en: string; it: string } {
+  const { min, factor } = upscaleKnobs(env);
+  if (factor === 1) return { en: `as many credits again as the film, at least ${min}`, it: `tanti crediti quanti ne costa il film, almeno ${min}` };
+  return { en: `${factor}x the film's credits, at least ${min}`, it: `${factor} volte i crediti del film, almeno ${min}` };
+}
+/** The kill switch: KLEO_SR "off" on the Worker (a var or a secret, no deploy) switches the option off for everybody. */
+export const aiUpscaleOn = (env: UpscaleEnv): boolean => !/^(?:off|0|false|no)$/i.test((env.KLEO_SR ?? "").trim());
+/** Whether this job was sold the AI upscale (JobParams.ai_upscale). */
+export function aiUpscaleJob(job: Pick<Job, "params">): boolean {
+  try { return (JSON.parse(job.params) as JobParams).ai_upscale === true; } catch { return false; }
+}
+/**
+ * What the finish box said about the upscale (the `sr` of its /done call, worker/kleo_video.py LAST_SR), read as a
+ * verdict: applied only when every part with a clip went through the GPU. Anything else — no report, no card, the
+ * benchmark over budget, the breaker, one part on the classic chain, KLEO_SR off on the box — is "not applied".
+ */
+export interface AiUpscaleVerdict { applied: boolean; parts: number; upscaled: number; model: string | null; gpu: string | null; reason: string | null }
+export function aiUpscaleVerdict(sr: unknown): AiUpscaleVerdict {
+  const o = sr && typeof sr === "object" && !Array.isArray(sr) ? (sr as Record<string, unknown>) : null;
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.floor(v)) : 0);
+  const s = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim().slice(0, 200) : null);
+  if (!o) return { applied: false, parts: 0, upscaled: 0, model: null, gpu: null, reason: "the finish box sent no report of the upscale" };
+  const parts = n(o.parts), upscaled = Math.min(parts, n(o.applied));
+  const applied = parts > 0 && upscaled === parts;
+  const reason = applied ? null : s(o.reason) ?? (parts === 0 ? "no shot had a clip to upscale" : `${upscaled} of ${parts} shots were upscaled`);
+  return { applied, parts, upscaled, model: s(o.model), gpu: s(o.gpu), reason };
+}
+
 /**
  * Whether a storyboard asks to be FILMED (backdrop "video" → the worker orders the clips) or drawn (no backdrop → the
  * stills with the camera over them). Three places used to compute it from the look alone; the product is the third
