@@ -20,7 +20,7 @@ clips froze, all with nothing alive in the scene), and travel_px() measures ever
 Nothing here runs on the owner's computer, ever. torch and diffusers are imported inside the functions so the
 module can be imported (and unit-tested with fakes) on a machine that has neither.
 """
-import gc, hashlib, json, math, os, re, subprocess, sys, time
+import gc, hashlib, json, math, os, re, subprocess, sys, threading, time
 
 # The generator: LTX-2.5 (Lightricks, 22B), the owner's choice of 13 September, and the only one. Stage one at
 # 960x544 (544x960 portrait), x2 latent upsample and a stage-two pass to 1920x1088, distilled eight-step schedule,
@@ -427,8 +427,10 @@ def seconds_of(path):
 
 
 def finish_clip(src, dst, width, height, fps=60, grade=True, trim=0.12):
-    """Upscale, interpolate and grade one clip. Lanczos, not a neural upscaler: per-frame networks shimmer on
-    generated footage, and the grain pass hides more than they would have added. Returns dst or None."""
+    """Upscale, interpolate and grade one clip (Lanczos + minterpolate; nothing calls it any more). The neural finish
+    lives in build_footage now (kleo_sr: SR on the clip's true frames, then RIFE): the old objection here, per-frame
+    networks shimmering, was measured on 1280x704 Wan clips upscaled frame by frame at 60 fps, which kleo_sr does not
+    do — each source frame is upscaled once and the in-betweens are warps of it. Returns dst or None."""
     try:
         dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", src],
                                    capture_output=True, text=True).stdout.strip() or 0)
@@ -494,6 +496,104 @@ def finish_vf(width, height, fps, want, stretch=1.0):
             f"crop={width}:{height},unsharp=5:5:{SHARPEN:.2f}:5:5:0.0,tpad=stop_mode=clone:stop_duration={want:.3f},{GRADE}")
 
 
+# ---- the neural finish (25 September 2026, worker/kleo_sr.py) ----------------------------------------------------------
+# On a finish box with a usable GPU the two costly lies of finish_vf are replaced: Lanczos x4.5 from a 480p clip by a
+# learned upscale of the clip's true frames, and minterpolate's block matching by RIFE. Everything else — the cut, the
+# slow-down, the held frame, the dissolves, the grade, the concat — is decided exactly as before, and any doubt (no
+# card, no weights, a projection over the budget, an error on a part) falls back to finish_vf for that part or film.
+SHARPEN_SR = float(os.environ.get("KLEO_SHARPEN_SR", "0.2"))      # after SR there is real edge detail; the A/B decides
+SR_BUDGET_MIN = float(os.environ.get("KLEO_SR_BUDGET_MIN", "20"))  # projected GPU minutes a film may spend on SR + RIFE
+
+
+def finish_vf_sr(width, height, want):
+    """The tail after the GPU pass: the frames are already `fps` and near delivery size, so only the last Lanczos step,
+    a lighter unsharp, the hold for whatever is still missing, and the same grade (whose temporal grain also hides
+    any residual flicker from the upscaler)."""
+    return (f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,crop={width}:{height},"
+            f"unsharp=5:5:{SHARPEN_SR:.2f}:5:5:0.0,tpad=stop_mode=clone:stop_duration={want:.3f},{GRADE}")
+
+
+def _sr_module():
+    """kleo_sr, next to this file; None when this image does not carry it."""
+    try:
+        import kleo_sr
+        return kleo_sr
+    except ImportError:
+        pass
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kleo_sr.py")
+    if not os.path.isfile(path):
+        return None
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("kleo_sr", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    sys.modules["kleo_sr"] = mod
+    return mod
+
+
+def _look_of(shots_json):
+    """The film's look: the shot plan's own field if it has one, else project.json next to build/, else realistic."""
+    for path in (shots_json, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(shots_json))), "project.json")):
+        try:
+            look = json.load(open(path)).get("look")
+            if look:
+                return str(look)
+        except Exception:
+            pass
+    return "realistic"
+
+
+def _size_of(path):
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                        "-of", "csv=p=0", path], capture_output=True, text=True)
+    w, h = (int(x) for x in r.stdout.strip().split(",")[:2])
+    return w, h
+
+
+def _part_problem(path, width, height, fps, want):
+    """Why a finished part cannot go into the track (wrong size, rate or length), or None."""
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                        "stream=width,height,r_frame_rate:format=duration", "-of", "json", path], capture_output=True, text=True)
+    try:
+        j = json.loads(r.stdout)
+        st, dur = j["streams"][0], float(j["format"]["duration"])
+        num, _, den = st["r_frame_rate"].partition("/")
+        rate = float(num) / float(den or 1)
+    except Exception:
+        return "unreadable part"
+    if (int(st["width"]), int(st["height"])) != (width, height):
+        return f"size {st['width']}x{st['height']}, not {width}x{height}"
+    if abs(rate - fps) > 0.05:
+        return f"{rate:.2f} fps, not {fps}"
+    if abs(dur - want) > 1.5 / fps + 0.02:
+        return f"{dur:.3f} s, not {want:.3f}"
+    return None
+
+
+def _sr_decision(srm, recipes, shots_json, width, height, fps, say):
+    """Once per film: (factor, look) when the whole track can go through the GPU within the budget, else None. The
+    look never changes in the middle of a film because of this: only an error on one part does, and says so."""
+    try:
+        if srm is None:
+            say("SR off: kleo_sr is not in this image — Lanczos + minterpolate as before")
+            return None
+        ok, why = srm.available()
+        if ok:
+            look = _look_of(shots_json)
+            first = next(iter(recipes.values()))[0]
+            factor = srm.plan(*_size_of(first), width, height)
+            est = srm.estimate_minutes(srm.benchmark(first, factor, look), list(recipes.values()), fps)
+            if est <= SR_BUDGET_MIN:
+                model = srm.model_for(look, factor) or "no upscaler"
+                say(f"SR on: {srm.gpu_name()}, {model} x{factor} + RIFE 4.25, est {est:.1f} min")
+                return factor, look
+            why = f"estimated {est:.0f} min over the {SR_BUDGET_MIN:g} min budget"
+        say(f"SR off: {why} — Lanczos + minterpolate as before")
+    except Exception as e:
+        say(f"SR off: {e} — Lanczos + minterpolate as before")
+    return None
+
+
 def plan_fill(want, have, frozen_tail=0.0):
     """How to make `want` seconds from a clip of `have` whose last `frozen_tail` seconds do not move:
     (stretch, usable_seconds, held_seconds). The frozen tail is dropped, the rest is slowed up to MAX_STRETCH,
@@ -553,7 +653,8 @@ def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=Non
     scenes_in = plan.get("scenes") or []
     dissolves_out = {k for k in range(len(scenes_in) - 1) if (scenes_in[k + 1] or {}).get("transition") == "dissolve"}
     # Pass one, serial and cheap: decide every part (what to cut, how much to slow, what stays black).
-    jobs, total, n = [], 0.0, 0
+    # `recipes` keeps what the GPU pass needs per part, beside `jobs` (whose 4-tuple pass three unpacks).
+    jobs, total, n, recipes = [], 0.0, 0, {}
     for si, scene in enumerate(scenes_in):
         shots_in = scene.get("shots") or []
         for sj, sh in enumerate(shots_in):
@@ -569,7 +670,8 @@ def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=Non
                 # compensation at the size the model produced, then Lanczos to the delivery size, then the film's
                 # own grade — `fps=` on its own would merely duplicate frames, the judder that makes generated
                 # footage look cheap. The curve is fixed, so grading each shot with it is the same film-wide grade
-                # as grading the finished track once.
+                # as grading the finished track once. On a finish box with a usable GPU the part goes through kleo_sr
+                # instead (run_sr below: SR + RIFE, then finish_vf_sr), and this very command is its fallback.
                 #
                 # A shot longer than its clip (a take is capped at MAX_S) is NOT filled by holding the last frame:
                 # the clip is slowed, up to MAX_STRETCH, and only the remainder is held. And the clip's own frozen
@@ -590,6 +692,7 @@ def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=Non
                 vf = finish_vf(width, height, fps, want, stretch)
                 cmd = ["ffmpeg", "-v", "error", "-y", "-t", f"{usable:.3f}", "-i", src, "-vf", vf, "-t", f"{want:.3f}",
                        "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p", dst]
+                recipes[dst] = (src, usable, stretch, want, label)
             else:
                 say(f"{scene['id']} shot {sh.get('index')}: no clip, that stretch stays black")
                 cmd = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
@@ -599,6 +702,57 @@ def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=Non
             total += want - (dissolve_s if extended else 0.0)
     if not jobs:
         return None
+    # Between the passes, once for the whole film: may the GPU finish these parts (kleo_sr)?
+    srm = _sr_module() if recipes else None
+    sr = _sr_decision(srm, recipes, shots_json, width, height, fps, say) if recipes else None
+    breaker, breaker_lock = [False], threading.Lock()
+
+    def run_sr(dst, rec):
+        """The part through the GPU, then the tail encode; False (and said) when today's chain must do it instead."""
+        src, usable, stretch, want, label = rec
+        mid = dst[:-4] + "-sr.mp4"
+        tile = None
+        for attempt in (1, 2):
+            try:
+                with srm.GPU:
+                    stats = srm.enhance(src, mid, usable, stretch, want, fps, sr[0], sr[1], tile=tile)
+                # The encode runs outside the lock: the CPU finishes this part while the card starts the next one.
+                r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", mid, "-vf", finish_vf_sr(width, height, want),
+                                    "-t", f"{want:.3f}", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "16",
+                                    "-pix_fmt", "yuv420p", dst], capture_output=True, text=True)
+                if r.returncode != 0 or not os.path.isfile(dst):
+                    raise RuntimeError(f"the tail encode failed: {r.stderr[-200:]}")
+                bad = _part_problem(dst, width, height, fps, want)
+                if bad:
+                    raise RuntimeError(bad)
+                s = stats if isinstance(stats, dict) else {}
+                say(f"{label}: SR x{sr[0]} + RIFE, {s.get('frames_in')} -> {s.get('frames_out')} frames"
+                    f" (SR {s.get('sr_fps')} fps, RIFE {s.get('rife_fps')} fps, {s.get('vram_peak_gb')} GB)")
+                return True
+            except Exception as e:
+                oom = srm.is_oom(e)
+                if oom and attempt == 1:
+                    tile = 256                            # the upscaler goes in tiles, on an emptied card
+                    try:
+                        with srm.GPU:
+                            srm.release()
+                    except Exception:
+                        pass
+                    continue
+                say(f"{label}: SR failed ({str(e)[:200]}), Lanczos path")
+                if not oom:
+                    with breaker_lock:
+                        if not breaker[0]:
+                            breaker[0] = True
+                            say("SR off for the parts not started yet: one failure is enough to stop trusting it for this film")
+                return False
+            finally:
+                try:
+                    os.remove(mid)
+                except OSError:
+                    pass
+        return False
+
     # Pass two, parallel: the encodes. Order is kept by index; a failure anywhere fails the track.
     from concurrent.futures import ThreadPoolExecutor
     n_workers = max(1, int(workers)) if workers else max(2, (os.cpu_count() or 4) // 4)
@@ -608,20 +762,30 @@ def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=Non
 
     def run(item):
         dst, cmd = item[0], item[1]
+        rec = recipes.get(dst)
+        if sr and rec and not breaker[0] and run_sr(dst, rec):
+            return dst, True
         r = subprocess.run(cmd, capture_output=True, text=True)
         return dst, (r.returncode == 0 and os.path.isfile(dst))
 
-    with ThreadPoolExecutor(max_workers=n_workers) as pool:
-        for dst, ok in pool.map(run, jobs):
-            done += 1
-            if not ok:
-                failed.append(dst)
-                say(f"could not prepare {os.path.basename(dst)}")
-            if progress_fn:
-                try:
-                    progress_fn(done, len(jobs))
-                except Exception:
-                    pass
+    try:
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            for dst, ok in pool.map(run, jobs):
+                done += 1
+                if not ok:
+                    failed.append(dst)
+                    say(f"could not prepare {os.path.basename(dst)}")
+                if progress_fn:
+                    try:
+                        progress_fn(done, len(jobs))
+                    except Exception:
+                        pass
+    finally:
+        if sr:
+            try:
+                srm.release()
+            except Exception:
+                pass
     if failed:
         return None
     # Pass three: the dissolves. A part that was cut long dissolves into the part after it; the two become one file

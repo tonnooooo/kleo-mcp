@@ -10,7 +10,7 @@ comes back as a digital zoom.
 
 Run: python3 -m unittest worker.test_kleo_video      (from the repo root)
 """
-import importlib.util, os, sys, types, unittest
+import importlib.util, math, os, sys, types, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -328,6 +328,227 @@ class DissolveTest(FreezeTest):
         out = os.path.join(self.tmp, "x.mp4")
         self.assertTrue(kv.xfade_parts(a, b, out, offset=2.0, seconds=0.5, fps=24))
         self.assertAlmostEqual(kv.seconds_of(out), 4.0, delta=0.15)
+
+
+ksr = load("kleo_sr_under_test", os.path.join(HERE, "kleo_sr.py"))
+
+
+class SrPlanTest(unittest.TestCase):
+    """worker/kleo_sr.py, the pure half: what factor, which frames, how long, and which weights. No torch here."""
+
+    def test_the_factor_follows_the_source_against_the_delivery(self):
+        for (w, h, W, H), f in {(480, 864, 2160, 3840): 4, (864, 480, 3840, 2160): 4, (720, 1280, 2160, 3840): 4,
+                                (1080, 1920, 2160, 3840): 2, (1440, 2560, 2160, 3840): 1, (2160, 3840, 2160, 3840): 1}.items():
+            self.assertEqual(ksr.plan(w, h, W, H), f, f"{w}x{h} -> {W}x{H}")
+
+    def test_the_model_follows_the_look_and_the_factor(self):
+        self.assertEqual(ksr.model_for("realistic", 4), "realesr-general-x4v3")
+        self.assertEqual(ksr.model_for("animation", 4), "realesr-animevideov3")
+        self.assertEqual(ksr.model_for("cartoon", 4), "realesr-animevideov3")
+        self.assertEqual(ksr.model_for("animation", 2), "RealESRGAN_x2plus")
+        self.assertIsNone(ksr.model_for("realistic", 1))
+
+    def test_24_to_60_fps_is_the_minterpolate_timestamps(self):
+        tl = ksr.timeline(24, 60, 1.0, 5.0)
+        self.assertEqual(len(tl), 300)
+        self.assertEqual(tl[:6], [(0, 0.0), (0, 0.4), (0, 0.8), (1, 0.2), (1, 0.6), (2, 0.0)])
+        self.assertEqual({round(t, 3) for _, t in tl}, {0.0, 0.4, 0.8, 0.2, 0.6})
+
+    def test_a_slowed_part_has_the_frame_count_of_setpts_and_never_runs_past_its_frames(self):
+        usable, want, stretch = 4.0, 5.0, 1.12
+        tl = ksr.timeline(24, 60, stretch, min(want, usable * stretch))
+        self.assertEqual(len(tl), math.ceil(min(want, usable * stretch) * 60))
+        self.assertEqual([i for i, _ in tl], sorted(i for i, _ in tl), "monotonic: the decoder only moves forward")
+        self.assertLess(tl[-1][0], usable * 24)
+        held = ksr.timeline(24, 60, 2.0, 5.0, n_src=10)
+        self.assertTrue(all(i <= 9 for i, _ in held))
+        self.assertEqual(held[-1], (9, 0.0), "past the last frame it is held, like tpad")
+
+    def test_the_estimate_counts_source_frames_for_sr_and_output_frames_for_rife(self):
+        bench = {"sr_s": 0.1, "rife_s": 0.05, "io_s": 0.01}
+        est = ksr.estimate_minutes(bench, [("a", 5.0, 1.0, 5.0), ("b", 4.0, 1.25, 5.0)], 60)
+        want = 1.25 * ((120 * 0.1 + 300 * 0.06) + (96 * 0.1 + 300 * 0.06)) / 60
+        self.assertAlmostEqual(est, want, places=6)
+
+    def test_off_and_no_torch_are_reasons_not_errors(self):
+        os.environ["KLEO_SR"] = "off"; self.addCleanup(lambda: os.environ.pop("KLEO_SR", None))
+        self.assertEqual(ksr.available(), (False, "KLEO_SR=off"))
+        os.environ["KLEO_SR"] = "auto"
+        saved = sys.modules.get("torch"); sys.modules["torch"] = None
+        self.addCleanup(lambda: sys.modules.__setitem__("torch", saved) if saved else sys.modules.pop("torch", None))
+        ok, why = ksr.available()
+        self.assertFalse(ok); self.assertIn("no torch", why)
+
+    def test_importing_it_never_imports_torch(self):
+        import subprocess
+        r = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); import kleo_sr; print('torch' in sys.modules)", HERE],
+                           capture_output=True, text=True)
+        self.assertEqual(r.stdout.strip(), "False", r.stderr)
+
+    def test_missing_or_altered_weights_are_refused(self):
+        import tempfile, shutil
+        d = tempfile.mkdtemp(prefix="kleo-sr-w-"); self.addCleanup(shutil.rmtree, d, True)
+        ok, why = ksr.weights_ok(d)
+        self.assertFalse(ok); self.assertIn("is not in", why)
+        for name in ksr.WEIGHTS:
+            open(os.path.join(d, name), "wb").write(b"not the weights")
+        ksr._checked.pop(d, None)
+        ok, why = ksr.weights_ok(d)
+        self.assertFalse(ok); self.assertIn("pinned sha256", why)
+
+    def test_the_image_pins_the_same_weights_as_the_module(self):
+        """Dockerfile.keou fetches with curl and checks sha256sum; kleo_sr checks the same files at run time. The two
+        tables must be one table, or the image ships weights the module then refuses (SR silently off everywhere)."""
+        docker = open(os.path.join(HERE, "Dockerfile.keou"), encoding="utf-8").read()
+        for name, (urls, size, sha) in ksr.WEIGHTS.items():
+            self.assertIn(sha, docker, name)
+            self.assertIn(str(size), docker, name)
+            for url in urls:
+                self.assertIn(url, docker, name)
+        for url in ksr.RIFE_ZIP[0]:
+            self.assertIn(url, docker)
+        self.assertIn(ksr.RIFE_ZIP[2], docker)
+        self.assertIn(ksr.RIFE_FILE, docker)
+        self.assertIn("COPY worker/kleo_sr.py /opt/kleo/kleo_sr.py", docker)
+
+    def test_out_of_memory_is_recognised(self):
+        self.assertTrue(ksr.is_oom(RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")))
+        self.assertFalse(ksr.is_oom(RuntimeError("no kernel image is available")))
+
+
+class FakeSr:
+    """kleo_sr with the GPU replaced: enhance() writes a real (tiny) clip of the part's slowed length at `fps`."""
+
+    def __init__(self, ok=True, est=1.0, fail_on=None, oom_on=None):
+        import threading
+        self.GPU, self.lock = threading.Lock(), threading.Lock()
+        self.ok, self.est, self.fail_on, self.oom_on = ok, est, fail_on, oom_on
+        self.calls, self.active, self.max_active, self.released = [], 0, 0, 0
+
+    def available(self): return (True, "ok") if self.ok else (False, "no CUDA device")
+    def plan(self, w, h, W, H): return 2
+    def model_for(self, look, factor): return "fake-x2"
+    def gpu_name(self): return "Fake GPU"
+    def benchmark(self, src, factor, look): return {"sr_s": 0.01}
+    def estimate_minutes(self, bench, recipes, fps): return self.est
+    def is_oom(self, e): return "out of memory" in str(e)
+    def release(self): self.released += 1
+
+    def enhance(self, src, mid, usable, stretch, want, fps, factor, look, tile=None):
+        import subprocess, time
+        part = int(os.path.basename(mid)[:3])
+        with self.lock:
+            self.active += 1; self.max_active = max(self.max_active, self.active); self.calls.append((part, tile))
+        try:
+            time.sleep(0.05)
+            if part == self.fail_on:
+                raise RuntimeError("boom")
+            if part == self.oom_on:
+                raise RuntimeError("CUDA out of memory")
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"testsrc=size=64x36:rate={fps}",
+                            "-t", f"{min(want, usable * stretch):.3f}", "-c:v", "libx264", "-preset", "ultrafast",
+                            "-pix_fmt", "yuv420p", mid], check=True, capture_output=True)
+            return {"frames_in": 1, "frames_out": 1}
+        finally:
+            with self.lock:
+                self.active -= 1
+
+
+class SrHookTest(FreezeTest):
+    """build_footage with kleo_sr faked: the track keeps its length to the frame and its one report per part whatever
+    the GPU does, a failing part falls back to today's chain, and the card is never shared by two parts."""
+
+    def use(self, fake):
+        saved = sys.modules.get("kleo_sr")
+        sys.modules["kleo_sr"] = fake
+        self.addCleanup(lambda: sys.modules.__setitem__("kleo_sr", saved) if saved else sys.modules.pop("kleo_sr", None))
+        return fake
+
+    def film(self, n=3, workers=3):
+        import json
+        src = self.clip("m.mp4", 72, 0)
+        plan = {"width": 128, "height": 72, "fps": 24, "duration": float(n),
+                "scenes": [{"id": "s1", "shots": [{"index": k, "start": float(k), "end": float(k + 1)} for k in range(n)]}]}
+        pj = os.path.join(self.tmp, "shots.json"); json.dump(plan, open(pj, "w"))
+        seen, said = [], []
+        out = kv.build_footage(pj, {f"s1-s{k + 1}": src for k in range(n)}, os.path.join(self.tmp, "footage.mp4"), 128, 72, fps=24,
+                               log_fn=lambda *a: said.append(" ".join(str(x) for x in a)),
+                               progress_fn=lambda d, t: seen.append((d, t)), workers=workers)
+        return out, seen, said
+
+    def test_the_gpu_finishes_every_part_one_at_a_time_and_the_track_keeps_its_length(self):
+        fake = self.use(FakeSr())
+        out, seen, said = self.film()
+        self.assertTrue(out and os.path.isfile(out), said)
+        self.assertTrue(any("SR on: Fake GPU, fake-x2 x2 + RIFE 4.25" in m for m in said), said)
+        self.assertEqual(sorted(p for p, _ in fake.calls), [0, 1, 2])
+        self.assertEqual(fake.max_active, 1, "two parts on the card at once")
+        self.assertEqual(seen, [(1, 3), (2, 3), (3, 3)])
+        self.assertAlmostEqual(kv.seconds_of(out), 3.0, delta=0.15)
+        self.assertFalse(any("Lanczos path" in m for m in said), said)
+        self.assertGreaterEqual(fake.released, 1, "the card is handed back after the track")
+
+    def test_a_failing_part_falls_back_and_the_rest_stop_trusting_the_gpu(self):
+        fake = self.use(FakeSr(fail_on=1))
+        out, seen, said = self.film(workers=1)
+        self.assertTrue(out and os.path.isfile(out), said)
+        self.assertTrue(any("s1 shot 2: SR failed (boom), Lanczos path" in m for m in said), said)
+        self.assertEqual(sum("SR off for the parts not started yet" in m for m in said), 1, said)
+        self.assertEqual([p for p, _ in fake.calls], [0, 1], "the third part never went to the card")
+        self.assertEqual(seen, [(1, 3), (2, 3), (3, 3)])
+        self.assertAlmostEqual(kv.seconds_of(out), 3.0, delta=0.15)
+
+    def test_out_of_memory_retries_in_tiles_then_falls_back_for_that_part_only(self):
+        fake = self.use(FakeSr(oom_on=1))
+        out, seen, said = self.film(workers=1)
+        self.assertTrue(out and os.path.isfile(out), said)
+        self.assertEqual(fake.calls, [(0, None), (1, None), (1, 256), (2, None)])
+        self.assertFalse(any("SR off for the parts" in m for m in said), "an OOM is not a reason to stop for the film")
+        self.assertAlmostEqual(kv.seconds_of(out), 3.0, delta=0.15)
+
+    def test_over_budget_the_whole_film_takes_todays_chain(self):
+        fake = self.use(FakeSr(est=99.0))
+        out, _, said = self.film()
+        self.assertTrue(out and os.path.isfile(out), said)
+        self.assertTrue(any("SR off: estimated 99 min over the 20 min budget" in m for m in said), said)
+        self.assertEqual(fake.calls, [])
+
+    def test_no_card_means_todays_chain_and_says_why(self):
+        fake = self.use(FakeSr(ok=False))
+        out, _, said = self.film()
+        self.assertTrue(out and os.path.isfile(out), said)
+        self.assertTrue(any("SR off: no CUDA device" in m for m in said), said)
+        self.assertEqual(fake.calls, [])
+
+    def test_the_real_module_on_a_machine_without_a_card_is_off_and_said(self):
+        saved = sys.modules.pop("kleo_sr", None)
+        self.addCleanup(lambda: sys.modules.__setitem__("kleo_sr", saved) if saved else None)
+        out, _, said = self.film()
+        self.assertTrue(out and os.path.isfile(out), said)
+        self.assertTrue(any(m.startswith("SR off:") for m in said), said)
+
+    def test_the_dissolve_is_untouched_by_the_gpu_pass(self):
+        import json
+        fake = self.use(FakeSr())
+        src = self.clip("d.mp4", 72, 0)
+        plan = {"width": 128, "height": 72, "fps": 24, "duration": 4.0, "dissolve_s": 0.5,
+                "scenes": [{"id": "s1", "transition": "cut", "shots": [{"index": 0, "start": 0.0, "end": 2.0}]},
+                           {"id": "s2", "transition": "dissolve", "shots": [{"index": 0, "start": 2.0, "end": 4.0}]}]}
+        pj = os.path.join(self.tmp, "shots.json"); json.dump(plan, open(pj, "w"))
+        said = []
+        out = kv.build_footage(pj, {"s1-s1": src, "s2-s1": src}, os.path.join(self.tmp, "footage.mp4"), 128, 72, fps=24,
+                               log_fn=lambda *a: said.append(" ".join(str(x) for x in a)))
+        self.assertTrue(out and os.path.isfile(out), said)
+        self.assertEqual(len(fake.calls), 2)
+        self.assertAlmostEqual(kv.seconds_of(out), 4.0, delta=0.15)
+        self.assertTrue(any("1 dissolve(s) between acts, 0.5 s each" in m for m in said), said)
+
+    def test_the_tail_after_the_gpu_keeps_the_hold_and_the_grade_but_not_the_cpu_interpolation(self):
+        vf = kv.finish_vf_sr(2160, 3840, 5.0)
+        self.assertNotIn("minterpolate", vf); self.assertNotIn("setpts", vf)
+        self.assertIn("tpad=stop_mode=clone:stop_duration=5.000", vf)
+        self.assertTrue(vf.endswith(kv.GRADE))
+        self.assertIn("scale=2160:3840", vf)
 
 
 class GenerateTest(unittest.TestCase):

@@ -50,6 +50,36 @@ COPY worker/prewarm_models.py /opt/kleo/prewarm/prewarm_models.py
 RUN HF_HUB_OFFLINE=0 PREWARM_PICTURES=${PREWARM_PICTURES} python3 /opt/kleo/prewarm/prewarm_models.py /opt/kleo/prewarm/contract.py \
     && rm -rf /root/.cache/pip && du -sh /opt/kleo/hf
 
+# --- The neural finish of the footage track (worker/kleo_sr.py): Real-ESRGAN compact weights (BSD-3) and RIFE 4.25
+#     (MIT), ~105 MB. Here, after the prewarm layer, so the base and the 2.7 GB models keep their digests.
+#     Every file is pinned by size and sha256 — the same table as kleo_sr.WEIGHTS / RIFE_ZIP (test_kleo_video holds the
+#     two together). The Real-ESRGAN files come from the author's GitHub release, with a Hugging Face mirror pinned to a
+#     commit as the fallback (its published LFS sha256 is the pinned value, and matches other independent mirrors of
+#     the same size). RIFE 4.25 is published by its author on Google Drive only: two Hugging Face copies of the same
+#     zip (same sha256) stand in for it, and only train_log/flownet.pkl is kept (the network is vendored in kleo_sr).
+#     No pip realesrgan/basicsr: basicsr imports torchvision.transforms.functional_tensor, gone in torchvision 0.23.
+#     --no-deps + pip check: spandrel runs on the base image's torch and torchvision, it never pulls its own. ---
+RUN pip install --no-deps spandrel==0.4.2 einops==0.8.1 && pip check && mkdir -p /opt/kleo/sr/rife425 && cd /opt/kleo/sr \
+    && get() { for u in "$2" "$3"; do curl -fsSL --retry 3 --max-time 300 -o "$1" "$u" \
+                 && [ "$(stat -c %s "$1")" = "$4" ] && echo "$5  $1" | sha256sum -c - && return 0; done; return 1; } \
+    && get realesr-general-x4v3.pth https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth \
+           https://huggingface.co/leonelhs/realesrgan/resolve/6907f85a9095e201ec4b3c7e91bbb66cdec0f04d/realesr-general-x4v3.pth \
+           4885111 8dc7edb9ac80ccdc30c3a5dca6616509367f05fbc184ad95b731f05bece96292 \
+    && get realesr-general-wdn-x4v3.pth https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-wdn-x4v3.pth \
+           https://huggingface.co/leonelhs/realesrgan/resolve/6907f85a9095e201ec4b3c7e91bbb66cdec0f04d/realesr-general-wdn-x4v3.pth \
+           4885111 1641f8c4464b9f097c9fdda5589273713f67cf59f3d909e0bd688f0cee269dca \
+    && get realesr-animevideov3.pth https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth \
+           https://huggingface.co/leonelhs/realesrgan/resolve/6907f85a9095e201ec4b3c7e91bbb66cdec0f04d/realesr-animevideov3.pth \
+           2504012 b8a8376811077954d82ca3fcf476f1ac3da3e8a68a4f4d71363008000a18b75d \
+    && get RealESRGAN_x2plus.pth https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth \
+           https://huggingface.co/leonelhs/realesrgan/resolve/6907f85a9095e201ec4b3c7e91bbb66cdec0f04d/RealESRGAN_x2plus.pth \
+           67061725 49fafd45f8fd7aa8d31ab2a22d14d91b536c34494a5cfe31eb5d89c2fa266abb \
+    && get rife425.zip https://huggingface.co/r3gm/RIFE/resolve/7ebada9b4387e6a599766e40816876ec500c93d0/RIFEv4.25_0919.zip \
+           https://huggingface.co/myfuturecsl/RIFE/resolve/3f5952a40952693dfad03d0606f64a815e7ad41d/RIFEv4.25_0919.zip \
+           22919050 e63d481b7ae5d4a4e6ad7ac5b410ff78f3bf7be3b51b2e38ca8152747abde5b4 \
+    && python3 -c "import zipfile; open('rife425/flownet.pkl','wb').write(zipfile.ZipFile('rife425.zip').read('train_log/flownet.pkl'))" \
+    && rm -f rife425.zip && sha256sum *.pth rife425/flownet.pkl > SHA256SUMS && cat SHA256SUMS && du -sh /opt/kleo/sr
+
 # --- Engine source + worker (last: cheapest layers to rebuild) ---
 COPY worker/keou /opt/kleo/keou
 
@@ -75,6 +105,10 @@ COPY worker/kleo_pictures.py /opt/kleo/kleo_pictures.py
 # The generated-motion module. It was never copied: in production every storyboard that asked to be filmed fell
 # back to the stills with "kleo_video is not in this image" in a log nobody read (found 13 September).
 COPY worker/kleo_video.py /opt/kleo/kleo_video.py
+# The neural finish kleo_video calls on a finish box with a usable GPU. The check loads every network on the CPU and
+# runs each once: a weight that does not fit its network fails the build here, never a film.
+COPY worker/kleo_sr.py /opt/kleo/kleo_sr.py
+RUN cd /opt/kleo && python3 -c "import kleo_sr; ok, why = kleo_sr.weights_ok(); assert ok, why; print(kleo_sr.selfcheck())"
 COPY worker/kleo_worker.py /opt/kleo/kleo_worker.py
 RUN node --version > runtime-node.txt && ffmpeg -version | head -1 > runtime-ffmpeg.txt \
     && pip freeze > runtime-python.txt && python3 -c "import contract; print('contract', contract.VERSION, sorted(contract.VOICES))"
