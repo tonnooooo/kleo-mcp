@@ -12,8 +12,9 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   FILM_WPS, KOKORO_WPS, spokenSeconds, wordBudget, speedFor, clipWordsPerShot, mergeThinScenes, trimShots, validateStoryboard, CINEMA_ACCENTS, directionProblems,
+  thinScenes, VOICE_MAX,
 } from "../src/keou-contract.ts";
-import { spreadWords, lengthShortfalls, planFor } from "../src/storyboard.ts";
+import { spreadWords, lengthShortfalls, planFor, lengthenPrompt, keepsLine } from "../src/storyboard.ts";
 import { treatmentBlock, treatmentPrompt, repairTreatment, variationFor, MASTER_PROMPT } from "../src/treatment.ts";
 import { guideText } from "../src/guide.ts";
 import { TREATMENT_FIXTURE } from "./fixtures/treatment.mjs";
@@ -107,6 +108,9 @@ test("mergeThinScenes: a line under a clip's worth of words is joined to its nei
   assert.deepEqual(sb.scenes.flatMap((s) => s.voice.split(/\s+/)), LIVE.join(" ").split(/\s+/));
   assert.equal(a.id, "02-part"); assert.equal(a.accent, "amber"); assert.equal(a.kind, "cinema");
   assert.equal(a.shots.length, 1, "twenty words pay for one clip"); assert.equal(a.shots[0].at, undefined);
+  // The picture that stays is the kept line's (the middle scene's id, title and accent): not the hook's, which would
+  // have played under "She gives the map, the squall takes two fingers…" for most of its six seconds.
+  assert.equal(a.shots[0].image_prompt, "picture 2");
   assert.equal(end.kind, "closing"); assert.equal(end.voice, LIVE[2]);
   // The sections follow: the hook's section gave up its only scene.
   assert.deepEqual(sb.direction.sections.map((s) => [s.accent, s.scenes]), [["amber", 1], ["green", 1]]);
@@ -117,15 +121,19 @@ test("mergeThinScenes: the second line's first picture cuts on words the first l
   const second = "The map was the only thing she ever owned, and the storm took it on the night the boy ran.";
   assert.equal(words(second), 20);
   const sb = film(["The map is gone", second, "Nobody on that island ever spoke of the map or the boy again."]);
-  sb.scenes[1].shots = [{ image_prompt: "picture 2" }, { image_prompt: "picture 3", at: "the storm" }];
   const notes = mergeThinScenes(sb, 4);
   assert.equal(notes.length, 1);
   const [a] = sb.scenes;
   assert.equal(a.voice, `The map is gone. ${second}`, "a line without an end gets one before the next begins");
   assert.equal(words(a.voice), 24);
-  assert.deepEqual(a.shots.map((s) => s.image_prompt), ["picture 1", "picture 2"], "24 words carry two clips; the third picture goes");
+  assert.deepEqual(a.shots.map((s) => s.image_prompt), ["picture 1", "picture 2"], "24 words carry two clips: both pictures stay");
   assert.equal(a.shots[1].at, "The map was", "\"The\" and \"The map\" are said by the first line: the cut would land early");
   assert.equal(a.shots[0].at, undefined);
+  // Three pictures for a line that pays for two: the thin line's picture goes, the kept line's two stay, in order.
+  const over = film(["The map is gone", second, "Nobody on that island ever spoke of the map or the boy again."]);
+  over.scenes[1].shots = [{ image_prompt: "picture 2" }, { image_prompt: "picture 3", at: "the storm" }];
+  assert.equal(mergeThinScenes(over, 4).length, 1);
+  assert.deepEqual(over.scenes[0].shots.map((s) => [s.image_prompt, s.at]), [["picture 2", undefined], ["picture 3", "the storm"]]);
 });
 
 test("mergeThinScenes: the colour law and the contract's two scenes are never broken; no floor, no join", () => {
@@ -154,8 +162,65 @@ test("mergeThinScenes: a thin closing is joined to the scene before it and stays
   assert.equal(end.kind, "closing"); assert.equal(end.button, "Follow"); assert.equal(end.hold, 0.4);
   assert.equal(end.id, "02-part", "the longer line's scene is the one kept");
   assert.ok(end.shots.length <= 2);
+  // Eighteen words pay for one clip, and it is the closing's own: the image the film ends on is never the one cut.
+  assert.deepEqual(end.shots.map((s) => s.image_prompt), ["picture 3"]);
   // What comes out is still a storyboard the contract accepts, and trimming it again changes nothing.
   assert.equal(trimShots(sb, null, 4), 0);
+});
+
+test("mergeThinScenes: the ceiling never costs the only shot of a must item — the join is refused instead", () => {
+  const spec = { mode: "open", items: ["R1", "R2", "R3"].map((id) => ({ id, must: true, kind: "event", text: id })) };
+  const make = (r2Elsewhere) => {
+    const sb = film([
+      "Every pirate on this island knows the price long before he ever sees the treasure.",
+      "She gives the boy the map, the squall takes two of his fingers on the rocks, and the boy runs for the longboat alone.",
+      "And the price remains, forever.",
+    ]);
+    sb.scenes[0].shots[0].covers = r2Elsewhere ? ["R2"] : [];
+    sb.scenes[1].shots = [{ image_prompt: "picture 2a", covers: ["R1"] }, { image_prompt: "picture 2b", at: "the squall", covers: ["R2"] }];
+    sb.scenes[2].shots[0].covers = ["R3"];
+    return sb;
+  };
+  // 24 + 5 words: a closing of three pictures is over its ceiling of two, and each of the three is the film's only
+  // witness of a must item. No join: a client is never refused for a storyboard that showed everything before Kleo.
+  const sole = make(false);
+  const before = JSON.stringify(sole);
+  assert.deepEqual(mergeThinScenes(sole, 4, { spec }), []);
+  assert.equal(JSON.stringify(sole), before);
+  // R2 is also shown by the first scene (counted over the whole film): its picture here may go; the closing's own stays.
+  const shared = make(true);
+  assert.equal(mergeThinScenes(shared, 4, { spec }).length, 1);
+  assert.equal(shared.scenes[1].kind, "closing");
+  assert.deepEqual(shared.scenes[1].shots.map((s) => s.image_prompt), ["picture 2a", "picture 3"]);
+  assert.deepEqual(shared.scenes.flatMap((s) => s.shots.flatMap((sh) => sh.covers ?? [])).sort(), ["R1", "R2", "R3"], "every must item keeps a witness");
+});
+
+test("mergeThinScenes: a join whose line would pass the contract's 350 characters is not made", () => {
+  const long = "The storm came in from the west before dawn, and it tore the sails from every mast in the harbour, and it drove the fishing boats onto the rocks one after the other, and when the light came up over the water there was nothing left of the old fleet but ropes and splinters and the smell of tar, and the boy stood alone on the pier.";
+  assert.equal(VOICE_MAX, 350);
+  assert.ok(long.length <= VOICE_MAX && `${long} And then, silence fell.`.length > VOICE_MAX, `${long.length}`);
+  const sb = film(["Every pirate on this island knows the price long before he ever sees the treasure.", long, "And then, silence fell."]);
+  const before = JSON.stringify(sb);
+  assert.deepEqual(mergeThinScenes(sb, 4), []);
+  assert.equal(JSON.stringify(sb), before, "the box would refuse the joined line, and the planner would cut its tail");
+  assert.deepEqual(thinScenes(sb, 4), [2], "the thin closing is named, not implied to be fixed");
+});
+
+test("thinScenes, keepsLine and the lengthening prompt: what the join could not reach is asked for once more", () => {
+  assert.deepEqual(thinScenes(film(LIVE), 4), [0, 2]);
+  assert.deepEqual(thinScenes(film(LIVE), 0), [], "no floor, nothing is thin");
+  assert.ok(keepsLine("The map is gone. The price remains.", "The map is gone. The price remains, and the boy still pays it every night."));
+  assert.ok(keepsLine("The map is gone.", "the MAP is gone — for good"), "case and punctuation are not words");
+  assert.ok(!keepsLine("The map is gone. The price remains.", "The map is gone, and the boy pays forever."), "a word of the line is missing");
+  assert.ok(!keepsLine("The price remains. The map is gone.", "The map is gone. The price remains."), "the order is the line's");
+  const joined = [{ voice: `${LIVE[0]} ${LIVE[1]}` }, { voice: LIVE[2] }];
+  const p = lengthenPrompt({ clipFloor: 4, language: "it" }, joined, [1], { mode: "faithful" });
+  assert.match(p, /^THE NARRATION OF THE FILM, line by line \(one line per scene, spoken in Italian\):\n1\. Pirates know/);
+  assert.match(p, /- scene 2 \(7 words\): add 4 or more words, 11 to 19 in all, at most 350 characters/);
+  assert.doesNotMatch(p, /- scene 1 /);
+  assert.match(p, /TASK: lengthen these lines/);
+  assert.match(p, /Keep each line exactly as it is, every word in its order/);
+  assert.match(p, /never a new event or character/, "a faithful film is lengthened from the user's own story");
 });
 
 test("the planner's scene count leaves room for the floor: three lines of eleven or more in a 15 s film", () => {
@@ -185,6 +250,8 @@ test("the guide asks for a clip's worth on every line, and for the length", () =
   const api = guideText({ duration_s: 15, style: "realistic", languages: ["en", "it"], clipFloorS: 4 });
   assert.match(api, /The hook and the closing too — a punch is a short first sentence inside the line, not a short line/);
   assert.match(api, /A line still under 11 words is joined by Kleo to its neighbour, word for word/);
+  // …and says when it is not: a two-scene film, a line over the contract's length, a join the colour law refuses.
+  assert.match(api, /but only while the film keeps more than two scenes, the joined line stays within 350 characters and the sections keep their colours apart\. Otherwise the short line stays as written and its clip plays past its voice/);
   assert.match(api, /and not much under 32 either/);
   assert.doesNotMatch(guideText({ duration_s: 15, style: "realistic", languages: ["en", "it"] }), /joined by Kleo to its neighbour/, "the local road buys no clip");
 });

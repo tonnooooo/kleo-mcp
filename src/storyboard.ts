@@ -24,7 +24,7 @@ import {
   KLEO_STYLES, PICTURE_STYLES, FILM_LOOKS, type FilmLook, IMAGE_PROMPT_MAX, kleoStyleOf, STORY_ACTS, STORY_CAST, STORY_PROPS, STORY_FX, STORY_ACCENTS,
   SHOTS_PER_SCENE, SHOT_CAPTION_MAX, SHOT_HL_MAX, SHOT_AT_MAX, IMAGE_PROMPT_MIN, CLOSING_BUTTON_MAX,
   SHOT_ID_SUFFIX_RE, quotesVoice, SHOTS_MIN_CINEMA, SHOTS_WORDS_PER_SHOT, SHOTS_MIN_WORDS_FOR_TWO, shotRangeText, narrationOf, anchorShots, shotBudget, clipWordsPerShot,
-  SHOT_ACTION_MAX, SHOT_COVERS_MAX, SHOT_CAST_MAX, SHOT_TAG_MAX, mergeThinScenes, FILM_WPS,
+  SHOT_ACTION_MAX, SHOT_COVERS_MAX, SHOT_CAST_MAX, SHOT_TAG_MAX, mergeThinScenes, thinScenes, FILM_WPS, VOICE_MAX,
 } from "./keou-contract.ts";
 /**
  * THE SPEC (24 September 2026): the user's request taken apart into checkable requirements (src/spec.ts). It is
@@ -578,6 +578,10 @@ export function spreadWords(words: readonly number[], target: number, least = 0)
   return out;
 }
 
+/** How a line is lengthened, by the spec's mode: from the user's own story in a faithful film, from the moment in an open one. */
+export const lengthenHow = (spec?: RequestSpec | null): string => spec?.mode === "faithful"
+  ? "with what the user's own story already holds at that moment (the place, the gesture, what is at stake), never a new event or character"
+  : "with a concrete detail of that moment, never a new scene and never a line said twice";
 /**
  * What a chunk's narration lacks, in the words the planner feeds back (25 September 2026): every line under one clip's
  * worth of words on the API road, with the exact number missing, and the chunk's total when it is under 80 % of the
@@ -590,9 +594,7 @@ export function lengthShortfalls(scenes: readonly Record<string, unknown>[], pla
   const out: string[] = [];
   const count = (s: Record<string, unknown>) => String(s.voice ?? "").trim().split(/\s+/).filter(Boolean).length;
   const least = plan.clipFloor > 0 ? clipWordsPerShot(plan.clipFloor) : 0;
-  const how = spec?.mode === "faithful"
-    ? "with what the user's own story already holds at that moment (the place, the gesture, what is at stake), never a new event or character"
-    : "with a concrete detail of that moment, never a new scene and never a line said twice";
+  const how = lengthenHow(spec);
   scenes.forEach((sc, i) => {
     const w = count(sc);
     if (least && w < least) out.push(`scene ${i + 1}: its voice has ${w} words, ${least - w} short of the ${least} that fill one paid ${plan.clipFloor}-second clip — add ${least - w} or more (about ${Math.max(least, planned[i] ?? least)} in all), ${how}; a short punch stays, as the first sentence, and a second one completes the line`);
@@ -602,6 +604,45 @@ export function lengthShortfalls(scenes: readonly Record<string, unknown>[], pla
   if (want > 0 && words < Math.round(want * 0.8))
     out.push(`the narration of these scenes is ${want - words} words short: ${words} words for about ${want} (${planned.map((w, i) => `scene ${i + 1} about ${w}`).join(", ")}) — this ${plan.duration}-second film is only as long as its voice; lengthen the lines ${how}`);
   return out;
+}
+
+/**
+ * THE LAST CALL FOR A LINE THE JOIN COULD NOT REACH (25 September 2026). mergeThinScenes never takes a film under two
+ * scenes and never breaks the colour law, so a 15-second film of three lines — the most common API length — can keep
+ * one line under its clip after every join it may make (gt_t2cxm2md: 7/13/7 joins once, to 20/7). Those lines, and only
+ * those, are asked for once more in a call of their own: each line is KEPT word for word and completed to the exact
+ * number of words its clip needs, in the film's language. Nothing else of the scene is touched.
+ */
+export const LENGTHEN_SYSTEM = "You complete narration lines of a narrated short film so that each one fills the clip it is paid for. You answer with JSON only.";
+export const LENGTHEN_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  properties: { lines: { type: "array", items: { type: "object", properties: { scene: { type: "integer" }, voice: { type: "string" } }, required: ["scene", "voice"] } } },
+  required: ["lines"],
+};
+export function lengthenPrompt(plan: Pick<Plan, "clipFloor" | "language">, scenes: readonly Record<string, unknown>[], thin: readonly number[], spec?: RequestSpec | null): string {
+  const least = clipWordsPerShot(plan.clipFloor);
+  const count = (v: unknown) => String(v ?? "").trim().split(/\s+/).filter(Boolean).length;
+  const lang = LANG_NAMES[plan.language] ?? plan.language;
+  const film = scenes.map((sc, i) => `${i + 1}. ${String(sc.voice ?? "").trim()}`).join("\n");
+  const asks = thin.map((i) => {
+    const w = count(scenes[i].voice);
+    return `- scene ${i + 1} (${w} words): add ${least - w} or more words, ${least} to ${least + 8} in all, at most ${VOICE_MAX} characters`;
+  }).join("\n");
+  return `THE NARRATION OF THE FILM, line by line (one line per scene, spoken in ${lang}):
+${film}
+
+TASK: lengthen these lines. Every scene is one paid clip of ${plan.clipFloor} seconds, and a line under ${least} words cannot fill it:
+${asks}
+Keep each line exactly as it is, every word in its order, and complete it ${lengthenHow(spec)}: a short punch stays, as the first sentence, and a second sentence completes the line. Write in ${lang}, in the voice of the lines around it. Never talk about the video, its length or its format.
+Answer {"lines":[{"scene":<number>,"voice":"<the whole new line>"}]}, one entry per scene listed above.`;
+}
+/** Whether `line` keeps every word of `was`, in order (case and punctuation ignored): what a lengthened line must do. */
+export function keepsLine(was: string, line: string): boolean {
+  const words = (x: string) => x.toLowerCase().split(/[^\p{L}\p{N}']+/u).filter(Boolean);
+  const need = words(was), have = words(line);
+  let at = 0;
+  for (const w of need) { const k = have.indexOf(w, at); if (k < 0) return false; at = k + 1; }
+  return true;
 }
 
 /* ------------------------------------------------------------------ prompt */
@@ -1329,7 +1370,7 @@ const inSet = (v: unknown, set: readonly string[]) => typeof v === "string" && s
 const isInt = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v);
 const strs = (v: unknown, max: number): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.trim() !== "" && x.length <= max) : []);
 /** Cuts narration at a sentence boundary so it fits the contract (350 chars) instead of failing the whole plan. */
-function fitVoice(v: string, max = 350): string {
+function fitVoice(v: string, max = VOICE_MAX): string {
   if (v.length <= max) return v;
   const head = v.slice(0, max);
   const cut = Math.max(head.lastIndexOf(". "), head.lastIndexOf("! "), head.lastIndexOf("? "), head.lastIndexOf(".\n"));
@@ -2247,6 +2288,12 @@ function chunkCoverage(spec: RequestSpec, scenes: Record<string, unknown>[], owe
 
 /** A repair round needs at least this much of the planning budget left: one call, one validation, one judge. */
 export const REPAIR_MIN_MS = 60_000;
+/**
+ * The budget a call made only to LENGTHEN lines needs left (25 September 2026): two model calls, so that one of them
+ * may run its full MODEL_CALL_TIMEOUT_MS and still leave the fidelity repair its REPAIR_MIN_MS. Under it, a chunk
+ * whose only problems are short lines is kept, and the single lengthening call after the join is not made.
+ */
+export const LENGTH_RETRY_MIN_MS = 2 * MODEL_CALL_TIMEOUT_MS;
 /** The budget a second judge call needs before a repaired plan is kept on its verdict; below it the deterministic checks decide. */
 export const REJUDGE_MIN_MS = 20_000;
 /** The most scenes one repair call rewrites: the size of a chunk and a half, so the answer stays one Workers AI call. */
@@ -2631,7 +2678,12 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
       let raw: unknown;
       const maxTokens = plan.style === "cinema" ? 700 * (to - from) : plan.style === "picture" ? (specShots ? 750 : 600) * (to - from) : 350 * (to - from);
       try { raw = await call(chunkPrompt(job, plan, outline, from, to, prevVoice, feedback, direction, treatment, spec), chunkSchema(plan, layerOf(plan, treatment), specShots ? spec : null), 400 + maxTokens); }
-      catch (e) { if (e instanceof PlanBudgetError) throw e; history.push([`scenes ${from + 1}–${to}: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) throw e; feedback = undefined; continue; }
+      catch (e) {
+        // The clock ran out on a RETRY: the valid answer already in hand is the chunk (kept below, its problems said),
+        // not a reason to throw the whole plan away and have the orchestrator redo every call (25 September 2026).
+        if (e instanceof PlanBudgetError) { if (best) { history.push([`scenes ${from + 1}–${to}: no time left for another attempt (${e.message})`]); break; } throw e; }
+        history.push([`scenes ${from + 1}–${to}: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) throw e; feedback = undefined; continue;
+      }
       const got = isObj(raw) && Array.isArray(raw.scenes) ? raw.scenes.filter(isObj) : [];
       // Validated in context (the scenes accepted so far + this chunk + a temporary closing unless it is the last chunk);
       // error labels are remapped so "scene n" counts within the scenes the model just returned.
@@ -2741,9 +2793,17 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
       // because its problems are exactly the ones that decide whether the film holds a viewer — and so do the
       // spec's, because they are the difference between the user's film and another one.
       // A line too short for its paid clip is worth the third attempt too: it is money on the floor and seconds off the film.
-      const patient = plan.style === "sketch" || owedProblems.length || talkProblems.length || (plan.clipFloor > 0 && lengthProblems.length) ? 3 : 2;
+      // But only while the clock allows it: with less than two model calls of the plan's budget left, a valid chunk whose
+      // only problems are its length is kept as it is — the join below is the planned answer to a line still short, and
+      // the minute the fidelity repair needs (REPAIR_MIN_MS) is worth more than a third ask for words (25 September 2026).
+      const lowOnTime = deadline - Date.now() < LENGTH_RETRY_MIN_MS;
+      const lengthOnly = problems.length > 0 && problems.every((p) => lengthProblems.includes(p));
+      const patient = plan.style === "sketch" || owedProblems.length || talkProblems.length || (plan.clipFloor > 0 && lengthProblems.length && !lowOnTime) ? 3 : 2;
       const valid = r.ok && got.length === to - from;
-      if (valid && (attempt >= patient || !problems.length)) { accepted = chunkScenes; break; }
+      if (valid && (attempt >= patient || !problems.length || (lengthOnly && lowOnTime))) {
+        if (problems.length && lengthOnly && lowOnTime && attempt < patient) history.push([`scenes ${from + 1}–${to}: kept with lines short of their clip, less than ${LENGTH_RETRY_MIN_MS / 1000} s of the planning budget left for another attempt`]);
+        accepted = chunkScenes; break;
+      }
       if (valid && (!best || problems.length <= best.problems.length)) best = { scenes: chunkScenes, problems };
       history.push(problems);
       feedback = problems;
@@ -2789,6 +2849,39 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
       },
     });
     if (joined.length) history.push(joined);
+    // What the join could not reach is asked for once more, in a call of its own (lengthenPrompt) — never for the
+    // user's own script, and only while the clock leaves the fidelity repair its minute (LENGTH_RETRY_MIN_MS).
+    const per = clipWordsPerShot(plan.clipFloor);
+    const thin = thinScenes({ scenes }, plan.clipFloor);
+    if (thin.length && !verbatim) {
+      if (deadline - Date.now() < LENGTH_RETRY_MIN_MS) history.push([`lengthening: skipped, less than ${LENGTH_RETRY_MIN_MS / 1000} s of the planning budget left`]);
+      else {
+        try {
+          const raw = clean(await call(lengthenPrompt(plan, scenes, thin, spec), LENGTHEN_SCHEMA, 200 + 160 * thin.length, { system: LENGTHEN_SYSTEM }));
+          const lines = isObj(raw) && Array.isArray(raw.lines) ? raw.lines.filter(isObj) : [];
+          const done: string[] = [];
+          for (const ln of lines) {
+            const i = Number(ln.scene) - 1;
+            if (!thin.includes(i)) continue;
+            const was = String(scenes[i].voice ?? "").trim();
+            const voice = typeof ln.voice === "string" ? ln.voice.replace(/\s+/g, " ").trim() : "";
+            const n = voice ? voice.split(" ").length : 0;
+            const why = n < per ? `${n} words, under ${per}` : voice.length > VOICE_MAX ? `over ${VOICE_MAX} characters` : !keepsLine(was, voice) ? "it does not keep the line it was given, word for word"
+              : guardTalk && formatTalk(voice) ? "it talks about the video itself" : "";
+            if (why) { history.push([`lengthening scene ${i + 1}: discarded, ${why}`]); continue; }
+            scenes[i].voice = voice;
+            done.push(`scene ${i + 1} (${countWords({ scenes: [{ voice: was }] })} → ${n} words)`);
+          }
+          if (done.length) history.push([`lengthening: ${done.join(", ")}`]);
+        } catch (e) {
+          // The plan is valid already: a lengthening that cannot be made — a failed call, the clock — never costs the film.
+          history.push([`lengthening: ${String(e).slice(0, 200)}`]);
+        }
+      }
+    }
+    // Still short: said, never implied to be fixed — the box buys that clip whole and shows the part its voice fills.
+    const still = thinScenes({ scenes }, plan.clipFloor);
+    if (still.length) history.push([`scene${still.length > 1 ? "s" : ""} ${still.map((i) => i + 1).join(", ")}: still under ${per} words, ${still.length > 1 ? "their" : "its"} ${plan.clipFloor}-second clip${still.length > 1 ? "s play" : " plays"} past the voice`]);
   }
   // Still under the budget's floor after every attempt: said, never hidden — the voice speed (speedFor) never goes
   // under 1.0, so this film will run short of the length asked.

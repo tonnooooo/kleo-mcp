@@ -225,6 +225,8 @@ export const clipWordsPerShot = (floorS = 0): number => (floorS > 0 ? Math.max(S
  * film that came out 11.2 s long for 15 asked.
  */
 export const FILM_WPS = 2.45;
+/** The longest voice line the contract takes, in characters (worker/keou/contract.py says the same number). */
+export const VOICE_MAX = 350;
 export const KOKORO_WPS = 3.3;
 /** Seconds a line of `words` words takes to SAY at Kokoro speed `speed` (KOKORO_WPS; no pause counted). */
 export const spokenSeconds = (words: number, speed = 1): number => Math.max(0, Number(words) || 0) / (KOKORO_WPS * (speed > 0 ? speed : 1));
@@ -283,6 +285,51 @@ export function trimShots(sb: { scenes?: unknown }, spec?: RequestSpec | null, f
   }
   return dropped;
 }
+/** How many shots of the whole film claim each must item: a shot is a sole witness when one of its items counts 1. */
+function witnesses(scenes: readonly unknown[], must: ReadonlySet<string>): Map<string, number> {
+  const count = new Map<string, number>();
+  for (const s of scenes) if (isObj(s) && Array.isArray(s.shots)) for (const sh of s.shots) for (const id of new Set(coversOf(sh))) if (must.has(id)) count.set(id, (count.get(id) ?? 0) + 1);
+  return count;
+}
+/**
+ * The pictures of two joined lines (mergeThinScenes), held to the joined line's budget (shotBudget) and to the kind's
+ * ceiling (SHOTS_PER_SCENE), in reading order. WHICH go (25 September 2026): the thin line's pictures before the kept
+ * line's, each from the end — the kept scene's id, title and accent stay, and so does its picture — and never the
+ * closing's own last picture, the image the film ends on. Shots that claim no must item go first, then the ones whose
+ * items another shot of the FILM (`count`, witnesses()) also shows; the sole witness of a must item never goes. Over
+ * the budget but under the ceiling is kept (a scene a second too dense beats a film without what was ordered, as in
+ * trimShots); over the ceiling is not a storyboard the contract takes, and null says this join cannot be made.
+ */
+function joinedShots(shotsA: unknown[], shotsB: unknown[], keepFirst: boolean, closing: boolean, voice: string, floorS: number, must: ReadonlySet<string>, count: Map<string, number>): unknown[] | null {
+  const all = [...shotsA.map((sh) => ({ sh, kept: keepFirst })), ...shotsB.map((sh) => ({ sh, kept: !keepFirst }))];
+  const ending = closing && shotsB.length ? all.length - 1 : -1;
+  const cap = SHOTS_PER_SCENE[closing ? "closing" : "cinema"][1];
+  const limit = Math.min(cap, shotBudget(voiceWords({ voice }), floorS).max);
+  const claims = (sh: unknown) => coversOf(sh).some((id) => must.has(id));
+  const sole = (sh: unknown) => coversOf(sh).some((id) => must.has(id) && (count.get(id) ?? 0) <= 1);
+  // The thin line's shots first, then the kept line's; within each, from the end.
+  const order = all.map((_, i) => i).filter((i) => i !== ending).sort((x, y) => Number(all[x].kept) - Number(all[y].kept) || y - x);
+  const gone = new Set<number>();
+  for (const pass of [0, 1] as const) {
+    for (const i of order) {
+      if (all.length - gone.size <= limit) break;
+      if (gone.has(i) || (pass === 0 ? claims(all[i].sh) : sole(all[i].sh))) continue;
+      for (const id of new Set(coversOf(all[i].sh))) if (must.has(id)) count.set(id, (count.get(id) ?? 1) - 1);
+      gone.add(i);
+    }
+  }
+  const left = all.filter((_, i) => !gone.has(i)).map((x) => x.sh);
+  return left.length > cap ? null : left;
+}
+/**
+ * The scenes of a floored film whose line is still under one clip's worth of words (clipWordsPerShot), by index: what
+ * mergeThinScenes could not join. Empty on the local road and in the animatic, where nothing is bought per shot.
+ */
+export function thinScenes(sb: { scenes?: unknown }, floorS = 0): number[] {
+  if (!(floorS > 0) || !Array.isArray(sb.scenes)) return [];
+  const per = clipWordsPerShot(floorS);
+  return (sb.scenes as unknown[]).map((s, i) => (isObj(s) && voiceWords(s) < per ? i : -1)).filter((i) => i >= 0);
+}
 /**
  * THE LAST RESORT FOR A LINE TOO SHORT FOR ITS CLIP (25 September 2026). On the API road every scene is at least one
  * clip bought at the floor, and a line under clipWordsPerShot(floorS) words cannot fill it: the box leaves that scene
@@ -297,10 +344,15 @@ export function trimShots(sb: { scenes?: unknown }, spec?: RequestSpec | null, f
  * other section gives one up and disappears when it had only that one), the transition INTO the pair, and the kind of
  * the second (a closing stays the closing). A join the direction's colour law would refuse — two neighbouring
  * sections left with one accent — is not made; the next candidate is tried. A film never goes under two scenes (the
- * contract's floor). The joined scene's pictures are then held to its line's budget (trimShots, the spec's sole
- * witnesses kept) and to the kind's ceiling. `onMerge(at, keepFirst)` is told every join — scenes `at` and `at + 1`
- * became one at `at` — so a caller can join whatever it keeps in parallel (the planner's outline). Returns one line
- * per join, for the history. 0 is the local road and the animatic: nothing is bought per shot, nothing is joined.
+ * contract's floor), and neither is one whose joined voice would pass the contract's VOICE_MAX characters: the box
+ * refuses such a line, and the planner's fitVoice would cut its tail off. The joined scene's pictures are then held to
+ * its line's budget and to the kind's ceiling (joinedShots): the kept line's pictures and the closing's own last
+ * picture before the thin line's, and never the only shot of the whole film that shows a must item — a join that
+ * could meet the ceiling only by dropping one is not made. `onMerge(at, keepFirst)` is told every join — scenes `at`
+ * and `at + 1` became one at `at` — so a caller can join whatever it keeps in parallel (the planner's outline).
+ * Returns one line per join, for the history. 0 is the local road and the animatic: nothing is bought per shot,
+ * nothing is joined. What is still thin after this (a two-scene film, a join the colour law refuses) stays thin:
+ * thinScenes() names it, and the planner asks for its words once more (storyboard.ts).
  */
 export function mergeThinScenes(sb: { scenes?: unknown; direction?: unknown; style?: unknown }, floorS = 0, opts: { spec?: RequestSpec | null; onMerge?: (at: number, keepFirst: boolean) => void } = {}): string[] {
   if (!(floorS > 0) || !Array.isArray(sb.scenes) || ("style" in sb && sb.style !== undefined && sb.style !== "picture")) return [];
@@ -309,6 +361,7 @@ export function mergeThinScenes(sb: { scenes?: unknown; direction?: unknown; sty
   const notes: string[] = [];
   const dir = isObj(sb.direction) && Array.isArray(sb.direction.sections) ? (sb.direction as { sections: Section[] }) : null;
   const voiceOf = (s: Record<string, unknown>): string => (typeof s.voice === "string" ? s.voice.trim() : "");
+  const must = new Set((opts.spec?.items ?? []).filter((i) => i && i.must).map((i) => i.id));
   for (let guard = 0; guard < 240 && scenes.length > 2; guard++) {
     const pairs: { k: number; thin: number; words: number }[] = [];
     for (let k = 0; k + 1 < scenes.length; k++) {
@@ -337,6 +390,7 @@ export function mergeThinScenes(sb: { scenes?: unknown; direction?: unknown; sty
       const keep = keepFirst ? a : b;
       const va = voiceOf(a), vb = voiceOf(b);
       const voice = `${va}${va && !/[.!?…"'»)\]]$/.test(va) ? "." : ""}${va && vb ? " " : ""}${vb}`;
+      if (voice.length > VOICE_MAX) continue;
       // The second line's first picture now cuts on its first words: the shortest run of them that the first line
       // does not already say, so the cut cannot land early.
       const bw = vb.split(/\s+/).filter(Boolean);
@@ -345,14 +399,13 @@ export function mergeThinScenes(sb: { scenes?: unknown; direction?: unknown; sty
       const shotsA = Array.isArray(a.shots) ? (a.shots as unknown[]).map((x) => (isObj(x) ? { ...x } : x)) : [];
       const shotsB = Array.isArray(b.shots) ? (b.shots as unknown[]).map((x) => (isObj(x) ? { ...x } : x)) : [];
       if (isObj(shotsB[0])) { if (at) (shotsB[0] as Record<string, unknown>).at = at; else delete (shotsB[0] as Record<string, unknown>).at; }
-      const merged: Record<string, unknown> = { ...keep, kind: b.kind, voice, shots: [...shotsA, ...shotsB] };
+      const shots = joinedShots(shotsA, shotsB, keepFirst, b.kind === "closing", voice, floorS, must, witnesses(scenes, must));
+      if (!shots) continue;
+      const merged: Record<string, unknown> = { ...keep, kind: b.kind, voice, shots };
       if (typeof b.hold === "number") merged.hold = b.hold; else delete merged.hold;
       if (a.transition !== undefined) merged.transition = a.transition; else delete merged.transition;
       if (b.kind === "closing") { for (const f of ["button", "detail"]) { if (f in b) merged[f] = b[f]; else delete merged[f]; } }
       else { delete merged.button; delete merged.detail; }
-      trimShots({ scenes: [merged] }, opts.spec ?? null, floorS);
-      const cap = SHOTS_PER_SCENE[merged.kind === "closing" ? "closing" : "cinema"][1];
-      if (Array.isArray(merged.shots) && merged.shots.length > cap) merged.shots = (merged.shots as unknown[]).slice(0, cap);
       if (Array.isArray(merged.shots) && isObj(merged.shots[0])) delete (merged.shots[0] as Record<string, unknown>).at;
       scenes.splice(k, 2, merged);
       if (dir && sections) dir.sections = sections;
@@ -1093,7 +1146,7 @@ function validateInner(input: unknown, opts: ValidateOptions, e: Collector): voi
     if (kind === "closing" && c.style === "stickman") {
       for (const [key, limit] of [["bubble", 40], ["hl", 24]] as const) if (key in s) e.text(s[key], `${label} ${key}`, limit);
     }
-    e.text(s.voice, `${label} voice`, 350);
+    e.text(s.voice, `${label} voice`, VOICE_MAX);
     // The explainer draws no title: its captions are the only text on screen.
     if (kind === "sketch") { if ("title" in s) e.text(s.title, `${label} title`, 90); } else e.text(s.title, `${label} title`, 90);
     // The picture style paints the closing button inside a pill: it is shorter than the editorial one.

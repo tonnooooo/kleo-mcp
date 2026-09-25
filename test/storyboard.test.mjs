@@ -121,6 +121,9 @@ function fakeEnv(respond, opts = {}) {
         : /TASK: write the DIRECTION/.test(user) ? "direction"
         : /TASK: plan the whole video/.test(user) ? "outline"
         : /TASK: correct these scenes/.test(user) ? "repair"
+        // The lengthening call (25 September): a line the join could not reach. It fails unless a test passes
+        // `opts.lengthen`, and the plan keeps the line as it was, as it does in production when the call fails.
+        : /TASK: lengthen these lines/.test(user) ? "lengthen"
         // The English pass (19 September): the direction's picture fields, then the picture prompts, come back in
         // English. Answered as the identity unless a test cares (`respond` sees the kind like any other).
         : /TASK: return the same object with every value in natural English/.test(user) ? "english-fields"
@@ -132,6 +135,7 @@ function fakeEnv(respond, opts = {}) {
       if (kind === "spec") return { response: opts.spec ? await opts.spec(user, a, inputs) : { note: "no spec in this test" }, usage: {} };
       if (kind === "judge") { if (!opts.judge) throw new Error("no judge in this test"); return { response: await opts.judge(user, a, inputs), usage: {} }; }
       if (kind === "repair" && opts.repair) return { response: await opts.repair(user, a, inputs), usage: {} };
+      if (kind === "lengthen") { if (!opts.lengthen) throw new Error("no lengthen in this test"); return { response: await opts.lengthen(user, a, inputs), usage: {} }; }
       const handler = kind === "treatment" ? (opts.treatment ?? (() => TREATMENT_FIXTURE(Number(/THE FILM: .*?, (\d+) seconds/.exec(user)?.[1] ?? 45))))
         : kind === "direction" ? (opts.direction ?? directionFor) : respond;
       const out = (kind === "treatment" && !opts.treatment) || (kind === "direction" && !opts.direction) ? handler(user) : await handler(kind, user, a, inputs);
@@ -1529,6 +1533,10 @@ test("the clip floor is enforced: a line under eleven words is sent back with th
   assert.equal(sb.scenes[1].voice, LIVE_LINES[2]); assert.equal(sb.scenes[1].kind, "closing");
   assert.equal(r.words, 27, "nothing was added to the narration");
   assert.equal(sb.direction.sections.reduce((n, s) => n + s.scenes, 0), 2, "the direction's sections follow the join");
+  // Two scenes are the floor: the thin closing could not be joined, the lengthening call failed (no fake for it
+  // here), and the plan says so instead of implying it was fixed.
+  assert.ok(r.history.some((h) => h.some((m) => /^lengthening: /.test(m))), JSON.stringify(r.history));
+  assert.ok(r.history.some((h) => h.some((m) => /^scene 2: still under 11 words, its 4-second clip plays past the voice/.test(m))), JSON.stringify(r.history));
   const v = validateStoryboard(sb, { format: "16:9", language: "en", clipFloorS: 4 });
   assert.deepEqual(v.ok ? [] : v.errors.filter((e) => !/forbidden/i.test(e)), []);
 });
@@ -1550,4 +1558,87 @@ test("the clip floor is enforced: a chunk that lengthens its lines when told is 
   assert.deepEqual(r.storyboard.scenes.map((s) => s.voice), LONG);
   assert.ok(!r.history.some((h) => h.some((m) => /were joined into one line/.test(m))), JSON.stringify(r.history));
   assert.ok(r.words >= 32, `${r.words} words: the film is as long as asked`);
+});
+
+/* ------------------------------------------------------------------ the thin line after the join, and the clock (25 September 2026) */
+
+/** Lines of eleven words or more: a chunk the length check has nothing to say about. */
+const FULL_LINES = [
+  "Every pirate on this island knows the price long before he ever sees the treasure.",
+  "She gives the boy the map, the squall takes two of his fingers, and the boy runs for the boat.",
+  "The map is gone now, lost to the sea, but the price the boy paid remains.",
+];
+
+test("a thin line the join cannot reach is asked for once more, in a call of its own, and kept word for word (gt_t2cxm2md)", async () => {
+  const asked = [];
+  const NEW = "The map is gone. The price remains, and the boy still pays it every night.";
+  const env = fakeEnv((kind, user, attempt) => (kind === "outline" ? outlineFor(user, true) : lineChunk(user, (i) => LIVE_LINES[i], attempt)), {
+    lengthen: (user) => { asked.push(user); return { lines: [{ scene: 2, voice: NEW }, { scene: 1, voice: "A line nobody asked for, which is never taken." }] }; },
+  });
+  const r = await generateStoryboard(env, floored15());
+  assert.equal(asked.length, 1, "one call, for every line still thin");
+  assert.match(asked[0], /- scene 2 \(7 words\): add 4 or more words, 11 to 19 in all, at most 350 characters/);
+  assert.doesNotMatch(asked[0], /- scene 1 /, "the joined line is not asked for anything");
+  const sb = r.storyboard;
+  assert.equal(sb.scenes.length, 2);
+  assert.equal(sb.scenes[0].voice, `${LIVE_LINES[0]} ${LIVE_LINES[1]}`, "a line that was not asked for is never rewritten");
+  assert.equal(sb.scenes[1].voice, NEW); assert.equal(sb.scenes[1].kind, "closing");
+  assert.equal(r.words, 35);
+  assert.ok(r.history.some((h) => h.some((m) => /^lengthening: scene 2 \(7 → 15 words\)/.test(m))), JSON.stringify(r.history));
+  assert.ok(!r.history.some((h) => h.some((m) => /still under 11 words/.test(m))), JSON.stringify(r.history));
+});
+
+test("a lengthened line that drops a word of the line it was given is discarded, and the thin line is reported", async () => {
+  const env = fakeEnv((kind, user, attempt) => (kind === "outline" ? outlineFor(user, true) : lineChunk(user, (i) => LIVE_LINES[i], attempt)), {
+    lengthen: () => ({ lines: [{ scene: 2, voice: "The map is gone, and the boy pays for it forever and ever after that night." }] }),
+  });
+  const r = await generateStoryboard(env, floored15());
+  assert.equal(r.storyboard.scenes[1].voice, LIVE_LINES[2]);
+  assert.ok(r.history.some((h) => h.some((m) => /^lengthening scene 2: discarded, it does not keep the line it was given, word for word/.test(m))), JSON.stringify(r.history));
+  assert.ok(r.history.some((h) => h.some((m) => /^scene 2: still under 11 words/.test(m))), JSON.stringify(r.history));
+});
+
+test("the clock running out on a chunk's retry keeps the valid answer in hand instead of failing the whole plan", async () => {
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow() + skew;
+  try {
+    const attempts = [];
+    const env = fakeEnv((kind, user, attempt) => {
+      if (kind === "outline") return outlineFor(user, true);
+      attempts.push(attempt);
+      skew = 10 * 60_000; // this answer took the rest of the planning budget
+      // Valid, but its first line talks about the video: worth another attempt, which the clock no longer allows.
+      return lineChunk(user, (i) => (i === 0 ? `This is a 15-second Short. ${FULL_LINES[0]}` : FULL_LINES[i]), attempt);
+    });
+    const r = await generateStoryboard(env, floored15());
+    assert.deepEqual(attempts, [1], "the retry never reached the model");
+    assert.ok(r.history.some((h) => h.some((m) => /^scenes 1–3: no time left for another attempt/.test(m))), JSON.stringify(r.history));
+    assert.equal(r.storyboard.scenes.length, 3);
+    assert.match(r.storyboard.scenes[0].voice, /^Every pirate on this island/, "the format talk of the kept answer is still taken out");
+    assert.doesNotMatch(r.storyboard.scenes[0].voice, /15-second|Short/);
+  } finally { Date.now = realNow; }
+});
+
+test("short on time, a line short of its clip earns no third attempt and no lengthening call", async () => {
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow() + skew;
+  try {
+    const attempts = [];
+    let lengthened = 0;
+    const env = fakeEnv((kind, user, attempt) => {
+      if (kind === "outline") return outlineFor(user, true);
+      attempts.push(attempt);
+      // About 100 s of the 4-minute budget left: enough for a call, not for two.
+      skew = 140_000;
+      return lineChunk(user, (i) => LIVE_LINES[i], attempt);
+    }, { lengthen: () => { lengthened++; return { lines: [] }; } });
+    const r = await generateStoryboard(env, floored15());
+    assert.ok(attempts.length < 3, `attempts ${attempts}: the join is the answer to a line still short, not a third ask`);
+    assert.equal(lengthened, 0);
+    assert.ok(r.history.some((h) => h.some((m) => /^lengthening: skipped, less than 180 s of the planning budget left/.test(m))), JSON.stringify(r.history));
+    assert.ok(r.history.some((h) => h.some((m) => /^scene 2: still under 11 words/.test(m))), JSON.stringify(r.history));
+    assert.equal(r.storyboard.scenes.length, 2);
+  } finally { Date.now = realNow; }
 });
