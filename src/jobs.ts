@@ -478,6 +478,7 @@ export async function resultLinks(env: Env, base: string, job: Job): Promise<Rec
     if (f.name === "log.txt" || f.name === "gen.tgz") continue; // the worker log and the GPU phase's bundle: not for users
     if (f.name === "fidelity.json") continue; // read and summarised in words by kleo_get_result, not handed over as a file
     if (isSceneImage(f.name)) continue;
+    if (f.name.startsWith("probe/")) continue; // an A/B probe's evidence (src/probe.ts): the operator's, not the user's
     const key = f.name.replace(/\.[a-z0-9]+$/i, "") + "_url";
     out[key] = await signedDownloadUrl(env, base, job, f.name);
   }

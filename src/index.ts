@@ -8,6 +8,7 @@ import { handleCredits } from "./credits";
 import { handleStripeWebhook } from "./stripe";
 import { handleDownload } from "./dl";
 import { handleUpload } from "./upload.ts";
+import { handleProbe } from "./probe.ts";
 import { tick } from "./orchestrator";
 import { json } from "./util";
 import { ensureSchema } from "./schema";
@@ -41,6 +42,9 @@ const app: ExportedHandler<Env> = {
     if (p === "/internal/dev/plan") return handleDevPlan(request, env);
     // Before handleInternal (whose router only knows /internal/jobs/… and /internal/pool/claim) and before the tick
     // it fires: pressing "pause" must not start one last GPU on its way in.
+    // The probe's uploads (src/probe.ts) carry their own auth: an expiring capability the rented box can hold instead
+    // of INTERNAL_SECRET, so they are routed before the admin router, whose only key is the secret itself.
+    if (p.startsWith("/internal/admin/probe/")) return handleProbe(request, env);
     if (p.startsWith("/internal/admin/")) return handleAdmin(request, env);
     if (p === "/authorize") return handleAuthorize(request, env);
     if (p === "/credits") return handleCredits(request, env);

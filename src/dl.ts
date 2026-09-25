@@ -4,6 +4,7 @@ import { hmacHex, safeEqual } from "./util.ts";
 import { getFile } from "./storage.ts";
 import { IMAGE_NAME_RE } from "./images.ts";
 import { REFERENCE_LINK_RE, referenceLinkKey } from "./stills.ts";
+import { PROBE_NAME_RE } from "./probe.ts";
 
 /** The render outputs (mp4, srt, …) live at the top level of the job. */
 const OUTPUT_NAME_RE = /^[A-Za-z0-9._-]+$/;
@@ -16,8 +17,10 @@ const OUTPUT_NAME_RE = /^[A-Za-z0-9._-]+$/;
  * Since 25 September 2026 also a REFERENCE a still is drawn from ("ref/cast/<id>.jpg", "ref/<kref_…>"), which kie.ai's
  * image models fetch by link (src/stills.ts referenceLinkKey). Those are not job files: they are resolved to their
  * stored key by the stills engine's own rule, and never listed among the user's results.
+ *
+ * And an A/B probe's output ("probe/<name>", src/probe.ts): job files the operator links for the owner, never the user.
  */
-const allowedName = (name: string): boolean => OUTPUT_NAME_RE.test(name) || IMAGE_NAME_RE.test(name) || REFERENCE_LINK_RE.test(name);
+const allowedName = (name: string): boolean => OUTPUT_NAME_RE.test(name) || IMAGE_NAME_RE.test(name) || REFERENCE_LINK_RE.test(name) || PROBE_NAME_RE.test(name);
 
 /** GET /dl/:jobId/:file?exp=<unix>&sig=<hmac>  — signed, time-limited download straight from R2. */
 export async function handleDownload(request: Request, env: Env): Promise<Response> {
