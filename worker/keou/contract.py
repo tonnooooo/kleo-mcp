@@ -53,7 +53,9 @@ LOOKS = {'cartoon', 'realistic', 'animation'}
 SHOT_MOTIONS = {'in', 'out', 'left', 'right',
                 'crash_zoom_in', 'push_in', 'push_in_dutch', 'pull_out', 'track_left', 'track_right',
                 'track_alongside', 'orbit_left', 'orbit_right', 'crane_down', 'crane_up', 'whip_pan', 'static_hold'}
-SHOT_FIELDS = {'image', 'clip', 'caption', 'hl', 'at', 'motion', 'strength'}
+# 'cut' is written by the Kleo worker on the box, never by a storyboard (src/keou-contract.ts refuses it there): the
+# second at which a shot begins inside its scene, when the shot is a clip bought by the whole second (prepare.py fit).
+SHOT_FIELDS = {'image', 'clip', 'caption', 'hl', 'at', 'motion', 'strength', 'cut'}
 # Stickman story slides (style 'stickman', portrait only). Every value is an
 # enum the renderer knows how to draw; nothing here is ever executed.
 STORY_ACTS = {'idle', 'explain', 'point-up', 'shrug', 'think', 'alarm', 'hold', 'drop', 'wave', 'walk', 'run', 'crouch'}
@@ -386,6 +388,10 @@ def validate(path, approved=True):
                     raise ValueError(sl + ': strength scales the camera move and runs from 0 to 1')
                 if 'motion' in shot and shot['motion'] not in SHOT_MOTIONS:
                     raise ValueError(sl + f': motion must be one of {sorted(SHOT_MOTIONS)}')
+                if 'cut' in shot:
+                    if j == 0:
+                        raise ValueError(sl + ': the first shot opens the scene, it takes no cut')
+                    finite(shot['cut'], .5, 600, sl + ' cut')
             if 'chapter' in s:
                 text(s['chapter'], label + ' chapter', 32)
             if 'accent' in s and s['accent'] not in CINEMA_ACCENTS:
@@ -583,6 +589,13 @@ def validate(path, approved=True):
                 raise ValueError(label + ': image is only accepted on image, cinema, story and closing scenes')
             local_asset(path, s['image'])
         finite(s.get('hold', .65), .05 if s['kind'] == 'sketch' else .15, 3, label + ' hold')
+        # The worker's fit (prepare.py): the scene's length in whole clip seconds and how much faster its line is said.
+        if 'fit' in s:
+            fit = s['fit']
+            if not isinstance(fit, dict) or not set(fit) <= {'length', 'tempo'} or 'length' not in fit:
+                raise ValueError(label + ': fit carries a length and, optionally, a tempo')
+            finite(fit['length'], 1, 600, label + ' fit length')
+            finite(fit.get('tempo', 1), 1, 1.25, label + ' fit tempo')
     # The explainer ends on its last drawn frame: no end card, no logo, no subscribe.
     if c['style'] != 'sketch' and scenes[-1]['kind'] != 'closing':
         raise ValueError('Last scene must be a closing')

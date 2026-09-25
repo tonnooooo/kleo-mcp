@@ -176,6 +176,50 @@ def trim_edges(audio, sr, keep_head=.12, keep_tail=.18, floor=.02):
     end = min(len(a), int(loud[-1]) + 1 + int(keep_tail * sr))
     return a[start:end]
 
+# A SCENE CUT TO THE CLIPS IT BUYS (25 September 2026). On the API road a film's clips are bought by the whole second
+# (Seedance, MiniMax: 4 s at the least) and the edit used to trim each one to the voice: a 2.5 s line was billed as a
+# 4 s clip and 1.5 s of it was thrown away. The Kleo worker now chooses each scene's length in whole clip seconds
+# first and writes it here as the scene's `fit`: {"length": L, "tempo": t}. The voice is fitted to the scene instead
+# of the clip to the voice: faster by `tempo` (atempo, pitch kept, never more than the worker's cap) when the line
+# is a little long for L, and a longer pause after the last word when it is short. The cached voice stays the one
+# Kokoro said, so a second pass can never speed a line twice. Without a `fit` nothing here runs.
+def stretch_voice(audio, sr, tempo):
+    """The line said `tempo` times faster (ffmpeg atempo: the pitch is kept), same rate, mono float. Raw PCM through
+    pipes, so it needs neither soundfile nor a temporary file. Raises when ffmpeg fails: a scene cannot be fitted
+    with a voice that was not."""
+    import subprocess
+    import numpy as np
+    a = np.asarray(audio, dtype=np.float32)
+    r = subprocess.run([os.environ.get('FFMPEG', 'ffmpeg'), '-nostdin', '-v', 'error', '-f', 'f32le', '-ar', str(sr), '-ac', '1',
+                        '-i', 'pipe:0', '-af', f'atempo={tempo:.5f}', '-ar', str(sr), '-ac', '1', '-f', 'f32le', 'pipe:1'],
+                       input=a.tobytes(), capture_output=True)
+    if r.returncode != 0 or not r.stdout:
+        raise ValueError('Voice fit failed: ' + r.stderr.decode('utf-8', 'replace')[-200:])
+    return np.frombuffer(r.stdout, dtype=np.float32).copy()
+
+def stretch_timing(timing, tempo):
+    """The captions and the word times of a line said `tempo` times faster: every time divided by the tempo."""
+    if abs(tempo - 1) < 1e-6:
+        return timing
+    out = dict(timing)
+    out['captions'] = [dict(g, start=g['start'] / tempo, end=g['end'] / tempo) for g in timing.get('captions', [])]
+    out['words'] = [dict(w, start=w['start'] / tempo) for w in timing.get('words', [])]
+    return out
+
+def scene_fit(s):
+    """(length, tempo) of a scene the worker fitted to its clips, or (None, 1.0). contract.py has checked the ranges."""
+    fit = s.get('fit') if isinstance(s.get('fit'), dict) else None
+    if not fit:
+        return None, 1.0
+    length = fit.get('length')
+    return (float(length) if isinstance(length, (int, float)) else None), float(fit.get('tempo', 1) or 1)
+
+def fitted_end(cursor, lead, duration, length, fps, margin=.05):
+    """Where a fitted scene ends: exactly `length` seconds after it starts, on a frame. None when the voice would not
+    fit in it (the caller then keeps its own end, and the worker sees the scene came out another length)."""
+    end = round((cursor + length) * fps) / fps
+    return end if cursor + lead + duration + margin <= end else None
+
 def main():
     p = argparse.ArgumentParser(); p.add_argument('project'); args = p.parse_args()
     project = Path(args.project).resolve(); c = validate(project)
@@ -237,6 +281,11 @@ def main():
             timing = {'captions':captions,'match':score,'transcript':' '.join(seg.text.strip() for seg in segments),'words':word_times}
             atomic_json(meta, timing)
             print('VOICE_NEW',s['id'],round(len(audio)/sr,2),'seconds',round(score,3),flush=True)
+        fit_length, tempo = scene_fit(s)
+        if abs(tempo - 1) > 1e-6:
+            said = len(audio)/sr
+            audio = stretch_voice(audio, sr, tempo); timing = stretch_timing(timing, tempo)
+            print('VOICE_FIT', s['id'], round(said, 2), '->', round(len(audio)/sr, 2), 'seconds', f'x{tempo:.3f}', flush=True)
         duration = len(audio)/sr
         # IL PRIMO SECONDO DECIDE SE QUALCUNO GUARDA. `lead` e' il silenzio prima che una scena cominci a parlare,
         # e serve: un attacco esattamente sul fotogramma zero fa uno scatto e le scene attaccate si accavallano.
@@ -256,6 +305,12 @@ def main():
         floor = (.05, .05) if c['style'] == 'sketch' else (.15, .4) if c['format'] == '9:16' else (.3, .9) if c['style'] == 'picture' else (.65, 1.5)
         hold = max(s.get('hold',.65), floor[1] if index == len(c['scenes'])-1 else floor[0])
         end = math.ceil((cursor+lead+duration+hold)*fps)/fps
+        if fit_length is not None:
+            fitted = fitted_end(cursor, lead, duration, fit_length, fps)
+            if fitted is None:
+                print('FIT_OVERRUN', s['id'], round(lead+duration, 2), 'seconds of voice do not fit', fit_length, flush=True)
+            else:
+                end = fitted
         audio_start = cursor+lead
         s.update(start=cursor,end=end,audio_start=audio_start,audio_end=audio_start+duration,
                  captions=[dict(g,start=audio_start+g['start'],end=min(audio_start+g['end']+.12,end-.1)) for g in timing['captions']],speech_match=timing['match'],transcript=timing['transcript'],

@@ -133,13 +133,19 @@
   // that word is spoken (s.words carries absolute word times, s.start the scene start); the rest
   // share what is left evenly. Always strictly increasing, never shorter than one readable
   // picture, and the last picture always keeps room before the scene ends.
+  // A shot with a `cut` begins exactly there: the Kleo worker writes it on a film whose clips are
+  // bought by the whole second, at the whole second nearest the shot's word, so each clip is laid
+  // in full (prepare.py fit). No storyboard carries one; without it nothing below changes.
   function shotStarts(s, shots, dur) {
     const n = shots.length, starts = new Array(n).fill(null);
     starts[0] = 0; if (n < 2) return starts;
     const span = Math.max(Number(dur) || 0, .1), min = Math.min(MIN_SHOT, span / n);
     const said = flatten(s && s.words), base = Number(s && s.start) || 0;
+    shots.forEach((sh, i) => {
+      if (i && sh && typeof sh.cut === 'number' && isFinite(sh.cut) && sh.cut > 0) starts[i] = sh.cut;
+    });
     if (said.length) shots.forEach((sh, i) => {
-      if (!i || !sh || !sh.at) return;
+      if (!i || !sh || !sh.at || starts[i] !== null) return;
       const toks = keys(sh.at); if (!toks.length) return;      // `at` is quoted from the same script
       for (let j = 0; j + toks.length <= said.length; j++)
         if (toks.every((tk, m) => said[j + m].k === tk) && said[j].start !== null) {

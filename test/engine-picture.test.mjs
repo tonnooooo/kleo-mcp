@@ -143,6 +143,14 @@ test("shot timing: the first shot opens the scene, the others cut on their `at` 
   assert.deepEqual(P.shotStarts(s, [{ at: "both eyes" }], 8), [0], "an `at` on the first shot is ignored");
 });
 
+test("shot timing: a shot the worker cut to a whole clip begins exactly at its cut, whatever its word says (25 September)", () => {
+  const s = { start: 10, end: 19, words: words(["Every", "pirate", "wears", "an", "eye", "patch", "but", "both", "eyes", "worked"]) };
+  assert.deepEqual(P.shotStarts(s, [{}, { at: "eye patch", cut: 4 }], 9), [0, 4], "the cut wins over the word");
+  assert.deepEqual(P.shotStarts(s, [{}, { cut: 4 }, { at: "both eyes", cut: 8 }], 12), [0, 4, 8], "every boundary a whole clip");
+  assert.deepEqual(P.shotStarts(s, [{}, { at: "eye patch" }], 9), P.shotStarts(s, [{}, { at: "eye patch", cut: 0 }], 9), "no cut (or none worth the name): the word, as before");
+  assert.deepEqual(P.shotStarts({ start: 0, end: 9 }, [{}, { cut: 5 }], 9), [0, 5], "a cut needs no aligned words");
+});
+
 test("shot timing: without a matching word the shots share the scene evenly", () => {
   assert.deepEqual(P.shotStarts({ start: 0, end: 6 }, [{}, {}, {}], 6), [0, 2, 4]);
   assert.deepEqual(P.shotStarts({ start: 0, end: 6, words: words(["nothing", "matches", "here"], 0) }, [{}, { at: "absent quote" }, {}], 6), [0, 2, 4]);
