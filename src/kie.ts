@@ -47,13 +47,22 @@ export async function kie<T>(env: Pick<Env, "KIE_API_KEY">, method: "GET" | "POS
   });
   const text = await res.text();
   let data: { code?: number; msg?: string; message?: string; data?: T } = {};
-  try { data = JSON.parse(text); } catch { throw new KieError(`kie.ai ${method} ${url} → ${res.status}: unreadable body ${text.slice(0, 120)}`, res.status, res.status >= 500); }
-  if (!res.ok) throw new KieError(`kie.ai ${method} ${url} → ${res.status}: ${(data.msg ?? data.message ?? text).toString().slice(0, 200)}`, res.status, res.status === 429 || res.status >= 500);
+  try { data = JSON.parse(text); } catch { throw new KieError(`kie.ai ${method} ${url} → ${res.status}: unreadable body ${text.slice(0, 120)}${notNow(res.status)}`, res.status, kieRetryable(res.status)); }
+  if (!res.ok) throw new KieError(`kie.ai ${method} ${url} → ${res.status}: ${(data.msg ?? data.message ?? text).toString().slice(0, 200)}${notNow(res.status)}`, res.status, kieRetryable(res.status));
   // The unified API answers HTTP 200 with its own code: 200 is fine, 402 is no credits, 4xx is our request, 5xx is
   // theirs. A body that carries `data` is trusted whatever the code says (the doc's own example shows 505 + success).
-  if (typeof data.code === "number" && data.code !== 200 && !(data.data && typeof data.data === "object")) throw new KieError(`kie.ai ${method} ${url} → code ${data.code}: ${(data.msg ?? "").slice(0, 200)}`, data.code, data.code >= 500 || data.code === 429);
+  if (typeof data.code === "number" && data.code !== 200 && !(data.data && typeof data.data === "object")) throw new KieError(`kie.ai ${method} ${url} → code ${data.code}: ${(data.msg ?? "").slice(0, 200)}${notNow(data.code)}`, data.code, kieRetryable(data.code));
   return data.data as T;
 }
+
+/**
+ * Which kie.ai answers are "not now" (25 September 2026, docs.kie.ai/market/common error codes): 429 (rate limit),
+ * every 5xx but 505, 408 ("service timeout") and 455 ("service unavailable", maintenance). 505 is "feature disabled",
+ * which no retry cures. 408 and 455 carry no word a generic reader (src/images.ts isTransientError) takes for "not
+ * now", so the message says it: a still that meets one pauses its job instead of being given up for good.
+ */
+export const kieRetryable = (status: number): boolean => status === 429 || status === 408 || status === 455 || (status >= 500 && status !== 505);
+const notNow = (status: number): string => (status === 408 || status === 455 ? " (temporarily unavailable)" : "");
 
 /**
  * kie.ai's own words for an empty account. The unified API documents HTTP 200 + code 402; on 13 September 2026 it
@@ -62,7 +71,8 @@ export async function kie<T>(env: Pick<Env, "KIE_API_KEY">, method: "GET" | "POS
  */
 export function isNoCredit(e: unknown): boolean {
   if (!(e instanceof KieError)) return false;
-  return e.status === 402 || /credits? insufficient|insufficient credits?|balance isn.t enough|not enough (credits?|balance)|top up/i.test(e.message);
+  // 433: a sub-key's own spending limit is reached (docs.kie.ai error codes) — the same wall for this server's key.
+  return e.status === 402 || e.status === 433 || /credits? insufficient|insufficient credits?|balance isn.t enough|not enough (credits?|balance)|top up|usage exceeded/i.test(e.message);
 }
 
 /** What kie.ai's recordInfo answers for one task (the fields Kleo reads; the rest is ignored). state is one of

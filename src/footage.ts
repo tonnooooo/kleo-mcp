@@ -35,7 +35,7 @@ import { hmacHex, int, num, nowIso } from "./util.ts";
 import { FILM_LOOKS, directionOf, type FilmLook } from "./keou-contract.ts";
 import { isAnimatic } from "./templates.ts";
 import { specOf, itemById, type RequestSpec, type SpecItem } from "./spec.ts";
-import { stillCast, stillShotsOf } from "./stills.ts";
+import { stillCast, stillShotsOf, stillModel, stillProviderOf, stillPriceUsd, STILL_SIZES, SHEET_SIZE } from "./stills.ts";
 import { KIE_BASE, KIE_CREATE, KIE_RECORD, KIE_CREDIT, USD_PER_KIE_CREDIT, KieError, kie, isNoCredit, kieResultUrls, type KieRecord } from "./kie.ts";
 
 /* ------------------------------------------------------------------ models and prices */
@@ -156,20 +156,39 @@ export const PREFLIGHT_SHOT_S = 2.5;
 export const PREFLIGHT_MARGIN = 1.25;
 
 /**
+ * WHAT A FILM'S PICTURES WILL COST ON KIE.AI (25 September 2026): 0 unless STILL_MODEL draws there (Nano Banana Pro
+ * since that day); otherwise one still per shot and three character sheets, times 1.3 for the redraws the vision
+ * judge asks for (the fidelity bench: about one still in three is drawn twice). The pictures are bought from the same
+ * kie.ai balance as the clips and BEFORE them, so a balance that pays the clips alone would see the film stop at its
+ * first clip: the pre-flight asks for both.
+ */
+export const PREFLIGHT_SHEETS = 3;
+export const PREFLIGHT_STILL_REDRAWS = 1.3;
+export function plannedStillsUsd(env: Pick<Env, "STILL_MODEL">, pictures: number): number {
+  const model = stillModel(env);
+  if (stillProviderOf(model).provider !== "kie") return 0;
+  const each = stillPriceUsd(model, STILL_SIZES["9:16"]) ?? 0, sheet = stillPriceUsd(model, SHEET_SIZE) ?? 0;
+  return Math.round((Math.max(0, pictures) * each + PREFLIGHT_SHEETS * sheet) * PREFLIGHT_STILL_REDRAWS * 1000) / 1000;
+}
+
+/**
  * The pre-flight of a film: can kie.ai pay for it right now? `null` when kie.ai did not answer (a monitoring call
  * never refuses a film: the order gate in requestFootage decides then), otherwise the balance and the plan so the
  * caller can refuse in numbers. Six seconds at most, like kieBalanceUsd.
  */
-export async function kiePreflight(env: Env, seconds: number, shots: number | null, maxShots: number): Promise<{ ok: boolean; reason: "balance" | "budget" | null; balance_usd: number | null; planned_usd: number; spent_today_usd: number; budget_usd: number; shots: number; model: string }> {
+export async function kiePreflight(env: Env, seconds: number, shots: number | null, maxShots: number): Promise<{ ok: boolean; reason: "balance" | "budget" | null; balance_usd: number | null; planned_usd: number; spent_today_usd: number; budget_usd: number; shots: number; model: string; stills_usd?: number }> {
   const cfg = await footageConfig(env);
   const plan = plannedFilmUsd(env, cfg, seconds, shots, maxShots);
   // The same two gates the order itself will meet on the box (requestFootage): today's ceiling first, then the account.
   const budget = num(env.DAILY_FOOTAGE_BUDGET_USD, 5);
   const spent = await footageSpentTodayUsd(env);
   if (spent + plan.usd > budget) return { ok: false, reason: "budget", balance_usd: null, planned_usd: plan.usd, spent_today_usd: spent, budget_usd: budget, shots: plan.shots, model: plan.model };
+  // The account pays the pictures too when they are drawn on kie.ai (plannedStillsUsd); today's ceiling above is the
+  // clips' own (the pictures have theirs: STILLS_JOB_MAX_USD, STILLS_DAILY_USD in src/stills.ts).
+  const stills = plannedStillsUsd(env, plan.shots);
   const balance = await kieBalanceUsd(env);
-  const ok = balance === null || balance >= plan.usd;
-  return { ok, reason: ok ? null : "balance", balance_usd: balance, planned_usd: plan.usd, spent_today_usd: spent, budget_usd: budget, shots: plan.shots, model: plan.model };
+  const ok = balance === null || balance >= plan.usd + stills;
+  return { ok, reason: ok ? null : "balance", balance_usd: balance, planned_usd: plan.usd, spent_today_usd: spent, budget_usd: budget, shots: plan.shots, model: plan.model, ...(stills > 0 ? { stills_usd: stills } : {}) };
 }
 
 /* ------------------------------------------------------------------ live override (no deploy) */

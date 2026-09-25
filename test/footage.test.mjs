@@ -413,6 +413,13 @@ test("the pre-flight prices a film before any card is rented: the storyboard's s
   const mute = await m.kiePreflight(env, 60, 10, 24);
   assert.equal(mute.ok, true, "kie.ai not answering is not a refusal");
   assert.equal(mute.balance_usd, null);
+  // 25 September 2026: with the stills on Nano Banana Pro (kie.ai) the same balance buys the pictures first, so the
+  // pre-flight asks for both: 10 stills + 3 sheets at 0.09 $, times 1.3 for the redraws = 1.521 $ on top of 4.875 $.
+  assert.equal(m.plannedStillsUsd({}, 10), 0, "klein on Workers AI costs kie.ai nothing");
+  assert.equal(m.plannedStillsUsd({ STILL_MODEL: "kie:nano-banana-pro" }, 10), 1.521);
+  globalThis.fetch = rich.fetch; // 5 $: enough for the clips alone, not for clips and pictures
+  const both = await m.kiePreflight({ ...env, STILL_MODEL: "kie:nano-banana-pro" }, 60, 10, 24);
+  assert.equal(both.ok, false); assert.equal(both.reason, "balance"); assert.equal(both.stills_usd, 1.521); assert.equal(both.planned_usd, 4.875);
 });
 
 test("footageStatus: success is copied to R2 once and served to the box; fail is a failed row; transient errors keep polling", async () => {

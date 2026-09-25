@@ -19,7 +19,9 @@ import {
   stillsErrorVerdict, pauseStills,
   drawImage, isFlaggedError, fallbackReason, stillProviderOf, strongStillModel, fallbackStillModel, stillPriceUsd, aspectRatioOf, imageTierOf,
   openRouterImageUrl, kieStillInput, KIE_STILL_POLL, SHEET_SIZE, REFERENCE_LINK_RE, referenceLinkKey, sheetLinkName,
+  isTaskFailure, isTransientStillError, stillsGiveUpMin, STILLS_GIVE_UP_MIN, StillDrawError,
 } from "../src/stills.ts";
+import { KieError, kieRetryable, isNoCredit } from "../src/kie.ts";
 import { isTransientError } from "../src/images.ts";
 import { handleDownload } from "../src/dl.ts";
 
@@ -27,7 +29,7 @@ import { handleDownload } from "../src/dl.ts";
 // back after every test, so no test sees another's network.
 const POLL0 = { ...KIE_STILL_POLL };
 let realFetch;
-beforeEach(() => { realFetch = globalThis.fetch; Object.assign(KIE_STILL_POLL, { everyMs: 2, minMs: 2_000, maxMs: 4_000 }); });
+beforeEach(() => { realFetch = globalThis.fetch; Object.assign(KIE_STILL_POLL, { firstMs: 1, everyMs: 2, minMs: 2_000, maxMs: 4_000 }); });
 afterEach(() => { globalThis.fetch = realFetch; Object.assign(KIE_STILL_POLL, POLL0); });
 
 /* ------------------------------------------------------------------ fixtures */
@@ -636,7 +638,7 @@ test("drawImage on @cf/…: the Workers AI binding as before, never the network;
   assert.equal(d.bytes[0], 0xff); assert.equal(d.usd, 0.0023); assert.equal(d.reported, false);
 });
 
-test("drawImage on openrouter:…: one chat completion — prompt, references as data URLs, aspect ratio and 2K — the picture from message.images, the cost from usage.cost", async () => {
+test("drawImage on openrouter:…: one chat completion — prompt, references as data URLs, aspect ratio and 1K — the picture from message.images, the cost from usage.cost", async () => {
   const or = fakeOpenRouter(); globalThis.fetch = or.fetch;
   const d = await drawImage({ IMAGE_API_KEY: "or-key", PLAN_API_KEY: "plan-key" }, NBP_OR, "Two friends at the bakery door", STILL_SIZES["9:16"], [{ ...IMG(1), url: "https://kleo.test/a" }, IMG(2)], 42);
   assert.equal(or.calls.length, 1);
@@ -645,7 +647,7 @@ test("drawImage on openrouter:…: one chat completion — prompt, references as
   assert.equal(headers.authorization, "Bearer or-key", "IMAGE_API_KEY wins over PLAN_API_KEY");
   assert.equal(body.model, "google/gemini-3-pro-image-preview");
   assert.deepEqual(body.modalities, ["image", "text"]);
-  assert.deepEqual(body.image_config, { aspect_ratio: "9:16", image_size: "2K" });
+  assert.deepEqual(body.image_config, { aspect_ratio: "9:16", image_size: "1K" }, "1K, the size measured: a 2K PNG would travel inline to the judge");
   assert.equal(body.seed, 42);
   const content = body.messages[0].content;
   assert.equal(body.messages[0].role, "user");
@@ -716,18 +718,24 @@ test("drawImage on kie:nano-banana-pro: createTask with the signed links only, 2
 test("drawImage on kie:…: a failed task (flagged when kie.ai names a policy), a timeout that pauses, and a refusal for money", async () => {
   globalThis.fetch = fakeKieImages({ state: () => "fail", failCode: "400", failMsg: "The content violates the content policy" }).fetch;
   const flagged = await rejection(drawImage({ KIE_API_KEY: "k" }, "kie:nano-banana-pro", "p", STILL_SIZES["9:16"], [], 1));
-  assert.match(String(flagged), /failed: 400 The content violates the content policy \(flagged\)/); assert.equal(isFlaggedError(flagged), true);
-  globalThis.fetch = fakeKieImages({ state: () => "fail", failCode: "500", failMsg: "internal error" }).fetch;
+  assert.match(String(flagged), /failed \[code_400\]: The content violates the content policy \(flagged\)/); assert.equal(isFlaggedError(flagged), true);
+  // A task that RAN and failed — even with "500" and "timed out" in its words — is a failed try: never a pause (the
+  // next tick would collect the same failed task and pause again until the give-up), never the account.
+  globalThis.fetch = fakeKieImages({ state: () => "fail", failCode: "500", failMsg: "internal error 500, generation timed out" }).fetch;
   const broke = await rejection(drawImage({ KIE_API_KEY: "k" }, "kie:nano-banana-pro", "p", STILL_SIZES["9:16"], [], 1));
-  assert.equal(isFlaggedError(broke), false); assert.equal(stillsErrorVerdict(broke), "pause");
+  assert.equal(isFlaggedError(broke), false); assert.equal(isTaskFailure(broke), true);
+  assert.equal(isTransientError(broke), true, "the generic reader would have paused on it");
+  assert.equal(isTransientStillError(broke), false); assert.equal(stillsErrorVerdict(broke), "failed"); assert.equal(fallbackReason(broke), null);
+  assert.match(String(broke), /\[code_500\]/);
   // Never finished: polled until the window closes, then a timeout — a pause for the job, never a fallback.
-  Object.assign(KIE_STILL_POLL, { everyMs: 5, minMs: 40, maxMs: 80 });
+  Object.assign(KIE_STILL_POLL, { firstMs: 5, everyMs: 5, minMs: 40, maxMs: 80 });
   const slow = fakeKieImages({ state: () => "generating" }); globalThis.fetch = slow.fetch;
   const t0 = Date.now();
   const late = await rejection(drawImage({ KIE_API_KEY: "k" }, "kie:nano-banana-pro", "p", STILL_SIZES["9:16"], [], 1));
   assert.match(String(late), /timed out after \d+ ms \(kie\.ai task task_1 still generating\)/);
   assert.ok(Date.now() - t0 >= 35, "it waited its minimum"); assert.ok(slow.calls.record >= 2);
   assert.equal(isTransientError(late), true); assert.equal(stillsErrorVerdict(late), "pause"); assert.equal(fallbackReason(late), null);
+  assert.equal(late.usd, 0.09, "the task was created, so it is paid for: the timeout carries its price");
   // Money: code 402, and the code 500 "Credits insufficient" kie.ai really answered on 13 September.
   globalThis.fetch = fakeKieImages({ create: () => jsonRes({ code: 402, msg: "insufficient credits" }) }).fetch;
   assert.equal(fallbackReason(await rejection(drawImage({ KIE_API_KEY: "k" }, "kie:nano-banana-pro", "p", STILL_SIZES["9:16"], [], 1))), "no credit");
@@ -855,4 +863,103 @@ test("drawJobStills: STILL_MODEL_FALLBACK=none — no fallback; the refused shee
   assert.equal(calls.draws.length, 0);
   assert.ok(!auditRows.some((a) => a.event === "stills.fallback"));
   assert.equal(auditRows.filter((a) => a.event === "stills.error").length, 3);
+});
+
+/* ------------------------------------------------------------------ the review of the Nano Banana switch (25 September 2026) */
+
+test("kie.ai answers: 408 and 455 are 'not now', 505 is a model switched off, 433 is money", () => {
+  for (const c of [429, 408, 455, 500, 502, 503]) assert.equal(kieRetryable(c), true, String(c));
+  for (const c of [400, 401, 402, 422, 433, 505]) assert.equal(kieRetryable(c), false, String(c));
+  const maint = new KieError("kie.ai POST x → code 455: Service unavailable (temporarily unavailable)", 455, true);
+  assert.equal(isTransientStillError(maint), true, "maintenance pauses the job instead of giving pictures up");
+  const off = new KieError("kie.ai POST x → code 505: feature disabled", 505, false);
+  assert.equal(fallbackReason(off), "model unavailable");
+  const sub = new KieError("kie.ai POST x → code 433: sub-key usage exceeded the limit", 433, false);
+  assert.equal(isNoCredit(sub), true); assert.equal(fallbackReason(sub), "no credit");
+  const budget = new StillDrawError("still draw (kie:nano-banana-pro): stills budget: today's pictures have spent $10.00", 402, "kie");
+  assert.equal(fallbackReason(budget), "budget");
+  const moderated = new StillDrawError("still draw (openrouter:x) → openrouter 403: Input was moderated (flagged)", 403, "openrouter");
+  assert.equal(fallbackReason(moderated), null, "a moderated picture is not a refused key"); assert.equal(isFlaggedError(moderated), true);
+});
+
+test("the kie.ai ledger: a task written down is collected, not bought again (cost 0 here); a cap refuses before createTask", async () => {
+  const kie = fakeKieImages(); globalThis.fetch = kie.fetch;
+  const rows = [];
+  const book = { find: (k) => (k === "known" ? "task_old" : null), refuse: () => null, created: async (key, task, model, usd) => { rows.push({ key, task, model, usd }); } };
+  const again = await drawImage({ KIE_API_KEY: "k" }, "kie:nano-banana-pro", "p", STILL_SIZES["9:16"], [], 1, { ledger: { key: "known", book } });
+  assert.equal(kie.calls.create.length, 0, "no new task"); assert.equal(again.usd, 0, "paid for when the earlier tick gave up on it");
+  const fresh = await drawImage({ KIE_API_KEY: "k" }, "kie:nano-banana-pro", "p", STILL_SIZES["9:16"], [], 1, { ledger: { key: "new", book } });
+  assert.equal(kie.calls.create.length, 1); assert.equal(fresh.usd, 0.09);
+  assert.deepEqual(rows, [{ key: "new", task: "task_1", model: "kie:nano-banana-pro", usd: 0.09 }], "written down the moment kie.ai answered");
+  const capped = { ...book, refuse: () => "this film's pictures have spent $5.00 on kie.ai (STILLS_JOB_MAX_USD $5.00)" };
+  const refused = await rejection(drawImage({ KIE_API_KEY: "k" }, "kie:nano-banana-pro", "p", STILL_SIZES["9:16"], [], 1, { ledger: { key: "other", book: capped } }));
+  assert.equal(kie.calls.create.length, 1, "kie.ai was never asked"); assert.equal(fallbackReason(refused), "budget");
+  // A task that succeeded but whose picture cannot be fetched is a pause (collected next tick), never a redraw without references.
+  const broken = fakeKieImages(); globalThis.fetch = async (u, i) => (String(u).startsWith("https://tempfile.kie.test/") ? new Response("gone", { status: 404 }) : broken.fetch(u, i));
+  const gone = await rejection(drawImage({ KIE_API_KEY: "k" }, "kie:nano-banana-pro", "p", STILL_SIZES["9:16"], [{ ...IMG(1), url: "https://kleo.test/a" }], 1));
+  assert.equal(isTransientStillError(gone), true); assert.equal(gone.usd, 0.09);
+});
+
+test("drawStill on kie:…: a task that failed for itself draws the next seed WITH the references; one that could not read them goes without", async () => {
+  const ref = { label: "Mara", image: IMG(1), url: "https://kleo.test/dl/gt/ref%2Fcast%2Fc1.jpg?exp=1&sig=a" };
+  const kie = fakeKieImages({ state: (id, n) => (id === "task_1" ? "fail" : n < 2 ? "generating" : "success"), failCode: "501", failMsg: "Generation failed" });
+  globalThis.fetch = kie.fetch;
+  const { ai } = fakeAi();
+  const r = await drawStill({ AI: ai, STILL_MODEL: "kie:nano-banana-pro", KIE_API_KEY: "k" }, input({ refs: [ref] }), { seedBase: 10 });
+  assert.equal(kie.calls.create.length, 2, "the failed task, then the next seed");
+  assert.deepEqual(kie.calls.create.map((c) => c.body.input.image_input.length), [1, 1], "the references stay: the failure was not about them");
+  assert.deepEqual(r.tries.map((t) => t.failed[0] ?? "ok"), ["task failed", "ok"]);
+  const unreadable = fakeKieImages({ state: (id, n) => (id === "task_1" ? "fail" : n < 2 ? "generating" : "success"), failCode: "400", failMsg: "Failed to download the image_input url" });
+  globalThis.fetch = unreadable.fetch;
+  await drawStill({ AI: fakeAi().ai, STILL_MODEL: "kie:nano-banana-pro", KIE_API_KEY: "k" }, input({ refs: [ref] }), { seedBase: 10 });
+  assert.deepEqual(unreadable.calls.create.map((c) => c.body.input.image_input.length), [1, 0], "a task that could not read its references is drawn again without them, same seed");
+});
+
+test("drawJobStills on kie.ai: a task that outlives the tick is written down, and the next tick collects it instead of paying again", async () => {
+  let slow = true;
+  const kie = fakeKieImages({ state: (id, n) => (slow ? "generating" : "success") }); globalThis.fetch = kie.fetch;
+  Object.assign(KIE_STILL_POLL, { firstMs: 1, everyMs: 2, minMs: 20, maxMs: 40 });
+  const { ai } = fakeAi();
+  const { env, jobs, auditRows } = fakeEnv({ AI: ai, STILL_MODEL: "kie:nano-banana-pro", KIE_API_KEY: "kie-key", PUBLIC_URL: "https://kleo.test" });
+  const job = jobOf(jobs);
+  const r1 = await drawJobStills(env, job, { deadline: Date.now() + 120_000 });
+  assert.equal(r1.state, "drawing", "the sheet timed out: a pause"); assert.equal(kie.calls.create.length, 1);
+  const ev = (e) => auditRows.filter((a) => a.event === e).map((a) => JSON.parse(a.detail));
+  assert.equal(ev("stills.task").length, 1); assert.equal(ev("stills.task")[0].task, "task_1"); assert.equal(ev("stills.task")[0].usd, 0.09);
+  assert.equal(ev("stills.sheet")[0].usd, 0.09, "the abandoned wait is counted once, when it is abandoned");
+  assert.equal(paramsNow(jobs).stills.road, "kie");
+  slow = false;
+  const r2 = await drawJobStills(env, { ...job, params: jobs.get("gt_stills").params }, { deadline: Date.now() + 120_000 });
+  assert.deepEqual(r2, { state: "done", drawn: 3, total: 3 });
+  assert.equal(kie.calls.create.length, 4, "the sheet was collected (task_1), only the three stills were created");
+  const done = ev("stills.done")[0];
+  assert.equal(done.usd, 0.36, "one sheet and three stills, each paid once");
+});
+
+test("drawJobStills on kie.ai: past STILLS_JOB_MAX_USD the job moves to klein-4B with a 'budget' fallback row", async () => {
+  const kie = fakeKieImages(); globalThis.fetch = kie.fetch;
+  const { ai, calls } = fakeAi();
+  const { env, jobs, auditRows } = fakeEnv({ AI: ai, STILL_MODEL: "kie:nano-banana-pro", KIE_API_KEY: "kie-key", PUBLIC_URL: "https://kleo.test", STILLS_JOB_MAX_USD: "0.1" });
+  const r = await drawJobStills(env, jobOf(jobs), { deadline: Date.now() + 120_000 });
+  assert.deepEqual(r, { state: "done", drawn: 3, total: 3 });
+  assert.equal(kie.calls.create.length, 1, "the sheet fitted the cap, nothing after it");
+  assert.equal(calls.draws.length, 3, "the three stills on klein-4B");
+  const fb = auditRows.filter((a) => a.event === "stills.fallback").map((a) => JSON.parse(a.detail));
+  assert.equal(fb.length, 1); assert.equal(fb[0].reason, "budget"); assert.match(fb[0].error, /STILLS_JOB_MAX_USD/);
+});
+
+test("stillsGiveUpMin: twenty minutes on Workers AI; on an external road it grows with the film", () => {
+  assert.equal(stillsGiveUpMin(null), STILLS_GIVE_UP_MIN);
+  assert.equal(stillsGiveUpMin({ road: "workers-ai", total: 48 }), STILLS_GIVE_UP_MIN);
+  assert.equal(stillsGiveUpMin({ road: "kie", total: 15 }), 20, "a 30 s Short");
+  assert.equal(stillsGiveUpMin({ road: "kie", total: 24 }), 22);
+  assert.equal(stillsGiveUpMin({ road: "kie", total: 48 }), 34);
+  const ai = fakeAi().ai;
+  const job = { id: "gt_x", user_id: "u", storyboard: JSON.stringify(STORYBOARD), params: JSON.stringify({ stills: { state: "drawing", at: new Date(Date.now() - 25 * 60_000).toISOString(), road: "kie", total: 48 } }) };
+  assert.equal(stillsHold({ AI: ai }, job), true, "25 minutes into a 48-picture film on kie.ai: still drawing");
+});
+
+test("a sheet link names the key the sheet is stored under, whatever the id's length (safeId is idempotent)", async () => {
+  const id = `d-${"a".repeat(29)}-bbb`;
+  assert.equal(await referenceLinkKey({}, { id: "gt_x", user_id: "u1" }, sheetLinkName(id)), castSheetKey("gt_x", id));
 });

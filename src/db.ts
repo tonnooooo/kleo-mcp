@@ -106,6 +106,8 @@ export interface JobParams {
     state: "drawing" | "done" | "failed"; at: string; drawn?: number; total?: number; note?: string;
     /** Ticks that stopped on a transient Workers AI or store error and left the drawing to the next tick (24 September 2026). */
     pauses?: number;
+    /** The road the pictures are drawn on ("workers-ai", "kie", "openrouter"): an external one gets a longer give-up (25 September 2026). */
+    road?: string;
   };
 }
 

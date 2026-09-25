@@ -66,6 +66,33 @@ Now: planner on Workers AI ≈ $0.03-0.06 + klein-4b stills ≈ $0.002 each (≈
 - An external planner that runs out of credit (401/402/403) falls back by itself to `PLAN_FALLBACK_MODEL` or
   `AI_MODEL` on Workers AI; a 429 stays a pause.
 
+## Nano Banana Pro draws the stills (25 September 2026)
+
+The first production probes on klein-4B showed a figure with three arms and a frame out of alignment; the owner's
+verdict was "the same as before" and his decision: "connect Nano Banana Pro and let's make quality things". A sweep of
+eleven image models the same day found Workers AI models failing on two-character scenes, while Nano Banana Pro drew a
+clean, story-true frame from two character sheets.
+
+- `STILL_MODEL` = `kie:nano-banana-pro` (kie.ai jobs API, $0.09 a still at 2K; references go as signed `/dl` links,
+  because kie.ai takes URLs, not bytes). The model id names its road: `@cf/…` is Workers AI, `openrouter:<model>` is
+  OpenRouter's chat completions, `kie:<model>` is kie.ai. The vision judge stays on Workers AI.
+- A refusal for money (no credit, no key, sub-key limit, feature disabled) or a cap moves the rest of the job to
+  `STILL_MODEL_FALLBACK` (klein-4B), with a `stills.fallback` audit row; a film never loses its pictures to an empty account.
+- **The ledger.** Every kie.ai task is written down the moment it is created (`stills.task`: key, task id, price). A
+  draw with the same key (picture, model, seed, prompt) collects that task on a later tick instead of paying for a new
+  one, for 20 minutes. The same rows are the caps: `STILLS_JOB_MAX_USD` (5 $ per film) and `STILLS_DAILY_USD` (10 $ per
+  UTC day across all films), so a loop or a queue of free animatics cannot empty the balance the paid clips need.
+- **The pace.** On an external road six pictures are drawn at once, the cron tick waits up to 150 s (`STILLS_EXTERNAL_MS`),
+  sheets are drawn in parallel, and the give-up grows with the film (`stillsGiveUpMin`: 20 minutes for a 30 s Short,
+  34 for 48 pictures). The first look at a task comes after 10 s, then every 4 s.
+- **Errors.** A task that ran and failed is a failed try (the next seed), never a pause and never the account; it is
+  redrawn without references only when it says it could not read them. 408 and 455 are "not now"; a result that
+  could not be fetched is a pause, and the next tick collects the same task.
+- **The film pre-flight** asks the kie.ai balance for the clips AND the pictures (`plannedStillsUsd`: one still per
+  shot and three sheets at 0.09 $, times 1.3 for redraws).
+
+Cost of a 30 s film on this road: pictures ≈ $1.5-2, MiniMax H3 2K clips ≈ $3.9-4.9, so about $6-7 of kie.ai balance.
+
 ## How it is measured
 
 `scripts/fidelity-bench/` (README there): 18 cases with hand-written requirement lists, planned by the old code

@@ -368,10 +368,10 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     const shots = storyboard ? pictureScenes(JSON.parse(storyboard)).length : null;
     const pre = await kiePreflight(env, duration, shots, MAX_PICTURES(duration));
     if (!pre.ok) {
-      await audit(env, user.id, null, "footage.preflight", { balance_usd: pre.balance_usd, planned_usd: pre.planned_usd, spent_today_usd: pre.spent_today_usd, budget_usd: pre.budget_usd, shots: pre.shots, model: pre.model, duration, owner_action: pre.reason === "budget" ? "raise DAILY_FOOTAGE_BUDGET_USD or wait for tomorrow" : "top up kie.ai" });
+      await audit(env, user.id, null, "footage.preflight", { balance_usd: pre.balance_usd, planned_usd: pre.planned_usd, stills_usd: pre.stills_usd ?? 0, spent_today_usd: pre.spent_today_usd, budget_usd: pre.budget_usd, shots: pre.shots, model: pre.model, duration, owner_action: pre.reason === "budget" ? "raise DAILY_FOOTAGE_BUDGET_USD or wait for tomorrow" : "top up kie.ai" });
       const why = pre.reason === "budget"
         ? `today's filming budget is used up ($${pre.spent_today_usd.toFixed(2)} of $${pre.budget_usd.toFixed(2)} committed, and this film needs about $${pre.planned_usd.toFixed(2)} of clips)`
-        : `the account it buys the clips from is empty (it holds $${(pre.balance_usd ?? 0).toFixed(2)} and this film needs about $${pre.planned_usd.toFixed(2)} of clips)`;
+        : `the account it buys the clips from is empty (it holds $${(pre.balance_usd ?? 0).toFixed(2)} and this film needs about $${(pre.planned_usd + (pre.stills_usd ?? 0)).toFixed(2)} of ${pre.stills_usd ? "clips and pictures" : "clips"})`;
       throw new JobError(`Kleo cannot film right now: ${why}. The request has been logged for the operator. Nothing was charged. Meanwhile the animatic of the same storyboard can be made — ${animaticWayOut}, the drawn frames with the camera moving over them — or ask for the film again later.`);
     }
   }

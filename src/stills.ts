@@ -162,6 +162,43 @@ export const STILLS_GIVE_UP_MIN = 20;
 const DRAW_TIMEOUT_MS = 90_000;
 
 /**
+ * THE PACE OF AN EXTERNAL ROAD (25 September 2026, review of the Nano Banana switch). Everything above was tuned for
+ * klein on Workers AI: 3-5 s a draw, so a tick of 45 s drew a dozen pictures, and twenty minutes was a generous
+ * give-up. Nano Banana Pro takes 20-60 s a picture on kie.ai (23 s measured on OpenRouter), and with those constants
+ * a tick started three stills, a redraw almost never fitted, sheets went one per tick, and a 24-picture film met the
+ * give-up with its last stills drawn by the GPU's SDXL. On an external road the picture is drawn on the provider's
+ * machines and the Worker only waits, so: six at a time, a tick window of STILLS_EXTERNAL_MS (the cron may run long,
+ * as planning does), a still counted at a minute, and a give-up that grows with the film (stillsGiveUpMin).
+ */
+export const STILLS_CONCURRENCY_EXTERNAL = 6;
+export const EST_STILL_MS_EXTERNAL = 60_000;
+export const STILLS_EXTERNAL_MS = 150_000;
+/** The road a model id names is external (kie.ai, OpenRouter): the slow pace above applies. */
+export const isExternalStillModel = (model: string): boolean => stillProviderOf(model).provider !== "workers-ai";
+/**
+ * The give-up of a job's drawing, in minutes: STILLS_GIVE_UP_MIN on Workers AI; on an external road ten minutes plus
+ * three per wave of STILLS_CONCURRENCY_EXTERNAL pictures (a 30 s Short of 15 pictures stays at 20, a 90 s film of 48
+ * gets 34). `road` and `total` are what params.stills recorded.
+ */
+export function stillsGiveUpMin(st: { road?: string; total?: number } | null | undefined): number {
+  if (!st?.road || st.road === "workers-ai") return STILLS_GIVE_UP_MIN;
+  return Math.max(STILLS_GIVE_UP_MIN, 10 + 3 * Math.ceil((st.total ?? 0) / STILLS_CONCURRENCY_EXTERNAL));
+}
+
+/**
+ * THE MONEY CAPS OF THE KIE.AI PICTURES (25 September 2026). Every kie.ai task a still creates is written down as a
+ * "stills.task" audit row with its price (see KieLedger), and no task is created past either cap: STILLS_JOB_MAX_USD
+ * per film (default 5 $: a 30 s Short with redraws is about 2 $) and STILLS_DAILY_USD per UTC day across every film
+ * (default 10 $). Past a cap the job's pictures move to STILL_MODEL_FALLBACK, like after a refusal for money, so a
+ * runaway loop or a queue of free animatics can never empty the kie.ai balance the paid films' clips are bought from.
+ * The clips keep their own ceiling (DAILY_FOOTAGE_BUDGET_USD, src/footage.ts).
+ */
+export const STILLS_JOB_MAX_USD = 5;
+export const STILLS_DAILY_USD = 10;
+/** A kie.ai task younger than this is collected on a later tick instead of paying for a new one (results live 24 h). */
+export const KIE_TASK_RESUME_MIN = 20;
+
+/**
  * The framing each shot kind asks for (src/shot-grammar.ts SHOT_KINDS), as the opening words of the prompt: a picture
  * model weighs the start most, and "extreme close-up of the object" is the difference between a detail shot and one
  * more wide view of the room.
@@ -469,15 +506,31 @@ export class StillDrawError extends Error {
  * (STILL_MODEL_FALLBACK) instead of pausing on it or giving the picture up. Null for anything else: a 429, a 5xx and a
  * timeout keep the pause semantics (stillsErrorVerdict), a refusal of the prompt keeps the retry-without-references.
  */
-export function fallbackReason(e: unknown): "no credit" | "unauthorized" | "model unavailable" | null {
+export function fallbackReason(e: unknown): "no credit" | "unauthorized" | "model unavailable" | "budget" | null {
+  // A cap of this server (STILLS_JOB_MAX_USD, STILLS_DAILY_USD): the provider was never asked.
+  if (e instanceof StillDrawError && e.status === 402 && /stills budget/.test(e.message)) return "budget";
+  if (isTaskFailure(e)) return null; // a task that ran and failed is about the picture, never the account
   if (isNoCredit(e)) return "no credit";
   const status = e instanceof KieError || e instanceof StillDrawError ? e.status : 0;
   if (status === 402) return "no credit";
+  // OpenRouter answers 403 for an input its moderation refused: that is the picture's problem (flagged), not the key's.
+  if (e instanceof StillDrawError && status === 403 && isFlaggedError(e)) return null;
   if (status === 401 || status === 403) return "unauthorized";
   if (e instanceof StillDrawError && status === 404) return "model unavailable";
+  if (e instanceof KieError && status === 505) return "model unavailable"; // kie.ai: "feature disabled"
   if (e instanceof KieError && /KIE_API_KEY is not set/.test(e.message)) return "unauthorized";
   return e instanceof KieError || e instanceof StillDrawError ? (/insufficient (?:credits?|balance|funds)|payment required|credits? insufficient/i.test(e.message) ? "no credit" : null) : null;
 }
+
+/**
+ * A kie.ai task that RAN and failed (state "fail"; 25 September 2026). Its failMsg is free text — "internal error
+ * 500", "generation timed out" — which the generic reader of "not now" (src/images.ts isTransientError) would take for
+ * a pause; and a paused picture resumes the SAME task on the next tick (KieLedger), reads the same failure, and pauses
+ * again until the give-up. So a failed task is never transient here: it is a failed try, and the next seed is drawn.
+ */
+export const isTaskFailure = (e: unknown): boolean => !!e && typeof e === "object" && (e as { taskFailed?: unknown }).taskFailed === true;
+/** "Not now" for this engine: isTransientError, except a kie.ai task that ran and failed (isTaskFailure). */
+export const isTransientStillError = (e: unknown): boolean => !isTaskFailure(e) && isTransientError(e);
 
 /** The dollars an error says were spent before it (StillDrawError.usd, or what drawJudged attached), else 0. */
 export const spentOn = (e: unknown): number => {
@@ -499,10 +552,10 @@ export const spentOn = (e: unknown): number => {
  * env.AI.run(model, { multipart: { body, contentType } })); the answer is {image: base64}. Throws on a missing binding,
  * a timeout, or an answer that is not a PNG/JPEG.
  */
-export async function drawImage(env: DrawEnv, model: string, prompt: string, size: { width: number; height: number }, refs: DrawRef[], seed: number, opts: { until?: number } = {}): Promise<DrawnImage> {
+export async function drawImage(env: DrawEnv, model: string, prompt: string, size: { width: number; height: number }, refs: DrawRef[], seed: number, opts: { until?: number; ledger?: { key: string; book: KieLedger } } = {}): Promise<DrawnImage> {
   const road = stillProviderOf(model);
   if (road.provider === "openrouter") return drawOpenRouter(env, model, road.id, prompt, size, refs, seed);
-  if (road.provider === "kie") return drawKie(env, model, road.id, prompt, size, refs, opts.until);
+  if (road.provider === "kie") return drawKie(env, model, road.id, prompt, size, refs, opts.until, opts.ledger);
   const ai = env.AI as unknown as AiRunner | undefined;
   if (!ai) throw new Error("no Workers AI binding (env.AI)");
   const form = new FormData();
@@ -567,9 +620,8 @@ export function openRouterImageUrl(message: Record<string, unknown>): string | n
 /**
  * THE OPENROUTER ROAD (25 September 2026): one chat completion with modalities ["image","text"], the prompt first and
  * the references after it as data: URLs (in the order compileStill numbers them: "reference image 1" is the first),
- * image_config.aspect_ratio from the size, and for a Gemini model image_config.image_size — "2K" for a still, "1K" for
- * a sheet (imageTierOf; the tier Google's image models take on OpenRouter's chat road; Google bills 1K and 2K the same
- * output tokens). Measured that day with google/gemini-3-pro-image-preview (Nano Banana Pro): 23 s, 768x1376 at 1K,
+ * image_config.aspect_ratio from the size, and for a Gemini model image_config.image_size "1K" (the tier measured;
+ * a 2K PNG would travel inline to the judge and to every later draw). Measured that day with google/gemini-3-pro-image-preview (Nano Banana Pro): 23 s, 768x1376 at 1K,
  * usage.cost 0.138 $, the picture in choices[0].message.images[0].image_url.url. Base URL IMAGE_API_URL, then
  * PLAN_API_URL, then OpenRouter's; key IMAGE_API_KEY, then PLAN_API_KEY (the same headers the planner sends).
  * An answer with no picture is a refusal ("flagged": drawJudged draws the next seed, and after two drops the
@@ -582,7 +634,9 @@ async function drawOpenRouter(env: DrawEnv, model: string, id: string, prompt: s
   const body = {
     model: id,
     modalities: ["image", "text"],
-    image_config: { aspect_ratio: aspectRatioOf(size), ...(/gemini/i.test(id) ? { image_size: imageTierOf(size) } : {}) },
+    // 1K for every Gemini picture (25 September 2026): the one size measured (768x1376, 0.138 $), already the still's
+    // size; a 2K PNG is 6-8 MB, sent back inline to the judge and to every later draw as a data: URL.
+    image_config: { aspect_ratio: aspectRatioOf(size), ...(/gemini/i.test(id) ? { image_size: "1K" } : {}) },
     messages: [{ role: "user", content: [
       { type: "text", text: prompt },
       ...refs.slice(0, MAX_INPUT_IMAGES).map((r) => ({ type: "image_url", image_url: { url: `data:${r.mime ?? mimeOf(r.bytes)};base64,${toBase64(r.bytes)}` } })),
@@ -607,7 +661,9 @@ async function drawOpenRouter(env: DrawEnv, model: string, id: string, prompt: s
     // gateway hiccup, answered as one.
     const status = !res.ok ? res.status : Number(err.code) || (j ? res.status : 502);
     const say = String(err.message ?? (j ? JSON.stringify(j) : text)).replace(/\s+/g, " ").slice(0, 240);
-    throw new StillDrawError(`still draw (${model}) → openrouter ${status}: ${say}`, status, "openrouter", cost ?? 0);
+    // A 403 for moderated input is a refused picture (the next seed, then no references), not a refused key.
+    const flag = status === 403 && /moderat|flagged|safety/i.test(say) && !/flagged/i.test(say) ? " (flagged)" : "";
+    throw new StillDrawError(`still draw (${model}) → openrouter ${status}: ${say}${flag}`, status, "openrouter", cost ?? 0);
   }
   const choice = obj(Array.isArray(j.choices) ? j.choices[0] : null);
   const message = obj(choice.message);
@@ -622,16 +678,38 @@ async function drawOpenRouter(env: DrawEnv, model: string, id: string, prompt: s
 }
 
 /**
- * How the kie.ai road waits on a task (25 September 2026): a look every `everyMs`, for at least `minMs` — the
- * DRAW_TIMEOUT_MS every other road gets, because a task abandoned early is a picture paid for and thrown away — and
- * at most `maxMs`, stretched between the two as far as the caller's deadline (`until`) allows. Mutable for the tests only.
+ * How the kie.ai road waits on a task (25 September 2026): a first look after `firstMs` (Nano Banana Pro is never
+ * done sooner, and every look is a subrequest of the cron's budget), then one every `everyMs`, for at least `minMs` —
+ * the DRAW_TIMEOUT_MS every other road gets — and at most `maxMs`, stretched between the two as far as the caller's
+ * deadline (`until`) allows. A task still running at the end is not lost: the ledger (KieLedger) collects it on the
+ * next tick. Mutable for the tests only.
  */
-export const KIE_STILL_POLL = { everyMs: 3_000, minMs: DRAW_TIMEOUT_MS, maxMs: 150_000 };
+export const KIE_STILL_POLL = { firstMs: 10_000, everyMs: 4_000, minMs: DRAW_TIMEOUT_MS, maxMs: 150_000 };
 /** One createTask or recordInfo call may take this long before it counts as a timeout. */
 const KIE_CALL_MS = 20_000;
 /** kie.ai's words for a picture its filters refused: marked "(flagged)" so drawJudged draws the next seed. */
 const KIE_FLAG_RE = /safety|policy|sensitive|nsfw|flagged|prohibited|violat|inappropriate|moderat/i;
+/** kie.ai's words for a task that could not read its reference images: the one failure a draw without them may cure. */
+export const KIE_REFS_TROUBLE_RE = /image_input|input image|image url|reference|download|fetch|unreachable|could not (?:load|read|open|access)|invalid (?:image|url)/i;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * THE LEDGER OF KIE.AI TASKS (25 September 2026, review of the Nano Banana switch). A kie.ai task is paid for when it
+ * is CREATED, and a picture may outlive the window a tick waits for it (a slow queue, a tick that ends). Without a
+ * record the next tick drew that picture again from scratch: a second task, a second payment, the first one thrown
+ * away. So every task is written down the moment kie.ai answers its id ("stills.task": the draw's key, the task id,
+ * the price), and a draw with the same key — the same picture, model, seed and prompt — collects that task instead of
+ * creating a new one, for KIE_TASK_RESUME_MIN. The same rows are the money caps: `refuse` says why one more task would
+ * cross STILLS_JOB_MAX_USD or STILLS_DAILY_USD, and the draw then falls back like after a refusal for money.
+ */
+export interface KieLedger {
+  /** The task created for this key less than KIE_TASK_RESUME_MIN ago, or null. */
+  find(key: string): string | null;
+  /** Why one more task of `usd` may not be created (a cap), or null when it may. */
+  refuse(usd: number): string | null;
+  /** Writes a created task down (its audit row, and the running sums of the caps). */
+  created(key: string, task: string, model: string, usd: number): Promise<void>;
+}
 
 /**
  * The `input` of a kie.ai image task (docs.kie.ai/market/google/pro-image-to-image and …/nanobanana2, read 25
@@ -647,11 +725,19 @@ export function kieStillInput(id: string, p: { prompt: string; urls: string[]; s
 }
 
 /**
- * THE KIE.AI ROAD (25 September 2026): createTask, then recordInfo every KIE_STILL_POLL.everyMs until "success" (the
- * picture downloaded from resultJson.resultUrls[0], its cost read off creditsConsumed at 0.005 $ a credit) or "fail"
- * (failCode + failMsg; a safety refusal is marked flagged). A recordInfo call that fails for a transient reason is
- * asked again, not counted against the task: the task is paid for either way. Out of time, the draw throws a timeout
- * (a pause for the job, never a fallback).
+ * THE KIE.AI ROAD (25 September 2026): createTask (or, when the ledger holds a task for this very draw, that task),
+ * then recordInfo — a first look after KIE_STILL_POLL.firstMs, then every everyMs — until "success" (the picture
+ * downloaded from resultJson.resultUrls[0], its cost read off creditsConsumed at 0.005 $ a credit) or "fail".
+ *
+ * What each ending means to the job:
+ *   - success: the picture and what it cost; a task collected from an earlier tick costs 0 here (its price was counted
+ *     when that tick gave up waiting on it);
+ *   - fail: a failed TRY (isTaskFailure), never a pause and never the account: the next seed is drawn; marked
+ *     "(flagged)" when kie.ai names a policy; its code is written as [code_N], which no reader takes for an HTTP 5xx;
+ *   - out of time, or a result that could not be fetched: a pause ("temporarily"/"timed out"), carrying the price of a
+ *     task created here — the next tick collects the same task through the ledger, it does not buy another;
+ *   - a recordInfo hiccup (a 429, a 5xx, a 404 or 422 before the task is visible, a dropped connection) is asked again
+ *     within the window: the task is paid for either way.
  *
  * THE REFERENCES reach kie.ai only as public links: image_input takes "file URLs, not file content". drawJobStills
  * signs one for every sheet, user picture and style anchor (signedFileUrl, through /dl). A reference with bytes only —
@@ -659,38 +745,64 @@ export function kieStillInput(id: string, p: { prompt: string; urls: string[]; s
  * leaves it out of the prompt and of the identity checks as well (usableRefs), so the prompt never names an image the
  * model does not get.
  */
-async function drawKie(env: DrawEnv, model: string, id: string, prompt: string, size: { width: number; height: number }, refs: DrawRef[], until?: number): Promise<DrawnImage> {
+async function drawKie(env: DrawEnv, model: string, id: string, prompt: string, size: { width: number; height: number }, refs: DrawRef[], until?: number, ledger?: { key: string; book: KieLedger }): Promise<DrawnImage> {
   if (!(env.KIE_API_KEY ?? "").trim()) throw new StillDrawError(`still draw (${model}): KIE_API_KEY is not set`, 401, "kie");
   const urls = refs.map((r) => r.url).filter((u): u is string => typeof u === "string" && /^https:\/\//i.test(u)).slice(0, MAX_INPUT_IMAGES);
+  const price = stillPriceUsd(model, size) ?? 0;
   const t0 = Date.now();
-  const created = await kie<{ taskId?: string }>(env, "POST", KIE_CREATE, { model: id, input: kieStillInput(id, { prompt, urls, size }) }, { timeoutMs: KIE_CALL_MS });
-  const taskId = created?.taskId;
-  if (!taskId) throw new KieError(`still draw (${model}): kie.ai answered without a taskId`, 0, false);
+  let taskId = ledger ? ledger.book.find(ledger.key) : null;
+  const resumed = !!taskId;
+  if (!taskId) {
+    const no = ledger ? ledger.book.refuse(price) : null;
+    if (no) throw new StillDrawError(`still draw (${model}): stills budget: ${no}`, 402, "kie");
+    let created: { taskId?: string } | undefined;
+    try { created = await kie<{ taskId?: string }>(env, "POST", KIE_CREATE, { model: id, input: kieStillInput(id, { prompt, urls, size }) }, { timeoutMs: KIE_CALL_MS }); }
+    catch (e) {
+      // A createTask that timed out may have created (and billed) a task whose id never came back: counted as spent.
+      if (!(e instanceof KieError) && isTransientError(e)) throw withSpend(roadError(model, e, KIE_CALL_MS), price);
+      throw e;
+    }
+    taskId = created?.taskId ?? null;
+    if (!taskId) throw new KieError(`still draw (${model}): kie.ai answered without a taskId`, 0, false);
+    if (ledger) { try { await ledger.book.created(ledger.key, taskId, model, price); } catch { /* a lost row only loses the resume */ } }
+  }
+  // The price of a task created here, carried by every error after it (a task collected from an earlier tick was
+  // counted when that tick gave up on it).
+  const owed = resumed ? 0 : price;
+  const paused = (why: string): Error => withSpend(new Error(`still draw (${model}): kie.ai task ${taskId} ${why}, temporarily`), owed) as Error;
   const stopAt = Math.min(t0 + KIE_STILL_POLL.maxMs, Math.max(until ?? 0, t0 + KIE_STILL_POLL.minMs));
   let state = "";
-  for (;;) {
-    const wait = Math.min(KIE_STILL_POLL.everyMs, stopAt - Date.now());
+  for (let look = 0; ; look++) {
+    const wait = Math.min(look === 0 ? KIE_STILL_POLL.firstMs : KIE_STILL_POLL.everyMs, stopAt - Date.now());
     if (wait <= 0) break;
     await sleep(wait);
     let rec: KieRecord;
     try { rec = await kie<KieRecord>(env, "GET", `${KIE_RECORD}?taskId=${encodeURIComponent(taskId)}`, undefined, { timeoutMs: KIE_CALL_MS }); }
-    catch (e) { if ((e instanceof KieError && e.retryable) || (!(e instanceof KieError) && isTransientError(e))) continue; throw e; }
+    catch (e) {
+      if ((e instanceof KieError && (e.retryable || e.status === 404 || e.status === 422)) || (!(e instanceof KieError) && isTransientError(e))) continue;
+      throw withSpend(e, owed);
+    }
     state = String(rec?.state ?? "").toLowerCase();
     if (state === "success") {
       const results = kieResultUrls(rec);
-      if (!results.length) throw new KieError(`still draw (${model}): kie.ai task ${taskId} succeeded without a result url`, 0, false);
-      const bytes = await pictureBytes(model, results[0]);
-      if (!sniffImage(bytes)) throw new Error(`model returned ${bytes.length} bytes that are neither PNG nor JPEG`);
+      if (!results.length) throw paused("succeeded without a result url");
+      let bytes: Uint8Array;
+      try { bytes = await pictureBytes(model, results[0]); }
+      catch (e) { throw paused(`succeeded, but its picture could not be fetched (${String(e).slice(0, 160)})`); }
+      if (!sniffImage(bytes)) throw paused(`succeeded, but its result is ${bytes.length} bytes that are neither PNG nor JPEG`);
       const credits = Number(rec.creditsConsumed);
       const reported = Number.isFinite(credits) && credits > 0;
-      return { bytes, usd: reported ? round4(credits * USD_PER_KIE_CREDIT) : stillPriceUsd(model, size) ?? 0, reported };
+      if (resumed) return { bytes, usd: 0, reported: false };
+      return { bytes, usd: reported ? round4(credits * USD_PER_KIE_CREDIT) : price, reported };
     }
     if (state === "fail" || state === "failed" || state === "error") {
-      const why = `${rec.failCode ?? ""} ${rec.failMsg ?? "kie.ai reported a failure"}`.trim().replace(/\s+/g, " ").slice(0, 240);
-      throw new KieError(`still draw (${model}): kie.ai task ${taskId} failed: ${why}${KIE_FLAG_RE.test(why) ? " (flagged)" : ""}`, Number(rec.failCode) || 0, false);
+      const code = String(rec.failCode ?? "").replace(/[^0-9A-Za-z_-]/g, "").slice(0, 12);
+      const why = String(rec.failMsg ?? "kie.ai reported a failure").replace(/\s+/g, " ").trim().slice(0, 240);
+      const err = new KieError(`still draw (${model}): kie.ai task ${taskId} failed${code ? ` [code_${code}]` : ""}: ${why}${KIE_FLAG_RE.test(why) ? " (flagged)" : ""}`, 0, false);
+      throw Object.assign(err, { taskFailed: true });
     }
   }
-  throw new Error(`still draw (${model}) timed out after ${Date.now() - t0} ms (kie.ai task ${taskId} still ${state || "pending"})`);
+  throw withSpend(new Error(`still draw (${model}) timed out after ${Date.now() - t0} ms (kie.ai task ${taskId} still ${state || "pending"})`), owed);
 }
 
 /* ------------------------------------------------------------------ the route: which model, and what after a refusal for money */
@@ -772,7 +884,7 @@ const drawRefOf = (r: StillRef): DrawRef => ({ bytes: r.image.bytes, mime: r.ima
  * `route` (25 September 2026): the model and the escalation model, read afresh before every try, and switched by a
  * refusal for money (switchRoute) — for this still and, the route being shared, for every other one of the job.
  */
-interface JudgedOptions { attempts: number; pass: number; seedBase: number; route: StillRoute; size: { width: number; height: number }; until?: number; escalateOn?: (failedMusts: VisualCheck[]) => boolean }
+interface JudgedOptions { attempts: number; pass: number; seedBase: number; route: StillRoute; size: { width: number; height: number }; until?: number; escalateOn?: (failedMusts: VisualCheck[]) => boolean; /** What is drawn (a picture id, "sheet/<cast>"): part of a kie.ai task's ledger key. */ label?: string; ledger?: KieLedger }
 /** Everything drawJudged, drawStill and drawCastSheet read of the environment. */
 export type StillEnv = DrawEnv & Pick<Env, "VISION_MODEL" | "STILL_MODEL" | "STILL_MODEL_STRONG" | "STILL_MODEL_FALLBACK" | "STILL_ATTEMPTS" | "STILL_PASS">;
 /** Attaches the dollars spent so far to an error that ends a still, so the audit row of the loss still counts them. */
@@ -847,6 +959,9 @@ async function drawJudged(env: StillEnv, refs0: StillRef[], compile: (feedback: 
     // the must it failed last is one that model draws better.
     const escalate = !!route.strong && k > 0 && k === budget - 1 && !!best && best.mustFailed > 0 && lastMustFailed.length > 0 && (o.escalateOn ? o.escalateOn(lastMustFailed) : true);
     let model = escalate ? route.strong! : route.model;
+    // The ledger key of a kie.ai task: this picture, this model, this seed, this exact prompt (a later tick that draws
+    // the same try again collects the task an earlier tick paid for).
+    const ledgerFor = (m: string, prompt: string) => (o.ledger && stillProviderOf(m).provider === "kie" ? { key: `${o.label ?? "still"}#${m}#${seed}#${fnv1a(prompt).toString(36)}`, book: o.ledger } : undefined);
     let drawn = usableRefs(model, refs);
     let c = compile(feedback, drawn);
     // One draw on model `m`: with the references it can take, then once without them when it refuses them (anything
@@ -854,13 +969,15 @@ async function drawJudged(env: StillEnv, refs0: StillRef[], compile: (feedback: 
     const drawOn = async (m: string): Promise<DrawnImage> => {
       drawn = usableRefs(m, refs);
       c = compile(feedback, drawn);
-      try { return await drawImage(env, m, c.prompt, o.size, drawn.map(drawRefOf), seed, { until: o.until }); }
+      try { return await drawImage(env, m, c.prompt, o.size, drawn.map(drawRefOf), seed, { until: o.until, ledger: ledgerFor(m, c.prompt) }); }
       catch (e) {
-        if (isFlaggedError(e) || !drawn.length || isTransientError(e) || fallbackReason(e)) throw e;
+        if (isFlaggedError(e) || !drawn.length || isTransientStillError(e) || fallbackReason(e)) throw e;
+        // A kie.ai task that ran and failed is redrawn without the references only when it says it could not read them.
+        if (isTaskFailure(e) && !KIE_REFS_TROUBLE_RE.test(String(e))) throw e;
         spent += spentOn(e);
         refs = []; drawn = [];
         c = compile(feedback, drawn);
-        return await drawImage(env, m, c.prompt, o.size, [], seed, { until: o.until });
+        return await drawImage(env, m, c.prompt, o.size, [], seed, { until: o.until, ledger: ledgerFor(m, c.prompt) });
       }
     };
     let d: DrawnImage;
@@ -879,10 +996,10 @@ async function drawJudged(env: StillEnv, refs0: StillRef[], compile: (feedback: 
       }
     } catch (e) {
       spent += spentOn(e);
-      if (isFlaggedError(e)) {
-        // A flagged draw is a failed try, not a lost still: the next seed is drawn.
+      if (isFlaggedError(e) || isTaskFailure(e)) {
+        // A flagged draw — or a kie.ai task that ran and failed — is a failed try, not a lost still: the next seed is drawn.
         lastFlag = e; flaggedRun++;
-        tries.push({ seed, score: 0, failed: ["flagged"], ...(escalate || route.switches.length ? { model } : {}) });
+        tries.push({ seed, score: 0, failed: [isFlaggedError(e) ? "flagged" : "task failed"], ...(escalate || route.switches.length ? { model } : {}) });
         // Two in a row: the rest go without the reference images, and a still with no picture yet gets that one try
         // even past its budget (one with a picture already keeps it rather than pay beyond its tries).
         if (flaggedRun >= 2 && refs.length && !droppedForFlag) { refs = []; droppedForFlag = true; if (!best) budget = Math.max(budget, k + 2); }
@@ -927,7 +1044,7 @@ const passOf = (env: Pick<Env, "STILL_PASS">, given?: number): number => Math.ma
  * What drawStill and drawCastSheet take besides the input. `model` forces one model (the bench: no escalation, no
  * fallback); `route` is the job's shared route (drawJobStills), which wins over both the env and `model`.
  */
-export interface DrawOptions { attempts?: number; pass?: number; seedBase?: number; model?: string; until?: number; route?: StillRoute }
+export interface DrawOptions { attempts?: number; pass?: number; seedBase?: number; model?: string; until?: number; route?: StillRoute; /** The job's kie.ai task ledger (drawJobStills): resume and money caps. */ ledger?: KieLedger }
 
 /** One still, drawn and judged against its checks, redrawn with the failures named while a must fails and tries remain. */
 export async function drawStill(env: StillEnv, input: StillInput, opts: DrawOptions = {}): Promise<StillResult> {
@@ -935,7 +1052,7 @@ export async function drawStill(env: StillEnv, input: StillInput, opts: DrawOpti
   return drawJudged(env, input.refs, (feedback, refs) => compileStill({ ...input, refs }, feedback), (failed) => feedbackFor(failed, input.spec, input.look), {
     attempts: attemptsOf(env, opts.attempts), pass: passOf(env, opts.pass), seedBase: opts.seedBase ?? fnv1a(input.shot.id) % 1_000_000,
     route: opts.route ?? stillRoute(env, { model: opts.model }), size, until: opts.until,
-    escalateOn: (failed) => strongDrawsBetter(failed, input.spec),
+    escalateOn: (failed) => strongDrawsBetter(failed, input.spec), label: input.shot.id, ledger: opts.ledger,
   });
 }
 
@@ -965,7 +1082,7 @@ export async function drawCastSheet(env: StillEnv, spec: RequestSpec | null, cas
   const r = await drawJudged(env, refs, compile, (failed) => feedbackFor(failed, spec, look), {
     attempts: Math.min(attemptsOf(env, opts.attempts ?? SHEET_ATTEMPTS), 4), pass: passOf(env, opts.pass), seedBase: opts.seedBase ?? fnv1a(`sheet/${cast.id}`) % 1_000_000,
     route: opts.route ?? stillRoute(env, { model: opts.model }), size: SHEET_SIZE, until: opts.until,
-    escalateOn: (failed) => strongDrawsBetter(failed, inSpec ? spec : null),
+    escalateOn: (failed) => strongDrawsBetter(failed, inSpec ? spec : null), label: `sheet/${cast.id}`, ledger: opts.ledger,
   });
   return { bytes: r.bytes, score: r.score, usd: r.usd ?? 0 };
 }
@@ -1004,7 +1121,7 @@ export function stillsHold(env: Pick<Env, "STILLS_ENGINE" | "AI" | "IMAGE_FIXTUR
   if (job.phase === "finish" || !stillsEngineOn(env, job)) return false;
   const st = stillsStateOf(job);
   if (st?.state === "done" || st?.state === "failed") return false;
-  if (st?.state === "drawing") return !(st.at && minutesSince(st.at) > STILLS_GIVE_UP_MIN);
+  if (st?.state === "drawing") return !(st.at && minutesSince(st.at) > stillsGiveUpMin(st));
   return true;
 }
 
@@ -1021,7 +1138,9 @@ function castMembersOf(spec: RequestSpec | null, direction: Direction | null): {
   }
   return out.slice(0, 6);
 }
-const safeId = (s: string): string => s.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32);
+// Idempotent (25 September 2026): the dashes are trimmed again after the cut, so safeId(safeId(x)) === safeId(x) — a
+// 33-character id cut on a dash used to give a sheet link (ref/cast/<id>) whose key no longer matched the stored sheet.
+const safeId = (s: string): string => s.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32).replace(/-+$/, "");
 export const castSheetKey = (jobId: string, castId: string): string => `renders/${jobId}/cast/${safeId(castId) || "x"}.jpg`;
 /** Every cast-sheet key a job can have (purged with the job: sheets are not job_files, so the file list does not know them). */
 export function castSheetKeys(job: Pick<Job, "id" | "params" | "storyboard">): string[] {
@@ -1134,7 +1253,7 @@ async function givenUp(env: Env, jobId: string): Promise<{ pictures: Set<string>
 }
 
 /** The engine's own audit events a job's rows are read back from (a fixed list: the name goes into the SQL as written). */
-type StillsEvent = "stills.error" | "stills.sheet" | "stills.judge" | "stills.store_error" | "stills.fallback";
+type StillsEvent = "stills.error" | "stills.sheet" | "stills.judge" | "stills.store_error" | "stills.fallback" | "stills.task";
 /** The parsed details of one event's audit rows for a job; [] when the audit cannot be read (that only costs a retry). */
 async function auditDetails(env: Env, jobId: string, event: StillsEvent): Promise<Record<string, unknown>[]> {
   let rows: { detail: string | null }[];
@@ -1157,6 +1276,42 @@ async function stillsSpentUsd(env: Env, jobId: string): Promise<number> {
 }
 
 /**
+ * A job's kie.ai ledger (KieLedger): its "stills.task" rows (the tasks to collect, what the film's pictures have
+ * spent on kie.ai) and the day's sum across every job. A cap is checked AND reserved in one step (`refuse`), so the
+ * six draws of a tick cannot all pass the same last dollar; a reservation whose createTask then fails stays counted
+ * for the rest of the call, which only errs on the careful side.
+ */
+async function jobLedger(env: Env, job: Pick<Job, "id" | "user_id">): Promise<KieLedger> {
+  const tasks = new Map<string, { task: string; at: number }>();
+  let jobUsd = 0;
+  for (const d of await auditDetails(env, job.id, "stills.task")) {
+    if (typeof d.key !== "string" || typeof d.task !== "string") continue;
+    const at = Date.parse(String(d.at ?? ""));
+    tasks.set(d.key, { task: d.task, at: Number.isFinite(at) ? at : 0 });
+    if (typeof d.usd === "number" && Number.isFinite(d.usd)) jobUsd += d.usd;
+  }
+  let dayUsd = 0;
+  try {
+    const r = await env.DB.prepare("SELECT COALESCE(SUM(json_extract(detail, '$.usd')), 0) AS usd FROM audit WHERE event = 'stills.task' AND at >= strftime('%Y-%m-%dT00:00:00.000Z','now')").first<{ usd: number }>();
+    dayUsd = Number(r?.usd ?? 0) || 0;
+  } catch { /* an unreadable sum: the film's own cap still holds */ }
+  const jobCap = num(env.STILLS_JOB_MAX_USD, STILLS_JOB_MAX_USD), dayCap = num(env.STILLS_DAILY_USD, STILLS_DAILY_USD);
+  return {
+    find: (key) => { const t = tasks.get(key); return t && Date.now() - t.at < KIE_TASK_RESUME_MIN * 60_000 ? t.task : null; },
+    refuse: (usd) => {
+      if (jobUsd + usd > jobCap + 1e-9) return `this film's pictures have spent $${jobUsd.toFixed(2)} on kie.ai (STILLS_JOB_MAX_USD $${jobCap.toFixed(2)})`;
+      if (dayUsd + usd > dayCap + 1e-9) return `today's pictures have spent $${dayUsd.toFixed(2)} on kie.ai (STILLS_DAILY_USD $${dayCap.toFixed(2)})`;
+      jobUsd += usd; dayUsd += usd;
+      return null;
+    },
+    created: async (key, task, model, usd) => {
+      tasks.set(key, { task, at: Date.now() });
+      await audit(env, job.user_id, job.id, "stills.task", { key, task, model, usd, at: nowIso() });
+    },
+  };
+}
+
+/**
  * THE VERDICT ON AN ERROR of the engine (24 September 2026): "pause" — the drawing stops for this tick and the next
  * tick carries on, the job still counted as drawing (and the GPU still waiting, up to STILLS_GIVE_UP_MIN) — or
  * "failed" — the engine is done with this job and the rented GPU draws what is missing the legacy way.
@@ -1171,7 +1326,7 @@ async function stillsSpentUsd(env: Env, jobId: string): Promise<number> {
  */
 export function stillsErrorVerdict(e: unknown): "pause" | "failed" {
   if (isQuotaError(e)) return "failed";
-  if (isTransientError(e)) return "pause";
+  if (isTransientStillError(e)) return "pause";
   return isTransientStoreError(e) ? "pause" : "failed";
 }
 
@@ -1185,7 +1340,8 @@ export async function pauseStills(env: Env, job: Pick<Job, "id" | "user_id" | "p
   const at = prev?.state === "drawing" && prev.at ? prev.at : nowIso();
   const pauses = (prev?.pauses ?? 0) + 1;
   const drawn = progress.drawn ?? prev?.drawn ?? 0, total = progress.total ?? prev?.total ?? 0;
-  await updateJobParams(env, job.id, { stills: { state: "drawing", at, drawn, total, pauses, note: note.slice(0, 300) } });
+  // The road is kept: it sets the give-up (stillsGiveUpMin), and a pause must not shorten it to the Workers AI one.
+  await updateJobParams(env, job.id, { stills: { state: "drawing", at, drawn, total, pauses, note: note.slice(0, 300), ...(prev?.road ? { road: prev.road } : {}) } });
   await audit(env, job.user_id, job.id, "stills.paused", { pauses, error: note.slice(0, 300), drawn, total });
   return { state: "drawing", drawn, total };
 }
@@ -1206,7 +1362,7 @@ export async function pauseStills(env: Env, job: Pick<Job, "id" | "user_id" | "p
  * next tick replays before it draws. Every reference carries a signed link (signedFileUrl) for a road that takes links,
  * and every sheet, still and loss carries its `usd`; "stills.done" says what the job's pictures cost in all.
  */
-export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: number; stop?: () => boolean }): Promise<{ state: "drawing" | "done" | "failed"; drawn: number; total: number }> {
+export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: number; stop?: () => boolean; stretch?: boolean }): Promise<{ state: "drawing" | "done" | "failed"; drawn: number; total: number }> {
   const params = paramsOf(job);
   const sb = storyboardOf(job);
   if (!sb || !stillsEngineOn(env, job)) return { state: "failed", drawn: 0, total: 0 };
@@ -1221,17 +1377,16 @@ export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: nu
   const startedAt = prev?.state === "drawing" && prev.at ? prev.at : nowIso();
   const stored = await storedPictures(env, job.id);
   const countDrawn = () => pics.filter((p) => stored.has(p.id)).length;
+  let road: StillProvider = stillProviderOf(stillModel(env)).provider;
   const setState = async (state: "drawing" | "done" | "failed", note?: string) => {
-    await updateJobParams(env, job.id, { stills: { state, at: state === "drawing" ? startedAt : nowIso(), drawn: countDrawn(), total, ...(prev?.pauses ? { pauses: prev.pauses } : {}), ...(note ? { note: note.slice(0, 300) } : {}) } });
+    await updateJobParams(env, job.id, { stills: { state, at: state === "drawing" ? startedAt : nowIso(), drawn: countDrawn(), total, road, ...(prev?.pauses ? { pauses: prev.pauses } : {}), ...(note ? { note: note.slice(0, 300) } : {}) } });
     return { state, drawn: countDrawn(), total };
   };
   // A transient error: this tick stops, the next one carries on from what is stored, and the pause is counted.
-  const pause = (note: string) => pauseStills(env, { id: job.id, user_id: job.user_id, params: JSON.stringify({ stills: { ...(prev ?? {}), state: "drawing", at: startedAt } }) }, note, { drawn: countDrawn(), total });
+  const pause = (note: string) => pauseStills(env, { id: job.id, user_id: job.user_id, params: JSON.stringify({ stills: { ...(prev ?? {}), state: "drawing", at: startedAt, road } }) }, note, { drawn: countDrawn(), total });
   const skip = await givenUp(env, job.id);
   const todo = pics.filter((p) => !stored.has(p.id) && !skip.pictures.has(p.id));
   if (!todo.length) return setState("done");
-  if (prev?.state !== "drawing") await setState("drawing");
-  const late = () => Date.now() > opts.deadline - EST_STILL_MS || !!opts.stop?.();
 
   // 0. THE ROUTE (25 September 2026): what draws, shared by every draw of this call; a fallback an earlier tick made
   //    (its "stills.fallback" row) holds for the rest of the job, so an empty account is not asked again every minute.
@@ -1240,49 +1395,69 @@ export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: nu
     if (typeof f.from === "string" && f.from) await switchRoute(route, f.from, false, String(f.reason ?? "an earlier tick"), f.error ?? "", { silent: true });
   }
   route.onFallback = (f) => audit(env, job.user_id, job.id, "stills.fallback", f);
+  road = stillProviderOf(route.model).provider;
+  if (prev?.state !== "drawing" || prev.road !== road) await setState("drawing");
+  // THE PACE (25 September 2026): an external road draws six at a time, counts a still at a minute, and — when the
+  // caller allows it (the cron's `stretch`) — takes STILLS_EXTERNAL_MS instead of the Workers AI window.
+  const external = isExternalStillModel(route.model);
+  const deadline = external && opts.stretch ? Math.max(opts.deadline, Date.now() + STILLS_EXTERNAL_MS) : opts.deadline;
+  const est = external ? EST_STILL_MS_EXTERNAL : EST_STILL_MS;
+  const concurrency = external ? STILLS_CONCURRENCY_EXTERNAL : STILLS_CONCURRENCY;
+  const late = () => Date.now() > deadline - est || !!opts.stop?.();
+  // The kie.ai ledger: the tasks earlier ticks paid for (collected, not bought again) and the money caps.
+  const ledger = [route.model, route.strong].some((m) => !!m && stillProviderOf(m).provider === "kie") ? await jobLedger(env, job) : undefined;
   const link = (name: string) => signedFileUrl(env, job.id, name);
   type Linked = VisionImage & { url: string | null };
 
-  // 1. THE SHEETS. What a tick drew is written to fidelity.json before it can return: a tick that ran out of time
-  //    between two sheets used to drop the report of the sheets it had drawn, and the next tick found them on R2 and
-  //    skipped them without reporting them (24 September 2026).
+  // 1. THE SHEETS, `concurrency` at a time since 25 September 2026 (one after the other, a Nano Banana tick drew one
+  //    sheet). The stills start only when every sheet is stored or given up. What a tick drew is written to
+  //    fidelity.json before it can return: a tick that ran out of time between two sheets used to drop the report of
+  //    the sheets it had drawn, and the next tick found them on R2 and skipped them without reporting them (24 September).
   const sheets = new Map<string, Linked>();
   const sheetReport: Record<string, unknown> = {};
   const flushSheets = async () => { if (Object.keys(sheetReport).length) await mergeFidelity(env, job, { sheets: sheetReport }); };
+  const sheetQueue: ReturnType<typeof castMembersOf> = [];
   for (const m of castMembersOf(spec, direction)) {
-    const key = castSheetKey(job.id, m.id);
-    const have = await readStored(env, key);
+    const have = await readStored(env, castSheetKey(job.id, m.id));
     if (have) { sheets.set(norm(m.name), { ...have, url: await link(sheetLinkName(m.id)) }); continue; }
-    if (skip.sheets.has(m.id)) continue; // refused for good on an earlier tick: this character is drawn from the words
-    if (late()) { await flushSheets(); return setState("drawing"); }
+    if (!skip.sheets.has(m.id)) sheetQueue.push(m); // one refused for good on an earlier tick: that character is drawn from the words
+  }
+  let sheetStop: { verdict: "pause" | "failed"; note: string } | null = null;
+  const sheetHalt = (verdict: "pause" | "failed", note: string) => { if (!sheetStop || (verdict === "failed" && sheetStop.verdict === "pause")) sheetStop = { verdict, note }; };
+  const drawSheet = async (m: ReturnType<typeof castMembersOf>[number]): Promise<void> => {
     const photo = m.ref ? await userImage(env, job.user_id, spec, m.ref) : null;
     const photoHandle = m.ref ? userRefHandle(spec, m.ref) : null;
     const userRef = photo ? { ...photo, url: photoHandle ? await link(userRefLinkName(photoHandle)) : null } : null;
     let r: { bytes: Uint8Array; score: number; usd: number };
     try {
-      r = await drawCastSheet(env, spec, m, look, userRef, { seedBase: fnv1a(`${job.id}/cast/${m.id}`) % 1_000_000, until: opts.deadline, route });
+      r = await drawCastSheet(env, spec, m, look, userRef, { seedBase: fnv1a(`${job.id}/cast/${m.id}`) % 1_000_000, until: deadline, route, ledger });
     } catch (e) {
       const msg = String(e).slice(0, 300);
-      const transient = isTransientError(e);
+      const transient = isTransientStillError(e);
       await audit(env, job.user_id, job.id, "stills.sheet", { cast: m.id, name: m.name, error: msg, transient, usd: round4(spentOn(e)) });
-      if (transient) {
-        await flushSheets();
-        return stillsErrorVerdict(e) === "failed" ? setState("failed", `sheet of ${m.name}: ${msg}`) : pause(`sheet of ${m.name}: ${msg}`);
-      }
-      continue; // a sheet the model refuses leaves that character without a reference; the shots are still drawn from the words
+      if (transient) sheetHalt(stillsErrorVerdict(e), `sheet of ${m.name}: ${msg}`);
+      return; // a sheet the model refuses leaves that character without a reference; the shots are still drawn from the words
     }
     try {
-      await putFile(env, key, r.bytes, sniffImage(r.bytes) === "png" ? "image/png" : "image/jpeg");
+      await putFile(env, castSheetKey(job.id, m.id), r.bytes, sniffImage(r.bytes) === "png" ? "image/png" : "image/jpeg");
     } catch (e) {
       // The sheet is drawn and paid for: a store that did not keep it is a hiccup unless it plainly says otherwise.
-      await flushSheets();
       const msg = `storing the sheet of ${m.name}: ${String(e).slice(0, 260)}`;
       await audit(env, job.user_id, job.id, "stills.store_error", { cast: m.id, error: msg, usd: r.usd });
-      return isTransientStoreError(e) ? pause(msg) : setState("failed", msg);
+      sheetHalt(isTransientStoreError(e) ? "pause" : "failed", msg);
+      return;
     }
     sheets.set(norm(m.name), { bytes: r.bytes, mime: mimeOf(r.bytes), url: await link(sheetLinkName(m.id)) });
     sheetReport[m.id] = { name: m.name, score: r.score, user_ref: !!userRef, usd: r.usd };
     await audit(env, job.user_id, job.id, "stills.sheet", { cast: m.id, name: m.name, score: r.score, user_ref: !!userRef, usd: r.usd });
+  };
+  const sheetWorker = async () => { while (sheetQueue.length && !sheetStop && !late()) await drawSheet(sheetQueue.shift()!); };
+  await Promise.all(Array.from({ length: Math.min(concurrency, sheetQueue.length) }, () => sheetWorker()));
+  const sheetHalted = sheetStop as { verdict: "pause" | "failed"; note: string } | null;
+  if (sheetHalted || sheetQueue.length) {
+    await flushSheets();
+    if (sheetHalted?.verdict === "failed") return setState("failed", sheetHalted.note);
+    return sheetHalted ? pause(sheetHalted.note) : setState("drawing");
   }
 
   // 2. THE STILLS.
@@ -1330,10 +1505,10 @@ export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: nu
       if (anchor && pic.id !== firstId && refs.length < MAX_INPUT_IMAGES) refs.push(asRef(ANCHOR_LABEL, anchor));
       let r: StillResult;
       try {
-        r = await drawStill(env, { shot: pic, spec, direction, look, format, visual, refs }, { seedBase: fnv1a(`${job.id}/${pic.id}`) % 1_000_000, until: opts.deadline, route });
+        r = await drawStill(env, { shot: pic, spec, direction, look, format, visual, refs }, { seedBase: fnv1a(`${job.id}/${pic.id}`) % 1_000_000, until: deadline, route, ledger });
       } catch (e) {
         const msg = String(e).slice(0, 300);
-        const transient = isTransientError(e);
+        const transient = isTransientStillError(e);
         if (transient) { halt(stillsErrorVerdict(e), msg); queue.unshift(pic); }
         await audit(env, job.user_id, job.id, "stills.error", { picture: pic.id, error: msg, transient, usd: round4(spentOn(e)) });
         continue;
@@ -1360,9 +1535,9 @@ export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: nu
       await audit(env, job.user_id, job.id, "stills.judge", { picture: pic.id, tries: r.tries.length, score: r.score, must_failed: r.mustFailed, failed: r.failed, refs: refs.length, usd: r.usd ?? 0 });
     }
   };
-  // The first still alone, so that every other one can be drawn in its style; then the rest, STILLS_CONCURRENCY at a time.
+  // The first still alone, so that every other one can be drawn in its style; then the rest, `concurrency` at a time.
   if (!anchor && queue[0]?.id === firstId) { const one = [queue.shift()!]; const rest = queue.splice(0); queue.push(...one); await worker(); queue.push(...rest); }
-  await Promise.all(Array.from({ length: Math.min(STILLS_CONCURRENCY, queue.length) }, () => worker()));
+  await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, () => worker()));
 
   // What drew (the route's model: the fallback once there was one), and what the job's pictures cost so far.
   const model = route.model;

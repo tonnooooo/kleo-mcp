@@ -15,7 +15,7 @@ import { poolWaitingJobs } from "./db";
 import { generateStoryboard, StoryboardError, isTransientAiError } from "./storyboard";
 import { updateJobParams } from "./db";
 import { specOf, type RequestSpec } from "./spec";
-import { drawJobStills, stillsEngineOn, stillsHold, stillsStateOf, mergeFidelity, castSheetKeys, stillsErrorVerdict, pauseStills, STILLS_GIVE_UP_MIN } from "./stills";
+import { drawJobStills, stillsEngineOn, stillsHold, stillsStateOf, mergeFidelity, castSheetKeys, stillsErrorVerdict, pauseStills, stillsGiveUpMin } from "./stills";
 import { purgeOldRefs } from "./refs.ts";
 
 /** Jobs whose stills one cron tick draws, at most, and how long each may take (they run side by side). */
@@ -150,7 +150,7 @@ async function recordPlanFidelity(env: Env, job: Job, f: PlanFidelityLike): Prom
  * drawn and judged on the server BEFORE the dispatcher may rent them a GPU (stillsHold). At most STILLS_JOBS_PER_TICK
  * jobs, side by side, STILLS_JOB_MS each, under an owned lock of their own (heartbeat-renewed) so an overlapping cron
  * never draws the same job twice; what does not fit is resumed on the next tick. A job drawing for more than
- * STILLS_GIVE_UP_MIN is marked "failed" here, which lets the GPU draw what is missing the legacy way: the engine may
+ * stillsGiveUpMin (20 minutes, more on an external road) is marked "failed" here, which lets the GPU draw what is missing the legacy way: the engine may
  * make a film more faithful, never strand it. A throw out of drawJobStills (a D1 or R2 hiccup) PAUSES the job's
  * drawing like a transient model error does (stillsErrorVerdict); only a bug fails it at once.
  *
@@ -167,8 +167,9 @@ export async function drawStills(env: Env): Promise<void> {
     if (job.phase === "finish" || !stillsEngineOn(env, job)) continue;
     const st = stillsStateOf(job);
     if (st?.state === "done" || st?.state === "failed") continue;
-    if (st?.state === "drawing" && st.at && minutesSince(st.at) > STILLS_GIVE_UP_MIN) {
-      await updateJobParams(env, job.id, { stills: { ...st, state: "failed", at: nowIso(), note: `gave up after ${STILLS_GIVE_UP_MIN} minutes of drawing; the GPU draws the rest` } });
+    const giveUp = stillsGiveUpMin(st);
+    if (st?.state === "drawing" && st.at && minutesSince(st.at) > giveUp) {
+      await updateJobParams(env, job.id, { stills: { ...st, state: "failed", at: nowIso(), note: `gave up after ${giveUp} minutes of drawing; the GPU draws the rest` } });
       await audit(env, job.user_id, job.id, "stills.gave_up", { minutes: Math.round(minutesSince(st.at)), drawn: st.drawn ?? null, total: st.total ?? null });
       continue;
     }
@@ -185,7 +186,8 @@ export async function drawStills(env: Env): Promise<void> {
     const deadline = Date.now() + STILLS_JOB_MS;
     await Promise.all(todo.slice(0, STILLS_JOBS_PER_TICK).map(async (job) => {
       try {
-        const r = await drawJobStills(env, job, { deadline, stop: () => lost });
+        // `stretch`: an external road (Nano Banana on kie.ai) takes STILLS_EXTERNAL_MS instead of this window (src/stills.ts).
+        const r = await drawJobStills(env, job, { deadline, stop: () => lost, stretch: true });
         if (r.state !== "drawing") await audit(env, job.user_id, job.id, "stills.state", r);
       } catch (e) {
         const msg = String(e).slice(0, 300);

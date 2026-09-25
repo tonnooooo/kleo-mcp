@@ -44,6 +44,13 @@ export interface Env {
    * provider refuses are left to the rented GPU, as any refused picture is). An audit row "stills.fallback" says when.
    */
   STILL_MODEL_FALLBACK?: string;
+  /**
+   * The money caps of the kie.ai pictures (src/stills.ts, 25 September 2026): dollars of kie.ai tasks one film's stills
+   * may create (default 5), and all films' stills in one UTC day (default 10). Past either, the job's pictures move to
+   * STILL_MODEL_FALLBACK. The clips keep their own ceiling, DAILY_FOOTAGE_BUDGET_USD.
+   */
+  STILLS_JOB_MAX_USD?: string;
+  STILLS_DAILY_USD?: string;
   /** The OpenAI-compatible endpoint base an "openrouter:…" still model is drawn through (unset = PLAN_API_URL, then "https://openrouter.ai/api/v1"). */
   IMAGE_API_URL?: string;
   /** Secret: the key for IMAGE_API_URL (unset = PLAN_API_KEY). Never logged, never in an audit row. */

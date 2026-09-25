@@ -175,8 +175,12 @@ async function drawLegacy(c, plan, shots, dir) {
 async function drawNew(mod, c, plan, shots, dir) {
   const sb = plan.storyboard, look = (sb.kleo_style ?? c.style) === "animation" ? "animation" : "realistic", format = (sb.format ?? c.format) === "16:9" ? "16:9" : "9:16";
   const spec = plan.spec ?? null, direction = sb.direction ?? plan.direction ?? null;
-  const env = makeEnv({ STILL_MODEL: args["still-model"], STILL_MODEL_STRONG: args["still-model-strong"], VISION_MODEL: args.vision, STILL_ATTEMPTS: args.attempts, STILL_PASS: args.pass });
-  const opts = { ...(args.attempts ? { attempts: Number(args.attempts) } : {}), ...(args.pass ? { pass: Number(args.pass) } : {}) };
+  const env = makeEnv({ STILL_MODEL: args["still-model"], STILL_MODEL_STRONG: args["still-model-strong"], VISION_MODEL: args.vision, STILL_ATTEMPTS: args.attempts, STILL_PASS: args.pass,
+    KIE_API_KEY: process.env.KIE_API_KEY, IMAGE_API_KEY: process.env.IMAGE_API_KEY, PLAN_API_KEY: process.env.PLAN_API_KEY });
+  // A model under comparison is FORCED (opts.model): no fallback, so a refusal fails loudly instead of the run silently
+  // measuring klein-4B under the other model's name (review of 25 September 2026).
+  const opts = { ...(args.attempts ? { attempts: Number(args.attempts) } : {}), ...(args.pass ? { pass: Number(args.pass) } : {}), ...(args["still-model"] ? { model: args["still-model"] } : {}) };
+  if (/^kie:/.test(args["still-model"] ?? "")) console.warn("note: kie.ai takes references as public links only; the bench has none, so every kie still is drawn WITHOUT its sheets");
   // THE SHEETS: the spec's cast when the plan has a spec, otherwise the direction's (an old plan drawn by the new engine).
   const members = spec?.cast?.length ? spec.cast.map((m) => ({ id: m.id, name: m.name, look: m.look })) : (direction?.cast ?? []).map((m) => ({ id: m.name, name: m.name, look: m.look }));
   const sheets = new Map();
