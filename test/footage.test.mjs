@@ -390,14 +390,14 @@ test("the pre-flight prices a film before any card is rented: the storyboard's s
   const ten = m.plannedFilmUsd(env, null, 60, 10, 24);
   assert.deepEqual(ten, { usd: Math.round(3.9 * m.PREFLIGHT_MARGIN * 1000) / 1000, shots: 10, model: "minimax-h3" }, "10 shots of 6 s at 0.065 $/s = 3.90 $ on the box, kept on the upper side by the margin");
   assert.equal(m.PREFLIGHT_MARGIN, 1.25);
+  // No storyboard: one shot per clip floor (MiniMax's shortest clip, 4 s), capped by the storyboard. Until 25 September
+  // this was a shot every 2.5 s and never fewer than six — the density of films planned before the clip floor.
   const guess = m.plannedFilmUsd(env, null, 60, null, 24);
-  assert.equal(guess.shots, 24, "no storyboard: the Short density, capped by the storyboard");
-  assert.equal(m.plannedFilmUsd(env, null, 15, null, 24).shots, 6, "never fewer than six");
+  assert.equal(guess.shots, 15, "60 s of 4-second clips");
+  assert.equal(m.plannedFilmUsd(env, null, 15, null, 24).shots, 4, "the six-shot floor is gone");
   assert.equal(m.plannedFilmUsd(env, null, 300, null, 48).shots, 48, "never more than the storyboard cap");
-  // an upper bound: never under the films the audit recorded (30 s Short = 15 × 4 s = 3.90 $; 15 s = 1.885 $; 60 s = 3.90 $)
-  assert.ok(m.plannedFilmUsd(env, null, 30, null, 24).usd >= 3.9, "a 30 s Short is not under-estimated");
-  assert.ok(m.plannedFilmUsd(env, null, 15, null, 24).usd >= 1.885, "nor a 15 s one");
-  assert.ok(m.plannedFilmUsd(env, null, 60, null, 24).usd >= 3.9, "nor a 60 s film");
+  // Still an upper bound: never fewer billed seconds than the film has, and the margin on top.
+  for (const s of [15, 30, 60]) assert.ok(m.plannedFilmUsd(env, null, s, null, 24).usd >= s * 0.065 * m.PREFLIGHT_MARGIN - 1e-9, `${s} s`);
   const empty = fakeKie({ credits: 14 }); globalThis.fetch = empty.fetch; // 14 credits = 0.07 $, the balance of that morning
   const pre = await m.kiePreflight(env, 60, 10, 24);
   assert.deepEqual(pre, { ok: false, reason: "balance", balance_usd: 0.07, planned_usd: 4.875, spent_today_usd: 0, budget_usd: 5, shots: 10, model: "minimax-h3" });
@@ -721,6 +721,22 @@ test("ePhone AI: an empty account (RixAPI's 403 insufficient_user_quota) stops t
   // The pre-flight reads the same account.
   const pre = await m.kiePreflight(env2, 30, 6, 24);
   assert.equal(pre.ok, false); assert.equal(pre.reason, "balance"); assert.equal(pre.balance_usd, 0.1);
+});
+
+test("the clip floor: a model's shortest clip; a film on the API road has one, the animatic and the local road none; the pre-flight prices it", () => {
+  const min = (k) => m.clipMinSeconds(m.KIE_MODELS[k]);
+  assert.equal(min("seedance-2.5-480p"), 4); assert.equal(min("seedance-2.5-720p"), 4); assert.equal(min("minimax-h3"), 4);
+  assert.equal(min("kling-3.0"), 3); assert.equal(min("wan-2.7"), 2); assert.equal(min("veo-3.1"), 4, "a per-clip model: its shortest listed clip");
+  const eph = { KLEO_FOOTAGE_BACKEND: "kie", EPHONE_API_KEY: "e", KLEO_FOOTAGE_MODEL: "seedance-2.5-480p", KIE_MAX_VIDEO_S: "0" };
+  assert.equal(m.clipFloorFor(eph, { product: "film", duration_s: 15 }), 4);
+  assert.equal(m.clipFloorFor(eph, { product: "animatic", duration_s: 15 }), 0, "an animatic buys no clip");
+  assert.equal(m.clipFloorFor({}, { product: "film", duration_s: 15 }), 0, "the local road buys no clip");
+  assert.equal(m.clipFloorFor({ ...eph, KIE_MAX_VIDEO_S: "20" }, { product: "film", duration_s: 45 }), 0, "over the API road's cap the film is local");
+  // The pre-flight of a 15 s Seedance film: four 4-second clips, not six.
+  const plan15 = m.plannedFilmUsd(eph, null, 15, null, 24);
+  assert.equal(plan15.shots, 4); assert.ok(plan15.usd <= 2.0, `${plan15.usd} $`);
+  const plan30 = m.plannedFilmUsd(eph, null, 30, null, 24);
+  assert.ok(plan30.usd >= 30 * 0.0875 * 1.25, `${plan30.usd} $: never under the film's own seconds`);
 });
 
 /* ------------------------------------------------------------------ the Seedance prompt (25 September) */

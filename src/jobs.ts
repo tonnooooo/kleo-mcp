@@ -2,7 +2,7 @@ import type { Env } from "./env";
 import { type Job, type JobParams, type JobState, type User, OPEN_STATES, countOpenForUser, countJobsTodayForUser, addJobCost, debitCredits, refundCredits, insertJob, transitionJob, audit, getUserJob, listFiles, hasPaid, recentJobsForUser } from "./db";
 import { accountUrl } from "./accounts";
 import { findTemplate, affordableGuess, creditsFor, creditsForProduct, etaFor, animaticEtaFor, normalizeVoice, voiceSpellings, isVideoStyle, videoModelIsGated, isPublicTemplate, FILM_TEMPLATE_ID, FILM_LONG_TEMPLATE_ID, filmTemplateFor, ACTIVE_TEMPLATE, PRODUCTS, ANIMATIC_CREDITS, ANIMATIC_MAX_S, filmedStoryboard, finishForProduct, productOf, type Format, type Product } from "./templates";
-import { footageBackendFor, footageConfig, kiePreflight } from "./footage";
+import { footageBackendFor, footageConfig, kiePreflight, clipFloorFor } from "./footage";
 import { rid, nowIso, int, hmacHex } from "./util";
 import { isFlagActive } from "./schema";
 import { backendFor } from "./backends";
@@ -226,6 +226,12 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   const look: FilmLook = (input.style as FilmLook | undefined) ?? asLook(field(input.treatment, "look")) ?? asLook(field(input.storyboard, "kleo_style")) ?? lookFromText(prompt) ?? "realistic";
   let style: KleoStyle | undefined = look;
   let cappedFrom: string | null = null; // set only when a guessed look was replaced by a cheaper one
+  // THE ROAD, BEFORE THE STORYBOARD (25 September 2026): on the API road every shot is a clip billed at the model's
+  // shortest length, so a client storyboard is trimmed and judged with that floor (clip_floor_s), the same one the
+  // planner writes to. The road depends on the length alone (footageBackendFor), so it is known this early.
+  const footageCfg = await footageConfig(env);
+  const onKie = footageBackendFor(env, { params: JSON.stringify({ duration_s: duration, format, language, voice, style: look }) }, footageCfg) === "kie";
+  const clipFloor = clipFloorFor(env, { product, duration_s: duration }, footageCfg);
   let storyboard: string | null = null;
   if (input.storyboard !== undefined && input.storyboard !== null) {
     const sbIn = input.storyboard;
@@ -238,7 +244,7 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     // requireDirection only here: this is the assistant's storyboard, and the guide already told it to write the
     // direction first. The planner (src/storyboard.ts) validates its own drafts with the flag off, because it is
     // still building the direction when the first of those calls happens.
-    const r = validateStoryboard(sbIn, { format, language, requireDirection: true });
+    const r = validateStoryboard(sbIn, { format, language, requireDirection: true, clipFloorS: clipFloor });
     if (!r.ok) {
       const n = r.errors.length;
       throw new JobError(`The storyboard has ${plural(n, "problem")} (nothing was charged). Fix ${n === 1 ? "it" : "them"} and call kleo_create_video again:\n- ${r.errors.join("\n- ")}`);
@@ -265,9 +271,9 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     if (filmed) (r.storyboard as Record<string, unknown>).backdrop = "video";
     else delete (r.storyboard as Record<string, unknown>).backdrop;
     const finished = finishForProduct(r.storyboard as Record<string, unknown>, product, duration);
-    // No more shots than a line's seconds can carry (keou-contract.ts shotBudget) — and never the only shot that
-    // shows something the spec asks for.
-    trimShots(finished, spec);
+    // No more shots than a line's seconds can carry (keou-contract.ts shotBudget, with the job's clip floor) — and never
+    // the only shot that shows something the spec asks for.
+    trimShots(finished, spec, clipFloor);
     // THE SPEC AGAINST THE STORYBOARD, deterministic (src/spec.ts coverage): every must item claimed by a shot's
     // "covers", every line said, the user's events in the user's order, no unknown item or character. A warning in
     // the planner (it repairs); a refusal here, like the must_keep promise above: this author wrote both and can fix
@@ -354,7 +360,6 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   // refused here, in words that say what is missing, and nothing is charged.
   // On the kie.ai road (footage.ts) no weights are fetched, so the token is not needed: the same decision the
   // renter will make, taken here on the same params, so a job is never refused for a token it will not use.
-  const onKie = footageBackendFor(env, { params: JSON.stringify({ duration_s: duration, format, language, voice, style }) }, await footageConfig(env)) === "kie";
   if (product === "film" && isVideoStyle(style) && !onKie && videoModelIsGated(env.KLEO_VIDEO_MODEL) && !(env.HF_TOKEN && env.HF_TOKEN.trim()))
     throw new JobError(`Kleo's video model (${env.KLEO_VIDEO_MODEL}) needs a Hugging Face token that is not configured on the server yet. Nothing was charged; try again later.`);
   const maxOpen = int(env.MAX_JOBS_PER_USER, 2);
@@ -395,7 +400,8 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   const brief: NonNullable<JobParams["brief"]> & { corrections?: string } = { ...answers, ...(corrections ? { corrections } : {}) };
   const musicParam = musicIn === null ? undefined : musicIn.wanted ? (musicOf((treatment as Treatment | null)?.music) ?? musicIn.brief ?? "a quiet instrumental bed that fits the film's mood, under the narration") : null;
   const params: JobParams = { duration_s: duration, format, language, voice, style, ...(product === "animatic" ? { product } : {}), ...(styleGuessed ? { style_guessed: true } : {}), ...(cappedFrom ? { style_capped_from: cappedFrom } : {}), ...(treatment ? { treatment } : {}), ...(musicParam !== undefined ? { music: musicParam } : {}), ...(subsIn !== null ? { subtitles: subsIn } : {}),
-    ...(spec ? { spec } : {}), ...(refHandles.length ? { refs: refHandles } : {}), ...(answers.must_keep || answers.audience || answers.tone || corrections ? { brief } : {}) };
+    ...(spec ? { spec } : {}), ...(refHandles.length ? { refs: refHandles } : {}), ...(answers.must_keep || answers.audience || answers.tone || corrections ? { brief } : {}),
+    ...(clipFloor > 0 ? { clip_floor_s: clipFloor } : {}) };
   const job: Job = {
     id: jobId, user_id: user.id, template: t.id, prompt, params: JSON.stringify(params),
     state: "queued", track: null, percent: 0, eta_min: product === "animatic" ? animaticEtaFor(duration) : etaFor(duration), credits,

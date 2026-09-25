@@ -204,9 +204,18 @@ export const SHOTS_MIN_CINEMA = 2;
  */
 export const SHOTS_WORDS_PER_SHOT = 7;
 export const SHOTS_MIN_WORDS_FOR_TWO = 14;
-export function shotBudget(words: number): { min: number; max: number } {
+/**
+ * THE CLIP FLOOR (25 September 2026). On the API road every shot is a clip bought at the model's shortest length
+ * (4 s on Seedance 2.5 and MiniMax H3) whatever the film keeps of it, so a shot of two seconds pays for four. With a
+ * floor of `floorS` seconds a shot carries at least that much voice: floorS × 2.45 words a second × 1.1 (the voice's
+ * speed), never fewer than the seven of the local road — eleven words for a 4-second floor. 0 is the local road and
+ * the animatic, where nothing is bought per shot: the seven-word rule, unchanged.
+ */
+export const clipWordsPerShot = (floorS = 0): number => (floorS > 0 ? Math.max(SHOTS_WORDS_PER_SHOT, Math.ceil(floorS * 2.45 * 1.1)) : SHOTS_WORDS_PER_SHOT);
+export function shotBudget(words: number, floorS = 0): { min: number; max: number } {
   const w = Math.max(0, Number(words) || 0);
-  return { min: w >= SHOTS_MIN_WORDS_FOR_TWO ? SHOTS_MIN_CINEMA : 1, max: Math.max(1, Math.min(SHOTS_PER_SCENE.cinema[1], Math.floor(w / SHOTS_WORDS_PER_SHOT))) };
+  const per = clipWordsPerShot(floorS);
+  return { min: w >= 2 * per ? SHOTS_MIN_CINEMA : 1, max: Math.max(1, Math.min(SHOTS_PER_SCENE.cinema[1], Math.floor(w / per))) };
 }
 const voiceWords = (s: unknown): number => (isObj(s) && typeof s.voice === "string" ? s.voice.trim().split(/\s+/).filter(Boolean).length : 0);
 /** The spec ids a shot claims in `covers`, whatever the shot is. */
@@ -223,8 +232,11 @@ const coversOf = (sh: unknown): string[] => (isObj(sh) && Array.isArray(sh.cover
  * When every shot left is the sole witness of something the user asked for, the scene keeps them all, over budget:
  * a scene a second too dense is a smaller fault than a film without the thing it was ordered for. Without a spec the
  * order is the old one — the last shots go first.
+ *
+ * `floorS` is the job's clip floor (shotBudget): the same number qualityProblems() is given, so the floor that trims a
+ * scene and the one that asks for a second picture can never disagree and send a storyboard round a refusal loop.
  */
-export function trimShots(sb: { scenes?: unknown }, spec?: RequestSpec | null): number {
+export function trimShots(sb: { scenes?: unknown }, spec?: RequestSpec | null, floorS = 0): number {
   const scenes = Array.isArray(sb.scenes) ? (sb.scenes as unknown[]) : [];
   const must = new Set((spec?.items ?? []).filter((i) => i && i.must).map((i) => i.id));
   // How many shots of the whole film claim each must item: a shot is the sole witness when its item's count is 1.
@@ -236,7 +248,7 @@ export function trimShots(sb: { scenes?: unknown }, spec?: RequestSpec | null): 
   for (const s of scenes) {
     if (!isObj(s) || s.kind === "closing" || !Array.isArray(s.shots)) continue;
     const shots = s.shots as unknown[];
-    let over = shots.length - shotBudget(voiceWords(s)).max;
+    let over = shots.length - shotBudget(voiceWords(s), floorS).max;
     if (over <= 0) continue;
     // Pass 0: the shots that claim no must item. Pass 1: the ones whose must items another shot also shows. Each pass
     // walks from the end of the scene, so without a spec (nothing claims anything) this is exactly the old order.
@@ -338,6 +350,8 @@ export function narrationOf(sb: unknown): string {
 export interface ValidateOptions {
   format: Format;
   language: string;
+  /** The job's clip floor in seconds (shotBudget): 0, the default, on the local road and for the animatic. */
+  clipFloorS?: number;
   /** Maximum number of errors collected (default 10). */
   maxErrors?: number;
   /**
@@ -1026,7 +1040,7 @@ export function validateStoryboard(sb: unknown, opts: ValidateOptions): Validate
   // to be safe gets a different answer the second time. It works on a copy now, and the copy is what comes out.
   const draft = clone(sb);
   const e = new Collector(opts.maxErrors ?? MAX_ERRORS);
-  try { validateInner(draft, opts, e); if (!e.errors.length) { for (const p of qualityProblems(draft)) e.add(p); for (const w of fidelityWarnings(draft)) e.warn(w); } } catch (err) { if (!(err instanceof TooMany)) throw err; }
+  try { validateInner(draft, opts, e); if (!e.errors.length) { for (const p of qualityProblems(draft, opts.clipFloorS ?? 0)) e.add(p); for (const w of fidelityWarnings(draft)) e.warn(w); } } catch (err) { if (!(err instanceof TooMany)) throw err; }
   if (e.errors.length) return { ok: false, errors: e.errors, normalised: draft, warnings: e.warnings };
   return { ok: true, storyboard: draft as Storyboard, warnings: e.warnings };
 }
@@ -1091,7 +1105,8 @@ export function fidelityWarnings(sb: unknown): string[] {
   return out;
 }
 
-export function qualityProblems(sb: unknown): string[] {
+/** `floorS`: the job's clip floor, as trimShots() is given it (shotBudget). */
+export function qualityProblems(sb: unknown, floorS = 0): string[] {
   const c = (typeof sb === "object" && sb !== null ? sb : {}) as Record<string, unknown>;
   const out: string[] = [];
   // 3. THE STORYBOARD KEEPS ITS OWN PROMISES. Whoever wrote the direction wrote the narration and the pictures too, so
@@ -1108,7 +1123,7 @@ export function qualityProblems(sb: unknown): string[] {
     if (!isObj(s) || !Array.isArray(s.shots)) return;
     const label = `scene ${i + 1}${typeof s.id === "string" ? ` (${s.id})` : ""}`;
     const shots = s.shots as unknown[];
-    if (s.kind !== "closing" && shots.length < shotBudget(voiceWords(s)).min)
+    if (s.kind !== "closing" && shots.length < shotBudget(voiceWords(s), floorS).min)
       out.push(`${label}: ${shots.length} picture${shots.length === 1 ? "" : "s"}, a scene needs at least ${SHOTS_MIN_CINEMA} — one picture held for a whole line is a slideshow, not a video. Split the line into ${SHOTS_MIN_CINEMA} moments and give each its own image_prompt and "at".`);
     shots.forEach((sh, n) => {
       if (n === 0 || !isObj(sh)) return;

@@ -15,7 +15,7 @@ import { createJob, cancelJob, jobView, resultLinks, JobError, FILE_NAMES } from
 import { accountUrl, makeHandle } from "./accounts";
 import { audit } from "./db";
 import { FORMATS, FILM_LOOKS, wordBudget, shotRangeText, pictureScenes } from "./keou-contract";
-import { musicNote } from "./footage";
+import { musicNote, clipFloorFor, footageConfig } from "./footage";
 import { guideText } from "./guide.ts";
 import { int } from "./util";
 import { adaptPrompt, adaptivePromptText, durationFrom, lookFromText } from "./adaptive.ts";
@@ -341,6 +341,8 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       throw new JobError(`Kleo makes ${brief.product === "animatic" ? "animatics" : "films"} of ${t.minSeconds} to ${maxS} seconds; ${dur} seconds is outside that range. Agree a length in range with the user and call again. Nothing was charged.`);
     // The narration's language is the user's answer (the intake asked it), never the language of the chat.
     const lang = brief.language, chosen = brief.product;
+    // On the API road every shot is a paid clip of at least the model's shortest length: the treatment is told so.
+    const clipFloorS = clipFloorFor(env, { product: chosen, duration_s: dur }, await footageConfig(env));
     // The intake's optional answers travel to kleo_create_video by name: until 24 September they died here, and the
     // planner never read who the film was for or what had to be in it.
     const answers = { ...(audience?.trim() ? { audience: audience.trim() } : {}), ...(tone?.trim() ? { tone: tone.trim() } : {}), ...(brief.must_keep ? { must_keep: brief.must_keep } : {}) };
@@ -359,7 +361,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
         tone ? `- the tone: "${tone.trim()}"` : "",
       ].filter(Boolean);
       const answersText = answerLines.length ? `\nTHE USER ALSO ANSWERED (items may quote these answers too, word for word):\n${answerLines.join("\n")}` : "";
-      const method = treatmentMethodText({ prompt: prompt.trim(), duration_s: dur, format: fmt, language: lang, look, sound, specPending: true }, v);
+      const method = treatmentMethodText({ prompt: prompt.trim(), duration_s: dur, format: fmt, language: lang, look, sound, specPending: true, clipFloorS }, v);
       void audit(env, user.id, null, "treatment.method", { variation: v.key, duration_s: dur, format: fmt, language: lang, product: chosen, look, music: brief.music?.wanted ?? null, subtitles: brief.subtitles, refs: handles.length, spec_method: true });
       return ok({ ...head, language: lang, treatment: null, spec: null, author: "assistant", variation: v.key, ready_to_render: true, ...answers,
         next: `STEP A: write the SPEC, following the spec method in the text (extraction: every item quotes the user). STEP B: write the TREATMENT under it, following the producer's method. The spec is ${MODE_RULE}; Kleo re-decides the mode by this rule. When it is FAITHFUL, tell the story the user's way — their characters as described, their events in their order — set the treatment's "variation" to "as-told/as-asked", and put everything you added in "decisions". THEN, in ONE message in the user's language, show them what Kleo understood (the spec read back as a short list: the characters and how they look, where, what happens in order, what must be seen or said, what is left to Kleo), the logline and the decisions, and wait for their yes or their corrections. If they correct or add something, change the spec and the treatment as they say (an item they added quotes their correction) and keep their words for "corrections". Only then call kleo_create_video with prompt (the user's words, unchanged), duration_s, format, language: "${lang}" (the narration language the user chose, not the language of the chat), product: "${chosen}", style (the look the treatment names), music and subtitles (the user's answers, as you passed them here), the object as "spec", the object as "treatment"${passOn}, and — when they corrected anything — "corrections" (their corrections, word for word). If you cannot write them, call this tool again with author: "server".` },
@@ -384,7 +386,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     } catch (e) {
       void audit(env, user.id, null, "spec.adapt", { ok: false, error: String(e).slice(0, 200) });
     }
-    const r = await writeTreatment(env, { prompt: prompt.trim(), duration_s: dur, format: fmt, language: lang, look, sound, spec });
+    const r = await writeTreatment(env, { prompt: prompt.trim(), duration_s: dur, format: fmt, language: lang, look, sound, spec, clipFloorS });
     void audit(env, user.id, null, "treatment.adapt", { language: lang, product: chosen, model: r.model, attempts: r.attempts, ms: r.ms, usage: r.usage, est_neurons: r.est_neurons, ok: !!r.treatment, transient: r.transient, history: r.history.slice(0, 3), variation: r.treatment?.variation ?? null, spec: spec ? spec.mode : null });
     const understood = spec ? `\n\n${specText(spec)}` : "";
     if (!r.treatment)
@@ -448,9 +450,10 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       duration_s: z.number().int().min(15).max(900).optional().describe("Target length in seconds, if the user chose one."),
       style: z.enum(FILM_LOOKS).optional().describe("The look: \"realistic\" (filmed) or \"animation\" (a 2D animated film); in both every shot is generated footage from its own frame, under the narration. Realistic when omitted."),
       format: z.enum(FORMATS).optional().describe("The frame the video will be in. The explainer authors its drawings in the frame's own pixels, so its guide prints different coordinates for 9:16 and 16:9; the template's own format is used when this is omitted."),
+      product: z.enum(PRODUCTS).optional().describe("The product the user chose (film or animatic): a film's pictures become paid clips, and the guide says how many a line can carry. Film when omitted."),
     }),
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
-  }, async ({ template, duration_s, style, format }) => {
+  }, async ({ template, duration_s, style, format, product }) => {
     const look = style ?? "realistic";
     const t = template === ACTIVE_TEMPLATE.id ? ACTIVE_TEMPLATE : null;
     const dur = duration_s ?? t?.defaultSeconds ?? 45;
@@ -460,7 +463,9 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     const words = wordBudget(dur, 1.1).target;
     // The guide is built in src/guide.ts from the contract\u2019s own constants, so the numbers it prints are the numbers
     // the validator enforces \u2014 the shot range used to be 1-4 here, 2-4 in the planner and "two to four" on the website.
-    const text = guideText({ template: ACTIVE_TEMPLATE.id, templateName: ACTIVE_TEMPLATE.name, duration_s: dur, style: look, languages: JOB_LANGUAGES, format: fmt });
+    // The road decides how many pictures a line can carry (src/footage.ts clipFloorFor), as it does at kleo_create_video.
+    const clipFloorS = clipFloorFor(env, { product: product ?? "film", duration_s: dur }, await footageConfig(env));
+    const text = guideText({ template: ACTIVE_TEMPLATE.id, templateName: ACTIVE_TEMPLATE.name, duration_s: dur, style: look, languages: JOB_LANGUAGES, format: fmt, clipFloorS });
     // The guide is where an assistant is most likely to start inventing: it has just been handed the shape of a
     // storyboard and nothing to put in it. So the sentence that leaves with it is the one that says whose idea it
     // has to be — a model follows the last instruction it read far more reliably than a tool description.

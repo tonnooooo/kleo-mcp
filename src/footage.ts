@@ -156,8 +156,11 @@ export function clipCostUsd(spec: KieModel, clipSeconds: number): number {
 
 /**
  * What a film of `seconds` will cost in clips BEFORE anything exists of it — an UPPER bound, on purpose. The shots
- * are the storyboard's when the caller wrote one, else the planner's Short density (a shot every PREFLIGHT_SHOT_S,
- * never fewer than six, never more than the storyboard cap: the audited 30 s Short was 15 shots, a 60 s film 10);
+ * are the storyboard's when the caller wrote one, else the planner's density on the API road: one shot per clip floor
+ * (the model's shortest clip, PREFLIGHT_SHOT_S at the least), never more than the storyboard cap. Until 25 September
+ * it assumed a shot every 2.5 s and never fewer than six, the density of the films before the clip floor: a 15 s film
+ * on Seedance was pre-flighted at 24 billed seconds (30 with the margin) for the 16 it buys, and could be refused on a
+ * balance that pays it;
  * each clip covers the average shot through the same clipSecondsFor/clipCostUsd as the order itself, and the total
  * carries PREFLIGHT_MARGIN because the voice decides the real cut times and some shots are billed a whole second
  * more (the 15 s film of 15 September: average 1.82 $, order 1.885 $). A pre-flight that passes a film the box then
@@ -167,11 +170,25 @@ export function clipCostUsd(spec: KieModel, clipSeconds: number): number {
  */
 export function plannedFilmUsd(env: Env, cfg: FootageOverride | null, seconds: number, shots: number | null, maxShots: number): { usd: number; shots: number; model: string } {
   const { name, spec } = kieModelFor(env, cfg);
-  const n = shots && shots > 0 ? shots : Math.min(maxShots, Math.max(6, Math.ceil(seconds / PREFLIGHT_SHOT_S)));
+  const n = shots && shots > 0 ? shots : Math.max(1, Math.min(maxShots, Math.ceil(seconds / Math.max(PREFLIGHT_SHOT_S, clipMinSeconds(spec)))));
   const each = clipCostUsd(spec, clipSecondsFor(spec, seconds / n));
   return { usd: Math.round(each * n * PREFLIGHT_MARGIN * 1000) / 1000, shots: n, model: name };
 }
 export const PREFLIGHT_SHOT_S = 2.5;
+
+/** The shortest clip a model films: a shot shorter than this is still bought, and billed, this long. */
+export const clipMinSeconds = (spec: Pick<KieModel, "seconds">): number => (Array.isArray(spec.seconds) ? Math.min(...spec.seconds) : spec.seconds.min);
+
+/**
+ * THE CLIP FLOOR OF A JOB (25 September 2026): the seconds every shot carries at the least, so the planner writes no
+ * shot shorter than the clip it is billed as. A film on the API road has its model's shortest clip; the animatic and
+ * the local road have none (0), and keep the seven-word rule of 22 September (src/keou-contract.ts shotBudget).
+ */
+export function clipFloorFor(env: Pick<Env, "KIE_API_KEY" | "EPHONE_API_KEY" | "KLEO_FOOTAGE_BACKEND" | "KLEO_FOOTAGE_MODEL" | "KIE_MAX_VIDEO_S">, job: { product?: string | null; duration_s: number }, cfg: FootageOverride | null = null): number {
+  if (job.product !== "film") return 0;
+  if (footageBackendFor(env, { params: JSON.stringify({ duration_s: job.duration_s }) }, cfg) !== "kie") return 0;
+  return clipMinSeconds(kieModelFor(env, cfg).spec);
+}
 export const PREFLIGHT_MARGIN = 1.25;
 
 /**

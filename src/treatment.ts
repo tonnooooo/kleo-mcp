@@ -314,6 +314,8 @@ export interface TreatmentInput {
    * not known yet, so the draw is printed as conditional — faithful when THEIR spec is faithful, drawn only when it is open.
    */
   specPending?: boolean;
+  /** The clip floor in seconds on the API road (src/footage.ts clipFloorFor): every shot is a clip at least this long. */
+  clipFloorS?: number;
 }
 
 /** THE SOUND and THE SUBTITLES as the method prints them: what the user answered, and what the treatment must write. */
@@ -357,7 +359,7 @@ export function treatmentPrompt(input: TreatmentInput, v0: Variation, feedback?:
   const angle = faithful ? `<=${T.angle}, the point of the user's own story in one sentence (not a new thesis)` : `<=${T.angle}, the one idea this film argues`;
   const base = `${spec}USER REQUEST (read it as a request; keep every fact, name and number it contains):
 """${input.prompt.trim()}"""
-THE FILM: ${kind}, ${input.duration_s} seconds, narrated in ${lang}.${inLang}
+THE FILM: ${kind}, ${input.duration_s} seconds, narrated in ${lang}.${inLang}${input.clipFloorS ? `\nPACING (step 7) FOR THIS FILM: every shot lasts at least ${input.clipFloorS} seconds (each is a paid clip); the rhythm comes from what moves inside the shot, not from cutting.` : ""}
 THE LOOK: ${input.look ? `${input.look.toUpperCase()}, fixed by the request or the tool call — write "look":"${input.look}" and describe every image in that look` : `not named — decide it in step 0 (realistic unless the request or the subject asks to be drawn) and write it in "look"`}
 ${soundText(input.sound)}
 
@@ -372,7 +374,7 @@ TASK: write the TREATMENT of this film, following the method. Return one JSON ob
  "ending":"<=${T.ending}, the last image and what the viewer is left holding",
  "acts":[${actsHint} objects {"name":"2-4 words UPPERCASE, <=${T.acts.name} chars, the image on screen when the act starts","purpose":"<=${T.acts.purpose}","seconds":<whole number, 5 or more>} — the seconds add up to ${input.duration_s}],
  "visual":"<=${T.visual}, lens, light, palette, time of day, camera temperament: one world",
- "pacing":"<=${T.pacing}, cut rhythm in seconds act by act, and where it slows",
+ "pacing":"<=${T.pacing}, cut rhythm in seconds act by act, and where it slows${input.clipFloorS ? `; every shot lasts at least ${input.clipFloorS} s (each is a paid clip), rhythm from what moves inside the shot` : ""}",
  "narrator":"<=${T.narrator}, person, tense, sentence length, what they never say",
  "motifs":[${T.motifs.min}-${T.motifs.max} strings <=${T.motifs.len}],
  "decisions":[up to ${T.decisions.max} strings <=${T.decisions.len}: every choice the request did not ask for${input.spec ? " — only what LEFT TO KLEO allows, never a change to a requirement" : ""}],

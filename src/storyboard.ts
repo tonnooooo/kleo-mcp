@@ -23,7 +23,7 @@ import {
   KINDS, BEAT_KINDS, BEAT_ICONS, BEAT_FX, CINEMA_ACCENTS, VISUALS, FORBIDDEN_FIELDS,
   KLEO_STYLES, PICTURE_STYLES, FILM_LOOKS, type FilmLook, IMAGE_PROMPT_MAX, kleoStyleOf, STORY_ACTS, STORY_CAST, STORY_PROPS, STORY_FX, STORY_ACCENTS,
   SHOTS_PER_SCENE, SHOT_CAPTION_MAX, SHOT_HL_MAX, SHOT_AT_MAX, IMAGE_PROMPT_MIN, CLOSING_BUTTON_MAX,
-  SHOT_ID_SUFFIX_RE, quotesVoice, SHOTS_MIN_CINEMA, SHOTS_WORDS_PER_SHOT, SHOTS_MIN_WORDS_FOR_TWO, shotRangeText, narrationOf, anchorShots,
+  SHOT_ID_SUFFIX_RE, quotesVoice, SHOTS_MIN_CINEMA, SHOTS_WORDS_PER_SHOT, SHOTS_MIN_WORDS_FOR_TWO, shotRangeText, narrationOf, anchorShots, shotBudget, clipWordsPerShot,
   SHOT_ACTION_MAX, SHOT_COVERS_MAX, SHOT_CAST_MAX, SHOT_TAG_MAX,
 } from "./keou-contract.ts";
 /**
@@ -358,6 +358,17 @@ Shot shape ("?" marks optional keys; WORDS = 1–4 consecutive words copied EXAC
 The FIRST shot of a scene starts with the scene and must NOT carry "at"; every other shot carries "at": the picture cuts when that word is spoken, so spread the anchors over the line in reading order. A caption is optional and rare: 2–5 strong words on the shot that carries the key idea (the first shot falls back to the scene title). The closing scene has ONE shot and may carry "button" (≤${CLOSING_BUTTON_MAX}, e.g. "Follow", default "Subscribe").
 "shot_kind" says what the shot is FOR. NEVER write a camera move, a zoom, a pan or any other direction: Kleo owns the camera and picks the move from the kind. hook = the opening jolt, first shot of the video. establish = where we are. face = one face or animal carrying the feeling. detail = one object, close. detail_orbit = one object worth circling. action = something moving through the frame. reveal = the frame opens on the answer. tension = the moment before it goes wrong. closing = the last picture of the video. static_forced = the picture must NOT move (visible hands doing something, a crowd, readable signs or writing, a mechanism with moving parts, two people interacting) — those break under any move, so pin them. Leave shot_kind out and Kleo chooses it.`;
 
+/**
+ * The picture rules for a plan. With no clip floor they are SHOT_RULES, byte for byte; on the API road (25 September
+ * 2026) the shot count follows the floor: one picture a scene, a second only for a line long enough to carry two paid
+ * clips, and every shot said to be a clip of at least that many seconds.
+ */
+function shotRules(plan: Pick<Plan, "clipFloor">): string {
+  if (!(plan.clipFloor > 0)) return SHOT_RULES;
+  const per = clipWordsPerShot(plan.clipFloor);
+  return SHOT_RULES.replace(`"shots": 2–4 pictures for a cinema scene, 1 for the closing`, `"shots": 1 picture per scene, 2 only for a line of ${2 * per}+ words (never more than one per ${per} words), 1 for the closing; every shot is a paid clip of at least ${plan.clipFloor} s`);
+}
+
 /** Every picture look: the recurring character is named by the cast name in every picture that shows them. */
 export const CAST_NAME_RULE = `In every image_prompt that shows a recurring character, call them by their cast name ("the pastry chef", "the captain"), never "she", "he" or "they": the name is what attaches their one description to the picture.`;
 const PICTURE_RULES: Record<"cartoon" | "realistic" | "animation", string> = {
@@ -531,15 +542,25 @@ export function pickKleoStyle(template: string, prompt: string): KleoStyle {
   return pickKleoStyleWhy(template, prompt).style;
 }
 
-function sceneRange(words: number, wps: [number, number]): [number, number] {
-  const lo = Math.max(4, Math.ceil(words / wps[1]));
-  const hi = Math.min(60, Math.max(lo + 1, Math.round(words / wps[0])));
-  return [lo, hi];
+function sceneRange(words: number, wps: [number, number], shotWords = 0): [number, number] {
+  // With a clip floor a scene carries at least one shot of `shotWords` words, so there are never more scenes than the
+  // words can pay a clip for (a 15 s film: 40 words, three scenes of eleven or more), and the four-scene minimum
+  // yields to that ceiling.
+  const most = shotWords > 0 ? Math.max(1, Math.floor(words / shotWords)) : Infinity;
+  const lo = Math.max(Math.min(4, most), Math.ceil(words / wps[1]));
+  const hi = Math.min(60, Math.max(lo + 1, Math.round(words / wps[0])), most);
+  return [Math.min(lo, hi), hi];
 }
 
 /* ------------------------------------------------------------------ prompt */
 
-interface Plan { style: StyleId; kleo: KleoStyle; pictures: boolean; product: Product; brief: Brief; format: Format; language: string; voice: string; duration: number; speed: number; words: ReturnType<typeof wordBudget>; scenes: [number, number]; maxDuration: number; chunk: number }
+interface Plan {
+  style: StyleId; kleo: KleoStyle; pictures: boolean; product: Product; brief: Brief; format: Format; language: string; voice: string; duration: number; speed: number; words: ReturnType<typeof wordBudget>; scenes: [number, number]; maxDuration: number; chunk: number;
+  /** The words of one voice line, [least, most]: what the scene count was computed from. */
+  lines: [number, number];
+  /** The job's clip floor in seconds (JobParams.clip_floor_s): 0 on the local road and for the animatic. */
+  clipFloor: number;
+}
 
 /**
  * `chosen` is the look the DIRECTION picked after reading the request. It only applies when the client did not name a
@@ -577,12 +598,18 @@ export function planFor(job: PlanJob, chosen?: KleoStyle | null): Plan {
   const perLine: [number, number] = p.duration_s > 120 ? [35, 50] : [10, 18];
   const shortLine = style === "cinema" || style === "picture" || style === "stickman";
   // The explainer's line length is the style's own, at both lengths: it is what the caption rhythm was calibrated on.
+  // THE CLIP FLOOR (25 September 2026): a film on the API road buys every shot as a clip of at least clip_floor_s
+  // seconds, so a line carries at least one such shot (ceil(floor × 2.7) words) and at most two (22 words). The
+  // animatic and the local road have no floor, and every number below is what it was.
+  const clipFloor = style === "picture" && productOf(p) === "film" && Number(p.clip_floor_s) > 0 ? Number(p.clip_floor_s) : 0;
   const wps: [number, number] = style === "sketch" ? EXPLAINER_WORDS[lengthOf(p.duration_s)]
+    : clipFloor > 0 && p.duration_s <= 120 ? [Math.ceil(clipFloor * 2.7), 22]
     : shortLine ? (brief.style === "cinema" && p.duration_s <= 120 ? brief.wordsPerScene : perLine)
     : (brief.style === "cinema" ? [25, 40] : brief.wordsPerScene);
   return {
     style, kleo, pictures: PICTURE_STYLES.includes(kleo), product: productOf(p), brief, format, language: p.language, voice: defaultVoice(p.language, job.template, p.voice), duration: p.duration_s, speed, words,
-    scenes: sceneRange(words.target, wps), maxDuration: Math.min(1800, Math.max(5, Math.round(p.duration_s * 1.6))),
+    scenes: sceneRange(words.target, wps, clipFloor > 0 ? clipWordsPerShot(clipFloor) : 0), maxDuration: Math.min(1800, Math.max(5, Math.round(p.duration_s * 1.6))),
+    lines: wps, clipFloor,
     chunk: style === "cinema" || style === "picture" ? 4 : style === "sketch" ? 4 : 5, // scenes per model call: keeps every call under ~2k output tokens (Workers AI times out on long generations)
   };
 }
@@ -594,7 +621,7 @@ const editorialKinds = () => KINDS.filter((k) => !["image", "story", "cinema"].i
 export function systemPrompt(plan: Plan, reasoning = false): string {
   const kinds = plan.style === "cinema" || plan.style === "picture" ? "cinema, closing" : plan.style === "stickman" ? "story, closing" : plan.style === "sketch" ? "sketch" : list(editorialKinds());
   const lang = LANG_NAMES[plan.language] ?? plan.language;
-  const rules = plan.style === "picture" ? SHOT_RULES : plan.style === "cinema" ? CINEMA_RULES : plan.style === "stickman" ? STICKMAN_RULES
+  const rules = plan.style === "picture" ? shotRules(plan) : plan.style === "cinema" ? CINEMA_RULES : plan.style === "stickman" ? STICKMAN_RULES
     : plan.style === "sketch" ? explainerRules(plan.format, plan.duration) : EDITORIAL_RULES;
   const pictures = plan.style === "picture" ? `\n${PICTURE_RULES[plan.kleo as keyof typeof PICTURE_RULES]} ${CAST_NAME_RULE}` : "";
   const enums = plan.style === "picture"
@@ -1048,8 +1075,11 @@ function chunkPrompt(job: PlanJob, plan: Plan, outline: OutlineEntry[], from: nu
   const owed = d?.must_keep.length ? [...new Set(entries.flatMap((e) => e.keeps))].filter((i) => i >= 0 && i < d.must_keep.length) : [];
   const pic = plan.style === "picture";
   const cin = plan.style === "cinema" || pic, stick = plan.style === "stickman", sk = plan.style === "sketch";
-  const lineWords = plan.duration > 120 ? "35–50" : "10–18";
-  const how = pic ? `Each voice line is ${plan.duration > 120 ? "two or three spoken sentences" : "one spoken sentence"} of ${lineWords} words; every scene has ${shotRangeText("cinema")} shots (the closing exactly one), each with its own "image_prompt" — and NEVER more than one shot per ${SHOTS_WORDS_PER_SHOT} words of voice: a shot is three seconds of film at the least, so a line of 7 to 13 words carries one shot, 14 two, 21 three, 28 four (Kleo cuts the extra ones); every shot after the first carries "at" with words copied from its own voice line. One picture for a line of ${SHOTS_MIN_WORDS_FOR_TWO} words or more is refused: a still held for a whole long line is a slideshow.`
+  const lineWords = plan.clipFloor > 0 && plan.duration <= 120 ? `${plan.lines[0]}–${plan.lines[1]}` : plan.duration > 120 ? "35–50" : "10–18";
+  const per = clipWordsPerShot(plan.clipFloor);
+  const how = pic && plan.clipFloor > 0
+    ? `Each voice line is ${plan.duration > 120 ? "two or three spoken sentences" : "one spoken sentence"} of ${lineWords} words; every scene has ONE shot (a second one only for a line of ${2 * per} words or more; the closing exactly one), each with its own "image_prompt" — and NEVER more than one shot per ${per} words of voice: every shot is a paid clip of at least ${plan.clipFloor} seconds, so a line of ${per} to ${2 * per - 1} words carries one shot, ${2 * per} two, ${3 * per} three, ${4 * per} four (Kleo cuts the extra ones); the rhythm comes from what moves inside the shot, told in its "action"; every shot after the first carries "at" with words copied from its own voice line.`
+    : pic ? `Each voice line is ${plan.duration > 120 ? "two or three spoken sentences" : "one spoken sentence"} of ${lineWords} words; every scene has ${shotRangeText("cinema")} shots (the closing exactly one), each with its own "image_prompt" — and NEVER more than one shot per ${SHOTS_WORDS_PER_SHOT} words of voice: a shot is three seconds of film at the least, so a line of 7 to 13 words carries one shot, 14 two, 21 three, 28 four (Kleo cuts the extra ones); every shot after the first carries "at" with words copied from its own voice line. One picture for a line of ${SHOTS_MIN_WORDS_FOR_TWO} words or more is refused: a still held for a whole long line is a slideshow.`
     : cin ? `Each voice line is ${plan.duration > 120 ? "two or three spoken sentences" : "one spoken sentence"} of ${lineWords} words; every scene needs 4–8 beats of different kinds, each anchored with "at" to words of its own voice line.`
     : sk ? `Each voice line is ONE spoken sentence of ${EXPLAINER_WORDS[lengthOf(plan.duration)].join("-")} words; every scene needs 2-8 drawings, each with an "at" quoting words from its OWN line, and the last of them must land in the second half of that line. One phrase, one drawing, and the drawing is literally what the words say.`
     : stick ? `Each voice line is one spoken sentence of ${lineWords} words; every scene has an act, a cast with hero, an accent and a title; add a bubble when the character says something.`
@@ -2181,7 +2211,7 @@ ${d ? `${directionBlock(d)}\n` : ""}THE PLANNED FILM (every scene, in order):
 ${JSON.stringify(compact)}
 A CHECK OF THIS PLAN AGAINST THE USER'S REQUEST FOUND:
 - ${feedback.join("\n- ")}
-TASK: correct these scenes so that the film shows and says what the user asked for: ${pick.map((i) => `scene ${i + 1} [${String(sb.scenes[i].id)}]`).join(", ")}. Return {"scenes":[…]} with exactly ${pick.length} scene objects, in that order, each one complete and keeping its id, kind, chapter and accent (and its "hud" and "cards" when it has them, changed only where the new voice changes them): the voice in ${lang}; ${shotRangeText("cinema")} shots for a cinema scene (the closing one), each with "image_prompt" (one English sentence, ≤${IMAGE_PROMPT_MAX} characters), "covers", "cast" and "action", and every shot after the first anchored with "at" to words copied from its own voice. Change only what the problems above require; keep everything else as it was.`;
+TASK: correct these scenes so that the film shows and says what the user asked for: ${pick.map((i) => `scene ${i + 1} [${String(sb.scenes[i].id)}]`).join(", ")}. Return {"scenes":[…]} with exactly ${pick.length} scene objects, in that order, each one complete and keeping its id, kind, chapter and accent (and its "hud" and "cards" when it has them, changed only where the new voice changes them): the voice in ${lang}; ${plan.clipFloor > 0 ? `one shot for a cinema scene, two only for a line of ${2 * clipWordsPerShot(plan.clipFloor)} words or more` : `${shotRangeText("cinema")} shots for a cinema scene`} (the closing one), each with "image_prompt" (one English sentence, ≤${IMAGE_PROMPT_MAX} characters), "covers", "cast" and "action", and every shot after the first anchored with "at" to words copied from its own voice. Change only what the problems above require; keep everything else as it was.`;
 }
 
 /**
@@ -2327,7 +2357,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     let feedback: string[] | undefined;
     for (let attempt = 1; attempt <= 2 && !treatment; attempt++) {
       let raw: unknown;
-      try { raw = clean(await call(treatmentPrompt({ prompt: storyRequest(job.prompt), duration_s: plan.duration, format: plan.format, language: plan.language, look: planLook, sound, spec }, v, feedback), treatmentSchema(), TREATMENT_MAX_TOKENS, { system: MASTER_PROMPT, temperature: treatmentTemperature(spec), model: env.TREATMENT_MODEL || undefined })); }
+      try { raw = clean(await call(treatmentPrompt({ prompt: storyRequest(job.prompt), duration_s: plan.duration, format: plan.format, language: plan.language, look: planLook, sound, spec, clipFloorS: plan.clipFloor }, v, feedback), treatmentSchema(), TREATMENT_MAX_TOKENS, { system: MASTER_PROMPT, temperature: treatmentTemperature(spec), model: env.TREATMENT_MODEL || undefined })); }
       catch (e) { if (e instanceof PlanBudgetError) throw e; history.push([`treatment: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) { transient = e; break; } continue; }
       // The second answer is held to the lenient rule: a short prose is asked to be fixed once, then kept.
       const t = repairTreatment(raw, plan.duration, v, plan.language, { lenient: attempt > 1, look: planLook, faithful });
@@ -2546,7 +2576,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
       const draft = normalizeStoryboard({ ...chunkHead, scenes: [...structuredClone(scenes), ...got, ...(isLast ? [] : [TEMP_CLOSING(plan)])] }, plan) as Record<string, unknown>;
       const problems: string[] = [];
       if (got.length !== to - from) problems.push(`expected exactly ${to - from} scenes, got ${got.length}`);
-      const r = validateStoryboard(draft, { format: plan.format, language: plan.language });
+      const r = validateStoryboard(draft, { format: plan.format, language: plan.language, clipFloorS: plan.clipFloor });
       const local = (m: string) => m.replace(/^scene (\d+)/, (_, n) => `scene ${Number(n) - scenes.length}`);
       const ofThisChunk = (m: string) => !/^scene (-\d+|0)\b/.test(m);
       if (!r.ok) problems.push(...r.errors.map(local).filter(ofThisChunk));
@@ -2593,8 +2623,12 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
       }
       if (plan.style === "picture") {
         // A cinema scene that ends up with one picture holds it for the whole line: ask for the missing cuts once.
-        const thin = chunkScenes.map((s, i) => (s.kind !== "closing" && (!Array.isArray(s.shots) || s.shots.length < 2) ? i + 1 : 0)).filter(Boolean);
-        if (thin.length) problems.push(`scene${thin.length > 1 ? "s" : ""} ${thin.join(", ")}: only one picture; every scene needs 2–4 "shots", each with its own "image_prompt", and every shot after the first anchored with "at" to words of that scene's voice`);
+        // With a clip floor one picture is the norm and a second one needs a line long enough for two paid clips.
+        const least = (s: { voice?: unknown }) => (plan.clipFloor > 0 ? shotBudget(String(s.voice ?? "").trim().split(/\s+/).filter(Boolean).length, plan.clipFloor).min : 2);
+        const thin = chunkScenes.map((s, i) => (s.kind !== "closing" && (!Array.isArray(s.shots) || s.shots.length < least(s)) ? i + 1 : 0)).filter(Boolean);
+        if (thin.length) problems.push(plan.clipFloor > 0
+          ? `scene${thin.length > 1 ? "s" : ""} ${thin.join(", ")}: only one picture for a line of ${2 * clipWordsPerShot(plan.clipFloor)} words or more; give that line 2 "shots", each with its own "image_prompt", the second anchored with "at" to words of that scene's voice`
+          : `scene${thin.length > 1 ? "s" : ""} ${thin.join(", ")}: only one picture; every scene needs 2–4 "shots", each with its own "image_prompt", and every shot after the first anchored with "at" to words of that scene's voice`);
         // A picture asked to draw a diagram, a screen with words or a quoted caption is sent back once: the layer
         // is where numbers and words live; the picture shows a real place, object or person (measured 14 September).
         // Except the words the USER asked to be read on screen: a shot that covers a "text" requirement may draw them.
@@ -2672,7 +2706,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
 
   // 3. Assemble and validate the whole project once more (ids are re-deduplicated across chunks).
   const sb = normalizeStoryboard({ ...head, scenes }, plan);
-  const r = validateStoryboard(sb, { format: plan.format, language: plan.language });
+  const r = validateStoryboard(sb, { format: plan.format, language: plan.language, clipFloorS: plan.clipFloor });
   if (!r.ok) fail(r.errors, sb);
   if (r.warnings.length) history.push(r.warnings.map((w) => `warning: ${w}`));
   let ok = r as { ok: true; storyboard: Storyboard };
@@ -2741,7 +2775,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
             // The plan's own top level (the layer, the direction, whatever the validator settled) is the one the scenes
             // are merged back into, not a fresh header: the repair rewrites scenes, nothing else.
             const { scenes: _scenes, ...top } = now as unknown as Record<string, unknown>;
-            const r2 = validateStoryboard(normalizeStoryboard({ ...head, ...top, scenes: merged }, plan), { format: plan.format, language: plan.language });
+            const r2 = validateStoryboard(normalizeStoryboard({ ...head, ...top, scenes: merged }, plan), { format: plan.format, language: plan.language, clipFloorS: plan.clipFloor });
             const talkIn = (x: Storyboard) => guardTalk ? x.scenes.filter((sc) => !!formatTalk(String(sc.voice ?? ""))).length : 0;
             const unsaid = (x: Storyboard) => direction ? missingFacts(spokenFacts(direction.must_keep, direction.cast), narrationOf(x)).length : 0;
             if (!r2.ok) history.push([`fidelity repair: discarded, the corrected plan does not validate (${r2.errors.slice(0, 3).join("; ")})`]);
@@ -2790,7 +2824,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   // Shots over a line's budget go — but never the only shot that shows a must requirement (trimShots under the spec).
   // The verdict above named the shots by their place before the trim; it is renamed to where they are after it.
   const shotsBefore = shotIdsOf(finished);
-  if (trimShots(finished, spec) > 0 && fidelity) fidelity = renumberShots(fidelity, shotsBefore, shotIdsOf(finished));
+  if (trimShots(finished, spec, plan.clipFloor) > 0 && fidelity) fidelity = renumberShots(fidelity, shotsBefore, shotIdsOf(finished));
   finished.speed = speedFor(countWords(finished), plan.duration);
   denyInPictures(finished, treatment);
   // The spec travels with the stored storyboard, like the treatment and the direction, so the stills engine and a
@@ -2827,7 +2861,7 @@ export interface TreatmentResult {
  * decides the draw; a random one is right when no job exists yet, because the treatment then travels with the job
  * and the planner never draws again. Never throws on a model problem: the tool has to answer either way.
  */
-export async function writeTreatment(env: Env, input: { prompt: string; duration_s: number; format: Format; language: string; look?: FilmLook | null; sound?: SoundOptions; spec?: RequestSpec | null }, opts: { seed?: string; model?: string } = {}): Promise<TreatmentResult> {
+export async function writeTreatment(env: Env, input: { prompt: string; duration_s: number; format: Format; language: string; look?: FilmLook | null; sound?: SoundOptions; spec?: RequestSpec | null; clipFloorS?: number }, opts: { seed?: string; model?: string } = {}): Promise<TreatmentResult> {
   const t0 = Date.now();
   const model = opts.model || env.TREATMENT_MODEL || planModel(env) || env.AI_MODEL || DEFAULT_MODEL;
   const usage: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
