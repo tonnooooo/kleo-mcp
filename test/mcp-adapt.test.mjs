@@ -42,7 +42,7 @@ class FakeKV {
 let m;
 before(async () => {
   const r = await esbuild.build({
-    stdin: { contents: `export { buildServer, summarizeFidelity } from "./src/mcp.ts"; export { handleAdmin } from "./src/internal.ts"; export * from "./src/db.ts";`, resolveDir: ROOT, loader: "ts" },
+    stdin: { contents: `export { buildServer, summarizeFidelity } from "./src/mcp.ts"; export { makeHandle } from "./src/accounts.ts"; export { handleAdmin } from "./src/internal.ts"; export * from "./src/db.ts";`, resolveDir: ROOT, loader: "ts" },
     bundle: true, write: false, format: "esm", platform: "node", target: "es2022", logLevel: "silent", external: ["@anthropic-ai/sdk"],
   });
   m = await import("data:text/javascript;base64," + Buffer.from(r.outputFiles[0].text).toString("base64"));
@@ -811,4 +811,25 @@ test("upload links are counted per day too", async () => {
   const second = await s.call("kleo_upload_link", {});
   assert.ok(second.isError);
   assert.match(second.text, /asked for 1 upload link today, and the limit is 1 a day[\s\S]*Nothing was charged/);
+});
+
+
+test("plugin tools declare their side effects and account replies contain no reusable account credential", async () => {
+  const s = await studio(fakeAi(() => TREATMENT_FIXTURE(60)));
+  const tools = (await s.client.listTools()).tools;
+  for (const tool of tools) {
+    for (const key of ["readOnlyHint", "destructiveHint", "openWorldHint"])
+      assert.equal(typeof tool.annotations?.[key], "boolean", `${tool.name} needs ${key}`);
+  }
+  for (const name of ["kleo_adapt_prompt", "kleo_upload_link"])
+    assert.equal(tools.find(t => t.name === name).annotations.readOnlyHint, false, `${name} writes records`);
+  const reply = await s.call("kleo_account", {});
+  assert.equal(reply.structuredContent.account_key, undefined);
+  assert.ok(reply.structuredContent.account_url, "balance page remains available");
+  // The exact private handle must be absent from every model-visible output, not only one field.
+  const privateKey = await m.makeHandle(s.env, s.user.id);
+  assert.equal(JSON.stringify(reply).includes(privateKey), false);
+  assert.doesNotMatch(JSON.stringify(reply), /"account_key"\s*:/);
+  assert.doesNotMatch(tools.find(t => t.name === "kleo_account").description, /Show account_key/);
+  await s.client.close();
 });

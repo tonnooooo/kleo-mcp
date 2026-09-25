@@ -45,7 +45,7 @@ function page(user: User | null, handle: string, env: Env, open_: boolean, paid:
 <code class="key">${escapeHtml(handle)}</code>
 <div class="foot">Kleo remembers this account in this browser. Clearing your cookies loses it unless you saved the key above.</div>`
     : `<h2>Using Kleo somewhere else</h2>
-<p>This page is read-only, so it does not show the key that carries the account to another browser: ask your assistant for kleo_account and it will show it to you there.</p>`;
+<p>This page is read-only, so it does not show the key that carries the account to another browser: open this page in the browser you originally used to connect Kleo. Only that signed-in browser can show your private key. Never paste the key into a conversation.</p>`;
   const body = user
     ? `<h1>${escapeHtml(plural(user.credits, "credit"))} left</h1>
 <p>${tariffSentence()}. A film (every shot a generated clip) is made for accounts that have bought a pack; the animatic is open to every account. ${paid ? "This account has bought a pack: it can order films and animatics." : `This account has not bought a pack yet: it can order animatics (${ANIMATIC_CREDITS} credits, up to ${ANIMATIC_MAX_S} s); the film opens with any pack.`} The credits come back in full if a render fails, or if you cancel it before it starts; cancelling part-way through gives back the part that was not rendered.</p>
@@ -56,7 +56,7 @@ ${open_ ? `<p>One payment, no subscription, nothing renews. Credits do not expir
 <div class="foot">Out of credits, or something went wrong? Write to <a href="mailto:${CONTACT}">${CONTACT}</a>.</div>
 ${key}`
     : `<h1>This account link is not valid</h1>
-<p>The link may have been cut short when it was copied. Ask your assistant for kleo_account: it gives you the full link and your Kleo key.</p>
+<p>The link may have been cut short when it was copied. Ask your assistant for kleo_account: it gives you the full read-only account link. Your private key is shown only in the browser you used to connect Kleo.</p>
 <div class="foot">Still stuck? Write to <a href="mailto:${CONTACT}">${CONTACT}</a>.</div>`;
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Your Kleo account</title>
