@@ -783,6 +783,11 @@ class Card:
             p.wait(timeout=10)                    # a process stuck in the driver may never go; it is abandoned
         except Exception:
             pass
+        for f in (p.stdin, p.stdout):
+            try:
+                f.close()
+            except Exception:
+                pass
 
     def close(self):
         """Hand the card back: ask the child to quit, kill it if it does not."""
@@ -793,9 +798,9 @@ class Card:
             p.stdin.write(json.dumps({"op": "quit"}) + "\n")
             p.stdin.flush()
             p.wait(timeout=20)
-            self.proc = None
         except Exception:
-            self.kill()
+            pass
+        self.kill()                               # gone already, or made to go; its pipes are closed either way
 
 
 def serve():
