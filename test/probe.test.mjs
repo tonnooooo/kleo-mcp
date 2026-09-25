@@ -5,7 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { handleProbe, probeUploadSig, isProbeFile, PROBE_NAME_RE, PROBE_TOKEN_MAX_S } from "../src/probe.ts";
+import { handleProbe, probeUploadSig, isProbeFile, PROBE_NAME_RE, PROBE_TOKEN_MAX_S, PROBE_REQUEST_MAX_BYTES, PROBE_PARTS_MAX, PROBE_JOB_BYTES_MAX, PROBE_JOB_WRITES_MAX } from "../src/probe.ts";
 import { handleDownload } from "../src/dl.ts";
 import { hmacHex } from "../src/util.ts";
 
@@ -17,11 +17,17 @@ function fakeEnv({ r2 = false } = {}) {
         args: [], bind(...a) { this.args = a; return this; },
         async run() {
           if (sql.startsWith("INSERT OR REPLACE INTO job_files")) files.set(this.args[1], { job_id: this.args[0], name: this.args[1], key: this.args[2], size: this.args[3], content_type: this.args[4] });
-          else if (sql.startsWith("INSERT INTO audit")) auditRows.push({ job_id: this.args[1], event: this.args[2] });
+          else if (sql.startsWith("INSERT INTO audit")) auditRows.push({ job_id: this.args[1], event: this.args[2], detail: this.args[3] });
           return { meta: { changes: 1 } };
         },
         async all() { return { results: sql.startsWith("SELECT * FROM job_files") ? [...files.values()].filter((f) => f.job_id === this.args[0]) : [] }; },
-        async first() { return (sql.startsWith("SELECT * FROM jobs") ? jobs.get(this.args[0]) : null) ?? null; },
+        async first() {
+          if (sql.includes("'admin.probe.write'")) {
+            const rows = auditRows.filter((a) => a.job_id === this.args[0] && a.event === "admin.probe.write");
+            return { n: rows.length, bytes: rows.reduce((s, a) => s + (JSON.parse(a.detail ?? "{}").bytes ?? 0), 0) };
+          }
+          return (sql.startsWith("SELECT * FROM jobs") ? jobs.get(this.args[0]) : null) ?? null;
+        },
       };
     },
   };
@@ -41,7 +47,9 @@ function fakeEnv({ r2 = false } = {}) {
   return { env, files, jobs, objects, auditRows };
 }
 
-const put = (env, path, body, headers = {}) => handleProbe(new Request(`http://kleo.test/internal/admin/probe/${path}`, { method: "PUT", body, headers }), env);
+// A real client (urllib, curl) declares the length of what it sends; node's Request does not add the header itself.
+const len = (body) => String(typeof body === "string" ? new TextEncoder().encode(body).byteLength : body.byteLength);
+const put = (env, path, body, headers = {}) => handleProbe(new Request(`http://kleo.test/internal/admin/probe/${path}`, { method: "PUT", body, headers: { "content-length": len(body), ...headers } }), env);
 const bearer = { authorization: "Bearer s3cret" };
 
 test("the operator's secret stores a file under probe/ of a finished job, recorded for /dl and never for the user", async () => {
@@ -98,7 +106,7 @@ test("a big clip goes up in parts on R2, and the finished file is recorded once"
   const { uploadId } = await start.json();
   const parts = [];
   for (const [n, size] of [[1, 7], [2, 3]]) {
-    const r = await handleProbe(new Request(`http://kleo.test/internal/admin/probe/gt_ujavdzva/film-B-4k60.mp4/uploads/${uploadId}/parts/${n}`, { method: "PUT", body: new Uint8Array(size), headers: bearer }), env);
+    const r = await handleProbe(new Request(`http://kleo.test/internal/admin/probe/gt_ujavdzva/film-B-4k60.mp4/uploads/${uploadId}/parts/${n}`, { method: "PUT", body: new Uint8Array(size), headers: { ...bearer, "content-length": String(size) } }), env);
     assert.equal(r.status, 200);
     parts.push(await r.json());
   }
@@ -125,4 +133,55 @@ test("/dl serves a probe file with a signed link, and refuses it unsigned", asyn
   assert.equal(res.headers.get("content-type"), "image/jpeg");
   assert.equal(await res.text(), "JPEGDATA");
   assert.equal((await handleDownload(new Request(`http://kleo.test/dl/gt_ujavdzva/probe%2Fcontact.jpg?exp=${exp}&sig=${"0".repeat(64)}`), env)).status, 403);
+});
+
+const part = (env, uploadId, n, body, headers = {}) => handleProbe(new Request(`http://kleo.test/internal/admin/probe/gt_ujavdzva/film-B-4k60.mp4/uploads/${uploadId}/parts/${n}`, { method: "PUT", body, headers: { ...bearer, ...headers } }), env);
+const writes = (auditRows, job = "gt_ujavdzva") => auditRows.filter((a) => a.job_id === job && a.event === "admin.probe.write");
+
+test("every request declares its length, and none carries more than the cap", async () => {
+  const { env, files } = fakeEnv({ r2: true });
+  const noLen = await handleProbe(new Request("http://kleo.test/internal/admin/probe/gt_ujavdzva/a.json", { method: "PUT", body: "{}", headers: bearer }), env);
+  assert.equal(noLen.status, 411);
+  const big = await handleProbe(new Request("http://kleo.test/internal/admin/probe/gt_ujavdzva/a.json", { method: "PUT", body: "{}", headers: { ...bearer, "content-length": String(PROBE_REQUEST_MAX_BYTES + 1) } }), env);
+  assert.equal(big.status, 413);
+  assert.equal(files.size, 0, "nothing stored");
+  const start = await handleProbe(new Request("http://kleo.test/internal/admin/probe/gt_ujavdzva/film-B-4k60.mp4/uploads", { method: "POST", headers: bearer }), env);
+  const { uploadId } = await start.json();
+  assert.equal((await part(env, uploadId, 1, new Uint8Array(4))).status, 411, "a part without a length");
+  assert.equal((await part(env, uploadId, 1, new Uint8Array(4), { "content-length": String(PROBE_REQUEST_MAX_BYTES + 1) })).status, 413);
+});
+
+test("a multipart upload has at most PROBE_PARTS_MAX parts", async () => {
+  const { env } = fakeEnv({ r2: true });
+  const start = await handleProbe(new Request("http://kleo.test/internal/admin/probe/gt_ujavdzva/film-B-4k60.mp4/uploads", { method: "POST", headers: bearer }), env);
+  const { uploadId } = await start.json();
+  for (const n of [0, PROBE_PARTS_MAX + 1, 10000]) {
+    assert.equal((await part(env, uploadId, n, new Uint8Array(4), { "content-length": "4" })).status, 400, `part ${n}`);
+  }
+  assert.equal((await part(env, uploadId, PROBE_PARTS_MAX, new Uint8Array(4), { "content-length": "4" })).status, 200);
+  const tooMany = Array.from({ length: PROBE_PARTS_MAX + 1 }, (_, k) => ({ partNumber: k + 1, etag: "e" }));
+  const done = await handleProbe(new Request(`http://kleo.test/internal/admin/probe/gt_ujavdzva/film-B-4k60.mp4/uploads/${uploadId}/complete`, { method: "POST", body: JSON.stringify({ parts: tooMany }), headers: bearer }), env);
+  assert.equal(done.status, 400);
+});
+
+test("every write is entered in the job's ledger before it is made, and the job's bytes are capped", async () => {
+  const { env, files, auditRows } = fakeEnv();
+  assert.equal((await put(env, "gt_ujavdzva/a.json", "0123456789", bearer)).status, 200);
+  assert.deepEqual(writes(auditRows).map((a) => JSON.parse(a.detail)), [{ name: "probe/a.json", bytes: 10 }]);
+  auditRows.push({ job_id: "gt_ujavdzva", event: "admin.probe.write", detail: JSON.stringify({ bytes: PROBE_JOB_BYTES_MAX - 20 }) });
+  auditRows.push({ job_id: "gt_other", event: "admin.probe.write", detail: JSON.stringify({ bytes: PROBE_JOB_BYTES_MAX }) });
+  assert.equal((await put(env, "gt_ujavdzva/b.json", "0123456789", bearer)).status, 200, "exactly at the cap");
+  const over = await put(env, "gt_ujavdzva/c.json", "x", bearer);
+  assert.equal(over.status, 413, await over.clone().text());
+  assert.ok(!files.has("probe/c.json"));
+});
+
+test("a job takes at most PROBE_JOB_WRITES_MAX writes, multipart starts included", async () => {
+  const { env, auditRows } = fakeEnv({ r2: true });
+  for (let k = 0; k < PROBE_JOB_WRITES_MAX - 1; k++) auditRows.push({ job_id: "gt_ujavdzva", event: "admin.probe.write", detail: JSON.stringify({ bytes: 0 }) });
+  const start = await handleProbe(new Request("http://kleo.test/internal/admin/probe/gt_ujavdzva/film-B-4k60.mp4/uploads", { method: "POST", headers: bearer }), env);
+  assert.equal(start.status, 200, "the last write the job may make");
+  assert.equal((await put(env, "gt_ujavdzva/a.json", "{}", bearer)).status, 409);
+  const again = await handleProbe(new Request("http://kleo.test/internal/admin/probe/gt_ujavdzva/film-A-4k60.mp4/uploads", { method: "POST", headers: bearer }), env);
+  assert.equal(again.status, 409);
 });

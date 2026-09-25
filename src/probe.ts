@@ -24,9 +24,22 @@ import { putFile } from "./storage.ts";
  * Narrow on purpose: names are flat and land under probe/ only (renders/<job>/probe/<name>, job_files "probe/<name>"),
  * so a probe can never overwrite a delivered file; /dl serves them with a signed link; resultLinks never lists them to
  * the user; and the purge removes them with the job's other files, on the job's own TTL.
+ *
+ * Bounded, because the capability sits in a third-party host's command line for hours: every request must declare
+ * its length (411 without one) and carry at most PROBE_REQUEST_MAX_BYTES (413); a multipart upload has at most
+ * PROBE_PARTS_MAX parts; and every write under a job's probe/ prefix — a PUT, a part, the start of a multipart
+ * upload — is entered in the audit table BEFORE it is made (event "admin.probe.write", its bytes), so a job takes at
+ * most PROBE_JOB_WRITES_MAX writes and PROBE_JOB_BYTES_MAX bytes in all, retries included (409 / 413 past either).
  */
 export const PROBE_NAME_RE = /^probe\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
 export const PROBE_TOKEN_MAX_S = 24 * 3600;
+/** One PUT or one part (sr-ab.py sends ≤ 90 MiB whole files and 50 MiB parts). */
+export const PROBE_REQUEST_MAX_BYTES = 100 * 1024 * 1024;
+/** Parts of one multipart upload: 40 x 50 MiB = 2 GiB, far above a 4K60 film of a few minutes. */
+export const PROBE_PARTS_MAX = 40;
+/** Everything one job's probe/ prefix may take, retries included: two 4K60 films, the wipe, frames, results. */
+export const PROBE_JOB_BYTES_MAX = 3 * 1024 * 1024 * 1024;
+export const PROBE_JOB_WRITES_MAX = 400;
 /** A probe's evidence among a job's files: the operator's, never one of the user's result links (jobs.ts resultLinks). */
 export const isProbeFile = (name: string): boolean => name.startsWith("probe/");
 const TYPES: Record<string, string> = { mp4: "video/mp4", jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", json: "application/json", txt: "text/plain", log: "text/plain" };
@@ -57,30 +70,62 @@ export async function handleProbe(request: Request, env: Env): Promise<Response>
   const name = `probe/${base}`;
   const key = `renders/${jobId}/${name}`;
   const ctype = TYPES[base.split(".").pop()?.toLowerCase() ?? ""] ?? "application/octet-stream";
+  // Every write is entered in the ledger before it is made, and refused past the job's caps.
+  const reserve = async (bytes: number): Promise<Response | null> => {
+    const used = await env.DB.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(json_extract(detail, '$.bytes')), 0) AS bytes FROM audit WHERE job_id = ? AND event = 'admin.probe.write'")
+      .bind(jobId).first<{ n: number; bytes: number }>();
+    const n = Number(used?.n ?? 0), total = Number(used?.bytes ?? 0);
+    if (n >= PROBE_JOB_WRITES_MAX) return json({ error: `this job's probe/ prefix has taken its ${PROBE_JOB_WRITES_MAX} writes` }, 409);
+    if (total + bytes > PROBE_JOB_BYTES_MAX) return json({ error: `this job's probe/ prefix would pass ${PROBE_JOB_BYTES_MAX} bytes (${total} used)` }, 413);
+    await audit(env, null, jobId, "admin.probe.write", { name, bytes });
+    return null;
+  };
+  // The declared length of a request that carries data: required, and at most PROBE_REQUEST_MAX_BYTES.
+  const declared = (): number | Response => {
+    const raw = request.headers.get("content-length");
+    const len = raw === null ? NaN : Number(raw);
+    if (!Number.isInteger(len) || len < 0) return json({ error: "Content-Length is required" }, 411);
+    if (len > PROBE_REQUEST_MAX_BYTES) return json({ error: `at most ${PROBE_REQUEST_MAX_BYTES} bytes per request` }, 413);
+    return len;
+  };
   const record = async (size: number) => {
     await setFile(env, { job_id: jobId, name, key, size, content_type: ctype });
     await audit(env, null, jobId, "admin.probe.file", { name, size });
   };
 
   if (!uploads && request.method === "PUT") {
+    const len = declared();
+    if (len instanceof Response) return len;
+    const refused = await reserve(len);
+    if (refused) return refused;
     const size = await putFile(env, key, request.body ?? new ArrayBuffer(0), ctype);
     await record(size);
     return json({ ok: true, name, size });
   }
   if (uploads && !uploadId && request.method === "POST") {
     if (!env.RENDERS) return json({ error: "multipart uploads need an R2 bucket; use a single PUT on this deployment" }, 501);
+    const refused = await reserve(0);
+    if (refused) return refused;
     const mpu = await env.RENDERS.createMultipartUpload(key, { httpMetadata: { contentType: ctype } });
     return json({ uploadId: mpu.uploadId, key });
   }
   if (uploadId && step?.startsWith("parts/") && request.method === "PUT") {
     if (!env.RENDERS) return json({ error: "no R2 bucket" }, 501);
-    const part = await env.RENDERS.resumeMultipartUpload(key, uploadId).uploadPart(parseInt(partNo!, 10), await request.arrayBuffer());
+    const n = parseInt(partNo!, 10);
+    if (!(n >= 1 && n <= PROBE_PARTS_MAX)) return json({ error: `partNumber must be 1..${PROBE_PARTS_MAX}` }, 400);
+    const len = declared();
+    if (len instanceof Response) return len;
+    const refused = await reserve(len);
+    if (refused) return refused;
+    const body = await request.arrayBuffer();
+    if (body.byteLength > PROBE_REQUEST_MAX_BYTES) return json({ error: `at most ${PROBE_REQUEST_MAX_BYTES} bytes per request` }, 413);
+    const part = await env.RENDERS.resumeMultipartUpload(key, uploadId).uploadPart(n, body);
     return json({ partNumber: part.partNumber, etag: part.etag });
   }
   if (uploadId && step === "complete" && request.method === "POST") {
     if (!env.RENDERS) return json({ error: "no R2 bucket" }, 501);
     const b = (await request.json().catch(() => ({}))) as { parts?: { partNumber: number; etag: string }[] };
-    if (!Array.isArray(b.parts) || !b.parts.length) return json({ error: "parts: the list of {partNumber, etag}" }, 400);
+    if (!Array.isArray(b.parts) || !b.parts.length || b.parts.length > PROBE_PARTS_MAX) return json({ error: `parts: the list of 1..${PROBE_PARTS_MAX} {partNumber, etag}` }, 400);
     const obj = await env.RENDERS.resumeMultipartUpload(key, uploadId).complete(b.parts);
     await record(obj.size);
     return json({ ok: true, name, size: obj.size });
