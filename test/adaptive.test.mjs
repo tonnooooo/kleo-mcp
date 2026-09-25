@@ -66,7 +66,7 @@ test("music and subtitles are asked every time, and 'no' is an answer that is ho
   assert.equal(open.music, null); assert.equal(open.subtitles, null);
   assert.match(open.questions[0], /^Do you want music under the narration\?/); assert.match(open.questions[1], /^Do you want subtitles burned into the video/);
   assert.match(adaptivePromptText(open), /- Music: MISSING — ask/); assert.match(adaptivePromptText(open), /- Subtitles: MISSING — ask/);
-  assert.match(adaptivePromptText(open), /their answers \(duration_s, format, style, music, subtitles, language, audience, tone, must_keep; if the user says the narration's language does not matter, pass language "en"\)/);
+  assert.match(adaptivePromptText(open), /their answers \(duration_s, format, style, product, ai_upscale, music, subtitles, language, audience, tone, must_keep; if the user says the narration's language does not matter, pass language "en"; if they leave the AI upscale question unanswered, pass ai_upscale "no"\)/);
   const no = adaptPrompt("A realistic film about a night race, 2 minutes, YouTube", { music: "No.", subtitles: "no", language: "en" });
   assert.deepEqual(no.music, { wanted: false, brief: null }); assert.equal(no.subtitles, false); assert.deepEqual(no.questions, []);
   assert.match(adaptivePromptText(no), /- Music: none — narration only/); assert.match(adaptivePromptText(no), /- Subtitles: none burned in/);
