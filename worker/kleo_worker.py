@@ -1250,8 +1250,12 @@ VOICE_CHAIN = ("aresample=48000,highpass=f=75,lowpass=f=12000,acompressor=thresh
                "volume=1.6,loudnorm=I=-16:TP=-1.5:LRA=7,aresample=48000,aformat=channel_layouts=stereo")
 # The narration WITH the user's track: run.py's own mix (the voice cleaned, the music ducked under every spoken word by
 # the sidechain, the two summed and normalised to -16 LUFS). Inputs: [1:a] the voice, [2:a] the shaped track.
+# Both inputs of the sidechain are forced to one format (25 September 2026, job gt_ujavdzva): the narration is mono and
+# the shaped track stereo, and ffmpeg refused the graph ("The following filters could not choose their formats:
+# Parsed_sidechaincompress_7"), so the first film with a music track failed at its last step.
+MIX_FMT = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
 MIX_CHAIN = ("[1:a]aresample=48000,highpass=f=75,lowpass=f=12000,acompressor=threshold=0.15:ratio=2:attack=15:release=180,"
-             "volume=1.6,asplit=2[v][s];[2:a]aresample=48000[m];[m][s]sidechaincompress=threshold=0.025:ratio=5:attack=15:release=320[bed];"
+             "volume=1.6," + MIX_FMT + ",asplit=2[v][s];[2:a]aresample=48000," + MIX_FMT + "[m];[m][s]sidechaincompress=threshold=0.025:ratio=5:attack=15:release=320[bed];"
              "[v][bed]amix=inputs=2:duration=first:normalize=0,loudnorm=I=-16:TP=-1.5:LRA=7,aresample=48000,aformat=channel_layouts=stereo[a]")
 
 
