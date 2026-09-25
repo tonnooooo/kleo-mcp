@@ -108,14 +108,21 @@ def upload_one(path, name):
 def upload(out):
     """Every file of the evidence, flat, as probe/<name> of the job. Writes out/uploaded.txt (the names)."""
     files = sorted(glob.glob(os.path.join(out, "*.*")) + glob.glob(os.path.join(out, "frames", "*.jpg")))
-    files = [p for p in files if not p.endswith("uploaded.txt")]
-    done = []
+    files = [p for p in files if not p.endswith(("uploaded.txt", ".part"))]
+    done, failed = [], []
     for p in files:
         name = os.path.basename(p)
-        upload_one(p, name)
+        try:
+            upload_one(p, name)
+        except Exception as e:                   # one file refused is no reason to lose the others
+            failed.append(name)
+            say(f"  could not upload probe/{name}: {str(e)[:160]}")
+            continue
         done.append(f"probe/{name}")
         say(f"  uploaded probe/{name} ({os.path.getsize(p) / 1e6:.1f} MB)")
-    open(os.path.join(out, "uploaded.txt"), "w").write(" ".join(done) + "\n")
+        open(os.path.join(out, "uploaded.txt"), "w").write(" ".join(done) + "\n")
+    if failed:
+        raise RuntimeError(f"{len(failed)} file(s) not uploaded: {', '.join(failed)[:200]}")
     return done
 
 
@@ -202,6 +209,7 @@ class GpuSampler:
 def run_variant(tag, kv, srm, shots_json, clips, width, height, fps, root, sharpen=None, force_factor=None, sr=True):
     os.environ["KLEO_SR"] = "auto" if sr else "off"
     kv.SR_BUDGET_MIN = 1e9                        # the probe measures; the estimate is kept from the log line
+    kv.SR_DEADLINE_MIN = float(os.environ.get("SR_AB_VARIANT_MIN", "30"))   # a hung card still ends the variant
     kv.SHARPEN_SR = 0.2 if sharpen is None else sharpen
     orig_plan = srm.plan
     if force_factor:
@@ -211,9 +219,12 @@ def run_variant(tag, kv, srm, shots_json, clips, width, height, fps, root, sharp
     os.makedirs(os.path.dirname(out), exist_ok=True)
     gpu = GpuSampler(os.path.join(root, tag, "gpu.csv"))
     t0 = time.time()
+    error = None
     try:
         track = kv.build_footage(shots_json, clips, out, width, height, fps=fps,
                                  log_fn=lambda *a: (lines.append(" ".join(str(x) for x in a)), say(f"  [{tag}]", *a)))
+    except Exception as e:                       # one variant failing is a result; the others still run
+        track, error = None, f"{type(e).__name__}: {str(e)[:300]}"
     finally:
         wall = time.time() - t0
         srm.plan = orig_plan
@@ -222,7 +233,7 @@ def run_variant(tag, kv, srm, shots_json, clips, width, height, fps, root, sharp
     info["sr"] = next((l for l in lines if l.startswith("SR on") or l.startswith("SR off")), None)
     info["fallbacks"] = [l for l in lines if "Lanczos path" in l]
     if not track:
-        info["error"] = "build_footage returned nothing"
+        info["error"] = error or "build_footage returned nothing"
         return None, info
     info["track"] = probe(track)
     info["frozen_max_s"] = max((s for _, s in kv.frozen_runs(track)), default=0.0)
@@ -260,13 +271,41 @@ def variant_d(kv, srm, src, usable, stretch, want, fps, factor, look, width, hei
     return {"gpu_seconds": round(gpu_s, 1), "frames_sr": len(srm.timeline(sfps, fps, stretch, min(want, usable * stretch)))}
 
 
+def dump(results, out):
+    """results.json as it stands: written after every variant and on the way out, so a late failure still leaves the
+    evidence of everything measured before it (and the error) for upload()."""
+    try:
+        os.makedirs(out, exist_ok=True)
+        tmp = os.path.join(out, "results.json.part")
+        with open(tmp, "w") as f:
+            json.dump(results, f, indent=1, default=str)
+        os.replace(tmp, os.path.join(out, "results.json"))
+    except Exception as e:
+        say(f"  results.json could not be written ({e})")
+
+
 def run(ab, out):
+    """Every variant and every measure; results.json whatever happens (a partial one carries "error"). Raises on failure."""
+    os.makedirs(os.path.join(out, "frames"), exist_ok=True)
+    results = {"job": os.environ.get("KLEO_PROBE_JOB"), "variants": {}, "shots": {}}
+    try:
+        _measure(ab, out, results)
+    except BaseException as e:
+        results["error"] = f"{type(e).__name__}: {str(e)[:300]}"
+        raise
+    finally:
+        dump(results, out)
+    for k, v in (results.get("summary") or {}).items():
+        say(f"SUMMARY {k}: {json.dumps(v)}"[:158])
+    return results
+
+
+def _measure(ab, out, results):
     sys.path.insert(0, os.path.join(REPO, "worker"))
     import kleo_video as kv
     import kleo_sr as srm
     import numpy as np
     from PIL import Image, ImageDraw, ImageFont
-    os.makedirs(os.path.join(out, "frames"), exist_ok=True)
     root = os.path.join(ab, "var")
     shots_json = os.path.join(ab, "build", "shots.json")
     plan = json.load(open(shots_json))
@@ -287,8 +326,7 @@ def run(ab, out):
     say(f"job {os.environ.get('KLEO_PROBE_JOB')}: {len(clips)} clips, {width}x{height} {fps} fps, look {look}, GPU {srm.gpu_name()}")
     ok, why = srm.available()
     say(f"kleo_sr.available(): {ok} ({why})")
-    results = {"job": os.environ.get("KLEO_PROBE_JOB"), "gpu": srm.gpu_name(), "look": look, "size": f"{width}x{height}", "fps": fps,
-               "available": [ok, why], "variants": {}, "shots": {}}
+    results.update({"gpu": srm.gpu_name(), "look": look, "size": f"{width}x{height}", "fps": fps, "available": [ok, why]})
     try:
         results["weights"] = open(os.path.join(srm.SR_DIR, srm.MANIFEST)).read().splitlines()   # the sha256 of every weight used
     except OSError:
@@ -304,6 +342,7 @@ def run(ab, out):
         v = results["variants"][tag]
         say(f"  {tag}: {v.get('minutes')} min, {v.get('sr')}, track {v.get('track')}, frozen max {v.get('frozen_max_s')}")
         srm.release()
+        dump(results, out)
 
     # Per shot, at the same instant in every track: sharpness, shimmer, luma, and the pictures to look at.
     font = ImageFont.truetype(FONT, 48) if os.path.isfile(FONT) else ImageFont.load_default()
@@ -396,11 +435,12 @@ def run(ab, out):
         vals = [r[metric][b] / r[metric][a] for r in results["shots"].values() if r[metric].get(a) and r[metric].get(b)]
         return round(st.median(vals), 2) if vals else None
     va, vb = results["variants"].get("A", {}), results["variants"].get("B2", {})
+    shifts = [r["luma"]["B2"] - r["luma"]["A"] for r in results["shots"].values() if "B2" in r["luma"] and "A" in r["luma"]]
     results["summary"] = {
         "minutes": {k: v.get("minutes") for k, v in results["variants"].items() if isinstance(v, dict) and "minutes" in v},
         "sharpness_x_B2_over_A": ratio("lap", "A", "B2"), "sharpness_x_B0_over_A": ratio("lap", "A", "B0"), "sharpness_x_C_over_A": ratio("lap", "A", "C"),
         "flicker_x_B2_over_A": ratio("flicker", "A", "B2"), "flicker_x_B0_over_A": ratio("flicker", "A", "B0"), "flicker_x_C_over_A": ratio("flicker", "A", "C"),
-        "luma_shift_B2_minus_A": round(st.mean(r["luma"]["B2"] - r["luma"]["A"] for r in results["shots"].values() if "B2" in r["luma"] and "A" in r["luma"]), 2) if results["shots"] else None,
+        "luma_shift_B2_minus_A": round(st.mean(shifts), 2) if shifts else None,
         "same_length": (va.get("track") or {}).get("duration") == (vb.get("track") or {}).get("duration"),
         "frozen_max_s": {k: v.get("frozen_max_s") for k, v in results["variants"].items() if isinstance(v, dict) and "frozen_max_s" in v},
         "sr_line_B2": vb.get("sr"), "fallbacks_B2": len(vb.get("fallbacks") or []),
@@ -408,9 +448,6 @@ def run(ab, out):
     s = results["summary"]
     s["gate"] = {"sharpness_1_5x": (s["sharpness_x_B2_over_A"] or 0) >= 1.5, "flicker_le_1_15x": (s["flicker_x_B2_over_A"] or 99) <= 1.15,
                  "no_new_frozen": (s["frozen_max_s"].get("B2") or 0) <= (s["frozen_max_s"].get("A") or 0) + 1e-6, "same_length": s["same_length"]}
-    json.dump(results, open(os.path.join(out, "results.json"), "w"), indent=1)
-    for k, v in s.items():
-        say(f"SUMMARY {k}: {json.dumps(v)}"[:158])
     return results
 
 
@@ -436,17 +473,32 @@ def main():
     for k in ("KLEO_PROBE_JOB", "KLEO_PROBE_UPLOAD"):
         if not os.environ.get(k):
             raise SystemExit(f"{k} is not set")
+    sys.exit(box(a.run, a.upload or a.out))
+
+
+def box(ab, out):
+    """The box's whole run: the measures (when `ab`), then the upload of whatever evidence exists — ALWAYS, even
+    after a failure 40 minutes in, because the box is destroyed right after and a lost probe must be paid for again.
+    Prints AB_DONE, or AB_FAIL with the first error; returns the exit code."""
+    import traceback
+    failure = None
+    if ab:
+        try:
+            run(ab, out)
+        except BaseException as e:
+            traceback.print_exc()
+            failure = e
     try:
-        if a.run:
-            run(a.run, a.out)
-        names = upload(a.upload or a.out)
+        names = upload(out)
         say(f"PROBE_FILES {len(names)} uploaded")
-        say("AB_DONE")
     except BaseException as e:
-        import traceback
         traceback.print_exc()
-        say(f"AB_FAIL {type(e).__name__}: {str(e)[:200]}")
-        sys.exit(1)
+        failure = failure or e
+    if failure is not None:
+        say(f"AB_FAIL {type(failure).__name__}: {str(failure)[:200]}")
+        return 1
+    say("AB_DONE")
+    return 0
 
 
 if __name__ == "__main__":

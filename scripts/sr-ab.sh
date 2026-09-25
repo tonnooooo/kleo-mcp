@@ -42,9 +42,17 @@ $D wait /opt/kleo/ab/weights.log WEIGHTS_READY Traceback 15
 
 echo "== the variants, the measures, the evidence, the upload (detached) =="
 $D bg "cd /opt/kleo/repo && KLEO_API='$API' KLEO_PROBE_JOB='$JOB' KLEO_PROBE_UPLOAD='$UP_Q' KLEO_SR_DIR=/opt/kleo/sr PYTHONUNBUFFERED=1 python3 scripts/sr-ab.py --run /opt/kleo/ab --out /opt/kleo/ab/out" /opt/kleo/ab/ab.log
-$D wait /opt/kleo/ab/ab.log AB_DONE AB_FAIL 75
+# AB_FAIL still uploads whatever evidence exists (a partial results.json carries the error), so its links are
+# printed too before this script reports the failure.
+RC=0
+$D wait /opt/kleo/ab/ab.log AB_DONE AB_FAIL 75 || RC=$?
 
 echo "== the links for the owner (signed here, valid ${HOURS} h; the files are purged with the job's own) =="
-NAMES=$($D run "cat /opt/kleo/ab/out/uploaded.txt")
-KLEO_API="$API" python3 scripts/sr-ab.py --links "$JOB" $NAMES --hours "$HOURS"
-$D status
+NAMES=$($D run "cat /opt/kleo/ab/out/uploaded.txt 2>/dev/null" || true)
+if [ -n "$NAMES" ]; then
+  KLEO_API="$API" python3 scripts/sr-ab.py --links "$JOB" $NAMES --hours "$HOURS"
+else
+  echo "nothing reached R2"
+fi
+$D status || true
+exit "$RC"
