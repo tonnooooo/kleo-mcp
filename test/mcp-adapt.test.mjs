@@ -42,7 +42,7 @@ class FakeKV {
 let m;
 before(async () => {
   const r = await esbuild.build({
-    stdin: { contents: `export { buildServer, summarizeFidelity } from "./src/mcp.ts"; export { handleAdmin } from "./src/internal.ts"; export * from "./src/db.ts";`, resolveDir: ROOT, loader: "ts" },
+    stdin: { contents: `export { buildServer, summarizeFidelity } from "./src/mcp.ts"; export { handleAdmin, handleInternal } from "./src/internal.ts"; export * from "./src/db.ts";`, resolveDir: ROOT, loader: "ts" },
     bundle: true, write: false, format: "esm", platform: "node", target: "es2022", logLevel: "silent", external: ["@anthropic-ai/sdk"],
   });
   m = await import("data:text/javascript;base64," + Buffer.from(r.outputFiles[0].text).toString("base64"));
@@ -158,19 +158,21 @@ test("a request with no length is answered with the question and no model call",
   // Since 25 September the product (with this account's prices: the length is not known yet, so the tariff) and the
   // narration's language are asked in the same message.
   assert.match(r.text, /4\. Film or animatic\? The film \(every shot a generated clip\) is priced by its length \(1 credit buys 2 seconds of film/);
-  assert.match(r.text, /5\. Do you want music under the narration\?/); assert.match(r.text, /6\. Do you want subtitles burned into the video/);
-  assert.match(r.text, /7\. Which language should the narration be in: English or Italian\? \(English if you have no preference\)/);
-  assert.deepEqual(r.structuredContent.questions.length, 7); assert.equal(r.structuredContent.optional_questions.length, 3);
-  assert.equal(r.structuredContent.has_paid, true); assert.deepEqual(r.structuredContent.prices, { film: null, animatic: 5 });
+  // And since the same day, for the film, the AI upscale with its price (the length is not known yet: the rule).
+  assert.match(r.text, /5\. If you choose the film: Do you want the AI upscale \(Real-ESRGAN \+ RIFE: a sharper picture, \+as many credits again as the film, at least 5\)\? If not, the film comes out in classic 4K 60 fps\./);
+  assert.match(r.text, /6\. Do you want music under the narration\?/); assert.match(r.text, /7\. Do you want subtitles burned into the video/);
+  assert.match(r.text, /8\. Which language should the narration be in: English or Italian\? \(English if you have no preference\)/);
+  assert.deepEqual(r.structuredContent.questions.length, 8); assert.equal(r.structuredContent.optional_questions.length, 3);
+  assert.equal(r.structuredContent.has_paid, true); assert.deepEqual(r.structuredContent.prices, { film: null, animatic: 5, ai_upscale: null });
   assert.match(r.structuredContent.account_url, /^http:\/\/kleo\.test\/credits\?k=/);
   assert.match(r.text, /do not fill any of these in yourself/);
   // Answered on the call, the same request is ready: nothing was assumed, everything came from the user.
-  const again = await s.call("kleo_adapt_prompt", { language: "en", product: "film", prompt: "Create a video about accuracy in medicine", duration_s: 60, format: "16:9", style: "realistic", audience: "nurses", tone: "calm", must_keep: "the number 30%", music: "no", subtitles: "no" });
+  const again = await s.call("kleo_adapt_prompt", { language: "en", product: "film", ai_upscale: "no", prompt: "Create a video about accuracy in medicine", duration_s: 60, format: "16:9", style: "realistic", audience: "nurses", tone: "calm", must_keep: "the number 30%", music: "no", subtitles: "no" });
   assert.equal(again.structuredContent.ready_to_render, true);
   assert.match(again.text, /- Length: 60s \(the user's answer\)/); assert.match(again.text, /- Look: realistic \(the user's answer\)/); assert.match(again.text, /- Must appear: the number 30% \(the user's answer\)/);
   assert.match(again.text, /- Audience: nurses/); assert.match(again.text, /- Tone: calm/);
   // Said in the request's own words, nothing is asked twice.
-  const said = await s.call("kleo_adapt_prompt", { language: "en", product: "film", prompt: "A realistic film about accuracy in medicine, 60 seconds, for YouTube, no music, no subtitles" });
+  const said = await s.call("kleo_adapt_prompt", { language: "en", product: "film", ai_upscale: "no", prompt: "A realistic film about accuracy in medicine, 60 seconds, for YouTube, no music, no subtitles" });
   assert.equal(said.structuredContent.ready_to_render, true, said.text);
   assert.match(said.text, /- Length: 60s \(from the request\)/); assert.match(said.text, /- Format: 16:9 \(from the request\)/); assert.match(said.text, /- Look: realistic \(from the request\)/);
   assert.equal(ai.calls.length, 0);
@@ -182,7 +184,7 @@ test("a complete request gets a spec (cold) and a treatment written under it (ho
   // system message — and the treatment under it. It used to be one call (the treatment alone); the test pinned that.
   const ai = specAware(SPEC_FIXTURE, () => TREATMENT_FIXTURE(60));
   const s = await studio(ai);
-  const r = await s.call("kleo_adapt_prompt", { language: "en", product: "film", prompt: "Create a video about accuracy in medicine", duration_s: 60, format: "16:9", style: "realistic", music: "no", subtitles: "no", author: "server" });
+  const r = await s.call("kleo_adapt_prompt", { language: "en", product: "film", ai_upscale: "no", prompt: "Create a video about accuracy in medicine", duration_s: 60, format: "16:9", style: "realistic", music: "no", subtitles: "no", author: "server" });
   assert.ok(!r.isError, r.text);
   assert.equal(ai.calls.length, 2, "one spec call, one treatment call");
   assert.equal(ai.calls[0].inputs.messages[0].content, SPEC_METHOD);
@@ -213,7 +215,7 @@ test("a complete request gets a spec (cold) and a treatment written under it (ho
 test("by default the tool hands the assistant the method and spends nothing: the assistant writes the treatment (the free road)", async () => {
   const ai = fakeAi(() => { throw new Error("must not be called"); });
   const s = await studio(ai);
-  const r = await s.call("kleo_adapt_prompt", { language: "en", product: "film", prompt: "A realistic film about lighthouse keepers, 45 seconds", format: "9:16", music: "no", subtitles: "no" });
+  const r = await s.call("kleo_adapt_prompt", { language: "en", product: "film", ai_upscale: "no", prompt: "A realistic film about lighthouse keepers, 45 seconds", format: "9:16", music: "no", subtitles: "no" });
   assert.ok(!r.isError, r.text);
   assert.equal(ai.calls.length, 0, "no model call on the server");
   assert.equal(r.structuredContent.author, "assistant"); assert.equal(r.structuredContent.treatment, null); assert.equal(r.structuredContent.ready_to_render, true);
@@ -244,7 +246,7 @@ test("by default the tool hands the assistant the method and spends nothing: the
 
 test("the intake's answers travel: the spec method quotes them and the next step hands them to kleo_create_video", async () => {
   const s = await studio(fakeAi(() => { throw new Error("must not be called"); }));
-  const r = await s.call("kleo_adapt_prompt", { language: "en", product: "film", prompt: "A realistic film about lighthouse keepers, 45 seconds", format: "9:16", music: "no", subtitles: "no", audience: "children", tone: "warm", must_keep: "the red lamp" });
+  const r = await s.call("kleo_adapt_prompt", { language: "en", product: "film", ai_upscale: "no", prompt: "A realistic film about lighthouse keepers, 45 seconds", format: "9:16", music: "no", subtitles: "no", audience: "children", tone: "warm", must_keep: "the red lamp" });
   assert.ok(!r.isError, r.text);
   assert.match(r.text, /THE USER ALSO ANSWERED[\s\S]*must appear, or must never appear: "the red lamp"[\s\S]*the film is for: "children"[\s\S]*the tone: "warm"/);
   assert.equal(r.structuredContent.must_keep, "the red lamp"); assert.equal(r.structuredContent.audience, "children"); assert.equal(r.structuredContent.tone, "warm");
@@ -255,7 +257,7 @@ test("reference pictures: a URL is taken in, described and handed back as a hand
   const ai = fakeAi(() => DESCRIBED);   // the only model call on this road is the vision model's description
   const s = await studio(ai, { RENDERS: new FakeR2() });
   const r = await withFetch(async () => new Response(PNG, { status: 200 }),
-    () => s.call("kleo_adapt_prompt", { language: "en", product: "film", prompt: "A realistic film about Mara, a pastry chef, 45 seconds", format: "9:16", music: "no", subtitles: "no", references: [{ url: "https://example.com/mara.png", role: "character", name: "Mara" }] }));
+    () => s.call("kleo_adapt_prompt", { language: "en", product: "film", ai_upscale: "no", prompt: "A realistic film about Mara, a pastry chef, 45 seconds", format: "9:16", music: "no", subtitles: "no", references: [{ url: "https://example.com/mara.png", role: "character", name: "Mara" }] }));
   assert.ok(!r.isError, r.text);
   const ref = r.structuredContent.references[0];
   assert.match(ref.handle, /^kref_[0-9a-f]{8}$/); assert.equal(ref.role, "character"); assert.equal(ref.name, "Mara"); assert.equal(ref.description, DESCRIBED);
@@ -316,7 +318,7 @@ test("kleo_create_video: references resolve to this account's handles; the look 
   const ai = fakeAi(() => DESCRIBED);
   const s = await studio(ai, { RENDERS: new FakeR2() });
   const a = await withFetch(async () => new Response(PNG, { status: 200 }),
-    () => s.call("kleo_adapt_prompt", { language: "en", product: "film", prompt: MARA, duration_s: 45, format: "9:16", style: "animation", music: "no", subtitles: "no", references: [{ url: "https://example.com/mara.png", role: "character", name: "Mara" }] }));
+    () => s.call("kleo_adapt_prompt", { language: "en", product: "film", ai_upscale: "no", prompt: MARA, duration_s: 45, format: "9:16", style: "animation", music: "no", subtitles: "no", references: [{ url: "https://example.com/mara.png", role: "character", name: "Mara" }] }));
   const handle = a.structuredContent.references[0].handle;
   const unknown = await s.call("kleo_create_video", { prompt: MARA, duration_s: 45, format: "9:16", references: ["kref_00000000"] });
   assert.ok(unknown.isError); assert.match(unknown.text, /not a picture Kleo received from this account[\s\S]*Nothing was charged/);
@@ -405,7 +407,7 @@ test("kleo_get_result reads the fidelity report: how many of the user's requirem
 
 test("when the model is down the tool says so and points at kleo_create_video; it never throws", async () => {
   const s = await studio(fakeAi(() => { throw new Error("429 4006 you have used up your daily free allocation"); }));
-  const r = await s.call("kleo_adapt_prompt", { language: "en", product: "film", prompt: "A realistic film about lighthouse keepers, 45 seconds, vertical, no music, no subtitles", author: "server" });
+  const r = await s.call("kleo_adapt_prompt", { language: "en", product: "film", ai_upscale: "no", prompt: "A realistic film about lighthouse keepers, 45 seconds, vertical, no music, no subtitles", author: "server" });
   assert.ok(!r.isError, "not an error: the video can still be made");
   assert.equal(r.structuredContent.treatment, null);
   assert.equal(r.structuredContent.note, "model unavailable");
@@ -416,16 +418,16 @@ test("when the model is down the tool says so and points at kleo_create_video; i
 
 test("the daily cap refuses the next call in words and leaves the road to kleo_create_video open", async () => {
   const s = await studio(fakeAi(() => TREATMENT_FIXTURE(45)), { ADAPT_MAX_PER_DAY: "1" });
-  const first = await s.call("kleo_adapt_prompt", { language: "en", product: "film", prompt: "A realistic film about lighthouse keepers, 45 seconds, vertical, no music, no subtitles", author: "server" });
+  const first = await s.call("kleo_adapt_prompt", { language: "en", product: "film", ai_upscale: "no", prompt: "A realistic film about lighthouse keepers, 45 seconds, vertical, no music, no subtitles", author: "server" });
   assert.ok(!first.isError && first.structuredContent.treatment);
-  const second = await s.call("kleo_adapt_prompt", { language: "en", product: "film", prompt: "A realistic film about lighthouse keepers, 45 seconds, vertical, no music, no subtitles", author: "server" });
+  const second = await s.call("kleo_adapt_prompt", { language: "en", product: "film", ai_upscale: "no", prompt: "A realistic film about lighthouse keepers, 45 seconds, vertical, no music, no subtitles", author: "server" });
   assert.ok(second.isError);
   assert.match(second.text, /asked for 1 treatment today, and the limit is 1 a day[\s\S]*kleo_create_video[\s\S]*Nothing was charged/);
 });
 
 test("kleo_create_video keeps the treatment the user approved and says so; a broken one is refused before any charge", async () => {
   const s = await studio(fakeAi(() => TREATMENT_FIXTURE(45)));
-  const a = await s.call("kleo_adapt_prompt", { language: "en", product: "film", prompt: "A realistic film about lighthouse keepers, 45 seconds", format: "9:16", music: "no", subtitles: "no", author: "server" });
+  const a = await s.call("kleo_adapt_prompt", { language: "en", product: "film", ai_upscale: "no", prompt: "A realistic film about lighthouse keepers, 45 seconds", format: "9:16", music: "no", subtitles: "no", author: "server" });
   const t = a.structuredContent.treatment;
   const bad = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers", duration_s: 45, format: "9:16", treatment: { ...t, logline: "no", acts: [] } });
   assert.ok(bad.isError);
@@ -494,17 +496,17 @@ test("POST /internal/admin/treatment writes N treatments on the Worker's own mod
 test("style names the look on every tool: the method is written for it, the guide draws it, create_video keeps it", async () => {
   const ai = fakeAi(() => { throw new Error("must not be called"); });
   const s = await studio(ai);
-  const r = await s.call("kleo_adapt_prompt", { language: "en", product: "film", prompt: "A fox who learns to swim, 45 seconds", format: "9:16", style: "animation", music: "no", subtitles: "no" });
+  const r = await s.call("kleo_adapt_prompt", { language: "en", product: "film", ai_upscale: "no", prompt: "A fox who learns to swim, 45 seconds", format: "9:16", style: "animation", music: "no", subtitles: "no" });
   assert.ok(!r.isError, r.text);
   assert.equal(r.structuredContent.style, "animation");
   assert.match(r.text, /THE LOOK: ANIMATION, fixed by the request or the tool call/);
   assert.match(r.structuredContent.next, /style \(the look the treatment names\)/, "the assistant is told to pass the look on");
   assert.match(r.text, /- Look: animation, a 2D animated film/, "the brief says the look");
-  const open = await s.call("kleo_adapt_prompt", { language: "en", product: "film", prompt: "A fox who learns to swim, 45 seconds", format: "9:16", music: "no", subtitles: "no" });
+  const open = await s.call("kleo_adapt_prompt", { language: "en", product: "film", ai_upscale: "no", prompt: "A fox who learns to swim, 45 seconds", format: "9:16", music: "no", subtitles: "no" });
   assert.equal(open.structuredContent.style, null, "no look named");
   assert.equal(open.structuredContent.ready_to_render, false, "the look is asked, never guessed (the intake, 14 September)");
   assert.match(open.text, /- Look: MISSING — ask/); assert.match(open.text, /1\. How do you want it: realistic \(filmed, cinematic photography\) or animation/);
-  const drawn = await s.call("kleo_adapt_prompt", { language: "it", product: "film", prompt: "Un cartone animato su una volpe che impara a nuotare, 45 secondi", format: "9:16", music: "no", subtitles: "no" });
+  const drawn = await s.call("kleo_adapt_prompt", { language: "it", product: "film", ai_upscale: "no", prompt: "Un cartone animato su una volpe che impara a nuotare, 45 secondi", format: "9:16", music: "no", subtitles: "no" });
   assert.equal(drawn.structuredContent.style, "animation", "the request named it: a cartoon is the animation look"); assert.match(drawn.text, /THE LOOK: ANIMATION/);
   const g = await s.call("kleo_storyboard_guide", { duration_s: 45, style: "animation", format: "9:16" });
   assert.ok(!g.isError, g.text);
@@ -553,7 +555,7 @@ test("an account that never paid is told it can order the animatic and not a fil
 
 test("the user's two answers travel: the method is told them, and kleo_create_video writes them on the job and into the treatment", async () => {
   const s = await studio(fakeAi(() => { throw new Error("must not be called"); }));
-  const r = await s.call("kleo_adapt_prompt", { language: "en", product: "film", prompt: "A realistic film about lighthouse keepers, 45 seconds", format: "9:16", music: "slow cello and sea wind", subtitles: "yes" });
+  const r = await s.call("kleo_adapt_prompt", { language: "en", product: "film", ai_upscale: "no", prompt: "A realistic film about lighthouse keepers, 45 seconds", format: "9:16", music: "slow cello and sea wind", subtitles: "yes" });
   assert.ok(!r.isError, r.text); assert.equal(r.structuredContent.ready_to_render, true);
   assert.match(r.text, /- Music: yes — slow cello and sea wind \(the user's answer\)/); assert.match(r.text, /- Subtitles: cinema \(burned in\) \(the user's answer\)/);
   assert.match(r.text, /THE SOUND: the user WANTS MUSIC and asked for "slow cello and sea wind"/);
@@ -623,7 +625,7 @@ test("the user's corrections after the read-back travel in their own argument, a
   const s = await studio(fakeAi(() => { throw new Error("must not be called"); }));
   const tools = (await s.client.listTools()).tools;
   assert.match(tools.find((t) => t.name === "kleo_create_video").inputSchema.properties.corrections.description, /IN THEIR OWN WORDS/);
-  const adapt = await s.call("kleo_adapt_prompt", { language: "en", product: "film", prompt: "A realistic film about lighthouse keepers, 45 seconds", format: "9:16", music: "no", subtitles: "no" });
+  const adapt = await s.call("kleo_adapt_prompt", { language: "en", product: "film", ai_upscale: "no", prompt: "A realistic film about lighthouse keepers, 45 seconds", format: "9:16", music: "no", subtitles: "no" });
   assert.match(adapt.structuredContent.next, /"corrections" \(their corrections, word for word\)/);
   const pepe = { id: "R6", kind: "character", text: "the user's dog Pepe with a red collar", quote: "add my dog Pepe with a red collar", must: true };
   const spec = maraSpec({ items: [...maraSpec().items, pepe] });
@@ -655,7 +657,7 @@ test("reference pictures are metered: one link is fetched and described once per
   let fetches = 0;
   const serve = (bytes) => async () => { fetches++; return new Response(bytes, { status: 200 }); };
   const PNG2 = new Uint8Array(PNG); PNG2[15] = 9;
-  const ask = (references) => s.call("kleo_adapt_prompt", { language: "en", product: "film", prompt: "A realistic film about Mara, a pastry chef, 45 seconds", format: "9:16", music: "no", subtitles: "no", references });
+  const ask = (references) => s.call("kleo_adapt_prompt", { language: "en", product: "film", ai_upscale: "no", prompt: "A realistic film about Mara, a pastry chef, 45 seconds", format: "9:16", music: "no", subtitles: "no", references });
   // Eight entries of the same link with flipping roles: one fetch, one vision call, one handle (the first role kept).
   const roles = ["character", "style", "character", "style", "character", "style", "character", "style"];
   const r = await withFetch(serve(PNG), () => ask(roles.map((role) => ({ url: "https://example.com/mara.png", role, name: "Mara" }))));
@@ -686,7 +688,7 @@ const PIRATE_SPEC = () => ({ v: 1, mode: "faithful", summary: "A video about pir
 test("the server's road re-decides a faithful pirate spec OPEN, and the audit says why", async () => {
   const ai = specAware(PIRATE_SPEC(), () => TREATMENT_FIXTURE(45));
   const s = await studio(ai);
-  const r = await s.call("kleo_adapt_prompt", { prompt: PIRATES, duration_s: 45, format: "16:9", style: "realistic", music: "no", subtitles: "no", language: "en", product: "film", author: "server" });
+  const r = await s.call("kleo_adapt_prompt", { prompt: PIRATES, duration_s: 45, format: "16:9", style: "realistic", music: "no", subtitles: "no", language: "en", product: "film", ai_upscale: "no", author: "server" });
   assert.ok(!r.isError, r.text);
   assert.equal(r.structuredContent.spec.mode, "open");
   assert.equal(ai.calls[1].inputs.temperature, 0.85, "an open spec keeps the producer's temperature");
@@ -696,7 +698,7 @@ test("the server's road re-decides a faithful pirate spec OPEN, and the audit sa
 
 test("the assistant's faithful pirate spec with an as-told treatment is refused with the reason and the draw to use; nothing is charged", async () => {
   const s = await studio(fakeAi(() => { throw new Error("must not be called"); }));
-  const adapt = await s.call("kleo_adapt_prompt", { prompt: PIRATES, duration_s: 45, format: "16:9", style: "realistic", music: "no", subtitles: "no", language: "en", product: "film" });
+  const adapt = await s.call("kleo_adapt_prompt", { prompt: PIRATES, duration_s: 45, format: "16:9", style: "realistic", music: "no", subtitles: "no", language: "en", product: "film", ai_upscale: "no" });
   assert.match(adapt.structuredContent.next, /Kleo re-decides the mode by this rule/);
   assert.match(adapt.structuredContent.next, /a genre, a topic or a generic role, even with a place or one action, is open/);
   const r = await s.call("kleo_create_video", { prompt: PIRATES, duration_s: 45, format: "16:9", style: "realistic", language: "en", product: "film", spec: PIRATE_SPEC(), treatment: AS_TOLD() });
@@ -713,21 +715,21 @@ const READY = { duration_s: 45, format: "9:16", style: "realistic", music: "no",
 
 test("the narration's language is asked, and the user's answer — not the chat's language — is the film's", async () => {
   const s = await studio(fakeAi(() => { throw new Error("must not be called"); }));
-  const none = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", product: "film", ...READY });
+  const none = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", product: "film", ai_upscale: "no", ...READY });
   assert.equal(none.structuredContent.ready_to_render, false); assert.equal(none.structuredContent.brief.language, null);
   assert.match(none.text, /1\. Which language should the narration be in/);
   // An Italian chat asking for an English film: English everywhere the film is decided.
   const it = "Fammi un film sui guardiani del faro";
-  const en = await s.call("kleo_adapt_prompt", { prompt: it, product: "film", language: "en", ...READY });
+  const en = await s.call("kleo_adapt_prompt", { prompt: it, product: "film", ai_upscale: "no", language: "en", ...READY });
   assert.equal(en.structuredContent.ready_to_render, true, en.text);
   assert.equal(en.structuredContent.brief.language, "en"); assert.equal(en.structuredContent.brief.chat_language, "it"); assert.equal(en.structuredContent.language, "en");
   assert.match(en.structuredContent.next, /language: "en" \(the narration language the user chose, not the language of the chat\)/);
   assert.match(en.structuredContent.next, /product: "film"/);
   assert.match(en.text, /USER REQUEST \(language: en\)/);
   assert.doesNotMatch(en.text, /LANGUAGE OF THIS TREATMENT/);
-  const ita = await s.call("kleo_adapt_prompt", { prompt: it, product: "film", language: "italiano", ...READY });
+  const ita = await s.call("kleo_adapt_prompt", { prompt: it, product: "film", ai_upscale: "no", language: "italiano", ...READY });
   assert.equal(ita.structuredContent.language, "it"); assert.match(ita.text, /LANGUAGE OF THIS TREATMENT: ITALIAN/);
-  const any = await s.call("kleo_adapt_prompt", { prompt: it, product: "film", language: "whatever", ...READY });
+  const any = await s.call("kleo_adapt_prompt", { prompt: it, product: "film", ai_upscale: "no", language: "whatever", ...READY });
   assert.equal(any.structuredContent.ready_to_render, true); assert.equal(any.structuredContent.language, "en");
   const rows = await s.audit("treatment.method");
   assert.deepEqual(rows.map((r) => [r.language, r.product]), [["en", "film"], ["it", "film"], ["en", "film"]]);
@@ -736,7 +738,7 @@ test("the narration's language is asked, and the user's answer — not the chat'
 test("the server's road writes the spec and the treatment in the language the user chose", async () => {
   const ai = specAware(SPEC_FIXTURE, () => TREATMENT_FIXTURE(45));
   const s = await studio(ai);
-  const r = await s.call("kleo_adapt_prompt", { prompt: "Fammi un film su accuracy in medicine", product: "film", language: "en", author: "server", ...READY });
+  const r = await s.call("kleo_adapt_prompt", { prompt: "Fammi un film su accuracy in medicine", product: "film", ai_upscale: "no", language: "en", author: "server", ...READY });
   assert.ok(!r.isError, r.text);
   assert.match(ai.calls[0].inputs.messages[1].content, /USER REQUEST \(language: en\)/);
   assert.match(ai.calls[1].inputs.messages[1].content, /narrated in English/);
@@ -749,7 +751,7 @@ test("film or animatic is asked with this account's prices; a paying account's a
   const s = await studio(fakeAi(() => { throw new Error("must not be called"); }));
   const ask = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", ...READY, duration_s: 15 });
   assert.equal(ask.structuredContent.ready_to_render, false);
-  assert.deepEqual(ask.structuredContent.prices, { film: 10, animatic: 5 }); assert.equal(ask.structuredContent.product, null);
+  assert.deepEqual(ask.structuredContent.prices, { film: 10, animatic: 5, ai_upscale: 10 }); assert.equal(ask.structuredContent.product, null);
   assert.match(ask.text, /1\. Film or animatic\? The film \(every shot a generated clip\) costs 10 credits for 15 seconds; the animatic .* costs 5 credits flat, up to 60 seconds\. You have 70 credits\./);
   assert.deepEqual(await s.audit("treatment.method"), [], "nothing is written before the product is chosen");
   for (const d of [15, 30, 60]) {
@@ -757,7 +759,7 @@ test("film or animatic is asked with this account's prices; a paying account's a
     assert.equal(q.structuredContent.prices.film, creditsForProduct(d, "realistic", "film"), `${d} s`);
     assert.match(q.text, new RegExp(`costs ${creditsForProduct(d, "realistic", "film")} credits for ${d} seconds`));
   }
-  const film = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", product: "film", ...READY });
+  const film = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", product: "film", ai_upscale: "no", ...READY });
   assert.equal(film.structuredContent.ready_to_render, true); assert.equal(film.structuredContent.product, "film");
   assert.match(film.structuredContent.next, /product: "film"/);
 });
@@ -767,7 +769,7 @@ test("an account that never paid is offered the animatic in the intake, and the 
   const none = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", ...READY });
   assert.equal(none.structuredContent.ready_to_render, false); assert.equal(none.structuredContent.has_paid, false);
   assert.match(none.text, /credit pack \(from 5 EUR, on your account page\)[\s\S]*the animatic/);
-  const film = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", product: "film", ...READY });
+  const film = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", product: "film", ai_upscale: "no", ...READY });
   assert.equal(film.structuredContent.ready_to_render, false, "a film is not for this account yet");
   const long = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", product: "animatic", ...READY, duration_s: 90 });
   assert.equal(long.structuredContent.ready_to_render, false); assert.match(long.text, /An animatic is at most 60 seconds long \(you asked for 90\)/);
@@ -796,6 +798,109 @@ test("the tool texts ask for the product and the language, and never read the la
     assert.match(instructions, /the LANGUAGE of the narration/); assert.match(instructions, /product \(film or animatic, with the prices the intake quotes\)/);
     assert.doesNotMatch(instructions, /Call kleo_account first/);
   }
+});
+
+/* ------------------------------------------------------------------ the AI upscale, an option that costs (25 September) */
+
+test("a film is asked about the AI upscale with its exact price: the film's credits again, 5 at least", async () => {
+  const s = await studio(fakeAi(() => { throw new Error("must not be called"); }));
+  for (const [d, film, up] of [[15, 10, 10], [30, 15, 15], [60, 30, 30]]) {
+    const q = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", product: "film", ...READY, duration_s: d });
+    assert.equal(q.structuredContent.ready_to_render, false, `${d} s: the upscale is asked`);
+    assert.deepEqual(q.structuredContent.prices, { film, animatic: 5, ai_upscale: up });
+    assert.match(q.text, new RegExp(`1\\. Do you want the AI upscale \\(Real-ESRGAN \\+ RIFE: a sharper picture, \\+${up} credits\\)\\? If not, the film comes out in classic 4K 60 fps\\.`));
+    assert.equal(creditsForProduct(d, "realistic", "film"), film);
+  }
+  const it = await s.call("kleo_adapt_prompt", { prompt: "Fammi un film sui guardiani del faro", language: "it", product: "film", ...READY, duration_s: 30 });
+  assert.match(it.text, /1\. Vuoi l'ingrandimento AI \(Real-ESRGAN \+ RIFE: immagine più nitida, \+15 crediti\)\? Se no, il film esce in 4K 60 fps classico\./);
+  // The knobs are the Worker's: AI_UPSCALE_MIN_CREDITS and AI_UPSCALE_FACTOR.
+  const dear = await studio(fakeAi(() => { throw new Error("must not be called"); }), { AI_UPSCALE_MIN_CREDITS: "20", AI_UPSCALE_FACTOR: "0.5" });
+  const q = await dear.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", product: "film", ...READY, duration_s: 60 });
+  assert.equal(q.structuredContent.prices.ai_upscale, 20, "max(20, ceil(30 x 0.5))");
+  // The answer is read back with the price, and passed on to kleo_create_video.
+  const yes = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", product: "film", ai_upscale: "yes please", ...READY, duration_s: 30 });
+  assert.equal(yes.structuredContent.ready_to_render, true, yes.text); assert.equal(yes.structuredContent.ai_upscale, true);
+  assert.match(yes.text, /- AI upscale: yes — Real-ESRGAN \+ RIFE on every shot, \+15 credits on top of the film/);
+  assert.match(yes.structuredContent.next, /ai_upscale: "yes" \(the user's AI upscale: \+15 credits, 30 in all\)/);
+  const no = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", product: "film", ai_upscale: "whatever", ...READY, duration_s: 30 });
+  assert.equal(no.structuredContent.ready_to_render, true); assert.equal(no.structuredContent.ai_upscale, false);
+  assert.match(no.structuredContent.next, /ai_upscale: "no"/); assert.match(no.text, /- AI upscale: no — the classic 4K 60 fps finish/);
+  // kleo_account says it too.
+  const acct = await s.call("kleo_account", {});
+  assert.deepEqual(acct.structuredContent.ai_upscale, { available: true, rule: "as many credits again as the film, at least 5", credits_30s: 15, credits_60s: 30 });
+  assert.match(acct.text, /optional AI upscale \(Real-ESRGAN \+ RIFE, a sharper picture\): as many credits again as the film, at least 5 \(15 for a 30-second Short\)/);
+});
+
+test("the AI upscale is paid with the film, refunded automatically when the finish did not apply it, and said with the links", async () => {
+  const s = await studio(fakeAi(() => { throw new Error("must not be called"); }));
+  const secretOf = async (id) => (await s.env.DB.prepare("SELECT worker_secret FROM jobs WHERE id = ?").bind(id).first()).worker_secret;
+  const done = async (id, body) => m.handleInternal(new Request(`http://kleo.test/internal/jobs/${id}/done`, { method: "POST", headers: { authorization: `Bearer ${await secretOf(id)}`, "content-type": "application/json" }, body: JSON.stringify(body) }), s.env);
+  const made = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers", duration_s: 30, format: "9:16", language: "en", product: "film", ai_upscale: "yes" });
+  assert.ok(!made.isError, made.text);
+  assert.equal(made.structuredContent.credits, 30, "15 for the film + 15 for the upscale");
+  assert.equal((await m.getUser(s.env, "u_test")).credits, 40);
+  assert.match(made.text, /AI upscale: yes, Real-ESRGAN \+ RIFE on every shot, 15 credits of the 30 credits \(given back automatically if the finish cannot apply it\)\./);
+  const id = made.structuredContent.job_id;
+  const params = JSON.parse((await m.getJob(s.env, id)).params);
+  assert.equal(params.ai_upscale, true); assert.equal(params.ai_upscale_credits, 15);
+  // The finish box upscaled two shots of three (a part fell back to the classic chain): the 15 credits come back.
+  const r = await done(id, { cost_usd: 0.02, sr: { parts: 3, applied: 2, model: "realesr-general-x4v3", gpu: "RTX 3060", reason: "01-hook shot 3: CUDA error" } });
+  assert.equal(r.status, 200);
+  assert.equal((await m.getUser(s.env, "u_test")).credits, 55, "the upscale's 15 credits are given back, the film's 15 are not");
+  const rows = await s.audit("ai_upscale.refunded");
+  assert.equal(rows.length, 1); assert.equal(rows[0].refunded, 15); assert.equal(rows[0].upscaled, 2); assert.equal(rows[0].parts, 3);
+  assert.match((await s.audit("credits.refund"))[0].reason, /^AI upscale not applied: 01-hook shot 3: CUDA error/);
+  const got = await s.call("kleo_get_result", { job_id: id });
+  assert.match(got.text, /AI upscale: not applied \(01-hook shot 3: CUDA error\), 15 credits refunded; the film is in the classic 4K 60 fps\./);
+  assert.deepEqual(got.structuredContent.ai_upscale, { applied: false, refunded: 15, reason: "01-hook shot 3: CUDA error" });
+  // A repeated /done changes nothing: the credits moved once.
+  await done(id, { sr: { parts: 3, applied: 3 } });
+  assert.equal((await m.getUser(s.env, "u_test")).credits, 55);
+
+  // Every shot upscaled: the credits stay spent and the links say so.
+  const ok2 = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers at dawn", duration_s: 15, format: "9:16", language: "en", product: "film", ai_upscale: "sì" });
+  assert.ok(!ok2.isError, ok2.text); assert.equal(ok2.structuredContent.credits, 20);
+  await done(ok2.structuredContent.job_id, { sr: { parts: 4, applied: 4, model: "realesr-general-x4v3", gpu: "RTX 3060", reason: null } });
+  assert.equal((await m.getUser(s.env, "u_test")).credits, 35);
+  assert.match((await s.call("kleo_get_result", { job_id: ok2.structuredContent.job_id })).text, /AI upscale: applied \(Real-ESRGAN \+ RIFE on all 4 shots\)\./);
+  assert.equal((await s.audit("ai_upscale.applied")).length, 1);
+
+  // No report at all (an older worker, the mock): not applied, refunded.
+  const old = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers at dusk", duration_s: 15, format: "9:16", language: "en", product: "film", ai_upscale: true });
+  await done(old.structuredContent.job_id, { cost_usd: 0.01 });
+  assert.equal((await m.getUser(s.env, "u_test")).credits, 25, "35 - 20 + 10");
+  assert.match((await s.call("kleo_get_result", { job_id: old.structuredContent.job_id })).text, /AI upscale: not applied \(the finish box sent no report of the upscale\), 10 credits refunded/);
+});
+
+test("a film without the option is priced, said and settled exactly as before", async () => {
+  const s = await studio(fakeAi(() => { throw new Error("must not be called"); }));
+  const made = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers", duration_s: 30, format: "9:16", language: "en", product: "film" });
+  assert.ok(!made.isError, made.text); assert.equal(made.structuredContent.credits, 15);
+  assert.doesNotMatch(made.text, /upscale/i);
+  const p = JSON.parse((await m.getJob(s.env, made.structuredContent.job_id)).params);
+  assert.equal(p.ai_upscale, undefined); assert.equal(p.ai_upscale_credits, undefined);
+  const secret = (await s.env.DB.prepare("SELECT worker_secret FROM jobs WHERE id = ?").bind(made.structuredContent.job_id).first()).worker_secret;
+  await m.handleInternal(new Request(`http://kleo.test/internal/jobs/${made.structuredContent.job_id}/done`, { method: "POST", headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" }, body: JSON.stringify({ sr: { parts: 3, applied: 0, reason: "KLEO_SR=off" } }) }), s.env);
+  assert.equal((await m.getUser(s.env, "u_test")).credits, 55, "nothing refunded: the option was never bought");
+  assert.doesNotMatch((await s.call("kleo_get_result", { job_id: made.structuredContent.job_id })).text, /upscale/i);
+  const no = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers again", duration_s: 15, format: "9:16", language: "en", product: "film", ai_upscale: "no" });
+  assert.equal(no.structuredContent.credits, 10); assert.match(no.text, / AI upscale: no, the classic 4K 60 fps finish\./);
+});
+
+test("KLEO_SR off switches the option off: never asked, and a create that asks for it is refused before any charge", async () => {
+  const s = await studio(fakeAi(() => { throw new Error("must not be called"); }), { KLEO_SR: "off" });
+  const q = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", product: "film", ...READY });
+  assert.equal(q.structuredContent.ready_to_render, true, q.text);
+  assert.deepEqual(q.structuredContent.prices, { film: 23, animatic: 5 });
+  assert.doesNotMatch(q.text, /upscale/i); assert.doesNotMatch(q.structuredContent.next, /ai_upscale/);
+  assert.deepEqual((await s.call("kleo_account", {})).structuredContent.ai_upscale, { available: false });
+  const refused = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers", duration_s: 30, format: "9:16", language: "en", product: "film", ai_upscale: "yes" });
+  assert.ok(refused.isError); assert.match(refused.text, /The AI upscale \(Real-ESRGAN \+ RIFE\) is switched off right now\. Call again with ai_upscale: "no"[\s\S]*Nothing was charged\./);
+  assert.equal((await m.getUser(s.env, "u_test")).credits, 70);
+  // And an animatic never has it.
+  const on = await studio(fakeAi(() => { throw new Error("must not be called"); }));
+  const anim = await on.call("kleo_create_video", { prompt: "A film about lighthouse keepers", duration_s: 30, format: "9:16", language: "en", product: "animatic", ai_upscale: "yes" });
+  assert.ok(anim.isError); assert.match(anim.text, /an option of the film only[\s\S]*Nothing was charged\./);
 });
 
 test("an Italian quote inside an English treatment is still an English treatment", () => {

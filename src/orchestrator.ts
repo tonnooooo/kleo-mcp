@@ -1,11 +1,11 @@
 import type { Env } from "./env";
-import { type Job, type JobState, ACTIVE_STATES, OPEN_STATES, GPU_ONLY_WAIT, PLAN_WAIT, unexplainedUnplannedJobs, activeJobs, queuedJobs, queuedPictureJobs, staleQueuedJobs, jobInstances, unplannedJobs, claimPlanAttempt, countRunning, runningPaidJobs, spentTodayUsd, addJobCost, rememberTriedMachine, updateJob, transitionJob, audit, refundCredits, expiredJobs, listFiles, deleteFiles, setFile, getJob, reserveJob, unreserveJob } from "./db";
+import { type Job, type JobParams, type JobState, ACTIVE_STATES, OPEN_STATES, GPU_ONLY_WAIT, PLAN_WAIT, unexplainedUnplannedJobs, activeJobs, queuedJobs, queuedPictureJobs, staleQueuedJobs, jobInstances, unplannedJobs, claimPlanAttempt, countRunning, runningPaidJobs, spentTodayUsd, addJobCost, rememberTriedMachine, updateJob, transitionJob, audit, refundCredits, expiredJobs, listFiles, deleteFiles, setFile, getJob, reserveJob, unreserveJob } from "./db";
 import { backendFor, getBackend } from "./backends";
 import { vastStatus, GONE, vastCredit, listKleoInstances, destroyInstance } from "./backends/vast";
 import { int, num, nowIso, minutesSince, secondsSince, addDays, base64ToBytes, rid } from "./util";
 import { TINY_MP4_B64 } from "./assets";
 import { resultLinks, FILE_NAMES } from "./jobs";
-import { jobTimeoutMin, renderSilenceMin, filmedJob } from "./templates";
+import { jobTimeoutMin, renderSilenceMin, filmedJob, aiUpscaleJob, aiUpscaleVerdict } from "./templates";
 import { sellingOpen, SELLING_PAUSE } from "./stripe";
 import { notifyDone } from "./notify";
 import { putFile, deleteFile } from "./storage";
@@ -620,14 +620,43 @@ export async function failJob(env: Env, job: Job, reason: string, retry: boolean
 }
 
 /**
+ * THE AI UPSCALE, SETTLED (25 September 2026). A film sold the option carries ai_upscale_credits inside job.credits;
+ * the finish box reports what it did (the `sr` of its /done call: parts with a clip, parts upscaled, model, reason).
+ * Before the job turns done the verdict is written on the row (params.ai_upscale_result), so kleo_get_result can say
+ * it from the first moment the job reads done; a verdict already there is never overwritten (a repeated /done).
+ * Only the call whose transition to done applies gives the credits back (refundAiUpscale), so they move once.
+ */
+async function recordAiUpscale(env: Env, job: Job, sr: unknown): Promise<void> {
+  let p: JobParams;
+  try { p = JSON.parse(job.params) as JobParams; } catch { return; }
+  if (!p.ai_upscale || p.ai_upscale_result) return;
+  const v = aiUpscaleVerdict(sr);
+  const refunded = v.applied ? 0 : Math.max(0, Math.round(p.ai_upscale_credits ?? 0));
+  await updateJobParams(env, job.id, { ai_upscale_result: { ...v, refunded, at: nowIso() } });
+}
+async function refundAiUpscale(env: Env, job: Job): Promise<void> {
+  const fresh = await getJob(env, job.id);
+  let r: JobParams["ai_upscale_result"];
+  try { r = (JSON.parse(fresh?.params ?? job.params) as JobParams).ai_upscale_result; } catch { r = undefined; }
+  if (!r) return;
+  const refunded = r.applied ? 0 : await refundCredits(env, job.user_id, r.refunded, job.id, `AI upscale not applied: ${(r.reason ?? "no reason given").slice(0, 120)}`);
+  await audit(env, job.user_id, job.id, r.applied ? "ai_upscale.applied" : "ai_upscale.refunded",
+    { applied: r.applied, parts: r.parts, upscaled: r.upscaled, model: r.model, gpu: r.gpu, reason: r.reason, refunded });
+}
+
+/**
  * Marks a job done, releases the GPU, emails the links. Called by the worker callback and by the mock.
  * Idempotent: a second "done", or a "done" after a cancel/failure, changes nothing. Returns whether it applied.
+ * `sr` is the finish box's report of the AI upscale (worker/kleo_video.py LAST_SR); it matters only to a job sold it.
  */
-export async function finishJob(env: Env, job: Job, costUsd: number | null): Promise<boolean> {
+export async function finishJob(env: Env, job: Job, costUsd: number | null, sr?: unknown): Promise<boolean> {
+  const upscale = aiUpscaleJob(job);
+  if (upscale) await recordAiUpscale(env, job, sr);
   const finished = nowIso();
   const expires = addDays(finished, int(env.RESULT_TTL_DAYS, 7));
   const done = await transitionJob(env, job.id, OPEN_STATES, { state: "done", percent: 100, track: null, eta_min: 0, finished_at: finished, expires_at: expires, error: null });
   if (!done) { await audit(env, job.user_id, job.id, "job.done.ignored", { note: "job was no longer open (already done, cancelled or failed)" }); return false; }
+  if (upscale) await refundAiUpscale(env, job);
   // The worker's figure is a convenience; the server's own (start_date x dph_total, straight from the Vast API) is the
   // trustworthy one — the worker runs on a machine rented from a stranger who has root on it and could report 0 for
   // every render. Take the larger of the two, so a reported 0 can never erase the estimate.

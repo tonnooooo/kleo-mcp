@@ -656,6 +656,61 @@ class LayerClipsBoundTest(unittest.TestCase):
             kw.bind_shot_clips(self.pdir, self.project)
         self.assertIn("01-a-s2", str(cm.exception))
 
+class AiUpscaleReportTest(unittest.TestCase):
+    """25 September 2026: the AI upscale is an option the user pays for, and the server gives its credits back unless
+    every shot went through the GPU. The finish box says what happened in its /done call — nothing else carries it."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kleo-sr-report-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        os.makedirs(os.path.join(self.tmp, "build"))
+        self.saved = {k: getattr(kw, k) for k in ("local_video_module", "progress", "api", "watchdog", "set_footage_backend",
+                                                  "download", "unpack_gen", "film_finish", "upload", "upload_log",
+                                                  "self_destruct", "API", "JOB", "SECRET", "SR_REPORT")}
+        self.addCleanup(lambda: [setattr(kw, k, v) for k, v in self.saved.items()])
+        kw.progress = lambda *a, **k: None
+
+    def fake_video(self, report):
+        class Mod:
+            LAST_SR = report
+
+            def build_footage(self, shots_json, clips, out_path, width, height, fps=60, log_fn=None):
+                open(out_path, "wb").write(b"\0" * 32)
+                return out_path
+        return Mod()
+
+    def test_lay_footage_keeps_what_the_neural_finish_did(self):
+        rep = {"parts": 3, "applied": 2, "model": "realesr-general-x4v3", "gpu": "RTX 3060", "reason": "s1 shot 3: boom"}
+        kw.local_video_module = lambda: self.fake_video(rep)
+        self.assertTrue(kw.lay_footage(self.tmp, {}, 64, 36, 60))
+        self.assertEqual(kw.SR_REPORT, rep)
+        kw.local_video_module = lambda: self.fake_video(None)   # an older kleo_video: nothing to report
+        self.assertTrue(kw.lay_footage(self.tmp, {}, 64, 36, 60))
+        self.assertIsNone(kw.SR_REPORT)
+
+    def test_the_finish_box_sends_the_report_with_done(self):
+        rep = {"parts": 4, "applied": 4, "model": "realesr-animevideov3", "gpu": "RTX 3060", "reason": None}
+        calls = []
+        kw.API, kw.JOB, kw.SECRET = "http://kleo.test", "gt_sr", "wk_1"
+        kw.watchdog = lambda: None
+        kw.api = lambda method, path, data=None, **k: calls.append((method, path, data)) or {"job_id": "gt_sr", "params": {}}
+        kw.set_footage_backend = lambda job: "kie"
+        kw.download = lambda name, path: None
+        kw.unpack_gen = lambda bundle, engine: self.tmp
+        kw.upload = kw.upload_log = lambda *a, **k: None
+        kw.self_destruct = lambda reason: None
+
+        def finish(pdir, out_dir, lay_track=False):
+            kw.SR_REPORT = rep
+            return {}
+        kw.film_finish = finish
+        os.environ["KLEO_PHASE"] = "finish"; self.addCleanup(os.environ.pop, "KLEO_PHASE", None)
+        kw.main()
+        done = [d for m, p, d in calls if p.endswith("/done")]
+        self.assertEqual(len(done), 1, calls)
+        self.assertEqual(done[0]["sr"], rep)
+
+
 # The caption repair of prepare.py (22 September 2026) rides in this module: tests.yml lists its modules by name and
 # the OAuth token that pushes from the owner's PC has no `workflow` scope to add one.
 from test_keou_prepare import CaptionRepairTest  # noqa: E402,F401

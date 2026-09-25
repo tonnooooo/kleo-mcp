@@ -510,6 +510,10 @@ SR_BUDGET_MIN = float(os.environ.get("KLEO_SR_BUDGET_MIN", "20"))  # projected G
 SR_GRACE_MIN = float(os.environ.get("KLEO_SR_GRACE_MIN", "5"))
 SR_DEADLINE_MIN = float(os.environ.get("KLEO_SR_DEADLINE_MIN", "40"))
 _clock = time.monotonic                                             # a module attribute so the tests can drive time
+# What the neural finish did on the last build_footage, for the server (25 September 2026: the AI upscale is an option
+# the user pays for, and its credits go back unless every part with a clip went through the GPU). kleo_worker sends it
+# with /done: {"parts": parts with a clip, "applied": parts upscaled, "model", "gpu", "reason": why not, or None}.
+LAST_SR = None
 
 
 def finish_vf_sr(width, height, want):
@@ -577,13 +581,15 @@ def _part_problem(path, width, height, fps, want):
     return None
 
 
-def _sr_decision(srm, card, recipes, shots_json, width, height, fps, say):
+def _sr_decision(srm, card, recipes, shots_json, width, height, fps, say, note=None):
     """Once per film: (factor, look, projected minutes) when the whole track can go through the GPU within the
     budget, else None. The card is asked through its child process (kleo_sr.Card), the benchmark with a time limit of
     its own. The look never changes in the middle of a film because of this: only an error on one part does, and
-    says so."""
+    says so. `note` (a dict), when given, receives the model and card, or the reason it is off (LAST_SR)."""
+    note = note if note is not None else {}
     try:
         if srm is None:
+            note["reason"] = "kleo_sr is not in this image"
             say("SR off: kleo_sr is not in this image — Lanczos + minterpolate as before")
             return None
         ok, why, gpu = card.available()
@@ -596,11 +602,14 @@ def _sr_decision(srm, card, recipes, shots_json, width, height, fps, say):
             est = srm.estimate_minutes(bench, list(recipes.values()), fps)
             if est <= SR_BUDGET_MIN:
                 model = srm.model_for(look, factor) or "no upscaler"
+                note.update(model=model, gpu=gpu)
                 say(f"SR on: {gpu or 'unknown GPU'}, {model} x{factor} + RIFE 4.25, est {est:.1f} min")
                 return factor, look, est
             why = f"estimated {est:.0f} min over the {SR_BUDGET_MIN:g} min budget"
+        note["reason"] = str(why)
         say(f"SR off: {why} — Lanczos + minterpolate as before")
     except Exception as e:
+        note["reason"] = str(e)[:200]
         say(f"SR off: {e} — Lanczos + minterpolate as before")
     return None
 
@@ -648,6 +657,8 @@ def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=Non
     `workers` files run at once (default: a quarter of the cores, at least 2) and progress_fn(done, total) is called
     as each part lands, which is what the worker turns into a progress report — the silence sensor stays at its
     number, the stage stops looking dead."""
+    global LAST_SR
+    LAST_SR = None
     say = log_fn or log
     try:
         plan = json.load(open(shots_json))
@@ -716,8 +727,10 @@ def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=Non
     # Between the passes, once for the whole film: may the GPU finish these parts (kleo_sr)?
     srm = _sr_module() if recipes else None
     card = srm.Card() if srm is not None else None
-    sr = _sr_decision(srm, card, recipes, shots_json, width, height, fps, say) if recipes else None
+    note = {} if recipes else {"reason": "no shot had a clip to upscale"}
+    sr = _sr_decision(srm, card, recipes, shots_json, width, height, fps, say, note) if recipes else None
     breaker, breaker_lock = [False], threading.Lock()
+    upscaled = []                                                   # the parts the GPU finished (LAST_SR)
     # What the GPU may still spend: the projection with headroom, and a wall clock from this moment (see SR_GRACE_MIN).
     gpu_used = [0.0]
     allowance_s = max(1.5 * sr[2], sr[2] + SR_GRACE_MIN) * 60.0 if sr else 0.0
@@ -727,6 +740,7 @@ def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=Non
         with breaker_lock:
             if not breaker[0]:
                 breaker[0] = True
+                note.setdefault("reason", why)
                 say(f"SR off for the parts not started yet: {why}")
 
     def run_sr(dst, rec):
@@ -769,6 +783,7 @@ def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=Non
                     with card.lock:
                         card.kill()                       # a fresh child: nothing of the failed attempt stays on the card
                     continue
+                note.setdefault("reason", f"{label}: {str(e)[:160]}")
                 say(f"{label}: SR failed ({str(e)[:200]}), Lanczos path")
                 if isinstance(e, srm.Overrun):
                     trip(f"a part overran the GPU's time ({gpu_used[0] / 60:.1f} min used, projection {sr[2]:.1f} min)")
@@ -793,6 +808,7 @@ def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=Non
         dst, cmd = item[0], item[1]
         rec = recipes.get(dst)
         if sr and rec and not breaker[0] and run_sr(dst, rec):
+            upscaled.append(dst)
             return dst, True
         r = subprocess.run(cmd, capture_output=True, text=True)
         return dst, (r.returncode == 0 and os.path.isfile(dst))
@@ -815,6 +831,9 @@ def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=Non
                 card.close()
             except Exception:
                 pass
+    LAST_SR = {"parts": len(recipes), "applied": len(upscaled), "model": note.get("model"), "gpu": note.get("gpu"),
+               "reason": None if recipes and len(upscaled) == len(recipes) else
+               note.get("reason") or f"{len(upscaled)} of {len(recipes)} parts went through the GPU"}
     if failed:
         return None
     # Pass three: the dissolves. A part that was cut long dissolves into the part after it; the two become one file

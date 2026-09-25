@@ -592,6 +592,8 @@ class SrHookTest(FreezeTest):
         self.assertAlmostEqual(kv.seconds_of(out), 3.0, delta=0.15)
         self.assertFalse(any("Lanczos path" in m for m in said), said)
         self.assertGreaterEqual(fake.released, 1, "the card is handed back after the track")
+        # The report the server reads to keep the AI upscale's credits (25 September 2026): every part upscaled.
+        self.assertEqual(kv.LAST_SR, {"parts": 3, "applied": 3, "model": "fake-x2", "gpu": "Fake GPU", "reason": None})
 
     def test_every_part_gets_only_the_gpu_time_the_film_has_left(self):
         fake = self.use(FakeSr(est=2.0, cost=30.0))
@@ -612,6 +614,8 @@ class SrHookTest(FreezeTest):
         self.assertEqual(fake.timeouts, [420.0, 270.0, 120.0])
         self.assertTrue(any("s1 shot 3: SR failed (enhance took more than 120 s" in m for m in said), said)
         self.assertEqual(sum("SR off for the parts not started yet: a part overran" in m for m in said), 1, said)
+        self.assertEqual((kv.LAST_SR["parts"], kv.LAST_SR["applied"]), (3, 2))
+        self.assertIn("enhance took more than 120 s", kv.LAST_SR["reason"])
         self.assertEqual(seen, [(1, 3), (2, 3), (3, 3)])
         self.assertAlmostEqual(kv.seconds_of(out), 3.0, delta=0.15)
 
@@ -641,6 +645,9 @@ class SrHookTest(FreezeTest):
         self.assertEqual(sum("SR off for the parts not started yet" in m for m in said), 1, said)
         self.assertEqual([p for p, _ in fake.calls], [0, 1], "the third part never went to the card")
         self.assertEqual(seen, [(1, 3), (2, 3), (3, 3)])
+        # One part on the classic chain is enough for the upscale not to count as applied: its credits go back.
+        self.assertEqual((kv.LAST_SR["parts"], kv.LAST_SR["applied"]), (3, 1))
+        self.assertIn("boom", kv.LAST_SR["reason"])
         self.assertAlmostEqual(kv.seconds_of(out), 3.0, delta=0.15)
 
     def test_out_of_memory_retries_in_tiles_then_falls_back_for_that_part_only(self):
@@ -658,6 +665,8 @@ class SrHookTest(FreezeTest):
         self.assertTrue(out and os.path.isfile(out), said)
         self.assertTrue(any("SR off: estimated 99 min over the 20 min budget" in m for m in said), said)
         self.assertEqual(fake.calls, [])
+        self.assertEqual((kv.LAST_SR["parts"], kv.LAST_SR["applied"]), (3, 0))
+        self.assertIn("over the 20 min budget", kv.LAST_SR["reason"])
 
     def test_no_card_means_todays_chain_and_says_why(self):
         fake = self.use(FakeSr(ok=False))
@@ -665,6 +674,7 @@ class SrHookTest(FreezeTest):
         self.assertTrue(out and os.path.isfile(out), said)
         self.assertTrue(any("SR off: no CUDA device" in m for m in said), said)
         self.assertEqual(fake.calls, [])
+        self.assertEqual(kv.LAST_SR, {"parts": 3, "applied": 0, "model": None, "gpu": None, "reason": "no CUDA device"})
 
     def test_the_real_module_on_a_machine_without_a_card_is_off_and_said(self):
         saved = sys.modules.pop("kleo_sr", None)
@@ -672,6 +682,17 @@ class SrHookTest(FreezeTest):
         out, _, said = self.film()
         self.assertTrue(out and os.path.isfile(out), said)
         self.assertTrue(any(m.startswith("SR off:") for m in said), said)
+
+    def test_kleo_sr_off_on_the_box_is_reported_as_the_reason(self):
+        """A job without the AI upscale gets KLEO_SR=off (src/backends/vast.ts), and so does one sold it when the
+        Worker's switch is off. The report says so, and a paid upscale is refunded on that reason."""
+        saved = sys.modules.pop("kleo_sr", None)
+        self.addCleanup(lambda: sys.modules.__setitem__("kleo_sr", saved) if saved else None)
+        os.environ["KLEO_SR"] = "off"; self.addCleanup(lambda: os.environ.pop("KLEO_SR", None))
+        out, _, said = self.film()
+        self.assertTrue(out and os.path.isfile(out), said)
+        self.assertEqual(kv.LAST_SR["applied"], 0)
+        self.assertEqual(kv.LAST_SR["reason"], "KLEO_SR=off")
 
     def test_the_dissolve_is_untouched_by_the_gpu_pass(self):
         import json

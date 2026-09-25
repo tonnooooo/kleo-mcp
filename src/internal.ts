@@ -33,7 +33,7 @@ const TYPES: Record<string, string> = { mp4: "video/mp4", srt: "application/x-su
  *   GET  /internal/jobs/:id/clips/:shotId                     a finished clip, streamed from R2
  *   POST /internal/jobs/:id/music      {brief, seconds, title}  order the user's music track from kie.ai (Suno); GET polls it (footage.ts)
  *   GET  /internal/jobs/:id/music/file                        the finished track, streamed from R2
- *   POST /internal/jobs/:id/done       {cost_usd?}
+ *   POST /internal/jobs/:id/done       {cost_usd?, sr?}                sr: the AI upscale's report (settled in orchestrator.ts)
  *   POST /internal/jobs/:id/failed     {error, retry?}
  *   POST /internal/jobs/:id/selfdestruct                      ask the server to destroy the GPU (fallback)
  *
@@ -204,8 +204,10 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
   }
 
   if (rest === "done" && request.method === "POST") {
-    const b = (await request.json().catch(() => ({}))) as { cost_usd?: number };
-    const applied = await finishJob(env, job, typeof b.cost_usd === "number" ? b.cost_usd : null);
+    // `sr` (25 September 2026): what the finish box's neural finish did — {parts, applied, model, gpu, reason} — read
+    // only for a film sold the AI upscale, whose extra credits go back when it was not applied to every shot.
+    const b = (await request.json().catch(() => ({}))) as { cost_usd?: number; sr?: unknown };
+    const applied = await finishJob(env, job, typeof b.cost_usd === "number" ? b.cost_usd : null, b.sr);
     if (applied) return json({ ok: true, state: "done" });
     const now = (await getJob(env, job.id))?.state ?? job.state;
     return now === "done" ? json({ ok: true, state: now, already: true }) : json({ error: `job is ${now}`, state: now }, 409);

@@ -1350,9 +1350,15 @@ def generate_footage(project, pdir, engine, log_path, units, lay_track=True):
     return True
 
 
+# What the neural finish did on this box (kleo_video.LAST_SR), sent with /done: the server gives the AI upscale's
+# credits back when it was not applied to every shot (25 September 2026). None when no track was laid here.
+SR_REPORT = None
+
+
 def lay_footage(pdir, made, width, height, fps):
     """build/footage.mp4 from the clips: the 60 fps 4K track. CPU work (minterpolate, Lanczos, the grade): the
     finish phase of a two-phase film runs exactly this on a box that costs cents."""
+    global SR_REPORT
     mod = local_video_module()
     build = os.path.join(pdir, "build")
 
@@ -1370,6 +1376,8 @@ def lay_footage(pdir, made, width, height, fps):
     except Exception as e:
         log("could not lay the track:", e)
         return False
+    report = getattr(mod, "LAST_SR", None)
+    SR_REPORT = dict(report) if isinstance(report, dict) else None
     return bool(track)
 
 
@@ -1919,7 +1927,7 @@ def main():
         upload_log(out_dir)
         if dph:
             cost = round(float(dph) * (time.time() - started) / 3600, 4)
-        api("POST", f"/internal/jobs/{JOB}/done", {"cost_usd": cost})
+        api("POST", f"/internal/jobs/{JOB}/done", {"cost_usd": cost, **({"sr": SR_REPORT} if SR_REPORT else {})})
         log("done in %.0f s" % (time.time() - started))
         self_destruct("finished")
     except Exception as e:
