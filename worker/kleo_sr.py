@@ -30,8 +30,14 @@ Weights (every file sha256-pinned, the same table as worker/Dockerfile.keou; a t
   RIFE 4.25 flownet                       MIT, hzwer/Practical-RIFE (RIFEv4.25_0919.zip, mirrored on Hugging Face)
 
 Kill switch: KLEO_SR=off (the server passes it to the box; no image rebuild).
+
+THE CARD RUNS IN A CHILD PROCESS (Card, `kleo_sr.py serve`). A thread stuck inside a CUDA call (a Vast host with Xid
+errors) can never be freed, and it would hold the card and every part waiting for it until the server's silence rule
+killed a film the CPU chain would have delivered. So kleo_video never touches torch: it asks one child per film, with a
+time limit on every request, and a request that overruns kills the child — the parent's thread comes back, the part
+and the rest of the film fall back to today's chain.
 """
-import hashlib, json, math, os, subprocess, sys, threading, time
+import hashlib, json, math, os, queue, subprocess, sys, threading, time
 
 SR_DIR = os.environ.get("KLEO_SR_DIR", "/opt/kleo/sr")
 MIN_CC = (7, 5)                                                        # torch 2.8 cu128 has no kernels below Turing
@@ -61,7 +67,6 @@ RIFE_ZIP = (("https://huggingface.co/r3gm/RIFE/resolve/7ebada9b4387e6a599766e408
 RIFE_FILE = "rife425/flownet.pkl"
 MANIFEST = "SHA256SUMS"          # written next to the weights when they are fetched: what available() re-checks
 
-GPU = threading.Lock()           # one part on the card at a time; the CPU encodes of the others run alongside
 _models = {}
 _checked = {}
 
@@ -420,15 +425,37 @@ def selfcheck(root=None):
 
 # ---- running them on a part -----------------------------------------------------------------------------------------
 
+def _ratio(v):
+    try:
+        num, _, den = str(v or "").partition("/")
+        r = float(num) / float(den or 1)
+        return r if 1.0 <= r <= 240.0 else None
+    except (ValueError, ZeroDivisionError):
+        return None
+
+
+def rate_of(st):
+    """The frame rate the frames really come at, from an ffprobe stream entry. The timestamp map (timeline) is only
+    as true as this number: r_frame_rate is the stream's base rate, and on a variable-rate clip it can say 48 or 50
+    for a 24 fps picture — the part would play twice as fast and then freeze. nb_frames over the duration counts the
+    frames actually there; avg_frame_rate is ffprobe's own count; r_frame_rate is the last resort."""
+    try:
+        n, d = int(st.get("nb_frames") or 0), float(st.get("duration") or 0)
+        if n >= 3 and d > 0.1 and 1.0 <= n / d <= 240.0:
+            return n / d
+    except (TypeError, ValueError):
+        pass
+    return _ratio(st.get("avg_frame_rate")) or _ratio(st.get("r_frame_rate")) or 24.0
+
+
 def probe(src):
     """(width, height, fps, matrix) of a clip's video stream. matrix is bt709 when tagged so, else bt601 (ffmpeg's
     own reading of an untagged stream), so the rgb round trip converts back with the matrix it came in with."""
     r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-                        "stream=width,height,r_frame_rate,color_space", "-of", "json", src], capture_output=True, text=True)
+                        "stream=width,height,r_frame_rate,avg_frame_rate,nb_frames,duration,color_space", "-of", "json", src],
+                       capture_output=True, text=True)
     st = json.loads(r.stdout or "{}").get("streams", [{}])[0]
-    num, _, den = str(st.get("r_frame_rate") or "24/1").partition("/")
-    fps = float(num) / float(den or 1) if float(den or 1) else 24.0
-    return int(st["width"]), int(st["height"]), fps or 24.0, ("bt709" if st.get("color_space") == "bt709" else "bt601")
+    return int(st["width"]), int(st["height"]), rate_of(st), ("bt709" if st.get("color_space") == "bt709" else "bt601")
 
 
 def _to_tensor(raw, w, h, dev, half):
@@ -513,6 +540,8 @@ class _Frames:
         return y
 
     def get(self, i):
+        """Source frame i, upscaled. One frame past the end is the last frame (the hold, like tpad); more than one
+        means the clip ran out before the timeline did — its frame rate is not the one it declared — and raises."""
         n = self.w * self.h * 3
         while i not in self.cache and not self.eof:
             raw = self.proc.stdout.read(n)
@@ -528,7 +557,22 @@ class _Frames:
             return self.cache[i]
         if not self.cache:
             raise RuntimeError("the clip gave no frame")
+        if i > self.decoded:
+            raise RuntimeError(f"the clip ran out at frame {self.decoded} where the timeline needs frame {i}: "
+                               f"it is not {self.fps:.3f} fps")
         return self.cache[max(self.cache)]
+
+    def drain(self):
+        """Every source frame of the window, counted: the ones decoded plus the rest, read and dropped (no upscale)."""
+        n = self.w * self.h * 3
+        total = self.decoded
+        while not self.eof:
+            raw = self.proc.stdout.read(n)
+            if not raw or len(raw) < n:
+                self.eof = True
+                break
+            total += 1
+        return total
 
     def close(self):
         try:
@@ -581,6 +625,11 @@ def enhance(src, mid, usable, stretch, want, fps, factor, look, tile=None):
                 y = a
             enc.stdin.write((y[0] * 255.0).round_().clamp_(0, 255).to(torch.uint8).permute(1, 2, 0).contiguous().cpu().numpy().tobytes())
             n_out += 1
+        # The map above trusted the clip's rate; the frames it really has in the window must agree with it, or the
+        # part plays too fast or too slow for the same length and the checks downstream (size, rate, seconds) pass.
+        frames_seen = frames.drain()
+        if abs(frames_seen - n_src_est) > 2:
+            raise RuntimeError(f"the clip has {frames_seen} frames in {usable:.2f} s, not the {n_src_est} of {frames.fps:.3f} fps")
         enc.stdin.close()
         rc = enc.wait()
         if rc != 0:
@@ -598,7 +647,7 @@ def enhance(src, mid, usable, stretch, want, fps, factor, look, tile=None):
     frames_in = max(frames.decoded, 1)
     return {"sr_fps": round(frames_in / stats["sr_s"], 2) if stats["sr_s"] else None,
             "rife_fps": round(n_out / stats["rife_s"], 2) if stats["rife_s"] else None,
-            "frames_in": frames.decoded, "frames_in_expected": n_src_est, "frames_out": n_out, "size": f"{sw}x{sh}",
+            "frames_in": frames.decoded, "frames_in_expected": n_src_est, "frames_seen": frames_seen, "frames_out": n_out, "size": f"{sw}x{sh}",
             "vram_peak_gb": round(torch.cuda.max_memory_allocated() / 1024 ** 3, 2), "tile": stats["tile"]}
 
 
@@ -643,9 +692,147 @@ def benchmark(src, factor, look, n=12):
     return {"sr_s": stats["sr_s"] / max(1, len(ups) - 1), "rife_s": t_rife / pairs, "io_s": t_io / pairs}
 
 
-if __name__ == "__main__":   # on a box: python3 kleo_sr.py fetch [dir] | check [dir]
+# ---- the card in a child process ------------------------------------------------------------------------------------
+
+class Overrun(RuntimeError):
+    """A request to the card's child took longer than it was given; the child has been killed."""
+
+
+def _pump(stream, q):
+    try:
+        for line in stream:
+            q.put(line)
+    except Exception:
+        pass
+    q.put(None)
+
+
+class Card:
+    """The GPU half of this module, in a child process (`kleo_sr.py serve`): one JSON line per request, one per
+    answer, and a time limit on each. A request that overruns — a slow card, a card that throttles, a CUDA call that
+    never returns — kills the child and raises Overrun; the caller's thread is free again and falls back. The next
+    request starts a fresh child (models load again, on an emptied card). `lock` keeps one request on the card at a
+    time; the parent never imports torch."""
+
+    def __init__(self, argv=None):
+        self.argv = argv or [sys.executable, "-u", os.path.abspath(__file__), "serve"]
+        self.lock = threading.Lock()
+        self.proc, self.answers = None, None
+
+    def _start(self):
+        self.proc = subprocess.Popen(self.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+        self.answers = queue.Queue()
+        threading.Thread(target=_pump, args=(self.proc.stdout, self.answers), daemon=True).start()
+
+    def call(self, op, timeout, **kw):
+        """The child's answer to `op`, or an exception: Overrun past `timeout` seconds, RuntimeError on its error."""
+        if self.proc is None or self.proc.poll() is not None:
+            self._start()
+        try:
+            self.proc.stdin.write(json.dumps({"op": op, **kw}) + "\n")
+            self.proc.stdin.flush()
+        except (OSError, ValueError) as e:
+            self.kill()
+            raise RuntimeError(f"the GPU process is gone ({e})")
+        try:
+            line = self.answers.get(timeout=max(0.01, float(timeout)))
+        except queue.Empty:
+            self.kill()
+            raise Overrun(f"{op} took more than {timeout:.0f} s; the GPU process was killed")
+        if line is None:
+            self.kill()
+            raise RuntimeError(f"the GPU process died during {op}")
+        try:
+            r = json.loads(line)
+        except ValueError:
+            self.kill()
+            raise RuntimeError(f"the GPU process answered {line[:120]!r}")
+        if not r.get("ok"):
+            msg = str(r.get("error") or "unknown error")
+            if r.get("oom") and not is_oom(RuntimeError(msg)):
+                msg = "out of memory: " + msg
+            raise RuntimeError(msg)
+        return r.get("result")
+
+    def available(self, timeout=180):
+        """(ok, reason, gpu name), read by the child: the parent never opens a CUDA context of its own."""
+        if os.environ.get("KLEO_SR", "auto").strip().lower() in ("off", "0", "false", "no"):
+            return False, "KLEO_SR=off", None
+        try:
+            ok, why, name = self.call("available", timeout)
+            return bool(ok), str(why), name
+        except Exception as e:
+            return False, f"the GPU process could not answer ({str(e)[:160]})", None
+
+    def benchmark(self, src, factor, look, timeout=300):
+        return self.call("benchmark", timeout, src=src, factor=factor, look=look)
+
+    def enhance(self, src, mid, usable, stretch, want, fps, factor, look, tile=None, timeout=600):
+        return self.call("enhance", timeout, src=src, mid=mid, usable=usable, stretch=stretch, want=want, fps=fps,
+                         factor=factor, look=look, tile=tile)
+
+    def kill(self):
+        p, self.proc = self.proc, None
+        if p is None:
+            return
+        try:
+            p.kill()
+        except Exception:
+            pass
+        try:
+            p.wait(timeout=10)                    # a process stuck in the driver may never go; it is abandoned
+        except Exception:
+            pass
+
+    def close(self):
+        """Hand the card back: ask the child to quit, kill it if it does not."""
+        p = self.proc
+        if p is None:
+            return
+        try:
+            p.stdin.write(json.dumps({"op": "quit"}) + "\n")
+            p.stdin.flush()
+            p.wait(timeout=20)
+            self.proc = None
+        except Exception:
+            self.kill()
+
+
+def serve():
+    """The child's loop: a JSON request per line on stdin, a JSON answer per line on the real stdout. Anything else
+    that writes to stdout (a library, an ffmpeg child) is sent to stderr, so the protocol line is never corrupted."""
+    proto = os.fdopen(os.dup(1), "w", buffering=1)
+    os.dup2(2, 1)
+    sys.stdout = sys.stderr
+
+    def _available():
+        ok, why = available()
+        return [ok, why, gpu_name() if ok else None]
+
+    ops = {"available": _available, "benchmark": benchmark, "enhance": enhance, "release": release}
+    for line in sys.stdin:
+        try:
+            req = json.loads(line)
+        except ValueError:
+            continue
+        op = req.pop("op", None)
+        if op == "quit":
+            break
+        try:
+            if op not in ops:
+                raise ValueError(f"unknown op {op!r}")
+            proto.write(json.dumps({"ok": True, "result": ops[op](**req)}) + "\n")
+        except Exception as e:
+            proto.write(json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"[:600], "oom": is_oom(e)}) + "\n")
+    release()
+
+
+if __name__ == "__main__":   # on a box: python3 kleo_sr.py fetch [dir] | check [dir] | serve (kleo_video's child)
     cmd = sys.argv[1] if len(sys.argv) > 1 else "check"
     where = sys.argv[2] if len(sys.argv) > 2 else None
+    if cmd == "serve":
+        serve()
+        sys.exit(0)
     if cmd == "fetch":
         print("fetched into", fetch_weights(where), flush=True)
     print(selfcheck(where) if cmd in ("check", "fetch") else available(), flush=True)

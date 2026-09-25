@@ -503,6 +503,13 @@ def finish_vf(width, height, fps, want, stretch=1.0):
 # card, no weights, a projection over the budget, an error on a part) falls back to finish_vf for that part or film.
 SHARPEN_SR = float(os.environ.get("KLEO_SHARPEN_SR", "0.2"))      # after SR there is real edge detail; the A/B decides
 SR_BUDGET_MIN = float(os.environ.get("KLEO_SR_BUDGET_MIN", "20"))  # projected GPU minutes a film may spend on SR + RIFE
+# The projection comes from twelve frames of the first clip; it cannot see a card that throttles after a few minutes
+# or the CPU the other parts' encodes take. So the GPU time the parts really use is added up, and once it passes
+# max(1.5 x projection, projection + SR_GRACE_MIN) — or SR_DEADLINE_MIN of wall clock since the decision — the parts
+# not started yet take today's chain, and a part still on the card is cut off at that limit (its child is killed).
+SR_GRACE_MIN = float(os.environ.get("KLEO_SR_GRACE_MIN", "5"))
+SR_DEADLINE_MIN = float(os.environ.get("KLEO_SR_DEADLINE_MIN", "40"))
+_clock = time.monotonic                                             # a module attribute so the tests can drive time
 
 
 def finish_vf_sr(width, height, want):
@@ -570,23 +577,27 @@ def _part_problem(path, width, height, fps, want):
     return None
 
 
-def _sr_decision(srm, recipes, shots_json, width, height, fps, say):
-    """Once per film: (factor, look) when the whole track can go through the GPU within the budget, else None. The
-    look never changes in the middle of a film because of this: only an error on one part does, and says so."""
+def _sr_decision(srm, card, recipes, shots_json, width, height, fps, say):
+    """Once per film: (factor, look, projected minutes) when the whole track can go through the GPU within the
+    budget, else None. The card is asked through its child process (kleo_sr.Card), the benchmark with a time limit of
+    its own. The look never changes in the middle of a film because of this: only an error on one part does, and
+    says so."""
     try:
         if srm is None:
             say("SR off: kleo_sr is not in this image — Lanczos + minterpolate as before")
             return None
-        ok, why = srm.available()
+        ok, why, gpu = card.available()
         if ok:
             look = _look_of(shots_json)
             first = next(iter(recipes.values()))[0]
             factor = srm.plan(*_size_of(first), width, height)
-            est = srm.estimate_minutes(srm.benchmark(first, factor, look), list(recipes.values()), fps)
+            with card.lock:
+                bench = card.benchmark(first, factor, look)
+            est = srm.estimate_minutes(bench, list(recipes.values()), fps)
             if est <= SR_BUDGET_MIN:
                 model = srm.model_for(look, factor) or "no upscaler"
-                say(f"SR on: {srm.gpu_name()}, {model} x{factor} + RIFE 4.25, est {est:.1f} min")
-                return factor, look
+                say(f"SR on: {gpu or 'unknown GPU'}, {model} x{factor} + RIFE 4.25, est {est:.1f} min")
+                return factor, look, est
             why = f"estimated {est:.0f} min over the {SR_BUDGET_MIN:g} min budget"
         say(f"SR off: {why} — Lanczos + minterpolate as before")
     except Exception as e:
@@ -704,8 +715,19 @@ def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=Non
         return None
     # Between the passes, once for the whole film: may the GPU finish these parts (kleo_sr)?
     srm = _sr_module() if recipes else None
-    sr = _sr_decision(srm, recipes, shots_json, width, height, fps, say) if recipes else None
+    card = srm.Card() if srm is not None else None
+    sr = _sr_decision(srm, card, recipes, shots_json, width, height, fps, say) if recipes else None
     breaker, breaker_lock = [False], threading.Lock()
+    # What the GPU may still spend: the projection with headroom, and a wall clock from this moment (see SR_GRACE_MIN).
+    gpu_used = [0.0]
+    allowance_s = max(1.5 * sr[2], sr[2] + SR_GRACE_MIN) * 60.0 if sr else 0.0
+    deadline = _clock() + SR_DEADLINE_MIN * 60.0
+
+    def trip(why):
+        with breaker_lock:
+            if not breaker[0]:
+                breaker[0] = True
+                say(f"SR off for the parts not started yet: {why}")
 
     def run_sr(dst, rec):
         """The part through the GPU, then the tail encode; False (and said) when today's chain must do it instead."""
@@ -714,8 +736,19 @@ def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=Non
         tile = None
         for attempt in (1, 2):
             try:
-                with srm.GPU:
-                    stats = srm.enhance(src, mid, usable, stretch, want, fps, sr[0], sr[1], tile=tile)
+                with card.lock:
+                    # Checked on the card, not before the wait for it: the part ahead may have used what was left.
+                    if breaker[0]:
+                        return False
+                    left = min(allowance_s - gpu_used[0], deadline - _clock())
+                    if left <= 0:
+                        trip(f"the GPU has used {gpu_used[0] / 60:.1f} min against a projection of {sr[2]:.1f} min")
+                        return False
+                    t0 = _clock()
+                    try:
+                        stats = card.enhance(src, mid, usable, stretch, want, fps, sr[0], sr[1], tile=tile, timeout=left)
+                    finally:
+                        gpu_used[0] += _clock() - t0
                 # The encode runs outside the lock: the CPU finishes this part while the card starts the next one.
                 r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", mid, "-vf", finish_vf_sr(width, height, want),
                                     "-t", f"{want:.3f}", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "16",
@@ -733,18 +766,14 @@ def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=Non
                 oom = srm.is_oom(e)
                 if oom and attempt == 1:
                     tile = 256                            # the upscaler goes in tiles, on an emptied card
-                    try:
-                        with srm.GPU:
-                            srm.release()
-                    except Exception:
-                        pass
+                    with card.lock:
+                        card.kill()                       # a fresh child: nothing of the failed attempt stays on the card
                     continue
                 say(f"{label}: SR failed ({str(e)[:200]}), Lanczos path")
-                if not oom:
-                    with breaker_lock:
-                        if not breaker[0]:
-                            breaker[0] = True
-                            say("SR off for the parts not started yet: one failure is enough to stop trusting it for this film")
+                if isinstance(e, srm.Overrun):
+                    trip(f"a part overran the GPU's time ({gpu_used[0] / 60:.1f} min used, projection {sr[2]:.1f} min)")
+                elif not oom:
+                    trip("one failure is enough to stop trusting it for this film")
                 return False
             finally:
                 try:
@@ -781,9 +810,9 @@ def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=Non
                     except Exception:
                         pass
     finally:
-        if sr:
+        if card is not None:
             try:
-                srm.release()
+                card.close()
             except Exception:
                 pass
     if failed:

@@ -415,43 +415,145 @@ class SrPlanTest(unittest.TestCase):
         self.assertTrue(ksr.is_oom(RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")))
         self.assertFalse(ksr.is_oom(RuntimeError("no kernel image is available")))
 
+    def test_the_rate_is_the_frames_really_there_not_the_base_rate(self):
+        """A variable-rate clip whose r_frame_rate says 48 while it carries 24 frames a second would play twice as
+        fast and then freeze under the timestamp map: the count of frames over the duration wins."""
+        self.assertAlmostEqual(ksr.rate_of({"r_frame_rate": "48/1", "avg_frame_rate": "24/1", "nb_frames": "121", "duration": "5.041667"}), 24.0, places=3)
+        self.assertAlmostEqual(ksr.rate_of({"r_frame_rate": "50/1", "avg_frame_rate": "25/1"}), 25.0)
+        self.assertAlmostEqual(ksr.rate_of({"r_frame_rate": "24000/1001", "avg_frame_rate": "0/0"}), 23.976, places=3)
+        self.assertEqual(ksr.rate_of({}), 24.0)
+        self.assertEqual(ksr.rate_of({"r_frame_rate": "90000/1", "avg_frame_rate": "0/0", "nb_frames": "N/A"}), 24.0, "a timebase is not a rate")
 
-class FakeSr:
-    """kleo_sr with the GPU replaced: enhance() writes a real (tiny) clip of the part's slowed length at `fps`."""
+    def frames(self, n):
+        import io
+        fr = object.__new__(ksr._Frames)
+        fr.w, fr.h, fr.fps = 2, 1, 24.0
+        fr.proc = types.SimpleNamespace(stdout=io.BytesIO(bytes(range(n)) * 6))
+        fr.cache, fr.decoded, fr.eof = {}, 0, False
+        fr._upscale = lambda raw: raw
+        return fr
 
-    def __init__(self, ok=True, est=1.0, fail_on=None, oom_on=None):
+    def test_one_frame_past_the_end_is_the_hold_two_are_a_wrong_rate(self):
+        fr = self.frames(5)
+        for i in range(5):
+            self.assertIsNotNone(fr.get(i))
+        self.assertEqual(fr.get(5), fr.get(4), "one past the last frame: held, like tpad")
+        with self.assertRaisesRegex(RuntimeError, "ran out at frame 5 where the timeline needs frame 7"):
+            fr.get(7)
+
+    def test_the_whole_window_is_counted_even_when_the_map_stops_early(self):
+        """A rate read too low: the map needs only the first half of the frames, the rest are counted, not upscaled."""
+        fr = self.frames(10)
+        fr.get(4)
+        self.assertEqual(fr.decoded, 5)
+        self.assertEqual(fr.drain(), 10)
+
+
+class SrCardTest(unittest.TestCase):
+    """kleo_sr.Card: the card in a child process, a time limit on every request. Real children here, no torch."""
+
+    def test_the_real_child_answers_and_says_why_there_is_no_card(self):
+        c = ksr.Card(); self.addCleanup(c.kill)
+        ok, why, gpu = c.available(timeout=120)
+        self.assertFalse(ok); self.assertTrue(why)
+        with self.assertRaisesRegex(RuntimeError, "unknown op"):
+            c.call("format_the_disk", 60)
+        c.close()
+        self.assertIsNone(c.proc)
+
+    def test_a_request_past_its_limit_kills_the_child_and_frees_the_caller(self):
+        import time
+        hang = "import sys, time\nfor line in sys.stdin:\n    time.sleep(3600)\n"
+        c = ksr.Card([sys.executable, "-c", hang]); self.addCleanup(c.kill)
+        t0 = time.time()
+        with self.assertRaises(ksr.Overrun):
+            c.enhance("a.mp4", "b.mp4", 1.0, 1.0, 1.0, 60, 4, "realistic", timeout=1.0)
+        self.assertLess(time.time() - t0, 15)
+        self.assertIsNone(c.proc, "the hung child is gone")
+
+    def test_a_child_that_dies_is_an_error_not_a_hang(self):
+        c = ksr.Card([sys.executable, "-c", "import sys; sys.stdin.readline(); sys.exit(3)"]); self.addCleanup(c.kill)
+        with self.assertRaisesRegex(RuntimeError, "died during benchmark"):
+            c.benchmark("a.mp4", 4, "realistic", timeout=60)
+
+    def test_an_out_of_memory_answer_stays_an_out_of_memory_error(self):
+        say = "import sys, json\nfor line in sys.stdin:\n    print(json.dumps({'ok': False, 'error': 'OutOfMemoryError: boom', 'oom': True}), flush=True)\n"
+        c = ksr.Card([sys.executable, "-c", say]); self.addCleanup(c.kill)
+        with self.assertRaises(RuntimeError) as cm:
+            c.enhance("a.mp4", "b.mp4", 1.0, 1.0, 1.0, 60, 4, "realistic", timeout=60)
+        self.assertTrue(ksr.is_oom(cm.exception))
+
+    def test_off_never_starts_a_child(self):
+        os.environ["KLEO_SR"] = "off"; self.addCleanup(lambda: os.environ.pop("KLEO_SR", None))
+        c = ksr.Card(["/nonexistent/python"])
+        self.assertEqual(c.available(), (False, "KLEO_SR=off", None))
+        self.assertIsNone(c.proc)
+
+
+class FakeCard:
+    """kleo_sr.Card with the child replaced: enhance() writes a real (tiny) clip of the part's slowed length at `fps`.
+    `cost` seconds of (fake) GPU time per part, read off kv._clock; a part that would take longer than the time it is
+    given behaves like the real child past its limit: the clock moves to the limit, the child is killed, Overrun."""
+
+    def __init__(self, fake):
         import threading
-        self.GPU, self.lock = threading.Lock(), threading.Lock()
-        self.ok, self.est, self.fail_on, self.oom_on = ok, est, fail_on, oom_on
-        self.calls, self.active, self.max_active, self.released = [], 0, 0, 0
+        self.fake, self.lock = fake, threading.Lock()
 
-    def available(self): return (True, "ok") if self.ok else (False, "no CUDA device")
-    def plan(self, w, h, W, H): return 2
-    def model_for(self, look, factor): return "fake-x2"
-    def gpu_name(self): return "Fake GPU"
-    def benchmark(self, src, factor, look): return {"sr_s": 0.01}
-    def estimate_minutes(self, bench, recipes, fps): return self.est
-    def is_oom(self, e): return "out of memory" in str(e)
-    def release(self): self.released += 1
+    def available(self, timeout=180):
+        return (True, "ok", "Fake GPU") if self.fake.ok else (False, "no CUDA device", None)
 
-    def enhance(self, src, mid, usable, stretch, want, fps, factor, look, tile=None):
+    def benchmark(self, src, factor, look, timeout=300):
+        return {"sr_s": 0.01}
+
+    def kill(self):
+        self.fake.killed += 1
+
+    def close(self):
+        self.fake.released += 1
+
+    def enhance(self, src, mid, usable, stretch, want, fps, factor, look, tile=None, timeout=600):
         import subprocess, time
+        f = self.fake
         part = int(os.path.basename(mid)[:3])
-        with self.lock:
-            self.active += 1; self.max_active = max(self.max_active, self.active); self.calls.append((part, tile))
+        with f.lock:
+            f.active += 1; f.max_active = max(f.max_active, f.active); f.calls.append((part, tile)); f.timeouts.append(timeout)
         try:
             time.sleep(0.05)
-            if part == self.fail_on:
+            cost = f.costs.get(part, f.cost)
+            if cost > timeout:
+                f.now[0] += timeout
+                self.kill()
+                raise f.Overrun(f"enhance took more than {timeout:.0f} s; the GPU process was killed")
+            f.now[0] += cost
+            if part == f.fail_on:
                 raise RuntimeError("boom")
-            if part == self.oom_on:
+            if part == f.oom_on:
                 raise RuntimeError("CUDA out of memory")
             subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"testsrc=size=64x36:rate={fps}",
                             "-t", f"{min(want, usable * stretch):.3f}", "-c:v", "libx264", "-preset", "ultrafast",
                             "-pix_fmt", "yuv420p", mid], check=True, capture_output=True)
             return {"frames_in": 1, "frames_out": 1}
         finally:
-            with self.lock:
-                self.active -= 1
+            with f.lock:
+                f.active -= 1
+
+
+class FakeSr:
+    """kleo_sr with the GPU replaced (its Card is a FakeCard); the pure half is the real module's where it matters."""
+    Overrun = ksr.Overrun
+
+    def __init__(self, ok=True, est=1.0, fail_on=None, oom_on=None, cost=0.0, costs=None):
+        import threading
+        self.lock = threading.Lock()
+        self.ok, self.est, self.fail_on, self.oom_on, self.cost, self.costs = ok, est, fail_on, oom_on, cost, costs or {}
+        self.calls, self.timeouts, self.active, self.max_active, self.released, self.killed = [], [], 0, 0, 0, 0
+        self.now = [1000.0]
+
+    def Card(self): return FakeCard(self)
+    def plan(self, w, h, W, H): return 2
+    def model_for(self, look, factor): return "fake-x2"
+    def estimate_minutes(self, bench, recipes, fps): return self.est
+    def is_oom(self, e): return "out of memory" in str(e)
 
 
 class SrHookTest(FreezeTest):
@@ -462,6 +564,9 @@ class SrHookTest(FreezeTest):
         saved = sys.modules.get("kleo_sr")
         sys.modules["kleo_sr"] = fake
         self.addCleanup(lambda: sys.modules.__setitem__("kleo_sr", saved) if saved else sys.modules.pop("kleo_sr", None))
+        clock = kv._clock
+        kv._clock = lambda: fake.now[0]
+        self.addCleanup(setattr, kv, "_clock", clock)
         return fake
 
     def film(self, n=3, workers=3):
@@ -488,6 +593,46 @@ class SrHookTest(FreezeTest):
         self.assertFalse(any("Lanczos path" in m for m in said), said)
         self.assertGreaterEqual(fake.released, 1, "the card is handed back after the track")
 
+    def test_every_part_gets_only_the_gpu_time_the_film_has_left(self):
+        fake = self.use(FakeSr(est=2.0, cost=30.0))
+        out, _, said = self.film(workers=1)
+        self.assertTrue(out and os.path.isfile(out), said)
+        allowance = max(1.5 * 2.0, 2.0 + kv.SR_GRACE_MIN) * 60
+        self.assertEqual(fake.timeouts, [allowance, allowance - 30, allowance - 60])
+
+    def test_a_card_slower_than_its_projection_hands_the_rest_to_the_cpu(self):
+        """The 12-frame benchmark said 2 min; the card really needs 2.5 min a part. The allowance is
+        max(1.5 x 2, 2 + 5) = 7 min: two parts fit, the third is cut off at the 2 min left (its child killed) and
+        finished by today's chain, and the film is delivered at its length."""
+        fake = self.use(FakeSr(est=2.0, cost=150.0))
+        self.assertEqual(kv.SR_GRACE_MIN, 5.0)
+        out, seen, said = self.film(workers=1)
+        self.assertTrue(out and os.path.isfile(out), said)
+        self.assertEqual([p for p, _ in fake.calls], [0, 1, 2])
+        self.assertEqual(fake.timeouts, [420.0, 270.0, 120.0])
+        self.assertTrue(any("s1 shot 3: SR failed (enhance took more than 120 s" in m for m in said), said)
+        self.assertEqual(sum("SR off for the parts not started yet: a part overran" in m for m in said), 1, said)
+        self.assertEqual(seen, [(1, 3), (2, 3), (3, 3)])
+        self.assertAlmostEqual(kv.seconds_of(out), 3.0, delta=0.15)
+
+    def test_once_the_allowance_is_spent_no_part_starts_on_the_card(self):
+        fake = self.use(FakeSr(est=0.5, costs={0: 330.0}))
+        out, _, said = self.film(workers=1)
+        self.assertTrue(out and os.path.isfile(out), said)
+        self.assertEqual([p for p, _ in fake.calls], [0], "5.5 min of 5.5 spent: nothing else is sent to the card")
+        self.assertEqual(sum("SR off for the parts not started yet: the GPU has used 5.5 min" in m for m in said), 1, said)
+        self.assertFalse(any("SR failed" in m for m in said), said)
+        self.assertAlmostEqual(kv.seconds_of(out), 3.0, delta=0.15)
+
+    def test_the_wall_clock_deadline_stops_the_card_too(self):
+        fake = self.use(FakeSr(est=1.0, cost=10.0))
+        saved = kv.SR_DEADLINE_MIN; kv.SR_DEADLINE_MIN = 0.25; self.addCleanup(setattr, kv, "SR_DEADLINE_MIN", saved)
+        out, _, said = self.film(workers=1)
+        self.assertTrue(out and os.path.isfile(out), said)
+        self.assertEqual(fake.timeouts, [15.0, 5.0])
+        self.assertTrue(any("SR failed (enhance took more than 5 s" in m for m in said), said)
+        self.assertAlmostEqual(kv.seconds_of(out), 3.0, delta=0.15)
+
     def test_a_failing_part_falls_back_and_the_rest_stop_trusting_the_gpu(self):
         fake = self.use(FakeSr(fail_on=1))
         out, seen, said = self.film(workers=1)
@@ -503,6 +648,7 @@ class SrHookTest(FreezeTest):
         out, seen, said = self.film(workers=1)
         self.assertTrue(out and os.path.isfile(out), said)
         self.assertEqual(fake.calls, [(0, None), (1, None), (1, 256), (2, None)])
+        self.assertEqual(fake.killed, 1, "the retry runs in a fresh child, on an emptied card")
         self.assertFalse(any("SR off for the parts" in m for m in said), "an OOM is not a reason to stop for the film")
         self.assertAlmostEqual(kv.seconds_of(out), 3.0, delta=0.15)
 
@@ -549,6 +695,67 @@ class SrHookTest(FreezeTest):
         self.assertIn("tpad=stop_mode=clone:stop_duration=5.000", vf)
         self.assertTrue(vf.endswith(kv.GRADE))
         self.assertIn("scale=2160:3840", vf)
+
+
+srab = load("sr_ab_under_test", os.path.join(os.path.dirname(HERE), "scripts", "sr-ab.py"))
+
+
+class SrAbEvidenceTest(unittest.TestCase):
+    """scripts/sr-ab.py on the box: whatever fails after forty minutes of rented GPU, what was measured reaches R2
+    before `guarded` destroys the box — the probe is never paid for twice for want of an upload."""
+
+    def setUp(self):
+        import tempfile, shutil
+        self.tmp = tempfile.mkdtemp(prefix="kleo-srab-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.said = []
+        self.patch("say", lambda *a: self.said.append(" ".join(str(x) for x in a)))
+
+    def patch(self, name, fake):
+        saved = getattr(srab, name); setattr(srab, name, fake); self.addCleanup(setattr, srab, name, saved)
+
+    def test_a_late_failure_still_uploads_the_evidence_and_says_ab_fail(self):
+        out, sent = os.path.join(self.tmp, "out"), []
+
+        def run(ab, o):
+            os.makedirs(o, exist_ok=True)
+            open(os.path.join(o, "results.json"), "w").write("{}")
+            raise RuntimeError("the split encode failed")
+        self.patch("run", run)
+        self.patch("upload", lambda o: sent.append(o) or ["probe/results.json"])
+        self.assertEqual(srab.box("/opt/kleo/ab", out), 1)
+        self.assertEqual(sent, [out], "the upload ran after the failure")
+        self.assertIn("PROBE_FILES 1 uploaded", self.said)
+        self.assertIn("AB_FAIL RuntimeError: the split encode failed", self.said)
+        self.assertNotIn("AB_DONE", self.said)
+
+    def test_a_clean_run_says_ab_done(self):
+        self.patch("run", lambda ab, o: {})
+        self.patch("upload", lambda o: [])
+        self.assertEqual(srab.box("/opt/kleo/ab", os.path.join(self.tmp, "out")), 0)
+        self.assertEqual(self.said[-1], "AB_DONE")
+
+    def test_the_run_leaves_a_results_json_with_its_error(self):
+        import json
+        out = os.path.join(self.tmp, "out")
+        with self.assertRaises(FileNotFoundError):
+            srab.run(os.path.join(self.tmp, "no-bundle"), out)
+        r = json.load(open(os.path.join(out, "results.json")))
+        self.assertIn("FileNotFoundError", r["error"])
+        self.assertEqual(r["variants"], {})
+
+    def test_one_refused_file_does_not_lose_the_others(self):
+        out = os.path.join(self.tmp, "out"); os.makedirs(out)
+        for name in ("a.json", "b.mp4", "c.jpg"):
+            open(os.path.join(out, name), "w").write("x")
+
+        def one(path, name):
+            if name == "b.mp4":
+                raise RuntimeError("PUT -> 413")
+        self.patch("upload_one", one)
+        with self.assertRaisesRegex(RuntimeError, "1 file\\(s\\) not uploaded: b.mp4"):
+            srab.upload(out)
+        self.assertEqual(open(os.path.join(out, "uploaded.txt")).read().split(), ["probe/a.json", "probe/c.jpg"])
 
 
 class GenerateTest(unittest.TestCase):
