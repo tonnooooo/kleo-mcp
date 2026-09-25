@@ -7,7 +7,7 @@ import { rid, nowIso, int, hmacHex } from "./util";
 import { isProbeFile } from "./probe.ts";
 import { isFlagActive } from "./schema";
 import { backendFor } from "./backends";
-import { validateStoryboard, kleoStyleOf, pictureScenes, narrationOf, MAX_PICTURES, wordBudget, speedFor, trimShots, KLEO_STYLES, FILM_LOOKS, type KleoStyle, type FilmLook } from "./keou-contract";
+import { validateStoryboard, kleoStyleOf, pictureScenes, narrationOf, MAX_PICTURES, wordBudget, speedFor, trimShots, mergeThinScenes, KLEO_STYLES, FILM_LOOKS, type KleoStyle, type FilmLook } from "./keou-contract";
 import { treatmentProblems, repairTreatment, variationFor, faithfulVariation, applySoundOptions, musicOf, type Treatment, type SoundOptions } from "./treatment.ts";
 import { denyInPictures } from "./storyboard";
 import { musicAnswer, subtitlesAnswer, lookFromText } from "./adaptive.ts";
@@ -272,6 +272,9 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     if (filmed) (r.storyboard as Record<string, unknown>).backdrop = "video";
     else delete (r.storyboard as Record<string, unknown>).backdrop;
     const finished = finishForProduct(r.storyboard as Record<string, unknown>, product, duration);
+    // On the API road a line too short to fill its paid clip is joined to a neighbour, word for word (keou-contract.ts
+    // mergeThinScenes): the same last resort the planner takes, on this road into the queue too.
+    mergeThinScenes(finished, clipFloor, { spec });
     // No more shots than a line's seconds can carry (keou-contract.ts shotBudget, with the job's clip floor) — and never
     // the only shot that shows something the spec asks for.
     trimShots(finished, spec, clipFloor);

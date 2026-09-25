@@ -213,7 +213,21 @@ export const SHOTS_MIN_WORDS_FOR_TWO = 14;
  * speed), never fewer than the seven of the local road — eleven words for a 4-second floor. 0 is the local road and
  * the animatic, where nothing is bought per shot: the seven-word rule, unchanged.
  */
-export const clipWordsPerShot = (floorS = 0): number => (floorS > 0 ? Math.max(SHOTS_WORDS_PER_SHOT, Math.ceil(floorS * 2.45 * 1.1)) : SHOTS_WORDS_PER_SHOT);
+export const clipWordsPerShot = (floorS = 0): number => (floorS > 0 ? Math.max(SHOTS_WORDS_PER_SHOT, Math.ceil(floorS * FILM_WPS * 1.1)) : SHOTS_WORDS_PER_SHOT);
+/**
+ * THE TWO SPEECH RATES (25 September 2026). FILM_WPS is what the planner budgets with: 2.45 words a second of FILM at
+ * voice speed 1.0 (2.7 at the planner's 1.1), pauses included — the rate wordBudget, speedFor and clipWordsPerShot
+ * share (recalibrated 22 September, see wordBudget). KOKORO_WPS is the voice itself, measured on the real Kokoro
+ * lines of gt_t2cxm2md (25 September, speed 1.0): 27 words spoken in 8.19 s (7 words in 2.19 s, 13 in 3.71 s, 7 in
+ * 2.29 s) — 3.3 words a second of speech, no pause. The two agree on the clip floor: eleven words at 1.1 are 3.03 s of
+ * speech, which with the scene's own pause fills a 4-second clip inside the worker's 1-second pad limit
+ * (worker/kleo_worker.py FIT_MAX_PAD); seven words are 1.9 s, and the box has to leave that clip to the old cut — the
+ * film that came out 11.2 s long for 15 asked.
+ */
+export const FILM_WPS = 2.45;
+export const KOKORO_WPS = 3.3;
+/** Seconds a line of `words` words takes to SAY at Kokoro speed `speed` (KOKORO_WPS; no pause counted). */
+export const spokenSeconds = (words: number, speed = 1): number => Math.max(0, Number(words) || 0) / (KOKORO_WPS * (speed > 0 ? speed : 1));
 export function shotBudget(words: number, floorS = 0): { min: number; max: number } {
   const w = Math.max(0, Number(words) || 0);
   const per = clipWordsPerShot(floorS);
@@ -248,7 +262,9 @@ export function trimShots(sb: { scenes?: unknown }, spec?: RequestSpec | null, f
   const sole = (sh: unknown) => coversOf(sh).some((id) => must.has(id) && (count.get(id) ?? 0) <= 1);
   let dropped = 0;
   for (const s of scenes) {
-    if (!isObj(s) || s.kind === "closing" || !Array.isArray(s.shots)) continue;
+    // A closing keeps its two pictures on the local road; with a clip floor each of them is a paid clip, and it is held
+    // to the line's budget like any other scene (25 September 2026).
+    if (!isObj(s) || (s.kind === "closing" && !(floorS > 0)) || !Array.isArray(s.shots)) continue;
     const shots = s.shots as unknown[];
     let over = shots.length - shotBudget(voiceWords(s), floorS).max;
     if (over <= 0) continue;
@@ -266,6 +282,88 @@ export function trimShots(sb: { scenes?: unknown }, spec?: RequestSpec | null, f
     if (isObj(shots[0]) && "at" in shots[0]) delete shots[0].at;
   }
   return dropped;
+}
+/**
+ * THE LAST RESORT FOR A LINE TOO SHORT FOR ITS CLIP (25 September 2026). On the API road every scene is at least one
+ * clip bought at the floor, and a line under clipWordsPerShot(floorS) words cannot fill it: the box leaves that scene
+ * to the old cut (worker/kleo_worker.py FIT_PAD), buys four seconds and shows two (gt_t2cxm2md: lines of 7, 13 and 7
+ * words, 12 s of clips for an 11.2 s film asked as 15). The planner asks for the missing words first, with their exact
+ * number; what is still short after that is JOINED to a neighbour here, never padded: the two lines are said as one,
+ * in their order, word for word (so a user's dictated script stays exactly theirs), the two scenes' pictures become
+ * one scene's, and one clip fewer is bought. Nothing is invented and nothing is dropped from the voice.
+ *
+ * Which pair: the thinnest line first, joined to the neighbour that makes the shorter line. The joined scene keeps the
+ * id, chapter, accent, title, layer state and cards of the one with more words (its section keeps the scene; the
+ * other section gives one up and disappears when it had only that one), the transition INTO the pair, and the kind of
+ * the second (a closing stays the closing). A join the direction's colour law would refuse — two neighbouring
+ * sections left with one accent — is not made; the next candidate is tried. A film never goes under two scenes (the
+ * contract's floor). The joined scene's pictures are then held to its line's budget (trimShots, the spec's sole
+ * witnesses kept) and to the kind's ceiling. `onMerge(at, keepFirst)` is told every join — scenes `at` and `at + 1`
+ * became one at `at` — so a caller can join whatever it keeps in parallel (the planner's outline). Returns one line
+ * per join, for the history. 0 is the local road and the animatic: nothing is bought per shot, nothing is joined.
+ */
+export function mergeThinScenes(sb: { scenes?: unknown; direction?: unknown; style?: unknown }, floorS = 0, opts: { spec?: RequestSpec | null; onMerge?: (at: number, keepFirst: boolean) => void } = {}): string[] {
+  if (!(floorS > 0) || !Array.isArray(sb.scenes) || ("style" in sb && sb.style !== undefined && sb.style !== "picture")) return [];
+  const scenes = sb.scenes as unknown[];
+  const per = clipWordsPerShot(floorS);
+  const notes: string[] = [];
+  const dir = isObj(sb.direction) && Array.isArray(sb.direction.sections) ? (sb.direction as { sections: Section[] }) : null;
+  const voiceOf = (s: Record<string, unknown>): string => (typeof s.voice === "string" ? s.voice.trim() : "");
+  for (let guard = 0; guard < 240 && scenes.length > 2; guard++) {
+    const pairs: { k: number; thin: number; words: number }[] = [];
+    for (let k = 0; k + 1 < scenes.length; k++) {
+      const a = scenes[k], b = scenes[k + 1];
+      if (!isObj(a) || !isObj(b)) continue;
+      const wa = voiceWords(a), wb = voiceWords(b);
+      if (wa >= per && wb >= per) continue;
+      pairs.push({ k, thin: Math.min(wa, wb), words: wa + wb });
+    }
+    pairs.sort((x, y) => x.thin - y.thin || x.words - y.words || x.k - y.k);
+    let joined = false;
+    for (const { k } of pairs) {
+      const a = scenes[k] as Record<string, unknown>, b = scenes[k + 1] as Record<string, unknown>;
+      const keepFirst = voiceWords(a) >= voiceWords(b);
+      // The sections after the join: the section of the scene that is not kept gives up one scene.
+      let sections: Section[] | null = null;
+      if (dir) {
+        const owner: number[] = [];
+        dir.sections.forEach((s, j) => { for (let n = 0; n < (Number(s?.scenes) || 0); n++) owner.push(j); });
+        if (owner.length === scenes.length) {
+          const loser = owner[k] === owner[k + 1] ? owner[k] : owner[keepFirst ? k + 1 : k];
+          sections = dir.sections.map((s, j) => (j === loser ? { ...s, scenes: s.scenes - 1 } : { ...s })).filter((s) => s.scenes > 0);
+          if (sections.length < DL.sections.min || sections.some((s, j) => j > 0 && s.accent === sections![j - 1].accent)) continue;
+        }
+      }
+      const keep = keepFirst ? a : b;
+      const va = voiceOf(a), vb = voiceOf(b);
+      const voice = `${va}${va && !/[.!?…"'»)\]]$/.test(va) ? "." : ""}${va && vb ? " " : ""}${vb}`;
+      // The second line's first picture now cuts on its first words: the shortest run of them that the first line
+      // does not already say, so the cut cannot land early.
+      const bw = vb.split(/\s+/).filter(Boolean);
+      const runs = [1, 2, 3, 4].filter((n) => n <= bw.length).map((n) => bw.slice(0, n).join(" ")).filter((r) => r.length <= SHOT_AT_MAX);
+      const at = runs.find((r) => !va.toLowerCase().includes(r.toLowerCase())) ?? runs[runs.length - 1] ?? "";
+      const shotsA = Array.isArray(a.shots) ? (a.shots as unknown[]).map((x) => (isObj(x) ? { ...x } : x)) : [];
+      const shotsB = Array.isArray(b.shots) ? (b.shots as unknown[]).map((x) => (isObj(x) ? { ...x } : x)) : [];
+      if (isObj(shotsB[0])) { if (at) (shotsB[0] as Record<string, unknown>).at = at; else delete (shotsB[0] as Record<string, unknown>).at; }
+      const merged: Record<string, unknown> = { ...keep, kind: b.kind, voice, shots: [...shotsA, ...shotsB] };
+      if (typeof b.hold === "number") merged.hold = b.hold; else delete merged.hold;
+      if (a.transition !== undefined) merged.transition = a.transition; else delete merged.transition;
+      if (b.kind === "closing") { for (const f of ["button", "detail"]) { if (f in b) merged[f] = b[f]; else delete merged[f]; } }
+      else { delete merged.button; delete merged.detail; }
+      trimShots({ scenes: [merged] }, opts.spec ?? null, floorS);
+      const cap = SHOTS_PER_SCENE[merged.kind === "closing" ? "closing" : "cinema"][1];
+      if (Array.isArray(merged.shots) && merged.shots.length > cap) merged.shots = (merged.shots as unknown[]).slice(0, cap);
+      if (Array.isArray(merged.shots) && isObj(merged.shots[0])) delete (merged.shots[0] as Record<string, unknown>).at;
+      scenes.splice(k, 2, merged);
+      if (dir && sections) dir.sections = sections;
+      opts.onMerge?.(k, keepFirst);
+      notes.push(`scenes ${k + 1} and ${k + 2} ("${String(a.id)}", ${voiceWords(a)} words; "${String(b.id)}", ${voiceWords(b)} words) were joined into one line of ${voiceWords(merged)} words: a line under ${per} words cannot fill a ${floorS}-second clip`);
+      joined = true;
+      break;
+    }
+    if (!joined) break;
+  }
+  return notes;
 }
 /** The shot range the guide, the planner and the website all quote, so the three can never say three different things. */
 export const shotRangeText = (kind: "cinema" | "closing"): string =>
@@ -1167,7 +1265,7 @@ export function defaultVoice(language: string, templateId?: string, preferred?: 
  * 32.9 s (gt_hxed87em) — 2.7 words a second of FILM, pauses included, on both.
  */
 export function wordBudget(duration_s: number, speed = 1.1): { target: number; min: number; max: number; wordsPerSecond: number } {
-  const wps = 2.45 * speed;
+  const wps = FILM_WPS * speed;
   const target = Math.round(duration_s * wps);
   return { target, min: Math.round(target * 0.8), max: Math.round(target * 1.1), wordsPerSecond: Math.round(wps * 100) / 100 };
 }
@@ -1182,6 +1280,6 @@ export function wordBudget(duration_s: number, speed = 1.1): { target: number; m
  */
 export function speedFor(words: number, duration_s: number): number {
   if (!(words > 0) || !(duration_s > 0)) return 1.1;
-  const speed = words / (2.45 * duration_s);
+  const speed = words / (FILM_WPS * duration_s);
   return Math.round(Math.min(1.3, Math.max(1.0, speed)) * 100) / 100;
 }

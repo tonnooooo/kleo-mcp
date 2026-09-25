@@ -31,7 +31,7 @@
 
 /** Character limits, printed in the prompt, enforced by the repair and checked by the tests. */
 import { LAYER_METHOD, graphicsProblems, repairGraphics, graphicsBlock, isNoLayer, HUD_KINDS, EDGES, CORNERS, SUBTITLE_MODES, CHAPTER_MODES, type Graphics } from "./graphics.ts";
-import { FILM_LOOKS, type FilmLook } from "./keou-contract.ts";
+import { FILM_LOOKS, wordBudget, clipWordsPerShot, type FilmLook } from "./keou-contract.ts";
 import { specBlock, type RequestSpec } from "./spec.ts";
 
 export const T = {
@@ -290,7 +290,7 @@ THE METHOD — answer these in order, each for THIS request:
 5. ENDING. The last image is earned by everything before it: a return to the first image changed, the answer to the opening question, the object at rest. Never a summary, never "and that is why", never a call to action.
 6. VISUAL LANGUAGE. One world, written as one sentence a cinematographer could shoot from, not a checklist ("the lens is standard, the light is fluorescent"): the lens (long and compressed, or wide and close), the light (source, colour, time of day), the palette (three colours at most), the camera's temperament (does it drift, hold, follow). Every shot of the film is filmed inside this sentence. CONCRETE AND SHARP: name real surfaces the camera can hold in focus — wet tarmac, wood grain, brushed metal, skin, paper, frost — and one plane in focus per shot. Nothing smooth, glossy or computer-generated: a frame that looks rendered is a frame the viewer stops believing. IN ANIMATION the same sentence names the drawn world instead: the line (thin and clean, or brushy), how the backgrounds are painted, the shape language of the characters — design each once, in words (build, face, hair, clothes, colours), and repeat it verbatim in every shot — flat cel shading or soft, a palette of three colours. Nothing photographic in it: an animated frame that looks like a photograph is a frame in the wrong film.
 7. PACING. The cut rhythm in seconds, act by act, and the one place where the film slows down on purpose. A film that cuts at the same speed throughout is wallpaper.
-8. NARRATOR. Person (second person is a tool, not a default: "you" only for what the viewer themselves does or feels, never for what engineers, pirates or a spacecraft did), tense, sentence length, what they never do. The narrator is a person who knows this subject and is talking to one viewer, not a voice reading a brochure.
+8. NARRATOR. Person (second person is a tool, not a default: "you" only for what the viewer themselves does or feels, never for what engineers, pirates or a spacecraft did), tense, sentence length, what they never do. Sentence length is a register, never a budget: the film's narration (the words THE FILM line gives) is said in full, so short sentences come two or three to a line. The narrator is a person who knows this subject and is talking to one viewer, not a voice reading a brochure.
 9. MOTIFS. Two to five images the film returns to. A motif seen three times is what makes eight independently generated shots feel like one film.
 10. DECISIONS. List every choice you made that the request did not ask for, one per line, so the person who asked can see it and change it. With requirements, these are exactly the things LEFT TO KLEO that you decided — and nothing that contradicts an item. A decision names something that could have been otherwise and that the viewer will SEE: the place, the period, who is in it, the object that carries it, how it ends. "The tone is informative", "the period is contemporary" and "the setting is a hospital" repeated from the angle are not decisions.
 11. ${LAYER_METHOD}
@@ -359,7 +359,7 @@ export function treatmentPrompt(input: TreatmentInput, v0: Variation, feedback?:
   const angle = faithful ? `<=${T.angle}, the point of the user's own story in one sentence (not a new thesis)` : `<=${T.angle}, the one idea this film argues`;
   const base = `${spec}USER REQUEST (read it as a request; keep every fact, name and number it contains):
 """${input.prompt.trim()}"""
-THE FILM: ${kind}, ${input.duration_s} seconds, narrated in ${lang}.${inLang}${input.clipFloorS ? `\nPACING (step 7) FOR THIS FILM: every shot lasts at least ${input.clipFloorS} seconds (each is a paid clip); the rhythm comes from what moves inside the shot, not from cutting.` : ""}
+THE FILM: ${kind}, ${input.duration_s} seconds, narrated in ${lang}: about ${wordBudget(input.duration_s).target} words of narration in all${input.clipFloorS ? `, at least ${clipWordsPerShot(input.clipFloorS)} under every shot` : ""} (step 8: the narrator's sentence length never lowers that).${inLang}${input.clipFloorS ? `\nPACING (step 7) FOR THIS FILM: every shot lasts at least ${input.clipFloorS} seconds (each is a paid clip); the rhythm comes from what moves inside the shot, not from cutting.` : ""}
 THE LOOK: ${input.look ? `${input.look.toUpperCase()}, fixed by the request or the tool call — write "look":"${input.look}" and describe every image in that look` : `not named — decide it in step 0 (realistic unless the request or the subject asks to be drawn) and write it in "look"`}
 ${soundText(input.sound)}
 
@@ -375,7 +375,7 @@ TASK: write the TREATMENT of this film, following the method. Return one JSON ob
  "acts":[${actsHint} objects {"name":"2-4 words UPPERCASE, <=${T.acts.name} chars, the image on screen when the act starts","purpose":"<=${T.acts.purpose}","seconds":<whole number, 5 or more>} — the seconds add up to ${input.duration_s}],
  "visual":"<=${T.visual}, lens, light, palette, time of day, camera temperament: one world",
  "pacing":"<=${T.pacing}, cut rhythm in seconds act by act, and where it slows${input.clipFloorS ? `; every shot lasts at least ${input.clipFloorS} s (each is a paid clip), rhythm from what moves inside the shot` : ""}",
- "narrator":"<=${T.narrator}, person, tense, sentence length, what they never say",
+ "narrator":"<=${T.narrator}, person, tense, sentence length (a register, never a cap on the words), what they never say",
  "motifs":[${T.motifs.min}-${T.motifs.max} strings <=${T.motifs.len}],
  "decisions":[up to ${T.decisions.max} strings <=${T.decisions.len}: every choice the request did not ask for${input.spec ? " — only what LEFT TO KLEO allows, never a change to a requirement" : ""}],
  "prose":"${proseTarget(input.duration_s)[0]}-${proseTarget(input.duration_s)[1]} words: the treatment a director could shoot from — the film told from the first image to the last, act by act, in the present tense, with what we see and what the narrator says over it. Not a list: prose.",
@@ -608,7 +608,13 @@ export const LOOK_LINES: Record<FilmLook, string> = {
   animation: "ANIMATION — a 2D animated film: every picture is a drawn frame, the characters designed once and drawn the same in every shot, nothing photographic",
 };
 
-export function treatmentBlock(t: Treatment, full = false): string {
+/**
+ * `words`: the narration budget of the film this treatment is being written into (the planner's wordBudget target and,
+ * on the API road, the words of one paid clip). The narrator's register is the treatment's; the word count is not:
+ * a narrator written as "sentences of five to eight words" read as a cap wrote one such sentence per scene — 27 words
+ * for a 15-second film (gt_t2cxm2md, 25 September 2026). With `words` the block says which of the two rules wins.
+ */
+export function treatmentBlock(t: Treatment, full = false, words?: { target: number; perLine?: number } | null): string {
   const acts = t.acts.map((a, i) => `  ${i + 1}. ${a.name} · ${a.seconds}s — ${a.purpose}`).join("\n");
   return `TREATMENT OF THIS FILM (the request as a producer expanded it; the direction and every scene follow it):
 Look: ${LOOK_LINES[t.look] ?? LOOK_LINES.realistic}
@@ -621,7 +627,8 @@ Acts (${t.acts.reduce((n, a) => n + a.seconds, 0)}s in all):
 ${acts}
 Visual language (every shot lives inside this): ${t.visual}
 Pacing: ${t.pacing}
-Narrator: ${t.narrator}
+Narrator: ${t.narrator}${words ? `
+  (that sentence length is the narrator's register, never the word count: the narration still totals about ${words.target} words${words.perLine ? `, and every scene's line has ${words.perLine} or more` : ""} — short sentences come two or three to a line)` : ""}
 Motifs (return to these): ${t.motifs.join("; ")}${t.graphics ? `\n${graphicsBlock(t.graphics)}` : "\nThe layer: none — nothing is drawn over the film."}
 Music: ${t.music ? `${t.music} (an instrumental track under the narration, ducked under the voice; the narration leaves it room between the acts)` : "none — narration only."}${full ? `\nThe treatment, in prose:\n${t.prose}` : ""}`;
 }

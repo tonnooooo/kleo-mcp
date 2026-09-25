@@ -24,7 +24,7 @@ import {
   KLEO_STYLES, PICTURE_STYLES, FILM_LOOKS, type FilmLook, IMAGE_PROMPT_MAX, kleoStyleOf, STORY_ACTS, STORY_CAST, STORY_PROPS, STORY_FX, STORY_ACCENTS,
   SHOTS_PER_SCENE, SHOT_CAPTION_MAX, SHOT_HL_MAX, SHOT_AT_MAX, IMAGE_PROMPT_MIN, CLOSING_BUTTON_MAX,
   SHOT_ID_SUFFIX_RE, quotesVoice, SHOTS_MIN_CINEMA, SHOTS_WORDS_PER_SHOT, SHOTS_MIN_WORDS_FOR_TWO, shotRangeText, narrationOf, anchorShots, shotBudget, clipWordsPerShot,
-  SHOT_ACTION_MAX, SHOT_COVERS_MAX, SHOT_CAST_MAX, SHOT_TAG_MAX,
+  SHOT_ACTION_MAX, SHOT_COVERS_MAX, SHOT_CAST_MAX, SHOT_TAG_MAX, mergeThinScenes, FILM_WPS,
 } from "./keou-contract.ts";
 /**
  * THE SPEC (24 September 2026): the user's request taken apart into checkable requirements (src/spec.ts). It is
@@ -552,6 +552,58 @@ function sceneRange(words: number, wps: [number, number], shotWords = 0): [numbe
   return [Math.min(lo, hi), hi];
 }
 
+/**
+ * THE WORD PLAN HAS A FLOOR (25 September 2026). The outline's words per scene, scaled to the budget, with every scene
+ * raised to `least` — on the API road the words that fill one paid clip (clipWordsPerShot) — and what that adds taken
+ * back from the scenes above it, in proportion to their surplus and never below `least` themselves. The total stays
+ * the budget unless the floor alone is more (n × least), which the planner's scene count avoids (sceneRange). A hook
+ * the outline planned at five words becomes eleven: its punch is the first sentence of the line, not the whole line.
+ */
+export function spreadWords(words: readonly number[], target: number, least = 0): number[] {
+  const n = words.length;
+  if (!n) return [];
+  const sum = words.reduce((a, w) => a + Math.max(0, w), 0) || n;
+  const scaled = words.map((w) => (sum ? Math.max(1, Math.round((Math.max(0, w) * target) / sum)) : Math.round(target / n)));
+  if (!(least > 0)) return scaled;
+  const out = scaled.map((w) => Math.max(w, least));
+  let excess = out.reduce((a, w) => a + w, 0) - Math.max(target, n * least);
+  while (excess > 0) {
+    const surplus = out.map((w) => w - least);
+    const room = surplus.reduce((a, x) => a + Math.max(0, x), 0);
+    if (room <= 0) break;
+    // One word at a time from the scene with the most to spare: exact, and it never undercuts the floor.
+    const i = surplus.indexOf(Math.max(...surplus));
+    out[i]--; excess--;
+  }
+  return out;
+}
+
+/**
+ * What a chunk's narration lacks, in the words the planner feeds back (25 September 2026): every line under one clip's
+ * worth of words on the API road, with the exact number missing, and the chunk's total when it is under 80 % of the
+ * words its scenes were planned at (wordBudget's own floor). `planned` are the outline's words for these scenes, in
+ * order; scene numbers count within the chunk, as every chunk problem does. How to lengthen follows the spec's mode:
+ * in a FAITHFUL film the words come from the user's own story, never a new event; in an OPEN one, from the moment.
+ * Empty when nothing is short. The user's dictated script is never passed here: its words are not the planner's.
+ */
+export function lengthShortfalls(scenes: readonly Record<string, unknown>[], planned: readonly number[], plan: Pick<Plan, "clipFloor" | "duration">, spec?: RequestSpec | null): string[] {
+  const out: string[] = [];
+  const count = (s: Record<string, unknown>) => String(s.voice ?? "").trim().split(/\s+/).filter(Boolean).length;
+  const least = plan.clipFloor > 0 ? clipWordsPerShot(plan.clipFloor) : 0;
+  const how = spec?.mode === "faithful"
+    ? "with what the user's own story already holds at that moment (the place, the gesture, what is at stake), never a new event or character"
+    : "with a concrete detail of that moment, never a new scene and never a line said twice";
+  scenes.forEach((sc, i) => {
+    const w = count(sc);
+    if (least && w < least) out.push(`scene ${i + 1}: its voice has ${w} words, ${least - w} short of the ${least} that fill one paid ${plan.clipFloor}-second clip — add ${least - w} or more (about ${Math.max(least, planned[i] ?? least)} in all), ${how}; a short punch stays, as the first sentence, and a second one completes the line`);
+  });
+  const want = planned.reduce((a, w) => a + w, 0);
+  const words = scenes.reduce((a, sc) => a + count(sc), 0);
+  if (want > 0 && words < Math.round(want * 0.8))
+    out.push(`the narration of these scenes is ${want - words} words short: ${words} words for about ${want} (${planned.map((w, i) => `scene ${i + 1} about ${w}`).join(", ")}) — this ${plan.duration}-second film is only as long as its voice; lengthen the lines ${how}`);
+  return out;
+}
+
 /* ------------------------------------------------------------------ prompt */
 
 interface Plan {
@@ -641,11 +693,16 @@ Never use scene kind "image", never reference files or URLs. Scene ids are uniqu
  * The request as every stage sees it — and, when the film has one, the treatment under it. `full` adds the prose
  * for the two stages that shape the film (direction, outline); the scene chunks get the structured block only.
  */
-function contextBlock(job: PlanJob, plan: Plan, treatment?: Treatment | null, full = false): string {
+function contextBlock(job: PlanJob, plan: Plan, treatment?: Treatment | null, full = false, spec?: RequestSpec | null): string {
   const t = findTemplate(job.template);
+  // The treatment's narrator ("sentences of five to eight words") is a register, and the scenes are told so next to
+  // it: read as a word count it starved the 15-second film of 25 September to 27 words. Not when the words are the
+  // user's own script, which has the length it has.
+  const words = plan.style === "picture" && !(spec?.narration === "verbatim" && spec.script)
+    ? { target: plan.words.target, ...(plan.clipFloor > 0 ? { perLine: clipWordsPerShot(plan.clipFloor) } : {}) } : null;
   return `TEMPLATE: ${t?.name ?? job.template} (${job.template}). BRIEF: ${plan.brief.guidance}
 USER REQUEST (the video is about this; keep every fact, name and constraint from it):
-"""${storyRequest(job.prompt)}"""${treatment ? `\n${treatmentBlock(treatment, full)}` : ""}`;
+"""${storyRequest(job.prompt)}"""${treatment ? `\n${treatmentBlock(treatment, full, words)}` : ""}`;
 }
 
 /* ------------------------------------------------------------------ the direction: step zero of the reasoning */
@@ -1061,8 +1118,8 @@ function outlinePrompt(job: PlanJob, plan: Plan, n: number, d: Direction | null,
     ? `\nTHE NARRATION IS THE USER'S SCRIPT, word for word (printed above): plan the scenes so they tell it in its order — Kleo splits the script across your scenes, so each summary says which part of the script that scene carries.`
     : "";
   const again = feedback?.length ? `\n\nYOUR PREVIOUS OUTLINE WAS REJECTED with these problems. Fix every one of them and return the whole outline again:\n- ${feedback.join("\n- ")}` : "";
-  return `${spec ? `${specBlock(spec)}\n` : ""}${contextBlock(job, plan, treatment, true)}${d ? `\n${directionBlock(d)}` : ""}${sectionMap}${keeps}${place}${told}${verbatim}
-TASK: plan the whole video as an outline of exactly ${n} scenes, in order.${treatment ? " The outline follows the treatment's acts in order: the opening image is scene 1, each act gets scenes in proportion to its seconds, and the last scene is the treatment's ending." : ""} The narration will total about ${plan.words.target} words (${perScene} per scene on average; the hook and the closing may be shorter, key scenes longer). Return {"title":"<video title ≤120>","description":"<YouTube description, one paragraph>","tags":["…"],"scenes":[{"id":"01-slug","kind":"${kind}","label":"<${label}>",${cin ? '"accent":"<accent>",' : ""}"summary":"<what this scene says, ≤25 words>","words":<narration words for this scene>${keeps ? ',"keeps":[<fact indexes>]' : ""}${place ? ',"covers":[<requirement ids>]' : ""}}, …]}.
+  return `${spec ? `${specBlock(spec)}\n` : ""}${contextBlock(job, plan, treatment, true, spec)}${d ? `\n${directionBlock(d)}` : ""}${sectionMap}${keeps}${place}${told}${verbatim}
+TASK: plan the whole video as an outline of exactly ${n} scenes, in order.${treatment ? " The outline follows the treatment's acts in order: the opening image is scene 1, each act gets scenes in proportion to its seconds, and the last scene is the treatment's ending." : ""} The narration will total about ${plan.words.target} words (${perScene} per scene on average; ${plan.clipFloor > 0 && plan.style === "picture" ? `every scene at least ${clipWordsPerShot(plan.clipFloor)} — each one is a paid clip of ${plan.clipFloor} s that its line must fill, the hook and the closing too: a punch is a short first sentence inside the line, not a short line` : "the hook and the closing may be shorter"}, key scenes longer). Return {"title":"<video title ≤120>","description":"<YouTube description, one paragraph>","tags":["…"],"scenes":[{"id":"01-slug","kind":"${kind}","label":"<${label}>",${cin ? '"accent":"<accent>",' : ""}"summary":"<what this scene says, ≤25 words>","words":<narration words for this scene>${keeps ? ',"keeps":[<fact indexes>]' : ""}${place ? ',"covers":[<requirement ids>]' : ""}}, …]}.
 ${cin ? `Chapters group scenes (several scenes may share a chapter label)${d ? "; copy each scene's accent from the section table above" : "; accents follow the mood"}.` : stick ? "Each scene is one situation the stickman can act out." : sk ? "Every scene is one drawn moment, and each one has to make the next one necessary." : "Vary the kinds: never more than two of the same kind in a row, at least four different kinds overall; use metric for numbers, compare for two-sided points, steps/list for three-part points, quote for a memorable line, hero for openings and transitions."} ${sk ? "There is NO closing scene: the film ends on its last drawing, so the last scene is the payoff itself." : `The last scene has kind "closing".`} The first scene is ${spec?.mode === "faithful" ? "the opening of the user's story" : "the hook"}.${again}`;
 }
 
@@ -1078,7 +1135,7 @@ function chunkPrompt(job: PlanJob, plan: Plan, outline: OutlineEntry[], from: nu
   const lineWords = plan.clipFloor > 0 && plan.duration <= 120 ? `${plan.lines[0]}–${plan.lines[1]}` : plan.duration > 120 ? "35–50" : "10–18";
   const per = clipWordsPerShot(plan.clipFloor);
   const how = pic && plan.clipFloor > 0
-    ? `Each voice line is ${plan.duration > 120 ? "two or three spoken sentences" : "one spoken sentence"} of ${lineWords} words; every scene has ONE shot (a second one only for a line of ${2 * per} words or more; the closing exactly one), each with its own "image_prompt" — and NEVER more than one shot per ${per} words of voice: every shot is a paid clip of at least ${plan.clipFloor} seconds, so a line of ${per} to ${2 * per - 1} words carries one shot, ${2 * per} two, ${3 * per} three, ${4 * per} four (Kleo cuts the extra ones); the rhythm comes from what moves inside the shot, told in its "action"; every shot after the first carries "at" with words copied from its own voice line.`
+    ? `Each voice line is ${plan.duration > 120 ? "two or three spoken sentences" : "one to three spoken sentences"} of ${lineWords} words in all — NEVER fewer than ${per}, the hook and the closing included (a punch is a short first sentence followed by one that completes the line), whatever sentence length the narrator uses; every scene has ONE shot (a second one only for a line of ${2 * per} words or more; the closing exactly one), each with its own "image_prompt" — and NEVER more than one shot per ${per} words of voice: every shot is a paid clip of at least ${plan.clipFloor} seconds, so a line of ${per} to ${2 * per - 1} words carries one shot, ${2 * per} two, ${3 * per} three, ${4 * per} four (Kleo cuts the extra ones); the rhythm comes from what moves inside the shot, told in its "action"; every shot after the first carries "at" with words copied from its own voice line.`
     : pic ? `Each voice line is ${plan.duration > 120 ? "two or three spoken sentences" : "one spoken sentence"} of ${lineWords} words; every scene has ${shotRangeText("cinema")} shots (the closing exactly one), each with its own "image_prompt" — and NEVER more than one shot per ${SHOTS_WORDS_PER_SHOT} words of voice: a shot is three seconds of film at the least, so a line of 7 to 13 words carries one shot, 14 two, 21 three, 28 four (Kleo cuts the extra ones); every shot after the first carries "at" with words copied from its own voice line. One picture for a line of ${SHOTS_MIN_WORDS_FOR_TWO} words or more is refused: a still held for a whole long line is a slideshow.`
     : cin ? `Each voice line is ${plan.duration > 120 ? "two or three spoken sentences" : "one spoken sentence"} of ${lineWords} words; every scene needs 4–8 beats of different kinds, each anchored with "at" to words of its own voice line.`
     : sk ? `Each voice line is ONE spoken sentence of ${EXPLAINER_WORDS[lengthOf(plan.duration)].join("-")} words; every scene needs 2-8 drawings, each with an "at" quoting words from its OWN line, and the last of them must land in the second half of that line. One phrase, one drawing, and the drawing is literally what the words say.`
@@ -1105,7 +1162,7 @@ function chunkPrompt(job: PlanJob, plan: Plan, outline: OutlineEntry[], from: nu
       : ` Every shot also carries "action": one English sentence, ≤${SHOT_ACTION_MAX} characters, saying what moves or happens during the shot (the clip is animated from it).`
     : "";
   const owedSaid = owed.map((i) => d?.must_keep[i]).filter((f): f is string => !!f && !lookFact(f, d?.cast ?? []));
-  let msg = `${contextBlock(job, plan, treatment)}${layerAsk}${d ? `\n${directionBlock(d)}` : ""}${owedSaid.length ? `\nTHESE SCENES OWE THESE FACTS — say each one out loud in a "voice" line:\n${owedSaid.map((f) => `  - ${f}`).join("\n")}` : ""}${castList}${owedSpec}${script}${faithful}
+  let msg = `${contextBlock(job, plan, treatment, false, spec)}${layerAsk}${d ? `\n${directionBlock(d)}` : ""}${owedSaid.length ? `\nTHESE SCENES OWE THESE FACTS — say each one out loud in a "voice" line:\n${owedSaid.map((f) => `  - ${f}`).join("\n")}` : ""}${castList}${owedSpec}${script}${faithful}
 VIDEO OUTLINE (${total} scenes; you write scenes ${from + 1}–${to} now):
 ${outline.map((e, i) => `${i + 1}. [${e.id}] ${e.kind} · ${e.label}${e.accent ? ` · ${e.accent}` : ""} — ${e.summary} (${e.words} words)${e.covers.length && owedIds.length ? ` · covers ${e.covers.join(", ")}` : ""}`).join("\n")}
 ${prevVoice ? `The previous scene ended with this narration, continue naturally from it: "${prevVoice}"` : "This is the start of the video."}
@@ -2211,7 +2268,7 @@ ${d ? `${directionBlock(d)}\n` : ""}THE PLANNED FILM (every scene, in order):
 ${JSON.stringify(compact)}
 A CHECK OF THIS PLAN AGAINST THE USER'S REQUEST FOUND:
 - ${feedback.join("\n- ")}
-TASK: correct these scenes so that the film shows and says what the user asked for: ${pick.map((i) => `scene ${i + 1} [${String(sb.scenes[i].id)}]`).join(", ")}. Return {"scenes":[…]} with exactly ${pick.length} scene objects, in that order, each one complete and keeping its id, kind, chapter and accent (and its "hud" and "cards" when it has them, changed only where the new voice changes them): the voice in ${lang}; ${plan.clipFloor > 0 ? `one shot for a cinema scene, two only for a line of ${2 * clipWordsPerShot(plan.clipFloor)} words or more` : `${shotRangeText("cinema")} shots for a cinema scene`} (the closing one), each with "image_prompt" (one English sentence, ≤${IMAGE_PROMPT_MAX} characters), "covers", "cast" and "action", and every shot after the first anchored with "at" to words copied from its own voice. Change only what the problems above require; keep everything else as it was.`;
+TASK: correct these scenes so that the film shows and says what the user asked for: ${pick.map((i) => `scene ${i + 1} [${String(sb.scenes[i].id)}]`).join(", ")}. Return {"scenes":[…]} with exactly ${pick.length} scene objects, in that order, each one complete and keeping its id, kind, chapter and accent (and its "hud" and "cards" when it has them, changed only where the new voice changes them): the voice in ${lang}${plan.clipFloor > 0 && spec.narration !== "verbatim" ? `, ${clipWordsPerShot(plan.clipFloor)} words at the least (each scene is a paid ${plan.clipFloor}-second clip its line must fill)` : ""}; ${plan.clipFloor > 0 ? `one shot for a cinema scene, two only for a line of ${2 * clipWordsPerShot(plan.clipFloor)} words or more` : `${shotRangeText("cinema")} shots for a cinema scene`} (the closing one), each with "image_prompt" (one English sentence, ≤${IMAGE_PROMPT_MAX} characters), "covers", "cast" and "action", and every shot after the first anchored with "at" to words copied from its own voice. Change only what the problems above require; keep everything else as it was.`;
 }
 
 /**
@@ -2387,8 +2444,11 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   // scenes, one sentence each — the fidelity bench's verbatim case was cut into seven scenes of half-sentences and the
   // planner padded them with lines of its own, the one thing the user had ruled out.
   const scriptSentences = spec?.narration === "verbatim" && spec.script ? sentencesOf(spec.script).length : 0;
+  // On the API road the script's own words decide too: never more scenes than it has clip floors of words (a
+  // twenty-word script is two lines of ten, not three of seven), because its words are never padded.
+  const scriptLines = scriptSentences && plan.clipFloor > 0 ? Math.floor(spec!.script!.split(/\s+/).filter(Boolean).length / clipWordsPerShot(plan.clipFloor)) : Infinity;
   const sceneGuess = scriptSentences && plan.style !== "sketch"
-    ? Math.max(2, Math.min(plan.scenes[1], scriptSentences))
+    ? Math.max(2, Math.min(plan.scenes[1], scriptSentences, scriptLines))
     : plan.style === "sketch"
     ? plan.scenes[0]
     : Math.max(plan.scenes[0], Math.min(plan.scenes[1], Math.round((plan.scenes[0] + plan.scenes[1]) / 2)));
@@ -2498,9 +2558,11 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     if (plan.style !== "sketch") outline[outline.length - 1].kind = "closing";
     // The same for the spec's requirements, once the closing is known: a must item nobody claimed goes to its scene.
     if (specShots) placeRequirements(outline, spec!);
-    // Scale the per-scene word plan to the budget.
-    const sum = outline.reduce((a, e) => a + e.words, 0) || 1;
-    outline.forEach((e) => { e.words = Math.max(5, Math.round((e.words * plan.words.target) / sum)); });
+    // Scale the per-scene word plan to the budget — and on the API road no scene under one clip's worth of words
+    // (spreadWords): the words a chunk is asked for are the words it writes, and a seven-word line cannot fill a clip.
+    const least = plan.clipFloor > 0 && plan.style === "picture" ? clipWordsPerShot(plan.clipFloor) : 0;
+    const spread = spreadWords(outline.map((e) => e.words), plan.words.target, least);
+    outline.forEach((e, i) => { e.words = Math.max(5, spread[i]); });
     // THE USER'S SCRIPT, WORD FOR WORD: cut into the scenes here, by arithmetic, so each chunk is handed the exact
     // words its scenes say; the word plan is the script's, not the budget's.
     if (spec?.narration === "verbatim" && spec.script) {
@@ -2592,7 +2654,15 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
       const chunkScenes = (temp.scenes as Record<string, unknown>[]).slice(scenes.length, isLast ? undefined : -1);
       const want = outline.slice(from, to).reduce((a, e) => a + e.words, 0);
       const words = countWords({ scenes: chunkScenes });
-      if (words < want * 0.55) problems.push(`the narration of these scenes is far too short: ${words} words, it must total about ${want}`);
+      // THE LENGTH IS MEASURED, AND THE SHORTFALL IS SAID IN WORDS (25 September 2026). A picture film is filled by its
+      // voice: a chunk under 80 % of its words (the budget's own floor, wordBudget().min) makes a film shorter than the
+      // user asked for — gt_t2cxm2md was planned at 27 words for 40 and ran 11.2 s for 15 — so it is sent back with the
+      // number of words missing, line by line. On the API road every line is also held to one clip's worth of words
+      // (clipWordsPerShot): a shorter line buys a whole clip and shows part of it. The user's own script is never
+      // asked for more words: what it lacks is its length, and the last resort below only groups it.
+      const lengthProblems = plan.style === "picture" && !verbatim ? lengthShortfalls(chunkScenes, outline.slice(from, to).map((e) => e.words), plan, spec) : [];
+      if (plan.style !== "picture" && words < want * 0.55) problems.push(`the narration of these scenes is far too short: ${words} words, it must total about ${want}`);
+      problems.push(...lengthProblems);
       if (words > want * 1.6) problems.push(`the narration of these scenes is far too long: ${words} words, it must total about ${want}`);
       // Fidelity, chunk by chunk. The validator can prove a chunk is well-formed; only this can prove it is still
       // about what the user asked for. Checking it here rather than at the end means the fix costs one retry of four
@@ -2670,7 +2740,8 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
       // takes the second answer to keep the retry budget for real errors; the explainer spends all three,
       // because its problems are exactly the ones that decide whether the film holds a viewer — and so do the
       // spec's, because they are the difference between the user's film and another one.
-      const patient = plan.style === "sketch" || owedProblems.length || talkProblems.length ? 3 : 2;
+      // A line too short for its paid clip is worth the third attempt too: it is money on the floor and seconds off the film.
+      const patient = plan.style === "sketch" || owedProblems.length || talkProblems.length || (plan.clipFloor > 0 && lengthProblems.length) ? 3 : 2;
       const valid = r.ok && got.length === to - from;
       if (valid && (attempt >= patient || !problems.length)) { accepted = chunkScenes; break; }
       if (valid && (!best || problems.length <= best.problems.length)) best = { scenes: chunkScenes, problems };
@@ -2702,6 +2773,28 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
       const cleaned = dropForbiddenClauses(sh.image_prompt, direction.forbidden);
       if (cleaned !== sh.image_prompt) { history.push([`scene "${String(sc.id)}": a clause asking for a forbidden thing was taken out of a picture: "${sh.image_prompt}" became "${cleaned}"`]); sh.image_prompt = cleaned; }
     }
+  }
+
+  // THE LAST RESORT FOR A LINE STILL TOO SHORT FOR ITS CLIP (keou-contract.ts mergeThinScenes): after three attempts
+  // it is joined to a neighbour — the same words, one clip fewer, the direction's sections and the outline joined in
+  // step — rather than padded with words nobody wrote or sent to the box to buy a clip it cannot fill.
+  if (plan.clipFloor > 0 && plan.style === "picture") {
+    const joined = mergeThinScenes({ scenes, direction }, plan.clipFloor, {
+      spec: specShots ? spec : null,
+      onMerge: (at, keepFirst) => {
+        const a = outline[at], b = outline[at + 1];
+        if (!a || !b) return;
+        const keep = keepFirst ? a : b;
+        outline.splice(at, 2, { ...keep, kind: b.kind, words: a.words + b.words, keeps: [...new Set([...a.keeps, ...b.keeps])], covers: [...new Set([...a.covers, ...b.covers])], ...(a.script || b.script ? { script: [a.script, b.script].filter(Boolean).join(" ") } : {}) });
+      },
+    });
+    if (joined.length) history.push(joined);
+  }
+  // Still under the budget's floor after every attempt: said, never hidden — the voice speed (speedFor) never goes
+  // under 1.0, so this film will run short of the length asked.
+  if (plan.style === "picture" && !verbatim) {
+    const said = countWords({ scenes });
+    if (said < plan.words.min) history.push([`the narration is ${said} words, under the ${plan.words.min} a ${plan.duration}-second film needs (about ${plan.words.target}): the film will run about ${Math.round(said / FILM_WPS)} s`]);
   }
 
   // 3. Assemble and validate the whole project once more (ids are re-deduplicated across chunks).

@@ -1482,3 +1482,72 @@ test("reference pictures on a job without a spec reach the spec written at step 
   assert.deepEqual(forgot.r.spec.refs.map((x) => [x.handle, x.role, x.for]), [[H, "character", "c1"]]);
   assert.ok(forgot.r.history.some((h) => h.some((m) => /spec: 1 of the user's reference picture was missing from it and added by Kleo/.test(m))), JSON.stringify(forgot.r.history));
 });
+
+/* ------------------------------------------------------------------ the narration fills the film (25 September 2026) */
+
+/** The three lines of the live film gt_t2cxm2md (15 s, API road, 4 s clip floor): 7, 13 and 7 words. */
+const LIVE_LINES = ["Pirates know the price before the treasure.", "She gives the map, the squall takes two fingers, and the boy runs.", "The map is gone. The price remains."];
+/** One chunk of a floored pirate film: one picture a scene, the voice of scene i from `voiceOf(i, attempt)`. */
+function lineChunk(user, voiceOf, attempt) {
+  const [from, to] = chunkRange(user);
+  const total = Number(/VIDEO OUTLINE \((\d+) scenes/.exec(user)[1]);
+  const scenes = [];
+  for (let i = from; i < to; i++) {
+    const closing = i === total - 1;
+    scenes.push({ id: `${String(i + 1).padStart(2, "0")}-part`, kind: closing ? "closing" : "cinema", chapter: `0${i + 1} PART`, accent: "cyan", title: `Part ${i + 1}`, hl: "Part", hold: closing ? 0.4 : 0.2,
+      voice: voiceOf(i, attempt),
+      shots: [{ image_prompt: `A pirate longboat pulled up on a windy beach at dusk, picture ${i + 1}`, action: "waves breaking against the longboat's hull" }] });
+  }
+  return { scenes };
+}
+const floored15 = () => { const j = job("viral-short", 15, "16:9", "en", "Pirates bury a treasure on an island nobody can find again.", "realistic"); return { ...j, params: JSON.stringify({ ...JSON.parse(j.params), clip_floor_s: 4 }) }; };
+
+test("the clip floor is enforced: a line under eleven words is sent back with the words it lacks, then joined to its neighbour (gt_t2cxm2md)", async () => {
+  const seen = { outline: [], chunk: [] };
+  const env = fakeEnv((kind, user, attempt) => {
+    if (kind === "outline") { seen.outline.push(user); return outlineFor(user, true); }
+    seen.chunk.push({ user, attempt });
+    return lineChunk(user, (i) => LIVE_LINES[i], attempt);
+  });
+  const r = await generateStoryboard(env, floored15());
+  // The plan: every scene of the outline and every chunk is told the floor, and the narrator's register is not a budget.
+  assert.match(seen.outline[0], /every scene at least 11 — each one is a paid clip of 4 s that its line must fill, the hook and the closing too/);
+  assert.match(seen.chunk[0].user, /NEVER fewer than 11, the hook and the closing included/);
+  assert.match(seen.chunk[0].user, /never the word count: the narration still totals about 40 words, and every scene's line has 11 or more/);
+  // Three attempts, each told exactly what is missing.
+  assert.deepEqual(seen.chunk.map((c) => c.attempt), [1, 2, 3], "a line too short for its paid clip is worth the third attempt");
+  assert.match(seen.chunk[1].user, /scene 1: its voice has 7 words, 4 short of the 11 that fill one paid 4-second clip/);
+  assert.match(seen.chunk[1].user, /scene 3: its voice has 7 words, 4 short of the 11/);
+  assert.match(seen.chunk[1].user, /the narration of these scenes is \d+ words short: 27 words for about \d+/);
+  assert.doesNotMatch(seen.chunk[1].user, /scene 2: its voice has/, "the thirteen-word line is not asked for more");
+  // Still short: the last resort joins the hook to the next line — same words, one clip fewer, never padded.
+  assert.ok(r.history.some((h) => h.some((m) => /scenes 1 and 2 \("01-part", 7 words; "02-part", 13 words\) were joined into one line of 20 words/.test(m))), JSON.stringify(r.history));
+  assert.ok(r.history.some((h) => h.some((m) => /the narration is 27 words, under the 32 a 15-second film needs \(about 40\): the film will run about 11 s/.test(m))), JSON.stringify(r.history));
+  const sb = r.storyboard;
+  assert.equal(sb.scenes.length, 2);
+  assert.equal(sb.scenes[0].voice, `${LIVE_LINES[0]} ${LIVE_LINES[1]}`);
+  assert.equal(sb.scenes[1].voice, LIVE_LINES[2]); assert.equal(sb.scenes[1].kind, "closing");
+  assert.equal(r.words, 27, "nothing was added to the narration");
+  assert.equal(sb.direction.sections.reduce((n, s) => n + s.scenes, 0), 2, "the direction's sections follow the join");
+  const v = validateStoryboard(sb, { format: "16:9", language: "en", clipFloorS: 4 });
+  assert.deepEqual(v.ok ? [] : v.errors.filter((e) => !/forbidden/i.test(e)), []);
+});
+
+test("the clip floor is enforced: a chunk that lengthens its lines when told is kept as written, with nothing joined", async () => {
+  const LONG = [
+    "Every pirate on this island knows the price long before he ever sees the treasure.",
+    "She gives the boy the map, the squall takes two of his fingers, and the boy runs for the boat.",
+    "The map is gone now, lost to the sea, but the price the boy paid remains.",
+  ];
+  const attempts = [];
+  const env = fakeEnv((kind, user, attempt) => {
+    if (kind === "outline") return outlineFor(user, true);
+    attempts.push(attempt);
+    return lineChunk(user, (i, a) => (a === 1 ? LIVE_LINES[i] : LONG[i]), attempt);
+  });
+  const r = await generateStoryboard(env, floored15());
+  assert.deepEqual(attempts, [1, 2]);
+  assert.deepEqual(r.storyboard.scenes.map((s) => s.voice), LONG);
+  assert.ok(!r.history.some((h) => h.some((m) => /were joined into one line/.test(m))), JSON.stringify(r.history));
+  assert.ok(r.words >= 32, `${r.words} words: the film is as long as asked`);
+});
