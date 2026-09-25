@@ -107,12 +107,14 @@ export interface JobParams {
   /**
    * THE AI UPSCALE (25 September 2026, src/templates.ts aiUpscaleCredits): true when the user said yes in the intake and
    * paid `ai_upscale_credits` on top of the film (they are part of job.credits). Absent on every other job. The
-   * finish box's report is kept in `ai_upscale_result` (src/orchestrator.ts settleAiUpscale): applied, or not applied
+   * finish box's report is kept in `ai_upscale_result` (src/orchestrator.ts recordAiUpscale): applied, or not applied
    * and the extra credits refunded.
    */
   ai_upscale?: boolean;
   ai_upscale_credits?: number;
   ai_upscale_result?: { applied: boolean; parts: number; upscaled: number; model: string | null; gpu: string | null; reason: string | null; refunded: number; at: string };
+  /** Set by POST /internal/admin/retry: failJob already gave back every credit, the upscale's included. */
+  ai_upscale_refunded?: boolean;
   /** The intake's optional answers, as the user gave them: they used to die between kleo_adapt_prompt and the planner. */
   brief?: { audience?: string | null; tone?: string | null; must_keep?: string | null; /** The user's corrections after the read-back, in their words. */ corrections?: string | null };
   /** Where the server-drawn stills are (src/stills.ts): drawing, done, or failed (the rented GPU draws them then). */

@@ -595,6 +595,19 @@ class SrHookTest(FreezeTest):
         # The report the server reads to keep the AI upscale's credits (25 September 2026): every part upscaled.
         self.assertEqual(kv.LAST_SR, {"parts": 3, "applied": 3, "model": "fake-x2", "gpu": "Fake GPU", "reason": None})
 
+    def test_rife_alone_is_not_the_ai_upscale_the_film_was_sold(self):
+        # Clips already near the delivery size (factor 1, no upscaler): every part goes through RIFE, but no
+        # Real-ESRGAN pass ran, so the report says "not applied" and the server refunds the upscale (review, 25 Sep).
+        fake = FakeSr()
+        fake.plan = lambda w, h, W, H: 1
+        fake.model_for = lambda look, factor: None
+        self.use(fake)
+        out, _, said = self.film()
+        self.assertTrue(out and os.path.isfile(out), said)
+        self.assertTrue(any("SR on: Fake GPU, no upscaler x1 + RIFE 4.25" in m for m in said), said)
+        self.assertEqual(kv.LAST_SR, {"parts": 3, "applied": 0, "model": None, "gpu": "Fake GPU",
+                                      "reason": "the clips are already near 4K: no Real-ESRGAN pass, RIFE only"})
+
     def test_every_part_gets_only_the_gpu_time_the_film_has_left(self):
         fake = self.use(FakeSr(est=2.0, cost=30.0))
         out, _, said = self.film(workers=1)

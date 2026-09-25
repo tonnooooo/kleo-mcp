@@ -446,7 +446,7 @@ export const FINISH: Machine = { minVramGb: 0, minComputeCap: 0, maxDph: 0.12 };
  * The finish box of a film with the AI upscale: 8 GB of Turing or newer (the image's torch has no kernels below
  * compute 7.5, and SR + RIFE need the memory). The search stays cheapest first with 16 or more cores, and the price
  * ceiling really applied is max(VAST_MAX_DPH, maxDph) — VAST_MAX_DPH (1.00) in production, not the 0.12 written here.
- * A box that still cannot run it finishes the classic way, and the upscale's credits go back (settleAiUpscale).
+ * A box that still cannot run it finishes the classic way, and the upscale's credits go back (refundAiUpscale, src/orchestrator.ts).
  */
 export const FINISH_SR: Machine = { minVramGb: 8, minComputeCap: 750, maxDph: 0.12 };
 
@@ -571,7 +571,7 @@ export const creditsForProduct = (seconds: number, style: string | null | undefi
  * The classic 4K 60 fps finish stays the default; the upscale is asked in the intake, for the film only, and adds
  *   max(AI_UPSCALE_MIN_CREDITS, ceil(film credits x AI_UPSCALE_FACTOR))
  * to the film's price — with the defaults (5, 1.0) the film costs double: 15 s = 10 + 10, 30 s = 15 + 15, 60 s = 30 + 30.
- * The extra is refunded automatically when the finish could not upscale every shot (settleAiUpscale, src/orchestrator.ts).
+ * The extra is refunded automatically when the finish could not upscale every shot (refundAiUpscale, src/orchestrator.ts).
  */
 export const AI_UPSCALE_MIN_CREDITS = 5;
 export const AI_UPSCALE_FACTOR = 1.0;
@@ -599,7 +599,7 @@ export function aiUpscaleJob(job: Pick<Job, "params">): boolean {
 }
 /**
  * What the finish box said about the upscale (the `sr` of its /done call, worker/kleo_video.py LAST_SR), read as a
- * verdict: applied only when every part with a clip went through the GPU. Anything else — no report, no card, the
+ * verdict: applied only when every part with a clip went through Real-ESRGAN (a model is named). Anything else — no report, no card, the
  * benchmark over budget, the breaker, one part on the classic chain, KLEO_SR off on the box — is "not applied".
  */
 export interface AiUpscaleVerdict { applied: boolean; parts: number; upscaled: number; model: string | null; gpu: string | null; reason: string | null }
@@ -608,10 +608,15 @@ export function aiUpscaleVerdict(sr: unknown): AiUpscaleVerdict {
   const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.floor(v)) : 0);
   const s = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim().slice(0, 200) : null);
   if (!o) return { applied: false, parts: 0, upscaled: 0, model: null, gpu: null, reason: "the finish box sent no report of the upscale" };
-  const parts = n(o.parts), upscaled = Math.min(parts, n(o.applied));
+  const parts = n(o.parts), model = s(o.model);
+  // No upscaler named (factor 1: RIFE only, the clips already near 4K; an older box says "no upscaler") is not the
+  // Real-ESRGAN pass the user paid for, even when every part went through the GPU (review, 25 September 2026).
+  const esrgan = model !== null && !/^no upscaler$/i.test(model);
+  const upscaled = esrgan ? Math.min(parts, n(o.applied)) : 0;
   const applied = parts > 0 && upscaled === parts;
-  const reason = applied ? null : s(o.reason) ?? (parts === 0 ? "no shot had a clip to upscale" : `${upscaled} of ${parts} shots were upscaled`);
-  return { applied, parts, upscaled, model: s(o.model), gpu: s(o.gpu), reason };
+  const reason = applied ? null : s(o.reason) ?? (parts === 0 ? "no shot had a clip to upscale"
+    : !esrgan ? "the clips are already near 4K: no Real-ESRGAN pass, RIFE only" : `${upscaled} of ${parts} shots were upscaled`);
+  return { applied, parts, upscaled, model, gpu: s(o.gpu), reason };
 }
 
 /**

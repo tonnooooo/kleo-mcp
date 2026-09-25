@@ -460,7 +460,13 @@ export async function cancelJob(env: Env, user: User, jobId: string): Promise<{ 
   const job = await getUserJob(env, user.id, jobId);
   if (!job) throw new JobError(`There is no video number "${jobId}" on this account. Check the number, or call kleo_get_job without a number to see your recent videos.`);
   if (!OPEN_STATES.includes(job.state)) throw notCancellable(job);
-  const refund = refundFor(job.credits, job.state, job.percent);
+  // THE AI UPSCALE COMES BACK WHOLE (review, 25 September 2026): it runs only in the finish, and a job still open has
+  // not had it settled, so a cancel refunds its credits in full and prorates only the film's (a 60 s film with the
+  // upscale, 30 + 30, cancelled at 58% used to keep 17 upscale credits for an upscale that never ran).
+  let upscaleCredits = 0;
+  try { const p = JSON.parse(job.params) as JobParams; if (p.ai_upscale) upscaleCredits = Math.max(0, Math.min(job.credits, Math.round(p.ai_upscale_credits ?? 0))); } catch { /* unreadable params: the whole debit is prorated */ }
+  const filmRefund = refundFor(job.credits - upscaleCredits, job.state, job.percent);
+  const refund = filmRefund + upscaleCredits;
   const moved = await transitionJob(env, job.id, OPEN_STATES, { state: "cancelled", finished_at: nowIso(), error: "cancelled by user" });
   if (!moved) throw notCancellable((await getUserJob(env, user.id, jobId)) ?? job);
   // Whatever GPU the job holds is released now; the orchestrator never rents one for a cancelled job (see tick()).
@@ -473,7 +479,7 @@ export async function cancelJob(env: Env, user: User, jobId: string): Promise<{ 
     } catch (e) { await audit(env, user.id, job.id, "backend.destroy.error", String(e)); }
   }
   const refunded = await refundCredits(env, user.id, refund, job.id, `cancelled at ${job.percent}% (${job.state})`);
-  await audit(env, user.id, job.id, "job.cancelled", { refunded, percent: job.percent, state_before: job.state });
+  await audit(env, user.id, job.id, "job.cancelled", { refunded, percent: job.percent, state_before: job.state, ...(upscaleCredits ? { film_refund: filmRefund, ai_upscale_refund: upscaleCredits } : {}) });
   return { job: { ...job, state: "cancelled" }, refunded };
 }
 

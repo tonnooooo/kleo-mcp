@@ -349,20 +349,23 @@ export function subtitlesAnswer(raw: boolean | string | null | undefined): boole
 }
 
 /**
- * The AI upscale answer as the call passes it: a boolean, or the user's words. A yes in any common spelling ("sì",
- * "yes please", "voglio provarlo") is yes; everything else — "no", "classic", "whatever", "fai tu", an empty shrug —
- * is no: the upscale costs many credits, so only a clear yes buys it.
+ * The AI upscale answer as the call passes it: a boolean, or the user's words. Only a short, unambiguous yes buys it
+ * ("sì", "yes please", "sì, grazie", "voglio provarlo", "AI upscale: yes"); everything else is no — "no", "classic",
+ * "whatever", "fai tu", an empty shrug, and above all any answer with a negation or "classic" ANYWHERE in it: the
+ * upscale doubles the film's price, so "certo che no", "ok, niente upscale", "voglio il classico" or the label form
+ * "Ingrandimento AI: no" must never read as yes (25 September 2026, review: the first word used to decide, and "ai",
+ * "upscale", "con", "voglio" counted as a yes on their own).
  */
-const UPSCALE_END = "(?=$|[\\s,.;:!?)])";
-const UPSCALE_NO_RE = new RegExp(`^(?:no|non|not|nope|nah|niente|senza|without|meglio di no|classic|classico)${UPSCALE_END}`, "i");
-const UPSCALE_YES_RE = new RegExp(`^(?:yes|yeah|yep|yup|y|s[iì]|ok|okay|sure|certo|certamente|va bene|volentieri|dai|of course|please|per favore|vai|proviamo|provalo|let'?s try(?: it)?|try it|voglio|vorrei|i want|i'?d like|con|with|ai|upscale|ingrandimento)${UPSCALE_END}`, "i");
-const UPSCALE_NEG_RE = /\b(?:di no|don'?t|do not|no thanks|no grazie|non lo voglio|not now)\b/i;
+const UPSCALE_NEG_RE = /(?<!\p{L})(?:no|non|not|nope|nah|niente|nulla|nessun[oa]?|senza|without|never|mai|dont|doesnt|wont|classic[oa]?|classici|classiche|normale|standard|later|dopo)(?!\p{L})|n't(?!\p{L})/iu;
+// An optional label the assistant may echo ("AI upscale: yes", "Ingrandimento AI: sì"), then ONE yes phrase, then at
+// most a politeness tail. Nothing else may be in the answer: "voglio", "con", "ai" or "upscale" alone are not a yes.
+const UPSCALE_YES_RE = /^(?:(?:the\s+)?(?:ai\s+)?upscal(?:e|ing)(?:\s+ai)?|(?:l'\s*)?ingrandimento(?:\s+ai)?)?\s*[:=\-–—]?\s*(?:yes|yeah|yep|yup|y|s[iì]|ok|okay|sure|certo|certamente|va bene|volentieri|of course|proviamo(?:lo|la)?|provalo|provala|let's try(?: it)?|lets try(?: it)?|try it|go for it|do it|facciamolo|voglio provarlo|voglio provarla|lo voglio|la voglio|i want it)(?:[\s,.;:!]+(?:grazie|please|thanks|thank you|per favore|pure|dai|proviamo(?:lo|la)?|provalo|let's try(?: it)?|go ahead|vai|certo|yes|s[iì]|ok))*[\s.!]*$/i;
 export function aiUpscaleAnswer(raw: boolean | string | null | undefined): boolean | null {
   if (raw === undefined || raw === null) return null;
   if (typeof raw === "boolean") return raw;
-  const s = String(raw).trim().replace(/\s+/g, " ").replace(/^["'“”‘’]+|["'“”‘’]+$/g, "");
+  const s = String(raw).trim().replace(/\s+/g, " ").replace(/^["'“”‘’]+|["'“”‘’]+$/g, "").replace(/[’‘]/g, "'");
   if (!s) return null;
-  if (NO_WORDS.test(s) || UPSCALE_NO_RE.test(s) || UPSCALE_NEG_RE.test(s)) return false;
+  if (NO_WORDS.test(s) || UPSCALE_NEG_RE.test(s)) return false;
   return YES_WORDS.test(s) || UPSCALE_YES_RE.test(s);
 }
 
@@ -640,12 +643,25 @@ const upscalePrice = (chat: NarrationLanguage, up: NonNullable<IntakeAccount["ai
  * costare tanti crediti"). The classic 4K 60 fps finish is the default; this is one more question in the same
  * message, only for a film. While the product is not chosen yet, it is asked for the case the user picks the film.
  */
-function upscaleQuestion(chat: NarrationLanguage, up: NonNullable<IntakeAccount["aiUpscale"]>, productOpen: boolean): string {
+function upscaleQuestion(chat: NarrationLanguage, acct: IntakeAccount, up: NonNullable<IntakeAccount["aiUpscale"]>, productOpen: boolean, refused: boolean): string {
   const price = upscalePrice(chat, up);
+  // THE BALANCE IS SAID HERE (review, 25 September 2026): a user who can pay for the film but not for film + upscale
+  // used to answer yes and learn it at kleo_create_video, after the spec, the treatment and the read-back.
+  const total = upscaleTotal(acct);
+  const short = total !== null && acct.credits < total;
+  if (refused && total !== null) {
+    return chat === "it"
+      ? `Hai scelto l'ingrandimento AI, ma film + ingrandimento fanno ${total} crediti e ne hai ${acct.credits}: non bastano. Vuoi il film in 4K 60 fps classico (${acct.filmCredits} crediti), o prima compri altri crediti per l'ingrandimento?`
+      : `You chose the AI upscale, but film + upscale come to ${total} credits and you have ${acct.credits}: not enough. Do you want the film in classic 4K 60 fps (${acct.filmCredits} credits), or buy more credits first for the upscale?`;
+  }
+  const note = short ? (chat === "it" ? `; film + ingrandimento fanno ${total} crediti, non bastano (hai ${acct.credits} crediti)` : `; film + upscale come to ${total} credits, not enough (you have ${acct.credits})`) : "";
   return chat === "it"
-    ? `${productOpen ? "Se scegli il film: " : ""}Vuoi l'ingrandimento AI (Real-ESRGAN + RIFE: immagine più nitida, ${price})? Se no, il film esce in 4K 60 fps classico.`
-    : `${productOpen ? "If you choose the film: " : ""}Do you want the AI upscale (Real-ESRGAN + RIFE: a sharper picture, ${price})? If not, the film comes out in classic 4K 60 fps.`;
+    ? `${productOpen ? "Se scegli il film: " : ""}Vuoi l'ingrandimento AI (Real-ESRGAN + RIFE: immagine più nitida, ${price}${note})? Se no, il film esce in 4K 60 fps classico.`
+    : `${productOpen ? "If you choose the film: " : ""}Do you want the AI upscale (Real-ESRGAN + RIFE: a sharper picture, ${price}${note})? If not, the film comes out in classic 4K 60 fps.`;
 }
+/** Film + AI upscale for this account, when both prices are known (the length is), else null. */
+const upscaleTotal = (acct: IntakeAccount): number | null =>
+  acct.aiUpscale && acct.aiUpscale.credits !== null && acct.filmCredits !== null ? acct.filmCredits + acct.aiUpscale.credits : null;
 
 /** The product a request names: the literal word only. "Preview", "anteprima", "bozza" are not a product. */
 const ANIMATIC_WORD_RE = /\banimatic[oi]?\b/i;
@@ -720,7 +736,11 @@ export function adaptPrompt(prompt: string, overrides: AdaptOverrides = {}): Ada
   // product is still open, for the film a paying account may choose. Never for an animatic.
   const callUpscale = aiUpscaleAnswer(overrides.ai_upscale);
   const upscaleAsked = !!acct?.aiUpscale && product !== "animatic" && productSaid !== "animatic" && (product === "film" || (product === null && acct.paid));
-  const ai_upscale = product === "animatic" || (acct && !acct.aiUpscale) ? false : callUpscale;
+  // A yes the balance cannot pay for (film + upscale over the account's credits) is not taken: the question comes back
+  // with the balance and the classic finish as the way out, and the brief is not ready.
+  const upscaleCost = acct ? upscaleTotal(acct) : null;
+  const upscaleRefused = upscaleAsked && callUpscale === true && upscaleCost !== null && acct!.credits < upscaleCost;
+  const ai_upscale = product === "animatic" || (acct && !acct.aiUpscale) ? false : upscaleRefused ? null : callUpscale;
 
   const answered: Partial<Record<IntakeKey, IntakeAnswer>> = {};
   if (hasContent(subject)) answered.subject = { value: subject, from: "request" };
@@ -733,7 +753,7 @@ export function adaptPrompt(prompt: string, overrides: AdaptOverrides = {}): Ada
   if (audience) answered.audience = { value: audience, from: "call" };
   if (tone) answered.tone = { value: tone, from: "call" };
   if (must_keep) answered.must_keep = { value: must_keep, from: "call" };
-  if (upscaleAsked && callUpscale !== null) answered.ai_upscale = { value: callUpscale ? `yes${acct?.aiUpscale?.credits != null ? ` (+${acct.aiUpscale.credits} credits)` : ""}` : "no — classic 4K 60 fps", from: "call" };
+  if (upscaleAsked && callUpscale !== null && !upscaleRefused) answered.ai_upscale = { value: callUpscale ? `yes${acct?.aiUpscale?.credits != null ? ` (+${acct.aiUpscale.credits} credits)` : ""}` : "no — classic 4K 60 fps", from: "call" };
   if (language) answered.language = { value: language === "it" ? "Italian" : callLang?.defaulted ? "English (no preference: the default)" : "English", from: callLang?.value ? "call" : "request" };
   // The product is not asked of a caller that did not pass the account: there is no price to quote.
   const missing = INTAKE.filter((i) => i.required && !answered[i.key] && (i.key !== "product" || !!acct) && (i.key !== "ai_upscale" || upscaleAsked)).map((i) => i.key);
@@ -751,7 +771,7 @@ export function adaptPrompt(prompt: string, overrides: AdaptOverrides = {}): Ada
         : i.key === "product" && acct
           ? productQuestion(chat, acct, duration_s ?? null, productSaid)
           : i.key === "ai_upscale" && acct?.aiUpscale
-            ? upscaleQuestion(chat, acct.aiUpscale, product === null)
+            ? upscaleQuestion(chat, acct, acct.aiUpscale, product === null, upscaleRefused)
           : i.key === "duration" && animaticTooLong && acct
             ? (chat === "it"
               ? `Un animatic dura al massimo ${acct.animaticMaxS} secondi (ne hai chiesti ${duration_s}): quanto deve durare, fino a ${acct.animaticMaxS} secondi?`

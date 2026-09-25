@@ -822,9 +822,11 @@ test("a film is asked about the AI upscale with its exact price: the film's cred
   assert.equal(yes.structuredContent.ready_to_render, true, yes.text); assert.equal(yes.structuredContent.ai_upscale, true);
   assert.match(yes.text, /- AI upscale: yes — Real-ESRGAN \+ RIFE on every shot, \+15 credits on top of the film/);
   assert.match(yes.structuredContent.next, /ai_upscale: "yes" \(the user's AI upscale: \+15 credits, 30 in all\)/);
+  // The read-back puts the exact price in front of the USER before anything is debited.
+  assert.match(yes.structuredContent.next, /the logline and the decisions, and, in the same message, the AI upscale they chose and its price: "AI upscale: yes, \+15 credits, 30 in all \(the 15 come back if the finish cannot apply it\)"/);
   const no = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", product: "film", ai_upscale: "whatever", ...READY, duration_s: 30 });
   assert.equal(no.structuredContent.ready_to_render, true); assert.equal(no.structuredContent.ai_upscale, false);
-  assert.match(no.structuredContent.next, /ai_upscale: "no"/); assert.match(no.text, /- AI upscale: no — the classic 4K 60 fps finish/);
+  assert.match(no.structuredContent.next, /ai_upscale: "no"/); assert.doesNotMatch(no.structuredContent.next, /AI upscale: yes/); assert.match(no.text, /- AI upscale: no — the classic 4K 60 fps finish/);
   // kleo_account says it too.
   const acct = await s.call("kleo_account", {});
   assert.deepEqual(acct.structuredContent.ai_upscale, { available: true, rule: "as many credits again as the film, at least 5", credits_30s: 15, credits_60s: 30 });
@@ -870,6 +872,47 @@ test("the AI upscale is paid with the film, refunded automatically when the fini
   await done(old.structuredContent.job_id, { cost_usd: 0.01 });
   assert.equal((await m.getUser(s.env, "u_test")).credits, 25, "35 - 20 + 10");
   assert.match((await s.call("kleo_get_result", { job_id: old.structuredContent.job_id })).text, /AI upscale: not applied \(the finish box sent no report of the upscale\), 10 credits refunded/);
+});
+
+test("an upscale film retried by the owner after a failure is not refunded twice, and a cancel gives the upscale back whole", async () => {
+  const s = await studio(fakeAi(() => { throw new Error("must not be called"); }));
+  const secretOf = async (id) => (await s.env.DB.prepare("SELECT worker_secret FROM jobs WHERE id = ?").bind(id).first()).worker_secret;
+  const post = async (id, rest, body) => m.handleInternal(new Request(`http://kleo.test/internal/jobs/${id}/${rest}`, { method: "POST", headers: { authorization: `Bearer ${await secretOf(id)}`, "content-type": "application/json" }, body: JSON.stringify(body) }), s.env);
+  const credits = async () => (await m.getUser(s.env, "u_test")).credits;
+  // 15 + 15 debited; the finish fails and failJob gives back all 30.
+  const made = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers", duration_s: 30, format: "9:16", language: "en", product: "film", ai_upscale: "yes" });
+  assert.ok(!made.isError, made.text); const id = made.structuredContent.job_id;
+  assert.equal(await credits(), 40);
+  await s.env.DB.prepare("UPDATE jobs SET phase = 'finish', state = 'finishing', percent = 80 WHERE id = ?").bind(id).run();
+  assert.equal((await post(id, "failed", { error: "Invalid master", retry: false })).status, 200);
+  assert.equal(await credits(), 70, "the whole debit back, the upscale included");
+  // The owner retries it: nothing is debited, and the retry's finish must not refund the upscale a second time.
+  const r = await (await m.handleAdmin(new Request("http://kleo.test/internal/admin/retry", { method: "POST", headers: { authorization: "Bearer s3cret", "content-type": "application/json" }, body: JSON.stringify({ job_id: id }) }), s.env)).json();
+  assert.equal(r.ok, true);
+  assert.equal(JSON.parse((await m.getJob(s.env, id)).params).ai_upscale_refunded, true);
+  assert.equal((await post(id, "done", { sr: { parts: 3, applied: 0, model: null, gpu: null, reason: "no card" } })).status, 200);
+  assert.equal(await credits(), 70, "not 85: the 15 upscale credits came back once, with the failure");
+  const got = await s.call("kleo_get_result", { job_id: id });
+  assert.match(got.text, /AI upscale: not applied \(no card; its credits were already given back when the film failed\); the film is in the classic 4K 60 fps\./);
+  assert.doesNotMatch(got.text, /credits? refunded/);
+  // A cancel before the finish: the upscale (which only the finish runs) comes back whole, the film's part prorated.
+  const c = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers at dawn", duration_s: 60, format: "9:16", language: "en", product: "film", ai_upscale: "yes" });
+  assert.ok(!c.isError, c.text); assert.equal(c.structuredContent.credits, 60); assert.equal(await credits(), 10);
+  await s.env.DB.prepare("UPDATE jobs SET state = 'rendering', percent = 58 WHERE id = ?").bind(c.structuredContent.job_id).run();
+  const x = await s.call("kleo_cancel_job", { job_id: c.structuredContent.job_id });
+  assert.ok(!x.isError, x.text);
+  assert.equal(await credits(), 10 + 13 + 30, "round(30 x 42%) = 13 for the film, all 30 for the upscale");
+  const row = (await s.audit("job.cancelled")).at(-1);
+  assert.equal(row.refunded, 43); assert.equal(row.film_refund, 13); assert.equal(row.ai_upscale_refund, 30);
+  // RIFE alone (factor 1, the clips already near 4K: no upscaler named) is not the Real-ESRGAN pass that was sold.
+  for (const [model, n] of [[null, 1], ["no upscaler", 2]]) {
+    const f = await s.call("kleo_create_video", { prompt: `A film about lighthouse keepers at dusk ${n}`, duration_s: 15, format: "9:16", language: "en", product: "film", ai_upscale: "yes" });
+    assert.ok(!f.isError, f.text);
+    const before = await credits();
+    await post(f.structuredContent.job_id, "done", { sr: { parts: 4, applied: 4, model, gpu: "RTX 3060", reason: null } });
+    assert.equal(await credits(), before + 10, `model ${model}: the upscale's 10 credits come back`);
+    assert.match((await s.call("kleo_get_result", { job_id: f.structuredContent.job_id })).text, /AI upscale: not applied \(the clips are already near 4K: no Real-ESRGAN pass, RIFE only\), 10 credits refunded/);
+  }
 });
 
 test("a film without the option is priced, said and settled exactly as before", async () => {

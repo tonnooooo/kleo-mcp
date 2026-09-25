@@ -1,5 +1,5 @@
 import type { Env } from "./env";
-import { getJob, setFile, listFiles, audit, type Job, claimQueuedJob, countRunning, transitionJob, ACTIVE_STATES, OPEN_STATES } from "./db";
+import { getJob, setFile, listFiles, audit, type Job, claimQueuedJob, countRunning, transitionJob, updateJobParams, ACTIVE_STATES, OPEN_STATES } from "./db";
 import { json, safeEqual, nowIso, int, num, rid } from "./util";
 import { isFlagActive, setFlagUntil, releaseLock } from "./schema";
 import { finishJob, failJob, trackFor, budgetSpentUsd, handoverToFinish } from "./orchestrator";
@@ -9,7 +9,7 @@ import { putFile, getFile } from "./storage";
 import { generateStoryboard, StoryboardError, writeTreatment } from "./storyboard";
 import { proseDistance } from "./treatment.ts";
 import { stripForWorker } from "./keou-contract.ts";
-import { findTemplate } from "./templates";
+import { findTemplate, aiUpscaleJob } from "./templates";
 import { generateJobImages, IMAGE_NAME_RE } from "./images";
 import { ephoneBalanceUsd } from "./ephone.ts";
 import { footageBackendFor, footageConfig, setFootageConfig, kieModelFor, clipLengthsSpec, requestFootage, footageStatus, footageSpentTodayUsd, kieBalanceUsd, clipKey, footageRows, KIE_MODELS, SHOT_ID_RE, STILL_NAME_RE, type ShotRequest, requestMusic, musicStatus, musicOn, musicKey, MUSIC_ID, type MusicRequest } from "./footage";
@@ -347,6 +347,9 @@ export async function handleAdmin(request: Request, env: Env): Promise<Response>
       state: "queued", backend: null, instance_id: null, instance_meta: null, started_at: null, finished_at: null, last_report_at: null, queued_at: nowIso(),
       percent: 58, track: "clips", error: null, attempts: 0, worker_secret: rid("wk", 32),
     });
+    // A film sold the AI upscale: its credits came back with the failure, so the retry's finish refunds nothing again,
+    // and a verdict a /done left on the failed row is not this attempt's (review, 25 September 2026).
+    if (ok && aiUpscaleJob(job)) await updateJobParams(env, job.id, { ai_upscale_result: undefined, ai_upscale_refunded: true });
     await audit(env, job.user_id, job.id, "admin.retry", { from: "failed", phase: job.phase, previous_error: (job.error ?? "").slice(0, 200), ok });
     return json({ ok, job_id: job.id, state: ok ? "queued" : job.state, phase: "finish", note: "the finish box is rented again; clips and music are reused, no credit is charged" });
   }

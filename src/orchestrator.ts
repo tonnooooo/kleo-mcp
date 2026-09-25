@@ -609,6 +609,8 @@ export async function failJob(env: Env, job: Job, reason: string, retry: boolean
       state: "queued", backend: null, instance_id: null, instance_meta: null, started_at: null, last_report_at: null, queued_at: nowIso(), percent: 0, track: null, error: reason, worker_secret: rid("wk", 32),
     });
     if (!requeued) { await audit(env, job.user_id, job.id, "job.requeue.ignored", { reason, note: "job was no longer open" }); return "ignored"; }
+    // A verdict a dead box's /done left on the row belongs to that attempt, not to the next one.
+    if (aiUpscaleJob(job)) await updateJobParams(env, job.id, { ai_upscale_result: undefined });
     await audit(env, job.user_id, job.id, "job.requeued", { reason, attempts: job.attempts });
     return "requeued";
   }
@@ -627,19 +629,27 @@ export async function failJob(env: Env, job: Job, reason: string, retry: boolean
  * Only the call whose transition to done applies gives the credits back (refundAiUpscale), so they move once.
  */
 async function recordAiUpscale(env: Env, job: Job, sr: unknown): Promise<void> {
+  // The row as it is NOW, and only while the job is open: a /done that reaches a failed or cancelled job settles
+  // nothing, or its verdict would outlive an admin retry (review, 25 September 2026).
+  const fresh = await getJob(env, job.id);
+  if (!fresh || !OPEN_STATES.includes(fresh.state)) return;
   let p: JobParams;
-  try { p = JSON.parse(job.params) as JobParams; } catch { return; }
+  try { p = JSON.parse(fresh.params) as JobParams; } catch { return; }
   if (!p.ai_upscale || p.ai_upscale_result) return;
   const v = aiUpscaleVerdict(sr);
-  const refunded = v.applied ? 0 : Math.max(0, Math.round(p.ai_upscale_credits ?? 0));
-  await updateJobParams(env, job.id, { ai_upscale_result: { ...v, refunded, at: nowIso() } });
+  // A film the owner retried after a failure (POST /internal/admin/retry) had ALL its credits given back by failJob,
+  // the upscale's included, and the retry debits nothing: there is nothing left to refund a second time.
+  const already = !v.applied && p.ai_upscale_refunded === true;
+  const refunded = v.applied || already ? 0 : Math.max(0, Math.round(p.ai_upscale_credits ?? 0));
+  const reason = already ? `${v.reason ?? "not applied"}; its credits were already given back when the film failed` : v.reason;
+  await updateJobParams(env, job.id, { ai_upscale_result: { ...v, reason, refunded, at: nowIso() } });
 }
 async function refundAiUpscale(env: Env, job: Job): Promise<void> {
   const fresh = await getJob(env, job.id);
   let r: JobParams["ai_upscale_result"];
   try { r = (JSON.parse(fresh?.params ?? job.params) as JobParams).ai_upscale_result; } catch { r = undefined; }
   if (!r) return;
-  const refunded = r.applied ? 0 : await refundCredits(env, job.user_id, r.refunded, job.id, `AI upscale not applied: ${(r.reason ?? "no reason given").slice(0, 120)}`);
+  const refunded = r.applied || r.refunded <= 0 ? 0 : await refundCredits(env, job.user_id, r.refunded, job.id, `AI upscale not applied: ${(r.reason ?? "no reason given").slice(0, 120)}`);
   await audit(env, job.user_id, job.id, r.applied ? "ai_upscale.applied" : "ai_upscale.refunded",
     { applied: r.applied, parts: r.parts, upscaled: r.upscaled, model: r.model, gpu: r.gpu, reason: r.reason, refunded });
 }

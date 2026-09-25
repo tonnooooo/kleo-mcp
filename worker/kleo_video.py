@@ -601,9 +601,14 @@ def _sr_decision(srm, card, recipes, shots_json, width, height, fps, say, note=N
                 bench = card.benchmark(first, factor, look)
             est = srm.estimate_minutes(bench, list(recipes.values()), fps)
             if est <= SR_BUDGET_MIN:
-                model = srm.model_for(look, factor) or "no upscaler"
+                model = srm.model_for(look, factor)
                 note.update(model=model, gpu=gpu)
-                say(f"SR on: {gpu or 'unknown GPU'}, {model} x{factor} + RIFE 4.25, est {est:.1f} min")
+                if model is None:
+                    # Factor 1: the clips are already near the delivery size, so only RIFE runs. That is not the
+                    # Real-ESRGAN pass a film sold the AI upscale paid for: LAST_SR says "not applied" and the
+                    # server gives the credits back (review, 25 September 2026: 1440p clips were billed as upscaled).
+                    note["reason"] = "the clips are already near 4K: no Real-ESRGAN pass, RIFE only"
+                say(f"SR on: {gpu or 'unknown GPU'}, {model or 'no upscaler'} x{factor} + RIFE 4.25, est {est:.1f} min")
                 return factor, look, est
             why = f"estimated {est:.0f} min over the {SR_BUDGET_MIN:g} min budget"
         note["reason"] = str(why)
@@ -831,8 +836,10 @@ def build_footage(shots_json, clips, out_path, width, height, fps=60, log_fn=Non
                 card.close()
             except Exception:
                 pass
-    LAST_SR = {"parts": len(recipes), "applied": len(upscaled), "model": note.get("model"), "gpu": note.get("gpu"),
-               "reason": None if recipes and len(upscaled) == len(recipes) else
+    # "applied" counts the parts Real-ESRGAN upscaled: with no upscaler (factor 1) RIFE alone is not the upscale.
+    esrgan = bool(note.get("model"))
+    LAST_SR = {"parts": len(recipes), "applied": len(upscaled) if esrgan else 0, "model": note.get("model"), "gpu": note.get("gpu"),
+               "reason": None if recipes and esrgan and len(upscaled) == len(recipes) else
                note.get("reason") or f"{len(upscaled)} of {len(recipes)} parts went through the GPU"}
     if failed:
         return None

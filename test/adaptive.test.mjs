@@ -481,10 +481,35 @@ test("the AI upscale is never asked for an animatic, of an account that cannot o
   assert.doesNotMatch(intakeText(off), /AI upscale/); assert.doesNotMatch(off.questions.join(" "), /upscale/i);
 });
 
+test("a balance that pays for the film but not for film + upscale is said in the question, and a yes it cannot pay for is asked again", () => {
+  // 15 credits: the film (10) yes, film + upscale (20) no.
+  const q = adaptPrompt("A film about pirates", { ...ANSWERS, product: "film", account: UP({ credits: 15 }) });
+  assert.equal(q.questions[0], "Do you want the AI upscale (Real-ESRGAN + RIFE: a sharper picture, +10 credits; film + upscale come to 20 credits, not enough (you have 15))? If not, the film comes out in classic 4K 60 fps.");
+  const qi = adaptPrompt("Fammi un film sui pirati", { ...ANSWERS, product: "film", account: UP({ credits: 15 }) });
+  assert.equal(qi.questions[0], "Vuoi l'ingrandimento AI (Real-ESRGAN + RIFE: immagine più nitida, +10 crediti; film + ingrandimento fanno 20 crediti, non bastano (hai 15 crediti))? Se no, il film esce in 4K 60 fps classico.");
+  const yes = adaptPrompt("A film about pirates", { ...ANSWERS, product: "film", ai_upscale: "yes", account: UP({ credits: 15 }) });
+  assert.equal(yes.ai_upscale, null, "not taken: the brief is not ready"); assert.deepEqual(yes.intake.missing, ["ai_upscale"]);
+  assert.equal(yes.questions[0], "You chose the AI upscale, but film + upscale come to 20 credits and you have 15: not enough. Do you want the film in classic 4K 60 fps (10 credits), or buy more credits first for the upscale?");
+  const no = adaptPrompt("A film about pirates", { ...ANSWERS, product: "film", ai_upscale: "no", account: UP({ credits: 15 }) });
+  assert.equal(no.ai_upscale, false); assert.deepEqual(no.questions, []);
+  // Exactly enough is enough.
+  const even = adaptPrompt("A film about pirates", { ...ANSWERS, product: "film", ai_upscale: "yes", account: UP({ credits: 20 }) });
+  assert.equal(even.ai_upscale, true); assert.deepEqual(even.questions, []);
+  assert.doesNotMatch(adaptPrompt("A film about pirates", { ...ANSWERS, product: "film", account: UP({ credits: 20 }) }).questions[0], /not enough/);
+});
+
 test("the answer: only a clear yes buys the upscale; no, whatever or no answer is the classic finish", () => {
   for (const y of ["yes", "Yes please", "sì", "si, grazie", "ok", "certo", "voglio provarlo", "let's try it", true]) assert.equal(aiUpscaleAnswer(y), true, String(y));
   for (const n of ["no", "No grazie", "nope", "classico", "whatever", "fai tu", "non lo so", "don't bother", "boh", false]) assert.equal(aiUpscaleAnswer(n), false, String(n));
   for (const u of [undefined, null, "", "   "]) assert.equal(aiUpscaleAnswer(u), null);
+  // The label an assistant echoes, and a clear yes with a politeness tail, are still a yes.
+  for (const y of ["AI upscale: yes", "Ingrandimento AI: sì", "sì!", "yes, thanks", "ok, proviamo", "Sì grazie."]) assert.equal(aiUpscaleAnswer(y), true, y);
+  // A negation or "classic" ANYWHERE is a no, and a word that is not a yes on its own ("voglio", "con", "ai") buys
+  // nothing (review, 25 September 2026: each of these used to read as yes and double the film's price).
+  for (const n of ["AI upscale: no", "Ingrandimento AI: no", "upscale: no", "ingrandimento no", "certo che no", "ok, niente upscale",
+    "va bene il 4K classico", "voglio il 4K classico", "voglio il classico", "vorrei quello normale", "con il classico", "vai col classico",
+    "with the classic finish", "I want the classic one", "please no", "sì ma dopo", "yes, I don't think so",
+    "ai", "upscale", "ingrandimento", "con", "with", "voglio", "vorrei", "i want", "dai", "vai", "please", "per favore"]) assert.equal(aiUpscaleAnswer(n), false, n);
   const yes = adaptPrompt("A film about pirates", { ...ANSWERS, product: "film", ai_upscale: "sì", account: UP() });
   assert.equal(yes.ai_upscale, true); assert.deepEqual(yes.questions, []);
   assert.match(intakeText(yes), /- AI upscale: yes \(\+10 credits\) \(the user's answer\)/);
