@@ -35,7 +35,7 @@ import { hmacHex, int, num, nowIso, publicText } from "./util.ts";
 import { FILM_LOOKS, directionOf, type FilmLook } from "./keou-contract.ts";
 import { isAnimatic } from "./templates.ts";
 import { specOf, itemById, type RequestSpec, type SpecItem } from "./spec.ts";
-import { stillCast, stillShotsOf, stillModel, stillProviderOf, stillPriceUsd, stillsEngineOn, stillsStateOf, STILL_SIZES, SHEET_SIZE } from "./stills.ts";
+import { stillCast, stillShotsOf, stillModel, stillProviderOf, stillPriceUsd, stillsHold, stillsStateOf, STILL_SIZES, SHEET_SIZE } from "./stills.ts";
 import { KIE_BASE, KIE_CREATE, KIE_RECORD, KIE_CREDIT, USD_PER_KIE_CREDIT, KieError, kie, isNoCredit, kieResultUrls, type KieRecord } from "./kie.ts";
 import { ephone, ephoneBalanceUsd, ephoneOutputs, ephoneFailure, type EphoneTask } from "./ephone.ts";
 
@@ -233,21 +233,24 @@ export async function kiePreflight(env: Env, seconds: number, shots: number | nu
   // The same two gates the order itself will meet on the box (requestFootage): today's ceiling first, then the account.
   const budget = num(env.DAILY_FOOTAGE_BUDGET_USD, 5);
   const spent = await footageSpentTodayUsd(env);
-  if (spent + plan.usd > budget) return { ok: false, reason: "budget", balance_usd: null, planned_usd: plan.usd, spent_today_usd: spent, budget_usd: budget, shots: plan.shots, model: plan.model };
-  // The account pays the pictures too when they are drawn on the same provider as the clips (plannedStillsUsd); today's
-  // ceiling above counts what the pictures already spent today (footageSpentTodayUsd), and the pictures have their own
-  // caps on top (STILLS_JOB_MAX_USD, STILLS_DAILY_USD in src/stills.ts).
+  // Today's ceiling counts a film's pictures once they are drawn (footageSpentTodayUsd), so the box's order at
+  // /footage meets this film's own pictures in `spent`. The pre-flight asks for them too, on whatever road they are
+  // drawn: a film admitted here is not refused later for the pictures it was admitted with (26 September 2026).
+  const pictures = plannedStillsUsd(env, plan.shots);
+  if (spent + plan.usd + pictures > budget) return { ok: false, reason: "budget", balance_usd: null, planned_usd: plan.usd, spent_today_usd: spent, budget_usd: budget, shots: plan.shots, model: plan.model, ...(pictures > 0 ? { stills_usd: pictures } : {}) };
+  // The account pays the pictures too when they are drawn on the same provider as the clips (plannedStillsUsd), and
+  // the pictures have their own caps on top (STILLS_JOB_MAX_USD, STILLS_DAILY_USD in src/stills.ts).
   const stillsRoad = stillProviderOf(stillModel(env)).provider;
   // Clips bought on ePhone AI are paid from that account, and so are the pictures when they are drawn there too (26
   // September 2026: Nano Banana Pro on ePhone is production); pictures on another road have a balance of their own, and
   // an empty one only moves them to klein-4B (src/stills.ts), it never stops the film.
   if (clipProviderOf(kieModelFor(env, cfg).spec) === "ephone") {
-    const stills = stillsRoad === "ephone" ? plannedStillsUsd(env, plan.shots) : 0;
+    const stills = stillsRoad === "ephone" ? pictures : 0;
     const balance = await ephoneBalanceUsd(env);
     const ok = balance === null || balance >= plan.usd + stills;
     return { ok, reason: ok ? null : "balance", balance_usd: balance, planned_usd: plan.usd, spent_today_usd: spent, budget_usd: budget, shots: plan.shots, model: plan.model, ...(stills > 0 ? { stills_usd: stills } : {}) };
   }
-  const stills = stillsRoad === "kie" ? plannedStillsUsd(env, plan.shots) : 0;
+  const stills = stillsRoad === "kie" ? pictures : 0;
   const balance = await kieBalanceUsd(env);
   const ok = balance === null || balance >= plan.usd + stills;
   return { ok, reason: ok ? null : "balance", balance_usd: balance, planned_usd: plan.usd, spent_today_usd: spent, budget_usd: budget, shots: plan.shots, model: plan.model, ...(stills > 0 ? { stills_usd: stills } : {}) };
@@ -506,18 +509,24 @@ async function updateRow(env: Env, jobId: string, shotId: string, fields: Partia
 }
 /**
  * Estimated dollars committed today (UTC) on the model APIs: the clips and tracks, from the rows written at task
- * creation, PLUS the pictures (26 September 2026, the owner's cost report): every paid still, on kie.ai, ePhone AI or
- * OpenRouter, is a "stills.task" audit row with its price (src/stills.ts KieLedger), and until today the day's ceiling
- * (DAILY_FOOTAGE_BUDGET_USD) never saw them, so a day of Nano Banana Pro pictures could spend on top of a full budget.
+ * creation, PLUS the films' pictures (26 September 2026, the owner's cost report): every paid still, on kie.ai, ePhone
+ * AI or OpenRouter, is a "stills.task" audit row with its price (src/stills.ts KieLedger), and until today the day's
+ * ceiling (DAILY_FOOTAGE_BUDGET_USD) never saw them, so a day of Nano Banana Pro pictures could spend on top of a full
+ * budget. An animatic's pictures are left out: they are bounded by STILLS_DAILY_USD, and a queue of free animatics must
+ * never eat the ceiling the paid films' clips are bought under. kiePreflight asks for a film's own pictures up front.
  */
 export async function footageSpentTodayUsd(env: Env): Promise<number> {
   const r = await env.DB.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS usd FROM footage WHERE created_at >= strftime('%Y-%m-%dT00:00:00Z','now') AND task_id IS NOT NULL").first<{ usd: number }>();
   return Math.round((Number(r?.usd ?? 0) + (await picturesSpentTodayUsd(env))) * 10000) / 10000;
 }
-/** The pictures' dollars of today (UTC): the "stills.task" rows' `usd`. 0 when the audit cannot be read. */
+/**
+ * The pictures' dollars of today (UTC): the "stills.task" rows' `usd`, except the rows of animatic jobs (see
+ * footageSpentTodayUsd). A row whose job cannot be found counts: when in doubt, the money is spent. 0 when the audit
+ * cannot be read.
+ */
 export async function picturesSpentTodayUsd(env: Env): Promise<number> {
   try {
-    const r = await env.DB.prepare("SELECT COALESCE(SUM(json_extract(detail, '$.usd')), 0) AS usd FROM audit WHERE event = 'stills.task' AND at >= strftime('%Y-%m-%dT00:00:00.000Z','now')").first<{ usd: number }>();
+    const r = await env.DB.prepare("SELECT COALESCE(SUM(json_extract(detail, '$.usd')), 0) AS usd FROM audit WHERE event = 'stills.task' AND at >= strftime('%Y-%m-%dT00:00:00.000Z','now') AND (job_id IS NULL OR job_id NOT IN (SELECT id FROM jobs WHERE json_extract(params, '$.product') = 'animatic'))").first<{ usd: number }>();
     return Number(r?.usd ?? 0) || 0;
   } catch { return 0; }
 }
@@ -607,25 +616,31 @@ export interface ShotRequest { id: string; image_prompt: string; motion?: string
 
 /**
  * THE GATE BEFORE ANY CLIP IS BOUGHT (26 September 2026, the owner's cost report). A clip is the dearest thing a film
- * buys, and it used to be bought whatever came before it: gt_rvhmhx55 bought five clips and then failed on its
- * storyboard. So the server refuses the order — and the route fails the job and refunds it, with nothing bought — when:
- *   - the plan did not pass: no storyboard stored and the planner's error on the row, or a stored one that no longer
- *     parses (a storyboard is stored only once validateStoryboard passed it, src/orchestrator.ts / src/jobs.ts);
- *   - the pictures did not: the server's stills engine is on for this job (stillsEngineOn) and its drawing is not
- *     "done" — still drawing, never started, or failed (given up, the quota, a bug). Only "done" means every picture
- *     was drawn and judged against the request (or refused for good), which is what the clips are filmed from.
+ * buys, so the server refuses an order that has anything fresh to buy (and the route fails the job and refunds it,
+ * with nothing bought) when:
+ *   - the plan is not there: no storyboard stored and the planner's error on the row, or a stored one that no longer
+ *     parses (a storyboard is stored only once validateStoryboard passed it, src/orchestrator.ts / src/jobs.ts). The
+ *     dispatcher never rents a GPU for a job with no storyboard (db.ts queuedJobs), so this is a guard, not a road
+ *     production takes;
+ *   - the server is still drawing this film's pictures: exactly the case in which the dispatcher would not have rented
+ *     the GPU (stillsHold: the engine is on, first phase, the drawing neither done nor failed nor past its give-up). A
+ *     drawing that FAILED or GAVE UP is not refused: by design the rented GPU draws the missing pictures itself
+ *     (src/orchestrator.ts drawStills), and refusing its clips would throw away a healthy film, with the rental and
+ *     the pictures already paid.
+ * Not the case of gt_rvhmhx55 (15 September): that film failed on the finish box on a picture left out of the bundle,
+ * fixed at its root in worker/kleo_worker.py (pack_gen and ensure_shot_pictures, a08d993).
  * Null when the order may go ahead.
  */
-export function footageGate(env: Pick<Env, "STILLS_ENGINE" | "AI" | "IMAGE_FIXTURE">, job: Pick<Job, "storyboard" | "params" | "plan_error">): { why: string; sentence: string } | null {
+export function footageGate(env: Pick<Env, "STILLS_ENGINE" | "AI" | "IMAGE_FIXTURE">, job: Pick<Job, "id" | "user_id" | "storyboard" | "params" | "plan_error"> & Partial<Pick<Job, "phase">>): { why: string; sentence: string } | null {
   const refunded = "no clip was ordered, this video was not made and its credits are refunded. Please ask for it again";
   if (job.storyboard) {
     try { JSON.parse(job.storyboard); } catch { return { why: "storyboard unreadable", sentence: `the film's storyboard could not be read back, so ${refunded}` }; }
   } else if (job.plan_error) {
     return { why: "storyboard never validated", sentence: `the film's storyboard did not pass validation, so ${refunded}` };
   }
-  if (stillsEngineOn(env, job)) {
+  if (stillsHold(env, job)) {
     const st = stillsStateOf(job)?.state ?? "not started";
-    if (st !== "done") return { why: `stills ${st}`, sentence: `the film's pictures could not all be drawn and checked against the request, so ${refunded}` };
+    return { why: `stills ${st}`, sentence: `the film's pictures were still being drawn and checked against the request when its clips were ordered, so ${refunded}` };
   }
   return null;
 }
@@ -645,13 +660,6 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
     await audit(env, job.user_id, job.id, "footage.unpaid", { note: "film for an account with no payment on record; refused before any task" });
     return { status: 402, reply: { error: "this film is for accounts that have bought a credit pack, and this account has not: no clip was ordered and the credits are refunded. The animatic of the same storyboard (product: \"animatic\") is open to every account", unpaid: true } };
   }
-  // NO CLIP BEFORE THE PLAN AND THE PICTURES ARE VALIDATED (26 September 2026): see footageGate. The route fails the job
-  // with this sentence (internal.ts), so the credits come back and nothing was bought.
-  const gate = footageGate(env, job);
-  if (gate) {
-    await audit(env, job.user_id, job.id, "footage.not_validated", { why: gate.why, stills: stillsStateOf(job)?.state ?? null });
-    return { status: 409, reply: { error: gate.sentence, not_validated: true } };
-  }
   const { name, spec } = kieModelFor(env, cfg);
   const format = body.format === "16:9" ? "16:9" : "9:16";
   // The look the worker read off the project, or the job's own style: the clip prompt and the negative follow it.
@@ -665,6 +673,14 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
   // again is how a topped-up account rescues a film that ran out of money halfway through the previous request.
   const retryable = (r: FootageRow | undefined) => !!r && r.state === "failed" && !r.task_id;
   const fresh = shots.filter((s) => !have.has(s.id) || retryable(have.get(s.id)));
+  // NO CLIP BEFORE THE PLAN AND THE PICTURES ARE VALIDATED (26 September 2026): see footageGate. Only an order with
+  // something to buy meets it (a requeued box whose clips all exist orders nothing). The route fails the job with
+  // this sentence (internal.ts), so the credits come back and nothing was bought.
+  const gate = fresh.length ? footageGate(env, job) : null;
+  if (gate) {
+    await audit(env, job.user_id, job.id, "footage.not_validated", { why: gate.why, stills: stillsStateOf(job)?.state ?? null });
+    return { status: 409, reply: { error: gate.sentence, not_validated: true } };
+  }
   const budget = num(env.DAILY_FOOTAGE_BUDGET_USD, 5);
   const planned = fresh.reduce((a, s) => a + clipCostUsd(spec, clipSecondsFor(spec, Number(s.seconds) || 3)), 0);
   const spent = await footageSpentTodayUsd(env);

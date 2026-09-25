@@ -45,7 +45,7 @@ class FakeR2 {
 let m;
 before(async () => {
   const r = await esbuild.build({
-    stdin: { contents: `export * from "./src/footage.ts"; export * from "./src/internal.ts"; export * from "./src/db.ts";`, resolveDir: ROOT, loader: "ts" },
+    stdin: { contents: `export * from "./src/footage.ts"; export * from "./src/internal.ts"; export * from "./src/db.ts"; export { stillsHold } from "./src/stills.ts";`, resolveDir: ROOT, loader: "ts" },
     bundle: true, write: false, format: "esm", platform: "neutral", target: "es2022", logLevel: "silent", external: ["@anthropic-ai/sdk"], // the planner on Claude (20 September) loads the SDK only when called, which no test here does
   });
   m = await import("data:text/javascript;base64," + Buffer.from(r.outputFiles[0].text).toString("base64"));
@@ -926,29 +926,30 @@ test("the footage sentences a user can read name no provider and no dollar", asy
 
 /* ------------------------------------------------------------------ the owner's cost report (26 September 2026) */
 
-test("no clip before the plan and the pictures pass: the order is refused, the route fails the job, nothing is bought", async () => {
-  // gt_rvhmhx55 (15 September): five clips bought, then the film failed on its storyboard. The server's stills engine
-  // is on for a realistic film (a Workers AI binding and a stored storyboard): until its drawing is "done", no clip.
+test("no clip while the server is still drawing the pictures: the order is refused, the route fails the job, nothing is bought", async () => {
+  // The server's stills engine is on for a realistic film (a Workers AI binding and a stored storyboard). While it is
+  // still drawing (not started, or drawing inside its give-up), the dispatcher holds the GPU (stillsHold) and a box
+  // that asks for clips anyway is refused: the clips would be filmed from pictures that are about to change.
   const env = await newEnv({ AI: {} });
   const job = await filmJob(env);
   const sb = JSON.stringify({ style: "picture", kleo_style: "realistic", scenes: [] });
-  const stillsAre = async (state) => {
+  const stillsAre = async (state, at = new Date().toISOString()) => {
     const p = JSON.parse(job.params); delete p.stills;
-    if (state) p.stills = { state, at: new Date().toISOString(), drawn: 1, total: 3 };
+    if (state) p.stills = { state, at, drawn: 1, total: 3 };
     job.storyboard = sb; job.params = JSON.stringify(p);
     await env.DB.prepare("UPDATE jobs SET storyboard = ?, params = ? WHERE id = ?").bind(job.storyboard, job.params, job.id).run();
   };
   const kie = fakeKie(); globalThis.fetch = kie.fetch;
-  for (const state of [null, "drawing", "failed"]) {
+  for (const state of [null, "drawing"]) {
     await stillsAre(state);
     const r = await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS, format: "9:16" });
     assert.equal(r.status, 409, String(state)); assert.equal(r.reply.not_validated, true);
-    assert.match(r.reply.error, /pictures could not all be drawn and checked against the request, so no clip was ordered[\s\S]*credits are refunded/);
+    assert.match(r.reply.error, /pictures were still being drawn and checked against the request when its clips were ordered, so no clip was ordered[\s\S]*credits are refunded/);
   }
   assert.equal(kie.calls.create.length, 0, "nothing bought"); assert.equal(kie.calls.credit ?? 0, 0, "not even the balance read");
   assert.equal((await m.footageRows(env, job.id)).length, 0);
   const rows = (await env.DB.prepare("SELECT detail FROM audit WHERE event = 'footage.not_validated'").all()).results.map((x) => JSON.parse(x.detail));
-  assert.deepEqual(rows.map((x) => x.why), ["stills not started", "stills drawing", "stills failed"]);
+  assert.deepEqual(rows.map((x) => x.why), ["stills not started", "stills drawing"]);
   // A plan that never passed: no storyboard, the planner's error on the row.
   const unplanned = { ...job, storyboard: null, plan_error: "the storyboard has 3 problems" };
   const p = await m.requestFootage(env, unplanned, "http://kleo.test", { shots: SHOTS, format: "9:16" });
@@ -958,7 +959,7 @@ test("no clip before the plan and the pictures pass: the order is refused, the r
   const res = await m.handleInternal(new Request(`http://kleo.test/internal/jobs/${job.id}/footage`, { method: "POST", headers: { authorization: "Bearer wsecret", "content-type": "application/json" }, body: JSON.stringify({ shots: SHOTS, format: "9:16" }) }), env);
   assert.equal(res.status, 409);
   const after = env.DB.db.prepare("SELECT state, error FROM jobs WHERE id = ?").get(job.id);
-  assert.equal(after.state, "failed"); assert.match(after.error, /pictures could not all be drawn/);
+  assert.equal(after.state, "failed"); assert.match(after.error, /pictures were still being drawn/);
   assert.equal(env.DB.db.prepare("SELECT credits FROM users WHERE id = 'u1'").get().credits, 107, "the 7 credits of the film are back");
   assert.equal(kie.calls.create.length, 0);
   // Pictures done: the same order goes through.
@@ -970,6 +971,36 @@ test("no clip before the plan and the pictures pass: the order is refused, the r
   const r2 = await m.requestFootage(env2, job2, "http://kleo.test", { shots: SHOTS, format: "9:16" });
   assert.equal(r2.status, 200, JSON.stringify(r2.reply)); assert.equal(ok.calls.create.length, 3);
   assert.equal(m.footageGate({ STILLS_ENGINE: "legacy", AI: {} }, { storyboard: sb, params: "{}", plan_error: null }), null, "the legacy engine draws on the GPU: no server stills to wait for");
+});
+
+test("the gate and the dispatcher agree: a drawing that failed or gave up rents the GPU, and that box's clips are bought", async () => {
+  // The server's drawing failed (the Workers AI quota, a bug) or gave up past its window: stillsHold lets the
+  // dispatcher rent the GPU, which draws the missing pictures itself, so /footage must take its order (until the fix
+  // of 26 September the gate refused it and the film was failed with the rental and the pictures paid).
+  const sb = JSON.stringify({ style: "picture", kleo_style: "realistic", scenes: [] });
+  const long = new Date(Date.now() - 6 * 3600_000).toISOString();
+  for (const stills of [{ state: "failed", at: new Date().toISOString(), note: "4006: daily neuron quota" }, { state: "failed", at: long, note: "gave up after 20 minutes of drawing; the GPU draws the rest" }, { state: "drawing", at: long, drawn: 1, total: 3 }]) {
+    const env = await newEnv({ AI: {} });
+    const job = await filmJob(env);
+    const p = JSON.parse(job.params); p.stills = stills;
+    job.storyboard = sb; job.params = JSON.stringify(p);
+    await env.DB.prepare("UPDATE jobs SET storyboard = ?, params = ? WHERE id = ?").bind(job.storyboard, job.params, job.id).run();
+    assert.equal(m.stillsHold(env, job), false, `${stills.state}: the dispatcher rents the GPU`);
+    assert.equal(m.footageGate(env, job), null, `${stills.state}: and the gate lets its clips through`);
+    const kie = fakeKie(); globalThis.fetch = kie.fetch;
+    const r = await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS, format: "9:16" });
+    assert.equal(r.status, 200, JSON.stringify(r.reply)); assert.equal(kie.calls.create.length, 3);
+    assert.equal(env.DB.db.prepare("SELECT state FROM jobs WHERE id = ?").get(job.id).state, "rendering", "the film goes on");
+  }
+  // A requeued box whose clips all exist orders nothing, so the gate is not even asked: a hold never refuses it.
+  const env = await newEnv({ AI: {} });
+  const job = await filmJob(env);
+  const kie = fakeKie(); globalThis.fetch = kie.fetch;
+  assert.equal((await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS, format: "9:16" })).status, 200);
+  const p = JSON.parse(job.params); p.stills = { state: "drawing", at: new Date().toISOString(), drawn: 1, total: 3 };
+  job.storyboard = sb; job.params = JSON.stringify(p);
+  const again = await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS, format: "9:16" });
+  assert.equal(again.status, 200, JSON.stringify(again.reply)); assert.equal(kie.calls.create.length, 3, "nothing more bought");
 });
 
 test("a requeued job never buys a clip twice: the ready, generating and failed rows of the first box are reused", async () => {
@@ -1009,4 +1040,31 @@ test("the day's ceiling counts the pictures' dollars: stills.task rows of today 
   assert.match(r.reply.error, /filming capacity is fully booked/);
   // The pre-flight sees them too, and on ePhone it asks the one account for the clips AND the pictures drawn there.
   assert.equal(m.plannedStillsUsd({ STILL_MODEL: "ephone:gemini-3-pro-image-preview" }, 10) > 0, true);
+  // An animatic's pictures are not the films' ceiling: they are bounded by STILLS_DAILY_USD alone.
+  await m.insertJob(env, { ...job, id: "gt_anim0001", params: JSON.stringify({ duration_s: 30, format: "9:16", language: "en", voice: null, style: "realistic", product: "animatic" }) });
+  await env.DB.prepare("INSERT INTO audit (user_id, job_id, event, detail) VALUES ('u1', 'gt_anim0001', 'stills.task', ?)").bind(JSON.stringify({ key: "k2", task: "", model: "ephone:gemini-3-pro-image-preview", usd: 3 })).run();
+  assert.equal(await m.picturesSpentTodayUsd(env), 4.5, "the animatic's 3 $ are not counted");
+  await env.DB.prepare("INSERT INTO audit (user_id, job_id, event, detail) VALUES ('u1', ?, 'stills.task', ?)").bind(job.id, JSON.stringify({ key: "k3", task: "", model: "ephone:gemini-3-pro-image-preview", usd: 0.5 })).run();
+  assert.equal(await m.picturesSpentTodayUsd(env), 5, "a film's own pictures are");
+});
+
+test("the pre-flight and /footage agree on the day's ceiling: a film is admitted with its own pictures, and not refused for them later", async () => {
+  const STILL_MODEL = "ephone:gemini-3-pro-image-preview";
+  const env0 = await newEnv({ STILL_MODEL });
+  const clips = m.plannedFilmUsd(env0, null, 18, 3, 24).usd;
+  const pictures = m.plannedStillsUsd(env0, 3);
+  assert.ok(pictures > 0 && clips > 0);
+  globalThis.fetch = fakeKie().fetch;
+  // Room for the clips but not for the clips and this film's own pictures: refused at creation, nothing spent.
+  const short = await m.kiePreflight({ ...env0, DAILY_FOOTAGE_BUDGET_USD: String(clips + pictures / 2) }, 18, 3, 24);
+  assert.equal(short.ok, false); assert.equal(short.reason, "budget"); assert.equal(short.stills_usd, pictures); assert.equal(short.balance_usd, null);
+  // Room for both: admitted. The film's pictures are then drawn (at most what was planned) and the box's order passes.
+  const env = await newEnv({ STILL_MODEL, DAILY_FOOTAGE_BUDGET_USD: String(Math.ceil((clips + pictures) * 1000 + 1) / 1000) });
+  const pre = await m.kiePreflight(env, 18, 3, 24);
+  assert.equal(pre.ok, true, JSON.stringify(pre));
+  const job = await filmJob(env);
+  await env.DB.prepare("INSERT INTO audit (user_id, job_id, event, detail) VALUES ('u1', ?, 'stills.task', ?)").bind(job.id, JSON.stringify({ key: "k", task: "", model: STILL_MODEL, usd: pictures })).run();
+  const kie = fakeKie(); globalThis.fetch = kie.fetch;
+  const r = await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS, format: "9:16" });
+  assert.equal(r.status, 200, JSON.stringify(r.reply)); assert.equal(kie.calls.create.length, 3);
 });

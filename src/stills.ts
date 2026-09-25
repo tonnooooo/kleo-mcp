@@ -196,7 +196,8 @@ export function stillsGiveUpMin(st: { road?: string; total?: number } | null | u
  * per film (default 5 $: a 30 s Short with redraws is about 2 $) and STILLS_DAILY_USD per UTC day across every film
  * (default 10 $). Past a cap the job's pictures move to STILL_MODEL_FALLBACK, like after a refusal for money, so a
  * runaway loop or a queue of free animatics can never empty the kie.ai balance the paid films' clips are bought from.
- * The clips keep their own ceiling (DAILY_FOOTAGE_BUDGET_USD, src/footage.ts), which counts the pictures' dollars too.
+ * The clips keep their own ceiling (DAILY_FOOTAGE_BUDGET_USD, src/footage.ts), which counts the films' pictures too
+ * (never an animatic's: those are bounded here only).
  * Since 26 September 2026 both caps bound EVERY external road — a chat draw on ePhone AI or OpenRouter is booked on the
  * same rows (drawBooked) — and only Workers AI, paid in neurons, stays outside them.
  */

@@ -584,7 +584,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     const what = kindOf(view.format);
     switch (job.state) {
       case "done": return `Your ${what} ${job.id} is ready. Call kleo_get_result for the download links.`;
-      case "failed": return `Sorry, ${what} ${job.id} could not be rendered. Your ${plural(job.credits, "credit")} ${job.credits === 1 ? "was" : "were"} given back. Please try again; if it fails a second time, try a shorter video or another template.${job.error ? ` (Technical detail: ${job.error})` : ""}`;
+      case "failed": return `Sorry, ${what} ${job.id} could not be rendered. Your ${plural(job.credits, "credit")} ${job.credits === 1 ? "was" : "were"} given back. Please try again; if it fails a second time, try a shorter video or another template.${job.error ? ` (Technical detail: ${publicText(job.error)})` : ""}`;
       case "cancelled": return `${what[0].toUpperCase() + what.slice(1)} ${job.id} was cancelled.`;
       case "queued": {
         const takes = `Once it starts it takes ${simulated ? "about a minute" : `about ${plural(job.eta_min ?? 0, "minute")}`}.`;

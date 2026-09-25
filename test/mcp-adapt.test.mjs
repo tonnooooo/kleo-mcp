@@ -154,6 +154,16 @@ test("the models are named where the user reads about the film, and no model gat
   for (const text of [list.text, acct.text, JSON.stringify(list.structuredContent), JSON.stringify(acct.structuredContent), tools]) assert.doesNotMatch(text, /kie\.ai|\bephone/i);
 });
 
+test("kleo_get_job's failed line names no model gateway: a provider's error on the row is read through publicText", async () => {
+  const s = await studio(fakeAi(() => TREATMENT_FIXTURE(60)));
+  const error = "worker: kie.ai POST https://api.kie.ai/api/v1/jobs/createTask → 402; ePhone AI balance is empty. Top up the kie.ai account";
+  await s.env.DB.prepare("INSERT INTO jobs (id, user_id, template, prompt, params, state, percent, credits, worker_secret, error) VALUES ('gt_failed01', 'u_test', 'film', 'a night run', ?, 'failed', 40, 15, 'w', ?)")
+    .bind(JSON.stringify({ duration_s: 30, format: "9:16", language: "en", style: "realistic", product: "film" }), error).run();
+  const r = await s.call("kleo_get_job", { job_id: "gt_failed01" });
+  assert.match(r.text, /could not be rendered\. Your 15 credits were given back[\s\S]*Technical detail: worker: the model provider/);
+  for (const text of [r.text, JSON.stringify(r.structuredContent)]) assert.doesNotMatch(text, /kie|ephone/i, text);
+});
+
 test("a request with no length is answered with the question and no model call", async () => {
   const ai = fakeAi(() => { throw new Error("must not be called"); });
   const s = await studio(ai);
