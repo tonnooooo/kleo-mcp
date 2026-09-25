@@ -55,6 +55,7 @@ import { judgeImage, mimeOf, toBase64, type VisionImage } from "./vision.ts";
 import { readImageResult, sniffImage, imageFileName, IMAGE_NAME_RE, fnv1a, isTransientError, isQuotaError, isTransientStoreError } from "./images.ts";
 import { refImage, refFileKey, readBodyCapped, REF_HANDLE_RE } from "./refs.ts";
 import { kie, KIE_CREATE, KIE_RECORD, KieError, isNoCredit, kieResultUrls, USD_PER_KIE_CREDIT, type KieRecord } from "./kie.ts";
+import { ephoneBase, EPHONE_NO_MONEY_RE } from "./ephone.ts";
 
 /* ------------------------------------------------------------------ constants */
 
@@ -95,10 +96,11 @@ export const fallbackStillModel = (env: Pick<Env, "STILL_MODEL_FALLBACK">): stri
  * THE ROAD A MODEL ID NAMES (25 September 2026): "openrouter:<vendor/model>" is OpenRouter's chat completions,
  * "kie:<model>" is kie.ai's jobs API, and anything else — "@cf/…" above all — is Workers AI, as every id was before.
  */
-export type StillProvider = "workers-ai" | "openrouter" | "kie";
+export type StillProvider = "workers-ai" | "openrouter" | "kie" | "ephone";
 export function stillProviderOf(model: string): { provider: StillProvider; id: string } {
   const m = String(model ?? "").trim();
   if (/^openrouter:/i.test(m)) return { provider: "openrouter", id: m.slice("openrouter:".length).trim() };
+  if (/^ephone:/i.test(m)) return { provider: "ephone", id: m.slice("ephone:".length).trim() };
   if (/^kie:/i.test(m)) return { provider: "kie", id: m.slice("kie:".length).trim() };
   return { provider: "workers-ai", id: m };
 }
@@ -130,6 +132,9 @@ export function stillPriceUsd(model: string, size: { width: number; height: numb
   const { provider, id } = stillProviderOf(model);
   const tier = imageTierOf(size);
   if (provider === "kie") return id === "nano-banana-pro" ? 0.09 : id === "nano-banana-2" ? (tier === "1K" ? 0.04 : 0.06) : null;
+  // ePhone AI, gemini-official-cheap group (ratio 0.53), 1K, 25 September 2026: Nano Banana Pro 1,120 image tokens at
+  // $120/M plus ~440 reasoning and text tokens at $12/M ≈ $0.14 x 0.53; Nano Banana 2 (gemini-3.1-flash-image) 1,120 at $60/M x 0.53.
+  if (provider === "ephone") return /gemini-3-pro-image/.test(id) ? 0.074 : /gemini-3\.1-flash-image/.test(id) ? 0.036 : null;
   if (provider === "openrouter") return /gemini-3-pro-image/.test(id) ? 0.138 : null;
   if (/flux-2-klein-4b/.test(id)) return round4(Math.ceil(size.width / 512) * Math.ceil(size.height / 512) * 0.000287);
   if (/flux-2-klein-9b/.test(id)) return 0.016;
@@ -473,7 +478,7 @@ async function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<
 }
 
 /** What a draw needs of the environment: the Workers AI binding, and the keys of the two external roads. */
-export type DrawEnv = Pick<Env, "AI" | "IMAGE_API_URL" | "IMAGE_API_KEY" | "PLAN_API_URL" | "PLAN_API_KEY" | "KIE_API_KEY">;
+export type DrawEnv = Pick<Env, "AI" | "IMAGE_API_URL" | "IMAGE_API_KEY" | "PLAN_API_URL" | "PLAN_API_KEY" | "KIE_API_KEY" | "EPHONE_API_KEY" | "EPHONE_API_URL">;
 /** A reference as a draw takes it: the bytes, and a public URL when one was signed (kie.ai takes nothing else). */
 export interface DrawRef extends VisionImage { url?: string | null }
 /** One picture drawn: its bytes, what it cost, and whether that figure came from the provider (else stillPriceUsd). */
@@ -555,6 +560,7 @@ export const spentOn = (e: unknown): number => {
 export async function drawImage(env: DrawEnv, model: string, prompt: string, size: { width: number; height: number }, refs: DrawRef[], seed: number, opts: { until?: number; ledger?: { key: string; book: KieLedger } } = {}): Promise<DrawnImage> {
   const road = stillProviderOf(model);
   if (road.provider === "openrouter") return drawOpenRouter(env, model, road.id, prompt, size, refs, seed);
+  if (road.provider === "ephone") return drawOpenRouter(env, model, road.id, prompt, size, refs, seed, EPHONE_ROAD);
   if (road.provider === "kie") return drawKie(env, model, road.id, prompt, size, refs, opts.until, opts.ledger);
   const ai = env.AI as unknown as AiRunner | undefined;
   if (!ai) throw new Error("no Workers AI binding (env.AI)");
@@ -627,10 +633,23 @@ export function openRouterImageUrl(message: Record<string, unknown>): string | n
  * An answer with no picture is a refusal ("flagged": drawJudged draws the next seed, and after two drops the
  * references, which is what a model that will not draw a real person's photo needs).
  */
-async function drawOpenRouter(env: DrawEnv, model: string, id: string, prompt: string, size: { width: number; height: number }, refs: DrawRef[], seed: number): Promise<DrawnImage> {
-  const key = (env.IMAGE_API_KEY || env.PLAN_API_KEY || "").trim();
-  if (!key) throw new StillDrawError(`still draw (${model}): no IMAGE_API_KEY (nor PLAN_API_KEY) is set`, 401, "openrouter");
-  const base = (env.IMAGE_API_URL || env.PLAN_API_URL || DEFAULT_IMAGE_API_URL).trim().replace(/\/+$/, "");
+/**
+ * THE ePhone AI ROAD (25 September 2026, the owner: "do everything with ePhone"): the same OpenAI-compatible chat
+ * completion as OpenRouter's, on ePhone's base URL with EPHONE_API_KEY, routed to the "official_cheap" provider first
+ * (the gemini-official-cheap group, ratio 0.53: Nano Banana Pro ≈ $0.074 at 1K against kie.ai's $0.09), then the
+ * official one. Measured the same day: 18 s, a 1376x768 JPEG for aspect 16:9 at 1K, returned as a data: URL inside
+ * message.content (openRouterImageUrl reads it); usage carries tokens, not dollars, so the price table counts.
+ */
+interface ChatRoad { provider: StillProvider; base: (env: DrawEnv) => string; key: (env: DrawEnv) => string; headers: Record<string, string>; keyName: string }
+const EPHONE_ROAD: ChatRoad = {
+  provider: "ephone", base: (env) => `${ephoneBase(env)}/v1`, key: (env) => (env.EPHONE_API_KEY ?? "").trim(),
+  headers: { "X-Provider-Order": "official_cheap,official" }, keyName: "EPHONE_API_KEY",
+};
+async function drawOpenRouter(env: DrawEnv, model: string, id: string, prompt: string, size: { width: number; height: number }, refs: DrawRef[], seed: number, road?: ChatRoad): Promise<DrawnImage> {
+  const provider: StillProvider = road?.provider ?? "openrouter";
+  const key = road ? road.key(env) : (env.IMAGE_API_KEY || env.PLAN_API_KEY || "").trim();
+  if (!key) throw new StillDrawError(`still draw (${model}): no ${road ? road.keyName : "IMAGE_API_KEY (nor PLAN_API_KEY)"} is set`, 401, provider);
+  const base = road ? road.base(env) : (env.IMAGE_API_URL || env.PLAN_API_URL || DEFAULT_IMAGE_API_URL).trim().replace(/\/+$/, "");
   const body = {
     model: id,
     modalities: ["image", "text"],
@@ -647,7 +666,7 @@ async function drawOpenRouter(env: DrawEnv, model: string, id: string, prompt: s
   try {
     res = await fetch(`${base}/chat/completions`, {
       method: "POST",
-      headers: { authorization: `Bearer ${key}`, "content-type": "application/json", "HTTP-Referer": "https://mcp.kleooai.com", "X-Title": "Kleo" },
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json", "HTTP-Referer": "https://mcp.kleooai.com", "X-Title": "Kleo", ...(road?.headers ?? {}) },
       body: JSON.stringify(body), signal: AbortSignal.timeout(DRAW_TIMEOUT_MS),
     });
     text = await res.text();
@@ -659,18 +678,20 @@ async function drawOpenRouter(env: DrawEnv, model: string, id: string, prompt: s
   if (!res.ok || !j || Object.keys(err).length) {
     // A 200 with an error object carries its own code (OpenRouter's 402 arrives that way too); an unreadable 200 is a
     // gateway hiccup, answered as one.
-    const status = !res.ok ? res.status : Number(err.code) || (j ? res.status : 502);
+    let status = !res.ok ? res.status : Number(err.code) || (j ? res.status : 502);
     const say = String(err.message ?? (j ? JSON.stringify(j) : text)).replace(/\s+/g, " ").slice(0, 240);
+    // ePhone's empty account ("insufficient_user_quota", HTTP 403) is money, not a refused key.
+    if (EPHONE_NO_MONEY_RE.test(say) || EPHONE_NO_MONEY_RE.test(String(err.code ?? ""))) status = 402;
     // A 403 for moderated input is a refused picture (the next seed, then no references), not a refused key.
     const flag = status === 403 && /moderat|flagged|safety/i.test(say) && !/flagged/i.test(say) ? " (flagged)" : "";
-    throw new StillDrawError(`still draw (${model}) → openrouter ${status}: ${say}${flag}`, status, "openrouter", cost ?? 0);
+    throw new StillDrawError(`still draw (${model}) → ${provider} ${status}: ${say}${flag}`, status, provider, cost ?? 0);
   }
   const choice = obj(Array.isArray(j.choices) ? j.choices[0] : null);
   const message = obj(choice.message);
   const url = openRouterImageUrl(message);
   if (!url) {
     const said = typeof message.content === "string" ? message.content.replace(/\s+/g, " ").slice(0, 200) : "";
-    throw new StillDrawError(`still draw (${model}) answered without a picture, refused or flagged (finish_reason ${String(choice.finish_reason ?? "?")}): ${said}`, 200, "openrouter", cost ?? 0);
+    throw new StillDrawError(`still draw (${model}) answered without a picture, refused or flagged (finish_reason ${String(choice.finish_reason ?? "?")}): ${said}`, 200, provider, cost ?? 0);
   }
   const bytes = await pictureBytes(model, url);
   if (!sniffImage(bytes)) throw new Error(`model returned ${bytes.length} bytes that are neither PNG nor JPEG`);

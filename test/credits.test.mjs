@@ -124,6 +124,32 @@ test("create: a client storyboard for a filmed style is stored asking to be film
   await assert.rejects(() => m.createJob(env, u, { template: "film", prompt: "Pirati e tesori", duration_s: 30, format: "16:9", language: "it", storyboard: c }), /film's look is "realistic", but the storyboard's kleo_style says "cartoon"/);
 });
 
+test("create: on the API road a client storyboard is trimmed to one clip per eleven words; an animatic keeps the seven-word budget (25 September)", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error("offline"); };   // the ePhone balance is silent: the pre-flight never refuses on silence
+  try {
+    const env = await newEnv();
+    Object.assign(env, { KLEO_FOOTAGE_BACKEND: "kie", EPHONE_API_KEY: "eph", KLEO_FOOTAGE_MODEL: "seedance-2.5-480p", KIE_MAX_VIDEO_S: "0" });
+    const u = await user(env, 20 * P);
+    const sb = () => {
+      const s = JSON.parse(readFileSync(join(ROOT, "scripts", "motion-demo", "samples", "venezia-16x9.json"), "utf8"));
+      // Twenty words and three pictures: two clips' worth on the local road, one on the API road.
+      s.scenes[1].voice = "Non e' la citta' che affonda: e' il mare che sale, piano, ogni anno un poco di piu' sulle pietre.";
+      s.scenes[1].shots.push({ image_prompt: "the tide creeping over the old stones of a Venice quay at dusk, water spilling across the pavement", shot_kind: "detail", at: "pietre" });
+      return s;
+    };
+    const args = { template: "film", prompt: "L'acqua alta a Venezia, cento volte l'anno", duration_s: 30, format: "16:9", language: "it", style: "realistic" };
+    const film = await m.createJob(env, u, { ...args, storyboard: sb() });
+    const stored = JSON.parse((await m.getJob(env, film.id)).storyboard);
+    assert.equal(stored.scenes[1].shots.length, 1, "twenty words pay for one 4-second clip");
+    for (const s of stored.scenes) if (s.kind === "cinema") assert.ok(s.shots.length <= Math.max(1, Math.floor(s.voice.split(/\s+/).length / 11)), s.id);
+    assert.equal(JSON.parse(film.params).clip_floor_s, 4);
+    const anim = await m.createJob(env, u, { ...args, storyboard: sb(), product: "animatic" });
+    assert.equal(JSON.parse((await m.getJob(env, anim.id)).storyboard).scenes[1].shots.length, 2, "the animatic keeps the seven-word budget: two pictures");
+    assert.equal(JSON.parse(anim.params).clip_floor_s, undefined);
+  } finally { globalThis.fetch = realFetch; }
+});
+
 test("create: the two products (15 September) — a film is for paying accounts only, the animatic is 5 credits, drawn, no music, no clip", async () => {
   // The owner's rule, said on his own test account (48 credits typed in by hand, never a payment): kie.ai clips are
   // bought with his money, so a FILM needs a payment on record; the free credits buy the ANIMATIC — the same

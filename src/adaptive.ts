@@ -16,10 +16,13 @@
  * a short list of concrete subjects to pick from, not the same question a third time (the Grok chat of 22
  * September asked "di cosa deve parlare?" three times to a user who had said "stupiscimi tu" twice).
  */
-import type { Format } from "./templates.ts";
+import type { Format, Product } from "./templates.ts";
+import { words, STOP, INTAKE_VOCAB } from "./format-vocab.ts";
 
 export type Look = "realistic" | "animation";
-export type IntakeKey = "subject" | "duration" | "format" | "look" | "music" | "subtitles" | "audience" | "tone" | "must_keep";
+export type IntakeKey = "subject" | "duration" | "format" | "look" | "product" | "music" | "subtitles" | "language" | "audience" | "tone" | "must_keep";
+/** The languages Kleo narrates in. */
+export type NarrationLanguage = "en" | "it";
 export interface IntakeItem { key: IntakeKey; required: boolean; label: { en: string; it: string }; question: { en: string; it: string } }
 
 export const INTAKE: readonly IntakeItem[] = [
@@ -31,10 +34,14 @@ export const INTAKE: readonly IntakeItem[] = [
     question: { en: "Where is it for: YouTube (landscape, 16:9) or a Short / TikTok / Reel (vertical, 9:16)?", it: "Per dove è: YouTube (orizzontale, 16:9) o Short / TikTok / Reel (verticale, 9:16)?" } },
   { key: "look", required: true, label: { en: "Look", it: "Look" },
     question: { en: "How do you want it: realistic (filmed, cinematic photography) or animation (a 2D animated film)?", it: "Come lo vuoi: realistico (girato, fotografia cinematografica) o animazione (film animato 2D)?" } },
+  { key: "product", required: true, label: { en: "Product", it: "Prodotto" },
+    question: { en: "Film or animatic? The film makes every shot a generated clip and is priced by its length; the animatic is the same drawn frames with the camera moving over each one, no generated clip, at a flat price and a shorter length.", it: "Film o animatic? Il film fa di ogni inquadratura una clip generata e costa in base alla durata; l'animatic sono gli stessi fotogrammi disegnati con la camera che si muove su ognuno, nessuna clip generata, a prezzo fisso e più corto." } },
   { key: "music", required: true, label: { en: "Music", it: "Musica" },
     question: { en: "Do you want music under the narration? If yes, what kind (a mood or a genre: quiet piano, tense electronic, warm strings…); if not, say no.", it: "Vuoi la musica sotto la voce? Se sì, di che tipo (un'atmosfera o un genere: pianoforte quieto, elettronica tesa, archi caldi…); se no, dì no." } },
   { key: "subtitles", required: true, label: { en: "Subtitles", it: "Sottotitoli" },
     question: { en: "Do you want subtitles burned into the video (yes or no)?", it: "Vuoi i sottotitoli impressi nel video (sì o no)?" } },
+  { key: "language", required: true, label: { en: "Narration", it: "Voce narrante" },
+    question: { en: "Which language should the narration be in: English or Italian? (English if you have no preference)", it: "In che lingua vuoi la voce narrante: inglese o italiano? (inglese se per te è indifferente)" } },
   { key: "audience", required: false, label: { en: "Audience", it: "Pubblico" },
     question: { en: "Who is it for?", it: "Per chi è?" } },
   { key: "tone", required: false, label: { en: "Tone", it: "Tono" },
@@ -65,14 +72,26 @@ export interface AdaptiveBrief {
   audience: string;
   tone: string;
   must_keep: string | null;
-  language: "en" | "it";
+  /**
+   * The language of the chat: the one the questions are asked in, read off the request's words. Never the film's
+   * language (25 September 2026: an Italian request for an English film was narrated in Italian, because the one field
+   * meant both things).
+   */
+  chat_language: NarrationLanguage;
+  /** The film's narration language: the user's answer, or what the request says outright; null until then (asked). */
+  language: NarrationLanguage | null;
   /** True when the request hands the subject to Kleo ("stupiscimi", "surprise me"): the answer is a list to pick from. */
   delegated: boolean;
+  /**
+   * Film or animatic: the user's answer (or the literal word "animatic" in the request). Asked only when the caller
+   * passes the account (kleo_adapt_prompt), with that account's prices; null while it is not settled.
+   */
+  product: Product | null;
   /** The intake as read: what was answered (and from where), what required item is missing, what optional one was not given. */
   intake: { answered: Partial<Record<IntakeKey, IntakeAnswer>>; missing: IntakeKey[]; optional: IntakeKey[] };
-  /** The questions for the missing REQUIRED items, in the request's language. Empty means nothing blocks. */
+  /** The questions for the missing REQUIRED items, in the chat's language. Empty means nothing blocks. */
   questions: string[];
-  /** The questions for the optional items not given, in the request's language: asked together with the required ones. */
+  /** The questions for the optional items not given, in the chat's language: asked together with the required ones. */
   optional_questions: string[];
   assumptions: string[];
 }
@@ -102,7 +121,7 @@ const LEN_RE = new RegExp(`(?<![\\w.,'’])(\\d{1,4}(?:[.,]\\d+)?|(?:${NUM_ALT})
 /** "30s": seconds in the compact form, never a decade ("the 90s", "in her 30s", "'80s") — the guards are below. */
 const COMPACT_RE = /(?<![\w'’.,])(\d{1,3})s\b/gi;
 const HALF_MINUTE_RE = /\b(?:mezzo minuto|half a minute|half[- ]minute)\b/gi;
-const VIDEO_WORDS = "videos?|film|short|clip|animatic|filmato|cortometraggio|corto|reel|spot|trailer|movie|documentario|documentary|animazione|animation|cartone(?: animato)?";
+const VIDEO_WORDS = "videos?|film|short|clip|animatic[oi]?|filmato|cortometraggio|corto|reel|spot|trailer|movie|documentario|documentary|animazione|animation|cartone(?: animato)?";
 /** The words that may stand between a length and its video word: articles, "of", and what kind of video it is. */
 const LEN_GLUE = "(?:of|di|de|del|dello|della|a|an|the|il|lo|un|uno|una|vertical[ei]?|horizontal|orizzontale|animated|animat[oa]|realistic|realistic[oa]|cinematic|cinematografico|youtube|long|lung[oaie]|narrated|narrato)";
 /** The number measures the video: "30-second video", "2 minute animated film", "30 secondi di video". */
@@ -178,31 +197,39 @@ function lengthHits(t: string): LenHit[] {
   return hits.filter((h, i) => !hits.slice(0, i).some((p) => h.at >= p.at && h.at < p.end));
 }
 
-function durationFrom(text: string): number | null {
-  const t = text.toLowerCase();
-  let bare: number | null = null;
+/**
+ * The video's length as the request says it, with where it sits in the text: `at`/`end` cover exactly the words of the
+ * length ("15 secondi", "30-second", "30s"), so the subject can cut them out and keep every other number (the story's
+ * "per 30 secondi" stays in the subject). Every pattern is case-blind, so it runs on the text as written and the
+ * offsets are the text's own.
+ */
+export function lengthOf(text: string): { seconds: number; at: number; end: number } | null {
+  const t = text;
+  let bare: LenHit | null = null;
   for (const h of lengthHits(t)) {
     const before = t.slice(Math.max(0, h.at - 48), h.at);
     const after = t.slice(h.end, h.end + 48);
     if (h.compact) {
       // "30s": a length only where a decade cannot be (COMPACT_END_RE and the comment above it).
-      if (VIDEO_AFTER_RE.test(after) || LENGTH_BEFORE_RE.test(before)) return h.seconds;
+      if (VIDEO_AFTER_RE.test(after) || LENGTH_BEFORE_RE.test(before)) return span(h);
       if (!COMPACT_END_RE.test(after)) continue;
-      if (VIDEO_TIGHT_BEFORE_RE.test(before)) return h.seconds;
-      if (bare === null && CLAUSE_START_RE.test(before)) bare = h.seconds;
+      if (VIDEO_TIGHT_BEFORE_RE.test(before)) return span(h);
+      if (bare === null && CLAUSE_START_RE.test(before)) bare = h;
       continue;
     }
     // Said to be the video's length: taken at once, whatever else the request measures.
-    if (VIDEO_AFTER_RE.test(after) || VIDEO_BEFORE_RE.test(before) || LENGTH_BEFORE_RE.test(before)) return h.seconds;
+    if (VIDEO_AFTER_RE.test(after) || VIDEO_BEFORE_RE.test(before) || LENGTH_BEFORE_RE.test(before)) return span(h);
     // "un video sui pirati da 30 secondi": the clause opens on the video, so its "da"/"per"/"for" is the video's.
     const clause = t.slice(Math.max(0, h.at - 200), h.at).split(/[.!?]\s/).pop() ?? "";
-    if (VIDEO_CLAUSE_LENGTH_RE.test(clause) && !STORY_VERB_BEFORE_RE.test(before)) return h.seconds;
+    if (VIDEO_CLAUSE_LENGTH_RE.test(clause) && !STORY_VERB_BEFORE_RE.test(before)) return span(h);
     // Time inside the story: never the length.
     if (STORY_BEFORE_RE.test(before) || STORY_AFTER_RE.test(after)) continue;
-    if (bare === null) bare = h.seconds;
+    if (bare === null) bare = h;
   }
-  return bare;
+  return bare && span(bare);
 }
+const span = (h: LenHit) => ({ seconds: h.seconds, at: h.at, end: h.end });
+export const durationFrom = (text: string): number | null => lengthOf(text)?.seconds ?? null;
 
 /* ------------------------------------------------------------------ the frame */
 
@@ -275,7 +302,7 @@ export const lookFromText = (text: string): Look | null => lookFrom(text.toLower
 const MUSIC_NO_RE = /\b(senza (?:la )?musica|niente musica|nessuna musica|no music|without music|music[- ]?free|solo (?:la )?voce|voice[- ]only|narration only)\b/i;
 const MUSIC_YES_RE = /\b(con (?:la |una )?musica|musica di sottofondo|colonna sonora|with (?:a )?(?:music|soundtrack|score)|background music|soundtrack|(?:a )?musical bed)\b/i;
 const SUBS_NO_RE = /\b(senza (?:i )?sottotitoli|niente sottotitoli|nessun sottotitolo|no subtitles|without subtitles|no captions|without captions)\b/i;
-const SUBS_YES_RE = /\b(con (?:i )?sottotitoli|sottotitolat[oaie]|sottotitoli|with (?:the )?subtitles|subtitled|with captions|burned[- ]in captions|captions on)\b/i;
+const SUBS_YES_RE = /\b(con (?:i )?sottotitoli|sottotitolat[oaie]|sottotitoli|with (?:the )?subtitles|(?:with|con) (?:la )?musica? (?:and|e) (?:i |the )?(?:subtitles|captions)|subtitled|with captions|burned[- ]in captions|captions on)\b/i;
 function musicFrom(text: string): MusicAnswer | null {
   if (MUSIC_NO_RE.test(text)) return { wanted: false, brief: null };
   if (MUSIC_YES_RE.test(text)) return { wanted: true, brief: null };
@@ -318,7 +345,7 @@ export function subtitlesAnswer(raw: boolean | string | null | undefined): boole
  * the same question back either: it proposes. The phrase is also taken OUT of the subject before the subject is
  * measured, so "stupiscimi tu" is not mistaken for a subject of thirteen characters.
  */
-const DELEGATE_RE = /\b(stupiscimi|stupiscimi tu|sorprendimi|scegli tu|decidi tu|fai tu|inventa tu|a tua scelta|come vuoi tu|surprise me|you (?:choose|pick|decide)|your (?:choice|call|pick)|dealer'?s choice|anything you (?:like|want)|whatever you (?:like|want|think))\b/gi;
+const DELEGATE_RE = /\b(stupiscimi(?: tu)?|sorprendimi(?: tu)?|scegli tu|decidi tu|fai tu|inventa tu|a tua scelta|come vuoi tu|surprise me|you (?:choose|pick|decide)|your (?:choice|call|pick)|dealer'?s choice|anything you (?:like|want)|whatever you (?:like|want|think))\b/gi;
 
 /**
  * Italian when the request has more Italian-only words than English ones. It used to be one regular expression
@@ -333,12 +360,269 @@ function languageFrom(text: string): "en" | "it" {
   return it > en ? "it" : "en";
 }
 
+/* ------------------------------------------------------------------ the narration's language */
+
+/**
+ * THE FILM'S LANGUAGE IS ASKED, NOT READ OFF THE CHAT (25 September 2026). The owner asked, in Italian, for a film
+ * narrated in English; Kleo took the language of his words for the language of the film. The chat's language still
+ * decides the questions (chat_language); the narration is the user's answer, or what the request says outright
+ * ("narrated in Italian", "voce inglese", "in English" at the end of a clause). "Life in Italian villages" and "the
+ * Italian Renaissance" say nothing about the narration.
+ */
+const LANG_NAME = "(english|inglese|italian|italiano|italiana)";
+/**
+ * "in italiano" after a verb of speaking, writing or learning is how someone in the story speaks ("un bambino che
+ * impara a parlare in italiano"), not the narration (25 September 2026 review).
+ */
+const SPEAKING_BEFORE = "(?<!\\b(?:parl\\w*|speak\\w*|spoke|talk\\w*|impar\\w*|learn\\w*|stud\\w*|scri\\w*|writ\\w*|dice|dico|dicono|dicendo|diceva|dett[oa]|say\\w*|said|sing\\w*|sung|cant\\w*|tradu\\w*|translat\\w*|legg\\w*|read\\w*|pens\\w*|think\\w*|thought|sogn\\w*|dream\\w*|pregh\\w*|pray\\w*|insegn\\w*|teach\\w*|taught)\\s+)";
+/**
+ * Each phrase needs a narration word, or stands where only the video's own talk stands. A voice that is the topic
+ * stays the topic: "an Italian voice actor", "la voce italiana di Topolino", "the Italian voice of Mickey Mouse".
+ */
+const LANGUAGE_PHRASES: readonly RegExp[] = [
+  new RegExp(`\\b(?:narrated|narrato|narrata|narrazione|told|raccontat[oa]|spoken|parlato|voiced)\\s+in\\s+${LANG_NAME}\\b`, "i"),
+  new RegExp(`\\bvoce\\s+(?:narrante|fuori\\s+campo)\\s+(?:in\\s+)?${LANG_NAME}\\b`, "i"),
+  // A bare "voce inglese" only as an answer: at the start of a clause, or after "con", "e".
+  new RegExp(`(?:^|[,;:(]\\s*|\\b(?:con|e|ed)\\s+(?:(?:una|la)\\s+)?)voce\\s+(?:in\\s+)?${LANG_NAME}\\b`, "i"),
+  new RegExp(`\\b${LANG_NAME}\\s+(?:narration|voice[- ]?over|narrator|voice)\\b(?![-'’]\\w)(?!\\s+(?:actors?|actress(?:es)?|artists?|talents?|cast|dub\\w*|coach\\w*|lessons?|of|di)\\b)`, "i"),
+  new RegExp(`\\b(?:lingua|language)\\s*:\\s*${LANG_NAME}\\b`, "i"),
+];
+/**
+ * "in English" at the end of a clause names the narration only in a clause that is the video's own ("un video sui
+ * pirati in inglese", "…, in inglese"): a clause with no video word in it is the story's.
+ */
+const LANGUAGE_AT_END = new RegExp(`${SPEAKING_BEFORE}\\bin\\s+(?:lingua\\s+)?${LANG_NAME}(?=\\s*(?:$|[,.;:!?)]))`, "gi");
+const VIDEO_WORD_RE = new RegExp(`\\b(?:${VIDEO_WORDS})\\b`, "i");
+const langOfName = (name: string): NarrationLanguage => (/^(?:english|inglese)$/i.test(name) ? "en" : "it");
+
+/** Where the request says the narration's language outright, and which it is; null when it does not. */
+export function languageSpan(text: string): { value: NarrationLanguage; at: number; end: number } | null {
+  for (const re of LANGUAGE_PHRASES) {
+    const m = re.exec(text);
+    if (m) return { value: langOfName(m[1]), at: m.index, end: m.index + m[0].length };
+  }
+  for (const m of text.matchAll(LANGUAGE_AT_END)) {
+    const clause = text.slice(0, m.index).split(/[,;.:!?]/).pop() ?? "";
+    if (!clause.trim() || VIDEO_WORD_RE.test(clause)) return { value: langOfName(m[1]), at: m.index ?? 0, end: (m.index ?? 0) + m[0].length };
+  }
+  return null;
+}
+export const languageFromRequest = (text: string): NarrationLanguage | null => languageSpan(text)?.value ?? null;
+
+/**
+ * The answer is read for its words, not matched whole (25 September 2026 review): "English please", "inglese,
+ * grazie", "en-US" and "nessuna preferenza" used to come back as languages Kleo does not speak. The two-letter codes
+ * count only as the whole answer ("it doesn't matter" is not Italian).
+ */
+const LANG_EN_RE = /\b(?:english|inglese|anglais|ingl[eé]s)\b|^(?:in\s+)?(?:en|eng)(?:[-_][a-z]{2})?$/i;
+const LANG_IT_RE = /\b(?:italian\w*|italiano|italiana|italien\w*)\b|^(?:in\s+)?(?:it|ita)(?:[-_][a-z]{2})?$/i;
+/** "Whatever", "fai tu": the user has no preference, and no preference means English (the owner's rule). */
+const LANG_ANY_RE = /\b(?:whatever|any|anything|either|no preference|none|don'?t (?:care|mind)|do not (?:care|mind)|doesn'?t matter|does not matter|you choose|you pick|you decide|your choice|up to you|indifferente|nessuna preferenza|fai tu|scegli tu|decidi tu|non (?:mi )?importa|fa lo stesso|come vuoi|qualsiasi|uguale|va bene tutto|default)\b/i;
+/** A language Kleo does not narrate in: only then is the answer quoted back ("you asked for …"). */
+const LANG_OTHER_RE = /\b(?:fran[cç]ais|french|francese|spanish|spagnolo|espa[nñ]ol|castellano|german|tedesco|deutsch|portugu[eê]s|portuguese|portoghese|chinese|cinese|mandarin|japanese|giapponese|russian|russo|arabic|arabo|hindi|korean|coreano|dutch|olandese|polish|polacco|turkish|turco|greek|greco|swedish|svedese|latin|latino)\b/i;
+
+/** The language answer as the call passes it. */
+export interface LanguageAnswer { value: NarrationLanguage | null; defaulted: boolean; unsupported: string | null }
+/**
+ * The user's answer to the language question: English or Italian in any spelling; no preference is English
+ * (`defaulted`); another language Kleo knows by name is `unsupported` (Kleo narrates in two), and the question comes
+ * back naming both. Anything else (both languages and no preference, words Kleo cannot read) is asked again plainly.
+ */
+export function languageAnswer(raw: string | null | undefined): LanguageAnswer | null {
+  if (raw === undefined || raw === null) return null;
+  const s = String(raw).trim().replace(/\s+/g, " ").replace(/^["'“”‘’]+|["'“”‘’.!?,;]+$/g, "").trim();
+  if (!s) return null;
+  const en = LANG_EN_RE.test(s), it = LANG_IT_RE.test(s);
+  if (en !== it) return { value: en ? "en" : "it", defaulted: false, unsupported: null };
+  if (LANG_ANY_RE.test(s)) return { value: "en", defaulted: true, unsupported: null };
+  if (!en && LANG_OTHER_RE.test(s)) return { value: null, defaulted: false, unsupported: s.slice(0, 40) };
+  return { value: null, defaulted: false, unsupported: null };
+}
+
+/* ------------------------------------------------------------------ the subject */
+
+/**
+ * THE SUBJECT IS WHAT THE FILM IS ABOUT, NOT HOW IT IS MADE (25 September 2026). "fammi un video in orizzontale, dei
+ * pirati di 15 secondi" used to leave "un video in orizzontale, dei pirati di 15 secondi" as the subject, and the spec
+ * and the treatment were written about a horizontal video of fifteen seconds. The talk about the video is cut out of
+ * the request as it was written: the request verbs, the video phrase ("un cartone animato", "a 30-second vertical
+ * video"), the ACCEPTED length only (the story's "per 30 secondi" stays), the format after a preposition ("per TikTok",
+ * "in orizzontale"; never a bare adjective: "vertical farming" is a subject), the music and subtitles answers, the
+ * narration's language, and any clause made only of those words (", verticale"). What is left keeps its prepositions
+ * ("dei pirati", "about pirates"), and every word of the subject is a word of the request.
+ */
+const SUBJECT_VIDEO = VIDEO_WORDS
+  .replace("short", "short(?!\\s+(?:of|on)\\b)").replace("|corto|", "|corto(?!\\s+(?:di|circuito)\\b)|")
+  .replace("reel", "reel(?!\\s+(?:of|di)\\b)").replace("spot", "spot(?!\\s+(?:of|on|where|in|at|di)\\b)").replace("trailer", "trailer(?!\\s+(?:park|home|truck)\\b)");
+const SUBJECT_ART = "(?:un|una|uno|a|an|the|il|lo|la|my|our|mio|nostro)";
+const SUBJECT_PRE = "(?:vertical|verticale|orizzontale|horizontal|animated|animat[oa]|realistic|realistic[oa]|cinematic|cinematografico|narrated|narrat[oa]|youtube|2d|new|nuovo|breve)";
+const SUBJECT_LEN = `(?:\\d{1,4}(?:[.,]\\d+)?\\s*-?\\s*(?:${MIN_UNIT}|${SEC_UNIT})|\\d{1,3}s)(?:-long)?`;
+const SUBJECT_POST = "(?:verticale|orizzontale|animat[oa]|realistic[oa]|in\\s+(?:orizzontale|verticale|16\\s*:\\s*9|9\\s*:\\s*16|4k)|(?:per|for)\\s+(?:(?:il|lo|i|gli|le|the|my|i miei|miei)\\s+)?(?:youtube(?:\\s+shorts?)?|tik\\s?tok|instagram|reels?|shorts))";
+const SUBJECT_VIDEO_RE = new RegExp(`(?<lead>(?:\\b${SUBJECT_ART}\\s+|\\bun')?(?:\\b(?:${SUBJECT_PRE}|${SUBJECT_LEN})\\s+){0,4})\\b(?:${SUBJECT_VIDEO})\\b(?:\\s+(?:(?:${SUBJECT_VIDEO})|${SUBJECT_POST})\\b){0,3}`, "gi");
+/** A video word right after one of these is the topic ("the history of animated film"), not the request. */
+const TOPIC_BEFORE_RE = /\b(?:of|about|on|regarding|sul|sulla|sullo|sui|sugli|sulle|su|di|del|della|dello|dei|degli|delle|from|like)\s*$/i;
+/** A bare video word (no article, no kind) is the request's only at the start of a clause or after a request verb. */
+const BARE_VIDEO_START_RE = /(?:^|[.!?,;:(]|\b(?:fammi|creami|generami|crea|genera|make(?: me| it)?|create|generate|want|vorrei|voglio|fai))\s*$/i;
+/**
+ * A video phrase that opens the request or a clause with no request verb before it heads the topic when a content
+ * word follows it ("Film noir explained", "Il nuovo film di Nolan", "Animation history", "Documentary photography
+ * tips"; 25 September 2026 review). It is the request's only when what follows is a topic preposition, a length, a
+ * format, the end of the clause, or one Italian adjective before a topic preposition ("un video divertente sui gatti").
+ */
+const VIDEO_AT_START_RE = /(?:^|[.!?,;:(])\s*$/;
+const VIDEO_FOLLOW_RE = /^\s*(?:$|[,.;:!?()–—-]|\d|(?:about|on|of|regarding|sul|sulla|sullo|sui|sugli|sulle|su|della|dello|dei|degli|delle|del|da|in|per|for|con|with|without|senza|that|which|che|where|dove|showing|explaining|telling|mostrando|spiegando|raccontando|to|lungo|lunga|long|tutorial|explainer)\b|di\s+(?!\p{Lu})|\p{L}+[aeiouàèéìòù]\s+(?:sul|sulla|sullo|sui|sugli|sulle|su|di|del|della|dello|dei|degli|delle|per|che|con)\b)/u;
+const VERB_ANY_RE = /\b(?:fammi|creami|generami)\b/gi;
+const VERB_START_RE = /(?:^|(?<=[.!?,;:]\s*))(?:(?:please|per favore|ciao|hey)\s*,?\s*)?(?:crea|genera|voglio|vorrei|mi fai|make(?:\s+(?:me|it))?|create|generate|i want|i'd like|can you make|could you make|puoi fare|puoi creare)\b/gi;
+const FORMAT_WORD = "(?:youtube(?:\\s+shorts?)?|yt|tik\\s?tok|instagram(?:\\s+(?:reels?|stories))?|ig|facebook|reels?|shorts|short(?=\\s*(?:$|[.,;:!?)]))|stories|orizzontale|verticale|vertical|horizontal|landscape|portrait|widescreen|16\\s*:\\s*9|9\\s*:\\s*16|4k)";
+/**
+ * A format phrase is the video's only where it ends its clause or another word about the video follows it ("per TikTok
+ * sulle api", "in orizzontale, dei pirati"). A platform inside the story stays: "come TikTok ha cambiato la musica",
+ * "tips for Instagram creators", "mistakes in YouTube history" (25 September 2026 review). "come" needs "un reel".
+ */
+const FORMAT_FOLLOW = `(?=\\s*(?:$|[,.;:!?)]|(?:(?:e|ed|and|o|or|&)\\s+)?(?:\\d|(?:${FORMAT_WORD}|(?:in|per|for|as|formato|format)\\s+(?:(?:il|lo|la|the|a|an|un|uno|una)\\s+)?${FORMAT_WORD}|con|with|senza|without|di\\s+\\d|da\\s+\\d|of\\s+\\d|lasting|lung[oa]|long|sul|sulla|sullo|sui|sugli|sulle|su|about|on|regarding|dei|degli|delle|della|dello|del|showing|explaining|mostrando|spiegando)\\b)))`;
+const FORMAT_PHRASE_RE = new RegExp(`\\b(?:in|per|for|as|come(?=\\s+(?:un|una|uno|a)\\s)|formato|format)\\s+(?:(?:il|lo|la|i|gli|le|the|a|an|un|uno|una|my|our|miei|mie|nostri|nostre|formato|format)\\s+){0,2}${FORMAT_WORD}(?:\\s*(?:,|e|and|o|or|/)?\\s*${FORMAT_WORD}){0,2}(?![\\w:])${FORMAT_FOLLOW}`, "gi");
+/** "con musica", "with music and subtitles": the yes answers with their preposition. A bare "soundtrack" may be a topic. */
+const SOUND_YES_RE = /\b(?:con|with)\s+(?:(?:la|una|le|i|a|the|some)\s+)?(?:background\s+)?(?:musica|music|soundtrack|score|colonna sonora|sottotitoli|subtitles|captions)(?:\s+di\s+sottofondo)?(?:\s*(?:,|e|and|&)\s*(?:(?:la|una|i|a|the|some|con|with)\s+)*(?:musica|music|sottotitoli|subtitles|captions))?\b/gi;
+/** The glue a length takes with it: "di 15 secondi", ", 30 secondi", "for 30 seconds", "in thirty seconds". */
+const LEN_GLUE_BEFORE_RE = /(?:\s*(?:[,:]|\b(?:di|da|of|for|per|in|lung[oa]|long|lasting|durata(?:\s+di)?)\b))+\s*$/i;
+const LEN_GLUE_AFTER_RE = /^(?:-long\b|\s*-?\s*(?:long|lung[oa])\b)/i;
+/** A topic after a preposition: "about music", "sulla musica" are subjects even though every noun is a word of the intake. */
+const TOPIC_RE = /\b(?:about|on|of|regarding|sul|sulla|sullo|sui|sugli|sulle|su|della|dello|dei|degli|delle|del)\s+(?:[\p{L}'’]+\s+){0,2}\p{L}{3,}/iu;
+const PRONOUNS = new Set(["tu", "you", "me", "it", "lo", "questo", "this"]);
+const letters = (w: string) => (w.match(/\p{L}/gu) ?? []).length;
+const CONJ_EDGES_RE = /^(?:\s*(?:e|ed|and|o|or|&|-|–|—)\s+)+|(?:\s+(?:e|ed|and|o|or|&|-|–|—))+\s*$/gi;
+
+/** True when a phrase names something to film: a word of three letters or more that is not the intake's, or a topic. */
+export function hasContent(subject: string): boolean {
+  const ws = words(subject);
+  if (ws.reduce((n, w) => n + letters(w), 0) < 4) return false;
+  if (ws.some((w) => letters(w) >= 3 && !STOP.has(w) && !INTAKE_VOCAB.has(w) && !PRONOUNS.has(w))) return true;
+  return TOPIC_RE.test(subject);
+}
+
+/** Where a span was cut out of the request (subjectFrom); never typed by a user. */
+const CUT = "\u0000";
+/**
+ * The intake's words that can also be a topic in a list ("about wine, food, music"): kept when a topic came first and
+ * nothing was cut from their clause. The format, length and look words never are (", verticale" always goes).
+ */
+const TOPICAL = new Set(["music", "musica", "film", "films", "video", "videos", "movie", "cinema", "animation", "animazione", "documentary",
+  "documentario", "cartoon", "cartoons", "cartone", "cartoni", "soundtrack", "voce", "voice", "language", "lingua", "trailer", "spot",
+  "clip", "clips", "storyboard", "narration", "narrazione"]);
+
+/** A clause that only says how the video is made (", verticale"): no topic, and no word the intake does not own. */
+const pureIntake = (clause: string): boolean =>
+  !TOPIC_RE.test(clause) && words(clause).every((w) => STOP.has(w) || INTAKE_VOCAB.has(w) || PRONOUNS.has(w) || /^\d+s?$/.test(w));
+
+/**
+ * The request with the talk about the video cut out (above). `lengthSpan` is the accepted length (lengthOf): only those
+ * words go, with their glue. Pure: the same request always gives the same subject, capped at 240 characters.
+ */
+export function subjectFrom(text: string, lengthSpan: { at: number; end: number } | null): string {
+  const spans: [number, number][] = [];
+  const add = (at: number, end: number) => { if (end > at) spans.push([at, end]); };
+  const all = (re: RegExp, keep?: (m: RegExpMatchArray) => boolean) => {
+    for (const m of text.matchAll(re)) if (!keep || keep(m)) add(m.index ?? 0, (m.index ?? 0) + m[0].length);
+  };
+  all(DELEGATE_RE);
+  all(VERB_ANY_RE);
+  all(VERB_START_RE);
+  if (lengthSpan) {
+    const glue = text.slice(Math.max(0, lengthSpan.at - 40), lengthSpan.at).match(LEN_GLUE_BEFORE_RE);
+    const tail = text.slice(lengthSpan.end).match(LEN_GLUE_AFTER_RE);
+    add(lengthSpan.at - (glue?.[0].length ?? 0), lengthSpan.end + (tail?.[0].length ?? 0));
+  }
+  all(SUBJECT_VIDEO_RE, (m) => {
+    const at = m.index ?? 0, before = text.slice(0, at), lead = !!m.groups?.lead?.trim();
+    if (TOPIC_BEFORE_RE.test(before)) return false;
+    // A bare video word after a comma, in a request that already named its topic, is an item of a list ("about
+    // cinema, film, and art").
+    if (!lead && /[,;]\s*$/.test(before) && TOPIC_RE.test(before)) return false;
+    if (VIDEO_AT_START_RE.test(before) && !VIDEO_FOLLOW_RE.test(text.slice(at + m[0].length))) return false;
+    return lead || BARE_VIDEO_START_RE.test(before);
+  });
+  all(FORMAT_PHRASE_RE);
+  all(new RegExp(MUSIC_NO_RE.source, "gi"));
+  all(new RegExp(SUBS_NO_RE.source, "gi"));
+  all(SOUND_YES_RE);
+  const lang = languageSpan(text);
+  if (lang) add(lang.at, lang.end);
+  // Merged, then cut from the right, each span replaced by a space so the words on its two sides never glue together.
+  spans.sort((x, y) => x[0] - y[0]);
+  const merged: [number, number][] = [];
+  for (const sp of spans) {
+    const last = merged[merged.length - 1];
+    if (last && sp[0] <= last[1]) last[1] = Math.max(last[1], sp[1]); else merged.push([sp[0], sp[1]]);
+  }
+  // The cut is marked, so a clause knows whether talk about the video was taken out of it.
+  let rest = text;
+  for (const [at, end] of merged.reverse()) rest = `${rest.slice(0, at)} ${CUT} ${rest.slice(end)}`;
+  // The clauses (a comma inside a number, "1,000" or "2,5", splits nothing): one made only of the intake's words goes,
+  // unless it is an item of a list whose topic came first ("about wine, food, music"); the others keep the
+  // punctuation that followed them.
+  const parts = rest.split(/([,;](?=\s|$)|[.:!?]+(?=\s|$))/);
+  const kept: { clause: string; delim: string }[] = [];
+  let topicBefore = false;
+  for (let i = 0; i < parts.length; i += 2) {
+    const cut = parts[i].includes(CUT);
+    const clause = parts[i].split(CUT).join(" ").replace(/\s+/g, " ").replace(CONJ_EDGES_RE, "").trim();
+    if (!clause) continue;
+    if (pureIntake(clause) && (cut || !topicBefore || !words(clause).some((w) => TOPICAL.has(w)))) continue;
+    if (TOPIC_RE.test(clause)) topicBefore = true;
+    kept.push({ clause, delim: (parts[i + 1] ?? "").trim() });
+  }
+  const out = kept.map((k, i) => (i < kept.length - 1 ? `${k.clause}${k.delim || ","} ` : k.clause)).join("");
+  return first(out.replace(/^[\s,.;:!?-]+|[\s,.;:!?-]+$/g, ""));
+}
+
 export type AdaptOverrides = Partial<Pick<AdaptiveBrief, "duration_s" | "format" | "audience" | "tone" | "look" | "must_keep">> & {
   /** The user's music answer, as they said it: "no", "yes", or the kind they want. */
   music?: string | null;
   /** The user's subtitles answer: true/false, or yes/no in words. */
   subtitles?: boolean | string | null;
+  /** The user's answer to the narration question, in their words: "en", "Italian", "whatever" (English)… */
+  language?: string | null;
+  /** The user's answer to the film/animatic question. */
+  product?: Product | null;
+  /** The account the film is for, with its prices: when given, the film/animatic question is asked with them. */
+  account?: IntakeAccount;
 };
+
+/**
+ * What the product question needs to know about the account, computed by the caller (src/mcp.ts) so this module
+ * stays pure and holds no price: whether it has paid (a film is for accounts that bought a pack), its balance, the
+ * film's price for the asked length (null while the length is unknown), the animatic's flat price and longest length,
+ * and the tariff sentence for when the length is not known yet.
+ */
+export interface IntakeAccount { paid: boolean; credits: number; filmCredits: number | null; animaticCredits: number; animaticMaxS: number; tariff: string }
+
+/** The product a request names: the literal word only. "Preview", "anteprima", "bozza" are not a product. */
+const ANIMATIC_WORD_RE = /\banimatic[oi]?\b/i;
+
+/**
+ * THE FILM OR THE ANIMATIC IS ASKED, WITH THE PRICES (25 September 2026). The choice used to come from kleo_account,
+ * which an assistant called or did not: a paying user was never asked, an unpaid one learned at kleo_create_video
+ * that a film was not for them. Now it is one more question in the same message, quoting what each costs this user.
+ */
+function productQuestion(chat: NarrationLanguage, acct: IntakeAccount, duration: number | null, product: Product | null): string {
+  const it = chat === "it";
+  const tooLong = duration !== null && duration > acct.animaticMaxS;
+  const anim = it
+    ? `costa ${acct.animaticCredits} crediti fissi, fino a ${acct.animaticMaxS} secondi${tooLong ? ` (quindi al massimo ${acct.animaticMaxS} secondi invece di ${duration})` : ""}`
+    : `costs ${acct.animaticCredits} credits flat, up to ${acct.animaticMaxS} seconds${tooLong ? ` (so at most ${acct.animaticMaxS} seconds instead of ${duration})` : ""}`;
+  if (!acct.paid) {
+    return it
+      ? `Il film (ogni inquadratura è una clip generata) si fa solo per gli account che hanno comprato un pacchetto di crediti (da 5 EUR, nella pagina del tuo account)${product === "film" ? ", e questo non l'ha ancora comprato" : ""}. Adesso puoi avere l'animatic: gli stessi fotogrammi disegnati con la camera che si muove su ognuno, nessuna clip generata; ${anim}. Vuoi l'animatic adesso, o prima compri un pacchetto per il film?`
+      : `A film (every shot a generated clip) is made only for accounts that have bought a credit pack (from 5 EUR, on your account page)${product === "film" ? ", and this one has not bought one yet" : ""}. Right now you can have the animatic: the same drawn frames with the camera moving over each one, no generated clip; it ${anim}. Do you want the animatic now, or buy a pack first for the film?`;
+  }
+  const low = acct.filmCredits !== null && acct.credits < acct.filmCredits;
+  const film = acct.filmCredits !== null
+    ? (it ? `Il film (ogni inquadratura è una clip generata) costa ${acct.filmCredits} crediti per ${duration} secondi` : `The film (every shot a generated clip) costs ${acct.filmCredits} credits for ${duration} seconds`)
+    : (it ? `Il film (ogni inquadratura è una clip generata) costa in base alla durata (${acct.tariff})` : `The film (every shot a generated clip) is priced by its length (${acct.tariff})`);
+  return it
+    ? `Film o animatic? ${film}; l'animatic (gli stessi fotogrammi disegnati con la camera che si muove su ognuno, nessuna clip generata) ${anim}. Hai ${acct.credits} crediti${low ? ", non bastano per il film" : ""}.`
+    : `Film or animatic? ${film}; the animatic (the same drawn frames with the camera moving over each one, no generated clip) ${anim}. You have ${acct.credits} credits${low ? ", not enough for the film" : ""}.`;
+}
 
 /**
  * Reads the request against the intake: every item is taken from the call first (the user's answers, passed back by
@@ -351,16 +635,12 @@ export function adaptPrompt(prompt: string, overrides: AdaptOverrides = {}): Ada
   // look named in the last line was never seen. Only the SUBJECT stays capped: it is a label, not the request.
   const text = prompt.trim().replace(/\s+/g, " ");
   const lower = text.toLowerCase();
-  const language = languageFrom(text);
+  const chat = languageFrom(text);
   const delegated = DELEGATE_RE.test(text);
   DELEGATE_RE.lastIndex = 0;
-  const subject = first(text
-    .replace(DELEGATE_RE, "")
-    .replace(/\b(?:fammi|creami|crea|genera|make me|create|generate)\b/gi, "")
-    .replace(/\b(?:un|una|a|an|the|il|la)\s+video\b/gi, "")
-    .replace(/\b(?:realistico|realistica|realistic|cinematico|cinematic)\b/gi, "")
-    .replace(/^[\s,.;:!?-]+|[\s,.;:!?-]+$/g, ""));
-  const fromRequestDuration = durationFrom(text);
+  const length = lengthOf(text);
+  const subject = subjectFrom(text, length);
+  const fromRequestDuration = length?.seconds ?? null;
   const duration_s = overrides.duration_s ?? fromRequestDuration;
   const fromRequestFormat = formatFrom(lower);
   const format = overrides.format ?? fromRequestFormat;
@@ -373,46 +653,73 @@ export function adaptPrompt(prompt: string, overrides: AdaptOverrides = {}): Ada
   const audience = overrides.audience?.trim() || null;
   const tone = overrides.tone?.trim() || null;
   const must_keep = overrides.must_keep?.trim() || null;
+  const acct = overrides.account;
+  const productSaid = overrides.product ?? (ANIMATIC_WORD_RE.test(text) ? "animatic" : null);
+  // Settled when there is no account to price it (pure callers take what they pass), when a paying account named
+  // either, or when an unpaid one chose the animatic; an unpaid account's "film" is asked again, with the way out.
+  const productSettled = !acct ? productSaid !== null : acct.paid ? productSaid !== null : productSaid === "animatic";
+  const product = productSettled ? productSaid : null;
+  // An animatic has a longest length: past it, the length is asked again, in the same message.
+  const animaticTooLong = !!acct && product === "animatic" && duration_s !== null && duration_s !== undefined && duration_s > acct.animaticMaxS;
+  // The narration: the user's answer first, then what the request says outright. The chat's language is never it.
+  const callLang = languageAnswer(overrides.language);
+  const language = callLang?.value ?? languageFromRequest(text);
 
   const answered: Partial<Record<IntakeKey, IntakeAnswer>> = {};
-  if (subject.length >= 8) answered.subject = { value: subject, from: "request" };
-  if (duration_s !== null && duration_s !== undefined) answered.duration = { value: `${duration_s}s`, from: overrides.duration_s !== undefined && overrides.duration_s !== null ? "call" : "request" };
+  if (hasContent(subject)) answered.subject = { value: subject, from: "request" };
+  if (duration_s !== null && duration_s !== undefined && !animaticTooLong) answered.duration = { value: `${duration_s}s`, from: overrides.duration_s !== undefined && overrides.duration_s !== null ? "call" : "request" };
   if (format) answered.format = { value: format, from: overrides.format ? "call" : "request" };
   if (look) answered.look = { value: look, from: overrides.look ? "call" : "request" };
+  if (product) answered.product = { value: product, from: overrides.product ? "call" : "request" };
   if (music) answered.music = { value: music.wanted ? (music.brief ? `yes — ${music.brief}` : "yes") : "none", from: callMusic ? "call" : "request" };
   if (subtitles !== null) answered.subtitles = { value: subtitles ? "cinema (burned in)" : "none", from: callSubs !== null ? "call" : "request" };
   if (audience) answered.audience = { value: audience, from: "call" };
   if (tone) answered.tone = { value: tone, from: "call" };
   if (must_keep) answered.must_keep = { value: must_keep, from: "call" };
-  const missing = INTAKE.filter((i) => i.required && !answered[i.key]).map((i) => i.key);
+  if (language) answered.language = { value: language === "it" ? "Italian" : callLang?.defaulted ? "English (no preference: the default)" : "English", from: callLang?.value ? "call" : "request" };
+  // The product is not asked of a caller that did not pass the account: there is no price to quote.
+  const missing = INTAKE.filter((i) => i.required && !answered[i.key] && (i.key !== "product" || !!acct)).map((i) => i.key);
   const optional = INTAKE.filter((i) => !i.required && !answered[i.key]).map((i) => i.key);
+  const unsupported = callLang?.unsupported ?? null;
   const questions = INTAKE.filter((i) => missing.includes(i.key)).map((i) =>
     i.key === "subject" && delegated
-      ? (language === "it"
+      ? (chat === "it"
         ? "L'utente ti ha chiesto di scegliere tu il soggetto (\"stupiscimi\"): non rifare la stessa domanda. Proponi 3-5 soggetti concreti e filmabili a misura d'uomo, una riga ciascuno, nello stesso messaggio, e chiedi di sceglierne uno (o di scriverne uno loro). Non si rende nulla finché non hanno scelto."
         : "The user asked YOU to choose the subject (\"surprise me\"): do not send the same question back. Propose 3-5 concrete, filmable, human-scale subjects, one line each, in the same message, and ask them to pick one (or write their own). Nothing is rendered until they have picked.")
-      : i.question[language]);
-  const optional_questions = INTAKE.filter((i) => optional.includes(i.key)).map((i) => i.question[language]);
+      : i.key === "language" && unsupported
+        ? (chat === "it"
+          ? `Kleo può narrare solo in inglese o in italiano (hai chiesto "${unsupported}"): quale delle due vuoi?`
+          : `Kleo narrates in English or Italian only (you asked for "${unsupported}"): which of the two do you want?`)
+        : i.key === "product" && acct
+          ? productQuestion(chat, acct, duration_s ?? null, productSaid)
+          : i.key === "duration" && animaticTooLong && acct
+            ? (chat === "it"
+              ? `Un animatic dura al massimo ${acct.animaticMaxS} secondi (ne hai chiesti ${duration_s}): quanto deve durare, fino a ${acct.animaticMaxS} secondi?`
+              : `An animatic is at most ${acct.animaticMaxS} seconds long (you asked for ${duration_s}): how long should it be, up to ${acct.animaticMaxS} seconds?`)
+            : i.question[chat]);
+  const optional_questions = INTAKE.filter((i) => optional.includes(i.key)).map((i) => i.question[chat]);
 
   const goal = /\b(spiega|explain|documentario|documentary|tutorial|how to|come funziona)\b/i.test(lower)
-    ? (language === "it" ? "Spiegare il soggetto in modo chiaro e cinematografico" : "Explain the subject clearly and cinematically")
-    : look === "animation" ? (language === "it" ? "Raccontare il soggetto come un film animato" : "Tell the subject as an animated film")
-    : (language === "it" ? "Raccontare il soggetto come un film realistico" : "Tell the subject as a realistic film");
+    ? (chat === "it" ? "Spiegare il soggetto in modo chiaro e cinematografico" : "Explain the subject clearly and cinematically")
+    : look === "animation" ? (chat === "it" ? "Raccontare il soggetto come un film animato" : "Tell the subject as an animated film")
+    : (chat === "it" ? "Raccontare il soggetto come un film realistico" : "Tell the subject as a realistic film");
   const assumptions = [
     format === "16:9" ? `16:9 landscape: ${overrides.format ? "the user's answer" : "the request says where it goes"}` : format === "9:16" ? `9:16 portrait: ${overrides.format ? "the user's answer" : "the request says where it goes"}` : "format not said: asked, never assumed",
     look === "animation" ? `animation look: a 2D animated film, ${overrides.look ? "the user's answer" : "named by the request"}` : look === "realistic" ? `realistic cinematic look, ${overrides.look ? "the user's answer" : "named by the request"}` : "look not said: asked, never assumed",
     music === null ? "music not said: asked, never assumed" : music.wanted ? `music: an instrumental track under the narration${music.brief ? ` (${music.brief})` : ""}, the user's answer` : "no music: narration only, the user's answer",
     subtitles === null ? "subtitles not said: asked, never assumed" : subtitles ? "subtitles: thin cinema subtitles burned in, the user's answer" : "no burned-in subtitles (an .srt sidecar is always delivered), the user's answer",
+    language === null ? "narration language not said: asked, never assumed (the language of the chat is not the answer)"
+      : `narration in ${language === "it" ? "Italian" : "English"}: ${callLang?.value ? (callLang.defaulted ? "the user had no preference, and English is the default" : "the user's answer") : "the request says it"}`,
     "no slideshow fallback",
   ];
   return {
-    subject, look, goal, duration_s: duration_s ?? null, format: format ?? null, music, subtitles,
+    subject, look, goal, duration_s: animaticTooLong ? null : duration_s ?? null, format: format ?? null, music, subtitles,
     audience: audience ?? "the audience implied by the request", tone: tone ?? "cinematic, naturalistic, emotionally coherent", must_keep,
-    language, delegated, intake: { answered, missing, optional }, questions, optional_questions, assumptions,
+    chat_language: chat, language, delegated, product, intake: { answered, missing, optional }, questions, optional_questions, assumptions,
   };
 }
 
-const lang = (b: AdaptiveBrief) => (b.language === "it" ? "Italian" : "English");
+const lang = (b: AdaptiveBrief) => (b.chat_language === "it" ? "Italian" : "English");
 
 /** The intake as a checklist the assistant reads: every item, its value and its source, or the fact that it is missing. */
 export function intakeText(brief: AdaptiveBrief): string {
@@ -420,6 +727,7 @@ export function intakeText(brief: AdaptiveBrief): string {
     const a = brief.intake.answered[i.key];
     if (a) return `- ${i.label.en}: ${a.value} (${a.from === "call" ? "the user's answer" : "from the request"})`;
     if (i.key === "subject" && brief.delegated) return `- ${i.label.en}: MISSING — the user delegated it ("surprise me"): propose 3-5 subjects and let them pick`;
+    if (i.required && !brief.intake.missing.includes(i.key)) return `- ${i.label.en}: not asked here`;
     return i.required ? `- ${i.label.en}: MISSING — ask` : `- ${i.label.en}: not given (optional)`;
   });
   return `INTAKE — what Kleo knows about this film, and what it must ask before anything is written. These are never guessed:\n${rows.join("\n")}`;
@@ -437,8 +745,8 @@ export function adaptivePromptText(brief: AdaptiveBrief): string {
   if (brief.questions.length) {
     const q = brief.questions.map((s, i) => `${i + 1}. ${s}`).join("\n");
     const opt = brief.optional_questions.length ? `\nOptional, in the SAME message if it feels natural (never a message of their own): ${brief.optional_questions.join(" · ")}` : "";
-    return `${intakeText(brief)}\n\nASK THE USER NOW, in ONE message, in ${lang(brief)}, exactly these questions — then call kleo_adapt_prompt again with the same prompt and their answers (duration_s, format, style, music, subtitles, audience, tone, must_keep). Do not write the treatment, do not call kleo_create_video, and do not fill any of these in yourself:\n${q}${opt}`;
+    return `${intakeText(brief)}\n\nASK THE USER NOW, in ONE message, in ${lang(brief)}, exactly these questions — then call kleo_adapt_prompt again with the same prompt and their answers (duration_s, format, style, music, subtitles, language, audience, tone, must_keep; if the user says the narration's language does not matter, pass language "en"). Do not write the treatment, do not call kleo_create_video, and do not fill any of these in yourself:\n${q}${opt}`;
   }
   const lookLine = brief.look === "animation" ? "animation, a 2D animated film" : "realistic cinematic";
-  return `${intakeText(brief)}\n\nAdaptive film brief ready:\n- Subject: ${brief.subject}\n- Goal: ${brief.goal}\n- Duration: ${brief.duration_s}s\n- Format: ${brief.format}\n- Look: ${lookLine}\n- Audience: ${brief.audience}\n- Tone: ${brief.tone}${brief.must_keep ? `\n- Must appear: ${brief.must_keep}` : ""}\n- Music: ${musicLine(brief.music)}\n- Subtitles: ${subtitlesLine(brief.subtitles)}\n- Plan: shot-by-shot real video clips, continuity checks, one clean dissolve between acts (one per 25 seconds, never inside an act), then edit.`;
+  return `${intakeText(brief)}\n\nAdaptive film brief ready:\n- Subject: ${brief.subject}\n- Goal: ${brief.goal}\n- Duration: ${brief.duration_s}s\n- Format: ${brief.format}\n- Look: ${lookLine}\n- Narration: ${brief.language === "it" ? "Italian" : "English"}\n- Audience: ${brief.audience}\n- Tone: ${brief.tone}${brief.must_keep ? `\n- Must appear: ${brief.must_keep}` : ""}\n- Music: ${musicLine(brief.music)}\n- Subtitles: ${subtitlesLine(brief.subtitles)}${brief.product ? `\n- Product: ${brief.product}` : ""}\n- Plan: ${brief.product === "animatic" ? "the animatic: drawn frames with the camera moving over each one, no generated clip" : "shot-by-shot real video clips, continuity checks"}, one clean dissolve between acts (one per 25 seconds, never inside an act), then edit.`;
 }

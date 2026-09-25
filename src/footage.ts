@@ -37,6 +37,7 @@ import { isAnimatic } from "./templates.ts";
 import { specOf, itemById, type RequestSpec, type SpecItem } from "./spec.ts";
 import { stillCast, stillShotsOf, stillModel, stillProviderOf, stillPriceUsd, STILL_SIZES, SHEET_SIZE } from "./stills.ts";
 import { KIE_BASE, KIE_CREATE, KIE_RECORD, KIE_CREDIT, USD_PER_KIE_CREDIT, KieError, kie, isNoCredit, kieResultUrls, type KieRecord } from "./kie.ts";
+import { ephone, ephoneBalanceUsd, ephoneOutputs, ephoneFailure, type EphoneTask } from "./ephone.ts";
 
 /* ------------------------------------------------------------------ models and prices */
 
@@ -60,7 +61,15 @@ export type FootageBackend = "kie" | "local";
  * image-to-video arena (Artificial Analysis, no audio: 1351), above Kling 3.0 pro (1302), Veo 3.1 (1304) and Wan 2.7
  * (1275); native 2K, so the box's 4K upscale starts from twice Kling's pixels; 0.065 $/s against Kling's 0.09.
  */
-export interface KieModel { model: string; usdPerSecond: number; usdPerClip?: Record<number, number>; seconds: { min: number; max: number } | number[]; note: string; verified: boolean }
+export interface KieModel {
+  model: string; usdPerSecond: number; usdPerClip?: Record<number, number>; seconds: { min: number; max: number } | number[]; note: string; verified: boolean;
+  /** Where the clip is bought (25 September 2026): kie.ai (unset) or ePhone AI (src/ephone.ts). */
+  provider?: "kie" | "ephone";
+  /** The resolution asked for, where the model's name does not say it. */
+  resolution?: string;
+}
+/** The road a model's clips are bought on. */
+export const clipProviderOf = (spec: Pick<KieModel, "provider">): "kie" | "ephone" => spec.provider ?? "kie";
 export const KIE_MODELS: Record<string, KieModel> = {
   "minimax-h3":     { model: "minimax-h3/image-to-video", usdPerSecond: 0.065, seconds: { min: 4, max: 15 }, verified: false,
                       note: "MiniMax H3 image-to-video, 2K: the default since 13 September — arena rank 3 (Elo 1351), native 2K, 0.065 $/s. First frame conditioning, whole seconds 4-15. Not yet exercised end to end." },
@@ -84,6 +93,14 @@ export const KIE_MODELS: Record<string, KieModel> = {
                       note: "Wan 2.7, 1080p, 0.12 $/s, first-frame conditioning, negative prompt and seed. Arena rank 15 (Elo 1275), dearer than Kling pro." },
   "seedance-2.0":   { model: "bytedance/seedance-2", usdPerSecond: 0.51, seconds: { min: 4, max: 15 }, verified: true,
                       note: "ByteDance Seedance 2.0, 1080p image-to-video, 0.51 $/s on kie.ai (720p is 0.205): fluid with people, arena rank 4 at 720p (Elo 1342), but 5.7x the price of Kling pro here. Keep for comparisons, not for production." },
+  // ePhone AI (25 September 2026, the owner's pick): Seedance 2.5 on the official ByteDance channel. The price is a
+  // token price — 70 CNY per million output tokens at 480p/720p without a reference video, times the ByteDance group
+  // ratio 0.9, with tokens = width x height x fps x seconds / 1024 (480x864 at 24 fps: 9,720 a second; 720x1280:
+  // 21,600) and 7 CNY a dollar — so these per-second figures are estimates the first real clip checks (usage.output_tokens).
+  "seedance-2.5-480p": { provider: "ephone", model: "doubao-seedance-2-5-260628", resolution: "480p", usdPerSecond: 0.0875, seconds: { min: 4, max: 30 }, verified: false,
+                      note: "ByteDance Seedance 2.5 through ePhone AI (official channel), 480p, about 0.0875 $/s (kie.ai: 0.14). First frame conditioning, whole seconds 4-30. 480p is upscaled 4.5x per side to 4K on the box (Lanczos): soft. Not yet exercised." },
+  "seedance-2.5-720p": { provider: "ephone", model: "doubao-seedance-2-5-260628", resolution: "720p", usdPerSecond: 0.194, seconds: { min: 4, max: 30 }, verified: false,
+                      note: "ByteDance Seedance 2.5 through ePhone AI (official channel), 720p, about 0.194 $/s (kie.ai: 0.315). Not yet exercised." },
 };
 export const DEFAULT_KIE_MODEL = "minimax-h3";
 
@@ -101,10 +118,12 @@ export const DEFAULT_KIE_MAX_VIDEO_S = 20;
  * and jobs.ts (the token check) cannot disagree: the same env and the same job give the same answer everywhere.
  * `override` is the admin route's live setting (footageConfig), read once by the caller.
  */
-export function footageBackendFor(env: Pick<Env, "KIE_API_KEY" | "KLEO_FOOTAGE_BACKEND" | "KIE_MAX_VIDEO_S">, job: Pick<Job, "params">, override: FootageOverride | null = null): FootageBackend {
+export function footageBackendFor(env: Pick<Env, "KIE_API_KEY" | "EPHONE_API_KEY" | "KLEO_FOOTAGE_BACKEND" | "KLEO_FOOTAGE_MODEL" | "KIE_MAX_VIDEO_S">, job: Pick<Job, "params">, override: FootageOverride | null = null): FootageBackend {
   const wanted = (override?.backend ?? env.KLEO_FOOTAGE_BACKEND ?? "").trim().toLowerCase();
   if (wanted !== "kie") return "local";
-  if (!(env.KIE_API_KEY && env.KIE_API_KEY.trim())) return "local";
+  // The key of the road the model is bought on ("kie" is the name of the API road, whichever provider sells the clip).
+  const key = clipProviderOf(kieModelFor(env, override).spec) === "ephone" ? env.EPHONE_API_KEY : env.KIE_API_KEY;
+  if (!(key && key.trim())) return "local";
   let seconds = 0;
   try { seconds = Number((JSON.parse(job.params) as JobParams).duration_s) || 0; } catch { /* unreadable params: the cap decides */ }
   const cap = int(env.KIE_MAX_VIDEO_S, DEFAULT_KIE_MAX_VIDEO_S);
@@ -137,8 +156,11 @@ export function clipCostUsd(spec: KieModel, clipSeconds: number): number {
 
 /**
  * What a film of `seconds` will cost in clips BEFORE anything exists of it — an UPPER bound, on purpose. The shots
- * are the storyboard's when the caller wrote one, else the planner's Short density (a shot every PREFLIGHT_SHOT_S,
- * never fewer than six, never more than the storyboard cap: the audited 30 s Short was 15 shots, a 60 s film 10);
+ * are the storyboard's when the caller wrote one, else the planner's density on the API road: one shot per clip floor
+ * (the model's shortest clip, PREFLIGHT_SHOT_S at the least), never more than the storyboard cap. Until 25 September
+ * it assumed a shot every 2.5 s and never fewer than six, the density of the films before the clip floor: a 15 s film
+ * on Seedance was pre-flighted at 24 billed seconds (30 with the margin) for the 16 it buys, and could be refused on a
+ * balance that pays it;
  * each clip covers the average shot through the same clipSecondsFor/clipCostUsd as the order itself, and the total
  * carries PREFLIGHT_MARGIN because the voice decides the real cut times and some shots are billed a whole second
  * more (the 15 s film of 15 September: average 1.82 $, order 1.885 $). A pre-flight that passes a film the box then
@@ -148,11 +170,39 @@ export function clipCostUsd(spec: KieModel, clipSeconds: number): number {
  */
 export function plannedFilmUsd(env: Env, cfg: FootageOverride | null, seconds: number, shots: number | null, maxShots: number): { usd: number; shots: number; model: string } {
   const { name, spec } = kieModelFor(env, cfg);
-  const n = shots && shots > 0 ? shots : Math.min(maxShots, Math.max(6, Math.ceil(seconds / PREFLIGHT_SHOT_S)));
+  const n = shots && shots > 0 ? shots : Math.max(1, Math.min(maxShots, Math.ceil(seconds / Math.max(PREFLIGHT_SHOT_S, clipMinSeconds(spec)))));
   const each = clipCostUsd(spec, clipSecondsFor(spec, seconds / n));
   return { usd: Math.round(each * n * PREFLIGHT_MARGIN * 1000) / 1000, shots: n, model: name };
 }
 export const PREFLIGHT_SHOT_S = 2.5;
+
+/** The shortest clip a model films: a shot shorter than this is still bought, and billed, this long. */
+export const clipMinSeconds = (spec: Pick<KieModel, "seconds">): number => (Array.isArray(spec.seconds) ? Math.min(...spec.seconds) : spec.seconds.min);
+
+/**
+ * THE CLIP LENGTHS THE BOX MAY ORDER (25 September 2026), in the job spec's "footage": the worker cuts every scene of
+ * a film on the API road to whole clips of these lengths and fits the voice to them (worker/kleo_worker.py
+ * fit_to_clips), so each clip is ordered at exactly its shot's length and laid in full. A range model sends its
+ * bounds; a model that films a few lengths only (Veo, Gemini) sends them too, because a range cannot say "4, 6 or 8".
+ */
+export function clipLengthsSpec(spec: Pick<KieModel, "seconds">): { clip_min_s: number; clip_max_s: number; clip_seconds?: number[] } {
+  if (Array.isArray(spec.seconds)) {
+    const listed = [...spec.seconds].sort((a, b) => a - b);
+    return { clip_min_s: listed[0], clip_max_s: listed[listed.length - 1], clip_seconds: listed };
+  }
+  return { clip_min_s: spec.seconds.min, clip_max_s: spec.seconds.max };
+}
+
+/**
+ * THE CLIP FLOOR OF A JOB (25 September 2026): the seconds every shot carries at the least, so the planner writes no
+ * shot shorter than the clip it is billed as. A film on the API road has its model's shortest clip; the animatic and
+ * the local road have none (0), and keep the seven-word rule of 22 September (src/keou-contract.ts shotBudget).
+ */
+export function clipFloorFor(env: Pick<Env, "KIE_API_KEY" | "EPHONE_API_KEY" | "KLEO_FOOTAGE_BACKEND" | "KLEO_FOOTAGE_MODEL" | "KIE_MAX_VIDEO_S">, job: { product?: string | null; duration_s: number }, cfg: FootageOverride | null = null): number {
+  if (job.product !== "film") return 0;
+  if (footageBackendFor(env, { params: JSON.stringify({ duration_s: job.duration_s }) }, cfg) !== "kie") return 0;
+  return clipMinSeconds(kieModelFor(env, cfg).spec);
+}
 export const PREFLIGHT_MARGIN = 1.25;
 
 /**
@@ -186,6 +236,13 @@ export async function kiePreflight(env: Env, seconds: number, shots: number | nu
   // The account pays the pictures too when they are drawn on kie.ai (plannedStillsUsd); today's ceiling above is the
   // clips' own (the pictures have theirs: STILLS_JOB_MAX_USD, STILLS_DAILY_USD in src/stills.ts).
   const stills = plannedStillsUsd(env, plan.shots);
+  // Clips bought on ePhone AI are paid from that account; the pictures (on kie.ai) then have a balance of their own,
+  // and an empty one only moves them to klein-4B (src/stills.ts), it never stops the film.
+  if (clipProviderOf(kieModelFor(env, cfg).spec) === "ephone") {
+    const balance = await ephoneBalanceUsd(env);
+    const ok = balance === null || balance >= plan.usd;
+    return { ok, reason: ok ? null : "balance", balance_usd: balance, planned_usd: plan.usd, spent_today_usd: spent, budget_usd: budget, shots: plan.shots, model: plan.model };
+  }
   const balance = await kieBalanceUsd(env);
   const ok = balance === null || balance >= plan.usd + stills;
   return { ok, reason: ok ? null : "balance", balance_usd: balance, planned_usd: plan.usd, spent_today_usd: spent, budget_usd: budget, shots: plan.shots, model: plan.model, ...(stills > 0 ? { stills_usd: stills } : {}) };
@@ -291,6 +348,122 @@ export function clipPrompt(shot: { id: string; image_prompt: string; motion?: st
 }
 
 /**
+ * THE SEEDANCE PROMPT (25 September 2026). Seedance 2.5 on ePhone AI is given the shot's first frame, so the picture —
+ * who is there, what they wear, where — is already said; what it lacks is what HAPPENS, when, and how the camera moves.
+ * clipPrompt was written for the kie.ai models and re-describes the frame (every look, the setting) and ends on a look
+ * paragraph with "35mm" and "shallow depth of field", which Seedance reads as a second picture to morph towards. This
+ * prompt follows ByteDance's own guidance for image-to-video, in four parts, 350-900 characters, never over 1990:
+ *   1. MOTION: "Continue from the first frame: <action>." — the planner's action, or a motion that fits the shot's kind,
+ *      never the image prompt again; the characters in the frame are named, not re-described;
+ *   2. TIMING: the action inside the part of the clip the film keeps (0s-<used>s), and a settle after it when the clip
+ *      is longer than the shot, so the cut never lands mid-gesture;
+ *   3. CAMERA: exactly one move, in the words Seedance's examples use; the word "fast" never (it reads as sped-up);
+ *   4. STYLE AND CONSTRAINTS as positive words: the look of the frame, one continuous shot at real-time speed, stable
+ *      faces and hands, and no lettering — unless the shot keeps a text the user asked for.
+ * Without a first frame (a still that failed to upload) the call is text-to-video, and the picture is described as
+ * clipPrompt describes it: the image, every look in full, the setting.
+ */
+export const SEEDANCE_MOVES: Record<string, string> = {
+  push_in: "slow push-in toward the subject",
+  crash_zoom_in: "sudden push-in that snaps to a close-up",
+  push_in_dutch: "slow push-in while the horizon tilts a few degrees",
+  pull_out: "slow pull-out, more of the place entering the frame",
+  track_left: "smooth tracking shot moving to the left",
+  track_right: "smooth tracking shot moving to the right",
+  track_alongside: "smooth tracking shot alongside the subject, at its pace",
+  orbit_left: "slow arc around the subject to the left",
+  orbit_right: "slow arc around the subject to the right",
+  crane_down: "slow crane down from above to eye level",
+  crane_up: "slow crane up, the ground falling away",
+  whip_pan: "quick whip pan to the right that settles",
+  static_hold: "locked off on a tripod, only the scene moves",
+};
+/** What moves in a shot the planner gave no action, by what the shot is for (src/shot-grammar.ts SHOT_KINDS). */
+export const SEEDANCE_KIND_MOTION: Record<string, string> = {
+  hook: "the moment is already under way: the subject moves with intent and the scene around it reacts",
+  establish: "the place is alive: the light shifts, the air and small things move, people go about their business in the distance",
+  face: "the face moves subtly: a breath, the eyes shift, a small change of expression",
+  detail: "hands touch and handle the object with small, precise movements while the light plays on it",
+  detail_orbit: "the object stays still while the light glides slowly over its surface",
+  action: "the action carries on: the subject moves through it with natural weight and momentum",
+  reveal: "the subject moves and what was hidden behind it comes into view",
+  tension: "a held stillness with small nervous movements: a breath, a glance, fingers tightening",
+  closing: "the movement slows to a quiet stop and the moment is held",
+  static_forced: "the scene holds still with only small natural movements",
+  default: "the scene comes alive with natural movement that carries on from what the frame shows",
+};
+export const SEEDANCE_STYLE: Record<FilmLook, string> = {
+  realistic: "Style: live-action film look, natural light, real textures, subtle film grain; keep the first frame's composition, faces, costumes and colours.",
+  animation: "Style: 2D hand-drawn animation, cel colour, clean linework, exactly the first frame's drawn style and character designs, nothing photographic, no 3D render.",
+};
+/** The same looks with no first frame to keep (text-to-video). */
+const SEEDANCE_STYLE_T2V: Record<FilmLook, string> = {
+  realistic: "Style: live-action film look, natural light, real textures, subtle film grain.",
+  animation: "Style: 2D hand-drawn animation, cel colour, clean linework, consistent character designs, nothing photographic, no 3D render.",
+};
+/**
+ * The shot's action without "fast" (rule 3 above), which reaches it from Kleo's own motion hint ("the mist drifting
+ * fast across the frame", direction.ts ENLIVEN) and from the guide: after a verb it becomes "steadily", before a noun
+ * or a participle it goes ("a fast car" is "a car", "fast-moving clouds" are "moving clouds").
+ */
+const VERB_BEFORE_FAST_RE = /(?:ing|ed|es|s)$|^(?:move|go|run|drift|flow|spin|turn|fall|blow|rush|walk|ride|swim|fly|roll|race)$/i;
+export const unhurried = (s: string): string =>
+  s.replace(/(\S+\s+)?\b(?:very\s+)?fast(?:er|est)?\b(-|\s*)/gi, (_m, prev: string | undefined, after: string) =>
+    prev && VERB_BEFORE_FAST_RE.test(prev.trim()) ? `${prev}steadily${after === "-" ? " " : after}` : prev ?? "").replace(/\s+/g, " ").trim();
+
+/** Seedance's prompt limit on ePhone AI is 2000 characters; the prompt stays under it with room to spare. */
+export const SEEDANCE_PROMPT_MAX = 1990;
+
+export function seedancePrompt(
+  shot: { id: string; image_prompt: string; motion?: string | null; strength?: number | null },
+  look: FilmLook,
+  stored: { storyboard: unknown; spec: RequestSpec | null } | null,
+  opts: { clipSeconds: number; usedSeconds: number; keepsText: boolean; hasFrame: boolean },
+): string {
+  const tidy = (s: unknown) => String(s ?? "").trim().replace(/\s+/g, " ").replace(/[.;,\s]+$/, "");
+  const pic = stored ? stillShotsOf(stored.storyboard).find((p) => p.id === shot.id) : undefined;
+  const spec = stored?.spec ?? null;
+  const direction = stored ? directionOf(stored.storyboard) : null;
+  const cast = pic ? stillCast(pic, spec, direction) : [];
+  const covered = spec && pic ? (pic.covers ?? []).map((id) => itemById(spec, id)).filter((x): x is SpecItem => !!x) : [];
+  const action = unhurried(tidy(pic?.action)) || SEEDANCE_KIND_MOTION[pic?.shot_kind ?? ""] || SEEDANCE_KIND_MOTION.default;
+  const secs = (n: number) => `${Math.round(n * 10) / 10}s`;
+  const used = Math.min(opts.usedSeconds, opts.clipSeconds);
+  // What is on screen and what moves (parts 1), then how it is timed, shot and looked at (parts 2-4).
+  const head: string[] = [];
+  if (opts.hasFrame) {
+    head.push(`Continue from the first frame: ${action}.`);
+    const names = cast.map((m) => tidy(m.name)).filter(Boolean);
+    if (names.length) head.push(`${names.join(" and ")} ${names.length > 1 ? "stay" : "stays"} exactly as in the first frame.`);
+  } else {
+    // Text-to-video: nothing on screen yet, so the picture is described, looks and all (as clipPrompt does).
+    head.push(`${tidy(pic?.image_prompt || shot.image_prompt)}.`, `${action.charAt(0).toUpperCase()}${action.slice(1)}.`);
+    for (const m of cast) head.push(`${tidy(m.name)}: ${tidy(m.look).slice(0, 300)}.`);
+    const place = tidy(direction?.world) || covered.filter((i) => i.kind === "place").map((i) => tidy(i.text)).join("; ");
+    if (place) head.push(`Setting: ${place}.`);
+  }
+  const lettering = opts.keepsText ? covered.find((i) => i.kind === "text") : undefined;
+  const tail = [
+    opts.clipSeconds - used >= 0.3
+      ? `Timing: 0s-${secs(used)} the action above; ${secs(used)}-${secs(opts.clipSeconds)} the motion settles and the move carries on gently.`
+      : `Timing: 0s-${secs(opts.clipSeconds)} the action above, in one continuous movement.`,
+    `Camera: ${SEEDANCE_MOVES[String(shot.motion ?? "")] ?? SEEDANCE_MOVES.push_in}.`,
+    (opts.hasFrame ? SEEDANCE_STYLE : SEEDANCE_STYLE_T2V)[look],
+    `One continuous shot at natural real-time speed, no slow motion; faces, hands and bodies stay stable, no morphing; ${lettering ? `the lettering on ${tidy(lettering.text)} stays exactly as in the first frame` : opts.keepsText ? "the lettering on screen stays exactly as it is" : "no text, subtitles, logos or watermark"}.`,
+  ].join(" ");
+  const flat = (s: string) => s.replace(/\s+/g, " ").trim();
+  let first = flat(head.join(" "));
+  // Over the limit (only a text-to-video prompt with long looks gets near it): what is on screen is shortened, never
+  // the timing, the camera or the constraints.
+  const room = SEEDANCE_PROMPT_MAX - flat(tail).length - 1;
+  if (first.length > room) first = `${first.slice(0, room - 1).replace(/\s+\S*$/, "").replace(/[.;,:\s]+$/, "")}.`;
+  return `${first} ${flat(tail)}`;
+}
+
+/** Whether a model is asked in Seedance's words (seedancePrompt) rather than the kie.ai models' (clipPrompt). */
+export const usesSeedancePrompt = (name: string, spec: KieModel): boolean => clipProviderOf(spec) === "ephone" || name.startsWith("seedance");
+
+/**
  * Whether the stored shot carries a text the user asked to be READ on screen (a spec item of kind "text" among its
  * covers) — the same question clipPrompt asks before it drops its "No text" sentence. requestFootage asks it again
  * for the NEGATIVE prompt (24 September 2026): on the Wan road kieInput always sent KIE_NEGATIVES, whose first words
@@ -355,8 +528,22 @@ export async function kieBalanceUsd(env: Env): Promise<number | null> {
 }
 
 /** The sentence the user reads when kie.ai has no money left. Plain, and it says what happens to their credits. */
-export function noCreditSentence(ordered: number, wanted: number): string {
-  return `kie.ai balance is empty: ${ordered} of ${wanted} shots could be ordered before it ran out. Top up the kie.ai account and ask for the video again; this video was not made and its credits are refunded`;
+export function noCreditSentence(ordered: number, wanted: number, provider: "kie" | "ephone" = "kie"): string {
+  const who = provider === "ephone" ? "ePhone AI" : "kie.ai";
+  return `${who} balance is empty: ${ordered} of ${wanted} shots could be ordered before it ran out. Top up the ${who} account and ask for the video again; this video was not made and its credits are refunded`;
+}
+
+/**
+ * The `input` of an ePhone AI video task (25 September 2026; the Seedance 2.5 API tab on platform.ephone.ai):
+ *   doubao-seedance-2-5-260628  prompt (≤ 2000 chars), first_frame (URL), duration (int 4-30), resolution
+ *                                480p|720p|1080p, aspect_ratio, generate_audio, watermark
+ * Audio off (the narration is Kleo's), no watermark. Without a still the call is text-to-video, which Seedance allows.
+ */
+export function ephoneInput(name: string, spec: KieModel, p: { prompt: string; imageUrl: string | null; seconds: number; format: string }): Record<string, unknown> {
+  // With a first frame Seedance 2.5 takes only aspect_ratio "adaptive" (the frame's own ratio): "9:16" was refused on
+  // the first real task, 25 September 2026 ("首帧/首尾帧任务仅支持 ratio=adaptive"). The still is drawn in the film's format.
+  const aspect = p.imageUrl ? "adaptive" : p.format === "16:9" ? "16:9" : "9:16";
+  return { prompt: p.prompt.slice(0, 2000), ...(p.imageUrl ? { first_frame: p.imageUrl } : {}), duration: clipSecondsFor(spec, p.seconds), resolution: spec.resolution ?? "720p", aspect_ratio: aspect, generate_audio: false, watermark: false };
 }
 
 /**
@@ -435,11 +622,12 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
   }
   // The account itself, before the first task: kie.ai bills per task, so a film that runs out of money on shot 14
   // has paid for 13 clips it will never use (13 September, 3.38 $). Silence from the balance call does not refuse.
+  const provider = clipProviderOf(spec);
   if (fresh.length) {
-    const balance = await kieBalanceUsd(env);
+    const balance = provider === "ephone" ? await ephoneBalanceUsd(env) : await kieBalanceUsd(env);
     if (balance !== null && balance < planned) {
-      await audit(env, job.user_id, job.id, "footage.no_credit", { balance_usd: balance, planned_usd: Math.round(planned * 1000) / 1000, model: name, ordered: 0, wanted: fresh.length });
-      return { status: 402, reply: { error: noCreditSentence(0, fresh.length), no_credit: true, balance_usd: balance, planned_usd: Math.round(planned * 1000) / 1000 } };
+      await audit(env, job.user_id, job.id, "footage.no_credit", { balance_usd: balance, planned_usd: Math.round(planned * 1000) / 1000, model: name, provider, ordered: 0, wanted: fresh.length });
+      return { status: 402, reply: { error: noCreditSentence(0, fresh.length, provider), no_credit: true, balance_usd: balance, planned_usd: Math.round(planned * 1000) / 1000 } };
     }
   }
   const exp = Math.floor(Date.now() / 1000) + 6 * 60 * 60;
@@ -456,17 +644,28 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
       const stillName = `img/${s.still}`;
       imageUrl = `${base}/dl/${job.id}/${encodeURIComponent(stillName)}?exp=${exp}&sig=${await hmacHex(env.INTERNAL_SECRET, `${job.id}/${stillName}/${exp}`)}`;
     }
-    const prompt = clipPrompt(s, look, stored);
+    const keepsText = clipKeepsText(s.id, stored);
+    const prompt = usesSeedancePrompt(name, spec)
+      ? seedancePrompt(s, look, stored, { clipSeconds, usedSeconds: seconds, keepsText, hasFrame: !!imageUrl })
+      : clipPrompt(s, look, stored);
     // The row goes in BEFORE the call, with no task id: a second request while the first is in flight orders nothing twice.
     // A refused row from an earlier request is reset in place instead (same key, new price, no error).
     if (retryable(have.get(s.id))) await updateRow(env, job.id, s.id, { state: "queued", model: name, seconds, cost_usd: cost, error: null });
     else await env.DB.prepare("INSERT OR IGNORE INTO footage (job_id, shot_id, model, state, seconds, cost_usd, updated_at) VALUES (?, ?, ?, 'queued', ?, ?, ?)")
       .bind(job.id, s.id, name, seconds, cost, nowIso()).run();
     try {
-      const r = await kie<{ taskId?: string }>(env, "POST", KIE_CREATE, { model: spec.model, input: kieInput(name, spec, { prompt, imageUrl, seconds, format, seed: seedFor(s.id), look, keepsText: clipKeepsText(s.id, stored) }) });
-      if (!r?.taskId) throw new KieError("kie.ai answered without a taskId", 0, false);
-      await updateRow(env, job.id, s.id, { task_id: r.taskId, state: "generating" });
-      await audit(env, job.user_id, job.id, "footage.task", { shot: s.id, model: name, task: r.taskId, clip_s: clipSeconds, want_s: seconds, usd: cost, still: !!imageUrl });
+      let taskId: string | undefined;
+      if (provider === "ephone") {
+        const r = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: spec.model, input: ephoneInput(name, spec, { prompt, imageUrl, seconds, format }) });
+        taskId = typeof r?.id === "string" && r.id ? r.id : undefined;
+        if (!taskId) throw new KieError("ephone.ai answered without a task id", 0, false);
+      } else {
+        const r = await kie<{ taskId?: string }>(env, "POST", KIE_CREATE, { model: spec.model, input: kieInput(name, spec, { prompt, imageUrl, seconds, format, seed: seedFor(s.id), look, keepsText }) });
+        taskId = r?.taskId;
+        if (!taskId) throw new KieError("kie.ai answered without a taskId", 0, false);
+      }
+      await updateRow(env, job.id, s.id, { task_id: taskId, state: "generating" });
+      await audit(env, job.user_id, job.id, "footage.task", { shot: s.id, model: name, provider, task: taskId, clip_s: clipSeconds, want_s: seconds, usd: cost, still: !!imageUrl });
       ordered++;
     } catch (e) {
       const msg = String(e).slice(0, 300);
@@ -480,8 +679,8 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
   }
   const reply = await footageStatus(env, job, false);
   if (outOfCredit) {
-    await audit(env, job.user_id, job.id, "footage.no_credit", { model: name, ordered, wanted: fresh.length });
-    return { status: 402, reply: { ...reply.reply, ordered, no_credit: true, error: noCreditSentence(ordered, fresh.length) } };
+    await audit(env, job.user_id, job.id, "footage.no_credit", { model: name, provider, ordered, wanted: fresh.length });
+    return { status: 402, reply: { ...reply.reply, ordered, no_credit: true, error: noCreditSentence(ordered, fresh.length, provider) } };
   }
   return { status: 200, reply: { ...reply.reply, ordered } };
 }
@@ -496,6 +695,24 @@ export async function footageStatus(env: Env, job: Job, poll = true): Promise<{ 
   if (poll) for (const row of rows) {
     if (row.state !== "generating" || !row.task_id || row.shot_id === MUSIC_ID) continue;
     try {
+      if (clipProviderOf(KIE_MODELS[row.model] ?? {}) === "ephone") {
+        const t = await ephone<EphoneTask>(env, "GET", `/v1/task/${encodeURIComponent(row.task_id)}`);
+        const st = String(t?.status ?? "").toLowerCase();
+        if (st === "completed") {
+          const urls = ephoneOutputs(t);
+          if (!urls.length) throw new KieError("ephone.ai task completed without an output url", 0, false);
+          await downloadClip(env, job, row, urls[0]);
+          if (t.usage) await audit(env, job.user_id, job.id, "footage.usage", { shot: row.shot_id, task: row.task_id, usage: t.usage });
+        } else if (st === "failed") {
+          const msg = ephoneFailure(t);
+          await updateRow(env, job.id, row.shot_id, { state: "failed", error: msg });
+          await audit(env, job.user_id, job.id, "footage.failed", { shot: row.shot_id, task: row.task_id, error: msg });
+        } else if (minutesSinceIso(row.created_at) > 30) {
+          await updateRow(env, job.id, row.shot_id, { state: "failed", error: `still ${st || "pending"} after 30 minutes` });
+          await audit(env, job.user_id, job.id, "footage.failed", { shot: row.shot_id, task: row.task_id, error: "timeout" });
+        }
+        continue;
+      }
       const rec = await kie<KieRecord>(env, "GET", `${KIE_RECORD}?taskId=${encodeURIComponent(row.task_id)}`);
       const state = String(rec?.state ?? "").toLowerCase();
       if (state === "success") {
@@ -572,8 +789,29 @@ export const MUSIC_USD = 0.06;
 export const DEFAULT_MUSIC_VERSION = "V6";
 export const musicKey = (jobId: string) => `renders/${jobId}/music.mp3`;
 
-export function musicOn(env: Pick<Env, "KIE_API_KEY" | "KLEO_MUSIC">): boolean {
-  return !!(env.KIE_API_KEY && env.KIE_API_KEY.trim()) && (env.KLEO_MUSIC ?? "").trim().toLowerCase() !== "off";
+/**
+ * Where the track is bought (25 September 2026): kie.ai (default) or ePhone AI (KLEO_MUSIC_PROVIDER "ephone": Suno
+ * through ePhone's unified task API, model "suno/music", $0.08 x 0.8 = $0.064 a call).
+ */
+export const musicProviderOf = (env: Pick<Env, "KLEO_MUSIC_PROVIDER">): "kie" | "ephone" => ((env.KLEO_MUSIC_PROVIDER ?? "").trim().toLowerCase() === "ephone" ? "ephone" : "kie");
+export const EPHONE_MUSIC_MODEL = "suno/music";
+export const EPHONE_MUSIC_USD = 0.064;
+export function musicOn(env: Pick<Env, "KIE_API_KEY" | "EPHONE_API_KEY" | "KLEO_MUSIC" | "KLEO_MUSIC_PROVIDER">): boolean {
+  const key = musicProviderOf(env) === "ephone" ? env.EPHONE_API_KEY : env.KIE_API_KEY;
+  return !!(key && key.trim()) && (env.KLEO_MUSIC ?? "").trim().toLowerCase() !== "off";
+}
+/**
+ * The input of Suno on ePhone AI (docs.rixapi.com guides/suno-quickstart, 25 September 2026): the description mode —
+ * one line for the composer, instrumental — since the custom mode needs lyrics. The line carries the brief and what a
+ * score under a voice must be; Suno caps it, so it is kept short.
+ */
+export function ephoneMusicInput(req: MusicRequest): Record<string, unknown> {
+  const brief = String(req.brief ?? "").trim().replace(/\s+/g, " ").slice(0, 200) || "a quiet instrumental bed under a narration";
+  return { mv: "chirp-v6", custom: false, instrumental: true, gpt_description_prompt: `${brief}. Instrumental film score under a narrator, no vocals, steady dynamics.`.slice(0, 390) };
+}
+/** The audio URL of a finished ePhone Suno task: the first output that looks like audio, else the first output. */
+export function ephoneAudioUrl(outputs: string[]): string | null {
+  return outputs.find((u) => /\.(mp3|m4a|wav|ogg|aac)(\?|$)/i.test(u)) ?? outputs.find((u) => !/\.(png|jpe?g|webp)(\?|$)/i.test(u)) ?? null;
 }
 export const musicVersion = (env: Pick<Env, "KIE_MUSIC_VERSION">): string => (env.KIE_MUSIC_VERSION ?? "").trim() || DEFAULT_MUSIC_VERSION;
 
@@ -600,33 +838,43 @@ export function musicInput(req: MusicRequest, version: string): Record<string, u
  * 409 when the road is closed (no key, switched off), 402 when the money says no; 200 with the row's state otherwise.
  */
 export async function requestMusic(env: Env, job: Job, req: MusicRequest): Promise<{ status: number; reply: Record<string, unknown> }> {
-  if (!musicOn(env)) return { status: 409, reply: { error: "music is not available on this server (no kie.ai key, or KLEO_MUSIC=off)", state: "off" } };
+  if (!musicOn(env)) return { status: 409, reply: { error: "music is not available on this server (no key for its provider, or KLEO_MUSIC=off)", state: "off" } };
+  const provider = musicProviderOf(env);
   const brief = String(req.brief ?? "").trim();
   if (!brief) return { status: 400, reply: { error: "a music request carries the composer's brief" } };
   const have = (await footageRows(env, job.id)).find((r) => r.shot_id === MUSIC_ID);
   if (have && !(have.state === "failed" && !have.task_id)) return musicStatus(env, job, false);
   const version = musicVersion(env);
-  const model = `suno-${version.toLowerCase()}`;
+  const model = provider === "ephone" ? EPHONE_MUSIC_MODEL : `suno-${version.toLowerCase()}`;
+  const trackUsd = provider === "ephone" ? EPHONE_MUSIC_USD : MUSIC_USD;
   const budget = num(env.DAILY_FOOTAGE_BUDGET_USD, 5);
   const spent = await footageSpentTodayUsd(env);
-  if (spent + MUSIC_USD > budget) {
-    await audit(env, job.user_id, job.id, "music.budget", { spent_usd: spent, planned_usd: MUSIC_USD, budget_usd: budget });
-    return { status: 402, reply: { error: `today's kie.ai budget is spent ($${spent.toFixed(2)} committed + $${MUSIC_USD.toFixed(2)} for the track > $${budget.toFixed(2)})`, state: "failed" } };
+  if (spent + trackUsd > budget) {
+    await audit(env, job.user_id, job.id, "music.budget", { spent_usd: spent, planned_usd: trackUsd, budget_usd: budget });
+    return { status: 402, reply: { error: `today's kie.ai budget is spent ($${spent.toFixed(2)} committed + $${trackUsd.toFixed(2)} for the track > $${budget.toFixed(2)})`, state: "failed" } };
   }
-  const balance = await kieBalanceUsd(env);
-  if (balance !== null && balance < MUSIC_USD) {
+  const balance = provider === "ephone" ? await ephoneBalanceUsd(env) : await kieBalanceUsd(env);
+  if (balance !== null && balance < trackUsd) {
     await audit(env, job.user_id, job.id, "music.no_credit", { balance_usd: balance, planned_usd: MUSIC_USD });
     return { status: 402, reply: { error: `kie.ai balance ($${balance.toFixed(2)}) does not cover the track ($${MUSIC_USD.toFixed(2)})`, state: "failed", no_credit: true } };
   }
   const seconds = Math.max(1, Math.min(360, Number(req.seconds) || 30));
-  if (have) await updateRow(env, job.id, MUSIC_ID, { state: "queued", model, seconds, cost_usd: MUSIC_USD, error: null });
+  if (have) await updateRow(env, job.id, MUSIC_ID, { state: "queued", model, seconds, cost_usd: trackUsd, error: null });
   else await env.DB.prepare("INSERT OR IGNORE INTO footage (job_id, shot_id, model, state, seconds, cost_usd, updated_at) VALUES (?, ?, ?, 'queued', ?, ?, ?)")
-    .bind(job.id, MUSIC_ID, model, seconds, MUSIC_USD, nowIso()).run();
+    .bind(job.id, MUSIC_ID, model, seconds, trackUsd, nowIso()).run();
   try {
-    const r = await kie<{ taskId?: string }>(env, "POST", KIE_CREATE, { model: MUSIC_MODEL, input: musicInput({ ...req, seconds }, version) });
-    if (!r?.taskId) throw new KieError("kie.ai answered without a taskId", 0, false);
-    await updateRow(env, job.id, MUSIC_ID, { task_id: r.taskId, state: "generating" });
-    await audit(env, job.user_id, job.id, "music.task", { model, task: r.taskId, seconds, usd: MUSIC_USD, brief: brief.slice(0, 200) });
+    let taskId: string | undefined;
+    if (provider === "ephone") {
+      const r = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: EPHONE_MUSIC_MODEL, input: ephoneMusicInput(req) });
+      taskId = typeof r?.id === "string" && r.id ? r.id : undefined;
+      if (!taskId) throw new KieError("ephone.ai answered without a task id", 0, false);
+    } else {
+      const r = await kie<{ taskId?: string }>(env, "POST", KIE_CREATE, { model: MUSIC_MODEL, input: musicInput({ ...req, seconds }, version) });
+      taskId = r?.taskId;
+      if (!taskId) throw new KieError("kie.ai answered without a taskId", 0, false);
+    }
+    await updateRow(env, job.id, MUSIC_ID, { task_id: taskId, state: "generating" });
+    await audit(env, job.user_id, job.id, "music.task", { model, provider, task: taskId, seconds, usd: trackUsd, brief: brief.slice(0, 200) });
   } catch (e) {
     const msg = String(e).slice(0, 300);
     await updateRow(env, job.id, MUSIC_ID, { state: "failed", error: msg, cost_usd: 0 });
@@ -646,6 +894,24 @@ export async function musicStatus(env: Env, job: Job, poll = true): Promise<{ st
   if (!row) return { status: 404, reply: { state: "none", error: "no track was ordered for this video" } };
   if (poll && row.state === "generating" && row.task_id) {
     try {
+      if (row.model === EPHONE_MUSIC_MODEL) {
+        const t = await ephone<EphoneTask>(env, "GET", `/v1/task/${encodeURIComponent(row.task_id)}`);
+        const st = String(t?.status ?? "").toLowerCase();
+        if (st === "completed") {
+          const url = ephoneAudioUrl(ephoneOutputs(t));
+          if (!url) throw new KieError("ephone.ai music task completed without an audio url", 0, false);
+          await downloadMusic(env, job, row, url);
+        } else if (st === "failed") {
+          const msg = ephoneFailure(t);
+          await updateRow(env, job.id, MUSIC_ID, { state: "failed", error: msg });
+          await audit(env, job.user_id, job.id, "music.failed", { task: row.task_id, error: msg });
+        } else if (minutesSinceIso(row.created_at) > 15) {
+          await updateRow(env, job.id, MUSIC_ID, { state: "failed", error: `still ${st || "pending"} after 15 minutes` });
+          await audit(env, job.user_id, job.id, "music.failed", { task: row.task_id, error: "timeout" });
+        }
+        row = (await footageRows(env, job.id)).find((r) => r.shot_id === MUSIC_ID) ?? row;
+        return { status: 200, reply: { state: row.state, model: row.model, cost_usd: row.cost_usd, ...(row.error ? { error: row.error } : {}), ...(row.state === "ready" ? { url: `/internal/jobs/${job.id}/music/file` } : {}) } };
+      }
       const rec = await kie<KieRecord>(env, "GET", `${KIE_RECORD}?taskId=${encodeURIComponent(row.task_id)}`);
       const state = String(rec?.state ?? "").toLowerCase();
       if (state === "success") {

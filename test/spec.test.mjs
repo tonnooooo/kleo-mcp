@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  S, SPEC_KINDS, REF_ROLES, norm, quoteInRequest, modeFor, specProblems, repairSpec, specOf, mustItems, shotItems, eventsInOrder,
+  S, SPEC_KINDS, REF_ROLES, norm, quoteInRequest, modeFor, modeWhy, specModeWhy, MODE_RULE, specProblems, repairSpec, specOf, mustItems, shotItems, eventsInOrder,
   itemById, castById, fullLook, specBlock, owedBlock, coverage, lineSaid, SPEC_METHOD, specPrompt, specMethodText, specText,
   specSchema, visualChecks, castOfItem, bodyOnlyLook,
 } from "../src/spec.ts";
@@ -59,14 +59,17 @@ test("norm folds case, accents and punctuation; quoteInRequest finds the user's 
 
 /* ------------------------------------------------------------------ the mode */
 
-test("modeFor: what the spec contains decides FAITHFUL or OPEN, whatever the writer claimed", () => {
+test("modeFor: what the spec contains decides FAITHFUL or OPEN, whatever the writer claimed (the rule of 25 September)", () => {
   const ev = (n) => item(`E${n}`, "event", `event ${n}`, "q", { order: n });
   assert.equal(modeFor([ev(1), ev(2)], "x"), "faithful", "two events are a story");
   assert.equal(modeFor([item("R1", "shot", "a close-up of her hands", "q")], "x"), "faithful", "a described shot");
   assert.equal(modeFor([item("R1", "line", "the narrator says hi", "q")], "x"), "faithful", "a line to say");
   assert.equal(modeFor([item("R1", "text", "a sign reading 'Da Mara'", "q")], "x"), "faithful", "a text to read");
-  assert.equal(modeFor([item("R1", "character", "Mara", "q"), item("R2", "look", "a lilac apron", "q")], "x"), "faithful", "a character and anything about her");
-  assert.equal(modeFor([item("R1", "place", "a harbour", "q"), item("R2", "action", "boats come in", "q")], "x"), "faithful", "a place and what happens there");
+  assert.equal(modeFor([item("R1", "character", "Mara", "q", { who: "c1" }), item("R2", "look", "a lilac apron", "q", { who: "c1" })], "x"), "faithful", "a character with the look the user gave her");
+  assert.equal(modeFor([item("R1", "character", "Mara", "q"), item("R2", "look", "a lilac apron", "q")], "x"), "open", "a look that belongs to nobody makes nobody particular");
+  // One place and one action is still a subject (the old rule made it FAITHFUL): Kleo tells the story.
+  assert.equal(modeFor([item("R1", "place", "a harbour", "q"), item("R2", "action", "boats come in", "q")], "x"), "open", "a place and one action");
+  assert.equal(modeFor([item("R1", "action", "boats come in", "q"), item("R2", "event", "a storm breaks", "q", { order: 1 })], "x"), "faithful", "two things that happen");
   assert.equal(modeFor([item("R1", "character", "a cat", "q")], "x"), "open", "a bare subject");
   assert.equal(modeFor([item("R1", "object", "a", "q"), item("R2", "object", "b", "q"), item("R3", "object", "c", "q")], "x"), "open");
   assert.equal(modeFor(["a", "b", "c", "d"].map((x, i) => item(`R${i}`, "object", x, "q")), "x"), "faithful", "four musts is a described film");
@@ -136,7 +139,7 @@ test("repairSpec: strict refuses an invented item, lenient drops it; the shape i
   // The writer's claim of the mode does not matter: the items decide.
   assert.equal(repairSpec(RAW({ mode: "open" }), REQ).mode, "faithful");
   const bare = repairSpec({ items: [item("R1", "character", "a pastry chef", "una pasticcera")], cast: [], refs: [], open: [] }, REQ);
-  assert.equal(bare.mode, "open", "a bare subject is an open film when the writer claimed nothing (a writer's \"faithful\" is kept: see the test below)");
+  assert.equal(bare.mode, "open", "a generic role is a subject, whatever the writer claims");
   assert.equal(bare.summary, "a pastry chef", "no summary: the first item stands for it");
   assert.equal(bare.narration, "free");
   // Defaults and clipping.
@@ -214,6 +217,8 @@ test("specBlock, owedBlock and specText print the spec for the planner and for t
   const script = "Mara accende il forno all'alba. I bambini aspettano fuori. Poi la festa.";
   assert.match(specBlock(SPEC({ narration: "verbatim", script })), /THE NARRATION IS THE USER'S, WORD FOR WORD/);
   assert.match(specBlock({ ...s, mode: "open" }), /the brief — OPEN: the user gave a subject/);
+  assert.match(specBlock({ ...s, mode: "open" }), /LEFT TO KLEO: THE STORY: who is in it beyond the requirements, what happens, the hook, the turn and the ending; and the ending \(decide these/);
+  assert.match(specBlock({ ...s, mode: "open", open: [] }), /LEFT TO KLEO: THE STORY: [^\n]*the ending \(decide these, and list each decision\)\.$/m);
   const owed = owedBlock(s, ["R4", "R99", "R6"]);
   assert.match(owed, /^THESE SCENES MUST SHOW OR SAY/);
   assert.match(owed, /R4 \[event\] Mara bakes/); assert.match(owed, /R6 \[line\]/); assert.ok(!owed.includes("R99"));
@@ -376,25 +381,99 @@ test("visualChecks (24 September, the fidelity bench): only what one frame prove
 
 /* ------------------------------------------------------------------ review fixes (24 September 2026) */
 
-test("modeFor keeps the writer's FAITHFUL when it stands on the user's story; never on a bare topic, never on a delegation", () => {
-  // "un film su mio nonno Pietro": one character, nothing about him. The assistant was told "faithful when the user
-  // described who is in it" and wrote an as-told treatment; the spec used to be re-decided OPEN and the treatment refused.
+test("the mode is decided by rule and the claim is ignored both ways: a particular character is the user's film, a generic role is not", () => {
+  // "un film su mio nonno Pietro": one character, nothing about him — but HIS: faithful with no claim at all.
   const nonno = [item("R1", "character", "the user's grandfather Pietro", "mio nonno Pietro")];
-  assert.equal(modeFor(nonno, "un film su mio nonno Pietro"), "open", "no claim: the contents decide");
-  assert.equal(modeFor(nonno, "un film su mio nonno Pietro", "faithful"), "faithful", "the writer's claim, on a character");
-  for (const k of ["event", "shot", "text", "line"]) assert.equal(modeFor([item("R1", k, `a ${k}`, "q")], "x", "faithful"), "faithful", k);
-  // A claim on nothing of the user's story, or on hints only, or against a delegation: open.
+  assert.equal(modeFor(nonno, "un film su mio nonno Pietro"), "faithful", "a first-person possessive: the user's own grandfather");
+  assert.equal(modeFor(nonno, "un film su mio nonno Pietro", "open"), "faithful", "an open claim is overruled upwards");
+  for (const k of ["shot", "text", "line"]) assert.equal(modeFor([item("R1", k, `a ${k}`, "q")], "x", "open"), "faithful", k);
+  // A single event, claimed faithful, is still a subject: the rule wants two things that happen.
+  assert.equal(modeFor([item("R1", "event", "the ship sinks", "q", { order: 1 })], "x", "faithful"), "open");
   assert.equal(modeFor([item("R1", "object", "a lighthouse", "q")], "x", "faithful"), "open", "a topic is not a story");
   assert.equal(modeFor([item("R1", "character", "a cat", "q", { must: false })], "x", "faithful"), "open", "a hint is not a story");
   assert.equal(modeFor(nonno, "Stupiscimi con un film su mio nonno Pietro", "faithful"), "open", "a delegation is open whatever anybody claims");
-  // An "open" claim is still overruled upwards by the contents.
   assert.equal(modeFor([item("E1", "event", "a", "q", { order: 1 }), item("E2", "event", "b", "q", { order: 2 })], "x", "open"), "faithful");
-  // repairSpec passes the claim on.
+  // repairSpec ignores the claim: a generic role claimed faithful is open, the user's own grandfather claimed open is faithful.
   const claimed = repairSpec({ mode: "faithful", items: [item("R1", "character", "a pastry chef", "una pasticcera")], cast: [], refs: [], open: [] }, REQ);
-  assert.equal(claimed.mode, "faithful");
-  const topic = repairSpec({ mode: "faithful", items: [item("R1", "object", "a lemon cake", "torta al limone")], cast: [], refs: [], open: [] }, REQ);
-  assert.equal(topic.mode, "open");
-  assert.match(SPEC_METHOD, /A faithful spec carries at least one such item with "must": true/);
+  assert.equal(claimed.mode, "open");
+  const pietro = repairSpec({ mode: "open", items: [item("R1", "character", "the user's grandfather Pietro", "mio nonno Pietro")], cast: [], refs: [], open: [] }, "Un film su mio nonno Pietro, il guardiano del faro");
+  assert.equal(pietro.mode, "faithful");
+  assert.match(SPEC_METHOD, /a genre, a topic or a generic role/); assert.ok(SPEC_METHOD.includes(MODE_RULE), "the method prints the rule Kleo applies");
+});
+
+test("the live case: the pirate spec a writer called faithful is OPEN, with the reason", () => {
+  const request = "fammi un video in orizzontale, dei pirati di 15 secondi";
+  const raw = { v: 1, mode: "faithful", summary: "A video about pirates.", cast: [], refs: [], open: ["the story"], narration: "free", script: null,
+    items: [item("R1", "character", "pirates", "dei pirati")] };
+  const s = repairSpec(raw, request);
+  assert.equal(s.mode, "open");
+  assert.deepEqual(specModeWhy(s, request), { mode: "open", why: "only a subject: pirates" });
+  // The server's writer, with a cast entry for the generic role and a place: still a subject.
+  const server = repairSpec({ ...raw, cast: [{ id: "c1", name: "the pirates", look: "a crew of weathered sailors in patched coats" }], items: [item("R1", "character", "pirates", "dei pirati", { who: "c1" }), item("R2", "style", "a horizontal video", "in orizzontale")] }, request);
+  assert.equal(server.mode, "open");
+  assert.match(specBlock(s), /LEFT TO KLEO: THE STORY: who is in it beyond the requirements, what happens, the hook, the turn and the ending; and the story/);
+});
+
+test("OPEN: a genre, a topic or a generic role, even with a place or one action; FAITHFUL: the user's own, a name, a look they gave, four things", () => {
+  const open = [
+    ["pirati in mare", [item("R1", "character", "pirates", "pirati"), item("R2", "place", "the sea", "in mare")]],
+    ["pirates bury a treasure", [item("R1", "character", "pirates", "pirates"), item("R2", "action", "the pirates bury a treasure", "bury a treasure"), item("R3", "object", "a treasure", "a treasure")]],
+    ["a noir film about a detective in a rainy city, sad", [item("R1", "style", "noir", "noir"), item("R2", "mood", "sad", "sad"), item("R3", "character", "a detective", "a detective"), item("R4", "place", "a rainy city", "a rainy city")]],
+  ];
+  for (const [request, items] of open) assert.equal(modeWhy(items, request).mode, "open", request);
+  assert.equal(modeFor(["a", "b", "c", "d"].map((x, i) => item(`R${i}`, "object", x, "q")), "x"), "faithful", "four things to film");
+  const faithful = [
+    ["Un film su mio nonno Pietro", [item("R1", "character", "the user's grandfather Pietro", "mio nonno Pietro")]],
+    ["Un video sul mio cane", [item("R1", "character", "the user's dog", "il mio cane")]],
+    ["A film about my dog", [item("R1", "character", "the user's dog", "my dog")]],
+    ["A film about Captain Mara", [item("R1", "character", "Captain Mara", "Captain Mara")]],
+  ];
+  for (const [request, items] of faithful) {
+    const w = modeWhy(items, request);
+    assert.equal(w.mode, "faithful", request); assert.match(w.why, /^a particular character \((their own|named)\)/, request);
+  }
+  const chef = [item("R1", "character", "a pastry chef", "una pasticcera", { who: "c1" }), item("R2", "look", "she wears a lilac apron", "grembiule lilla", { who: "c1" })];
+  assert.deepEqual(modeWhy(chef, "una pasticcera con il grembiule lilla"), { mode: "faithful", why: 'a particular character (described): "una pasticcera"' });
+  assert.equal(modeWhy([chef[0], { ...chef[1], who: null }], "una pasticcera con il grembiule lilla", { cast: [{ id: "c1", name: "the pastry chef", look: "a woman in a lilac apron" }] }).mode, "open", "a look with no owner describes nobody");
+});
+
+test("a capital proves a name only where no sentence starts, never in Title Case or all caps, never a platform", () => {
+  const pirates = (quote) => [item("R1", "character", "pirates", quote)];
+  assert.equal(modeWhy(pirates("PIRATES"), "PIRATES AT SEA, A FILM").mode, "open", "all caps");
+  assert.equal(modeWhy(pirates("Brave Pirates"), "A Film About Brave Pirates On The Sea").mode, "open", "Title Case");
+  assert.equal(modeWhy(pirates("Pirati all'arrembaggio"), "Pirati all'arrembaggio, un video di 30 secondi").mode, "open", "the first word of the request");
+  assert.equal(modeWhy(pirates("a YouTube Short about pirates"), "Make a YouTube Short about pirates").mode, "open", "a platform is not a name");
+  assert.equal(modeWhy(pirates("Pirates"), "Sea. Pirates attack the harbour at night").mode, "open", "the first word of a sentence");
+});
+
+test("a name at the start of a sentence, after a quote mark or a colon is still a name; a people, a feast or a capitalised role is not (review, 25 September)", () => {
+  const mara = [item("R1", "character", "Mara", "Mara", { who: "c1" }), item("R2", "action", "Mara bakes a cake", "bakes a cake", { who: "c1" }), item("R3", "object", "a cake", "a cake")];
+  const cast = [{ id: "c1", name: "Mara", look: "a woman in a baker's apron", ref: null }];
+  assert.deepEqual(modeWhy(mara, "Mara bakes a cake for the village.", { cast }), { mode: "faithful", why: 'a particular character (named): "Mara"' }, "the writer's cast names the first word");
+  assert.equal(modeWhy(mara, "Mara bakes a cake for the village.").mode, "open", "a first word alone proves nothing");
+  assert.equal(modeWhy(mara, "Mara bakes a cake. The village loves Mara.").mode, "faithful", "the same word mid-sentence is a name");
+  const lina = [item("R1", "character", "a girl called Lina", "a girl called \"Lina\"")];
+  assert.equal(modeWhy(lina, 'a girl called "Lina" flies a kite').mode, "faithful", "a quote mark does not start a sentence");
+  assert.equal(modeWhy([item("R1", "character", "Mara, a baker", "Mara, a baker")], "Protagonist: Mara, a baker in a small town").mode, "faithful", "nor does a colon");
+  const open = [
+    ["Make a video about a Viking raid", [item("R1", "character", "a Viking", "a Viking")]],
+    ["A film about a Roman legionary", [item("R1", "character", "a Roman legionary", "a Roman legionary")]],
+    ["A short story about a Christmas elf", [item("R1", "character", "a Christmas elf", "a Christmas elf")]],
+    ["Fammi un video sui Pirati", [item("R1", "character", "pirates", "sui Pirati")]],
+  ];
+  for (const [request, items] of open) assert.equal(modeWhy(items, request).mode, "open", request);
+  const genova = [item("R1", "character", "the fishermen of Genoa", "i pescatori di Genova", { who: "c1" })];
+  assert.equal(modeWhy(genova, "un film sui pescatori di Genova", { cast: [{ id: "c1", name: "the fishermen", look: "weathered men in oilskins", ref: null }] }).mode, "open", "a cast called by its role is a role, whatever the capitals");
+});
+
+test("one beat written as an action and as an event is one beat, and one beat is a subject (review, 25 September)", () => {
+  const request = "fammi un video dei pirati che seppelliscono un tesoro";
+  const twice = [item("R1", "character", "pirates", "dei pirati"), item("R2", "action", "bury a treasure", "seppelliscono un tesoro"),
+    item("R3", "event", "the pirates bury a treasure", "pirati che seppelliscono un tesoro", { order: 1 })];
+  assert.equal(modeWhy(twice, request).mode, "open");
+  const two = [item("R1", "action", "the pirates bury a treasure", "seppelliscono un tesoro"), item("R2", "event", "a storm sinks their ship", "una tempesta affonda la nave", { order: 1 })];
+  assert.equal(modeWhy(two, `${request}, poi una tempesta affonda la nave`).mode, "faithful", "two different beats are a story");
+  assert.match(SPEC_METHOD, /A beat of the story is an event OR an action, never both/);
 });
 
 test("the user's corrections are what the user said: the refusal names them, the server's writer is given them", () => {

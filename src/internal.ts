@@ -11,7 +11,8 @@ import { proseDistance } from "./treatment.ts";
 import { stripForWorker } from "./keou-contract.ts";
 import { findTemplate } from "./templates";
 import { generateJobImages, IMAGE_NAME_RE } from "./images";
-import { footageBackendFor, footageConfig, setFootageConfig, kieModelFor, requestFootage, footageStatus, footageSpentTodayUsd, kieBalanceUsd, clipKey, footageRows, KIE_MODELS, SHOT_ID_RE, STILL_NAME_RE, type ShotRequest, requestMusic, musicStatus, musicOn, musicKey, MUSIC_ID, type MusicRequest } from "./footage";
+import { ephoneBalanceUsd } from "./ephone.ts";
+import { footageBackendFor, footageConfig, setFootageConfig, kieModelFor, clipLengthsSpec, requestFootage, footageStatus, footageSpentTodayUsd, kieBalanceUsd, clipKey, footageRows, KIE_MODELS, SHOT_ID_RE, STILL_NAME_RE, type ShotRequest, requestMusic, musicStatus, musicOn, musicKey, MUSIC_ID, type MusicRequest } from "./footage";
 
 const ALLOWED_FILES = new Set([FILE_NAMES.video.name, FILE_NAMES.subtitles.name, FILE_NAMES.thumbnail.name, "thumbnail.svg", "log.txt", "gen.tgz"]);
 const TYPES: Record<string, string> = { mp4: "video/mp4", srt: "application/x-subrip", jpg: "image/jpeg", svg: "image/svg+xml", txt: "text/plain" };
@@ -56,9 +57,11 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
     // reads them, and a spec is kilobytes the worker would print into every log line that shows the params.
     const { spec: _spec, refs: _refs, brief: _brief, stills: _stills, ...params } = JSON.parse(job.params) as { style?: string; spec?: unknown; refs?: unknown; brief?: unknown; stills?: unknown };
     const cfg = await footageConfig(env);
+    const film = kieModelFor(env, cfg);
     return json({ job_id: job.id, template: job.template, prompt: job.prompt, params, state: job.state, style: params.style ?? null, phase: job.phase ?? "gen",
       // Where the clips come from: repeated here for runners that get no env from Vast (the box's env wins when set).
-      footage: { backend: footageBackendFor(env, job, cfg), model: kieModelFor(env, cfg).name },
+      // And the clip lengths the model films: the box cuts the film's scenes to whole clips of them (clipLengthsSpec).
+      footage: { backend: footageBackendFor(env, job, cfg), model: film.name, ...clipLengthsSpec(film.spec) },
       // Whether the user's music track can be ordered here at all (22 September): the box skips the road when it cannot.
       music: { available: musicOn(env) },
       // The worker gets the storyboard WITHOUT the server's authoring fields (covers, cast, action on the shots; a
@@ -282,7 +285,9 @@ export async function handleAdmin(request: Request, env: Env): Promise<Response>
         key_configured: !!(env.KIE_API_KEY && env.KIE_API_KEY.trim()), max_video_s: int(env.KIE_MAX_VIDEO_S, 20),
         spend_today_usd: Math.round((await footageSpentTodayUsd(env)) * 1000) / 1000, budget_usd: num(env.DAILY_FOOTAGE_BUDGET_USD, 5),
         balance_usd: await kieBalanceUsd(env), // what the kie.ai account can still spend (null when kie.ai did not answer)
-        models: Object.fromEntries(Object.entries(KIE_MODELS).map(([k, m]) => [k, { usd_per_s: m.usdPerSecond, ...(m.usdPerClip ? { usd_per_clip: m.usdPerClip } : {}), seconds: m.seconds, verified: m.verified, note: m.note }])) };
+        ephone_key_configured: !!(env.EPHONE_API_KEY && env.EPHONE_API_KEY.trim()),
+        ephone_balance_usd: await ephoneBalanceUsd(env), // the same for ePhone AI (null when it did not answer or no key)
+        models: Object.fromEntries(Object.entries(KIE_MODELS).map(([k, m]) => [k, { provider: m.provider ?? "kie", usd_per_s: m.usdPerSecond, ...(m.usdPerClip ? { usd_per_clip: m.usdPerClip } : {}), seconds: m.seconds, verified: m.verified, note: m.note }])) };
     };
     if (request.method === "GET") return json(await view());
     if (request.method !== "POST") return json({ error: "method" }, 405);

@@ -99,6 +99,11 @@ export interface JobParams {
   spec?: RequestSpec;
   /** Handles of the reference images the user gave (src/refs.ts), in the order given. */
   refs?: string[];
+  /**
+   * The clip floor in seconds (src/footage.ts clipFloorFor, 25 September 2026): every shot of a film on the API road
+   * carries at least this much voice, because each is a clip billed at the model's shortest length. Absent = 0.
+   */
+  clip_floor_s?: number;
   /** The intake's optional answers, as the user gave them: they used to die between kleo_adapt_prompt and the planner. */
   brief?: { audience?: string | null; tone?: string | null; must_keep?: string | null; /** The user's corrections after the read-back, in their words. */ corrections?: string | null };
   /** Where the server-drawn stills are (src/stills.ts): drawing, done, or failed (the rented GPU draws them then). */

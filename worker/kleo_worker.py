@@ -46,7 +46,7 @@ Tuning: KLEO_WIDTH_PORTRAIT (2160) / KLEO_WIDTH_LANDSCAPE (3840): both formats d
 Standard library only (kleo_pictures.py and kleo_video.py, next to this file, are optional and imported lazily),
 so it runs in any image with python3 and ffmpeg.
 """
-import copy, glob, json, os, re, shutil, sys, time, threading, subprocess, tempfile, urllib.request, urllib.error, traceback
+import copy, glob, json, math, os, re, shutil, sys, time, threading, subprocess, tempfile, urllib.request, urllib.error, traceback
 from collections import deque
 
 API = os.environ.get("KLEO_API", "").rstrip("/")
@@ -760,11 +760,13 @@ def footage_backend():
 
 
 def set_footage_backend(job):
-    """The env wins (vast.ts writes it on the box); a job spec's "footage" fills in for runners without one."""
-    global FOOTAGE_BACKEND
+    """The env wins (vast.ts writes it on the box); a job spec's "footage" fills in for runners without one. The
+    clip lengths the model films come from the spec whatever the env says: only the server knows the model."""
+    global FOOTAGE_BACKEND, CLIP_LENGTHS
+    spec = job.get("footage") if isinstance(job, dict) else None
+    CLIP_LENGTHS = clip_lengths_of(spec)
     if FOOTAGE_BACKEND in ("kie", "local"):
         return FOOTAGE_BACKEND
-    spec = job.get("footage") if isinstance(job, dict) else None
     if isinstance(spec, dict) and spec.get("backend") in ("kie", "local"):
         FOOTAGE_BACKEND = spec["backend"]
     return footage_backend()
@@ -839,8 +841,11 @@ def remote_clips(units, look, fmt, out_dir, seconds_of=None, wait_min=None, poll
             except Exception as e:
                 log(f"{sid}: could not upload the reference frame ({e}); kie.ai will invent the frame from the text")
         secs = (seconds_of or {}).get(sid) or u.get("dur") or 3.0
+        # A whole number is a clip the fit bought whole (fit_to_clips): it travels as that number, and the server
+        # orders exactly it (src/footage.ts clipSecondsFor).
+        whole = isinstance(secs, int) and not isinstance(secs, bool)
         shots.append({"id": sid, "image_prompt": u["image_prompt"], "motion": u.get("motion"), "strength": u.get("strength"),
-                      "seconds": round(float(secs), 3), "still": name})
+                      "seconds": secs if whole else round(float(secs), 3), "still": name})
     if not shots:
         return {}
     try:
@@ -1014,6 +1019,254 @@ def shot_plan(build):
     return plan, seconds
 
 
+# ---- Clips bought by the second: the scene is cut to whole clips, the voice is fitted to the scene ---------------
+# THE MONEY THAT WENT ON THE FLOOR (25 September 2026). kie.ai and ePhone sell a clip by the WHOLE second, 4 s at the
+# least (Seedance 2.5, MiniMax H3), and the edit used to cut every clip to its shot's voice-driven length: the first
+# ePhone film (gt_ujavdzva, pirates, 15 s) bought 21 s of clips and showed 16. So on the API road the order is turned
+# round: once the script is voiced and the engine has said where the words cut, each scene is given a length in
+# whole clip seconds (the nearest whole second to what its voice needs, never less than one shortest clip per
+# shot), each shot a whole number of those seconds (cut at the whole second nearest its word), and the voice is
+# fitted to the scene: said up to FIT_MAX_TEMPO faster when the line is a little long for it, followed by a longer
+# pause when it is short (prepare.py, the scene's `fit`). Every clip is then ordered at exactly its shot's length
+# and laid in full: the seconds billed are the seconds on screen. The one variable trim build_footage still makes,
+# the frozen tail a model sometimes leaves, is filled by slowing the rest of that clip (plan_fill), not by buying
+# more. The animatic (never filmed) and the local road (clips made on the box, not bought) never come here.
+#
+# THREE LIMITS (review of 25 September). (1) Dead air is not a saving: a scene is never made more than FIT_MAX_PAD
+# seconds longer than its voice made it (a 2.3 s line on a 4 s clip would be 1.7 s of silence, the pauses the owner
+# rejected on 22 September); such a scene keeps the old cut, logged as FIT_PAD, and the clip floor in the planner
+# (src/keou-contract.ts shotBudget) is what keeps lines that short rare. (2) The fit's tempo rides on Kokoro's own
+# speed (project.speed, up to 1.3): the two together never pass VOICE_SPEED_MAX. (3) A scene that dissolves into the
+# next one keeps its last clip on screen for the dissolve too (build_footage lays it dissolve_s past its slot): that
+# clip is fitted to slot + dissolve, so it is laid at its own speed and no part of it is thrown away or slowed.
+FIT_MAX_TEMPO = float(os.environ.get("KLEO_FIT_MAX_TEMPO", "1.12"))   # the fastest a line may be said to fit its clips
+FIT_MAX_PAD = float(os.environ.get("KLEO_FIT_MAX_PAD", "1.0"))       # the most a fit may lengthen a scene, seconds
+VOICE_SPEED_MAX = 1.3   # Kokoro speed x fit tempo, at the most: the contract's own ceiling on speed (contract.py)
+CLIP_LENGTHS = None     # the whole clip lengths the API model films (job spec "footage"); None: unknown, no fit
+
+
+def clip_lengths_of(spec):
+    """The whole clip lengths a model films, from the job spec's "footage" (src/internal.ts): a list model's own list
+    (clip_seconds), else every second from clip_min_s to clip_max_s. None when the spec does not say."""
+    if not isinstance(spec, dict):
+        return None
+
+    def whole(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool) and float(v).is_integer() and 1 <= v <= 60
+
+    listed = spec.get("clip_seconds")
+    if isinstance(listed, list):
+        return sorted({int(v) for v in listed if whole(v)}) or None
+    lo, hi = spec.get("clip_min_s"), spec.get("clip_max_s")
+    if whole(lo) and whole(hi) and lo <= hi:
+        return list(range(int(lo), int(hi) + 1))
+    return None
+
+
+def hold_floor(fmt, last):
+    """The shortest pause prepare.py leaves after a picture-style line (its `floor`, kept in step by hand): 9:16
+    0.15 s (0.4 on the last scene), 16:9 0.3 s (0.9 on the last)."""
+    return (.4 if last else .15) if fmt == "9:16" else (.9 if last else .3)
+
+
+def split_whole(total, lengths, targets):
+    """`total` seconds as len(targets)+1 whole clip lengths from `lengths`, the boundaries as near as they can be to
+    `targets` (seconds into the scene where each shot after the first was going to begin). None when no split exists."""
+    k = len(targets) + 1
+    best = {0: (0.0, [])}          # seconds used so far -> (distance from the targets, lengths)
+    for i in range(k):
+        nxt = {}
+        for used, (cost, parts) in sorted(best.items()):
+            for n in lengths:
+                at = used + n
+                if at > total or (i == k - 1 and at != total):
+                    continue
+                here = cost + (abs(at - targets[i]) if i < k - 1 else 0.0)
+                if at not in nxt or here < nxt[at][0] - 1e-9:
+                    nxt[at] = (here, parts + [n])
+        best = nxt
+    return best[total][1] if total in best else None
+
+
+def fit_scene(lead, voice, length, cuts, floor, lengths, max_tempo=None, overlap=0.0, max_pad=None, why=None):
+    """One scene cut to whole clips. `lead` is the silence before its line, `voice` the line, `length` the scene as
+    the voice pass made it, `cuts` where each shot after the first begins (seconds into the scene), `floor` the
+    shortest pause allowed after the line, `overlap` the dissolve the scene's last clip runs under the next scene (0
+    for a cut). Returns {"length": seconds, "tempo": >= 1, "shots": [whole seconds]} (and "overlap" when there is
+    one: the scene is then `overlap` shorter than its clips, which stay on screen for the dissolve), or None when no
+    clip lengths hold the line said at most `max_tempo` faster, or only with more than `max_pad` seconds of pause
+    added to the scene. `why`, a list, is given the reason of a None."""
+    max_tempo = FIT_MAX_TEMPO if max_tempo is None else max_tempo
+    max_pad = FIT_MAX_PAD if max_pad is None else max_pad
+    lengths = sorted({int(n) for n in (lengths or []) if int(n) > 0})
+    overlap = max(0.0, float(overlap or 0))
+    if not lengths or voice <= 0:
+        return None
+    k = len(cuts) + 1
+    for total in range(max(k * lengths[0], int(math.floor(length + overlap + 0.5))), k * lengths[-1] + 1):
+        scene = total - overlap
+        if scene - length > max_pad + 1e-9:
+            # Every longer total pads more: the shortest whole clips this scene can be cut to are dead air.
+            if why is not None:
+                why.append(f"FIT_PAD {scene - length:.2f} s of pause would be added to a {length:.2f} s scene "
+                           f"({k} clip(s) of {lengths[0]} s at the least; the limit is {max_pad:g} s)")
+            return None
+        room = scene - lead - floor
+        if room <= 0:
+            continue
+        # Rounded UP, so the line said this fast always ends inside its room.
+        tempo = max(1.0, math.ceil(voice / room * 10000) / 10000)
+        if tempo > max_tempo + 1e-9:
+            continue
+        # The words move with the tempo: a cut planned c seconds into the scene now lands at lead + (c - lead) / tempo.
+        parts = split_whole(total, lengths, [lead + max(0.0, c - lead) / tempo for c in cuts])
+        if parts and parts[-1] - overlap >= 1:
+            fit = {"length": round(scene, 3) if overlap else total, "tempo": tempo, "shots": parts}
+            if overlap:
+                fit["overlap"] = overlap
+            return fit
+    if why is not None:
+        why.append(f"the line ({voice:.2f} s) does not fit whole clips said at most x{max_tempo:.3f} faster")
+    return None
+
+
+def plan_fit(project, timeline, plan, lengths, unit_ids=None, max_tempo=None, notes=None):
+    """{scene id: fit_scene(...)} for every scene whose shots are all bought clips and can be cut to whole ones, read
+    off the first voice pass (build/timeline.json) and the engine's first shot plan (build/shots.json). Pure; `notes`,
+    a list, is given "<scene id>: <reason>" for every scene left to the old cut."""
+    timed = {s.get("id"): s for s in (timeline or {}).get("scenes") or [] if isinstance(s, dict)}
+    planned = [s for s in (plan or {}).get("scenes") or [] if isinstance(s, dict)]
+    cut = {s.get("id"): s for s in planned}
+    # A scene the next one dissolves into keeps its last clip on screen dissolve_s longer (build_footage).
+    dissolve_s = float((plan or {}).get("dissolve_s") or 0.8)
+    overlap_of = {s.get("id"): (dissolve_s if nxt.get("transition") == "dissolve" else 0.0) for s, nxt in zip(planned, planned[1:])}
+    scenes = [s for s in (project or {}).get("scenes") or [] if isinstance(s, dict)]
+    fmt, fits = (project or {}).get("format") or "9:16", {}
+    # Kokoro has already said the line at the project's speed: the fit's tempo is on top of it, and the two together
+    # stay under the contract's ceiling on speed.
+    try:
+        speed = float((project or {}).get("speed") or 1)
+    except (TypeError, ValueError):
+        speed = 1.0
+    cap = min(FIT_MAX_TEMPO if max_tempo is None else max_tempo, max(1.0, VOICE_SPEED_MAX / max(speed, 0.1)))
+    for i, sc in enumerate(scenes):
+        sid, t, p = sc.get("id"), timed.get(sc.get("id")), cut.get(sc.get("id"))
+        shots = shots_of(sc)
+        if not (t and p and shots) or len(p.get("shots") or []) != len(shots):
+            continue
+        if unit_ids is not None and any(f"{sid}-s{j + 1}" not in unit_ids for j in range(len(shots))):
+            continue
+        try:
+            start, end = float(t["start"]), float(t["end"])
+            lead, voice = float(t["audio_start"]) - start, float(t["audio_end"]) - float(t["audio_start"])
+            cuts = [float(sh["start"]) - start for sh in p["shots"][1:]]
+        except (KeyError, TypeError, ValueError):
+            continue
+        why = []
+        fit = fit_scene(lead, voice, end - start, cuts, hold_floor(fmt, i == len(scenes) - 1), lengths, cap,
+                        overlap=overlap_of.get(sid, 0.0), why=why)
+        if fit:
+            fits[sid] = fit
+        elif notes is not None and why:
+            notes.append(f"{sid}: {why[0]}")
+    return fits
+
+
+def apply_fit(project, fits):
+    """Writes each fit where prepare.py and picture.js read it: the scene's `fit` (length, and tempo when the line is
+    said faster) and every later shot's `cut` (the whole second it begins at). Scenes without a fit are cleared."""
+    for sc in (project or {}).get("scenes") or []:
+        if not isinstance(sc, dict):
+            continue
+        sc.pop("fit", None)
+        for sh in shots_of(sc):
+            if isinstance(sh, dict):
+                sh.pop("cut", None)
+        f = fits.get(sc.get("id"))
+        if not f:
+            continue
+        sc["fit"] = {"length": f["length"], **({"tempo": f["tempo"]} if f["tempo"] > 1 else {})}
+        at = 0
+        for j, (sh, n) in enumerate(zip(shots_of(sc), f["shots"])):
+            if j and isinstance(sh, dict):
+                sh["cut"] = at
+            at += n
+
+
+def billed_seconds(seconds, lengths):
+    """What a set of shot lengths is billed as: each the shortest listed clip that covers it (src/footage.ts
+    clipSecondsFor), the longest when none does."""
+    total = 0
+    for v in seconds:
+        want = math.ceil(max(0.5, float(v)) - 0.05)
+        total += next((n for n in lengths if n >= want), lengths[-1])
+    return total
+
+
+def fit_to_clips(project, pdir, engine, log_path, units, plan, seconds):
+    """The API road's second voice pass: plan the fit, write it into project.json, voice (every line from the cache:
+    nothing is synthesised again) and time the shots again. Returns (plan, seconds), the new ones with every fitted
+    shot's length a whole number, or the ones it was given when there is nothing to fit or the fit cannot be used."""
+    lengths = CLIP_LENGTHS
+    if not lengths:
+        log("fit: the job spec does not say which clip lengths the model films; clips are cut to the voice")
+        return plan, seconds
+    build = os.path.join(pdir, "build")
+    try:
+        with open(os.path.join(build, "timeline.json")) as f:
+            timeline = json.load(f)
+    except Exception as e:
+        log("fit: could not read the timeline:", e)
+        return plan, seconds
+    notes = []
+    fits = plan_fit(project, timeline, plan, lengths, unit_ids={u["id"] for u in units}, notes=notes)
+    for note in notes:
+        log(f"fit: {note}; that scene keeps the old cut")
+    if not fits:
+        log("fit: no scene can be cut to whole clips; clips are cut to the voice")
+        return plan, seconds
+    before = float(timeline.get("duration") or 0)
+    after = sum(fits[s["id"]]["length"] if s.get("id") in fits else float(s["end"]) - float(s["start"])
+                for s in timeline.get("scenes") or [])
+    cap = float(project.get("max_duration") or 600)
+    if after > cap - 0.5:
+        log(f"fit: whole clips would make the film {after:.1f} s, over its {cap:.0f} s ceiling; clips are cut to the voice")
+        return plan, seconds
+    apply_fit(project, fits)
+    write_project(project, pdir)
+    for sid, f in fits.items():
+        log(f"fit: {sid} {f['length']} s = clips {'+'.join(map(str, f['shots']))}"
+            + (f" (the last {f['overlap']:g} s under the dissolve)" if f.get("overlap") else "")
+            + (f", line said x{f['tempo']:.3f}" if f["tempo"] > 1 else ""))
+    progress("voice", 10, message="fitting the voice to whole clips")
+    engine_step([keou_python(engine), os.path.join(engine, "prepare.py"), os.path.join(pdir, "project.json")],
+                engine, log_path, "the voice fit pass", VOICE_TIMEOUT_MIN)
+    engine_step(["node", os.path.join(engine, "engine", "render.mjs"), os.path.join(pdir, "project.json"), "--shots"],
+                engine, log_path, "the shot timing pass", SHOTS_TIMEOUT_MIN)
+    new_plan, new_seconds = shot_plan(build)
+    if not new_plan or not new_seconds:
+        return new_plan, new_seconds
+    whole = dict(new_seconds)
+    tol = max(0.02, 1.0 / float(new_plan.get("fps") or 60))    # a scene ends on a frame
+    for sid, f in fits.items():
+        for j, n in enumerate(f["shots"]):
+            key = f"{sid}-s{j + 1}"
+            got = new_seconds.get(key)
+            # The last clip of a scene that dissolves out has a slot `overlap` shorter than the clip: the rest of it
+            # is on screen under the dissolve (build_footage), so the clip is still ordered, and laid, whole.
+            slot = n - (f.get("overlap") or 0.0) if j == len(f["shots"]) - 1 else n
+            if got is not None and abs(got - slot) < tol:
+                whole[key] = n
+            else:
+                log(f"fit: {key} came out {got} s instead of {slot:g} s; that clip is cut to its shot")
+    ids = [u["id"] for u in units]
+    was = billed_seconds([seconds[i] for i in ids if i in seconds], lengths)
+    now = billed_seconds([whole[i] for i in ids if i in whole], lengths)
+    log(f"fit: {len(fits)} scene(s) cut to whole clips; {was} s of clips bought for {before:.1f} s of film before, "
+        f"{now} s for {float(new_plan.get('duration') or 0):.1f} s now")
+    return new_plan, whole
+
+
 def still_of(shot, pdir):
     """Absolute path of the shot's picture if it exists on disk, else None."""
     im = shot.get("image") if isinstance(shot, dict) else None
@@ -1053,6 +1306,9 @@ def generate_footage(project, pdir, engine, log_path, units, lay_track=True):
     engine_step(["node", os.path.join(engine, "engine", "render.mjs"), project_json, "--shots"],
                 engine, log_path, "the shot timing pass", SHOTS_TIMEOUT_MIN)
     plan, seconds = shot_plan(build)
+    if plan and seconds and remote:
+        # Bought clips are bought whole: the scenes are cut to them and the voice is fitted (fit_to_clips).
+        plan, seconds = fit_to_clips(project, pdir, engine, log_path, units, plan, seconds)
     if not plan or not seconds:
         log("no generated motion: the engine did not say when the shots cut")
         return False
@@ -1129,9 +1385,11 @@ def strip_kleo_fields(project):
     for s in project.get("scenes") or []:
         if isinstance(s, dict):
             s.pop("image_prompt", None)
+            s.pop("fit", None)        # the box's own fields (fit_to_clips): never taken from a storyboard
             for sh in shots_of(s):
                 if isinstance(sh, dict):
                     sh.pop("image_prompt", None)
+                    sh.pop("cut", None)
                     # Authoring fields: the server has already turned shot_kind into the concrete `motion` and
                     # `strength` the engine draws with, so the kind and its planned duration stop here.
                     for f in ("shot_kind", "dur"):
@@ -1250,8 +1508,12 @@ VOICE_CHAIN = ("aresample=48000,highpass=f=75,lowpass=f=12000,acompressor=thresh
                "volume=1.6,loudnorm=I=-16:TP=-1.5:LRA=7,aresample=48000,aformat=channel_layouts=stereo")
 # The narration WITH the user's track: run.py's own mix (the voice cleaned, the music ducked under every spoken word by
 # the sidechain, the two summed and normalised to -16 LUFS). Inputs: [1:a] the voice, [2:a] the shaped track.
+# Both inputs of the sidechain are forced to one format (25 September 2026, job gt_ujavdzva): the narration is mono and
+# the shaped track stereo, and ffmpeg refused the graph ("The following filters could not choose their formats:
+# Parsed_sidechaincompress_7"), so the first film with a music track failed at its last step.
+MIX_FMT = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
 MIX_CHAIN = ("[1:a]aresample=48000,highpass=f=75,lowpass=f=12000,acompressor=threshold=0.15:ratio=2:attack=15:release=180,"
-             "volume=1.6,asplit=2[v][s];[2:a]aresample=48000[m];[m][s]sidechaincompress=threshold=0.025:ratio=5:attack=15:release=320[bed];"
+             "volume=1.6," + MIX_FMT + ",asplit=2[v][s];[2:a]aresample=48000," + MIX_FMT + "[m];[m][s]sidechaincompress=threshold=0.025:ratio=5:attack=15:release=320[bed];"
              "[v][bed]amix=inputs=2:duration=first:normalize=0,loudnorm=I=-16:TP=-1.5:LRA=7,aresample=48000,aformat=channel_layouts=stereo[a]")
 
 

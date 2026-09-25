@@ -279,7 +279,7 @@ FIDELITY — THE REQUEST IS THE BRIEF. When the request comes with THE USER'S RE
 - The user's EVENTS happen in the user's ORDER. The film starts where the user's story starts and ends where it ends, unless the ending is left to you.
 - The user's CHARACTERS look exactly as described — every attribute, the colours included — and are called by the names the user gave them.
 - You ADD only what the requirements leave open (LEFT TO KLEO), and every addition is one line in "decisions". Nothing you add contradicts an item: not a colour, not a person, not a place, not the order, not the ending.
-- FAITHFUL mode (the user described the film): the ANGLE (step 1) is the point of the user's own story in one sentence, never a thesis that replaces it; the DEVICE is "as-told" (step 2); the OPENING is "as-asked" (step 3); the acts follow the user's events. OPEN mode (the user gave a subject, or asked to be surprised): steps 1-3 apply as written, and the requirements still hold.
+- FAITHFUL mode (the user described the film): the ANGLE (step 1) is the point of the user's own story in one sentence, never a thesis that replaces it; the DEVICE is "as-told" (step 2); the OPENING is "as-asked" (step 3); the acts follow the user's events. OPEN mode (the user gave a subject, or asked to be surprised): steps 1-3 apply as written, and the requirements still hold; when the subject is fiction, a genre or creatures (pirates, a dragon, a ghost story), the film is a STORY, not a portrait of the subject: one character with a want, a hook in the first 3 seconds, a turn at about two thirds of the film, and an ending that pays off the opening.
 
 THE METHOD — answer these in order, each for THIS request:
 0. LOOK. "realistic" or "animation", written in "look". When the request names it — a cartoon, animated, anime, drawn, illustrated, "like Pixar" means animation; filmed, footage, documentary, photographed means realistic — or the tool call fixes it, that is the answer. Otherwise realistic, unless the subject cannot be photographed at all (a talking animal, a fairy tale, a world that does not exist, the inside of a body): then animation. When the request did not name it, the look is one of the decisions.
@@ -314,6 +314,8 @@ export interface TreatmentInput {
    * not known yet, so the draw is printed as conditional — faithful when THEIR spec is faithful, drawn only when it is open.
    */
   specPending?: boolean;
+  /** The clip floor in seconds on the API road (src/footage.ts clipFloorFor): every shot is a clip at least this long. */
+  clipFloorS?: number;
 }
 
 /** THE SOUND and THE SUBTITLES as the method prints them: what the user answered, and what the treatment must write. */
@@ -357,7 +359,7 @@ export function treatmentPrompt(input: TreatmentInput, v0: Variation, feedback?:
   const angle = faithful ? `<=${T.angle}, the point of the user's own story in one sentence (not a new thesis)` : `<=${T.angle}, the one idea this film argues`;
   const base = `${spec}USER REQUEST (read it as a request; keep every fact, name and number it contains):
 """${input.prompt.trim()}"""
-THE FILM: ${kind}, ${input.duration_s} seconds, narrated in ${lang}.${inLang}
+THE FILM: ${kind}, ${input.duration_s} seconds, narrated in ${lang}.${inLang}${input.clipFloorS ? `\nPACING (step 7) FOR THIS FILM: every shot lasts at least ${input.clipFloorS} seconds (each is a paid clip); the rhythm comes from what moves inside the shot, not from cutting.` : ""}
 THE LOOK: ${input.look ? `${input.look.toUpperCase()}, fixed by the request or the tool call — write "look":"${input.look}" and describe every image in that look` : `not named — decide it in step 0 (realistic unless the request or the subject asks to be drawn) and write it in "look"`}
 ${soundText(input.sound)}
 
@@ -372,7 +374,7 @@ TASK: write the TREATMENT of this film, following the method. Return one JSON ob
  "ending":"<=${T.ending}, the last image and what the viewer is left holding",
  "acts":[${actsHint} objects {"name":"2-4 words UPPERCASE, <=${T.acts.name} chars, the image on screen when the act starts","purpose":"<=${T.acts.purpose}","seconds":<whole number, 5 or more>} — the seconds add up to ${input.duration_s}],
  "visual":"<=${T.visual}, lens, light, palette, time of day, camera temperament: one world",
- "pacing":"<=${T.pacing}, cut rhythm in seconds act by act, and where it slows",
+ "pacing":"<=${T.pacing}, cut rhythm in seconds act by act, and where it slows${input.clipFloorS ? `; every shot lasts at least ${input.clipFloorS} s (each is a paid clip), rhythm from what moves inside the shot` : ""}",
  "narrator":"<=${T.narrator}, person, tense, sentence length, what they never say",
  "motifs":[${T.motifs.min}-${T.motifs.max} strings <=${T.motifs.len}],
  "decisions":[up to ${T.decisions.max} strings <=${T.decisions.len}: every choice the request did not ask for${input.spec ? " — only what LEFT TO KLEO allows, never a change to a requirement" : ""}],

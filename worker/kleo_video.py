@@ -457,6 +457,8 @@ def finish_clip(src, dst, width, height, fps=60, grade=True, trim=0.12):
 
 MAX_STRETCH = float(os.environ.get("KLEO_VIDEO_MAX_STRETCH", "1.6"))   # slow motion up to this before a frame is held
 FROZEN_S = float(os.environ.get("KLEO_VIDEO_FROZEN_S", "0.6"))          # a run this long is repaired; QA rejects at 1.0
+# Past MAX_STRETCH, slower still rather than a held frame the QA rejects: up to this, only as far as it takes.
+RESCUE_STRETCH = float(os.environ.get("KLEO_VIDEO_RESCUE_STRETCH", "2.0"))
 
 
 def frozen_runs(path, sample_fps=6):
@@ -495,9 +497,17 @@ def finish_vf(width, height, fps, want, stretch=1.0):
 def plan_fill(want, have, frozen_tail=0.0):
     """How to make `want` seconds from a clip of `have` whose last `frozen_tail` seconds do not move:
     (stretch, usable_seconds, held_seconds). The frozen tail is dropped, the rest is slowed up to MAX_STRETCH,
-    and only what is still missing is a held frame — said out loud by the caller."""
+    and only what is still missing is a held frame — said out loud by the caller.
+
+    A HELD FRAME THE QA WOULD REJECT IS WORSE THAN SLOWER MOTION (25 September 2026). On the API road a clip is
+    bought at exactly its shot's length (kleo_worker.fit_to_clips): there is no spare second any more to absorb a
+    frozen tail, and a held remainder of a second or more fails the whole film at film_checks, after every clip has
+    been paid for. So when MAX_STRETCH would leave more than FROZEN_S held, the clip is slowed further, up to
+    RESCUE_STRETCH, just enough to bring the held frame back to FROZEN_S."""
     usable = max(0.5, have - max(0.0, frozen_tail))
     stretch = min(MAX_STRETCH, max(1.0, want / usable))
+    if want - usable * stretch > FROZEN_S:
+        stretch = max(stretch, min(RESCUE_STRETCH, (want - FROZEN_S) / usable))
     held = max(0.0, want - usable * stretch)
     return stretch, usable, held
 

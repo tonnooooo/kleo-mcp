@@ -138,6 +138,14 @@ export interface Env {
   /** kie.ai (https://kie.ai): the clips of a filmed video come from its API instead of a model on the rented card.
    *  KIE_API_KEY is a Cloudflare SECRET (wrangler secret put): it never reaches the box, the audit or a job row. */
   KIE_API_KEY?: string;
+  /**
+   * ePhone AI (src/ephone.ts, 25 September 2026): the clips of a model whose KIE_MODELS entry says provider "ephone"
+   * (Seedance 2.5) are bought there. EPHONE_API_KEY is a Cloudflare SECRET; EPHONE_API_URL defaults to https://api.ephone.ai.
+   */
+  EPHONE_API_KEY?: string;
+  EPHONE_API_URL?: string;
+  /** "ephone": the user's music track is bought from Suno on ePhone AI instead of kie.ai (src/footage.ts musicProviderOf). */
+  KLEO_MUSIC_PROVIDER?: string;
   /** "kie" routes the clips through kie.ai (needs KIE_API_KEY); anything else, or unset, keeps the local model. */
   KLEO_FOOTAGE_BACKEND?: string;
   /** kie.ai model id for the clips (src/footage.ts KIE_MODELS); the admin route can override it without a deploy. */

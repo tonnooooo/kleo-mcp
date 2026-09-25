@@ -164,37 +164,118 @@ export function quoteInRequest(quote: string, request: string): boolean {
 /** The phrases by which a user hands the subject to Kleo: a delegation is an OPEN spec by definition. */
 const DELEGATE_RE = /\b(stupiscimi|sorprendimi|scegli tu|decidi tu|fai tu|inventa tu|a tua scelta|come vuoi tu|surprise me|you (?:choose|pick|decide)|your (?:choice|call|pick)|anything you (?:like|want)|whatever you (?:like|want|think))\b/i;
 
-/**
- * The kinds that are the user's own story rather than a bare topic: someone in it, something that happens, a shot they
- * described, words to be read or said. A writer's "faithful" standing on one of these is kept (modeFor).
- */
-const STORY_KINDS: readonly SpecKind[] = ["character", "event", "shot", "text", "line"];
+/** Words that are capitalised without being anybody's name: never the proof of a particular character. */
+const NAME_STOP = new Set(["i", "kleo", "youtube", "tiktok", "instagram", "short", "shorts", "reel", "reels"]);
+/** A first-person possessive: "my dog", "mio nonno", "la nostra gatta"; French "ma" only where the quote starts. */
+const POSSESSIVE_RE = /\b(?:my|our|mio|mia|miei|mie|nostr[oaie])\b|^\s*ma\s/i;
+/** The kinds that are content (something to film), not the manner of it: what rule 5 counts. */
+const MANNER_KINDS: readonly SpecKind[] = ["style", "mood", "exclude"];
 
 /**
- * FAITHFUL or OPEN, decided by what the spec actually contains: a request with a character plus anything about them,
- * or two events, or a described shot, or a place and an action, is a film the user already has in mind — FAITHFUL. A
- * delegation is OPEN whatever anybody claims, and so is a bare subject with at most two must items…
- *
- * …UNLESS THE WRITER CALLED IT FAITHFUL AND IT STANDS ON THE USER'S STORY (24 September 2026). The spec method (rule
- * 9 below, and kleo_adapt_prompt's next step) tells the writer "faithful when the user described what happens or who
- * is in it", and the same writer is told to write its treatment "as-told" under a faithful spec. This function used to
- * ignore the claim, so "un film su mio nonno Pietro" (one character item, nothing about him) was re-decided OPEN after
- * the assistant had written a faithful spec and an as-told treatment, and kleo_create_video refused the treatment it
- * had been told to write. The writer read the request and Kleo did not; a writer's "faithful" is kept whenever it has
- * at least one must item that is the user's own story (STORY_KINDS). An "open" claim is still overruled upwards by the
- * contents: a film the user described is theirs whatever the writer thought.
+ * Capitalised without being anybody's name: a people or a feast ("a Viking raid", "a Roman legionary", "Danish",
+ * "a Christmas elf"). A cast name the writer gives as a proper name ("Brian") still counts (characterNamed).
  */
-export function modeFor(items: readonly SpecItem[], request: string, claimed?: unknown): SpecMode {
-  if (DELEGATE_RE.test(request)) return "open";
-  const must = items.filter((i) => i.must);
-  const count = (k: SpecKind) => must.filter((i) => i.kind === k).length;
-  if (count("event") >= 2 || count("shot") >= 1 || count("line") >= 1 || count("text") >= 1) return "faithful";
-  if (count("character") >= 1 && (count("look") + count("action") + count("place") + count("event")) >= 1) return "faithful";
-  if (count("place") >= 1 && count("action") + count("event") >= 1) return "faithful";
-  if (must.length >= 4) return "faithful";
-  if (claimed === "faithful" && must.some((i) => STORY_KINDS.includes(i.kind))) return "faithful";
-  return "open";
+const NOT_A_NAME_RE = /^(?:\p{L}+(?:an|ese|ish)|vikings?|vichingh[io]|vichingo|christmas|easter|halloween|thanksgiving|natale|pasqua|capodanno|carnevale)$/u;
+/** A cast name that is a role, not a name: it opens with an article ("the pirates", "a Viking"). */
+const ARTICLE_START_RE = /^(?:the|a|an|il|lo|la|i|gli|le|un|una|uno)\s|^(?:l|un)['’]/i;
+
+/**
+ * The capitalised words of a request: `mid` stand where no sentence starts, the names the user gave ("mio nonno
+ * Pietro", "Captain Mara", 'a girl called "Lina"', "Protagonist: Mara"); `initial` open a sentence, where grammar
+ * capitalises every word and a capital proves a name only with the writer's cast behind it ("Mara bakes a cake.").
+ * Only . ! ? … and a new line start a sentence (25 September 2026 review: a quote mark or a colon used to hide the name
+ * after it). Both are empty when more than half the words that open no sentence are capitalised (Title Case, caps):
+ * there a capital proves nothing.
+ */
+function namesIn(request: string): { mid: Set<string>; initial: Set<string> } {
+  const mid = new Set<string>(), initial = new Set<string>();
+  let start = true, caps = 0, total = 0;
+  for (const m of request.matchAll(/([.!?…\n]+)|(\p{L}[\p{L}'’-]*)/gu)) {
+    if (m[1]) { start = true; continue; }
+    const w = m[2];
+    const add = (to: Set<string>) => { if (/^\p{Lu}\p{Ll}/u.test(w) && !NAME_STOP.has(w.toLowerCase())) for (const p of norm(w).split(" ")) if (p.length >= 3) to.add(p); };
+    // The first word of a sentence is capitalised by grammar: it does not count towards Title Case.
+    if (start) { start = false; add(initial); continue; }
+    total++;
+    if (!/^\p{Lu}/u.test(w)) continue;
+    caps++;
+    add(mid);
+  }
+  return total && caps / total > 0.5 ? { mid: new Set(), initial: new Set() } : { mid, initial };
 }
+
+/**
+ * Whether the user NAMED this character. A capitalised word of its quote counts when it stands mid-sentence and is not
+ * a people or a feast, or anywhere when the writer's cast gives it as the character's proper name. Never the role
+ * itself capitalised ("sui Pirati": the English text says "pirates" in lower case), and never for a character the cast
+ * calls by a role ("the fishermen" of "Genova").
+ */
+function characterNamed(c: SpecItem, names: ReturnType<typeof namesIn>, cast: SpecCast | null): boolean {
+  const castName = cast?.name.trim() ?? "";
+  const proper = !!castName && !ARTICLE_START_RE.test(castName)
+    && (castName.match(/\p{L}[\p{L}'’-]*/gu) ?? []).filter((w) => w.length >= 3).every((w) => /^\p{Lu}/u.test(w));
+  if (cast && !proper) return false;
+  const confirmed = new Set(proper ? wordsOf(castName) : []);
+  const role = new Set((c.text.match(/\p{L}[\p{L}'’-]*/gu) ?? []).filter((w) => /^\p{Ll}/u.test(w) && w.length >= 3).map((w) => norm(w).slice(0, 5)));
+  return wordsOf(c.quote).some((w) => !role.has(w.slice(0, 5))
+    && (confirmed.has(w) ? names.mid.has(w) || names.initial.has(w) : names.mid.has(w) && !NOT_A_NAME_RE.test(w)));
+}
+
+/** The same beat written twice, as an action and as an event: their quotes and their texts overlap. */
+const sameBeat = (a: SpecItem, b: SpecItem): boolean => {
+  const overlap = (x: string, y: string) => !!norm(x) && !!norm(y) && (quoteInRequest(x, y) || quoteInRequest(y, x));
+  return overlap(a.quote, b.quote) && overlap(a.text, b.text);
+};
+
+/** Why a spec is FAITHFUL or OPEN: the mode and the one rule that decided it, in words for the audit and the refusal. */
+export interface ModeWhy { mode: SpecMode; why: string }
+
+/**
+ * FAITHFUL or OPEN, DECIDED BY RULE, NEVER BY CLAIM (25 September 2026). The writer's claim used to be kept whenever it
+ * stood on one "story" item, and "fammi un video dei pirati" came back FAITHFUL on a single character item ("pirates"):
+ * the treatment was told as-told, and the film was a pirate at a rail. The mode is now decided from the items and the
+ * request alone, in this order:
+ *   1. a delegation ("stupiscimi", "surprise me") is OPEN;
+ *   2. two or more things that happen (must events and actions together, one beat written as both counted once) are
+ *      the user's story: FAITHFUL;
+ *   3. a shot the user described, words to be read on screen or said: FAITHFUL;
+ *   4. a PARTICULAR character — theirs ("my dog", "mio nonno"), named ("Captain Mara", "Pietro"), or with a look the
+ *      user gave them — is FAITHFUL; a genre, a topic or a generic role ("pirates", "a pastry chef") is not;
+ *   5. four or more things to film (content items, not style, mood or exclusions): FAITHFUL;
+ *   6. anything else is a subject: OPEN, and Kleo tells the story.
+ */
+export function modeWhy(items: readonly SpecItem[], request: string, opts: { cast?: readonly SpecCast[] } = {}): ModeWhy {
+  if (DELEGATE_RE.test(request)) return { mode: "open", why: "a delegation: the user left the film to Kleo" };
+  const must = items.filter((i) => i.must);
+  // Distinct beats: an action that restates an event ("bury a treasure" beside "the pirates bury a treasure") is one.
+  const events = must.filter((i) => i.kind === "event");
+  const happens = events.length + must.filter((i) => i.kind === "action" && !events.some((e) => sameBeat(e, i))).length;
+  if (happens >= 2) return { mode: "faithful", why: `the user told what happens (${happens} events and actions)` };
+  const described = must.find((i) => i.kind === "shot" || i.kind === "text" || i.kind === "line");
+  if (described) return { mode: "faithful", why: `the user described a ${described.kind}: "${described.quote}"` };
+  const names = namesIn(request);
+  const soleCast = opts.cast?.length === 1 ? opts.cast[0].id : null;
+  for (const c of must.filter((i) => i.kind === "character")) {
+    const castId = c.who || soleCast;
+    const cast = castId ? opts.cast?.find((x) => x.id === castId) ?? null : null;
+    const reason = POSSESSIVE_RE.test(c.quote) ? "their own"
+      : characterNamed(c, names, cast) ? "named"
+      : castId && must.some((i) => i.kind === "look" && i.who === castId) ? "described" : null;
+    if (reason) return { mode: "faithful", why: `a particular character (${reason}): "${c.quote}"` };
+  }
+  const content = must.filter((i) => !MANNER_KINDS.includes(i.kind));
+  if (content.length >= 4) return { mode: "faithful", why: `the user described ${content.length} things to film` };
+  const subject = (content.length ? content : must.length ? must : items).slice(0, 3).map((i) => i.text).join(", ");
+  return { mode: "open", why: `only a subject: ${subject}` };
+}
+
+/** The mode alone. `claimed` (the writer's own "faithful"/"open") is accepted and ignored: the rules decide (modeWhy). */
+export function modeFor(items: readonly SpecItem[], request: string, _claimed?: unknown, opts: { cast?: readonly SpecCast[] } = {}): SpecMode {
+  return modeWhy(items, request, opts).mode;
+}
+
+/** Why a stored spec has the mode it has, for the audit and the refusal (the stored shape carries no reason). */
+export const specModeWhy = (spec: RequestSpec, request: string): ModeWhy => modeWhy(spec.items, request, { cast: spec.cast });
 
 /* ------------------------------------------------------------------ repair and check */
 
@@ -252,8 +333,8 @@ export function specProblems(raw: unknown, request: string, opts: { handles?: re
 /**
  * The writer's answer fitted to the limits, or null when it is not a spec (specProblems says why). Items whose quote is
  * not in the request are dropped rather than refused when `lenient` (the second attempt of the server's writer: a spec
- * with one invented item removed is still the user's spec). The mode is re-decided from the items and the writer's
- * claim (modeFor).
+ * with one invented item removed is still the user's spec). The mode is re-decided from the items and the request
+ * (modeWhy): the writer's claim does not count.
  */
 export function repairSpec(raw: unknown, request: string, opts: { lenient?: boolean; handles?: readonly string[] } = {}): RequestSpec | null {
   if (!isObj(raw)) return null;
@@ -303,7 +384,7 @@ export function repairSpec(raw: unknown, request: string, opts: { lenient?: bool
   const script = narration === "verbatim" ? clip(raw.script, S.script) || null : null;
   return {
     v: 1,
-    mode: modeFor(items, request, raw.mode),
+    mode: modeFor(items, request, raw.mode, { cast }),
     summary: clip(raw.summary, S.summary) || items[0].text,
     items, cast, refs,
     open: (Array.isArray(raw.open) ? raw.open : []).map((o) => clip(o, S.openLen)).filter(Boolean).slice(0, S.open),
@@ -364,7 +445,11 @@ export function specBlock(spec: RequestSpec): string {
   const items = spec.items.map((i) => `  ${i.id} [${i.kind}${i.kind === "event" && i.order ? ` #${i.order}` : ""}${i.must ? ", MUST" : ""}] ${KIND_LABEL[i.kind]}: ${i.text}${i.who ? ` (${i.who})` : ""} — user: "${i.quote}"`).join("\n");
   const events = eventsInOrder(spec);
   const order = events.length >= 2 ? `\nORDER: the events happen in this order: ${events.map((e) => e.id).join(" → ")}. Never reorder them.` : "";
-  const open = spec.open.length ? `\nLEFT TO KLEO (decide these, and list each decision): ${spec.open.join("; ")}.` : "\nLEFT TO KLEO: only how it is told — nothing about WHAT happens.";
+  // An OPEN film's story is Kleo's to invent (25 September 2026): printed first, so a writer handed "pirates" does not
+  // read "only how it is told" and film a pirate standing at a rail.
+  const open = spec.mode === "open"
+    ? `\nLEFT TO KLEO: THE STORY: who is in it beyond the requirements, what happens, the hook, the turn and the ending${spec.open.length ? `; and ${spec.open.join("; ")}` : ""} (decide these, and list each decision).`
+    : spec.open.length ? `\nLEFT TO KLEO (decide these, and list each decision): ${spec.open.join("; ")}.` : "\nLEFT TO KLEO: only how it is told — nothing about WHAT happens.";
   const script = spec.narration === "verbatim" && spec.script ? `\nTHE NARRATION IS THE USER'S, WORD FOR WORD — split it across the scenes, never rewrite it:\n"""${spec.script}"""` : "";
   const refs = spec.refs.length ? `\nREFERENCE IMAGES the user gave (Kleo draws from them): ${spec.refs.map((r) => `${r.id} (${r.role}${r.for ? ` of ${r.for}` : ""}): ${r.description ?? "an image"}`).join("; ")}.` : "";
   const mode = spec.mode === "faithful"
@@ -481,15 +566,23 @@ export function coverage(spec: RequestSpec, sb: unknown, opts: { cast?: readonly
 /* ------------------------------------------------------------------ the method, for the assistant and the server */
 
 /**
+ * The mode's rule in one sentence (modeWhy), printed wherever a writer is told which mode to claim: the spec method,
+ * kleo_adapt_prompt's next step and kleo_create_video's refusal all say the same thing, so a writer cannot be told one
+ * rule and judged by another.
+ */
+export const MODE_RULE = `FAITHFUL when the user told what happens (two or more events or actions), described a shot, words to be read on screen or said, a particular character (their own — "my dog", "mio nonno" —, one they named, or one whose look they gave), or four or more things to film; OPEN otherwise: a genre, a topic or a generic role, even with a place or one action, is open, and so is "surprise me"`;
+
+/**
  * THE SPEC METHOD. The system message of the server's spec call, and the text kleo_adapt_prompt hands the assistant.
  * Its whole job is to NOT be creative: extraction, not interpretation.
  */
 export const SPEC_METHOD = `You are Kleo's script supervisor. Kleo makes short narrated films (realistic live action, or a 2D animated film) from a user's request. Before any creative decision is taken, you take the request apart into the REQUIREMENTS the finished film will be checked against. You invent nothing: you extract. You answer with ONE JSON object and nothing else.
 
 WHAT TO EXTRACT — every concrete thing the user wrote about the film's CONTENT becomes an item:
-- character: each person, animal or creature in the film ("a thin pastry chef", "Captain Mara", "my dog").
+- character: each person, animal or creature in the film ("a thin pastry chef", "Captain Mara", "my dog"). A generic role ("pirates", "a fisherman") is still a character item.
 - look: EACH visible attribute of a character as its own item — hair, age, build, clothes, colours, accessories — with "who" = that character's cast id. "short blonde hair tied up" and "lilac apron" are two items.
 - place: where it happens. object: a thing that must be seen. action: what someone does. mood: a feeling asked for.
+  A beat of the story is an event OR an action, never both: do not list the same beat twice.
 - event: each beat of the story, with "order" 1, 2, 3… in the order the user told them. A story told in five sentences is five events.
 - shot: a framing the user described ("close-up of her hands", "seen from above", "the film opens on the empty street").
 - style: a visual style or reference ("like Pixar", "black and white", "Wes Anderson colours", "anime").
@@ -507,7 +600,7 @@ RULES:
 6. "open": what the user left to Kleo, in English, one short phrase each ("the ending", "the setting", "the narrator's words"). If they described the whole story, "open" holds only presentation details.
 7. "narration": "verbatim" when the user wrote the narration itself (then "script" = that text, word for word), "lines" when they gave some lines the narrator must say, "free" otherwise.
 8. "summary": one English sentence — the film the user asked for, as they asked for it. Not a pitch, not an improvement.
-9. "mode": "faithful" when the user described what happens or who is in it (a character they named or described, an event, a shot, words to be read on screen or said); "open" when they gave only a subject or asked to be surprised. A faithful spec carries at least one such item with "must": true.
+9. "mode": ${MODE_RULE}. Kleo re-decides the mode by this rule, so write the one it gives.
 
 SHAPE:
 {"v":1,"mode":"faithful|open","summary":"…","cast":[{"id":"c1","name":"…","look":"…","ref":null}],"items":[{"id":"R1","kind":"character|look|place|object|action|event|shot|style|text|line|mood|exclude","text":"…","quote":"…","must":true,"who":"c1"|null,"order":1|null}],"refs":[{"id":"ref1","handle":"kref_…","role":"character|object|place|style","for":"c1","description":"…"}],"open":["…"],"narration":"free|lines|verbatim","script":null}

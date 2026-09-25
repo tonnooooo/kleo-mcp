@@ -8,6 +8,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildGuide, guideText, EXAMPLE_DIRECTION, EXAMPLE_SCENES } from "../src/guide.ts";
+import { qualityProblems, clipWordsPerShot } from "../src/keou-contract.ts";
 import { validateStoryboard, defaultVoice, wordBudget, speedFor, shotBudget, trimShots, kleoStyleOf, pictureScenes, stripForWorker, AUTHORING_SHOT_FIELDS, SHOT_ACTION_MAX, SHOT_COVERS_MAX, fidelityWarnings, directionProblems, sectionOfScene, CINEMA_ACCENTS, SHOTS_MIN_CINEMA, shotRangeText, VOICES, FORBIDDEN_FIELDS, FORBIDDEN_KINDS, FORBIDDEN_SCENE_FIELDS, KLEO_STYLES, IMAGE_PROMPT_MAX, MAX_PICTURES, SHOT_MOTION, SHOT_FIELDS, SHOTS_PER_SCENE, SHOT_KINDS, SHOT_GRAMMAR, durationFor, MOTION_ALIASES, MOTION_MOVES, MAX_SHOT_S, MAX_PERSON_SHOT_S, LOUD_WINDOW_S, LOUD_MAX_PER_WINDOW } from "../src/keou-contract.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -207,6 +208,29 @@ test("shotBudget and trimShots: a line carries one shot per seven words, at most
   const short = pirates(); short.scenes[1].voice = "Below deck it is pitch black."; short.scenes[1].shots = [short.scenes[1].shots[0]];
   const r = validateStoryboard(short, { format: "9:16", language: "en" });
   assert.ok(!(r.ok ? [] : r.errors).some((e) => /a scene needs at least 2/.test(e)), (r.ok ? [] : r.errors).join("\n"));
+});
+
+test("the clip floor (25 September): with a 4-second floor a shot carries eleven words; the floor and the ceiling agree, so nothing loops", () => {
+  // No floor: today's seven/fourteen table, for every length.
+  for (let w = 0; w <= 40; w++) assert.deepEqual(shotBudget(w, 0), { min: w >= 14 ? 2 : 1, max: Math.max(1, Math.min(4, Math.floor(w / 7))) }, `${w} words`);
+  assert.equal(clipWordsPerShot(0), 7); assert.equal(clipWordsPerShot(4), 11); assert.equal(clipWordsPerShot(2), 7, "a floor under the local road's shot keeps seven");
+  assert.deepEqual(shotBudget(13, 4), { min: 1, max: 1 }); assert.deepEqual(shotBudget(22, 4), { min: 2, max: 2 }); assert.deepEqual(shotBudget(44, 4), { min: 2, max: 4 });
+  const line = (n) => Array.from({ length: n }, (_, i) => `w${i}`).join(" ");
+  const sb = () => ({ style: "picture", scenes: [
+    { id: "a", kind: "cinema", voice: line(13), shots: [{ image_prompt: "1" }, { image_prompt: "2", at: "w7" }] },
+    { id: "b", kind: "cinema", voice: line(16), shots: [{ image_prompt: "1" }] },
+    { id: "end", kind: "closing", voice: line(4), shots: [{ image_prompt: "1" }] },
+  ] });
+  const trimmed = sb(); assert.equal(trimShots(trimmed, null, 4), 1); assert.equal(trimmed.scenes[0].shots.length, 1, "a 13-word line is one 4-second clip");
+  const local = sb(); assert.equal(trimShots(local, null, 0), 1, "on the local road too: 13 words are one shot");
+  // The sole witness of a must item still stays, over budget.
+  const witnessed = sb(); witnessed.scenes[0].shots[0].covers = ["R1"]; witnessed.scenes[0].shots[1].covers = ["R2"];
+  assert.equal(trimShots(witnessed, SPEC(), 4), 0); assert.equal(witnessed.scenes[0].shots.length, 2);
+  // A 16-word line with one picture: a slideshow on the local road, one clip on the API road.
+  assert.ok(qualityProblems(sb(), 0).some((p) => /scene 2 \(b\): 1 picture, a scene needs at least 2/.test(p)));
+  assert.ok(!qualityProblems(sb(), 4).some((p) => /a scene needs at least/.test(p)), "with a 4-second floor one picture is what a 16-word line pays for");
+  const long = sb(); long.scenes[1].voice = line(24);
+  assert.ok(qualityProblems(long, 4).some((p) => /scene 2 \(b\): 1 picture/.test(p)), "24 words are two clips: one picture is refused");
 });
 
 /* ------------------------------------------------------------------ Kleo styles and pictures (docs/PICTURE-STYLE.md) */
@@ -761,6 +785,24 @@ test("the storyboard guide's examples validate against this contract", () => {
     assert.ok(text.includes(EXAMPLE_DIRECTION.world), `${style}: the example's world is in the guide`);
     assert.ok(text.includes(EXAMPLE_SCENES[0].shots[0].image_prompt), `${style}: the example's first picture is in the guide`);
   }
+});
+
+test("on the API road the whole guide teaches the clip floor: scenes the words can pay for, one picture per clip's worth (review, 25 September)", () => {
+  const per = clipWordsPerShot(4);
+  const api = guideText({ duration_s: 15, style: "realistic", languages: ["en", "it"], clipFloorS: 4 });
+  const words = wordBudget(15, 1.1).target;
+  assert.match(api, new RegExp(`about ${words} narrated words across ${Math.floor(words / per)} scenes`));
+  assert.ok(api.includes(`1-${SHOTS_PER_SCENE.cinema[1]} shots each, one per ${per} words of voice (one for a line under ${2 * per} words)`), "the refusal list says the floor's shot count");
+  assert.ok(!api.includes(`${shotRangeText("cinema")} shots each`), "and not the local road's");
+  // A line shorter than one clip is bought whole and shown in part (the box never pads it with dead air: kleo_worker FIT_PAD).
+  assert.ok(api.includes(`Give every line ${per} words at the least: a shorter one still pays for a whole 4-second clip`), "the guide asks for a clip's worth of words per line");
+  assert.match(api, new RegExp(`in THIS film a picture is a paid clip, so a scene has one picture per ${per} words of voice`));
+  assert.doesNotMatch(api, /Notice: every scene has \d or more pictures/);
+  // A longer film keeps the local range where the words can pay for it; the local road is unchanged.
+  assert.match(guideText({ duration_s: 45, style: "realistic", languages: ["en", "it"], clipFloorS: 4 }), /across 4-8 scenes/);
+  const local = guideText({ duration_s: 15, style: "realistic", languages: ["en", "it"] });
+  assert.match(local, /across 4-8 scenes/); assert.ok(local.includes(`${shotRangeText("cinema")} shots each`));
+  assert.match(local, new RegExp(`Notice: every scene has ${SHOTS_MIN_CINEMA} or more pictures`));
 });
 
 test("the guide only offers languages and voices kleo_create_video accepts", () => {

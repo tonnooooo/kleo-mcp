@@ -390,14 +390,14 @@ test("the pre-flight prices a film before any card is rented: the storyboard's s
   const ten = m.plannedFilmUsd(env, null, 60, 10, 24);
   assert.deepEqual(ten, { usd: Math.round(3.9 * m.PREFLIGHT_MARGIN * 1000) / 1000, shots: 10, model: "minimax-h3" }, "10 shots of 6 s at 0.065 $/s = 3.90 $ on the box, kept on the upper side by the margin");
   assert.equal(m.PREFLIGHT_MARGIN, 1.25);
+  // No storyboard: one shot per clip floor (MiniMax's shortest clip, 4 s), capped by the storyboard. Until 25 September
+  // this was a shot every 2.5 s and never fewer than six — the density of films planned before the clip floor.
   const guess = m.plannedFilmUsd(env, null, 60, null, 24);
-  assert.equal(guess.shots, 24, "no storyboard: the Short density, capped by the storyboard");
-  assert.equal(m.plannedFilmUsd(env, null, 15, null, 24).shots, 6, "never fewer than six");
+  assert.equal(guess.shots, 15, "60 s of 4-second clips");
+  assert.equal(m.plannedFilmUsd(env, null, 15, null, 24).shots, 4, "the six-shot floor is gone");
   assert.equal(m.plannedFilmUsd(env, null, 300, null, 48).shots, 48, "never more than the storyboard cap");
-  // an upper bound: never under the films the audit recorded (30 s Short = 15 × 4 s = 3.90 $; 15 s = 1.885 $; 60 s = 3.90 $)
-  assert.ok(m.plannedFilmUsd(env, null, 30, null, 24).usd >= 3.9, "a 30 s Short is not under-estimated");
-  assert.ok(m.plannedFilmUsd(env, null, 15, null, 24).usd >= 1.885, "nor a 15 s one");
-  assert.ok(m.plannedFilmUsd(env, null, 60, null, 24).usd >= 3.9, "nor a 60 s film");
+  // Still an upper bound: never fewer billed seconds than the film has, and the margin on top.
+  for (const s of [15, 30, 60]) assert.ok(m.plannedFilmUsd(env, null, s, null, 24).usd >= s * 0.065 * m.PREFLIGHT_MARGIN - 1e-9, `${s} s`);
   const empty = fakeKie({ credits: 14 }); globalThis.fetch = empty.fetch; // 14 credits = 0.07 $, the balance of that morning
   const pre = await m.kiePreflight(env, 60, 10, 24);
   assert.deepEqual(pre, { ok: false, reason: "balance", balance_usd: 0.07, planned_usd: 4.875, spent_today_usd: 0, budget_usd: 5, shots: 10, model: "minimax-h3" });
@@ -482,7 +482,8 @@ test("the job spec tells the box which road and which model; the admin route swi
   const env = await newEnv();
   const job = await filmJob(env);
   const spec = await (await m.handleInternal(new Request(`http://kleo.test/internal/jobs/${job.id}`, { headers: { authorization: "Bearer wsecret" } }), env)).json();
-  assert.deepEqual(spec.footage, { backend: "kie", model: "minimax-h3" }, "the default of the file is MiniMax H3");
+  assert.deepEqual(spec.footage, { backend: "kie", model: "minimax-h3", clip_min_s: 4, clip_max_s: 15 },
+    "the default of the file is MiniMax H3, and the box is told the clip lengths it films (whole seconds 4-15)");
   const admin = (method, body) => m.handleAdmin(new Request("http://kleo.test/internal/admin/footage", { method, headers: { authorization: "Bearer s3cret" }, body: body && JSON.stringify(body) }), env);
   globalThis.fetch = fakeKie({ credits: 2000 }).fetch;
   let v = await (await admin("GET")).json();
@@ -492,12 +493,45 @@ test("the job spec tells the box which road and which model; the admin route swi
   v = await (await admin("POST", { model: "seedance-2.0" })).json();
   assert.equal(v.model, "seedance-2.0");
   assert.equal((await (await m.handleInternal(new Request(`http://kleo.test/internal/jobs/${job.id}`, { headers: { authorization: "Bearer wsecret" } }), env)).json()).footage.model, "seedance-2.0");
+  await admin("POST", { model: "veo-3.1" });
+  assert.deepEqual((await (await m.handleInternal(new Request(`http://kleo.test/internal/jobs/${job.id}`, { headers: { authorization: "Bearer wsecret" } }), env)).json()).footage,
+    { backend: "kie", model: "veo-3.1", clip_min_s: 4, clip_max_s: 8, clip_seconds: [4, 6, 8] }, "a model that films a few lengths only says which");
+  await admin("POST", { model: "seedance-2.0" });
   assert.equal((await admin("POST", { model: "nope" })).status, 400);
   v = await (await admin("POST", { backend: "local" })).json();
   assert.equal(v.backend, "local"); assert.equal(v.model, "seedance-2.0", "the model survives a backend switch");
   v = await (await admin("POST", { reset: true })).json();
   assert.equal(v.backend, "kie"); assert.equal(v.model, "minimax-h3"); assert.equal(v.override, null);
   assert.equal((await m.handleAdmin(new Request("http://kleo.test/internal/admin/footage", { headers: { authorization: "Bearer wrong" } }), env)).status, 401);
+});
+
+test("clipLengthsSpec: the lengths the box may order are exactly the lengths the server orders, for every model (25 September)", () => {
+  for (const [name, spec] of Object.entries(m.KIE_MODELS)) {
+    const told = m.clipLengthsSpec(spec);
+    const lengths = told.clip_seconds ?? Array.from({ length: told.clip_max_s - told.clip_min_s + 1 }, (_, i) => told.clip_min_s + i);
+    assert.equal(lengths[0], m.clipMinSeconds(spec), `${name}: the shortest clip`);
+    assert.equal(Array.isArray(spec.seconds), Array.isArray(told.clip_seconds), `${name}: a list model sends its list, a range model its bounds`);
+    // The worker orders a fitted shot at a whole length from this list: the server must film exactly that, not one more.
+    for (const n of lengths) assert.equal(m.clipSecondsFor(spec, n), n, `${name}: a ${n} s shot is a ${n} s clip`);
+  }
+  assert.deepEqual(m.clipLengthsSpec(m.KIE_MODELS["seedance-2.5-480p"]), { clip_min_s: 4, clip_max_s: 30 });
+});
+
+test("a clip the box bought whole is ordered at exactly that length, billed for it, and asked as one continuous take (25 September)", async () => {
+  const env = await newEnv({ KIE_API_KEY: undefined, EPHONE_API_KEY: "eph-key", KLEO_FOOTAGE_MODEL: "seedance-2.5-480p", KIE_MAX_VIDEO_S: "0" });
+  const job = await filmJob(env);
+  const eph = fakeEphone(); globalThis.fetch = eph.fetch;
+  const whole = SHOTS.map((s, i) => ({ ...s, seconds: [4, 5, 7][i] }));
+  const r = await m.requestFootage(env, job, "http://kleo.test", { shots: whole, look: "realistic", format: "9:16" });
+  assert.equal(r.status, 200, JSON.stringify(r.reply)); assert.equal(r.reply.ordered, 3);
+  // One task per shot, in the order the box sent them.
+  assert.deepEqual(eph.calls.submit.map((c) => c.body.input.duration), [4, 5, 7], "the length the box asked for, not one second more");
+  for (const c of eph.calls.submit) {
+    assert.doesNotMatch(c.body.input.prompt, /the motion settles/, "nothing of the clip is left over to settle in");
+    assert.match(c.body.input.prompt, /in one continuous movement/);
+  }
+  const rows = await m.footageRows(env, job.id);
+  assert.deepEqual(rows.map((x) => [x.shot_id, x.seconds, x.cost_usd]), [["01-hook-s1", 4, 0.35], ["01-hook-s2", 5, 0.4375], ["02-city-s1", 7, 0.6125]]);
 });
 
 test("kiePrompt: the animated film asks the clip model for drawn motion, never for 35mm photography (14 September)", () => {
@@ -635,4 +669,231 @@ test("Wan road: a shot that carries the user's sign is not told by the NEGATIVE 
   assert.equal(m.kieInput("wan-2.7", m.KIE_MODELS["wan-2.7"], p).negative_prompt, m.KIE_NEGATIVES.realistic);
   assert.equal(m.kieInput("wan-2.7", m.KIE_MODELS["wan-2.7"], { ...p, keepsText: true }).negative_prompt, m.kieNegativeFor("realistic", true));
   assert.equal(m.kieInput("minimax-h3", m.KIE_MODELS["minimax-h3"], { ...p, keepsText: true }).negative_prompt, undefined, "only the Wan dialect has a negative prompt");
+});
+
+/* ------------------------------------------------------------------ ePhone AI (25 September 2026) */
+
+/** A fake ePhone AI (RixAPI): /v1/task/submit, /v1/task/{id}, the billing pair, the result file. */
+function fakeEphone(script = {}) {
+  const calls = { submit: [], query: [], downloads: 0, billing: 0 };
+  let n = 0;
+  const mp4 = new Uint8Array(4096); mp4.set([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70], 0);
+  const fetch = async (url, init = {}) => {
+    const u = String(url);
+    if (u === "https://api.ephone.ai/v1/task/submit") {
+      calls.submit.push({ body: JSON.parse(init.body), headers: init.headers });
+      // The real answer of an empty account, 25 September 2026.
+      if (script.submitNoMoney) return new Response(JSON.stringify({ error: { message: "预扣费额度失败, 用户剩余额度: ＄0.000000, 需要预扣费额度: ＄0.006360 (request id: a407)", type: "rix_api_error", param: "", code: "insufficient_user_quota" } }), { status: 403 });
+      return new Response(JSON.stringify({ id: `eph_${++n}`, status: "queued", created_at: 1 }), { status: 200 });
+    }
+    const q = /^https:\/\/api\.ephone\.ai\/v1\/task\/([^/?]+)$/.exec(u);
+    if (q) {
+      calls.query.push(q[1]);
+      const status = script.status?.[q[1]] ?? script.defaultStatus ?? "in_progress";
+      const body = { id: q[1], status, created_at: 1,
+        ...(status === "completed" ? { outputs: [`https://cdn.ephone.test/${q[1]}.mp4`], usage: { type: "tokens", output_tokens: 38880, total_tokens: 38880 } } : {}),
+        ...(status === "failed" ? { error: "Content policy violation detected" } : {}) };
+      return new Response(JSON.stringify(body), { status: 200 });
+    }
+    if (u.endsWith("/v1/dashboard/billing/subscription")) { calls.billing++; return new Response(JSON.stringify({ object: "billing_subscription", hard_limit_usd: script.limit ?? 10 }), { status: 200 }); }
+    if (u.endsWith("/v1/dashboard/billing/usage")) return new Response(JSON.stringify({ object: "list", total_usage: script.usedCents ?? 250 }), { status: 200 });
+    if (u.startsWith("https://cdn.ephone.test/")) { calls.downloads++; return new Response(mp4, { status: 200, headers: { "content-length": String(mp4.length) } }); }
+    throw new Error(`unexpected fetch ${u}`);
+  };
+  return { calls, fetch };
+}
+
+test("ePhone AI: a Seedance 2.5 model needs EPHONE_API_KEY, not kie.ai's; the price table knows it", () => {
+  const j = { params: JSON.stringify({ duration_s: 15 }) };
+  assert.equal(m.footageBackendFor({ KLEO_FOOTAGE_BACKEND: "kie", KIE_API_KEY: "k", KLEO_FOOTAGE_MODEL: "seedance-2.5-480p" }, j), "local", "no ePhone key: the API road is closed");
+  assert.equal(m.footageBackendFor({ KLEO_FOOTAGE_BACKEND: "kie", EPHONE_API_KEY: "e", KLEO_FOOTAGE_MODEL: "seedance-2.5-480p" }, j), "kie");
+  assert.equal(m.footageBackendFor({ KLEO_FOOTAGE_BACKEND: "kie", EPHONE_API_KEY: "e" }, j, { model: "seedance-2.5-720p" }), "kie", "the admin override picks the road too");
+  const s480 = m.KIE_MODELS["seedance-2.5-480p"];
+  assert.equal(s480.provider, "ephone"); assert.equal(s480.model, "doubao-seedance-2-5-260628"); assert.equal(s480.resolution, "480p");
+  assert.equal(m.clipSecondsFor(s480, 2.4), 4, "4 s at least"); assert.equal(m.clipSecondsFor(s480, 22), 22, "up to 30 s in one clip");
+  assert.deepEqual(m.ephoneInput("seedance-2.5-480p", s480, { prompt: "p", imageUrl: "https://kleo.test/a.png", seconds: 3.2, format: "9:16" }),
+    { prompt: "p", first_frame: "https://kleo.test/a.png", duration: 4, resolution: "480p", aspect_ratio: "adaptive", generate_audio: false, watermark: false }, "with a first frame only 'adaptive' is accepted");
+  assert.equal(m.ephoneInput("seedance-2.5-480p", s480, { prompt: "p", imageUrl: null, seconds: 4, format: "16:9" }).aspect_ratio, "16:9", "text-to-video keeps the film's format");
+});
+
+test("ePhone AI: requestFootage submits one task per shot on the official channels only, footageStatus collects the clip", async () => {
+  const env = await newEnv({ KIE_API_KEY: undefined, EPHONE_API_KEY: "eph-key", KLEO_FOOTAGE_MODEL: "seedance-2.5-480p", KIE_MAX_VIDEO_S: "0" });
+  const job = await filmJob(env);
+  const eph = fakeEphone(); globalThis.fetch = eph.fetch;
+  const r = await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS, look: "realistic", format: "9:16" });
+  assert.equal(r.status, 200, JSON.stringify(r.reply)); assert.equal(r.reply.ordered, 3); assert.equal(r.reply.model, "seedance-2.5-480p");
+  assert.equal(eph.calls.billing, 1, "the balance is read before the first task");
+  const first = eph.calls.submit.find((c) => c.body.input.prompt.startsWith("a figure") || c.body.input.first_frame?.includes("01-hook-s1"));
+  assert.equal(first.headers.authorization, "Bearer eph-key");
+  assert.equal(first.headers["X-Provider-Order"], "official"); assert.equal(first.headers["X-Provider-Only"], "true");
+  assert.equal(first.body.model, "doubao-seedance-2-5-260628");
+  assert.match(first.body.input.first_frame, /^http:\/\/kleo\.test\/dl\/gt_test1234\/img%2F01-hook-s1\.png\?exp=\d+&sig=[0-9a-f]{64}$/);
+  assert.deepEqual([first.body.input.duration, first.body.input.resolution, first.body.input.aspect_ratio, first.body.input.generate_audio], [4, "480p", "adaptive", false]);
+  const rows = await m.footageRows(env, job.id);
+  assert.deepEqual(rows.map((x) => [x.shot_id, x.state, x.cost_usd]), [["01-hook-s1", "generating", 0.35], ["01-hook-s2", "generating", 0.35], ["02-city-s1", "generating", 0.7]]);
+  // One finishes, one fails, one is still running.
+  const byShot = Object.fromEntries(rows.map((x) => [x.shot_id, x.task_id]));
+  globalThis.fetch = fakeEphone({ status: { [byShot["01-hook-s1"]]: "completed", [byShot["01-hook-s2"]]: "failed" } }).fetch;
+  const st = await m.footageStatus(env, job);
+  assert.deepEqual(st.reply.ready, ["01-hook-s1"]); assert.deepEqual(st.reply.pending, ["02-city-s1"]);
+  assert.match(st.reply.failed["01-hook-s2"], /Content policy/);
+  assert.ok(await env.RENDERS.get(m.clipKey(job.id, "01-hook-s1")), "the clip is on R2");
+});
+
+test("ePhone AI: an empty account (RixAPI's 403 insufficient_user_quota) stops the order at once, and the balance refuses first when it is known", async () => {
+  const env = await newEnv({ KIE_API_KEY: undefined, EPHONE_API_KEY: "eph-key", KLEO_FOOTAGE_MODEL: "seedance-2.5-480p", KIE_MAX_VIDEO_S: "0" });
+  const job = await filmJob(env);
+  const poor = fakeEphone({ submitNoMoney: true, limit: 0 }); globalThis.fetch = poor.fetch; // limit 0: the balance says nothing, the task decides
+  const r = await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS, format: "9:16" });
+  assert.equal(r.status, 402); assert.equal(r.reply.no_credit, true); assert.match(r.reply.error, /ePhone AI balance is empty/);
+  assert.equal(poor.calls.submit.length, 1, "the first refusal stops the order");
+  const env2 = await newEnv({ KIE_API_KEY: undefined, EPHONE_API_KEY: "eph-key", KLEO_FOOTAGE_MODEL: "seedance-2.5-480p", KIE_MAX_VIDEO_S: "0" });
+  const job2 = await filmJob(env2);
+  const low = fakeEphone({ limit: 1, usedCents: 90 }); globalThis.fetch = low.fetch; // 0.10 $ left
+  const r2 = await m.requestFootage(env2, job2, "http://kleo.test", { shots: SHOTS, format: "9:16" });
+  assert.equal(r2.status, 402); assert.equal(low.calls.submit.length, 0, "nothing ordered"); assert.equal(r2.reply.balance_usd, 0.1);
+  // The pre-flight reads the same account.
+  const pre = await m.kiePreflight(env2, 30, 6, 24);
+  assert.equal(pre.ok, false); assert.equal(pre.reason, "balance"); assert.equal(pre.balance_usd, 0.1);
+});
+
+test("the clip floor: a model's shortest clip; a film on the API road has one, the animatic and the local road none; the pre-flight prices it", () => {
+  const min = (k) => m.clipMinSeconds(m.KIE_MODELS[k]);
+  assert.equal(min("seedance-2.5-480p"), 4); assert.equal(min("seedance-2.5-720p"), 4); assert.equal(min("minimax-h3"), 4);
+  assert.equal(min("kling-3.0"), 3); assert.equal(min("wan-2.7"), 2); assert.equal(min("veo-3.1"), 4, "a per-clip model: its shortest listed clip");
+  const eph = { KLEO_FOOTAGE_BACKEND: "kie", EPHONE_API_KEY: "e", KLEO_FOOTAGE_MODEL: "seedance-2.5-480p", KIE_MAX_VIDEO_S: "0" };
+  assert.equal(m.clipFloorFor(eph, { product: "film", duration_s: 15 }), 4);
+  assert.equal(m.clipFloorFor(eph, { product: "animatic", duration_s: 15 }), 0, "an animatic buys no clip");
+  assert.equal(m.clipFloorFor({}, { product: "film", duration_s: 15 }), 0, "the local road buys no clip");
+  assert.equal(m.clipFloorFor({ ...eph, KIE_MAX_VIDEO_S: "20" }, { product: "film", duration_s: 45 }), 0, "over the API road's cap the film is local");
+  // The pre-flight of a 15 s Seedance film: four 4-second clips, not six.
+  const plan15 = m.plannedFilmUsd(eph, null, 15, null, 24);
+  assert.equal(plan15.shots, 4); assert.ok(plan15.usd <= 2.0, `${plan15.usd} $`);
+  const plan30 = m.plannedFilmUsd(eph, null, 30, null, 24);
+  assert.ok(plan30.usd >= 30 * 0.0875 * 1.25, `${plan30.usd} $: never under the film's own seconds`);
+});
+
+/* ------------------------------------------------------------------ the Seedance prompt (25 September) */
+
+const SEED_SPEC = () => ({
+  v: 1, mode: "faithful", summary: "Mara decorates a cake at dawn.",
+  cast: [{ id: "c1", name: "Mara", look: "a thin woman with short blonde hair tied up", ref: null }],
+  items: [
+    { id: "R1", kind: "look", text: "Mara wears a lilac apron", quote: "grembiule lilla", must: true, who: "c1", order: null },
+    { id: "R2", kind: "text", text: "a shop sign reading \"Forno Mara\"", quote: "insegna Forno Mara", must: true, who: null, order: null },
+  ],
+  refs: [], open: [], narration: "free", script: null,
+});
+const SEED_SB = () => ({
+  style: "picture", kleo_style: "realistic", direction: { subject: "cake", world: "A village bakery at dawn", cast: [{ name: "Mara", look: "a blonde woman" }], objects: [], forbidden: [], sections: [] },
+  scenes: [{ id: "01-hook", kind: "cinema", voice: "a line", shots: [
+    { image_prompt: "Mara at the counter with a cake", action: "Mara lifts the piping bag and draws a slow spiral of cream", cast: ["c1"], covers: ["R1"] },
+    { image_prompt: "The bakery sign above the door", covers: ["R2"] },
+    { image_prompt: "Close on Mara's face in the warm light", shot_kind: "face", cast: ["c1"] },
+  ] }],
+});
+const FRAME = { clipSeconds: 4, usedSeconds: 3.2, keepsText: false, hasFrame: true };
+
+test("seedancePrompt: the frame is continued, not described again; the action is timed inside the kept seconds; one camera move; the look in positive words", () => {
+  const stored = { storyboard: SEED_SB(), spec: SEED_SPEC() };
+  const p = m.seedancePrompt({ id: "01-hook-s1", image_prompt: "ignored", motion: "push_in" }, "realistic", stored, FRAME);
+  assert.ok(p.startsWith("Continue from the first frame: Mara lifts the piping bag and draws a slow spiral of cream. Mara stays exactly as in the first frame."), p);
+  assert.match(p, /Timing: 0s-3\.2s the action above; 3\.2s-4s the motion settles and the move carries on gently\./);
+  assert.equal((p.match(/camera/gi) ?? []).length, 1, "exactly one camera sentence"); assert.match(p, /Camera: slow push-in toward the subject\./);
+  for (const bad of [/\bfast\b/i, /35mm/i, /shallow depth of field/i]) assert.doesNotMatch(p, bad);
+  assert.ok(!p.includes("a thin woman with short blonde hair tied up"), "a character in the frame is named, not re-described");
+  assert.match(p, /live-action film look/); assert.match(p, /no slow motion/); assert.match(p, /no text, subtitles, logos or watermark\.$/);
+  assert.ok(p.length >= 350 && p.length <= m.SEEDANCE_PROMPT_MAX, `${p.length} characters`);
+  // The whole clip is the shot: no settle, the action fills it.
+  const full = m.seedancePrompt({ id: "01-hook-s1", image_prompt: "x", motion: "push_in" }, "realistic", stored, { ...FRAME, usedSeconds: 4 });
+  assert.match(full, /Timing: 0s-4s the action above, in one continuous movement\./); assert.doesNotMatch(full, /settles/);
+  // No action: the shot's kind says what moves, never the image prompt again.
+  const face = m.seedancePrompt({ id: "01-hook-s3", image_prompt: "x", motion: "static_hold" }, "realistic", stored, FRAME);
+  assert.ok(face.startsWith(`Continue from the first frame: ${m.SEEDANCE_KIND_MOTION.face}.`), face);
+  assert.doesNotMatch(face, /warm light/);
+  assert.match(face, /Camera: locked off on a tripod, only the scene moves\./);
+  const bare = m.seedancePrompt({ id: "01-hook-s2", image_prompt: "x", motion: "crash_zoom_in" }, "realistic", stored, FRAME);
+  assert.ok(bare.startsWith(`Continue from the first frame: ${m.SEEDANCE_KIND_MOTION.default}.`), bare);
+  assert.match(bare, /Camera: sudden push-in that snaps to a close-up\./);
+  for (const move of Object.values(m.SEEDANCE_MOVES)) assert.doesNotMatch(move, /\bfast\b|camera/i, move);
+});
+
+test("seedancePrompt: 'fast' never reaches Seedance, not even from Kleo's own motion hint (review, 25 September)", () => {
+  const sb = SEED_SB(); sb.scenes[0].shots[0].action = "the mist drifting fast across the frame";
+  const p = m.seedancePrompt({ id: "01-hook-s1", image_prompt: "x", motion: "push_in" }, "realistic", { storyboard: sb, spec: SEED_SPEC() }, FRAME);
+  assert.ok(p.startsWith("Continue from the first frame: the mist drifting steadily across the frame."), p);
+  assert.doesNotMatch(p, /\bfast/i);
+  const t2v = m.seedancePrompt({ id: "01-hook-s1", image_prompt: "x", motion: "push_in" }, "realistic", { storyboard: sb, spec: SEED_SPEC() }, { ...FRAME, hasFrame: false });
+  assert.doesNotMatch(t2v, /\bfast/i);
+  for (const [a, b] of [["clouds race fast over the ridge", "clouds race steadily over the ridge"], ["a fast car crosses the bridge", "a car crosses the bridge"],
+    ["fast-moving clouds", "moving clouds"], ["the river moves very fast", "the river moves steadily"], ["she eats breakfast slowly", "she eats breakfast slowly"]])
+    assert.equal(m.unhurried(a), b, a);
+});
+
+test("seedancePrompt: the drawn look, a text the user asked for, the text-to-video fallback, and the limit", () => {
+  const stored = { storyboard: SEED_SB(), spec: SEED_SPEC() };
+  const anim = m.seedancePrompt({ id: "01-hook-s1", image_prompt: "x", motion: "push_in" }, "animation", stored, FRAME);
+  assert.match(anim, /nothing photographic/); assert.match(anim, /2D hand-drawn animation/); assert.doesNotMatch(anim, /live-action/);
+  // The shop sign the user asked for is kept, not erased.
+  const sign = m.seedancePrompt({ id: "01-hook-s2", image_prompt: "x", motion: "static_hold" }, "realistic", stored, { ...FRAME, keepsText: true });
+  assert.match(sign, /the lettering on a shop sign reading "Forno Mara" stays exactly as in the first frame\.$/); assert.doesNotMatch(sign, /no text/);
+  // No first frame: text-to-video, so the picture, every look in full and the setting are described.
+  const t2v = m.seedancePrompt({ id: "01-hook-s1", image_prompt: "x", motion: "push_in" }, "realistic", stored, { ...FRAME, hasFrame: false });
+  assert.ok(t2v.startsWith("Mara at the counter with a cake. Mara lifts the piping bag"), t2v);
+  assert.match(t2v, /Mara: a thin woman with short blonde hair tied up; Mara wears a lilac apron\./); assert.match(t2v, /Setting: A village bakery at dawn\./);
+  assert.doesNotMatch(t2v, /first frame/i);
+  // Long looks never take it past Seedance's limit.
+  const crowd = { ...SEED_SPEC(), cast: ["c1", "c2", "c3", "c4", "c5"].map((id) => ({ id, name: `Person ${id}`, look: `${"a very detailed description of a coat and a hat and a scarf ".repeat(12)}`, ref: null })) };
+  const sb = SEED_SB(); sb.scenes[0].shots[0].cast = ["c1", "c2", "c3", "c4", "c5"]; sb.scenes[0].shots[0].action = "they all walk across the square ".repeat(30);
+  const long = m.seedancePrompt({ id: "01-hook-s1", image_prompt: "x", motion: "push_in" }, "realistic", { storyboard: sb, spec: crowd }, { ...FRAME, hasFrame: false });
+  assert.ok(long.length <= m.SEEDANCE_PROMPT_MAX, `${long.length} characters`);
+});
+
+test("the ePhone road asks in Seedance's words; the kie.ai models keep clipPrompt byte for byte", async () => {
+  const sb = SEED_SB(), spec = SEED_SPEC();
+  const shot = { id: "01-hook-s1", image_prompt: "Mara at the counter with a cake", motion: "push_in", strength: 0.5, seconds: 3.2, still: "01-hook-s1.png" };
+  const env = await newEnv({ KIE_API_KEY: undefined, EPHONE_API_KEY: "eph-key", KLEO_FOOTAGE_MODEL: "seedance-2.5-480p", KIE_MAX_VIDEO_S: "0" });
+  const job = await filmJob(env);
+  job.storyboard = JSON.stringify(sb); job.params = JSON.stringify({ ...JSON.parse(job.params), spec });
+  const eph = fakeEphone(); globalThis.fetch = eph.fetch;
+  const r = await m.requestFootage(env, job, "http://kleo.test", { shots: [shot], format: "9:16" });
+  assert.equal(r.status, 200, JSON.stringify(r.reply));
+  const sent = eph.calls.submit[0].body.input.prompt;
+  assert.equal(sent, m.seedancePrompt(shot, "realistic", { storyboard: sb, spec }, { clipSeconds: 4, usedSeconds: 3.2, keepsText: false, hasFrame: true }));
+  assert.ok(sent.startsWith("Continue from the first frame:"));
+  assert.equal(m.ephoneInput("seedance-2.5-480p", m.KIE_MODELS["seedance-2.5-480p"], { prompt: sent, imageUrl: "https://kleo.test/a.png", seconds: 3.2, format: "9:16" }).prompt, sent, "no new fields, the prompt as written");
+  // MiniMax on kie.ai: exactly the prompt it had.
+  const env2 = await newEnv({ KLEO_FOOTAGE_MODEL: "minimax-h3" });
+  const job2 = await filmJob(env2);
+  job2.storyboard = JSON.stringify(sb); job2.params = JSON.stringify({ ...JSON.parse(job2.params), spec });
+  const kie = fakeKie(); globalThis.fetch = kie.fetch;
+  await m.requestFootage(env2, job2, "http://kleo.test", { shots: [shot], format: "9:16" });
+  assert.equal(kie.calls.create[0].body.input.prompt, m.clipPrompt(shot, "realistic", { storyboard: sb, spec }));
+  assert.equal(m.usesSeedancePrompt("seedance-2.0", m.KIE_MODELS["seedance-2.0"]), true, "Seedance on kie.ai reads the same words");
+  assert.equal(m.usesSeedancePrompt("kling-3.0", m.KIE_MODELS["kling-3.0"]), false);
+});
+
+test("ePhone AI music: Suno through the task API when KLEO_MUSIC_PROVIDER is ephone; the mp3 among the outputs is the track", async () => {
+  const env = await newEnv({ KIE_API_KEY: undefined, EPHONE_API_KEY: "eph-key", KLEO_MUSIC_PROVIDER: "ephone" });
+  const job = await filmJob(env);
+  assert.equal(m.musicOn(env), true); assert.equal(m.musicOn({ ...env, KLEO_MUSIC_PROVIDER: "" }), false, "kie.ai's road needs kie.ai's key");
+  const calls = [];
+  const mp3 = new Uint8Array(6000); mp3.set([0x49, 0x44, 0x33], 0);
+  globalThis.fetch = async (url, init = {}) => {
+    const u = String(url);
+    calls.push(u);
+    if (u === "https://api.ephone.ai/v1/task/submit") { calls.body = JSON.parse(init.body); return new Response(JSON.stringify({ id: "mus_1", status: "queued" }), { status: 200 }); }
+    if (u.endsWith("/v1/dashboard/billing/subscription")) return new Response(JSON.stringify({ hard_limit_usd: 10000 }), { status: 200 });
+    if (u.endsWith("/v1/dashboard/billing/usage")) return new Response(JSON.stringify({ total_usage: 0 }), { status: 200 });
+    if (u === "https://api.ephone.ai/v1/task/mus_1") return new Response(JSON.stringify({ id: "mus_1", status: "completed", outputs: ["https://storage.test/a.jpeg", "https://storage.test/b.jpeg", "https://storage.test/c.mp3", "https://storage.test/d.mp3"] }), { status: 200 });
+    if (u === "https://storage.test/c.mp3") return new Response(mp3, { status: 200 });
+    throw new Error(`unexpected fetch ${u}`);
+  };
+  const r = await m.requestMusic(env, job, { brief: "epic orchestral pirate adventure", seconds: 15 });
+  assert.equal(r.status, 200, JSON.stringify(r.reply));
+  assert.equal(calls.body.model, "suno/music"); assert.equal(calls.body.input.instrumental, true); assert.equal(calls.body.input.custom, false);
+  assert.match(calls.body.input.gpt_description_prompt, /^epic orchestral pirate adventure\. Instrumental film score/);
+  const st = await m.musicStatus(env, job);
+  assert.equal(st.reply.state, "ready"); assert.equal(st.reply.cost_usd, 0.064);
+  assert.ok(calls.includes("https://storage.test/c.mp3") && !calls.includes("https://storage.test/a.jpeg"), "the first mp3, never a cover picture");
 });

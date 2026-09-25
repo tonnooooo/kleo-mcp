@@ -1311,6 +1311,38 @@ function storyChunk(user, voiceOf, attempt = 1) {
   return { scenes };
 }
 
+test("the clip floor on the API road (25 September): fewer, longer scenes, one clip a line; with no floor the planner asks what it always asked", async () => {
+  const floored = (j, f, extra = {}) => ({ ...j, params: JSON.stringify({ ...JSON.parse(j.params), clip_floor_s: f, ...extra }) });
+  const pirates = (s) => job("viral-short", s, "16:9", "en", "Pirates bury a treasure on an island nobody can find again.", "realistic");
+  const p15 = planFor(floored(pirates(15), 4));
+  assert.equal(p15.clipFloor, 4); assert.deepEqual(p15.scenes, [3, 3]); assert.deepEqual(p15.lines, [11, 22]);
+  assert.ok(planFor(floored(pirates(30), 4)).scenes[1] <= 7, "30 s: no more scenes than eleven-word lines");
+  const p0 = planFor(pirates(15));
+  assert.equal(p0.clipFloor, 0); assert.ok(p0.scenes[0] >= 4, "no floor: the four-scene minimum, as before");
+  const anim = planFor(floored(pirates(15), 4, { product: "animatic" }));
+  assert.equal(anim.clipFloor, 0, "an animatic buys no clip"); assert.deepEqual(anim.scenes, p0.scenes);
+  // What the planner is told, on both roads.
+  const run = async (j) => {
+    const seen = { system: [], chunk: [] };
+    const env = fakeEnv((kind, user, attempt, inputs) => {
+      if (kind === "outline") return outlineFor(user, true);
+      seen.system.push(inputs.messages[0].content); seen.chunk.push(user);
+      return storyChunk(user, () => null);
+    });
+    const r = await generateStoryboard(env, j);
+    return { seen, r };
+  };
+  const api = await run(floored(pirates(30), 4));
+  assert.ok(api.seen.chunk.length);
+  for (const s of api.seen.system) { assert.match(s, /"shots": 1 picture per scene, 2 only for a line of 22\+ words \(never more than one per 11 words\), 1 for the closing; every shot is a paid clip of at least 4 s/); assert.doesNotMatch(s, /2–4 pictures/); }
+  for (const u of api.seen.chunk) { assert.match(u, /NEVER more than one shot per 11 words of voice: every shot is a paid clip of at least 4 seconds/); assert.match(u, /of 11–22 words/); assert.doesNotMatch(u, /per 7 words/); }
+  // The sixteen-word lines of the fake chunks carry one clip each: the second picture is cut, never refused.
+  for (const s of api.r.storyboard.scenes) if (s.kind === "cinema") assert.equal(s.shots.length, 1, s.id);
+  const local = await run(pirates(30));
+  for (const s of local.seen.system) assert.match(s, /"shots": 2–4 pictures for a cinema scene, 1 for the closing\./);
+  for (const u of local.seen.chunk) { assert.match(u, /NEVER more than one shot per 7 words of voice: a shot is three seconds of film at the least/); assert.match(u, /of 10–18 words/); }
+});
+
 test("format talk in a voice is fed back for as long as attempts remain, and what the kept answer still says of it is taken out", async () => {
   const chunkAttempts = new Map();
   const talk = "In a 30-second vertical YouTube Short, the young warrior receives a faint transmission from a dead planet beyond the ruined temple walls.";

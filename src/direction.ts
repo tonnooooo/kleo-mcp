@@ -22,6 +22,8 @@
  * (the accents, and the scene count to check the sections against) are passed in by the caller.
  */
 
+import { words, STOP, FORMAT_VOCAB } from "./format-vocab.ts";
+
 /** What a scene is FOR, in narrative terms — the DA document's "genre de scène". The template a scene falls back to. */
 export const GENRES = ["hook", "fact", "number", "list", "quote", "turn", "close"] as const;
 export type Genre = (typeof GENRES)[number];
@@ -213,14 +215,6 @@ export function sectionOfScene(sections: readonly Section[], sceneCount: number)
 
 /* ------------------------------------------------------------------ fidelity: does the video say what was asked */
 
-/** Content words of a phrase, for the "did the narration keep this" test: lowercase, punctuation dropped, stops kept. */
-const words = (s: string): string[] => s.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
-/** Words too common to prove anything, in the two languages a job can be in. */
-const STOP = new Set(
-  ("the a an and or of to in on at for with your you it is are was were be this that they them their its from by as if so we he she i not no but into one two " +
-   "il lo la i gli le un uno una di a da in con su per tra fra e o che non ci si è sono era del della dei delle al alla ai alle nel nella come più anche")
-    .split(" "),
-);
 /** A number as it is written, so "3 million" in the request is not answered by "a few million" in the narration. */
 const NUM = /\d[\d.,]*/g;
 /**
@@ -540,15 +534,6 @@ export function storyRequest(prompt: string): string {
   return String(prompt ?? "").trim().replace(/\s+/g, " ");
 }
 
-/** The words a must_keep item about the FILM ITSELF is made of, beside the ones formatTalk() finds (all three languages). */
-const FORMAT_VOCAB = new Set(
-  ("duration durata durée length lunghezza long lungo lunga seconds second secondi secondo secondes sec minutes minute minuti minuto min " +
-   "scene scenes scena scène scènes shot shots inquadrature inquadratura circa about around approximately environ format formato " +
-   "video film short shorts reel clip youtube tiktok vertical horizontal verticale orizzontale narrated narrato narrata narrator narration " +
-   "narrazione narratore narrateur voiceover voice over italian english french italiano inglese francese italien anglais language lingua " +
-   "langue animatic storyboard subtitles sottotitoli music musica aspect ratio")
-    .split(" "),
-);
 
 /**
  * True when a must_keep item is ONLY about the video — its length, format, language, narrator — and says nothing about

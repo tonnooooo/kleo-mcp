@@ -24,7 +24,7 @@ import {
   STYLES, CINEMA_ACCENTS, BEAT_KINDS, BEAT_ICONS, BEAT_FX, VISUALS, VOICES, KLEO_STYLES,
   STORY_ACTS, STORY_CAST, STORY_PROPS, STORY_FX,
   IMAGE_PROMPT_MAX, SHOT_CAPTION_MAX, SHOT_HL_MAX, SHOT_AT_MAX, CLOSING_BUTTON_MAX,
-  MAX_PICTURES, SHOTS_MIN_CINEMA, shotRangeText, SHOTS_PER_SCENE, wordBudget,
+  MAX_PICTURES, SHOTS_MIN_CINEMA, shotRangeText, SHOTS_PER_SCENE, wordBudget, clipWordsPerShot,
   DIRECTION_LIMITS as DL, SHOT_KINDS,
   SKETCH_ACCENTS, SKETCH_ART, SKETCH_MOODS, SKETCH_MOTION, SKETCH_ENTER, SKETCH_EXIT,
   SHOT_ACTION_MAX, SHOT_COVERS_MAX, SHOT_CAST_MAX, SHOT_TAG_MAX,
@@ -47,6 +47,12 @@ export interface GuideOptions {
   languages: readonly string[];
   /** The frame the storyboard is written for: the explainer authors its art in the frame's own pixels. */
   format?: string;
+  /**
+   * The clip floor in seconds (src/footage.ts clipFloorFor): on the API road every picture of a film becomes a paid
+   * clip at least this long, so the guide teaches one picture per clip's worth of voice. 0 (or absent) on the local
+   * road and for the animatic, where the guide says what it always said.
+   */
+  clipFloorS?: number;
 }
 
 const list = (a: readonly string[]) => a.join(", ");
@@ -124,19 +130,22 @@ Kleo refuses a scene that speaks to an element the film does not have, a card th
 
 /* ------------------------------------------------------------------ per-look sections */
 
-function pictureSection(look: "cartoon" | "realistic" | "animation", dur: number): string {
+function pictureSection(look: "cartoon" | "realistic" | "animation", dur: number, floorS = 0): string {
+  const per = clipWordsPerShot(floorS);
   const kind = look === "cartoon" ? "flat vector cartoon illustration" : look === "animation" ? "frame of a 2D animated feature film (a painted background; drawn characters designed once in the direction's cast and described the same way in every shot; cel colour; nothing photographic)" : "cinematic photograph";
   return `3. THE SCENES — ${look}: full-screen pictures cut on the narration
 The whole video is these pictures, cut like a short documentary. No icons, no cards, no beats, no HUD.
 The same storyboard serves the FILM (each frame becomes a generated clip) and the ANIMATIC (the camera moves over the frame itself): write every image_prompt as one still that also reads well when it moves.
 
-SCENE: {"id":"01-hook","kind":"cinema","chapter":"01 THE CAPTAIN <=32","accent":<its section's accent>,"title":"<=90, the line shown on the first picture","hl":"<=24, ONE word of the title","voice":"1-3 sentences <=350 chars","hold":0.2,"shots":[${shotRangeText("cinema")} pictures]}
+SCENE: {"id":"01-hook","kind":"cinema","chapter":"01 THE CAPTAIN <=32","accent":<its section's accent>,"title":"<=90, the line shown on the first picture","hl":"<=24, ONE word of the title","voice":"1-3 sentences <=350 chars","hold":0.2,"shots":[${floorS > 0 ? `1-${SHOTS_PER_SCENE.cinema[1]} pictures, one per ${per} words of voice` : `${shotRangeText("cinema")} pictures`}]}
 CLOSING (always the last scene): {"id":"…","kind":"closing", …, "shots":[${shotRangeText("closing")}, one is the norm], "button":"<=${CLOSING_BUTTON_MAX}, default Subscribe" OR "detail":"<=110", never both}
 
 SHOT: {"image_prompt":"ONE sentence <=${IMAGE_PROMPT_MAX} chars","caption"?:"2-5 BIG WORDS <=${SHOT_CAPTION_MAX}","hl"?:"ONE WORD OF caption <=${SHOT_HL_MAX}","at"?:"<=${SHOT_AT_MAX} chars","shot_kind"?:${quoted(SHOT_KINDS)},"cast"?:["c1" or a cast name, up to ${SHOT_CAST_MAX}],"covers"?:["R1", up to ${SHOT_COVERS_MAX}],"action"?:"<=${SHOT_ACTION_MAX}, English, what moves during the shot"}
  A shot carries these eight keys and no others. "cast" names who is in the picture, "covers" the spec requirements it shows (when the job has a spec, 1b), "action" what moves in it.
 
- EVERY SCENE SHOWS AT LEAST ${SHOTS_MIN_CINEMA} PICTURES. ${SHOTS_MIN_CINEMA}-3 is the usual rhythm. One picture held for a whole narrated line is a slideshow, and Kleo refuses it: split the line into its moments and give each moment its own picture.
+${floorS > 0
+    ? ` ONE PICTURE PER ${per} WORDS OF VOICE. In this film every picture becomes a paid clip of at least ${floorS} seconds: a scene shows one picture, a second one only when its line has ${2 * per} words or more (Kleo refuses one picture for a line that long, and cuts the pictures a line cannot pay for). The rhythm comes from what moves inside each shot — say it in "action" — not from cutting. Give every line ${per} words at the least: a shorter one still pays for a whole ${floorS}-second clip and shows only the part its voice fills.`
+    : ` EVERY SCENE SHOWS AT LEAST ${SHOTS_MIN_CINEMA} PICTURES. ${SHOTS_MIN_CINEMA}-3 is the usual rhythm. One picture held for a whole narrated line is a slideshow, and Kleo refuses it: split the line into its moments and give each moment its own picture.`}
  EVERY PICTURE AFTER THE FIRST CARRIES "at". "at" is an unbroken run of whole words copied character for character out of THAT scene's own "voice" — punctuation included, case ignored. The picture cuts the instant those words are spoken. From "only one cabin boy swam back to shore" take "swam back"; never a fragment ("wam bac"), never a paraphrase ("he swam"), never a jump across punctuation. The first shot of a scene opens with the scene and must NOT carry "at". Place the anchors along the line in reading order.
  image_prompt is ALWAYS WRITTEN IN ENGLISH, whatever language the film is narrated in: the picture model reads English only, and a prompt in another language is drawn wrong (Kleo refuses it). It describes ONE ${kind}: a concrete subject, a place, an action, the light and the mood. A recurring character is called by their cast name in every picture that shows them ("the pastry chef" or "Mara", never "she") AND listed in the shot's "cast": that is what attaches their one full description to the picture. Consecutive shots of one scene are the next moment or a new angle of the same place. Everything you write must come from the direction's world and objects; anything on the direction's forbidden list is refused. Never ask for text, letters, numbers, logos or captions inside the picture — except the exact words of a spec "text" requirement on the shot that covers it — and never a real person.
  SOMETHING IN EVERY PICTURE MUST BE DOING SOMETHING. Name a subject and give it an action, in the -ing form: "mist DRIFTING fast across the tarmac", "the flame GUTTERING", "waves BREAKING against the hull", "sand BLOWING across the road" — and say it again, for the clip, in the shot's "action". Naming the thing is not enough — "low mist" and "dust in the air" are states, and a shot with only those in it comes back (in the film) as a frozen frame; it was measured at 0.03 pixels of movement. The one exception is a person or an animal: they breathe and turn their head on their own, so a picture that shows someone needs nothing added. Write the action yourself — if you leave it out, Kleo writes one into "action" for you (never into your image_prompt), and it will not be the one you would have chosen.
@@ -262,17 +271,25 @@ hero = the viewer, thief/thief2 = villains. The act follows the narration: alarm
 export function buildGuide(o: GuideOptions): string {
   const dur = o.duration_s ?? 45;
   const words = wordBudget(dur, 1.1).target;
-  const scenes = dur <= 90 ? "4-8" : dur <= 300 ? "10-20" : "18-30";
   const look = o.style && (KLEO_STYLES as readonly string[]).includes(o.style) ? o.style : null;
+  // THE CLIP FLOOR IN THE WHOLE GUIDE (25 September 2026 review). On the API road a scene is at least one paid clip, so
+  // there are never more scenes than the words can pay a clip for (storyboard.ts sceneRange: a 15 s film is three
+  // scenes of eleven words, not six of seven), and a line shorter than two clips' worth has one picture.
+  const floorS = !look || PICTURE_LOOKS.includes(look) ? o.clipFloorS ?? 0 : 0;
+  const per = clipWordsPerShot(floorS);
+  const [lo, hi] = dur <= 90 ? [4, 8] : dur <= 300 ? [10, 20] : [18, 30];
+  const most = floorS > 0 ? Math.max(1, Math.floor(words / per)) : Infinity;
+  const range = [Math.min(lo, most), Math.min(hi, most)];
+  const scenes = range[0] === range[1] ? `${range[0]}` : `${range[0]}-${range[1]}`;
   const keou = look ? (PICTURE_LOOKS.includes(look) ? "picture" : look === "stickman" ? "stickman" : look === "explainer" ? "sketch" : "cinema") : "picture";
   const voiceLine = o.languages.map((l) => `${l}: ${(VOICES[l] ?? []).join("|")}`).join(" · ");
 
   const scenesSection = !look
-    ? `${pictureSection("cartoon", dur)}
+    ? `${pictureSection("cartoon", dur, o.clipFloorS ?? 0)}
 
 OTHER LOOKS: call kleo_storyboard_guide again with style "cyber" (motion design with icons and big type, no pictures — tech and security topics that want diagrams), style "explainer" (the cyber explainer: hand-drawn white marker line art on pure black, one drawing per phrase, karaoke captions — the strongest look for teaching one idea fast) or style "stickman" (a hand-drawn stickman acting the story, 9:16 only, on request) to get that look's vocabulary instead of this one.`
     : PICTURE_LOOKS.includes(look)
-    ? pictureSection(look as "cartoon" | "realistic" | "animation", dur)
+    ? pictureSection(look as "cartoon" | "realistic" | "animation", dur, o.clipFloorS ?? 0)
     : look === "cyber"
     ? cyberSection()
     : look === "explainer"
@@ -302,7 +319,7 @@ ${!look || PICTURE_LOOKS.includes(look) ? layerSection() : ""}
  Every fact in direction.must_keep must appear in the narration (an appearance is proven by the pictures instead); no image_prompt may ask for anything in direction.forbidden.
  With a spec: every MUST requirement covered by a shot's "covers" or said in a voice, the user's events in the user's order, and "covers"/"cast" naming only the spec's own ids.
  THE PICTURES SPEAK ENGLISH whatever the film speaks: every image_prompt, and the direction's world, cast names and looks, objects and forbidden terms, are written in English (they are pasted into the picture prompts, and the picture model reads English only). Subject, goal, audience, tone, must_keep, the narration, titles and chapters stay in the film's language.
- Picture looks: only cinema and closing scenes, ${shotRangeText("cinema")} shots each (closing ${shotRangeText("closing")}), "at" on every shot after the first, no "beats".
+ Picture looks: only cinema and closing scenes, ${floorS > 0 ? `1-${SHOTS_PER_SCENE.cinema[1]} shots each, one per ${per} words of voice (one for a line under ${2 * per} words)` : `${shotRangeText("cinema")} shots each`} (closing ${shotRangeText("closing")}), "at" on every shot after the first, no "beats".
  A shot carries only image_prompt, caption, hl, at, shot_kind, cast, covers and action. A hand-written camera move is refused.
  scene.image, scene.motion and shot.image are refused (Kleo generates the pictures; no asset travels with a job).
  Total narration must fit the length: never more than about ${Math.round(words * 1.25)} words for ${dur}s.
@@ -314,7 +331,7 @@ ${!look || PICTURE_LOOKS.includes(look) ? layerSection() : ""}
 }
 
 /** The worked example, kept apart from the rules so a caller can be given the rules alone when context is tight. */
-export function guideExample(style: GuideStyle | null): string {
+export function guideExample(style: GuideStyle | null, clipFloorS = 0): string {
   if (style === "cyber") {
     return `EXAMPLE (cyber Short, 9:16, one scene of five):
 {"id":"02-relay","kind":"cinema","chapter":"02 THE METHOD","accent":"cyan","title":"they never touch the key","hl":"never","voice":"Two people, one at your door and one at your car, pass the signal between them.","hold":0.2,"beats":[
@@ -341,7 +358,7 @@ Notice: every phrase has its own drawing and the drawing is the thing the words 
   return `EXAMPLE (a realistic film, 9:16, 40s, en — the direction plus the first two scenes of six; the same shape, drawn as film${style === "animation" ? "; an ANIMATED film keeps this exact shape, with every image_prompt describing a drawn frame instead of a photograph" : ""}):
 "direction":${JSON.stringify(d)}
 "scenes":${JSON.stringify(EXAMPLE_SCENES)}
-Notice: every scene has ${SHOTS_MIN_CINEMA} or more pictures; every picture after the first carries "at" quoted from its own voice line; the accents come from the sections, not from the mood; "${d.cast[0].name}" and "${d.cast[1].name}" are named exactly as the direction names them and listed in each shot's "cast", so Kleo appends their look to every picture that shows them; the moving shots say what moves in "action"; nothing on the forbidden list appears anywhere. (This example has no spec, so no shot carries "covers"; with one, each shot lists the requirement ids it shows.)`;
+Notice: ${clipFloorS > 0 ? `the example's scenes have ${SHOTS_MIN_CINEMA} pictures because it is written for the local road; in THIS film a picture is a paid clip, so a scene has one picture per ${clipWordsPerShot(clipFloorS)} words of voice and a short line has one` : `every scene has ${SHOTS_MIN_CINEMA} or more pictures`}; every picture after the first carries "at" quoted from its own voice line; the accents come from the sections, not from the mood; "${d.cast[0].name}" and "${d.cast[1].name}" are named exactly as the direction names them and listed in each shot's "cast", so Kleo appends their look to every picture that shows them; the moving shots say what moves in "action"; nothing on the forbidden list appears anywhere. (This example has no spec, so no shot carries "covers"; with one, each shot lists the requirement ids it shows.)`;
 }
 
 /**
@@ -413,7 +430,7 @@ export const EXAMPLE_SCENES = [
 ];
 
 /** Everything a caller gets in one string: the rules, then the one example that matches the look they asked for. */
-export const guideText = (o: GuideOptions): string => `${buildGuide(o)}\n\n${guideExample(o.style ?? null)}`;
+export const guideText = (o: GuideOptions): string => `${buildGuide(o)}\n\n${guideExample(o.style ?? null, o.clipFloorS ?? 0)}`;
 
 /** Kept so a caller can still see which Keou styles exist without the guide having to list them all. */
 export const KEOU_STYLE_NAMES = STYLES;
