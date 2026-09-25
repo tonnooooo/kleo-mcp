@@ -3,7 +3,7 @@ import { type Job, type JobParams, type JobState, type User, OPEN_STATES, countO
 import { accountUrl } from "./accounts";
 import { findTemplate, affordableGuess, creditsFor, creditsForProduct, aiUpscaleCredits, aiUpscaleOn, etaFor, animaticEtaFor, normalizeVoice, voiceSpellings, isVideoStyle, videoModelIsGated, isPublicTemplate, FILM_TEMPLATE_ID, FILM_LONG_TEMPLATE_ID, filmTemplateFor, ACTIVE_TEMPLATE, PRODUCTS, ANIMATIC_CREDITS, ANIMATIC_MAX_S, filmedStoryboard, finishForProduct, productOf, type Format, type Product } from "./templates";
 import { footageBackendFor, footageConfig, kiePreflight, clipFloorFor } from "./footage";
-import { rid, nowIso, int, hmacHex } from "./util";
+import { rid, nowIso, int, hmacHex, publicText } from "./util";
 import { isProbeFile } from "./probe.ts";
 import { isFlagActive } from "./schema";
 import { backendFor } from "./backends";
@@ -398,9 +398,10 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     const pre = await kiePreflight(env, duration, shots, MAX_PICTURES(duration));
     if (!pre.ok) {
       await audit(env, user.id, null, "footage.preflight", { balance_usd: pre.balance_usd, planned_usd: pre.planned_usd, stills_usd: pre.stills_usd ?? 0, spent_today_usd: pre.spent_today_usd, budget_usd: pre.budget_usd, shots: pre.shots, model: pre.model, duration, owner_action: pre.reason === "budget" ? "raise DAILY_FOOTAGE_BUDGET_USD or wait for tomorrow" : "top up kie.ai" });
+      // The user reads no dollar and no provider (26 September 2026, the owner's rule): the numbers are in the audit row above.
       const why = pre.reason === "budget"
-        ? `today's filming budget is used up ($${pre.spent_today_usd.toFixed(2)} of $${pre.budget_usd.toFixed(2)} committed, and this film needs about $${pre.planned_usd.toFixed(2)} of clips)`
-        : `the account it buys the clips from is empty (it holds $${(pre.balance_usd ?? 0).toFixed(2)} and this film needs about $${(pre.planned_usd + (pre.stills_usd ?? 0)).toFixed(2)} of ${pre.stills_usd ? "clips and pictures" : "clips"})`;
+        ? "today's filming capacity is fully booked"
+        : "the video model cannot take a new film at the moment";
       throw new JobError(`Kleo cannot film right now: ${why}. The request has been logged for the operator. Nothing was charged. Meanwhile the animatic of the same storyboard can be made — ${animaticWayOut}, the drawn frames with the camera moving over them — or ask for the film again later.`);
     }
   }
@@ -528,6 +529,7 @@ export function jobView(job: Job) {
     created_at: job.created_at,
     finished_at: job.finished_at,
     expires_at: job.expires_at,
-    error: job.error,
+    // What the user reads: never a provider's name (publicText); the row keeps the words as they came.
+    error: job.error === null || job.error === undefined ? job.error : publicText(job.error),
   };
 }

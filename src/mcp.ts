@@ -9,7 +9,7 @@ import { treatmentText, treatmentMethodText, variationFor } from "./treatment.ts
 import { specMethodText, specText, specOf, itemById, visualChecks, specModeWhy, MODE_RULE, REF_ROLES, type RequestSpec } from "./spec.ts";
 import { resolveRefs, makeUploadToken, fetchRefBytes, refHandle, refMeta, ingestRef, RefError, REF_HANDLE_RE, UPLOAD_MAX_FILES, UPLOAD_TTL_S, type ResolvedRef, type RefInput } from "./refs.ts";
 import { getFile } from "./storage";
-import { ACTIVE_TEMPLATE, PUBLIC_TEMPLATES as TEMPLATES, PUBLIC_TEMPLATE_IDS as ACTIVE_TEMPLATE_IDS, findTemplate, creditsFor, creditsForProduct, filmCredits, freeCreditsFor, tariffSentence, MIN_FILM_CREDITS, SECONDS_PER_CREDIT, PRODUCTS, ANIMATIC_CREDITS, ANIMATIC_MAX_S, FILM_STYLE, productOf, aiUpscaleCredits, aiUpscaleRule, aiUpscaleOn } from "./templates";
+import { ACTIVE_TEMPLATE, PUBLIC_TEMPLATES as TEMPLATES, PUBLIC_TEMPLATE_IDS as ACTIVE_TEMPLATE_IDS, findTemplate, creditsFor, creditsForProduct, filmCredits, freeCreditsFor, tariffSentence, MIN_FILM_CREDITS, SECONDS_PER_CREDIT, PRODUCTS, ANIMATIC_CREDITS, ANIMATIC_MAX_S, FILM_STYLE, productOf, aiUpscaleCredits, aiUpscaleRule, aiUpscaleOn, MODELS, modelsSentence } from "./templates";
 import { PACKS, sellingAvailable } from "./stripe";
 import { createJob, cancelJob, jobView, resultLinks, JobError, FILE_NAMES } from "./jobs";
 import { accountUrl, makeHandle } from "./accounts";
@@ -17,7 +17,7 @@ import { audit } from "./db";
 import { FORMATS, FILM_LOOKS, wordBudget, shotRangeText, pictureScenes } from "./keou-contract";
 import { musicNote, clipFloorFor, footageConfig } from "./footage";
 import { guideText } from "./guide.ts";
-import { int } from "./util";
+import { int, publicText } from "./util";
 import { adaptPrompt, adaptivePromptText, durationFrom, lookFromText, aiUpscaleAnswer } from "./adaptive.ts";
 
 /**
@@ -446,7 +446,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
 
   server.registerTool("kleo_list_templates", {
     title: "List the template and the two products",
-    description: `Lists Kleo's one template, film (realistic or animation look, 16:9 or 9:16, 15-300 s), and its two products: the film (every shot a generated clip, priced by length, for accounts that have bought a credit pack) and the animatic (the same drawn frames with camera moves, ${ANIMATIC_CREDITS} credits flat, up to ${ANIMATIC_MAX_S} s, every account). Music and burned-in subtitles are options in both: the user is always asked and gets them only when they say yes.`,
+    description: `Lists Kleo's one template, film (realistic or animation look, 16:9 or 9:16, 15-300 s), and its two products: the film (every shot a generated clip — moving footage by ByteDance Seedance 2.5 from a frame drawn by Google Nano Banana Pro — priced by length, for accounts that have bought a credit pack) and the animatic (the same drawn frames with camera moves, ${ANIMATIC_CREDITS} credits flat, up to ${ANIMATIC_MAX_S} s, every account). Music and burned-in subtitles are options in both: the user is always asked and gets them only when they say yes.`,
     inputSchema: z.object({}),
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   }, async () => {
@@ -464,8 +464,8 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     return ok(
       // The prices are the ones creditsFor charges, read from it: this line used to quote the pre-film tariff (one
       // credit a Short) next to a description that said seven.
-      { templates, credits_available: fresh.credits, pricing, account_url: await accountUrl(env, user.id, base) },
-      `Kleo has one template (film) in two looks, realistic and animation, and two products from the same storyboard: the film (every shot a generated clip; accounts that have bought a pack) and the animatic (the drawn frames with camera moves, ${plural(ANIMATIC_CREDITS, "credit")} flat, up to ${ANIMATIC_MAX_S} s; every account). You have ${plural(fresh.credits, "credit")} left. Call kleo_adapt_prompt with the user's request before creating the video: its intake asks, in one message, whatever the request does not say (subject, length, format, look, film or animatic with the prices, music, subtitles, the narration's language).\n${lines.join("\n")}\nPrices: ${pricing}.`,
+      { templates, credits_available: fresh.credits, pricing, models: MODELS, account_url: await accountUrl(env, user.id, base) },
+      `Kleo has one template (film) in two looks, realistic and animation, and two products from the same storyboard: the film (every shot a generated clip; accounts that have bought a pack) and the animatic (the drawn frames with camera moves, ${plural(ANIMATIC_CREDITS, "credit")} flat, up to ${ANIMATIC_MAX_S} s; every account). You have ${plural(fresh.credits, "credit")} left. Call kleo_adapt_prompt with the user's request before creating the video: its intake asks, in one message, whatever the request does not say (subject, length, format, look, film or animatic with the prices, music, subtitles, the narration's language).\n${lines.join("\n")}\nPrices: ${pricing}.\nModels: ${modelsSentence()}.`,
     );
   });
 
@@ -514,7 +514,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       language: z.enum(JOB_LANGUAGES).default("en").describe("Voice and caption language: the narration language the user chose, as kleo_adapt_prompt's \"language\" returned it (the intake asks it; never the language of the chat). A storyboard you pass must declare this same language."),
       voice: z.string().optional().describe("Voice id from kleo_list_templates (narrator-en-m, narrator-en-f, narrator-it-m, narrator-it-f). The engine ids used inside a storyboard (am_michael, af_heart, bf_emma, im_nicola, if_sara) are accepted too. Optional."),
       style: z.enum(FILM_LOOKS).optional().describe("The look: \"realistic\" (cinematic live action) or \"animation\" (a 2D animated film); both narrated; every shot starts as one frame drawn in that look — a generated clip in the film, a camera move over the frame in the animatic. Pass the treatment's \"look\"; when omitted the treatment decides, and realistic when nothing says."),
-      music: z.string().max(200).nullable().optional().describe("The user's answer about music, exactly as you passed it to kleo_adapt_prompt: \"no\" (or null) for none; \"yes\" or the kind they want for an instrumental track under the narration (the treatment's \"music\" brief is used when it has one). Kleo orders the track from kie.ai and ducks it under the voice."),
+      music: z.string().max(200).nullable().optional().describe("The user's answer about music, exactly as you passed it to kleo_adapt_prompt: \"no\" (or null) for none; \"yes\" or the kind they want for an instrumental track under the narration (the treatment's \"music\" brief is used when it has one). Kleo has the track composed by Suno and ducks it under the voice."),
       subtitles: z.union([z.boolean(), z.enum(["yes", "no"])]).optional().describe("The user's answer about burned-in subtitles: true/\"yes\" for thin cinema subtitles in the picture, false/\"no\" for none. An .srt file is delivered either way."),
       product: z.enum(PRODUCTS).optional().describe(`The product the user chose in the intake (kleo_adapt_prompt asks it, with the prices): pass it. What to make from the storyboard: "film" (default; every shot a generated clip, priced by length, for accounts that have bought a credit pack) or "animatic" (the same drawn frames with the camera moving over each one, the same narrator and layer, 4K 60 fps, no generated clip; ${ANIMATIC_CREDITS} credits flat, up to ${ANIMATIC_MAX_S} seconds, every account). Say which one you are ordering to the user before you call.`),
       ai_upscale: z.union([z.boolean(), z.string().max(80)]).optional().describe("The user's answer to the AI upscale question kleo_adapt_prompt asked (film only): \"yes\" for Real-ESRGAN + RIFE on every shot, at the extra credits the intake quoted (refunded automatically if the finish cannot apply it); \"no\", or omitted, for the classic 4K 60 fps finish."),
@@ -656,7 +656,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       const r = await resultPayload(env, base, job);
       return ok(r.data, r.text);
     }
-    if (job.state === "failed") return ok({ ...jobView(job), next: "stop" }, `Sorry, ${what} ${job.id} could not be rendered: ${job.error ?? "unknown error"}. Your credits were given back. You can try again with kleo_create_video.`);
+    if (job.state === "failed") return ok({ ...jobView(job), next: "stop" }, `Sorry, ${what} ${job.id} could not be rendered: ${publicText(job.error ?? "unknown error")}. Your credits were given back. You can try again with kleo_create_video.`);
     if (job.state === "cancelled") return ok({ ...jobView(job), next: "stop" }, `${what[0].toUpperCase() + what.slice(1)} ${job.id} was cancelled.`);
     const again = "Call kleo_wait_for_video again now to keep waiting; the links will come back from that call as soon as it is ready.";
     if (gpuOnlyWait(job))
@@ -761,6 +761,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       account_key: await makeHandle(env, user.id),
       account_url: url,
       payments_open: open,
+      models: MODELS,
     };
     const enough = fresh.credits >= MIN_FILM_CREDITS ? "" : ` That is not enough for a film yet (the shortest is ${MIN_FILM_CREDITS} credits)${fresh.credits >= ANIMATIC_CREDITS ? `, but it pays for an animatic (${ANIMATIC_CREDITS})` : ""}.`;
     const films = paid

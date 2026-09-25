@@ -12,6 +12,7 @@ import { join, dirname } from "node:path";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
+import { publicText } from "../src/util.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -308,7 +309,8 @@ test("kie.ai out of money: the film stops at the first refusal, the route fails 
   const r = await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS, format: "9:16" });
   assert.equal(r.status, 402);
   assert.equal(r.reply.no_credit, true);
-  assert.match(r.reply.error, /kie\.ai balance is empty: 1 of 3 shots/);
+  assert.match(r.reply.error, /the video model could not take this film's order \(1 of 3 shots were placed before it stopped\)/);
+  assert.doesNotMatch(r.reply.error, /kie|ephone|balance|top up/i, "the user reads no provider and no balance (26 September 2026)");
   assert.equal(kie.calls.create.length, 2, "the third shot was never asked for");
   let rows = await m.footageRows(env, job.id);
   assert.deepEqual(rows.map((x) => [x.shot_id, x.state, !!x.task_id]), [["01-hook-s1", "generating", true], ["01-hook-s2", "failed", false]], "the refused row has no task; the third has no row");
@@ -333,7 +335,7 @@ test("kie.ai out of money: the film stops at the first refusal, the route fails 
   assert.equal(res.status, 402);
   const after = env2.DB.db.prepare("SELECT state, error FROM jobs WHERE id = ?").get(job2.id);
   assert.equal(after.state, "failed");
-  assert.match(after.error, /kie\.ai balance is empty: 0 of 3 shots/);
+  assert.match(after.error, /could not take this film's order \(0 of 3 shots[\s\S]*credits are refunded/);
   assert.equal(env2.DB.db.prepare("SELECT credits FROM users WHERE id = 'u1'").get().credits, 107, "the 7 credits of the film are back");
 });
 
@@ -745,7 +747,7 @@ test("ePhone AI: an empty account (RixAPI's 403 insufficient_user_quota) stops t
   const job = await filmJob(env);
   const poor = fakeEphone({ submitNoMoney: true, limit: 0 }); globalThis.fetch = poor.fetch; // limit 0: the balance says nothing, the task decides
   const r = await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS, format: "9:16" });
-  assert.equal(r.status, 402); assert.equal(r.reply.no_credit, true); assert.match(r.reply.error, /ePhone AI balance is empty/);
+  assert.equal(r.status, 402); assert.equal(r.reply.no_credit, true); assert.match(r.reply.error, /could not take this film's order/); assert.doesNotMatch(r.reply.error, /ephone|kie/i);
   assert.equal(poor.calls.submit.length, 1, "the first refusal stops the order");
   const env2 = await newEnv({ KIE_API_KEY: undefined, EPHONE_API_KEY: "eph-key", KLEO_FOOTAGE_MODEL: "seedance-2.5-480p", KIE_MAX_VIDEO_S: "0" });
   const job2 = await filmJob(env2);
@@ -896,4 +898,28 @@ test("ePhone AI music: Suno through the task API when KLEO_MUSIC_PROVIDER is eph
   const st = await m.musicStatus(env, job);
   assert.equal(st.reply.state, "ready"); assert.equal(st.reply.cost_usd, 0.064);
   assert.ok(calls.includes("https://storage.test/c.mp3") && !calls.includes("https://storage.test/a.jpeg"), "the first mp3, never a cover picture");
+});
+
+/* ------------------------------------------------------------------ the public words (26 September 2026) */
+
+test("publicText: what a user reads names no model gateway — a provider's URL, name or key becomes neutral words", () => {
+  assert.equal(publicText("kie.ai POST https://api.kie.ai/api/v1/jobs/createTask → 402: insufficient credits"), "the model provider → 402: insufficient credits");
+  assert.equal(publicText("ephone.ai GET /v1/task/abc → 500: boom"), "the model provider → 500: boom");
+  assert.equal(publicText("the track could not be ordered: kie.ai's balance was empty"), "the track could not be ordered: the model provider's balance was empty");
+  assert.equal(publicText("ePhone AI balance is empty; ePhone's queue; EPHONE_API_KEY is not set"), "the AI model gateway balance is empty; the AI model gateway's queue; the provider key is not set");
+  assert.equal(publicText("a telephone rang in the scene"), "a telephone rang in the scene", "ordinary words are left alone");
+  assert.equal(publicText("storyboard rejected by the engine"), "storyboard rejected by the engine");
+});
+
+test("the footage sentences a user can read name no provider and no dollar", async () => {
+  for (const s of [m.noCreditSentence(2, 5, "kie"), m.noCreditSentence(0, 3, "ephone")]) assert.doesNotMatch(s, /kie|ephone|\$|balance/i, s);
+  const env = await newEnv({ DAILY_FOOTAGE_BUDGET_USD: "0.01" });
+  const job = await filmJob(env);
+  globalThis.fetch = fakeKie().fetch;
+  const r = await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS, format: "9:16" });
+  assert.equal(r.status, 402);
+  assert.match(r.reply.error, /today's filming capacity is fully booked: no clip was ordered[\s\S]*credits are refunded/);
+  assert.doesNotMatch(r.reply.error, /kie|ephone|\$|DAILY_FOOTAGE_BUDGET_USD/i);
+  const row = (await env.DB.prepare("SELECT detail FROM audit WHERE event = 'footage.budget'").first()).detail;
+  assert.match(row, /budget_usd/, "the operator keeps the numbers");
 });

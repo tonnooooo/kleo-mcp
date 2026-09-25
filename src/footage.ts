@@ -31,7 +31,7 @@ import type { Env } from "./env";
 import type { Job, JobParams } from "./db";
 import { audit, hasPaid } from "./db.ts";
 import { putFile } from "./storage.ts";
-import { hmacHex, int, num, nowIso } from "./util.ts";
+import { hmacHex, int, num, nowIso, publicText } from "./util.ts";
 import { FILM_LOOKS, directionOf, type FilmLook } from "./keou-contract.ts";
 import { isAnimatic } from "./templates.ts";
 import { specOf, itemById, type RequestSpec, type SpecItem } from "./spec.ts";
@@ -527,10 +527,13 @@ export async function kieBalanceUsd(env: Env): Promise<number | null> {
   } catch { return null; }
 }
 
-/** The sentence the user reads when kie.ai has no money left. Plain, and it says what happens to their credits. */
-export function noCreditSentence(ordered: number, wanted: number, provider: "kie" | "ephone" = "kie"): string {
-  const who = provider === "ephone" ? "ePhone AI" : "kie.ai";
-  return `${who} balance is empty: ${ordered} of ${wanted} shots could be ordered before it ran out. Top up the ${who} account and ask for the video again; this video was not made and its credits are refunded`;
+/**
+ * The sentence the user reads when the video model's account refuses for money. Plain, it says what happens to their
+ * credits, and it names no provider and no balance (26 September 2026, the owner's rule: the footage.no_credit audit
+ * row carries the provider, the balance and the counts for the operator).
+ */
+export function noCreditSentence(ordered: number, wanted: number, _provider: "kie" | "ephone" = "kie"): string {
+  return `the video model could not take this film's order (${ordered} of ${wanted} shots were placed before it stopped): this video was not made and its credits are refunded. Please ask for it again a little later`;
 }
 
 /**
@@ -591,7 +594,7 @@ export interface ShotRequest { id: string; image_prompt: string; motion?: string
  */
 export async function requestFootage(env: Env, job: Job, base: string, body: { shots: ShotRequest[]; look?: string; format?: string }): Promise<{ status: number; reply: Record<string, unknown> }> {
   const cfg = await footageConfig(env);
-  if (footageBackendFor(env, job, cfg) !== "kie") return { status: 409, reply: { error: "this job does not film through kie.ai (switch off, no key, or the video is longer than KIE_MAX_VIDEO_S)" } };
+  if (footageBackendFor(env, job, cfg) !== "kie") return { status: 409, reply: { error: "this job does not film through the video model's API (switch off, no key, or the video is longer than KIE_MAX_VIDEO_S)" } };
   // An animatic is drawn, never filmed: whatever a box asks, no clip is bought for it (templates.ts, the two products).
   try { if (isAnimatic(JSON.parse(job.params) as JobParams)) return { status: 409, reply: { error: "this job is an animatic: it is drawn from its frames and orders no clip" } }; } catch { /* unreadable params: the film rules apply */ }
   // The paid rule holds on this road too (a film queued before the rule, or created by any other road): the clips
@@ -618,7 +621,8 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
   const spent = await footageSpentTodayUsd(env);
   if (fresh.length && spent + planned > budget) {
     await audit(env, job.user_id, job.id, "footage.budget", { spent_usd: spent, planned_usd: planned, budget_usd: budget, model: name });
-    return { status: 402, reply: { error: `today's kie.ai budget is spent ($${spent.toFixed(2)} committed + $${planned.toFixed(2)} for this film > $${budget.toFixed(2)}, DAILY_FOOTAGE_BUDGET_USD)` } };
+    // The sentence fails the job (internal.ts), so the user reads it: no dollar, no provider (the audit row has both).
+    return { status: 402, reply: { error: "today's filming capacity is fully booked: no clip was ordered, this video was not made and its credits are refunded. Please ask for it again tomorrow, or order the animatic of the same storyboard" } };
   }
   // The account itself, before the first task: kie.ai bills per task, so a film that runs out of money on shot 14
   // has paid for 13 clips it will never use (13 September, 3.38 $). Silence from the balance call does not refuse.
@@ -720,7 +724,7 @@ export async function footageStatus(env: Env, job: Job, poll = true): Promise<{ 
         if (!urls.length) throw new KieError("task succeeded without a result url", 0, false);
         await downloadClip(env, job, row, urls[0]);
       } else if (state === "fail" || state === "failed" || state === "error") {
-        const msg = `${rec.failCode ?? ""} ${rec.failMsg ?? "kie.ai reported a failure"}`.trim().slice(0, 300);
+        const msg = `${rec.failCode ?? ""} ${rec.failMsg ?? "the model reported a failure"}`.trim().slice(0, 300);
         await updateRow(env, job.id, row.shot_id, { state: "failed", error: msg });
         await audit(env, job.user_id, job.id, "footage.failed", { shot: row.shot_id, task: row.task_id, error: msg });
       } else if (minutesSinceIso(row.created_at) > 30) {
@@ -851,12 +855,12 @@ export async function requestMusic(env: Env, job: Job, req: MusicRequest): Promi
   const spent = await footageSpentTodayUsd(env);
   if (spent + trackUsd > budget) {
     await audit(env, job.user_id, job.id, "music.budget", { spent_usd: spent, planned_usd: trackUsd, budget_usd: budget });
-    return { status: 402, reply: { error: `today's kie.ai budget is spent ($${spent.toFixed(2)} committed + $${trackUsd.toFixed(2)} for the track > $${budget.toFixed(2)})`, state: "failed" } };
+    return { status: 402, reply: { error: `today's budget is spent ($${spent.toFixed(2)} committed + $${trackUsd.toFixed(2)} for the track > $${budget.toFixed(2)})`, state: "failed" } };
   }
   const balance = provider === "ephone" ? await ephoneBalanceUsd(env) : await kieBalanceUsd(env);
   if (balance !== null && balance < trackUsd) {
-    await audit(env, job.user_id, job.id, "music.no_credit", { balance_usd: balance, planned_usd: MUSIC_USD });
-    return { status: 402, reply: { error: `kie.ai balance ($${balance.toFixed(2)}) does not cover the track ($${MUSIC_USD.toFixed(2)})`, state: "failed", no_credit: true } };
+    await audit(env, job.user_id, job.id, "music.no_credit", { balance_usd: balance, planned_usd: trackUsd, provider });
+    return { status: 402, reply: { error: `the music model's balance ($${balance.toFixed(2)}) does not cover the track ($${trackUsd.toFixed(2)})`, state: "failed", no_credit: true } };
   }
   const seconds = Math.max(1, Math.min(360, Number(req.seconds) || 30));
   if (have) await updateRow(env, job.id, MUSIC_ID, { state: "queued", model, seconds, cost_usd: trackUsd, error: null });
@@ -919,7 +923,7 @@ export async function musicStatus(env: Env, job: Job, poll = true): Promise<{ st
         if (!urls.length) throw new KieError("task succeeded without a result url", 0, false);
         await downloadMusic(env, job, row, urls[0]);
       } else if (state === "fail" || state === "failed" || state === "error") {
-        const msg = `${rec.failCode ?? ""} ${rec.failMsg ?? "kie.ai reported a failure"}`.trim().slice(0, 300);
+        const msg = `${rec.failCode ?? ""} ${rec.failMsg ?? "the model reported a failure"}`.trim().slice(0, 300);
         await updateRow(env, job.id, MUSIC_ID, { state: "failed", error: msg });
         await audit(env, job.user_id, job.id, "music.failed", { task: row.task_id, error: msg });
       } else if (minutesSinceIso(row.created_at) > 15) {
@@ -982,6 +986,7 @@ export async function musicNote(env: Env, job: Pick<Job, "id" | "params">): Prom
   if (!asked) return null;
   const row = (await footageRows(env, job.id)).find((r) => r.shot_id === MUSIC_ID);
   if (row?.state === "ready") return null;
-  const why = row?.error ? `: ${row.error.replace(/\s+/g, " ").slice(0, 160)}` : row ? ` (the track was ${row.state})` : " (the track could not be ordered: kie.ai's balance was empty or the service was off)";
-  return `NOTE: the music the user asked for is NOT on this video${why}. Tell them so plainly; the rest of the video is as ordered. The operator has been logged (the fix is on Kleo's side: a kie.ai top-up), and they can ask for the video again later with the music.`;
+  // What the assistant reads and repeats: the provider's own words pass through publicText (src/util.ts).
+  const why = row?.error ? `: ${publicText(row.error).replace(/\s+/g, " ").slice(0, 160)}` : row ? ` (the track was ${row.state})` : " (the track could not be ordered: the music model was not available)";
+  return `NOTE: the music the user asked for is NOT on this video${why}. Tell them so plainly; the rest of the video is as ordered. The operator has been logged (the fix is on Kleo's side), and they can ask for the video again later with the music.`;
 }

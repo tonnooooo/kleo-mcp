@@ -117,7 +117,7 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
     const r = await requestFootage(env, job, url.origin, { shots: b.shots ?? [], look: b.look, format: b.format });
     // 402 is definitive (no kie.ai money, or today's ceiling): the box cannot film without the clips and would only
     // report the generic "the shots did not film" later. Fail the job here, with the sentence, and refund at once.
-    if (r.status === 402) await failJob(env, job, String(r.reply.error ?? "the clips could not be ordered from kie.ai"), false);
+    if (r.status === 402) await failJob(env, job, String(r.reply.error ?? "the clips could not be ordered from the video model"), false);
     return json(r.reply, r.status);
   }
   if (rest === "footage" && request.method === "GET") {

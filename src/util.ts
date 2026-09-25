@@ -50,3 +50,21 @@ export function base64ToBytes(b64: string): Uint8Array {
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
 }
+
+/**
+ * THE PUBLIC WORDS (26 September 2026, the owner's rule): nothing a user or their assistant reads names the gateways
+ * Kleo buys its models through. The sentences Kleo writes itself say "the video model", "the model provider" or "the
+ * AI model gateway"; this is the net under them, for the free text a provider or a box sends back (a task's failure
+ * reason, an HTTP error quoted into a job's error). A provider URL goes with its method; the key names go too.
+ * Audit rows, admin routes and logs keep the real names: they are the operator's.
+ */
+export function publicText(s: string): string {
+  return s
+    .replace(/\b(?:kie\.ai|ephone\.ai)\s+(?:GET|POST|PUT|DELETE)\s+\S+/gi, "the model provider")
+    .replace(/https?:\/\/[^\s"'<>)]*(?:kie\.ai|ephone\.ai)[^\s"'<>)]*/gi, "the model provider")
+    .replace(/\b(?:KIE|EPHONE)_API_KEY\b/g, "the provider key")
+    .replace(/\bkie\.ai's\b/gi, "the model provider's")
+    .replace(/\bkie\.ai\b/gi, "the model provider")
+    .replace(/\bePhone(?:\s+AI|\.ai)?'s\b/gi, "the AI model gateway's")
+    .replace(/\bePhone(?:\s+AI|\.ai)?\b/gi, "the AI model gateway");
+}

@@ -1,8 +1,19 @@
 # Kleo MCP server
 
-Kleo is a remote [Model Context Protocol](https://modelcontextprotocol.io) server that renders YouTube videos and Shorts. A user connects one URL to Claude, ChatGPT, Grok, Claude Code, Cursor, VS Code, OpenCode or Gemini CLI, presses one button to get in (no email, no password, no invite code) and asks for a video in plain language. The render runs on a GPU machine rented for that job only (Vast.ai) with the Keou motion-design engine, every shot a generated clip bought from kie.ai; the result comes back as signed download links (MP4, `.srt` subtitles, thumbnail) that last 7 days.
+Kleo is a remote [Model Context Protocol](https://modelcontextprotocol.io) server that renders YouTube videos and Shorts. A user connects one URL to Claude, ChatGPT, Grok, Claude Code, Cursor, VS Code, OpenCode or Gemini CLI, presses one button to get in (no email, no password, no invite code) and asks for a video in plain language. The render runs on a GPU machine rented for that job only (Vast.ai) with the Keou motion-design engine; the result comes back as signed download links (MP4, `.srt` subtitles, thumbnail) that last 7 days.
 
 The server runs entirely on Cloudflare (Workers + KV + D1 + R2 + Workers AI + Cron), free plan. Production address: `https://mcp.kleooai.com/mcp` (Streamable HTTP, OAuth 2.1; the Worker itself answers at `https://kleo-mcp.plural-juice.workers.dev/mcp`). The public site (`../kleo-site`) reads that address from its `config.json`.
+
+## Models
+
+| Part of the film | Model |
+|---|---|
+| Moving footage (every shot of a film) | **ByteDance Seedance 2.5**, image-to-video from the shot's own frame |
+| Frames and character sheets (from the user's own photos when they give some) | **Google Nano Banana Pro** |
+| Picture check | a vision model compares every picture with the user's request before anything is filmed |
+| Music (on request) | **Suno** |
+| Narration | Kokoro voices, English or Italian |
+| Finish | 4K 60 fps; optional AI upscale (Real-ESRGAN + RIFE) on the rendering GPU |
 
 ## Connect
 
