@@ -636,3 +636,87 @@ test("Wan road: a shot that carries the user's sign is not told by the NEGATIVE 
   assert.equal(m.kieInput("wan-2.7", m.KIE_MODELS["wan-2.7"], { ...p, keepsText: true }).negative_prompt, m.kieNegativeFor("realistic", true));
   assert.equal(m.kieInput("minimax-h3", m.KIE_MODELS["minimax-h3"], { ...p, keepsText: true }).negative_prompt, undefined, "only the Wan dialect has a negative prompt");
 });
+
+/* ------------------------------------------------------------------ ePhone AI (25 September 2026) */
+
+/** A fake ePhone AI (RixAPI): /v1/task/submit, /v1/task/{id}, the billing pair, the result file. */
+function fakeEphone(script = {}) {
+  const calls = { submit: [], query: [], downloads: 0, billing: 0 };
+  let n = 0;
+  const mp4 = new Uint8Array(4096); mp4.set([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70], 0);
+  const fetch = async (url, init = {}) => {
+    const u = String(url);
+    if (u === "https://api.ephone.ai/v1/task/submit") {
+      calls.submit.push({ body: JSON.parse(init.body), headers: init.headers });
+      if (script.submitNoMoney) return new Response(JSON.stringify({ error: { message: "user quota is not enough (request id: 1)", type: "rix_api_error", code: "" } }), { status: 403 });
+      return new Response(JSON.stringify({ id: `eph_${++n}`, status: "queued", created_at: 1 }), { status: 200 });
+    }
+    const q = /^https:\/\/api\.ephone\.ai\/v1\/task\/([^/?]+)$/.exec(u);
+    if (q) {
+      calls.query.push(q[1]);
+      const status = script.status?.[q[1]] ?? script.defaultStatus ?? "in_progress";
+      const body = { id: q[1], status, created_at: 1,
+        ...(status === "completed" ? { outputs: [`https://cdn.ephone.test/${q[1]}.mp4`], usage: { type: "tokens", output_tokens: 38880, total_tokens: 38880 } } : {}),
+        ...(status === "failed" ? { error: "Content policy violation detected" } : {}) };
+      return new Response(JSON.stringify(body), { status: 200 });
+    }
+    if (u.endsWith("/v1/dashboard/billing/subscription")) { calls.billing++; return new Response(JSON.stringify({ object: "billing_subscription", hard_limit_usd: script.limit ?? 10 }), { status: 200 }); }
+    if (u.endsWith("/v1/dashboard/billing/usage")) return new Response(JSON.stringify({ object: "list", total_usage: script.usedCents ?? 250 }), { status: 200 });
+    if (u.startsWith("https://cdn.ephone.test/")) { calls.downloads++; return new Response(mp4, { status: 200, headers: { "content-length": String(mp4.length) } }); }
+    throw new Error(`unexpected fetch ${u}`);
+  };
+  return { calls, fetch };
+}
+
+test("ePhone AI: a Seedance 2.5 model needs EPHONE_API_KEY, not kie.ai's; the price table knows it", () => {
+  const j = { params: JSON.stringify({ duration_s: 15 }) };
+  assert.equal(m.footageBackendFor({ KLEO_FOOTAGE_BACKEND: "kie", KIE_API_KEY: "k", KLEO_FOOTAGE_MODEL: "seedance-2.5-480p" }, j), "local", "no ePhone key: the API road is closed");
+  assert.equal(m.footageBackendFor({ KLEO_FOOTAGE_BACKEND: "kie", EPHONE_API_KEY: "e", KLEO_FOOTAGE_MODEL: "seedance-2.5-480p" }, j), "kie");
+  assert.equal(m.footageBackendFor({ KLEO_FOOTAGE_BACKEND: "kie", EPHONE_API_KEY: "e" }, j, { model: "seedance-2.5-720p" }), "kie", "the admin override picks the road too");
+  const s480 = m.KIE_MODELS["seedance-2.5-480p"];
+  assert.equal(s480.provider, "ephone"); assert.equal(s480.model, "doubao-seedance-2-5-260628"); assert.equal(s480.resolution, "480p");
+  assert.equal(m.clipSecondsFor(s480, 2.4), 4, "4 s at least"); assert.equal(m.clipSecondsFor(s480, 22), 22, "up to 30 s in one clip");
+  assert.deepEqual(m.ephoneInput("seedance-2.5-480p", s480, { prompt: "p", imageUrl: "https://kleo.test/a.png", seconds: 3.2, format: "9:16" }),
+    { prompt: "p", first_frame: "https://kleo.test/a.png", duration: 4, resolution: "480p", aspect_ratio: "9:16", generate_audio: false, watermark: false });
+});
+
+test("ePhone AI: requestFootage submits one task per shot on the official channels only, footageStatus collects the clip", async () => {
+  const env = await newEnv({ KIE_API_KEY: undefined, EPHONE_API_KEY: "eph-key", KLEO_FOOTAGE_MODEL: "seedance-2.5-480p", KIE_MAX_VIDEO_S: "0" });
+  const job = await filmJob(env);
+  const eph = fakeEphone(); globalThis.fetch = eph.fetch;
+  const r = await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS, look: "realistic", format: "9:16" });
+  assert.equal(r.status, 200, JSON.stringify(r.reply)); assert.equal(r.reply.ordered, 3); assert.equal(r.reply.model, "seedance-2.5-480p");
+  assert.equal(eph.calls.billing, 1, "the balance is read before the first task");
+  const first = eph.calls.submit.find((c) => c.body.input.prompt.startsWith("a figure") || c.body.input.first_frame?.includes("01-hook-s1"));
+  assert.equal(first.headers.authorization, "Bearer eph-key");
+  assert.equal(first.headers["X-Provider-Order"], "official"); assert.equal(first.headers["X-Provider-Only"], "true");
+  assert.equal(first.body.model, "doubao-seedance-2-5-260628");
+  assert.match(first.body.input.first_frame, /^http:\/\/kleo\.test\/dl\/gt_test1234\/img%2F01-hook-s1\.png\?exp=\d+&sig=[0-9a-f]{64}$/);
+  assert.deepEqual([first.body.input.duration, first.body.input.resolution, first.body.input.aspect_ratio, first.body.input.generate_audio], [4, "480p", "9:16", false]);
+  const rows = await m.footageRows(env, job.id);
+  assert.deepEqual(rows.map((x) => [x.shot_id, x.state, x.cost_usd]), [["01-hook-s1", "generating", 0.35], ["01-hook-s2", "generating", 0.35], ["02-city-s1", "generating", 0.7]]);
+  // One finishes, one fails, one is still running.
+  const byShot = Object.fromEntries(rows.map((x) => [x.shot_id, x.task_id]));
+  globalThis.fetch = fakeEphone({ status: { [byShot["01-hook-s1"]]: "completed", [byShot["01-hook-s2"]]: "failed" } }).fetch;
+  const st = await m.footageStatus(env, job);
+  assert.deepEqual(st.reply.ready, ["01-hook-s1"]); assert.deepEqual(st.reply.pending, ["02-city-s1"]);
+  assert.match(st.reply.failed["01-hook-s2"], /Content policy/);
+  assert.ok(await env.RENDERS.get(m.clipKey(job.id, "01-hook-s1")), "the clip is on R2");
+});
+
+test("ePhone AI: an empty account (RixAPI's 403 'quota is not enough') stops the order at once, and the balance refuses first when it is known", async () => {
+  const env = await newEnv({ KIE_API_KEY: undefined, EPHONE_API_KEY: "eph-key", KLEO_FOOTAGE_MODEL: "seedance-2.5-480p", KIE_MAX_VIDEO_S: "0" });
+  const job = await filmJob(env);
+  const poor = fakeEphone({ submitNoMoney: true, limit: 0 }); globalThis.fetch = poor.fetch; // limit 0: the balance says nothing, the task decides
+  const r = await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS, format: "9:16" });
+  assert.equal(r.status, 402); assert.equal(r.reply.no_credit, true); assert.match(r.reply.error, /ePhone AI balance is empty/);
+  assert.equal(poor.calls.submit.length, 1, "the first refusal stops the order");
+  const env2 = await newEnv({ KIE_API_KEY: undefined, EPHONE_API_KEY: "eph-key", KLEO_FOOTAGE_MODEL: "seedance-2.5-480p", KIE_MAX_VIDEO_S: "0" });
+  const job2 = await filmJob(env2);
+  const low = fakeEphone({ limit: 1, usedCents: 90 }); globalThis.fetch = low.fetch; // 0.10 $ left
+  const r2 = await m.requestFootage(env2, job2, "http://kleo.test", { shots: SHOTS, format: "9:16" });
+  assert.equal(r2.status, 402); assert.equal(low.calls.submit.length, 0, "nothing ordered"); assert.equal(r2.reply.balance_usd, 0.1);
+  // The pre-flight reads the same account.
+  const pre = await m.kiePreflight(env2, 30, 6, 24);
+  assert.equal(pre.ok, false); assert.equal(pre.reason, "balance"); assert.equal(pre.balance_usd, 0.1);
+});

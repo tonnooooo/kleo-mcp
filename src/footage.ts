@@ -37,6 +37,7 @@ import { isAnimatic } from "./templates.ts";
 import { specOf, itemById, type RequestSpec, type SpecItem } from "./spec.ts";
 import { stillCast, stillShotsOf, stillModel, stillProviderOf, stillPriceUsd, STILL_SIZES, SHEET_SIZE } from "./stills.ts";
 import { KIE_BASE, KIE_CREATE, KIE_RECORD, KIE_CREDIT, USD_PER_KIE_CREDIT, KieError, kie, isNoCredit, kieResultUrls, type KieRecord } from "./kie.ts";
+import { ephone, ephoneBalanceUsd, ephoneOutputs, ephoneFailure, type EphoneTask } from "./ephone.ts";
 
 /* ------------------------------------------------------------------ models and prices */
 
@@ -60,7 +61,15 @@ export type FootageBackend = "kie" | "local";
  * image-to-video arena (Artificial Analysis, no audio: 1351), above Kling 3.0 pro (1302), Veo 3.1 (1304) and Wan 2.7
  * (1275); native 2K, so the box's 4K upscale starts from twice Kling's pixels; 0.065 $/s against Kling's 0.09.
  */
-export interface KieModel { model: string; usdPerSecond: number; usdPerClip?: Record<number, number>; seconds: { min: number; max: number } | number[]; note: string; verified: boolean }
+export interface KieModel {
+  model: string; usdPerSecond: number; usdPerClip?: Record<number, number>; seconds: { min: number; max: number } | number[]; note: string; verified: boolean;
+  /** Where the clip is bought (25 September 2026): kie.ai (unset) or ePhone AI (src/ephone.ts). */
+  provider?: "kie" | "ephone";
+  /** The resolution asked for, where the model's name does not say it. */
+  resolution?: string;
+}
+/** The road a model's clips are bought on. */
+export const clipProviderOf = (spec: Pick<KieModel, "provider">): "kie" | "ephone" => spec.provider ?? "kie";
 export const KIE_MODELS: Record<string, KieModel> = {
   "minimax-h3":     { model: "minimax-h3/image-to-video", usdPerSecond: 0.065, seconds: { min: 4, max: 15 }, verified: false,
                       note: "MiniMax H3 image-to-video, 2K: the default since 13 September — arena rank 3 (Elo 1351), native 2K, 0.065 $/s. First frame conditioning, whole seconds 4-15. Not yet exercised end to end." },
@@ -84,6 +93,14 @@ export const KIE_MODELS: Record<string, KieModel> = {
                       note: "Wan 2.7, 1080p, 0.12 $/s, first-frame conditioning, negative prompt and seed. Arena rank 15 (Elo 1275), dearer than Kling pro." },
   "seedance-2.0":   { model: "bytedance/seedance-2", usdPerSecond: 0.51, seconds: { min: 4, max: 15 }, verified: true,
                       note: "ByteDance Seedance 2.0, 1080p image-to-video, 0.51 $/s on kie.ai (720p is 0.205): fluid with people, arena rank 4 at 720p (Elo 1342), but 5.7x the price of Kling pro here. Keep for comparisons, not for production." },
+  // ePhone AI (25 September 2026, the owner's pick): Seedance 2.5 on the official ByteDance channel. The price is a
+  // token price — 70 CNY per million output tokens at 480p/720p without a reference video, times the ByteDance group
+  // ratio 0.9, with tokens = width x height x fps x seconds / 1024 (480x864 at 24 fps: 9,720 a second; 720x1280:
+  // 21,600) and 7 CNY a dollar — so these per-second figures are estimates the first real clip checks (usage.output_tokens).
+  "seedance-2.5-480p": { provider: "ephone", model: "doubao-seedance-2-5-260628", resolution: "480p", usdPerSecond: 0.0875, seconds: { min: 4, max: 30 }, verified: false,
+                      note: "ByteDance Seedance 2.5 through ePhone AI (official channel), 480p, about 0.0875 $/s (kie.ai: 0.14). First frame conditioning, whole seconds 4-30. 480p is upscaled 4.5x per side to 4K on the box (Lanczos): soft. Not yet exercised." },
+  "seedance-2.5-720p": { provider: "ephone", model: "doubao-seedance-2-5-260628", resolution: "720p", usdPerSecond: 0.194, seconds: { min: 4, max: 30 }, verified: false,
+                      note: "ByteDance Seedance 2.5 through ePhone AI (official channel), 720p, about 0.194 $/s (kie.ai: 0.315). Not yet exercised." },
 };
 export const DEFAULT_KIE_MODEL = "minimax-h3";
 
@@ -101,10 +118,12 @@ export const DEFAULT_KIE_MAX_VIDEO_S = 20;
  * and jobs.ts (the token check) cannot disagree: the same env and the same job give the same answer everywhere.
  * `override` is the admin route's live setting (footageConfig), read once by the caller.
  */
-export function footageBackendFor(env: Pick<Env, "KIE_API_KEY" | "KLEO_FOOTAGE_BACKEND" | "KIE_MAX_VIDEO_S">, job: Pick<Job, "params">, override: FootageOverride | null = null): FootageBackend {
+export function footageBackendFor(env: Pick<Env, "KIE_API_KEY" | "EPHONE_API_KEY" | "KLEO_FOOTAGE_BACKEND" | "KLEO_FOOTAGE_MODEL" | "KIE_MAX_VIDEO_S">, job: Pick<Job, "params">, override: FootageOverride | null = null): FootageBackend {
   const wanted = (override?.backend ?? env.KLEO_FOOTAGE_BACKEND ?? "").trim().toLowerCase();
   if (wanted !== "kie") return "local";
-  if (!(env.KIE_API_KEY && env.KIE_API_KEY.trim())) return "local";
+  // The key of the road the model is bought on ("kie" is the name of the API road, whichever provider sells the clip).
+  const key = clipProviderOf(kieModelFor(env, override).spec) === "ephone" ? env.EPHONE_API_KEY : env.KIE_API_KEY;
+  if (!(key && key.trim())) return "local";
   let seconds = 0;
   try { seconds = Number((JSON.parse(job.params) as JobParams).duration_s) || 0; } catch { /* unreadable params: the cap decides */ }
   const cap = int(env.KIE_MAX_VIDEO_S, DEFAULT_KIE_MAX_VIDEO_S);
@@ -186,6 +205,13 @@ export async function kiePreflight(env: Env, seconds: number, shots: number | nu
   // The account pays the pictures too when they are drawn on kie.ai (plannedStillsUsd); today's ceiling above is the
   // clips' own (the pictures have theirs: STILLS_JOB_MAX_USD, STILLS_DAILY_USD in src/stills.ts).
   const stills = plannedStillsUsd(env, plan.shots);
+  // Clips bought on ePhone AI are paid from that account; the pictures (on kie.ai) then have a balance of their own,
+  // and an empty one only moves them to klein-4B (src/stills.ts), it never stops the film.
+  if (clipProviderOf(kieModelFor(env, cfg).spec) === "ephone") {
+    const balance = await ephoneBalanceUsd(env);
+    const ok = balance === null || balance >= plan.usd;
+    return { ok, reason: ok ? null : "balance", balance_usd: balance, planned_usd: plan.usd, spent_today_usd: spent, budget_usd: budget, shots: plan.shots, model: plan.model };
+  }
   const balance = await kieBalanceUsd(env);
   const ok = balance === null || balance >= plan.usd + stills;
   return { ok, reason: ok ? null : "balance", balance_usd: balance, planned_usd: plan.usd, spent_today_usd: spent, budget_usd: budget, shots: plan.shots, model: plan.model, ...(stills > 0 ? { stills_usd: stills } : {}) };
@@ -355,8 +381,20 @@ export async function kieBalanceUsd(env: Env): Promise<number | null> {
 }
 
 /** The sentence the user reads when kie.ai has no money left. Plain, and it says what happens to their credits. */
-export function noCreditSentence(ordered: number, wanted: number): string {
-  return `kie.ai balance is empty: ${ordered} of ${wanted} shots could be ordered before it ran out. Top up the kie.ai account and ask for the video again; this video was not made and its credits are refunded`;
+export function noCreditSentence(ordered: number, wanted: number, provider: "kie" | "ephone" = "kie"): string {
+  const who = provider === "ephone" ? "ePhone AI" : "kie.ai";
+  return `${who} balance is empty: ${ordered} of ${wanted} shots could be ordered before it ran out. Top up the ${who} account and ask for the video again; this video was not made and its credits are refunded`;
+}
+
+/**
+ * The `input` of an ePhone AI video task (25 September 2026; the Seedance 2.5 API tab on platform.ephone.ai):
+ *   doubao-seedance-2-5-260628  prompt (≤ 2000 chars), first_frame (URL), duration (int 4-30), resolution
+ *                                480p|720p|1080p, aspect_ratio, generate_audio, watermark
+ * Audio off (the narration is Kleo's), no watermark. Without a still the call is text-to-video, which Seedance allows.
+ */
+export function ephoneInput(name: string, spec: KieModel, p: { prompt: string; imageUrl: string | null; seconds: number; format: string }): Record<string, unknown> {
+  const aspect = p.format === "16:9" ? "16:9" : "9:16";
+  return { prompt: p.prompt.slice(0, 2000), ...(p.imageUrl ? { first_frame: p.imageUrl } : {}), duration: clipSecondsFor(spec, p.seconds), resolution: spec.resolution ?? "720p", aspect_ratio: aspect, generate_audio: false, watermark: false };
 }
 
 /**
@@ -435,11 +473,12 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
   }
   // The account itself, before the first task: kie.ai bills per task, so a film that runs out of money on shot 14
   // has paid for 13 clips it will never use (13 September, 3.38 $). Silence from the balance call does not refuse.
+  const provider = clipProviderOf(spec);
   if (fresh.length) {
-    const balance = await kieBalanceUsd(env);
+    const balance = provider === "ephone" ? await ephoneBalanceUsd(env) : await kieBalanceUsd(env);
     if (balance !== null && balance < planned) {
-      await audit(env, job.user_id, job.id, "footage.no_credit", { balance_usd: balance, planned_usd: Math.round(planned * 1000) / 1000, model: name, ordered: 0, wanted: fresh.length });
-      return { status: 402, reply: { error: noCreditSentence(0, fresh.length), no_credit: true, balance_usd: balance, planned_usd: Math.round(planned * 1000) / 1000 } };
+      await audit(env, job.user_id, job.id, "footage.no_credit", { balance_usd: balance, planned_usd: Math.round(planned * 1000) / 1000, model: name, provider, ordered: 0, wanted: fresh.length });
+      return { status: 402, reply: { error: noCreditSentence(0, fresh.length, provider), no_credit: true, balance_usd: balance, planned_usd: Math.round(planned * 1000) / 1000 } };
     }
   }
   const exp = Math.floor(Date.now() / 1000) + 6 * 60 * 60;
@@ -463,10 +502,18 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
     else await env.DB.prepare("INSERT OR IGNORE INTO footage (job_id, shot_id, model, state, seconds, cost_usd, updated_at) VALUES (?, ?, ?, 'queued', ?, ?, ?)")
       .bind(job.id, s.id, name, seconds, cost, nowIso()).run();
     try {
-      const r = await kie<{ taskId?: string }>(env, "POST", KIE_CREATE, { model: spec.model, input: kieInput(name, spec, { prompt, imageUrl, seconds, format, seed: seedFor(s.id), look, keepsText: clipKeepsText(s.id, stored) }) });
-      if (!r?.taskId) throw new KieError("kie.ai answered without a taskId", 0, false);
-      await updateRow(env, job.id, s.id, { task_id: r.taskId, state: "generating" });
-      await audit(env, job.user_id, job.id, "footage.task", { shot: s.id, model: name, task: r.taskId, clip_s: clipSeconds, want_s: seconds, usd: cost, still: !!imageUrl });
+      let taskId: string | undefined;
+      if (provider === "ephone") {
+        const r = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: spec.model, input: ephoneInput(name, spec, { prompt, imageUrl, seconds, format }) });
+        taskId = typeof r?.id === "string" && r.id ? r.id : undefined;
+        if (!taskId) throw new KieError("ephone.ai answered without a task id", 0, false);
+      } else {
+        const r = await kie<{ taskId?: string }>(env, "POST", KIE_CREATE, { model: spec.model, input: kieInput(name, spec, { prompt, imageUrl, seconds, format, seed: seedFor(s.id), look, keepsText: clipKeepsText(s.id, stored) }) });
+        taskId = r?.taskId;
+        if (!taskId) throw new KieError("kie.ai answered without a taskId", 0, false);
+      }
+      await updateRow(env, job.id, s.id, { task_id: taskId, state: "generating" });
+      await audit(env, job.user_id, job.id, "footage.task", { shot: s.id, model: name, provider, task: taskId, clip_s: clipSeconds, want_s: seconds, usd: cost, still: !!imageUrl });
       ordered++;
     } catch (e) {
       const msg = String(e).slice(0, 300);
@@ -480,8 +527,8 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
   }
   const reply = await footageStatus(env, job, false);
   if (outOfCredit) {
-    await audit(env, job.user_id, job.id, "footage.no_credit", { model: name, ordered, wanted: fresh.length });
-    return { status: 402, reply: { ...reply.reply, ordered, no_credit: true, error: noCreditSentence(ordered, fresh.length) } };
+    await audit(env, job.user_id, job.id, "footage.no_credit", { model: name, provider, ordered, wanted: fresh.length });
+    return { status: 402, reply: { ...reply.reply, ordered, no_credit: true, error: noCreditSentence(ordered, fresh.length, provider) } };
   }
   return { status: 200, reply: { ...reply.reply, ordered } };
 }
@@ -496,6 +543,24 @@ export async function footageStatus(env: Env, job: Job, poll = true): Promise<{ 
   if (poll) for (const row of rows) {
     if (row.state !== "generating" || !row.task_id || row.shot_id === MUSIC_ID) continue;
     try {
+      if (clipProviderOf(KIE_MODELS[row.model] ?? {}) === "ephone") {
+        const t = await ephone<EphoneTask>(env, "GET", `/v1/task/${encodeURIComponent(row.task_id)}`);
+        const st = String(t?.status ?? "").toLowerCase();
+        if (st === "completed") {
+          const urls = ephoneOutputs(t);
+          if (!urls.length) throw new KieError("ephone.ai task completed without an output url", 0, false);
+          await downloadClip(env, job, row, urls[0]);
+          if (t.usage) await audit(env, job.user_id, job.id, "footage.usage", { shot: row.shot_id, task: row.task_id, usage: t.usage });
+        } else if (st === "failed") {
+          const msg = ephoneFailure(t);
+          await updateRow(env, job.id, row.shot_id, { state: "failed", error: msg });
+          await audit(env, job.user_id, job.id, "footage.failed", { shot: row.shot_id, task: row.task_id, error: msg });
+        } else if (minutesSinceIso(row.created_at) > 30) {
+          await updateRow(env, job.id, row.shot_id, { state: "failed", error: `still ${st || "pending"} after 30 minutes` });
+          await audit(env, job.user_id, job.id, "footage.failed", { shot: row.shot_id, task: row.task_id, error: "timeout" });
+        }
+        continue;
+      }
       const rec = await kie<KieRecord>(env, "GET", `${KIE_RECORD}?taskId=${encodeURIComponent(row.task_id)}`);
       const state = String(rec?.state ?? "").toLowerCase();
       if (state === "success") {

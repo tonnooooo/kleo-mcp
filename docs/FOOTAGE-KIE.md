@@ -130,3 +130,24 @@ Quando l'utente risponde sì alla domanda sulla musica, la stessa API (`createTa
 Suno (`ai-music-api/generate`, strumentale, custom mode, 12 crediti = 0,06 $), scritta nella tabella `footage` con
 `shot_id = "music"` per il tetto giornaliero e servita alla macchina da `/internal/jobs/:id/music/file`. Rifiuti
 morbidi: il film esce senza traccia. Tutto in `docs/MUSICA-SOTTOTITOLI-DISSOLVENZE.md`.
+
+## ePhone AI as a second clip provider (25 September 2026)
+
+The owner picked ePhone AI (platform.ephone.ai, PULSE AI SINGAPORE PTE. LTD., a RixAPI deployment) for Seedance 2.5:
+about 0.0875 $/s at 480p and 0.194 $/s at 720p, against kie.ai's 0.14 and 0.315. MiniMax H3 stays on kie.ai
+(ePhone sells it dearer: about 0.091 $/s at 2K against 0.065).
+
+- `src/ephone.ts`: `POST /v1/task/submit {model, input}` and `GET /v1/task/{id}`, the same submit/poll shape as kie.ai.
+  Every call sends `X-Provider-Order: official` and `X-Provider-Only: true`: ePhone's default routing mixes in
+  reverse-engineered channels, and a user's pictures must never go through one.
+- `KIE_MODELS` entries with `provider: "ephone"`: `seedance-2.5-480p`, `seedance-2.5-720p` (model
+  `doubao-seedance-2-5-260628`; input prompt ≤ 2000 chars, `first_frame` URL, duration 4-30, resolution, aspect ratio,
+  audio off, no watermark). The prices are estimates from ePhone's token price; the first real clip checks them
+  against `usage.output_tokens` (a `footage.usage` audit row).
+- The key is `EPHONE_API_KEY` (a Cloudflare secret). The road is chosen by the model: switch with the admin route,
+  `POST /internal/admin/footage {"model":"seedance-2.5-480p"}`, no deploy.
+- An empty ePhone account answers 403 "quota is not enough"; the client turns it into status 402, so the order stops
+  at the first refusal, like kie.ai's. The balance is read through `/v1/dashboard/billing/subscription` and `/usage`
+  (not yet verified against the live console).
+- 480p is upscaled 4.5x per side to 4K on the box (Lanczos): the picture is soft. 720p is the fair comparison with
+  MiniMax H3 2K.
