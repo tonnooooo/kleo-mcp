@@ -29,7 +29,7 @@ One button signs you in (no email, no password); 7 credits arrive with the accou
 | `kleo_get_result` | Signed download links for a finished job. |
 | `kleo_generate_thumbnail` | Not enabled yet in the beta (every render already includes a thumbnail): records the request and returns a notice. |
 | `kleo_cancel_job` | Cancels a queued or running job and refunds the unused credits. |
-| `kleo_account` | Credits left, the read-only link to the account page (`/credits`) and the "Kleo key" that carries the account to another browser. The link is safe to paste anywhere; the key is the account. |
+| `kleo_account` | Credits left, the read-only link to the account page (`/credits`) with the private Kleo key visible only to the owning browser. No reusable account credential is returned to the assistant. |
 
 Credits (`src/templates.ts`): 1 credit = 2 seconds of film, rounded up, 10 credits minimum; the film is made for accounts that bought a credit pack (€5 = 10 credits, €15 = 35, €40 = 100, one-off, no subscription). The animatic (the same storyboard with the camera moving over drawn frames, no generated clip, 15–60 s) costs 5 credits and is open to every account: the 7 credits that come with a new account pay for one. `tariffSentence()` is the sentence every page quotes. Accounts are anonymous: no email and no password, just an HMAC-signed handle (`src/accounts.ts`) kept in a cookie, which doubles as the pasteable "Kleo key". The D1 table `invites` survives only as an optional gift: a code typed into the collapsed field of the sign-in page adds credits on top of the free ones, and an unknown code never blocks anyone. Output: 2160×3840 for 9:16, 1920×1080 for 16:9, 60 fps, H.264 + AAC. A Short takes about 10–20 minutes including the machine boot; a long video takes proportionally longer, and the timeout a render is given follows the length it was quoted (`jobTimeoutMin`), never a flat number below it.
 
@@ -92,3 +92,10 @@ Above all of those sits `DAILY_GPU_BUDGET_USD`: before renting anything, the orc
 - `DEPLOY.md` — current status, going live, day-to-day operations (Italian)
 - `docs/MCP-GUIDA.md` — what MCP is, how each client connects, the seven tools (Italian)
 - `docs/ARCHITETTURA.md` — the original feasibility analysis and architecture (Italian)
+
+## Public plugin review
+
+Every tool explicitly declares its read, write and external-access annotations. Prompt adaptation and upload-link
+creation are writes because they persist reference data or audit/quota records. The account tool returns a read-only
+balance link, never the reusable account key. Users save that key only in their already authenticated browser.
+Before public review, deploy these changes and scan the production MCP again in the publisher portal.

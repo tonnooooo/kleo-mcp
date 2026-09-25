@@ -12,7 +12,7 @@ import { getFile } from "./storage";
 import { ACTIVE_TEMPLATE, PUBLIC_TEMPLATES as TEMPLATES, PUBLIC_TEMPLATE_IDS as ACTIVE_TEMPLATE_IDS, findTemplate, creditsFor, creditsForProduct, filmCredits, freeCreditsFor, tariffSentence, MIN_FILM_CREDITS, SECONDS_PER_CREDIT, PRODUCTS, ANIMATIC_CREDITS, ANIMATIC_MAX_S, productOf } from "./templates";
 import { PACKS, sellingAvailable } from "./stripe";
 import { createJob, cancelJob, jobView, resultLinks, JobError, FILE_NAMES } from "./jobs";
-import { accountUrl, makeHandle } from "./accounts";
+import { accountUrl } from "./accounts";
 import { audit } from "./db";
 import { FORMATS, FILM_LOOKS, wordBudget, shotRangeText, pictureScenes } from "./keou-contract";
 import { musicNote } from "./footage";
@@ -309,7 +309,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       references: z.array(referenceSchema).max(8).optional().describe("The pictures the user gave for this film, each with ONE of: url (a public https link), upload (the token of a kleo_upload_link link they uploaded through), handle (kref_… returned earlier); plus role and name when the user said what it shows. Kleo draws the characters, objects and places FROM these pictures."),
       author: z.enum(["assistant", "server"]).default("assistant").describe("Who writes the spec and the treatment. \"assistant\" (default): Kleo hands YOU the two methods and you write them — you are a far stronger writer than Kleo's own planning model, and it costs nothing. \"server\": Kleo's model writes them (use only if you cannot write JSON yourself)."),
     }),
-    annotations: { readOnlyHint: true, idempotentHint: false, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   }, async ({ prompt, duration_s, format, language, audience, tone, must_keep, style, music, subtitles, references, author }) => guarded(async () => {
     const brief = adaptPrompt(prompt, { duration_s, format, audience, tone, must_keep, look: style ?? null, music, subtitles });
     // The two answers, as the method and the server's model read them (src/treatment.ts SoundOptions).
@@ -386,7 +386,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     title: "Get a link where the user uploads pictures",
     description: `When the user attached pictures to the chat (or says they have photos) of a person, a pet, an object, a place or a style Kleo should draw from, call this and give them the link: they open it on their device, drop the pictures in (PNG, JPEG or WebP, up to 12 MB each, ${UPLOAD_MAX_FILES} per link; the link lasts 48 hours) and come back. When they say they uploaded, call kleo_adapt_prompt again with references [{upload: "<token>", role, name}] — Kleo takes every picture uploaded there, describes it, and draws the characters from it. Pictures on the web can be passed directly as references [{url: "https://…"}] instead. Nothing is charged.`,
     inputSchema: z.object({}),
-    annotations: { readOnlyHint: true, idempotentHint: false, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   }, async () => guarded(async () => {
     // Each link takes UPLOAD_MAX_FILES new pictures, and each picture is a vision call: links are counted too (24
     // September 2026), so the number of pictures an account can have described is bounded on this road as well.
@@ -405,7 +405,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     title: "List the template and the two products",
     description: `Lists Kleo's one template, film (realistic or animation look, 16:9 or 9:16, 15-300 s), and its two products: the film (every shot a generated clip, priced by length, for accounts that have bought a credit pack) and the animatic (the same drawn frames with camera moves, ${ANIMATIC_CREDITS} credits flat, up to ${ANIMATIC_MAX_S} s, every account). Music and burned-in subtitles are options in both: the user is always asked and gets them only when they say yes.`,
     inputSchema: z.object({}),
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => {
     const fresh = (await getUser(env, user.id)) ?? user;
     const activeTemplate = ACTIVE_TEMPLATE;
@@ -436,7 +436,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       style: z.enum(FILM_LOOKS).optional().describe("The look: \"realistic\" (filmed) or \"animation\" (a 2D animated film); in both every shot is generated footage from its own frame, under the narration. Realistic when omitted."),
       format: z.enum(FORMATS).optional().describe("The frame the video will be in. The explainer authors its drawings in the frame's own pixels, so its guide prints different coordinates for 9:16 and 16:9; the template's own format is used when this is omitted."),
     }),
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ template, duration_s, style, format }) => {
     const look = style ?? "realistic";
     const t = template === ACTIVE_TEMPLATE.id ? ACTIVE_TEMPLATE : null;
@@ -548,7 +548,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     title: "Check progress",
     description: "Step 4. Progress of a video: state (queued, starting, rendering, finishing, done, failed, cancelled), what it is doing now, percent done and minutes left (eta_min). Use it for a one-off status check; to wait until the video is ready use kleo_wait_for_video instead. When the state is done, call kleo_get_result. Without a job_id it lists the account's recent videos.",
     inputSchema: z.object({ job_id: z.string().optional().describe("The video number returned by kleo_create_video (for example gt_ab12cd34). Omit to list recent videos.") }),
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ job_id }) => guarded(async () => {
     if (!job_id) {
       const jobs = await recentJobsForUser(env, user.id, 10);
@@ -576,7 +576,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       job_id: z.string().optional().describe("The video number from kleo_create_video. Omit to wait for your most recent video."),
       max_wait_s: z.number().int().min(10).max(600).optional().describe("How long this call may wait before reporting progress, in seconds. Leave it empty: Kleo picks a safe value for your client (45 s for ChatGPT and Grok, 170 s for Claude, 5 minutes for OpenCode)."),
     }),
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ job_id, max_wait_s }, ctx) => guarded(async () => {
     let job = job_id ? await getUserJob(env, user.id, job_id) : (await recentJobsForUser(env, user.id, 1))[0];
     if (!job) throw job_id ? noSuchVideo(job_id) : new JobError("No videos on this account yet. Create one with kleo_create_video.");
@@ -618,7 +618,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     title: "Get download links",
     description: "Step 5. Download links for a finished video (film or animatic): the MP4, the thumbnail and the subtitles as an .srt file (burned-in subtitles and the music track, when the user asked for them, are inside the MP4), and, when the pictures were checked against the user's request, one line saying how many of the things they asked for the pictures show and which they miss.",
     inputSchema: z.object({ job_id: z.string().describe("The video number returned by kleo_create_video.") }),
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ job_id }) => guarded(async () => {
     const job = await getUserJob(env, user.id, job_id);
     if (!job) throw noSuchVideo(job_id);
@@ -666,9 +666,9 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
 
   server.registerTool("kleo_account", {
     title: "Account and credits",
-    description: "The credits left on this account, whether it can order a FILM (has_paid: films are for accounts that have bought a pack; every account can order the animatic), the link to its page, and the \"Kleo key\" that carries the same account (and the same credits) to another browser or another computer. Call it before the first kleo_create_video of a conversation and when the user asks how many credits they have, how to get more, or how to use Kleo somewhere else. Give them account_url as a plain link: it opens a read-only page (balance, prices, where to write) and cannot sign anybody in. Show account_key only if they ask for it, because anyone who has it can take the account over and spend its credits.",
+    description: "The credits left on this account, whether it can order a FILM (has_paid: films require a credit-pack purchase; every account can order an animatic), and a read-only account page link. Call before the first kleo_create_video and for balance or credit-pack questions. Give account_url as a plain link. Private account keys are never returned to the assistant; to save their key, users must open the account page in the browser they used to connect Kleo. Never ask them to paste the key into the conversation.",
     inputSchema: z.object({}),
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => {
     const fresh = (await getUser(env, user.id)) ?? user;
     const url = await accountUrl(env, user.id, base);
@@ -698,7 +698,6 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       free_tier: free > 0
         ? `${plural(free, "credit")} on sign-up, no signup form; they buy an animatic (${ANIMATIC_CREDITS} credits, up to ${ANIMATIC_MAX_S} s), and the shortest film is ${MIN_FILM_CREDITS} credits and needs a pack (from ${cheapest.label}: ${free} + ${cheapest.credits} = ${free + cheapest.credits} credits, a 30-second Short)`
         : "no free credits: connecting is free, every video is paid (no subscription, credit packs only)",
-      account_key: await makeHandle(env, user.id),
       account_url: url,
       payments_open: open,
     };
@@ -709,7 +708,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     const buy = open
       ? `Credit packs are on the account page, paid through Stripe (from ${cheapest.label} for ${cheapest.credits} credits; one payment, nothing renews)`
       : `Card payments are paused right now; the account page says when they reopen`;
-    return ok(data, `You have ${plural(fresh.credits, "credit")}. ${tariffSentence()}.${enough}${films} ${buy}. Your account page, which also shows the key that carries this account to another browser: ${url}`);
+    return ok(data, `You have ${plural(fresh.credits, "credit")}. ${tariffSentence()}.${enough}${films} ${buy}. Your read-only account page (your private key is visible only in the browser that owns this account): ${url}`);
   });
 
   return server;
