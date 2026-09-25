@@ -13,6 +13,7 @@ import { generateStoryboard, TREATMENT_TEMPERATURE, writeTreatment, callModel } 
 import { validateStoryboard } from "../src/keou-contract.ts";
 import { ACTIVE_TEMPLATE, PUBLIC_TEMPLATES, filmTemplateFor, isPublicTemplate } from "../src/templates.ts";
 import { TREATMENT_FIXTURE } from "./fixtures/treatment.mjs";
+import { repairSpec } from "../src/spec.ts";
 
 const v = variationFor("gt_test0001");
 
@@ -381,6 +382,20 @@ test("a faithful film is not drawn: as-told/as-asked, never handed out by variat
   assert.equal(treatmentTemperature(FAITHFUL_SPEC()), 0.4);
   assert.equal(treatmentTemperature(OPEN_SPEC()), 0.85);
   assert.equal(treatmentTemperature(null), 0.85); assert.equal(treatmentTemperature(undefined), 0.85);
+});
+
+test("the pirate spec a writer called faithful is open: a drawn device, at the producer's temperature, and a story", () => {
+  // 25 September 2026: "fammi un video dei pirati" came back FAITHFUL on one generic character, was told as-told at
+  // temperature 0.4, and the film was a pirate standing at a rail. Kleo's rule makes it OPEN.
+  const request = "fammi un video in orizzontale, dei pirati di 15 secondi";
+  const spec = repairSpec({ v: 1, mode: "faithful", summary: "A video about pirates.", cast: [], refs: [], open: ["the story"], narration: "free", script: null,
+    items: [{ id: "R1", kind: "character", text: "pirates", quote: "dei pirati", must: true, who: null, order: null }] }, request);
+  assert.equal(spec.mode, "open");
+  assert.equal(treatmentTemperature(spec), 0.85);
+  const p = treatmentPrompt({ prompt: request, duration_s: 15, format: "16:9", language: "en", spec }, v);
+  assert.ok(p.includes(`narrative device: ${v.device}`), "the draw is printed");
+  assert.doesNotMatch(p, /THE DRAW FOR THIS FILM: as-told/);
+  assert.match(MASTER_PROMPT, /OPEN mode[^\n]*when the subject is fiction, a genre or creatures[^\n]*the film is a STORY, not a portrait of the subject: one character with a want, a hook in the first 3 seconds, a turn at about two thirds of the film, and an ending that pays off the opening/);
 });
 
 test("the master prompt has a FIDELITY section: the request is the brief", () => {

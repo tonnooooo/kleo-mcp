@@ -11,7 +11,7 @@ import { treatmentProblems, repairTreatment, variationFor, faithfulVariation, ap
 import { denyInPictures } from "./storyboard";
 import { musicAnswer, subtitlesAnswer, lookFromText } from "./adaptive.ts";
 import { repairGraphics } from "./graphics.ts";
-import { specProblems, repairSpec, coverage, type RequestSpec } from "./spec.ts";
+import { specProblems, repairSpec, coverage, specModeWhy, MODE_RULE, type RequestSpec } from "./spec.ts";
 import { resolveRefs, refsOf, RefError, REF_HANDLE_RE } from "./refs.ts";
 
 /** An error whose message is shown to the user as-is: plain English, always says whether something was charged. */
@@ -296,8 +296,15 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     // FAITHFUL (the user described their film): no drawn device, and the angle is the point of the user's own story,
     // so the rule that an angle must not merely restate the request does not apply (src/treatment.ts).
     const problems = treatmentProblems(input.treatment, duration, language, { look, faithful });
+    // THE MODE WAS RE-DECIDED (25 September 2026): the writer called its spec FAITHFUL, Kleo's rule made it OPEN, and the
+    // as-told treatment written for the claim is refused. The refusal says why, and which draw to write under instead,
+    // so the assistant fixes it in one round trip rather than guessing.
+    const claimed = field(input.spec, "mode");
+    const redecided = spec && claimed !== spec.mode && problems.some((p) => p.startsWith('device: "as-told"'))
+      ? (() => { const d = variationFor(prompt); return `\nKleo re-decided the spec ${spec.mode.toUpperCase()} (${specModeWhy(spec, requestText).why}), by its rule: ${MODE_RULE}. Write the treatment under a drawn device instead — "variation": "${d.key}" (device "${d.device}", opening "${d.opening}") — or, if the user did tell their own story, put it in the spec.`; })()
+      : "";
     if (problems.length)
-      throw new JobError(`The treatment has ${plural(problems.length, "problem")} (nothing was charged). Fix ${problems.length === 1 ? "it" : "them"} and call kleo_create_video again, or leave the treatment out and Kleo writes one:\n- ${problems.join("\n- ")}`);
+      throw new JobError(`The treatment has ${plural(problems.length, "problem")} (nothing was charged). Fix ${problems.length === 1 ? "it" : "them"} and call kleo_create_video again, or leave the treatment out and Kleo writes one:\n- ${problems.join("\n- ")}${redecided}`);
     const tIn = input.treatment as Record<string, unknown>;
     // No spec: the treatment says which it is, the same reading as the readback (treatment.ts treatmentOf).
     const asTold = faithful ?? (tIn.device === "as-told" || String(tIn.variation ?? "").startsWith("as-told"));

@@ -676,6 +676,37 @@ test("reference pictures are metered: one link is fetched and described once per
   assert.equal(ai.calls.length, 1);
 });
 
+/* ------------------------------------------------------------------ the mode is Kleo's rule, not the writer's claim (25 September) */
+
+const PIRATES = "Fammi un video dei pirati";
+/** The spec a writer returned for PIRATES on 25 September: one generic character, called faithful. */
+const PIRATE_SPEC = () => ({ v: 1, mode: "faithful", summary: "A video about pirates.", cast: [], refs: [], open: ["the story"], narration: "free", script: null,
+  items: [{ id: "R1", kind: "character", text: "pirates", quote: "dei pirati", must: true, who: null, order: null }] });
+
+test("the server's road re-decides a faithful pirate spec OPEN, and the audit says why", async () => {
+  const ai = specAware(PIRATE_SPEC(), () => TREATMENT_FIXTURE(45));
+  const s = await studio(ai);
+  const r = await s.call("kleo_adapt_prompt", { prompt: PIRATES, duration_s: 45, format: "16:9", style: "realistic", music: "no", subtitles: "no", language: "en", product: "film", author: "server" });
+  assert.ok(!r.isError, r.text);
+  assert.equal(r.structuredContent.spec.mode, "open");
+  assert.equal(ai.calls[1].inputs.temperature, 0.85, "an open spec keeps the producer's temperature");
+  const row = (await s.audit("spec.adapt"))[0];
+  assert.equal(row.mode, "open"); assert.equal(row.why, "only a subject: pirates");
+});
+
+test("the assistant's faithful pirate spec with an as-told treatment is refused with the reason and the draw to use; nothing is charged", async () => {
+  const s = await studio(fakeAi(() => { throw new Error("must not be called"); }));
+  const adapt = await s.call("kleo_adapt_prompt", { prompt: PIRATES, duration_s: 45, format: "16:9", style: "realistic", music: "no", subtitles: "no", language: "en", product: "film" });
+  assert.match(adapt.structuredContent.next, /Kleo re-decides the mode by this rule/);
+  assert.match(adapt.structuredContent.next, /a genre, a topic or a generic role, even with a place or one action, is open/);
+  const r = await s.call("kleo_create_video", { prompt: PIRATES, duration_s: 45, format: "16:9", style: "realistic", language: "en", product: "film", spec: PIRATE_SPEC(), treatment: AS_TOLD() });
+  assert.ok(r.isError);
+  assert.match(r.text, /device: "as-told" is the device of a film the user described/);
+  assert.match(r.text, /Kleo re-decided the spec OPEN \(only a subject: pirates\), by its rule: FAITHFUL when the user told what happens/);
+  assert.match(r.text, /"variation": "[a-z-]+\/[a-z-]+" \(device "[a-z-]+", opening "[a-z-]+"\)/);
+  assert.equal((await m.getUser(s.env, "u_test")).credits, 70, "refused before any charge");
+});
+
 /* ------------------------------------------------------------------ the narration's language and the product (25 September) */
 
 const READY = { duration_s: 45, format: "9:16", style: "realistic", music: "no", subtitles: "no" };

@@ -32,7 +32,7 @@ import {
  * is checked against it — deterministically (coverage) and by a judge model (src/fidelity.ts).
  */
 import {
-  specOf, specBlock, owedBlock, coverage, lineSaid, fullLook, specPrompt, specSchema, specProblems, repairSpec, SPEC_METHOD,
+  specOf, specBlock, owedBlock, coverage, lineSaid, fullLook, specPrompt, specSchema, specProblems, repairSpec, specModeWhy, SPEC_METHOD,
   mustItems, eventsInOrder, itemById, SHOT_KINDS_TO_COVER,
   S as SPEC_LIMITS, type RequestSpec, type SpecItem, type RefRole,
 } from "./spec.ts";
@@ -2295,7 +2295,12 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     const added = withHeldRefs(spec, held);
     if (added.length) history.push([`spec: ${added.length} of the user's reference picture${added.length === 1 ? " was" : "s were"} missing from it and added by Kleo (${added.join(", ")})`]);
   }
-  if (spec) history.push([`spec: ${spec.mode}, ${spec.items.length} items (${mustItems(spec).length} must), ${spec.cast.length} in the cast, narration ${spec.narration}`]);
+  if (spec) {
+    // Why the mode is what it is (25 September 2026): "spec: open (only a subject: pirates)" says which rule decided it.
+    const b = jobParams.brief ?? {};
+    const request = [job.prompt, b.must_keep, b.audience, b.tone, (b as { corrections?: string }).corrections].filter((x): x is string => typeof x === "string" && !!x.trim()).join("\n");
+    history.push([`spec: ${spec.mode} (${specModeWhy(spec, request).why}), ${spec.items.length} items (${mustItems(spec).length} must), ${spec.cast.length} in the cast, narration ${spec.narration}`]);
+  }
   const faithful = spec?.mode === "faithful";
   /** The spec's machinery (covers, cast, coverage, the judge) runs on the films made of pictures: they are what it checks. */
   const specShots = !!spec && plan.style === "picture";
