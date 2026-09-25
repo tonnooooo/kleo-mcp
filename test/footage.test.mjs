@@ -279,7 +279,7 @@ test("requestFootage refuses BEFORE ordering when today's ceiling would be cross
   const kie = fakeKie(); globalThis.fetch = kie.fetch;
   const r = await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS, format: "9:16" });
   assert.equal(r.status, 402);
-  assert.match(r.reply.error, /budget/);
+  assert.match(r.reply.error, /filming capacity is fully booked/);
   assert.equal(kie.calls.create.length, 0, "no task was created");
   assert.equal((await m.footageRows(env, job.id)).length, 0);
   const env2 = await newEnv({ KLEO_FOOTAGE_BACKEND: "local" });
