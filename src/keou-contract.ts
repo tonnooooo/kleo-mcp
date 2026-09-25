@@ -162,6 +162,8 @@ export const SHOT_AT_MAX = 24;
  * Everything a shot may carry, mirroring contract.py SHOT_FIELDS with image_prompt where the engine has the
  * worker-attached `image`. contract.py refuses a shot with any other key, and it only runs once the GPU is rented
  * and the pictures are drawn: whatever the server lets through here is paid for before the engine throws it out.
+ * contract.py's `cut` is the box's own (the whole second a bought clip begins at: worker/kleo_worker.py
+ * fit_to_clips), never a storyboard's, so it is refused here like any unknown key.
  */
 export const SHOT_FIELDS = ["image_prompt", "caption", "hl", "at", "shot_kind", "strength", "dur", "motion"] as const;
 /**

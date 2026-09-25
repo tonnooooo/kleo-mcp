@@ -180,6 +180,20 @@ export const PREFLIGHT_SHOT_S = 2.5;
 export const clipMinSeconds = (spec: Pick<KieModel, "seconds">): number => (Array.isArray(spec.seconds) ? Math.min(...spec.seconds) : spec.seconds.min);
 
 /**
+ * THE CLIP LENGTHS THE BOX MAY ORDER (25 September 2026), in the job spec's "footage": the worker cuts every scene of
+ * a film on the API road to whole clips of these lengths and fits the voice to them (worker/kleo_worker.py
+ * fit_to_clips), so each clip is ordered at exactly its shot's length and laid in full. A range model sends its
+ * bounds; a model that films a few lengths only (Veo, Gemini) sends them too, because a range cannot say "4, 6 or 8".
+ */
+export function clipLengthsSpec(spec: Pick<KieModel, "seconds">): { clip_min_s: number; clip_max_s: number; clip_seconds?: number[] } {
+  if (Array.isArray(spec.seconds)) {
+    const listed = [...spec.seconds].sort((a, b) => a - b);
+    return { clip_min_s: listed[0], clip_max_s: listed[listed.length - 1], clip_seconds: listed };
+  }
+  return { clip_min_s: spec.seconds.min, clip_max_s: spec.seconds.max };
+}
+
+/**
  * THE CLIP FLOOR OF A JOB (25 September 2026): the seconds every shot carries at the least, so the planner writes no
  * shot shorter than the clip it is billed as. A film on the API road has its model's shortest clip; the animatic and
  * the local road have none (0), and keep the seven-word rule of 22 September (src/keou-contract.ts shotBudget).

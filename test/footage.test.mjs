@@ -482,7 +482,8 @@ test("the job spec tells the box which road and which model; the admin route swi
   const env = await newEnv();
   const job = await filmJob(env);
   const spec = await (await m.handleInternal(new Request(`http://kleo.test/internal/jobs/${job.id}`, { headers: { authorization: "Bearer wsecret" } }), env)).json();
-  assert.deepEqual(spec.footage, { backend: "kie", model: "minimax-h3" }, "the default of the file is MiniMax H3");
+  assert.deepEqual(spec.footage, { backend: "kie", model: "minimax-h3", clip_min_s: 4, clip_max_s: 15 },
+    "the default of the file is MiniMax H3, and the box is told the clip lengths it films (whole seconds 4-15)");
   const admin = (method, body) => m.handleAdmin(new Request("http://kleo.test/internal/admin/footage", { method, headers: { authorization: "Bearer s3cret" }, body: body && JSON.stringify(body) }), env);
   globalThis.fetch = fakeKie({ credits: 2000 }).fetch;
   let v = await (await admin("GET")).json();
@@ -492,12 +493,45 @@ test("the job spec tells the box which road and which model; the admin route swi
   v = await (await admin("POST", { model: "seedance-2.0" })).json();
   assert.equal(v.model, "seedance-2.0");
   assert.equal((await (await m.handleInternal(new Request(`http://kleo.test/internal/jobs/${job.id}`, { headers: { authorization: "Bearer wsecret" } }), env)).json()).footage.model, "seedance-2.0");
+  await admin("POST", { model: "veo-3.1" });
+  assert.deepEqual((await (await m.handleInternal(new Request(`http://kleo.test/internal/jobs/${job.id}`, { headers: { authorization: "Bearer wsecret" } }), env)).json()).footage,
+    { backend: "kie", model: "veo-3.1", clip_min_s: 4, clip_max_s: 8, clip_seconds: [4, 6, 8] }, "a model that films a few lengths only says which");
+  await admin("POST", { model: "seedance-2.0" });
   assert.equal((await admin("POST", { model: "nope" })).status, 400);
   v = await (await admin("POST", { backend: "local" })).json();
   assert.equal(v.backend, "local"); assert.equal(v.model, "seedance-2.0", "the model survives a backend switch");
   v = await (await admin("POST", { reset: true })).json();
   assert.equal(v.backend, "kie"); assert.equal(v.model, "minimax-h3"); assert.equal(v.override, null);
   assert.equal((await m.handleAdmin(new Request("http://kleo.test/internal/admin/footage", { headers: { authorization: "Bearer wrong" } }), env)).status, 401);
+});
+
+test("clipLengthsSpec: the lengths the box may order are exactly the lengths the server orders, for every model (25 September)", () => {
+  for (const [name, spec] of Object.entries(m.KIE_MODELS)) {
+    const told = m.clipLengthsSpec(spec);
+    const lengths = told.clip_seconds ?? Array.from({ length: told.clip_max_s - told.clip_min_s + 1 }, (_, i) => told.clip_min_s + i);
+    assert.equal(lengths[0], m.clipMinSeconds(spec), `${name}: the shortest clip`);
+    assert.equal(Array.isArray(spec.seconds), Array.isArray(told.clip_seconds), `${name}: a list model sends its list, a range model its bounds`);
+    // The worker orders a fitted shot at a whole length from this list: the server must film exactly that, not one more.
+    for (const n of lengths) assert.equal(m.clipSecondsFor(spec, n), n, `${name}: a ${n} s shot is a ${n} s clip`);
+  }
+  assert.deepEqual(m.clipLengthsSpec(m.KIE_MODELS["seedance-2.5-480p"]), { clip_min_s: 4, clip_max_s: 30 });
+});
+
+test("a clip the box bought whole is ordered at exactly that length, billed for it, and asked as one continuous take (25 September)", async () => {
+  const env = await newEnv({ KIE_API_KEY: undefined, EPHONE_API_KEY: "eph-key", KLEO_FOOTAGE_MODEL: "seedance-2.5-480p", KIE_MAX_VIDEO_S: "0" });
+  const job = await filmJob(env);
+  const eph = fakeEphone(); globalThis.fetch = eph.fetch;
+  const whole = SHOTS.map((s, i) => ({ ...s, seconds: [4, 5, 7][i] }));
+  const r = await m.requestFootage(env, job, "http://kleo.test", { shots: whole, look: "realistic", format: "9:16" });
+  assert.equal(r.status, 200, JSON.stringify(r.reply)); assert.equal(r.reply.ordered, 3);
+  // One task per shot, in the order the box sent them.
+  assert.deepEqual(eph.calls.submit.map((c) => c.body.input.duration), [4, 5, 7], "the length the box asked for, not one second more");
+  for (const c of eph.calls.submit) {
+    assert.doesNotMatch(c.body.input.prompt, /the motion settles/, "nothing of the clip is left over to settle in");
+    assert.match(c.body.input.prompt, /in one continuous movement/);
+  }
+  const rows = await m.footageRows(env, job.id);
+  assert.deepEqual(rows.map((x) => [x.shot_id, x.seconds, x.cost_usd]), [["01-hook-s1", 4, 0.35], ["01-hook-s2", 5, 0.4375], ["02-city-s1", 7, 0.6125]]);
 });
 
 test("kiePrompt: the animated film asks the clip model for drawn motion, never for 35mm photography (14 September)", () => {
