@@ -155,15 +155,16 @@ test("a request with no length is answered with the question and no model call",
   assert.match(r.text, /1\. How long should it be\?/); assert.match(r.text, /2\. Where is it for: YouTube/); assert.match(r.text, /3\. How do you want it: realistic/);
   assert.match(r.text, /Optional, in the SAME message.*Who is it for\?/);
   assert.match(r.text, /4\. Do you want music under the narration\?/); assert.match(r.text, /5\. Do you want subtitles burned into the video/);
-  assert.deepEqual(r.structuredContent.questions.length, 5); assert.equal(r.structuredContent.optional_questions.length, 3);
+  assert.match(r.text, /6\. Which language should the narration be in: English or Italian\? \(English if you have no preference\)/);
+  assert.deepEqual(r.structuredContent.questions.length, 6); assert.equal(r.structuredContent.optional_questions.length, 3);
   assert.match(r.text, /do not fill any of these in yourself/);
   // Answered on the call, the same request is ready: nothing was assumed, everything came from the user.
-  const again = await s.call("kleo_adapt_prompt", { prompt: "Create a video about accuracy in medicine", duration_s: 60, format: "16:9", style: "realistic", audience: "nurses", tone: "calm", must_keep: "the number 30%", music: "no", subtitles: "no" });
+  const again = await s.call("kleo_adapt_prompt", { language: "en", prompt: "Create a video about accuracy in medicine", duration_s: 60, format: "16:9", style: "realistic", audience: "nurses", tone: "calm", must_keep: "the number 30%", music: "no", subtitles: "no" });
   assert.equal(again.structuredContent.ready_to_render, true);
   assert.match(again.text, /- Length: 60s \(the user's answer\)/); assert.match(again.text, /- Look: realistic \(the user's answer\)/); assert.match(again.text, /- Must appear: the number 30% \(the user's answer\)/);
   assert.match(again.text, /- Audience: nurses/); assert.match(again.text, /- Tone: calm/);
   // Said in the request's own words, nothing is asked twice.
-  const said = await s.call("kleo_adapt_prompt", { prompt: "A realistic film about accuracy in medicine, 60 seconds, for YouTube, no music, no subtitles" });
+  const said = await s.call("kleo_adapt_prompt", { language: "en", prompt: "A realistic film about accuracy in medicine, 60 seconds, for YouTube, no music, no subtitles" });
   assert.equal(said.structuredContent.ready_to_render, true, said.text);
   assert.match(said.text, /- Length: 60s \(from the request\)/); assert.match(said.text, /- Format: 16:9 \(from the request\)/); assert.match(said.text, /- Look: realistic \(from the request\)/);
   assert.equal(ai.calls.length, 0);
@@ -175,7 +176,7 @@ test("a complete request gets a spec (cold) and a treatment written under it (ho
   // system message — and the treatment under it. It used to be one call (the treatment alone); the test pinned that.
   const ai = specAware(SPEC_FIXTURE, () => TREATMENT_FIXTURE(60));
   const s = await studio(ai);
-  const r = await s.call("kleo_adapt_prompt", { prompt: "Create a video about accuracy in medicine", duration_s: 60, format: "16:9", style: "realistic", music: "no", subtitles: "no", author: "server" });
+  const r = await s.call("kleo_adapt_prompt", { language: "en", prompt: "Create a video about accuracy in medicine", duration_s: 60, format: "16:9", style: "realistic", music: "no", subtitles: "no", author: "server" });
   assert.ok(!r.isError, r.text);
   assert.equal(ai.calls.length, 2, "one spec call, one treatment call");
   assert.equal(ai.calls[0].inputs.messages[0].content, SPEC_METHOD);
@@ -206,7 +207,7 @@ test("a complete request gets a spec (cold) and a treatment written under it (ho
 test("by default the tool hands the assistant the method and spends nothing: the assistant writes the treatment (the free road)", async () => {
   const ai = fakeAi(() => { throw new Error("must not be called"); });
   const s = await studio(ai);
-  const r = await s.call("kleo_adapt_prompt", { prompt: "A realistic film about lighthouse keepers, 45 seconds", format: "9:16", music: "no", subtitles: "no" });
+  const r = await s.call("kleo_adapt_prompt", { language: "en", prompt: "A realistic film about lighthouse keepers, 45 seconds", format: "9:16", music: "no", subtitles: "no" });
   assert.ok(!r.isError, r.text);
   assert.equal(ai.calls.length, 0, "no model call on the server");
   assert.equal(r.structuredContent.author, "assistant"); assert.equal(r.structuredContent.treatment, null); assert.equal(r.structuredContent.ready_to_render, true);
@@ -237,7 +238,7 @@ test("by default the tool hands the assistant the method and spends nothing: the
 
 test("the intake's answers travel: the spec method quotes them and the next step hands them to kleo_create_video", async () => {
   const s = await studio(fakeAi(() => { throw new Error("must not be called"); }));
-  const r = await s.call("kleo_adapt_prompt", { prompt: "A realistic film about lighthouse keepers, 45 seconds", format: "9:16", music: "no", subtitles: "no", audience: "children", tone: "warm", must_keep: "the red lamp" });
+  const r = await s.call("kleo_adapt_prompt", { language: "en", prompt: "A realistic film about lighthouse keepers, 45 seconds", format: "9:16", music: "no", subtitles: "no", audience: "children", tone: "warm", must_keep: "the red lamp" });
   assert.ok(!r.isError, r.text);
   assert.match(r.text, /THE USER ALSO ANSWERED[\s\S]*must appear, or must never appear: "the red lamp"[\s\S]*the film is for: "children"[\s\S]*the tone: "warm"/);
   assert.equal(r.structuredContent.must_keep, "the red lamp"); assert.equal(r.structuredContent.audience, "children"); assert.equal(r.structuredContent.tone, "warm");
@@ -248,7 +249,7 @@ test("reference pictures: a URL is taken in, described and handed back as a hand
   const ai = fakeAi(() => DESCRIBED);   // the only model call on this road is the vision model's description
   const s = await studio(ai, { RENDERS: new FakeR2() });
   const r = await withFetch(async () => new Response(PNG, { status: 200 }),
-    () => s.call("kleo_adapt_prompt", { prompt: "A realistic film about Mara, a pastry chef, 45 seconds", format: "9:16", music: "no", subtitles: "no", references: [{ url: "https://example.com/mara.png", role: "character", name: "Mara" }] }));
+    () => s.call("kleo_adapt_prompt", { language: "en", prompt: "A realistic film about Mara, a pastry chef, 45 seconds", format: "9:16", music: "no", subtitles: "no", references: [{ url: "https://example.com/mara.png", role: "character", name: "Mara" }] }));
   assert.ok(!r.isError, r.text);
   const ref = r.structuredContent.references[0];
   assert.match(ref.handle, /^kref_[0-9a-f]{8}$/); assert.equal(ref.role, "character"); assert.equal(ref.name, "Mara"); assert.equal(ref.description, DESCRIBED);
@@ -309,7 +310,7 @@ test("kleo_create_video: references resolve to this account's handles; the look 
   const ai = fakeAi(() => DESCRIBED);
   const s = await studio(ai, { RENDERS: new FakeR2() });
   const a = await withFetch(async () => new Response(PNG, { status: 200 }),
-    () => s.call("kleo_adapt_prompt", { prompt: MARA, duration_s: 45, format: "9:16", style: "animation", music: "no", subtitles: "no", references: [{ url: "https://example.com/mara.png", role: "character", name: "Mara" }] }));
+    () => s.call("kleo_adapt_prompt", { language: "en", prompt: MARA, duration_s: 45, format: "9:16", style: "animation", music: "no", subtitles: "no", references: [{ url: "https://example.com/mara.png", role: "character", name: "Mara" }] }));
   const handle = a.structuredContent.references[0].handle;
   const unknown = await s.call("kleo_create_video", { prompt: MARA, duration_s: 45, format: "9:16", references: ["kref_00000000"] });
   assert.ok(unknown.isError); assert.match(unknown.text, /not a picture Kleo received from this account[\s\S]*Nothing was charged/);
@@ -398,7 +399,7 @@ test("kleo_get_result reads the fidelity report: how many of the user's requirem
 
 test("when the model is down the tool says so and points at kleo_create_video; it never throws", async () => {
   const s = await studio(fakeAi(() => { throw new Error("429 4006 you have used up your daily free allocation"); }));
-  const r = await s.call("kleo_adapt_prompt", { prompt: "A realistic film about lighthouse keepers, 45 seconds, vertical, no music, no subtitles", author: "server" });
+  const r = await s.call("kleo_adapt_prompt", { language: "en", prompt: "A realistic film about lighthouse keepers, 45 seconds, vertical, no music, no subtitles", author: "server" });
   assert.ok(!r.isError, "not an error: the video can still be made");
   assert.equal(r.structuredContent.treatment, null);
   assert.equal(r.structuredContent.note, "model unavailable");
@@ -409,16 +410,16 @@ test("when the model is down the tool says so and points at kleo_create_video; i
 
 test("the daily cap refuses the next call in words and leaves the road to kleo_create_video open", async () => {
   const s = await studio(fakeAi(() => TREATMENT_FIXTURE(45)), { ADAPT_MAX_PER_DAY: "1" });
-  const first = await s.call("kleo_adapt_prompt", { prompt: "A realistic film about lighthouse keepers, 45 seconds, vertical, no music, no subtitles", author: "server" });
+  const first = await s.call("kleo_adapt_prompt", { language: "en", prompt: "A realistic film about lighthouse keepers, 45 seconds, vertical, no music, no subtitles", author: "server" });
   assert.ok(!first.isError && first.structuredContent.treatment);
-  const second = await s.call("kleo_adapt_prompt", { prompt: "A realistic film about lighthouse keepers, 45 seconds, vertical, no music, no subtitles", author: "server" });
+  const second = await s.call("kleo_adapt_prompt", { language: "en", prompt: "A realistic film about lighthouse keepers, 45 seconds, vertical, no music, no subtitles", author: "server" });
   assert.ok(second.isError);
   assert.match(second.text, /asked for 1 treatment today, and the limit is 1 a day[\s\S]*kleo_create_video[\s\S]*Nothing was charged/);
 });
 
 test("kleo_create_video keeps the treatment the user approved and says so; a broken one is refused before any charge", async () => {
   const s = await studio(fakeAi(() => TREATMENT_FIXTURE(45)));
-  const a = await s.call("kleo_adapt_prompt", { prompt: "A realistic film about lighthouse keepers, 45 seconds", format: "9:16", music: "no", subtitles: "no", author: "server" });
+  const a = await s.call("kleo_adapt_prompt", { language: "en", prompt: "A realistic film about lighthouse keepers, 45 seconds", format: "9:16", music: "no", subtitles: "no", author: "server" });
   const t = a.structuredContent.treatment;
   const bad = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers", duration_s: 45, format: "9:16", treatment: { ...t, logline: "no", acts: [] } });
   assert.ok(bad.isError);
@@ -487,17 +488,17 @@ test("POST /internal/admin/treatment writes N treatments on the Worker's own mod
 test("style names the look on every tool: the method is written for it, the guide draws it, create_video keeps it", async () => {
   const ai = fakeAi(() => { throw new Error("must not be called"); });
   const s = await studio(ai);
-  const r = await s.call("kleo_adapt_prompt", { prompt: "A fox who learns to swim, 45 seconds", format: "9:16", style: "animation", music: "no", subtitles: "no" });
+  const r = await s.call("kleo_adapt_prompt", { language: "en", prompt: "A fox who learns to swim, 45 seconds", format: "9:16", style: "animation", music: "no", subtitles: "no" });
   assert.ok(!r.isError, r.text);
   assert.equal(r.structuredContent.style, "animation");
   assert.match(r.text, /THE LOOK: ANIMATION, fixed by the request or the tool call/);
   assert.match(r.structuredContent.next, /style \(the look the treatment names\)/, "the assistant is told to pass the look on");
   assert.match(r.text, /- Look: animation, a 2D animated film/, "the brief says the look");
-  const open = await s.call("kleo_adapt_prompt", { prompt: "A fox who learns to swim, 45 seconds", format: "9:16", music: "no", subtitles: "no" });
+  const open = await s.call("kleo_adapt_prompt", { language: "en", prompt: "A fox who learns to swim, 45 seconds", format: "9:16", music: "no", subtitles: "no" });
   assert.equal(open.structuredContent.style, null, "no look named");
   assert.equal(open.structuredContent.ready_to_render, false, "the look is asked, never guessed (the intake, 14 September)");
   assert.match(open.text, /- Look: MISSING — ask/); assert.match(open.text, /1\. How do you want it: realistic \(filmed, cinematic photography\) or animation/);
-  const drawn = await s.call("kleo_adapt_prompt", { prompt: "Un cartone animato su una volpe che impara a nuotare, 45 secondi", format: "9:16", music: "no", subtitles: "no" });
+  const drawn = await s.call("kleo_adapt_prompt", { language: "it", prompt: "Un cartone animato su una volpe che impara a nuotare, 45 secondi", format: "9:16", music: "no", subtitles: "no" });
   assert.equal(drawn.structuredContent.style, "animation", "the request named it: a cartoon is the animation look"); assert.match(drawn.text, /THE LOOK: ANIMATION/);
   const g = await s.call("kleo_storyboard_guide", { duration_s: 45, style: "animation", format: "9:16" });
   assert.ok(!g.isError, g.text);
@@ -546,7 +547,7 @@ test("an account that never paid is told it can order the animatic and not a fil
 
 test("the user's two answers travel: the method is told them, and kleo_create_video writes them on the job and into the treatment", async () => {
   const s = await studio(fakeAi(() => { throw new Error("must not be called"); }));
-  const r = await s.call("kleo_adapt_prompt", { prompt: "A realistic film about lighthouse keepers, 45 seconds", format: "9:16", music: "slow cello and sea wind", subtitles: "yes" });
+  const r = await s.call("kleo_adapt_prompt", { language: "en", prompt: "A realistic film about lighthouse keepers, 45 seconds", format: "9:16", music: "slow cello and sea wind", subtitles: "yes" });
   assert.ok(!r.isError, r.text); assert.equal(r.structuredContent.ready_to_render, true);
   assert.match(r.text, /- Music: yes — slow cello and sea wind \(the user's answer\)/); assert.match(r.text, /- Subtitles: cinema \(burned in\) \(the user's answer\)/);
   assert.match(r.text, /THE SOUND: the user WANTS MUSIC and asked for "slow cello and sea wind"/);
@@ -616,7 +617,7 @@ test("the user's corrections after the read-back travel in their own argument, a
   const s = await studio(fakeAi(() => { throw new Error("must not be called"); }));
   const tools = (await s.client.listTools()).tools;
   assert.match(tools.find((t) => t.name === "kleo_create_video").inputSchema.properties.corrections.description, /IN THEIR OWN WORDS/);
-  const adapt = await s.call("kleo_adapt_prompt", { prompt: "A realistic film about lighthouse keepers, 45 seconds", format: "9:16", music: "no", subtitles: "no" });
+  const adapt = await s.call("kleo_adapt_prompt", { language: "en", prompt: "A realistic film about lighthouse keepers, 45 seconds", format: "9:16", music: "no", subtitles: "no" });
   assert.match(adapt.structuredContent.next, /"corrections" \(their corrections, word for word\)/);
   const pepe = { id: "R6", kind: "character", text: "the user's dog Pepe with a red collar", quote: "add my dog Pepe with a red collar", must: true };
   const spec = maraSpec({ items: [...maraSpec().items, pepe] });
@@ -648,7 +649,7 @@ test("reference pictures are metered: one link is fetched and described once per
   let fetches = 0;
   const serve = (bytes) => async () => { fetches++; return new Response(bytes, { status: 200 }); };
   const PNG2 = new Uint8Array(PNG); PNG2[15] = 9;
-  const ask = (references) => s.call("kleo_adapt_prompt", { prompt: "A realistic film about Mara, a pastry chef, 45 seconds", format: "9:16", music: "no", subtitles: "no", references });
+  const ask = (references) => s.call("kleo_adapt_prompt", { language: "en", prompt: "A realistic film about Mara, a pastry chef, 45 seconds", format: "9:16", music: "no", subtitles: "no", references });
   // Eight entries of the same link with flipping roles: one fetch, one vision call, one handle (the first role kept).
   const roles = ["character", "style", "character", "style", "character", "style", "character", "style"];
   const r = await withFetch(serve(PNG), () => ask(roles.map((role) => ({ url: "https://example.com/mara.png", role, name: "Mara" }))));

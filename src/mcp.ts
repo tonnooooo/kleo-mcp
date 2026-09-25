@@ -311,7 +311,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     }),
     annotations: { readOnlyHint: true, idempotentHint: false, openWorldHint: true },
   }, async ({ prompt, duration_s, format, language, audience, tone, must_keep, style, music, subtitles, references, author }) => guarded(async () => {
-    const brief = adaptPrompt(prompt, { duration_s, format, audience, tone, must_keep, look: style ?? null, music, subtitles });
+    const brief = adaptPrompt(prompt, { duration_s, format, audience, tone, must_keep, look: style ?? null, music, subtitles, language });
     // The two answers, as the method and the server's model read them (src/treatment.ts SoundOptions).
     const sound = { music: brief.music, subtitles: brief.subtitles };
     const look = style ?? brief.look;   // the user's answer on the call, or read off the request
@@ -324,11 +324,11 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     // THE INTAKE (14 September): a required item the request does not say — subject, length, format, look — is asked,
     // never guessed. The questions are the tool's answer, and nothing is spent.
     const fmt = brief.format, dur = brief.duration_s;
-    if (brief.questions.length || dur === null || fmt === null || look === null) return ok({ ...base, treatment: null, ready_to_render: false, questions: brief.questions, optional_questions: brief.optional_questions }, `${adaptivePromptText(brief)}${refsBlock(refs)}`);
+    if (brief.questions.length || dur === null || fmt === null || look === null || brief.language === null) return ok({ ...base, treatment: null, ready_to_render: false, questions: brief.questions, optional_questions: brief.optional_questions }, `${adaptivePromptText(brief)}${refsBlock(refs)}`);
     const t = ACTIVE_TEMPLATE;
     if (dur < t.minSeconds || dur > t.maxSeconds)
       throw new JobError(`Kleo makes films of ${t.minSeconds} to ${t.maxSeconds} seconds; ${dur} seconds is outside that range. Agree a length in range with the user and call again. Nothing was charged.`);
-    const lang = language ?? brief.language;
+    const lang = brief.language;
     // The intake's optional answers travel to kleo_create_video by name: until 24 September they died here, and the
     // planner never read who the film was for or what had to be in it.
     const answers = { ...(audience?.trim() ? { audience: audience.trim() } : {}), ...(tone?.trim() ? { tone: tone.trim() } : {}), ...(brief.must_keep ? { must_keep: brief.must_keep } : {}) };
