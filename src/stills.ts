@@ -759,7 +759,10 @@ async function drawKie(env: DrawEnv, model: string, id: string, prompt: string, 
     try { created = await kie<{ taskId?: string }>(env, "POST", KIE_CREATE, { model: id, input: kieStillInput(id, { prompt, urls, size }) }, { timeoutMs: KIE_CALL_MS }); }
     catch (e) {
       // A createTask that timed out may have created (and billed) a task whose id never came back: counted as spent.
-      if (!(e instanceof KieError) && isTransientError(e)) throw withSpend(roadError(model, e, KIE_CALL_MS), price);
+      if (!(e instanceof KieError) && isTransientError(e)) {
+        if (ledger) { try { await ledger.book.created(`${ledger.key}#lost`, "", model, price); } catch { /* the cap of this call still holds it */ } }
+        throw withSpend(roadError(model, e, KIE_CALL_MS), price);
+      }
       throw e;
     }
     taskId = created?.taskId ?? null;
@@ -827,7 +830,16 @@ export interface StillRoute {
   switches: { from: string; to: string; reason: string; error: string }[];
   /** Called once per switch (drawJobStills writes the "stills.fallback" audit row). */
   onFallback?: (f: { from: string; to: string; reason: string; error: string }) => unknown;
+  /** kie.ai tasks that ran and failed in a row across the job's draws (a success resets it): see TASK_FAILS_TO_FALL_BACK. */
+  taskFails?: number;
 }
+/**
+ * A kie.ai OUTAGE (25 September 2026, second review): tasks that run and fail one after the other ("internal error",
+ * "overloaded") are not about any one picture. Each is a failed try, and a still whose every try failed was given up
+ * for good — the GPU's SDXL drew it. After this many task failures in a row, across the job, the route falls back
+ * (switchRoute, "model unavailable") and the try is drawn again on STILL_MODEL_FALLBACK.
+ */
+export const TASK_FAILS_TO_FALL_BACK = 2;
 export function stillRoute(env: Pick<Env, "STILL_MODEL" | "STILL_MODEL_STRONG" | "STILL_MODEL_FALLBACK">, opts: { model?: string } = {}): StillRoute {
   if (opts.model) return { model: opts.model, strong: null, fallback: null, ladder: null, dead: [], switches: [] };
   const fallback = fallbackStillModel(env);
@@ -1000,6 +1012,16 @@ async function drawJudged(env: StillEnv, refs0: StillRef[], compile: (feedback: 
         // A flagged draw — or a kie.ai task that ran and failed — is a failed try, not a lost still: the next seed is drawn.
         lastFlag = e; flaggedRun++;
         tries.push({ seed, score: 0, failed: [isFlaggedError(e) ? "flagged" : "task failed"], ...(escalate || route.switches.length ? { model } : {}) });
+        // Task failures in a row across the job (not a policy refusal): the provider is struggling, the job falls back,
+        // and a still with no picture yet gets one more try there.
+        if (isTaskFailure(e) && !isFlaggedError(e)) {
+          route.taskFails = (route.taskFails ?? 0) + 1;
+          if (route.taskFails >= TASK_FAILS_TO_FALL_BACK && route.fallback && (await switchRoute(route, model, escalate, "model unavailable", e))) {
+            route.taskFails = 0;
+            if (!best) budget = Math.max(budget, k + 2);
+            continue;
+          }
+        }
         // Two in a row: the rest go without the reference images, and a still with no picture yet gets that one try
         // even past its budget (one with a picture already keeps it rather than pay beyond its tries).
         if (flaggedRun >= 2 && refs.length && !droppedForFlag) { refs = []; droppedForFlag = true; if (!best) budget = Math.max(budget, k + 2); }
@@ -1009,6 +1031,7 @@ async function drawJudged(env: StillEnv, refs0: StillRef[], compile: (feedback: 
       throw withSpend(e, spent);
     }
     flaggedRun = 0;
+    if (stillProviderOf(model).provider === "kie") route.taskFails = 0;
     spent += d.usd;
     lastRefs = drawn;
     const bytes = d.bytes;
@@ -1281,7 +1304,7 @@ async function stillsSpentUsd(env: Env, jobId: string): Promise<number> {
  * six draws of a tick cannot all pass the same last dollar; a reservation whose createTask then fails stays counted
  * for the rest of the call, which only errs on the careful side.
  */
-async function jobLedger(env: Env, job: Pick<Job, "id" | "user_id">): Promise<KieLedger> {
+async function jobLedger(env: Env, job: Pick<Job, "id" | "user_id">, minJobCap = 0): Promise<KieLedger> {
   const tasks = new Map<string, { task: string; at: number }>();
   let jobUsd = 0;
   for (const d of await auditDetails(env, job.id, "stills.task")) {
@@ -1295,9 +1318,9 @@ async function jobLedger(env: Env, job: Pick<Job, "id" | "user_id">): Promise<Ki
     const r = await env.DB.prepare("SELECT COALESCE(SUM(json_extract(detail, '$.usd')), 0) AS usd FROM audit WHERE event = 'stills.task' AND at >= strftime('%Y-%m-%dT00:00:00.000Z','now')").first<{ usd: number }>();
     dayUsd = Number(r?.usd ?? 0) || 0;
   } catch { /* an unreadable sum: the film's own cap still holds */ }
-  const jobCap = num(env.STILLS_JOB_MAX_USD, STILLS_JOB_MAX_USD), dayCap = num(env.STILLS_DAILY_USD, STILLS_DAILY_USD);
+  const jobCap = Math.max(num(env.STILLS_JOB_MAX_USD, STILLS_JOB_MAX_USD), minJobCap), dayCap = num(env.STILLS_DAILY_USD, STILLS_DAILY_USD);
   return {
-    find: (key) => { const t = tasks.get(key); return t && Date.now() - t.at < KIE_TASK_RESUME_MIN * 60_000 ? t.task : null; },
+    find: (key) => { const t = tasks.get(key); return t?.task && Date.now() - t.at < KIE_TASK_RESUME_MIN * 60_000 ? t.task : null; },
     refuse: (usd) => {
       if (jobUsd + usd > jobCap + 1e-9) return `this film's pictures have spent $${jobUsd.toFixed(2)} on kie.ai (STILLS_JOB_MAX_USD $${jobCap.toFixed(2)})`;
       if (dayUsd + usd > dayCap + 1e-9) return `today's pictures have spent $${dayUsd.toFixed(2)} on kie.ai (STILLS_DAILY_USD $${dayCap.toFixed(2)})`;
@@ -1396,16 +1419,23 @@ export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: nu
   }
   route.onFallback = (f) => audit(env, job.user_id, job.id, "stills.fallback", f);
   road = stillProviderOf(route.model).provider;
+  // Once external, the give-up stays external: a fallback to klein halfway must not cut the film's time back to 20
+  // minutes measured from its first picture (second review, 25 September 2026).
+  if (road === "workers-ai" && prev?.road && prev.road !== "workers-ai") road = prev.road as StillProvider;
   if (prev?.state !== "drawing" || prev.road !== road) await setState("drawing");
   // THE PACE (25 September 2026): an external road draws six at a time, counts a still at a minute, and — when the
   // caller allows it (the cron's `stretch`) — takes STILLS_EXTERNAL_MS instead of the Workers AI window.
   const external = isExternalStillModel(route.model);
-  const deadline = external && opts.stretch ? Math.max(opts.deadline, Date.now() + STILLS_EXTERNAL_MS) : opts.deadline;
+  // Never past the job's give-up: another cron invocation marks it failed then and the GPU draws the rest.
+  const giveUpAt = Date.parse(startedAt) + stillsGiveUpMin({ road, total }) * 60_000;
+  const deadline = external && opts.stretch ? Math.max(opts.deadline, Math.min(Date.now() + STILLS_EXTERNAL_MS, giveUpAt)) : opts.deadline;
   const est = external ? EST_STILL_MS_EXTERNAL : EST_STILL_MS;
   const concurrency = external ? STILLS_CONCURRENCY_EXTERNAL : STILLS_CONCURRENCY;
   const late = () => Date.now() > deadline - est || !!opts.stop?.();
   // The kie.ai ledger: the tasks earlier ticks paid for (collected, not bought again) and the money caps.
-  const ledger = [route.model, route.strong].some((m) => !!m && stillProviderOf(m).provider === "kie") ? await jobLedger(env, job) : undefined;
+  // The film's own cap is at least every picture and sheet drawn twice (a film over 90 s has 48 pictures: about 9 $).
+  const kieModel = [route.model, route.strong].find((m): m is string => !!m && stillProviderOf(m).provider === "kie");
+  const ledger = kieModel ? await jobLedger(env, job, round3((total + castMembersOf(spec, direction).length) * 2 * (stillPriceUsd(kieModel, STILL_SIZES[format]) ?? 0))) : undefined;
   const link = (name: string) => signedFileUrl(env, job.id, name);
   type Linked = VisionImage & { url: string | null };
 

@@ -938,16 +938,31 @@ test("drawJobStills on kie.ai: a task that outlives the tick is written down, an
   assert.equal(done.usd, 0.36, "one sheet and three stills, each paid once");
 });
 
-test("drawJobStills on kie.ai: past STILLS_JOB_MAX_USD the job moves to klein-4B with a 'budget' fallback row", async () => {
+test("drawJobStills on kie.ai: past STILLS_DAILY_USD the job moves to klein-4B with a 'budget' fallback row", async () => {
   const kie = fakeKieImages(); globalThis.fetch = kie.fetch;
   const { ai, calls } = fakeAi();
-  const { env, jobs, auditRows } = fakeEnv({ AI: ai, STILL_MODEL: "kie:nano-banana-pro", KIE_API_KEY: "kie-key", PUBLIC_URL: "https://kleo.test", STILLS_JOB_MAX_USD: "0.1" });
+  // The film's own cap grows with the film (every picture and sheet twice: 0.72 $ here), so the day's cap is the one met.
+  const { env, jobs, auditRows } = fakeEnv({ AI: ai, STILL_MODEL: "kie:nano-banana-pro", KIE_API_KEY: "kie-key", PUBLIC_URL: "https://kleo.test", STILLS_JOB_MAX_USD: "0.1", STILLS_DAILY_USD: "0.1" });
   const r = await drawJobStills(env, jobOf(jobs), { deadline: Date.now() + 120_000 });
   assert.deepEqual(r, { state: "done", drawn: 3, total: 3 });
   assert.equal(kie.calls.create.length, 1, "the sheet fitted the cap, nothing after it");
   assert.equal(calls.draws.length, 3, "the three stills on klein-4B");
   const fb = auditRows.filter((a) => a.event === "stills.fallback").map((a) => JSON.parse(a.detail));
-  assert.equal(fb.length, 1); assert.equal(fb[0].reason, "budget"); assert.match(fb[0].error, /STILLS_JOB_MAX_USD/);
+  assert.equal(fb.length, 1); assert.equal(fb[0].reason, "budget"); assert.match(fb[0].error, /STILLS_DAILY_USD/);
+});
+
+test("drawJobStills on kie.ai: tasks failing one after the other (an outage) move the job to klein-4B; no picture is given up", async () => {
+  const kie = fakeKieImages({ state: () => "fail", failCode: "500", failMsg: "internal error" }); globalThis.fetch = kie.fetch;
+  const { ai, calls } = fakeAi();
+  const { env, jobs, auditRows } = fakeEnv({ AI: ai, STILL_MODEL: "kie:nano-banana-pro", KIE_API_KEY: "kie-key", PUBLIC_URL: "https://kleo.test" });
+  const r = await drawJobStills(env, jobOf(jobs), { deadline: Date.now() + 120_000 });
+  assert.deepEqual(r, { state: "done", drawn: 3, total: 3 });
+  assert.equal(kie.calls.create.length, 2, "two failed tasks in a row, then no more kie.ai");
+  const fb = auditRows.filter((a) => a.event === "stills.fallback").map((a) => JSON.parse(a.detail));
+  assert.equal(fb.length, 1); assert.equal(fb[0].reason, "model unavailable");
+  assert.ok(calls.draws[0].prompt.startsWith("Character reference sheet of Mara"), "the sheet is drawn again on klein-4B");
+  assert.equal(calls.draws.length, 4, "the sheet and the three stills");
+  assert.equal(auditRows.filter((a) => a.event === "stills.error").length, 0);
 });
 
 test("stillsGiveUpMin: twenty minutes on Workers AI; on an external road it grows with the film", () => {
