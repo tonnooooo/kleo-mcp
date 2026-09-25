@@ -144,6 +144,8 @@ export interface Env {
    */
   EPHONE_API_KEY?: string;
   EPHONE_API_URL?: string;
+  /** "ephone": the user's music track is bought from Suno on ePhone AI instead of kie.ai (src/footage.ts musicProviderOf). */
+  KLEO_MUSIC_PROVIDER?: string;
   /** "kie" routes the clips through kie.ai (needs KIE_API_KEY); anything else, or unset, keeps the local model. */
   KLEO_FOOTAGE_BACKEND?: string;
   /** kie.ai model id for the clips (src/footage.ts KIE_MODELS); the admin route can override it without a deploy. */

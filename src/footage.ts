@@ -639,8 +639,29 @@ export const MUSIC_USD = 0.06;
 export const DEFAULT_MUSIC_VERSION = "V6";
 export const musicKey = (jobId: string) => `renders/${jobId}/music.mp3`;
 
-export function musicOn(env: Pick<Env, "KIE_API_KEY" | "KLEO_MUSIC">): boolean {
-  return !!(env.KIE_API_KEY && env.KIE_API_KEY.trim()) && (env.KLEO_MUSIC ?? "").trim().toLowerCase() !== "off";
+/**
+ * Where the track is bought (25 September 2026): kie.ai (default) or ePhone AI (KLEO_MUSIC_PROVIDER "ephone": Suno
+ * through ePhone's unified task API, model "suno/music", $0.08 x 0.8 = $0.064 a call).
+ */
+export const musicProviderOf = (env: Pick<Env, "KLEO_MUSIC_PROVIDER">): "kie" | "ephone" => ((env.KLEO_MUSIC_PROVIDER ?? "").trim().toLowerCase() === "ephone" ? "ephone" : "kie");
+export const EPHONE_MUSIC_MODEL = "suno/music";
+export const EPHONE_MUSIC_USD = 0.064;
+export function musicOn(env: Pick<Env, "KIE_API_KEY" | "EPHONE_API_KEY" | "KLEO_MUSIC" | "KLEO_MUSIC_PROVIDER">): boolean {
+  const key = musicProviderOf(env) === "ephone" ? env.EPHONE_API_KEY : env.KIE_API_KEY;
+  return !!(key && key.trim()) && (env.KLEO_MUSIC ?? "").trim().toLowerCase() !== "off";
+}
+/**
+ * The input of Suno on ePhone AI (docs.rixapi.com guides/suno-quickstart, 25 September 2026): the description mode —
+ * one line for the composer, instrumental — since the custom mode needs lyrics. The line carries the brief and what a
+ * score under a voice must be; Suno caps it, so it is kept short.
+ */
+export function ephoneMusicInput(req: MusicRequest): Record<string, unknown> {
+  const brief = String(req.brief ?? "").trim().replace(/\s+/g, " ").slice(0, 200) || "a quiet instrumental bed under a narration";
+  return { mv: "chirp-v6", custom: false, instrumental: true, gpt_description_prompt: `${brief}. Instrumental film score under a narrator, no vocals, steady dynamics.`.slice(0, 390) };
+}
+/** The audio URL of a finished ePhone Suno task: the first output that looks like audio, else the first output. */
+export function ephoneAudioUrl(outputs: string[]): string | null {
+  return outputs.find((u) => /\.(mp3|m4a|wav|ogg|aac)(\?|$)/i.test(u)) ?? outputs.find((u) => !/\.(png|jpe?g|webp)(\?|$)/i.test(u)) ?? null;
 }
 export const musicVersion = (env: Pick<Env, "KIE_MUSIC_VERSION">): string => (env.KIE_MUSIC_VERSION ?? "").trim() || DEFAULT_MUSIC_VERSION;
 
@@ -667,33 +688,43 @@ export function musicInput(req: MusicRequest, version: string): Record<string, u
  * 409 when the road is closed (no key, switched off), 402 when the money says no; 200 with the row's state otherwise.
  */
 export async function requestMusic(env: Env, job: Job, req: MusicRequest): Promise<{ status: number; reply: Record<string, unknown> }> {
-  if (!musicOn(env)) return { status: 409, reply: { error: "music is not available on this server (no kie.ai key, or KLEO_MUSIC=off)", state: "off" } };
+  if (!musicOn(env)) return { status: 409, reply: { error: "music is not available on this server (no key for its provider, or KLEO_MUSIC=off)", state: "off" } };
+  const provider = musicProviderOf(env);
   const brief = String(req.brief ?? "").trim();
   if (!brief) return { status: 400, reply: { error: "a music request carries the composer's brief" } };
   const have = (await footageRows(env, job.id)).find((r) => r.shot_id === MUSIC_ID);
   if (have && !(have.state === "failed" && !have.task_id)) return musicStatus(env, job, false);
   const version = musicVersion(env);
-  const model = `suno-${version.toLowerCase()}`;
+  const model = provider === "ephone" ? EPHONE_MUSIC_MODEL : `suno-${version.toLowerCase()}`;
+  const trackUsd = provider === "ephone" ? EPHONE_MUSIC_USD : MUSIC_USD;
   const budget = num(env.DAILY_FOOTAGE_BUDGET_USD, 5);
   const spent = await footageSpentTodayUsd(env);
-  if (spent + MUSIC_USD > budget) {
-    await audit(env, job.user_id, job.id, "music.budget", { spent_usd: spent, planned_usd: MUSIC_USD, budget_usd: budget });
-    return { status: 402, reply: { error: `today's kie.ai budget is spent ($${spent.toFixed(2)} committed + $${MUSIC_USD.toFixed(2)} for the track > $${budget.toFixed(2)})`, state: "failed" } };
+  if (spent + trackUsd > budget) {
+    await audit(env, job.user_id, job.id, "music.budget", { spent_usd: spent, planned_usd: trackUsd, budget_usd: budget });
+    return { status: 402, reply: { error: `today's kie.ai budget is spent ($${spent.toFixed(2)} committed + $${trackUsd.toFixed(2)} for the track > $${budget.toFixed(2)})`, state: "failed" } };
   }
-  const balance = await kieBalanceUsd(env);
-  if (balance !== null && balance < MUSIC_USD) {
+  const balance = provider === "ephone" ? await ephoneBalanceUsd(env) : await kieBalanceUsd(env);
+  if (balance !== null && balance < trackUsd) {
     await audit(env, job.user_id, job.id, "music.no_credit", { balance_usd: balance, planned_usd: MUSIC_USD });
     return { status: 402, reply: { error: `kie.ai balance ($${balance.toFixed(2)}) does not cover the track ($${MUSIC_USD.toFixed(2)})`, state: "failed", no_credit: true } };
   }
   const seconds = Math.max(1, Math.min(360, Number(req.seconds) || 30));
-  if (have) await updateRow(env, job.id, MUSIC_ID, { state: "queued", model, seconds, cost_usd: MUSIC_USD, error: null });
+  if (have) await updateRow(env, job.id, MUSIC_ID, { state: "queued", model, seconds, cost_usd: trackUsd, error: null });
   else await env.DB.prepare("INSERT OR IGNORE INTO footage (job_id, shot_id, model, state, seconds, cost_usd, updated_at) VALUES (?, ?, ?, 'queued', ?, ?, ?)")
-    .bind(job.id, MUSIC_ID, model, seconds, MUSIC_USD, nowIso()).run();
+    .bind(job.id, MUSIC_ID, model, seconds, trackUsd, nowIso()).run();
   try {
-    const r = await kie<{ taskId?: string }>(env, "POST", KIE_CREATE, { model: MUSIC_MODEL, input: musicInput({ ...req, seconds }, version) });
-    if (!r?.taskId) throw new KieError("kie.ai answered without a taskId", 0, false);
-    await updateRow(env, job.id, MUSIC_ID, { task_id: r.taskId, state: "generating" });
-    await audit(env, job.user_id, job.id, "music.task", { model, task: r.taskId, seconds, usd: MUSIC_USD, brief: brief.slice(0, 200) });
+    let taskId: string | undefined;
+    if (provider === "ephone") {
+      const r = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: EPHONE_MUSIC_MODEL, input: ephoneMusicInput(req) });
+      taskId = typeof r?.id === "string" && r.id ? r.id : undefined;
+      if (!taskId) throw new KieError("ephone.ai answered without a task id", 0, false);
+    } else {
+      const r = await kie<{ taskId?: string }>(env, "POST", KIE_CREATE, { model: MUSIC_MODEL, input: musicInput({ ...req, seconds }, version) });
+      taskId = r?.taskId;
+      if (!taskId) throw new KieError("kie.ai answered without a taskId", 0, false);
+    }
+    await updateRow(env, job.id, MUSIC_ID, { task_id: taskId, state: "generating" });
+    await audit(env, job.user_id, job.id, "music.task", { model, provider, task: taskId, seconds, usd: trackUsd, brief: brief.slice(0, 200) });
   } catch (e) {
     const msg = String(e).slice(0, 300);
     await updateRow(env, job.id, MUSIC_ID, { state: "failed", error: msg, cost_usd: 0 });
@@ -713,6 +744,24 @@ export async function musicStatus(env: Env, job: Job, poll = true): Promise<{ st
   if (!row) return { status: 404, reply: { state: "none", error: "no track was ordered for this video" } };
   if (poll && row.state === "generating" && row.task_id) {
     try {
+      if (row.model === EPHONE_MUSIC_MODEL) {
+        const t = await ephone<EphoneTask>(env, "GET", `/v1/task/${encodeURIComponent(row.task_id)}`);
+        const st = String(t?.status ?? "").toLowerCase();
+        if (st === "completed") {
+          const url = ephoneAudioUrl(ephoneOutputs(t));
+          if (!url) throw new KieError("ephone.ai music task completed without an audio url", 0, false);
+          await downloadMusic(env, job, row, url);
+        } else if (st === "failed") {
+          const msg = ephoneFailure(t);
+          await updateRow(env, job.id, MUSIC_ID, { state: "failed", error: msg });
+          await audit(env, job.user_id, job.id, "music.failed", { task: row.task_id, error: msg });
+        } else if (minutesSinceIso(row.created_at) > 15) {
+          await updateRow(env, job.id, MUSIC_ID, { state: "failed", error: `still ${st || "pending"} after 15 minutes` });
+          await audit(env, job.user_id, job.id, "music.failed", { task: row.task_id, error: "timeout" });
+        }
+        row = (await footageRows(env, job.id)).find((r) => r.shot_id === MUSIC_ID) ?? row;
+        return { status: 200, reply: { state: row.state, model: row.model, cost_usd: row.cost_usd, ...(row.error ? { error: row.error } : {}), ...(row.state === "ready" ? { url: `/internal/jobs/${job.id}/music/file` } : {}) } };
+      }
       const rec = await kie<KieRecord>(env, "GET", `${KIE_RECORD}?taskId=${encodeURIComponent(row.task_id)}`);
       const state = String(rec?.state ?? "").toLowerCase();
       if (state === "success") {

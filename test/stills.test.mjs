@@ -980,3 +980,26 @@ test("a sheet link names the key the sheet is stored under, whatever the id's le
   const id = `d-${"a".repeat(29)}-bbb`;
   assert.equal(await referenceLinkKey({}, { id: "gt_x", user_id: "u1" }, sheetLinkName(id)), castSheetKey("gt_x", id));
 });
+
+test("drawImage on ephone:…: ePhone's chat road — its base URL and key, official_cheap first, the picture as a data URL in the text, the price from the table; an empty account is money", async () => {
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), headers: init.headers, body: JSON.parse(init.body) });
+    return jsonRes({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: `![image](data:image/jpeg;base64,${b64(JPG(5))})` } }], usage: { prompt_tokens: 60, completion_tokens: 1557 } });
+  };
+  const d = await drawImage({ EPHONE_API_KEY: "eph-key", IMAGE_API_KEY: "or-key" }, "ephone:gemini-3-pro-image-preview", "a pirate at the rail", STILL_SIZES["16:9"], [{ ...IMG(1), url: null }], 3);
+  assert.equal(calls[0].url, "https://api.ephone.ai/v1/chat/completions");
+  assert.equal(calls[0].headers.authorization, "Bearer eph-key", "ePhone's key, never OpenRouter's");
+  assert.equal(calls[0].headers["X-Provider-Order"], "official_cheap,official");
+  assert.equal(calls[0].body.model, "gemini-3-pro-image-preview");
+  assert.deepEqual(calls[0].body.image_config, { aspect_ratio: "16:9", image_size: "1K" });
+  assert.equal(calls[0].body.messages[0].content.length, 2, "the reference goes as a data URL: no public link needed");
+  assert.equal(d.bytes[4], 5); assert.equal(d.usd, 0.074); assert.equal(d.reported, false);
+  assert.deepEqual(stillProviderOf("ephone:gemini-3-pro-image-preview"), { provider: "ephone", id: "gemini-3-pro-image-preview" });
+  assert.equal(strongStillModel({ STILL_MODEL: "ephone:gemini-3-pro-image-preview" }), null);
+  // The empty account, as ePhone really answered it on 25 September 2026.
+  globalThis.fetch = async () => jsonRes({ error: { message: "用户额度不足, 剩余额度: ＄-0.348831 (request id: a407)", type: "rix_api_error", code: "insufficient_user_quota" } }, 403);
+  const poor = await rejection(drawImage({ EPHONE_API_KEY: "eph-key" }, "ephone:gemini-3-pro-image-preview", "p", STILL_SIZES["16:9"], [], 1));
+  assert.equal(fallbackReason(poor), "no credit", "the job falls back to klein-4B");
+  assert.equal(fallbackReason(await rejection(drawImage({}, "ephone:gemini-3-pro-image-preview", "p", STILL_SIZES["16:9"], [], 1))), "unauthorized", "no EPHONE_API_KEY");
+});

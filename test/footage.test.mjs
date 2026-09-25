@@ -722,3 +722,28 @@ test("ePhone AI: an empty account (RixAPI's 403 insufficient_user_quota) stops t
   const pre = await m.kiePreflight(env2, 30, 6, 24);
   assert.equal(pre.ok, false); assert.equal(pre.reason, "balance"); assert.equal(pre.balance_usd, 0.1);
 });
+
+test("ePhone AI music: Suno through the task API when KLEO_MUSIC_PROVIDER is ephone; the mp3 among the outputs is the track", async () => {
+  const env = await newEnv({ KIE_API_KEY: undefined, EPHONE_API_KEY: "eph-key", KLEO_MUSIC_PROVIDER: "ephone" });
+  const job = await filmJob(env);
+  assert.equal(m.musicOn(env), true); assert.equal(m.musicOn({ ...env, KLEO_MUSIC_PROVIDER: "" }), false, "kie.ai's road needs kie.ai's key");
+  const calls = [];
+  const mp3 = new Uint8Array(6000); mp3.set([0x49, 0x44, 0x33], 0);
+  globalThis.fetch = async (url, init = {}) => {
+    const u = String(url);
+    calls.push(u);
+    if (u === "https://api.ephone.ai/v1/task/submit") { calls.body = JSON.parse(init.body); return new Response(JSON.stringify({ id: "mus_1", status: "queued" }), { status: 200 }); }
+    if (u.endsWith("/v1/dashboard/billing/subscription")) return new Response(JSON.stringify({ hard_limit_usd: 10000 }), { status: 200 });
+    if (u.endsWith("/v1/dashboard/billing/usage")) return new Response(JSON.stringify({ total_usage: 0 }), { status: 200 });
+    if (u === "https://api.ephone.ai/v1/task/mus_1") return new Response(JSON.stringify({ id: "mus_1", status: "completed", outputs: ["https://storage.test/a.jpeg", "https://storage.test/b.jpeg", "https://storage.test/c.mp3", "https://storage.test/d.mp3"] }), { status: 200 });
+    if (u === "https://storage.test/c.mp3") return new Response(mp3, { status: 200 });
+    throw new Error(`unexpected fetch ${u}`);
+  };
+  const r = await m.requestMusic(env, job, { brief: "epic orchestral pirate adventure", seconds: 15 });
+  assert.equal(r.status, 200, JSON.stringify(r.reply));
+  assert.equal(calls.body.model, "suno/music"); assert.equal(calls.body.input.instrumental, true); assert.equal(calls.body.input.custom, false);
+  assert.match(calls.body.input.gpt_description_prompt, /^epic orchestral pirate adventure\. Instrumental film score/);
+  const st = await m.musicStatus(env, job);
+  assert.equal(st.reply.state, "ready"); assert.equal(st.reply.cost_usd, 0.064);
+  assert.ok(calls.includes("https://storage.test/c.mp3") && !calls.includes("https://storage.test/a.jpeg"), "the first mp3, never a cover picture");
+});
