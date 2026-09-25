@@ -405,7 +405,9 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     await audit(env, user.id, jobId, "job.create.error", String(e).slice(0, 500));
     throw new JobError("Kleo could not save the video request. Nothing was charged; please try again in a moment.");
   }
-  await audit(env, user.id, job.id, "job.created", { template: t.id, product, credits, duration, format, style, storyboard: storyboard ? "client" : "auto", treatment: treatment ? (treatmentFrom ? "reused" : "client") : "auto", ...(treatmentFrom ? { treatment_from: treatmentFrom } : {}), spec: spec ? spec.mode : null, refs: refHandles.length });
+  // language_defaulted (25 September 2026): the caller named no narration language and English was assumed; the intake
+  // asks it, so these rows count the callers that went round it.
+  await audit(env, user.id, job.id, "job.created", { template: t.id, product, credits, duration, format, style, storyboard: storyboard ? "client" : "auto", treatment: treatment ? (treatmentFrom ? "reused" : "client") : "auto", ...(treatmentFrom ? { treatment_from: treatmentFrom } : {}), spec: spec ? spec.mode : null, refs: refHandles.length, ...(input.language === undefined ? { language_defaulted: true } : {}) });
   return job;
 }
 
