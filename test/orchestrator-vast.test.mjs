@@ -162,7 +162,7 @@ test("start: with no model configured the filmed job still gets the LTX-2.5 prof
   assert.equal(body.env.KLEO_PHASE, "gen");
 });
 
-test("start: a job in its finish phase rents the cheapest box that runs ffmpeg, with no model and no token", async () => {
+test("start: a job in its finish phase rents the cheapest box with a card that can finish the track, with no model and no token", async () => {
   const env = { ...(await newEnv()), KLEO_VIDEO_MODEL: "Lightricks/LTX-2.5-Diffusers", HF_TOKEN: "hf_secret_xyz" };
   const job = { id: "gt_fin", worker_secret: "wk_1", phase: "finish", params: JSON.stringify({ style: "realistic", format: "16:9" }) };
   let query = null, body = null;
@@ -170,11 +170,23 @@ test("start: a job in its finish phase rents the cheapest box that runs ffmpeg, 
   const origFetch = v.fetch;
   v.fetch = async (url, init = {}) => { if (init.method === "POST" && String(url).endsWith("/bundles/")) query = JSON.parse(init.body); return origFetch(url, init); };
   await withVast(v, () => m.vastBackend.start(env, job));
-  assert.equal(query.gpu_ram.gte, 0, "any card");
+  // 25 September 2026: the footage is upscaled and interpolated on the card (worker/kleo_sr.py), so 8 GB of Turing or newer.
+  assert.equal(query.gpu_ram.gte, 8 * 1024, "8 GB for SR + RIFE");
+  assert.equal(query.compute_cap.gte, 750, "Turing or newer: the image's torch has no kernels below 7.5");
   assert.ok(query.dph_total.lte <= 0.4, `cents an hour, not dollars (${query.dph_total.lte})`);
   assert.equal(body.disk, 40);
   assert.equal(body.env.KLEO_PHASE, "finish");
+  assert.equal(body.env.KLEO_SR, "auto", "the neural finish is on unless the Worker says off");
   assert.equal(body.env.HF_TOKEN, undefined, "a finish box never sees the token");
+});
+
+test("start: KLEO_SR=off on the Worker reaches the box: the kill switch of the neural finish needs no new image", async () => {
+  const env = { ...(await newEnv()), KLEO_SR: " off " };
+  const job = { id: "gt_fin_off", worker_secret: "wk_1", phase: "finish", params: JSON.stringify({ style: "realistic", format: "9:16" }) };
+  let body = null;
+  const v = fakeVast({ onCreate: (offer, b) => { body = b; return { create: 503 }; } });
+  await withVast(v, () => m.vastBackend.start(env, job));
+  assert.equal(body.env.KLEO_SR, "off");
 });
 
 test("start: a create whose answer is lost is adopted by its label, not left orphaned", async () => {
@@ -845,7 +857,7 @@ test("an animatic rents the pictures card whatever the footage switch says: neve
   const drawn = m.profileFor(env, "realistic", null, "local", true);
   assert.deepEqual(drawn.need, m.machineFor("cartoon"), "an animatic is that same pictures job");
   assert.equal(drawn.disk, 80, "and the ordinary disk, not the model's 150 GB");
-  assert.equal(m.profileFor(env, "realistic", "finish", "local", true).need.minVramGb, 0, "the finish profile still wins over everything");
+  assert.equal(m.profileFor(env, "realistic", "finish", "local", true).need.minVramGb, 8, "the finish profile still wins over everything");
 });
 
 

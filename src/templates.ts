@@ -432,10 +432,17 @@ export function videoMachineFor(modelId: string | undefined, over: { minVramGb?:
 
 /**
  * The box for the FINISH phase of a filmed video: no model, no picture, only ffmpeg on the clips the GPU made —
- * the 60 fps 4K track, the narration, the checks, the upload. Any card will do; what matters is cores and price.
- * Ten to twelve minutes a film at these prices is a cent, against a third of the GPU bill it replaces.
+ * the 60 fps 4K track, the narration, the checks, the upload. Ten to twelve minutes a film at these prices is a cent,
+ * against a third of the GPU bill it replaces.
+ *
+ * Since 25 September 2026 the card is used: the footage track is upscaled (Real-ESRGAN) and interpolated to 60 fps
+ * (RIFE 4.25) on it before the box destroys itself (worker/kleo_sr.py). That needs Turing or newer (the image's torch
+ * has no kernels below compute 7.5) and 8 GB, so the finish box is no longer "any card". The search stays cheapest
+ * first with 16 or more cores, and the price ceiling really applied is max(VAST_MAX_DPH, maxDph) — VAST_MAX_DPH (1.00)
+ * in production, not the 0.12 written here. A box that still cannot run it finishes the old way (Lanczos +
+ * minterpolate); KLEO_SR=off on the Worker turns it off without a new image.
  */
-export const FINISH: Machine = { minVramGb: 0, minComputeCap: 0, maxDph: 0.12 };
+export const FINISH: Machine = { minVramGb: 8, minComputeCap: 750, maxDph: 0.12 };
 
 /** True when the model's weights are gated on Hugging Face and the worker needs a token to fetch them. */
 export const videoModelIsGated = (modelId: string | undefined): boolean => /ltx/i.test(modelId ?? "");

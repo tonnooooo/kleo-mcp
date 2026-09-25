@@ -134,6 +134,9 @@ export interface Env {
   VIDEO_MIN_VRAM_GB?: string;
   /** Disk for the finish box (default 40 GB: the image, the clips, the 4K film). */
   FINISH_DISK_GB?: string;
+  /** The neural finish of the footage track on the rented card (worker/kleo_sr.py: Real-ESRGAN + RIFE): "auto" (default)
+   *  or "off", the kill switch. Passed to every box; `npx wrangler secret put KLEO_SR` flips it without a code change. */
+  KLEO_SR?: string;
   VIDEO_MAX_DPH?: string;
   /** kie.ai (https://kie.ai): the clips of a filmed video come from its API instead of a model on the rented card.
    *  KIE_API_KEY is a Cloudflare SECRET (wrangler secret put): it never reaches the box, the audit or a job row. */

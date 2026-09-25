@@ -314,6 +314,9 @@ export const vastBackend: RenderBackend = {
             ...(footage === "kie" ? { KLEO_FOOTAGE_MODEL: kieModelFor(env, footageCfg).name } : {}),
             // Which phase this box is for. A finish box never loads a model and never gets the token.
             KLEO_PHASE: job.phase === "finish" ? "finish" : "gen",
+            // The neural finish of the footage track (worker/kleo_sr.py): "auto" uses the card when it can, "off" is
+            // the kill switch — a Worker secret or var, no image rebuild (25 September 2026).
+            KLEO_SR: (env.KLEO_SR ?? "").trim() || "auto",
           },
         };
         const r = await vast<{ success: boolean; new_contract?: number; msg?: string; error?: string }>(env, "PUT", `/asks/${offer.id}/`, body);
