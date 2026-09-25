@@ -648,7 +648,8 @@ function fakeEphone(script = {}) {
     const u = String(url);
     if (u === "https://api.ephone.ai/v1/task/submit") {
       calls.submit.push({ body: JSON.parse(init.body), headers: init.headers });
-      if (script.submitNoMoney) return new Response(JSON.stringify({ error: { message: "user quota is not enough (request id: 1)", type: "rix_api_error", code: "" } }), { status: 403 });
+      // The real answer of an empty account, 25 September 2026.
+      if (script.submitNoMoney) return new Response(JSON.stringify({ error: { message: "预扣费额度失败, 用户剩余额度: ＄0.000000, 需要预扣费额度: ＄0.006360 (request id: a407)", type: "rix_api_error", param: "", code: "insufficient_user_quota" } }), { status: 403 });
       return new Response(JSON.stringify({ id: `eph_${++n}`, status: "queued", created_at: 1 }), { status: 200 });
     }
     const q = /^https:\/\/api\.ephone\.ai\/v1\/task\/([^/?]+)$/.exec(u);
@@ -677,7 +678,8 @@ test("ePhone AI: a Seedance 2.5 model needs EPHONE_API_KEY, not kie.ai's; the pr
   assert.equal(s480.provider, "ephone"); assert.equal(s480.model, "doubao-seedance-2-5-260628"); assert.equal(s480.resolution, "480p");
   assert.equal(m.clipSecondsFor(s480, 2.4), 4, "4 s at least"); assert.equal(m.clipSecondsFor(s480, 22), 22, "up to 30 s in one clip");
   assert.deepEqual(m.ephoneInput("seedance-2.5-480p", s480, { prompt: "p", imageUrl: "https://kleo.test/a.png", seconds: 3.2, format: "9:16" }),
-    { prompt: "p", first_frame: "https://kleo.test/a.png", duration: 4, resolution: "480p", aspect_ratio: "9:16", generate_audio: false, watermark: false });
+    { prompt: "p", first_frame: "https://kleo.test/a.png", duration: 4, resolution: "480p", aspect_ratio: "adaptive", generate_audio: false, watermark: false }, "with a first frame only 'adaptive' is accepted");
+  assert.equal(m.ephoneInput("seedance-2.5-480p", s480, { prompt: "p", imageUrl: null, seconds: 4, format: "16:9" }).aspect_ratio, "16:9", "text-to-video keeps the film's format");
 });
 
 test("ePhone AI: requestFootage submits one task per shot on the official channels only, footageStatus collects the clip", async () => {
@@ -692,7 +694,7 @@ test("ePhone AI: requestFootage submits one task per shot on the official channe
   assert.equal(first.headers["X-Provider-Order"], "official"); assert.equal(first.headers["X-Provider-Only"], "true");
   assert.equal(first.body.model, "doubao-seedance-2-5-260628");
   assert.match(first.body.input.first_frame, /^http:\/\/kleo\.test\/dl\/gt_test1234\/img%2F01-hook-s1\.png\?exp=\d+&sig=[0-9a-f]{64}$/);
-  assert.deepEqual([first.body.input.duration, first.body.input.resolution, first.body.input.aspect_ratio, first.body.input.generate_audio], [4, "480p", "9:16", false]);
+  assert.deepEqual([first.body.input.duration, first.body.input.resolution, first.body.input.aspect_ratio, first.body.input.generate_audio], [4, "480p", "adaptive", false]);
   const rows = await m.footageRows(env, job.id);
   assert.deepEqual(rows.map((x) => [x.shot_id, x.state, x.cost_usd]), [["01-hook-s1", "generating", 0.35], ["01-hook-s2", "generating", 0.35], ["02-city-s1", "generating", 0.7]]);
   // One finishes, one fails, one is still running.
@@ -704,7 +706,7 @@ test("ePhone AI: requestFootage submits one task per shot on the official channe
   assert.ok(await env.RENDERS.get(m.clipKey(job.id, "01-hook-s1")), "the clip is on R2");
 });
 
-test("ePhone AI: an empty account (RixAPI's 403 'quota is not enough') stops the order at once, and the balance refuses first when it is known", async () => {
+test("ePhone AI: an empty account (RixAPI's 403 insufficient_user_quota) stops the order at once, and the balance refuses first when it is known", async () => {
   const env = await newEnv({ KIE_API_KEY: undefined, EPHONE_API_KEY: "eph-key", KLEO_FOOTAGE_MODEL: "seedance-2.5-480p", KIE_MAX_VIDEO_S: "0" });
   const job = await filmJob(env);
   const poor = fakeEphone({ submitNoMoney: true, limit: 0 }); globalThis.fetch = poor.fetch; // limit 0: the balance says nothing, the task decides

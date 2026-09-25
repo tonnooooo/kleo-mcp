@@ -31,7 +31,9 @@ export const ephoneBase = (env: Pick<Env, "EPHONE_API_URL">): string => (env.EPH
 /** Official channels only, no fallback to the cheaper mixed or reverse-engineered ones (docs: guides/provider.md). */
 export const EPHONE_ROUTING: Record<string, string> = { "X-Provider-Order": "official", "X-Provider-Only": "true" };
 /** RixAPI's words for an empty balance (it answers them with HTTP 403). */
-export const EPHONE_NO_MONEY_RE = /quota is not enough|not enough (?:quota|balance)|insufficient (?:user |token |account )?(?:quota|balance)|额度不足|余额不足/i;
+// Measured 25 September 2026 on an empty account: code "insufficient_user_quota", message "预扣费额度失败, 用户剩余额度:
+// $0.000000, 需要预扣费额度: $0.006360" (the pre-charge failed, the user's remaining quota is $0).
+export const EPHONE_NO_MONEY_RE = /quota is not enough|not enough (?:quota|balance)|insufficient[ _](?:user[ _]|token[ _]|account[ _])?(?:quota|balance)|额度不足|余额不足|预扣费额度失败/i;
 
 /** What GET /v1/task/{id} answers (the fields Kleo reads). */
 export interface EphoneTask { id?: string; status?: string; outputs?: unknown; error?: unknown; usage?: { type?: string; seconds?: number; output_tokens?: number; total_tokens?: number } }
@@ -52,7 +54,7 @@ export async function ephone<T>(env: Pick<Env, "EPHONE_API_KEY" | "EPHONE_API_UR
   const err = data && data.error && typeof data.error === "object" ? (data.error as Record<string, unknown>) : null;
   if (!res.ok || err) {
     const said = String(err?.message ?? data?.message ?? text).replace(/\s+/g, " ").slice(0, 240);
-    const money = res.status === 402 || EPHONE_NO_MONEY_RE.test(said);
+    const money = res.status === 402 || EPHONE_NO_MONEY_RE.test(said) || EPHONE_NO_MONEY_RE.test(String(err?.code ?? ""));
     const status = money ? 402 : res.status;
     throw new KieError(`ephone.ai ${method} ${path} → ${res.status}: ${said}`, status, !money && (res.status === 429 || res.status >= 500));
   }
@@ -70,9 +72,13 @@ export const ephoneFailure = (t: EphoneTask): string => String(t.error ?? "ephon
 /**
  * What the account can still spend, in dollars, or null when ePhone did not say — a monitoring call never stops a
  * film. Read through the OpenAI-compatible billing pair RixAPI serves to an API key: subscription.hard_limit_usd (the
- * quota) minus usage.total_usage (cents). An unlimited or unreadable answer is null. NOT YET VERIFIED against the live
- * API (25 September 2026): the first test with the owner's key checks it against the console's balance.
+ * TOKEN's quota) minus usage.total_usage (cents). Measured with the owner's key on 25 September 2026: a token with no
+ * limit answers hard_limit_usd 10000 whatever the account holds, and an API key cannot read the account balance at
+ * all (/api/user/self wants a console token). So a limit of 10000 or more is "unknown" (null): only a token given a
+ * quota limit in the console reports a real figure. With null the order itself decides — RixAPI's 403 "quota is not
+ * enough" stops it at the first refusal.
  */
+export const EPHONE_UNLIMITED_USD = 10_000;
 export async function ephoneBalanceUsd(env: Pick<Env, "EPHONE_API_KEY" | "EPHONE_API_URL">): Promise<number | null> {
   if (!(env.EPHONE_API_KEY ?? "").trim()) return null;
   try {
@@ -81,7 +87,7 @@ export async function ephoneBalanceUsd(env: Pick<Env, "EPHONE_API_KEY" | "EPHONE
       ephone<{ total_usage?: unknown }>(env, "GET", "/v1/dashboard/billing/usage", undefined, { timeoutMs: 6000 }),
     ]);
     const limit = Number(sub.hard_limit_usd), used = Number(use.total_usage);
-    if (!Number.isFinite(limit) || !Number.isFinite(used) || limit <= 0 || limit >= 1e7) return null;
+    if (!Number.isFinite(limit) || !Number.isFinite(used) || limit <= 0 || limit >= EPHONE_UNLIMITED_USD) return null;
     return Math.round(Math.max(0, limit - used / 100) * 1000) / 1000;
   } catch { return null; }
 }

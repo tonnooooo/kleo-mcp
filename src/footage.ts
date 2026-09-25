@@ -393,7 +393,9 @@ export function noCreditSentence(ordered: number, wanted: number, provider: "kie
  * Audio off (the narration is Kleo's), no watermark. Without a still the call is text-to-video, which Seedance allows.
  */
 export function ephoneInput(name: string, spec: KieModel, p: { prompt: string; imageUrl: string | null; seconds: number; format: string }): Record<string, unknown> {
-  const aspect = p.format === "16:9" ? "16:9" : "9:16";
+  // With a first frame Seedance 2.5 takes only aspect_ratio "adaptive" (the frame's own ratio): "9:16" was refused on
+  // the first real task, 25 September 2026 ("首帧/首尾帧任务仅支持 ratio=adaptive"). The still is drawn in the film's format.
+  const aspect = p.imageUrl ? "adaptive" : p.format === "16:9" ? "16:9" : "9:16";
   return { prompt: p.prompt.slice(0, 2000), ...(p.imageUrl ? { first_frame: p.imageUrl } : {}), duration: clipSecondsFor(spec, p.seconds), resolution: spec.resolution ?? "720p", aspect_ratio: aspect, generate_audio: false, watermark: false };
 }
 
