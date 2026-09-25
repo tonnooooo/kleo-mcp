@@ -36,6 +36,6 @@ export const INTAKE_VOCAB = new Set([
       "videos films clips reels movie filmato cortometraggio corto documentary documentario spot trailer cartone cartoni cartoon cartoons " +
       "animated animato animata animati animation animazione realistic realistico realistica cinematic cinematico cinematografico " +
       "2d 3d new nuovo breve landscape portrait widescreen 4k instagram reels stories tik tok secs mins " +
-      "con senza without none niente nessuna soundtrack captions sottotitolato sottotitolata subtitled voce narrante")
+      "con senza without none niente nessuna soundtrack captions sottotitolato sottotitolata subtitled voce narrante animatico animatici")
     .split(" "),
 ]);

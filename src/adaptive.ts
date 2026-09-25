@@ -16,11 +16,11 @@
  * a short list of concrete subjects to pick from, not the same question a third time (the Grok chat of 22
  * September asked "di cosa deve parlare?" three times to a user who had said "stupiscimi tu" twice).
  */
-import type { Format } from "./templates.ts";
+import type { Format, Product } from "./templates.ts";
 import { words, STOP, INTAKE_VOCAB } from "./format-vocab.ts";
 
 export type Look = "realistic" | "animation";
-export type IntakeKey = "subject" | "duration" | "format" | "look" | "music" | "subtitles" | "language" | "audience" | "tone" | "must_keep";
+export type IntakeKey = "subject" | "duration" | "format" | "look" | "product" | "music" | "subtitles" | "language" | "audience" | "tone" | "must_keep";
 /** The languages Kleo narrates in. */
 export type NarrationLanguage = "en" | "it";
 export interface IntakeItem { key: IntakeKey; required: boolean; label: { en: string; it: string }; question: { en: string; it: string } }
@@ -34,6 +34,8 @@ export const INTAKE: readonly IntakeItem[] = [
     question: { en: "Where is it for: YouTube (landscape, 16:9) or a Short / TikTok / Reel (vertical, 9:16)?", it: "Per dove è: YouTube (orizzontale, 16:9) o Short / TikTok / Reel (verticale, 9:16)?" } },
   { key: "look", required: true, label: { en: "Look", it: "Look" },
     question: { en: "How do you want it: realistic (filmed, cinematic photography) or animation (a 2D animated film)?", it: "Come lo vuoi: realistico (girato, fotografia cinematografica) o animazione (film animato 2D)?" } },
+  { key: "product", required: true, label: { en: "Product", it: "Prodotto" },
+    question: { en: "Film or animatic? The film makes every shot a generated clip and is priced by its length; the animatic is the same drawn frames with the camera moving over each one, no generated clip, at a flat price and a shorter length.", it: "Film o animatic? Il film fa di ogni inquadratura una clip generata e costa in base alla durata; l'animatic sono gli stessi fotogrammi disegnati con la camera che si muove su ognuno, nessuna clip generata, a prezzo fisso e più corto." } },
   { key: "music", required: true, label: { en: "Music", it: "Musica" },
     question: { en: "Do you want music under the narration? If yes, what kind (a mood or a genre: quiet piano, tense electronic, warm strings…); if not, say no.", it: "Vuoi la musica sotto la voce? Se sì, di che tipo (un'atmosfera o un genere: pianoforte quieto, elettronica tesa, archi caldi…); se no, dì no." } },
   { key: "subtitles", required: true, label: { en: "Subtitles", it: "Sottotitoli" },
@@ -80,6 +82,11 @@ export interface AdaptiveBrief {
   language: NarrationLanguage | null;
   /** True when the request hands the subject to Kleo ("stupiscimi", "surprise me"): the answer is a list to pick from. */
   delegated: boolean;
+  /**
+   * Film or animatic: the user's answer (or the literal word "animatic" in the request). Asked only when the caller
+   * passes the account (kleo_adapt_prompt), with that account's prices; null while it is not settled.
+   */
+  product: Product | null;
   /** The intake as read: what was answered (and from where), what required item is missing, what optional one was not given. */
   intake: { answered: Partial<Record<IntakeKey, IntakeAnswer>>; missing: IntakeKey[]; optional: IntakeKey[] };
   /** The questions for the missing REQUIRED items, in the chat's language. Empty means nothing blocks. */
@@ -114,7 +121,7 @@ const LEN_RE = new RegExp(`(?<![\\w.,'’])(\\d{1,4}(?:[.,]\\d+)?|(?:${NUM_ALT})
 /** "30s": seconds in the compact form, never a decade ("the 90s", "in her 30s", "'80s") — the guards are below. */
 const COMPACT_RE = /(?<![\w'’.,])(\d{1,3})s\b/gi;
 const HALF_MINUTE_RE = /\b(?:mezzo minuto|half a minute|half[- ]minute)\b/gi;
-const VIDEO_WORDS = "videos?|film|short|clip|animatic|filmato|cortometraggio|corto|reel|spot|trailer|movie|documentario|documentary|animazione|animation|cartone(?: animato)?";
+const VIDEO_WORDS = "videos?|film|short|clip|animatic[oi]?|filmato|cortometraggio|corto|reel|spot|trailer|movie|documentario|documentary|animazione|animation|cartone(?: animato)?";
 /** The words that may stand between a length and its video word: articles, "of", and what kind of video it is. */
 const LEN_GLUE = "(?:of|di|de|del|dello|della|a|an|the|il|lo|un|uno|una|vertical[ei]?|horizontal|orizzontale|animated|animat[oa]|realistic|realistic[oa]|cinematic|cinematografico|youtube|long|lung[oaie]|narrated|narrato)";
 /** The number measures the video: "30-second video", "2 minute animated film", "30 secondi di video". */
@@ -511,7 +518,47 @@ export type AdaptOverrides = Partial<Pick<AdaptiveBrief, "duration_s" | "format"
   subtitles?: boolean | string | null;
   /** The user's answer to the narration question, in their words: "en", "Italian", "whatever" (English)… */
   language?: string | null;
+  /** The user's answer to the film/animatic question. */
+  product?: Product | null;
+  /** The account the film is for, with its prices: when given, the film/animatic question is asked with them. */
+  account?: IntakeAccount;
 };
+
+/**
+ * What the product question needs to know about the account, computed by the caller (src/mcp.ts) so this module
+ * stays pure and holds no price: whether it has paid (a film is for accounts that bought a pack), its balance, the
+ * film's price for the asked length (null while the length is unknown), the animatic's flat price and longest length,
+ * and the tariff sentence for when the length is not known yet.
+ */
+export interface IntakeAccount { paid: boolean; credits: number; filmCredits: number | null; animaticCredits: number; animaticMaxS: number; tariff: string }
+
+/** The product a request names: the literal word only. "Preview", "anteprima", "bozza" are not a product. */
+const ANIMATIC_WORD_RE = /\banimatic[oi]?\b/i;
+
+/**
+ * THE FILM OR THE ANIMATIC IS ASKED, WITH THE PRICES (25 September 2026). The choice used to come from kleo_account,
+ * which an assistant called or did not: a paying user was never asked, an unpaid one learned at kleo_create_video
+ * that a film was not for them. Now it is one more question in the same message, quoting what each costs this user.
+ */
+function productQuestion(chat: NarrationLanguage, acct: IntakeAccount, duration: number | null, product: Product | null): string {
+  const it = chat === "it";
+  const tooLong = duration !== null && duration > acct.animaticMaxS;
+  const anim = it
+    ? `costa ${acct.animaticCredits} crediti fissi, fino a ${acct.animaticMaxS} secondi${tooLong ? ` (quindi al massimo ${acct.animaticMaxS} secondi invece di ${duration})` : ""}`
+    : `costs ${acct.animaticCredits} credits flat, up to ${acct.animaticMaxS} seconds${tooLong ? ` (so at most ${acct.animaticMaxS} seconds instead of ${duration})` : ""}`;
+  if (!acct.paid) {
+    return it
+      ? `Il film (ogni inquadratura è una clip generata) si fa solo per gli account che hanno comprato un pacchetto di crediti (da 5 EUR, nella pagina del tuo account)${product === "film" ? ", e questo non l'ha ancora comprato" : ""}. Adesso puoi avere l'animatic: gli stessi fotogrammi disegnati con la camera che si muove su ognuno, nessuna clip generata; ${anim}. Vuoi l'animatic adesso, o prima compri un pacchetto per il film?`
+      : `A film (every shot a generated clip) is made only for accounts that have bought a credit pack (from 5 EUR, on your account page)${product === "film" ? ", and this one has not bought one yet" : ""}. Right now you can have the animatic: the same drawn frames with the camera moving over each one, no generated clip; it ${anim}. Do you want the animatic now, or buy a pack first for the film?`;
+  }
+  const low = acct.filmCredits !== null && acct.credits < acct.filmCredits;
+  const film = acct.filmCredits !== null
+    ? (it ? `Il film (ogni inquadratura è una clip generata) costa ${acct.filmCredits} crediti per ${duration} secondi` : `The film (every shot a generated clip) costs ${acct.filmCredits} credits for ${duration} seconds`)
+    : (it ? `Il film (ogni inquadratura è una clip generata) costa in base alla durata (${acct.tariff})` : `The film (every shot a generated clip) is priced by its length (${acct.tariff})`);
+  return it
+    ? `Film o animatic? ${film}; l'animatic (gli stessi fotogrammi disegnati con la camera che si muove su ognuno, nessuna clip generata) ${anim}. Hai ${acct.credits} crediti${low ? ", non bastano per il film" : ""}.`
+    : `Film or animatic? ${film}; the animatic (the same drawn frames with the camera moving over each one, no generated clip) ${anim}. You have ${acct.credits} credits${low ? ", not enough for the film" : ""}.`;
+}
 
 /**
  * Reads the request against the intake: every item is taken from the call first (the user's answers, passed back by
@@ -542,22 +589,32 @@ export function adaptPrompt(prompt: string, overrides: AdaptOverrides = {}): Ada
   const audience = overrides.audience?.trim() || null;
   const tone = overrides.tone?.trim() || null;
   const must_keep = overrides.must_keep?.trim() || null;
+  const acct = overrides.account;
+  const productSaid = overrides.product ?? (ANIMATIC_WORD_RE.test(text) ? "animatic" : null);
+  // Settled when there is no account to price it (pure callers take what they pass), when a paying account named
+  // either, or when an unpaid one chose the animatic; an unpaid account's "film" is asked again, with the way out.
+  const productSettled = !acct ? productSaid !== null : acct.paid ? productSaid !== null : productSaid === "animatic";
+  const product = productSettled ? productSaid : null;
+  // An animatic has a longest length: past it, the length is asked again, in the same message.
+  const animaticTooLong = !!acct && product === "animatic" && duration_s !== null && duration_s !== undefined && duration_s > acct.animaticMaxS;
   // The narration: the user's answer first, then what the request says outright. The chat's language is never it.
   const callLang = languageAnswer(overrides.language);
   const language = callLang?.value ?? languageFromRequest(text);
 
   const answered: Partial<Record<IntakeKey, IntakeAnswer>> = {};
   if (hasContent(subject)) answered.subject = { value: subject, from: "request" };
-  if (duration_s !== null && duration_s !== undefined) answered.duration = { value: `${duration_s}s`, from: overrides.duration_s !== undefined && overrides.duration_s !== null ? "call" : "request" };
+  if (duration_s !== null && duration_s !== undefined && !animaticTooLong) answered.duration = { value: `${duration_s}s`, from: overrides.duration_s !== undefined && overrides.duration_s !== null ? "call" : "request" };
   if (format) answered.format = { value: format, from: overrides.format ? "call" : "request" };
   if (look) answered.look = { value: look, from: overrides.look ? "call" : "request" };
+  if (product) answered.product = { value: product, from: overrides.product ? "call" : "request" };
   if (music) answered.music = { value: music.wanted ? (music.brief ? `yes — ${music.brief}` : "yes") : "none", from: callMusic ? "call" : "request" };
   if (subtitles !== null) answered.subtitles = { value: subtitles ? "cinema (burned in)" : "none", from: callSubs !== null ? "call" : "request" };
   if (audience) answered.audience = { value: audience, from: "call" };
   if (tone) answered.tone = { value: tone, from: "call" };
   if (must_keep) answered.must_keep = { value: must_keep, from: "call" };
   if (language) answered.language = { value: language === "it" ? "Italian" : callLang?.defaulted ? "English (no preference: the default)" : "English", from: callLang?.value ? "call" : "request" };
-  const missing = INTAKE.filter((i) => i.required && !answered[i.key]).map((i) => i.key);
+  // The product is not asked of a caller that did not pass the account: there is no price to quote.
+  const missing = INTAKE.filter((i) => i.required && !answered[i.key] && (i.key !== "product" || !!acct)).map((i) => i.key);
   const optional = INTAKE.filter((i) => !i.required && !answered[i.key]).map((i) => i.key);
   const unsupported = callLang?.unsupported ?? null;
   const questions = INTAKE.filter((i) => missing.includes(i.key)).map((i) =>
@@ -569,7 +626,13 @@ export function adaptPrompt(prompt: string, overrides: AdaptOverrides = {}): Ada
         ? (chat === "it"
           ? `Kleo può narrare solo in inglese o in italiano (hai chiesto "${unsupported}"): quale delle due vuoi?`
           : `Kleo narrates in English or Italian only (you asked for "${unsupported}"): which of the two do you want?`)
-        : i.question[chat]);
+        : i.key === "product" && acct
+          ? productQuestion(chat, acct, duration_s ?? null, productSaid)
+          : i.key === "duration" && animaticTooLong && acct
+            ? (chat === "it"
+              ? `Un animatic dura al massimo ${acct.animaticMaxS} secondi (ne hai chiesti ${duration_s}): quanto deve durare, fino a ${acct.animaticMaxS} secondi?`
+              : `An animatic is at most ${acct.animaticMaxS} seconds long (you asked for ${duration_s}): how long should it be, up to ${acct.animaticMaxS} seconds?`)
+            : i.question[chat]);
   const optional_questions = INTAKE.filter((i) => optional.includes(i.key)).map((i) => i.question[chat]);
 
   const goal = /\b(spiega|explain|documentario|documentary|tutorial|how to|come funziona)\b/i.test(lower)
@@ -586,9 +649,9 @@ export function adaptPrompt(prompt: string, overrides: AdaptOverrides = {}): Ada
     "no slideshow fallback",
   ];
   return {
-    subject, look, goal, duration_s: duration_s ?? null, format: format ?? null, music, subtitles,
+    subject, look, goal, duration_s: animaticTooLong ? null : duration_s ?? null, format: format ?? null, music, subtitles,
     audience: audience ?? "the audience implied by the request", tone: tone ?? "cinematic, naturalistic, emotionally coherent", must_keep,
-    chat_language: chat, language, delegated, intake: { answered, missing, optional }, questions, optional_questions, assumptions,
+    chat_language: chat, language, delegated, product, intake: { answered, missing, optional }, questions, optional_questions, assumptions,
   };
 }
 
@@ -600,6 +663,7 @@ export function intakeText(brief: AdaptiveBrief): string {
     const a = brief.intake.answered[i.key];
     if (a) return `- ${i.label.en}: ${a.value} (${a.from === "call" ? "the user's answer" : "from the request"})`;
     if (i.key === "subject" && brief.delegated) return `- ${i.label.en}: MISSING — the user delegated it ("surprise me"): propose 3-5 subjects and let them pick`;
+    if (i.required && !brief.intake.missing.includes(i.key)) return `- ${i.label.en}: not asked here`;
     return i.required ? `- ${i.label.en}: MISSING — ask` : `- ${i.label.en}: not given (optional)`;
   });
   return `INTAKE — what Kleo knows about this film, and what it must ask before anything is written. These are never guessed:\n${rows.join("\n")}`;
@@ -620,5 +684,5 @@ export function adaptivePromptText(brief: AdaptiveBrief): string {
     return `${intakeText(brief)}\n\nASK THE USER NOW, in ONE message, in ${lang(brief)}, exactly these questions — then call kleo_adapt_prompt again with the same prompt and their answers (duration_s, format, style, music, subtitles, language, audience, tone, must_keep; if the user says the narration's language does not matter, pass language "en"). Do not write the treatment, do not call kleo_create_video, and do not fill any of these in yourself:\n${q}${opt}`;
   }
   const lookLine = brief.look === "animation" ? "animation, a 2D animated film" : "realistic cinematic";
-  return `${intakeText(brief)}\n\nAdaptive film brief ready:\n- Subject: ${brief.subject}\n- Goal: ${brief.goal}\n- Duration: ${brief.duration_s}s\n- Format: ${brief.format}\n- Look: ${lookLine}\n- Narration: ${brief.language === "it" ? "Italian" : "English"}\n- Audience: ${brief.audience}\n- Tone: ${brief.tone}${brief.must_keep ? `\n- Must appear: ${brief.must_keep}` : ""}\n- Music: ${musicLine(brief.music)}\n- Subtitles: ${subtitlesLine(brief.subtitles)}\n- Plan: shot-by-shot real video clips, continuity checks, one clean dissolve between acts (one per 25 seconds, never inside an act), then edit.`;
+  return `${intakeText(brief)}\n\nAdaptive film brief ready:\n- Subject: ${brief.subject}\n- Goal: ${brief.goal}\n- Duration: ${brief.duration_s}s\n- Format: ${brief.format}\n- Look: ${lookLine}\n- Narration: ${brief.language === "it" ? "Italian" : "English"}\n- Audience: ${brief.audience}\n- Tone: ${brief.tone}${brief.must_keep ? `\n- Must appear: ${brief.must_keep}` : ""}\n- Music: ${musicLine(brief.music)}\n- Subtitles: ${subtitlesLine(brief.subtitles)}${brief.product ? `\n- Product: ${brief.product}` : ""}\n- Plan: ${brief.product === "animatic" ? "the animatic: drawn frames with the camera moving over each one, no generated clip" : "shot-by-shot real video clips, continuity checks"}, one clean dissolve between acts (one per 25 seconds, never inside an act), then edit.`;
 }

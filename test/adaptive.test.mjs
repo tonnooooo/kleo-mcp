@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { adaptPrompt, adaptivePromptText, intakeText, lookFromText, INTAKE, REQUIRED_INTAKE, subjectFrom, lengthOf, languageAnswer, languageFromRequest } from "../src/adaptive.ts";
 import { words, STOP, INTAKE_VOCAB } from "../src/format-vocab.ts";
 
-test("the intake is a fixed list: seven things Kleo settles every time (music and subtitles since 22 September, the narration's language since 25 September), three it offers to ask", () => {
-  assert.deepEqual(INTAKE.map((i) => i.key), ["subject", "duration", "format", "look", "music", "subtitles", "language", "audience", "tone", "must_keep"]);
-  assert.deepEqual([...REQUIRED_INTAKE], ["subject", "duration", "format", "look", "music", "subtitles", "language"]);
+test("the intake is a fixed list: eight things Kleo settles every time (music and subtitles since 22 September, the product and the narration's language since 25 September), three it offers to ask", () => {
+  assert.deepEqual(INTAKE.map((i) => i.key), ["subject", "duration", "format", "look", "product", "music", "subtitles", "language", "audience", "tone", "must_keep"]);
+  assert.deepEqual([...REQUIRED_INTAKE], ["subject", "duration", "format", "look", "product", "music", "subtitles", "language"]);
   for (const i of INTAKE) { assert.ok(i.question.it.includes("?"), `${i.key}: the Italian question is a question`); assert.ok(i.question.en.includes("?"), `${i.key}: the English question is a question`); }
 });
 
@@ -321,4 +321,64 @@ test("the live regression: an Italian chat asking for an English film gets an En
   assert.deepEqual(b.questions, []);
   assert.match(adaptivePromptText(b), /- Narration: English/);
   assert.ok(b.assumptions.some((a) => /narration in English: the user's answer/.test(a)));
+});
+
+/* ------------------------------------------------------------------ film or animatic, with the prices (25 September) */
+
+/** The account as src/mcp.ts passes it: a paying one with 70 credits, a 15-second film at 10 credits. */
+const ACCT = (over = {}) => ({ paid: true, credits: 70, filmCredits: 10, animaticCredits: 5, animaticMaxS: 60, tariff: "1 credit buys 2 seconds of film, 10 credits minimum", ...over });
+const ANSWERS = { duration_s: 15, format: "16:9", look: "animation", music: "no", subtitles: "no", language: "en" };
+
+test("with no account the product is not asked: a pure caller takes the product it passes", () => {
+  const b = adaptPrompt("A film about pirates", ANSWERS);
+  assert.equal(b.product, null); assert.deepEqual(b.questions, []); assert.ok(!b.intake.missing.includes("product"));
+  assert.match(intakeText(b), /- Product: not asked here/);
+  assert.equal(adaptPrompt("A film about pirates", { ...ANSWERS, product: "animatic" }).product, "animatic");
+});
+
+test("a paying account is asked film or animatic, with both prices, in the chat's language and in the same message", () => {
+  const en = adaptPrompt("A film about pirates", { ...ANSWERS, account: ACCT() });
+  assert.deepEqual(en.intake.missing, ["product"]); assert.equal(en.questions.length, 1);
+  assert.match(en.questions[0], /^Film or animatic\?/); assert.match(en.questions[0], /10 credits for 15 seconds/); assert.match(en.questions[0], /5 credits flat, up to 60 seconds/);
+  assert.match(en.questions[0], /You have 70 credits\.$/);
+  const it = adaptPrompt("Un video sui pirati", { ...ANSWERS, account: ACCT() });
+  assert.match(it.questions[0], /^Film o animatic\?/); assert.match(it.questions[0], /10 crediti per 15 secondi/); assert.match(it.questions[0], /5 crediti fissi/);
+  // The length not known yet: the tariff, in the same question as the length's.
+  const open = adaptPrompt("A film about pirates", { ...ANSWERS, duration_s: undefined, account: ACCT({ filmCredits: null }) });
+  assert.deepEqual(open.intake.missing, ["duration", "product"]);
+  assert.match(open.questions[1], /priced by its length \(1 credit buys 2 seconds of film, 10 credits minimum\)/);
+  // Not enough credits for the film: said in the question.
+  assert.match(adaptPrompt("A film about pirates", { ...ANSWERS, account: ACCT({ credits: 7 }) }).questions[0], /You have 7 credits, not enough for the film\./);
+  // Answered: the product is the user's.
+  const film = adaptPrompt("A film about pirates", { ...ANSWERS, product: "film", account: ACCT() });
+  assert.equal(film.product, "film"); assert.deepEqual(film.questions, []); assert.equal(film.intake.answered.product.from, "call");
+  for (const q of [en.questions[0], it.questions[0], open.questions[1]]) assert.ok(q.includes("?"), q);
+});
+
+test("an account that never paid is offered the animatic and the way to the film: two exits, no loop", () => {
+  const unpaid = ACCT({ paid: false });
+  const none = adaptPrompt("A film about pirates", { ...ANSWERS, account: unpaid });
+  assert.deepEqual(none.intake.missing, ["product"]);
+  assert.match(none.questions[0], /credit pack/); assert.match(none.questions[0], /animatic/); assert.match(none.questions[0], /\?$/);
+  const film = adaptPrompt("A film about pirates", { ...ANSWERS, product: "film", account: unpaid });
+  assert.equal(film.product, null); assert.deepEqual(film.intake.missing, ["product"], "a film is not for this account yet: asked again, with the way out");
+  const anim = adaptPrompt("A film about pirates", { ...ANSWERS, duration_s: 45, product: "animatic", account: unpaid });
+  assert.equal(anim.product, "animatic"); assert.deepEqual(anim.questions, []);
+  const long = adaptPrompt("A film about pirates", { ...ANSWERS, duration_s: 90, product: "animatic", account: unpaid });
+  assert.deepEqual(long.intake.missing, ["duration"]); assert.equal(long.duration_s, null);
+  assert.match(long.questions[0], /An animatic is at most 60 seconds long \(you asked for 90\)/);
+  // No product yet and a length past the animatic's: the offer says so in the same question.
+  assert.match(adaptPrompt("A film about pirates", { ...ANSWERS, duration_s: 90, account: unpaid }).questions[0], /at most 60 seconds instead of 90/);
+});
+
+test("the request names the product only with the word itself; the animatic's brief never promises clips", () => {
+  const said = adaptPrompt("An animatic about pirates", { ...ANSWERS, account: ACCT() });
+  assert.equal(said.product, "animatic"); assert.equal(said.intake.answered.product.from, "request");
+  assert.equal(said.subject, "about pirates");
+  for (const p of ["A preview of a film about pirates", "Un'anteprima sui pirati", "Una bozza di video sui pirati"])
+    assert.ok(adaptPrompt(p, { ...ANSWERS, account: ACCT() }).intake.missing.includes("product"), p);
+  const text = adaptivePromptText(adaptPrompt("A film about pirates", { ...ANSWERS, product: "animatic", account: ACCT() }));
+  assert.match(text, /- Product: animatic/); assert.match(text, /- Plan: the animatic: drawn frames with the camera moving over each one, no generated clip/);
+  assert.doesNotMatch(text, /shot-by-shot real video clips/);
+  assert.match(adaptivePromptText(adaptPrompt("A film about pirates", { ...ANSWERS, product: "film", account: ACCT() })), /- Plan: shot-by-shot real video clips/);
 });
