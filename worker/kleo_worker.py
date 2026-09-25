@@ -1030,9 +1030,18 @@ def shot_plan(build):
 # pause when it is short (prepare.py, the scene's `fit`). Every clip is then ordered at exactly its shot's length
 # and laid in full: the seconds billed are the seconds on screen. The one variable trim build_footage still makes,
 # the frozen tail a model sometimes leaves, is filled by slowing the rest of that clip (plan_fill), not by buying
-# more; and the last shot before a dissolve is laid 0.8 s longer by slowing it too (x1.2 on a 4 s clip).
-# The animatic (never filmed) and the local road (clips made on the box, not bought) never come here.
+# more. The animatic (never filmed) and the local road (clips made on the box, not bought) never come here.
+#
+# THREE LIMITS (review of 25 September). (1) Dead air is not a saving: a scene is never made more than FIT_MAX_PAD
+# seconds longer than its voice made it (a 2.3 s line on a 4 s clip would be 1.7 s of silence, the pauses the owner
+# rejected on 22 September); such a scene keeps the old cut, logged as FIT_PAD, and the clip floor in the planner
+# (src/keou-contract.ts shotBudget) is what keeps lines that short rare. (2) The fit's tempo rides on Kokoro's own
+# speed (project.speed, up to 1.3): the two together never pass VOICE_SPEED_MAX. (3) A scene that dissolves into the
+# next one keeps its last clip on screen for the dissolve too (build_footage lays it dissolve_s past its slot): that
+# clip is fitted to slot + dissolve, so it is laid at its own speed and no part of it is thrown away or slowed.
 FIT_MAX_TEMPO = float(os.environ.get("KLEO_FIT_MAX_TEMPO", "1.12"))   # the fastest a line may be said to fit its clips
+FIT_MAX_PAD = float(os.environ.get("KLEO_FIT_MAX_PAD", "1.0"))       # the most a fit may lengthen a scene, seconds
+VOICE_SPEED_MAX = 1.3   # Kokoro speed x fit tempo, at the most: the contract's own ceiling on speed (contract.py)
 CLIP_LENGTHS = None     # the whole clip lengths the API model films (job spec "footage"); None: unknown, no fit
 
 
@@ -1079,18 +1088,30 @@ def split_whole(total, lengths, targets):
     return best[total][1] if total in best else None
 
 
-def fit_scene(lead, voice, length, cuts, floor, lengths, max_tempo=None):
+def fit_scene(lead, voice, length, cuts, floor, lengths, max_tempo=None, overlap=0.0, max_pad=None, why=None):
     """One scene cut to whole clips. `lead` is the silence before its line, `voice` the line, `length` the scene as
     the voice pass made it, `cuts` where each shot after the first begins (seconds into the scene), `floor` the
-    shortest pause allowed after the line. Returns {"length": whole seconds, "tempo": >= 1, "shots": [whole seconds]}
-    or None when no clip lengths can hold the line (too long for the longest clips even said FIT_MAX_TEMPO faster)."""
+    shortest pause allowed after the line, `overlap` the dissolve the scene's last clip runs under the next scene (0
+    for a cut). Returns {"length": seconds, "tempo": >= 1, "shots": [whole seconds]} (and "overlap" when there is
+    one: the scene is then `overlap` shorter than its clips, which stay on screen for the dissolve), or None when no
+    clip lengths hold the line said at most `max_tempo` faster, or only with more than `max_pad` seconds of pause
+    added to the scene. `why`, a list, is given the reason of a None."""
     max_tempo = FIT_MAX_TEMPO if max_tempo is None else max_tempo
+    max_pad = FIT_MAX_PAD if max_pad is None else max_pad
     lengths = sorted({int(n) for n in (lengths or []) if int(n) > 0})
+    overlap = max(0.0, float(overlap or 0))
     if not lengths or voice <= 0:
         return None
     k = len(cuts) + 1
-    for total in range(max(k * lengths[0], int(math.floor(length + 0.5))), k * lengths[-1] + 1):
-        room = total - lead - floor
+    for total in range(max(k * lengths[0], int(math.floor(length + overlap + 0.5))), k * lengths[-1] + 1):
+        scene = total - overlap
+        if scene - length > max_pad + 1e-9:
+            # Every longer total pads more: the shortest whole clips this scene can be cut to are dead air.
+            if why is not None:
+                why.append(f"FIT_PAD {scene - length:.2f} s of pause would be added to a {length:.2f} s scene "
+                           f"({k} clip(s) of {lengths[0]} s at the least; the limit is {max_pad:g} s)")
+            return None
+        room = scene - lead - floor
         if room <= 0:
             continue
         # Rounded UP, so the line said this fast always ends inside its room.
@@ -1099,18 +1120,35 @@ def fit_scene(lead, voice, length, cuts, floor, lengths, max_tempo=None):
             continue
         # The words move with the tempo: a cut planned c seconds into the scene now lands at lead + (c - lead) / tempo.
         parts = split_whole(total, lengths, [lead + max(0.0, c - lead) / tempo for c in cuts])
-        if parts:
-            return {"length": total, "tempo": tempo, "shots": parts}
+        if parts and parts[-1] - overlap >= 1:
+            fit = {"length": round(scene, 3) if overlap else total, "tempo": tempo, "shots": parts}
+            if overlap:
+                fit["overlap"] = overlap
+            return fit
+    if why is not None:
+        why.append(f"the line ({voice:.2f} s) does not fit whole clips said at most x{max_tempo:.3f} faster")
     return None
 
 
-def plan_fit(project, timeline, plan, lengths, unit_ids=None, max_tempo=None):
+def plan_fit(project, timeline, plan, lengths, unit_ids=None, max_tempo=None, notes=None):
     """{scene id: fit_scene(...)} for every scene whose shots are all bought clips and can be cut to whole ones, read
-    off the first voice pass (build/timeline.json) and the engine's first shot plan (build/shots.json). Pure."""
+    off the first voice pass (build/timeline.json) and the engine's first shot plan (build/shots.json). Pure; `notes`,
+    a list, is given "<scene id>: <reason>" for every scene left to the old cut."""
     timed = {s.get("id"): s for s in (timeline or {}).get("scenes") or [] if isinstance(s, dict)}
-    cut = {s.get("id"): s for s in (plan or {}).get("scenes") or [] if isinstance(s, dict)}
+    planned = [s for s in (plan or {}).get("scenes") or [] if isinstance(s, dict)]
+    cut = {s.get("id"): s for s in planned}
+    # A scene the next one dissolves into keeps its last clip on screen dissolve_s longer (build_footage).
+    dissolve_s = float((plan or {}).get("dissolve_s") or 0.8)
+    overlap_of = {s.get("id"): (dissolve_s if nxt.get("transition") == "dissolve" else 0.0) for s, nxt in zip(planned, planned[1:])}
     scenes = [s for s in (project or {}).get("scenes") or [] if isinstance(s, dict)]
     fmt, fits = (project or {}).get("format") or "9:16", {}
+    # Kokoro has already said the line at the project's speed: the fit's tempo is on top of it, and the two together
+    # stay under the contract's ceiling on speed.
+    try:
+        speed = float((project or {}).get("speed") or 1)
+    except (TypeError, ValueError):
+        speed = 1.0
+    cap = min(FIT_MAX_TEMPO if max_tempo is None else max_tempo, max(1.0, VOICE_SPEED_MAX / max(speed, 0.1)))
     for i, sc in enumerate(scenes):
         sid, t, p = sc.get("id"), timed.get(sc.get("id")), cut.get(sc.get("id"))
         shots = shots_of(sc)
@@ -1124,9 +1162,13 @@ def plan_fit(project, timeline, plan, lengths, unit_ids=None, max_tempo=None):
             cuts = [float(sh["start"]) - start for sh in p["shots"][1:]]
         except (KeyError, TypeError, ValueError):
             continue
-        fit = fit_scene(lead, voice, end - start, cuts, hold_floor(fmt, i == len(scenes) - 1), lengths, max_tempo)
+        why = []
+        fit = fit_scene(lead, voice, end - start, cuts, hold_floor(fmt, i == len(scenes) - 1), lengths, cap,
+                        overlap=overlap_of.get(sid, 0.0), why=why)
         if fit:
             fits[sid] = fit
+        elif notes is not None and why:
+            notes.append(f"{sid}: {why[0]}")
     return fits
 
 
@@ -1176,7 +1218,10 @@ def fit_to_clips(project, pdir, engine, log_path, units, plan, seconds):
     except Exception as e:
         log("fit: could not read the timeline:", e)
         return plan, seconds
-    fits = plan_fit(project, timeline, plan, lengths, unit_ids={u["id"] for u in units})
+    notes = []
+    fits = plan_fit(project, timeline, plan, lengths, unit_ids={u["id"] for u in units}, notes=notes)
+    for note in notes:
+        log(f"fit: {note}; that scene keeps the old cut")
     if not fits:
         log("fit: no scene can be cut to whole clips; clips are cut to the voice")
         return plan, seconds
@@ -1191,6 +1236,7 @@ def fit_to_clips(project, pdir, engine, log_path, units, plan, seconds):
     write_project(project, pdir)
     for sid, f in fits.items():
         log(f"fit: {sid} {f['length']} s = clips {'+'.join(map(str, f['shots']))}"
+            + (f" (the last {f['overlap']:g} s under the dissolve)" if f.get("overlap") else "")
             + (f", line said x{f['tempo']:.3f}" if f["tempo"] > 1 else ""))
     progress("voice", 10, message="fitting the voice to whole clips")
     engine_step([keou_python(engine), os.path.join(engine, "prepare.py"), os.path.join(pdir, "project.json")],
@@ -1201,14 +1247,18 @@ def fit_to_clips(project, pdir, engine, log_path, units, plan, seconds):
     if not new_plan or not new_seconds:
         return new_plan, new_seconds
     whole = dict(new_seconds)
+    tol = max(0.02, 1.0 / float(new_plan.get("fps") or 60))    # a scene ends on a frame
     for sid, f in fits.items():
         for j, n in enumerate(f["shots"]):
             key = f"{sid}-s{j + 1}"
             got = new_seconds.get(key)
-            if got is not None and abs(got - n) < 0.02:
+            # The last clip of a scene that dissolves out has a slot `overlap` shorter than the clip: the rest of it
+            # is on screen under the dissolve (build_footage), so the clip is still ordered, and laid, whole.
+            slot = n - (f.get("overlap") or 0.0) if j == len(f["shots"]) - 1 else n
+            if got is not None and abs(got - slot) < tol:
                 whole[key] = n
             else:
-                log(f"fit: {key} came out {got} s instead of {n} s; that clip is cut to its shot")
+                log(f"fit: {key} came out {got} s instead of {slot:g} s; that clip is cut to its shot")
     ids = [u["id"] for u in units]
     was = billed_seconds([seconds[i] for i in ids if i in seconds], lengths)
     now = billed_seconds([whole[i] for i in ids if i in whole], lengths)

@@ -220,10 +220,25 @@ class FreezeTest(unittest.TestCase):
         self.assertLess(stretch, kv.MAX_STRETCH)
         self.assertAlmostEqual(held, 0.0, places=6)
 
-    def test_a_shot_far_longer_than_a_take_is_slowed_to_the_cap_and_the_rest_is_held_and_said(self):
-        stretch, usable, held = kv.plan_fill(10.0, 5.0, 0.0)
+    def test_a_shot_longer_than_its_take_is_slowed_to_the_cap_and_a_short_rest_is_held(self):
+        stretch, usable, held = kv.plan_fill(8.4, 5.0, 0.0)
         self.assertEqual(stretch, kv.MAX_STRETCH)
-        self.assertAlmostEqual(held, 10.0 - 5.0 * kv.MAX_STRETCH, places=6)
+        self.assertAlmostEqual(held, 8.4 - 5.0 * kv.MAX_STRETCH, places=6)
+        self.assertLessEqual(held, kv.FROZEN_S)
+
+    def test_a_held_frame_the_qa_would_reject_is_slowed_away_instead(self):
+        # A whole 4 s clip bought for a 4 s shot (no spare second) whose last 2.2 s do not move: x1.6 would leave
+        # 1.12 s held and fail the film at its QA; slowed x1.89 instead, the held frame is FROZEN_S.
+        stretch, usable, held = kv.plan_fill(4.0, 4.0, 2.2)
+        self.assertAlmostEqual(usable, 1.8, places=6)
+        self.assertAlmostEqual(stretch, (4.0 - kv.FROZEN_S) / 1.8, places=6)
+        self.assertGreater(stretch, kv.MAX_STRETCH)
+        self.assertAlmostEqual(held, kv.FROZEN_S, places=6)
+
+    def test_the_rescue_has_its_own_ceiling_and_the_rest_is_held_and_said(self):
+        stretch, usable, held = kv.plan_fill(20.0, 5.0, 0.0)
+        self.assertEqual(stretch, kv.RESCUE_STRETCH)
+        self.assertAlmostEqual(held, 20.0 - 5.0 * kv.RESCUE_STRETCH, places=6)
 
     def test_a_clip_long_enough_is_neither_slowed_nor_cut(self):
         self.assertEqual(kv.plan_fill(3.0, 3.0, 0.0), (1.0, 3.0, 0.0))

@@ -305,9 +305,20 @@ class ClipFitTest(unittest.TestCase):
 
     # ---- one scene ------------------------------------------------------------------------------------------
 
-    def test_a_short_line_fills_its_clip_with_a_pause_instead_of_throwing_it_away(self):
-        """The pirates film (gt_ujavdzva): a 2.27 s line on Seedance is a 4 s clip either way; now all 4 s are seen."""
-        self.assertEqual(kw.fit_scene(0.06, 2.27, 2.5333, [], 0.15, self.SEEDANCE), {"length": 4, "tempo": 1.0, "shots": [4]})
+    def test_a_line_a_little_short_for_its_clip_fills_it_with_a_pause_instead_of_throwing_it_away(self):
+        """A 2.9 s line on Seedance is a 4 s clip either way; 0.8 s more pause and all 4 s are seen."""
+        self.assertEqual(kw.fit_scene(0.06, 2.9, 3.2, [], 0.15, self.SEEDANCE), {"length": 4, "tempo": 1.0, "shots": [4]})
+
+    def test_a_line_far_shorter_than_its_clip_is_never_padded_with_dead_air(self):
+        """The pirates film (gt_ujavdzva): a 2.27 s line in a 2.53 s scene would have 1.5 s of silence added to fill a
+        4 s clip, the pauses the owner rejected on 22 September. The scene keeps the old cut, and says why."""
+        why = []
+        self.assertIsNone(kw.fit_scene(0.06, 2.27, 2.5333, [], 0.15, self.SEEDANCE, why=why))
+        self.assertTrue(why and why[0].startswith("FIT_PAD 1.47 s"), why)
+        self.assertEqual(kw.fit_scene(0.06, 2.27, 2.5333, [], 0.15, self.SEEDANCE, max_pad=1.5)["length"], 4)
+        # A closing line of 1.8 s, and two shots over a 3 s line (two 4 s clips at the least): dead air both, refused.
+        self.assertIsNone(kw.fit_scene(0.22, 1.8, 2.42, [], 0.4, self.SEEDANCE))
+        self.assertIsNone(kw.fit_scene(0.22, 3.0, 3.5, [1.8], 0.15, self.SEEDANCE))
 
     def test_a_line_a_little_long_for_its_clip_is_said_faster(self):
         fit = kw.fit_scene(0.22, 5.6, 6.2333, [], 0.4, self.SEEDANCE)
@@ -321,13 +332,23 @@ class ClipFitTest(unittest.TestCase):
         self.assertEqual(kw.fit_scene(0.22, 4.07, 4.49, [], 0.15, self.MINIMAX, max_tempo=1.2)["length"], 4)
 
     def test_a_list_model_is_cut_to_a_length_it_actually_films(self):
-        self.assertEqual(kw.fit_scene(0.22, 4.4, 4.82, [], 0.15, [4, 6, 8]), {"length": 6, "tempo": 1.0, "shots": [6]})
+        self.assertEqual(kw.fit_scene(0.22, 5.0, 5.42, [], 0.15, [4, 6, 8]), {"length": 6, "tempo": 1.0, "shots": [6]})
+        self.assertIsNone(kw.fit_scene(0.22, 4.4, 4.82, [], 0.15, [4, 6, 8]),
+                          "4 s is too short for the line even said x1.12 faster, 6 s is 1.2 s of added silence")
 
     def test_the_cut_between_two_clips_lands_on_the_whole_second_nearest_its_word(self):
         fit = kw.fit_scene(0.22, 8.6, 9.02, [5.3], 0.15, self.SEEDANCE)
         self.assertEqual(fit, {"length": 9, "tempo": 1.0, "shots": [5, 4]}, "the word at 5.3 s: the cut at 5, not at 4")
-        self.assertEqual(kw.fit_scene(0.22, 3.0, 3.5, [1.8], 0.15, self.SEEDANCE)["shots"], [4, 4],
-                         "two shots are two clips of at least 4 s, whatever the line")
+        self.assertEqual(kw.fit_scene(0.22, 7.2, 7.62, [3.1], 0.15, self.SEEDANCE)["shots"], [4, 4],
+                         "two shots are two clips of at least 4 s, the cut moved from 3.1 to 4")
+
+    def test_a_scene_that_dissolves_out_is_fitted_with_its_last_clip_under_the_dissolve(self):
+        """The last clip of a scene the next one dissolves into stays on screen 0.8 s past the scene's end
+        (build_footage): the scene is 0.8 s shorter than its clips, and that clip is laid whole at its own speed."""
+        fit = kw.fit_scene(0.06, 3.9, 4.1667, [], 0.15, self.SEEDANCE, overlap=0.8)
+        self.assertEqual(fit, {"length": 4.2, "tempo": 1.0, "shots": [5], "overlap": 0.8})
+        self.assertAlmostEqual(fit["shots"][-1] - fit["overlap"], 4.2, places=6, msg="the slot the engine cuts")
+        self.assertEqual(kw.fit_scene(0.06, 3.9, 4.1667, [], 0.15, self.SEEDANCE)["length"], 4, "a hard cut: no overlap")
 
     def test_a_line_too_long_for_its_clips_is_left_to_the_old_cut(self):
         self.assertIsNone(kw.fit_scene(0.22, 20.0, 20.5, [], 0.15, self.MINIMAX))
@@ -354,14 +375,20 @@ class ClipFitTest(unittest.TestCase):
         return self.tmp
 
     def test_pirates_five_short_lines_on_seedance(self):
-        """Voices 2.27/2.01/3.02/2.92/2.98 s, one shot each: 20 s of clips bought for a 15.4 s film before, and the
-        same 20 s bought for a 20 s film now. Every second paid for is on screen."""
-        timeline, project, fits, seconds = self.fit_film([2.27, 2.01, 3.02, 2.92, 2.98], self.SEEDANCE)
+        """Voices 2.27/2.01/3.02/2.92/2.98 s, one shot each: 20 s of clips bought for a 15.4 s film before. The three
+        lines of about 3 s fill their 4 s clips with under a second more pause; the two of about 2 s would need 1.5 s
+        of silence each and keep the old cut (FIT_PAD): 20 s bought for a 17 s film, and no dead air."""
+        timeline = timeline_like_prepare([2.27, 2.01, 3.02, 2.92, 2.98])
+        notes = []
+        fits = kw.plan_fit(project_of(timeline), timeline, plan_of(timeline), self.SEEDANCE, notes=notes)
+        _, seconds = kw.shot_plan(self.write_plan(plan_of(timeline)))
         self.assertAlmostEqual(timeline["duration"], 15.37, delta=0.02)
         self.assertEqual(kw.billed_seconds(seconds.values(), self.SEEDANCE), 20)
-        self.assertEqual([f["length"] for f in fits.values()], [4, 4, 4, 4, 4])
+        self.assertEqual(sorted(fits), ["03-s", "04-s", "05-s"])
+        self.assertEqual([f["length"] for f in fits.values()], [4, 4, 4])
         self.assertTrue(all(f["tempo"] == 1.0 for f in fits.values()), "every line fits: a longer pause, never a faster voice")
-        self.assertEqual(sum(f["length"] for f in fits.values()), 20)
+        self.assertEqual([n.split(":")[0] for n in notes], ["01-s", "02-s"])
+        self.assertTrue(all("FIT_PAD" in n for n in notes), notes)
 
     def test_a_fifteen_second_film_planned_with_the_clip_floor(self):
         """Voices 4.4/5.1/5.6 s: 18 s of clips bought for a 16.4 s film before, 17 s for a 17 s film now."""
@@ -371,6 +398,30 @@ class ClipFitTest(unittest.TestCase):
         self.assertEqual([f["length"] for f in fits.values()], [5, 6, 6])
         self.assertEqual([f["tempo"] for f in fits.values()][:2], [1.0, 1.0])
         self.assertAlmostEqual(fits["03-s"]["tempo"], 1.0409, places=4)
+
+    def test_the_fit_tempo_rides_on_kokoros_own_speed_and_never_passes_its_ceiling(self):
+        """The closing line of 5.6 s needs x1.041 to fit 6 s. At the voice's usual speed 1.1 that is 1.145 in all;
+        at 1.25 it would be 1.30, over the contract's 1.3 ceiling, so the scene takes one more second instead."""
+        timeline = timeline_like_prepare([4.4, 5.6])
+        plan = plan_of(timeline)
+        project = project_of(timeline)
+        project["speed"] = 1.1
+        fit = kw.plan_fit(project, timeline, plan, self.SEEDANCE)["02-s"]
+        self.assertEqual(fit["length"], 6)
+        self.assertAlmostEqual(fit["tempo"], 1.0409, places=4)
+        project["speed"] = 1.25
+        self.assertEqual(kw.plan_fit(project, timeline, plan, self.SEEDANCE)["02-s"], {"length": 7, "tempo": 1.0, "shots": [7]})
+        project["speed"] = 1.3
+        self.assertTrue(all(f["tempo"] == 1.0 for f in kw.plan_fit(project, timeline, plan, self.SEEDANCE).values()),
+                        "at the contract's top speed a line is never said faster still")
+
+    def test_the_plan_reads_the_dissolve_from_the_engines_shot_plan(self):
+        timeline = timeline_like_prepare([3.9, 5.1])
+        plan = plan_of(timeline)
+        plan["scenes"][1]["transition"] = "dissolve"
+        fits = kw.plan_fit(project_of(timeline), timeline, plan, self.SEEDANCE)
+        self.assertEqual(fits["01-s"], {"length": 4.2, "tempo": 1.0, "shots": [5], "overlap": 0.8})
+        self.assertNotIn("overlap", fits["02-s"], "the last scene dissolves into nothing")
 
     def test_apply_fit_writes_what_prepare_and_picture_read_and_the_contract_accepts(self):
         timeline = timeline_like_prepare([4.4, 8.6])
@@ -392,9 +443,9 @@ class ClipFitTest(unittest.TestCase):
 
     # ---- the seam: the second pass, and what is ordered ----------------------------------------------------
 
-    def fit_seam(self, second_plan_seconds):
+    def fit_seam(self, second_plan_seconds, dissolve_into=()):
         """fit_to_clips over a first pass of voices 4.4/5.1/5.6 s, with the engine stubbed: the second shot plan
-        comes out with `second_plan_seconds` per shot."""
+        comes out with `second_plan_seconds` per shot. `dissolve_into`: the scene ids the plan dissolves into."""
         pdir = os.path.join(self.tmp, "p")
         os.makedirs(os.path.join(pdir, "build"))
         timeline = timeline_like_prepare([4.4, 5.1, 5.6])
@@ -402,6 +453,9 @@ class ClipFitTest(unittest.TestCase):
             json.dump(timeline, f)
         project = project_of(timeline)
         plan = plan_of(timeline)
+        for s in plan["scenes"]:
+            if s["id"] in dissolve_into:
+                s["transition"] = "dissolve"
         _, seconds = kw.shot_plan(self.write_plan(plan))
         steps = []
         kw.CLIP_LENGTHS = self.SEEDANCE
@@ -420,6 +474,13 @@ class ClipFitTest(unittest.TestCase):
         self.assertEqual(seconds, {"01-s-s1": 5, "02-s-s1": 6, "03-s-s1": 6})
         self.assertTrue(all(type(v) is int for v in seconds.values()), "whole seconds travel as whole numbers")
         self.assertEqual([s.get("fit", {}).get("length") for s in written["scenes"]], [5, 6, 6], "project.json carries the fit")
+
+    def test_the_clip_under_a_dissolve_is_ordered_whole_though_its_slot_is_shorter(self):
+        # 01-s dissolves into 02-s: a 5 s clip, 4.2 s of slot and 0.8 s under the dissolve (the line said x1.103).
+        _, _, seconds, written = self.fit_seam([4.2, 6.0, 6.0], dissolve_into={"02-s"})
+        self.assertEqual(seconds, {"01-s-s1": 5, "02-s-s1": 6, "03-s-s1": 6})
+        self.assertEqual(written["scenes"][0]["fit"]["length"], 4.2)
+        self.assertEqual(set(written["scenes"][0]["fit"]), {"length", "tempo"}, "the contract's two fields, nothing else")
 
     def test_a_scene_that_came_out_another_length_is_cut_as_before(self):
         _, _, seconds, _ = self.fit_seam([5.0, 6.0, 6.4])
@@ -441,14 +502,14 @@ class ClipFitTest(unittest.TestCase):
         with open(os.path.join(pdir, "build", "timeline.json"), "w") as f:
             json.dump(timeline, f)
         project = project_of(timeline)
-        project["max_duration"] = 18
+        project["max_duration"] = 16
         kw.CLIP_LENGTHS = self.SEEDANCE
         steps = []
         kw.engine_step = lambda *a, **k: steps.append(a)
         plan = plan_of(timeline)
         got = kw.fit_to_clips(project, pdir, self.tmp, "log", [{"id": f"0{i + 1}-s-s1"} for i in range(5)], plan, {"x": 1.0})
         self.assertEqual(got, (plan, {"x": 1.0}))
-        self.assertEqual(steps, [], "20 s of whole clips would pass the 18 s ceiling prepare.py enforces")
+        self.assertEqual(steps, [], "17 s of fitted film would pass the 16 s ceiling prepare.py enforces")
 
     def test_the_box_is_never_told_to_keep_a_storyboards_own_fit(self):
         project = {"style": "picture", "scenes": [{"id": "a", "fit": {"length": 60}, "shots": [{"at": "x"}, {"cut": 1, "at": "y"}]}]}

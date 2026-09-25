@@ -794,6 +794,8 @@ test("on the API road the whole guide teaches the clip floor: scenes the words c
   assert.match(api, new RegExp(`about ${words} narrated words across ${Math.floor(words / per)} scenes`));
   assert.ok(api.includes(`1-${SHOTS_PER_SCENE.cinema[1]} shots each, one per ${per} words of voice (one for a line under ${2 * per} words)`), "the refusal list says the floor's shot count");
   assert.ok(!api.includes(`${shotRangeText("cinema")} shots each`), "and not the local road's");
+  // A line shorter than one clip is bought whole and shown in part (the box never pads it with dead air: kleo_worker FIT_PAD).
+  assert.ok(api.includes(`Give every line ${per} words at the least: a shorter one still pays for a whole 4-second clip`), "the guide asks for a clip's worth of words per line");
   assert.match(api, new RegExp(`in THIS film a picture is a paid clip, so a scene has one picture per ${per} words of voice`));
   assert.doesNotMatch(api, /Notice: every scene has \d or more pictures/);
   // A longer film keeps the local range where the words can pay for it; the local road is unchanged.
