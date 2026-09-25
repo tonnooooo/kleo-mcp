@@ -420,8 +420,12 @@ test("the pre-flight prices a film before any card is rented: the storyboard's s
   assert.equal(m.plannedStillsUsd({}, 10), 0, "klein on Workers AI costs kie.ai nothing");
   assert.equal(m.plannedStillsUsd({ STILL_MODEL: "kie:nano-banana-pro" }, 10), 1.521);
   globalThis.fetch = rich.fetch; // 5 $: enough for the clips alone, not for clips and pictures
-  const both = await m.kiePreflight({ ...env, STILL_MODEL: "kie:nano-banana-pro" }, 60, 10, 24);
+  const both = await m.kiePreflight({ ...env, STILL_MODEL: "kie:nano-banana-pro", DAILY_FOOTAGE_BUDGET_USD: "50" }, 60, 10, 24);
   assert.equal(both.ok, false); assert.equal(both.reason, "balance"); assert.equal(both.stills_usd, 1.521); assert.equal(both.planned_usd, 4.875);
+  // 26 September 2026: today's ceiling asks for the film's own pictures too (4.875 + 1.521 > the default 5 $), before
+  // the balance is even read.
+  const ceiling = await m.kiePreflight({ ...env, STILL_MODEL: "kie:nano-banana-pro" }, 60, 10, 24);
+  assert.equal(ceiling.ok, false); assert.equal(ceiling.reason, "budget"); assert.equal(ceiling.stills_usd, 1.521); assert.equal(ceiling.balance_usd, null);
 });
 
 test("footageStatus: success is copied to R2 once and served to the box; fail is a failed row; transient errors keep polling", async () => {
