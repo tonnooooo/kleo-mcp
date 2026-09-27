@@ -1,6 +1,7 @@
 /**
  * The growth plan of 27 September 2026 (the owner: "attract people and make them stay"): launch codes and the free
- * 15-second film they open (src/launch.ts). No Worker runtime: the sources are bundled with esbuild and run against
+ * 15-second film they open (src/launch.ts), referrals (src/referral.ts), the optional verified email (src/email.ts),
+ * attribution and the funnel (src/growth.ts). No Worker runtime: the sources are bundled with esbuild and run against
  * the D1 look-alike on node:sqlite, with every migration applied, so the real SQL is exercised.
  * Run: node --test test/growth.test.mjs
  */
@@ -52,7 +53,7 @@ before(async () => {
         export { handleCredits } from "./src/credits.ts"; export { handleAdmin } from "./src/internal.ts";
         export { makeViewToken, makeHandle } from "./src/accounts.ts"; export * from "./src/referral.ts";
         export { handleStripeWebhook } from "./src/stripe.ts"; export { handleAuthorize, connectionHints } from "./src/auth.ts";
-        export * from "./src/email.ts"; export { notifyDone } from "./src/notify.ts";`,
+        export * from "./src/email.ts"; export { notifyDone } from "./src/notify.ts"; export * from "./src/growth.ts";`,
       resolveDir: ROOT, loader: "ts",
     },
     alias: { "@cloudflare/workers-oauth-provider": join(ROOT, "test/fixtures/oauth-provider-stub.mjs") },
@@ -448,4 +449,101 @@ test("/credits: the email box works only for the browser that owns the account; 
   const gone = await post({ action: "email_remove" }, cookie);
   assert.match(await gone.text(), /Your email was removed/);
   assert.deepEqual(await m.contactEmailOf(env, "u_a"), { email: null, verified: false });
+});
+
+/* ------------------------------------------------------------------ P7: attribution and the funnel */
+
+test("the /b fields are cleaned to what the funnel needs and nothing else", () => {
+  assert.equal(m.cleanPath("https://kleooai.com/pricing?utm_source=x#top"), "/pricing");
+  assert.equal(m.cleanPath("/it/stili.html?x=1"), "/it/stili.html");
+  assert.equal(m.cleanPath(""), "/"); assert.equal(m.cleanPath("<script>"), "/script");
+  assert.equal(m.cleanHost("https://www.google.com/search?q=kleo"), "google.com");
+  assert.equal(m.cleanHost("news.ycombinator.com"), "news.ycombinator.com");
+  assert.equal(m.cleanHost("https://kleooai.com/"), "", "a page of the site is not a referrer");
+  assert.equal(m.cleanHost("not a host"), "");
+  assert.equal(m.cleanSource("ProductHunt"), "producthunt"); assert.equal(m.cleanSource(""), "");
+  assert.equal(m.cleanLang("it-IT"), "it"); assert.equal(m.cleanLang("x"), "");
+  assert.equal(m.cleanCountry("nz"), "NZ"); assert.equal(m.cleanCountry("XX"), ""); assert.equal(m.cleanCountry("New Zealand"), "");
+});
+
+test("GET/POST /b: one page view counted per day and combination, 204 with CORS, no address, no cookie, no user id stored", async () => {
+  const env = await newEnv();
+  const get = (qs, headers = {}) => m.handleBeacon(new Request(`http://kleo.test/b?${qs}`, { headers }), env);
+  const r = await get("p=%2Fpricing&r=https%3A%2F%2Fwww.reddit.com%2Fr%2Fx&s=reddit&l=it-IT", { "cf-ipcountry": "NZ", "cf-connecting-ip": "203.0.113.9", cookie: "kleo_id=u_x.y" });
+  assert.equal(r.status, 204); assert.equal(r.headers.get("access-control-allow-origin"), "*"); assert.equal(r.headers.get("set-cookie"), null);
+  await get("p=%2Fpricing&r=https%3A%2F%2Fwww.reddit.com%2Fr%2Fy&s=reddit&l=it", { "cf-ipcountry": "NZ" });
+  const beacon = await m.handleBeacon(new Request("http://kleo.test/b", { method: "POST", headers: { "content-type": "text/plain" }, body: "p=/&l=en" }), env);
+  assert.equal(beacon.status, 204);
+  await m.handleBeacon(new Request("http://kleo.test/b", { method: "POST", body: JSON.stringify({ p: "/", l: "en" }) }), env);
+  assert.equal((await m.handleBeacon(new Request("http://kleo.test/b", { method: "OPTIONS" }), env)).status, 204);
+  const rows = env.DB.db.prepare("SELECT path, ref, source, lang, country, n FROM page_hits ORDER BY path DESC").all().map((x) => ({ ...x }));
+  assert.deepEqual(rows, [
+    { path: "/pricing", ref: "reddit.com", source: "reddit", lang: "it", country: "NZ", n: 2 },
+    { path: "/", ref: "", source: "", lang: "en", country: "", n: 2 },
+  ]);
+  const cols = env.DB.db.prepare("PRAGMA table_info(page_hits)").all().map((c) => c.name);
+  assert.deepEqual(cols, ["day", "path", "ref", "source", "lang", "country", "n"], "nothing that can name a visitor");
+});
+
+test("/b: past the day's row cap every new combination is counted under (other)", async () => {
+  const env = await newEnv();
+  const day = new Date().toISOString().slice(0, 10);
+  const ins = env.DB.db.prepare("INSERT INTO page_hits (day, path, n) VALUES (?, ?, 1)");
+  for (let i = 0; i < m.HITS_ROWS_PER_DAY; i++) ins.run(day, `/p${i}`);
+  await m.handleBeacon(new Request("http://kleo.test/b?p=/brand-new"), env);
+  await m.handleBeacon(new Request("http://kleo.test/b?p=/p1"), env);
+  assert.equal(env.DB.db.prepare("SELECT n FROM page_hits WHERE path = '(other)'").get().n, 1);
+  assert.equal(env.DB.db.prepare("SELECT n FROM page_hits WHERE path = '/p1'").get().n, 2, "an existing row still counts");
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM page_hits WHERE path = '/brand-new'").get().n, 0);
+});
+
+test("sign-in: ?src= on the connector address is the new account's channel, written once; an existing account keeps its own", async () => {
+  const env = await signInEnv();
+  await signIn(env, { query: oauthQuery({ resource: "http://kleo.test/mcp?src=ProductHunt" }) });
+  const u = newestUser(env);
+  assert.equal(u.src, "producthunt");
+  assert.equal(audits(env, "user.created").at(-1).detail.src, "producthunt");
+  assert.equal(audits(env, "oauth.granted").at(-1).detail.src, "producthunt");
+  assert.equal(await m.recordSignupSource(env, u.id, "hn", "mcp"), false, "written once");
+  await signIn(env, { query: oauthQuery({ src: "tiktok" }) });
+  assert.equal(newestUser(env).src, "tiktok", "straight on /authorize too");
+  await newUser(env, "u_old");
+  await signIn(env, { cookie: `kleo_id=${await m.makeHandle(env, "u_old")}`, query: oauthQuery({ src: "x" }) });
+  assert.equal(env.DB.db.prepare("SELECT src FROM users WHERE id = 'u_old'").get().src, null);
+});
+
+test("/internal/admin/growth: the funnel per day and per source, behind the secret", async () => {
+  const env = await newEnv();
+  const today = new Date().toISOString().slice(0, 10);
+  const q = (sql, ...a) => env.DB.db.prepare(sql).run(...a);
+  // Visits: two from Product Hunt, one from a Reddit link, one direct.
+  q("INSERT INTO page_hits (day, path, source, n) VALUES (?, '/', 'producthunt', 2)", today);
+  q("INSERT INTO page_hits (day, path, ref, n) VALUES (?, '/', 'reddit.com', 1)", today);
+  q("INSERT INTO page_hits (day, path, n) VALUES (?, '/pricing', 1)", today);
+  // Accounts: one through ?src=producthunt, one through the HN launch code, one referred, one direct.
+  await newUser(env, "u_ph"); q("UPDATE users SET src = 'producthunt' WHERE id = 'u_ph'");
+  await newUser(env, "u_hn"); await m.redeemLaunchCode(env, "u_hn", "HN");
+  await newUser(env, "u_friend"); await newUser(env, "u_direct");
+  await m.linkReferral(env, "u_friend", await m.referralCodeFor(env, "u_direct"), "test");
+  // Videos: the Product Hunt account an animatic then a film, the HN one its free film.
+  const job = (id, user, product) => q("INSERT INTO jobs (id, user_id, template, prompt, params, state, credits, worker_secret) VALUES (?, ?, 'film', 'p', ?, 'queued', 5, 'w')", id, user, JSON.stringify({ duration_s: 15, ...(product ? { product } : {}) }));
+  job("gt_1", "u_ph", "animatic"); job("gt_2", "u_ph", null); job("gt_3", "u_hn", null);
+  // Payments: the referred account buys, and the referral is rewarded.
+  q("INSERT INTO payments (session_id, user_id, credits, amount_cent, currency, status) VALUES ('cs_f', 'u_friend', 10, 500, 'eur', 'paid')");
+  q("INSERT INTO payments (session_id, user_id, credits, amount_cent, currency, status, raw_ref) VALUES ('manual', 'u_direct', 0, 0, 'eur', 'paid', 'tester')");
+  await m.rewardReferral(env, "u_friend", "cs_f");
+  const call = (secret = "s3cret", qs = "") => m.handleAdmin(new Request(`http://kleo.test/internal/admin/growth${qs}`, { headers: { authorization: `Bearer ${secret}` } }), env);
+  assert.equal((await call("wrong")).status, 401);
+  const g = await (await call("s3cret", "?days=7")).json();
+  assert.equal(g.days, 7);
+  assert.deepEqual(g.totals, { visits: 4, signups: 4, first_videos: 2, first_films: 2, redemptions: 1, payments: 1, payment_cents: 500, referrals: 1 });
+  const src = Object.fromEntries(g.by_source.map(({ source, ...row }) => [source, row]));
+  assert.deepEqual(src.producthunt, { visits: 2, signups: 1, first_videos: 1, first_films: 1, redemptions: 0, payments: 0, payment_cents: 0, referrals: 0 });
+  assert.deepEqual(src.hn, { visits: 0, signups: 1, first_videos: 1, first_films: 1, redemptions: 1, payments: 0, payment_cents: 0, referrals: 0 });
+  assert.deepEqual(src.referral, { visits: 0, signups: 1, first_videos: 0, first_films: 0, redemptions: 0, payments: 1, payment_cents: 500, referrals: 1 });
+  assert.equal(src.direct.signups, 1); assert.equal(src.direct.visits, 1); assert.equal(src["reddit.com"].visits, 1);
+  assert.deepEqual(g.by_day.map((d) => d.day), [today]);
+  assert.ok(g.by_day_source.every((r) => r.day === today && typeof r.source === "string"));
+  assert.deepEqual(g.top_pages[0], { path: "/", visits: 3 });
+  assert.deepEqual(g.top_referrers, [{ referrer: "reddit.com", visits: 1 }]);
 });

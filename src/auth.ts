@@ -5,6 +5,8 @@ import { accountCookie, cookieHandle, ipFingerprint, makeHandle, signupRateKey, 
 import { html, escapeHtml, rid, int } from "./util";
 import { getLaunchCode, redeemLaunchCode, normalizeCode, TRIAL_FILM_MAX_S } from "./launch.ts";
 import { linkReferral, normalizeReferral, cookieReferral } from "./referral.ts";
+import { recordSignupSource } from "./growth.ts";
+import { normalizeChannel } from "./launch.ts";
 
 /**
  * Where a sign-up came from, read off the connection request (27 September 2026): the connector address the user
@@ -65,7 +67,7 @@ export async function handleAuthorize(request: Request, env: Env): Promise<Respo
   const hints = connectionHints(oauthQuery);
   const typedRef = normalizeReferral(bonusCode);
   const ref = typedRef ?? cookieReferral(request.headers.get("cookie")) ?? hints.ref;
-  const resolved = await resolveAccount(env, { cookie: cookieHandle(request.headers.get("cookie")), key: pastedKey, bonus: typedRef ? "" : bonusCode, ip, ref });
+  const resolved = await resolveAccount(env, { cookie: cookieHandle(request.headers.get("cookie")), key: pastedKey, bonus: typedRef ? "" : bonusCode, ip, ref, src: normalizeChannel(hints.src) });
   if ("error" in resolved) return back(resolved.error, resolved.status);
   const user = resolved.user;
   await touchUser(env, user.id);
@@ -78,7 +80,7 @@ export async function handleAuthorize(request: Request, env: Env): Promise<Respo
     scope: parsed.scope,
     props,
   });
-  await audit(env, user.id, null, "oauth.granted", { client: clientName });
+  await audit(env, user.id, null, "oauth.granted", { client: clientName, ...(hints.src ? { src: normalizeChannel(hints.src) } : {}) });
   // Response.redirect() hands back IMMUTABLE headers, so the cookie could never be attached to it: build the 302 by hand.
   return new Response(null, { status: 302, headers: { location: redirectTo, "set-cookie": accountCookie(await makeHandle(env, user.id)) } });
 }
@@ -98,7 +100,7 @@ type Resolved = { user: User } | { error: string; status: number };
  * where this browser already has a cookie of its own. Whichever branch wins, a gift code typed alongside is applied.
  * The daily caps are part of the INSERT itself, so a day that is over creates neither a user nor credits.
  */
-async function resolveAccount(env: Env, o: { cookie: string | null; key: string; bonus: string; ip: string | null; ref: string | null }): Promise<Resolved> {
+async function resolveAccount(env: Env, o: { cookie: string | null; key: string; bonus: string; ip: string | null; ref: string | null; src: string | null }): Promise<Resolved> {
   const accountFor = async (handle: string | null) => {
     const userId = await verifyHandle(env, handle);
     return userId ? await getUser(env, userId) : null;
@@ -129,8 +131,10 @@ async function resolveAccount(env: Env, o: { cookie: string | null; key: string;
     return verdict === "day_full"
       ? { error: "Kleo has handed out today's free credits. Come back tomorrow and this button will work again.", status: 429 }
       : { error: "Kleo is giving out its free credits slowly today. Try again in a little while, and your account will be waiting.", status: 429 };
-  await audit(env, user.id, null, "user.created", { source: "open", credits: user.credits, ip, ...(o.ref ? { ref: o.ref } : {}) });
+  await audit(env, user.id, null, "user.created", { source: "open", credits: user.credits, ip, ...(o.ref ? { ref: o.ref } : {}), ...(o.src ? { src: o.src } : {}) });
   if (o.ref) await linkReferral(env, user.id, o.ref, "sign-in");
+  // THE CHANNEL (27 September 2026, src/growth.ts): ?src= on the connector address the user added.
+  if (o.src) await recordSignupSource(env, user.id, o.src, "sign-in");
   // The gift is applied only now, to an account that exists: a sign-up a cap refused must never burn one of the
   // code's uses, which is what claiming it before the INSERT did.
   return { user: await applyBonus(env, user, o.bonus) };

@@ -45,6 +45,8 @@ const STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS referrals_session ON referrals(session_id)`,
   // THE VERIFIED-EMAIL BONUS (27 September 2026, src/email.ts; mirrors migrations/0014_email.sql): once per address, once per account.
   `CREATE TABLE IF NOT EXISTS email_bonus (email TEXT PRIMARY KEY, user_id TEXT NOT NULL UNIQUE, credits INTEGER NOT NULL, nonce TEXT NOT NULL, at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
+  // THE SITE'S PAGE VIEWS, aggregated per day (27 September 2026, src/growth.ts; mirrors migrations/0015_growth.sql): no IP, no cookie, no user id.
+  `CREATE TABLE IF NOT EXISTS page_hits (day TEXT NOT NULL, path TEXT NOT NULL, ref TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', lang TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT '', n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, path, ref, source, lang, country))`,
 ];
 
 /** Columns added after 0001 (mirrors migrations/0003_storyboard.sql + 0004_last_report.sql — one migration per column,
@@ -74,6 +76,8 @@ const COLUMNS: [table: string, column: string, definition: string][] = [
   // The optional address the owner adds on the account page, and when its link was opened (src/email.ts; 0014_email.sql).
   ["users", "contact_email", "TEXT"],
   ["users", "contact_email_verified_at", "TEXT"],
+  // The channel an account came through (?src= on the connector address; src/growth.ts, 0015_growth.sql).
+  ["users", "src", "TEXT"],
 ];
 
 /** Indexes over columns from COLUMNS. They belong here and NOT in STATEMENTS: that batch runs before the ALTERs, so
@@ -82,6 +86,7 @@ const COLUMN_INDEXES = [
   "CREATE INDEX IF NOT EXISTS users_ip_created ON users(ip_hash, created_at)",
   "CREATE UNIQUE INDEX IF NOT EXISTS users_referral_code ON users(referral_code)",
   "CREATE INDEX IF NOT EXISTS users_referred_by ON users(referred_by)",
+  "CREATE INDEX IF NOT EXISTS users_created ON users(created_at)",
 ];
 
 async function ensureColumns(env: Env): Promise<void> {

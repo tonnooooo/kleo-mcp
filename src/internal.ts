@@ -13,6 +13,7 @@ import { findTemplate, aiUpscaleJob } from "./templates";
 import { generateJobImages, IMAGE_NAME_RE } from "./images";
 import { ephoneBalanceUsd } from "./ephone.ts";
 import { listLaunchCodes, upsertLaunchCode, normalizeCode, normalizeChannel, LAUNCH_CODE_MAX_USES } from "./launch.ts";
+import { growthReport } from "./growth.ts";
 import { footageBackendFor, footageConfig, setFootageConfig, kieModelFor, clipLengthsSpec, requestFootage, footageStatus, footageSpentTodayUsd, kieBalanceUsd, clipKey, footageRows, KIE_MODELS, SHOT_ID_RE, STILL_NAME_RE, type ShotRequest, requestMusic, musicStatus, musicOn, musicKey, MUSIC_ID, type MusicRequest } from "./footage";
 
 const ALLOWED_FILES = new Set([FILE_NAMES.video.name, FILE_NAMES.subtitles.name, FILE_NAMES.thumbnail.name, "thumbnail.svg", "log.txt", "gen.tgz"]);
@@ -278,6 +279,12 @@ export async function handleAdmin(request: Request, env: Env): Promise<Response>
     budget_usd: num(env.DAILY_GPU_BUDGET_USD, 1),
   });
   if (request.method === "GET" && path === "/internal/admin/pause") return json(await state());
+  // THE FUNNEL (27 September 2026, src/growth.ts): per day and per source — visits, sign-ups, first video, first film,
+  // launch-code redemptions, payments, referral rewards.   GET /internal/admin/growth?days=30
+  if (path === "/internal/admin/growth") {
+    if (request.method !== "GET") return json({ error: "method" }, 405);
+    return json(await growthReport(env, Number(new URL(request.url).searchParams.get("days") ?? 30)));
+  }
   // LAUNCH CODES (27 September 2026, src/launch.ts): what each code has given, and new ones without a deploy.
   //   GET  /internal/admin/launch-codes
   //   POST /internal/admin/launch-codes {"code":"DISCORD","channel":"discord","max_uses":30,"credits":null,"active":true}

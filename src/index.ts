@@ -11,6 +11,7 @@ import { handleUpload } from "./upload.ts";
 import { handleProbe } from "./probe.ts";
 import { handleReferralPage, linkReferral } from "./referral.ts";
 import { handleEmailLink } from "./email.ts";
+import { handleBeacon, recordSignupSource } from "./growth.ts";
 import { tick } from "./orchestrator";
 import { json } from "./util";
 import { ensureSchema } from "./schema";
@@ -28,9 +29,12 @@ const mcpApi: ExportedHandler<Env> = {
     // THE CONNECTOR ADDRESS'S HINTS (27 September 2026): a new account's first calls carry the ?ref= of the address the
     // user added (src/referral.ts). Only within a day of the sign-up, so an old account re-added through somebody's
     // link is never re-attributed; linkReferral itself writes once.
+    // The same for ?src= (src/growth.ts): the channel is written once.
     const hints = new URL(request.url).searchParams;
-    if (hints.get("ref") && Date.now() - Date.parse(user.created_at) < 24 * 3600_000)
-      ctx.waitUntil(linkReferral(env, user.id, hints.get("ref"), "mcp").catch(() => false));
+    if ((hints.get("ref") || hints.get("src")) && Date.now() - Date.parse(user.created_at) < 24 * 3600_000) {
+      if (hints.get("ref")) ctx.waitUntil(linkReferral(env, user.id, hints.get("ref"), "mcp").catch(() => false));
+      if (hints.get("src")) ctx.waitUntil(recordSignupSource(env, user.id, hints.get("src"), "mcp").catch(() => false));
+    }
     const base = new URL(request.url).origin; // links use the address the client actually reached us on
     const handler = mcpHandlerFor(env, user, base);
     try {
@@ -60,6 +64,8 @@ const app: ExportedHandler<Env> = {
     if (p.startsWith("/r/")) return handleReferralPage(request, env);
     // The two links Kleo mails (27 September 2026, src/email.ts): verify an address, or remove it.
     if (p === "/email/verify" || p === "/email/unsubscribe") return handleEmailLink(request, env);
+    // The site's page counter (27 September 2026, src/growth.ts): aggregated per day, no IP, no cookie, no user id.
+    if (p === "/b") return handleBeacon(request, env);
     // Deliberately OUTSIDE the /internal/ branch below: that one fires ctx.waitUntil(tick(env)), and a payment
     // webhook must not have the power to start renting a GPU. It also needs no auth of its own — the Stripe
     // signature IS the authentication, checked before anything is parsed.

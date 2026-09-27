@@ -1003,8 +1003,10 @@ test("kleo_redeem: a launch code opens one 15-second film to an account that nev
   assert.match(r.text, /Code HN redeemed: 10 credits added \(80 credits on the account now\) and ONE free film of up to 15 seconds unlocked/);
   const again = await s.call("kleo_redeem", { code: "X" });
   assert.equal(again.isError, true); assert.match(again.text, /already used a launch code \(HN\)/);
+  await s.env.DB.prepare("UPDATE users SET src = 'producthunt' WHERE id = 'u_test'").run();
   const a = await s.call("kleo_account", {});
   assert.equal(a.structuredContent.can_order_film, true);
+  assert.doesNotMatch(`${a.text}\n${JSON.stringify(a.structuredContent)}`, /producthunt|"src"/i, "the channel an account came through is the operator's, never shown");
   assert.deepEqual(a.structuredContent.film_trial, { code: "HN", available: true, max_s: 15, used_by: null });
   assert.match(a.text, /its launch code \(HN\) opens ONE free film of up to 15 seconds/);
   // Every account has its invitation link (src/referral.ts), and the tool says what it earns.
