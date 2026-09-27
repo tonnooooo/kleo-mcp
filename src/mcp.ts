@@ -21,6 +21,7 @@ import { int, publicText } from "./util";
 import { adaptPrompt, adaptivePromptText, durationFrom, lookFromText, aiUpscaleAnswer } from "./adaptive.ts";
 import { redeemLaunchCode, trialOf, TRIAL_FILM_MAX_S } from "./launch.ts";
 import { referralCodeFor, referralLink, referralRule, REFERRER_BONUS, REFERRED_BONUS } from "./referral.ts";
+import { contactEmailOf, EMAIL_BONUS } from "./email.ts";
 
 /**
  * Languages a job can be created in. The engine ships more Kokoro voices (keou-contract VOICES still knows fr),
@@ -760,6 +761,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     const trialOpen = !!trial?.available;
     // The account's referral link (27 September 2026, src/referral.ts), made the first time it is shown.
     const refCode = await referralCodeFor(env, user.id);
+    const contactVerified = (await contactEmailOf(env, user.id)).verified;
     const invite = refCode ? { code: refCode, link: referralLink(env.PUBLIC_URL || base, refCode), rule: referralRule(), referrer_credits: REFERRER_BONUS, referred_credits: REFERRED_BONUS } : null;
     // The AI upscale (25 September 2026): a film's option at extra credits, unless the Worker switched it off.
     const upscaleOffered = aiUpscaleOn(env);
@@ -793,6 +795,8 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       account_key: await makeHandle(env, user.id),
       account_url: url,
       referral: invite,
+      // The optional verified email (src/email.ts): whether the account has one, never the address itself.
+      email_verified: contactVerified,
       payments_open: open,
       models: MODELS,
     };
@@ -808,7 +812,8 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       ? `Credit packs are on the account page, paid through Stripe (from ${cheapest.label} for ${cheapest.credits} credits; one payment, nothing renews)`
       : `Card payments are paused right now; the account page says when they reopen`;
     const inviteSentence = invite ? ` Invite friends with ${invite.link}: ${invite.rule}.` : "";
-    return ok(data, `You have ${plural(fresh.credits, "credit")}. ${tariffSentence()}.${enough}${films}${paid ? upscaleSentence : ""} ${buy}.${inviteSentence} Your account page, which also shows the key that carries this account to another browser: ${url}`);
+    const emailSentence = contactVerified ? "" : ` Adding a verified email on the account page gives ${EMAIL_BONUS} credits once, and every finished video's links by email.`;
+    return ok(data, `You have ${plural(fresh.credits, "credit")}. ${tariffSentence()}.${enough}${films}${paid ? upscaleSentence : ""} ${buy}.${inviteSentence}${emailSentence} Your account page, which also shows the key that carries this account to another browser: ${url}`);
   });
 
   return server;

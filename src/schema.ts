@@ -43,6 +43,8 @@ const STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS referrals (referred_id TEXT PRIMARY KEY, referrer_id TEXT NOT NULL, session_id TEXT NOT NULL, referrer_credits INTEGER NOT NULL, referred_credits INTEGER NOT NULL, nonce TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'paid', at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
   `CREATE INDEX IF NOT EXISTS referrals_referrer ON referrals(referrer_id, at)`,
   `CREATE INDEX IF NOT EXISTS referrals_session ON referrals(session_id)`,
+  // THE VERIFIED-EMAIL BONUS (27 September 2026, src/email.ts; mirrors migrations/0014_email.sql): once per address, once per account.
+  `CREATE TABLE IF NOT EXISTS email_bonus (email TEXT PRIMARY KEY, user_id TEXT NOT NULL UNIQUE, credits INTEGER NOT NULL, nonce TEXT NOT NULL, at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
 ];
 
 /** Columns added after 0001 (mirrors migrations/0003_storyboard.sql + 0004_last_report.sql — one migration per column,
@@ -69,6 +71,9 @@ const COLUMNS: [table: string, column: string, definition: string][] = [
   // 2026, src/referral.ts; migrations/0013_referrals.sql).
   ["users", "referral_code", "TEXT"],
   ["users", "referred_by", "TEXT"],
+  // The optional address the owner adds on the account page, and when its link was opened (src/email.ts; 0014_email.sql).
+  ["users", "contact_email", "TEXT"],
+  ["users", "contact_email_verified_at", "TEXT"],
 ];
 
 /** Indexes over columns from COLUMNS. They belong here and NOT in STATEMENTS: that batch runs before the ALTERs, so

@@ -10,6 +10,7 @@ import { handleDownload } from "./dl";
 import { handleUpload } from "./upload.ts";
 import { handleProbe } from "./probe.ts";
 import { handleReferralPage, linkReferral } from "./referral.ts";
+import { handleEmailLink } from "./email.ts";
 import { tick } from "./orchestrator";
 import { json } from "./util";
 import { ensureSchema } from "./schema";
@@ -57,6 +58,8 @@ const app: ExportedHandler<Env> = {
     if (p === "/credits") return handleCredits(request, env);
     // A referral link (27 September 2026, src/referral.ts): the invitation page, which remembers the code for sign-in.
     if (p.startsWith("/r/")) return handleReferralPage(request, env);
+    // The two links Kleo mails (27 September 2026, src/email.ts): verify an address, or remove it.
+    if (p === "/email/verify" || p === "/email/unsubscribe") return handleEmailLink(request, env);
     // Deliberately OUTSIDE the /internal/ branch below: that one fires ctx.waitUntil(tick(env)), and a payment
     // webhook must not have the power to start renting a GPU. It also needs no auth of its own — the Stripe
     // signature IS the authentication, checked before anything is parsed.

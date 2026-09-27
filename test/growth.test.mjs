@@ -51,7 +51,8 @@ before(async () => {
       contents: `export * from "./src/jobs.ts"; export * from "./src/db.ts"; export * from "./src/launch.ts";
         export { handleCredits } from "./src/credits.ts"; export { handleAdmin } from "./src/internal.ts";
         export { makeViewToken, makeHandle } from "./src/accounts.ts"; export * from "./src/referral.ts";
-        export { handleStripeWebhook } from "./src/stripe.ts"; export { handleAuthorize, connectionHints } from "./src/auth.ts";`,
+        export { handleStripeWebhook } from "./src/stripe.ts"; export { handleAuthorize, connectionHints } from "./src/auth.ts";
+        export * from "./src/email.ts"; export { notifyDone } from "./src/notify.ts";`,
       resolveDir: ROOT, loader: "ts",
     },
     alias: { "@cloudflare/workers-oauth-provider": join(ROOT, "test/fixtures/oauth-provider-stub.mjs") },
@@ -321,4 +322,130 @@ test("/r/<code>: the invitation page remembers a known code for sign-in and show
   assert.match(page, /you get 5 extra credits, and your friend gets 10/);
   const unknown = await m.handleReferralPage(new Request("http://kleo.test/r/RNOBODY1"), env);
   assert.equal(unknown.status, 404); assert.equal(unknown.headers.get("set-cookie"), null);
+});
+
+/* ------------------------------------------------------------------ P6: the optional, verified email */
+
+/** Resend, faked: every mail it is asked to send, and the answer it gives. */
+function fakeResend(status = 200) {
+  const sent = [];
+  const real = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (String(url) !== "https://api.resend.com/emails") throw new Error(`unexpected fetch ${url}`);
+    sent.push({ auth: init.headers.authorization, ...JSON.parse(init.body) });
+    return new Response(JSON.stringify({ id: "re_1" }), { status });
+  };
+  return { sent, restore: () => { globalThis.fetch = real; } };
+}
+const linkIn = (text, path) => text.match(new RegExp(`http://kleo\\.test${path}\\?\\S+`))?.[0];
+const openLink = (env, link) => m.handleEmailLink(new Request(link), env);
+
+test("email: without RESEND_API_KEY the address is kept unverified, nothing is sent and no credit is given", async () => {
+  const env = await newEnv();
+  await newUser(env, "u_a");
+  const r = await m.setContactEmail(env, "u_a", " Ann@Example.COM ", "http://kleo.test");
+  assert.deepEqual(r, { ok: true, sent: false, email: "ann@example.com", message: "ann@example.com is saved on this account. Kleo's emails are not switched on yet, so it cannot be verified today: the 3 credits come when it is." });
+  assert.deepEqual(await m.contactEmailOf(env, "u_a"), { email: "ann@example.com", verified: false });
+  assert.equal(await balance(env, "u_a"), 5);
+  assert.equal((await m.setContactEmail(env, "u_a", "not an address", "http://kleo.test")).ok, false);
+  assert.equal(m.normalizeEmail("u_1@anon.kleo.invalid"), null, "the synthetic address is never a contact");
+});
+
+test("email: the verification link verifies once and gives 3 credits once per account and once per address; a forged or expired link does nothing", async () => {
+  const env = await newEnv({ RESEND_API_KEY: "re_key", NOTIFY_FROM: "Kleo <noreply@kleooai.com>" });
+  await newUser(env, "u_a"); await newUser(env, "u_b");
+  const mail = fakeResend();
+  try {
+    const r = await m.setContactEmail(env, "u_a", "ann@example.com", "http://kleo.test");
+    assert.equal(r.sent, true); assert.match(r.message, /verification link is on its way to ann@example\.com/);
+    assert.equal(mail.sent.length, 1);
+    assert.equal(mail.sent[0].from, "Kleo <noreply@kleooai.com>"); assert.deepEqual(mail.sent[0].to, ["ann@example.com"]); assert.equal(mail.sent[0].auth, "Bearer re_key");
+    assert.match(mail.sent[0].text, /only for your videos and Kleo news/);
+    const link = linkIn(mail.sent[0].text, "/email/verify");
+    assert.ok(link, mail.sent[0].text);
+    const forged = link.replace(/sig=[0-9a-f]+/, "sig=" + "0".repeat(64));
+    assert.equal((await openLink(env, forged)).status, 400);
+    assert.equal(await balance(env, "u_a"), 5);
+    const ok = await openLink(env, link);
+    assert.equal(ok.status, 200); assert.match(await ok.text(), /3 credits were added/);
+    assert.equal(await balance(env, "u_a"), 8);
+    assert.deepEqual(await m.contactEmailOf(env, "u_a"), { email: "ann@example.com", verified: true });
+    await openLink(env, link);
+    assert.equal(await balance(env, "u_a"), 8, "the same link twice: once");
+    // Another address on the same account: verified, no second bonus.
+    await m.setContactEmail(env, "u_a", "ann2@example.com", "http://kleo.test");
+    await openLink(env, linkIn(mail.sent.at(-1).text, "/email/verify"));
+    assert.equal(await balance(env, "u_a"), 8, "once per account");
+    assert.deepEqual(await m.contactEmailOf(env, "u_a"), { email: "ann2@example.com", verified: true });
+    // The first address on another account: verified, no bonus either.
+    await m.setContactEmail(env, "u_b", "ann@example.com", "http://kleo.test");
+    const b = await openLink(env, linkIn(mail.sent.at(-1).text, "/email/verify"));
+    assert.match(await b.text(), /given once per account and once per address/);
+    assert.equal(await balance(env, "u_b"), 5, "once per address");
+    // An old link for an address the account no longer has is refused; an expired one too.
+    assert.equal((await openLink(env, link)).status, 400, "u_a's first address is not its address any more");
+    const expired = new URLSearchParams(new URL(await m.verifyLink(env, "http://kleo.test", "u_b", "ann@example.com", Math.floor(Date.now() / 1000) - 4 * 86400)).search);
+    assert.equal((await m.verifyContactEmail(env, expired)).ok, false);
+    assert.deepEqual(audits(env, "email.verified").map((a) => a.detail.amount ?? 0), [3, 0, 0, 0]);
+  } finally { mail.restore(); }
+});
+
+test("email: at most 3 verification mails an account a day", async () => {
+  const env = await newEnv({ RESEND_API_KEY: "re_key" });
+  await newUser(env, "u_a");
+  const mail = fakeResend();
+  try {
+    for (let i = 0; i < 3; i++) assert.equal((await m.setContactEmail(env, "u_a", `a${i}@example.com`, "http://kleo.test")).sent, true);
+    const fourth = await m.setContactEmail(env, "u_a", "a4@example.com", "http://kleo.test");
+    assert.equal(fourth.ok, false); assert.match(fourth.message, /already sent 3 verification emails/);
+    assert.equal(mail.sent.length, 3);
+  } finally { mail.restore(); }
+});
+
+test("email: a finished video's links go to the verified address with a link that removes it; the unsubscribe link removes it", async () => {
+  const env = await newEnv({ RESEND_API_KEY: "re_key" });
+  await newUser(env, "u_a");
+  const mail = fakeResend();
+  try {
+    const job = { id: "gt_done01", user_id: "u_a", notify_email: null, template: "film", expires_at: "2026-10-04T00:00:00.000Z" };
+    await m.notifyDone(env, job, { video_url: "http://kleo.test/dl/gt_done01/video.mp4?x" });
+    assert.equal(mail.sent.length, 0, "no address, no mail");
+    await m.setContactEmail(env, "u_a", "ann@example.com", "http://kleo.test");
+    await m.notifyDone(env, job, { video_url: "http://kleo.test/dl/gt_done01/video.mp4?x" });
+    assert.equal(mail.sent.length, 1, "an unverified address gets only its verification link");
+    await openLink(env, linkIn(mail.sent[0].text, "/email/verify"));
+    await m.notifyDone(env, job, { video_url: "http://kleo.test/dl/gt_done01/video.mp4?x" });
+    const done = mail.sent.at(-1);
+    assert.deepEqual(done.to, ["ann@example.com"]); assert.equal(done.subject, "Your video is ready (gt_done01)");
+    assert.match(done.text, /video: http:\/\/kleo\.test\/dl\/gt_done01\/video\.mp4\?x/);
+    const unsub = linkIn(done.text, "/email/unsubscribe");
+    assert.ok(unsub); assert.equal(done.headers["List-Unsubscribe"], `<${unsub}>`);
+    assert.equal((await openLink(env, unsub.replace(/sig=[0-9a-f]+/, "sig=00"))).status, 400);
+    assert.equal((await openLink(env, unsub)).status, 200);
+    assert.deepEqual(await m.contactEmailOf(env, "u_a"), { email: null, verified: false });
+    // A job's own notify_email still works, without the unsubscribe line (it is not the account's address).
+    await m.notifyDone(env, { ...job, notify_email: "other@example.com" }, { video_url: "x" });
+    assert.deepEqual(mail.sent.at(-1).to, ["other@example.com"]); assert.doesNotMatch(mail.sent.at(-1).text, /unsubscribe/);
+  } finally { mail.restore(); }
+});
+
+test("/credits: the email box works only for the browser that owns the account; a shared link is told where to do it", async () => {
+  const env = await newEnv();
+  await newUser(env, "u_a");
+  const k = await m.makeViewToken(env, "u_a");
+  const post = (form, cookie) => m.handleCredits(new Request("http://kleo.test/credits", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", ...(cookie ? { cookie } : {}) }, body: new URLSearchParams({ k, ...form }) }), env);
+  const shared = await (await m.handleCredits(new Request(`http://kleo.test/credits?k=${encodeURIComponent(k)}`), env)).text();
+  assert.match(shared, /Open this page in the browser you connected Kleo from to add it/); assert.doesNotMatch(shared, /name="email"/);
+  const refused = await post({ action: "email", email: "thief@example.com" });
+  assert.equal(refused.status, 400); assert.match(await refused.text(), /only from the browser that owns this account/);
+  assert.deepEqual(await m.contactEmailOf(env, "u_a"), { email: null, verified: false });
+  const cookie = `kleo_id=${await m.makeHandle(env, "u_a")}`;
+  const owner = await (await m.handleCredits(new Request("http://kleo.test/credits", { headers: { cookie } }), env)).text();
+  assert.match(owner, /Add your email: \+3 credits once it is verified/); assert.match(owner, /name="email"/);
+  const set = await post({ action: "email", email: "ann@example.com" }, cookie);
+  assert.equal(set.status, 200); assert.match(await set.text(), /ann@example\.com is saved on this account/);
+  assert.deepEqual(await m.contactEmailOf(env, "u_a"), { email: "ann@example.com", verified: false });
+  const gone = await post({ action: "email_remove" }, cookie);
+  assert.match(await gone.text(), /Your email was removed/);
+  assert.deepEqual(await m.contactEmailOf(env, "u_a"), { email: null, verified: false });
 });

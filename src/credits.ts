@@ -6,6 +6,7 @@ import { html, escapeHtml } from "./util";
 import { tariffSentence, animaticRule } from "./templates";
 import { redeemLaunchCode, trialOf, TRIAL_FILM_MAX_S, type TrialState } from "./launch.ts";
 import { referralCodeFor, referralLink, referralRule } from "./referral.ts";
+import { setContactEmail, removeContactEmail, contactEmailOf, EMAIL_BONUS, type ContactEmail } from "./email.ts";
 
 /** The one address a stranger can write to. It is also in the site footer; both must always say the same thing. */
 const CONTACT = "kleooai@gmail.com";
@@ -20,6 +21,9 @@ const CONTACT = "kleooai@gmail.com";
  *
  * POST /credits (27 September 2026): the page's own forms. `action=redeem` redeems a launch code (src/launch.ts) onto
  * the account the page shows — the view token in the form is enough, since a code can only ADD to an account.
+ * `action=email` / `email_remove` set or remove the optional contact email (src/email.ts), and ONLY from the browser
+ * that owns the account: an address receives the account's video links, and a shared link must never be able to
+ * point them somewhere else.
  */
 export async function handleCredits(request: Request, env: Env): Promise<Response> {
   if (request.method !== "GET" && request.method !== "POST") return new Response("Method not allowed", { status: 405 });
@@ -38,6 +42,13 @@ export async function handleCredits(request: Request, env: Env): Promise<Respons
       notice = r.ok
         ? { ok: true, text: `Code ${r.code} redeemed: ${plural(r.credits, "credit")} added, and one free film of up to ${TRIAL_FILM_MAX_S} seconds is open on this account. Ask your assistant for it.` }
         : { ok: false, text: r.message };
+    } else if (action === "email" || action === "email_remove") {
+      if (ownerId !== user.id) notice = { ok: false, text: "An email can be added only from the browser that owns this account (the one you connected Kleo from). Nothing was changed." };
+      else if (action === "email_remove") notice = { ok: true, text: (await removeContactEmail(env, user.id, "account page")) ? "Your email was removed: Kleo will not email you again." : "There was no email on this account." };
+      else {
+        const r = await setContactEmail(env, user.id, form.get("email"), env.PUBLIC_URL || url.origin);
+        notice = { ok: r.ok, text: r.message };
+      }
     }
     user = (await getUser(env, user.id)) ?? user;
   }
@@ -46,7 +57,8 @@ export async function handleCredits(request: Request, env: Env): Promise<Respons
   const paid = await hasPaid(env, user.id);
   const refCode = await referralCodeFor(env, user.id);
   const invite = refCode ? referralLink(env.PUBLIC_URL || url.origin, refCode) : null;
-  return html(page({ user, handle: key, env, open: await sellingAvailable(env), paid, trial: paid ? null : await trialOf(env, user.id), viewToken: await makeViewToken(env, user.id), notice, invite }), notice && !notice.ok ? 400 : 200);
+  return html(page({ user, handle: key, env, open: await sellingAvailable(env), paid, trial: paid ? null : await trialOf(env, user.id), viewToken: await makeViewToken(env, user.id), notice, invite,
+    owner: ownerId === user.id, contact: await contactEmailOf(env, user.id) }), notice && !notice.ok ? 400 : 200);
 }
 
 /** What the page says after one of its forms was sent. */
@@ -54,7 +66,26 @@ interface Notice { ok: boolean; text: string }
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-interface PageOpts { user: User | null; handle: string; env: Env; open: boolean; paid: boolean; trial: TrialState | null; viewToken: string; notice?: Notice | null; invite?: string | null }
+/**
+ * THE EMAIL BOX (27 September 2026, src/email.ts): what the account has (verified, waiting, none) and the form — only
+ * for the browser that owns the account; a shared link is told where to do it instead.
+ */
+function emailBlock(o: PageOpts, hidden: string): string {
+  const why = `+${EMAIL_BONUS} credits once it is verified, and every finished video's links in your inbox. Kleo uses it only for your videos and Kleo news, and every email has a link to stop them.`;
+  if (!o.owner) return `<h2>Email (optional)</h2>
+<p>Add an email: ${why} Open this page in the browser you connected Kleo from to add it: a shared link cannot change the account.</p>`;
+  const c = o.contact ?? { email: null, verified: false };
+  const form = (label: string) => `<form class="row" method="post" action="/credits">${hidden}<input type="hidden" name="action" value="email"><input name="email" type="email" autocomplete="email" placeholder="you@example.com" aria-label="Email" required maxlength="254"${c.email ? ` value="${escapeHtml(c.email)}"` : ""}><button type="submit">${label}</button></form>`;
+  const remove = `<form method="post" action="/credits">${hidden}<input type="hidden" name="action" value="email_remove"><button class="link" type="submit">Remove my email</button></form>`;
+  if (c.email && c.verified) return `<h2>Email</h2>
+<p>Verified: ${escapeHtml(c.email)}. Kleo emails you the links of every finished video.</p>${remove}`;
+  if (c.email) return `<h2>Email</h2>
+<p>Waiting for verification: ${escapeHtml(c.email)}. Open the link Kleo sent (check the spam folder too); ${why}</p>${form("Send the link again")}${remove}`;
+  return `<h2>Email (optional)</h2>
+<p>Add your email: ${why}</p>${form("Add")}`;
+}
+
+interface PageOpts { user: User | null; handle: string; env: Env; open: boolean; paid: boolean; trial: TrialState | null; viewToken: string; notice?: Notice | null; invite?: string | null; owner?: boolean; contact?: ContactEmail }
 
 function page(o: PageOpts): string {
   const { user, handle, env, paid, trial } = o;
@@ -92,6 +123,7 @@ ${launch}
 ${open_ ? `<p>Payment is handled by Stripe: Kleo never sees your card. Credits land on this account within a few seconds of paying, and the page shows the new balance when you reload it.</p>` : configured ? `<div class="badge">Credit packs are paused for a moment: Kleo is topping up its rendering capacity so that every credit sold can actually be rendered. Try again in a little while - nothing is wrong with your account.</div>` : `<div class="badge">Card payments are not open yet - Kleo is free while it is in beta.</div>`}
 <ul class="packs">${packs}</ul>
 ${open_ ? `<p>One payment, no subscription, nothing renews. Credits do not expire.</p>` : `<p>These are the prices the packs will have. When they open, this page is where you will buy them - nothing else about Kleo changes.</p>`}
+${emailBlock(o, hidden)}
 ${o.invite ? `<h2>Invite a friend</h2>
 <p>Share this link: ${referralRule()}.</p>
 <code class="key">${escapeHtml(o.invite)}</code>` : ""}
@@ -122,6 +154,7 @@ p{margin:0 0 14px;color:var(--mute);font-size:.95rem}
 .badge{margin-bottom:14px}
 .row{display:flex;gap:8px;margin:8px 0 14px}.row input{flex:1;min-width:0;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font:inherit}
 .row button{padding:10px 14px;border-radius:8px;border:0;background:var(--amber);color:var(--amber-ink);font:600 .95rem/1 inherit;cursor:pointer}
+button.link{background:none;border:0;padding:0;color:var(--mute);font:inherit;font-size:.85rem;text-decoration:underline;cursor:pointer;margin-bottom:14px}
 </style></head><body><main class="card">
 <div class="brand"><svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="7" width="26" height="22" rx="5" fill="#F3B53F"/><path d="M3 12h26v4H3z" fill="#1A1200" opacity=".85"/><path d="M7 12l3.5 4M13 12l3.5 4M19 12l3.5 4" stroke="#F3B53F" stroke-width="1.6"/><path d="M10 19v8M10 23l6-4M10 23l6 4" stroke="#1A1200" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>Kleo <span>ACCOUNT</span></div>
 ${body}

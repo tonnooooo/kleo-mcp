@@ -1,19 +1,23 @@
 import type { Env } from "./env";
 import type { Job } from "./db";
+import { audit } from "./db.ts";
+import { deliveryAddressFor, sendEmail, unsubscribeLink } from "./email.ts";
 
-/** Emails the download links when a job finishes. Uses Resend if RESEND_API_KEY is set; otherwise a no-op. */
+/**
+ * Emails the download links when a job finishes, through Resend (src/email.ts sendEmail; a no-op without
+ * RESEND_API_KEY). The address is the one given with the job (notify_email) or, since 27 September 2026, the account's
+ * VERIFIED contact email; a mail to the contact email carries the link that removes it.
+ */
 export async function notifyDone(env: Env, job: Job, links: Record<string, string>): Promise<void> {
-  if (!job.notify_email || !env.RESEND_API_KEY) return;
+  const to = await deliveryAddressFor(env, job);
+  if (!to) return;
   const lines = Object.entries(links).map(([k, v]) => `${k.replace("_url", "")}: ${v}`).join("\n");
-  const body = {
-    from: env.NOTIFY_FROM ?? "Kleo <noreply@example.com>",
-    to: [job.notify_email],
+  const unsubscribe = to.contact ? await unsubscribeLink(env, env.PUBLIC_URL, job.user_id) : undefined;
+  const sent = await sendEmail(env, {
+    to: to.to,
     subject: `Your video is ready (${job.id})`,
-    text: `Your ${job.template} video is rendered.\n\n${lines}\n\nLinks expire on ${job.expires_at}.`,
-  };
-  await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, "content-type": "application/json" },
-    body: JSON.stringify(body),
+    text: `Your Kleo video ${job.id} is rendered.\n\n${lines}\n\nLinks expire on ${job.expires_at}.${unsubscribe ? `\n\nYou get this email because you verified this address on your Kleo account. Stop these emails: ${unsubscribe}` : ""}`,
+    unsubscribe,
   });
+  if (to.contact) await audit(env, job.user_id, job.id, sent ? "email.delivered" : "email.delivery_failed", {});
 }
