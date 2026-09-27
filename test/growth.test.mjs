@@ -182,7 +182,7 @@ test("the launch-code film: a cancel or a failure AFTER its clips were ordered k
   assert.equal(JSON.parse(second.params).trial, true);
   // Its clips are ordered (one footage row, with a task), then it is cancelled at 58%: the trial stays spent.
   env.DB.db.prepare("INSERT INTO footage (job_id, shot_id, model, task_id, state, seconds, cost_usd) VALUES (?, 's1', 'seedance', 'tk_1', 'generating', 5, 0.4)").run(second.id);
-  env.DB.db.prepare("UPDATE jobs SET state = 'running', percent = 58 WHERE id = ?").run(second.id);
+  env.DB.db.prepare("UPDATE jobs SET state = 'rendering', percent = 58 WHERE id = ?").run(second.id);
   await m.cancelJob(env, await m.getUser(env, "u_a"), second.id);
   const after = await m.trialOf(env, "u_a");
   assert.equal(after.available, false); assert.equal(after.held_by, second.id);
