@@ -107,6 +107,11 @@ def pixel(video, t, x, y):
     return tuple(r.stdout[:3])
 
 
+def read_json(path):
+    with open(path) as f:
+        return json.load(f)
+
+
 def write_voice(path, spans, duration, sr=24000):
     """Kokoro's shape: mono, 24 kHz, 24-bit, sound only inside each scene's audio span — a 140 Hz voice with harmonics
     and a 4 Hz syllable envelope, silence everywhere else."""
@@ -130,10 +135,10 @@ def project():
         "voice": "am_michael", "music": "track", "music_brief": "a slow piano over low strings, no drums",
         "graphics": {"accent": "#ffb347", "subtitles": "cinema", "chapters": "none",
                      "hud": [{"id": "signal", "kind": "line", "edge": "bottom", "means": "the lamp"}]},
-        "scenes": [dict({"id": sid, "kind": kind, "voice": voice,
+        "scenes": [dict({"id": sid, "kind": kind, "voice": voice, "title": caps[0],
                          "shots": [{"image": f"img/{sid}-s{n + 1}.png", "motion": "push_in", "strength": 0.8} for n in range(nshots)]},
                         **({"transition": "dissolve"} if i else {}))
-                   for i, (sid, kind, voice, _, _, _, nshots) in enumerate(SCENES)],
+                   for i, (sid, kind, voice, caps, _, _, nshots) in enumerate(SCENES)],
     }
 
 
@@ -171,12 +176,13 @@ class FilmEndToEnd(unittest.TestCase):
         img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         ImageDraw.Draw(img).rectangle([20, 20, 79, 79], fill=(255, 0, 255, 255))
         img.save(cls.frame)
-        cls.saved = {k: getattr(kw, k) for k in ("KEOU_DIR", "progress", "api", "log", "JOB")}
+        cls.saved = {k: getattr(kw, k) for k in ("KEOU_DIR", "progress", "api", "log", "JOB", "API")}
         cls.saved_urlopen = kw.urllib.request.urlopen
         cls.saved_env = os.environ.get(FAKE_FRAME_ENV)
         os.environ[FAKE_FRAME_ENV] = cls.frame
-        kw.KEOU_DIR, kw.JOB = cls.engine, "gt_e2e"
-        kw.progress = lambda *a, **k: None
+        kw.KEOU_DIR, kw.JOB, kw.API = cls.engine, "gt_e2e", "http://kleo.test"
+        cls.progress = []
+        kw.progress = lambda track, percent, eta_min=None, message=None: cls.progress.append(str(message or ""))
         kw.log = lambda *a: cls.logs.append(" ".join(str(x) for x in a))
 
         def api(method, path, data=None, **k):
@@ -258,8 +264,10 @@ class FilmEndToEnd(unittest.TestCase):
                     elif k == 1:
                         ff("-f", "lavfi", "-i", src, "-t", f"{(slot + .8) / 1.4:.3f}", "-pix_fmt", "yuv420p", os.path.join(pdir, "clips", cid + ".mp4"))
                     else:
+                        # Lossless, so the held second is bit-identical frame to frame the way a model's hold is: a lossy
+                        # x264 encode keeps refining a static picture, and the md5 ruler would read that as motion.
                         ff("-f", "lavfi", "-i", f"{src}:duration={slot:.3f}", "-vf", "negate,tpad=stop_mode=clone:stop_duration=0.9",
-                           "-pix_fmt", "yuv420p", os.path.join(pdir, "clips", cid + ".mp4"))
+                           "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p", os.path.join(pdir, "clips", cid + ".mp4"))
                     k += 1
         cls.stage("clips", clips, needs=("plan",))
 
@@ -282,9 +290,9 @@ class FilmEndToEnd(unittest.TestCase):
         cls.files_plain = cls.stage("film without a layer", plain, needs=("clips",))
 
         job = {"params": {"duration_s": 6, "format": "16:9", "music": "a slow piano over low strings", "subtitles": True}}
-        cls.report_layer = cls.stage("report of the layer film", lambda: json.load(open(kw.self_report(cls.files_layer, job, cls.out_layer))),
+        cls.report_layer = cls.stage("report of the layer film", lambda: read_json(kw.self_report(cls.files_layer, job, cls.out_layer)),
                                      needs=("film with the layer",))
-        cls.report_plain = cls.stage("report of the plain film", lambda: json.load(open(kw.self_report(cls.files_plain, job, cls.out_plain))),
+        cls.report_plain = cls.stage("report of the plain film", lambda: read_json(kw.self_report(cls.files_plain, job, cls.out_plain)),
                                      needs=("film without a layer",))
 
     def reached(self, *names):
@@ -327,6 +335,9 @@ class FilmEndToEnd(unittest.TestCase):
         posts = [c for c in self.api_calls if c[0] == "POST" and c[1].endswith("/music")]
         self.assertTrue(posts, "the track is ordered")
         self.assertEqual(posts[0][2]["brief"], project()["music_brief"])
+        said = "\n".join(self.logs)
+        self.assertNotIn("the film goes on without it", said, "the track reached the film (film_overlay's silent stand-in is not music)")
+        self.assertIn("music: the track is under the film", said)
         a = audio_of(probe(os.path.join(self.pdir, "build", "music.wav")))
         self.assertEqual((a["channels"], a["sample_rate"]), (2, "48000"))
         self.assertAlmostEqual(float(a["duration"]), DURATION, delta=0.05, msg="a 3.5 s track is looped to the film")
@@ -361,6 +372,7 @@ class FilmEndToEnd(unittest.TestCase):
 
     def test_the_plain_film_mixes_a_mono_voice_with_stereo_music(self):
         self.reached("film without a layer")
+        self.assertTrue(any("with the music" in m for m in self.progress), "MIX_CHAIN ran, not the voice-only chain")
         self.check_delivery(self.files_plain)
 
     # ---- what Kleo says about them -----------------------------------------------------------------------------------
