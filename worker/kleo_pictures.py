@@ -187,7 +187,9 @@ def negative_for(direction, style="realistic"):
     base = STYLE_NEGATIVE.get(style, NEGATIVE_PROMPT)
     terms = []
     if isinstance(direction, dict):
-        negated = negated_terms(". ".join([str(m.get("look") or "") for m in (direction.get("cast") or []) if isinstance(m, dict)] + [str(direction.get("world") or "")]))
+        looks = [str(m.get("look") or "") for m in (direction.get("cast") or []) if isinstance(m, dict)]
+        looks += [str(m.get("look") or "") for m in (direction.get("props") or []) if isinstance(m, dict)]
+        negated = negated_terms(". ".join(looks + [str(direction.get("world") or "")]))
         for t in list(direction.get("forbidden") or []) + negated:
             t = " ".join(str(t).split()).strip().rstrip(",.;")
             if t and t.lower() not in base.lower() and t.lower() not in [x.lower() for x in terms]:
@@ -200,8 +202,10 @@ def negative_for(direction, style="realistic"):
     return joined
 
 
-# The pronouns and generic words that can only mean the film's one character. Mirrors src/direction.ts PRONOUN_HINTS.
-PRONOUN_HINTS = re.compile(r"(?<![^\W\d_])(?:she|her|hers|herself|he|him|his|himself|the character|the protagonist)(?![^\W\d_])", re.IGNORECASE)
+# The pronouns and generic words that can only mean the film's one character. Mirrors src/direction.ts PRONOUN_HINTS:
+# since 27 September 2026 a hand, fingers or a forearm too (a one-person film seen only as hands drew an old man's hand
+# in one shot, because "a hand draws a line" named nobody).
+PRONOUN_HINTS = re.compile(r"(?<![^\W\d_])(?:she|her|hers|herself|he|him|his|himself|the character|the protagonist|hands?|fingers?|fingertips?|forearms?|palms?|wrists?|knuckles?)(?![^\W\d_])", re.IGNORECASE)
 
 
 def head_noun_in(name, image_prompt):
@@ -240,6 +244,30 @@ def cast_in(direction, image_prompt):
     return cast if PRONOUN_HINTS.search(str(image_prompt or "")) else []
 
 
+_ARTICLE = re.compile(r"^(?:(?:the|a|an|il|lo|la|le|un|una|uno)\s+|l['\u2019])", re.IGNORECASE)
+
+
+def props_in(direction, image_prompt):
+    """The direction's props this picture names (27 September 2026), as [{"name", "look"}]: the prop's name without its
+    article, or its head noun when no other prop shares it. The shot's own "props" list never reaches the box
+    (stripForWorker), so the words are all there is. Mirrors src/direction.ts propsFor()."""
+    if not isinstance(direction, dict):
+        return []
+    lowered = str(image_prompt or "").lower()
+    props = []
+    for m in direction.get("props") or []:
+        if not isinstance(m, dict):
+            continue
+        name = " ".join(str(m.get("name") or "").split()).strip()
+        look = " ".join(str(m.get("look") or "").split()).strip()
+        if name and look:
+            props.append({"name": name, "look": look})
+    heads = [(m["name"].strip().lower().split() or [""])[-1] for m in props]
+    unique = [h != "" and heads.count(h) == 1 for h in heads]
+    return [m for i, m in enumerate(props)
+            if _ARTICLE.sub("", m["name"].lower()).strip() in lowered or (unique[i] and head_noun_in(m["name"], str(image_prompt or "")))]
+
+
 def cast_for(direction, image_prompt, budget=None):
     """The look of whichever cast members this picture names — "the pastry chef: a thin woman with short blonde hair
     tied up, lilac apron" — whole sentences inside `budget`, or "". It is what generate_pictures() puts FIRST."""
@@ -276,6 +304,9 @@ def context_for(direction, image_prompt, accent, budget=None, style=None):
         bits.append(text)
         used += cost
     for m in cast_in(direction, image_prompt):
+        add(f"{m['name']}: {m['look']}")
+    # The props after the cast, whole or not at all: in 110 characters a face still matters more than a pencil.
+    for m in props_in(direction, image_prompt):
         add(f"{m['name']}: {m['look']}")
     if lights_pictures(style):
         add(ACCENT_LIGHT.get(accent))

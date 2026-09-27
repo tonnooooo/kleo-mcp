@@ -1072,3 +1072,25 @@ test("the pre-flight and /footage agree on the day's ceiling: a film is admitted
   const r = await m.requestFootage(env, job, "http://kleo.test", { shots: SHOTS, format: "9:16" });
   assert.equal(r.status, 200, JSON.stringify(r.reply)); assert.equal(kie.calls.create.length, 3);
 });
+
+test("props (27 September 2026): the clip keeps the shot's recurring objects — their look on the kie.ai road, their name beside the characters on Seedance", () => {
+  const pencil = { name: "the piping bag", look: "a clear piping bag with a fluted steel nozzle, half full of pale cream" };
+  const sb = SEED_SB();
+  sb.direction.props = [pencil, { name: "the camera", look: "an old film camera on a tripod in the corner of the bakery" }];
+  sb.scenes[0].shots[0].props = ["the piping bag", "the camera"];
+  const stored = { storyboard: sb, spec: SEED_SPEC() };
+  const kie = m.clipPrompt({ id: "01-hook-s1", image_prompt: "x", motion: "push_in" }, "realistic", stored);
+  const at = (s) => kie.indexOf(s);
+  assert.ok(at("the piping bag: a clear piping bag with a fluted steel nozzle, half full of pale cream.") > at("Mara: a thin woman"), kie);
+  assert.ok(at("Setting: A village bakery at dawn") > at("the piping bag:"), kie);
+  const seed = m.seedancePrompt({ id: "01-hook-s1", image_prompt: "ignored", motion: "push_in" }, "realistic", stored, FRAME);
+  assert.match(seed, /Mara and the piping bag stay exactly as in the first frame, every object with the same shape, colour and markings\./);
+  assert.ok(!seed.includes("fluted steel nozzle"), "an object in the frame is named, not re-described");
+  assert.equal((seed.match(/camera/gi) ?? []).length, 1, "a prop called 'the camera' never adds a second camera sentence");
+  const t2v = m.seedancePrompt({ id: "01-hook-s1", image_prompt: "ignored", motion: "push_in" }, "realistic", stored, { ...FRAME, hasFrame: false });
+  assert.match(t2v, /the piping bag: a clear piping bag with a fluted steel nozzle, half full of pale cream\./);
+  assert.ok(t2v.length <= m.SEEDANCE_PROMPT_MAX);
+  // A shot that shows no prop, and a direction with none, say nothing new.
+  const face = m.seedancePrompt({ id: "01-hook-s3", image_prompt: "x", motion: "push_in" }, "realistic", { storyboard: SEED_SB(), spec: SEED_SPEC() }, FRAME);
+  assert.match(face, /Mara stays exactly as in the first frame\./);
+});

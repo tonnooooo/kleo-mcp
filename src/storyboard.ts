@@ -24,7 +24,7 @@ import {
   KLEO_STYLES, PICTURE_STYLES, FILM_LOOKS, type FilmLook, IMAGE_PROMPT_MAX, kleoStyleOf, STORY_ACTS, STORY_CAST, STORY_PROPS, STORY_FX, STORY_ACCENTS,
   SHOTS_PER_SCENE, SHOT_CAPTION_MAX, SHOT_HL_MAX, SHOT_AT_MAX, IMAGE_PROMPT_MIN, CLOSING_BUTTON_MAX,
   SHOT_ID_SUFFIX_RE, quotesVoice, SHOTS_MIN_CINEMA, SHOTS_WORDS_PER_SHOT, SHOTS_MIN_WORDS_FOR_TWO, shotRangeText, narrationOf, anchorShots, shotBudget, clipWordsPerShot,
-  SHOT_ACTION_MAX, SHOT_COVERS_MAX, SHOT_CAST_MAX, SHOT_TAG_MAX, mergeThinScenes, thinScenes, FILM_WPS, VOICE_MAX,
+  SHOT_ACTION_MAX, SHOT_COVERS_MAX, SHOT_CAST_MAX, SHOT_PROPS_MAX, SHOT_TAG_MAX, mergeThinScenes, thinScenes, FILM_WPS, VOICE_MAX,
 } from "./keou-contract.ts";
 /**
  * THE SPEC (24 September 2026): the user's request taken apart into checkable requirements (src/spec.ts). It is
@@ -45,8 +45,8 @@ import { judgePlan, fidelityFeedback, shotIdsOf, renumberShots, type PlanFidelit
  * the world of the video was never written down, nothing said what must NOT appear, and no colour meant anything.
  */
 import {
-  directionProblems, missingFacts, spokenFacts, lookFact, forbiddenInPrompts, dropForbiddenClauses, sectionOfScene, motionHint, screenTextProblems, notEnglish, formatTalk, stripFormatTalk, storyRequest, dropLookFacts, negatedTerms, D as DL,
-  type Direction, type Section,
+  directionProblems, missingFacts, spokenFacts, lookFact, forbiddenInPrompts, dropForbiddenClauses, sectionOfScene, motionHint, screenTextProblems, notEnglish, formatTalk, stripFormatTalk, storyRequest, dropLookFacts, negatedTerms, D as DL, thinPropLook, propKey,
+  type Direction, type Section, type PropMember,
 } from "./direction.ts";
 // The shot grammar: the ten story kinds and the one preset table that turns a kind into a camera move.
 // src/shot-grammar.ts is mirrored by worker/keou/shot_grammar.py; nothing here restates what that table says.
@@ -370,7 +370,7 @@ function shotRules(plan: Pick<Plan, "clipFloor">): string {
 }
 
 /** Every picture look: the recurring character is named by the cast name in every picture that shows them. */
-export const CAST_NAME_RULE = `In every image_prompt that shows a recurring character, call them by their cast name ("the pastry chef", "the captain"), never "she", "he" or "they": the name is what attaches their one description to the picture.`;
+export const CAST_NAME_RULE = `In every image_prompt that shows a recurring character, call them by their cast name ("the pastry chef", "the captain"), never "she", "he" or "they": the name is what attaches their one description to the picture. The same for the direction's props: call a prop by its prop name ("the pencil") in every image_prompt that shows it, never re-describe its colour or shape (Kleo appends its one look), and list it in the shot's "props".`;
 const PICTURE_RULES: Record<"cartoon" | "realistic" | "animation", string> = {
   cartoon: `PICTURES: this is a CARTOON video, so every "image_prompt" describes a flat vector cartoon illustration: concrete subjects and setting from the story (pirates → a beach, sand, a ship at anchor; space → a rocket, a station, planets), the SAME characters described the same way in every shot (hair, clothes, colours), bright simple shapes, one clear action per picture, a clear mood. Consecutive shots of one scene show the same place from a new angle or the next moment of the action. Never mention text, letters, numbers, logos, captions or the style itself; never name real people.`,
   realistic: `PICTURES: this is a REALISTIC video, so every "image_prompt" describes a cinematic photograph: the concrete subject and place (a rocket on the pad at dawn, a control room, a mountain road in rain), the lens feel, the light and the mood, the SAME subject described the same way in every shot, one clear action per picture. Consecutive shots of one scene show the same place from a new angle or the next moment. Never mention text, letters, numbers, logos or captions; never name or depict real people.`,
@@ -876,7 +876,7 @@ export function directionPrompt(job: PlanJob, plan: Plan, treatment?: Treatment 
   // The requirements are printed ABOVE everything: they are the brief, the rest is how it is told.
   const brief = spec ? `${specBlock(spec)}\n\n` : "";
   const specRules = spec
-    ? `\n- THE REQUIREMENTS ABOVE ARE THE FILM. The cast is the requirements' CAST: the same characters, the same names, never one more or one less, their looks exactly as written (Kleo pastes them in). must_keep starts with every "line" requirement, in the user's words. forbidden starts with every "NEVER" requirement. objects include every "must be seen" requirement.${faithful ? " Do not add a character, a place or an event the requirements do not have, unless it is LEFT TO KLEO." : ""}`
+    ? `\n- THE REQUIREMENTS ABOVE ARE THE FILM. The cast is the requirements' CAST: the same characters, the same names, never one more or one less, their looks exactly as written (Kleo pastes them in). must_keep starts with every "line" requirement, in the user's words. forbidden starts with every "NEVER" requirement. objects include every "must be seen" requirement, and a "must be seen" object that appears in more than one shot is also a prop whose look keeps the requirement's words.${faithful ? " Do not add a character, a place or an event the requirements do not have, unless it is LEFT TO KLEO." : ""}`
     : "";
   return `${brief}USER REQUEST (read it as a request, not as raw material):
 """${storyRequest(job.prompt)}"""
@@ -893,6 +893,7 @@ TASK: write the DIRECTION of this one film, before any scene exists. Return one 
   "must_keep":[up to ${DL.mustKeep.max} strings <=${DL.mustKeep.len}: facts, names, numbers and constraints COPIED FROM THE REQUEST that the finished narration must still say. Use [] if the request states none. Never invent one.],
   "world":"<=${DL.world}, the place, period and material everything is drawn in — one sentence a picture can be built from",
   "cast":[up to ${DL.cast.max} {"name":"<=${DL.cast.name}, how the narration refers to them","look":"<=${DL.cast.look}, the ONE description reused word for word in every picture that shows them: one sentence a painter could work from — age or build, face, hair, clothes with their colours, one distinctive item. Never a name or a role ('a young warrior' is not a look)"}],
+  "props":[up to ${DL.props.max} {"name":"<=${DL.props.name}, how every image_prompt calls it ('the pencil', 'the brass key')","look":"<=${DL.props.look}, the ONE description reused word for word in every picture that shows it: material, colour, shape, size, markings, wear, and for a tool the mark it leaves ('a short yellow hexagonal HB pencil with a worn pink eraser, drawing a thin grey graphite line')"}]: the OBJECTS THAT RECUR — shown in more than one shot, or handled by a character — which must stay the same object from shot to shot. [] when nothing recurs. A prop is never a character and never has a character's name.
   "objects":[${DL.objects.min}-${DL.objects.max} strings <=${DL.objects.len}: the object vocabulary of THIS film and nothing else — pirates: beach, sand, chest, red-sailed ship; space: rocket, launch pad, orbital station],
   "forbidden":[${DL.forbidden.min}-${DL.forbidden.max} strings <=${DL.forbidden.len}: what must NEVER appear. Name the things a picture generator adds by habit and the things that belong to a DIFFERENT subject than this one],
   "sections":[${skeleton.length} objects, ONE PER SECTION BELOW, in the same order: {"name":"<=${DL.sections.name} UPPERCASE, the section's name FOR THIS FILM","means":"<=${DL.sections.means}, what its colour stands for in this story"}]}}
@@ -913,7 +914,7 @@ RULES${specRules}
   · explainer — the answer is ONE IDEA TAKEN APART until the viewer believes something different at the end: one mechanism, one object, one misconception, and nothing to list or compare. Hand-drawn line art where every spoken phrase has its own literal drawing. The words "explain", "why", "how" in a request do NOT choose it — most requests for cyber and realistic say "explain" too. What chooses it is that the answer is a single thing and the viewer's belief about it changes.
   · stickman — only if the user asked for a stickman by name.
   THE LINE BETWEEN cyber AND explainer IS THE ONE THAT MATTERS, and it is not the subject and not the verb. Ask: does the answer have PARTS? A flow from one named thing to the next, a breakdown into shares or percentages, several items, two things compared, a set of steps or numbers — that is cyber, whatever the request calls it. "Show how our data goes from the app to the servers to third parties" is cyber: three named parts and a flow between them. "Break down how much of a phone bill is the network" is cyber: shares of a whole. "The five costliest cyberattacks in history" is cyber: five items with figures. "Explain what a VPN is to my mother" is explainer: one thing, no parts, and she ends up believing something new. And a photographable subject with no mechanism in it — bread going mouldy, choosing a mattress, a place, a product — is realistic even when the request says "explain why". Decide which of these the request looks like before you decide anything else about it.
-- Everything you write here is in ${lang} except the enum values (style, accent) and THE PICTURE FIELDS — "world", every cast "name" and "look", "objects" and "forbidden" — which are written in ENGLISH whatever the film speaks: they are pasted into every picture prompt, and the picture model reads English only ("la pasticcera" becomes "the pastry chef").${feedback?.length ? `\n\nYOUR PREVIOUS ANSWER WAS REJECTED with these problems. Fix every one of them and return the whole object again:\n- ${feedback.join("\n- ")}` : ""}`;
+- Everything you write here is in ${lang} except the enum values (style, accent) and THE PICTURE FIELDS — "world", every cast "name" and "look", "objects" and "forbidden", every prop "name" and "look" — which are written in ENGLISH whatever the film speaks: the world, the looks and the forbidden list are pasted into the picture prompts, and the picture model reads English only ("la pasticcera" becomes "the pastry chef", "la matita" becomes "the pencil").${feedback?.length ? `\n\nYOUR PREVIOUS ANSWER WAS REJECTED with these problems. Fix every one of them and return the whole object again:\n- ${feedback.join("\n- ")}` : ""}`;
 }
 
 export const directionSchema = (): Record<string, unknown> => ({
@@ -931,6 +932,9 @@ export const directionSchema = (): Record<string, unknown> => ({
         subject: str, goal: str, audience: str, tone: str, world: str,
         must_keep: strArr, objects: strArr, forbidden: strArr,
         cast: { type: "array", items: { type: "object", additionalProperties: false, required: ["name", "look"], properties: { name: str, look: str } } },
+        // Optional (27 September 2026): a direction with no recurring object leaves it out, and every answer written
+        // before props existed is still a direction.
+        props: { type: "array", items: { type: "object", additionalProperties: false, required: ["name", "look"], properties: { name: str, look: str } } },
         // No accent and no scene count: those come from the template's shape, so the model cannot get them wrong.
         sections: {
           type: "array",
@@ -969,6 +973,18 @@ function repairDirection(raw: unknown, skeleton: readonly Bone[], scenes: number
   });
   const cast = (Array.isArray(raw.cast) ? raw.cast : []).filter(isObj).slice(0, DL.cast.max)
     .map((m) => ({ name: cut(m.name, DL.cast.name), look: cut(m.look, DL.cast.look) })).filter((m) => m.name && m.look);
+  // THE PROPS ARE BEST EFFORT (27 September 2026): a prop the model named badly (no look, a thin one, a character's
+  // name, a repeat) is dropped here, never allowed to make directionProblems refuse the whole direction — a film with
+  // no direction is worse than a film whose pencil is described in its own shots only.
+  const castKeys = new Set(cast.map((m) => propKey(m.name)));
+  const props: PropMember[] = [];
+  for (const m of (Array.isArray(raw.props) ? raw.props : []).filter(isObj)) {
+    const p = { name: cut(m.name, DL.props.name), look: cut(m.look, DL.props.look) };
+    const k = propKey(p.name);
+    if (!p.name || !p.look || thinPropLook(p.look) || !k || castKeys.has(k) || props.some((x) => propKey(x.name) === k)) continue;
+    props.push(p);
+    if (props.length >= DL.props.max) break;
+  }
   const d: Direction = {
     subject: cut(raw.subject, DL.subject), goal: cut(raw.goal, DL.goal), audience: cut(raw.audience, DL.audience),
     tone: cut(raw.tone, DL.tone), world: cut(raw.world, DL.world),
@@ -976,6 +992,7 @@ function repairDirection(raw: unknown, skeleton: readonly Bone[], scenes: number
     objects: cutList(raw.objects, DL.objects.max, DL.objects.len),
     forbidden: cutList(raw.forbidden, DL.forbidden.max, DL.forbidden.len),
     cast,
+    ...(props.length ? { props } : {}),
     sections,
   };
   return directionProblems(d, { accents: CINEMA_ACCENTS, scenes }).length ? null : d;
@@ -1006,7 +1023,7 @@ export function directionBlock(d: Direction): string {
 Subject: ${d.subject}
 Goal: ${d.goal}   Audience: ${d.audience}   Tone: ${d.tone}
 World (everything is drawn here): ${d.world}
-${d.cast.length ? `Cast, described the SAME WAY every time they appear:\n${d.cast.map((m) => `  - ${m.name}: ${m.look}`).join("\n")}\n` : ""}Objects this film may show: ${d.objects.join(", ")}
+${d.cast.length ? `Cast, described the SAME WAY every time they appear:\n${d.cast.map((m) => `  - ${m.name}: ${m.look}`).join("\n")}\n` : ""}${d.props?.length ? `Props, the SAME object every time it appears (call each by its name in every image_prompt that shows it and list it in the shot's "props"; Kleo appends the look):\n${d.props.map((m) => `  - ${m.name}: ${m.look}`).join("\n")}\n` : ""}Objects this film may show: ${d.objects.join(", ")}
 NEVER show: ${d.forbidden.join(", ")}
 ${spoken.length ? `The narration MUST still say all of this, in the viewer's hearing:\n${spoken.map((f) => `  - ${f}`).join("\n")}\n` : ""}${seen.length ? `SEEN IN THE PICTURES, NEVER READ ALOUD (the narration does not describe how anyone looks): ${seen.join("; ")}` : ""}`;
 }
@@ -1202,12 +1219,14 @@ function chunkPrompt(job: PlanJob, plan: Plan, outline: OutlineEntry[], from: nu
       ? ` Every shot also carries "covers" — the ids of the requirements it SHOWS ([] when none) — "cast" — the ids of the characters in the picture (${spec.cast.map((c) => c.id).join(", ") || "none in this film"}; [] when nobody) — and "action": one English sentence, ≤${SHOT_ACTION_MAX} characters, saying what moves or happens during the shot (the clip is animated from it). The "image_prompt" describes what the shot covers explicitly: each character by the cast name with their key look, the place, what they are doing.`
       : ` Every shot also carries "action": one English sentence, ≤${SHOT_ACTION_MAX} characters, saying what moves or happens during the shot (the clip is animated from it).`
     : "";
+  const propNames = pic ? (d?.props ?? []).map((m) => m.name) : [];
+  const propAsk = propNames.length ? ` A shot that shows one of the direction's props lists it in "props" (${propNames.map((n) => `"${n}"`).join(", ")}; [] when none) and calls it by that name in its image_prompt, never re-describing it.` : "";
   const owedSaid = owed.map((i) => d?.must_keep[i]).filter((f): f is string => !!f && !lookFact(f, d?.cast ?? []));
   let msg = `${contextBlock(job, plan, treatment, false, spec)}${layerAsk}${d ? `\n${directionBlock(d)}` : ""}${owedSaid.length ? `\nTHESE SCENES OWE THESE FACTS — say each one out loud in a "voice" line:\n${owedSaid.map((f) => `  - ${f}`).join("\n")}` : ""}${castList}${owedSpec}${script}${faithful}
 VIDEO OUTLINE (${total} scenes; you write scenes ${from + 1}–${to} now):
 ${outline.map((e, i) => `${i + 1}. [${e.id}] ${e.kind} · ${e.label}${e.accent ? ` · ${e.accent}` : ""} — ${e.summary} (${e.words} words)${e.covers.length && owedIds.length ? ` · covers ${e.covers.join(", ")}` : ""}`).join("\n")}
 ${prevVoice ? `The previous scene ended with this narration, continue naturally from it: "${prevVoice}"` : "This is the start of the video."}
-TASK: write scenes ${from + 1}–${to} in full, in order, keeping their ids, kinds${cin ? ", chapters (as \"chapter\") and accents" : stick ? " and titles" : sk ? " and accents" : " and eyebrows"} from the outline. Their narration together totals about ${words} words (${entries.map((e) => `${e.id}: ${e.words}`).join(", ")}). ${how}${pic ? ` Each "image_prompt" is one sentence, ≤${IMAGE_PROMPT_MAX} characters, with no text in the picture${spec?.items.some((i) => i.kind === "text") ? " unless the shot covers a requirement that must be read on screen (then the exact words, in quotes)" : ""}${plan.language !== "en" ? ", WRITTEN IN ENGLISH (only the voice is in the narration's language)" : ""}.${shotFields}` : ""}
+TASK: write scenes ${from + 1}–${to} in full, in order, keeping their ids, kinds${cin ? ", chapters (as \"chapter\") and accents" : stick ? " and titles" : sk ? " and accents" : " and eyebrows"} from the outline. Their narration together totals about ${words} words (${entries.map((e) => `${e.id}: ${e.words}`).join(", ")}). ${how}${pic ? ` Each "image_prompt" is one sentence, ≤${IMAGE_PROMPT_MAX} characters, with no text in the picture${spec?.items.some((i) => i.kind === "text") ? " unless the shot covers a requirement that must be read on screen (then the exact words, in quotes)" : ""}${plan.language !== "en" ? ", WRITTEN IN ENGLISH (only the voice is in the narration's language)" : ""}.${shotFields}${propAsk}` : ""}
 Return {"scenes":[…]} with exactly ${entries.length} scene objects and nothing else.`;
   if (feedback?.length) msg += `\n\nYOUR PREVIOUS ANSWER WAS REJECTED by the validator with these problems (scene numbers count within the scenes you returned, "beat n" counts inside that scene). Fix every one of them and return all ${entries.length} scenes again:\n- ${feedback.join("\n- ")}`;
   return msg;
@@ -1219,7 +1238,7 @@ const strArr = { type: "array", items: str };
 
 /** Every property the contract knows, closed with additionalProperties:false (open objects let the grammar accept
  * garbled keys). Junk the model puts in irrelevant properties is removed per kind by normalizeStoryboard. */
-function sceneSchema(plan: Plan, layer: Graphics | null = null, spec: RequestSpec | null = null): Record<string, unknown> {
+function sceneSchema(plan: Plan, layer: Graphics | null = null, spec: RequestSpec | null = null, propNames: readonly string[] = []): Record<string, unknown> {
   if (plan.style === "sketch") return explainerSceneSchema();
   if (plan.style === "picture") {
     // The authoring fields (24 September 2026): "action" on every picture film, "covers" and "cast" only under a spec,
@@ -1232,6 +1251,9 @@ function sceneSchema(plan: Plan, layer: Graphics | null = null, spec: RequestSpe
         image_prompt: str, caption: str, hl: str, at: str, shot_kind: { type: "string", enum: [...SHOT_KINDS] }, action: str,
         ...(ids.length ? { covers: { type: "array", items: { type: "string", enum: ids } } } : {}),
         ...(castIds.length ? { cast: { type: "array", items: { type: "string", enum: castIds } } } : {}),
+        // The direction's props (27 September 2026), as an enum of their FINAL names (after the English pass): a
+        // grammar that can only decode a real prop name cannot tag a shot with one the direction does not have.
+        ...(propNames.length ? { props: { type: "array", items: { type: "string", enum: [...propNames] } } } : {}),
       },
       required: ["image_prompt"],
       additionalProperties: false,
@@ -1316,8 +1338,8 @@ function outlineSchema(plan: Plan, facts = 0, covers: readonly string[] = []): R
   };
 }
 
-const chunkSchema = (plan: Plan, layer: Graphics | null = null, spec: RequestSpec | null = null): Record<string, unknown> => ({
-  type: "object", properties: { scenes: { type: "array", items: sceneSchema(plan, layer, spec) } }, required: ["scenes"], additionalProperties: false,
+const chunkSchema = (plan: Plan, layer: Graphics | null = null, spec: RequestSpec | null = null, propNames: readonly string[] = []): Record<string, unknown> => ({
+  type: "object", properties: { scenes: { type: "array", items: sceneSchema(plan, layer, spec, propNames) } }, required: ["scenes"], additionalProperties: false,
 });
 
 /* ------------------------------------------------------------------ normalisation */
@@ -1485,6 +1507,7 @@ function repairShot(sh: Record<string, unknown>, voice: string, first: boolean):
   const ids = (v: unknown, len: number, max: number): string[] => [...new Set((Array.isArray(v) ? v : []).filter((x): x is string => typeof x === "string").map((x) => x.trim()).filter((x) => x && x.length <= len))].slice(0, max);
   const covers = ids(sh.covers, SHOT_TAG_MAX, SHOT_COVERS_MAX); if (covers.length) out.covers = covers;
   const cast = ids(sh.cast, SHOT_TAG_MAX, SHOT_CAST_MAX); if (cast.length) out.cast = cast;
+  const props = ids(sh.props, SHOT_TAG_MAX, SHOT_PROPS_MAX); if (props.length) out.props = props;
   if (typeof sh.caption === "string" && sh.caption.trim() && sh.caption.length <= SHOT_CAPTION_MAX && printableStr(sh.caption)) out.caption = sh.caption.trim();
   if (typeof sh.hl === "string" && sh.hl.trim() && sh.hl.length <= SHOT_HL_MAX && typeof out.caption === "string" && String(out.caption).toLowerCase().includes(sh.hl.trim().toLowerCase())) out.hl = sh.hl.trim();
   // The cut has to be whole words of the narration (quotesVoice, the way engine/picture.js aligns a shot): a fragment
@@ -1863,10 +1886,10 @@ export const TRANSLATOR_SYSTEM = `You translate the art direction of a film into
 
 /** The picture fields of a direction, to be returned in English with the same shape (same array lengths and order). */
 export function englishFieldsPrompt(d: Direction, language: string): string {
-  const fields = { world: d.world, cast: (d.cast ?? []).map((m) => ({ name: m.name, look: m.look })), objects: d.objects ?? [], forbidden: d.forbidden ?? [] };
+  const fields = { world: d.world, cast: (d.cast ?? []).map((m) => ({ name: m.name, look: m.look })), objects: d.objects ?? [], forbidden: d.forbidden ?? [], ...(d.props?.length ? { props: d.props.map((m) => ({ name: m.name, look: m.look })) } : {}) };
   return `These fields of a film's art direction are pasted into the prompts of an image generator that reads English only. They may be written in ${LANG_NAMES[language] ?? language} or already in English.
 ${JSON.stringify(fields)}
-TASK: return the same object with every value in natural English: "world" as one sentence, each cast "name" as the English way of naming that character (e.g. "la pasticcera" → "the pastry chef"), each cast "look" as a plain visual description, "objects" and "forbidden" as English nouns. Keep a value that is already English exactly as it is. Keep every array the same length and order, add nothing, explain nothing.`;
+TASK: return the same object with every value in natural English: "world" as one sentence, each cast "name" as the English way of naming that character (e.g. "la pasticcera" → "the pastry chef"), each cast "look" as a plain visual description, "objects" and "forbidden" as English nouns${d.props?.length ? ', each prop "name" as the English name of that object and each prop "look" as a plain visual description' : ""}. Keep a value that is already English exactly as it is. Keep every array the same length and order, add nothing, explain nothing.`;
 }
 export const englishFieldsSchema = (): Record<string, unknown> => ({
   type: "object", additionalProperties: false,
@@ -1875,6 +1898,7 @@ export const englishFieldsSchema = (): Record<string, unknown> => ({
     cast: { type: "array", items: { type: "object", additionalProperties: false, properties: { name: { type: "string" }, look: { type: "string" } }, required: ["name", "look"] } },
     objects: { type: "array", items: { type: "string" } },
     forbidden: { type: "array", items: { type: "string" } },
+    props: { type: "array", items: { type: "object", additionalProperties: false, properties: { name: { type: "string" }, look: { type: "string" } }, required: ["name", "look"] } },
   },
   required: ["world", "cast", "objects", "forbidden"],
 });
@@ -1896,6 +1920,9 @@ export function applyEnglishFields(d: Direction, raw: unknown): void {
     d.cast = (d.cast ?? []).map((m, i) => { const c: Record<string, unknown> = isObj(cast[i]) ? (cast[i] as Record<string, unknown>) : {}; return { ...(m.id ? { id: m.id } : {}), name: text(c.name, DL.cast.name) ?? m.name, look: text(c.look, DL.cast.look) ?? m.look }; });
   const objects = list(raw.objects, d.objects ?? [], DL.objects.len); if (objects) d.objects = objects;
   const forbidden = list(raw.forbidden, d.forbidden ?? [], DL.forbidden.len); if (forbidden) d.forbidden = forbidden;
+  const props: unknown[] = Array.isArray(raw.props) ? raw.props : [];
+  if (d.props?.length && props.length === d.props.length)
+    d.props = d.props.map((m, i) => { const c: Record<string, unknown> = isObj(props[i]) ? (props[i] as Record<string, unknown>) : {}; return { name: text(c.name, DL.props.name) ?? m.name, look: text(c.look, DL.props.look) ?? m.look }; });
 }
 
 /** The picture prompts a chunk wrote in the narration's language, to come back in English, one for one. */
@@ -2304,7 +2331,7 @@ function repairPrompt(spec: RequestSpec, plan: Plan, d: Direction | null, sb: St
   const lang = LANG_NAMES[plan.language] ?? plan.language;
   const compact = sb.scenes.map((s, i) => ({
     n: i + 1, id: s.id, kind: s.kind, chapter: s.chapter, accent: s.accent, title: s.title, voice: s.voice,
-    shots: (Array.isArray(s.shots) ? s.shots : []).filter(isObj).map((sh) => ({ image_prompt: sh.image_prompt, covers: sh.covers ?? [], cast: sh.cast ?? [], action: sh.action, at: sh.at })),
+    shots: (Array.isArray(s.shots) ? s.shots : []).filter(isObj).map((sh) => ({ image_prompt: sh.image_prompt, covers: sh.covers ?? [], cast: sh.cast ?? [], ...(Array.isArray(sh.props) && sh.props.length ? { props: sh.props } : {}), action: sh.action, at: sh.at })),
     // The layer's per-scene state, so an answer that rewrites the scene can hand it back as it was (keepUnsaid keeps
     // it anyway when the answer leaves it out).
     ...((s as { hud?: unknown }).hud ? { hud: (s as { hud?: unknown }).hud } : {}),
@@ -2315,7 +2342,7 @@ ${d ? `${directionBlock(d)}\n` : ""}THE PLANNED FILM (every scene, in order):
 ${JSON.stringify(compact)}
 A CHECK OF THIS PLAN AGAINST THE USER'S REQUEST FOUND:
 - ${feedback.join("\n- ")}
-TASK: correct these scenes so that the film shows and says what the user asked for: ${pick.map((i) => `scene ${i + 1} [${String(sb.scenes[i].id)}]`).join(", ")}. Return {"scenes":[…]} with exactly ${pick.length} scene objects, in that order, each one complete and keeping its id, kind, chapter and accent (and its "hud" and "cards" when it has them, changed only where the new voice changes them): the voice in ${lang}${plan.clipFloor > 0 && spec.narration !== "verbatim" ? `, ${clipWordsPerShot(plan.clipFloor)} words at the least (each scene is a paid ${plan.clipFloor}-second clip its line must fill)` : ""}; ${plan.clipFloor > 0 ? `one shot for a cinema scene, two only for a line of ${2 * clipWordsPerShot(plan.clipFloor)} words or more` : `${shotRangeText("cinema")} shots for a cinema scene`} (the closing one), each with "image_prompt" (one English sentence, ≤${IMAGE_PROMPT_MAX} characters), "covers", "cast" and "action", and every shot after the first anchored with "at" to words copied from its own voice. Change only what the problems above require; keep everything else as it was.`;
+TASK: correct these scenes so that the film shows and says what the user asked for: ${pick.map((i) => `scene ${i + 1} [${String(sb.scenes[i].id)}]`).join(", ")}. Return {"scenes":[…]} with exactly ${pick.length} scene objects, in that order, each one complete and keeping its id, kind, chapter and accent (and its "hud" and "cards" when it has them, changed only where the new voice changes them): the voice in ${lang}${plan.clipFloor > 0 && spec.narration !== "verbatim" ? `, ${clipWordsPerShot(plan.clipFloor)} words at the least (each scene is a paid ${plan.clipFloor}-second clip its line must fill)` : ""}; ${plan.clipFloor > 0 ? `one shot for a cinema scene, two only for a line of ${2 * clipWordsPerShot(plan.clipFloor)} words or more` : `${shotRangeText("cinema")} shots for a cinema scene`} (the closing one), each with "image_prompt" (one English sentence, ≤${IMAGE_PROMPT_MAX} characters), "covers", "cast"${d?.props?.length ? ', "props"' : ""} and "action", and every shot after the first anchored with "at" to words copied from its own voice. Change only what the problems above require; keep everything else as it was.`;
 }
 
 /**
@@ -2504,7 +2531,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   let directionFeedback: string[] | undefined;
   for (let attempt = 1; attempt <= 2 && !direction; attempt++) {
     let raw: unknown;
-    try { raw = clean(await call(directionPrompt(job, plan, treatment, directionFeedback, spec), directionSchema(), 900 + (spec?.cast.length ?? 0) * 120)); }
+    try { raw = clean(await call(directionPrompt(job, plan, treatment, directionFeedback, spec), directionSchema(), 900 + (spec?.cast.length ?? 0) * 120 + DL.props.max * 90)); }
     catch (e) { if (e instanceof PlanBudgetError) throw e; history.push([`direction: model call failed: ${String(e).slice(0, 200)}`]); if (isTransientAiError(e)) { transient = e; break; } continue; }
     const o = isObj(raw) ? raw : {};
     const d = repairDirection(o.direction, skeleton, sceneGuess);
@@ -2540,7 +2567,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
   //     temperature 0, and a field that comes back empty or too long keeps what it had. The cast NAME is translated
   //     too, because it is what castFor() looks for inside the (English) picture prompts.
   if (direction && plan.style === "picture" && plan.language !== "en") {
-    try { applyEnglishFields(direction, clean(await call(englishFieldsPrompt(direction, plan.language), englishFieldsSchema(), 700, { system: TRANSLATOR_SYSTEM, temperature: 0 }))); }
+    try { applyEnglishFields(direction, clean(await call(englishFieldsPrompt(direction, plan.language), englishFieldsSchema(), 700 + (direction.cast?.length ?? 0) * 120 + (direction.props?.length ?? 0) * 90, { system: TRANSLATOR_SYSTEM, temperature: 0 }))); }
     catch (e) { if (e instanceof PlanBudgetError) throw e; history.push([`english pass (direction): ${String(e).slice(0, 200)}`]); }
     // The spec's cast keeps the spec's names (castFor matches a picture to its character through them, and the shots
     // name their cast by the spec's ids): the translation of the rest of the direction stands, the cast goes back.
@@ -2677,7 +2704,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     for (let attempt = 1; attempt <= 3 && !accepted; attempt++) {
       let raw: unknown;
       const maxTokens = plan.style === "cinema" ? 700 * (to - from) : plan.style === "picture" ? (specShots ? 750 : 600) * (to - from) : 350 * (to - from);
-      try { raw = await call(chunkPrompt(job, plan, outline, from, to, prevVoice, feedback, direction, treatment, spec), chunkSchema(plan, layerOf(plan, treatment), specShots ? spec : null), 400 + maxTokens); }
+      try { raw = await call(chunkPrompt(job, plan, outline, from, to, prevVoice, feedback, direction, treatment, spec), chunkSchema(plan, layerOf(plan, treatment), specShots ? spec : null, (direction?.props ?? []).map((m) => m.name)), 400 + maxTokens); }
       catch (e) {
         // The clock ran out on a RETRY: the valid answer already in hand is the chunk (kept below, its problems said),
         // not a reason to throw the whole plan away and have the orchestrator redo every call (25 September 2026).
@@ -2938,7 +2965,7 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
       let repairedVerdict: PlanFidelity | null = null;
       if (pick.length) {
         try {
-          const raw = clean(await call(repairPrompt(spec!, plan, direction, now, pick, feedback), chunkSchema(plan, layerOf(plan, treatment), spec), 400 + 750 * pick.length));
+          const raw = clean(await call(repairPrompt(spec!, plan, direction, now, pick, feedback), chunkSchema(plan, layerOf(plan, treatment), spec, (direction?.props ?? []).map((m) => m.name)), 400 + 750 * pick.length));
           const got = isObj(raw) && Array.isArray(raw.scenes) ? raw.scenes.filter(isObj) : [];
           const byIndex = new Map<number, Record<string, unknown>>();
           got.forEach((g, k) => {

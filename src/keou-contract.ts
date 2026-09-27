@@ -178,15 +178,19 @@ export const SHOT_FIELDS = ["image_prompt", "caption", "hl", "at", "shot_kind", 
  *     before it guesses from the prompt's words, and the stills engine passes those characters' sheets as references.
  *   - action: what moves or happens during the shot, in English, for the clip model (the still is drawn from
  *     image_prompt alone; the movement no longer rides on it — src/direction.ts motionHint()).
+ *   - props:  the direction's recurring objects IN THE PICTURE, by prop name (27 September 2026). propsFor() uses it
+ *     before it reads the prompt's words, and every still and clip prompt of the shot carries those props' looks.
  * They are not in SHOT_FIELDS, which stays the mirror of what the engine accepts.
  */
-export const AUTHORING_SHOT_FIELDS = ["covers", "cast", "action"] as const;
+export const AUTHORING_SHOT_FIELDS = ["covers", "cast", "action", "props"] as const;
 export const SHOT_ACTION_MAX = 240;
 export const SHOT_COVERS_MAX = 12;
 /** One entry of covers or cast: a spec id ("R12", "c3") or a cast name, at most the direction's name length. */
 export const SHOT_TAG_MAX = DL.cast.name;
 /** Characters one picture can name in its cast: the direction's own ceiling. */
 export const SHOT_CAST_MAX = DL.cast.max;
+/** Props one picture can name: the direction's own ceiling. */
+export const SHOT_PROPS_MAX = DL.props.max;
 /**
  * Shots per scene: a cinema scene cuts up to four times, a closing shows one picture (two at most).
  * The contract's floor stays 1 because worker/keou/contract.py has the same floor and the two must not drift; the
@@ -462,6 +466,8 @@ export interface PictureScene {
   covers: string[];
   cast: string[];
   action: string | null;
+  /** The direction's props the shot shows, by name (27 September 2026). */
+  props: string[];
 }
 export function pictureScenes(sb: unknown): PictureScene[] {
   const c = (typeof sb === "object" && sb !== null ? sb : {}) as Record<string, unknown>;
@@ -479,7 +485,7 @@ export function pictureScenes(sb: unknown): PictureScene[] {
       if (!p) return []; // a shot without a prompt keeps its index: ids follow the shot number
       const tags = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && !!x.trim()).map((x) => x.trim()) : []);
       const action = typeof o.action === "string" && o.action.trim() ? o.action.trim() : null;
-      return [{ id: `${sc.id}-s${i + 1}`, image_prompt: p, accent, shot_kind: typeof o.shot_kind === "string" ? o.shot_kind : null, covers: tags(o.covers), cast: tags(o.cast), action }];
+      return [{ id: `${sc.id}-s${i + 1}`, image_prompt: p, accent, shot_kind: typeof o.shot_kind === "string" ? o.shot_kind : null, covers: tags(o.covers), cast: tags(o.cast), action, props: tags(o.props) }];
     });
   });
 }
@@ -863,6 +869,7 @@ function validateShots(s: Record<string, unknown>, label: string, kind: "cinema"
     }
     if ("covers" in sh) tagList(sh.covers, `${sl} covers`, SHOT_COVERS_MAX, 'the spec item ids this shot shows ("R1", "R2"…)', e);
     if ("cast" in sh) tagList(sh.cast, `${sl} cast`, SHOT_CAST_MAX, 'the characters in this picture, by spec cast id ("c1") or by their cast name', e);
+    if ("props" in sh) tagList(sh.props, `${sl} props`, SHOT_PROPS_MAX, "the direction's props in this picture, by their prop name", e);
     if ("action" in sh) e.text(sh.action, `${sl} action`, SHOT_ACTION_MAX);
     if (e.text(sh.image_prompt, `${sl} image_prompt`, IMAGE_PROMPT_MAX) && (sh.image_prompt as string).trim().length < IMAGE_PROMPT_MIN)
       e.add(`${sl} image_prompt: required text, minimum ${IMAGE_PROMPT_MIN} characters`);

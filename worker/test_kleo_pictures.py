@@ -741,5 +741,40 @@ class NegatedLookTest(unittest.TestCase):
         self.assertLessEqual(len(neg), kp.NEGATIVE_MAX)
 
 
+class PropsTest(unittest.TestCase):
+    """The props on the GPU fallback (27 September 2026). Mirrors src/direction.ts propsFor(): a prop the prompt names
+    gets its look after the cast, whole or not at all inside CONTEXT_MAX; a hand in a one-character film is that
+    character; what a prop look negates reaches the negative prompt."""
+
+    DIRECTION = {
+        "world": "A small desk by one window before dawn",
+        "cast": [{"name": "the writer", "look": "slim young hands, short nails"}],
+        "props": [{"name": "the pencil", "look": "a yellow hexagonal pencil, no eraser"},
+                  {"name": "the desk lamp", "look": "a black enamel desk lamp on a jointed arm"}],
+        "forbidden": ["blue ink"],
+    }
+
+    def test_a_named_prop_follows_the_cast_whole_or_not_at_all(self):
+        names = [m["name"] for m in kp.props_in(self.DIRECTION, "A hand draws a line with the pencil")]
+        self.assertEqual(names, ["the pencil"])
+        self.assertEqual([m["name"] for m in kp.props_in(self.DIRECTION, "The lamp glows over the page")], ["the desk lamp"], "a unique head noun")
+        self.assertEqual(kp.props_in(self.DIRECTION, "It rolls across the page"), [])
+        self.assertEqual(kp.props_in({"props": ["pencil"]}, "the pencil"), [], "a malformed entry is ignored")
+        ctx = kp.context_for(self.DIRECTION, "A hand draws a line with the pencil", None)
+        self.assertTrue(ctx.startswith("the writer: slim young hands"), ctx)
+        self.assertIn("the pencil: a yellow hexagonal pencil, no eraser", ctx)
+        self.assertLessEqual(len(ctx), kp.CONTEXT_MAX)
+        crowded = dict(self.DIRECTION, props=[{"name": "the pencil", "look": "x " * 80}])
+        self.assertNotIn("the pencil:", kp.context_for(crowded, "the pencil", None), "a look that does not fit is left out whole")
+
+    def test_a_hand_is_the_one_character(self):
+        self.assertEqual([m["name"] for m in kp.cast_in(self.DIRECTION, "A hand draws a thin line")], ["the writer"])
+        two = dict(self.DIRECTION, cast=self.DIRECTION["cast"] + [{"name": "the teacher", "look": "a tall grey-haired man"}])
+        self.assertEqual(kp.cast_in(two, "A hand draws a thin line"), [])
+        self.assertIsNone(kp.PRONOUN_HINTS.search("handsome scenery"))
+
+    def test_what_a_prop_look_negates_goes_to_the_negative(self):
+        self.assertIn("eraser", kp.negative_for(self.DIRECTION))
+
 if __name__ == "__main__":
     unittest.main()

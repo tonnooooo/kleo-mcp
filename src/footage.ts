@@ -36,7 +36,7 @@ import { hmacHex, int, num, nowIso, publicText } from "./util.ts";
 import { FILM_LOOKS, directionOf, type FilmLook } from "./keou-contract.ts";
 import { isAnimatic } from "./templates.ts";
 import { specOf, itemById, type RequestSpec, type SpecItem } from "./spec.ts";
-import { stillCast, stillShotsOf, stillModel, stillProviderOf, stillPriceUsd, stillsHold, stillsStateOf, STILL_SIZES, SHEET_SIZE } from "./stills.ts";
+import { stillCast, stillShotsOf, stillModel, stillProviderOf, stillPriceUsd, stillsHold, stillsStateOf, STILL_SIZES, SHEET_SIZE, stillProps } from "./stills.ts";
 import { KIE_BASE, KIE_CREATE, KIE_RECORD, KIE_CREDIT, USD_PER_KIE_CREDIT, KieError, kie, isNoCredit, kieResultUrls, type KieRecord } from "./kie.ts";
 import { ephone, ephoneBalanceUsd, ephoneOutputs, ephoneFailure, type EphoneTask } from "./ephone.ts";
 
@@ -335,7 +335,8 @@ export function kiePrompt(shot: { image_prompt: string; motion?: string | null; 
  * not who the characters are, not where. Now the server finds the shot by its picture id in job.storyboard and writes:
  *   1. what MOVES during the shot — the planner's `action` (the image_prompt when the shot has none): the first frame
  *      already shows the picture, the clip model needs the motion;
- *   2. every character in it with their full look (the spec's, uncut), so a turn of the head keeps the face;
+ *   2. every character in it with their full look (the spec's, uncut), so a turn of the head keeps the face, then
+ *      every prop it shows with its look (27 September 2026), so the pencil does not change colour as it moves;
  *   3. the place (the direction's world, or the spec's place items the shot covers);
  *   4. the camera sentence, then the look paragraph — minus its "No text" when the shot carries a text the user asked
  *      to be read on screen, which the clip must keep, not erase.
@@ -350,10 +351,11 @@ export function clipPrompt(shot: { id: string; image_prompt: string; motion?: st
   const covered = spec ? (pic.covers ?? []).map((id) => itemById(spec, id)).filter((x): x is SpecItem => !!x) : [];
   const what = tidy(pic.action || pic.image_prompt || shot.image_prompt);
   const cast = stillCast(pic, spec, direction).map((m) => `${tidy(m.name)}: ${tidy(m.look)}`);
+  const props = stillProps(pic, direction).map((m) => `${tidy(m.name)}: ${tidy(m.look)}`);
   const place = tidy(direction?.world) || covered.filter((i) => i.kind === "place").map((i) => tidy(i.text)).join("; ");
   const keepsText = covered.some((i) => i.kind === "text");
   const lookText = keepsText ? KIE_LOOKS[look].replace(/\s*No text, no captions, no logos\.?/i, "") : KIE_LOOKS[look];
-  return [what, ...cast, place ? `Setting: ${place}` : ""].filter(Boolean).map((s) => `${s}.`).concat([cameraSentence(shot), lookText]).join(" ").replace(/\s+/g, " ").trim();
+  return [what, ...cast, ...props, place ? `Setting: ${place}` : ""].filter(Boolean).map((s) => `${s}.`).concat([cameraSentence(shot), lookText]).join(" ").replace(/\s+/g, " ").trim();
 }
 
 /**
@@ -434,6 +436,10 @@ export function seedancePrompt(
   const spec = stored?.spec ?? null;
   const direction = stored ? directionOf(stored.storyboard) : null;
   const cast = pic ? stillCast(pic, spec, direction) : [];
+  // The shot's props (27 September 2026) are named beside the characters, never re-described when the frame is given:
+  // the first frame already shows the pencil, and a look written out again is the second picture Seedance morphs
+  // towards. A prop whose name says "camera" or "fast" stays out of this prompt (rules 1 and 3 above).
+  const props = pic ? stillProps(pic, direction).filter((m) => !/\bcamera|\bfast/i.test(m.name)) : [];
   const covered = spec && pic ? (pic.covers ?? []).map((id) => itemById(spec, id)).filter((x): x is SpecItem => !!x) : [];
   const action = unhurried(tidy(pic?.action)) || SEEDANCE_KIND_MOTION[pic?.shot_kind ?? ""] || SEEDANCE_KIND_MOTION.default;
   const secs = (n: number) => `${Math.round(n * 10) / 10}s`;
@@ -442,12 +448,14 @@ export function seedancePrompt(
   const head: string[] = [];
   if (opts.hasFrame) {
     head.push(`Continue from the first frame: ${action}.`);
-    const names = cast.map((m) => tidy(m.name)).filter(Boolean);
-    if (names.length) head.push(`${names.join(" and ")} ${names.length > 1 ? "stay" : "stays"} exactly as in the first frame.`);
+    const names = [...cast.map((m) => tidy(m.name)), ...props.map((m) => tidy(m.name))].filter(Boolean);
+    const list = names.length > 2 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : names.join(" and ");
+    if (names.length) head.push(`${list} ${names.length > 1 ? "stay" : "stays"} exactly as in the first frame${props.length ? ", every object with the same shape, colour and markings" : ""}.`);
   } else {
     // Text-to-video: nothing on screen yet, so the picture is described, looks and all (as clipPrompt does).
     head.push(`${tidy(pic?.image_prompt || shot.image_prompt)}.`, `${action.charAt(0).toUpperCase()}${action.slice(1)}.`);
     for (const m of cast) head.push(`${tidy(m.name)}: ${tidy(m.look).slice(0, 300)}.`);
+    for (const m of props) head.push(`${tidy(m.name)}: ${unhurried(tidy(m.look)).replace(/\bcamera\b/gi, "lens").slice(0, 200)}.`);
     const place = tidy(direction?.world) || covered.filter((i) => i.kind === "place").map((i) => tidy(i.text)).join("; ");
     if (place) head.push(`Setting: ${place}.`);
   }

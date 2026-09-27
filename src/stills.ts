@@ -49,7 +49,7 @@ import { audit, setFile, listFiles, updateJobParams } from "./db.ts";
 import { putFile, getFile } from "./storage.ts";
 import { int, num, nowIso, minutesSince, hmacHex, base64ToBytes } from "./util.ts";
 import { pictureScenes, directionOf, kleoStyleOf, MAX_PICTURES } from "./keou-contract.ts";
-import { headNoun, headNounIn, PRONOUN_HINTS, type Direction } from "./direction.ts";
+import { headNoun, headNounIn, PRONOUN_HINTS, propsFor, type Direction, type PropMember } from "./direction.ts";
 import { specOf, castById, fullLook, itemById, visualChecks, norm, type RequestSpec, type SpecItem, type VisualCheck } from "./spec.ts";
 import { judgeImage, mimeOf, toBase64, type VisionImage } from "./vision.ts";
 import { readImageResult, sniffImage, imageFileName, IMAGE_NAME_RE, fnv1a, isTransientError, isQuotaError, isTransientStoreError } from "./images.ts";
@@ -241,7 +241,7 @@ const logicCheck: VisualCheck = { id: "logic", question: "Does everything in the
 
 /* ------------------------------------------------------------------ shapes */
 
-export interface StillShot { id: string; image_prompt: string; shot_kind?: string | null; covers?: string[]; cast?: string[]; action?: string | null }
+export interface StillShot { id: string; image_prompt: string; shot_kind?: string | null; covers?: string[]; cast?: string[]; action?: string | null; /** The direction's props this shot shows, by name (27 September 2026). */ props?: string[] }
 /**
  * A reference image: its bytes (what Workers AI, OpenRouter and the judge are given), and — since 25 September 2026 —
  * a signed public `url` of the same file, for a provider that takes links, not bytes (kie.ai). drawJobStills signs
@@ -279,16 +279,25 @@ const round4 = (n: number): number => Math.round(n * 10000) / 10000;
  */
 export function stillShotsOf(sb: unknown): StillShot[] {
   return pictureScenes(sb).map((p) => {
-    const x = p as typeof p & Partial<{ shot_kind: string | null; covers: string[]; cast: string[]; action: string | null }>;
+    const x = p as typeof p & Partial<{ shot_kind: string | null; covers: string[]; cast: string[]; action: string | null; props: string[] }>;
     return {
       id: p.id, image_prompt: p.image_prompt,
       shot_kind: typeof x.shot_kind === "string" ? x.shot_kind : null,
       covers: Array.isArray(x.covers) ? x.covers.map(String) : [],
       cast: Array.isArray(x.cast) ? x.cast.map(String) : [],
       action: typeof x.action === "string" && x.action.trim() ? x.action.trim() : null,
+      props: Array.isArray(x.props) ? x.props.map(String) : [],
     };
   });
 }
+
+/**
+ * The props one shot shows, each with the look every picture and clip of it must keep (27 September 2026): the shot's
+ * own `props` first, else the prompt's words (direction.ts propsFor). A direction written before props existed has
+ * none, and then nothing is added to any prompt.
+ */
+export const stillProps = (shot: Pick<StillShot, "image_prompt" | "props">, direction: Direction | null): PropMember[] =>
+  propsFor(direction, String(shot.image_prompt ?? ""), shot.props ?? null);
 
 /* ------------------------------------------------------------------ who is in the picture */
 
@@ -337,6 +346,14 @@ export function stillCast(shot: Pick<StillShot, "image_prompt" | "covers" | "cas
 const styleCheck = (look: StillLook): VisualCheck => visualChecks(null, {}, look)[0];
 const noTextCheck: VisualCheck = { id: "no-text", question: "Is there any written text, lettering, caption or watermark in the image?", expect: "no", must: false };
 const castCheck = (m: StillCastMember): VisualCheck => ({ id: `cast:${m.id ?? norm(m.name).replace(/ /g, "-")}`, question: `Is there a character matching this description: ${m.look}?`, expect: "yes", must: true });
+/**
+ * THE PROP QUESTION (27 September 2026): whether the recurring object is drawn as the direction describes it. Soft on
+ * purpose: a small object in a wide shot is exactly what a judge answers unreliably, and a must would buy redraws for
+ * it (the bench's lesson on unprovable musts, 24 September). Soft still counts in the score, so between two tries the
+ * one with the right pencil wins, and the report lists every still where it drifted.
+ */
+const propQuestionPrefix = "Is there an object matching this description:";
+const propCheck = (m: PropMember): VisualCheck => ({ id: `prop:${norm(m.name).replace(/ /g, "-")}`, question: `${propQuestionPrefix} ${m.name}, ${m.look}?`, expect: "yes", must: false });
 const stripNegation = (t: string): string => clean(t).replace(/^(?:no|never|without|not|nothing like)\s+/i, "").replace(/[.\s]+$/, "");
 /**
  * THE IDENTITY QUESTION (24 September 2026): whether the character in the still is the same individual as the sheet
@@ -365,13 +382,14 @@ const identityCheck = (m: StillCastMember, among: number): VisualCheck => ({
  * as drawJobStills passes them). A reference dropped on the way (a refused or flagged input image) takes its identity
  * question with it: compileStill is called again with the references actually passed.
  */
-function checksFor(input: StillInput, cast: StillCastMember[]): VisualCheck[] {
+function checksFor(input: StillInput, cast: StillCastMember[], props: PropMember[] = []): VisualCheck[] {
   const { shot, spec, look } = input;
   const ids = [...(shot.cast ?? []), ...cast.map((m) => m.id).filter((x): x is string => !!x)];
   const checks = visualChecks(spec, { covers: shot.covers ?? [], cast: ids }, look);
   for (const m of cast) if (!m.id || !spec) checks.push(castCheck(m));
   const drawnFrom = cast.filter((m) => input.refs.some((r) => norm(r.label) === norm(m.name)));
   for (const m of drawnFrom) checks.push(identityCheck(m, drawnFrom.length));
+  for (const m of props) checks.push(propCheck(m));
   // Without a spec, a picture whose sentence quotes words to be read ("a sign reading 'OPEN 24H'") is not held to
   // "no text": the bench's smoke run redrew exactly that sign twice for failing it (24 September 2026).
   if (!spec && !/["“”«»]|\b(?:reading|reads|says|labelled|labeled|titled|written)\b/i.test(shot.image_prompt)) checks.push(noTextCheck);
@@ -397,6 +415,7 @@ export function feedbackFor(failed: readonly VisualCheck[], spec: RequestSpec | 
       const it = spec ? itemById(spec, c.id.slice(8)) : undefined;
       return `none of this is visible anywhere: ${stripNegation(it?.text ?? c.question.replace(/^Does the image show any of this:\s*/i, "").replace(/\?$/, ""))}`;
     }
+    if (c.id.startsWith("prop:")) return `this object looks exactly like this: ${c.question.slice(propQuestionPrefix.length).trim().replace(/\?$/, "")}`;
     if (c.id.startsWith("cast:")) {
       const m = spec ? castById(spec, c.id.slice(5)) : undefined;
       return m && spec ? `${m.name} looks exactly like this: ${fullLook(spec, m.id)}` : `the character looks exactly like this: ${c.question.replace(/^Is there a character matching this description:\s*/i, "").replace(/\?$/, "")}`;
@@ -414,20 +433,22 @@ export function feedbackFor(failed: readonly VisualCheck[], spec: RequestSpec | 
  *   1. what an earlier try got wrong ("It is essential that: …"), when there was one;
  *   2. the framing the shot kind asks for, and the frame's orientation;
  *   3. the author's image_prompt;
- *   4. every character in it, "NAME (reference image N): full look" — the user's words, uncut;
+ *   4. every character in it, "NAME (reference image N): full look" — the user's words, uncut — then every prop it
+ *      shows, "NAME: its look" (27 September 2026: the pencil that changed colour between two shots);
  *   5. the other reference images (a place, an object, a style the user gave);
  *   6. the place (the direction's world), the treatment's visual sentence;
  *   7. the exact words of every on-screen text the shot must carry;
  *   8. the look's style sentence and the spec's style items;
  *   9. "no text anywhere" unless the shot carries a text, and "without …" for everything the user excluded.
- * Past STILL_PROMPT_MAX the visual sentence, the world and the looks are shortened in that order, never the feedback,
- * the framing or the author's sentence. Returns the prompt, the size, and the yes/no checks the result is judged by.
+ * Past STILL_PROMPT_MAX the visual sentence, the world, the prop looks and the cast looks are shortened in that order,
+ * never the feedback, the framing or the author's sentence. Returns the prompt, the size, and the yes/no checks the result is judged by.
  */
 export function compileStill(input: StillInput, feedback: string[] = []): { prompt: string; width: number; height: number; checks: VisualCheck[] } {
   const { shot, spec, direction, look } = input;
   const format: StillFormat = input.format === "16:9" ? "16:9" : "9:16";
   const size = STILL_SIZES[format];
   const cast = stillCast(shot, spec, direction);
+  const props = stillProps(shot, direction);
   const refIndex = (label: string) => input.refs.findIndex((r) => norm(r.label) === norm(label));
   const covered = spec ? (shot.covers ?? []).map((id) => itemById(spec, id)).filter((x): x is SpecItem => !!x) : [];
   const texts = covered.filter((i) => i.kind === "text");
@@ -441,11 +462,12 @@ export function compileStill(input: StillInput, feedback: string[] = []): { prom
   ].filter(Boolean);
   const kind = String(shot.shot_kind ?? "");
 
-  const build = (lim: { look: number; world: number; visual: number }): string => [
+  const build = (lim: { look: number; world: number; visual: number; prop: number }): string => [
     feedback.length ? `It is essential that: ${feedback.map((f) => f.replace(/[.\s]+$/, "")).join("; ")}.` : "",
     `${FRAMING[kind] ?? DEFAULT_FRAMING}, ${format === "16:9" ? "horizontal 16:9 frame" : "vertical 9:16 frame"}.`,
     sentence(shot.image_prompt),
     ...cast.map((m) => { const k = refIndex(m.name); return sentence(`${m.name}${k >= 0 ? ` (reference image ${k + 1})` : ""}: ${cut(clean(m.look), lim.look)}`); }),
+    ...props.map((m) => sentence(`${m.name}: ${cut(clean(m.look), lim.prop)}`)),
     ...otherRefs.map(({ r, i }) => sentence(`As in reference image ${i + 1}: ${clean(r.label)}`)),
     world && lim.world > 0 ? sentence(`Setting: ${cut(world, lim.world)}`) : "",
     input.visual && lim.visual > 0 ? sentence(`Visual language: ${cut(clean(input.visual), lim.visual)}`) : "",
@@ -460,16 +482,16 @@ export function compileStill(input: StillInput, feedback: string[] = []): { prom
   ].filter(Boolean).join(" ");
 
   const stages = [
-    { look: 420, world: 300, visual: 420 },
-    { look: 420, world: 200, visual: 200 },
-    { look: 300, world: 160, visual: 0 },
-    { look: 220, world: 120, visual: 0 },
-    { look: 160, world: 0, visual: 0 },
+    { look: 420, world: 300, visual: 420, prop: 300 },
+    { look: 420, world: 200, visual: 200, prop: 300 },
+    { look: 300, world: 160, visual: 0, prop: 220 },
+    { look: 220, world: 120, visual: 0, prop: 160 },
+    { look: 160, world: 0, visual: 0, prop: 120 },
   ];
   let prompt = "";
   for (const s of stages) { prompt = build(s); if (prompt.length <= STILL_PROMPT_MAX) break; }
   if (prompt.length > STILL_PROMPT_MAX) prompt = prompt.slice(0, STILL_PROMPT_MAX);
-  return { prompt, width: size.width, height: size.height, checks: checksFor(input, cast) };
+  return { prompt, width: size.width, height: size.height, checks: checksFor(input, cast, props) };
 }
 
 /* ------------------------------------------------------------------ the model call */

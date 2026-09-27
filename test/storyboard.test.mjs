@@ -780,7 +780,7 @@ test("an Italian film: the direction's picture fields and every picture prompt c
     return { scenes };
   }, {
     direction: (kind, user) => {
-      assert.match(user, /THE PICTURE FIELDS — "world", every cast "name" and "look", "objects" and "forbidden" — which are written in ENGLISH/);
+      assert.match(user, /THE PICTURE FIELDS — "world", every cast "name" and "look", "objects" and "forbidden", every prop "name" and "look" — which are written in ENGLISH/);
       const n = (user.match(/^ {2}\d+\. /gm) || []).length;
       return {
         style: "animation", why: "a tale wants drawing",
@@ -1641,4 +1641,60 @@ test("short on time, a line short of its clip earns no third attempt and no leng
     assert.ok(r.history.some((h) => h.some((m) => /^scene 2: still under 11 words/.test(m))), JSON.stringify(r.history));
     assert.equal(r.storyboard.scenes.length, 2);
   } finally { Date.now = realNow; }
+});
+
+test("props (27 September 2026): the direction's recurring objects reach every scene writer, the shot grammar and the stored shots", async () => {
+  // The test film of 22 September drew its pencil yellow in one shot and brown in the next: the direction had no way
+  // to say what the pencil looks like, and no shot said which pencil it showed.
+  const pencil = { name: "the pencil", look: "a short yellow hexagonal HB pencil with a worn pink eraser, drawing a thin grey graphite line" };
+  let shotSchema = null, chunks = 0, sawProps = 0;
+  const env = fakeEnv((kind, user, attempt, inputs) => {
+    if (kind === "outline") return outlineFor(user, true);
+    chunks++;
+    if (/Props, the SAME object every time it appears/.test(user) && /lists it in "props" \("the pencil"/.test(user)) sawProps++;
+    shotSchema ??= inputs?.response_format?.json_schema?.properties?.scenes?.items?.properties?.shots?.items ?? null;
+    const [from, to] = chunkRange(user);
+    const total = Number(/VIDEO OUTLINE \((\d+) scenes/.exec(user)[1]);
+    const scenes = [];
+    for (let i = from; i < to; i++) {
+      const closing = i === total - 1;
+      scenes.push({
+        id: `${String(i + 1).padStart(2, "0")}-part`, kind: closing ? "closing" : "cinema", chapter: `0${i + 1} PART`,
+        accent: "cyan", title: `Part ${i + 1}`, hl: "Part", hold: 0.2,
+        voice: `Scene ${i + 1} of the story, told in one line with a concrete detail in it.`,
+        shots: closing ? [{ image_prompt: "An empty desk at dawn, the pencil lying across the finished page", props: ["the pencil"] }]
+          : [{ image_prompt: `A hand draws a thin line with the pencil across cream paper, scene ${i + 1}`, props: ["the pencil"] }, { image_prompt: "The same desk from above, the paper slowly filling with lines" }],
+      });
+    }
+    return { scenes };
+  }, {
+    direction: (kind, user) => {
+      assert.match(user, /"props":\[up to 6/, "the direction prompt asks for props");
+      const n = (user.match(/^ {2}\d+\. /gm) || []).length;
+      return {
+        style: "realistic", why: "a desk you could photograph",
+        direction: {
+          subject: "The birth of an idea on a sheet of paper", goal: "The viewer feels the spark of a first sketch",
+          audience: "Makers and students", tone: "Quiet and warm", must_keep: [],
+          world: "A small desk by one window before dawn, cream paper, brass fittings, slate blue shadows",
+          cast: [{ name: "the writer", look: "a young woman seen only as hands and forearms, slim fingers, a cream wool sleeve" }],
+          // One good prop, one named like the character, one with no look to speak of: only the first survives, and
+          // the two bad ones never cost the film its direction.
+          props: [pencil, { name: "the writer", look: "a second person who should not be a prop at all" }, { name: "the eraser", look: "pink" }],
+          objects: ["pencil", "paper", "desk lamp", "window"],
+          forbidden: ["text in the picture", "brand logo", "phone", "blue ink"],
+          sections: Array.from({ length: n }, (_, i) => ({ name: `0${i + 1} OF THE IDEA`, means: "what this part is for" })),
+        },
+      };
+    },
+  });
+  const r = await generateStoryboard(env, job("viral-short", 45, "9:16", "en", "The birth of a brilliant idea on a sheet of paper"));
+  const sb = r.storyboard;
+  assert.deepEqual(sb.direction.props, [pencil], "the bad props are dropped, the good one is stored");
+  assert.ok(chunks >= 1 && sawProps === chunks, `every scene writer saw the props (${sawProps}/${chunks})`);
+  assert.deepEqual(shotSchema?.properties?.props?.items?.enum, ["the pencil"], "the grammar offers exactly the direction's prop names");
+  const pics = pictureScenes(sb);
+  assert.ok(pics.some((p) => p.props.includes("the pencil")), JSON.stringify(pics.map((p) => p.props)));
+  const v = validateStoryboard(sb, { format: "9:16", language: "en" });
+  assert.deepEqual(v.ok ? [] : v.errors, []);
 });

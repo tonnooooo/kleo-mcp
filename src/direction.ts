@@ -50,6 +50,13 @@ export const D = {
    */
   cast: { max: 6, name: 40, look: 420 },
   objects: { min: 3, max: 12, len: 36 },
+  /**
+   * The props (27 September 2026): the recurring objects that get a look, the way the cast does. A test film of 22
+   * September drew its pencil yellow in one shot and brown in the next, its line blue in a third: `objects` is only a
+   * vocabulary of nouns, and every image prompt re-invented the pencil. Six props, a 36-character name (a shot names
+   * them in `props`, whose entries are at most 40) and a 300-character look: an object needs less room than a person.
+   */
+  props: { max: 6, name: 36, look: 300 },
   forbidden: { min: 3, max: 12, len: 36 },
   sections: { min: 2, max: 8, name: 32, means: 40 },
 } as const;
@@ -64,6 +71,14 @@ export interface CastMember {
   look: string;
   /** The request spec's cast id ("c1") this character is, when the film has a spec. Lets a shot's `cast` name them by id. */
   id?: string | null;
+}
+
+/** A recurring object with ONE description, reused verbatim in every picture and clip prompt that shows it. */
+export interface PropMember {
+  /** How the prompts refer to it: "the pencil", "the brass compass". A shot lists it by this name in `props`. */
+  name: string;
+  /** Material, colour, shape, size, markings, wear — and for a tool, the mark it leaves ("draws a thin grey graphite line"). */
+  look: string;
 }
 
 /** A spec cast entry as castFor reads it: the id a shot may name, and the name that ties it to the direction's cast. */
@@ -91,8 +106,13 @@ export interface Direction {
   /* ---- the world this film is drawn in ("ogni prompt ha il suo mondo") */
   world: string;
   cast: CastMember[];
-  /** The object vocabulary of THIS film. Every picture draws from this list and nothing else. */
+  /** The object vocabulary of THIS film: the nouns the planner writes pictures from. Not pasted anywhere (props are). */
   objects: string[];
+  /**
+   * The objects that recur and must stay the same object (27 September 2026). Optional: a direction written before
+   * that date has none, and a film with no recurring object needs none.
+   */
+  props?: PropMember[];
   /** What must NOT appear. Reaches the image model as a negative prompt and the validator as a hard check. */
   forbidden: string[];
   /* ---- the colour law */
@@ -176,6 +196,28 @@ export function directionProblems(d: unknown, opts: DirectionOptions): string[] 
     if (typeof m.look === "string" && thinLook(m.look))
       out.push(`direction.cast[${i}].look "${m.look.trim()}" is a name, not a look: describe the character in one sentence a painter could work from — age or build, face, hair, clothes with their colours, one distinctive item (a 30-second Short about a warrior was drawn with a different face in every picture because its look was "a young Jedi-like warrior")`);
   });
+
+  // The props are optional too, and held to the same rule as the cast: a listed prop is described once, well enough
+  // to be drawn the same twice, under a name no character already has (a prop called "the captain" would be pasted
+  // wherever the captain is).
+  if (d.props === undefined) { /* no recurring object */ }
+  else if (!Array.isArray(d.props)) out.push("direction.props must be an array (use [] when no object recurs)");
+  else if (d.props.length > D.props.max) out.push(`direction.props has ${d.props.length} entries, the limit is ${D.props.max}`);
+  else {
+    const castNames = new Set((Array.isArray(d.cast) ? d.cast : []).map((m) => castKey(isObj(m) ? String(m.name ?? "") : "")).filter(Boolean));
+    const seen = new Set<string>();
+    d.props.forEach((m, i) => {
+      if (!isObj(m)) { out.push(`direction.props[${i}] must be {name, look}`); return; }
+      add(badText(m.name, `props[${i}].name`, D.props.name));
+      add(badText(m.look, `props[${i}].look`, D.props.look));
+      const k = castKey(String(m.name ?? ""));
+      if (k && seen.has(k)) out.push(`direction.props[${i}] repeats the prop "${String(m.name).trim()}"`);
+      if (k && castNames.has(k)) out.push(`direction.props[${i}] is called "${String(m.name).trim()}" like a character of the cast: give the object its own name`);
+      seen.add(k);
+      if (typeof m.look === "string" && thinPropLook(m.look))
+        out.push(`direction.props[${i}].look "${m.look.trim()}" is a name, not a look: describe the object as a prop maker would — material, colour, shape, size, markings, and for a tool the mark it leaves (a pencil drawn yellow in one shot and brown in the next, 22 September 2026, had no look at all)`);
+    });
+  }
 
   if (!Array.isArray(d.sections) || d.sections.length < D.sections.min || d.sections.length > D.sections.max) {
     out.push(`direction.sections must be an array of ${D.sections.min}-${D.sections.max} sections`);
@@ -470,6 +512,14 @@ export function thinLook(look: string): boolean {
 }
 
 /**
+ * A prop look too short to draw the same object twice: fewer than five words ("a pencil", "an old brass key"). Five,
+ * not the cast's six: "a yellow hexagonal graphite pencil" already fixes colour, shape and what it draws.
+ */
+export function thinPropLook(look: string): boolean {
+  return (look.trim().match(/[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*/gu) ?? []).length < 5;
+}
+
+/**
  * Narration that describes the video instead of telling the story. The planning model copies the request's own
  * words about the format into the first line ("In a 30-second vertical YouTube Short, a young warrior receives…",
  * job gt_6xchnk99) and the narrator reads them out. Returns the offending words, or null. English and Italian.
@@ -632,6 +682,8 @@ export function castFor(
 /** A cast name as two spellings of it share: case, accents, a leading article and extra spaces folded away. */
 const castKey = (s: string): string =>
   String(s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim().replace(/^(?:(?:the|a|an|il|lo|la|le|un|una|uno)\s+|l['’])/, "").replace(/\s+/g, " ");
+/** The same folding for a prop name: "the Pencil" and "pencil" are one prop. */
+export const propKey = (s: string): string => castKey(s);
 
 /**
  * The direction's cast members a shot's explicit `cast` names, in the shot's order: by the member's spec id ("c1"), by
@@ -651,8 +703,13 @@ function explicitCast(cast: readonly CastMember[], shotCast: readonly string[] |
   return out;
 }
 
-/** The pronouns and generic words that can only mean the film's one character. Mirrored in worker/kleo_pictures.py. */
-export const PRONOUN_HINTS = /(?<![\p{L}])(?:she|her|hers|herself|he|him|his|himself|the character|the protagonist)(?![\p{L}])/iu;
+/**
+ * The pronouns and generic words that can only mean the film's one character. Mirrored in worker/kleo_pictures.py.
+ * THE HANDS (27 September 2026): a film whose one person is seen only as hands ("a hand draws a line across the
+ * page") named nobody, so no look was attached and one shot came back with an old man's hand between young ones.
+ * In a one-character film a hand, fingers or a forearm belong to that character.
+ */
+export const PRONOUN_HINTS = /(?<![\p{L}])(?:she|her|hers|herself|he|him|his|himself|the character|the protagonist|hands?|fingers?|fingertips?|forearms?|palms?|wrists?|knuckles?)(?![\p{L}])/iu;
 /**
  * The head noun of a cast name — "chef" of "the pastry chef", "captain" of "the captain" — as a whole word of the
  * prompt: a planner that writes "the chef decorates a cake" means the pastry chef of the cast. Four letters or more,
@@ -663,6 +720,34 @@ export function headNounIn(name: string, imagePrompt: string): boolean {
   const head = headNoun(name);
   if (head.length < 4) return false;
   return new RegExp(`(?<![\\p{L}])${escapeRe(head)}(?![\\p{L}])`, "iu").test(imagePrompt);
+}
+
+/**
+ * The props a picture prompt shows, so their one description can be appended verbatim (27 September 2026). The shot's
+ * own `props` list decides when it names any; otherwise the prompt is read the way castFor reads it: the prop's whole
+ * name, or its head noun when no other prop shares it ("pencil" for "the yellow pencil"). No pronoun rule: "it" can
+ * mean anything. The production stills (stills.ts compileStill) and the clip prompts (footage.ts) call this function.
+ */
+export function propsFor(
+  propsOrDirection: readonly PropMember[] | Pick<Direction, "props"> | null | undefined,
+  imagePrompt: string,
+  shotProps?: readonly string[] | null,
+): PropMember[] {
+  const list = Array.isArray(propsOrDirection) ? propsOrDirection : ((propsOrDirection as Pick<Direction, "props"> | null | undefined)?.props ?? []);
+  const props = (Array.isArray(list) ? list : []).filter((m): m is PropMember => isObj(m) && typeof m.name === "string" && !!m.name.trim() && typeof m.look === "string" && !!m.look.trim());
+  if (!props.length) return [];
+  if (Array.isArray(shotProps) && shotProps.length) {
+    const out: PropMember[] = [];
+    for (const raw of shotProps) {
+      const hit = typeof raw === "string" ? props.find((m) => castKey(m.name) === castKey(raw)) : undefined;
+      if (hit && !out.includes(hit)) out.push(hit);
+    }
+    if (out.length) return out;
+  }
+  const p = String(imagePrompt ?? "").toLowerCase();
+  const heads = props.map((m) => headNoun(m.name));
+  const unique = (i: number) => heads[i] !== "" && heads.filter((h) => h === heads[i]).length === 1;
+  return props.filter((m, i) => p.includes(castKey(m.name)) || (unique(i) && headNounIn(m.name, String(imagePrompt ?? ""))));
 }
 
 /**
@@ -679,10 +764,12 @@ export function pictureContext(
   look: string | null = null,
   shotCast?: readonly string[] | null,
   specCast?: readonly CastRef[] | null,
+  shotProps?: readonly string[] | null,
 ): string {
   if (!d) return "";
   const bits: string[] = [];
   for (const m of castFor(d.cast ?? [], imagePrompt, shotCast, specCast)) bits.push(`${m.name}: ${m.look}`);
+  for (const m of propsFor(d, imagePrompt, shotProps)) bits.push(`${m.name}: ${m.look}`);
   if (d.world) bits.push(d.world);
   const light = accent && lightsPictures(look) ? ACCENT_LIGHT[accent] : null;
   if (light) bits.push(light);
@@ -723,12 +810,13 @@ export function notEnglish(text: unknown, min = 2): boolean {
   const hits = [...String(text ?? "").matchAll(FOREIGN_WORDS)].length;
   return hits >= min;
 }
-/** The cast names, looks, world, objects and forbidden terms of a direction that are not written in English. */
+/** The cast names, looks, props, world, objects and forbidden terms of a direction that are not written in English. */
 export function foreignPictureFields(d: Partial<Direction> | null | undefined): string[] {
   if (!d) return [];
   const out: string[] = [];
   if (notEnglish(d.world)) out.push("world");
   (d.cast ?? []).forEach((m, i) => { if (notEnglish(`${m?.name ?? ""} ${m?.look ?? ""}`)) out.push(`cast[${i}]`); });
+  (Array.isArray(d.props) ? d.props : []).forEach((m, i) => { if (notEnglish(`${m?.name ?? ""} ${m?.look ?? ""}`)) out.push(`props[${i}]`); });
   if (notEnglish((d.objects ?? []).join(" "), 3)) out.push("objects");
   if (notEnglish((d.forbidden ?? []).join(" "), 3)) out.push("forbidden");
   return out;
@@ -741,7 +829,9 @@ export function negativeFor(d: Direction | null, base: string): string {
   // logo") is not a description the picture model can draw from: measured on gt_hxed87em (22 September 2026), a cast
   // look of "no visible face" and a decision "only a hand and a forearm are ever seen" still drew a man's face in
   // the sixth picture. The negated clause belongs on the negative side, where the model reads a "no".
-  for (const t of negatedTerms([...(d?.cast ?? []).map((m) => m.look), d?.world ?? ""].join(". "))) if (!extra.some((e) => e.toLowerCase() === t.toLowerCase())) extra.push(t);
+  const plist: unknown = d?.props;
+  const propLooks = (Array.isArray(plist) ? plist : []).map((m) => String((m as Partial<PropMember> | null)?.look ?? ""));
+  for (const t of negatedTerms([...(d?.cast ?? []).map((m) => m.look), ...propLooks, d?.world ?? ""].join(". "))) if (!extra.some((e) => e.toLowerCase() === t.toLowerCase())) extra.push(t);
   return extra.length ? `${base}, ${extra.join(", ")}` : base;
 }
 

@@ -481,7 +481,7 @@ test("pictureScenes flattens scene → shot in order, with `<sceneId>-s<n>` ids"
   assert.deepEqual(pictureScenes({ kleo_style: "cartoon", scenes: "nope" }), []);
   const shorthand = { kleo_style: "realistic", scenes: [{ id: "01-a", image_prompt: "a rocket on the pad at dawn" }] };
   // Since 24 September every picture also carries its kind and the authoring fields, empty when the shot has none.
-  assert.deepEqual(pictureScenes(shorthand), [{ id: "01-a-s1", image_prompt: "a rocket on the pad at dawn", accent: null, shot_kind: null, covers: [], cast: [], action: null }], "the old shorthand still maps to shot 1");
+  assert.deepEqual(pictureScenes(shorthand), [{ id: "01-a-s1", image_prompt: "a rocket on the pad at dawn", accent: null, shot_kind: null, covers: [], cast: [], action: null, props: [] }], "the old shorthand still maps to shot 1");
   const gap = { kleo_style: "cartoon", scenes: [{ id: "01-a", shots: [{ image_prompt: "a beach" }, { caption: "NO PICTURE" }, { image_prompt: "a ship" }] }] };
   assert.deepEqual(pictureScenes(gap).map((p) => p.id), ["01-a-s1", "01-a-s3"], "ids follow the shot number, not the position in the answer");
 });
@@ -859,7 +859,7 @@ const SPEC = () => ({
 });
 
 test("covers, cast and action: accepted on a shot, optional, typed — and kept in what the server stores", () => {
-  assert.deepEqual([...AUTHORING_SHOT_FIELDS], ["covers", "cast", "action"]);
+  assert.deepEqual([...AUTHORING_SHOT_FIELDS], ["covers", "cast", "action", "props"]);
   assert.equal(SHOT_ACTION_MAX, 240); assert.equal(SHOT_COVERS_MAX, 12);
   const sb = pirates();
   Object.assign(sb.scenes[0].shots[0], { covers: ["R1", "R2"], cast: ["c1"], action: "the captain drives the spade into the wet sand" });

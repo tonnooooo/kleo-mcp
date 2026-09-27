@@ -88,6 +88,7 @@ function planLines(sb: unknown): string {
       const bits = [`image: ${clip(sh.image_prompt, 400)}`];
       if (typeof sh.action === "string" && sh.action.trim()) bits.push(`action: ${clip(sh.action, 240)}`);
       if (list(sh.cast)) bits.push(`cast: ${list(sh.cast)}`);
+      if (list(sh.props)) bits.push(`props: ${list(sh.props)}`);
       if (list(sh.covers)) bits.push(`covers: ${list(sh.covers)}`);
       out.push(`  ${sid}-s${j + 1} | ${bits.join(" | ")}`);
     });
@@ -102,11 +103,12 @@ export function judgePrompt(spec: RequestSpec, storyboard: unknown): string {
   const judge = mustItems(spec).map((i) => i.id).join(", ");
   const d = isObj(storyboard) && isObj(storyboard.direction) ? storyboard.direction : null;
   const dcast = d && Array.isArray(d.cast) ? d.cast.filter(isObj).map((m) => `  ${clip(m.name, 40)}: ${clip(m.look, 420)}`).join("\n") : "";
+  const dprops = d && Array.isArray(d.props) ? d.props.filter(isObj).map((m) => `  ${clip(m.name, 36)}: ${clip(m.look, 300)}`).join("\n") : "";
   return `THE USER'S REQUIREMENTS (mode ${spec.mode}; summary: ${spec.summary})
 ${cast}REQUIREMENTS:
 ${items}${spec.open.length ? `\nLEFT TO KLEO (additions here are allowed, not inventions): ${spec.open.join("; ")}` : ""}
 
-THE PLAN${dcast ? `\nThe characters as the plan draws them (this description is added to every picture that shows them):\n${dcast}` : ""}
+THE PLAN${dcast ? `\nThe characters as the plan draws them (this description is added to every picture that shows them):\n${dcast}` : ""}${dprops ? `\nThe recurring objects as the plan draws them (added to every picture that lists them in "props"):\n${dprops}` : ""}
 ${planLines(storyboard)}
 
 JUDGE THESE: ${judge || "(no must item)"}
