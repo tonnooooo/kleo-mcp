@@ -106,7 +106,7 @@ test("launch codes: one per account whatever the code, a used-up code and an unk
   await m.upsertLaunchCode(env, { code: "X", channel: "x", active: false });
   assert.equal((await m.redeemLaunchCode(env, "u_c", "X")).reason, "unknown", "a code switched off is no code");
   assert.equal(await balance(env, "u_b"), 5); assert.equal(await balance(env, "u_c"), 5);
-  assert.deepEqual(audits(env, "launch.refused").map((a) => a.detail.reason), ["already", "unknown", "invalid", "used_up", "unknown"]);
+  assert.deepEqual(audits(env, "launch.refused").map((a) => a.detail.reason), ["already", "unknown", "used_up", "unknown"], "rubbish that cannot be a code is not even written down");
 });
 
 test("launch codes: twenty presses at once redeem once", async () => {
