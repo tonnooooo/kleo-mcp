@@ -11,7 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { STYLE_CREDITS, STYLE_MACHINE, VIDEO, creditsFor, creditsForProduct, filmCredits, freeCreditsFor, machineFor, isVideoStyle, filmedStoryboard, filmedJob, finishForProduct, BARE_LAYER, tariffSentence, MIN_FILM_CREDITS, ANIMATIC_CREDITS, ANIMATIC_MAX_S, animaticEtaFor } from "../src/templates.ts";
+import { STYLE_CREDITS, STYLE_MACHINE, VIDEO, creditsFor, creditsForProduct, filmCredits, freeCreditsFor, machineFor, isVideoStyle, filmedStoryboard, filmedJob, finishForProduct, BARE_LAYER, tariffSentence, MIN_FILM_CREDITS, MIN_FILM_SECONDS, ANIMATIC_CREDITS, ANIMATIC_LONG_CREDITS, ANIMATIC_SHORT_MAX_S, ANIMATIC_MAX_S, animaticCredits, animaticEtaFor } from "../src/templates.ts";
 import { KLEO_STYLES } from "../src/keou-contract.ts";
 
 test("every style Kleo can render has a declared price", () => {
@@ -32,14 +32,19 @@ test("a price is a whole number of credits, and at least one", () => {
   }
 });
 
-test("the price is length alone: one credit per two seconds, ten at least (14 September)", () => {
-  assert.equal(creditsFor(15, "realistic"), 10, "the floor: the shortest film is the 5 EUR pack");
-  assert.equal(creditsFor(20, "realistic"), 10);
-  assert.equal(creditsFor(30, "realistic"), 15, "a 30-second Short");
-  assert.equal(creditsFor(31, "realistic"), 16, "an odd second rounds up, never down");
-  assert.equal(creditsFor(60, "realistic"), 30);
-  assert.equal(creditsFor(90, "realistic"), 45);
-  assert.equal(creditsFor(300, "realistic"), 150, "five minutes");
+test("the price is length alone: one credit per 1.5 seconds, ten at least (27 September 2026)", () => {
+  assert.equal(creditsFor(15, "realistic"), 10, "the floor: the shortest film (15 s) is the 5 EUR pack");
+  assert.equal(MIN_FILM_SECONDS, 15);
+  assert.equal(creditsFor(10, "realistic"), 10, "never under the floor");
+  assert.equal(creditsFor(16, "realistic"), 11, "a part of a credit rounds up, never down");
+  assert.equal(creditsFor(20, "realistic"), 14);
+  assert.equal(creditsFor(30, "realistic"), 20, "a 30-second Short: an exact multiple stays exact");
+  assert.equal(creditsFor(31, "realistic"), 21);
+  assert.equal(creditsFor(45, "realistic"), 30);
+  assert.equal(creditsFor(60, "realistic"), 40);
+  assert.equal(creditsFor(90, "realistic"), 60);
+  assert.equal(creditsFor(300, "realistic"), 200, "five minutes");
+  assert.match(tariffSentence(), /^1 credit buys 1\.5 seconds of film, 10 credits minimum: 10 credits for a 15-second film, 20 for a 30-second Short, 40 for a minute, 200 for five minutes; /);
 });
 
 test("a film is never sold under its cost: the tariff returns at least 1.4x what kie.ai and the GPU take, on the cheapest credit", () => {
@@ -54,52 +59,53 @@ test("a film is never sold under its cost: the tariff returns at least 1.4x what
 
 test("every look is charged as a film, none below it", () => {
   // The three lengths the pricing has always had, at the cheapest style.
-  assert.equal(creditsFor(45, "cartoon"), 23, "a picture Short costs what the film costs: the 1-credit Short was the loophole");
-  assert.equal(creditsFor(300, "cartoon"), 150);
-  assert.equal(creditsFor(480, "cartoon"), 240);
+  assert.equal(creditsFor(45, "cartoon"), 30, "a picture Short costs what the film costs: the 1-credit Short was the loophole");
+  assert.equal(creditsFor(300, "cartoon"), 200);
+  assert.equal(creditsFor(480, "cartoon"), 320);
   // No style named: the caller is quoted the base price, which is what an unstyled request has always cost.
-  assert.equal(creditsFor(45), 23);
-  assert.equal(creditsFor(480), 240);
+  assert.equal(creditsFor(45), 30);
+  assert.equal(creditsFor(480), 320);
 });
 
 test("an unpriced style is charged the DEAREST price, never the cheapest", () => {
   const dearest = Math.max(...Object.values(STYLE_CREDITS));
   assert.equal(creditsFor(45, "a-style-nobody-priced"), creditsFor(45, "realistic") * dearest / STYLE_CREDITS.realistic,
     "forgetting a price must cost the user a loud complaint, not cost the owner a silent bill");
-  assert.equal(creditsFor(45, "a-style-nobody-priced"), 23, "which today is the film's own price");
+  assert.equal(creditsFor(45, "a-style-nobody-priced"), 30, "which today is the film's own price");
 });
 
-test("the sign-up gift is a fixed 7 credits, below the shortest film on purpose; with the 5 EUR pack it is a 30 s Short", () => {
-  // 14 September: the owner keeps the free tier (0 EUR, one button) but a kie.ai film must never be free. So the
-  // gift is a credit count again, and the test pins the two facts that make it work: it cannot buy the 10-credit
-  // film by itself, and together with the smallest pack (5 EUR = 10 credits, src/stripe.ts) it buys a 30 s Short.
+test("the sign-up gift is 5 credits: exactly one short animatic, below the shortest film on purpose (27 September 2026)", () => {
+  // The owner's re-pricing: the free tier stays (0 EUR, one button) but a film is never free by default. The gift is
+  // exactly one short animatic; the smallest pack (5 EUR = 10 credits, src/stripe.ts) alone is the 15-second film.
   const cfg = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
   assert.ok(!/"FREE_FILMS"/.test(cfg), "FREE_FILMS is gone: it tied the gift to the film's price, the one thing it must not be");
   const gift = Number(/"FREE_CREDITS":\s*"(\d+)"/.exec(cfg)?.[1]);
-  assert.equal(gift, 7, "production gives 7 credits");
+  assert.equal(gift, 5, "production gives 5 credits");
   assert.equal(freeCreditsFor({ FREE_CREDITS: String(gift) }), gift);
   assert.equal(freeCreditsFor({}), 0, "a missing value means no gift");
   assert.ok(gift < MIN_FILM_CREDITS, "the gift alone never buys a film");
+  assert.equal(gift, animaticCredits(ANIMATIC_SHORT_MAX_S), "the gift is exactly one short animatic");
+  assert.ok(gift < animaticCredits(ANIMATIC_SHORT_MAX_S + 1), "and not a long one");
   const SMALLEST_PACK = 10;
-  assert.ok(gift + SMALLEST_PACK >= filmCredits(30), "gift + 5 EUR pack = a 30-second Short");
-  assert.ok(gift + SMALLEST_PACK < filmCredits(40), "and not more than that");
+  assert.equal(SMALLEST_PACK, filmCredits(MIN_FILM_SECONDS), "the 5 EUR pack alone is the 15-second film");
 });
 
-test("the animatic (15 September): 5 credits flat, under the gift and under the shortest film; drawn, never filmed; its price sits in one function", () => {
+test("the animatic (15 September; by length since 27 September 2026): 5 credits up to 20 s, 10 up to 60 s; drawn, never filmed; its price sits in one function", () => {
   // The owner's rule: kie.ai clips are bought with his money, so the film is for paying accounts and the free
   // credits have to buy SOMETHING — the animatic, the same storyboard drawn. Two facts pinned: the gift covers one,
   // and an animatic never costs more than the shortest film, at any length or look.
   const cfg = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
   const gift = Number(/"FREE_CREDITS":\s*"(\d+)"/.exec(cfg)?.[1]);
-  assert.ok(ANIMATIC_CREDITS <= gift, "the sign-up gift pays for an animatic");
+  assert.ok(ANIMATIC_CREDITS <= gift, "the sign-up gift pays for a short animatic");
   assert.ok(ANIMATIC_CREDITS < MIN_FILM_CREDITS, "and an animatic is cheaper than the shortest film");
-  for (const s of [15, 30, 45, ANIMATIC_MAX_S]) for (const look of ["realistic", "animation"]) {
-    assert.equal(creditsForProduct(s, look, "animatic"), ANIMATIC_CREDITS, `flat at ${s} s in ${look}`);
+  assert.ok(ANIMATIC_LONG_CREDITS <= MIN_FILM_CREDITS, "a minute of pictures never costs more than the shortest film");
+  for (const [s, price] of [[15, 5], [20, 5], [21, 10], [30, 10], [45, 10], [ANIMATIC_MAX_S, 10]]) for (const look of ["realistic", "animation"]) {
+    assert.equal(creditsForProduct(s, look, "animatic"), price, `${price} credits at ${s} s in ${look}`);
     assert.equal(creditsForProduct(s, look, "film"), creditsFor(s, look), "the film keeps the tariff");
     assert.equal(creditsForProduct(s, look, undefined), creditsFor(s, look), "no product means film, as on every row before this day");
   }
   assert.equal(ANIMATIC_MAX_S, 60, "a preview, not a five-minute film drawn on the cheap");
-  assert.match(tariffSentence(), /animatic[^.]*costs 5 credits flat/, "the one tariff sentence names it");
+  assert.match(tariffSentence(), /animatic[^;]*costs 5 credits up to 20 seconds, 10 up to 60 seconds$/, "the one tariff sentence names it");
   // filmed or drawn: the look, the engine style and the product — the third term is what this day added
   assert.equal(filmedStoryboard("realistic", "picture", "film"), true);
   assert.equal(filmedStoryboard("realistic", "picture", undefined), true);

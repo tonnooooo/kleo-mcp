@@ -79,7 +79,7 @@ export interface JobParams {
   treatment?: Record<string, unknown>;
   /**
    * What is being made (src/templates.ts Product, 15 September 2026): "film" — every shot filmed by kie.ai, paid
-   * accounts only — or "animatic" — the same stills with the camera over them and no generated clip, 5 credits flat.
+   * accounts only — or "animatic" — the same stills with the camera over them and no generated clip, priced by length.
    * Absent on every row made before that day, which means film.
    */
   product?: "film" | "animatic";

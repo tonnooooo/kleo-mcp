@@ -1492,6 +1492,10 @@ export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: nu
   const ledger = paidModel ? await jobLedger(env, job, round3((total + castMembersOf(spec, direction).length) * 2 * (stillPriceUsd(paidModel, STILL_SIZES[format]) ?? 0))) : undefined;
   const link = (name: string) => signedFileUrl(env, job.id, name);
   type Linked = VisionImage & { url: string | null };
+  // AN ANIMATIC IS DRAWN ONCE (27 September 2026, the owner's re-pricing): one try per still and per sheet, no redraw
+  // driven by the judge. The vision model still judges every picture and the fidelity report still says what it saw;
+  // only the second paid draw is gone, which is what keeps the free product (the sign-up gift buys one) cheap.
+  const onceIfAnimatic: { attempts?: number } = params.product === "animatic" ? { attempts: 1 } : {};
 
   // 1. THE SHEETS, `concurrency` at a time since 25 September 2026 (one after the other, a Nano Banana tick drew one
   //    sheet). The stills start only when every sheet is stored or given up. What a tick drew is written to
@@ -1514,7 +1518,7 @@ export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: nu
     const userRef = photo ? { ...photo, url: photoHandle ? await link(userRefLinkName(photoHandle)) : null } : null;
     let r: { bytes: Uint8Array; score: number; usd: number };
     try {
-      r = await drawCastSheet(env, spec, m, look, userRef, { seedBase: fnv1a(`${job.id}/cast/${m.id}`) % 1_000_000, until: deadline, route, ledger });
+      r = await drawCastSheet(env, spec, m, look, userRef, { seedBase: fnv1a(`${job.id}/cast/${m.id}`) % 1_000_000, until: deadline, route, ledger, ...onceIfAnimatic });
     } catch (e) {
       const msg = String(e).slice(0, 300);
       const transient = isTransientStillError(e);
@@ -1589,7 +1593,7 @@ export async function drawJobStills(env: Env, job: JobLike, opts: { deadline: nu
       if (anchor && pic.id !== firstId && refs.length < MAX_INPUT_IMAGES) refs.push(asRef(ANCHOR_LABEL, anchor));
       let r: StillResult;
       try {
-        r = await drawStill(env, { shot: pic, spec, direction, look, format, visual, refs }, { seedBase: fnv1a(`${job.id}/${pic.id}`) % 1_000_000, until: deadline, route, ledger });
+        r = await drawStill(env, { shot: pic, spec, direction, look, format, visual, refs }, { seedBase: fnv1a(`${job.id}/${pic.id}`) % 1_000_000, until: deadline, route, ledger, ...onceIfAnimatic });
       } catch (e) {
         const msg = String(e).slice(0, 300);
         const transient = isTransientStillError(e);

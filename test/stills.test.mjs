@@ -313,6 +313,23 @@ test("drawJobStills: the sheet first, then every still with the sheet as referen
   assert.equal(calls.draws.length, n, "nothing is drawn twice");
 });
 
+test("drawJobStills: an animatic's pictures are drawn ONCE — one try per still and per sheet, the judge still reports (27 September 2026)", async () => {
+  // The owner's re-pricing: the free product has to stay cheap, so a missed must never buys an animatic a second
+  // paid draw. The same film, with a judge that never sees the lilac apron, redraws; its animatic does not.
+  const never = (q) => (/lilac apron/.test(q) ? "no" : /any written text|any of this/i.test(q) ? "no" : "yes");
+  const film = fakeAi({ answer: never });
+  const f = fakeEnv({ AI: film.ai });
+  assert.deepEqual(await drawJobStills(f.env, jobOf(f.jobs), { deadline: Date.now() + 120_000 }), { state: "done", drawn: 3, total: 3 });
+  assert.ok(film.calls.draws.length > 4, `the film redraws a missed must (${film.calls.draws.length} draws)`);
+  const anim = fakeAi({ answer: never });
+  const a = fakeEnv({ AI: anim.ai });
+  assert.deepEqual(await drawJobStills(a.env, jobOf(a.jobs, { product: "animatic" }), { deadline: Date.now() + 120_000 }), { state: "done", drawn: 3, total: 3 });
+  assert.equal(anim.calls.draws.length, 4, "one sheet and three stills, one draw each");
+  assert.equal(anim.calls.judges.length, 4, "and every one of them judged");
+  const judged = a.auditRows.filter((r) => r.event === "stills.judge").map((r) => JSON.parse(r.detail));
+  assert.equal(judged.length, 3, "the fidelity rows are written as for a film");
+});
+
 test("drawJobStills: past the deadline it stops and says drawing; a quota answer fails the job's engine so the GPU draws the rest", async () => {
   const { ai, calls } = fakeAi();
   const { env, jobs } = fakeEnv({ AI: ai });

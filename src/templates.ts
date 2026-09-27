@@ -290,7 +290,7 @@ export const TEMPLATES: Template[] = [
   // user's; the planner decides the scenes from it (see BRIEFS / FAMILIES: the "chaptered" language, which handles
   // both a thirty-second piece and five minutes).
   { id: "film", name: "Film", formats: ["16:9", "9:16"], minSeconds: 15, maxSeconds: 90, defaultSeconds: 30,
-    description: "A film, realistic or animated, under ninety seconds: a hook in the first two seconds, every shot generated as moving footage by Seedance 2.5 from its own frame drawn by Nano Banana Pro (the film) or that frame with a camera move over it (the animatic, 5 credits, up to 60 s), narrated, music and burned-in subtitles only when the user asks, 4K 60 fps. Say what it is about and how long; Kleo decides the shots.", voices: EN_IT,
+    description: "A film, realistic or animated, under ninety seconds: a hook in the first two seconds, every shot generated as moving footage by Seedance 2.5 from its own frame drawn by Nano Banana Pro (the film) or that frame with a camera move over it (the animatic, 5 credits up to 20 s, 10 up to 60 s), narrated, music and burned-in subtitles only when the user asks, 4K 60 fps. Say what it is about and how long; Kleo decides the shots.", voices: EN_IT,
     family: "short-hook" },
   { id: "film-long", name: "Film (long)", formats: ["16:9", "9:16"], minSeconds: 90, maxSeconds: 300, defaultSeconds: 120,
     description: "The same film in chapters, from a minute and a half to five minutes. Chosen on its own when the length asks for it.", voices: EN_IT,
@@ -512,20 +512,25 @@ const priceOf = (style: string | null | undefined): number =>
   style ? STYLE_CREDITS[style] ?? Math.max(...Object.values(STYLE_CREDITS)) : 1;
 
 /**
- * THE TARIFF, 14 September 2026: one credit buys two seconds of film, ten credits at least.
+ * THE TARIFF, 14 September 2026, re-priced 27 September 2026: one credit buys a second and a half of film, ten
+ * credits at least.
  *
- * Why length and nothing else: the film's real cost is per second — about 0.13 $ of kie.ai clips a second (fifteen
- * MiniMax H3 shots at their 4 s minimum for a 30 s Short = 3.90 $), plus a few cents of GPU. The old ladder
- * (7 credits up to 90 s) sold a 90 s film for 3.50 EUR that cost 11 $ to make, and the free tier gave one away to
- * every stranger. At 0.40-0.50 EUR a credit (the packs in stripe.ts) this rule returns 1.5-1.9x the cost at every
- * length (test/style-price.test.mjs guards 1.4x on the cheapest credit), and the floor of ten is exactly the smallest
- * pack: 5 EUR buys a 20-second film, nothing buys one for free.
- *   20 s = 10 · 30 s = 15 · 60 s = 30 · 90 s = 45 · 5 min = 150
+ * Why length and nothing else: the film's real cost is per second — Seedance 2.5 clips at about 0.09 $ a second
+ * through ePhone AI, the frames and the character sheets on top, plus a few cents of GPU. The first rule (14 September,
+ * one credit for two seconds) left the shortest paid film at 20 seconds for the 5 EUR pack; the owner's decision of
+ * 27 September 2026 ("cambia prezzo", zero users and zero revenue) makes the credit buy 1.5 seconds with the same
+ * floor of ten, so the smallest pack is exactly a 15-second film and a launch code (src/launch.ts) can give one away
+ * at a known price. At 0.40-0.50 EUR a credit (the packs in stripe.ts) the rule returns more than 1.4x the cost at
+ * every length (test/style-price.test.mjs guards it on the cheapest credit).
+ *   15 s = 10 · 20 s = 14 · 30 s = 20 · 60 s = 40 · 90 s = 60 · 5 min = 200   (always rounded up)
  */
-export const SECONDS_PER_CREDIT = 2;
+export const SECONDS_PER_CREDIT = 1.5;
 export const MIN_FILM_CREDITS = 10;
+/** The length the smallest price buys: 15 seconds, the film a launch code gives away (src/launch.ts). */
+export const MIN_FILM_SECONDS = MIN_FILM_CREDITS * SECONDS_PER_CREDIT;
+// The 1e-9 keeps an exact multiple exact: 30 / 1.5 is 20, and floating point must not turn it into 21.
 export const filmBase = (seconds: number): number =>
-  Math.max(MIN_FILM_CREDITS, Math.ceil(Math.max(0, Number(seconds) || 0) / SECONDS_PER_CREDIT));
+  Math.max(MIN_FILM_CREDITS, Math.ceil(Math.max(0, Number(seconds) || 0) / SECONDS_PER_CREDIT - 1e-9));
 /** Credits for a video of this length in this look: the film base times the look's multiplier (1 for every look today). */
 export const creditsFor = (seconds: number, style?: string | null): number => filmBase(seconds) * priceOf(style);
 
@@ -539,7 +544,7 @@ export const filmCredits = (seconds: number = ACTIVE_TEMPLATE.defaultSeconds): n
  * day after the film became the only product at 7.
  */
 export const tariffSentence = (): string =>
-  `1 credit buys ${SECONDS_PER_CREDIT} seconds of film, ${MIN_FILM_CREDITS} credits minimum: ${filmCredits(30)} credits for a 30-second Short, ${filmCredits(60)} for a minute, ${filmCredits(300)} for five minutes; an animatic of the same storyboard (the drawn frames with camera moves and the narration, no generated clip, up to ${ANIMATIC_MAX_S} seconds) costs ${ANIMATIC_CREDITS} credits flat`;
+  `1 credit buys ${SECONDS_PER_CREDIT} seconds of film, ${MIN_FILM_CREDITS} credits minimum: ${filmCredits(MIN_FILM_SECONDS)} credits for a ${MIN_FILM_SECONDS}-second film, ${filmCredits(30)} for a 30-second Short, ${filmCredits(60)} for a minute, ${filmCredits(300)} for five minutes; an animatic of the same storyboard (the drawn frames with camera moves and the narration, no generated clip, up to ${ANIMATIC_MAX_S} seconds) costs ${animaticRule().en}`;
 
 /**
  * THE MODELS, BY NAME (26 September 2026, the owner: "add Seedance 2.5 and Nano Banana Pro"). What makes a film, said
@@ -567,14 +572,31 @@ export const modelsSentence = (): string =>
  */
 export type Product = "film" | "animatic";
 export const PRODUCTS = ["film", "animatic"] as const;
+/**
+ * THE ANIMATIC BY LENGTH (27 September 2026, the owner's re-pricing): ANIMATIC_CREDITS up to ANIMATIC_SHORT_MAX_S
+ * seconds, ANIMATIC_LONG_CREDITS up to ANIMATIC_MAX_S. The short one is exactly the sign-up gift (FREE_CREDITS 5), so
+ * every new account can make one; a minute of pictures is twice the drawing and costs twice. Its pictures are drawn
+ * ONCE (src/stills.ts: one try per still and per sheet, the vision judge still reports), which is what keeps the free
+ * product cheap. ANIMATIC_CREDITS stays the name of the cheapest animatic: "can this balance buy an animatic at all".
+ */
 export const ANIMATIC_CREDITS = 5;
+export const ANIMATIC_LONG_CREDITS = 10;
+export const ANIMATIC_SHORT_MAX_S = 20;
 /** The longest animatic: it is a preview and a free-tier product, not a five-minute film drawn on the cheap. */
 export const ANIMATIC_MAX_S = 60;
+/** What an animatic of this length costs (a length over ANIMATIC_MAX_S is refused before any price is taken). */
+export const animaticCredits = (seconds: number): number =>
+  (Number(seconds) || 0) <= ANIMATIC_SHORT_MAX_S ? ANIMATIC_CREDITS : ANIMATIC_LONG_CREDITS;
+/** The animatic's price in words, for when the length is not known yet. */
+export const animaticRule = (): { en: string; it: string } => ({
+  en: `${ANIMATIC_CREDITS} credits up to ${ANIMATIC_SHORT_MAX_S} seconds, ${ANIMATIC_LONG_CREDITS} up to ${ANIMATIC_MAX_S} seconds`,
+  it: `${ANIMATIC_CREDITS} crediti fino a ${ANIMATIC_SHORT_MAX_S} secondi, ${ANIMATIC_LONG_CREDITS} fino a ${ANIMATIC_MAX_S} secondi`,
+});
 export const productOf = (p: { product?: string } | null | undefined): Product => (p?.product === "animatic" ? "animatic" : "film");
 export const isAnimatic = (p: { product?: string } | null | undefined): boolean => productOf(p) === "animatic";
-/** What a job costs: the film's tariff, or the animatic's flat price. The ONE place a product's price is decided. */
+/** What a job costs: the film's tariff, or the animatic's price by length. The ONE place a product's price is decided. */
 export const creditsForProduct = (seconds: number, style: string | null | undefined, product: Product | string | null | undefined): number =>
-  product === "animatic" ? ANIMATIC_CREDITS : creditsFor(seconds, style);
+  product === "animatic" ? animaticCredits(seconds) : creditsFor(seconds, style);
 /**
  * THE AI UPSCALE, AN OPTION THAT COSTS (the owner's decision of 25 September 2026, after the A/B probe on an RTX 3060:
  * Real-ESRGAN + RIFE 4.25 made the track 4.6x sharper for 1.29x the flicker and 1.4 more minutes per 15 s of film).
@@ -679,12 +701,11 @@ export function finishForProduct<T extends Record<string, unknown>>(sb: T, produ
 export const animaticEtaFor = (seconds: number): number => Math.max(12, Math.round(10 + seconds / 6));
 
 /**
- * THE SIGN-UP GIFT, 14 September 2026: FREE_CREDITS (wrangler.jsonc, 7) credits on a brand-new account — and the
- * shortest film costs MIN_FILM_CREDITS (10). That gap is the owner's decision, not an oversight: the free tier
- * exists (0 EUR, nothing to type) but it cannot buy a kie.ai film by itself; the smallest pack (5 EUR, 10 credits)
- * takes it to 17, a 30-second Short. The earlier FREE_FILMS (a film count turned into credits at the film's price)
- * is gone: it was built to keep the gift equal to a film, which is the one thing it must no longer be.
- * test/style-price.test.mjs pins both facts: gift < film, gift + smallest pack ≥ a 30 s Short.
+ * THE SIGN-UP GIFT, 14 September 2026, lowered 27 September 2026: FREE_CREDITS (wrangler.jsonc, 5) credits on a
+ * brand-new account — exactly one short animatic (ANIMATIC_CREDITS, up to ANIMATIC_SHORT_MAX_S seconds), and under
+ * the shortest film (MIN_FILM_CREDITS, 10) on purpose: a film is never free by default. The ways to a first film are
+ * the smallest pack (5 EUR, 10 credits: a 15-second film), a launch code (src/launch.ts: one free 15-second film) and
+ * the verified-email bonus on top. test/style-price.test.mjs pins it: gift = one short animatic, gift < film.
  */
 export const freeCreditsFor = (env: { FREE_CREDITS?: string }): number => Math.max(0, int(env.FREE_CREDITS, 0));
 

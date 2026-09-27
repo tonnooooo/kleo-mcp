@@ -54,8 +54,8 @@ async function newEnv(extra = {}) {
   for (const f of readdirSync(join(ROOT, "migrations")).sort()) env.DB.db.exec(readFileSync(join(ROOT, "migrations", f), "utf8"));
   return env;
 }
-/** Price units (14 September: one credit per two seconds, ten at least): P = the 45 s Short below, PL = a five-minute film. */
-const P = 23, PL = 150;
+/** Price units (27 September 2026: one credit per 1.5 seconds, ten at least): P = the 45 s Short below, PL = a five-minute film. */
+const P = 30, PL = 200;
 // Since 15 September a FILM is made only for an account with a payment on record (src/db.ts hasPaid): these suites
 // test a paying customer, so the user carries one Stripe row — the way a tester is let in on production too.
 const markPaid = (env, id) => env.DB.prepare("INSERT INTO payments (session_id, user_id, credits, amount_cent, currency, status, raw_ref) VALUES (?, ?, 10, 500, 'eur', 'paid', 'test')").bind(`cs_test_${id}`, id).run();

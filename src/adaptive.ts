@@ -35,7 +35,7 @@ export const INTAKE: readonly IntakeItem[] = [
   { key: "look", required: true, label: { en: "Look", it: "Look" },
     question: { en: "How do you want it: realistic (filmed, cinematic photography) or animation (a 2D animated film)?", it: "Come lo vuoi: realistico (girato, fotografia cinematografica) o animazione (film animato 2D)?" } },
   { key: "product", required: true, label: { en: "Product", it: "Prodotto" },
-    question: { en: "Film or animatic? The film makes every shot a generated clip and is priced by its length; the animatic is the same drawn frames with the camera moving over each one, no generated clip, at a flat price and a shorter length.", it: "Film o animatic? Il film fa di ogni inquadratura una clip generata e costa in base alla durata; l'animatic sono gli stessi fotogrammi disegnati con la camera che si muove su ognuno, nessuna clip generata, a prezzo fisso e più corto." } },
+    question: { en: "Film or animatic? The film makes every shot a generated clip and is priced by its length; the animatic is the same drawn frames with the camera moving over each one, no generated clip, cheaper and at most a minute long.", it: "Film o animatic? Il film fa di ogni inquadratura una clip generata e costa in base alla durata; l'animatic sono gli stessi fotogrammi disegnati con la camera che si muove su ognuno, nessuna clip generata, più economico e lungo al massimo un minuto." } },
   // THE AI UPSCALE (25 September 2026): asked only for a film, only with the account's price (upscaleQuestion below).
   { key: "ai_upscale", required: true, label: { en: "AI upscale", it: "Ingrandimento AI" },
     question: { en: "Do you want the AI upscale (Real-ESRGAN + RIFE: a sharper picture, for extra credits)? If not, the film comes out in classic 4K 60 fps.", it: "Vuoi l'ingrandimento AI (Real-ESRGAN + RIFE: immagine più nitida, per crediti in più)? Se no, il film esce in 4K 60 fps classico." } },
@@ -622,11 +622,14 @@ export type AdaptOverrides = Partial<Pick<AdaptiveBrief, "duration_s" | "format"
 /**
  * What the product question needs to know about the account, computed by the caller (src/mcp.ts) so this module
  * stays pure and holds no price: whether it has paid (a film is for accounts that bought a pack), its balance, the
- * film's price for the asked length (null while the length is unknown), the animatic's flat price and longest length,
- * and the tariff sentence for when the length is not known yet.
+ * film's price for the asked length (null while the length is unknown), the animatic's price for the asked length
+ * (null while it is unknown: since 27 September 2026 the animatic is priced by length too) with its rule in words and
+ * its longest length, and the tariff sentence for when the length is not known yet.
  */
 export interface IntakeAccount {
-  paid: boolean; credits: number; filmCredits: number | null; animaticCredits: number; animaticMaxS: number; tariff: string;
+  paid: boolean; credits: number; filmCredits: number | null; animaticCredits: number | null; animaticMaxS: number; tariff: string;
+  /** The animatic's price rule in words ("5 credits up to 20 seconds, 10 up to 60 seconds"), quoted while the length is unknown. */
+  animaticRule?: { en: string; it: string };
   /**
    * The AI upscale's price for this film (null while the length is unknown) and its rule in words; absent when the
    * option is switched off (the Worker's KLEO_SR "off"): then it is never asked.
@@ -674,9 +677,15 @@ const ANIMATIC_WORD_RE = /\banimatic[oi]?\b/i;
 function productQuestion(chat: NarrationLanguage, acct: IntakeAccount, duration: number | null, product: Product | null): string {
   const it = chat === "it";
   const tooLong = duration !== null && duration > acct.animaticMaxS;
-  const anim = it
-    ? `costa ${acct.animaticCredits} crediti fissi, fino a ${acct.animaticMaxS} secondi${tooLong ? ` (quindi al massimo ${acct.animaticMaxS} secondi invece di ${duration})` : ""}`
-    : `costs ${acct.animaticCredits} credits flat, up to ${acct.animaticMaxS} seconds${tooLong ? ` (so at most ${acct.animaticMaxS} seconds instead of ${duration})` : ""}`;
+  // The animatic's price for the length asked, with the rule beside it; the rule alone while the length is unknown.
+  const rule = acct.animaticRule?.[it ? "it" : "en"] ?? null;
+  const anim = acct.animaticCredits !== null && duration !== null
+    ? (it
+      ? `costa ${acct.animaticCredits} crediti per ${Math.min(duration, acct.animaticMaxS)} secondi${rule ? ` (${rule})` : ""}${tooLong ? `, al massimo ${acct.animaticMaxS} secondi invece di ${duration}` : ""}`
+      : `costs ${acct.animaticCredits} credits for ${Math.min(duration, acct.animaticMaxS)} seconds${rule ? ` (${rule})` : ""}${tooLong ? `, at most ${acct.animaticMaxS} seconds instead of ${duration}` : ""}`)
+    : (it
+      ? `costa ${rule ?? `${acct.animaticCredits ?? "pochi"} crediti, fino a ${acct.animaticMaxS} secondi`}`
+      : `costs ${rule ?? `${acct.animaticCredits ?? "a few"} credits, up to ${acct.animaticMaxS} seconds`}`);
   if (!acct.paid) {
     return it
       ? `Il film (ogni inquadratura è una clip generata) si fa solo per gli account che hanno comprato un pacchetto di crediti (da 5 EUR, nella pagina del tuo account)${product === "film" ? ", e questo non l'ha ancora comprato" : ""}. Adesso puoi avere l'animatic: gli stessi fotogrammi disegnati con la camera che si muove su ognuno, nessuna clip generata; ${anim}. Vuoi l'animatic adesso, o prima compri un pacchetto per il film?`

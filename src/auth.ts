@@ -3,7 +3,7 @@ import type { Env, AuthProps } from "./env";
 import { type User, getUser, createUserIfUnderCaps, getInvite, useInvite, applyBonusToUser, touchUser, audit } from "./db";
 import { accountCookie, cookieHandle, ipFingerprint, makeHandle, signupRateKey, verifyHandle, verifyTurnstile } from "./accounts";
 import { html, escapeHtml, rid, int } from "./util";
-import { MIN_FILM_CREDITS, ANIMATIC_CREDITS, ANIMATIC_MAX_S, freeCreditsFor, tariffSentence } from "./templates";
+import { MIN_FILM_CREDITS, MIN_FILM_SECONDS, ANIMATIC_CREDITS, ANIMATIC_SHORT_MAX_S, animaticRule, freeCreditsFor, tariffSentence } from "./templates";
 
 /**
  * /authorize: the page an MCP client (Claude, ChatGPT, Grok, Cursor…) opens in the browser.
@@ -168,9 +168,10 @@ function page(o: { clientName: string; oauthQuery: string; freeCredits: number; 
   // Since 15 September the gift buys an ANIMATIC (the drawn frames with the camera over them, narrated, 4K 60 fps,
   // no generated clip) and a film needs a pack: the clips are generated at Kleo's expense, so they are for accounts
   // that have paid — whatever their balance.
+  // Since 27 September 2026 the gift (5) is exactly one short animatic, and the 5 EUR pack alone is a 15-second film.
   const animatics = Math.floor(o.freeCredits / ANIMATIC_CREDITS);
   const start = o.freeCredits > 0
-    ? `You start with ${plural(o.freeCredits, "credit")}: ${animatics > 0 ? `${plural(animatics, "animatic")} on the house (${ANIMATIC_CREDITS} credits each, up to ${ANIMATIC_MAX_S} seconds: your storyboard as drawn frames with the camera moving over them, narrated, 4K 60 fps)` : `not yet an animatic (${ANIMATIC_CREDITS} credits)`}. A film — every shot a generated clip — starts at ${MIN_FILM_CREDITS} credits and is made for accounts that have bought a pack: the 5 EUR pack takes you to ${o.freeCredits + 10}, a 20-second film or a 30-second Short with what you have.`
+    ? `You start with ${plural(o.freeCredits, "credit")}: ${animatics > 0 ? `${animatics === 1 ? "a short animatic" : plural(animatics, "short animatic")} on the house (up to ${ANIMATIC_SHORT_MAX_S} seconds: your storyboard as drawn frames with the camera moving over them, narrated, 4K 60 fps)` : `not yet an animatic (${animaticRule().en})`}. A film — every shot a generated clip — starts at ${MIN_FILM_CREDITS} credits (${MIN_FILM_SECONDS} seconds) and is made for accounts that have bought a pack: the 5 EUR pack alone is a ${MIN_FILM_SECONDS}-second film.`
     : "A new account starts at zero credits: connecting is free, every video is paid. Credit packs (from 5 EUR) are on your account page, one click away in the chat.";
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Connect to Kleo</title>

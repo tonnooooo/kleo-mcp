@@ -123,13 +123,13 @@ test("kleo_account quotes the film's price and the real state of the shop, never
   const closed = await studio(fakeAi(() => TREATMENT_FIXTURE(60)));
   const a = await closed.call("kleo_account", {});
   const d = a.structuredContent;
-  assert.equal(d.film_credits, 30, "the active template's default film: 60 s");
+  assert.equal(d.film_credits, 40, "the active template's default film: 60 s");
   assert.equal(d.min_film_credits, 10);
-  assert.equal(d.free_tier, "7 credits on sign-up, no signup form; they buy an animatic (5 credits, up to 60 s), and the shortest film is 10 credits and needs a pack (from 5 EUR: 7 + 10 = 17 credits, a 30-second Short)");
+  assert.equal(d.free_tier, "7 credits on sign-up, no signup form; they buy a short animatic (5 credits, up to 20 s), and the shortest film is 10 credits (15 s) and needs a pack (from 5 EUR: 10 credits, a 15-second film)");
   assert.equal(d.has_paid, true, "this harness marks the tester as a paying customer");
   assert.equal(d.animatic_credits, 5);
   assert.equal(d.payments_open, false, "no Stripe links configured: the shop is closed and the tool says so");
-  assert.match(a.text, /1 credit buys 2 seconds of film, 10 credits minimum: 15 credits for a 30-second Short, 30 for a minute, 150 for five minutes/);
+  assert.match(a.text, /1 credit buys 1\.5 seconds of film, 10 credits minimum: 10 credits for a 15-second film, 20 for a 30-second Short, 40 for a minute, 200 for five minutes/);
   assert.doesNotMatch(a.text, /1 credit = 1 Short|free while it is in beta/);
   assert.match(a.text, /payments are paused/);
 
@@ -181,13 +181,13 @@ test("a request with no length is answered with the question and no model call",
   assert.match(r.text, /Optional, in the SAME message.*Who is it for\?/);
   // Since 25 September the product (with this account's prices: the length is not known yet, so the tariff) and the
   // narration's language are asked in the same message.
-  assert.match(r.text, /4\. Film or animatic\? The film \(every shot a generated clip\) is priced by its length \(1 credit buys 2 seconds of film/);
+  assert.match(r.text, /4\. Film or animatic\? The film \(every shot a generated clip\) is priced by its length \(1 credit buys 1\.5 seconds of film/);
   // And since the same day, for the film, the AI upscale with its price (the length is not known yet: the rule).
   assert.match(r.text, /5\. If you choose the film: Do you want the AI upscale \(Real-ESRGAN \+ RIFE: a sharper picture, \+as many credits again as the film, at least 5\)\? If not, the film comes out in classic 4K 60 fps\./);
   assert.match(r.text, /6\. Do you want music under the narration\?/); assert.match(r.text, /7\. Do you want subtitles burned into the video/);
   assert.match(r.text, /8\. Which language should the narration be in: English or Italian\? \(English if you have no preference\)/);
   assert.deepEqual(r.structuredContent.questions.length, 8); assert.equal(r.structuredContent.optional_questions.length, 3);
-  assert.equal(r.structuredContent.has_paid, true); assert.deepEqual(r.structuredContent.prices, { film: null, animatic: 5, ai_upscale: null });
+  assert.equal(r.structuredContent.has_paid, true); assert.deepEqual(r.structuredContent.prices, { film: null, animatic: null, ai_upscale: null });
   assert.match(r.structuredContent.account_url, /^http:\/\/kleo\.test\/credits\?k=/);
   assert.match(r.text, /do not fill any of these in yourself/);
   // Answered on the call, the same request is ready: nothing was assumed, everything came from the user.
@@ -558,7 +558,7 @@ test("an account that never paid is told it can order the animatic and not a fil
   assert.equal(a.structuredContent.has_paid, false);
   assert.equal(a.structuredContent.can_order_film, false);
   assert.match(a.structuredContent.products, /^animatic only/);
-  assert.match(a.text, /has not bought a pack yet, so it can order the ANIMATIC \(5 credits, up to 60 seconds/);
+  assert.match(a.text, /has not bought a pack yet, so it can order the ANIMATIC \(5 credits up to 20 seconds, 10 up to 60 seconds/);
   const film = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers", duration_s: 45, format: "9:16" });
   assert.equal(film.isError, true);
   assert.match(film.text, /A film is made only for accounts that have bought a credit pack[\s\S]*product: "animatic"[\s\S]*Nothing was charged/);
@@ -567,9 +567,9 @@ test("an account that never paid is told it can order the animatic and not a fil
   assert.equal((await s.env.DB.prepare("SELECT credits FROM users WHERE id = 'u_test'").first()).credits, 70, "nothing was charged");
   const anim = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers", duration_s: 45, format: "9:16", product: "animatic" });
   assert.equal(anim.isError, undefined, anim.text);
-  assert.equal(anim.structuredContent.credits, 5, "the animatic is 5 credits flat");
+  assert.equal(anim.structuredContent.credits, 10, "a 45-second animatic is 10 credits (5 up to 20 s, 10 up to 60 s)");
   assert.match(anim.text, /This is the ANIMATIC/);
-  assert.equal((await s.env.DB.prepare("SELECT credits FROM users WHERE id = 'u_test'").first()).credits, 65);
+  assert.equal((await s.env.DB.prepare("SELECT credits FROM users WHERE id = 'u_test'").first()).credits, 60);
   const tooLong = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers", duration_s: 90, format: "9:16", product: "animatic" });
   assert.equal(tooLong.isError, true);
   assert.match(tooLong.text, /An animatic is at most 60 seconds long/);
@@ -776,7 +776,7 @@ test("film or animatic is asked with this account's prices; a paying account's a
   const ask = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", ...READY, duration_s: 15 });
   assert.equal(ask.structuredContent.ready_to_render, false);
   assert.deepEqual(ask.structuredContent.prices, { film: 10, animatic: 5, ai_upscale: 10 }); assert.equal(ask.structuredContent.product, null);
-  assert.match(ask.text, /1\. Film or animatic\? The film \(every shot a generated clip\) costs 10 credits for 15 seconds; the animatic .* costs 5 credits flat, up to 60 seconds\. You have 70 credits\./);
+  assert.match(ask.text, /1\. Film or animatic\? The film \(every shot a generated clip\) costs 10 credits for 15 seconds; the animatic .* costs 5 credits for 15 seconds \(5 credits up to 20 seconds, 10 up to 60 seconds\)\. You have 70 credits\./);
   assert.deepEqual(await s.audit("treatment.method"), [], "nothing is written before the product is chosen");
   for (const d of [15, 30, 60]) {
     const q = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", ...READY, duration_s: d });
@@ -788,7 +788,7 @@ test("film or animatic is asked with this account's prices; a paying account's a
   assert.match(film.structuredContent.next, /product: "film"/);
 });
 
-test("an account that never paid is offered the animatic in the intake, and the animatic it chooses is made for 5 credits", async () => {
+test("an account that never paid is offered the animatic in the intake, and the animatic it chooses is made at its price", async () => {
   const s = await studio(fakeAi(() => { throw new Error("must not be called"); }), {}, { paid: false });
   const none = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", ...READY });
   assert.equal(none.structuredContent.ready_to_render, false); assert.equal(none.structuredContent.has_paid, false);
@@ -801,10 +801,10 @@ test("an account that never paid is offered the animatic in the intake, and the 
   assert.equal(anim.structuredContent.ready_to_render, true, anim.text); assert.equal(anim.structuredContent.product, "animatic");
   assert.match(anim.structuredContent.next, /product: "animatic"/);
   assert.equal((await m.getUser(s.env, "u_test")).credits, 70, "the intake charges nothing");
-  // The product the next step names is the one kleo_create_video is called with: the animatic, 5 credits, no refusal.
+  // The product the next step names is the one kleo_create_video is called with: the animatic, 10 credits at 45 s, no refusal.
   const made = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers", duration_s: 45, format: "9:16", language: anim.structuredContent.language, product: anim.structuredContent.product });
   assert.ok(!made.isError, made.text);
-  assert.equal(made.structuredContent.credits, 5); assert.equal((await m.getUser(s.env, "u_test")).credits, 65);
+  assert.equal(made.structuredContent.credits, 10); assert.equal((await m.getUser(s.env, "u_test")).credits, 60);
 });
 
 test("the tool texts ask for the product and the language, and never read the language off the request", async () => {
@@ -828,33 +828,33 @@ test("the tool texts ask for the product and the language, and never read the la
 
 test("a film is asked about the AI upscale with its exact price: the film's credits again, 5 at least", async () => {
   const s = await studio(fakeAi(() => { throw new Error("must not be called"); }));
-  for (const [d, film, up] of [[15, 10, 10], [30, 15, 15], [60, 30, 30]]) {
+  for (const [d, film, up, animatic] of [[15, 10, 10, 5], [30, 20, 20, 10], [60, 40, 40, 10]]) {
     const q = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", product: "film", ...READY, duration_s: d });
     assert.equal(q.structuredContent.ready_to_render, false, `${d} s: the upscale is asked`);
-    assert.deepEqual(q.structuredContent.prices, { film, animatic: 5, ai_upscale: up });
+    assert.deepEqual(q.structuredContent.prices, { film, animatic, ai_upscale: up });
     assert.match(q.text, new RegExp(`1\\. Do you want the AI upscale \\(Real-ESRGAN \\+ RIFE: a sharper picture, \\+${up} credits\\)\\? If not, the film comes out in classic 4K 60 fps\\.`));
     assert.equal(creditsForProduct(d, "realistic", "film"), film);
   }
   const it = await s.call("kleo_adapt_prompt", { prompt: "Fammi un film sui guardiani del faro", language: "it", product: "film", ...READY, duration_s: 30 });
-  assert.match(it.text, /1\. Vuoi l'ingrandimento AI \(Real-ESRGAN \+ RIFE: immagine più nitida, \+15 crediti\)\? Se no, il film esce in 4K 60 fps classico\./);
+  assert.match(it.text, /1\. Vuoi l'ingrandimento AI \(Real-ESRGAN \+ RIFE: immagine più nitida, \+20 crediti\)\? Se no, il film esce in 4K 60 fps classico\./);
   // The knobs are the Worker's: AI_UPSCALE_MIN_CREDITS and AI_UPSCALE_FACTOR.
   const dear = await studio(fakeAi(() => { throw new Error("must not be called"); }), { AI_UPSCALE_MIN_CREDITS: "20", AI_UPSCALE_FACTOR: "0.5" });
   const q = await dear.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", product: "film", ...READY, duration_s: 60 });
-  assert.equal(q.structuredContent.prices.ai_upscale, 20, "max(20, ceil(30 x 0.5))");
+  assert.equal(q.structuredContent.prices.ai_upscale, 20, "max(20, ceil(40 x 0.5))");
   // The answer is read back with the price, and passed on to kleo_create_video.
   const yes = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", product: "film", ai_upscale: "yes please", ...READY, duration_s: 30 });
   assert.equal(yes.structuredContent.ready_to_render, true, yes.text); assert.equal(yes.structuredContent.ai_upscale, true);
-  assert.match(yes.text, /- AI upscale: yes — Real-ESRGAN \+ RIFE on every shot, \+15 credits on top of the film/);
-  assert.match(yes.structuredContent.next, /ai_upscale: "yes" \(the user's AI upscale: \+15 credits, 30 in all\)/);
+  assert.match(yes.text, /- AI upscale: yes — Real-ESRGAN \+ RIFE on every shot, \+20 credits on top of the film/);
+  assert.match(yes.structuredContent.next, /ai_upscale: "yes" \(the user's AI upscale: \+20 credits, 40 in all\)/);
   // The read-back puts the exact price in front of the USER before anything is debited.
-  assert.match(yes.structuredContent.next, /the logline and the decisions, and, in the same message, the AI upscale they chose and its price: "AI upscale: yes, \+15 credits, 30 in all \(the 15 come back if the finish cannot apply it\)"/);
+  assert.match(yes.structuredContent.next, /the logline and the decisions, and, in the same message, the AI upscale they chose and its price: "AI upscale: yes, \+20 credits, 40 in all \(the 20 come back if the finish cannot apply it\)"/);
   const no = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", product: "film", ai_upscale: "whatever", ...READY, duration_s: 30 });
   assert.equal(no.structuredContent.ready_to_render, true); assert.equal(no.structuredContent.ai_upscale, false);
   assert.match(no.structuredContent.next, /ai_upscale: "no"/); assert.doesNotMatch(no.structuredContent.next, /AI upscale: yes/); assert.match(no.text, /- AI upscale: no — the classic 4K 60 fps finish/);
   // kleo_account says it too.
   const acct = await s.call("kleo_account", {});
-  assert.deepEqual(acct.structuredContent.ai_upscale, { available: true, rule: "as many credits again as the film, at least 5", credits_30s: 15, credits_60s: 30 });
-  assert.match(acct.text, /optional AI upscale \(Real-ESRGAN \+ RIFE, a sharper picture\): as many credits again as the film, at least 5 \(15 for a 30-second Short\)/);
+  assert.deepEqual(acct.structuredContent.ai_upscale, { available: true, rule: "as many credits again as the film, at least 5", credits_30s: 20, credits_60s: 40 });
+  assert.match(acct.text, /optional AI upscale \(Real-ESRGAN \+ RIFE, a sharper picture\): as many credits again as the film, at least 5 \(20 for a 30-second Short\)/);
 });
 
 test("the AI upscale is paid with the film, refunded automatically when the finish did not apply it, and said with the links", async () => {
@@ -863,38 +863,38 @@ test("the AI upscale is paid with the film, refunded automatically when the fini
   const done = async (id, body) => m.handleInternal(new Request(`http://kleo.test/internal/jobs/${id}/done`, { method: "POST", headers: { authorization: `Bearer ${await secretOf(id)}`, "content-type": "application/json" }, body: JSON.stringify(body) }), s.env);
   const made = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers", duration_s: 30, format: "9:16", language: "en", product: "film", ai_upscale: "yes" });
   assert.ok(!made.isError, made.text);
-  assert.equal(made.structuredContent.credits, 30, "15 for the film + 15 for the upscale");
-  assert.equal((await m.getUser(s.env, "u_test")).credits, 40);
-  assert.match(made.text, /AI upscale: yes, Real-ESRGAN \+ RIFE on every shot, 15 credits of the 30 credits \(given back automatically if the finish cannot apply it\)\./);
+  assert.equal(made.structuredContent.credits, 40, "20 for the film + 20 for the upscale");
+  assert.equal((await m.getUser(s.env, "u_test")).credits, 30);
+  assert.match(made.text, /AI upscale: yes, Real-ESRGAN \+ RIFE on every shot, 20 credits of the 40 credits \(given back automatically if the finish cannot apply it\)\./);
   const id = made.structuredContent.job_id;
   const params = JSON.parse((await m.getJob(s.env, id)).params);
-  assert.equal(params.ai_upscale, true); assert.equal(params.ai_upscale_credits, 15);
-  // The finish box upscaled two shots of three (a part fell back to the classic chain): the 15 credits come back.
+  assert.equal(params.ai_upscale, true); assert.equal(params.ai_upscale_credits, 20);
+  // The finish box upscaled two shots of three (a part fell back to the classic chain): the 20 credits come back.
   const r = await done(id, { cost_usd: 0.02, sr: { parts: 3, applied: 2, model: "realesr-general-x4v3", gpu: "RTX 3060", reason: "01-hook shot 3: CUDA error" } });
   assert.equal(r.status, 200);
-  assert.equal((await m.getUser(s.env, "u_test")).credits, 55, "the upscale's 15 credits are given back, the film's 15 are not");
+  assert.equal((await m.getUser(s.env, "u_test")).credits, 50, "the upscale's 20 credits are given back, the film's 20 are not");
   const rows = await s.audit("ai_upscale.refunded");
-  assert.equal(rows.length, 1); assert.equal(rows[0].refunded, 15); assert.equal(rows[0].upscaled, 2); assert.equal(rows[0].parts, 3);
+  assert.equal(rows.length, 1); assert.equal(rows[0].refunded, 20); assert.equal(rows[0].upscaled, 2); assert.equal(rows[0].parts, 3);
   assert.match((await s.audit("credits.refund"))[0].reason, /^AI upscale not applied: 01-hook shot 3: CUDA error/);
   const got = await s.call("kleo_get_result", { job_id: id });
-  assert.match(got.text, /AI upscale: not applied \(01-hook shot 3: CUDA error\), 15 credits refunded; the film is in the classic 4K 60 fps\./);
-  assert.deepEqual(got.structuredContent.ai_upscale, { applied: false, refunded: 15, reason: "01-hook shot 3: CUDA error" });
+  assert.match(got.text, /AI upscale: not applied \(01-hook shot 3: CUDA error\), 20 credits refunded; the film is in the classic 4K 60 fps\./);
+  assert.deepEqual(got.structuredContent.ai_upscale, { applied: false, refunded: 20, reason: "01-hook shot 3: CUDA error" });
   // A repeated /done changes nothing: the credits moved once.
   await done(id, { sr: { parts: 3, applied: 3 } });
-  assert.equal((await m.getUser(s.env, "u_test")).credits, 55);
+  assert.equal((await m.getUser(s.env, "u_test")).credits, 50);
 
   // Every shot upscaled: the credits stay spent and the links say so.
   const ok2 = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers at dawn", duration_s: 15, format: "9:16", language: "en", product: "film", ai_upscale: "sì" });
   assert.ok(!ok2.isError, ok2.text); assert.equal(ok2.structuredContent.credits, 20);
   await done(ok2.structuredContent.job_id, { sr: { parts: 4, applied: 4, model: "realesr-general-x4v3", gpu: "RTX 3060", reason: null } });
-  assert.equal((await m.getUser(s.env, "u_test")).credits, 35);
+  assert.equal((await m.getUser(s.env, "u_test")).credits, 30);
   assert.match((await s.call("kleo_get_result", { job_id: ok2.structuredContent.job_id })).text, /AI upscale: applied \(Real-ESRGAN \+ RIFE on all 4 shots\)\./);
   assert.equal((await s.audit("ai_upscale.applied")).length, 1);
 
   // No report at all (an older worker, the mock): not applied, refunded.
   const old = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers at dusk", duration_s: 15, format: "9:16", language: "en", product: "film", ai_upscale: true });
   await done(old.structuredContent.job_id, { cost_usd: 0.01 });
-  assert.equal((await m.getUser(s.env, "u_test")).credits, 25, "35 - 20 + 10");
+  assert.equal((await m.getUser(s.env, "u_test")).credits, 20, "30 - 20 + 10");
   assert.match((await s.call("kleo_get_result", { job_id: old.structuredContent.job_id })).text, /AI upscale: not applied \(the finish box sent no report of the upscale\), 10 credits refunded/);
 });
 
@@ -903,35 +903,35 @@ test("an upscale film retried by the owner after a failure is not refunded twice
   const secretOf = async (id) => (await s.env.DB.prepare("SELECT worker_secret FROM jobs WHERE id = ?").bind(id).first()).worker_secret;
   const post = async (id, rest, body) => m.handleInternal(new Request(`http://kleo.test/internal/jobs/${id}/${rest}`, { method: "POST", headers: { authorization: `Bearer ${await secretOf(id)}`, "content-type": "application/json" }, body: JSON.stringify(body) }), s.env);
   const credits = async () => (await m.getUser(s.env, "u_test")).credits;
-  // 15 + 15 debited; the finish fails and failJob gives back all 30.
+  // 20 + 20 debited; the finish fails and failJob gives back all 40.
   const made = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers", duration_s: 30, format: "9:16", language: "en", product: "film", ai_upscale: "yes" });
   assert.ok(!made.isError, made.text); const id = made.structuredContent.job_id;
-  assert.equal(await credits(), 40);
+  assert.equal(await credits(), 30);
   await s.env.DB.prepare("UPDATE jobs SET phase = 'finish', state = 'finishing', percent = 80 WHERE id = ?").bind(id).run();
   assert.equal((await post(id, "failed", { error: "Invalid master", retry: false })).status, 200);
   assert.equal(await credits(), 70, "the whole debit back, the upscale included");
-  // The owner retries it (26 September 2026, one refund per job): the 30 credits the failure gave back are taken
+  // The owner retries it (26 September 2026, one refund per job): the 40 credits the failure gave back are taken
   // again, so the retry's finish settles the upscale like any other finish — and nothing is refunded twice.
   const r = await (await m.handleAdmin(new Request("http://kleo.test/internal/admin/retry", { method: "POST", headers: { authorization: "Bearer s3cret", "content-type": "application/json" }, body: JSON.stringify({ job_id: id }) }), s.env)).json();
-  assert.equal(r.ok, true); assert.equal(r.credits_debited, 30);
-  assert.equal(await credits(), 40, "the retry is paid again");
+  assert.equal(r.ok, true); assert.equal(r.credits_debited, 40);
+  assert.equal(await credits(), 30, "the retry is paid again");
   assert.equal(JSON.parse((await m.getJob(s.env, id)).params).ai_upscale_refunded, undefined);
   assert.equal((await post(id, "done", { sr: { parts: 3, applied: 0, model: null, gpu: null, reason: "no card" } })).status, 200);
-  assert.equal(await credits(), 55, "the 15 upscale credits come back once, from the retry's own debit");
+  assert.equal(await credits(), 50, "the 20 upscale credits come back once, from the retry's own debit");
   const got = await s.call("kleo_get_result", { job_id: id });
-  assert.match(got.text, /AI upscale: not applied \(no card\), 15 credits refunded; the film is in the classic 4K 60 fps\./);
+  assert.match(got.text, /AI upscale: not applied \(no card\), 20 credits refunded; the film is in the classic 4K 60 fps\./);
   const refunds = await s.audit("credits.refund");
-  assert.deepEqual(refunds.map((x) => x.amount), [30, 15], "the failure's 30, then the upscale's 15: each credit given back once");
-  await s.env.DB.prepare("UPDATE users SET credits = 70 WHERE id = 'u_test'").run(); // the cancel below starts from 70
+  assert.deepEqual(refunds.map((x) => x.amount), [40, 20], "the failure's 40, then the upscale's 20: each credit given back once");
+  await s.env.DB.prepare("UPDATE users SET credits = 100 WHERE id = 'u_test'").run(); // the cancel below starts from 100
   // A cancel before the finish: the upscale (which only the finish runs) comes back whole, the film's part prorated.
   const c = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers at dawn", duration_s: 60, format: "9:16", language: "en", product: "film", ai_upscale: "yes" });
-  assert.ok(!c.isError, c.text); assert.equal(c.structuredContent.credits, 60); assert.equal(await credits(), 10);
+  assert.ok(!c.isError, c.text); assert.equal(c.structuredContent.credits, 80); assert.equal(await credits(), 20);
   await s.env.DB.prepare("UPDATE jobs SET state = 'rendering', percent = 58 WHERE id = ?").bind(c.structuredContent.job_id).run();
   const x = await s.call("kleo_cancel_job", { job_id: c.structuredContent.job_id });
   assert.ok(!x.isError, x.text);
-  assert.equal(await credits(), 10 + 13 + 30, "round(30 x 42%) = 13 for the film, all 30 for the upscale");
+  assert.equal(await credits(), 20 + 17 + 40, "round(40 x 42%) = 17 for the film, all 40 for the upscale");
   const row = (await s.audit("job.cancelled")).at(-1);
-  assert.equal(row.refunded, 43); assert.equal(row.film_refund, 13); assert.equal(row.ai_upscale_refund, 30);
+  assert.equal(row.refunded, 57); assert.equal(row.film_refund, 17); assert.equal(row.ai_upscale_refund, 40);
   // RIFE alone (factor 1, the clips already near 4K: no upscaler named) is not the Real-ESRGAN pass that was sold.
   for (const [model, n] of [[null, 1], ["no upscaler", 2]]) {
     const f = await s.call("kleo_create_video", { prompt: `A film about lighthouse keepers at dusk ${n}`, duration_s: 15, format: "9:16", language: "en", product: "film", ai_upscale: "yes" });
@@ -946,13 +946,13 @@ test("an upscale film retried by the owner after a failure is not refunded twice
 test("a film without the option is priced, said and settled exactly as before", async () => {
   const s = await studio(fakeAi(() => { throw new Error("must not be called"); }));
   const made = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers", duration_s: 30, format: "9:16", language: "en", product: "film" });
-  assert.ok(!made.isError, made.text); assert.equal(made.structuredContent.credits, 15);
+  assert.ok(!made.isError, made.text); assert.equal(made.structuredContent.credits, 20);
   assert.doesNotMatch(made.text, /upscale/i);
   const p = JSON.parse((await m.getJob(s.env, made.structuredContent.job_id)).params);
   assert.equal(p.ai_upscale, undefined); assert.equal(p.ai_upscale_credits, undefined);
   const secret = (await s.env.DB.prepare("SELECT worker_secret FROM jobs WHERE id = ?").bind(made.structuredContent.job_id).first()).worker_secret;
   await m.handleInternal(new Request(`http://kleo.test/internal/jobs/${made.structuredContent.job_id}/done`, { method: "POST", headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" }, body: JSON.stringify({ sr: { parts: 3, applied: 0, reason: "KLEO_SR=off" } }) }), s.env);
-  assert.equal((await m.getUser(s.env, "u_test")).credits, 55, "nothing refunded: the option was never bought");
+  assert.equal((await m.getUser(s.env, "u_test")).credits, 50, "nothing refunded: the option was never bought");
   assert.doesNotMatch((await s.call("kleo_get_result", { job_id: made.structuredContent.job_id })).text, /upscale/i);
   const no = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers again", duration_s: 15, format: "9:16", language: "en", product: "film", ai_upscale: "no" });
   assert.equal(no.structuredContent.credits, 10); assert.match(no.text, / AI upscale: no, the classic 4K 60 fps finish\./);

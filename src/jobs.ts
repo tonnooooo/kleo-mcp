@@ -1,7 +1,7 @@
 import type { Env } from "./env";
 import { type Job, type JobParams, type JobState, type User, OPEN_STATES, countOpenForUser, countJobsTodayForUser, addJobCost, debitCredits, refundCredits, refundJobCredits, insertJob, transitionJob, audit, getUserJob, listFiles, hasPaid, recentJobsForUser } from "./db";
 import { accountUrl } from "./accounts";
-import { findTemplate, affordableGuess, creditsFor, creditsForProduct, aiUpscaleCredits, aiUpscaleOn, etaFor, animaticEtaFor, normalizeVoice, voiceSpellings, isVideoStyle, videoModelIsGated, isPublicTemplate, FILM_TEMPLATE_ID, FILM_LONG_TEMPLATE_ID, filmTemplateFor, ACTIVE_TEMPLATE, PRODUCTS, ANIMATIC_CREDITS, ANIMATIC_MAX_S, filmedStoryboard, finishForProduct, productOf, type Format, type Product } from "./templates";
+import { findTemplate, affordableGuess, creditsFor, creditsForProduct, aiUpscaleCredits, aiUpscaleOn, etaFor, animaticEtaFor, normalizeVoice, voiceSpellings, isVideoStyle, videoModelIsGated, isPublicTemplate, FILM_TEMPLATE_ID, FILM_LONG_TEMPLATE_ID, filmTemplateFor, ACTIVE_TEMPLATE, PRODUCTS, ANIMATIC_MAX_S, animaticCredits, animaticRule, filmedStoryboard, finishForProduct, productOf, type Format, type Product } from "./templates";
 import { footageBackendFor, footageConfig, kiePreflight, clipFloorFor } from "./footage";
 import { rid, nowIso, int, hmacHex, publicText } from "./util";
 import { isProbeFile } from "./probe.ts";
@@ -30,7 +30,7 @@ export interface CreateInput {
   style?: string;
   /**
    * "film" (default: every shot filmed by kie.ai, for accounts that have paid) or "animatic" (the same stills with
-   * the camera over them, no generated clip, ANIMATIC_CREDITS flat, up to ANIMATIC_MAX_S seconds, open to every
+   * the camera over them, no generated clip, priced by length (animaticCredits), up to ANIMATIC_MAX_S seconds, open to every
    * account). See templates.ts, the two products of 15 September 2026.
    */
   product?: string;
@@ -161,7 +161,7 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   if (!t) throw new JobError(`There is no template called "${input.template}". Call kleo_list_templates for the valid ids. Nothing was charged.`);
   // One template, two products (13 and 15 September 2026): the film, and the animatic of the same storyboard. The old
   // templates stay readable for the rows made with them and for the planner's families, but a new video is not made with them.
-  if (!isPublicTemplate(t.id)) throw new JobError(`Kleo has one template, "${FILM_TEMPLATE_ID}" (realistic or animated, 16:9 or 9:16, 15 to 300 seconds; "${FILM_LONG_TEMPLATE_ID}" is the same over 90), in two products: the film and, with product: "animatic", the animatic (${plural(ANIMATIC_CREDITS, "credit")}, up to ${ANIMATIC_MAX_S} seconds). Omit the template and say the length. Nothing was charged.`);
+  if (!isPublicTemplate(t.id)) throw new JobError(`Kleo has one template, "${FILM_TEMPLATE_ID}" (realistic or animated, 16:9 or 9:16, 15 to 300 seconds; "${FILM_LONG_TEMPLATE_ID}" is the same over 90), in two products: the film and, with product: "animatic", the animatic (${animaticRule().en}). Omit the template and say the length. Nothing was charged.`);
   const format = (input.format ?? t.formats[0]) as Format;
   if (!t.formats.includes(format))
     throw new JobError(`The "${t.name}" template only makes ${formatWords(t.formats[0])}, not ${formatWords(format)}. Pick ${t.formats[0]} or another template. Nothing was charged.`);
@@ -172,12 +172,13 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   // made only for an account with a payment on record; everyone else — the free credits, a bonus, a balance typed in
   // by hand, the owner's own test account — is offered the animatic, in words, before anything is charged.
   if (input.product !== undefined && !(PRODUCTS as readonly string[]).includes(input.product))
-    throw new JobError(`Kleo makes two things: a "film" (every shot filmed) and an "animatic" (the same frames with the camera moving over them, ${plural(ANIMATIC_CREDITS, "credit")} flat). Pass product: "film" or "animatic", or omit it for the film. Nothing was charged.`);
+    throw new JobError(`Kleo makes two things: a "film" (every shot filmed) and an "animatic" (the same frames with the camera moving over them, ${animaticRule().en}). Pass product: "film" or "animatic", or omit it for the film. Nothing was charged.`);
   const product: Product = input.product === "animatic" ? "animatic" : "film";
   const paid = await hasPaid(env, user.id);
   // Every way out named below is one THIS account can take: an animatic is offered with its length cap when the film
   // asked is longer than it, and "order the film" only to an account the film is open to.
-  const animaticWayOut = `call again with product: "animatic"${duration > ANIMATIC_MAX_S ? ` and a length of at most ${ANIMATIC_MAX_S} seconds` : ""} (${plural(ANIMATIC_CREDITS, "credit")} flat)`;
+  const animaticPrice = animaticCredits(Math.min(duration, ANIMATIC_MAX_S));
+  const animaticWayOut = `call again with product: "animatic"${duration > ANIMATIC_MAX_S ? ` and a length of at most ${ANIMATIC_MAX_S} seconds` : ""} (${plural(animaticPrice, "credit")})`;
   if (product === "animatic" && duration > ANIMATIC_MAX_S)
     throw new JobError(`An animatic is at most ${ANIMATIC_MAX_S} seconds long (${duration} asked): it is the preview of a film, not the film. Ask for ${ANIMATIC_MAX_S} seconds or less${paid ? ", or order the film itself" : `, or buy any pack (from 5 EUR) on the account page and order the film: ${await accountUrl(env, user.id)}`}. Nothing was charged.`);
   // THE AI UPSCALE is the film's option, and the Worker's KLEO_SR "off" switches it off for everybody: both are said
@@ -412,7 +413,7 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   const jobId = rid("gt", 8);
   // The debit is one conditional UPDATE: it either takes the credits for this job or does nothing.
   if (!(await debitCredits(env, user.id, credits, jobId)))
-    throw new JobError(`Not enough credits: this ${product === "animatic" ? "animatic" : kindOf(format)} costs ${plural(credits, "credit")}${upscaleCredits ? ` (${filmPrice} for the film + ${upscaleCredits} for the AI upscale; with ai_upscale: "no" it costs ${filmPrice})` : ""} and you have ${plural(Math.max(0, user.credits), "credit")}. Nothing was charged.${product === "film" && user.credits >= ANIMATIC_CREDITS ? ` The animatic of the same storyboard costs ${plural(ANIMATIC_CREDITS, "credit")}: ${animaticWayOut}.` : ""} Your account and how to get more: ${await accountUrl(env, user.id)}`);
+    throw new JobError(`Not enough credits: this ${product === "animatic" ? "animatic" : kindOf(format)} costs ${plural(credits, "credit")}${upscaleCredits ? ` (${filmPrice} for the film + ${upscaleCredits} for the AI upscale; with ai_upscale: "no" it costs ${filmPrice})` : ""} and you have ${plural(Math.max(0, user.credits), "credit")}. Nothing was charged.${product === "film" && user.credits >= animaticPrice ? ` The animatic of the same storyboard costs ${plural(animaticPrice, "credit")}: ${animaticWayOut}.` : ""} Your account and how to get more: ${await accountUrl(env, user.id)}`);
 
   // The two answers travel on the row: the planner reads them when it writes its own treatment, the worker reads the
   // storyboard they shaped. A "yes" to music with no brief yet gets the treatment's brief, or the user's own words.

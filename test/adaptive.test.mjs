@@ -392,7 +392,8 @@ test("the live regression: an Italian chat asking for an English film gets an En
 /* ------------------------------------------------------------------ film or animatic, with the prices (25 September) */
 
 /** The account as src/mcp.ts passes it: a paying one with 70 credits, a 15-second film at 10 credits. */
-const ACCT = (over = {}) => ({ paid: true, credits: 70, filmCredits: 10, animaticCredits: 5, animaticMaxS: 60, tariff: "1 credit buys 2 seconds of film, 10 credits minimum", ...over });
+const ACCT = (over = {}) => ({ paid: true, credits: 70, filmCredits: 10, animaticCredits: 5, animaticMaxS: 60, tariff: "1 credit buys 1.5 seconds of film, 10 credits minimum",
+  animaticRule: { en: "5 credits up to 20 seconds, 10 up to 60 seconds", it: "5 crediti fino a 20 secondi, 10 fino a 60 secondi" }, ...over });
 const ANSWERS = { duration_s: 15, format: "16:9", look: "animation", music: "no", subtitles: "no", language: "en" };
 
 test("with no account the product is not asked: a pure caller takes the product it passes", () => {
@@ -405,14 +406,15 @@ test("with no account the product is not asked: a pure caller takes the product 
 test("a paying account is asked film or animatic, with both prices, in the chat's language and in the same message", () => {
   const en = adaptPrompt("A film about pirates", { ...ANSWERS, account: ACCT() });
   assert.deepEqual(en.intake.missing, ["product"]); assert.equal(en.questions.length, 1);
-  assert.match(en.questions[0], /^Film or animatic\?/); assert.match(en.questions[0], /10 credits for 15 seconds/); assert.match(en.questions[0], /5 credits flat, up to 60 seconds/);
+  assert.match(en.questions[0], /^Film or animatic\?/); assert.match(en.questions[0], /10 credits for 15 seconds/); assert.match(en.questions[0], /the animatic .* costs 5 credits for 15 seconds \(5 credits up to 20 seconds, 10 up to 60 seconds\)/);
   assert.match(en.questions[0], /You have 70 credits\.$/);
   const it = adaptPrompt("Un video sui pirati", { ...ANSWERS, account: ACCT() });
-  assert.match(it.questions[0], /^Film o animatic\?/); assert.match(it.questions[0], /10 crediti per 15 secondi/); assert.match(it.questions[0], /5 crediti fissi/);
+  assert.match(it.questions[0], /^Film o animatic\?/); assert.match(it.questions[0], /10 crediti per 15 secondi/); assert.match(it.questions[0], /costa 5 crediti per 15 secondi \(5 crediti fino a 20 secondi, 10 fino a 60 secondi\)/);
   // The length not known yet: the tariff, in the same question as the length's.
-  const open = adaptPrompt("A film about pirates", { ...ANSWERS, duration_s: undefined, account: ACCT({ filmCredits: null }) });
+  const open = adaptPrompt("A film about pirates", { ...ANSWERS, duration_s: undefined, account: ACCT({ filmCredits: null, animaticCredits: null }) });
   assert.deepEqual(open.intake.missing, ["duration", "product"]);
-  assert.match(open.questions[1], /priced by its length \(1 credit buys 2 seconds of film, 10 credits minimum\)/);
+  assert.match(open.questions[1], /priced by its length \(1 credit buys 1\.5 seconds of film, 10 credits minimum\)/);
+  assert.match(open.questions[1], /the animatic .* costs 5 credits up to 20 seconds, 10 up to 60 seconds\./, "the animatic's rule in words while the length is unknown");
   // Not enough credits for the film: said in the question.
   assert.match(adaptPrompt("A film about pirates", { ...ANSWERS, account: ACCT({ credits: 7 }) }).questions[0], /You have 7 credits, not enough for the film\./);
   // Answered: the product is the user's.

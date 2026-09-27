@@ -60,9 +60,9 @@ async function newEnv(backend = "manual") {
   for (const f of readdirSync(join(ROOT, "migrations")).sort()) env.DB.db.exec(readFileSync(join(ROOT, "migrations", f), "utf8"));
   return env;
 }
-/** Price units (14 September: one credit per two seconds, ten at least): P = the 45 s Short below, P30 = a 30 s film,
- *  PL = a five-minute film. */
-const P = 23, P30 = 15, PL = 150;
+/** Price units (27 September 2026: one credit per 1.5 seconds, ten at least): P = the 45 s Short below, P30 = a 30 s
+ *  film, PL = a five-minute film. */
+const P = 30, P30 = 20, PL = 200;
 // Since 15 September a FILM is made only for an account with a payment on record (src/db.ts hasPaid): these suites
 // test a paying customer, so the user carries one Stripe row — the way a tester is let in on production too.
 const markPaid = (env, id) => env.DB.prepare("INSERT INTO payments (session_id, user_id, credits, amount_cent, currency, status, raw_ref) VALUES (?, ?, 10, 500, 'eur', 'paid', 'test')").bind(`cs_test_${id}`, id).run();
@@ -150,7 +150,7 @@ test("create: on the API road a client storyboard is trimmed to one clip per ele
   } finally { globalThis.fetch = realFetch; }
 });
 
-test("create: the two products (15 September) — a film is for paying accounts only, the animatic is 5 credits, drawn, no music, no clip", async () => {
+test("create: the two products (15 September) — a film is for paying accounts only, the animatic is priced by length, drawn, no music, no clip", async () => {
   // The owner's rule, said on his own test account (48 credits typed in by hand, never a payment): kie.ai clips are
   // bought with his money, so a FILM needs a payment on record; the free credits buy the ANIMATIC — the same
   // storyboard as drawn frames with the camera over them — and nothing filmed.
@@ -163,7 +163,7 @@ test("create: the two products (15 September) — a film is for paying accounts 
   await assert.rejects(() => m.createJob(env, stranger, { ...film, product: "animatic", duration_s: 90 }), /An animatic is at most 60 seconds long/);
   await assert.rejects(() => m.createJob(env, stranger, { ...film, product: "trailer" }), /Pass product: "film" or "animatic"/);
   const anim = await m.createJob(env, stranger, { ...film, product: "animatic" });
-  assert.equal(anim.credits, 5, "flat, under the 7-credit gift");
+  assert.equal(anim.credits, 10, "30 seconds: the long animatic (5 credits up to 20 s, 10 up to 60 s, 27 September 2026)");
   assert.equal(await balance(env, "u_free"), 43);
   const p = JSON.parse(anim.params);
   assert.equal(p.product, "animatic");
