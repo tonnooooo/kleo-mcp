@@ -6,7 +6,7 @@ import { html, escapeHtml } from "./util";
 import { tariffSentence, animaticRule } from "./templates";
 import { redeemLaunchCode, trialOf, TRIAL_FILM_MAX_S, type TrialState } from "./launch.ts";
 import { referralCodeFor, referralLink, referralRule } from "./referral.ts";
-import { setContactEmail, removeContactEmail, contactEmailOf, EMAIL_BONUS, type ContactEmail } from "./email.ts";
+import { setContactEmail, removeContactEmail, contactEmailOf, emailConfigured, EMAIL_BONUS, type ContactEmail } from "./email.ts";
 
 /** The one address a stranger can write to. It is also in the site footer; both must always say the same thing. */
 const CONTACT = "kleooai@gmail.com";
@@ -40,7 +40,7 @@ export async function handleCredits(request: Request, env: Env): Promise<Respons
     if (action === "redeem") {
       const r = await redeemLaunchCode(env, user.id, form.get("code"));
       notice = r.ok
-        ? { ok: true, text: `Code ${r.code} redeemed: ${plural(r.credits, "credit")} added, and one free film of up to ${TRIAL_FILM_MAX_S} seconds is open on this account. Ask your assistant for it.` }
+        ? { ok: true, text: `Code ${r.code} redeemed: ${plural(r.credits, "credit")} added, and one free film of up to ${TRIAL_FILM_MAX_S} seconds is open on this account, paid with them (spending them on something else closes it). Ask your assistant for it.` }
         : { ok: false, text: r.message };
     } else if (action === "email" || action === "email_remove") {
       if (ownerId !== user.id) notice = { ok: false, text: "An email can be added only from the browser that owns this account (the one you connected Kleo from). Nothing was changed." };
@@ -68,10 +68,16 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 /**
  * THE EMAIL BOX (27 September 2026, src/email.ts): what the account has (verified, waiting, none) and the form — only
- * for the browser that owns the account; a shared link is told where to do it instead.
+ * for the browser that owns the account; a shared link is told where to do it instead. While Kleo cannot send email
+ * (no RESEND_API_KEY) the box never promises the bonus as if it were one click away: the address can still be saved,
+ * and the page says its link and its credits come when the emails are switched on.
  */
 function emailBlock(o: PageOpts, hidden: string): string {
-  const why = `+${EMAIL_BONUS} credits once it is verified, and every finished video's links in your inbox. Kleo uses it only for your videos and Kleo news, and every email has a link to stop them.`;
+  const sending = emailConfigured(o.env);
+  const use = "Kleo uses it only for your videos and Kleo news, and every email has a link to stop them.";
+  const why = sending
+    ? `+${EMAIL_BONUS} credits once it is verified, and every finished video's links in your inbox. ${use}`
+    : `Kleo's emails are not switched on yet. An address saved here gets its verification link when they are, and +${EMAIL_BONUS} credits once it is verified, then every finished video's links in your inbox. ${use}`;
   if (!o.owner) return `<h2>Email (optional)</h2>
 <p>Add an email: ${why} Open this page in the browser you connected Kleo from to add it: a shared link cannot change the account.</p>`;
   const c = o.contact ?? { email: null, verified: false };
@@ -79,6 +85,8 @@ function emailBlock(o: PageOpts, hidden: string): string {
   const remove = `<form method="post" action="/credits">${hidden}<input type="hidden" name="action" value="email_remove"><button class="link" type="submit">Remove my email</button></form>`;
   if (c.email && c.verified) return `<h2>Email</h2>
 <p>Verified: ${escapeHtml(c.email)}. Kleo emails you the links of every finished video.</p>${remove}`;
+  if (c.email && !sending) return `<h2>Email</h2>
+<p>Saved, not verified yet: ${escapeHtml(c.email)}. ${why}</p>${remove}`;
   if (c.email) return `<h2>Email</h2>
 <p>Waiting for verification: ${escapeHtml(c.email)}. Open the link Kleo sent (check the spam folder too); ${why}</p>${form("Send the link again")}${remove}`;
   return `<h2>Email (optional)</h2>
@@ -110,7 +118,7 @@ function page(o: PageOpts): string {
   // THE LAUNCH CODE (27 September 2026, src/launch.ts): the box while the account has none; its state once it has one.
   const launch = paid ? "" : trial
     ? `<h2>Launch code</h2>
-<p>${escapeHtml(trial.code)}: ${trial.available ? `one free film of up to ${TRIAL_FILM_MAX_S} seconds is open on this account. Ask your assistant for it.` : `its free film has been made (video ${escapeHtml(trial.held_by ?? "")}).`}</p>`
+<p>${escapeHtml(trial.code)}: ${trial.available ? `one free film of up to ${TRIAL_FILM_MAX_S} seconds is open on this account, paid with the ${trial.price} credits the code added. Ask your assistant for it.` : trial.held_by ? `its free film is taken (video ${escapeHtml(trial.held_by)}).` : `its free film was paid with the ${trial.price} credits the code added, and ${trial.credits_short} of them have been spent on something else, so the film is no longer open. Any pack opens films again.`}</p>`
     : `<h2>Have a launch code?</h2>
 <p>A code from Product Hunt, Hacker News, Reddit, X or TikTok opens one free film of up to ${TRIAL_FILM_MAX_S} seconds on this account, even before any pack. One code per account.</p>
 <form class="row" method="post" action="/credits">${hidden}<input type="hidden" name="action" value="redeem"><input name="code" type="text" autocomplete="off" placeholder="PRODUCTHUNT" aria-label="Launch code" required maxlength="40" style="text-transform:uppercase"><button type="submit">Redeem</button></form>`;

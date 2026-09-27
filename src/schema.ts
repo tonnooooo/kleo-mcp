@@ -78,6 +78,9 @@ const COLUMNS: [table: string, column: string, definition: string][] = [
   ["users", "contact_email_verified_at", "TEXT"],
   // The channel an account came through (?src= on the connector address; src/growth.ts, 0015_growth.sql).
   ["users", "src", "TEXT"],
+  // When the launch-code film was claimed (src/launch.ts CLAIM_FREE; 0016_trial_claim.sql): a claim naming no job row
+  // holds the trial for a few minutes, then lapses.
+  ["redemptions", "film_at", "TEXT"],
 ];
 
 /** Indexes over columns from COLUMNS. They belong here and NOT in STATEMENTS: that batch runs before the ALTERs, so

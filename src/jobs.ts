@@ -14,7 +14,7 @@ import { musicAnswer, subtitlesAnswer, lookFromText, aiUpscaleAnswer } from "./a
 import { repairGraphics } from "./graphics.ts";
 import { specProblems, repairSpec, coverage, specModeWhy, MODE_RULE, type RequestSpec } from "./spec.ts";
 import { resolveRefs, refsOf, RefError, REF_HANDLE_RE } from "./refs.ts";
-import { trialOf, claimTrial, TRIAL_FILM_MAX_S } from "./launch.ts";
+import { trialOf, claimTrial, releaseTrial, TRIAL_FILM_MAX_S } from "./launch.ts";
 
 /** An error whose message is shown to the user as-is: plain English, always says whether something was charged. */
 export class JobError extends Error {}
@@ -198,8 +198,11 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
     const buy = `buy any pack (from 5 EUR) on the account page and the film opens: ${await accountUrl(env, user.id)}`;
     if (trial?.available)
       throw new JobError(`The launch code on this account (${trial.code}) opens one free film of up to ${TRIAL_FILM_MAX_S} seconds, and this one is ${duration}. Ask for ${TRIAL_FILM_MAX_S} seconds, or ${animaticWayOut}, or ${buy}. Nothing was charged.`);
-    if (trial)
+    if (trial?.held_by)
       throw new JobError(`The film the launch code ${trial.code} opened is already taken by video ${trial.held_by} (one per account). Two ways on: ${animaticWayOut}, or ${buy}. Nothing was charged.`);
+    // The film is the credits the code added, and some of them went on something else (an animatic, most often).
+    if (trial)
+      throw new JobError(`The launch code on this account (${trial.code}) opened one free film of up to ${TRIAL_FILM_MAX_S} seconds with the ${plural(trial.price, "credit")} it added, and ${plural(trial.credits_short, "credit")} of those have since been spent, so the film cannot be made from them (you have ${plural(Math.max(0, user.credits), "credit")}). Two ways on: ${animaticWayOut}, or ${buy}. Nothing was charged.`);
     throw new JobError(`A film is made only for accounts that have bought a credit pack: its shots are generated clips that Kleo pays for per second, and the credits on this account were not paid for (a gift, a bonus or a test balance). Three ways on: ${animaticWayOut} — the same storyboard as drawn frames with the camera moving over them, narrated, 4K 60 fps, up to ${ANIMATIC_MAX_S} seconds — or redeem a launch code with kleo_redeem (one free film of up to ${TRIAL_FILM_MAX_S} seconds), or ${buy}. Nothing was charged.`);
   }
   const prompt = input.prompt.trim();
@@ -423,12 +426,15 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   const upscaleCredits = upscale ? aiUpscaleCredits(filmPrice, env) : 0;
   const credits = filmPrice + upscaleCredits;
   const jobId = rid("gt", 8);
-  // The launch-code film is claimed for THIS job before the debit: two calls at once cannot both take it.
+  // The launch-code film is claimed for THIS job before the debit: the claim is conditional (src/launch.ts CLAIM_FREE),
+  // so of two calls at once only one takes it, and a claim whose row is never written is given back just below.
   if (trialFilm && !(await claimTrial(env, user.id, jobId)))
     throw new JobError(`The film the launch code ${trial!.code} opened was just taken by another video on this account (one per account). Nothing was charged.`);
   // The debit is one conditional UPDATE: it either takes the credits for this job or does nothing.
-  if (!(await debitCredits(env, user.id, credits, jobId)))
+  if (!(await debitCredits(env, user.id, credits, jobId))) {
+    if (trialFilm) await releaseTrial(env, user.id, jobId);
     throw new JobError(`Not enough credits: this ${product === "animatic" ? "animatic" : kindOf(format)} costs ${plural(credits, "credit")}${upscaleCredits ? ` (${filmPrice} for the film + ${upscaleCredits} for the AI upscale; with ai_upscale: "no" it costs ${filmPrice})` : ""} and you have ${plural(Math.max(0, user.credits), "credit")}. Nothing was charged.${product === "film" && user.credits >= animaticPrice ? ` The animatic of the same storyboard costs ${plural(animaticPrice, "credit")}: ${animaticWayOut}.` : ""} Your account and how to get more: ${await accountUrl(env, user.id)}`);
+  }
 
   // The two answers travel on the row: the planner reads them when it writes its own treatment, the worker reads the
   // storyboard they shaped. A "yes" to music with no brief yet gets the treatment's brief, or the user's own words.
@@ -452,6 +458,7 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   } catch (e) {
     // The row never existed, so the credits go straight back: a user is never charged for a video that was not created.
     await refundCredits(env, user.id, credits, jobId, "job could not be saved");
+    if (trialFilm) await releaseTrial(env, user.id, jobId);
     await audit(env, user.id, jobId, "job.create.error", String(e).slice(0, 500));
     throw new JobError("Kleo could not save the video request. Nothing was charged; please try again in a moment.");
   }

@@ -1007,8 +1007,9 @@ test("kleo_redeem: a launch code opens one 15-second film to an account that nev
   const a = await s.call("kleo_account", {});
   assert.equal(a.structuredContent.can_order_film, true);
   assert.doesNotMatch(`${a.text}\n${JSON.stringify(a.structuredContent)}`, /producthunt|"src"/i, "the channel an account came through is the operator's, never shown");
-  assert.deepEqual(a.structuredContent.film_trial, { code: "HN", available: true, max_s: 15, used_by: null });
+  assert.deepEqual(a.structuredContent.film_trial, { code: "HN", available: true, max_s: 15, used_by: null, credits_short: 0 });
   assert.match(a.text, /its launch code \(HN\) opens ONE free film of up to 15 seconds/);
+  assert.doesNotMatch(a.text, /verified email/, "no RESEND_API_KEY: the email bonus is not offered, since no link could be sent");
   // Every account has its invitation link (src/referral.ts), and the tool says what it earns.
   assert.match(a.structuredContent.referral.link, /^http:\/\/kleo\.test\/r\/R[A-Z0-9]{7}$/);
   assert.equal(a.structuredContent.referral.referrer_credits, 10); assert.equal(a.structuredContent.referral.referred_credits, 5);
@@ -1025,4 +1026,10 @@ test("kleo_redeem: a launch code opens one 15-second film to an account that nev
   assert.ok(!made.isError, made.text); assert.equal(made.structuredContent.credits, 10);
   const tools = (await s.client.listTools()).tools;
   assert.ok(tools.find((t) => t.name === "kleo_redeem"), "the tool is registered");
+});
+
+test("kleo_account offers the verified-email bonus only while Kleo can send the link (RESEND_API_KEY)", async () => {
+  const s = await studio(fakeAi(() => { throw new Error("must not be called"); }), { RESEND_API_KEY: "re_key" }, { paid: false });
+  const a = await s.call("kleo_account", {});
+  assert.match(a.text, /Adding a verified email on the account page gives 3 credits once, and every finished video's links by email\./);
 });

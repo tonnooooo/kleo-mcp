@@ -15,8 +15,13 @@ import { rid } from "./util.ts";
  *  · ONE redemption per account, whatever the code (redemptions.user_id is the primary key);
  *  · the redemption grants the credits of the trial film (launch_codes.credits, or filmCredits(TRIAL_FILM_MAX_S) when
  *    NULL: the tariff decides, not a number copied into a table) and records the channel, which is the attribution;
- *  · the film it opens is claimed by ONE job at a time (redemptions.film_job): a trial job that failed or was cancelled
- *    gives the trial back by itself, a queued, running or delivered one holds it for good.
+ *  · the film it opens is claimed by ONE job at a time (redemptions.film_job, film_at): a trial job that failed or was
+ *    cancelled BEFORE any clip was ordered for it gives the trial back by itself; a queued, running or delivered one
+ *    holds it for good, and so does a failed or cancelled one whose clips were bought (the owner's money is spent: a
+ *    cancel at 58% must not buy a second round of clips). A claim whose job row was never written (the debit refused,
+ *    the insert failed) is released by createJob, and one left behind by a crash lapses after TRIAL_CLAIM_STALE_MIN;
+ *  · the film is the credits the code added: it is open while the account still has them (the price of the trial
+ *    film), so a code whose credits went on animatics never reads "open" to a film the debit would then refuse.
  * The gates that read it: createJob (src/jobs.ts), requestFootage (src/footage.ts) and, through createJob, the
  * pre-flight — which runs before the claim, so a film refused for capacity never holds the trial.
  */
@@ -46,7 +51,7 @@ export function normalizeChannel(raw: unknown): string | null {
 }
 
 export interface LaunchCode { code: string; channel: string; max_uses: number; uses: number; credits: number | null; active: number }
-export interface Redemption { user_id: string; code: string; channel: string; credits: number; film_job: string | null; at: string }
+export interface Redemption { user_id: string; code: string; channel: string; credits: number; film_job: string | null; film_at: string | null; at: string }
 
 export const getLaunchCode = (env: Env, code: string) =>
   env.DB.prepare("SELECT * FROM launch_codes WHERE code = ?").bind(code).first<LaunchCode>();
@@ -97,29 +102,58 @@ export async function redeemLaunchCode(env: Env, userId: string, raw: unknown): 
   return why;
 }
 
-/** What the account's launch code still offers: the trial film, when there is one and no live job holds it. */
-export interface TrialState { code: string; channel: string; available: boolean; max_s: number; held_by: string | null }
+/** Minutes after which a claim that names no job row (a crash between the claim and the insert) no longer holds. */
+export const TRIAL_CLAIM_STALE_MIN = 10;
+
+/**
+ * The claim is FREE — no job holds the trial film — in SQL, over the redemptions row: no claim yet; or the claiming job
+ * failed or was cancelled and no clip was ever ordered for it (a footage row counts unless kie.ai refused it before
+ * giving it a task, which is never billed); or the claim names no job row at all and is older than
+ * TRIAL_CLAIM_STALE_MIN. A claim whose job row is not written YET is not free: that is the moment a second call from the
+ * same account arrives in (an assistant retrying after a client timeout), and it must not take the trial over.
+ * trialOf and claimTrial read this one predicate, so the page, the texts and the gate never disagree.
+ */
+const CLAIM_FREE = `(redemptions.film_job IS NULL
+  OR EXISTS (SELECT 1 FROM jobs WHERE jobs.id = redemptions.film_job AND jobs.state IN ('failed', 'cancelled')
+             AND NOT EXISTS (SELECT 1 FROM footage WHERE footage.job_id = jobs.id AND NOT (footage.state = 'failed' AND footage.task_id IS NULL)))
+  OR (NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.id = redemptions.film_job)
+      AND (redemptions.film_at IS NULL OR redemptions.film_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-${TRIAL_CLAIM_STALE_MIN} minutes'))))`;
+
+/**
+ * What the account's launch code still offers. `available`: no job holds the trial film AND the account still has the
+ * credits the code added for it (the film's price); `held_by`: the job that holds it (made, in the making, or failed
+ * after its clips were bought); `credits_short`: how many credits the free film lacks because they were spent on
+ * something else (0 otherwise).
+ */
+export interface TrialState { code: string; channel: string; available: boolean; max_s: number; held_by: string | null; price: number; credits_short: number }
 export async function trialOf(env: Env, userId: string): Promise<TrialState | null> {
-  const r = await redemptionOf(env, userId);
+  const r = await env.DB.prepare(
+    `SELECT redemptions.code, redemptions.channel, redemptions.film_job, ${CLAIM_FREE} AS free,
+            (SELECT credits FROM users WHERE users.id = redemptions.user_id) AS balance
+     FROM redemptions WHERE user_id = ?`,
+  ).bind(userId).first<{ code: string; channel: string; film_job: string | null; free: number; balance: number | null }>();
   if (!r) return null;
-  const holder = r.film_job
-    ? await env.DB.prepare("SELECT id, state FROM jobs WHERE id = ?").bind(r.film_job).first<{ id: string; state: string }>()
-    : null;
-  const live = !!holder && holder.state !== "failed" && holder.state !== "cancelled";
-  return { code: r.code, channel: r.channel, available: !live, max_s: TRIAL_FILM_MAX_S, held_by: live ? holder!.id : null };
+  const price = filmCredits(TRIAL_FILM_MAX_S);
+  const held = !r.free && !!r.film_job;
+  const short = held ? 0 : Math.max(0, price - (r.balance ?? 0));
+  return { code: r.code, channel: r.channel, available: !held && short === 0, max_s: TRIAL_FILM_MAX_S, held_by: held ? r.film_job : null, price, credits_short: short };
 }
 
 /**
- * Claims the trial film for one job, atomically: the redemption's film_job is set only while no job that is still
- * alive (queued, running or delivered) holds it. A claim for a job that is never inserted (the debit refused, the row
- * could not be saved) points at nothing, and nothing is exactly what "no live job holds it" reads.
+ * Claims the trial film for one job, atomically: the redemption's film_job is set only while the claim is free
+ * (CLAIM_FREE), so of two calls at once only one takes it, whichever order the rows are written in. The caller that
+ * then fails to write its job row gives the claim back with releaseTrial.
  */
 export async function claimTrial(env: Env, userId: string, jobId: string): Promise<boolean> {
   const r = await env.DB.prepare(
-    `UPDATE redemptions SET film_job = ? WHERE user_id = ?
-       AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.id = redemptions.film_job AND jobs.state NOT IN ('failed', 'cancelled'))`,
+    `UPDATE redemptions SET film_job = ?, film_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE user_id = ? AND ${CLAIM_FREE}`,
   ).bind(jobId, userId).run();
   return (r.meta.changes ?? 0) === 1;
+}
+
+/** Gives back a claim whose job was never written (the debit refused, the insert failed): only if it is still this job's. */
+export async function releaseTrial(env: Env, userId: string, jobId: string): Promise<void> {
+  await env.DB.prepare("UPDATE redemptions SET film_job = NULL, film_at = NULL WHERE user_id = ? AND film_job = ?").bind(userId, jobId).run();
 }
 
 /** True when this job is the account's launch-code film: marked so, no longer than the trial, and the claim is its. */

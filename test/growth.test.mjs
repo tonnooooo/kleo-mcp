@@ -90,7 +90,7 @@ test("launch codes: the five channels are seeded with 30 uses each; a code is ca
   assert.equal((await m.getLaunchCode(env, "PRODUCTHUNT")).uses, 1);
   assert.deepEqual(audits(env, "launch.redeemed")[0].detail, { code: "PRODUCTHUNT", channel: "producthunt", amount: 10, balance: 15 });
   const trial = await m.trialOf(env, "u_a");
-  assert.deepEqual(trial, { code: "PRODUCTHUNT", channel: "producthunt", available: true, max_s: 15, held_by: null });
+  assert.deepEqual(trial, { code: "PRODUCTHUNT", channel: "producthunt", available: true, max_s: 15, held_by: null, price: 10, credits_short: 0 });
 });
 
 test("launch codes: one per account whatever the code, a used-up code and an unknown one change nothing, and each refusal says why", async () => {
@@ -167,6 +167,89 @@ test("the launch-code film never lets a paying account's films through the trial
   const job = await m.createJob(env, await m.getUser(env, "u_p"), film({ duration_s: 30 }));
   assert.equal(JSON.parse(job.params).trial, undefined, "a paid film is not the trial");
   assert.equal((await m.trialOf(env, "u_p")).available, true);
+});
+
+test("the launch-code film: a cancel or a failure AFTER its clips were ordered keeps the trial spent; one before gives it back", async () => {
+  const env = await newEnv();
+  // The reviewer's account: 5 (gift) + 10 (code) + 3 (verified email) = 18 credits, never paid.
+  await newUser(env, "u_a", 8);
+  await m.redeemLaunchCode(env, "u_a", "HN");
+  const first = await m.createJob(env, await m.getUser(env, "u_a"), film());
+  // Cancelled before any clip: the trial comes back (nothing of the owner's money went out for clips).
+  await m.cancelJob(env, await m.getUser(env, "u_a"), first.id);
+  assert.equal((await m.trialOf(env, "u_a")).available, true);
+  const second = await m.createJob(env, await m.getUser(env, "u_a"), film({ prompt: "The lighthouse keeper, a second try at the film" }));
+  assert.equal(JSON.parse(second.params).trial, true);
+  // Its clips are ordered (one footage row, with a task), then it is cancelled at 58%: the trial stays spent.
+  env.DB.db.prepare("INSERT INTO footage (job_id, shot_id, model, task_id, state, seconds, cost_usd) VALUES (?, 's1', 'seedance', 'tk_1', 'generating', 5, 0.4)").run(second.id);
+  env.DB.db.prepare("UPDATE jobs SET state = 'running', percent = 58 WHERE id = ?").run(second.id);
+  await m.cancelJob(env, await m.getUser(env, "u_a"), second.id);
+  const after = await m.trialOf(env, "u_a");
+  assert.equal(after.available, false); assert.equal(after.held_by, second.id);
+  await assert.rejects(async () => m.createJob(env, await m.getUser(env, "u_a"), film({ prompt: "The lighthouse keeper, a third round of clips" })), (e) => new RegExp(`already taken by video ${second.id}`).test(e.message) && /Nothing was charged/.test(e.message));
+  assert.equal(await m.claimTrial(env, "u_a", "gt_third"), false, "the claim itself refuses too");
+  // A failure after the clips were bought is the same; a clip refused before it had a task was never billed.
+  const env2 = await newEnv();
+  await newUser(env2, "u_b", 8);
+  await m.redeemLaunchCode(env2, "u_b", "X");
+  const j = await m.createJob(env2, await m.getUser(env2, "u_b"), film());
+  env2.DB.db.prepare("INSERT INTO footage (job_id, shot_id, model, task_id, state) VALUES (?, 's1', 'seedance', NULL, 'failed')").run(j.id);
+  env2.DB.db.prepare("UPDATE jobs SET state = 'failed' WHERE id = ?").run(j.id);
+  assert.equal((await m.trialOf(env2, "u_b")).available, true, "a refused, never-billed clip spends nothing");
+  env2.DB.db.prepare("INSERT INTO footage (job_id, shot_id, model, task_id, state) VALUES (?, 's2', 'seedance', 'tk_2', 'failed')").run(j.id);
+  assert.equal((await m.trialOf(env2, "u_b")).held_by, j.id, "a clip with a task was billed: the trial is spent");
+});
+
+test("the launch-code film: a claim whose job row is not written yet holds the trial; a refused debit gives it back; a crash's claim lapses", async () => {
+  const env = await newEnv();
+  await newUser(env, "u_a", 0);
+  await m.redeemLaunchCode(env, "u_a", "HN");
+  // Call A has claimed and is between its claim and its insert; call B (a retry after a client timeout) arrives.
+  assert.equal(await m.claimTrial(env, "u_a", "gt_callA"), true);
+  assert.equal(await m.claimTrial(env, "u_a", "gt_callB"), false, "B cannot overwrite A's claim before A's row exists");
+  assert.equal((await m.trialOf(env, "u_a")).held_by, "gt_callA");
+  await assert.rejects(async () => m.createJob(env, await m.getUser(env, "u_a"), film()), (e) => /already taken by video gt_callA/.test(e.message));
+  assert.equal((await m.redemptionOf(env, "u_a")).film_job, "gt_callA");
+  // Only the claiming job releases its claim; once A gives it back (its debit or its insert failed), the trial is open.
+  await m.releaseTrial(env, "u_a", "gt_callB");
+  assert.equal((await m.redemptionOf(env, "u_a")).film_job, "gt_callA");
+  await m.releaseTrial(env, "u_a", "gt_callA");
+  assert.equal((await m.trialOf(env, "u_a")).available, true);
+  // A claim left by a crash between the claim and the insert lapses after TRIAL_CLAIM_STALE_MIN minutes.
+  assert.equal(await m.claimTrial(env, "u_a", "gt_crashed"), true);
+  assert.equal((await m.trialOf(env, "u_a")).available, false);
+  env.DB.db.prepare("UPDATE redemptions SET film_at = ? WHERE user_id = 'u_a'").run(new Date(Date.now() - (m.TRIAL_CLAIM_STALE_MIN + 1) * 60_000).toISOString());
+  assert.equal((await m.trialOf(env, "u_a")).available, true);
+  const job = await m.createJob(env, await m.getUser(env, "u_a"), film());
+  assert.equal(JSON.parse(job.params).trial, true);
+  assert.equal(await m.trialHolds(env, job), true);
+  // The debit refused (the film's 10 credits are there, the AI upscale on top is not): createJob gives its claim back.
+  const env2 = await newEnv();
+  await newUser(env2, "u_b", 0);
+  await m.redeemLaunchCode(env2, "u_b", "X");
+  await assert.rejects(async () => m.createJob(env2, await m.getUser(env2, "u_b"), film({ ai_upscale: "yes" })), (e) => /Not enough credits/.test(e.message));
+  assert.equal((await m.redemptionOf(env2, "u_b")).film_job, null, "no claim is left naming a job that was never written");
+});
+
+test("the launch-code film is the credits the code added: spent on an animatic, the film no longer reads as open anywhere", async () => {
+  const env = await newEnv();
+  await newUser(env, "u_a", 5);
+  await m.redeemLaunchCode(env, "u_a", "HN"); // 15 credits
+  const anim = await m.createJob(env, await m.getUser(env, "u_a"), film({ product: "animatic", duration_s: 30, prompt: "A lighthouse keeper's animatic, drawn frames" }));
+  assert.equal(anim.credits, 10);
+  const t = await m.trialOf(env, "u_a");
+  assert.deepEqual({ available: t.available, held_by: t.held_by, credits_short: t.credits_short }, { available: false, held_by: null, credits_short: 5 });
+  await assert.rejects(async () => m.createJob(env, await m.getUser(env, "u_a"), film()), (e) => /opened one free film of up to 15 seconds with the 10 credits it added, and 5 credits of those have since been spent/.test(e.message) && /Nothing was charged/.test(e.message) && !/already taken by video/.test(e.message));
+  const k = await m.makeViewToken(env, "u_a");
+  const page = await (await m.handleCredits(new Request(`http://kleo.test/credits?k=${encodeURIComponent(k)}`), env)).text();
+  assert.match(page, /5 of them have been spent on something else, so the film is no longer open/);
+  assert.doesNotMatch(page, /is open on this account/);
+  // A cheaper animatic that leaves the film's credits keeps the film open.
+  const env2 = await newEnv();
+  await newUser(env2, "u_b", 5);
+  await m.redeemLaunchCode(env2, "u_b", "HN");
+  await m.createJob(env2, await m.getUser(env2, "u_b"), film({ product: "animatic", duration_s: 15, prompt: "A lighthouse keeper's animatic, drawn frames" }));
+  assert.equal((await m.trialOf(env2, "u_b")).available, true);
 });
 
 test("/credits: the launch-code box redeems onto the account the page shows; the page says what happened", async () => {
@@ -442,9 +525,19 @@ test("/credits: the email box works only for the browser that owns the account; 
   assert.deepEqual(await m.contactEmailOf(env, "u_a"), { email: null, verified: false });
   const cookie = `kleo_id=${await m.makeHandle(env, "u_a")}`;
   const owner = await (await m.handleCredits(new Request("http://kleo.test/credits", { headers: { cookie } }), env)).text();
-  assert.match(owner, /Add your email: \+3 credits once it is verified/); assert.match(owner, /name="email"/);
+  // No RESEND_API_KEY here: the box keeps the form (the address is saved) but never offers the bonus as one click away.
+  assert.match(owner, /Add your email: Kleo's emails are not switched on yet\. An address saved here gets its verification link when they are, and \+3 credits once it is verified/); assert.match(owner, /name="email"/);
+  assert.doesNotMatch(owner, /Add your email: \+3 credits once it is verified/);
   const set = await post({ action: "email", email: "ann@example.com" }, cookie);
-  assert.equal(set.status, 200); assert.match(await set.text(), /ann@example\.com is saved on this account/);
+  assert.equal(set.status, 200);
+  const saved = await set.text();
+  assert.match(saved, /ann@example\.com is saved on this account/); assert.match(saved, /Saved, not verified yet: ann@example\.com/);
+  assert.doesNotMatch(saved, /Open the link Kleo sent/, "no link was sent, so the page does not send anyone to look for it");
+  // With the key, the same box offers the bonus plainly.
+  const envOn = await newEnv({ RESEND_API_KEY: "re_key" });
+  await newUser(envOn, "u_on");
+  const on = await (await m.handleCredits(new Request("http://kleo.test/credits", { headers: { cookie: `kleo_id=${await m.makeHandle(envOn, "u_on")}` } }), envOn)).text();
+  assert.match(on, /Add your email: \+3 credits once it is verified/);
   assert.deepEqual(await m.contactEmailOf(env, "u_a"), { email: "ann@example.com", verified: false });
   const gone = await post({ action: "email_remove" }, cookie);
   assert.match(await gone.text(), /Your email was removed/);

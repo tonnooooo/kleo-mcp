@@ -21,7 +21,7 @@ import { int, publicText } from "./util";
 import { adaptPrompt, adaptivePromptText, durationFrom, lookFromText, aiUpscaleAnswer } from "./adaptive.ts";
 import { redeemLaunchCode, trialOf, TRIAL_FILM_MAX_S } from "./launch.ts";
 import { referralCodeFor, referralLink, referralRule, REFERRER_BONUS, REFERRED_BONUS } from "./referral.ts";
-import { contactEmailOf, EMAIL_BONUS } from "./email.ts";
+import { contactEmailOf, emailConfigured, EMAIL_BONUS } from "./email.ts";
 
 /**
  * Languages a job can be created in. The engine ships more Kokoro voices (keou-contract VOICES still knows fr),
@@ -735,7 +735,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     if (!r.ok) return fail(r.message);
     const balance = r.balance ?? ((await getUser(env, user.id)) ?? user).credits;
     return ok({ redeemed: true, code: r.code, credits_added: r.credits, credits_available: balance, film_trial: { max_s: TRIAL_FILM_MAX_S } },
-      `Code ${r.code} redeemed: ${plural(r.credits, "credit")} added (${plural(balance, "credit")} on the account now) and ONE free film of up to ${TRIAL_FILM_MAX_S} seconds unlocked on this account — every shot a generated clip, narrated, 4K 60 fps. Offer the user that film now: call kleo_adapt_prompt with their idea, a length of ${TRIAL_FILM_MAX_S} seconds and product "film".`);
+      `Code ${r.code} redeemed: ${plural(r.credits, "credit")} added (${plural(balance, "credit")} on the account now) and ONE free film of up to ${TRIAL_FILM_MAX_S} seconds unlocked on this account — every shot a generated clip, narrated, 4K 60 fps — paid with the credits just added (spending them on something else closes the film). Offer the user that film now: call kleo_adapt_prompt with their idea, a length of ${TRIAL_FILM_MAX_S} seconds and product "film".`);
   });
 
   server.registerTool("kleo_account", {
@@ -773,7 +773,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       has_paid: paid,
       can_order_film: paid || trialOpen,
       // null: no launch code redeemed (kleo_redeem takes one). Otherwise the one free film it opened, and whether it is still free to use.
-      film_trial: trial ? { code: trial.code, available: trial.available, max_s: trial.max_s, used_by: trial.held_by } : null,
+      film_trial: trial ? { code: trial.code, available: trial.available, max_s: trial.max_s, used_by: trial.held_by, credits_short: trial.credits_short } : null,
       animatic_credits: ANIMATIC_CREDITS,
       animatic_pricing: animaticRule().en,
       animatic_max_s: ANIMATIC_MAX_S,
@@ -805,14 +805,17 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       ? " This account has bought a pack, so it can order films and animatics."
       : trialOpen
         ? ` This account has not bought a pack, but its launch code (${trial!.code}) opens ONE free film of up to ${TRIAL_FILM_MAX_S} seconds; it can also order the ANIMATIC (${animaticRule().en}). Any other film opens with a pack.`
-      : trial
+      : trial?.held_by
         ? ` This account's launch code film is taken (video ${trial.held_by}); it can order the ANIMATIC (${animaticRule().en}), and more films open with any pack.`
+      : trial
+        ? ` This account's launch code (${trial.code}) opened a free film paid with the ${plural(trial.price, "credit")} it added, and ${plural(trial.credits_short, "credit")} of those have been spent on something else, so that film is closed; it can order the ANIMATIC (${animaticRule().en}), and films open with any pack.`
       : ` This account has not bought a pack yet, so it can order the ANIMATIC (${animaticRule().en}: the drawn frames with the camera moving over them, narrated) but not a film — the film opens with any pack, because its clips are generated at Kleo's expense.`;
     const buy = open
       ? `Credit packs are on the account page, paid through Stripe (from ${cheapest.label} for ${cheapest.credits} credits; one payment, nothing renews)`
       : `Card payments are paused right now; the account page says when they reopen`;
     const inviteSentence = invite ? ` Invite friends with ${invite.link}: ${invite.rule}.` : "";
-    const emailSentence = contactVerified ? "" : ` Adding a verified email on the account page gives ${EMAIL_BONUS} credits once, and every finished video's links by email.`;
+    // Offered only while Kleo can send the verification link (RESEND_API_KEY): a bonus nobody can claim is not offered.
+    const emailSentence = contactVerified || !emailConfigured(env) ? "" : ` Adding a verified email on the account page gives ${EMAIL_BONUS} credits once, and every finished video's links by email.`;
     return ok(data, `You have ${plural(fresh.credits, "credit")}. ${tariffSentence()}.${enough}${films}${paid ? upscaleSentence : ""} ${buy}.${inviteSentence}${emailSentence} Your account page, which also shows the key that carries this account to another browser: ${url}`);
   });
 
