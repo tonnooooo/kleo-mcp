@@ -107,6 +107,11 @@ def pixel(video, t, x, y):
     return tuple(r.stdout[:3])
 
 
+def read_bytes(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+
 def read_json(path):
     with open(path) as f:
         return json.load(f)
@@ -197,7 +202,7 @@ class FilmEndToEnd(unittest.TestCase):
             cls.music_src = os.path.join(cls.tmp, "suno.wav")      # an ffmpeg without lame: the track is a wav, still stereo 44.1k
             ff("-f", "lavfi", "-i", f"sine=f=220:d={MUSIC_SECONDS}", "-f", "lavfi", "-i", f"sine=f=330:d={MUSIC_SECONDS}",
                "-filter_complex", "[0:a][1:a]amerge=inputs=2[a]", "-map", "[a]", "-ar", "44100", cls.music_src)
-        kw.urllib.request.urlopen = lambda req, timeout=None: io.BytesIO(open(cls.music_src, "rb").read())
+        kw.urllib.request.urlopen = lambda req, timeout=None: io.BytesIO(read_bytes(cls.music_src))
         try:
             cls.chain()
         except Exception as e:   # recorded per stage below; the tests report it
@@ -329,6 +334,11 @@ class FilmEndToEnd(unittest.TestCase):
         self.assertIn("1 dissolve(s) between acts", said)
         self.assertIn("slowed", said, "the short clip is slowed, not held")
         self.assertIn("do not move", said, "the frozen tail is found and dropped before the cut")
+        # The track is laid in seconds, the master cut in frames: 5.911 s is 354.66 frames and the master wants 355. The
+        # first run of this test found render.mjs refusing the last composited part for that missing frame ("Invalid
+        # encoded segment"); the engine now holds the track's last frame (tpad) instead. Kept visible here on purpose.
+        frames = int(video_of(probe(os.path.join(self.pdir, "build", "footage.mp4"), count=True))["nb_read_frames"])
+        self.assertLessEqual(abs(frames - DURATION * FPS), 1.5, f"{frames} frames for {DURATION} s")
 
     def test_the_music_is_looped_to_the_film_and_shaped_to_stereo_48k(self):
         self.reached("clips")

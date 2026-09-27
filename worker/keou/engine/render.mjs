@@ -87,7 +87,12 @@ try{
    // 60000/1001) and the overlay keeps the rate of its FIRST input, so every composited part carried 60000/1001, the
    // concat copied it into the master, and validPart refused a master of exactly 1089 frames at 3840x2160 because its
    // rate was not "60/1" (gt_nyhb8aj9, 22 September 2026: four finish rentals lost to it). The part is 60/1 by construction.
-   const lay=underlay?['-filter_complex',`[1:v]fps=${fps},scale=${width}:${height},setsar=1[bg];[bg][0:v]overlay=format=auto,setpts=PTS-STARTPTS,fps=${fps}[v]`,'-map','[v]']:[];
+   // tpad on the underlay (27 September 2026, found by worker/test_film_e2e.py on its first run): the overlay ends with its
+   // MAIN input, the footage, and the track is laid to the timeline's length in seconds while the parts are cut in frames —
+   // a 5.911 s film is 354.66 frames, the master wants round() = 355, and the last part came out one frame short:
+   // "Invalid encoded segment" after every other part had rendered, i.e. a finish rental lost whenever a film's length
+   // ends past half a frame. The last footage frame is held for at most half a second; -frames:v cuts the part exactly.
+   const lay=underlay?['-filter_complex',`[1:v]fps=${fps},scale=${width}:${height},setsar=1,tpad=stop_mode=clone:stop_duration=0.5[bg];[bg][0:v]overlay=format=auto,setpts=PTS-STARTPTS,fps=${fps}[v]`,'-map','[v]']:[];
    const tmp=part+'.partial.mp4';const proc=spawn(ffmpeg,['-nostdin','-v','error','-y','-f','image2pipe','-vcodec','png','-framerate',String(fps),'-i','pipe:0',...under,...lay,'-an','-c:v','libx264','-preset','veryfast','-crf','17','-threads','4','-pix_fmt','yuv420p','-r',String(fps),'-frames:v',String(last-first),'-movflags','+faststart',tmp],{stdio:['pipe','ignore','pipe']});children.add(proc);let err='';proc.stderr.on('data',d=>err=(err+d).slice(-8000));proc.stdin.on('error',e=>fatal=e);proc.on('error',e=>fatal=e);const done=once(proc,'close');const page=await pageAt(width);
    // FRAME every 30, not every 180. This line is the only thing that says the render is alive: the worker turns it
    // into a progress report, and the server now destroys a GPU that has said nothing for RENDER_SILENCE_MIN. At
