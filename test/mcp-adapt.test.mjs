@@ -832,7 +832,8 @@ test("a film is asked about the AI upscale with its exact price: the film's cred
     const q = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", product: "film", ...READY, duration_s: d });
     assert.equal(q.structuredContent.ready_to_render, false, `${d} s: the upscale is asked`);
     assert.deepEqual(q.structuredContent.prices, { film, animatic, ai_upscale: up });
-    assert.match(q.text, new RegExp(`1\\. Do you want the AI upscale \\(Real-ESRGAN \\+ RIFE: a sharper picture, \\+${up} credits\\)\\? If not, the film comes out in classic 4K 60 fps\\.`));
+    // At 60 s film + upscale (80) is more than the 70 credits of this account, and the question says so.
+    assert.match(q.text, new RegExp(`1\\. Do you want the AI upscale \\(Real-ESRGAN \\+ RIFE: a sharper picture, \\+${up} credits${film + up > 70 ? `; film \\+ upscale come to ${film + up} credits, not enough \\(you have 70\\)` : ""}\\)\\? If not, the film comes out in classic 4K 60 fps\\.`));
     assert.equal(creditsForProduct(d, "realistic", "film"), film);
   }
   const it = await s.call("kleo_adapt_prompt", { prompt: "Fammi un film sui guardiani del faro", language: "it", product: "film", ...READY, duration_s: 30 });
@@ -962,7 +963,7 @@ test("KLEO_SR off switches the option off: never asked, and a create that asks f
   const s = await studio(fakeAi(() => { throw new Error("must not be called"); }), { KLEO_SR: "off" });
   const q = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", product: "film", ...READY });
   assert.equal(q.structuredContent.ready_to_render, true, q.text);
-  assert.deepEqual(q.structuredContent.prices, { film: 23, animatic: 5 });
+  assert.deepEqual(q.structuredContent.prices, { film: 30, animatic: 10 });
   assert.doesNotMatch(q.text, /upscale/i); assert.doesNotMatch(q.structuredContent.next, /ai_upscale/);
   assert.deepEqual((await s.call("kleo_account", {})).structuredContent.ai_upscale, { available: false });
   const refused = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers", duration_s: 30, format: "9:16", language: "en", product: "film", ai_upscale: "yes" });

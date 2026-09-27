@@ -164,7 +164,7 @@ test("create: the two products (15 September) — a film is for paying accounts 
   await assert.rejects(() => m.createJob(env, stranger, { ...film, product: "trailer" }), /Pass product: "film" or "animatic"/);
   const anim = await m.createJob(env, stranger, { ...film, product: "animatic" });
   assert.equal(anim.credits, 10, "30 seconds: the long animatic (5 credits up to 20 s, 10 up to 60 s, 27 September 2026)");
-  assert.equal(await balance(env, "u_free"), 43);
+  assert.equal(await balance(env, "u_free"), 38);
   const p = JSON.parse(anim.params);
   assert.equal(p.product, "animatic");
   const stored = JSON.parse((await m.getJob(env, anim.id)).storyboard);
