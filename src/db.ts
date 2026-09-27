@@ -111,6 +111,12 @@ export interface JobParams {
    * and the extra credits refunded.
    */
   ai_upscale?: boolean;
+  /**
+   * THE LAUNCH-CODE FILM (27 September 2026, src/launch.ts): true on the one film of at most 15 seconds a launch code
+   * opened for an account that never paid. The paid gates (createJob, requestFootage) let it through only while the
+   * account's redemption names this job.
+   */
+  trial?: boolean;
   ai_upscale_credits?: number;
   ai_upscale_result?: { applied: boolean; parts: number; upscaled: number; model: string | null; gpu: string | null; reason: string | null; refunded: number; at: string };
   /** Set by POST /internal/admin/retry: failJob already gave back every credit, the upscale's included. */

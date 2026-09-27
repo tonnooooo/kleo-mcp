@@ -3,6 +3,7 @@ import type { Env, AuthProps } from "./env";
 import { type User, getUser, createUserIfUnderCaps, getInvite, useInvite, applyBonusToUser, touchUser, audit } from "./db";
 import { accountCookie, cookieHandle, ipFingerprint, makeHandle, signupRateKey, verifyHandle, verifyTurnstile } from "./accounts";
 import { html, escapeHtml, rid, int } from "./util";
+import { getLaunchCode, redeemLaunchCode, normalizeCode, TRIAL_FILM_MAX_S } from "./launch.ts";
 import { MIN_FILM_CREDITS, MIN_FILM_SECONDS, ANIMATIC_CREDITS, ANIMATIC_SHORT_MAX_S, animaticRule, freeCreditsFor, tariffSentence } from "./templates";
 
 /**
@@ -122,6 +123,13 @@ async function resolveAccount(env: Env, o: { cookie: string | null; key: string;
  */
 async function applyBonus(env: Env, user: User, code: string): Promise<User> {
   if (!code) return user;
+  // A LAUNCH CODE typed here is redeemed like kleo_redeem does (src/launch.ts): the channel is recorded and one free
+  // 15-second film opens. Its own rules hold (one per account, its uses), and its refusals are audited there.
+  const launch = normalizeCode(code);
+  if (launch && (await getLaunchCode(env, launch))) {
+    await redeemLaunchCode(env, user.id, launch);
+    return (await getUser(env, user.id)) ?? user;
+  }
   const reject = async (reason: string) => { await audit(env, user.id, null, "bonus.rejected", { code, reason }); return user; };
   if (user.invite_code) return reject("this account has already used a bonus code");
   const credits = await claimBonus(env, code);
@@ -171,7 +179,7 @@ function page(o: { clientName: string; oauthQuery: string; freeCredits: number; 
   // Since 27 September 2026 the gift (5) is exactly one short animatic, and the 5 EUR pack alone is a 15-second film.
   const animatics = Math.floor(o.freeCredits / ANIMATIC_CREDITS);
   const start = o.freeCredits > 0
-    ? `You start with ${plural(o.freeCredits, "credit")}: ${animatics > 0 ? `${animatics === 1 ? "a short animatic" : plural(animatics, "short animatic")} on the house (up to ${ANIMATIC_SHORT_MAX_S} seconds: your storyboard as drawn frames with the camera moving over them, narrated, 4K 60 fps)` : `not yet an animatic (${animaticRule().en})`}. A film — every shot a generated clip — starts at ${MIN_FILM_CREDITS} credits (${MIN_FILM_SECONDS} seconds) and is made for accounts that have bought a pack: the 5 EUR pack alone is a ${MIN_FILM_SECONDS}-second film.`
+    ? `You start with ${plural(o.freeCredits, "credit")}: ${animatics > 0 ? `${animatics === 1 ? "a short animatic" : plural(animatics, "short animatic")} on the house (up to ${ANIMATIC_SHORT_MAX_S} seconds: your storyboard as drawn frames with the camera moving over them, narrated, 4K 60 fps)` : `not yet an animatic (${animaticRule().en})`}. A film — every shot a generated clip — starts at ${MIN_FILM_CREDITS} credits (${MIN_FILM_SECONDS} seconds) and is made for accounts that have bought a pack: the 5 EUR pack alone is a ${MIN_FILM_SECONDS}-second film, and a launch code opens one for free.`
     : "A new account starts at zero credits: connecting is free, every video is paid. Credit packs (from 5 EUR) are on your account page, one click away in the chat.";
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Connect to Kleo</title>
@@ -203,7 +211,7 @@ ${o.returning ? `<div class="back">Welcome back - ${plural(o.returning.credits, 
 <details><summary>Have a bonus code, or a Kleo key?</summary>
 <label for="bonus">Bonus code</label><input id="bonus" name="bonus" type="text" autocomplete="off" placeholder="Leave empty" style="text-transform:uppercase">
 <label for="account_key">Kleo key</label><input id="account_key" name="account_key" type="text" autocomplete="off" placeholder="Leave empty">
-<p class="note">A bonus code adds credits, to a new account or to the one this browser already has. A Kleo key brings an account you already have on another browser: ask your assistant for kleo_account to see yours.</p>
+<p class="note">A bonus code adds credits, to a new account or to the one this browser already has; a launch code (PRODUCTHUNT, HN, REDDIT, X, TIKTOK) opens one free ${TRIAL_FILM_MAX_S}-second film. A Kleo key brings an account you already have on another browser: ask your assistant for kleo_account to see yours.</p>
 </details>
 <div class="foot">${tariffSentence()}. ${start} When credits run out, Kleo gives you a link in the chat.</div>
 </form></body></html>`;

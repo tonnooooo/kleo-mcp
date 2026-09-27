@@ -989,3 +989,34 @@ test("upload links are counted per day too", async () => {
   assert.ok(second.isError);
   assert.match(second.text, /asked for 1 upload link today, and the limit is 1 a day[\s\S]*Nothing was charged/);
 });
+
+/* ------------------------------------------------------------------ launch codes (27 September 2026, src/launch.ts) */
+
+test("kleo_redeem: a launch code opens one 15-second film to an account that never paid; kleo_account and the intake say so", async () => {
+  const s = await studio(fakeAi(() => { throw new Error("must not be called"); }), {}, { paid: false });
+  const before = await s.call("kleo_account", {});
+  assert.equal(before.structuredContent.film_trial, null); assert.equal(before.structuredContent.can_order_film, false);
+  assert.match(before.structuredContent.products, /or a launch code opens one of up to 15 s/);
+  const r = await s.call("kleo_redeem", { code: "hn" });
+  assert.ok(!r.isError, r.text);
+  assert.equal(r.structuredContent.credits_added, 10); assert.equal(r.structuredContent.credits_available, 80);
+  assert.match(r.text, /Code HN redeemed: 10 credits added \(80 credits on the account now\) and ONE free film of up to 15 seconds unlocked/);
+  const again = await s.call("kleo_redeem", { code: "X" });
+  assert.equal(again.isError, true); assert.match(again.text, /already used a launch code \(HN\)/);
+  const a = await s.call("kleo_account", {});
+  assert.equal(a.structuredContent.can_order_film, true);
+  assert.deepEqual(a.structuredContent.film_trial, { code: "HN", available: true, max_s: 15, used_by: null });
+  assert.match(a.text, /its launch code \(HN\) opens ONE free film of up to 15 seconds/);
+  // The intake offers that film with its price, takes "film" at 15 seconds, and asks again at 30.
+  const ask = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", ...READY, duration_s: 15 });
+  assert.match(ask.text, /Your launch code opens ONE free film \(every shot a generated clip\) of up to 15 seconds \(10 credits, already on your account\)/);
+  assert.deepEqual(ask.structuredContent.film_trial, { max_s: 15, code: "HN" });
+  const yes = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", product: "film", ai_upscale: "no", ...READY, duration_s: 15 });
+  assert.equal(yes.structuredContent.ready_to_render, true, yes.text);
+  const long = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", product: "film", ai_upscale: "no", ...READY, duration_s: 30 });
+  assert.equal(long.structuredContent.ready_to_render, false); assert.match(long.text, /You asked for 30: a longer film opens with a credit pack/);
+  const made = await s.call("kleo_create_video", { prompt: "A film about lighthouse keepers", duration_s: 15, format: "9:16", language: "en", product: "film" });
+  assert.ok(!made.isError, made.text); assert.equal(made.structuredContent.credits, 10);
+  const tools = (await s.client.listTools()).tools;
+  assert.ok(tools.find((t) => t.name === "kleo_redeem"), "the tool is registered");
+});

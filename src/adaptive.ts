@@ -631,6 +631,11 @@ export interface IntakeAccount {
   /** The animatic's price rule in words ("5 credits up to 20 seconds, 10 up to 60 seconds"), quoted while the length is unknown. */
   animaticRule?: { en: string; it: string };
   /**
+   * THE LAUNCH-CODE FILM (27 September 2026, src/launch.ts): set on an account that never paid but holds an unused
+   * launch code — the longest film that code opens (15 seconds). Such an account is offered that film too.
+   */
+  trialMaxS?: number | null;
+  /**
    * The AI upscale's price for this film (null while the length is unknown) and its rule in words; absent when the
    * option is switched off (the Worker's KLEO_SR "off"): then it is never asked.
    */
@@ -686,6 +691,15 @@ function productQuestion(chat: NarrationLanguage, acct: IntakeAccount, duration:
     : (it
       ? `costa ${rule ?? `${acct.animaticCredits ?? "pochi"} crediti, fino a ${acct.animaticMaxS} secondi`}`
       : `costs ${rule ?? `${acct.animaticCredits ?? "a few"} credits, up to ${acct.animaticMaxS} seconds`}`);
+  if (!acct.paid && acct.trialMaxS) {
+    const t = acct.trialMaxS;
+    const fits = duration !== null && duration <= t;
+    const price = fits && acct.filmCredits !== null ? (it ? ` (${acct.filmCredits} crediti, già sul tuo account)` : ` (${acct.filmCredits} credits, already on your account)`) : "";
+    const over = duration !== null && !fits ? (it ? ` Ne hai chiesti ${duration}: un film più lungo si apre con un pacchetto di crediti (da 5 EUR, nella pagina del tuo account).` : ` You asked for ${duration}: a longer film opens with a credit pack (from 5 EUR, on your account page).`) : "";
+    return it
+      ? `Il tuo codice lancio apre UN film gratuito (ogni inquadratura è una clip generata) fino a ${t} secondi${price}.${over} Oppure l'animatic: gli stessi fotogrammi disegnati con la camera che si muove su ognuno, nessuna clip generata; ${anim}. Vuoi il film da ${t} secondi o l'animatic?`
+      : `Your launch code opens ONE free film (every shot a generated clip) of up to ${t} seconds${price}.${over} Or the animatic: the same drawn frames with the camera moving over each one, no generated clip; it ${anim}. Do you want the ${t}-second film or the animatic?`;
+  }
   if (!acct.paid) {
     return it
       ? `Il film (ogni inquadratura è una clip generata) si fa solo per gli account che hanno comprato un pacchetto di crediti (da 5 EUR, nella pagina del tuo account)${product === "film" ? ", e questo non l'ha ancora comprato" : ""}. Adesso puoi avere l'animatic: gli stessi fotogrammi disegnati con la camera che si muove su ognuno, nessuna clip generata; ${anim}. Vuoi l'animatic adesso, o prima compri un pacchetto per il film?`
@@ -734,7 +748,10 @@ export function adaptPrompt(prompt: string, overrides: AdaptOverrides = {}): Ada
   const productSaid = overrides.product ?? (ANIMATIC_WORD_RE.test(text) ? "animatic" : null);
   // Settled when there is no account to price it (pure callers take what they pass), when a paying account named
   // either, or when an unpaid one chose the animatic; an unpaid account's "film" is asked again, with the way out.
-  const productSettled = !acct ? productSaid !== null : acct.paid ? productSaid !== null : productSaid === "animatic";
+  // A launch code opens the film to an unpaid account for one film no longer than its trial (src/launch.ts).
+  const trialFits = !!acct && !acct.paid && !!acct.trialMaxS && duration_s !== null && duration_s !== undefined && duration_s <= acct.trialMaxS;
+  const filmOpen = !!acct && (acct.paid || trialFits);
+  const productSettled = !acct ? productSaid !== null : filmOpen ? productSaid !== null : productSaid === "animatic";
   const product = productSettled ? productSaid : null;
   // An animatic has a longest length: past it, the length is asked again, in the same message.
   const animaticTooLong = !!acct && product === "animatic" && duration_s !== null && duration_s !== undefined && duration_s > acct.animaticMaxS;
@@ -744,7 +761,7 @@ export function adaptPrompt(prompt: string, overrides: AdaptOverrides = {}): Ada
   // The AI upscale: asked of an account the option is offered to (the price came with it), for a film — or, while the
   // product is still open, for the film a paying account may choose. Never for an animatic.
   const callUpscale = aiUpscaleAnswer(overrides.ai_upscale);
-  const upscaleAsked = !!acct?.aiUpscale && product !== "animatic" && productSaid !== "animatic" && (product === "film" || (product === null && acct.paid));
+  const upscaleAsked = !!acct?.aiUpscale && product !== "animatic" && productSaid !== "animatic" && (product === "film" || (product === null && filmOpen));
   // A yes the balance cannot pay for (film + upscale over the account's credits) is not taken: the question comes back
   // with the balance and the classic finish as the way out, and the brief is not ready.
   const upscaleCost = acct ? upscaleTotal(acct) : null;

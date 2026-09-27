@@ -19,6 +19,7 @@ import { musicNote, clipFloorFor, footageConfig } from "./footage";
 import { guideText } from "./guide.ts";
 import { int, publicText } from "./util";
 import { adaptPrompt, adaptivePromptText, durationFrom, lookFromText, aiUpscaleAnswer } from "./adaptive.ts";
+import { redeemLaunchCode, trialOf, TRIAL_FILM_MAX_S } from "./launch.ts";
 
 /**
  * Languages a job can be created in. The engine ships more Kokoro voices (keou-contract VOICES still knows fr),
@@ -31,6 +32,7 @@ const shotRange = shotRangeText;
 
 const INSTRUCTIONS = `This server is Kleo (the kleo_* tools): the video studio the user connected. Kleo makes narrated videos in one of two looks, realistic (cinematic live action) or animation (a 2D animated film) — one narrator; MUSIC (an instrumental track under the voice) and burned-in SUBTITLES are options the user is ALWAYS asked about and gets only when they say yes; no other on-screen text; one clean dissolve between acts per 25 seconds — 4K 60 fps, 16:9 for YouTube or 9:16 for a Short, as TWO PRODUCTS from the same treatment and storyboard: the FILM (every shot a generated clip, 15 seconds to 5 minutes, priced by length, made only for accounts that have bought a credit pack, because Kleo pays for every second of clip) and the ANIMATIC (the same drawn frames with the camera moving over each one, the same narrator and layer, no generated clip; ${animaticRule().en}, from 15 seconds, open to every account — the sign-up credits pay for a short one). kleo_adapt_prompt asks the user which of the two they want, quoting the prices for their account (an account that has not bought a pack is offered the animatic in so many words): pass their answer as product — never call an animatic a film, never make one without saying which it is. When the user mentions Kleo, a video, a film, a Short or a YouTube clip, use these tools; never answer from memory.
 ORDER OF CALLS: 1) kleo_adapt_prompt with the user's request, FIRST, before anything else: it reads the request against Kleo's intake — subject, length, format, look, product (film or animatic, with the prices the intake quotes), for a film the optional AI UPSCALE (Real-ESRGAN + RIFE, a sharper picture for many extra credits; the default is the classic 4K 60 fps, and the credits come back if the finish cannot apply it), music, subtitles and the LANGUAGE of the narration (English or Italian; "no preference" means English) (required: music, subtitles and the language are asked EVERY time, and "no" is an answer); audience, tone, what must appear (optional) — and answers with the questions for whatever the request does not say. Ask the user ALL of them in ONE message, in the user's language, wait for the answers, and call it again with them (duration_s, format, style, product, ai_upscale, music, subtitles, language, audience, tone, must_keep; an AI upscale question left unanswered is "no"). The film's language is their answer to the language question, never the language they write to you in. Never pick a subject, a length, a format, a look, the product, music, subtitles or the language for them: what the request does not say is asked, not assumed. When the user delegates the subject ("stupiscimi", "surprise me"), the tool says so: propose 3-5 concrete subjects in one message and let them pick — never ask the same question again, never render before they pick. 2) Once it answers ready_to_render, the same tool hands YOU two methods. FIRST the SPEC: the user's request taken apart into the requirements the film is checked against — who is in it and exactly how they look, where, what happens and in which order, what must be seen, read or said, what must never appear — extraction, not creativity: every item quotes the user's own words. THEN the producer's method, and you write the TREATMENT under the spec (logline, angle, opening image, acts, ending, look, pacing, narrator, the layer, the decisions you took): when the user described their film, it is THEIR film — their characters as described, their events in their order — and you add only what they left open. Show the user in ONE message what Kleo understood (the spec read back as a short list), the logline and the decisions, and wait for their yes or their corrections. 3) kleo_storyboard_guide, then write the storyboard yourself under that treatment (every shot lists the spec items it shows in "covers" and the characters in it in "cast"): this is where the film's quality is made, and Kleo's own planner is the fallback, not the standard. 4) kleo_create_video with the prompt (unchanged), the length, the format, the product, the AI upscale answer and the language the user chose, the spec, the treatment, the references, the storyboard and — when the user corrected what Kleo understood — their corrections in their own words as "corrections". 5) kleo_wait_for_video again and again until it returns the links, then hand them over.
+LAUNCH CODES: when the user gives you a Kleo code (PRODUCTHUNT, HN, REDDIT, X, TIKTOK or another one), call kleo_redeem with it: it adds the credits of a free ${TRIAL_FILM_MAX_S}-second film and opens that one film even on an account that never bought a pack (one code per account).
 PICTURES: when the user attaches or links images (a person, a pet, an object, a place, a style they like), Kleo draws the characters and things FROM those pictures. Pass https links as "references" to kleo_adapt_prompt; for pictures attached to the chat, call kleo_upload_link, give the user the link, and when they say they uploaded, call kleo_adapt_prompt again with references [{upload: "<token>"}]. Describe every attached picture in the spec as well (the character's "look"), and pass the returned handles to kleo_create_video as "references".
 DELIVERY RULE: the user expects the finished video in this same conversation. After kleo_create_video, call kleo_wait_for_video repeatedly (each call waits up to about a minute and returns progress) until it returns the MP4 and thumbnail links. Tell the user once that the render is running and the estimated minutes — the eta_min the server returns, never your own guess — and do not ask "shall I keep waiting?". Never invent progress, files or links: only repeat what these tools return. Call the video by its number (for example "video gt_ab12cd34"), not "job".`;
 
@@ -333,6 +335,8 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     // THE PRODUCT IS ASKED WITH THE PRICES (25 September 2026): film or animatic is one of the intake's questions, and
     // it quotes what each costs this user, so the account is read first. D1 reads only: nothing is written or charged.
     const paid = await hasPaid(env, user.id);
+    // A launch code (src/launch.ts) opens one film of up to TRIAL_FILM_MAX_S seconds to an account that never paid.
+    const trial = paid ? null : await trialOf(env, user.id);
     const fresh = (await getUser(env, user.id)) ?? user;
     const said = prompt.trim().replace(/\s+/g, " ");
     const lengthAsked = duration_s ?? durationFrom(said);
@@ -343,7 +347,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     // The animatic is priced by length too since 27 September 2026: the price of the length asked (capped at the
     // animatic's longest), or null while the length is not known, when the rule in words is quoted instead.
     const animaticPrice = lengthAsked ? animaticCredits(Math.min(lengthAsked, ANIMATIC_MAX_S)) : null;
-    const account = { paid, credits: fresh.credits, filmCredits: filmPrice, animaticCredits: animaticPrice, animaticRule: animaticRule(), animaticMaxS: ANIMATIC_MAX_S, tariff: tariffSentence(),
+    const account = { paid, credits: fresh.credits, filmCredits: filmPrice, animaticCredits: animaticPrice, animaticRule: animaticRule(), animaticMaxS: ANIMATIC_MAX_S, tariff: tariffSentence(), trialMaxS: trial?.available ? TRIAL_FILM_MAX_S : null,
       ...(upscaleOffered ? { aiUpscale: { credits: upscalePrice, rule: aiUpscaleRule(env) } } : {}) };
     const brief = adaptPrompt(prompt, { duration_s, format, audience, tone, must_keep, look: style ?? null, music, subtitles, language, product, ai_upscale, account });
     // The two answers, as the method and the server's model read them (src/treatment.ts SoundOptions).
@@ -354,7 +358,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     // Metered (meteredRefs above): this runs before every cap, so it carries its own.
     const refs = references?.length ? await meteredRefs(env, user.id, references) : [];
     if (refs.length) void audit(env, user.id, null, "refs.adapt", { handles: refs.map((r) => r.handle), described: refs.filter((r) => r.description).length });
-    const head = { workflow: ACTIVE_TEMPLATE.id, style: look, brief, has_paid: paid, product: brief.product, ai_upscale: brief.ai_upscale, prices: { film: filmPrice, animatic: animaticPrice, ...(upscaleOffered ? { ai_upscale: upscalePrice } : {}) }, account_url: await accountUrl(env, user.id, base), ...(refs.length ? { references: refsData(refs) } : {}) };
+    const head = { workflow: ACTIVE_TEMPLATE.id, style: look, brief, has_paid: paid, ...(trial?.available ? { film_trial: { max_s: TRIAL_FILM_MAX_S, code: trial.code } } : {}), product: brief.product, ai_upscale: brief.ai_upscale, prices: { film: filmPrice, animatic: animaticPrice, ...(upscaleOffered ? { ai_upscale: upscalePrice } : {}) }, account_url: await accountUrl(env, user.id, base), ...(refs.length ? { references: refsData(refs) } : {}) };
     // THE INTAKE (14 September): a required item the request does not say — subject, length, format, look, and since
     // 25 September the product and the narration's language — is asked, never guessed. The questions are the tool's
     // answer, and nothing is spent.
@@ -719,6 +723,19 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     return ok({ job_id: job.id, state: "cancelled", refunded, credits_left: fresh.credits + refunded }, `${Cap} ${job.id} was cancelled. ${back} You now have ${plural(fresh.credits + refunded, "credit")}.`);
   }));
 
+  server.registerTool("kleo_redeem", {
+    title: "Redeem a launch code",
+    description: `Redeems a Kleo launch code the user gives you (PRODUCTHUNT, HN, REDDIT, X, TIKTOK, or another code Kleo published). One code per account: it adds the credits of a ${TRIAL_FILM_MAX_S}-second film and opens ONE free film of up to ${TRIAL_FILM_MAX_S} seconds, even on an account that has never bought a pack. Call it only with a code the user typed, never one you guess. Then offer to make that film (kleo_adapt_prompt with a length of ${TRIAL_FILM_MAX_S} seconds and product "film").`,
+    inputSchema: z.object({ code: z.string().min(1).max(40).describe("The code exactly as the user gave it (case does not matter).") }),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ code }) => {
+    const r = await redeemLaunchCode(env, user.id, code);
+    if (!r.ok) return fail(r.message);
+    const balance = r.balance ?? ((await getUser(env, user.id)) ?? user).credits;
+    return ok({ redeemed: true, code: r.code, credits_added: r.credits, credits_available: balance, film_trial: { max_s: TRIAL_FILM_MAX_S } },
+      `Code ${r.code} redeemed: ${plural(r.credits, "credit")} added (${plural(balance, "credit")} on the account now) and ONE free film of up to ${TRIAL_FILM_MAX_S} seconds unlocked on this account — every shot a generated clip, narrated, 4K 60 fps. Offer the user that film now: call kleo_adapt_prompt with their idea, a length of ${TRIAL_FILM_MAX_S} seconds and product "film".`);
+  });
+
   server.registerTool("kleo_account", {
     title: "Account and credits",
     description: "The credits left on this account, whether it can order a FILM (has_paid: films are for accounts that have bought a pack; every account can order the animatic), the link to its page, and the \"Kleo key\" that carries the same account (and the same credits) to another browser or another computer. Call it before the first kleo_create_video of a conversation and when the user asks how many credits they have, how to get more, or how to use Kleo somewhere else. Give them account_url as a plain link: it opens a read-only page (balance, prices, where to write) and cannot sign anybody in. Show account_key only if they ask for it, because anyone who has it can take the account over and spend its credits.",
@@ -737,6 +754,9 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     // THE TWO PRODUCTS (15 September): a film is filmed by kie.ai on the owner's money and is opened by one payment on
     // record; the animatic is for everyone. Said here, once, so the assistant offers what this account can have.
     const paid = await hasPaid(env, user.id);
+    // A launch code's film (src/launch.ts): what is left of it, for an account that never paid.
+    const trial = paid ? null : await trialOf(env, user.id);
+    const trialOpen = !!trial?.available;
     // The AI upscale (25 September 2026): a film's option at extra credits, unless the Worker switched it off.
     const upscaleOffered = aiUpscaleOn(env);
     const upscaleSentence = upscaleOffered
@@ -745,13 +765,17 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     const data = {
       credits_available: fresh.credits,
       has_paid: paid,
-      can_order_film: paid,
+      can_order_film: paid || trialOpen,
+      // null: no launch code redeemed (kleo_redeem takes one). Otherwise the one free film it opened, and whether it is still free to use.
+      film_trial: trial ? { code: trial.code, available: trial.available, max_s: trial.max_s, used_by: trial.held_by } : null,
       animatic_credits: ANIMATIC_CREDITS,
       animatic_pricing: animaticRule().en,
       animatic_max_s: ANIMATIC_MAX_S,
       products: paid
         ? `film (priced by length) and animatic (${animaticRule().en})`
-        : `animatic only (${animaticRule().en}): the film opens after any credit pack is bought`,
+        : trialOpen
+          ? `animatic (${animaticRule().en}) and ONE film of up to ${TRIAL_FILM_MAX_S} s opened by the launch code ${trial!.code}; any other film opens after a credit pack is bought`
+          : `animatic only (${animaticRule().en}): the film opens after any credit pack is bought, or a launch code opens one of up to ${TRIAL_FILM_MAX_S} s`,
       film_credits: filmCredits(), // the template's default length (30 s)
       ai_upscale: upscaleOffered
         ? { available: true, rule: aiUpscaleRule(env).en, credits_30s: aiUpscaleCredits(filmCredits(30), env), credits_60s: aiUpscaleCredits(filmCredits(60), env) }
@@ -770,6 +794,10 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     const enough = fresh.credits >= MIN_FILM_CREDITS ? "" : ` That is not enough for a film yet (the shortest is ${MIN_FILM_CREDITS} credits)${fresh.credits >= ANIMATIC_CREDITS ? `, but it pays for an animatic (${animaticRule().en})` : ""}.`;
     const films = paid
       ? " This account has bought a pack, so it can order films and animatics."
+      : trialOpen
+        ? ` This account has not bought a pack, but its launch code (${trial!.code}) opens ONE free film of up to ${TRIAL_FILM_MAX_S} seconds; it can also order the ANIMATIC (${animaticRule().en}). Any other film opens with a pack.`
+      : trial
+        ? ` This account's launch code film is taken (video ${trial.held_by}); it can order the ANIMATIC (${animaticRule().en}), and more films open with any pack.`
       : ` This account has not bought a pack yet, so it can order the ANIMATIC (${animaticRule().en}: the drawn frames with the camera moving over them, narrated) but not a film — the film opens with any pack, because its clips are generated at Kleo's expense.`;
     const buy = open
       ? `Credit packs are on the account page, paid through Stripe (from ${cheapest.label} for ${cheapest.credits} credits; one payment, nothing renews)`

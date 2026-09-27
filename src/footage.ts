@@ -30,6 +30,7 @@
 import type { Env } from "./env";
 import type { Job, JobParams } from "./db";
 import { audit, hasPaid } from "./db.ts";
+import { trialHolds } from "./launch.ts";
 import { putFile } from "./storage.ts";
 import { hmacHex, int, num, nowIso, publicText } from "./util.ts";
 import { FILM_LOOKS, directionOf, type FilmLook } from "./keou-contract.ts";
@@ -656,7 +657,8 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
   try { if (isAnimatic(JSON.parse(job.params) as JobParams)) return { status: 409, reply: { error: "this job is an animatic: it is drawn from its frames and orders no clip" } }; } catch { /* unreadable params: the film rules apply */ }
   // The paid rule holds on this road too (a film queued before the rule, or created by any other road): the clips
   // are the owner's money, and a 402 here fails the job at once with the sentence and refunds it (internal.ts).
-  if (!(await hasPaid(env, job.user_id))) {
+  // The launch-code film (src/launch.ts) is the one exception: at most 15 seconds, and only the job the claim names.
+  if (!(await hasPaid(env, job.user_id)) && !(await trialHolds(env, job))) {
     await audit(env, job.user_id, job.id, "footage.unpaid", { note: "film for an account with no payment on record; refused before any task" });
     return { status: 402, reply: { error: "this film is for accounts that have bought a credit pack, and this account has not: no clip was ordered and the credits are refunded. The animatic of the same storyboard (product: \"animatic\") is open to every account", unpaid: true } };
   }

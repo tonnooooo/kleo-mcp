@@ -12,6 +12,7 @@ import { stripForWorker } from "./keou-contract.ts";
 import { findTemplate, aiUpscaleJob } from "./templates";
 import { generateJobImages, IMAGE_NAME_RE } from "./images";
 import { ephoneBalanceUsd } from "./ephone.ts";
+import { listLaunchCodes, upsertLaunchCode, normalizeCode, normalizeChannel, LAUNCH_CODE_MAX_USES } from "./launch.ts";
 import { footageBackendFor, footageConfig, setFootageConfig, kieModelFor, clipLengthsSpec, requestFootage, footageStatus, footageSpentTodayUsd, kieBalanceUsd, clipKey, footageRows, KIE_MODELS, SHOT_ID_RE, STILL_NAME_RE, type ShotRequest, requestMusic, musicStatus, musicOn, musicKey, MUSIC_ID, type MusicRequest } from "./footage";
 
 const ALLOWED_FILES = new Set([FILE_NAMES.video.name, FILE_NAMES.subtitles.name, FILE_NAMES.thumbnail.name, "thumbnail.svg", "log.txt", "gen.tgz"]);
@@ -277,6 +278,25 @@ export async function handleAdmin(request: Request, env: Env): Promise<Response>
     budget_usd: num(env.DAILY_GPU_BUDGET_USD, 1),
   });
   if (request.method === "GET" && path === "/internal/admin/pause") return json(await state());
+  // LAUNCH CODES (27 September 2026, src/launch.ts): what each code has given, and new ones without a deploy.
+  //   GET  /internal/admin/launch-codes
+  //   POST /internal/admin/launch-codes {"code":"DISCORD","channel":"discord","max_uses":30,"credits":null,"active":true}
+  // "credits" null (or absent) means the price of the trial film; "active": false switches a code off, its uses kept.
+  if (path === "/internal/admin/launch-codes") {
+    if (request.method === "GET") return json({ codes: await listLaunchCodes(env) });
+    if (request.method !== "POST") return json({ error: "method" }, 405);
+    const b = (await request.json().catch(() => ({}))) as { code?: unknown; channel?: unknown; max_uses?: unknown; credits?: unknown; active?: unknown };
+    const code = normalizeCode(b.code);
+    const channel = normalizeChannel(b.channel ?? b.code);
+    if (!code || !channel) return json({ error: "code: letters, digits, _ or -, up to 32; channel: a short name like \"discord\"" }, 400);
+    const maxUses = b.max_uses === undefined ? LAUNCH_CODE_MAX_USES : Number(b.max_uses);
+    const credits = b.credits === undefined || b.credits === null ? null : Number(b.credits);
+    if (!Number.isInteger(maxUses) || maxUses < 0 || maxUses > 100_000) return json({ error: "max_uses: a whole number from 0 to 100000" }, 400);
+    if (credits !== null && (!Number.isInteger(credits) || credits < 0 || credits > 1000)) return json({ error: "credits: null (the trial film's price) or a whole number from 0 to 1000" }, 400);
+    const row = await upsertLaunchCode(env, { code, channel, max_uses: maxUses, credits, active: b.active !== false });
+    await audit(env, null, null, "admin.launch_code", { code, channel, max_uses: maxUses, credits, active: b.active !== false });
+    return json({ ok: true, code: row });
+  }
   // The kie.ai switch and model, changeable from a phone between two test videos, no deploy:
   //   GET  /internal/admin/footage                      what is on, the models Kleo knows, today's kie.ai spend
   //   POST /internal/admin/footage {"backend":"kie","model":"kling-3.0"}   ({"reset":true} goes back to the config)

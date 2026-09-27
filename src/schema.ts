@@ -32,6 +32,12 @@ const STATEMENTS = [
   // list's estimate, written when the task is CREATED, so the daily budget counts money the moment it is committed.
   `CREATE TABLE IF NOT EXISTS footage (job_id TEXT NOT NULL, shot_id TEXT NOT NULL, model TEXT NOT NULL, task_id TEXT, state TEXT NOT NULL DEFAULT 'queued', seconds REAL NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0, result_url TEXT, key TEXT, error TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), updated_at TEXT, PRIMARY KEY (job_id, shot_id))`,
   `CREATE INDEX IF NOT EXISTS footage_created ON footage(created_at)`,
+  // LAUNCH CODES (27 September 2026, src/launch.ts; mirrors migrations/0012_launch_codes.sql): a code unlocks one free
+  // 15-second film and records its channel; one redemption per account, film_job the one job holding the trial film.
+  `CREATE TABLE IF NOT EXISTS launch_codes (code TEXT PRIMARY KEY, channel TEXT NOT NULL, max_uses INTEGER NOT NULL DEFAULT 30, uses INTEGER NOT NULL DEFAULT 0, credits INTEGER, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
+  `CREATE TABLE IF NOT EXISTS redemptions (user_id TEXT PRIMARY KEY, code TEXT NOT NULL, channel TEXT NOT NULL, credits INTEGER NOT NULL, nonce TEXT NOT NULL, film_job TEXT, at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
+  `CREATE INDEX IF NOT EXISTS redemptions_at ON redemptions(at)`,
+  `INSERT OR IGNORE INTO launch_codes (code, channel) VALUES ('PRODUCTHUNT', 'producthunt'), ('HN', 'hn'), ('REDDIT', 'reddit'), ('X', 'x'), ('TIKTOK', 'tiktok')`,
 ];
 
 /** Columns added after 0001 (mirrors migrations/0003_storyboard.sql + 0004_last_report.sql — one migration per column,
