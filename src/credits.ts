@@ -5,6 +5,7 @@ import { PACKS, sellingOpen, sellingAvailable, buyUrl } from "./stripe";
 import { html, escapeHtml } from "./util";
 import { tariffSentence, animaticRule } from "./templates";
 import { redeemLaunchCode, trialOf, TRIAL_FILM_MAX_S, type TrialState } from "./launch.ts";
+import { referralCodeFor, referralLink, referralRule } from "./referral.ts";
 
 /** The one address a stranger can write to. It is also in the site footer; both must always say the same thing. */
 const CONTACT = "kleooai@gmail.com";
@@ -43,7 +44,9 @@ export async function handleCredits(request: Request, env: Env): Promise<Respons
   // Only the browser that IS this account sees the key; a shared link shows the balance and nothing worth stealing.
   const key = ownerId === user.id ? await makeHandle(env, user.id) : "";
   const paid = await hasPaid(env, user.id);
-  return html(page({ user, handle: key, env, open: await sellingAvailable(env), paid, trial: paid ? null : await trialOf(env, user.id), viewToken: await makeViewToken(env, user.id), notice }), notice && !notice.ok ? 400 : 200);
+  const refCode = await referralCodeFor(env, user.id);
+  const invite = refCode ? referralLink(env.PUBLIC_URL || url.origin, refCode) : null;
+  return html(page({ user, handle: key, env, open: await sellingAvailable(env), paid, trial: paid ? null : await trialOf(env, user.id), viewToken: await makeViewToken(env, user.id), notice, invite }), notice && !notice.ok ? 400 : 200);
 }
 
 /** What the page says after one of its forms was sent. */
@@ -51,7 +54,7 @@ interface Notice { ok: boolean; text: string }
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-interface PageOpts { user: User | null; handle: string; env: Env; open: boolean; paid: boolean; trial: TrialState | null; viewToken: string; notice?: Notice | null }
+interface PageOpts { user: User | null; handle: string; env: Env; open: boolean; paid: boolean; trial: TrialState | null; viewToken: string; notice?: Notice | null; invite?: string | null }
 
 function page(o: PageOpts): string {
   const { user, handle, env, paid, trial } = o;
@@ -89,6 +92,9 @@ ${launch}
 ${open_ ? `<p>Payment is handled by Stripe: Kleo never sees your card. Credits land on this account within a few seconds of paying, and the page shows the new balance when you reload it.</p>` : configured ? `<div class="badge">Credit packs are paused for a moment: Kleo is topping up its rendering capacity so that every credit sold can actually be rendered. Try again in a little while - nothing is wrong with your account.</div>` : `<div class="badge">Card payments are not open yet - Kleo is free while it is in beta.</div>`}
 <ul class="packs">${packs}</ul>
 ${open_ ? `<p>One payment, no subscription, nothing renews. Credits do not expire.</p>` : `<p>These are the prices the packs will have. When they open, this page is where you will buy them - nothing else about Kleo changes.</p>`}
+${o.invite ? `<h2>Invite a friend</h2>
+<p>Share this link: ${referralRule()}.</p>
+<code class="key">${escapeHtml(o.invite)}</code>` : ""}
 <div class="foot">Out of credits, or something went wrong? Write to <a href="mailto:${CONTACT}">${CONTACT}</a>.</div>
 ${key}`
     : `<h1>This account link is not valid</h1>

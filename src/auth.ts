@@ -4,6 +4,20 @@ import { type User, getUser, createUserIfUnderCaps, getInvite, useInvite, applyB
 import { accountCookie, cookieHandle, ipFingerprint, makeHandle, signupRateKey, verifyHandle, verifyTurnstile } from "./accounts";
 import { html, escapeHtml, rid, int } from "./util";
 import { getLaunchCode, redeemLaunchCode, normalizeCode, TRIAL_FILM_MAX_S } from "./launch.ts";
+import { linkReferral, normalizeReferral, cookieReferral } from "./referral.ts";
+
+/**
+ * Where a sign-up came from, read off the connection request (27 September 2026): the connector address the user
+ * added may carry ?ref=<referral code> (src/referral.ts) and ?src=<channel>; MCP clients send that address as the
+ * OAuth `resource`, and the same keys directly on /authorize are read too.
+ */
+export function connectionHints(oauthQuery: string): { ref: string | null; src: string | null } {
+  const q = new URLSearchParams(oauthQuery);
+  let inner: URLSearchParams | null = null;
+  try { const r = q.get("resource"); if (r) inner = new URL(r).searchParams; } catch { /* not a URL: nothing in it */ }
+  const pick = (k: string) => inner?.get(k) ?? q.get(k) ?? null;
+  return { ref: normalizeReferral(pick("ref")), src: pick("src") };
+}
 import { MIN_FILM_CREDITS, MIN_FILM_SECONDS, ANIMATIC_CREDITS, ANIMATIC_SHORT_MAX_S, animaticRule, freeCreditsFor, tariffSentence } from "./templates";
 
 /**
@@ -46,7 +60,12 @@ export async function handleAuthorize(request: Request, env: Env): Promise<Respo
   if (!(await verifyTurnstile(env, String(form.get("cf-turnstile-response") ?? ""), ip)))
     return back("Kleo could not check that you are a person. Reload the page and press the button again.", 403);
 
-  const resolved = await resolveAccount(env, { cookie: cookieHandle(request.headers.get("cookie")), key: pastedKey, bonus: bonusCode, ip });
+  // A referral code arrives typed in the code field, in the kleo_ref cookie its /r/ page left, or in the connector
+  // address (src/referral.ts); it only ever links a NEW account.
+  const hints = connectionHints(oauthQuery);
+  const typedRef = normalizeReferral(bonusCode);
+  const ref = typedRef ?? cookieReferral(request.headers.get("cookie")) ?? hints.ref;
+  const resolved = await resolveAccount(env, { cookie: cookieHandle(request.headers.get("cookie")), key: pastedKey, bonus: typedRef ? "" : bonusCode, ip, ref });
   if ("error" in resolved) return back(resolved.error, resolved.status);
   const user = resolved.user;
   await touchUser(env, user.id);
@@ -79,7 +98,7 @@ type Resolved = { user: User } | { error: string; status: number };
  * where this browser already has a cookie of its own. Whichever branch wins, a gift code typed alongside is applied.
  * The daily caps are part of the INSERT itself, so a day that is over creates neither a user nor credits.
  */
-async function resolveAccount(env: Env, o: { cookie: string | null; key: string; bonus: string; ip: string | null }): Promise<Resolved> {
+async function resolveAccount(env: Env, o: { cookie: string | null; key: string; bonus: string; ip: string | null; ref: string | null }): Promise<Resolved> {
   const accountFor = async (handle: string | null) => {
     const userId = await verifyHandle(env, handle);
     return userId ? await getUser(env, userId) : null;
@@ -110,7 +129,8 @@ async function resolveAccount(env: Env, o: { cookie: string | null; key: string;
     return verdict === "day_full"
       ? { error: "Kleo has handed out today's free credits. Come back tomorrow and this button will work again.", status: 429 }
       : { error: "Kleo is giving out its free credits slowly today. Try again in a little while, and your account will be waiting.", status: 429 };
-  await audit(env, user.id, null, "user.created", { source: "open", credits: user.credits, ip });
+  await audit(env, user.id, null, "user.created", { source: "open", credits: user.credits, ip, ...(o.ref ? { ref: o.ref } : {}) });
+  if (o.ref) await linkReferral(env, user.id, o.ref, "sign-in");
   // The gift is applied only now, to an account that exists: a sign-up a cap refused must never burn one of the
   // code's uses, which is what claiming it before the INSERT did.
   return { user: await applyBonus(env, user, o.bonus) };
@@ -211,7 +231,7 @@ ${o.returning ? `<div class="back">Welcome back - ${plural(o.returning.credits, 
 <details><summary>Have a bonus code, or a Kleo key?</summary>
 <label for="bonus">Bonus code</label><input id="bonus" name="bonus" type="text" autocomplete="off" placeholder="Leave empty" style="text-transform:uppercase">
 <label for="account_key">Kleo key</label><input id="account_key" name="account_key" type="text" autocomplete="off" placeholder="Leave empty">
-<p class="note">A bonus code adds credits, to a new account or to the one this browser already has; a launch code (PRODUCTHUNT, HN, REDDIT, X, TIKTOK) opens one free ${TRIAL_FILM_MAX_S}-second film. A Kleo key brings an account you already have on another browser: ask your assistant for kleo_account to see yours.</p>
+<p class="note">A bonus code adds credits, to a new account or to the one this browser already has; a launch code (PRODUCTHUNT, HN, REDDIT, X, TIKTOK) opens one free ${TRIAL_FILM_MAX_S}-second film; a friend's invitation code links a new account to theirs. A Kleo key brings an account you already have on another browser: ask your assistant for kleo_account to see yours.</p>
 </details>
 <div class="foot">${tariffSentence()}. ${start} When credits run out, Kleo gives you a link in the chat.</div>
 </form></body></html>`;

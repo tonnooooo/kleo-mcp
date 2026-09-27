@@ -38,6 +38,11 @@ const STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS redemptions (user_id TEXT PRIMARY KEY, code TEXT NOT NULL, channel TEXT NOT NULL, credits INTEGER NOT NULL, nonce TEXT NOT NULL, film_job TEXT, at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
   `CREATE INDEX IF NOT EXISTS redemptions_at ON redemptions(at)`,
   `INSERT OR IGNORE INTO launch_codes (code, channel) VALUES ('PRODUCTHUNT', 'producthunt'), ('HN', 'hn'), ('REDDIT', 'reddit'), ('X', 'x'), ('TIKTOK', 'tiktok')`,
+  // REFERRALS (27 September 2026, src/referral.ts; mirrors migrations/0013_referrals.sql): one row per referred account,
+  // written with its first real payment, so the reward is paid once.
+  `CREATE TABLE IF NOT EXISTS referrals (referred_id TEXT PRIMARY KEY, referrer_id TEXT NOT NULL, session_id TEXT NOT NULL, referrer_credits INTEGER NOT NULL, referred_credits INTEGER NOT NULL, nonce TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'paid', at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
+  `CREATE INDEX IF NOT EXISTS referrals_referrer ON referrals(referrer_id, at)`,
+  `CREATE INDEX IF NOT EXISTS referrals_session ON referrals(session_id)`,
 ];
 
 /** Columns added after 0001 (mirrors migrations/0003_storyboard.sql + 0004_last_report.sql — one migration per column,
@@ -60,12 +65,18 @@ const COLUMNS: [table: string, column: string, definition: string][] = [
   // requeue clears instance_id and instance_meta, which is exactly the memory the next attempt needed.
   ["jobs", "tried_machines", "TEXT"],
   ["jobs", "phase", "TEXT NOT NULL DEFAULT 'gen'"],   // gen (GPU: frames + clips) | finish (cheap box: track, voice, upload)
+  // The account's referral code (made the first time it is shown) and the referrer it was opened through (27 September
+  // 2026, src/referral.ts; migrations/0013_referrals.sql).
+  ["users", "referral_code", "TEXT"],
+  ["users", "referred_by", "TEXT"],
 ];
 
 /** Indexes over columns from COLUMNS. They belong here and NOT in STATEMENTS: that batch runs before the ALTERs, so
  *  an index naming a column added above would fail on every request against a database that predates it. */
 const COLUMN_INDEXES = [
   "CREATE INDEX IF NOT EXISTS users_ip_created ON users(ip_hash, created_at)",
+  "CREATE UNIQUE INDEX IF NOT EXISTS users_referral_code ON users(referral_code)",
+  "CREATE INDEX IF NOT EXISTS users_referred_by ON users(referred_by)",
 ];
 
 async function ensureColumns(env: Env): Promise<void> {

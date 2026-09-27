@@ -20,6 +20,7 @@ import { guideText } from "./guide.ts";
 import { int, publicText } from "./util";
 import { adaptPrompt, adaptivePromptText, durationFrom, lookFromText, aiUpscaleAnswer } from "./adaptive.ts";
 import { redeemLaunchCode, trialOf, TRIAL_FILM_MAX_S } from "./launch.ts";
+import { referralCodeFor, referralLink, referralRule, REFERRER_BONUS, REFERRED_BONUS } from "./referral.ts";
 
 /**
  * Languages a job can be created in. The engine ships more Kokoro voices (keou-contract VOICES still knows fr),
@@ -738,7 +739,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
 
   server.registerTool("kleo_account", {
     title: "Account and credits",
-    description: "The credits left on this account, whether it can order a FILM (has_paid: films are for accounts that have bought a pack; every account can order the animatic), the link to its page, and the \"Kleo key\" that carries the same account (and the same credits) to another browser or another computer. Call it before the first kleo_create_video of a conversation and when the user asks how many credits they have, how to get more, or how to use Kleo somewhere else. Give them account_url as a plain link: it opens a read-only page (balance, prices, where to write) and cannot sign anybody in. Show account_key only if they ask for it, because anyone who has it can take the account over and spend its credits.",
+    description: "The credits left on this account, whether it can order a FILM (has_paid: films are for accounts that have bought a pack, or film_trial: the one free 15-second film a launch code opened; every account can order the animatic), the account's invitation link (referral: a friend who joins through it and buys a first pack earns both of you credits), the link to its page, and the \"Kleo key\" that carries the same account (and the same credits) to another browser or another computer. Call it before the first kleo_create_video of a conversation and when the user asks how many credits they have, how to get more, or how to use Kleo somewhere else. Give them account_url as a plain link: it opens a read-only page (balance, prices, where to write) and cannot sign anybody in. Show account_key only if they ask for it, because anyone who has it can take the account over and spend its credits.",
     inputSchema: z.object({}),
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   }, async () => {
@@ -757,6 +758,9 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     // A launch code's film (src/launch.ts): what is left of it, for an account that never paid.
     const trial = paid ? null : await trialOf(env, user.id);
     const trialOpen = !!trial?.available;
+    // The account's referral link (27 September 2026, src/referral.ts), made the first time it is shown.
+    const refCode = await referralCodeFor(env, user.id);
+    const invite = refCode ? { code: refCode, link: referralLink(env.PUBLIC_URL || base, refCode), rule: referralRule(), referrer_credits: REFERRER_BONUS, referred_credits: REFERRED_BONUS } : null;
     // The AI upscale (25 September 2026): a film's option at extra credits, unless the Worker switched it off.
     const upscaleOffered = aiUpscaleOn(env);
     const upscaleSentence = upscaleOffered
@@ -788,6 +792,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
         : "no free credits: connecting is free, every video is paid (no subscription, credit packs only)",
       account_key: await makeHandle(env, user.id),
       account_url: url,
+      referral: invite,
       payments_open: open,
       models: MODELS,
     };
@@ -802,7 +807,8 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     const buy = open
       ? `Credit packs are on the account page, paid through Stripe (from ${cheapest.label} for ${cheapest.credits} credits; one payment, nothing renews)`
       : `Card payments are paused right now; the account page says when they reopen`;
-    return ok(data, `You have ${plural(fresh.credits, "credit")}. ${tariffSentence()}.${enough}${films}${paid ? upscaleSentence : ""} ${buy}. Your account page, which also shows the key that carries this account to another browser: ${url}`);
+    const inviteSentence = invite ? ` Invite friends with ${invite.link}: ${invite.rule}.` : "";
+    return ok(data, `You have ${plural(fresh.credits, "credit")}. ${tariffSentence()}.${enough}${films}${paid ? upscaleSentence : ""} ${buy}.${inviteSentence} Your account page, which also shows the key that carries this account to another browser: ${url}`);
   });
 
   return server;

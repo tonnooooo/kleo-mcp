@@ -1007,6 +1007,10 @@ test("kleo_redeem: a launch code opens one 15-second film to an account that nev
   assert.equal(a.structuredContent.can_order_film, true);
   assert.deepEqual(a.structuredContent.film_trial, { code: "HN", available: true, max_s: 15, used_by: null });
   assert.match(a.text, /its launch code \(HN\) opens ONE free film of up to 15 seconds/);
+  // Every account has its invitation link (src/referral.ts), and the tool says what it earns.
+  assert.match(a.structuredContent.referral.link, /^http:\/\/kleo\.test\/r\/R[A-Z0-9]{7}$/);
+  assert.equal(a.structuredContent.referral.referrer_credits, 10); assert.equal(a.structuredContent.referral.referred_credits, 5);
+  assert.match(a.text, /Invite friends with http:\/\/kleo\.test\/r\/R[A-Z0-9]{7}: when someone who joined through your link buys their first credit pack, you get 10 credits and they get 5 more on top of their pack\./);
   // The intake offers that film with its price, takes "film" at 15 seconds, and asks again at 30.
   const ask = await s.call("kleo_adapt_prompt", { prompt: "A film about lighthouse keepers", language: "en", ...READY, duration_s: 15 });
   assert.match(ask.text, /Your launch code opens ONE free film \(every shot a generated clip\) of up to 15 seconds \(10 credits, already on your account\)/);

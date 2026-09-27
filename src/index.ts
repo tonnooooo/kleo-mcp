@@ -9,6 +9,7 @@ import { handleStripeWebhook } from "./stripe";
 import { handleDownload } from "./dl";
 import { handleUpload } from "./upload.ts";
 import { handleProbe } from "./probe.ts";
+import { handleReferralPage, linkReferral } from "./referral.ts";
 import { tick } from "./orchestrator";
 import { json } from "./util";
 import { ensureSchema } from "./schema";
@@ -23,6 +24,12 @@ const mcpApi: ExportedHandler<Env> = {
     const user = await getUser(env, props.userId);
     if (!user) return json({ error: "account not found; reconnect Kleo" }, 401);
     ctx.waitUntil(touchUser(env, user.id));
+    // THE CONNECTOR ADDRESS'S HINTS (27 September 2026): a new account's first calls carry the ?ref= of the address the
+    // user added (src/referral.ts). Only within a day of the sign-up, so an old account re-added through somebody's
+    // link is never re-attributed; linkReferral itself writes once.
+    const hints = new URL(request.url).searchParams;
+    if (hints.get("ref") && Date.now() - Date.parse(user.created_at) < 24 * 3600_000)
+      ctx.waitUntil(linkReferral(env, user.id, hints.get("ref"), "mcp").catch(() => false));
     const base = new URL(request.url).origin; // links use the address the client actually reached us on
     const handler = mcpHandlerFor(env, user, base);
     try {
@@ -48,6 +55,8 @@ const app: ExportedHandler<Env> = {
     if (p.startsWith("/internal/admin/")) return handleAdmin(request, env);
     if (p === "/authorize") return handleAuthorize(request, env);
     if (p === "/credits") return handleCredits(request, env);
+    // A referral link (27 September 2026, src/referral.ts): the invitation page, which remembers the code for sign-in.
+    if (p.startsWith("/r/")) return handleReferralPage(request, env);
     // Deliberately OUTSIDE the /internal/ branch below: that one fires ctx.waitUntil(tick(env)), and a payment
     // webhook must not have the power to start renting a GPU. It also needs no auth of its own — the Stripe
     // signature IS the authentication, checked before anything is parsed.

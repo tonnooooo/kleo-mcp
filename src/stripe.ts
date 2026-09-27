@@ -2,6 +2,7 @@ import type { Env } from "./env";
 import { getUser, creditPurchase, paymentByIntent, setPaymentStatus, takeBackCredits, audit } from "./db";
 import { json, hmacHex, safeEqual } from "./util";
 import { isFlagActive } from "./schema";
+import { rewardReferral, takeBackReferral } from "./referral.ts";
 
 /**
  * The credit packs. ONE list, and it is the only place a price and a number of credits are tied together: the
@@ -159,7 +160,14 @@ export async function handleStripeWebhook(request: Request, env: Env): Promise<R
     paymentIntent: pi, eventId: event.id ?? null, eventType: event.type ?? null,
     country: typeof country === "string" ? country : null, rawRef: userId || null,
   });
-  return json({ ok: true, credits: known ? pack.credits : 0, orphan: !known, already: !credited });
+  // THE REFERRAL REWARD (27 September 2026, src/referral.ts): on the referred account's first real payment only, once.
+  // A failure here must never make Stripe retry a payment that is already credited: it is written down instead.
+  let referral: Awaited<ReturnType<typeof rewardReferral>> = null;
+  if (credited && known) {
+    try { referral = await rewardReferral(env, known, sessionId); }
+    catch (e) { await audit(env, known, null, "referral.error", { session: sessionId, error: String(e).slice(0, 300) }); }
+  }
+  return json({ ok: true, credits: known ? pack.credits : 0, orphan: !known, already: !credited, ...(referral ? { referral_bonus: referral.referred_credits } : {}) });
 }
 
 
@@ -193,6 +201,8 @@ async function handleChargeTrouble(env: Env, type: string, charge: Record<string
 
   if (row.status === "disputed") return json({ ok: true, already: "disputed" });
   if (row.user_id && row.credits > 0) await takeBackCredits(env, row.user_id, row.credits, row.session_id);
+  // The referral reward this payment earned goes with it, from both sides (src/referral.ts).
+  await takeBackReferral(env, row.session_id);
   await setPaymentStatus(env, row.session_id, "disputed");
   await audit(env, row.user_id, null, "stripe.disputed", { payment_intent: pi, session: row.session_id, credits_taken: row.credits });
   return json({ ok: true, marked: "disputed", credits_taken: row.credits });

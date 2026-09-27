@@ -11,6 +11,7 @@ import { join, dirname } from "node:path";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
+import { createHmac } from "node:crypto";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -49,7 +50,8 @@ before(async () => {
     stdin: {
       contents: `export * from "./src/jobs.ts"; export * from "./src/db.ts"; export * from "./src/launch.ts";
         export { handleCredits } from "./src/credits.ts"; export { handleAdmin } from "./src/internal.ts";
-        export { makeViewToken, makeHandle } from "./src/accounts.ts";`,
+        export { makeViewToken, makeHandle } from "./src/accounts.ts"; export * from "./src/referral.ts";
+        export { handleStripeWebhook } from "./src/stripe.ts"; export { handleAuthorize, connectionHints } from "./src/auth.ts";`,
       resolveDir: ROOT, loader: "ts",
     },
     alias: { "@cloudflare/workers-oauth-provider": join(ROOT, "test/fixtures/oauth-provider-stub.mjs") },
@@ -197,4 +199,126 @@ test("admin: launch codes are listed and added without a deploy, behind the secr
   assert.equal((await m.redeemLaunchCode(env, "u_a", "DISCORD")).credits, 10, "credits null: the trial film's price");
   const off = await (await call("POST", { code: "DISCORD", channel: "discord", max_uses: 50, active: false })).json();
   assert.equal(off.code.active, 0); assert.equal(off.code.uses, 1, "an update never resets the uses");
+});
+
+/* ------------------------------------------------------------------ P5: referrals */
+
+const WHSEC = "whsec_test";
+const stripeEnv = (env) => Object.assign(env, { STRIPE_WEBHOOK_SECRET: WHSEC });
+const signedPost = (env, obj) => {
+  const body = JSON.stringify(obj);
+  const t = Math.floor(Date.now() / 1000);
+  const sig = `t=${t},v1=${createHmac("sha256", WHSEC).update(`${t}.${body}`).digest("hex")}`;
+  return m.handleStripeWebhook(new Request("https://k/stripe/webhook", { method: "POST", body, headers: { "stripe-signature": sig } }), env);
+};
+const pays = (env, userId, session, cents = 500) => signedPost(env, { id: `evt_${session}`, type: "checkout.session.completed", livemode: true,
+  data: { object: { id: session, client_reference_id: userId, amount_total: cents, currency: "eur", payment_status: "paid", payment_intent: `pi_${session}`, customer_details: { email: null } } } });
+const dispute = (env, session) => signedPost(env, { id: `evt_d_${session}`, type: "charge.dispute.created", livemode: true, data: { object: { payment_intent: `pi_${session}` } } });
+
+test("referral codes: one per account, made once, R + seven characters; a link binds a new account once, never to itself", async () => {
+  const env = await newEnv();
+  await newUser(env, "u_ref"); await newUser(env, "u_new"); await newUser(env, "u_other");
+  const code = await m.referralCodeFor(env, "u_ref");
+  assert.match(code, /^R[A-Z0-9]{7}$/);
+  assert.equal(await m.referralCodeFor(env, "u_ref"), code, "the same code every time");
+  assert.equal(m.referralLink("http://kleo.test", code), `http://kleo.test/r/${code}`);
+  assert.equal(m.normalizeReferral(` ${code.toLowerCase()} `), code);
+  assert.equal(await m.linkReferral(env, "u_ref", code, "test"), false, "never to itself");
+  assert.equal(await m.linkReferral(env, "u_new", "RNOBODY1", "test"), false, "never to a code nobody has");
+  assert.equal(await m.linkReferral(env, "u_new", code, "test"), true);
+  const other = await m.referralCodeFor(env, "u_other");
+  assert.equal(await m.linkReferral(env, "u_new", other, "test"), false, "linked once, the first referrer stays");
+  assert.equal(env.DB.db.prepare("SELECT referred_by FROM users WHERE id = 'u_new'").get().referred_by, "u_ref");
+  assert.deepEqual(audits(env, "referral.linked").map((a) => a.detail), [{ referrer: "u_ref", code, via: "test" }]);
+});
+
+test("referral reward: the referred account's FIRST real payment gives the referrer 10 and the referred 5 on top, once; later payments and replays nothing", async () => {
+  const env = stripeEnv(await newEnv());
+  await newUser(env, "u_ref", 0); await newUser(env, "u_new", 5);
+  await m.linkReferral(env, "u_new", await m.referralCodeFor(env, "u_ref"), "test");
+  // A tester row (no amount, no webhook) is not a payment: it neither earns the reward nor spends it.
+  env.DB.db.prepare("INSERT INTO payments (session_id, user_id, credits, amount_cent, currency, status, raw_ref) VALUES ('manual_t', 'u_new', 0, 0, 'eur', 'paid', 'tester')").run();
+  const r = await pays(env, "u_new", "cs_first");
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).referral_bonus, 5);
+  assert.equal(await balance(env, "u_new"), 5 + 10 + 5, "gift + the 5 EUR pack + the referral bonus");
+  assert.equal(await balance(env, "u_ref"), 10);
+  await pays(env, "u_new", "cs_first"); // Stripe delivers the same event again
+  await pays(env, "u_new", "cs_second"); // and a second purchase
+  assert.equal(await balance(env, "u_new"), 5 + 10 + 5 + 10, "the second pack is a pack, nothing more");
+  assert.equal(await balance(env, "u_ref"), 10, "never twice");
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM referrals").get().n, 1);
+  assert.deepEqual(audits(env, "referral.rewarded").map((a) => [a.user_id, a.detail.role, a.detail.amount]), [["u_ref", "referrer", 10], ["u_new", "referred", 5]]);
+  // A dispute of the first payment takes the pack and both rewards back.
+  await dispute(env, "cs_first");
+  assert.equal(await balance(env, "u_ref"), 0);
+  assert.equal(await balance(env, "u_new"), 5 + 10 + 5 + 10 - 10 - 5, "the pack's 10 and the bonus's 5 taken back");
+  assert.equal(env.DB.db.prepare("SELECT status FROM referrals").get().status, "disputed");
+  await dispute(env, "cs_first");
+  assert.equal(await balance(env, "u_ref"), 0, "a second dispute event takes nothing more");
+});
+
+test("referral reward: nothing for an account nobody referred, and nothing for one whose first real payment came before the link", async () => {
+  const env = stripeEnv(await newEnv());
+  await newUser(env, "u_ref", 0); await newUser(env, "u_solo", 0); await newUser(env, "u_late", 0);
+  await pays(env, "u_solo", "cs_solo");
+  assert.equal(await balance(env, "u_solo"), 10);
+  await pays(env, "u_late", "cs_late_1");
+  await m.linkReferral(env, "u_late", await m.referralCodeFor(env, "u_ref"), "test");
+  await pays(env, "u_late", "cs_late_2");
+  assert.equal(await balance(env, "u_ref"), 0, "the reward is for the FIRST real payment only");
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM referrals").get().n, 0);
+});
+
+function fakeProvider() {
+  return {
+    async parseAuthRequest(request) {
+      const q = new URL(request.url).searchParams;
+      return { clientId: q.get("client_id"), redirectUri: q.get("redirect_uri"), scope: (q.get("scope") ?? "").split(" ").filter(Boolean), state: q.get("state") };
+    },
+    async lookupClient(clientId) { return { clientId, clientName: "Test Assistant" }; },
+    async completeAuthorization(o) { return { redirectTo: `http://localhost:9999/cb?code=code_${o.userId}&state=${o.request.state}` }; },
+  };
+}
+const oauthQuery = (extra = {}) => new URLSearchParams({ response_type: "code", client_id: "client_1", redirect_uri: "http://localhost:9999/cb", scope: "video:create", state: "s", ...extra }).toString();
+const signIn = (env, { cookie, form = {}, query = oauthQuery() } = {}) => m.handleAuthorize(new Request("http://kleo.test/authorize", {
+  method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", ...(cookie ? { cookie } : {}) },
+  body: new URLSearchParams({ oauth_query: query, ...form }),
+}), env);
+const newestUser = (env) => env.DB.db.prepare("SELECT * FROM users ORDER BY rowid DESC LIMIT 1").get();
+const signInEnv = async () => Object.assign(await newEnv(), { OAUTH_PROVIDER: fakeProvider(), MAX_NEW_USERS_PER_DAY: "25", MAX_NEW_USERS_PER_IP_DAY: "25" });
+
+test("sign-in: a referral code links the NEW account — from the /r/ cookie, the code field or the connector address — and never an existing one", async () => {
+  const env = await signInEnv();
+  await newUser(env, "u_ref");
+  const code = await m.referralCodeFor(env, "u_ref");
+  assert.equal((await signIn(env, { cookie: `kleo_ref=${code}` })).status, 302);
+  assert.equal(newestUser(env).referred_by, "u_ref", "the cookie the /r/ page left");
+  await signIn(env, { form: { bonus: code.toLowerCase() } });
+  assert.equal(newestUser(env).referred_by, "u_ref", "typed in the code field");
+  assert.equal(audits(env, "bonus.rejected").length, 0, "a referral code is not a failed bonus code");
+  const resource = `http://kleo.test/mcp?ref=${code}&src=producthunt`;
+  await signIn(env, { query: oauthQuery({ resource }) });
+  assert.equal(newestUser(env).referred_by, "u_ref", "the connector address, sent as the OAuth resource");
+  assert.deepEqual(m.connectionHints(oauthQuery({ resource })), { ref: code, src: "producthunt" });
+  // A browser that already has an account keeps it, unlinked.
+  await newUser(env, "u_existing");
+  const before = env.DB.db.prepare("SELECT COUNT(*) AS n FROM users").get().n;
+  await signIn(env, { cookie: `kleo_id=${await m.makeHandle(env, "u_existing")}; kleo_ref=${code}` });
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM users").get().n, before, "no new account");
+  assert.equal(env.DB.db.prepare("SELECT referred_by FROM users WHERE id = 'u_existing'").get().referred_by, null);
+});
+
+test("/r/<code>: the invitation page remembers a known code for sign-in and shows the connector address carrying it", async () => {
+  const env = await newEnv();
+  await newUser(env, "u_ref");
+  const code = await m.referralCodeFor(env, "u_ref");
+  const r = await m.handleReferralPage(new Request(`http://kleo.test/r/${code}`), env);
+  assert.equal(r.status, 200);
+  assert.match(r.headers.get("set-cookie") ?? "", new RegExp(`^kleo_ref=${code}; Path=/; Max-Age=2592000; HttpOnly; Secure; SameSite=Lax`));
+  const page = await r.text();
+  assert.ok(page.includes(`http://kleo.test/mcp?ref=${code}`), "the connector address carries the code");
+  assert.match(page, /you get 5 extra credits, and your friend gets 10/);
+  const unknown = await m.handleReferralPage(new Request("http://kleo.test/r/RNOBODY1"), env);
+  assert.equal(unknown.status, 404); assert.equal(unknown.headers.get("set-cookie"), null);
 });
