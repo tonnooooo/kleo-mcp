@@ -40,10 +40,11 @@ export const buyUrl = (env: Env, pack: (typeof PACKS)[number], userId: string): 
   `${env[pack.linkVar]}?client_reference_id=${encodeURIComponent(userId)}`;
 
 /**
- * Whether the buttons should be SHOWN right now: selling is configured AND Kleo can currently deliver what it sells.
- * The second half is a flag the orchestrator raises when the Vast balance falls under VAST_MIN_BALANCE_TO_SELL, and
- * lets expire on its own when money comes back. On 12 September the shop was open with the balance at $0.00: two
- * paying customers would have bought credits for a service that could not render a single frame.
+ * Whether the buttons should be SHOWN right now: selling is configured and the "selling_pause" flag is not raised.
+ * Until 27 September 2026 the orchestrator raised that flag by itself whenever the Vast balance fell under
+ * VAST_MIN_BALANCE_TO_SELL ($1). The owner removed that automatic pause on 27 September ("togli sta roba"): the shop
+ * stays open whatever the GPU balance, and keeping Vast topped up is his job. Nothing raises the flag any more; the
+ * check stays so a flag left over from before the deploy expires on its own (fifteen minutes) instead of sticking.
  *
  * Only the BUTTONS follow this. The webhook does not: anyone who already paid — from a cached page, an old
  * message, a link opened just before the balance fell — is credited regardless. Not showing the door is a

@@ -181,3 +181,16 @@ test("i bottoni spariscono quando la bandiera 'selling_pause' e' alzata, e il we
   assert.equal(r.status, 200);
   assert.equal(balance(env, "u_buyer"), 10, "pagato = accreditato, bandiera o no");
 });
+
+test("27 September 2026: the shop never closes itself on a low Vast balance (the owner removed the automatic pause)", async () => {
+  // The orchestrator used to raise "selling_pause" whenever the Vast balance fell under VAST_MIN_BALANCE_TO_SELL.
+  // The owner's words: «no sotto $1 il negozio si mette in pausa da solo. togli sta roba». Nothing may raise it now.
+  const { readFileSync } = await import("node:fs");
+  const orchestrator = readFileSync(new URL("../src/orchestrator.ts", import.meta.url), "utf8");
+  assert.ok(!/SELLING_PAUSE|guardSelling|vastCredit/.test(orchestrator), "the tick no longer reads the Vast balance to close the shop");
+  const cfg = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
+  assert.ok(!/VAST_MIN_BALANCE_TO_SELL/.test(cfg), "the threshold is gone from the configuration");
+  const env = newEnv();
+  env.DB.db.exec("CREATE TABLE IF NOT EXISTS locks (name TEXT PRIMARY KEY, until TEXT NOT NULL)");
+  assert.equal(await m.sellingAvailable(env), true, "configured means open");
+});
