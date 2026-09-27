@@ -195,7 +195,8 @@ test("the launch-code film: a cancel or a failure AFTER its clips were ordered k
   const j = await m.createJob(env2, await m.getUser(env2, "u_b"), film());
   env2.DB.db.prepare("INSERT INTO footage (job_id, shot_id, model, task_id, state) VALUES (?, 's1', 'seedance', NULL, 'failed')").run(j.id);
   env2.DB.db.prepare("UPDATE jobs SET state = 'failed' WHERE id = ?").run(j.id);
-  assert.equal((await m.trialOf(env2, "u_b")).available, true, "a refused, never-billed clip spends nothing");
+  // (failJob refunds the debit in production; set here by hand, so the held_by says it: no job holds the film.)
+  assert.equal((await m.trialOf(env2, "u_b")).held_by, null, "a refused, never-billed clip spends nothing");
   env2.DB.db.prepare("INSERT INTO footage (job_id, shot_id, model, task_id, state) VALUES (?, 's2', 'seedance', 'tk_2', 'failed')").run(j.id);
   assert.equal((await m.trialOf(env2, "u_b")).held_by, j.id, "a clip with a task was billed: the trial is spent");
 });
