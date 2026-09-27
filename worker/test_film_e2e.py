@@ -102,8 +102,11 @@ def audio_of(p):
 
 def pixel(video, t, x, y):
     """(r, g, b) of one pixel of the frame at `t` seconds."""
+    # To RGB first: a 1x1 crop of a 4:2:0 frame has no whole chroma sample and ffmpeg refuses it.
     r = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-ss", f"{t:.3f}", "-i", video, "-frames:v", "1",
-                        "-vf", f"crop=1:1:{x}:{y}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True)
+                        "-vf", f"format=rgb24,crop=2:2:{x}:{y}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True)
+    if len(r.stdout) < 3:
+        raise AssertionError(f"could not read pixel {x},{y} at {t} s of {video}: {r.stderr.decode(errors='replace')[-300:]}")
     return tuple(r.stdout[:3])
 
 
