@@ -973,18 +973,7 @@ function repairDirection(raw: unknown, skeleton: readonly Bone[], scenes: number
   });
   const cast = (Array.isArray(raw.cast) ? raw.cast : []).filter(isObj).slice(0, DL.cast.max)
     .map((m) => ({ name: cut(m.name, DL.cast.name), look: cut(m.look, DL.cast.look) })).filter((m) => m.name && m.look);
-  // THE PROPS ARE BEST EFFORT (27 September 2026): a prop the model named badly (no look, a thin one, a character's
-  // name, a repeat) is dropped here, never allowed to make directionProblems refuse the whole direction — a film with
-  // no direction is worse than a film whose pencil is described in its own shots only.
-  const castKeys = new Set(cast.map((m) => propKey(m.name)));
-  const props: PropMember[] = [];
-  for (const m of (Array.isArray(raw.props) ? raw.props : []).filter(isObj)) {
-    const p = { name: cut(m.name, DL.props.name), look: cut(m.look, DL.props.look) };
-    const k = propKey(p.name);
-    if (!p.name || !p.look || thinPropLook(p.look) || !k || castKeys.has(k) || props.some((x) => propKey(x.name) === k)) continue;
-    props.push(p);
-    if (props.length >= DL.props.max) break;
-  }
+  const props = keepProps((Array.isArray(raw.props) ? raw.props : []).filter(isObj).map((m) => ({ name: cut(m.name, DL.props.name), look: cut(m.look, DL.props.look) })), cast);
   const d: Direction = {
     subject: cut(raw.subject, DL.subject), goal: cut(raw.goal, DL.goal), audience: cut(raw.audience, DL.audience),
     tone: cut(raw.tone, DL.tone), world: cut(raw.world, DL.world),
@@ -996,6 +985,33 @@ function repairDirection(raw: unknown, skeleton: readonly Bone[], scenes: number
     sections,
   };
   return directionProblems(d, { accents: CINEMA_ACCENTS, scenes }).length ? null : d;
+}
+
+/**
+ * THE PROPS ARE BEST EFFORT (27 September 2026): the props a direction may keep — a name and a look within limits, a
+ * look that is not thin, a name no character and no earlier prop has. A bad prop is dropped, never allowed to make
+ * directionProblems refuse the direction: a film with no direction is worse than one whose pencil is described in its
+ * own shots only. Run on the model's answer (repairDirection), and again on the direction as it finally is, after the
+ * English pass renamed things and the spec put the user's cast back (cleanProps) — the final validateStoryboard runs
+ * directionProblems, and a prop that went bad there would refuse the whole plan after every chunk was paid for.
+ */
+export function keepProps(list: readonly { name?: unknown; look?: unknown }[], cast: readonly { name: string }[]): PropMember[] {
+  const castKeys = new Set(cast.map((m) => propKey(m.name)));
+  const out: PropMember[] = [];
+  for (const m of list) {
+    const name = typeof m?.name === "string" ? m.name.trim() : "", look = typeof m?.look === "string" ? m.look.trim() : "";
+    const k = propKey(name);
+    if (!name || !look || name.length > DL.props.name || look.length > DL.props.look || thinPropLook(look) || !k || castKeys.has(k) || out.some((x) => propKey(x.name) === k)) continue;
+    out.push({ name, look });
+    if (out.length >= DL.props.max) break;
+  }
+  return out;
+}
+/** keepProps on a direction in place: the key disappears when nothing is left, so an old-shaped direction stays old-shaped. */
+export function cleanProps(d: Direction): void {
+  if (d.props === undefined) return;
+  const kept = keepProps(Array.isArray(d.props) ? d.props : [], d.cast ?? []);
+  if (kept.length) d.props = kept; else delete d.props;
 }
 
 /**
@@ -1064,7 +1080,16 @@ export function applySpecToDirection(d: Direction, spec: RequestSpec, scenes: nu
   if (spec.cast.length) {
     // The spec id rides along (CastMember.id), so a shot whose "cast" says ["c1"] finds its character in castFor()
     // even after the English pass has renamed "la pasticcera" to "the pastry chef".
-    tryField("cast", spec.cast.slice(0, DL.cast.max).map((c) => ({ id: c.id, name: shortPhrase(c.name, DL.cast.name), look: shortPhrase(fullLook(spec, c.id) || c.look, DL.cast.look) })));
+    const cast = spec.cast.slice(0, DL.cast.max).map((c) => ({ id: c.id, name: shortPhrase(c.name, DL.cast.name), look: shortPhrase(fullLook(spec, c.id) || c.look, DL.cast.look) }));
+    // A prop named like one of the USER'S characters is dropped first: props are best effort, and one of them must
+    // never make tryField refuse the user's cast (the review of 27 September: a toy car prop "Bolt" in a film whose
+    // spec character is Bolt the dog).
+    if (d.props?.length) {
+      const before = d.props.length;
+      const kept = keepProps(d.props, cast);
+      if (kept.length !== before) { if (kept.length) d.props = kept; else delete d.props; changed.push("props"); }
+    }
+    tryField("cast", cast);
   }
   const said = spec.items.filter((i) => i.kind === "line").map((i) => shortPhrase(i.quote || i.text, DL.mustKeep.len));
   const read = spec.narration === "verbatim" ? [] : spec.items.filter((i) => i.kind === "text" && i.must).map((i) => shortPhrase(i.quote || i.text, DL.mustKeep.len));
@@ -1921,8 +1946,15 @@ export function applyEnglishFields(d: Direction, raw: unknown): void {
   const objects = list(raw.objects, d.objects ?? [], DL.objects.len); if (objects) d.objects = objects;
   const forbidden = list(raw.forbidden, d.forbidden ?? [], DL.forbidden.len); if (forbidden) d.forbidden = forbidden;
   const props: unknown[] = Array.isArray(raw.props) ? raw.props : [];
-  if (d.props?.length && props.length === d.props.length)
-    d.props = d.props.map((m, i) => { const c: Record<string, unknown> = isObj(props[i]) ? (props[i] as Record<string, unknown>) : {}; return { name: text(c.name, DL.props.name) ?? m.name, look: text(c.look, DL.props.look) ?? m.look }; });
+  if (d.props?.length && props.length === d.props.length) {
+    // One prop at a time, and a translation only where it still holds: a look that came back thin keeps the original.
+    d.props = d.props.map((m, i) => {
+      const c: Record<string, unknown> = isObj(props[i]) ? (props[i] as Record<string, unknown>) : {};
+      const look = text(c.look, DL.props.look);
+      return { name: text(c.name, DL.props.name) ?? m.name, look: look && !thinPropLook(look) ? look : m.look };
+    });
+    cleanProps(d);
+  }
 }
 
 /** The picture prompts a chunk wrote in the narration's language, to come back in English, one for one. */
@@ -2573,6 +2605,9 @@ export async function generateStoryboard(env: Env, job: PlanJob, opts: GenerateO
     // name their cast by the spec's ids): the translation of the rest of the direction stands, the cast goes back.
     if (spec) applySpecToDirection(direction, spec, sceneGuess);
   }
+  // The props once more, against the direction as it finally is (renamed, the user's cast back): what the scene
+  // writers are shown and the shot grammar offers is exactly what the final validation will accept.
+  if (direction) cleanProps(direction);
 
   // 1. Outline
   const n = sceneGuess;

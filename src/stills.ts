@@ -415,7 +415,9 @@ export function feedbackFor(failed: readonly VisualCheck[], spec: RequestSpec | 
       const it = spec ? itemById(spec, c.id.slice(8)) : undefined;
       return `none of this is visible anywhere: ${stripNegation(it?.text ?? c.question.replace(/^Does the image show any of this:\s*/i, "").replace(/\?$/, ""))}`;
     }
-    if (c.id.startsWith("prop:")) return `this object looks exactly like this: ${c.question.slice(propQuestionPrefix.length).trim().replace(/\?$/, "")}`;
+    // Short: the prop's whole look is already in the prompt on its own line, and feedback is never shortened (a
+    // 300-character look repeated here pushed a redraw past STILL_PROMPT_MAX; the review of 27 September).
+    if (c.id.startsWith("prop:")) return `this object looks exactly like this: ${cut(clean(c.question.slice(propQuestionPrefix.length).replace(/\?$/, "")), 140)}`;
     if (c.id.startsWith("cast:")) {
       const m = spec ? castById(spec, c.id.slice(5)) : undefined;
       return m && spec ? `${m.name} looks exactly like this: ${fullLook(spec, m.id)}` : `the character looks exactly like this: ${c.question.replace(/^Is there a character matching this description:\s*/i, "").replace(/\?$/, "")}`;

@@ -17,7 +17,7 @@ import {
 } from "../src/direction.ts";
 import { compileStill, stillProps, stillShotsOf, feedbackFor } from "../src/stills.ts";
 import { validateStoryboard, pictureScenes, stripForWorker, AUTHORING_SHOT_FIELDS, CINEMA_ACCENTS, SHOT_PROPS_MAX } from "../src/keou-contract.ts";
-import { directionBlock, applyEnglishFields, englishFieldsPrompt, englishFieldsSchema, directionSchema } from "../src/storyboard.ts";
+import { directionBlock, applyEnglishFields, englishFieldsPrompt, englishFieldsSchema, directionSchema, applySpecToDirection, keepProps, cleanProps } from "../src/storyboard.ts";
 import { judgePrompt } from "../src/fidelity.ts";
 import { EXAMPLE_DIRECTION, EXAMPLE_SCENES } from "../src/guide.ts";
 
@@ -204,4 +204,56 @@ test("the plan judge sees the props and which shot lists them", () => {
   assert.match(p, /The recurring objects as the plan draws them/);
   assert.match(p, /  the pencil: a short yellow hexagonal HB pencil/);
   assert.match(p, /01-a-s1 \| image: A hand with the pencil \| props: the pencil \| covers: R1/);
+});
+
+/* ------------------------------------------------------------------ the review of 27 September */
+
+test("review: a hand word attaches the one character only when it is a body part", () => {
+  const one = [{ name: "the captain", look: "a pirate captain with a red bandana, a long dark braid and a brown coat" }];
+  const names = (p) => castFor(one, p).map((m) => m.name);
+  for (const p of ["An empty golden beach at sunset, palm trees swaying", "A hand-painted sign above the bakery door", "a hand-drawn map on the table",
+    "a second-hand bookshop on a rainy street", "the clock hands point to midnight", "the hands of the clock point to midnight",
+    "A customer's hand pours milk into the coffee", "fingers of fog creep over the harbour wall"])
+    assert.deepEqual(names(p), [], p);
+  for (const p of ["A hand draws a thin line across the page", "Fingers tap the table", "Two hands smooth the sheet flat", "A forearm rests on the rail", "her fingertips on the glass"])
+    assert.deepEqual(names(p), ["the captain"], p);
+});
+
+test("review: a prop is matched as a whole phrase, never inside another word", () => {
+  const pen = { props: [{ name: "the pen", look: "a black lacquered fountain pen with a gold nib" }] };
+  assert.deepEqual(propsFor(pen, "Morning light through an open window onto the empty desk"), [], "'pen' is not in 'open'");
+  assert.deepEqual(propsFor(pen, "The pen lies across the letter").map((m) => m.name), ["the pen"]);
+  const ring = { props: [{ name: "the ring", look: "a thin gold band set with one small ruby" }] };
+  assert.deepEqual(propsFor(ring, "Morning light falls across the empty kitchen table during the evening"), []);
+  assert.deepEqual(propsFor(ring, "Two rings on the velvet").map((m) => m.name), ["the ring"], "a plural still names it");
+  assert.deepEqual(propsFor({ props: [PENCIL] }, "Three yellow pencils in a jar").map((m) => m.name), ["the pencil"]);
+});
+
+test("review: the props are filtered again after the English pass and before the user's cast", () => {
+  // A translation that comes back thin keeps the original look; one that takes a character's name is dropped.
+  const d = good({ props: [PENCIL, LAMP] });
+  applyEnglishFields(d, { world: d.world, cast: d.cast, objects: d.objects, forbidden: d.forbidden, props: [{ name: "the pencil", look: "a pencil" }, { name: "the writer", look: LAMP.look }] });
+  assert.deepEqual(d.props, [PENCIL], "the thin translation kept the original look; the prop renamed like the writer is gone");
+  assert.deepEqual(directionProblems(d, { ...opts, scenes: 2 }), []);
+  // The user's cast is never refused because of a prop: a toy car called Bolt makes way for Bolt the dog.
+  const bolt = good({ cast: [], props: [{ name: "Bolt", look: "a small red die-cast toy car with black wheels" }] });
+  const spec = { v: 1, mode: "faithful", summary: "Bolt the dog", cast: [{ id: "c1", name: "Bolt", look: "a small white terrier with a black patch over one eye", ref: null }], items: [], refs: [], open: [], narration: "free", script: null };
+  const changed = applySpecToDirection(bolt, spec, 2);
+  assert.equal(bolt.cast[0].id, "c1"); assert.equal(bolt.props, undefined);
+  assert.ok(changed.includes("cast") && changed.includes("props"), changed.join(","));
+  assert.deepEqual(directionProblems(bolt, { ...opts, scenes: 2 }), []);
+  // keepProps / cleanProps: limits, thin looks, repeats, character names, and an old-shaped direction left alone.
+  assert.deepEqual(keepProps([PENCIL, { name: "The Pencil", look: LAMP.look }, { name: "x".repeat(37), look: LAMP.look }, { name: "the eraser", look: "pink" }, LAMP], [{ name: "the writer" }]), [PENCIL, LAMP]);
+  const old = good(); delete old.props; cleanProps(old); assert.ok(!("props" in old));
+  const empty = good({ props: [{ name: "the eraser", look: "pink" }] }); cleanProps(empty); assert.ok(!("props" in empty));
+});
+
+test("review: a failed prop check's feedback is short — the look is already in the prompt", () => {
+  const long = { name: "the chest", look: `a small oak chest ${"with a very long description of every carved detail ".repeat(5)}`.slice(0, 300) };
+  const d = good({ props: [long] });
+  const c = compileStill({ shot: { id: "x", image_prompt: "The chest on the sand", props: ["the chest"] }, spec: null, direction: d, look: "realistic", format: "9:16", refs: [] });
+  const check = c.checks.find((x) => x.id === "prop:the-chest");
+  const [f] = feedbackFor([{ ...check, must: true }], null, "realistic");
+  assert.ok(f.length <= "this object looks exactly like this: ".length + 140, `${f.length}`);
+  assert.ok(f.startsWith("this object looks exactly like this: the chest, a small oak chest"));
 });

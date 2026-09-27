@@ -203,9 +203,15 @@ def negative_for(direction, style="realistic"):
 
 
 # The pronouns and generic words that can only mean the film's one character. Mirrors src/direction.ts PRONOUN_HINTS:
-# since 27 September 2026 a hand, fingers or a forearm too (a one-person film seen only as hands drew an old man's hand
-# in one shot, because "a hand draws a line" named nobody).
-PRONOUN_HINTS = re.compile(r"(?<![^\W\d_])(?:she|her|hers|herself|he|him|his|himself|the character|the protagonist|hands?|fingers?|fingertips?|forearms?|palms?|wrists?|knuckles?)(?![^\W\d_])", re.IGNORECASE)
+# since 27 September 2026 a bare hand, fingers or a forearm too (a one-person film seen only as hands drew an old man's
+# hand in one shot, because "a hand draws a line" named nobody) — never "hand-painted", "second-hand", "a customer's
+# hand", clock hands or "fingers of fog", and never "palm" (a tree). Python lookbehinds are fixed-width, one each.
+PRONOUN_HINTS = re.compile(
+    r"(?<![^\W\d_])(?:she|her|hers|herself|he|him|his|himself|the character|the protagonist)(?![^\W\d_])"
+    r"|(?<![^\W\d_])(?<!-)(?<!'s )(?<!\u2019s )(?<!clock )(?<!clock-)(?<!watch )(?<!minute )(?<!hour )(?<!second )(?<!second-)"
+    r"(?:hands?|fingers?|fingertips?|forearms?|wrists?|knuckles?)(?![^\W\d_])(?!-)"
+    r"(?!\s+of\s+(?:the\s+|a\s+)?(?:clock|watch|light|fog|mist|smoke|sunlight|shadows?|flames?))",
+    re.IGNORECASE)
 
 
 def head_noun_in(name, image_prompt):
@@ -264,8 +270,12 @@ def props_in(direction, image_prompt):
             props.append({"name": name, "look": look})
     heads = [(m["name"].strip().lower().split() or [""])[-1] for m in props]
     unique = [h != "" and heads.count(h) == 1 for h in heads]
-    return [m for i, m in enumerate(props)
-            if _ARTICLE.sub("", m["name"].lower()).strip() in lowered or (unique[i] and head_noun_in(m["name"], str(image_prompt or "")))]
+
+    def named(m):
+        # The name as a WHOLE phrase, a plural allowed: "the pen" never fires on "an open window".
+        key = " ".join(_ARTICLE.sub("", m["name"].lower()).split())
+        return bool(key) and re.search(r"(?<![^\W_])" + re.escape(key) + r"(?:e?s)?(?![^\W_])", lowered) is not None
+    return [m for i, m in enumerate(props) if named(m) or (unique[i] and head_noun_in(m["name"], str(image_prompt or "")))]
 
 
 def cast_for(direction, image_prompt, budget=None):

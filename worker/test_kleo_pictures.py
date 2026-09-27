@@ -773,6 +773,18 @@ class PropsTest(unittest.TestCase):
         self.assertEqual(kp.cast_in(two, "A hand draws a thin line"), [])
         self.assertIsNone(kp.PRONOUN_HINTS.search("handsome scenery"))
 
+    def test_the_review_of_27_september(self):
+        one = {"cast": [{"name": "the captain", "look": "a pirate captain with a red bandana"}]}
+        for p in ["An empty golden beach at sunset, palm trees swaying", "A hand-painted sign above the door", "a hand-drawn map",
+                  "a second-hand bookshop", "the clock hands point to midnight", "the hands of the clock", "A customer's hand pours milk",
+                  "fingers of fog over the wall"]:
+            self.assertEqual(kp.cast_in(one, p), [], p)
+        for p in ["A hand draws a line", "Fingers tap the table", "Two hands smooth the sheet", "her fingertips"]:
+            self.assertEqual([m["name"] for m in kp.cast_in(one, p)], ["the captain"], p)
+        pen = {"props": [{"name": "the pen", "look": "a black lacquered fountain pen with a gold nib"}]}
+        self.assertEqual(kp.props_in(pen, "Morning light through an open window"), [])
+        self.assertEqual([m["name"] for m in kp.props_in(pen, "Two pens on the desk")], ["the pen"])
+
     def test_what_a_prop_look_negates_goes_to_the_negative(self):
         self.assertIn("eraser", kp.negative_for(self.DIRECTION))
 

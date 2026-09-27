@@ -707,9 +707,13 @@ function explicitCast(cast: readonly CastMember[], shotCast: readonly string[] |
  * The pronouns and generic words that can only mean the film's one character. Mirrored in worker/kleo_pictures.py.
  * THE HANDS (27 September 2026): a film whose one person is seen only as hands ("a hand draws a line across the
  * page") named nobody, so no look was attached and one shot came back with an old man's hand between young ones.
- * In a one-character film a hand, fingers or a forearm belong to that character.
+ * In a one-character film a bare hand, fingers or a forearm belong to that character — but only a BODY PART: never
+ * "hand-painted", "second-hand" or "hand-drawn" (a hyphen on either side), never someone else's ("a customer's
+ * hand"), never a clock's ("the clock hands", "the hands of the clock"), never "fingers of fog". No "palm": in a
+ * picture prompt it is a tree (the review of the same day found the guide's own "palm trees" dressing an empty beach
+ * in the captain's look).
  */
-export const PRONOUN_HINTS = /(?<![\p{L}])(?:she|her|hers|herself|he|him|his|himself|the character|the protagonist|hands?|fingers?|fingertips?|forearms?|palms?|wrists?|knuckles?)(?![\p{L}])/iu;
+export const PRONOUN_HINTS = /(?<![\p{L}])(?:she|her|hers|herself|he|him|his|himself|the character|the protagonist)(?![\p{L}])|(?<![\p{L}-])(?<!['’]s )(?<!(?:clock|watch|minute|hour|second)[\s-])(?:hands?|fingers?|fingertips?|forearms?|wrists?|knuckles?)(?![\p{L}-])(?!\s+of\s+(?:the\s+|a\s+)?(?:clock|watch|light|fog|mist|smoke|sunlight|shadows?|flames?))/iu;
 /**
  * The head noun of a cast name — "chef" of "the pastry chef", "captain" of "the captain" — as a whole word of the
  * prompt: a planner that writes "the chef decorates a cake" means the pastry chef of the cast. Four letters or more,
@@ -744,10 +748,16 @@ export function propsFor(
     }
     if (out.length) return out;
   }
-  const p = String(imagePrompt ?? "").toLowerCase();
+  // The prop's name (article dropped) as a WHOLE phrase of the prompt, a plural allowed: "the pen" must never fire on
+  // "an open window", nor "the ring" on "morning light" (the review of 27 September).
+  const text = String(imagePrompt ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "");
+  const named = (m: PropMember): boolean => {
+    const k = castKey(m.name);
+    return !!k && new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(k)}(?:e?s)?(?![\\p{L}\\p{N}])`, "iu").test(text);
+  };
   const heads = props.map((m) => headNoun(m.name));
   const unique = (i: number) => heads[i] !== "" && heads.filter((h) => h === heads[i]).length === 1;
-  return props.filter((m, i) => p.includes(castKey(m.name)) || (unique(i) && headNounIn(m.name, String(imagePrompt ?? ""))));
+  return props.filter((m, i) => named(m) || (unique(i) && headNounIn(m.name, String(imagePrompt ?? ""))));
 }
 
 /**
