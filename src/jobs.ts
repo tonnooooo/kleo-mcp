@@ -5,6 +5,7 @@ import { findTemplate, affordableGuess, creditsFor, creditsForProduct, aiUpscale
 import { footageBackendFor, footageConfig, kiePreflight, clipFloorFor } from "./footage";
 import { rid, nowIso, int, hmacHex, publicText } from "./util";
 import { isProbeFile } from "./probe.ts";
+import { REPORT_FILE } from "./report.ts";
 import { isFlagActive } from "./schema";
 import { backendFor } from "./backends";
 import { validateStoryboard, kleoStyleOf, pictureScenes, narrationOf, MAX_PICTURES, wordBudget, speedFor, trimShots, mergeThinScenes, KLEO_STYLES, FILM_LOOKS, type KleoStyle, type FilmLook } from "./keou-contract";
@@ -527,6 +528,7 @@ export async function resultLinks(env: Env, base: string, job: Job): Promise<Rec
   for (const f of await listFiles(env, job.id)) {
     if (f.name === "log.txt" || f.name === "gen.tgz") continue; // the worker log and the GPU phase's bundle: not for users
     if (f.name === "fidelity.json") continue; // read and summarised in words by kleo_get_result, not handed over as a file
+    if (f.name === REPORT_FILE) continue; // what the box measured on its own video (src/report.ts): the operator's, not the user's
     if (isSceneImage(f.name)) continue;
     if (isProbeFile(f.name)) continue; // an A/B probe's evidence (src/probe.ts): the operator's, not the user's
     const key = f.name.replace(/\.[a-z0-9]+$/i, "") + "_url";

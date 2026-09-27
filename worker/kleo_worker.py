@@ -1875,6 +1875,53 @@ def render(job, out_dir):
     return render_keou(job, out_dir)
 
 
+def local_report_module():
+    """kleo_report (next to this file) or None when it is not shipped. Never raises."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    try:
+        import kleo_report
+        return kleo_report
+    except Exception as e:
+        log("kleo_report could not be imported:", e)
+        return None
+
+
+def self_report(files, job, out_dir):
+    """The report Kleo writes about the video it has just made (kleo_report.py, 27 September 2026): the length against
+    the order, the pauses and what lies under them, the cuts, the frozen runs, the subtitles — measured on this box,
+    written to report.json beside the deliverables (never shown to the user: GET /internal/admin/report reads it) and
+    said in log.txt as one REPORT line and one PROBLEM line per finding. Every test film of 22-25 September found its
+    defect only when a person watched it; this reads every film the same way, automatically. Never raises: a report
+    that cannot run is a line in the log, never a failed film. Returns the path of report.json, or None."""
+    video = (files or {}).get("video.mp4")
+    if not video or not os.path.isfile(video):
+        return None
+    mod = local_report_module()
+    if mod is None:
+        return None
+    try:
+        params = job.get("params") if isinstance(job, dict) else None
+        if isinstance(params, str):
+            params = json.loads(params)
+        ordered, music, subs = mod.expectations(params)
+        t0 = time.time()
+        rep = mod.report(video, ordered, music, subs, files.get("subtitles.srt"))
+        rep["job_id"] = JOB
+        rep["seconds_to_measure"] = round(time.time() - t0, 1)
+        path = os.path.join(out_dir, "report.json")
+        with open(path, "w") as f:
+            json.dump(rep, f, indent=1)
+        log("REPORT", mod.summary(rep))
+        for p in rep["problems"]:
+            log("PROBLEM", p)
+        return path
+    except Exception as e:
+        log("report could not run:", e)
+        return None
+
+
 def upload_log(out_dir):
     p = os.path.join(out_dir or "", "log.txt")
     try:
@@ -1921,9 +1968,15 @@ def main():
             files = film_finish(pdir, out_dir, lay_track=True)
         else:
             files = render(job, out_dir)
+        report = self_report(files, job, out_dir)
         for name, path in files.items():
             progress("finishing", 97, message=f"uploading {name}")
             upload(path, name)
+        if report:
+            try:
+                upload(report, "report.json")    # after the deliverables, and never at their expense
+            except Exception as e:
+                log("report upload failed:", e)
         upload_log(out_dir)
         if dph:
             cost = round(float(dph) * (time.time() - started) / 3600, 4)

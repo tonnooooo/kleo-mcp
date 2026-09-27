@@ -715,3 +715,7 @@ class AiUpscaleReportTest(unittest.TestCase):
 # the OAuth token that pushes from the owner's PC has no `workflow` scope to add one.
 from test_keou_prepare import CaptionRepairTest  # noqa: E402,F401
 
+# The film end to end on fake 59.94 clips, and the report Kleo writes about every video (27 September 2026): same reason,
+# tests.yml lists its modules by name. The python job has ffmpeg; node is on the runner image; Chromium is a stub.
+from test_film_e2e import FilmEndToEnd, ReportTest  # noqa: E402,F401
+

@@ -14,10 +14,11 @@ import { generateJobImages, IMAGE_NAME_RE } from "./images";
 import { ephoneBalanceUsd } from "./ephone.ts";
 import { listLaunchCodes, upsertLaunchCode, normalizeCode, normalizeChannel, LAUNCH_CODE_MAX_USES } from "./launch.ts";
 import { growthReport } from "./growth.ts";
+import { REPORT_FILE, readReport, recentReports } from "./report.ts";
 import { footageBackendFor, footageConfig, setFootageConfig, kieModelFor, clipLengthsSpec, requestFootage, footageStatus, footageSpentTodayUsd, kieBalanceUsd, clipKey, footageRows, KIE_MODELS, SHOT_ID_RE, STILL_NAME_RE, type ShotRequest, requestMusic, musicStatus, musicOn, musicKey, MUSIC_ID, type MusicRequest } from "./footage";
 
-const ALLOWED_FILES = new Set([FILE_NAMES.video.name, FILE_NAMES.subtitles.name, FILE_NAMES.thumbnail.name, "thumbnail.svg", "log.txt", "gen.tgz"]);
-const TYPES: Record<string, string> = { mp4: "video/mp4", srt: "application/x-subrip", jpg: "image/jpeg", svg: "image/svg+xml", txt: "text/plain" };
+const ALLOWED_FILES = new Set([FILE_NAMES.video.name, FILE_NAMES.subtitles.name, FILE_NAMES.thumbnail.name, "thumbnail.svg", "log.txt", "gen.tgz", REPORT_FILE]);
+const TYPES: Record<string, string> = { mp4: "video/mp4", srt: "application/x-subrip", jpg: "image/jpeg", svg: "image/svg+xml", txt: "text/plain", json: "application/json" };
 
 /**
  * Worker-facing API. Only the GPU worker of a given job calls these, authenticated with the
@@ -284,6 +285,19 @@ export async function handleAdmin(request: Request, env: Env): Promise<Response>
   if (path === "/internal/admin/growth") {
     if (request.method !== "GET") return json({ error: "method" }, 405);
     return json(await growthReport(env, Number(new URL(request.url).searchParams.get("days") ?? 30)));
+  }
+  // WHAT KLEO SAYS ABOUT ITS OWN VIDEOS (27 September 2026, src/report.ts, worker/kleo_report.py): every render measures
+  // itself on the box that made it; the user never sees the report.
+  //   GET /internal/admin/report?job_id=gt_…   one video's whole report
+  //   GET /internal/admin/reports?limit=20    the latest videos: the order, the length, the problems found
+  if (path === "/internal/admin/report" || path === "/internal/admin/reports") {
+    if (request.method !== "GET") return json({ error: "method" }, 405);
+    const q = new URL(request.url).searchParams;
+    if (path === "/internal/admin/reports") return json({ reports: await recentReports(env, Number(q.get("limit") ?? 20)) });
+    const id = (q.get("job_id") ?? "").trim();
+    if (!id) return json({ error: "job_id: which video" }, 400);
+    const rep = await readReport(env, id);
+    return rep ? json(rep) : json({ error: "no report for this video (made before 27 September 2026, or the box could not measure it)" }, 404);
   }
   // LAUNCH CODES (27 September 2026, src/launch.ts): what each code has given, and new ones without a deploy.
   //   GET  /internal/admin/launch-codes

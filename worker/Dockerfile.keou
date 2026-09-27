@@ -109,6 +109,9 @@ COPY worker/kleo_video.py /opt/kleo/kleo_video.py
 # runs each once: a weight that does not fit its network fails the build here, never a film.
 COPY worker/kleo_sr.py /opt/kleo/kleo_sr.py
 RUN cd /opt/kleo && python3 -c "import kleo_sr; ok, why = kleo_sr.weights_ok(); assert ok, why; print(kleo_sr.selfcheck())"
+# The report Kleo writes about every video it makes (27 September 2026): report.json beside the deliverables, a REPORT
+# line in log.txt. Without this file the worker says "kleo_report could not be imported" and delivers as before.
+COPY worker/kleo_report.py /opt/kleo/kleo_report.py
 COPY worker/kleo_worker.py /opt/kleo/kleo_worker.py
 RUN node --version > runtime-node.txt && ffmpeg -version | head -1 > runtime-ffmpeg.txt \
     && pip freeze > runtime-python.txt && python3 -c "import contract; print('contract', contract.VERSION, sorted(contract.VOICES))"
