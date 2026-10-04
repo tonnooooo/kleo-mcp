@@ -177,6 +177,10 @@ export interface Env {
   // the same way notify.ts stays silent without RESEND_API_KEY. The secret is pasted by the owner into the
   // Cloudflare dashboard and never lives in a file.
   STRIPE_WEBHOOK_SECRET?: string;
+  // The signing secret of a SECOND Stripe account's webhook (4 October 2026: the shop moved from the New Zealand account
+  // to a new Italy account, which can offer PayPal). Both point at the same /stripe/webhook; an event is accepted when
+  // either secret verifies it, so the old account's refunds and disputes keep arriving after the move.
+  STRIPE_WEBHOOK_SECRET_2?: string;
   STRIPE_LINK_5?: string;
   STRIPE_LINK_15?: string;
   STRIPE_LINK_40?: string;

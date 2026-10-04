@@ -18,10 +18,14 @@ export const PACKS: { cents: number; credits: number; label: string; linkVar: "S
   { cents: 4000, credits: 100, label: "40 EUR", linkVar: "STRIPE_LINK_40" },
 ];
 
+/** Every webhook signing secret configured: the Italy account's and the New Zealand one's (src/env.ts). */
+export const webhookSecrets = (env: Env): string[] =>
+  [env.STRIPE_WEBHOOK_SECRET, env.STRIPE_WEBHOOK_SECRET_2].filter((s): s is string => !!s);
+
 /** True when the owner has actually configured selling: three links and a webhook secret. Everything degrades to
  *  "not open yet" until then, the same way notify.ts stays silent without RESEND_API_KEY. */
 export const sellingOpen = (env: Env): boolean =>
-  !!env.STRIPE_WEBHOOK_SECRET && PACKS.every((p) => {
+  webhookSecrets(env).length > 0 && PACKS.every((p) => {
     const link = env[p.linkVar] ?? "";
     // Must be a real Stripe Payment Link, and NOT a test one. This is the second half of the livemode check, at the
     // other end of the road: a test dashboard hands out /test_ links, and a page that offers them takes nobody's
@@ -94,7 +98,8 @@ export async function verifyStripeSignature(secret: string, header: string, rawB
  */
 export async function handleStripeWebhook(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") return json({ error: "method" }, 405);
-  if (!env.STRIPE_WEBHOOK_SECRET) {
+  const secrets = webhookSecrets(env);
+  if (!secrets.length) {
     // 503 e NON 404, e la differenza vale un incasso. Per Stripe qualunque risposta non-2xx e' un fallimento: con il
     // 503 ritenta per tre giorni e, se nel frattempo il segreto arriva, il pagamento si accredita da solo. Con il 200
     // smetterebbe di ritentare e quel pagamento sarebbe perso per sempre. Il 404 fallisce come il 503 ma non lascia
@@ -107,8 +112,10 @@ export async function handleStripeWebhook(request: Request, env: Env): Promise<R
   const raw = await request.text(); // raw, before any parsing: the signature covers these exact bytes
   if (raw.length > 256 * 1024) return json({ error: "too large" }, 413); // a Stripe event is a few KB; the rest is someone making the HMAC work for nothing
   const sig = request.headers.get("stripe-signature") ?? "";
-  if (!(await verifyStripeSignature(env.STRIPE_WEBHOOK_SECRET, sig, raw, Date.now())))
-    return json({ error: "bad signature" }, 400);
+  // Two accounts post here (src/env.ts STRIPE_WEBHOOK_SECRET_2): the event is genuine when either secret signed it.
+  let signed = false;
+  for (const secret of secrets) if (await verifyStripeSignature(secret, sig, raw, Date.now())) { signed = true; break; }
+  if (!signed) return json({ error: "bad signature" }, 400);
 
   let event: { id?: string; type?: string; livemode?: boolean; data?: { object?: Record<string, unknown> } };
   try { event = JSON.parse(raw); } catch { return json({ error: "not json" }, 400); }

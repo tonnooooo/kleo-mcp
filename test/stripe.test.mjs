@@ -194,3 +194,21 @@ test("27 September 2026: the shop never closes itself on a low Vast balance (the
   env.DB.db.exec("CREATE TABLE IF NOT EXISTS locks (name TEXT PRIMARY KEY, until TEXT NOT NULL)");
   assert.equal(await m.sellingAvailable(env), true, "configured means open");
 });
+
+/* ------------------------------------------------------------------ two Stripe accounts, one webhook */
+
+test("4 October 2026: the Italy account's events and the New Zealand account's events are both accepted", async () => {
+  // The shop moved to a new Italy account (PayPal is only offered to EEA accounts); the New Zealand account still holds
+  // the first real payment, whose refund or dispute must keep reaching Kleo. Each account signs with its own secret.
+  const SECOND = "whsec_italy_account";
+  const env = newEnv({ STRIPE_WEBHOOK_SECRET_2: SECOND }); user(env, "u_buyer");
+  const body = JSON.stringify(session());
+  const r = await m.handleStripeWebhook(new Request("https://k/stripe/webhook", { method: "POST", body, headers: signed(body, SECOND) }), env);
+  assert.equal(r.status, 200, "signed by the second account: accepted");
+  assert.equal(balance(env, "u_buyer"), 10);
+
+  const forged = await m.handleStripeWebhook(new Request("https://k/stripe/webhook", { method: "POST", body, headers: signed(body, "whsec_someone_else") }), env);
+  assert.equal(forged.status, 400, "a third secret is still a forgery");
+
+  assert.equal(m.sellingOpen(newEnv({ STRIPE_WEBHOOK_SECRET: undefined, STRIPE_WEBHOOK_SECRET_2: SECOND })), true, "either secret opens the shop");
+});
