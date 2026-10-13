@@ -538,6 +538,49 @@ test("apps: face swap (consent, two pictures), talking photo (speech first, exac
   } finally { p.restore(); }
 });
 
+test("the site behind the app: /mcp is the site's home, other pages keep their address, videos seek, unknown paths 404", async () => {
+  const env = newEnv();
+  const files = {
+    "/index.html": "<!doctype html><title>Kleo MCP</title>", "/pricing/index.html": "<!doctype html><title>Pricing</title>",
+    "/site.css": "body{}", "/404.html": "<!doctype html><title>Not found</title>", "/samples/a.mp4": "0123456789",
+  };
+  const p = fakeProvider((u) => {
+    const path = decodeURIComponent(u.replace("https://raw.githubusercontent.com/tonnooooo/kleo-site/main", ""));
+    return files[path] !== undefined ? new Response(files[path], { status: 200, headers: { "content-type": "text/plain", "content-security-policy": "sandbox" } }) : new Response("404", { status: 404 });
+  });
+  try {
+    const home = await call(env, "/mcp");
+    assert.equal(home.status, 200);
+    assert.match(home.text, /Kleo MCP/);
+    assert.match(home.res.headers.get("content-type"), /text\/html/);
+    assert.equal(home.res.headers.get("content-security-policy"), null, "the raw host's sandbox header is not passed on");
+    assert.equal((await call(env, "/pricing/")).text.includes("Pricing"), true);
+    const bare = await call(env, "/pricing");
+    assert.equal(bare.status, 301);
+    assert.match(bare.res.headers.get("location"), /\/pricing\/$/);
+    assert.match((await call(env, "/site.css")).res.headers.get("content-type"), /text\/css/);
+    const part = await call(env, "/samples/a.mp4", { headers: { range: "bytes=2-5" } });
+    assert.equal(part.status, 206);
+    assert.equal(part.text, "2345");
+    assert.equal(part.res.headers.get("content-range"), "bytes 2-5/10");
+    const missing = await call(env, "/nope.html");
+    assert.equal(missing.status, 404);
+    assert.match(missing.text, /Not found/);
+    // The app's own pages are not the site.
+    assert.match((await call(env, "/video")).text, /app/);
+    assert.match((await call(env, "/")).text, /app/);
+  } finally { p.restore(); }
+});
+
+test("one host: www and app. redirect to the canonical host once it is set", async () => {
+  const env = newEnv({ CANONICAL_HOST: "app.kleo.test" });
+  const r = await worker.fetch(new Request("https://www.app.kleo.test/video?x=1"), env, ctx);
+  assert.equal(r.status, 301);
+  assert.equal(r.headers.get("location"), "https://app.kleo.test/video?x=1");
+  const same = await worker.fetch(new Request("https://app.kleo.test/health"), env, ctx);
+  assert.equal(same.status, 200);
+});
+
 test("the app shell is served for any page path", async () => {
   const env = newEnv();
   const r = await call(env, "/c/c_whatever");

@@ -12,6 +12,8 @@ export interface StudioEnv {
   EPHONE_API_URL?: string;
   /** Public address of the MCP server (for the "use Kleo in Claude/ChatGPT" line). */
   PUBLIC_URL: string;
+  /** The one host of the app (kleooai.com); www. and app. hosts redirect to it. Empty: no redirect. */
+  CANONICAL_HOST?: string;
   /** Public address of Studio itself, used when no request is at hand (cron). */
   STUDIO_URL?: string;
   STRIPE_LINK_5?: string;

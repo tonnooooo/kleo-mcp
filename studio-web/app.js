@@ -165,7 +165,7 @@ async function api(path, opts = {}) {
   return data;
 }
 function handleError(e) {
-  if (e?.code === "signin") { S.me = null; renderAuth(); return; }
+  if (e?.code === "signin") { S.me = null; renderAuth("signin", true); return; }
   if (e?.code === "locked" || e?.code === "credits") { toast(e.message, true); setTimeout(() => openBuy(), 350); return; }
   toast(e?.message || "Something went wrong.", true);
 }
@@ -177,6 +177,7 @@ function setCredits(n) {
 
 /** Uploads one file (pictures are shrunk to 2048 px first). Answers { id, kind, duration, local }. */
 async function uploadFile(f) {
+  if (!S.me && !DEMO) { requireAccount(); throw new Error("Create a free account to upload."); }
   const isPic = f.type.startsWith("image/");
   if (f.type.startsWith("video/") && f.size > 60 * 1048576) throw new Error("That video is too big (60 MB max).");
   if (f.type.startsWith("audio/") && f.size > 15 * 1048576) throw new Error("That sound is too big (15 MB max).");
@@ -221,14 +222,17 @@ async function boot() {
       : err === "cancelled" ? "Sign-in was cancelled." : `${who(err)} sign-in didn't finish. Please try again.`;
     setTimeout(() => toast(msg, !linked), 300);
   }
-  try { S.me = await api("/api/me"); } catch (e) { if (e.code === "signin" || e.status === 401) return renderAuth(); return handleError(e); }
+  try { S.me = await api("/api/me"); } catch (e) { if (!(e.code === "signin" || e.status === 401)) return handleError(e); S.me = null; }
   await enter();
 }
+/** Visitors browse everything; the account is asked for at the first Generate (or Sign in). */
+function requireAccount(mode = "signup") { renderAuth(mode, true); return false; }
+const signedIn = () => !!S.me;
 async function enter() {
   S.settings = fix(S.settings);
-  if (!allowed(S.settings.model)) S.settings = fix({ ...S.settings, model: S.me.allowed[0] });
+  if (S.me && !allowed(S.settings.model)) S.settings = fix({ ...S.settings, model: S.me.allowed[0] });
   S.imageSettings = ifix(S.imageSettings);
-  if (!iallowed(S.imageSettings.model) && S.me.allowedImages?.length) S.imageSettings = ifix({ ...S.imageSettings, model: S.me.allowedImages[0] });
+  if (S.me && !iallowed(S.imageSettings.model) && S.me.allowedImages?.length) S.imageSettings = ifix({ ...S.imageSettings, model: S.me.allowedImages[0] });
   renderShell();
   loadChats();
   await route();
@@ -252,7 +256,7 @@ async function route() {
   if (p === "/audio") return show("audio", () => audioView());
   if (app) return show("apps", () => appView(app[1]));
   if (p === "/apps") return show("apps", () => appsView());
-  if (p === "/library" || p === "/gallery") return show("library", () => libraryView());
+  if (p === "/library") return show("library", () => libraryView());
   return show("chat", () => newChat());
 }
 function show(key, render) {
@@ -277,7 +281,7 @@ function authFrame(title, sub, ...content) {
     h("img", { class: "logo", src: "/kleo-mark.svg", alt: "Kleo" }), h("h1", {}, title), h("p", { class: "sub" }, sub), ...content)));
 }
 function busyButton(btn) { const old = btn.textContent; btn.disabled = true; fill(btn, spinner(18)); return () => { btn.disabled = false; btn.textContent = old; }; }
-function renderAuth(mode = "signup") {
+function renderAuth(mode = "signup", fromApp = false) {
   let showKey = false;
   const email = h("input", { class: "input", type: "email", placeholder: "E-mail", autocomplete: "email", inputmode: "email", autocapitalize: "off" });
   const pass = h("input", { class: "input", type: "password", placeholder: mode === "signup" ? "Password (8+ characters)" : "Password", autocomplete: mode === "signup" ? "new-password" : "current-password" });
@@ -292,6 +296,7 @@ function renderAuth(mode = "signup") {
       if (showKey) await api("/api/auth/key", { method: "POST", body: { key: key.value } });
       else await api(mode === "signup" ? "/api/auth/signup" : "/api/auth/signin", { method: "POST", body: { email: email.value, password: pass.value } });
       S.me = await api("/api/me");
+      S.feeds = {};
       await enter();
       if (mode === "signup" && !showKey) toast(`Welcome! You have ${S.me.credits} free credits.`);
     } catch (e) { err.textContent = e.message; restore(); }
@@ -311,6 +316,7 @@ function renderAuth(mode = "signup") {
       mode === "signup" ? ["Already have an account? ", h("button", { type: "button", onclick: () => renderAuth("signin") }, "Sign in")]
         : ["New here? ", h("button", { type: "button", onclick: () => renderAuth("signup") }, "Create an account")]),
     h("div", { class: "auth-switch small" }, toggleKey, mode === "signin" ? [" · ", h("button", { type: "button", onclick: () => renderForgot(email.value) }, "Forgot password?")] : null),
+    h("div", { class: "auth-switch small" }, h("button", { type: "button", onclick: () => enter() }, fromApp ? "← Keep looking around" : "Look around first")),
     h("div", { class: "auth-foot" }, "By continuing you agree to the ", h("a", { href: "https://kleooai.com/terms.html", target: "_blank" }, "Terms"), " and ",
       h("a", { href: "https://kleooai.com/privacy.html", target: "_blank" }, "Privacy Policy"), "."));
   setTimeout(() => (IS_TOUCH ? null : email.focus()), 50);
@@ -361,9 +367,11 @@ function renderShell() {
     h("div", { class: "brand", onclick: () => go("/") }, h("img", { src: "/kleo-mark.svg", alt: "" }), "Kleo"),
     h("nav", { class: "nav-tabs", "aria-label": "Main" }, PAGES.map((p) => h("button", { class: "nav-tab", "data-page": p.key, onclick: () => go(p.path) },
       icon(p.ic, 17), p.label, p.isNew ? h("span", { class: "new" }, "NEW") : null))),
-    h("div", { class: "nav-right" },
+    h("div", { class: "nav-right" }, S.me ? [
       h("button", { class: "credits-pill", onclick: () => openBuy(), "aria-label": "Credits" }, bolt(15), h("span", { "data-credits": "" }, S.me.credits)),
-      h("button", { class: "avatar avatar-btn", "aria-label": "Account", onclick: openAccount }, (S.me.email || "K")[0].toUpperCase())));
+      h("button", { class: "avatar avatar-btn", "aria-label": "Account", onclick: openAccount }, (S.me.email || "K")[0].toUpperCase())] : [
+      h("button", { class: "btn btn-quiet btn-sm", onclick: () => requireAccount("signin") }, "Sign in"),
+      h("button", { class: "btn btn-cta btn-sm", onclick: () => requireAccount("signup") }, "Start free")]));
   const tabs = h("nav", { class: "tabbar", "aria-label": "Main" }, PAGES.filter((p) => p.key !== "audio").map((p) => h("button", { "data-page": p.key, onclick: () => go(p.path) }, icon(p.ic, 23), p.label)));
   fill($("#app"), h("div", { class: "frame" }, nav, h("div", { class: "views" }, h("section", { class: "view", id: "view" })), tabs));
 }
@@ -387,6 +395,7 @@ function chatShell() {
 function openChatSide() { $("#chat-side")?.classList.add("open"); const s = h("div", { class: "side-scrim", onclick: closeChatSide }); viewEl().append(s); S.sideScrim = s; }
 function closeChatSide() { $("#chat-side")?.classList.remove("open"); S.sideScrim?.remove(); S.sideScrim = null; }
 async function loadChats() {
+  if (!S.me) { S.chats = []; renderChats(); return; }
   try { S.chats = (await api("/api/chats")).chats; } catch { S.chats = []; }
   renderChats();
 }
@@ -782,6 +791,7 @@ function drawAttachments() {
     h("button", { class: "x", "aria-label": "Remove", onclick: () => { S.attachments = S.attachments.filter((x) => x !== a); drawAttachments(); drawChips(); updateSend(); } }, icon("x", 12, 3)))));
 }
 async function submit() {
+  if (!signedIn()) return requireAccount();
   const t = $("#prompt");
   const text = t.value.trim();
   const img = S.mode === "image";
@@ -842,7 +852,7 @@ function generatorView(kind) {
   const setI = (ns) => { S.imageSettings = ifix(ns); store.set("imageSettings", S.imageSettings); draw(); };
   let exact = null;
   const askPrice = debounce(async () => {
-    if (!isVid || !page.refs.some((r) => r.kind === "video") || page.refs.some((r) => !r.id)) { exact = null; return; }
+    if (!S.me || !isVid || !page.refs.some((r) => r.kind === "video") || page.refs.some((r) => !r.id)) { exact = null; return; }
     try { exact = (await api("/api/price", { method: "POST", body: { imageIds: page.refs.map((r) => r.id), settings: vs() } })).credits; } catch { exact = null; }
     refreshCta();
   }, 300);
@@ -916,9 +926,10 @@ function generatorView(kind) {
     const c = cost();
     fill(ctaBox, h("button", { class: "btn btn-cta btn-xl", disabled: !ok || page.sending, onclick: generate },
       page.sending ? spinner(18) : [lockd ? icon("lock", 17) : icon("sparkle", 18, 2.2), "Generate", h("span", { class: "cost" }, bolt(15), c ?? "…")]),
-      h("div", { class: "cta-note" }, lockd ? "Unlocks with any credit pack" : `You have ${S.me.credits} credits`));
+      h("div", { class: "cta-note" }, !S.me ? "Free account · 5 credits to start" : lockd ? "Unlocks with any credit pack" : `You have ${S.me.credits} credits`));
   }
   async function generate() {
+    if (!signedIn()) return requireAccount();
     const s = isVid ? vs() : is();
     if (isVid ? !allowed(s.model) : !iallowed(s.model)) return openLocked(isVid ? model(s.model) : imodel(s.model), !isVid);
     page.sending = true; refreshCta();
@@ -945,6 +956,7 @@ function generatorView(kind) {
   function draw() { drawModel(); drawRefs(); drawSettings(); drawPresets(); refreshCta(); askPrice(); }
   const enhance = h("button", { class: "mini wand", onclick: async (e) => {
     if (!page.prompt.trim()) return toast("Write an idea first — Kleo will make it a great prompt.");
+    if (!signedIn()) return requireAccount();
     const b = e.currentTarget; b.disabled = true; fill(b, spinner(13), "Improving…");
     try { const r = await api("/api/enhance", { method: "POST", body: { kind, prompt: page.prompt } }); page.prompt = r.prompt; ta.value = r.prompt; refreshCta(); }
     catch (er) { handleError(er); } finally { b.disabled = false; fill(b, icon("wand", 14), "Enhance"); }
@@ -962,6 +974,7 @@ function generatorView(kind) {
   loadFeed(kind).then(drawFeed);
 }
 async function loadFeed(kind, filter) {
+  if (!S.me) { S.feeds[filter ? `tool:${filter}` : kind] = []; return; }
   try {
     const q = kind === "audio" ? "kind=tool" : kind === "library" ? "" : `kind=${kind}`;
     const { generations } = await api(`/api/generations?limit=60${q ? "&" + q : ""}${filter ? "&model=" + filter : ""}`);
@@ -1080,6 +1093,7 @@ function toolBody(key, compact) {
   let quote = null;
   const visible = (f) => !f.when || f.when.is.includes(st.inputs[f.when.field] ?? t.fields.find((x) => x.key === f.when.field)?.default);
   const priceNow = debounce(async () => {
+    if (!S.me) { quote = { credits: t.from, estimate: true }; drawCta(); return; }
     try { quote = await api("/api/tools/price", { method: "POST", body: { tool: key, inputs: st.inputs } }); } catch { quote = null; }
     drawCta();
   }, 250);
@@ -1128,12 +1142,13 @@ function toolBody(key, compact) {
     const missing = quote?.missing;
     const busy = Object.values(st.files).some((x) => !x.id);
     const lockd = !tallowed(key);
-    const ready = quote && quote.credits && !busy && (!t.consent || st.consent);
+    const ready = !S.me || (quote && quote.credits && !busy && (!t.consent || st.consent));
     fill(ctaBox, h("button", { class: "btn btn-cta btn-xl", disabled: !ready || st.sending, onclick: run },
       st.sending ? spinner(18) : [lockd ? icon("lock", 17) : icon("sparkle", 18, 2.2), t.output === "audio" ? "Create" : "Generate", h("span", { class: "cost" }, bolt(15), quote?.credits ? `${quote.estimate ? "~" : ""}${quote.credits}` : "…")]),
-      h("div", { class: "cta-note" }, lockd ? "Unlocks with any credit pack" : missing || (t.consent && !st.consent ? "Tick the box above to continue" : `You have ${S.me.credits} credits`)));
+      h("div", { class: "cta-note" }, !S.me ? "Free account · 5 credits to start" : lockd ? "Unlocks with any credit pack" : missing || (t.consent && !st.consent ? "Tick the box above to continue" : `You have ${S.me.credits} credits`)));
   }
   async function run() {
+    if (!signedIn()) return requireAccount();
     if (!tallowed(key)) return openBuy(`${t.name} unlocks with your first credit pack.`);
     st.sending = true; drawCta();
     try {
@@ -1182,6 +1197,7 @@ function libraryView() {
     fill(body, list.length ? h("div", { class: "feed" }, list.map((g) => resultCard(g)))
       : h("div", { class: "empty-feed" }, h("b", {}, "Nothing here yet"), "Everything you generate lands here.", h("div", { style: { marginTop: "16px" } }, h("button", { class: "btn btn-cta", onclick: () => go("/video") }, icon("sparkle", 18), "Make something"))));
   };
+  if (!S.me) { fill(body, h("div", { class: "empty-feed" }, h("b", {}, "Your creations live here"), "Create a free account to start — 5 credits on us.", h("div", { style: { marginTop: "16px" } }, h("button", { class: "btn btn-cta", onclick: () => requireAccount() }, icon("sparkle", 18), "Start free")))); return; }
   if (S.feeds.library) drawIt();
   loadFeed("library").then(drawIt);
 }
@@ -1256,8 +1272,9 @@ function packRows(note) {
     h("p", { class: "sheet-sub", style: { paddingTop: "10px" } }, "Secure checkout by Stripe: card, Apple Pay, Google Pay, PayPal. Your first pack unlocks every model and app.")];
 }
 function bigCredits(sub) { return h("div", { class: "big-credits" }, h("b", {}, bolt(34), h("span", { "data-credits": "" }, S.me.credits)), h("span", {}, sub)); }
-function openBuy(note) { sheet("Get credits", null, bigCredits("credits left"), packRows(note)); }
+function openBuy(note) { if (!S.me) return requireAccount(); sheet("Get credits", null, bigCredits("credits left"), packRows(note)); }
 function openAccount() {
+  if (!S.me) return requireAccount("signin");
   const hasPass = S.me.methods?.includes("password");
   let revealed = false;
   const keyBox = h("div", { class: "keybox" }, "••••••••••••••••••••••••");
@@ -1297,8 +1314,8 @@ function addPasswordForm() {
 async function signOut() {
   closeLayer();
   try { await api("/api/auth/signout", { method: "POST" }); } catch { /* the cookie goes anyway */ }
-  S.me = null; S.chat = null; S.messages = []; watching.clear();
-  history.replaceState(null, "", "/"); renderAuth("signin");
+  S.me = null; S.chat = null; S.messages = []; S.feeds = {}; watching.clear();
+  history.replaceState(null, "", "/"); enter(); toast("Signed out");
 }
 function applyTheme() {
   const t = store.get("theme", "system");

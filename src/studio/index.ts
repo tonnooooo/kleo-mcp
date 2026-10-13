@@ -26,6 +26,7 @@ import { StudioError, createGeneration, refreshGeneration, publicGeneration, mar
 import { publicPresets } from "./presets.ts";
 import { planTool, publicTools, toolByKey, toolCredits, ToolRefusal, type Media } from "./tools.ts";
 import { mediaInfo } from "./media.ts";
+import { APP_PATH, serveSite } from "./site.ts";
 import { runAgent, chatTitle, enhancePrompt, type Proposal } from "./agent.ts";
 import { signUp, signIn, signInWithKey, addPassword, me, signedIn, googleEnabled, microsoftEnabled, enabledSocial, socialEnabled, socialStart, socialCallback, forgotPassword, resetPassword, resetAvailable, type SocialKey } from "./auth.ts";
 import { SESSION_COOKIE, clearSessionCookie, readCookie, readSession, signPath, checkSignedPath } from "./session.ts";
@@ -390,6 +391,15 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
 export default {
   async fetch(request: Request, env: StudioEnv, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    // One address for the app: www and the old app.kleooai.com send people to the canonical host.
+    const canonical = (env.CANONICAL_HOST ?? "").trim();
+    if (canonical && url.hostname !== canonical && (url.hostname === `www.${canonical}` || url.hostname.startsWith("app."))) {
+      return Response.redirect(`https://${canonical}${url.pathname}${url.search}`, 301);
+    }
+    // Everything that is not the app is the Kleo site (kleooai.com/mcp, /pricing/, /guides/…).
+    if (!APP_PATH.test(url.pathname)) {
+      try { return await serveSite(request, url); } catch { return new Response("The site is not reachable right now.", { status: 502 }); }
+    }
     try {
       if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/media/") || url.pathname.startsWith("/auth/")) await ensureStudioSchema(env);
       if (url.pathname.startsWith("/api/")) return await api(env, request, url, ctx);
