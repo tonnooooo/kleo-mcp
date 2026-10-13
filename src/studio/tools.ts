@@ -1,0 +1,310 @@
+/**
+ * KLEO STUDIO — APPS. The one-purpose tools of the Higgsfield kind, each a short form (a picture here, a clip there, a
+ * line of text) in front of one or two provider calls:
+ *
+ *   face-swap        two pictures              → Nano Banana Pro edit          (picture)
+ *   video-face-swap  a clip + a face           → HappyHorse video edit         (video)
+ *   talking-photo    a portrait + words/voice  → speech, then Kling avatar     (video)
+ *   lipsync          a clip + words/voice      → speech, then Kling lip sync   (video)
+ *   motion-control   a character + a dance     → Kling 3.0 motion control      (video)
+ *   outfit-swap      a person + a garment      → FLUX virtual try-on           (picture)
+ *   video-edit       a clip + an instruction   → FLUX video edit               (video)
+ *   video-upscale    a clip                    → FLUX video upscale            (video)
+ *   voice            words                     → gpt-4o-mini-tts               (sound)
+ *   music            a description             → Suno                          (2 songs)
+ *   sfx              a description             → Suno sounds                   (sound)
+ *
+ * planTool() is pure: from the form and what the uploads are (kind, seconds, size) it answers the provider calls and
+ * their price, or a refusal a person can act on. The Worker runs the plan (generate.ts runTool).
+ *
+ * Prices (ePhone price list, 13 October 2026; CNY at 7 per dollar; Kling 1 credit = ¥1 × 0.8):
+ *   Nano Banana Pro ~$0.073 a picture · HappyHorse edit ¥0.9/s 720P × 0.8 on input + output seconds
+ *   Kling avatar 0.4 (std) / 0.8 (pro) credit per second · Kling lip sync 0.5 credit per 5 s
+ *   Kling motion control 0.9 (720p) / 1.2 (1080p) credit per second · FLUX try-on $0.0375 · FLUX video edit $0.03/s
+ *   FLUX upscale $0.07 per output megapixel-second (precise) · speech ≈ $0.00025/s · Suno $0.08 · Suno sounds $0.069
+ *   (FLUX and the speech model × 0.53 on the official_cheap channel, Suno × 0.8)
+ *
+ * FACES. The face tools ask the person to confirm they have the right to use the face, and refuse nothing by
+ * themselves beyond that: the providers moderate public figures, minors and sexual content, and every use is in the
+ * audit table with the account. Kleo never removes a provider's own refusal.
+ */
+import { CREDIT_USD, DEFAULT_MARGIN } from "./models.ts";
+
+export type ToolKey = "face-swap" | "video-face-swap" | "talking-photo" | "lipsync" | "motion-control" | "outfit-swap" | "video-edit" | "video-upscale" | "voice" | "music" | "sfx";
+export type FieldKind = "image" | "video" | "audio" | "text" | "select" | "voice";
+export interface ToolField {
+  key: string; kind: FieldKind; label: string; hint?: string; required?: boolean;
+  options?: { value: string; label: string }[]; default?: string; maxLength?: number; placeholder?: string;
+  /** Show the field only when another field has one of these values. */
+  when?: { field: string; is: string[] };
+}
+export interface ToolDef {
+  key: ToolKey; name: string; blurb: string; group: "face" | "video" | "image" | "audio";
+  icon: string; tint: string; output: "video" | "image" | "audio"; consent?: boolean; badge?: string;
+  fields: ToolField[];
+}
+
+export const VOICES = [
+  { value: "nova", label: "Nova · bright, friendly" }, { value: "shimmer", label: "Shimmer · soft, warm" },
+  { value: "coral", label: "Coral · lively" }, { value: "sage", label: "Sage · calm" },
+  { value: "alloy", label: "Alloy · neutral" }, { value: "ash", label: "Ash · clear, male" },
+  { value: "onyx", label: "Onyx · deep, male" }, { value: "echo", label: "Echo · smooth, male" },
+  { value: "ballad", label: "Ballad · expressive" }, { value: "verse", label: "Verse · storyteller" },
+  { value: "fable", label: "Fable · British" },
+];
+const TONES = [
+  { value: "natural", label: "Natural" }, { value: "excited", label: "Excited" }, { value: "calm", label: "Calm" },
+  { value: "narrator", label: "Narrator" }, { value: "whisper", label: "Whisper" }, { value: "sales", label: "Salesy" },
+];
+const TONE_TEXT: Record<string, string> = {
+  natural: "Speak naturally and clearly, like a real person talking to a friend.",
+  excited: "Speak with high energy and excitement, upbeat and fast.",
+  calm: "Speak slowly and calmly, warm and reassuring.",
+  narrator: "Speak like a documentary narrator: rich, measured, cinematic.",
+  whisper: "Speak in a soft, intimate whisper.",
+  sales: "Speak like an enthusiastic product presenter on social media, confident and punchy.",
+};
+const SPEECH: ToolField[] = [
+  { key: "source", kind: "select", label: "Voice from", options: [{ value: "script", label: "Type the words" }, { value: "audio", label: "Upload a voice" }], default: "script" },
+  { key: "script", kind: "text", label: "What should they say?", maxLength: 1000, placeholder: "Hi! I'm so excited to show you…", when: { field: "source", is: ["script"] } },
+  { key: "voice", kind: "voice", label: "Voice", default: "nova", when: { field: "source", is: ["script"] } },
+  { key: "tone", kind: "select", label: "Tone", options: TONES, default: "natural", when: { field: "source", is: ["script"] } },
+  { key: "audio", kind: "audio", label: "Voice clip", hint: "MP3 or WAV, 2–60 seconds", when: { field: "source", is: ["audio"] } },
+];
+
+export const TOOLS: ToolDef[] = [
+  { key: "face-swap", name: "Face Swap", blurb: "Put a face on any photo", group: "face", icon: "user", tint: "#ff375f", output: "image", consent: true, badge: "Popular",
+    fields: [
+      { key: "target", kind: "image", label: "Photo", hint: "The picture to change", required: true },
+      { key: "face", kind: "image", label: "Face", hint: "A clear, front-facing face", required: true },
+    ] },
+  { key: "video-face-swap", name: "Video Face Swap", blurb: "Swap a face in a video", group: "face", icon: "film", tint: "#bf5af2", output: "video", consent: true,
+    fields: [
+      { key: "video", kind: "video", label: "Video", hint: "MP4 or MOV, 3–15 seconds", required: true },
+      { key: "face", kind: "image", label: "Face", hint: "A clear, front-facing face", required: true },
+    ] },
+  { key: "talking-photo", name: "Talking Photo", blurb: "Make any portrait speak", group: "face", icon: "mic", tint: "#0a84ff", output: "video", consent: true, badge: "New",
+    fields: [
+      { key: "image", kind: "image", label: "Portrait", hint: "One face, looking at the camera", required: true },
+      ...SPEECH,
+      { key: "quality", kind: "select", label: "Quality", options: [{ value: "std", label: "Standard 720p" }, { value: "pro", label: "Pro 1080p" }], default: "std" },
+    ] },
+  { key: "lipsync", name: "Lipsync", blurb: "Make a video say new words", group: "face", icon: "lips", tint: "#ff9f0a", output: "video", consent: true,
+    fields: [
+      { key: "video", kind: "video", label: "Video", hint: "MP4 or MOV with one face, 2–60 seconds", required: true },
+      ...SPEECH,
+    ] },
+  { key: "motion-control", name: "Motion Control", blurb: "Copy any dance or move", group: "video", icon: "run", tint: "#30d158", output: "video",
+    fields: [
+      { key: "image", kind: "image", label: "Character", hint: "Full body works best", required: true },
+      { key: "video", kind: "video", label: "Moves", hint: "A clip of the motion, 3–30 seconds", required: true },
+      { key: "prompt", kind: "text", label: "Extra details (optional)", maxLength: 500, placeholder: "On a neon stage, cinematic light" },
+      { key: "quality", kind: "select", label: "Quality", options: [{ value: "720p", label: "720p" }, { value: "1080p", label: "1080p" }], default: "720p" },
+    ] },
+  { key: "outfit-swap", name: "Outfit Swap", blurb: "Try any clothes on anyone", group: "image", icon: "shirt", tint: "#64d2ff", output: "image",
+    fields: [
+      { key: "person", kind: "image", label: "Person", hint: "Full or half body", required: true },
+      { key: "garment", kind: "image", label: "Clothes", hint: "A photo of the outfit", required: true },
+    ] },
+  { key: "video-edit", name: "Edit Video", blurb: "Change anything in a clip", group: "video", icon: "wand", tint: "#5e5ce6", output: "video",
+    fields: [
+      { key: "video", kind: "video", label: "Video", hint: "MP4, up to 15 seconds", required: true },
+      { key: "prompt", kind: "text", label: "What should change?", required: true, maxLength: 1000, placeholder: "Make it snow · turn day into night · make the car red" },
+    ] },
+  { key: "video-upscale", name: "Upscale Video", blurb: "Sharper, up to 4K", group: "video", icon: "hd", tint: "#ffd60a", output: "video",
+    fields: [{ key: "video", kind: "video", label: "Video", hint: "MP4 up to 20 seconds and 1440p", required: true }] },
+  { key: "voice", name: "Voiceover", blurb: "Text to a natural voice", group: "audio", icon: "mic", tint: "#ff2d55", output: "audio",
+    fields: [
+      { key: "script", kind: "text", label: "Text to read", required: true, maxLength: 3000, placeholder: "Write the words to speak…" },
+      { key: "voice", kind: "voice", label: "Voice", default: "nova" },
+      { key: "tone", kind: "select", label: "Tone", options: TONES, default: "natural" },
+    ] },
+  { key: "music", name: "Music", blurb: "Songs and soundtracks", group: "audio", icon: "music", tint: "#af52de", output: "audio",
+    fields: [
+      { key: "prompt", kind: "text", label: "Describe the music", required: true, maxLength: 1000, placeholder: "Upbeat summer pop about road trips · dark cinematic trailer score" },
+      { key: "vocals", kind: "select", label: "Vocals", options: [{ value: "none", label: "Instrumental" }, { value: "female", label: "Female voice" }, { value: "male", label: "Male voice" }], default: "none" },
+    ] },
+  { key: "sfx", name: "Sound Effects", blurb: "Any sound from words", group: "audio", icon: "wave", tint: "#32ade6", output: "audio",
+    fields: [
+      { key: "prompt", kind: "text", label: "Describe the sound", required: true, maxLength: 300, placeholder: "Thunder rolling far away · a sword unsheathed · crowd cheering" },
+      { key: "loop", kind: "select", label: "Type", options: [{ value: "one-shot", label: "One shot" }, { value: "loop", label: "Loop" }], default: "one-shot" },
+    ] },
+];
+
+export const toolByKey = (key: string | null | undefined): ToolDef | null => TOOLS.find((t) => t.key === key) ?? null;
+
+/** What the plan knows about an attached file. */
+export interface Media { id: string; url: string; kind: "image" | "video" | "audio"; seconds: number | null; width: number | null; height: number | null; type: string }
+/** One provider call. `{{speech}}` in the input is replaced by the link to the spoken audio once it exists. */
+export interface PlannedTask { model: string; input: Record<string, unknown>; routing?: Record<string, string>; output: "image" | "video" | "audio" }
+export interface Plan { usd: number; speech?: { text: string; voice: string; tone: string }; tasks: PlannedTask[]; output: ToolDef["output"]; summary: string }
+export class ToolRefusal extends Error {}
+
+const CNY = 1 / 7;
+const CHEAP = { "X-Provider-Order": "official_cheap", "X-Provider-Only": "true" };
+const KLING_CREDIT_USD = 1 * 0.8 * CNY;
+/** Speech is ~$0.00025 a second on the cheap channel; one generous flat figure covers it. */
+const SPEECH_USD = 0.01;
+/** Characters of speech per second, to price a script before it is spoken (fast talkers ~17, slow ~12). */
+export const CHARS_PER_SECOND = 12;
+const r3 = (n: number) => Math.round(n * 1000) / 1000;
+
+export function toolCredits(usd: number, margin = DEFAULT_MARGIN): number {
+  return Math.max(1, Math.ceil((usd * margin) / CREDIT_USD - 1e-9));
+}
+
+/** Seconds a script takes to say, for the price shown before it is spoken. */
+export const scriptSeconds = (text: string): number => Math.max(2, Math.ceil(text.trim().length / CHARS_PER_SECOND));
+
+function nearestAspect(w: number | null, h: number | null): string {
+  if (!w || !h) return "1:1";
+  const r = w / h;
+  const all = [["1:1", 1], ["4:5", 0.8], ["3:4", 0.75], ["2:3", 0.667], ["9:16", 0.5625], ["4:3", 1.333], ["3:2", 1.5], ["16:9", 1.778], ["21:9", 2.333]] as const;
+  return all.reduce((best, a) => (Math.abs(Math.log(a[1] / r)) < Math.abs(Math.log(best[1] / r)) ? a : best))[0];
+}
+
+function need(m: Media | undefined, kind: Media["kind"], label: string): Media {
+  if (!m) throw new ToolRefusal(`Add the ${label.toLowerCase()}.`);
+  if (m.kind !== kind) throw new ToolRefusal(`The ${label.toLowerCase()} must be ${kind === "image" ? "a picture" : kind === "video" ? "a video" : "a sound file"}.`);
+  return m;
+}
+function seconds(m: Media, label: string, min: number, max: number): number {
+  const s = m.seconds;
+  if (!s) throw new ToolRefusal(`Kleo couldn't read the length of the ${label.toLowerCase()}. Use an MP4/MOV video or an MP3/WAV sound.`);
+  if (s < min) throw new ToolRefusal(`The ${label.toLowerCase()} is too short (${s.toFixed(1)} s, at least ${min} s).`);
+  if (s > max + 0.5) throw new ToolRefusal(`The ${label.toLowerCase()} is too long (${Math.round(s)} s, at most ${max} s).`);
+  return Math.min(s, max);
+}
+
+/** The voice of a talking-photo or lipsync: the person's clip, or words to speak. */
+function speechPart(inputs: Record<string, string>, media: Record<string, Media | undefined>): { seconds: number; speech?: Plan["speech"]; audioUrl: string } {
+  if ((inputs.source ?? "script") === "audio") {
+    const a = need(media.audio, "audio", "Voice clip");
+    return { seconds: seconds(a, "Voice clip", 2, 60), audioUrl: a.url };
+  }
+  const text = String(inputs.script ?? "").trim();
+  if (text.length < 3) throw new ToolRefusal("Type what they should say.");
+  if (text.length > 1000) throw new ToolRefusal("Keep the words under 1000 characters (about a minute).");
+  return { seconds: Math.min(60, scriptSeconds(text)), speech: { text, voice: inputs.voice || "nova", tone: inputs.tone || "natural" }, audioUrl: "{{speech}}" };
+}
+
+export function planTool(key: ToolKey, inputs: Record<string, string>, media: Record<string, Media | undefined>): Plan {
+  const t = toolByKey(key);
+  if (!t) throw new ToolRefusal("That app doesn't exist.");
+  switch (key) {
+    case "face-swap": {
+      const target = need(media.target, "image", "Photo"), face = need(media.face, "image", "Face");
+      return {
+        usd: 0.075, output: "image", summary: "Face swap",
+        tasks: [{ model: "gemini-3-pro-image", routing: CHEAP, output: "image", input: {
+          prompt: "Image 1 is the photo to keep. Image 2 shows a person's face. Replace the face of the person in image 1 with the face from image 2: the same identity, eyes, nose, mouth, jaw, face shape and skin tone as image 2. Keep image 1's pose, head angle, expression, hair, lighting, colors, clothes, body and background exactly as they are. Photorealistic and seamless, no visible edges.",
+          images: [target.url, face.url], aspect_ratio: nearestAspect(target.width, target.height), quality: "2K", output_format: "jpeg",
+        } }],
+      };
+    }
+    case "video-face-swap": {
+      const video = need(media.video, "video", "Video"), face = need(media.face, "image", "Face");
+      const s = seconds(video, "Video", 3, 15);
+      return {
+        usd: r3(2 * s * 0.9 * 0.8 * CNY), output: "video", summary: `Face swap · ${Math.round(s)} s`,
+        tasks: [{ model: "happyhorse-1.0-video-edit", output: "video", input: {
+          prompt: "Replace the face of the main person in the video with the face of the person in the reference image: same identity and facial features as the reference. Keep the motion, expressions, lip movement, head angles, lighting, clothes, background and sound of the video exactly as they are.",
+          video: video.url, images: [face.url], resolution: "720P", audio_setting: "origin", watermark: false,
+        } }],
+      };
+    }
+    case "talking-photo": {
+      const image = need(media.image, "image", "Portrait");
+      const sp = speechPart(inputs, media);
+      const pro = inputs.quality === "pro";
+      return {
+        usd: r3(sp.seconds * (pro ? 0.8 : 0.4) * KLING_CREDIT_USD + (sp.speech ? SPEECH_USD : 0)), output: "video", speech: sp.speech,
+        summary: `Talking photo · ~${Math.round(sp.seconds)} s`,
+        tasks: [{ model: "kling_avatar_image2video", output: "video", input: { image: image.url, sound_file: sp.audioUrl, mode: pro ? "pro" : "std", prompt: "Natural head movement and expressions while talking, steady camera." } }],
+      };
+    }
+    case "lipsync": {
+      const video = need(media.video, "video", "Video");
+      const vs = seconds(video, "Video", 2, 60);
+      const sp = speechPart(inputs, media);
+      return {
+        usd: r3(Math.max(vs, sp.seconds) / 5 * 0.5 * KLING_CREDIT_USD + (sp.speech ? SPEECH_USD : 0)), output: "video", speech: sp.speech,
+        summary: `Lipsync · ${Math.round(vs)} s`,
+        tasks: [{ model: "kling_advanced_lip_sync", output: "video", input: { video_url: video.url, sound_file: sp.audioUrl, original_audio_volume: 0, sound_volume: 1 } }],
+      };
+    }
+    case "motion-control": {
+      const image = need(media.image, "image", "Character"), video = need(media.video, "video", "Moves");
+      const s = seconds(video, "Moves", 3, 30);
+      const hd = inputs.quality === "1080p";
+      const contents: Record<string, unknown>[] = [{ type: "image", url: image.url }, { type: "video", url: video.url }];
+      if (String(inputs.prompt ?? "").trim()) contents.unshift({ type: "prompt", text: String(inputs.prompt).trim().slice(0, 500) });
+      return {
+        usd: r3(s * (hd ? 1.2 : 0.9) * KLING_CREDIT_USD), output: "video", summary: `Motion control · ${Math.round(s)} s`,
+        tasks: [{ model: "kling-3.0/motion-control", output: "video", input: { contents, settings: { character_orientation: "video", audio: "original", resolution: hd ? "1080p" : "720p" } } }],
+      };
+    }
+    case "outfit-swap": {
+      const person = need(media.person, "image", "Person"), garment = need(media.garment, "image", "Clothes");
+      return {
+        usd: 0.035, output: "image", summary: "Outfit swap",
+        tasks: [{ model: "flux-tools/vto-v1", routing: CHEAP, output: "image", input: { prompt: "The person of image 1, maintaining exactly their face, hair, body and pose, wearing the garments of image 2.", images: [person.url, garment.url], output_format: "jpeg" } }],
+      };
+    }
+    case "video-edit": {
+      const video = need(media.video, "video", "Video");
+      const s = seconds(video, "Video", 1, 15);
+      const prompt = String(inputs.prompt ?? "").trim();
+      if (prompt.length < 3) throw new ToolRefusal("Say what should change.");
+      return {
+        usd: r3(s * 0.03 * 0.53), output: "video", summary: `Video edit · ${Math.round(s)} s`,
+        tasks: [{ model: "flux-tools/video-edit-v1", routing: CHEAP, output: "video", input: { prompt: prompt.slice(0, 1000), video: video.url } }],
+      };
+    }
+    case "video-upscale": {
+      const video = need(media.video, "video", "Video");
+      const s = seconds(video, "Video", 1, 20);
+      const w = video.width ?? 1280, h = video.height ?? 720;
+      if (Math.max(w, h) > 2560 || Math.min(w, h) > 1440) throw new ToolRefusal("That video is already very sharp (over 1440p).");
+      const factor = Math.max(1.5, Math.min(3, Math.round((3840 / Math.max(w, h)) * 10) / 10));
+      const mp = Math.min(14, (w * h * factor * factor) / 1048576);
+      return {
+        usd: r3(mp * s * 0.07 * 0.53), output: "video", summary: `Upscale ×${factor} · ${Math.round(s)} s`,
+        tasks: [{ model: "flux-tools/video-upscale-v1", routing: CHEAP, output: "video", input: { input_video: video.url, upscale_factor: factor, creativity: 0 } }],
+      };
+    }
+    case "voice": {
+      const text = String(inputs.script ?? "").trim();
+      if (text.length < 2) throw new ToolRefusal("Write the words to speak.");
+      if (text.length > 3000) throw new ToolRefusal("Keep it under 3000 characters.");
+      return { usd: SPEECH_USD, output: "audio", speech: { text, voice: inputs.voice || "nova", tone: inputs.tone || "natural" }, tasks: [], summary: `Voiceover · ~${scriptSeconds(text)} s` };
+    }
+    case "music": {
+      const prompt = String(inputs.prompt ?? "").trim();
+      if (prompt.length < 3) throw new ToolRefusal("Describe the music.");
+      const vocals = inputs.vocals === "female" || inputs.vocals === "male" ? inputs.vocals : "none";
+      const input: Record<string, unknown> = { mv: "chirp-v6", custom: false, instrumental: vocals === "none", gpt_description_prompt: prompt.slice(0, 1000) };
+      if (vocals !== "none") input.vocal_gender = vocals === "female" ? "Female" : "Male";
+      return { usd: r3(0.08 * 0.8), output: "audio", summary: "Music · 2 songs", tasks: [{ model: "suno/music", output: "audio", input }] };
+    }
+    case "sfx": {
+      const prompt = String(inputs.prompt ?? "").trim();
+      if (prompt.length < 2) throw new ToolRefusal("Describe the sound.");
+      return { usd: r3(0.069 * 0.8), output: "audio", summary: "Sound effect", tasks: [{ model: "suno/sounds", output: "audio", input: { mv: "chirp-v6", sound: prompt.slice(0, 300), type: inputs.loop === "loop" ? "loop" : "one-shot" } }] };
+    }
+  }
+  throw new ToolRefusal("That app doesn't exist.");
+}
+
+/** The speech instruction for a tone. */
+export const toneText = (tone: string): string => TONE_TEXT[tone] ?? TONE_TEXT.natural;
+
+/** The catalog the page draws the Apps grid from (prices are credit estimates for a typical use). */
+export function publicTools(margin = DEFAULT_MARGIN): unknown[] {
+  const typical: Record<ToolKey, number> = {
+    "face-swap": 0.075, "video-face-swap": 2 * 8 * 0.9 * 0.8 * CNY, "talking-photo": 10 * 0.4 * KLING_CREDIT_USD + SPEECH_USD,
+    lipsync: 10 / 5 * 0.5 * KLING_CREDIT_USD, "motion-control": 8 * 0.9 * KLING_CREDIT_USD, "outfit-swap": 0.035,
+    "video-edit": 8 * 0.03 * 0.53, "video-upscale": 8 * 3.6 * 0.07 * 0.53, voice: SPEECH_USD, music: 0.064, sfx: 0.055,
+  };
+  return TOOLS.map((t) => ({ ...t, from: toolCredits(typical[t.key], margin) }));
+}

@@ -6,12 +6,16 @@ export interface StudioEnv {
   DB: D1Database;
   RENDERS: R2Bucket;
   ASSETS: Fetcher;
+  /** The MCP Worker (service binding): Kleo films are ordered there (src/studio-film.ts). */
+  MCP?: Fetcher;
   /** Same value as the MCP server's: it signs sessions, links and verifies a pasted Kleo key. */
   INTERNAL_SECRET: string;
   EPHONE_API_KEY?: string;
   EPHONE_API_URL?: string;
   /** Public address of the MCP server (for the "use Kleo in Claude/ChatGPT" line). */
   PUBLIC_URL: string;
+  /** The one host of the app (kleooai.com); www. and app. hosts redirect to it. Empty: no redirect. */
+  CANONICAL_HOST?: string;
   /** Public address of Studio itself, used when no request is at hand (cron). */
   STUDIO_URL?: string;
   STRIPE_LINK_5?: string;
@@ -23,6 +27,8 @@ export interface StudioEnv {
   MAX_NEW_USERS_PER_IP_DAY?: string;
   /** Models an account that never paid may use: comma separated keys or "*" (default "seedance-2.0-fast"). */
   STUDIO_FREE_MODELS?: string;
+  /** Apps an account that never paid may use (default face-swap,outfit-swap,voice,music,sfx; "*" = all). */
+  STUDIO_FREE_TOOLS?: string;
   /** Image models an account that never paid may use (default all but Nano Banana Pro). */
   STUDIO_FREE_IMAGE_MODELS?: string;
   /** Resend key and sender for the password-reset e-mail (src/email.ts); without the key, reset is by hand. */

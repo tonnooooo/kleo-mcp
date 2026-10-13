@@ -21,6 +21,10 @@ import { KieError } from "../kie.ts";
 import { debitCredits, refundCredits, getUser, hasPaid, audit } from "../db.ts";
 import { publicText, rid } from "../util.ts";
 import { clipCostUsd, clipCredits, freeModels, modelByKey, normalizeSettings, taskInput, DEFAULT_MARGIN, type ClipSettings } from "./models.ts";
+import { withPreset } from "./presets.ts";
+import { planTool, toolByKey, toolCredits, toneText, ToolRefusal, type Media, type Plan, type ToolKey } from "./tools.ts";
+import { mediaInfo } from "./media.ts";
+import { refreshFilm } from "./films.ts";
 import { freeImageModels, imageCostUsd, imageCredits, imageModelByKey, imageTaskInput, normalizeImageSettings, type ImageSettings } from "./image-models.ts";
 import {
   addUpload, getGeneration, insertGeneration, moveGeneration, markChecked, runningCount, studioSpentTodayUsd, uploadsOf,
@@ -52,6 +56,8 @@ const IMAGE_LINK_TTL_S = 6 * 3600;
 
 export interface CreateRequest {
   kind?: "video" | "image";
+  /** A camera or effect preset (presets.ts), added to a video prompt. */
+  preset?: string | null;
   prompt: string;
   settings: Partial<Record<keyof ClipSettings | keyof ImageSettings, unknown>>;
   imageIds: string[];
@@ -65,17 +71,22 @@ export function publicGeneration(g: GenerationRow): Record<string, unknown> {
   try { settings = JSON.parse(g.settings); } catch { /* keep {} */ }
   let images: string[] = [];
   try { images = JSON.parse(g.images ?? "[]"); } catch { /* keep [] */ }
-  const kind = g.kind === "image" ? "image" : "video";
+  const kind = g.kind === "image" || g.kind === "tool" || g.kind === "film" ? g.kind : "video";
+  let progress: unknown = null;
+  if (kind === "film") { try { progress = JSON.parse(g.usage ?? "null"); } catch { /* none yet */ } }
   const slots = parseSlots(g);
   return {
-    id: g.id, kind, model: g.model, modelName: (kind === "image" ? imageModelByKey(g.model)?.name : modelByKey(g.model)?.name) ?? g.model,
+    id: g.id, kind, model: g.model,
+    modelName: (kind === "image" ? imageModelByKey(g.model)?.name : kind === "tool" ? toolByKey(g.model)?.name : kind === "film" ? (g.model === "kleo-animatic" ? "Kleo Animatic" : "Kleo Film") : modelByKey(g.model)?.name) ?? g.model,
     settings, prompt: g.prompt, images, credits: g.credits,
     status: g.status === "submitting" || g.status === "saving" ? "running" : g.status,
     error: g.error, refunded: !!g.refunded, chatId: g.chat_id, messageId: g.message_id,
-    video: kind === "video" && g.status === "done" ? `/media/${g.id}.mp4` : null,
+    video: (kind === "video" || kind === "film") && g.status === "done" ? `/media/${g.id}.mp4` : null,
+    progress,
     // Every finished picture is also an upload, so it can be animated or used as a reference with one tap.
-    outputs: kind === "image" ? slots.filter((x) => x.status === "done" && x.upload).map((x) => ({ upload: x.upload, url: `/media/u/${x.upload}` })) : [],
-    count: kind === "image" ? (slots.length || Number((settings as { count?: number }).count ?? 1)) : 1,
+    outputs: kind !== "video" && kind !== "film" ? slots.filter((x) => x.status === "done" && x.upload).map((x) => ({ upload: x.upload, url: `/media/u/${x.upload}`, type: x.type ?? "image" })) : [],
+    count: kind === "image" ? (slots.length || Number((settings as { count?: number }).count ?? 1)) : kind === "tool" ? Math.max(1, slots.filter((x) => x.task !== null || x.status !== "done").length) : 1,
+    output: kind === "tool" ? (settings as { output?: string }).output ?? "video" : kind === "film" ? "video" : kind,
     createdAt: g.created_at, finishedAt: g.finished_at,
   };
 }
@@ -115,34 +126,43 @@ function refusal(e: unknown, noun: string): string {
 
 export async function createGeneration(env: StudioEnv, userId: string, req: CreateRequest, origin: string): Promise<GenerationRow> {
   if (req.kind === "image") return createImageGeneration(env, userId, req, origin);
-  const prompt = (req.prompt ?? "").trim();
-  const uploads = await uploadsOf(env, userId, req.imageIds ?? []);
-  if (!prompt && !uploads.length) throw new StudioError("Write what you want to see, or add a picture.");
+  const prompt = withPreset((req.prompt ?? "").trim(), req.preset);
+  const all = await uploadsOf(env, userId, req.imageIds ?? []);
+  const pictures = all.filter((u) => (u.kind ?? "image") === "image");
+  const videos = all.filter((u) => u.kind === "video");
+  const sounds = all.filter((u) => u.kind === "audio");
+  if (!prompt && !all.length) throw new StudioError("Write what you want to see, or add a picture.");
   if (prompt.length > 4000) throw new StudioError("That prompt is too long. Keep it under 4000 characters.");
-  const s = normalizeSettings(req.settings ?? {}, uploads.length);
+  const videoSeconds = videos.reduce((a, v) => a + (v.duration ?? 0), 0);
+  const s = normalizeSettings(req.settings ?? {}, pictures.length, { images: pictures.length, videos: videos.length, audios: sounds.length, videoSeconds });
   const model = modelByKey(s.model)!;
+  if (videos.some((v) => !v.duration || v.duration < 2)) throw new StudioError("Each video clip must be at least 2 seconds long (MP4 or MOV).");
+  if (videoSeconds > (model.maxRefVideoSeconds ?? 0) + 0.5) throw new StudioError(`Video clips can add up to ${model.maxRefVideoSeconds} seconds with ${model.name}. Yours are ${Math.round(videoSeconds)} s.`);
+  if (sounds.some((a) => !a.duration || a.duration < 2 || a.duration > 15.5)) throw new StudioError("Each sound clip must be 2–15 seconds long (MP3 or WAV).");
 
   const free = freeModels(env.STUDIO_FREE_MODELS);
-  const credits = clipCredits(s, marginOf(env));
-  const usd = clipCostUsd(s);
+  const credits = clipCredits(s, marginOf(env), videoSeconds);
+  const usd = clipCostUsd(s, videoSeconds);
   const id = await charge(env, userId, {
     freeOk: free.includes(s.model), credits, usd, noun: "video",
     lockedMessage: `${model.name} unlocks with your first credit pack. Free credits work with ${free.map((k) => modelByKey(k)!.name).join(", ")}.`,
   });
-  const imagePaths = uploads.map((u) => `/media/u/${u.id}`);
+  const imagePaths = all.map((u) => `/media/u/${u.id}`);
   try {
-    await insertGeneration(env, { id, userId, chatId: req.chatId ?? null, messageId: req.messageId ?? null, model: s.model, settings: s, prompt, images: imagePaths, credits, estUsd: usd });
+    await insertGeneration(env, { id, userId, chatId: req.chatId ?? null, messageId: req.messageId ?? null, model: s.model, settings: { ...s, preset: req.preset ?? null }, prompt, images: imagePaths, credits, estUsd: usd });
   } catch (e) {
     await refundCredits(asEnv(env), userId, credits, id, "studio.insert_failed");
     throw e;
   }
   await audit(asEnv(env), userId, id, "studio.create", { model: s.model, settings: s, credits, usd });
 
-  // The provider fetches the pictures through short signed links on this same host.
-  const links = await Promise.all(uploads.map(async (u) => `${origin}${await signPath(env.INTERNAL_SECRET, `/media/u/${u.id}`, IMAGE_LINK_TTL_S)}`));
+  // The provider fetches the pictures and clips through short signed links on this same host.
+  const link = async (u: { id: string }) => `${origin}${await signPath(env.INTERNAL_SECRET, `/media/u/${u.id}`, IMAGE_LINK_TTL_S)}`;
+  const links = await Promise.all(pictures.map(link));
+  const clipLinks = { videos: await Promise.all(videos.map(link)), audios: await Promise.all(sounds.map(link)) };
   try {
     const t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit",
-      { model: model.ephoneModel, input: taskInput(s, prompt || "Bring this picture to life with natural, cinematic motion.", links, await safetyId(env, userId)) },
+      { model: model.ephoneModel, input: taskInput(s, prompt || "Bring this picture to life with natural, cinematic motion.", links, await safetyId(env, userId), clipLinks) },
       { timeoutMs: 30_000, routing: model.routing });
     if (!t.id) throw new KieError("ephone.ai answered no task id", 502, true);
     await moveGeneration(env, id, ["submitting"], "running", { task_id: String(t.id) });
@@ -236,7 +256,8 @@ export async function refreshGeneration(env: StudioEnv, g: GenerationRow, minGap
     if (g.updated_at && (Date.now() - Date.parse(g.updated_at)) / 60_000 > 4) await moveGeneration(env, g.id, ["saving"], "running");
     return (await getGeneration(env, g.id))!;
   }
-  if (g.kind === "image") return refreshImages(env, g, ageMin);
+  if (g.kind === "film") return refreshFilm(env, g);
+  if (g.kind === "image" || g.kind === "tool") return refreshImages(env, g, ageMin);
   if (!g.task_id) return g;
   if (ageMin > GENERATION_TIMEOUT_MIN) {
     await failGeneration(env, g.id, "The video model took too long. Your credits are back.", { stage: "timeout", minutes: Math.round(ageMin) });
@@ -294,12 +315,6 @@ async function saveVideo(env: StudioEnv, g: GenerationRow, url: string): Promise
   return { key, size };
 }
 
-/** Result links of a finished picture task: https links, or data: URIs some image models answer with. */
-export function imageOutputs(t: EphoneTask): string[] {
-  const out = Array.isArray(t.outputs) ? t.outputs : [];
-  return out.filter((u): u is string => typeof u === "string" && (/^https?:\/\//.test(u) || /^data:image\//.test(u)));
-}
-
 /**
  * One pass over a set of pictures. The set is held in "saving" during the pass (compare-and-set), so two polls never
  * save the same picture twice; a pass that dies leaves it to the "saving" rescue in refreshGeneration.
@@ -307,25 +322,37 @@ export function imageOutputs(t: EphoneTask): string[] {
 async function refreshImages(env: StudioEnv, g: GenerationRow, ageMin: number): Promise<GenerationRow> {
   if (!(await moveGeneration(env, g.id, ["running"], "saving"))) return (await getGeneration(env, g.id))!;
   const slots = parseSlots(g);
-  const model = imageModelByKey(g.model);
+  const routing = g.kind === "tool" ? undefined : imageModelByKey(g.model)?.routing;
+  const timeout = g.kind === "tool" ? GENERATION_TIMEOUT_MIN : IMAGE_TIMEOUT_MIN;
+  const extra: Slot[] = [];
   for (let i = 0; i < slots.length; i++) {
     const slot = slots[i];
     if (slot.status !== "running" || !slot.task) continue;
-    if (ageMin > IMAGE_TIMEOUT_MIN) { slot.status = "failed"; slot.error = "timeout"; continue; }
+    if (ageMin > timeout) { slot.status = "failed"; slot.error = "timeout"; continue; }
     let t: EphoneTask;
-    try { t = await ephone<EphoneTask>(env, "GET", `/v1/task/${encodeURIComponent(slot.task)}`, undefined, { timeoutMs: 15_000, routing: model?.routing }); } catch { continue; }
+    try { t = await ephone<EphoneTask>(env, "GET", `/v1/task/${encodeURIComponent(slot.task)}`, undefined, { timeoutMs: 15_000, routing: slot.model ? toolRouting(slot.model) : routing }); } catch { continue; }
     const status = String(t.status ?? "").toLowerCase();
     if (status === "failed" || status === "failure" || status === "cancelled") { slot.status = "failed"; slot.error = publicText(ephoneFailure(t)).slice(0, 200); continue; }
     if (status !== "completed" && status !== "succeeded" && status !== "success") continue;
-    const url = imageOutputs(t)[0];
-    if (!url) { slot.status = "failed"; slot.error = "no picture"; continue; }
+    const want = slot.type ?? "image";
+    const urls = mediaOutputs(t).filter((u) => kindOfUrl(u) === want || kindOfUrl(u) === null);
+    if (!urls.length) { slot.status = "failed"; slot.error = "no result"; continue; }
     try {
-      const { key, type, size } = await saveImage(env, g, i, url);
-      const upload = rid("up", 12);
-      await addUpload(env, { id: upload, userId: g.user_id, key, contentType: type, size, width: null, height: null });
-      slot.status = "done"; slot.key = key; slot.upload = upload;
+      // Suno answers two songs (and their covers): every result of the wanted kind becomes its own picture/clip.
+      const saved: { key: string; upload: string; type: Slot["type"] }[] = [];
+      for (const [n, url] of urls.slice(0, want === "audio" ? 2 : 1).entries()) {
+        const out = await saveOutput(env, g, n === 0 ? `${i}` : `${i}-${n}`, url);
+        if (out.kind !== want) continue;
+        const upload = rid("up", 12);
+        await addUpload(env, { id: upload, userId: g.user_id, key: out.key, contentType: out.type, size: out.size, width: out.width, height: out.height, kind: out.kind, duration: out.duration });
+        saved.push({ key: out.key, upload, type: out.kind });
+      }
+      if (!saved.length) { slot.status = "failed"; slot.error = "no result"; continue; }
+      Object.assign(slot, { status: "done", key: saved[0].key, upload: saved[0].upload, type: saved[0].type });
+      for (const x of saved.slice(1)) extra.push({ task: null, status: "done", key: x.key, upload: x.upload, type: x.type });
     } catch { /* the next pass downloads again */ }
   }
+  slots.push(...extra);
   const json = JSON.stringify(slots);
   if (slots.some((x) => x.status === "running")) {
     await moveGeneration(env, g.id, ["saving"], "running", { slots: json });
@@ -335,11 +362,14 @@ async function refreshImages(env: StudioEnv, g: GenerationRow, ageMin: number): 
   if (!done.length) {
     await moveGeneration(env, g.id, ["saving"], "running", { slots: json });
     const why = slots.find((x) => x.error && x.error !== "timeout" && x.error !== "balance")?.error;
-    await failGeneration(env, g.id, why ? `The image model could not make this one: ${why}. Your credits are back.` : "The image model took too long. Your credits are back.", { stage: "images" });
+    const noun = g.kind === "tool" ? "model" : "image model";
+    await failGeneration(env, g.id, why ? `The ${noun} could not make this one: ${why}. Your credits are back.` : `The ${noun} took too long. Your credits are back.`, { stage: g.kind });
     return (await getGeneration(env, g.id))!;
   }
   // Some pictures failed: the share of credits they stood for goes back (rounded down).
-  const back = Math.floor((g.credits * (slots.length - done.length)) / slots.length);
+  // (Extra results of one task, like Suno's second song, are a bonus, not a share.)
+  const ordered = slots.filter((x) => x.task !== null || x.status !== "done" || !extra.includes(x));
+  const back = Math.floor((g.credits * ordered.filter((x) => x.status === "failed").length) / Math.max(1, ordered.length));
   if (await moveGeneration(env, g.id, ["saving"], "done", { slots: json, file_key: done[0].key ?? null, refunded: back > 0 ? 1 : 0 })) {
     if (back > 0) await refundCredits(asEnv(env), g.user_id, back, g.id, "studio.images_partial");
     await audit(asEnv(env), g.user_id, g.id, "studio.done", { kind: "image", pictures: done.length, of: slots.length, refunded: back });
@@ -347,23 +377,153 @@ async function refreshImages(env: StudioEnv, g: GenerationRow, ageMin: number): 
   return (await getGeneration(env, g.id))!;
 }
 
-async function saveImage(env: StudioEnv, g: GenerationRow, i: number, url: string): Promise<{ key: string; type: string; size: number }> {
+/** Result links of a finished task: https links and data: URIs, of any media. */
+export function mediaOutputs(t: EphoneTask): string[] {
+  const out = Array.isArray(t.outputs) ? t.outputs : [];
+  return out.filter((u): u is string => typeof u === "string" && (/^https?:\/\//.test(u) || /^data:(image|video|audio)\//.test(u)));
+}
+/** The kind a result link announces by its extension or data type, or null when it does not say. */
+export function kindOfUrl(u: string): "image" | "video" | "audio" | null {
+  const d = /^data:(image|video|audio)\//.exec(u);
+  if (d) return d[1] as "image" | "video" | "audio";
+  const ext = /\.([a-z0-9]{2,4})(?:[?#]|$)/i.exec(u)?.[1]?.toLowerCase();
+  if (!ext) return null;
+  if (["png", "jpg", "jpeg", "webp", "gif"].includes(ext)) return "image";
+  if (["mp4", "mov", "webm"].includes(ext)) return "video";
+  if (["mp3", "wav", "m4a", "aac", "ogg", "flac"].includes(ext)) return "audio";
+  return null;
+}
+const TOOL_ROUTED = new Set(["gemini-3-pro-image", "flux-tools/vto-v1", "flux-tools/video-edit-v1", "flux-tools/video-upscale-v1"]);
+const toolRouting = (model: string) => (TOOL_ROUTED.has(model) ? { "X-Provider-Order": "official_cheap", "X-Provider-Only": "true" } : undefined);
+
+/** Downloads one result into R2 and says what it is (by its bytes). */
+async function saveOutput(env: StudioEnv, g: GenerationRow, name: string, url: string) {
   let bytes: Uint8Array;
-  let type: string;
-  const data = /^data:(image\/[a-z+.-]+);base64,(.*)$/i.exec(url);
-  if (data) {
-    type = data[1];
-    bytes = Uint8Array.from(atob(data[2]), (c) => c.charCodeAt(0));
-  } else {
-    const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
-    if (!res.ok) throw new Error(`picture download answered ${res.status}`);
+  const data = /^data:[a-z]+\/[a-z0-9+.-]+;base64,(.*)$/i.exec(url);
+  if (data) bytes = Uint8Array.from(atob(data[1]), (c) => c.charCodeAt(0));
+  else {
+    const res = await fetch(url, { signal: AbortSignal.timeout(90_000) });
+    if (!res.ok) throw new Error(`result download answered ${res.status}`);
     bytes = new Uint8Array(await res.arrayBuffer());
-    type = (res.headers.get("content-type") ?? "").split(";")[0].trim();
   }
-  if (bytes.byteLength < 200) throw new Error("picture download was empty");
-  if (!/^image\//.test(type)) type = bytes[0] === 0x89 ? "image/png" : bytes[0] === 0x52 ? "image/webp" : "image/jpeg";
-  const ext = type === "image/png" ? "png" : type === "image/webp" ? "webp" : "jpg";
-  const key = `studio/${g.user_id}/${g.id}/${i}.${ext}`;
-  await env.RENDERS.put(key, bytes, { httpMetadata: { contentType: type } });
-  return { key, type, size: bytes.byteLength };
+  if (bytes.byteLength < 200) throw new Error("result download was empty");
+  const info = mediaInfo(bytes) ?? { kind: "image" as const, type: "image/jpeg", ext: "jpg", duration: null, width: null, height: null };
+  const key = `studio/${g.user_id}/${g.id}/${name}.${info.ext}`;
+  await env.RENDERS.put(key, bytes, { httpMetadata: { contentType: info.type } });
+  return { key, type: info.type, size: bytes.byteLength, kind: info.kind, duration: info.duration, width: info.width, height: info.height };
+}
+
+// ── Apps ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** Tools a never-paid account may use (STUDIO_FREE_TOOLS; default the cheap picture and sound ones). */
+export function freeTools(list: string | undefined): ToolKey[] {
+  const raw = (list ?? "face-swap,outfit-swap,voice,music,sfx").trim();
+  if (raw === "*") return ["face-swap", "video-face-swap", "talking-photo", "lipsync", "motion-control", "outfit-swap", "video-edit", "video-upscale", "voice", "music", "sfx"];
+  return raw.split(",").map((x) => x.trim()).filter((k): k is ToolKey => !!toolByKey(k));
+}
+
+/** Speech through the OpenAI-compatible endpoint (a WAV, so its length is exact). */
+export async function speak(env: StudioEnv, sp: NonNullable<Plan["speech"]>): Promise<Uint8Array> {
+  const key = (env.EPHONE_API_KEY ?? "").trim();
+  if (!key) throw new KieError("EPHONE_API_KEY is not set", 0, false);
+  const base = (env.EPHONE_API_URL ?? "").trim().replace(/\/+$/, "") || "https://api.ephone.ai";
+  const res = await fetch(`${base}/v1/audio/speech`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${key}`, "content-type": "application/json", "X-Provider-Order": "official_cheap,official", "X-Provider-Only": "true" },
+    body: JSON.stringify({ model: "gpt-4o-mini-tts", input: sp.text, voice: sp.voice, instructions: toneText(sp.tone), response_format: "wav" }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  if (!res.ok || bytes.byteLength < 100) {
+    const said = new TextDecoder().decode(bytes.slice(0, 300));
+    const money = res.status === 402 || /quota|余额|额度|balance/i.test(said);
+    throw new KieError(`ephone.ai POST /v1/audio/speech → ${res.status}: ${said}`, money ? 402 : res.status, res.status >= 500);
+  }
+  return bytes;
+}
+
+export interface ToolRequest { tool: string; inputs: Record<string, string>; consent?: boolean; chatId?: string | null }
+
+/** Runs one app: reads the attached files, speaks the words if any, prices, charges, orders. */
+export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, origin: string): Promise<GenerationRow> {
+  const tool = toolByKey(req.tool);
+  if (!tool) throw new StudioError("That app doesn't exist.", 404);
+  if (tool.consent && req.consent !== true) throw new StudioError("Please confirm you have the right to use this person's face.", 400, "consent");
+  const inputs: Record<string, string> = {};
+  for (const f of tool.fields) if (req.inputs?.[f.key] !== undefined) inputs[f.key] = String(req.inputs[f.key]).slice(0, f.maxLength ?? 200);
+  const fileFields = tool.fields.filter((f) => f.kind === "image" || f.kind === "video" || f.kind === "audio");
+  const rows = await uploadsOf(env, userId, fileFields.map((f) => inputs[f.key]).filter(Boolean));
+  const link = async (id: string) => `${origin}${await signPath(env.INTERNAL_SECRET, `/media/u/${id}`, IMAGE_LINK_TTL_S)}`;
+  const media: Record<string, Media | undefined> = {};
+  for (const f of fileFields) {
+    const u = rows.find((r) => r.id === inputs[f.key]);
+    if (u) media[f.key] = { id: u.id, url: await link(u.id), kind: u.kind ?? "image", seconds: u.duration ?? null, width: u.width, height: u.height, type: u.content_type ?? "" };
+  }
+  let plan: Plan;
+  try { plan = planTool(tool.key, inputs, media); } catch (e) { if (e instanceof ToolRefusal) throw new StudioError(e.message); throw e; }
+
+  // Words to speak become a sound clip first: its exact length prices the talking video, and for a voiceover it IS
+  // the result. Speech costs a fraction of a cent, so it is made before the charge.
+  let spoken: { id: string; key: string; size: number; seconds: number | null } | null = null;
+  if (plan.speech) {
+    let wav: Uint8Array;
+    try { wav = await speak(env, plan.speech); } catch (e) {
+      const money = e instanceof KieError && e.status === 402;
+      throw new StudioError(money ? "Our generation engine is being recharged. Please try again in a little while — nothing was charged." : "The voice model couldn't read that. Try different words — nothing was charged.", 502, "speech");
+    }
+    const info = mediaInfo(wav);
+    const id = rid("up", 12), key = `studio/${userId}/up/${id}.wav`;
+    await env.RENDERS.put(key, wav, { httpMetadata: { contentType: "audio/wav" } });
+    await addUpload(env, { id, userId, key, contentType: "audio/wav", size: wav.byteLength, width: null, height: null, kind: "audio", duration: info?.duration ?? null });
+    spoken = { id, key, size: wav.byteLength, seconds: info?.duration ?? null };
+    if (tool.key === "talking-photo" || tool.key === "lipsync") {
+      if (spoken.seconds && spoken.seconds > 60.5) throw new StudioError("That's more than a minute of speech. Shorten the words.");
+      media.audio = { id, url: await link(id), kind: "audio", seconds: spoken.seconds, width: null, height: null, type: "audio/wav" };
+      try { plan = planTool(tool.key, { ...inputs, source: "audio" }, media); } catch (e) { if (e instanceof ToolRefusal) throw new StudioError(e.message); throw e; }
+      plan.usd += 0.01;
+    }
+  }
+
+  const free = freeTools(env.STUDIO_FREE_TOOLS);
+  const credits = toolCredits(plan.usd, marginOf(env));
+  const id = await charge(env, userId, {
+    freeOk: free.includes(tool.key), credits, usd: plan.usd, noun: tool.name.toLowerCase(),
+    lockedMessage: `${tool.name} unlocks with your first credit pack.`,
+  });
+  const prompt = String(inputs.script ?? inputs.prompt ?? "").trim() || plan.summary;
+  const settings = { tool: tool.key, summary: plan.summary, output: plan.output, inputs: Object.fromEntries(Object.entries(inputs).filter(([k]) => !fileFields.some((f) => f.key === k))) };
+  try {
+    await insertGeneration(env, { id, userId, chatId: req.chatId ?? null, messageId: null, model: tool.key, settings, prompt, images: Object.values(media).filter(Boolean).map((m) => `/media/u/${m!.id}`), credits, estUsd: plan.usd, kind: "tool" });
+  } catch (e) {
+    await refundCredits(asEnv(env), userId, credits, id, "studio.insert_failed");
+    throw e;
+  }
+  await audit(asEnv(env), userId, id, "studio.create", { kind: "tool", tool: tool.key, credits, usd: plan.usd, consent: tool.consent ? true : undefined });
+
+  if (!plan.tasks.length && spoken) {
+    // A voiceover is finished the moment it is spoken.
+    const slots: Slot[] = [{ task: null, status: "done", key: spoken.key, upload: spoken.id, type: "audio" }];
+    await moveGeneration(env, id, ["submitting"], "done", { slots: JSON.stringify(slots), file_key: spoken.key });
+    return (await getGeneration(env, id))!;
+  }
+  const slots: Slot[] = [];
+  let firstError: unknown = null;
+  for (const task of plan.tasks) {
+    try {
+      const input = JSON.parse(JSON.stringify(task.input).split("{{speech}}").join(media.audio?.url ?? ""));
+      const t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: task.model, input }, { timeoutMs: 30_000, routing: task.routing });
+      if (!t.id) throw new KieError("ephone.ai answered no task id", 502, true);
+      slots.push({ task: String(t.id), status: "running", type: task.output, model: task.model });
+    } catch (e) {
+      firstError ??= e;
+      slots.push({ task: null, status: "failed", type: task.output, error: publicText(e instanceof Error ? e.message : String(e)).slice(0, 200) });
+    }
+  }
+  if (!slots.some((x) => x.status === "running")) {
+    await failGeneration(env, id, refusal(firstError, tool.output === "image" ? "image" : tool.output === "audio" ? "audio" : "video"), { provider: String(firstError instanceof Error ? firstError.message : firstError).slice(0, 300) });
+  } else {
+    await moveGeneration(env, id, ["submitting"], "running", { task_id: slots.find((x) => x.task)!.task, slots: JSON.stringify(slots) });
+    await audit(asEnv(env), userId, id, "studio.submitted", { tasks: slots.map((x) => x.task), tool: tool.key });
+  }
+  return (await getGeneration(env, id))!;
 }

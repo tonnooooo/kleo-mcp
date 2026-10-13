@@ -13,6 +13,7 @@ import type { StudioEnv } from "./env.ts";
 import { ephone } from "../ephone.ts";
 import { MODELS, clipCredits, normalizeSettings, type ClipSettings, type ModelKey } from "./models.ts";
 import { IMAGE_MODELS, imageCredits, normalizeImageSettings, type ImageModelKey, type ImageSettings } from "./image-models.ts";
+import { normalizeFilm, type FilmSettings } from "./films.ts";
 import type { MessageRow, UploadRow } from "./store.ts";
 
 export const DEFAULT_AGENT_MODEL = "claude-haiku-5-5";
@@ -21,10 +22,10 @@ const HISTORY = 24;
 
 export interface Proposal {
   /** A video clip or a set of pictures (old proposals have no kind: video). */
-  kind?: "video" | "image";
+  kind?: "video" | "image" | "film";
   title: string;
   prompt: string;
-  settings: ClipSettings | ImageSettings;
+  settings: ClipSettings | ImageSettings | FilmSettings;
   credits: number;
   imageIds: string[];
 }
@@ -89,6 +90,28 @@ const IMAGE_TOOL = {
   },
 };
 
+const FILM_TOOL = {
+  type: "function",
+  function: {
+    name: "propose_film",
+    description: "Show the user a ready-to-generate KLEO FILM card: a complete narrated film (15 s to 5 min) that Kleo writes, storyboards, voices, films with Seedance and finishes in 4K 60 fps, with music and subtitles if wanted. For stories, explainers, documentaries, ads with a narrator, YouTube videos and Shorts longer than one shot.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "2-5 word title, in the user's language." },
+        prompt: { type: "string", description: "The film's brief IN THE USER'S OWN WORDS (their subject, story, names, facts, what must appear), plus at most one line of what they confirmed in the chat. Never invent a subject." },
+        duration_s: { type: "integer", enum: [15, 30, 45, 60, 90, 120, 180, 300] },
+        format: { type: "string", enum: ["16:9", "9:16"], description: "9:16 for Shorts/TikTok/Reels, 16:9 for YouTube." },
+        style: { type: "string", enum: ["realistic", "animation"] },
+        product: { type: "string", enum: ["film", "animatic"], description: "film = every shot filmed (paid accounts); animatic = drawn frames with camera moves, cheaper, up to 60 s, every account." },
+        music: { type: "boolean" }, subtitles: { type: "boolean" },
+        language: { type: "string", enum: ["en", "it"], description: "Narration language (English or Italian) as the user chose it; English when they did not say." },
+      },
+      required: ["title", "prompt"],
+    },
+  },
+};
+
 export function systemPrompt(ctx: AgentContext): string {
   const ui = normalizeSettings(ctx.ui, ctx.uploads.length);
   const lines = MODELS.map((m) => {
@@ -104,13 +127,16 @@ export function systemPrompt(ctx: AgentContext): string {
   return `You are Kleo, the creative director inside Kleo Studio, an app where people make AI videos and pictures.
 Talk like a friendly, talented creator: short (1-3 sentences), warm, zero jargon. Always reply in the language the user writes in.
 
-Your job: turn the user's idea into ONE great result and show it as a card: propose_video for a clip, propose_image for a picture.
+Your job: turn the user's idea into ONE great result and show it as a card: propose_video for a single clip (4-15 s, one moment), propose_image for a picture, propose_film for a whole KLEO FILM (a narrated story, explainer, documentary or YouTube video/Short from 15 s to 5 min, written and edited by Kleo with a narrator, music and subtitles).
+- A film needs its subject from the user. If the user wants a film but did not say its length, format (YouTube 16:9 or Short 9:16), look (realistic or animation), narration language, music or subtitles, propose it anyway with sensible choices — the card lets them change every setting — and say in one line what you chose.
 The app is set to make ${ctx.mode === "image" ? "PICTURES" : "VIDEOS"} right now: use that unless the user clearly asks for the other.
 - If the idea is clear enough, call the tool right away. Do not ask permission first.
 - Ask at most one short question, and only when something essential is missing (for example "a video" with no subject).
 - Never say the video is being generated: the user taps Generate on the card. Mention the price in credits only if useful.
 - If the user asks to change something (longer, vertical, cheaper, different style), call propose_video again with the change.
 - Pictures the user attached: use image_role first_frame to animate a photo, reference to keep a person/product/style.
+- Video or sound clips attached: Seedance uses them as references; name them in the prompt as "video 1", "audio 1" (for example "the dance moves of video 1", "the voice of audio 1"). A clip set to Edit or Extend is changed or continued.
+- Face swaps, talking photos, lipsync, motion control (copy a dance), outfit swaps, video upscaling, voiceovers, music and sound effects live in Apps: when asked, say so in one line (no card).
 
 Video models (keys for propose_video):
 ${lines}
@@ -131,15 +157,20 @@ function historyLine(m: MessageRow): { role: "user" | "assistant"; content: stri
   let data: Record<string, any> = {};
   try { data = m.data ? JSON.parse(m.data) : {}; } catch { /* plain text */ }
   if (m.role === "user") {
-    const n = Array.isArray(data.attachments) ? data.attachments.length : 0;
-    const text = `${m.text ?? ""}${n ? `\n[attached ${n} picture${n > 1 ? "s" : ""}]` : ""}`.trim();
+    const att = Array.isArray(data.attachments) ? data.attachments : [];
+    const count = (k: string) => att.filter((a: { kind?: string }) => (a.kind ?? "image") === k).length;
+    const said = ([["picture", count("image")], ["video clip", count("video")], ["sound clip", count("audio")]] as [string, number][])
+      .filter(([, n]) => n > 0).map(([w, n]) => `${n} ${w}${n > 1 ? "s" : ""}`);
+    const text = `${m.text ?? ""}${said.length ? `\n[attached ${said.join(", ")}]` : ""}`.trim();
     return text ? { role: "user", content: text } : null;
   }
   const parts = [m.text ?? ""];
   if (data.proposal) {
     const p = data.proposal as Proposal;
     const st = p.settings as unknown as Record<string, unknown>;
-    parts.push(p.kind === "image"
+    parts.push(p.kind === "film"
+      ? `[Proposed Kleo film "${p.title}": ${st.duration} s, ${st.format}, ${st.style}, ${st.product}, music ${st.music ? "yes" : "no"}, subtitles ${st.subtitles ? "yes" : "no"}, narration ${st.language}. Brief: ${p.prompt}]`
+      : p.kind === "image"
       ? `[Proposed picture "${p.title}": ${st.model}, ${st.aspect}, ${st.quality}, ${st.count} at a time. Prompt: ${p.prompt}]`
       : `[Proposed clip "${p.title}": ${st.model}, ${st.duration} s, ${st.resolution}, ${st.aspect}. Prompt: ${p.prompt}]`);
     if (Array.isArray(data.generations) && data.generations.length) parts.push("[The user generated it.]");
@@ -168,24 +199,37 @@ export function proposalFrom(args: Record<string, unknown>, ctx: AgentContext): 
   const prompt = String(args.prompt ?? "").trim();
   if (!prompt) return null;
   const imageRole = args.image_role === "none" ? "none" : args.image_role;
-  const uploads = imageRole === "none" ? [] : ctx.uploads;
+  // Clips (video, sound) always go along; pictures only when the agent wants them.
+  const clips = ctx.uploads.filter((u) => u.kind === "video" || u.kind === "audio");
+  const pictures = imageRole === "none" ? [] : ctx.uploads.filter((u) => (u.kind ?? "image") === "image");
+  const uploads = [...pictures, ...clips];
+  const videoSeconds = clips.filter((u) => u.kind === "video").reduce((a, u) => a + (u.duration ?? 0), 0);
+  const refs = { images: pictures.length, videos: clips.filter((u) => u.kind === "video").length, audios: clips.filter((u) => u.kind === "audio").length, videoSeconds };
   let settings = normalizeSettings({
     model: args.model ?? ctx.ui.model, duration: args.duration ?? ctx.ui.duration, resolution: args.resolution ?? ctx.ui.resolution,
     aspect: args.aspect ?? ctx.ui.aspect, audio: typeof args.audio === "boolean" ? args.audio : ctx.ui.audio, imageRole,
-  }, uploads.length);
+    videoRole: ctx.ui.videoRole,
+  }, pictures.length, refs);
   // A model this account cannot use yet is swapped for the user's own choice (or the first one it can use).
   if (!ctx.allowed.includes(settings.model)) {
     const fallback = ctx.allowed.includes(String(ctx.ui.model) as ModelKey) ? String(ctx.ui.model) : ctx.allowed[0];
-    if (fallback) settings = normalizeSettings({ ...settings, model: fallback }, uploads.length);
+    if (fallback) settings = normalizeSettings({ ...settings, model: fallback }, pictures.length, refs);
   }
   return {
     kind: "video",
     title: String(args.title ?? "").trim().slice(0, 60) || "Your video",
     prompt: prompt.slice(0, 2000),
     settings,
-    credits: clipCredits(settings, ctx.margin),
+    credits: clipCredits(settings, ctx.margin, videoSeconds),
     imageIds: uploads.map((u) => u.id),
   };
+}
+
+/** The film tool's arguments as a card (the price is filled in by the Worker, which asks the MCP server). */
+export function filmProposalFrom(args: Record<string, unknown>): Proposal | null {
+  const prompt = String(args.prompt ?? "").trim();
+  if (prompt.length < 8) return null;
+  return { kind: "film", title: String(args.title ?? "").trim().slice(0, 60) || "Your film", prompt: prompt.slice(0, 4000), settings: normalizeFilm(args), credits: 0, imageIds: [] };
 }
 
 /** The picture tool's arguments as a card, on a model this account may use. */
@@ -228,7 +272,7 @@ export async function runAgent(env: StudioEnv, ctx: AgentContext, pictures: stri
   try {
     const r = await ephone<{ choices?: { message?: { content?: unknown; tool_calls?: { function?: { name?: string; arguments?: string } }[] } }[] }>(
       env, "POST", "/v1/chat/completions",
-      { model: (env.STUDIO_AGENT_MODEL ?? "").trim() || DEFAULT_AGENT_MODEL, messages, tools: [TOOL, IMAGE_TOOL], tool_choice: "auto", max_tokens: 1200, temperature: 0.7 },
+      { model: (env.STUDIO_AGENT_MODEL ?? "").trim() || DEFAULT_AGENT_MODEL, messages, tools: [TOOL, IMAGE_TOOL, FILM_TOOL], tool_choice: "auto", max_tokens: 1200, temperature: 0.7 },
       { timeoutMs: 45_000, routing: CHAT_ROUTING },
     );
     const msg = r.choices?.[0]?.message ?? {};
@@ -237,10 +281,10 @@ export async function runAgent(env: StudioEnv, ctx: AgentContext, pictures: stri
     let proposal: Proposal | null = null;
     for (const call of msg.tool_calls ?? []) {
       const name = call.function?.name;
-      if (name !== "propose_video" && name !== "propose_image") continue;
+      if (name !== "propose_video" && name !== "propose_image" && name !== "propose_film") continue;
       try {
         const args = JSON.parse(call.function?.arguments ?? "{}");
-        proposal = name === "propose_image" ? imageProposalFrom(args, ctx) : proposalFrom(args, ctx);
+        proposal = name === "propose_image" ? imageProposalFrom(args, ctx) : name === "propose_film" ? filmProposalFrom(args) : proposalFrom(args, ctx);
       } catch { /* malformed arguments: no card */ }
     }
     text = text.trim();
@@ -266,3 +310,29 @@ export function chatTitle(text: string, hasPictures: boolean): string {
 }
 
 
+
+/**
+ * "Enhance": rewrites a short idea into a full prompt for the chosen kind of result, keeping the idea and the
+ * language of any quoted dialogue. Answers the person's own text when the model cannot be reached.
+ */
+export async function enhancePrompt(env: StudioEnv, kind: "video" | "image", text: string): Promise<string> {
+  const idea = text.trim().slice(0, 2000);
+  if (!idea) return idea;
+  const how = kind === "image"
+    ? "Rewrite it as one English image prompt of 40-90 words: subject, composition, setting, light, style, lens. Exact text to render goes in quotes."
+    : "Rewrite it as one English video prompt of 60-120 words: subject, action in present tense, setting, camera movement, light, style, sound. Dialogue stays in quotes in its own language.";
+  try {
+    const r = await ephone<{ choices?: { message?: { content?: unknown } }[] }>(env, "POST", "/v1/chat/completions", {
+      model: (env.STUDIO_AGENT_MODEL ?? "").trim() || DEFAULT_AGENT_MODEL, max_tokens: 400, temperature: 0.7,
+      messages: [
+        { role: "system", content: `You improve prompts for AI ${kind} models. Keep the user's idea, subject and any names exactly; add vivid, concrete detail; never add on-screen text unless asked. ${how} Answer with the prompt only, no quotes around it, no preamble.` },
+        { role: "user", content: idea },
+      ],
+    }, { timeoutMs: 30_000, routing: CHAT_ROUTING });
+    const out = r.choices?.[0]?.message?.content;
+    const said = (typeof out === "string" ? out : "").trim().replace(/^["“]|["”]$/g, "");
+    return said.length > 10 ? said.slice(0, 2000) : idea;
+  } catch {
+    return idea;
+  }
+}
