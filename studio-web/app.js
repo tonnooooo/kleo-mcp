@@ -281,8 +281,23 @@ function authFrame(title, sub, ...content) {
     h("img", { class: "logo", src: "/kleo-mark.svg", alt: "Kleo" }), h("h1", {}, title), h("p", { class: "sub" }, sub), ...content)));
 }
 function busyButton(btn) { const old = btn.textContent; btn.disabled = true; fill(btn, spinner(18)); return () => { btn.disabled = false; btn.textContent = old; }; }
+// Cloudflare Turnstile on sign-up (only when the server has a site key): the bot check behind the free credits.
+let turnstileLoad = null;
+function loadTurnstile() {
+  turnstileLoad ??= new Promise((ok, no) => {
+    const s = document.createElement("script");
+    s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+    s.onload = () => ok(window.turnstile);
+    s.onerror = () => { turnstileLoad = null; no(new Error("The human check didn't load. Check your connection and try again.")); };
+    document.head.append(s);
+  });
+  return turnstileLoad;
+}
 function renderAuth(mode = "signup", fromApp = false) {
   let showKey = false;
+  let checkToken = "", checkId = null, checkWaiters = [];
+  const tokenReady = () => checkToken ? Promise.resolve(checkToken) : new Promise((ok) => { checkWaiters.push(ok); setTimeout(() => ok(checkToken), 15000); });
+  const check = mode === "signup" && S.config?.turnstile ? h("div", { class: "human-check" }) : null;
   const email = h("input", { class: "input", type: "email", placeholder: "E-mail", autocomplete: "email", inputmode: "email", autocapitalize: "off" });
   const pass = h("input", { class: "input", type: "password", placeholder: mode === "signup" ? "Password (8+ characters)" : "Password", autocomplete: mode === "signup" ? "new-password" : "current-password" });
   const key = h("input", { class: "input", placeholder: "Paste your Kleo key", autocomplete: "off", autocapitalize: "off", spellcheck: "false" });
@@ -294,16 +309,27 @@ function renderAuth(mode = "signup", fromApp = false) {
     const restore = busyButton(submit);
     try {
       if (showKey) await api("/api/auth/key", { method: "POST", body: { key: key.value } });
-      else await api(mode === "signup" ? "/api/auth/signup" : "/api/auth/signin", { method: "POST", body: { email: email.value, password: pass.value } });
+      else {
+        if (check && mode === "signup") await tokenReady();
+        await api(mode === "signup" ? "/api/auth/signup" : "/api/auth/signin", { method: "POST", body: { email: email.value, password: pass.value, turnstile: checkToken } });
+      }
       S.me = await api("/api/me");
       S.feeds = {};
       await enter();
       if (mode === "signup" && !showKey) toast(`Welcome! You have ${S.me.credits} free credits.`);
-    } catch (e) { err.textContent = e.message; restore(); }
-  } }, email, pass, keyBox, err, submit);
+    } catch (e) {
+      err.textContent = e.message; restore();
+      if (check && checkId !== null) { checkToken = ""; window.turnstile?.reset(checkId); }
+    }
+  } }, email, pass, keyBox, check, err, submit);
+  if (check) loadTurnstile().then((t) => {
+    checkId = t.render(check, { sitekey: S.config.turnstile, theme: "auto", size: "flexible", appearance: "interaction-only",
+      callback: (v) => { checkToken = v; checkWaiters.splice(0).forEach((ok) => ok(v)); }, "expired-callback": () => { checkToken = ""; }, "error-callback": () => { checkToken = ""; } });
+  }).catch((e) => { err.textContent = e.message; });
   const toggleKey = h("button", { type: "button", onclick: () => {
     showKey = !showKey;
     keyBox.style.display = showKey ? "" : "none"; email.style.display = pass.style.display = showKey ? "none" : "";
+    if (check) check.style.display = showKey ? "none" : "";
     submit.textContent = showKey ? "Sign in with key" : mode === "signup" ? "Create account" : "Sign in";
     toggleKey.textContent = showKey ? "Use e-mail instead" : "I have a Kleo key";
     (showKey ? key : email).focus();

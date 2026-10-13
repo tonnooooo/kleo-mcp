@@ -16,6 +16,7 @@ import { handleBeacon, recordSignupSource } from "./growth.ts";
 import { tick } from "./orchestrator";
 import { json } from "./util";
 import { ensureSchema } from "./schema";
+import { httpsRedirect, hardenResponse } from "./security-headers";
 
 /** /mcp — only reached with a valid OAuth token; the provider puts the token props on ctx.props. */
 const mcpApi: ExportedHandler<Env> = {
@@ -111,7 +112,11 @@ const provider = new OAuthProvider<Env>({
 });
 
 export default {
-  fetch: (request: Request, env: Env, ctx: ExecutionContext) => provider.fetch(request, env, ctx),
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const toHttps = httpsRedirect(new URL(request.url));
+    if (toHttps) return toHttps;
+    return hardenResponse(await provider.fetch(request, env, ctx));
+  },
   scheduled: (_controller: ScheduledController, env: Env, ctx: ExecutionContext) => {
     ctx.waitUntil((async () => {
       try {

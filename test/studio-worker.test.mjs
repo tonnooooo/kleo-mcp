@@ -581,6 +581,28 @@ test("one host: www and app. redirect to the canonical host once it is set", asy
   assert.equal(same.status, 200);
 });
 
+test("security: plain HTTP goes to HTTPS; every answer carries HSTS, nosniff, no framing and a CSP that fits it", async () => {
+  const env = newEnv();
+  const plain = await worker.fetch(new Request("http://app.kleooai.com/video?x=1"), env, ctx);
+  assert.equal(plain.status, 301);
+  assert.equal(plain.headers.get("location"), "https://app.kleooai.com/video?x=1");
+  const p = fakeProvider((u) => u.includes("raw.githubusercontent.com") ? new Response("<!doctype html><title>MCP</title>", { headers: { "content-type": "text/plain" } }) : new Response("?", { status: 404 }));
+  try {
+    const page = await call(env, "/");
+    const site = await call(env, "/mcp");
+    const api = await call(env, "/health");
+    for (const r of [page, site, api]) {
+      assert.match(r.res.headers.get("strict-transport-security") ?? "", /max-age=31536000/);
+      assert.equal(r.res.headers.get("x-content-type-options"), "nosniff");
+      assert.equal(r.res.headers.get("x-frame-options"), "DENY");
+      assert.match(r.res.headers.get("content-security-policy") ?? "", /frame-ancestors 'none'|default-src 'none'/);
+    }
+    assert.match(page.res.headers.get("content-security-policy"), /script-src 'self' https:\/\/challenges\.cloudflare\.com;/, "the app runs only its own scripts (and Turnstile)");
+    assert.match(site.res.headers.get("content-security-policy"), /fonts\.googleapis\.com/, "site pages get the site's policy");
+    assert.match(api.res.headers.get("content-security-policy"), /^default-src 'none'/, "JSON and files can never run as a page");
+  } finally { p.restore(); }
+});
+
 test("Kleo films in the chat: the agent proposes, the MCP server prices and orders, Studio follows the job and keeps the video", async () => {
   const env = newEnv();
   const { cookie, id } = await paidAccount(env, "film@example.com", 100);

@@ -30,6 +30,7 @@ import { APP_PATH, serveSite } from "./site.ts";
 import { normalizeFilm, orderFilm, quoteFilm } from "./films.ts";
 import { runAgent, chatTitle, enhancePrompt, type Proposal } from "./agent.ts";
 import { signUp, signIn, signInWithKey, addPassword, me, signedIn, googleEnabled, microsoftEnabled, enabledSocial, socialEnabled, socialStart, socialCallback, forgotPassword, resetPassword, resetAvailable, type SocialKey } from "./auth.ts";
+import { httpsRedirect, secureResponse } from "./security.ts";
 import { SESSION_COOKIE, clearSessionCookie, readCookie, readSession, signPath, checkSignedPath } from "./session.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
@@ -403,42 +404,48 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
   return json({ error: "Not found." }, 404);
 }
 
+async function route(request: Request, env: StudioEnv, ctx: ExecutionContext, url: URL): Promise<Response> {
+  // One address for the app: www and the old app.kleooai.com send people to the canonical host.
+  const canonical = (env.CANONICAL_HOST ?? "").trim();
+  if (canonical && url.hostname !== canonical && (url.hostname === `www.${canonical}` || url.hostname.startsWith("app."))) {
+    return Response.redirect(`https://${canonical}${url.pathname}${url.search}`, 301);
+  }
+  // Everything that is not the app is the Kleo site (kleooai.com/mcp, /pricing/, /guides/…).
+  if (!APP_PATH.test(url.pathname)) {
+    try { return await serveSite(request, url); } catch { return new Response("The site is not reachable right now.", { status: 502 }); }
+  }
+  try {
+    if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/media/") || url.pathname.startsWith("/auth/")) await ensureStudioSchema(env);
+    if (url.pathname.startsWith("/api/")) return await api(env, request, url, ctx);
+    if (url.pathname.startsWith("/media/")) return await handleMedia(env, request, url);
+    const social = url.pathname.match(/^\/auth\/(google|microsoft)(\/callback)?$/);
+    if (social) {
+      const key = social[1] as SocialKey;
+      if (!socialEnabled(env, key)) return Response.redirect(`${url.origin}/`, 302);
+      if (!social[2]) return socialStart(env, key, url.origin, url.searchParams.get("link") === "1");
+      return await socialCallback(env, key, request, url.origin, await sessionUser(env, request));
+    }
+    if (url.pathname === "/health") return json({ ok: true, service: "kleo-studio" });
+  } catch (e) {
+    return fail(e);
+  }
+  // The single-page app: real files as they are, every other path gets index.html (client-side routes).
+  let asset = await env.ASSETS.fetch(request);
+  if (asset.status === 404 && request.method === "GET") asset = await env.ASSETS.fetch(new Request(new URL("/", url).toString(), request));
+  // The page itself is never cached, so a release reaches everybody on the next load (its scripts carry ?v=).
+  if ((asset.headers.get("content-type") ?? "").includes("text/html")) {
+    asset = new Response(asset.body, asset);
+    asset.headers.set("cache-control", "no-store");
+  }
+  return asset;
+}
+
 export default {
   async fetch(request: Request, env: StudioEnv, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-    // One address for the app: www and the old app.kleooai.com send people to the canonical host.
-    const canonical = (env.CANONICAL_HOST ?? "").trim();
-    if (canonical && url.hostname !== canonical && (url.hostname === `www.${canonical}` || url.hostname.startsWith("app."))) {
-      return Response.redirect(`https://${canonical}${url.pathname}${url.search}`, 301);
-    }
-    // Everything that is not the app is the Kleo site (kleooai.com/mcp, /pricing/, /guides/…).
-    if (!APP_PATH.test(url.pathname)) {
-      try { return await serveSite(request, url); } catch { return new Response("The site is not reachable right now.", { status: 502 }); }
-    }
-    try {
-      if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/media/") || url.pathname.startsWith("/auth/")) await ensureStudioSchema(env);
-      if (url.pathname.startsWith("/api/")) return await api(env, request, url, ctx);
-      if (url.pathname.startsWith("/media/")) return await handleMedia(env, request, url);
-      const social = url.pathname.match(/^\/auth\/(google|microsoft)(\/callback)?$/);
-      if (social) {
-        const key = social[1] as SocialKey;
-        if (!socialEnabled(env, key)) return Response.redirect(`${url.origin}/`, 302);
-        if (!social[2]) return socialStart(env, key, url.origin, url.searchParams.get("link") === "1");
-        return await socialCallback(env, key, request, url.origin, await sessionUser(env, request));
-      }
-      if (url.pathname === "/health") return json({ ok: true, service: "kleo-studio" });
-    } catch (e) {
-      return fail(e);
-    }
-    // The single-page app: real files as they are, every other path gets index.html (client-side routes).
-    let asset = await env.ASSETS.fetch(request);
-    if (asset.status === 404 && request.method === "GET") asset = await env.ASSETS.fetch(new Request(new URL("/", url).toString(), request));
-    // The page itself is never cached, so a release reaches everybody on the next load (its scripts carry ?v=).
-    if ((asset.headers.get("content-type") ?? "").includes("text/html")) {
-      asset = new Response(asset.body, asset);
-      asset.headers.set("cache-control", "no-store");
-    }
-    return asset;
+    const toHttps = httpsRedirect(url);
+    if (toHttps) return toHttps;
+    return secureResponse(await route(request, env, ctx, url), { site: !APP_PATH.test(url.pathname) });
   },
 
   async scheduled(_event: ScheduledController, env: StudioEnv, ctx: ExecutionContext): Promise<void> {
