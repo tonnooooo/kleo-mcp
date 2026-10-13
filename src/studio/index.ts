@@ -22,7 +22,10 @@ import {
   getMessage, setMessageData, agentMessagesToday, addUpload, getUpload, uploadsOf, getGeneration, listGenerations,
   staleGenerations, type MessageRow, type GenerationRow,
 } from "./store.ts";
-import { StudioError, createGeneration, refreshGeneration, publicGeneration, marginOf } from "./generate.ts";
+import { StudioError, createGeneration, refreshGeneration, publicGeneration, marginOf, runTool, freeTools } from "./generate.ts";
+import { publicPresets } from "./presets.ts";
+import { planTool, publicTools, toolByKey, toolCredits, ToolRefusal, type Media } from "./tools.ts";
+import { mediaInfo } from "./media.ts";
 import { runAgent, chatTitle, type Proposal } from "./agent.ts";
 import { signUp, signIn, signInWithKey, addPassword, me, signedIn, googleEnabled, microsoftEnabled, enabledSocial, socialEnabled, socialStart, socialCallback, forgotPassword, resetPassword, resetAvailable, type SocialKey } from "./auth.ts";
 import { SESSION_COOKIE, clearSessionCookie, readCookie, readSession, signPath, checkSignedPath } from "./session.ts";
@@ -37,6 +40,7 @@ const fail = (e: unknown): Response => {
 };
 const SHARE_DAYS = 30;
 const MAX_UPLOAD = 10 * 1024 * 1024;
+const MAX_CLIP = 60 * 1024 * 1024;
 
 async function body<T = Record<string, unknown>>(request: Request): Promise<T> {
   try { return (await request.json()) as T; } catch { throw new StudioError("Bad request."); }
@@ -106,12 +110,6 @@ async function picturesForAgent(env: StudioEnv, keys: string[]): Promise<string[
   return out;
 }
 
-function sniffImage(b: Uint8Array): string | null {
-  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
-  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "image/png";
-  if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return "image/webp";
-  return null;
-}
 
 /** Streams a stored file with Range support. */
 async function serveFile(env: StudioEnv, request: Request, key: string, filename: string, download: boolean, cache = "private, max-age=3600"): Promise<Response> {
@@ -164,7 +162,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       google: googleEnabled(env), microsoft: microsoftEnabled(env), social: enabledSocial(env), turnstile: env.TURNSTILE_SITEKEY ?? null, defaultModel: DEFAULT_MODEL,
       models: publicCatalog(marginOf(env), freeModels(env.STUDIO_FREE_MODELS)), freeCredits: Number(env.FREE_CREDITS ?? 5),
       defaultImageModel: DEFAULT_IMAGE_MODEL, imageModels: publicImageCatalog(marginOf(env), freeImageModels(env.STUDIO_FREE_IMAGE_MODELS)),
-      emailReset: resetAvailable(env),
+      emailReset: resetAvailable(env), presets: publicPresets(), tools: publicTools(marginOf(env)), freeTools: freeTools(env.STUDIO_FREE_TOOLS),
     });
   }
   if (path.startsWith("/api/auth/") && method === "POST") {
@@ -190,6 +188,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     return json({
       ...info, paid, allowed: paid ? publicCatalog().map((m: any) => m.key) : freeModels(env.STUDIO_FREE_MODELS),
       allowedImages: paid ? IMAGE_MODELS.map((m) => m.key) : freeImageModels(env.STUDIO_FREE_IMAGE_MODELS), packs: packsFor(env, userId),
+      allowedTools: paid ? freeTools("*") : freeTools(env.STUDIO_FREE_TOOLS),
     });
   }
 
@@ -206,7 +205,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
 
   // ── the agent ──
   if (path === "/api/chat" && method === "POST") {
-    const b = await body<{ chatId?: string; text?: string; imageIds?: string[]; settings?: Record<string, unknown>; imageSettings?: Record<string, unknown>; mode?: string }>(request);
+    const b = await body<{ chatId?: string; text?: string; imageIds?: string[]; settings?: Record<string, unknown>; imageSettings?: Record<string, unknown>; mode?: string; preset?: string }>(request);
     const text = String(b.text ?? "").trim().slice(0, 4000);
     const uploads = await uploadsOf(env, userId, Array.isArray(b.imageIds) ? b.imageIds : []);
     if (!text && !uploads.length) throw new StudioError("Write a message or add a picture.");
@@ -220,7 +219,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       chat = (await getChat(env, userId, id))!;
     }
     const history = await listMessages(env, chat.id, 40);
-    const attachments = uploads.map((u) => ({ id: u.id, url: `/media/u/${u.id}`, width: u.width, height: u.height }));
+    const attachments = uploads.map((u) => ({ id: u.id, url: `/media/u/${u.id}`, width: u.width, height: u.height, kind: u.kind ?? "image", duration: u.duration ?? null }));
     const userMsgId = rid("m", 12);
     await addMessage(env, { id: userMsgId, chatId: chat.id, userId, role: "user", text, data: attachments.length ? { attachments } : null });
     const paid = await hasPaid(asEnv(env), userId);
@@ -230,7 +229,9 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       history, text, uploads, ui: b.settings ?? {}, uiImage: b.imageSettings ?? {}, mode: b.mode === "image" ? "image" : "video",
       credits: user.credits, allowed, allowedImages, margin: marginOf(env),
     },
-      await picturesForAgent(env, uploads.map((u) => u.key)));
+      await picturesForAgent(env, uploads.filter((u) => (u.kind ?? "image") === "image").map((u) => u.key)));
+    // The chosen camera/effect preset rides on a video card and is added to its prompt when it is generated.
+    if (reply.proposal && reply.proposal.kind !== "image" && b.preset) (reply.proposal.settings as unknown as Record<string, unknown>).preset = String(b.preset);
     const botId = rid("m", 12);
     await addMessage(env, { id: botId, chatId: chat.id, userId, role: "assistant", text: reply.text, data: reply.proposal || reply.fallback ? { proposal: reply.proposal ?? undefined, fallback: reply.fallback || undefined } : null });
     await touchChat(env, chat.id);
@@ -239,7 +240,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
 
   // ── generating ──
   if (path === "/api/generate" && method === "POST") {
-    const b = await body<{ chatId?: string; proposalId?: string; prompt?: string; settings?: Record<string, unknown>; imageIds?: string[]; kind?: string }>(request);
+    const b = await body<{ chatId?: string; proposalId?: string; prompt?: string; settings?: Record<string, unknown>; imageIds?: string[]; kind?: string; preset?: string }>(request);
     let chat = b.chatId ? await getChat(env, userId, b.chatId) : null;
     let kind: "video" | "image" = b.kind === "image" ? "image" : "video";
     let proposalMsg: MessageRow | null = null;
@@ -261,7 +262,8 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     const newMessages: string[] = [];
     const chatId = chat?.id ?? rid("c", 12);
     const userMsgId = proposalMsg ? null : rid("m", 12);
-    const g = await createGeneration(env, userId, { kind, prompt, settings, imageIds, chatId, messageId: proposalMsg?.id ?? userMsgId }, origin);
+    const preset = b.preset ?? (typeof settings.preset === "string" ? settings.preset : null);
+    const g = await createGeneration(env, userId, { kind, prompt, settings, imageIds, chatId, messageId: proposalMsg?.id ?? userMsgId, preset }, origin);
     if (!chat) {
       await createChat(env, chatId, userId, chatTitle(prompt, imageIds.length > 0));
       chat = (await getChat(env, userId, chatId))!;
@@ -269,7 +271,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     if (userMsgId) {
       // Direct mode: the prompt itself is the person's message.
       const uploads = await uploadsOf(env, userId, imageIds);
-      await addMessage(env, { id: userMsgId, chatId: chat.id, userId, role: "user", text: prompt.trim(), data: uploads.length ? { attachments: uploads.map((u) => ({ id: u.id, url: `/media/u/${u.id}`, width: u.width, height: u.height })) } : null });
+      await addMessage(env, { id: userMsgId, chatId: chat.id, userId, role: "user", text: prompt.trim(), data: uploads.length ? { attachments: uploads.map((u) => ({ id: u.id, url: `/media/u/${u.id}`, width: u.width, height: u.height, kind: u.kind ?? "image", duration: u.duration ?? null })) } : null });
       newMessages.push(userMsgId);
     }
     if (proposalMsg) {
@@ -290,13 +292,44 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     });
   }
   if (path === "/api/price" && method === "POST") {
-    const b = await body<{ settings?: Record<string, unknown>; images?: number }>(request);
-    const s = normalizeSettings(b.settings ?? {}, Number(b.images ?? 0));
-    return json({ settings: s, credits: clipCredits(s, marginOf(env)) });
+    // The exact price of a video with clips attached (their seconds are billed too), as the page cannot know it.
+    const b = await body<{ settings?: Record<string, unknown>; imageIds?: string[] }>(request);
+    const all = await uploadsOf(env, userId, Array.isArray(b.imageIds) ? b.imageIds : []);
+    const pics = all.filter((u) => (u.kind ?? "image") === "image").length;
+    const vids = all.filter((u) => u.kind === "video");
+    const secs = vids.reduce((a, v) => a + (v.duration ?? 0), 0);
+    const s = normalizeSettings(b.settings ?? {}, pics, { images: pics, videos: vids.length, audios: all.filter((u) => u.kind === "audio").length, videoSeconds: secs });
+    return json({ settings: s, credits: clipCredits(s, marginOf(env), secs) });
+  }
+  if (path === "/api/tools/price" && method === "POST") {
+    const b = await body<{ tool?: string; inputs?: Record<string, string> }>(request);
+    const tool = toolByKey(b.tool);
+    if (!tool) return json({ error: "Not found." }, 404);
+    const inputs = b.inputs ?? {};
+    const rows = await uploadsOf(env, userId, Object.values(inputs).map(String));
+    const media: Record<string, Media | undefined> = {};
+    for (const f of tool.fields) {
+      const u = rows.find((r) => r.id === inputs[f.key]);
+      if (u) media[f.key] = { id: u.id, url: "", kind: u.kind ?? "image", seconds: u.duration ?? null, width: u.width, height: u.height, type: u.content_type ?? "" };
+    }
+    try {
+      const plan = planTool(tool.key, inputs, media);
+      return json({ credits: toolCredits(plan.usd, marginOf(env)), summary: plan.summary, estimate: !!plan.speech });
+    } catch (e) {
+      if (e instanceof ToolRefusal) return json({ credits: null, missing: e.message });
+      throw e;
+    }
+  }
+  if (path === "/api/tools/run" && method === "POST") {
+    const b = await body<{ tool?: string; inputs?: Record<string, string>; consent?: boolean; chatId?: string }>(request);
+    const g = await runTool(env, userId, { tool: String(b.tool ?? ""), inputs: b.inputs ?? {}, consent: b.consent === true, chatId: b.chatId ?? null }, origin);
+    const user = await getUser(asEnv(env), userId);
+    return json({ generation: publicGeneration(g), credits: user?.credits ?? 0 });
   }
   if (path === "/api/generations" && method === "GET") {
     const before = url.searchParams.get("before") ?? undefined;
-    const rows = await listGenerations(env, userId, Math.min(100, Number(url.searchParams.get("limit") ?? 60)), before);
+    const rows = await listGenerations(env, userId, Math.min(100, Number(url.searchParams.get("limit") ?? 60)), before,
+      { model: url.searchParams.get("model") ?? undefined, kind: url.searchParams.get("kind") ?? undefined });
     return json({ generations: rows.map(publicGeneration) });
   }
   const genM = path.match(/^\/api\/generations\/(g_[a-z0-9]+)(\/share)?$/);
@@ -324,17 +357,19 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
   // ── pictures ──
   if (path === "/api/uploads" && method === "POST") {
     const len = Number(request.headers.get("content-length") ?? 0);
-    if (len > MAX_UPLOAD) throw new StudioError("That picture is too big (10 MB max).", 413);
+    if (len > MAX_CLIP) throw new StudioError("That file is too big (60 MB max).", 413);
     const bytes = new Uint8Array(await request.arrayBuffer());
-    if (bytes.byteLength > MAX_UPLOAD) throw new StudioError("That picture is too big (10 MB max).", 413);
-    const type = sniffImage(bytes);
-    if (!type) throw new StudioError("Use a JPG, PNG or WebP picture.", 415);
+    const info = mediaInfo(bytes);
+    if (!info || info.type === "audio/mp4") throw new StudioError("Use a JPG, PNG or WebP picture, an MP4 or MOV video, or an MP3 or WAV sound.", 415);
+    const cap = info.kind === "image" ? MAX_UPLOAD : info.kind === "audio" ? 15 * 1024 * 1024 : MAX_CLIP;
+    if (bytes.byteLength > cap) throw new StudioError(`That ${info.kind === "image" ? "picture" : info.kind} is too big (${Math.round(cap / 1048576)} MB max).`, 413);
     const id = rid("up", 12);
-    const key = `studio/${userId}/up/${id}.${type.split("/")[1]}`;
-    await env.RENDERS.put(key, bytes, { httpMetadata: { contentType: type } });
-    const w = Number(request.headers.get("x-width") ?? 0) || null, h = Number(request.headers.get("x-height") ?? 0) || null;
-    await addUpload(env, { id, userId, key, contentType: type, size: bytes.byteLength, width: w, height: h });
-    return json({ id, url: `/media/u/${id}`, width: w, height: h });
+    const key = `studio/${userId}/up/${id}.${info.ext}`;
+    await env.RENDERS.put(key, bytes, { httpMetadata: { contentType: info.type } });
+    // Pictures: the page measured them while shrinking; clips: the Worker read their header.
+    const w = info.width ?? (Number(request.headers.get("x-width") ?? 0) || null), h = info.height ?? (Number(request.headers.get("x-height") ?? 0) || null);
+    await addUpload(env, { id, userId, key, contentType: info.type, size: bytes.byteLength, width: w, height: h, kind: info.kind, duration: info.duration });
+    return json({ id, url: `/media/u/${id}`, kind: info.kind, width: w, height: h, duration: info.duration });
   }
 
   return json({ error: "Not found." }, 404);

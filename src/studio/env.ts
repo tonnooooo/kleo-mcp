@@ -23,6 +23,8 @@ export interface StudioEnv {
   MAX_NEW_USERS_PER_IP_DAY?: string;
   /** Models an account that never paid may use: comma separated keys or "*" (default "seedance-2.0-fast"). */
   STUDIO_FREE_MODELS?: string;
+  /** Apps an account that never paid may use (default face-swap,outfit-swap,voice,music,sfx; "*" = all). */
+  STUDIO_FREE_TOOLS?: string;
   /** Image models an account that never paid may use (default all but Nano Banana Pro). */
   STUDIO_FREE_IMAGE_MODELS?: string;
   /** Resend key and sender for the password-reset e-mail (src/email.ts); without the key, reset is by hand. */

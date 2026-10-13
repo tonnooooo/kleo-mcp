@@ -111,6 +111,8 @@ The app is set to make ${ctx.mode === "image" ? "PICTURES" : "VIDEOS"} right now
 - Never say the video is being generated: the user taps Generate on the card. Mention the price in credits only if useful.
 - If the user asks to change something (longer, vertical, cheaper, different style), call propose_video again with the change.
 - Pictures the user attached: use image_role first_frame to animate a photo, reference to keep a person/product/style.
+- Video or sound clips attached: Seedance uses them as references; name them in the prompt as "video 1", "audio 1" (for example "the dance moves of video 1", "the voice of audio 1"). A clip set to Edit or Extend is changed or continued.
+- Face swaps, talking photos, lipsync, motion control (copy a dance), outfit swaps, video upscaling, voiceovers, music and sound effects live in Apps: when asked, say so in one line (no card).
 
 Video models (keys for propose_video):
 ${lines}
@@ -131,8 +133,11 @@ function historyLine(m: MessageRow): { role: "user" | "assistant"; content: stri
   let data: Record<string, any> = {};
   try { data = m.data ? JSON.parse(m.data) : {}; } catch { /* plain text */ }
   if (m.role === "user") {
-    const n = Array.isArray(data.attachments) ? data.attachments.length : 0;
-    const text = `${m.text ?? ""}${n ? `\n[attached ${n} picture${n > 1 ? "s" : ""}]` : ""}`.trim();
+    const att = Array.isArray(data.attachments) ? data.attachments : [];
+    const count = (k: string) => att.filter((a: { kind?: string }) => (a.kind ?? "image") === k).length;
+    const said = ([["picture", count("image")], ["video clip", count("video")], ["sound clip", count("audio")]] as [string, number][])
+      .filter(([, n]) => n > 0).map(([w, n]) => `${n} ${w}${n > 1 ? "s" : ""}`);
+    const text = `${m.text ?? ""}${said.length ? `\n[attached ${said.join(", ")}]` : ""}`.trim();
     return text ? { role: "user", content: text } : null;
   }
   const parts = [m.text ?? ""];
@@ -168,22 +173,28 @@ export function proposalFrom(args: Record<string, unknown>, ctx: AgentContext): 
   const prompt = String(args.prompt ?? "").trim();
   if (!prompt) return null;
   const imageRole = args.image_role === "none" ? "none" : args.image_role;
-  const uploads = imageRole === "none" ? [] : ctx.uploads;
+  // Clips (video, sound) always go along; pictures only when the agent wants them.
+  const clips = ctx.uploads.filter((u) => u.kind === "video" || u.kind === "audio");
+  const pictures = imageRole === "none" ? [] : ctx.uploads.filter((u) => (u.kind ?? "image") === "image");
+  const uploads = [...pictures, ...clips];
+  const videoSeconds = clips.filter((u) => u.kind === "video").reduce((a, u) => a + (u.duration ?? 0), 0);
+  const refs = { images: pictures.length, videos: clips.filter((u) => u.kind === "video").length, audios: clips.filter((u) => u.kind === "audio").length, videoSeconds };
   let settings = normalizeSettings({
     model: args.model ?? ctx.ui.model, duration: args.duration ?? ctx.ui.duration, resolution: args.resolution ?? ctx.ui.resolution,
     aspect: args.aspect ?? ctx.ui.aspect, audio: typeof args.audio === "boolean" ? args.audio : ctx.ui.audio, imageRole,
-  }, uploads.length);
+    videoRole: ctx.ui.videoRole,
+  }, pictures.length, refs);
   // A model this account cannot use yet is swapped for the user's own choice (or the first one it can use).
   if (!ctx.allowed.includes(settings.model)) {
     const fallback = ctx.allowed.includes(String(ctx.ui.model) as ModelKey) ? String(ctx.ui.model) : ctx.allowed[0];
-    if (fallback) settings = normalizeSettings({ ...settings, model: fallback }, uploads.length);
+    if (fallback) settings = normalizeSettings({ ...settings, model: fallback }, pictures.length, refs);
   }
   return {
     kind: "video",
     title: String(args.title ?? "").trim().slice(0, 60) || "Your video",
     prompt: prompt.slice(0, 2000),
     settings,
-    credits: clipCredits(settings, ctx.margin),
+    credits: clipCredits(settings, ctx.margin, videoSeconds),
     imageIds: uploads.map((u) => u.id),
   };
 }

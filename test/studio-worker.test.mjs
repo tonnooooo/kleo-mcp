@@ -416,6 +416,128 @@ test("linking: the signed-in account gets Google; an account another person uses
   assert.equal((await social(env, "microsoft", { sub: "m-x", aud: "mid", tid: MS_PERSONAL }, { link: true })).location, "/?signin_error=signin");
 });
 
+function mp4Bytes(seconds, width = 1280, height = 720) {
+  const box = (type, ...parts) => {
+    const body = Buffer.concat(parts.map((p) => Buffer.from(p)));
+    const head = Buffer.alloc(8); head.writeUInt32BE(8 + body.length); head.write(type, 4, "ascii");
+    return Buffer.concat([head, body]);
+  };
+  const mvhd = Buffer.alloc(100); mvhd.writeUInt32BE(1000, 12); mvhd.writeUInt32BE(Math.round(seconds * 1000), 16);
+  const tkhd = Buffer.alloc(84); tkhd.writeUInt32BE(width * 65536, 76); tkhd.writeUInt32BE(height * 65536, 80);
+  return new Uint8Array(Buffer.concat([box("ftyp", Buffer.from("isom"), Buffer.alloc(4), Buffer.from("isommp42")), box("moov", box("mvhd", mvhd), box("trak", box("tkhd", tkhd))), box("mdat", Buffer.alloc(800))]));
+}
+function wavBytes(seconds, rate = 24000) {
+  const samples = Math.round(seconds * rate), h = Buffer.alloc(44);
+  h.write("RIFF", 0); h.writeUInt32LE(36 + samples * 2, 4); h.write("WAVE", 8); h.write("fmt ", 12); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22);
+  h.writeUInt32LE(rate, 24); h.writeUInt32LE(rate * 2, 28); h.writeUInt16LE(2, 32); h.writeUInt16LE(16, 34); h.write("data", 36); h.writeUInt32LE(samples * 2, 40);
+  return new Uint8Array(Buffer.concat([h, Buffer.alloc(samples * 2)]));
+}
+const jpegBytes = () => { const b = new Uint8Array(3000); b.set([0xff, 0xd8, 0xff, 0xe0]); return b; };
+async function upload(env, cookie, bytes, type = "application/octet-stream") {
+  const r = await call(env, "/api/uploads", { method: "POST", cookie, raw: bytes, headers: { "content-type": type } });
+  assert.equal(r.status, 200, r.text);
+  return r.json;
+}
+async function paidAccount(env, email = "pro@example.com", credits = 100) {
+  const cookie = await signUp(env, email);
+  const me = (await call(env, "/api/me", { cookie })).json;
+  env.DB.db.exec(`INSERT INTO payments (session_id, user_id, credits, amount_cent, currency, status, raw_ref) VALUES ('manual_${me.id}', '${me.id}', 0, 0, 'eur', 'paid', 'tester'); UPDATE users SET credits = ${credits} WHERE id = '${me.id}'`);
+  return { cookie, id: me.id };
+}
+
+test("uploads: video and sound clips are measured by the Worker; unknown files are refused", async () => {
+  const env = newEnv();
+  const cookie = await signUp(env);
+  const v = await upload(env, cookie, mp4Bytes(8.5, 1920, 1080));
+  assert.deepEqual({ k: v.kind, d: v.duration, w: v.width, h: v.height }, { k: "video", d: 8.5, w: 1920, h: 1080 });
+  const a = await upload(env, cookie, wavBytes(3));
+  assert.deepEqual({ k: a.kind, d: a.duration }, { k: "audio", d: 3 });
+  assert.equal((await call(env, "/api/uploads", { method: "POST", cookie, raw: new Uint8Array(500).fill(9) })).status, 415);
+  const cfg = (await call(env, "/api/config")).json;
+  assert.ok(cfg.presets.length >= 20 && cfg.tools.length >= 10);
+  assert.deepEqual((await call(env, "/api/me", { cookie })).json.allowedTools, ["face-swap", "outfit-swap", "voice", "music", "sfx"]);
+});
+
+test("video with a reference clip and a preset: priced on the clip's seconds, sent as omni reference", async () => {
+  const env = newEnv();
+  const { cookie, id } = await paidAccount(env);
+  const v = await upload(env, cookie, mp4Bytes(8));
+  const price = await call(env, "/api/price", { method: "POST", cookie, body: { imageIds: [v.id], settings: { model: "seedance-2.0-fast", duration: 5, resolution: "720p" } } });
+  assert.equal(price.json.credits, 3, "max(9, 8 + 5) = 13 s at the reference rate");
+  const p = fakeProvider(() => ok({ id: "task_r" }));
+  try {
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { prompt: "a robot copies the dance of video 1", imageIds: [v.id], preset: "orbit-360", settings: { model: "seedance-2.0-fast", duration: 5, resolution: "720p" } } });
+    assert.equal(r.status, 200, r.text);
+    const input = p.sent.find((s) => s.url.endsWith("/v1/task/submit")).body.input;
+    assert.equal(input.reference_videos.length, 1);
+    assert.match(input.prompt, /360-degree orbit/);
+    assert.equal(credits(env, id), 97);
+  } finally { p.restore(); }
+});
+
+test("apps: face swap (consent, two pictures), talking photo (speech first, exact price), voiceover, music; locked for free accounts", async () => {
+  const env = newEnv();
+  const free = await signUp(env, "free@example.com");
+  const locked = await call(env, "/api/tools/run", { method: "POST", cookie: free, body: { tool: "motion-control", inputs: {} } });
+  assert.equal(locked.status, 400, "the form is checked before the lock: nothing attached");
+  const { cookie, id } = await paidAccount(env);
+  const t = await upload(env, cookie, jpegBytes(), "image/jpeg"), f = await upload(env, cookie, jpegBytes(), "image/jpeg");
+  const jpg = jpegBytes();
+  let n = 0;
+  const p = fakeProvider((u) => {
+    if (u.endsWith("/v1/audio/speech")) return new Response(wavBytes(2.5), { status: 200, headers: { "content-type": "audio/wav" } });
+    if (u.endsWith("/v1/task/submit")) return ok({ id: `task_t${++n}` });
+    if (/task_t1$/.test(u)) return ok({ status: "completed", outputs: ["https://cdn.example/swap.jpg"] });
+    if (/task_t2$/.test(u)) return ok({ status: "completed", outputs: ["https://cdn.example/talk.mp4"] });
+    if (/task_t3$/.test(u)) return ok({ status: "completed", outputs: ["https://cdn.example/a.jpeg", "https://cdn.example/a.mp3", "https://cdn.example/b.mp3"] });
+    if (u === "https://cdn.example/swap.jpg" || u === "https://cdn.example/a.jpeg") return new Response(jpg, { status: 200 });
+    if (u === "https://cdn.example/talk.mp4") return new Response(mp4Bytes(2.5), { status: 200 });
+    if (u.endsWith(".mp3")) { const m = new Uint8Array(16000); m.set([0xff, 0xfb, 0x90, 0x00]); return new Response(m, { status: 200 }); }
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const noConsent = await call(env, "/api/tools/run", { method: "POST", cookie, body: { tool: "face-swap", inputs: { target: t.id, face: f.id } } });
+    assert.equal(noConsent.json.code, "consent");
+    const swap = await call(env, "/api/tools/run", { method: "POST", cookie, body: { tool: "face-swap", consent: true, inputs: { target: t.id, face: f.id } } });
+    assert.equal(swap.status, 200, swap.text);
+    const sub = p.sent.filter((s) => s.url.endsWith("/v1/task/submit"))[0];
+    assert.equal(sub.body.model, "gemini-3-pro-image");
+    assert.equal(sub.body.input.images.length, 2);
+    old(env);
+    const swapDone = await call(env, `/api/generations/${swap.json.generation.id}`, { cookie });
+    assert.equal(swapDone.json.generation.status, "done", swapDone.text);
+    assert.equal(swapDone.json.generation.outputs[0].type, "image");
+
+    const price = await call(env, "/api/tools/price", { method: "POST", cookie, body: { tool: "talking-photo", inputs: { image: t.id, script: "Hello everyone, welcome back!" } } });
+    assert.equal(price.json.credits, 1);
+    assert.equal(price.json.estimate, true);
+    const talk = await call(env, "/api/tools/run", { method: "POST", cookie, body: { tool: "talking-photo", consent: true, inputs: { image: t.id, script: "Hello everyone, welcome back!", voice: "onyx", tone: "excited" } } });
+    assert.equal(talk.status, 200, talk.text);
+    const tts = p.sent.find((s) => s.url.endsWith("/v1/audio/speech"));
+    assert.deepEqual({ v: tts.body.voice, f: tts.body.response_format }, { v: "onyx", f: "wav" });
+    const avatar = p.sent.filter((s) => s.url.endsWith("/v1/task/submit"))[1];
+    assert.equal(avatar.body.model, "kling_avatar_image2video");
+    assert.match(avatar.body.input.sound_file, /^https:\/\/app\.kleo\.test\/media\/u\/up_.*sig=/, "the spoken clip, by signed link");
+    old(env);
+    const talkDone = await call(env, `/api/generations/${talk.json.generation.id}`, { cookie });
+    assert.equal(talkDone.json.generation.outputs[0].type, "video");
+
+    const voice = await call(env, "/api/tools/run", { method: "POST", cookie, body: { tool: "voice", inputs: { script: "Ciao a tutti!", voice: "nova" } } });
+    assert.equal(voice.json.generation.status, "done", "a voiceover is ready at once");
+    assert.equal(voice.json.generation.outputs[0].type, "audio");
+    assert.equal((await call(env, voice.json.generation.outputs[0].url, { cookie })).status, 200);
+
+    const music = await call(env, "/api/tools/run", { method: "POST", cookie, body: { tool: "music", inputs: { prompt: "lofi beats", vocals: "none" } } });
+    old(env);
+    const musicDone = await call(env, `/api/generations/${music.json.generation.id}`, { cookie });
+    assert.equal(musicDone.json.generation.outputs.length, 2, "both songs, not the cover picture");
+    assert.ok(musicDone.json.generation.outputs.every((o) => o.type === "audio"));
+    assert.equal(musicDone.json.credits, credits(env, id));
+    const list = await call(env, "/api/generations?model=music", { cookie });
+    assert.equal(list.json.generations.length, 1);
+  } finally { p.restore(); }
+});
+
 test("the app shell is served for any page path", async () => {
   const env = newEnv();
   const r = await call(env, "/c/c_whatever");

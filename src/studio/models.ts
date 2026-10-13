@@ -28,6 +28,8 @@
 export type ModelKey = "seedance-2.5" | "seedance-2.0" | "seedance-2.0-fast" | "veo-3.1" | "veo-3.1-fast";
 export type Resolution = "480p" | "720p" | "1080p";
 export type ImageRole = "first_frame" | "reference" | "none";
+/** What an attached video clip is for (Seedance omni reference): guide the new clip, be edited, or be continued. */
+export type VideoRole = "reference" | "edit" | "extend" | "none";
 
 export interface StudioModel {
   key: ModelKey;
@@ -42,6 +44,12 @@ export interface StudioModel {
   ephoneModel: string;
   /** Dollars per output second, per resolution (already times the channel ratio). */
   usdPerSecond: Partial<Record<Resolution, number>>;
+  /** Seedance's lower rate when a reference video is attached (billed on reference + output seconds, 9 s minimum). */
+  usdPerSecondRef?: Partial<Record<Resolution, number>>;
+  /** Reference clips (video, audio) it takes; 0 = none. */
+  maxRefVideos?: number;
+  /** Longest total of reference video seconds. */
+  maxRefVideoSeconds?: number;
   durations: number[];
   defaultDuration: number;
   resolutions: Resolution[];
@@ -63,6 +71,8 @@ export const MODELS: StudioModel[] = [
     key: "seedance-2.5", name: "Seedance 2.5", blurb: "Best all-round motion, with sound", badge: "Best",
     family: "seedance", ephoneModel: "doubao-seedance-2-5-260628",
     usdPerSecond: { "480p": r4(0.67 * BYTEDANCE * CNY), "720p": r4(1.51 * BYTEDANCE * CNY), "1080p": r4(3.74 * BYTEDANCE * CNY) },
+    usdPerSecondRef: { "480p": r4(0.40 * BYTEDANCE * CNY), "720p": r4(0.91 * BYTEDANCE * CNY), "1080p": r4(2.24 * BYTEDANCE * CNY) },
+    maxRefVideos: 10, maxRefVideoSeconds: 30,
     durations: [5, 10, 15], defaultDuration: 5, resolutions: ["480p", "720p", "1080p"], defaultResolution: "720p",
     aspects: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"], maxReferences: 9,
   },
@@ -70,6 +80,8 @@ export const MODELS: StudioModel[] = [
     key: "seedance-2.0", name: "Seedance 2.0", blurb: "Great quality for less",
     family: "seedance", ephoneModel: "doubao-seedance-2-0-260128",
     usdPerSecond: { "480p": r4(0.46 * BYTEDANCE * CNY), "720p": r4(0.99 * BYTEDANCE * CNY), "1080p": r4(2.48 * BYTEDANCE * CNY) },
+    usdPerSecondRef: { "480p": r4(0.28 * BYTEDANCE * CNY), "720p": r4(0.60 * BYTEDANCE * CNY), "1080p": r4(1.51 * BYTEDANCE * CNY) },
+    maxRefVideos: 3, maxRefVideoSeconds: 15,
     durations: [5, 10, 15], defaultDuration: 5, resolutions: ["480p", "720p", "1080p"], defaultResolution: "720p",
     aspects: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"], maxReferences: 9,
   },
@@ -77,6 +89,8 @@ export const MODELS: StudioModel[] = [
     key: "seedance-2.0-fast", name: "Seedance 2.0 Fast", blurb: "Cheapest and quick, great for drafts", badge: "Cheapest",
     family: "seedance", ephoneModel: "doubao-seedance-2-0-fast-260128",
     usdPerSecond: { "480p": r4(0.37 * BYTEDANCE * CNY), "720p": r4(0.80 * BYTEDANCE * CNY) },
+    usdPerSecondRef: { "480p": r4(0.22 * BYTEDANCE * CNY), "720p": r4(0.48 * BYTEDANCE * CNY) },
+    maxRefVideos: 3, maxRefVideoSeconds: 15,
     durations: [5, 10, 15], defaultDuration: 5, resolutions: ["480p", "720p"], defaultResolution: "720p",
     aspects: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"], maxReferences: 9,
   },
@@ -114,7 +128,13 @@ export interface ClipSettings {
   aspect: string;
   audio: boolean;
   imageRole: ImageRole;
+  /** Only with attached video clips (Seedance). Older rows have none: read as "none". */
+  videoRole?: VideoRole;
 }
+
+/** What is attached to a clip, by kind (pictures, video clips, sound clips) and the total seconds of the clips. */
+export interface RefCounts { images: number; videos: number; audios: number; videoSeconds: number }
+export const noRefs = (images = 0): RefCounts => ({ images, videos: 0, audios: 0, videoSeconds: 0 });
 
 /** Closest allowed value (ties go to the larger one). */
 function nearest(values: number[], want: number): number {
@@ -126,8 +146,16 @@ function nearest(values: number[], want: number): number {
  * duration snaps to the nearest one the model offers, a resolution or an aspect it does not offer becomes its
  * default. Never throws: a clip is always priced on the settings that will actually be sent.
  */
-export function normalizeSettings(raw: Partial<Record<keyof ClipSettings, unknown>>, imageCount: number): ClipSettings {
-  const m = modelByKey(String(raw.model ?? "")) ?? modelByKey(DEFAULT_MODEL)!;
+export function normalizeSettings(raw: Partial<Record<keyof ClipSettings, unknown>>, imageCount: number, refs: RefCounts = noRefs(imageCount)): ClipSettings {
+  let m = modelByKey(String(raw.model ?? "")) ?? modelByKey(DEFAULT_MODEL)!;
+  // Video and sound clips are a Seedance feature; editing or extending a clip is Seedance 2.5's; a sound clip
+  // alone (no picture, no video) only 2.5 accepts.
+  const clips = refs.videos + refs.audios > 0;
+  const wantsRole = raw.videoRole === "edit" || raw.videoRole === "extend";
+  if (clips && m.family !== "seedance") m = modelByKey("seedance-2.5")!;
+  if (refs.videos > 0 && wantsRole) m = modelByKey("seedance-2.5")!;
+  if (refs.audios > 0 && refs.videos === 0 && imageCount === 0) m = modelByKey("seedance-2.5")!;
+  if (refs.videos > (m.maxRefVideos ?? 0)) m = modelByKey("seedance-2.5")!;
   const d = Number(raw.duration);
   const duration = Number.isFinite(d) && d > 0 ? nearest(m.durations, d) : m.defaultDuration;
   const resolution = m.resolutions.includes(raw.resolution as Resolution) ? (raw.resolution as Resolution) : m.defaultResolution;
@@ -137,19 +165,28 @@ export function normalizeSettings(raw: Partial<Record<keyof ClipSettings, unknow
   // One picture can be the opening frame; more than one can only guide the look.
   if (imageCount > 1 && imageRole === "first_frame") imageRole = "reference";
   if (imageRole === "reference" && m.maxReferences === 0) imageRole = "first_frame";
-  return { model: m.key, duration, resolution, aspect, audio: raw.audio === false ? false : true, imageRole };
+  // Omni reference mode (clips attached) cannot take a first frame: the pictures guide the look instead.
+  if (clips && imageRole === "first_frame") imageRole = "reference";
+  const videoRole: VideoRole = refs.videos === 0 ? "none" : wantsRole ? (raw.videoRole as VideoRole) : "reference";
+  return { model: m.key, duration, resolution, aspect, audio: raw.audio === false ? false : true, imageRole, videoRole };
 }
 
 /** Dollars the provider charges for one clip (an upper estimate: list price × channel ratio, CNY at 7). */
-export function clipCostUsd(s: ClipSettings): number {
+export function clipCostUsd(s: ClipSettings, refVideoSeconds = 0): number {
   const m = modelByKey(s.model)!;
+  if (refVideoSeconds > 0 && m.usdPerSecondRef) {
+    // Billed on the reference seconds plus the output, never under 9 s; an edit comes out as long as its source.
+    const out = s.videoRole === "edit" ? refVideoSeconds : s.duration;
+    const perS = m.usdPerSecondRef[s.resolution] ?? Math.max(...Object.values(m.usdPerSecondRef).map(Number));
+    return Math.round(perS * Math.max(9, refVideoSeconds + out) * 1000) / 1000;
+  }
   const perS = m.usdPerSecond[s.resolution] ?? Math.max(...Object.values(m.usdPerSecond).map(Number));
   return Math.round(perS * s.duration * 1000) / 1000;
 }
 
 /** Credits one clip costs the person. */
-export function clipCredits(s: ClipSettings, margin = DEFAULT_MARGIN): number {
-  return Math.max(1, Math.ceil((clipCostUsd(s) * margin) / CREDIT_USD - 1e-9));
+export function clipCredits(s: ClipSettings, margin = DEFAULT_MARGIN, refVideoSeconds = 0): number {
+  return Math.max(1, Math.ceil((clipCostUsd(s, refVideoSeconds) * margin) / CREDIT_USD - 1e-9));
 }
 
 /**
@@ -170,7 +207,7 @@ export function freeModels(list: string | undefined): ModelKey[] {
  *   Veo:      {prompt, images[1] first frame | reference_images[≤3], aspect 16:9|9:16, resolution, duration 4|6|8}.
  * `images` are absolute URLs the provider can fetch (signed links to the person's uploads).
  */
-export function taskInput(s: ClipSettings, prompt: string, images: string[], safetyId?: string): Record<string, unknown> {
+export function taskInput(s: ClipSettings, prompt: string, images: string[], safetyId?: string, clips: { videos: string[]; audios: string[] } = { videos: [], audios: [] }): Record<string, unknown> {
   const m = modelByKey(s.model)!;
   const text = prompt.trim().slice(0, 2000);
   if (m.family === "veo") {
@@ -186,7 +223,15 @@ export function taskInput(s: ClipSettings, prompt: string, images: string[], saf
     prompt: text, duration: s.duration, resolution: s.resolution, generate_audio: s.audio, watermark: false,
     aspect_ratio: s.aspect,
   };
-  if (images.length && s.imageRole === "first_frame") {
+  if (clips.videos.length || clips.audios.length) {
+    // Omni reference: pictures, video clips and sound clips together ("image 1", "video 1", "audio 1" in the prompt).
+    if (images.length) input.reference_images = images.slice(0, m.maxReferences);
+    if (clips.videos.length) input.reference_videos = clips.videos.slice(0, m.maxRefVideos ?? 0);
+    if (clips.audios.length) input.reference_audio = clips.audios.slice(0, m.key === "seedance-2.5" ? 10 : 3);
+    if (m.key === "seedance-2.5") input.omni_reference_task_type = s.videoRole === "edit" || s.videoRole === "extend" ? s.videoRole : clips.videos.length ? "reference" : "auto";
+    if (s.videoRole === "edit") { input.aspect_ratio = "adaptive"; input.duration = -1; }
+    if (s.videoRole === "extend") input.aspect_ratio = "adaptive";
+  } else if (images.length && s.imageRole === "first_frame") {
     input.first_frame = images[0];
     // Seedance 2.5 refuses any other ratio with a first frame: the clip keeps the picture's own shape.
     input.aspect_ratio = "adaptive";
