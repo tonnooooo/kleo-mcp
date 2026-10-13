@@ -27,8 +27,8 @@
   // /mcp and its old addresses (src/studio/site.ts). www. and the first address app. redirect to kleooai.com.
   // DNS records and certificates are made by wrangler (zone kleooai.com is in this account).
   "routes": [
-    { "pattern": "kleooai.com", "custom_domain": true },
-    { "pattern": "www.kleooai.com", "custom_domain": true },
+    // { "pattern": "kleooai.com", "custom_domain": true },      ← after the owner deletes the GitHub Pages A records
+    // { "pattern": "www.kleooai.com", "custom_domain": true },  ← after the owner deletes the www CNAME
     { "pattern": "app.kleooai.com", "custom_domain": true }
   ],
   "assets": { "directory": "./studio-web", "binding": "ASSETS", "run_worker_first": true, "not_found_handling": "single-page-application" },
@@ -42,7 +42,7 @@
   "triggers": { "crons": ["* * * * *"] }, // every minute: refresh clips still with the provider, save finished ones, refund failed ones
   "vars": {
     "PUBLIC_URL": "https://mcp.kleooai.com",
-    "CANONICAL_HOST": "kleooai.com",
+    "CANONICAL_HOST": "", // set to "kleooai.com" once the apex DNS records point to this Worker (owner: delete the GitHub Pages A records first)
     "STRIPE_LINK_5": "https://buy.stripe.com/bJe3cu4XZ1nYh0Ua24dQQ00",
     "STRIPE_LINK_15": "https://buy.stripe.com/8x27sK8abfeOcKEb68dQQ01",
     "STRIPE_LINK_40": "https://buy.stripe.com/dRmeVc0HJ2s25ic7TWdQQ02",
