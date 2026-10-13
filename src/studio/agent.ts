@@ -277,3 +277,29 @@ export function chatTitle(text: string, hasPictures: boolean): string {
 }
 
 
+
+/**
+ * "Enhance": rewrites a short idea into a full prompt for the chosen kind of result, keeping the idea and the
+ * language of any quoted dialogue. Answers the person's own text when the model cannot be reached.
+ */
+export async function enhancePrompt(env: StudioEnv, kind: "video" | "image", text: string): Promise<string> {
+  const idea = text.trim().slice(0, 2000);
+  if (!idea) return idea;
+  const how = kind === "image"
+    ? "Rewrite it as one English image prompt of 40-90 words: subject, composition, setting, light, style, lens. Exact text to render goes in quotes."
+    : "Rewrite it as one English video prompt of 60-120 words: subject, action in present tense, setting, camera movement, light, style, sound. Dialogue stays in quotes in its own language.";
+  try {
+    const r = await ephone<{ choices?: { message?: { content?: unknown } }[] }>(env, "POST", "/v1/chat/completions", {
+      model: (env.STUDIO_AGENT_MODEL ?? "").trim() || DEFAULT_AGENT_MODEL, max_tokens: 400, temperature: 0.7,
+      messages: [
+        { role: "system", content: `You improve prompts for AI ${kind} models. Keep the user's idea, subject and any names exactly; add vivid, concrete detail; never add on-screen text unless asked. ${how} Answer with the prompt only, no quotes around it, no preamble.` },
+        { role: "user", content: idea },
+      ],
+    }, { timeoutMs: 30_000, routing: CHAT_ROUTING });
+    const out = r.choices?.[0]?.message?.content;
+    const said = (typeof out === "string" ? out : "").trim().replace(/^["“]|["”]$/g, "");
+    return said.length > 10 ? said.slice(0, 2000) : idea;
+  } catch {
+    return idea;
+  }
+}

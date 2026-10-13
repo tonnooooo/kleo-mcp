@@ -12,7 +12,7 @@
  */
 import type { StudioEnv } from "./env.ts";
 import type { Env } from "../env";
-import { getUser, hasPaid } from "../db.ts";
+import { getUser, hasPaid, audit, countAuditTodayForUser } from "../db.ts";
 import { PACKS, buyUrl } from "../stripe.ts";
 import { rid } from "../util.ts";
 import { DEFAULT_MODEL, freeModels, publicCatalog, normalizeSettings, clipCredits } from "./models.ts";
@@ -26,7 +26,7 @@ import { StudioError, createGeneration, refreshGeneration, publicGeneration, mar
 import { publicPresets } from "./presets.ts";
 import { planTool, publicTools, toolByKey, toolCredits, ToolRefusal, type Media } from "./tools.ts";
 import { mediaInfo } from "./media.ts";
-import { runAgent, chatTitle, type Proposal } from "./agent.ts";
+import { runAgent, chatTitle, enhancePrompt, type Proposal } from "./agent.ts";
 import { signUp, signIn, signInWithKey, addPassword, me, signedIn, googleEnabled, microsoftEnabled, enabledSocial, socialEnabled, socialStart, socialCallback, forgotPassword, resetPassword, resetAvailable, type SocialKey } from "./auth.ts";
 import { SESSION_COOKIE, clearSessionCookie, readCookie, readSession, signPath, checkSignedPath } from "./session.ts";
 
@@ -240,7 +240,13 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
 
   // ── generating ──
   if (path === "/api/generate" && method === "POST") {
-    const b = await body<{ chatId?: string; proposalId?: string; prompt?: string; settings?: Record<string, unknown>; imageIds?: string[]; kind?: string; preset?: string }>(request);
+    const b = await body<{ chatId?: string; proposalId?: string; prompt?: string; settings?: Record<string, unknown>; imageIds?: string[]; kind?: string; preset?: string; noChat?: boolean }>(request);
+    if (b.noChat && !b.proposalId) {
+      // The Video and Image pages: a generation with no conversation around it.
+      const g = await createGeneration(env, userId, { kind: b.kind === "image" ? "image" : "video", prompt: String(b.prompt ?? ""), settings: b.settings ?? {}, imageIds: Array.isArray(b.imageIds) ? b.imageIds : [], chatId: null, messageId: null, preset: b.preset ?? null }, origin);
+      const user = await getUser(asEnv(env), userId);
+      return json({ generation: publicGeneration(g), credits: user?.credits ?? 0 });
+    }
     let chat = b.chatId ? await getChat(env, userId, b.chatId) : null;
     let kind: "video" | "image" = b.kind === "image" ? "image" : "video";
     let proposalMsg: MessageRow | null = null;
@@ -300,6 +306,12 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     const secs = vids.reduce((a, v) => a + (v.duration ?? 0), 0);
     const s = normalizeSettings(b.settings ?? {}, pics, { images: pics, videos: vids.length, audios: all.filter((u) => u.kind === "audio").length, videoSeconds: secs });
     return json({ settings: s, credits: clipCredits(s, marginOf(env), secs) });
+  }
+  if (path === "/api/enhance" && method === "POST") {
+    const b = await body<{ kind?: string; prompt?: string }>(request);
+    if ((await countAuditTodayForUser(asEnv(env), userId, "studio.enhance")) >= Number(env.STUDIO_AGENT_PER_DAY ?? 200)) throw new StudioError("You've reached today's limit for prompt help.", 429, "agent_limit");
+    await audit(asEnv(env), userId, null, "studio.enhance", {});
+    return json({ prompt: await enhancePrompt(env, b.kind === "image" ? "image" : "video", String(b.prompt ?? "")) });
   }
   if (path === "/api/tools/price" && method === "POST") {
     const b = await body<{ tool?: string; inputs?: Record<string, string> }>(request);
