@@ -58,7 +58,8 @@ export async function serveSite(request: Request, url: URL): Promise<Response> {
     const dir = await fromRepo(`${path}/index.html`, false);
     if (dir.ok) return Response.redirect(`${url.origin}${url.pathname}/${url.search}`, 301);
   }
-  let status = res.status;
+  // A blocked or unknown path is answered by the 404 page, with the 404 status (sitePath returns "/404.html" for it).
+  let status = path === "/404.html" ? 404 : res.status;
   if (status === 404) { path = "/404.html"; ext = "html"; res = await fromRepo(path, false); status = 404; }
   if (!res.ok && status !== 404) return new Response("The site is not reachable right now.", { status: 502 });
   const headers = new Headers({
