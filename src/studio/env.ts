@@ -41,6 +41,9 @@ export interface StudioEnv {
   /** Google sign-in (OAuth client of type "Web application"); the button shows only when both are set. */
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
+  /** Microsoft sign-in (Entra app registration, any account type, Web redirect /auth/microsoft/callback). */
+  MICROSOFT_CLIENT_ID?: string;
+  MICROSOFT_CLIENT_SECRET?: string;
   TURNSTILE_SITEKEY?: string;
   TURNSTILE_SECRET?: string;
   /** Workers rate limit on the sign-in routes (per hashed address). */

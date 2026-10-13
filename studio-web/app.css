@@ -456,3 +456,7 @@ button.pic:hover img { transform: scale(1.02); }
 .auth-switch.small { margin-top: 10px; font-size: 14px; }
 .auth-switch.small button { font-weight: 600; }
 @media (max-width: 640px) { .pics.n1 .pic { max-width: none; } }
+
+.socials { display: grid; gap: 10px; }
+.socials .btn { gap: 10px; }
+a.row { color: var(--ink); }

@@ -88,7 +88,9 @@ function fakeProvider(script) {
   const real = globalThis.fetch;
   globalThis.fetch = async (url, init = {}) => {
     const u = String(url);
-    sent.push({ url: u, method: init.method ?? "GET", body: init.body ? JSON.parse(init.body) : null, headers: init.headers ?? {} });
+    let body = null;
+    try { body = init.body ? JSON.parse(init.body) : null; } catch { body = String(init.body); }
+    sent.push({ url: u, method: init.method ?? "GET", body, headers: init.headers ?? {} });
     return script(u, init, sent);
   };
   return { sent, restore: () => { globalThis.fetch = real; } };
@@ -340,6 +342,78 @@ test("password reset: off without an e-mail key; with one, a one-time link that 
     assert.equal((await call(env, "/api/auth/reset", { method: "POST", body: { token, password: "another pass 2" } })).status, 400, "the link died with the old password");
     assert.equal((await call(env, "/api/auth/signin", { method: "POST", body: { email: "rita@example.com", password: "brand new pass" } })).status, 200);
   } finally { p.restore(); }
+});
+
+const b64u = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+const jwt = (claims) => `${b64u({ alg: "RS256" })}.${b64u(claims)}.sig`;
+/** One full social round trip: start (state cookie), then the callback with the provider answering `claims`. */
+async function social(env, key, claims, { cookie = "", link = false, tamper = false } = {}) {
+  const start = await worker.fetch(new Request(`https://app.kleo.test/auth/${key}${link ? "?link=1" : ""}`, { headers: cookie ? { cookie } : {} }), env, ctx);
+  assert.equal(start.status, 302);
+  const to = new URL(start.headers.get("location"));
+  const state = to.searchParams.get("state");
+  const stateCookie = (start.headers.get("set-cookie") ?? "").split(";")[0];
+  const p = fakeProvider((u, init) => {
+    if (u.includes("oauth2.googleapis.com/token") || u.includes("login.microsoftonline.com/common/oauth2/v2.0/token")) {
+      assert.match(String(init.body), /client_secret=/);
+      return ok({ id_token: jwt(claims) });
+    }
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const cb = await worker.fetch(new Request(`https://app.kleo.test/auth/${key}/callback?code=c1&state=${tamper ? "st_forged" : state}`, { headers: { cookie: [stateCookie, cookie].filter(Boolean).join("; ") } }), env, ctx);
+    const session = (cb.headers.getSetCookie?.() ?? [cb.headers.get("set-cookie") ?? ""]).find((c) => c.startsWith("kleo_studio=") && !c.startsWith("kleo_studio=;"));
+    return { to, location: cb.headers.get("location"), cookie: session ? session.split(";")[0] : null };
+  } finally { p.restore(); }
+}
+const MS_PERSONAL = "9188040d-6c67-4c5b-b112-36a304b66dad";
+
+test("Google and Microsoft: off until configured; new accounts; verified e-mails join the existing account, unverified ones never do", async () => {
+  const off = newEnv();
+  assert.deepEqual((await call(off, "/api/config")).json.social, []);
+  const env = newEnv({ GOOGLE_CLIENT_ID: "gid", GOOGLE_CLIENT_SECRET: "gs", MICROSOFT_CLIENT_ID: "mid", MICROSOFT_CLIENT_SECRET: "ms" });
+  assert.deepEqual((await call(env, "/api/config")).json.social, ["google", "microsoft"]);
+
+  // A brand-new Google person.
+  const g = await social(env, "google", { sub: "g-1", aud: "gid", email: "Luca@Gmail.com", email_verified: true });
+  assert.equal(g.to.host, "accounts.google.com");
+  assert.equal(g.to.searchParams.get("redirect_uri"), "https://app.kleo.test/auth/google/callback");
+  assert.equal(g.location, "/");
+  const gm = (await call(env, "/api/me", { cookie: g.cookie })).json;
+  assert.equal(gm.email, "luca@gmail.com");
+  assert.equal(gm.credits, 5);
+  assert.deepEqual(gm.methods, ["google"]);
+  // Back again with the same Google account: the same Kleo account.
+  const g2 = await social(env, "google", { sub: "g-1", aud: "gid", email: "luca@gmail.com", email_verified: true });
+  assert.equal((await call(env, "/api/me", { cookie: g2.cookie })).json.id, gm.id);
+  // A token for another app is refused.
+  assert.match((await social(env, "google", { sub: "g-9", aud: "someone-else" })).location, /signin_error=google/);
+  // A forged state is refused.
+  assert.match((await social(env, "google", { sub: "g-1", aud: "gid" }, { tamper: true })).location, /signin_error=state/);
+
+  // A password account, then Microsoft with the same address.
+  const pw = await signUp(env, "anna@outlook.com");
+  const pwId = (await call(env, "/api/me", { cookie: pw })).json.id;
+  const work = await social(env, "microsoft", { sub: "m-work", aud: "mid", tid: "some-company-tenant", email: "anna@outlook.com" });
+  const workMe = (await call(env, "/api/me", { cookie: work.cookie })).json;
+  assert.notEqual(workMe.id, pwId, "a work tenant's e-mail claim is not proof: no takeover of the password account");
+  const personal = await social(env, "microsoft", { sub: "m-home", aud: "mid", tid: MS_PERSONAL, preferred_username: "anna@outlook.com" });
+  assert.equal((await call(env, "/api/me", { cookie: personal.cookie })).json.id, pwId, "a personal Microsoft account's address is verified: same person");
+  assert.equal((await call(env, "/api/auth/signup", { method: "POST", body: { email: "luca@gmail.com", password: "long enough pw" } })).json.code, "use_google");
+});
+
+test("linking: the signed-in account gets Google; an account another person uses is refused; no session, no link", async () => {
+  const env = newEnv({ GOOGLE_CLIENT_ID: "gid", GOOGLE_CLIENT_SECRET: "gs", MICROSOFT_CLIENT_ID: "mid", MICROSOFT_CLIENT_SECRET: "ms" });
+  const a = await signUp(env, "a@example.com");
+  const aId = (await call(env, "/api/me", { cookie: a })).json.id;
+  const linked = await social(env, "google", { sub: "g-a", aud: "gid", email: "a.other@gmail.com", email_verified: true }, { cookie: a, link: true });
+  assert.equal(linked.location, "/?linked=google");
+  assert.deepEqual((await call(env, "/api/me", { cookie: a })).json.methods.sort(), ["google", "password"]);
+  const viaGoogle = await social(env, "google", { sub: "g-a", aud: "gid" });
+  assert.equal((await call(env, "/api/me", { cookie: viaGoogle.cookie })).json.id, aId);
+  const b = await signUp(env, "b@example.com");
+  assert.equal((await social(env, "google", { sub: "g-a", aud: "gid" }, { cookie: b, link: true })).location, "/?signin_error=taken_google");
+  assert.equal((await social(env, "microsoft", { sub: "m-x", aud: "mid", tid: MS_PERSONAL }, { link: true })).location, "/?signin_error=signin");
 });
 
 test("the app shell is served for any page path", async () => {

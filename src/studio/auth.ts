@@ -3,8 +3,8 @@
  * payments as the MCP server. What Studio adds is a way to sign in that a person can remember:
  *
  *   e-mail + password   studio_logins (provider 'password', subject = the e-mail), PBKDF2 (session.ts)
- *   Google              studio_logins (provider 'google', subject = Google's `sub`); on only when GOOGLE_CLIENT_ID and
- *                       GOOGLE_CLIENT_SECRET are set
+ *   Google, Microsoft   studio_logins (provider 'google' | 'microsoft', subject = the provider's `sub`); each one is on
+ *                       only when its CLIENT_ID and CLIENT_SECRET are set (SOCIAL below)
  *   Kleo key            the "<userId>.<sig>" key the MCP sign-in page shows (src/accounts.ts verifyHandle): someone who
  *                       already uses Kleo in Claude or ChatGPT brings that account, credits included, and may then
  *                       add an e-mail and password to it
@@ -26,6 +26,7 @@ const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const int = (v: string | undefined, d: number): number => { const n = parseInt(v ?? "", 10); return Number.isFinite(n) ? n : d; };
 
 export const googleEnabled = (env: StudioEnv): boolean => !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
+export const microsoftEnabled = (env: StudioEnv): boolean => !!(env.MICROSOFT_CLIENT_ID && env.MICROSOFT_CLIENT_SECRET);
 
 /** Sets the session cookie for an account on a JSON answer. */
 export async function signedIn(env: StudioEnv, userId: string, body: unknown = { ok: true }): Promise<Response> {
@@ -57,9 +58,12 @@ export async function signUp(env: StudioEnv, body: { email?: string; password?: 
   if (bad) throw new StudioError(bad);
   if (!(await verifyTurnstile(asEnv(env), String(body.turnstile ?? ""), ip))) throw new StudioError("Please complete the check and try again.", 400, "turnstile");
   if (await getLogin(env, "password", email)) throw new StudioError("You already have an account with this e-mail. Sign in instead.", 409, "exists");
-  // The same address may already be on a Google sign-in: one person, one account.
-  const google = (await env.DB.prepare("SELECT user_id FROM studio_logins WHERE provider = 'google' AND email = ? LIMIT 1").bind(email).first<{ user_id: string }>())?.user_id;
-  if (google) throw new StudioError("This e-mail signs in with Google. Use “Continue with Google”.", 409, "use_google");
+  // The same address may already be on a Google or Microsoft sign-in: one person, one account.
+  const social = await env.DB.prepare("SELECT provider FROM studio_logins WHERE provider IN ('google','microsoft') AND email = ? LIMIT 1").bind(email).first<{ provider: string }>();
+  if (social) {
+    const name = social.provider === "google" ? "Google" : "Microsoft";
+    throw new StudioError(`This e-mail signs in with ${name}. Use “Continue with ${name}”.`, 409, `use_${social.provider}`);
+  }
   const existing = await getUserByEmail(asEnv(env), email);
   const userId = existing ? null : await newAccount(env, email, ip);
   if (!userId) throw new StudioError("You already have an account with this e-mail. Sign in instead.", 409, "exists");
@@ -105,7 +109,8 @@ export async function me(env: StudioEnv, userId: string): Promise<Record<string,
   const user = await getUser(asEnv(env), userId);
   if (!user) return null;
   const logins = await loginsOf(env, userId);
-  const email = logins.find((l) => l.email)?.email ?? (user.email.endsWith("@anon.kleo.invalid") ? null : user.email);
+  const email = logins.find((l) => l.email)?.email ?? (user.email.endsWith("@anon.kleo.invalid") ? null : user.email)
+    ?? ((user as unknown as { contact_email?: string | null }).contact_email ?? null);
   return {
     id: user.id, email, credits: user.credits,
     methods: logins.map((l) => l.provider),
@@ -160,57 +165,139 @@ export async function resetPassword(env: StudioEnv, body: { token?: string; pass
   return m[1];
 }
 
-// ── Google ─────────────────────────────────────────────────────────────────────────────────────────────────────────
-const STATE_COOKIE = "kleo_gstate";
+// ── Google and Microsoft ───────────────────────────────────────────────────────────────────────────────────────────
+// OpenID Connect code flow. The id_token is read straight from the provider's token endpoint over TLS, in exchange for
+// our client secret, so it needs no signature check (OIDC core 3.1.3.7); its audience must still be our client id.
+//
+// E-MAIL TRUST. An address links a social sign-in to an existing account only when the provider vouches for it:
+// Google's `email_verified`, or a PERSONAL Microsoft account (consumer tenant), whose address is its verified sign-in
+// name. A work or school Microsoft account's `email` claim can be set by that tenant's admin to anything (the
+// "nOAuth" takeover), so it is shown but never used to find an account.
+//
+// LINKING. A signed-in person can add Google or Microsoft to the account they are in (/auth/<p>?link=1). The account
+// to link is read from the session cookie at the callback, never from the state cookie, so a forged state cannot
+// attach a stranger's Google account to somebody else's Kleo account.
 
-export function googleStart(env: StudioEnv, origin: string): Response {
+export type SocialKey = "google" | "microsoft";
+export const MS_CONSUMER_TENANT = "9188040d-6c67-4c5b-b112-36a304b66dad";
+
+interface Social {
+  label: string;
+  authorize: string;
+  token: string;
+  scope: string;
+  id: (env: StudioEnv) => string | undefined;
+  secret: (env: StudioEnv) => string | undefined;
+  extra: Record<string, string>;
+  /** The address the provider vouches for (may link accounts), or null. */
+  verifiedEmail: (c: Record<string, any>) => string | null;
+  /** Any address to show the person, verified or not. */
+  shownEmail: (c: Record<string, any>) => string | null;
+}
+
+const msEmail = (c: Record<string, any>): string | null => {
+  const e = String(c.email ?? c.preferred_username ?? "").trim().toLowerCase();
+  return EMAIL_RE.test(e) ? e : null;
+};
+
+export const SOCIAL: Record<SocialKey, Social> = {
+  google: {
+    label: "Google",
+    authorize: "https://accounts.google.com/o/oauth2/v2/auth",
+    token: "https://oauth2.googleapis.com/token",
+    scope: "openid email profile",
+    id: (env) => env.GOOGLE_CLIENT_ID, secret: (env) => env.GOOGLE_CLIENT_SECRET,
+    extra: { prompt: "select_account" },
+    verifiedEmail: (c) => (c.email && c.email_verified ? normalizeEmail(String(c.email)) : null),
+    shownEmail: (c) => (c.email ? normalizeEmail(String(c.email)) : null),
+  },
+  microsoft: {
+    label: "Microsoft",
+    // "common": personal Microsoft accounts (Outlook, Hotmail, Xbox) and work or school accounts.
+    authorize: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+    token: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+    scope: "openid email profile",
+    id: (env) => env.MICROSOFT_CLIENT_ID, secret: (env) => env.MICROSOFT_CLIENT_SECRET,
+    extra: { prompt: "select_account", response_mode: "query" },
+    verifiedEmail: (c) => (c.tid === MS_CONSUMER_TENANT ? msEmail(c) : null),
+    shownEmail: msEmail,
+  },
+};
+
+export const socialEnabled = (env: StudioEnv, key: SocialKey): boolean => !!(SOCIAL[key].id(env) && SOCIAL[key].secret(env));
+export const enabledSocial = (env: StudioEnv): SocialKey[] => (Object.keys(SOCIAL) as SocialKey[]).filter((k) => socialEnabled(env, k));
+
+const STATE_COOKIE = "kleo_ostate";
+const clearState = (key: SocialKey) => `${STATE_COOKIE}=; Path=/auth/${key}; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;
+
+export function socialStart(env: StudioEnv, key: SocialKey, origin: string, link: boolean): Response {
+  const p = SOCIAL[key];
   const state = rid("st", 16);
-  const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-  url.searchParams.set("client_id", env.GOOGLE_CLIENT_ID!);
-  url.searchParams.set("redirect_uri", `${origin}/auth/google/callback`);
+  const url = new URL(p.authorize);
+  url.searchParams.set("client_id", p.id(env)!);
+  url.searchParams.set("redirect_uri", `${origin}/auth/${key}/callback`);
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", "openid email profile");
+  url.searchParams.set("scope", p.scope);
   url.searchParams.set("state", state);
-  url.searchParams.set("prompt", "select_account");
+  for (const [k, v] of Object.entries(p.extra)) url.searchParams.set(k, v);
   return new Response(null, {
     status: 302,
-    headers: { location: url.toString(), "set-cookie": `${STATE_COOKIE}=${state}; Path=/auth/google; Max-Age=600; HttpOnly; Secure; SameSite=Lax` },
+    headers: { location: url.toString(), "set-cookie": `${STATE_COOKIE}=${state}.${link ? "link" : "in"}; Path=/auth/${key}; Max-Age=600; HttpOnly; Secure; SameSite=Lax` },
   });
 }
 
-/** Google's answer: code → id_token (read straight from Google over TLS with our secret, so it needs no signature check). */
-export async function googleCallback(env: StudioEnv, request: Request, origin: string): Promise<Response> {
+/** The provider's answer: code, then id_token, then the account (found, linked or created), then the session. */
+export async function socialCallback(env: StudioEnv, key: SocialKey, request: Request, origin: string, sessionUserId: string | null): Promise<Response> {
+  const p = SOCIAL[key];
   const url = new URL(request.url);
   const state = url.searchParams.get("state") ?? "";
-  const saved = readCookie(request.headers.get("cookie"), STATE_COOKIE) ?? "";
-  const back = (q: string) => new Response(null, { status: 302, headers: { location: `/?${q}`, "set-cookie": `${STATE_COOKIE}=; Path=/auth/google; Max-Age=0; HttpOnly; Secure; SameSite=Lax` } });
-  if (!state || !safeEqual(state, saved)) return back("signin_error=state");
+  const [savedState, intent] = (readCookie(request.headers.get("cookie"), STATE_COOKIE) ?? "").split(".");
+  const back = (q: string) => new Response(null, { status: 302, headers: { location: `/?${q}`, "set-cookie": clearState(key) } });
+  if (!state || !savedState || !safeEqual(state, savedState)) return back("signin_error=state");
   const code = url.searchParams.get("code");
   if (!code) return back("signin_error=cancelled");
-  const tok = await fetch("https://oauth2.googleapis.com/token", {
+  const tok = await fetch(p.token, {
     method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ code, client_id: env.GOOGLE_CLIENT_ID!, client_secret: env.GOOGLE_CLIENT_SECRET!, redirect_uri: `${origin}/auth/google/callback`, grant_type: "authorization_code" }),
+    headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+    body: new URLSearchParams({ code, client_id: p.id(env)!, client_secret: p.secret(env)!, redirect_uri: `${origin}/auth/${key}/callback`, grant_type: "authorization_code", scope: p.scope }),
   }).then((r) => r.json() as Promise<{ id_token?: string }>).catch(() => ({} as { id_token?: string }));
   const claims = decodeJwt(tok.id_token ?? "");
-  if (!claims?.sub || claims.aud !== env.GOOGLE_CLIENT_ID) return back("signin_error=google");
-  const email = claims.email && claims.email_verified ? normalizeEmail(String(claims.email)) : null;
-  let userId = (await getLogin(env, "google", String(claims.sub)))?.user_id ?? null;
-  if (!userId && email) {
-    // The same verified address already signs in with a password: same person, same account.
-    userId = (await getLogin(env, "password", email))?.user_id ?? (await getUserByEmail(asEnv(env), email))?.id ?? null;
+  if (!claims?.sub || claims.aud !== p.id(env)) return back(`signin_error=${key}`);
+  const subject = String(claims.sub);
+  const verified = p.verifiedEmail(claims);
+  const shown = p.shownEmail(claims);
+  const owner = (await getLogin(env, key, subject))?.user_id ?? null;
+
+  if (intent === "link") {
+    if (!sessionUserId) return back("signin_error=signin");
+    if (owner && owner !== sessionUserId) return back(`signin_error=taken_${key}`);
+    if (!owner) await addLogin(env, { provider: key, subject, userId: sessionUserId, email: verified, secret: null });
+    await audit(asEnv(env), sessionUserId, null, "studio.login_linked", { provider: key });
+    return back(`linked=${key}`);
+  }
+
+  let userId = owner;
+  if (!userId && verified) {
+    // The same verified address already has an account (password, the other provider, or Stripe's): same person.
+    userId = (await getLogin(env, "password", verified))?.user_id
+      ?? (await env.DB.prepare("SELECT user_id FROM studio_logins WHERE provider IN ('google','microsoft') AND email = ? LIMIT 1").bind(verified).first<{ user_id: string }>())?.user_id
+      ?? (await getUserByEmail(asEnv(env), verified))?.id ?? null;
   }
   try {
-    if (!userId) userId = await newAccount(env, email, request.headers.get("cf-connecting-ip"));
+    if (!userId) {
+      userId = await newAccount(env, verified, request.headers.get("cf-connecting-ip"));
+      // An address the provider does not vouch for is kept only as the contact address, to show; it finds no account.
+      if (!verified && shown) await env.DB.prepare("UPDATE users SET contact_email = COALESCE(contact_email, ?) WHERE id = ?").bind(shown, userId).run().catch(() => undefined);
+    }
   } catch (e) {
     return back(`signin_error=${encodeURIComponent(e instanceof StudioError ? e.code : "error")}`);
   }
-  await addLogin(env, { provider: "google", subject: String(claims.sub), userId, email, secret: null });
-  await touchLogin(env, "google", String(claims.sub));
+  // Only a vouched-for address is stored on the sign-in: it is what finds and joins accounts later.
+  if (!owner) await addLogin(env, { provider: key, subject, userId, email: verified, secret: null });
+  await touchLogin(env, key, subject);
   return new Response(null, {
     status: 302,
-    headers: [["location", "/"], ["set-cookie", sessionCookie(await makeSession(env.INTERNAL_SECRET, userId))],
-      ["set-cookie", `${STATE_COOKIE}=; Path=/auth/google; Max-Age=0; HttpOnly; Secure; SameSite=Lax`]],
+    headers: [["location", "/"], ["set-cookie", sessionCookie(await makeSession(env.INTERNAL_SECRET, userId))], ["set-cookie", clearState(key)]],
   });
 }
 
