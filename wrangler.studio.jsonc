@@ -1,0 +1,48 @@
+/**
+ * Kleo Studio — the consumer web app (chat + video generation), Worker "kleo-studio".
+ * Deployed on its own, so a Studio release never touches the MCP server:
+ *   npx wrangler deploy --config wrangler.studio.jsonc
+ *
+ * It shares the MCP server's D1 database (users, credits, payments, audit) and R2 bucket. Its own tables
+ * (studio_*) are created on first use by src/studio/store.ts; migrations/0017_studio.sql is the same SQL.
+ *
+ * Secrets (npx wrangler secret put NAME --config wrangler.studio.jsonc):
+ *   INTERNAL_SECRET       the SAME value as the MCP server's: it verifies a pasted Kleo key and signs sessions/links
+ *   EPHONE_API_KEY        the ePhone AI key (video models and the chat agent)
+ *   GOOGLE_CLIENT_ID      optional: Google sign-in (OAuth client "Web application", redirect URI
+ *   GOOGLE_CLIENT_SECRET    https://app.kleooai.com/auth/google/callback); the button appears when both are set
+ *   TURNSTILE_SECRET      optional: bot check on sign-up, together with the TURNSTILE_SITEKEY var
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "kleo-studio",
+  "account_id": "e4a5a1308df5b44c65497b85210c6845",
+  "main": "src/studio/index.ts",
+  "compatibility_date": "2026-07-02",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "observability": { "enabled": true },
+  "assets": { "directory": "./studio-web", "binding": "ASSETS", "run_worker_first": true, "not_found_handling": "single-page-application" },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "kleo-db", "database_id": "ffaa0767-9df1-4e5c-84f2-552e37851d63", "migrations_dir": "migrations" }
+  ],
+  "r2_buckets": [ { "binding": "RENDERS", "bucket_name": "kleo-renders" } ],
+  "ratelimits": [
+    { "name": "AUTH_LIMIT", "namespace_id": "1002", "simple": { "limit": 10, "period": 60 } }
+  ],
+  "triggers": { "crons": ["* * * * *"] }, // every minute: refresh clips still with the provider, save finished ones, refund failed ones
+  "vars": {
+    "PUBLIC_URL": "https://mcp.kleooai.com",
+    "STRIPE_LINK_5": "https://buy.stripe.com/bJe3cu4XZ1nYh0Ua24dQQ00",
+    "STRIPE_LINK_15": "https://buy.stripe.com/8x27sK8abfeOcKEb68dQQ01",
+    "STRIPE_LINK_40": "https://buy.stripe.com/dRmeVc0HJ2s25ic7TWdQQ02",
+    "FREE_CREDITS": "5",
+    "MAX_NEW_USERS_PER_DAY": "150",
+    "MAX_NEW_USERS_PER_IP_DAY": "5",
+    "STUDIO_FREE_MODELS": "seedance-2.0-fast", // the owner's rule (15 Sep 2026): gifted credits never buy the expensive models
+    "STUDIO_MARGIN": "1.6",
+    "STUDIO_DAILY_BUDGET_USD": "30",
+    "STUDIO_MAX_RUNNING": "3",
+    "STUDIO_AGENT_MODEL": "claude-haiku-5-5",
+    "STUDIO_AGENT_PER_DAY": "200"
+  }
+}

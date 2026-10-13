@@ -38,13 +38,16 @@ export const EPHONE_NO_MONEY_RE = /quota is not enough|not enough (?:quota|balan
 /** What GET /v1/task/{id} answers (the fields Kleo reads). */
 export interface EphoneTask { id?: string; status?: string; outputs?: unknown; error?: unknown; usage?: { type?: string; seconds?: number; output_tokens?: number; total_tokens?: number } }
 
-/** One call to ePhone's API, answering its JSON body. `timeoutMs` bounds the whole call. */
-export async function ephone<T>(env: Pick<Env, "EPHONE_API_KEY" | "EPHONE_API_URL">, method: "GET" | "POST", path: string, body?: unknown, opts: { timeoutMs?: number } = {}): Promise<T> {
+/**
+ * One call to ePhone's API, answering its JSON body. `timeoutMs` bounds the whole call. `routing` replaces the
+ * default channel headers for one call (Kleo Studio sends Veo to the official_cheap channel only, src/studio/models.ts).
+ */
+export async function ephone<T>(env: Pick<Env, "EPHONE_API_KEY" | "EPHONE_API_URL">, method: "GET" | "POST", path: string, body?: unknown, opts: { timeoutMs?: number; routing?: Record<string, string> } = {}): Promise<T> {
   const key = (env.EPHONE_API_KEY ?? "").trim();
   if (!key) throw new KieError("EPHONE_API_KEY is not set", 0, false);
   const res = await fetch(`${ephoneBase(env)}${path}`, {
     method,
-    headers: { accept: "application/json", "content-type": "application/json", authorization: `Bearer ${key}`, ...EPHONE_ROUTING },
+    headers: { accept: "application/json", "content-type": "application/json", authorization: `Bearer ${key}`, ...(opts.routing ?? EPHONE_ROUTING) },
     body: body === undefined ? undefined : JSON.stringify(body),
     ...(opts.timeoutMs ? { signal: AbortSignal.timeout(opts.timeoutMs) } : {}),
   });
