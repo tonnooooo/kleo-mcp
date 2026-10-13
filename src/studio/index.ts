@@ -68,7 +68,9 @@ function publicMessage(m: MessageRow, gens: Map<string, GenerationRow>): Record<
   const out: Record<string, unknown> = { id: m.id, role: m.role, text: m.text ?? "", createdAt: m.created_at };
   if (Array.isArray(data.attachments)) out.attachments = data.attachments;
   if (data.proposal) out.proposal = data.proposal;
-  if (Array.isArray(data.generations)) out.generations = data.generations.map((id: string) => gens.get(id)).filter(Boolean).map((g: GenerationRow) => publicGeneration(g));
+  if (Array.isArray(data.generations)) {
+    out.generations = (data.generations as string[]).map((id) => gens.get(id)).filter((g): g is GenerationRow => !!g).map(publicGeneration);
+  }
   if (data.generation && gens.get(data.generation)) out.generation = publicGeneration(gens.get(data.generation)!);
   if (data.fallback) out.fallback = true;
   return out;
