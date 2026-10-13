@@ -21,6 +21,7 @@
   "compatibility_date": "2026-07-02",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "observability": { "enabled": true },
+  "routes": [ { "pattern": "app.kleooai.com", "custom_domain": true } ], // DNS record and certificate made by wrangler (zone kleooai.com is in this account)
   "assets": { "directory": "./studio-web", "binding": "ASSETS", "run_worker_first": true, "not_found_handling": "single-page-application" },
   "d1_databases": [
     { "binding": "DB", "database_name": "kleo-db", "database_id": "ffaa0767-9df1-4e5c-84f2-552e37851d63", "migrations_dir": "migrations" }

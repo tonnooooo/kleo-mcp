@@ -4,7 +4,7 @@ Kleo Studio is Kleo's consumer web app: a person signs in, chats with Kleo, atta
 generate video clips. It sits next to the MCP server and does not replace it. One account, one balance and one
 payment history work in both.
 
-- Address: `https://app.kleooai.com` (the Worker also answers on `kleo-studio.<account>.workers.dev`).
+- Address: `https://app.kleooai.com` (custom domain set in `wrangler.studio.jsonc`; the workers.dev address is off).
 - Code: `src/studio/` (Worker), `studio-web/` (the page), `wrangler.studio.jsonc` (config), `migrations/0017_studio.sql`.
 - Tests: `test/studio-models.test.mjs` (pure parts) and `test/studio-worker.test.mjs` (the whole Worker on a fake D1,
   R2 and provider). They run on GitHub Actions with the rest of the suite.

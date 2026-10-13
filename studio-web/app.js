@@ -6,6 +6,12 @@ const IS_TOUCH = matchMedia("(hover: none)").matches;
 
 // ── tiny DOM helpers ─────────────────────────────────────────────────────────────────────────────────────────────
 const $ = (sel, root = document) => root.querySelector(sel);
+/** replaceChildren that skips null/false and flattens arrays (the DOM would print "null"). */
+function fill(el, ...kids) {
+  if (!el) return el;
+  el.replaceChildren(...kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false).map((k) => (k instanceof Node ? k : document.createTextNode(String(k)))));
+  return el;
+}
 function h(tag, attrs, ...kids) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
@@ -52,6 +58,11 @@ const P = {
   plug: '<path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0Z"/><path d="M12 17v4"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/>',
   film: '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7.5 4v16M16.5 4v16M3 9h4.5M3 15h4.5M16.5 9H21M16.5 15H21"/>',
+  bag: '<path d="M5 8h14l-1 12H6Z"/><path d="M9 8V6.5a3 3 0 0 1 6 0V8"/>',
+  phone: '<rect x="6.5" y="2.5" width="11" height="19" rx="3"/><path d="M10.5 18.5h3"/>',
+  flame: '<path d="M12 21c4 0 6.5-2.6 6.5-6.2 0-3.6-2.8-5.9-4.3-9.8-1 2.6-2.4 3.7-3.7 4.4C10 7.6 9.3 6.3 9 5c-2 2.4-3.5 5.6-3.5 9.6C5.5 18.3 8 21 12 21Z"/>',
+  plane: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3Z"/>',
+  cup: '<path d="M4 9h13v5a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5Z"/><path d="M17 11h1.5a2.5 2.5 0 0 1 0 5H17M8 3.5c-.5 1 .5 1.8 0 3M12 3.5c-.5 1 .5 1.8 0 3"/>',
 };
 function icon(name, size = 20, sw = 1.9) {
   const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -132,7 +143,7 @@ function setCredits(n) {
 // ── boot & routing ───────────────────────────────────────────────────────────────────────────────────────────────
 async function boot() {
   applyTheme();
-  try { S.config = await api("/api/config"); } catch (e) { $("#app").replaceChildren(h("div", { class: "boot" }, h("p", {}, "Kleo Studio can't load right now. Please refresh."))); return; }
+  try { S.config = await api("/api/config"); } catch (e) { fill($("#app"), h("div", { class: "boot" }, h("p", {}, "Kleo Studio can't load right now. Please refresh."))); return; }
   const err = new URLSearchParams(location.search).get("signin_error");
   if (err) { history.replaceState(null, "", "/"); setTimeout(() => toast(err === "day_full" ? "Kleo is full for new accounts today." : "Google sign-in didn't finish. Try again.", true), 300); }
   try { S.me = await api("/api/me"); } catch (e) { if (e.code === "signin" || e.status === 401) return renderAuth(); return handleError(e); }
@@ -167,7 +178,7 @@ function renderAuth(mode = "signup") {
   const submit = h("button", { class: "btn btn-primary", type: "submit" }, mode === "signup" ? "Create account" : "Sign in");
   const form = h("form", { onsubmit: async (ev) => {
     ev.preventDefault(); err.textContent = ""; submit.disabled = true;
-    const old = submit.textContent; submit.replaceChildren(h("span", { class: "spin", style: { borderColor: "rgba(127,127,127,.3)", borderTopColor: "currentColor" } }));
+    const old = submit.textContent; fill(submit, h("span", { class: "spin", style: { borderColor: "rgba(127,127,127,.3)", borderTopColor: "currentColor" } }));
     try {
       if (showKey) await api("/api/auth/key", { method: "POST", body: { key: key.value } });
       else await api(mode === "signup" ? "/api/auth/signup" : "/api/auth/signin", { method: "POST", body: { email: email.value, password: pass.value } });
@@ -185,7 +196,7 @@ function renderAuth(mode = "signup") {
     (showKey ? key : email).focus();
   } }, "I have a Kleo key");
   form.insertBefore(keyBox, err);
-  $("#app").replaceChildren(h("div", { class: "auth" }, h("div", { class: "auth-card" },
+  fill($("#app"), h("div", { class: "auth" }, h("div", { class: "auth-card" },
     h("img", { class: "logo", src: "/kleo-mark.svg", alt: "Kleo" }),
     h("h1", {}, mode === "signup" ? "Create with Kleo" : "Welcome back"),
     h("p", { class: "sub" }, "Make AI videos just by chatting."),
@@ -224,7 +235,7 @@ function renderShell() {
       h("button", { class: "credits-pill", onclick: openAccount, "aria-label": "Credits" }, bolt(15), h("span", { "data-credits": "" }, S.me.credits))),
     h("div", { class: "scroll", id: "scroll", onscroll: (e) => $("#topbar").classList.toggle("scrolled", e.target.scrollTop > 4) }, h("div", { class: "col", id: "col" })),
     h("div", { class: "dock", id: "dock" }, composer()));
-  $("#app").replaceChildren(h("div", { class: "shell" }, side, main));
+  fill($("#app"), h("div", { class: "shell" }, side, main));
 }
 function openSide() { $("#side").classList.add("open"); const s = h("div", { class: "side-scrim", onclick: closeSide }); document.body.append(s); S.sideScrim = s; }
 function closeSide() { $("#side")?.classList.remove("open"); S.sideScrim?.remove(); S.sideScrim = null; }
@@ -235,7 +246,7 @@ async function loadChats() {
 }
 function renderChats() {
   const box = $("#chats"); if (!box) return;
-  box.replaceChildren(...(S.chats.length ? S.chats.map((c) => h("div", { class: "chat-item" + (S.chat?.id === c.id && S.view === "chat" ? " on" : ""), role: "button", tabindex: "0",
+  fill(box, ...(S.chats.length ? S.chats.map((c) => h("div", { class: "chat-item" + (S.chat?.id === c.id && S.view === "chat" ? " on" : ""), role: "button", tabindex: "0",
     onclick: () => go(`/c/${c.id}`), onkeydown: (e) => e.key === "Enter" && go(`/c/${c.id}`) },
     h("span", {}, c.title || "Untitled"),
     h("button", { class: "del", title: "Delete chat", "aria-label": "Delete chat", onclick: async (e) => {
@@ -256,7 +267,7 @@ function newChat() {
 }
 async function openChat(id) {
   S.view = "chat"; $("#dock").style.display = "";
-  if (S.chat?.id !== id) { S.chat = { id }; S.messages = []; $("#col").replaceChildren(h("div", { class: "hero" }, h("span", { class: "spin dark", style: { margin: "0 auto" } }))); }
+  if (S.chat?.id !== id) { S.chat = { id }; S.messages = []; fill($("#col"), h("div", { class: "hero" }, h("span", { class: "spin dark", style: { margin: "0 auto" } }))); }
   renderChats();
   try {
     const r = await api(`/api/chats/${id}`);
@@ -271,25 +282,25 @@ function collectGens(m) {
 }
 
 const IDEAS = [
-  { em: "🎬", t: "Cinematic product shot", p: "A sleek black wireless earbud case opening slowly on a wet reflective surface, macro lens, soft rim light, slow orbit, premium commercial look, subtle whoosh sound." },
-  { em: "📱", t: "Scroll-stopping TikTok hook", p: "A vertical POV shot running through a neon night market in Tokyo, handheld energy, steam and lights, fast and exciting, upbeat ambience." },
-  { em: "🖼️", t: "Animate a photo", p: "", photo: true },
-  { em: "🐉", t: "Anime fight scene", p: "Two anime warriors clash on a rooftop at sunset, dramatic speed lines, wind in their hair, dynamic camera swing, epic music swell." },
-  { em: "🌊", t: "Dreamy travel clip", p: "Drone shot gliding over turquoise water toward a tiny island with one palm tree at golden hour, gentle waves, calm ambient sound." },
-  { em: "☕", t: "Cozy café ad", p: "Close-up of latte art being poured in a warm sunlit café, steam rising, shallow depth of field, slow push-in, soft jazz in the background." },
+  { ic: "bag", c: "#ff9500", t: "Cinematic product shot", p: "A sleek black wireless earbud case opening slowly on a wet reflective surface, macro lens, soft rim light, slow orbit, premium commercial look, subtle whoosh sound." },
+  { ic: "phone", c: "#ff2d55", t: "Scroll-stopping TikTok hook", p: "A vertical POV shot running through a neon night market in Tokyo, handheld energy, steam and lights, fast and exciting, upbeat ambience." },
+  { ic: "photo", c: "#007aff", t: "Animate a photo", p: "", photo: true },
+  { ic: "flame", c: "#af52de", t: "Anime fight scene", p: "Two anime warriors clash on a rooftop at sunset, dramatic speed lines, wind in their hair, dynamic camera swing, epic music swell." },
+  { ic: "plane", c: "#30b0c7", t: "Dreamy travel clip", p: "Drone shot gliding over turquoise water toward a tiny island with one palm tree at golden hour, gentle waves, calm ambient sound." },
+  { ic: "cup", c: "#a2845e", t: "Cozy café ad", p: "Close-up of latte art being poured in a warm sunlit café, steam rising, shallow depth of field, slow push-in, soft jazz in the background." },
 ];
 function renderMessages(jump = false) {
   const col = $("#col"); if (!col) return;
   if (!S.messages.length) {
-    col.replaceChildren(h("div", { class: "hero" },
+    fill(col, h("div", { class: "hero" },
       h("img", { src: "/kleo-mark.svg", alt: "" }),
       h("h1", {}, "What do you want to create?"),
       h("p", {}, S.agent ? "Tell me your idea, drop a photo, or tap an example. I'll set up the perfect video." : "Describe your video and hit Generate."),
       h("div", { class: "ideas" }, IDEAS.map((i) => h("button", { class: "idea", onclick: () => useIdea(i) },
-        h("span", { class: "em" }, i.em), h("div", {}, h("b", {}, i.t), h("span", {}, i.photo ? "Upload a picture and bring it to life." : i.p)))))));
+        h("span", { class: "em", style: { background: i.c } }, icon(i.ic, 19, 2)), h("div", {}, h("b", {}, i.t), h("span", {}, i.photo ? "Upload a picture and bring it to life." : i.p)))))));
     return;
   }
-  col.replaceChildren(...S.messages.map(messageEl));
+  fill(col, ...S.messages.map(messageEl));
   if (jump) requestAnimationFrame(() => { const s = $("#scroll"); s.style.scrollBehavior = "auto"; s.scrollTop = s.scrollHeight; s.style.scrollBehavior = ""; });
 }
 function useIdea(i) {
@@ -336,7 +347,7 @@ function proposalEl(m) {
     const long = p.prompt.length > 220;
     const cost = price(s);
     const lockd = !allowed(s.model);
-    wrap.replaceChildren(
+    fill(wrap, 
       h("div", { class: "card-h" }, h("span", { class: "eyebrow" }, icon("sparkle", 13, 2.2), gens.length ? "Your video" : "Ready to generate")),
       h("div", { class: "card-title" }, p.title),
       promptBox,
@@ -344,7 +355,7 @@ function proposalEl(m) {
       p.imageIds?.length ? h("div", { class: "card-thumbs" }, p.imageIds.map((id) => h("img", { src: DEMO ? demoUploads.get(id) : `/media/u/${id}`, alt: "" }))) : null,
       settingPills(s, (ns) => { s = fix(ns, p.imageIds?.length || 0); p.settings = s; draw(); }),
       h("div", { class: "card-f" },
-        h("button", { class: "btn btn-primary btn-grow", disabled: S.busy, onclick: (e) => generateFromProposal(m, s, e.currentTarget) },
+        h("button", { class: "btn btn-primary btn-grow", onclick: (e) => generateFromProposal(m, s, e.currentTarget) },
           lockd ? icon("lock", 17) : null, gens.length ? "Generate again" : "Generate", h("span", { class: "cost" }, bolt(14), cost)),
         h("button", { class: "btn btn-quiet", onclick: () => { editing = !editing; draw(); if (editing) wrap.querySelector("textarea")?.focus(); } }, editing ? "Done" : "Edit")),
       ...gens.map((g) => clipEl(g.id)));
@@ -481,7 +492,7 @@ function drawChips() {
   const s = S.settings = fix(S.settings, S.attachments.length);
   const m = model(s.model);
   const set = (ns) => { S.settings = fix(ns, S.attachments.length); store.set("settings", S.settings); drawChips(); updateSend(); };
-  box.replaceChildren(
+  fill(box, 
     h("button", { class: "chip model", onclick: () => openModelPicker(s, set) }, h("span", { class: "dot" }), m.name, icon("down", 14, 2.2)),
     s.imageRole === "first_frame" ? null : h("button", { class: "chip", onclick: () => openAspect(s, set) }, icon("frame", 16), s.aspect),
     h("button", { class: "chip", onclick: (e) => openMenu(e.currentTarget, m.durations.map((d) => ({ label: `${d} seconds`, value: d, on: d === s.duration, cost: price({ ...s, duration: d }) })), (v) => set({ ...s, duration: v })) }, icon("clock", 16), `${s.duration}s`),
@@ -493,10 +504,10 @@ function updateSend() {
   const text = $("#prompt")?.value.trim() || "";
   const ready = (text || S.attachments.length) && !S.busy && !S.attachments.some((a) => !a.id);
   if (S.agent) {
-    slot.replaceChildren(h("button", { class: "send", disabled: !ready, "aria-label": "Send", onclick: submit }, S.busy ? h("span", { class: "spin", style: { borderColor: "rgba(127,127,127,.35)", borderTopColor: "currentColor", width: "16px", height: "16px" } }) : icon("up", 20, 2.4)));
+    fill(slot, h("button", { class: "send", disabled: !ready, "aria-label": "Send", onclick: submit }, S.busy ? h("span", { class: "spin", style: { borderColor: "rgba(127,127,127,.35)", borderTopColor: "currentColor", width: "16px", height: "16px" } }) : icon("up", 20, 2.4)));
   } else {
     const s = fix(S.settings, S.attachments.length);
-    slot.replaceChildren(h("button", { class: "gen-btn", disabled: !ready, onclick: submit }, !allowed(s.model) ? icon("lock", 15) : null, h("span", { class: "lbl-text" }, "Generate"), h("span", { class: "cost" }, bolt(14), price(s))));
+    fill(slot, h("button", { class: "gen-btn", disabled: !ready, onclick: submit }, !allowed(s.model) ? icon("lock", 15) : null, h("span", { class: "lbl-text" }, "Generate"), h("span", { class: "cost" }, bolt(14), price(s))));
   }
 }
 
@@ -534,7 +545,7 @@ function drawAttachments() {
   const box = $("#att"); if (!box) return;
   const one = S.attachments.length === 1;
   const s = fix(S.settings, S.attachments.length);
-  box.replaceChildren(...S.attachments.map((a) => h("div", { class: "thumb" },
+  fill(box, ...S.attachments.map((a) => h("div", { class: "thumb" },
     h("img", { src: a.local, alt: "" }),
     !a.id ? h("div", { class: "busy" }, h("span", { class: "spin" })) : null,
     a.id ? h("button", { class: "role", title: one ? "Tap to switch: start frame or style reference" : "Used as reference", onclick: () => {
@@ -703,12 +714,12 @@ async function showGallery() {
   S.view = "gallery"; S.chat = null; $("#title").textContent = "My videos"; $("#dock").style.display = "none";
   renderChats();
   const col = $("#col");
-  col.replaceChildren(h("div", { class: "gallery-h" }, h("h1", {}, "My videos")), h("div", { class: "hero" }, h("span", { class: "spin dark", style: { margin: "0 auto" } })));
+  fill(col, h("div", { class: "gallery-h" }, h("h1", {}, "My videos")), h("div", { class: "hero" }, h("span", { class: "spin dark", style: { margin: "0 auto" } })));
   try {
     const { generations } = await api("/api/generations?limit=100");
     for (const g of generations) { S.gens.set(g.id, g); if (g.status === "running") watch(g.id); }
     const shown = generations.filter((g) => g.status !== "failed");
-    col.replaceChildren(h("div", { class: "gallery-h" }, h("h1", {}, "My videos"), h("span", {}, `${shown.filter((g) => g.status === "done").length} videos`)),
+    fill(col, h("div", { class: "gallery-h" }, h("h1", {}, "My videos"), h("span", {}, `${shown.filter((g) => g.status === "done").length} videos`)),
       shown.length ? h("div", { class: "grid" }, shown.map(tileEl))
         : h("div", { class: "empty-gallery" }, h("b", {}, "No videos yet"), "Everything you generate lands here.", h("div", { style: { marginTop: "18px" } }, h("button", { class: "btn btn-primary", onclick: () => go("/") }, icon("sparkle", 18), "Make your first video"))));
   } catch (e) { handleError(e); }

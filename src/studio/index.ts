@@ -332,9 +332,14 @@ export default {
       return fail(e);
     }
     // The single-page app: real files as they are, every other path gets index.html (client-side routes).
-    const asset = await env.ASSETS.fetch(request);
-    if (asset.status !== 404 || request.method !== "GET") return asset;
-    return env.ASSETS.fetch(new Request(new URL("/", url).toString(), request));
+    let asset = await env.ASSETS.fetch(request);
+    if (asset.status === 404 && request.method === "GET") asset = await env.ASSETS.fetch(new Request(new URL("/", url).toString(), request));
+    // The page itself is never cached, so a release reaches everybody on the next load (its scripts carry ?v=).
+    if ((asset.headers.get("content-type") ?? "").includes("text/html")) {
+      asset = new Response(asset.body, asset);
+      asset.headers.set("cache-control", "no-store");
+    }
+    return asset;
   },
 
   async scheduled(_event: ScheduledController, env: StudioEnv, ctx: ExecutionContext): Promise<void> {
