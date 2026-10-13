@@ -5,7 +5,7 @@
  * Same D1 database and R2 bucket: one account, one balance, one payment history for both.
  *
  *   /api/*          JSON API for the page (session cookie; every POST/PATCH/DELETE needs the header X-Kleo: 1)
- *   /auth/google*   Google sign-in round trip
+ *   /auth/<google|microsoft>[/callback]   social sign-in round trip (?link=1 adds it to the signed-in account)
  *   /media/...      the person's pictures and clips (cookie, or a signed link for the provider and for sharing)
  *   everything else the single-page app in studio-web/ (served by the ASSETS binding, index.html for app routes)
  *   cron            every minute: refresh the clips still with the provider, save the finished ones, refund the failed
@@ -24,7 +24,7 @@ import {
 } from "./store.ts";
 import { StudioError, createGeneration, refreshGeneration, publicGeneration, marginOf } from "./generate.ts";
 import { runAgent, chatTitle, type Proposal } from "./agent.ts";
-import { signUp, signIn, signInWithKey, addPassword, me, signedIn, googleEnabled, googleStart, googleCallback, forgotPassword, resetPassword, resetAvailable } from "./auth.ts";
+import { signUp, signIn, signInWithKey, addPassword, me, signedIn, googleEnabled, microsoftEnabled, enabledSocial, socialEnabled, socialStart, socialCallback, forgotPassword, resetPassword, resetAvailable, type SocialKey } from "./auth.ts";
 import { SESSION_COOKIE, clearSessionCookie, readCookie, readSession, signPath, checkSignedPath } from "./session.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
@@ -161,7 +161,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
   // ── no session needed ──
   if (path === "/api/config" && method === "GET") {
     return json({
-      google: googleEnabled(env), turnstile: env.TURNSTILE_SITEKEY ?? null, defaultModel: DEFAULT_MODEL,
+      google: googleEnabled(env), microsoft: microsoftEnabled(env), social: enabledSocial(env), turnstile: env.TURNSTILE_SITEKEY ?? null, defaultModel: DEFAULT_MODEL,
       models: publicCatalog(marginOf(env), freeModels(env.STUDIO_FREE_MODELS)), freeCredits: Number(env.FREE_CREDITS ?? 5),
       defaultImageModel: DEFAULT_IMAGE_MODEL, imageModels: publicImageCatalog(marginOf(env), freeImageModels(env.STUDIO_FREE_IMAGE_MODELS)),
       emailReset: resetAvailable(env),
@@ -347,8 +347,13 @@ export default {
       if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/media/") || url.pathname.startsWith("/auth/")) await ensureStudioSchema(env);
       if (url.pathname.startsWith("/api/")) return await api(env, request, url, ctx);
       if (url.pathname.startsWith("/media/")) return await handleMedia(env, request, url);
-      if (url.pathname === "/auth/google") return googleEnabled(env) ? googleStart(env, url.origin) : Response.redirect(`${url.origin}/`, 302);
-      if (url.pathname === "/auth/google/callback") return googleEnabled(env) ? await googleCallback(env, request, url.origin) : Response.redirect(`${url.origin}/`, 302);
+      const social = url.pathname.match(/^\/auth\/(google|microsoft)(\/callback)?$/);
+      if (social) {
+        const key = social[1] as SocialKey;
+        if (!socialEnabled(env, key)) return Response.redirect(`${url.origin}/`, 302);
+        if (!social[2]) return socialStart(env, key, url.origin, url.searchParams.get("link") === "1");
+        return await socialCallback(env, key, request, url.origin, await sessionUser(env, request));
+      }
       if (url.pathname === "/health") return json({ ok: true, service: "kleo-studio" });
     } catch (e) {
       return fail(e);

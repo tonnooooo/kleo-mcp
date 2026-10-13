@@ -11,6 +11,8 @@
  *   EPHONE_API_KEY        the ePhone AI key (video models and the chat agent)
  *   GOOGLE_CLIENT_ID      optional: Google sign-in (OAuth client "Web application", redirect URI
  *   GOOGLE_CLIENT_SECRET    https://app.kleooai.com/auth/google/callback); the button appears when both are set
+ *   MICROSOFT_CLIENT_ID   optional: Microsoft sign-in (Entra app registration, "any organizational directory and personal
+ *   MICROSOFT_CLIENT_SECRET Microsoft accounts", Web redirect https://app.kleooai.com/auth/microsoft/callback)
  *   TURNSTILE_SECRET      optional: bot check on sign-up, together with the TURNSTILE_SITEKEY var
  */
 {

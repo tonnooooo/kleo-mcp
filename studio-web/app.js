@@ -84,6 +84,10 @@ function bolt(size = 14) {
 }
 const googleLogo = () => h("span", { html: '<svg width="20" height="20" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34 6.1 29.3 4 24 4 13 4 4 13 4 24s9 20 20 20 20-9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>' });
 
+const microsoftLogo = () => h("span", { html: '<svg width="19" height="19" viewBox="0 0 23 23" aria-hidden="true"><path fill="#f25022" d="M1 1h10v10H1z"/><path fill="#7fba00" d="M12 1h10v10H12z"/><path fill="#00a4ef" d="M1 12h10v10H1z"/><path fill="#ffb900" d="M12 12h10v10H12z"/></svg>' });
+const SOCIAL = { google: { label: "Google", logo: googleLogo }, microsoft: { label: "Microsoft", logo: microsoftLogo } };
+const socialList = () => (S.config?.social || (S.config?.google ? ["google"] : [])).filter((k) => SOCIAL[k]);
+
 const store = {
   get(k, d) { try { const v = localStorage.getItem("kleo." + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem("kleo." + k, JSON.stringify(v)); } catch { /* private mode */ } },
@@ -160,8 +164,18 @@ async function boot() {
   try { S.config = await api("/api/config"); } catch { fill($("#app"), h("div", { class: "boot" }, h("p", {}, "Kleo Studio can't load right now. Please refresh."))); return; }
   const q = new URLSearchParams(location.search);
   if (location.pathname === "/reset" && q.get("t")) return renderReset(q.get("t"));
-  const err = q.get("signin_error");
-  if (err) { history.replaceState(null, "", "/"); setTimeout(() => toast(err === "day_full" ? "Kleo is full for new accounts today." : "Google sign-in didn't finish. Try again.", true), 300); }
+  const err = q.get("signin_error"), linked = q.get("linked");
+  if (err || linked) {
+    history.replaceState(null, "", "/");
+    const who = (k) => SOCIAL[k]?.label || "That account";
+    const msg = linked ? `${who(linked)} is now connected — use it to sign in next time.`
+      : err === "day_full" ? "Kleo is full for new accounts today. Please come back tomorrow."
+      : err === "address_full" ? "Too many new accounts from this connection today."
+      : /^taken_/.test(err) ? `That ${who(err.slice(6))} account already belongs to another Kleo account.`
+      : err === "cancelled" ? "Sign-in was cancelled."
+      : `${who(err)} sign-in didn't finish. Please try again.`;
+    setTimeout(() => toast(msg, !linked), 300);
+  }
   try { S.me = await api("/api/me"); } catch (e) { if (e.code === "signin" || e.status === 401) return renderAuth(); return handleError(e); }
   await enter();
 }
@@ -228,7 +242,7 @@ function renderAuth(mode = "signup") {
   } }, "I have a Kleo key");
   authFrame(mode === "signup" ? "Create with Kleo" : "Welcome back", "Make AI videos and pictures just by chatting.",
     mode === "signup" ? h("div", { class: "gift" }, bolt(15), `${S.config?.freeCredits ?? 5} free credits to start`) : null,
-    S.config?.google ? [h("a", { class: "btn google", href: "/auth/google" }, googleLogo(), "Continue with Google"), h("div", { class: "or" }, "or")] : null,
+    socialList().length ? [h("div", { class: "socials" }, socialList().map((k) => h("a", { class: "btn google", href: `/auth/${k}` }, SOCIAL[k].logo(), `Continue with ${SOCIAL[k].label}`))), h("div", { class: "or" }, "or use e-mail")] : null,
     form,
     h("div", { class: "auth-switch" },
       mode === "signup" ? ["Already have an account? ", h("button", { type: "button", onclick: () => renderAuth("signin") }, "Sign in")]
@@ -847,7 +861,12 @@ function openAccount() {
         navigator.clipboard.writeText(S.me.kleoKey); toast("Kleo key copied — keep it private");
       } }, icon("key", 19), h("div", { class: "lbl" }, h("b", {}, "Kleo key"), h("span", {}, "Tap to show, tap again to copy. It signs in to your account.")))),
     keyBox,
-    !hasPass ? [h("div", { class: "field-label" }, "Secure your account"), addPasswordForm()] : null,
+    socialList().length ? [h("div", { class: "field-label" }, "Sign-in methods"), h("div", { class: "list" }, socialList().map((k) => {
+      const on = S.me.methods?.includes(k);
+      return h(on ? "div" : "a", { class: "row", href: on ? null : `/auth/${k}?link=1` }, SOCIAL[k].logo(), h("div", { class: "lbl" }, h("b", {}, SOCIAL[k].label), h("span", {}, on ? "Connected" : `Sign in with ${SOCIAL[k].label} next time`)),
+        on ? h("span", { class: "check" }, icon("check", 18, 2.4)) : h("span", { class: "val" }, "Connect", icon("right", 16)));
+    }))] : null,
+    !hasPass ? [h("div", { class: "field-label" }, "E-mail and password"), addPasswordForm()] : null,
     h("div", { class: "field-label" }, "Appearance"), seg,
     h("div", { class: "list", style: { marginTop: "14px" } },
       h("button", { class: "row danger", onclick: signOut }, icon("out", 19), h("div", { class: "lbl" }, h("b", {}, "Sign out")))));
@@ -960,8 +979,8 @@ async function demoApi(path, opts) {
   await new Promise((r) => setTimeout(r, path === "/api/chat" ? 1100 : 150));
   const method = opts.method || "GET", b = opts.body || {};
   const now = () => new Date().toISOString();
-  if (path === "/api/config") return { google: true, emailReset: true, defaultModel: "seedance-2.5", models: demoCatalog(), defaultImageModel: "nano-banana-2", imageModels: demoImageCatalog(), freeCredits: 5 };
-  if (path === "/api/me") return { id: "u_demo", email: "you@example.com", credits: demoDb.credits, paid: true, allowed: demoCatalog().map((m) => m.key), allowedImages: demoImageCatalog().map((m) => m.key), methods: ["password"], kleoKey: "u_demo.0123456789abcdef0123456789abcdef", mcpUrl: "https://mcp.kleooai.com/mcp", packs: [{ label: "5 EUR", credits: 10, url: "https://kleooai.com/pricing/" }, { label: "15 EUR", credits: 35, url: "https://kleooai.com/pricing/" }, { label: "40 EUR", credits: 100, url: "https://kleooai.com/pricing/" }] };
+  if (path === "/api/config") return { google: true, microsoft: true, social: ["google", "microsoft"], emailReset: true, defaultModel: "seedance-2.5", models: demoCatalog(), defaultImageModel: "nano-banana-2", imageModels: demoImageCatalog(), freeCredits: 5 };
+  if (path === "/api/me") return { id: "u_demo", email: "you@example.com", credits: demoDb.credits, paid: true, allowed: demoCatalog().map((m) => m.key), allowedImages: demoImageCatalog().map((m) => m.key), methods: ["password", "google"], kleoKey: "u_demo.0123456789abcdef0123456789abcdef", mcpUrl: "https://mcp.kleooai.com/mcp", packs: [{ label: "5 EUR", credits: 10, url: "https://kleooai.com/pricing/" }, { label: "15 EUR", credits: 35, url: "https://kleooai.com/pricing/" }, { label: "40 EUR", credits: 100, url: "https://kleooai.com/pricing/" }] };
   if (path === "/api/auth/signout") return { ok: true };
   if (path === "/api/chats" && method === "GET") return { chats: demoDb.chats };
   const cm = path.match(/^\/api\/chats\/(c_\w+)$/);
