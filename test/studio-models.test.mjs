@@ -143,3 +143,45 @@ test("agent: a tool call becomes a card; an unreachable model still gives a usab
     assert.equal(f.proposal.prompt, "a dragon over Venice");
   } finally { globalThis.fetch = real; }
 });
+
+import { IMAGE_MODELS, normalizeImageSettings, imageCredits, imageCostUsd, imageTaskInput, freeImageModels, publicImageCatalog } from "../src/studio/image-models.ts";
+import { imageProposalFrom } from "../src/studio/agent.ts";
+
+test("image models: every quality priced; credits per set; never under 1.5× cost", () => {
+  for (const m of IMAGE_MODELS) for (const q of m.qualities) assert.ok(m.usd[q] > 0, `${m.key} ${q}`);
+  const c = (model, quality, count) => imageCredits({ model, aspect: "1:1", quality, count });
+  assert.equal(c("nano-banana-pro", "2K", 1), 1);
+  assert.equal(c("nano-banana-pro", "2K", 4), 2);
+  assert.equal(c("nano-banana-2", "2K", 4), 1);
+  assert.equal(c("seedream-5", "2K", 4), 1);
+  for (const m of IMAGE_MODELS) for (const q of m.qualities) for (const n of [1, 2, 4]) {
+    const s = { model: m.key, aspect: "1:1", quality: q, count: n };
+    assert.ok(imageCredits(s) * 0.44 >= imageCostUsd(s) * 1.5, `${m.key} ${q} ×${n}`);
+  }
+  assert.deepEqual(freeImageModels(undefined), ["nano-banana-2", "seedream-5", "flux-2-pro"]);
+  assert.equal(publicImageCatalog(1.6, ["seedream-5"]).find((m) => m.key === "seedream-5").prices["2K"][4], 1);
+});
+
+test("image settings and provider input per model", () => {
+  const s = normalizeImageSettings({ model: "seedream-5", aspect: "9:16", quality: "4K", count: 3 });
+  assert.deepEqual(s, { model: "seedream-5", aspect: "9:16", quality: "2K", count: 1 });
+  const sd = imageTaskInput(s, "a cat", ["https://x/a.jpg"]);
+  assert.equal(sd.size, "1440x2560");
+  assert.equal(sd.watermark, false, "Seedream watermarks by default");
+  assert.deepEqual(sd.images, ["https://x/a.jpg"]);
+  const nb = imageTaskInput(normalizeImageSettings({ model: "nano-banana-pro", aspect: "4:5", quality: "4K" }), "a cat", []);
+  assert.deepEqual({ a: nb.aspect_ratio, q: nb.quality, i: nb.images }, { a: "4:5", q: "4K", i: undefined });
+  const fx = imageTaskInput(normalizeImageSettings({ model: "flux-2-pro", aspect: "16:9" }), "x", []);
+  assert.equal(fx.aspect_ratio, "16:9");
+  assert.equal(normalizeImageSettings({ model: "nope" }).model, "nano-banana-2");
+});
+
+test("agent picture cards: priced, on an allowed model", () => {
+  const ctx = { history: [], text: "logo", uploads: [{ id: "up_a" }], ui: {}, uiImage: { model: "nano-banana-2" }, mode: "image", credits: 5, allowed: [], allowedImages: ["nano-banana-2"], margin: 1.6 };
+  const p = imageProposalFrom({ title: "Logo", prompt: "A fox logo", model: "nano-banana-pro", count: 4 }, ctx);
+  assert.equal(p.kind, "image");
+  assert.equal(p.settings.model, "nano-banana-2");
+  assert.equal(p.settings.count, 4);
+  assert.deepEqual(p.imageIds, ["up_a"]);
+  assert.deepEqual(imageProposalFrom({ title: "x", prompt: "y", use_images: false }, ctx).imageIds, []);
+});

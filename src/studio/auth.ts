@@ -14,7 +14,8 @@
  */
 import type { StudioEnv } from "./env.ts";
 import type { Env } from "../env";
-import { createUserIfUnderCaps, getUser, getUserByEmail, audit } from "../db.ts";
+import { createUserIfUnderCaps, getUser, getUserByEmail, audit, countAuditTodayForUser } from "../db.ts";
+import { emailConfigured, sendEmail } from "../email.ts";
 import { verifyHandle, ipFingerprint, verifyTurnstile, makeHandle } from "../accounts.ts";
 import { rid } from "../util.ts";
 import { addLogin, getLogin, loginsOf, touchLogin } from "./store.ts";
@@ -111,6 +112,52 @@ export async function me(env: StudioEnv, userId: string): Promise<Record<string,
     kleoKey: await makeHandle(asEnv(env), user.id),
     mcpUrl: `${env.PUBLIC_URL.replace(/\/+$/, "")}/mcp`,
   };
+}
+
+// ── Password reset ─────────────────────────────────────────────────────────────────────────────────────────────────
+// The link carries "<userId>.<exp>.<sig>"; the signature covers the CURRENT password hash, so a link stops working
+// the moment the password changes (used once, or reset another way). One hour, three mails per account per day.
+const RESET_TTL_S = 3600;
+const RESETS_PER_DAY = 3;
+
+async function resetSig(env: StudioEnv, userId: string, exp: number, secret: string): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.INTERNAL_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`kleo-studio-reset:${userId}:${exp}:${secret}`));
+  return [...new Uint8Array(sig)].slice(0, 16).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export const resetAvailable = (env: StudioEnv): boolean => emailConfigured(env as unknown as Env);
+
+/** Sends the reset link. Answers the same whether or not the address has an account. */
+export async function forgotPassword(env: StudioEnv, body: { email?: string }, origin: string): Promise<void> {
+  if (!resetAvailable(env)) throw new StudioError("Password reset by e-mail is not on yet. Write to hello@kleooai.com and we'll help.", 503, "no_email");
+  const email = normalizeEmail(String(body.email ?? ""));
+  if (!EMAIL_RE.test(email)) throw new StudioError("That e-mail doesn't look right.");
+  const login = await getLogin(env, "password", email);
+  if (!login?.secret) return;
+  if ((await countAuditTodayForUser(asEnv(env), login.user_id, "studio.reset_sent")) >= RESETS_PER_DAY) return;
+  const exp = Math.floor(Date.now() / 1000) + RESET_TTL_S;
+  const token = `${login.user_id}.${exp}.${await resetSig(env, login.user_id, exp, login.secret)}`;
+  const sent = await sendEmail(asEnv(env), {
+    to: email, subject: "Reset your Kleo password",
+    text: `Someone (hopefully you) asked to reset the password of your Kleo Studio account.\n\nChoose a new password here (the link works for one hour):\n${origin}/reset?t=${encodeURIComponent(token)}\n\nIf it wasn't you, ignore this e-mail: nothing changes.\n\nKleo`,
+  });
+  await audit(asEnv(env), login.user_id, null, "studio.reset_sent", { sent });
+}
+
+/** Sets the new password from a reset link; answers the account id (the person is signed in). */
+export async function resetPassword(env: StudioEnv, body: { token?: string; password?: string }): Promise<string> {
+  const m = /^([A-Za-z0-9_-]{1,64})\.(\d{9,11})\.([0-9a-f]{32})$/.exec(String(body.token ?? "").trim());
+  const bad = () => new StudioError("This reset link is no longer valid. Ask for a new one.", 400, "bad_link");
+  if (!m || Number(m[2]) * 1000 < Date.now()) throw bad();
+  const login = (await loginsOf(env, m[1])).find((l) => l.provider === "password");
+  const full = login ? await getLogin(env, "password", login.subject) : null;
+  if (!full?.secret || !safeEqual(m[3], await resetSig(env, m[1], Number(m[2]), full.secret))) throw bad();
+  const problem = passwordProblem(String(body.password ?? ""));
+  if (problem) throw new StudioError(problem);
+  await env.DB.prepare("UPDATE studio_logins SET secret = ? WHERE provider = 'password' AND subject = ?").bind(await hashPassword(String(body.password)), full.subject).run();
+  await audit(asEnv(env), m[1], null, "studio.reset_done", {});
+  return m[1];
 }
 
 // ── Google ─────────────────────────────────────────────────────────────────────────────────────────────────────────

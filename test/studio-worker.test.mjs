@@ -281,6 +281,67 @@ test("pictures: only the owner (or the provider's signed link) can fetch them; t
   } finally { p.restore(); }
 });
 
+test("pictures: a set of four, two fail, the share they stood for comes back; each picture is an upload", async () => {
+  const env = newEnv();
+  const cookie = await signUp(env);
+  const me = (await call(env, "/api/me", { cookie })).json;
+  assert.deepEqual(me.allowedImages, ["nano-banana-2", "seedream-5", "flux-2-pro"]);
+  const locked = await call(env, "/api/generate", { method: "POST", cookie, body: { kind: "image", prompt: "a fox", settings: { model: "nano-banana-pro" } } });
+  assert.equal(locked.json.code, "locked");
+  env.DB.db.exec(`INSERT INTO payments (session_id, user_id, credits, amount_cent, currency, status, raw_ref) VALUES ('manual_i', '${me.id}', 0, 0, 'eur', 'paid', 'tester')`);
+  let n = 0;
+  const png = new Uint8Array(4000); png.set([0x89, 0x50, 0x4e, 0x47]);
+  const p = fakeProvider((u) => {
+    if (u.endsWith("/v1/task/submit")) return ok({ id: `task_i${++n}` });
+    const m = u.match(/task_i(\d)$/);
+    if (m) return Number(m[1]) <= 2 ? ok({ status: "completed", outputs: [`https://cdn.example/p${m[1]}.png`] }) : ok({ status: "failed", error: "blocked by safety" });
+    if (u.startsWith("https://cdn.example/p")) return new Response(png, { status: 200, headers: { "content-type": "image/png" } });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { kind: "image", prompt: "a fox in a hat", settings: { model: "nano-banana-pro", count: 4, aspect: "4:5" } } });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.generation.kind, "image");
+    assert.equal(r.json.credits, 3, "4 Nano Banana Pro pictures cost 2 credits");
+    const submits = p.sent.filter((s) => s.url.endsWith("/v1/task/submit"));
+    assert.equal(submits.length, 4);
+    assert.equal(submits[0].body.model, "gemini-3-pro-image");
+    assert.equal(submits[0].body.input.aspect_ratio, "4:5");
+    assert.equal(submits[0].headers["X-Provider-Order"], "official_cheap");
+    old(env);
+    const done = await call(env, `/api/generations/${r.json.generation.id}`, { cookie });
+    assert.equal(done.json.generation.status, "done", done.text);
+    assert.equal(done.json.generation.outputs.length, 2);
+    assert.equal(done.json.credits, 4, "two failed pictures of four give back 1 of the 2 credits");
+    const pic = done.json.generation.outputs[0];
+    assert.equal((await call(env, pic.url, { cookie })).status, 200);
+    // A finished picture can start a video at once (it is an upload of this account).
+    const anim = await call(env, "/api/generate", { method: "POST", cookie, body: { prompt: "the fox winks", imageIds: [pic.upload], settings: { model: "seedance-2.0-fast" } } });
+    assert.equal(anim.status, 200, anim.text);
+    assert.match(p.sent.filter((s) => s.url.endsWith("/v1/task/submit")).at(-1).body.input.first_frame, /\/media\/u\/up_/);
+    const share = await call(env, `/api/generations/${r.json.generation.id}/share`, { method: "POST", cookie, body: { upload: pic.upload } });
+    assert.match(share.json.url, /\/media\/u\/up_.*sig=/);
+  } finally { p.restore(); }
+});
+
+test("password reset: off without an e-mail key; with one, a one-time link that dies when used", async () => {
+  const off = newEnv();
+  assert.equal((await call(off, "/api/auth/forgot", { method: "POST", body: { email: "a@b.co" } })).status, 503);
+  const env = newEnv({ RESEND_API_KEY: "re_x" });
+  await signUp(env, "rita@example.com");
+  let mail;
+  const p = fakeProvider((u, init) => { if (u.includes("api.resend.com")) { mail = JSON.parse(init.body); return ok({ id: "m1" }); } return new Response("?", { status: 404 }); });
+  try {
+    assert.equal((await call(env, "/api/auth/forgot", { method: "POST", body: { email: "nobody@example.com" } })).status, 200, "same answer for unknown addresses");
+    assert.equal(mail, undefined);
+    assert.equal((await call(env, "/api/auth/forgot", { method: "POST", body: { email: "rita@example.com" } })).status, 200);
+    const token = decodeURIComponent(mail.text.match(/reset\?t=(\S+)/)[1]);
+    assert.equal((await call(env, "/api/auth/reset", { method: "POST", body: { token, password: "brand new pass" } })).status, 200);
+    assert.equal((await call(env, "/api/auth/reset", { method: "POST", body: { token, password: "another pass 2" } })).status, 400, "the link died with the old password");
+    assert.equal((await call(env, "/api/auth/signin", { method: "POST", body: { email: "rita@example.com", password: "brand new pass" } })).status, 200);
+  } finally { p.restore(); }
+});
+
 test("the app shell is served for any page path", async () => {
   const env = newEnv();
   const r = await call(env, "/c/c_whatever");

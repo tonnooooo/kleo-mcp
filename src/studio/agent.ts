@@ -12,6 +12,7 @@
 import type { StudioEnv } from "./env.ts";
 import { ephone } from "../ephone.ts";
 import { MODELS, clipCredits, normalizeSettings, type ClipSettings, type ModelKey } from "./models.ts";
+import { IMAGE_MODELS, imageCredits, normalizeImageSettings, type ImageModelKey, type ImageSettings } from "./image-models.ts";
 import type { MessageRow, UploadRow } from "./store.ts";
 
 export const DEFAULT_AGENT_MODEL = "claude-haiku-5-5";
@@ -19,9 +20,11 @@ const CHAT_ROUTING = { "X-Provider-Order": "official_cheap,official", "X-Provide
 const HISTORY = 24;
 
 export interface Proposal {
+  /** A video clip or a set of pictures (old proposals have no kind: video). */
+  kind?: "video" | "image";
   title: string;
   prompt: string;
-  settings: ClipSettings;
+  settings: ClipSettings | ImageSettings;
   credits: number;
   imageIds: string[];
 }
@@ -33,8 +36,13 @@ export interface AgentContext {
   uploads: UploadRow[];
   /** The settings chosen on the page (model, duration, resolution, aspect, audio). */
   ui: Partial<Record<keyof ClipSettings, unknown>>;
+  /** The picture settings chosen on the page (model, aspect, quality, count). */
+  uiImage?: Partial<Record<keyof ImageSettings, unknown>>;
+  /** What the page is set to make: the agent leans that way when the request does not say. */
+  mode?: "video" | "image";
   credits: number;
   allowed: ModelKey[];
+  allowedImages?: ImageModelKey[];
   margin: number;
 }
 
@@ -60,6 +68,27 @@ const TOOL = {
   },
 };
 
+const IMAGE_TOOL = {
+  type: "function",
+  function: {
+    name: "propose_image",
+    description: "Show the user a ready-to-generate picture card (photo, poster, thumbnail, product shot, character, logo idea…). The user decides whether to generate it.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "2-5 word title for the card, in the user's language." },
+        prompt: { type: "string", description: "The full English prompt for the image model (40-120 words): subject, composition, setting, light, style, lens; exact text to render in quotes." },
+        model: { type: "string", enum: IMAGE_MODELS.map((m) => m.key) },
+        aspect: { type: "string", enum: ["1:1", "4:5", "3:4", "2:3", "9:16", "4:3", "3:2", "16:9", "21:9"] },
+        quality: { type: "string", enum: ["1K", "2K", "4K"] },
+        count: { type: "integer", enum: [1, 2, 4], description: "How many variations." },
+        use_images: { type: "boolean", description: "Use the attached pictures as references (edit or keep a person/product/style)." },
+      },
+      required: ["title", "prompt"],
+    },
+  },
+};
+
 export function systemPrompt(ctx: AgentContext): string {
   const ui = normalizeSettings(ctx.ui, ctx.uploads.length);
   const lines = MODELS.map((m) => {
@@ -67,18 +96,27 @@ export function systemPrompt(ctx: AgentContext): string {
     const lock = ctx.allowed.includes(m.key) ? "" : " [LOCKED for this user until they buy a pack]";
     return `- ${m.key} (${m.name}): ${m.blurb}. Durations ${m.durations.join("/")} s, ${m.resolutions.join("/")}, ratios ${m.aspects.join(" ")}. ${m.defaultDuration} s ${m.defaultResolution} ≈ ${p5} credits.${lock}`;
   }).join("\n");
-  return `You are Kleo, the creative director inside Kleo Studio, an app where people make AI videos.
+  const ui2 = normalizeImageSettings(ctx.uiImage ?? {});
+  const imageLines = IMAGE_MODELS.map((m) => {
+    const lock = (ctx.allowedImages ?? []).includes(m.key) ? "" : " [LOCKED for this user until they buy a pack]";
+    return `- ${m.key} (${m.name}): ${m.blurb}. Qualities ${m.qualities.join("/")}. 1 picture ≈ ${imageCredits({ model: m.key, aspect: "1:1", quality: m.defaultQuality, count: 1 }, ctx.margin)} credit(s), 4 pictures ≈ ${imageCredits({ model: m.key, aspect: "1:1", quality: m.defaultQuality, count: 4 }, ctx.margin)}.${lock}`;
+  }).join("\n");
+  return `You are Kleo, the creative director inside Kleo Studio, an app where people make AI videos and pictures.
 Talk like a friendly, talented creator: short (1-3 sentences), warm, zero jargon. Always reply in the language the user writes in.
 
-Your job: turn the user's idea into ONE great video clip and show it with the propose_video tool.
-- If the idea is clear enough, call propose_video right away. Do not ask permission first.
+Your job: turn the user's idea into ONE great result and show it as a card: propose_video for a clip, propose_image for a picture.
+The app is set to make ${ctx.mode === "image" ? "PICTURES" : "VIDEOS"} right now: use that unless the user clearly asks for the other.
+- If the idea is clear enough, call the tool right away. Do not ask permission first.
 - Ask at most one short question, and only when something essential is missing (for example "a video" with no subject).
 - Never say the video is being generated: the user taps Generate on the card. Mention the price in credits only if useful.
 - If the user asks to change something (longer, vertical, cheaper, different style), call propose_video again with the change.
 - Pictures the user attached: use image_role first_frame to animate a photo, reference to keep a person/product/style.
 
-Models (keys for the tool):
+Video models (keys for propose_video):
 ${lines}
+Picture models (keys for propose_image):
+${imageLines}
+Pictures chosen now: model ${ui2.model}, ${ui2.aspect}, ${ui2.quality}, ${ui2.count} at a time. Text inside a picture: Nano Banana Pro is best.
 Pick the user's chosen settings unless the idea clearly needs something else. Chosen now: model ${ui.model}, ${ui.duration} s, ${ui.resolution}, ${ui.aspect}, sound ${ui.audio ? "on" : "off"}.
 Social posts, TikTok, Reels, Shorts = 9:16. YouTube, film, trailer = 16:9. The user has ${ctx.credits} credits.
 
@@ -100,8 +138,11 @@ function historyLine(m: MessageRow): { role: "user" | "assistant"; content: stri
   const parts = [m.text ?? ""];
   if (data.proposal) {
     const p = data.proposal as Proposal;
-    parts.push(`[Proposed clip "${p.title}": ${p.settings.model}, ${p.settings.duration} s, ${p.settings.resolution}, ${p.settings.aspect}. Prompt: ${p.prompt}]`);
-    if (Array.isArray(data.generations) && data.generations.length) parts.push("[The user generated this clip.]");
+    const st = p.settings as Record<string, unknown>;
+    parts.push(p.kind === "image"
+      ? `[Proposed picture "${p.title}": ${st.model}, ${st.aspect}, ${st.quality}, ${st.count} at a time. Prompt: ${p.prompt}]`
+      : `[Proposed clip "${p.title}": ${st.model}, ${st.duration} s, ${st.resolution}, ${st.aspect}. Prompt: ${p.prompt}]`);
+    if (Array.isArray(data.generations) && data.generations.length) parts.push("[The user generated it.]");
   }
   if (data.generation) parts.push("[A clip was generated directly from the user's prompt.]");
   const text = parts.join("\n").trim();
@@ -138,6 +179,7 @@ export function proposalFrom(args: Record<string, unknown>, ctx: AgentContext): 
     if (fallback) settings = normalizeSettings({ ...settings, model: fallback }, uploads.length);
   }
   return {
+    kind: "video",
     title: String(args.title ?? "").trim().slice(0, 60) || "Your video",
     prompt: prompt.slice(0, 2000),
     settings,
@@ -146,8 +188,31 @@ export function proposalFrom(args: Record<string, unknown>, ctx: AgentContext): 
   };
 }
 
+/** The picture tool's arguments as a card, on a model this account may use. */
+export function imageProposalFrom(args: Record<string, unknown>, ctx: AgentContext): Proposal | null {
+  const prompt = String(args.prompt ?? "").trim();
+  if (!prompt) return null;
+  const ui = ctx.uiImage ?? {};
+  let settings = normalizeImageSettings({ model: args.model ?? ui.model, aspect: args.aspect ?? ui.aspect, quality: args.quality ?? ui.quality, count: args.count ?? ui.count });
+  const allowed = ctx.allowedImages ?? [];
+  if (!allowed.includes(settings.model)) {
+    const fallback = allowed.includes(String(ui.model) as ImageModelKey) ? String(ui.model) : allowed[0];
+    if (fallback) settings = normalizeImageSettings({ ...settings, model: fallback });
+  }
+  const uploads = args.use_images === false ? [] : ctx.uploads;
+  return {
+    kind: "image",
+    title: String(args.title ?? "").trim().slice(0, 60) || "Your picture",
+    prompt: prompt.slice(0, 4000),
+    settings,
+    credits: imageCredits(settings, ctx.margin),
+    imageIds: uploads.map((u) => u.id),
+  };
+}
+
 /** A proposal straight from the person's words, for when the model is unreachable. */
 export function fallbackProposal(ctx: AgentContext): Proposal | null {
+  if (ctx.mode === "image") return ctx.text.trim() ? imageProposalFrom({ title: ctx.text.trim().split(/\s+/).slice(0, 4).join(" "), prompt: ctx.text.trim() }, ctx) : null;
   if (!ctx.text.trim() && !ctx.uploads.length) return null;
   return proposalFrom({ title: ctx.text.trim().split(/\s+/).slice(0, 4).join(" ") || "Your video", prompt: ctx.text.trim() || "Bring this picture to life with natural, cinematic motion." }, ctx);
 }
@@ -163,7 +228,7 @@ export async function runAgent(env: StudioEnv, ctx: AgentContext, pictures: stri
   try {
     const r = await ephone<{ choices?: { message?: { content?: unknown; tool_calls?: { function?: { name?: string; arguments?: string } }[] } }[] }>(
       env, "POST", "/v1/chat/completions",
-      { model: (env.STUDIO_AGENT_MODEL ?? "").trim() || DEFAULT_AGENT_MODEL, messages, tools: [TOOL], tool_choice: "auto", max_tokens: 1200, temperature: 0.7 },
+      { model: (env.STUDIO_AGENT_MODEL ?? "").trim() || DEFAULT_AGENT_MODEL, messages, tools: [TOOL, IMAGE_TOOL], tool_choice: "auto", max_tokens: 1200, temperature: 0.7 },
       { timeoutMs: 45_000, routing: CHAT_ROUTING },
     );
     const msg = r.choices?.[0]?.message ?? {};
@@ -171,8 +236,12 @@ export async function runAgent(env: StudioEnv, ctx: AgentContext, pictures: stri
       : Array.isArray(msg.content) ? (msg.content as any[]).map((p) => (typeof p?.text === "string" ? p.text : "")).join("") : "";
     let proposal: Proposal | null = null;
     for (const call of msg.tool_calls ?? []) {
-      if (call.function?.name !== "propose_video") continue;
-      try { proposal = proposalFrom(JSON.parse(call.function.arguments ?? "{}"), ctx); } catch { /* malformed arguments: no card */ }
+      const name = call.function?.name;
+      if (name !== "propose_video" && name !== "propose_image") continue;
+      try {
+        const args = JSON.parse(call.function?.arguments ?? "{}");
+        proposal = name === "propose_image" ? imageProposalFrom(args, ctx) : proposalFrom(args, ctx);
+      } catch { /* malformed arguments: no card */ }
     }
     text = text.trim();
     if (!text && proposal) text = "Here's what I'd make. Tap Generate when you're ready, or tell me what to change.";

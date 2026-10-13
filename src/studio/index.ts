@@ -16,6 +16,7 @@ import { getUser, hasPaid } from "../db.ts";
 import { PACKS, buyUrl } from "../stripe.ts";
 import { rid } from "../util.ts";
 import { DEFAULT_MODEL, freeModels, publicCatalog, normalizeSettings, clipCredits } from "./models.ts";
+import { DEFAULT_IMAGE_MODEL, IMAGE_MODELS, freeImageModels, publicImageCatalog } from "./image-models.ts";
 import {
   ensureStudioSchema, listChats, getChat, createChat, touchChat, renameChat, deleteChat, listMessages, addMessage,
   getMessage, setMessageData, agentMessagesToday, addUpload, getUpload, uploadsOf, getGeneration, listGenerations,
@@ -23,7 +24,7 @@ import {
 } from "./store.ts";
 import { StudioError, createGeneration, refreshGeneration, publicGeneration, marginOf } from "./generate.ts";
 import { runAgent, chatTitle, type Proposal } from "./agent.ts";
-import { signUp, signIn, signInWithKey, addPassword, me, signedIn, googleEnabled, googleStart, googleCallback } from "./auth.ts";
+import { signUp, signIn, signInWithKey, addPassword, me, signedIn, googleEnabled, googleStart, googleCallback, forgotPassword, resetPassword, resetAvailable } from "./auth.ts";
 import { SESSION_COOKIE, clearSessionCookie, readCookie, readSession, signPath, checkSignedPath } from "./session.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
@@ -139,7 +140,8 @@ async function handleMedia(env: StudioEnv, request: Request, url: URL): Promise<
   if (up) {
     const u = await getUpload(env, up[1]);
     if (!u || (!signed && u.user_id !== viewer)) return new Response("Not found", { status: 404 });
-    return serveFile(env, request, u.key, `${u.id}.jpg`, false, "private, max-age=86400");
+    const ext = (u.key.split(".").pop() ?? "jpg").replace("jpeg", "jpg");
+    return serveFile(env, request, u.key, `kleo-${u.id}.${ext}`, url.searchParams.get("dl") === "1", "private, max-age=86400");
   }
   const clip = url.pathname.match(/^\/media\/(g_[a-z0-9]+)\.mp4$/);
   if (clip) {
@@ -161,6 +163,8 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     return json({
       google: googleEnabled(env), turnstile: env.TURNSTILE_SITEKEY ?? null, defaultModel: DEFAULT_MODEL,
       models: publicCatalog(marginOf(env), freeModels(env.STUDIO_FREE_MODELS)), freeCredits: Number(env.FREE_CREDITS ?? 5),
+      defaultImageModel: DEFAULT_IMAGE_MODEL, imageModels: publicImageCatalog(marginOf(env), freeImageModels(env.STUDIO_FREE_IMAGE_MODELS)),
+      emailReset: resetAvailable(env),
     });
   }
   if (path.startsWith("/api/auth/") && method === "POST") {
@@ -170,6 +174,8 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     if (path === "/api/auth/signin") return signedIn(env, await signIn(env, await body(request)));
     if (path === "/api/auth/key") return signedIn(env, await signInWithKey(env, String((await body(request)).key ?? "")));
     if (path === "/api/auth/signout") return json({ ok: true }, 200, { "set-cookie": clearSessionCookie() });
+    if (path === "/api/auth/forgot") { await forgotPassword(env, await body(request), origin); return json({ ok: true }); }
+    if (path === "/api/auth/reset") return signedIn(env, await resetPassword(env, await body(request)));
   }
 
   const userId = await sessionUser(env, request);
@@ -181,7 +187,10 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     const info = await me(env, userId);
     if (!info) return json({ error: "Please sign in.", code: "signin" }, 401, { "set-cookie": clearSessionCookie() });
     const paid = await hasPaid(asEnv(env), userId);
-    return json({ ...info, paid, allowed: paid ? publicCatalog().map((m: any) => m.key) : freeModels(env.STUDIO_FREE_MODELS), packs: packsFor(env, userId) });
+    return json({
+      ...info, paid, allowed: paid ? publicCatalog().map((m: any) => m.key) : freeModels(env.STUDIO_FREE_MODELS),
+      allowedImages: paid ? IMAGE_MODELS.map((m) => m.key) : freeImageModels(env.STUDIO_FREE_IMAGE_MODELS), packs: packsFor(env, userId),
+    });
   }
 
   // ── chats ──
@@ -197,7 +206,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
 
   // ── the agent ──
   if (path === "/api/chat" && method === "POST") {
-    const b = await body<{ chatId?: string; text?: string; imageIds?: string[]; settings?: Record<string, unknown> }>(request);
+    const b = await body<{ chatId?: string; text?: string; imageIds?: string[]; settings?: Record<string, unknown>; imageSettings?: Record<string, unknown>; mode?: string }>(request);
     const text = String(b.text ?? "").trim().slice(0, 4000);
     const uploads = await uploadsOf(env, userId, Array.isArray(b.imageIds) ? b.imageIds : []);
     if (!text && !uploads.length) throw new StudioError("Write a message or add a picture.");
@@ -216,7 +225,11 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     await addMessage(env, { id: userMsgId, chatId: chat.id, userId, role: "user", text, data: attachments.length ? { attachments } : null });
     const paid = await hasPaid(asEnv(env), userId);
     const allowed = paid ? (publicCatalog().map((m: any) => m.key) as any) : freeModels(env.STUDIO_FREE_MODELS);
-    const reply = await runAgent(env, { history, text, uploads, ui: b.settings ?? {}, credits: user.credits, allowed, margin: marginOf(env) },
+    const allowedImages = paid ? IMAGE_MODELS.map((m) => m.key) : freeImageModels(env.STUDIO_FREE_IMAGE_MODELS);
+    const reply = await runAgent(env, {
+      history, text, uploads, ui: b.settings ?? {}, uiImage: b.imageSettings ?? {}, mode: b.mode === "image" ? "image" : "video",
+      credits: user.credits, allowed, allowedImages, margin: marginOf(env),
+    },
       await picturesForAgent(env, uploads.map((u) => u.key)));
     const botId = rid("m", 12);
     await addMessage(env, { id: botId, chatId: chat.id, userId, role: "assistant", text: reply.text, data: reply.proposal || reply.fallback ? { proposal: reply.proposal ?? undefined, fallback: reply.fallback || undefined } : null });
@@ -226,8 +239,9 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
 
   // ── generating ──
   if (path === "/api/generate" && method === "POST") {
-    const b = await body<{ chatId?: string; proposalId?: string; prompt?: string; settings?: Record<string, unknown>; imageIds?: string[] }>(request);
+    const b = await body<{ chatId?: string; proposalId?: string; prompt?: string; settings?: Record<string, unknown>; imageIds?: string[]; kind?: string }>(request);
     let chat = b.chatId ? await getChat(env, userId, b.chatId) : null;
+    let kind: "video" | "image" = b.kind === "image" ? "image" : "video";
     let proposalMsg: MessageRow | null = null;
     let prompt = String(b.prompt ?? "");
     let settings = b.settings ?? {};
@@ -241,12 +255,13 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       if (!prompt.trim()) prompt = p.prompt;
       settings = { ...p.settings, ...settings };
       if (!b.imageIds) imageIds = p.imageIds;
+      kind = p.kind === "image" ? "image" : "video";
     }
     // The clip is ordered FIRST: a refusal (locked model, too few credits, full day) must leave no empty chat behind.
     const newMessages: string[] = [];
     const chatId = chat?.id ?? rid("c", 12);
     const userMsgId = proposalMsg ? null : rid("m", 12);
-    const g = await createGeneration(env, userId, { prompt, settings, imageIds, chatId, messageId: proposalMsg?.id ?? userMsgId }, origin);
+    const g = await createGeneration(env, userId, { kind, prompt, settings, imageIds, chatId, messageId: proposalMsg?.id ?? userMsgId }, origin);
     if (!chat) {
       await createChat(env, chatId, userId, chatTitle(prompt, imageIds.length > 0));
       chat = (await getChat(env, userId, chatId))!;
@@ -289,7 +304,14 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     let g = await getGeneration(env, genM[1]);
     if (!g || g.user_id !== userId) return json({ error: "Not found." }, 404);
     if (genM[2] && method === "POST") {
-      if (g.status !== "done") throw new StudioError("The video isn't ready yet.");
+      if (g.status !== "done") throw new StudioError("It isn't ready yet.");
+      if (g.kind === "image") {
+        // One picture of the set: the upload id the page shows under it.
+        const upload = String((await body(request)).upload ?? "");
+        const own = (await uploadsOf(env, userId, [upload]))[0];
+        if (!own) return json({ error: "Not found." }, 404);
+        return json({ url: `${origin}${await signPath(env.INTERNAL_SECRET, `/media/u/${own.id}`, SHARE_DAYS * 86_400)}` });
+      }
       return json({ url: `${origin}${await signPath(env.INTERNAL_SECRET, `/media/${g.id}.mp4`, SHARE_DAYS * 86_400)}` });
     }
     if (method === "GET") {

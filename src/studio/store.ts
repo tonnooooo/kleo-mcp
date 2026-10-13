@@ -38,9 +38,26 @@ export const STUDIO_SCHEMA: string[] = [
   `CREATE INDEX IF NOT EXISTS studio_generations_status ON studio_generations (status, checked_at)`,
 ];
 
+/**
+ * Columns added after the tables first went live (migrations/0018_studio_images.sql): images made one generation of
+ * several pictures, each its own provider task ("slots").
+ */
+export const STUDIO_COLUMNS: string[] = [
+  "ALTER TABLE studio_generations ADD COLUMN kind TEXT NOT NULL DEFAULT 'video'",
+  "ALTER TABLE studio_generations ADD COLUMN slots TEXT",
+];
+
 let ready: Promise<unknown> | null = null;
 export function ensureStudioSchema(env: StudioEnv): Promise<unknown> {
-  if (!ready) ready = env.DB.batch(STUDIO_SCHEMA.map((s) => env.DB.prepare(s))).catch((e) => { ready = null; throw e; });
+  if (!ready) {
+    ready = env.DB.batch(STUDIO_SCHEMA.map((s) => env.DB.prepare(s)))
+      .then(async () => {
+        for (const sql of STUDIO_COLUMNS) {
+          try { await env.DB.prepare(sql).run(); } catch (e) { if (!/duplicate column/i.test(String(e))) throw e; }
+        }
+      })
+      .catch((e) => { ready = null; throw e; });
+  }
   return ready;
 }
 
@@ -54,7 +71,10 @@ export interface GenerationRow {
   prompt: string; images: string | null; credits: number; est_usd: number; status: GenStatus; task_id: string | null;
   error: string | null; file_key: string | null; size: number | null; usage: string | null; refunded: number;
   created_at: string; updated_at: string; checked_at: string | null; finished_at: string | null;
+  kind: "video" | "image"; slots: string | null;
 }
+/** One picture of an image generation: its provider task and, once saved, its file and its upload id. */
+export interface Slot { task: string | null; status: "running" | "done" | "failed"; key?: string; upload?: string; error?: string }
 
 export const getLogin = (env: StudioEnv, provider: string, subject: string) =>
   env.DB.prepare("SELECT * FROM studio_logins WHERE provider = ? AND subject = ?").bind(provider, subject).first<LoginRow>();
@@ -129,10 +149,10 @@ export async function studioSpentTodayUsd(env: StudioEnv): Promise<number> {
     .first<{ usd: number }>();
   return r?.usd ?? 0;
 }
-export const insertGeneration = (env: StudioEnv, g: { id: string; userId: string; chatId: string | null; messageId: string | null; model: string; settings: unknown; prompt: string; images: string[]; credits: number; estUsd: number }) =>
-  env.DB.prepare(`INSERT INTO studio_generations (id, user_id, chat_id, message_id, model, settings, prompt, images, credits, est_usd, status, checked_at)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitting', ${NOW})`)
-    .bind(g.id, g.userId, g.chatId, g.messageId, g.model, JSON.stringify(g.settings), g.prompt, JSON.stringify(g.images), g.credits, g.estUsd).run();
+export const insertGeneration = (env: StudioEnv, g: { id: string; userId: string; chatId: string | null; messageId: string | null; model: string; settings: unknown; prompt: string; images: string[]; credits: number; estUsd: number; kind?: "video" | "image" }) =>
+  env.DB.prepare(`INSERT INTO studio_generations (id, user_id, chat_id, message_id, model, settings, prompt, images, credits, est_usd, status, checked_at, kind)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitting', ${NOW}, ?)`)
+    .bind(g.id, g.userId, g.chatId, g.messageId, g.model, JSON.stringify(g.settings), g.prompt, JSON.stringify(g.images), g.credits, g.estUsd, g.kind ?? "video").run();
 /**
  * Moves a clip from one of `from` to `to`, writing `fields` with it, as ONE compare-and-set: the caller learns
  * whether IT made the move. Two polls racing on the same finished task cannot both save it, and a refund is paid

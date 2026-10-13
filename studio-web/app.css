@@ -428,3 +428,30 @@ button.row:hover { background: var(--fill-2); }
   .composer textarea { font-size: 16px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* ── video / image switch, pictures ────────────────────────────────────── */
+.modes-row { max-width: 760px; margin: 0 auto 8px; display: flex; justify-content: center; pointer-events: none; }
+.modes { pointer-events: auto; display: inline-flex; gap: 2px; padding: 3px; border-radius: 16px; background: var(--glass); border: 1px solid var(--sep);
+  backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px); box-shadow: var(--shadow); }
+.modes button { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 14px; border-radius: 13px; font-size: 14px; font-weight: 600; color: var(--ink-2); transition: background .2s, color .2s; }
+.modes button.on { background: var(--primary); color: var(--on-primary); }
+.modes button:not(.on):hover { color: var(--ink); }
+.row-gap { display: flex; gap: 10px; align-items: center; }
+.pics { margin-top: 12px; max-width: 560px; }
+.card .pics { margin: 0 12px 12px; }
+.pics-grid { display: grid; gap: 6px; grid-template-columns: 1fr; }
+.pics.n2 .pics-grid, .pics.n4 .pics-grid { grid-template-columns: 1fr 1fr; }
+.pic { position: relative; display: block; width: 100%; border-radius: 16px; overflow: hidden; background: var(--bg-2); max-height: 62vh; }
+.pics.n1 .pic { max-width: 420px; }
+.pic img { display: block; width: 100%; height: 100%; object-fit: cover; transition: transform .35s var(--ease); }
+button.pic:hover img { transform: scale(1.02); }
+.pics-bar { display: flex; gap: 6px; align-items: center; padding: 8px 2px 0; }
+.pics-bar .meta { flex: 1; min-width: 0; font-size: 13px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pics-bar .t { font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.tile img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.tile .count { position: absolute; top: 8px; right: 8px; display: inline-flex; align-items: center; gap: 3px; height: 24px; padding: 0 8px; border-radius: 12px; background: rgba(0, 0, 0, .5); color: #fff; font-size: 12px; font-weight: 700; backdrop-filter: blur(8px); }
+.viewer img { max-width: 100%; max-height: calc(100dvh - 210px); border-radius: 16px; object-fit: contain; }
+.viewer .vactions { flex-wrap: wrap; justify-content: center; }
+.auth-switch.small { margin-top: 10px; font-size: 14px; }
+.auth-switch.small button { font-weight: 600; }
+@media (max-width: 640px) { .pics.n1 .pic { max-width: none; } }

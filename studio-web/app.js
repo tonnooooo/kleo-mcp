@@ -54,15 +54,18 @@ const P = {
   key: '<circle cx="8" cy="15" r="4"/><path d="m11 12 8.5-8.5M16 7l2.5 2.5"/>',
   out: '<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 16l4-4-4-4M14 12H4"/>',
   sparkle: '<path d="M12 3.5 13.8 9l5.7 1.8-5.7 1.8L12 18.5l-1.8-5.9L4.5 10.8 10.2 9Z"/>',
-  mail: '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="m3.5 7.5 8.5 6 8.5-6"/>',
   plug: '<path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0Z"/><path d="M12 17v4"/>',
-  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/>',
   film: '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7.5 4v16M16.5 4v16M3 9h4.5M3 15h4.5M16.5 9H21M16.5 15H21"/>',
   bag: '<path d="M5 8h14l-1 12H6Z"/><path d="M9 8V6.5a3 3 0 0 1 6 0V8"/>',
   phone: '<rect x="6.5" y="2.5" width="11" height="19" rx="3"/><path d="M10.5 18.5h3"/>',
   flame: '<path d="M12 21c4 0 6.5-2.6 6.5-6.2 0-3.6-2.8-5.9-4.3-9.8-1 2.6-2.4 3.7-3.7 4.4C10 7.6 9.3 6.3 9 5c-2 2.4-3.5 5.6-3.5 9.6C5.5 18.3 8 21 12 21Z"/>',
-  plane: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3Z"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3Z"/>',
   cup: '<path d="M4 9h13v5a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5Z"/><path d="M17 11h1.5a2.5 2.5 0 0 1 0 5H17M8 3.5c-.5 1 .5 1.8 0 3M12 3.5c-.5 1 .5 1.8 0 3"/>',
+  play: '<path d="M8 5.5v13l10.5-6.5Z"/>',
+  layers: '<path d="m12 3 9 5-9 5-9-5Z"/><path d="m3 13 9 5 9-5"/>',
+  text: '<path d="M5 6V4.5h14V6M12 4.5v15M9 19.5h6"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/>',
+  star: '<path d="m12 3.5 2.6 5.4 5.9.8-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.8Z"/>',
 };
 function icon(name, size = 20, sw = 1.9) {
   const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -89,19 +92,17 @@ const store = {
 function toast(msg, err = false) {
   const t = $("#toast");
   t.textContent = msg; t.classList.toggle("err", !!err); t.classList.add("show");
-  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove("show"), 2600);
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove("show"), 2800);
 }
-const ago = (iso) => {
-  const s = (Date.now() - Date.parse(iso)) / 1000;
-  if (s < 60) return "now"; if (s < 3600) return `${Math.floor(s / 60)}m`; if (s < 86400) return `${Math.floor(s / 3600)}h`;
-  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-};
+const spinner = (size = 16) => h("span", { class: "spin", style: { borderColor: "rgba(127,127,127,.35)", borderTopColor: "currentColor", width: size + "px", height: size + "px" } });
 
 // ── state ────────────────────────────────────────────────────────────────────────────────────────────────────────
 const S = {
-  config: null, me: null, chats: [], chat: null, messages: [], gens: new Map(), view: "chat", gallery: null,
-  settings: store.get("settings", {}), agent: store.get("agent", true), attachments: [], busy: false, sideOpen: false,
+  config: null, me: null, chats: [], chat: null, messages: [], gens: new Map(), view: "chat",
+  mode: store.get("mode", "video"), settings: store.get("settings", {}), imageSettings: store.get("imageSettings", {}),
+  agent: store.get("agent", true), attachments: [], busy: false,
 };
+// video models
 const model = (key) => S.config.models.find((m) => m.key === key) || S.config.models.find((m) => m.key === S.config.defaultModel);
 function fix(s, images = 0) {
   const m = model(s.model);
@@ -115,6 +116,19 @@ function fix(s, images = 0) {
 }
 const price = (s) => model(s.model).prices[s.resolution]?.[s.duration] ?? 1;
 const allowed = (key) => !S.me || S.me.allowed.includes(key);
+// image models
+const imodel = (key) => S.config.imageModels.find((m) => m.key === key) || S.config.imageModels.find((m) => m.key === S.config.defaultImageModel);
+function ifix(s) {
+  const m = imodel(s.model);
+  return {
+    model: m.key, aspect: m.aspects.includes(s.aspect) ? s.aspect : "1:1",
+    quality: m.qualities.includes(s.quality) ? s.quality : m.defaultQuality, count: m.counts.includes(Number(s.count)) ? Number(s.count) : 1,
+  };
+}
+const iprice = (s) => imodel(s.model).prices[s.quality]?.[s.count] ?? 1;
+const iallowed = (key) => !S.me || (S.me.allowedImages || []).includes(key);
+const isImage = (p) => p?.kind === "image";
+const RATIOS = { "16:9": [34, 19, "YouTube"], "9:16": [19, 34, "TikTok · Reels"], "1:1": [26, 26, "Square"], "4:3": [30, 23, "Classic"], "3:4": [23, 30, "Portrait"], "21:9": [38, 16, "Cinema"], "4:5": [24, 30, "Instagram"], "2:3": [21, 31, "Poster"], "3:2": [31, 21, "Photo"] };
 
 // ── API ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 class ApiError extends Error { constructor(msg, status, code) { super(msg); this.status = status; this.code = code; } }
@@ -131,7 +145,7 @@ async function api(path, opts = {}) {
 }
 function handleError(e) {
   if (e?.code === "signin") { S.me = null; renderAuth(); return; }
-  if (e?.code === "locked" || e?.code === "credits") { toast(e.message, true); setTimeout(openBuy, 350); return; }
+  if (e?.code === "locked" || e?.code === "credits") { toast(e.message, true); setTimeout(() => openBuy(), 350); return; }
   toast(e?.message || "Something went wrong.", true);
 }
 function setCredits(n) {
@@ -143,8 +157,10 @@ function setCredits(n) {
 // ── boot & routing ───────────────────────────────────────────────────────────────────────────────────────────────
 async function boot() {
   applyTheme();
-  try { S.config = await api("/api/config"); } catch (e) { fill($("#app"), h("div", { class: "boot" }, h("p", {}, "Kleo Studio can't load right now. Please refresh."))); return; }
-  const err = new URLSearchParams(location.search).get("signin_error");
+  try { S.config = await api("/api/config"); } catch { fill($("#app"), h("div", { class: "boot" }, h("p", {}, "Kleo Studio can't load right now. Please refresh."))); return; }
+  const q = new URLSearchParams(location.search);
+  if (location.pathname === "/reset" && q.get("t")) return renderReset(q.get("t"));
+  const err = q.get("signin_error");
   if (err) { history.replaceState(null, "", "/"); setTimeout(() => toast(err === "day_full" ? "Kleo is full for new accounts today." : "Google sign-in didn't finish. Try again.", true), 300); }
   try { S.me = await api("/api/me"); } catch (e) { if (e.code === "signin" || e.status === 401) return renderAuth(); return handleError(e); }
   await enter();
@@ -152,6 +168,8 @@ async function boot() {
 async function enter() {
   S.settings = fix(S.settings);
   if (!allowed(S.settings.model)) S.settings = fix({ ...S.settings, model: S.me.allowed[0] });
+  S.imageSettings = ifix(S.imageSettings);
+  if (!iallowed(S.imageSettings.model) && S.me.allowedImages?.length) S.imageSettings = ifix({ ...S.imageSettings, model: S.me.allowedImages[0] });
   renderShell();
   loadChats();
   await route();
@@ -159,16 +177,29 @@ async function enter() {
 async function route() {
   const p = location.pathname;
   const m = p.match(/^\/c\/(c_[a-z0-9]+)/);
-  closeSide();
+  closeSide(); closeLayer();
   if (p === "/gallery") return showGallery();
   if (m) return openChat(m[1]);
   return newChat();
 }
-function go(path) { if (location.pathname + location.search !== path) history.pushState(null, "", DEMO ? path + (path.includes("?") ? "&" : "?") + "demo=1" : path); route(); }
+function go(path) {
+  const target = DEMO ? path + (path.includes("?") ? "&" : "?") + "demo=1" : path;
+  if (location.pathname + location.search !== target) history.pushState(null, "", target);
+  route();
+}
 addEventListener("popstate", () => S.me && route());
-addEventListener("focus", async () => { if (!S.me || DEMO) return; try { const me = await api("/api/me"); const before = S.me.credits; S.me = me; if (me.credits !== before) { S.me.credits = before; setCredits(me.credits); } } catch { /* later */ } });
+addEventListener("focus", async () => {
+  if (!S.me || DEMO) return;
+  try { const me = await api("/api/me"); const before = S.me.credits; S.me = me; S.me.credits = before; setCredits(me.credits); } catch { /* later */ }
+});
 
-// ── auth screen ──────────────────────────────────────────────────────────────────────────────────────────────────
+// ── auth screens ─────────────────────────────────────────────────────────────────────────────────────────────────
+function authFrame(title, sub, ...content) {
+  fill($("#app"), h("div", { class: "auth" }, h("div", { class: "auth-card" },
+    h("img", { class: "logo", src: "/kleo-mark.svg", alt: "Kleo" }), h("h1", {}, title), h("p", { class: "sub" }, sub), ...content)));
+}
+function busyButton(btn) { const old = btn.textContent; btn.disabled = true; fill(btn, spinner(18)); return () => { btn.disabled = false; btn.textContent = old; }; }
+
 function renderAuth(mode = "signup") {
   let showKey = false;
   const email = h("input", { class: "input", type: "email", placeholder: "E-mail", autocomplete: "email", inputmode: "email", autocapitalize: "off" });
@@ -176,41 +207,75 @@ function renderAuth(mode = "signup") {
   const key = h("input", { class: "input", placeholder: "Paste your Kleo key", autocomplete: "off", autocapitalize: "off", spellcheck: "false" });
   const err = h("div", { class: "auth-err" });
   const submit = h("button", { class: "btn btn-primary", type: "submit" }, mode === "signup" ? "Create account" : "Sign in");
+  const keyBox = h("div", { style: { display: "none" } }, key);
   const form = h("form", { onsubmit: async (ev) => {
-    ev.preventDefault(); err.textContent = ""; submit.disabled = true;
-    const old = submit.textContent; fill(submit, h("span", { class: "spin", style: { borderColor: "rgba(127,127,127,.3)", borderTopColor: "currentColor" } }));
+    ev.preventDefault(); err.textContent = "";
+    const restore = busyButton(submit);
     try {
       if (showKey) await api("/api/auth/key", { method: "POST", body: { key: key.value } });
       else await api(mode === "signup" ? "/api/auth/signup" : "/api/auth/signin", { method: "POST", body: { email: email.value, password: pass.value } });
       S.me = await api("/api/me");
       await enter();
       if (mode === "signup" && !showKey) toast(`Welcome! You have ${S.me.credits} free credits.`);
-    } catch (e) { err.textContent = e.message; submit.disabled = false; submit.textContent = old; }
-  } }, email, pass, err, submit);
-  const keyBox = h("div", { style: { display: "none" } }, key);
-  const toggleKey = h("button", { type: "button", style: { color: "var(--blue)", fontWeight: 600 }, onclick: () => {
+    } catch (e) { err.textContent = e.message; restore(); }
+  } }, email, pass, keyBox, err, submit);
+  const toggleKey = h("button", { type: "button", onclick: () => {
     showKey = !showKey;
     keyBox.style.display = showKey ? "" : "none"; email.style.display = pass.style.display = showKey ? "none" : "";
     submit.textContent = showKey ? "Sign in with key" : mode === "signup" ? "Create account" : "Sign in";
     toggleKey.textContent = showKey ? "Use e-mail instead" : "I have a Kleo key";
     (showKey ? key : email).focus();
   } }, "I have a Kleo key");
-  form.insertBefore(keyBox, err);
-  fill($("#app"), h("div", { class: "auth" }, h("div", { class: "auth-card" },
-    h("img", { class: "logo", src: "/kleo-mark.svg", alt: "Kleo" }),
-    h("h1", {}, mode === "signup" ? "Create with Kleo" : "Welcome back"),
-    h("p", { class: "sub" }, "Make AI videos just by chatting."),
+  authFrame(mode === "signup" ? "Create with Kleo" : "Welcome back", "Make AI videos and pictures just by chatting.",
     mode === "signup" ? h("div", { class: "gift" }, bolt(15), `${S.config?.freeCredits ?? 5} free credits to start`) : null,
     S.config?.google ? [h("a", { class: "btn google", href: "/auth/google" }, googleLogo(), "Continue with Google"), h("div", { class: "or" }, "or")] : null,
     form,
     h("div", { class: "auth-switch" },
       mode === "signup" ? ["Already have an account? ", h("button", { type: "button", onclick: () => renderAuth("signin") }, "Sign in")]
         : ["New here? ", h("button", { type: "button", onclick: () => renderAuth("signup") }, "Create an account")]),
-    h("div", { class: "auth-switch", style: { marginTop: "10px" } }, toggleKey),
+    h("div", { class: "auth-switch small" }, toggleKey, mode === "signin" ? [" · ", h("button", { type: "button", onclick: () => renderForgot(email.value) }, "Forgot password?")] : null),
     h("div", { class: "auth-foot" }, "By continuing you agree to the ", h("a", { href: "https://kleooai.com/terms.html", target: "_blank" }, "Terms"), " and ",
-      h("a", { href: "https://kleooai.com/privacy.html", target: "_blank" }, "Privacy Policy"), ".", h("br"), "Forgot your password? Write to ", h("a", { href: "mailto:hello@kleooai.com" }, "hello@kleooai.com"), "."),
-  )));
+      h("a", { href: "https://kleooai.com/privacy.html", target: "_blank" }, "Privacy Policy"), "."));
   setTimeout(() => (IS_TOUCH ? null : email.focus()), 50);
+}
+function renderForgot(prefill = "") {
+  if (!S.config?.emailReset) {
+    authFrame("Forgot your password?", "Write to us from the e-mail of your account and we'll get you back in.",
+      h("a", { class: "btn btn-primary", href: "mailto:hello@kleooai.com?subject=Kleo%20password%20reset" }, "Write to hello@kleooai.com"),
+      h("div", { class: "auth-switch" }, h("button", { type: "button", onclick: () => renderAuth("signin") }, "Back to sign in")));
+    return;
+  }
+  const email = h("input", { class: "input", type: "email", placeholder: "E-mail", autocomplete: "email", value: prefill });
+  const err = h("div", { class: "auth-err" });
+  const btn = h("button", { class: "btn btn-primary", type: "submit" }, "Send me a link");
+  authFrame("Forgot your password?", "We'll e-mail you a link to choose a new one.",
+    h("form", { onsubmit: async (ev) => {
+      ev.preventDefault(); err.textContent = "";
+      const restore = busyButton(btn);
+      try {
+        await api("/api/auth/forgot", { method: "POST", body: { email: email.value } });
+        authFrame("Check your e-mail", "If an account uses that address, a link is on its way. It works for one hour.",
+          h("div", { class: "auth-switch" }, h("button", { type: "button", onclick: () => renderAuth("signin") }, "Back to sign in")));
+      } catch (e) { err.textContent = e.message; restore(); }
+    } }, email, err, btn),
+    h("div", { class: "auth-switch" }, h("button", { type: "button", onclick: () => renderAuth("signin") }, "Back to sign in")));
+  email.focus();
+}
+function renderReset(token) {
+  const pass = h("input", { class: "input", type: "password", placeholder: "New password (8+ characters)", autocomplete: "new-password" });
+  const err = h("div", { class: "auth-err" });
+  const btn = h("button", { class: "btn btn-primary", type: "submit" }, "Save and sign in");
+  authFrame("Choose a new password", "Then you're straight back in.",
+    h("form", { onsubmit: async (ev) => {
+      ev.preventDefault(); err.textContent = "";
+      const restore = busyButton(btn);
+      try {
+        await api("/api/auth/reset", { method: "POST", body: { token, password: pass.value } });
+        history.replaceState(null, "", "/");
+        S.me = await api("/api/me"); await enter(); toast("Password changed");
+      } catch (e) { err.textContent = e.message; restore(); }
+    } }, pass, err, btn));
+  pass.focus();
 }
 
 // ── shell ────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -219,9 +284,9 @@ function renderShell() {
     h("div", { class: "side-top" },
       h("div", { class: "brand" }, h("img", { src: "/kleo-mark.svg", alt: "" }), "Kleo", h("small", {}, "Studio")),
       h("span", { class: "spacer" }),
-      h("button", { class: "icon-btn", title: "New video", "aria-label": "New video", onclick: () => go("/") }, icon("compose", 21))),
-    h("button", { class: "nav-item", id: "nav-new", onclick: () => go("/") }, icon("sparkle", 19), "New video"),
-    h("button", { class: "nav-item", id: "nav-gallery", onclick: () => go("/gallery") }, icon("grid", 19), "My videos"),
+      h("button", { class: "icon-btn", title: "New chat", "aria-label": "New chat", onclick: () => go("/") }, icon("compose", 21))),
+    h("button", { class: "nav-item", id: "nav-new", onclick: () => go("/") }, icon("sparkle", 19), "Create"),
+    h("button", { class: "nav-item", id: "nav-gallery", onclick: () => go("/gallery") }, icon("grid", 19), "My creations"),
     h("div", { class: "side-label" }, "Chats"),
     h("div", { class: "chats", id: "chats" }),
     h("button", { class: "me-row", onclick: openAccount },
@@ -246,14 +311,14 @@ async function loadChats() {
 }
 function renderChats() {
   const box = $("#chats"); if (!box) return;
-  fill(box, ...(S.chats.length ? S.chats.map((c) => h("div", { class: "chat-item" + (S.chat?.id === c.id && S.view === "chat" ? " on" : ""), role: "button", tabindex: "0",
+  fill(box, S.chats.length ? S.chats.map((c) => h("div", { class: "chat-item" + (S.chat?.id === c.id && S.view === "chat" ? " on" : ""), role: "button", tabindex: "0",
     onclick: () => go(`/c/${c.id}`), onkeydown: (e) => e.key === "Enter" && go(`/c/${c.id}`) },
     h("span", {}, c.title || "Untitled"),
     h("button", { class: "del", title: "Delete chat", "aria-label": "Delete chat", onclick: async (e) => {
       e.stopPropagation();
-      if (!confirm("Delete this chat? Your videos stay in My videos.")) return;
+      if (!confirm("Delete this chat? Your creations stay in My creations.")) return;
       try { await api(`/api/chats/${c.id}`, { method: "DELETE" }); S.chats = S.chats.filter((x) => x.id !== c.id); renderChats(); if (S.chat?.id === c.id) go("/"); } catch (er) { handleError(er); }
-    } }, icon("trash", 16)))) : [h("div", { class: "empty-chats" }, "Your chats will show up here.")]));
+    } }, icon("trash", 16)))) : h("div", { class: "empty-chats" }, "Your chats will show up here."));
   $("#nav-gallery")?.classList.toggle("on", S.view === "gallery");
   $("#nav-new")?.classList.toggle("on", S.view === "chat" && !S.chat);
 }
@@ -281,26 +346,38 @@ function collectGens(m) {
   for (const g of [m.generation, ...(m.generations || [])].filter(Boolean)) { S.gens.set(g.id, g); if (g.status === "running") watch(g.id); }
 }
 
-const IDEAS = [
-  { ic: "bag", c: "#ff9500", t: "Cinematic product shot", p: "A sleek black wireless earbud case opening slowly on a wet reflective surface, macro lens, soft rim light, slow orbit, premium commercial look, subtle whoosh sound." },
-  { ic: "phone", c: "#ff2d55", t: "Scroll-stopping TikTok hook", p: "A vertical POV shot running through a neon night market in Tokyo, handheld energy, steam and lights, fast and exciting, upbeat ambience." },
-  { ic: "photo", c: "#007aff", t: "Animate a photo", p: "", photo: true },
-  { ic: "flame", c: "#af52de", t: "Anime fight scene", p: "Two anime warriors clash on a rooftop at sunset, dramatic speed lines, wind in their hair, dynamic camera swing, epic music swell." },
-  { ic: "plane", c: "#30b0c7", t: "Dreamy travel clip", p: "Drone shot gliding over turquoise water toward a tiny island with one palm tree at golden hour, gentle waves, calm ambient sound." },
-  { ic: "cup", c: "#a2845e", t: "Cozy café ad", p: "Close-up of latte art being poured in a warm sunlit café, steam rising, shallow depth of field, slow push-in, soft jazz in the background." },
-];
+const IDEAS = {
+  video: [
+    { ic: "bag", c: "#ff9500", t: "Cinematic product shot", p: "A sleek black wireless earbud case opening slowly on a wet reflective surface, macro lens, soft rim light, slow orbit, premium commercial look, subtle whoosh sound." },
+    { ic: "phone", c: "#ff2d55", t: "Scroll-stopping TikTok hook", p: "A vertical POV shot running through a neon night market in Tokyo, handheld energy, steam and lights, fast and exciting, upbeat ambience." },
+    { ic: "photo", c: "#007aff", t: "Animate a photo", p: "", photo: true },
+    { ic: "flame", c: "#af52de", t: "Anime fight scene", p: "Two anime warriors clash on a rooftop at sunset, dramatic speed lines, wind in their hair, dynamic camera swing, epic music swell." },
+    { ic: "globe", c: "#30b0c7", t: "Dreamy travel clip", p: "Drone shot gliding over turquoise water toward a tiny island with one palm tree at golden hour, gentle waves, calm ambient sound." },
+    { ic: "cup", c: "#a2845e", t: "Cozy café ad", p: "Close-up of latte art being poured in a warm sunlit café, steam rising, shallow depth of field, slow push-in, soft jazz in the background." },
+  ],
+  image: [
+    { ic: "bag", c: "#ff9500", t: "Product photo", p: "A minimalist perfume bottle on a travertine pedestal, soft morning light through palm leaves, beige and sage palette, studio product photography, crisp reflections." },
+    { ic: "star", c: "#ff2d55", t: "YouTube thumbnail", p: "A shocked young creator pointing at a giant glowing golden trophy, bold rim light, vibrant teal and orange background, high contrast YouTube thumbnail style, big empty space on the right." },
+    { ic: "photo", c: "#007aff", t: "Edit my photo", p: "", photo: true },
+    { ic: "text", c: "#af52de", t: "Poster with text", p: "A retro 70s travel poster of the Amalfi coast, sun-faded colors, bold title text \"AMALFI\" at the top, grainy print texture." },
+    { ic: "user", c: "#30b0c7", t: "Character design", p: "Full-body character sheet of a friendly cyberpunk courier girl with a yellow jacket and a robot cat, front and side views, clean white background, 3D animated film style." },
+    { ic: "layers", c: "#a2845e", t: "Album cover", p: "An album cover: a lone astronaut sitting on a crescent moon fishing for stars, dreamy pastel gradient sky, painterly texture, square composition." },
+  ],
+};
 function renderMessages(jump = false) {
   const col = $("#col"); if (!col) return;
   if (!S.messages.length) {
+    const img = S.mode === "image";
     fill(col, h("div", { class: "hero" },
       h("img", { src: "/kleo-mark.svg", alt: "" }),
-      h("h1", {}, "What do you want to create?"),
-      h("p", {}, S.agent ? "Tell me your idea, drop a photo, or tap an example. I'll set up the perfect video." : "Describe your video and hit Generate."),
-      h("div", { class: "ideas" }, IDEAS.map((i) => h("button", { class: "idea", onclick: () => useIdea(i) },
-        h("span", { class: "em", style: { background: i.c } }, icon(i.ic, 19, 2)), h("div", {}, h("b", {}, i.t), h("span", {}, i.photo ? "Upload a picture and bring it to life." : i.p)))))));
+      h("h1", {}, img ? "What should we picture?" : "What do you want to create?"),
+      h("p", {}, S.agent ? (img ? "Describe a picture or drop a photo to edit. I'll set up the perfect shot." : "Tell me your idea, drop a photo, or tap an example. I'll set up the perfect video.")
+        : img ? "Describe your picture and hit Generate." : "Describe your video and hit Generate."),
+      h("div", { class: "ideas" }, IDEAS[S.mode].map((i) => h("button", { class: "idea", onclick: () => useIdea(i) },
+        h("span", { class: "em", style: { background: i.c } }, icon(i.ic, 19, 2)), h("div", {}, h("b", {}, i.t), h("span", {}, i.photo ? (img ? "Upload a picture and say what to change." : "Upload a picture and bring it to life.") : i.p)))))));
     return;
   }
-  fill(col, ...S.messages.map(messageEl));
+  fill(col, S.messages.map(messageEl));
   if (jump) requestAnimationFrame(() => { const s = $("#scroll"); s.style.scrollBehavior = "auto"; s.scrollTop = s.scrollHeight; s.style.scrollBehavior = ""; });
 }
 function useIdea(i) {
@@ -319,46 +396,58 @@ function messageEl(m) {
   if (m.typing) body.append(h("div", { class: "typing" }, h("i"), h("i"), h("i")));
   else if (m.text) body.append(h("div", { class: "text" }, m.text));
   if (m.proposal) body.append(proposalEl(m));
-  if (m.generation) body.append(clipEl(m.generation.id));
+  if (m.generation) body.append(genEl(m.generation.id));
   return h("div", { class: "msg bot", "data-msg": m.id }, h("img", { class: "mark", src: "/kleo-mark.svg", alt: "Kleo" }), body);
 }
 
-function settingPills(s, onChange) {
+// The setting pills of a card (and the menus behind them), for a video or a picture.
+const durOptions = (s) => model(s.model).durations.map((d) => ({ label: `${d} seconds`, value: d, on: d === s.duration, cost: price({ ...s, duration: d }) }));
+const resOptions = (s) => model(s.model).resolutions.map((r) => ({ label: r === "1080p" ? "1080p · Full HD" : r === "720p" ? "720p · HD" : "480p · Draft", value: r, on: r === s.resolution, cost: price({ ...s, resolution: r }) }));
+const qualOptions = (s) => imodel(s.model).qualities.map((q) => ({ label: q === "4K" ? "4K · Ultra" : q === "2K" ? "2K · High" : "1K · Standard", value: q, on: q === s.quality, cost: iprice({ ...s, quality: q }) }));
+const countOptions = (s) => imodel(s.model).counts.map((c) => ({ label: c === 1 ? "1 picture" : `${c} pictures`, value: c, on: c === s.count, cost: iprice({ ...s, count: c }) }));
+function settingPills(s, onChange, kind = "video") {
+  const pill = (ic, label, fn) => fn ? h("button", { class: "pill", onclick: fn }, icon(ic, 15), label) : h("span", { class: "pill" }, icon(ic, 15), label);
+  if (kind === "image") {
+    const m = imodel(s.model);
+    return h("div", { class: "pills" },
+      pill("photo", m.name, () => openImageModelPicker(s, onChange)),
+      pill("frame", s.aspect, () => openAspect(m.aspects, s.aspect, (a) => onChange({ ...s, aspect: a }))),
+      m.qualities.length > 1 ? pill("hd", s.quality, (e) => openMenu(e.currentTarget, qualOptions(s), (v) => onChange({ ...s, quality: v }))) : null,
+      pill("layers", `×${s.count}`, (e) => openMenu(e.currentTarget, countOptions(s), (v) => onChange({ ...s, count: v }))));
+  }
   const m = model(s.model);
-  const pill = (ic, label, fn) => onChange ? h("button", { class: "pill", onclick: fn }, icon(ic, 15), label) : h("span", { class: "pill" }, icon(ic, 15), label);
   return h("div", { class: "pills" },
-    pill("film", m.name, (e) => openModelPicker(s, onChange)),
-    pill("clock", `${s.duration}s`, (e) => openMenu(e.currentTarget, m.durations.map((d) => ({ label: `${d} seconds`, value: d, on: d === s.duration, cost: price({ ...s, duration: d }) })), (v) => onChange({ ...s, duration: v }))),
-    pill("hd", s.resolution, (e) => openMenu(e.currentTarget, m.resolutions.map((r) => ({ label: r === "1080p" ? "1080p · Full HD" : r === "720p" ? "720p · HD" : "480p · Draft", value: r, on: r === s.resolution, cost: price({ ...s, resolution: r }) })), (v) => onChange({ ...s, resolution: v }))),
-    s.imageRole === "first_frame" ? pill("photo", "From photo", null) : pill("frame", s.aspect, () => openAspect(s, onChange)),
+    pill("film", m.name, () => openModelPicker(s, onChange)),
+    pill("clock", `${s.duration}s`, (e) => openMenu(e.currentTarget, durOptions(s), (v) => onChange({ ...s, duration: v }))),
+    pill("hd", s.resolution, (e) => openMenu(e.currentTarget, resOptions(s), (v) => onChange({ ...s, resolution: v }))),
+    s.imageRole === "first_frame" ? pill("photo", "From photo", null) : pill("frame", s.aspect, () => openAspect(m.aspects, s.aspect, (a) => onChange({ ...s, aspect: a }))),
     pill(s.audio ? "sound" : "mute", s.audio ? "Sound" : "Silent", () => onChange({ ...s, audio: !s.audio })));
 }
 
 function proposalEl(m) {
   const p = m.proposal;
-  let s = fix(p.settings, p.imageIds?.length || 0);
+  const img = isImage(p);
+  let s = img ? ifix(p.settings) : fix(p.settings, p.imageIds?.length || 0);
   let editing = false, expanded = false;
   const wrap = h("div", { class: "card", "data-proposal": m.id });
   const draw = () => {
     const gens = (m.generations || []).map((g) => S.gens.get(g.id) || g);
-    const promptBox = editing
-      ? h("textarea", { "aria-label": "Prompt", oninput: (e) => { p.prompt = e.target.value; } }, p.prompt)
-      : h("div", { class: "card-prompt" + (expanded ? "" : " clamp") }, p.prompt);
     const long = p.prompt.length > 220;
-    const cost = price(s);
-    const lockd = !allowed(s.model);
-    fill(wrap, 
-      h("div", { class: "card-h" }, h("span", { class: "eyebrow" }, icon("sparkle", 13, 2.2), gens.length ? "Your video" : "Ready to generate")),
+    const cost = img ? iprice(s) : price(s);
+    const lockd = img ? !iallowed(s.model) : !allowed(s.model);
+    fill(wrap,
+      h("div", { class: "card-h" }, h("span", { class: "eyebrow" }, icon(img ? "photo" : "sparkle", 13, 2.2), gens.length ? (img ? "Your pictures" : "Your video") : "Ready to generate")),
       h("div", { class: "card-title" }, p.title),
-      promptBox,
+      editing ? h("textarea", { "aria-label": "Prompt", oninput: (e) => { p.prompt = e.target.value; } }, p.prompt)
+        : h("div", { class: "card-prompt" + (expanded ? "" : " clamp") }, p.prompt),
       !editing && long ? h("button", { class: "more", onclick: () => { expanded = !expanded; draw(); } }, expanded ? "Less" : "More") : null,
       p.imageIds?.length ? h("div", { class: "card-thumbs" }, p.imageIds.map((id) => h("img", { src: DEMO ? demoUploads.get(id) : `/media/u/${id}`, alt: "" }))) : null,
-      settingPills(s, (ns) => { s = fix(ns, p.imageIds?.length || 0); p.settings = s; draw(); }),
+      settingPills(s, (ns) => { s = img ? ifix(ns) : fix(ns, p.imageIds?.length || 0); p.settings = s; draw(); }, img ? "image" : "video"),
       h("div", { class: "card-f" },
         h("button", { class: "btn btn-primary btn-grow", onclick: (e) => generateFromProposal(m, s, e.currentTarget) },
           lockd ? icon("lock", 17) : null, gens.length ? "Generate again" : "Generate", h("span", { class: "cost" }, bolt(14), cost)),
         h("button", { class: "btn btn-quiet", onclick: () => { editing = !editing; draw(); if (editing) wrap.querySelector("textarea")?.focus(); } }, editing ? "Done" : "Edit")),
-      ...gens.map((g) => clipEl(g.id)));
+      gens.map((g) => genEl(g.id)));
   };
   draw();
   wrap.redraw = draw;
@@ -366,77 +455,133 @@ function proposalEl(m) {
 }
 
 async function generateFromProposal(m, s, btn) {
-  if (!allowed(s.model)) return openModelLocked(s.model);
-  if (S.me.credits < price(s)) return openBuy(`This video costs ${price(s)} credits. You have ${S.me.credits}.`);
-  btn.disabled = true; btn.replaceChildren(h("span", { class: "spin", style: { borderColor: "rgba(127,127,127,.35)", borderTopColor: "currentColor" } }));
+  const img = isImage(m.proposal);
+  if (img ? !iallowed(s.model) : !allowed(s.model)) return openLocked(img ? imodel(s.model) : model(s.model), img);
+  const cost = img ? iprice(s) : price(s);
+  if (S.me.credits < cost) return openBuy(`This costs ${cost} credits. You have ${S.me.credits}.`);
+  btn.disabled = true; fill(btn, spinner(18));
   try {
     const r = await api("/api/generate", { method: "POST", body: { proposalId: m.id, prompt: m.proposal.prompt, settings: s } });
     setCredits(r.credits);
     S.gens.set(r.generation.id, r.generation); watch(r.generation.id);
     const fresh = r.messages.find((x) => x.id === m.id);
-    if (fresh) { m.generations = fresh.generations; for (const g of fresh.generations || []) S.gens.set(g.id, S.gens.get(g.id) || g); }
-    else m.generations = [...(m.generations || []), r.generation];
+    m.generations = fresh?.generations || [...(m.generations || []), r.generation];
+    for (const g of m.generations) if (!S.gens.has(g.id)) S.gens.set(g.id, g);
     $(`[data-proposal="${m.id}"]`)?.redraw();
     $(`[data-gen="${r.generation.id}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
   } catch (e) { handleError(e); $(`[data-proposal="${m.id}"]`)?.redraw(); }
 }
 
-// ── one clip ─────────────────────────────────────────────────────────────────────────────────────────────────────
-function clipEl(id) {
+// ── one generation: a clip or a set of pictures ──────────────────────────────────────────────────────────────────
+const cssRatio = (a) => (a || "16:9").replace(":", " / ");
+function elapsed(g, t) {
+  const tick = () => { const sec = Math.max(0, Math.floor((Date.now() - Date.parse(g.createdAt)) / 1000)); t.textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`; };
+  tick(); const id = setInterval(() => (t.isConnected ? tick() : clearInterval(id)), 1000);
+}
+function failedEl(g, el) {
+  el.append(h("div", { class: "clip-fail" }, h("div", { class: "x" }, icon("x", 16, 2.4)),
+    h("div", {}, h("p", {}, g.error || "This one couldn't be made."), g.refunded ? h("div", { class: "refund" }, icon("check", 14, 2.6), `${g.credits} credits refunded`) : null,
+      h("div", { style: { marginTop: "10px" } }, h("button", { class: "btn btn-quiet btn-sm", onclick: () => remix(g) }, icon("redo", 16), "Try again")))));
+  return el;
+}
+function genEl(id) {
   const g = S.gens.get(id);
   if (!g) return h("div");
+  return g.kind === "image" ? picturesEl(g) : clipEl(g);
+}
+function clipEl(g) {
   const s = g.settings || {};
   const shape = s.aspect === "9:16" || s.aspect === "3:4" ? "portrait" : s.aspect === "1:1" ? "square" : "";
-  const ratio = s.imageRole === "first_frame" ? "16 / 10" : (s.aspect || "16:9").replace(":", " / ");
-  const el = h("div", { class: `clip ${shape}`, "data-gen": id });
+  const ratio = s.imageRole === "first_frame" ? "16 / 10" : cssRatio(s.aspect);
+  const el = h("div", { class: `clip ${shape}`, "data-gen": g.id });
   if (g.status === "running") {
-    const t = h("span", { class: "t" });
-    const tick = () => { const sec = Math.max(0, Math.floor((Date.now() - Date.parse(g.createdAt)) / 1000)); t.textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`; };
-    tick(); el.timer = setInterval(() => (el.isConnected ? tick() : clearInterval(el.timer)), 1000);
+    const t = h("span", { class: "t" }); elapsed(g, t);
     el.append(h("div", { class: "clip-media", style: { aspectRatio: ratio } }, h("div", { class: "shimmer" }),
-      h("div", { class: "clip-status" }, h("div", {}, h("b", {}, "Generating…"), h("span", {}, `${g.modelName} · usually 1–4 min`)), h("div", { style: { display: "flex", gap: "10px", alignItems: "center" } }, t, h("span", { class: "spin" })))));
+      h("div", { class: "clip-status" }, h("div", {}, h("b", {}, "Generating…"), h("span", {}, `${g.modelName} · usually 1–4 min`)), h("div", { class: "row-gap" }, t, h("span", { class: "spin" })))));
     return el;
   }
-  if (g.status === "failed") {
-    el.append(h("div", { class: "clip-fail" }, h("div", { class: "x" }, icon("x", 16, 2.4)),
-      h("div", {}, h("p", {}, g.error || "This video couldn't be made."), g.refunded ? h("div", { class: "refund" }, icon("check", 14, 2.6), `${g.credits} credits refunded`) : null,
-        h("div", { style: { marginTop: "10px" } }, h("button", { class: "btn btn-quiet btn-sm", onclick: () => remix(g) }, icon("redo", 16), "Try again")))));
-    return el;
-  }
-  const src = DEMO ? g.video : g.video;
-  const v = h("video", { src: src + "#t=0.05", controls: true, playsinline: true, loop: true, preload: "metadata" });
-  el.append(h("div", { class: "clip-media", style: { aspectRatio: ratio } }, v),
+  if (g.status === "failed") return failedEl(g, el);
+  el.append(h("div", { class: "clip-media", style: { aspectRatio: ratio } }, h("video", { src: g.video + "#t=0.05", controls: true, playsinline: true, loop: true, preload: "metadata" })),
     h("div", { class: "clip-bar" },
       h("span", { class: "meta" }, `${g.modelName} · ${s.duration}s · ${s.resolution}`),
-      h("a", { class: "icon-btn", href: DEMO ? src : `${src}?dl=1`, download: `kleo-${g.id}.mp4`, title: "Download", "aria-label": "Download" }, icon("dl", 19)),
+      h("a", { class: "icon-btn", href: DEMO ? g.video : `${g.video}?dl=1`, download: `kleo-${g.id}.mp4`, title: "Download", "aria-label": "Download" }, icon("dl", 19)),
       h("button", { class: "icon-btn", title: "Share", "aria-label": "Share", onclick: () => share(g) }, icon("share", 19)),
       h("button", { class: "icon-btn", title: "Remix", "aria-label": "Remix", onclick: () => remix(g) }, icon("wand", 19))));
   return el;
 }
-function refreshClip(id) {
-  for (const old of document.querySelectorAll(`[data-gen="${id}"]`)) { clearInterval(old.timer); old.replaceWith(clipEl(id)); }
+function picturesEl(g) {
+  const s = g.settings || {};
+  const n = g.status === "done" ? g.outputs.length : g.count || s.count || 1;
+  const el = h("div", { class: `pics n${Math.min(n, 4)}`, "data-gen": g.id });
+  if (g.status === "running") {
+    const t = h("span", { class: "t" }); elapsed(g, t);
+    el.append(h("div", { class: "pics-grid" }, Array.from({ length: n }, () => h("div", { class: "pic", style: { aspectRatio: cssRatio(s.aspect) } }, h("div", { class: "shimmer" })))),
+      h("div", { class: "pics-bar" }, h("span", { class: "spin dark" }), h("span", { class: "meta" }, `${g.modelName} · painting ${n > 1 ? `${n} pictures` : "your picture"}…`), t));
+    return el;
+  }
+  if (g.status === "failed") return failedEl(g, el);
+  el.append(h("div", { class: "pics-grid" }, g.outputs.map((o) => h("button", { class: "pic", style: { aspectRatio: cssRatio(s.aspect) }, onclick: () => viewPicture(g, o) },
+      h("img", { src: o.url, alt: g.prompt.slice(0, 80), loading: "lazy" })))),
+    h("div", { class: "pics-bar" },
+      h("span", { class: "meta" }, `${g.modelName} · ${s.aspect} · ${s.quality}`, g.refunded ? ` · ${g.count - g.outputs.length} failed, refunded` : ""),
+      g.outputs.length === 1 ? h("button", { class: "btn btn-quiet btn-sm", onclick: () => animate(g.outputs[0]) }, icon("play", 15), "Animate") : null,
+      h("button", { class: "icon-btn", title: "Remix", "aria-label": "Remix", onclick: () => remix(g) }, icon("wand", 19))));
+  return el;
+}
+function refreshGen(id) {
+  for (const old of document.querySelectorAll(`[data-gen="${id}"]`)) old.replaceWith(genEl(id));
   const tile = document.querySelector(`[data-tile="${id}"]`);
   if (tile) tile.replaceWith(tileEl(S.gens.get(id)));
 }
-async function share(g) {
+async function share(g, out) {
   try {
-    const { url } = DEMO ? { url: g.video } : await api(`/api/generations/${g.id}/share`, { method: "POST" });
+    const { url } = DEMO ? { url: out ? out.url : g.video } : await api(`/api/generations/${g.id}/share`, { method: "POST", body: out ? { upload: out.upload } : {} });
     if (navigator.share && IS_TOUCH) { await navigator.share({ title: "Made with Kleo", url }).catch(() => {}); return; }
     await navigator.clipboard.writeText(url); toast("Link copied — valid for 30 days");
   } catch (e) { handleError(e); }
+}
+function setMode(mode) {
+  if (S.mode === mode) return;
+  S.mode = mode; store.set("mode", mode);
+  for (const b of document.querySelectorAll(".modes button")) b.classList.toggle("on", b.dataset.mode === mode);
+  const t = $("#prompt"); if (t) t.placeholder = mode === "image" ? "Describe your picture…" : "Describe your video…";
+  drawAttachments(); drawChips(); updateSend();
+  if (S.view === "chat" && !S.messages.length) renderMessages();
 }
 function remix(g) {
   if (S.view !== "chat") go(g.chatId ? `/c/${g.chatId}` : "/");
   setTimeout(() => {
     const t = $("#prompt"); if (!t) return;
+    setMode(g.kind === "image" ? "image" : "video");
     t.value = g.prompt; autosize(t);
-    S.settings = fix({ ...S.settings, ...g.settings }); store.set("settings", S.settings);
+    if (g.kind === "image") { S.imageSettings = ifix({ ...S.imageSettings, ...g.settings }); store.set("imageSettings", S.imageSettings); }
+    else { S.settings = fix({ ...S.settings, ...g.settings }); store.set("settings", S.settings); }
     drawChips(); updateSend(); t.focus();
     toast("Prompt is back in the box — change anything");
   }, 60);
 }
+/** A finished picture becomes the start frame of a new video. */
+function animate(o) {
+  closeLayer();
+  if (S.view !== "chat") go(S.chat?.id ? `/c/${S.chat.id}` : "/");
+  setTimeout(() => {
+    setMode("video");
+    S.attachments = [{ id: o.upload, local: o.url }];
+    S.settings = fix({ ...S.settings, imageRole: "first_frame" }, 1); store.set("settings", S.settings);
+    drawAttachments(); drawChips(); updateSend();
+    const t = $("#prompt"); t.value = ""; t.placeholder = "Describe the motion… (or just send)"; t.focus();
+    toast("Picture attached as the first frame");
+  }, 60);
+}
+function useAsReference(o) {
+  closeLayer();
+  if (S.attachments.length >= 6) return toast("Up to 6 pictures.", true);
+  S.attachments.push({ id: o.upload, local: o.url });
+  drawAttachments(); drawChips(); updateSend(); $("#prompt")?.focus();
+  toast("Picture attached");
+}
 
-// polling of running clips
+// polling of running generations
 const watching = new Set();
 let pollTimer = null;
 function watch(id) {
@@ -453,20 +598,22 @@ async function poll() {
       if (r.generation.status !== "running") {
         watching.delete(id);
         setCredits(r.credits);
-        refreshClip(id);
-        if (r.generation.status === "done") toast("Your video is ready ✨");
-      } else if (!before) refreshClip(id);
+        refreshGen(id);
+        if (r.generation.status === "done") toast(r.generation.kind === "image" ? "Your pictures are ready ✨" : "Your video is ready ✨");
+      } else if (!before) refreshGen(id);
     } catch (e) { if (e.code === "signin") { watching.clear(); return handleError(e); } }
   }
 }
 
 // ── composer ─────────────────────────────────────────────────────────────────────────────────────────────────────
 function composer() {
-  const ta = h("textarea", { id: "prompt", rows: "1", placeholder: "Describe your video…", "aria-label": "Describe your video",
+  const ta = h("textarea", { id: "prompt", rows: "1", placeholder: S.mode === "image" ? "Describe your picture…" : "Describe your video…", "aria-label": "Describe what to create",
     oninput: (e) => { autosize(e.target); updateSend(); },
     onkeydown: (e) => { if (e.key === "Enter" && !e.shiftKey && !IS_TOUCH && !e.isComposing) { e.preventDefault(); submit(); } },
     onpaste: (e) => { const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith("image/")); if (files.length) { e.preventDefault(); addFiles(files); } } });
   const file = h("input", { type: "file", accept: "image/*", multiple: true, id: "file", hidden: true, onchange: (e) => { addFiles([...e.target.files]); e.target.value = ""; } });
+  const modes = h("div", { class: "modes", role: "tablist" },
+    [["video", "film", "Video"], ["image", "photo", "Image"]].map(([k, ic, label]) => h("button", { role: "tab", "data-mode": k, class: S.mode === k ? "on" : "", onclick: () => setMode(k) }, icon(ic, 16), label)));
   const box = h("div", { class: "composer", id: "composer",
     ondragover: (e) => { e.preventDefault(); box.classList.add("drag"); }, ondragleave: () => box.classList.remove("drag"),
     ondrop: (e) => { e.preventDefault(); box.classList.remove("drag"); addFiles([...(e.dataTransfer?.files || [])].filter((f) => f.type.startsWith("image/"))); } },
@@ -477,7 +624,7 @@ function composer() {
       h("button", { class: "agent-toggle", id: "agent", title: "Kleo agent: chat first, then generate", onclick: toggleAgent }, h("span", { class: "lbl-text" }, "Agent"), h("span", { class: "switch" + (S.agent ? " on" : "") })),
       h("div", { id: "send-slot" })));
   setTimeout(() => { drawChips(); updateSend(); drawAttachments(); }, 0);
-  return [box, h("div", { class: "hint" }, "Kleo can make mistakes. Videos are generated by AI models.")];
+  return [h("div", { class: "modes-row" }, modes), box, h("div", { class: "hint" }, "Kleo can make mistakes. Everything is generated by AI models.")];
 }
 function autosize(t) { t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, innerHeight * 0.4) + "px"; }
 function pickFiles() { $("#file")?.click(); }
@@ -489,25 +636,37 @@ function toggleAgent() {
 }
 function drawChips() {
   const box = $("#chips"); if (!box) return;
+  if (S.mode === "image") {
+    const s = S.imageSettings = ifix(S.imageSettings);
+    const m = imodel(s.model);
+    const set = (ns) => { S.imageSettings = ifix(ns); store.set("imageSettings", S.imageSettings); drawChips(); updateSend(); };
+    fill(box,
+      h("button", { class: "chip model", onclick: () => openImageModelPicker(s, set) }, h("span", { class: "dot" }), m.name, icon("down", 14, 2.2)),
+      h("button", { class: "chip", onclick: () => openAspect(m.aspects, s.aspect, (a) => set({ ...s, aspect: a })) }, icon("frame", 16), s.aspect),
+      m.qualities.length > 1 ? h("button", { class: "chip", onclick: (e) => openMenu(e.currentTarget, qualOptions(s), (v) => set({ ...s, quality: v })) }, icon("hd", 16), s.quality) : null,
+      h("button", { class: "chip", onclick: (e) => openMenu(e.currentTarget, countOptions(s), (v) => set({ ...s, count: v })) }, icon("layers", 16), `×${s.count}`));
+    return;
+  }
   const s = S.settings = fix(S.settings, S.attachments.length);
   const m = model(s.model);
   const set = (ns) => { S.settings = fix(ns, S.attachments.length); store.set("settings", S.settings); drawChips(); updateSend(); };
-  fill(box, 
+  fill(box,
     h("button", { class: "chip model", onclick: () => openModelPicker(s, set) }, h("span", { class: "dot" }), m.name, icon("down", 14, 2.2)),
-    s.imageRole === "first_frame" ? null : h("button", { class: "chip", onclick: () => openAspect(s, set) }, icon("frame", 16), s.aspect),
-    h("button", { class: "chip", onclick: (e) => openMenu(e.currentTarget, m.durations.map((d) => ({ label: `${d} seconds`, value: d, on: d === s.duration, cost: price({ ...s, duration: d }) })), (v) => set({ ...s, duration: v })) }, icon("clock", 16), `${s.duration}s`),
-    h("button", { class: "chip", onclick: (e) => openMenu(e.currentTarget, m.resolutions.map((r) => ({ label: r === "1080p" ? "1080p · Full HD" : r === "720p" ? "720p · HD" : "480p · Draft", value: r, on: r === s.resolution, cost: price({ ...s, resolution: r }) })), (v) => set({ ...s, resolution: v })) }, icon("hd", 16), s.resolution),
-    h("button", { class: "chip", title: s.audio ? "Sound on" : "Sound off", onclick: () => set({ ...s, audio: !s.audio }) }, icon(s.audio ? "sound" : "mute", 16)));
+    s.imageRole === "first_frame" ? null : h("button", { class: "chip", onclick: () => openAspect(m.aspects, s.aspect, (a) => set({ ...s, aspect: a })) }, icon("frame", 16), s.aspect),
+    h("button", { class: "chip", onclick: (e) => openMenu(e.currentTarget, durOptions(s), (v) => set({ ...s, duration: v })) }, icon("clock", 16), `${s.duration}s`),
+    h("button", { class: "chip", onclick: (e) => openMenu(e.currentTarget, resOptions(s), (v) => set({ ...s, resolution: v })) }, icon("hd", 16), s.resolution),
+    h("button", { class: "chip", title: s.audio ? "Sound on" : "Sound off", "aria-label": s.audio ? "Sound on" : "Sound off", onclick: () => set({ ...s, audio: !s.audio }) }, icon(s.audio ? "sound" : "mute", 16)));
 }
+function currentCost() { return S.mode === "image" ? iprice(ifix(S.imageSettings)) : price(fix(S.settings, S.attachments.length)); }
+function currentLocked() { return S.mode === "image" ? !iallowed(ifix(S.imageSettings).model) : !allowed(fix(S.settings, S.attachments.length).model); }
 function updateSend() {
   const slot = $("#send-slot"); if (!slot) return;
   const text = $("#prompt")?.value.trim() || "";
-  const ready = (text || S.attachments.length) && !S.busy && !S.attachments.some((a) => !a.id);
+  const ready = (text || (S.attachments.length && S.mode === "video")) && !S.busy && !S.attachments.some((a) => !a.id);
   if (S.agent) {
-    fill(slot, h("button", { class: "send", disabled: !ready, "aria-label": "Send", onclick: submit }, S.busy ? h("span", { class: "spin", style: { borderColor: "rgba(127,127,127,.35)", borderTopColor: "currentColor", width: "16px", height: "16px" } }) : icon("up", 20, 2.4)));
+    fill(slot, h("button", { class: "send", disabled: !ready, "aria-label": "Send", onclick: submit }, S.busy ? spinner(16) : icon("up", 20, 2.4)));
   } else {
-    const s = fix(S.settings, S.attachments.length);
-    fill(slot, h("button", { class: "gen-btn", disabled: !ready, onclick: submit }, !allowed(s.model) ? icon("lock", 15) : null, h("span", { class: "lbl-text" }, "Generate"), h("span", { class: "cost" }, bolt(14), price(s))));
+    fill(slot, h("button", { class: "gen-btn", disabled: !ready, onclick: submit }, currentLocked() ? icon("lock", 15) : null, h("span", { class: "lbl-text" }, "Generate"), h("span", { class: "cost" }, bolt(14), currentCost())));
   }
 }
 
@@ -545,46 +704,50 @@ function drawAttachments() {
   const box = $("#att"); if (!box) return;
   const one = S.attachments.length === 1;
   const s = fix(S.settings, S.attachments.length);
-  fill(box, ...S.attachments.map((a) => h("div", { class: "thumb" },
+  const label = S.mode === "image" ? "Reference" : s.imageRole === "first_frame" ? "Start frame" : "Reference";
+  fill(box, S.attachments.map((a) => h("div", { class: "thumb" },
     h("img", { src: a.local, alt: "" }),
     !a.id ? h("div", { class: "busy" }, h("span", { class: "spin" })) : null,
-    a.id ? h("button", { class: "role", title: one ? "Tap to switch: start frame or style reference" : "Used as reference", onclick: () => {
+    a.id ? h("button", { class: "role", title: S.mode === "image" ? "The picture model edits or follows this picture" : one ? "Tap to switch: start frame or style reference" : "Used as reference", onclick: () => {
+      if (S.mode === "image") return toast("The picture model edits or follows your pictures.");
       if (!one) return toast("With several pictures, Kleo uses them as references.");
       S.settings = fix({ ...S.settings, imageRole: s.imageRole === "first_frame" ? "reference" : "first_frame" }, 1); store.set("settings", S.settings);
       drawAttachments(); drawChips(); toast(S.settings.imageRole === "first_frame" ? "The video will start from this picture" : "The picture guides the look (character, product, style)");
-    } }, s.imageRole === "first_frame" ? "Start frame" : "Reference") : null,
+    } }, label) : null,
     h("button", { class: "x", "aria-label": "Remove picture", onclick: () => { S.attachments = S.attachments.filter((x) => x !== a); drawAttachments(); drawChips(); updateSend(); } }, icon("x", 12, 3)))));
 }
 
 async function submit() {
   const t = $("#prompt");
   const text = t.value.trim();
-  if ((!text && !S.attachments.length) || S.busy || S.attachments.some((a) => !a.id)) return;
+  const img = S.mode === "image";
+  if ((!text && (img || !S.attachments.length)) || S.busy || S.attachments.some((a) => !a.id)) return;
   const imageIds = S.attachments.map((a) => a.id);
-  const settings = fix(S.settings, imageIds.length);
+  const settings = img ? ifix(S.imageSettings) : fix(S.settings, imageIds.length);
   if (!S.agent) {
-    if (!allowed(settings.model)) return openModelLocked(settings.model);
-    if (S.me.credits < price(settings)) return openBuy(`This video costs ${price(settings)} credits. You have ${S.me.credits}.`);
+    if (currentLocked()) return openLocked(img ? imodel(settings.model) : model(settings.model), img);
+    if (S.me.credits < currentCost()) return openBuy(`This costs ${currentCost()} credits. You have ${S.me.credits}.`);
   }
   const atts = S.attachments.map((a) => ({ id: a.id, url: a.local }));
   S.busy = true; updateSend();
   const tempUser = { id: "tmp-u", role: "user", text, attachments: atts };
   const tempBot = { id: "tmp-b", role: "assistant", typing: true };
   S.messages.push(tempUser); if (S.agent) S.messages.push(tempBot);
-  t.value = ""; autosize(t); S.attachments = []; drawAttachments(); drawChips();
+  t.value = ""; autosize(t); t.placeholder = img ? "Describe your picture…" : "Describe your video…";
+  S.attachments = []; drawAttachments(); drawChips();
   renderMessages(); scrollDown();
   try {
     const r = S.agent
-      ? await api("/api/chat", { method: "POST", body: { chatId: S.chat?.id, text, imageIds, settings } })
-      : await api("/api/generate", { method: "POST", body: { chatId: S.chat?.id, prompt: text, settings, imageIds } });
+      ? await api("/api/chat", { method: "POST", body: { chatId: S.chat?.id, text, imageIds, mode: S.mode, settings: fix(S.settings, imageIds.length), imageSettings: ifix(S.imageSettings) } })
+      : await api("/api/generate", { method: "POST", body: { chatId: S.chat?.id, kind: S.mode, prompt: text, settings, imageIds } });
     S.messages = S.messages.filter((m) => m !== tempUser && m !== tempBot);
     for (const m of r.messages) { collectGens(m); if (m.role === "user" && atts.length && DEMO) m.attachments = atts; }
     S.messages.push(...r.messages);
     if (r.generation) { S.gens.set(r.generation.id, r.generation); watch(r.generation.id); setCredits(r.credits); }
     const isNew = !S.chat || S.chat.id !== r.chat.id;
     S.chat = r.chat; $("#title").textContent = r.chat.title || "";
-    if (isNew) { history.replaceState(null, "", `/c/${r.chat.id}${DEMO ? "?demo=1" : ""}`); S.chats = [r.chat, ...S.chats.filter((c) => c.id !== r.chat.id)]; }
-    else S.chats = [r.chat, ...S.chats.filter((c) => c.id !== r.chat.id)];
+    if (isNew) history.replaceState(null, "", `/c/${r.chat.id}${DEMO ? "?demo=1" : ""}`);
+    S.chats = [r.chat, ...S.chats.filter((c) => c.id !== r.chat.id)];
     renderChats(); renderMessages(); scrollDown();
   } catch (e) {
     S.messages = S.messages.filter((m) => m !== tempUser && m !== tempBot);
@@ -603,53 +766,54 @@ function sheet(title, sub, ...content) {
   const box = h("div", { class: "sheet", role: "dialog", "aria-modal": "true", "aria-label": title },
     h("div", { class: "grabber" }),
     h("div", { class: "sheet-h" }, h("h2", {}, title), h("button", { class: "icon-btn", "aria-label": "Close", onclick: closeLayer }, icon("x", 19, 2.2))),
-    sub ? h("p", { class: "sheet-sub" }, sub) : null, ...content);
+    sub ? h("p", { class: "sheet-sub" }, sub) : null, ...content.flat(Infinity).filter(Boolean));
   document.body.append(scrim, box); openLayer = [scrim, box];
   document.addEventListener("keydown", escClose);
   return box;
 }
 function openMenu(anchor, options, pick) {
-  if (innerWidth <= 640) {
-    sheet("Choose", null, h("div", { class: "list" }, options.map((o) => h("button", { class: "row", onclick: () => { closeLayer(); pick(o.value); } },
-      h("div", { class: "lbl" }, h("b", {}, o.label)), o.cost !== undefined ? h("span", { class: "val" }, bolt(13), o.cost) : null, o.on ? h("span", { class: "check" }, icon("check", 18, 2.4)) : null))));
-    return;
-  }
+  const rows = (menu) => options.map((o) => h("button", { class: "row", role: menu ? "menuitem" : null, onclick: () => { closeLayer(); pick(o.value); } },
+    h("div", { class: "lbl" }, h("b", {}, o.label)), o.cost !== undefined ? h("span", { class: "val" }, bolt(13), o.cost) : null,
+    h("span", { class: "check", style: { visibility: o.on ? "visible" : "hidden" } }, icon("check", 17, 2.4))));
+  if (innerWidth <= 640) { sheet("Choose", null, h("div", { class: "list" }, rows(false))); return; }
   closeLayer();
   const r = anchor.getBoundingClientRect();
   const scrim = h("div", { class: "scrim clear", onclick: closeLayer });
-  const menu = h("div", { class: "menu", role: "menu" }, options.map((o) => h("button", { class: "row", role: "menuitem", onclick: () => { closeLayer(); pick(o.value); } },
-    h("div", { class: "lbl" }, h("b", {}, o.label)), o.cost !== undefined ? h("span", { class: "val" }, bolt(13), o.cost) : null, h("span", { class: "check", style: { visibility: o.on ? "visible" : "hidden" } }, icon("check", 17, 2.4)))));
+  const menu = h("div", { class: "menu", role: "menu" }, rows(true));
   document.body.append(scrim, menu); openLayer = [scrim, menu];
   const mh = menu.offsetHeight, mw = menu.offsetWidth;
-  const above = r.top - mh - 8 > 8;
-  menu.style.top = (above ? r.top - mh - 8 : r.bottom + 8) + "px";
+  menu.style.top = (r.top - mh - 8 > 8 ? r.top - mh - 8 : r.bottom + 8) + "px";
   menu.style.left = Math.min(Math.max(8, r.left), innerWidth - mw - 8) + "px";
   document.addEventListener("keydown", escClose);
 }
-function openModelPicker(s, onPick) {
-  const list = h("div", { class: "list" }, S.config.models.map((m) => {
-    const lockd = !allowed(m.key);
-    const from = Math.min(...m.resolutions.map((r) => m.prices[r][m.durations[0]]));
-    return h("button", { class: "row" + (lockd ? " locked" : ""), onclick: () => {
-      if (lockd) return openModelLocked(m.key);
-      closeLayer(); onPick({ ...s, model: m.key, duration: m.durations.includes(s.duration) ? s.duration : m.defaultDuration, resolution: m.resolutions.includes(s.resolution) ? s.resolution : m.defaultResolution });
-    } },
+function modelRows(models, current, isAllowed, fromPrice, onPick, img) {
+  return h("div", { class: "list" }, models.map((m) => {
+    const lockd = !isAllowed(m.key);
+    return h("button", { class: "row" + (lockd ? " locked" : ""), onclick: () => (lockd ? openLocked(m, img) : (closeLayer(), onPick(m))) },
       h("div", { class: "lbl" }, h("b", {}, m.name, m.badge ? h("span", { class: "badge" }, m.badge) : null), h("span", {}, lockd ? "Unlocks with any credit pack" : m.blurb)),
-      h("span", { class: "val" }, lockd ? icon("lock", 16) : [h("small", { style: { fontSize: "12px" } }, "from"), bolt(13), from]),
-      s.model === m.key ? h("span", { class: "check" }, icon("check", 18, 2.4)) : null);
+      h("span", { class: "val" }, lockd ? icon("lock", 16) : [h("small", { style: { fontSize: "12px" } }, "from"), bolt(13), fromPrice(m)]),
+      current === m.key ? h("span", { class: "check" }, icon("check", 18, 2.4)) : null);
   }));
-  sheet("Video model", "Pick the engine. Price shows the shortest clip.", list);
 }
-function openModelLocked(key) {
-  const m = model(key);
-  openBuy(`${m.name} unlocks with your first credit pack. Free credits work with ${S.config.models.filter((x) => x.free).map((x) => x.name).join(", ")}.`);
+function openModelPicker(s, onPick) {
+  sheet("Video model", "Pick the engine. Price shows the shortest clip.",
+    modelRows(S.config.models, s.model, allowed, (m) => Math.min(...m.resolutions.map((r) => m.prices[r][m.durations[0]])),
+      (m) => onPick({ ...s, model: m.key, duration: m.durations.includes(s.duration) ? s.duration : m.defaultDuration, resolution: m.resolutions.includes(s.resolution) ? s.resolution : m.defaultResolution }), false));
 }
-function openAspect(s, onPick) {
-  const m = model(s.model);
-  const dims = { "16:9": [34, 19, "YouTube"], "9:16": [19, 34, "TikTok · Reels"], "1:1": [26, 26, "Instagram"], "4:3": [30, 23, "Classic"], "3:4": [23, 30, "Portrait"], "21:9": [38, 16, "Cinema"] };
-  sheet("Format", null, h("div", { class: "ratio-grid" }, m.aspects.map((a) => h("button", { class: "ratio" + (a === s.aspect ? " on" : ""), onclick: () => { closeLayer(); onPick({ ...s, aspect: a }); } },
-    h("i", { style: { width: dims[a][0] + "px", height: dims[a][1] + "px" } }), a, h("small", {}, dims[a][2])))),
-    m.aspects.length < 6 ? h("p", { class: "sheet-sub", style: { paddingTop: "8px" } }, `${m.name} makes 16:9 and 9:16 videos.`) : null);
+function openImageModelPicker(s, onPick) {
+  sheet("Picture model", "Pick the engine. Price shows one picture.",
+    modelRows(S.config.imageModels, s.model, iallowed, (m) => m.prices[m.defaultQuality][1], (m) => onPick({ ...s, model: m.key }), true));
+}
+function openLocked(m, img) {
+  const free = (img ? S.config.imageModels : S.config.models).filter((x) => x.free).map((x) => x.name).join(", ");
+  openBuy(`${m.name} unlocks with your first credit pack. Free credits work with ${free}.`);
+}
+function openAspect(aspects, current, onPick) {
+  sheet("Format", null, h("div", { class: "ratio-grid" }, aspects.map((a) => {
+    const d = RATIOS[a] || [26, 26, ""];
+    return h("button", { class: "ratio" + (a === current ? " on" : ""), onclick: () => { closeLayer(); onPick(a); } },
+      h("i", { style: { width: d[0] + "px", height: d[1] + "px" } }), a, h("small", {}, d[2]));
+  })));
 }
 
 function packRows(note) {
@@ -662,9 +826,8 @@ function packRows(note) {
       h("span", {}, `${(Number(p.label.split(" ")[0]) / p.credits).toFixed(2)} € per credit`))), icon("right", 18)))),
     h("p", { class: "sheet-sub", style: { paddingTop: "10px" } }, "Secure checkout by Stripe: card, Apple Pay, Google Pay, PayPal. Your first pack unlocks every model.")];
 }
-function openBuy(note) {
-  sheet("Get credits", null, h("div", { class: "big-credits" }, h("b", {}, bolt(34), h("span", { "data-credits": "" }, S.me.credits)), h("span", {}, "credits left")), ...packRows(note));
-}
+function bigCredits(sub) { return h("div", { class: "big-credits" }, h("b", {}, bolt(34), h("span", { "data-credits": "" }, S.me.credits)), h("span", {}, sub)); }
+function openBuy(note) { sheet("Get credits", null, bigCredits("credits left"), packRows(note)); }
 function openAccount() {
   closeSide();
   const hasPass = S.me.methods?.includes("password");
@@ -673,8 +836,8 @@ function openAccount() {
   const theme = store.get("theme", "system");
   const seg = h("div", { class: "seg" }, ["system", "light", "dark"].map((t) => h("button", { class: t === theme ? "on" : "", onclick: () => { store.set("theme", t); applyTheme(); openAccount(); } }, t[0].toUpperCase() + t.slice(1))));
   sheet("Account", S.me.email || "Signed in with a Kleo key",
-    h("div", { class: "big-credits" }, h("b", {}, bolt(34), h("span", { "data-credits": "" }, S.me.credits)), h("span", {}, S.me.paid ? "credits · all models unlocked" : "credits · buy a pack to unlock every model")),
-    ...packRows(),
+    bigCredits(S.me.paid ? "credits · all models unlocked" : "credits · buy a pack to unlock every model"),
+    packRows(),
     h("div", { class: "field-label" }, "Use Kleo in Claude & ChatGPT"),
     h("p", { class: "sheet-sub" }, "The same credits work in your AI assistant. Add Kleo as a connector with this address:"),
     h("div", { class: "list" },
@@ -711,46 +874,63 @@ function applyTheme() {
 
 // ── gallery ──────────────────────────────────────────────────────────────────────────────────────────────────────
 async function showGallery() {
-  S.view = "gallery"; S.chat = null; $("#title").textContent = "My videos"; $("#dock").style.display = "none";
+  S.view = "gallery"; S.chat = null; $("#title").textContent = "My creations"; $("#dock").style.display = "none";
   renderChats();
   const col = $("#col");
-  fill(col, h("div", { class: "gallery-h" }, h("h1", {}, "My videos")), h("div", { class: "hero" }, h("span", { class: "spin dark", style: { margin: "0 auto" } })));
+  fill(col, h("div", { class: "gallery-h" }, h("h1", {}, "My creations")), h("div", { class: "hero" }, h("span", { class: "spin dark", style: { margin: "0 auto" } })));
   try {
     const { generations } = await api("/api/generations?limit=100");
     for (const g of generations) { S.gens.set(g.id, g); if (g.status === "running") watch(g.id); }
     const shown = generations.filter((g) => g.status !== "failed");
-    fill(col, h("div", { class: "gallery-h" }, h("h1", {}, "My videos"), h("span", {}, `${shown.filter((g) => g.status === "done").length} videos`)),
+    const nv = shown.filter((g) => g.status === "done" && g.kind !== "image").length;
+    const np = shown.filter((g) => g.status === "done" && g.kind === "image").reduce((a, g) => a + g.outputs.length, 0);
+    fill(col, h("div", { class: "gallery-h" }, h("h1", {}, "My creations"), h("span", {}, `${nv} videos · ${np} pictures`)),
       shown.length ? h("div", { class: "grid" }, shown.map(tileEl))
-        : h("div", { class: "empty-gallery" }, h("b", {}, "No videos yet"), "Everything you generate lands here.", h("div", { style: { marginTop: "18px" } }, h("button", { class: "btn btn-primary", onclick: () => go("/") }, icon("sparkle", 18), "Make your first video"))));
+        : h("div", { class: "empty-gallery" }, h("b", {}, "Nothing here yet"), "Everything you generate lands here.", h("div", { style: { marginTop: "18px" } }, h("button", { class: "btn btn-primary", onclick: () => go("/") }, icon("sparkle", 18), "Make your first one"))));
   } catch (e) { handleError(e); }
 }
 function tileEl(g) {
   if (g.status === "running") return h("div", { class: "tile", "data-tile": g.id }, h("div", { class: "shimmer" }), h("div", { class: "cap" }, h("span", {}, "Generating…"), h("span", { class: "spin", style: { width: "14px", height: "14px" } })));
   if (g.status === "failed") return h("div", { class: "tile failed", "data-tile": g.id }, "Couldn't be made · refunded");
+  if (g.kind === "image") {
+    const o = g.outputs[0];
+    return h("button", { class: "tile", "data-tile": g.id, onclick: () => viewPicture(g, o) },
+      h("img", { src: o.url, alt: "", loading: "lazy" }), g.outputs.length > 1 ? h("span", { class: "count" }, icon("layers", 13, 2.2), g.outputs.length) : null,
+      h("div", { class: "cap" }, h("span", {}, g.prompt), h("span", {}, g.settings?.aspect || "")));
+  }
   const v = h("video", { src: g.video + "#t=0.05", muted: true, playsinline: true, loop: true, preload: "metadata" });
   v.muted = true;
-  return h("button", { class: "tile", "data-tile": g.id, onclick: () => viewer(g), onmouseenter: () => v.play().catch(() => {}), onmouseleave: () => { v.pause(); } },
-    v, h("div", { class: "cap" }, h("span", {}, g.prompt), h("span", {}, `${g.settings?.duration || ""}s`)));
+  return h("button", { class: "tile", "data-tile": g.id, onclick: () => viewVideo(g), onmouseenter: () => v.play().catch(() => {}), onmouseleave: () => v.pause() },
+    v, h("span", { class: "count" }, icon("play", 12, 2.4)), h("div", { class: "cap" }, h("span", {}, g.prompt), h("span", {}, `${g.settings?.duration || ""}s`)));
 }
-function viewer(g) {
+function viewerFrame(media, prompt, actions) {
   closeLayer();
   const box = h("div", { class: "viewer", role: "dialog", "aria-modal": "true" },
-    h("button", { class: "icon-btn vclose", "aria-label": "Close", onclick: closeLayer }, icon("x", 20, 2.2)),
-    h("video", { src: g.video, controls: true, autoplay: true, playsinline: true, loop: true }),
-    h("p", { class: "vprompt" }, g.prompt),
-    h("div", { class: "vactions" },
-      h("a", { class: "btn btn-quiet btn-sm", href: DEMO ? g.video : `${g.video}?dl=1`, download: `kleo-${g.id}.mp4` }, icon("dl", 17), "Download"),
-      h("button", { class: "btn btn-quiet btn-sm", onclick: () => share(g) }, icon("share", 17), "Share"),
-      h("button", { class: "btn btn-quiet btn-sm", onclick: () => { closeLayer(); remix(g); } }, icon("wand", 17), "Remix")));
+    h("button", { class: "icon-btn vclose", "aria-label": "Close", onclick: closeLayer }, icon("x", 20, 2.2)), media,
+    h("p", { class: "vprompt" }, prompt), h("div", { class: "vactions" }, actions));
   box.addEventListener("click", (e) => { if (e.target === box) closeLayer(); });
   document.body.append(box); openLayer = [box];
   document.addEventListener("keydown", escClose);
+}
+function viewVideo(g) {
+  viewerFrame(h("video", { src: g.video, controls: true, autoplay: true, playsinline: true, loop: true }), g.prompt, [
+    h("a", { class: "btn btn-quiet btn-sm", href: DEMO ? g.video : `${g.video}?dl=1`, download: `kleo-${g.id}.mp4` }, icon("dl", 17), "Download"),
+    h("button", { class: "btn btn-quiet btn-sm", onclick: () => share(g) }, icon("share", 17), "Share"),
+    h("button", { class: "btn btn-quiet btn-sm", onclick: () => { closeLayer(); remix(g); } }, icon("wand", 17), "Remix")]);
+}
+function viewPicture(g, o) {
+  viewerFrame(h("img", { src: o.url, alt: g.prompt.slice(0, 80) }), g.prompt, [
+    h("button", { class: "btn btn-primary btn-sm", onclick: () => animate(o) }, icon("play", 16), "Animate"),
+    h("a", { class: "btn btn-quiet btn-sm", href: DEMO ? o.url : `${o.url}?dl=1`, download: `kleo-${o.upload}.jpg` }, icon("dl", 17), "Download"),
+    h("button", { class: "btn btn-quiet btn-sm", onclick: () => share(g, o) }, icon("share", 17), "Share"),
+    h("button", { class: "btn btn-quiet btn-sm", onclick: () => { setMode("image"); useAsReference(o); } }, icon("layers", 17), "Use as reference")]);
 }
 
 // ── demo mode (?demo=1): the whole app on fake data, no account, nothing charged ─────────────────────────────────
 const demoUploads = new Map();
 const demoDb = { chats: [], messages: new Map(), gens: new Map(), credits: 42, n: 0 };
 const SAMPLES = ["https://kleooai.com/samples/shot-dunes.mp4", "https://kleooai.com/samples/realistic-tether.mp4", "https://kleooai.com/samples/animation-octopus.mp4", "https://kleooai.com/samples/shot-moon.mp4"];
+const STILLS = ["https://kleooai.com/samples/realistic-tether.jpg", "https://kleooai.com/samples/shot-moon.jpg", "https://kleooai.com/samples/animation-octopus.jpg", "https://kleooai.com/samples/shot-dunes.jpg"];
 function demoUpload(url) { const id = "up_demo" + (++demoDb.n); demoUploads.set(id, url); return { id }; }
 const demoCatalog = () => {
   const cfg = [
@@ -767,63 +947,95 @@ const demoCatalog = () => {
     prices: Object.fromEntries(resolutions.map((r) => [r, Object.fromEntries(durations.map((d) => [d, Math.max(1, Math.ceil(base * (family === "veo" ? 1 : mult[r]) * d * 1.6 / 0.44))]))])),
   }));
 };
+const demoImageCatalog = () => [
+  ["nano-banana-pro", "Nano Banana Pro", "Google's best: text, faces, edits", "Best", ["1K", "2K", "4K"], "2K", { "1K": [1, 1, 2], "2K": [1, 1, 2], "4K": [1, 1, 2] }],
+  ["nano-banana-2", "Nano Banana 2", "Fast Google model, great value", null, ["1K", "2K", "4K"], "2K", { "1K": [1, 1, 1], "2K": [1, 1, 1], "4K": [1, 1, 2] }],
+  ["seedream-5", "Seedream 5.0", "ByteDance, sharp and detailed", "Cheapest", ["2K"], "2K", { "2K": [1, 1, 1] }],
+  ["flux-2-pro", "FLUX.2 Pro", "Photoreal, natural light", null, ["1K"], "1K", { "1K": [1, 1, 1] }],
+].map(([key, name, blurb, badge, qualities, dq, pr]) => ({
+  key, name, blurb, badge, qualities, defaultQuality: dq, aspects: ["1:1", "4:5", "3:4", "2:3", "9:16", "4:3", "3:2", "16:9", "21:9"], maxReferences: 14, free: key !== "nano-banana-pro", counts: [1, 2, 4],
+  prices: Object.fromEntries(qualities.map((q) => [q, { 1: pr[q][0], 2: pr[q][1], 4: pr[q][2] }])),
+}));
 async function demoApi(path, opts) {
   await new Promise((r) => setTimeout(r, path === "/api/chat" ? 1100 : 150));
   const method = opts.method || "GET", b = opts.body || {};
   const now = () => new Date().toISOString();
-  if (path === "/api/config") return { google: true, defaultModel: "seedance-2.5", models: demoCatalog(), freeCredits: 5 };
-  if (path === "/api/me") return { id: "u_demo", email: "you@example.com", credits: demoDb.credits, paid: true, allowed: demoCatalog().map((m) => m.key), methods: ["password"], kleoKey: "u_demo.0123456789abcdef0123456789abcdef", mcpUrl: "https://mcp.kleooai.com/mcp", packs: [{ label: "5 EUR", credits: 10, url: "https://kleooai.com/pricing/" }, { label: "15 EUR", credits: 35, url: "https://kleooai.com/pricing/" }, { label: "40 EUR", credits: 100, url: "https://kleooai.com/pricing/" }] };
+  if (path === "/api/config") return { google: true, emailReset: true, defaultModel: "seedance-2.5", models: demoCatalog(), defaultImageModel: "nano-banana-2", imageModels: demoImageCatalog(), freeCredits: 5 };
+  if (path === "/api/me") return { id: "u_demo", email: "you@example.com", credits: demoDb.credits, paid: true, allowed: demoCatalog().map((m) => m.key), allowedImages: demoImageCatalog().map((m) => m.key), methods: ["password"], kleoKey: "u_demo.0123456789abcdef0123456789abcdef", mcpUrl: "https://mcp.kleooai.com/mcp", packs: [{ label: "5 EUR", credits: 10, url: "https://kleooai.com/pricing/" }, { label: "15 EUR", credits: 35, url: "https://kleooai.com/pricing/" }, { label: "40 EUR", credits: 100, url: "https://kleooai.com/pricing/" }] };
   if (path === "/api/auth/signout") return { ok: true };
   if (path === "/api/chats" && method === "GET") return { chats: demoDb.chats };
   const cm = path.match(/^\/api\/chats\/(c_\w+)$/);
   if (cm) { if (method === "DELETE") { demoDb.chats = demoDb.chats.filter((c) => c.id !== cm[1]); return { ok: true }; } const chat = demoDb.chats.find((c) => c.id === cm[1]); if (!chat) throw new ApiError("Chat not found.", 404); return { chat, messages: demoDb.messages.get(chat.id) }; }
   const ensureChat = (title) => {
     let chat = demoDb.chats.find((c) => c.id === b.chatId);
-    if (!chat) { chat = { id: "c_demo" + (++demoDb.n), title: title.slice(0, 40) || "New video", updated_at: now() }; demoDb.chats.unshift(chat); demoDb.messages.set(chat.id, []); }
+    if (!chat) { chat = { id: "c_demo" + (++demoDb.n), title: title.slice(0, 40) || "New chat", updated_at: now() }; demoDb.chats.unshift(chat); demoDb.messages.set(chat.id, []); }
     return chat;
   };
-  const newGen = (prompt, settings, chatId) => {
-    const m = demoCatalog().find((x) => x.key === settings.model);
-    const g = { id: "g_demo" + (++demoDb.n), model: m.key, modelName: m.name, settings, prompt, credits: m.prices[settings.resolution][settings.duration], status: "running", chatId, createdAt: now(), video: null, doneAt: Date.now() + 7000 };
-    demoDb.credits -= g.credits; demoDb.gens.set(g.id, g); return g;
+  const newGen = (kind, prompt, settings, chatId) => {
+    const img = kind === "image";
+    const m = img ? demoImageCatalog().find((x) => x.key === settings.model) : demoCatalog().find((x) => x.key === settings.model);
+    const credits = img ? m.prices[settings.quality][settings.count] : m.prices[settings.resolution][settings.duration];
+    const g = { id: "g_demo" + (++demoDb.n), kind, model: m.key, modelName: m.name, settings, prompt, credits, status: "running", chatId, createdAt: now(), video: null, outputs: [], count: img ? settings.count : 1, doneAt: Date.now() + (img ? 4000 : 7000) };
+    demoDb.credits -= credits; demoDb.gens.set(g.id, g); return g;
   };
   if (path === "/api/chat") {
     const chat = ensureChat(b.text);
     const u = { id: "m_u" + (++demoDb.n), role: "user", text: b.text, attachments: (b.imageIds || []).map((id) => ({ id, url: demoUploads.get(id) })) };
-    const s = fix(b.settings, (b.imageIds || []).length);
-    const vertical = /tiktok|reel|short|vertical|verticale/i.test(b.text);
-    if (vertical) s.aspect = "9:16";
-    const p = { title: b.text.split(/\s+/).slice(0, 4).join(" ") || "Your video", prompt: `${b.text || "The attached picture comes to life"}. Cinematic composition, natural motion, a slow dolly-in that reveals the scene, soft golden light with gentle contrast, shallow depth of field, rich detailed textures, photoreal style, immersive ambient sound that matches the action.`, settings: s, credits: price(s), imageIds: b.imageIds || [] };
-    const bot = { id: "m_b" + (++demoDb.n), role: "assistant", text: vertical ? "Love it — I set it up vertical for TikTok. Tap Generate or tell me what to tweak." : "Great idea! Here's how I'd shoot it. Tap Generate when you're ready, or ask me to change anything.", proposal: p };
+    let p, reply;
+    if (b.mode === "image") {
+      const s = ifix(b.imageSettings || {});
+      p = { kind: "image", title: b.text.split(/\s+/).slice(0, 4).join(" ") || "Your picture", prompt: `${b.text}. Striking composition, soft natural light, rich detail, shallow depth of field, editorial photography, cohesive color palette.`, settings: s, credits: iprice(s), imageIds: b.imageIds || [] };
+      reply = "Nice! Here's the shot I'd paint. Tap Generate, or tell me what to change.";
+    } else {
+      const s = fix(b.settings, (b.imageIds || []).length);
+      if (/tiktok|reel|short|vertical|verticale/i.test(b.text)) s.aspect = "9:16";
+      p = { kind: "video", title: b.text.split(/\s+/).slice(0, 4).join(" ") || "Your video", prompt: `${b.text || "The attached picture comes to life"}. Cinematic composition, natural motion, a slow dolly-in that reveals the scene, soft golden light with gentle contrast, shallow depth of field, rich detailed textures, photoreal style, immersive ambient sound that matches the action.`, settings: s, credits: price(s), imageIds: b.imageIds || [] };
+      reply = s.aspect === "9:16" ? "Love it — I set it up vertical for TikTok. Tap Generate or tell me what to tweak." : "Great idea! Here's how I'd shoot it. Tap Generate when you're ready, or ask me to change anything.";
+    }
+    const bot = { id: "m_b" + (++demoDb.n), role: "assistant", text: reply, proposal: p };
     demoDb.messages.get(chat.id).push(u, bot);
     return { chat, messages: [u, bot] };
   }
   if (path === "/api/generate") {
-    let chat, msgs = [];
     if (b.proposalId) {
-      for (const [cid, list] of demoDb.messages) { const m = list.find((x) => x.id === b.proposalId); if (m) { chat = demoDb.chats.find((c) => c.id === cid); const g = newGen(b.prompt || m.proposal.prompt, fix(b.settings || m.proposal.settings), cid); m.generations = [...(m.generations || []), g]; return { chat, generation: g, credits: demoDb.credits, messages: [m] }; } }
+      for (const [cid, list] of demoDb.messages) {
+        const m = list.find((x) => x.id === b.proposalId);
+        if (!m) continue;
+        const kind = m.proposal.kind || "video";
+        const g = newGen(kind, b.prompt || m.proposal.prompt, kind === "image" ? ifix(b.settings || m.proposal.settings) : fix(b.settings || m.proposal.settings), cid);
+        m.generations = [...(m.generations || []), g];
+        return { chat: demoDb.chats.find((c) => c.id === cid), generation: g, credits: demoDb.credits, messages: [m] };
+      }
     }
-    chat = ensureChat(b.prompt);
+    const chat = ensureChat(b.prompt);
     const u = { id: "m_u" + (++demoDb.n), role: "user", text: b.prompt };
-    const g = newGen(b.prompt, fix(b.settings, (b.imageIds || []).length), chat.id);
+    const g = newGen(b.kind === "image" ? "image" : "video", b.prompt, b.kind === "image" ? ifix(b.settings) : fix(b.settings, (b.imageIds || []).length), chat.id);
     const bot = { id: "m_b" + (++demoDb.n), role: "assistant", text: "", generation: g };
-    demoDb.messages.get(chat.id).push(u, bot); msgs = [u, bot];
-    return { chat, generation: g, credits: demoDb.credits, messages: msgs };
+    demoDb.messages.get(chat.id).push(u, bot);
+    return { chat, generation: g, credits: demoDb.credits, messages: [u, bot] };
   }
   const gm = path.match(/^\/api\/generations\/(g_\w+)$/);
-  if (gm) { const g = demoDb.gens.get(gm[1]); if (g.status === "running" && Date.now() > g.doneAt) { g.status = "done"; g.video = SAMPLES[demoDb.n % SAMPLES.length]; } return { generation: { ...g }, credits: demoDb.credits }; }
+  if (gm) {
+    const g = demoDb.gens.get(gm[1]);
+    if (g.status === "running" && Date.now() > g.doneAt) {
+      g.status = "done";
+      if (g.kind === "image") g.outputs = Array.from({ length: g.count }, (_, i) => { const url = STILLS[(demoDb.n + i) % STILLS.length]; const up = demoUpload(url); return { upload: up.id, url }; });
+      else g.video = SAMPLES[demoDb.n % SAMPLES.length];
+    }
+    return { generation: { ...g }, credits: demoDb.credits };
+  }
   if (path.startsWith("/api/generations")) return { generations: [...demoDb.gens.values()].reverse() };
   throw new ApiError("Not in the demo.", 404);
 }
 if (DEMO) {
   // Seed one finished conversation so the demo opens on something real.
   const s = { model: "seedance-2.5", duration: 5, resolution: "720p", aspect: "16:9", audio: true, imageRole: "none" };
-  const g = { id: "g_demo0", model: "seedance-2.5", modelName: "Seedance 2.5", settings: s, prompt: "A lone rider crosses golden dunes at sunset, wind lifting sand into the light, wide drone shot slowly pushing in, warm cinematic grade, soft desert wind sound.", credits: 4, status: "done", chatId: "c_demo0", createdAt: new Date(Date.now() - 3600e3).toISOString(), video: SAMPLES[0] };
+  const g = { id: "g_demo0", kind: "video", model: "seedance-2.5", modelName: "Seedance 2.5", settings: s, prompt: "A lone rider crosses golden dunes at sunset, wind lifting sand into the light, wide drone shot slowly pushing in, warm cinematic grade, soft desert wind sound.", credits: 4, status: "done", chatId: "c_demo0", createdAt: new Date(Date.now() - 3600e3).toISOString(), video: SAMPLES[0], outputs: [] };
   demoDb.gens.set(g.id, g);
   demoDb.chats.push({ id: "c_demo0", title: "Desert rider at sunset", updated_at: new Date(Date.now() - 3600e3).toISOString() });
   demoDb.messages.set("c_demo0", [
     { id: "m_d1", role: "user", text: "un cavaliere nel deserto al tramonto, molto cinematografico" },
-    { id: "m_d2", role: "assistant", text: "Bellissima idea! Ecco come lo girerei: drone largo, luce dorata, sabbia nel vento. Premi Genera quando vuoi.", proposal: { title: "Cavaliere nel deserto", prompt: g.prompt, settings: s, credits: 4, imageIds: [] }, generations: [g] },
+    { id: "m_d2", role: "assistant", text: "Bellissima idea! Ecco come lo girerei: drone largo, luce dorata, sabbia nel vento. Premi Genera quando vuoi.", proposal: { kind: "video", title: "Cavaliere nel deserto", prompt: g.prompt, settings: s, credits: 4, imageIds: [] }, generations: [g] },
   ]);
 }
 

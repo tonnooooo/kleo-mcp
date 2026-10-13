@@ -23,6 +23,11 @@ export interface StudioEnv {
   MAX_NEW_USERS_PER_IP_DAY?: string;
   /** Models an account that never paid may use: comma separated keys or "*" (default "seedance-2.0-fast"). */
   STUDIO_FREE_MODELS?: string;
+  /** Image models an account that never paid may use (default all but Nano Banana Pro). */
+  STUDIO_FREE_IMAGE_MODELS?: string;
+  /** Resend key and sender for the password-reset e-mail (src/email.ts); without the key, reset is by hand. */
+  RESEND_API_KEY?: string;
+  NOTIFY_FROM?: string;
   /** Price over cost (default 1.6). */
   STUDIO_MARGIN?: string;
   /** Hard ceiling on provider dollars Studio may commit in one UTC day (default 30). */
