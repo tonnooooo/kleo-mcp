@@ -1,7 +1,7 @@
 # Kleo Studio
 
 Kleo Studio is Kleo's consumer web app: a person signs in, chats with Kleo, attaches pictures and spends credits to
-generate video clips. It sits next to the MCP server and does not replace it. One account, one balance and one
+generate video clips and pictures. It sits next to the MCP server and does not replace it. One account, one balance and one
 payment history work in both.
 
 - Address: `https://app.kleooai.com` (custom domain set in `wrangler.studio.jsonc`; the workers.dev address is off).
@@ -42,6 +42,30 @@ the `official_cheap` channel only; a Veo order that finds no such channel fails 
 **Free accounts** (no Stripe payment on record) can use only `STUDIO_FREE_MODELS` (default: Seedance 2.0 Fast). This is
 the owner's rule of 15 September 2026: gifted credits must not buy the expensive models. The first pack unlocks all.
 
+## Pictures
+
+Same task API, one task per picture; a generation is a set of 1, 2 or 4 pictures (`slots` in `studio_generations`).
+
+| Key | Shown as | ePhone model | Qualities | Credits (1 / 4 pictures) |
+| --- | --- | --- | --- | --- |
+| `nano-banana-pro` | Nano Banana Pro | `gemini-3-pro-image` | 1K, 2K, 4K | 1 / 2 |
+| `nano-banana-2` | Nano Banana 2 | `gemini-3.1-flash-image` | 1K, 2K, 4K | 1 / 1 (4K ×4: 2) |
+| `seedream-5` | Seedream 5.0 | `doubao-seedream-5-0-260128` | 2K | 1 / 1 |
+| `flux-2-pro` | FLUX.2 Pro | `flux-2-pro` | 1K | 1 / 1 |
+
+Gemini and FLUX go to the `official_cheap` channel only. Free accounts may use `STUDIO_FREE_IMAGE_MODELS` (all but Nano
+Banana Pro). If some pictures of a set fail, the share of credits they stood for comes back (rounded down). Every
+finished picture is also a `studio_uploads` row, so the page can animate it into a video (start frame) or use it as a
+reference with one tap. The agent proposes pictures with a second tool, `propose_image`; the composer has a
+Video / Image switch.
+
+## Password reset
+
+`POST /api/auth/forgot` mails a one-hour link (`/reset?t=<user>.<exp>.<sig>`, signed over the current password hash, so
+it dies when the password changes); three mails per account per day; the same answer for unknown addresses. It needs
+the `RESEND_API_KEY` secret and kleooai.com verified as a sending domain in Resend; until then the page sends people to
+hello@kleooai.com.
+
 ## Money safety
 
 - Credits are debited before the order and refunded once if the provider refuses or fails (compare-and-set on the clip
@@ -75,7 +99,8 @@ Secrets, once (`npx wrangler secret put NAME --config wrangler.studio.jsonc`):
   client ID → Web application, authorised redirect URI `https://app.kleooai.com/auth/google/callback`.
 - `TURNSTILE_SECRET` (optional) with the `TURNSTILE_SITEKEY` var.
 
-The tables are created on first use; `migrations/0017_studio.sql` holds the same SQL for the record.
+The tables are created on first use; `migrations/0017_studio.sql` and `0018_studio_images.sql` hold the same SQL for the
+record and are already marked applied in production's `d1_migrations` (14 Oct 2026), so `migrations apply` skips them.
 
 ## Demo
 
@@ -83,7 +108,7 @@ The tables are created on first use; `migrations/0017_studio.sql` holds the same
 
 ## Not done yet
 
-- Password reset by e-mail (needs a sending service such as Resend). The sign-in page points to hello@kleooai.com.
-- Image generation (the owner is deciding between Vast and a provider).
+- Resend account (password-reset mails): code ready, secret not set.
+- Google OAuth client: code ready, secrets not set.
 - Reference videos and audio for Seedance 2.5 (edit/extend a clip).
 - A Stripe success URL that returns to Studio (today the Payment Links return where the owner configured them).
