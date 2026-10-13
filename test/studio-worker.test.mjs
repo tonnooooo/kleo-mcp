@@ -601,9 +601,10 @@ test("the site behind the app: /mcp is the site's home, other pages keep their a
     assert.equal(missing.status, 404);
     assert.match(missing.text, /Not found/);
     // Only what a browser needs: no repository tooling, no dot-folders, no Markdown.
-    for (const hidden of ["/.github/workflows/publish-x.yml", "/tools/check.py", "/README.md", "/.gitignore", "/%2e%2e/secret"]) {
+    for (const hidden of ["/.github/workflows/publish-x.yml", "/tools/check.py", "/README.md", "/.gitignore", "/a/%2e%2e%2f%2e%2e%2fsecret"]) {
+      const before = p.sent.length;
       assert.equal((await call(env, hidden)).status, 404, hidden);
-      assert.ok(!p.sent.some((s) => s.url.endsWith(hidden.replace("/%2e%2e", ""))), `${hidden} was never fetched`);
+      assert.ok(p.sent.slice(before).every((s) => s.url.endsWith("/404.html")), `${hidden}: only the 404 page was fetched`);
     }
     // The app's own pages are not the site.
     assert.match((await call(env, "/video")).text, /app/);
