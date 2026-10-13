@@ -513,7 +513,53 @@ function settingPills(s, onChange, kind = "video") {
     s.imageRole === "first_frame" ? pill("photo", "From photo", null) : pill("frame", s.aspect, () => openAspect(m.aspects, s.aspect, (a) => onChange({ ...s, aspect: a }))),
     pill(s.audio ? "sound" : "mute", s.audio ? "Sound" : "Silent", () => onChange({ ...s, audio: !s.audio })));
 }
+const FILM_LENGTHS = [15, 30, 45, 60, 90, 120, 180, 300];
+const fmtLen = (d) => (d >= 60 ? `${d / 60} min` : `${d}s`);
+function filmCardEl(m) {
+  const p = m.proposal;
+  let s = { ...p.settings };
+  let quote = p.quote || null;
+  let cost = p.credits || null;
+  let editing = false;
+  const wrap = h("div", { class: "card film-card", "data-proposal": m.id });
+  const requote = async () => {
+    if (DEMO) { cost = s.product === "animatic" ? (s.duration <= 20 ? 5 : 10) : Math.max(10, Math.ceil(s.duration / 1.5)); draw(); return; }
+    try { quote = await api("/api/film/quote", { method: "POST", body: { settings: s } }); cost = quote.credits_for_choice; } catch { cost = null; }
+    draw();
+  };
+  const set = (patch) => { s = { ...s, ...patch }; if (s.product === "animatic" && s.duration > 60) s.duration = 60; p.settings = s; cost = null; draw(); requote(); };
+  const pill = (ic, label, fn) => h("button", { class: "pill", onclick: fn }, icon(ic, 15), label);
+  const draw = () => {
+    const gens = (m.generations || []).map((g) => S.gens.get(g.id) || g);
+    const filmLocked = quote && s.product === "film" && !quote.film.allowed;
+    fill(wrap,
+      h("div", { class: "card-h" }, h("span", { class: "eyebrow" }, icon("film", 13, 2.2), s.product === "animatic" ? "Kleo animatic" : "Kleo film"),
+        h("span", { class: "film-tag" }, "Script · voice · music · 4K")),
+      h("div", { class: "card-title" }, p.title),
+      editing ? h("textarea", { "aria-label": "Brief", oninput: (e) => { p.prompt = e.target.value; } }, p.prompt) : h("div", { class: "card-prompt clamp" }, p.prompt),
+      h("div", { class: "pills" },
+        pill(s.style === "animation" ? "sparkle" : "film", s.style === "animation" ? "Animation" : "Realistic", () => set({ style: s.style === "animation" ? "realistic" : "animation" })),
+        pill("frame", s.format === "9:16" ? "9:16 Short" : "16:9 YouTube", () => set({ format: s.format === "9:16" ? "16:9" : "9:16" })),
+        pill("clock", fmtLen(s.duration), (e) => openMenu(e.currentTarget, FILM_LENGTHS.filter((d) => s.product === "film" || d <= 60).map((d) => ({ label: fmtLen(d), value: d, on: d === s.duration })), (v) => set({ duration: v }))),
+        pill("layers", s.product === "animatic" ? "Animatic" : "Full film", () => set({ product: s.product === "animatic" ? "film" : "animatic" })),
+        pill(s.music ? "music" : "mute", s.music ? "Music" : "No music", () => set({ music: !s.music })),
+        pill("text", s.subtitles ? "Subtitles" : "No subtitles", () => set({ subtitles: !s.subtitles })),
+        pill("globe", s.language === "it" ? "Italiano" : "English", () => set({ language: s.language === "it" ? "en" : "it" }))),
+      filmLocked ? h("p", { class: "film-note" }, icon("lock", 14), ` A full film unlocks with your first credit pack. The animatic (drawn frames with camera moves) works with any credits — ${quote.animatic.credits} credits.`) : null,
+      h("div", { class: "card-f" },
+        h("button", { class: "btn btn-cta btn-grow", disabled: cost === null, onclick: (e) => (filmLocked ? openBuy("A full Kleo film unlocks with your first credit pack.") : generateFromProposal(m, s, e.currentTarget)) },
+          filmLocked ? icon("lock", 17) : null, gens.length ? "Make it again" : s.product === "animatic" ? "Make the animatic" : "Make the film", h("span", { class: "cost" }, bolt(14), cost ?? "…")),
+        h("button", { class: "btn btn-quiet", onclick: () => { editing = !editing; draw(); } }, editing ? "Done" : "Edit")),
+      h("div", { class: "cta-note", style: { textAlign: "left", padding: "0 16px 12px" } }, s.product === "animatic" ? "Ready in about 15–20 minutes." : "Ready in about 25–35 minutes. You can close the page — it keeps going."),
+      gens.map((g) => genEl(g.id)));
+  };
+  draw();
+  if (cost === null) requote();
+  wrap.redraw = draw;
+  return wrap;
+}
 function proposalEl(m) {
+  if (m.proposal?.kind === "film") return filmCardEl(m);
   const p = m.proposal;
   const img = isImage(p);
   let s = img ? ifix(p.settings) : { ...fix(p.settings, p.imageIds?.length || 0), preset: p.settings?.preset };
@@ -575,6 +621,7 @@ function genEl(id) {
   if (!g) return h("div");
   if (g.kind === "image") return picturesEl(g);
   if (g.kind === "tool") return h("div", { class: "pics n1", "data-gen": g.id, style: { maxWidth: "360px" } }, resultCard(g));
+  if (g.kind === "film") return filmEl(g);
   return clipEl(g);
 }
 function clipEl(g) {
@@ -595,6 +642,28 @@ function clipEl(g) {
       h("a", { class: "icon-btn", href: DEMO ? g.video : `${g.video}?dl=1`, download: `kleo-${g.id}.mp4`, title: "Download", "aria-label": "Download" }, icon("dl", 19)),
       h("button", { class: "icon-btn", title: "Share", "aria-label": "Share", onclick: () => share(g) }, icon("share", 19)),
       h("button", { class: "icon-btn", title: "Remix", "aria-label": "Remix", onclick: () => remix(g) }, icon("wand", 19))));
+  return el;
+}
+function filmEl(g) {
+  const s = g.settings || {};
+  const el = h("div", { class: `clip ${s.format === "9:16" ? "portrait" : ""}`, "data-gen": g.id });
+  const ratio = (s.format || "16:9").replace(":", " / ");
+  if (g.status === "running") {
+    const pr = g.progress || {};
+    const pct = Math.max(2, Math.min(99, Number(pr.percent) || 0));
+    el.append(h("div", { class: "clip-media", style: { aspectRatio: ratio } }, h("div", { class: "shimmer" }),
+      h("div", { class: "clip-status", style: { flexDirection: "column", alignItems: "stretch", gap: "8px" } },
+        h("div", { style: { display: "flex", justifyContent: "space-between", gap: "8px" } }, h("b", {}, pr.label || "Starting your film"), h("span", {}, `${Math.round(pct)}%`)),
+        h("div", { class: "progress" }, h("i", { style: { width: `${pct}%` } })),
+        h("span", {}, `${g.modelName} · ${fmtLen(s.duration || 30)}${pr.eta_min ? ` · about ${pr.eta_min} min left` : ""}`))));
+    return el;
+  }
+  if (g.status === "failed") return failedEl(g, el);
+  el.append(h("div", { class: "clip-media", style: { aspectRatio: ratio } }, h("video", { src: g.video + "#t=0.05", controls: true, playsinline: true, preload: "metadata" })),
+    h("div", { class: "clip-bar" },
+      h("span", { class: "meta" }, `${g.modelName} · ${fmtLen(s.duration || 30)} · 4K`),
+      h("a", { class: "icon-btn", href: DEMO ? g.video : `${g.video}?dl=1`, download: `kleo-film-${g.id}.mp4`, title: "Download", "aria-label": "Download" }, icon("dl", 19)),
+      h("button", { class: "icon-btn", title: "Share", "aria-label": "Share", onclick: () => share(g) }, icon("share", 19))));
   return el;
 }
 function picturesEl(g) {
@@ -638,6 +707,7 @@ function setMode(mode) {
 function remix(g) {
   closeLayer();
   if (g.kind === "tool") return go(`/apps/${g.model}`);
+  if (g.kind === "film") return go(g.chatId ? `/c/${g.chatId}` : "/");
   const kind = g.kind === "image" ? "image" : "video";
   const page = S.page[kind];
   page.prompt = g.prompt.replace(/\nCamera: .*$|\nEffect: .*$|\nStyle: .*$/s, "");
@@ -1010,7 +1080,8 @@ function resultCard(g) {
   const media = h("div", { class: "media", style: { aspectRatio: ratio } });
   if (g.status === "running") {
     const t = h("span", {}); elapsed(g, t);
-    media.append(h("div", { class: "shimmer" }), h("div", { class: "state" }, h("span", {}, "Generating…"), h("span", { class: "row-gap" }, t, h("span", { class: "spin" }))));
+    const label = g.kind === "film" ? `${g.progress?.label || "Starting your film"} · ${Math.round(g.progress?.percent || 0)}%` : "Generating…";
+    media.append(h("div", { class: "shimmer" }), h("div", { class: "state" }, h("span", {}, label), h("span", { class: "row-gap" }, t, h("span", { class: "spin" }))));
   } else if (g.status === "failed") {
     media.append(h("div", {}, h("div", {}, g.error || "This one couldn't be made."), g.refunded ? h("div", { class: "refund", style: { justifyContent: "center" } }, icon("check", 14, 2.6), `${g.credits} credits refunded`) : null));
   } else if (out === "audio") {
@@ -1024,10 +1095,11 @@ function resultCard(g) {
     media.addEventListener("click", () => o && viewOutput(g, o));
   } else {
     const src = g.kind === "tool" ? g.outputs?.[0]?.url : g.video;
+    if (g.kind === "film") media.style.aspectRatio = (s.format || "16:9").replace(":", " / ");
     if (src) {
       const v = h("video", { src: src + "#t=0.05", muted: true, playsinline: true, loop: true, preload: "metadata" });
       v.muted = true;
-      media.append(v, h("span", { class: "badge-r" }, icon("play", 11, 2.4), g.kind === "tool" ? g.modelName : `${s.duration || ""}s`));
+      media.append(v, h("span", { class: "badge-r" }, icon("play", 11, 2.4), g.kind === "tool" || g.kind === "film" ? g.modelName : `${s.duration || ""}s`));
       media.addEventListener("mouseenter", () => v.play().catch(() => {}));
       media.addEventListener("mouseleave", () => v.pause());
       media.addEventListener("click", () => (g.kind === "tool" ? viewOutput(g, g.outputs[0]) : viewVideo(g)));
@@ -1036,9 +1108,9 @@ function resultCard(g) {
   const acts = h("div", { class: "acts" }, h("span", { class: "meta" }, g.modelName || ""));
   if (g.status === "done") {
     const first = g.outputs?.[0];
-    const dlUrl = g.kind === "video" ? g.video : first?.url;
+    const dlUrl = g.kind === "video" || g.kind === "film" ? g.video : first?.url;
     if (dlUrl) acts.append(h("a", { class: "icon-btn", href: DEMO ? dlUrl : `${dlUrl}?dl=1`, download: "", title: "Download", "aria-label": "Download" }, icon("dl", 18)));
-    acts.append(h("button", { class: "icon-btn", title: "Share", "aria-label": "Share", onclick: () => share(g, g.kind === "video" ? undefined : first) }, icon("share", 18)));
+    acts.append(h("button", { class: "icon-btn", title: "Share", "aria-label": "Share", onclick: () => share(g, g.kind === "video" || g.kind === "film" ? undefined : first) }, icon("share", 18)));
     if (out === "image" && first) acts.append(h("button", { class: "icon-btn", title: "Animate", "aria-label": "Animate", onclick: () => animate(first) }, icon("play", 18)));
     acts.append(h("button", { class: "icon-btn", title: "Remix", "aria-label": "Remix", onclick: () => remix(g) }, icon("wand", 18)));
   }
@@ -1060,10 +1132,24 @@ function audioView() {
 
 // ── Apps ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 const GROUPS = [["face", "Faces", "Swap, animate and make them talk"], ["video", "Video", "Move, edit and sharpen clips"], ["image", "Image", "Change looks in one tap"], ["audio", "Audio", "Voices, music and sounds"]];
+function startFilm() {
+  go("/");
+  setTimeout(() => {
+    setMode("video");
+    const t = $("#prompt"); if (!t) return;
+    if (!S.agent) toggleAgent();
+    t.value = "Make a 60-second narrated film about "; autosize(t); updateSend(); t.focus();
+    t.setSelectionRange(t.value.length, t.value.length);
+  }, 80);
+}
 function appsView() {
   const tools = S.config.tools || [];
   setView("", h("div", { class: "page" },
     h("div", { class: "page-h" }, h("div", {}, h("h1", {}, "Apps"), h("p", {}, "One-tap tools. Pick one, add your photo or clip, done."))),
+    h("button", { class: "film-banner", onclick: startFilm },
+      h("div", { class: "fb-art" }, icon("film", 30, 1.8)),
+      h("div", { class: "fb-tx" }, h("b", {}, "Kleo Film"), h("span", {}, "A whole narrated film from one message: script, voice, music, subtitles, 4K. Up to 5 minutes.")),
+      h("span", { class: "fb-go" }, "Start", icon("right", 16, 2.2))),
     GROUPS.map(([g, title, sub]) => {
       const list = tools.filter((t) => t.group === g);
       if (!list.length) return null;
@@ -1193,7 +1279,7 @@ function libraryView() {
   setView("", h("div", { class: "page" }, h("div", { class: "page-h" }, h("div", {}, h("h1", {}, "Library"), h("p", {}, "Everything you made, in one place."))), filters, body));
   const drawIt = () => {
     const all = (S.feeds.library || []).filter((g) => g.status !== "failed");
-    const list = all.filter((g) => f === "all" || (f === "video" && g.kind === "video") || (f === "image" && g.kind === "image") || (f === "audio" && g.output === "audio") || (f === "apps" && g.kind === "tool" && g.output !== "audio"));
+    const list = all.filter((g) => f === "all" || (f === "video" && (g.kind === "video" || g.kind === "film")) || (f === "image" && g.kind === "image") || (f === "audio" && g.output === "audio") || (f === "apps" && g.kind === "tool" && g.output !== "audio"));
     fill(body, list.length ? h("div", { class: "feed" }, list.map((g) => resultCard(g)))
       : h("div", { class: "empty-feed" }, h("b", {}, "Nothing here yet"), "Everything you generate lands here.", h("div", { style: { marginTop: "16px" } }, h("button", { class: "btn btn-cta", onclick: () => go("/video") }, icon("sparkle", 18), "Make something"))));
   };
@@ -1428,7 +1514,10 @@ async function demoApi(path, opts) {
     const chat = ensureChat(b.text);
     const u = { id: "m_u" + (++demoDb.n), role: "user", text: b.text, attachments: (b.imageIds || []).map((id) => ({ id, url: demoUploads.get(id)?.url, kind: demoUploads.get(id)?.kind })) };
     let p, reply;
-    if (b.mode === "image") {
+    if (/film|story|storia|documentar|narrat/i.test(b.text)) {
+      p = { kind: "film", title: b.text.split(/\s+/).slice(0, 4).join(" ") || "Your film", prompt: b.text, settings: { duration: 60, format: "16:9", style: "realistic", product: "film", music: true, subtitles: false, language: "en" }, credits: 40, quote: { film: { credits: 40, allowed: true }, animatic: { credits: 10, allowed: true } }, imageIds: [] };
+      reply = "Here's your Kleo film: I picked 60 seconds, YouTube format, realistic look, English narration with music. Change anything on the card.";
+    } else if (b.mode === "image") {
       const s = ifix(b.imageSettings || {});
       p = { kind: "image", title: b.text.split(/\s+/).slice(0, 4).join(" ") || "Your picture", prompt: `${b.text}. Striking composition, soft natural light, rich detail, shallow depth of field, editorial photography, cohesive color palette.`, settings: s, credits: iprice(s), imageIds: b.imageIds || [] };
       reply = "Nice! Here's the shot I'd paint. Tap Generate, or tell me what to change.";
@@ -1448,6 +1537,11 @@ async function demoApi(path, opts) {
         const m = list.find((x) => x.id === b.proposalId);
         if (!m) continue;
         const kind = m.proposal.kind || "video";
+        if (kind === "film") {
+          const g = { id: "g_demo" + (++demoDb.n), kind: "film", model: "kleo-film", modelName: "Kleo Film", settings: { ...m.proposal.settings, ...(b.settings || {}) }, prompt: m.proposal.prompt, credits: 40, status: "running", chatId: cid, createdAt: now(), video: null, outputs: [], output: "video", progress: { percent: 5, label: "Writing the script", eta_min: 30 }, doneAt: Date.now() + 15000 };
+          demoDb.credits -= 40; demoDb.gens.set(g.id, g); m.generations = [...(m.generations || []), g];
+          return { chat: demoDb.chats.find((c) => c.id === cid), generation: g, credits: demoDb.credits, messages: [m] };
+        }
         const g = newGen(kind, b.prompt || m.proposal.prompt, kind === "image" ? ifix(b.settings || m.proposal.settings) : fix(b.settings || m.proposal.settings), cid);
         m.generations = [...(m.generations || []), g];
         return { chat: demoDb.chats.find((c) => c.id === cid), generation: g, credits: demoDb.credits, messages: [m] };
@@ -1466,9 +1560,11 @@ async function demoApi(path, opts) {
   const gm = path.match(/^\/api\/generations\/(g_\w+)$/);
   if (gm) {
     const g = demoDb.gens.get(gm[1]);
+    if (g.kind === "film" && g.status === "running") { const left = Math.max(0, g.doneAt - Date.now()); g.progress = { percent: Math.round(100 - left / 150), label: left > 10000 ? "Writing the script" : left > 5000 ? "Filming the scenes" : "Finishing the film", eta_min: Math.ceil(left / 1000) }; }
     if (g.status === "running" && Date.now() > g.doneAt) {
       g.status = "done";
-      if (g.kind === "image" || (g.kind === "tool" && g.output === "image")) g.outputs = Array.from({ length: g.count }, (_, i) => { const url = STILLS[(demoDb.n + i) % STILLS.length]; const up = demoUpload(url); return { upload: up.id, url, type: "image" }; });
+      if (g.kind === "film") g.video = SAMPLES[1];
+      else if (g.kind === "image" || (g.kind === "tool" && g.output === "image")) g.outputs = Array.from({ length: g.count }, (_, i) => { const url = STILLS[(demoDb.n + i) % STILLS.length]; const up = demoUpload(url); return { upload: up.id, url, type: "image" }; });
       else if (g.kind === "tool" && g.output === "audio") g.outputs = [{ upload: "up_demo_a", url: "https://kleooai.com/samples/cinema.mp4", type: "audio" }];
       else if (g.kind === "tool") g.outputs = [{ upload: "up_demo_v", url: SAMPLES[demoDb.n % SAMPLES.length], type: "video" }];
       else g.video = SAMPLES[demoDb.n % SAMPLES.length];

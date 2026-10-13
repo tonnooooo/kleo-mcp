@@ -5,6 +5,7 @@ import { mcpHandlerFor } from "./mcp";
 import { handleAuthorize } from "./auth";
 import { handleInternal, handleDevPlan, handleAdmin } from "./internal";
 import { handleCredits } from "./credits";
+import { handleStudioFilm } from "./studio-film";
 import { handleStripeWebhook } from "./stripe";
 import { handleDownload } from "./dl";
 import { handleUpload } from "./upload.ts";
@@ -58,6 +59,9 @@ const app: ExportedHandler<Env> = {
     // of INTERNAL_SECRET, so they are routed before the admin router, whose only key is the secret itself.
     if (p.startsWith("/internal/admin/probe/")) return handleProbe(request, env);
     if (p.startsWith("/internal/admin/")) return handleAdmin(request, env);
+    // Kleo Studio orders films here over its service binding (14 October 2026, src/studio-film.ts); like the admin
+    // routes it never fires a tick (the cron picks the job up).
+    if (p.startsWith("/internal/studio/")) return handleStudioFilm(request, env);
     if (p === "/authorize") return handleAuthorize(request, env);
     if (p === "/credits") return handleCredits(request, env);
     // A referral link (27 September 2026, src/referral.ts): the invitation page, which remembers the code for sign-in.

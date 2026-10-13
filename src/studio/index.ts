@@ -27,6 +27,7 @@ import { publicPresets } from "./presets.ts";
 import { planTool, publicTools, toolByKey, toolCredits, ToolRefusal, type Media } from "./tools.ts";
 import { mediaInfo } from "./media.ts";
 import { APP_PATH, serveSite } from "./site.ts";
+import { normalizeFilm, orderFilm, quoteFilm } from "./films.ts";
 import { runAgent, chatTitle, enhancePrompt, type Proposal } from "./agent.ts";
 import { signUp, signIn, signInWithKey, addPassword, me, signedIn, googleEnabled, microsoftEnabled, enabledSocial, socialEnabled, socialStart, socialCallback, forgotPassword, resetPassword, resetAvailable, type SocialKey } from "./auth.ts";
 import { SESSION_COOKIE, clearSessionCookie, readCookie, readSession, signPath, checkSignedPath } from "./session.ts";
@@ -231,8 +232,16 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       credits: user.credits, allowed, allowedImages, margin: marginOf(env),
     },
       await picturesForAgent(env, uploads.filter((u) => (u.kind ?? "image") === "image").map((u) => u.key)));
+    // A film card carries the MCP server's price (and what this account may order: film or animatic).
+    if (reply.proposal?.kind === "film") {
+      try {
+        const q = await quoteFilm(env, userId, normalizeFilm(reply.proposal.settings as unknown as Record<string, unknown>));
+        reply.proposal.credits = q.credits_for_choice;
+        (reply.proposal as unknown as Record<string, unknown>).quote = q;
+      } catch { /* the card still shows; the price is asked again on Generate */ }
+    }
     // The chosen camera/effect preset rides on a video card and is added to its prompt when it is generated.
-    if (reply.proposal && reply.proposal.kind !== "image" && b.preset) (reply.proposal.settings as unknown as Record<string, unknown>).preset = String(b.preset);
+    if (reply.proposal && reply.proposal.kind === "video" && b.preset) (reply.proposal.settings as unknown as Record<string, unknown>).preset = String(b.preset);
     const botId = rid("m", 12);
     await addMessage(env, { id: botId, chatId: chat.id, userId, role: "assistant", text: reply.text, data: reply.proposal || reply.fallback ? { proposal: reply.proposal ?? undefined, fallback: reply.fallback || undefined } : null });
     await touchChat(env, chat.id);
@@ -249,7 +258,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       return json({ generation: publicGeneration(g), credits: user?.credits ?? 0 });
     }
     let chat = b.chatId ? await getChat(env, userId, b.chatId) : null;
-    let kind: "video" | "image" = b.kind === "image" ? "image" : "video";
+    let kind: "video" | "image" | "film" = b.kind === "image" ? "image" : "video";
     let proposalMsg: MessageRow | null = null;
     let prompt = String(b.prompt ?? "");
     let settings = b.settings ?? {};
@@ -263,14 +272,16 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       if (!prompt.trim()) prompt = p.prompt;
       settings = { ...p.settings, ...settings };
       if (!b.imageIds) imageIds = p.imageIds;
-      kind = p.kind === "image" ? "image" : "video";
+      kind = p.kind === "image" ? "image" : p.kind === "film" ? "film" : "video";
     }
     // The clip is ordered FIRST: a refusal (locked model, too few credits, full day) must leave no empty chat behind.
     const newMessages: string[] = [];
     const chatId = chat?.id ?? rid("c", 12);
     const userMsgId = proposalMsg ? null : rid("m", 12);
     const preset = b.preset ?? (typeof settings.preset === "string" ? settings.preset : null);
-    const g = await createGeneration(env, userId, { kind, prompt, settings, imageIds, chatId, messageId: proposalMsg?.id ?? userMsgId, preset }, origin);
+    const g = kind === "film"
+      ? await orderFilm(env, userId, { prompt, settings: normalizeFilm(settings), chatId, messageId: proposalMsg?.id ?? userMsgId })
+      : await createGeneration(env, userId, { kind, prompt, settings, imageIds, chatId, messageId: proposalMsg?.id ?? userMsgId, preset }, origin);
     if (!chat) {
       await createChat(env, chatId, userId, chatTitle(prompt, imageIds.length > 0));
       chat = (await getChat(env, userId, chatId))!;
@@ -307,6 +318,10 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     const secs = vids.reduce((a, v) => a + (v.duration ?? 0), 0);
     const s = normalizeSettings(b.settings ?? {}, pics, { images: pics, videos: vids.length, audios: all.filter((u) => u.kind === "audio").length, videoSeconds: secs });
     return json({ settings: s, credits: clipCredits(s, marginOf(env), secs) });
+  }
+  if (path === "/api/film/quote" && method === "POST") {
+    const b = await body<{ settings?: Record<string, unknown> }>(request);
+    return json(await quoteFilm(env, userId, normalizeFilm(b.settings ?? {})));
   }
   if (path === "/api/enhance" && method === "POST") {
     const b = await body<{ kind?: string; prompt?: string }>(request);

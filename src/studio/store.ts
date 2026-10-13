@@ -74,7 +74,7 @@ export interface GenerationRow {
   prompt: string; images: string | null; credits: number; est_usd: number; status: GenStatus; task_id: string | null;
   error: string | null; file_key: string | null; size: number | null; usage: string | null; refunded: number;
   created_at: string; updated_at: string; checked_at: string | null; finished_at: string | null;
-  kind: "video" | "image" | "tool"; slots: string | null;
+  kind: "video" | "image" | "tool" | "film"; slots: string | null;
 }
 /** One picture of an image generation: its provider task and, once saved, its file and its upload id. */
 export interface Slot { task: string | null; status: "running" | "done" | "failed"; key?: string; upload?: string; error?: string; type?: "image" | "video" | "audio"; model?: string }
@@ -157,7 +157,7 @@ export async function studioSpentTodayUsd(env: StudioEnv): Promise<number> {
     .first<{ usd: number }>();
   return r?.usd ?? 0;
 }
-export const insertGeneration = (env: StudioEnv, g: { id: string; userId: string; chatId: string | null; messageId: string | null; model: string; settings: unknown; prompt: string; images: string[]; credits: number; estUsd: number; kind?: "video" | "image" | "tool" }) =>
+export const insertGeneration = (env: StudioEnv, g: { id: string; userId: string; chatId: string | null; messageId: string | null; model: string; settings: unknown; prompt: string; images: string[]; credits: number; estUsd: number; kind?: "video" | "image" | "tool" | "film" }) =>
   env.DB.prepare(`INSERT INTO studio_generations (id, user_id, chat_id, message_id, model, settings, prompt, images, credits, est_usd, status, checked_at, kind)
                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitting', ${NOW}, ?)`)
     .bind(g.id, g.userId, g.chatId, g.messageId, g.model, JSON.stringify(g.settings), g.prompt, JSON.stringify(g.images), g.credits, g.estUsd, g.kind ?? "video").run();

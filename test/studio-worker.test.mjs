@@ -581,6 +581,79 @@ test("one host: www and app. redirect to the canonical host once it is set", asy
   assert.equal(same.status, 200);
 });
 
+test("Kleo films in the chat: the agent proposes, the MCP server prices and orders, Studio follows the job and keeps the video", async () => {
+  const env = newEnv();
+  const { cookie, id } = await paidAccount(env, "film@example.com", 100);
+  const orders = [];
+  env.MCP = {
+    async fetch(url, init) {
+      const body = JSON.parse(init.body);
+      assert.equal(init.headers.authorization, "Bearer s3cret");
+      if (String(url).endsWith("/internal/studio/film/quote")) return new Response(JSON.stringify({ film: { credits: 40, allowed: true, min_s: 15, max_s: 300 }, animatic: { credits: 10, allowed: true, max_s: 60 }, has_paid: true, credits: 100, credits_for_choice: body.product === "animatic" ? 10 : 40 }));
+      orders.push(body);
+      env.DB.db.exec(`UPDATE users SET credits = credits - 40 WHERE id = '${body.userId}'`);
+      env.DB.db.exec(`INSERT INTO jobs (id, user_id, template, prompt, params, state, credits, worker_secret) VALUES ('gt_film1', '${body.userId}', 'film', 'p', '{}', 'queued', 40, 'x')`);
+      return new Response(JSON.stringify({ job: { job_id: "gt_film1", credits: 40, eta_min: 30 }, credits_left: 60 }));
+    },
+  };
+  const p = fakeProvider((u) => u.endsWith("/v1/chat/completions")
+    ? ok({ choices: [{ message: { content: "Here's your film!", tool_calls: [{ function: { name: "propose_film", arguments: JSON.stringify({ title: "The whale", prompt: "a lighthouse keeper befriends a whale", duration_s: 60, format: "16:9", style: "realistic", product: "film", music: true, subtitles: false, language: "it" }) } }] } }] })
+    : new Response("?", { status: 404 }));
+  try {
+    const chat = await call(env, "/api/chat", { method: "POST", cookie, body: { text: "fammi un film su un guardiano del faro e una balena" } });
+    assert.equal(chat.status, 200, chat.text);
+    const card = chat.json.messages.find((m) => m.role === "assistant");
+    assert.equal(card.proposal.kind, "film");
+    assert.equal(card.proposal.credits, 40);
+    assert.equal(card.proposal.settings.language, "it");
+    const q = await call(env, "/api/film/quote", { method: "POST", cookie, body: { settings: { ...card.proposal.settings, product: "animatic" } } });
+    assert.equal(q.json.credits_for_choice, 10);
+    const g = await call(env, "/api/generate", { method: "POST", cookie, body: { proposalId: card.id, settings: { subtitles: true } } });
+    assert.equal(g.status, 200, g.text);
+    assert.equal(g.json.generation.kind, "film");
+    assert.equal(g.json.generation.modelName, "Kleo Film");
+    assert.equal(orders[0].prompt, "a lighthouse keeper befriends a whale");
+    assert.equal(orders[0].subtitles, true, "the card's edit reaches the order");
+    assert.equal(orders[0].language, "it");
+    assert.equal(credits(env, id), 60, "the MCP server charged, Studio did not charge again");
+    // The job moves on the MCP side; Studio mirrors it.
+    env.DB.db.exec("UPDATE jobs SET state = 'rendering', percent = 42, track = 'clips', eta_min = 12 WHERE id = 'gt_film1'");
+    old(env);
+    const mid = await call(env, `/api/generations/${g.json.generation.id}`, { cookie });
+    assert.deepEqual({ p: mid.json.generation.progress.percent, l: mid.json.generation.progress.label }, { p: 42, l: "Filming the scenes" });
+    await env.RENDERS.put("renders/gt_film1/video.mp4", new Uint8Array(4000).fill(1), { httpMetadata: { contentType: "video/mp4" } });
+    env.DB.db.exec("INSERT INTO job_files (job_id, name, key, size, content_type) VALUES ('gt_film1', 'video.mp4', 'renders/gt_film1/video.mp4', 4000, 'video/mp4')");
+    env.DB.db.exec("UPDATE jobs SET state = 'done', percent = 100 WHERE id = 'gt_film1'");
+    old(env);
+    const done = await call(env, `/api/generations/${g.json.generation.id}`, { cookie });
+    assert.equal(done.json.generation.status, "done", done.text);
+    const video = await call(env, done.json.generation.video, { cookie });
+    assert.equal(video.status, 200);
+    assert.equal(video.text.length, 4000);
+    assert.ok(env.RENDERS.m.has(`studio/${id}/${g.json.generation.id}.mp4`), "a copy that outlives the MCP server's 7 days");
+  } finally { p.restore(); }
+});
+
+test("a film the MCP server failed is shown failed and refunded there, never refunded twice by Studio", async () => {
+  const env = newEnv();
+  const { cookie, id } = await paidAccount(env, "film2@example.com", 100);
+  env.MCP = { fetch: async (url) => String(url).endsWith("/quote")
+    ? new Response(JSON.stringify({ film: { credits: 20, allowed: true }, animatic: { credits: 10, allowed: true }, has_paid: true, credits: 100, credits_for_choice: 20 }))
+    : (env.DB.db.exec(`INSERT INTO jobs (id, user_id, template, prompt, params, state, credits, worker_secret) VALUES ('gt_film2', '${id}', 'film', 'p', '{}', 'queued', 20, 'x')`), new Response(JSON.stringify({ job: { job_id: "gt_film2", credits: 20, eta_min: 30 } }))) };
+  const p = fakeProvider((u) => u.endsWith("/v1/chat/completions") ? ok({ choices: [{ message: { content: "ok", tool_calls: [{ function: { name: "propose_film", arguments: JSON.stringify({ title: "x", prompt: "a short film about bees", duration_s: 30 }) } }] } }] }) : new Response("?", { status: 404 }));
+  try {
+    const chat = await call(env, "/api/chat", { method: "POST", cookie, body: { text: "a film about bees" } });
+    const card = chat.json.messages.find((m) => m.role === "assistant");
+    const g = await call(env, "/api/generate", { method: "POST", cookie, body: { proposalId: card.id } });
+    env.DB.db.exec("UPDATE jobs SET state = 'failed' WHERE id = 'gt_film2'");
+    old(env);
+    const f = await call(env, `/api/generations/${g.json.generation.id}`, { cookie });
+    assert.equal(f.json.generation.status, "failed");
+    assert.equal(credits(env, id), 100, "Studio charged nothing and refunded nothing (the MCP server does both)");
+    assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE event = 'credits.refund'").get().n, 0);
+  } finally { p.restore(); }
+});
+
 test("the app shell is served for any page path", async () => {
   const env = newEnv();
   const r = await call(env, "/c/c_whatever");

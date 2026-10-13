@@ -24,6 +24,7 @@ import { clipCostUsd, clipCredits, freeModels, modelByKey, normalizeSettings, ta
 import { withPreset } from "./presets.ts";
 import { planTool, toolByKey, toolCredits, toneText, ToolRefusal, type Media, type Plan, type ToolKey } from "./tools.ts";
 import { mediaInfo } from "./media.ts";
+import { refreshFilm } from "./films.ts";
 import { freeImageModels, imageCostUsd, imageCredits, imageModelByKey, imageTaskInput, normalizeImageSettings, type ImageSettings } from "./image-models.ts";
 import {
   addUpload, getGeneration, insertGeneration, moveGeneration, markChecked, runningCount, studioSpentTodayUsd, uploadsOf,
@@ -70,19 +71,22 @@ export function publicGeneration(g: GenerationRow): Record<string, unknown> {
   try { settings = JSON.parse(g.settings); } catch { /* keep {} */ }
   let images: string[] = [];
   try { images = JSON.parse(g.images ?? "[]"); } catch { /* keep [] */ }
-  const kind = g.kind === "image" || g.kind === "tool" ? g.kind : "video";
+  const kind = g.kind === "image" || g.kind === "tool" || g.kind === "film" ? g.kind : "video";
+  let progress: unknown = null;
+  if (kind === "film") { try { progress = JSON.parse(g.usage ?? "null"); } catch { /* none yet */ } }
   const slots = parseSlots(g);
   return {
     id: g.id, kind, model: g.model,
-    modelName: (kind === "image" ? imageModelByKey(g.model)?.name : kind === "tool" ? toolByKey(g.model)?.name : modelByKey(g.model)?.name) ?? g.model,
+    modelName: (kind === "image" ? imageModelByKey(g.model)?.name : kind === "tool" ? toolByKey(g.model)?.name : kind === "film" ? (g.model === "kleo-animatic" ? "Kleo Animatic" : "Kleo Film") : modelByKey(g.model)?.name) ?? g.model,
     settings, prompt: g.prompt, images, credits: g.credits,
     status: g.status === "submitting" || g.status === "saving" ? "running" : g.status,
     error: g.error, refunded: !!g.refunded, chatId: g.chat_id, messageId: g.message_id,
-    video: kind === "video" && g.status === "done" ? `/media/${g.id}.mp4` : null,
+    video: (kind === "video" || kind === "film") && g.status === "done" ? `/media/${g.id}.mp4` : null,
+    progress,
     // Every finished picture is also an upload, so it can be animated or used as a reference with one tap.
-    outputs: kind !== "video" ? slots.filter((x) => x.status === "done" && x.upload).map((x) => ({ upload: x.upload, url: `/media/u/${x.upload}`, type: x.type ?? "image" })) : [],
+    outputs: kind !== "video" && kind !== "film" ? slots.filter((x) => x.status === "done" && x.upload).map((x) => ({ upload: x.upload, url: `/media/u/${x.upload}`, type: x.type ?? "image" })) : [],
     count: kind === "image" ? (slots.length || Number((settings as { count?: number }).count ?? 1)) : kind === "tool" ? Math.max(1, slots.filter((x) => x.task !== null || x.status !== "done").length) : 1,
-    output: kind === "tool" ? (settings as { output?: string }).output ?? "video" : kind,
+    output: kind === "tool" ? (settings as { output?: string }).output ?? "video" : kind === "film" ? "video" : kind,
     createdAt: g.created_at, finishedAt: g.finished_at,
   };
 }
@@ -252,6 +256,7 @@ export async function refreshGeneration(env: StudioEnv, g: GenerationRow, minGap
     if (g.updated_at && (Date.now() - Date.parse(g.updated_at)) / 60_000 > 4) await moveGeneration(env, g.id, ["saving"], "running");
     return (await getGeneration(env, g.id))!;
   }
+  if (g.kind === "film") return refreshFilm(env, g);
   if (g.kind === "image" || g.kind === "tool") return refreshImages(env, g, ageMin);
   if (!g.task_id) return g;
   if (ageMin > GENERATION_TIMEOUT_MIN) {

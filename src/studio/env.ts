@@ -6,6 +6,8 @@ export interface StudioEnv {
   DB: D1Database;
   RENDERS: R2Bucket;
   ASSETS: Fetcher;
+  /** The MCP Worker (service binding): Kleo films are ordered there (src/studio-film.ts). */
+  MCP?: Fetcher;
   /** Same value as the MCP server's: it signs sessions, links and verifies a pasted Kleo key. */
   INTERNAL_SECRET: string;
   EPHONE_API_KEY?: string;
