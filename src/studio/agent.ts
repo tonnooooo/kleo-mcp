@@ -138,7 +138,7 @@ function historyLine(m: MessageRow): { role: "user" | "assistant"; content: stri
   const parts = [m.text ?? ""];
   if (data.proposal) {
     const p = data.proposal as Proposal;
-    const st = p.settings as Record<string, unknown>;
+    const st = p.settings as unknown as Record<string, unknown>;
     parts.push(p.kind === "image"
       ? `[Proposed picture "${p.title}": ${st.model}, ${st.aspect}, ${st.quality}, ${st.count} at a time. Prompt: ${p.prompt}]`
       : `[Proposed clip "${p.title}": ${st.model}, ${st.duration} s, ${st.resolution}, ${st.aspect}. Prompt: ${p.prompt}]`);
