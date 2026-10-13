@@ -242,21 +242,21 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       settings = { ...p.settings, ...settings };
       if (!b.imageIds) imageIds = p.imageIds;
     }
+    // The clip is ordered FIRST: a refusal (locked model, too few credits, full day) must leave no empty chat behind.
     const newMessages: string[] = [];
+    const chatId = chat?.id ?? rid("c", 12);
+    const userMsgId = proposalMsg ? null : rid("m", 12);
+    const g = await createGeneration(env, userId, { prompt, settings, imageIds, chatId, messageId: proposalMsg?.id ?? userMsgId }, origin);
     if (!chat) {
-      const id = rid("c", 12);
-      await createChat(env, id, userId, chatTitle(prompt, imageIds.length > 0));
-      chat = (await getChat(env, userId, id))!;
+      await createChat(env, chatId, userId, chatTitle(prompt, imageIds.length > 0));
+      chat = (await getChat(env, userId, chatId))!;
     }
-    let userMsgId: string | null = null;
-    if (!proposalMsg) {
+    if (userMsgId) {
       // Direct mode: the prompt itself is the person's message.
       const uploads = await uploadsOf(env, userId, imageIds);
-      userMsgId = rid("m", 12);
       await addMessage(env, { id: userMsgId, chatId: chat.id, userId, role: "user", text: prompt.trim(), data: uploads.length ? { attachments: uploads.map((u) => ({ id: u.id, url: `/media/u/${u.id}`, width: u.width, height: u.height })) } : null });
       newMessages.push(userMsgId);
     }
-    const g = await createGeneration(env, userId, { prompt, settings, imageIds, chatId: chat.id, messageId: proposalMsg?.id ?? userMsgId }, origin);
     if (proposalMsg) {
       const data = JSON.parse(proposalMsg.data!);
       data.generations = [...(data.generations ?? []), g.id];
