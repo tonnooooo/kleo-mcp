@@ -46,7 +46,7 @@ globalThis.FixedLengthStream ??= class extends TransformStream { constructor() {
 let worker, accounts;
 before(async () => {
   const r = await esbuild.build({
-    stdin: { contents: `export { default } from "./src/studio/index.ts"; export { makeHandle } from "./src/accounts.ts";`, resolveDir: ROOT, loader: "ts" },
+    stdin: { contents: `export { default } from "./src/studio/index.ts"; export { makeHandle, verifyHandle } from "./src/accounts.ts";`, resolveDir: ROOT, loader: "ts" },
     bundle: true, write: false, format: "esm", platform: "neutral", target: "es2022", logLevel: "silent", external: ["@anthropic-ai/sdk"],
   });
   const mod = await import("data:text/javascript;base64," + Buffer.from(r.outputFiles[0].text).toString("base64"));
@@ -64,13 +64,15 @@ function newEnv(over = {}) {
   for (const f of readdirSync(join(ROOT, "migrations")).sort()) env.DB.db.exec(readFileSync(join(ROOT, "migrations", f), "utf8"));
   return env;
 }
-const ctx = { waitUntil() {}, passThroughOnException() {} };
+const pending = [];
+const ctx = { waitUntil(p) { pending.push(p); }, passThroughOnException() {} };
 async function call(env, path, { method = "GET", body, cookie, header = true, raw, headers = {} } = {}) {
   const h = { ...headers };
   if (header) h["x-kleo"] = "1";
   if (cookie) h.cookie = cookie;
   if (body !== undefined) h["content-type"] = "application/json";
   const res = await worker.fetch(new Request(`https://app.kleo.test${path}`, { method, headers: h, body: raw ?? (body === undefined ? undefined : JSON.stringify(body)) }), env, ctx);
+  await Promise.allSettled(pending.splice(0));
   const text = await res.text();
   let json = null; try { json = JSON.parse(text); } catch { /* not JSON */ }
   return { status: res.status, json, text, res };
@@ -131,6 +133,19 @@ test("a Kleo key from the MCP server signs in to that same account", async () =>
   assert.equal(me.json.email, null);
   assert.equal((await call(env, "/api/auth/password", { method: "POST", cookie: cookieOf(r), body: { email: "mcp@x.io", password: "long enough pw" } })).status, 200);
   assert.equal((await call(env, "/api/auth/signin", { method: "POST", body: { email: "mcp@x.io", password: "long enough pw" } })).status, 200);
+  // The key is a credential: never in /api/me, only on an explicit request; a new one retires the old everywhere.
+  assert.equal(me.json.kleoKey, undefined);
+  assert.equal((await call(env, "/api/me/key", { method: "POST", cookie: cookieOf(r), body: {} })).json.key, key);
+  const fresh = (await call(env, "/api/me/key", { method: "POST", cookie: cookieOf(r), body: { reset: true } })).json.key;
+  assert.notEqual(fresh, key);
+  assert.equal(await accounts.verifyHandle(env, key), null, "the old key no longer opens the account (MCP sign-in included)");
+  assert.equal(await accounts.verifyHandle(env, fresh), "u_mcpuser00001");
+  assert.equal((await call(env, "/api/auth/key", { method: "POST", body: { key } })).status, 401);
+  // Sign out everywhere: every cookie of the account stops working.
+  const other = await call(env, "/api/auth/key", { method: "POST", body: { key: fresh } });
+  assert.equal((await call(env, "/api/auth/signout-all", { method: "POST", cookie: cookieOf(other) })).status, 200);
+  assert.equal((await call(env, "/api/me", { cookie: cookieOf(r) })).status, 401);
+  assert.equal((await call(env, "/api/me", { cookie: cookieOf(other) })).status, 401);
 });
 
 test("free account: a locked model is refused before any money moves; the free one debits, saves and serves", async () => {
@@ -330,7 +345,7 @@ test("password reset: off without an e-mail key; with one, a one-time link that 
   const off = newEnv();
   assert.equal((await call(off, "/api/auth/forgot", { method: "POST", body: { email: "a@b.co" } })).status, 503);
   const env = newEnv({ RESEND_API_KEY: "re_x" });
-  await signUp(env, "rita@example.com");
+  const before = await signUp(env, "rita@example.com");
   let mail;
   const p = fakeProvider((u, init) => { if (u.includes("api.resend.com")) { mail = JSON.parse(init.body); return ok({ id: "m1" }); } return new Response("?", { status: 404 }); });
   try {
@@ -341,6 +356,7 @@ test("password reset: off without an e-mail key; with one, a one-time link that 
     assert.equal((await call(env, "/api/auth/reset", { method: "POST", body: { token, password: "brand new pass" } })).status, 200);
     assert.equal((await call(env, "/api/auth/reset", { method: "POST", body: { token, password: "another pass 2" } })).status, 400, "the link died with the old password");
     assert.equal((await call(env, "/api/auth/signin", { method: "POST", body: { email: "rita@example.com", password: "brand new pass" } })).status, 200);
+    assert.equal((await call(env, "/api/me", { cookie: before })).status, 401, "a reset ends every session made with the old password");
   } finally { p.restore(); }
 });
 
@@ -352,17 +368,21 @@ async function social(env, key, claims, { cookie = "", link = false, tamper = fa
   assert.equal(start.status, 302);
   const to = new URL(start.headers.get("location"));
   const state = to.searchParams.get("state");
+  assert.equal(to.searchParams.get("code_challenge_method"), "S256");
+  assert.ok(to.searchParams.get("code_challenge") && to.searchParams.get("nonce"), "PKCE and a nonce on every sign-in");
   const stateCookie = (start.headers.get("set-cookie") ?? "").split(";")[0];
+  assert.match(stateCookie, new RegExp(`^__Host-kleo_ostate_${key}=`));
   const p = fakeProvider((u, init) => {
     if (u.includes("oauth2.googleapis.com/token") || u.includes("login.microsoftonline.com/common/oauth2/v2.0/token")) {
       assert.match(String(init.body), /client_secret=/);
-      return ok({ id_token: jwt(claims) });
+      assert.match(String(init.body), /code_verifier=/);
+      return ok({ id_token: jwt({ nonce: to.searchParams.get("nonce"), ...claims }) });
     }
     return new Response("?", { status: 404 });
   });
   try {
     const cb = await worker.fetch(new Request(`https://app.kleo.test/auth/${key}/callback?code=c1&state=${tamper ? "st_forged" : state}`, { headers: { cookie: [stateCookie, cookie].filter(Boolean).join("; ") } }), env, ctx);
-    const session = (cb.headers.getSetCookie?.() ?? [cb.headers.get("set-cookie") ?? ""]).find((c) => c.startsWith("kleo_studio=") && !c.startsWith("kleo_studio=;"));
+    const session = (cb.headers.getSetCookie?.() ?? [cb.headers.get("set-cookie") ?? ""]).find((c) => c.startsWith("__Host-kleo_studio=") && !c.startsWith("__Host-kleo_studio=;"));
     return { to, location: cb.headers.get("location"), cookie: session ? session.split(";")[0] : null };
   } finally { p.restore(); }
 }
@@ -398,8 +418,21 @@ test("Google and Microsoft: off until configured; new accounts; verified e-mails
   const workMe = (await call(env, "/api/me", { cookie: work.cookie })).json;
   assert.notEqual(workMe.id, pwId, "a work tenant's e-mail claim is not proof: no takeover of the password account");
   const personal = await social(env, "microsoft", { sub: "m-home", aud: "mid", tid: MS_PERSONAL, preferred_username: "anna@outlook.com" });
-  assert.equal((await call(env, "/api/me", { cookie: personal.cookie })).json.id, pwId, "a personal Microsoft account's address is verified: same person");
+  assert.equal((await call(env, "/api/me", { cookie: personal.cookie })).json.id, pwId, "a personal Microsoft account's address is verified: the untouched account is hers");
+  // Whoever typed her address at sign-up is out: the password login is gone and the old session ended.
+  assert.equal((await call(env, "/api/me", { cookie: pw })).status, 401, "the claimant's session ended");
+  assert.equal((await call(env, "/api/auth/signin", { method: "POST", body: { email: "anna@outlook.com", password: "long enough pw" } })).status, 401, "and the claimed password no longer opens it");
   assert.equal((await call(env, "/api/auth/signup", { method: "POST", body: { email: "luca@gmail.com", password: "long enough pw" } })).json.code, "use_google");
+  // A NOBODY-checked address on an account that was USED is never handed over: sign in to it, then connect.
+  const used = await signUp(env, "carla@gmail.com");
+  const usedId = (await call(env, "/api/me", { cookie: used })).json.id;
+  env.DB.db.exec(`INSERT INTO studio_chats (id, user_id, title) VALUES ('c_used00000001', '${usedId}', 'x')`);
+  const refused = await social(env, "google", { sub: "g-carla", aud: "gid", email: "carla@gmail.com", email_verified: true });
+  assert.equal(refused.location, "/?signin_error=claimed_google");
+  assert.equal(refused.cookie, null);
+  assert.equal((await call(env, "/api/me", { cookie: used })).json.id, usedId, "the used account is untouched by the refusal");
+  // A reply from the provider made for another sign-in (wrong nonce) is refused.
+  assert.match((await social(env, "google", { sub: "g-1", aud: "gid", nonce: "someone-elses" })).location, /signin_error=google/);
 });
 
 test("linking: the signed-in account gets Google; an account another person uses is refused; no session, no link", async () => {
@@ -553,7 +586,8 @@ test("the site behind the app: /mcp is the site's home, other pages keep their a
     assert.equal(home.status, 200);
     assert.match(home.text, /Kleo MCP/);
     assert.match(home.res.headers.get("content-type"), /text\/html/);
-    assert.equal(home.res.headers.get("content-security-policy"), null, "the raw host's sandbox header is not passed on");
+    assert.doesNotMatch(home.res.headers.get("content-security-policy"), /sandbox/, "the raw host's sandbox header is not passed on");
+    assert.match(home.res.headers.get("content-security-policy"), /fonts\.googleapis\.com/, "the site's own policy instead");
     assert.equal((await call(env, "/pricing/")).text.includes("Pricing"), true);
     const bare = await call(env, "/pricing");
     assert.equal(bare.status, 301);
@@ -566,6 +600,11 @@ test("the site behind the app: /mcp is the site's home, other pages keep their a
     const missing = await call(env, "/nope.html");
     assert.equal(missing.status, 404);
     assert.match(missing.text, /Not found/);
+    // Only what a browser needs: no repository tooling, no dot-folders, no Markdown.
+    for (const hidden of ["/.github/workflows/publish-x.yml", "/tools/check.py", "/README.md", "/.gitignore", "/%2e%2e/secret"]) {
+      assert.equal((await call(env, hidden)).status, 404, hidden);
+      assert.ok(!p.sent.some((s) => s.url.endsWith(hidden.replace("/%2e%2e", ""))), `${hidden} was never fetched`);
+    }
     // The app's own pages are not the site.
     assert.match((await call(env, "/video")).text, /app/);
     assert.match((await call(env, "/")).text, /app/);
@@ -674,6 +713,31 @@ test("a film the MCP server failed is shown failed and refunded there, never ref
     assert.equal(credits(env, id), 100, "Studio charged nothing and refunded nothing (the MCP server does both)");
     assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE event = 'credits.refund'").get().n, 0);
   } finally { p.restore(); }
+});
+
+test("free credits draw on their own daily pool; speech is never made for an account that cannot pay; uploads have a daily allowance", async () => {
+  const env = newEnv({ STUDIO_FREE_DAILY_BUDGET_USD: "0.01", STUDIO_UPLOADS_PER_DAY: "2" });
+  const free = await signUp(env, "free2@example.com");
+  const p = fakeProvider((u) => u.endsWith("/v1/audio/speech") ? new Response(wavBytes(1), { status: 200 }) : ok({ id: "task_free" }));
+  try {
+    const r = await call(env, "/api/generate", { method: "POST", cookie: free, body: { prompt: "a cat", settings: { model: "seedance-2.0-fast", duration: 5 } } });
+    assert.equal(r.status, 503);
+    assert.equal(r.json.code, "free_capacity", "the free pool is full; paying customers are not affected");
+    const { cookie: paid } = await paidAccount(env, "payer@example.com", 50);
+    const ok2 = await call(env, "/api/generate", { method: "POST", cookie: paid, body: { prompt: "a cat", settings: { model: "seedance-2.0-fast", duration: 5 } } });
+    assert.equal(ok2.status, 200, ok2.text);
+    // An account with no credits asks for a voiceover: refused BEFORE any speech is made.
+    env.DB.db.exec("UPDATE users SET credits = 0 WHERE email = 'free2@example.com'");
+    const before = p.sent.filter((s) => s.url.endsWith("/v1/audio/speech")).length;
+    const voice = await call(env, "/api/tools/run", { method: "POST", cookie: free, body: { tool: "voice", inputs: { script: "Hello there, this is a long enough script to cost something.", voice: "nova" } } });
+    assert.notEqual(voice.status, 200);
+    assert.equal(p.sent.filter((s) => s.url.endsWith("/v1/audio/speech")).length, before, "no speech was bought");
+  } finally { p.restore(); }
+  await upload(env, free, jpegBytes(), "image/jpeg");
+  await upload(env, free, jpegBytes(), "image/jpeg");
+  const third = await call(env, "/api/uploads", { method: "POST", cookie: free, raw: jpegBytes(), headers: { "content-type": "image/jpeg" } });
+  assert.equal(third.status, 429);
+  assert.equal(third.json.code, "uploads");
 });
 
 test("the app shell is served for any page path", async () => {

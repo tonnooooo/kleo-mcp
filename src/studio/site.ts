@@ -15,19 +15,29 @@ export const APP_PATH = /^\/(?:$|video$|image$|audio$|apps(?:\/[a-z0-9-]*)?$|lib
 
 const TYPES: Record<string, string> = {
   html: "text/html; charset=utf-8", css: "text/css; charset=utf-8", js: "text/javascript; charset=utf-8", mjs: "text/javascript; charset=utf-8",
-  json: "application/json; charset=utf-8", xml: "application/xml; charset=utf-8", txt: "text/plain; charset=utf-8", md: "text/plain; charset=utf-8",
+  json: "application/json; charset=utf-8", xml: "application/xml; charset=utf-8", txt: "text/plain; charset=utf-8",
   svg: "image/svg+xml", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif", ico: "image/x-icon", avif: "image/avif",
   mp4: "video/mp4", webm: "video/webm", mov: "video/quicktime", mp3: "audio/mpeg", wav: "audio/wav",
   woff2: "font/woff2", woff: "font/woff", ttf: "font/ttf", webmanifest: "application/manifest+json", pdf: "application/pdf",
 };
 const extOf = (p: string): string => /\.([a-z0-9]+)$/i.exec(p)?.[1]?.toLowerCase() ?? "";
 
-/** The repository file a site address stands for. */
+/**
+ * The repository file a site address stands for. Only what a visitor's browser needs is served (14 October 2026):
+ * the extensions in TYPES, never a dot-folder or dot-file (.github, .gitignore — .well-known excepted), never the
+ * repository's tooling (tools/, README, Markdown). Everything else is the 404 page, as if it did not exist.
+ */
 export function sitePath(pathname: string): string {
-  let p = decodeURIComponent(pathname);
+  let p: string;
+  try { p = decodeURIComponent(pathname); } catch { return "/404.html"; }
   if (p === "/mcp" || p === "/mcp/") return "/index.html";
-  if (p.includes("..")) return "/404.html";
+  if (p.includes("..") || p.includes("\\") || p.includes("\0")) return "/404.html";
+  const parts = p.split("/").filter(Boolean);
+  if (parts.some((x, i) => x.startsWith(".") && !(i === 0 && x === ".well-known"))) return "/404.html";
+  if (parts[0] === "tools" || /^readme/i.test(parts[parts.length - 1] ?? "")) return "/404.html";
   if (p.endsWith("/")) p += "index.html";
+  const ext = extOf(p);
+  if (ext && !TYPES[ext] && parts[0] !== ".well-known") return "/404.html";
   return p;
 }
 

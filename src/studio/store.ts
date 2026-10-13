@@ -48,6 +48,9 @@ export const STUDIO_COLUMNS: string[] = [
   // migrations/0019_studio_media.sql: uploads may be video or sound clips, with their length read by the Worker.
   "ALTER TABLE studio_uploads ADD COLUMN kind TEXT NOT NULL DEFAULT 'image'",
   "ALTER TABLE studio_uploads ADD COLUMN duration REAL",
+  // migrations/0020_security.sql: revocable Kleo keys and sessions.
+  "ALTER TABLE users ADD COLUMN key_version INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE users ADD COLUMN studio_epoch INTEGER NOT NULL DEFAULT 0",
 ];
 
 let ready: Promise<unknown> | null = null;
@@ -152,8 +155,10 @@ export async function runningCount(env: StudioEnv, userId: string): Promise<numb
   return r?.n ?? 0;
 }
 /** Provider dollars committed since midnight UTC by clips that did not fail (the daily budget). */
-export async function studioSpentTodayUsd(env: StudioEnv): Promise<number> {
-  const r = await env.DB.prepare("SELECT COALESCE(SUM(est_usd), 0) AS usd FROM studio_generations WHERE status != 'failed' AND created_at >= strftime('%Y-%m-%dT00:00:00.000Z','now')")
+/** Today's provider spend (UTC day); `unpaidOnly` counts only accounts with no payment on record (the free pool). */
+export async function studioSpentTodayUsd(env: StudioEnv, o: { unpaidOnly?: boolean } = {}): Promise<number> {
+  const unpaid = o.unpaidOnly ? " AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.user_id = g.user_id AND p.status = 'paid')" : "";
+  const r = await env.DB.prepare(`SELECT COALESCE(SUM(g.est_usd), 0) AS usd FROM studio_generations g WHERE g.status != 'failed' AND g.created_at >= strftime('%Y-%m-%dT00:00:00.000Z','now')${unpaid}`)
     .first<{ usd: number }>();
   return r?.usd ?? 0;
 }

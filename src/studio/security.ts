@@ -14,6 +14,8 @@
 const SITE_INLINE_SCRIPT = "'sha256-0A3SoNnOj/VD5rKtWDb4PSvN8Br+QRibbwlM+84okfY='";
 const SITE_ONERROR = "'sha256-/KwTAEKE9+mYpISAG1liGBx1tOlvzPR5mU24VIyc49U='";
 const MEDIA_HOST = "https://media.kleooai.com";
+/** The site's own samples (kleooai.com/samples/…), shown by the app while it still lives on app.kleooai.com. */
+const SITE_HOST = "https://kleooai.com";
 const MCP_HOST = "https://mcp.kleooai.com";
 
 const COMMON = [
@@ -26,8 +28,8 @@ export const APP_CSP = [
   "default-src 'self'",
   `script-src 'self' ${TURNSTILE}`,
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob:",
-  "media-src 'self' blob:",
+  `img-src 'self' data: blob: ${SITE_HOST} ${MEDIA_HOST}`,
+  `media-src 'self' blob: ${SITE_HOST} ${MEDIA_HOST}`,
   "font-src 'self'",
   "connect-src 'self'",
   `frame-src ${TURNSTILE}`,

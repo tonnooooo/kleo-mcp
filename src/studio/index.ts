@@ -29,9 +29,10 @@ import { mediaInfo } from "./media.ts";
 import { APP_PATH, serveSite } from "./site.ts";
 import { normalizeFilm, orderFilm, quoteFilm } from "./films.ts";
 import { runAgent, chatTitle, enhancePrompt, type Proposal } from "./agent.ts";
-import { signUp, signIn, signInWithKey, addPassword, me, signedIn, googleEnabled, microsoftEnabled, enabledSocial, socialEnabled, socialStart, socialCallback, forgotPassword, resetPassword, resetAvailable, type SocialKey } from "./auth.ts";
+import { signUp, signIn, signInWithKey, addPassword, me, signedIn, endAllSessions, kleoKeyOf, googleEnabled, microsoftEnabled, enabledSocial, socialEnabled, socialStart, socialCallback, forgotPassword, resetPassword, resetAvailable, type SocialKey } from "./auth.ts";
 import { httpsRedirect, secureResponse } from "./security.ts";
-import { SESSION_COOKIE, clearSessionCookie, readCookie, readSession, signPath, checkSignedPath } from "./session.ts";
+import { SESSION_COOKIE, clearSessionCookie, readCookie, readSessionFull, normalizeEmail, signPath, checkSignedPath } from "./session.ts";
+import { ipBucket } from "../accounts.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const json = (data: unknown, status = 200, headers: Record<string, string> = {}): Response =>
@@ -49,15 +50,20 @@ async function body<T = Record<string, unknown>>(request: Request): Promise<T> {
   try { return (await request.json()) as T; } catch { throw new StudioError("Bad request."); }
 }
 
+/** The signed-in account, or null. A cookie from before the account's last "sign out everywhere" no longer counts. */
 async function sessionUser(env: StudioEnv, request: Request): Promise<string | null> {
-  return readSession(env.INTERNAL_SECRET, readCookie(request.headers.get("cookie"), SESSION_COOKIE));
+  const s = await readSessionFull(env.INTERNAL_SECRET, readCookie(request.headers.get("cookie"), SESSION_COOKIE));
+  if (!s) return null;
+  const row = await env.DB.prepare("SELECT studio_epoch FROM users WHERE id = ?").bind(s.userId).first<{ studio_epoch: number | null }>().catch(() => null);
+  return row && Number(row.studio_epoch ?? 0) === s.epoch ? s.userId : null;
 }
 
-async function rateLimited(env: StudioEnv, request: Request): Promise<boolean> {
+/** Ten tries a minute per visitor (an IPv6 visitor is its /64) and, for a sign-in, per e-mail address as well. */
+async function rateLimited(env: StudioEnv, request: Request, email?: string): Promise<boolean> {
   if (!env.AUTH_LIMIT) return false;
-  const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
-  const { success } = await env.AUTH_LIMIT.limit({ key: `auth:${ip}` });
-  return !success;
+  const ip = request.headers.get("cf-connecting-ip");
+  if (!(await env.AUTH_LIMIT.limit({ key: `auth:${ip ? ipBucket(ip) : "unknown"}` })).success) return true;
+  return !!email && !(await env.AUTH_LIMIT.limit({ key: `signin:${email}` })).success;
 }
 
 /** The credit packs with this account's buy links (only real, live Stripe Payment Links). */
@@ -168,21 +174,33 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       emailReset: resetAvailable(env), presets: publicPresets(), tools: publicTools(marginOf(env)), freeTools: freeTools(env.STUDIO_FREE_TOOLS),
     });
   }
-  if (path.startsWith("/api/auth/") && method === "POST") {
-    if (path !== "/api/auth/signout" && (await rateLimited(env, request))) return json({ error: "Too many tries. Wait a minute.", code: "rate" }, 429);
-    const ip = request.headers.get("cf-connecting-ip");
-    if (path === "/api/auth/signup") return signedIn(env, await signUp(env, await body(request), ip));
-    if (path === "/api/auth/signin") return signedIn(env, await signIn(env, await body(request)));
-    if (path === "/api/auth/key") return signedIn(env, await signInWithKey(env, String((await body(request)).key ?? "")));
+  if (path.startsWith("/api/auth/") && method === "POST" && path !== "/api/auth/password" && path !== "/api/auth/signout-all") {
     if (path === "/api/auth/signout") return json({ ok: true }, 200, { "set-cookie": clearSessionCookie() });
-    if (path === "/api/auth/forgot") { await forgotPassword(env, await body(request), origin); return json({ ok: true }); }
-    if (path === "/api/auth/reset") return signedIn(env, await resetPassword(env, await body(request)));
+    const b = await body(request);
+    // Guessing one person's password from many addresses is throttled per e-mail too, not only per visitor.
+    const email = path === "/api/auth/signin" ? normalizeEmail(String(b.email ?? "")) : undefined;
+    if (await rateLimited(env, request, email)) return json({ error: "Too many tries. Wait a minute.", code: "rate" }, 429);
+    const ip = request.headers.get("cf-connecting-ip");
+    if (path === "/api/auth/signup") return signedIn(env, await signUp(env, b, ip));
+    if (path === "/api/auth/signin") return signedIn(env, await signIn(env, b));
+    if (path === "/api/auth/key") return signedIn(env, await signInWithKey(env, String(b.key ?? "")));
+    if (path === "/api/auth/forgot") { ctx.waitUntil(forgotPassword(env, b, origin)); return json({ ok: true }); }
+    if (path === "/api/auth/reset") return signedIn(env, await resetPassword(env, b));
+    return json({ error: "Not found." }, 404);
   }
 
   const userId = await sessionUser(env, request);
   if (!userId) return json({ error: "Please sign in.", code: "signin" }, 401);
 
   if (path === "/api/auth/password" && method === "POST") { await addPassword(env, userId, await body(request)); return json({ ok: true }); }
+  // Every browser and phone signed in to this account is signed out (this one too).
+  if (path === "/api/auth/signout-all" && method === "POST") {
+    await endAllSessions(env, userId);
+    await audit(asEnv(env), userId, null, "studio.signout_all", {});
+    return json({ ok: true }, 200, { "set-cookie": clearSessionCookie() });
+  }
+  // The Kleo key only on request; "reset" retires the old one everywhere (MCP sign-in cookies included).
+  if (path === "/api/me/key" && method === "POST") return json({ key: await kleoKeyOf(env, userId, (await body(request)).reset === true) });
 
   if (path === "/api/me" && method === "GET") {
     const info = await me(env, userId);
@@ -357,7 +375,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
   }
   if (path === "/api/generations" && method === "GET") {
     const before = url.searchParams.get("before") ?? undefined;
-    const rows = await listGenerations(env, userId, Math.min(100, Number(url.searchParams.get("limit") ?? 60)), before,
+    const rows = await listGenerations(env, userId, Math.max(1, Math.min(100, Number(url.searchParams.get("limit") ?? 60) || 60)), before,
       { model: url.searchParams.get("model") ?? undefined, kind: url.searchParams.get("kind") ?? undefined });
     return json({ generations: rows.map(publicGeneration) });
   }
@@ -387,9 +405,16 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
   if (path === "/api/uploads" && method === "POST") {
     const len = Number(request.headers.get("content-length") ?? 0);
     if (len > MAX_CLIP) throw new StudioError("That file is too big (60 MB max).", 413);
+    // A daily allowance per account (14 October 2026): storage is the owner's money, and uploads are kept.
+    const today = await env.DB.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM studio_uploads WHERE user_id = ? AND created_at >= strftime('%Y-%m-%dT00:00:00.000Z','now')")
+      .bind(userId).first<{ n: number; bytes: number }>();
+    if ((today?.n ?? 0) >= Number(env.STUDIO_UPLOADS_PER_DAY ?? 200) || (today?.bytes ?? 0) + len > Number(env.STUDIO_UPLOAD_MB_PER_DAY ?? 2048) * 1048576) {
+      throw new StudioError("You've reached today's upload allowance. Use the files you already added, or come back tomorrow.", 429, "uploads");
+    }
     const bytes = new Uint8Array(await request.arrayBuffer());
     const info = mediaInfo(bytes);
     if (!info || info.type === "audio/mp4") throw new StudioError("Use a JPG, PNG or WebP picture, an MP4 or MOV video, or an MP3 or WAV sound.", 415);
+    if (info.fragmented) throw new StudioError("This video is a streaming (fragmented) MP4. Export it as a regular MP4 or MOV and try again.", 415, "fragmented");
     const cap = info.kind === "image" ? MAX_UPLOAD : info.kind === "audio" ? 15 * 1024 * 1024 : MAX_CLIP;
     if (bytes.byteLength > cap) throw new StudioError(`That ${info.kind === "image" ? "picture" : info.kind} is too big (${Math.round(cap / 1048576)} MB max).`, 413);
     const id = rid("up", 12);

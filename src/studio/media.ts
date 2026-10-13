@@ -3,15 +3,21 @@
  * many tools depends on how long a clip is (a talking photo is billed per second of voice, a video edit per second of
  * video), and the page's own claim about that length cannot be trusted with money. So the Worker reads it itself:
  *
- *   MP4 / MOV   the `mvhd` box (timescale, duration) and the first video `tkhd` (width, height)
- *   WAV         the `fmt ` byte rate and the `data` size
- *   MP3         the first frame header (bitrate, sample rate) and its Xing/Info frame count when the file is VBR
+ *   MP4 / MOV   every place the file states its length — `mvhd`, each `tkhd` and `mdhd`, each track's sample table
+ *               (`stts`, what a decoder actually plays) and edit list (`elst`) — and the LONGEST one counts; the size
+ *               is the largest video track's (`tkhd`). A fragmented MP4 is flagged (its length lives in fragments).
+ *   WAV         the `fmt ` byte rate and every byte after the `data` header (not the size the header claims)
+ *   MP3         the first frame header (bitrate, sample rate), its Xing/Info frame count when the file is VBR, and never
+ *               less than the file's size played at 320 kbps, the format's top bitrate
+ *
+ * WHY THE LONGEST (14 October 2026): the provider bills what it decodes, not what a header says, so a file with a short
+ * `mvhd` over a long track was a way to buy a long edit at the price of a short one.
  *
  * No decoding, no dependency: a few hundred bytes of each file. Pure module, imported directly by the tests.
  */
 
 export type MediaKind = "image" | "video" | "audio";
-export interface MediaInfo { kind: MediaKind; type: string; ext: string; duration: number | null; width: number | null; height: number | null }
+export interface MediaInfo { kind: MediaKind; type: string; ext: string; duration: number | null; width: number | null; height: number | null; fragmented?: boolean }
 
 const ascii = (b: Uint8Array, at: number, n: number): string => String.fromCharCode(...b.subarray(at, at + n));
 const u32 = (b: Uint8Array, at: number): number => ((b[at] << 24) >>> 0) + (b[at + 1] << 16) + (b[at + 2] << 8) + b[at + 3];
@@ -35,35 +41,56 @@ export function sniffMedia(b: Uint8Array): Omit<MediaInfo, "duration" | "width" 
   return null;
 }
 
-/** Walks ISO-BMFF boxes looking for `mvhd` and the first video `tkhd`. */
-export function mp4Info(b: Uint8Array): { duration: number | null; width: number | null; height: number | null } {
-  let duration: number | null = null, width: number | null = null, height: number | null = null;
+const u64 = (b: Uint8Array, at: number): number => u32(b, at) * 0x100000000 + u32(b, at + 4);
+/** A stated length worth believing: positive and under a day (0xFFFFFFFF and friends mean "unknown"). */
+const plausible = (seconds: number): boolean => Number.isFinite(seconds) && seconds > 0 && seconds < 86_400;
+
+/** Walks ISO-BMFF boxes: the longest stated length, the largest video track, and whether the file is fragmented. */
+export function mp4Info(b: Uint8Array): { duration: number | null; width: number | null; height: number | null; fragmented: boolean } {
+  let movieScale = 0, trackScale = 0, width: number | null = null, height: number | null = null, fragmented = false;
+  const lengths: number[] = [];
+  const keep = (dur: number, scale: number) => { if (scale > 0 && plausible(dur / scale)) lengths.push(dur / scale); };
   const walk = (start: number, end: number, depth: number): void => {
     let at = start;
-    while (at + 8 <= end && depth < 8) {
+    while (at + 8 <= end && depth < 10) {
       let size = u32(b, at);
       const type = ascii(b, at + 4, 4);
       let head = 8;
-      if (size === 1) { size = u32(b, at + 8) * 0x100000000 + u32(b, at + 12); head = 16; }
+      if (size === 1) { size = u64(b, at + 8); head = 16; }
       else if (size === 0) size = end - at;
       if (size < head || at + size > end) return;
-      if (type === "moov" || type === "trak" || type === "mdia" || type === "minf") walk(at + head, at + size, depth + 1);
-      else if (type === "mvhd" && duration === null) {
-        const v = b[at + head];
-        const timescale = v === 1 ? u32(b, at + head + 20) : u32(b, at + head + 12);
-        const dur = v === 1 ? u32(b, at + head + 24) * 0x100000000 + u32(b, at + head + 28) : u32(b, at + head + 16);
-        if (timescale > 0) duration = Math.round((dur / timescale) * 1000) / 1000;
-      } else if (type === "tkhd" && width === null) {
-        const v = b[at + head];
-        const off = at + head + (v === 1 ? 88 : 76);
-        const w = u32(b, off) / 65536, h = u32(b, off + 4) / 65536;
-        if (w > 0 && h > 0) { width = Math.round(w); height = Math.round(h); }
+      const body = at + head, stop = at + size, v = b[body];
+      if (type === "trak") { trackScale = 0; walk(body, stop, depth + 1); }
+      else if (type === "moov" || type === "mdia" || type === "minf" || type === "stbl" || type === "edts") walk(body, stop, depth + 1);
+      else if (type === "moof" || type === "mvex") fragmented = true;
+      else if (type === "mvhd") {
+        movieScale = v === 1 ? u32(b, body + 20) : u32(b, body + 12);
+        keep(v === 1 ? u64(b, body + 24) : u32(b, body + 16), movieScale);
+      } else if (type === "tkhd") {
+        keep(v === 1 ? u64(b, body + 28) : u32(b, body + 20), movieScale);
+        const off = body + (v === 1 ? 88 : 76);
+        const w = Math.round(u32(b, off) / 65536), h = Math.round(u32(b, off + 4) / 65536);
+        if (w > 0 && h > 0 && w * h > (width ?? 0) * (height ?? 0)) { width = w; height = h; }
+      } else if (type === "mdhd") {
+        trackScale = v === 1 ? u32(b, body + 20) : u32(b, body + 12);
+        keep(v === 1 ? u64(b, body + 24) : u32(b, body + 16), trackScale);
+      } else if (type === "stts") {
+        let sum = 0;
+        const n = u32(b, body + 4);
+        for (let i = 0, e = body + 8; i < n && e + 8 <= stop; i++, e += 8) sum += u32(b, e) * u32(b, e + 4);
+        keep(sum, trackScale);
+      } else if (type === "elst") {
+        let sum = 0;
+        const n = u32(b, body + 4), step = v === 1 ? 20 : 12;
+        for (let i = 0, e = body + 8; i < n && e + step <= stop; i++, e += step) sum += v === 1 ? u64(b, e) : u32(b, e);
+        keep(sum, movieScale);
       }
       at += size;
     }
   };
   walk(0, b.length, 0);
-  return { duration, width, height };
+  const duration = lengths.length ? Math.round(Math.max(...lengths) * 1000) / 1000 : null;
+  return { duration, width, height, fragmented };
 }
 
 export function wavDuration(b: Uint8Array): number | null {
@@ -71,7 +98,8 @@ export function wavDuration(b: Uint8Array): number | null {
   while (at + 8 <= b.length) {
     const id = ascii(b, at, 4), size = u32le(b, at + 4);
     if (id === "fmt ") byteRate = u32le(b, at + 16);
-    if (id === "data") return byteRate > 0 ? Math.round(((Math.min(size, b.length - at - 8)) / byteRate) * 1000) / 1000 : null;
+    // Every byte after the header plays, whatever size the header claims (a player reads to the end of the file).
+    if (id === "data") return byteRate > 0 ? Math.round((Math.max(size, b.length - at - 8) / byteRate) * 1000) / 1000 : null;
     at += 8 + size + (size % 2);
   }
   return null;
@@ -98,7 +126,9 @@ export function mp3Duration(b: Uint8Array): number | null {
     const side = ver === 3 ? (mono ? 17 : 32) : (mono ? 9 : 17);
     const x = at + 4 + side;
     const tag = ascii(b, x, 4);
-    if ((tag === "Xing" || tag === "Info") && (b[x + 7] & 1)) return Math.round((u32(b, x + 8) * samples / rate) * 1000) / 1000;
+    // The frame count is a claim: the file can never play shorter than its size at 320 kbps, the format's ceiling.
+    const floor = ((b.length - at) * 8) / 320_000;
+    if ((tag === "Xing" || tag === "Info") && (b[x + 7] & 1)) return Math.round(Math.max(u32(b, x + 8) * samples / rate, floor) * 1000) / 1000;
     return Math.round(((b.length - at) * 8 / (kbps * 1000)) * 1000) / 1000;
   }
   return null;
@@ -108,7 +138,7 @@ export function mp3Duration(b: Uint8Array): number | null {
 export function mediaInfo(b: Uint8Array): MediaInfo | null {
   const s = sniffMedia(b);
   if (!s) return null;
-  if (s.kind === "video") return { ...s, ...mp4Info(b) };
+  if (s.kind === "video") { const m = mp4Info(b); return { ...s, duration: m.duration, width: m.width, height: m.height, fragmented: m.fragmented }; }
   if (s.type === "audio/wav") return { ...s, duration: wavDuration(b), width: null, height: null };
   if (s.type === "audio/mpeg") return { ...s, duration: mp3Duration(b), width: null, height: null };
   if (s.type === "audio/mp4") return { ...s, duration: mp4Info(b).duration, width: null, height: null };

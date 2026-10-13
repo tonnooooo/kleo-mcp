@@ -1,9 +1,13 @@
 /**
  * KLEO STUDIO — SESSIONS, PASSWORDS AND SIGNED LINKS.
  *
- * The session is a cookie `kleo_studio=<userId>.<exp>.<sig>` signed with INTERNAL_SECRET (the same secret that signs
- * the MCP account handle, src/accounts.ts, so one rotation logs everybody out of both). Unlike the handle it expires:
- * a stolen Studio cookie is worth 60 days, not an account forever.
+ * The session is a cookie `__Host-kleo_studio=<userId>.<exp>.<epoch>.<sig>` signed with INTERNAL_SECRET (the same
+ * secret that signs the MCP account handle, src/accounts.ts, so one rotation logs everybody out of both). Unlike the
+ * handle it expires: a stolen Studio cookie is worth 60 days at most. The epoch (users.studio_epoch, checked on every
+ * request by the router) makes it revocable: a password reset, "sign out everywhere", or an e-mail taken back from
+ * an account that only claimed it bumps the epoch and every older cookie stops working (14 October 2026).
+ * The `__Host-` prefix pins the cookie to this exact host over HTTPS with Path=/: no sibling *.kleooai.com host can
+ * set or shadow it.
  *
  * Passwords are PBKDF2-SHA256 with a random 16-byte salt and 100 000 iterations — the most Cloudflare Workers allow —
  * stored as "pbkdf2$<iterations>$<salt b64>$<hash b64>".
@@ -14,7 +18,7 @@
  * Pure WebCrypto (no Env type at runtime), so the tests import it under Node's type stripping.
  */
 
-export const SESSION_COOKIE = "kleo_studio";
+export const SESSION_COOKIE = "__Host-kleo_studio";
 export const SESSION_DAYS = 60;
 const SIG_LEN = 32;
 const enc = new TextEncoder();
@@ -32,18 +36,25 @@ export function safeEqual(a: string, b: string): boolean {
   return r === 0;
 }
 
-export async function makeSession(secret: string, userId: string, nowMs = Date.now()): Promise<string> {
+const sessionMessage = (userId: string, exp: string | number, epoch: string | number) => `kleo-studio-session:${userId}:${exp}:${epoch}`;
+
+export async function makeSession(secret: string, userId: string, nowMs = Date.now(), epoch = 0): Promise<string> {
   const exp = Math.floor(nowMs / 1000) + SESSION_DAYS * 86_400;
-  return `${userId}.${exp}.${(await hmac(secret, `kleo-studio:${userId}:${exp}`)).slice(0, SIG_LEN)}`;
+  return `${userId}.${exp}.${epoch}.${(await hmac(secret, sessionMessage(userId, exp, epoch))).slice(0, SIG_LEN)}`;
 }
 
-/** The user id inside a session value, or null (tampered, expired, malformed). */
-export async function readSession(secret: string, value: string | null | undefined, nowMs = Date.now()): Promise<string | null> {
-  const m = /^([A-Za-z0-9_-]{1,64})\.(\d{9,11})\.([0-9a-f]{32})$/.exec((value ?? "").trim());
+/** The account and epoch inside a session value, or null (tampered, expired, malformed). */
+export async function readSessionFull(secret: string, value: string | null | undefined, nowMs = Date.now()): Promise<{ userId: string; epoch: number } | null> {
+  const m = /^([A-Za-z0-9_-]{1,64})\.(\d{9,11})\.(\d{1,9})\.([0-9a-f]{32})$/.exec((value ?? "").trim());
   if (!m) return null;
-  const [, userId, exp, sig] = m;
+  const [, userId, exp, epoch, sig] = m;
   if (Number(exp) * 1000 < nowMs) return null;
-  return safeEqual(sig, (await hmac(secret, `kleo-studio:${userId}:${exp}`)).slice(0, SIG_LEN)) ? userId : null;
+  return safeEqual(sig, (await hmac(secret, sessionMessage(userId, exp, epoch))).slice(0, SIG_LEN)) ? { userId, epoch: Number(epoch) } : null;
+}
+
+/** The user id inside a session value, or null. The router also checks the epoch against the account. */
+export async function readSession(secret: string, value: string | null | undefined, nowMs = Date.now()): Promise<string | null> {
+  return (await readSessionFull(secret, value, nowMs))?.userId ?? null;
 }
 
 export function readCookie(header: string | null | undefined, name: string): string | null {

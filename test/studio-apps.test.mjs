@@ -29,7 +29,7 @@ export function fakeWav(seconds, rate = 24000) {
 
 test("media: kinds and lengths read from the bytes", () => {
   const mp4 = fakeMp4(8.5, 1920, 1080);
-  assert.deepEqual(mp4Info(mp4), { duration: 8.5, width: 1920, height: 1080 });
+  assert.deepEqual(mp4Info(mp4), { duration: 8.5, width: 1920, height: 1080, fragmented: false });
   assert.equal(mediaInfo(mp4).kind, "video");
   assert.equal(mediaInfo(mp4).type, "video/mp4");
   const wav = fakeWav(2.5);
@@ -42,6 +42,36 @@ test("media: kinds and lengths read from the bytes", () => {
   const jpg = new Uint8Array(100); jpg.set([0xff, 0xd8, 0xff]);
   assert.equal(mediaInfo(jpg).kind, "image");
   assert.equal(mediaInfo(new Uint8Array(100).fill(7)), null);
+});
+
+test("media: a file cannot claim to be shorter than it plays (the longest stated length counts)", () => {
+  const box = (type, ...parts) => {
+    const body = Buffer.concat(parts.map((p) => Buffer.from(p)));
+    const head = Buffer.alloc(8); head.writeUInt32BE(8 + body.length); head.write(type, 4, "ascii");
+    return Buffer.concat([head, body]);
+  };
+  // mvhd says 2 s (timescale 1000); the video track's mdhd and its sample table say 30 s at 30 fps (timescale 30000).
+  const mvhd = Buffer.alloc(100); mvhd.writeUInt32BE(1000, 12); mvhd.writeUInt32BE(2000, 16);
+  const tkhd = Buffer.alloc(84); tkhd.writeUInt32BE(320 * 65536, 76); tkhd.writeUInt32BE(180 * 65536, 80);
+  const tkhd2 = Buffer.alloc(84); tkhd2.writeUInt32BE(2560 * 65536, 76); tkhd2.writeUInt32BE(1440 * 65536, 80);
+  const mdhd = Buffer.alloc(24); mdhd.writeUInt32BE(30000, 12); mdhd.writeUInt32BE(60000, 16); // also lies: 2 s
+  const stts = Buffer.alloc(16); stts.writeUInt32BE(1, 4); stts.writeUInt32BE(900, 8); stts.writeUInt32BE(1000, 12); // 900 frames x 1/30 s
+  const trak = (t) => box("trak", box("tkhd", t), box("mdia", box("mdhd", mdhd), box("minf", box("stbl", box("stts", stts)))));
+  const ftyp = box("ftyp", Buffer.from("isom"), Buffer.alloc(4), Buffer.from("isommp42"));
+  const lying = new Uint8Array(Buffer.concat([ftyp, box("moov", box("mvhd", mvhd), trak(tkhd), trak(tkhd2)), box("mdat", Buffer.alloc(64))]));
+  const info = mp4Info(lying);
+  assert.equal(info.duration, 30, "900 samples of 1/30 s play for 30 s, whatever mvhd and mdhd say");
+  assert.deepEqual([info.width, info.height], [2560, 1440], "the largest track decides the size");
+  // A fragmented MP4 keeps its length in fragments: flagged, so the upload refuses it.
+  const frag = new Uint8Array(Buffer.concat([ftyp, box("moov", box("mvhd", mvhd), box("mvex")), box("moof"), box("mdat", Buffer.alloc(64))]));
+  assert.equal(mp4Info(frag).fragmented, true);
+  // WAV: the bytes after the header play, whatever size the header claims.
+  const wav = fakeWav(3); new DataView(wav.buffer).setUint32(40, 2 * 24000, true); // header says 1 s of data
+  assert.equal(wavDuration(wav), 3);
+  // MP3: a Xing frame count of 1 frame on a 160 000-byte file is refused: at 320 kbps those bytes are 4 s.
+  const mp3 = new Uint8Array(160000); mp3.set([0xff, 0xfb, 0x90, 0x00]);
+  const x = 4 + 32; mp3.set([0x58, 0x69, 0x6e, 0x67, 0, 0, 0, 1, 0, 0, 0, 1], x);
+  assert.equal(mp3Duration(mp3), 4);
 });
 
 test("presets: added once, published without their prompt text", () => {
