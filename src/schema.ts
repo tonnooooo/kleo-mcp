@@ -38,6 +38,8 @@ const STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS redemptions (user_id TEXT PRIMARY KEY, code TEXT NOT NULL, channel TEXT NOT NULL, credits INTEGER NOT NULL, nonce TEXT NOT NULL, film_job TEXT, at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
   `CREATE INDEX IF NOT EXISTS redemptions_at ON redemptions(at)`,
   `INSERT OR IGNORE INTO launch_codes (code, channel) VALUES ('PRODUCTHUNT', 'producthunt'), ('HN', 'hn'), ('REDDIT', 'reddit'), ('X', 'x'), ('TIKTOK', 'tiktok')`,
+  // Addresses that may not open accounts or generate for free until `until` (15 October 2026, src/abuse.ts; 0021).
+  `CREATE TABLE IF NOT EXISTS blocked_addresses (ip_hash TEXT PRIMARY KEY, reason TEXT NOT NULL, until TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
   // REFERRALS (27 September 2026, src/referral.ts; mirrors migrations/0013_referrals.sql): one row per referred account,
   // written with its first real payment, so the reward is paid once.
   `CREATE TABLE IF NOT EXISTS referrals (referred_id TEXT PRIMARY KEY, referrer_id TEXT NOT NULL, session_id TEXT NOT NULL, referrer_credits INTEGER NOT NULL, referred_credits INTEGER NOT NULL, nonce TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'paid', at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
@@ -81,6 +83,10 @@ const COLUMNS: [table: string, column: string, definition: string][] = [
   // When the launch-code film was claimed (src/launch.ts CLAIM_FREE; 0016_trial_claim.sql): a claim naming no job row
   // holds the trial for a few minutes, then lapses.
   ["redemptions", "film_at", "TEXT"],
+  // One gift per person (15 October 2026, src/abuse.ts; 0021_one_gift_per_person.sql): the credits the account was
+  // opened with, and the inbox behind its address.
+  ["users", "gift", "INTEGER NOT NULL DEFAULT 0"],
+  ["users", "email_canon", "TEXT"],
 ];
 
 /** Indexes over columns from COLUMNS. They belong here and NOT in STATEMENTS: that batch runs before the ALTERs, so
@@ -90,6 +96,7 @@ const COLUMN_INDEXES = [
   "CREATE UNIQUE INDEX IF NOT EXISTS users_referral_code ON users(referral_code)",
   "CREATE INDEX IF NOT EXISTS users_referred_by ON users(referred_by)",
   "CREATE INDEX IF NOT EXISTS users_created ON users(created_at)",
+  "CREATE INDEX IF NOT EXISTS users_email_canon ON users(email_canon)",
 ];
 
 async function ensureColumns(env: Env): Promise<void> {

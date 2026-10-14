@@ -558,7 +558,7 @@ a.row { color: var(--ink); }
 .feed-h { display: flex; align-items: center; justify-content: space-between; margin: 2px 2px 12px; }
 .feed-h h2 { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: -.02em; }
 .feed-h span { color: var(--ink-2); font-size: 15.5px; }
-.feed { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.feed { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
 .result { border-radius: 20px; overflow: hidden; background: var(--card); border: 1px solid var(--sep); box-shadow: var(--shadow); display: flex; flex-direction: column; animation: rise .35s var(--ease) both; }
 .result .media { position: relative; background: #0b0b0d; aspect-ratio: 16 / 10; overflow: hidden; cursor: pointer; }
 .result .media img, .result .media video { width: 100%; height: 100%; object-fit: cover; display: block; }

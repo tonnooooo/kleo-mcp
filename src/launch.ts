@@ -60,12 +60,14 @@ export const redemptionOf = (env: Env, userId: string) =>
 
 export type RedeemResult =
   | { ok: true; code: string; channel: string; credits: number; balance: number | null }
-  | { ok: false; reason: "invalid" | "unknown" | "used_up" | "already"; message: string };
+  | { ok: false; reason: "invalid" | "unknown" | "used_up" | "already" | "connection"; message: string };
 
 /**
  * Redeems a launch code for an account, exactly once, whatever arrives at the same time. Three statements in ONE
  * batch (a transaction): the redemption row is inserted only while the code is active and has uses left, and the
  * primary key refuses a second one for the account; the use and the credits follow only if THAT row (its nonce) exists.
+ * ONE PER PERSON (15 October 2026, src/abuse.ts): nor while another account opened from the same address (users.ip_hash)
+ * holds a redemption — a free film per throwaway account was the most expensive way to farm Kleo.
  */
 export async function redeemLaunchCode(env: Env, userId: string, raw: unknown): Promise<RedeemResult> {
   const code = normalizeCode(raw);
@@ -75,7 +77,9 @@ export async function redeemLaunchCode(env: Env, userId: string, raw: unknown): 
   const rows = await env.DB.batch([
     env.DB.prepare(
       `INSERT OR IGNORE INTO redemptions (user_id, code, channel, credits, nonce)
-       SELECT ?, code, channel, COALESCE(credits, ?), ? FROM launch_codes WHERE code = ? AND active = 1 AND uses < max_uses`,
+       SELECT ?1, code, channel, COALESCE(credits, ?2), ?3 FROM launch_codes WHERE code = ?4 AND active = 1 AND uses < max_uses
+         AND NOT EXISTS (SELECT 1 FROM redemptions r JOIN users o ON o.id = r.user_id
+                         WHERE o.id <> ?1 AND o.ip_hash IS NOT NULL AND o.ip_hash = (SELECT ip_hash FROM users WHERE id = ?1))`,
     ).bind(userId, trialCredits, nonce, code),
     env.DB.prepare("UPDATE launch_codes SET uses = uses + 1 WHERE code = ? AND EXISTS (SELECT 1 FROM redemptions WHERE user_id = ? AND nonce = ?)")
       .bind(code, userId, nonce),
@@ -93,8 +97,14 @@ export async function redeemLaunchCode(env: Env, userId: string, raw: unknown): 
   // Nothing was written: say which of the three it was (a read after the fact only chooses the words).
   const had = await redemptionOf(env, userId);
   const row = await getLaunchCode(env, code);
+  const sibling = had ? null : await env.DB.prepare(
+    `SELECT 1 AS one FROM redemptions r JOIN users o ON o.id = r.user_id
+     WHERE o.id <> ?1 AND o.ip_hash IS NOT NULL AND o.ip_hash = (SELECT ip_hash FROM users WHERE id = ?1) LIMIT 1`,
+  ).bind(userId).first<{ one: number }>();
   const why: RedeemResult = had
     ? { ok: false, reason: "already", message: `This account has already used a launch code (${had.code}): one per account. Nothing was changed.` }
+    : sibling && row?.active && row.uses < row.max_uses
+      ? { ok: false, reason: "connection", message: "A launch code has already been used from this connection: one free film per person. Nothing was changed." }
     : !row || !row.active
       ? { ok: false, reason: "unknown", message: `There is no launch code "${code}". Check the spelling, or ask where you found it. Nothing was changed.` }
       : { ok: false, reason: "used_up", message: `The launch code ${code} has been used ${row.max_uses} times, which is all it had. Nothing was changed.` };

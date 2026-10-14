@@ -6,6 +6,7 @@ import { html, escapeHtml, rid, int, crossSiteRequest } from "./util";
 import { getLaunchCode, redeemLaunchCode, normalizeCode, TRIAL_FILM_MAX_S } from "./launch.ts";
 import { linkReferral, normalizeReferral, cookieReferral } from "./referral.ts";
 import { recordSignupSource } from "./growth.ts";
+import { giftBlocker, giftCookie, visitorOf, type Visitor } from "./abuse.ts";
 import { normalizeChannel } from "./launch.ts";
 
 /**
@@ -77,7 +78,7 @@ export async function handleAuthorize(request: Request, env: Env): Promise<Respo
   const hints = connectionHints(oauthQuery);
   const typedRef = normalizeReferral(bonusCode);
   const ref = typedRef ?? cookieReferral(request.headers.get("cookie")) ?? hints.ref;
-  const resolved = await resolveAccount(env, { cookie: cookieHandle(request.headers.get("cookie")), key: pastedKey, bonus: typedRef ? "" : bonusCode, ip, ref, src: normalizeChannel(hints.src) });
+  const resolved = await resolveAccount(env, { cookie: cookieHandle(request.headers.get("cookie")), key: pastedKey, bonus: typedRef ? "" : bonusCode, ip, ref, src: normalizeChannel(hints.src), visitor: visitorOf(request) });
   if ("error" in resolved) {
     const refused = back(resolved.error, resolved.status);
     if (resolved.clearCookie) refused.headers.append("set-cookie", `${ACCOUNT_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`);
@@ -97,7 +98,11 @@ export async function handleAuthorize(request: Request, env: Env): Promise<Respo
   });
   await audit(env, user.id, null, "oauth.granted", { client: clientName, ...(hints.src ? { src: normalizeChannel(hints.src) } : {}) });
   // Response.redirect() hands back IMMUTABLE headers, so the cookie could never be attached to it: build the 302 by hand.
-  return new Response(null, { status: 302, headers: { location: redirectTo, "set-cookie": accountCookie(await makeHandle(env, user.id)) } });
+  const headers = new Headers({ location: redirectTo });
+  headers.append("set-cookie", accountCookie(await makeHandle(env, user.id)));
+  // A browser that was given the free credits keeps a mark of it: its next new accounts start empty (src/abuse.ts).
+  if (resolved.gifted) headers.append("set-cookie", giftCookie());
+  return new Response(null, { status: 302, headers });
 }
 
 /** The account this browser already owns, if its cookie is valid and the row still exists. */
@@ -106,7 +111,7 @@ async function returningUser(env: Env, request: Request): Promise<User | undefin
   return (userId ? await getUser(env, userId) : null) ?? undefined;
 }
 
-type Resolved = { user: User } | { error: string; status: number; clearCookie?: boolean };
+type Resolved = { user: User; gifted?: number } | { error: string; status: number; clearCookie?: boolean };
 
 /**
  * A pasted Kleo key FIRST, then the cookie, then a new account — and ONLY the new account is given free credits.
@@ -115,7 +120,7 @@ type Resolved = { user: User } | { error: string; status: number; clearCookie?: 
  * where this browser already has a cookie of its own. Whichever branch wins, a gift code typed alongside is applied.
  * The daily caps are part of the INSERT itself, so a day that is over creates neither a user nor credits.
  */
-async function resolveAccount(env: Env, o: { cookie: string | null; key: string; bonus: string; ip: string | null; ref: string | null; src: string | null }): Promise<Resolved> {
+async function resolveAccount(env: Env, o: { cookie: string | null; key: string; bonus: string; ip: string | null; ref: string | null; src: string | null; visitor?: Visitor }): Promise<Resolved> {
   const accountFor = async (handle: string | null) => {
     const userId = await verifyHandle(env, handle);
     return userId ? await getUser(env, userId) : null;
@@ -145,22 +150,27 @@ async function resolveAccount(env: Env, o: { cookie: string | null; key: string;
   const id = rid("u", 12);
   // users.email is NOT NULL UNIQUE and an anonymous account has no address: this synthetic one satisfies the
   // constraint. .invalid can never be a real domain (RFC 2606).
-  const { verdict, user } = await createUserIfUnderCaps(
+  // ONE GIFT PER PERSON (15 October 2026, src/abuse.ts): a browser that already had one, a Tor exit or a server farm
+  // opens the account at zero; the address rule is inside the INSERT.
+  const blocker = o.visitor ? giftBlocker(o.visitor) : null;
+  const { verdict, user, gifted } = await createUserIfUnderCaps(
     env,
-    { id, email: `${id}@anon.kleo.invalid`, credits: freeCreditsFor(env), ipHash: ip },
+    { id, email: `${id}@anon.kleo.invalid`, credits: freeCreditsFor(env), ipHash: ip, gift: !blocker },
     { perDay: int(env.MAX_NEW_USERS_PER_DAY, 25), perAddressDay: int(env.MAX_NEW_USERS_PER_IP_DAY, 5) },
   );
   if (!user)
     return verdict === "day_full"
       ? { error: "Kleo has handed out today's free credits. Come back tomorrow and this button will work again.", status: 429 }
-      : { error: "Kleo is giving out its free credits slowly today. Try again in a little while, and your account will be waiting.", status: 429 };
-  await audit(env, user.id, null, "user.created", { source: "open", credits: user.credits, ip, ...(o.ref ? { ref: o.ref } : {}), ...(o.src ? { src: o.src } : {}) });
+      : verdict === "address_blocked"
+        ? { error: "No new Kleo accounts can be opened from this connection for now. If you already have one, open the box below and paste its Kleo key.", status: 403 }
+        : { error: "Kleo is giving out its free credits slowly today. Try again in a little while, and your account will be waiting.", status: 429 };
+  await audit(env, user.id, null, "user.created", { source: "open", credits: user.credits, ip, ...(gifted ? {} : { no_gift: blocker ?? "address" }), ...(o.ref ? { ref: o.ref } : {}), ...(o.src ? { src: o.src } : {}) });
   if (o.ref) await linkReferral(env, user.id, o.ref, "sign-in");
   // THE CHANNEL (27 September 2026, src/growth.ts): ?src= on the connector address the user added.
   if (o.src) await recordSignupSource(env, user.id, o.src, "sign-in");
   // The gift is applied only now, to an account that exists: a sign-up a cap refused must never burn one of the
   // code's uses, which is what claiming it before the INSERT did.
-  return { user: await applyBonus(env, user, o.bonus) };
+  return { user: await applyBonus(env, user, o.bonus), gifted: gifted ?? 0 };
 }
 
 /**

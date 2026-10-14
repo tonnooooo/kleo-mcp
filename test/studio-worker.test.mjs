@@ -42,6 +42,17 @@ class FakeR2 {
   async delete(keys) { for (const k of [].concat(keys)) this.m.delete(k); }
   async list({ prefix = "" } = {}) { return { objects: [...this.m.keys()].filter((k) => k.startsWith(prefix)).map((key) => ({ key })), truncated: false }; }
 }
+// DNS for the e-mail check (src/abuse.ts mailDomainOk), answered here: "nomail.example" does not exist, every other
+// domain receives mail. Installed under every test; fakeProvider wraps it like any other fetch.
+{
+  const real = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url);
+    if (!u.startsWith("https://cloudflare-dns.com/dns-query")) return real(url, init);
+    const name = new URL(u).searchParams.get("name");
+    return new Response(JSON.stringify(name === "nomail.example" ? { Status: 3 } : { Status: 0, Answer: [{ type: 15 }] }), { headers: { "content-type": "application/dns-json" } });
+  };
+}
 // The Workers runtime's FixedLengthStream, as a plain pass-through.
 globalThis.FixedLengthStream ??= class extends TransformStream { constructor() { super(); } };
 
@@ -68,12 +79,15 @@ function newEnv(over = {}) {
 }
 const pending = [];
 const ctx = { waitUntil(p) { pending.push(p); }, passThroughOnException() {} };
-async function call(env, path, { method = "GET", body, cookie, header = true, raw, headers = {} } = {}) {
+async function call(env, path, { method = "GET", body, cookie, header = true, raw, headers = {}, cf } = {}) {
   const h = { ...headers };
   if (header) h["x-kleo"] = "1";
   if (cookie) h.cookie = cookie;
   if (body !== undefined) h["content-type"] = "application/json";
-  const res = await worker.fetch(new Request(`https://app.kleo.test${path}`, { method, headers: h, body: raw ?? (body === undefined ? undefined : JSON.stringify(body)) }), env, ctx);
+  const req = new Request(`https://app.kleo.test${path}`, { method, headers: h, body: raw ?? (body === undefined ? undefined : JSON.stringify(body)) });
+  // What Cloudflare tells the Worker about the visitor's network (request.cf), when a test needs it.
+  if (cf) Object.defineProperty(req, "cf", { value: cf });
+  const res = await worker.fetch(req, env, ctx);
   await Promise.allSettled(pending.splice(0));
   const text = await res.text();
   let json = null; try { json = JSON.parse(text); } catch { /* not JSON */ }
@@ -412,7 +426,7 @@ const MS_PERSONAL = "9188040d-6c67-4c5b-b112-36a304b66dad";
 test("Google and Microsoft: off until configured; new accounts; verified e-mails join the existing account, unverified ones never do", async () => {
   const off = newEnv();
   assert.deepEqual((await call(off, "/api/config")).json.social, []);
-  const env = newEnv({ GOOGLE_CLIENT_ID: "gid", GOOGLE_CLIENT_SECRET: "gs", MICROSOFT_CLIENT_ID: "mid", MICROSOFT_CLIENT_SECRET: "ms" });
+  const env = newEnv({ GOOGLE_CLIENT_ID: "gid", GOOGLE_CLIENT_SECRET: "gs", MICROSOFT_CLIENT_ID: "mid", MICROSOFT_CLIENT_SECRET: "ms", STUDIO_SIGNUP: "all" });
   assert.deepEqual((await call(env, "/api/config")).json.social, ["google", "microsoft"]);
 
   // A brand-new Google person.
@@ -457,7 +471,7 @@ test("Google and Microsoft: off until configured; new accounts; verified e-mails
 });
 
 test("an evicted claimant is out by every road: their linked Google, their Kleo key and their sessions no longer open the account", async () => {
-  const env = newEnv({ GOOGLE_CLIENT_ID: "gid", GOOGLE_CLIENT_SECRET: "gs" });
+  const env = newEnv({ GOOGLE_CLIENT_ID: "gid", GOOGLE_CLIENT_SECRET: "gs", STUDIO_SIGNUP: "all" });
   // Someone signs up with Vera's address, links their OWN Google account to it, and keeps the Kleo key.
   const squat = await signUp(env, "vera@gmail.com");
   const squatId = (await call(env, "/api/me", { cookie: squat })).json.id;
@@ -475,7 +489,7 @@ test("an evicted claimant is out by every road: their linked Google, their Kleo 
 });
 
 test("linking: the signed-in account gets Google; an account another person uses is refused; no session, no link", async () => {
-  const env = newEnv({ GOOGLE_CLIENT_ID: "gid", GOOGLE_CLIENT_SECRET: "gs", MICROSOFT_CLIENT_ID: "mid", MICROSOFT_CLIENT_SECRET: "ms" });
+  const env = newEnv({ GOOGLE_CLIENT_ID: "gid", GOOGLE_CLIENT_SECRET: "gs", MICROSOFT_CLIENT_ID: "mid", MICROSOFT_CLIENT_SECRET: "ms", STUDIO_SIGNUP: "all" });
   const a = await signUp(env, "a@example.com");
   const aId = (await call(env, "/api/me", { cookie: a })).json.id;
   const linked = await social(env, "google", { sub: "g-a", aud: "gid", email: "a.other@gmail.com", email_verified: true }, { cookie: a, link: true });
@@ -882,4 +896,74 @@ test("the app shell is served for any page path", async () => {
   const r = await call(env, "/c/c_whatever");
   assert.equal(r.status, 200);
   assert.match(r.text, /app/);
+});
+
+test("one gift per person: per connection, per browser, never to Tor or a server farm; one inbox; no throwaway mail; a farm of accounts is blocked", async () => {
+  const env = newEnv();
+  const join = (email, headers = {}, cf) => call(env, "/api/auth/signup", { method: "POST", body: { email, password: "long enough pw" }, headers, cf });
+  const home = { "cf-connecting-ip": "203.0.113.20" };
+  const first = await join("ana@example.com", home);
+  assert.equal(first.status, 200, first.text);
+  assert.equal(first.json.gift, 5);
+  assert.match(first.res.headers.get("set-cookie"), /__Host-kleo_gift=1;.*HttpOnly/);
+  // Same connection, a new account: it opens, at zero, and the page says why.
+  const second = await join("bea@example.com", home);
+  assert.equal(second.status, 200, second.text);
+  assert.equal(second.json.gift, 0);
+  assert.match(second.json.note, /one per person/);
+  assert.doesNotMatch(second.res.headers.get("set-cookie"), /kleo_gift/);
+  assert.equal((await call(env, "/api/me", { cookie: cookieOf(second) })).json.credits, 0);
+  // A browser that already had the gift, from another connection.
+  assert.equal((await join("cy@example.com", { "cf-connecting-ip": "198.51.100.30", cookie: "__Host-kleo_gift=1" })).json.gift, 0);
+  // Tor, and a server farm (VPNs and scripts live there); a home or phone network gets it.
+  assert.equal((await join("dee@example.com", { "cf-connecting-ip": "198.51.100.31", "cf-ipcountry": "T1" })).json.gift, 0);
+  assert.equal((await join("eve@example.com", { "cf-connecting-ip": "198.51.100.32" }, { asn: 14061, asOrganization: "DigitalOcean, LLC" })).json.gift, 0);
+  assert.equal((await join("fay@example.com", { "cf-connecting-ip": "198.51.100.33" }, { asn: 65000, asOrganization: "Example Rented Servers Hosting" })).json.gift, 0);
+  assert.equal((await join("gia@example.com", { "cf-connecting-ip": "198.51.100.34" }, { asn: 1136, asOrganization: "KPN B.V." })).json.gift, 5);
+  assert.equal((await join("hal@example.com", { "cf-connecting-ip": "198.51.100.35" }, { asn: 13335, asOrganization: "Cloudflare, Inc." })).json.gift, 5, "WARP and iCloud Private Relay are people");
+  // One inbox, one account: Gmail ignores dots and "+tags", and googlemail.com is gmail.com.
+  assert.equal((await join("john.smith@gmail.com", { "cf-connecting-ip": "198.51.100.40" })).status, 200);
+  const alias = await join("johnsmith+kleo@googlemail.com", { "cf-connecting-ip": "198.51.100.41" });
+  assert.equal(alias.status, 409);
+  assert.equal(alias.json.code, "exists");
+  // Throwaway mailboxes and domains that cannot receive mail are refused.
+  assert.equal((await join("zed@mailinator.com", { "cf-connecting-ip": "198.51.100.42" })).json.code, "email_domain");
+  assert.equal((await join("zed@nomail.example", { "cf-connecting-ip": "198.51.100.43" })).json.code, "email_domain");
+  // A farm: the third account of one address still opens, the fourth is refused and the address is blocked.
+  assert.equal((await join("ida@example.com", home)).status, 200);
+  const farm = await join("jo@example.com", home);
+  assert.equal(farm.status, 403);
+  assert.equal(farm.json.code, "address_blocked");
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM blocked_addresses").get().n, 1);
+  assert.equal((await join("kim@example.com", home)).json.code, "address_blocked", "and it stays blocked");
+  // The never-paid accounts of a blocked address stop generating for free; nothing is charged.
+  const r = await call(env, "/api/generate", { method: "POST", cookie: cookieOf(first), body: { prompt: "a fox", settings: { model: "seedance-2.0-fast", resolution: "480p", duration: 5 } } });
+  assert.equal(r.status, 403, r.text);
+  assert.equal(r.json.code, "address_blocked");
+  assert.equal((await call(env, "/api/me", { cookie: cookieOf(first) })).json.credits, 5);
+});
+
+test("free generations: the never-paid accounts of one address share one small daily allowance", async () => {
+  const env = newEnv({ STUDIO_FREE_PER_ADDRESS_DAY_USD: "0.0001" });
+  const a = await call(env, "/api/auth/signup", { method: "POST", body: { email: "lia@example.com", password: "long enough pw" }, headers: { "cf-connecting-ip": "203.0.113.50" } });
+  const r = await call(env, "/api/generate", { method: "POST", cookie: cookieOf(a), body: { prompt: "a fox", settings: { model: "seedance-2.0-fast", resolution: "480p", duration: 5 } } });
+  assert.equal(r.status, 429, r.text);
+  assert.equal(r.json.code, "free_address");
+  assert.equal((await call(env, "/api/me", { cookie: cookieOf(a) })).json.credits, 5, "nothing was charged");
+});
+
+test("once Google sign-in is on, new accounts are opened with Google only; e-mail accounts still sign in", async () => {
+  const env = newEnv({ GOOGLE_CLIENT_ID: "gid", GOOGLE_CLIENT_SECRET: "gs" });
+  assert.equal((await call(env, "/api/config")).json.signup, "google");
+  const refused = await call(env, "/api/auth/signup", { method: "POST", body: { email: "max@example.com", password: "long enough pw" } });
+  assert.equal(refused.status, 403);
+  assert.equal(refused.json.code, "use_google");
+  // An e-mail account made before keeps working.
+  const open = newEnv({ STUDIO_SIGNUP: "all" });
+  assert.equal((await call(open, "/api/config")).json.signup, "all");
+  // Without Google configured nobody is locked out: e-mail sign-up stays.
+  assert.equal((await call(newEnv(), "/api/config")).json.signup, "all");
+  const g = await social(env, "google", { sub: "g-new", aud: "gid", email: "new@gmail.com", email_verified: true });
+  assert.equal(g.location, "/");
+  assert.equal((await call(env, "/api/me", { cookie: g.cookie })).json.credits, 5);
 });

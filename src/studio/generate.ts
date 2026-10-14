@@ -31,6 +31,7 @@ import {
   type GenerationRow, type Slot,
 } from "./store.ts";
 import { signPath } from "./session.ts";
+import { addressBlocked } from "../abuse.ts";
 
 /** A refusal the page shows as it is (no provider names in it). */
 export class StudioError extends Error {
@@ -117,6 +118,24 @@ async function gate(env: StudioEnv, userId: string, o: Gate): Promise<void> {
     throw new StudioError("Kleo is at full capacity today. Please try again tomorrow — nothing was charged.", 503, "capacity");
   }
   if (!paid) {
+    // ONE GIFT PER PERSON (15 October 2026, src/abuse.ts): the never-paid accounts of a blocked address stop here, and
+    // all the never-paid accounts opened from one address share STUDIO_FREE_PER_ADDRESS_DAY_USD a day — ten throwaway
+    // accounts spend what one would.
+    const ipHash = (user as unknown as { ip_hash?: string | null }).ip_hash ?? null;
+    if (await addressBlocked(env, ipHash)) {
+      await audit(asEnv(env), userId, null, "studio.address_blocked", { usd: o.usd });
+      throw new StudioError("Free generations are paused for this account. A credit pack unlocks everything — nothing was charged.", 403, "address_blocked");
+    }
+    if (ipHash) {
+      const perAddress = num(env.STUDIO_FREE_PER_ADDRESS_DAY_USD, 2);
+      const spent = await env.DB.prepare(`SELECT COALESCE(SUM(g.est_usd), 0) AS usd FROM studio_generations g JOIN users u ON u.id = g.user_id
+          WHERE u.ip_hash = ? AND g.status != 'failed' AND g.created_at >= strftime('%Y-%m-%dT00:00:00.000Z','now')
+            AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.user_id = g.user_id AND p.status = 'paid')`).bind(ipHash).first<{ usd: number }>();
+      if (Number(spent?.usd ?? 0) + o.usd > perAddress) {
+        await audit(asEnv(env), userId, null, "studio.free_address", { usd: o.usd, spent: Number(spent?.usd ?? 0), cap: perAddress });
+        throw new StudioError("You've used today's free generations. Come back tomorrow, or buy a pack to keep going — nothing was charged.", 429, "free_address");
+      }
+    }
     const free = num(env.STUDIO_FREE_DAILY_BUDGET_USD, 8);
     if ((await studioSpentTodayUsd(env, { unpaidOnly: true })) + o.usd > free) {
       await audit(asEnv(env), userId, null, "studio.free_budget", { usd: o.usd, budget: free });

@@ -1,5 +1,6 @@
 import type { RequestSpec } from "./spec.ts";
 import type { Env } from "./env";
+import { accountsPerAddress, addressBlocked, blockAddress, blockDays, giftWindowDays, giftsPerAddress } from "./abuse.ts";
 
 export interface User {
   id: string;
@@ -180,7 +181,7 @@ export async function countUsersCreatedTodayForIp(env: Env, ipHash: string): Pro
 }
 
 /** Why an account was not created, so the page can say the true thing: the day is over, or this address has had its share. */
-export type CapVerdict = "created" | "day_full" | "address_full";
+export type CapVerdict = "created" | "day_full" | "address_full" | "address_blocked";
 
 /**
  * Creates the account ONLY while both daily caps still allow it, as ONE statement: the counts live in the INSERT's
@@ -188,25 +189,49 @@ export type CapVerdict = "created" | "day_full" | "address_full";
  * this replaced — lets a burst of simultaneous sign-ups all read "24 so far" and all get in.
  * A cap that was hit is reported by counting again afterwards; that second read is only there to choose the wording,
  * and being a moment stale cannot let anybody in.
+ *
+ * ONE GIFT PER PERSON (15 October 2026, src/abuse.ts). `credits` is the gift; the account receives it only when the
+ * caller found no reason against it (`gift`) AND this address has not had MAX_GIFTS_PER_ADDRESS gifts inside the
+ * window — decided by the same INSERT, so it cannot be raced. users.gift keeps what was given. An address blocked in
+ * blocked_addresses, or one that has already opened MAX_ACCOUNTS_PER_ADDRESS accounts inside the window, opens none;
+ * the second case blocks it for ADDRESS_BLOCK_DAYS ("address_blocked").
  */
 export async function createUserIfUnderCaps(
   env: Env,
-  u: { id: string; email: string; credits: number; inviteCode?: string | null; ipHash: string | null },
+  u: { id: string; email: string; credits: number; inviteCode?: string | null; ipHash: string | null; gift?: boolean; emailCanon?: string | null },
   caps: { perDay: number; perAddressDay: number },
-): Promise<{ verdict: CapVerdict; user?: User }> {
+): Promise<{ verdict: CapVerdict; user?: User; gifted?: number }> {
   const midnight = "strftime('%Y-%m-%dT00:00:00.000Z','now')";
-  // The address clause is skipped for a request that arrives without one (local dev, an odd proxy): a missing
+  const window = `strftime('%Y-%m-%dT%H:%M:%fZ','now', '-${giftWindowDays(env)} days')`;
+  const now = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
+  // The address clauses are skipped for a request that arrives without one (local dev, an odd proxy): a missing
   // fingerprint must not become a free pass past the day cap, nor a wall in front of an honest visitor.
   const r = await env.DB.prepare(
-    `INSERT INTO users (id, email, credits, invite_code, ip_hash)
-     SELECT ?, ?, ?, ?, ?
-     WHERE (SELECT COUNT(*) FROM users WHERE created_at >= ${midnight}) < ?
-       AND (? IS NULL OR (SELECT COUNT(*) FROM users WHERE ip_hash = ? AND created_at >= ${midnight}) < ?)`,
-  ).bind(u.id, u.email.toLowerCase(), u.credits, u.inviteCode ?? null, u.ipHash,
-         caps.perDay, u.ipHash, u.ipHash, caps.perAddressDay).run();
-  if ((r.meta.changes ?? 0) === 1) return { verdict: "created", user: (await getUser(env, u.id))! };
+    `INSERT INTO users (id, email, credits, gift, invite_code, ip_hash, email_canon)
+     SELECT ?1, ?2, g.n, g.n, ?4, ?5, ?6 FROM (SELECT CASE WHEN ?7 = 1 AND (?5 IS NULL
+         OR (SELECT COUNT(*) FROM users WHERE ip_hash = ?5 AND gift > 0 AND created_at >= ${window}) < ?8) THEN ?3 ELSE 0 END AS n) g
+     WHERE (SELECT COUNT(*) FROM users WHERE created_at >= ${midnight}) < ?9
+       AND (?5 IS NULL OR (SELECT COUNT(*) FROM users WHERE ip_hash = ?5 AND created_at >= ${midnight}) < ?10)
+       AND (?5 IS NULL OR (SELECT COUNT(*) FROM users WHERE ip_hash = ?5 AND created_at >= ${window}) < ?11)
+       AND (?5 IS NULL OR NOT EXISTS (SELECT 1 FROM blocked_addresses WHERE ip_hash = ?5 AND until > ${now}))`,
+  ).bind(u.id, u.email.toLowerCase(), Math.max(0, u.credits), u.inviteCode ?? null, u.ipHash, u.emailCanon ?? null,
+         u.gift === false ? 0 : 1, giftsPerAddress(env), caps.perDay, caps.perAddressDay, accountsPerAddress(env)).run();
+  if ((r.meta.changes ?? 0) === 1) {
+    const user = (await getUser(env, u.id))!;
+    return { verdict: "created", user, gifted: Number((user as unknown as { gift?: number }).gift ?? user.credits) || 0 };
+  }
   const today = await countUsersCreatedToday(env);
-  return { verdict: today >= caps.perDay ? "day_full" : "address_full" };
+  if (today >= caps.perDay) return { verdict: "day_full" };
+  if (u.ipHash) {
+    if (await addressBlocked(env, u.ipHash)) return { verdict: "address_blocked" };
+    const inWindow = await env.DB.prepare(`SELECT COUNT(*) AS n FROM users WHERE ip_hash = ? AND created_at >= ${window}`).bind(u.ipHash).first<{ n: number }>();
+    if (Number(inWindow?.n ?? 0) >= accountsPerAddress(env)) {
+      await blockAddress(env, u.ipHash, "too many accounts", blockDays(env));
+      await audit(env, null, null, "address.blocked", { ip: u.ipHash, accounts: Number(inWindow?.n ?? 0), days: blockDays(env) });
+      return { verdict: "address_blocked" };
+    }
+  }
+  return { verdict: "address_full" };
 }
 /**
  * Credits a gift code onto an account that already exists, at most once in its life: the UPDATE applies only while

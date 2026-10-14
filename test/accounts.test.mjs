@@ -363,3 +363,27 @@ test("/credits: the link is read-only, is not the Kleo key, and never binds this
   assert.equal(byCookie.status, 200, "and the browser that owns the account needs no link at all");
   assert.ok((await byCookie.text()).includes(handle), "only that browser is shown the key");
 });
+
+test("sign-in: one gift per person — a second account from the same address, or from a browser that had one, starts at zero; a farm of accounts is blocked", async () => {
+  const env = await newEnv({ MAX_NEW_USERS_PER_DAY: "25", MAX_NEW_USERS_PER_IP_DAY: "10" });
+  const first = await press(env, { ip: "203.0.113.60" });
+  assert.equal(first.status, 302);
+  assert.match(first.headers.get("set-cookie"), /__Host-kleo_gift=1; Path=\/; Max-Age=\d+; HttpOnly; Secure; SameSite=Lax/);
+  const second = await press(env, { ip: "203.0.113.60" });
+  assert.equal(second.status, 302, "the account still opens: connecting is free, the gift is not");
+  assert.doesNotMatch(second.headers.get("set-cookie"), /kleo_gift/);
+  assert.deepEqual(users(env).map((u) => u.credits).sort(), [0, 7]);
+  // Another address, but a browser that already had the gift.
+  assert.equal((await press(env, { ip: "198.51.100.61", cookie: "__Host-kleo_gift=1" })).status, 302);
+  assert.equal(users(env).filter((u) => u.credits === 0).length, 2);
+  // The third account of one address opens; the fourth is refused, and the address is blocked.
+  assert.equal((await press(env, { ip: "203.0.113.60" })).status, 302);
+  const farm = await press(env, { ip: "203.0.113.60" });
+  assert.equal(farm.status, 403);
+  assert.match(await farm.text(), /No new Kleo accounts can be opened from this connection/);
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM blocked_addresses").get().n, 1);
+  // Everybody else is unaffected.
+  assert.equal((await press(env, { ip: "198.51.100.62" })).status, 302);
+  assert.equal(users(env).at(-1).credits, 7);
+});
+

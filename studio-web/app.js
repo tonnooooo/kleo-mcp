@@ -105,7 +105,7 @@ const store = {
 function toast(msg, err = false) {
   const t = $("#toast");
   t.textContent = msg; t.classList.toggle("err", !!err); t.classList.add("show");
-  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove("show"), 2800);
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove("show"), Math.max(2800, String(msg).length * 55));
 }
 const spinner = (size = 16) => h("span", { class: "spin", style: { borderColor: "rgba(127,127,127,.35)", borderTopColor: "currentColor", width: size + "px", height: size + "px" } });
 const fmtSec = (s) => (s >= 60 ? `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}` : `${Math.round(s * 10) / 10}s`);
@@ -212,12 +212,15 @@ async function boot() {
   const q = new URLSearchParams(location.search);
   if (location.pathname === "/reset" && q.get("t")) return renderReset(q.get("t"));
   const err = q.get("signin_error"), linked = q.get("linked");
+  // A new Google account that started without the free credits (one gift per person, src/abuse.ts).
+  if (q.get("gift") === "none") { history.replaceState(null, "", "/"); setTimeout(() => toast(S.config.noGift || "Free credits are one per person.", true), 300); }
   if (err || linked) {
     history.replaceState(null, "", "/");
     const who = (k) => SOCIAL[k]?.label || "That account";
     const msg = linked ? `${who(linked)} is now connected — use it to sign in next time.`
       : err === "day_full" ? "Kleo is full for new accounts today. Please come back tomorrow."
       : err === "address_full" ? "Too many new accounts from this connection today."
+      : err === "address_blocked" ? "No new accounts can be opened from this connection for now. Sign in to the account you already have."
       : /^taken_/.test(err) ? `That ${who(err.slice(6))} account already belongs to another Kleo account.`
       : /^claimed_/.test(err) ? `This e-mail already has a Kleo account. Sign in to it with your password or Kleo key, then connect ${who(err.slice(8))} from Account.`
       : err === "cancelled" ? "Sign-in was cancelled." : `${who(err)} sign-in didn't finish. Please try again.`;
@@ -310,15 +313,18 @@ function loadTurnstile() {
 }
 function renderAuth(mode = "signup", fromApp = false) {
   let showKey = false;
+  // Once Google sign-in is on, new accounts are opened with Google only (STUDIO_SIGNUP): the e-mail form is for signing in.
+  const googleOnly = mode === "signup" && S.config?.signup === "google" && socialList().includes("google");
   let checkToken = "", checkId = null, checkWaiters = [];
   const tokenReady = () => checkToken ? Promise.resolve(checkToken) : new Promise((ok) => { checkWaiters.push(ok); setTimeout(() => ok(checkToken), 15000); });
-  const check = mode === "signup" && S.config?.turnstile ? h("div", { class: "human-check" }) : null;
+  const check = mode === "signup" && !googleOnly && S.config?.turnstile ? h("div", { class: "human-check" }) : null;
   const email = h("input", { class: "input", type: "email", placeholder: "E-mail", autocomplete: "email", inputmode: "email", autocapitalize: "off" });
   const pass = h("input", { class: "input", type: "password", placeholder: mode === "signup" ? "Password (8+ characters)" : "Password", autocomplete: mode === "signup" ? "new-password" : "current-password" });
   const key = h("input", { class: "input", placeholder: "Paste your Kleo key", autocomplete: "off", autocapitalize: "off", spellcheck: "false" });
   const err = h("div", { class: "auth-err" });
   const submit = h("button", { class: "btn btn-primary", type: "submit" }, mode === "signup" ? "Create account" : "Sign in");
   const keyBox = h("div", { style: { display: "none" } }, key);
+  let made = null;
   const form = h("form", { onsubmit: async (ev) => {
     ev.preventDefault(); err.textContent = "";
     const restore = busyButton(submit);
@@ -326,23 +332,26 @@ function renderAuth(mode = "signup", fromApp = false) {
       if (showKey) await api("/api/auth/key", { method: "POST", body: { key: key.value } });
       else {
         if (check && mode === "signup") await tokenReady();
-        await api(mode === "signup" ? "/api/auth/signup" : "/api/auth/signin", { method: "POST", body: { email: email.value, password: pass.value, turnstile: checkToken } });
+        made = await api(mode === "signup" ? "/api/auth/signup" : "/api/auth/signin", { method: "POST", body: { email: email.value, password: pass.value, turnstile: checkToken } });
       }
       S.me = await api("/api/me");
       S.feeds = {};
       await enter();
-      if (mode === "signup" && !showKey) toast(`Welcome! You have ${S.me.credits} free credits.`);
+      if (mode === "signup" && !showKey) toast(made?.note || `Welcome! You have ${S.me.credits} free credits.`, !!made?.note);
     } catch (e) {
       err.textContent = e.message; restore();
       if (check && checkId !== null) { checkToken = ""; window.turnstile?.reset(checkId); }
     }
   } }, email, pass, keyBox, check, err, submit);
+  // Google only: the form appears just for "I have a Kleo key" (an account that already exists).
+  if (googleOnly) form.style.display = "none";
   if (check) loadTurnstile().then((t) => {
     checkId = t.render(check, { sitekey: S.config.turnstile, theme: "auto", size: "flexible", appearance: "interaction-only",
       callback: (v) => { checkToken = v; checkWaiters.splice(0).forEach((ok) => ok(v)); }, "expired-callback": () => { checkToken = ""; }, "error-callback": () => { checkToken = ""; } });
   }).catch((e) => { err.textContent = e.message; });
   const toggleKey = h("button", { type: "button", onclick: () => {
     showKey = !showKey;
+    if (googleOnly) form.style.display = showKey ? "" : "none";
     keyBox.style.display = showKey ? "" : "none"; email.style.display = pass.style.display = showKey ? "none" : "";
     if (check) check.style.display = showKey ? "none" : "";
     submit.textContent = showKey ? "Sign in with key" : mode === "signup" ? "Create account" : "Sign in";
@@ -351,7 +360,7 @@ function renderAuth(mode = "signup", fromApp = false) {
   } }, "I have a Kleo key");
   authFrame(mode === "signup" ? "Create with Kleo" : "Welcome back", "Videos, pictures, voices and films — just by chatting.",
     mode === "signup" ? h("div", { class: "gift" }, bolt(15), `${S.config?.freeCredits ?? 5} free credits to start`) : null,
-    socialList().length ? [h("div", { class: "socials" }, socialList().map((k) => h("a", { class: "btn google", href: `/auth/${k}` }, SOCIAL[k].logo(), `Continue with ${SOCIAL[k].label}`))), h("div", { class: "or" }, "or use e-mail")] : null,
+    socialList().length ? [h("div", { class: "socials" }, socialList().map((k) => h("a", { class: "btn google", href: `/auth/${k}` }, SOCIAL[k].logo(), `Continue with ${SOCIAL[k].label}`))), googleOnly ? null : h("div", { class: "or" }, "or use e-mail")] : null,
     form,
     h("div", { class: "auth-switch" },
       mode === "signup" ? ["Already have an account? ", h("button", { type: "button", onclick: () => renderAuth("signin") }, "Sign in")]
