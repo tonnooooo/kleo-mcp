@@ -1262,12 +1262,46 @@ function startFilm() {
     t.setSelectionRange(t.value.length, t.value.length);
   }, 80);
 }
+// ── App art (14 October 2026): every app shows what it does, the way Higgsfield's cards do ───────────────────────
+// Pictures made for this with FLUX.2 Pro (media.kleooai.com/app/) and the Kleo team's own film loops. Before/after
+// halves slide; sounds get a moving waveform. Nothing here is a fake result: each picture shows the kind of change.
+const MEDIA = "https://media.kleooai.com";
+const pic = (name) => `${MEDIA}/app/app-${name}.jpg`;
+const loop = (slug) => `${MEDIA}/gallery/${slug}-p.mp4`;
+function artImg(src, cls = "") { return h("img", { class: `art-fill ${cls}`, src, alt: "", loading: "lazy", decoding: "async" }); }
+function artVideo(src, cls = "") { const v = loopVideo(src, ""); v.classList.add("art-fill"); if (cls) v.classList.add(...cls.split(" ")); return v; }
+function waveBars(n = 22) { return h("div", { class: "art-wave", "aria-hidden": "true" }, Array.from({ length: n }, (_, i) => h("i", { style: { animationDelay: `${(i * 97) % 900}ms`, height: `${30 + ((i * 37) % 60)}%` } }))); }
+const chip = (text, cls = "") => h("span", { class: `art-chip ${cls}` }, text);
+/** Two layers with a sliding divider: the right one shows through from the divider on. */
+function split(left, right, labels) {
+  return h("div", { class: "art-split" }, left, h("div", { class: "art-split-r" }, right), h("span", { class: "art-split-bar" }, h("i")),
+    labels ? [chip(labels[0], "l"), chip(labels[1], "r")] : null);
+}
+const APP_ART = {
+  "face-swap": () => split(artImg(pic("face-a")), artImg(pic("face-b"))),
+  "video-face-swap": () => h("div", { class: "art-stack" }, artVideo(loop("street-reel")), h("span", { class: "art-face" }, artImg(pic("face-b"))), h("span", { class: "art-arrow" }, icon("redo", 16, 2.2))),
+  "talking-photo": () => h("div", { class: "art-stack" }, artImg(pic("speaker")), h("span", { class: "art-bubble" }, "Hi, I'm talking!"), waveBars()),
+  "lipsync": () => h("div", { class: "art-stack" }, artVideo(loop("kleo-x-claude-ad")), waveBars()),
+  "motion-control": () => h("div", { class: "art-pair" }, artVideo(loop("lobby-run")), artVideo(loop("kitten-knight-jump")), h("span", { class: "art-arrow mid" }, icon("right", 16, 2.4))),
+  "video-edit": () => split(artVideo(loop("koi-supra-night")), artVideo(loop("koi-supra-night"), "graded"), ["Before", "After"]),
+  "video-upscale": () => split(artVideo(loop("dragon-rider-cat"), "soft"), artVideo(loop("dragon-rider-cat")), ["480p", "4K"]),
+  "outfit-swap": () => split(artImg(pic("outfit-a"), "top"), artImg(pic("outfit-b"), "top")),
+  "voice": () => h("div", { class: "art-stack" }, artImg(pic("face-a"), "dim"), waveBars(28)),
+  "music": () => h("div", { class: "art-stack art-music" }, artImg(pic("music"), "blur"), h("img", { class: "art-cover", src: pic("music"), alt: "", loading: "lazy" }), waveBars(18)),
+  "sfx": () => h("div", { class: "art-stack" }, artVideo(loop("mechs-in-snow"), "dim"), waveBars(28)),
+};
+function appArt(t) {
+  const make = APP_ART[t.key];
+  return h("div", { class: "art art-media", style: { background: `linear-gradient(135deg, ${t.tint}, ${t.tint}aa)` } },
+    make ? make() : icon(t.icon, 44, 1.7), t.badge ? h("span", { class: "tag" }, t.badge) : null);
+}
+
 function appsView() {
   const tools = S.config.tools || [];
   setView("", h("div", { class: "page" },
     h("div", { class: "page-h" }, h("div", {}, h("h1", {}, "Apps"), h("p", {}, "One-tap tools. Pick one, add your photo or clip, done."))),
     h("button", { class: "film-banner", onclick: startFilm },
-      h("div", { class: "fb-art" }, icon("film", 30, 1.8)),
+      h("div", { class: "fb-art fb-media" }, artVideo(loop("kleo-x-claude-ad"))),
       h("div", { class: "fb-tx" }, h("b", {}, "Kleo Film"), h("span", {}, "A whole narrated film from one message: script, voice, music, subtitles, 4K. Up to 5 minutes.")),
       h("span", { class: "fb-go" }, "Start", icon("right", 16, 2.2))),
     GROUPS.map(([g, title, sub]) => {
@@ -1275,7 +1309,7 @@ function appsView() {
       if (!list.length) return null;
       return [h("div", { class: "apps-group" }, h("h2", {}, title), h("span", {}, sub)),
         h("div", { class: "app-grid" }, list.map((t) => h("button", { class: "app-card", onclick: () => go(`/apps/${t.key}`) },
-          h("div", { class: "art", style: { background: `linear-gradient(135deg, ${t.tint}, ${t.tint}aa)` } }, icon(t.icon, 44, 1.7), t.badge ? h("span", { class: "tag" }, t.badge) : null),
+          appArt(t),
           h("div", { class: "tx" }, h("b", {}, t.name), h("span", {}, t.blurb),
             h("span", { class: "from" }, tallowed(t.key) ? [h("span", {}, "from"), bolt(12), t.from] : [icon("lock", 13), "Unlocks with any pack"])))))];
     })));
@@ -1285,7 +1319,7 @@ function appView(key) {
   if (!t) return go("/apps");
   setView("", h("div", { class: "page" },
     h("button", { class: "back", onclick: () => go("/apps") }, icon("right", 16, 2.2), "Apps"),
-    h("div", { class: "app-hero" }, h("div", { class: "art", style: { background: `linear-gradient(135deg, ${t.tint}, ${t.tint}aa)` } }, icon(t.icon, 32, 1.8)),
+    h("div", { class: "app-hero app-hero-big" }, h("div", { class: "app-hero-art" }, appArt(t)),
       h("div", {}, h("h1", {}, t.name), h("p", {}, t.blurb))),
     toolBody(key, false)));
 }
