@@ -29,7 +29,8 @@ import { mediaInfo } from "./media.ts";
 import { APP_PATH, serveSite } from "./site.ts";
 import { normalizeFilm, orderFilm, quoteFilm } from "./films.ts";
 import { runAgent, chatTitle, enhancePrompt, type Proposal } from "./agent.ts";
-import { signUp, signIn, signInWithKey, addPassword, me, signedIn, endAllSessions, kleoKeyOf, setName, changePassword, activity, deleteAccount, googleEnabled, microsoftEnabled, enabledSocial, socialEnabled, socialStart, socialCallback, forgotPassword, resetPassword, resetAvailable, type SocialKey } from "./auth.ts";
+import { NO_GIFT_SENTENCE, giftCookie, visitorOf } from "../abuse.ts";
+import { signUp, signIn, signInWithKey, addPassword, me, signedIn, endAllSessions, kleoKeyOf, setName, changePassword, activity, deleteAccount, googleEnabled, signupMode, microsoftEnabled, enabledSocial, socialEnabled, socialStart, socialCallback, forgotPassword, resetPassword, resetAvailable, type SocialKey } from "./auth.ts";
 import { httpsRedirect, secureResponse } from "./security.ts";
 import { SESSION_COOKIE, clearSessionCookie, readCookie, readSessionFull, normalizeEmail, signPath, checkSignedPath } from "./session.ts";
 import { ipBucket } from "../accounts.ts";
@@ -168,7 +169,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
   // ── no session needed ──
   if (path === "/api/config" && method === "GET") {
     return json({
-      google: googleEnabled(env), microsoft: microsoftEnabled(env), social: enabledSocial(env), turnstile: env.TURNSTILE_SITEKEY ?? null, defaultModel: DEFAULT_MODEL,
+      google: googleEnabled(env), microsoft: microsoftEnabled(env), social: enabledSocial(env), signup: signupMode(env), noGift: NO_GIFT_SENTENCE, turnstile: env.TURNSTILE_SITEKEY ?? null, defaultModel: DEFAULT_MODEL,
       models: publicCatalog(marginOf(env), freeModels(env.STUDIO_FREE_MODELS)), freeCredits: Number(env.FREE_CREDITS ?? 5),
       defaultImageModel: DEFAULT_IMAGE_MODEL, imageModels: publicImageCatalog(marginOf(env), freeImageModels(env.STUDIO_FREE_IMAGE_MODELS)),
       emailReset: resetAvailable(env), presets: publicPresets(), tools: publicTools(marginOf(env)), freeTools: freeTools(env.STUDIO_FREE_TOOLS),
@@ -180,8 +181,13 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     // Guessing one person's password from many addresses is throttled per e-mail too, not only per visitor.
     const email = path === "/api/auth/signin" ? normalizeEmail(String(b.email ?? "")) : undefined;
     if (await rateLimited(env, request, email)) return json({ error: "Too many tries. Wait a minute.", code: "rate" }, 429);
-    const ip = request.headers.get("cf-connecting-ip");
-    if (path === "/api/auth/signup") return signedIn(env, await signUp(env, b, ip));
+    if (path === "/api/auth/signup") {
+      // The answer says whether the gift came, and a gifted browser keeps a mark of it (src/abuse.ts).
+      const made = await signUp(env, b, visitorOf(request));
+      const res = await signedIn(env, made.userId, { ok: true, gift: made.gifted, ...(made.gifted ? {} : { note: NO_GIFT_SENTENCE }) });
+      if (made.gifted) res.headers.append("set-cookie", giftCookie());
+      return res;
+    }
     if (path === "/api/auth/signin") return signedIn(env, await signIn(env, b));
     if (path === "/api/auth/key") return signedIn(env, await signInWithKey(env, String(b.key ?? "")));
     if (path === "/api/auth/forgot") { ctx.waitUntil(forgotPassword(env, b, origin)); return json({ ok: true }); }
@@ -469,7 +475,7 @@ async function route(request: Request, env: StudioEnv, ctx: ExecutionContext, ur
       const key = social[1] as SocialKey;
       if (!socialEnabled(env, key)) return Response.redirect(`${url.origin}/`, 302);
       if (!social[2]) return socialStart(env, key, url.origin, url.searchParams.get("link") === "1");
-      return await socialCallback(env, key, request, url.origin, await sessionUser(env, request));
+      return await socialCallback(env, key, request, url.origin, await sessionUser(env, request), visitorOf(request));
     }
     if (url.pathname === "/health") return json({ ok: true, service: "kleo-studio" });
   } catch (e) {

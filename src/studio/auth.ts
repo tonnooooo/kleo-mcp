@@ -11,6 +11,11 @@
  *
  * A new account starts with FREE_CREDITS (5) and goes through the same daily caps as the MCP sign-in page
  * (createUserIfUnderCaps: per day, per hashed address), so Studio is no side door around them.
+ *
+ * ONE GIFT PER PERSON (15 October 2026, src/abuse.ts): the gift goes to one account per connection, browser and inbox;
+ * a throwaway mailbox is refused; and once Google sign-in is on, new accounts are opened with Google only
+ * (STUDIO_SIGNUP, default "google"): a Google account is a real person's, an e-mail typed here was never checked.
+ * Existing e-mail accounts keep signing in with their password.
  */
 import type { StudioEnv } from "./env.ts";
 import type { Env } from "../env";
@@ -21,11 +26,15 @@ import { rid } from "../util.ts";
 import { addLogin, getLogin, loginsOf, touchLogin } from "./store.ts";
 import { EMAIL_RE, checkPassword, hashPassword, makeSession, normalizeEmail, passwordProblem, readCookie, safeEqual, sessionCookie } from "./session.ts";
 import { StudioError } from "./generate.ts";
+import { canonicalEmail, giftBlocker, giftCookie, mailDomainOk, type Visitor } from "../abuse.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const int = (v: string | undefined, d: number): number => { const n = parseInt(v ?? "", 10); return Number.isFinite(n) ? n : d; };
 
 export const googleEnabled = (env: StudioEnv): boolean => !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
+/** How new accounts are opened: "google" (Google only, once it is configured) or "all" (e-mail and password too). */
+export const signupMode = (env: StudioEnv): "google" | "all" =>
+  googleEnabled(env) && (env.STUDIO_SIGNUP ?? "google").trim().toLowerCase() !== "all" ? "google" : "all";
 export const microsoftEnabled = (env: StudioEnv): boolean => !!(env.MICROSOFT_CLIENT_ID && env.MICROSOFT_CLIENT_SECRET);
 
 /** The account's session epoch (users.studio_epoch): a session made under an older one is no longer valid. */
@@ -49,28 +58,32 @@ export async function signedIn(env: StudioEnv, userId: string, body: unknown = {
   });
 }
 
-/** Creates a brand-new Kleo account for a person who signs up in Studio. */
-async function newAccount(env: StudioEnv, email: string | null, ip: string | null): Promise<string> {
+/** Creates a brand-new Kleo account for a person who signs up in Studio; answers it with the credits it was given. */
+async function newAccount(env: StudioEnv, email: string | null, v: Visitor): Promise<{ id: string; gifted: number }> {
   const id = rid("u", 12);
-  const ipHash = await ipFingerprint(asEnv(env), ip);
+  const ipHash = await ipFingerprint(asEnv(env), v.ip);
+  const blocker = giftBlocker(v);
   // users.email is UNIQUE and NOT NULL: a real address when we have one, the MCP server's synthetic one otherwise.
   const r = await createUserIfUnderCaps(asEnv(env),
-    { id, email: email ?? `${id}@anon.kleo.invalid`, credits: Math.max(0, int(env.FREE_CREDITS, 5)), ipHash },
+    { id, email: email ?? `${id}@anon.kleo.invalid`, credits: Math.max(0, int(env.FREE_CREDITS, 5)), ipHash, gift: !blocker, emailCanon: email ? canonicalEmail(email) : null },
     { perDay: int(env.MAX_NEW_USERS_PER_DAY, 150), perAddressDay: int(env.MAX_NEW_USERS_PER_IP_DAY, 5) });
   if (r.verdict === "day_full") throw new StudioError("Kleo is full for new accounts today. Please come back tomorrow.", 429, "day_full");
   if (r.verdict === "address_full") throw new StudioError("Too many new accounts from this connection today. Please try again tomorrow.", 429, "address_full");
+  if (r.verdict === "address_blocked") throw new StudioError("No new accounts can be opened from this connection for now. Sign in to the account you already have.", 403, "address_blocked");
   await env.DB.prepare("UPDATE users SET src = COALESCE(src, 'studio') WHERE id = ?").bind(id).run().catch(() => undefined);
-  await audit(asEnv(env), id, null, "user.created", { via: "studio", credits: int(env.FREE_CREDITS, 5) });
-  return id;
+  const gifted = r.gifted ?? 0;
+  await audit(asEnv(env), id, null, "user.created", { via: "studio", credits: gifted, ip: ipHash, ...(gifted ? {} : { no_gift: blocker ?? "address" }) });
+  return { id, gifted };
 }
 
-export async function signUp(env: StudioEnv, body: { email?: string; password?: string; turnstile?: string }, ip: string | null): Promise<string> {
+export async function signUp(env: StudioEnv, body: { email?: string; password?: string; turnstile?: string }, v: Visitor): Promise<{ userId: string; gifted: number }> {
+  if (signupMode(env) === "google") throw new StudioError("New Kleo accounts are opened with Google. Use “Continue with Google”.", 403, "use_google");
   const email = normalizeEmail(String(body.email ?? ""));
   const password = String(body.password ?? "");
   if (!EMAIL_RE.test(email)) throw new StudioError("That e-mail doesn't look right.");
   const bad = passwordProblem(password);
   if (bad) throw new StudioError(bad);
-  if (!(await verifyTurnstile(asEnv(env), String(body.turnstile ?? ""), ip))) throw new StudioError("Please complete the check and try again.", 400, "turnstile");
+  if (!(await verifyTurnstile(asEnv(env), String(body.turnstile ?? ""), v.ip))) throw new StudioError("Please complete the check and try again.", 400, "turnstile");
   if (await getLogin(env, "password", email)) throw new StudioError("You already have an account with this e-mail. Sign in instead.", 409, "exists");
   // The same address may already be on a Google or Microsoft sign-in: one person, one account.
   const social = await env.DB.prepare("SELECT provider FROM studio_logins WHERE provider IN ('google','microsoft') AND email = ? LIMIT 1").bind(email).first<{ provider: string }>();
@@ -78,13 +91,20 @@ export async function signUp(env: StudioEnv, body: { email?: string; password?: 
     const name = social.provider === "google" ? "Google" : "Microsoft";
     throw new StudioError(`This e-mail signs in with ${name}. Use “Continue with ${name}”.`, 409, `use_${social.provider}`);
   }
-  const existing = await getUserByEmail(asEnv(env), email);
-  const userId = existing ? null : await newAccount(env, email, ip);
-  if (!userId) throw new StudioError("You already have an account with this e-mail. Sign in instead.", 409, "exists");
-  if (!(await addLogin(env, { provider: "password", subject: email, userId, email, secret: await hashPassword(password) }))) {
+  // One inbox, one account: the same Gmail with dots or a "+tag" is the account it already has.
+  if (await env.DB.prepare("SELECT 1 AS one FROM users WHERE email_canon = ? LIMIT 1").bind(canonicalEmail(email)).first()) {
     throw new StudioError("You already have an account with this e-mail. Sign in instead.", 409, "exists");
   }
-  return userId;
+  if (!(await mailDomainOk(email.slice(email.lastIndexOf("@") + 1)))) {
+    throw new StudioError("Please use an e-mail address you keep: this one can't receive mail, or it is a throwaway mailbox.", 400, "email_domain");
+  }
+  const existing = await getUserByEmail(asEnv(env), email);
+  const made = existing ? null : await newAccount(env, email, v);
+  if (!made) throw new StudioError("You already have an account with this e-mail. Sign in instead.", 409, "exists");
+  if (!(await addLogin(env, { provider: "password", subject: email, userId: made.id, email, secret: await hashPassword(password) }))) {
+    throw new StudioError("You already have an account with this e-mail. Sign in instead.", 409, "exists");
+  }
+  return { userId: made.id, gifted: made.gifted };
 }
 
 export async function signIn(env: StudioEnv, body: { email?: string; password?: string }): Promise<string> {
@@ -390,7 +410,7 @@ async function evictClaimant(env: StudioEnv, userId: string, provider: SocialKey
 }
 
 /** The provider's answer: code, then id_token, then the account (found, linked or created), then the session. */
-export async function socialCallback(env: StudioEnv, key: SocialKey, request: Request, origin: string, sessionUserId: string | null): Promise<Response> {
+export async function socialCallback(env: StudioEnv, key: SocialKey, request: Request, origin: string, sessionUserId: string | null, v: Visitor): Promise<Response> {
   const p = SOCIAL[key];
   const url = new URL(request.url);
   const state = url.searchParams.get("state") ?? "";
@@ -420,6 +440,7 @@ export async function socialCallback(env: StudioEnv, key: SocialKey, request: Re
   }
 
   let userId = owner;
+  let gifted: number | null = null;
   if (!userId && verified) {
     // The address is already VOUCHED for by the other provider: same person, same account.
     userId = (await env.DB.prepare("SELECT user_id FROM studio_logins WHERE provider IN ('google','microsoft') AND email = ? LIMIT 1").bind(verified).first<{ user_id: string }>())?.user_id ?? null;
@@ -438,7 +459,9 @@ export async function socialCallback(env: StudioEnv, key: SocialKey, request: Re
   }
   try {
     if (!userId) {
-      userId = await newAccount(env, verified, request.headers.get("cf-connecting-ip"));
+      const made = await newAccount(env, verified, v);
+      userId = made.id;
+      gifted = made.gifted;
       // An address the provider does not vouch for is kept only as the contact address, to show; it finds no account.
       if (!verified && shown) await env.DB.prepare("UPDATE users SET contact_email = COALESCE(contact_email, ?) WHERE id = ?").bind(shown, userId).run().catch(() => undefined);
     }
@@ -448,10 +471,10 @@ export async function socialCallback(env: StudioEnv, key: SocialKey, request: Re
   // Only a vouched-for address is stored on the sign-in: it is what finds and joins accounts later.
   if (!owner) await addLogin(env, { provider: key, subject, userId, email: verified, secret: null });
   await touchLogin(env, key, subject);
-  return new Response(null, {
-    status: 302,
-    headers: [["location", "/"], ["set-cookie", await newSession(env, userId)], ["set-cookie", clearState(key)]],
-  });
+  // A new account that started without the gift lands on "/?gift=none", where the page says why (src/abuse.ts).
+  const headers: [string, string][] = [["location", gifted === 0 ? "/?gift=none" : "/"], ["set-cookie", await newSession(env, userId)], ["set-cookie", clearState(key)]];
+  if (gifted) headers.push(["set-cookie", giftCookie()]);
+  return new Response(null, { status: 302, headers });
 }
 
 function decodeJwt(t: string): Record<string, any> | null {

@@ -113,6 +113,12 @@ export interface Env {
   MAX_NEW_USERS_PER_DAY?: string; // new accounts created in a UTC day (default 25); past it the page says come back tomorrow
   MAX_NEW_USERS_PER_IP_DAY?: string; // new accounts in a UTC day from one hashed address (default 5), so 25 requests
                                      // from a single visitor cannot consume the whole day's allowance
+  // One gift per person (15 October 2026, src/abuse.ts): gifts per address inside the window (default 1), the window
+  // in days (30), accounts one address may open inside it before it is blocked (3), and how long a block lasts (30 days).
+  MAX_GIFTS_PER_ADDRESS?: string;
+  GIFT_WINDOW_DAYS?: string;
+  MAX_ACCOUNTS_PER_ADDRESS?: string;
+  ADDRESS_BLOCK_DAYS?: string;
   RESULT_TTL_DAYS: string;
   MOCK_TOTAL_SECONDS?: string;
 

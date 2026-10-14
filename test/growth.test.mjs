@@ -641,3 +641,17 @@ test("/internal/admin/growth: the funnel per day and per source, behind the secr
   assert.deepEqual(g.top_pages[0], { path: "/", visits: 3 });
   assert.deepEqual(g.top_referrers, [{ referrer: "reddit.com", visits: 1 }]);
 });
+
+test("launch codes: one free film per person — an account opened from the same address as one that redeemed a code is refused", async () => {
+  const env = await newEnv();
+  await newUser(env, "u_a"); await newUser(env, "u_b"); await newUser(env, "u_c");
+  env.DB.db.exec("UPDATE users SET ip_hash = 'addr_one' WHERE id IN ('u_a', 'u_b')");
+  env.DB.db.exec("UPDATE users SET ip_hash = 'addr_two' WHERE id = 'u_c'");
+  assert.equal((await m.redeemLaunchCode(env, "u_a", "HN")).ok, true);
+  const twin = await m.redeemLaunchCode(env, "u_b", "REDDIT");
+  assert.equal(twin.ok, false); assert.equal(twin.reason, "connection"); assert.match(twin.message, /one free film per person/);
+  assert.equal((await m.getLaunchCode(env, "REDDIT")).uses, 0, "a refused redemption uses nothing");
+  assert.equal(await balance(env, "u_b"), 5);
+  assert.equal((await m.redeemLaunchCode(env, "u_c", "REDDIT")).ok, true, "another address is another person");
+});
+

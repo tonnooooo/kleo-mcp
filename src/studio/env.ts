@@ -51,6 +51,15 @@ export interface StudioEnv {
   STUDIO_ENHANCE_MODEL?: string;
   /** Agent messages one account may send in a UTC day (default 200). */
   STUDIO_AGENT_PER_DAY?: string;
+  /** How new accounts are opened once Google is set: "google" (default, Google only) or "all" (e-mail too). */
+  STUDIO_SIGNUP?: string;
+  /** What the never-paid accounts opened from ONE address may spend together in a UTC day, in dollars (default 2). */
+  STUDIO_FREE_PER_ADDRESS_DAY_USD?: string;
+  /** One gift per person (src/abuse.ts): see src/env.ts. */
+  MAX_GIFTS_PER_ADDRESS?: string;
+  GIFT_WINDOW_DAYS?: string;
+  MAX_ACCOUNTS_PER_ADDRESS?: string;
+  ADDRESS_BLOCK_DAYS?: string;
   /** Google sign-in (OAuth client of type "Web application"); the button shows only when both are set. */
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
