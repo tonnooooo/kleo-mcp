@@ -20,7 +20,7 @@ import { ephone, ephoneOutputs, ephoneFailure, type EphoneTask } from "../ephone
 import { KieError } from "../kie.ts";
 import { debitCredits, refundCredits, getUser, hasPaid, audit, countAuditTodayForUser } from "../db.ts";
 import { publicText, rid } from "../util.ts";
-import { clipCostUsd, clipCredits, freeModels, freeResolutions, modelByKey, normalizeSettings, taskInput, DEFAULT_MARGIN, type ClipSettings } from "./models.ts";
+import { clampFreeResolution, clipCostUsd, clipCredits, freeModels, freeResolutions, modelByKey, normalizeSettings, taskInput, DEFAULT_MARGIN, type ClipSettings } from "./models.ts";
 import { withPreset } from "./presets.ts";
 import { planTool, toolByKey, toolCredits, toneText, ToolRefusal, type Media, type Plan, type ToolKey } from "./tools.ts";
 import { mediaInfo } from "./media.ts";
@@ -193,7 +193,7 @@ export async function createGeneration(env: StudioEnv, userId: string, req: Crea
   if (!prompt && !all.length) throw new StudioError("Write what you want to see, or add a picture.");
   if (prompt.length > 4000) throw new StudioError("That prompt is too long. Keep it under 4000 characters.");
   const videoSeconds = videos.reduce((a, v) => a + (v.duration ?? 0), 0);
-  const s = normalizeSettings(req.settings ?? {}, pictures.length, { images: pictures.length, videos: videos.length, audios: sounds.length, videoSeconds });
+  let s = normalizeSettings(req.settings ?? {}, pictures.length, { images: pictures.length, videos: videos.length, audios: sounds.length, videoSeconds });
   const model = modelByKey(s.model)!;
   if (videos.some((v) => !v.duration || v.duration < 2)) throw new StudioError("Each video clip must be at least 2 seconds long (MP4 or MOV).");
   if (videoSeconds > (model.maxRefVideoSeconds ?? 0) + 0.5) throw new StudioError(`Video clips can add up to ${model.maxRefVideoSeconds} seconds with ${model.name}. Yours are ${Math.round(videoSeconds)} s.`);
@@ -201,9 +201,13 @@ export async function createGeneration(env: StudioEnv, userId: string, req: Crea
 
   const free = freeModels(env.STUDIO_FREE_MODELS);
   const freeRes = freeResolutions(env.STUDIO_FREE_RESOLUTIONS);
+  const modelFree = free.includes(s.model);
+  // An order that names no resolution gets the model's default, which a free account may not use: it gets its own.
+  if (!(req.settings as Record<string, unknown> | undefined)?.resolution && modelFree && !freeRes.includes(s.resolution) && !(await hasPaid(asEnv(env), userId))) {
+    s = clampFreeResolution(s, freeRes);
+  }
   const credits = clipCredits(s, marginOf(env), videoSeconds);
   const usd = clipCostUsd(s, videoSeconds);
-  const modelFree = free.includes(s.model);
   const id = await charge(env, userId, {
     freeOk: modelFree && freeRes.includes(s.resolution), credits, usd, noun: "video",
     lockedMessage: modelFree
