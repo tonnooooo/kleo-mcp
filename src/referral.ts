@@ -9,7 +9,9 @@ import { MIN_FILM_SECONDS } from "./templates.ts";
  * never to itself). When that account makes its FIRST REAL PAYMENT — a Stripe payment with an amount, through the
  * webhook — the referrer gets REFERRER_BONUS credits and the referred REFERRED_BONUS on top of that first pack. Never
  * for grants (a tester row, a launch code, a gift: none of them comes through the webhook), never twice (one
- * `referrals` row per referred account), and a dispute of that payment takes both back (src/stripe.ts).
+ * `referrals` row per referred account), and a dispute of that payment takes both back (src/stripe.ts). Since 14 October
+ * 2026 also never from the referrer's own address, and at most REFERRER_REWARDS_PER_DAY paid to one referrer per UTC
+ * day (the farming guards, above rewardReferral).
  *
  * How the link reaches the sign-up: /r/<code> sets a kleo_ref cookie on this host and shows the connector address
  * with ?ref=<code>; the sign-in page (src/auth.ts) reads the cookie, the ref in the connector address the client
@@ -76,33 +78,70 @@ export async function linkReferral(env: Env, userId: string, raw: unknown, via: 
 }
 
 /**
+ * THE FARMING GUARDS (14 October 2026, the security review). One person can open accounts through their own link and
+ * buy the smallest pack on each: every one paid the referrer REFERRER_BONUS, so 5 EUR spent bought 25 credits across
+ * the accounts. Two rules now, both inside the same INSERT that writes the reward, so no burst of payments can slip
+ * between a check and the write (the pattern of createUserIfUnderCaps in src/db.ts):
+ *  - an account opened from the SAME ADDRESS as its referrer (users.ip_hash, the fingerprint the sign-in stores, never
+ *    the address) earns no reward on either side: that is one person referring themselves. An account without a
+ *    fingerprint (local dev, an odd proxy, an account made elsewhere) is not judged by it — a missing signal is neither
+ *    proof of fraud nor a free pass, and the day cap still holds;
+ *  - a referrer is paid at most REFERRER_REWARDS_PER_DAY rewards per UTC day. Past it the friend still gets their own
+ *    REFERRED_BONUS — it was promised to them on the invitation page, and they are not the one farming — and the row
+ *    is written with referrer_credits 0, so it is still once per account and the cap counts only paid rewards.
+ * Rows count whatever their status: a disputed reward does not give its day's slot back, or a dispute would be a reset.
+ */
+export const REFERRER_REWARDS_PER_DAY = 3;
+
+/**
  * The reward, called by the Stripe webhook right after a payment was credited for the first time (creditPurchase said
  * so). One batch: the `referrals` row is written only for an account that has a referrer and no OTHER payment with an
- * amount (this is its first real one); its primary key refuses a second row; both credits follow only if THAT row (its
- * nonce) exists. Returns what was given, or null.
+ * amount (this is its first real one), and not from its referrer's own address; its primary key refuses a second row;
+ * both credits follow only if THAT row (its nonce) exists, the referrer's as the row says (0 past the day's cap).
+ * Returns what was given, or null.
  */
 export async function rewardReferral(env: Env, userId: string, sessionId: string): Promise<{ referrer: string; referrer_credits: number; referred_credits: number } | null> {
   const nonce = rid("rf", 12);
+  const midnight = "strftime('%Y-%m-%dT00:00:00.000Z','now')"; // referrals.at is ISO text, so the comparison is lexicographic
   const rows = await env.DB.batch([
     env.DB.prepare(
       `INSERT OR IGNORE INTO referrals (referred_id, referrer_id, session_id, referrer_credits, referred_credits, nonce)
-       SELECT u.id, u.referred_by, ?, ?, ?, ? FROM users u
+       SELECT u.id, u.referred_by, ?,
+              CASE WHEN (SELECT COUNT(*) FROM referrals x WHERE x.referrer_id = u.referred_by AND x.referrer_credits > 0 AND x.at >= ${midnight}) < ?
+                   THEN ? ELSE 0 END,
+              ?, ? FROM users u
        WHERE u.id = ? AND u.referred_by IS NOT NULL AND u.referred_by != u.id
          AND EXISTS (SELECT 1 FROM users r WHERE r.id = u.referred_by)
+         AND NOT EXISTS (SELECT 1 FROM users r WHERE r.id = u.referred_by AND r.ip_hash IS NOT NULL AND r.ip_hash = u.ip_hash)
          AND EXISTS (SELECT 1 FROM payments WHERE session_id = ? AND user_id = u.id AND amount_cent > 0 AND status = 'paid')
          AND NOT EXISTS (SELECT 1 FROM payments WHERE user_id = u.id AND amount_cent > 0 AND session_id != ?)`,
-    ).bind(sessionId, REFERRER_BONUS, REFERRED_BONUS, nonce, userId, sessionId, sessionId),
-    env.DB.prepare("UPDATE users SET credits = credits + ? WHERE id = (SELECT referrer_id FROM referrals WHERE referred_id = ? AND nonce = ?)")
-      .bind(REFERRER_BONUS, userId, nonce),
+    ).bind(sessionId, REFERRER_REWARDS_PER_DAY, REFERRER_BONUS, REFERRED_BONUS, nonce, userId, sessionId, sessionId),
+    env.DB.prepare(
+      `UPDATE users SET credits = credits + (SELECT referrer_credits FROM referrals WHERE referred_id = ? AND nonce = ?)
+       WHERE id = (SELECT referrer_id FROM referrals WHERE referred_id = ? AND nonce = ? AND referrer_credits > 0)`,
+    ).bind(userId, nonce, userId, nonce),
     env.DB.prepare("UPDATE users SET credits = credits + ? WHERE id = ? AND EXISTS (SELECT 1 FROM referrals WHERE referred_id = ? AND nonce = ?)")
       .bind(REFERRED_BONUS, userId, userId, nonce),
   ]);
-  if ((rows[0]?.meta.changes ?? 0) !== 1) return null;
-  const row = await env.DB.prepare("SELECT referrer_id FROM referrals WHERE referred_id = ?").bind(userId).first<{ referrer_id: string }>();
+  if ((rows[0]?.meta.changes ?? 0) !== 1) {
+    // Written down when the address guard is what refused THIS first payment, so a reward somebody expected and did
+    // not get can be traced (a later payment of the same account is not a first one, and is not written down again).
+    const why = await env.DB.prepare(
+      `SELECT r.id AS referrer FROM users u JOIN users r ON r.id = u.referred_by
+       WHERE u.id = ? AND r.ip_hash IS NOT NULL AND r.ip_hash = u.ip_hash
+         AND NOT EXISTS (SELECT 1 FROM referrals WHERE referred_id = u.id)
+         AND NOT EXISTS (SELECT 1 FROM payments WHERE user_id = u.id AND amount_cent > 0 AND session_id != ?)`,
+    ).bind(userId, sessionId).first<{ referrer: string }>();
+    if (why) await audit(env, userId, null, "referral.refused", { referrer: why.referrer, session: sessionId, reason: "same address as the referrer" });
+    return null;
+  }
+  const row = await env.DB.prepare("SELECT referrer_id, referrer_credits FROM referrals WHERE referred_id = ?").bind(userId).first<{ referrer_id: string; referrer_credits: number }>();
   const referrer = row?.referrer_id ?? "";
-  await audit(env, referrer, null, "referral.rewarded", { referred: userId, session: sessionId, amount: REFERRER_BONUS, role: "referrer" });
+  const referrerCredits = row?.referrer_credits ?? 0;
+  if (referrerCredits > 0) await audit(env, referrer, null, "referral.rewarded", { referred: userId, session: sessionId, amount: referrerCredits, role: "referrer" });
+  else await audit(env, referrer, null, "referral.capped", { referred: userId, session: sessionId, per_day: REFERRER_REWARDS_PER_DAY, note: "the referrer's reward is capped per UTC day; the friend's bonus was still given" });
   await audit(env, userId, null, "referral.rewarded", { referrer, session: sessionId, amount: REFERRED_BONUS, role: "referred" });
-  return { referrer, referrer_credits: REFERRER_BONUS, referred_credits: REFERRED_BONUS };
+  return { referrer, referrer_credits: referrerCredits, referred_credits: REFERRED_BONUS };
 }
 
 /**

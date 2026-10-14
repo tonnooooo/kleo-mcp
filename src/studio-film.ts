@@ -10,6 +10,15 @@
  *                                                                                       → the job (jobView) or a refusal
  * Both: Authorization: Bearer <INTERNAL_SECRET>. Studio reads the job's progress and files straight from the shared
  * D1 database and R2 bucket afterwards.
+ *
+ * ONLY OVER THE BINDING (14 October 2026, the security review). The route used to answer anybody on the internet who
+ * held the secret, at https://mcp.kleooai.com/internal/studio/... — and a request there can debit any account by its
+ * id. Studio's binding always calls https://kleo-mcp/... (src/studio/films.ts), a host name no public DNS name can
+ * carry to this Worker, so any other host answers a plain 404, BEFORE the secret is looked at: the public door gives
+ * no hint that a route lives here, and a leaked secret no longer orders films through THIS route. It is one door, not
+ * the whole risk: INTERNAL_SECRET still signs every Kleo key (src/accounts.ts makeHandle) and every Studio session
+ * (src/studio/session.ts) and opens /internal/admin/*, so whoever holds it can still act as any account by other
+ * roads. It stays the one secret to guard; splitting it (a binding secret, separate signing keys) is its own change.
  */
 import type { Env } from "./env";
 import { getUser, hasPaid, countOpenForUser } from "./db";
@@ -17,7 +26,11 @@ import { json, safeEqual, int } from "./util";
 import { createJob, jobView, JobError } from "./jobs";
 import { ACTIVE_TEMPLATE, ANIMATIC_MAX_S, animaticCredits, creditsForProduct } from "./templates";
 
+/** The host name Studio's service binding calls this Worker by (src/studio/films.ts mcp()). */
+export const STUDIO_BINDING_HOST = "kleo-mcp";
+
 export async function handleStudioFilm(request: Request, env: Env): Promise<Response> {
+  if (new URL(request.url).hostname !== STUDIO_BINDING_HOST) return json({ error: "not found" }, 404);
   const auth = request.headers.get("authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
   if (!env.INTERNAL_SECRET || !token || !safeEqual(token, env.INTERNAL_SECRET)) return json({ error: "unauthorized" }, 401);
@@ -29,6 +42,10 @@ export async function handleStudioFilm(request: Request, env: Env): Promise<Resp
   if (!user) return json({ error: "Please sign in again." }, 401);
   const t = ACTIVE_TEMPLATE;
   const duration = Math.round(Number(b.duration_s ?? t.defaultSeconds));
+  // A length that is not a number ("abc", NaN, Infinity) is refused here, before any price or range check (14 October
+  // 2026, the security review): NaN compares false with everything, so it slipped past `< min` and `> max` alike and
+  // reached the price as NaN credits.
+  if (!Number.isFinite(duration)) return json({ error: "The length must be a number of seconds. Nothing was charged.", code: "refused" }, 400);
   const product = b.product === "animatic" ? "animatic" : "film";
   const style = b.style === "animation" ? "animation" : "realistic";
   const paid = await hasPaid(env, user.id);

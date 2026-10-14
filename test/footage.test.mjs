@@ -109,6 +109,15 @@ const SHOTS = [
   { id: "01-hook-s2", image_prompt: "water spraying up from every step", motion: "track_alongside", strength: 0.6, seconds: 2.4, still: null },
   { id: "02-city-s1", image_prompt: "a vast rain-lashed city from above", motion: "crane_down", strength: 0.5, seconds: 7.5, still: "02-city-s1.png" },
 ];
+/**
+ * A stored storyboard that plans exactly SHOTS (scene 01-hook with two shots, 02-city with one; ids <scene>-s<n>,
+ * keou-contract.ts pictureScenes). Since 14 October 2026 /footage buys only the shots of the stored storyboard
+ * (footage.ts footagePlanOf), so a test that stores one must store the shots it orders.
+ */
+const PLANNED_SB = () => JSON.stringify({ style: "picture", kleo_style: "realistic", scenes: [
+  { id: "01-hook", kind: "cinema", voice: "a line", shots: [{ image_prompt: SHOTS[0].image_prompt }, { image_prompt: SHOTS[1].image_prompt }] },
+  { id: "02-city", kind: "cinema", voice: "a line", shots: [{ image_prompt: SHOTS[2].image_prompt }] },
+] });
 
 let realFetch;
 beforeEach(() => { realFetch = globalThis.fetch; });
@@ -936,7 +945,7 @@ test("no clip while the server is still drawing the pictures: the order is refus
   // that asks for clips anyway is refused: the clips would be filmed from pictures that are about to change.
   const env = await newEnv({ AI: {} });
   const job = await filmJob(env);
-  const sb = JSON.stringify({ style: "picture", kleo_style: "realistic", scenes: [] });
+  const sb = PLANNED_SB();
   const stillsAre = async (state, at = new Date().toISOString()) => {
     const p = JSON.parse(job.params); delete p.stills;
     if (state) p.stills = { state, at, drawn: 1, total: 3 };
@@ -981,7 +990,7 @@ test("the gate and the dispatcher agree: a drawing that failed or gave up rents 
   // The server's drawing failed (the Workers AI quota, a bug) or gave up past its window: stillsHold lets the
   // dispatcher rent the GPU, which draws the missing pictures itself, so /footage must take its order (until the fix
   // of 26 September the gate refused it and the film was failed with the rental and the pictures paid).
-  const sb = JSON.stringify({ style: "picture", kleo_style: "realistic", scenes: [] });
+  const sb = PLANNED_SB();
   const long = new Date(Date.now() - 6 * 3600_000).toISOString();
   for (const stills of [{ state: "failed", at: new Date().toISOString(), note: "4006: daily neuron quota" }, { state: "failed", at: long, note: "gave up after 20 minutes of drawing; the GPU draws the rest" }, { state: "drawing", at: long, drawn: 1, total: 3 }]) {
     const env = await newEnv({ AI: {} });

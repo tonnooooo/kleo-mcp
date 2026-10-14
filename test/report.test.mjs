@@ -121,8 +121,10 @@ test("the worker may upload report.json with its own secret", async () => {
   const env = await newEnv();
   addJob(env, "gt_up", "2026-09-27T01:00:00.000Z");
   env.DB.db.prepare("UPDATE jobs SET state = 'finishing' WHERE id = 'gt_up'").run();
+  // The single PUT declares its length (14 October 2026, src/internal.ts FILE_MAX_BYTES), as the worker's urllib does;
+  // Node's Request adds no Content-Length of its own.
   const put = (name) => m.handleInternal(new Request(`http://kleo.test/internal/jobs/gt_up/files/${name}`, {
-    method: "PUT", headers: { authorization: "Bearer wk_secret", "content-type": "application/json" }, body: JSON.stringify(REPORT),
+    method: "PUT", headers: { authorization: "Bearer wk_secret", "content-type": "application/json", "content-length": String(Buffer.byteLength(JSON.stringify(REPORT))) }, body: JSON.stringify(REPORT),
   }), env);
   const r = await put("report.json");
   assert.equal(r.status, 200, await r.clone().text());

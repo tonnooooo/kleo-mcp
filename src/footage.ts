@@ -14,6 +14,8 @@
  * WHO PAYS WHAT. Every task is priced from KIE_MODELS at creation and written to the `footage` table; the daily gate
  * (DAILY_FOOTAGE_BUDGET_USD) sums today's rows BEFORE creating new ones, so the ceiling counts money the moment it is
  * committed, not when the clip lands. A refusal here fails the film with a clear sentence and no clip is ordered.
+ * Since 14 October 2026 the launch-code films have a ceiling of their own (TRIAL_FOOTAGE_BUDGET_USD, footageBudgetUsd),
+ * and the box may only order the shots of the stored storyboard (footagePlanOf): the box is a rented machine.
  *
  * Worker-facing routes (all under the job secret, see internal.ts):
  *   PUT  /internal/jobs/:id/stills/:pictureId.png   the shot's reference frame (also .jpg / .webp)
@@ -228,12 +230,13 @@ export function plannedStillsUsd(env: Pick<Env, "STILL_MODEL">, pictures: number
  * never refuses a film: the order gate in requestFootage decides then), otherwise the balance and the plan so the
  * caller can refuse in numbers. Six seconds at most, like kieBalanceUsd.
  */
-export async function kiePreflight(env: Env, seconds: number, shots: number | null, maxShots: number): Promise<{ ok: boolean; reason: "balance" | "budget" | null; balance_usd: number | null; planned_usd: number; spent_today_usd: number; budget_usd: number; shots: number; model: string; stills_usd?: number }> {
+export async function kiePreflight(env: Env, seconds: number, shots: number | null, maxShots: number, pool: FootagePool = "paid"): Promise<{ ok: boolean; reason: "balance" | "budget" | null; balance_usd: number | null; planned_usd: number; spent_today_usd: number; budget_usd: number; shots: number; model: string; stills_usd?: number }> {
   const cfg = await footageConfig(env);
   const plan = plannedFilmUsd(env, cfg, seconds, shots, maxShots);
   // The same two gates the order itself will meet on the box (requestFootage): today's ceiling first, then the account.
-  const budget = num(env.DAILY_FOOTAGE_BUDGET_USD, 5);
-  const spent = await footageSpentTodayUsd(env);
+  // A launch-code film is measured against the trial pool (14 October 2026, footageBudgetUsd), every other film the paid one.
+  const budget = footageBudgetUsd(env, pool);
+  const spent = await footageSpentTodayUsd(env, pool);
   // Today's ceiling counts a film's pictures once they are drawn (footageSpentTodayUsd), so the box's order at
   // /footage meets this film's own pictures in `spent`. The pre-flight asks for them too, on whatever road they are
   // drawn: a film admitted here is not refused later for the pictures it was admitted with (26 September 2026).
@@ -340,7 +343,9 @@ export function kiePrompt(shot: { image_prompt: string; motion?: string | null; 
  *   3. the place (the direction's world, or the spec's place items the shot covers);
  *   4. the camera sentence, then the look paragraph — minus its "No text" when the shot carries a text the user asked
  *      to be read on screen, which the clip must keep, not erase.
- * A shot that is not in the stored storyboard (a box that sends one the server never planned) keeps kiePrompt.
+ * A shot that is not in the stored storyboard (a box that sends one the server never planned) keeps kiePrompt — a
+ * fallback requestFootage no longer reaches for a job with a stored storyboard: such a shot is dropped there before
+ * it is priced (footagePlanOf, 14 October 2026), so the box's own words are filmed only on a job with no plan stored.
  */
 export function clipPrompt(shot: { id: string; image_prompt: string; motion?: string | null; strength?: number | null }, look: FilmLook, stored: { storyboard: unknown; spec: RequestSpec | null } | null): string {
   const pic = stored ? stillShotsOf(stored.storyboard).find((p) => p.id === shot.id) : undefined;
@@ -524,20 +529,53 @@ async function updateRow(env: Env, jobId: string, shotId: string, fields: Partia
  * budget. An animatic's pictures are left out: they are bounded by STILLS_DAILY_USD, and a queue of free animatics must
  * never eat the ceiling the paid films' clips are bought under. kiePreflight asks for a film's own pictures up front.
  */
-export async function footageSpentTodayUsd(env: Env): Promise<number> {
-  const r = await env.DB.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS usd FROM footage WHERE created_at >= strftime('%Y-%m-%dT00:00:00Z','now') AND task_id IS NOT NULL").first<{ usd: number }>();
-  return Math.round((Number(r?.usd ?? 0) + (await picturesSpentTodayUsd(env))) * 10000) / 10000;
+export async function footageSpentTodayUsd(env: Env, pool?: FootagePool): Promise<number> {
+  const scope = pool === "trial" ? ` AND job_id IN (${TRIAL_JOBS_SQL})` : pool === "paid" ? ` AND job_id NOT IN (${TRIAL_JOBS_SQL})` : "";
+  const r = await env.DB.prepare(`SELECT COALESCE(SUM(cost_usd), 0) AS usd FROM footage WHERE created_at >= strftime('%Y-%m-%dT00:00:00Z','now') AND task_id IS NOT NULL${scope}`).first<{ usd: number }>();
+  return Math.round((Number(r?.usd ?? 0) + (await picturesSpentTodayUsd(env, pool))) * 10000) / 10000;
 }
 /**
  * The pictures' dollars of today (UTC): the "stills.task" rows' `usd`, except the rows of animatic jobs (see
- * footageSpentTodayUsd). A row whose job cannot be found counts: when in doubt, the money is spent. 0 when the audit
- * cannot be read.
+ * footageSpentTodayUsd). A row whose job cannot be found counts: when in doubt, the money is spent (in the paid pool,
+ * whose ceiling is the one that matters). 0 when the audit cannot be read.
  */
-export async function picturesSpentTodayUsd(env: Env): Promise<number> {
+export async function picturesSpentTodayUsd(env: Env, pool?: FootagePool): Promise<number> {
+  const scope = pool === "trial" ? ` AND job_id IN (${TRIAL_JOBS_SQL})` : pool === "paid" ? ` AND (job_id IS NULL OR job_id NOT IN (${TRIAL_JOBS_SQL}))` : "";
   try {
-    const r = await env.DB.prepare("SELECT COALESCE(SUM(json_extract(detail, '$.usd')), 0) AS usd FROM audit WHERE event = 'stills.task' AND at >= strftime('%Y-%m-%dT00:00:00.000Z','now') AND (job_id IS NULL OR job_id NOT IN (SELECT id FROM jobs WHERE json_extract(params, '$.product') = 'animatic'))").first<{ usd: number }>();
+    const r = await env.DB.prepare(`SELECT COALESCE(SUM(json_extract(detail, '$.usd')), 0) AS usd FROM audit WHERE event = 'stills.task' AND at >= strftime('%Y-%m-%dT00:00:00.000Z','now') AND (job_id IS NULL OR job_id NOT IN (SELECT id FROM jobs WHERE json_extract(params, '$.product') = 'animatic'))${scope}`).first<{ usd: number }>();
     return Number(r?.usd ?? 0) || 0;
   } catch { return 0; }
+}
+
+/**
+ * TWO CEILINGS, NOT ONE (14 October 2026, the security review). The launch codes are public (PRODUCTHUNT, HN, ...),
+ * and every account that redeems one may film one free 15-second film; until today those films were bought under the
+ * same DAILY_FOOTAGE_BUDGET_USD as the paying customers', so a few dozen throwaway accounts could book the whole day
+ * and every paid film after them failed with "fully booked". Now the money of the day is two pools:
+ *   "trial"  the clips, tracks and pictures of the launch-code films — jobs createJob marked params.trial, of an
+ *            account with no payment on record (footagePoolOf; requestFootage lets such a job film only while
+ *            trialHolds) — under TRIAL_FOOTAGE_BUDGET_USD (4 $ by default: two or three trial films a day);
+ *   "paid"   everything else, under DAILY_FOOTAGE_BUDGET_USD, which no longer counts the trial films.
+ * The worst day is therefore the sum of the two ceilings, said here so nobody reads either one as the total. An account
+ * that pays later moves its trial film's spend to the paid pool, where its next films are counted anyway.
+ */
+export type FootagePool = "paid" | "trial";
+export const DEFAULT_TRIAL_FOOTAGE_BUDGET_USD = 4;
+// CASE, not a bare json_extract: a row whose params do not parse must not turn the whole sum into an SQL error.
+const TRIAL_JOBS_SQL = `SELECT id FROM jobs WHERE (CASE WHEN json_valid(params) THEN json_extract(params, '$.trial') END) = 1
+  AND NOT EXISTS (SELECT 1 FROM payments WHERE payments.user_id = jobs.user_id AND payments.status = 'paid')`;
+/** The ceiling of one pool, in dollars a UTC day. */
+export const footageBudgetUsd = (env: Pick<Env, "DAILY_FOOTAGE_BUDGET_USD" | "TRIAL_FOOTAGE_BUDGET_USD">, pool: FootagePool): number =>
+  pool === "trial" ? num(env.TRIAL_FOOTAGE_BUDGET_USD, DEFAULT_TRIAL_FOOTAGE_BUDGET_USD) : num(env.DAILY_FOOTAGE_BUDGET_USD, 5);
+/**
+ * The pool a job's orders are counted in, by the same definition TRIAL_JOBS_SQL sums with: "trial" for a job marked a
+ * launch-code film of an account that never paid, "paid" for every other. Not trialHolds: a trial job whose claim has
+ * moved on (its first attempt failed before any clip) is still counted in the trial pool, so it is gated there too.
+ */
+export async function footagePoolOf(env: Env, job: Pick<Job, "user_id" | "params">): Promise<FootagePool> {
+  let marked = false;
+  try { marked = (JSON.parse(job.params) as JobParams).trial === true; } catch { /* unreadable params: not a trial film */ }
+  return marked && !(await hasPaid(env, job.user_id)) ? "trial" : "paid";
 }
 
 /** A shot id is a picture id: `<sceneId>-s<n>` (kleo_worker.py PICTURE_ID). */
@@ -654,6 +692,39 @@ export function footageGate(env: Pick<Env, "STILLS_ENGINE" | "AI" | "IMAGE_FIXTU
   return null;
 }
 
+/** The longest clip any shot may be ordered at, whatever the box says (the models' own maximum is 30 s, Seedance 2.5). */
+export const SHOT_MAX_S = 30;
+/** How far past the storyboard's max_duration all of a job's clips together may go (footagePlanOf.totalSeconds). */
+export const PLAN_TOTAL_SLACK = 1.5;
+
+/**
+ * THE PLAN THE BOX MAY ORDER FROM (14 October 2026, the security review). The box is a rented machine: whoever has root
+ * on it can read the job's worker secret and post to /footage, so what it asks for is a request, never a fact. Until
+ * today a shot id the stored storyboard did not have was bought all the same, filmed from the box's own image_prompt
+ * (kiePrompt) — any clip, on the owner's account. `ids`: the shots of the stored storyboard, the same list clipPrompt
+ * and seedancePrompt read every prompt from (stillShotsOf); `maxSeconds`: the longest a shot may be ordered, the film's
+ * own ceiling (the storyboard's max_duration, which the box's voice fit never passes: worker/kleo_worker.py
+ * fit_to_clips), never above SHOT_MAX_S. The storyboard carries no per-shot length the box must keep — `dur` is a
+ * planner hint the voice and the whole-clip fit legitimately override — so the film's ceiling is the only plan figure.
+ * `totalSeconds`: what ALL the job's shots together may add up to (the review's second pass, same day) — the per-shot
+ * clamp alone let a box order every planned shot at the film's ceiling, several films' worth of clips (a 15 s trial
+ * film of five shots: about 120 s). An honest box orders about the film's own length: the shots' slots, which never
+ * pass max_duration (the engine refuses longer narration: worker/keou/prepare.py), plus the tail of the last clip of a
+ * scene that runs on under a dissolve (0.8 s each), so
+ * max_duration × PLAN_TOTAL_SLACK leaves room to spare. Infinity when the storyboard states no max_duration (none of
+ * the server's own planners writes one without it: storyboard.ts), so an older plan is never refused for its length.
+ * Null when there is no storyboard stored, or one that does not parse: footageGate decides those.
+ */
+export function footagePlanOf(job: Pick<Job, "storyboard">): { ids: Set<string>; maxSeconds: number; totalSeconds: number } | null {
+  if (!job.storyboard) return null;
+  let sb: unknown;
+  try { sb = JSON.parse(job.storyboard); } catch { return null; }
+  const ceiling = Number((sb as { max_duration?: unknown } | null)?.max_duration);
+  const stated = Number.isFinite(ceiling) && ceiling > 0;
+  return { ids: new Set(stillShotsOf(sb).map((p) => p.id)), maxSeconds: stated ? Math.max(1, Math.min(SHOT_MAX_S, ceiling)) : SHOT_MAX_S,
+    totalSeconds: stated ? Math.round(ceiling * PLAN_TOTAL_SLACK * 1000) / 1000 : Number.POSITIVE_INFINITY };
+}
+
 /**
  * POST /footage: one task per shot that has no row yet. Answers the same shape as GET so the worker has one parser.
  * Budget first: the sum of today's committed rows plus this request must stay under the ceiling, or nothing is ordered.
@@ -666,7 +737,9 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
   // The paid rule holds on this road too (a film queued before the rule, or created by any other road): the clips
   // are the owner's money, and a 402 here fails the job at once with the sentence and refunds it (internal.ts).
   // The launch-code film (src/launch.ts) is the one exception: at most 15 seconds, and only the job the claim names.
-  if (!(await hasPaid(env, job.user_id)) && !(await trialHolds(env, job))) {
+  const paid = await hasPaid(env, job.user_id);
+  const trial = !paid && (await trialHolds(env, job));
+  if (!paid && !trial) {
     await audit(env, job.user_id, job.id, "footage.unpaid", { note: "film for an account with no payment on record; refused before any task" });
     return { status: 402, reply: { error: "this film is for accounts that have bought a credit pack, and this account has not: no clip was ordered and the credits are refunded. The animatic of the same storyboard (product: \"animatic\") is open to every account", unpaid: true } };
   }
@@ -675,14 +748,42 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
   // The look the worker read off the project, or the job's own style: the clip prompt and the negative follow it.
   let look: FilmLook = filmLookOf(body.look);
   if (!body.look) { try { look = filmLookOf((JSON.parse(job.params) as JobParams).style); } catch { /* unreadable params: realistic */ } }
-  const shots = (Array.isArray(body.shots) ? body.shots : []).filter((s) => s && typeof s === "object" && SHOT_ID_RE.test(String(s.id ?? "")) && String(s.image_prompt ?? "").trim());
+  // MUSIC_ID is the track's row in the same table (requestMusic), never a shot: a clip ordered under it would sit in
+  // the track's place, unpolled by footageStatus and read back as audio by /music (14 October 2026).
+  const asked = (Array.isArray(body.shots) ? body.shots : []).filter((s) => s && typeof s === "object" && SHOT_ID_RE.test(String(s.id ?? "")) && String(s.id) !== MUSIC_ID && String(s.image_prompt ?? "").trim());
+  // Only the planned shots (footagePlanOf): the rest are dropped, written down, and never priced or bought.
+  const plan = footagePlanOf(job);
+  // One order per shot id, the first the box sent (14 October 2026): a list that named a shot twice bought it twice —
+  // the second task took the row over and the first was billed for nothing. The worker never repeats one (picture_units).
+  const once = new Set<string>();
+  const shots = (plan ? asked.filter((s) => plan.ids.has(String(s.id))) : asked).filter((s) => !once.has(String(s.id)) && !!once.add(String(s.id)));
+  if (plan && asked.some((s) => !plan.ids.has(String(s.id)))) {
+    const dropped = asked.filter((s) => !plan.ids.has(String(s.id))).map((s) => String(s.id));
+    await audit(env, job.user_id, job.id, "footage.unplanned", { dropped: dropped.slice(0, 40), count: dropped.length, kept: shots.length });
+    if (!shots.length) return { status: 400, reply: { error: "none of these shots is in the film's stored storyboard: nothing was ordered" } };
+  }
   if (!shots.length) return { status: 400, reply: { error: "no shots to film" } };
   if (shots.length > 40) return { status: 400, reply: { error: `${shots.length} shots is more than one film may ask for (40)` } };
+  // One clip length for the price and for the order: the box's seconds, at most what the plan allows.
+  const maxShotS = plan?.maxSeconds ?? SHOT_MAX_S;
+  const secondsOf = (s: ShotRequest): number => Math.max(1, Math.min(maxShotS, Number(s.seconds) || 3));
   const have = new Map((await footageRows(env, job.id)).map((r) => [r.shot_id, r]));
   // Fresh: no row yet, or a row that failed BEFORE kie.ai gave it a task (refused, never billed). Ordering that one
   // again is how a topped-up account rescues a film that ran out of money halfway through the previous request.
   const retryable = (r: FootageRow | undefined) => !!r && r.state === "failed" && !r.task_id;
   const fresh = shots.filter((s) => !have.has(s.id) || retryable(have.get(s.id)));
+  // The film's total (footagePlanOf.totalSeconds): what this job already bought plus this order, never more than the
+  // plan allows. A row refused before it got a task was never billed, and the track's row is not a shot. Like an
+  // unplanned shot, an order over it is the box's fault: answered 400, nothing priced or bought, the job left alone.
+  if (plan && fresh.length) {
+    const bought = [...have.values()].filter((r) => r.shot_id !== MUSIC_ID && !retryable(r)).reduce((a, r) => a + (Number(r.seconds) || 0), 0);
+    const asking = fresh.reduce((a, s) => a + secondsOf(s), 0);
+    if (bought + asking > plan.totalSeconds + 1e-9) {
+      const r3 = (x: number) => Math.round(x * 1000) / 1000;
+      await audit(env, job.user_id, job.id, "footage.over_length", { bought_s: r3(bought), asked_s: r3(asking), total_s: plan.totalSeconds, shots: fresh.length });
+      return { status: 400, reply: { error: `these shots add up to ${r3(bought + asking)} s of clips, more than this film's plan allows (${plan.totalSeconds} s): nothing was ordered` } };
+    }
+  }
   // NO CLIP BEFORE THE PLAN AND THE PICTURES ARE VALIDATED (26 September 2026): see footageGate. Only an order with
   // something to buy meets it (a requeued box whose clips all exist orders nothing). The route fails the job with
   // this sentence (internal.ts), so the credits come back and nothing was bought.
@@ -691,13 +792,25 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
     await audit(env, job.user_id, job.id, "footage.not_validated", { why: gate.why, stills: stillsStateOf(job)?.state ?? null });
     return { status: 409, reply: { error: gate.sentence, not_validated: true } };
   }
-  const budget = num(env.DAILY_FOOTAGE_BUDGET_USD, 5);
-  const planned = fresh.reduce((a, s) => a + clipCostUsd(spec, clipSecondsFor(spec, Number(s.seconds) || 3)), 0);
-  const spent = await footageSpentTodayUsd(env);
+  // The day's ceiling of this film's pool (14 October 2026, footageBudgetUsd): a launch-code film is counted, and
+  // refused, inside the trial pool, so the public codes can never book the day the paying customers film in. A job
+  // that got this far is footagePoolOf's "trial" exactly when trialHolds let it through (marked, never paid).
+  const pool: FootagePool = trial ? "trial" : "paid";
+  const budget = footageBudgetUsd(env, pool);
+  const planned = fresh.reduce((a, s) => a + clipCostUsd(spec, clipSecondsFor(spec, secondsOf(s))), 0);
+  const spent = await footageSpentTodayUsd(env, pool);
   if (fresh.length && spent + planned > budget) {
-    await audit(env, job.user_id, job.id, "footage.budget", { spent_usd: spent, planned_usd: planned, budget_usd: budget, model: name });
+    await audit(env, job.user_id, job.id, "footage.budget", { pool, spent_usd: spent, planned_usd: planned, budget_usd: budget, model: name });
     // The sentence fails the job (internal.ts), so the user reads it: no dollar, no provider (the audit row has both).
-    return { status: 402, reply: { error: "today's filming capacity is fully booked: no clip was ordered, this video was not made and its credits are refunded. Please ask for it again tomorrow, or order the animatic of the same storyboard" } };
+    // The trial film's credits come back like any other's, and its claim with them — but only while this job has no
+    // row the claim counts as spent (src/launch.ts CLAIM_FREE: any row but one refused before it got a task, the
+    // track's included): a requeued box whose first attempt bought clips keeps the claim held, and the sentence must
+    // not promise a free film the account no longer has.
+    const claimKept = [...have.values()].some((r) => !(r.state === "failed" && !r.task_id));
+    const again = "ask for it again tomorrow, or order the animatic of the same storyboard";
+    return { status: 402, reply: { error: trial
+      ? `today's free launch-code films are fully booked: no clip was ordered, this video was not made and its credits are refunded. ${claimKept ? `Please ${again}` : `The free film stays open on this account: please ${again}`}`
+      : `today's filming capacity is fully booked: no clip was ordered, this video was not made and its credits are refunded. Please ${again}` } };
   }
   // The account itself, before the first task: kie.ai bills per task, so a film that runs out of money on shot 14
   // has paid for 13 clips it will never use (13 September, 3.38 $). Silence from the balance call does not refuse.
@@ -711,11 +824,20 @@ export async function requestFootage(env: Env, job: Job, base: string, body: { s
   }
   const exp = Math.floor(Date.now() / 1000) + 6 * 60 * 60;
   // The stored storyboard and spec the clip prompts are written from (clipPrompt); a job without one keeps kiePrompt.
+  // The storyboard and the spec are read apart (14 October 2026): params that do not parse cost the prompt its spec,
+  // never its stored shot — the box's own image_prompt is no longer what a planned shot is filmed from.
   let stored: { storyboard: unknown; spec: RequestSpec | null } | null = null;
-  try { if (job.storyboard) stored = { storyboard: JSON.parse(job.storyboard) as unknown, spec: specOf(JSON.parse(job.params)) }; } catch { stored = null; }
+  try {
+    if (job.storyboard) {
+      const storyboard = JSON.parse(job.storyboard) as unknown;
+      let spec: RequestSpec | null = null;
+      try { spec = specOf(JSON.parse(job.params)); } catch { spec = null; }
+      stored = { storyboard, spec };
+    }
+  } catch { stored = null; }
   let ordered = 0, outOfCredit = false;
   for (const s of fresh) {
-    const seconds = Math.max(1, Math.min(30, Number(s.seconds) || 3));
+    const seconds = secondsOf(s);
     const clipSeconds = clipSecondsFor(spec, seconds);
     const cost = clipCostUsd(spec, clipSeconds);
     let imageUrl: string | null = null;
@@ -926,10 +1048,12 @@ export async function requestMusic(env: Env, job: Job, req: MusicRequest): Promi
   const version = musicVersion(env);
   const model = provider === "ephone" ? EPHONE_MUSIC_MODEL : `suno-${version.toLowerCase()}`;
   const trackUsd = provider === "ephone" ? EPHONE_MUSIC_USD : MUSIC_USD;
-  const budget = num(env.DAILY_FOOTAGE_BUDGET_USD, 5);
-  const spent = await footageSpentTodayUsd(env);
+  // The track is counted in its film's pool, like the clips (14 October 2026, footageBudgetUsd).
+  const pool = await footagePoolOf(env, job);
+  const budget = footageBudgetUsd(env, pool);
+  const spent = await footageSpentTodayUsd(env, pool);
   if (spent + trackUsd > budget) {
-    await audit(env, job.user_id, job.id, "music.budget", { spent_usd: spent, planned_usd: trackUsd, budget_usd: budget });
+    await audit(env, job.user_id, job.id, "music.budget", { pool, spent_usd: spent, planned_usd: trackUsd, budget_usd: budget });
     return { status: 402, reply: { error: `today's budget is spent ($${spent.toFixed(2)} committed + $${trackUsd.toFixed(2)} for the track > $${budget.toFixed(2)})`, state: "failed" } };
   }
   const balance = provider === "ephone" ? await ephoneBalanceUsd(env) : await kieBalanceUsd(env);

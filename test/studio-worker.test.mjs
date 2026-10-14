@@ -136,8 +136,14 @@ test("a Kleo key from the MCP server signs in to that same account", async () =>
   // The key is a credential: never in /api/me, only on an explicit request; a new one retires the old everywhere.
   assert.equal(me.json.kleoKey, undefined);
   assert.equal((await call(env, "/api/me/key", { method: "POST", cookie: cookieOf(r), body: {} })).json.key, key);
-  const fresh = (await call(env, "/api/me/key", { method: "POST", cookie: cookieOf(r), body: { reset: true } })).json.key;
+  const second = await call(env, "/api/auth/key", { method: "POST", body: { key } }); // the leaked key's own session
+  const rotated = await call(env, "/api/me/key", { method: "POST", cookie: cookieOf(r), body: { reset: true } });
+  const fresh = rotated.json.key;
   assert.notEqual(fresh, key);
+  assert.equal(rotated.res.headers.get("cache-control"), "no-store");
+  assert.equal((await call(env, "/api/me", { cookie: cookieOf(second) })).status, 401, "a session opened with the old key ends with it");
+  assert.equal((await call(env, "/api/me", { cookie: cookieOf(r) })).status, 401, "every session does");
+  assert.equal((await call(env, "/api/me", { cookie: cookieOf(rotated) })).json.id, "u_mcpuser00001", "but the browser that asked is signed in again");
   assert.equal(await accounts.verifyHandle(env, key), null, "the old key no longer opens the account (MCP sign-in included)");
   assert.equal(await accounts.verifyHandle(env, fresh), "u_mcpuser00001");
   assert.equal((await call(env, "/api/auth/key", { method: "POST", body: { key } })).status, 401);
@@ -346,6 +352,7 @@ test("password reset: off without an e-mail key; with one, a one-time link that 
   assert.equal((await call(off, "/api/auth/forgot", { method: "POST", body: { email: "a@b.co" } })).status, 503);
   const env = newEnv({ RESEND_API_KEY: "re_x" });
   const before = await signUp(env, "rita@example.com");
+  const oldKey = (await call(env, "/api/me/key", { method: "POST", cookie: before, body: {} })).json.key;
   let mail;
   const p = fakeProvider((u, init) => { if (u.includes("api.resend.com")) { mail = JSON.parse(init.body); return ok({ id: "m1" }); } return new Response("?", { status: 404 }); });
   try {
@@ -357,6 +364,7 @@ test("password reset: off without an e-mail key; with one, a one-time link that 
     assert.equal((await call(env, "/api/auth/reset", { method: "POST", body: { token, password: "another pass 2" } })).status, 400, "the link died with the old password");
     assert.equal((await call(env, "/api/auth/signin", { method: "POST", body: { email: "rita@example.com", password: "brand new pass" } })).status, 200);
     assert.equal((await call(env, "/api/me", { cookie: before })).status, 401, "a reset ends every session made with the old password");
+    assert.equal(await accounts.verifyHandle(env, oldKey), null, "and renews the Kleo key, so an assistant connected with the old one is out too");
   } finally { p.restore(); }
 });
 
@@ -433,6 +441,24 @@ test("Google and Microsoft: off until configured; new accounts; verified e-mails
   assert.equal((await call(env, "/api/me", { cookie: used })).json.id, usedId, "the used account is untouched by the refusal");
   // A reply from the provider made for another sign-in (wrong nonce) is refused.
   assert.match((await social(env, "google", { sub: "g-1", aud: "gid", nonce: "someone-elses" })).location, /signin_error=google/);
+});
+
+test("an evicted claimant is out by every road: their linked Google, their Kleo key and their sessions no longer open the account", async () => {
+  const env = newEnv({ GOOGLE_CLIENT_ID: "gid", GOOGLE_CLIENT_SECRET: "gs" });
+  // Someone signs up with Vera's address, links their OWN Google account to it, and keeps the Kleo key.
+  const squat = await signUp(env, "vera@gmail.com");
+  const squatId = (await call(env, "/api/me", { cookie: squat })).json.id;
+  assert.equal((await social(env, "google", { sub: "g-squatter", aud: "gid", email: "squatter@gmail.com", email_verified: true }, { cookie: squat, link: true })).location, "/?linked=google");
+  const key = (await call(env, "/api/me/key", { method: "POST", cookie: squat, body: {} })).json.key;
+  // Vera signs in with Google: the untouched account is hers.
+  const vera = await social(env, "google", { sub: "g-vera", aud: "gid", email: "vera@gmail.com", email_verified: true });
+  assert.equal((await call(env, "/api/me", { cookie: vera.cookie })).json.id, squatId);
+  assert.deepEqual((await call(env, "/api/me", { cookie: vera.cookie })).json.methods, ["google"], "only her own sign-in is left on it");
+  // The squatter's Google now finds nothing of hers: a fresh, separate account.
+  const back = await social(env, "google", { sub: "g-squatter", aud: "gid", email: "squatter@gmail.com", email_verified: true });
+  assert.notEqual((await call(env, "/api/me", { cookie: back.cookie })).json.id, squatId);
+  assert.equal(await accounts.verifyHandle(env, key), null, "the key they kept is retired");
+  assert.equal((await call(env, "/api/me", { cookie: squat })).status, 401, "and their session ended");
 });
 
 test("linking: the signed-in account gets Google; an account another person uses is refused; no session, no link", async () => {
@@ -734,11 +760,42 @@ test("free credits draw on their own daily pool; speech is never made for an acc
     assert.notEqual(voice.status, 200);
     assert.equal(p.sent.filter((s) => s.url.endsWith("/v1/audio/speech")).length, before, "no speech was bought");
   } finally { p.restore(); }
+  // Pictures and speech Kleo made for the account are upload rows too (outside its up/ prefix): they do not count.
+  const freeId = (await call(env, "/api/me", { cookie: free })).json.id;
+  for (const [i, key] of [`studio/${freeId}/g_made0000001/0.jpg`, `studio/${freeId}/g_made0000001/1.jpg`, `studio/${freeId}/speech/up_spoken000001.wav`].entries()) {
+    env.DB.db.prepare("INSERT INTO studio_uploads (id, user_id, key, content_type, size) VALUES (?, ?, ?, 'image/jpeg', 1000)").run(`up_made${i}`, freeId, key);
+  }
   await upload(env, free, jpegBytes(), "image/jpeg");
   await upload(env, free, jpegBytes(), "image/jpeg");
   const third = await call(env, "/api/uploads", { method: "POST", cookie: free, raw: jpegBytes(), headers: { "content-type": "image/jpeg" } });
   assert.equal(third.status, 429);
   assert.equal(third.json.code, "uploads");
+});
+
+test("speech refused after it was made is deleted and counted; past five a day no more is made", async () => {
+  const env = newEnv();
+  const { cookie, id } = await paidAccount(env, "talker@example.com", 50);
+  const t = await upload(env, cookie, jpegBytes(), "image/jpeg");
+  // The voice runs past a minute although the words were estimated under it (slow, with pauses): refused once timed.
+  const p = fakeProvider((u) => u.endsWith("/v1/audio/speech") ? new Response(wavBytes(70), { status: 200 }) : ok({ id: "task_x" }));
+  const speeches = () => p.sent.filter((s) => s.url.endsWith("/v1/audio/speech")).length;
+  const run = () => call(env, "/api/tools/run", { method: "POST", cookie, body: { tool: "talking-photo", consent: true, inputs: { image: t.id, script: "Hello... everyone... welcome... back!" } } });
+  try {
+    for (let i = 1; i <= 5; i++) {
+      const r = await run();
+      assert.equal(r.status, 400, r.text);
+      assert.match(r.json.error, /more than a minute of speech/);
+      assert.equal(speeches(), i);
+    }
+    assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM studio_uploads WHERE user_id = ? AND kind = 'audio'").get(id).n, 0, "no orphan clip is kept");
+    assert.equal([...env.RENDERS.m.keys()].filter((k) => k.includes("/speech/")).length, 5, "the test R2 cannot delete; the rows are what links a clip");
+    assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE user_id = ? AND event = 'studio.speech_refused'").get(id).n, 5);
+    const sixth = await run();
+    assert.equal(sixth.status, 429);
+    assert.equal(sixth.json.code, "speech_limit");
+    assert.equal(speeches(), 5, "no sixth voice was bought");
+    assert.equal(credits(env, id), 50, "nothing was charged at any point");
+  } finally { p.restore(); }
 });
 
 test("the app shell is served for any page path", async () => {

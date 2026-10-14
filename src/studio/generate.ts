@@ -18,7 +18,7 @@ import type { StudioEnv } from "./env.ts";
 import type { Env } from "../env";
 import { ephone, ephoneOutputs, ephoneFailure, type EphoneTask } from "../ephone.ts";
 import { KieError } from "../kie.ts";
-import { debitCredits, refundCredits, getUser, hasPaid, audit } from "../db.ts";
+import { debitCredits, refundCredits, getUser, hasPaid, audit, countAuditTodayForUser } from "../db.ts";
 import { publicText, rid } from "../util.ts";
 import { clipCostUsd, clipCredits, freeModels, modelByKey, normalizeSettings, taskInput, DEFAULT_MARGIN, type ClipSettings } from "./models.ts";
 import { withPreset } from "./presets.ts";
@@ -465,6 +465,15 @@ export async function speak(env: StudioEnv, sp: NonNullable<Plan["speech"]>): Pr
 
 export interface ToolRequest { tool: string; inputs: Record<string, string>; consent?: boolean; chatId?: string | null }
 
+/** How many spoken clips an account may have refused after they were made, per UTC day, before no more is made. */
+export const SPEECH_REFUSED_PER_DAY = 5;
+/** A spoken clip whose order was then refused: deleted with its upload row, and the refusal written down. */
+async function forgetSpeech(env: StudioEnv, userId: string, spoken: { id: string; key: string; seconds: number | null }, why: unknown): Promise<void> {
+  try { await env.RENDERS.delete(spoken.key); } catch { /* the row goes all the same: nothing links to the object */ }
+  await env.DB.prepare("DELETE FROM studio_uploads WHERE id = ? AND user_id = ?").bind(spoken.id, userId).run();
+  await audit(asEnv(env), userId, null, "studio.speech_refused", { seconds: spoken.seconds, why: why instanceof StudioError ? why.code : "error" });
+}
+
 /** Runs one app: reads the attached files, speaks the words if any, prices, charges, orders. */
 export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, origin: string): Promise<GenerationRow> {
   const tool = toolByKey(req.tool);
@@ -491,26 +500,40 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
   let spoken: { id: string; key: string; size: number; seconds: number | null } | null = null;
   if (plan.speech) {
     await gate(env, userId, gateFor(plan));
+    // Speech that was made and then refused (longer than the estimate, or dearer than the credits once timed) is paid
+    // for and never charged (14 October 2026, the review's second pass): a few a day are honest mistakes, a loop is
+    // not, so past SPEECH_REFUSED_PER_DAY no more is made for the account until tomorrow.
+    if ((await countAuditTodayForUser(asEnv(env), userId, "studio.speech_refused")) >= SPEECH_REFUSED_PER_DAY)
+      throw new StudioError("Too many voice attempts were refused today. Shorten the words, or try again tomorrow — nothing was charged.", 429, "speech_limit");
     let wav: Uint8Array;
     try { wav = await speak(env, plan.speech); } catch (e) {
       const money = e instanceof KieError && e.status === 402;
       throw new StudioError(money ? "Our generation engine is being recharged. Please try again in a little while — nothing was charged." : "The voice model couldn't read that. Try different words — nothing was charged.", 502, "speech");
     }
     const info = mediaInfo(wav);
-    const id = rid("up", 12), key = `studio/${userId}/up/${id}.wav`;
+    // Kleo's speech is not one of the person's own uploads: kept outside their up/ prefix, so the upload allowance
+    // (src/studio/index.ts) never counts it.
+    const id = rid("up", 12), key = `studio/${userId}/speech/${id}.wav`;
     await env.RENDERS.put(key, wav, { httpMetadata: { contentType: "audio/wav" } });
     await addUpload(env, { id, userId, key, contentType: "audio/wav", size: wav.byteLength, width: null, height: null, kind: "audio", duration: info?.duration ?? null });
     spoken = { id, key, size: wav.byteLength, seconds: info?.duration ?? null };
-    if (tool.key === "talking-photo" || tool.key === "lipsync") {
+  }
+
+  let credits: number, id: string;
+  try {
+    if (spoken && (tool.key === "talking-photo" || tool.key === "lipsync")) {
       if (spoken.seconds && spoken.seconds > 60.5) throw new StudioError("That's more than a minute of speech. Shorten the words.");
-      media.audio = { id, url: await link(id), kind: "audio", seconds: spoken.seconds, width: null, height: null, type: "audio/wav" };
+      media.audio = { id: spoken.id, url: await link(spoken.id), kind: "audio", seconds: spoken.seconds, width: null, height: null, type: "audio/wav" };
       try { plan = planTool(tool.key, { ...inputs, source: "audio" }, media); } catch (e) { if (e instanceof ToolRefusal) throw new StudioError(e.message); throw e; }
       plan.usd += 0.01;
     }
+    credits = toolCredits(plan.usd, marginOf(env));
+    id = await charge(env, userId, gateFor(plan));
+  } catch (e) {
+    // Refused after the voice was made: the clip and its row go (nobody can use them), and the refusal is counted.
+    if (spoken) await forgetSpeech(env, userId, spoken, e);
+    throw e;
   }
-
-  const credits = toolCredits(plan.usd, marginOf(env));
-  const id = await charge(env, userId, gateFor(plan));
   const prompt = String(inputs.script ?? inputs.prompt ?? "").trim() || plan.summary;
   const settings = { tool: tool.key, summary: plan.summary, output: plan.output, inputs: Object.fromEntries(Object.entries(inputs).filter(([k]) => !fileFields.some((f) => f.key === k))) };
   try {

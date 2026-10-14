@@ -26,6 +26,13 @@ export function fakeWav(seconds, rate = 24000) {
   const samples = Math.round(seconds * rate);
   return new Uint8Array(Buffer.concat([Buffer.from(wavHeader(rate, samples)), Buffer.alloc(samples * 2)]));
 }
+/** `n` MPEG audio frames, each starting with `header` (4 bytes) and `bytes` long. */
+function mpegFrames(n, header, bytes) {
+  const frame = Buffer.alloc(bytes); Buffer.from(header).copy(frame);
+  return Buffer.concat(Array.from({ length: n }, () => frame));
+}
+// MPEG-1 layer III, 128 kbps, 48 kHz: 384 bytes and 24 ms a frame.
+const MP3_128 = [0xff, 0xfb, 0x94, 0x00];
 
 test("media: kinds and lengths read from the bytes", () => {
   const mp4 = fakeMp4(8.5, 1920, 1080);
@@ -35,9 +42,9 @@ test("media: kinds and lengths read from the bytes", () => {
   const wav = fakeWav(2.5);
   assert.equal(wavDuration(wav), 2.5);
   assert.equal(mediaInfo(wav).kind, "audio");
-  // MPEG-1 layer III, 128 kbps, 44.1 kHz, constant bitrate: 16 000 bytes = 1 s.
-  const mp3 = new Uint8Array(16000); mp3.set([0xff, 0xfb, 0x90, 0x00]);
-  assert.equal(mp3Duration(mp3), 1);
+  // 125 frames of MPEG-1 layer III at 128 kbps and 48 kHz: 125 x 24 ms = 3 s.
+  const mp3 = new Uint8Array(mpegFrames(125, MP3_128, 384));
+  assert.equal(mp3Duration(mp3), 3);
   assert.equal(mediaInfo(mp3).type, "audio/mpeg");
   const jpg = new Uint8Array(100); jpg.set([0xff, 0xd8, 0xff]);
   assert.equal(mediaInfo(jpg).kind, "image");
@@ -72,6 +79,51 @@ test("media: a file cannot claim to be shorter than it plays (the longest stated
   const mp3 = new Uint8Array(160000); mp3.set([0xff, 0xfb, 0x90, 0x00]);
   const x = 4 + 32; mp3.set([0x58, 0x69, 0x6e, 0x67, 0, 0, 0, 1, 0, 0, 0, 1], x);
   assert.equal(mp3Duration(mp3), 4);
+});
+
+test("media: the second pass (14 October 2026) - box order, a streamed or inflated WAV header, an MP3 that changes bitrate", () => {
+  const box = (type, ...parts) => {
+    const body = Buffer.concat(parts.map((p) => Buffer.from(p)));
+    const head = Buffer.alloc(8); head.writeUInt32BE(8 + body.length); head.write(type, 4, "ascii");
+    return Buffer.concat([head, body]);
+  };
+  const ftyp = box("ftyp", Buffer.from("isom"), Buffer.alloc(4), Buffer.from("isommp42"));
+  const mvhd = Buffer.alloc(100); mvhd.writeUInt32BE(1000, 12); mvhd.writeUInt32BE(2000, 16); // 2 s
+  const tkhd = Buffer.alloc(84); tkhd.writeUInt32BE(640 * 65536, 76); tkhd.writeUInt32BE(360 * 65536, 80);
+  const mdhd = Buffer.alloc(24); mdhd.writeUInt32BE(30000, 12); mdhd.writeUInt32BE(60000, 16); // 2 s
+  const stts = Buffer.alloc(16); stts.writeUInt32BE(1, 4); stts.writeUInt32BE(900, 8); stts.writeUInt32BE(1000, 12); // 30 s at 1/30 s
+  // MP4: the sample table placed BEFORE its track's mdhd still counts (it was dropped as untimed).
+  const late = box("trak", box("tkhd", tkhd), box("mdia", box("minf", box("stbl", box("stts", stts))), box("mdhd", mdhd)));
+  assert.equal(mp4Info(new Uint8Array(Buffer.concat([ftyp, box("moov", box("mvhd", mvhd), late), box("mdat", Buffer.alloc(64))]))).duration, 30);
+  // MP4: a track header placed before mvhd is timed by mvhd all the same (30 000 ticks of 1/1000 s).
+  const tkhd30 = Buffer.from(tkhd); tkhd30.writeUInt32BE(30000, 20);
+  assert.equal(mp4Info(new Uint8Array(Buffer.concat([ftyp, box("moov", box("trak", box("tkhd", tkhd30)), box("mvhd", mvhd)), box("mdat", Buffer.alloc(64))]))).duration, 30);
+  // No timescale anywhere: no length to trust, so none (the apps refuse the clip).
+  assert.equal(mp4Info(new Uint8Array(Buffer.concat([ftyp, box("moov", box("trak", box("tkhd", tkhd30))), box("mdat", Buffer.alloc(64))]))).duration, null);
+
+  // WAV: a streamed header (data size 0xFFFFFFFF, its writer could not seek back) is measured by its bytes, not 25 hours.
+  const streamed = fakeWav(3); new DataView(streamed.buffer).setUint32(40, 0xffffffff, true);
+  assert.equal(wavDuration(streamed), 3);
+  // WAV: a byte-rate field inflated tenfold does not shorten the clip: the samples' own rate counts.
+  const inflated = fakeWav(3); new DataView(inflated.buffer).setUint32(28, 24000 * 2 * 10, true);
+  assert.equal(wavDuration(inflated), 3);
+  // WAV: a compressed format (2 = MS ADPCM) has no fixed frame size: not measured.
+  const adpcm = fakeWav(3); new DataView(adpcm.buffer).setUint16(20, 2, true);
+  assert.equal(wavDuration(adpcm), null);
+
+  // MP3: a first frame at 320 kbps with a Xing count of ONE frame, then 1000 frames of MPEG-2 layer III at 8 kbps and
+  // 24 kHz (24 bytes, 24 ms each). The old reading (the Xing count, or the file at 320 kbps) said 0.624 s; it plays 24 s.
+  const head = Buffer.alloc(960); Buffer.from([0xff, 0xfb, 0xe4, 0x00]).copy(head); // MPEG-1 III, 320 kbps, 48 kHz
+  Buffer.from([0x58, 0x69, 0x6e, 0x67, 0, 0, 0, 1, 0, 0, 0, 1]).copy(head, 4 + 32);
+  const slow = new Uint8Array(Buffer.concat([head, mpegFrames(1000, [0xff, 0xf3, 0x14, 0x00], 24)]));
+  assert.equal(mp3Duration(slow), 24.024);
+  // MP3: no Xing, the first frame at 128 kbps, the rest at 8 kbps: every frame is timed by its own header.
+  const mixed = new Uint8Array(Buffer.concat([mpegFrames(1, MP3_128, 384), mpegFrames(500, [0xff, 0xf3, 0x14, 0x00], 24)]));
+  assert.equal(mp3Duration(mixed), 12.024);
+  // MP3: an ID3 tag in front is skipped, and frames of layer II count like the others (1152 samples, 48 kHz: 24 ms).
+  const id3 = Buffer.alloc(10 + 100); id3.write("ID3", 0); id3[9] = 100;
+  const layer2 = mpegFrames(50, [0xff, 0xfd, 0x84, 0x00], 384); // MPEG-1 layer II, 128 kbps (index 8 in its table), 48 kHz
+  assert.equal(mp3Duration(new Uint8Array(Buffer.concat([id3, layer2]))), 1.2);
 });
 
 test("presets: added once, published without their prompt text", () => {

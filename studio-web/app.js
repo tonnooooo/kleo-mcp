@@ -382,7 +382,7 @@ function renderReset(token) {
       try {
         await api("/api/auth/reset", { method: "POST", body: { token, password: pass.value } });
         history.replaceState(null, "", "/");
-        S.me = await api("/api/me"); await enter(); toast("Password changed");
+        S.me = await api("/api/me"); await enter(); toast("Password changed. Other sessions are signed out and your Kleo key is new: reconnect your AI assistant with it (Account)");
       } catch (e) { err.textContent = e.message; restore(); }
     } }, pass, err, btn));
   pass.focus();
@@ -1417,7 +1417,7 @@ function openAccount() {
     h("div", { class: "field-label" }, "Security"),
     h("div", { class: "list" },
       h("button", { class: "row", onclick: async () => {
-        if (!confirm("Make a new Kleo key? The old one stops working everywhere, including browsers where you connected Kleo to Claude or ChatGPT with it.")) return;
+        if (!confirm("Make a new Kleo key? The old one stops working everywhere: AI assistants connected with it (Claude, ChatGPT) are disconnected until you add Kleo again with the new key, and every other browser and phone is signed out.")) return;
         try { revealed = (await api("/api/me/key", { method: "POST", body: { reset: true } })).key; keyBox.textContent = revealed; toast("New Kleo key made — the old one no longer works"); }
         catch (e) { handleError(e); }
       } }, icon("key", 19), h("div", { class: "lbl" }, h("b", {}, "New Kleo key"), h("span", {}, "If your key leaked, retire it and get a new one."))),
@@ -1425,7 +1425,7 @@ function openAccount() {
         if (!confirm("Sign out on every browser and phone, this one included?")) return;
         try { await api("/api/auth/signout-all", { method: "POST" }); } catch (e) { return handleError(e); }
         signOut(true);
-      } }, icon("out", 19), h("div", { class: "lbl" }, h("b", {}, "Sign out everywhere"), h("span", {}, "Ends every session of this account.")))),
+      } }, icon("out", 19), h("div", { class: "lbl" }, h("b", {}, "Sign out everywhere"), h("span", {}, "Ends every Kleo Studio session of this account. To disconnect AI assistants too, make a new Kleo key.")))),
     h("div", { class: "list", style: { marginTop: "14px" } },
       h("button", { class: "row danger", onclick: () => signOut() }, icon("out", 19), h("div", { class: "lbl" }, h("b", {}, "Sign out")))));
 }

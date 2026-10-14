@@ -134,10 +134,16 @@ export async function me(env: StudioEnv, userId: string): Promise<Record<string,
   };
 }
 
-/** The account's Kleo key, on request. `fresh` retires the old one first (src/accounts.ts rotateKey). */
+/**
+ * The account's Kleo key, on request. `fresh` retires the old one first (src/accounts.ts rotateKey) and with it every
+ * way in the old key opened (14 October 2026, the review's second pass): the assistants connected with it (their OAuth
+ * grants carry the key version they were made under, src/index.ts mcpApi) and every Studio session, one of which may
+ * have been opened with the leaked key itself (/api/auth/key). The caller signs the asking browser in again.
+ */
 export async function kleoKeyOf(env: StudioEnv, userId: string, fresh = false): Promise<string> {
   if (!fresh) return makeHandle(asEnv(env), userId);
   const key = await rotateKey(asEnv(env), userId);
+  await endAllSessions(env, userId);
   await audit(asEnv(env), userId, null, "studio.key_rotated", {});
   return key;
 }
@@ -192,7 +198,11 @@ export async function resetPassword(env: StudioEnv, body: { token?: string; pass
   if (problem) throw new StudioError(problem);
   await env.DB.prepare("UPDATE studio_logins SET secret = ? WHERE provider = 'password' AND subject = ?").bind(await hashPassword(String(body.password)), full.subject).run();
   // Whoever had the old password may still hold a session: every one of them ends here (the new one is made after).
+  // And the Kleo key is renewed (the review's second pass): with the password one could ask for the key and connect an
+  // assistant with it, which then read the key back (kleo_account) and kept the account through any number of resets.
+  // A new key ends those assistants' grants (src/index.ts mcpApi); the page tells the person to reconnect them.
   await endAllSessions(env, m[1]);
+  await rotateKey(asEnv(env), m[1]);
   await audit(asEnv(env), m[1], null, "studio.reset_done", {});
   return m[1];
 }
@@ -306,9 +316,14 @@ async function untouched(env: StudioEnv, userId: string): Promise<boolean> {
   return Number(r?.n ?? 1) === 0;
 }
 
-/** Takes an untouched account away from whoever claimed its e-mail: password login gone, sessions ended, key retired. */
+/**
+ * Takes an untouched account away from whoever claimed its e-mail: every sign-in of it gone, sessions ended, key
+ * retired — and with the key, every assistant the claimant connected (its grant carries the old key version, src/index.ts
+ * mcpApi). Every sign-in, not only the password (the review's second pass): a claimant who had linked their own Google
+ * or Microsoft account to it would otherwise sign straight back in. The verified person's sign-in is added right after.
+ */
 async function evictClaimant(env: StudioEnv, userId: string, provider: SocialKey): Promise<void> {
-  await env.DB.prepare("DELETE FROM studio_logins WHERE user_id = ? AND provider = 'password'").bind(userId).run();
+  await env.DB.prepare("DELETE FROM studio_logins WHERE user_id = ?").bind(userId).run();
   await endAllSessions(env, userId);
   await rotateKey(asEnv(env), userId);
   await audit(asEnv(env), userId, null, "studio.email_claim_evicted", { provider });

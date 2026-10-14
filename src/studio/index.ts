@@ -199,8 +199,16 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     await audit(asEnv(env), userId, null, "studio.signout_all", {});
     return json({ ok: true }, 200, { "set-cookie": clearSessionCookie() });
   }
-  // The Kleo key only on request; "reset" retires the old one everywhere (MCP sign-in cookies included).
-  if (path === "/api/me/key" && method === "POST") return json({ key: await kleoKeyOf(env, userId, (await body(request)).reset === true) });
+  // The Kleo key only on request; "reset" retires the old one everywhere (MCP sign-in cookies, the assistants connected
+  // with it, every Studio session) and signs THIS browser in again under the new epoch.
+  if (path === "/api/me/key" && method === "POST") {
+    const fresh = (await body(request)).reset === true;
+    const key = await kleoKeyOf(env, userId, fresh);
+    if (!fresh) return json({ key });
+    const res = await signedIn(env, userId, { key });
+    res.headers.set("cache-control", "no-store"); // a credential, like every other answer of this API
+    return res;
+  }
 
   if (path === "/api/me" && method === "GET") {
     const info = await me(env, userId);
@@ -405,9 +413,11 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
   if (path === "/api/uploads" && method === "POST") {
     const len = Number(request.headers.get("content-length") ?? 0);
     if (len > MAX_CLIP) throw new StudioError("That file is too big (60 MB max).", 413);
-    // A daily allowance per account (14 October 2026): storage is the owner's money, and uploads are kept.
-    const today = await env.DB.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM studio_uploads WHERE user_id = ? AND created_at >= strftime('%Y-%m-%dT00:00:00.000Z','now')")
-      .bind(userId).first<{ n: number; bytes: number }>();
+    // A daily allowance per account (14 October 2026): storage is the owner's money, and uploads are kept. Only the
+    // files this route stored count (their keys sit under the account's up/ prefix): the pictures, clips and speech
+    // Kleo made for the account are upload rows too, and must not use up the room for the person's own files.
+    const today = await env.DB.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM studio_uploads WHERE user_id = ? AND key LIKE ? AND created_at >= strftime('%Y-%m-%dT00:00:00.000Z','now')")
+      .bind(userId, `studio/${userId}/up/%`).first<{ n: number; bytes: number }>();
     if ((today?.n ?? 0) >= Number(env.STUDIO_UPLOADS_PER_DAY ?? 200) || (today?.bytes ?? 0) + len > Number(env.STUDIO_UPLOAD_MB_PER_DAY ?? 2048) * 1048576) {
       throw new StudioError("You've reached today's upload allowance. Use the files you already added, or come back tomorrow.", 429, "uploads");
     }

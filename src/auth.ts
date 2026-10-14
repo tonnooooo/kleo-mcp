@@ -1,8 +1,8 @@
 import { AuthorizationError, type AuthRequest } from "@cloudflare/workers-oauth-provider";
 import type { Env, AuthProps } from "./env";
 import { type User, getUser, createUserIfUnderCaps, getInvite, useInvite, applyBonusToUser, touchUser, audit } from "./db";
-import { accountCookie, cookieHandle, ipFingerprint, makeHandle, signupRateKey, verifyHandle, verifyTurnstile } from "./accounts";
-import { html, escapeHtml, rid, int } from "./util";
+import { ACCOUNT_COOKIE, accountCookie, cookieHandle, ipFingerprint, keyVersion, makeHandle, signupRateKey, verifyHandle, verifyTurnstile } from "./accounts";
+import { html, escapeHtml, rid, int, crossSiteRequest } from "./util";
 import { getLaunchCode, redeemLaunchCode, normalizeCode, TRIAL_FILM_MAX_S } from "./launch.ts";
 import { linkReferral, normalizeReferral, cookieReferral } from "./referral.ts";
 import { recordSignupSource } from "./growth.ts";
@@ -36,9 +36,14 @@ export async function handleAuthorize(request: Request, env: Env): Promise<Respo
     if (parsed instanceof Response) return parsed;
     const client = await env.OAUTH_PROVIDER.lookupClient(parsed.clientId);
     if (!client) return html(page({ error: "This connection request is not valid. Please add Kleo again from your assistant's connector settings.", clientName: parsed.clientId, oauthQuery: "", freeCredits }), 400);
-    return html(page({ clientName: client.clientName ?? parsed.clientId, oauthQuery: url.search.slice(1), returning: await returningUser(env, request), freeCredits }));
+    return html(page({ clientName: client.clientName ?? parsed.clientId, oauthQuery: url.search.slice(1), returning: await returningUser(env, request), freeCredits,
+      returnTo: returnHost(parsed.redirectUri), siteKey: env.TURNSTILE_SITEKEY }));
   }
   if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+  // LOGIN CSRF (14 October 2026, the security review): the press is honoured only from this page itself. A form on
+  // another site could post a Kleo key of the attacker's here, and the cookie the answer sets would put the victim's
+  // browser — and every assistant they connect afterwards — on the attacker's account. Refused before the form is read.
+  if (crossSiteRequest(request)) return new Response("This sign-in can only be sent from Kleo's own page. Open it again from your assistant's connector settings.", { status: 403, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
 
   const form = await request.formData();
   const oauthQuery = String(form.get("oauth_query") ?? "");
@@ -51,15 +56,20 @@ export async function handleAuthorize(request: Request, env: Env): Promise<Respo
   const client = await env.OAUTH_PROVIDER.lookupClient(parsed.clientId);
   const clientName = client?.clientName ?? parsed.clientId;
   const returning = await returningUser(env, request);
-  const back = (error: string, status = 400) => html(page({ error, clientName, oauthQuery, returning, freeCredits }), status);
+  const back = (error: string, status = 400) => html(page({ error, clientName, oauthQuery, returning, freeCredits, returnTo: returnHost(parsed.redirectUri), siteKey: env.TURNSTILE_SITEKEY }), status);
 
   const ip = request.headers.get("CF-Connecting-IP");
   if (env.SIGNUP_LIMIT) {
     const { success } = await env.SIGNUP_LIMIT.limit({ key: await signupRateKey(env, ip) });
     if (!success) return back("Kleo is getting a lot of requests right now. Wait a few seconds and press the button again.", 429);
   }
-  // Skipped entirely while TURNSTILE_SECRET is unset; the widget itself is Phase 2.
-  if (!(await verifyTurnstile(env, String(form.get("cf-turnstile-response") ?? ""), ip)))
+  // THE BOT CHECK (14 October 2026) guards the free credits, so it asks only the press that will CREATE an account:
+  // no Kleo key typed and no valid kleo_id cookie — exactly resolveAccount's last branch. A returning browser or a
+  // pasted key opens an account that already exists and gets nothing new, and must never be locked out of its own
+  // credits by a challenge that did not load. Skipped entirely while TURNSTILE_SECRET is unset (src/accounts.ts);
+  // the widget is on the page whenever TURNSTILE_SITEKEY is set.
+  const creating = !pastedKey && !returning;
+  if (creating && !(await verifyTurnstile(env, String(form.get("cf-turnstile-response") ?? ""), ip)))
     return back("Kleo could not check that you are a person. Reload the page and press the button again.", 403);
 
   // A referral code arrives typed in the code field, in the kleo_ref cookie its /r/ page left, or in the connector
@@ -68,11 +78,16 @@ export async function handleAuthorize(request: Request, env: Env): Promise<Respo
   const typedRef = normalizeReferral(bonusCode);
   const ref = typedRef ?? cookieReferral(request.headers.get("cookie")) ?? hints.ref;
   const resolved = await resolveAccount(env, { cookie: cookieHandle(request.headers.get("cookie")), key: pastedKey, bonus: typedRef ? "" : bonusCode, ip, ref, src: normalizeChannel(hints.src) });
-  if ("error" in resolved) return back(resolved.error, resolved.status);
+  if ("error" in resolved) {
+    const refused = back(resolved.error, resolved.status);
+    if (resolved.clearCookie) refused.headers.append("set-cookie", `${ACCOUNT_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`);
+    return refused;
+  }
   const user = resolved.user;
   await touchUser(env, user.id);
 
-  const props: AuthProps = { userId: user.id, email: user.email };
+  // The key version the grant is made under (src/accounts.ts grantStillValid): a later "New Kleo key" ends this grant.
+  const props: AuthProps = { userId: user.id, email: user.email, keyVersion: await keyVersion(env, user.id) };
   const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
     request: parsed,
     userId: user.id,
@@ -91,7 +106,7 @@ async function returningUser(env: Env, request: Request): Promise<User | undefin
   return (userId ? await getUser(env, userId) : null) ?? undefined;
 }
 
-type Resolved = { user: User } | { error: string; status: number };
+type Resolved = { user: User } | { error: string; status: number; clearCookie?: boolean };
 
 /**
  * A pasted Kleo key FIRST, then the cookie, then a new account — and ONLY the new account is given free credits.
@@ -114,6 +129,14 @@ async function resolveAccount(env: Env, o: { cookie: string | null; key: string;
   }
   const known = await accountFor(o.cookie);
   if (known) return { user: await applyBonus(env, known, o.bonus) };
+  // A RETIRED KEY IN THE COOKIE (14 October 2026): the account exists but its Kleo key was replaced ("New Kleo key", a
+  // password reset, an eviction — src/accounts.ts rotateKey). This browser belongs to that account, so silently opening
+  // a brand-new empty one here would strand its credits and films. Ask once for the new key; the answer also clears the
+  // stale cookie, so pressing the button again with the field empty does start a new account if that is what they want.
+  const staleId = /^([A-Za-z0-9_-]{1,64})\.[0-9a-f]{32}$/.exec((o.cookie ?? "").trim())?.[1];
+  if (staleId && (await getUser(env, staleId))) {
+    return { error: "This browser's Kleo key was replaced with a new one. Paste your new Kleo key below (in Kleo: Account → Kleo key) to keep your account and credits. To start a new, empty account instead, press the button again.", status: 409, clearCookie: true };
+  }
 
   // Both daily caps live inside the INSERT (db.ts createUserIfUnderCaps): the day cap, and the per-address one that
   // stops 25 requests from one place closing the free tier for everybody until midnight. The address is stored only
@@ -192,8 +215,30 @@ async function parseOrError(request: Request, env: Env): Promise<AuthRequest | R
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-function page(o: { clientName: string; oauthQuery: string; freeCredits: number; error?: string; returning?: User }): string {
+/**
+ * The host the consent sends the browser back to, for the page to name (14 October 2026, the security review). Any
+ * client can register itself (dynamic client registration) under any name — "Claude" included — so the name alone
+ * proves nothing; the address the code goes to is the fact the user can check. A web address is named by its host
+ * (claude.ai, localhost:33418 for an assistant on this computer); a desktop app's own scheme keeps the scheme, which
+ * is the part that says "an app" (cursor://anysphere.cursor-retrieval, com.example.app:). "" when there is none.
+ */
+export function returnHost(redirectUri: string | null | undefined): string {
+  try {
+    if (!redirectUri) return "";
+    const u = new URL(redirectUri);
+    if (u.protocol === "https:" || u.protocol === "http:") return u.host;
+    return u.host ? `${u.protocol}//${u.host}` : u.protocol;
+  } catch {
+    return "";
+  }
+}
+
+function page(o: { clientName: string; oauthQuery: string; freeCredits: number; error?: string; returning?: User; returnTo?: string; siteKey?: string }): string {
   const client = escapeHtml(o.clientName || "your assistant");
+  // Cloudflare Turnstile (14 October 2026): only for a browser that will open a NEW account, the one press the check is
+  // asked of (handleAuthorize); "interaction-only" keeps it invisible unless Cloudflare wants a click. The implicit
+  // render puts its token in a hidden cf-turnstile-response field, so the widget must sit INSIDE the form.
+  const turnstile = !!o.siteKey && !o.returning;
   // The price is the table's, not a number typed here: this page said "1 credit = 1 Short" for a day after the
   // film became the only product at 7 credits. Since 14 September the gift (7) sits under the shortest film (10):
   // the sentence below says so in as many words, instead of promising a film the credits cannot buy.
@@ -223,13 +268,17 @@ button{width:100%;padding:15px;border-radius:10px;border:0;background:var(--ambe
 details{margin-top:22px;border-top:1px solid var(--line);padding-top:14px}
 summary{cursor:pointer;font-size:.85rem;color:var(--mute)}
 .foot{margin-top:16px;font-size:.8rem;color:var(--mute)}
-</style></head><body><form class="card" method="post" action="/authorize">
+.dest b{color:var(--ink);word-break:break-all}
+.cf-turnstile{margin:6px 0 4px}
+</style>${turnstile ? `\n<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>` : ""}</head><body><form class="card" method="post" action="/authorize">
 <div class="brand"><svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="7" width="26" height="22" rx="5" fill="#F3B53F"/><path d="M3 12h26v4H3z" fill="#1A1200" opacity=".85"/><path d="M7 12l3.5 4M13 12l3.5 4M19 12l3.5 4" stroke="#F3B53F" stroke-width="1.6"/><path d="M10 19v8M10 23l6-4M10 23l6 4" stroke="#1A1200" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>Kleo <span>MCP</span></div>
 <h1>Connect ${client} to Kleo</h1>
 <p>${client} will be able to create videos for you, follow their progress and fetch the download links. You can remove this at any time from ${client}'s connector settings.</p>
+${o.returnTo ? `<p class="dest">After you continue you go back to <b>${escapeHtml(o.returnTo)}</b>. If that is not the assistant you are connecting, close this page.</p>` : ""}
 ${o.error ? `<div class="err" role="alert">${escapeHtml(o.error)}</div>` : ""}
 ${o.returning ? `<div class="back">Welcome back - ${plural(o.returning.credits, "credit")} left.</div>` : ""}
 <input type="hidden" name="oauth_query" value="${escapeHtml(o.oauthQuery)}">
+${turnstile ? `<div class="cf-turnstile" data-sitekey="${escapeHtml(o.siteKey ?? "")}" data-theme="dark" data-appearance="interaction-only"></div>` : ""}
 <button type="submit">${o.returning ? "Continue" : o.freeCredits > 0 ? `Start free - ${plural(o.freeCredits, "credit")} included` : "Start"}</button>
 <p class="note">No email. No password. No card. No invite code. Your Kleo account lives in this browser.</p>
 <details><summary>Have a bonus code, or a Kleo key?</summary>

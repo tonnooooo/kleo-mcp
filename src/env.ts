@@ -163,6 +163,12 @@ export interface Env {
   KIE_MAX_VIDEO_S?: string;
   /** Hard ceiling on estimated kie.ai dollars per UTC day (default 5.00); over it the footage call refuses. */
   DAILY_FOOTAGE_BUDGET_USD?: string;
+  /**
+   * The launch-code films' own ceiling, estimated dollars per UTC day (default 4.00; 14 October 2026, src/footage.ts
+   * footageBudgetUsd): their clips, track and pictures are counted here and no longer in DAILY_FOOTAGE_BUDGET_USD, so
+   * the public codes cannot book the paying customers' day. The worst day is the sum of the two.
+   */
+  TRIAL_FOOTAGE_BUDGET_USD?: string;
   /** The Suno version kie.ai's "ai-music-api/generate" is asked for (default V6; `duration` needs V5_5 or a V6): the user's optional music track (src/footage.ts). */
   KIE_MUSIC_VERSION?: string;
   /** "off" refuses every music order (the film is made without its track); anything else, or unset, orders it when KIE_API_KEY is set. */
@@ -193,4 +199,9 @@ export interface Env {
 export interface AuthProps {
   userId: string;
   email: string;
+  /**
+   * users.key_version when the grant was made (14 October 2026, src/accounts.ts grantStillValid): a grant made before
+   * the account's Kleo key was retired no longer opens /mcp. Absent on grants made before versions existed: version 0.
+   */
+  keyVersion?: number;
 }

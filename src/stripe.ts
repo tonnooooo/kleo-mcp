@@ -1,5 +1,5 @@
 import type { Env } from "./env";
-import { getUser, creditPurchase, paymentByIntent, setPaymentStatus, takeBackCredits, audit } from "./db";
+import { getUser, creditPurchase, paymentByIntent, takeBackCredits, audit } from "./db";
 import { json, hmacHex, safeEqual } from "./util";
 import { isFlagActive } from "./schema";
 import { rewardReferral, takeBackReferral } from "./referral.ts";
@@ -194,6 +194,15 @@ export async function handleStripeWebhook(request: Request, env: Env): Promise<R
  * non-refundable fee, and it stays gone for the months the case takes. Leaving the credits spendable on top of that
  * is paying twice for the same purchase. The balance is allowed to go negative — that is an honest record of what
  * happened, and every spend path already refuses to start a video without enough credits.
+ *
+ * ONCE, EVEN DELIVERED TWICE AT THE SAME MOMENT (14 October 2026, the security review). Stripe may deliver the same
+ * dispute twice, and two deliveries can run side by side; this used to READ the status, see "paid" in both, and take
+ * the credits back twice. The claim is now one conditional UPDATE — status becomes 'disputed' only where it is not yet
+ * — and only the delivery whose UPDATE changed the row takes anything back. The claim goes FIRST on purpose: if the
+ * Worker died between the claim and the take-back, the retry would find the row claimed and take nothing, so the
+ * worst case is credits left with the customer and a 'disputed' row without its credits.chargeback audit, visible and
+ * fixable by hand — never credits taken twice. A refund is marked the same careful way: it never overwrites
+ * 'disputed', or a dispute delivered again after it would find the row "not disputed" and take the credits again.
  */
 async function handleChargeTrouble(env: Env, type: string, charge: Record<string, unknown>): Promise<Response> {
   const pi = typeof charge.payment_intent === "string" ? charge.payment_intent : null;
@@ -202,16 +211,17 @@ async function handleChargeTrouble(env: Env, type: string, charge: Record<string
   if (!row) return json({ ok: true, ignored: "no payment of ours matches that charge" });
 
   if (type === "charge.refunded") {
-    await setPaymentStatus(env, row.session_id, "refunded");
+    const marked = await env.DB.prepare("UPDATE payments SET status = 'refunded' WHERE session_id = ? AND status != 'disputed'").bind(row.session_id).run();
+    if ((marked.meta.changes ?? 0) !== 1) return json({ ok: true, already: "disputed" });
     await audit(env, row.user_id, null, "stripe.refunded", { payment_intent: pi, session: row.session_id, credits: row.credits, note: "credits deliberately NOT removed: a refund can still fail" });
     return json({ ok: true, marked: "refunded" });
   }
 
-  if (row.status === "disputed") return json({ ok: true, already: "disputed" });
+  const claimed = await env.DB.prepare("UPDATE payments SET status = 'disputed' WHERE session_id = ? AND status != 'disputed'").bind(row.session_id).run();
+  if ((claimed.meta.changes ?? 0) !== 1) return json({ ok: true, already: "disputed" });
   if (row.user_id && row.credits > 0) await takeBackCredits(env, row.user_id, row.credits, row.session_id);
   // The referral reward this payment earned goes with it, from both sides (src/referral.ts).
   await takeBackReferral(env, row.session_id);
-  await setPaymentStatus(env, row.session_id, "disputed");
   await audit(env, row.user_id, null, "stripe.disputed", { payment_intent: pi, session: row.session_id, credits_taken: row.credits });
   return json({ ok: true, marked: "disputed", credits_taken: row.credits });
 }

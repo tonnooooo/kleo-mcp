@@ -27,7 +27,7 @@ const SIG_LEN = 32;
  * retires the old key everywhere at once — the MCP sign-in cookie, the pasted key, Studio's "I have a Kleo key".
  * A database that cannot answer (an old test env, a missing column) means version 0, never a refusal.
  */
-async function keyVersion(env: Env, userId: string): Promise<number> {
+export async function keyVersion(env: Env, userId: string): Promise<number> {
   try {
     const r = await env.DB.prepare("SELECT key_version FROM users WHERE id = ?").bind(userId).first<{ key_version: number | null }>();
     return Number(r?.key_version ?? 0) || 0;
@@ -52,10 +52,26 @@ export async function verifyHandle(env: Env, value: string | null | undefined): 
   return safeEqual(handle, await makeHandle(env, userId)) ? userId : null;
 }
 
-/** Retires the account's current Kleo key (and the MCP sign-in cookies made from it); answers the new key. */
+/**
+ * Retires the account's current Kleo key (and the MCP sign-in cookies made from it, and the OAuth grants of the
+ * assistants connected while it was current: grantStillValid); answers the new key.
+ */
 export async function rotateKey(env: Env, userId: string): Promise<string> {
   await env.DB.prepare("UPDATE users SET key_version = COALESCE(key_version, 0) + 1 WHERE id = ?").bind(userId).run();
   return makeHandle(env, userId);
+}
+
+/**
+ * THE GRANT FOLLOWS THE KEY (14 October 2026, the review's second pass). An assistant connected at /authorize holds an
+ * OAuth grant tied to the account id, and until today nothing retired it: whoever had connected one with a leaked key,
+ * or from an account later handed to the owner of its e-mail (Studio's evictClaimant), kept spending its credits and
+ * could read the NEW key back through kleo_account. Every grant now carries the key version it was made under
+ * (AuthProps.keyVersion, src/auth.ts), and /mcp opens only for a grant of the current version (src/index.ts mcpApi), so
+ * rotateKey — "New Kleo key", a password reset, an eviction — disconnects those assistants too. A grant made before
+ * versions existed counts as version 0, so every assistant connected until today keeps working until the first rotation.
+ */
+export async function grantStillValid(env: Env, userId: string, grantVersion: unknown): Promise<boolean> {
+  return (Number(grantVersion ?? 0) || 0) === (await keyVersion(env, userId));
 }
 
 /** The raw (still unverified) kleo_id value out of a Cookie header, e.g. "other=1; kleo_id=u_ab.cd12". */
