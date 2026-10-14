@@ -127,11 +127,71 @@ export async function me(env: StudioEnv, userId: string): Promise<Record<string,
     ?? ((user as unknown as { contact_email?: string | null }).contact_email ?? null);
   return {
     id: user.id, email, credits: user.credits,
+    name: (user as unknown as { display_name?: string | null }).display_name ?? null, since: user.created_at,
     methods: logins.map((l) => l.provider),
     // The Kleo key is a credential (whoever holds it owns the account): it is handed out only on an explicit request
     // (kleoKeyOf), never in the answer every page load reads.
     mcpUrl: `${env.PUBLIC_URL.replace(/\/+$/, "")}/mcp`,
   };
+}
+
+// ── The account page (14 October 2026, the owner: "impostazioni profilo molto minime, fai come higgsfield") ─────────
+
+/** The name shown in the app (users.display_name); empty clears it. */
+export async function setName(env: StudioEnv, userId: string, raw: unknown): Promise<string | null> {
+  const name = String(raw ?? "").replace(/\s+/g, " ").trim().slice(0, 60) || null;
+  await env.DB.prepare("UPDATE users SET display_name = ? WHERE id = ?").bind(name, userId).run();
+  return name;
+}
+
+/** Changes the password of an account that has one; every other session ends, this browser gets a new one. */
+export async function changePassword(env: StudioEnv, userId: string, body: { current?: string; password?: string }): Promise<void> {
+  const login = (await loginsOf(env, userId)).find((l) => l.provider === "password");
+  const full = login ? await getLogin(env, "password", login.subject) : null;
+  if (!full?.secret) throw new StudioError("This account has no password yet. Add one below.", 400, "no_password");
+  if (!(await checkPassword(String(body.current ?? ""), full.secret))) throw new StudioError("Your current password isn't right.", 401, "wrong");
+  const bad = passwordProblem(String(body.password ?? ""));
+  if (bad) throw new StudioError(bad);
+  await env.DB.prepare("UPDATE studio_logins SET secret = ? WHERE provider = 'password' AND subject = ?").bind(await hashPassword(String(body.password)), full.subject).run();
+  await endAllSessions(env, userId);
+  await audit(asEnv(env), userId, null, "studio.password_changed", {});
+}
+
+/** What the credits went on, and what was bought: the account page's two lists. */
+export async function activity(env: StudioEnv, userId: string): Promise<{ usage: unknown[]; purchases: unknown[] }> {
+  const usage = (await env.DB.prepare(`SELECT id, kind, model, credits, status, refunded, created_at, substr(prompt, 1, 90) AS prompt
+      FROM studio_generations WHERE user_id = ? ORDER BY created_at DESC LIMIT 60`).bind(userId).all()).results;
+  const purchases = (await env.DB.prepare(`SELECT credits, amount_cent, currency, status, at FROM payments
+      WHERE user_id = ? AND amount_cent > 0 ORDER BY at DESC LIMIT 30`).bind(userId).all()).results;
+  return { usage, purchases };
+}
+
+/**
+ * Deletes the account's data for good: every creation and upload (rows and files), chats, sign-in methods; the account
+ * row keeps only what the law and the books need (payments), with no address, no name and no credits. Sessions end and
+ * the Kleo key is retired, so neither a browser nor an assistant can open it again.
+ */
+export async function deleteAccount(env: StudioEnv, userId: string, confirm: unknown): Promise<void> {
+  if (String(confirm ?? "").trim().toUpperCase() !== "DELETE") throw new StudioError("Type DELETE to confirm.", 400, "confirm");
+  const prefix = `studio/${userId}/`;
+  for (let cursor: string | undefined, i = 0; i < 50; i++) {
+    const page = await env.RENDERS.list({ prefix, cursor, limit: 1000 });
+    const keys = page.objects.map((o) => o.key);
+    if (keys.length) await env.RENDERS.delete(keys);
+    if (!page.truncated) break;
+    cursor = page.cursor;
+  }
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM studio_generations WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM studio_uploads WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM studio_messages WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM studio_chats WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM studio_logins WHERE user_id = ?").bind(userId),
+    env.DB.prepare("UPDATE users SET email = ?, display_name = NULL, contact_email = NULL, credits = 0 WHERE id = ?").bind(`${userId}@deleted.kleo.invalid`, userId),
+  ]);
+  await endAllSessions(env, userId);
+  await rotateKey(asEnv(env), userId);
+  await audit(asEnv(env), userId, null, "studio.account_deleted", {});
 }
 
 /**
