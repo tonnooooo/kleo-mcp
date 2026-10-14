@@ -29,7 +29,7 @@ import { mediaInfo } from "./media.ts";
 import { APP_PATH, serveSite } from "./site.ts";
 import { normalizeFilm, orderFilm, quoteFilm } from "./films.ts";
 import { runAgent, chatTitle, enhancePrompt, type Proposal } from "./agent.ts";
-import { signUp, signIn, signInWithKey, addPassword, me, signedIn, endAllSessions, kleoKeyOf, googleEnabled, microsoftEnabled, enabledSocial, socialEnabled, socialStart, socialCallback, forgotPassword, resetPassword, resetAvailable, type SocialKey } from "./auth.ts";
+import { signUp, signIn, signInWithKey, addPassword, me, signedIn, endAllSessions, kleoKeyOf, setName, changePassword, activity, deleteAccount, googleEnabled, microsoftEnabled, enabledSocial, socialEnabled, socialStart, socialCallback, forgotPassword, resetPassword, resetAvailable, type SocialKey } from "./auth.ts";
 import { httpsRedirect, secureResponse } from "./security.ts";
 import { SESSION_COOKIE, clearSessionCookie, readCookie, readSessionFull, normalizeEmail, signPath, checkSignedPath } from "./session.ts";
 import { ipBucket } from "../accounts.ts";
@@ -174,7 +174,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       emailReset: resetAvailable(env), presets: publicPresets(), tools: publicTools(marginOf(env)), freeTools: freeTools(env.STUDIO_FREE_TOOLS),
     });
   }
-  if (path.startsWith("/api/auth/") && method === "POST" && path !== "/api/auth/password" && path !== "/api/auth/signout-all") {
+  if (path.startsWith("/api/auth/") && method === "POST" && path !== "/api/auth/password" && path !== "/api/auth/password/change" && path !== "/api/auth/signout-all") {
     if (path === "/api/auth/signout") return json({ ok: true }, 200, { "set-cookie": clearSessionCookie() });
     const b = await body(request);
     // Guessing one person's password from many addresses is throttled per e-mail too, not only per visitor.
@@ -219,6 +219,15 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       allowedImages: paid ? IMAGE_MODELS.map((m) => m.key) : freeImageModels(env.STUDIO_FREE_IMAGE_MODELS), packs: packsFor(env, userId),
       allowedTools: paid ? freeTools("*") : freeTools(env.STUDIO_FREE_TOOLS),
     });
+  }
+
+  // ── the account page ──
+  if (path === "/api/me/activity" && method === "GET") return json(await activity(env, userId));
+  if (path === "/api/me/profile" && method === "POST") return json({ name: await setName(env, userId, (await body(request)).name) });
+  if (path === "/api/auth/password/change" && method === "POST") { await changePassword(env, userId, await body(request)); return signedIn(env, userId); }
+  if (path === "/api/me/delete" && method === "POST") {
+    await deleteAccount(env, userId, (await body(request)).confirm);
+    return json({ ok: true }, 200, { "set-cookie": clearSessionCookie() });
   }
 
   // ── chats ──

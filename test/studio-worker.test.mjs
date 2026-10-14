@@ -40,6 +40,7 @@ class FakeR2 {
     return { size: e.bytes.byteLength, httpEtag: '"x"', httpMetadata: { contentType: e.type }, body: new Response(e.bytes).body, arrayBuffer: async () => e.bytes.buffer };
   }
   async delete(keys) { for (const k of [].concat(keys)) this.m.delete(k); }
+  async list({ prefix = "" } = {}) { return { objects: [...this.m.keys()].filter((k) => k.startsWith(prefix)).map((key) => ({ key })), truncated: false }; }
 }
 // The Workers runtime's FixedLengthStream, as a plain pass-through.
 globalThis.FixedLengthStream ??= class extends TransformStream { constructor() { super(); } };
@@ -808,6 +809,37 @@ test("speech refused after it was made is deleted and counted; past five a day n
     assert.equal(speeches(), 5, "no sixth voice was bought");
     assert.equal(credits(env, id), 50, "nothing was charged at any point");
   } finally { p.restore(); }
+});
+
+test("account page: a name, the activity, a password change that ends other sessions, and deleting the account for good", async () => {
+  const env = newEnv();
+  const cookie = await signUp(env, "acct@example.com");
+  const me = (await call(env, "/api/me", { cookie })).json;
+  assert.equal((await call(env, "/api/me/profile", { method: "POST", cookie, body: { name: "  Ada   Lovelace " } })).json.name, "Ada Lovelace");
+  assert.equal((await call(env, "/api/me", { cookie })).json.name, "Ada Lovelace");
+  env.DB.db.exec(`INSERT INTO payments (session_id, user_id, credits, amount_cent, currency, status, raw_ref) VALUES ('cs_a1', '${me.id}', 10, 500, 'eur', 'paid', 'x')`);
+  const act = (await call(env, "/api/me/activity", { cookie })).json;
+  assert.deepEqual(act.purchases.map((p) => [p.credits, p.amount_cent]), [[10, 500]]);
+  assert.ok(Array.isArray(act.usage));
+  // Password change: the current one is required; other sessions end, this browser gets a fresh one.
+  const other = cookieOf(await call(env, "/api/auth/signin", { method: "POST", body: { email: "acct@example.com", password: "long enough pw" } }));
+  assert.equal((await call(env, "/api/auth/password/change", { method: "POST", cookie, body: { current: "nope nope", password: "brand new pass" } })).status, 401);
+  const changed = await call(env, "/api/auth/password/change", { method: "POST", cookie, body: { current: "long enough pw", password: "brand new pass" } });
+  assert.equal(changed.status, 200, changed.text);
+  assert.equal((await call(env, "/api/me", { cookie: other })).status, 401, "the other device is signed out");
+  const fresh = cookieOf(changed);
+  assert.equal((await call(env, "/api/me", { cookie: fresh })).status, 200, "this browser stays in");
+  // Delete the account: type DELETE; files, rows and sign-in go, the payment record stays.
+  await env.RENDERS.put(`studio/${me.id}/up/up_x.jpg`, new Uint8Array(10));
+  assert.equal((await call(env, "/api/me/delete", { method: "POST", cookie: fresh, body: { confirm: "yes" } })).status, 400);
+  const gone = await call(env, "/api/me/delete", { method: "POST", cookie: fresh, body: { confirm: "delete" } });
+  assert.equal(gone.status, 200, gone.text);
+  assert.ok(![...env.RENDERS.m.keys()].some((k) => k.startsWith(`studio/${me.id}/`)), "every file is gone");
+  assert.equal((await call(env, "/api/me", { cookie: fresh })).status, 401);
+  assert.equal((await call(env, "/api/auth/signin", { method: "POST", body: { email: "acct@example.com", password: "brand new pass" } })).status, 401);
+  const row = env.DB.db.prepare("SELECT email, credits, display_name FROM users WHERE id = ?").get(me.id);
+  assert.deepEqual([row.email, row.credits, row.display_name], [`${me.id}@deleted.kleo.invalid`, 0, null]);
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM payments WHERE user_id = ?").get(me.id).n, 1, "the books keep the payment");
 });
 
 test("the app shell is served for any page path", async () => {
