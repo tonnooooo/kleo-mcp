@@ -410,7 +410,7 @@ function renderShell() {
       icon(p.ic, 17), p.label, p.isNew ? h("span", { class: "new" }, "NEW") : null))),
     h("div", { class: "nav-right" }, S.me ? [
       h("button", { class: "credits-pill", onclick: () => openBuy(), "aria-label": "Credits" }, bolt(15), h("span", { "data-credits": "" }, S.me.credits)),
-      h("button", { class: "avatar avatar-btn", "aria-label": "Account", onclick: openAccount }, (S.me.email || "K")[0].toUpperCase())] : [
+      h("button", { class: "avatar avatar-btn", "aria-label": "Account", onclick: openAccount }, (S.me.name || S.me.email || "K")[0].toUpperCase())] : [
       h("button", { class: "btn btn-quiet btn-sm", onclick: () => requireAccount("signin") }, "Sign in"),
       h("button", { class: "btn btn-cta btn-sm", onclick: () => requireAccount("signup") }, "Start free")]));
   const tabs = h("nav", { class: "tabbar", "aria-label": "Main" }, PAGES.filter((p) => p.key !== "audio").map((p) => h("button", { "data-page": p.key, onclick: () => go(p.path) }, icon(p.ic, 23), p.label)));
