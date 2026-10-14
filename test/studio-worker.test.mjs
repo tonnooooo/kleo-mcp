@@ -842,6 +842,41 @@ test("account page: a name, the activity, a password change that ends other sess
   assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM payments WHERE user_id = ?").get(me.id).n, 1, "the books keep the payment");
 });
 
+test("Enhance: Kleo's adapt rules on a fast model, the clip's length and shape in the brief, a failure said out loud; the agent sends no sampling parameters", async () => {
+  const env = newEnv();
+  const cookie = await signUp(env, "enh@example.com");
+  const p = fakeProvider((u) => u.endsWith("/v1/chat/completions")
+    ? ok({ choices: [{ message: { content: "\"A red race car leaves the pit lane at dusk, low tracking shot, sodium light, engine roar.\"" } }] })
+    : new Response("?", { status: 404 }));
+  try {
+    const r = await call(env, "/api/enhance", { method: "POST", cookie, body: { kind: "video", prompt: "una corsa automobilistica", seconds: 5, aspect: "9:16", model: "Seedance 2.0 Fast" } });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.prompt, "A red race car leaves the pit lane at dusk, low tracking shot, sodium light, engine roar.");
+    const sent = p.sent.find((s) => s.url.endsWith("/v1/chat/completions")).body;
+    assert.equal(sent.model, "gpt-4.1-mini");
+    assert.equal(sent.temperature, undefined);
+    assert.match(sent.messages[0].content, /FIDELITY/);
+    assert.match(sent.messages[0].content, /5 seconds, 9:16/);
+    const music = await call(env, "/api/enhance", { method: "POST", cookie, body: { kind: "music", prompt: "lofi" } });
+    assert.equal(music.status, 200);
+    assert.match(p.sent.at(-1).body.messages[0].content, /MUSIC model/);
+  } finally { p.restore(); }
+  const down = fakeProvider(() => new Response("nope", { status: 500 }));
+  try {
+    const r = await call(env, "/api/enhance", { method: "POST", cookie, body: { kind: "image", prompt: "a cat" } });
+    assert.equal(r.status, 503);
+    assert.equal(r.json.code, "enhance");
+  } finally { down.restore(); }
+  // The chat agent: Claude 5 on ePhone refuses temperature, so the call carries none.
+  const q = fakeProvider((u) => u.endsWith("/v1/chat/completions") ? ok({ choices: [{ message: { content: "Hi!" } }] }) : new Response("?", { status: 404 }));
+  try {
+    await call(env, "/api/chat", { method: "POST", cookie, body: { text: "ciao" } });
+    const agentCall = q.sent.find((s) => s.url.endsWith("/v1/chat/completions"));
+    assert.ok(agentCall, "the agent was called");
+    assert.equal(agentCall.body.temperature, undefined);
+  } finally { q.restore(); }
+});
+
 test("the app shell is served for any page path", async () => {
   const env = newEnv();
   const r = await call(env, "/c/c_whatever");

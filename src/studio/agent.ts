@@ -11,6 +11,8 @@
  */
 import type { StudioEnv } from "./env.ts";
 import { ephone } from "../ephone.ts";
+import { KieError } from "../kie.ts";
+import { StudioError } from "./generate.ts";
 import { MODELS, clipCredits, normalizeSettings, type ClipSettings, type ModelKey } from "./models.ts";
 import { IMAGE_MODELS, imageCredits, normalizeImageSettings, type ImageModelKey, type ImageSettings } from "./image-models.ts";
 import { normalizeFilm, type FilmSettings } from "./films.ts";
@@ -272,7 +274,7 @@ export async function runAgent(env: StudioEnv, ctx: AgentContext, pictures: stri
   try {
     const r = await ephone<{ choices?: { message?: { content?: unknown; tool_calls?: { function?: { name?: string; arguments?: string } }[] } }[] }>(
       env, "POST", "/v1/chat/completions",
-      { model: (env.STUDIO_AGENT_MODEL ?? "").trim() || DEFAULT_AGENT_MODEL, messages, tools: [TOOL, IMAGE_TOOL, FILM_TOOL], tool_choice: "auto", max_tokens: 1200, temperature: 0.7 },
+      { model: (env.STUDIO_AGENT_MODEL ?? "").trim() || DEFAULT_AGENT_MODEL, messages, tools: [TOOL, IMAGE_TOOL, FILM_TOOL], tool_choice: "auto", max_tokens: 1200 },
       { timeoutMs: 45_000, routing: CHAT_ROUTING },
     );
     const msg = r.choices?.[0]?.message ?? {};
@@ -315,24 +317,47 @@ export function chatTitle(text: string, hasPictures: boolean): string {
  * "Enhance": rewrites a short idea into a full prompt for the chosen kind of result, keeping the idea and the
  * language of any quoted dialogue. Answers the person's own text when the model cannot be reached.
  */
-export async function enhancePrompt(env: StudioEnv, kind: "video" | "image", text: string): Promise<string> {
+/**
+ * ENHANCE = KLEO'S ADAPT PROMPT, FOR ONE CLIP, PICTURE OR SOUND (14 October 2026, the owner: "usa l'adapt prompting di
+ * Kleo … due secondi massimo"). The same discipline as the film treatment (src/treatment.ts MASTER_PROMPT), cut to
+ * one shot: FIDELITY first (every subject, name, colour, object and action of the idea stays, in its order; only what
+ * it leaves open is added, concrete and filmable), then the visual language a cinematographer could shoot from (the
+ * first image, one camera move, the light, three colours, the lens, the sound), then the banned words. A small, fast
+ * model writes it (STUDIO_ENHANCE_MODEL, gpt-4.1-mini by default: about 1.7 s measured on ePhone, where Claude Haiku
+ * 5.5 took 3 s and ignored the English rule); the clip's length, shape and model shape the prompt. A failure is said,
+ * never hidden: the page shows it instead of handing back the same words.
+ */
+export type EnhanceKind = "video" | "image" | "music" | "sfx" | "edit";
+const ENHANCE_RULES: Record<EnhanceKind, string> = {
+  video: "WRITE 45-75 words, present tense, ONE shot that fits the length: the first image the camera holds; the action as it unfolds; the place; one camera move; the light (source, colour, time of day); a palette of at most three colours; the lens; the sound (ambience and effects; words someone says go in quotes, in their own language).",
+  image: "WRITE 35-65 words: the subject and what it does; the framing and composition; the place; the light (source, colour, time of day); a palette of at most three colours; the style or medium; the lens. Text that must appear in the picture goes in quotes, exactly.",
+  edit: "WRITE one clear instruction of 20-45 words for a video EDITING model: what to change in the clip (look, weather, time of day, style, an object) and what must stay exactly as it is (the people, their movement, the framing).",
+  music: "WRITE 25-50 words for a MUSIC model: genre, instruments, tempo in bpm, mood, and how it moves from start to end. Never a known song or an artist's name.",
+  sfx: "WRITE 8-25 words for a SOUND EFFECTS model: the sound source, the action, the space it is heard in (close, distant, a room, outdoors), and its length or rhythm. No music.",
+};
+export async function enhancePrompt(env: StudioEnv, kind: EnhanceKind, text: string, ctx: { seconds?: number; aspect?: string; model?: string } = {}): Promise<string> {
   const idea = text.trim().slice(0, 2000);
   if (!idea) return idea;
-  const how = kind === "image"
-    ? "Rewrite it as one English image prompt of 40-90 words: subject, composition, setting, light, style, lens. Exact text to render goes in quotes."
-    : "Rewrite it as one English video prompt of 60-120 words: subject, action in present tense, setting, camera movement, light, style, sound. Dialogue stays in quotes in its own language.";
+  const target = kind === "video" ? `an AI video model${ctx.model ? ` (${ctx.model})` : ""}, ${ctx.seconds ? `${ctx.seconds} seconds` : "a few seconds"}${ctx.aspect ? `, ${ctx.aspect}` : ""}`
+    : kind === "image" ? `an AI image model${ctx.model ? ` (${ctx.model})` : ""}${ctx.aspect ? `, ${ctx.aspect}` : ""}`
+    : kind === "edit" ? "an AI video editing model" : kind === "music" ? "an AI music model" : "an AI sound effects model";
+  const system = `You are Kleo's prompt director: you turn a person's idea into ONE prompt for ${target}.
+FIDELITY: keep every subject, name, colour, object and action of the idea, in its order; never swap the idea for a better one; add only what it leaves open, concrete and possible to film or hear.
+${ENHANCE_RULES[kind]}
+NEVER: stunning, breathtaking, epic, vibrant, masterpiece, 8k, ultra-realistic, cinematic masterpiece; no brands, logos or real people the idea did not name; no on-screen text unless the idea asks for it.
+Write in English, whatever the idea's language, except words in quotes. Answer with the prompt only: no title, no quotes around it, no preamble.`;
+  let r: { choices?: { message?: { content?: unknown } }[] };
   try {
-    const r = await ephone<{ choices?: { message?: { content?: unknown } }[] }>(env, "POST", "/v1/chat/completions", {
-      model: (env.STUDIO_AGENT_MODEL ?? "").trim() || DEFAULT_AGENT_MODEL, max_tokens: 400, temperature: 0.7,
-      messages: [
-        { role: "system", content: `You improve prompts for AI ${kind} models. Keep the user's idea, subject and any names exactly; add vivid, concrete detail; never add on-screen text unless asked. ${how} Answer with the prompt only, no quotes around it, no preamble.` },
-        { role: "user", content: idea },
-      ],
-    }, { timeoutMs: 30_000, routing: CHAT_ROUTING });
-    const out = r.choices?.[0]?.message?.content;
-    const said = (typeof out === "string" ? out : "").trim().replace(/^["“]|["”]$/g, "");
-    return said.length > 10 ? said.slice(0, 2000) : idea;
-  } catch {
-    return idea;
+    r = await ephone(env, "POST", "/v1/chat/completions", {
+      model: (env.STUDIO_ENHANCE_MODEL ?? "").trim() || "gpt-4.1-mini", max_tokens: 200,
+      messages: [{ role: "system", content: system }, { role: "user", content: idea }],
+    }, { timeoutMs: 8_000, routing: CHAT_ROUTING });
+  } catch (e) {
+    const money = e instanceof KieError && e.status === 402;
+    throw new StudioError(money ? "Prompt help is paused while our engine is recharged. Try again in a little while." : "Kleo couldn't improve this prompt right now. Try again in a moment.", 503, "enhance");
   }
+  const out = r.choices?.[0]?.message?.content;
+  const said = (typeof out === "string" ? out : "").trim().replace(/^["“]|["”]$/g, "").replace(/^(?:prompt|here is[^:]*):\s*/i, "");
+  if (said.length < 8) throw new StudioError("Kleo couldn't improve this prompt right now. Try again in a moment.", 503, "enhance");
+  return said.slice(0, 2000);
 }

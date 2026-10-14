@@ -47,6 +47,8 @@ export interface StudioEnv {
   STUDIO_MAX_RUNNING?: string;
   /** The chat model, an ePhone OpenAI-compatible model id (default claude-haiku-5-5). */
   STUDIO_AGENT_MODEL?: string;
+  /** The fast model behind Enhance (default gpt-4.1-mini: ~1.7 s on ePhone). */
+  STUDIO_ENHANCE_MODEL?: string;
   /** Agent messages one account may send in a UTC day (default 200). */
   STUDIO_AGENT_PER_DAY?: string;
   /** Google sign-in (OAuth client of type "Web application"); the button shows only when both are set. */

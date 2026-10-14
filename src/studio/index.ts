@@ -360,10 +360,11 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     return json(await quoteFilm(env, userId, normalizeFilm(b.settings ?? {})));
   }
   if (path === "/api/enhance" && method === "POST") {
-    const b = await body<{ kind?: string; prompt?: string }>(request);
+    const b = await body<{ kind?: string; prompt?: string; seconds?: number; aspect?: string; model?: string }>(request);
     if ((await countAuditTodayForUser(asEnv(env), userId, "studio.enhance")) >= Number(env.STUDIO_AGENT_PER_DAY ?? 200)) throw new StudioError("You've reached today's limit for prompt help.", 429, "agent_limit");
     await audit(asEnv(env), userId, null, "studio.enhance", {});
-    return json({ prompt: await enhancePrompt(env, b.kind === "image" ? "image" : "video", String(b.prompt ?? "")) });
+    const kind = (["video", "image", "music", "sfx", "edit"] as const).find((k) => k === b.kind) ?? "video";
+    return json({ prompt: await enhancePrompt(env, kind, String(b.prompt ?? ""), { seconds: Number(b.seconds) || undefined, aspect: typeof b.aspect === "string" ? b.aspect.slice(0, 8) : undefined, model: typeof b.model === "string" ? b.model.slice(0, 40) : undefined }) });
   }
   if (path === "/api/tools/price" && method === "POST") {
     const b = await body<{ tool?: string; inputs?: Record<string, string> }>(request);
