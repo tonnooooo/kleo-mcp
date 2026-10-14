@@ -801,7 +801,7 @@ test("speech refused after it was made is deleted and counted; past five a day n
       assert.equal(speeches(), i);
     }
     assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM studio_uploads WHERE user_id = ? AND kind = 'audio'").get(id).n, 0, "no orphan clip is kept");
-    assert.equal([...env.RENDERS.m.keys()].filter((k) => k.includes("/speech/")).length, 5, "the test R2 cannot delete; the rows are what links a clip");
+    assert.equal([...env.RENDERS.m.keys()].filter((k) => k.includes("/speech/")).length, 0, "the refused speech files are deleted too");
     assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE user_id = ? AND event = 'studio.speech_refused'").get(id).n, 5);
     const sixth = await run();
     assert.equal(sixth.status, 429);
