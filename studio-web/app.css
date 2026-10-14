@@ -646,10 +646,10 @@ a.row { color: var(--ink); }
   .nav { padding: env(safe-area-inset-top) 12px 0; }
   .nav-tabs { display: none; }
   .tabbar {
-    display: grid; grid-template-columns: repeat(5, 1fr); background: var(--glass); border-top: 1px solid var(--sep); padding-bottom: env(safe-area-inset-bottom);
+    display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); background: var(--glass); border-top: 1px solid var(--sep); padding-bottom: env(safe-area-inset-bottom);
     backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px); z-index: 20;
   }
-  .tabbar button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; font-size: 13px; font-weight: 600; color: var(--ink-3); }
+  .tabbar button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; font-size: 13px; font-weight: 600; min-width: 0; white-space: nowrap; color: var(--ink-3); }
   .tabbar button.on { color: var(--ink); }
   .tabbar button.on svg { color: #f3a43f; }
   .page { padding: 14px 14px 30px; }
