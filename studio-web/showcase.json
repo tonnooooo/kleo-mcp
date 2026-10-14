@@ -36,6 +36,54 @@
   "poster": "https://media.kleooai.com/gallery/kitten-knight-black-dragon.jpg"
  },
  {
+  "slug": "tether-film",
+  "title": "Tether",
+  "line": "An astronaut on one tether, under the station.",
+  "format": "wide",
+  "seconds": 20,
+  "prompt": "A lone astronaut in low Earth orbit, from a close-up of his face inside the helmet, lit by the two lamps of his suit, pulling back as he drifts on a single tether below the sunlit underside of the space station.",
+  "kind": "film",
+  "preview": "https://media.kleooai.com/gallery/tether-film-p.mp4",
+  "full": "https://media.kleooai.com/gallery/tether-film.mp4",
+  "poster": "https://media.kleooai.com/gallery/tether-film.jpg"
+ },
+ {
+  "slug": "signal-delay",
+  "title": "Signal Delay",
+  "line": "Voyager 1 goes silent, 24 billion km away.",
+  "format": "wide",
+  "seconds": 62,
+  "prompt": "November 2023, Voyager 1 starts sending nonsense from 24 billion kilometres away. A radio dish in the dark, columns of corrupted data, a record player, the Milky Way, a room of engineers at their terminals, 45 hours for every question and its answer, and the title Signal Delay.",
+  "kind": "film",
+  "preview": "https://media.kleooai.com/gallery/signal-delay-p.mp4",
+  "full": "https://media.kleooai.com/gallery/signal-delay.mp4",
+  "poster": "https://media.kleooai.com/gallery/signal-delay.jpg"
+ },
+ {
+  "slug": "apex-film",
+  "title": "Apex",
+  "line": "A hypercar and a classic 911, tunnel to cliff road.",
+  "format": "wide",
+  "seconds": 20,
+  "prompt": "A yellow hypercar and a pale-blue classic 911 race side by side through a lit tunnel, burst out onto a cliff road above the sea at golden hour, and the classic takes the lead in the low sun.",
+  "kind": "film",
+  "preview": "https://media.kleooai.com/gallery/apex-film-p.mp4",
+  "full": "https://media.kleooai.com/gallery/apex-film.mp4",
+  "poster": "https://media.kleooai.com/gallery/apex-film.jpg"
+ },
+ {
+  "slug": "venice-high-water",
+  "title": "Venice, high water",
+  "line": "High water, a speedboat, the lagoon at sunset.",
+  "format": "wide",
+  "seconds": 20,
+  "prompt": "Venice at high water. People wade across a flooded square, a speedboat cuts across the lagoon past the domes, the wooden piles stand under clear green water with fish, waves break over an iron gate, and gulls rise over the city at sunset.",
+  "kind": "film",
+  "preview": "https://media.kleooai.com/gallery/venice-high-water-p.mp4",
+  "full": "https://media.kleooai.com/gallery/venice-high-water.mp4",
+  "poster": "https://media.kleooai.com/gallery/venice-high-water.jpg"
+ },
+ {
   "slug": "kitten-sunglasses-dragon",
   "title": "Kitten in Sunglasses",
   "line": "Desert road, silver armour, white sunglasses.",
@@ -82,6 +130,18 @@
   "preview": "https://media.kleooai.com/gallery/raccoons-pizza-run-p.mp4",
   "full": "https://media.kleooai.com/gallery/raccoons-pizza-run.mp4",
   "poster": "https://media.kleooai.com/gallery/raccoons-pizza-run.jpg"
+ },
+ {
+  "slug": "octopus-facts",
+  "title": "Octopus, three hearts",
+  "line": "Three hearts, blue blood: an animated explainer.",
+  "format": "tall",
+  "seconds": 32,
+  "prompt": "Why does an octopus have three hearts and blue blood? Two hearts pump blood to the gills, its blood carries copper, not iron, and its main heart stops when it swims, with big captions word by word.",
+  "kind": "film",
+  "preview": "https://media.kleooai.com/gallery/octopus-facts-p.mp4",
+  "full": "https://media.kleooai.com/gallery/octopus-facts.mp4",
+  "poster": "https://media.kleooai.com/gallery/octopus-facts.jpg"
  },
  {
   "slug": "mechs-in-snow",
@@ -252,6 +312,18 @@
   "poster": "https://media.kleooai.com/gallery/type-the-film-30s.jpg"
  },
  {
+  "slug": "lighthouse-sketch-ad",
+  "title": "Sketch to Film",
+  "line": "A pencil sketch becomes a film, inside Claude.",
+  "format": "wide",
+  "seconds": 52,
+  "prompt": "Make a short film like this: A pencil sketch becomes a film, inside Claude.",
+  "kind": "ad",
+  "preview": "https://media.kleooai.com/gallery/lighthouse-sketch-ad-p.mp4",
+  "full": "https://media.kleooai.com/gallery/lighthouse-sketch-ad.mp4",
+  "poster": "https://media.kleooai.com/gallery/lighthouse-sketch-ad.jpg"
+ },
+ {
   "slug": "claude-chat-to-film-30s",
   "title": "An idea. A chat. A film.",
   "line": "One line typed in Claude, and Apex comes back in 4K 60 fps.",
@@ -396,6 +468,42 @@
   "poster": "https://media.kleooai.com/gallery/opus-blender-to-film.jpg"
  },
  {
+  "slug": "ai-is-not-creative",
+  "title": "AI is not creative",
+  "line": "Motion graphics made by Claude Opus 5.5 and Kleo.",
+  "format": "tall",
+  "seconds": 15,
+  "prompt": "Make a short film like this: Motion graphics made by Claude Opus 5.5 and Kleo.",
+  "kind": "ad",
+  "preview": "https://media.kleooai.com/gallery/ai-is-not-creative-p.mp4",
+  "full": "https://media.kleooai.com/gallery/ai-is-not-creative.mp4",
+  "poster": "https://media.kleooai.com/gallery/ai-is-not-creative.jpg"
+ },
+ {
+  "slug": "one-sentence-r6",
+  "title": "One sentence. One film.",
+  "line": "One sentence, four looks, one film.",
+  "format": "tall",
+  "seconds": 30,
+  "prompt": "Make a short film like this: One sentence, four looks, one film.",
+  "kind": "ad",
+  "preview": "https://media.kleooai.com/gallery/one-sentence-r6-p.mp4",
+  "full": "https://media.kleooai.com/gallery/one-sentence-r6-p.mp4",
+  "poster": "https://media.kleooai.com/gallery/one-sentence-r6.jpg"
+ },
+ {
+  "slug": "it-writes-it-directs-r5",
+  "title": "It writes. It directs.",
+  "line": "One message, and Kleo writes and directs the film.",
+  "format": "tall",
+  "seconds": 30,
+  "prompt": "Make a short film like this: One message, and Kleo writes and directs the film.",
+  "kind": "ad",
+  "preview": "https://media.kleooai.com/gallery/it-writes-it-directs-r5-p.mp4",
+  "full": "https://media.kleooai.com/gallery/it-writes-it-directs-r5-p.mp4",
+  "poster": "https://media.kleooai.com/gallery/it-writes-it-directs-r5.jpg"
+ },
+ {
   "slug": "diver-bowling",
   "title": "The Diver",
   "line": "A deep-sea diver leaves the laundromat for the bowling lane.",
@@ -516,6 +624,42 @@
   "poster": "https://media.kleooai.com/gallery/the-wake-trailer.jpg"
  },
  {
+  "slug": "puppy-knight",
+  "title": "The Puppy Knight",
+  "line": "A puppy knight in a poppy field, and a dragon.",
+  "format": "wide",
+  "seconds": 30,
+  "prompt": "Make a short film like this: A puppy knight in a poppy field, and a dragon.",
+  "kind": "film",
+  "preview": "https://media.kleooai.com/gallery/puppy-knight-p.mp4",
+  "full": "https://media.kleooai.com/gallery/puppy-knight.mp4",
+  "poster": "https://media.kleooai.com/gallery/puppy-knight.jpg"
+ },
+ {
+  "slug": "knights-and-goblins",
+  "title": "Knights and Goblins",
+  "line": "Two knights, a tavern and two little goblins by a lake.",
+  "format": "wide",
+  "seconds": 11,
+  "prompt": "Make a short film like this: Two knights, a tavern and two little goblins by a lake.",
+  "kind": "film",
+  "preview": "https://media.kleooai.com/gallery/knights-and-goblins-p.mp4",
+  "full": "https://media.kleooai.com/gallery/knights-and-goblins.mp4",
+  "poster": "https://media.kleooai.com/gallery/knights-and-goblins.jpg"
+ },
+ {
+  "slug": "tuna-smart-tv",
+  "title": "Your Smart TV Is Watching",
+  "line": "How smart TVs watch what you watch, and how to stop it.",
+  "format": "wide",
+  "seconds": 273,
+  "prompt": "Make a short film like this: How smart TVs watch what you watch, and how to stop it.",
+  "kind": "film",
+  "preview": "https://media.kleooai.com/gallery/tuna-smart-tv-p.mp4",
+  "full": "https://media.kleooai.com/gallery/tuna-smart-tv.mp4",
+  "poster": "https://media.kleooai.com/gallery/tuna-smart-tv.jpg"
+ },
+ {
   "slug": "venice-whale",
   "title": "A Whale in Venice",
   "line": "A humpback breaches out of the Grand Canal, and it never happened.",
@@ -526,5 +670,17 @@
   "preview": "https://media.kleooai.com/gallery/venice-whale-p.mp4",
   "full": "https://media.kleooai.com/gallery/venice-whale.mp4",
   "poster": "https://media.kleooai.com/gallery/venice-whale.jpg"
+ },
+ {
+  "slug": "corgi-knight-reel",
+  "title": "The Corgi Knight, the reel",
+  "line": "A corgi knight takes the ice throne.",
+  "format": "tall",
+  "seconds": 12,
+  "prompt": "Make a short film like this: A corgi knight takes the ice throne.",
+  "kind": "film",
+  "preview": "https://media.kleooai.com/gallery/corgi-knight-reel-p.mp4",
+  "full": "https://media.kleooai.com/gallery/corgi-knight-reel.mp4",
+  "poster": "https://media.kleooai.com/gallery/corgi-knight-reel.jpg"
  }
 ]
