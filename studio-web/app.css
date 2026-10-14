@@ -888,3 +888,6 @@ body::after {
 
 /* The lines drift sideways: the layer is wider than the screen so its ends never show. */
 body::after { inset: -6% -18%; }
+/* The header link to kleooai.com/mcp (Kleo inside ChatGPT, Claude, Cursor): desktop only, the phone has no room. */
+.nav-plugin { gap: 6px; }
+@media (max-width: 860px) { .nav-plugin { display: none; } }
