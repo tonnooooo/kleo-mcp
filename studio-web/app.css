@@ -886,3 +886,5 @@ body::after {
 .hero .logo-orb { margin-bottom: 4px; }
 .auth-card .logo-orb { margin-bottom: 8px; }
 
+/* The lines drift sideways: the layer is wider than the screen so its ends never show. */
+body::after { inset: -6% -18%; }
