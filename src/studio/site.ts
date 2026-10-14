@@ -30,7 +30,8 @@ const extOf = (p: string): string => /\.([a-z0-9]+)$/i.exec(p)?.[1]?.toLowerCase
 export function sitePath(pathname: string): string {
   let p: string;
   try { p = decodeURIComponent(pathname); } catch { return "/404.html"; }
-  if (p === "/mcp" || p === "/mcp/") return "/index.html";
+  // kleooai.com/mcp is the connect page (kleo-site mcp/index.html, 14 October 2026), like higgsfield.ai/mcp.
+  if (p === "/mcp" || p === "/mcp/") return "/mcp/index.html";
   if (p.includes("..") || p.includes("\\") || p.includes("\0")) return "/404.html";
   const parts = p.split("/").filter(Boolean);
   if (parts.some((x, i) => x.startsWith(".") && !(i === 0 && x === ".well-known"))) return "/404.html";

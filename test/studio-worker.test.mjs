@@ -613,7 +613,7 @@ test("apps: face swap (consent, two pictures), talking photo (speech first, exac
 test("the site behind the app: /mcp is the site's home, other pages keep their address, videos seek, unknown paths 404", async () => {
   const env = newEnv();
   const files = {
-    "/index.html": "<!doctype html><title>Kleo MCP</title>", "/pricing/index.html": "<!doctype html><title>Pricing</title>",
+    "/mcp/index.html": "<!doctype html><title>Kleo MCP</title>", "/pricing/index.html": "<!doctype html><title>Pricing</title>",
     "/site.css": "body{}", "/404.html": "<!doctype html><title>Not found</title>", "/samples/a.mp4": "0123456789",
   };
   const p = fakeProvider((u) => {
