@@ -1270,7 +1270,7 @@ const MEDIA = "https://media.kleooai.com";
 const pic = (name) => `${MEDIA}/app/app-${name}.jpg`;
 const loop = (slug) => `${MEDIA}/gallery/${slug}-p.mp4`;
 const still = (slug) => `${MEDIA}/gallery/${slug}.jpg`;
-function artImg(src, cls = "") { return h("img", { class: `art-fill ${cls}`, src, alt: "", loading: "lazy", decoding: "async" }); }
+function artImg(src, cls = "") { return h("img", { class: `art-fill ${cls}`, src, alt: "", decoding: "async" }); }
 function artVideo(src, cls = "") { const v = loopVideo(src, src.replace(/-p\.mp4$/, ".jpg")); v.classList.add("art-fill"); if (cls) v.classList.add(...cls.split(" ")); return v; }
 function waveBars(n = 22) { return h("div", { class: "art-wave", "aria-hidden": "true" }, Array.from({ length: n }, (_, i) => h("i", { style: { animationDelay: `${(i * 97) % 900}ms`, height: `${30 + ((i * 37) % 60)}%` } }))); }
 const chip = (text, cls = "") => h("span", { class: `art-chip ${cls}` }, text);
@@ -1281,9 +1281,9 @@ function split(left, right, labels) {
 }
 const APP_ART = {
   "face-swap": () => split(artImg(pic("face-a")), artImg(pic("face-b"))),
-  "video-face-swap": () => h("div", { class: "art-stack" }, artVideo(loop("founder-starter-kit-p2")), h("span", { class: "art-face" }, artImg(pic("face-b"))), h("span", { class: "art-arrow" }, icon("redo", 16, 2.2))),
+  "video-face-swap": () => h("div", { class: "art-stack" }, artVideo(loop("made-in-kleo-ai-queen")), h("span", { class: "art-face" }, artImg(pic("face-a"))), h("span", { class: "art-arrow" }, icon("redo", 16, 2.2))),
   "talking-photo": () => h("div", { class: "art-stack" }, artImg(pic("speaker")), h("span", { class: "art-bubble" }, "Hi, I'm talking!"), waveBars()),
-  "lipsync": () => h("div", { class: "art-stack" }, artVideo(loop("kleo-x-claude-ad")), waveBars()),
+  "lipsync": () => h("div", { class: "art-stack" }, artImg(pic("face-b")), h("span", { class: "art-bubble" }, "New words, same face"), waveBars()),
   "motion-control": () => h("div", { class: "art-pair" }, artVideo(loop("lobby-run")), artVideo(loop("kitten-knight-jump")), h("span", { class: "art-arrow mid" }, icon("right", 16, 2.4))),
   "video-edit": () => split(artImg(still("koi-supra-night")), artImg(still("koi-supra-night"), "graded"), ["Before", "After"]),
   "video-upscale": () => split(artImg(still("dragon-rider-cat"), "soft"), artImg(still("dragon-rider-cat")), ["480p", "4K"]),

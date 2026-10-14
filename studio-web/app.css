@@ -803,8 +803,8 @@ a.row { color: var(--ink); }
 .art-fill.top { object-position: 50% 18%; }
 .art-fill.dim { filter: brightness(.55) saturate(1.1); }
 .art-fill.blur { filter: blur(18px) brightness(.6) saturate(1.3); transform: scale(1.2); }
-.art-fill.soft { filter: blur(2.6px) contrast(.88) saturate(.8); transform: scale(1.04); }
-.art-fill.graded { filter: sepia(.55) hue-rotate(-18deg) saturate(1.7) brightness(1.08); }
+.art-fill.soft { filter: blur(5px) contrast(.85) saturate(.75); transform: scale(1.06); }
+.art-fill.graded { filter: hue-rotate(165deg) saturate(1.6) brightness(1.05) contrast(1.05); }
 .art-split, .art-stack, .art-pair { position: absolute; inset: 0; overflow: hidden; }
 .art-split-r { position: absolute; inset: 0; clip-path: inset(0 0 0 50%); animation: art-slide 6s ease-in-out infinite; }
 .art-split-bar { position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; background: #fff; box-shadow: 0 0 12px rgba(0, 0, 0, .45); animation: art-bar 6s ease-in-out infinite; }
