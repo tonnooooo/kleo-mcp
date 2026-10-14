@@ -72,16 +72,16 @@
   "poster": "https://media.kleooai.com/gallery/apex-film.jpg"
  },
  {
-  "slug": "venice-high-water",
+  "slug": "venice-high-water-kleo",
   "title": "Venice, high water",
-  "line": "High water, a speedboat, the lagoon at sunset.",
+  "line": "High water, a boat on the lagoon, gulls at sunset.",
   "format": "wide",
-  "seconds": 20,
+  "seconds": 5,
   "prompt": "Venice at high water. People wade across a flooded square, a speedboat cuts across the lagoon past the domes, the wooden piles stand under clear green water with fish, waves break over an iron gate, and gulls rise over the city at sunset.",
   "kind": "film",
-  "preview": "https://media.kleooai.com/gallery/venice-high-water-p.mp4",
-  "full": "https://media.kleooai.com/gallery/venice-high-water.mp4",
-  "poster": "https://media.kleooai.com/gallery/venice-high-water.jpg"
+  "preview": "https://media.kleooai.com/gallery/venice-high-water-kleo-p.mp4",
+  "full": "https://media.kleooai.com/gallery/venice-high-water-kleo.mp4",
+  "poster": "https://media.kleooai.com/gallery/venice-high-water-kleo.jpg"
  },
  {
   "slug": "kitten-sunglasses-dragon",
