@@ -1269,8 +1269,9 @@ function startFilm() {
 const MEDIA = "https://media.kleooai.com";
 const pic = (name) => `${MEDIA}/app/app-${name}.jpg`;
 const loop = (slug) => `${MEDIA}/gallery/${slug}-p.mp4`;
+const still = (slug) => `${MEDIA}/gallery/${slug}.jpg`;
 function artImg(src, cls = "") { return h("img", { class: `art-fill ${cls}`, src, alt: "", loading: "lazy", decoding: "async" }); }
-function artVideo(src, cls = "") { const v = loopVideo(src, ""); v.classList.add("art-fill"); if (cls) v.classList.add(...cls.split(" ")); return v; }
+function artVideo(src, cls = "") { const v = loopVideo(src, src.replace(/-p\.mp4$/, ".jpg")); v.classList.add("art-fill"); if (cls) v.classList.add(...cls.split(" ")); return v; }
 function waveBars(n = 22) { return h("div", { class: "art-wave", "aria-hidden": "true" }, Array.from({ length: n }, (_, i) => h("i", { style: { animationDelay: `${(i * 97) % 900}ms`, height: `${30 + ((i * 37) % 60)}%` } }))); }
 const chip = (text, cls = "") => h("span", { class: `art-chip ${cls}` }, text);
 /** Two layers with a sliding divider: the right one shows through from the divider on. */
@@ -1280,12 +1281,12 @@ function split(left, right, labels) {
 }
 const APP_ART = {
   "face-swap": () => split(artImg(pic("face-a")), artImg(pic("face-b"))),
-  "video-face-swap": () => h("div", { class: "art-stack" }, artVideo(loop("street-reel")), h("span", { class: "art-face" }, artImg(pic("face-b"))), h("span", { class: "art-arrow" }, icon("redo", 16, 2.2))),
+  "video-face-swap": () => h("div", { class: "art-stack" }, artVideo(loop("founder-starter-kit-p2")), h("span", { class: "art-face" }, artImg(pic("face-b"))), h("span", { class: "art-arrow" }, icon("redo", 16, 2.2))),
   "talking-photo": () => h("div", { class: "art-stack" }, artImg(pic("speaker")), h("span", { class: "art-bubble" }, "Hi, I'm talking!"), waveBars()),
   "lipsync": () => h("div", { class: "art-stack" }, artVideo(loop("kleo-x-claude-ad")), waveBars()),
   "motion-control": () => h("div", { class: "art-pair" }, artVideo(loop("lobby-run")), artVideo(loop("kitten-knight-jump")), h("span", { class: "art-arrow mid" }, icon("right", 16, 2.4))),
-  "video-edit": () => split(artVideo(loop("koi-supra-night")), artVideo(loop("koi-supra-night"), "graded"), ["Before", "After"]),
-  "video-upscale": () => split(artVideo(loop("dragon-rider-cat"), "soft"), artVideo(loop("dragon-rider-cat")), ["480p", "4K"]),
+  "video-edit": () => split(artImg(still("koi-supra-night")), artImg(still("koi-supra-night"), "graded"), ["Before", "After"]),
+  "video-upscale": () => split(artImg(still("dragon-rider-cat"), "soft"), artImg(still("dragon-rider-cat")), ["480p", "4K"]),
   "outfit-swap": () => split(artImg(pic("outfit-a"), "top"), artImg(pic("outfit-b"), "top")),
   "voice": () => h("div", { class: "art-stack" }, artImg(pic("face-a"), "dim"), waveBars(28)),
   "music": () => h("div", { class: "art-stack art-music" }, artImg(pic("music"), "blur"), h("img", { class: "art-cover", src: pic("music"), alt: "", loading: "lazy" }), waveBars(18)),
