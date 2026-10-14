@@ -243,8 +243,8 @@ button.pill:hover { background: var(--fill); }
 .refund { display: inline-flex; gap: 4px; align-items: center; font-size: 15px; font-weight: 600; color: var(--green); margin-top: 6px; }
 
 /* ── composer ──────────────────────────────────────────────────────────── */
-.dock { position: absolute; left: 0; right: 0; bottom: 0; padding: 0 12px max(12px, env(safe-area-inset-bottom)); z-index: 6; pointer-events: none;
-  background: linear-gradient(to top, var(--bg) 55%, transparent); }
+.dock { position: absolute; left: 0; right: 0; bottom: 0; padding: 26px 12px max(12px, env(safe-area-inset-bottom)); z-index: 6; pointer-events: none;
+  background: linear-gradient(to top, var(--bg) 74%, transparent); }
 .composer {
   pointer-events: auto; max-width: 760px; margin: 0 auto; background: var(--elev); border: 1px solid var(--sep);
   border-radius: 28px; box-shadow: var(--shadow-l); padding: 8px; transition: border-color .2s, box-shadow .2s;
@@ -422,7 +422,7 @@ button.row:hover { background: var(--fill-2); }
   .sheet { left: 0; right: 0; top: auto; bottom: 0; transform: none; width: 100%; border-radius: 26px 26px 0 0; max-height: 88vh; padding-bottom: max(16px, env(safe-area-inset-bottom)); animation: up .38s var(--ease) both; }
   @keyframes up { from { transform: translateY(100%); } }
   .grabber { display: block; }
-  .agent-toggle .lbl-text { display: none; }
+  .agent-toggle { font-size: 14px; gap: 5px; padding: 0 2px 0 4px; }
   .gen-btn .lbl-text { display: none; }
   .grid { grid-template-columns: repeat(2, 1fr); }
   .clip.portrait { width: min(78%, calc(56vh * 9 / 16)); }
@@ -512,7 +512,9 @@ a.row { color: var(--ink); }
 .model-card .mi { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; color: #fff; flex: none; background: linear-gradient(135deg, #ffb23e, #ff6a3d); }
 .model-card .mt { flex: 1; min-width: 0; }
 .model-card .mt b { display: flex; align-items: center; gap: 7px; font-size: 16px; font-weight: 650; }
-.model-card .mt span { display: block; font-size: 15px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.model-card .mt > span { display: block; font-size: 15px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.model-card .mt b { flex-wrap: wrap; row-gap: 3px; }
+.model-card .mt b .badge { flex: none; white-space: nowrap; }
 .prompt-box { position: relative; background: var(--bg-2); border-radius: 16px; border: 1px solid transparent; transition: border-color .15s, background .15s; }
 .prompt-box:focus-within { border-color: var(--blue); background: var(--elev); }
 .prompt-box textarea { display: block; width: 100%; min-height: 120px; max-height: 300px; resize: vertical; border: 0; outline: 0; background: transparent; padding: 12px 14px 46px; font-size: 16px; line-height: 1.45; }
@@ -649,17 +651,17 @@ a.row { color: var(--ink); }
   .nav { padding: env(safe-area-inset-top) 12px 0; }
   .nav-tabs { display: none; }
   .tabbar {
-    display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); background: var(--glass); border-top: 1px solid var(--sep); padding-bottom: env(safe-area-inset-bottom);
+    display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); background: var(--glass); border-top: 1px solid var(--sep); padding-bottom: env(safe-area-inset-bottom);
     backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px); z-index: 20;
   }
-  .tabbar button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; font-size: 13px; font-weight: 600; min-width: 0; white-space: nowrap; color: var(--ink-3); }
+  .tabbar button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; font-size: 13px; font-weight: 600; min-width: 0; white-space: nowrap; color: var(--ink-3); letter-spacing: -.01em; }
   .tabbar button.on { color: var(--ink); }
   .tabbar button.on svg { color: #f3a43f; }
   .page { padding: 14px 14px 30px; }
   .page-h { margin-bottom: 12px; }
   .panel { padding: 14px; border-radius: 22px; }
   .cta-wrap { margin: 0 -14px -14px; padding: 10px 14px 14px; border-radius: 0 0 22px 22px; }
-  .feed { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .feed { grid-template-columns: repeat(2, 1fr); gap: 10px; }
   .result .info { padding: 8px 10px 10px; }
   .result .info p { font-size: 15px; }
   .app-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
@@ -894,3 +896,15 @@ body::after { inset: -6% -18%; }
 /* The header link to kleooai.com/mcp (Kleo inside ChatGPT, Claude, Cursor): desktop only, the phone has no room. */
 .nav-plugin { gap: 6px; }
 @media (max-width: 860px) { .nav-plugin { display: none; } }
+/* Phones (15 October 2026): your videos and pictures one per row, big; the narrowest phones keep seven tabs readable. */
+@media (max-width: 520px) { .feed { grid-template-columns: 1fr; gap: 12px; } }
+@media (max-width: 360px) { .tabbar button { font-size: 12px; } .tabbar button svg { width: 21px; height: 21px; } }
+@media (max-width: 640px) {
+  .model-card .mt > span { white-space: normal; }
+  .viewer { -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+  /* Kept last so they win over the base rules above. The Kleo Film banner stacks: the film on top, the words, then a real Start button. */
+  .film-banner { flex-wrap: wrap; padding: 12px; gap: 12px; }
+  .film-banner .fb-art.fb-media { width: 100%; height: auto; aspect-ratio: 16 / 9; }
+  .film-banner .fb-tx { flex-basis: 100%; }
+  .film-banner .fb-go { width: 100%; justify-content: center; height: 46px; border-radius: 14px; background: linear-gradient(135deg, var(--cta-a), var(--cta-b)); color: var(--cta-ink); font-size: 16px; }
+}

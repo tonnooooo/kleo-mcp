@@ -431,7 +431,7 @@ function renderShell() {
       h("button", { class: "avatar avatar-btn", "aria-label": "Account", onclick: openAccount }, (S.me.name || S.me.email || "K")[0].toUpperCase())] : [
       h("button", { class: "btn btn-quiet btn-sm", onclick: () => requireAccount("signin") }, "Sign in"),
       h("button", { class: "btn btn-cta btn-sm", onclick: () => requireAccount("signup") }, "Start free")]));
-  const tabs = h("nav", { class: "tabbar", "aria-label": "Main" }, PAGES.filter((p) => p.key !== "audio").map((p) => h("button", { "data-page": p.key, onclick: () => go(p.path) }, icon(p.ic, 23), p.label)));
+  const tabs = h("nav", { class: "tabbar", "aria-label": "Main" }, PAGES.map((p) => h("button", { "data-page": p.key, onclick: () => go(p.path) }, icon(p.ic, 22), p.label)));
   fill($("#app"), h("div", { class: "frame" }, nav, h("div", { class: "views" }, h("section", { class: "view", id: "view" })), tabs));
 }
 const viewEl = () => $("#view");
