@@ -38,6 +38,11 @@ export interface StudioEnv {
   STUDIO_MARGIN?: string;
   /** Hard ceiling on provider dollars Studio may commit in one UTC day (default 30). */
   STUDIO_DAILY_BUDGET_USD?: string;
+  /** The part of that day accounts which never paid may use together (default 8): free credits cannot fill the day. */
+  STUDIO_FREE_DAILY_BUDGET_USD?: string;
+  /** Uploads one account may add in one UTC day (default 200 files, 2 GB). */
+  STUDIO_UPLOADS_PER_DAY?: string;
+  STUDIO_UPLOAD_MB_PER_DAY?: string;
   /** Clips one account may have generating at once (default 3). */
   STUDIO_MAX_RUNNING?: string;
   /** The chat model, an ePhone OpenAI-compatible model id (default claude-haiku-5-5). */

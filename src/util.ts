@@ -68,3 +68,20 @@ export function publicText(s: string): string {
     .replace(/\bePhone(?:\s+AI|\.ai)?'s\b/gi, "the AI model gateway's")
     .replace(/\bePhone(?:\s+AI|\.ai)?\b/gi, "the AI model gateway");
 }
+
+/**
+ * A browser POST that ANOTHER site started (14 October 2026, the security review): the login-CSRF guard of the forms
+ * that bind a browser to an account (/authorize sets the kleo_id cookie, /credits writes to the account). A page on
+ * any site can auto-submit a form to them, and the cookie the answer sets would then put the victim's browser on the
+ * attacker's account. `Sec-Fetch-Site` is what every current browser sends: only "same-origin" (Kleo's own form) and
+ * "none" (typed, a bookmark) are ours. A browser too old for it is judged by `Origin`, which it always sends on a
+ * cross-site form POST ("null" from a sandboxed frame counts as foreign). A request with neither header (curl, the
+ * e2e scripts, Node's fetch) is no victim's browser riding on its cookies, so it passes.
+ */
+export function crossSiteRequest(request: Request): boolean {
+  const site = (request.headers.get("sec-fetch-site") ?? "").trim().toLowerCase();
+  if (site) return site !== "same-origin" && site !== "none";
+  const origin = request.headers.get("origin");
+  if (origin === null) return false;
+  try { return origin.trim() !== new URL(request.url).origin; } catch { return true; }
+}

@@ -208,7 +208,7 @@ function pickFile(accept, multiple, cb) {
 // ── boot & routing ───────────────────────────────────────────────────────────────────────────────────────────────
 async function boot() {
   applyTheme();
-  try { S.config = await api("/api/config"); } catch { fill($("#app"), h("div", { class: "boot" }, h("p", {}, "Kleo Studio can't load right now. Please refresh."))); return; }
+  try { S.config = await api("/api/config"); } catch { fill($("#app"), h("div", { class: "boot" }, h("p", {}, "Kleo can't load right now. Please refresh."))); return; }
   const q = new URLSearchParams(location.search);
   if (location.pathname === "/reset" && q.get("t")) return renderReset(q.get("t"));
   const err = q.get("signin_error"), linked = q.get("linked");
@@ -219,6 +219,7 @@ async function boot() {
       : err === "day_full" ? "Kleo is full for new accounts today. Please come back tomorrow."
       : err === "address_full" ? "Too many new accounts from this connection today."
       : /^taken_/.test(err) ? `That ${who(err.slice(6))} account already belongs to another Kleo account.`
+      : /^claimed_/.test(err) ? `This e-mail already has a Kleo account. Sign in to it with your password or Kleo key, then connect ${who(err.slice(8))} from Account.`
       : err === "cancelled" ? "Sign-in was cancelled." : `${who(err)} sign-in didn't finish. Please try again.`;
     setTimeout(() => toast(msg, !linked), 300);
   }
@@ -239,15 +240,28 @@ async function enter() {
 }
 const PAGES = [
   { key: "chat", path: "/", label: "Create", ic: "chat" },
+  { key: "explore", path: "/explore", label: "Explore", ic: "sparkle" },
   { key: "video", path: "/video", label: "Video", ic: "film" },
   { key: "image", path: "/image", label: "Image", ic: "photo" },
   { key: "audio", path: "/audio", label: "Audio", ic: "music" },
-  { key: "apps", path: "/apps", label: "Apps", ic: "apps", isNew: true },
+  { key: "apps", path: "/apps", label: "Apps", ic: "apps" },
   { key: "library", path: "/library", label: "Library", ic: "library" },
 ];
 async function route() {
   const p = location.pathname;
   closeLayer();
+  // A "Generate" button on kleooai.com opens the app with its prompt (?prompt=…&aspect=…): the form is filled, nothing
+  // is charged until the person taps Generate. The parameters leave the address bar at once.
+  const q = new URLSearchParams(location.search);
+  const pre = (q.get("prompt") || "").slice(0, 4000);
+  if (pre || q.get("aspect")) {
+    if (p === "/video" || p === "/image") S.page[p.slice(1)].prompt = pre;
+    else if (p === "/") S.prefill = pre;
+    if (q.get("aspect") && RATIOS[q.get("aspect")]) S.settings = fix({ ...S.settings, aspect: q.get("aspect") });
+    q.delete("prompt"); q.delete("aspect");
+    history.replaceState(null, "", p + (q.toString() ? `?${q}` : ""));
+  }
+  if (p === "/explore") return show("explore", () => exploreView());
   const m = p.match(/^\/c\/(c_[a-z0-9]+)/);
   const app = p.match(/^\/apps\/([a-z0-9-]+)/);
   if (m) return show("chat", () => openChat(m[1]));
@@ -281,8 +295,23 @@ function authFrame(title, sub, ...content) {
     h("img", { class: "logo", src: "/kleo-mark.svg", alt: "Kleo" }), h("h1", {}, title), h("p", { class: "sub" }, sub), ...content)));
 }
 function busyButton(btn) { const old = btn.textContent; btn.disabled = true; fill(btn, spinner(18)); return () => { btn.disabled = false; btn.textContent = old; }; }
+// Cloudflare Turnstile on sign-up (only when the server has a site key): the bot check behind the free credits.
+let turnstileLoad = null;
+function loadTurnstile() {
+  turnstileLoad ??= new Promise((ok, no) => {
+    const s = document.createElement("script");
+    s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+    s.onload = () => ok(window.turnstile);
+    s.onerror = () => { turnstileLoad = null; no(new Error("The human check didn't load. Check your connection and try again.")); };
+    document.head.append(s);
+  });
+  return turnstileLoad;
+}
 function renderAuth(mode = "signup", fromApp = false) {
   let showKey = false;
+  let checkToken = "", checkId = null, checkWaiters = [];
+  const tokenReady = () => checkToken ? Promise.resolve(checkToken) : new Promise((ok) => { checkWaiters.push(ok); setTimeout(() => ok(checkToken), 15000); });
+  const check = mode === "signup" && S.config?.turnstile ? h("div", { class: "human-check" }) : null;
   const email = h("input", { class: "input", type: "email", placeholder: "E-mail", autocomplete: "email", inputmode: "email", autocapitalize: "off" });
   const pass = h("input", { class: "input", type: "password", placeholder: mode === "signup" ? "Password (8+ characters)" : "Password", autocomplete: mode === "signup" ? "new-password" : "current-password" });
   const key = h("input", { class: "input", placeholder: "Paste your Kleo key", autocomplete: "off", autocapitalize: "off", spellcheck: "false" });
@@ -294,16 +323,27 @@ function renderAuth(mode = "signup", fromApp = false) {
     const restore = busyButton(submit);
     try {
       if (showKey) await api("/api/auth/key", { method: "POST", body: { key: key.value } });
-      else await api(mode === "signup" ? "/api/auth/signup" : "/api/auth/signin", { method: "POST", body: { email: email.value, password: pass.value } });
+      else {
+        if (check && mode === "signup") await tokenReady();
+        await api(mode === "signup" ? "/api/auth/signup" : "/api/auth/signin", { method: "POST", body: { email: email.value, password: pass.value, turnstile: checkToken } });
+      }
       S.me = await api("/api/me");
       S.feeds = {};
       await enter();
       if (mode === "signup" && !showKey) toast(`Welcome! You have ${S.me.credits} free credits.`);
-    } catch (e) { err.textContent = e.message; restore(); }
-  } }, email, pass, keyBox, err, submit);
+    } catch (e) {
+      err.textContent = e.message; restore();
+      if (check && checkId !== null) { checkToken = ""; window.turnstile?.reset(checkId); }
+    }
+  } }, email, pass, keyBox, check, err, submit);
+  if (check) loadTurnstile().then((t) => {
+    checkId = t.render(check, { sitekey: S.config.turnstile, theme: "auto", size: "flexible", appearance: "interaction-only",
+      callback: (v) => { checkToken = v; checkWaiters.splice(0).forEach((ok) => ok(v)); }, "expired-callback": () => { checkToken = ""; }, "error-callback": () => { checkToken = ""; } });
+  }).catch((e) => { err.textContent = e.message; });
   const toggleKey = h("button", { type: "button", onclick: () => {
     showKey = !showKey;
     keyBox.style.display = showKey ? "" : "none"; email.style.display = pass.style.display = showKey ? "none" : "";
+    if (check) check.style.display = showKey ? "none" : "";
     submit.textContent = showKey ? "Sign in with key" : mode === "signup" ? "Create account" : "Sign in";
     toggleKey.textContent = showKey ? "Use e-mail instead" : "I have a Kleo key";
     (showKey ? key : email).focus();
@@ -355,7 +395,7 @@ function renderReset(token) {
       try {
         await api("/api/auth/reset", { method: "POST", body: { token, password: pass.value } });
         history.replaceState(null, "", "/");
-        S.me = await api("/api/me"); await enter(); toast("Password changed");
+        S.me = await api("/api/me"); await enter(); toast("Password changed. Other sessions are signed out and your Kleo key is new: reconnect your AI assistant with it (Account)");
       } catch (e) { err.textContent = e.message; restore(); }
     } }, pass, err, btn));
   pass.focus();
@@ -460,7 +500,9 @@ function renderMessages(jump = false) {
       h("div", { class: "ideas" }, IDEAS[S.mode].map((i) => h("button", { class: "idea", onclick: () => useIdea(i) },
         h("span", { class: "em", style: { background: i.c } }, icon(i.ic, 19, 2)), h("div", {}, h("b", {}, i.t), h("span", {}, i.photo ? (img ? "Upload a picture and say what to change." : "Upload a picture and bring it to life.") : i.p))))),
       h("div", { class: "steps", style: { justifyContent: "center", marginTop: "22px" } },
-        h("button", { class: "mini", onclick: () => go("/apps") }, icon("apps", 15), "Face swap, talking photos & more in Apps"))));
+        h("button", { class: "mini", onclick: () => go("/apps") }, icon("apps", 15), "Face swap, talking photos & more in Apps")),
+      showcaseStrip("Made by the Kleo team")));
+    if (S.prefill) { const t = $("#prompt"); if (t) { t.value = S.prefill; autosize(t); updateSend(); t.focus(); } S.prefill = ""; }
     return;
   }
   fill(col, S.messages.map(messageEl));
@@ -1020,8 +1062,7 @@ function generatorView(kind) {
       list.length ? h("div", { class: "feed" }, list.map((g) => resultCard(g)))
         : h("div", { class: "empty-feed" }, h("b", {}, isVid ? "Your first video starts here" : "Your first picture starts here"),
           isVid ? "Write a prompt on the left, or try one of these:" : "Write a prompt and hit Generate.",
-          isVid ? h("div", { class: "inspo" }, INSPO.map((x) => h("button", { onclick: () => { page.prompt = x.p; ta.value = x.p; refreshCta(); ta.focus(); } },
-            h("video", { src: x.url + "#t=1", muted: true, playsinline: true, loop: true, preload: "metadata", onmouseenter: (e) => e.target.play().catch(() => {}), onmouseleave: (e) => e.target.pause() }), h("span", {}, x.t)))) : null));
+          isVid ? showcaseGrid((x) => { page.prompt = x.prompt; ta.value = x.prompt; refreshCta(); ta.focus(); }, 8, null, "film") : null));
   }
   function draw() { drawModel(); drawRefs(); drawSettings(); drawPresets(); refreshCta(); askPrice(); }
   const enhance = h("button", { class: "mini wand", onclick: async (e) => {
@@ -1121,6 +1162,83 @@ function resultCard(g) {
 }
 
 // ── Audio page ───────────────────────────────────────────────────────────────────────────────────────────────────
+// ── Explore: every finished video the Kleo team made, Higgsfield-style (14 October 2026) ───────────────────────────
+// studio-web/showcase.json (scripts/showcase.py) lists them; the files live on media.kleooai.com. Cards play their
+// muted preview loop while they are on screen; a tap opens the whole clip with "Recreate" (the Video page, prompt and
+// shape filled in) and "Ask Kleo" (the chat, prompt filled in). None of them went through the app, so the credit is
+// "the Kleo team", never "made with Kleo".
+let SHOWCASE = null;
+async function showcase() {
+  if (!SHOWCASE) SHOWCASE = await fetch("/showcase.json").then((r) => (r.ok ? r.json() : [])).catch(() => []);
+  return SHOWCASE;
+}
+const playing = "IntersectionObserver" in window ? new IntersectionObserver((entries) => {
+  for (const e of entries) {
+    const v = e.target;
+    if (e.isIntersecting) { if (!v.src) v.src = v.dataset.src; v.play().catch(() => {}); } else v.pause();
+  }
+}, { threshold: 0.55 }) : null;
+function loopVideo(src, poster) {
+  const v = h("video", { "data-src": src, poster, muted: true, loop: true, playsinline: true, preload: "none", "aria-hidden": "true" });
+  v.muted = true;
+  if (playing) playing.observe(v); else v.src = src;
+  return v;
+}
+function showcaseCard(x, pick) {
+  return h("button", { class: `sc-card sc-${x.format}`, onclick: () => (pick ? pick(x) : openShowcase(x)), "aria-label": x.title },
+    h("div", { class: "sc-media" }, loopVideo(x.preview, x.poster)),
+    h("div", { class: "sc-text" }, h("b", {}, x.title), x.line ? h("span", {}, x.line) : null));
+}
+function openShowcase(x) {
+  const v = h("video", { src: x.full, poster: x.poster, autoplay: true, muted: true, loop: true, playsinline: true, controls: true });
+  v.muted = true;
+  // A film shows its prompt and can be recreated on the Video page; an ad has no prompt, so Kleo starts from it in the chat.
+  viewerFrame(v, x.kind === "ad" ? x.line : x.prompt, x.kind === "ad"
+    ? [h("button", { class: "btn btn-cta btn-sm", onclick: () => askKleo(x) }, icon("chat", 16), "Make one like this")]
+    : [h("button", { class: "btn btn-cta btn-sm", onclick: () => recreate(x) }, icon("wand", 16), "Recreate"),
+      h("button", { class: "btn btn-quiet btn-sm", onclick: () => askKleo(x) }, icon("chat", 16), "Ask Kleo")]);
+}
+function recreate(x) {
+  closeLayer();
+  S.page.video.prompt = x.prompt;
+  S.settings = fix({ ...S.settings, aspect: x.format === "tall" ? "9:16" : x.format === "square" ? "1:1" : "16:9" });
+  go("/video");
+}
+function askKleo(x) { closeLayer(); S.prefill = x.prompt; go("/"); }
+/** A grid of cards (all one shape per row), filled when the list arrives. */
+function showcaseGrid(pick, limit = 0, only = null, kind = null) {
+  const box = h("div", { class: "sc-grids" });
+  showcase().then((all) => {
+    const list = all.filter((x) => (!only || x.format === only) && (!kind || (x.kind || "film") === kind)).slice(0, limit || undefined);
+    const groups = ["wide", "tall", "square"].map((f) => list.filter((x) => x.format === f)).filter((g) => g.length);
+    fill(box, groups.map((g) => h("div", { class: `sc-grid sc-grid-${g[0].format}` }, g.map((x) => showcaseCard(x, pick)))));
+  });
+  return box;
+}
+/** One scrolling row (the Create page): a few clips and "See all". */
+function showcaseStrip(title) {
+  const row = h("div", { class: "sc-row" });
+  showcase().then((all) => fill(row, all.slice(0, 10).map((x) => showcaseCard(x))));
+  return h("section", { class: "sc-strip" },
+    h("div", { class: "sc-head" }, h("h2", {}, title), h("button", { class: "mini", onclick: () => go("/explore") }, "See all", icon("right", 14))), row);
+}
+function exploreView() {
+  let only = null;
+  const grids = h("div", {});
+  const chips = h("div", { class: "seg2 sc-filter" });
+  const draw = () => {
+    fill(chips, [[null, "All"], ["wide", "Wide"], ["tall", "Vertical"]].map(([k, label]) =>
+      h("button", { class: only === k ? "on" : "", onclick: () => { only = k; draw(); } }, label)));
+    // Films first (each one can be recreated), then the Kleo ads.
+    fill(grids, h("h2", { class: "sc-title" }, "Films"), showcaseGrid(null, 0, only, "film"),
+      h("h2", { class: "sc-title" }, "Kleo ads"), showcaseGrid(null, 0, only, "ad"));
+  };
+  draw();
+  setView("explore-view",
+    h("div", { class: "page-head" }, h("h1", {}, "Explore"), h("p", {}, "Films made by the Kleo team. Tap one, then Recreate it.")),
+    chips, grids);
+}
+
 function audioView() {
   const sub = store.get("audioTab", "voice");
   const tabs = h("div", { class: "seg2", style: { maxWidth: "460px", marginBottom: "16px" } },
@@ -1373,9 +1491,11 @@ function openAccount() {
     h("p", { class: "sheet-sub" }, "The same account and credits work in your AI assistant. Add Kleo as a connector with this address:"),
     h("div", { class: "list" },
       h("button", { class: "row", onclick: () => { navigator.clipboard.writeText(S.me.mcpUrl); toast("Address copied"); } }, icon("plug", 19), h("div", { class: "lbl" }, h("b", {}, S.me.mcpUrl)), icon("copy", 18)),
-      h("button", { class: "row", onclick: () => {
-        if (!revealed) { revealed = true; keyBox.textContent = S.me.kleoKey; return; }
-        navigator.clipboard.writeText(S.me.kleoKey); toast("Kleo key copied — keep it private");
+      h("button", { class: "row", onclick: async () => {
+        try {
+          if (!revealed) { revealed = (await api("/api/me/key", { method: "POST", body: {} })).key; keyBox.textContent = revealed; return; }
+          navigator.clipboard.writeText(revealed); toast("Kleo key copied — keep it private");
+        } catch (e) { handleError(e); }
       } }, icon("key", 19), h("div", { class: "lbl" }, h("b", {}, "Kleo key"), h("span", {}, "Tap to show, tap again to copy. It signs in to your account.")))),
     keyBox,
     socialList().length ? [h("div", { class: "field-label" }, "Sign-in methods"), h("div", { class: "list" }, socialList().map((k) => {
@@ -1385,8 +1505,20 @@ function openAccount() {
     }))] : null,
     !hasPass ? [h("div", { class: "field-label" }, "E-mail and password"), addPasswordForm()] : null,
     h("div", { class: "field-label" }, "Appearance"), seg,
+    h("div", { class: "field-label" }, "Security"),
+    h("div", { class: "list" },
+      h("button", { class: "row", onclick: async () => {
+        if (!confirm("Make a new Kleo key? The old one stops working everywhere: AI assistants connected with it (Claude, ChatGPT) are disconnected until you add Kleo again with the new key, and every other browser and phone is signed out.")) return;
+        try { revealed = (await api("/api/me/key", { method: "POST", body: { reset: true } })).key; keyBox.textContent = revealed; toast("New Kleo key made — the old one no longer works"); }
+        catch (e) { handleError(e); }
+      } }, icon("key", 19), h("div", { class: "lbl" }, h("b", {}, "New Kleo key"), h("span", {}, "If your key leaked, retire it and get a new one."))),
+      h("button", { class: "row", onclick: async () => {
+        if (!confirm("Sign out on every browser and phone, this one included?")) return;
+        try { await api("/api/auth/signout-all", { method: "POST" }); } catch (e) { return handleError(e); }
+        signOut(true);
+      } }, icon("out", 19), h("div", { class: "lbl" }, h("b", {}, "Sign out everywhere"), h("span", {}, "Ends every Kleo Studio session of this account. To disconnect AI assistants too, make a new Kleo key.")))),
     h("div", { class: "list", style: { marginTop: "14px" } },
-      h("button", { class: "row danger", onclick: signOut }, icon("out", 19), h("div", { class: "lbl" }, h("b", {}, "Sign out")))));
+      h("button", { class: "row danger", onclick: () => signOut() }, icon("out", 19), h("div", { class: "lbl" }, h("b", {}, "Sign out")))));
 }
 function addPasswordForm() {
   const e = h("input", { class: "input", type: "email", placeholder: "E-mail", autocomplete: "email" });
@@ -1397,9 +1529,9 @@ function addPasswordForm() {
     catch (er) { handleError(er); }
   } }, h("p", { class: "sheet-sub", style: { padding: "0 4px 10px" } }, "Add an e-mail and password so you can sign in anywhere."), e, p, h("button", { class: "btn btn-primary", style: { width: "100%" } }, "Save"));
 }
-async function signOut() {
+async function signOut(already = false) {
   closeLayer();
-  try { await api("/api/auth/signout", { method: "POST" }); } catch { /* the cookie goes anyway */ }
+  if (!already) try { await api("/api/auth/signout", { method: "POST" }); } catch { /* the cookie goes anyway */ }
   S.me = null; S.chat = null; S.messages = []; S.feeds = {}; watching.clear();
   history.replaceState(null, "", "/"); enter(); toast("Signed out");
 }
@@ -1483,8 +1615,9 @@ async function demoApi(path, opts) {
   const method = opts.method || "GET", b = opts.body || {};
   const now = () => new Date().toISOString();
   if (path === "/api/config") return { google: true, microsoft: true, social: ["google", "microsoft"], emailReset: true, defaultModel: "seedance-2.5", models: demoCatalog(), defaultImageModel: "nano-banana-2", imageModels: demoImageCatalog(), freeCredits: 5, presets: DEMO_PRESETS, tools: DEMO_TOOLS };
-  if (path === "/api/me") return { id: "u_demo", email: "you@example.com", credits: demoDb.credits, paid: true, allowed: demoCatalog().map((m) => m.key), allowedImages: demoImageCatalog().map((m) => m.key), allowedTools: DEMO_TOOLS.map((t) => t.key), methods: ["password", "google"], kleoKey: "u_demo.0123456789abcdef0123456789abcdef", mcpUrl: "https://mcp.kleooai.com/mcp", packs: [{ label: "5 EUR", credits: 10, url: "https://kleooai.com/pricing/" }, { label: "15 EUR", credits: 35, url: "https://kleooai.com/pricing/" }, { label: "40 EUR", credits: 100, url: "https://kleooai.com/pricing/" }] };
-  if (path === "/api/auth/signout") return { ok: true };
+  if (path === "/api/me") return { id: "u_demo", email: "you@example.com", credits: demoDb.credits, paid: true, allowed: demoCatalog().map((m) => m.key), allowedImages: demoImageCatalog().map((m) => m.key), allowedTools: DEMO_TOOLS.map((t) => t.key), methods: ["password", "google"], mcpUrl: "https://mcp.kleooai.com/mcp", packs: [{ label: "5 EUR", credits: 10, url: "https://kleooai.com/pricing/" }, { label: "15 EUR", credits: 35, url: "https://kleooai.com/pricing/" }, { label: "40 EUR", credits: 100, url: "https://kleooai.com/pricing/" }] };
+  if (path === "/api/auth/signout" || path === "/api/auth/signout-all") return { ok: true };
+  if (path === "/api/me/key") return { key: "u_demo.0123456789abcdef0123456789abcdef" };
   if (path === "/api/chats" && method === "GET") return { chats: demoDb.chats };
   if (path === "/api/enhance") return { prompt: `${b.prompt}. Cinematic composition, rich detail, soft directional light, shallow depth of field, smooth camera movement, vivid but natural colors, immersive ambient sound.` };
   if (path === "/api/price") return { credits: 3 };

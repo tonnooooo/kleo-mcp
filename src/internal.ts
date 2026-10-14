@@ -15,10 +15,55 @@ import { ephoneBalanceUsd } from "./ephone.ts";
 import { listLaunchCodes, upsertLaunchCode, normalizeCode, normalizeChannel, LAUNCH_CODE_MAX_USES } from "./launch.ts";
 import { growthReport } from "./growth.ts";
 import { REPORT_FILE, readReport, recentReports } from "./report.ts";
-import { footageBackendFor, footageConfig, setFootageConfig, kieModelFor, clipLengthsSpec, requestFootage, footageStatus, footageSpentTodayUsd, kieBalanceUsd, clipKey, footageRows, KIE_MODELS, SHOT_ID_RE, STILL_NAME_RE, type ShotRequest, requestMusic, musicStatus, musicOn, musicKey, MUSIC_ID, type MusicRequest } from "./footage";
+import { footageBackendFor, footageConfig, setFootageConfig, kieModelFor, clipLengthsSpec, requestFootage, footageStatus, footageSpentTodayUsd, footageBudgetUsd, kieBalanceUsd, clipKey, footageRows, KIE_MODELS, SHOT_ID_RE, STILL_NAME_RE, type ShotRequest, requestMusic, musicStatus, musicOn, musicKey, MUSIC_ID, type MusicRequest } from "./footage";
 
 const ALLOWED_FILES = new Set([FILE_NAMES.video.name, FILE_NAMES.subtitles.name, FILE_NAMES.thumbnail.name, "thumbnail.svg", "log.txt", "gen.tgz", REPORT_FILE]);
 const TYPES: Record<string, string> = { mp4: "video/mp4", srt: "application/x-subrip", jpg: "image/jpeg", svg: "image/svg+xml", txt: "text/plain", json: "application/json" };
+
+/**
+ * THE MOST ONE SINGLE PUT MAY CARRY, per file (14 October 2026, the security review). The worker secret sits on a
+ * rented box whose root user can read it, so the single-shot upload is no longer streamed into R2 on trust: it must
+ * declare its length (Content-Length; the Workers runtime holds the body to it), and a length over the file's cap is
+ * refused before a byte is read. The worker sends a single PUT only up to 90 MB, with its length (worker/kleo_worker.py
+ * upload: urllib over bytes; the multipart road above that, bounded below), so the caps sit far above any honest
+ * upload: 8 GiB for the film and the GPU's hand-over bundle (the two that take the multipart road, where the cap holds
+ * too: a five-minute 4K60 film at CRF 17 can pass 2 GiB, so 2 GiB would have thrown a paid film away), tens of MiB at
+ * most for the picture and the text files.
+ * A name ALLOWED_FILES gains without a cap here gets FILE_MAX_DEFAULT, the text files' size, never "unbounded".
+ */
+const MIB = 1024 * 1024;
+export const FILE_MAX_BYTES: Record<string, number> = {
+  [FILE_NAMES.video.name]: 8192 * MIB, "gen.tgz": 8192 * MIB, [FILE_NAMES.thumbnail.name]: 25 * MIB, "thumbnail.svg": 5 * MIB,
+  [FILE_NAMES.subtitles.name]: 5 * MIB, "log.txt": 64 * MIB, [REPORT_FILE]: 5 * MIB,
+};
+const FILE_MAX_DEFAULT = 5 * MIB;
+/**
+ * THE MULTIPART ROAD, BOUNDED TOO (14 October 2026, the review's second pass): the caps above guarded only the single
+ * PUT, and a box could take the multipart road for any name, log.txt included, with as many parts as R2 takes. Now:
+ *   - only the two files that can legitimately pass the worker's 90 MB single-PUT line take it (MULTIPART_FILES);
+ *   - each part declares its length, at most MULTIPART_PART_MAX (the worker sends 50 MiB parts, kleo_worker.py PART);
+ *   - a part number is at most the file's cap over MULTIPART_PART_MIN (256 parts for 8 GiB; the worker's 50 MiB parts
+ *     need 164), so what a box can park in unfinished parts stays near twice the cap;
+ *   - `complete` measures the object it made and deletes it when it is over the file's cap.
+ */
+const MULTIPART_FILES: ReadonlySet<string> = new Set([FILE_NAMES.video.name, "gen.tgz"]);
+const MULTIPART_PART_MAX = 64 * MIB;
+const MULTIPART_PART_MIN = 32 * MIB;
+/**
+ * The progress tracks the job view can name (src/mcp.ts TRACK_LABEL, and every progress("…") call of
+ * worker/kleo_worker.py); anything else a box sends is replaced by the percent's own track (orchestrator.ts trackFor).
+ * jobView hands `track` to the user's assistant as it is stored, so a free-text track was a way into its context.
+ */
+export const WORKER_TRACKS: ReadonlySet<string> = new Set(["script", "voice", "music", "clips", "film", "edit", "finishing"]);
+/**
+ * The longest text from a box that is stored (14 October 2026): a progress message, the error of a /failed call. The
+ * error is what jobView shows the user's assistant (through publicText, which renames providers but does not shorten),
+ * so a box's text is cut here, before it reaches the row, whatever it is.
+ */
+export const BOX_TEXT_MAX = 300;
+const boxText = (v: unknown): string => (typeof v === "string" ? v : v === undefined || v === null ? "" : String(v)).slice(0, BOX_TEXT_MAX);
+/** The longest estimate a box may report, in minutes (a day): eta_min is shown as a number of minutes, nothing else. */
+const ETA_MAX_MIN = 24 * 60;
 
 /**
  * Worker-facing API. Only the GPU worker of a given job calls these, authenticated with the
@@ -26,9 +71,9 @@ const TYPES: Record<string, string> = { mp4: "video/mp4", srt: "application/x-su
  *
  *   GET  /internal/jobs/:id                                   job spec for the worker
  *   POST /internal/jobs/:id/progress   {track, percent, eta_min?, message?}
- *   PUT  /internal/jobs/:id/files/:name                       single-shot upload (≤ ~95 MB)
- *   POST /internal/jobs/:id/files/:name/uploads               start multipart → {uploadId}
- *   PUT  /internal/jobs/:id/files/:name/uploads/:uid/parts/:n upload one part (≥ 5 MB except last) → {etag}
+ *   PUT  /internal/jobs/:id/files/:name                       single-shot upload (≤ ~95 MB; Content-Length required, FILE_MAX_BYTES)
+ *   POST /internal/jobs/:id/files/:name/uploads               start multipart → {uploadId} (MULTIPART_FILES only)
+ *   PUT  /internal/jobs/:id/files/:name/uploads/:uid/parts/:n upload one part (≥ 5 MB except last; Content-Length, ≤ 64 MiB) → {etag}
  *   POST /internal/jobs/:id/files/:name/uploads/:uid/complete {parts:[{partNumber, etag}]}
  *   POST /internal/jobs/:id/images     (empty body) → {images: {pictureId: url}, missing: [pictureId]}  scene pictures (cartoon/realistic)
  *   PUT  /internal/jobs/:id/stills/:pictureId.png             a shot's reference frame, for kie.ai to animate (footage.ts)
@@ -162,13 +207,21 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
   }
 
   if (rest === "progress" && request.method === "POST") {
-    const b = (await request.json().catch(() => ({}))) as { track?: string; percent?: number; eta_min?: number; message?: string };
-    const percent = Math.max(0, Math.min(99, Math.round(Number(b.percent ?? job.percent))));
+    const b = (await request.json().catch(() => ({}))) as { track?: unknown; percent?: unknown; eta_min?: unknown; message?: unknown };
+    // What a box says is checked before it is stored (14 October 2026): the box is a rented machine, not a trusted
+    // writer of the jobs table, and jobView shows track and eta_min to the user's assistant as they are stored. So the
+    // percent and the estimate are finite numbers (a word in eta_min was text in the assistant's context; NaN in percent
+    // broke the NOT NULL column), the track is one of WORKER_TRACKS, and the message is cut to BOX_TEXT_MAX.
+    const raw = Number(b.percent ?? job.percent);
+    const percent = Math.max(0, Math.min(99, Math.round(Number.isFinite(raw) ? raw : job.percent)));
     const auto = trackFor(percent);
-    const applied = await transitionJob(env, job.id, ACTIVE_STATES, { percent, track: b.track ?? auto.track, state: auto.state,
-      eta_min: b.eta_min ?? job.eta_min, last_report_at: new Date().toISOString() });
+    const track = typeof b.track === "string" && WORKER_TRACKS.has(b.track) ? b.track : auto.track;
+    const eta_min = typeof b.eta_min === "number" && Number.isFinite(b.eta_min) ? Math.max(0, Math.min(ETA_MAX_MIN, b.eta_min)) : job.eta_min;
+    const message = boxText(b.message);
+    const applied = await transitionJob(env, job.id, ACTIVE_STATES, { percent, track, state: auto.state,
+      eta_min, last_report_at: new Date().toISOString() });
     if (!applied) return json({ error: "job is not running any more", state: (await getJob(env, job.id))?.state ?? job.state }, 409);
-    if (b.message) await audit(env, job.user_id, job.id, "worker.progress", { percent, track: b.track, message: b.message });
+    if (message) await audit(env, job.user_id, job.id, "worker.progress", { percent, track, message });
     return json({ ok: true });
   }
 
@@ -179,11 +232,27 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
     const key = `renders/${job.id}/${name}`;
     const ctype = TYPES[name.split(".").pop() ?? ""] ?? "application/octet-stream";
     const record = (size: number) => setFile(env, { job_id: job.id, name, key, size, content_type: ctype });
+    const cap = FILE_MAX_BYTES[name] ?? FILE_MAX_DEFAULT;
 
     if (!f[2] && f[0] === `files/${name}` && request.method === "PUT") {
+      // The declared length, then the cap of this file (FILE_MAX_BYTES), and only then the bytes (14 October 2026).
+      const declared = (request.headers.get("content-length") ?? "").trim();
+      if (!/^\d{1,16}$/.test(declared)) {
+        await audit(env, job.user_id, job.id, "worker.upload.refused", { name, why: "no content-length" });
+        return json({ error: `a single upload of ${name} must declare its Content-Length (files over 90 MB take the multipart road: POST files/${name}/uploads)` }, 411);
+      }
+      if (Number(declared) > cap) {
+        await audit(env, job.user_id, job.id, "worker.upload.refused", { name, why: "over the cap", bytes: Number(declared), cap });
+        return json({ error: `${name} may be at most ${cap} bytes in one upload, and ${declared} were declared` }, 413);
+      }
       const size = await putFile(env, key, request.body ?? new ArrayBuffer(0), ctype);
       await record(size);
       return json({ ok: true, size });
+    }
+    const multipart = f[0].endsWith("/uploads") || !!f[3];
+    if (multipart && !MULTIPART_FILES.has(name)) {
+      await audit(env, job.user_id, job.id, "worker.upload.refused", { name, why: "multipart for a small file" });
+      return json({ error: `${name} is sent in one PUT (only ${[...MULTIPART_FILES].join(" and ")} take the multipart road)` }, 400);
     }
     if (f[0].endsWith("/uploads") && request.method === "POST") {
       if (!env.RENDERS) return json({ error: "multipart uploads need an R2 bucket; use a single PUT (max 20 MB) on this deployment" }, 501);
@@ -192,8 +261,22 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
     }
     if (f[3]?.startsWith("parts/") && request.method === "PUT") {
       if (!env.RENDERS) return json({ error: "no R2 bucket" }, 501);
+      const n = parseInt(f[4]!, 10);
+      const maxParts = Math.ceil(cap / MULTIPART_PART_MIN);
+      if (!(n >= 1 && n <= maxParts)) {
+        await audit(env, job.user_id, job.id, "worker.upload.refused", { name, why: "part number", part: n, max: maxParts });
+        return json({ error: `${name} has at most ${maxParts} parts, and this is part ${f[4]}` }, 400);
+      }
+      const declared = (request.headers.get("content-length") ?? "").trim();
+      if (!/^\d{1,16}$/.test(declared)) return json({ error: `each part of ${name} must declare its Content-Length` }, 411);
+      if (Number(declared) > MULTIPART_PART_MAX) {
+        await audit(env, job.user_id, job.id, "worker.upload.refused", { name, why: "part over the cap", bytes: Number(declared), cap: MULTIPART_PART_MAX });
+        return json({ error: `a part may be at most ${MULTIPART_PART_MAX} bytes, and ${declared} were declared` }, 413);
+      }
+      const body = await request.arrayBuffer();
+      if (body.byteLength > MULTIPART_PART_MAX) return json({ error: `a part may be at most ${MULTIPART_PART_MAX} bytes` }, 413);
       const mpu = env.RENDERS.resumeMultipartUpload(key, f[2]!);
-      const part = await mpu.uploadPart(parseInt(f[4]!, 10), await request.arrayBuffer());
+      const part = await mpu.uploadPart(n, body);
       return json({ partNumber: part.partNumber, etag: part.etag });
     }
     if (f[3] === "complete" && request.method === "POST") {
@@ -201,6 +284,12 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
       const b = (await request.json()) as { parts: { partNumber: number; etag: string }[] };
       const mpu = env.RENDERS.resumeMultipartUpload(key, f[2]!);
       const obj = await mpu.complete(b.parts);
+      // The parts each kept their limit, but their sum is only known now: an object over the file's cap is not kept.
+      if (obj.size > cap) {
+        await env.RENDERS.delete(key);
+        await audit(env, job.user_id, job.id, "worker.upload.refused", { name, why: "over the cap", bytes: obj.size, cap, multipart: true });
+        return json({ error: `${name} may be at most ${cap} bytes, and the parts made ${obj.size}: the upload was discarded` }, 413);
+      }
       await record(obj.size);
       return json({ ok: true, size: obj.size });
     }
@@ -217,8 +306,9 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
     return now === "done" ? json({ ok: true, state: now, already: true }) : json({ error: `job is ${now}`, state: now }, 409);
   }
   if (rest === "failed" && request.method === "POST") {
-    const b = (await request.json().catch(() => ({}))) as { error?: string; retry?: boolean };
-    const outcome = await failJob(env, job, `worker: ${b.error ?? "unknown error"}`, b.retry !== false);
+    const b = (await request.json().catch(() => ({}))) as { error?: unknown; retry?: boolean };
+    // The box's words become job.error, which jobView shows the user's assistant: cut to BOX_TEXT_MAX (14 October 2026).
+    const outcome = await failJob(env, job, `worker: ${boxText(b.error) || "unknown error"}`, b.retry !== false);
     if (outcome !== "ignored") return json({ ok: true, state: outcome === "requeued" ? "queued" : "failed", outcome });
     const now = (await getJob(env, job.id))?.state ?? job.state;
     return now === "failed" ? json({ ok: true, state: now, already: true }) : json({ error: `job is ${now}`, state: now }, 409);
@@ -327,7 +417,9 @@ export async function handleAdmin(request: Request, env: Env): Promise<Response>
       const probe = { params: JSON.stringify({ duration_s: 1 }) };
       return { backend: footageBackendFor(env, probe, cfg), model: kieModelFor(env, cfg).name, override: cfg,
         key_configured: !!(env.KIE_API_KEY && env.KIE_API_KEY.trim()), max_video_s: int(env.KIE_MAX_VIDEO_S, 20),
-        spend_today_usd: Math.round((await footageSpentTodayUsd(env)) * 1000) / 1000, budget_usd: num(env.DAILY_FOOTAGE_BUDGET_USD, 5),
+        // The two ceilings of the day (14 October 2026, footage.ts footageBudgetUsd): each spend beside its own budget.
+        spend_today_usd: Math.round((await footageSpentTodayUsd(env, "paid")) * 1000) / 1000, budget_usd: footageBudgetUsd(env, "paid"),
+        trial_spend_today_usd: Math.round((await footageSpentTodayUsd(env, "trial")) * 1000) / 1000, trial_budget_usd: footageBudgetUsd(env, "trial"),
         balance_usd: await kieBalanceUsd(env), // what the kie.ai account can still spend (null when kie.ai did not answer)
         ephone_key_configured: !!(env.EPHONE_API_KEY && env.EPHONE_API_KEY.trim()),
         ephone_balance_usd: await ephoneBalanceUsd(env), // the same for ePhone AI (null when it did not answer or no key)

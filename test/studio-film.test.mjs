@@ -82,3 +82,34 @@ test("an unpaid account orders the animatic; the film is refused with nothing ch
   const busy = await call(env, "/internal/studio/film", { userId: "u_a", prompt: "Another film about the sea", duration_s: 15, product: "film" });
   assert.equal(busy.status, 429, "two films open is the limit");
 });
+
+test("14 October 2026: the route answers only over Studio's binding host; the public address is a 404 even with the secret", async () => {
+  const env = newEnv();
+  await m.createUser(env, { id: "u_pub", email: "p@example.com", credits: 60, inviteCode: null });
+  const at = (host, path, body, secret = "s3cret") => m.handleStudioFilm(new Request(`https://${host}${path}`, { method: "POST", headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" }, body: JSON.stringify(body) }), env);
+  const quote = await at("mcp.kleooai.com", "/internal/studio/film/quote", { userId: "u_pub", duration_s: 30 });
+  assert.equal(quote.status, 404, "a leaked secret alone must not reach the route from the internet");
+  assert.equal((await at("mcp.kleooai.com", "/internal/studio/film/quote", { userId: "u_pub", duration_s: 30 }, "nope")).status, 404, "and the public door says nothing about the secret either");
+  const order = await at("mcp.kleooai.com", "/internal/studio/film", { userId: "u_pub", prompt: "A lighthouse keeper befriends a whale", duration_s: 30, product: "animatic" });
+  assert.equal(order.status, 404);
+  assert.equal(credits(env, "u_pub"), 60, "nothing ordered, nothing charged");
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 0);
+  assert.equal((await at("kleo-mcp", "/internal/studio/film/quote", { userId: "u_pub", duration_s: 30 })).status, 200, "the binding's own host still works");
+});
+
+test("14 October 2026: a length that is not a number is refused before any price, on the quote and on the order", async () => {
+  const env = newEnv();
+  await m.createUser(env, { id: "u_len", email: "l@example.com", credits: 60, inviteCode: null });
+  // JSON has no NaN (JSON.stringify writes null, which is "no length", the default); "abc" and 1e999 (Infinity once
+  // parsed) are what a caller can actually send, so the raw body is written by hand here.
+  const raw = (path, body) => m.handleStudioFilm(new Request(`https://kleo-mcp${path}`, { method: "POST", headers: { authorization: "Bearer s3cret", "content-type": "application/json" }, body }), env);
+  for (const len of ['"abc"', "1e999", '"Infinity"']) {
+    const q = await raw("/internal/studio/film/quote", `{"userId":"u_len","duration_s":${len}}`);
+    assert.equal(q.status, 400, `quote with duration_s ${len}`);
+    assert.match((await q.json()).error, /number of seconds/);
+    const o = await raw("/internal/studio/film", `{"userId":"u_len","prompt":"A lighthouse keeper befriends a whale","product":"animatic","duration_s":${len}}`);
+    assert.equal(o.status, 400, `order with duration_s ${len}`);
+  }
+  assert.equal(credits(env, "u_len"), 60, "nothing charged");
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 0, "and no job written");
+});

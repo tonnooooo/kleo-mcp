@@ -18,7 +18,7 @@ import type { StudioEnv } from "./env.ts";
 import type { Env } from "../env";
 import { ephone, ephoneOutputs, ephoneFailure, type EphoneTask } from "../ephone.ts";
 import { KieError } from "../kie.ts";
-import { debitCredits, refundCredits, getUser, hasPaid, audit } from "../db.ts";
+import { debitCredits, refundCredits, getUser, hasPaid, audit, countAuditTodayForUser } from "../db.ts";
 import { publicText, rid } from "../util.ts";
 import { clipCostUsd, clipCredits, freeModels, modelByKey, normalizeSettings, taskInput, DEFAULT_MARGIN, type ClipSettings } from "./models.ts";
 import { withPreset } from "./presets.ts";
@@ -95,14 +95,18 @@ export function parseSlots(g: Pick<GenerationRow, "slots">): Slot[] {
   try { const v = JSON.parse(g.slots ?? "[]"); return Array.isArray(v) ? v : []; } catch { return []; }
 }
 
+type Gate = { freeOk: boolean; lockedMessage: string; credits: number; usd: number; noun: string };
+
 /**
- * The checks every order passes, in order, before any money moves, then the debit itself. Answers the new
- * generation's id. `freeOk` = the model is open to accounts that never paid.
+ * The checks every order passes, in order, before any money moves (and before any paid work, such as speech).
+ * TWO DAILY POOLS (14 October 2026): accounts that never paid draw on their own, smaller STUDIO_FREE_DAILY_BUDGET_USD,
+ * so a crowd of throwaway accounts spending free credits can never fill the day for paying customers.
  */
-async function charge(env: StudioEnv, userId: string, o: { freeOk: boolean; lockedMessage: string; credits: number; usd: number; noun: string }): Promise<string> {
+async function gate(env: StudioEnv, userId: string, o: Gate): Promise<void> {
   const user = await getUser(asEnv(env), userId);
   if (!user) throw new StudioError("Please sign in again.", 401, "signin");
-  if (!o.freeOk && !(await hasPaid(asEnv(env), userId))) throw new StudioError(o.lockedMessage, 402, "locked");
+  const paid = await hasPaid(asEnv(env), userId);
+  if (!o.freeOk && !paid) throw new StudioError(o.lockedMessage, 402, "locked");
   const maxRunning = Math.max(1, num(env.STUDIO_MAX_RUNNING, 3));
   if ((await runningCount(env, userId)) >= maxRunning) {
     throw new StudioError(`You already have ${maxRunning} things generating. Wait for one to finish.`, 429, "busy");
@@ -110,9 +114,21 @@ async function charge(env: StudioEnv, userId: string, o: { freeOk: boolean; lock
   const budget = num(env.STUDIO_DAILY_BUDGET_USD, 30);
   if ((await studioSpentTodayUsd(env)) + o.usd > budget) {
     await audit(asEnv(env), userId, null, "studio.budget", { usd: o.usd, budget });
-    throw new StudioError("Kleo Studio is at full capacity today. Please try again tomorrow — nothing was charged.", 503, "capacity");
+    throw new StudioError("Kleo is at full capacity today. Please try again tomorrow — nothing was charged.", 503, "capacity");
+  }
+  if (!paid) {
+    const free = num(env.STUDIO_FREE_DAILY_BUDGET_USD, 8);
+    if ((await studioSpentTodayUsd(env, { unpaidOnly: true })) + o.usd > free) {
+      await audit(asEnv(env), userId, null, "studio.free_budget", { usd: o.usd, budget: free });
+      throw new StudioError("Free generations are full for today. Come back tomorrow, or buy a pack to skip the queue — nothing was charged.", 503, "free_capacity");
+    }
   }
   if (user.credits < o.credits) throw new StudioError(`This ${o.noun} costs ${o.credits} credits and you have ${user.credits}.`, 402, "credits");
+}
+
+/** The gate, then the debit itself. Answers the new generation's id. `freeOk` = open to accounts that never paid. */
+async function charge(env: StudioEnv, userId: string, o: Gate): Promise<string> {
+  await gate(env, userId, o);
   const id = rid("g", 12);
   if (!(await debitCredits(asEnv(env), userId, o.credits, id))) throw new StudioError(`This ${o.noun} costs ${o.credits} credits and you have fewer.`, 402, "credits");
   return id;
@@ -248,7 +264,12 @@ export async function refreshGeneration(env: StudioEnv, g: GenerationRow, minGap
 
   if (g.status === "submitting") {
     // The request that debited the credits died before the order went out (or the order is still on its way).
-    if (ageMin > 5) await failGeneration(env, g.id, "The video could not be started. Your credits are back.", { stage: "submit" });
+    // A film row is the exception: Studio never debited it (the MCP Worker did, and refunds a failed job itself), so
+    // it is closed WITHOUT a refund — refunding here would hand out credits nobody paid.
+    if (ageMin > 5 && g.kind === "film") {
+      await moveGeneration(env, g.id, ["submitting"], "failed", { error: "Kleo lost track of this film. If it was charged, write to hello@kleooai.com.", refunded: 1 });
+      await audit(asEnv(env), g.user_id, g.id, "studio.film_lost", {});
+    } else if (ageMin > 5) await failGeneration(env, g.id, "The video could not be started. Your credits are back.", { stage: "submit" });
     return (await getGeneration(env, g.id))!;
   }
   if (g.status === "saving") {
@@ -444,6 +465,15 @@ export async function speak(env: StudioEnv, sp: NonNullable<Plan["speech"]>): Pr
 
 export interface ToolRequest { tool: string; inputs: Record<string, string>; consent?: boolean; chatId?: string | null }
 
+/** How many spoken clips an account may have refused after they were made, per UTC day, before no more is made. */
+export const SPEECH_REFUSED_PER_DAY = 5;
+/** A spoken clip whose order was then refused: deleted with its upload row, and the refusal written down. */
+async function forgetSpeech(env: StudioEnv, userId: string, spoken: { id: string; key: string; seconds: number | null }, why: unknown): Promise<void> {
+  try { await env.RENDERS.delete(spoken.key); } catch { /* the row goes all the same: nothing links to the object */ }
+  await env.DB.prepare("DELETE FROM studio_uploads WHERE id = ? AND user_id = ?").bind(spoken.id, userId).run();
+  await audit(asEnv(env), userId, null, "studio.speech_refused", { seconds: spoken.seconds, why: why instanceof StudioError ? why.code : "error" });
+}
+
 /** Runs one app: reads the attached files, speaks the words if any, prices, charges, orders. */
 export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, origin: string): Promise<GenerationRow> {
   const tool = toolByKey(req.tool);
@@ -463,33 +493,47 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
   try { plan = planTool(tool.key, inputs, media); } catch (e) { if (e instanceof ToolRefusal) throw new StudioError(e.message); throw e; }
 
   // Words to speak become a sound clip first: its exact length prices the talking video, and for a voiceover it IS
-  // the result. Speech costs a fraction of a cent, so it is made before the charge.
+  // the result. Speech is made before the charge, so the order first passes every check the charge will make, on the
+  // price estimated from the script (an empty or locked account cannot make Kleo speak for free in a loop).
+  const free = freeTools(env.STUDIO_FREE_TOOLS);
+  const gateFor = (p: Plan): Gate => ({ freeOk: free.includes(tool.key), credits: toolCredits(p.usd, marginOf(env)), usd: p.usd, noun: tool.name.toLowerCase(), lockedMessage: `${tool.name} unlocks with your first credit pack.` });
   let spoken: { id: string; key: string; size: number; seconds: number | null } | null = null;
   if (plan.speech) {
+    await gate(env, userId, gateFor(plan));
+    // Speech that was made and then refused (longer than the estimate, or dearer than the credits once timed) is paid
+    // for and never charged (14 October 2026, the review's second pass): a few a day are honest mistakes, a loop is
+    // not, so past SPEECH_REFUSED_PER_DAY no more is made for the account until tomorrow.
+    if ((await countAuditTodayForUser(asEnv(env), userId, "studio.speech_refused")) >= SPEECH_REFUSED_PER_DAY)
+      throw new StudioError("Too many voice attempts were refused today. Shorten the words, or try again tomorrow — nothing was charged.", 429, "speech_limit");
     let wav: Uint8Array;
     try { wav = await speak(env, plan.speech); } catch (e) {
       const money = e instanceof KieError && e.status === 402;
       throw new StudioError(money ? "Our generation engine is being recharged. Please try again in a little while — nothing was charged." : "The voice model couldn't read that. Try different words — nothing was charged.", 502, "speech");
     }
     const info = mediaInfo(wav);
-    const id = rid("up", 12), key = `studio/${userId}/up/${id}.wav`;
+    // Kleo's speech is not one of the person's own uploads: kept outside their up/ prefix, so the upload allowance
+    // (src/studio/index.ts) never counts it.
+    const id = rid("up", 12), key = `studio/${userId}/speech/${id}.wav`;
     await env.RENDERS.put(key, wav, { httpMetadata: { contentType: "audio/wav" } });
     await addUpload(env, { id, userId, key, contentType: "audio/wav", size: wav.byteLength, width: null, height: null, kind: "audio", duration: info?.duration ?? null });
     spoken = { id, key, size: wav.byteLength, seconds: info?.duration ?? null };
-    if (tool.key === "talking-photo" || tool.key === "lipsync") {
+  }
+
+  let credits: number, id: string;
+  try {
+    if (spoken && (tool.key === "talking-photo" || tool.key === "lipsync")) {
       if (spoken.seconds && spoken.seconds > 60.5) throw new StudioError("That's more than a minute of speech. Shorten the words.");
-      media.audio = { id, url: await link(id), kind: "audio", seconds: spoken.seconds, width: null, height: null, type: "audio/wav" };
+      media.audio = { id: spoken.id, url: await link(spoken.id), kind: "audio", seconds: spoken.seconds, width: null, height: null, type: "audio/wav" };
       try { plan = planTool(tool.key, { ...inputs, source: "audio" }, media); } catch (e) { if (e instanceof ToolRefusal) throw new StudioError(e.message); throw e; }
       plan.usd += 0.01;
     }
+    credits = toolCredits(plan.usd, marginOf(env));
+    id = await charge(env, userId, gateFor(plan));
+  } catch (e) {
+    // Refused after the voice was made: the clip and its row go (nobody can use them), and the refusal is counted.
+    if (spoken) await forgetSpeech(env, userId, spoken, e);
+    throw e;
   }
-
-  const free = freeTools(env.STUDIO_FREE_TOOLS);
-  const credits = toolCredits(plan.usd, marginOf(env));
-  const id = await charge(env, userId, {
-    freeOk: free.includes(tool.key), credits, usd: plan.usd, noun: tool.name.toLowerCase(),
-    lockedMessage: `${tool.name} unlocks with your first credit pack.`,
-  });
   const prompt = String(inputs.script ?? inputs.prompt ?? "").trim() || plan.summary;
   const settings = { tool: tool.key, summary: plan.summary, output: plan.output, inputs: Object.fromEntries(Object.entries(inputs).filter(([k]) => !fileFields.some((f) => f.key === k))) };
   try {

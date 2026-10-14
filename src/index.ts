@@ -1,6 +1,7 @@
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import type { Env, AuthProps } from "./env";
 import { getUser, touchUser, audit } from "./db";
+import { grantStillValid } from "./accounts";
 import { mcpHandlerFor } from "./mcp";
 import { handleAuthorize } from "./auth";
 import { handleInternal, handleDevPlan, handleAdmin } from "./internal";
@@ -16,6 +17,7 @@ import { handleBeacon, recordSignupSource } from "./growth.ts";
 import { tick } from "./orchestrator";
 import { json } from "./util";
 import { ensureSchema } from "./schema";
+import { httpsRedirect, hardenResponse } from "./security-headers";
 
 /** /mcp — only reached with a valid OAuth token; the provider puts the token props on ctx.props. */
 const mcpApi: ExportedHandler<Env> = {
@@ -26,6 +28,12 @@ const mcpApi: ExportedHandler<Env> = {
     if (request.method === "POST") ctx.waitUntil(tick(env).catch(() => undefined)); // progress also without cron
     const user = await getUser(env, props.userId);
     if (!user) return json({ error: "account not found; reconnect Kleo" }, 401);
+    // A grant made before the account's Kleo key was retired opens nothing (14 October 2026, src/accounts.ts
+    // grantStillValid): the assistant must be connected again, with the new key.
+    if (!(await grantStillValid(env, user.id, props.keyVersion))) {
+      return json({ error: "this connection was made with a Kleo key that has since been replaced: remove Kleo from your assistant's connectors and add it again, pasting the new key from your account page" }, 401,
+        { "www-authenticate": `Bearer error="invalid_token", resource_metadata="${new URL(request.url).origin}/.well-known/oauth-protected-resource"` });
+    }
     ctx.waitUntil(touchUser(env, user.id));
     // THE CONNECTOR ADDRESS'S HINTS (27 September 2026): a new account's first calls carry the ?ref= of the address the
     // user added (src/referral.ts). Only within a day of the sign-up, so an old account re-added through somebody's
@@ -111,7 +119,11 @@ const provider = new OAuthProvider<Env>({
 });
 
 export default {
-  fetch: (request: Request, env: Env, ctx: ExecutionContext) => provider.fetch(request, env, ctx),
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const toHttps = httpsRedirect(new URL(request.url));
+    if (toHttps) return toHttps;
+    return hardenResponse(await provider.fetch(request, env, ctx));
+  },
   scheduled: (_controller: ScheduledController, env: Env, ctx: ExecutionContext) => {
     ctx.waitUntil((async () => {
       try {

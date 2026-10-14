@@ -2,7 +2,7 @@ import type { Env } from "./env";
 import { getUser, hasPaid, type User } from "./db";
 import { cookieHandle, makeHandle, makeViewToken, verifyHandle, verifyViewToken } from "./accounts";
 import { PACKS, sellingOpen, sellingAvailable, buyUrl } from "./stripe";
-import { html, escapeHtml } from "./util";
+import { html, escapeHtml, crossSiteRequest } from "./util";
 import { tariffSentence, animaticRule } from "./templates";
 import { redeemLaunchCode, trialOf, TRIAL_FILM_MAX_S, type TrialState } from "./launch.ts";
 import { referralCodeFor, referralLink, referralRule } from "./referral.ts";
@@ -27,6 +27,10 @@ const CONTACT = "kleooai@gmail.com";
  */
 export async function handleCredits(request: Request, env: Env): Promise<Response> {
   if (request.method !== "GET" && request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+  // CROSS-SITE POSTS (14 October 2026, the security review; src/util.ts crossSiteRequest): the page's forms change the
+  // account (a launch code, the contact email that receives every video link), so they are taken only from this page.
+  // Refused before the form is read, like the sign-in at /authorize.
+  if (request.method === "POST" && crossSiteRequest(request)) return new Response("This form can only be sent from your Kleo account page.", { status: 403, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
   const url = new URL(request.url);
   const ownerId = await verifyHandle(env, cookieHandle(request.headers.get("cookie")));
   const form = request.method === "POST" ? await request.formData().catch(() => null) : null;

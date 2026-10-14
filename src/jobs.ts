@@ -156,6 +156,14 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   // arc or the chapters). The range is checked on the PUBLIC template first, so the message names the range the
   // user was offered, not the row's half of it.
   const active = ACTIVE_TEMPLATE;
+  // A length that is not a finite number is refused FIRST, before any range or price check (14 October 2026, the
+  // security review): NaN compares false with everything, so it passed `< min` and `> max` alike, picked a template
+  // and reached the price as NaN credits. Every caller passes a number (the MCP tool's zod schema, Studio's route,
+  // which refuses non-numbers itself); this is the last door for any other. Missing (undefined or null) still means
+  // the template's default length, as the `??` below has always read it.
+  const lengthIn: unknown = input.duration_s;
+  if (lengthIn !== undefined && lengthIn !== null && (typeof lengthIn !== "number" || !Number.isFinite(lengthIn)))
+    throw new JobError(`The length must be a number of seconds, from ${active.minSeconds} to ${active.maxSeconds}. Nothing was charged.`);
   const asked = input.duration_s ?? active.defaultSeconds;
   if ((!input.template || input.template === FILM_TEMPLATE_ID) && (asked < active.minSeconds || asked > active.maxSeconds))
     throw new JobError(`Kleo makes films of ${active.minSeconds} to ${active.maxSeconds} seconds; ${Math.round(asked)} seconds is outside that range. Choose a length in range. Nothing was charged.`);
@@ -412,9 +420,14 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   // against the film's planned cost, and the refusal names the animatic. kie.ai's silence never refuses.
   if (product === "film" && onKie) {
     const shots = storyboard ? pictureScenes(JSON.parse(storyboard)).length : null;
-    const pre = await kiePreflight(env, duration, shots, MAX_PICTURES(duration));
+    // A launch-code film is measured against the trial pool, exactly as /footage will measure it (14 October 2026,
+    // footage.ts footageBudgetUsd): checked here against the paid pool, a full trial pool still rented a card and drew
+    // the pictures before the order was refused on the box, and a full paid pool refused a free film the trial pool
+    // could take. trialFilm implies an account that never paid, footagePoolOf's own definition of the trial pool.
+    const pool = trialFilm ? "trial" : "paid";
+    const pre = await kiePreflight(env, duration, shots, MAX_PICTURES(duration), pool);
     if (!pre.ok) {
-      await audit(env, user.id, null, "footage.preflight", { balance_usd: pre.balance_usd, planned_usd: pre.planned_usd, stills_usd: pre.stills_usd ?? 0, spent_today_usd: pre.spent_today_usd, budget_usd: pre.budget_usd, shots: pre.shots, model: pre.model, duration, owner_action: pre.reason === "budget" ? "raise DAILY_FOOTAGE_BUDGET_USD or wait for tomorrow" : "top up kie.ai" });
+      await audit(env, user.id, null, "footage.preflight", { pool, balance_usd: pre.balance_usd, planned_usd: pre.planned_usd, stills_usd: pre.stills_usd ?? 0, spent_today_usd: pre.spent_today_usd, budget_usd: pre.budget_usd, shots: pre.shots, model: pre.model, duration, owner_action: pre.reason === "budget" ? `raise ${pool === "trial" ? "TRIAL_FOOTAGE_BUDGET_USD" : "DAILY_FOOTAGE_BUDGET_USD"} or wait for tomorrow` : "top up kie.ai" });
       // The user reads no dollar and no provider (26 September 2026, the owner's rule): the numbers are in the audit row above.
       const why = pre.reason === "budget"
         ? "today's filming capacity is fully booked"

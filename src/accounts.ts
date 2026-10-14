@@ -20,10 +20,28 @@ const COOKIE_MAX_AGE = 400 * 24 * 60 * 60;
 /** Half of the SHA-256 hex digest: 128 bits of signature, still short enough to be retyped by hand. */
 const SIG_LEN = 32;
 
-export const makeHandle = async (env: Env, userId: string): Promise<string> =>
-  `${userId}.${(await hmacHex(env.INTERNAL_SECRET, `kleo-id:${userId}`)).slice(0, SIG_LEN)}`;
+/**
+ * REVOCABLE KEYS (14 October 2026). A key that leaked (a pasted chat, a shared screen, an account somebody else set up
+ * with your e-mail) used to be good forever. users.key_version now enters the signature from version 1 on: version 0
+ * signs exactly as before, so every key handed out until today still works, and bumping the version (rotateKey)
+ * retires the old key everywhere at once — the MCP sign-in cookie, the pasted key, Studio's "I have a Kleo key".
+ * A database that cannot answer (an old test env, a missing column) means version 0, never a refusal.
+ */
+export async function keyVersion(env: Env, userId: string): Promise<number> {
+  try {
+    const r = await env.DB.prepare("SELECT key_version FROM users WHERE id = ?").bind(userId).first<{ key_version: number | null }>();
+    return Number(r?.key_version ?? 0) || 0;
+  } catch {
+    return 0;
+  }
+}
 
-/** The user id inside a handle, or null if the string was tampered with, truncated or never signed by us. */
+export const makeHandle = async (env: Env, userId: string, version?: number): Promise<string> => {
+  const v = version ?? (await keyVersion(env, userId));
+  return `${userId}.${(await hmacHex(env.INTERNAL_SECRET, v > 0 ? `kleo-id:${userId}:${v}` : `kleo-id:${userId}`)).slice(0, SIG_LEN)}`;
+};
+
+/** The user id inside a handle, or null if the string was tampered with, truncated, retired or never signed by us. */
 export async function verifyHandle(env: Env, value: string | null | undefined): Promise<string | null> {
   const handle = (value ?? "").trim();
   const dot = handle.indexOf(".");
@@ -32,6 +50,28 @@ export async function verifyHandle(env: Env, value: string | null | undefined): 
   // The id only ever reaches an HMAC message from here, but a shape check keeps rubbish out of the hash.
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(userId)) return null;
   return safeEqual(handle, await makeHandle(env, userId)) ? userId : null;
+}
+
+/**
+ * Retires the account's current Kleo key (and the MCP sign-in cookies made from it, and the OAuth grants of the
+ * assistants connected while it was current: grantStillValid); answers the new key.
+ */
+export async function rotateKey(env: Env, userId: string): Promise<string> {
+  await env.DB.prepare("UPDATE users SET key_version = COALESCE(key_version, 0) + 1 WHERE id = ?").bind(userId).run();
+  return makeHandle(env, userId);
+}
+
+/**
+ * THE GRANT FOLLOWS THE KEY (14 October 2026, the review's second pass). An assistant connected at /authorize holds an
+ * OAuth grant tied to the account id, and until today nothing retired it: whoever had connected one with a leaked key,
+ * or from an account later handed to the owner of its e-mail (Studio's evictClaimant), kept spending its credits and
+ * could read the NEW key back through kleo_account. Every grant now carries the key version it was made under
+ * (AuthProps.keyVersion, src/auth.ts), and /mcp opens only for a grant of the current version (src/index.ts mcpApi), so
+ * rotateKey — "New Kleo key", a password reset, an eviction — disconnects those assistants too. A grant made before
+ * versions existed counts as version 0, so every assistant connected until today keeps working until the first rotation.
+ */
+export async function grantStillValid(env: Env, userId: string, grantVersion: unknown): Promise<boolean> {
+  return (Number(grantVersion ?? 0) || 0) === (await keyVersion(env, userId));
 }
 
 /** The raw (still unverified) kleo_id value out of a Cookie header, e.g. "other=1; kleo_id=u_ab.cd12". */
@@ -76,9 +116,24 @@ export async function verifyViewToken(env: Env, value: string | null | undefined
 export const accountUrl = async (env: Env, userId: string, base?: string): Promise<string> =>
   `${base ?? env.PUBLIC_URL}/credits?k=${encodeURIComponent(await makeViewToken(env, userId))}`;
 
+/**
+ * The part of an address that names one visitor. IPv4: the whole address. IPv6: its /64 prefix — one home or one
+ * phone gets a whole /64 and can rotate through it at will, so counting full IPv6 addresses let a single machine
+ * open every free account of the day (14 October 2026).
+ */
+export function ipBucket(ip: string): string {
+  if (!ip.includes(":")) return ip;
+  if (ip.includes(".")) return ip.slice(ip.lastIndexOf(":") + 1); // an IPv4 address written as IPv6 (::ffff:1.2.3.4)
+  const [head, tail = ""] = ip.toLowerCase().split("::");
+  const left = head ? head.split(":") : [];
+  const right = tail ? tail.split(":") : [];
+  const groups = ip.includes("::") ? [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill("0"), ...right] : left;
+  return `${groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, "")).join(":")}::/64`;
+}
+
 /** Rate-limit key for one visitor: the address is hashed with INTERNAL_SECRET and never stored or logged raw. */
 export const signupRateKey = (env: Env, ip: string | null | undefined): Promise<string> =>
-  hmacHex(env.INTERNAL_SECRET, `rl:${ip ?? "unknown"}`);
+  hmacHex(env.INTERNAL_SECRET, `rl:${ip ? ipBucket(ip) : "unknown"}`);
 
 /**
  * Short fingerprint of the visitor's address for the per-address sign-up cap, written into the user.created audit
