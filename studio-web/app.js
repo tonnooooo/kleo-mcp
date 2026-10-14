@@ -4,6 +4,7 @@
 // Pages: Create (chat with Kleo) · Video · Image · Audio · Apps · Library. Desktop: a top bar; phones: a tab bar.
 
 const DEMO = new URLSearchParams(location.search).has("demo");
+const DEMO_FREE = new URLSearchParams(location.search).get("demo") === "free"; // ?demo=free: an account that never paid
 const IS_TOUCH = matchMedia("(hover: none)").matches;
 
 // ── tiny DOM helpers ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -121,6 +122,13 @@ const S = {
   feeds: {},
 };
 const model = (key) => S.config.models.find((m) => m.key === key) || S.config.models.find((m) => m.key === S.config.defaultModel);
+// FREE RESOLUTIONS (15 October 2026): an account that never paid makes 480p; 720p and 1080p show a lock and open Get credits.
+const RES_ALL = ["480p", "720p", "1080p"];
+const freeRes = () => (S.me && !S.me.paid && Array.isArray(S.me.freeResolutions) ? S.me.freeResolutions : null);
+const resLocked = (r) => { const f = freeRes(); return !!f && !f.includes(r); };
+const resNote = () => { const f = freeRes() || []; return `${RES_ALL.filter((r) => !f.includes(r)).join(" and ")} unlock with your first credit pack. Free credits make ${f.join(" and ")} videos.`; };
+/** The resolutions shown for a model: a free account sees every one, the locked ones with a lock. */
+const resList = (m) => (freeRes() && allowed(m.key) ? RES_ALL : m.resolutions);
 function fix(s, images = 0, clips = { videos: 0, audios: 0 }) {
   let m = model(s.model);
   const hasClips = clips.videos + clips.audios > 0;
@@ -129,6 +137,7 @@ function fix(s, images = 0, clips = { videos: 0, audios: 0 }) {
   const out = { model: m.key };
   out.duration = m.durations.includes(Number(s.duration)) ? Number(s.duration) : m.defaultDuration;
   out.resolution = m.resolutions.includes(s.resolution) ? s.resolution : m.defaultResolution;
+  if (resLocked(out.resolution)) out.resolution = m.resolutions.find((r) => !resLocked(r)) || out.resolution;
   out.aspect = m.aspects.includes(s.aspect) ? s.aspect : "16:9";
   out.audio = s.audio !== false;
   out.imageRole = images === 0 ? "none" : images === 1 && !hasClips ? (s.imageRole === "reference" ? "reference" : "first_frame") : "reference";
@@ -544,7 +553,10 @@ function messageEl(m) {
 
 // The setting pills of a card (and the menus behind them), for a video or a picture.
 const durOptions = (s) => model(s.model).durations.map((d) => ({ label: `${d} seconds`, value: d, on: d === s.duration, cost: price({ ...s, duration: d }) }));
-const resOptions = (s) => model(s.model).resolutions.map((r) => ({ label: r === "1080p" ? "1080p · Full HD" : r === "720p" ? "720p · HD" : "480p · Draft", value: r, on: r === s.resolution, cost: price({ ...s, resolution: r }) }));
+const resOptions = (s) => { const m = model(s.model); return resList(m).map((r) => {
+  const locked = resLocked(r) || !m.resolutions.includes(r);
+  return { label: r === "1080p" ? "1080p · Full HD" : r === "720p" ? "720p · HD" : "480p · Draft", value: r, on: r === s.resolution, locked, note: resNote(), cost: locked ? undefined : price({ ...s, resolution: r }) };
+}); };
 const qualOptions = (s) => imodel(s.model).qualities.map((q) => ({ label: q === "4K" ? "4K · Ultra" : q === "2K" ? "2K · High" : "1K · Standard", value: q, on: q === s.quality, cost: iprice({ ...s, quality: q }) }));
 const countOptions = (s) => imodel(s.model).counts.map((c) => ({ label: c === 1 ? "1 picture" : `${c} pictures`, value: c, on: c === s.count, cost: iprice({ ...s, count: c }) }));
 function settingPills(s, onChange, kind = "video") {
@@ -1009,8 +1021,8 @@ function generatorView(kind) {
       draw();
     }
   }
-  const seg = (options, current, pick) => h("div", { class: "seg2" }, options.map((o) => h("button", { class: o.value === current ? "on" : "", onclick: () => pick(o.value) },
-    o.label, o.cost !== undefined ? h("span", { class: "c" }, bolt(9), o.cost) : null)));
+  const seg = (options, current, pick) => h("div", { class: "seg2" }, options.map((o) => h("button", { class: (o.value === current ? "on" : "") + (o.locked ? " locked" : ""), onclick: () => (o.locked ? openBuy(o.note) : pick(o.value)) },
+    o.label, o.locked ? h("span", { class: "c" }, icon("lock", 12)) : o.cost !== undefined ? h("span", { class: "c" }, bolt(9), o.cost) : null)));
   function drawSettings() {
     if (isVid) {
       const s = vs(), m = model(s.model);
@@ -1019,7 +1031,7 @@ function generatorView(kind) {
         fromPhoto ? null : [h("div", { class: "field-h" }, "Format"), seg(m.aspects.slice(0, 4).map((a) => ({ value: a, label: a })), s.aspect, (a) => setV({ ...s, aspect: a })),
           m.aspects.length > 4 ? h("button", { class: "mini", style: { alignSelf: "flex-start" }, onclick: () => openAspect(m.aspects, s.aspect, (a) => setV({ ...s, aspect: a })) }, icon("frame", 14), "More formats") : null],
         s.videoRole === "edit" ? null : [h("div", { class: "field-h" }, "Length"), seg(m.durations.map((d) => ({ value: d, label: `${d}s`, cost: price({ ...s, duration: d }) })), s.duration, (d) => setV({ ...s, duration: d }))],
-        h("div", { class: "field-h" }, "Quality"), seg(m.resolutions.map((r) => ({ value: r, label: r, cost: price({ ...s, resolution: r }) })), s.resolution, (r) => setV({ ...s, resolution: r })),
+        h("div", { class: "field-h" }, "Quality"), seg(resList(m).map((r) => { const locked = resLocked(r) || !m.resolutions.includes(r); return { value: r, label: r, locked, note: resNote(), cost: locked ? undefined : price({ ...s, resolution: r }) }; }), s.resolution, (r) => setV({ ...s, resolution: r })),
         h("label", { class: "toggle-row", onclick: () => setV({ ...s, audio: !s.audio }) }, h("span", {}, icon(s.audio ? "sound" : "mute", 17), " Sound"), h("span", { class: "switch" + (s.audio ? " on" : "") })));
     } else {
       const s = is(), m = imodel(s.model);
@@ -1480,8 +1492,9 @@ function sheet(title, sub, ...content) {
   return box;
 }
 function openMenu(anchor, options, pick) {
-  const rows = (menu) => options.map((o) => h("button", { class: "row", role: menu ? "menuitem" : null, onclick: () => { closeLayer(); pick(o.value); } },
-    h("div", { class: "lbl" }, h("b", {}, o.label)), o.cost !== undefined ? h("span", { class: "val" }, bolt(13), o.cost) : null,
+  // A locked option shows a lock instead of its price and opens Get credits instead of being chosen.
+  const rows = (menu) => options.map((o) => h("button", { class: "row" + (o.locked ? " locked" : ""), role: menu ? "menuitem" : null, onclick: () => { closeLayer(); if (o.locked) return openBuy(o.note); pick(o.value); } },
+    h("div", { class: "lbl" }, h("b", {}, o.label)), o.locked ? h("span", { class: "val" }, icon("lock", 16)) : o.cost !== undefined ? h("span", { class: "val" }, bolt(13), o.cost) : null,
     h("span", { class: "check", style: { visibility: o.on ? "visible" : "hidden" } }, icon("check", 17, 2.4))));
   if (innerWidth <= 640) { sheet("Choose", null, h("div", { class: "list" }, rows(false))); return; }
   closeLayer();
@@ -1775,6 +1788,7 @@ async function demoApi(path, opts) {
   const method = opts.method || "GET", b = opts.body || {};
   const now = () => new Date().toISOString();
   if (path === "/api/config") return { google: true, microsoft: true, social: ["google", "microsoft"], emailReset: true, defaultModel: "seedance-2.5", models: demoCatalog(), defaultImageModel: "nano-banana-2", imageModels: demoImageCatalog(), freeCredits: 5, presets: DEMO_PRESETS, tools: DEMO_TOOLS };
+  if (path === "/api/me" && DEMO_FREE) return { id: "u_demo", email: "you@example.com", name: "Demo", since: "2026-10-01T09:00:00Z", credits: 5, paid: false, allowed: ["seedance-2.0-fast"], freeResolutions: ["480p"], allowedImages: ["nano-banana-2"], allowedTools: [], methods: ["password"], mcpUrl: "https://mcp.kleooai.com/mcp", packs: [{ label: "5 EUR", credits: 10, url: "https://kleooai.com/pricing/" }, { label: "15 EUR", credits: 35, url: "https://kleooai.com/pricing/" }, { label: "40 EUR", credits: 100, url: "https://kleooai.com/pricing/" }] };
   if (path === "/api/me") return { id: "u_demo", email: "you@example.com", name: "Demo", since: "2026-10-01T09:00:00Z", credits: demoDb.credits, paid: true, allowed: demoCatalog().map((m) => m.key), allowedImages: demoImageCatalog().map((m) => m.key), allowedTools: DEMO_TOOLS.map((t) => t.key), methods: ["password", "google"], mcpUrl: "https://mcp.kleooai.com/mcp", packs: [{ label: "5 EUR", credits: 10, url: "https://kleooai.com/pricing/" }, { label: "15 EUR", credits: 35, url: "https://kleooai.com/pricing/" }, { label: "40 EUR", credits: 100, url: "https://kleooai.com/pricing/" }] };
   if (path === "/api/auth/signout" || path === "/api/auth/signout-all") return { ok: true };
   if (path === "/api/me/key") return { key: "u_demo.0123456789abcdef0123456789abcdef" };

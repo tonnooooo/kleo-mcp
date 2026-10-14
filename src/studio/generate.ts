@@ -20,7 +20,7 @@ import { ephone, ephoneOutputs, ephoneFailure, type EphoneTask } from "../ephone
 import { KieError } from "../kie.ts";
 import { debitCredits, refundCredits, getUser, hasPaid, audit, countAuditTodayForUser } from "../db.ts";
 import { publicText, rid } from "../util.ts";
-import { clipCostUsd, clipCredits, freeModels, modelByKey, normalizeSettings, taskInput, DEFAULT_MARGIN, type ClipSettings } from "./models.ts";
+import { clipCostUsd, clipCredits, freeModels, freeResolutions, modelByKey, normalizeSettings, taskInput, DEFAULT_MARGIN, type ClipSettings } from "./models.ts";
 import { withPreset } from "./presets.ts";
 import { planTool, toolByKey, toolCredits, toneText, ToolRefusal, type Media, type Plan, type ToolKey } from "./tools.ts";
 import { mediaInfo } from "./media.ts";
@@ -200,11 +200,15 @@ export async function createGeneration(env: StudioEnv, userId: string, req: Crea
   if (sounds.some((a) => !a.duration || a.duration < 2 || a.duration > 15.5)) throw new StudioError("Each sound clip must be 2–15 seconds long (MP3 or WAV).");
 
   const free = freeModels(env.STUDIO_FREE_MODELS);
+  const freeRes = freeResolutions(env.STUDIO_FREE_RESOLUTIONS);
   const credits = clipCredits(s, marginOf(env), videoSeconds);
   const usd = clipCostUsd(s, videoSeconds);
+  const modelFree = free.includes(s.model);
   const id = await charge(env, userId, {
-    freeOk: free.includes(s.model), credits, usd, noun: "video",
-    lockedMessage: `${model.name} unlocks with your first credit pack. Free credits work with ${free.map((k) => modelByKey(k)!.name).join(", ")}.`,
+    freeOk: modelFree && freeRes.includes(s.resolution), credits, usd, noun: "video",
+    lockedMessage: modelFree
+      ? `${s.resolution} unlocks with your first credit pack. Free credits make ${freeRes.join(" and ")} videos.`
+      : `${model.name} unlocks with your first credit pack. Free credits work with ${free.map((k) => modelByKey(k)!.name).join(", ")}.`,
   });
   const imagePaths = all.map((u) => `/media/u/${u.id}`);
   try {

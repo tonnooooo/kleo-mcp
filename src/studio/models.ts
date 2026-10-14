@@ -190,6 +190,26 @@ export function clipCredits(s: ClipSettings, margin = DEFAULT_MARGIN, refVideoSe
 }
 
 /**
+ * The resolutions an account that never paid may use (15 October 2026, the owner: a 5-second 720p clip of Seedance 2.0
+ * Fast costs about $0.52 and the gift paid for two of them; free credits now make 480p, the rest unlocks with a pack).
+ * STUDIO_FREE_RESOLUTIONS: comma separated, or "*" for all.
+ */
+export function freeResolutions(list: string | undefined): Resolution[] {
+  const raw = (list ?? "480p").trim();
+  const all: Resolution[] = ["480p", "720p", "1080p"];
+  if (raw === "*") return all;
+  const out = raw.split(",").map((s) => s.trim()).filter((r): r is Resolution => (all as string[]).includes(r));
+  return out.length ? out : ["480p"];
+}
+
+/** A free account's choice brought inside what it may use: the first resolution of the model it is allowed. */
+export function clampFreeResolution(s: ClipSettings, free: Resolution[]): ClipSettings {
+  if (free.includes(s.resolution)) return s;
+  const ok = modelByKey(s.model)?.resolutions.find((r) => free.includes(r));
+  return ok ? { ...s, resolution: ok } : s;
+}
+
+/**
  * Which models an account that never paid may use. The owner's rule of 15 September 2026: the provider is paid
  * with the owner's money, so gifted credits must not buy the expensive models. Free accounts get the cheapest one;
  * the first pack unlocks the rest. `list` is the STUDIO_FREE_MODELS var: comma separated keys, or "*" for all.
