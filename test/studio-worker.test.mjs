@@ -237,8 +237,8 @@ test("a clip the provider fails is refunded once, however many times it is polle
   const me = (await call(env, "/api/me", { cookie })).json;
   const p = fakeProvider((u) => u.endsWith("/v1/task/submit") ? ok({ id: "task_9" }) : ok({ id: "task_9", status: "failed", error: "Content policy violation detected" }));
   try {
-    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { prompt: "x", settings: { model: "seedance-2.0-fast", resolution: "720p" } } });
-    assert.equal(credits(env, me.id), 3);
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { prompt: "x", settings: { model: "seedance-2.0-fast", resolution: "480p" } } });
+    assert.equal(credits(env, me.id), 4);
     old(env);
     const f = await call(env, `/api/generations/${r.json.generation.id}`, { cookie });
     assert.equal(f.json.generation.status, "failed");
@@ -967,3 +967,19 @@ test("once Google sign-in is on, new accounts are opened with Google only; e-mai
   assert.equal(g.location, "/");
   assert.equal((await call(env, "/api/me", { cookie: g.cookie })).json.credits, 5);
 });
+
+test("free credits make 480p: 720p and 1080p are locked until the first pack, and the agent proposes 480p", async () => {
+  const env = newEnv();
+  const cookie = await signUp(env);
+  const me = (await call(env, "/api/me", { cookie })).json;
+  assert.deepEqual(me.freeResolutions, ["480p"]);
+  const locked = await call(env, "/api/generate", { method: "POST", cookie, body: { prompt: "a fox", settings: { model: "seedance-2.0-fast", resolution: "720p", duration: 5 } } });
+  assert.equal(locked.status, 402, locked.text);
+  assert.equal(locked.json.code, "locked");
+  assert.match(locked.json.error, /720p unlocks with your first credit pack\. Free credits make 480p videos\./);
+  assert.equal(credits(env, me.id), 5, "nothing was charged");
+  // A paid account has every resolution.
+  const paid = await paidAccount(env);
+  assert.equal((await call(env, "/api/me", { cookie: paid.cookie })).json.freeResolutions, null);
+});
+

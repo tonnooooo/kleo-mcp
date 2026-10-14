@@ -51,6 +51,8 @@ export interface StudioEnv {
   STUDIO_ENHANCE_MODEL?: string;
   /** Agent messages one account may send in a UTC day (default 200). */
   STUDIO_AGENT_PER_DAY?: string;
+  /** Video resolutions an account that never paid may use (default "480p"; "*" for all). */
+  STUDIO_FREE_RESOLUTIONS?: string;
   /** How new accounts are opened once Google is set: "google" (default, Google only) or "all" (e-mail too). */
   STUDIO_SIGNUP?: string;
   /** What the never-paid accounts opened from ONE address may spend together in a UTC day, in dollars (default 2). */

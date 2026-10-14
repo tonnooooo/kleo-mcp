@@ -15,7 +15,7 @@ import type { Env } from "../env";
 import { getUser, hasPaid, audit, countAuditTodayForUser } from "../db.ts";
 import { PACKS, buyUrl } from "../stripe.ts";
 import { rid } from "../util.ts";
-import { DEFAULT_MODEL, freeModels, publicCatalog, normalizeSettings, clipCredits } from "./models.ts";
+import { DEFAULT_MODEL, freeModels, freeResolutions, publicCatalog, normalizeSettings, clipCredits } from "./models.ts";
 import { DEFAULT_IMAGE_MODEL, IMAGE_MODELS, freeImageModels, publicImageCatalog } from "./image-models.ts";
 import {
   ensureStudioSchema, listChats, getChat, createChat, touchChat, renameChat, deleteChat, listMessages, addMessage,
@@ -222,6 +222,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     const paid = await hasPaid(asEnv(env), userId);
     return json({
       ...info, paid, allowed: paid ? publicCatalog().map((m: any) => m.key) : freeModels(env.STUDIO_FREE_MODELS),
+      freeResolutions: paid ? null : freeResolutions(env.STUDIO_FREE_RESOLUTIONS),
       allowedImages: paid ? IMAGE_MODELS.map((m) => m.key) : freeImageModels(env.STUDIO_FREE_IMAGE_MODELS), packs: packsFor(env, userId),
       allowedTools: paid ? freeTools("*") : freeTools(env.STUDIO_FREE_TOOLS),
     });
@@ -271,7 +272,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     const allowedImages = paid ? IMAGE_MODELS.map((m) => m.key) : freeImageModels(env.STUDIO_FREE_IMAGE_MODELS);
     const reply = await runAgent(env, {
       history, text, uploads, ui: b.settings ?? {}, uiImage: b.imageSettings ?? {}, mode: b.mode === "image" ? "image" : "video",
-      credits: user.credits, allowed, allowedImages, margin: marginOf(env),
+      credits: user.credits, allowed, allowedImages, margin: marginOf(env), freeResolutions: paid ? undefined : freeResolutions(env.STUDIO_FREE_RESOLUTIONS),
     },
       await picturesForAgent(env, uploads.filter((u) => (u.kind ?? "image") === "image").map((u) => u.key)));
     // A film card carries the MCP server's price (and what this account may order: film or animatic).

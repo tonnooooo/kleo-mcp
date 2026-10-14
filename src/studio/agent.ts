@@ -13,7 +13,7 @@ import type { StudioEnv } from "./env.ts";
 import { ephone } from "../ephone.ts";
 import { KieError } from "../kie.ts";
 import { StudioError } from "./generate.ts";
-import { MODELS, clipCredits, normalizeSettings, type ClipSettings, type ModelKey } from "./models.ts";
+import { MODELS, clampFreeResolution, clipCredits, normalizeSettings, type ClipSettings, type ModelKey, type Resolution } from "./models.ts";
 import { IMAGE_MODELS, imageCredits, normalizeImageSettings, type ImageModelKey, type ImageSettings } from "./image-models.ts";
 import { normalizeFilm, type FilmSettings } from "./films.ts";
 import type { MessageRow, UploadRow } from "./store.ts";
@@ -45,6 +45,8 @@ export interface AgentContext {
   mode?: "video" | "image";
   credits: number;
   allowed: ModelKey[];
+  /** The resolutions this account may use (an account that never paid: 480p); absent = all. */
+  freeResolutions?: Resolution[];
   allowedImages?: ImageModelKey[];
   margin: number;
 }
@@ -118,7 +120,9 @@ export function systemPrompt(ctx: AgentContext): string {
   const ui = normalizeSettings(ctx.ui, ctx.uploads.length);
   const lines = MODELS.map((m) => {
     const p5 = clipCredits({ model: m.key, duration: m.defaultDuration, resolution: m.defaultResolution, aspect: "16:9", audio: true, imageRole: "none" }, ctx.margin);
-    const lock = ctx.allowed.includes(m.key) ? "" : " [LOCKED for this user until they buy a pack]";
+    const lock = ctx.allowed.includes(m.key)
+      ? ctx.freeResolutions ? ` [this user may use only ${ctx.freeResolutions.join("/")} until they buy a pack]` : ""
+      : " [LOCKED for this user until they buy a pack]";
     return `- ${m.key} (${m.name}): ${m.blurb}. Durations ${m.durations.join("/")} s, ${m.resolutions.join("/")}, ratios ${m.aspects.join(" ")}. ${m.defaultDuration} s ${m.defaultResolution} ≈ ${p5} credits.${lock}`;
   }).join("\n");
   const ui2 = normalizeImageSettings(ctx.uiImage ?? {});
@@ -217,6 +221,7 @@ export function proposalFrom(args: Record<string, unknown>, ctx: AgentContext): 
     const fallback = ctx.allowed.includes(String(ctx.ui.model) as ModelKey) ? String(ctx.ui.model) : ctx.allowed[0];
     if (fallback) settings = normalizeSettings({ ...settings, model: fallback }, pictures.length, refs);
   }
+  if (ctx.freeResolutions) settings = clampFreeResolution(settings, ctx.freeResolutions);
   return {
     kind: "video",
     title: String(args.title ?? "").trim().slice(0, 60) || "Your video",
