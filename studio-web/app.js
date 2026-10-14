@@ -240,15 +240,28 @@ async function enter() {
 }
 const PAGES = [
   { key: "chat", path: "/", label: "Create", ic: "chat" },
+  { key: "explore", path: "/explore", label: "Explore", ic: "sparkle" },
   { key: "video", path: "/video", label: "Video", ic: "film" },
   { key: "image", path: "/image", label: "Image", ic: "photo" },
   { key: "audio", path: "/audio", label: "Audio", ic: "music" },
-  { key: "apps", path: "/apps", label: "Apps", ic: "apps", isNew: true },
+  { key: "apps", path: "/apps", label: "Apps", ic: "apps" },
   { key: "library", path: "/library", label: "Library", ic: "library" },
 ];
 async function route() {
   const p = location.pathname;
   closeLayer();
+  // A "Generate" button on kleooai.com opens the app with its prompt (?prompt=…&aspect=…): the form is filled, nothing
+  // is charged until the person taps Generate. The parameters leave the address bar at once.
+  const q = new URLSearchParams(location.search);
+  const pre = (q.get("prompt") || "").slice(0, 4000);
+  if (pre || q.get("aspect")) {
+    if (p === "/video" || p === "/image") S.page[p.slice(1)].prompt = pre;
+    else if (p === "/") S.prefill = pre;
+    if (q.get("aspect") && RATIOS[q.get("aspect")]) S.settings = fix({ ...S.settings, aspect: q.get("aspect") });
+    q.delete("prompt"); q.delete("aspect");
+    history.replaceState(null, "", p + (q.toString() ? `?${q}` : ""));
+  }
+  if (p === "/explore") return show("explore", () => exploreView());
   const m = p.match(/^\/c\/(c_[a-z0-9]+)/);
   const app = p.match(/^\/apps\/([a-z0-9-]+)/);
   if (m) return show("chat", () => openChat(m[1]));
@@ -487,7 +500,9 @@ function renderMessages(jump = false) {
       h("div", { class: "ideas" }, IDEAS[S.mode].map((i) => h("button", { class: "idea", onclick: () => useIdea(i) },
         h("span", { class: "em", style: { background: i.c } }, icon(i.ic, 19, 2)), h("div", {}, h("b", {}, i.t), h("span", {}, i.photo ? (img ? "Upload a picture and say what to change." : "Upload a picture and bring it to life.") : i.p))))),
       h("div", { class: "steps", style: { justifyContent: "center", marginTop: "22px" } },
-        h("button", { class: "mini", onclick: () => go("/apps") }, icon("apps", 15), "Face swap, talking photos & more in Apps"))));
+        h("button", { class: "mini", onclick: () => go("/apps") }, icon("apps", 15), "Face swap, talking photos & more in Apps")),
+      showcaseStrip("Made by the Kleo team")));
+    if (S.prefill) { const t = $("#prompt"); if (t) { t.value = S.prefill; autosize(t); updateSend(); t.focus(); } S.prefill = ""; }
     return;
   }
   fill(col, S.messages.map(messageEl));
@@ -1047,8 +1062,7 @@ function generatorView(kind) {
       list.length ? h("div", { class: "feed" }, list.map((g) => resultCard(g)))
         : h("div", { class: "empty-feed" }, h("b", {}, isVid ? "Your first video starts here" : "Your first picture starts here"),
           isVid ? "Write a prompt on the left, or try one of these:" : "Write a prompt and hit Generate.",
-          isVid ? h("div", { class: "inspo" }, INSPO.map((x) => h("button", { onclick: () => { page.prompt = x.p; ta.value = x.p; refreshCta(); ta.focus(); } },
-            h("video", { src: x.url + "#t=1", muted: true, playsinline: true, loop: true, preload: "metadata", onmouseenter: (e) => e.target.play().catch(() => {}), onmouseleave: (e) => e.target.pause() }), h("span", {}, x.t)))) : null));
+          isVid ? showcaseGrid((x) => { page.prompt = x.prompt; ta.value = x.prompt; refreshCta(); ta.focus(); }, 8) : null));
   }
   function draw() { drawModel(); drawRefs(); drawSettings(); drawPresets(); refreshCta(); askPrice(); }
   const enhance = h("button", { class: "mini wand", onclick: async (e) => {
@@ -1148,6 +1162,79 @@ function resultCard(g) {
 }
 
 // ── Audio page ───────────────────────────────────────────────────────────────────────────────────────────────────
+// ── Explore: every finished video the Kleo team made, Higgsfield-style (14 October 2026) ───────────────────────────
+// studio-web/showcase.json (scripts/showcase.py) lists them; the files live on media.kleooai.com. Cards play their
+// muted preview loop while they are on screen; a tap opens the whole clip with "Recreate" (the Video page, prompt and
+// shape filled in) and "Ask Kleo" (the chat, prompt filled in). None of them went through the app, so the credit is
+// "the Kleo team", never "made with Kleo".
+let SHOWCASE = null;
+async function showcase() {
+  if (!SHOWCASE) SHOWCASE = await fetch("/showcase.json").then((r) => (r.ok ? r.json() : [])).catch(() => []);
+  return SHOWCASE;
+}
+const playing = "IntersectionObserver" in window ? new IntersectionObserver((entries) => {
+  for (const e of entries) {
+    const v = e.target;
+    if (e.isIntersecting) { if (!v.src) v.src = v.dataset.src; v.play().catch(() => {}); } else v.pause();
+  }
+}, { threshold: 0.55 }) : null;
+function loopVideo(src, poster) {
+  const v = h("video", { "data-src": src, poster, muted: true, loop: true, playsinline: true, preload: "none", "aria-hidden": "true" });
+  v.muted = true;
+  if (playing) playing.observe(v); else v.src = src;
+  return v;
+}
+function showcaseCard(x, pick) {
+  return h("button", { class: `sc-card sc-${x.format}`, onclick: () => (pick ? pick(x) : openShowcase(x)), "aria-label": x.title },
+    h("div", { class: "sc-media" }, loopVideo(x.preview, x.poster)),
+    h("div", { class: "sc-text" }, h("b", {}, x.title), x.line ? h("span", {}, x.line) : null));
+}
+function openShowcase(x) {
+  const v = h("video", { src: x.full, poster: x.poster, autoplay: true, muted: true, loop: true, playsinline: true, controls: true });
+  v.muted = true;
+  viewerFrame(v, x.prompt, [
+    h("button", { class: "btn btn-cta btn-sm", onclick: () => recreate(x) }, icon("wand", 16), "Recreate"),
+    h("button", { class: "btn btn-quiet btn-sm", onclick: () => askKleo(x) }, icon("chat", 16), "Ask Kleo")]);
+}
+function recreate(x) {
+  closeLayer();
+  S.page.video.prompt = x.prompt;
+  S.settings = fix({ ...S.settings, aspect: x.format === "tall" ? "9:16" : x.format === "square" ? "1:1" : "16:9" });
+  go("/video");
+}
+function askKleo(x) { closeLayer(); S.prefill = x.prompt; go("/"); }
+/** A grid of cards (all one shape per row), filled when the list arrives. */
+function showcaseGrid(pick, limit = 0, only = null) {
+  const box = h("div", { class: "sc-grids" });
+  showcase().then((all) => {
+    const list = all.filter((x) => !only || x.format === only).slice(0, limit || undefined);
+    const groups = ["wide", "tall", "square"].map((f) => list.filter((x) => x.format === f)).filter((g) => g.length);
+    fill(box, groups.map((g) => h("div", { class: `sc-grid sc-grid-${g[0].format}` }, g.map((x) => showcaseCard(x, pick)))));
+  });
+  return box;
+}
+/** One scrolling row (the Create page): a few clips and "See all". */
+function showcaseStrip(title) {
+  const row = h("div", { class: "sc-row" });
+  showcase().then((all) => fill(row, all.slice(0, 10).map((x) => showcaseCard(x))));
+  return h("section", { class: "sc-strip" },
+    h("div", { class: "sc-head" }, h("h2", {}, title), h("button", { class: "mini", onclick: () => go("/explore") }, "See all", icon("right", 14))), row);
+}
+function exploreView() {
+  let only = null;
+  const grids = h("div", {});
+  const chips = h("div", { class: "seg2 sc-filter" });
+  const draw = () => {
+    fill(chips, [[null, "All"], ["wide", "Wide"], ["tall", "Vertical"]].map(([k, label]) =>
+      h("button", { class: only === k ? "on" : "", onclick: () => { only = k; draw(); } }, label)));
+    fill(grids, showcaseGrid(null, 0, only));
+  };
+  draw();
+  setView("explore-view",
+    h("div", { class: "page-head" }, h("h1", {}, "Explore"), h("p", {}, "Films made by the Kleo team. Tap one, then Recreate it.")),
+    chips, grids);
+}
+
 function audioView() {
   const sub = store.get("audioTab", "voice");
   const tabs = h("div", { class: "seg2", style: { maxWidth: "460px", marginBottom: "16px" } },
