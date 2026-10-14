@@ -869,3 +869,20 @@ body::after {
 }
 
 .main { background: transparent; }
+
+/* ── The logo, 14 October 2026 (the owner: "migliora il logo … rendi più grande il cerchio"): the mark is never
+   clipped into a rounded square any more; on the empty chat and sign-in it sits in a glowing ring. ───────────── */
+.brand img { border-radius: 0; filter: drop-shadow(0 2px 8px rgba(243, 181, 63, .35)); }
+.logo-orb { position: relative; width: 112px; height: 112px; margin: 0 auto; border-radius: 50%; display: grid; place-items: center;
+  background: radial-gradient(circle at 50% 42%, rgba(243, 181, 63, .30), rgba(243, 181, 63, .08) 58%, transparent 72%); }
+.logo-orb::before { content: ""; position: absolute; inset: 0; border-radius: 50%; padding: 1.5px;
+  background: conic-gradient(from 0deg, rgba(243, 181, 63, .95), rgba(169, 155, 245, .55), rgba(240, 138, 75, .95), rgba(79, 209, 197, .45), rgba(243, 181, 63, .95));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0); animation: orb-spin 9s linear infinite; }
+.logo-orb::after { content: ""; position: absolute; inset: 14px; border-radius: 50%; background: radial-gradient(circle, rgba(255, 255, 255, .06), transparent 70%); border: 1px solid rgba(255, 255, 255, .06); }
+.logo-orb img { position: relative; z-index: 1; width: 58px; height: 58px; border-radius: 0 !important; box-shadow: none !important; filter: drop-shadow(0 10px 24px rgba(243, 181, 63, .5)); }
+@keyframes orb-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .logo-orb::before { animation: none; } }
+.hero .logo-orb { margin-bottom: 4px; }
+.auth-card .logo-orb { margin-bottom: 8px; }
+

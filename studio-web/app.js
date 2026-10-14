@@ -293,7 +293,7 @@ addEventListener("focus", async () => {
 // ── auth screens ─────────────────────────────────────────────────────────────────────────────────────────────────
 function authFrame(title, sub, ...content) {
   fill($("#app"), h("div", { class: "auth" }, h("div", { class: "auth-card" },
-    h("img", { class: "logo", src: "/kleo-mark.svg", alt: "Kleo" }), h("h1", {}, title), h("p", { class: "sub" }, sub), ...content)));
+    h("div", { class: "logo-orb" }, h("img", { src: "/kleo-mark.svg", alt: "Kleo" })), h("h1", {}, title), h("p", { class: "sub" }, sub), ...content)));
 }
 function busyButton(btn) { const old = btn.textContent; btn.disabled = true; fill(btn, spinner(18)); return () => { btn.disabled = false; btn.textContent = old; }; }
 // Cloudflare Turnstile on sign-up (only when the server has a site key): the bot check behind the free credits.
@@ -495,7 +495,7 @@ function renderMessages(jump = false) {
   if (!S.messages.length) {
     const img = S.mode === "image";
     fill(col, h("div", { class: "hero" },
-      h("img", { src: "/kleo-mark.svg", alt: "" }),
+      h("div", { class: "logo-orb" }, h("img", { src: "/kleo-mark.svg", alt: "" })),
       h("h1", {}, img ? "What should we picture?" : "What do you want to create?"),
       h("p", {}, S.agent ? "Tell Kleo your idea, drop a photo or a clip, or tap an example." : img ? "Describe your picture and hit Generate." : "Describe your video and hit Generate."),
       h("div", { class: "ideas" }, IDEAS[S.mode].map((i) => h("button", { class: "idea", onclick: () => useIdea(i) },
@@ -1070,7 +1070,8 @@ function generatorView(kind) {
     if (!page.prompt.trim()) return toast("Write an idea first — Kleo will make it a great prompt.");
     if (!signedIn()) return requireAccount();
     const b = e.currentTarget; b.disabled = true; fill(b, spinner(13), "Improving…");
-    try { const r = await api("/api/enhance", { method: "POST", body: { kind, prompt: page.prompt } }); page.prompt = r.prompt; ta.value = r.prompt; refreshCta(); }
+    const cur = isVid ? fix(S.settings) : ifix(S.imageSettings);
+    try { const r = await api("/api/enhance", { method: "POST", body: { kind, prompt: page.prompt, seconds: isVid ? cur.duration : undefined, aspect: cur.aspect, model: (isVid ? model(cur.model) : null)?.name } }); page.prompt = r.prompt; ta.value = r.prompt; refreshCta(); }
     catch (er) { handleError(er); } finally { b.disabled = false; fill(b, icon("wand", 14), "Enhance"); }
   } }, icon("wand", 14), "Enhance");
   const panel = h("div", { class: "panel" },
@@ -1367,8 +1368,19 @@ function toolBody(key, compact) {
   }
   function fieldEl(f) {
     if (!visible(f)) return null;
-    if (f.kind === "text") return h("div", { class: "field" }, h("div", { class: "field-h" }, f.label, f.maxLength ? h("span", { style: { textTransform: "none", letterSpacing: 0, fontWeight: 500 } }, `${(st.inputs[f.key] || "").length}/${f.maxLength}`) : null),
-      h("textarea", { class: "text-in", placeholder: f.placeholder || "", maxlength: f.maxLength || null, oninput: (e) => { st.inputs[f.key] = e.target.value; const c = e.target.previousSibling?.querySelector("span"); if (c && f.maxLength) c.textContent = `${e.target.value.length}/${f.maxLength}`; priceNow(); drawCta(); } }, st.inputs[f.key] || ""));
+    if (f.kind === "text") {
+      // Kleo's Enhance on every app prompt that describes something to make (not on words to be spoken as they are).
+      const ek = f.key === "prompt" ? ({ music: "music", sfx: "sfx", "video-edit": "edit" })[key] || "video" : null;
+      const ta2 = h("textarea", { class: "text-in", placeholder: f.placeholder || "", maxlength: f.maxLength || null, oninput: (e) => { st.inputs[f.key] = e.target.value; const c = e.target.parentNode?.querySelector(".field-h .count"); if (c && f.maxLength) c.textContent = `${e.target.value.length}/${f.maxLength}`; priceNow(); drawCta(); } }, st.inputs[f.key] || "");
+      const enh = ek ? h("button", { class: "mini wand", type: "button", onclick: async (e) => {
+        if (!(st.inputs[f.key] || "").trim()) return toast("Write an idea first — Kleo will make it a great prompt.");
+        if (!signedIn()) return requireAccount();
+        const b = e.currentTarget; b.disabled = true; fill(b, spinner(13), "Improving…");
+        try { const r = await api("/api/enhance", { method: "POST", body: { kind: ek, prompt: st.inputs[f.key] } }); st.inputs[f.key] = r.prompt.slice(0, f.maxLength || 4000); ta2.value = st.inputs[f.key]; priceNow(); drawCta(); }
+        catch (er) { handleError(er); } finally { b.disabled = false; fill(b, icon("wand", 14), "Enhance"); }
+      } }, icon("wand", 14), "Enhance") : null;
+      return h("div", { class: "field" }, h("div", { class: "field-h" }, f.label, h("span", { class: "row-gap" }, enh, f.maxLength ? h("span", { class: "count", style: { fontWeight: 500 } }, `${(st.inputs[f.key] || "").length}/${f.maxLength}`) : null)), ta2);
+    }
     if (f.kind === "select") return h("div", { class: "field" }, h("div", { class: "field-h" }, f.label),
       h("div", { class: "seg2" }, f.options.map((o) => h("button", { class: (st.inputs[f.key] ?? f.default) === o.value ? "on" : "", onclick: () => { st.inputs[f.key] = o.value; draw(); } }, o.label))));
     if (f.kind === "voice") {
