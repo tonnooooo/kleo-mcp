@@ -23,15 +23,18 @@ const COMMON = [
 ];
 
 const TURNSTILE = "https://challenges.cloudflare.com";
+/** Cloudflare Web Analytics, which the zone injects into every HTML page (the script, then its beacon). */
+const CF_INSIGHTS = "https://static.cloudflareinsights.com";
+const CF_BEACON = "https://cloudflareinsights.com";
 
 export const APP_CSP = [
   "default-src 'self'",
-  `script-src 'self' ${TURNSTILE}`,
+  `script-src 'self' ${TURNSTILE} ${CF_INSIGHTS}`,
   "style-src 'self' 'unsafe-inline'",
   `img-src 'self' data: blob: ${SITE_HOST} ${MEDIA_HOST}`,
   `media-src 'self' blob: ${SITE_HOST} ${MEDIA_HOST}`,
   "font-src 'self'",
-  "connect-src 'self'",
+  `connect-src 'self' ${CF_BEACON}`,
   `frame-src ${TURNSTILE}`,
   "worker-src 'none'",
   "manifest-src 'self'",
@@ -40,12 +43,12 @@ export const APP_CSP = [
 
 export const SITE_CSP = [
   "default-src 'self'",
-  `script-src 'self' ${SITE_INLINE_SCRIPT} 'unsafe-hashes' ${SITE_ONERROR}`,
+  `script-src 'self' ${SITE_INLINE_SCRIPT} 'unsafe-hashes' ${SITE_ONERROR} ${CF_INSIGHTS}`,
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' https://fonts.gstatic.com",
   `img-src 'self' data: ${MEDIA_HOST}`,
   `media-src 'self' ${MEDIA_HOST}`,
-  `connect-src 'self' ${MCP_HOST}`,
+  `connect-src 'self' ${MCP_HOST} ${CF_BEACON}`,
   "frame-src 'none'",
   "worker-src 'none'",
   ...COMMON,

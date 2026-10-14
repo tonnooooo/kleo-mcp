@@ -663,7 +663,7 @@ test("security: plain HTTP goes to HTTPS; every answer carries HSTS, nosniff, no
       assert.equal(r.res.headers.get("x-frame-options"), "DENY");
       assert.match(r.res.headers.get("content-security-policy") ?? "", /frame-ancestors 'none'|default-src 'none'/);
     }
-    assert.match(page.res.headers.get("content-security-policy"), /script-src 'self' https:\/\/challenges\.cloudflare\.com;/, "the app runs only its own scripts (and Turnstile)");
+    assert.match(page.res.headers.get("content-security-policy"), /script-src 'self' https:\/\/challenges\.cloudflare\.com https:\/\/static\.cloudflareinsights\.com;/, "the app runs only its own scripts (Turnstile and Cloudflare's analytics aside)");
     assert.match(site.res.headers.get("content-security-policy"), /fonts\.googleapis\.com/, "site pages get the site's policy");
     assert.match(api.res.headers.get("content-security-policy"), /^default-src 'none'/, "JSON and files can never run as a page");
   } finally { p.restore(); }

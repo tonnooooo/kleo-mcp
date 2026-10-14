@@ -397,7 +397,7 @@ button.row:hover { background: var(--fill-2); }
 .viewer { position: fixed; inset: 0; z-index: 45; background: rgba(0, 0, 0, .92); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 56px 16px 20px; animation: fade .2s both; }
 .viewer video { max-width: 100%; max-height: calc(100dvh - 210px); border-radius: 16px; background: #000; }
 .viewer .vclose { position: absolute; top: max(14px, env(safe-area-inset-top)); right: 14px; color: #fff; background: rgba(255, 255, 255, .14); }
-.viewer .vprompt { color: rgba(255, 255, 255, .78); font-size: 15.5px; max-width: 640px; text-align: center; margin: 14px 0 10px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.viewer .vprompt { color: rgba(255, 255, 255, .82); font-size: 17px; max-width: 640px; text-align: center; margin: 14px 0 10px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .viewer .vactions { display: flex; gap: 8px; }
 .viewer .btn-quiet { background: rgba(255, 255, 255, .14); color: #fff; }
 
