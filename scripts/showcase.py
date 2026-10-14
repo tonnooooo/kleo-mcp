@@ -38,15 +38,23 @@ def fmt_of(w, h, section=None):
     return "wide"
 
 
+SECTION_FORMAT = {"wide": "wide", "ads-wide": "wide", "tall": "tall", "series": "tall", "ads-tall": "tall"}
+
+
 def from_gallery(path):
     out = []
     for f in json.loads(Path(path).read_text(encoding="utf-8")):
         slug = f["slug"]
+        line = f.get("line", "")
+        # Ads carry no prompt: "Ask Kleo" then starts from what the ad shows.
+        prompt = clean_prompt(f.get("prompt", "")) or (f"Make a short film like this: {line}" if line else "")
+        # `full: false` in the site's list = only the clean loop may be shown (the whole cut has outdated parts).
+        full = f"{MEDIA}/{slug}-p.mp4" if f.get("full") is False else f"{MEDIA}/{slug}.mp4"
         out.append({
-            "slug": slug, "title": f.get("title", slug), "line": f.get("line", ""),
-            "format": fmt_of(f.get("w"), f.get("h"), "tall" if f.get("section") == "tall" else None),
-            "seconds": f.get("dur"), "prompt": clean_prompt(f.get("prompt", "")),
-            "preview": f"{MEDIA}/{slug}-p.mp4", "full": f"{MEDIA}/{slug}.mp4", "poster": f"{MEDIA}/{slug}.jpg",
+            "slug": slug, "title": f.get("title", slug), "line": line,
+            "format": SECTION_FORMAT.get(f.get("section")) or fmt_of(f.get("w"), f.get("h")),
+            "seconds": f.get("dur"), "prompt": prompt, "kind": "ad" if str(f.get("section", "")).startswith("ads") else "film",
+            "preview": f"{MEDIA}/{slug}-p.mp4", "full": full, "poster": f"{MEDIA}/{slug}.jpg",
         })
     return out
 

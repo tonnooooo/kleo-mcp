@@ -741,3 +741,5 @@ a.row { color: var(--ink); }
   .sc-grid-tall, .sc-grid-square { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sc-row { grid-auto-columns: 46%; }
 }
+.sc-title { font-size: 24px; font-weight: 700; letter-spacing: -.02em; margin: 26px 0 14px; }
+.explore-view .sc-title:first-child { margin-top: 0; }

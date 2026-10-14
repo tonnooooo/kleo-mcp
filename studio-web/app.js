@@ -1062,7 +1062,7 @@ function generatorView(kind) {
       list.length ? h("div", { class: "feed" }, list.map((g) => resultCard(g)))
         : h("div", { class: "empty-feed" }, h("b", {}, isVid ? "Your first video starts here" : "Your first picture starts here"),
           isVid ? "Write a prompt on the left, or try one of these:" : "Write a prompt and hit Generate.",
-          isVid ? showcaseGrid((x) => { page.prompt = x.prompt; ta.value = x.prompt; refreshCta(); ta.focus(); }, 8) : null));
+          isVid ? showcaseGrid((x) => { page.prompt = x.prompt; ta.value = x.prompt; refreshCta(); ta.focus(); }, 8, null, "film") : null));
   }
   function draw() { drawModel(); drawRefs(); drawSettings(); drawPresets(); refreshCta(); askPrice(); }
   const enhance = h("button", { class: "mini wand", onclick: async (e) => {
@@ -1192,9 +1192,11 @@ function showcaseCard(x, pick) {
 function openShowcase(x) {
   const v = h("video", { src: x.full, poster: x.poster, autoplay: true, muted: true, loop: true, playsinline: true, controls: true });
   v.muted = true;
-  viewerFrame(v, x.prompt, [
-    h("button", { class: "btn btn-cta btn-sm", onclick: () => recreate(x) }, icon("wand", 16), "Recreate"),
-    h("button", { class: "btn btn-quiet btn-sm", onclick: () => askKleo(x) }, icon("chat", 16), "Ask Kleo")]);
+  // A film shows its prompt and can be recreated on the Video page; an ad has no prompt, so Kleo starts from it in the chat.
+  viewerFrame(v, x.kind === "ad" ? x.line : x.prompt, x.kind === "ad"
+    ? [h("button", { class: "btn btn-cta btn-sm", onclick: () => askKleo(x) }, icon("chat", 16), "Make one like this")]
+    : [h("button", { class: "btn btn-cta btn-sm", onclick: () => recreate(x) }, icon("wand", 16), "Recreate"),
+      h("button", { class: "btn btn-quiet btn-sm", onclick: () => askKleo(x) }, icon("chat", 16), "Ask Kleo")]);
 }
 function recreate(x) {
   closeLayer();
@@ -1204,10 +1206,10 @@ function recreate(x) {
 }
 function askKleo(x) { closeLayer(); S.prefill = x.prompt; go("/"); }
 /** A grid of cards (all one shape per row), filled when the list arrives. */
-function showcaseGrid(pick, limit = 0, only = null) {
+function showcaseGrid(pick, limit = 0, only = null, kind = null) {
   const box = h("div", { class: "sc-grids" });
   showcase().then((all) => {
-    const list = all.filter((x) => !only || x.format === only).slice(0, limit || undefined);
+    const list = all.filter((x) => (!only || x.format === only) && (!kind || (x.kind || "film") === kind)).slice(0, limit || undefined);
     const groups = ["wide", "tall", "square"].map((f) => list.filter((x) => x.format === f)).filter((g) => g.length);
     fill(box, groups.map((g) => h("div", { class: `sc-grid sc-grid-${g[0].format}` }, g.map((x) => showcaseCard(x, pick)))));
   });
@@ -1227,7 +1229,9 @@ function exploreView() {
   const draw = () => {
     fill(chips, [[null, "All"], ["wide", "Wide"], ["tall", "Vertical"]].map(([k, label]) =>
       h("button", { class: only === k ? "on" : "", onclick: () => { only = k; draw(); } }, label)));
-    fill(grids, showcaseGrid(null, 0, only));
+    // Films first (each one can be recreated), then the Kleo ads.
+    fill(grids, h("h2", { class: "sc-title" }, "Films"), showcaseGrid(null, 0, only, "film"),
+      h("h2", { class: "sc-title" }, "Kleo ads"), showcaseGrid(null, 0, only, "ad"));
   };
   draw();
   setView("explore-view",
