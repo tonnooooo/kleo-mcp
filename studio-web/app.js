@@ -1155,6 +1155,7 @@ function resultCard(g) {
     if (out === "image" && first) acts.append(h("button", { class: "icon-btn", title: "Animate", "aria-label": "Animate", onclick: () => animate(first) }, icon("play", 18)));
     acts.append(h("button", { class: "icon-btn", title: "Remix", "aria-label": "Remix", onclick: () => remix(g) }, icon("wand", 18)));
   }
+  if (g.status === "done" || g.status === "failed") acts.append(h("button", { class: "icon-btn danger", title: "Delete", "aria-label": "Delete", onclick: () => deleteGen(g) }, icon("trash", 18)));
   el.append(media, h("div", { class: "info" },
     out === "audio" && g.status === "done" ? (g.outputs || []).map((o) => h("audio", { src: o.url, controls: true, preload: "none" })) : null,
     g.prompt ? h("p", {}, g.prompt) : null, acts));
@@ -1550,11 +1551,23 @@ function viewerFrame(media, prompt, actions) {
   document.body.append(box); openLayer = [box];
   document.addEventListener("keydown", escClose);
 }
+/** Deletes a creation for good (the file, its pictures or sounds) and takes it off every list on screen. */
+async function deleteGen(g) {
+  const what = g.kind === "image" ? (g.outputs?.length > 1 ? "these pictures" : "this picture") : g.output === "audio" ? "this sound" : g.kind === "film" ? "this film" : "this video";
+  if (!confirm(`Delete ${what}? This can't be undone.`)) return;
+  try { await api(`/api/generations/${g.id}`, { method: "DELETE" }); } catch (e) { return handleError(e); }
+  closeLayer();
+  S.gens.delete(g.id);
+  for (const k of Object.keys(S.feeds)) if (Array.isArray(S.feeds[k])) S.feeds[k] = S.feeds[k].filter((x) => x.id !== g.id);
+  document.querySelectorAll(`[data-result="${g.id}"], [data-gen="${g.id}"]`).forEach((n) => n.remove());
+  toast("Deleted");
+}
 function viewVideo(g) {
   viewerFrame(h("video", { src: g.video, controls: true, autoplay: true, playsinline: true, loop: true }), g.prompt, [
     h("a", { class: "btn btn-quiet btn-sm", href: DEMO ? g.video : `${g.video}?dl=1`, download: `kleo-${g.id}.mp4` }, icon("dl", 17), "Download"),
     h("button", { class: "btn btn-quiet btn-sm", onclick: () => share(g) }, icon("share", 17), "Share"),
-    h("button", { class: "btn btn-quiet btn-sm", onclick: () => remix(g) }, icon("wand", 17), "Remix")]);
+    h("button", { class: "btn btn-quiet btn-sm", onclick: () => remix(g) }, icon("wand", 17), "Remix"),
+    h("button", { class: "btn btn-quiet btn-sm danger", onclick: () => deleteGen(g) }, icon("trash", 17), "Delete")]);
 }
 function viewOutput(g, o) {
   const isVid = o.type === "video";
@@ -1563,7 +1576,8 @@ function viewOutput(g, o) {
     h("a", { class: "btn btn-quiet btn-sm", href: DEMO ? o.url : `${o.url}?dl=1`, download: "" }, icon("dl", 17), "Download"),
     h("button", { class: "btn btn-quiet btn-sm", onclick: () => share(g, o) }, icon("share", 17), "Share"),
     !isVid ? h("button", { class: "btn btn-quiet btn-sm", onclick: () => useAsReference(o, "image") }, icon("layers", 17), "Use as reference") : null,
-    isVid ? h("button", { class: "btn btn-quiet btn-sm", onclick: () => useAsReference(o, "video") }, icon("film", 17), "Use in a video") : null]);
+    isVid ? h("button", { class: "btn btn-quiet btn-sm", onclick: () => useAsReference(o, "video") }, icon("film", 17), "Use in a video") : null,
+    h("button", { class: "btn btn-quiet btn-sm danger", onclick: () => deleteGen(g) }, icon("trash", 17), "Delete")]);
 }
 
 // ── demo mode (?demo=1): the whole app on fake data, no account, nothing charged ─────────────────────────────────
@@ -1611,6 +1625,7 @@ const DEMO_TOOLS = [
   ["sfx", "Sound Effects", "Any sound from words", "audio", "wave", "#32ade6", "audio", false, null, [["prompt", "text", "Describe the sound"]], 1],
 ].map(([key, name, blurb, group, ic, tint, output, consent, badge, fields, from]) => ({ key, name, blurb, group, icon: ic, tint, output, consent, badge, from, fields: fields.map(([k, kind, label, hint]) => ({ key: k, kind, label, hint, default: kind === "voice" ? "nova" : undefined, maxLength: kind === "text" ? 1000 : undefined })) }));
 async function demoApi(path, opts) {
+  if (/^\/api\/generations\/g_[a-z0-9]+$/.test(path) && opts?.method === "DELETE") { demoDb.gens.delete(path.split("/").pop()); return { ok: true }; }
   await new Promise((r) => setTimeout(r, path === "/api/chat" ? 1100 : 150));
   const method = opts.method || "GET", b = opts.body || {};
   const now = () => new Date().toISOString();

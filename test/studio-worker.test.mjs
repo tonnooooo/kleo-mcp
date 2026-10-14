@@ -39,6 +39,7 @@ class FakeR2 {
     if (!e) return null;
     return { size: e.bytes.byteLength, httpEtag: '"x"', httpMetadata: { contentType: e.type }, body: new Response(e.bytes).body, arrayBuffer: async () => e.bytes.buffer };
   }
+  async delete(keys) { for (const k of [].concat(keys)) this.m.delete(k); }
 }
 // The Workers runtime's FixedLengthStream, as a plain pass-through.
 globalThis.FixedLengthStream ??= class extends TransformStream { constructor() { super(); } };
@@ -201,6 +202,17 @@ test("free account: a locked model is refused before any money moves; the free o
     assert.equal(list.json.generations.length, 1);
     const chats = await call(env, "/api/chats", { cookie });
     assert.equal(chats.json.chats.length, 1);
+    // Delete: never another account's, never without the header; then the row, the file and the share link are gone.
+    assert.equal((await call(env, `/api/generations/${id}`, { method: "DELETE", cookie: other })).status, 404);
+    assert.equal((await call(env, `/api/generations/${id}`, { method: "DELETE", cookie, header: false })).status, 403);
+    const fileKey = [...env.RENDERS.m.keys()].find((k) => k.includes(id));
+    assert.ok(fileKey, "the clip is stored");
+    const del = await call(env, `/api/generations/${id}`, { method: "DELETE", cookie });
+    assert.equal(del.status, 200, del.text);
+    assert.ok(!env.RENDERS.m.has(fileKey), "the file is gone");
+    assert.equal((await call(env, "/api/generations", { cookie })).json.generations.length, 0);
+    assert.equal((await call(env, shared.pathname + shared.search)).status, 404, "the shared link dies with it");
+    assert.equal(credits(env, me.id), 4, "deleting never moves credits");
   } finally { p.restore(); }
 });
 

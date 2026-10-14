@@ -134,6 +134,30 @@ async function charge(env: StudioEnv, userId: string, o: Gate): Promise<string> 
   return id;
 }
 
+/**
+ * Deletes one finished or failed creation for good (14 October 2026, the owner: "metti l'opzione che posso eliminare
+ * le immagini o video creati"): the row, the files Kleo made for it (the clip, every picture or sound of its slots, and
+ * their upload rows), never the person's own reference uploads. One still generating is refused: its credits were
+ * spent and the result is on its way. Shared links to it stop working with the file.
+ */
+export async function deleteGeneration(env: StudioEnv, userId: string, g: GenerationRow): Promise<void> {
+  if (g.user_id !== userId) throw new StudioError("Not found.", 404);
+  if (g.status !== "done" && g.status !== "failed") throw new StudioError("It's still being made. Wait for it to finish, then delete it.", 409, "busy");
+  const slots = parseSlots(g);
+  const made = slots.map((x) => x.upload).filter((x): x is string => !!x);
+  const keys = new Set<string>([g.file_key, ...slots.map((x) => x.key)].filter((k): k is string => !!k && k.startsWith(`studio/${userId}/`)));
+  if (made.length) {
+    // Only uploads Kleo made (never under the person's own up/ prefix, where references live).
+    const rows = (await env.DB.prepare(`SELECT id, key FROM studio_uploads WHERE user_id = ? AND id IN (${made.map(() => "?").join(",")})`).bind(userId, ...made).all<{ id: string; key: string }>()).results;
+    const mine = rows.filter((r) => !r.key.startsWith(`studio/${userId}/up/`));
+    for (const r of mine) keys.add(r.key);
+    if (mine.length) await env.DB.prepare(`DELETE FROM studio_uploads WHERE user_id = ? AND id IN (${mine.map(() => "?").join(",")})`).bind(userId, ...mine.map((r) => r.id)).run();
+  }
+  if (keys.size) await env.RENDERS.delete([...keys]);
+  await env.DB.prepare("DELETE FROM studio_generations WHERE id = ? AND user_id = ?").bind(g.id, userId).run();
+  await audit(asEnv(env), userId, g.id, "studio.deleted", { kind: g.kind, files: keys.size });
+}
+
 /** The sentence a person reads when the provider refused an order. */
 function refusal(e: unknown, noun: string): string {
   if (e instanceof KieError && e.status === 402) return "Our generation engine is being recharged. Your credits are back — please try again in a little while.";

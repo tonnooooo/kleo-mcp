@@ -22,7 +22,7 @@ import {
   getMessage, setMessageData, agentMessagesToday, addUpload, getUpload, uploadsOf, getGeneration, listGenerations,
   staleGenerations, type MessageRow, type GenerationRow,
 } from "./store.ts";
-import { StudioError, createGeneration, refreshGeneration, publicGeneration, marginOf, runTool, freeTools } from "./generate.ts";
+import { deleteGeneration, StudioError, createGeneration, refreshGeneration, publicGeneration, marginOf, runTool, freeTools } from "./generate.ts";
 import { publicPresets } from "./presets.ts";
 import { planTool, publicTools, toolByKey, toolCredits, ToolRefusal, type Media } from "./tools.ts";
 import { mediaInfo } from "./media.ts";
@@ -407,6 +407,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       const user = await getUser(asEnv(env), userId);
       return json({ generation: publicGeneration(g), credits: user?.credits ?? 0 });
     }
+    if (!genM[2] && method === "DELETE") { await deleteGeneration(env, userId, g); return json({ ok: true }); }
   }
 
   // ── pictures ──
