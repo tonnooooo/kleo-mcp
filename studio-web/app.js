@@ -182,7 +182,7 @@ function handleError(e) {
 function setCredits(n) {
   if (!S.me || typeof n !== "number" || n === S.me.credits) return;
   S.me.credits = n;
-  for (const el of document.querySelectorAll("[data-credits]")) { el.textContent = n; el.parentElement?.classList.remove("bump"); void el.offsetWidth; el.parentElement?.classList.add("bump"); }
+  for (const el of document.querySelectorAll("[data-credits]")) { el.textContent = S.me.admin ? "∞" : n; el.parentElement?.classList.remove("bump"); void el.offsetWidth; el.parentElement?.classList.add("bump"); }
 }
 
 /** Uploads one file (pictures are shrunk to 2048 px first). Answers { id, kind, duration, local }. */
@@ -428,7 +428,7 @@ function renderShell() {
     h("nav", { class: "nav-tabs", "aria-label": "Main" }, PAGES.map((p) => h("button", { class: "nav-tab", "data-page": p.key, onclick: () => go(p.path) },
       icon(p.ic, 17), p.label, p.isNew ? h("span", { class: "new" }, "NEW") : null))),
     h("div", { class: "nav-right" }, h("a", { class: "btn btn-quiet btn-sm nav-plugin", href: "https://kleooai.com/mcp/", target: "_blank", rel: "noopener" }, icon("plug", 16), "Install plugin"), S.me ? [
-      h("button", { class: "credits-pill", onclick: () => openBuy(), "aria-label": "Credits" }, bolt(15), h("span", { "data-credits": "" }, S.me.credits)),
+      h("button", { class: "credits-pill", onclick: () => openBuy(), "aria-label": "Credits" }, bolt(15), h("span", { "data-credits": "" }, S.me.admin ? "∞" : S.me.credits)),
       h("button", { class: "avatar avatar-btn", "aria-label": "Account", onclick: openAccount }, (S.me.name || S.me.email || "K")[0].toUpperCase())] : [
       h("button", { class: "btn btn-quiet btn-sm", onclick: () => requireAccount("signin") }, "Sign in"),
       h("button", { class: "btn btn-cta btn-sm", onclick: () => requireAccount("signup") }, "Start free")]));
@@ -1578,7 +1578,7 @@ function packRows(note) {
       h("span", {}, `${(Number(p.label.split(" ")[0]) / p.credits).toFixed(2)} € per credit`))), icon("right", 18)))),
     h("p", { class: "sheet-sub", style: { paddingTop: "10px" } }, "Secure checkout by Stripe: card, Apple Pay, Google Pay, PayPal. Your first pack unlocks every model and app.")];
 }
-function bigCredits(sub) { return h("div", { class: "big-credits" }, h("b", {}, bolt(34), h("span", { "data-credits": "" }, S.me.credits)), h("span", {}, sub)); }
+function bigCredits(sub) { return h("div", { class: "big-credits" }, h("b", {}, bolt(34), h("span", { "data-credits": "" }, S.me.admin ? "∞" : S.me.credits)), h("span", {}, S.me.admin ? "Admin account: no limits" : sub)); }
 function openBuy(note) { if (!S.me) return requireAccount(); sheet("Get credits", null, bigCredits("credits left"), packRows(note)); }
 // ── Account: a whole page, like Higgsfield's settings (14 October 2026) ──────────────────────────────────────────
 // Profile, credits and packs, what the credits went on and what was bought, sign-in and security, Kleo in your AI

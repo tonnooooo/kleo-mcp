@@ -51,6 +51,8 @@ export interface StudioEnv {
   STUDIO_ENHANCE_MODEL?: string;
   /** Agent messages one account may send in a UTC day (default 200). */
   STUDIO_AGENT_PER_DAY?: string;
+  /** The owner's admin account ids, comma separated (src/studio/generate.ts isAdmin): every model, no limits. */
+  STUDIO_ADMINS?: string;
   /** Picture models taken out of service for now (comma separated keys; src/studio/image-models.ts pausedImageModels). */
   STUDIO_PAUSED_IMAGE_MODELS?: string;
   /** Video resolutions an account that never paid may use (default "480p"; "*" for all). */
