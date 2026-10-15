@@ -22,7 +22,7 @@ import {
   getMessage, setMessageData, agentMessagesToday, addUpload, getUpload, uploadsOf, getGeneration, listGenerations,
   staleGenerations, type MessageRow, type GenerationRow,
 } from "./store.ts";
-import { deleteGeneration, StudioError, createGeneration, refreshGeneration, publicGeneration, marginOf, runTool, freeTools } from "./generate.ts";
+import { deleteGeneration, StudioError, createGeneration, refreshGeneration, publicGeneration, marginOf, runTool, freeTools, isAdmin } from "./generate.ts";
 import { publicPresets } from "./presets.ts";
 import { planTool, publicTools, toolByKey, toolCredits, ToolRefusal, type Media } from "./tools.ts";
 import { mediaInfo } from "./media.ts";
@@ -220,9 +220,9 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
   if (path === "/api/me" && method === "GET") {
     const info = await me(env, userId);
     if (!info) return json({ error: "Please sign in.", code: "signin" }, 401, { "set-cookie": clearSessionCookie() });
-    const paid = await hasPaid(asEnv(env), userId);
+    const paid = (await hasPaid(asEnv(env), userId)) || isAdmin(env, userId);
     return json({
-      ...info, paid, allowed: paid ? publicCatalog().map((m: any) => m.key) : freeModels(env.STUDIO_FREE_MODELS),
+      ...info, paid, admin: isAdmin(env, userId), allowed: paid ? publicCatalog().map((m: any) => m.key) : freeModels(env.STUDIO_FREE_MODELS),
       freeResolutions: paid ? null : freeResolutions(env.STUDIO_FREE_RESOLUTIONS),
       allowedImages: (paid ? IMAGE_MODELS.map((m) => m.key) : freeImageModels(env.STUDIO_FREE_IMAGE_MODELS)).filter((k) => !pausedImageModels(env.STUDIO_PAUSED_IMAGE_MODELS).includes(k)), packs: packsFor(env, userId),
       allowedTools: paid ? freeTools("*") : freeTools(env.STUDIO_FREE_TOOLS),
@@ -268,7 +268,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     const attachments = uploads.map((u) => ({ id: u.id, url: `/media/u/${u.id}`, width: u.width, height: u.height, kind: u.kind ?? "image", duration: u.duration ?? null }));
     const userMsgId = rid("m", 12);
     await addMessage(env, { id: userMsgId, chatId: chat.id, userId, role: "user", text, data: attachments.length ? { attachments } : null });
-    const paid = await hasPaid(asEnv(env), userId);
+    const paid = (await hasPaid(asEnv(env), userId)) || isAdmin(env, userId);
     const allowed = paid ? (publicCatalog().map((m: any) => m.key) as any) : freeModels(env.STUDIO_FREE_MODELS);
     const allowedImages = (paid ? IMAGE_MODELS.map((m) => m.key) : freeImageModels(env.STUDIO_FREE_IMAGE_MODELS)).filter((k) => !pausedImageModels(env.STUDIO_PAUSED_IMAGE_MODELS).includes(k));
     const reply = await runAgent(env, {

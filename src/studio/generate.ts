@@ -100,6 +100,16 @@ export function parseSlots(g: Pick<GenerationRow, "slots">): Slot[] {
 type Gate = { freeOk: boolean; lockedMessage: string; credits: number; usd: number; noun: string };
 
 /**
+ * THE OWNER'S ADMIN ACCOUNT (15 October 2026, "un account admin con accesso illimitato a tutti i modelli, per me").
+ * STUDIO_ADMINS lists account ids. An admin passes every gate but "sign in" and a generous running cap: every model,
+ * resolution and app, no free pools, no daily budget, no address limits, and a balance that cannot run out (the account
+ * carries a tester payment and a large credit balance, so the MCP film paths treat it the same). Its spend is left out
+ * of the daily budgets, so the owner's own tests never close the day for customers.
+ */
+export const adminIds = (env: StudioEnv): string[] => (env.STUDIO_ADMINS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+export const isAdmin = (env: StudioEnv, userId: string): boolean => adminIds(env).includes(userId);
+
+/**
  * The checks every order passes, in order, before any money moves (and before any paid work, such as speech).
  * TWO DAILY POOLS (14 October 2026): accounts that never paid draw on their own, smaller STUDIO_FREE_DAILY_BUDGET_USD,
  * so a crowd of throwaway accounts spending free credits can never fill the day for paying customers.
@@ -107,6 +117,10 @@ type Gate = { freeOk: boolean; lockedMessage: string; credits: number; usd: numb
 async function gate(env: StudioEnv, userId: string, o: Gate): Promise<void> {
   const user = await getUser(asEnv(env), userId);
   if (!user) throw new StudioError("Please sign in again.", 401, "signin");
+  if (isAdmin(env, userId)) {
+    if ((await runningCount(env, userId)) >= 12) throw new StudioError("You already have 12 things generating. Wait for one to finish.", 429, "busy");
+    return;
+  }
   const paid = await hasPaid(asEnv(env), userId);
   if (!o.freeOk && !paid) throw new StudioError(o.lockedMessage, 402, "locked");
   const maxRunning = Math.max(1, num(env.STUDIO_MAX_RUNNING, 3));

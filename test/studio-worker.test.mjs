@@ -1037,3 +1037,27 @@ test("a paused picture model is shown as paused, takes no order and charges noth
   assert.equal(credits(env, me.id), 5, "nothing was charged");
 });
 
+
+test("the owner's admin account: every model at any resolution, no budget, and its spend never fills the day for customers", async () => {
+  const env = newEnv({ STUDIO_DAILY_BUDGET_USD: "1" });
+  const cookie = await signUp(env, "owner@example.com");
+  const me = (await call(env, "/api/me", { cookie })).json;
+  env.STUDIO_ADMINS = me.id;
+  env.DB.db.exec(`UPDATE users SET credits = 1000000 WHERE id = '${me.id}'`); // as in production: a balance that cannot run out
+  const again = (await call(env, "/api/me", { cookie })).json;
+  assert.equal(again.admin, true);
+  assert.equal(again.paid, true);
+  assert.equal(again.freeResolutions, null);
+  const p = fakeProvider(() => ok({ id: "task_admin" }));
+  try {
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { prompt: "a fox", settings: { model: "seedance-2.5", resolution: "1080p", duration: 5 } } });
+    assert.equal(r.status, 200, r.text);
+  } finally { p.restore(); }
+  // A customer's order is not blocked by the admin's spend.
+  const other = await signUp(env, "customer@example.com");
+  const q = fakeProvider(() => ok({ id: "task_c" }));
+  try {
+    const r = await call(env, "/api/generate", { method: "POST", cookie: other, body: { prompt: "a cat", settings: { model: "seedance-2.0-fast", resolution: "480p", duration: 5 } } });
+    assert.equal(r.status, 200, `the admin's ~2.40 $ is not counted in the 1 $ day: ${r.text}`);
+  } finally { q.restore(); }
+});

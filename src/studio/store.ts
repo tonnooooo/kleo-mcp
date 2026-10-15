@@ -158,7 +158,10 @@ export async function runningCount(env: StudioEnv, userId: string): Promise<numb
 /** Today's provider spend (UTC day); `unpaidOnly` counts only accounts with no payment on record (the free pool). */
 export async function studioSpentTodayUsd(env: StudioEnv, o: { unpaidOnly?: boolean } = {}): Promise<number> {
   const unpaid = o.unpaidOnly ? " AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.user_id = g.user_id AND p.status = 'paid')" : "";
-  const r = await env.DB.prepare(`SELECT COALESCE(SUM(g.est_usd), 0) AS usd FROM studio_generations g WHERE g.status != 'failed' AND g.created_at >= strftime('%Y-%m-%dT00:00:00.000Z','now')${unpaid}`)
+  // The owner's admin accounts (generate.ts isAdmin) never fill the day for customers.
+  const admins = JSON.stringify((env.STUDIO_ADMINS ?? "").split(",").map((s) => s.trim()).filter(Boolean));
+  const r = await env.DB.prepare(`SELECT COALESCE(SUM(g.est_usd), 0) AS usd FROM studio_generations g WHERE g.status != 'failed' AND g.created_at >= strftime('%Y-%m-%dT00:00:00.000Z','now')${unpaid}
+      AND g.user_id NOT IN (SELECT value FROM json_each(?))`).bind(admins)
     .first<{ usd: number }>();
   return r?.usd ?? 0;
 }
