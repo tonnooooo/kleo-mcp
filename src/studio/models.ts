@@ -59,6 +59,8 @@ export interface StudioModel {
   maxReferences: number;
   /** ePhone channel routing headers for this model (src/ephone.ts EPHONE_ROUTING is the default). */
   routing?: Record<string, string>;
+  /** The owner's own mark-up on top of the margin, per resolution (1 when absent). */
+  creditFactor?: Partial<Record<Resolution, number>>;
 }
 
 const CNY = 1 / 7;
@@ -93,6 +95,9 @@ export const MODELS: StudioModel[] = [
     maxRefVideos: 3, maxRefVideoSeconds: 15,
     durations: [5, 10, 15], defaultDuration: 5, resolutions: ["480p", "720p"], defaultResolution: "720p",
     aspects: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"], maxReferences: 9,
+    // 15 October 2026, the owner: "Seedance 2.0 Fast mettimi 2 crediti invece di uno su 480p". 480p doubles (5 s = 2,
+    // 10 s = 4, 15 s = 6) and 720p goes up by half (3, 6, 9), so 720p still costs more than 480p.
+    creditFactor: { "480p": 2, "720p": 1.5 },
   },
   {
     key: "veo-3.1", name: "Google Veo 3.1", blurb: "Maximum quality, cinematic, native audio", badge: "Max quality",
@@ -186,7 +191,8 @@ export function clipCostUsd(s: ClipSettings, refVideoSeconds = 0): number {
 
 /** Credits one clip costs the person. */
 export function clipCredits(s: ClipSettings, margin = DEFAULT_MARGIN, refVideoSeconds = 0): number {
-  return Math.max(1, Math.ceil((clipCostUsd(s, refVideoSeconds) * margin) / CREDIT_USD - 1e-9));
+  const factor = modelByKey(s.model)?.creditFactor?.[s.resolution] ?? 1;
+  return Math.max(1, Math.ceil((clipCostUsd(s, refVideoSeconds) * margin * factor) / CREDIT_USD - 1e-9));
 }
 
 /**

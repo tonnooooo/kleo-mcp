@@ -189,7 +189,7 @@ test("free account: a locked model is refused before any money moves; the free o
     const r = await call(env, "/api/generate", { method: "POST", cookie, body: { prompt: "a fox in the snow", settings: { model: "seedance-2.0-fast", resolution: "480p", duration: 5, aspect: "9:16" } } });
     assert.equal(r.status, 200, r.text);
     assert.equal(r.json.generation.status, "running");
-    assert.equal(r.json.credits, 4);
+    assert.equal(r.json.credits, 3);
     assert.equal(r.json.messages.length, 2);
     const submit = p.sent.find((s) => s.url.endsWith("/v1/task/submit"));
     assert.equal(submit.body.model, "doubao-seedance-2-0-fast-260128");
@@ -202,7 +202,7 @@ test("free account: a locked model is refused before any money moves; the free o
     const done = await call(env, `/api/generations/${id}`, { cookie });
     assert.equal(done.json.generation.status, "done", done.text);
     assert.equal(done.json.generation.video, `/media/${id}.mp4`);
-    assert.equal(done.json.credits, 4, "a finished clip keeps its price");
+    assert.equal(done.json.credits, 3, "a finished clip keeps its price");
     const video = await call(env, `/media/${id}.mp4`, { cookie });
     assert.equal(video.status, 200);
     assert.equal(video.text.length, 5000);
@@ -227,7 +227,7 @@ test("free account: a locked model is refused before any money moves; the free o
     assert.ok(!env.RENDERS.m.has(fileKey), "the file is gone");
     assert.equal((await call(env, "/api/generations", { cookie })).json.generations.length, 0);
     assert.equal((await call(env, shared.pathname + shared.search)).status, 404, "the shared link dies with it");
-    assert.equal(credits(env, me.id), 4, "deleting never moves credits");
+    assert.equal(credits(env, me.id), 3, "deleting never moves credits");
   } finally { p.restore(); }
 });
 
@@ -238,7 +238,7 @@ test("a clip the provider fails is refunded once, however many times it is polle
   const p = fakeProvider((u) => u.endsWith("/v1/task/submit") ? ok({ id: "task_9" }) : ok({ id: "task_9", status: "failed", error: "Content policy violation detected" }));
   try {
     const r = await call(env, "/api/generate", { method: "POST", cookie, body: { prompt: "x", settings: { model: "seedance-2.0-fast", resolution: "480p" } } });
-    assert.equal(credits(env, me.id), 4);
+    assert.equal(credits(env, me.id), 3);
     old(env);
     const f = await call(env, `/api/generations/${r.json.generation.id}`, { cookie });
     assert.equal(f.json.generation.status, "failed");
@@ -549,7 +549,7 @@ test("video with a reference clip and a preset: priced on the clip's seconds, se
   const { cookie, id } = await paidAccount(env);
   const v = await upload(env, cookie, mp4Bytes(8));
   const price = await call(env, "/api/price", { method: "POST", cookie, body: { imageIds: [v.id], settings: { model: "seedance-2.0-fast", duration: 5, resolution: "720p" } } });
-  assert.equal(price.json.credits, 3, "max(9, 8 + 5) = 13 s at the reference rate");
+  assert.equal(price.json.credits, 5, "max(9, 8 + 5) = 13 s at the reference rate, Fast 720p x1.5");
   const p = fakeProvider(() => ok({ id: "task_r" }));
   try {
     const r = await call(env, "/api/generate", { method: "POST", cookie, body: { prompt: "a robot copies the dance of video 1", imageIds: [v.id], preset: "orbit-360", settings: { model: "seedance-2.0-fast", duration: 5, resolution: "720p" } } });
@@ -557,7 +557,7 @@ test("video with a reference clip and a preset: priced on the clip's seconds, se
     const input = p.sent.find((s) => s.url.endsWith("/v1/task/submit")).body.input;
     assert.equal(input.reference_videos.length, 1);
     assert.match(input.prompt, /360-degree orbit/);
-    assert.equal(credits(env, id), 97);
+    assert.equal(credits(env, id), 95);
   } finally { p.restore(); }
 });
 

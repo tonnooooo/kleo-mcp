@@ -20,8 +20,11 @@ test("every model has a price for every resolution it offers, and defaults it of
 
 test("credits: the price table the owner signs off (margin 1.6, 1 credit = 0.44 $)", () => {
   const c = (model, duration, resolution) => clipCredits({ model, duration, resolution, aspect: "16:9", audio: true, imageRole: "none" });
-  assert.equal(c("seedance-2.0-fast", 5, "480p"), 1);
-  assert.equal(c("seedance-2.0-fast", 5, "720p"), 2);
+  // 15 October 2026: the owner's mark-up on Fast (480p ×2, 720p ×1.5): 2/4/6 and 3/6/9 credits.
+  assert.equal(c("seedance-2.0-fast", 5, "480p"), 2);
+  assert.equal(c("seedance-2.0-fast", 10, "480p"), 4);
+  assert.equal(c("seedance-2.0-fast", 15, "480p"), 6);
+  assert.equal(c("seedance-2.0-fast", 5, "720p"), 3);
   assert.equal(c("seedance-2.0", 5, "720p"), 3);
   assert.equal(c("seedance-2.5", 5, "480p"), 2);
   assert.equal(c("seedance-2.5", 5, "720p"), 4);
