@@ -25,7 +25,7 @@ import { withPreset } from "./presets.ts";
 import { planTool, toolByKey, toolCredits, toneText, ToolRefusal, type Media, type Plan, type ToolKey } from "./tools.ts";
 import { mediaInfo } from "./media.ts";
 import { refreshFilm } from "./films.ts";
-import { freeImageModels, imageCostUsd, imageCredits, imageModelByKey, imageTaskInput, normalizeImageSettings, type ImageSettings } from "./image-models.ts";
+import { freeImageModels, imageCostUsd, imageCredits, imageModelByKey, imageModelOfProvider, imageTaskInput, normalizeImageSettings, pausedImageModels, type ImageSettings } from "./image-models.ts";
 import {
   addUpload, getGeneration, insertGeneration, moveGeneration, markChecked, runningCount, studioSpentTodayUsd, uploadsOf,
   type GenerationRow, type Slot,
@@ -250,6 +250,9 @@ async function createImageGeneration(env: StudioEnv, userId: string, req: Create
   const uploads = await uploadsOf(env, userId, req.imageIds ?? []);
   const s = normalizeImageSettings(req.settings ?? {});
   const model = imageModelByKey(s.model)!;
+  if (pausedImageModels(env.STUDIO_PAUSED_IMAGE_MODELS).includes(s.model)) {
+    throw new StudioError(`${model.name} is paused for a little while: its provider is having trouble. Use FLUX.2 Pro or Seedream 5.0 — nothing was charged.`, 503, "paused");
+  }
   const free = freeImageModels(env.STUDIO_FREE_IMAGE_MODELS);
   const credits = imageCredits(s, marginOf(env));
   const usd = imageCostUsd(s);
@@ -548,6 +551,11 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
   if (kind && inputs.prompt) inputs.prompt = (await toEnglish(env, inputs.prompt, kind)).slice(0, tool.fields.find((f) => f.key === "prompt")?.maxLength ?? 1000);
   let plan: Plan;
   try { plan = planTool(tool.key, inputs, media); } catch (e) { if (e instanceof ToolRefusal) throw new StudioError(e.message); throw e; }
+  // An app that runs on a paused picture model (Face Swap on Nano Banana Pro) is paused with it, before any charge.
+  const pausedImages = pausedImageModels(env.STUDIO_PAUSED_IMAGE_MODELS);
+  if (plan.tasks.some((t) => { const k = imageModelOfProvider(t.model); return !!k && pausedImages.includes(k); })) {
+    throw new StudioError(`${tool.name} is paused for a little while: its provider is having trouble. Try again later — nothing was charged.`, 503, "paused");
+  }
 
   // Words to speak become a sound clip first: its exact length prices the talking video, and for a voiceover it IS
   // the result. Speech is made before the charge, so the order first passes every check the charge will make, on the

@@ -58,6 +58,7 @@
     "STUDIO_DAILY_BUDGET_USD": "30",
     "TURNSTILE_SITEKEY": "0x4AAAAAAFWD13GJ3SI11_Ww", // public key of the Turnstile widget "Kleo sign-up" (14 Oct 2026); TURNSTILE_SECRET is a secret
     "STUDIO_FREE_DAILY_BUDGET_USD": "8", // accounts that never paid share this part of the day (14 Oct 2026)
+    "STUDIO_PAUSED_IMAGE_MODELS": "nano-banana-2,nano-banana-pro", // 15 Oct 2026: ePhone's Gemini image channel bills but cannot return the pictures ("invalid channel id"); empty this to bring them back
     "STUDIO_MAX_RUNNING": "3",
     "STUDIO_AGENT_MODEL": "claude-haiku-5-5",
     "STUDIO_AGENT_PER_DAY": "200"

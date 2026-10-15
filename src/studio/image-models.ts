@@ -68,6 +68,27 @@ export const IMAGE_MODELS: ImageModel[] = [
 ];
 
 export const DEFAULT_IMAGE_MODEL: ImageModelKey = "nano-banana-2";
+
+/**
+ * PAUSED MODELS (15 October 2026). ePhone's Gemini image channel took orders, billed them and then could not hand the
+ * pictures back ("invalid channel id"), after rejecting the documented quality tiers. A model listed in
+ * STUDIO_PAUSED_IMAGE_MODELS stays in the picker, marked paused, takes no order (nothing is charged), and the default
+ * moves to the first model that works. Remove it from the list to bring it back.
+ */
+export function pausedImageModels(list: string | undefined): ImageModelKey[] {
+  return (list ?? "").split(",").map((s) => s.trim()).filter((k): k is ImageModelKey => !!imageModelByKey(k));
+}
+export function defaultImageModel(paused: ImageModelKey[]): ImageModelKey {
+  if (!paused.includes(DEFAULT_IMAGE_MODEL)) return DEFAULT_IMAGE_MODEL;
+  return (["flux-2-pro", "seedream-5", "nano-banana-pro", "nano-banana-2"] as ImageModelKey[]).find((k) => !paused.includes(k)) ?? DEFAULT_IMAGE_MODEL;
+}
+/** The image model behind a provider model id (an app's task), or null. */
+export const imageModelOfProvider = (ephoneModel: string): ImageModelKey | null => IMAGE_MODELS.find((m) => m.ephoneModel === ephoneModel)?.key ?? null;
+/**
+ * Gemini's quality field (15 October 2026): ePhone's gateway now takes auto|low|medium|high|xhigh|max, not the 1K/2K/4K
+ * its own schema still lists. Our tiers map onto it.
+ */
+export const GEMINI_QUALITY: Record<ImageQuality, string> = { "1K": "medium", "2K": "high", "4K": "max" };
 export const IMAGE_COUNTS = [1, 2, 4];
 export const imageModelByKey = (key: string | null | undefined): ImageModel | null => IMAGE_MODELS.find((m) => m.key === key) ?? null;
 
@@ -108,12 +129,12 @@ export function imageTaskInput(s: ImageSettings, prompt: string, refs: string[])
     return { prompt: text, size: size[s.aspect] ?? "2K", n: 1, force_single: true, watermark: false, output_format: "jpeg", ...(images.length ? { images } : {}) };
   }
   if (m.key === "flux-2-pro") return { prompt: text, aspect_ratio: s.aspect, output_format: "jpeg", ...(images.length ? { images } : {}) };
-  return { prompt: text, aspect_ratio: s.aspect, quality: s.quality, output_format: "jpeg", ...(images.length ? { images } : {}) };
+  return { prompt: text, aspect_ratio: s.aspect, quality: GEMINI_QUALITY[s.quality] ?? "high", output_format: "jpeg", ...(images.length ? { images } : {}) };
 }
 
-export function publicImageCatalog(margin = DEFAULT_MARGIN, free: ImageModelKey[] = []): unknown[] {
+export function publicImageCatalog(margin = DEFAULT_MARGIN, free: ImageModelKey[] = [], paused: ImageModelKey[] = []): unknown[] {
   return IMAGE_MODELS.map((m) => ({
-    key: m.key, name: m.name, blurb: m.blurb, badge: m.badge ?? null, qualities: m.qualities, defaultQuality: m.defaultQuality,
+    key: m.key, name: m.name, blurb: m.blurb, badge: m.badge ?? null, qualities: m.qualities, defaultQuality: m.defaultQuality, paused: paused.includes(m.key),
     aspects: m.aspects, maxReferences: m.maxReferences, free: free.includes(m.key), counts: IMAGE_COUNTS,
     prices: Object.fromEntries(m.qualities.map((q) => [q, Object.fromEntries(IMAGE_COUNTS.map((c) => [c, imageCredits({ model: m.key, aspect: "1:1", quality: q, count: c }, margin)]))])),
   }));

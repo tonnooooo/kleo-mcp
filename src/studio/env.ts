@@ -51,6 +51,8 @@ export interface StudioEnv {
   STUDIO_ENHANCE_MODEL?: string;
   /** Agent messages one account may send in a UTC day (default 200). */
   STUDIO_AGENT_PER_DAY?: string;
+  /** Picture models taken out of service for now (comma separated keys; src/studio/image-models.ts pausedImageModels). */
+  STUDIO_PAUSED_IMAGE_MODELS?: string;
   /** Video resolutions an account that never paid may use (default "480p"; "*" for all). */
   STUDIO_FREE_RESOLUTIONS?: string;
   /** How new accounts are opened once Google is set: "google" (default, Google only) or "all" (e-mail too). */

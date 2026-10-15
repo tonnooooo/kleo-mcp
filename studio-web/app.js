@@ -148,7 +148,8 @@ const price = (s) => model(s.model).prices[s.resolution]?.[s.duration] ?? 1;
 const allowed = (key) => !S.me || S.me.allowed.includes(key);
 const imodel = (key) => S.config.imageModels.find((m) => m.key === key) || S.config.imageModels.find((m) => m.key === S.config.defaultImageModel);
 function ifix(s) {
-  const m = imodel(s.model);
+  let m = imodel(s.model);
+  if (m.paused) m = imodel(S.config.defaultImageModel);
   return { model: m.key, aspect: m.aspects.includes(s.aspect) ? s.aspect : "1:1", quality: m.qualities.includes(s.quality) ? s.quality : m.defaultQuality, count: m.counts.includes(Number(s.count)) ? Number(s.count) : 1 };
 }
 const iprice = (s) => imodel(s.model).prices[s.quality]?.[s.count] ?? 1;
@@ -1511,10 +1512,12 @@ function openMenu(anchor, options, pick) {
 }
 function modelRows(models, current, isAllowed, fromPrice, onPick, img) {
   return h("div", { class: "list" }, models.map((m) => {
-    const lockd = !isAllowed(m.key);
-    return h("button", { class: "row" + (lockd ? " locked" : ""), onclick: () => (lockd ? openLocked(m, img) : (closeLayer(), onPick(m))) },
-      h("div", { class: "lbl" }, h("b", {}, m.name, m.badge ? h("span", { class: "badge" }, m.badge) : null), h("span", {}, lockd ? "Unlocks with any credit pack" : m.blurb)),
-      h("span", { class: "val" }, lockd ? icon("lock", 16) : [h("small", { style: { fontSize: "12px" } }, "from"), bolt(13), fromPrice(m)]),
+    // A paused model (its provider is down) is shown, marked, and never chosen.
+    const paused = !!m.paused;
+    const lockd = paused || !isAllowed(m.key);
+    return h("button", { class: "row" + (lockd ? " locked" : ""), onclick: () => (paused ? toast(`${m.name} is paused for a little while: its provider is having trouble.`, true) : lockd ? openLocked(m, img) : (closeLayer(), onPick(m))) },
+      h("div", { class: "lbl" }, h("b", {}, m.name, m.badge ? h("span", { class: "badge" }, m.badge) : null), h("span", {}, paused ? "Paused for a little while" : lockd ? "Unlocks with any credit pack" : m.blurb)),
+      h("span", { class: "val" }, paused ? icon("clock", 16) : lockd ? icon("lock", 16) : [h("small", { style: { fontSize: "12px" } }, "from"), bolt(13), fromPrice(m)]),
       current === m.key ? h("span", { class: "check" }, icon("check", 18, 2.4)) : null);
   }));
 }

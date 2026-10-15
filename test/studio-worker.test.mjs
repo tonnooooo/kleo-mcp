@@ -1022,3 +1022,18 @@ test("every camera, effect and style preset comes with its example picture", asy
   assert.equal(presets.length, 24);
   for (const p of presets) assert.equal(p.art, `https://media.kleooai.com/app/presets/${p.key}.jpg?v=1`, p.key);
 });
+
+test("a paused picture model is shown as paused, takes no order and charges nothing; the default moves to one that works", async () => {
+  const env = newEnv({ STUDIO_PAUSED_IMAGE_MODELS: "nano-banana-2,nano-banana-pro" });
+  const cfg = (await call(env, "/api/config")).json;
+  assert.equal(cfg.defaultImageModel, "flux-2-pro");
+  assert.deepEqual(cfg.imageModels.filter((m) => m.paused).map((m) => m.key).sort(), ["nano-banana-2", "nano-banana-pro"]);
+  const cookie = await signUp(env);
+  const me = (await call(env, "/api/me", { cookie })).json;
+  assert.ok(!me.allowedImages.includes("nano-banana-2"));
+  const r = await call(env, "/api/generate", { method: "POST", cookie, body: { kind: "image", prompt: "a red apple", settings: { model: "nano-banana-2", aspect: "1:1", quality: "1K", count: 1 } } });
+  assert.equal(r.status, 503, r.text);
+  assert.equal(r.json.code, "paused");
+  assert.equal(credits(env, me.id), 5, "nothing was charged");
+});
+
