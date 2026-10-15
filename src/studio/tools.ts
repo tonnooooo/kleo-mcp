@@ -198,7 +198,7 @@ export function planTool(key: ToolKey, inputs: Record<string, string>, media: Re
         usd: 0.075, output: "image", summary: "Face swap",
         tasks: [{ model: "gemini-3-pro-image", routing: CHEAP, output: "image", input: {
           prompt: "Image 1 is the photo to keep. Image 2 shows a person's face. Replace the face of the person in image 1 with the face from image 2: the same identity, eyes, nose, mouth, jaw, face shape and skin tone as image 2. Keep image 1's pose, head angle, expression, hair, lighting, colors, clothes, body and background exactly as they are. Photorealistic and seamless, no visible edges.",
-          images: [target.url, face.url], aspect_ratio: nearestAspect(target.width, target.height), quality: "2K", output_format: "jpeg",
+          images: [target.url, face.url], aspect_ratio: nearestAspect(target.width, target.height), quality: "high", output_format: "jpeg",
         } }],
       };
     }

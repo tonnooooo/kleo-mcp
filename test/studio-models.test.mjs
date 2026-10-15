@@ -173,7 +173,7 @@ test("image settings and provider input per model", () => {
   assert.equal(sd.watermark, false, "Seedream watermarks by default");
   assert.deepEqual(sd.images, ["https://x/a.jpg"]);
   const nb = imageTaskInput(normalizeImageSettings({ model: "nano-banana-pro", aspect: "4:5", quality: "4K" }), "a cat", []);
-  assert.deepEqual({ a: nb.aspect_ratio, q: nb.quality, i: nb.images }, { a: "4:5", q: "4K", i: undefined });
+  assert.deepEqual({ a: nb.aspect_ratio, q: nb.quality, i: nb.images }, { a: "4:5", q: "max", i: undefined }, "Gemini takes auto|low|medium|high|xhigh|max since 15 Oct 2026");
   const fx = imageTaskInput(normalizeImageSettings({ model: "flux-2-pro", aspect: "16:9" }), "x", []);
   assert.equal(fx.aspect_ratio, "16:9");
   assert.equal(normalizeImageSettings({ model: "nope" }).model, "nano-banana-2");

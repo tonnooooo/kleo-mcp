@@ -16,7 +16,7 @@ import { getUser, hasPaid, audit, countAuditTodayForUser } from "../db.ts";
 import { PACKS, buyUrl } from "../stripe.ts";
 import { rid } from "../util.ts";
 import { DEFAULT_MODEL, freeModels, freeResolutions, publicCatalog, normalizeSettings, clipCredits } from "./models.ts";
-import { DEFAULT_IMAGE_MODEL, IMAGE_MODELS, freeImageModels, publicImageCatalog } from "./image-models.ts";
+import { IMAGE_MODELS, defaultImageModel, freeImageModels, pausedImageModels, publicImageCatalog } from "./image-models.ts";
 import {
   ensureStudioSchema, listChats, getChat, createChat, touchChat, renameChat, deleteChat, listMessages, addMessage,
   getMessage, setMessageData, agentMessagesToday, addUpload, getUpload, uploadsOf, getGeneration, listGenerations,
@@ -171,7 +171,8 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     return json({
       google: googleEnabled(env), microsoft: microsoftEnabled(env), social: enabledSocial(env), signup: signupMode(env), noGift: NO_GIFT_SENTENCE, turnstile: env.TURNSTILE_SITEKEY ?? null, defaultModel: DEFAULT_MODEL,
       models: publicCatalog(marginOf(env), freeModels(env.STUDIO_FREE_MODELS)), freeCredits: Number(env.FREE_CREDITS ?? 5),
-      defaultImageModel: DEFAULT_IMAGE_MODEL, imageModels: publicImageCatalog(marginOf(env), freeImageModels(env.STUDIO_FREE_IMAGE_MODELS)),
+      defaultImageModel: defaultImageModel(pausedImageModels(env.STUDIO_PAUSED_IMAGE_MODELS)),
+      imageModels: publicImageCatalog(marginOf(env), freeImageModels(env.STUDIO_FREE_IMAGE_MODELS), pausedImageModels(env.STUDIO_PAUSED_IMAGE_MODELS)),
       emailReset: resetAvailable(env), presets: publicPresets(), tools: publicTools(marginOf(env)), freeTools: freeTools(env.STUDIO_FREE_TOOLS),
     });
   }
@@ -223,7 +224,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     return json({
       ...info, paid, allowed: paid ? publicCatalog().map((m: any) => m.key) : freeModels(env.STUDIO_FREE_MODELS),
       freeResolutions: paid ? null : freeResolutions(env.STUDIO_FREE_RESOLUTIONS),
-      allowedImages: paid ? IMAGE_MODELS.map((m) => m.key) : freeImageModels(env.STUDIO_FREE_IMAGE_MODELS), packs: packsFor(env, userId),
+      allowedImages: (paid ? IMAGE_MODELS.map((m) => m.key) : freeImageModels(env.STUDIO_FREE_IMAGE_MODELS)).filter((k) => !pausedImageModels(env.STUDIO_PAUSED_IMAGE_MODELS).includes(k)), packs: packsFor(env, userId),
       allowedTools: paid ? freeTools("*") : freeTools(env.STUDIO_FREE_TOOLS),
     });
   }
@@ -269,7 +270,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     await addMessage(env, { id: userMsgId, chatId: chat.id, userId, role: "user", text, data: attachments.length ? { attachments } : null });
     const paid = await hasPaid(asEnv(env), userId);
     const allowed = paid ? (publicCatalog().map((m: any) => m.key) as any) : freeModels(env.STUDIO_FREE_MODELS);
-    const allowedImages = paid ? IMAGE_MODELS.map((m) => m.key) : freeImageModels(env.STUDIO_FREE_IMAGE_MODELS);
+    const allowedImages = (paid ? IMAGE_MODELS.map((m) => m.key) : freeImageModels(env.STUDIO_FREE_IMAGE_MODELS)).filter((k) => !pausedImageModels(env.STUDIO_PAUSED_IMAGE_MODELS).includes(k));
     const reply = await runAgent(env, {
       history, text, uploads, ui: b.settings ?? {}, uiImage: b.imageSettings ?? {}, mode: b.mode === "image" ? "image" : "video",
       credits: user.credits, allowed, allowedImages, margin: marginOf(env), freeResolutions: paid ? undefined : freeResolutions(env.STUDIO_FREE_RESOLUTIONS),
