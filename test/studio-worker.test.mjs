@@ -59,7 +59,7 @@ globalThis.FixedLengthStream ??= class extends TransformStream { constructor() {
 let worker, accounts;
 before(async () => {
   const r = await esbuild.build({
-    stdin: { contents: `export { default } from "./src/studio/index.ts"; export { makeHandle, verifyHandle } from "./src/accounts.ts";`, resolveDir: ROOT, loader: "ts" },
+    stdin: { contents: `export { default } from "./src/studio/index.ts"; export { makeHandle, verifyHandle } from "./src/accounts.ts"; export { looksEnglish } from "./src/studio/translate.ts";`, resolveDir: ROOT, loader: "ts" },
     bundle: true, write: false, format: "esm", platform: "neutral", target: "es2022", logLevel: "silent", external: ["@anthropic-ai/sdk"],
   });
   const mod = await import("data:text/javascript;base64," + Buffer.from(r.outputFiles[0].text).toString("base64"));
@@ -983,3 +983,42 @@ test("free credits make 480p: 720p and 1080p are locked until the first pack, an
   assert.equal((await call(env, "/api/me", { cookie: paid.cookie })).json.freeResolutions, null);
 });
 
+test("any language in, English to the model: a prompt that is not English is translated, quotes kept; English goes straight through", () => {
+  for (const t of ["A paper boat sails down a rainy street at dusk", "a cat in the rain", "Close up of a man walking, slow motion"]) assert.equal(accounts.looksEnglish(t), true, t);
+  for (const t of ["Un gatto nero cammina sotto la pioggia a Venezia", "gatto nero", "Девушка танцует на крыше", "Un vieux pêcheur répare son filet sur un quai",
+    "Un perro corre por la playa al atardecer", "Ein Hund läuft am Strand", "一只猫在雨中行走"]) assert.equal(accounts.looksEnglish(t), false, t);
+  // Words in quotes are what someone says: their language does not decide.
+  assert.equal(accounts.looksEnglish('A woman in a red coat turns to the camera and says "Che freddo stasera!"'), true);
+});
+
+test("a video typed in Italian reaches the model in English; the card keeps the Italian; a preset is added after", async () => {
+  const env = newEnv();
+  const cookie = await signUp(env);
+  const p = fakeProvider((u, init) => {
+    if (u.endsWith("/v1/chat/completions")) return ok({ choices: [{ message: { content: 'A black cat walks in the rain in Venice. It says: "Che freddo!"' } }] });
+    if (u.endsWith("/v1/task/submit")) return ok({ id: "task_tr" });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { prompt: 'Un gatto nero cammina sotto la pioggia a Venezia. Dice: "Che freddo!"', preset: "crash-zoom", settings: { model: "seedance-2.0-fast", resolution: "480p", duration: 5 } } });
+    assert.equal(r.status, 200, r.text);
+    const chat = p.sent.find((s) => s.url.endsWith("/v1/chat/completions"));
+    assert.ok(chat, "the Italian prompt was translated");
+    assert.match(chat.body.messages[0].content, /stay exactly as written/);
+    const sent = p.sent.find((s) => s.url.endsWith("/v1/task/submit")).body.input.prompt;
+    assert.match(sent, /^A black cat walks in the rain in Venice\. It says: "Che freddo!"/);
+    assert.match(sent, /crash zoom/);
+    assert.match(r.json.generation.prompt, /^Un gatto nero/, "the card shows the person's own words");
+    // English goes straight through: no translation call.
+    const before = p.sent.filter((s) => s.url.endsWith("/v1/chat/completions")).length;
+    assert.equal((await call(env, "/api/generate", { method: "POST", cookie, body: { prompt: "a fox in the snow", settings: { model: "seedance-2.0-fast", resolution: "480p", duration: 5 } } })).status, 200);
+    assert.equal(p.sent.filter((s) => s.url.endsWith("/v1/chat/completions")).length, before);
+  } finally { p.restore(); }
+});
+
+
+test("every camera, effect and style preset comes with its example picture", async () => {
+  const presets = (await call(newEnv(), "/api/config")).json.presets;
+  assert.equal(presets.length, 24);
+  for (const p of presets) assert.equal(p.art, `https://media.kleooai.com/app/presets/${p.key}.jpg?v=1`, p.key);
+});

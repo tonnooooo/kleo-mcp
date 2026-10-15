@@ -47,4 +47,13 @@ export function withPreset(prompt: string, key: string | null | undefined): stri
   return `${prompt.trim()}${prompt.trim() ? "\n" : ""}${p.text}`;
 }
 
-export const publicPresets = () => PRESETS.map(({ key, name, group, hint, tint }) => ({ key, name, group, hint, tint }));
+/**
+ * Each preset's example picture (15 October 2026, the owner: "voglio che ci siano degli esempi su crash zoom, dolly zoom…"):
+ * one 16:9 picture per preset on media.kleooai.com/app/presets/, made on Workers AI (FLUX.1 schnell). The page plays
+ * the camera move over it (crash zoom, orbit, pull-out…), so a tile shows what the preset does before it is chosen.
+ */
+const ART = "https://media.kleooai.com/app/presets";
+const ART_VERSION = 1;
+export const presetArt = (key: string): string => `${ART}/${key}.jpg?v=${ART_VERSION}`;
+
+export const publicPresets = () => PRESETS.map(({ key, name, group, hint, tint }) => ({ key, name, group, hint, tint, art: presetArt(key) }));
