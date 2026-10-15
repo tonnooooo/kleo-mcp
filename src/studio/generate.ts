@@ -32,6 +32,7 @@ import {
 } from "./store.ts";
 import { signPath } from "./session.ts";
 import { addressBlocked } from "../abuse.ts";
+import { toEnglish } from "./translate.ts";
 
 /** A refusal the page shows as it is (no provider names in it). */
 export class StudioError extends Error {
@@ -229,7 +230,8 @@ export async function createGeneration(env: StudioEnv, userId: string, req: Crea
   const clipLinks = { videos: await Promise.all(videos.map(link)), audios: await Promise.all(sounds.map(link)) };
   try {
     const t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit",
-      { model: model.ephoneModel, input: taskInput(s, prompt || "Bring this picture to life with natural, cinematic motion.", links, await safetyId(env, userId), clipLinks) },
+      // Any language in, English to the model (./translate.ts); the card keeps the person's own words.
+      { model: model.ephoneModel, input: taskInput(s, prompt ? withPreset(await toEnglish(env, (req.prompt ?? "").trim(), "video"), req.preset) : "Bring this picture to life with natural, cinematic motion.", links, await safetyId(env, userId), clipLinks) },
       { timeoutMs: 30_000, routing: model.routing });
     if (!t.id) throw new KieError("ephone.ai answered no task id", 502, true);
     await moveGeneration(env, id, ["submitting"], "running", { task_id: String(t.id) });
@@ -263,7 +265,7 @@ async function createImageGeneration(env: StudioEnv, userId: string, req: Create
   }
   await audit(asEnv(env), userId, id, "studio.create", { kind: "image", model: s.model, settings: s, credits, usd });
   const links = await Promise.all(uploads.map(async (u) => `${origin}${await signPath(env.INTERNAL_SECRET, `/media/u/${u.id}`, IMAGE_LINK_TTL_S)}`));
-  const input = imageTaskInput(s, prompt, links);
+  const input = imageTaskInput(s, await toEnglish(env, prompt, "image"), links);
   const slots: Slot[] = [];
   let firstError: unknown = null;
   for (let i = 0; i < s.count; i++) {
@@ -540,6 +542,10 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
     const u = rows.find((r) => r.id === inputs[f.key]);
     if (u) media[f.key] = { id: u.id, url: await link(u.id), kind: u.kind ?? "image", seconds: u.duration ?? null, width: u.width, height: u.height, type: u.content_type ?? "" };
   }
+  // An app's description of what to make or change is read in English by its model; words to SPEAK and song
+  // descriptions are not touched (a song asked for in Italian may well be sung in Italian).
+  const kind = ({ "video-edit": "edit", "motion-control": "video", sfx: "sound" } as const)[tool.key as "video-edit" | "motion-control" | "sfx"];
+  if (kind && inputs.prompt) inputs.prompt = (await toEnglish(env, inputs.prompt, kind)).slice(0, tool.fields.find((f) => f.key === "prompt")?.maxLength ?? 1000);
   let plan: Plan;
   try { plan = planTool(tool.key, inputs, media); } catch (e) { if (e instanceof ToolRefusal) throw new StudioError(e.message); throw e; }
 

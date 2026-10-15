@@ -1116,10 +1116,12 @@ async function loadFeed(kind, filter) {
     S.feeds[filter ? `tool:${filter}` : kind] = generations;
   } catch (e) { handleError(e); S.feeds[filter ? `tool:${filter}` : kind] = []; }
 }
+// A preset tile shows its example picture with the preset's own camera move playing over it (app.css .pm-*).
 function presetTile(p, on, pick) {
-  return h("button", { class: "preset" + (on ? " on" : ""), onclick: pick },
-    h("div", { class: "art", style: { background: `linear-gradient(135deg, ${p.tint}, ${p.tint}99)` } }, p.key ? icon(p.group === "effect" ? "flame" : p.group === "style" ? "sparkle" : "film", 20, 2) : icon("x", 18, 2)),
-    h("b", {}, p.name), h("span", {}, p.hint));
+  const art = p.art
+    ? h("div", { class: "art has-pic", style: { background: p.tint } }, h("img", { src: p.art, alt: "", loading: "lazy", decoding: "async", class: `pm pm-${p.group === "camera" ? p.key : "drift"}` }))
+    : h("div", { class: "art", style: { background: `linear-gradient(135deg, ${p.tint}, ${p.tint}99)` } }, p.key ? icon(p.group === "effect" ? "flame" : p.group === "style" ? "sparkle" : "film", 20, 2) : icon("x", 18, 2));
+  return h("button", { class: "preset" + (on ? " on" : ""), onclick: pick }, art, h("b", {}, p.name), h("span", {}, p.hint));
 }
 function openPresets(current, pick) {
   const list = S.config.presets || [];
@@ -1765,7 +1767,7 @@ const demoImageCatalog = () => [
   key, name, blurb, badge, qualities, defaultQuality: dq, aspects: ["1:1", "4:5", "3:4", "2:3", "9:16", "4:3", "3:2", "16:9", "21:9"], maxReferences: 14, free: key !== "nano-banana-pro", counts: [1, 2, 4],
   prices: Object.fromEntries(qualities.map((q) => [q, { 1: pr[q][0], 2: pr[q][1], 4: pr[q][2] }])),
 }));
-const DEMO_PRESETS = [["crash-zoom", "Crash Zoom", "camera", "Fast punch-in", "#ff375f"], ["dolly-zoom", "Dolly Zoom", "camera", "Vertigo effect", "#bf5af2"], ["orbit-360", "360 Orbit", "camera", "Circle the subject", "#0a84ff"], ["fpv-drone", "FPV Drone", "camera", "Fast fly-through", "#30d158"], ["crane-up", "Crane Up", "camera", "Rise and reveal", "#64d2ff"], ["dolly-in", "Slow Push-In", "camera", "Cinematic tension", "#ffd60a"], ["bullet-time", "Bullet Time", "camera", "Frozen moment", "#5e5ce6"], ["earth-zoom-out", "Earth Zoom Out", "camera", "From face to space", "#32ade6"], ["disintegrate", "Disintegration", "effect", "Turns to dust", "#a2845e"], ["levitate", "Levitation", "effect", "Floats up", "#ac8e68"], ["explosion", "Explosion", "effect", "Boom behind", "#ff6b00"], ["lightning", "Thunder God", "effect", "Electric power", "#7d7aff"], ["portal", "Portal", "effect", "Step through", "#5856d6"], ["anime", "Anime", "style", "Japanese animation", "#ff7eb6"], ["clay", "Claymation", "style", "Stop-motion clay", "#d4a373"], ["vhs", "VHS 90s", "style", "Retro tape", "#6a994e"]].map(([key, name, group, hint, tint]) => ({ key, name, group, hint, tint }));
+const DEMO_PRESETS = [["crash-zoom", "Crash Zoom", "camera", "Fast punch-in", "#ff375f"], ["dolly-zoom", "Dolly Zoom", "camera", "Vertigo effect", "#bf5af2"], ["orbit-360", "360 Orbit", "camera", "Circle the subject", "#0a84ff"], ["fpv-drone", "FPV Drone", "camera", "Fast fly-through", "#30d158"], ["crane-up", "Crane Up", "camera", "Rise and reveal", "#64d2ff"], ["dolly-in", "Slow Push-In", "camera", "Cinematic tension", "#ffd60a"], ["bullet-time", "Bullet Time", "camera", "Frozen moment", "#5e5ce6"], ["earth-zoom-out", "Earth Zoom Out", "camera", "From face to space", "#32ade6"], ["disintegrate", "Disintegration", "effect", "Turns to dust", "#a2845e"], ["levitate", "Levitation", "effect", "Floats up", "#ac8e68"], ["explosion", "Explosion", "effect", "Boom behind", "#ff6b00"], ["lightning", "Thunder God", "effect", "Electric power", "#7d7aff"], ["portal", "Portal", "effect", "Step through", "#5856d6"], ["anime", "Anime", "style", "Japanese animation", "#ff7eb6"], ["clay", "Claymation", "style", "Stop-motion clay", "#d4a373"], ["vhs", "VHS 90s", "style", "Retro tape", "#6a994e"]].map(([key, name, group, hint, tint]) => ({ key, name, group, hint, tint, art: `https://media.kleooai.com/app/presets/${key}.jpg?v=1` }));
 const DEMO_TOOLS = [
   ["face-swap", "Face Swap", "Put a face on any photo", "face", "user", "#ff375f", "image", true, "Popular", [["target", "image", "Photo", "The picture to change"], ["face", "image", "Face", "A clear, front-facing face"]], 1],
   ["video-face-swap", "Video Face Swap", "Swap a face in a video", "face", "film", "#bf5af2", "video", true, null, [["video", "video", "Video", "MP4 or MOV, 3–15 seconds"], ["face", "image", "Face", "A clear, front-facing face"]], 7],
