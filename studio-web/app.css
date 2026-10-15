@@ -938,4 +938,19 @@ body::after { inset: -6% -18%; }
 @keyframes pmEarth { from { transform: scale(3.2); } to { transform: scale(1); } }
 .pm-top-down { animation: pmTop 7s ease-in-out infinite alternate; }
 @keyframes pmTop { from { transform: scale(1.38) rotate(-7deg); } to { transform: scale(1.38) rotate(7deg); } }
+/* Kleo's own confirm card (15 October 2026): no browser pop-ups. */
+.ask-scrim { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; padding: 16px; background: rgba(0, 0, 0, .5); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); animation: fade .16s both; }
+.ask-scrim.out { opacity: 0; transition: opacity .15s; }
+.ask { width: min(380px, 100%); background: var(--elev); border: 1px solid var(--sep); border-radius: 26px; box-shadow: var(--shadow-l); padding: 24px 22px 20px; text-align: center; animation: askIn .22s var(--ease) both; }
+@keyframes askIn { from { transform: scale(.94); opacity: 0; } }
+.ask-ic { width: 54px; height: 54px; margin: 0 auto 12px; border-radius: 50%; display: grid; place-items: center; background: var(--fill-2); color: var(--ink); }
+.ask-ic.danger { background: rgba(255, 69, 58, .14); color: #ff453a; }
+.ask h3 { margin: 0 0 6px; font-size: 20px; font-weight: 700; letter-spacing: -.01em; }
+.ask p { margin: 0 0 16px; font-size: 16px; line-height: 1.45; color: var(--ink-2); }
+.ask .input { margin: 0 0 14px; text-align: center; letter-spacing: .08em; }
+.ask-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.ask-btns .btn { height: 48px; border-radius: 14px; font-size: 16px; font-weight: 650; justify-content: center; }
+.btn-destroy { background: #ff3b30; color: #fff; }
+.btn-destroy:hover { background: #ff5147; }
+.btn-destroy:disabled { opacity: .45; }
 

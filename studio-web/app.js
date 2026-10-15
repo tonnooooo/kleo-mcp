@@ -466,7 +466,7 @@ function renderChats() {
     h("span", {}, c.title || "Untitled"),
     h("button", { class: "del", title: "Delete chat", "aria-label": "Delete chat", onclick: async (e) => {
       e.stopPropagation();
-      if (!confirm("Delete this chat? Your creations stay in the Library.")) return;
+      if (!(await ask({ title: "Delete this chat?", text: "Your videos and pictures stay in the Library.", ok: "Delete", danger: true }))) return;
       try { await api(`/api/chats/${c.id}`, { method: "DELETE" }); S.chats = S.chats.filter((x) => x.id !== c.id); renderChats(); if (S.chat?.id === c.id) go("/"); } catch (er) { handleError(er); }
     } }, icon("trash", 16)))) : h("div", { class: "empty-chats" }, "Your chats will show up here."));
 }
@@ -1494,6 +1494,33 @@ function sheet(title, sub, ...content) {
   document.addEventListener("keydown", escClose);
   return box;
 }
+/**
+ * Kleo's own "are you sure?" (15 October 2026, the owner: no browser pop-ups, ever). A card over the page with the
+ * question, Cancel and the action; Enter confirms, Escape and a tap outside cancel. Answers true or false. With `word`
+ * the action stays off until that word is typed (deleting the account). It never closes the sheet or viewer beneath it.
+ */
+function ask({ title, text = "", ok = "OK", cancel = "Cancel", danger = false, ic = danger ? "trash" : "check", word = null }) {
+  return new Promise((done) => {
+    const input = word ? h("input", { class: "input", placeholder: `Type ${word}`, autocomplete: "off", autocapitalize: "characters", spellcheck: "false" }) : null;
+    const yes = h("button", { class: "btn " + (danger ? "btn-destroy" : "btn-primary"), type: "button" }, ok);
+    const no = h("button", { class: "btn btn-quiet", type: "button" }, cancel);
+    const card = h("div", { class: "ask", role: "alertdialog", "aria-modal": "true", "aria-label": title, onclick: (e) => e.stopPropagation() },
+      h("div", { class: "ask-ic" + (danger ? " danger" : "") }, icon(ic, 24, 2)), h("h3", {}, title), text ? h("p", {}, text) : null, input, h("div", { class: "ask-btns" }, no, yes));
+    const scrim = h("div", { class: "ask-scrim" }, card);
+    const key = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(false); }
+      else if (e.key === "Enter" && !yes.disabled) { e.preventDefault(); e.stopPropagation(); finish(true); }
+    };
+    const finish = (v) => { document.removeEventListener("keydown", key, true); scrim.classList.add("out"); setTimeout(() => scrim.remove(), 160); done(v); };
+    scrim.addEventListener("click", () => finish(false));
+    no.addEventListener("click", () => finish(false));
+    yes.addEventListener("click", () => finish(true));
+    if (input) { yes.disabled = true; input.addEventListener("input", () => { yes.disabled = input.value.trim().toUpperCase() !== word; }); }
+    document.addEventListener("keydown", key, true);
+    document.body.append(scrim);
+    setTimeout(() => (input || yes).focus(), 30);
+  });
+}
 function openMenu(anchor, options, pick) {
   // A locked option shows a lock instead of its price and opens Get credits instead of being chosen.
   const rows = (menu) => options.map((o) => h("button", { class: "row" + (o.locked ? " locked" : ""), role: menu ? "menuitem" : null, onclick: () => { closeLayer(); if (o.locked) return openBuy(o.note); pick(o.value); } },
@@ -1637,14 +1664,14 @@ function accountView() {
         } catch (e) { handleError(e); }
       } }, icon("key", 17), "Show / copy"),
       h("button", { class: "btn btn-quiet", onclick: async () => {
-        if (!confirm("Make a new Kleo key? The old one stops working everywhere: AI assistants connected with it are disconnected until you add Kleo again, and every other browser and phone is signed out.")) return;
+        if (!(await ask({ title: "Make a new Kleo key?", text: "The old one stops working everywhere: AI assistants connected with it are disconnected until you add Kleo again, and every other browser and phone is signed out.", ok: "Make a new key", ic: "key" }))) return;
         try { revealed = (await api("/api/me/key", { method: "POST", body: { reset: true } })).key; keyBox.textContent = revealed; toast("New Kleo key made"); }
         catch (e) { handleError(e); }
       } }, icon("redo", 17), "New key")),
     h("h3", {}, "Sessions"),
     h("div", { class: "acct-actions" },
       h("button", { class: "btn btn-quiet", onclick: async () => {
-        if (!confirm("Sign out on every browser and phone, this one included?")) return;
+        if (!(await ask({ title: "Sign out everywhere?", text: "Every browser and phone signed in to this account is signed out, this one included.", ok: "Sign out", ic: "out" }))) return;
         try { await api("/api/auth/signout-all", { method: "POST" }); } catch (e) { return handleError(e); }
         signOut(true);
       } }, icon("out", 17), "Sign out everywhere"),
@@ -1672,9 +1699,8 @@ function accountView() {
   const danger = h("section", { class: "acct-card acct-danger" }, h("h2", {}, "Delete account"),
     h("p", { class: "acct-sub" }, "Deletes your videos, pictures, sounds, chats and sign-in methods for good. Credits you have left are lost. This can't be undone."),
     h("button", { class: "btn btn-danger", onclick: async () => {
-      const typed = prompt("To delete your account and everything in it, type DELETE");
-      if (typed === null) return;
-      try { await api("/api/me/delete", { method: "POST", body: { confirm: typed } }); } catch (e) { return handleError(e); }
+      if (!(await ask({ title: "Delete your account?", text: "Your videos, pictures, sounds, chats and credits are deleted for good. To confirm, type DELETE.", ok: "Delete my account", danger: true, word: "DELETE" }))) return;
+      try { await api("/api/me/delete", { method: "POST", body: { confirm: "DELETE" } }); } catch (e) { return handleError(e); }
       signOut(true); toast("Your account was deleted");
     } }, icon("trash", 17), "Delete my account"));
 
@@ -1714,7 +1740,7 @@ function viewerFrame(media, prompt, actions) {
 /** Deletes a creation for good (the file, its pictures or sounds) and takes it off every list on screen. */
 async function deleteGen(g) {
   const what = g.kind === "image" ? (g.outputs?.length > 1 ? "these pictures" : "this picture") : g.output === "audio" ? "this sound" : g.kind === "film" ? "this film" : "this video";
-  if (!confirm(`Delete ${what}? This can't be undone.`)) return;
+  if (!(await ask({ title: `Delete ${what}?`, text: "This can't be undone.", ok: "Delete", danger: true }))) return;
   try { await api(`/api/generations/${g.id}`, { method: "DELETE" }); } catch (e) { return handleError(e); }
   closeLayer();
   S.gens.delete(g.id);
