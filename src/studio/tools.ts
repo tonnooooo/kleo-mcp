@@ -30,7 +30,7 @@
  */
 import { CREDIT_USD, DEFAULT_MARGIN } from "./models.ts";
 
-export type ToolKey = "face-swap" | "video-face-swap" | "talking-photo" | "lipsync" | "motion-control" | "outfit-swap" | "video-edit" | "video-upscale" | "voice" | "music" | "sfx";
+export type ToolKey = "face-swap" | "video-face-swap" | "talking-photo" | "lipsync" | "character-swap" | "motion-control" | "outfit-swap" | "video-edit" | "video-upscale" | "voice" | "music" | "sfx";
 export type FieldKind = "image" | "video" | "audio" | "text" | "select" | "voice";
 export interface ToolField {
   key: string; kind: FieldKind; label: string; hint?: string; required?: boolean;
@@ -93,6 +93,15 @@ export const TOOLS: ToolDef[] = [
     fields: [
       { key: "video", kind: "video", label: "Video", hint: "MP4 or MOV with one face, 2–60 seconds", required: true },
       ...SPEECH,
+    ] },
+  // 18 October 2026, the owner: "video character swap ma fatto bene". Kling O1 edits the video itself: the person in it
+  // becomes the character of the picture, while the motion, camera, background and light stay the video's own.
+  { key: "character-swap", name: "Character Swap", blurb: "Put your character in any video", group: "video", icon: "user", tint: "#ff9f0a", output: "video", consent: true, badge: "New",
+    fields: [
+      { key: "video", kind: "video", label: "Video", hint: "MP4 or MOV, 3–10 seconds, at least 720p", required: true },
+      { key: "image", kind: "image", label: "Character", hint: "Full body, clear face", required: true },
+      { key: "prompt", kind: "text", label: "Extra details (optional)", maxLength: 500, placeholder: "Keep the red jacket from the photo" },
+      { key: "quality", kind: "select", label: "Quality", options: [{ value: "720p", label: "720p" }, { value: "1080p", label: "1080p" }], default: "720p" },
     ] },
   { key: "motion-control", name: "Motion Control", blurb: "Copy any dance or move", group: "video", icon: "run", tint: "#30d158", output: "video",
     fields: [
@@ -233,6 +242,24 @@ export function planTool(key: ToolKey, inputs: Record<string, string>, media: Re
         tasks: [{ model: "kling_advanced_lip_sync", output: "video", input: { video_url: video.url, sound_file: sp.audioUrl, original_audio_volume: 0, sound_volume: 1 } }],
       };
     }
+    case "character-swap": {
+      const video = need(media.video, "video", "Video"), image = need(media.image, "image", "Character");
+      const s = seconds(video, "Video", 3, 10);
+      // Kling reads the base video only from 700 px tall (and up to 2160).
+      if (video.height && (video.height < 700 || video.height > 2160)) throw new ToolRefusal("Use a video between 720p and 4K (at least 700 pixels tall).");
+      const hd = inputs.quality === "1080p";
+      const extra = String(inputs.prompt ?? "").trim().slice(0, 500);
+      const prompt = "Replace the main person in the video with the character from the reference image: same face, hair, clothes and build as the reference. "
+        + "Keep the motion, the timing, the camera, the background and the light of the video exactly." + (extra ? ` ${extra}` : "");
+      const a = nearestAspect(video.width, video.height);
+      return {
+        usd: r3(s * (hd ? 1.2 : 0.9) * KLING_CREDIT_USD), output: "video", summary: `Character swap · ${Math.round(s)} s`,
+        tasks: [{ model: "kling-o1/omni-video", output: "video", input: {
+          contents: [{ type: "prompt", text: prompt }, { type: "base_video", url: video.url }, { type: "refer_image", url: image.url }],
+          settings: { resolution: hd ? "1080p" : "720p", duration: Math.min(10, Math.max(3, Math.round(s))), audio: "original", aspect_ratio: a === "9:16" || a === "2:3" || a === "3:4" || a === "4:5" ? "9:16" : a === "1:1" ? "1:1" : "16:9" },
+        } }],
+      };
+    }
     case "motion-control": {
       const image = need(media.image, "image", "Character"), video = need(media.video, "video", "Moves");
       const s = seconds(video, "Moves", 3, 30);
@@ -303,7 +330,7 @@ export const toneText = (tone: string): string => TONE_TEXT[tone] ?? TONE_TEXT.n
 export function publicTools(margin = DEFAULT_MARGIN): unknown[] {
   const typical: Record<ToolKey, number> = {
     "face-swap": 0.075, "video-face-swap": 2 * 8 * 0.9 * 0.8 * CNY, "talking-photo": 10 * 0.4 * KLING_CREDIT_USD + SPEECH_USD,
-    lipsync: 10 / 5 * 0.5 * KLING_CREDIT_USD, "motion-control": 8 * 0.9 * KLING_CREDIT_USD, "outfit-swap": 0.035,
+    lipsync: 10 / 5 * 0.5 * KLING_CREDIT_USD, "character-swap": 5 * 0.9 * KLING_CREDIT_USD, "motion-control": 8 * 0.9 * KLING_CREDIT_USD, "outfit-swap": 0.035,
     "video-edit": 8 * 0.03 * 0.53, "video-upscale": 8 * 3.6 * 0.07 * 0.53, voice: SPEECH_USD, music: 0.064, sfx: 0.055,
   };
   return TOOLS.map((t) => ({ ...t, from: toolCredits(typical[t.key], margin) }));
