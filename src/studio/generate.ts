@@ -577,7 +577,7 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
   }
   // An app's description of what to make or change is read in English by its model; words to SPEAK and song
   // descriptions are not touched (a song asked for in Italian may well be sung in Italian).
-  const kind = ({ "video-edit": "edit", "motion-control": "video", "character-swap": "edit", sfx: "sound" } as const)[tool.key as "video-edit" | "motion-control" | "character-swap" | "sfx"];
+  const kind = ({ "video-edit": "edit", "motion-control": "video", "character-swap": "edit", "photo-character-swap": "image", sfx: "sound" } as const)[tool.key as "video-edit" | "motion-control" | "character-swap" | "photo-character-swap" | "sfx"];
   if (kind && inputs.prompt) inputs.prompt = (await toEnglish(env, inputs.prompt, kind)).slice(0, tool.fields.find((f) => f.key === "prompt")?.maxLength ?? 1000);
   let plan: Plan;
   try { plan = planTool(tool.key, inputs, media); } catch (e) { if (e instanceof ToolRefusal) throw new StudioError(e.message); throw e; }
