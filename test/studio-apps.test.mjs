@@ -187,16 +187,20 @@ test("apps: every app plans, prices within reason and refuses what it cannot do"
   assert.equal(lip.tasks[0].input.original_audio_volume, 0);
   assert.equal(toolCredits(lip.usd), 1);
 
-  // Character Swap (18 Oct 2026): Kling O1 edits the video itself; 3-10 s, the base video 700-2160 px tall.
-  const swap = planTool("character-swap", { prompt: "keep the red jacket" }, { video: vid("v", 4), image: img("c") });
-  assert.equal(swap.tasks[0].model, "kling-o1/omni-video");
-  assert.deepEqual(swap.tasks[0].input.contents.map((c) => c.type), ["prompt", "base_video", "refer_image"]);
-  assert.match(swap.tasks[0].input.contents[0].text, /Replace the main person in the video with the character from the reference image.*keep the red jacket$/);
-  assert.deepEqual(swap.tasks[0].input.settings, { resolution: "720p", duration: 4, audio: "original", aspect_ratio: "16:9" });
-  assert.equal(toolCredits(swap.usd), 2, "4 s at 0.9 Kling credits a second (about $0.41, measured)");
-  assert.equal(planTool("character-swap", {}, { video: vid("v", 6, 1080, 1920), image: img("c") }).tasks[0].input.settings.aspect_ratio, "9:16");
-  assert.throws(() => planTool("character-swap", {}, { video: vid("v", 4, 854, 480), image: img("c") }), /at least 700 pixels tall/);
-  assert.throws(() => planTool("character-swap", {}, { video: vid("v", 14), image: img("c") }), /too long/);
+  // Character Swap (18 Oct 2026): the first frame redrawn with the character (FLUX.2 Pro), then Runway Aleph 2.
+  const swap = planTool("character-swap", { prompt: "keep the red jacket" }, { video: vid("v", 5, 1080, 1920), image: img("c"), frame: { ...img("f"), width: 1080, height: 1920 } });
+  assert.equal(swap.tasks.length, 1);
+  assert.equal(swap.tasks[0].model, "flux-2-pro");
+  assert.deepEqual(swap.tasks[0].input.images, ["https://k/f", "https://k/c"]);
+  assert.equal(swap.tasks[0].input.aspect_ratio, "9:16");
+  assert.match(swap.tasks[0].input.prompt, /Replace the main person in image 1 with the character from image 2.*keep the red jacket$/);
+  assert.equal(swap.tasks[0].then.model, "aleph2/video-to-video");
+  assert.deepEqual(swap.tasks[0].then.input.keyframes, [{ uri: "{{prev}}", seconds: 0 }]);
+  assert.equal(swap.tasks[0].then.input.videoUri, "https://k/v");
+  assert.ok(swap.tasks[0].then.input.promptText.length <= 1000);
+  assert.equal(toolCredits(swap.usd), 6, "5 s: $0.03 + 5 × $0.28 = $1.43");
+  assert.throws(() => planTool("character-swap", {}, { video: vid("v", 5), image: img("c") }), /first frame/i);
+  assert.throws(() => planTool("character-swap", {}, { video: vid("v", 20), image: img("c"), frame: img("f") }), /too long/);
   const motion = planTool("motion-control", { prompt: "on a neon stage", quality: "1080p" }, { image: img("c"), video: vid("m", 10) });
   assert.equal(motion.tasks[0].model, "kling-3.0/motion-control");
   assert.deepEqual(motion.tasks[0].input.contents.map((c) => c.type), ["prompt", "image", "video"]);

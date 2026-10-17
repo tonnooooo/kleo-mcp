@@ -37,6 +37,8 @@ export interface ToolField {
   options?: { value: string; label: string }[]; default?: string; maxLength?: number; placeholder?: string;
   /** Show the field only when another field has one of these values. */
   when?: { field: string; is: string[] };
+  /** Filled by the page itself, never shown (Character Swap's first frame). */
+  hidden?: boolean;
 }
 export interface ToolDef {
   key: ToolKey; name: string; blurb: string; group: "face" | "video" | "image" | "audio";
@@ -94,14 +96,17 @@ export const TOOLS: ToolDef[] = [
       { key: "video", kind: "video", label: "Video", hint: "MP4 or MOV with one face, 2–60 seconds", required: true },
       ...SPEECH,
     ] },
-  // 18 October 2026, the owner: "video character swap ma fatto bene". Kling O1 edits the video itself: the person in it
-  // becomes the character of the picture, while the motion, camera, background and light stay the video's own.
-  { key: "character-swap", name: "Character Swap", blurb: "Put your character in any video", group: "video", icon: "user", tint: "#ff9f0a", output: "video", consent: true, badge: "New",
+  // 18 October 2026, the owner: "video character swap ma fatto bene … uguale o più di Higgsfield". Two steps, the way
+  // the pros do it: the video's first frame is redrawn with the character in the person's place (FLUX.2 Pro, two
+  // references), then Runway Aleph 2 carries that frame through the whole video, keeping every movement, the camera,
+  // the room and the light. Compared on a real 1080p clip: Kling O1 alone pulled in the reference photo's room;
+  // this kept the office, the gestures and the light. The page takes the first frame itself (field "frame").
+  { key: "character-swap", name: "Character Swap", blurb: "Put your character in any video", group: "video", icon: "user", tint: "#ff9f0a", output: "video", consent: true, badge: "Pro",
     fields: [
-      { key: "video", kind: "video", label: "Video", hint: "MP4 or MOV, 3–10 seconds, at least 720p", required: true },
-      { key: "image", kind: "image", label: "Character", hint: "Full body, clear face", required: true },
+      { key: "video", kind: "video", label: "Video", hint: "MP4 or MOV, 2–15 seconds, 30 fps or less", required: true },
+      { key: "image", kind: "image", label: "Character", hint: "Clear face, the clothes you want", required: true },
+      { key: "frame", kind: "image", label: "First frame", hidden: true, required: true },
       { key: "prompt", kind: "text", label: "Extra details (optional)", maxLength: 500, placeholder: "Keep the red jacket from the photo" },
-      { key: "quality", kind: "select", label: "Quality", options: [{ value: "720p", label: "720p" }, { value: "1080p", label: "1080p" }], default: "720p" },
     ] },
   { key: "motion-control", name: "Motion Control", blurb: "Copy any dance or move", group: "video", icon: "run", tint: "#30d158", output: "video",
     fields: [
@@ -145,13 +150,21 @@ export const toolByKey = (key: string | null | undefined): ToolDef | null => TOO
 /** What the plan knows about an attached file. */
 export interface Media { id: string; url: string; kind: "image" | "video" | "audio"; seconds: number | null; width: number | null; height: number | null; type: string }
 /** One provider call. `{{speech}}` in the input is replaced by the link to the spoken audio once it exists. */
-export interface PlannedTask { model: string; input: Record<string, unknown>; routing?: Record<string, string>; output: "image" | "video" | "audio" }
+export interface PlannedTask {
+  model: string; input: Record<string, unknown>; routing?: Record<string, string>; output: "image" | "video" | "audio";
+  /** A second task started when this one finishes; "{{prev}}" in its input becomes this task's result link. */
+  then?: PlannedTask;
+}
 export interface Plan { usd: number; speech?: { text: string; voice: string; tone: string }; tasks: PlannedTask[]; output: ToolDef["output"]; summary: string }
 export class ToolRefusal extends Error {}
 
 const CNY = 1 / 7;
 const CHEAP = { "X-Provider-Order": "official_cheap", "X-Provider-Only": "true" };
 const KLING_CREDIT_USD = 1 * 0.8 * CNY;
+/** Runway Aleph 2 video-to-video, per output second (billed at Runway's own rate in the 18 Oct 2026 probe). */
+const ALEPH2_USD_PER_S = 0.28;
+/** One FLUX.2 Pro picture of about one megapixel. */
+const FLUX_PRO_USD = 0.03;
 /** Speech is ~$0.00025 a second on the cheap channel; one generous flat figure covers it. */
 const SPEECH_USD = 0.01;
 /** Characters of speech per second, to price a script before it is spoken (fast talkers ~17, slow ~12). */
@@ -244,20 +257,20 @@ export function planTool(key: ToolKey, inputs: Record<string, string>, media: Re
     }
     case "character-swap": {
       const video = need(media.video, "video", "Video"), image = need(media.image, "image", "Character");
-      const s = seconds(video, "Video", 3, 10);
-      // Kling reads the base video only from 700 px tall (and up to 2160).
-      if (video.height && (video.height < 700 || video.height > 2160)) throw new ToolRefusal("Use a video between 720p and 4K (at least 700 pixels tall).");
-      const hd = inputs.quality === "1080p";
-      const extra = String(inputs.prompt ?? "").trim().slice(0, 500);
-      const prompt = "Replace the main person in the video with the character from the reference image: same face, hair, clothes and build as the reference. "
-        + "Keep the motion, the timing, the camera, the background and the light of the video exactly." + (extra ? ` ${extra}` : "");
-      const a = nearestAspect(video.width, video.height);
+      const frame = need(media.frame, "image", "First frame");
+      const s = seconds(video, "Video", 2, 15);
+      const extra = String(inputs.prompt ?? "").trim().slice(0, 400);
+      const still = "Replace the main person in image 1 with the character from image 2: the same face, hair, clothes and build as image 2. "
+        + "Keep exactly the same pose, position, size in the frame, framing, camera angle, light and background as image 1. Realistic photograph, sharp, natural skin." + (extra ? ` ${extra}` : "");
+      const motion = "Replace the main person in the video with the character shown in the keyframe: the same face, hair and clothes. "
+        + "Keep every movement, gesture and their timing, the camera, the background and the light exactly as in the video. Realistic, sharp, natural skin." + (extra ? ` ${extra}` : "");
       return {
-        usd: r3(s * (hd ? 1.2 : 0.9) * KLING_CREDIT_USD), output: "video", summary: `Character swap · ${Math.round(s)} s`,
-        tasks: [{ model: "kling-o1/omni-video", output: "video", input: {
-          contents: [{ type: "prompt", text: prompt }, { type: "base_video", url: video.url }, { type: "refer_image", url: image.url }],
-          settings: { resolution: hd ? "1080p" : "720p", duration: Math.min(10, Math.max(3, Math.round(s))), audio: "original", aspect_ratio: a === "9:16" || a === "2:3" || a === "3:4" || a === "4:5" ? "9:16" : a === "1:1" ? "1:1" : "16:9" },
-        } }],
+        usd: r3(FLUX_PRO_USD + s * ALEPH2_USD_PER_S), output: "video", summary: `Character swap · ${Math.round(s)} s`,
+        tasks: [{
+          model: "flux-2-pro", routing: CHEAP, output: "image",
+          input: { prompt: still, images: [frame.url, image.url], aspect_ratio: nearestAspect(frame.width ?? video.width, frame.height ?? video.height), output_format: "jpeg" },
+          then: { model: "aleph2/video-to-video", routing: CHEAP, output: "video", input: { videoUri: video.url, promptText: motion.slice(0, 1000), keyframes: [{ uri: "{{prev}}", seconds: 0 }] } },
+        }],
       };
     }
     case "motion-control": {
@@ -330,7 +343,7 @@ export const toneText = (tone: string): string => TONE_TEXT[tone] ?? TONE_TEXT.n
 export function publicTools(margin = DEFAULT_MARGIN): unknown[] {
   const typical: Record<ToolKey, number> = {
     "face-swap": 0.075, "video-face-swap": 2 * 8 * 0.9 * 0.8 * CNY, "talking-photo": 10 * 0.4 * KLING_CREDIT_USD + SPEECH_USD,
-    lipsync: 10 / 5 * 0.5 * KLING_CREDIT_USD, "character-swap": 5 * 0.9 * KLING_CREDIT_USD, "motion-control": 8 * 0.9 * KLING_CREDIT_USD, "outfit-swap": 0.035,
+    lipsync: 10 / 5 * 0.5 * KLING_CREDIT_USD, "character-swap": FLUX_PRO_USD + 5 * ALEPH2_USD_PER_S, "motion-control": 8 * 0.9 * KLING_CREDIT_USD, "outfit-swap": 0.035,
     "video-edit": 8 * 0.03 * 0.53, "video-upscale": 8 * 3.6 * 0.07 * 0.53, voice: SPEECH_USD, music: 0.064, sfx: 0.055,
   };
   return TOOLS.map((t) => ({ ...t, from: toolCredits(typical[t.key], margin) }));

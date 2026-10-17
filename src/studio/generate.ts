@@ -428,6 +428,22 @@ async function refreshImages(env: StudioEnv, g: GenerationRow, ageMin: number): 
     const want = slot.type ?? "image";
     const urls = mediaOutputs(t).filter((u) => kindOfUrl(u) === want || kindOfUrl(u) === null);
     if (!urls.length) { slot.status = "failed"; slot.error = "no result"; continue; }
+    // A first step (Character Swap's redrawn first frame) starts the second with its result, and the slot runs on.
+    if (slot.then) {
+      const next = slot.then;
+      delete slot.then;
+      try {
+        const input = JSON.parse(JSON.stringify(next.input).split("{{prev}}").join(urls[0]));
+        const t2 = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: next.model, input }, { timeoutMs: 30_000, routing: next.routing });
+        if (!t2.id) throw new KieError("ephone.ai answered no task id", 502, true);
+        Object.assign(slot, { task: String(t2.id), model: next.model, type: next.output, status: "running" });
+        await audit(asEnv(env), g.user_id, g.id, "studio.next_step", { task: t2.id, model: next.model });
+      } catch (e) {
+        slot.status = "failed";
+        slot.error = publicText(e instanceof Error ? e.message : String(e)).slice(0, 200);
+      }
+      continue;
+    }
     try {
       // Suno answers two songs (and their covers): every result of the wanted kind becomes its own picture/clip.
       const saved: { key: string; upload: string; type: Slot["type"] }[] = [];
@@ -484,7 +500,7 @@ export function kindOfUrl(u: string): "image" | "video" | "audio" | null {
   if (["mp3", "wav", "m4a", "aac", "ogg", "flac"].includes(ext)) return "audio";
   return null;
 }
-const TOOL_ROUTED = new Set(["gemini-3-pro-image", "flux-tools/vto-v1", "flux-tools/video-edit-v1", "flux-tools/video-upscale-v1"]);
+const TOOL_ROUTED = new Set(["gemini-3-pro-image", "flux-tools/vto-v1", "flux-tools/video-edit-v1", "flux-tools/video-upscale-v1", "flux-2-pro", "aleph2/video-to-video"]);
 const toolRouting = (model: string) => (TOOL_ROUTED.has(model) ? { "X-Provider-Order": "official_cheap", "X-Provider-Only": "true" } : undefined);
 
 /** Downloads one result into R2 and says what it is (by its bytes). */
@@ -561,7 +577,7 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
   }
   // An app's description of what to make or change is read in English by its model; words to SPEAK and song
   // descriptions are not touched (a song asked for in Italian may well be sung in Italian).
-  const kind = ({ "video-edit": "edit", "motion-control": "video", sfx: "sound" } as const)[tool.key as "video-edit" | "motion-control" | "sfx"];
+  const kind = ({ "video-edit": "edit", "motion-control": "video", "character-swap": "edit", sfx: "sound" } as const)[tool.key as "video-edit" | "motion-control" | "character-swap" | "sfx"];
   if (kind && inputs.prompt) inputs.prompt = (await toEnglish(env, inputs.prompt, kind)).slice(0, tool.fields.find((f) => f.key === "prompt")?.maxLength ?? 1000);
   let plan: Plan;
   try { plan = planTool(tool.key, inputs, media); } catch (e) { if (e instanceof ToolRefusal) throw new StudioError(e.message); throw e; }
@@ -633,10 +649,12 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
   let firstError: unknown = null;
   for (const task of plan.tasks) {
     try {
-      const input = JSON.parse(JSON.stringify(task.input).split("{{speech}}").join(media.audio?.url ?? ""));
+      const fill = (o: unknown) => JSON.parse(JSON.stringify(o).split("{{speech}}").join(media.audio?.url ?? ""));
+      const input = fill(task.input);
       const t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: task.model, input }, { timeoutMs: 30_000, routing: task.routing });
       if (!t.id) throw new KieError("ephone.ai answered no task id", 502, true);
-      slots.push({ task: String(t.id), status: "running", type: task.output, model: task.model });
+      slots.push({ task: String(t.id), status: "running", type: task.output, model: task.model,
+        ...(task.then ? { then: { model: task.then.model, input: fill(task.then.input), output: task.then.output, routing: task.then.routing } } : {}) });
     } catch (e) {
       firstError ??= e;
       slots.push({ task: null, status: "failed", type: task.output, error: publicText(e instanceof Error ? e.message : String(e)).slice(0, 200) });

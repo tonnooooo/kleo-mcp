@@ -80,7 +80,11 @@ export interface GenerationRow {
   kind: "video" | "image" | "tool" | "film"; slots: string | null;
 }
 /** One picture of an image generation: its provider task and, once saved, its file and its upload id. */
-export interface Slot { task: string | null; status: "running" | "done" | "failed"; key?: string; upload?: string; error?: string; type?: "image" | "video" | "audio"; model?: string }
+export interface Slot {
+  task: string | null; status: "running" | "done" | "failed"; key?: string; upload?: string; error?: string; type?: "image" | "video" | "audio"; model?: string;
+  /** The task to start when this one finishes ("{{prev}}" in its input = this task's result link); see generate.ts. */
+  then?: { model: string; input: Record<string, unknown>; output: "image" | "video" | "audio"; routing?: Record<string, string> };
+}
 
 export const getLogin = (env: StudioEnv, provider: string, subject: string) =>
   env.DB.prepare("SELECT * FROM studio_logins WHERE provider = ? AND subject = ?").bind(provider, subject).first<LoginRow>();

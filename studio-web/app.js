@@ -197,6 +197,19 @@ async function uploadFile(f) {
   const r = DEMO ? demoUpload(local, isPic ? "image" : f.type.startsWith("video/") ? "video" : "audio") : await api("/api/uploads", { method: "POST", raw: body, headers });
   return { id: r.id, kind: r.kind || "image", duration: r.duration ?? null, local };
 }
+/** The first frame of a video file, as a JPEG at the video's own size (Character Swap redraws it). */
+async function firstFrame(file) {
+  const v = document.createElement("video");
+  v.muted = true; v.playsInline = true; v.preload = "auto"; v.src = URL.createObjectURL(file);
+  await new Promise((ok, no) => { v.onloadeddata = ok; v.onerror = () => no(new Error("Kleo couldn't read that video. Use an MP4 or MOV.")); });
+  await new Promise((ok) => { v.onseeked = ok; v.currentTime = 0.001; setTimeout(ok, 1500); });
+  const c = document.createElement("canvas"); c.width = v.videoWidth; c.height = v.videoHeight;
+  c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
+  const blob = await new Promise((r) => c.toBlob(r, "image/jpeg", 0.92));
+  URL.revokeObjectURL(v.src);
+  if (!blob) throw new Error("Kleo couldn't read the first frame of that video.");
+  return new File([blob], "first-frame.jpg", { type: "image/jpeg" });
+}
 async function shrink(file) {
   try {
     const bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
@@ -1390,10 +1403,15 @@ function toolBody(key, compact) {
     draw();
     try { const u = await uploadFile(file); Object.assign(st.files[f.key], { id: u.id, duration: u.duration }); st.inputs[f.key] = u.id; }
     catch (e) { delete st.files[f.key]; handleError(e); }
+    // An app with a hidden "frame" field (Character Swap) gets the video's first frame, taken here from the file.
+    if (f.kind === "video" && st.inputs[f.key] && t.fields.some((x) => x.key === "frame")) {
+      delete st.inputs.frame;
+      try { st.inputs.frame = (await uploadFile(await firstFrame(file))).id; } catch (e) { handleError(e); }
+    }
     draw();
   }
   function fieldEl(f) {
-    if (!visible(f)) return null;
+    if (!visible(f) || f.hidden) return null;
     if (f.kind === "text") {
       // Kleo's Enhance on every app prompt that describes something to make (not on words to be spoken as they are).
       const ek = f.key === "prompt" ? ({ music: "music", sfx: "sfx", "video-edit": "edit" })[key] || "video" : null;
@@ -1803,7 +1821,7 @@ const DEMO_TOOLS = [
   ["video-face-swap", "Video Face Swap", "Swap a face in a video", "face", "film", "#bf5af2", "video", true, null, [["video", "video", "Video", "MP4 or MOV, 3–15 seconds"], ["face", "image", "Face", "A clear, front-facing face"]], 7],
   ["talking-photo", "Talking Photo", "Make any portrait speak", "face", "mic", "#0a84ff", "video", true, "New", [["image", "image", "Portrait", "One face, looking at the camera"], ["script", "text", "What should they say?"], ["voice", "voice", "Voice"]], 2],
   ["lipsync", "Lipsync", "Make a video say new words", "face", "lips", "#ff9f0a", "video", true, null, [["video", "video", "Video", "MP4 or MOV with one face"], ["script", "text", "What should they say?"], ["voice", "voice", "Voice"]], 1],
-  ["character-swap", "Character Swap", "Put your character in any video", "video", "user", "#ff9f0a", "video", true, "New", [["video", "video", "Video", "MP4 or MOV, 3–10 seconds, at least 720p"], ["image", "image", "Character", "Full body, clear face"]], 4],
+  ["character-swap", "Character Swap", "Put your character in any video", "video", "user", "#ff9f0a", "video", true, "Pro", [["video", "video", "Video", "MP4 or MOV, 2–15 seconds, 30 fps or less"], ["image", "image", "Character", "Clear face, the clothes you want"]], 7],
   ["motion-control", "Motion Control", "Copy any dance or move", "video", "run", "#30d158", "video", false, null, [["image", "image", "Character", "Full body works best"], ["video", "video", "Moves", "A clip of the motion"]], 3],
   ["outfit-swap", "Outfit Swap", "Try any clothes on anyone", "image", "shirt", "#64d2ff", "image", false, null, [["person", "image", "Person"], ["garment", "image", "Clothes"]], 1],
   ["video-edit", "Edit Video", "Change anything in a clip", "video", "wand", "#5e5ce6", "video", false, null, [["video", "video", "Video", "MP4, up to 15 seconds"], ["prompt", "text", "What should change?"]], 1],
