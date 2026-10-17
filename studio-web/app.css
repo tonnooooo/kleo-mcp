@@ -836,8 +836,9 @@ a.row { color: var(--ink); }
 .art-music .art-cover { position: absolute; left: 50%; top: 14px; width: 92px; height: 92px; margin-left: -46px; border-radius: 14px; object-fit: cover; box-shadow: 0 10px 28px rgba(0, 0, 0, .45); }
 .film-banner .fb-art.fb-media { position: relative; overflow: hidden; width: 96px; height: 64px; border-radius: 14px; }
 .app-hero-big { align-items: stretch; }
-.app-hero-art { position: relative; width: 300px; max-width: 42vw; flex: none; border-radius: 20px; overflow: hidden; }
-.app-hero-art .art { height: 170px; position: relative; display: grid; place-items: center; color: #fff; overflow: hidden; border-radius: 20px; }
+.app-hero-art { position: relative; width: 460px; max-width: 46vw; flex: none; border-radius: 24px; overflow: hidden; box-shadow: var(--shadow-l); }
+/* The example fills the whole card (it was squeezed into the 64 px icon box of .app-hero .art). */
+.app-hero-art .art { width: 100%; height: auto; aspect-ratio: 16 / 10; position: relative; display: grid; place-items: center; color: #fff; overflow: hidden; border-radius: 24px; box-shadow: none; }
 @media (max-width: 640px) {
   .app-hero-big { flex-direction: column; }
   .app-hero-art { width: 100%; max-width: none; }
@@ -953,4 +954,29 @@ body::after { inset: -6% -18%; }
 .btn-destroy { background: #ff3b30; color: #fff; }
 .btn-destroy:hover { background: #ff5147; }
 .btn-destroy:disabled { opacity: .45; }
+/* App pages, Higgsfield-style (18 October 2026): a big example, a big title, how it works, the price. */
+.app-hero-big { gap: 28px; margin: 6px 0 26px; align-items: center; }
+.app-hero-tx { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; min-width: 0; }
+.app-hero-tx h1 { font-size: 40px; line-height: 1.05; letter-spacing: -.035em; }
+.app-hero-tx p { margin: 0; font-size: 18px; line-height: 1.45; }
+.app-hero-badge { font-size: 14px; font-weight: 700; padding: 4px 10px; border-radius: 999px; background: var(--amber-soft); color: #b07a10; }
+:root[data-theme="dark"] .app-hero-badge { color: var(--amber); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .app-hero-badge { color: var(--amber); } }
+.app-steps { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.app-steps li { display: inline-flex; align-items: center; gap: 8px; height: 38px; padding: 0 14px 0 6px; border-radius: 999px; background: var(--fill-2); font-size: 16px; font-weight: 600; }
+.app-steps li i { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: var(--elev); font-style: normal; font-size: 14px; font-weight: 700; box-shadow: var(--shadow); }
+.app-hero-price { display: inline-flex; align-items: center; gap: 6px; font-size: 16px; font-weight: 650; color: var(--ink-2); }
+/* Bigger upload boxes and labels on app pages. */
+.drop { min-height: 190px; }
+.drop .dl .ic { width: 52px; height: 52px; border-radius: 16px; }
+.drop .dl b { font-size: 17px; }
+.drop .dl small { font-size: 15px; }
+.field-h { font-size: 16px; }
+@media (max-width: 640px) {
+  .app-hero-big { gap: 16px; }
+  .app-hero-art { width: 100%; max-width: none; }
+  .app-hero-tx h1 { font-size: 32px; }
+  .app-hero-tx p { font-size: 17px; }
+  .drop { min-height: 160px; }
+}
 

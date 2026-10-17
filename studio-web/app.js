@@ -1322,6 +1322,7 @@ const APP_ART = {
   "talking-photo": () => h("div", { class: "art-stack" }, artImg(pic("speaker")), h("span", { class: "art-bubble" }, "Hi, I'm talking!"), waveBars()),
   "lipsync": () => h("div", { class: "art-stack" }, artImg(pic("face-b")), h("span", { class: "art-bubble" }, "New words, same face"), waveBars()),
   "character-swap": () => split(artImg(pic("swap2-a")), artImg(pic("swap2-b"))),
+  "photo-character-swap": () => split(artImg(pic("photoswap-a")), artImg(pic("photoswap-b"))),
   "motion-control": () => h("div", { class: "art-pair" }, artVideo(loop("lobby-run")), artVideo(loop("kitten-knight-jump")), h("span", { class: "art-arrow mid" }, icon("right", 16, 2.4))),
   "video-edit": () => split(artImg(still("koi-supra-night")), artImg(still("koi-supra-night"), "graded"), ["Before", "After"]),
   "video-upscale": () => split(artImg(still("dragon-rider-cat"), "soft"), artImg(still("dragon-rider-cat")), ["480p", "4K"]),
@@ -1360,7 +1361,12 @@ function appView(key) {
   setView("", h("div", { class: "page" },
     h("button", { class: "back", onclick: () => go("/apps") }, icon("right", 16, 2.2), "Apps"),
     h("div", { class: "app-hero app-hero-big" }, h("div", { class: "app-hero-art" }, appArt(t)),
-      h("div", {}, h("h1", {}, t.name), h("p", {}, t.blurb))),
+      h("div", { class: "app-hero-tx" },
+        t.badge ? h("span", { class: "app-hero-badge" }, t.badge) : null,
+        h("h1", {}, t.name), h("p", {}, t.blurb),
+        // How it works, read from the app's own fields: what to add, then Generate (the way Higgsfield's pages say it).
+        h("ol", { class: "app-steps" }, [...t.fields.filter((f) => !f.hidden && (f.required || ["image", "video", "audio"].includes(f.kind))).map((f) => f.label), t.output === "audio" ? "Create" : "Generate"].map((l, i) => h("li", {}, h("i", {}, i + 1), l))),
+        h("span", { class: "app-hero-price" }, tallowed(t.key) ? [bolt(15), `from ${t.from} credits`] : [icon("lock", 15), "Unlocks with any credit pack"]))),
     toolBody(key, false)));
 }
 /** The form of one app with its results beside it. */
@@ -1821,7 +1827,8 @@ const DEMO_TOOLS = [
   ["video-face-swap", "Video Face Swap", "Swap a face in a video", "face", "film", "#bf5af2", "video", true, null, [["video", "video", "Video", "MP4 or MOV, 3–15 seconds"], ["face", "image", "Face", "A clear, front-facing face"]], 7],
   ["talking-photo", "Talking Photo", "Make any portrait speak", "face", "mic", "#0a84ff", "video", true, "New", [["image", "image", "Portrait", "One face, looking at the camera"], ["script", "text", "What should they say?"], ["voice", "voice", "Voice"]], 2],
   ["lipsync", "Lipsync", "Make a video say new words", "face", "lips", "#ff9f0a", "video", true, null, [["video", "video", "Video", "MP4 or MOV with one face"], ["script", "text", "What should they say?"], ["voice", "voice", "Voice"]], 1],
-  ["character-swap", "Character Swap", "Put your character in any video", "video", "user", "#ff9f0a", "video", true, "Pro", [["video", "video", "Video", "MP4 or MOV, 2–15 seconds, 30 fps or less"], ["image", "image", "Character", "Clear face, the clothes you want"]], 7],
+  ["character-swap", "Character Swap", "Put your character in any video", "video", "user", "#ff9f0a", "video", true, "Pro", [["video", "video", "Video", "MP4 or MOV, 3–10 seconds, 720p or more"], ["image", "image", "Character", "Clear face, the clothes you want"]], 4],
+  ["photo-character-swap", "Photo Character Swap", "Put your character in any photo", "image", "user", "#ff6b00", "image", true, "New", [["photo", "image", "Photo", "The picture to change"], ["image", "image", "Character", "Clear face, the clothes you want"]], 1],
   ["motion-control", "Motion Control", "Copy any dance or move", "video", "run", "#30d158", "video", false, null, [["image", "image", "Character", "Full body works best"], ["video", "video", "Moves", "A clip of the motion"]], 3],
   ["outfit-swap", "Outfit Swap", "Try any clothes on anyone", "image", "shirt", "#64d2ff", "image", false, null, [["person", "image", "Person"], ["garment", "image", "Clothes"]], 1],
   ["video-edit", "Edit Video", "Change anything in a clip", "video", "wand", "#5e5ce6", "video", false, null, [["video", "video", "Video", "MP4, up to 15 seconds"], ["prompt", "text", "What should change?"]], 1],

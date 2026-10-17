@@ -1062,7 +1062,7 @@ test("the owner's admin account: every model at any resolution, no budget, and i
   } finally { q.restore(); }
 });
 
-test("Character Swap runs in two steps: the redrawn first frame, then the video carried from it", async () => {
+test("Character Swap runs in two steps: the redrawn first frame, then the video edited from it", async () => {
   const env = newEnv();
   const { cookie } = await paidAccount(env);
   const v = await upload(env, cookie, mp4Bytes(5, 1080, 1920));
@@ -1086,8 +1086,8 @@ test("Character Swap runs in two steps: the redrawn first frame, then the video 
     const mid = await call(env, `/api/generations/${r.json.generation.id}`, { cookie });
     assert.equal(mid.json.generation.status, "running", "the frame is ready, the video is on its way");
     assert.equal(subs().length, 2);
-    assert.equal(subs()[1].body.model, "aleph2/video-to-video");
-    assert.deepEqual(subs()[1].body.input.keyframes, [{ uri: "https://cdn.example/frame.jpeg", seconds: 0 }]);
+    assert.equal(subs()[1].body.model, "kling-o1/omni-video");
+    assert.deepEqual(subs()[1].body.input.contents.filter((c) => c.type === "refer_image")[0].url, "https://cdn.example/frame.jpeg", "the redrawn frame is Kling's reference");
     old(env);
     const done = await call(env, `/api/generations/${r.json.generation.id}`, { cookie });
     assert.equal(done.json.generation.status, "done", done.text);
