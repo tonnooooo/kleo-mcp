@@ -1061,3 +1061,37 @@ test("the owner's admin account: every model at any resolution, no budget, and i
     assert.equal(r.status, 200, `the admin's ~2.40 $ is not counted in the 1 $ day: ${r.text}`);
   } finally { q.restore(); }
 });
+
+test("Character Swap runs in two steps: the redrawn first frame, then the video carried from it", async () => {
+  const env = newEnv();
+  const { cookie } = await paidAccount(env);
+  const v = await upload(env, cookie, mp4Bytes(5, 1080, 1920));
+  const c = await upload(env, cookie, jpegBytes());
+  const f = await upload(env, cookie, jpegBytes());
+  let n = 0;
+  const p = fakeProvider((u) => {
+    if (u.endsWith("/v1/task/submit")) return ok({ id: `task_s${++n}` });
+    if (/task_s1$/.test(u)) return ok({ status: "completed", outputs: ["https://cdn.example/frame.jpeg"] });
+    if (/task_s2$/.test(u)) return ok({ status: "completed", outputs: ["https://cdn.example/swap.mp4"] });
+    if (u === "https://cdn.example/swap.mp4") return new Response(mp4Bytes(5, 1080, 1920), { status: 200 });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const r = await call(env, "/api/tools/run", { method: "POST", cookie, body: { tool: "character-swap", consent: true, inputs: { video: v.id, image: c.id, frame: f.id } } });
+    assert.equal(r.status, 200, r.text);
+    const subs = () => p.sent.filter((s) => s.url.endsWith("/v1/task/submit"));
+    assert.equal(subs().length, 1, "only the first step goes out at once");
+    assert.equal(subs()[0].body.model, "flux-2-pro");
+    old(env);
+    const mid = await call(env, `/api/generations/${r.json.generation.id}`, { cookie });
+    assert.equal(mid.json.generation.status, "running", "the frame is ready, the video is on its way");
+    assert.equal(subs().length, 2);
+    assert.equal(subs()[1].body.model, "aleph2/video-to-video");
+    assert.deepEqual(subs()[1].body.input.keyframes, [{ uri: "https://cdn.example/frame.jpeg", seconds: 0 }]);
+    old(env);
+    const done = await call(env, `/api/generations/${r.json.generation.id}`, { cookie });
+    assert.equal(done.json.generation.status, "done", done.text);
+    assert.equal(done.json.generation.outputs[0].type, "video");
+  } finally { p.restore(); }
+});
+
