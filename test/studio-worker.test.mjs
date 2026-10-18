@@ -335,7 +335,7 @@ test("pictures: a set of four, two fail, the share they stood for comes back; ea
   const env = newEnv();
   const cookie = await signUp(env);
   const me = (await call(env, "/api/me", { cookie })).json;
-  assert.deepEqual(me.allowedImages, ["nano-banana-2", "seedream-5", "flux-2-pro"]);
+  assert.deepEqual(me.allowedImages, ["nano-banana-2.1", "nano-banana-2", "seedream-5", "flux-2-pro"]);
   const locked = await call(env, "/api/generate", { method: "POST", cookie, body: { kind: "image", prompt: "a fox", settings: { model: "nano-banana-pro" } } });
   assert.equal(locked.json.code, "locked");
   env.DB.db.exec(`INSERT INTO payments (session_id, user_id, credits, amount_cent, currency, status, raw_ref) VALUES ('manual_i', '${me.id}', 0, 0, 'eur', 'paid', 'tester')`);
