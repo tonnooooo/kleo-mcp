@@ -902,6 +902,9 @@ async function poll() {
       const r = await api(`/api/generations/${id}`);
       const before = S.gens.get(id);
       S.gens.set(id, r.generation);
+      // The page lists (Video, Image, an app, Library) hold the generation as it was when sent: swap in the fresh one,
+      // or the next redraw (after another Generate) shows a finished picture as still in progress.
+      for (const list of Object.values(S.feeds)) if (Array.isArray(list)) { const i = list.findIndex((x) => x.id === id); if (i >= 0) list[i] = r.generation; }
       if (r.generation.status !== "running") {
         watching.delete(id);
         setCredits(r.credits);
