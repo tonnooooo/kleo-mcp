@@ -1092,3 +1092,22 @@ body::after { inset: -6% -18%; }
 .am-theme { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 12px; font-size: 16px; }
 .am-theme .seg2 { width: 190px; }
 
+/* ── Desktop fills the screen (18 October 2026, the owner: "riempi tutta la scheda, come Higgsfield") ───────────── */
+@media (min-width: 1100px) {
+  .page.wide { max-width: none; padding: 18px 28px 40px; }
+  .explore-view { max-width: none; padding-left: 28px; padding-right: 28px; }
+  .page.wide .gen-layout { grid-template-columns: 460px minmax(0, 1fr); gap: 28px; }
+  .page.wide .panel { top: 12px; max-height: calc(100dvh - var(--nav-h) - 24px); overflow-y: auto; scrollbar-width: thin; padding: 18px; }
+  .page.wide .prompt-box textarea { min-height: 190px; max-height: 420px; font-size: 17px; }
+  .page.wide .feed { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+  .page.wide .empty-feed { padding: 34px 28px; }
+  .page.wide .empty-feed .sc-grid-wide { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+  .page.wide .empty-feed .sc-grid-tall { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  .page.wide .app-grid { grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 16px; }
+  .sc-grid-wide { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+  .sc-grid-tall, .sc-grid-square { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+}
+@media (min-width: 1600px) {
+  .page.wide .gen-layout { grid-template-columns: 520px minmax(0, 1fr); }
+  .page.wide .prompt-box textarea { min-height: 230px; }
+}

@@ -1185,7 +1185,7 @@ function generatorView(kind) {
     h("div", { class: "field" }, h("div", { class: "field-h" }, "Prompt"),
       h("div", { class: "prompt-box" }, ta, h("div", { class: "pb-tools" }, enhance, h("button", { class: "mini", onclick: () => { page.prompt = ""; ta.value = ""; refreshCta(); ta.focus(); } }, icon("x", 13), "Clear")))),
     presetBox, settingsBox, ctaBox);
-  setView("", h("div", { class: "page" },
+  setView("", h("div", { class: "page wide" },
     h("div", { class: "page-h" }, h("div", {}, h("h1", {}, isVid ? "Create video" : "Create image"), h("p", {}, isVid ? "Seedance 2.5, Seedance 2.0 and Google Veo 3.1, with references and camera presets." : "Nano Banana Pro, Nano Banana 2, Seedream 5.0 and FLUX.2 Pro."))),
     h("div", { class: "gen-layout" }, panel, feed)));
   draw(); drawFeed();
@@ -1353,7 +1353,7 @@ function audioView() {
   const sub = store.get("audioTab", "voice");
   const tabs = h("div", { class: "seg2", style: { maxWidth: "460px", marginBottom: "16px" } },
     [["voice", "Voiceover"], ["music", "Music"], ["sfx", "Sound FX"]].map(([k, l]) => h("button", { class: sub === k ? "on" : "", onclick: () => { store.set("audioTab", k); audioView(); } }, l)));
-  setView("", h("div", { class: "page" },
+  setView("", h("div", { class: "page wide" },
     h("div", { class: "page-h" }, h("div", {}, h("h1", {}, "Create audio"), h("p", {}, "Natural voices, songs and sound effects. Use them in your videos, talking photos and lipsync."))),
     tabs, toolBody(sub, true)));
 }
@@ -1409,7 +1409,7 @@ function appArt(t) {
 
 function appsView() {
   const tools = S.config.tools || [];
-  setView("", h("div", { class: "page" },
+  setView("", h("div", { class: "page wide" },
     h("div", { class: "page-h" }, h("div", {}, h("h1", {}, "Apps"), h("p", {}, "One-tap tools. Pick one, add your photo or clip, done."))),
     h("button", { class: "film-banner", onclick: startFilm },
       h("div", { class: "fb-art fb-media" }, artVideo(loop("kleo-x-claude-ad"))),
@@ -1428,7 +1428,7 @@ function appsView() {
 function appView(key) {
   const t = tool(key);
   if (!t) return go("/apps");
-  setView("", h("div", { class: "page" },
+  setView("", h("div", { class: "page wide" },
     h("button", { class: "back", onclick: () => go("/apps") }, icon("right", 16, 2.2), "Apps"),
     h("div", { class: "app-hero app-hero-big" }, h("div", { class: "app-hero-art" }, appArt(t)),
       h("div", { class: "app-hero-tx" },
@@ -1562,7 +1562,7 @@ function libraryView() {
   const body = h("div", {}, h("div", { class: "hero" }, h("span", { class: "spin dark", style: { margin: "0 auto" } })));
   const filters = h("div", { class: "filters" }, [["all", "All"], ["video", "Videos"], ["image", "Pictures"], ["audio", "Audio"], ["apps", "Apps"]].map(([k, l]) =>
     h("button", { class: f === k ? "on" : "", onclick: () => { store.set("libFilter", k); libraryView(); } }, l)));
-  setView("", h("div", { class: "page" }, h("div", { class: "page-h" }, h("div", {}, h("h1", {}, "Library"), h("p", {}, "Everything you made, in one place."))), filters, body));
+  setView("", h("div", { class: "page wide" }, h("div", { class: "page-h" }, h("div", {}, h("h1", {}, "Library"), h("p", {}, "Everything you made, in one place."))), filters, body));
   const drawIt = () => {
     const all = (S.feeds.library || []).filter((g) => g.status !== "failed");
     const list = all.filter((g) => f === "all" || (f === "video" && (g.kind === "video" || g.kind === "film")) || (f === "image" && g.kind === "image") || (f === "audio" && g.output === "audio") || (f === "apps" && g.kind === "tool" && g.output !== "audio"));
