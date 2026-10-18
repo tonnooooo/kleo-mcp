@@ -1190,7 +1190,7 @@ function generatorView(kind) {
       h("div", { class: "prompt-box" }, ta, h("div", { class: "pb-tools" }, enhance, h("button", { class: "mini", onclick: () => { page.prompt = ""; ta.value = ""; refreshCta(); ta.focus(); } }, icon("x", 13), "Clear")))),
     presetBox, settingsBox, ctaBox);
   setView("", h("div", { class: "page wide" },
-    h("div", { class: "page-h" }, h("div", {}, h("h1", {}, isVid ? "Create video" : "Create image"), h("p", {}, isVid ? "Seedance 2.5, Seedance 2.0 and Google Veo 3.1, with references and camera presets." : "Nano Banana Pro, Nano Banana 2, Seedream 5.0 and FLUX.2 Pro."))),
+    h("div", { class: "page-h" }, h("div", {}, h("h1", {}, isVid ? "Create video" : "Create image"), h("p", {}, isVid ? "Seedance 2.5, Seedance 2.0 and Google Veo 3.1, with references and camera presets." : "Nano Banana Pro, Nano Banana 2.1, Nano Banana 2, Seedream 5.0 and FLUX.2 Pro."))),
     h("div", { class: "gen-layout" }, panel, feed)));
   draw(); drawFeed();
   loadFeed(kind).then(drawFeed);
