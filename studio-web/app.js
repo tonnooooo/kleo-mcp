@@ -319,15 +319,22 @@ addEventListener("focus", async () => {
 });
 
 // ── auth screens ─────────────────────────────────────────────────────────────────────────────────────────────────
+const AUTH_WALL = [
+  ["dragon-rider-cat:w", "raccoons-pizza-run:t", "koi-supra-night:w", "corgi-knight-cathedral:t", "venice-high-water-kleo:w"],
+  ["mechs-in-snow:t", "tether-film:w", "kitten-knight-black-dragon:w", "octopus-facts:t", "apex-film:w"],
+  ["signal-delay:w", "street-reel:t", "made-in-kleo-ai-queen:w", "venice-whale:t", "puppy-knight:w"],
+  ["kitten-knight-living-room:t", "diver-bowling:w", "the-wake-trailer:w", "corgi-knight-arrival:t", "knights-and-goblins:w"],
+];
 function authFrame(title, sub, ...content) {
-  // The left half plays the team's films one after another (desktop only), the way Higgsfield's sign-in shows its work.
-  const clips = ["kleo-x-claude-ad", "tether-film", "koi-supra-night", "puppy-knight", "apex-film"];
-  const v = h("video", { muted: true, autoplay: true, playsinline: true, "aria-hidden": "true", poster: `${GALLERY}/${clips[0]}.jpg`, src: `${GALLERY}/${clips[0]}-p.mp4` });
-  v.muted = true;
-  let n = 0;
-  v.addEventListener("ended", () => { n = (n + 1) % clips.length; v.poster = `${GALLERY}/${clips[n]}.jpg`; v.src = `${GALLERY}/${clips[n]}-p.mp4`; v.play().catch(() => {}); });
+  // The left half (desktop only) is a slowly drifting wall of the team's films, each in its own small rounded tile:
+  // small enough that the preview files stay sharp (the owner, 18 Oct: one big video looked grainy and cut).
+  const wall = h("div", { class: "auth-wall", "aria-hidden": "true" }, AUTH_WALL.map((col, n) =>
+    h("div", { class: `aw-col aw-${n}` }, h("div", { class: "aw-track" }, [...col, ...col].map((x) => {
+      const [slug, f] = x.split(":");
+      return h("div", { class: `aw-tile ${f === "t" ? "tall" : "wide"}` }, loopVideo(`${GALLERY}/${slug}-p.mp4`, `${GALLERY}/${slug}.jpg`));
+    })))));
   fill($("#app"), h("div", { class: "auth" },
-    h("div", { class: "auth-media" }, v, h("div", { class: "auth-media-tx" }, h("img", { src: "/kleo-mark.svg", alt: "" }),
+    h("div", { class: "auth-media" }, wall, h("div", { class: "auth-media-tx" }, h("img", { src: "/kleo-mark.svg", alt: "" }),
       h("b", {}, "Every frame you see here was made with Kleo."), h("span", {}, "Seedance 2.5, Veo 3.1, FLUX.2 and whole Kleo films, in one place."))),
     h("div", { class: "auth-side" }, h("div", { class: "auth-card" },
       h("div", { class: "logo-orb" }, h("img", { src: "/kleo-mark.svg", alt: "Kleo" })), h("h1", {}, title), h("p", { class: "sub" }, sub), ...content))));
@@ -1931,7 +1938,7 @@ async function demoApi(path, opts) {
   await new Promise((r) => setTimeout(r, path === "/api/chat" ? 1100 : 150));
   const method = opts.method || "GET", b = opts.body || {};
   const now = () => new Date().toISOString();
-  if (path === "/api/config") return { google: true, microsoft: true, social: ["google", "apple", "microsoft"], emailReset: true, defaultModel: "seedance-2.5", models: demoCatalog(), defaultImageModel: "nano-banana-2", imageModels: demoImageCatalog(), freeCredits: 5, presets: DEMO_PRESETS, tools: DEMO_TOOLS };
+  if (path === "/api/config") return { google: true, microsoft: true, social: ["google"], emailReset: true, defaultModel: "seedance-2.5", models: demoCatalog(), defaultImageModel: "nano-banana-2", imageModels: demoImageCatalog(), freeCredits: 5, presets: DEMO_PRESETS, tools: DEMO_TOOLS };
   if (path === "/api/me" && DEMO_GUEST) throw new ApiError("Sign in first.", 401, "signin");
   if (path === "/api/me" && DEMO_FREE) return { id: "u_demo", email: "you@example.com", name: "Demo", since: "2026-10-01T09:00:00Z", credits: 5, paid: false, allowed: ["seedance-2.0-fast"], freeResolutions: ["480p"], allowedImages: ["nano-banana-2"], allowedTools: [], methods: ["password"], mcpUrl: "https://mcp.kleooai.com/mcp", packs: [{ label: "5 EUR", credits: 10, url: "https://kleooai.com/pricing/" }, { label: "15 EUR", credits: 35, url: "https://kleooai.com/pricing/" }, { label: "40 EUR", credits: 100, url: "https://kleooai.com/pricing/" }] };
   if (path === "/api/me") return { id: "u_demo", email: "you@example.com", name: "Demo", since: "2026-10-01T09:00:00Z", credits: demoDb.credits, paid: true, allowed: demoCatalog().map((m) => m.key), allowedImages: demoImageCatalog().map((m) => m.key), allowedTools: DEMO_TOOLS.map((t) => t.key), methods: ["password", "google"], mcpUrl: "https://mcp.kleooai.com/mcp", packs: [{ label: "5 EUR", credits: 10, url: "https://kleooai.com/pricing/" }, { label: "15 EUR", credits: 35, url: "https://kleooai.com/pricing/" }, { label: "40 EUR", credits: 100, url: "https://kleooai.com/pricing/" }] };

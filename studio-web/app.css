@@ -1047,12 +1047,22 @@ body::after { inset: -6% -18%; }
 }
 /* ── Sign-in: films on the left, the card on the right ─────────────────────────────────────────────────────────── */
 .auth { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(420px, 1fr); padding: 0; place-items: stretch; }
-.auth-media { position: relative; overflow: hidden; background: #000; }
-.auth-media video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-.auth-media::after { content: ""; position: absolute; inset: 0; background: linear-gradient(to top, rgba(0, 0, 0, .8), transparent 55%); }
-.auth-media-tx { position: absolute; left: 36px; right: 36px; bottom: 36px; z-index: 1; color: #fff; display: flex; flex-direction: column; gap: 8px; }
+.auth-media { position: relative; overflow: hidden; background: #060606; }
+.auth-media::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(to bottom, rgba(6, 6, 6, .85), transparent 16%, transparent 52%, rgba(6, 6, 6, .96) 88%); }
+.auth-wall { position: absolute; inset: -14% -10%; display: grid; grid-template-columns: repeat(4, 210px); justify-content: center; gap: 16px; transform: rotate(-6deg); }
+.aw-track { animation: aw-drift 90s linear infinite; will-change: transform; }
+.aw-1 .aw-track { animation-direction: reverse; animation-duration: 110s; }
+.aw-2 .aw-track { animation-duration: 100s; }
+.aw-3 .aw-track { animation-direction: reverse; animation-duration: 95s; }
+@keyframes aw-drift { to { transform: translateY(-50%); } }
+.aw-tile { margin-bottom: 16px; border-radius: 20px; overflow: hidden; background: #161616; border: 1px solid rgba(255, 255, 255, .08); box-shadow: 0 14px 34px rgba(0, 0, 0, .55); }
+.aw-tile.tall { aspect-ratio: 9 / 16; }
+.aw-tile.wide { aspect-ratio: 16 / 9; }
+.aw-tile video { width: 100%; height: 100%; object-fit: cover; display: block; }
+@media (prefers-reduced-motion: reduce) { .aw-track { animation: none; } }
+.auth-media-tx { position: absolute; left: 40px; right: 40px; bottom: 36px; z-index: 2; color: #fff; display: flex; flex-direction: column; gap: 8px; }
 .auth-media-tx img { width: 44px; height: 44px; border-radius: 12px; }
-.auth-media-tx b { font-size: 28px; line-height: 1.15; letter-spacing: -.02em; }
+.auth-media-tx b { font-size: 26px; line-height: 1.15; letter-spacing: -.02em; }
 .auth-media-tx span { font-size: 17px; opacity: .85; }
 .auth-side { display: grid; place-items: center; padding: 40px 28px; overflow-y: auto; }
 @media (min-width: 901px) { .auth { height: 100dvh; overflow: hidden; } }
