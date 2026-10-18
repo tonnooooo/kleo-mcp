@@ -5,6 +5,7 @@
 
 const DEMO = new URLSearchParams(location.search).has("demo");
 const DEMO_FREE = new URLSearchParams(location.search).get("demo") === "free"; // ?demo=free: an account that never paid
+const DEMO_GUEST = new URLSearchParams(location.search).get("demo") === "guest"; // ?demo=guest: a visitor, not signed in
 const IS_TOUCH = matchMedia("(hover: none)").matches;
 
 // ── tiny DOM helpers ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -96,7 +97,8 @@ function bolt(size = 14) {
 }
 const googleLogo = () => h("span", { html: '<svg width="20" height="20" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34 6.1 29.3 4 24 4 13 4 4 13 4 24s9 20 20 20 20-9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>' });
 const microsoftLogo = () => h("span", { html: '<svg width="19" height="19" viewBox="0 0 23 23" aria-hidden="true"><path fill="#f25022" d="M1 1h10v10H1z"/><path fill="#7fba00" d="M12 1h10v10H12z"/><path fill="#00a4ef" d="M1 12h10v10H1z"/><path fill="#ffb900" d="M12 12h10v10H12z"/></svg>' });
-const SOCIAL = { google: { label: "Google", logo: googleLogo }, microsoft: { label: "Microsoft", logo: microsoftLogo } };
+const appleLogo = () => h("span", { html: '<svg width="18" height="20" viewBox="0 0 814 1000" aria-hidden="true"><path fill="currentColor" d="M788 341c-6 4-108 61-108 189 0 148 130 200 134 201-1 3-21 72-69 142-43 62-88 124-156 124s-86-40-165-40c-77 0-104 41-167 41s-106-58-156-129C43 785 0 651 0 523c0-205 133-314 265-314 70 0 128 46 172 46 42 0 107-49 187-49 31 0 140 3 212 106zM540 150c31-37 54-89 54-140 0-7-1-14-2-20-51 2-112 34-149 77-28 32-55 85-55 137 0 8 1 16 2 18 3 1 9 1 14 1 46 0 103-31 136-73z"/></svg>' });
+const SOCIAL = { google: { label: "Google", logo: googleLogo }, apple: { label: "Apple", logo: appleLogo }, microsoft: { label: "Microsoft", logo: microsoftLogo } };
 const socialList = () => (S.config?.social || (S.config?.google ? ["google"] : [])).filter((k) => SOCIAL[k]);
 
 const store = {
@@ -318,8 +320,17 @@ addEventListener("focus", async () => {
 
 // ── auth screens ─────────────────────────────────────────────────────────────────────────────────────────────────
 function authFrame(title, sub, ...content) {
-  fill($("#app"), h("div", { class: "auth" }, h("div", { class: "auth-card" },
-    h("div", { class: "logo-orb" }, h("img", { src: "/kleo-mark.svg", alt: "Kleo" })), h("h1", {}, title), h("p", { class: "sub" }, sub), ...content)));
+  // The left half plays the team's films one after another (desktop only), the way Higgsfield's sign-in shows its work.
+  const clips = ["kleo-x-claude-ad", "tether-film", "koi-supra-night", "puppy-knight", "apex-film"];
+  const v = h("video", { muted: true, autoplay: true, playsinline: true, "aria-hidden": "true", poster: `${GALLERY}/${clips[0]}.jpg`, src: `${GALLERY}/${clips[0]}-p.mp4` });
+  v.muted = true;
+  let n = 0;
+  v.addEventListener("ended", () => { n = (n + 1) % clips.length; v.poster = `${GALLERY}/${clips[n]}.jpg`; v.src = `${GALLERY}/${clips[n]}-p.mp4`; v.play().catch(() => {}); });
+  fill($("#app"), h("div", { class: "auth" },
+    h("div", { class: "auth-media" }, v, h("div", { class: "auth-media-tx" }, h("img", { src: "/kleo-mark.svg", alt: "" }),
+      h("b", {}, "Every frame you see here was made with Kleo."), h("span", {}, "Seedance 2.5, Veo 3.1, FLUX.2 and whole Kleo films, in one place."))),
+    h("div", { class: "auth-side" }, h("div", { class: "auth-card" },
+      h("div", { class: "logo-orb" }, h("img", { src: "/kleo-mark.svg", alt: "Kleo" })), h("h1", {}, title), h("p", { class: "sub" }, sub), ...content))));
 }
 function busyButton(btn) { const old = btn.textContent; btn.disabled = true; fill(btn, spinner(18)); return () => { btn.disabled = false; btn.textContent = old; }; }
 // Cloudflare Turnstile on sign-up (only when the server has a site key): the bot check behind the free credits.
@@ -383,7 +394,7 @@ function renderAuth(mode = "signup", fromApp = false) {
   } }, "I have a Kleo key");
   authFrame(mode === "signup" ? "Create with Kleo" : "Welcome back", "Videos, pictures, voices and films — just by chatting.",
     mode === "signup" ? h("div", { class: "gift" }, bolt(15), `${S.config?.freeCredits ?? 5} free credits to start`) : null,
-    socialList().length ? [h("div", { class: "socials" }, socialList().map((k) => h("a", { class: "btn google", href: `/auth/${k}` }, SOCIAL[k].logo(), `Continue with ${SOCIAL[k].label}`))), googleOnly ? null : h("div", { class: "or" }, "or use e-mail")] : null,
+    socialList().length ? [h("div", { class: "socials" }, socialList().map((k) => h("a", { class: `btn social social-${k}`, href: `/auth/${k}` }, SOCIAL[k].logo(), `Continue with ${SOCIAL[k].label}`))), googleOnly ? null : h("div", { class: "or" }, "or use e-mail")] : null,
     form,
     h("div", { class: "auth-switch" },
       mode === "signup" ? ["Already have an account? ", h("button", { type: "button", onclick: () => renderAuth("signin") }, "Sign in")]
@@ -453,16 +464,17 @@ function setView(cls, ...kids) { const v = viewEl(); v.className = `view ${cls |
 
 // ── Create: the chat with Kleo ───────────────────────────────────────────────────────────────────────────────────
 function chatShell() {
-  if ($("#scroll") && viewEl().classList.contains("chat-view")) return;
+  if ($("#scroll") && viewEl().classList.contains("chat-view") && viewEl().classList.contains("no-side") === !S.me) return;
   const side = h("aside", { class: "chat-side", id: "chat-side" },
     h("button", { class: "nav-item", onclick: () => { closeChatSide(); go("/"); } }, icon("compose", 19), "New chat"),
     h("div", { class: "side-label" }, "Chats"),
     h("div", { class: "chats", id: "chats" }));
   const main = h("div", { class: "chat-main" },
-    h("div", { class: "chat-top" }, h("button", { class: "mini", onclick: openChatSide }, icon("side", 15), "Chats")),
+    S.me ? h("div", { class: "chat-top" }, h("button", { class: "mini", onclick: openChatSide }, icon("side", 15), "Chats")) : null,
     h("div", { class: "scroll", id: "scroll" }, h("div", { class: "col", id: "col" })),
     h("div", { class: "dock", id: "dock" }, composer()));
-  setView("chat-view", side, main);
+  // Visitors have no chats: the page gets the whole width instead of an empty list.
+  setView("chat-view" + (S.me ? "" : " no-side"), S.me ? side : null, main);
   renderChats();
 }
 function openChatSide() { $("#chat-side")?.classList.add("open"); const s = h("div", { class: "side-scrim", onclick: closeChatSide }); viewEl().append(s); S.sideScrim = s; }
@@ -524,6 +536,12 @@ const IDEAS = {
 };
 function renderMessages(jump = false) {
   const col = $("#col"); if (!col) return;
+  col.classList.toggle("wide", !S.messages.length && S.mode !== "image");
+  if (!S.messages.length && S.mode !== "image") {
+    fill(col, homeView());
+    if (S.prefill) { const t = $("#prompt"); if (t) { t.value = S.prefill; autosize(t); updateSend(); t.focus(); } S.prefill = ""; }
+    return;
+  }
   if (!S.messages.length) {
     const img = S.mode === "image";
     fill(col, h("div", { class: "hero" },
@@ -540,6 +558,45 @@ function renderMessages(jump = false) {
   }
   fill(col, S.messages.map(messageEl));
   if (jump) requestAnimationFrame(() => { const s = $("#scroll"); if (!s) return; s.style.scrollBehavior = "auto"; s.scrollTop = s.scrollHeight; s.style.scrollBehavior = ""; });
+}
+// ── Home (18 October 2026, the owner: "fai tipo Higgsfield"): big video banners of what Kleo does best, the tools as
+// tiles, a start-free card for visitors, ideas one tap away, and the team's films. The chat box stays docked below.
+const MEDIA_APP = "https://media.kleooai.com/app";
+const GALLERY = "https://media.kleooai.com/gallery";
+const HOME_BANNERS = [
+  { t: "Character Swap", s: "Put your character in any video", badge: "Pro", v: `${MEDIA_APP}/home-swap.mp4`, p: `${MEDIA_APP}/home-swap.jpg`, go: () => go("/apps/character-swap") },
+  { t: "Kleo Film", s: "A whole narrated film from one message", badge: "New", v: `${GALLERY}/tether-film-p.mp4`, p: `${GALLERY}/tether-film.jpg`, go: () => startFilm() },
+  { t: "Seedance 2.5", s: "Cinematic video from one sentence", badge: "Top", v: `${GALLERY}/koi-supra-night-p.mp4`, p: `${GALLERY}/koi-supra-night.jpg`, go: () => go("/video") },
+];
+const HOME_TILES = [
+  { ic: "film", c: "#ff9f0a", t: "Video", s: "Seedance 2.5 and Veo 3.1", go: () => go("/video") },
+  { ic: "photo", c: "#0a84ff", t: "Image", s: "FLUX.2 and Seedream", go: () => go("/image") },
+  { ic: "user", c: "#ff6b00", t: "Photo Character Swap", s: "Your character in any photo", badge: "New", go: () => go("/apps/photo-character-swap") },
+  { ic: "mic", c: "#bf5af2", t: "Talking Photo", s: "Make any portrait speak", go: () => go("/apps/talking-photo") },
+  { ic: "run", c: "#30d158", t: "Motion Control", s: "Copy any dance or move", go: () => go("/apps/motion-control") },
+  { ic: "plug", c: "#64d2ff", t: "Kleo in Claude & ChatGPT", s: "Make videos inside your AI chat", href: "https://kleooai.com/mcp/" },
+];
+function homeView() {
+  const banner = (b) => h("button", { class: "hb", onclick: b.go, "aria-label": `${b.t}: ${b.s}` },
+    h("div", { class: "hb-media" }, loopVideo(b.v, b.p), b.badge ? h("span", { class: "hb-badge" }, b.badge) : null),
+    h("b", {}, b.t), h("span", {}, b.s));
+  const tile = (x) => h(x.href ? "a" : "button", { class: "ht", ...(x.href ? { href: x.href, target: "_blank", rel: "noopener" } : { onclick: x.go }) },
+    h("span", { class: "ht-ic", style: { background: x.c } }, icon(x.ic, 20, 2)),
+    h("b", {}, x.t, x.badge ? h("span", { class: "badge" }, x.badge) : null), h("span", {}, x.s));
+  const promo = S.me ? null : h("div", { class: "home-promo" },
+    loopVideo(`${GALLERY}/apex-film-p.mp4`, `${GALLERY}/apex-film.jpg`),
+    h("div", { class: "home-promo-tx" },
+      h("h2", {}, "Start free", h("br"), h("em", {}, "5 credits on us")),
+      h("ul", {}, ["Videos with Seedance 2.5 and Veo 3.1", "Pictures, voices and music", "Whole films from one message"].map((x) => h("li", {}, icon("check", 16, 2.6), x))),
+      h("button", { class: "btn btn-cta", onclick: () => requireAccount("signup") }, "Create my free account")));
+  // A soft glow of the team's films behind the page (a blurred still: no video decoding for a background).
+  return h("div", { class: "home" },
+    h("div", { class: "home-glow", "aria-hidden": "true" }, h("i", { style: { backgroundImage: `url(${GALLERY}/koi-supra-night.jpg)` } }), h("i", { style: { backgroundImage: `url(${GALLERY}/tether-film.jpg)` } })),
+    h("div", { class: "home-banners" }, HOME_BANNERS.map(banner)),
+    h("div", { class: "home-row" + (promo ? "" : " solo") }, promo, h("div", { class: "home-tiles" }, HOME_TILES.map(tile))),
+    h("div", { class: "home-ideas" }, h("h2", {}, "What do you want to create?"),
+      h("div", { class: "home-chips" }, IDEAS.video.map((i) => h("button", { class: "chip-idea", onclick: () => useIdea(i) }, h("span", { class: "em", style: { background: i.c } }, icon(i.ic, 15, 2)), i.t)))),
+    showcaseStrip("Made by the Kleo team"));
 }
 function useIdea(i) {
   if (i.photo) return pickFiles();
@@ -1608,7 +1665,30 @@ function openBuy(note) { if (!S.me) return requireAccount(); sheet("Get credits"
 // ── Account: a whole page, like Higgsfield's settings (14 October 2026) ──────────────────────────────────────────
 // Profile, credits and packs, what the credits went on and what was bought, sign-in and security, Kleo in your AI
 // assistant, appearance, help, and the account's end. Plain words, iPhone-size type, every button does what it says.
-function openAccount() { if (!S.me) return requireAccount("signin"); closeLayer(); go("/account"); }
+function openAccount(e) {
+  if (!S.me) return requireAccount("signin");
+  const anchor = e?.currentTarget;
+  if (!anchor || innerWidth <= 760) { closeLayer(); go("/account"); return; }
+  closeLayer();
+  const r = anchor.getBoundingClientRect();
+  const item = (ic, label, fn, cls = "") => h("button", { class: "am-item " + cls, onclick: () => { closeLayer(); fn(); } }, icon(ic, 18), h("span", {}, label));
+  const theme = store.get("theme", "system");
+  const menu = h("div", { class: "account-menu", role: "menu", style: { top: `${r.bottom + 10}px`, right: `${Math.max(12, innerWidth - r.right)}px` } },
+    h("div", { class: "am-head" }, h("span", { class: "avatar" }, (S.me.name || S.me.email || "K")[0].toUpperCase()),
+      h("div", {}, h("b", {}, S.me.name || "Your account"), h("span", {}, S.me.email || "Signed in with a Kleo key"))),
+    h("div", { class: "am-credits" }, h("div", {}, bolt(18), h("b", { "data-credits": "" }, S.me.admin ? "∞" : S.me.credits), h("span", {}, S.me.admin ? "admin" : "credits")),
+      S.me.admin ? null : h("button", { class: "btn btn-cta btn-sm", onclick: () => { closeLayer(); openBuy(); } }, "Get credits")),
+    item("user", "Account settings", () => go("/account")),
+    item("library", "My creations", () => go("/library")),
+    item("plug", "Kleo in Claude & ChatGPT", () => window.open("https://kleooai.com/mcp/", "_blank", "noopener")),
+    h("div", { class: "am-theme" }, h("span", {}, "Appearance"), h("div", { class: "seg2" }, [["system", "Auto"], ["light", "Light"], ["dark", "Dark"]].map(([k, l]) =>
+      h("button", { class: theme === k ? "on" : "", onclick: () => { store.set("theme", k); applyTheme(); closeLayer(); } }, l)))),
+    item("chat", "Help", () => window.open("mailto:hello@kleooai.com", "_blank")),
+    item("out", "Sign out", () => signOut(), "danger"));
+  const scrim = h("div", { class: "scrim clear", onclick: closeLayer });
+  document.body.append(scrim, menu); openLayer = [scrim, menu];
+  document.addEventListener("keydown", escClose);
+}
 const ACCOUNT_SECTIONS = [["profile", "Profile", "user"], ["credits", "Credits", "star"], ["activity", "Activity", "clock"], ["security", "Sign-in & security", "lock"], ["assistant", "Kleo in your AI assistant", "plug"], ["appearance", "Appearance", "sparkle"], ["help", "Help", "chat"]];
 const KIND_ICON = { video: "film", image: "photo", tool: "apps", film: "film" };
 function nameOf(model) {
@@ -1845,7 +1925,8 @@ async function demoApi(path, opts) {
   await new Promise((r) => setTimeout(r, path === "/api/chat" ? 1100 : 150));
   const method = opts.method || "GET", b = opts.body || {};
   const now = () => new Date().toISOString();
-  if (path === "/api/config") return { google: true, microsoft: true, social: ["google", "microsoft"], emailReset: true, defaultModel: "seedance-2.5", models: demoCatalog(), defaultImageModel: "nano-banana-2", imageModels: demoImageCatalog(), freeCredits: 5, presets: DEMO_PRESETS, tools: DEMO_TOOLS };
+  if (path === "/api/config") return { google: true, microsoft: true, social: ["google", "apple", "microsoft"], emailReset: true, defaultModel: "seedance-2.5", models: demoCatalog(), defaultImageModel: "nano-banana-2", imageModels: demoImageCatalog(), freeCredits: 5, presets: DEMO_PRESETS, tools: DEMO_TOOLS };
+  if (path === "/api/me" && DEMO_GUEST) throw new ApiError("Sign in first.", 401, "signin");
   if (path === "/api/me" && DEMO_FREE) return { id: "u_demo", email: "you@example.com", name: "Demo", since: "2026-10-01T09:00:00Z", credits: 5, paid: false, allowed: ["seedance-2.0-fast"], freeResolutions: ["480p"], allowedImages: ["nano-banana-2"], allowedTools: [], methods: ["password"], mcpUrl: "https://mcp.kleooai.com/mcp", packs: [{ label: "5 EUR", credits: 10, url: "https://kleooai.com/pricing/" }, { label: "15 EUR", credits: 35, url: "https://kleooai.com/pricing/" }, { label: "40 EUR", credits: 100, url: "https://kleooai.com/pricing/" }] };
   if (path === "/api/me") return { id: "u_demo", email: "you@example.com", name: "Demo", since: "2026-10-01T09:00:00Z", credits: demoDb.credits, paid: true, allowed: demoCatalog().map((m) => m.key), allowedImages: demoImageCatalog().map((m) => m.key), allowedTools: DEMO_TOOLS.map((t) => t.key), methods: ["password", "google"], mcpUrl: "https://mcp.kleooai.com/mcp", packs: [{ label: "5 EUR", credits: 10, url: "https://kleooai.com/pricing/" }, { label: "15 EUR", credits: 35, url: "https://kleooai.com/pricing/" }, { label: "40 EUR", credits: 100, url: "https://kleooai.com/pricing/" }] };
   if (path === "/api/auth/signout" || path === "/api/auth/signout-all") return { ok: true };

@@ -3,8 +3,8 @@
  * payments as the MCP server. What Studio adds is a way to sign in that a person can remember:
  *
  *   e-mail + password   studio_logins (provider 'password', subject = the e-mail), PBKDF2 (session.ts)
- *   Google, Microsoft   studio_logins (provider 'google' | 'microsoft', subject = the provider's `sub`); each one is on
- *                       only when its CLIENT_ID and CLIENT_SECRET are set (SOCIAL below)
+ *   Google, Microsoft,  studio_logins (provider 'google' | 'microsoft' | 'apple', subject = the provider's `sub`); each
+ *   Apple               one is on only when its keys are set (SOCIAL below)
  *   Kleo key            the "<userId>.<sig>" key the MCP sign-in page shows (src/accounts.ts verifyHandle): someone who
  *                       already uses Kleo in Claude or ChatGPT brings that account, credits included, and may then
  *                       add an e-mail and password to it
@@ -85,10 +85,10 @@ export async function signUp(env: StudioEnv, body: { email?: string; password?: 
   if (bad) throw new StudioError(bad);
   if (!(await verifyTurnstile(asEnv(env), String(body.turnstile ?? ""), v.ip))) throw new StudioError("Please complete the check and try again.", 400, "turnstile");
   if (await getLogin(env, "password", email)) throw new StudioError("You already have an account with this e-mail. Sign in instead.", 409, "exists");
-  // The same address may already be on a Google or Microsoft sign-in: one person, one account.
-  const social = await env.DB.prepare("SELECT provider FROM studio_logins WHERE provider IN ('google','microsoft') AND email = ? LIMIT 1").bind(email).first<{ provider: string }>();
+  // The same address may already be on a Google, Microsoft or Apple sign-in: one person, one account.
+  const social = await env.DB.prepare(`SELECT provider FROM studio_logins WHERE provider IN (${SOCIAL_SQL}) AND email = ? LIMIT 1`).bind(email).first<{ provider: string }>();
   if (social) {
-    const name = social.provider === "google" ? "Google" : "Microsoft";
+    const name = SOCIAL[social.provider as SocialKey]?.label ?? "Google";
     throw new StudioError(`This e-mail signs in with ${name}. Use “Continue with ${name}”.`, 409, `use_${social.provider}`);
   }
   // One inbox, one account: the same Gmail with dots or a "+tag" is the account it already has.
@@ -310,8 +310,15 @@ export async function resetPassword(env: StudioEnv, body: { token?: string; pass
 // LINKING. A signed-in person can add Google or Microsoft to the account they are in (/auth/<p>?link=1). The account
 // to link is read from the session cookie at the callback, never from the state cookie, so a forged state cannot
 // attach a stranger's Google account to somebody else's Kleo account.
+//
+// APPLE (18 October 2026, the owner: "accedi con Apple"). The same code flow with three differences Apple imposes:
+// its answer comes back as a form POST from appleid.apple.com (response_mode=form_post, required when asking for the
+// e-mail), so the state cookie is SameSite=None or the browser would not send it with that POST; there is no PKCE, the
+// state and the nonce bind the answer instead; and the client secret is a short JWT we sign with the .p8 key from
+// the Apple developer account (ES256, appleClientSecret). Apple vouches for the e-mail it gives ("email_verified",
+// sometimes the string "true"), including its "Hide My Email" relay address, which is one fixed address per person.
 
-export type SocialKey = "google" | "microsoft";
+export type SocialKey = "google" | "microsoft" | "apple";
 export const MS_CONSUMER_TENANT = "9188040d-6c67-4c5b-b112-36a304b66dad";
 
 interface Social {
@@ -326,6 +333,10 @@ interface Social {
   verifiedEmail: (c: Record<string, any>) => string | null;
   /** Any address to show the person, verified or not. */
   shownEmail: (c: Record<string, any>) => string | null;
+  /** The answer comes back as a cross-site form POST (Apple): no PKCE, a SameSite=None state cookie. */
+  formPost?: boolean;
+  /** A client secret made per sign-in instead of a fixed one (Apple's signed JWT). */
+  mintSecret?: (env: StudioEnv) => Promise<string>;
 }
 
 const msEmail = (c: Record<string, any>): string | null => {
@@ -344,6 +355,19 @@ export const SOCIAL: Record<SocialKey, Social> = {
     verifiedEmail: (c) => (c.email && c.email_verified ? normalizeEmail(String(c.email)) : null),
     shownEmail: (c) => (c.email ? normalizeEmail(String(c.email)) : null),
   },
+  apple: {
+    label: "Apple",
+    authorize: "https://appleid.apple.com/auth/authorize",
+    token: "https://appleid.apple.com/auth/token",
+    scope: "name email",
+    id: (env) => env.APPLE_CLIENT_ID,
+    secret: (env) => (env.APPLE_TEAM_ID && env.APPLE_KEY_ID ? env.APPLE_PRIVATE_KEY : undefined),
+    mintSecret: (env) => appleClientSecret(env),
+    extra: { response_mode: "form_post" },
+    formPost: true,
+    verifiedEmail: (c) => (c.email && (c.email_verified === true || c.email_verified === "true") ? normalizeEmail(String(c.email)) : null),
+    shownEmail: (c) => (c.email ? normalizeEmail(String(c.email)) : null),
+  },
   microsoft: {
     label: "Microsoft",
     // "common": personal Microsoft accounts (Outlook, Hotmail, Xbox) and work or school accounts.
@@ -359,14 +383,32 @@ export const SOCIAL: Record<SocialKey, Social> = {
 
 export const socialEnabled = (env: StudioEnv, key: SocialKey): boolean => !!(SOCIAL[key].id(env) && SOCIAL[key].secret(env));
 export const enabledSocial = (env: StudioEnv): SocialKey[] => (Object.keys(SOCIAL) as SocialKey[]).filter((k) => socialEnabled(env, k));
+const SOCIAL_SQL = (Object.keys(SOCIAL) as SocialKey[]).map((k) => `'${k}'`).join(",");
 
 const stateCookieName = (key: SocialKey) => `__Host-kleo_ostate_${key}`;
-const clearState = (key: SocialKey) => `${stateCookieName(key)}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;
+const stateSameSite = (key: SocialKey) => (SOCIAL[key].formPost ? "None" : "Lax");
+const clearState = (key: SocialKey) => `${stateCookieName(key)}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=${stateSameSite(key)}`;
 
 const b64url = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const randomToken = (n = 32): string => b64url(crypto.getRandomValues(new Uint8Array(n)));
 const pkceChallenge = async (verifier: string): Promise<string> =>
   b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
+
+/**
+ * Apple's client secret: a JWT signed with the private key (.p8, PKCS#8 PEM) of a "Sign in with Apple" key, naming
+ * the team, the key and the Services ID. Valid ten minutes: one is made for every sign-in, so nothing expires unseen.
+ */
+async function appleClientSecret(env: StudioEnv): Promise<string> {
+  const pem = String(env.APPLE_PRIVATE_KEY ?? "").replace(/\\n/g, "\n").replace(/-----[^-]+-----/g, "").replace(/\s+/g, "");
+  const der = Uint8Array.from(atob(pem), (c) => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey("pkcs8", der, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+  const part = (o: object) => b64url(new TextEncoder().encode(JSON.stringify(o)));
+  const now = Math.floor(Date.now() / 1000);
+  const body = `${part({ alg: "ES256", kid: env.APPLE_KEY_ID })}.${part({ iss: env.APPLE_TEAM_ID, iat: now, exp: now + 600, aud: "https://appleid.apple.com", sub: env.APPLE_CLIENT_ID })}`;
+  // WebCrypto's ECDSA signature is already r||s, the form JWS wants.
+  const sig = new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, new TextEncoder().encode(body)));
+  return `${body}.${b64url(sig)}`;
+}
 
 export async function socialStart(env: StudioEnv, key: SocialKey, origin: string, link: boolean): Promise<Response> {
   const p = SOCIAL[key];
@@ -378,12 +420,14 @@ export async function socialStart(env: StudioEnv, key: SocialKey, origin: string
   url.searchParams.set("scope", p.scope);
   url.searchParams.set("state", state);
   url.searchParams.set("nonce", nonce);
-  url.searchParams.set("code_challenge", await pkceChallenge(verifier));
-  url.searchParams.set("code_challenge_method", "S256");
+  if (!p.formPost) {
+    url.searchParams.set("code_challenge", await pkceChallenge(verifier));
+    url.searchParams.set("code_challenge_method", "S256");
+  }
   for (const [k, v] of Object.entries(p.extra)) url.searchParams.set(k, v);
   return new Response(null, {
     status: 302,
-    headers: { location: url.toString(), "set-cookie": `${stateCookieName(key)}=${state}.${link ? "link" : "in"}.${verifier}.${nonce}; Path=/; Max-Age=600; HttpOnly; Secure; SameSite=Lax` },
+    headers: { location: url.toString(), "set-cookie": `${stateCookieName(key)}=${state}.${link ? "link" : "in"}.${verifier}.${nonce}; Path=/; Max-Age=600; HttpOnly; Secure; SameSite=${stateSameSite(key)}` },
   });
 }
 
@@ -413,16 +457,22 @@ async function evictClaimant(env: StudioEnv, userId: string, provider: SocialKey
 export async function socialCallback(env: StudioEnv, key: SocialKey, request: Request, origin: string, sessionUserId: string | null, v: Visitor): Promise<Response> {
   const p = SOCIAL[key];
   const url = new URL(request.url);
-  const state = url.searchParams.get("state") ?? "";
+  // Apple answers with a form POST; the others with a redirect carrying the same fields in the query.
+  const params = request.method === "POST" ? new URLSearchParams(await request.text().catch(() => "")) : url.searchParams;
+  const state = params.get("state") ?? "";
   const [savedState, intent, verifier, nonce] = (readCookie(request.headers.get("cookie"), stateCookieName(key)) ?? "").split(".");
   const back = (q: string) => new Response(null, { status: 302, headers: { location: `/?${q}`, "set-cookie": clearState(key) } });
   if (!state || !savedState || !verifier || !nonce || !safeEqual(state, savedState)) return back("signin_error=state");
-  const code = url.searchParams.get("code");
+  const code = params.get("code");
   if (!code) return back("signin_error=cancelled");
+  let secret: string;
+  try { secret = p.mintSecret ? await p.mintSecret(env) : p.secret(env)!; } catch { return back(`signin_error=${key}`); }
+  const form = new URLSearchParams({ code, client_id: p.id(env)!, client_secret: secret, redirect_uri: `${origin}/auth/${key}/callback`, grant_type: "authorization_code" });
+  if (!p.formPost) { form.set("scope", p.scope); form.set("code_verifier", verifier); }
   const tok = await fetch(p.token, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-    body: new URLSearchParams({ code, client_id: p.id(env)!, client_secret: p.secret(env)!, redirect_uri: `${origin}/auth/${key}/callback`, grant_type: "authorization_code", scope: p.scope, code_verifier: verifier }),
+    body: form,
   }).then((r) => r.json() as Promise<{ id_token?: string }>).catch(() => ({} as { id_token?: string }));
   const claims = decodeJwt(tok.id_token ?? "");
   if (!claims?.sub || claims.aud !== p.id(env) || typeof claims.nonce !== "string" || !safeEqual(claims.nonce, nonce)) return back(`signin_error=${key}`);
@@ -443,7 +493,7 @@ export async function socialCallback(env: StudioEnv, key: SocialKey, request: Re
   let gifted: number | null = null;
   if (!userId && verified) {
     // The address is already VOUCHED for by the other provider: same person, same account.
-    userId = (await env.DB.prepare("SELECT user_id FROM studio_logins WHERE provider IN ('google','microsoft') AND email = ? LIMIT 1").bind(verified).first<{ user_id: string }>())?.user_id ?? null;
+    userId = (await env.DB.prepare(`SELECT user_id FROM studio_logins WHERE provider IN (${SOCIAL_SQL}) AND email = ? LIMIT 1`).bind(verified).first<{ user_id: string }>())?.user_id ?? null;
     if (!userId) {
       // An account that only CLAIMS the address (a password sign-up, or the e-mail on the account row).
       const claimant = (await getLogin(env, "password", verified))?.user_id ?? (await getUserByEmail(asEnv(env), verified))?.id ?? null;

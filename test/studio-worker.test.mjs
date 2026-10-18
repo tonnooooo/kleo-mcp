@@ -488,6 +488,55 @@ test("an evicted claimant is out by every road: their linked Google, their Kleo 
   assert.equal((await call(env, "/api/me", { cookie: squat })).status, 401, "and their session ended");
 });
 
+test("Apple: off until its four keys are set; the answer is a form POST; our client secret is a signed ES256 JWT; a verified e-mail opens the account", async () => {
+  const { generateKeyPairSync, verify } = await import("node:crypto");
+  const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  const pem = privateKey.export({ type: "pkcs8", format: "pem" });
+  assert.deepEqual((await call(newEnv({ APPLE_CLIENT_ID: "com.kleooai.web" }), "/api/config")).json.social, [], "a client id alone is not enough");
+  const env = newEnv({ APPLE_CLIENT_ID: "com.kleooai.web", APPLE_TEAM_ID: "TEAM123456", APPLE_KEY_ID: "KEY1234567", APPLE_PRIVATE_KEY: pem.replace(/\n/g, "\n") });
+  assert.deepEqual((await call(env, "/api/config")).json.social, ["apple"]);
+  const start = await worker.fetch(new Request("https://app.kleo.test/auth/apple"), env, ctx);
+  const to = new URL(start.headers.get("location"));
+  assert.equal(to.host, "appleid.apple.com");
+  assert.equal(to.searchParams.get("response_mode"), "form_post");
+  assert.equal(to.searchParams.get("scope"), "name email");
+  assert.equal(to.searchParams.get("code_challenge"), null, "Apple takes no PKCE: the state and the nonce bind the answer");
+  const stateCookie = start.headers.get("set-cookie");
+  assert.match(stateCookie, /^__Host-kleo_ostate_apple=.*SameSite=None/, "or the browser would not send it with Apple's cross-site POST");
+  let secret = null, sentBody = "";
+  const p = fakeProvider((u, init) => {
+    if (u === "https://appleid.apple.com/auth/token") {
+      sentBody = String(init.body);
+      secret = new URLSearchParams(sentBody).get("client_secret");
+      return ok({ id_token: jwt({ sub: "001234.apple", aud: "com.kleooai.web", nonce: to.searchParams.get("nonce"), email: "Mia@privaterelay.appleid.com", email_verified: "true", is_private_email: "true" }) });
+    }
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const form = new URLSearchParams({ code: "c1", state: to.searchParams.get("state"), user: JSON.stringify({ name: { firstName: "Mia" } }) });
+    const cb = await worker.fetch(new Request("https://app.kleo.test/auth/apple/callback", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", cookie: stateCookie.split(";")[0] }, body: form }), env, ctx);
+    assert.equal(cb.status, 302);
+    assert.equal(cb.headers.get("location"), "/");
+    assert.doesNotMatch(sentBody, /code_verifier=/);
+    const [h64, c64, s64] = secret.split(".");
+    assert.deepEqual(JSON.parse(Buffer.from(h64, "base64url")), { alg: "ES256", kid: "KEY1234567" });
+    const c = JSON.parse(Buffer.from(c64, "base64url"));
+    assert.equal(c.iss, "TEAM123456"); assert.equal(c.sub, "com.kleooai.web"); assert.equal(c.aud, "https://appleid.apple.com");
+    assert.ok(c.exp > c.iat && c.exp - c.iat <= 600);
+    assert.ok(verify("sha256", Buffer.from(`${h64}.${c64}`), { key: publicKey, dsaEncoding: "ieee-p1363" }, Buffer.from(s64, "base64url")), "signed with the .p8 key");
+    const session = cb.headers.getSetCookie().find((x) => x.startsWith("__Host-kleo_studio=") && !x.startsWith("__Host-kleo_studio=;"));
+    const me = (await call(env, "/api/me", { cookie: session.split(";")[0] })).json;
+    assert.equal(me.email, "mia@privaterelay.appleid.com");
+    assert.deepEqual(me.methods, ["apple"]);
+    // A POST that did not start here (no state cookie) is refused.
+    const forged = await worker.fetch(new Request("https://app.kleo.test/auth/apple/callback", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: form }), env, ctx);
+    assert.match(forged.headers.get("location"), /signin_error=state/);
+  } finally { p.restore(); }
+  // Google and Microsoft answer with a redirect, never a POST.
+  const g = newEnv({ GOOGLE_CLIENT_ID: "gid", GOOGLE_CLIENT_SECRET: "gs" });
+  assert.equal((await worker.fetch(new Request("https://app.kleo.test/auth/google/callback", { method: "POST", body: "code=x" }), g, ctx)).status, 404);
+});
+
 test("linking: the signed-in account gets Google; an account another person uses is refused; no session, no link", async () => {
   const env = newEnv({ GOOGLE_CLIENT_ID: "gid", GOOGLE_CLIENT_SECRET: "gs", MICROSOFT_CLIENT_ID: "mid", MICROSOFT_CLIENT_SECRET: "ms", STUDIO_SIGNUP: "all" });
   const a = await signUp(env, "a@example.com");
