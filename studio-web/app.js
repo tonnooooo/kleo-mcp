@@ -574,14 +574,18 @@ const HOME_BANNERS = [
   { t: "Kleo Film", s: "A whole narrated film from one message", badge: "New", v: `${GALLERY}/tether-film-p.mp4`, p: `${GALLERY}/tether-film.jpg`, go: () => startFilm() },
   { t: "Seedance 2.5", s: "Cinematic video from one sentence", badge: "Top", v: `${GALLERY}/koi-supra-night-p.mp4`, p: `${GALLERY}/koi-supra-night.jpg`, go: () => go("/video") },
 ];
+// Each tile is just its picture in motion and two lines under it (the owner, 18 Oct: "come Higgsfield: video pulito,
+// niente sopra, scrive solo sotto").
 const HOME_TILES = [
-  { ic: "film", c: "#ff9f0a", t: "Video", s: "Seedance 2.5 and Veo 3.1", art: () => artVideo(loop("mechs-in-snow")), go: () => go("/video") },
-  { ic: "photo", c: "#0a84ff", t: "Image", s: "FLUX.2 and Seedream", art: () => artImg(`${MEDIA_APP}/presets/levitate.jpg?v=1`), go: () => go("/image") },
-  { ic: "user", c: "#ff6b00", t: "Photo Character Swap", s: "Your character in any photo", badge: "New", art: () => APP_ART["photo-character-swap"](), go: () => go("/apps/photo-character-swap") },
-  { ic: "mic", c: "#bf5af2", t: "Talking Photo", s: "Make any portrait speak", art: () => APP_ART["talking-photo"](), go: () => go("/apps/talking-photo") },
-  { ic: "run", c: "#30d158", t: "Motion Control", s: "Copy any dance or move", art: () => APP_ART["motion-control"](), go: () => go("/apps/motion-control") },
-  { ic: "plug", c: "#64d2ff", t: "Kleo in Claude & ChatGPT", s: "Make videos inside your AI chat", art: () => artVideo(loop("kleo-x-claude-ad")), href: "https://kleooai.com/mcp/" },
+  { t: "Video", s: "Seedance 2.5 and Veo 3.1", art: () => artVideo(loop("kitten-knight-black-dragon")), go: () => go("/video") },
+  { t: "Image", s: "FLUX.2, Seedream and Nano Banana", art: () => artImg(still("venice-high-water-kleo"), "kb"), go: () => go("/image") },
+  { t: "Photo Character Swap", s: "Your character in any photo", art: () => xfade(pic("photoswap3-a"), pic("photoswap3-b")), go: () => go("/apps/photo-character-swap") },
+  { t: "Talking Photo", s: "Make any portrait speak", art: () => artImg(pic("speaker"), "kb"), go: () => go("/apps/talking-photo") },
+  { t: "Motion Control", s: "Copy any dance or move", art: () => artVideo(loop("kitten-knight-jump")), go: () => go("/apps/motion-control") },
+  { t: "Kleo in Claude & ChatGPT", s: "Make videos inside your AI chat", art: () => artVideo(loop("kleo-x-claude-ad")), href: "https://kleooai.com/mcp/" },
 ];
+/** Two pictures that slowly dissolve into each other: the before and after of a swap, with nothing drawn on top. */
+function xfade(a, b) { return h("div", { class: "art-xfade" }, artImg(a), artImg(b, "xf-b")); }
 /** An idea as a picture card: what it makes, its name; a tap fills the box below. */
 function ideaCard(i) {
   return h("button", { class: "idea-card", onclick: () => useIdea(i), "aria-label": i.t },
@@ -591,11 +595,11 @@ function ideaCard(i) {
 }
 function homeView() {
   const banner = (b) => h("button", { class: "hb", onclick: b.go, "aria-label": `${b.t}: ${b.s}` },
-    h("div", { class: "hb-media" }, loopVideo(b.v, b.p), b.badge ? h("span", { class: "hb-badge" }, b.badge) : null),
+    h("div", { class: "hb-media" }, loopVideo(b.v, b.p)),
     h("b", {}, b.t), h("span", {}, b.s));
   const tile = (x) => h(x.href ? "a" : "button", { class: "ht", ...(x.href ? { href: x.href, target: "_blank", rel: "noopener" } : { onclick: x.go }) },
-    h("div", { class: "ht-media art-media" }, x.art(), h("span", { class: "ht-ic", style: { background: x.c } }, icon(x.ic, 17, 2.1))),
-    h("div", { class: "ht-tx" }, h("b", {}, x.t, x.badge ? h("span", { class: "badge" }, x.badge) : null), h("span", {}, x.s)));
+    h("div", { class: "ht-media art-media" }, x.art()),
+    h("div", { class: "ht-tx" }, h("b", {}, x.t), h("span", {}, x.s)));
   const promo = S.me ? null : h("div", { class: "home-promo" },
     loopVideo(`${GALLERY}/apex-film-p.mp4`, `${GALLERY}/apex-film.jpg`),
     h("div", { class: "home-promo-tx" },
