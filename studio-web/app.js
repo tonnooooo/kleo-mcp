@@ -518,20 +518,20 @@ function collectGens(m) {
 
 const IDEAS = {
   video: [
-    { ic: "bag", c: "#ff9500", t: "Cinematic product shot", p: "A sleek black wireless earbud case opening slowly on a wet reflective surface, macro lens, soft rim light, slow orbit, premium commercial look, subtle whoosh sound." },
-    { ic: "phone", c: "#ff2d55", t: "Scroll-stopping TikTok hook", p: "A vertical POV shot running through a neon night market in Tokyo, handheld energy, steam and lights, fast and exciting, upbeat ambience." },
-    { ic: "photo", c: "#007aff", t: "Animate a photo", p: "", photo: true },
-    { ic: "flame", c: "#af52de", t: "Anime fight scene", p: "Two anime warriors clash on a rooftop at sunset, dramatic speed lines, wind in their hair, dynamic camera swing, epic music swell." },
-    { ic: "globe", c: "#30b0c7", t: "Dreamy travel clip", p: "Drone shot gliding over turquoise water toward a tiny island with one palm tree at golden hour, gentle waves, calm ambient sound." },
-    { ic: "cup", c: "#a2845e", t: "Cozy café ad", p: "Close-up of latte art being poured in a warm sunlit café, steam rising, shallow depth of field, slow push-in, soft jazz in the background." },
+    { a: "v-product", ic: "bag", c: "#ff9500", t: "Cinematic product shot", p: "A sleek black wireless earbud case opening slowly on a wet reflective surface, macro lens, soft rim light, slow orbit, premium commercial look, subtle whoosh sound." },
+    { a: "v-tiktok", ic: "phone", c: "#ff2d55", t: "Scroll-stopping TikTok hook", p: "A vertical POV shot running through a neon night market in Tokyo, handheld energy, steam and lights, fast and exciting, upbeat ambience." },
+    { a: "v-animate", ic: "photo", c: "#007aff", t: "Animate a photo", p: "", photo: true },
+    { a: "v-anime", ic: "flame", c: "#af52de", t: "Anime fight scene", p: "Two anime warriors clash on a rooftop at sunset, dramatic speed lines, wind in their hair, dynamic camera swing, epic music swell." },
+    { a: "v-travel", ic: "globe", c: "#30b0c7", t: "Dreamy travel clip", p: "Drone shot gliding over turquoise water toward a tiny island with one palm tree at golden hour, gentle waves, calm ambient sound." },
+    { a: "v-cafe", ic: "cup", c: "#a2845e", t: "Cozy café ad", p: "Close-up of latte art being poured in a warm sunlit café, steam rising, shallow depth of field, slow push-in, soft jazz in the background." },
   ],
   image: [
-    { ic: "bag", c: "#ff9500", t: "Product photo", p: "A minimalist perfume bottle on a travertine pedestal, soft morning light through palm leaves, beige and sage palette, studio product photography, crisp reflections." },
-    { ic: "star", c: "#ff2d55", t: "YouTube thumbnail", p: "A shocked young creator pointing at a giant glowing golden trophy, bold rim light, vibrant teal and orange background, high contrast YouTube thumbnail style, big empty space on the right." },
-    { ic: "photo", c: "#007aff", t: "Edit my photo", p: "", photo: true },
-    { ic: "text", c: "#af52de", t: "Poster with text", p: "A retro 70s travel poster of the Amalfi coast, sun-faded colors, bold title text \"AMALFI\" at the top, grainy print texture." },
-    { ic: "user", c: "#30b0c7", t: "Character design", p: "Full-body character sheet of a friendly cyberpunk courier girl with a yellow jacket and a robot cat, front and side views, clean white background, 3D animated film style." },
-    { ic: "layers", c: "#a2845e", t: "Album cover", p: "An album cover: a lone astronaut sitting on a crescent moon fishing for stars, dreamy pastel gradient sky, painterly texture, square composition." },
+    { a: "i-product", ic: "bag", c: "#ff9500", t: "Product photo", p: "A minimalist perfume bottle on a travertine pedestal, soft morning light through palm leaves, beige and sage palette, studio product photography, crisp reflections." },
+    { a: "i-thumb", ic: "star", c: "#ff2d55", t: "YouTube thumbnail", p: "A shocked young creator pointing at a giant glowing golden trophy, bold rim light, vibrant teal and orange background, high contrast YouTube thumbnail style, big empty space on the right." },
+    { a: "i-edit", ic: "photo", c: "#007aff", t: "Edit my photo", p: "", photo: true },
+    { a: "i-poster", ic: "text", c: "#af52de", t: "Poster with text", p: "A retro 70s travel poster of the Amalfi coast, sun-faded colors, bold title text \"AMALFI\" at the top, grainy print texture." },
+    { a: "i-character", ic: "user", c: "#30b0c7", t: "Character design", p: "Full-body character sheet of a friendly cyberpunk courier girl with a yellow jacket and a robot cat, front and side views, clean white background, 3D animated film style." },
+    { a: "i-album", ic: "layers", c: "#a2845e", t: "Album cover", p: "An album cover: a lone astronaut sitting on a crescent moon fishing for stars, dreamy pastel gradient sky, painterly texture, square composition." },
   ],
 };
 function renderMessages(jump = false) {
@@ -548,8 +548,7 @@ function renderMessages(jump = false) {
       h("div", { class: "logo-orb" }, h("img", { src: "/kleo-mark.svg", alt: "" })),
       h("h1", {}, img ? "What should we picture?" : "What do you want to create?"),
       h("p", {}, S.agent ? "Tell Kleo your idea, drop a photo or a clip, or tap an example." : img ? "Describe your picture and hit Generate." : "Describe your video and hit Generate."),
-      h("div", { class: "ideas" }, IDEAS[S.mode].map((i) => h("button", { class: "idea", onclick: () => useIdea(i) },
-        h("span", { class: "em", style: { background: i.c } }, icon(i.ic, 19, 2)), h("div", {}, h("b", {}, i.t), h("span", {}, i.photo ? (img ? "Upload a picture and say what to change." : "Upload a picture and bring it to life.") : i.p))))),
+      h("div", { class: "idea-grid three" }, IDEAS[S.mode].map(ideaCard)),
       h("div", { class: "steps", style: { justifyContent: "center", marginTop: "22px" } },
         h("button", { class: "mini", onclick: () => go("/apps") }, icon("apps", 15), "Face swap, talking photos & more in Apps")),
       showcaseStrip("Made by the Kleo team")));
@@ -569,20 +568,27 @@ const HOME_BANNERS = [
   { t: "Seedance 2.5", s: "Cinematic video from one sentence", badge: "Top", v: `${GALLERY}/koi-supra-night-p.mp4`, p: `${GALLERY}/koi-supra-night.jpg`, go: () => go("/video") },
 ];
 const HOME_TILES = [
-  { ic: "film", c: "#ff9f0a", t: "Video", s: "Seedance 2.5 and Veo 3.1", go: () => go("/video") },
-  { ic: "photo", c: "#0a84ff", t: "Image", s: "FLUX.2 and Seedream", go: () => go("/image") },
-  { ic: "user", c: "#ff6b00", t: "Photo Character Swap", s: "Your character in any photo", badge: "New", go: () => go("/apps/photo-character-swap") },
-  { ic: "mic", c: "#bf5af2", t: "Talking Photo", s: "Make any portrait speak", go: () => go("/apps/talking-photo") },
-  { ic: "run", c: "#30d158", t: "Motion Control", s: "Copy any dance or move", go: () => go("/apps/motion-control") },
-  { ic: "plug", c: "#64d2ff", t: "Kleo in Claude & ChatGPT", s: "Make videos inside your AI chat", href: "https://kleooai.com/mcp/" },
+  { ic: "film", c: "#ff9f0a", t: "Video", s: "Seedance 2.5 and Veo 3.1", art: () => artVideo(loop("mechs-in-snow")), go: () => go("/video") },
+  { ic: "photo", c: "#0a84ff", t: "Image", s: "FLUX.2 and Seedream", art: () => artImg(`${MEDIA_APP}/presets/levitate.jpg?v=1`), go: () => go("/image") },
+  { ic: "user", c: "#ff6b00", t: "Photo Character Swap", s: "Your character in any photo", badge: "New", art: () => APP_ART["photo-character-swap"](), go: () => go("/apps/photo-character-swap") },
+  { ic: "mic", c: "#bf5af2", t: "Talking Photo", s: "Make any portrait speak", art: () => APP_ART["talking-photo"](), go: () => go("/apps/talking-photo") },
+  { ic: "run", c: "#30d158", t: "Motion Control", s: "Copy any dance or move", art: () => APP_ART["motion-control"](), go: () => go("/apps/motion-control") },
+  { ic: "plug", c: "#64d2ff", t: "Kleo in Claude & ChatGPT", s: "Make videos inside your AI chat", art: () => artVideo(loop("kleo-x-claude-ad")), href: "https://kleooai.com/mcp/" },
 ];
+/** An idea as a picture card: what it makes, its name; a tap fills the box below. */
+function ideaCard(i) {
+  return h("button", { class: "idea-card", onclick: () => useIdea(i), "aria-label": i.t },
+    h("img", { src: `${MEDIA_APP}/ideas/${i.a}.jpg`, alt: "", loading: "lazy", decoding: "async" }),
+    h("span", { class: "em", style: { background: i.c } }, icon(i.ic, 16, 2)),
+    h("b", {}, i.t));
+}
 function homeView() {
   const banner = (b) => h("button", { class: "hb", onclick: b.go, "aria-label": `${b.t}: ${b.s}` },
     h("div", { class: "hb-media" }, loopVideo(b.v, b.p), b.badge ? h("span", { class: "hb-badge" }, b.badge) : null),
     h("b", {}, b.t), h("span", {}, b.s));
   const tile = (x) => h(x.href ? "a" : "button", { class: "ht", ...(x.href ? { href: x.href, target: "_blank", rel: "noopener" } : { onclick: x.go }) },
-    h("span", { class: "ht-ic", style: { background: x.c } }, icon(x.ic, 20, 2)),
-    h("b", {}, x.t, x.badge ? h("span", { class: "badge" }, x.badge) : null), h("span", {}, x.s));
+    h("div", { class: "ht-media art-media" }, x.art(), h("span", { class: "ht-ic", style: { background: x.c } }, icon(x.ic, 17, 2.1))),
+    h("div", { class: "ht-tx" }, h("b", {}, x.t, x.badge ? h("span", { class: "badge" }, x.badge) : null), h("span", {}, x.s)));
   const promo = S.me ? null : h("div", { class: "home-promo" },
     loopVideo(`${GALLERY}/apex-film-p.mp4`, `${GALLERY}/apex-film.jpg`),
     h("div", { class: "home-promo-tx" },
@@ -595,7 +601,7 @@ function homeView() {
     h("div", { class: "home-banners" }, HOME_BANNERS.map(banner)),
     h("div", { class: "home-row" + (promo ? "" : " solo") }, promo, h("div", { class: "home-tiles" }, HOME_TILES.map(tile))),
     h("div", { class: "home-ideas" }, h("h2", {}, "What do you want to create?"),
-      h("div", { class: "home-chips" }, IDEAS.video.map((i) => h("button", { class: "chip-idea", onclick: () => useIdea(i) }, h("span", { class: "em", style: { background: i.c } }, icon(i.ic, 15, 2)), i.t)))),
+      h("div", { class: "idea-grid" }, IDEAS.video.map(ideaCard))),
     showcaseStrip("Made by the Kleo team"));
 }
 function useIdea(i) {
