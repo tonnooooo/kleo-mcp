@@ -25,7 +25,7 @@ import { withPreset } from "./presets.ts";
 import { planTool, toolByKey, toolCredits, toneText, ToolRefusal, type Media, type Plan, type ToolKey } from "./tools.ts";
 import { mediaInfo } from "./media.ts";
 import { refreshFilm } from "./films.ts";
-import { freeImageModels, imageCostUsd, imageCredits, imageModelByKey, imageModelOfProvider, imageTaskInput, normalizeImageSettings, pausedImageModels, type ImageSettings } from "./image-models.ts";
+import { freeImageModels, imageCostUsd, imageCredits, imageModelByKey, imageModelOfProvider, imageTaskInput, isQualityRefusal, normalizeImageSettings, pausedImageModels, type ImageSettings } from "./image-models.ts";
 import {
   addUpload, getGeneration, insertGeneration, moveGeneration, markChecked, runningCount, studioSpentTodayUsd, uploadsOf,
   type GenerationRow, type Slot,
@@ -282,12 +282,23 @@ async function createImageGeneration(env: StudioEnv, userId: string, req: Create
   }
   await audit(asEnv(env), userId, id, "studio.create", { kind: "image", model: s.model, settings: s, credits, usd });
   const links = await Promise.all(uploads.map(async (u) => `${origin}${await signPath(env.INTERNAL_SECRET, `/media/u/${u.id}`, IMAGE_LINK_TTL_S)}`));
-  const input = imageTaskInput(s, await toEnglish(env, prompt, "image"), links);
+  const english = await toEnglish(env, prompt, "image");
+  let input = imageTaskInput(s, english, links);
+  let otherTried = false;
   const slots: Slot[] = [];
   let firstError: unknown = null;
   for (let i = 0; i < s.count; i++) {
     try {
-      const t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: model.ephoneModel, input }, { timeoutMs: 30_000, routing: model.routing });
+      let t: { id?: string };
+      try {
+        t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: model.ephoneModel, input }, { timeoutMs: 30_000, routing: model.routing });
+      } catch (e) {
+        // Gemini's quality field has two spellings and ePhone has refused each at some point: one retry with the other.
+        if (otherTried || !model.key.startsWith("nano-banana") || !isQualityRefusal(e instanceof Error ? e.message : String(e))) throw e;
+        otherTried = true;
+        input = imageTaskInput(s, english, links, true);
+        t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: model.ephoneModel, input }, { timeoutMs: 30_000, routing: model.routing });
+      }
       if (!t.id) throw new KieError("ephone.ai answered no task id", 502, true);
       slots.push({ task: String(t.id), status: "running" });
     } catch (e) {

@@ -161,7 +161,8 @@ test("image models: every quality priced; credits per set; never under 1.5× cos
     const s = { model: m.key, aspect: "1:1", quality: q, count: n };
     assert.ok(imageCredits(s) * 0.44 >= imageCostUsd(s) * 1.5, `${m.key} ${q} ×${n}`);
   }
-  assert.deepEqual(freeImageModels(undefined), ["nano-banana-2", "seedream-5", "flux-2-pro"]);
+  assert.deepEqual(freeImageModels(undefined), ["nano-banana-2.1", "nano-banana-2", "seedream-5", "flux-2-pro"]);
+  assert.equal(c("nano-banana-2.1", "4K", 4), 1, "Nano Banana 2.1: 4 pictures at 4K cost about $0.26, one credit");
   assert.equal(publicImageCatalog(1.6, ["seedream-5"]).find((m) => m.key === "seedream-5").prices["2K"][4], 1);
 });
 
@@ -174,6 +175,10 @@ test("image settings and provider input per model", () => {
   assert.deepEqual(sd.images, ["https://x/a.jpg"]);
   const nb = imageTaskInput(normalizeImageSettings({ model: "nano-banana-pro", aspect: "4:5", quality: "4K" }), "a cat", []);
   assert.deepEqual({ a: nb.aspect_ratio, q: nb.quality, i: nb.images }, { a: "4:5", q: "max", i: undefined }, "Gemini takes auto|low|medium|high|xhigh|max since 15 Oct 2026");
+  assert.equal(imageTaskInput(normalizeImageSettings({ model: "nano-banana-pro", quality: "4K" }), "a cat", [], true).quality, "4K", "the retry uses the other spelling");
+  const nb21 = imageTaskInput(normalizeImageSettings({ model: "nano-banana-2.1", aspect: "4:5", quality: "1K" }), "a cat", []);
+  assert.deepEqual(nb21, { prompt: "a cat", aspect_ratio: "4:5", quality: "1K" }, "2.1 follows its schema: 1K/2K/4K, no output_format");
+  assert.equal(imageTaskInput(normalizeImageSettings({ model: "nano-banana-2.1", quality: "2K" }), "x", [], true).quality, "high");
   const fx = imageTaskInput(normalizeImageSettings({ model: "flux-2-pro", aspect: "16:9" }), "x", []);
   assert.equal(fx.aspect_ratio, "16:9");
   assert.equal(normalizeImageSettings({ model: "nope" }).model, "nano-banana-2");
