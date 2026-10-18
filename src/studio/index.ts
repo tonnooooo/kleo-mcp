@@ -5,7 +5,8 @@
  * Same D1 database and R2 bucket: one account, one balance, one payment history for both.
  *
  *   /api/*          JSON API for the page (session cookie; every POST/PATCH/DELETE needs the header X-Kleo: 1)
- *   /auth/<google|microsoft>[/callback]   social sign-in round trip (?link=1 adds it to the signed-in account)
+ *   /auth/<google|microsoft|apple>[/callback]   social sign-in round trip (?link=1 adds it to the signed-in account;
+ *                                              Apple's callback is a form POST)
  *   /media/...      the person's pictures and clips (cookie, or a signed link for the provider and for sharing)
  *   everything else the single-page app in studio-web/ (served by the ASSETS binding, index.html for app routes)
  *   cron            every minute: refresh the clips still with the provider, save the finished ones, refund the failed
@@ -472,11 +473,12 @@ async function route(request: Request, env: StudioEnv, ctx: ExecutionContext, ur
     if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/media/") || url.pathname.startsWith("/auth/")) await ensureStudioSchema(env);
     if (url.pathname.startsWith("/api/")) return await api(env, request, url, ctx);
     if (url.pathname.startsWith("/media/")) return await handleMedia(env, request, url);
-    const social = url.pathname.match(/^\/auth\/(google|microsoft)(\/callback)?$/);
+    const social = url.pathname.match(/^\/auth\/(google|microsoft|apple)(\/callback)?$/);
     if (social) {
       const key = social[1] as SocialKey;
       if (!socialEnabled(env, key)) return Response.redirect(`${url.origin}/`, 302);
       if (!social[2]) return socialStart(env, key, url.origin, url.searchParams.get("link") === "1");
+      if (request.method === "POST" && key !== "apple") return json({ error: "Not found." }, 404);
       return await socialCallback(env, key, request, url.origin, await sessionUser(env, request), visitorOf(request));
     }
     if (url.pathname === "/health") return json({ ok: true, service: "kleo-studio" });

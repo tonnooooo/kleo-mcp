@@ -72,6 +72,12 @@ export interface StudioEnv {
   /** Microsoft sign-in (Entra app registration, any account type, Web redirect /auth/microsoft/callback). */
   MICROSOFT_CLIENT_ID?: string;
   MICROSOFT_CLIENT_SECRET?: string;
+  /** Sign in with Apple: the Services ID (client id), the team id, and a Sign in with Apple key (its id and its .p8
+   *  PEM, a secret); the button shows only when all four are set. Return URL: /auth/apple/callback. */
+  APPLE_CLIENT_ID?: string;
+  APPLE_TEAM_ID?: string;
+  APPLE_KEY_ID?: string;
+  APPLE_PRIVATE_KEY?: string;
   TURNSTILE_SITEKEY?: string;
   TURNSTILE_SECRET?: string;
   /** Workers rate limit on the sign-in routes (per hashed address). */
