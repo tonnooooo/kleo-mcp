@@ -585,7 +585,7 @@ const HOME_TILES = [
 /** An idea as a picture card: what it makes, its name; a tap fills the box below. */
 function ideaCard(i) {
   return h("button", { class: "idea-card", onclick: () => useIdea(i), "aria-label": i.t },
-    h("img", { src: `${MEDIA_APP}/ideas/${i.a}.jpg`, alt: "", loading: "lazy", decoding: "async" }),
+    h("img", { src: `${MEDIA_APP}/ideas2/${i.a}.jpg`, alt: "", loading: "lazy", decoding: "async" }),
     h("span", { class: "em", style: { background: i.c } }, icon(i.ic, 16, 2)),
     h("b", {}, i.t));
 }
