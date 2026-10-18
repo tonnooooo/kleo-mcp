@@ -1907,6 +1907,7 @@ const demoCatalog = () => {
 };
 const demoImageCatalog = () => [
   ["nano-banana-pro", "Nano Banana Pro", "Google's best: text, faces, edits", "Best", ["1K", "2K", "4K"], "2K", { "1K": [1, 1, 2], "2K": [1, 1, 2], "4K": [1, 1, 2] }],
+  ["nano-banana-2.1", "Nano Banana 2.1", "Google's newest: sharper, better text and faces", "New", ["1K", "2K", "4K"], "2K", { "1K": [1, 1, 1], "2K": [1, 1, 1], "4K": [1, 1, 1] }],
   ["nano-banana-2", "Nano Banana 2", "Fast Google model, great value", null, ["1K", "2K", "4K"], "2K", { "1K": [1, 1, 1], "2K": [1, 1, 1], "4K": [1, 1, 2] }],
   ["seedream-5", "Seedream 5.0", "ByteDance, sharp and detailed", "Cheapest", ["2K"], "2K", { "2K": [1, 1, 1] }],
   ["flux-2-pro", "FLUX.2 Pro", "Photoreal, natural light", null, ["1K"], "1K", { "1K": [1, 1, 1] }],

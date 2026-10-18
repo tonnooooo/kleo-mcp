@@ -9,6 +9,8 @@
  * THE PRICES (ePhone price list, 13 October 2026; CNY at 7 per dollar):
  *   Nano Banana Pro   gemini-3-pro-image       $120 per 1M image tokens; 1K/2K = 1120 tokens, 4K = 2000   × 0.53
  *   Nano Banana 2     gemini-3.1-flash-image   $60 per 1M; 1K 1120, 2K 1680, 4K 2520 tokens                × 0.53
+ *   Nano Banana 2.1   gemini-nano-banana-2.1   $30 per 1M; 1K 1120, 2K 1680, 4K 3780 tokens, + its thinking   × 0.53
+ *                     ($7.50 per 1M output; about 1,000 tokens allowed for). Added 18 October 2026, marked New.
  *   Seedream 5.0      doubao-seedream-5-0      ¥0.22 per picture                                          × 0.9
  *   FLUX.2 Pro        flux-2-pro               $0.03 first megapixel (+$0.015 each further one)           × 0.53
  * Gemini and FLUX are routed to the official_cheap channel only, like Veo, so the figures above hold.
@@ -17,7 +19,7 @@
  */
 import { CREDIT_USD, DEFAULT_MARGIN } from "./models.ts";
 
-export type ImageModelKey = "nano-banana-pro" | "nano-banana-2" | "seedream-5" | "flux-2-pro";
+export type ImageModelKey = "nano-banana-pro" | "nano-banana-2.1" | "nano-banana-2" | "seedream-5" | "flux-2-pro";
 export type ImageQuality = "1K" | "2K" | "4K";
 
 export interface ImageModel {
@@ -34,6 +36,10 @@ export interface ImageModel {
   /** Most reference pictures it takes. */
   maxReferences: number;
   routing?: Record<string, string>;
+  /** Gemini: which spelling of the quality field goes first ("tier" = 1K/2K/4K, else medium/high/max). */
+  qualityFirst?: "tier" | "word";
+  /** The provider's schema has no output_format: send none. */
+  noFormat?: boolean;
 }
 
 const CHEAP = { "X-Provider-Order": "official_cheap", "X-Provider-Only": "true" };
@@ -46,6 +52,12 @@ export const IMAGE_MODELS: ImageModel[] = [
     ephoneModel: "gemini-3-pro-image",
     usd: { "1K": r4(1120 * 120e-6 * 0.53), "2K": r4(1120 * 120e-6 * 0.53), "4K": r4(2000 * 120e-6 * 0.53) },
     qualities: ["1K", "2K", "4K"], defaultQuality: "2K", aspects: COMMON, maxReferences: 14, routing: CHEAP,
+  },
+  {
+    key: "nano-banana-2.1", name: "Nano Banana 2.1", blurb: "Google's newest: sharper, better text and faces", badge: "New",
+    ephoneModel: "gemini-nano-banana-2.1",
+    usd: { "1K": r4((1120 * 30e-6 + 0.0075) * 0.53), "2K": r4((1680 * 30e-6 + 0.0075) * 0.53), "4K": r4((3780 * 30e-6 + 0.0075) * 0.53) },
+    qualities: ["1K", "2K", "4K"], defaultQuality: "2K", aspects: COMMON, maxReferences: 14, routing: CHEAP, qualityFirst: "tier", noFormat: true,
   },
   {
     key: "nano-banana-2", name: "Nano Banana 2", blurb: "Fast Google model, great value",
@@ -80,7 +92,7 @@ export function pausedImageModels(list: string | undefined): ImageModelKey[] {
 }
 export function defaultImageModel(paused: ImageModelKey[]): ImageModelKey {
   if (!paused.includes(DEFAULT_IMAGE_MODEL)) return DEFAULT_IMAGE_MODEL;
-  return (["flux-2-pro", "seedream-5", "nano-banana-pro", "nano-banana-2"] as ImageModelKey[]).find((k) => !paused.includes(k)) ?? DEFAULT_IMAGE_MODEL;
+  return (["flux-2-pro", "seedream-5", "nano-banana-2.1", "nano-banana-pro", "nano-banana-2"] as ImageModelKey[]).find((k) => !paused.includes(k)) ?? DEFAULT_IMAGE_MODEL;
 }
 /** The image model behind a provider model id (an app's task), or null. */
 export const imageModelOfProvider = (ephoneModel: string): ImageModelKey | null => IMAGE_MODELS.find((m) => m.ephoneModel === ephoneModel)?.key ?? null;
@@ -89,6 +101,16 @@ export const imageModelOfProvider = (ephoneModel: string): ImageModelKey | null 
  * its own schema still lists. Our tiers map onto it.
  */
 export const GEMINI_QUALITY: Record<ImageQuality, string> = { "1K": "medium", "2K": "high", "4K": "max" };
+/**
+ * The two spellings have each been refused at some point (the schema says 1K/2K/4K, the gateway took only
+ * medium/high/max on 15 October). The first try uses the model's `qualityFirst`; a refusal that names the quality field
+ * is retried once with the other spelling (src/studio/generate.ts), so a change on ePhone's side costs nobody a picture.
+ */
+export function geminiQuality(m: ImageModel, q: ImageQuality, other = false): string {
+  const tier = (m.qualityFirst === "tier") !== other;
+  return tier ? q : GEMINI_QUALITY[q] ?? "high";
+}
+export const isQualityRefusal = (message: string): boolean => /quality/i.test(message);
 export const IMAGE_COUNTS = [1, 2, 4];
 export const imageModelByKey = (key: string | null | undefined): ImageModel | null => IMAGE_MODELS.find((m) => m.key === key) ?? null;
 
@@ -114,13 +136,13 @@ export function imageCredits(s: ImageSettings, margin = DEFAULT_MARGIN): number 
 
 /** Image models a never-paid account may use (STUDIO_FREE_IMAGE_MODELS; default all but Nano Banana Pro). */
 export function freeImageModels(list: string | undefined): ImageModelKey[] {
-  const raw = (list ?? "nano-banana-2,seedream-5,flux-2-pro").trim();
+  const raw = (list ?? "nano-banana-2.1,nano-banana-2,seedream-5,flux-2-pro").trim();
   if (raw === "*") return IMAGE_MODELS.map((m) => m.key);
   return raw.split(",").map((s) => s.trim()).filter((k): k is ImageModelKey => !!imageModelByKey(k));
 }
 
 /** The `input` of one picture's task (schemas from the price list, 13 October 2026). */
-export function imageTaskInput(s: ImageSettings, prompt: string, refs: string[]): Record<string, unknown> {
+export function imageTaskInput(s: ImageSettings, prompt: string, refs: string[], otherQuality = false): Record<string, unknown> {
   const m = imageModelByKey(s.model)!;
   const text = prompt.trim().slice(0, 4000);
   const images = refs.slice(0, m.maxReferences);
@@ -129,7 +151,7 @@ export function imageTaskInput(s: ImageSettings, prompt: string, refs: string[])
     return { prompt: text, size: size[s.aspect] ?? "2K", n: 1, force_single: true, watermark: false, output_format: "jpeg", ...(images.length ? { images } : {}) };
   }
   if (m.key === "flux-2-pro") return { prompt: text, aspect_ratio: s.aspect, output_format: "jpeg", ...(images.length ? { images } : {}) };
-  return { prompt: text, aspect_ratio: s.aspect, quality: GEMINI_QUALITY[s.quality] ?? "high", output_format: "jpeg", ...(images.length ? { images } : {}) };
+  return { prompt: text, aspect_ratio: s.aspect, quality: geminiQuality(m, s.quality, otherQuality), ...(m.noFormat ? {} : { output_format: "jpeg" }), ...(images.length ? { images } : {}) };
 }
 
 export function publicImageCatalog(margin = DEFAULT_MARGIN, free: ImageModelKey[] = [], paused: ImageModelKey[] = []): unknown[] {
