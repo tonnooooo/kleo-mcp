@@ -1121,4 +1121,27 @@ body::after { inset: -6% -18%; }
 .connect-card h1 { margin: 10px 0 0; font-size: 30px; letter-spacing: -.03em; }
 .connect-card p { margin: 0 0 8px; font-size: 17px; color: var(--ink-2); line-height: 1.45; }
 .connect-card .btn { min-width: 200px; height: 50px; border-radius: 25px; font-size: 17px; }
+/* ── The chat, Higgsfield-clean (19 October 2026, the owner: messages squeezed in the middle, media "messe lì a caso") ── */
+.attach-row { gap: 8px; margin-bottom: 8px; }
+.att-tile { position: relative; width: 112px; height: 112px; border-radius: 16px; overflow: hidden; background: var(--fill); border: 1px solid var(--sep); flex: none; display: grid; place-items: center; color: var(--ink-2); }
+.att-tile img, .att-tile video { width: 100%; height: 100%; object-fit: cover; display: block; border-radius: 0; }
+.att-kind { position: absolute; left: 8px; bottom: 8px; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; background: rgba(0, 0, 0, .6); color: #fff; }
+.bubble-wrap { display: flex; flex-direction: column; align-items: flex-end; max-width: min(680px, 88%); }
+.bubble-wrap .bubble { max-width: 100%; }
+.bubble { line-height: 1.5; }
+.bubble.long:not(.open) { max-height: calc(1.5em * 5 + 20px); overflow: hidden; -webkit-mask-image: linear-gradient(to bottom, #000 72%, transparent); mask-image: linear-gradient(to bottom, #000 72%, transparent); }
+.bubble-more { margin-top: 4px; font-size: 15px; font-weight: 600; color: var(--ink-2); padding: 2px 6px; }
+.bubble-more:hover { color: var(--ink); }
+.clip, .pics .pic, .result { border: 1px solid var(--sep); box-shadow: var(--shadow); }
+@media (min-width: 1100px) {
+  .chat-main .col:not(.wide) { max-width: 1120px; }
+  .bubble { max-width: min(680px, 88%); font-size: 16.5px; }
+  .clip { max-width: 820px; }
+  .clip.portrait { width: min(400px, calc(66vh * 9 / 16)); }
+  .clip.square { width: min(560px, 66vh); }
+  .pics { max-width: 820px; }
+  .pics.n1 .pic { max-width: 600px; }
+  .att-tile { width: 128px; height: 128px; }
+  .composer, .modes-row { max-width: 880px; }
+}
 

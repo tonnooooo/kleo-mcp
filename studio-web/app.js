@@ -659,16 +659,27 @@ function useIdea(i) {
   const t = $("#prompt"); t.value = i.p; autosize(t); updateSend(); t.focus();
 }
 function scrollDown() { requestAnimationFrame(() => { const s = $("#scroll"); if (s) s.scrollTop = s.scrollHeight; }); }
+// What the person attached, as small rounded tiles above their message: a clip is its first frame with a play mark,
+// never the full-size video player it used to be (the owner, 19 Oct: "immagini messe lì a cazzo").
 function attachThumb(a) {
-  if (a.kind === "video") return h("video", { src: a.url + "#t=0.1", muted: true, playsinline: true, preload: "metadata" });
-  if (a.kind === "audio") return h("div", { class: "ref audio" }, icon("music", 26));
-  return h("img", { src: a.url, alt: "Attached picture", loading: "lazy" });
+  if (a.kind === "video") return h("div", { class: "att-tile", title: "Video" }, h("video", { src: a.url + "#t=0.1", muted: true, playsinline: true, preload: "metadata" }), h("span", { class: "att-kind" }, icon("play", 12, 2.4)));
+  if (a.kind === "audio") return h("div", { class: "att-tile audio", title: "Sound" }, icon("music", 26));
+  return h("div", { class: "att-tile", title: "Picture" }, h("img", { src: a.url, alt: "Attached picture", loading: "lazy" }));
+}
+/** A long prompt shows its first lines; one tap shows all of it. */
+function promptBubble(text) {
+  const b = h("div", { class: "bubble" + (text.length > 320 ? " long" : "") }, text);
+  if (text.length > 320) {
+    const more = h("button", { class: "bubble-more", onclick: () => { const open = b.classList.toggle("open"); more.textContent = open ? "Show less" : "Show more"; } }, "Show more");
+    return h("div", { class: "bubble-wrap" }, b, more);
+  }
+  return b;
 }
 function messageEl(m) {
   if (m.role === "user") {
     return h("div", { class: "msg user", "data-msg": m.id },
       m.attachments?.length ? h("div", { class: "attach-row" }, m.attachments.map(attachThumb)) : null,
-      m.text ? h("div", { class: "bubble" }, m.text) : null);
+      m.text ? promptBubble(m.text) : null);
   }
   const body = h("div", { class: "body" });
   if (m.typing) body.append(h("div", { class: "typing" }, h("i"), h("i"), h("i")));
