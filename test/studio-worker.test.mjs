@@ -335,7 +335,7 @@ test("pictures: a set of four, two fail, the share they stood for comes back; ea
   const env = newEnv();
   const cookie = await signUp(env);
   const me = (await call(env, "/api/me", { cookie })).json;
-  assert.deepEqual(me.allowedImages, ["nano-banana-2.1", "nano-banana-2", "seedream-5", "flux-2-pro"]);
+  assert.deepEqual(me.allowedImages, ["nano-banana-2.1", "nano-banana-2", "seedream-5", "flux-2-pro", "flux-3"]);
   const locked = await call(env, "/api/generate", { method: "POST", cookie, body: { kind: "image", prompt: "a fox", settings: { model: "nano-banana-pro" } } });
   assert.equal(locked.json.code, "locked");
   env.DB.db.exec(`INSERT INTO payments (session_id, user_id, credits, amount_cent, currency, status, raw_ref) VALUES ('manual_i', '${me.id}', 0, 0, 'eur', 'paid', 'tester')`);
@@ -359,9 +359,16 @@ test("pictures: a set of four, two fail, the share they stood for comes back; ea
     assert.equal(submits[0].body.input.aspect_ratio, "4:5");
     assert.equal(submits[0].headers["X-Provider-Order"], "official_cheap");
     old(env);
+    // The two refused pictures get their second try on FLUX 3 (19 October 2026), at BFL's default tolerance.
+    const retry = await call(env, `/api/generations/${r.json.generation.id}`, { cookie });
+    assert.equal(retry.json.generation.status, "running", retry.text);
+    const seconds = p.sent.filter((s) => s.url.endsWith("/v1/task/submit")).slice(4);
+    assert.deepEqual(seconds.map((s) => [s.body.model, s.body.input.safety_tolerance, s.body.input.aspect_ratio]), [["flux-3-image", 2, "4:5"], ["flux-3-image", 2, "4:5"]]);
+    old(env);
     const done = await call(env, `/api/generations/${r.json.generation.id}`, { cookie });
     assert.equal(done.json.generation.status, "done", done.text);
     assert.equal(done.json.generation.outputs.length, 2);
+    assert.equal(p.sent.filter((s) => s.url.endsWith("/v1/task/submit")).length, 6, "a safety refusal on FLUX 3 is not asked again");
     assert.equal(done.json.credits, 4, "two failed pictures of four give back 1 of the 2 credits");
     const pic = done.json.generation.outputs[0];
     assert.equal((await call(env, pic.url, { cookie })).status, 200);
@@ -371,6 +378,40 @@ test("pictures: a set of four, two fail, the share they stood for comes back; ea
     assert.match(p.sent.filter((s) => s.url.endsWith("/v1/task/submit")).at(-1).body.input.first_frame, /\/media\/u\/up_/);
     const share = await call(env, `/api/generations/${r.json.generation.id}/share`, { method: "POST", cookie, body: { upload: pic.upload } });
     assert.match(share.json.url, /\/media\/u\/up_.*sig=/);
+  } finally { p.restore(); }
+});
+
+test("a well-known character Google refuses is made on FLUX 3; BFL's Protected Content is asked once more at tolerance 4", async () => {
+  // The owner's WALL-E edit, 19 October 2026: Nano Banana 2.1 answered no image, Seedream "sensitive information",
+  // FLUX 3 at tolerance 2 "Protected Content", FLUX 3 at 4 made it.
+  const env = newEnv();
+  const { cookie, id } = await paidAccount(env);
+  const ref = await upload(env, cookie, jpegBytes());
+  let n = 0;
+  const png = new Uint8Array(4000); png.set([0x89, 0x50, 0x4e, 0x47]);
+  const p = fakeProvider((u) => {
+    if (u.endsWith("/v1/task/submit")) return ok({ id: `task_w${++n}` });
+    if (/task_w1$/.test(u)) return ok({ status: "failed", error: "no image generated in response" });
+    if (/task_w2$/.test(u)) return ok({ status: "failed", error: 'Content Moderated: {"Moderation Reasons":["Protected Content"]}' });
+    if (/task_w3$/.test(u)) return ok({ status: "completed", outputs: ["https://cdn.example/w.png"] });
+    if (u === "https://cdn.example/w.png") return new Response(png, { status: 200, headers: { "content-type": "image/png" } });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { kind: "image", prompt: "three robots at a counter", imageIds: [ref.id], settings: { model: "nano-banana-2.1", aspect: "16:9", quality: "4K" } } });
+    assert.equal(r.status, 200, r.text);
+    const paid = credits(env, id);
+    const subs = () => p.sent.filter((s) => s.url.endsWith("/v1/task/submit"));
+    for (let i = 0; i < 3; i++) { old(env); await call(env, `/api/generations/${r.json.generation.id}`, { cookie }); }
+    assert.deepEqual(subs().map((s) => [s.body.model, s.body.input.safety_tolerance ?? null, s.body.input.resolution ?? null]),
+      [["gemini-nano-banana-2.1", null, null], ["flux-3-image", 2, "2k"], ["flux-3-image", 4, "2k"]], "4K on Nano Banana is made at 2K on FLUX 3");
+    assert.equal(subs()[1].headers["X-Provider-Order"], "official_cheap");
+    assert.equal(subs()[1].body.input.images.length, 1, "the same references");
+    const done = await call(env, `/api/generations/${r.json.generation.id}`, { cookie });
+    assert.equal(done.json.generation.status, "done", done.text);
+    assert.equal(done.json.generation.modelName, "FLUX 3", "the card names the model that drew it");
+    assert.equal(done.json.generation.outputs.length, 1);
+    assert.equal(credits(env, id), paid, "same credits, nothing refunded, nothing more charged");
   } finally { p.restore(); }
 });
 

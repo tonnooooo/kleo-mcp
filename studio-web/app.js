@@ -2112,6 +2112,8 @@ const demoImageCatalog = () => [
   ["nano-banana-2", "Nano Banana 2", "Fast Google model, great value", null, ["1K", "2K", "4K"], "2K", { "1K": [1, 1, 1], "2K": [1, 1, 1], "4K": [1, 1, 2] }],
   ["seedream-5", "Seedream 5.0", "ByteDance, sharp and detailed", "Cheapest", ["2K"], "2K", { "2K": [1, 1, 1] }],
   ["flux-2-pro", "FLUX.2 Pro", "Photoreal, natural light", null, ["1K"], "1K", { "1K": [1, 1, 1] }],
+  ["flux-3", "FLUX 3", "Black Forest Labs' newest: real light, edits with up to 10 pictures", "New", ["1K", "2K", "4K"], "2K", { "1K": [1, 1, 1], "2K": [1, 1, 1], "4K": [2, 3, 5] }],
+  ["gpt-image-2.5", "GPT Image 2.5", "OpenAI's newest: precise edits and perfect text", "New", ["1K", "2K"], "1K", { "1K": [1, 2, 3], "2K": [2, 3, 5] }],
 ].map(([key, name, blurb, badge, qualities, dq, pr]) => ({
   key, name, blurb, badge, qualities, defaultQuality: dq, aspects: ["1:1", "4:5", "3:4", "2:3", "9:16", "4:3", "3:2", "16:9", "21:9"], maxReferences: 14, free: key !== "nano-banana-pro", counts: [1, 2, 4],
   prices: Object.fromEntries(qualities.map((q) => [q, { 1: pr[q][0], 2: pr[q][1], 4: pr[q][2] }])),

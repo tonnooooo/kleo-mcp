@@ -13,13 +13,28 @@
  *                     ($7.50 per 1M output; about 1,000 tokens allowed for). Added 18 October 2026, marked New.
  *   Seedream 5.0      doubao-seedream-5-0      ¥0.22 per picture                                          × 0.9
  *   FLUX.2 Pro        flux-2-pro               $0.03 first megapixel (+$0.015 each further one)           × 0.53
- * Gemini and FLUX are routed to the official_cheap channel only, like Veo, so the figures above hold.
+ *   FLUX 3            flux-3-image             per call: 1k $0.048, 2k $0.10, 4k $0.607                   × 0.53
+ *   GPT Image 2.5     gpt-image-2.5-sunburst   tokens: image output $30 per 1M, image input $8 per 1M     × 0.53
+ *                     (high quality, about 6k output tokens at 1K and 14k at 2K, plus the references at high
+ *                     fidelity: priced at $0.15 and $0.30 a picture, above what it should cost)
+ * Gemini, FLUX and GPT are routed to the official_cheap channel only, like Veo, so the figures above hold.
+ *
+ * THE TWO NEWEST (19 October 2026, the owner: "mi servono gli ultimi modelli"). Google (Nano Banana) and ByteDance
+ * (Seedream) refuse well-known characters inside the model itself ("no image generated in response", "the output
+ * image may contain sensitive information"): no parameter on ePhone changes that. FLUX 3 made the owner's WALL-E edit
+ * in one probe. So FLUX 3 is in the picker, and a picture Google or ByteDance (or OpenAI) refuses is made again on
+ * FLUX 3 by itself, for the same credits (FALLBACK_IMAGE_MODEL, src/studio/generate.ts).
+ * FLUX 3 starts at BFL's default safety tolerance (2 of 4). BFL refuses well-known characters too, and names it
+ * ("Content Moderated: Protected Content"): only for THAT reason the picture is asked again at 4, the level the
+ * owner's WALL-E edit passed at. A nudity refusal is never raised, so a stranger's uploaded photo cannot be undressed
+ * by retrying. GPT Image 2.5 runs with moderation "low", OpenAI's setting for platforms (it still refuses sexual
+ * content with real people and minors).
  *
  * Pure module, imported directly by the tests.
  */
 import { CREDIT_USD, DEFAULT_MARGIN } from "./models.ts";
 
-export type ImageModelKey = "nano-banana-pro" | "nano-banana-2.1" | "nano-banana-2" | "seedream-5" | "flux-2-pro";
+export type ImageModelKey = "nano-banana-pro" | "nano-banana-2.1" | "nano-banana-2" | "seedream-5" | "flux-2-pro" | "flux-3" | "gpt-image-2.5";
 export type ImageQuality = "1K" | "2K" | "4K";
 
 export interface ImageModel {
@@ -77,7 +92,75 @@ export const IMAGE_MODELS: ImageModel[] = [
     usd: { "1K": r4(0.03 * 0.53) },
     qualities: ["1K"], defaultQuality: "1K", aspects: COMMON, maxReferences: 8, routing: CHEAP,
   },
+  {
+    key: "flux-3", name: "FLUX 3", blurb: "Black Forest Labs' newest: real light, edits with up to 10 pictures", badge: "New",
+    ephoneModel: "flux-3-image",
+    usd: { "1K": r4(0.048 * 0.53), "2K": r4(0.1 * 0.53), "4K": r4(0.607 * 0.53) },
+    qualities: ["1K", "2K", "4K"], defaultQuality: "2K", aspects: COMMON, maxReferences: 10, routing: CHEAP, noFormat: true,
+  },
+  {
+    key: "gpt-image-2.5", name: "GPT Image 2.5", blurb: "OpenAI's newest: precise edits and perfect text", badge: "New",
+    ephoneModel: "gpt-image-2.5-sunburst",
+    usd: { "1K": 0.15, "2K": 0.3 },
+    qualities: ["1K", "2K"], defaultQuality: "1K", aspects: COMMON, maxReferences: 16, routing: CHEAP,
+  },
 ];
+
+/** Where a picture goes when its own model refuses it (Google and ByteDance refuse well-known characters). */
+export const FALLBACK_IMAGE_MODEL: ImageModelKey = "flux-3";
+/** The models whose refusals are made again on FLUX 3. */
+export const FALLS_BACK = new Set<ImageModelKey>(["nano-banana-pro", "nano-banana-2.1", "nano-banana-2", "seedream-5", "gpt-image-2.5"]);
+/**
+ * A provider's "I won't draw this" (as opposed to a broken request, an empty balance or a timeout): Gemini answers no
+ * image at all, Seedream says the output "may contain sensitive information", OpenAI names its safety system.
+ */
+export const isContentRefusal = (message: string): boolean =>
+  !/quality|quota|balance|余额|额度|timeout|timed out/i.test(message) &&
+  /no image generated|no result|sensitive|safety|moderat|blocked|prohibit|policy|copyright|violat|not allowed|refus|recitation|IMAGE_SAFETY|审核|敏感/i.test(message);
+/** BFL's moderation level for FLUX 3 (0 strictest … 4; 2 is BFL's default). See the note at the top. */
+export const FLUX3_SAFETY = 2;
+/** The level a "Protected Content" refusal (a well-known character) is asked again at. */
+export const FLUX3_SAFETY_PROTECTED = 4;
+/** BFL's refusal for a well-known character, as opposed to nudity or violence. */
+export const isProtectedContent = (message: string): boolean => /protected content/i.test(message);
+
+/** A second try for one picture: on FLUX 3, when the first answer was a refusal of the matching kind. */
+export interface ImageAlternative { model: string; input: Record<string, unknown>; when: "refusal" | "protected" }
+/**
+ * The second tries of one picture, in order. A picture on Google, ByteDance or OpenAI that is refused goes to FLUX 3
+ * (4K is made at 2K there: the credits were set by the first model); any FLUX 3 picture refused as Protected Content
+ * is asked once more at tolerance 4. Each one is used at most once.
+ */
+export function imageAlternatives(s: ImageSettings, prompt: string, refs: string[]): ImageAlternative[] {
+  const fallback = imageModelByKey(FALLBACK_IMAGE_MODEL)!;
+  const own = s.model === FALLBACK_IMAGE_MODEL;
+  if (!own && !FALLS_BACK.has(s.model)) return [];
+  const quality: ImageQuality = own ? s.quality : s.quality === "4K" ? "2K" : s.quality;
+  const settings: ImageSettings = { model: FALLBACK_IMAGE_MODEL, aspect: fallback.aspects.includes(s.aspect) ? s.aspect : "1:1", quality, count: 1 };
+  const strict = imageTaskInput(settings, prompt, refs);
+  return [
+    ...(own ? [] : [{ model: fallback.ephoneModel, input: strict, when: "refusal" as const }]),
+    { model: fallback.ephoneModel, input: { ...strict, safety_tolerance: FLUX3_SAFETY_PROTECTED }, when: "protected" as const },
+  ];
+}
+/** The first second-try a refusal earns, or null. */
+export function alternativeFor(alts: ImageAlternative[] | undefined, message: string): ImageAlternative | null {
+  return (alts ?? []).find((a) => (a.when === "protected" ? isProtectedContent(message) : isContentRefusal(message))) ?? null;
+}
+const FLUX3_RESOLUTION: Record<ImageQuality, string> = { "1K": "1k", "2K": "2k", "4K": "4k" };
+/** GPT Image sizes: both edges multiples of 16, about 1.6 MP at 1K and 3.6 MP at 2K (OpenAI's own presets where they exist). */
+export function gptImageSize(aspect: string, q: ImageQuality): string {
+  const preset: Record<string, string> = q === "2K"
+    ? { "16:9": "2048x1152", "9:16": "1152x2048", "1:1": "1920x1920" }
+    : { "1:1": "1024x1024", "3:2": "1536x1024", "2:3": "1024x1536" };
+  if (preset[aspect]) return preset[aspect];
+  const [a, b] = aspect.split(":").map(Number);
+  const r = a > 0 && b > 0 ? a / b : 1;
+  const area = q === "2K" ? 3_600_000 : 1_572_864;
+  const w = Math.round(Math.sqrt(area * r) / 16) * 16;
+  const h = Math.round(Math.sqrt(area / r) / 16) * 16;
+  return `${w}x${h}`;
+}
 
 export const DEFAULT_IMAGE_MODEL: ImageModelKey = "nano-banana-2";
 
@@ -141,7 +224,7 @@ export function imageCredits(s: ImageSettings, margin = DEFAULT_MARGIN): number 
 
 /** Image models a never-paid account may use (STUDIO_FREE_IMAGE_MODELS; default all but Nano Banana Pro). */
 export function freeImageModels(list: string | undefined): ImageModelKey[] {
-  const raw = (list ?? "nano-banana-2.1,nano-banana-2,seedream-5,flux-2-pro").trim();
+  const raw = (list ?? "nano-banana-2.1,nano-banana-2,seedream-5,flux-2-pro,flux-3").trim();
   if (raw === "*") return IMAGE_MODELS.map((m) => m.key);
   return raw.split(",").map((s) => s.trim()).filter((k): k is ImageModelKey => !!imageModelByKey(k));
 }
@@ -156,6 +239,13 @@ export function imageTaskInput(s: ImageSettings, prompt: string, refs: string[],
     return { prompt: text, size: size[s.aspect] ?? "2K", n: 1, force_single: true, watermark: false, output_format: "jpeg", ...(images.length ? { images } : {}) };
   }
   if (m.key === "flux-2-pro") return { prompt: text, aspect_ratio: s.aspect, output_format: "jpeg", ...(images.length ? { images } : {}) };
+  if (m.key === "flux-3") {
+    return { prompt: text, aspect_ratio: s.aspect, resolution: FLUX3_RESOLUTION[s.quality] ?? "2k", safety_tolerance: FLUX3_SAFETY, grounding: false, ...(images.length ? { images } : {}) };
+  }
+  if (m.key === "gpt-image-2.5") {
+    return { prompt: text, size: gptImageSize(s.aspect, s.quality), quality: "high", n: 1, moderation: "low", output_format: "jpeg", output_compression: 95,
+      ...(images.length ? { images, input_fidelity: "high" } : {}) };
+  }
   return { prompt: text, aspect_ratio: s.aspect, quality: geminiQuality(m, s.quality, otherQuality), ...(m.noFormat ? {} : { output_format: "jpeg" }), ...(images.length ? { images } : {}) };
 }
 

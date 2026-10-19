@@ -53,7 +53,7 @@
     "MAX_NEW_USERS_PER_DAY": "150",
     "MAX_NEW_USERS_PER_IP_DAY": "5",
     "STUDIO_FREE_MODELS": "seedance-2.0-fast", // the owner's rule (15 Sep 2026): gifted credits never buy the expensive models
-    "STUDIO_FREE_IMAGE_MODELS": "nano-banana-2.1,nano-banana-2,seedream-5,flux-2-pro", // pictures are cheap: all but Nano Banana Pro are open to free credits
+    "STUDIO_FREE_IMAGE_MODELS": "nano-banana-2.1,nano-banana-2,seedream-5,flux-2-pro,flux-3", // pictures are cheap: all but Nano Banana Pro are open to free credits
     "NOTIFY_FROM": "Kleo <noreply@kleooai.com>", // sender of the password-reset e-mail; nothing is sent until the RESEND_API_KEY secret is set
     "STUDIO_MARGIN": "1.6",
     "STUDIO_DAILY_BUDGET_USD": "30",

@@ -84,6 +84,8 @@ export interface Slot {
   task: string | null; status: "running" | "done" | "failed"; key?: string; upload?: string; error?: string; type?: "image" | "video" | "audio"; model?: string;
   /** The task to start when this one finishes ("{{prev}}" in its input = this task's result link); see generate.ts. */
   then?: { model: string; input: Record<string, unknown>; output: "image" | "video" | "audio"; routing?: Record<string, string> };
+  /** Second tries on FLUX 3 when the provider refuses this picture (src/studio/image-models.ts imageAlternatives). */
+  alts?: { model: string; input: Record<string, unknown>; when: "refusal" | "protected" }[];
 }
 
 export const getLogin = (env: StudioEnv, provider: string, subject: string) =>
