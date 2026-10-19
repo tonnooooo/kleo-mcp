@@ -25,7 +25,7 @@ import { withPreset } from "./presets.ts";
 import { planTool, toolByKey, toolCredits, toneText, ToolRefusal, type Media, type Plan, type ToolKey } from "./tools.ts";
 import { mediaInfo } from "./media.ts";
 import { refreshFilm } from "./films.ts";
-import { freeImageModels, imageCostUsd, imageCredits, imageModelByKey, imageModelOfProvider, imageTaskInput, isQualityRefusal, normalizeImageSettings, pausedImageModels, type ImageSettings } from "./image-models.ts";
+import { freeImageModels, imageCostUsd, imageCredits, imageModelByKey, imageModelOfProvider, imageTaskInput, isQualityRefusal, normalizeImageSettings, otherQualitySpelling, pausedImageModels, type ImageSettings } from "./image-models.ts";
 import {
   addUpload, getGeneration, insertGeneration, moveGeneration, markChecked, runningCount, studioSpentTodayUsd, uploadsOf,
   type GenerationRow, type Slot,
@@ -662,7 +662,15 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
     try {
       const fill = (o: unknown) => JSON.parse(JSON.stringify(o).split("{{speech}}").join(media.audio?.url ?? ""));
       const input = fill(task.input);
-      const t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: task.model, input }, { timeoutMs: 30_000, routing: task.routing });
+      let t: { id?: string };
+      try {
+        t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: task.model, input }, { timeoutMs: 30_000, routing: task.routing });
+      } catch (e) {
+        // A Gemini app (Face Swap, Photo Character Swap) whose quality spelling ePhone refuses gets one retry with the other.
+        if (!task.model.startsWith("gemini-") || typeof input.quality !== "string" || !isQualityRefusal(e instanceof Error ? e.message : String(e))) throw e;
+        input.quality = otherQualitySpelling(input.quality);
+        t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: task.model, input }, { timeoutMs: 30_000, routing: task.routing });
+      }
       if (!t.id) throw new KieError("ephone.ai answered no task id", 502, true);
       slots.push({ task: String(t.id), status: "running", type: task.output, model: task.model,
         ...(task.then ? { then: { model: task.then.model, input: fill(task.then.input), output: task.then.output, routing: task.then.routing } } : {}) });

@@ -111,6 +111,11 @@ export function geminiQuality(m: ImageModel, q: ImageQuality, other = false): st
   return tier ? q : GEMINI_QUALITY[q] ?? "high";
 }
 export const isQualityRefusal = (message: string): boolean => /quality/i.test(message);
+/** The other spelling of a Gemini quality value ("max" ↔ "4K"…), for the one retry a refusal earns (apps too). */
+export function otherQualitySpelling(q: string): string {
+  const pairs: Record<string, string> = { medium: "1K", high: "2K", max: "4K", "1K": "medium", "2K": "high", "4K": "max" };
+  return pairs[q] ?? q;
+}
 export const IMAGE_COUNTS = [1, 2, 4];
 export const imageModelByKey = (key: string | null | undefined): ImageModel | null => IMAGE_MODELS.find((m) => m.key === key) ?? null;
 

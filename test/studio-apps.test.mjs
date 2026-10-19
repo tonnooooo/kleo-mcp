@@ -209,9 +209,11 @@ test("apps: every app plans, prices within reason and refuses what it cannot do"
   assert.equal(toolCredits(exact.usd), 13, "12 s: $0.06 + 12 x $0.28");
   assert.throws(() => planTool("character-swap", { engine: "aleph" }, { video: vid("v", 20), image: img("c"), frame: fr }), /too long/);
   const still = planTool("photo-character-swap", {}, { photo: { ...img("p"), width: 1600, height: 1200 }, image: img("c") });
-  assert.equal(still.tasks[0].model, "flux-2-pro");
+  assert.equal(still.tasks[0].model, "gemini-3-pro-image", "Nano Banana Pro since 19 Oct 2026");
   assert.deepEqual(still.tasks[0].input.images, ["https://k/p", "https://k/c"]);
   assert.equal(still.tasks[0].input.aspect_ratio, "4:3");
+  assert.equal(still.tasks[0].input.quality, "max", "its top quality");
+  assert.match(still.tasks[0].input.prompt, /Keep from image 1, exactly: the facial expression/);
   assert.equal(toolCredits(still.usd), 1);
   const motion = planTool("motion-control", { prompt: "on a neon stage", quality: "1080p" }, { image: img("c"), video: vid("m", 10) });
   assert.equal(motion.tasks[0].model, "kling-3.0/motion-control");
