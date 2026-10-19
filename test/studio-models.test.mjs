@@ -196,13 +196,16 @@ test("agent picture cards: priced, on an allowed model", () => {
 
 test("copy motion: one picture + one video becomes Kling 3.0 Omni with the picture as first frame and the video as feature video", () => {
   const refs = { images: 1, videos: 1, audios: 0, videoSeconds: 6 };
-  const s = normalizeSettings({ model: "seedance-2.5", videoRole: "motion", resolution: "720p", duration: 5 }, 1, refs);
+  const s = normalizeSettings({ model: "seedance-2.5", videoRole: "motion", resolution: "720p", duration: 5 }, 1, { ...refs, videoSeconds: 5.2 });
   assert.deepEqual(s, { model: "kling-3-omni", duration: 5, resolution: "720p", aspect: "16:9", audio: false, imageRole: "first_frame", videoRole: "motion" });
+  assert.equal(normalizeSettings({ videoRole: "motion", duration: 10 }, 1, { ...refs, videoSeconds: 3.83 }).duration, 4, "as long as the clip it copies: no time left to start the movement again");
+  assert.equal(normalizeSettings({ videoRole: "motion" }, 1, { ...refs, videoSeconds: 2.1 }).duration, 3, "Kling's shortest");
   assert.equal(normalizeSettings({ videoRole: "motion" }, 2, { ...refs, images: 2 }).model, "seedance-2.5", "two pictures: no single first frame, Seedance reference");
   assert.equal(normalizeSettings({ videoRole: "motion" }, 2, { ...refs, images: 2 }).videoRole, "reference");
   assert.equal(normalizeSettings({ model: "kling-3-omni" }, 0, { images: 0, videos: 0, audios: 0, videoSeconds: 0 }).model, "seedance-2.5", "Kling is only for copying motion");
   const input = taskInput(s, "The shot starts on the first frame.", ["https://k/img"], "safety", { videos: ["https://k/vid"], audios: [] });
   assert.deepEqual(input.contents.map((c) => [c.type, c.url ?? null]), [["prompt", null], ["first_frame", "https://k/img"], ["feature_video", "https://k/vid"]]);
+  assert.match(input.contents[0].text, /^The shot starts on the first frame\. One continuous take that ends exactly where the reference video ends.*never bends, melts, morphs/);
   assert.deepEqual(input.settings, { resolution: "720p", aspect_ratio: "16:9", duration: 5, audio: "off", multi_shot: false });
   assert.equal(clipCredits(s, 1.6, 6), 2, "5 s 720p: 5 x 0.9 x 0.8 CNY = $0.51");
   assert.equal(clipCredits({ ...s, resolution: "1080p" }, 1.6, 6), 3, "5 s 1080p: $0.69");

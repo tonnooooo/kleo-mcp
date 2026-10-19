@@ -1183,7 +1183,7 @@ function generatorView(kind) {
       fill(settingsBox,
         fromPhoto ? null : [h("div", { class: "field-h" }, "Format"), seg(m.aspects.slice(0, 4).map((a) => ({ value: a, label: a })), s.aspect, (a) => setV({ ...s, aspect: a })),
           m.aspects.length > 4 ? h("button", { class: "mini", style: { alignSelf: "flex-start" }, onclick: () => openAspect(m.aspects, s.aspect, (a) => setV({ ...s, aspect: a })) }, icon("frame", 14), "More formats") : null],
-        s.videoRole === "edit" ? null : [h("div", { class: "field-h" }, "Length"), seg(m.durations.map((d) => ({ value: d, label: `${d}s`, cost: price({ ...s, duration: d }) })), s.duration, (d) => setV({ ...s, duration: d }))],
+        s.videoRole === "edit" || s.videoRole === "motion" ? null : [h("div", { class: "field-h" }, "Length"), seg(m.durations.map((d) => ({ value: d, label: `${d}s`, cost: price({ ...s, duration: d }) })), s.duration, (d) => setV({ ...s, duration: d }))],
         h("div", { class: "field-h" }, "Quality"), seg(resList(m).map((r) => { const locked = resLocked(r) || !m.resolutions.includes(r); return { value: r, label: r, locked, note: resNote(), cost: locked ? undefined : price({ ...s, resolution: r }) }; }), s.resolution, (r) => setV({ ...s, resolution: r })),
         h("label", { class: "toggle-row", onclick: () => setV({ ...s, audio: !s.audio }) }, h("span", {}, icon(s.audio ? "sound" : "mute", 17), " Sound"), h("span", { class: "switch" + (s.audio ? " on" : "") })));
     } else {

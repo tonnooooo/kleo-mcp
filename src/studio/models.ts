@@ -130,8 +130,8 @@ export const MODELS: StudioModel[] = [
     key: "kling-3-omni", name: "Kling 3.0", blurb: "Your picture, moving like your video", badge: "Motion",
     family: "kling", ephoneModel: "kling-3.0-omni/omni-video",
     usdPerSecond: { "720p": r4(0.9 * KLING * CNY), "1080p": r4(1.2 * KLING * CNY) },
-    maxRefVideos: 1, maxRefVideoSeconds: 10,
-    durations: [5, 10, 15], defaultDuration: 5, resolutions: ["720p", "1080p"], defaultResolution: "1080p",
+    maxRefVideos: 1, maxRefVideoSeconds: 15,
+    durations: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], defaultDuration: 5, resolutions: ["720p", "1080p"], defaultResolution: "1080p",
     aspects: ["16:9", "9:16", "1:1"], maxReferences: 1, motionOnly: true,
   },
 ];
@@ -190,7 +190,12 @@ export function normalizeSettings(raw: Partial<Record<keyof ClipSettings, unknow
   const duration = Number.isFinite(d) && d > 0 ? nearest(m.durations, d) : m.defaultDuration;
   const resolution = m.resolutions.includes(raw.resolution as Resolution) ? (raw.resolution as Resolution) : m.defaultResolution;
   const aspect = m.aspects.includes(String(raw.aspect)) ? String(raw.aspect) : "16:9";
-  if (motion) return { model: m.key, duration, resolution, aspect, audio: false, imageRole: "first_frame", videoRole: "motion" };
+  // The copy is exactly as long as the clip it copies (19 October 2026, the first live test): a 3.8 s clip asked for
+  // 5 s, and Kling ran out of movement and started it again — the car landed back on the ice after taking off.
+  if (motion) {
+    const fit = refs.videoSeconds > 0 ? Math.max(3, Math.min(15, Math.round(refs.videoSeconds))) : duration;
+    return { model: m.key, duration: fit, resolution, aspect, audio: false, imageRole: "first_frame", videoRole: "motion" };
+  }
   let imageRole: ImageRole = raw.imageRole === "reference" || raw.imageRole === "first_frame" ? (raw.imageRole as ImageRole) : imageCount === 1 ? "first_frame" : "reference";
   if (imageCount === 0) imageRole = "none";
   // One picture can be the opening frame; more than one can only guide the look.
@@ -264,7 +269,12 @@ export function taskInput(s: ClipSettings, prompt: string, images: string[], saf
   const text = prompt.trim().slice(0, 2000);
   if (m.family === "kling") {
     // Kling 3.0 Omni: the picture is the first frame, the video a "feature video" (its camera and pacing), one shot.
-    const contents: Record<string, unknown>[] = [{ type: "prompt", text }];
+    // The same test: the car tumbled and bent as it flew. The prompt now pins one continuous take that ends with the
+    // reference, and a subject that keeps its shape (Kling reads the negative part from the same text).
+    const guard = " One continuous take that ends exactly where the reference video ends: no cut, no jump back, no repeated action, no reset."
+      + " The subject keeps its exact shape, size, proportions and design in every frame; it never bends, melts, morphs or breaks apart."
+      + " Avoid: cuts, looping, deformation, extra vehicles or people, text.";
+    const contents: Record<string, unknown>[] = [{ type: "prompt", text: (text + guard).slice(0, 2500) }];
     if (images[0]) contents.push({ type: "first_frame", url: images[0] });
     if (clips.videos[0]) contents.push({ type: "feature_video", url: clips.videos[0] });
     return { contents, settings: { resolution: s.resolution, aspect_ratio: s.aspect, duration: s.duration, audio: "off", multi_shot: false } };
