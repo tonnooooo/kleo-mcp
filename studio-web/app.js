@@ -1462,6 +1462,23 @@ function split(left, right, labels) {
   return h("div", { class: "art-split" }, left, h("div", { class: "art-split-r" }, right), h("span", { class: "art-split-bar" }, h("i")),
     labels ? [chip(labels[0], "l"), chip(labels[1], "r")] : null);
 }
+/** The engine card's preview: one result of the app, full frame (an app without one shows none). */
+const ENGINE_THUMB = {
+  "motion-control": () => artVideo(loop("kitten-knight-jump")),
+  "video-edit": () => artVideo(loop("koi-supra-night")),
+  "video-face-swap": () => artVideo(loop("made-in-kleo-ai-queen")),
+  "video-upscale": () => artVideo(loop("dragon-rider-cat")),
+  "sfx": () => artVideo(loop("mechs-in-snow")),
+  "character-swap": () => artImg(pic("swap2-b")),
+  "photo-character-swap": () => artImg(pic("photoswap3-b")),
+  "face-swap": () => artImg(pic("face-b")),
+  "talking-photo": () => artImg(pic("speaker")),
+  "lipsync": () => artImg(pic("face-b")),
+  "outfit-swap": () => artImg(pic("outfit-b"), "top"),
+  "voice": () => artImg(pic("face-a")),
+  "music": () => artImg(pic("music")),
+};
+function engineThumb(key) { const make = ENGINE_THUMB[key]; return make ? h("div", { class: "ec-thumb" }, make()) : null; }
 const APP_ART = {
   "face-swap": () => split(artImg(pic("face-a")), artImg(pic("face-b"))),
   "video-face-swap": () => h("div", { class: "art-stack" }, artVideo(loop("made-in-kleo-ai-queen")), h("span", { class: "art-face" }, artImg(pic("face-a"))), h("span", { class: "art-arrow" }, icon("redo", 16, 2.2))),
@@ -1643,9 +1660,11 @@ function toolBody(key, compact, top = null) {
   }
   function draw() {
     const files = t.fields.filter((f) => ["image", "video", "audio"].includes(f.kind) && visible(f));
-    // No engine card with a little preview on top of the form (19 October 2026, the owner: "fanno schifo come
-    // anteprime"): the engine's name lives in the big empty state next to it.
+    // The engine card: one clean clip or picture of what the app makes, no before/after split, no arrows, no chips
+    // (19 October 2026, the owner: the little previews "fanno schifo").
+    const eng = ENGINE[key] || [t.name, t.blurb];
     fill(form, top,
+      compact ? null : h("div", { class: "engine-card" }, engineThumb(key), h("div", { class: "ec-tx" }, h("b", {}, eng[0]), h("span", {}, eng[1]))),
       files.length ? h("div", { class: "drops" }, files.map((f, i) => { const z = dropZone(f); if (files.length === 1 || (files.length % 2 === 1 && i === files.length - 1)) z.classList.add("one"); return z; })) : null,
       t.fields.filter((f) => !["image", "video", "audio"].includes(f.kind)).map(fieldEl),
       t.consent ? h("label", { class: "consent" }, h("input", { type: "checkbox", checked: st.consent || null, onchange: (e) => { st.consent = e.target.checked; drawCta(); } }),
