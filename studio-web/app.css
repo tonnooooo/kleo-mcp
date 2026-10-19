@@ -17,7 +17,7 @@
   --amber: #f3b53f;
   --amber-ink: #1a1200;
   --amber-soft: rgba(243, 181, 63, .16);
-  --blue: #007aff;
+  --accent: #a86f00; /* links, focus rings, "See all": Kleo amber, never iOS blue (19 October 2026) */
   --red: #ff3b30;
   --green: #34c759;
   --glass: rgba(255, 255, 255, .78);
@@ -35,7 +35,7 @@
     --bg: #000000; --bg-2: #0b0b0d; --bg-3: #1c1c1e; --card: #1c1c1e; --elev: #2c2c2e;
     --fill: rgba(118, 118, 128, .24); --fill-2: rgba(118, 118, 128, .16); --fill-3: rgba(118, 118, 128, .32);
     --ink: #ffffff; --ink-2: rgba(235, 235, 245, .62); --ink-3: rgba(235, 235, 245, .3); --sep: rgba(84, 84, 88, .5);
-    --primary: #ffffff; --on-primary: #000000; --blue: #0a84ff; --red: #ff453a; --green: #30d158;
+    --primary: #ffffff; --on-primary: #000000; --accent: #f5c451; --red: #ff453a; --green: #30d158;
     --glass: rgba(22, 22, 24, .74); --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 28px rgba(0, 0, 0, .4);
     --shadow-l: 0 24px 70px rgba(0, 0, 0, .6); color-scheme: dark;
   }
@@ -44,7 +44,7 @@
   --bg: #000000; --bg-2: #0b0b0d; --bg-3: #1c1c1e; --card: #1c1c1e; --elev: #2c2c2e;
   --fill: rgba(118, 118, 128, .24); --fill-2: rgba(118, 118, 128, .16); --fill-3: rgba(118, 118, 128, .32);
   --ink: #ffffff; --ink-2: rgba(235, 235, 245, .62); --ink-3: rgba(235, 235, 245, .3); --sep: rgba(84, 84, 88, .5);
-  --primary: #ffffff; --on-primary: #000000; --blue: #0a84ff; --red: #ff453a; --green: #30d158;
+  --primary: #ffffff; --on-primary: #000000; --accent: #f5c451; --red: #ff453a; --green: #30d158;
   --glass: rgba(22, 22, 24, .74); --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 28px rgba(0, 0, 0, .4);
   --shadow-l: 0 24px 70px rgba(0, 0, 0, .6); color-scheme: dark;
 }
@@ -59,9 +59,9 @@ body {
 button, input, textarea, select { font: inherit; color: inherit; letter-spacing: inherit; }
 button { cursor: pointer; border: 0; background: none; padding: 0; }
 button:disabled { cursor: default; }
-a { color: var(--blue); text-decoration: none; }
+a { color: var(--accent); text-decoration: none; }
 svg { display: block; flex: none; }
-:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; border-radius: 10px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 10px; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 .boot { height: 100dvh; display: grid; place-items: center; }
@@ -182,12 +182,12 @@ svg { display: block; flex: none; }
 .card-title { font-size: 18px; font-weight: 650; letter-spacing: -.02em; padding: 2px 16px 0; }
 .card-prompt { padding: 6px 16px 0; color: var(--ink-2); font-size: 15px; white-space: pre-wrap; }
 .card-prompt.clamp { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
-.more { color: var(--blue); font-size: 15.5px; font-weight: 500; padding: 2px 16px 0; }
+.more { color: var(--accent); font-size: 15.5px; font-weight: 500; padding: 2px 16px 0; }
 .card textarea {
   display: block; width: calc(100% - 24px); margin: 8px 12px 0; min-height: 120px; resize: vertical; border-radius: 14px; border: 1px solid var(--sep);
   background: var(--bg-2); padding: 10px 12px; font-size: 15px; line-height: 1.45; outline: none;
 }
-.card textarea:focus { border-color: var(--blue); }
+.card textarea:focus { border-color: var(--accent); }
 .pills { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 16px 0; }
 .pill {
   display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 11px; border-radius: 15px; background: var(--fill-2);
@@ -249,7 +249,7 @@ button.pill:hover { background: var(--fill); }
   pointer-events: auto; max-width: 760px; margin: 0 auto; background: var(--elev); border: 1px solid var(--sep);
   border-radius: 28px; box-shadow: var(--shadow-l); padding: 8px; transition: border-color .2s, box-shadow .2s;
 }
-.composer.drag { border-color: var(--blue); box-shadow: 0 0 0 4px rgba(0, 122, 255, .15), var(--shadow-l); }
+.composer.drag { border-color: var(--accent); box-shadow: 0 0 0 4px rgba(243, 181, 63, .16), var(--shadow-l); }
 .att { display: flex; gap: 8px; padding: 8px 8px 2px; overflow-x: auto; scrollbar-width: none; }
 .att::-webkit-scrollbar { display: none; }
 .att:empty { display: none; }
@@ -320,7 +320,7 @@ button.row:hover { background: var(--fill-2); }
 .row .lbl b { display: flex; align-items: center; gap: 7px; font-size: 16px; font-weight: 550; }
 .row .lbl span { display: block; font-size: 15px; color: var(--ink-2); margin-top: 1px; }
 .row .val { color: var(--ink-2); font-size: 15px; display: inline-flex; align-items: center; gap: 4px; font-variant-numeric: tabular-nums; }
-.row .check { color: var(--blue); }
+.row .check { color: var(--accent); }
 .row.locked .lbl b, .row.locked .lbl span { opacity: .5; }
 .badge { font-size: 13px; font-weight: 700; padding: 2px 7px; border-radius: 6px; background: var(--amber-soft); color: #b07a10; letter-spacing:0; }
 :root[data-theme="dark"] .badge { color: var(--amber); }
@@ -367,7 +367,7 @@ button.row:hover { background: var(--fill-2); }
 }
 :root[data-theme="dark"] .input { background: var(--bg-3); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .input { background: var(--bg-3); } }
-.input:focus { border-color: var(--blue); background: var(--elev); }
+.input:focus { border-color: var(--accent); background: var(--elev); }
 .auth .btn { width: 100%; height: 52px; border-radius: 26px; font-size: 17px; }
 .google { background: var(--elev); border: 1px solid var(--sep); color: var(--ink); }
 .google:hover { background: var(--bg-2); }
@@ -375,7 +375,7 @@ button.row:hover { background: var(--fill-2); }
 .or::before, .or::after { content: ""; flex: 1; border-top: 1px solid var(--sep); }
 .auth-err { color: var(--red); font-size: 15.5px; min-height: 22px; margin: 4px 0 8px; }
 .auth-switch { margin-top: 18px; font-size: 15px; color: var(--ink-2); }
-.auth-switch button { color: var(--blue); font-weight: 600; }
+.auth-switch button { color: var(--accent); font-weight: 600; }
 .auth-foot { margin-top: 26px; font-size: 15px; color: var(--ink-3); line-height: 1.6; }
 .auth-foot a { color: var(--ink-2); }
 .gift { display: inline-flex; align-items: center; gap: 6px; background: var(--amber-soft); color: #9a6a00; border-radius: 14px; padding: 6px 12px; font-size: 15.5px; font-weight: 600; margin-bottom: 22px; }
@@ -506,7 +506,7 @@ a.row { color: var(--ink); }
 .panel { background: var(--card); border: 1px solid var(--sep); border-radius: 24px; box-shadow: var(--shadow); padding: 16px; position: sticky; top: 16px; display: flex; flex-direction: column; gap: 14px; }
 .field { display: flex; flex-direction: column; gap: 8px; }
 .field-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 15px; font-weight: 650; color: var(--ink-2); letter-spacing:0; }
-.field-h .act { text-transform: none; letter-spacing: 0; font-size: 15px; font-weight: 600; color: var(--blue); display: inline-flex; align-items: center; gap: 4px; }
+.field-h .act { text-transform: none; letter-spacing: 0; font-size: 15px; font-weight: 600; color: var(--accent); display: inline-flex; align-items: center; gap: 4px; }
 .model-card { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 16px; background: var(--bg-2); text-align: left; width: 100%; transition: background .15s; }
 .model-card:hover { background: var(--bg-3); }
 .model-card .mi { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; color: #fff; flex: none; background: linear-gradient(135deg, #ffb23e, #ff6a3d); }
@@ -516,7 +516,7 @@ a.row { color: var(--ink); }
 .model-card .mt b { flex-wrap: wrap; row-gap: 3px; }
 .model-card .mt b .badge { flex: none; white-space: nowrap; }
 .prompt-box { position: relative; background: var(--bg-2); border-radius: 16px; border: 1px solid transparent; transition: border-color .15s, background .15s; }
-.prompt-box:focus-within { border-color: var(--blue); background: var(--elev); }
+.prompt-box:focus-within { border-color: var(--accent); background: var(--elev); }
 .prompt-box textarea { display: block; width: 100%; min-height: 120px; max-height: 300px; resize: vertical; border: 0; outline: 0; background: transparent; padding: 12px 14px 46px; font-size: 16px; line-height: 1.45; }
 .prompt-box .pb-tools { position: absolute; left: 8px; right: 8px; bottom: 8px; display: flex; gap: 6px; align-items: center; }
 .mini { height: 30px; padding: 0 11px; border-radius: 15px; background: var(--elev); border: 1px solid var(--sep); font-size: 15px; font-weight: 600; display: inline-flex; align-items: center; gap: 5px; color: var(--ink); }
@@ -525,7 +525,7 @@ a.row { color: var(--ink); }
 .mini.wand svg { color: #bf5af2; }
 .refs { display: flex; gap: 8px; flex-wrap: wrap; }
 .ref-add { width: 76px; height: 76px; border-radius: 16px; border: 1.5px dashed var(--fill-3); display: grid; place-items: center; color: var(--ink-2); background: var(--fill-2); transition: border-color .15s, background .15s; }
-.ref-add:hover { border-color: var(--blue); color: var(--blue); }
+.ref-add:hover { border-color: var(--accent); color: var(--accent); }
 .ref-add span { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 13px; font-weight: 650; }
 .ref { position: relative; width: 76px; height: 76px; border-radius: 16px; overflow: hidden; background: var(--bg-3); flex: none; }
 .ref img, .ref video { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -604,11 +604,11 @@ a.row { color: var(--ink); }
 .app-hero .art { width: 64px; height: 64px; border-radius: 18px; display: grid; place-items: center; color: #fff; flex: none; box-shadow: var(--shadow); }
 .app-hero h1 { margin: 0; font-size: 28px; font-weight: 760; letter-spacing: -.03em; }
 .app-hero p { margin: 4px 0 0; color: var(--ink-2); }
-.back { display: inline-flex; align-items: center; gap: 4px; color: var(--blue); font-weight: 600; font-size: 15px; margin-bottom: 8px; }
+.back { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); font-weight: 600; font-size: 15px; margin-bottom: 8px; }
 .back svg { transform: rotate(180deg); }
 .drops { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
 .drop { position: relative; border-radius: 18px; border: 1.5px dashed var(--fill-3); background: var(--fill-2); min-height: 150px; display: grid; place-items: center; text-align: center; padding: 12px; cursor: pointer; transition: border-color .15s, background .15s; overflow: hidden; }
-.drop:hover, .drop.drag { border-color: var(--blue); background: rgba(0, 122, 255, .06); }
+.drop:hover, .drop.drag { border-color: var(--accent); background: rgba(243, 181, 63, .07); }
 .drop .dl { display: flex; flex-direction: column; align-items: center; gap: 6px; color: var(--ink-2); }
 .drop .dl b { color: var(--ink); font-size: 15px; }
 .drop .dl small { font-size: 15px; line-height: 1.3; }
@@ -622,7 +622,7 @@ a.row { color: var(--ink); }
 .drop audio { width: 100%; }
 .drop.one { grid-column: 1 / -1; }
 .text-in { width: 100%; border: 1px solid transparent; background: var(--bg-2); border-radius: 14px; padding: 12px 14px; font-size: 16px; line-height: 1.45; outline: none; resize: vertical; min-height: 96px; }
-.text-in:focus { border-color: var(--blue); background: var(--elev); }
+.text-in:focus { border-color: var(--accent); background: var(--elev); }
 .voice-pick { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
 .voice-pick::-webkit-scrollbar { display: none; }
 .voice-pick button { flex: none; height: 38px; padding: 0 14px; border-radius: 19px; background: var(--fill-2); font-size: 15.5px; font-weight: 600; white-space: nowrap; }
@@ -1152,10 +1152,16 @@ b, strong { font-weight: 700; }
 /* No flowing lines any more, no coloured glow: one deep, flat background. */
 body::after { display: none; }
 body::before { display: none; }
+/* Dark is near-black and neutral, like Higgsfield and Mira (19 October 2026, the owner: "un tocco di nero … i colori
+   sembrano blu"). The old #05090f / #0d1219 family leaned navy. */
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) { --bg: #05090f; --bg-2: #0d1219; --bg-3: #151b24; --card: #0f141b; --elev: #161c25; --sep: rgba(255, 255, 255, .08); --fill-2: rgba(255, 255, 255, .06); --fill-3: rgba(255, 255, 255, .12); }
+  :root:not([data-theme="light"]) { --bg: #09090b; --bg-2: #111113; --bg-3: #19191c; --card: #121214; --elev: #1b1b1e; --sep: rgba(255, 255, 255, .07);
+    --fill: rgba(255, 255, 255, .09); --fill-2: rgba(255, 255, 255, .055); --fill-3: rgba(255, 255, 255, .13);
+    --ink-2: rgba(255, 255, 255, .6); --ink-3: rgba(255, 255, 255, .34); --glass: rgba(9, 9, 11, .8); }
 }
-:root[data-theme="dark"] { --bg: #05090f; --bg-2: #0d1219; --bg-3: #151b24; --card: #0f141b; --elev: #161c25; --sep: rgba(255, 255, 255, .08); --fill-2: rgba(255, 255, 255, .06); --fill-3: rgba(255, 255, 255, .12); }
+:root[data-theme="dark"] { --bg: #09090b; --bg-2: #111113; --bg-3: #19191c; --card: #121214; --elev: #1b1b1e; --sep: rgba(255, 255, 255, .07);
+  --fill: rgba(255, 255, 255, .09); --fill-2: rgba(255, 255, 255, .055); --fill-3: rgba(255, 255, 255, .13);
+  --ink-2: rgba(255, 255, 255, .6); --ink-3: rgba(255, 255, 255, .34); --glass: rgba(9, 9, 11, .8); }
 /* Quiet scrollbars: thin and dark, never the grey Windows bar beside the panel. */
 * { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, .14) transparent; }
 *::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -1386,3 +1392,66 @@ img.fx-in { animation: fx-img-in .7s var(--ease-out) both; }
 .bump { animation: fx-bump .55s var(--ease-spring); }
 @keyframes fx-bump { 35% { transform: scale(1.14); } }
 @media (prefers-reduced-motion: reduce) { .fx-ink, .glide::before { display: none; } .modes > button.on { background: var(--primary); } .vtabs > button.on { background: var(--elev); } .nav-tab.on { background: var(--fill); } img.fx-wait { opacity: 1; } }
+
+/* ── Darker and calmer (19 October 2026, the owner: "tema più scuro … sistema le grafiche … anche il menu non mi piace
+   … see all non mi piace", after Higgsfield, Ausar and Mira). Near-black surfaces, one amber accent, no iOS blue. ── */
+:root { --well: var(--bg-2); --pill: #ffffff; }
+:root[data-theme="dark"] { --well: #19191c; --pill: #2a2a2e; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --well: #19191c; --pill: #2a2a2e; } }
+/* The sliding pills measure from their own box (app.js glide): the box is positioned from the first paint. */
+.modes, .vtabs, .nav-tabs { position: relative; }
+/* A card moved from one list to another stays still (app.js resultCard). */
+.result.seen, .fx-stagger > .seen { animation: none; }
+
+/* Top bar: plain text tabs like Higgsfield's. The chosen one is white on a soft pill, the others grey; no icons. */
+.nav { gap: 4px; background: color-mix(in srgb, var(--bg) 88%, transparent); border-bottom: 1px solid var(--sep); }
+.nav .brand { font-size: 18px; font-weight: 800; letter-spacing: -.03em; margin-right: 16px; }
+.nav-tabs { gap: 2px; padding: 3px; }
+.nav-tab { height: 36px; padding: 0 13px; border-radius: 10px; font-size: 15px; font-weight: 600; color: var(--ink-2); }
+.nav-tab svg { display: none; }
+.nav-tab:hover { color: var(--ink); background: transparent; }
+.nav-tab.on { color: var(--ink); background: var(--fill); }
+.nav-tabs.glide::before { background: var(--fill); border-radius: 10px; box-shadow: inset 0 0 0 1px var(--sep); }
+.nav-tabs.glide > .nav-tab.on { background: transparent; }
+.nav-right { gap: 8px; }
+.nav-right .btn-sm { height: 38px; border-radius: 12px; padding: 0 14px; }
+.nav-right .credits-pill { height: 38px; border-radius: 12px; border: 1px solid var(--sep); background: var(--fill-2); }
+.nav-right .avatar-btn { width: 38px; height: 38px; }
+.tabbar button.on svg { color: var(--cta-a); }
+
+/* Create · Edit · Motion Control, and every other segmented switch: a raised pill on a dark track, never darker. */
+.vtabs { padding: 4px; gap: 4px; border-radius: 14px; background: var(--fill-2); border: 1px solid var(--sep); }
+.vtabs button { height: 40px; border-radius: 10px; }
+.vtabs button.on, .vtabs.glide::before { background: var(--pill); }
+.vtabs.glide::before { border-radius: 10px; box-shadow: 0 1px 2px rgba(0, 0, 0, .35), inset 0 1px 0 rgba(255, 255, 255, .06); }
+.seg button.on { background: var(--pill); }
+
+/* "See all": a quiet pill with an arrow, the same family as every other small button. */
+.field-h .act { height: 32px; padding: 0 10px 0 12px; border-radius: 16px; gap: 4px; background: var(--fill-2); border: 1px solid var(--sep); color: var(--ink); font-size: 15px; font-weight: 600; }
+.field-h .act:hover { background: var(--fill); }
+.field-h .act svg { color: var(--ink-2); }
+/* The other text links: white, not coloured. */
+.back, .more, .auth-switch button { color: var(--ink); }
+.back:hover, .more:hover, .auth-switch button:hover { color: var(--accent); }
+
+/* Panels and the boxes inside them: the box is a step lighter than its panel, as on Higgsfield. */
+.panel { box-shadow: none; }
+.model-card, .prompt-box, .text-in, .engine-card, .preset { background: var(--well); }
+.model-card:hover { background: color-mix(in srgb, var(--well) 80%, #fff 6%); }
+.prompt-box:focus-within, .text-in:focus { background: var(--well); }
+.result, .app-card, .pl-card { box-shadow: none; }
+
+/* Menus: one dark card with a hairline, rows that light up softly. */
+.menu, .account-menu { background: var(--elev); border: 1px solid var(--sep); box-shadow: 0 24px 60px -12px rgba(0, 0, 0, .7); }
+.am-item, .menu .row { border-radius: 10px; }
+.am-item:hover, .menu button.row:hover { background: var(--fill); }
+.am-credits { background: var(--fill-2); border: 1px solid var(--sep); }
+/* The top bar never runs off the screen: on a 1024 px window it was 1193 px wide and hid the credits and the avatar.
+   The tabs scroll sideways when they don't fit, and "Install plugin" waits for a wide screen. */
+.frame { grid-template-columns: minmax(0, 1fr); }
+.nav, .nav-tabs { min-width: 0; }
+.nav-right { flex: none; }
+@media (max-width: 1240px) { .nav-plugin { display: none; } }
+/* Phones: "Motion Control" stays on one line (it broke in two at 375 px); the short "Edit" gives it the room. */
+.vtabs button { white-space: nowrap; }
+@media (max-width: 520px) { .vtabs { grid-template-columns: 1fr .72fr 1.4fr; } }

@@ -359,11 +359,18 @@ async function route() {
   if (p === "/library") return show("library", () => libraryView());
   return show("chat", () => newChat());
 }
+let lastSection = null;
 function show(key, render) {
   S.view = key;
-  for (const b of document.querySelectorAll("[data-page]")) b.classList.toggle("on", b.dataset.page === key);
-  // The old page fades, the new one rises in (motion, 19 October 2026). Without View Transitions it just rises in.
+  // The phone's tab bar has no Motion Control tab: Video stays lit there.
+  for (const b of document.querySelectorAll("[data-page]")) b.classList.toggle("on", b.dataset.page === key || (key === "motion" && b.dataset.page === "video" && !!b.closest(".tabbar")));
+  // The old page fades, the new one fades in (motion, 19 October 2026). Inside one section (the Video page's Create,
+  // Edit and Motion Control tabs) nothing moves but the tab pill: the owner saw his creations stutter at every switch.
   const v = viewEl();
+  const section = location.pathname.startsWith("/video") ? "/video" : location.pathname;
+  const same = section === lastSection;
+  lastSection = section;
+  if (same) { render(); return; }
   motionStamp = performance.now();
   if (v?.childElementCount && document.startViewTransition && !reducedMotion() && !document.hidden) { document.startViewTransition(render); return; }
   render();
@@ -914,7 +921,7 @@ function picturesEl(g) {
 }
 function refreshGen(id) {
   for (const old of document.querySelectorAll(`[data-gen="${id}"]`)) old.replaceWith(genEl(id));
-  for (const old of document.querySelectorAll(`[data-result="${id}"]`)) old.replaceWith(resultCard(S.gens.get(id)));
+  for (const old of document.querySelectorAll(`[data-result="${id}"]`)) { const card = resultCard(S.gens.get(id)); if (card !== old) old.replaceWith(card); }
 }
 async function share(g, out) {
   try {
@@ -1217,7 +1224,7 @@ function generatorView(kind) {
   function drawPresets() {
     if (!isVid) { fill(presetBox); return; }
     const list = S.config.presets || [];
-    fill(presetBox, h("div", { class: "field-h" }, "Camera & effects", h("button", { class: "act", onclick: () => openPresets(page.preset, (k) => { page.preset = k; draw(); }) }, "See all")),
+    fill(presetBox, h("div", { class: "field-h" }, "Camera & effects", h("button", { class: "act", onclick: () => openPresets(page.preset, (k) => { page.preset = k; draw(); }) }, "See all", icon("right", 14, 2.2))),
       h("div", { class: "presets" }, [{ key: null, name: "None", hint: "Just your prompt", tint: "#8e8e93" }, ...list.slice(0, 12)].map((p) => presetTile(p, page.preset === p.key, () => { page.preset = page.preset === p.key ? null : p.key; draw(); }))));
   }
   function cost() {
@@ -1310,8 +1317,21 @@ function openPresets(current, pick) {
 }
 
 // ── result cards (pages, Library) ───────────────────────────────────────────────────────────────────────────────
+// A finished card is built once and then moved, never rebuilt (19 October 2026). Every switch between Create, Edit and
+// Motion Control, and the feed's second draw (first from memory, then from the server), used to make every card again:
+// pictures faded in from a blur and clips went black for a moment, the "scattini" the owner saw. A card that is still
+// generating is always built fresh (its clock and progress move).
+const CARDS = new Map();
 function resultCard(g) {
   if (!g) return h("div");
+  const sig = g.status === "running" ? null : JSON.stringify([g.status, g.video, g.outputs, g.error, g.refunded, g.prompt, g.modelName]);
+  const kept = sig && CARDS.get(g.id);
+  if (kept && kept.sig === sig) { kept.el.classList.add("seen"); kept.el.classList.remove("just-done"); return kept.el; }
+  const el = buildResultCard(g);
+  if (sig) CARDS.set(g.id, { sig, el });
+  return el;
+}
+function buildResultCard(g) {
   const out = g.output || (g.kind === "image" ? "image" : "video");
   const el = h("div", { class: "result" + (g.status === "failed" ? " failed" : ""), "data-result": g.id });
   const s = g.settings || {};
@@ -1924,7 +1944,7 @@ function openAccount(e) {
   closeLayer();
   const r = anchor.getBoundingClientRect();
   const item = (ic, label, fn, cls = "") => h("button", { class: "am-item " + cls, onclick: () => { closeLayer(); fn(); } }, icon(ic, 18), h("span", {}, label));
-  const theme = store.get("theme", "system");
+  const theme = store.get("theme", "dark");
   const menu = h("div", { class: "account-menu", role: "menu", style: { top: `${r.bottom + 10}px`, right: `${Math.max(12, innerWidth - r.right)}px` } },
     h("div", { class: "am-head" }, h("span", { class: "avatar" }, (S.me.name || S.me.email || "K")[0].toUpperCase()),
       h("div", {}, h("b", {}, S.me.name || "Your account"), h("span", {}, S.me.email || "Signed in with a Kleo key"))),
@@ -2043,7 +2063,7 @@ function accountView() {
       h("li", {}, "On Kleo's page, paste your Kleo key to use this account.")));
 
   // Appearance
-  const theme = store.get("theme", "system");
+  const theme = store.get("theme", "dark");
   const appearance = card("appearance", "Appearance", null, h("div", { class: "seg2 acct-seg" }, ["system", "light", "dark"].map((t) =>
     h("button", { class: t === theme ? "on" : "", onclick: () => { store.set("theme", t); applyTheme(); accountView(); } }, t === "system" ? "Automatic" : t[0].toUpperCase() + t.slice(1)))));
 
@@ -2080,7 +2100,7 @@ async function signOut(already = false) {
   history.replaceState(null, "", "/"); enter(); toast("Signed out");
 }
 function applyTheme() {
-  const t = store.get("theme", "system");
+  const t = store.get("theme", "dark");
   if (t === "system") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", t);
 }
 
@@ -2103,6 +2123,7 @@ async function deleteGen(g) {
   S.gens.delete(g.id);
   for (const k of Object.keys(S.feeds)) if (Array.isArray(S.feeds[k])) S.feeds[k] = S.feeds[k].filter((x) => x.id !== g.id);
   document.querySelectorAll(`[data-result="${g.id}"], [data-gen="${g.id}"]`).forEach((n) => n.remove());
+  CARDS.delete(g.id);
   toast("Deleted");
 }
 function viewVideo(g) {
@@ -2380,13 +2401,17 @@ function glide(box) {
   const on = box.querySelector(":scope > button.on");
   const key = box.classList[0];
   if (!on || !on.offsetWidth) { box.classList.remove("glide"); return; }
+  // offsetLeft/offsetTop count from the nearest positioned ancestor. The box must be that ancestor before we measure:
+  // on 19 October 2026 it was not yet, and the pill sat half a tab low under "Create" and "Motion Control".
+  // (Offsets, not getBoundingClientRect: a tab being pressed is scaled down, and the pill must not copy that.)
+  if (on.offsetParent !== box) box.style.position = "relative";
   const now = { x: on.offsetLeft, y: on.offsetTop, w: on.offsetWidth, h: on.offsetHeight };
   const put = (p) => { box.style.setProperty("--gx", p.x + "px"); box.style.setProperty("--gy", p.y + "px"); box.style.setProperty("--gw", p.w + "px"); box.style.setProperty("--gh", p.h + "px"); };
   if (!box.classList.contains("glide")) {
     const from = lastGlide[key] && !reducedMotion() ? lastGlide[key] : now;
     box.classList.add("glide", "glide-still");
     put(from);
-    setTimeout(() => { box.classList.remove("glide-still"); put(now); }, 30);
+    setTimeout(() => { box.classList.remove("glide-still"); glide(box); }, 30);
     if (!box.dataset.glideWatch && window.ResizeObserver) { box.dataset.glideWatch = "1"; new ResizeObserver(() => box.classList.contains("glide") && glide(box)).observe(box); }
   } else put(now);
   lastGlide[key] = now;
@@ -2397,16 +2422,29 @@ function stagger(grid) {
   if (grid.dataset.fx || reducedMotion()) return;
   if (!grid.closest(".sheet, .menu, .viewer") && performance.now() - motionStamp > 1500) return;
   grid.dataset.fx = "1";
-  [...grid.children].forEach((c, i) => c.style.setProperty("--i", Math.min(i, 10)));
+  // Cards already on screen before (moved here, not new) stay still; only new ones come in.
+  const fresh = [...grid.children].filter((c) => !c.classList.contains("seen"));
+  if (!fresh.length) return;
+  fresh.forEach((c, i) => c.style.setProperty("--i", Math.min(i, 10)));
   grid.classList.add("fx-stagger");
   setTimeout(() => grid.classList.remove("fx-stagger"), 1400);
 }
-/** A picture waits invisible and arrives sharp out of a blur once it has loaded. */
+/** A picture waits invisible and arrives sharp out of a blur once it has loaded, the first time only: a picture
+ *  already shown once in this visit appears at once (no blur again on every page switch). */
+const shownPics = new Set();
 function prepImg(img) {
   if (img.dataset.fxImg || (img.complete && img.naturalWidth) || img.closest(".boot, .avatar, .brand, .logo")) return;
   img.dataset.fxImg = "1";
+  if (shownPics.has(img.currentSrc || img.src)) return;
   img.classList.add("fx-wait");
-  const done = () => { img.classList.remove("fx-wait"); if (!reducedMotion()) img.classList.add("fx-in"); };
+  const done = () => {
+    shownPics.add(img.currentSrc || img.src);
+    img.classList.remove("fx-wait");
+    if (reducedMotion()) return;
+    img.classList.add("fx-in");
+    // Drop the class once played, or the blur would run again whenever the card is moved to another list.
+    img.addEventListener("animationend", () => img.classList.remove("fx-in"), { once: true });
+  };
   img.addEventListener("load", done, { once: true });
   img.addEventListener("error", () => img.classList.remove("fx-wait"), { once: true });
 }
@@ -2429,6 +2467,8 @@ function motionInit() {
   }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
   motionScan(document.body);
   addEventListener("resize", debounce(() => { for (const g of document.querySelectorAll(GLIDE)) glide(g); }, 120));
+  // A web font that arrives late widens the tabs without resizing their box: measure the pills again.
+  document.fonts?.ready.then(() => { for (const g of document.querySelectorAll(GLIDE)) glide(g); });
 }
 
 motionInit();
