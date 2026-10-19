@@ -1463,3 +1463,6 @@ img.fx-in { animation: fx-img-in .7s var(--ease-out) both; }
 .seat-guide figcaption { padding: 10px 2px 0; color: var(--ink-2); font-size: 16px; line-height: 1.35; }
 .drop .dl .ic.seat-ic { color: #fff; font-size: 17px; font-weight: 700; }
 .drop .seat-tag { position: absolute; left: 10px; top: 10px; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-size: 15px; font-weight: 700; box-shadow: 0 0 0 2px rgba(255, 255, 255, .85); }
+/* The Apps page's way to every template, and the Templates grid (portrait clips get taller cards). */
+.see-all { margin: 12px 0 4px; gap: 6px; }
+.tpl-grid .app-card .art, .page.wide .tpl-grid .app-card .art { height: auto; aspect-ratio: 4 / 5; }

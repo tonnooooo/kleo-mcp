@@ -35,7 +35,7 @@ test("every template is an app: one photo box per seat, a quality, consent, its 
     assert.deepEqual(app.fields.filter((f) => f.kind === "image").map((f) => f.key), t.seats.map((s) => s.key));
     assert.ok(app.fields.some((f) => f.key === "quality"));
     assert.ok(app.preview?.endsWith("-p.mp4") && app.guide);
-    for (const s of t.seats) assert.ok(s.at[0] > 0 && s.at[0] < 100 && s.at[1] > 0 && s.at[1] < 100, s.key);
+    for (const s of t.seats) if (s.at) assert.ok(s.at[0] > 0 && s.at[0] < 100 && s.at[1] > 0 && s.at[1] < 100, s.key);
   }
   assert.equal(new Set(TOOLS.map((x) => x.key)).size, TOOLS.length);
   const card = publicTools().find((x) => x.key === YTBM);
@@ -104,4 +104,36 @@ test("wavespeed client: submit, a running and a finished prediction, an empty ba
     await assert.rejects(wavespeedSubmit(env, "x/y", {}), (e) => e.status === 402);
     await assert.rejects(wavespeed({}, "GET", "/api/v3/x"), /WAVESPEED_API_KEY is not set/);
   } finally { globalThis.fetch = real; }
+});
+
+test("imported templates: their own prompt in WaveSpeed's words, every seat needed, at most 15 s billed twice", () => {
+  const imported = TRENDS.filter((t) => t.prompt);
+  assert.ok(imported.length >= 20, `${imported.length}`);
+  for (const t of imported) {
+    // No ausar.ai cite left: "@Image1" and "@[Video 1](video_1)" are "Image 1" and "Video 1".
+    assert.doesNotMatch(t.prompt, /@\[|@Image|@Video|@photo|@Bild/, t.key);
+    assert.match(t.prompt, /image 1/i, t.key);
+    assert.ok(t.baseSeconds > 0 && t.baseSeconds <= 15.05, t.key);
+    assert.ok(trendCostUsd(t, "720p") <= 3, t.key);
+    assert.ok(t.baseUrl.startsWith("https://media.kleooai.com/app/templates/"), t.key);
+    const app = toolByKey(t.key);
+    const photos = app.fields.filter((f) => f.kind === "image");
+    assert.equal(photos.length, t.seats.length, t.key);
+    assert.ok(photos.every((f) => f.required && f.hint), t.key);
+  }
+  // The four clips with ausar.ai's own mascot are not in the catalog.
+  for (const slug of ["burning-bridges-trend", "doja-trend", "pop-star-trend", "rain-dance"]) assert.equal(trendByKey(`trend-${slug}`), null);
+  assert.equal(TRENDS.filter((t) => t.key === YTBM).length, 1);
+});
+
+test("imported template plan: refused until every seat has its photo, then the fixed prompt with the photos in order", () => {
+  const t = trendByKey("trend-apt");
+  assert.ok(t);
+  assert.throws(() => planTool(t.key, {}, { person1: photo("up_a") }), (e) => e instanceof ToolRefusal && /each of the 2 people/.test(e.message));
+  const plan = planTool(t.key, { quality: "480p" }, { person1: photo("up_a"), person2: photo("up_b") });
+  assert.equal(plan.tasks[0].input.prompt, t.prompt);
+  assert.deepEqual(plan.tasks[0].input.reference_images, [photo("up_a").url, photo("up_b").url]);
+  assert.equal(plan.usd, trendCostUsd(t, "480p"));
+  const one = TRENDS.find((x) => x.prompt && x.seats.length === 1);
+  assert.throws(() => planTool(one.key, {}, {}), (e) => e instanceof ToolRefusal && /Add your photo/.test(e.message));
 });

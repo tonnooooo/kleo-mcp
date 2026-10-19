@@ -319,6 +319,7 @@ async function enter() {
 }
 const PAGES = [
   { key: "chat", path: "/", label: "Create", ic: "chat" },
+  { key: "templates", path: "/templates", label: "Templates", ic: "film" },
   { key: "explore", path: "/explore", label: "Explore", ic: "sparkle" },
   { key: "video", path: "/video", label: "Video", ic: "film" },
   { key: "motion", path: "/video/motion", label: "Motion Control", ic: "run", desktop: true },
@@ -354,7 +355,9 @@ async function route() {
   if (p === "/video/edit") return show("video", () => videoToolView("video-edit", "edit"));
   if (p === "/image") return show("image", () => generatorView("image"));
   if (p === "/audio") return show("audio", () => audioView());
-  if (app) return show("apps", () => appView(app[1]));
+  // A viral template lives under Templates (20 October 2026, the owner: "mettile nella cartella template").
+  if (app) return show(app[1].startsWith("trend-") ? "templates" : "apps", () => appView(app[1]));
+  if (p === "/templates") return show("templates", () => templatesView());
   if (p === "/apps") return show("apps", () => appsView());
   if (p === "/library") return show("library", () => libraryView());
   return show("chat", () => newChat());
@@ -1549,20 +1552,34 @@ function appsView() {
       h("div", { class: "fb-tx" }, h("b", {}, "Kleo Film"), h("span", {}, "A whole narrated film from one message: script, voice, music, subtitles, 4K. Up to 5 minutes.")),
       h("span", { class: "fb-go" }, "Start", icon("right", 16, 2.2))),
     GROUPS.map(([g, title, sub]) => {
-      const list = tools.filter((t) => t.group === g);
+      // The viral templates have their own page; Apps shows the first few and a way there.
+      const all = tools.filter((t) => t.group === g);
+      const list = g === "trend" ? all.slice(0, 6) : all;
       if (!list.length) return null;
       return [h("div", { class: "apps-group" }, h("h2", {}, title), h("span", {}, sub)),
         h("div", { class: "app-grid" }, list.map((t) => h("button", { class: "app-card", onclick: () => go(`/apps/${t.key}`) },
           appArt(t),
           h("div", { class: "tx" }, h("b", {}, t.name), h("span", {}, t.blurb),
-            h("span", { class: "from" }, tallowed(t.key) ? [h("span", {}, "from"), bolt(12), t.from] : [icon("lock", 13), "Unlocks with any pack"])))))];
+            h("span", { class: "from" }, tallowed(t.key) ? [h("span", {}, "from"), bolt(12), t.from] : [icon("lock", 13), "Unlocks with any pack"]))))),
+        all.length > list.length ? h("button", { class: "btn btn-quiet see-all", onclick: () => go("/templates") }, `See all ${all.length} templates`, icon("right", 16, 2.2)) : null];
     })));
+}
+/** Every viral template, one tap to its page (ausar.ai's Templates, 20 October 2026). */
+function templatesView() {
+  const list = (S.config.tools || []).filter((t) => t.group === "trend");
+  setView("", h("div", { class: "page wide" },
+    h("div", { class: "page-h" }, h("div", {}, h("h1", {}, "Templates"), h("p", {}, "Pick a viral clip, add your photos, and Kleo puts you in it."))),
+    h("div", { class: "app-grid tpl-grid" }, list.map((t) => h("button", { class: "app-card", onclick: () => go(`/apps/${t.key}`) },
+      appArt(t),
+      h("div", { class: "tx" }, h("b", {}, t.name), h("span", {}, t.blurb),
+        h("span", { class: "from" }, tallowed(t.key) ? [h("span", {}, "from"), bolt(12), t.from] : [icon("lock", 13), "Unlocks with any pack"])))))));
 }
 function appView(key) {
   const t = tool(key);
   if (!t) return go("/apps");
   setView("", h("div", { class: "page wide" },
-    h("button", { class: "back", onclick: () => go("/apps") }, icon("right", 16, 2.2), "Apps"),
+    t.group === "trend" ? h("button", { class: "back", onclick: () => go("/templates") }, icon("right", 16, 2.2), "Templates")
+      : h("button", { class: "back", onclick: () => go("/apps") }, icon("right", 16, 2.2), "Apps"),
     h("div", { class: "app-hero app-hero-big" }, h("div", { class: "app-hero-art" }, appArt(t)),
       h("div", { class: "app-hero-tx" },
         t.badge ? h("span", { class: "app-hero-badge" }, t.badge) : null,
@@ -1713,8 +1730,9 @@ function toolBody(key, compact, top = null) {
       // A viral template: the clip's first frame with each seat's number where that person sits.
       t.guide ? h("figure", { class: "seat-guide" },
         h("div", { class: "sg-pic" }, h("img", { src: t.guide, alt: "" }),
-          t.seats.map((s, i) => h("span", { class: "seat-dot", style: { left: `${s.at[0]}%`, top: `${s.at[1]}%`, background: s.color } }, String(i + 1)))),
-        h("figcaption", {}, "Add a photo for each person you want in the clip. Empty seats keep the original person.")) : null,
+          t.seats.map((s, i) => s.at ? h("span", { class: "seat-dot", style: { left: `${s.at[0]}%`, top: `${s.at[1]}%`, background: s.color } }, String(i + 1)) : null)),
+        h("figcaption", {}, t.fields.some((f) => f.required) ? (t.seats.length === 1 ? "Add a clear photo of yourself: you take the place of the person in this clip." : `Add a clear photo for each of the ${t.seats.length} people, the way the boxes below describe them.`)
+          : "Add a photo for each person you want in the clip. Empty seats keep the original person.")) : null,
       files.length ? h("div", { class: "drops" }, files.map((f, i) => { const z = dropZone(f); if (files.length === 1 || (files.length % 2 === 1 && i === files.length - 1)) z.classList.add("one"); return z; })) : null,
       t.fields.filter((f) => !["image", "video", "audio"].includes(f.kind)).map(fieldEl),
       t.consent ? h("label", { class: "consent" }, h("input", { type: "checkbox", checked: st.consent || null, onchange: (e) => { st.consent = e.target.checked; drawCta(); } }),

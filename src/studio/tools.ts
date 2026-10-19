@@ -30,7 +30,7 @@
  * audit table with the account. Kleo never removes a provider's own refusal.
  */
 import { CREDIT_USD, DEFAULT_MARGIN } from "./models.ts";
-import { DEFAULT_TREND_QUALITY, TRENDS, TREND_QUALITIES, WAN30_EDIT_MODEL, trendByKey, trendCostUsd, trendQuality, trendTaskInput, type Trend } from "./trends.ts";
+import { DEFAULT_TREND_QUALITY, TRENDS, TREND_QUALITIES, WAN30_EDIT_MODEL, trendByKey, trendCostUsd, trendNeedsAllSeats, trendQuality, trendTaskInput, type Trend } from "./trends.ts";
 
 export type ToolKey = "face-swap" | "video-face-swap" | "talking-photo" | "lipsync" | "character-swap" | "photo-character-swap" | "motion-control" | "outfit-swap" | "video-edit" | "video-upscale" | "voice" | "music" | "sfx" | `trend-${string}`;
 export type FieldKind = "image" | "video" | "audio" | "text" | "select" | "voice";
@@ -47,7 +47,7 @@ export interface ToolDef {
   icon: string; tint: string; output: "video" | "image" | "audio"; consent?: boolean; badge?: string;
   fields: ToolField[];
   /** Viral templates only (src/studio/trends.ts): the looping example, the seat guide still and its seat marks. */
-  preview?: string; guide?: string; seats?: { key: string; color: string; at: [number, number] }[];
+  preview?: string; guide?: string; seats?: { key: string; color: string; at?: [number, number] }[];
 }
 
 export const VOICES = [
@@ -165,9 +165,12 @@ export const TOOLS: ToolDef[] = [
 function trendTool(t: Trend): ToolDef {
   return {
     key: t.key, name: t.name, blurb: t.blurb, group: "trend", icon: "film", tint: t.tint, output: "video", consent: true, badge: "Viral",
-    preview: t.preview, guide: t.guide, seats: t.seats.map((s) => ({ key: s.key, color: s.color, at: s.at })),
+    preview: t.preview, guide: t.guide, seats: t.seats.map((s) => ({ key: s.key, color: s.color, ...(s.at ? { at: s.at } : {}) })),
     fields: [
-      ...t.seats.map((s, i): ToolField => ({ key: s.key, kind: "image", label: `Person ${i + 1}`, hint: i === 0 ? `${s.label} · a clear photo` : `${s.label} · optional` })),
+      // A template with its own fixed prompt needs every seat (as on ausar.ai); Kleo's own may leave seats empty.
+      ...t.seats.map((s, i): ToolField => trendNeedsAllSeats(t)
+        ? { key: s.key, kind: "image", label: `Person ${i + 1}`, hint: s.hint ?? "A clear photo", required: true }
+        : { key: s.key, kind: "image", label: `Person ${i + 1}`, hint: i === 0 ? `${s.label} · a clear photo` : `${s.label} · optional` }),
       { key: "quality", kind: "select", label: "Quality", options: TREND_QUALITIES.map((q) => ({ value: q, label: q })), default: DEFAULT_TREND_QUALITY },
     ],
   };
@@ -246,6 +249,7 @@ function speechPart(inputs: Record<string, string>, media: Record<string, Media 
 function planTrend(trend: Trend, inputs: Record<string, string>, media: Record<string, Media | undefined>): Plan {
   const filled = trend.seats.filter((s) => media[s.key]);
   for (const s of filled) need(media[s.key], "image", `Person ${trend.seats.indexOf(s) + 1}`);
+  if (trendNeedsAllSeats(trend) && filled.length < trend.seats.length) throw new ToolRefusal(trend.seats.length === 1 ? "Add your photo." : `Add a photo for each of the ${trend.seats.length} people.`);
   if (!filled.length) throw new ToolRefusal("Add a photo of at least one person.");
   const q = trendQuality(inputs.quality);
   return {
