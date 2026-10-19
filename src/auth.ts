@@ -8,6 +8,7 @@ import { linkReferral, normalizeReferral, cookieReferral } from "./referral.ts";
 import { recordSignupSource } from "./growth.ts";
 import { giftBlocker, giftCookie, visitorOf, type Visitor } from "./abuse.ts";
 import { normalizeChannel } from "./launch.ts";
+import { ANON_DOMAIN, clearConnectCookie, connectCookie, finishTtl, isAnonymous, newNonce, readConnectCookie, readToken, requestTtl, signToken, studioSignIn, studioUrl, type FinishToken, type RequestToken } from "./connect.ts";
 
 /**
  * Where a sign-up came from, read off the connection request (27 September 2026): the connector address the user
@@ -37,10 +38,13 @@ export async function handleAuthorize(request: Request, env: Env): Promise<Respo
     if (parsed instanceof Response) return parsed;
     const client = await env.OAUTH_PROVIDER.lookupClient(parsed.clientId);
     if (!client) return html(page({ error: "This connection request is not valid. Please add Kleo again from your assistant's connector settings.", clientName: parsed.clientId, oauthQuery: "", freeCredits }), 400);
+    if (studioSignIn(env)) return toStudioSignIn(request, env, url, client.clientName ?? parsed.clientId);
     return html(page({ clientName: client.clientName ?? parsed.clientId, oauthQuery: url.search.slice(1), returning: await returningUser(env, request), freeCredits,
       returnTo: returnHost(parsed.redirectUri), siteKey: env.TURNSTILE_SITEKEY }));
   }
   if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+  // With Studio sign-in on, the one-press form no longer exists: nothing may open an anonymous account behind it.
+  if (studioSignIn(env)) return new Response("Kleo now connects through your Kleo account. Open the connection again from your assistant's connector settings.", { status: 410, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
   // LOGIN CSRF (14 October 2026, the security review): the press is honoured only from this page itself. A form on
   // another site could post a Kleo key of the attacker's here, and the cookie the answer sets would put the victim's
   // browser — and every assistant they connect afterwards — on the attacker's account. Refused before the form is read.
@@ -102,6 +106,57 @@ export async function handleAuthorize(request: Request, env: Env): Promise<Respo
   headers.append("set-cookie", accountCookie(await makeHandle(env, user.id)));
   // A browser that was given the free credits keeps a mark of it: its next new accounts start empty (src/abuse.ts).
   if (resolved.gifted) headers.append("set-cookie", giftCookie());
+  return new Response(null, { status: 302, headers });
+}
+
+/**
+ * Step 1 of the Studio sign-in (src/connect.ts): the browser goes to Kleo Studio with the whole OAuth request signed,
+ * the old anonymous account this browser holds (to be merged, never stranded), and a nonce whose twin stays here in a
+ * cookie, so only this browser can finish what it started.
+ */
+async function toStudioSignIn(request: Request, env: Env, url: URL, clientName: string): Promise<Response> {
+  const nonce = newNonce();
+  const held = await returningUser(env, request);
+  const anon = held && (await isAnonymous(env, held)) ? held.id : null;
+  const token = await signToken(env, "request", { q: url.search.slice(1), n: nonce, a: anon, c: clientName, o: url.origin, exp: requestTtl() } satisfies RequestToken);
+  const headers = new Headers({ location: `${studioUrl(env)}/connect?r=${token}`, "cache-control": "no-store" });
+  headers.append("set-cookie", connectCookie(nonce));
+  return new Response(null, { status: 302, headers });
+}
+
+/**
+ * Step 3: GET /authorize/finish?t=<ticket Studio signed>. The ticket names the signed-in account and the request; the
+ * nonce cookie proves it is the browser that started. Then the grant is made exactly as the old page made it.
+ */
+export async function handleConnectFinish(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const fail = (text: string, status = 400) => new Response(text, { status, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+  const t = await readToken<FinishToken>(env, "finish", url.searchParams.get("t"));
+  if (!t) return fail("This sign-in link has expired. Go back to your assistant and connect Kleo again.");
+  const nonce = readConnectCookie(request.headers.get("cookie"));
+  if (!nonce || nonce !== t.n) return fail("Finish connecting Kleo in the same browser where you started. Go back to your assistant and connect Kleo again.", 403);
+  const user = await getUser(env, t.u);
+  if (!user) return fail("That Kleo account no longer exists. Go back to your assistant and connect Kleo again.", 404);
+  const parsed = await parseOrError(new Request(`${url.origin}/authorize?${t.q}`, { method: "GET", headers: request.headers }), env);
+  if (parsed instanceof Response) return parsed;
+  const client = await env.OAUTH_PROVIDER.lookupClient(parsed.clientId);
+  const clientName = client?.clientName ?? parsed.clientId;
+  await touchUser(env, user.id);
+  const props: AuthProps = { userId: user.id, email: user.email.endsWith(ANON_DOMAIN) ? "" : user.email, keyVersion: await keyVersion(env, user.id) };
+  const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
+    request: parsed, userId: user.id, scope: parsed.scope, props,
+    metadata: { clientName, label: `${clientName} · ${new Date().toISOString().slice(0, 10)}` },
+  });
+  const hints = connectionHints(t.q);
+  await audit(env, user.id, null, "oauth.granted", { client: clientName, via: "studio", ...(hints.src ? { src: normalizeChannel(hints.src) } : {}) });
+  // A new account's first connection may carry the connector address's ?ref= and ?src= (written once, within a day).
+  if (Date.now() - Date.parse(user.created_at) < 24 * 3600_000) {
+    if (hints.ref) await linkReferral(env, user.id, hints.ref, "sign-in").catch(() => false);
+    if (hints.src) await recordSignupSource(env, user.id, hints.src, "sign-in").catch(() => false);
+  }
+  const headers = new Headers({ location: redirectTo });
+  headers.append("set-cookie", accountCookie(await makeHandle(env, user.id)));
+  headers.append("set-cookie", clearConnectCookie());
   return new Response(null, { status: 302, headers });
 }
 

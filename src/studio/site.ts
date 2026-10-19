@@ -11,7 +11,7 @@
 export const SITE_ORIGIN = "https://raw.githubusercontent.com/tonnooooo/kleo-site/main";
 
 /** Paths the app answers; everything else is the site. */
-export const APP_PATH = /^\/(?:$|video$|image$|audio$|explore$|account$|showcase\.json$|apps(?:\/[a-z0-9-]*)?$|library$|c\/[a-z0-9_]+$|reset$|api\/|media\/|auth\/|health$|app\.(?:js|css)$|manifest\.webmanifest$|kleo-(?:mark|favicon)\.svg$|kleo-icon-dark-(?:192|512)\.png$)/;
+export const APP_PATH = /^\/(?:$|video$|image$|audio$|explore$|account$|showcase\.json$|apps(?:\/[a-z0-9-]*)?$|library$|connect$|c\/[a-z0-9_]+$|reset$|api\/|media\/|auth\/|health$|app\.(?:js|css)$|manifest\.webmanifest$|kleo-(?:mark|favicon)\.svg$|kleo-icon-dark-(?:192|512)\.png$)/;
 
 const TYPES: Record<string, string> = {
   html: "text/html; charset=utf-8", css: "text/css; charset=utf-8", js: "text/javascript; charset=utf-8", mjs: "text/javascript; charset=utf-8",

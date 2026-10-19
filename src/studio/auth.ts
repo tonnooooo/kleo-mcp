@@ -119,9 +119,12 @@ export async function signIn(env: StudioEnv, body: { email?: string; password?: 
 
 /** Signs in with the Kleo key from the MCP server's sign-in page. */
 export async function signInWithKey(env: StudioEnv, key: string): Promise<string> {
-  const userId = await verifyHandle(asEnv(env), key.trim());
-  if (!userId || !(await getUser(asEnv(env), userId))) throw new StudioError("That Kleo key isn't valid.", 401, "wrong_key");
-  await audit(asEnv(env), userId, null, "studio.key_signin", {});
+  const keyId = await verifyHandle(asEnv(env), key.trim());
+  const held = keyId ? await getUser(asEnv(env), keyId) as (Awaited<ReturnType<typeof getUser>> & { merged_into?: string | null }) | null : null;
+  if (!keyId || !held) throw new StudioError("That Kleo key isn't valid.", 401, "wrong_key");
+  // The key of an old connector account that was merged into a real one (src/connect.ts) opens the real one.
+  const userId = held.merged_into && (await getUser(asEnv(env), held.merged_into)) ? held.merged_into : keyId;
+  await audit(asEnv(env), userId, null, "studio.key_signin", userId !== keyId ? { via: keyId } : {});
   return userId;
 }
 

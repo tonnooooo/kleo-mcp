@@ -1115,3 +1115,10 @@ body::after { inset: -6% -18%; }
 }
 
 @media (min-width: 1100px) { .scroll:has(.col.wide) { padding-left: 28px; padding-right: 28px; } }
+/* ── /connect: an assistant finishing its sign-in (19 October 2026) ─────────────────────────────────────────────── */
+.connect-view { display: grid; place-items: center; min-height: 70vh; padding: 24px 16px; }
+.connect-card { width: min(440px, 100%); text-align: center; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.connect-card h1 { margin: 10px 0 0; font-size: 30px; letter-spacing: -.03em; }
+.connect-card p { margin: 0 0 8px; font-size: 17px; color: var(--ink-2); line-height: 1.45; }
+.connect-card .btn { min-width: 200px; height: 50px; border-radius: 25px; font-size: 17px; }
+
