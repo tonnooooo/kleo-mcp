@@ -67,6 +67,7 @@ const TOOL = {
         aspect: { type: "string", enum: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"] },
         audio: { type: "boolean", description: "Generate sound (ambience, effects, dialogue). Default true." },
         image_role: { type: "string", enum: ["first_frame", "reference", "none"], description: "How to use the attached pictures: first_frame = the video starts from the picture (animate a photo); reference = keep the look of a character/product/style; none = ignore them." },
+        video_role: { type: "string", enum: ["reference", "edit", "extend", "motion"], description: "How to use an attached video. motion = exactly one picture + one video: the clip starts on the picture and moves like the video (same camera move, same motion of the subject, same pacing) while everything seen comes from the picture (Kling 3.0). reference = the video guides content and style (Seedance; it may copy the video's place). edit = change the clip itself. extend = continue it." },
       },
       required: ["title", "prompt"],
     },
@@ -142,6 +143,8 @@ The app is set to make ${ctx.mode === "image" ? "PICTURES" : "VIDEOS"} right now
 - If the user asks to change something (longer, vertical, cheaper, different style), call propose_video again with the change.
 - Pictures the user attached: use image_role first_frame to animate a photo, reference to keep a person/product/style.
 - Video or sound clips attached: Seedance uses them as references; name them in the prompt as "video 1", "audio 1" (for example "the dance moves of video 1", "the voice of audio 1"). A clip set to Edit or Extend is changed or continued.
+- ONE picture + ONE video and the user wants the picture's scene/subject to move the way the video moves (copy its camera, its motion, its timing; "fai come questo video", "same movement", "video swap" of motion): set video_role "motion" (Kling 3.0). It keeps everything from the picture and only borrows the movement. Never use Seedance reference for this: it copies the video's place. For "motion" write the prompt about the PICTURE's world: "The shot starts exactly on the first frame. Follow the camera movement and the motion of the reference video: …", then the beats in order; no "image 1/video 1".
+- To put the user's character INTO their video (the video's place stays, the person changes) send them to the Character Swap app instead.
 - Face swaps, talking photos, lipsync, motion control (copy a dance), outfit swaps, video upscaling, voiceovers, music and sound effects live in Apps: when asked, say so in one line (no card).
 
 Video models (keys for propose_video):
@@ -215,7 +218,7 @@ export function proposalFrom(args: Record<string, unknown>, ctx: AgentContext): 
   let settings = normalizeSettings({
     model: args.model ?? ctx.ui.model, duration: args.duration ?? ctx.ui.duration, resolution: args.resolution ?? ctx.ui.resolution,
     aspect: args.aspect ?? ctx.ui.aspect, audio: typeof args.audio === "boolean" ? args.audio : ctx.ui.audio, imageRole,
-    videoRole: ctx.ui.videoRole,
+    videoRole: typeof args.video_role === "string" ? args.video_role : ctx.ui.videoRole,
   }, pictures.length, refs);
   // A model this account cannot use yet is swapped for the user's own choice (or the first one it can use).
   if (!ctx.allowed.includes(settings.model)) {

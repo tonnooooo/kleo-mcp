@@ -131,8 +131,20 @@ const resLocked = (r) => { const f = freeRes(); return !!f && !f.includes(r); };
 const resNote = () => { const f = freeRes() || []; return `${RES_ALL.filter((r) => !f.includes(r)).join(" and ")} unlock with your first credit pack. Free credits make ${f.join(" and ")} videos.`; };
 /** The resolutions shown for a model: a free account sees every one, the locked ones with a lock. */
 const resList = (m) => (freeRes() && allowed(m.key) ? RES_ALL : m.resolutions);
+// "Copy motion" (19 October 2026, src/studio/models.ts videoRole "motion"): one picture + one video, Kling 3.0.
+const canMotion = (images, clips) => images === 1 && clips.videos === 1 && clips.audios === 0;
+const VIDEO_ROLES = (images, clips) => (canMotion(images, clips) ? ["motion", "reference", "edit", "extend"] : ["reference", "edit", "extend"]);
+const VIDEO_ROLE_LABEL = { motion: "Copy motion", reference: "Reference", edit: "Edit it", extend: "Extend it" };
+const VIDEO_ROLE_TOAST = { motion: "Your picture moves exactly like this clip: same camera, same motion (Kling 3.0)", reference: "The clip guides motion and style", edit: "Kleo edits this clip (say what to change)", extend: "Kleo continues this clip" };
 function fix(s, images = 0, clips = { videos: 0, audios: 0 }) {
+  if (s.videoRole === "motion" && canMotion(images, clips) && S.config.models.some((x) => x.key === "kling-3-omni")) {
+    const k = model("kling-3-omni");
+    return { model: k.key, duration: k.durations.includes(Number(s.duration)) ? Number(s.duration) : k.defaultDuration,
+      resolution: k.resolutions.includes(s.resolution) ? s.resolution : k.defaultResolution, aspect: k.aspects.includes(s.aspect) ? s.aspect : "16:9",
+      audio: false, imageRole: "first_frame", videoRole: "motion" };
+  }
   let m = model(s.model);
+  if (m.motionOnly) m = model(S.config.defaultModel);
   const hasClips = clips.videos + clips.audios > 0;
   if (hasClips && m.family !== "seedance") m = model("seedance-2.5");
   if (clips.videos > 0 && (s.videoRole === "edit" || s.videoRole === "extend")) m = model("seedance-2.5");
@@ -1054,15 +1066,15 @@ function drawAttachments() {
     a.id ? h("button", { class: "role", onclick: () => {
       if (S.mode === "image" || a.kind === "audio") return toast(a.kind === "audio" ? "Kleo uses this sound as a voice or music reference." : "The picture model edits or follows your pictures.");
       if (a.kind === "video") {
-        const order = ["reference", "edit", "extend"];
-        S.settings = fix({ ...S.settings, videoRole: order[(order.indexOf(s.videoRole) + 1) % 3] }, picCount(S.attachments), clipCount(S.attachments)); store.set("settings", S.settings);
+        const order = VIDEO_ROLES(picCount(S.attachments), clipCount(S.attachments));
+        S.settings = fix({ ...S.settings, videoRole: order[(order.indexOf(s.videoRole) + 1) % order.length] }, picCount(S.attachments), clipCount(S.attachments)); store.set("settings", S.settings);
         drawAttachments(); drawChips(); updateSend();
-        return toast({ reference: "The clip guides motion and style", edit: "Kleo edits this clip (say what to change)", extend: "Kleo continues this clip" }[S.settings.videoRole]);
+        return toast(VIDEO_ROLE_TOAST[S.settings.videoRole]);
       }
       if (!onePic) return toast("With several files, pictures are references.");
       S.settings = fix({ ...S.settings, imageRole: s.imageRole === "first_frame" ? "reference" : "first_frame" }, 1); store.set("settings", S.settings);
       drawAttachments(); drawChips(); toast(S.settings.imageRole === "first_frame" ? "The video will start from this picture" : "The picture guides the look (character, product, style)");
-    } }, a.kind === "video" ? ({ reference: "Reference", edit: "Edit", extend: "Extend" }[s.videoRole] || "Reference") : a.kind === "audio" ? "Sound" : S.mode === "image" ? "Reference" : s.imageRole === "first_frame" ? "Start frame" : "Reference") : null,
+    } }, a.kind === "video" ? (VIDEO_ROLE_LABEL[s.videoRole] || "Reference") : a.kind === "audio" ? "Sound" : S.mode === "image" ? "Reference" : s.imageRole === "first_frame" ? "Start frame" : "Reference") : null,
     h("button", { class: "x", "aria-label": "Remove", onclick: () => { S.attachments = S.attachments.filter((x) => x !== a); drawAttachments(); drawChips(); updateSend(); } }, icon("x", 12, 3)))));
 }
 async function submit() {
@@ -1145,9 +1157,9 @@ function generatorView(kind) {
       r.kind !== "image" ? h("span", { class: "kind" }, icon(r.kind === "video" ? "film" : "sound", 12, 2.2)) : null,
       !r.id ? h("div", { class: "busy" }, h("span", { class: "spin" })) : null,
       isVid && r.id ? h("button", { class: "role", onclick: () => {
-        if (r.kind === "video") { const o = ["reference", "edit", "extend"]; setV({ ...s, videoRole: o[(o.indexOf(s.videoRole) + 1) % 3] }); return; }
+        if (r.kind === "video") { const o = VIDEO_ROLES(pics(), clips()); setV({ ...s, videoRole: o[(o.indexOf(s.videoRole) + 1) % o.length] }); toast(VIDEO_ROLE_TOAST[o[(o.indexOf(s.videoRole) + 1) % o.length]]); return; }
         if (r.kind === "image" && pics() === 1 && !clips().videos && !clips().audios) setV({ ...s, imageRole: s.imageRole === "first_frame" ? "reference" : "first_frame" });
-      } }, r.kind === "video" ? { reference: "Reference", edit: "Edit it", extend: "Extend it" }[s.videoRole] : r.kind === "audio" ? "Sound" : s.imageRole === "first_frame" ? "Start frame" : "Reference") : null,
+      } }, r.kind === "video" ? VIDEO_ROLE_LABEL[s.videoRole] || "Reference" : r.kind === "audio" ? "Sound" : s.imageRole === "first_frame" ? "Start frame" : "Reference") : null,
       h("button", { class: "x", "aria-label": "Remove", onclick: () => { page.refs = page.refs.filter((x) => x !== r); draw(); } }, icon("x", 11, 3)))),
       page.refs.length < 6 ? h("button", { class: "ref-add", onclick: () => pickFile(isVid ? ACCEPT_ALL : "image/*", true, addRefs) },
         h("span", {}, icon("plus", 22), isVid ? "Add" : "Add photo")) : null);
@@ -1702,7 +1714,7 @@ function modelRows(models, current, isAllowed, fromPrice, onPick, img) {
 }
 function openModelPicker(s, onPick) {
   sheet("Video model", "Pick the engine. Price shows the shortest clip.",
-    modelRows(S.config.models, s.model, allowed, (m) => Math.min(...m.resolutions.map((r) => m.prices[r][m.durations[0]])),
+    modelRows(S.config.models.filter((m) => !m.motionOnly), s.model, allowed, (m) => Math.min(...m.resolutions.map((r) => m.prices[r][m.durations[0]])),
       (m) => onPick({ ...s, model: m.key, duration: m.durations.includes(s.duration) ? s.duration : m.defaultDuration, resolution: m.resolutions.includes(s.resolution) ? s.resolution : m.defaultResolution }), false));
 }
 function openImageModelPicker(s, onPick) {
