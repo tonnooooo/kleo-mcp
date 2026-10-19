@@ -646,7 +646,7 @@ const GALLERY = "https://media.kleooai.com/gallery";
 // 20 October 2026, the owner: the viral templates (ausar.ai's people swaps) lead the page. Seedance 2.5 keeps its
 // tile below (Video · Seedance 2.5 and Veo 3.1).
 const HOME_BANNERS = [
-  { t: "You Talking Bout Me?", s: "Put your friends in this viral clip", badge: "Viral", v: `${MEDIA_APP}/templates/you-talking-bout-me/preview-p.mp4`, p: `${MEDIA_APP}/templates/you-talking-bout-me/preview.jpg`, go: () => go("/apps/trend-you-talking-bout-me") },
+  { t: "You Talking Bout Me?", s: "Put your friends in this viral clip", badge: "Viral", v: `${MEDIA_APP}/templates/you-talking-bout-me/preview2-p.mp4`, p: `${MEDIA_APP}/templates/you-talking-bout-me/preview2.jpg`, go: () => go("/apps/trend-you-talking-bout-me") },
   { t: "Character Swap", s: "Put your character in any video", badge: "Pro", v: `${MEDIA_APP}/home-swap.mp4`, p: `${MEDIA_APP}/home-swap.jpg`, go: () => go("/apps/character-swap") },
   { t: "Kleo Film", s: "A whole narrated film from one message", badge: "New", v: `${GALLERY}/tether-film-p.mp4`, p: `${GALLERY}/tether-film.jpg`, go: () => startFilm() },
 ];

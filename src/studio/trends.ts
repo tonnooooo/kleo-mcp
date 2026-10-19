@@ -55,7 +55,7 @@ export interface Trend {
   baseUrl: string;
   /** Its length in seconds. */
   baseSeconds: number;
-  /** A finished example, looping on the app's card (with its "-p.mp4" → ".jpg" poster). */
+  /** The clip looping on the app's card (its first 6 s at 720p, with its "-p.mp4" → ".jpg" poster). */
   preview: string;
   /** A still of the fixed clip, with the seats marked on it by the page. */
   guide: string;
@@ -84,7 +84,7 @@ export const DEFAULT_TREND_QUALITY: TrendQuality = "720p";
 const fromCatalog = (c: CatalogTrend): Trend => ({
   key: `trend-${c.slug}`, name: c.name, blurb: c.blurb, tint: c.tint,
   baseUrl: `${TRENDS_MEDIA}/${c.slug}/base.mp4`, baseSeconds: c.seconds,
-  preview: `${TRENDS_MEDIA}/${c.slug}/preview-p.mp4`, guide: `${TRENDS_MEDIA}/${c.slug}/guide.jpg`,
+  preview: `${TRENDS_MEDIA}/${c.slug}/preview2-p.mp4`, guide: `${TRENDS_MEDIA}/${c.slug}/guide.jpg`,
   seats: c.seats, prompt: c.prompt,
 });
 
@@ -92,7 +92,7 @@ export const TRENDS: Trend[] = [
   {
     key: "trend-you-talking-bout-me", name: "You Talking Bout Me?", blurb: "Put up to three friends in this viral clip", tint: "#bf5af2",
     baseUrl: `${TRENDS_MEDIA}/you-talking-bout-me/base.mp4`, baseSeconds: 14,
-    preview: `${TRENDS_MEDIA}/you-talking-bout-me/preview-p.mp4`, guide: `${TRENDS_MEDIA}/you-talking-bout-me/guide.jpg`,
+    preview: `${TRENDS_MEDIA}/you-talking-bout-me/preview2-p.mp4`, guide: `${TRENDS_MEDIA}/you-talking-bout-me/guide.jpg`,
     scene: "Same counter with the white tabletop, phones and small objects on it, wooden wall panel with the \"SHAPED BY TRADITION\" lettering, red-and-white striped flag, dark ceiling lights, screens and the \"RULES\" sign in the background. Same low handheld camera angle, same slight shake and movement, same framing, focus and depth of field, same warm indoor lighting.",
     seats: [
       { key: "person1", label: "Front, right", where: "in the FRONT on the right, closest to the camera, large in the frame, talking and laughing the most",
