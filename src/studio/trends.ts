@@ -16,26 +16,33 @@
  * and capped at 15, plus the output's seconds (the same length), at $0.05 / $0.10 / $0.20 a second for 480p / 720p /
  * 1080p. "You Talking Bout Me?" (14 s) costs $1.40 / $2.80 / $5.60.
  *
+ * THE CATALOG (20 October 2026, the owner: "prendile tutte"): You Talking Bout Me, written here seat by seat, then the
+ * templates imported from ausar.ai with their own fixed prompts (./trends-catalog.ts).
+ *
  * Pure module (no Env, no fetch), so the tests import it directly under Node's type stripping.
  */
+
+import { IMPORTED_TRENDS } from "./trends-catalog.ts";
 
 export type TrendQuality = "480p" | "720p" | "1080p";
 
 export interface TrendSeat {
-  /** The upload field of this seat: person1, person2, person3. */
+  /** The upload field of this seat: person1, person2, … */
   key: string;
   /** The seat in two or three words, under its photo box on the page. */
   label: string;
-  /** Where the person sits, as the page and the prompt name it. */
-  where: string;
+  /** Who sits there, in a few words, for a template with its own fixed prompt (the imported ones). */
+  hint?: string;
+  /** Where the person sits, as the page and the prompt name it (templates whose prompt Kleo writes per seat). */
+  where?: string;
   /** What the original person wears or carries, so nothing of it survives. */
-  original: string;
+  original?: string;
   /** What this seat does in the clip, second by second. */
-  motion: string;
+  motion?: string;
   /** Seat colour on the page's seat guide. */
   color: string;
-  /** Where the seat is on the guide picture, in percent of its width and height. */
-  at: [number, number];
+  /** Where the seat is on the guide picture, in percent of its width and height (when it was measured). */
+  at?: [number, number];
 }
 
 export interface Trend {
@@ -53,16 +60,33 @@ export interface Trend {
   /** A still of the fixed clip, with the seats marked on it by the page. */
   guide: string;
   seats: TrendSeat[];
-  /** The room and the camera, to keep identical. */
-  scene: string;
+  /** The room and the camera, to keep identical (templates whose prompt Kleo writes per seat). */
+  scene?: string;
+  /**
+   * A fixed edit instruction ("Image 1", "Image 2", "Video 1"): the imported templates (./trends-catalog.ts). Every seat
+   * then needs its photo, as on ausar.ai; without one, Kleo writes the prompt for the seats that have one (trendPrompt).
+   */
+  prompt?: string;
 }
 
+/** One imported template as the catalog stores it (./trends-catalog.ts). */
+export interface CatalogTrend { slug: string; name: string; blurb: string; tint: string; seconds: number; seats: { key: string; label: string; hint: string; color: string }[]; prompt: string }
+
 export const TRENDS_MEDIA = "https://media.kleooai.com/app/templates";
+/** Every seat needs a photo when the template brings its own prompt. */
+export const trendNeedsAllSeats = (t: Pick<Trend, "prompt">): boolean => !!t.prompt;
 /** WaveSpeed's Wan 3.0 video edit: dollars per billed second (source + output). */
 export const WAN30_EDIT_USD_PER_S: Record<TrendQuality, number> = { "480p": 0.05, "720p": 0.10, "1080p": 0.20 };
 export const WAN30_EDIT_MODEL = "alibaba/wan-3.0/video-edit";
 export const TREND_QUALITIES: TrendQuality[] = ["480p", "720p", "1080p"];
 export const DEFAULT_TREND_QUALITY: TrendQuality = "720p";
+
+const fromCatalog = (c: CatalogTrend): Trend => ({
+  key: `trend-${c.slug}`, name: c.name, blurb: c.blurb, tint: c.tint,
+  baseUrl: `${TRENDS_MEDIA}/${c.slug}/base.mp4`, baseSeconds: c.seconds,
+  preview: `${TRENDS_MEDIA}/${c.slug}/preview-p.mp4`, guide: `${TRENDS_MEDIA}/${c.slug}/guide.jpg`,
+  seats: c.seats, prompt: c.prompt,
+});
 
 export const TRENDS: Trend[] = [
   {
@@ -85,6 +109,7 @@ export const TRENDS: Trend[] = [
         color: "#30d158", at: [34, 80] },
     ],
   },
+  ...IMPORTED_TRENDS.map(fromCatalog),
 ];
 
 export const trendByKey = (key: string | null | undefined): Trend | null => TRENDS.find((t) => t.key === key) ?? null;
@@ -115,8 +140,8 @@ export function trendPrompt(t: Trend, filled: string[]): string {
   const lines: string[] = [];
   lines.push(`Recreate Video 1 exactly, frame for frame, with a new cast: ${one ? "one person is" : `${seats.length} people are`} replaced by ${who}. Everything else stays identical to Video 1${kept.length ? ", including the other people" : ""}.`);
   lines.push("", "CAST (identification only, nothing of the original look is kept)");
-  for (const s of seats) lines.push(`- ${img(s)} replaces the person ${s.where}.`);
-  for (const s of kept) lines.push(`- The person ${s.where} stays exactly as in Video 1: the same face, hair, clothes and movements.`);
+  for (const s of seats) lines.push(`- ${img(s)} replaces the person ${s.where ?? ""}.`);
+  for (const s of kept) lines.push(`- The person ${s.where ?? ""} stays exactly as in Video 1: the same face, hair, clothes and movements.`);
   lines.push("This mapping is fixed for the whole video. Each new person appears exactly once per frame, only in their own seat. No swapping, no merging, no sharing faces, hair or clothes.");
   lines.push("", "EXACT LIKENESS - THE MOST IMPORTANT RULE",
     "Each new person must look IDENTICAL to their reference image, as if they were really filmed in this scene. Copy everything 1:1 and change nothing:",
@@ -129,24 +154,24 @@ export function trendPrompt(t: Trend, filled: string[]): string {
     "- LOOK: if the reference is a real photo, the person is photorealistic; a stylised reference keeps its own style.",
     "Nothing is beautified, smoothed, simplified, recoloured or reinterpreted. Each new person looks exactly like their reference in every frame, also in close-ups, when laughing, when covering the face and when turned away.");
   lines.push("", "NOTHING FROM THE ORIGINAL PEOPLE");
-  lines.push(`${seats.map((s) => s.original).join("; ")}; no original faces. The replaced people are only invisible motion and performance guides.`);
+  lines.push(`${seats.map((s) => s.original).filter(Boolean).join("; ")}; no original faces. The replaced people are only invisible motion and performance guides.`);
   lines.push("", "MOTION AND PERFORMANCE",
     "Every new person copies the exact movements, gestures, head turns, facial expressions, lip movement and timing of the person they replace, frame-accurately, adapted naturally to their own body:");
-  for (const s of seats) lines.push(`- ${img(s)}: ${s.motion}.`);
+  for (const s of seats) if (s.motion) lines.push(`- ${img(s)}: ${s.motion}.`);
   lines.push("All lips move in perfect sync with the original speech and laughter, with natural expressions and eye movement.");
   lines.push("", "IDENTITY LOCK",
     "Each new person keeps exactly the same face, hair and outfit from the first frame to the last, also when partly out of frame, turned away or out of focus. No morphing, no drift back to the original people.");
   lines.push("", "NO NEW PEOPLE", "The number of people stays exactly the same, and no new people appear anywhere.");
-  lines.push("", "SCENE AND CAMERA", `Identical to Video 1. ${t.scene} One continuous shot, no cuts. No new objects, no new text.`);
+  lines.push("", "SCENE AND CAMERA", `Identical to Video 1. ${t.scene ?? ""} One continuous shot, no cuts. No new objects, no new text.`.replace("  ", " "));
   lines.push("", "STYLE",
     "Natural handheld footage, looking like it was really filmed there. Each new person is lit naturally by the room's light with matching shadows. Anatomically correct hands with five fingers. No beauty filter, no skin smoothing, no over-sharpening, no face flicker, no morphing, no distorted faces in the background.");
   return lines.join("\n");
 }
 
-/** The WaveSpeed input of one run. `photos` are the filled seats' links, in seat order. */
+/** The WaveSpeed input of one run. `photos` are the filled seats' links, in seat order (all of them for a fixed prompt). */
 export function trendTaskInput(t: Trend, filled: string[], photos: string[], q: TrendQuality): Record<string, unknown> {
   return {
-    prompt: trendPrompt(t, filled), video: t.baseUrl, reference_images: photos.slice(0, t.seats.length), resolution: q,
+    prompt: t.prompt ?? trendPrompt(t, filled), video: t.baseUrl, reference_images: photos.slice(0, t.seats.length), resolution: q,
     // false keeps the clip's own sound on the result (WaveSpeed: "the source audio track is preserved").
     generate_audio: false, enable_prompt_expansion: false, seed: -1,
   };
