@@ -13,6 +13,8 @@
  *   Seedance 2.0 Fast   480p ¥0.37/s · 720p ¥0.80/s                   group bytedance ×0.9
  *   Veo 3.1             720p/1080p $0.40/s                           group gemini-official-cheap ×0.53
  *   Veo 3.1 Fast        720p/1080p $0.15/s                           group gemini-official-cheap ×0.53
+ *   Kling 3.0 Omni      720p ¥0.9/s · 1080p ¥1.2/s (with a reference video, no sound)   group kling ×0.8
+ *                       (19 October 2026: only for "copy this video's motion" — see videoRole "motion")
  * CNY is converted at 7 per dollar, a little under the market rate, so every figure here is an upper side.
  * Veo is routed to the official_cheap channel ONLY (see `routing`): the price below assumes it, and a Veo order that
  * found no such channel fails and is refunded instead of silently costing twice as much.
@@ -25,11 +27,17 @@
  * Pure module (no Env, no fetch), so the tests import it directly under Node's type stripping.
  */
 
-export type ModelKey = "seedance-2.5" | "seedance-2.0" | "seedance-2.0-fast" | "veo-3.1" | "veo-3.1-fast";
+export type ModelKey = "seedance-2.5" | "seedance-2.0" | "seedance-2.0-fast" | "veo-3.1" | "veo-3.1-fast" | "kling-3-omni";
 export type Resolution = "480p" | "720p" | "1080p";
 export type ImageRole = "first_frame" | "reference" | "none";
-/** What an attached video clip is for (Seedance omni reference): guide the new clip, be edited, or be continued. */
-export type VideoRole = "reference" | "edit" | "extend" | "none";
+/**
+ * What an attached video clip is for: guide the new clip (Seedance omni reference), be edited, be continued — or
+ * "motion" (19 October 2026): with exactly one picture, the clip starts on the picture and moves the way the video
+ * moves (its camera, its subject's motion, its pacing) while everything seen comes from the picture. Seedance cannot
+ * take a first frame next to a reference video and copied the video's place instead; Kling 3.0 Omni can
+ * (first_frame + feature_video).
+ */
+export type VideoRole = "reference" | "edit" | "extend" | "motion" | "none";
 
 export interface StudioModel {
   key: ModelKey;
@@ -39,7 +47,7 @@ export interface StudioModel {
   blurb: string;
   /** Badge in the picker ("Best", "Cheapest", "Max quality"). */
   badge?: string;
-  family: "seedance" | "veo";
+  family: "seedance" | "veo" | "kling";
   /** ePhone model id. */
   ephoneModel: string;
   /** Dollars per output second, per resolution (already times the channel ratio). */
@@ -61,11 +69,14 @@ export interface StudioModel {
   routing?: Record<string, string>;
   /** The owner's own mark-up on top of the margin, per resolution (1 when absent). */
   creditFactor?: Partial<Record<Resolution, number>>;
+  /** Used only for one job (Kling: a picture moving like a video); never offered in the model picker. */
+  motionOnly?: boolean;
 }
 
 const CNY = 1 / 7;
 const BYTEDANCE = 0.9;
 const GEMINI_CHEAP = 0.53;
+const KLING = 0.8;
 const r4 = (n: number): number => Math.round(n * 10_000) / 10_000;
 
 export const MODELS: StudioModel[] = [
@@ -115,6 +126,14 @@ export const MODELS: StudioModel[] = [
     aspects: ["16:9", "9:16"], maxReferences: 3,
     routing: { "X-Provider-Order": "official_cheap", "X-Provider-Only": "true" },
   },
+  {
+    key: "kling-3-omni", name: "Kling 3.0", blurb: "Your picture, moving like your video", badge: "Motion",
+    family: "kling", ephoneModel: "kling-3.0-omni/omni-video",
+    usdPerSecond: { "720p": r4(0.9 * KLING * CNY), "1080p": r4(1.2 * KLING * CNY) },
+    maxRefVideos: 1, maxRefVideoSeconds: 10,
+    durations: [5, 10, 15], defaultDuration: 5, resolutions: ["720p", "1080p"], defaultResolution: "1080p",
+    aspects: ["16:9", "9:16", "1:1"], maxReferences: 1, motionOnly: true,
+  },
 ];
 
 export const DEFAULT_MODEL: ModelKey = "seedance-2.5";
@@ -153,18 +172,25 @@ function nearest(values: number[], want: number): number {
  */
 export function normalizeSettings(raw: Partial<Record<keyof ClipSettings, unknown>>, imageCount: number, refs: RefCounts = noRefs(imageCount)): ClipSettings {
   let m = modelByKey(String(raw.model ?? "")) ?? modelByKey(DEFAULT_MODEL)!;
+  // "Move my picture like this video": one picture, one video, no sound clip — Kling 3.0 Omni, whatever was picked.
+  const motion = raw.videoRole === "motion" && imageCount === 1 && refs.videos === 1 && refs.audios === 0;
+  if (motion) m = modelByKey("kling-3-omni")!;
+  else if (m.motionOnly) m = modelByKey(DEFAULT_MODEL)!;
   // Video and sound clips are a Seedance feature; editing or extending a clip is Seedance 2.5's; a sound clip
   // alone (no picture, no video) only 2.5 accepts.
   const clips = refs.videos + refs.audios > 0;
   const wantsRole = raw.videoRole === "edit" || raw.videoRole === "extend";
-  if (clips && m.family !== "seedance") m = modelByKey("seedance-2.5")!;
-  if (refs.videos > 0 && wantsRole) m = modelByKey("seedance-2.5")!;
-  if (refs.audios > 0 && refs.videos === 0 && imageCount === 0) m = modelByKey("seedance-2.5")!;
-  if (refs.videos > (m.maxRefVideos ?? 0)) m = modelByKey("seedance-2.5")!;
+  if (!motion) {
+    if (clips && m.family !== "seedance") m = modelByKey("seedance-2.5")!;
+    if (refs.videos > 0 && wantsRole) m = modelByKey("seedance-2.5")!;
+    if (refs.audios > 0 && refs.videos === 0 && imageCount === 0) m = modelByKey("seedance-2.5")!;
+    if (refs.videos > (m.maxRefVideos ?? 0)) m = modelByKey("seedance-2.5")!;
+  }
   const d = Number(raw.duration);
   const duration = Number.isFinite(d) && d > 0 ? nearest(m.durations, d) : m.defaultDuration;
   const resolution = m.resolutions.includes(raw.resolution as Resolution) ? (raw.resolution as Resolution) : m.defaultResolution;
   const aspect = m.aspects.includes(String(raw.aspect)) ? String(raw.aspect) : "16:9";
+  if (motion) return { model: m.key, duration, resolution, aspect, audio: false, imageRole: "first_frame", videoRole: "motion" };
   let imageRole: ImageRole = raw.imageRole === "reference" || raw.imageRole === "first_frame" ? (raw.imageRole as ImageRole) : imageCount === 1 ? "first_frame" : "reference";
   if (imageCount === 0) imageRole = "none";
   // One picture can be the opening frame; more than one can only guide the look.
@@ -236,6 +262,13 @@ export function freeModels(list: string | undefined): ModelKey[] {
 export function taskInput(s: ClipSettings, prompt: string, images: string[], safetyId?: string, clips: { videos: string[]; audios: string[] } = { videos: [], audios: [] }): Record<string, unknown> {
   const m = modelByKey(s.model)!;
   const text = prompt.trim().slice(0, 2000);
+  if (m.family === "kling") {
+    // Kling 3.0 Omni: the picture is the first frame, the video a "feature video" (its camera and pacing), one shot.
+    const contents: Record<string, unknown>[] = [{ type: "prompt", text }];
+    if (images[0]) contents.push({ type: "first_frame", url: images[0] });
+    if (clips.videos[0]) contents.push({ type: "feature_video", url: clips.videos[0] });
+    return { contents, settings: { resolution: s.resolution, aspect_ratio: s.aspect, duration: s.duration, audio: "off", multi_shot: false } };
+  }
   if (m.family === "veo") {
     const input: Record<string, unknown> = {
       prompt: text, aspect_ratio: s.aspect === "9:16" ? "9:16" : "16:9", resolution: s.resolution,
@@ -271,7 +304,7 @@ export function taskInput(s: ClipSettings, prompt: string, images: string[], saf
 /** The catalog the page draws its picker from (no provider names, no costs in dollars). */
 export function publicCatalog(margin = DEFAULT_MARGIN, free: ModelKey[] = []): unknown[] {
   return MODELS.map((m) => ({
-    key: m.key, name: m.name, blurb: m.blurb, badge: m.badge ?? null, family: m.family,
+    key: m.key, name: m.name, blurb: m.blurb, badge: m.badge ?? null, family: m.family, motionOnly: !!m.motionOnly,
     durations: m.durations, defaultDuration: m.defaultDuration, resolutions: m.resolutions,
     defaultResolution: m.defaultResolution, aspects: m.aspects, maxReferences: m.maxReferences,
     free: free.includes(m.key),

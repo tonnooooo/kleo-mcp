@@ -272,7 +272,7 @@ test("paid account: every model; not enough credits is refused; the daily budget
   const cookie = await signUp(env);
   const me = (await call(env, "/api/me", { cookie })).json;
   env.DB.db.exec(`INSERT INTO payments (session_id, user_id, credits, amount_cent, currency, status, raw_ref) VALUES ('manual_t', '${me.id}', 0, 0, 'eur', 'paid', 'tester')`);
-  assert.equal((await call(env, "/api/me", { cookie })).json.allowed.length, 5);
+  assert.equal((await call(env, "/api/me", { cookie })).json.allowed.length, 6, "Seedance x3, Veo x2 and Kling 3.0 (copy motion)");
   const poor = await call(env, "/api/generate", { method: "POST", cookie, body: { prompt: "x", settings: { model: "veo-3.1", duration: 8 } } });
   assert.equal(poor.status, 402);
   assert.equal(poor.json.code, "credits");
