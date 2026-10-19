@@ -48,7 +48,7 @@
     "STRIPE_LINK_5": "https://buy.stripe.com/bJe3cu4XZ1nYh0Ua24dQQ00",
     "STRIPE_LINK_15": "https://buy.stripe.com/8x27sK8abfeOcKEb68dQQ01",
     "STRIPE_LINK_40": "https://buy.stripe.com/dRmeVc0HJ2s25ic7TWdQQ02",
-    "STRIPE_PLAN_LINKS": "{}", // 19 Oct 2026: subscription Payment Links of the plans (src/plans.ts linkKey), e.g. {"pro:month":"https://buy.stripe.com/..."}; a plan without a link says it opens soon
+    "STRIPE_PLAN_LINKS": "{\"lite:month\":\"https://buy.stripe.com/cNibJ09efgiS6mg3DGdQQ03\",\"lite:year\":\"https://buy.stripe.com/bJe5kC0HJ9Uu6mg0rudQQ04\",\"starter:month\":\"https://buy.stripe.com/5kQ3cu4XZeaKbGA3DGdQQ05\",\"starter:year\":\"https://buy.stripe.com/7sYeVc3TV9UueSM4HKdQQ06\",\"pro:month\":\"https://buy.stripe.com/eVq7sKcqr0jUbGA5LOdQQ07\",\"pro:year\":\"https://buy.stripe.com/fZu7sKduv5Ee9ys1vydQQ08\",\"agency:month\":\"https://buy.stripe.com/3cIeVc3TV3w6bGA5LOdQQ09\",\"agency:year\":\"https://buy.stripe.com/bJe6oGgGHeaK3a4fmodQQ0a\",\"agency-590:month\":\"https://buy.stripe.com/3cI4gybmn8Qq7qk4HKdQQ0b\",\"agency-590:year\":\"https://buy.stripe.com/cNi00i3TVgiSeSMb68dQQ0c\",\"agency-750:month\":\"https://buy.stripe.com/6oU6oG3TVgiS8uo2zCdQQ0d\",\"agency-750:year\":\"https://buy.stripe.com/eVq28qeyz7Mmh0Ub68dQQ0e\"}", // 19 Oct 2026: subscription Payment Links of the plans (src/plans.ts linkKey), e.g. {"pro:month":"https://buy.stripe.com/..."}; a plan without a link says it opens soon
     "FREE_CREDITS": "5",
     "MAX_NEW_USERS_PER_DAY": "150",
     "MAX_NEW_USERS_PER_IP_DAY": "5",

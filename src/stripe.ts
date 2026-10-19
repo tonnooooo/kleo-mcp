@@ -3,7 +3,7 @@ import { getUser, creditPurchase, paymentByIntent, takeBackCredits, audit } from
 import { json, hmacHex, safeEqual } from "./util";
 import { isFlagActive } from "./schema";
 import { rewardReferral, takeBackReferral } from "./referral.ts";
-import { planByKey, planForAmount, topupBonusCredits, type Plan } from "./plans.ts";
+import { periodCents, planByKey, planForAmount, topupBonusCredits, type Plan } from "./plans.ts";
 
 /**
  * The credit packs. ONE list, and it is the only place a price and a number of credits are tied together: the
@@ -42,7 +42,22 @@ export const sellingOpen = (env: Env): boolean =>
  * does not: the webhook looks the account up before crediting anything.
  */
 export const buyUrl = (env: Env, pack: (typeof PACKS)[number], userId: string): string =>
-  `${env[pack.linkVar]}?client_reference_id=${encodeURIComponent(userId)}`;
+  `${env[pack.linkVar]}?client_reference_id=${encodeURIComponent(userId)}&locale=${CHECKOUT_LOCALE}`;
+/** Checkout always in English, wherever the buyer is (19 October 2026, the owner: "per tutti … in inglese"). */
+export const CHECKOUT_LOCALE = "en";
+
+/**
+ * What a Checkout Session paid, in EUR cents, or null when it was not a EUR sale. Every link is created in EUR, but
+ * Adaptive Pricing (on for the Italy account) lets a buyer abroad pay in their own money: the session's `currency`
+ * and `amount_total` are then THEIRS (usd, 1049) and `currency_conversion` carries the EUR it was made from
+ * (source_currency eur, amount_total 900). That EUR amount is what names the pack or plan. A link created in another
+ * currency (the old USD ones) has no EUR source and stays refused.
+ */
+export function eurCents(s: Record<string, any>): number | null {
+  if (s.currency === "eur") return typeof s.amount_total === "number" ? s.amount_total : null;
+  const c = s.currency_conversion;
+  return c?.source_currency === "eur" && typeof c.amount_total === "number" ? c.amount_total : null;
+}
 
 /**
  * Whether the buttons should be SHOWN right now: selling is configured and the "selling_pause" flag is not raised.
@@ -60,7 +75,7 @@ export async function sellingAvailable(env: Env): Promise<boolean> {
 }
 export const SELLING_PAUSE = "selling_pause";
 
-/** The pack an amount bought, or null./** The pack an amount bought, or null. Matched on the amount Stripe reports, never on what the page displayed. */
+/** The pack an amount bought, or null. Matched on the amount Stripe reports, never on what the page displayed. */
 export const packForAmount = (cents: number): (typeof PACKS)[number] | null =>
   PACKS.find((p) => p.cents === cents) ?? null;
 
@@ -144,19 +159,22 @@ export async function handleStripeWebhook(request: Request, env: Env): Promise<R
   if (s.mode === "subscription") return handlePlanCheckout(env, event, s);
   const sessionId = typeof s.id === "string" ? s.id : "";
   const userId = typeof s.client_reference_id === "string" ? s.client_reference_id : "";
-  const cents = typeof s.amount_total === "number" ? s.amount_total : -1;
-  const currency = typeof s.currency === "string" ? s.currency : "";
+  const eur = eurCents(s);
+  const cents = eur ?? -1;
+  const currency = "eur";
+  const shown = typeof s.currency === "string" ? s.currency : "";
   const paid = s.payment_status === "paid" || s.payment_status === "no_payment_required";
   const email = typeof (s.customer_details as { email?: unknown } | undefined)?.email === "string"
     ? ((s.customer_details as { email: string }).email) : null;
 
   // Everything below is a reason to accept the event and do nothing — never a reason to make Stripe retry.
   if (!sessionId || !paid) return json({ ok: true, ignored: "not a completed payment" });
-  // The live catalogue is EUR-only. Amounts alone are not enough here: the old USD links must never be able to
-  // mint credits if one of them is still reachable from a cached page or an old message.
-  if (currency !== "eur") {
-    await audit(env, null, null, "stripe.wrong_currency", { session: sessionId, currency: currency || null });
-    return json({ ok: true, ignored: `unsupported currency ${currency || "unknown"}` });
+  // The live catalogue is EUR-only (a buyer abroad pays in their money, converted from EUR: eurCents). Amounts alone
+  // are not enough here: the old USD links must never be able to mint credits if one of them is still reachable
+  // from a cached page or an old message.
+  if (eur === null) {
+    await audit(env, null, null, "stripe.wrong_currency", { session: sessionId, currency: shown || null });
+    return json({ ok: true, ignored: `unsupported currency ${shown || "unknown"}` });
   }
   const pack = packForAmount(cents);
   if (!pack) return json({ ok: true, ignored: `no pack costs ${cents} ${currency}` });
@@ -206,11 +224,13 @@ const subscriptionOf = (o: Record<string, any>): string | null => {
 async function handlePlanCheckout(env: Env, event: { id?: string; type?: string }, s: Record<string, any>): Promise<Response> {
   const sessionId = typeof s.id === "string" ? s.id : "";
   const userId = typeof s.client_reference_id === "string" ? s.client_reference_id : "";
-  const cents = typeof s.amount_total === "number" ? s.amount_total : -1;
-  const currency = typeof s.currency === "string" ? s.currency : "";
+  const eur = eurCents(s);
+  const cents = eur ?? -1;
+  const currency = "eur";
+  const shown = typeof s.currency === "string" ? s.currency : "";
   const paid = s.payment_status === "paid" || s.payment_status === "no_payment_required";
   if (!sessionId || !paid) return json({ ok: true, ignored: "not a completed payment" });
-  if (currency !== "eur") { await audit(env, null, null, "stripe.wrong_currency", { session: sessionId, currency: currency || null }); return json({ ok: true, ignored: `unsupported currency ${currency || "unknown"}` }); }
+  if (eur === null) { await audit(env, null, null, "stripe.wrong_currency", { session: sessionId, currency: shown || null }); return json({ ok: true, ignored: `unsupported currency ${shown || "unknown"}` }); }
   const match = planForAmount(cents);
   if (!match) return json({ ok: true, ignored: `no plan costs ${cents} ${currency}` });
   const known = userId && (await getUser(env, userId)) ? userId : null;
@@ -238,11 +258,22 @@ async function handleInvoicePaid(env: Env, event: { id?: string; type?: string; 
   // The first invoice is the checkout itself (handlePlanCheckout gave its credits).
   if (inv.billing_reason === "subscription_create") return json({ ok: true, ignored: "first invoice: credited at checkout" });
   const sub = subscriptionOf(inv);
-  const cents = typeof inv.amount_paid === "number" ? inv.amount_paid : -1;
-  if (!sub || inv.currency !== "eur") return json({ ok: true, ignored: "not a plan invoice" });
-  const match = planForAmount(cents);
-  if (!match) return json({ ok: true, ignored: `no plan costs ${cents}` });
-  const row = await env.DB.prepare("SELECT id FROM users WHERE plan_sub = ? LIMIT 1").bind(sub).first<{ id: string }>();
+  const paidAmount = typeof inv.amount_paid === "number" ? inv.amount_paid : -1;
+  if (!sub) return json({ ok: true, ignored: "not a plan invoice" });
+  const row = await env.DB.prepare("SELECT id, plan, plan_period, plan_credits FROM users WHERE plan_sub = ? LIMIT 1").bind(sub)
+    .first<{ id: string; plan: string | null; plan_period: string | null; plan_credits: number | null }>();
+  // A EUR invoice names its plan by amount. A buyer abroad (Adaptive Pricing) renews in their own currency, which
+  // names nothing: then the subscription itself is the proof, and it renews the plan the account bought at checkout.
+  // Only a real monthly or yearly renewal of a known subscription, never a proration or a one-off invoice.
+  let match = inv.currency === "eur" ? planForAmount(paidAmount) : null;
+  const stored = planByKey(row?.plan);
+  if (!match && inv.currency !== "eur" && stored && paidAmount > 0 && inv.billing_reason === "subscription_cycle"
+    && (row?.plan_period === "month" || row?.plan_period === "year")) {
+    const tier = stored.tiers.find((t) => t.credits === row.plan_credits) ?? null;
+    if (tier) match = { plan: stored, tier, period: row.plan_period };
+  }
+  if (!match) return json({ ok: true, ignored: `no plan costs ${paidAmount} ${inv.currency ?? ""}`.trim() });
+  const cents = periodCents(match.tier, match.period); // recorded in EUR, what the plan costs
   const userId = row?.id ?? null;
   const pi = typeof inv.payment_intent === "string" ? inv.payment_intent : null;
   const credited = await creditPurchase(env, {

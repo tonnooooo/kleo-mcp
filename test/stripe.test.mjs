@@ -278,3 +278,38 @@ test("plans: an amount no plan costs, or another currency, buys nothing", async 
   assert.equal(balance(env, "u_sub"), 0);
 });
 
+/* ------------------------------------------------------------------ buyers abroad (Adaptive Pricing, 19 October 2026) */
+const fx = (eurCents, local = "usd", localCents = Math.round(eurCents * 1.16)) => ({ currency: local, amount_total: localCents,
+  currency_conversion: { source_currency: "eur", amount_total: eurCents, amount_subtotal: eurCents, fx_rate: "1.16" } });
+
+test("abroad: a pack paid in dollars from a EUR link buys the pack its EUR price names", async () => {
+  const env = newEnv(); user(env, "u_buyer");
+  assert.equal((await post(env, session(fx(500)))).status, 200);
+  assert.equal(balance(env, "u_buyer"), 10, "5 EUR shown as 5.80 USD is still the 5 EUR pack");
+  const row = env.DB.db.prepare("SELECT amount_cent, currency FROM payments").get();
+  assert.deepEqual({ ...row }, { amount_cent: 500, currency: "eur" }, "written down in EUR, like every other sale");
+  // A link created in dollars has no EUR source: still refused, whatever its amount.
+  await post(env, session({ id: "cs_usd", currency: "usd", amount_total: 500, payment_intent: "pi_usd" }));
+  assert.equal(balance(env, "u_buyer"), 10);
+});
+
+test("abroad: a plan bought in another currency starts, and its renewals in that currency renew it", async () => {
+  const env = newEnv(); user(env, "u_sub");
+  await post(env, subCheckout(fx(3900, "gbp", 3350)));
+  assert.equal(balance(env, "u_sub"), 110);
+  assert.equal(planRow(env, "u_sub").plan, "pro");
+  await post(env, invoice({ currency: "gbp", amount_paid: 3350 }));
+  assert.equal(balance(env, "u_sub"), 220, "a pound renewal of a known subscription renews Pro");
+  await post(env, invoice({ id: "in_pr", currency: "gbp", amount_paid: 120, billing_reason: "subscription_update" }));
+  assert.equal(balance(env, "u_sub"), 220, "a proration is not a month");
+  await post(env, invoice({ id: "in_x", currency: "gbp", amount_paid: 3350, parent: { subscription_details: { subscription: "sub_nobody" } } }));
+  assert.equal(balance(env, "u_sub"), 220, "an unknown subscription names no plan");
+});
+
+test("abroad: every buy link opens in English", () => {
+  const env = newEnv();
+  assert.match(m.buyUrl(env, m.PACKS[0], "u_1"), /\?client_reference_id=u_1&locale=en$/);
+  const pro = m.publicPlans(JSON.stringify({ "pro:month": "https://buy.stripe.com/xyz" }), "u_1").find((p) => p.key === "pro");
+  assert.equal(pro.tiers[0].month.url, "https://buy.stripe.com/xyz?client_reference_id=u_1&locale=en");
+});
+

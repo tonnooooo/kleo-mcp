@@ -97,5 +97,5 @@ export function publicPlans(raw: string | undefined, userId: string | null): unk
 /** A visitor gets no link (they sign up first, or the payment would belong to nobody); "open" says whether one exists. */
 function link(links: Record<string, string>, key: string, userId: string | null): { url: string | null; open: boolean } {
   const url = links[key];
-  return { url: url && userId ? `${url}?client_reference_id=${encodeURIComponent(userId)}` : null, open: !!url };
+  return { url: url && userId ? `${url}?client_reference_id=${encodeURIComponent(userId)}&locale=en` : null, open: !!url }; // checkout in English for everyone
 }
