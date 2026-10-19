@@ -919,6 +919,7 @@ test("publicText: what a user reads names no model gateway — a provider's URL,
   assert.equal(publicText("kie.ai POST https://api.kie.ai/api/v1/jobs/createTask → 402: insufficient credits"), "the model provider → 402: insufficient credits");
   assert.equal(publicText("ephone.ai GET /v1/task/abc → 500: boom"), "the model provider → 500: boom");
   assert.equal(publicText("the track could not be ordered: kie.ai's balance was empty"), "the track could not be ordered: the model provider's balance was empty");
+  assert.equal(publicText("The request failed because the output image may contain sensitive information. Request id: 021792379535783b71a54db2718758900f1b5b7cc45ea65c32b32"), "The request failed because the output image may contain sensitive information.", "no provider request id");
   assert.equal(publicText("ePhone AI balance is empty; ePhone's queue; EPHONE_API_KEY is not set"), "the AI model gateway balance is empty; the AI model gateway's queue; the provider key is not set");
   assert.equal(publicText("a telephone rang in the scene"), "a telephone rang in the scene", "ordinary words are left alone");
   assert.equal(publicText("storyboard rejected by the engine"), "storyboard rejected by the engine");

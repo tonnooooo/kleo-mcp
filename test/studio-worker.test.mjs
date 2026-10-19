@@ -415,6 +415,34 @@ test("a well-known character Google refuses is made on FLUX 3; BFL's Protected C
   } finally { p.restore(); }
 });
 
+test("a copyright refusal reads plainly and has no request id; a song downloads under its own name", async () => {
+  // The owner's first customer, 19 October 2026: Seedance refused her video three times, and the 50-character
+  // request id ran off her phone's screen.
+  const env = newEnv();
+  const { cookie, id } = await paidAccount(env);
+  const p = fakeProvider((u) => {
+    if (u.endsWith("/v1/task/submit")) return ok({ id: "task_cr" });
+    if (/task_cr$/.test(u)) return ok({ status: "failed", error: "The request failed because the output video may be related to copyright restrictions. Request id: 02179238171945500000000000000000000ffffac158e25999f35" });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { prompt: "three singers dance", settings: { model: "seedance-2.0-fast", resolution: "480p", duration: 5 } } });
+    assert.equal(r.status, 200, r.text);
+    old(env);
+    const g = (await call(env, `/api/generations/${r.json.generation.id}`, { cookie })).json.generation;
+    assert.equal(g.status, "failed");
+    assert.match(g.error, /^The video model won't make this one: it recognised characters, people or music protected by copyright/);
+    assert.ok(!/Request id|0217/.test(g.error), g.error);
+    assert.equal(g.refunded, true);
+    assert.equal(credits(env, id), 100);
+  } finally { p.restore(); }
+  const up = await upload(env, cookie, jpegBytes(), "image/jpeg");
+  const named = await call(env, `/media/u/${up.id}?dl=1&name=song-2-abc123`, { cookie });
+  assert.match(named.res.headers.get("content-disposition"), /attachment; filename="kleo-song-2-abc123\.jpg"/);
+  const odd = await call(env, `/media/u/${up.id}?dl=1&name=..%2Fx`, { cookie });
+  assert.match(odd.res.headers.get("content-disposition"), new RegExp(`filename="kleo-${up.id}\.jpg"`), "anything but a plain slug falls back to the id");
+});
+
 test("password reset: off without an e-mail key; with one, a one-time link that dies when used", async () => {
   const off = newEnv();
   assert.equal((await call(off, "/api/auth/forgot", { method: "POST", body: { email: "a@b.co" } })).status, 503);

@@ -145,7 +145,7 @@ export const TOOLS: ToolDef[] = [
     ] },
   { key: "music", name: "Music", blurb: "Songs and soundtracks", group: "audio", icon: "music", tint: "#af52de", output: "audio",
     fields: [
-      { key: "prompt", kind: "text", label: "Describe the music", required: true, maxLength: 1000, placeholder: "Upbeat summer pop about road trips · dark cinematic trailer score" },
+      { key: "prompt", kind: "text", label: "Describe your new song", required: true, maxLength: 1000, placeholder: "Kleo writes a new song: upbeat K-pop for a 4th birthday · dark cinematic trailer score" },
       { key: "vocals", kind: "select", label: "Vocals", options: [{ value: "none", label: "Instrumental" }, { value: "female", label: "Female voice" }, { value: "male", label: "Male voice" }], default: "none" },
     ] },
   { key: "sfx", name: "Sound Effects", blurb: "Any sound from words", group: "audio", icon: "wave", tint: "#32ade6", output: "audio",

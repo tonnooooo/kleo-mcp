@@ -197,7 +197,22 @@ export async function deleteGeneration(env: StudioEnv, userId: string, g: Genera
 /** The sentence a person reads when the provider refused an order. */
 function refusal(e: unknown, noun: string): string {
   if (e instanceof KieError && e.status === 402) return "Our generation engine is being recharged. Your credits are back — please try again in a little while.";
-  return `The ${noun} model refused this request: ${publicText(e instanceof Error ? e.message : String(e)).replace(/^.*?→ \d+: /, "")}`;
+  const why = e instanceof Error ? e.message : String(e);
+  if (isCopyrightRefusal(why)) return copyrightText(`${noun} model`);
+  return `The ${noun} model refused this request: ${publicText(why).replace(/^.*?→ \d+: /, "")}`;
+}
+
+/**
+ * A copyright refusal, told plainly (19 October 2026: the owner's first customer met Seedance's "the output video may
+ * be related to copyright restrictions" three times, with a 50-character request id running off her phone's screen).
+ */
+export const isCopyrightRefusal = (why: string): boolean => /copyright|protected content|intellectual property/i.test(why);
+const copyrightText = (noun: string): string =>
+  `The ${noun} won't make this one: it recognised characters, people or music protected by copyright, from a film, a show or a song. Your credits are back. Try your own characters, and leave out their pictures and names.`;
+/** What a failed generation says: the copyright sentence, or the provider's reason in neutral words. */
+export function failureText(noun: string, why: string): string {
+  if (isCopyrightRefusal(why)) return copyrightText(noun);
+  return `The ${noun} could not make this one: ${publicText(why).replace(/[.\s]+$/, "")}. Your credits are back.`;
 }
 
 export async function createGeneration(env: StudioEnv, userId: string, req: CreateRequest, origin: string): Promise<GenerationRow> {
@@ -389,7 +404,7 @@ export async function refreshGeneration(env: StudioEnv, g: GenerationRow, minGap
   }
   const status = String(t.status ?? "").toLowerCase();
   if (status === "failed" || status === "failure" || status === "cancelled") {
-    await failGeneration(env, g.id, `The video model could not make this one: ${publicText(ephoneFailure(t))}. Your credits are back.`, { stage: "provider", usage: t.usage ?? null });
+    await failGeneration(env, g.id, failureText("video model", ephoneFailure(t)), { stage: "provider", usage: t.usage ?? null, provider: ephoneFailure(t).slice(0, 300) });
     return (await getGeneration(env, g.id))!;
   }
   if (status !== "completed" && status !== "succeeded" && status !== "success") return (await getGeneration(env, g.id))!;
@@ -522,7 +537,7 @@ async function refreshImages(env: StudioEnv, g: GenerationRow, ageMin: number): 
     await moveGeneration(env, g.id, ["saving"], "running", { slots: json });
     const why = slots.find((x) => x.error && x.error !== "timeout" && x.error !== "balance")?.error;
     const noun = g.kind === "tool" ? "model" : "image model";
-    await failGeneration(env, g.id, why ? `The ${noun} could not make this one: ${why}. Your credits are back.` : `The ${noun} took too long. Your credits are back.`, { stage: g.kind });
+    await failGeneration(env, g.id, why ? failureText(noun, why) : `The ${noun} took too long. Your credits are back.`, { stage: g.kind });
     return (await getGeneration(env, g.id))!;
   }
   // Some pictures failed: the share of credits they stood for goes back (rounded down).
