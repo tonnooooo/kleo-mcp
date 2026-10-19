@@ -36,6 +36,7 @@ import { httpsRedirect, secureResponse } from "./security.ts";
 import { SESSION_COOKIE, clearSessionCookie, readCookie, readSessionFull, normalizeEmail, signPath, checkSignedPath } from "./session.ts";
 import { ipBucket } from "../accounts.ts";
 import { studioConnect } from "../connect.ts";
+import { publicPlans } from "../plans.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const json = (data: unknown, status = 200, headers: Record<string, string> = {}): Response =>
@@ -67,6 +68,13 @@ async function rateLimited(env: StudioEnv, request: Request, email?: string): Pr
   const ip = request.headers.get("cf-connecting-ip");
   if (!(await env.AUTH_LIMIT.limit({ key: `auth:${ip ? ipBucket(ip) : "unknown"}` })).success) return true;
   return !!email && !(await env.AUTH_LIMIT.limit({ key: `signin:${email}` })).success;
+}
+
+/** The plan an account is on, as the pricing page shows it (null for none, or one that ran out). */
+async function planOf(env: StudioEnv, userId: string): Promise<Record<string, unknown> | null> {
+  const r = await env.DB.prepare("SELECT plan, plan_period, plan_credits, plan_until, plan_status FROM users WHERE id = ?").bind(userId).first<Record<string, any>>().catch(() => null);
+  if (!r?.plan_until || Date.parse(r.plan_until) <= Date.now() || r.plan === "trial") return null;
+  return { key: r.plan, period: r.plan_period, credits: r.plan_credits, until: r.plan_until, status: r.plan_status };
 }
 
 /** The credit packs with this account's buy links (only real, live Stripe Payment Links). */
@@ -175,7 +183,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       models: publicCatalog(marginOf(env), freeModels(env.STUDIO_FREE_MODELS)), freeCredits: Number(env.FREE_CREDITS ?? 5),
       defaultImageModel: defaultImageModel(pausedImageModels(env.STUDIO_PAUSED_IMAGE_MODELS)),
       imageModels: publicImageCatalog(marginOf(env), freeImageModels(env.STUDIO_FREE_IMAGE_MODELS), pausedImageModels(env.STUDIO_PAUSED_IMAGE_MODELS)),
-      emailReset: resetAvailable(env), presets: publicPresets(), tools: publicTools(marginOf(env)), freeTools: freeTools(env.STUDIO_FREE_TOOLS),
+      emailReset: resetAvailable(env), plans: publicPlans(env.STRIPE_PLAN_LINKS, null), presets: publicPresets(), tools: publicTools(marginOf(env)), freeTools: freeTools(env.STUDIO_FREE_TOOLS),
     });
   }
   if (path.startsWith("/api/auth/") && method === "POST" && path !== "/api/auth/password" && path !== "/api/auth/password/change" && path !== "/api/auth/signout-all") {
@@ -234,6 +242,8 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       freeResolutions: paid ? null : freeResolutions(env.STUDIO_FREE_RESOLUTIONS),
       allowedImages: (paid ? IMAGE_MODELS.map((m) => m.key) : freeImageModels(env.STUDIO_FREE_IMAGE_MODELS)).filter((k) => !pausedImageModels(env.STUDIO_PAUSED_IMAGE_MODELS).includes(k)), packs: packsFor(env, userId),
       allowedTools: paid ? freeTools("*") : freeTools(env.STUDIO_FREE_TOOLS),
+      // Monthly plans (src/plans.ts): the buy links with this account tied in, and the plan it is on now.
+      plans: publicPlans(env.STRIPE_PLAN_LINKS, userId), plan: await planOf(env, userId),
     });
   }
 

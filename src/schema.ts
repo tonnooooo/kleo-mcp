@@ -90,6 +90,14 @@ const COLUMNS: [table: string, column: string, definition: string][] = [
   // One account everywhere (19 October 2026, src/connect.ts; 0022_merged_accounts.sql): an old anonymous connector
   // account merged into a real one points at it, so the assistant's grant keeps working there.
   ["users", "merged_into", "TEXT"],
+  // Monthly plans (19 October 2026, src/plans.ts; 0023_plans.sql).
+  ["users", "plan_period", "TEXT"],
+  ["users", "plan_credits", "INTEGER"],
+  ["users", "plan_until", "TEXT"],
+  ["users", "plan_status", "TEXT"],
+  ["users", "plan_sub", "TEXT"],
+  ["users", "plan_customer", "TEXT"],
+  ["users", "plan_next_grant", "TEXT"],
 ];
 
 /** Indexes over columns from COLUMNS. They belong here and NOT in STATEMENTS: that batch runs before the ALTERs, so
@@ -100,6 +108,7 @@ const COLUMN_INDEXES = [
   "CREATE INDEX IF NOT EXISTS users_referred_by ON users(referred_by)",
   "CREATE INDEX IF NOT EXISTS users_created ON users(created_at)",
   "CREATE INDEX IF NOT EXISTS users_email_canon ON users(email_canon)",
+  "CREATE INDEX IF NOT EXISTS users_plan_sub ON users(plan_sub)",
 ];
 
 async function ensureColumns(env: Env): Promise<void> {

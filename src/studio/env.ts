@@ -21,6 +21,8 @@ export interface StudioEnv {
   STRIPE_LINK_5?: string;
   STRIPE_LINK_15?: string;
   STRIPE_LINK_40?: string;
+  /** Monthly plans (src/plans.ts): JSON {"lite:month": "https://buy.stripe.com/…", "pro:year": …, "agency-620:month": …}. */
+  STRIPE_PLAN_LINKS?: string;
   /** Credits a new Studio account starts with (default 5, the MCP server's FREE_CREDITS). */
   FREE_CREDITS?: string;
   MAX_NEW_USERS_PER_DAY?: string;
