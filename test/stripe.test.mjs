@@ -220,7 +220,7 @@ const subCheckout = (o = {}) => ({ id: "evt_s1", type: "checkout.session.complet
 const invoice = (o = {}) => ({ id: "evt_i1", type: "invoice.paid", livemode: true,
   data: { object: { id: "in_2", billing_reason: "subscription_cycle", amount_paid: 3900, currency: "eur", payment_intent: "pi_i2",
     parent: { subscription_details: { subscription: "sub_1" } }, lines: { data: [{ period: { end: Math.floor(Date.now() / 1000) + 31 * 86400 } }] }, ...o } } });
-const planRow = (env, id) => env.DB.db.prepare("SELECT plan, plan_period, plan_credits, plan_status, plan_sub FROM users WHERE id = ?").get(id);
+const planRow = (env, id) => ({ ...env.DB.db.prepare("SELECT plan, plan_period, plan_credits, plan_status, plan_sub FROM users WHERE id = ?").get(id) });
 
 test("plans: prices and credits come from one table, and no plan costs what a pack costs", () => {
   assert.deepEqual([m.planForAmount(3900).plan.key, m.planForAmount(3900).period], ["pro", "month"]);
