@@ -340,6 +340,7 @@ async function route() {
     history.replaceState(null, "", p + (q.toString() ? `?${q}` : ""));
   }
   if (p === "/connect") return show("chat", () => connectView());
+  if (p === "/plans") return show("plans", () => plansView());
   if (p === "/explore") return show("explore", () => exploreView());
   if (p === "/account") return show("account", () => accountView());
   const m = p.match(/^\/c\/(c_[a-z0-9]+)/);
@@ -513,7 +514,8 @@ function renderShell() {
     h("div", { class: "brand", onclick: () => go("/") }, h("img", { src: "/kleo-mark.svg", alt: "" }), "Kleo"),
     h("nav", { class: "nav-tabs", "aria-label": "Main" }, PAGES.map((p) => h("button", { class: "nav-tab", "data-page": p.key, onclick: () => go(p.path) },
       icon(p.ic, 17), p.label, p.isNew ? h("span", { class: "new" }, "NEW") : null))),
-    h("div", { class: "nav-right" }, h("a", { class: "btn btn-quiet btn-sm nav-plugin", href: "https://kleooai.com/mcp/", target: "_blank", rel: "noopener" }, icon("plug", 16), "Install plugin"), S.me ? [
+    h("div", { class: "nav-right" }, h("a", { class: "btn btn-quiet btn-sm nav-plugin", href: "https://kleooai.com/mcp/", target: "_blank", rel: "noopener" }, icon("plug", 16), "Install plugin"),
+      S.me?.plan?.key === "agency" ? null : h("button", { class: "btn btn-sm nav-upgrade", onclick: () => go("/plans") }, icon("sparkle", 15), S.me?.plan ? "Upgrade" : "Upgrade plan"), S.me ? [
       h("button", { class: "credits-pill", onclick: () => openBuy(), "aria-label": "Credits" }, bolt(15), h("span", { "data-credits": "" }, S.me.admin ? "∞" : S.me.credits)),
       h("button", { class: "avatar avatar-btn", "aria-label": "Account", onclick: openAccount }, (S.me.name || S.me.email || "K")[0].toUpperCase())] : [
       h("button", { class: "btn btn-quiet btn-sm", onclick: () => requireAccount("signin") }, "Sign in"),
@@ -1656,6 +1658,101 @@ function toolBody(key, compact, top = null) {
   return h("div", { class: "gen-layout" }, form, feed);
 }
 
+// ── Plans (19 October 2026, the owner: "metti delle subscription come fa Ausar … stessa identica cosa") ──────────
+// Ausar's pricing page, in Kleo's credits (src/plans.ts): Monthly/Annually, four cards, a plan finder and a table.
+const eur = (cents) => `€${(cents / 100).toFixed(cents % 100 ? 2 : 0)}`;
+const plansList = () => (S.me?.plans || S.config.plans || []);
+// What one thing costs in credits, for the plan finder (Kleo's own prices: src/studio/models.ts, tools.ts).
+const USES = [
+  { key: "video", label: "Videos", each: 4, hint: "≈ 4 credits · 5-second clip" },
+  { key: "image", label: "Pictures", each: 1, hint: "1 credit · picture" },
+  { key: "swap", label: "Character swap & edits", each: 3, hint: "≈ 3 credits · swap" },
+  { key: "motion", label: "Motion control", each: 3, hint: "≈ 3 credits · motion" },
+  { key: "film", label: "Kleo films", each: 20, hint: "≈ 20 credits · 30-second film" },
+  { key: "chat", label: "Chat-assisted creation", each: 3, hint: "≈ 3 credits · idea to clip" },
+];
+function plansView() {
+  const ui = (S.plansUi ||= { period: store.get("planPeriod", "year"), tier: 0, uses: ["video", "image"], count: 20 });
+  const page = h("div", { class: "page wide plans-page" });
+  const draw = () => {
+    const list = plansList();
+    const per = ui.period;
+    const toggle = h("div", { class: "pl-toggle" },
+      h("span", { class: per === "month" ? "on" : "" }, "Monthly"),
+      h("button", { class: "pl-switch" + (per === "year" ? " year" : ""), role: "switch", "aria-checked": String(per === "year"), "aria-label": "Billed annually",
+        onclick: () => { ui.period = per === "year" ? "month" : "year"; store.set("planPeriod", ui.period); draw(); } }, h("i")),
+      h("span", { class: per === "year" ? "on" : "" }, "Annually"), h("b", { class: "pl-off" }, "20% OFF"));
+    const usage = Math.round(ui.count * (ui.uses.length ? ui.uses.reduce((a, k) => a + USES.find((u) => u.key === k).each, 0) / ui.uses.length : 4));
+    const best = list.find((p) => p.tiers.some((t) => t.credits >= usage)) || list[list.length - 1];
+    const finder = h("section", { class: "pl-finder" },
+      h("div", { class: "pf-left" },
+        h("h2", {}, "Find the best plan for you"), h("p", { class: "pl-sub" }, "Tell Kleo what you make: it does the sums."),
+        h("div", { class: "pf-step" }, h("span", { class: "pf-n" }, "1"), h("div", {}, h("h3", {}, "What are you here to make?"), h("p", {}, "Pick one or more."),
+          h("div", { class: "pf-uses" }, USES.map((u) => h("button", { class: "pf-use" + (ui.uses.includes(u.key) ? " on" : ""), onclick: () => { ui.uses = ui.uses.includes(u.key) ? ui.uses.filter((k) => k !== u.key) : [...ui.uses, u.key]; draw(); } },
+            h("span", {}, u.label), h("i", {}, ui.uses.includes(u.key) ? icon("check", 14, 3) : null)))))),
+        h("div", { class: "pf-step" }, h("span", { class: "pf-n" }, "2"), h("div", { style: { flex: 1 } }, h("h3", {}, "How many a month?"),
+          h("p", {}, USES.filter((u) => ui.uses.includes(u.key)).map((u) => u.hint).join(" · ") || "Pick something above."),
+          h("input", { type: "range", min: "1", max: "120", value: String(ui.count), class: "pf-range", oninput: (e) => { ui.count = Number(e.target.value); draw(); } }),
+          h("div", { class: "pf-count" }, h("b", {}, `${ui.count} a month`), h("span", {}, `≈ ${usage} credits`))))),
+      h("div", { class: "pf-right" }, h("p", { class: "pf-rec" }, "We recommend ", h("b", {}, best?.name || "")),
+        best ? [h("div", { class: "pf-bar" }, h("span", {}, "Expected usage"), h("b", {}, `${usage}/${(best.tiers.find((t) => t.credits >= usage) || best.tiers[best.tiers.length - 1]).credits}`)),
+          h("div", { class: "pf-meter" }, h("i", { style: { width: `${Math.min(100, usage / (best.tiers.find((t) => t.credits >= usage) || best.tiers[best.tiers.length - 1]).credits * 100)}%` } })),
+          planCard(best, per, ui)] : null));
+    fill(page,
+      h("div", { class: "pl-head" }, h("h1", {}, "Choose your ", h("em", {}, "Plan")),
+        h("p", { class: "pl-sub" }, "Subscribers get 10–25% more credits on every top-up."), toggle),
+      h("div", { class: "pl-grid" }, list.map((p) => planCard(p, per, ui, draw))),
+      h("p", { class: "pl-note" }, "Credits never expire. Cancel any time: you keep your plan until the end of what you paid for. ",
+        h("button", { class: "link", onclick: () => openBuy() }, "Just need a few credits? Buy a pack")),
+      finder, compareTable(list, per));
+  };
+  setView("", page);
+  draw();
+}
+function planCard(p, per, ui, redraw) {
+  const tier = p.tiers.length > 1 ? p.tiers[Math.min(ui.tier, p.tiers.length - 1)] : p.tiers[0];
+  const price = tier[per];
+  const mine = S.me?.plan?.key === p.key;
+  const cta = h("button", { class: "btn pl-cta" + (p.popular ? " btn-cta" : ""), disabled: mine || null, onclick: () => buyPlan(p, tier, per) }, mine ? "Your plan" : `Get ${p.name}`);
+  return h("div", { class: "pl-card" + (p.popular ? " popular" : "") },
+    p.popular ? h("span", { class: "pl-pop" }, "MOST POPULAR") : null,
+    h("div", { class: "pl-name" }, h("b", {}, p.name), price.off > 0 ? h("span", { class: "pl-badge" }, `${price.off}% OFF`) : null),
+    h("div", { class: "pl-credits" }, h("div", { class: "pl-cr" }, icon("sparkle", 16), h("b", {}, `${tier.credits}`), " credits/mo"),
+      p.tiers.length > 1 && redraw ? [h("input", { type: "range", min: "0", max: String(p.tiers.length - 1), value: String(Math.min(ui.tier, p.tiers.length - 1)), class: "pl-tier", "aria-label": "Credits per month",
+        oninput: (e) => { ui.tier = Number(e.target.value); redraw(); } }),
+        h("div", { class: "pl-ticks" }, p.tiers.map((t, i) => h("span", { class: i === ui.tier ? "on" : "" }, t.credits)))] : null),
+    h("div", { class: "pl-price" }, per === "year" ? h("s", {}, eur(tier.month.cents)) : null, h("b", {}, eur(price.perMonth)), h("span", {}, "/month")),
+    h("p", { class: "pl-bill" }, per === "year" ? `Billed ${eur(price.cents)}/year · was ${eur(tier.month.cents * 12)}` : `Billed monthly · renews at ${eur(price.cents)}/mo`),
+    h("span", { class: "pl-tag" }, p.tagline), cta,
+    h("ul", { class: "pl-feats" }, p.features.map((f) => h("li", {}, icon("check", 15, 2.6), f))));
+}
+async function buyPlan(p, tier, per) {
+  if (!S.me) return requireAccount("signup");
+  const price = tier[per];
+  if (price.url) { location.href = price.url; return; }
+  if (await ask({ title: `${p.name} opens in a few days`, text: "Plans are almost ready. You can already buy a credit pack: your credits stay when the plan starts.", ok: "Buy credits" })) openBuy();
+}
+function compareTable(list, per) {
+  const yes = h("span", { class: "ct-yes" }, icon("check", 16, 2.6));
+  const row = (label, cells) => h("tr", {}, h("th", {}, label), cells.map((c) => h("td", {}, c === true ? yes.cloneNode(true) : c)));
+  const head = h("tr", {}, h("th", {}), list.map((p) => { const t = p.tiers[0]; return h("td", {}, h("b", { class: "ct-name" }, p.name, p.key === "agency" ? h("span", { class: "pl-badge small" }, "BEST VALUE") : null),
+    h("span", { class: "ct-price" }, `${eur(t[per].perMonth)}/month`), h("span", { class: "ct-bill" }, per === "year" ? "Billed annually" : "Billed monthly"),
+    h("button", { class: "btn pl-cta" + (p.key === "agency" ? " btn-cta" : ""), onclick: () => buyPlan(p, t, per) }, "Get plan")); }));
+  return h("section", { class: "pl-compare" }, h("h2", {}, "Compare features"), h("p", { class: "pl-sub" }, "See in detail which plan suits you best."),
+    h("div", { class: "ct-wrap" }, h("table", { class: "ct" }, h("thead", {}, head), h("tbody", {},
+      h("tr", { class: "ct-group" }, h("th", { colspan: String(list.length + 1) }, "Credits")),
+      row("Credits every month", list.map((p) => p.tiers.map((t) => t.credits).join(" · "))),
+      row("Price per credit", list.map((p) => `€${(p.tiers[0][per].perMonth / p.tiers[0].credits / 100).toFixed(2)}`)),
+      row("Extra credits on top-ups", list.map((p) => (p.topupBonus ? `+${Math.round(p.topupBonus * 100)}%` : "—"))),
+      h("tr", { class: "ct-group" }, h("th", { colspan: String(list.length + 1) }, "Create")),
+      row("Video: Seedance 2.5, Veo 3.1, Kling 3.0", list.map(() => true)),
+      row("Image: Nano Banana Pro, Seedream, FLUX.2", list.map(() => true)),
+      row("Apps: swaps, motion control, talking photos", list.map(() => true)),
+      row("Kleo films, up to 5 minutes", list.map(() => true)),
+      row("Kleo in Claude, ChatGPT and Grok", list.map(() => true)),
+      row("Commercial use", list.map(() => true))))));
+}
+
 // ── Library ──────────────────────────────────────────────────────────────────────────────────────────────────────
 function libraryView() {
   const f = store.get("libFilter", "all");
@@ -1774,7 +1871,11 @@ function packRows(note) {
     h("p", { class: "sheet-sub", style: { paddingTop: "10px" } }, "Secure checkout by Stripe: card, Apple Pay, Google Pay, PayPal. Your first pack unlocks every model and app.")];
 }
 function bigCredits(sub) { return h("div", { class: "big-credits" }, h("b", {}, bolt(34), h("span", { "data-credits": "" }, S.me.admin ? "∞" : S.me.credits)), h("span", {}, S.me.admin ? "Admin account: no limits" : sub)); }
-function openBuy(note) { if (!S.me) return requireAccount(); sheet("Get credits", null, bigCredits("credits left"), packRows(note)); }
+function openBuy(note) {
+  if (!S.me) return requireAccount();
+  const plan = S.me.plan ? null : h("button", { class: "buy-plan", onclick: () => { closeLayer(); go("/plans"); } }, icon("sparkle", 16), h("span", {}, h("b", {}, "Save up to 35% with a plan"), "New credits every month, and more on every top-up"), icon("right", 15, 2.2));
+  sheet("Get credits", null, bigCredits("credits left"), plan, packRows(note));
+}
 // ── Account: a whole page, like Higgsfield's settings (14 October 2026) ──────────────────────────────────────────
 // Profile, credits and packs, what the credits went on and what was bought, sign-in and security, Kleo in your AI
 // assistant, appearance, help, and the account's end. Plain words, iPhone-size type, every button does what it says.
@@ -2016,6 +2117,16 @@ const demoImageCatalog = () => [
   prices: Object.fromEntries(qualities.map((q) => [q, { 1: pr[q][0], 2: pr[q][1], 4: pr[q][2] }])),
 }));
 const DEMO_PRESETS = [["crash-zoom", "Crash Zoom", "camera", "Fast punch-in", "#ff375f"], ["dolly-zoom", "Dolly Zoom", "camera", "Vertigo effect", "#bf5af2"], ["orbit-360", "360 Orbit", "camera", "Circle the subject", "#0a84ff"], ["fpv-drone", "FPV Drone", "camera", "Fast fly-through", "#30d158"], ["crane-up", "Crane Up", "camera", "Rise and reveal", "#64d2ff"], ["dolly-in", "Slow Push-In", "camera", "Cinematic tension", "#ffd60a"], ["bullet-time", "Bullet Time", "camera", "Frozen moment", "#5e5ce6"], ["earth-zoom-out", "Earth Zoom Out", "camera", "From face to space", "#32ade6"], ["disintegrate", "Disintegration", "effect", "Turns to dust", "#a2845e"], ["levitate", "Levitation", "effect", "Floats up", "#ac8e68"], ["explosion", "Explosion", "effect", "Boom behind", "#ff6b00"], ["lightning", "Thunder God", "effect", "Electric power", "#7d7aff"], ["portal", "Portal", "effect", "Step through", "#5856d6"], ["anime", "Anime", "style", "Japanese animation", "#ff7eb6"], ["clay", "Claymation", "style", "Stop-motion clay", "#d4a373"], ["vhs", "VHS 90s", "style", "Retro tape", "#6a994e"]].map(([key, name, group, hint, tint]) => ({ key, name, group, hint, tint, art: `https://media.kleooai.com/app/presets/${key}.jpg?v=1` }));
+// The same numbers as src/plans.ts, for ?demo=1 (no links: the buttons say the plans open soon).
+const DEMO_PLANS = (() => {
+  const P = [["lite", "Lite", "For trying Kleo", [[900, 22]], 0], ["starter", "Starter", "For beginners & explorers", [[1900, 50]], 0.1], ["pro", "Pro", "For serious creators", [[3900, 110]], 0.15, true], ["agency", "Agency", "For teams & agencies", [[14900, 430], [19900, 590], [24900, 750]], 0.25]];
+  const base = 900 / 22;
+  return P.map(([key, name, tagline, tiers, topupBonus, popular]) => ({ key, name, tagline, topupBonus, popular: !!popular,
+    features: ["Every video, image and audio model", "New credits every month", "Every app: swaps, motion, talking photos", "Kleo films, up to 5 minutes", "Commercial use", ...(topupBonus ? [`+${Math.round(topupBonus * 100)}% credits on top-ups`] : []), ...(key === "agency" ? ["Volume credit tiers"] : [])],
+    tiers: tiers.map(([cents, credits]) => { const y = Math.round(cents * 0.8 / 100) * 100 * 12; return { credits,
+      month: { cents, perMonth: cents, off: Math.max(0, Math.round((1 - cents / credits / base) * 100)), url: null, open: false },
+      year: { cents: y, perMonth: Math.round(y / 12), off: Math.max(0, Math.round((1 - y / 12 / credits / base) * 100)), url: null, open: false } }; }) }));
+})();
 const DEMO_TOOLS = [
   ["face-swap", "Face Swap", "Put a face on any photo", "face", "user", "#ff375f", "image", true, "Popular", [["target", "image", "Photo", "The picture to change"], ["face", "image", "Face", "A clear, front-facing face"]], 1],
   ["video-face-swap", "Video Face Swap", "Swap a face in a video", "face", "film", "#bf5af2", "video", true, null, [["video", "video", "Video", "MP4 or MOV, 3–15 seconds"], ["face", "image", "Face", "A clear, front-facing face"]], 7],
@@ -2039,7 +2150,7 @@ async function demoApi(path, opts) {
   await new Promise((r) => setTimeout(r, path === "/api/chat" ? 1100 : 150));
   const method = opts.method || "GET", b = opts.body || {};
   const now = () => new Date().toISOString();
-  if (path === "/api/config") return { google: true, microsoft: true, social: ["google"], emailReset: true, defaultModel: "seedance-2.5", models: demoCatalog(), defaultImageModel: "nano-banana-2", imageModels: demoImageCatalog(), freeCredits: 5, presets: DEMO_PRESETS, tools: DEMO_TOOLS };
+  if (path === "/api/config") return { google: true, microsoft: true, social: ["google"], emailReset: true, defaultModel: "seedance-2.5", models: demoCatalog(), defaultImageModel: "nano-banana-2", imageModels: demoImageCatalog(), freeCredits: 5, presets: DEMO_PRESETS, tools: DEMO_TOOLS, plans: DEMO_PLANS };
   if (path === "/api/me" && DEMO_GUEST) throw new ApiError("Sign in first.", 401, "signin");
   if (path === "/api/me" && DEMO_FREE) return { id: "u_demo", email: "you@example.com", name: "Demo", since: "2026-10-01T09:00:00Z", credits: 5, paid: false, allowed: ["seedance-2.0-fast"], freeResolutions: ["480p"], allowedImages: ["nano-banana-2"], allowedTools: [], methods: ["password"], mcpUrl: "https://mcp.kleooai.com/mcp", packs: [{ label: "5 EUR", credits: 10, url: "https://kleooai.com/pricing/" }, { label: "15 EUR", credits: 35, url: "https://kleooai.com/pricing/" }, { label: "40 EUR", credits: 100, url: "https://kleooai.com/pricing/" }] };
   if (path === "/api/me") return { id: "u_demo", email: "you@example.com", name: "Demo", since: "2026-10-01T09:00:00Z", credits: demoDb.credits, paid: true, allowed: demoCatalog().map((m) => m.key), allowedImages: demoImageCatalog().map((m) => m.key), allowedTools: DEMO_TOOLS.map((t) => t.key), methods: ["password", "google"], mcpUrl: "https://mcp.kleooai.com/mcp", packs: [{ label: "5 EUR", credits: 10, url: "https://kleooai.com/pricing/" }, { label: "15 EUR", credits: 35, url: "https://kleooai.com/pricing/" }, { label: "40 EUR", credits: 100, url: "https://kleooai.com/pricing/" }] };

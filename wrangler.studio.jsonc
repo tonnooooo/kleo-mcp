@@ -48,6 +48,7 @@
     "STRIPE_LINK_5": "https://buy.stripe.com/bJe3cu4XZ1nYh0Ua24dQQ00",
     "STRIPE_LINK_15": "https://buy.stripe.com/8x27sK8abfeOcKEb68dQQ01",
     "STRIPE_LINK_40": "https://buy.stripe.com/dRmeVc0HJ2s25ic7TWdQQ02",
+    "STRIPE_PLAN_LINKS": "{}", // 19 Oct 2026: subscription Payment Links of the plans (src/plans.ts linkKey), e.g. {"pro:month":"https://buy.stripe.com/..."}; a plan without a link says it opens soon
     "FREE_CREDITS": "5",
     "MAX_NEW_USERS_PER_DAY": "150",
     "MAX_NEW_USERS_PER_IP_DAY": "5",

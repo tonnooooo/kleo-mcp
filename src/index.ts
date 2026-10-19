@@ -8,7 +8,7 @@ import { activeAccount, isAnonymous, signInLink, signInRequiredReply, studioSign
 import { handleInternal, handleDevPlan, handleAdmin } from "./internal";
 import { handleCredits } from "./credits";
 import { handleStudioFilm } from "./studio-film";
-import { handleStripeWebhook } from "./stripe";
+import { handleStripeWebhook, grantDuePlanCredits } from "./stripe";
 import { handleDownload } from "./dl";
 import { handleUpload } from "./upload.ts";
 import { handleProbe } from "./probe.ts";
@@ -139,6 +139,8 @@ export default {
         await ensureSchema(env);
         const stats = await tick(env, { plan: true });
         await audit(env, null, null, "cron.tick", stats);
+        // Annual plans: this month's credits (src/stripe.ts). Its own try, so a failure never stops the film queue.
+        try { await grantDuePlanCredits(env); } catch (e) { await audit(env, null, null, "plan.cron.error", String(e).slice(0, 300)); }
       } catch (e) {
         try { await audit(env, null, null, "cron.error", String(e).slice(0, 300)); } catch { /* ignore */ }
       }

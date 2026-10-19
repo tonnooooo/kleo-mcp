@@ -18,7 +18,7 @@ const SECRET = "whsec_" + "a".repeat(32);
 let m;
 before(async () => {
   const r = await esbuild.build({
-    stdin: { contents: `export * from "./src/stripe.ts"; export * from "./src/db.ts"; export * from "./src/schema.ts";`, resolveDir: ROOT, loader: "ts" },
+    stdin: { contents: `export * from "./src/stripe.ts"; export * from "./src/db.ts"; export * from "./src/schema.ts"; export * from "./src/plans.ts";`, resolveDir: ROOT, loader: "ts" },
     bundle: true, write: false, format: "esm", platform: "neutral", target: "es2022", logLevel: "silent", external: ["@anthropic-ai/sdk"], // the planner on Claude (20 September) loads the SDK only when called, which no test here does
   });
   m = await import("data:text/javascript;base64," + Buffer.from(r.outputFiles[0].text).toString("base64"));
@@ -212,3 +212,69 @@ test("4 October 2026: the Italy account's events and the New Zealand account's e
 
   assert.equal(m.sellingOpen(newEnv({ STRIPE_WEBHOOK_SECRET: undefined, STRIPE_WEBHOOK_SECRET_2: SECOND })), true, "either secret opens the shop");
 });
+
+/* ------------------------------------------------------------------ the plans (19 October 2026, src/plans.ts) */
+const subCheckout = (o = {}) => ({ id: "evt_s1", type: "checkout.session.completed", livemode: true,
+  data: { object: { id: "cs_sub1", mode: "subscription", client_reference_id: "u_sub", amount_total: 3900, currency: "eur", payment_status: "paid",
+    subscription: "sub_1", customer: "cus_1", customer_details: { email: "s@example.com", address: { country: "IT" } }, ...o } } });
+const invoice = (o = {}) => ({ id: "evt_i1", type: "invoice.paid", livemode: true,
+  data: { object: { id: "in_2", billing_reason: "subscription_cycle", amount_paid: 3900, currency: "eur", payment_intent: "pi_i2",
+    parent: { subscription_details: { subscription: "sub_1" } }, lines: { data: [{ period: { end: Math.floor(Date.now() / 1000) + 31 * 86400 } }] }, ...o } } });
+const planRow = (env, id) => env.DB.db.prepare("SELECT plan, plan_period, plan_credits, plan_status, plan_sub FROM users WHERE id = ?").get(id);
+
+test("plans: prices and credits come from one table, and no plan costs what a pack costs", () => {
+  assert.deepEqual([m.planForAmount(3900).plan.key, m.planForAmount(3900).period], ["pro", "month"]);
+  assert.deepEqual([m.planForAmount(37200).plan.key, m.planForAmount(37200).period], ["pro", "year"], "€31 a month, billed €372 a year");
+  assert.equal(m.planForAmount(19900).tier.credits, 590, "Agency's middle tier");
+  for (const p of [500, 1500, 4000]) assert.equal(m.planForAmount(p), null, "a pack is never read as a plan");
+  for (const plan of m.PLANS) for (const t of plan.tiers) for (const per of ["month", "year"]) {
+    const perCredit = m.periodCents(t, per) / (per === "year" ? 12 : 1) / t.credits / 100 * 1.16; // dollars per credit
+    assert.ok(perCredit >= 0.275 * 1.1, `${plan.key} ${t.credits} ${per}: ${perCredit.toFixed(3)} $/credit stays over the worst-case cost`);
+  }
+});
+
+test("plans: the checkout gives the first month and remembers the subscription; a renewal gives the next; nothing twice", async () => {
+  const env = newEnv(); user(env, "u_sub");
+  assert.equal((await post(env, subCheckout())).status, 200);
+  assert.equal(balance(env, "u_sub"), 110);
+  assert.deepEqual(planRow(env, "u_sub"), { plan: "pro", plan_period: "month", plan_credits: 110, plan_status: "active", plan_sub: "sub_1" });
+  await post(env, subCheckout());
+  assert.equal(balance(env, "u_sub"), 110, "the same checkout twice credits once");
+  await post(env, invoice({ id: "in_1", billing_reason: "subscription_create" }));
+  assert.equal(balance(env, "u_sub"), 110, "the first invoice IS the checkout");
+  await post(env, invoice());
+  assert.equal(balance(env, "u_sub"), 220, "next month");
+  await post(env, invoice());
+  assert.equal(balance(env, "u_sub"), 220, "the same invoice twice credits once");
+  // A top-up while subscribed: Pro's +15%.
+  await post(env, session({ id: "cs_pack", client_reference_id: "u_sub", amount_total: 4000, payment_intent: "pi_pack" }));
+  assert.equal(balance(env, "u_sub"), 335, "100 + 15 credits");
+  // Cancelled: nothing is taken, the plan lasts to the end of what was paid.
+  await post(env, { id: "evt_d", type: "customer.subscription.deleted", livemode: true, data: { object: { id: "sub_1" } } });
+  assert.equal(planRow(env, "u_sub").plan_status, "canceled");
+  assert.equal((await m.activePlan(env, "u_sub")).key, "pro");
+  assert.equal(balance(env, "u_sub"), 335);
+});
+
+test("plans: an annual plan is paid once and gets its credits every month from the cron, never twice for one month", async () => {
+  const env = newEnv(); user(env, "u_year");
+  await post(env, subCheckout({ id: "cs_y", client_reference_id: "u_year", amount_total: 37200, subscription: "sub_y" }));
+  assert.equal(balance(env, "u_year"), 110);
+  assert.equal(planRow(env, "u_year").plan_period, "year");
+  const day = 86_400_000;
+  assert.equal(await m.grantDuePlanCredits(env, Date.now() + 10 * day), 0, "not before its month");
+  assert.equal(await m.grantDuePlanCredits(env, Date.now() + 29 * day), 1);
+  assert.equal(balance(env, "u_year"), 220);
+  assert.equal(await m.grantDuePlanCredits(env, Date.now() + 29 * day), 0, "the same tick again pays nothing");
+  assert.equal(await m.grantDuePlanCredits(env, Date.now() + 59 * day), 1);
+  assert.equal(balance(env, "u_year"), 330);
+  assert.equal(await m.grantDuePlanCredits(env, Date.now() + 400 * day), 0, "after the paid year, nothing");
+});
+
+test("plans: an amount no plan costs, or another currency, buys nothing", async () => {
+  const env = newEnv(); user(env, "u_sub");
+  await post(env, subCheckout({ amount_total: 4100 }));
+  await post(env, subCheckout({ id: "cs_usd", currency: "usd" }));
+  assert.equal(balance(env, "u_sub"), 0);
+});
+

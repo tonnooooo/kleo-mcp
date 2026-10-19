@@ -1188,3 +1188,87 @@ body::before { display: none; }
 @media (max-width: 760px) { .start-hero { min-height: 30vh; padding: 28px 12px; } }
 
 .engine-card .art-arrow, .engine-card .art-face, .engine-card .art-bubble, .engine-card .art-wave, .engine-card .art-split-bar { display: none; }
+/* ── Plans (19 October 2026): Ausar's pricing page in Kleo's colours ──────────────────────────────────────────── */
+.nav-upgrade { background: linear-gradient(180deg, var(--cta-a), var(--cta-b)); color: var(--cta-ink); font-weight: 700; gap: 6px; }
+@media (max-width: 860px) { .nav-upgrade { display: none; } }
+.plans-page { max-width: 1320px !important; margin: 0 auto; }
+.pl-head { text-align: center; margin: 18px 0 30px; }
+.pl-head h1 { font-size: clamp(34px, 4.4vw, 54px); font-weight: 900; letter-spacing: -.035em; margin: 0; }
+.pl-head h1 em { color: var(--cta-a); }
+.pl-sub { color: var(--ink-2); font-size: 16.5px; margin: 10px 0 0; }
+.pl-toggle { display: inline-flex; align-items: center; gap: 12px; margin-top: 26px; font-size: 15.5px; font-weight: 700; color: var(--ink-2); }
+.pl-toggle span.on { color: var(--ink); }
+.pl-switch { width: 50px; height: 28px; border-radius: 14px; background: var(--fill-3); position: relative; }
+.pl-switch i { position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; transition: transform .2s var(--ease); }
+.pl-switch.year { background: var(--cta-b); }
+.pl-switch.year i { transform: translateX(22px); }
+.pl-off { font-size: 12.5px; font-weight: 800; padding: 5px 10px; border-radius: 8px; background: var(--cta-a); color: var(--cta-ink); letter-spacing: .04em; }
+.pl-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; align-items: start; }
+.pl-card { position: relative; background: var(--card); border: 1px solid var(--sep); border-radius: 22px; padding: 22px; display: flex; flex-direction: column; gap: 14px; }
+.pl-card.popular { border-color: color-mix(in srgb, var(--cta-a) 60%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--cta-a) 35%, transparent), 0 20px 50px rgba(0, 0, 0, .35); }
+.pl-pop { position: absolute; top: -13px; right: 18px; font-size: 13px; font-weight: 900; letter-spacing: .06em; padding: 5px 12px; border-radius: 8px; background: var(--cta-a); color: var(--cta-ink); }
+.pl-name { display: flex; align-items: center; gap: 10px; }
+.pl-name b { font-size: 26px; font-weight: 800; letter-spacing: -.02em; }
+.pl-badge { font-size: 13px; font-weight: 900; letter-spacing: .03em; padding: 4px 9px; border-radius: 8px; background: #22c55e; color: #052e16; }
+.pl-badge.small { font-size: 11.5px; padding: 3px 7px; margin-left: 8px; vertical-align: middle; }
+.pl-credits { background: var(--bg-2); border-radius: 14px; padding: 12px 14px; }
+.pl-cr { display: flex; align-items: center; gap: 8px; font-size: 15.5px; color: var(--ink-2); }
+.pl-cr b { color: var(--ink); font-size: 16px; }
+.pl-tier { width: 100%; margin: 12px 0 4px; accent-color: var(--cta-a); }
+.pl-ticks { display: flex; justify-content: space-between; font-size: 13.5px; color: var(--ink-2); }
+.pl-ticks .on { color: var(--ink); font-weight: 800; }
+.pl-price { display: flex; align-items: baseline; gap: 8px; }
+.pl-price s { color: var(--ink-3); font-size: 20px; font-weight: 700; }
+.pl-price b { font-size: 44px; font-weight: 900; letter-spacing: -.03em; line-height: 1; }
+.pl-price span { color: var(--ink-2); font-size: 15.5px; }
+.pl-bill { margin: -6px 0 0; color: var(--ink-2); font-size: 15px; }
+.pl-tag { align-self: flex-start; font-size: 13.5px; padding: 4px 10px; border-radius: 8px; background: var(--fill-2); color: var(--ink-2); }
+.pl-cta { height: 50px; border-radius: 14px; font-size: 16px; font-weight: 800; background: var(--bg-3); color: var(--ink); }
+.pl-cta.btn-cta { color: var(--cta-ink); }
+.pl-cta:disabled { opacity: .55; }
+.pl-feats { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.pl-feats li { display: flex; align-items: flex-start; gap: 9px; font-size: 15.5px; color: var(--ink-2); line-height: 1.35; }
+.pl-feats li svg { color: var(--cta-a); flex: none; margin-top: 2px; }
+.pl-note { text-align: center; color: var(--ink-2); font-size: 15.5px; margin: 22px 0 0; }
+.pl-note .link { color: var(--cta-a); font-weight: 700; }
+.pl-finder { margin-top: 60px; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); background: var(--card); border: 1px solid var(--sep); border-radius: 24px; overflow: hidden; }
+.pf-left { padding: 28px; border-right: 1px solid var(--sep); }
+.pf-left h2, .pl-compare h2 { margin: 0; font-size: clamp(26px, 3vw, 36px); font-weight: 900; letter-spacing: -.03em; }
+.pf-step { display: flex; gap: 14px; margin-top: 26px; }
+.pf-n { width: 30px; height: 30px; border-radius: 50%; background: var(--bg-3); display: grid; place-items: center; font-weight: 800; flex: none; }
+.pf-step h3 { margin: 2px 0 2px; font-size: 18px; font-weight: 800; }
+.pf-step p { margin: 0 0 12px; color: var(--ink-2); font-size: 15px; }
+.pf-uses { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.pf-use { display: flex; align-items: center; justify-content: space-between; gap: 8px; text-align: left; padding: 12px 14px; border-radius: 12px; background: var(--bg-2); font-size: 15.5px; font-weight: 600; }
+.pf-use i { width: 20px; height: 20px; border-radius: 6px; border: 1.5px solid var(--fill-3); display: grid; place-items: center; color: var(--cta-ink); }
+.pf-use.on { color: var(--cta-a); }
+.pf-use.on i { background: var(--cta-a); border-color: var(--cta-a); }
+.pf-range { width: 100%; accent-color: var(--cta-a); }
+.pf-count { display: flex; justify-content: space-between; font-size: 15.5px; margin-top: 6px; }
+.pf-count span { color: var(--ink-2); }
+.pf-right { padding: 28px; display: flex; flex-direction: column; gap: 10px; background: var(--bg-2); }
+.pf-rec { margin: 0; text-align: center; color: var(--ink-2); font-size: 16px; }
+.pf-rec b { color: var(--ink); }
+.pf-bar { display: flex; justify-content: space-between; font-size: 14.5px; color: var(--ink-2); }
+.pf-bar b { color: var(--cta-a); }
+.pf-meter { height: 6px; border-radius: 3px; background: var(--fill-2); overflow: hidden; margin-bottom: 12px; }
+.pf-meter i { display: block; height: 100%; background: linear-gradient(90deg, var(--cta-a), var(--cta-b)); }
+.pl-compare { margin-top: 60px; }
+.ct-wrap { overflow-x: auto; margin-top: 18px; }
+.ct { width: 100%; border-collapse: collapse; min-width: 760px; }
+.ct th, .ct td { padding: 14px 12px; border-bottom: 1px solid var(--sep); text-align: left; font-size: 15.5px; vertical-align: middle; }
+.ct thead td { vertical-align: top; }
+.ct th { font-weight: 600; color: var(--ink-2); width: 28%; }
+.ct-group th { padding-top: 26px; font-size: 18px; font-weight: 800; color: var(--ink); }
+.ct-name { display: block; font-size: 20px; font-weight: 800; }
+.ct-price { display: block; margin-top: 6px; font-weight: 700; }
+.ct-bill { display: block; color: var(--ink-2); font-size: 14px; margin-bottom: 10px; }
+.ct .pl-cta { height: 42px; width: 100%; max-width: 180px; font-size: 15px; }
+.ct-yes { color: var(--cta-a); display: inline-grid; }
+.buy-plan { width: calc(100% - 32px); margin: 4px 16px 10px; display: flex; align-items: center; gap: 12px; text-align: left; padding: 12px 14px; border-radius: 16px; background: color-mix(in srgb, var(--cta-a) 14%, transparent); border: 1px solid color-mix(in srgb, var(--cta-a) 40%, transparent); color: var(--ink); }
+.buy-plan > svg:first-child { color: var(--cta-a); flex: none; }
+.buy-plan span { flex: 1; display: flex; flex-direction: column; font-size: 14.5px; color: var(--ink-2); }
+.buy-plan b { color: var(--ink); font-size: 16px; }
+@media (max-width: 1100px) { .pl-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .pl-finder { grid-template-columns: 1fr; } .pf-left { border-right: 0; border-bottom: 1px solid var(--sep); } }
+@media (max-width: 640px) { .pl-grid { grid-template-columns: 1fr; } .pf-uses { grid-template-columns: 1fr; } .pl-price b { font-size: 38px; } }
+.pl-cta.btn-cta { background: linear-gradient(180deg, var(--cta-a), var(--cta-b)); }

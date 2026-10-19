@@ -3,6 +3,7 @@ import { getUser, creditPurchase, paymentByIntent, takeBackCredits, audit } from
 import { json, hmacHex, safeEqual } from "./util";
 import { isFlagActive } from "./schema";
 import { rewardReferral, takeBackReferral } from "./referral.ts";
+import { planByKey, planForAmount, topupBonusCredits, type Plan } from "./plans.ts";
 
 /**
  * The credit packs. ONE list, and it is the only place a price and a number of credits are tied together: the
@@ -134,9 +135,13 @@ export async function handleStripeWebhook(request: Request, env: Env): Promise<R
   const BUYS = ["checkout.session.completed", "checkout.session.async_payment_succeeded"];
   if (event.type === "charge.refunded" || event.type === "charge.dispute.created")
     return handleChargeTrouble(env, event.type, event.data?.object ?? {});
+  // THE PLANS (19 October 2026, src/plans.ts): a renewal pays an invoice; a cancelled plan ends the subscription.
+  if (event.type === "invoice.paid") return handleInvoicePaid(env, event);
+  if (event.type === "customer.subscription.deleted") return handleSubscriptionEnded(env, event.data?.object ?? {});
   if (!BUYS.includes(event.type ?? "")) return json({ ok: true, ignored: event.type ?? "unknown" });
 
   const s = event.data?.object ?? {};
+  if (s.mode === "subscription") return handlePlanCheckout(env, event, s);
   const sessionId = typeof s.id === "string" ? s.id : "";
   const userId = typeof s.client_reference_id === "string" ? s.client_reference_id : "";
   const cents = typeof s.amount_total === "number" ? s.amount_total : -1;
@@ -155,6 +160,8 @@ export async function handleStripeWebhook(request: Request, env: Env): Promise<R
   }
   const pack = packForAmount(cents);
   if (!pack) return json({ ok: true, ignored: `no pack costs ${cents} ${currency}` });
+  // A subscriber's top-up carries the plan's bonus (+10/15/25%, src/plans.ts).
+  const bonus = userId ? topupBonusCredits(await activePlan(env, userId), pack.credits) : 0;
 
   const pi = typeof s.payment_intent === "string" ? s.payment_intent : null;
   const country = (s.customer_details as { address?: { country?: unknown } } | undefined)?.address?.country;
@@ -164,7 +171,7 @@ export async function handleStripeWebhook(request: Request, env: Env): Promise<R
   const known = userId && (await getUser(env, userId)) ? userId : null;
 
   const credited = await creditPurchase(env, {
-    sessionId, userId: known, credits: pack.credits, cents, currency, email,
+    sessionId, userId: known, credits: pack.credits + bonus, cents, currency, email,
     paymentIntent: pi, eventId: event.id ?? null, eventType: event.type ?? null,
     country: typeof country === "string" ? country : null, rawRef: userId || null,
   });
@@ -175,7 +182,110 @@ export async function handleStripeWebhook(request: Request, env: Env): Promise<R
     try { referral = await rewardReferral(env, known, sessionId); }
     catch (e) { await audit(env, known, null, "referral.error", { session: sessionId, error: String(e).slice(0, 300) }); }
   }
-  return json({ ok: true, credits: known ? pack.credits : 0, orphan: !known, already: !credited, ...(referral ? { referral_bonus: referral.referred_credits } : {}) });
+  return json({ ok: true, credits: known ? pack.credits + bonus : 0, orphan: !known, already: !credited, ...(bonus ? { plan_bonus: bonus } : {}), ...(referral ? { referral_bonus: referral.referred_credits } : {}) });
+}
+
+/* ------------------------------------------------------------------ the plans (19 October 2026, src/plans.ts) */
+
+const DAY_MS = 86_400_000;
+const iso = (ms: number) => new Date(ms).toISOString();
+/** The plan an account is on right now (paid through plan_until, even when cancelled), or null. */
+export async function activePlan(env: Env, userId: string): Promise<Plan | null> {
+  const row = await env.DB.prepare("SELECT plan, plan_until FROM users WHERE id = ?").bind(userId).first<{ plan: string | null; plan_until: string | null }>();
+  return row?.plan_until && Date.parse(row.plan_until) > Date.now() ? planByKey(row.plan) : null;
+}
+const subscriptionOf = (o: Record<string, any>): string | null => {
+  const s = o.subscription ?? o.parent?.subscription_details?.subscription; // the field moved in Stripe's 2025 API
+  return typeof s === "string" ? s : typeof s?.id === "string" ? s.id : null;
+};
+
+/**
+ * A plan bought through a subscription Payment Link: the first month's credits arrive with the checkout, the account
+ * remembers its subscription so later invoices find it. Recorded in payments like a pack (the session id).
+ */
+async function handlePlanCheckout(env: Env, event: { id?: string; type?: string }, s: Record<string, any>): Promise<Response> {
+  const sessionId = typeof s.id === "string" ? s.id : "";
+  const userId = typeof s.client_reference_id === "string" ? s.client_reference_id : "";
+  const cents = typeof s.amount_total === "number" ? s.amount_total : -1;
+  const currency = typeof s.currency === "string" ? s.currency : "";
+  const paid = s.payment_status === "paid" || s.payment_status === "no_payment_required";
+  if (!sessionId || !paid) return json({ ok: true, ignored: "not a completed payment" });
+  if (currency !== "eur") { await audit(env, null, null, "stripe.wrong_currency", { session: sessionId, currency: currency || null }); return json({ ok: true, ignored: `unsupported currency ${currency || "unknown"}` }); }
+  const match = planForAmount(cents);
+  if (!match) return json({ ok: true, ignored: `no plan costs ${cents} ${currency}` });
+  const known = userId && (await getUser(env, userId)) ? userId : null;
+  const email = typeof s.customer_details?.email === "string" ? s.customer_details.email : null;
+  const country = typeof s.customer_details?.address?.country === "string" ? s.customer_details.address.country : null;
+  const credited = await creditPurchase(env, {
+    sessionId, userId: known, credits: match.tier.credits, cents, currency, email,
+    paymentIntent: typeof s.payment_intent === "string" ? s.payment_intent : null, eventId: event.id ?? null, eventType: event.type ?? null,
+    country, rawRef: userId || null,
+  });
+  if (known && credited) {
+    const now = Date.now();
+    await env.DB.prepare(`UPDATE users SET plan = ?, plan_period = ?, plan_credits = ?, plan_until = ?, plan_status = 'active', plan_sub = ?, plan_customer = ?, plan_next_grant = ? WHERE id = ?`)
+      .bind(match.plan.key, match.period, match.tier.credits, iso(now + (match.period === "year" ? 366 : 31) * DAY_MS),
+        typeof s.subscription === "string" ? s.subscription : null, typeof s.customer === "string" ? s.customer : null, iso(now + 28 * DAY_MS), known).run();
+    await audit(env, known, null, "plan.started", { plan: match.plan.key, period: match.period, credits: match.tier.credits, cents, session: sessionId });
+    try { await rewardReferral(env, known, sessionId); } catch (e) { await audit(env, known, null, "referral.error", { session: sessionId, error: String(e).slice(0, 300) }); }
+  }
+  return json({ ok: true, plan: match.plan.key, period: match.period, credits: known ? match.tier.credits : 0, orphan: !known, already: !credited });
+}
+
+/** A renewal: the month's (or the new year's first month of) credits, and the paid-through date moves on. */
+async function handleInvoicePaid(env: Env, event: { id?: string; type?: string; data?: { object?: Record<string, any> } }): Promise<Response> {
+  const inv = event.data?.object ?? {};
+  // The first invoice is the checkout itself (handlePlanCheckout gave its credits).
+  if (inv.billing_reason === "subscription_create") return json({ ok: true, ignored: "first invoice: credited at checkout" });
+  const sub = subscriptionOf(inv);
+  const cents = typeof inv.amount_paid === "number" ? inv.amount_paid : -1;
+  if (!sub || inv.currency !== "eur") return json({ ok: true, ignored: "not a plan invoice" });
+  const match = planForAmount(cents);
+  if (!match) return json({ ok: true, ignored: `no plan costs ${cents}` });
+  const row = await env.DB.prepare("SELECT id FROM users WHERE plan_sub = ? LIMIT 1").bind(sub).first<{ id: string }>();
+  const userId = row?.id ?? null;
+  const pi = typeof inv.payment_intent === "string" ? inv.payment_intent : null;
+  const credited = await creditPurchase(env, {
+    sessionId: String(inv.id ?? `inv_${event.id}`), userId, credits: match.tier.credits, cents, currency: "eur",
+    email: typeof inv.customer_email === "string" ? inv.customer_email : null, paymentIntent: pi, eventId: event.id ?? null, eventType: event.type ?? null, country: null, rawRef: sub,
+  });
+  if (userId && credited) {
+    const end = Number(inv.lines?.data?.[0]?.period?.end ?? inv.period_end ?? 0) * 1000;
+    const now = Date.now();
+    await env.DB.prepare(`UPDATE users SET plan = ?, plan_period = ?, plan_credits = ?, plan_until = ?, plan_status = 'active', plan_next_grant = ? WHERE id = ?`)
+      .bind(match.plan.key, match.period, match.tier.credits, iso(end > now ? end : now + (match.period === "year" ? 366 : 31) * DAY_MS), iso(now + 28 * DAY_MS), userId).run();
+    await audit(env, userId, null, "plan.renewed", { plan: match.plan.key, period: match.period, credits: match.tier.credits, invoice: inv.id ?? null });
+  }
+  return json({ ok: true, credits: userId ? match.tier.credits : 0, orphan: !userId, already: !credited });
+}
+
+/** A cancelled plan: nothing is taken back; the account keeps its plan until the end of what it paid for. */
+async function handleSubscriptionEnded(env: Env, sub: Record<string, any>): Promise<Response> {
+  const id = typeof sub.id === "string" ? sub.id : "";
+  if (!id) return json({ ok: true, ignored: "no subscription" });
+  const row = await env.DB.prepare("SELECT id FROM users WHERE plan_sub = ? LIMIT 1").bind(id).first<{ id: string }>();
+  if (row) {
+    await env.DB.prepare("UPDATE users SET plan_status = 'canceled' WHERE id = ?").bind(row.id).run();
+    await audit(env, row.id, null, "plan.canceled", { subscription: id });
+  }
+  return json({ ok: true, canceled: !!row });
+}
+
+/**
+ * The cron's part (src/index.ts scheduled): an ANNUAL plan is paid once a year but gets its credits every month.
+ * Monthly plans get theirs with each invoice. One conditional UPDATE per account, so two ticks never pay twice.
+ */
+export async function grantDuePlanCredits(env: Env, nowMs = Date.now()): Promise<number> {
+  const now = iso(nowMs);
+  const due = await env.DB.prepare(`SELECT id, plan_credits, plan_next_grant FROM users WHERE plan_period = 'year' AND plan_until > ? AND plan_next_grant <= ? AND plan_credits > 0 LIMIT 100`)
+    .bind(now, now).all<{ id: string; plan_credits: number; plan_next_grant: string }>();
+  let n = 0;
+  for (const u of due.results ?? []) {
+    const r = await env.DB.prepare("UPDATE users SET credits = credits + ?, plan_next_grant = ? WHERE id = ? AND plan_next_grant = ?")
+      .bind(u.plan_credits, iso(Date.parse(u.plan_next_grant) + 30 * DAY_MS), u.id, u.plan_next_grant).run();
+    if ((r.meta?.changes ?? 0) === 1) { n++; await audit(env, u.id, null, "plan.credits", { credits: u.plan_credits, at: u.plan_next_grant }); }
+  }
+  return n;
 }
 
 
