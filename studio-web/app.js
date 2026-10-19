@@ -1643,9 +1643,9 @@ function toolBody(key, compact, top = null) {
   }
   function draw() {
     const files = t.fields.filter((f) => ["image", "video", "audio"].includes(f.kind) && visible(f));
-    const eng = ENGINE[key] || [t.name, t.blurb];
+    // No engine card with a little preview on top of the form (19 October 2026, the owner: "fanno schifo come
+    // anteprime"): the engine's name lives in the big empty state next to it.
     fill(form, top,
-      compact ? null : h("div", { class: "engine-card" }, h("div", { class: "ec-art" }, appArt(t)), h("div", { class: "ec-tx" }, h("b", {}, eng[0]), h("span", {}, eng[1]))),
       files.length ? h("div", { class: "drops" }, files.map((f, i) => { const z = dropZone(f); if (files.length === 1 || (files.length % 2 === 1 && i === files.length - 1)) z.classList.add("one"); return z; })) : null,
       t.fields.filter((f) => !["image", "video", "audio"].includes(f.kind)).map(fieldEl),
       t.consent ? h("label", { class: "consent" }, h("input", { type: "checkbox", checked: st.consent || null, onchange: (e) => { st.consent = e.target.checked; drawCta(); } }),

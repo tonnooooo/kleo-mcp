@@ -1172,13 +1172,6 @@ body::before { display: none; }
 .vtabs button { height: 40px; border-radius: 11px; font-size: 15px; font-weight: 600; color: var(--ink-2); }
 .vtabs button.on { background: var(--elev); color: var(--ink); box-shadow: 0 1px 2px rgba(0, 0, 0, .3); }
 .vtabs button:not(.on):hover { color: var(--ink); }
-/* The engine card on an app's form (KLING MOTION CONTROL 3.0 · Motion from your reference clip.). */
-.engine-card { display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 16px; background: var(--bg-2); border: 1px solid var(--sep); }
-.engine-card .ec-art { width: 64px; height: 44px; border-radius: 10px; overflow: hidden; flex: none; position: relative; }
-.engine-card .ec-art .art { position: absolute; inset: 0; height: auto !important; border-radius: 0; }
-.engine-card .ec-art .art .tag { display: none; }
-.engine-card b { display: block; font-size: 14.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .02em; }
-.engine-card span { display: block; font-size: 14.5px; color: var(--ink-2); }
 /* "START CREATING WITH / <ENGINE>": the big centred empty state. */
 .start-hero { min-height: 52vh; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 40px 20px; }
 .start-hero .sh-kicker { margin: 0; font-size: clamp(26px, 3vw, 38px); font-weight: 900; letter-spacing: -.02em; text-transform: uppercase; line-height: 1.05; }
@@ -1187,7 +1180,6 @@ body::before { display: none; }
 .start-examples h3 { margin: 0 0 12px; font-size: 18px; font-weight: 800; }
 @media (max-width: 760px) { .start-hero { min-height: 30vh; padding: 28px 12px; } }
 
-.engine-card .art-arrow, .engine-card .art-face, .engine-card .art-bubble, .engine-card .art-wave, .engine-card .art-split-bar { display: none; }
 /* ── Plans (19 October 2026): Ausar's pricing page in Kleo's colours ──────────────────────────────────────────── */
 .nav-upgrade { background: linear-gradient(180deg, var(--cta-a), var(--cta-b)); color: var(--cta-ink); font-weight: 700; gap: 6px; }
 @media (max-width: 860px) { .nav-upgrade { display: none; } }
