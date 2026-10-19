@@ -109,6 +109,7 @@ const store = {
 function toast(msg, err = false) {
   const t = $("#toast");
   t.textContent = msg; t.classList.toggle("err", !!err); t.classList.add("show");
+  t.classList.remove("jiggle"); if (err) { void t.offsetWidth; t.classList.add("jiggle"); }
   clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove("show"), Math.max(2800, String(msg).length * 55));
 }
 const spinner = (size = 16) => h("span", { class: "spin", style: { borderColor: "rgba(127,127,127,.35)", borderTopColor: "currentColor", width: size + "px", height: size + "px" } });
@@ -361,7 +362,12 @@ async function route() {
 function show(key, render) {
   S.view = key;
   for (const b of document.querySelectorAll("[data-page]")) b.classList.toggle("on", b.dataset.page === key);
+  // The old page fades, the new one rises in (motion, 19 October 2026). Without View Transitions it just rises in.
+  const v = viewEl();
+  motionStamp = performance.now();
+  if (v?.childElementCount && document.startViewTransition && !reducedMotion() && !document.hidden) { document.startViewTransition(render); return; }
   render();
+  if (v && !reducedMotion()) { v.classList.remove("fx-enter"); void v.offsetWidth; v.classList.add("fx-enter"); }
 }
 function go(path) {
   const target = DEMO ? path + (path.includes("?") ? "&" : "?") + "demo=1" : path;
@@ -978,7 +984,10 @@ async function poll() {
         watching.delete(id);
         setCredits(r.credits);
         refreshGen(id);
-        if (r.generation.status === "done") toast(`${r.generation.modelName || "Your creation"} is ready ✨`);
+        if (r.generation.status === "done") {
+          toast(`${r.generation.modelName || "Your creation"} is ready ✨`);
+          requestAnimationFrame(() => { for (const c of document.querySelectorAll(`[data-result="${id}"], [data-gen="${id}"]`)) c.classList.add("just-done"); });
+        }
       } else if (!before) refreshGen(id);
     } catch (e) { if (e.code === "signin") { watching.clear(); return handleError(e); } }
   }
@@ -1796,7 +1805,13 @@ function libraryView() {
 
 // ── sheets & menus ───────────────────────────────────────────────────────────────────────────────────────────────
 let openLayer = null;
-function closeLayer() { openLayer?.forEach((n) => n.remove()); openLayer = null; document.removeEventListener("keydown", escClose); }
+function closeLayer() {
+  const nodes = openLayer;
+  openLayer = null;
+  document.removeEventListener("keydown", escClose);
+  // They leave with a short animation (motion, 19 October 2026), and take no taps meanwhile.
+  nodes?.forEach((n) => { if (reducedMotion() || !n.isConnected) return n.remove(); n.classList.add("out"); setTimeout(() => n.remove(), 190); });
+}
 const escClose = (e) => e.key === "Escape" && closeLayer();
 function sheet(title, sub, ...content) {
   closeLayer();
@@ -2315,4 +2330,106 @@ if (DEMO) {
   ]);
 }
 
+// ── motion (19 October 2026, the owner: "più animazioni … ruba l'occhio da Higgsfield e Ausar") ────────────────────────
+// Ausar's curves (ease-out 0.22,1,0.36,1; reveal 0.16,1,0.3,1), Higgsfield's sheet curve and shimmer. A press sinks with
+// a spring back and leaves an ink glow where the finger landed; the active tab sits on a pill that slides; a new page
+// rises in and its cards follow one after another; pictures arrive sharp out of a blur; layers leave instead of
+// vanishing; a finished creation pops. "Reduce motion" turns all of it off.
+const reducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+const PRESSABLE = "button, a.btn, [role=button], .app-card, .sc-card, .preset, .idea, .ratio";
+const INKABLE = ".btn, .gen-btn, .send, .chip, .pill, .nav-tab, .nav-item, .chat-item, .vtabs button, .modes button, .model-card, .pl-cta, .icon-btn, .credits-pill, .row, .mini, .ratio, .idea, .preset, .app-card, .tabbar button";
+const GLIDE = ".modes, .vtabs, .nav-tabs";
+const STAGGER = ".app-grid, .feed, .sc-grid, .pics-grid, .preset-grid, .pl-grid, .idea-grid, .home-tiles, .home-row, .home-ideas, .ratio-grid, .list";
+function pressDown(e) {
+  if (reducedMotion() || e.button > 0 || !e.target.closest) return;
+  const el = e.target.closest(PRESSABLE);
+  if (!el || el.disabled || el.getAttribute("aria-disabled") === "true") return;
+  const w = el.offsetWidth;
+  const s = w > 320 ? 0.985 : w > 140 ? 0.97 : 0.93;
+  for (const a of el.getAnimations?.() || []) if (a.id === "press") a.cancel();
+  const down = el.animate([{ scale: "1" }, { scale: String(s) }], { duration: 110, easing: "cubic-bezier(.22,1,.36,1)", fill: "forwards" });
+  down.id = "press";
+  const up = () => {
+    removeEventListener("pointerup", up, true);
+    removeEventListener("pointercancel", up, true);
+    if (!el.isConnected) return;
+    const back = el.animate([{ scale: String(s) }, { scale: "1.012" }, { scale: "1" }], { duration: 440, easing: "cubic-bezier(.34,1.56,.64,1)" });
+    back.id = "press";
+    down.cancel();
+  };
+  addEventListener("pointerup", up, true);
+  addEventListener("pointercancel", up, true);
+  if (el.matches(INKABLE)) ink(el, e);
+}
+/** The glow that spreads from where the finger landed, clipped to the button's own shape. */
+function ink(el, e) {
+  const r = el.getBoundingClientRect();
+  if (getComputedStyle(el).position === "static") el.style.position = "relative";
+  const box = document.createElement("span");
+  box.className = "fx-ink";
+  const dot = document.createElement("i");
+  const d = Math.hypot(r.width, r.height) * 2.1;
+  dot.style.cssText = `left:${e.clientX - r.left}px;top:${e.clientY - r.top}px;width:${d}px;height:${d}px`;
+  box.append(dot);
+  el.append(box);
+  setTimeout(() => box.remove(), 750);
+}
+/** The pill under the active tab: it slides to the tab that is chosen, and carries over when the tabs are drawn again. */
+const lastGlide = {};
+function glide(box) {
+  const on = box.querySelector(":scope > button.on");
+  const key = box.classList[0];
+  if (!on || !on.offsetWidth) { box.classList.remove("glide"); return; }
+  const now = { x: on.offsetLeft, y: on.offsetTop, w: on.offsetWidth, h: on.offsetHeight };
+  const put = (p) => { box.style.setProperty("--gx", p.x + "px"); box.style.setProperty("--gy", p.y + "px"); box.style.setProperty("--gw", p.w + "px"); box.style.setProperty("--gh", p.h + "px"); };
+  if (!box.classList.contains("glide")) {
+    const from = lastGlide[key] && !reducedMotion() ? lastGlide[key] : now;
+    box.classList.add("glide", "glide-still");
+    put(from);
+    setTimeout(() => { box.classList.remove("glide-still"); put(now); }, 30);
+    if (!box.dataset.glideWatch && window.ResizeObserver) { box.dataset.glideWatch = "1"; new ResizeObserver(() => box.classList.contains("glide") && glide(box)).observe(box); }
+  } else put(now);
+  lastGlide[key] = now;
+}
+/** Cards of a list that just appeared come in one after another (only when the whole list is new, never on a refresh). */
+let motionStamp = 0; // when the page last changed (app.js show): lists stagger only then, or inside a layer just opened
+function stagger(grid) {
+  if (grid.dataset.fx || reducedMotion()) return;
+  if (!grid.closest(".sheet, .menu, .viewer") && performance.now() - motionStamp > 1500) return;
+  grid.dataset.fx = "1";
+  [...grid.children].forEach((c, i) => c.style.setProperty("--i", Math.min(i, 10)));
+  grid.classList.add("fx-stagger");
+  setTimeout(() => grid.classList.remove("fx-stagger"), 1400);
+}
+/** A picture waits invisible and arrives sharp out of a blur once it has loaded. */
+function prepImg(img) {
+  if (img.dataset.fxImg || (img.complete && img.naturalWidth) || img.closest(".boot, .avatar, .brand, .logo")) return;
+  img.dataset.fxImg = "1";
+  img.classList.add("fx-wait");
+  const done = () => { img.classList.remove("fx-wait"); if (!reducedMotion()) img.classList.add("fx-in"); };
+  img.addEventListener("load", done, { once: true });
+  img.addEventListener("error", () => img.classList.remove("fx-wait"), { once: true });
+}
+function motionScan(node) {
+  if (node.nodeType !== 1) return;
+  if (node.matches(GLIDE)) glide(node);
+  if (node.matches(STAGGER)) stagger(node);
+  if (node.tagName === "IMG") prepImg(node);
+  for (const g of node.querySelectorAll(GLIDE)) glide(g);
+  for (const g of node.querySelectorAll(STAGGER)) stagger(g);
+  for (const i of node.querySelectorAll("img")) prepImg(i);
+}
+function motionInit() {
+  addEventListener("pointerdown", pressDown, true);
+  new MutationObserver((records) => {
+    for (const r of records) {
+      if (r.type === "attributes") { const box = r.target.parentElement; if (box?.matches(GLIDE)) glide(box); continue; }
+      for (const n of r.addedNodes) motionScan(n);
+    }
+  }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+  motionScan(document.body);
+  addEventListener("resize", debounce(() => { for (const g of document.querySelectorAll(GLIDE)) glide(g); }, 120));
+}
+
+motionInit();
 boot();
