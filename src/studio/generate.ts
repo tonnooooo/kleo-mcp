@@ -17,12 +17,13 @@
 import type { StudioEnv } from "./env.ts";
 import type { Env } from "../env";
 import { ephone, ephoneOutputs, ephoneFailure, type EphoneTask } from "../ephone.ts";
+import { wavespeedSubmit, wavespeedTask } from "../wavespeed.ts";
 import { KieError } from "../kie.ts";
 import { debitCredits, refundCredits, getUser, hasPaid, audit, countAuditTodayForUser } from "../db.ts";
 import { publicText, rid } from "../util.ts";
 import { clampFreeResolution, clipCostUsd, clipCredits, freeModels, freeResolutions, modelByKey, normalizeSettings, taskInput, DEFAULT_MARGIN, type ClipSettings } from "./models.ts";
 import { withPreset } from "./presets.ts";
-import { planTool, toolByKey, toolCredits, toneText, ToolRefusal, type Media, type Plan, type ToolKey } from "./tools.ts";
+import { planTool, toolByKey, toolCredits, toneText, ToolRefusal, TOOLS, type Media, type Plan, type ToolKey } from "./tools.ts";
 import { mediaInfo } from "./media.ts";
 import { refreshFilm } from "./films.ts";
 import { alternativeFor, freeImageModels, imageAlternatives, imageCostUsd, imageCredits, imageModelByKey, imageModelOfProvider, imageTaskInput, isQualityRefusal, normalizeImageSettings, otherQualitySpelling, pausedImageModels, type ImageSettings } from "./image-models.ts";
@@ -206,7 +207,9 @@ function refusal(e: unknown, noun: string): string {
  * A copyright refusal, told plainly (19 October 2026: the owner's first customer met Seedance's "the output video may
  * be related to copyright restrictions" three times, with a 50-character request id running off her phone's screen).
  */
-export const isCopyrightRefusal = (why: string): boolean => /copyright|protected content|intellectual property/i.test(why);
+// WaveSpeed's words for the same refusal (19 October 2026, Pixar characters in a viral template): "Content flagged as
+// potentially sensitive". Alibaba's own, through ePhone: "IPInfringementSuspect".
+export const isCopyrightRefusal = (why: string): boolean => /copyright|protected content|intellectual property|IPInfringement|flagged as potentially sensitive/i.test(why);
 const copyrightText = (noun: string): string =>
   `The ${noun} won't make this one: it recognised characters, people or music protected by copyright, from a film, a show or a song. Your credits are back. Try your own characters, and leave out their pictures and names.`;
 /** What a failed generation says: the copyright sentence, or the provider's reason in neutral words. */
@@ -481,7 +484,10 @@ async function refreshImages(env: StudioEnv, g: GenerationRow, ageMin: number): 
     if (slot.status !== "running" || !slot.task) continue;
     if (ageMin > timeout) { slot.status = "failed"; slot.error = "timeout"; continue; }
     let t: EphoneTask;
-    try { t = await ephone<EphoneTask>(env, "GET", `/v1/task/${encodeURIComponent(slot.task)}`, undefined, { timeoutMs: 15_000, routing: slot.model ? toolRouting(slot.model) : routing }); } catch { continue; }
+    try {
+      t = slot.provider === "wavespeed" ? await wavespeedTask(env, slot.task)
+        : await ephone<EphoneTask>(env, "GET", `/v1/task/${encodeURIComponent(slot.task)}`, undefined, { timeoutMs: 15_000, routing: slot.model ? toolRouting(slot.model) : routing });
+    } catch { continue; }
     const status = String(t.status ?? "").toLowerCase();
     if (status === "failed" || status === "failure" || status === "cancelled") {
       const why = ephoneFailure(t);
@@ -592,7 +598,8 @@ async function saveOutput(env: StudioEnv, g: GenerationRow, name: string, url: s
 /** Tools a never-paid account may use (STUDIO_FREE_TOOLS; default the cheap picture and sound ones). */
 export function freeTools(list: string | undefined): ToolKey[] {
   const raw = (list ?? "face-swap,outfit-swap,voice,music,sfx").trim();
-  if (raw === "*") return ["face-swap", "video-face-swap", "talking-photo", "lipsync", "motion-control", "outfit-swap", "video-edit", "video-upscale", "voice", "music", "sfx"];
+  // Every app (the list once written out here had missed the two Character Swaps, so a paying account saw them locked).
+  if (raw === "*") return TOOLS.map((t) => t.key);
   return raw.split(",").map((x) => x.trim()).filter((k): k is ToolKey => !!toolByKey(k));
 }
 
@@ -718,6 +725,10 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
     try {
       const fill = (o: unknown) => JSON.parse(JSON.stringify(o).split("{{speech}}").join(media.audio?.url ?? ""));
       const input = fill(task.input);
+      if (task.provider === "wavespeed") {
+        slots.push({ task: await wavespeedSubmit(env, task.model, input), status: "running", type: task.output, model: task.model, provider: "wavespeed" });
+        continue;
+      }
       let t: { id?: string };
       try {
         t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: task.model, input }, { timeoutMs: 30_000, routing: task.routing });

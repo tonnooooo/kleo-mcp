@@ -12,6 +12,8 @@ export interface StudioEnv {
   INTERNAL_SECRET: string;
   EPHONE_API_KEY?: string;
   EPHONE_API_URL?: string;
+  /** WaveSpeed AI (src/wavespeed.ts): the viral templates' Wan 3.0 video edit. */
+  WAVESPEED_API_KEY?: string;
   /** Public address of the MCP server (for the "use Kleo in Claude/ChatGPT" line). */
   PUBLIC_URL: string;
   /** The one host of the app (kleooai.com); www. and app. hosts redirect to it. Empty: no redirect. */
