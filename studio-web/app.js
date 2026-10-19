@@ -659,11 +659,11 @@ const HOME_TILES = [
 ];
 /** Two pictures that slowly dissolve into each other: the before and after of a swap, with nothing drawn on top. */
 function xfade(a, b) { return h("div", { class: "art-xfade" }, artImg(a), artImg(b, "xf-b")); }
-/** An idea as a picture card: what it makes, its name; a tap fills the box below. */
+/** An idea as a picture card: what it makes, its name; a tap fills the box below. No icon badge on the picture
+ *  (20 October 2026, the owner: "togli queste icone in alto a sinistra"). */
 function ideaCard(i) {
   return h("button", { class: "idea-card", onclick: () => useIdea(i), "aria-label": i.t },
     h("img", { src: `${MEDIA_APP}/ideas2/${i.a}.jpg`, alt: "", loading: "lazy", decoding: "async" }),
-    h("span", { class: "em", style: { background: i.c } }, icon(i.ic, 16, 2)),
     h("b", {}, i.t));
 }
 function homeView() {
