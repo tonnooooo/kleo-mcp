@@ -87,6 +87,9 @@ const COLUMNS: [table: string, column: string, definition: string][] = [
   // opened with, and the inbox behind its address.
   ["users", "gift", "INTEGER NOT NULL DEFAULT 0"],
   ["users", "email_canon", "TEXT"],
+  // One account everywhere (19 October 2026, src/connect.ts; 0022_merged_accounts.sql): an old anonymous connector
+  // account merged into a real one points at it, so the assistant's grant keeps working there.
+  ["users", "merged_into", "TEXT"],
 ];
 
 /** Indexes over columns from COLUMNS. They belong here and NOT in STATEMENTS: that batch runs before the ALTERs, so

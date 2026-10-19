@@ -35,6 +35,7 @@ import { signUp, signIn, signInWithKey, addPassword, me, signedIn, endAllSession
 import { httpsRedirect, secureResponse } from "./security.ts";
 import { SESSION_COOKIE, clearSessionCookie, readCookie, readSessionFull, normalizeEmail, signPath, checkSignedPath } from "./session.ts";
 import { ipBucket } from "../accounts.ts";
+import { studioConnect } from "../connect.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const json = (data: unknown, status = 200, headers: Record<string, string> = {}): Response =>
@@ -200,6 +201,12 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
   const userId = await sessionUser(env, request);
   if (!userId) return json({ error: "Please sign in.", code: "signin" }, 401);
 
+  // ONE ACCOUNT EVERYWHERE (19 October 2026, src/connect.ts): this account finishes an assistant's connection, and takes in
+  // the old anonymous account that came with it, credits and films included.
+  if (path === "/api/connect" && method === "POST") {
+    const r = await studioConnect(asEnv(env), userId, await body(request));
+    return "error" in r ? json({ error: r.error, code: r.code ?? "connect" }, 400) : json(r);
+  }
   if (path === "/api/auth/password" && method === "POST") { await addPassword(env, userId, await body(request)); return json({ ok: true }); }
   // Every browser and phone signed in to this account is signed out (this one too).
   if (path === "/api/auth/signout-all" && method === "POST") {

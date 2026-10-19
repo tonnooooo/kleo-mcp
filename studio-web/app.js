@@ -236,6 +236,12 @@ async function boot() {
   try { S.config = await api("/api/config"); } catch { fill($("#app"), h("div", { class: "boot" }, h("p", {}, "Kleo can't load right now. Please refresh."))); return; }
   const q = new URLSearchParams(location.search);
   if (location.pathname === "/reset" && q.get("t")) return renderReset(q.get("t"));
+  // ONE ACCOUNT EVERYWHERE (19 October 2026, src/connect.ts): an assistant sent this browser here to sign in. The request
+  // is kept across the sign-in (Google comes back to "/"), then finished by connectView.
+  if (location.pathname === "/connect" && (q.get("r") || q.get("m"))) {
+    store.set("connect", { r: q.get("r") || null, m: q.get("m") || null, at: Date.now() });
+    history.replaceState(null, "", "/connect");
+  }
   const err = q.get("signin_error"), linked = q.get("linked");
   // A new Google account that started without the free credits (one gift per person, src/abuse.ts).
   if (q.get("gift") === "none") { history.replaceState(null, "", "/"); setTimeout(() => toast(S.config.noGift || "Free credits are one per person.", true), 300); }
@@ -252,7 +258,38 @@ async function boot() {
     setTimeout(() => toast(msg, !linked), 300);
   }
   try { S.me = await api("/api/me"); } catch (e) { if (!(e.code === "signin" || e.status === 401)) return handleError(e); S.me = null; }
+  if (S.me && location.pathname === "/" && pendingConnect()) history.replaceState(null, "", "/connect");
   await enter();
+}
+const pendingConnect = () => { const p = store.get("connect", null); return p && Date.now() - p.at < 30 * 60e3 ? p : null; };
+function connectCard(title, text, ...extra) {
+  return h("div", { class: "connect-card" }, h("div", { class: "logo-orb" }, h("img", { src: "/kleo-mark.svg", alt: "Kleo" })), h("h1", {}, title), h("p", {}, text), ...extra);
+}
+/** /connect: the signed-in account finishes an assistant's connection (or takes in its old anonymous account). */
+async function connectView() {
+  const pend = pendingConnect();
+  if (!pend) {
+    setView("connect-view", connectCard("This link has expired", "Go back to your assistant and connect Kleo again.", h("button", { class: "btn btn-primary", onclick: () => go("/") }, "Open Kleo")));
+    return;
+  }
+  if (!S.me) { S.connecting = true; renderAuth("signin", true); return; }
+  setView("connect-view", connectCard("Connecting Kleo…", "One moment.", spinner(22)));
+  try {
+    const r = await api("/api/connect", { method: "POST", body: { r: pend.r, m: pend.m } });
+    store.set("connect", null); S.connecting = false;
+    if (r.url) { location.href = r.url; return; }
+    try { S.me = await api("/api/me"); setCredits(S.me.credits); } catch { /* later */ }
+    setView("connect-view", connectCard("Kleo is connected", `${r.merged ? `Your ${r.merged} credits and your videos are now in this account. ` : ""}Go back to your assistant and ask again: it uses the same credits as this app.`,
+      h("button", { class: "btn btn-primary", onclick: () => go("/") }, "Open Kleo")));
+  } catch (e) {
+    if (e.code === "anonymous") {
+      // Signed in with a bare Kleo key: sign in with Google or an e-mail instead; the key's account is merged then.
+      try { await api("/api/auth/signout", { method: "POST" }); } catch { /* the cookie goes anyway */ }
+      S.me = null; S.connecting = true; renderAuth("signin", true); return;
+    }
+    store.set("connect", null); S.connecting = false;
+    setView("connect-view", connectCard("Kleo couldn't connect", e.message || "Please try again from your assistant.", h("button", { class: "btn btn-primary", onclick: () => go("/") }, "Open Kleo")));
+  }
 }
 /** Visitors browse everything; the account is asked for at the first Generate (or Sign in). */
 function requireAccount(mode = "signup") { renderAuth(mode, true); return false; }
@@ -289,6 +326,7 @@ async function route() {
     q.delete("prompt"); q.delete("aspect");
     history.replaceState(null, "", p + (q.toString() ? `?${q}` : ""));
   }
+  if (p === "/connect") return show("chat", () => connectView());
   if (p === "/explore") return show("explore", () => exploreView());
   if (p === "/account") return show("account", () => accountView());
   const m = p.match(/^\/c\/(c_[a-z0-9]+)/);
@@ -399,7 +437,8 @@ function renderAuth(mode = "signup", fromApp = false) {
     toggleKey.textContent = showKey ? "Use e-mail instead" : "I have a Kleo key";
     (showKey ? key : email).focus();
   } }, "I have a Kleo key");
-  authFrame(mode === "signup" ? "Create with Kleo" : "Welcome back", "Videos, pictures, voices and films — just by chatting.",
+  authFrame(S.connecting ? "Connect Kleo to your assistant" : mode === "signup" ? "Create with Kleo" : "Welcome back",
+    S.connecting ? "Sign in or create your free account. Your credits are the same here and in Grok, Claude or ChatGPT." : "Videos, pictures, voices and films — just by chatting.",
     mode === "signup" ? h("div", { class: "gift" }, bolt(15), `${S.config?.freeCredits ?? 5} free credits to start`) : null,
     socialList().length ? [h("div", { class: "socials" }, socialList().map((k) => h("a", { class: `btn social social-${k}`, href: `/auth/${k}` }, SOCIAL[k].logo(), `Continue with ${SOCIAL[k].label}`))), googleOnly ? null : h("div", { class: "or" }, "or use e-mail")] : null,
     form,

@@ -3,7 +3,8 @@ import type { Env, AuthProps } from "./env";
 import { getUser, touchUser, audit } from "./db";
 import { grantStillValid } from "./accounts";
 import { mcpHandlerFor } from "./mcp";
-import { handleAuthorize } from "./auth";
+import { handleAuthorize, handleConnectFinish } from "./auth";
+import { activeAccount, isAnonymous, signInLink, signInRequiredReply, studioSignIn } from "./connect.ts";
 import { handleInternal, handleDevPlan, handleAdmin } from "./internal";
 import { handleCredits } from "./credits";
 import { handleStudioFilm } from "./studio-film";
@@ -26,13 +27,20 @@ const mcpApi: ExportedHandler<Env> = {
     const props = (ctx as ExecutionContext & { props?: AuthProps }).props;
     if (!props?.userId) return json({ error: "unauthorized" }, 401);
     if (request.method === "POST") ctx.waitUntil(tick(env).catch(() => undefined)); // progress also without cron
-    const user = await getUser(env, props.userId);
-    if (!user) return json({ error: "account not found; reconnect Kleo" }, 401);
+    const granted = await getUser(env, props.userId);
+    if (!granted) return json({ error: "account not found; reconnect Kleo" }, 401);
     // A grant made before the account's Kleo key was retired opens nothing (14 October 2026, src/accounts.ts
     // grantStillValid): the assistant must be connected again, with the new key.
-    if (!(await grantStillValid(env, user.id, props.keyVersion))) {
+    if (!(await grantStillValid(env, granted.id, props.keyVersion))) {
       return json({ error: "this connection was made with a Kleo key that has since been replaced: remove Kleo from your assistant's connectors and add it again, pasting the new key from your account page" }, 401,
         { "www-authenticate": `Bearer error="invalid_token", resource_metadata="${new URL(request.url).origin}/.well-known/oauth-protected-resource"` });
+    }
+    // ONE ACCOUNT EVERYWHERE (19 October 2026, src/connect.ts): a grant made for an old anonymous account acts on the
+    // account it was merged into; one that nobody has signed in to yet runs no tool until its owner signs in.
+    const user = await activeAccount(env, granted);
+    if (studioSignIn(env) && request.method === "POST" && (await isAnonymous(env, user))) {
+      const rpc = await request.clone().json().catch(() => null) as { method?: string; id?: unknown } | null;
+      if (rpc?.method === "tools/call") return json(signInRequiredReply(rpc.id, await signInLink(env, user.id)));
     }
     ctx.waitUntil(touchUser(env, user.id));
     // THE CONNECTOR ADDRESS'S HINTS (27 September 2026): a new account's first calls carry the ?ref= of the address the
@@ -71,6 +79,7 @@ const app: ExportedHandler<Env> = {
     // routes it never fires a tick (the cron picks the job up).
     if (p.startsWith("/internal/studio/")) return handleStudioFilm(request, env);
     if (p === "/authorize") return handleAuthorize(request, env);
+    if (p === "/authorize/finish") return handleConnectFinish(request, env);
     if (p === "/credits") return handleCredits(request, env);
     // A referral link (27 September 2026, src/referral.ts): the invitation page, which remembers the code for sign-in.
     if (p.startsWith("/r/")) return handleReferralPage(request, env);

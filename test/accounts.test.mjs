@@ -33,7 +33,7 @@ before(async () => {
   const r = await esbuild.build({
     stdin: {
       contents: `export * from "./src/auth.ts"; export * from "./src/accounts.ts"; export * from "./src/credits.ts";
-        export * from "./src/db.ts"; export * from "./src/schema.ts";`,
+        export * from "./src/db.ts"; export * from "./src/schema.ts"; export * from "./src/connect.ts";`,
       resolveDir: ROOT, loader: "ts",
     },
     // The OAuth library cannot be bundled outside the Workers runtime; see the stub's own comment.
@@ -385,5 +385,99 @@ test("sign-in: one gift per person — a second account from the same address, o
   // Everybody else is unaffected.
   assert.equal((await press(env, { ip: "198.51.100.62" })).status, 302);
   assert.equal(users(env).at(-1).credits, 7);
+});
+
+/* ------------------------------------------------------------------ one account everywhere (19 October 2026) */
+const addUser = (env, id, email, credits = 0) => env.DB.db.prepare("INSERT INTO users (id, email, credits) VALUES (?, ?, ?)").run(id, email, credits);
+const userRow = (env, id) => env.DB.db.prepare("SELECT * FROM users WHERE id = ?").get(id);
+const finishRequest = (path, cookie) => new Request(`http://kleo.test${path}`, { headers: cookie ? { cookie } : {} });
+
+test("studio sign-in: /authorize sends the browser to Kleo Studio with the request signed, opens no account, and the one-press form is gone", async () => {
+  const env = await newEnv({ MCP_SIGNIN: "studio", STUDIO_URL: "https://app.kleo.test" });
+  const anon = await press(await newEnv()); // an old anonymous account in another deployment: its cookie means nothing here
+  addUser(env, "u_anon00000001", "u_anon00000001@anon.kleo.invalid", 4);
+  const held = `kleo_id=${await m.makeHandle(env, "u_anon00000001")}`;
+  const res = await openPage(env, held);
+  assert.equal(res.status, 302);
+  const to = new URL(res.headers.get("location"));
+  assert.equal(to.origin + to.pathname, "https://app.kleo.test/connect");
+  const nonce = (res.headers.get("set-cookie") ?? "").match(/__Host-kleo_connect=([^;]+);.*HttpOnly; Secure; SameSite=Lax/)?.[1];
+  assert.ok(nonce, "the nonce stays behind in a __Host- cookie");
+  const r = await m.readToken(env, "request", to.searchParams.get("r"));
+  assert.equal(r.q, OAUTH_QUERY);
+  assert.equal(r.n, nonce);
+  assert.equal(r.a, "u_anon00000001", "the browser's old anonymous account rides along, to be merged");
+  assert.equal(r.o, "http://kleo.test");
+  assert.equal(users(env).length, 1, "no account was opened");
+  assert.equal(await m.readToken(env, "finish", to.searchParams.get("r")), null, "a request token is never a finish ticket");
+  assert.equal((await press(env)).status, 410, "nothing can open an anonymous account behind the page");
+  assert.ok(anon);
+});
+
+test("studio sign-in: /authorize/finish grants the account Studio signed, only in the browser that started, only in time", async () => {
+  const env = await newEnv({ MCP_SIGNIN: "studio" });
+  addUser(env, "u_real00000001", "ana@example.com", 12);
+  const ticket = (o = {}) => m.signToken(env, "finish", { u: "u_real00000001", n: "nonce-1", q: OAUTH_QUERY, exp: Math.floor(Date.now() / 1000) + 300, ...o });
+  const ok = await m.handleConnectFinish(finishRequest(`/authorize/finish?t=${await ticket()}`, "__Host-kleo_connect=nonce-1"), env);
+  assert.equal(ok.status, 302, await ok.clone().text());
+  assert.equal(ok.headers.get("location"), `${REDIRECT}?code=code_u_real00000001&state=xyz`);
+  assert.equal(env.OAUTH_PROVIDER.granted.at(-1).props.userId, "u_real00000001");
+  assert.equal(env.OAUTH_PROVIDER.granted.at(-1).props.email, "ana@example.com");
+  assert.match(ok.headers.get("set-cookie"), /kleo_id=u_real00000001\./);
+  assert.equal(audits(env, "oauth.granted").at(-1).detail.via, "studio");
+  const before = env.OAUTH_PROVIDER.granted.length;
+  assert.equal((await m.handleConnectFinish(finishRequest(`/authorize/finish?t=${await ticket()}`, "__Host-kleo_connect=other"), env)).status, 403, "another browser cannot finish it");
+  assert.equal((await m.handleConnectFinish(finishRequest(`/authorize/finish?t=${await ticket()}`), env)).status, 403);
+  assert.equal((await m.handleConnectFinish(finishRequest(`/authorize/finish?t=${await ticket({ exp: 1 })}`, "__Host-kleo_connect=nonce-1"), env)).status, 400, "an old ticket is dead");
+  const forged = (await ticket()).replace(/.$/, (c) => (c === "A" ? "B" : "A"));
+  assert.equal((await m.handleConnectFinish(finishRequest(`/authorize/finish?t=${forged}`, "__Host-kleo_connect=nonce-1"), env)).status, 400);
+  assert.equal(env.OAUTH_PROVIDER.granted.length, before, "none of those granted anything");
+});
+
+test("merging an old anonymous account: credits and films move, the old id points at the real account, and it happens once", async () => {
+  const env = await newEnv();
+  addUser(env, "u_anon00000002", "u_anon00000002@anon.kleo.invalid", 12);
+  addUser(env, "u_real00000002", "bo@example.com", 3);
+  env.DB.db.prepare("INSERT INTO jobs (id, user_id, template, prompt, params, state, credits, worker_secret) VALUES ('j_1', 'u_anon00000002', 'film', 'p', '{}', 'done', 5, 'w')").run();
+  assert.equal(await m.mergeAnonymous(env, "u_anon00000002", "u_real00000002", "test"), 12);
+  assert.equal(userRow(env, "u_real00000002").credits, 15);
+  assert.equal(userRow(env, "u_anon00000002").credits, 0);
+  assert.equal(userRow(env, "u_anon00000002").merged_into, "u_real00000002");
+  assert.equal(env.DB.db.prepare("SELECT user_id FROM jobs WHERE id = 'j_1'").get().user_id, "u_real00000002");
+  assert.equal((await m.activeAccount(env, await m.getUser(env, "u_anon00000002"))).id, "u_real00000002", "the old grant now acts on the real account");
+  assert.equal(await m.mergeAnonymous(env, "u_anon00000002", "u_real00000002", "again"), null, "a second merge moves nothing");
+  assert.equal(userRow(env, "u_real00000002").credits, 15);
+  addUser(env, "u_real00000003", "cy@example.com", 9);
+  assert.equal(await m.mergeAnonymous(env, "u_real00000003", "u_real00000002", "test"), null, "a real account is never swallowed");
+  assert.equal(audits(env, "account.merged_in").length, 1);
+});
+
+test("studio connect: the signed-in account takes in the anonymous one and gets a finish ticket; a bare Kleo key is not enough", async () => {
+  const env = await newEnv();
+  addUser(env, "u_anon00000004", "u_anon00000004@anon.kleo.invalid", 7);
+  addUser(env, "u_real00000004", "di@example.com", 1);
+  const r = await m.signToken(env, "request", { q: OAUTH_QUERY, n: "n4", a: "u_anon00000004", c: "Grok", o: "https://mcp.kleo.test", exp: Math.floor(Date.now() / 1000) + 600 });
+  const out = await m.studioConnect(env, "u_real00000004", { r });
+  assert.equal(out.merged, 7);
+  assert.equal(out.client, "Grok");
+  const t = new URL(out.url);
+  assert.equal(t.origin + t.pathname, "https://mcp.kleo.test/authorize/finish");
+  const fin = await m.readToken(env, "finish", t.searchParams.get("t"));
+  assert.deepEqual({ u: fin.u, n: fin.n, q: fin.q }, { u: "u_real00000004", n: "n4", q: OAUTH_QUERY });
+  assert.equal(userRow(env, "u_real00000004").credits, 8);
+  // The link an assistant on an anonymous account hands out.
+  addUser(env, "u_anon00000005", "u_anon00000005@anon.kleo.invalid", 2);
+  const link = new URL(await m.signInLink({ ...env, STUDIO_URL: "https://app.kleo.test" }, "u_anon00000005"));
+  assert.equal(link.origin + link.pathname, "https://app.kleo.test/connect");
+  assert.deepEqual(await m.studioConnect(env, "u_real00000004", { m: link.searchParams.get("m") }), { merged: 2 });
+  assert.deepEqual(await m.studioConnect(env, "u_real00000004", { m: link.searchParams.get("m") }), { merged: 0 }, "opening it twice is fine");
+  // Signed in to Studio with nothing but an anonymous account's key: refused, so the assistant lands on a real account.
+  addUser(env, "u_anon00000006", "u_anon00000006@anon.kleo.invalid", 5);
+  assert.equal((await m.studioConnect(env, "u_anon00000006", { r })).code, "anonymous");
+  assert.match((await m.studioConnect(env, "u_real00000004", { r: "nope.nope" })).error, /expired/);
+  const reply = m.signInRequiredReply(9, "https://app.kleo.test/connect?m=x");
+  assert.equal(reply.id, 9);
+  assert.equal(reply.result.isError, true);
+  assert.match(reply.result.content[0].text, /https:\/\/app\.kleo\.test\/connect\?m=x/);
 });
 

@@ -116,6 +116,11 @@ export interface Env {
   // One gift per person (15 October 2026, src/abuse.ts): gifts per address inside the window (default 1), the window
   // in days (30), accounts one address may open inside it before it is blocked (3), and how long a block lasts (30 days).
   MAX_GIFTS_PER_ADDRESS?: string;
+  /** "studio" (19 Oct 2026): assistants connect only through a Kleo account, signed in at STUDIO_URL (src/connect.ts).
+   *  Anything else keeps the old one-press anonymous page. */
+  MCP_SIGNIN?: string;
+  /** Kleo Studio's address, where /authorize sends the browser to sign in (default https://app.kleooai.com). */
+  STUDIO_URL?: string;
   GIFT_WINDOW_DAYS?: string;
   MAX_ACCOUNTS_PER_ADDRESS?: string;
   ADDRESS_BLOCK_DAYS?: string;
