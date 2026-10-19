@@ -1711,8 +1711,9 @@ function toolBody(key, compact, top = null) {
     fill(form, top,
       compact ? null : h("div", { class: "engine-card" }, engineThumb(key), h("div", { class: "ec-tx" }, h("b", {}, eng[0]), h("span", {}, eng[1]))),
       // A viral template: the clip's first frame with each seat's number where that person sits.
-      t.guide ? h("figure", { class: "seat-guide" }, h("img", { src: t.guide, alt: "" }),
-        t.seats.map((s, i) => h("span", { class: "seat-dot", style: { left: `${s.at[0]}%`, top: `${s.at[1]}%`, background: s.color } }, String(i + 1))),
+      t.guide ? h("figure", { class: "seat-guide" },
+        h("div", { class: "sg-pic" }, h("img", { src: t.guide, alt: "" }),
+          t.seats.map((s, i) => h("span", { class: "seat-dot", style: { left: `${s.at[0]}%`, top: `${s.at[1]}%`, background: s.color } }, String(i + 1)))),
         h("figcaption", {}, "Add a photo for each person you want in the clip. Empty seats keep the original person.")) : null,
       files.length ? h("div", { class: "drops" }, files.map((f, i) => { const z = dropZone(f); if (files.length === 1 || (files.length % 2 === 1 && i === files.length - 1)) z.classList.add("one"); return z; })) : null,
       t.fields.filter((f) => !["image", "video", "audio"].includes(f.kind)).map(fieldEl),
