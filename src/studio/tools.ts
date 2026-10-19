@@ -175,6 +175,8 @@ const KLING_CREDIT_USD = 1 * 0.8 * CNY;
 const ALEPH2_USD_PER_S = 0.28;
 /** One FLUX.2 Pro edit with two reference pictures ($0.06 measured on 18 Oct 2026: the references are billed too). */
 const FLUX_EDIT_USD = 0.06;
+/** One Nano Banana Pro picture at its top quality (4K: 2,000 image tokens at $120 per 1M, two input pictures, × 0.53). */
+const NBP_MAX_USD = 0.13;
 /** Speech is ~$0.00025 a second on the cheap channel; one generous flat figure covers it. */
 const SPEECH_USD = 0.01;
 /** Characters of speech per second, to price a script before it is spoken (fast talkers ~17, slow ~12). */
@@ -301,11 +303,15 @@ export function planTool(key: ToolKey, inputs: Record<string, string>, media: Re
     case "photo-character-swap": {
       const photo = need(media.photo, "image", "Photo"), image = need(media.image, "image", "Character");
       const extra = String(inputs.prompt ?? "").trim().slice(0, 400);
-      const prompt = "Replace the main person in image 1 with the character from image 2: the same face, hair, clothes and build as image 2. "
-        + "Keep exactly the same pose, position, size in the frame, framing, camera angle, light and background as image 1. Realistic photograph, sharp, natural skin." + (extra ? ` ${extra}` : "");
+      // Nano Banana Pro at its top quality (19 October 2026, the owner, after three live FLUX.2 Pro tests: the person was
+      // right but the expression and the gesture came from the character's photo instead of the scene).
+      const prompt = "Image 1 is the scene to keep. Image 2 shows the character. Put the character from image 2 into image 1 in place of the main person: "
+        + "use image 2's face, identity, hair, skin tone, body and clothes. Keep from image 1, exactly: the facial expression (the same mouth shape, eyes and eyebrows), "
+        + "the head angle and gaze, the pose and the hand gestures, the position and size in the frame, the framing and camera angle, the lighting, the colors and the whole background. "
+        + "Photorealistic and seamless, sharp, natural skin texture, no visible edges." + (extra ? ` ${extra}` : "");
       return {
-        usd: FLUX_EDIT_USD, output: "image", summary: "Photo character swap",
-        tasks: [{ model: "flux-2-pro", routing: CHEAP, output: "image", input: { prompt, images: [photo.url, image.url], aspect_ratio: nearestAspect(photo.width, photo.height), output_format: "jpeg" } }],
+        usd: NBP_MAX_USD, output: "image", summary: "Photo character swap",
+        tasks: [{ model: "gemini-3-pro-image", routing: CHEAP, output: "image", input: { prompt, images: [photo.url, image.url], aspect_ratio: nearestAspect(photo.width, photo.height), quality: "max", output_format: "jpeg" } }],
       };
     }
     case "motion-control": {
@@ -378,7 +384,7 @@ export const toneText = (tone: string): string => TONE_TEXT[tone] ?? TONE_TEXT.n
 export function publicTools(margin = DEFAULT_MARGIN): unknown[] {
   const typical: Record<ToolKey, number> = {
     "face-swap": 0.075, "video-face-swap": 2 * 8 * 0.9 * 0.8 * CNY, "talking-photo": 10 * 0.4 * KLING_CREDIT_USD + SPEECH_USD,
-    lipsync: 10 / 5 * 0.5 * KLING_CREDIT_USD, "character-swap": FLUX_EDIT_USD + 5 * 1.2 * KLING_CREDIT_USD, "photo-character-swap": FLUX_EDIT_USD, "motion-control": 8 * 0.9 * KLING_CREDIT_USD, "outfit-swap": 0.035,
+    lipsync: 10 / 5 * 0.5 * KLING_CREDIT_USD, "character-swap": FLUX_EDIT_USD + 5 * 1.2 * KLING_CREDIT_USD, "photo-character-swap": NBP_MAX_USD, "motion-control": 8 * 0.9 * KLING_CREDIT_USD, "outfit-swap": 0.035,
     "video-edit": 8 * 0.03 * 0.53, "video-upscale": 8 * 3.6 * 0.07 * 0.53, voice: SPEECH_USD, music: 0.064, sfx: 0.055,
   };
   return TOOLS.map((t) => ({ ...t, from: toolCredits(typical[t.key], margin) }));
