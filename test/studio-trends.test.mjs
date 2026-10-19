@@ -137,3 +137,10 @@ test("imported template plan: refused until every seat has its photo, then the f
   const one = TRENDS.find((x) => x.prompt && x.seats.length === 1);
   assert.throws(() => planTool(one.key, {}, {}), (e) => e instanceof ToolRefusal && /Add your photo/.test(e.message));
 });
+
+test("the Templates page is served by the app, not the website's 404", async () => {
+  const { APP_PATH } = await import("../src/studio/site.ts");
+  assert.ok(APP_PATH.test("/templates"));
+  assert.ok(APP_PATH.test("/apps/trend-apt"));
+  assert.ok(!APP_PATH.test("/templates/x"));
+});
