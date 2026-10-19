@@ -319,6 +319,7 @@ const PAGES = [
   { key: "chat", path: "/", label: "Create", ic: "chat" },
   { key: "explore", path: "/explore", label: "Explore", ic: "sparkle" },
   { key: "video", path: "/video", label: "Video", ic: "film" },
+  { key: "motion", path: "/video/motion", label: "Motion Control", ic: "run", desktop: true },
   { key: "image", path: "/image", label: "Image", ic: "photo" },
   { key: "audio", path: "/audio", label: "Audio", ic: "music" },
   { key: "apps", path: "/apps", label: "Apps", ic: "apps" },
@@ -345,6 +346,9 @@ async function route() {
   const app = p.match(/^\/apps\/([a-z0-9-]+)/);
   if (m) return show("chat", () => openChat(m[1]));
   if (p === "/video") return show("video", () => generatorView("video"));
+  // The Video page's other two tabs (19 October 2026, the owner: "come Ausar: Create, Edit, Motion Control").
+  if (p === "/video/motion") return show("motion", () => videoToolView("motion-control", "motion"));
+  if (p === "/video/edit") return show("video", () => videoToolView("video-edit", "edit"));
   if (p === "/image") return show("image", () => generatorView("image"));
   if (p === "/audio") return show("audio", () => audioView());
   if (app) return show("apps", () => appView(app[1]));
@@ -514,7 +518,7 @@ function renderShell() {
       h("button", { class: "avatar avatar-btn", "aria-label": "Account", onclick: openAccount }, (S.me.name || S.me.email || "K")[0].toUpperCase())] : [
       h("button", { class: "btn btn-quiet btn-sm", onclick: () => requireAccount("signin") }, "Sign in"),
       h("button", { class: "btn btn-cta btn-sm", onclick: () => requireAccount("signup") }, "Start free")]));
-  const tabs = h("nav", { class: "tabbar", "aria-label": "Main" }, PAGES.map((p) => h("button", { "data-page": p.key, onclick: () => go(p.path) }, icon(p.ic, 22), p.label)));
+  const tabs = h("nav", { class: "tabbar", "aria-label": "Main" }, PAGES.filter((p) => !p.desktop).map((p) => h("button", { "data-page": p.key, onclick: () => go(p.path) }, icon(p.ic, 22), p.label)));
   fill($("#app"), h("div", { class: "frame" }, nav, h("div", { class: "views" }, h("section", { class: "view", id: "view" })), tabs));
 }
 const viewEl = () => $("#view");
@@ -1235,9 +1239,9 @@ function generatorView(kind) {
     if (!list) { fill(feed, h("div", { class: "hero" }, h("span", { class: "spin dark", style: { margin: "0 auto" } }))); return; }
     fill(feed, h("div", { class: "feed-h" }, h("h2", {}, isVid ? "Your videos" : "Your pictures"), list.length ? h("span", {}, `${list.length}`) : null),
       list.length ? h("div", { class: "feed" }, list.map((g) => resultCard(g)))
-        : h("div", { class: "empty-feed" }, h("b", {}, isVid ? "Your first video starts here" : "Your first picture starts here"),
-          isVid ? "Write a prompt on the left, or try one of these:" : "Write a prompt and hit Generate.",
-          isVid ? showcaseGrid((x) => { page.prompt = x.prompt; ta.value = x.prompt; refreshCta(); ta.focus(); }, 8, null, "film") : null));
+        : [startHero(isVid ? model(vs().model).name : imodel(is().model).name,
+            isVid ? "Describe your scene, add an optional picture or clip, and your videos land here." : "Describe your picture, add optional references, and your pictures land here."),
+          isVid ? h("div", { class: "start-examples" }, h("h3", {}, "Or start from one of ours"), showcaseGrid((x) => { page.prompt = x.prompt; ta.value = x.prompt; refreshCta(); ta.focus(); }, 8, null, "film")) : null]);
   }
   function draw() { drawModel(); drawRefs(); drawSettings(); drawPresets(); refreshCta(); askPrice(); }
   const enhance = h("button", { class: "mini wand", onclick: async (e) => {
@@ -1249,6 +1253,7 @@ function generatorView(kind) {
     catch (er) { handleError(er); } finally { b.disabled = false; fill(b, icon("wand", 14), "Enhance"); }
   } }, icon("wand", 14), "Enhance");
   const panel = h("div", { class: "panel" },
+    isVid ? videoTabs("create") : null,
     modelBox,
     h("div", { class: "field" }, h("div", { class: "field-h" }, isVid ? "References" : "Reference photos", h("span", { style: { textTransform: "none", letterSpacing: 0, fontWeight: 500 } }, isVid ? "photos, clips, sounds · optional" : "optional")), refsBox),
     h("div", { class: "field" }, h("div", { class: "field-h" }, "Prompt"),
@@ -1509,7 +1514,30 @@ function appView(key) {
     toolBody(key, false)));
 }
 /** The form of one app with its results beside it. */
-function toolBody(key, compact) {
+/** "Start creating with <engine>": the big centred empty state of a workspace (the way Ausar's pages open). */
+function startHero(title, line) {
+  return h("div", { class: "start-hero" }, h("p", { class: "sh-kicker" }, "Start creating with"), h("h2", {}, title), h("p", { class: "sh-line" }, line));
+}
+// The engine behind an app, named the way the person sees it on Ausar or Higgsfield.
+const ENGINE = {
+  "motion-control": ["Kling Motion Control 3.0", "Motion from your reference clip."],
+  "video-edit": ["Kleo Video Edit", "Change anything in a clip: the motion stays."],
+  "character-swap": ["Kling O1 Character Swap", "Your character in any video, the scene stays."],
+  "photo-character-swap": ["Nano Banana Pro · 4K", "Your character in any photo."],
+  "face-swap": ["Nano Banana Pro", "A face on any photo."],
+  "talking-photo": ["Kling Avatar", "Any portrait, speaking."],
+  "lipsync": ["Kling Lip Sync", "New words on any face."],
+};
+function videoTabs(active) {
+  return h("div", { class: "vtabs", role: "tablist" }, [["create", "Create", "/video"], ["edit", "Edit", "/video/edit"], ["motion", "Motion Control", "/video/motion"]].map(([k, l, path]) =>
+    h("button", { role: "tab", class: k === active ? "on" : "", onclick: () => go(path) }, l)));
+}
+/** A video app inside the Video page, under its tabs (Edit, Motion Control). */
+function videoToolView(key, tab) {
+  if (!tool(key)) return go("/video");
+  setView("", h("div", { class: "page wide" }, toolBody(key, false, videoTabs(tab))));
+}
+function toolBody(key, compact, top = null) {
   const t = tool(key);
   const st = (S.toolState ||= {})[key] ||= { inputs: Object.fromEntries(t.fields.filter((f) => f.default).map((f) => [f.key, f.default])), files: {}, consent: false };
   const form = h("div", { class: "panel" });
@@ -1608,11 +1636,14 @@ function toolBody(key, compact) {
     fill(feed, h("div", { class: "feed-h" }, h("h2", {}, "Your results")),
       !list ? h("div", { class: "hero" }, h("span", { class: "spin dark", style: { margin: "0 auto" } }))
         : list.length ? h("div", { class: "feed" }, list.map((g) => resultCard(g)))
-        : h("div", { class: "empty-feed" }, h("b", {}, "Nothing yet"), t.output === "audio" ? "Your sounds will appear here." : "Your results will appear here."));
+        : compact ? h("div", { class: "empty-feed" }, h("b", {}, "Nothing yet"), t.output === "audio" ? "Your sounds will appear here." : "Your results will appear here.")
+        : startHero((ENGINE[key] || [t.name])[0], (ENGINE[key] || [null, t.blurb])[1]));
   }
   function draw() {
     const files = t.fields.filter((f) => ["image", "video", "audio"].includes(f.kind) && visible(f));
-    fill(form,
+    const eng = ENGINE[key] || [t.name, t.blurb];
+    fill(form, top,
+      compact ? null : h("div", { class: "engine-card" }, h("div", { class: "ec-art" }, appArt(t)), h("div", { class: "ec-tx" }, h("b", {}, eng[0]), h("span", {}, eng[1]))),
       files.length ? h("div", { class: "drops" }, files.map((f, i) => { const z = dropZone(f); if (files.length === 1 || (files.length % 2 === 1 && i === files.length - 1)) z.classList.add("one"); return z; })) : null,
       t.fields.filter((f) => !["image", "video", "audio"].includes(f.kind)).map(fieldEl),
       t.consent ? h("label", { class: "consent" }, h("input", { type: "checkbox", checked: st.consent || null, onchange: (e) => { st.consent = e.target.checked; drawCta(); } }),
