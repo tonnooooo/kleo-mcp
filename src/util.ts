@@ -66,7 +66,10 @@ export function publicText(s: string): string {
     .replace(/\bkie\.ai's\b/gi, "the model provider's")
     .replace(/\bkie\.ai\b/gi, "the model provider")
     .replace(/\bePhone(?:\s+AI|\.ai)?'s\b/gi, "the AI model gateway's")
-    .replace(/\bePhone(?:\s+AI|\.ai)?\b/gi, "the AI model gateway");
+    .replace(/\bePhone(?:\s+AI|\.ai)?\b/gi, "the AI model gateway")
+    // A provider's request id (ByteDance's run 50 characters with no space) means nothing to a person and broke the
+    // card on a phone (19 October 2026): it stays in the audit, never in the sentence.
+    .replace(/\s*Request id:\s*[0-9a-z-]{12,}\.?/gi, "");
 }
 
 /**

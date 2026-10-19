@@ -1271,3 +1271,16 @@ body::before { display: none; }
 @media (max-width: 1100px) { .pl-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .pl-finder { grid-template-columns: 1fr; } .pf-left { border-right: 0; border-bottom: 1px solid var(--sep); } }
 @media (max-width: 640px) { .pl-grid { grid-template-columns: 1fr; } .pf-uses { grid-template-columns: 1fr; } .pl-price b { font-size: 38px; } }
 .pl-cta.btn-cta { background: linear-gradient(180deg, var(--cta-a), var(--cta-b)); }
+
+/* Customer fixes (19 October 2026). A refusal's sentence wraps on a phone instead of running off the card. */
+.result.failed .media > div { max-width: 100%; overflow-wrap: anywhere; }
+/* A sound reference: tap to listen; its name on the chip ("Song 2"). */
+.ref .ref-play { width: 42px; height: 42px; border-radius: 50%; display: grid; place-items: center; background: rgba(255, 255, 255, .22); color: #fff; margin-bottom: 14px; }
+.ref .ref-play:active { transform: scale(.94); }
+.ref .role { overflow: hidden; text-overflow: ellipsis; padding: 0 6px; }
+/* Songs of a set: each one named, with its own buttons. */
+.song { display: grid; gap: 8px; margin-bottom: 12px; }
+.song-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.song-h b { font-size: 16px; }
+.song-acts { display: flex; gap: 6px; flex-wrap: wrap; }
+.song audio { width: 100%; }

@@ -66,6 +66,7 @@ const P = {
   globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3Z"/>',
   cup: '<path d="M4 9h13v5a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5Z"/><path d="M17 11h1.5a2.5 2.5 0 0 1 0 5H17M8 3.5c-.5 1 .5 1.8 0 3M12 3.5c-.5 1 .5 1.8 0 3"/>',
   play: '<path d="M8 5.5v13l10.5-6.5Z"/>',
+  pause: '<path d="M8.5 5.5v13M15.5 5.5v13"/>',
   layers: '<path d="m12 3 9 5-9 5-9-5Z"/><path d="m3 13 9 5 9-5"/>',
   text: '<path d="M5 6V4.5h14V6M12 4.5v15M9 19.5h6"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/>',
@@ -951,7 +952,7 @@ function useAsReference(o, kind = "image") {
   closeLayer();
   const page = S.page[kind];
   if (page.refs.length >= 6) return toast("Up to 6 references.", true);
-  page.refs.push({ id: o.upload, local: o.url, kind: o.type || "image" });
+  page.refs.push({ id: o.upload, local: o.url, kind: o.type || "image", label: o.label || null });
   go(`/${kind}`);
   toast("Added as a reference");
 }
@@ -1159,13 +1160,13 @@ function generatorView(kind) {
   function drawRefs() {
     const s = isVid ? vs() : null;
     fill(refsBox, page.refs.map((r) => h("div", { class: "ref" + (r.kind === "audio" ? " audio" : "") },
-      r.kind === "video" ? h("video", { src: r.local, muted: true, playsinline: true }) : r.kind === "audio" ? icon("music", 26) : h("img", { src: r.local, alt: "" }),
+      r.kind === "video" ? h("video", { src: r.local, muted: true, playsinline: true }) : r.kind === "audio" ? soundPlayButton(r) : h("img", { src: r.local, alt: "" }),
       r.kind !== "image" ? h("span", { class: "kind" }, icon(r.kind === "video" ? "film" : "sound", 12, 2.2)) : null,
       !r.id ? h("div", { class: "busy" }, h("span", { class: "spin" })) : null,
       isVid && r.id ? h("button", { class: "role", onclick: () => {
         if (r.kind === "video") { const o = VIDEO_ROLES(pics(), clips()); setV({ ...s, videoRole: o[(o.indexOf(s.videoRole) + 1) % o.length] }); toast(VIDEO_ROLE_TOAST[o[(o.indexOf(s.videoRole) + 1) % o.length]]); return; }
         if (r.kind === "image" && pics() === 1 && !clips().videos && !clips().audios) setV({ ...s, imageRole: s.imageRole === "first_frame" ? "reference" : "first_frame" });
-      } }, r.kind === "video" ? VIDEO_ROLE_LABEL[s.videoRole] || "Reference" : r.kind === "audio" ? "Sound" : s.imageRole === "first_frame" ? "Start frame" : "Reference") : null,
+      } }, r.kind === "video" ? VIDEO_ROLE_LABEL[s.videoRole] || "Reference" : r.kind === "audio" ? r.label || "Sound" : s.imageRole === "first_frame" ? "Start frame" : "Reference") : null,
       h("button", { class: "x", "aria-label": "Remove", onclick: () => { page.refs = page.refs.filter((x) => x !== r); draw(); } }, icon("x", 11, 3)))),
       page.refs.length < 6 ? h("button", { class: "ref-add", onclick: () => pickFile(isVid ? ACCEPT_ALL : "image/*", true, addRefs) },
         h("span", {}, icon("plus", 22), isVid ? "Add" : "Add photo")) : null);
@@ -1173,6 +1174,9 @@ function generatorView(kind) {
   async function addRefs(files) {
     for (const f of files.slice(0, 6 - page.refs.length)) {
       const r = { local: URL.createObjectURL(f), id: null, kind: f.type.startsWith("video/") ? "video" : f.type.startsWith("audio/") ? "audio" : "image" };
+      // A song saved from Kleo (kleo-song-2-….mp3) keeps its name on the chip: "Song 2".
+      const sn = /(song|sound)-(\d+)/i.exec(f.name || "");
+      if (r.kind === "audio" && sn) r.label = `${sn[1][0].toUpperCase()}${sn[1].slice(1).toLowerCase()} ${sn[2]}`;
       if (!isVid && r.kind !== "image") { toast("Pictures only here.", true); continue; }
       page.refs.push(r); draw();
       try { const u = await uploadFile(f); Object.assign(r, { id: u.id, kind: u.kind, duration: u.duration }); }
@@ -1335,14 +1339,14 @@ function resultCard(g) {
   if (g.status === "done") {
     const first = g.outputs?.[0];
     const dlUrl = g.kind === "video" || g.kind === "film" ? g.video : first?.url;
-    if (dlUrl) acts.append(h("a", { class: "icon-btn", href: DEMO ? dlUrl : `${dlUrl}?dl=1`, download: "", title: "Download", "aria-label": "Download" }, icon("dl", 18)));
+    if (dlUrl) acts.append(h("a", { class: "icon-btn", href: DEMO ? dlUrl : `${dlUrl}?dl=1${out === "audio" ? `&name=${songSlug(g, 0, (g.outputs || []).length)}` : ""}`, download: "", title: "Download", "aria-label": "Download" }, icon("dl", 18)));
     acts.append(h("button", { class: "icon-btn", title: "Share", "aria-label": "Share", onclick: () => share(g, g.kind === "video" || g.kind === "film" ? undefined : first) }, icon("share", 18)));
     if (out === "image" && first) acts.append(h("button", { class: "icon-btn", title: "Animate", "aria-label": "Animate", onclick: () => animate(first) }, icon("play", 18)));
     acts.append(h("button", { class: "icon-btn", title: "Remix", "aria-label": "Remix", onclick: () => remix(g) }, icon("wand", 18)));
   }
   if (g.status === "done" || g.status === "failed") acts.append(h("button", { class: "icon-btn danger", title: "Delete", "aria-label": "Delete", onclick: () => deleteGen(g) }, icon("trash", 18)));
   el.append(media, h("div", { class: "info" },
-    out === "audio" && g.status === "done" ? (g.outputs || []).map((o) => h("audio", { src: o.url, controls: true, preload: "none" })) : null,
+    out === "audio" && g.status === "done" ? (g.outputs || []).map((o, i, all) => songRow(g, o, i, all.length)) : null,
     g.prompt ? h("p", {}, g.prompt) : null, acts));
   return el;
 }
@@ -2092,6 +2096,36 @@ function viewVideo(g) {
     h("button", { class: "btn btn-quiet btn-sm", onclick: () => share(g) }, icon("share", 17), "Share"),
     h("button", { class: "btn btn-quiet btn-sm", onclick: () => remix(g) }, icon("wand", 17), "Remix"),
     h("button", { class: "btn btn-quiet btn-sm danger", onclick: () => deleteGen(g) }, icon("trash", 17), "Delete")]);
+}
+/**
+ * One song of a set (Suno answers two): its name, its player, its own download and "Use in a video" (19 October 2026:
+ * a customer downloaded both songs and could not tell which one her video's sound chip was).
+ */
+const songLabel = (g, i, n) => `${g.model === "music" ? "Song" : "Sound"}${n > 1 ? ` ${i + 1}` : ""}`;
+const songSlug = (g, i, n) => `${songLabel(g, i, n).toLowerCase().replace(/\s+/g, "-")}-${g.id.replace(/^g_/, "").slice(0, 6)}`;
+function songRow(g, o, i, n) {
+  const label = songLabel(g, i, n);
+  return h("div", { class: "song" },
+    h("div", { class: "song-h" }, h("b", {}, label),
+      h("span", { class: "song-acts" },
+        h("button", { class: "btn btn-quiet btn-sm", onclick: () => useAsReference({ ...o, type: "audio", label }, "video") }, icon("film", 16), "Use in a video"),
+        h("a", { class: "btn btn-quiet btn-sm", href: DEMO ? o.url : `${o.url}?dl=1&name=${songSlug(g, i, n)}`, download: "" }, icon("dl", 16), "Download"))),
+    h("audio", { src: o.url, controls: true, preload: "none" }));
+}
+/** A sound reference plays when tapped, so a person can hear which one it is. One plays at a time. */
+let refAudio = null, refAudioBtn = null;
+function soundPlayButton(r) {
+  const b = h("button", { class: "ref-play", type: "button", "aria-label": "Listen" }, icon("play", 22, 2.2));
+  b.onclick = () => {
+    const mine = refAudioBtn === b && refAudio && !refAudio.paused;
+    if (refAudio) refAudio.pause();
+    if (refAudioBtn) fill(refAudioBtn, icon("play", 22, 2.2));
+    if (mine) { refAudio = null; refAudioBtn = null; return; }
+    refAudio = new Audio(r.local); refAudioBtn = b;
+    refAudio.onended = () => fill(b, icon("play", 22, 2.2));
+    refAudio.play().then(() => fill(b, icon("pause", 22, 2.4))).catch(() => toast("This sound can't play here.", true));
+  };
+  return b;
 }
 function viewOutput(g, o) {
   const isVid = o.type === "video";

@@ -159,7 +159,9 @@ async function handleMedia(env: StudioEnv, request: Request, url: URL): Promise<
     const u = await getUpload(env, up[1]);
     if (!u || (!signed && u.user_id !== viewer)) return new Response("Not found", { status: 404 });
     const ext = (u.key.split(".").pop() ?? "jpg").replace("jpeg", "jpg");
-    return serveFile(env, request, u.key, `kleo-${u.id}.${ext}`, url.searchParams.get("dl") === "1", "private, max-age=86400");
+    // ?name=song-1 names the download (two songs of one set were told apart by nothing but their ids).
+    const name = /^[a-z0-9-]{1,40}$/.test(url.searchParams.get("name") ?? "") ? url.searchParams.get("name") : u.id;
+    return serveFile(env, request, u.key, `kleo-${name}.${ext}`, url.searchParams.get("dl") === "1", "private, max-age=86400");
   }
   const clip = url.pathname.match(/^\/media\/(g_[a-z0-9]+)\.mp4$/);
   if (clip) {
