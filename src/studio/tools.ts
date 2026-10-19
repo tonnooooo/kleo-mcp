@@ -13,6 +13,7 @@
  *   voice            words                     → gpt-4o-mini-tts               (sound)
  *   music            a description             → Suno                          (2 songs)
  *   sfx              a description             → Suno sounds                   (sound)
+ *   trend-…          a photo per seat          → Wan 3.0 video edit, on WaveSpeed (video; src/studio/trends.ts)
  *
  * planTool() is pure: from the form and what the uploads are (kind, seconds, size) it answers the provider calls and
  * their price, or a refusal a person can act on. The Worker runs the plan (generate.ts runTool).
@@ -29,8 +30,9 @@
  * audit table with the account. Kleo never removes a provider's own refusal.
  */
 import { CREDIT_USD, DEFAULT_MARGIN } from "./models.ts";
+import { DEFAULT_TREND_QUALITY, TRENDS, TREND_QUALITIES, WAN30_EDIT_MODEL, trendByKey, trendCostUsd, trendQuality, trendTaskInput, type Trend } from "./trends.ts";
 
-export type ToolKey = "face-swap" | "video-face-swap" | "talking-photo" | "lipsync" | "character-swap" | "photo-character-swap" | "motion-control" | "outfit-swap" | "video-edit" | "video-upscale" | "voice" | "music" | "sfx";
+export type ToolKey = "face-swap" | "video-face-swap" | "talking-photo" | "lipsync" | "character-swap" | "photo-character-swap" | "motion-control" | "outfit-swap" | "video-edit" | "video-upscale" | "voice" | "music" | "sfx" | `trend-${string}`;
 export type FieldKind = "image" | "video" | "audio" | "text" | "select" | "voice";
 export interface ToolField {
   key: string; kind: FieldKind; label: string; hint?: string; required?: boolean;
@@ -41,9 +43,11 @@ export interface ToolField {
   hidden?: boolean;
 }
 export interface ToolDef {
-  key: ToolKey; name: string; blurb: string; group: "face" | "video" | "image" | "audio";
+  key: ToolKey; name: string; blurb: string; group: "trend" | "face" | "video" | "image" | "audio";
   icon: string; tint: string; output: "video" | "image" | "audio"; consent?: boolean; badge?: string;
   fields: ToolField[];
+  /** Viral templates only (src/studio/trends.ts): the looping example, the seat guide still and its seat marks. */
+  preview?: string; guide?: string; seats?: { key: string; color: string; at: [number, number] }[];
 }
 
 export const VOICES = [
@@ -153,7 +157,21 @@ export const TOOLS: ToolDef[] = [
       { key: "prompt", kind: "text", label: "Describe the sound", required: true, maxLength: 300, placeholder: "Thunder rolling far away · a sword unsheathed · crowd cheering" },
       { key: "loop", kind: "select", label: "Type", options: [{ value: "one-shot", label: "One shot" }, { value: "loop", label: "Loop" }], default: "one-shot" },
     ] },
+  // The viral templates (20 October 2026, ausar.ai's people-swap templates): a photo per seat, swapped into the clip.
+  ...TRENDS.map(trendTool),
 ];
+
+/** One viral template as an app: a photo box per seat (any of them may stay empty) and the output quality. */
+function trendTool(t: Trend): ToolDef {
+  return {
+    key: t.key, name: t.name, blurb: t.blurb, group: "trend", icon: "film", tint: t.tint, output: "video", consent: true, badge: "Viral",
+    preview: t.preview, guide: t.guide, seats: t.seats.map((s) => ({ key: s.key, color: s.color, at: s.at })),
+    fields: [
+      ...t.seats.map((s, i): ToolField => ({ key: s.key, kind: "image", label: `Person ${i + 1}`, hint: i === 0 ? `${s.label} · a clear photo` : `${s.label} · optional` })),
+      { key: "quality", kind: "select", label: "Quality", options: TREND_QUALITIES.map((q) => ({ value: q, label: q })), default: DEFAULT_TREND_QUALITY },
+    ],
+  };
+}
 
 export const toolByKey = (key: string | null | undefined): ToolDef | null => TOOLS.find((t) => t.key === key) ?? null;
 
@@ -162,6 +180,8 @@ export interface Media { id: string; url: string; kind: "image" | "video" | "aud
 /** One provider call. `{{speech}}` in the input is replaced by the link to the spoken audio once it exists. */
 export interface PlannedTask {
   model: string; input: Record<string, unknown>; routing?: Record<string, string>; output: "image" | "video" | "audio";
+  /** Who runs it: ePhone (the default), or WaveSpeed for the viral templates (src/wavespeed.ts). */
+  provider?: "wavespeed";
   /** A second task started when this one finishes; "{{prev}}" in its input becomes this task's result link. */
   then?: PlannedTask;
 }
@@ -222,9 +242,24 @@ function speechPart(inputs: Record<string, string>, media: Record<string, Media 
   return { seconds: Math.min(60, scriptSeconds(text)), speech: { text, voice: inputs.voice || "nova", tone: inputs.tone || "natural" }, audioUrl: "{{speech}}" };
 }
 
+/** A viral template: every seat with a photo is swapped in; at least one seat needs one. */
+function planTrend(trend: Trend, inputs: Record<string, string>, media: Record<string, Media | undefined>): Plan {
+  const filled = trend.seats.filter((s) => media[s.key]);
+  for (const s of filled) need(media[s.key], "image", `Person ${trend.seats.indexOf(s) + 1}`);
+  if (!filled.length) throw new ToolRefusal("Add a photo of at least one person.");
+  const q = trendQuality(inputs.quality);
+  return {
+    usd: trendCostUsd(trend, q), output: "video", summary: `${trend.name} · ${filled.length === 1 ? "1 person" : `${filled.length} people`} · ${q}`,
+    tasks: [{ provider: "wavespeed", model: WAN30_EDIT_MODEL, output: "video",
+      input: trendTaskInput(trend, filled.map((s) => s.key), filled.map((s) => media[s.key]!.url), q) }],
+  };
+}
+
 export function planTool(key: ToolKey, inputs: Record<string, string>, media: Record<string, Media | undefined>): Plan {
   const t = toolByKey(key);
   if (!t) throw new ToolRefusal("That app doesn't exist.");
+  const trend = trendByKey(key);
+  if (trend) return planTrend(trend, inputs, media);
   switch (key) {
     case "face-swap": {
       const target = need(media.target, "image", "Photo"), face = need(media.face, "image", "Face");
@@ -382,10 +417,12 @@ export const toneText = (tone: string): string => TONE_TEXT[tone] ?? TONE_TEXT.n
 
 /** The catalog the page draws the Apps grid from (prices are credit estimates for a typical use). */
 export function publicTools(margin = DEFAULT_MARGIN): unknown[] {
-  const typical: Record<ToolKey, number> = {
+  const typical: Partial<Record<ToolKey, number>> = {
     "face-swap": 0.075, "video-face-swap": 2 * 8 * 0.9 * 0.8 * CNY, "talking-photo": 10 * 0.4 * KLING_CREDIT_USD + SPEECH_USD,
     lipsync: 10 / 5 * 0.5 * KLING_CREDIT_USD, "character-swap": FLUX_EDIT_USD + 5 * 1.2 * KLING_CREDIT_USD, "photo-character-swap": NBP_MAX_USD, "motion-control": 8 * 0.9 * KLING_CREDIT_USD, "outfit-swap": 0.035,
     "video-edit": 8 * 0.03 * 0.53, "video-upscale": 8 * 3.6 * 0.07 * 0.53, voice: SPEECH_USD, music: 0.064, sfx: 0.055,
   };
-  return TOOLS.map((t) => ({ ...t, from: toolCredits(typical[t.key], margin) }));
+  // A template's "from" is its cheapest quality (480p).
+  const usd = (k: ToolKey) => typical[k] ?? (trendByKey(k) ? trendCostUsd(trendByKey(k)!, "480p") : 0.1);
+  return TOOLS.map((t) => ({ ...t, from: toolCredits(usd(t.key), margin) }));
 }

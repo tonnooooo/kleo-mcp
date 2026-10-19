@@ -640,10 +640,12 @@ function renderMessages(jump = false) {
 // tiles, a start-free card for visitors, ideas one tap away, and the team's films. The chat box stays docked below.
 const MEDIA_APP = "https://media.kleooai.com/app";
 const GALLERY = "https://media.kleooai.com/gallery";
+// 20 October 2026, the owner: the viral templates (ausar.ai's people swaps) lead the page. Seedance 2.5 keeps its
+// tile below (Video · Seedance 2.5 and Veo 3.1).
 const HOME_BANNERS = [
+  { t: "You Talking Bout Me?", s: "Put your friends in this viral clip", badge: "Viral", v: `${MEDIA_APP}/templates/you-talking-bout-me/preview-p.mp4`, p: `${MEDIA_APP}/templates/you-talking-bout-me/preview.jpg`, go: () => go("/apps/trend-you-talking-bout-me") },
   { t: "Character Swap", s: "Put your character in any video", badge: "Pro", v: `${MEDIA_APP}/home-swap.mp4`, p: `${MEDIA_APP}/home-swap.jpg`, go: () => go("/apps/character-swap") },
   { t: "Kleo Film", s: "A whole narrated film from one message", badge: "New", v: `${GALLERY}/tether-film-p.mp4`, p: `${GALLERY}/tether-film.jpg`, go: () => startFilm() },
-  { t: "Seedance 2.5", s: "Cinematic video from one sentence", badge: "Top", v: `${GALLERY}/koi-supra-night-p.mp4`, p: `${GALLERY}/koi-supra-night.jpg`, go: () => go("/video") },
 ];
 // Each tile is just its picture in motion and two lines under it (the owner, 18 Oct: "come Higgsfield: video pulito,
 // niente sopra, scrive solo sotto").
@@ -1468,7 +1470,7 @@ function audioView() {
 }
 
 // ── Apps ─────────────────────────────────────────────────────────────────────────────────────────────────────────
-const GROUPS = [["face", "Faces", "Swap, animate and make them talk"], ["video", "Video", "Move, edit and sharpen clips"], ["image", "Image", "Change looks in one tap"], ["audio", "Audio", "Voices, music and sounds"]];
+const GROUPS = [["trend", "Viral templates", "Your people in a viral clip, one tap"], ["face", "Faces", "Swap, animate and make them talk"], ["video", "Video", "Move, edit and sharpen clips"], ["image", "Image", "Change looks in one tap"], ["audio", "Audio", "Voices, music and sounds"]];
 function startFilm() {
   go("/");
   setTimeout(() => {
@@ -1511,7 +1513,11 @@ const ENGINE_THUMB = {
   "voice": () => artImg(pic("face-a")),
   "music": () => artImg(pic("music")),
 };
-function engineThumb(key) { const make = ENGINE_THUMB[key]; return make ? h("div", { class: "ec-thumb" }, make()) : null; }
+function engineThumb(key) {
+  const p = tool(key)?.preview;
+  const make = ENGINE_THUMB[key] || (p ? () => artVideo(p) : null);
+  return make ? h("div", { class: "ec-thumb" }, make()) : null;
+}
 const APP_ART = {
   "face-swap": () => split(artImg(pic("face-a")), artImg(pic("face-b"))),
   "video-face-swap": () => h("div", { class: "art-stack" }, artVideo(loop("made-in-kleo-ai-queen")), h("span", { class: "art-face" }, artImg(pic("face-a"))), h("span", { class: "art-arrow" }, icon("redo", 16, 2.2))),
@@ -1528,7 +1534,8 @@ const APP_ART = {
   "sfx": () => h("div", { class: "art-stack" }, artVideo(loop("mechs-in-snow"), "dim"), waveBars(28)),
 };
 function appArt(t) {
-  const make = APP_ART[t.key];
+  // A viral template shows its own finished example.
+  const make = APP_ART[t.key] || (t.preview ? () => artVideo(t.preview) : null);
   return h("div", { class: "art art-media", style: { background: `linear-gradient(135deg, ${t.tint}, ${t.tint}aa)` } },
     make ? make() : icon(t.icon, 44, 1.7), t.badge ? h("span", { class: "tag" }, t.badge) : null);
 }
@@ -1610,11 +1617,16 @@ function toolBody(key, compact, top = null) {
       onclick: (e) => { if (e.target.closest(".x") || e.target.closest("audio") || e.target.closest("video")) return; pickFile(accept, false, (fs) => fs[0] && put(f, fs[0])); },
       ondragover: (e) => { e.preventDefault(); z.classList.add("drag"); }, ondragleave: () => z.classList.remove("drag"),
       ondrop: (e) => { e.preventDefault(); z.classList.remove("drag"); const fl = e.dataTransfer?.files?.[0]; if (fl) put(f, fl); } });
-    if (!file) z.append(h("div", { class: "dl" }, h("span", { class: "ic" }, icon(f.kind === "image" ? "photo" : f.kind === "video" ? "film" : "mic", 20)), h("b", {}, f.label), h("small", {}, f.hint || `Tap to add a ${kindLabel}`)));
+    // A template's seat: its number in its colour, the same as on the seat guide.
+    const seat = (t.seats || []).findIndex((s) => s.key === f.key);
+    const ic = seat >= 0 ? h("span", { class: "ic seat-ic", style: { background: t.seats[seat].color } }, String(seat + 1))
+      : h("span", { class: "ic" }, icon(f.kind === "image" ? "photo" : f.kind === "video" ? "film" : "mic", 20));
+    if (!file) z.append(h("div", { class: "dl" }, ic, h("b", {}, f.label), h("small", {}, f.hint || `Tap to add a ${kindLabel}`)));
     else {
       if (f.kind === "image") z.append(h("img", { src: file.local, alt: "" }));
       else if (f.kind === "video") z.append(h("video", { src: file.local, muted: true, playsinline: true, controls: true }));
       else z.append(h("div", { class: "dl", style: { color: "#fff", width: "100%" } }, icon("music", 30), h("audio", { src: file.local, controls: true })));
+      if (seat >= 0) z.append(h("span", { class: "seat-tag", style: { background: t.seats[seat].color } }, String(seat + 1)));
       if (file.duration) z.append(h("span", { class: "dur" }, fmtSec(file.duration)));
       if (!file.id) z.append(h("div", { class: "busy" }, h("span", { class: "spin" })));
       z.append(h("button", { class: "x", "aria-label": "Remove", onclick: (e) => { e.stopPropagation(); delete st.files[f.key]; delete st.inputs[f.key]; draw(); } }, icon("x", 14, 2.6)));
@@ -1695,9 +1707,13 @@ function toolBody(key, compact, top = null) {
     const files = t.fields.filter((f) => ["image", "video", "audio"].includes(f.kind) && visible(f));
     // The engine card: one clean clip or picture of what the app makes, no before/after split, no arrows, no chips
     // (19 October 2026, the owner: the little previews "fanno schifo").
-    const eng = ENGINE[key] || [t.name, t.blurb];
+    const eng = ENGINE[key] || (t.group === "trend" ? ["Wan 3.0 Video Edit", "Your people in this clip: the room, the moves and the sound stay."] : [t.name, t.blurb]);
     fill(form, top,
       compact ? null : h("div", { class: "engine-card" }, engineThumb(key), h("div", { class: "ec-tx" }, h("b", {}, eng[0]), h("span", {}, eng[1]))),
+      // A viral template: the clip's first frame with each seat's number where that person sits.
+      t.guide ? h("figure", { class: "seat-guide" }, h("img", { src: t.guide, alt: "" }),
+        t.seats.map((s, i) => h("span", { class: "seat-dot", style: { left: `${s.at[0]}%`, top: `${s.at[1]}%`, background: s.color } }, String(i + 1))),
+        h("figcaption", {}, "Add a photo for each person you want in the clip. Empty seats keep the original person.")) : null,
       files.length ? h("div", { class: "drops" }, files.map((f, i) => { const z = dropZone(f); if (files.length === 1 || (files.length % 2 === 1 && i === files.length - 1)) z.classList.add("one"); return z; })) : null,
       t.fields.filter((f) => !["image", "video", "audio"].includes(f.kind)).map(fieldEl),
       t.consent ? h("label", { class: "consent" }, h("input", { type: "checkbox", checked: st.consent || null, onchange: (e) => { st.consent = e.target.checked; drawCta(); } }),
