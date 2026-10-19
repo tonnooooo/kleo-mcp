@@ -1172,6 +1172,13 @@ body::before { display: none; }
 .vtabs button { height: 40px; border-radius: 11px; font-size: 15px; font-weight: 600; color: var(--ink-2); }
 .vtabs button.on { background: var(--elev); color: var(--ink); box-shadow: 0 1px 2px rgba(0, 0, 0, .3); }
 .vtabs button:not(.on):hover { color: var(--ink); }
+/* The engine card on an app's form: one clean preview, then KLING MOTION CONTROL 3.0 · Motion from your reference clip. */
+.engine-card { display: flex; align-items: center; gap: 14px; padding: 10px; border-radius: 16px; background: var(--bg-2); border: 1px solid var(--sep); }
+.engine-card .ec-thumb { width: 96px; height: 60px; border-radius: 10px; overflow: hidden; flex: none; position: relative; background: var(--bg-3); }
+.engine-card .ec-thumb .art-fill { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.engine-card .ec-tx { min-width: 0; }
+.engine-card b { display: block; font-size: 14.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .02em; }
+.engine-card span { display: block; font-size: 14.5px; color: var(--ink-2); }
 /* "START CREATING WITH / <ENGINE>": the big centred empty state. */
 .start-hero { min-height: 52vh; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 40px 20px; }
 .start-hero .sh-kicker { margin: 0; font-size: clamp(26px, 3vw, 38px); font-weight: 900; letter-spacing: -.02em; text-transform: uppercase; line-height: 1.05; }
