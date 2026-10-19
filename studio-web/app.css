@@ -1457,9 +1457,10 @@ img.fx-in { animation: fx-img-in .7s var(--ease-out) both; }
 @media (max-width: 520px) { .vtabs { grid-template-columns: 1fr .72fr 1.4fr; } }
 
 /* Viral templates (20 October 2026): the seat guide and the numbered seats, one colour per person. */
-.seat-guide { position: relative; margin: 0 0 12px; border-radius: 18px; overflow: hidden; background: #000; }
+.seat-guide { flex: none; margin: 0 0 12px; }
+.seat-guide .sg-pic { position: relative; border-radius: 18px; overflow: hidden; background: #000; }
 .seat-guide img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
 .seat-guide .seat-dot { position: absolute; transform: translate(-50%, -50%); width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-size: 17px; font-weight: 700; box-shadow: 0 0 0 3px rgba(255, 255, 255, .9), 0 6px 18px rgba(0, 0, 0, .45); }
-.seat-guide figcaption { position: absolute; left: 0; right: 0; bottom: 0; padding: 28px 14px 12px; color: #fff; font-size: 16px; line-height: 1.35; background: linear-gradient(transparent, rgba(0, 0, 0, .7)); }
+.seat-guide figcaption { padding: 10px 2px 0; color: var(--ink-2); font-size: 16px; line-height: 1.35; }
 .drop .dl .ic.seat-ic { color: #fff; font-size: 17px; font-weight: 700; }
 .drop .seat-tag { position: absolute; left: 10px; top: 10px; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-size: 15px; font-weight: 700; box-shadow: 0 0 0 2px rgba(255, 255, 255, .85); }
