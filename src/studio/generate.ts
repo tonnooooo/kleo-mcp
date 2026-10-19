@@ -25,7 +25,7 @@ import { withPreset } from "./presets.ts";
 import { planTool, toolByKey, toolCredits, toneText, ToolRefusal, type Media, type Plan, type ToolKey } from "./tools.ts";
 import { mediaInfo } from "./media.ts";
 import { refreshFilm } from "./films.ts";
-import { freeImageModels, imageCostUsd, imageCredits, imageModelByKey, imageModelOfProvider, imageTaskInput, isQualityRefusal, normalizeImageSettings, otherQualitySpelling, pausedImageModels, type ImageSettings } from "./image-models.ts";
+import { alternativeFor, freeImageModels, imageAlternatives, imageCostUsd, imageCredits, imageModelByKey, imageModelOfProvider, imageTaskInput, isQualityRefusal, normalizeImageSettings, otherQualitySpelling, pausedImageModels, type ImageSettings } from "./image-models.ts";
 import {
   addUpload, getGeneration, insertGeneration, moveGeneration, markChecked, runningCount, studioSpentTodayUsd, uploadsOf,
   type GenerationRow, type Slot,
@@ -77,9 +77,11 @@ export function publicGeneration(g: GenerationRow): Record<string, unknown> {
   let progress: unknown = null;
   if (kind === "film") { try { progress = JSON.parse(g.usage ?? "null"); } catch { /* none yet */ } }
   const slots = parseSlots(g);
+  // A picture its own model refused and FLUX 3 made says so (the card names the model that drew it).
+  const madeBy = kind === "image" ? imageModelOfProvider(slots.find((x) => x.status === "done" && x.model)?.model ?? "") : null;
   return {
     id: g.id, kind, model: g.model,
-    modelName: (kind === "image" ? imageModelByKey(g.model)?.name : kind === "tool" ? toolByKey(g.model)?.name : kind === "film" ? (g.model === "kleo-animatic" ? "Kleo Animatic" : "Kleo Film") : modelByKey(g.model)?.name) ?? g.model,
+    modelName: (kind === "image" ? imageModelByKey(madeBy ?? g.model)?.name : kind === "tool" ? toolByKey(g.model)?.name : kind === "film" ? (g.model === "kleo-animatic" ? "Kleo Animatic" : "Kleo Film") : modelByKey(g.model)?.name) ?? g.model,
     settings, prompt: g.prompt, images, credits: g.credits,
     status: g.status === "submitting" || g.status === "saving" ? "running" : g.status,
     error: g.error, refunded: !!g.refunded, chatId: g.chat_id, messageId: g.message_id,
@@ -284,23 +286,35 @@ async function createImageGeneration(env: StudioEnv, userId: string, req: Create
   const links = await Promise.all(uploads.map(async (u) => `${origin}${await signPath(env.INTERNAL_SECRET, `/media/u/${u.id}`, IMAGE_LINK_TTL_S)}`));
   const english = await toEnglish(env, prompt, "image");
   let input = imageTaskInput(s, english, links);
+  // A refusal of a well-known character (Google, ByteDance, OpenAI, BFL) is made again on FLUX 3 for the same credits.
+  const alts = imageAlternatives(s, english, links);
   let otherTried = false;
   const slots: Slot[] = [];
   let firstError: unknown = null;
   for (let i = 0; i < s.count; i++) {
     try {
       let t: { id?: string };
+      let slot: Slot = { task: null, status: "running", ...(alts.length ? { alts } : {}) };
       try {
         t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: model.ephoneModel, input }, { timeoutMs: 30_000, routing: model.routing });
       } catch (e) {
-        // Gemini's quality field has two spellings and ePhone has refused each at some point: one retry with the other.
-        if (otherTried || !model.key.startsWith("nano-banana") || !isQualityRefusal(e instanceof Error ? e.message : String(e))) throw e;
-        otherTried = true;
-        input = imageTaskInput(s, english, links, true);
-        t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: model.ephoneModel, input }, { timeoutMs: 30_000, routing: model.routing });
+        const why = e instanceof Error ? e.message : String(e);
+        const alt = alternativeFor(alts, why);
+        if (alt && !(e instanceof KieError && e.status === 402)) {
+          // Refused at the door (the prompt or a reference): straight to the second try.
+          t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: alt.model, input: alt.input }, { timeoutMs: 30_000, routing: toolRouting(alt.model) });
+          slot = { ...slot, model: alt.model, alts: alts.slice(alts.indexOf(alt) + 1) };
+          await audit(asEnv(env), userId, id, "studio.fallback", { from: model.ephoneModel, to: alt.model, when: alt.when, why: why.slice(0, 200) });
+        } else {
+          // Gemini's quality field has two spellings and ePhone has refused each at some point: one retry with the other.
+          if (otherTried || !model.key.startsWith("nano-banana") || !isQualityRefusal(why)) throw e;
+          otherTried = true;
+          input = imageTaskInput(s, english, links, true);
+          t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: model.ephoneModel, input }, { timeoutMs: 30_000, routing: model.routing });
+        }
       }
       if (!t.id) throw new KieError("ephone.ai answered no task id", 502, true);
-      slots.push({ task: String(t.id), status: "running" });
+      slots.push({ ...slot, task: String(t.id) });
     } catch (e) {
       firstError ??= e;
       slots.push({ task: null, status: "failed", error: publicText(e instanceof Error ? e.message : String(e)).slice(0, 200) });
@@ -418,6 +432,26 @@ async function saveVideo(env: StudioEnv, g: GenerationRow, url: string): Promise
 }
 
 /**
+ * A refused picture's second try (src/studio/image-models.ts imageAlternatives): the slot runs on with the new task.
+ * False when the refusal earns none, or the second try could not be started (the slot then fails as before).
+ */
+async function secondTry(env: StudioEnv, g: GenerationRow, slot: Slot, why: string): Promise<boolean> {
+  const alt = g.kind === "image" ? alternativeFor(slot.alts, why) : null;
+  if (!alt) return false;
+  const from = slot.model ?? imageModelByKey(g.model)?.ephoneModel ?? g.model;
+  slot.alts = (slot.alts ?? []).slice((slot.alts ?? []).indexOf(alt) + 1);
+  try {
+    const t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: alt.model, input: alt.input }, { timeoutMs: 30_000, routing: toolRouting(alt.model) });
+    if (!t.id) return false;
+    Object.assign(slot, { task: String(t.id), model: alt.model, status: "running" });
+    await audit(asEnv(env), g.user_id, g.id, "studio.fallback", { from, to: alt.model, when: alt.when, why: why.slice(0, 200) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * One pass over a set of pictures. The set is held in "saving" during the pass (compare-and-set), so two polls never
  * save the same picture twice; a pass that dies leaves it to the "saving" rescue in refreshGeneration.
  */
@@ -434,11 +468,18 @@ async function refreshImages(env: StudioEnv, g: GenerationRow, ageMin: number): 
     let t: EphoneTask;
     try { t = await ephone<EphoneTask>(env, "GET", `/v1/task/${encodeURIComponent(slot.task)}`, undefined, { timeoutMs: 15_000, routing: slot.model ? toolRouting(slot.model) : routing }); } catch { continue; }
     const status = String(t.status ?? "").toLowerCase();
-    if (status === "failed" || status === "failure" || status === "cancelled") { slot.status = "failed"; slot.error = publicText(ephoneFailure(t)).slice(0, 200); continue; }
+    if (status === "failed" || status === "failure" || status === "cancelled") {
+      const why = ephoneFailure(t);
+      if (!(await secondTry(env, g, slot, why))) { slot.status = "failed"; slot.error = publicText(why).slice(0, 200); }
+      continue;
+    }
     if (status !== "completed" && status !== "succeeded" && status !== "success") continue;
     const want = slot.type ?? "image";
     const urls = mediaOutputs(t).filter((u) => kindOfUrl(u) === want || kindOfUrl(u) === null);
-    if (!urls.length) { slot.status = "failed"; slot.error = "no result"; continue; }
+    if (!urls.length) {
+      if (!(await secondTry(env, g, slot, "no image generated in response"))) { slot.status = "failed"; slot.error = "no result"; }
+      continue;
+    }
     // A first step (Character Swap's redrawn first frame) starts the second with its result, and the slot runs on.
     if (slot.then) {
       const next = slot.then;
@@ -511,7 +552,7 @@ export function kindOfUrl(u: string): "image" | "video" | "audio" | null {
   if (["mp3", "wav", "m4a", "aac", "ogg", "flac"].includes(ext)) return "audio";
   return null;
 }
-const TOOL_ROUTED = new Set(["gemini-3-pro-image", "flux-tools/vto-v1", "flux-tools/video-edit-v1", "flux-tools/video-upscale-v1", "flux-2-pro", "aleph2/video-to-video"]);
+const TOOL_ROUTED = new Set(["gemini-3-pro-image", "flux-tools/vto-v1", "flux-tools/video-edit-v1", "flux-tools/video-upscale-v1", "flux-2-pro", "flux-3-image", "gpt-image-2.5-sunburst", "aleph2/video-to-video"]);
 const toolRouting = (model: string) => (TOOL_ROUTED.has(model) ? { "X-Provider-Order": "official_cheap", "X-Provider-Only": "true" } : undefined);
 
 /** Downloads one result into R2 and says what it is (by its bytes). */

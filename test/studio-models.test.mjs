@@ -147,7 +147,7 @@ test("agent: a tool call becomes a card; an unreachable model still gives a usab
   } finally { globalThis.fetch = real; }
 });
 
-import { IMAGE_MODELS, normalizeImageSettings, imageCredits, imageCostUsd, imageTaskInput, freeImageModels, publicImageCatalog } from "../src/studio/image-models.ts";
+import { IMAGE_MODELS, normalizeImageSettings, imageCredits, imageCostUsd, imageTaskInput, freeImageModels, publicImageCatalog, imageAlternatives, alternativeFor, isContentRefusal, gptImageSize } from "../src/studio/image-models.ts";
 import { imageProposalFrom } from "../src/studio/agent.ts";
 
 test("image models: every quality priced; credits per set; never under 1.5× cost", () => {
@@ -161,7 +161,7 @@ test("image models: every quality priced; credits per set; never under 1.5× cos
     const s = { model: m.key, aspect: "1:1", quality: q, count: n };
     assert.ok(imageCredits(s) * 0.44 >= imageCostUsd(s) * 1.5, `${m.key} ${q} ×${n}`);
   }
-  assert.deepEqual(freeImageModels(undefined), ["nano-banana-2.1", "nano-banana-2", "seedream-5", "flux-2-pro"]);
+  assert.deepEqual(freeImageModels(undefined), ["nano-banana-2.1", "nano-banana-2", "seedream-5", "flux-2-pro", "flux-3"]);
   assert.equal(c("nano-banana-2.1", "4K", 4), 1, "Nano Banana 2.1: 4 pictures at 4K cost about $0.26, one credit");
   assert.equal(publicImageCatalog(1.6, ["seedream-5"]).find((m) => m.key === "seedream-5").prices["2K"][4], 1);
 });
@@ -182,6 +182,36 @@ test("image settings and provider input per model", () => {
   const fx = imageTaskInput(normalizeImageSettings({ model: "flux-2-pro", aspect: "16:9" }), "x", []);
   assert.equal(fx.aspect_ratio, "16:9");
   assert.equal(normalizeImageSettings({ model: "nope" }).model, "nano-banana-2");
+});
+
+test("FLUX 3 and GPT Image 2.5 (19 October 2026): their schemas, their prices", () => {
+  const f = imageTaskInput(normalizeImageSettings({ model: "flux-3", aspect: "16:9", quality: "4K" }), "x", ["https://x/a.jpg"]);
+  assert.deepEqual(f, { prompt: "x", aspect_ratio: "16:9", resolution: "4k", safety_tolerance: 2, grounding: false, images: ["https://x/a.jpg"] });
+  assert.equal(imageCredits({ model: "flux-3", aspect: "1:1", quality: "2K", count: 1 }), 1);
+  assert.equal(imageCredits({ model: "flux-3", aspect: "1:1", quality: "4K", count: 1 }), 2, "4K is $0.607 a picture");
+  const g = imageTaskInput(normalizeImageSettings({ model: "gpt-image-2.5", aspect: "16:9", quality: "2K" }), "x", ["https://x/a.jpg"]);
+  assert.deepEqual(g, { prompt: "x", size: "2048x1152", quality: "high", n: 1, moderation: "low", output_format: "jpeg", output_compression: 95, images: ["https://x/a.jpg"], input_fidelity: "high" });
+  assert.equal(imageTaskInput(normalizeImageSettings({ model: "gpt-image-2.5" }), "x", []).input_fidelity, undefined, "text-to-image takes no input_fidelity");
+  for (const a of ["1:1", "4:5", "3:4", "2:3", "9:16", "4:3", "3:2", "16:9", "21:9"]) for (const q of ["1K", "2K"]) {
+    const [w, h] = gptImageSize(a, q).split("x").map(Number);
+    assert.ok(w % 16 === 0 && h % 16 === 0 && w * h >= 655_360 && w * h <= 3_686_400 && Math.max(w, h) <= 3840 && Math.max(w / h, h / w) <= 3, `${a} ${q}: ${w}x${h}`);
+  }
+});
+
+test("a refused picture: Google/ByteDance/OpenAI go to FLUX 3; only Protected Content raises FLUX 3's tolerance", () => {
+  assert.ok(isContentRefusal("no image generated in response"));
+  assert.ok(isContentRefusal("The request failed because the output image may contain sensitive information. Request id: 0217"));
+  assert.ok(isContentRefusal('Content Moderated: {"Moderation Reasons":["Protected Content"]}'));
+  assert.ok(!isContentRefusal("quality must be one of 1K, 2K, 4K"), "a quality spelling refusal is not a content refusal");
+  assert.ok(!isContentRefusal("quota is not enough"));
+  const nb = imageAlternatives(normalizeImageSettings({ model: "nano-banana-pro", aspect: "4:5", quality: "4K" }), "x", ["https://x/a.jpg"]);
+  assert.deepEqual(nb.map((a) => [a.when, a.model, a.input.safety_tolerance, a.input.resolution]), [["refusal", "flux-3-image", 2, "2k"], ["protected", "flux-3-image", 4, "2k"]]);
+  const own = imageAlternatives(normalizeImageSettings({ model: "flux-3", quality: "4K" }), "x", []);
+  assert.deepEqual(own.map((a) => [a.when, a.input.safety_tolerance, a.input.resolution]), [["protected", 4, "4k"]], "FLUX 3 itself: only the Protected Content retry, same resolution");
+  assert.deepEqual(imageAlternatives(normalizeImageSettings({ model: "flux-2-pro" }), "x", []), []);
+  assert.equal(alternativeFor(nb, "no image generated in response").when, "refusal");
+  assert.equal(alternativeFor(own, "Content Moderated: NSFW"), null, "nudity is never retried at a higher tolerance");
+  assert.equal(alternativeFor(own, 'Content Moderated: {"Moderation Reasons":["Protected Content"]}').input.safety_tolerance, 4);
 });
 
 test("agent picture cards: priced, on an allowed model", () => {
