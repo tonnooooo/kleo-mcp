@@ -1209,7 +1209,17 @@ body::before { display: none; }
 
 /* ── Plans (19 October 2026): Ausar's pricing page in Kleo's colours ──────────────────────────────────────────── */
 .nav-upgrade { background: linear-gradient(180deg, var(--cta-a), var(--cta-b)); color: var(--cta-ink); font-weight: 700; gap: 6px; }
-@media (max-width: 860px) { .nav-upgrade { display: none; } }
+.nav-upgrade .nu-short { display: none; }
+/* Phones (21 October 2026, the owner): credits, Upgrade, profile, in that order; a visitor keeps Sign in and Start free. */
+@media (max-width: 860px) {
+  .nav-upgrade.guest { display: none; }
+  .nav-upgrade .nu-full { display: none; }
+  .nav-upgrade .nu-short { display: inline; }
+  .nav-right .credits-pill { order: 1; }
+  .nav-right .nav-upgrade { order: 2; padding: 0 12px; }
+  .nav-right .avatar-btn { order: 3; }
+}
+
 .plans-page { max-width: 1320px !important; margin: 0 auto; }
 .pl-head { text-align: center; margin: 18px 0 30px; }
 .pl-head h1 { font-size: clamp(34px, 4.4vw, 54px); font-weight: 900; letter-spacing: -.035em; margin: 0; }
@@ -1221,7 +1231,7 @@ body::before { display: none; }
 .pl-switch i { position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; transition: transform .2s var(--ease); }
 .pl-switch.year { background: var(--cta-b); }
 .pl-switch.year i { transform: translateX(22px); }
-.pl-off { font-size: 12.5px; font-weight: 800; padding: 5px 10px; border-radius: 8px; background: var(--cta-a); color: var(--cta-ink); letter-spacing: .04em; }
+.pl-off { font-size: 13px; font-weight: 800; padding: 5px 10px; border-radius: 8px; background: var(--cta-a); color: var(--cta-ink); letter-spacing: .04em; }
 .pl-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; align-items: start; }
 .pl-card { position: relative; background: var(--card); border: 1px solid var(--sep); border-radius: 22px; padding: 22px; display: flex; flex-direction: column; gap: 14px; }
 .pl-card.popular { border-color: color-mix(in srgb, var(--cta-a) 60%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--cta-a) 35%, transparent), 0 20px 50px rgba(0, 0, 0, .35); }
@@ -1229,7 +1239,13 @@ body::before { display: none; }
 .pl-name { display: flex; align-items: center; gap: 10px; }
 .pl-name b { font-size: 26px; font-weight: 800; letter-spacing: -.02em; }
 .pl-badge { font-size: 13px; font-weight: 900; letter-spacing: .03em; padding: 4px 9px; border-radius: 8px; background: #22c55e; color: #052e16; }
-.pl-badge.small { font-size: 11.5px; padding: 3px 7px; margin-left: 8px; vertical-align: middle; }
+.pl-badge.small { font-size: 13px; padding: 3px 7px; margin-left: 8px; vertical-align: middle; }
+/* The wallet this device pays with (app.js WALLET). */
+.wallet-line { display: flex; justify-content: center; align-items: flex-start; gap: 6px; margin: 12px 0 0; font-size: 15px; font-weight: 600; color: var(--green); }
+.wallet-line svg { flex: none; margin-top: 2px; }
+.wallet-line span { text-align: center; text-wrap: balance; }
+.sheet .wallet-line { justify-content: flex-start; }
+.sheet .wallet-line span { text-align: left; }
 .pl-credits { background: var(--bg-2); border-radius: 14px; padding: 12px 14px; }
 .pl-cr { display: flex; align-items: center; gap: 8px; font-size: 15.5px; color: var(--ink-2); }
 .pl-cr b { color: var(--ink); font-size: 16px; }
@@ -1284,6 +1300,17 @@ body::before { display: none; }
 .ct-bill { display: block; color: var(--ink-2); font-size: 14px; margin-bottom: 10px; }
 .ct .pl-cta { height: 42px; width: 100%; max-width: 180px; font-size: 15px; }
 .ct-yes { color: var(--cta-a); display: inline-grid; }
+.ct-hint { display: none; }
+/* Phones: the feature names stay on the left while the plans slide under them. */
+@media (max-width: 640px) {
+  .ct-hint { display: block; margin: 8px 0 0; font-size: 15px; color: var(--ink-2); }
+  .ct { min-width: 0; width: auto; }
+  .ct th, .ct td { padding: 12px 10px; font-size: 15px; }
+  .ct td { min-width: 132px; }
+  .ct tr:not(.ct-group) > th:first-child { position: sticky; left: 0; z-index: 2; width: 128px; min-width: 128px; max-width: 128px; background: var(--bg); box-shadow: 1px 0 0 var(--sep); }
+  .ct-group th { padding-left: 0; }
+  .ct-g { position: sticky; left: 10px; display: inline-block; }
+}
 .buy-plan { width: calc(100% - 32px); margin: 4px 16px 10px; display: flex; align-items: center; gap: 12px; text-align: left; padding: 12px 14px; border-radius: 16px; background: color-mix(in srgb, var(--cta-a) 14%, transparent); border: 1px solid color-mix(in srgb, var(--cta-a) 40%, transparent); color: var(--ink); }
 .buy-plan > svg:first-child { color: var(--cta-a); flex: none; }
 .buy-plan span { flex: 1; display: flex; flex-direction: column; font-size: 14.5px; color: var(--ink-2); }
@@ -1482,3 +1509,16 @@ img.fx-in { animation: fx-img-in .7s var(--ease-out) both; }
 /* The Apps page's way to every template, and the Templates grid: square cards crop portrait and landscape clips alike. */
 .see-all { margin: 12px 0 4px; gap: 6px; }
 .tpl-grid .app-card .art, .page.wide .tpl-grid .app-card .art { height: auto; aspect-ratio: 1 / 1; }
+
+/* Phones, last so it wins over the dark look above (21 October 2026, the owner: credits, Upgrade, profile on the phone).
+   The narrowest phones (320 px) show the Kleo mark without its word, so the three still fit on one line. */
+@media (max-width: 860px) {
+  .nav-right { gap: 6px; }
+  .nav-right .nav-upgrade { padding: 0 12px; gap: 5px; }
+  .pl-off { white-space: nowrap; }
+}
+@media (max-width: 360px) {
+  .nav .brand { font-size: 0; gap: 0; margin-right: 8px; }
+  .nav-right .nav-upgrade { padding: 0 10px; }
+  .nav-right .credits-pill { padding: 0 10px; }
+}
