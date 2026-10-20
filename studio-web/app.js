@@ -80,6 +80,7 @@ const P = {
   run: '<circle cx="14" cy="4.5" r="2"/><path d="m8 21 3-6 3 2v4M6 12l3-4 4 1 3 3 3 1M11 9l-1 6"/>',
   shirt: '<path d="m8 3-5 3 2 4 2-1v12h10V9l2 1 2-4-5-3c-.5 1.5-2 2.5-4 2.5S8.5 4.5 8 3Z"/>',
   library: '<rect x="3" y="3" width="7" height="18" rx="2"/><rect x="14" y="3" width="7" height="11" rx="2"/><path d="M14 18h7M14 21h7"/>',
+  more: '<circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/>',
 };
 function icon(name, size = 20, sw = 1.9) {
   const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -378,7 +379,8 @@ let lastSection = null;
 function show(key, render) {
   S.view = key;
   // The phone's tab bar has no Motion Control tab: Video stays lit there.
-  for (const b of document.querySelectorAll("[data-page]")) b.classList.toggle("on", b.dataset.page === key || (key === "motion" && b.dataset.page === "video" && !!b.closest(".tabbar")));
+  for (const b of document.querySelectorAll("[data-page]")) b.classList.toggle("on", b.dataset.page === key || (key === "motion" && b.dataset.page === "video" && !!b.closest(".tabbar"))
+    || (b.dataset.page === "more" && MORE_PAGES.some(([k]) => k === key)));
   // The old page fades, the new one fades in (motion, 19 October 2026). Inside one section (the Video page's Create,
   // Edit and Motion Control tabs) nothing moves but the tab pill: the owner saw his creations stutter at every switch.
   const v = viewEl();
@@ -549,8 +551,22 @@ function renderShell() {
       h("button", { class: "avatar avatar-btn", "aria-label": "Account", onclick: openAccount }, (S.me.name || S.me.email || "K")[0].toUpperCase())] : [
       h("button", { class: "btn btn-quiet btn-sm", onclick: () => requireAccount("signin") }, "Sign in"),
       h("button", { class: "btn btn-cta btn-sm", onclick: () => requireAccount("signup") }, "Start free")]));
-  const tabs = h("nav", { class: "tabbar", "aria-label": "Main" }, PAGES.filter((p) => !p.desktop).map((p) => h("button", { "data-page": p.key, onclick: () => go(p.path) }, icon(p.ic, 22), p.label)));
+  // THE PHONE'S TAB BAR (20 October 2026, the owner's iPhone: eight tabs in a seven-column bar, "Templates" running
+  // into "Explore" and Library on a second row, "che schifezza"). Like an iPhone app: four pages and More, one row on
+  // every phone; More opens a sheet with the rest.
+  const tabs = h("nav", { class: "tabbar", "aria-label": "Main" },
+    TAB_PAGES.map((k) => PAGES.find((p) => p.key === k)).map((p) => h("button", { "data-page": p.key, onclick: () => go(p.path) }, icon(p.ic, 22), h("span", { class: "tl" }, p.label))),
+    h("button", { "data-page": "more", "aria-haspopup": "dialog", onclick: openMore }, icon("more", 22), h("span", { class: "tl" }, "More")));
   fill($("#app"), h("div", { class: "frame" }, nav, h("div", { class: "views" }, h("section", { class: "view", id: "view" })), tabs));
+}
+const TAB_PAGES = ["chat", "templates", "video", "image"];
+const MORE_PAGES = [["library", "Your videos, pictures and sounds"], ["explore", "Videos made by the Kleo team"], ["audio", "Voices, music and sounds"], ["apps", "Swaps, talking photos and more"]];
+function openMore() {
+  sheet("More", null, h("div", { class: "list" }, MORE_PAGES.map(([k, hint]) => {
+    const p = PAGES.find((x) => x.key === k);
+    return h("button", { class: "row" + (S.view === k ? " on" : ""), onclick: () => { closeLayer(); go(p.path); } },
+      icon(p.ic, 20), h("div", { class: "lbl" }, h("b", {}, p.label), h("span", {}, hint)), icon("right", 16));
+  })));
 }
 const viewEl = () => $("#view");
 function setView(cls, ...kids) { const v = viewEl(); v.className = `view ${cls || ""}`; v.scrollTop = 0; fill(v, ...kids); return v; }
