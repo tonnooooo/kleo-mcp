@@ -646,7 +646,7 @@ const GALLERY = "https://media.kleooai.com/gallery";
 // 20 October 2026, the owner: the viral templates (ausar.ai's people swaps) lead the page. Seedance 2.5 keeps its
 // tile below (Video · Seedance 2.5 and Veo 3.1).
 const HOME_BANNERS = [
-  { t: "You Talking Bout Me?", s: "Put your friends in this viral clip", badge: "Viral", v: `${MEDIA_APP}/templates/you-talking-bout-me/preview2-p.mp4`, p: `${MEDIA_APP}/templates/you-talking-bout-me/preview2.jpg`, go: () => go("/apps/trend-you-talking-bout-me") },
+  { t: "You Talking Bout Me?", s: "Put your friends in this viral clip", badge: "Viral", v: `${MEDIA_APP}/templates/you-talking-bout-me/preview3-p.mp4`, p: `${MEDIA_APP}/templates/you-talking-bout-me/preview3.jpg`, go: () => go("/apps/trend-you-talking-bout-me") },
   { t: "Character Swap", s: "Put your character in any video", badge: "Pro", v: `${MEDIA_APP}/home-swap.mp4`, p: `${MEDIA_APP}/home-swap.jpg`, go: () => go("/apps/character-swap") },
   { t: "Kleo Film", s: "A whole narrated film from one message", badge: "New", v: `${GALLERY}/tether-film-p.mp4`, p: `${GALLERY}/tether-film.jpg`, go: () => startFilm() },
 ];
@@ -1569,10 +1569,26 @@ function templatesView() {
   const list = (S.config.tools || []).filter((t) => t.group === "trend");
   setView("", h("div", { class: "page wide" },
     h("div", { class: "page-h" }, h("div", {}, h("h1", {}, "Templates"), h("p", {}, "Pick a viral clip, add your photos, and Kleo puts you in it."))),
-    h("div", { class: "app-grid tpl-grid" }, list.map((t) => h("button", { class: "app-card", onclick: () => go(`/apps/${t.key}`) },
-      appArt(t),
-      h("div", { class: "tx" }, h("b", {}, t.name), h("span", {}, t.blurb),
-        h("span", { class: "from" }, tallowed(t.key) ? [h("span", {}, "from"), bolt(12), t.from] : [icon("lock", 13), "Unlocks with any pack"])))))));
+    h("div", { class: "app-grid tpl-grid" }, list.map(templateCard))));
+}
+/**
+ * One template card. With a mouse, only the card under it plays (20 October 2026: twenty 1080p loops playing at once
+ * kept the owner's graphics card at 85%); the others show their sharp still. On a phone the card in view plays.
+ */
+function templateCard(t) {
+  const hover = matchMedia("(hover: hover)").matches;
+  let art = appArt(t), v = null;
+  if (hover && t.preview) {
+    v = h("video", { class: "art-fill", poster: t.preview.replace(/-p\.mp4$/, ".jpg"), muted: true, loop: true, playsinline: true, preload: "none", "aria-hidden": "true" });
+    v.muted = true;
+    art = h("div", { class: "art art-media", style: { background: `linear-gradient(135deg, ${t.tint}, ${t.tint}aa)` } }, v, t.badge ? h("span", { class: "tag" }, t.badge) : null);
+  }
+  return h("button", { class: "app-card", onclick: () => go(`/apps/${t.key}`),
+      onmouseenter: () => { if (!v) return; if (!v.src) v.src = t.preview; v.play().catch(() => {}); },
+      onmouseleave: () => v?.pause() },
+    art,
+    h("div", { class: "tx" }, h("b", {}, t.name), h("span", {}, t.blurb),
+      h("span", { class: "from" }, tallowed(t.key) ? [h("span", {}, "from"), bolt(12), t.from] : [icon("lock", 13), "Unlocks with any pack"])));
 }
 function appView(key) {
   const t = tool(key);
