@@ -23,7 +23,7 @@ import {
   getMessage, setMessageData, agentMessagesToday, addUpload, getUpload, uploadsOf, getGeneration, listGenerations,
   staleGenerations, autoWanOn, setAutoWan, type MessageRow, type GenerationRow,
 } from "./store.ts";
-import { deleteGeneration, StudioError, createGeneration, refreshGeneration, publicGeneration, marginOf, runTool, freeTools, isAdmin, retryOnWan, declineWan } from "./generate.ts";
+import { deleteGeneration, StudioError, createGeneration, refreshGeneration, publicGeneration, marginOf, runTool, freeTools, isAdmin, retryOnWan, declineWan, retryDescribed, declineRewrite } from "./generate.ts";
 import { publicPresets } from "./presets.ts";
 import { planTool, publicTools, toolByKey, toolCredits, ToolRefusal, type Media } from "./tools.ts";
 import { mediaInfo } from "./media.ts";
@@ -42,7 +42,7 @@ const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const json = (data: unknown, status = 200, headers: Record<string, string> = {}): Response =>
   new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers } });
 const fail = (e: unknown): Response => {
-  if (e instanceof StudioError) return json({ error: e.message, code: e.code }, e.status);
+  if (e instanceof StudioError) return json({ ...(e.data ?? {}), error: e.message, code: e.code }, e.status);
   console.error("studio error", e instanceof Error ? e.stack ?? e.message : e);
   return json({ error: "Something went wrong on our side. Please try again.", code: "internal" }, 500);
 };
@@ -322,10 +322,12 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
 
   // ── generating ──
   if (path === "/api/generate" && method === "POST") {
-    const b = await body<{ chatId?: string; proposalId?: string; prompt?: string; settings?: Record<string, unknown>; imageIds?: string[]; kind?: string; preset?: string; noChat?: boolean }>(request);
+    const b = await body<{ chatId?: string; proposalId?: string; prompt?: string; settings?: Record<string, unknown>; imageIds?: string[]; kind?: string; preset?: string; noChat?: boolean; engine?: string }>(request);
+    // After the name check asked: the person's choice (generate.ts createGeneration).
+    const engine = b.engine === "wan" || b.engine === "seedance" ? b.engine : null;
     if (b.noChat && !b.proposalId) {
       // The Video and Image pages: a generation with no conversation around it.
-      const g = await createGeneration(env, userId, { kind: b.kind === "image" ? "image" : "video", prompt: String(b.prompt ?? ""), settings: b.settings ?? {}, imageIds: Array.isArray(b.imageIds) ? b.imageIds : [], chatId: null, messageId: null, preset: b.preset ?? null }, origin);
+      const g = await createGeneration(env, userId, { kind: b.kind === "image" ? "image" : "video", prompt: String(b.prompt ?? ""), settings: b.settings ?? {}, imageIds: Array.isArray(b.imageIds) ? b.imageIds : [], chatId: null, messageId: null, preset: b.preset ?? null, engine }, origin);
       const user = await getUser(asEnv(env), userId);
       return json({ generation: publicGeneration(g), credits: user?.credits ?? 0 });
     }
@@ -353,7 +355,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     const preset = b.preset ?? (typeof settings.preset === "string" ? settings.preset : null);
     const g = kind === "film"
       ? await orderFilm(env, userId, { prompt, settings: normalizeFilm(settings), chatId, messageId: proposalMsg?.id ?? userMsgId })
-      : await createGeneration(env, userId, { kind, prompt, settings, imageIds, chatId, messageId: proposalMsg?.id ?? userMsgId, preset }, origin);
+      : await createGeneration(env, userId, { kind, prompt, settings, imageIds, chatId, messageId: proposalMsg?.id ?? userMsgId, preset, engine }, origin);
     if (!chat) {
       await createChat(env, chatId, userId, chatTitle(prompt, imageIds.length > 0));
       chat = (await getChat(env, userId, chatId))!;
@@ -433,14 +435,16 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       { model: url.searchParams.get("model") ?? undefined, kind: url.searchParams.get("kind") ?? undefined });
     return json({ generations: rows.map(publicGeneration) });
   }
-  const genM = path.match(/^\/api\/generations\/(g_[a-z0-9]+)(\/share|\/wan)?$/);
+  const genM = path.match(/^\/api\/generations\/(g_[a-z0-9]+)(\/share|\/wan|\/describe)?$/);
   if (genM) {
     let g = await getGeneration(env, genM[1]);
     if (!g || g.user_id !== userId) return json({ error: "Not found." }, 404);
-    if (genM[2] === "/wan" && method === "POST") {
-      // A clip refused for copyright: "Use Wan 3.0" makes it again there, "No thanks" ({decline: true}) drops the offer.
-      if ((await body<{ decline?: boolean }>(request)).decline === true) return json({ original: publicGeneration(await declineWan(env, userId, g)) });
-      const made = await retryOnWan(env, userId, g, origin);
+    if ((genM[2] === "/wan" || genM[2] === "/describe") && method === "POST") {
+      // A creation refused for copyright: "/wan" makes the clip again on Wan 3.0, "/describe" makes it again with its
+      // names turned into descriptions; {decline: true} drops the offer.
+      const wan = genM[2] === "/wan";
+      if ((await body<{ decline?: boolean }>(request)).decline === true) return json({ original: publicGeneration(await (wan ? declineWan : declineRewrite)(env, userId, g)) });
+      const made = await (wan ? retryOnWan : retryDescribed)(env, userId, g, origin);
       // In a chat the new clip comes as Kleo's next message, under the refused one.
       let message: Record<string, unknown> | null = null;
       if (g.chat_id) {

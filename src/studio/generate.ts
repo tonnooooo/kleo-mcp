@@ -28,23 +28,26 @@ import { presetByKey, withPreset } from "./presets.ts";
 import { planTool, toolByKey, toolCredits, toneText, ToolRefusal, TOOLS, type Media, type Plan, type ToolKey } from "./tools.ts";
 import { mediaInfo } from "./media.ts";
 import { refreshFilm } from "./films.ts";
-import { alternativeFor, freeImageModels, imageAlternatives, imageCostUsd, imageCredits, imageModelByKey, imageModelOfProvider, imageTaskInput, isQualityRefusal, normalizeImageSettings, otherQualitySpelling, pausedImageModels, type ImageSettings } from "./image-models.ts";
+import { alternativeFor, FALLBACK_IMAGE_MODEL, freeImageModels, imageAlternatives, imageCostUsd, imageCredits, imageModelByKey, imageModelOfProvider, imageTaskInput, isQualityRefusal, normalizeImageSettings, otherQualitySpelling, pausedImageModels, type ImageSettings } from "./image-models.ts";
 import {
-  addUpload, autoWanOn, getGeneration, insertGeneration, moveGeneration, markChecked, runningCount, settleWanOffer, studioSpentTodayUsd, uploadsOf,
+  addUpload, autoWanOn, getGeneration, insertGeneration, moveGeneration, markChecked, runningCount, settleOffer, studioSpentTodayUsd, uploadsOf,
   type GenerationRow, type GenStatus, type Slot, type UploadRow,
 } from "./store.ts";
 import { signPath } from "./session.ts";
 import { addressBlocked } from "../abuse.ts";
-import { toEnglish } from "./translate.ts";
+import { describeWithoutNames, namedCharacters, toEnglish } from "./translate.ts";
 
 /** A refusal the page shows as it is (no provider names in it). */
 export class StudioError extends Error {
   status: number;
   code: string;
-  constructor(message: string, status = 400, code = "refused") {
+  /** More for the page than the sentence (the names found before a clip, and the offer that goes with them). */
+  data?: Record<string, unknown>;
+  constructor(message: string, status = 400, code = "refused", data?: Record<string, unknown>) {
     super(message);
     this.status = status;
     this.code = code;
+    this.data = data;
   }
 }
 
@@ -126,6 +129,8 @@ export interface CreateRequest {
   imageIds: string[];
   chatId?: string | null;
   messageId?: string | null;
+  /** After the name check asked (createGeneration): "wan" = make it on Wan 3.0, "seedance" = try Seedance anyway. */
+  engine?: "wan" | "seedance" | null;
 }
 
 /** What the page receives about one clip. */
@@ -141,6 +146,7 @@ export function publicGeneration(g: GenerationRow): Record<string, unknown> {
   // A picture its own model refused and FLUX 3 made says so (the card names the model that drew it).
   const madeBy = kind === "image" ? imageModelOfProvider(slots.find((x) => x.status === "done" && x.model)?.model ?? "") : null;
   const offer = kind === "video" ? wanOfferOf(g, settings as Partial<ClipSettings>) : null;
+  const rewrite = offer ? null : rewriteOfferOf(g, kind, settings as Record<string, unknown>);
   return {
     id: g.id, kind, model: g.model,
     modelName: (kind === "image" ? imageModelByKey(madeBy ?? g.model)?.name : kind === "tool" ? toolByKey(g.model)?.name : kind === "film" ? (g.model === "kleo-animatic" ? "Kleo Animatic" : "Kleo Film") : g.model === WAN_KEY ? WAN_NAME : modelByKey(g.model)?.name) ?? g.model,
@@ -148,8 +154,11 @@ export function publicGeneration(g: GenerationRow): Record<string, unknown> {
     status: g.status === "submitting" || g.status === "saving" ? "running" : g.status,
     // A clip with an offer says which model refused it; the page puts the offer right under it.
     error: offer ? `${offer.from} won't make this one: it recognised characters, people or music protected by copyright. Your credits are back.`
-      : remadeOnWan(g, settings) ? `${modelByKey(g.model)?.name ?? "The video model"} won't make this one: it recognised characters, people or music protected by copyright. Your credits are back, and you sent it to ${WAN_NAME}.` : g.error,
-    offer, refunded: !!g.refunded, chatId: g.chat_id, messageId: g.message_id,
+      : remadeOnWan(g, settings) ? `${modelByKey(g.model)?.name ?? "The video model"} won't make this one: it recognised characters, people or music protected by copyright. Your credits are back, and you sent it to ${WAN_NAME}.`
+      : rewrite ? `${kind === "image" ? "The image model" : WAN_NAME} won't make this one either: it recognised characters, people or music protected by copyright. Your credits are back.` : g.error,
+    offer, rewrite, refunded: !!g.refunded, chatId: g.chat_id, messageId: g.message_id,
+    // A clip that went straight to Wan 3.0 because its prompt names well-known characters (the name check).
+    preRouted: kind === "video" && g.model === WAN_KEY && !!(settings as { pre?: boolean }).pre,
     // A clip the automatic switch moved to Wan 3.0 names the model that refused it.
     switchedFrom: kind === "video" && g.model === WAN_KEY && (settings as { auto?: boolean }).auto ? modelByKey((settings as { from?: string }).from)?.name ?? null : null,
     video: (kind === "video" || kind === "film") && g.status === "done" ? `/media/${g.id}.mp4` : null,
@@ -313,6 +322,18 @@ export function wanOfferOf(g: GenerationRow, settings: Partial<ClipSettings> & {
   return { model: WAN_KEY, name: WAN_NAME, from: modelByKey(g.model)?.name ?? "This model", credits: g.credits };
 }
 
+/**
+ * The last offer on a creation refused for copyright once the second model refused too (21 October 2026): a clip
+ * Wan 3.0 refused, or a picture FLUX 3 refused, may be made once more with its names turned into descriptions
+ * (translate.ts describeWithoutNames), for the credits it cost. Never on a creation that already was rewritten.
+ */
+export function rewriteOfferOf(g: GenerationRow, kind: string, settings: Record<string, unknown>): { name: string; credits: number } | null {
+  if (g.status !== "failed" || !g.refunded || settings.rewrite || settings.rewritten || !isCopyrightRefusal(g.error ?? "")) return null;
+  if (kind === "video" && g.model === WAN_KEY) return { name: WAN_NAME, credits: g.credits };
+  if (kind === "image") return { name: imageModelByKey(FALLBACK_IMAGE_MODEL)?.name ?? "FLUX 3", credits: g.credits };
+  return null;
+}
+
 /** A refused clip whose offer was taken: settings.wan holds the new clip's id. */
 const remadeOnWan = (g: GenerationRow, settings: unknown): boolean => g.status === "failed" && /^g_/.test(String((settings as { wan?: unknown }).wan ?? ""));
 
@@ -336,7 +357,7 @@ export async function retryOnWan(env: StudioEnv, userId: string, g: GenerationRo
     freeOk: free.includes(s.model) && freeRes.includes(s.resolution), credits: g.credits, usd, noun: "video",
     lockedMessage: `${s.resolution} unlocks with your first credit pack.`,
   });
-  if (!(await settleWanOffer(env, g.id, userId, id))) {
+  if (!(await settleOffer(env, g.id, userId, "wan", id))) {
     await refundCredits(asEnv(env), userId, g.credits, id, "studio.wan_twice");
     throw new StudioError(`This video is already being made with ${WAN_NAME}.`, 409, "busy");
   }
@@ -345,7 +366,7 @@ export async function retryOnWan(env: StudioEnv, userId: string, g: GenerationRo
     await insertGeneration(env, { id, userId, chatId: g.chat_id, messageId: g.message_id, model: WAN_KEY, settings: { ...asked, model: WAN_KEY, from: g.id }, prompt: g.prompt, images: rows.map((r) => `/media/u/${r.id}`), credits: g.credits, estUsd: usd });
   } catch (e) {
     await refundCredits(asEnv(env), userId, g.credits, id, "studio.insert_failed");
-    await settleWanOffer(env, g.id, userId, null);
+    await settleOffer(env, g.id, userId, "wan", null);
     throw e;
   }
   await audit(asEnv(env), userId, id, "studio.create", { model: WAN_KEY, from: g.id, settings: asked, credits: g.credits, usd });
@@ -366,7 +387,71 @@ export async function declineWan(env: StudioEnv, userId: string, g: GenerationRo
   let s: Partial<ClipSettings> = {};
   try { s = JSON.parse(g.settings); } catch { /* no offer */ }
   if (!wanOfferOf(g, s)) return g;
-  if (await settleWanOffer(env, g.id, userId, "declined")) await audit(asEnv(env), userId, g.id, "studio.wan_declined", {});
+  if (await settleOffer(env, g.id, userId, "wan", "declined")) await audit(asEnv(env), userId, g.id, "studio.wan_declined", {});
+  return (await getGeneration(env, g.id))!;
+}
+
+/**
+ * "Rewrite and make it" (21 October 2026): the creation is made once more, its names turned into descriptions, as a new
+ * creation charged the credits the refused one cost (they came back). A clip goes to Wan 3.0, a picture to FLUX 3. The
+ * new card shows the rewritten prompt, so the person sees what was sent.
+ */
+export async function retryDescribed(env: StudioEnv, userId: string, g: GenerationRow, origin: string): Promise<GenerationRow> {
+  if (g.user_id !== userId) throw new StudioError("Not found.", 404);
+  let s: Record<string, unknown> = {};
+  try { s = JSON.parse(g.settings); } catch { /* no offer */ }
+  const kind = g.kind === "image" ? "image" : "video";
+  if (!rewriteOfferOf(g, kind, s)) throw new StudioError("This one can't be rewritten and made again.", 409, "no_offer");
+  if (kind === "video" && !wanReady(env)) throw new StudioError(`${WAN_NAME} isn't available right now. Try again later — nothing was charged.`, 503, "unavailable");
+  const rows = await clipPictures(env, g);
+  if (!rows) throw new StudioError("A picture this was made from was deleted, so it can't be made again. Add it again and start over.", 409, "gone");
+  const described = await describeWithoutNames(env, g.prompt, kind);
+  if (!described) throw new StudioError("Kleo couldn't rewrite this prompt right now. Try again in a minute — nothing was charged.", 503, "rewrite");
+  // The new creation starts clean: no offer marks, and not shown as switched or sent ahead.
+  const { wan: _w, rewrite: _r, pre: _p, auto: _a, ...asked } = s;
+  const claim = (id: string) => settleOffer(env, g.id, userId, "rewrite", id);
+
+  if (kind === "image") {
+    const made = await createImageGeneration(env, userId, {
+      kind: "image", prompt: described, settings: { ...asked, model: FALLBACK_IMAGE_MODEL }, imageIds: rows.map((r) => r.id), chatId: g.chat_id, messageId: g.message_id,
+    }, origin, { credits: g.credits, extra: { from: g.id, rewritten: true }, claim });
+    await audit(asEnv(env), userId, g.id, "studio.rewrite", { to: made.id, kind });
+    return made;
+  }
+  const clip = asked as unknown as ClipSettings;
+  const usd = wanCostUsd(clip);
+  // A refused clip proves the account could order it: the free pools and the daily budget still apply in the gate.
+  const id = await charge(env, userId, { freeOk: true, credits: g.credits, usd, noun: "video", lockedMessage: "" });
+  if (!(await claim(id))) {
+    await refundCredits(asEnv(env), userId, g.credits, id, "studio.rewrite_twice");
+    throw new StudioError("This one is already being made again.", 409, "busy");
+  }
+  try {
+    await insertGeneration(env, { id, userId, chatId: g.chat_id, messageId: g.message_id, model: WAN_KEY, settings: { ...asked, model: WAN_KEY, from: g.id, rewritten: true }, prompt: described, images: rows.map((r) => `/media/u/${r.id}`), credits: g.credits, estUsd: usd });
+  } catch (e) {
+    await refundCredits(asEnv(env), userId, g.credits, id, "studio.insert_failed");
+    await settleOffer(env, g.id, userId, "rewrite", null);
+    throw e;
+  }
+  await audit(asEnv(env), userId, id, "studio.create", { model: WAN_KEY, from: g.id, rewritten: true, credits: g.credits, usd });
+  try {
+    const w = await startWan(env, clip, described, rows, origin);
+    await moveGeneration(env, id, ["submitting"], "running", { task_id: w.taskId });
+    await audit(asEnv(env), userId, id, "studio.submitted", { task: w.taskId, model: w.slug, provider: "wavespeed" });
+    await audit(asEnv(env), userId, g.id, "studio.rewrite", { to: id, kind, model: w.slug, usd });
+  } catch (e) {
+    await failGeneration(env, id, refusal(e, "video"), { provider: String(e instanceof Error ? e.message : e).slice(0, 300) });
+  }
+  return (await getGeneration(env, id))!;
+}
+
+/** "No thanks" to the rewrite: the offer goes away for good. */
+export async function declineRewrite(env: StudioEnv, userId: string, g: GenerationRow): Promise<GenerationRow> {
+  if (g.user_id !== userId) throw new StudioError("Not found.", 404);
+  let s: Record<string, unknown> = {};
+  try { s = JSON.parse(g.settings); } catch { /* no offer */ }
+  if (!rewriteOfferOf(g, g.kind === "image" ? "image" : "video", s)) return g;
+  if (await settleOffer(env, g.id, userId, "rewrite", "declined")) await audit(asEnv(env), userId, g.id, "studio.rewrite_declined", {});
   return (await getGeneration(env, g.id))!;
 }
 
@@ -455,6 +540,26 @@ export async function createGeneration(env: StudioEnv, userId: string, req: Crea
   }
   const credits = clipCredits(s, marginOf(env), videoSeconds);
   const usd = clipCostUsd(s, videoSeconds);
+  // THE NAME CHECK (21 October 2026, the owner: "cerca di diminuire i problemi"). A Seedance clip whose prompt names
+  // well-known characters, franchises, brands or famous people would be refused after a wait. Before any charge the
+  // prompt is checked (translate.ts namedCharacters): with the automatic switch on the clip goes straight to Wan 3.0;
+  // otherwise the page asks first ("names", 409) and sends the order again with engine "wan" or "seedance". Same
+  // credits either way. A check that cannot run lets the order go on as before.
+  let preWan: string[] | null = null;
+  if (model.family === "seedance" && !videos.length && !sounds.length && req.engine !== "seedance" && wanReady(env) && wanOffered(s)) {
+    if (req.engine === "wan") preWan = [];
+    else {
+      const names = await namedCharacters(env, (req.prompt ?? "").trim());
+      if (names?.length) {
+        if (await autoWanOn(env, userId)) preWan = names;
+        else {
+          const shown = names.length > 3 ? `${names.slice(0, 3).join(", ")} and others` : names.join(" and ").replace(/ and (?=.* and )/g, ", ");
+          throw new StudioError(`${model.name} usually refuses ${shown}: they are protected by copyright.`, 409, "names",
+            { names, from: model.name, offer: { model: WAN_KEY, name: WAN_NAME, credits } });
+        }
+      }
+    }
+  }
   const id = await charge(env, userId, {
     freeOk: modelFree && freeRes.includes(s.resolution), credits, usd, noun: "video",
     lockedMessage: modelFree
@@ -480,6 +585,17 @@ export async function createGeneration(env: StudioEnv, userId: string, req: Crea
   try {
     // Any language in, English to the model (./translate.ts); the card keeps the person's own words.
     english = prompt ? withPreset(await toEnglish(env, (req.prompt ?? "").trim(), "video"), req.preset) : "Bring this picture to life with natural, cinematic motion.";
+    if (preWan) {
+      // Straight to Wan 3.0; should WaveSpeed not take it, the order goes to Seedance as it would have.
+      try {
+        const w = await startWan(env, s, english, pictures, origin);
+        await moveGeneration(env, id, ["submitting"], "running", { task_id: w.taskId, model: WAN_KEY, settings: JSON.stringify({ ...stored, model: WAN_KEY, from: s.model, pre: true }) });
+        await audit(asEnv(env), userId, id, "studio.wan_pre", { from: s.model, to: w.slug, task: w.taskId, names: preWan, chosen: req.engine === "wan" });
+        return (await getGeneration(env, id))!;
+      } catch (e) {
+        await audit(asEnv(env), userId, id, "studio.wan_pre_failed", { error: String(e instanceof Error ? e.message : e).slice(0, 200) });
+      }
+    }
     const input = taskInput(s, english, links, await safetyId(env, userId), clipLinks);
     const placed = await placeTask(env, model.ephoneModel, input, model.routing, { userId, genId: id }, usd);
     await moveGeneration(env, id, ["submitting"], "running", { task_id: clipTaskId(placed) });
@@ -495,7 +611,11 @@ export async function createGeneration(env: StudioEnv, userId: string, req: Crea
 }
 
 /** 1, 2 or 4 pictures: one provider task each. The person's attached pictures are references. */
-async function createImageGeneration(env: StudioEnv, userId: string, req: CreateRequest, origin: string): Promise<GenerationRow> {
+/**
+ * `over` (retryDescribed): the credits to charge instead of the model's price, settings to add to the row, and a claim
+ * made right after the charge (false = refund and refuse: the offer was taken already).
+ */
+async function createImageGeneration(env: StudioEnv, userId: string, req: CreateRequest, origin: string, over?: { credits: number; extra: Record<string, unknown>; claim: (id: string) => Promise<boolean> }): Promise<GenerationRow> {
   const prompt = (req.prompt ?? "").trim();
   if (!prompt) throw new StudioError("Describe the picture you want.");
   if (prompt.length > 4000) throw new StudioError("That prompt is too long. Keep it under 4000 characters.");
@@ -506,14 +626,19 @@ async function createImageGeneration(env: StudioEnv, userId: string, req: Create
     throw new StudioError(`${model.name} is paused for a little while: its provider is having trouble. Use FLUX.2 Pro or Seedream 5.0 — nothing was charged.`, 503, "paused");
   }
   const free = freeImageModels(env.STUDIO_FREE_IMAGE_MODELS);
-  const credits = imageCredits(s, marginOf(env));
+  const credits = over ? over.credits : imageCredits(s, marginOf(env));
   const usd = imageCostUsd(s);
   const id = await charge(env, userId, {
-    freeOk: free.includes(s.model), credits, usd, noun: s.count > 1 ? "set of pictures" : "picture",
+    // A rewrite of a refused picture: the refused one proves the account could order it.
+    freeOk: !!over || free.includes(s.model), credits, usd, noun: s.count > 1 ? "set of pictures" : "picture",
     lockedMessage: `${model.name} unlocks with your first credit pack. Free credits work with ${free.map((k) => imageModelByKey(k)!.name).join(", ")}.`,
   });
+  if (over && !(await over.claim(id))) {
+    await refundCredits(asEnv(env), userId, credits, id, "studio.rewrite_twice");
+    throw new StudioError("This one is already being made again.", 409, "busy");
+  }
   try {
-    await insertGeneration(env, { id, userId, chatId: req.chatId ?? null, messageId: req.messageId ?? null, model: s.model, settings: s, prompt, images: uploads.map((u) => `/media/u/${u.id}`), credits, estUsd: usd, kind: "image" });
+    await insertGeneration(env, { id, userId, chatId: req.chatId ?? null, messageId: req.messageId ?? null, model: s.model, settings: over ? { ...s, ...over.extra } : s, prompt, images: uploads.map((u) => `/media/u/${u.id}`), credits, estUsd: usd, kind: "image" });
   } catch (e) {
     await refundCredits(asEnv(env), userId, credits, id, "studio.insert_failed");
     throw e;

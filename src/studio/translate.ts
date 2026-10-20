@@ -60,3 +60,62 @@ export async function toEnglish(env: StudioEnv, text: string, what: keyof typeof
     return text;
   }
 }
+
+/**
+ * NAMES A MODEL'S MAKER REFUSES (21 October 2026, the owner: "cerca di diminuire i problemi" with copyright). Seedance
+ * refuses well-known characters, franchises, brands and famous people only after the order went out, so the person
+ * waited for a failed card. The same small model now reads the prompt first and lists the names it finds; Studio then
+ * asks (or, with the automatic switch on, goes) to Wan 3.0 before anything is made. Null when the check could not run:
+ * the order then goes on as before, so a slow checker never costs anybody their video.
+ */
+export const NAMES_RULES = `You check prompts for an AI video model whose maker refuses copyrighted material. List every specific copyrighted fictional character, franchise (film, series, cartoon, anime, game, band, song), brand or logo, and real famous person that the prompt NAMES, exactly as written. Generic words (a superhero, a princess, a robot, a pop star) and invented names do not count. Answer with JSON only: {"names": ["..."]}, with an empty list when there are none.`;
+export async function namedCharacters(env: StudioEnv, text: string): Promise<string[] | null> {
+  const src = text.trim();
+  if (!src) return [];
+  try {
+    const r = await ephone<{ choices?: { message?: { content?: unknown } }[] }>(env, "POST", "/v1/chat/completions", {
+      model: (env.STUDIO_ENHANCE_MODEL ?? "").trim() || "gpt-4.1-mini",
+      max_tokens: 150,
+      messages: [{ role: "system", content: NAMES_RULES }, { role: "user", content: src.slice(0, 3000) }],
+    }, { timeoutMs: 6_000, routing: CHAT_ROUTING });
+    return parseNames(r.choices?.[0]?.message?.content);
+  } catch {
+    return null;
+  }
+}
+/** The names in the checker's answer (JSON, perhaps inside prose or a code block); null when it cannot be read. */
+export function parseNames(out: unknown): string[] | null {
+  const m = /\{[\s\S]*\}/.exec(typeof out === "string" ? out : "");
+  if (!m) return null;
+  try {
+    const v = JSON.parse(m[0]) as { names?: unknown };
+    if (!Array.isArray(v.names)) return null;
+    return [...new Set(v.names.filter((x): x is string => typeof x === "string").map((x) => x.trim()).filter((x) => x.length > 1 && x.length <= 60))].slice(0, 8);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A prompt with its names turned into descriptions (21 October 2026): the last try once Wan 3.0 or FLUX 3 refused a
+ * well-known character too. Every named character, franchise, brand or famous person becomes how they look (build,
+ * face, hair, clothes, colours, art style), with no names, titles or logos; everything else stays. English. Null when
+ * the rewrite failed.
+ */
+export const DESCRIBE_RULES = (what: string) => `Rewrite the user's prompt for ${what} so that it names no copyrighted character, franchise, brand, logo or famous person. Replace each of them with a vivid visual description of how they look: build, age, face, hair, clothes and their colours, accessories, art style. Keep everything else exactly: the actions, the setting, the camera, the mood, the light, the sound, and any words in quotes. No names, no titles, no logos. Write in English. Answer with the new prompt only.`;
+export async function describeWithoutNames(env: StudioEnv, text: string, what: "video" | "image"): Promise<string | null> {
+  const src = text.trim();
+  if (!src) return null;
+  try {
+    const r = await ephone<{ choices?: { message?: { content?: unknown } }[] }>(env, "POST", "/v1/chat/completions", {
+      model: (env.STUDIO_ENHANCE_MODEL ?? "").trim() || "gpt-4.1-mini",
+      max_tokens: Math.min(1500, 250 + Math.ceil(src.length / 2)),
+      messages: [{ role: "system", content: DESCRIBE_RULES(WHAT[what]) }, { role: "user", content: src.slice(0, 4000) }],
+    }, { timeoutMs: 12_000, routing: CHAT_ROUTING });
+    const out = r.choices?.[0]?.message?.content;
+    const said = (typeof out === "string" ? out : "").trim().replace(/^["“]|["”]$/g, "");
+    return said.length >= 10 ? said.slice(0, 4000) : null;
+  } catch {
+    return null;
+  }
+}

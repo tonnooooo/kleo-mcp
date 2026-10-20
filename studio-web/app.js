@@ -179,7 +179,7 @@ const clipCount = (list) => ({ videos: list.filter((a) => a.kind === "video").le
 const picCount = (list) => list.filter((a) => (a.kind || "image") === "image").length;
 
 // ── API ──────────────────────────────────────────────────────────────────────────────────────────────────────────
-class ApiError extends Error { constructor(msg, status, code) { super(msg); this.status = status; this.code = code; } }
+class ApiError extends Error { constructor(msg, status, code, data = {}) { super(msg); this.status = status; this.code = code; this.data = data; } }
 async function api(path, opts = {}) {
   if (DEMO) return demoApi(path, opts);
   const init = { method: opts.method || "GET", headers: { "x-kleo": "1" }, credentials: "same-origin" };
@@ -188,10 +188,11 @@ async function api(path, opts = {}) {
   let res;
   try { res = await fetch(path, init); } catch { throw new ApiError("You seem to be offline.", 0, "offline"); }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(data.error || "Something went wrong.", res.status, data.code);
+  if (!res.ok) throw new ApiError(data.error || "Something went wrong.", res.status, data.code, data);
   return data;
 }
 function handleError(e) {
+  if (e?.code === "dismissed") return; // the person closed a question: nothing to say
   if (e?.code === "signin") { S.me = null; renderAuth("signin", true); return; }
   if (e?.code === "locked" || e?.code === "credits") { toast(e.message, true); setTimeout(() => openBuy(), 350); return; }
   toast(e?.message || "Something went wrong.", true);
@@ -860,7 +861,7 @@ async function generateFromProposal(m, s, btn) {
   if (img ? !iallowed(s.model) : !allowed(s.model)) return openLocked(img ? imodel(s.model) : model(s.model), img);
   btn.disabled = true; fill(btn, spinner(18));
   try {
-    const r = await api("/api/generate", { method: "POST", body: { proposalId: m.id, prompt: m.proposal.prompt, settings: s } });
+    const r = await generateApi({ proposalId: m.id, prompt: m.proposal.prompt, settings: s });
     setCredits(r.credits);
     S.gens.set(r.generation.id, r.generation); watch(r.generation.id);
     const fresh = r.messages.find((x) => x.id === m.id);
@@ -880,16 +881,29 @@ function elapsed(g, t) {
 function failedEl(g, el) {
   el.append(h("div", { class: "clip-fail" }, h("div", { class: "x" }, icon("x", 16, 2.4)),
     h("div", {}, h("p", {}, g.error || "This one couldn't be made."), g.refunded ? h("div", { class: "refund" }, icon("check", 14, 2.6), `${g.credits} credits refunded`) : null,
-      g.offer ? wanOfferEl(g) : h("div", { style: { marginTop: "10px" } }, h("button", { class: "btn btn-quiet btn-sm", onclick: () => remix(g) }, icon("redo", 16), "Try again")))));
+      g.offer ? wanOfferEl(g) : g.rewrite ? rewriteOfferEl(g) : h("div", { style: { marginTop: "10px" } }, h("button", { class: "btn btn-quiet btn-sm", onclick: () => remix(g) }, icon("redo", 16), "Try again")))));
   return el;
+}
+// THE NAME CHECK (21 October 2026, the owner: "cerca di diminuire i problemi"). When a Seedance prompt names well-known
+// characters and the automatic switch is off, the server answers "names" before any charge: the person picks Wan 3.0 or
+// Seedance here, and the order goes again with that engine. Closing the question sends nothing.
+async function generateApi(body) {
+  try { return await api("/api/generate", { method: "POST", body }); }
+  catch (e) {
+    if (e.code !== "names" || body.engine) throw e;
+    const o = e.data?.offer || { name: "Wan 3.0", credits: "" };
+    const pick = await ask({ title: e.message, text: `${o.name} makes most well-known characters, for the same ${o.credits} credits.`, ok: `Use ${o.name}`, cancel: `Try ${e.data?.from || "Seedance"}`, ic: "sparkle" });
+    if (pick === null) throw new ApiError("", 0, "dismissed");
+    return api("/api/generate", { method: "POST", body: { ...body, engine: pick ? "wan" : "seedance" } });
+  }
 }
 // A clip Seedance refused for copyright offers one more try on Wan 3.0 (20 October 2026, the owner: "metti un avviso…
 // usa Wan 3.0 / no grazie, in modo tale da non perdere il cliente"). The same prompt, pictures and settings, for the
 // credits the refused clip cost (they came back). The server's `offer` says when; it is taken or declined once.
 function wanOfferEl(g) {
   const o = g.offer;
-  const use = h("button", { class: "btn btn-primary btn-sm", onclick: () => settleWan(g, false, use, no) }, icon("sparkle", 16, 2.2), `Use ${o.name}`, h("span", { class: "cost" }, bolt(13), o.credits));
-  const no = h("button", { class: "btn btn-quiet btn-sm", onclick: () => settleWan(g, true, use, no) }, "No thanks");
+  const use = h("button", { class: "btn btn-primary btn-sm", onclick: () => settleOffer(g, "wan", false, use, no) }, icon("sparkle", 16, 2.2), `Use ${o.name}`, h("span", { class: "cost" }, bolt(13), o.credits));
+  const no = h("button", { class: "btn btn-quiet btn-sm", onclick: () => settleOffer(g, "wan", true, use, no) }, "No thanks");
   // "Switch by itself from now on" (the owner: "metti una spunta, abilita cambio automatico, durante l'avviso"): saved
   // on the account the moment it is ticked, and changed again in Account → Videos.
   const tick = h("input", { type: "checkbox", checked: !!S.me?.autoWan, onchange: () => setAutoWan(tick.checked, tick) });
@@ -899,6 +913,17 @@ function wanOfferEl(g) {
     h("div", { class: "wan-btns" }, use, no),
     h("label", { class: "wan-auto" }, tick, h("span", {}, `Next time, switch to ${o.name} by itself`)));
 }
+// The last chance (21 October 2026): Wan 3.0 or FLUX 3 refused it too, so Kleo rewrites the names as descriptions and
+// makes it once more, for the same credits. The new card shows the rewritten prompt.
+function rewriteOfferEl(g) {
+  const o = g.rewrite;
+  const use = h("button", { class: "btn btn-primary btn-sm", onclick: () => settleOffer(g, "describe", false, use, no) }, icon("wand", 16, 2.2), "Rewrite and make it", h("span", { class: "cost" }, bolt(13), o.credits));
+  const no = h("button", { class: "btn btn-quiet btn-sm", onclick: () => settleOffer(g, "describe", true, use, no) }, "No thanks");
+  return h("div", { class: "wan-offer", onclick: (e) => e.stopPropagation() },
+    h("b", {}, "Try describing them instead of naming them?"),
+    h("p", {}, `Kleo rewrites your prompt with how each character looks (hair, clothes, colours, style) and no names, and ${o.name} makes it once more. It will look alike, not identical.`),
+    h("div", { class: "wan-btns" }, use, no));
+}
 async function setAutoWan(on, input) {
   try {
     const r = await api("/api/me/auto-wan", { method: "POST", body: { on } });
@@ -906,12 +931,12 @@ async function setAutoWan(on, input) {
     toast(r.autoWan ? "From now on, Kleo switches to Wan 3.0 by itself. You can change it in Account." : "Kleo will ask you first.");
   } catch (e) { if (input) input.checked = !on; handleError(e); }
 }
-async function settleWan(g, decline, use, no) {
+async function settleOffer(g, what, decline, use, no) {
   if (!signedIn() && !DEMO) return requireAccount();
   use.disabled = no.disabled = true;
-  if (!decline) fill(use, spinner(15), "Starting…");
+  if (!decline) fill(use, spinner(15), what === "describe" ? "Rewriting…" : "Starting…");
   try {
-    const r = await api(`/api/generations/${g.id}/wan`, { method: "POST", body: decline ? { decline: true } : {} });
+    const r = await api(`/api/generations/${g.id}/${what}`, { method: "POST", body: decline ? { decline: true } : {} });
     const swap = (x) => { S.gens.set(x.id, x); for (const list of Object.values(S.feeds)) if (Array.isArray(list)) { const i = list.findIndex((y) => y.id === x.id); if (i >= 0) list[i] = x; } };
     swap(r.original);
     if (r.generation) {
@@ -922,7 +947,7 @@ async function settleWan(g, decline, use, no) {
       for (const list of Object.values(S.feeds)) if (Array.isArray(list)) { const i = list.findIndex((y) => y.id === g.id); if (i >= 0) list.splice(i, 0, n); }
       for (const old of document.querySelectorAll(`[data-result="${g.id}"]`)) old.before(resultCard(n));
       if (r.message && S.chat && S.chat.id === g.chatId) { collectGens(r.message); S.messages.push(r.message); renderMessages(); scrollDown(); }
-      toast(`Making it with ${n.modelName || "Wan 3.0"}`);
+      toast(what === "describe" ? "Rewritten without names — making it now" : `Making it with ${n.modelName || "Wan 3.0"}`);
     }
     refreshGen(g.id);
   } catch (e) { CARDS.delete(g.id); refreshGen(g.id); handleError(e); }
@@ -943,7 +968,7 @@ function clipEl(g) {
   if (g.status === "running") {
     const t = h("span", { class: "t" }); elapsed(g, t);
     el.append(h("div", { class: "clip-media", style: { aspectRatio: ratio } }, h("div", { class: "shimmer" }),
-      h("div", { class: "clip-status" }, h("div", {}, h("b", {}, "Generating…"), h("span", {}, g.switchedFrom ? `${g.switchedFrom} refused it for copyright, so ${g.modelName} is making it` : `${g.modelName} · usually 1–4 min`)), h("div", { class: "row-gap" }, t, h("span", { class: "spin" })))));
+      h("div", { class: "clip-status" }, h("div", {}, h("b", {}, "Generating…"), h("span", {}, g.switchedFrom ? `${g.switchedFrom} refused it for copyright, so ${g.modelName} is making it` : g.preRouted ? `${g.modelName} is making it: it takes well-known characters` : `${g.modelName} · usually 1–4 min`)), h("div", { class: "row-gap" }, t, h("span", { class: "spin" })))));
     return el;
   }
   if (g.status === "failed") return failedEl(g, el);
@@ -1197,7 +1222,7 @@ async function submit() {
   try {
     const r = S.agent
       ? await api("/api/chat", { method: "POST", body: { chatId: S.chat?.id, text, imageIds, mode: S.mode, settings: fix(S.settings, picCount(atts), clipCount(atts)), imageSettings: ifix(S.imageSettings) } })
-      : await api("/api/generate", { method: "POST", body: { chatId: S.chat?.id, kind: S.mode, prompt: text, settings, imageIds } });
+      : await generateApi({ chatId: S.chat?.id, kind: S.mode, prompt: text, settings, imageIds });
     S.messages = S.messages.filter((m) => m !== tempUser && m !== tempBot);
     for (const m of r.messages) { collectGens(m); if (m.role === "user" && atts.length) m.attachments = atts; }
     S.messages.push(...r.messages);
@@ -1324,7 +1349,7 @@ function generatorView(kind) {
     if (isVid ? !allowed(s.model) : !iallowed(s.model)) return openLocked(isVid ? model(s.model) : imodel(s.model), !isVid);
     page.sending = true; refreshCta();
     try {
-      const r = await api("/api/generate", { method: "POST", body: { noChat: true, kind, prompt: page.prompt, settings: s, imageIds: page.refs.map((x) => x.id), preset: isVid ? page.preset : null } });
+      const r = await generateApi({ noChat: true, kind, prompt: page.prompt, settings: s, imageIds: page.refs.map((x) => x.id), preset: isVid ? page.preset : null });
       setCredits(r.credits);
       S.gens.set(r.generation.id, r.generation); watch(r.generation.id);
       (S.feeds[kind] ||= []).unshift(r.generation);
@@ -1401,7 +1426,7 @@ function openPresets(current, pick) {
 const CARDS = new Map();
 function resultCard(g) {
   if (!g) return h("div");
-  const sig = g.status === "running" ? null : JSON.stringify([g.status, g.video, g.outputs, g.error, g.refunded, g.prompt, g.modelName, g.offer]);
+  const sig = g.status === "running" ? null : JSON.stringify([g.status, g.video, g.outputs, g.error, g.refunded, g.prompt, g.modelName, g.offer, g.rewrite]);
   const kept = sig && CARDS.get(g.id);
   if (kept && kept.sig === sig) { kept.el.classList.add("seen"); kept.el.classList.remove("just-done"); return kept.el; }
   const el = buildResultCard(g);
@@ -1452,7 +1477,7 @@ function buildResultCard(g) {
   }
   if (g.status === "done" || g.status === "failed") acts.append(h("button", { class: "icon-btn danger", title: "Delete", "aria-label": "Delete", onclick: () => deleteGen(g) }, icon("trash", 18)));
   el.append(media, h("div", { class: "info" },
-    g.status === "failed" && g.offer ? wanOfferEl(g) : null,
+    g.status === "failed" ? (g.offer ? wanOfferEl(g) : g.rewrite ? rewriteOfferEl(g) : null) : null,
     out === "audio" && g.status === "done" ? (g.outputs || []).map((o, i, all) => songRow(g, o, i, all.length)) : null,
     g.prompt ? h("p", {}, g.prompt) : null, acts));
   return el;
@@ -1981,11 +2006,11 @@ function ask({ title, text = "", ok = "OK", cancel = "Cancel", danger = false, i
       h("div", { class: "ask-ic" + (danger ? " danger" : "") }, icon(ic, 24, 2)), h("h3", {}, title), text ? h("p", {}, text) : null, input, h("div", { class: "ask-btns" }, no, yes));
     const scrim = h("div", { class: "ask-scrim" }, card);
     const key = (e) => {
-      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(false); }
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(null); }
       else if (e.key === "Enter" && !yes.disabled) { e.preventDefault(); e.stopPropagation(); finish(true); }
     };
     const finish = (v) => { document.removeEventListener("keydown", key, true); scrim.classList.add("out"); setTimeout(() => scrim.remove(), 160); done(v); };
-    scrim.addEventListener("click", () => finish(false));
+    scrim.addEventListener("click", () => finish(null));
     no.addEventListener("click", () => finish(false));
     yes.addEventListener("click", () => finish(true));
     if (input) { yes.disabled = true; input.addEventListener("input", () => { yes.disabled = input.value.trim().toUpperCase() !== word; }); }
@@ -2425,6 +2450,10 @@ async function demoApi(path, opts) {
     return { chat, messages: [u, bot] };
   }
   if (path === "/api/generate") {
+    if (/kpop|rumi|spider-?man|mickey/i.test(b.prompt || "") && !b.engine && (b.settings?.model || "seedance-2.5").startsWith("seedance") && b.kind !== "image") {
+      throw new ApiError("Seedance 2.5 usually refuses Rumi and KPop Demon Hunters: they are protected by copyright.", 409, "names", { names: ["Rumi", "KPop Demon Hunters"], from: "Seedance 2.5", offer: { model: "wan-3.0", name: "Wan 3.0", credits: 2 } });
+    }
+    if (b.engine === "wan") b.settings = { ...(b.settings || {}), model: "seedance-2.5" };
     if (b.proposalId) {
       for (const [cid, list] of demoDb.messages) {
         const m = list.find((x) => x.id === b.proposalId);
@@ -2449,6 +2478,17 @@ async function demoApi(path, opts) {
     const bot = { id: "m_b" + (++demoDb.n), role: "assistant", text: "", generation: g };
     demoDb.messages.get(chat.id).push(u, bot);
     return { chat, generation: g, credits: demoDb.credits, messages: [u, bot] };
+  }
+  const dm = path.match(/^\/api\/generations\/(g_\w+)\/describe$/);
+  if (dm) {
+    const g = demoDb.gens.get(dm[1]);
+    if (!g?.rewrite) throw new ApiError("This one can't be rewritten and made again.", 409, "no_offer");
+    const o = g.rewrite;
+    g.rewrite = null;
+    if (b.decline) return { original: { ...g } };
+    const n = { id: "g_demo" + (++demoDb.n), kind: "video", model: "wan-3.0", modelName: "Wan 3.0", settings: { ...g.settings }, prompt: "Three young women in glittering stage outfits — one with a long purple braid, one with wild red hair, one with a short black bob — sing on a neon stage while fans wave light sticks", credits: o.credits, status: "running", chatId: g.chatId, createdAt: now(), video: null, outputs: [], output: "video", count: 1, doneAt: Date.now() + 6000 };
+    demoDb.credits -= o.credits; demoDb.gens.set(n.id, n);
+    return { generation: { ...n }, original: { ...g }, message: g.chatId ? { id: "m_b" + (++demoDb.n), role: "assistant", text: "", generation: n } : null, credits: demoDb.credits };
   }
   const wm = path.match(/^\/api\/generations\/(g_\w+)\/wan$/);
   if (wm) {
@@ -2493,7 +2533,10 @@ if (DEMO) {
   // A clip Seedance refused for copyright, with its offer to make it on Wan 3.0.
   const gr = { id: "g_demo_cr", kind: "video", model: "seedance-2.5", modelName: "Seedance 2.5", settings: { ...s, resolution: "480p" }, prompt: "Rumi, Mira and Zoey from KPop Demon Hunters sing on a neon stage, fans waving light sticks", credits: 2, status: "failed", refunded: true, chatId: "c_demo0", createdAt: new Date(Date.now() - 600e3).toISOString(), video: null, outputs: [], output: "video",
     error: "Seedance 2.5 won't make this one: it recognised characters, people or music protected by copyright. Your credits are back.", offer: { model: "wan-3.0", name: "Wan 3.0", from: "Seedance 2.5", credits: 2 } };
-  demoDb.gens.set(gi.id, gi); demoDb.gens.set(g.id, g); demoDb.gens.set(gr.id, gr);
+  // A clip Wan 3.0 refused too, with the offer to rewrite its names as descriptions.
+  const gw = { id: "g_demo_rw", kind: "video", model: "wan-3.0", modelName: "Wan 3.0", settings: { ...s, model: "wan-3.0", resolution: "480p" }, prompt: "Rumi, Mira and Zoey from KPop Demon Hunters sing on a neon stage", credits: 2, status: "failed", refunded: true, createdAt: new Date(Date.now() - 300e3).toISOString(), video: null, outputs: [], output: "video",
+    error: "Wan 3.0 won't make this one either: it recognised characters, people or music protected by copyright. Your credits are back.", rewrite: { name: "Wan 3.0", credits: 2 } };
+  demoDb.gens.set(gi.id, gi); demoDb.gens.set(g.id, g); demoDb.gens.set(gr.id, gr); demoDb.gens.set(gw.id, gw);
   demoDb.chats.push({ id: "c_demo0", title: "Desert rider at sunset", updated_at: new Date(Date.now() - 3600e3).toISOString() });
   demoDb.messages.set("c_demo0", [
     { id: "m_d1", role: "user", text: "un cavaliere nel deserto al tramonto, molto cinematografico" },

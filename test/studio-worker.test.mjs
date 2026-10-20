@@ -1568,3 +1568,161 @@ test("a picture Seedance cannot take is refused before any charge; a provider's 
     assert.equal(g.offer, null, "not a copyright refusal");
   } finally { p.restore(); }
 });
+
+// ── Fewer copyright dead ends (21 October 2026) ─────────────────────────────────────────────────────────────────────
+const chatReply = (text) => ok({ choices: [{ message: { content: text } }] });
+const DESCRIBED = "Three young women in glittering stage outfits, one with a long purple braid, one with wild red hair, one with a short black bob, sing on a neon stage";
+/** The small model behind the name check (names), the rewrite (describes) and the translation (echo). */
+function chatScript(names, u, init) {
+  if (!u.endsWith("/v1/chat/completions")) return null;
+  const body = JSON.parse(init.body);
+  const sys = String(body.messages?.[0]?.content ?? "");
+  if (sys.startsWith("You check prompts")) return names === "down" ? new Response("upstream error", { status: 500 }) : chatReply(JSON.stringify({ names }));
+  if (sys.startsWith("Rewrite the user's prompt")) return chatReply(DESCRIBED);
+  return chatReply(String(body.messages?.[1]?.content ?? ""));
+}
+
+test("the name check asks before a Seedance clip that names well-known characters; the choice goes through for the same credits", async () => {
+  const env = newEnv({ WAVESPEED_API_KEY: "wk" });
+  const { cookie, id } = await paidAccount(env);
+  const p = fakeProvider((u, init) => {
+    const c = chatScript(["Rumi", "KPop Demon Hunters"], u, init); if (c) return c;
+    if (u.endsWith("/v1/task/submit")) return ok({ id: "task_sd" });
+    if (u === "https://api.wavespeed.ai/api/v3/alibaba/wan-3.0/text-to-video") return ok({ code: 200, data: { id: "ws_pre" } });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const order = { noChat: true, prompt: "Rumi from KPop Demon Hunters sings on a rooftop", settings: { model: "seedance-2.5", resolution: "480p", duration: 5 } };
+    const asked = await call(env, "/api/generate", { method: "POST", cookie, body: order });
+    assert.equal(asked.status, 409, asked.text);
+    assert.equal(asked.json.code, "names");
+    assert.equal(asked.json.error, "Seedance 2.5 usually refuses Rumi and KPop Demon Hunters: they are protected by copyright.");
+    assert.deepEqual(asked.json.names, ["Rumi", "KPop Demon Hunters"]);
+    assert.deepEqual({ ...asked.json.offer, credits: typeof asked.json.offer.credits }, { model: "wan-3.0", name: "Wan 3.0", credits: "number" });
+    assert.equal(credits(env, id), 100, "nothing was charged");
+    assert.ok(!p.sent.some((s) => s.url.endsWith("/v1/task/submit") || s.url.includes("wavespeed")), "nothing was ordered");
+
+    const checks = () => p.sent.filter((s) => s.url.endsWith("/v1/chat/completions") && String(s.body.messages[0].content).startsWith("You check prompts")).length;
+    const wan = await call(env, "/api/generate", { method: "POST", cookie, body: { ...order, engine: "wan" } });
+    assert.equal(wan.status, 200, wan.text);
+    assert.deepEqual({ m: wan.json.generation.model, n: wan.json.generation.modelName, pre: wan.json.generation.preRouted, s: wan.json.generation.status }, { m: "wan-3.0", n: "Wan 3.0", pre: true, s: "running" });
+    assert.equal(credits(env, id), 100 - asked.json.offer.credits, "the credits the notice named");
+    assert.equal(p.sent.find((s) => s.url.endsWith("/wan-3.0/text-to-video")).body.prompt, order.prompt);
+    assert.ok(!p.sent.some((s) => s.url.endsWith("/v1/task/submit")), "Seedance is never asked");
+    assert.ok(env.DB.db.prepare("SELECT 1 FROM audit WHERE event = 'studio.wan_pre' AND job_id = ?").get(wan.json.generation.id));
+    assert.equal(checks(), 1, "a chosen engine is not checked again");
+
+    const sd = await call(env, "/api/generate", { method: "POST", cookie, body: { ...order, engine: "seedance" } });
+    assert.equal(sd.status, 200, sd.text);
+    assert.equal(sd.json.generation.model, "seedance-2.5");
+    assert.ok(p.sent.some((s) => s.url.endsWith("/v1/task/submit")), "Seedance is tried as asked");
+    assert.equal(checks(), 1);
+  } finally { p.restore(); }
+});
+
+test("with the automatic switch on, a named character goes straight to Wan 3.0; a check that cannot run lets the order go on", async () => {
+  const env = newEnv({ WAVESPEED_API_KEY: "wk" });
+  const { cookie } = await paidAccount(env);
+  await call(env, "/api/me/auto-wan", { method: "POST", cookie, body: { on: true } });
+  let names = ["Spider-Man"];
+  const p = fakeProvider((u, init) => {
+    const c = chatScript(names, u, init); if (c) return c;
+    if (u.endsWith("/v1/task/submit")) return ok({ id: "task_sd" });
+    if (u === "https://api.wavespeed.ai/api/v3/alibaba/wan-3.0/text-to-video") return ok({ code: 200, data: { id: "ws_auto" } });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const order = { noChat: true, prompt: "Spider-Man swings over a city at dusk", settings: { model: "seedance-2.0-fast", resolution: "480p", duration: 5 } };
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: order });
+    assert.equal(r.status, 200, r.text);
+    assert.deepEqual({ m: r.json.generation.model, pre: r.json.generation.preRouted }, { m: "wan-3.0", pre: true });
+    names = "down";
+    const r2 = await call(env, "/api/generate", { method: "POST", cookie, body: order });
+    assert.equal(r2.status, 200, r2.text);
+    assert.equal(r2.json.generation.model, "seedance-2.0-fast", "no answer from the checker: Seedance as before");
+    names = [];
+    const r3 = await call(env, "/api/generate", { method: "POST", cookie, body: { ...order, prompt: "a fox in the snow" } });
+    assert.equal(r3.json.generation.model, "seedance-2.0-fast");
+  } finally { p.restore(); }
+});
+
+test("when Wan 3.0 refuses too, the clip can be made once more with its names turned into descriptions", async () => {
+  const env = newEnv({ WAVESPEED_API_KEY: "wk" });
+  const { cookie, id } = await paidAccount(env);
+  let n = 0;
+  const p = fakeProvider((u, init) => {
+    const c = chatScript([], u, init); if (c) return c;
+    if (u === "https://api.wavespeed.ai/api/v3/alibaba/wan-3.0/text-to-video") return ok({ code: 200, data: { id: `ws_r${++n}` } });
+    if (/\/predictions\/ws_r\d\/result$/.test(u)) return ok({ code: 200, data: { status: "failed", error: "Content flagged as potentially sensitive. Please try different prompts or images.", outputs: [] } });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { noChat: true, engine: "wan", prompt: "Rumi, Mira and Zoey from KPop Demon Hunters sing", settings: { model: "seedance-2.5", resolution: "480p", duration: 5 } } });
+    assert.equal(r.status, 200, r.text);
+    old(env);
+    const g = (await call(env, `/api/generations/${r.json.generation.id}`, { cookie })).json.generation;
+    assert.equal(g.status, "failed");
+    assert.deepEqual(g.rewrite, { name: "Wan 3.0", credits: g.credits });
+    assert.match(g.error, /^Wan 3\.0 won't make this one either: it recognised characters/);
+    assert.equal(credits(env, id), 100, "refunded");
+
+    const w = await call(env, `/api/generations/${g.id}/describe`, { method: "POST", cookie, body: {} });
+    assert.equal(w.status, 200, w.text);
+    assert.equal(w.json.generation.prompt, DESCRIBED, "the card shows the rewritten prompt");
+    assert.deepEqual({ m: w.json.generation.modelName, s: w.json.generation.status }, { m: "Wan 3.0", s: "running" });
+    assert.equal(w.json.credits, 100 - g.credits, "the credits it cost");
+    assert.equal(w.json.original.rewrite, null);
+    const sent = p.sent.filter((s) => s.url.endsWith("/wan-3.0/text-to-video"));
+    assert.equal(sent.length, 2);
+    assert.equal(sent[1].body.prompt, DESCRIBED);
+    assert.equal((await call(env, `/api/generations/${g.id}/describe`, { method: "POST", cookie, body: {} })).status, 409, "once only");
+    assert.equal(credits(env, id), 100 - g.credits);
+
+    old(env);
+    const again = (await call(env, `/api/generations/${w.json.generation.id}`, { cookie })).json.generation;
+    assert.equal(again.status, "failed");
+    assert.equal(again.rewrite, null, "a rewritten clip is not rewritten again");
+
+    // No thanks drops the offer.
+    const r2 = await call(env, "/api/generate", { method: "POST", cookie, body: { noChat: true, engine: "wan", prompt: "Zoey waves", settings: { model: "seedance-2.5", resolution: "480p", duration: 5 } } });
+    old(env);
+    await call(env, `/api/generations/${r2.json.generation.id}`, { cookie });
+    const no = await call(env, `/api/generations/${r2.json.generation.id}/describe`, { method: "POST", cookie, body: { decline: true } });
+    assert.equal(no.json.original.rewrite, null);
+    assert.equal((await call(env, `/api/generations/${r2.json.generation.id}/describe`, { method: "POST", cookie, body: {} })).status, 409);
+  } finally { p.restore(); }
+});
+
+test("a picture FLUX 3 refuses too can be drawn once more on FLUX 3 with its names turned into descriptions", async () => {
+  const env = newEnv();
+  const { cookie, id } = await paidAccount(env);
+  let n = 0;
+  const png = new Uint8Array(4000); png.set([0x89, 0x50, 0x4e, 0x47]);
+  const p = fakeProvider((u, init) => {
+    const c = chatScript([], u, init); if (c) return c;
+    if (u.endsWith("/v1/task/submit")) return ok({ id: `task_i${++n}` });
+    if (/task_i[1-3]$/.test(u)) return ok({ status: "failed", error: n === 1 ? "no image generated in response" : 'Content Moderated: {"Moderation Reasons":["Protected Content"]}' });
+    if (/task_i4$/.test(u)) return ok({ status: "completed", outputs: ["https://cdn.example/i.png"] });
+    if (u === "https://cdn.example/i.png") return new Response(png, { status: 200, headers: { "content-type": "image/png" } });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { kind: "image", noChat: true, prompt: "Rumi from KPop Demon Hunters on a poster", settings: { model: "nano-banana-2.1", aspect: "3:4", quality: "2K" } } });
+    assert.equal(r.status, 200, r.text);
+    for (let i = 0; i < 3; i++) { old(env); await call(env, `/api/generations/${r.json.generation.id}`, { cookie }); }
+    const g = (await call(env, `/api/generations/${r.json.generation.id}`, { cookie })).json.generation;
+    assert.equal(g.status, "failed", JSON.stringify(g));
+    assert.deepEqual(g.rewrite, { name: "FLUX 3", credits: g.credits });
+    const before = credits(env, id);
+    const w = await call(env, `/api/generations/${g.id}/describe`, { method: "POST", cookie, body: {} });
+    assert.equal(w.status, 200, w.text);
+    assert.equal(w.json.generation.prompt, DESCRIBED);
+    assert.equal(w.json.generation.model, "flux-3");
+    assert.equal(credits(env, id), before - g.credits, "the credits the refused picture cost");
+    const last = p.sent.filter((s) => s.url.endsWith("/v1/task/submit")).at(-1);
+    assert.deepEqual([last.body.model, last.body.input.prompt, last.body.input.safety_tolerance], ["flux-3-image", DESCRIBED, 2]);
+    old(env);
+    const done = (await call(env, `/api/generations/${w.json.generation.id}`, { cookie })).json.generation;
+    assert.equal(done.status, "done", JSON.stringify(done));
+  } finally { p.restore(); }
+});
