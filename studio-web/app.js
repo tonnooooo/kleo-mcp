@@ -1747,7 +1747,7 @@ function toolBody(key, compact, top = null) {
       t.guide ? h("figure", { class: "seat-guide" },
         h("div", { class: "sg-pic" }, h("img", { src: t.guide, alt: "" }),
           t.seats.map((s, i) => s.at ? h("span", { class: "seat-dot", style: { left: `${s.at[0]}%`, top: `${s.at[1]}%`, background: s.color } }, String(i + 1)) : null)),
-        h("figcaption", {}, t.fields.some((f) => f.required) ? (t.seats.length === 1 ? "Add a clear photo of yourself: you take the place of the person in this clip." : `Add a clear photo for each of the ${t.seats.length} people, the way the boxes below describe them.`)
+        h("figcaption", {}, t.fields.some((f) => f.required) ? (t.seats.length === 1 ? "Add a clear, well-lit photo of yourself, face to the camera: you take the place of the person in this clip." : `Add a clear, well-lit photo of one person for each of the ${t.seats.length} people, face to the camera, the way the boxes below describe them.`)
           : "Add a photo for each person you want in the clip. Empty seats keep the original person.")) : null,
       files.length ? h("div", { class: "drops" }, files.map((f, i) => { const z = dropZone(f); if (files.length === 1 || (files.length % 2 === 1 && i === files.length - 1)) z.classList.add("one"); return z; })) : null,
       t.fields.filter((f) => !["image", "video", "audio"].includes(f.kind)).map(fieldEl),
