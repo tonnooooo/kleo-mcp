@@ -12,8 +12,13 @@ export interface StudioEnv {
   INTERNAL_SECRET: string;
   EPHONE_API_KEY?: string;
   EPHONE_API_URL?: string;
-  /** WaveSpeed AI (src/wavespeed.ts): the viral templates' Wan 3.0 video edit. */
+  /** WaveSpeed AI (src/wavespeed.ts): the viral templates' Wan 3.0 video edit, and the backup of GPT Image 2.5 and
+   *  Character Swap's first frame when ePhone cannot take an order (src/studio/backups.ts). */
   WAVESPEED_API_KEY?: string;
+  /** APIMart (src/apimart.ts): the backup of most models when ePhone cannot take an order (src/studio/backups.ts). */
+  APIMART_API_KEY?: string;
+  /** "off" keeps every order on ePhone, even when it is out of credit (default: backups on). */
+  STUDIO_BACKUPS?: string;
   /** Public address of the MCP server (for the "use Kleo in Claude/ChatGPT" line). */
   PUBLIC_URL: string;
   /** The one host of the app (kleooai.com); www. and app. hosts redirect to it. Empty: no redirect. */

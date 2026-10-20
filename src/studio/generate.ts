@@ -18,6 +18,8 @@ import type { StudioEnv } from "./env.ts";
 import type { Env } from "../env";
 import { ephone, ephoneOutputs, ephoneFailure, type EphoneTask } from "../ephone.ts";
 import { wavespeedSubmit, wavespeedTask } from "../wavespeed.ts";
+import { apimartSubmit, apimartTask, MUSIC_PREFIX } from "../apimart.ts";
+import { backupRoutes, withinBudget, type BackupProvider } from "./backups.ts";
 import { KieError } from "../kie.ts";
 import { debitCredits, refundCredits, getUser, hasPaid, audit, countAuditTodayForUser } from "../db.ts";
 import { publicText, rid } from "../util.ts";
@@ -49,6 +51,64 @@ export class StudioError extends Error {
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const num = (v: string | undefined, d: number): number => { const n = parseFloat(v ?? ""); return Number.isFinite(n) ? n : d; };
 export const marginOf = (env: StudioEnv): number => Math.max(1, num(env.STUDIO_MARGIN, DEFAULT_MARGIN));
+
+/**
+ * ePhone first, then the backup (20 October 2026, src/studio/backups.ts). An order moves to the backup only when ePhone
+ * cannot take it: an empty balance (402), a rate limit or an outage (429, 5xx), no key, or no answer at all. Never for a
+ * refusal of the request itself (the backup sells the same model and would refuse it too), and never after a timeout
+ * (ePhone may have taken that order). STUDIO_BACKUPS = "off" keeps every order on ePhone.
+ */
+export function switchesToBackup(e: unknown): boolean {
+  if (e instanceof KieError) return e.status === 402 || e.status === 429 || e.status >= 500 || (e.status === 0 && /API_KEY is not set/.test(e.message));
+  const name = e instanceof Error ? e.name : "";
+  return name !== "TimeoutError" && name !== "AbortError";
+}
+const backupKey = (env: StudioEnv, p: BackupProvider): boolean => !!(p === "apimart" ? env.APIMART_API_KEY : env.WAVESPEED_API_KEY)?.trim();
+
+/** Where an order went: its task id, and the provider holding it when that is not ePhone. */
+export interface Placed { task: string; provider?: BackupProvider }
+
+/**
+ * Starts one task: on ePhone, or (when ePhone cannot take it) on the model's backup. `who` names the account and the
+ * generation for the audit; `budgetUsd` is what Kleo priced the order at, and a backup dearer than that is skipped.
+ * Throws what the last provider tried answered (ePhone's own error when there is no backup).
+ */
+export async function placeTask(env: StudioEnv, model: string, input: Record<string, unknown>, routing: Record<string, string> | undefined, who?: { userId: string; genId: string }, budgetUsd?: number | null): Promise<Placed> {
+  try {
+    const t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model, input }, { timeoutMs: 30_000, routing });
+    if (!t.id) throw new KieError("ephone.ai answered no task id", 502, true);
+    return { task: String(t.id) };
+  } catch (e) {
+    if ((env.STUDIO_BACKUPS ?? "").trim() === "off" || !switchesToBackup(e)) throw e;
+    let last: unknown = e;
+    for (const r of withinBudget(backupRoutes(model, input), budgetUsd)) {
+      if (!backupKey(env, r.provider)) continue;
+      try {
+        const id = r.provider === "apimart" ? await apimartSubmit(env, r.path, r.body) : await wavespeedSubmit(env, r.path, r.body);
+        if (who) await audit(asEnv(env), who.userId, who.genId, "studio.backup", { from: model, to: `${r.provider}:${r.model}`, usd: r.usd, why: String(e instanceof Error ? e.message : e).slice(0, 200) });
+        return { task: r.music ? `${MUSIC_PREFIX}${id}` : id, provider: r.provider };
+      } catch (e2) {
+        last = e2;
+        if (!switchesToBackup(e2)) break;
+      }
+    }
+    throw last;
+  }
+}
+
+/** One task's state from whichever provider holds it, read as an ePhone task. */
+export async function readTask(env: StudioEnv, task: string, provider: BackupProvider | undefined, routing?: Record<string, string>): Promise<EphoneTask> {
+  if (provider === "apimart") return apimartTask(env, task);
+  if (provider === "wavespeed") return wavespeedTask(env, task);
+  return ephone<EphoneTask>(env, "GET", `/v1/task/${encodeURIComponent(task)}`, undefined, { timeoutMs: 15_000, routing });
+}
+
+/** A clip's task id names its provider when that is not ePhone ("apimart:<id>"), so the poll knows where to ask. */
+export const clipTaskId = (p: Placed): string => (p.provider ? `${p.provider}:${p.task}` : p.task);
+export function clipTask(taskId: string): Placed {
+  const m = /^(apimart|wavespeed):(.+)$/.exec(taskId);
+  return m ? { provider: m[1] as BackupProvider, task: m[2] } : { task: taskId };
+}
 
 /** Minutes a clip may stay with the provider before it is called failed and refunded. */
 export const GENERATION_TIMEOUT_MIN = 45;
@@ -263,13 +323,11 @@ export async function createGeneration(env: StudioEnv, userId: string, req: Crea
   const links = await Promise.all(pictures.map(link));
   const clipLinks = { videos: await Promise.all(videos.map(link)), audios: await Promise.all(sounds.map(link)) };
   try {
-    const t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit",
-      // Any language in, English to the model (./translate.ts); the card keeps the person's own words.
-      { model: model.ephoneModel, input: taskInput(s, prompt ? withPreset(await toEnglish(env, (req.prompt ?? "").trim(), "video"), req.preset) : "Bring this picture to life with natural, cinematic motion.", links, await safetyId(env, userId), clipLinks) },
-      { timeoutMs: 30_000, routing: model.routing });
-    if (!t.id) throw new KieError("ephone.ai answered no task id", 502, true);
-    await moveGeneration(env, id, ["submitting"], "running", { task_id: String(t.id) });
-    await audit(asEnv(env), userId, id, "studio.submitted", { task: t.id, model: model.ephoneModel });
+    // Any language in, English to the model (./translate.ts); the card keeps the person's own words.
+    const input = taskInput(s, prompt ? withPreset(await toEnglish(env, (req.prompt ?? "").trim(), "video"), req.preset) : "Bring this picture to life with natural, cinematic motion.", links, await safetyId(env, userId), clipLinks);
+    const placed = await placeTask(env, model.ephoneModel, input, model.routing, { userId, genId: id }, usd);
+    await moveGeneration(env, id, ["submitting"], "running", { task_id: clipTaskId(placed) });
+    await audit(asEnv(env), userId, id, "studio.submitted", { task: placed.task, model: model.ephoneModel, provider: placed.provider ?? "ephone" });
   } catch (e) {
     await failGeneration(env, id, refusal(e, "video"), { provider: String(e instanceof Error ? e.message : e).slice(0, 300) });
   }
@@ -311,16 +369,17 @@ async function createImageGeneration(env: StudioEnv, userId: string, req: Create
   let firstError: unknown = null;
   for (let i = 0; i < s.count; i++) {
     try {
-      let t: { id?: string };
+      let t: Placed;
       let slot: Slot = { task: null, status: "running", ...(alts.length ? { alts } : {}) };
+      const who = { userId, genId: id };
       try {
-        t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: model.ephoneModel, input }, { timeoutMs: 30_000, routing: model.routing });
+        t = await placeTask(env, model.ephoneModel, input, model.routing, who, usd / s.count);
       } catch (e) {
         const why = e instanceof Error ? e.message : String(e);
         const alt = alternativeFor(alts, why);
         if (alt && !(e instanceof KieError && e.status === 402)) {
           // Refused at the door (the prompt or a reference): straight to the second try.
-          t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: alt.model, input: alt.input }, { timeoutMs: 30_000, routing: toolRouting(alt.model) });
+          t = await placeTask(env, alt.model, alt.input, toolRouting(alt.model), who);
           slot = { ...slot, model: alt.model, alts: alts.slice(alts.indexOf(alt) + 1) };
           await audit(asEnv(env), userId, id, "studio.fallback", { from: model.ephoneModel, to: alt.model, when: alt.when, why: why.slice(0, 200) });
         } else {
@@ -328,11 +387,10 @@ async function createImageGeneration(env: StudioEnv, userId: string, req: Create
           if (otherTried || !model.key.startsWith("nano-banana") || !isQualityRefusal(why)) throw e;
           otherTried = true;
           input = imageTaskInput(s, english, links, true);
-          t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: model.ephoneModel, input }, { timeoutMs: 30_000, routing: model.routing });
+          t = await placeTask(env, model.ephoneModel, input, model.routing, who, usd / s.count);
         }
       }
-      if (!t.id) throw new KieError("ephone.ai answered no task id", 502, true);
-      slots.push({ ...slot, task: String(t.id) });
+      slots.push({ ...slot, task: t.task, ...(t.provider ? { provider: t.provider } : {}) });
     } catch (e) {
       firstError ??= e;
       slots.push({ task: null, status: "failed", error: publicText(e instanceof Error ? e.message : String(e)).slice(0, 200) });
@@ -344,7 +402,7 @@ async function createImageGeneration(env: StudioEnv, userId: string, req: Create
     await failGeneration(env, id, refusal(firstError, "image"), { provider: String(firstError instanceof Error ? firstError.message : firstError).slice(0, 300) });
   } else {
     await moveGeneration(env, id, ["submitting"], "running", { task_id: slots.find((x) => x.task)!.task, slots: JSON.stringify(slots) });
-    await audit(asEnv(env), userId, id, "studio.submitted", { tasks: slots.map((x) => x.task), model: model.ephoneModel });
+    await audit(asEnv(env), userId, id, "studio.submitted", { tasks: slots.map((x) => x.task), model: model.ephoneModel, providers: slots.map((x) => x.provider ?? "ephone") });
   }
   return (await getGeneration(env, id))!;
 }
@@ -398,9 +456,10 @@ export async function refreshGeneration(env: StudioEnv, g: GenerationRow, minGap
     return (await getGeneration(env, g.id))!;
   }
   const model = modelByKey(g.model);
+  const held = clipTask(g.task_id);
   let t: EphoneTask;
   try {
-    t = await ephone<EphoneTask>(env, "GET", `/v1/task/${encodeURIComponent(g.task_id)}`, undefined, { timeoutMs: 15_000, routing: model?.routing });
+    t = await readTask(env, held.task, held.provider, model?.routing);
   } catch (e) {
     // A failed status read is not a failed video: try again on the next refresh.
     return g;
@@ -459,9 +518,9 @@ async function secondTry(env: StudioEnv, g: GenerationRow, slot: Slot, why: stri
   const from = slot.model ?? imageModelByKey(g.model)?.ephoneModel ?? g.model;
   slot.alts = (slot.alts ?? []).slice((slot.alts ?? []).indexOf(alt) + 1);
   try {
-    const t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: alt.model, input: alt.input }, { timeoutMs: 30_000, routing: toolRouting(alt.model) });
-    if (!t.id) return false;
-    Object.assign(slot, { task: String(t.id), model: alt.model, status: "running" });
+    const t = await placeTask(env, alt.model, alt.input, toolRouting(alt.model), { userId: g.user_id, genId: g.id });
+    Object.assign(slot, { task: t.task, model: alt.model, status: "running" });
+    if (t.provider) slot.provider = t.provider; else delete slot.provider;
     await audit(asEnv(env), g.user_id, g.id, "studio.fallback", { from, to: alt.model, when: alt.when, why: why.slice(0, 200) });
     return true;
   } catch {
@@ -485,8 +544,7 @@ async function refreshImages(env: StudioEnv, g: GenerationRow, ageMin: number): 
     if (ageMin > timeout) { slot.status = "failed"; slot.error = "timeout"; continue; }
     let t: EphoneTask;
     try {
-      t = slot.provider === "wavespeed" ? await wavespeedTask(env, slot.task)
-        : await ephone<EphoneTask>(env, "GET", `/v1/task/${encodeURIComponent(slot.task)}`, undefined, { timeoutMs: 15_000, routing: slot.model ? toolRouting(slot.model) : routing });
+      t = await readTask(env, slot.task, slot.provider, slot.model ? toolRouting(slot.model) : routing);
     } catch { continue; }
     const status = String(t.status ?? "").toLowerCase();
     if (status === "failed" || status === "failure" || status === "cancelled") {
@@ -507,10 +565,10 @@ async function refreshImages(env: StudioEnv, g: GenerationRow, ageMin: number): 
       delete slot.then;
       try {
         const input = JSON.parse(JSON.stringify(next.input).split("{{prev}}").join(urls[0]));
-        const t2 = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: next.model, input }, { timeoutMs: 30_000, routing: next.routing });
-        if (!t2.id) throw new KieError("ephone.ai answered no task id", 502, true);
-        Object.assign(slot, { task: String(t2.id), model: next.model, type: next.output, status: "running" });
-        await audit(asEnv(env), g.user_id, g.id, "studio.next_step", { task: t2.id, model: next.model });
+        const t2 = await placeTask(env, next.model, input, next.routing, { userId: g.user_id, genId: g.id }, g.est_usd);
+        Object.assign(slot, { task: t2.task, model: next.model, type: next.output, status: "running" });
+        if (t2.provider) slot.provider = t2.provider; else delete slot.provider;
+        await audit(asEnv(env), g.user_id, g.id, "studio.next_step", { task: t2.task, model: next.model, provider: t2.provider ?? "ephone" });
       } catch (e) {
         slot.status = "failed";
         slot.error = publicText(e instanceof Error ? e.message : String(e)).slice(0, 200);
@@ -729,17 +787,17 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
         slots.push({ task: await wavespeedSubmit(env, task.model, input), status: "running", type: task.output, model: task.model, provider: "wavespeed" });
         continue;
       }
-      let t: { id?: string };
+      let t: Placed;
+      const who = { userId, genId: id };
       try {
-        t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: task.model, input }, { timeoutMs: 30_000, routing: task.routing });
+        t = await placeTask(env, task.model, input, task.routing, who, plan.usd);
       } catch (e) {
         // A Gemini app (Face Swap, Photo Character Swap) whose quality spelling ePhone refuses gets one retry with the other.
         if (!task.model.startsWith("gemini-") || typeof input.quality !== "string" || !isQualityRefusal(e instanceof Error ? e.message : String(e))) throw e;
         input.quality = otherQualitySpelling(input.quality);
-        t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model: task.model, input }, { timeoutMs: 30_000, routing: task.routing });
+        t = await placeTask(env, task.model, input, task.routing, who, plan.usd);
       }
-      if (!t.id) throw new KieError("ephone.ai answered no task id", 502, true);
-      slots.push({ task: String(t.id), status: "running", type: task.output, model: task.model,
+      slots.push({ task: t.task, status: "running", type: task.output, model: task.model, ...(t.provider ? { provider: t.provider } : {}),
         ...(task.then ? { then: { model: task.then.model, input: fill(task.then.input), output: task.then.output, routing: task.then.routing } } : {}) });
     } catch (e) {
       firstError ??= e;

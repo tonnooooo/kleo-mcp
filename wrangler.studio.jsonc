@@ -9,6 +9,8 @@
  * Secrets (npx wrangler secret put NAME --config wrangler.studio.jsonc):
  *   INTERNAL_SECRET       the SAME value as the MCP server's: it verifies a pasted Kleo key and signs sessions/links
  *   EPHONE_API_KEY        the ePhone AI key (video models and the chat agent)
+ *   APIMART_API_KEY       the APIMart key: the backup of most models when ePhone cannot take an order (src/studio/backups.ts)
+ *   WAVESPEED_API_KEY     the WaveSpeed key: viral templates, and the backup of GPT Image 2.5 and Character Swap's frame
  *   GOOGLE_CLIENT_ID      optional: Google sign-in (OAuth client "Web application", redirect URI
  *   GOOGLE_CLIENT_SECRET    https://app.kleooai.com/auth/google/callback); the button appears when both are set
  *   MICROSOFT_CLIENT_ID   optional: Microsoft sign-in (Entra app registration, "any organizational directory and personal
