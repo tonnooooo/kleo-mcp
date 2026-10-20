@@ -109,6 +109,20 @@ export const TRENDS: Trend[] = [
         color: "#30d158", at: [34, 80] },
     ],
   },
+  // 20 October 2026, the owner: "mi serve il template per questo" (an Instagram reel by @cantbemelo, 42 s, one take):
+  // its first 15 s at 1080x1920, one seat, the prompt written seat by seat like You Talking Bout Me.
+  {
+    key: "trend-wings-and-vibes", name: "Wings & Vibes", blurb: "Put yourself in this viral clip", tint: "#ff9f0a",
+    baseUrl: `${TRENDS_MEDIA}/wings-and-vibes/base.mp4`, baseSeconds: 15,
+    preview: `${TRENDS_MEDIA}/wings-and-vibes/preview3-p.mp4`, guide: `${TRENDS_MEDIA}/wings-and-vibes/guide.jpg`,
+    scene: "Same small room: the black desk on the left with a monitor, a microphone on a boom arm, an open Domino's box of chicken wings, a Vaseline lotion bottle, a two-litre Coca-Cola bottle and crumpled tissues; cream walls, white wall shelves at the top left, a window with white blinds and a white box fan behind him, the beige office chair. Same static vertical phone camera from behind on the left, the person seen in side profile, same framing, same soft daylight from the window.",
+    seats: [
+      { key: "person1", label: "At the desk", where: "sitting in the beige office chair on the RIGHT, seen in side profile, facing the desk on the left and eating chicken wings",
+        original: "no white sauce-stained T-shirt, no cream over-ear headphones, no black trousers",
+        motion: "0-2s leans toward the desk and picks chicken wings from the open box with both hands; 2-4s brings a wing to the mouth with both hands and eats it, chewing; 4-8s reaches back into the box with both hands and picks another piece, leaning forward over the desk; 8-12s leans back in the chair holding a wing in one hand, raises the other hand and waves it slowly as if conducting the music, swaying, eyes half closed; 12-15s stretches the right arm to the box, takes another wing and brings it toward the mouth",
+        color: "#ff9f0a", at: [86, 52] },
+    ],
+  },
   ...IMPORTED_TRENDS.map(fromCatalog),
 ];
 
