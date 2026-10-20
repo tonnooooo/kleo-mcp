@@ -77,7 +77,7 @@ const SEEDREAM_ASPECT: Record<string, string> = {
   "2048x2048": "1:1", "2304x1728": "4:3", "1728x2304": "3:4", "2560x1440": "16:9", "1440x2560": "9:16", "2496x1664": "3:2", "1664x2496": "2:3", "3024x1296": "21:9",
 };
 
-/** The aspect WaveSpeed's GPT Image offers nearest to a "WxH" size. */
+/** The aspect WaveSpeed's GPT Image offers nearest to a "WxH" size, and its tier: Kleo's 1K sizes are at most 1.6 MP, its 2K sizes at least 2.36 MP (2048x1152). */
 const GPT_ASPECTS = ["1:1", "1:2", "2:1", "1:3", "3:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "9:21", "21:9"];
 export function gptAspect(size: string): { aspect: string; resolution: "1k" | "2k" } {
   const [w, h] = size.split("x").map(Number);
@@ -88,7 +88,7 @@ export function gptAspect(size: string): { aspect: string; resolution: "1k" | "2
     const [bx, by] = best.split(":").map(Number);
     return Math.abs(Math.log(x / y / r)) < Math.abs(Math.log(bx / by / r)) ? a : best;
   });
-  return { aspect, resolution: w * h > 2_400_000 ? "2k" : "1k" };
+  return { aspect, resolution: w * h > 2_000_000 ? "2k" : "1k" };
 }
 
 /** APIMart's verified per-second prices for Seedance 2.0 Fast (Gold), without and with a reference video. */
