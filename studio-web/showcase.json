@@ -682,5 +682,65 @@
   "preview": "https://media.kleooai.com/gallery/corgi-knight-reel-p.mp4",
   "full": "https://media.kleooai.com/gallery/corgi-knight-reel.mp4",
   "poster": "https://media.kleooai.com/gallery/corgi-knight-reel.jpg"
+ },
+ {
+  "slug": "forged-in-fire-ad",
+  "title": "Forged in Fire",
+  "line": "A knife-maker sends one message; her launch film sells the knives out.",
+  "format": "wide",
+  "seconds": 25,
+  "prompt": "Make a short film like this: A knife-maker sends one message; her launch film sells the knives out.",
+  "kind": "ad",
+  "preview": "https://media.kleooai.com/gallery/forged-in-fire-ad-p.mp4",
+  "full": "https://media.kleooai.com/gallery/forged-in-fire-ad.mp4",
+  "poster": "https://media.kleooai.com/gallery/forged-in-fire-ad.jpg"
+ },
+ {
+  "slug": "rocket-car",
+  "title": "Rocket Car",
+  "line": "A white coupe on rocket jets, from a cliff-side window to lift-off over the snow.",
+  "format": "wide",
+  "seconds": 21.6,
+  "prompt": "Make a short film like this: A white coupe on rocket jets, from a cliff-side window to lift-off over the snow.",
+  "kind": "film",
+  "preview": "https://media.kleooai.com/gallery/rocket-car-p.mp4",
+  "full": "https://media.kleooai.com/gallery/rocket-car.mp4",
+  "poster": "https://media.kleooai.com/gallery/rocket-car.jpg"
+ },
+ {
+  "slug": "vacuuming-the-desert",
+  "title": "Vacuuming the Desert",
+  "line": "A woman hoovers the dunes, one patch of sand at a time.",
+  "format": "wide",
+  "seconds": 10,
+  "prompt": "A woman with a black bob, a red top, a tartan skirt and red tights vacuums the sand of an endless desert with a red canister vacuum cleaner, in hazy midday light, a static wide shot.",
+  "kind": "film",
+  "preview": "https://media.kleooai.com/gallery/vacuuming-the-desert-p.mp4",
+  "full": "https://media.kleooai.com/gallery/vacuuming-the-desert.mp4",
+  "poster": "https://media.kleooai.com/gallery/vacuuming-the-desert.jpg"
+ },
+ {
+  "slug": "sweeping-the-sea",
+  "title": "Sweeping the Sea",
+  "line": "A woman tries to broom the waves back into the sea.",
+  "format": "tall",
+  "seconds": 10,
+  "prompt": "On a grey, windy beach a woman in a green parka, a white skirt, jeans and brown boots tries to sweep the incoming waves back into the sea with a wooden push broom, foam swirling round her boots, handheld from behind.",
+  "kind": "film",
+  "preview": "https://media.kleooai.com/gallery/sweeping-the-sea-p.mp4",
+  "full": "https://media.kleooai.com/gallery/sweeping-the-sea.mp4",
+  "poster": "https://media.kleooai.com/gallery/sweeping-the-sea.jpg"
+ },
+ {
+  "slug": "hello-kitten",
+  "title": "Hello, Kitten",
+  "line": "A ginger kitten trots up to the lens and meows.",
+  "format": "tall",
+  "seconds": 6,
+  "prompt": "A tiny ginger tabby kitten on a seamless pale lilac studio backdrop walks straight toward the camera and meows, the lens slowly pushing in until its face fills the frame.",
+  "kind": "film",
+  "preview": "https://media.kleooai.com/gallery/hello-kitten-p.mp4",
+  "full": "https://media.kleooai.com/gallery/hello-kitten.mp4",
+  "poster": "https://media.kleooai.com/gallery/hello-kitten.jpg"
  }
 ]
