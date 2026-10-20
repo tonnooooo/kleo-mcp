@@ -40,11 +40,14 @@ def fmt_of(w, h, section=None):
 
 SECTION_FORMAT = {"wide": "wide", "ads-wide": "wide", "tall": "tall", "series": "tall", "ads-tall": "tall"}
 
-# Videos the owner took out of the app on 20 October 2026: the older connector-era ads. They stay on the website.
+# Videos the owner took out of Kleo on 20 October 2026: the older connector-era ads. The site's films.json dropped
+# them too (kleo-site PR #27); this set keeps them out even if an older list or a manifest still names them.
 HIDDEN = {
     "claude-chat-to-film-30s", "add-kleo-to-claude-p3", "opus-lighthouse-ad", "your-next-film-30s",
     "apex-in-claude-35s", "kleo-ad-v2-lighthouse", "kleo-reel-r3-tall",
     "tether-not-filmed-wide", "films-in-claude-52s", "type-the-film-30s",
+    "tether-not-filmed-tall", "connect-once-tall", "this-film-cost-5-euro", "it-writes-it-directs-r5",
+    "one-sentence-r6",
 }
 
 
