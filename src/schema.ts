@@ -112,23 +112,37 @@ const COLUMN_INDEXES = [
 ];
 
 async function ensureColumns(env: Env): Promise<void> {
+  // The columns already there, read in one batch (every ALTER tried on every new isolate was ~35 round trips to D1).
+  const tables = [...new Set(COLUMNS.map(([t]) => t))];
+  let have: Map<string, Set<string>> | null = null;
+  try {
+    const rows = await env.DB.batch(tables.map((t) => env.DB.prepare("SELECT name FROM pragma_table_info(?)").bind(t)));
+    have = new Map(tables.map((t, i) => [t, new Set(((rows[i] as { results?: { name: string }[] })?.results ?? []).map((r) => r.name))]));
+  } catch { /* try every ALTER: each says for itself whether its column exists */ }
   for (const [table, column, definition] of COLUMNS) {
+    if (have?.get(table)?.has(column)) continue;
     try {
       await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
     } catch (e) {
       if (!/duplicate column/i.test(String(e))) throw e;
     }
   }
-  for (const sql of COLUMN_INDEXES) await env.DB.prepare(sql).run();
+  await env.DB.batch(COLUMN_INDEXES.map((sql) => env.DB.prepare(sql)));
 }
 
-let ready: Promise<void> | null = null;
+/**
+ * Whether this isolate has checked the schema: a FLAG, never a promise shared between requests (20 October 2026, see
+ * src/studio/store.ts ensureStudioSchema): a promise started by one request never settles once that request is gone,
+ * and every later request of the isolate hung on it with no CPU. Two first requests may both run the check; it is
+ * idempotent.
+ */
+let schemaChecked = false;
 
-export function ensureSchema(env: Env): Promise<void> {
-  if (!ready) {
-    ready = env.DB.batch(STATEMENTS.map((s) => env.DB.prepare(s))).then(() => ensureColumns(env)).catch((e) => { ready = null; throw e; });
-  }
-  return ready;
+export async function ensureSchema(env: Env): Promise<void> {
+  if (schemaChecked) return;
+  await env.DB.batch(STATEMENTS.map((s) => env.DB.prepare(s)));
+  await ensureColumns(env);
+  schemaChecked = true;
 }
 
 /** Atomic, time-limited lock in D1 (used to avoid two orchestrator ticks running at once). */
