@@ -83,6 +83,28 @@ test("Wings & Vibes (20 October 2026): one seat, 15 s, the prompt written for th
   assert.throws(() => planTool(t.key, {}, {}), ToolRefusal, "a photo is needed");
 });
 
+test("Paris Fire Dance and Bby Wow (21 October 2026): one seat each, their clips on R2, their prices", () => {
+  const paris = trendByKey("trend-paris-fire-dance"), bby = trendByKey("trend-bby-wow");
+  assert.ok(paris && !paris.prompt, "Paris Fire Dance: written seat by seat");
+  assert.equal(paris.baseUrl, "https://media.kleooai.com/app/templates/paris-fire-dance/base.mp4");
+  assert.deepEqual(["480p", "720p", "1080p"].map((q) => toolCredits(trendCostUsd(paris, q))), [6, 11, 21], "14 + 14 billed seconds");
+  const p = planTool(paris.key, { quality: "480p" }, { person1: photo("up_p") }).tasks[0].input.prompt;
+  assert.match(p, /Image 1 replaces the person in the CENTRE of the street/);
+  assert.match(p, /no yellow rubber gloves/);
+  assert.match(p, /a fire burning on the road/);
+  assert.ok(bby && bby.prompt, "Bby Wow: Ausar's own fixed prompt");
+  assert.equal(bby.baseUrl, "https://media.kleooai.com/app/templates/bby-wow/base.mp4");
+  assert.equal(bby.preview, "https://media.kleooai.com/app/templates/bby-wow/preview3-p.mp4");
+  assert.deepEqual(["480p", "720p", "1080p"].map((q) => toolCredits(trendCostUsd(bby, q))), [4, 8, 15], "10 + 10 billed seconds");
+  assert.match(bby.prompt, /Image 1/);
+  assert.match(bby.prompt, /Video 1/);
+  assert.doesNotMatch(bby.prompt, /@|Reference Image|source video|ausar/i, "WaveSpeed's words, nothing of Ausar's");
+  const input = planTool(bby.key, { quality: "720p" }, { person1: photo("up_b") }).tasks[0].input;
+  assert.equal(input.prompt, bby.prompt);
+  assert.deepEqual(input.reference_images, [photo("up_b").url]);
+  assert.equal(input.generate_audio, false);
+});
+
 test("plan: no photo is a refusal a person can act on; a video in a seat is refused", () => {
   assert.throws(() => planTool(YTBM, {}, {}), (e) => e instanceof ToolRefusal && /at least one person/.test(e.message));
   assert.throws(() => planTool(YTBM, {}, { person1: { ...photo("up_v"), kind: "video" } }), (e) => e instanceof ToolRefusal && /picture/.test(e.message));
