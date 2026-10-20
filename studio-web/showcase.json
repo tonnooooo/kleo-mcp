@@ -276,42 +276,6 @@
   "poster": "https://media.kleooai.com/gallery/kleo-reel-r3-wide.jpg"
  },
  {
-  "slug": "tether-not-filmed-wide",
-  "title": "Not one frame was filmed",
-  "line": "Tether: a weightless retreat in orbit, every shot generated.",
-  "format": "wide",
-  "seconds": 26,
-  "prompt": "Make a short film like this: Tether: a weightless retreat in orbit, every shot generated.",
-  "kind": "ad",
-  "preview": "https://media.kleooai.com/gallery/tether-not-filmed-wide-p.mp4",
-  "full": "https://media.kleooai.com/gallery/tether-not-filmed-wide.mp4",
-  "poster": "https://media.kleooai.com/gallery/tether-not-filmed-wide.jpg"
- },
- {
-  "slug": "films-in-claude-52s",
-  "title": "Films in Claude",
-  "line": "Add the connector, type the film, and Tether and Apex arrive in the same chat.",
-  "format": "wide",
-  "seconds": 52,
-  "prompt": "Make a short film like this: Add the connector, type the film, and Tether and Apex arrive in the same chat.",
-  "kind": "ad",
-  "preview": "https://media.kleooai.com/gallery/films-in-claude-52s-p.mp4",
-  "full": "https://media.kleooai.com/gallery/films-in-claude-52s-p.mp4",
-  "poster": "https://media.kleooai.com/gallery/films-in-claude-52s.jpg"
- },
- {
-  "slug": "type-the-film-30s",
-  "title": "Type the film",
-  "line": "One sentence for Apex, another for the octopus, in the same chat.",
-  "format": "wide",
-  "seconds": 30,
-  "prompt": "Make a short film like this: One sentence for Apex, another for the octopus, in the same chat.",
-  "kind": "ad",
-  "preview": "https://media.kleooai.com/gallery/type-the-film-30s-p.mp4",
-  "full": "https://media.kleooai.com/gallery/type-the-film-30s-p.mp4",
-  "poster": "https://media.kleooai.com/gallery/type-the-film-30s.jpg"
- },
- {
   "slug": "lighthouse-sketch-ad",
   "title": "Sketch to Film",
   "line": "A pencil sketch becomes a film, inside Claude.",
@@ -322,90 +286,6 @@
   "preview": "https://media.kleooai.com/gallery/lighthouse-sketch-ad-p.mp4",
   "full": "https://media.kleooai.com/gallery/lighthouse-sketch-ad.mp4",
   "poster": "https://media.kleooai.com/gallery/lighthouse-sketch-ad.jpg"
- },
- {
-  "slug": "claude-chat-to-film-30s",
-  "title": "An idea. A chat. A film.",
-  "line": "One line typed in Claude, and Apex comes back in 4K 60 fps.",
-  "format": "tall",
-  "seconds": 30,
-  "prompt": "Make a short film like this: One line typed in Claude, and Apex comes back in 4K 60 fps.",
-  "kind": "ad",
-  "preview": "https://media.kleooai.com/gallery/claude-chat-to-film-30s-p.mp4",
-  "full": "https://media.kleooai.com/gallery/claude-chat-to-film-30s.mp4",
-  "poster": "https://media.kleooai.com/gallery/claude-chat-to-film-30s.jpg"
- },
- {
-  "slug": "add-kleo-to-claude-p3",
-  "title": "Add Kleo to Claude",
-  "line": "Stuck in a render queue, she adds the connector and asks for the film.",
-  "format": "tall",
-  "seconds": 25,
-  "prompt": "Make a short film like this: Stuck in a render queue, she adds the connector and asks for the film.",
-  "kind": "ad",
-  "preview": "https://media.kleooai.com/gallery/add-kleo-to-claude-p3-p.mp4",
-  "full": "https://media.kleooai.com/gallery/add-kleo-to-claude-p3.mp4",
-  "poster": "https://media.kleooai.com/gallery/add-kleo-to-claude-p3.jpg"
- },
- {
-  "slug": "opus-lighthouse-ad",
-  "title": "The Lighthouse Launch",
-  "line": "A client needs a launch film tonight; the lighthouse keeper delivers.",
-  "format": "tall",
-  "seconds": 31,
-  "prompt": "Make a short film like this: A client needs a launch film tonight; the lighthouse keeper delivers.",
-  "kind": "ad",
-  "preview": "https://media.kleooai.com/gallery/opus-lighthouse-ad-p.mp4",
-  "full": "https://media.kleooai.com/gallery/opus-lighthouse-ad.mp4",
-  "poster": "https://media.kleooai.com/gallery/opus-lighthouse-ad.jpg"
- },
- {
-  "slug": "your-next-film-30s",
-  "title": "From idea to film",
-  "line": "One line about a chase becomes a realistic film, or an animated one.",
-  "format": "tall",
-  "seconds": 30,
-  "prompt": "Make a short film like this: One line about a chase becomes a realistic film, or an animated one.",
-  "kind": "ad",
-  "preview": "https://media.kleooai.com/gallery/your-next-film-30s-p.mp4",
-  "full": "https://media.kleooai.com/gallery/your-next-film-30s.mp4",
-  "poster": "https://media.kleooai.com/gallery/your-next-film-30s.jpg"
- },
- {
-  "slug": "apex-in-claude-35s",
-  "title": "Apex, from one message",
-  "line": "A Claude chat, a pencil storyboard, then two cars out of a tunnel.",
-  "format": "tall",
-  "seconds": 35,
-  "prompt": "Make a short film like this: A Claude chat, a pencil storyboard, then two cars out of a tunnel.",
-  "kind": "ad",
-  "preview": "https://media.kleooai.com/gallery/apex-in-claude-35s-p.mp4",
-  "full": "https://media.kleooai.com/gallery/apex-in-claude-35s-p.mp4",
-  "poster": "https://media.kleooai.com/gallery/apex-in-claude-35s.jpg"
- },
- {
-  "slug": "kleo-ad-v2-lighthouse",
-  "title": "You direct, Kleo renders",
-  "line": "Floating keys type the brief; a lighthouse-keeper film renders on a phone.",
-  "format": "tall",
-  "seconds": 30,
-  "prompt": "Make a short film like this: Floating keys type the brief; a lighthouse-keeper film renders on a phone.",
-  "kind": "ad",
-  "preview": "https://media.kleooai.com/gallery/kleo-ad-v2-lighthouse-p.mp4",
-  "full": "https://media.kleooai.com/gallery/kleo-ad-v2-lighthouse-p.mp4",
-  "poster": "https://media.kleooai.com/gallery/kleo-ad-v2-lighthouse.jpg"
- },
- {
-  "slug": "kleo-reel-r3-tall",
-  "title": "One sentence, any look (9:16)",
-  "line": "The same reel, cut for phones.",
-  "format": "tall",
-  "seconds": 30,
-  "prompt": "Make a short film like this: The same reel, cut for phones.",
-  "kind": "ad",
-  "preview": "https://media.kleooai.com/gallery/kleo-reel-r3-tall-p.mp4",
-  "full": "https://media.kleooai.com/gallery/kleo-reel-r3-tall.mp4",
-  "poster": "https://media.kleooai.com/gallery/kleo-reel-r3-tall.jpg"
  },
  {
   "slug": "tether-not-filmed-tall",

@@ -40,6 +40,13 @@ def fmt_of(w, h, section=None):
 
 SECTION_FORMAT = {"wide": "wide", "ads-wide": "wide", "tall": "tall", "series": "tall", "ads-tall": "tall"}
 
+# Videos the owner took out of the app on 20 October 2026: the older connector-era ads. They stay on the website.
+HIDDEN = {
+    "claude-chat-to-film-30s", "add-kleo-to-claude-p3", "opus-lighthouse-ad", "your-next-film-30s",
+    "apex-in-claude-35s", "kleo-ad-v2-lighthouse", "kleo-reel-r3-tall",
+    "tether-not-filmed-wide", "films-in-claude-52s", "type-the-film-30s",
+}
+
 
 def from_gallery(path):
     out = []
@@ -81,7 +88,7 @@ def main(args):
     items, seen = [], set()
     for i, path in enumerate(args):
         for x in (from_gallery(path) if i == 0 else from_manifest(path)):
-            if x["slug"] not in seen:
+            if x["slug"] not in seen and x["slug"] not in HIDDEN:
                 seen.add(x["slug"])
                 items.append(x)
     OUT.write_text(json.dumps(items, ensure_ascii=False, indent=1) + "\n", encoding="utf-8", newline="\n")
