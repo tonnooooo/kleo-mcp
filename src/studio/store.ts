@@ -61,18 +61,39 @@ export const autoWanOn = async (env: StudioEnv, userId: string): Promise<boolean
 export const setAutoWan = (env: StudioEnv, userId: string, on: boolean) =>
   env.DB.prepare("UPDATE users SET studio_auto_wan = ? WHERE id = ?").bind(on ? 1 : 0, userId).run();
 
-let ready: Promise<unknown> | null = null;
-export function ensureStudioSchema(env: StudioEnv): Promise<unknown> {
-  if (!ready) {
-    ready = env.DB.batch(STUDIO_SCHEMA.map((s) => env.DB.prepare(s)))
-      .then(async () => {
-        for (const sql of STUDIO_COLUMNS) {
-          try { await env.DB.prepare(sql).run(); } catch (e) { if (!/duplicate column/i.test(String(e))) throw e; }
-        }
-      })
-      .catch((e) => { ready = null; throw e; });
+/**
+ * Whether this isolate has checked the tables. A FLAG, never a promise shared between requests (20 October 2026): the
+ * check used to be one promise kept for the isolate, and a promise started by one request never settles once that
+ * request is gone (its I/O is cancelled with it). Every later /api/ call on the isolate then waited on it for ever,
+ * with no CPU, until the browser gave up: the app stayed on its logo on the owner's computer while his phone, on another
+ * isolate, worked. Now each request runs its own check until one has passed; two first requests may both run it, and
+ * every statement in it is idempotent.
+ */
+let schemaChecked = false;
+export async function ensureStudioSchema(env: StudioEnv): Promise<void> {
+  if (schemaChecked) return;
+  await env.DB.batch(STUDIO_SCHEMA.map((s) => env.DB.prepare(s)));
+  for (const sql of await missingColumns(env, STUDIO_COLUMNS)) {
+    try { await env.DB.prepare(sql).run(); } catch (e) { if (!/duplicate column/i.test(String(e))) throw e; }
   }
-  return ready;
+  schemaChecked = true;
+}
+
+/**
+ * The ALTERs whose column is not there yet, read in one batch of pragma_table_info queries instead of trying every
+ * ALTER on every new isolate (seven round trips to D1, each answered "duplicate column"). Any trouble reading the
+ * columns answers all of them, and the ALTERs say for themselves which already exist.
+ */
+async function missingColumns(env: StudioEnv, alters: string[]): Promise<string[]> {
+  const parsed = alters.map((sql) => ({ sql, m: /^ALTER TABLE (\w+) ADD COLUMN (\w+)/i.exec(sql) }));
+  const tables = [...new Set(parsed.map((p) => p.m?.[1]).filter((t): t is string => !!t))];
+  try {
+    const rows = await env.DB.batch(tables.map((t) => env.DB.prepare("SELECT name FROM pragma_table_info(?)").bind(t)));
+    const have = new Map(tables.map((t, i) => [t, new Set(((rows[i] as { results?: { name: string }[] })?.results ?? []).map((r) => r.name))]));
+    return parsed.filter((p) => !p.m || !have.get(p.m[1])?.has(p.m[2])).map((p) => p.sql);
+  } catch {
+    return alters;
+  }
 }
 
 export interface LoginRow { provider: string; subject: string; user_id: string; email: string | null; secret: string | null }
