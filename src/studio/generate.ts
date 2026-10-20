@@ -23,7 +23,7 @@ import { backupRoutes, withinBudget, type BackupProvider } from "./backups.ts";
 import { KieError } from "../kie.ts";
 import { debitCredits, refundCredits, getUser, hasPaid, audit, countAuditTodayForUser } from "../db.ts";
 import { publicText, rid } from "../util.ts";
-import { clampFreeResolution, clipCostUsd, clipCredits, freeModels, freeResolutions, modelByKey, normalizeSettings, taskInput, wanCostUsd, wanOffered, wanOrder, DEFAULT_MARGIN, WAN_KEY, WAN_NAME, type ClipSettings } from "./models.ts";
+import { clampFreeResolution, clipCostUsd, clipCredits, freeModels, freeResolutions, modelByKey, normalizeSettings, pictureProblem, taskInput, wanCostUsd, wanOffered, wanOrder, DEFAULT_MARGIN, WAN_KEY, WAN_NAME, type ClipSettings } from "./models.ts";
 import { presetByKey, withPreset } from "./presets.ts";
 import { planTool, toolByKey, toolCredits, toneText, ToolRefusal, TOOLS, type Media, type Plan, type ToolKey } from "./tools.ts";
 import { mediaInfo } from "./media.ts";
@@ -268,7 +268,24 @@ function refusal(e: unknown, noun: string): string {
   if (e instanceof KieError && e.status === 429) return `The ${noun} model is busy right now. Your credits are back — please try again in a minute.`;
   const why = e instanceof Error ? e.message : String(e);
   if (isCopyrightRefusal(why)) return copyrightText(`${noun} model`);
-  return `The ${noun} model refused this request: ${publicText(why).replace(/^.*?→ \d+: /, "")}`;
+  return `The ${noun} model refused this request: ${plainReason(why).replace(/^.*?→ \d+: /, "")}`;
+}
+
+/**
+ * A provider's reason in plain words (20 October 2026). ByteDance's asset errors came through as
+ * "资源同步失败: url=https://app.kleooai.com/media/u/…?exp=…&sig=…, DoCall CreateAsset: InvalidParameter.HeightTooSmall:
+ * Height must be between 300px and 6000px. status code: 400, request id: 202…": Chinese, a signed link and a request id
+ * on a customer's card. They now read "one of the pictures was refused (Height must be between 300px and 6000px)".
+ */
+export function plainReason(why: string): string {
+  // Only ByteDance's asset step (CreateAsset) is about a picture; any other InvalidParameter keeps its own words.
+  const asset = /CreateAsset:\s*InvalidParameter\.[A-Za-z]+:\s*(.+?)\.?\s*(?:status code:|request id:|$)/i.exec(why);
+  if (asset) return `one of the pictures was refused (${asset[1].trim().replace(/[.,;\s]+$/, "")})`;
+  return publicText(why)
+    .replace(/https?:\/\/\S+?\?exp=\d+&sig=[0-9a-f]+/gi, "a picture link")
+    .replace(/[\u3400-\u9fff\uff00-\uffef]+[:：]?\s*/g, "")
+    .replace(/^[\s:,;]+/, "")
+    .trim() || "the provider gave no reason";
 }
 
 /**
@@ -284,7 +301,7 @@ const copyrightText = (noun: string): string =>
 /** What a failed generation says: the copyright sentence, or the provider's reason in neutral words. */
 export function failureText(noun: string, why: string): string {
   if (isCopyrightRefusal(why)) return copyrightText(noun);
-  return `The ${noun} could not make this one: ${publicText(why).replace(/[.\s]+$/, "")}. Your credits are back.`;
+  return `The ${noun} could not make this one: ${plainReason(why).replace(/[.\s]+$/, "")}. Your credits are back.`;
 }
 
 /**
@@ -424,6 +441,10 @@ export async function createGeneration(env: StudioEnv, userId: string, req: Crea
   if (videos.some((v) => !v.duration || v.duration < 2)) throw new StudioError("Each video clip must be at least 2 seconds long (MP4 or MOV).");
   if (videoSeconds > (model.maxRefVideoSeconds ?? 0) + 0.5) throw new StudioError(`Video clips can add up to ${model.maxRefVideoSeconds} seconds with ${model.name}. Yours are ${Math.round(videoSeconds)} s.`);
   if (sounds.some((a) => !a.duration || a.duration < 2 || a.duration > 15.5)) throw new StudioError("Each sound clip must be 2–15 seconds long (MP3 or WAV).");
+  for (const p of pictures) {
+    const problem = pictureProblem(model.name, model.family, p.width, p.height);
+    if (problem) throw new StudioError(problem, 400, "picture_size");
+  }
 
   const free = freeModels(env.STUDIO_FREE_MODELS);
   const freeRes = freeResolutions(env.STUDIO_FREE_RESOLUTIONS);

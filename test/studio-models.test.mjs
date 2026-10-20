@@ -5,7 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MODELS, normalizeSettings, clipCredits, clipCostUsd, taskInput, freeModels, publicCatalog, modelByKey, wanCostUsd, wanOffered, wanOrder } from "../src/studio/models.ts";
+import { MODELS, normalizeSettings, clipCredits, clipCostUsd, taskInput, freeModels, publicCatalog, modelByKey, pictureProblem, wanCostUsd, wanOffered, wanOrder } from "../src/studio/models.ts";
 import { makeSession, readSession, hashPassword, checkPassword, passwordProblem, signPath, checkSignedPath, readCookie } from "../src/studio/session.ts";
 import { proposalFrom, fallbackProposal, systemPrompt, chatTitle, runAgent } from "../src/studio/agent.ts";
 
@@ -267,4 +267,16 @@ test("Wan 3.0 after a copyright refusal: offered for Seedance clips only, always
   const r2v = wanOrder(s({ model: "seedance-2.5", resolution: "1080p", duration: 10, aspect: "9:16", audio: false, images: 3 }), "they meet", ["a", "b", "c"]);
   assert.deepEqual(r2v, { slug: "alibaba/wan-3.0/reference-to-video", body: { prompt: "they meet", duration: 10, resolution: "1080p", generate_audio: false, reference_images: ["a", "b", "c"], aspect_ratio: "9:16" } });
   for (const o of [t2v, i2v, r2v]) assert.ok(!/spicy/.test(o.slug), "never a -spicy route");
+});
+
+test("Seedance's picture sizes: 300-6000 px a side, sides at most 2.5 times each other; other models and unknown sizes pass", () => {
+  assert.equal(pictureProblem("Seedance 2.5", "seedance", 1024, 768), null);
+  assert.equal(pictureProblem("Seedance 2.5", "seedance", 300, 750), null, "exactly 2.5 passes");
+  assert.match(pictureProblem("Seedance 2.5", "seedance", 387, 297), /too small .*387×297/);
+  assert.match(pictureProblem("Seedance 2.5", "seedance", 6100, 3000), /too big/);
+  assert.match(pictureProblem("Seedance 2.5", "seedance", 300, 751), /too tall or too wide/);
+  assert.match(pictureProblem("Seedance 2.5", "seedance", 100, 4000), /too tall or too wide/, "a thin strip is told to crop, not that it is small");
+  assert.equal(pictureProblem("Veo 3.1", "veo", 100, 100), null);
+  assert.equal(pictureProblem("Seedance 2.5", "seedance", null, null), null);
+  assert.equal(pictureProblem("Seedance 2.5", "seedance", 0, 297), null);
 });

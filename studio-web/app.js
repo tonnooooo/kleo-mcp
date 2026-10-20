@@ -201,7 +201,7 @@ function setCredits(n) {
   for (const el of document.querySelectorAll("[data-credits]")) { el.textContent = S.me.admin ? "∞" : n; el.parentElement?.classList.remove("bump"); void el.offsetWidth; el.parentElement?.classList.add("bump"); }
 }
 
-/** Uploads one file (pictures are shrunk to 2048 px first). Answers { id, kind, duration, local }. */
+/** Uploads one file (pictures are fitted to 320-2048 px first, fitPicture). Answers { id, kind, duration, local }. */
 async function uploadFile(f) {
   if (!S.me && !DEMO) { requireAccount(); throw new Error("Create a free account to upload."); }
   const isPic = f.type.startsWith("image/");
@@ -226,12 +226,24 @@ async function firstFrame(file) {
   if (!blob) throw new Error("Kleo couldn't read the first frame of that video.");
   return new File([blob], "first-frame.jpg", { type: "image/jpeg" });
 }
+/**
+ * The size a picture is uploaded at: at most 2048 px on its long side, and at least 320 px on its short side
+ * (20 October 2026: Seedance refuses sides under 300 px, and a customer's 387x297 pictures failed five clips in a row).
+ * Never past 6000 px, Seedance's upper limit, even for a very long and thin picture.
+ */
+function fitPicture(w, h) {
+  let k = Math.min(1, 2048 / Math.max(w, h));
+  if (Math.min(w, h) * k < 320) k = 320 / Math.min(w, h);
+  k = Math.min(k, 6000 / Math.max(w, h));
+  return { w: Math.max(1, Math.round(w * k)), h: Math.max(1, Math.round(h * k)) };
+}
 async function shrink(file) {
   try {
     const bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
-    const k = Math.min(1, 2048 / Math.max(bmp.width, bmp.height));
-    const c = document.createElement("canvas"); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
-    c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+    const fit = fitPicture(bmp.width, bmp.height);
+    const c = document.createElement("canvas"); c.width = fit.w; c.height = fit.h;
+    const g = c.getContext("2d"); g.imageSmoothingEnabled = true; g.imageSmoothingQuality = "high";
+    g.drawImage(bmp, 0, 0, c.width, c.height);
     const blob = await new Promise((res) => c.toBlob(res, "image/jpeg", 0.9));
     if (blob) return { blob, w: c.width, h: c.height };
   } catch { /* fall through: send the file as it is */ }
