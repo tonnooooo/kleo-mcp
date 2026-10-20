@@ -208,15 +208,17 @@ export const insertGeneration = (env: StudioEnv, g: { id: string; userId: string
                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitting', ${NOW}, ?)`)
     .bind(g.id, g.userId, g.chatId, g.messageId, g.model, JSON.stringify(g.settings), g.prompt, JSON.stringify(g.images), g.credits, g.estUsd, g.kind ?? "video").run();
 /**
- * Settles a refused clip's offer to make it again on Wan 3.0 (generate.ts retryOnWan): `settings.wan` becomes the new
- * clip's id, or "declined". One compare-and-set, so two taps can never start two clips: false when it was settled
- * already. `null` reopens it (the new clip could not even be written down).
+ * Settles one offer on a refused creation (generate.ts): "wan" = make the clip again on Wan 3.0 (retryOnWan), "rewrite" =
+ * make it again with its names turned into descriptions (retryDescribed). `settings.<field>` becomes the new creation's
+ * id, or "declined". One compare-and-set, so two taps can never start two: false when it was settled already. `null`
+ * reopens it (the new creation could not even be written down).
  */
-export async function settleWanOffer(env: StudioEnv, id: string, userId: string, value: string | null): Promise<boolean> {
+export async function settleOffer(env: StudioEnv, id: string, userId: string, field: "wan" | "rewrite", value: string | null): Promise<boolean> {
+  const path = `$.${field}`;
   const r = value === null
-    ? await env.DB.prepare(`UPDATE studio_generations SET settings = json_remove(settings, '$.wan'), updated_at = ${NOW} WHERE id = ? AND user_id = ?`).bind(id, userId).run()
-    : await env.DB.prepare(`UPDATE studio_generations SET settings = json_set(settings, '$.wan', ?), updated_at = ${NOW}
-        WHERE id = ? AND user_id = ? AND status = 'failed' AND json_extract(settings, '$.wan') IS NULL`).bind(value, id, userId).run();
+    ? await env.DB.prepare(`UPDATE studio_generations SET settings = json_remove(settings, ?), updated_at = ${NOW} WHERE id = ? AND user_id = ?`).bind(path, id, userId).run()
+    : await env.DB.prepare(`UPDATE studio_generations SET settings = json_set(settings, ?, ?), updated_at = ${NOW}
+        WHERE id = ? AND user_id = ? AND status = 'failed' AND json_extract(settings, ?) IS NULL`).bind(path, value, id, userId, path).run();
   return (r.meta.changes ?? 0) === 1;
 }
 /**
