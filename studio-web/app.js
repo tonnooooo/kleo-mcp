@@ -1797,15 +1797,14 @@ function toolBody(key, compact, top = null) {
     const files = t.fields.filter((f) => ["image", "video", "audio"].includes(f.kind) && visible(f));
     // The engine card: one clean clip or picture of what the app makes, no before/after split, no arrows, no chips
     // (19 October 2026, the owner: the little previews "fanno schifo").
-    const eng = ENGINE[key] || (t.group === "trend" ? ["Wan 3.0 Video Edit", "Your people in this clip: the room, the moves and the sound stay."] : [t.name, t.blurb]);
+    const eng = ENGINE[key] || [t.name, t.blurb];
+    // A viral template shows its clip once, at the top of the page (20 October 2026, the owner: "troppe anteprime,
+    // veramente troppe… lascia la prima in alto"): no engine card and no first-frame picture in the form, only the words.
+    const trend = t.group === "trend";
     fill(form, top,
-      compact ? null : h("div", { class: "engine-card" }, engineThumb(key), h("div", { class: "ec-tx" }, h("b", {}, eng[0]), h("span", {}, eng[1]))),
-      // A viral template: the clip's first frame with each seat's number where that person sits.
-      t.guide ? h("figure", { class: "seat-guide" },
-        h("div", { class: "sg-pic" }, h("img", { src: t.guide, alt: "" }),
-          t.seats.map((s, i) => s.at ? h("span", { class: "seat-dot", style: { left: `${s.at[0]}%`, top: `${s.at[1]}%`, background: s.color } }, String(i + 1)) : null)),
-        h("figcaption", {}, t.fields.some((f) => f.required) ? (t.seats.length === 1 ? "Add a clear, well-lit photo of yourself, face to the camera: you take the place of the person in this clip." : `Add a clear, well-lit photo of one person for each of the ${t.seats.length} people, face to the camera, the way the boxes below describe them.`)
-          : "Add a photo for each person you want in the clip. Empty seats keep the original person.")) : null,
+      compact || trend ? null : h("div", { class: "engine-card" }, engineThumb(key), h("div", { class: "ec-tx" }, h("b", {}, eng[0]), h("span", {}, eng[1]))),
+      trend ? h("p", { class: "seat-note" }, t.fields.some((f) => f.required) ? (t.seats.length === 1 ? "Add a clear, well-lit photo of yourself, face to the camera: you take the place of the person in this clip." : `Add a clear, well-lit photo of one person for each of the ${t.seats.length} people, face to the camera, the way the boxes below describe them.`)
+        : "Add a photo for each person you want in the clip. Empty seats keep the original person.") : null,
       files.length ? h("div", { class: "drops" }, files.map((f, i) => { const z = dropZone(f); if (files.length === 1 || (files.length % 2 === 1 && i === files.length - 1)) z.classList.add("one"); return z; })) : null,
       t.fields.filter((f) => !["image", "video", "audio"].includes(f.kind)).map(fieldEl),
       t.consent ? h("label", { class: "consent" }, h("input", { type: "checkbox", checked: st.consent || null, onchange: (e) => { st.consent = e.target.checked; drawCta(); } }),

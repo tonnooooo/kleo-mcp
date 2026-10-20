@@ -1464,6 +1464,7 @@ img.fx-in { animation: fx-img-in .7s var(--ease-out) both; }
 @media (max-width: 520px) { .vtabs { grid-template-columns: 1fr .72fr 1.4fr; } }
 
 /* Viral templates (20 October 2026): the seat guide and the numbered seats, one colour per person. */
+.seat-note { margin: 0 0 4px; font-size: 16px; line-height: 1.45; color: var(--ink-2); }
 .seat-guide { flex: none; margin: 0 0 12px; }
 .seat-guide .sg-pic { position: relative; border-radius: 18px; overflow: hidden; background: #000; }
 .seat-guide img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
