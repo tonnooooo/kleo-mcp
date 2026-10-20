@@ -248,7 +248,13 @@ function speechPart(inputs: Record<string, string>, media: Record<string, Media 
 /** A viral template: every seat with a photo is swapped in; at least one seat needs one. */
 function planTrend(trend: Trend, inputs: Record<string, string>, media: Record<string, Media | undefined>): Plan {
   const filled = trend.seats.filter((s) => media[s.key]);
-  for (const s of filled) need(media[s.key], "image", `Person ${trend.seats.indexOf(s) + 1}`);
+  for (const s of filled) {
+    const m = need(media[s.key], "image", `Person ${trend.seats.indexOf(s) + 1}`);
+    // Wan 3.0 reads reference pictures from 240 to 8000 pixels a side (the page shrinks big photos before upload).
+    const lo = Math.min(m.width ?? 1000, m.height ?? 1000), hi = Math.max(m.width ?? 0, m.height ?? 0);
+    if (lo < 240) throw new ToolRefusal(`The photo of person ${trend.seats.indexOf(s) + 1} is too small (${lo} pixels). Use a photo at least 240 pixels on each side.`);
+    if (hi > 8000) throw new ToolRefusal(`The photo of person ${trend.seats.indexOf(s) + 1} is too big (${hi} pixels). Use a photo under 8000 pixels.`);
+  }
   if (trendNeedsAllSeats(trend) && filled.length < trend.seats.length) throw new ToolRefusal(trend.seats.length === 1 ? "Add your photo." : `Add a photo for each of the ${trend.seats.length} people.`);
   if (!filled.length) throw new ToolRefusal("Add a photo of at least one person.");
   const q = trendQuality(inputs.quality);

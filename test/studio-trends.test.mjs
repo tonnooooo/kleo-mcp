@@ -144,3 +144,34 @@ test("the Templates page is served by the app, not the website's 404", async () 
   assert.ok(APP_PATH.test("/apps/trend-apt"));
   assert.ok(!APP_PATH.test("/templates/x"));
 });
+
+test("plan: a photo too small or too big for Wan 3.0 is refused before any charge", () => {
+  const tiny = { ...photo("up_t"), width: 200, height: 180 };
+  assert.throws(() => planTool(YTBM, {}, { person1: tiny }), (e) => e instanceof ToolRefusal && /too small \(180 pixels\)/.test(e.message));
+  const huge = { ...photo("up_h"), width: 8064, height: 6048 };
+  assert.throws(() => planTool(YTBM, {}, { person1: huge }), (e) => e instanceof ToolRefusal && /too big \(8064 pixels\)/.test(e.message));
+  // Unknown sizes are let through (the page measures every picture it uploads).
+  assert.equal(planTool(YTBM, { quality: "480p" }, { person1: { ...photo("up_u"), width: null, height: null } }).usd, 1.4);
+});
+
+test("wavespeed upload: a ticket, then the bytes PUT to the ticket's address with its headers, answering download_url", async () => {
+  const real = globalThis.fetch;
+  try {
+    const calls = [];
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url: String(url), method: init?.method, headers: init?.headers, size: init?.body?.byteLength ?? null, body: typeof init?.body === "string" ? JSON.parse(init.body) : null });
+      if (String(url).endsWith("/api/v3/media/uploads")) return new Response(JSON.stringify({ code: 200, data: { download_url: "https://cdn.example/m/up_a.jpg", upload: { method: "PUT", url: "https://store.example/signed", headers: { "Content-Type": "image/jpeg", "If-None-Match": "*" } } } }));
+      if (String(url) === "https://store.example/signed") return new Response("", { status: 200 });
+      return new Response("no", { status: 500 });
+    };
+    const { wavespeedUpload } = await import("../src/wavespeed.ts");
+    const url = await wavespeedUpload({ WAVESPEED_API_KEY: "k" }, new Uint8Array(1234), "up_a.jpg", "image/jpeg");
+    assert.equal(url, "https://cdn.example/m/up_a.jpg");
+    assert.deepEqual(calls[0].body, { filename: "up_a.jpg", size: 1234, content_type: "image/jpeg" });
+    assert.equal(calls[0].headers.authorization, "Bearer k");
+    assert.equal(calls[1].method, "PUT");
+    assert.equal(calls[1].size, 1234);
+    assert.equal(calls[1].headers.authorization, undefined);
+    assert.equal(calls[1].headers["If-None-Match"], "*");
+  } finally { globalThis.fetch = real; }
+});

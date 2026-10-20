@@ -50,6 +50,20 @@ export async function wavespeedSubmit(env: { WAVESPEED_API_KEY?: string }, model
   return String(d.id);
 }
 
+/**
+ * Puts one file in WaveSpeed's own storage and answers its download_url (POST /api/v3/media/uploads for a ticket, then
+ * PUT the bytes to the ticket's address; free, kept 7 days, read 20 October 2026). A template's photos go this way, so
+ * the model never has to fetch them from Kleo's signed links.
+ */
+export async function wavespeedUpload(env: { WAVESPEED_API_KEY?: string }, bytes: Uint8Array, filename: string, contentType: string): Promise<string> {
+  const d = await wavespeed<{ download_url?: string; upload?: { method?: string; url?: string; headers?: Record<string, string> } }>(env, "POST", "/api/v3/media/uploads",
+    { filename, size: bytes.byteLength, content_type: contentType });
+  if (!d.download_url || !d.upload?.url) throw new KieError("wavespeed.ai answered no upload address", 502, true);
+  const put = await fetch(d.upload.url, { method: d.upload.method ?? "PUT", headers: d.upload.headers ?? { "content-type": contentType }, body: bytes, signal: AbortSignal.timeout(60_000) });
+  if (!put.ok) throw new KieError(`wavespeed.ai upload → ${put.status}`, put.status, put.status >= 500);
+  return d.download_url;
+}
+
 /** One prediction's state, read as an ePhone task: completed with outputs, failed with its reason, or still running. */
 export async function wavespeedTask(env: { WAVESPEED_API_KEY?: string }, id: string): Promise<WavespeedTask> {
   const d = await wavespeed<WavespeedTask>(env, "GET", `/api/v3/predictions/${encodeURIComponent(id)}/result`, undefined, 15_000);

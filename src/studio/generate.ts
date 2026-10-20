@@ -17,7 +17,7 @@
 import type { StudioEnv } from "./env.ts";
 import type { Env } from "../env";
 import { ephone, ephoneOutputs, ephoneFailure, type EphoneTask } from "../ephone.ts";
-import { wavespeedSubmit, wavespeedTask } from "../wavespeed.ts";
+import { wavespeedSubmit, wavespeedTask, wavespeedUpload } from "../wavespeed.ts";
 import { apimartSubmit, apimartTask, MUSIC_PREFIX } from "../apimart.ts";
 import { backupRoutes, withinBudget, type BackupProvider } from "./backups.ts";
 import { KieError } from "../kie.ts";
@@ -258,6 +258,8 @@ export async function deleteGeneration(env: StudioEnv, userId: string, g: Genera
 /** The sentence a person reads when the provider refused an order. */
 function refusal(e: unknown, noun: string): string {
   if (e instanceof KieError && e.status === 402) return "Our generation engine is being recharged. Your credits are back — please try again in a little while.";
+  // A provider's rate limit (WaveSpeed answers 429 when too many runs start at once) is a busy minute, not a refusal.
+  if (e instanceof KieError && e.status === 429) return `The ${noun} model is busy right now. Your credits are back — please try again in a minute.`;
   const why = e instanceof Error ? e.message : String(e);
   if (isCopyrightRefusal(why)) return copyrightText(`${noun} model`);
   return `The ${noun} model refused this request: ${publicText(why).replace(/^.*?→ \d+: /, "")}`;
@@ -692,6 +694,28 @@ async function forgetSpeech(env: StudioEnv, userId: string, spoken: { id: string
   await audit(asEnv(env), userId, null, "studio.speech_refused", { seconds: spoken.seconds, why: why instanceof StudioError ? why.code : "error" });
 }
 
+/**
+ * A template's photos, copied into WaveSpeed's own storage before the run (20 October 2026): the model then reads them
+ * from there instead of fetching Kleo's signed links. A photo that cannot be copied keeps its signed link.
+ */
+async function rehostForWavespeed(env: StudioEnv, urls: string[], media: Record<string, Media | undefined>, rows: { id: string; key: string; content_type: string | null }[]): Promise<string[]> {
+  return Promise.all(urls.map(async (url) => {
+    const m = Object.values(media).find((x) => x?.url === url);
+    const row = m ? rows.find((r) => r.id === m.id) : undefined;
+    if (!row) return url;
+    try {
+      const obj = await env.RENDERS.get(row.key);
+      if (!obj) return url;
+      const bytes = new Uint8Array(await obj.arrayBuffer());
+      const type = row.content_type || obj.httpMetadata?.contentType || "image/jpeg";
+      const ext = type.includes("png") ? "png" : type.includes("webp") ? "webp" : "jpg";
+      return await wavespeedUpload(env, bytes, `${row.id}.${ext}`, type);
+    } catch {
+      return url;
+    }
+  }));
+}
+
 /** Runs one app: reads the attached files, speaks the words if any, prices, charges, orders. */
 export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, origin: string): Promise<GenerationRow> {
   const tool = toolByKey(req.tool);
@@ -784,6 +808,7 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
       const fill = (o: unknown) => JSON.parse(JSON.stringify(o).split("{{speech}}").join(media.audio?.url ?? ""));
       const input = fill(task.input);
       if (task.provider === "wavespeed") {
+        if (Array.isArray(input.reference_images)) input.reference_images = await rehostForWavespeed(env, input.reference_images as string[], media, rows);
         slots.push({ task: await wavespeedSubmit(env, task.model, input), status: "running", type: task.output, model: task.model, provider: "wavespeed" });
         continue;
       }
