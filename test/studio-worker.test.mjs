@@ -687,6 +687,32 @@ test("video with a reference clip and a preset: priced on the clip's seconds, se
   } finally { p.restore(); }
 });
 
+test("templates and Motion Control stay locked for an account that never paid, whatever its balance", async () => {
+  // 20 October 2026, the owner: free accounts may look and upload, never generate the dear things. Some templates cost
+  // under 5 credits at 480p (Fernandez Celebration: 3), so the lock, not the price, is what keeps the gift off them.
+  const env = newEnv();
+  const cookie = await signUp(env, "farm@example.com");
+  const me = (await call(env, "/api/me", { cookie })).json;
+  env.DB.db.exec(`UPDATE users SET credits = 100 WHERE id = '${me.id}'`);
+  const pic = await upload(env, cookie, jpegBytes(), "image/jpeg");
+  const moves = await upload(env, cookie, mp4Bytes(8));
+  const trends = (await call(env, "/api/config")).json.tools.filter((t) => t.group === "trend");
+  assert.ok(trends.length >= 20, "every template is checked");
+  const p = fakeProvider(() => ok({ id: "task_never" }));
+  try {
+    for (const t of trends) {
+      const inputs = Object.fromEntries(t.seats.map((s) => [s.key, pic.id]));
+      const r = await call(env, "/api/tools/run", { method: "POST", cookie, body: { tool: t.key, consent: true, inputs: { ...inputs, quality: "480p" } } });
+      assert.equal(r.status, 402, `${t.key}: ${r.text}`);
+      assert.equal(r.json.code, "locked", t.key);
+    }
+    const motion = await call(env, "/api/tools/run", { method: "POST", cookie, body: { tool: "motion-control", inputs: { image: pic.id, video: moves.id } } });
+    assert.equal(motion.json.code, "locked");
+    assert.equal(p.sent.length, 0, "no provider was asked");
+    assert.equal(credits(env, me.id), 100, "nothing was charged");
+  } finally { p.restore(); }
+});
+
 test("apps: face swap (consent, two pictures), talking photo (speech first, exact price), voiceover, music; locked for free accounts", async () => {
   const env = newEnv();
   const free = await signUp(env, "free@example.com");
