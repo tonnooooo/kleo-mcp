@@ -897,7 +897,7 @@ async function settleWan(g, decline, use, no) {
       toast(`Making it with ${n.modelName || "Wan 3.0"}`);
     }
     refreshGen(g.id);
-  } catch (e) { use.disabled = no.disabled = false; refreshGen(g.id); handleError(e); }
+  } catch (e) { CARDS.delete(g.id); refreshGen(g.id); handleError(e); }
 }
 function genEl(id) {
   const g = S.gens.get(id);
@@ -2061,7 +2061,7 @@ const ACCOUNT_SECTIONS = [["profile", "Profile", "user"], ["credits", "Credits",
 const KIND_ICON = { video: "film", image: "photo", tool: "apps", film: "film" };
 function nameOf(model) {
   return S.config?.models?.find((m) => m.key === model)?.name || S.config?.imageModels?.find((m) => m.key === model)?.name
-    || S.config?.tools?.find((t) => t.key === model)?.name || (model === "kleo-film" ? "Kleo Film" : model === "kleo-animatic" ? "Kleo Animatic" : model);
+    || S.config?.tools?.find((t) => t.key === model)?.name || (model === "kleo-film" ? "Kleo Film" : model === "kleo-animatic" ? "Kleo Animatic" : model === "wan-3.0" ? "Wan 3.0" : model);
 }
 const when = (iso) => { try { return new Date(iso.endsWith("Z") ? iso : iso + "Z").toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }); } catch { return ""; } };
 function accountView() {
@@ -2431,7 +2431,7 @@ async function demoApi(path, opts) {
     g.offer = null;
     g.error = "The video model won't make this one: it recognised characters, people or music protected by copyright, from a film, a show or a song. Your credits are back. Try your own characters, and leave out their pictures and names.";
     if (b.decline) return { original: { ...g } };
-    g.error = "Seedance 2.5 won't make this one: it recognised characters, people or music protected by copyright. Your credits are back, and Wan 3.0 made it again.";
+    g.error = "Seedance 2.5 won't make this one: it recognised characters, people or music protected by copyright. Your credits are back, and you sent it to Wan 3.0.";
     const n = { id: "g_demo" + (++demoDb.n), kind: "video", model: "wan-3.0", modelName: "Wan 3.0", settings: { ...g.settings, model: "wan-3.0" }, prompt: g.prompt, credits: o.credits, status: "running", chatId: g.chatId, createdAt: now(), video: null, outputs: [], output: "video", count: 1, doneAt: Date.now() + 6000 };
     demoDb.credits -= o.credits; demoDb.gens.set(n.id, n);
     let message = null;
