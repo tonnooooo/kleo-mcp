@@ -223,11 +223,13 @@ export function imageCredits(s: ImageSettings, margin = DEFAULT_MARGIN): number 
 }
 
 /**
- * Image models a never-paid account may use (STUDIO_FREE_IMAGE_MODELS). Nano Banana Pro, Nano Banana 2.1 (20 October
- * 2026, the owner: "blocca per i nuovi utenti … Nano Banana 2.1") and GPT Image 2.5 unlock with the first purchase.
+ * Image models a never-paid account may use (STUDIO_FREE_IMAGE_MODELS). Nano Banana Pro, Nano Banana 2.1, FLUX 3 (20
+ * October 2026, the owner: "blocca per i nuovi utenti … Nano Banana 2.1", then "blocca flux 3") and GPT Image 2.5 unlock
+ * with the first purchase. A free picture another model refuses still gets its FLUX 3 second try (imageAlternatives):
+ * that is Kleo's retry, at 2K at most, not the person's choice of model.
  */
 export function freeImageModels(list: string | undefined): ImageModelKey[] {
-  const raw = (list ?? "nano-banana-2,seedream-5,flux-2-pro,flux-3").trim();
+  const raw = (list ?? "nano-banana-2,seedream-5,flux-2-pro").trim();
   if (raw === "*") return IMAGE_MODELS.map((m) => m.key);
   return raw.split(",").map((s) => s.trim()).filter((k): k is ImageModelKey => !!imageModelByKey(k));
 }
