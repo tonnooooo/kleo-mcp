@@ -288,42 +288,6 @@
   "poster": "https://media.kleooai.com/gallery/lighthouse-sketch-ad.jpg"
  },
  {
-  "slug": "tether-not-filmed-tall",
-  "title": "Not one frame was filmed (9:16)",
-  "line": "Tether in orbit, cut for phones.",
-  "format": "tall",
-  "seconds": 26,
-  "prompt": "Make a short film like this: Tether in orbit, cut for phones.",
-  "kind": "ad",
-  "preview": "https://media.kleooai.com/gallery/tether-not-filmed-tall-p.mp4",
-  "full": "https://media.kleooai.com/gallery/tether-not-filmed-tall.mp4",
-  "poster": "https://media.kleooai.com/gallery/tether-not-filmed-tall.jpg"
- },
- {
-  "slug": "connect-once-tall",
-  "title": "Connect once",
-  "line": "Paste the address, describe the film, and Kleo writes and renders it.",
-  "format": "tall",
-  "seconds": 32,
-  "prompt": "Make a short film like this: Paste the address, describe the film, and Kleo writes and renders it.",
-  "kind": "ad",
-  "preview": "https://media.kleooai.com/gallery/connect-once-tall-p.mp4",
-  "full": "https://media.kleooai.com/gallery/connect-once-tall-p.mp4",
-  "poster": "https://media.kleooai.com/gallery/connect-once-tall.jpg"
- },
- {
-  "slug": "this-film-cost-5-euro",
-  "title": "No car, no crew, no camera",
-  "line": "Apex from one sentence: every frame generated.",
-  "format": "tall",
-  "seconds": 24,
-  "prompt": "Make a short film like this: Apex from one sentence: every frame generated.",
-  "kind": "ad",
-  "preview": "https://media.kleooai.com/gallery/this-film-cost-5-euro-p.mp4",
-  "full": "https://media.kleooai.com/gallery/this-film-cost-5-euro-p.mp4",
-  "poster": "https://media.kleooai.com/gallery/this-film-cost-5-euro.jpg"
- },
- {
   "slug": "sonnet-blender-to-film",
   "title": "Blender to film",
   "line": "Grey Blender previz on top, the finished shots underneath.",
@@ -358,30 +322,6 @@
   "preview": "https://media.kleooai.com/gallery/ai-is-not-creative-p.mp4",
   "full": "https://media.kleooai.com/gallery/ai-is-not-creative.mp4",
   "poster": "https://media.kleooai.com/gallery/ai-is-not-creative.jpg"
- },
- {
-  "slug": "one-sentence-r6",
-  "title": "One sentence. One film.",
-  "line": "One sentence, four looks, one film.",
-  "format": "tall",
-  "seconds": 30,
-  "prompt": "Make a short film like this: One sentence, four looks, one film.",
-  "kind": "ad",
-  "preview": "https://media.kleooai.com/gallery/one-sentence-r6-p.mp4",
-  "full": "https://media.kleooai.com/gallery/one-sentence-r6-p.mp4",
-  "poster": "https://media.kleooai.com/gallery/one-sentence-r6.jpg"
- },
- {
-  "slug": "it-writes-it-directs-r5",
-  "title": "It writes. It directs.",
-  "line": "One message, and Kleo writes and directs the film.",
-  "format": "tall",
-  "seconds": 30,
-  "prompt": "Make a short film like this: One message, and Kleo writes and directs the film.",
-  "kind": "ad",
-  "preview": "https://media.kleooai.com/gallery/it-writes-it-directs-r5-p.mp4",
-  "full": "https://media.kleooai.com/gallery/it-writes-it-directs-r5-p.mp4",
-  "poster": "https://media.kleooai.com/gallery/it-writes-it-directs-r5.jpg"
  },
  {
   "slug": "diver-bowling",
