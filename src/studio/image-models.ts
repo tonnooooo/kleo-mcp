@@ -222,9 +222,12 @@ export function imageCredits(s: ImageSettings, margin = DEFAULT_MARGIN): number 
   return Math.max(1, Math.ceil((imageCostUsd(s) * margin) / CREDIT_USD - 1e-9));
 }
 
-/** Image models a never-paid account may use (STUDIO_FREE_IMAGE_MODELS; default all but Nano Banana Pro). */
+/**
+ * Image models a never-paid account may use (STUDIO_FREE_IMAGE_MODELS). Nano Banana Pro, Nano Banana 2.1 (20 October
+ * 2026, the owner: "blocca per i nuovi utenti … Nano Banana 2.1") and GPT Image 2.5 unlock with the first purchase.
+ */
 export function freeImageModels(list: string | undefined): ImageModelKey[] {
-  const raw = (list ?? "nano-banana-2.1,nano-banana-2,seedream-5,flux-2-pro,flux-3").trim();
+  const raw = (list ?? "nano-banana-2,seedream-5,flux-2-pro,flux-3").trim();
   if (raw === "*") return IMAGE_MODELS.map((m) => m.key);
   return raw.split(",").map((s) => s.trim()).filter((k): k is ImageModelKey => !!imageModelByKey(k));
 }

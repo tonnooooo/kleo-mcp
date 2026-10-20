@@ -335,9 +335,15 @@ test("pictures: a set of four, two fail, the share they stood for comes back; ea
   const env = newEnv();
   const cookie = await signUp(env);
   const me = (await call(env, "/api/me", { cookie })).json;
-  assert.deepEqual(me.allowedImages, ["nano-banana-2.1", "nano-banana-2", "seedream-5", "flux-2-pro", "flux-3"]);
+  assert.deepEqual(me.allowedImages, ["nano-banana-2", "seedream-5", "flux-2-pro", "flux-3"]);
   const locked = await call(env, "/api/generate", { method: "POST", cookie, body: { kind: "image", prompt: "a fox", settings: { model: "nano-banana-pro" } } });
   assert.equal(locked.json.code, "locked");
+  for (const model of ["nano-banana-2.1", "gpt-image-2.5"]) {
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { kind: "image", prompt: "a fox", settings: { model, quality: "1K", count: 4 } } });
+    assert.equal(r.status, 402, `${model} is locked for an account that never paid`);
+    assert.equal(r.json.code, "locked");
+  }
+  assert.equal((await call(env, "/api/me", { cookie })).json.credits, me.credits, "nothing was charged");
   env.DB.db.exec(`INSERT INTO payments (session_id, user_id, credits, amount_cent, currency, status, raw_ref) VALUES ('manual_i', '${me.id}', 0, 0, 'eur', 'paid', 'tester')`);
   let n = 0;
   const png = new Uint8Array(4000); png.set([0x89, 0x50, 0x4e, 0x47]);
