@@ -1500,3 +1500,39 @@ test("in a chat, the clip made again on Wan 3.0 comes as Kleo's next message", a
     assert.equal(last.generation.modelName, "Wan 3.0");
   } finally { p.restore(); }
 });
+
+// ── Pictures Seedance cannot take (20 October 2026) ─────────────────────────────────────────────────────────────────
+test("a picture Seedance cannot take is refused before any charge; a provider's asset error reads plainly", async () => {
+  const env = newEnv();
+  const { cookie, id } = await paidAccount(env);
+  const pic = async (w, h) => (await call(env, "/api/uploads", { method: "POST", cookie, raw: jpegBytes(), headers: { "content-type": "image/jpeg", "x-width": String(w), "x-height": String(h) } })).json;
+  const tiny = await pic(387, 297), thin = await pic(400, 1100), fine = await pic(1024, 768);
+  const p = fakeProvider((u) => {
+    if (u.endsWith("/v1/task/submit")) return ok({ id: "task_px" });
+    if (/\/v1\/task\/task_px$/.test(u)) return ok({ status: "failed", error: "资源同步失败: url=https://app.kleooai.com/media/u/up_h6rbdkq8wcdp?exp=1792477318&sig=0123456789abcdef0123456789abcdef, DoCall CreateAsset: InvalidParameter.HeightTooSmall: Height must be between 300px and 6000px. status code: 400, request id: 2021234567890" });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const small = await call(env, "/api/generate", { method: "POST", cookie, body: { noChat: true, prompt: "they dance", imageIds: [fine.id, tiny.id], settings: { model: "seedance-2.0-fast", resolution: "480p", duration: 5 } } });
+    assert.equal(small.status, 400, small.text);
+    assert.equal(small.json.code, "picture_size");
+    assert.match(small.json.error, /^A picture is too small for Seedance 2\.0 Fast \(387×297 px\): it needs at least 300 px on each side\. Add it again and Kleo will enlarge it — nothing was charged\.$/);
+    const tall = await call(env, "/api/generate", { method: "POST", cookie, body: { noChat: true, prompt: "she walks", imageIds: [thin.id], settings: { model: "seedance-2.5", resolution: "480p", duration: 5 } } });
+    assert.equal(tall.status, 400, tall.text);
+    assert.match(tall.json.error, /too tall or too wide for Seedance 2\.5 \(400×1100 px\)/);
+    assert.equal(credits(env, id), 100, "nothing was charged");
+    assert.ok(!p.sent.some((s) => s.url.endsWith("/v1/task/submit")), "nothing was ordered");
+    // Veo states no such limit: the small picture goes through to it.
+    const veo = await call(env, "/api/generate", { method: "POST", cookie, body: { noChat: true, prompt: "she smiles", imageIds: [tiny.id], settings: { model: "veo-3.1-fast", resolution: "720p", duration: 8 } } });
+    assert.equal(veo.status, 200, veo.text);
+
+    // An order that still fails on a picture (an old row, another limit) says why in plain words.
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { noChat: true, prompt: "they dance", imageIds: [fine.id], settings: { model: "seedance-2.0-fast", resolution: "480p", duration: 5 } } });
+    assert.equal(r.status, 200, r.text);
+    old(env);
+    const g = (await call(env, `/api/generations/${r.json.generation.id}`, { cookie })).json.generation;
+    assert.equal(g.status, "failed");
+    assert.equal(g.error, "The video model could not make this one: one of the pictures was refused (Height must be between 300px and 6000px). Your credits are back.");
+    assert.equal(g.offer, null, "not a copyright refusal");
+  } finally { p.restore(); }
+});

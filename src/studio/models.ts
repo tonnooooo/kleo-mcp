@@ -312,6 +312,26 @@ export function taskInput(s: ClipSettings, prompt: string, images: string[], saf
 }
 
 /**
+ * THE PICTURES SEEDANCE TAKES (20 October 2026). ByteDance refuses a first frame or a reference picture whose sides are
+ * not 300-6000 px, or whose sides differ by more than 2.5 times (ePhone's task_input_schema for every Seedance model:
+ * "aspect ratio 0.4-2.5, 300-6000px per side", read 20 October 2026). It said so only after the order went out, as
+ * "资源同步失败 … InvalidParameter.HeightTooSmall": a customer's five clips from 387x297 pictures all failed that way.
+ * Pictures uploaded since are enlarged by the page (app.js fitPicture); this check stops an older one before any charge.
+ * The other models state no such limit, so their pictures pass.
+ */
+export const SEEDANCE_PICTURE = { minSide: 300, maxSide: 6000, maxRatio: 2.5 };
+/** Why `model` cannot take a picture of w×h pixels, as the sentence the person reads; null when it can (or the size is unknown). */
+export function pictureProblem(modelName: string, family: StudioModel["family"], w: number | null | undefined, h: number | null | undefined): string | null {
+  if (family !== "seedance" || !w || !h || w <= 0 || h <= 0) return null;
+  const { minSide, maxSide, maxRatio } = SEEDANCE_PICTURE;
+  // The shape first: a long, thin picture cannot be fixed by enlarging it.
+  if (Math.max(w, h) / Math.min(w, h) > maxRatio + 1e-9) return `A picture is too tall or too wide for ${modelName} (${w}×${h} px): one side can be at most ${maxRatio} times the other. Crop it and add it again — nothing was charged.`;
+  if (Math.min(w, h) < minSide) return `A picture is too small for ${modelName} (${w}×${h} px): it needs at least ${minSide} px on each side. Add it again and Kleo will enlarge it — nothing was charged.`;
+  if (Math.max(w, h) > maxSide) return `A picture is too big for ${modelName} (${w}×${h} px): it takes at most ${maxSide} px on each side. Add it again and Kleo will shrink it — nothing was charged.`;
+  return null;
+}
+
+/**
  * WAN 3.0, THE SECOND CHANCE AFTER A COPYRIGHT REFUSAL (20 October 2026).
  *
  * The owner's first customer had a KPop Demon Hunters clip refused by Seedance three times. ByteDance checks copyright
