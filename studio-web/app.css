@@ -241,6 +241,14 @@ button.pill:hover { background: var(--fill); }
 .clip-fail p { margin: 0 0 4px; font-size: 15px; }
 .clip-fail small { color: var(--ink-2); font-size: 15px; }
 .refund { display: inline-flex; gap: 4px; align-items: center; font-size: 15px; font-weight: 600; color: var(--green); margin-top: 6px; }
+/* A clip refused for copyright: the offer to make it on Wan 3.0 (app.js wanOfferEl) */
+.wan-offer { margin-top: 12px; padding: 14px 14px 12px; border-radius: 18px; background: var(--amber-soft); border: 1px solid rgba(243, 181, 63, .32); text-align: left; cursor: default; }
+.wan-offer b { display: block; font-size: 16px; font-weight: 700; color: var(--ink); letter-spacing: -.01em; }
+.wan-offer p, .result .info .wan-offer p { margin: 4px 0 0; font-size: 15px; line-height: 1.4; color: var(--ink-2); display: block; -webkit-line-clamp: unset; overflow: visible; }
+.wan-btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.wan-auto { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: 15px; color: var(--ink); cursor: pointer; }
+.wan-auto input { width: 20px; height: 20px; margin: 0; flex: none; accent-color: var(--amber); cursor: pointer; }
+.acct-toggle { padding: 10px 2px 2px; font-size: 16px; }
 
 /* ── composer ──────────────────────────────────────────────────────────── */
 .dock { position: absolute; left: 0; right: 0; bottom: 0; padding: 26px 12px max(12px, env(safe-area-inset-bottom)); z-index: 6; pointer-events: none;

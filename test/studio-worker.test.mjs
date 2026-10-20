@@ -431,7 +431,9 @@ test("a copyright refusal reads plainly and has no request id; a song downloads 
     old(env);
     const g = (await call(env, `/api/generations/${r.json.generation.id}`, { cookie })).json.generation;
     assert.equal(g.status, "failed");
-    assert.match(g.error, /^The video model won't make this one: it recognised characters, people or music protected by copyright/);
+    // Since 20 October 2026 the card names the model that refused it, with the Wan 3.0 offer under it.
+    assert.match(g.error, /^Seedance 2\.0 Fast won't make this one: it recognised characters, people or music protected by copyright/);
+    assert.equal(g.offer?.name, "Wan 3.0");
     assert.ok(!/Request id|0217/.test(g.error), g.error);
     assert.equal(g.refunded, true);
     assert.equal(credits(env, id), 100);
@@ -1314,5 +1316,168 @@ test("ePhone out of credit: a Nano Banana 2 picture is made on APIMart's ext rou
     const made = await call(env, `/api/generations/${song.json.generation.id}`, { cookie });
     assert.equal(made.json.generation.status, "done", made.text);
     assert.deepEqual(made.json.generation.outputs.map((o) => o.type), ["audio", "audio"], "two songs, no cover picture");
+  } finally { p.restore(); }
+});
+
+// ── Wan 3.0 after a copyright refusal (20 October 2026) ─────────────────────────────────────────────────────────────
+const COPYRIGHT = "The request failed because the output video may be related to copyright restrictions. Request id: 0217923817194550";
+const mp4Reply = () => new Response(new Uint8Array(5000).fill(7), { status: 200, headers: { "content-type": "video/mp4" } });
+
+test("a Seedance copyright refusal offers Wan 3.0: the same credits, everything the clip asked for, taken once", async () => {
+  const env = newEnv({ WAVESPEED_API_KEY: "wk" });
+  const { cookie, id } = await paidAccount(env);
+  const p = fakeProvider((u) => {
+    if (u.endsWith("/v1/task/submit")) return ok({ id: "task_cr" });
+    if (/\/v1\/task\/task_cr$/.test(u)) return ok({ status: "failed", error: COPYRIGHT });
+    if (u === "https://api.wavespeed.ai/api/v3/alibaba/wan-3.0/text-to-video") return ok({ code: 200, data: { id: "ws_1", status: "created" } });
+    if (u === "https://api.wavespeed.ai/api/v3/predictions/ws_1/result") return ok({ code: 200, data: { id: "ws_1", status: "completed", outputs: ["https://cdn.wavespeed.test/out.mp4"] } });
+    if (u === "https://cdn.wavespeed.test/out.mp4") return mp4Reply();
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const prompt = "Rumi, Mira and Zoey from KPop Demon Hunters sing on a neon stage";
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { noChat: true, prompt, settings: { model: "seedance-2.5", resolution: "720p", duration: 10, aspect: "21:9", audio: false } } });
+    assert.equal(r.status, 200, r.text);
+    const paid = r.json.generation.credits;
+    old(env);
+    const g = (await call(env, `/api/generations/${r.json.generation.id}`, { cookie })).json.generation;
+    assert.equal(g.status, "failed");
+    assert.deepEqual(g.offer, { model: "wan-3.0", name: "Wan 3.0", from: "Seedance 2.5", credits: paid });
+    assert.match(g.error, /^Seedance 2\.5 won't make this one: it recognised characters/);
+    assert.equal(credits(env, id), 100, "the refusal gave the credits back");
+
+    const w = await call(env, `/api/generations/${g.id}/wan`, { method: "POST", cookie, body: {} });
+    assert.equal(w.status, 200, w.text);
+    assert.deepEqual({ m: w.json.generation.model, n: w.json.generation.modelName, s: w.json.generation.status }, { m: "wan-3.0", n: "Wan 3.0", s: "running" });
+    assert.equal(w.json.credits, 100 - paid, "charged the credits the refused clip cost");
+    assert.equal(w.json.original.offer, null);
+    assert.match(w.json.original.error, /Wan 3\.0 made it again/);
+    const sent = p.sent.filter((s) => s.url.startsWith("https://api.wavespeed.ai/api/v3/alibaba/"));
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].url, "https://api.wavespeed.ai/api/v3/alibaba/wan-3.0/text-to-video");
+    assert.deepEqual(sent[0].body, { prompt, duration: 10, resolution: "720p", generate_audio: false, aspect_ratio: "16:9" }, "21:9 becomes Wan's nearest shape");
+    assert.equal(sent[0].headers.authorization, "Bearer wk");
+    assert.ok(!p.sent.some((s) => /spicy/.test(s.url)), "never a -spicy route");
+    const row = env.DB.db.prepare("SELECT task_id, est_usd, model FROM studio_generations WHERE id = ?").get(w.json.generation.id);
+    assert.deepEqual({ ...row }, { task_id: "wavespeed:ws_1", est_usd: 0.95, model: "wan-3.0" });
+    assert.ok(env.DB.db.prepare("SELECT 1 FROM audit WHERE event = 'studio.wan_retry' AND job_id = ?").get(g.id), "the switch is in the audit");
+
+    const again = await call(env, `/api/generations/${g.id}/wan`, { method: "POST", cookie, body: {} });
+    assert.equal(again.status, 409);
+    assert.equal(credits(env, id), 100 - paid, "a second tap starts nothing and charges nothing");
+    assert.equal(p.sent.filter((s) => s.url.startsWith("https://api.wavespeed.ai/api/v3/alibaba/")).length, 1);
+
+    old(env);
+    const done = (await call(env, `/api/generations/${w.json.generation.id}`, { cookie })).json.generation;
+    assert.equal(done.status, "done", JSON.stringify(done));
+    assert.equal((await call(env, `/media/${done.id}.mp4`, { cookie })).text.length, 5000);
+    assert.equal(done.offer, null);
+  } finally { p.restore(); }
+});
+
+test("a refusal at the door offers Wan 3.0 too; a picture's clip goes to image-to-video; No thanks drops the offer", async () => {
+  const env = newEnv({ WAVESPEED_API_KEY: "wk" });
+  const { cookie, id } = await paidAccount(env);
+  const up = await upload(env, cookie, jpegBytes(), "image/jpeg");
+  const p = fakeProvider((u) => {
+    if (u.endsWith("/v1/task/submit")) return new Response(JSON.stringify({ error: { message: COPYRIGHT } }), { status: 400, headers: { "content-type": "application/json" } });
+    if (u === "https://api.wavespeed.ai/api/v3/media/uploads") return ok({ code: 200, data: { download_url: "https://cdn.wavespeed.test/in.jpg", upload: { method: "PUT", url: "https://up.wavespeed.test/put" } } });
+    if (u === "https://up.wavespeed.test/put") return new Response("", { status: 200 });
+    if (u === "https://api.wavespeed.ai/api/v3/alibaba/wan-3.0/image-to-video") return ok({ code: 200, data: { id: "ws_2" } });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { noChat: true, prompt: "she draws her sword", imageIds: [up.id], settings: { model: "seedance-2.0", resolution: "480p", duration: 5 } } });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.generation.status, "failed");
+    assert.equal(r.json.generation.offer?.name, "Wan 3.0", "the offer is there as soon as the order is refused");
+    const w = await call(env, `/api/generations/${r.json.generation.id}/wan`, { method: "POST", cookie, body: {} });
+    assert.equal(w.status, 200, w.text);
+    const sent = p.sent.find((s) => s.url === "https://api.wavespeed.ai/api/v3/alibaba/wan-3.0/image-to-video");
+    assert.deepEqual(sent.body, { prompt: "she draws her sword", duration: 5, resolution: "480p", generate_audio: true, image: "https://cdn.wavespeed.test/in.jpg" },
+      "the first frame, copied into WaveSpeed's storage; no shape, so the clip keeps the picture's");
+    assert.deepEqual(w.json.generation.images, [`/media/u/${up.id}`]);
+
+    const r2 = await call(env, "/api/generate", { method: "POST", cookie, body: { noChat: true, prompt: "she draws her sword", settings: { model: "seedance-2.0", resolution: "480p", duration: 5 } } });
+    const before = credits(env, id);
+    const no = await call(env, `/api/generations/${r2.json.generation.id}/wan`, { method: "POST", cookie, body: { decline: true } });
+    assert.equal(no.status, 200, no.text);
+    assert.equal(no.json.original.offer, null);
+    assert.match(no.json.original.error, /^The video model won't make this one/);
+    assert.equal((await call(env, `/api/generations/${r2.json.generation.id}`, { cookie })).json.generation.offer, null, "it stays declined");
+    assert.equal((await call(env, `/api/generations/${r2.json.generation.id}/wan`, { method: "POST", cookie, body: {} })).status, 409);
+    assert.equal(credits(env, id), before);
+    // Only the owner of a clip can take its offer.
+    const other = await signUp(env, "other@example.com");
+    assert.equal((await call(env, `/api/generations/${r2.json.generation.id}/wan`, { method: "POST", cookie: other, body: {} })).status, 404);
+  } finally { p.restore(); }
+});
+
+test("with the automatic switch on, a refused clip goes on on Wan 3.0 in the same card, for the credits already paid", async () => {
+  const env = newEnv({ WAVESPEED_API_KEY: "wk" });
+  const { cookie, id } = await paidAccount(env);
+  assert.equal((await call(env, "/api/me", { cookie })).json.autoWan, false);
+  const on = await call(env, "/api/me/auto-wan", { method: "POST", cookie, body: { on: true } });
+  assert.equal(on.json.autoWan, true);
+  assert.equal((await call(env, "/api/me", { cookie })).json.autoWan, true);
+  let door = false;
+  const p = fakeProvider((u) => {
+    if (u.endsWith("/v1/task/submit")) return door ? new Response(JSON.stringify({ error: { message: COPYRIGHT } }), { status: 400 }) : ok({ id: "task_cr" });
+    if (/\/v1\/task\/task_cr$/.test(u)) return ok({ status: "failed", error: COPYRIGHT });
+    if (u === "https://api.wavespeed.ai/api/v3/alibaba/wan-3.0/text-to-video") return ok({ code: 200, data: { id: door ? "ws_4" : "ws_3" } });
+    if (/\/api\/v3\/predictions\/ws_[34]\/result$/.test(u)) return ok({ code: 200, data: { status: "completed", outputs: ["https://cdn.wavespeed.test/out.mp4"] } });
+    if (u === "https://cdn.wavespeed.test/out.mp4") return mp4Reply();
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { noChat: true, prompt: "Rumi from KPop Demon Hunters on a rooftop", settings: { model: "seedance-2.0-fast", resolution: "480p", duration: 5, aspect: "9:16" } } });
+    const paid = r.json.generation.credits;
+    old(env);
+    const g = (await call(env, `/api/generations/${r.json.generation.id}`, { cookie })).json.generation;
+    assert.deepEqual({ s: g.status, m: g.model, n: g.modelName, from: g.switchedFrom, refunded: g.refunded, offer: g.offer },
+      { s: "running", m: "wan-3.0", n: "Wan 3.0", from: "Seedance 2.0 Fast", refunded: false, offer: null });
+    assert.equal(credits(env, id), 100 - paid, "no refund and no second charge");
+    assert.equal(env.DB.db.prepare("SELECT task_id FROM studio_generations WHERE id = ?").get(g.id).task_id, "wavespeed:ws_3");
+    assert.match(env.DB.db.prepare("SELECT detail FROM audit WHERE event = 'studio.wan_auto' AND job_id = ?").get(g.id).detail, /alibaba\/wan-3\.0\/text-to-video/);
+    assert.deepEqual(p.sent.find((s) => s.url.endsWith("/wan-3.0/text-to-video")).body, { prompt: "Rumi from KPop Demon Hunters on a rooftop", duration: 5, resolution: "480p", generate_audio: true, aspect_ratio: "9:16" });
+    old(env);
+    const done = (await call(env, `/api/generations/${g.id}`, { cookie })).json.generation;
+    assert.equal(done.status, "done", JSON.stringify(done));
+
+    // Refused at the door: the order itself goes to Wan 3.0, and the card is running from the start.
+    door = true;
+    const r2 = await call(env, "/api/generate", { method: "POST", cookie, body: { noChat: true, prompt: "Zoey from KPop Demon Hunters waves", settings: { model: "seedance-2.0-fast", resolution: "480p", duration: 5 } } });
+    assert.deepEqual({ s: r2.json.generation.status, m: r2.json.generation.model }, { s: "running", m: "wan-3.0" });
+    assert.equal(credits(env, id), 100 - paid - r2.json.generation.credits);
+
+    // Switched off again: the next refusal asks first.
+    door = false;
+    await call(env, "/api/me/auto-wan", { method: "POST", cookie, body: { on: false } });
+    const r3 = await call(env, "/api/generate", { method: "POST", cookie, body: { noChat: true, prompt: "Mira from KPop Demon Hunters", settings: { model: "seedance-2.0-fast", resolution: "480p", duration: 5 } } });
+    old(env);
+    const g3 = (await call(env, `/api/generations/${r3.json.generation.id}`, { cookie })).json.generation;
+    assert.equal(g3.status, "failed");
+    assert.equal(g3.offer?.name, "Wan 3.0");
+  } finally { p.restore(); }
+});
+
+test("in a chat, the clip made again on Wan 3.0 comes as Kleo's next message", async () => {
+  const env = newEnv({ WAVESPEED_API_KEY: "wk" });
+  const { cookie } = await paidAccount(env);
+  const p = fakeProvider((u) => {
+    if (u.endsWith("/v1/task/submit")) return new Response(JSON.stringify({ error: { message: COPYRIGHT } }), { status: 400 });
+    if (u === "https://api.wavespeed.ai/api/v3/alibaba/wan-3.0/text-to-video") return ok({ code: 200, data: { id: "ws_5" } });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { prompt: "Rumi sings", kind: "video", settings: { model: "seedance-2.5", resolution: "480p", duration: 5 } } });
+    assert.equal(r.status, 200, r.text);
+    const w = await call(env, `/api/generations/${r.json.generation.id}/wan`, { method: "POST", cookie, body: {} });
+    assert.equal(w.status, 200, w.text);
+    assert.equal(w.json.message.generation.id, w.json.generation.id);
+    const chat = await call(env, `/api/chats/${r.json.chat.id}`, { cookie });
+    const last = chat.json.messages.find((m) => m.generation?.id === w.json.generation.id);
+    assert.ok(last, "the new clip is in the chat");
+    assert.equal(last.generation.modelName, "Wan 3.0");
   } finally { p.restore(); }
 });
