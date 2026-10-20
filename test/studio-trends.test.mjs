@@ -64,6 +64,25 @@ test("plan: only the filled seats are swapped, in seat order, on WaveSpeed's Wan
   assert.match(p, /- Image 1: 0-4s leans toward the camera/);
 });
 
+test("Wings & Vibes (20 October 2026): one seat, 15 s, the prompt written for that seat, the clip's own sound", () => {
+  const t = trendByKey("trend-wings-and-vibes");
+  assert.ok(t && !t.prompt, "a seat-by-seat prompt, not a fixed one");
+  assert.equal(t.seats.length, 1);
+  assert.equal(t.baseUrl, "https://media.kleooai.com/app/templates/wings-and-vibes/base.mp4");
+  assert.deepEqual(["480p", "720p", "1080p"].map((q) => toolCredits(trendCostUsd(t, q))), [6, 11, 22], "15 + 15 billed seconds");
+  const plan = planTool(t.key, { quality: "720p" }, { person1: photo("up_w") });
+  assert.equal(plan.usd, 3);
+  const input = plan.tasks[0].input;
+  assert.deepEqual(input.reference_images, [photo("up_w").url]);
+  assert.equal(input.generate_audio, false);
+  assert.match(input.prompt, /one person is replaced by the person from Image 1/);
+  assert.match(input.prompt, /Image 1 replaces the person sitting in the beige office chair on the RIGHT/);
+  assert.match(input.prompt, /no cream over-ear headphones/);
+  assert.match(input.prompt, /8-12s leans back in the chair/);
+  assert.match(input.prompt, /Domino's box of chicken wings/);
+  assert.throws(() => planTool(t.key, {}, {}), ToolRefusal, "a photo is needed");
+});
+
 test("plan: no photo is a refusal a person can act on; a video in a seat is refused", () => {
   assert.throws(() => planTool(YTBM, {}, {}), (e) => e instanceof ToolRefusal && /at least one person/.test(e.message));
   assert.throws(() => planTool(YTBM, {}, { person1: { ...photo("up_v"), kind: "video" } }), (e) => e instanceof ToolRefusal && /picture/.test(e.message));
