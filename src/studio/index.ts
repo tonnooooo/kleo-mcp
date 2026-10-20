@@ -21,9 +21,9 @@ import { IMAGE_MODELS, defaultImageModel, freeImageModels, pausedImageModels, pu
 import {
   ensureStudioSchema, listChats, getChat, createChat, touchChat, renameChat, deleteChat, listMessages, addMessage,
   getMessage, setMessageData, agentMessagesToday, addUpload, getUpload, uploadsOf, getGeneration, listGenerations,
-  staleGenerations, type MessageRow, type GenerationRow,
+  staleGenerations, autoWanOn, setAutoWan, type MessageRow, type GenerationRow,
 } from "./store.ts";
-import { deleteGeneration, StudioError, createGeneration, refreshGeneration, publicGeneration, marginOf, runTool, freeTools, isAdmin } from "./generate.ts";
+import { deleteGeneration, StudioError, createGeneration, refreshGeneration, publicGeneration, marginOf, runTool, freeTools, isAdmin, retryOnWan, declineWan } from "./generate.ts";
 import { publicPresets } from "./presets.ts";
 import { planTool, publicTools, toolByKey, toolCredits, ToolRefusal, type Media } from "./tools.ts";
 import { mediaInfo } from "./media.ts";
@@ -246,7 +246,15 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       allowedTools: paid ? freeTools("*") : freeTools(env.STUDIO_FREE_TOOLS),
       // Monthly plans (src/plans.ts): the buy links with this account tied in, and the plan it is on now.
       plans: publicPlans(env.STRIPE_PLAN_LINKS, userId), plan: await planOf(env, userId),
+      // Copyright refusals made on Wan 3.0 by themselves (generate.ts switchToWan).
+      autoWan: await autoWanOn(env, userId),
     });
+  }
+  if (path === "/api/me/auto-wan" && method === "POST") {
+    const on = (await body<{ on?: boolean }>(request)).on === true;
+    await setAutoWan(env, userId, on);
+    await audit(asEnv(env), userId, null, "studio.auto_wan", { on });
+    return json({ autoWan: on });
   }
 
   // ── the account page ──
@@ -425,11 +433,26 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       { model: url.searchParams.get("model") ?? undefined, kind: url.searchParams.get("kind") ?? undefined });
     return json({ generations: rows.map(publicGeneration) });
   }
-  const genM = path.match(/^\/api\/generations\/(g_[a-z0-9]+)(\/share)?$/);
+  const genM = path.match(/^\/api\/generations\/(g_[a-z0-9]+)(\/share|\/wan)?$/);
   if (genM) {
     let g = await getGeneration(env, genM[1]);
     if (!g || g.user_id !== userId) return json({ error: "Not found." }, 404);
-    if (genM[2] && method === "POST") {
+    if (genM[2] === "/wan" && method === "POST") {
+      // A clip refused for copyright: "Use Wan 3.0" makes it again there, "No thanks" ({decline: true}) drops the offer.
+      if ((await body<{ decline?: boolean }>(request)).decline === true) return json({ original: publicGeneration(await declineWan(env, userId, g)) });
+      const made = await retryOnWan(env, userId, g, origin);
+      // In a chat the new clip comes as Kleo's next message, under the refused one.
+      let message: Record<string, unknown> | null = null;
+      if (g.chat_id) {
+        const botId = rid("m", 12);
+        await addMessage(env, { id: botId, chatId: g.chat_id, userId, role: "assistant", text: "", data: { generation: made.id } });
+        await touchChat(env, g.chat_id);
+        message = (await messagesWithClips(env, g.chat_id)).find((m) => m.id === botId) ?? null;
+      }
+      const user = await getUser(asEnv(env), userId);
+      return json({ generation: publicGeneration(made), original: publicGeneration((await getGeneration(env, g.id))!), message, credits: user?.credits ?? 0 });
+    }
+    if (genM[2] === "/share" && method === "POST") {
       if (g.status !== "done") throw new StudioError("It isn't ready yet.");
       if (g.kind === "image") {
         // One picture of the set: the upload id the page shows under it.

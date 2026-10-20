@@ -852,8 +852,52 @@ function elapsed(g, t) {
 function failedEl(g, el) {
   el.append(h("div", { class: "clip-fail" }, h("div", { class: "x" }, icon("x", 16, 2.4)),
     h("div", {}, h("p", {}, g.error || "This one couldn't be made."), g.refunded ? h("div", { class: "refund" }, icon("check", 14, 2.6), `${g.credits} credits refunded`) : null,
-      h("div", { style: { marginTop: "10px" } }, h("button", { class: "btn btn-quiet btn-sm", onclick: () => remix(g) }, icon("redo", 16), "Try again")))));
+      g.offer ? wanOfferEl(g) : h("div", { style: { marginTop: "10px" } }, h("button", { class: "btn btn-quiet btn-sm", onclick: () => remix(g) }, icon("redo", 16), "Try again")))));
   return el;
+}
+// A clip Seedance refused for copyright offers one more try on Wan 3.0 (20 October 2026, the owner: "metti un avviso…
+// usa Wan 3.0 / no grazie, in modo tale da non perdere il cliente"). The same prompt, pictures and settings, for the
+// credits the refused clip cost (they came back). The server's `offer` says when; it is taken or declined once.
+function wanOfferEl(g) {
+  const o = g.offer;
+  const use = h("button", { class: "btn btn-primary btn-sm", onclick: () => settleWan(g, false, use, no) }, icon("sparkle", 16, 2.2), `Use ${o.name}`, h("span", { class: "cost" }, bolt(13), o.credits));
+  const no = h("button", { class: "btn btn-quiet btn-sm", onclick: () => settleWan(g, true, use, no) }, "No thanks");
+  // "Switch by itself from now on" (the owner: "metti una spunta, abilita cambio automatico, durante l'avviso"): saved
+  // on the account the moment it is ticked, and changed again in Account → Videos.
+  const tick = h("input", { type: "checkbox", checked: !!S.me?.autoWan, onchange: () => setAutoWan(tick.checked, tick) });
+  return h("div", { class: "wan-offer", onclick: (e) => e.stopPropagation() },
+    h("b", {}, `Make it with ${o.name} instead?`),
+    h("p", {}, `${o.name} makes most well-known characters. Same prompt, pictures and settings. If it can't make it either, your credits come back.`),
+    h("div", { class: "wan-btns" }, use, no),
+    h("label", { class: "wan-auto" }, tick, h("span", {}, `Next time, switch to ${o.name} by itself`)));
+}
+async function setAutoWan(on, input) {
+  try {
+    const r = await api("/api/me/auto-wan", { method: "POST", body: { on } });
+    if (S.me) S.me.autoWan = r.autoWan;
+    toast(r.autoWan ? "From now on, Kleo switches to Wan 3.0 by itself. You can change it in Account." : "Kleo will ask you first.");
+  } catch (e) { if (input) input.checked = !on; handleError(e); }
+}
+async function settleWan(g, decline, use, no) {
+  if (!signedIn() && !DEMO) return requireAccount();
+  use.disabled = no.disabled = true;
+  if (!decline) fill(use, spinner(15), "Starting…");
+  try {
+    const r = await api(`/api/generations/${g.id}/wan`, { method: "POST", body: decline ? { decline: true } : {} });
+    const swap = (x) => { S.gens.set(x.id, x); for (const list of Object.values(S.feeds)) if (Array.isArray(list)) { const i = list.findIndex((y) => y.id === x.id); if (i >= 0) list[i] = x; } };
+    swap(r.original);
+    if (r.generation) {
+      const n = r.generation;
+      setCredits(r.credits);
+      S.gens.set(n.id, n); if (n.status === "running") watch(n.id);
+      // The new clip lands right above the refused one in every list that shows it, and under it in its chat.
+      for (const list of Object.values(S.feeds)) if (Array.isArray(list)) { const i = list.findIndex((y) => y.id === g.id); if (i >= 0) list.splice(i, 0, n); }
+      for (const old of document.querySelectorAll(`[data-result="${g.id}"]`)) old.before(resultCard(n));
+      if (r.message && S.chat && S.chat.id === g.chatId) { collectGens(r.message); S.messages.push(r.message); renderMessages(); scrollDown(); }
+      toast(`Making it with ${n.modelName || "Wan 3.0"}`);
+    }
+    refreshGen(g.id);
+  } catch (e) { use.disabled = no.disabled = false; refreshGen(g.id); handleError(e); }
 }
 function genEl(id) {
   const g = S.gens.get(id);
@@ -871,7 +915,7 @@ function clipEl(g) {
   if (g.status === "running") {
     const t = h("span", { class: "t" }); elapsed(g, t);
     el.append(h("div", { class: "clip-media", style: { aspectRatio: ratio } }, h("div", { class: "shimmer" }),
-      h("div", { class: "clip-status" }, h("div", {}, h("b", {}, "Generating…"), h("span", {}, `${g.modelName} · usually 1–4 min`)), h("div", { class: "row-gap" }, t, h("span", { class: "spin" })))));
+      h("div", { class: "clip-status" }, h("div", {}, h("b", {}, "Generating…"), h("span", {}, g.switchedFrom ? `${g.switchedFrom} refused it for copyright, so ${g.modelName} is making it` : `${g.modelName} · usually 1–4 min`)), h("div", { class: "row-gap" }, t, h("span", { class: "spin" })))));
     return el;
   }
   if (g.status === "failed") return failedEl(g, el);
@@ -1329,7 +1373,7 @@ function openPresets(current, pick) {
 const CARDS = new Map();
 function resultCard(g) {
   if (!g) return h("div");
-  const sig = g.status === "running" ? null : JSON.stringify([g.status, g.video, g.outputs, g.error, g.refunded, g.prompt, g.modelName]);
+  const sig = g.status === "running" ? null : JSON.stringify([g.status, g.video, g.outputs, g.error, g.refunded, g.prompt, g.modelName, g.offer]);
   const kept = sig && CARDS.get(g.id);
   if (kept && kept.sig === sig) { kept.el.classList.add("seen"); kept.el.classList.remove("just-done"); return kept.el; }
   const el = buildResultCard(g);
@@ -1380,6 +1424,7 @@ function buildResultCard(g) {
   }
   if (g.status === "done" || g.status === "failed") acts.append(h("button", { class: "icon-btn danger", title: "Delete", "aria-label": "Delete", onclick: () => deleteGen(g) }, icon("trash", 18)));
   el.append(media, h("div", { class: "info" },
+    g.status === "failed" && g.offer ? wanOfferEl(g) : null,
     out === "audio" && g.status === "done" ? (g.outputs || []).map((o, i, all) => songRow(g, o, i, all.length)) : null,
     g.prompt ? h("p", {}, g.prompt) : null, acts));
   return el;
@@ -2012,7 +2057,7 @@ function openAccount(e) {
   document.body.append(scrim, menu); openLayer = [scrim, menu];
   document.addEventListener("keydown", escClose);
 }
-const ACCOUNT_SECTIONS = [["profile", "Profile", "user"], ["credits", "Credits", "star"], ["activity", "Activity", "clock"], ["security", "Sign-in & security", "lock"], ["assistant", "Kleo in your AI assistant", "plug"], ["appearance", "Appearance", "sparkle"], ["help", "Help", "chat"]];
+const ACCOUNT_SECTIONS = [["profile", "Profile", "user"], ["credits", "Credits", "star"], ["activity", "Activity", "clock"], ["security", "Sign-in & security", "lock"], ["assistant", "Kleo in your AI assistant", "plug"], ["videos", "Videos", "film"], ["appearance", "Appearance", "sparkle"], ["help", "Help", "chat"]];
 const KIND_ICON = { video: "film", image: "photo", tool: "apps", film: "film" };
 function nameOf(model) {
   return S.config?.models?.find((m) => m.key === model)?.name || S.config?.imageModels?.find((m) => m.key === model)?.name
@@ -2113,6 +2158,13 @@ function accountView() {
       h("li", {}, "Name it Kleo and paste the address."),
       h("li", {}, "On Kleo's page, paste your Kleo key to use this account.")));
 
+  // Videos: copyright refusals made on Wan 3.0 by themselves
+  const autoSwitch = h("span", { class: "switch" + (me.autoWan ? " on" : "") });
+  const videos = card("videos", "Videos", "When Seedance refuses a video for copyright, Wan 3.0 can make it for the same credits.",
+    h("label", { class: "toggle-row acct-toggle", role: "switch", "aria-checked": String(!!me.autoWan), tabindex: "0",
+      onclick: async (e) => { const row = e.currentTarget; await setAutoWan(!me.autoWan); autoSwitch.classList.toggle("on", !!me.autoWan); row.setAttribute("aria-checked", String(!!me.autoWan)); } },
+      h("span", {}, "Switch to Wan 3.0 by itself"), autoSwitch));
+
   // Appearance
   const theme = store.get("theme", "dark");
   const appearance = card("appearance", "Appearance", null, h("div", { class: "seg2 acct-seg" }, ["system", "light", "dark"].map((t) =>
@@ -2133,7 +2185,7 @@ function accountView() {
     } }, icon("trash", 17), "Delete my account"));
 
   setView("account-view", h("div", { class: "acct" }, nav,
-    h("div", { class: "acct-main" }, h("h1", { class: "acct-title" }, "Account"), profile, credits, activity, security, assistant, appearance, help, danger)));
+    h("div", { class: "acct-main" }, h("h1", { class: "acct-title" }, "Account"), profile, credits, activity, security, assistant, videos, appearance, help, danger)));
 }
 function addPasswordForm() {
   const e = h("input", { class: "input", type: "email", placeholder: "E-mail", autocomplete: "email" });
@@ -2288,6 +2340,7 @@ async function demoApi(path, opts) {
   if (/^\/api\/generations\/g_[a-z0-9]+$/.test(path) && opts?.method === "DELETE") { demoDb.gens.delete(path.split("/").pop()); return { ok: true }; }
   if (path === "/api/me/activity") return { usage: [...demoDb.gens.values()].map((g) => ({ id: g.id, kind: g.kind, model: g.model, credits: g.credits, status: g.status, refunded: 0, created_at: g.createdAt, prompt: (g.prompt || "").slice(0, 90) })), purchases: [{ credits: 35, amount_cent: 1500, currency: "eur", status: "paid", at: new Date(Date.now() - 86400e3).toISOString() }] };
   if (path === "/api/me/profile") return { name: String(opts.body?.name || "").trim() || null };
+  if (path === "/api/me/auto-wan") { demoDb.autoWan = opts.body?.on === true; return { autoWan: demoDb.autoWan }; }
   if (path === "/api/auth/password/change" || path === "/api/me/delete") return { ok: true };
   await new Promise((r) => setTimeout(r, path === "/api/chat" ? 1100 : 150));
   const method = opts.method || "GET", b = opts.body || {};
@@ -2295,7 +2348,7 @@ async function demoApi(path, opts) {
   if (path === "/api/config") return { google: true, microsoft: true, social: ["google"], emailReset: true, defaultModel: "seedance-2.5", models: demoCatalog(), defaultImageModel: "nano-banana-2", imageModels: demoImageCatalog(), freeCredits: 5, presets: DEMO_PRESETS, tools: DEMO_TOOLS, plans: DEMO_PLANS };
   if (path === "/api/me" && DEMO_GUEST) throw new ApiError("Sign in first.", 401, "signin");
   if (path === "/api/me" && DEMO_FREE) return { id: "u_demo", email: "you@example.com", name: "Demo", since: "2026-10-01T09:00:00Z", credits: 5, paid: false, allowed: ["seedance-2.0-fast"], freeResolutions: ["480p"], allowedImages: ["nano-banana-2"], allowedTools: [], methods: ["password"], mcpUrl: "https://mcp.kleooai.com/mcp", packs: [{ label: "5 EUR", credits: 10, url: "https://kleooai.com/pricing/" }, { label: "15 EUR", credits: 35, url: "https://kleooai.com/pricing/" }, { label: "40 EUR", credits: 100, url: "https://kleooai.com/pricing/" }] };
-  if (path === "/api/me") return { id: "u_demo", email: "you@example.com", name: "Demo", since: "2026-10-01T09:00:00Z", credits: demoDb.credits, paid: true, allowed: demoCatalog().map((m) => m.key), allowedImages: demoImageCatalog().map((m) => m.key), allowedTools: DEMO_TOOLS.map((t) => t.key), methods: ["password", "google"], mcpUrl: "https://mcp.kleooai.com/mcp", packs: [{ label: "5 EUR", credits: 10, url: "https://kleooai.com/pricing/" }, { label: "15 EUR", credits: 35, url: "https://kleooai.com/pricing/" }, { label: "40 EUR", credits: 100, url: "https://kleooai.com/pricing/" }] };
+  if (path === "/api/me") return { id: "u_demo", email: "you@example.com", name: "Demo", since: "2026-10-01T09:00:00Z", credits: demoDb.credits, paid: true, allowed: demoCatalog().map((m) => m.key), allowedImages: demoImageCatalog().map((m) => m.key), allowedTools: DEMO_TOOLS.map((t) => t.key), methods: ["password", "google"], mcpUrl: "https://mcp.kleooai.com/mcp", autoWan: !!demoDb.autoWan, packs: [{ label: "5 EUR", credits: 10, url: "https://kleooai.com/pricing/" }, { label: "15 EUR", credits: 35, url: "https://kleooai.com/pricing/" }, { label: "40 EUR", credits: 100, url: "https://kleooai.com/pricing/" }] };
   if (path === "/api/auth/signout" || path === "/api/auth/signout-all") return { ok: true };
   if (path === "/api/me/key") return { key: "u_demo.0123456789abcdef0123456789abcdef" };
   if (path === "/api/chats" && method === "GET") return { chats: demoDb.chats };
@@ -2370,6 +2423,22 @@ async function demoApi(path, opts) {
     demoDb.messages.get(chat.id).push(u, bot);
     return { chat, generation: g, credits: demoDb.credits, messages: [u, bot] };
   }
+  const wm = path.match(/^\/api\/generations\/(g_\w+)\/wan$/);
+  if (wm) {
+    const g = demoDb.gens.get(wm[1]);
+    if (!g?.offer) throw new ApiError("This video can't be made again with Wan 3.0.", 409, "no_offer");
+    const o = g.offer;
+    g.offer = null;
+    g.error = "The video model won't make this one: it recognised characters, people or music protected by copyright, from a film, a show or a song. Your credits are back. Try your own characters, and leave out their pictures and names.";
+    if (b.decline) return { original: { ...g } };
+    g.error = "Seedance 2.5 won't make this one: it recognised characters, people or music protected by copyright. Your credits are back, and Wan 3.0 made it again.";
+    const n = { id: "g_demo" + (++demoDb.n), kind: "video", model: "wan-3.0", modelName: "Wan 3.0", settings: { ...g.settings, model: "wan-3.0" }, prompt: g.prompt, credits: o.credits, status: "running", chatId: g.chatId, createdAt: now(), video: null, outputs: [], output: "video", count: 1, doneAt: Date.now() + 6000 };
+    demoDb.credits -= o.credits; demoDb.gens.set(n.id, n);
+    let message = null;
+    // (The page adds it to the chat it shows, which in the demo is this very list.)
+    if (g.chatId) message = { id: "m_b" + (++demoDb.n), role: "assistant", text: "", generation: n };
+    return { generation: { ...n }, original: { ...g }, message, credits: demoDb.credits };
+  }
   const gm = path.match(/^\/api\/generations\/(g_\w+)$/);
   if (gm) {
     const g = demoDb.gens.get(gm[1]);
@@ -2394,11 +2463,16 @@ if (DEMO) {
   const s = { model: "seedance-2.5", duration: 5, resolution: "720p", aspect: "16:9", audio: true, imageRole: "none" };
   const g = { id: "g_demo0", kind: "video", model: "seedance-2.5", modelName: "Seedance 2.5", settings: s, prompt: INSPO[0].p, credits: 4, status: "done", chatId: "c_demo0", createdAt: new Date(Date.now() - 3600e3).toISOString(), video: SAMPLES[0], outputs: [], output: "video" };
   const gi = { id: "g_demo00", kind: "image", model: "nano-banana-pro", modelName: "Nano Banana Pro", settings: { model: "nano-banana-pro", aspect: "1:1", quality: "2K", count: 2 }, prompt: "An astronaut portrait in soft studio light", credits: 1, status: "done", createdAt: new Date(Date.now() - 7200e3).toISOString(), outputs: [{ upload: "up_x1", url: STILLS[0], type: "image" }, { upload: "up_x2", url: STILLS[1], type: "image" }], output: "image", count: 2 };
-  demoDb.gens.set(gi.id, gi); demoDb.gens.set(g.id, g);
+  // A clip Seedance refused for copyright, with its offer to make it on Wan 3.0.
+  const gr = { id: "g_demo_cr", kind: "video", model: "seedance-2.5", modelName: "Seedance 2.5", settings: { ...s, resolution: "480p" }, prompt: "Rumi, Mira and Zoey from KPop Demon Hunters sing on a neon stage, fans waving light sticks", credits: 2, status: "failed", refunded: true, chatId: "c_demo0", createdAt: new Date(Date.now() - 600e3).toISOString(), video: null, outputs: [], output: "video",
+    error: "Seedance 2.5 won't make this one: it recognised characters, people or music protected by copyright. Your credits are back.", offer: { model: "wan-3.0", name: "Wan 3.0", from: "Seedance 2.5", credits: 2 } };
+  demoDb.gens.set(gi.id, gi); demoDb.gens.set(g.id, g); demoDb.gens.set(gr.id, gr);
   demoDb.chats.push({ id: "c_demo0", title: "Desert rider at sunset", updated_at: new Date(Date.now() - 3600e3).toISOString() });
   demoDb.messages.set("c_demo0", [
     { id: "m_d1", role: "user", text: "un cavaliere nel deserto al tramonto, molto cinematografico" },
     { id: "m_d2", role: "assistant", text: "Bellissima idea! Ecco come lo girerei: drone largo, luce dorata, sabbia nel vento. Premi Genera quando vuoi.", proposal: { kind: "video", title: "Cavaliere nel deserto", prompt: g.prompt, settings: s, credits: 4, imageIds: [] }, generations: [g] },
+    { id: "m_d3", role: "user", text: gr.prompt },
+    { id: "m_d4", role: "assistant", text: "", generation: gr },
   ]);
 }
 

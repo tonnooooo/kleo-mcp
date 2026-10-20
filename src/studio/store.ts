@@ -51,7 +51,15 @@ export const STUDIO_COLUMNS: string[] = [
   // migrations/0020_security.sql: revocable Kleo keys and sessions.
   "ALTER TABLE users ADD COLUMN key_version INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE users ADD COLUMN studio_epoch INTEGER NOT NULL DEFAULT 0",
+  // migrations/0024_studio_auto_wan.sql: the account's "switch to Wan 3.0 by itself" choice (generate.ts switchToWan).
+  "ALTER TABLE users ADD COLUMN studio_auto_wan INTEGER NOT NULL DEFAULT 0",
 ];
+
+/** Whether the account chose to have copyright refusals made on Wan 3.0 by themselves. */
+export const autoWanOn = async (env: StudioEnv, userId: string): Promise<boolean> =>
+  !!(await env.DB.prepare("SELECT studio_auto_wan AS on_ FROM users WHERE id = ?").bind(userId).first<{ on_: number }>())?.on_;
+export const setAutoWan = (env: StudioEnv, userId: string, on: boolean) =>
+  env.DB.prepare("UPDATE users SET studio_auto_wan = ? WHERE id = ?").bind(on ? 1 : 0, userId).run();
 
 let ready: Promise<unknown> | null = null;
 export function ensureStudioSchema(env: StudioEnv): Promise<unknown> {
@@ -178,6 +186,18 @@ export const insertGeneration = (env: StudioEnv, g: { id: string; userId: string
   env.DB.prepare(`INSERT INTO studio_generations (id, user_id, chat_id, message_id, model, settings, prompt, images, credits, est_usd, status, checked_at, kind)
                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitting', ${NOW}, ?)`)
     .bind(g.id, g.userId, g.chatId, g.messageId, g.model, JSON.stringify(g.settings), g.prompt, JSON.stringify(g.images), g.credits, g.estUsd, g.kind ?? "video").run();
+/**
+ * Settles a refused clip's offer to make it again on Wan 3.0 (generate.ts retryOnWan): `settings.wan` becomes the new
+ * clip's id, or "declined". One compare-and-set, so two taps can never start two clips: false when it was settled
+ * already. `null` reopens it (the new clip could not even be written down).
+ */
+export async function settleWanOffer(env: StudioEnv, id: string, userId: string, value: string | null): Promise<boolean> {
+  const r = value === null
+    ? await env.DB.prepare(`UPDATE studio_generations SET settings = json_remove(settings, '$.wan'), updated_at = ${NOW} WHERE id = ? AND user_id = ?`).bind(id, userId).run()
+    : await env.DB.prepare(`UPDATE studio_generations SET settings = json_set(settings, '$.wan', ?), updated_at = ${NOW}
+        WHERE id = ? AND user_id = ? AND status = 'failed' AND json_extract(settings, '$.wan') IS NULL`).bind(value, id, userId).run();
+  return (r.meta.changes ?? 0) === 1;
+}
 /**
  * Moves a clip from one of `from` to `to`, writing `fields` with it, as ONE compare-and-set: the caller learns
  * whether IT made the move. Two polls racing on the same finished task cannot both save it, and a refund is paid

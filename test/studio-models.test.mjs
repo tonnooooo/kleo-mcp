@@ -5,7 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MODELS, normalizeSettings, clipCredits, clipCostUsd, taskInput, freeModels, publicCatalog, modelByKey } from "../src/studio/models.ts";
+import { MODELS, normalizeSettings, clipCredits, clipCostUsd, taskInput, freeModels, publicCatalog, modelByKey, wanCostUsd, wanOffered, wanOrder } from "../src/studio/models.ts";
 import { makeSession, readSession, hashPassword, checkPassword, passwordProblem, signPath, checkSignedPath, readCookie } from "../src/studio/session.ts";
 import { proposalFrom, fallbackProposal, systemPrompt, chatTitle, runAgent } from "../src/studio/agent.ts";
 
@@ -240,4 +240,31 @@ test("copy motion: one picture + one video becomes Kling 3.0 Omni with the pictu
   assert.equal(clipCredits(s, 1.6, 6), 2, "5 s 720p: 5 x 0.9 x 0.8 CNY = $0.51");
   assert.equal(clipCredits({ ...s, resolution: "1080p" }, 1.6, 6), 3, "5 s 1080p: $0.69");
   assert.equal(publicCatalog(1.6).find((m) => m.key === "kling-3-omni").motionOnly, true, "never offered in the picker");
+});
+
+test("Wan 3.0 after a copyright refusal: offered for Seedance clips only, always within the credits, the right route", () => {
+  const s = (o) => normalizeSettings(o, o.images ?? 0);
+  // Every Seedance length and resolution costs less on Wan 3.0 than the price its credits were set from.
+  for (const m of MODELS.filter((x) => x.family === "seedance")) {
+    for (const res of m.resolutions) for (const d of m.durations) {
+      const x = s({ model: m.key, resolution: res, duration: d });
+      assert.ok(wanOffered(x), `${m.key} ${res} ${d}`);
+      assert.ok(wanCostUsd(x) <= clipCostUsd(x) + 1e-9, `${m.key} ${res} ${d}: ${wanCostUsd(x)} > ${clipCostUsd(x)}`);
+    }
+  }
+  assert.equal(wanCostUsd(s({ model: "seedance-2.5", resolution: "1080p", duration: 5 })), 0.95);
+  assert.equal(wanCostUsd(s({ model: "seedance-2.0-fast", resolution: "480p", duration: 5 })), 0.2375);
+  assert.equal(wanOffered(s({ model: "veo-3.1", resolution: "1080p", duration: 8 })), false, "Veo is not Seedance");
+  // Clips made with video or sound clips attached (omni reference, edit, extend) get no offer.
+  assert.equal(wanOffered(normalizeSettings({ model: "seedance-2.5", videoRole: "edit" }, 0, { images: 0, videos: 1, audios: 0, videoSeconds: 6 })), false);
+  assert.equal(wanOffered({ ...normalizeSettings({ model: "seedance-2.5" }, 0, { images: 0, videos: 0, audios: 1, videoSeconds: 0 }), clips: 1 }), false, "a sound clip alone: the stored clip count says so");
+
+  const t2v = wanOrder(s({ model: "seedance-2.5", resolution: "720p", duration: 15, aspect: "21:9" }), " a castle ", []);
+  assert.deepEqual(t2v, { slug: "alibaba/wan-3.0/text-to-video", body: { prompt: "a castle", duration: 15, resolution: "720p", generate_audio: true, aspect_ratio: "16:9" } });
+  const i2v = wanOrder(s({ model: "seedance-2.0", resolution: "480p", duration: 5, images: 1 }), "", ["https://x/1.jpg"]);
+  assert.equal(i2v.slug, "alibaba/wan-3.0/image-to-video");
+  assert.deepEqual(i2v.body, { prompt: "Bring this picture to life with natural, cinematic motion.", duration: 5, resolution: "480p", generate_audio: true, image: "https://x/1.jpg" });
+  const r2v = wanOrder(s({ model: "seedance-2.5", resolution: "1080p", duration: 10, aspect: "9:16", audio: false, images: 3 }), "they meet", ["a", "b", "c"]);
+  assert.deepEqual(r2v, { slug: "alibaba/wan-3.0/reference-to-video", body: { prompt: "they meet", duration: 10, resolution: "1080p", generate_audio: false, reference_images: ["a", "b", "c"], aspect_ratio: "9:16" } });
+  for (const o of [t2v, i2v, r2v]) assert.ok(!/spicy/.test(o.slug), "never a -spicy route");
 });

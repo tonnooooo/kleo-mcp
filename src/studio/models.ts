@@ -311,6 +311,53 @@ export function taskInput(s: ClipSettings, prompt: string, images: string[], saf
   return input;
 }
 
+/**
+ * WAN 3.0, THE SECOND CHANCE AFTER A COPYRIGHT REFUSAL (20 October 2026).
+ *
+ * The owner's first customer had a KPop Demon Hunters clip refused by Seedance three times. ByteDance checks copyright
+ * on its own servers, so every reseller of Seedance refuses the same clip. WaveSpeed's Alibaba Wan 3.0 route
+ * (alibaba/wan-3.0/image-to-video, NOT the "-spicy" routes, which undress people unasked) animated the official poster
+ * with Rumi, Mira and Zoey named in the prompt, clean, on 20 October.
+ *
+ * So a Seedance clip refused for copyright offers the person one more try on Wan 3.0, with the same prompt, pictures,
+ * length, resolution, shape and sound, for the same credits the refused clip cost (they were given back). The person
+ * chooses: "Use Wan 3.0" or "No thanks" (the owner, 20 October: "in modo tale da non perdere il cliente"). Wan 3.0 is
+ * never in the model picker.
+ *
+ * Prices from WaveSpeed's price API (POST /api/v3/model/price, our account's 5% discount), 20 October 2026: $0.0475,
+ * $0.095 and $0.19 a second at 480p, 720p and 1080p, with or without sound and whatever the input. Seedance on ePhone
+ * costs $0.0476-$0.481 a second, so the same credits always cover it.
+ *
+ *   no picture          alibaba/wan-3.0/text-to-video       {prompt, aspect_ratio, duration, resolution, generate_audio}
+ *   a first frame       alibaba/wan-3.0/image-to-video      {image, prompt, duration, resolution, generate_audio}
+ *                                                           (no aspect: the clip keeps the picture's shape, as on Seedance)
+ *   reference pictures  alibaba/wan-3.0/reference-to-video  {reference_images ≤ 10, prompt, aspect_ratio, …}
+ *
+ * Clips made with video or sound clips attached (Seedance's omni reference, edit, extend) get no offer.
+ */
+export const WAN_KEY = "wan-3.0";
+export const WAN_NAME = "Wan 3.0";
+const WAN_USD_PER_S: Record<Resolution, number> = { "480p": 0.0475, "720p": 0.095, "1080p": 0.19 };
+const WAN_ASPECTS = ["16:9", "9:16", "1:1", "4:3", "3:4"];
+
+/** True when a clip with these settings may be made again on Wan 3.0. `clips`: the video and sound clips it was made with. */
+export function wanOffered(s: Partial<ClipSettings> & { clips?: number }): boolean {
+  const m = modelByKey(s.model);
+  return !!m && m.family === "seedance" && (s.videoRole ?? "none") === "none" && !s.clips && !!s.resolution && !!WAN_USD_PER_S[s.resolution] && !!s.duration && s.duration >= 2 && s.duration <= 30;
+}
+
+/** What WaveSpeed charges for the clip on Wan 3.0. */
+export const wanCostUsd = (s: ClipSettings): number => Math.round((WAN_USD_PER_S[s.resolution] ?? WAN_USD_PER_S["1080p"]) * s.duration * 10_000) / 10_000;
+
+/** The WaveSpeed order for the clip on Wan 3.0: its model slug and its inputs. `images` are links WaveSpeed can fetch. */
+export function wanOrder(s: ClipSettings, prompt: string, images: string[]): { slug: string; body: Record<string, unknown> } {
+  const base = { prompt: prompt.trim().slice(0, 2000) || "Bring this picture to life with natural, cinematic motion.", duration: s.duration, resolution: s.resolution, generate_audio: s.audio !== false };
+  const aspect = WAN_ASPECTS.includes(s.aspect) ? s.aspect : s.aspect === "9:21" ? "9:16" : "16:9";
+  if (images.length && s.imageRole === "first_frame") return { slug: "alibaba/wan-3.0/image-to-video", body: { ...base, image: images[0] } };
+  if (images.length) return { slug: "alibaba/wan-3.0/reference-to-video", body: { ...base, reference_images: images.slice(0, 10), aspect_ratio: aspect } };
+  return { slug: "alibaba/wan-3.0/text-to-video", body: { ...base, aspect_ratio: aspect } };
+}
+
 /** The catalog the page draws its picker from (no provider names, no costs in dollars). */
 export function publicCatalog(margin = DEFAULT_MARGIN, free: ModelKey[] = []): unknown[] {
   return MODELS.map((m) => ({
