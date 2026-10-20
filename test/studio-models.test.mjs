@@ -161,7 +161,7 @@ test("image models: every quality priced; credits per set; never under 1.5× cos
     const s = { model: m.key, aspect: "1:1", quality: q, count: n };
     assert.ok(imageCredits(s) * 0.44 >= imageCostUsd(s) * 1.5, `${m.key} ${q} ×${n}`);
   }
-  assert.deepEqual(freeImageModels(undefined), ["nano-banana-2", "seedream-5", "flux-2-pro", "flux-3"], "Nano Banana Pro, 2.1 and GPT Image 2.5 unlock with the first purchase");
+  assert.deepEqual(freeImageModels(undefined), ["nano-banana-2", "seedream-5", "flux-2-pro"], "Nano Banana Pro, 2.1, FLUX 3 and GPT Image 2.5 unlock with the first purchase");
   assert.equal(c("nano-banana-2.1", "4K", 4), 1, "Nano Banana 2.1: 4 pictures at 4K cost about $0.26, one credit");
   assert.equal(publicImageCatalog(1.6, ["seedream-5"]).find((m) => m.key === "seedream-5").prices["2K"][4], 1);
 });

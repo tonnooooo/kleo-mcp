@@ -55,7 +55,7 @@
     "MAX_NEW_USERS_PER_DAY": "150",
     "MAX_NEW_USERS_PER_IP_DAY": "5",
     "STUDIO_FREE_MODELS": "seedance-2.0-fast", // the owner's rule (15 Sep 2026): gifted credits never buy the expensive models
-    "STUDIO_FREE_IMAGE_MODELS": "nano-banana-2,seedream-5,flux-2-pro,flux-3", // 20 Oct 2026, the owner: Nano Banana 2.1 too unlocks with the first purchase (it was open: 4 pictures at 4K for one credit); Nano Banana Pro and GPT Image 2.5 were never open
+    "STUDIO_FREE_IMAGE_MODELS": "nano-banana-2,seedream-5,flux-2-pro", // 20 Oct 2026, the owner: Nano Banana 2.1 and FLUX 3 unlock with the first purchase too (2.1 made four 4K pictures for one credit, FLUX 3 costs $0.32 a 4K picture); Nano Banana Pro and GPT Image 2.5 were never open
     "NOTIFY_FROM": "Kleo <noreply@kleooai.com>", // sender of the password-reset e-mail; nothing is sent until the RESEND_API_KEY secret is set
     "STUDIO_MARGIN": "1.6",
     "STUDIO_DAILY_BUDGET_USD": "30",
