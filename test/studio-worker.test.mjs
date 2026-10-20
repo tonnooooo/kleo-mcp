@@ -431,7 +431,9 @@ test("a copyright refusal reads plainly and has no request id; a song downloads 
     old(env);
     const g = (await call(env, `/api/generations/${r.json.generation.id}`, { cookie })).json.generation;
     assert.equal(g.status, "failed");
-    assert.match(g.error, /^The video model won't make this one: it recognised characters, people or music protected by copyright/);
+    // Since 20 October 2026 the card names the model that refused it, with the Wan 3.0 offer under it.
+    assert.match(g.error, /^Seedance 2\.0 Fast won't make this one: it recognised characters, people or music protected by copyright/);
+    assert.equal(g.offer?.name, "Wan 3.0");
     assert.ok(!/Request id|0217/.test(g.error), g.error);
     assert.equal(g.refunded, true);
     assert.equal(credits(env, id), 100);
