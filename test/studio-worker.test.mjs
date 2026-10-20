@@ -335,9 +335,15 @@ test("pictures: a set of four, two fail, the share they stood for comes back; ea
   const env = newEnv();
   const cookie = await signUp(env);
   const me = (await call(env, "/api/me", { cookie })).json;
-  assert.deepEqual(me.allowedImages, ["nano-banana-2.1", "nano-banana-2", "seedream-5", "flux-2-pro", "flux-3"]);
+  assert.deepEqual(me.allowedImages, ["nano-banana-2", "seedream-5", "flux-2-pro", "flux-3"]);
   const locked = await call(env, "/api/generate", { method: "POST", cookie, body: { kind: "image", prompt: "a fox", settings: { model: "nano-banana-pro" } } });
   assert.equal(locked.json.code, "locked");
+  for (const model of ["nano-banana-2.1", "gpt-image-2.5"]) {
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { kind: "image", prompt: "a fox", settings: { model, quality: "1K", count: 4 } } });
+    assert.equal(r.status, 402, `${model} is locked for an account that never paid`);
+    assert.equal(r.json.code, "locked");
+  }
+  assert.equal((await call(env, "/api/me", { cookie })).json.credits, me.credits, "nothing was charged");
   env.DB.db.exec(`INSERT INTO payments (session_id, user_id, credits, amount_cent, currency, status, raw_ref) VALUES ('manual_i', '${me.id}', 0, 0, 'eur', 'paid', 'tester')`);
   let n = 0;
   const png = new Uint8Array(4000); png.set([0x89, 0x50, 0x4e, 0x47]);
@@ -678,6 +684,32 @@ test("video with a reference clip and a preset: priced on the clip's seconds, se
     assert.equal(input.reference_videos.length, 1);
     assert.match(input.prompt, /360-degree orbit/);
     assert.equal(credits(env, id), 95);
+  } finally { p.restore(); }
+});
+
+test("templates and Motion Control stay locked for an account that never paid, whatever its balance", async () => {
+  // 20 October 2026, the owner: free accounts may look and upload, never generate the dear things. Some templates cost
+  // under 5 credits at 480p (Fernandez Celebration: 3), so the lock, not the price, is what keeps the gift off them.
+  const env = newEnv();
+  const cookie = await signUp(env, "farm@example.com");
+  const me = (await call(env, "/api/me", { cookie })).json;
+  env.DB.db.exec(`UPDATE users SET credits = 100 WHERE id = '${me.id}'`);
+  const pic = await upload(env, cookie, jpegBytes(), "image/jpeg");
+  const moves = await upload(env, cookie, mp4Bytes(8));
+  const trends = (await call(env, "/api/config")).json.tools.filter((t) => t.group === "trend");
+  assert.ok(trends.length >= 20, "every template is checked");
+  const p = fakeProvider(() => ok({ id: "task_never" }));
+  try {
+    for (const t of trends) {
+      const inputs = Object.fromEntries(t.seats.map((s) => [s.key, pic.id]));
+      const r = await call(env, "/api/tools/run", { method: "POST", cookie, body: { tool: t.key, consent: true, inputs: { ...inputs, quality: "480p" } } });
+      assert.equal(r.status, 402, `${t.key}: ${r.text}`);
+      assert.equal(r.json.code, "locked", t.key);
+    }
+    const motion = await call(env, "/api/tools/run", { method: "POST", cookie, body: { tool: "motion-control", inputs: { image: pic.id, video: moves.id } } });
+    assert.equal(motion.json.code, "locked");
+    assert.equal(p.sent.length, 0, "no provider was asked");
+    assert.equal(credits(env, me.id), 100, "nothing was charged");
   } finally { p.restore(); }
 });
 
