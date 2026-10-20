@@ -278,7 +278,8 @@ function refusal(e: unknown, noun: string): string {
  * on a customer's card. They now read "one of the pictures was refused (Height must be between 300px and 6000px)".
  */
 export function plainReason(why: string): string {
-  const asset = /InvalidParameter\.[A-Za-z]+:\s*(.+?)\.?\s*(?:status code:|request id:|$)/i.exec(why);
+  // Only ByteDance's asset step (CreateAsset) is about a picture; any other InvalidParameter keeps its own words.
+  const asset = /CreateAsset:\s*InvalidParameter\.[A-Za-z]+:\s*(.+?)\.?\s*(?:status code:|request id:|$)/i.exec(why);
   if (asset) return `one of the pictures was refused (${asset[1].trim().replace(/[.,;\s]+$/, "")})`;
   return publicText(why)
     .replace(/https?:\/\/\S+?\?exp=\d+&sig=[0-9a-f]+/gi, "a picture link")
