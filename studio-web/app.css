@@ -659,10 +659,11 @@ a.row { color: var(--ink); }
   .nav { padding: env(safe-area-inset-top) 12px 0; }
   .nav-tabs { display: none; }
   .tabbar {
-    display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); background: var(--glass); border-top: 1px solid var(--sep); padding-bottom: env(safe-area-inset-bottom);
+    display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); background: var(--glass); border-top: 1px solid var(--sep); padding-bottom: env(safe-area-inset-bottom);
     backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px); z-index: 20;
   }
   .tabbar button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; font-size: 13px; font-weight: 600; min-width: 0; white-space: nowrap; color: var(--ink-3); letter-spacing: -.01em; }
+  .tabbar button .tl { max-width: 100%; overflow: hidden; text-overflow: ellipsis; padding: 0 2px; }
   .tabbar button.on { color: var(--ink); }
   .tabbar button.on svg { color: #f3a43f; }
   .page { padding: 14px 14px 30px; }
@@ -905,7 +906,7 @@ body::after { inset: -6% -18%; }
 /* The header link to kleooai.com/mcp (Kleo inside ChatGPT, Claude, Cursor): desktop only, the phone has no room. */
 .nav-plugin { gap: 6px; }
 @media (max-width: 860px) { .nav-plugin { display: none; } }
-/* Phones (15 October 2026): your videos and pictures one per row, big; the narrowest phones keep seven tabs readable. */
+/* Phones (15 October 2026): your videos and pictures one per row, big; the narrowest phones keep the five tabs readable. */
 @media (max-width: 520px) { .feed { grid-template-columns: 1fr; gap: 12px; } }
 @media (max-width: 360px) { .tabbar button { font-size: 12px; } .tabbar button svg { width: 21px; height: 21px; } }
 @media (max-width: 640px) {
