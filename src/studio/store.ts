@@ -82,8 +82,9 @@ export interface GenerationRow {
 /** One picture of an image generation: its provider task and, once saved, its file and its upload id. */
 export interface Slot {
   task: string | null; status: "running" | "done" | "failed"; key?: string; upload?: string; error?: string; type?: "image" | "video" | "audio"; model?: string;
-  /** The provider holding `task`: ePhone when absent, WaveSpeed for the viral templates. */
-  provider?: "wavespeed";
+  /** The provider holding `task`: ePhone when absent; WaveSpeed for the viral templates; APIMart or WaveSpeed when the
+   *  order went to a backup (src/studio/backups.ts). */
+  provider?: "wavespeed" | "apimart";
   /** The task to start when this one finishes ("{{prev}}" in its input = this task's result link); see generate.ts. */
   then?: { model: string; input: Record<string, unknown>; output: "image" | "video" | "audio"; routing?: Record<string, string> };
   /** Second tries on FLUX 3 when the provider refuses this picture (src/studio/image-models.ts imageAlternatives). */

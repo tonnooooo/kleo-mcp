@@ -1213,3 +1213,106 @@ test("Character Swap runs in two steps: the redrawn first frame, then the video 
   } finally { p.restore(); }
 });
 
+
+// ── Backups (20 October 2026): ePhone out of credit, the order moves to APIMart where it costs the same or less ──────
+const EMPTY = () => new Response(JSON.stringify({ error: { code: "insufficient_user_quota", message: "预扣费额度失败, 用户剩余额度: $0.000000" } }), { status: 403 });
+
+test("ePhone out of credit: a Seedance 2.0 Fast clip is made on APIMart for the same credits, polled and saved there", async () => {
+  const env = newEnv({ APIMART_API_KEY: "ak" });
+  const cookie = await signUp(env);
+  const me = (await call(env, "/api/me", { cookie })).json;
+  const p = fakeProvider((u) => {
+    if (u.startsWith("https://api.ephone.ai/")) return EMPTY();
+    if (u === "https://api.apimart.ai/v1/videos/generations") return ok({ code: 200, data: [{ status: "submitted", task_id: "task_am1" }] });
+    if (u === "https://api.apimart.ai/v1/tasks/task_am1") return ok({ code: 200, data: { id: "task_am1", status: "completed", cost: 0.2, result: { videos: [{ url: ["https://upload.apimart.ai/f/video/out.mp4"] }] } } });
+    if (u === "https://upload.apimart.ai/f/video/out.mp4") return new Response(new Uint8Array(5000).fill(7), { status: 200, headers: { "content-type": "video/mp4" } });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { prompt: "a fox in the snow", settings: { model: "seedance-2.0-fast", resolution: "480p", duration: 5, aspect: "9:16" } } });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.generation.status, "running", r.json.generation.error);
+    assert.equal(credits(env, me.id), 3, "the same 2 credits as on ePhone");
+    const am = p.sent.find((s) => s.url === "https://api.apimart.ai/v1/videos/generations");
+    assert.deepEqual(am.body, { model: "seedance-2.0-fast", prompt: "a fox in the snow", duration: 5, resolution: "480p", size: "9:16", generate_audio: true });
+    assert.equal(am.headers.authorization, "Bearer ak");
+    const row = env.DB.db.prepare("SELECT task_id FROM studio_generations WHERE id = ?").get(r.json.generation.id);
+    assert.equal(row.task_id, "apimart:task_am1");
+    const moved = env.DB.db.prepare("SELECT detail FROM audit WHERE event = 'studio.backup' AND job_id = ?").get(r.json.generation.id);
+    assert.match(moved.detail, /apimart:seedance-2\.0-fast/);
+    old(env);
+    const done = await call(env, `/api/generations/${r.json.generation.id}`, { cookie });
+    assert.equal(done.json.generation.status, "done", done.text);
+    assert.equal((await call(env, `/media/${r.json.generation.id}.mp4`, { cookie })).text.length, 5000);
+    assert.ok(!p.sent.some((s) => s.url.includes("ephone.ai/v1/task/task_am1")), "never asked ePhone about APIMart's task");
+    assert.equal(credits(env, me.id), 3);
+  } finally { p.restore(); }
+});
+
+test("ePhone out of credit: a model that costs more elsewhere stays on ePhone and is refunded; no key, no backup; a refusal never moves", async () => {
+  const env = newEnv({ APIMART_API_KEY: "ak" });
+  const { cookie, id } = await paidAccount(env);
+  const p = fakeProvider((u) => (u.startsWith("https://api.ephone.ai/") ? EMPTY() : ok({ code: 200, data: [{ task_id: "nope" }] })));
+  try {
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { prompt: "x", settings: { model: "seedance-2.5", resolution: "720p" } } });
+    assert.equal(r.json.generation.status, "failed");
+    assert.match(r.json.generation.error, /recharged/);
+    assert.ok(!p.sent.some((s) => s.url.includes("apimart")), "Seedance 2.5 is dearer on APIMart: never sent there");
+    assert.equal(credits(env, id), 100);
+  } finally { p.restore(); }
+  // Without an APIMart key the old behaviour holds.
+  const bare = newEnv();
+  const c2 = await signUp(bare);
+  const p2 = fakeProvider((u) => (u.startsWith("https://api.ephone.ai/") ? EMPTY() : new Response("?", { status: 404 })));
+  try {
+    const r = await call(bare, "/api/generate", { method: "POST", cookie: c2, body: { prompt: "x", settings: { model: "seedance-2.0-fast", resolution: "480p" } } });
+    assert.match(r.json.generation.error, /recharged/);
+    assert.ok(!p2.sent.some((s) => s.url.includes("apimart")));
+  } finally { p2.restore(); }
+  // A refusal of the request itself stays a refusal.
+  const env3 = newEnv({ APIMART_API_KEY: "ak" });
+  const c3 = await signUp(env3);
+  const p3 = fakeProvider((u) => (u.startsWith("https://api.ephone.ai/") ? new Response(JSON.stringify({ error: { message: "prompt violates policy" } }), { status: 400 }) : ok({ code: 200, data: [{ task_id: "t" }] })));
+  try {
+    const r = await call(env3, "/api/generate", { method: "POST", cookie: c3, body: { prompt: "x", settings: { model: "seedance-2.0-fast", resolution: "480p" } } });
+    assert.equal(r.json.generation.status, "failed");
+    assert.ok(!p3.sent.some((s) => s.url.includes("apimart")));
+  } finally { p3.restore(); }
+});
+
+test("ePhone out of credit: a Nano Banana 2 picture is made on APIMart's ext route; a song on APIMart's Suno", async () => {
+  const env = newEnv({ APIMART_API_KEY: "ak" });
+  const cookie = await signUp(env);
+  const png = new Uint8Array(4000); png.set([0x89, 0x50, 0x4e, 0x47]);
+  const mp3 = new Uint8Array(4000); mp3.set([0x49, 0x44, 0x33]);
+  const p = fakeProvider((u) => {
+    if (u.startsWith("https://api.ephone.ai/")) return EMPTY();
+    if (u === "https://api.apimart.ai/v1/images/generations") return ok({ code: 200, data: [{ status: "submitted", task_id: "task_img" }] });
+    if (u === "https://api.apimart.ai/v1/tasks/task_img") return ok({ code: 200, data: { status: "completed", result: { images: [{ url: ["https://upload.apimart.ai/f/image/a.png"], expires_at: 1 }] } } });
+    if (u === "https://upload.apimart.ai/f/image/a.png") return new Response(png, { status: 200, headers: { "content-type": "image/png" } });
+    if (u === "https://api.apimart.ai/v1/music/generations") return ok({ code: 200, data: [{ status: "submitted", task_id: "task_song" }] });
+    if (u === "https://api.apimart.ai/v1/music/tasks/task_song") return ok({ code: 200, data: { status: "completed", result: { music: [{ audio_url: "https://cdn.apimart.ai/s1.mp3", image_url: "https://cdn.apimart.ai/s1.jpg" }, { audio_url: "https://cdn.apimart.ai/s2.mp3" }] } } });
+    if (u.startsWith("https://cdn.apimart.ai/s")) return new Response(mp3, { status: 200, headers: { "content-type": "audio/mpeg" } });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { kind: "image", prompt: "a fox in a hat", settings: { model: "nano-banana-2", aspect: "4:5", quality: "2K" } } });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.generation.status, "running", r.json.generation.error);
+    const am = p.sent.find((s) => s.url === "https://api.apimart.ai/v1/images/generations");
+    assert.deepEqual(am.body, { model: "gemini-3.1-flash-image-preview", prompt: "a fox in a hat", size: "4:5", resolution: "2K", n: 1, official_fallback: false });
+    old(env);
+    const done = await call(env, `/api/generations/${r.json.generation.id}`, { cookie });
+    assert.equal(done.json.generation.status, "done", done.text);
+    assert.equal(done.json.generation.outputs.length, 1);
+
+    const song = await call(env, "/api/tools/run", { method: "POST", cookie, body: { tool: "music", inputs: { prompt: "upbeat pop for a birthday", vocals: "none" } } });
+    assert.equal(song.status, 200, song.text);
+    const sent = p.sent.find((s) => s.url === "https://api.apimart.ai/v1/music/generations");
+    assert.deepEqual(sent.body, { model: "suno", custom: false, version: "v6", prompt: "upbeat pop for a birthday", instrumental: true });
+    old(env);
+    const made = await call(env, `/api/generations/${song.json.generation.id}`, { cookie });
+    assert.equal(made.json.generation.status, "done", made.text);
+    assert.deepEqual(made.json.generation.outputs.map((o) => o.type), ["audio", "audio"], "two songs, no cover picture");
+  } finally { p.restore(); }
+});
