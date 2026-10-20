@@ -547,7 +547,9 @@ function renderShell() {
     h("nav", { class: "nav-tabs", "aria-label": "Main" }, PAGES.map((p) => h("button", { class: "nav-tab", "data-page": p.key, onclick: () => go(p.path) },
       icon(p.ic, 17), p.label, p.isNew ? h("span", { class: "new" }, "NEW") : null))),
     h("div", { class: "nav-right" }, h("a", { class: "btn btn-quiet btn-sm nav-plugin", href: "https://kleooai.com/mcp/", target: "_blank", rel: "noopener" }, icon("plug", 16), "Install plugin"),
-      S.me?.plan?.key === "agency" ? null : h("button", { class: "btn btn-sm nav-upgrade", onclick: () => go("/plans") }, icon("sparkle", 15), S.me?.plan ? "Upgrade" : "Upgrade plan"), S.me ? [
+      // Upgrade (21 October 2026, the owner: on the phone too, in this order: credits, Upgrade, profile).
+      S.me?.plan?.key === "agency" ? null : h("button", { class: "btn btn-sm nav-upgrade" + (S.me ? "" : " guest"), onclick: () => go("/plans") }, icon("sparkle", 15),
+        S.me?.plan ? "Upgrade" : [h("span", { class: "nu-full" }, "Upgrade plan"), h("span", { class: "nu-short" }, "Upgrade")]), S.me ? [
       h("button", { class: "credits-pill", onclick: () => openBuy(), "aria-label": "Credits" }, bolt(15), h("span", { "data-credits": "" }, S.me.admin ? "∞" : S.me.credits)),
       h("button", { class: "avatar avatar-btn", "aria-label": "Account", onclick: openAccount }, (S.me.name || S.me.email || "K")[0].toUpperCase())] : [
       h("button", { class: "btn btn-quiet btn-sm", onclick: () => requireAccount("signin") }, "Sign in"),
@@ -1900,7 +1902,7 @@ function plansView() {
           planCard(best, per, ui)] : null));
     fill(page,
       h("div", { class: "pl-head" }, h("h1", {}, "Choose your ", h("em", {}, "Plan")),
-        h("p", { class: "pl-sub" }, "Subscribers get 10–25% more credits on every top-up."), toggle),
+        h("p", { class: "pl-sub" }, "Subscribers get 10–25% more credits on every top-up."), toggle, walletLine()),
       h("div", { class: "pl-grid" }, list.map((p) => planCard(p, per, ui, draw))),
       h("p", { class: "pl-note" }, "Credits never expire. Cancel any time: you keep your plan until the end of what you paid for. ",
         h("button", { class: "link", onclick: () => openBuy() }, "Just need a few credits? Buy a pack")),
@@ -1939,12 +1941,13 @@ function compareTable(list, per) {
     h("span", { class: "ct-price" }, `${eur(t[per].perMonth)}/month`), h("span", { class: "ct-bill" }, per === "year" ? "Billed annually" : "Billed monthly"),
     h("button", { class: "btn pl-cta" + (p.key === "agency" ? " btn-cta" : ""), onclick: () => buyPlan(p, t, per) }, "Get plan")); }));
   return h("section", { class: "pl-compare" }, h("h2", {}, "Compare features"), h("p", { class: "pl-sub" }, "See in detail which plan suits you best."),
+    h("p", { class: "ct-hint" }, "Swipe sideways to see every plan."),
     h("div", { class: "ct-wrap" }, h("table", { class: "ct" }, h("thead", {}, head), h("tbody", {},
-      h("tr", { class: "ct-group" }, h("th", { colspan: String(list.length + 1) }, "Credits")),
+      h("tr", { class: "ct-group" }, h("th", { colspan: String(list.length + 1) }, h("span", { class: "ct-g" }, "Credits"))),
       row("Credits every month", list.map((p) => p.tiers.map((t) => t.credits).join(" · "))),
       row("Price per credit", list.map((p) => `€${(p.tiers[0][per].perMonth / p.tiers[0].credits / 100).toFixed(2)}`)),
       row("Extra credits on top-ups", list.map((p) => (p.topupBonus ? `+${Math.round(p.topupBonus * 100)}%` : "—"))),
-      h("tr", { class: "ct-group" }, h("th", { colspan: String(list.length + 1) }, "Create")),
+      h("tr", { class: "ct-group" }, h("th", { colspan: String(list.length + 1) }, h("span", { class: "ct-g" }, "Create"))),
       row("Video: Seedance 2.5, Veo 3.1, Kling 3.0", list.map(() => true)),
       row("Image: Nano Banana Pro, Seedream, FLUX.2", list.map(() => true)),
       row("Apps: swaps, motion control, talking photos", list.map(() => true)),
@@ -2066,6 +2069,16 @@ function openAspect(aspects, current, onPick) {
       h("i", { style: { width: d[0] + "px", height: d[1] + "px" } }), a, h("small", {}, d[2]));
   })));
 }
+/**
+ * The wallet this device pays with at Stripe's checkout (21 October 2026, the owner: "dal telefono la conversione più
+ * easy… Safari Apple Pay, Android Google Pay"). Stripe's checkout puts that wallet first by itself; the app says so
+ * before the tap, so a phone buyer knows it is one tap and no card to type. Apple devices expose ApplePaySession.
+ */
+const WALLET = (() => {
+  try { if (window.ApplePaySession && ApplePaySession.canMakePayments()) return "Apple Pay"; } catch { /* not Safari */ }
+  return /Android/i.test(navigator.userAgent) ? "Google Pay" : null;
+})();
+const walletLine = () => WALLET ? h("p", { class: "wallet-line" }, icon("check", 16, 2.6), h("span", {}, `Pay in one tap with ${WALLET}. Card and PayPal work too.`)) : null;
 function packRows(note) {
   const packs = S.me.packs || [];
   if (!packs.some((p) => p.url)) return [h("p", { class: "sheet-sub" }, "Credit packs are not on sale right now. Please check back soon.")];
@@ -2074,7 +2087,8 @@ function packRows(note) {
     window.open(p.url, "_blank", "noopener"); toast("Finish the payment, then come back — credits appear by themselves.");
   } }, h("div", { class: "pack lbl" }, h("span", { class: "amt" }, bolt(18), p.credits), h("div", {}, h("b", {}, p.label.replace(" EUR", " €"), tags[i] ? h("span", { class: "badge" }, tags[i]) : null),
       h("span", {}, `${(Number(p.label.split(" ")[0]) / p.credits).toFixed(2)} € per credit`))), icon("right", 18)))),
-    h("p", { class: "sheet-sub", style: { paddingTop: "10px" } }, "Secure checkout by Stripe: card, Apple Pay, Google Pay, PayPal. Your first pack unlocks every model and app.")];
+    WALLET ? walletLine() : null,
+    h("p", { class: "sheet-sub", style: { paddingTop: "10px" } }, WALLET ? "Secure checkout by Stripe. Your first pack unlocks every model and app." : "Secure checkout by Stripe: card, Apple Pay, Google Pay, PayPal. Your first pack unlocks every model and app.")];
 }
 function bigCredits(sub) { return h("div", { class: "big-credits" }, h("b", {}, bolt(34), h("span", { "data-credits": "" }, S.me.admin ? "∞" : S.me.credits)), h("span", {}, S.me.admin ? "Admin account: no limits" : sub)); }
 function openBuy(note) {
