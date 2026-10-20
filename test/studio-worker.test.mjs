@@ -1351,7 +1351,7 @@ test("a Seedance copyright refusal offers Wan 3.0: the same credits, everything 
     assert.deepEqual({ m: w.json.generation.model, n: w.json.generation.modelName, s: w.json.generation.status }, { m: "wan-3.0", n: "Wan 3.0", s: "running" });
     assert.equal(w.json.credits, 100 - paid, "charged the credits the refused clip cost");
     assert.equal(w.json.original.offer, null);
-    assert.match(w.json.original.error, /Wan 3\.0 made it again/);
+    assert.match(w.json.original.error, /you sent it to Wan 3\.0\.$/);
     const sent = p.sent.filter((s) => s.url.startsWith("https://api.wavespeed.ai/api/v3/alibaba/"));
     assert.equal(sent.length, 1);
     assert.equal(sent[0].url, "https://api.wavespeed.ai/api/v3/alibaba/wan-3.0/text-to-video");
@@ -1458,6 +1458,25 @@ test("with the automatic switch on, a refused clip goes on on Wan 3.0 in the sam
     const g3 = (await call(env, `/api/generations/${r3.json.generation.id}`, { cookie })).json.generation;
     assert.equal(g3.status, "failed");
     assert.equal(g3.offer?.name, "Wan 3.0");
+  } finally { p.restore(); }
+});
+
+test("a copyright refusal in Chinese (版权) earns the offer too; a picture too small does not", async () => {
+  const env = newEnv({ WAVESPEED_API_KEY: "wk" });
+  const { cookie } = await paidAccount(env);
+  let said = "";
+  const p = fakeProvider((u) => {
+    if (u.endsWith("/v1/task/submit")) return new Response(JSON.stringify({ error: { message: said } }), { status: 400 });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    said = "输出视频可能涉及版权限制";
+    const a = await call(env, "/api/generate", { method: "POST", cookie, body: { noChat: true, prompt: "Rumi sings", settings: { model: "seedance-2.5", resolution: "480p", duration: 5 } } });
+    assert.equal(a.json.generation.offer?.name, "Wan 3.0", a.text);
+    said = "资源同步失败: url=https://app.kleo.test/media/u/up_x, DoCall CreateAsset: InvalidParameter.HeightTooSmall: Height must be between 300px and 6000px.";
+    const b = await call(env, "/api/generate", { method: "POST", cookie, body: { noChat: true, prompt: "a fox", settings: { model: "seedance-2.5", resolution: "480p", duration: 5 } } });
+    assert.equal(b.json.generation.status, "failed");
+    assert.equal(b.json.generation.offer, null);
   } finally { p.restore(); }
 });
 

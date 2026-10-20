@@ -148,7 +148,7 @@ export function publicGeneration(g: GenerationRow): Record<string, unknown> {
     status: g.status === "submitting" || g.status === "saving" ? "running" : g.status,
     // A clip with an offer says which model refused it; the page puts the offer right under it.
     error: offer ? `${offer.from} won't make this one: it recognised characters, people or music protected by copyright. Your credits are back.`
-      : remadeOnWan(g, settings) ? `${modelByKey(g.model)?.name ?? "The video model"} won't make this one: it recognised characters, people or music protected by copyright. Your credits are back, and ${WAN_NAME} made it again.` : g.error,
+      : remadeOnWan(g, settings) ? `${modelByKey(g.model)?.name ?? "The video model"} won't make this one: it recognised characters, people or music protected by copyright. Your credits are back, and you sent it to ${WAN_NAME}.` : g.error,
     offer, refunded: !!g.refunded, chatId: g.chat_id, messageId: g.message_id,
     // A clip the automatic switch moved to Wan 3.0 names the model that refused it.
     switchedFrom: kind === "video" && g.model === WAN_KEY && (settings as { auto?: boolean }).auto ? modelByKey((settings as { from?: string }).from)?.name ?? null : null,
@@ -276,8 +276,9 @@ function refusal(e: unknown, noun: string): string {
  * be related to copyright restrictions" three times, with a 50-character request id running off her phone's screen).
  */
 // WaveSpeed's words for the same refusal (19 October 2026, Pixar characters in a viral template): "Content flagged as
-// potentially sensitive". Alibaba's own, through ePhone: "IPInfringementSuspect".
-export const isCopyrightRefusal = (why: string): boolean => /copyright|protected content|intellectual property|IPInfringement|flagged as potentially sensitive/i.test(why);
+// potentially sensitive". Alibaba's own, through ePhone: "IPInfringementSuspect". ePhone answers some errors in Chinese
+// (20 October 2026, "资源同步失败" for a picture too small): 版权 is "copyright".
+export const isCopyrightRefusal = (why: string): boolean => /copyright|protected content|intellectual property|IPInfringement|flagged as potentially sensitive|版权/i.test(why);
 const copyrightText = (noun: string): string =>
   `The ${noun} won't make this one: it recognised characters, people or music protected by copyright, from a film, a show or a song. Your credits are back. Try your own characters, and leave out their pictures and names.`;
 /** What a failed generation says: the copyright sentence, or the provider's reason in neutral words. */
@@ -589,8 +590,9 @@ export async function refreshGeneration(env: StudioEnv, g: GenerationRow, minGap
   if (g.kind === "film") return refreshFilm(env, g);
   if (g.kind === "image" || g.kind === "tool") return refreshImages(env, g, ageMin);
   if (!g.task_id) return g;
-  // A clip that went on on Wan 3.0 after a refusal gets a second allowance of time.
-  if (ageMin > GENERATION_TIMEOUT_MIN * (g.model === WAN_KEY ? 2 : 1)) {
+  // A clip the automatic switch moved to Wan 3.0 part way gets a second allowance of time (a clip made again on Wan
+  // after "Use Wan 3.0" is a new row, with its own clock).
+  if (ageMin > GENERATION_TIMEOUT_MIN * (g.model === WAN_KEY && /"auto":true/.test(g.settings) ? 2 : 1)) {
     await failGeneration(env, g.id, "The video model took too long. Your credits are back.", { stage: "timeout", minutes: Math.round(ageMin) });
     return (await getGeneration(env, g.id))!;
   }
