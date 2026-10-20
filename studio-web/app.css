@@ -597,6 +597,12 @@ a.row { color: var(--ink); }
 .apps-group { margin: 26px 0 12px; display: flex; align-items: baseline; gap: 10px; }
 .apps-group h2 { margin: 0; font-size: 20px; font-weight: 720; letter-spacing: -.02em; }
 .apps-group span { color: var(--ink-2); font-size: 15.5px; }
+/* Phones (20 October 2026, the owner's iPhone: "Viral / templates" broke over two lines beside its subtitle): the title
+   on one line, the subtitle under it. */
+@media (max-width: 640px) {
+  .apps-group { flex-direction: column; align-items: flex-start; gap: 2px; }
+  .apps-group h2 { white-space: nowrap; }
+}
 .app-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
 .app-card { text-align: left; border-radius: 22px; overflow: hidden; background: var(--card); border: 1px solid var(--sep); box-shadow: var(--shadow); transition: transform .2s var(--ease), box-shadow .2s; display: flex; flex-direction: column; }
 .app-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-l); }
