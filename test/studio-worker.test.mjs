@@ -1778,3 +1778,41 @@ test("the in-app wallet button pays a Checkout Session for the same Stripe Price
   assert.match(page.res.headers.get("permissions-policy"), /payment=\(self "https:\/\/js\.stripe\.com" "https:\/\/\*\.js\.stripe\.com"\)/, "payments allowed for Stripe's frames only");
   assert.match(page.res.headers.get("content-security-policy"), /connect-src 'self' https:\/\/cloudflareinsights\.com https:\/\/api\.stripe\.com;/);
 });
+
+// ── A template's video reaches the customer byte for byte (21 October 2026) ─────────────────────────────────────────
+// The owner: "assicurati che kleo prenda il contenuto generato da WaveSpeed e lo dia al cliente alla massima qualità".
+test("a template's video reaches the customer byte for byte: WaveSpeed's file is stored, shown and downloaded unchanged, at the quality chosen", async () => {
+  const env = newEnv({ WAVESPEED_API_KEY: "k" });
+  const { cookie } = await paidAccount(env, "tpl@example.com", 100);
+  const photo = await call(env, "/api/uploads", { method: "POST", cookie, raw: jpegBytes(), headers: { "content-type": "image/jpeg", "x-width": "1080", "x-height": "1920" } });
+  assert.equal(photo.status, 200, photo.text);
+  // A 14 s 1080p clip with a long patterned tail, so a change to any single byte shows.
+  const made = new Uint8Array(Buffer.concat([Buffer.from(mp4Bytes(14, 1080, 1920)), Buffer.from(Array.from({ length: 50_000 }, (_, i) => (i * 31 + 7) % 256))]));
+  const p = fakeProvider((u) => {
+    if (u === "https://api.wavespeed.ai/api/v3/media/uploads") return ok({ code: 200, data: { download_url: "https://cdn.wavespeed.test/person.jpg", upload: { method: "PUT", url: "https://up.wavespeed.test/put" } } });
+    if (u === "https://up.wavespeed.test/put") return new Response("", { status: 200 });
+    if (u === "https://api.wavespeed.ai/api/v3/alibaba/wan-3.0/video-edit") return ok({ code: 200, data: { id: "ws_tpl", status: "created" } });
+    if (u === "https://api.wavespeed.ai/api/v3/predictions/ws_tpl/result") return ok({ code: 200, data: { id: "ws_tpl", status: "completed", outputs: ["https://cdn.wavespeed.test/tpl.mp4"] } });
+    if (u === "https://cdn.wavespeed.test/tpl.mp4") return new Response(made, { status: 200, headers: { "content-type": "video/mp4", "content-length": String(made.byteLength) } });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const run = await call(env, "/api/tools/run", { method: "POST", cookie, body: { tool: "trend-paris-fire-dance", consent: true, inputs: { person1: photo.json.id, quality: "1080p" } } });
+    assert.equal(run.status, 200, run.text);
+    const sent = p.sent.find((s) => s.url.endsWith("/alibaba/wan-3.0/video-edit"));
+    assert.equal(sent.body.resolution, "1080p", "the quality the customer chose is the quality ordered");
+    old(env);
+    const done = await call(env, `/api/generations/${run.json.generation.id}`, { cookie });
+    assert.equal(done.json.generation.status, "done", done.text);
+    const out = done.json.generation.outputs[0];
+    assert.equal(out.type, "video");
+    for (const path of [out.url, `${out.url}?dl=1`]) {
+      const res = await worker.fetch(new Request(`https://app.kleo.test${path}`, { headers: { cookie } }), env, ctx);
+      assert.equal(res.status, 200, path);
+      assert.equal(res.headers.get("content-type"), "video/mp4");
+      const got = new Uint8Array(await res.arrayBuffer());
+      assert.equal(got.byteLength, made.byteLength, `${path}: same size`);
+      assert.ok(Buffer.from(got).equals(Buffer.from(made)), `${path}: the very bytes WaveSpeed made, nothing re-encoded or shrunk`);
+    }
+  } finally { p.restore(); }
+});
