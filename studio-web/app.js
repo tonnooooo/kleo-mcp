@@ -1933,7 +1933,8 @@ function planCard(p, per, ui, redraw) {
 async function buyPlan(p, tier, per) {
   if (!S.me) return requireAccount("signup");
   const price = tier[per];
-  if (price.url && WALLET && !DEMO) return walletPay({ plan: p.key, tier: Math.max(0, p.tiers.indexOf(tier)), period: per }, `Kleo ${p.name}`, () => { location.href = price.url; }, () => { location.href = price.url; });
+  if (price.url && WALLET && !DEMO) return walletPay({ plan: p.key, tier: Math.max(0, p.tiers.indexOf(tier)), period: per }, `Kleo ${p.name}`, () => { location.href = price.url; }, () => { location.href = price.url; },
+    { name: `Kleo ${p.name}`, sub: `${tier.credits} credits every month`, points: [per === "year" ? "Billed once a year" : "Billed every month", "Cancel any time", "Credits never expire"], plan: true });
   if (price.url) { location.href = price.url; return; }
   if (await ask({ title: `${p.name} opens in a few days`, text: "Plans are almost ready. You can already buy a credit pack: your credits stay when the plan starts.", ok: "Buy credits" })) openBuy();
 }
@@ -2106,22 +2107,36 @@ const darkNow = () => (document.documentElement.getAttribute("data-theme") || (m
  * without one, the server not ready): Stripe's checkout page, as before. `other` is the "Other ways to pay" button.
  * The credits arrive through the same webhook as a Payment Link; the page only waits for them.
  */
-async function walletPay(what, title, noWallet, other) {
+async function walletPay(what, title, noWallet, other, item = {}) {
   if (!S.me) return requireAccount("signup");
   const slot = h("div", { class: "wallet-slot" }, h("div", { class: "wallet-wait" }, spinner(22)));
-  const total = h("p", { class: "wallet-total" });
+  const total = h("b", { class: "wallet-total" }, h("span", { class: "wallet-total-wait" }));
   const err = h("p", { class: "wallet-err" });
   const otherBtn = h("button", { class: "btn btn-quiet wallet-other", onclick: () => { closeLayer(); other(); } }, "Other ways to pay");
-  sheet(title, null, total, slot, err, otherBtn);
+  // 21 October 2026, the owner: "fai meglio la grafica, sembra una roba scam". What is bought, from whom, for how much,
+  // then one button: the wallet of THIS phone only, and who handles the card.
+  sheet(title, null, h("div", { class: "wallet-pane" },
+    h("div", { class: "wallet-card" },
+      h("div", { class: "wallet-top" },
+        h("img", { class: "wallet-mark", src: "/kleo-mark.svg", alt: "" }),
+        h("div", { class: "wallet-what" }, h("b", {}, item.name || title), item.sub ? h("span", {}, item.sub) : null)),
+      h("div", { class: "wallet-sum" }, h("span", {}, "Total"), total)),
+    item.points?.length ? h("ul", { class: "wallet-points" }, item.points.map((x) => h("li", {}, icon("check", 16, 2.6), x))) : null,
+    slot, err, otherBtn,
+    h("div", { class: "wallet-secure" }, h("p", {}, icon("lock", 15, 2.2), "Secure payment by Stripe"), h("p", {}, "Kleo never sees your card."))));
   const open = () => slot.isConnected;
   try {
     const [StripeFn, s] = await Promise.all([loadStripeJs(), api("/api/pay/session", { method: "POST", body: what })]);
     if (!open()) return;
     const dark = darkNow();
-    const checkout = StripeFn(s.publishableKey).initCheckoutElementsSdk({ clientSecret: s.clientSecret, elementsOptions: { appearance: { theme: dark ? "night" : "stripe" } } });
+    const checkout = StripeFn(s.publishableKey).initCheckoutElementsSdk({ clientSecret: s.clientSecret, elementsOptions: { appearance: { theme: dark ? "night" : "stripe", variables: { borderRadius: "14px" } } } });
+    // Only the wallet of this phone: Apple Pay on an iPhone, Google Pay on Android (Google Pay on an iPhone looked odd).
+    const apple = WALLET === "Apple Pay";
+    const kind = item.plan ? "subscribe" : "buy";
     const ece = checkout.createExpressCheckoutElement({
-      buttonHeight: 52, buttonType: { applePay: "buy", googlePay: "buy" }, buttonTheme: { applePay: dark ? "white" : "black", googlePay: dark ? "white" : "black" },
-      paymentMethods: { applePay: "always", googlePay: "always", link: "never", paypal: "never", amazonPay: "never" },
+      buttonHeight: 54, layout: { maxColumns: 1 },
+      buttonType: { applePay: kind, googlePay: kind }, buttonTheme: { applePay: dark ? "white" : "black", googlePay: dark ? "white" : "black" },
+      paymentMethods: { applePay: apple ? "always" : "never", googlePay: apple ? "never" : "always", link: "never", paypal: "never", amazonPay: "never" },
     });
     const mount = h("div", { class: "wallet-mount" });
     ece.on("availablepaymentmethodschange", ({ paymentMethods }) => {
@@ -2134,7 +2149,7 @@ async function walletPay(what, title, noWallet, other) {
     if (loaded.type !== "success") throw new Error(loaded.error?.message || "The payment couldn't start.");
     // Stripe asks that the total it computed is shown before the buyer pays.
     const sess = typeof loaded.actions.getSession === "function" ? loaded.actions.getSession() : checkout.session?.();
-    total.textContent = `${sess?.total?.total?.amount ?? ""}${sess?.recurring ? ` / ${sess.recurring.interval}` : ""}`;
+    fill(total, sess?.total?.total?.amount ?? "", sess?.recurring ? h("small", {}, ` / ${sess.recurring.interval}`) : null);
     slot.append(mount);
     ece.mount(mount);
     ece.on("confirm", async (event) => {
@@ -2175,7 +2190,8 @@ function packRows(note) {
   const tags = ["", "Popular", "Best value"];
   const checkout = (p) => { window.open(p.url, "_blank", "noopener"); toast("Finish the payment, then come back — credits appear by themselves."); };
   return [note ? h("p", { class: "sheet-sub" }, note) : null, h("div", { class: "list" }, packs.map((p, i) => h("button", { class: "row", disabled: !p.url, onclick: () => {
-    if (WALLET && !DEMO) walletPay({ pack: p.credits }, `${p.credits} credits`, () => { location.href = p.url; }, () => checkout(p));
+    if (WALLET && !DEMO) walletPay({ pack: p.credits }, "Get credits", () => { location.href = p.url; }, () => checkout(p),
+      { name: `${p.credits} credits`, sub: "One payment, no subscription", points: ["Credits never expire", "Every model and app unlocked"] });
     else checkout(p);
   } }, h("div", { class: "pack lbl" }, h("span", { class: "amt" }, bolt(18), p.credits), h("div", {}, h("b", {}, p.label.replace(" EUR", " €"), tags[i] ? h("span", { class: "badge" }, tags[i]) : null),
       h("span", {}, `${(Number(p.label.split(" ")[0]) / p.credits).toFixed(2)} € per credit`))), icon("right", 18)))),
