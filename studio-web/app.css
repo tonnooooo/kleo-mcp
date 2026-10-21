@@ -1240,13 +1240,31 @@ body::before { display: none; }
 .pl-name b { font-size: 26px; font-weight: 800; letter-spacing: -.02em; }
 .pl-badge { font-size: 13px; font-weight: 900; letter-spacing: .03em; padding: 4px 9px; border-radius: 8px; background: #22c55e; color: #052e16; }
 .pl-badge.small { font-size: 13px; padding: 3px 7px; margin-left: 8px; vertical-align: middle; }
-/* The in-app wallet sheet (app.js walletPay). */
-.wallet-total { margin: 4px 0 14px; text-align: center; font-size: 28px; font-weight: 800; letter-spacing: -.02em; min-height: 34px; }
-.wallet-slot { min-height: 52px; display: grid; }
-.wallet-wait { display: grid; place-items: center; min-height: 52px; }
+/* The in-app wallet sheet (app.js walletPay): what is bought, its price, one wallet button, who handles the card. */
+.wallet-pane { padding: 4px 20px 6px; }
+.wallet-card { padding: 16px; border-radius: 18px; background: var(--fill-2); border: 1px solid var(--sep); }
+.wallet-top { display: flex; align-items: center; gap: 14px; }
+.wallet-sum { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--sep); }
+.wallet-sum > span { font-size: 16px; color: var(--ink-2); font-weight: 600; }
+.wallet-mark { width: 44px; height: 44px; flex: none; }
+.wallet-what { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.wallet-what b { font-size: 17px; font-weight: 700; letter-spacing: -.01em; }
+.wallet-what span { font-size: 15px; color: var(--ink-2); }
+.wallet-total { flex: none; font-size: 24px; font-weight: 800; letter-spacing: -.02em; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.wallet-total small { font-size: 15px; font-weight: 600; color: var(--ink-2); letter-spacing: 0; }
+.wallet-total-wait { display: inline-block; width: 64px; height: 24px; border-radius: 8px; background: var(--fill); vertical-align: middle; }
+.wallet-points { list-style: none; margin: 14px 2px 18px; padding: 0; display: grid; gap: 8px; }
+.wallet-points li { display: flex; align-items: center; gap: 10px; font-size: 15.5px; color: var(--ink); }
+.wallet-points svg { color: var(--green); flex: none; }
+.wallet-slot { min-height: 54px; display: grid; }
+.wallet-wait { display: grid; place-items: center; min-height: 54px; border-radius: 14px; background: var(--fill-2); }
 .wallet-err { margin: 10px 0 0; color: var(--red); font-size: 15px; text-align: center; min-height: 0; overflow-wrap: anywhere; }
 .wallet-err:empty { display: none; }
-.wallet-other { width: 100%; margin-top: 12px; height: 46px; font-size: 16px; }
+.wallet-other { width: 100%; margin-top: 10px; height: 48px; font-size: 16px; border-radius: 14px; }
+.wallet-secure { margin: 14px 0 4px; text-align: center; color: var(--ink-2); font-size: 15px; }
+.wallet-secure p { margin: 0; }
+.wallet-secure p:first-child { display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--ink); font-weight: 600; }
+.wallet-secure svg { flex: none; }
 /* The wallet this device pays with (app.js WALLET). */
 .wallet-line { display: flex; justify-content: center; align-items: flex-start; gap: 6px; margin: 12px 0 0; font-size: 15px; font-weight: 600; color: var(--green); }
 .wallet-line svg { flex: none; margin-top: 2px; }
