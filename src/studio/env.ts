@@ -30,6 +30,10 @@ export interface StudioEnv {
   STRIPE_LINK_40?: string;
   /** Monthly plans (src/plans.ts): JSON {"lite:month": "https://buy.stripe.com/…", "pro:year": …, "agency-620:month": …}. */
   STRIPE_PLAN_LINKS?: string;
+  /** The restricted key the in-app Apple Pay / Google Pay button pays with (src/studio/pay.ts); secret. */
+  STRIPE_SECRET_KEY?: string;
+  /** The account's publishable key, for Stripe.js in the page (public). */
+  STRIPE_PUBLISHABLE_KEY?: string;
   /** Credits a new Studio account starts with (default 5, the MCP server's FREE_CREDITS). */
   FREE_CREDITS?: string;
   MAX_NEW_USERS_PER_DAY?: string;

@@ -287,6 +287,8 @@ async function boot() {
   }
   try { S.me = await api("/api/me"); } catch (e) { if (!(e.code === "signin" || e.status === 401)) return handleError(e); S.me = null; }
   if (S.me && location.pathname === "/" && pendingConnect()) history.replaceState(null, "", "/connect");
+  // Back from a payment that had to leave the app (src/studio/pay.ts return_url).
+  if (q.get("paid") === "1") { history.replaceState(null, "", location.pathname); if (S.me) setTimeout(waitForCredits, 300); }
   await enter();
 }
 const pendingConnect = () => { const p = store.get("connect", null); return p && Date.now() - p.at < 30 * 60e3 ? p : null; };
@@ -1931,6 +1933,7 @@ function planCard(p, per, ui, redraw) {
 async function buyPlan(p, tier, per) {
   if (!S.me) return requireAccount("signup");
   const price = tier[per];
+  if (price.url && WALLET && !DEMO) return walletPay({ plan: p.key, tier: Math.max(0, p.tiers.indexOf(tier)), period: per }, `Kleo ${p.name}`, () => { location.href = price.url; }, () => { location.href = price.url; });
   if (price.url) { location.href = price.url; return; }
   if (await ask({ title: `${p.name} opens in a few days`, text: "Plans are almost ready. You can already buy a credit pack: your credits stay when the plan starts.", ok: "Buy credits" })) openBuy();
 }
@@ -2083,12 +2086,97 @@ const WALLET = (() => {
   return /Android/i.test(ua) ? "Google Pay" : null;
 })();
 const walletLine = () => WALLET ? h("p", { class: "wallet-line" }, icon("check", 16, 2.6), h("span", {}, `Pay in one tap with ${WALLET}. Card and PayPal work too.`)) : null;
+// ── Apple Pay / Google Pay inside the app (21 October 2026, src/studio/pay.ts) ────────────────────────────────────
+// Stripe.js loads only when a phone buyer taps a pack or a plan; nothing of Stripe's runs on any other visit.
+let stripeJs = null;
+function loadStripeJs() {
+  return (stripeJs ||= new Promise((ok, no) => {
+    if (window.Stripe) return ok(window.Stripe);
+    const s = document.createElement("script");
+    s.src = "https://js.stripe.com/endive/stripe.js"; s.async = true;
+    s.onload = () => (window.Stripe ? ok(window.Stripe) : no(new Error("Stripe didn't load")));
+    s.onerror = () => { stripeJs = null; no(new Error("Stripe didn't load")); };
+    document.head.append(s);
+  }));
+}
+const darkNow = () => (document.documentElement.getAttribute("data-theme") || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")) === "dark";
+/**
+ * One tap to pay on a phone: a sheet with Stripe's Apple Pay or Google Pay button for one pack or plan (`what` =
+ * {pack: 10} or {plan, tier, period}). `noWallet` runs when no wallet button can show (no card in the wallet, a browser
+ * without one, the server not ready): Stripe's checkout page, as before. `other` is the "Other ways to pay" button.
+ * The credits arrive through the same webhook as a Payment Link; the page only waits for them.
+ */
+async function walletPay(what, title, noWallet, other) {
+  if (!S.me) return requireAccount("signup");
+  const slot = h("div", { class: "wallet-slot" }, h("div", { class: "wallet-wait" }, spinner(22)));
+  const total = h("p", { class: "wallet-total" });
+  const err = h("p", { class: "wallet-err" });
+  const otherBtn = h("button", { class: "btn btn-quiet wallet-other", onclick: () => { closeLayer(); other(); } }, "Other ways to pay");
+  sheet(title, null, total, slot, err, otherBtn);
+  const open = () => slot.isConnected;
+  try {
+    const [StripeFn, s] = await Promise.all([loadStripeJs(), api("/api/pay/session", { method: "POST", body: what })]);
+    if (!open()) return;
+    const dark = darkNow();
+    const checkout = StripeFn(s.publishableKey).initCheckoutElementsSdk({ clientSecret: s.clientSecret, elementsOptions: { appearance: { theme: dark ? "night" : "stripe" } } });
+    const ece = checkout.createExpressCheckoutElement({
+      buttonHeight: 52, buttonType: { applePay: "buy", googlePay: "buy" }, buttonTheme: { applePay: dark ? "white" : "black", googlePay: dark ? "white" : "black" },
+      paymentMethods: { applePay: "always", googlePay: "always", link: "never", paypal: "never", amazonPay: "never" },
+    });
+    const mount = h("div", { class: "wallet-mount" });
+    ece.on("availablepaymentmethodschange", ({ paymentMethods }) => {
+      if (!open()) return;
+      if (!paymentMethods) { closeLayer(); noWallet(); return; }
+      slot.querySelector(".wallet-wait")?.remove();
+    });
+    const loaded = await checkout.loadActions();
+    if (!open()) return;
+    if (loaded.type !== "success") throw new Error(loaded.error?.message || "The payment couldn't start.");
+    // Stripe asks that the total it computed is shown before the buyer pays.
+    const sess = typeof loaded.actions.getSession === "function" ? loaded.actions.getSession() : checkout.session?.();
+    total.textContent = `${sess?.total?.total?.amount ?? ""}${sess?.recurring ? ` / ${sess.recurring.interval}` : ""}`;
+    slot.append(mount);
+    ece.mount(mount);
+    ece.on("confirm", async (event) => {
+      err.textContent = "";
+      const res = await loaded.actions.confirm({ expressCheckoutConfirmEvent: event, redirect: "if_required" });
+      if (res.type === "error") { err.textContent = res.error?.message || "The payment didn't go through. Nothing was charged."; return; }
+      closeLayer();
+      waitForCredits();
+    });
+  } catch (e) {
+    if (!open()) return;
+    if (e.code === "pay_unavailable" || /Stripe didn't load/.test(e.message || "")) { closeLayer(); noWallet(); return; }
+    if (e.code === "signin") return handleError(e);
+    slot.querySelector(".wallet-wait")?.remove();
+    err.textContent = e.message || "The payment couldn't start.";
+  }
+}
+/** After a payment: the webhook adds the credits within seconds; the page watches /api/me for a minute and says so. */
+async function waitForCredits() {
+  const before = { credits: S.me?.credits ?? 0, plan: S.me?.plan?.key ?? null };
+  toast("Paid. Your credits are on their way…");
+  for (let i = 0; i < 30; i++) {
+    await new Promise((r) => setTimeout(r, 2000));
+    try {
+      const me = await api("/api/me");
+      if (me.credits !== before.credits || (me.plan?.key ?? null) !== before.plan) {
+        S.me = me; setCredits(me.credits);
+        toast(me.credits > before.credits ? `+${me.credits - before.credits} credits — enjoy!` : "Your plan is active.");
+        return;
+      }
+    } catch { /* try again */ }
+  }
+  toast("Payment received. Your credits will appear in a minute.");
+}
 function packRows(note) {
   const packs = S.me.packs || [];
   if (!packs.some((p) => p.url)) return [h("p", { class: "sheet-sub" }, "Credit packs are not on sale right now. Please check back soon.")];
   const tags = ["", "Popular", "Best value"];
+  const checkout = (p) => { window.open(p.url, "_blank", "noopener"); toast("Finish the payment, then come back — credits appear by themselves."); };
   return [note ? h("p", { class: "sheet-sub" }, note) : null, h("div", { class: "list" }, packs.map((p, i) => h("button", { class: "row", disabled: !p.url, onclick: () => {
-    window.open(p.url, "_blank", "noopener"); toast("Finish the payment, then come back — credits appear by themselves.");
+    if (WALLET && !DEMO) walletPay({ pack: p.credits }, `${p.credits} credits`, () => { location.href = p.url; }, () => checkout(p));
+    else checkout(p);
   } }, h("div", { class: "pack lbl" }, h("span", { class: "amt" }, bolt(18), p.credits), h("div", {}, h("b", {}, p.label.replace(" EUR", " €"), tags[i] ? h("span", { class: "badge" }, tags[i]) : null),
       h("span", {}, `${(Number(p.label.split(" ")[0]) / p.credits).toFixed(2)} € per credit`))), icon("right", 18)))),
     WALLET ? walletLine() : null,

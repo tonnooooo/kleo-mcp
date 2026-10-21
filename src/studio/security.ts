@@ -27,15 +27,21 @@ const TURNSTILE = "https://challenges.cloudflare.com";
 const CF_INSIGHTS = "https://static.cloudflareinsights.com";
 const CF_BEACON = "https://cloudflareinsights.com";
 
+/**
+ * Stripe.js and its Express Checkout Element (the in-app Apple Pay / Google Pay button, src/studio/pay.ts, 21 October
+ * 2026), with Stripe's own list of what it needs (docs.stripe.com/security/guide, "Stripe.js").
+ */
+const STRIPE_JS = "https://js.stripe.com https://*.js.stripe.com";
+
 export const APP_CSP = [
   "default-src 'self'",
-  `script-src 'self' ${TURNSTILE} ${CF_INSIGHTS}`,
+  `script-src 'self' ${TURNSTILE} ${CF_INSIGHTS} ${STRIPE_JS}`,
   "style-src 'self' 'unsafe-inline'",
-  `img-src 'self' data: blob: ${SITE_HOST} ${MEDIA_HOST}`,
+  `img-src 'self' data: blob: ${SITE_HOST} ${MEDIA_HOST} https://*.stripe.com`,
   `media-src 'self' blob: ${SITE_HOST} ${MEDIA_HOST}`,
   "font-src 'self'",
-  `connect-src 'self' ${CF_BEACON}`,
-  `frame-src ${TURNSTILE}`,
+  `connect-src 'self' ${CF_BEACON} https://api.stripe.com`,
+  `frame-src ${TURNSTILE} ${STRIPE_JS} https://hooks.stripe.com`,
   "worker-src 'none'",
   "manifest-src 'self'",
   ...COMMON,
@@ -57,7 +63,8 @@ export const SITE_CSP = [
 /** Media files, JSON and plain-text answers: a browser that opens one directly must not run anything in it. */
 export const LOCKED_CSP = "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
 
-const PERMISSIONS = "camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=(), bluetooth=(), midi=()";
+// Payments only for this origin and Stripe's frames: "payment=()" switched Apple Pay and Google Pay off in the page.
+const PERMISSIONS = 'camera=(), microphone=(), geolocation=(), payment=(self "https://js.stripe.com" "https://*.js.stripe.com"), usb=(), serial=(), hid=(), bluetooth=(), midi=()';
 
 /** The plain-HTTP twin of a request, sent to HTTPS (local development hosts stay as they are). */
 export function httpsRedirect(url: URL): Response | null {
