@@ -2075,8 +2075,12 @@ function openAspect(aspects, current, onPick) {
  * before the tap, so a phone buyer knows it is one tap and no card to type. Apple devices expose ApplePaySession.
  */
 const WALLET = (() => {
+  // Phones only (the owner: "mi serviva per telefono non per pc"): a Mac's Safari has Apple Pay too, and says nothing.
+  const ua = navigator.userAgent;
+  const phone = /iPhone|iPod|Android/i.test(ua) || (/iPad/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1));
+  if (!phone) return null;
   try { if (window.ApplePaySession && ApplePaySession.canMakePayments()) return "Apple Pay"; } catch { /* not Safari */ }
-  return /Android/i.test(navigator.userAgent) ? "Google Pay" : null;
+  return /Android/i.test(ua) ? "Google Pay" : null;
 })();
 const walletLine = () => WALLET ? h("p", { class: "wallet-line" }, icon("check", 16, 2.6), h("span", {}, `Pay in one tap with ${WALLET}. Card and PayPal work too.`)) : null;
 function packRows(note) {
