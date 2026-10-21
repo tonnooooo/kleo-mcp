@@ -1244,7 +1244,7 @@ body::before { display: none; }
 .wallet-total { margin: 4px 0 14px; text-align: center; font-size: 28px; font-weight: 800; letter-spacing: -.02em; min-height: 34px; }
 .wallet-slot { min-height: 52px; display: grid; }
 .wallet-wait { display: grid; place-items: center; min-height: 52px; }
-.wallet-err { margin: 10px 0 0; color: var(--red); font-size: 15px; text-align: center; min-height: 0; }
+.wallet-err { margin: 10px 0 0; color: var(--red); font-size: 15px; text-align: center; min-height: 0; overflow-wrap: anywhere; }
 .wallet-err:empty { display: none; }
 .wallet-other { width: 100%; margin-top: 12px; height: 46px; font-size: 16px; }
 /* The wallet this device pays with (app.js WALLET). */
