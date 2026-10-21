@@ -842,7 +842,7 @@ test("security: plain HTTP goes to HTTPS; every answer carries HSTS, nosniff, no
       assert.equal(r.res.headers.get("x-frame-options"), "DENY");
       assert.match(r.res.headers.get("content-security-policy") ?? "", /frame-ancestors 'none'|default-src 'none'/);
     }
-    assert.match(page.res.headers.get("content-security-policy"), /script-src 'self' https:\/\/challenges\.cloudflare\.com https:\/\/static\.cloudflareinsights\.com;/, "the app runs only its own scripts (Turnstile and Cloudflare's analytics aside)");
+    assert.match(page.res.headers.get("content-security-policy"), /script-src 'self' https:\/\/challenges\.cloudflare\.com https:\/\/static\.cloudflareinsights\.com https:\/\/js\.stripe\.com https:\/\/\*\.js\.stripe\.com;/, "the app runs only its own scripts (Turnstile, Cloudflare's analytics and Stripe.js aside)");
     assert.match(site.res.headers.get("content-security-policy"), /fonts\.googleapis\.com/, "site pages get the site's policy");
     assert.match(api.res.headers.get("content-security-policy"), /^default-src 'none'/, "JSON and files can never run as a page");
   } finally { p.restore(); }
@@ -1725,4 +1725,56 @@ test("a picture FLUX 3 refuses too can be drawn once more on FLUX 3 with its nam
     const done = (await call(env, `/api/generations/${w.json.generation.id}`, { cookie })).json.generation;
     assert.equal(done.status, "done", JSON.stringify(done));
   } finally { p.restore(); }
+});
+
+// ── Apple Pay / Google Pay inside the app (21 October 2026) ─────────────────────────────────────────────────────────
+test("the in-app wallet button pays a Checkout Session for the same Stripe Price, tied to the account; no keys, no button", async () => {
+  const PRICES = { data: [
+    { id: "price_pack10", currency: "eur", unit_amount: 500, type: "one_time", recurring: null },
+    { id: "price_pack35", currency: "eur", unit_amount: 1500, type: "one_time", recurring: null },
+    { id: "price_pro_m", currency: "eur", unit_amount: 3900, type: "recurring", recurring: { interval: "month" } },
+    { id: "price_pro_y", currency: "eur", unit_amount: 37200, type: "recurring", recurring: { interval: "year" } },
+    { id: "price_usd", currency: "usd", unit_amount: 500, type: "one_time", recurring: null },
+  ] };
+  const none = newEnv();
+  const c0 = (await paidAccount(none)).cookie;
+  const off = await call(none, "/api/pay/session", { method: "POST", cookie: c0, body: { pack: 10 } });
+  assert.equal(off.status, 503);
+  assert.equal(off.json.code, "pay_unavailable", "without the keys the page opens Stripe's checkout instead");
+
+  const env = newEnv({ STRIPE_SECRET_KEY: "rk_live_test", STRIPE_PUBLISHABLE_KEY: "pk_live_test" });
+  assert.equal((await call(env, "/api/pay/session", { method: "POST", body: { pack: 10 } })).status, 401, "a visitor gets nothing");
+  const { cookie, id } = await paidAccount(env, "buyer@example.com");
+  const p = fakeProvider((u, init) => {
+    if (u.startsWith("https://api.stripe.com/v1/prices")) return ok(PRICES);
+    if (u === "https://api.stripe.com/v1/checkout/sessions") return ok({ id: "cs_live_x", client_secret: "cs_live_x_secret_y" });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const r = await call(env, "/api/pay/session", { method: "POST", cookie, body: { pack: 10 } });
+    assert.equal(r.status, 200, r.text);
+    assert.deepEqual(r.json, { clientSecret: "cs_live_x_secret_y", publishableKey: "pk_live_test", label: "10 credits", cents: 500 });
+    const made = p.sent.find((s) => s.url === "https://api.stripe.com/v1/checkout/sessions");
+    assert.equal(made.headers.authorization, "Bearer rk_live_test");
+    const form = Object.fromEntries(new URLSearchParams(made.body));
+    assert.deepEqual(form, {
+      mode: "payment", ui_mode: "elements", "line_items[0][price]": "price_pack10", "line_items[0][quantity]": "1",
+      client_reference_id: id, return_url: "https://app.kleo.test/?paid=1", locale: "en",
+      "metadata[kleo_user]": id, "metadata[kleo_source]": "studio-wallet", customer_email: "buyer@example.com",
+    }, "the webhook names the account by client_reference_id and the pack by the EUR amount, as for a Payment Link");
+
+    const plan = await call(env, "/api/pay/session", { method: "POST", cookie, body: { plan: "pro", tier: 0, period: "year" } });
+    assert.equal(plan.status, 200, plan.text);
+    const f2 = Object.fromEntries(new URLSearchParams(p.sent.filter((s) => s.url.endsWith("/v1/checkout/sessions")).at(-1).body));
+    assert.deepEqual([f2.mode, f2["line_items[0][price]"]], ["subscription", "price_pro_y"]);
+    assert.equal(p.sent.filter((s) => s.url.startsWith("https://api.stripe.com/v1/prices")).length, 1, "the prices are read once");
+
+    assert.equal((await call(env, "/api/pay/session", { method: "POST", cookie, body: { pack: 7 } })).status, 400, "no such pack");
+    const missing = await call(env, "/api/pay/session", { method: "POST", cookie, body: { pack: 100 } });
+    assert.equal(missing.json.code, "pay_unavailable", "a pack with no live Stripe Price falls back to the checkout");
+    assert.ok(env.DB.db.prepare("SELECT 1 FROM audit WHERE event = 'pay.session' AND user_id = ?").get(id), "every session is in the audit");
+  } finally { p.restore(); }
+  const page = await call(env, "/");
+  assert.match(page.res.headers.get("permissions-policy"), /payment=\(self "https:\/\/js\.stripe\.com" "https:\/\/\*\.js\.stripe\.com"\)/, "payments allowed for Stripe's frames only");
+  assert.match(page.res.headers.get("content-security-policy"), /connect-src 'self' https:\/\/cloudflareinsights\.com https:\/\/api\.stripe\.com;/);
 });

@@ -37,6 +37,7 @@ import { SESSION_COOKIE, clearSessionCookie, readCookie, readSessionFull, normal
 import { ipBucket } from "../accounts.ts";
 import { studioConnect } from "../connect.ts";
 import { publicPlans } from "../plans.ts";
+import { createPaySession } from "./pay.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const json = (data: unknown, status = 200, headers: Record<string, string> = {}): Response =>
@@ -249,6 +250,14 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       // Copyright refusals made on Wan 3.0 by themselves (generate.ts switchToWan).
       autoWan: await autoWanOn(env, userId),
     });
+  }
+  // Apple Pay / Google Pay inside the app (src/studio/pay.ts): the Checkout Session a phone's wallet button pays.
+  if (path === "/api/pay/session" && method === "POST") {
+    const b = await body<{ pack?: unknown; plan?: unknown; tier?: unknown; period?: unknown }>(request);
+    const u = await getUser(asEnv(env), userId);
+    const s = await createPaySession(env, userId, (u as { email?: string | null } | null)?.email ?? null, b, origin);
+    await audit(asEnv(env), userId, null, "pay.session", { label: s.label, cents: s.cents });
+    return json(s);
   }
   if (path === "/api/me/auto-wan" && method === "POST") {
     const on = (await body<{ on?: boolean }>(request)).on === true;
