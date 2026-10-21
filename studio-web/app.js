@@ -2146,10 +2146,10 @@ async function walletPay(what, title, noWallet, other) {
     });
   } catch (e) {
     if (!open()) return;
-    if (e.code === "pay_unavailable" || /Stripe didn't load/.test(e.message || "")) { closeLayer(); noWallet(); return; }
     if (e.code === "signin") return handleError(e);
-    slot.querySelector(".wallet-wait")?.remove();
-    err.textContent = e.message || "The payment couldn't start.";
+    // Anything that stops the wallet button before the buyer has paid (21 October 2026: a mistyped publishable key
+    // showed "Invalid API Key provided" on the owner's iPhone) sends the buyer to Stripe's checkout page instead.
+    closeLayer(); noWallet();
   }
 }
 /** After a payment: the webhook adds the credits within seconds; the page watches /api/me for a minute and says so. */
