@@ -105,6 +105,31 @@ test("Paris Fire Dance and Bby Wow (21 October 2026): one seat each, their clips
   assert.equal(input.generate_audio, false);
 });
 
+test("Garden Dunk and Branch Chop (22 October 2026): one seat each, 15 s clips on R2, written seat by seat", () => {
+  const dunk = trendByKey("trend-garden-dunk"), chop = trendByKey("trend-branch-chop");
+  for (const [t, slug] of [[dunk, "garden-dunk"], [chop, "branch-chop"]]) {
+    assert.ok(t && !t.prompt, `${slug}: a seat-by-seat prompt, not a fixed one`);
+    assert.equal(t.seats.length, 1);
+    assert.equal(t.baseUrl, `https://media.kleooai.com/app/templates/${slug}/base.mp4`);
+    assert.equal(t.preview, `https://media.kleooai.com/app/templates/${slug}/preview3-p.mp4`);
+    assert.equal(t.guide, `https://media.kleooai.com/app/templates/${slug}/guide.jpg`);
+    assert.deepEqual(["480p", "720p", "1080p"].map((q) => toolCredits(trendCostUsd(t, q))), [6, 11, 22], "15 + 15 billed seconds");
+    assert.equal(planTool(t.key, { quality: "720p" }, { person1: photo("up_g") }).usd, 3);
+  }
+  const d = planTool(dunk.key, { quality: "720p" }, { person1: photo("up_d") }).tasks[0].input;
+  assert.deepEqual(d.reference_images, [photo("up_d").url]);
+  assert.equal(d.generate_audio, false);
+  assert.match(d.prompt, /Image 1 replaces the person in the CENTRE of the court/);
+  assert.match(d.prompt, /no black-and-white fur/);
+  assert.match(d.prompt, /11-12s slams the ball down through the hoop/);
+  assert.match(d.prompt, /Knicks centre-court logo/);
+  const c = planTool(chop.key, { quality: "480p" }, { person1: photo("up_c") }).tasks[0].input.prompt;
+  assert.match(c, /Image 1 replaces the person on the BRANCH over the river/);
+  assert.match(c, /no red Adidas polo shirt/);
+  assert.match(c, /13-14s the branch snaps at 13.1s/);
+  assert.match(c, /the big white splash/);
+});
+
 test("plan: no photo is a refusal a person can act on; a video in a seat is refused", () => {
   assert.throws(() => planTool(YTBM, {}, {}), (e) => e instanceof ToolRefusal && /at least one person/.test(e.message));
   assert.throws(() => planTool(YTBM, {}, { person1: { ...photo("up_v"), kind: "video" } }), (e) => e instanceof ToolRefusal && /picture/.test(e.message));
