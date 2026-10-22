@@ -37,6 +37,7 @@ import {
 } from "./store.ts";
 import { signPath } from "./session.ts";
 import { addressBlocked } from "../abuse.ts";
+import { anyRouteReady, noteNoMoney, pausedText, spent, type Provider, type Route } from "./providers.ts";
 import { describeWithoutNames, namedCharacters, toEnglish } from "./translate.ts";
 
 /** A refusal the page shows as it is (no provider names in it). */
@@ -82,24 +83,44 @@ export async function placeTask(env: StudioEnv, model: string, input: Record<str
   try {
     const t = await ephone<{ id?: string }>(env, "POST", "/v1/task/submit", { model, input }, { timeoutMs: 30_000, routing });
     if (!t.id) throw new KieError("ephone.ai answered no task id", 502, true);
+    await spent(env, "ephone", budgetUsd);
     return { task: String(t.id) };
   } catch (e) {
+    await noticeMoney(env, "ephone", e);
     if ((env.STUDIO_BACKUPS ?? "").trim() === "off" || !switchesToBackup(e)) throw e;
     let last: unknown = e;
     for (const r of withinBudget(backupRoutes(model, input), budgetUsd)) {
       if (!backupKey(env, r.provider)) continue;
       try {
         const id = r.provider === "apimart" ? await apimartSubmit(env, r.path, r.body) : await wavespeedSubmit(env, r.path, r.body);
+        await spent(env, r.provider, r.usd ?? budgetUsd);
         if (who) await audit(asEnv(env), who.userId, who.genId, "studio.backup", { from: model, to: `${r.provider}:${r.model}`, usd: r.usd, why: String(e instanceof Error ? e.message : e).slice(0, 200) });
         return { task: r.music ? `${MUSIC_PREFIX}${id}` : id, provider: r.provider };
       } catch (e2) {
         last = e2;
+        await noticeMoney(env, r.provider, e2);
         if (!switchesToBackup(e2)) break;
       }
     }
     throw last;
   }
 }
+
+/** A refusal for money (402, src/ephone.ts and its peers) is written down, so the next orders stop before the charge. */
+async function noticeMoney(env: StudioEnv, p: Provider, e: unknown): Promise<void> {
+  if (e instanceof KieError && e.status === 402) await noteNoMoney(env, p, e.message);
+}
+
+/**
+ * The routes an ePhone order could take (ePhone, then its backups within Kleo's price), for the check before the
+ * charge. `probe` is the order's input with stand-in links: the backups depend on its resolution and references only.
+ */
+function ephoneRoutes(env: StudioEnv, ephoneModel: string, probe: Record<string, unknown>, usd: number): Route[] {
+  const off = (env.STUDIO_BACKUPS ?? "").trim() === "off";
+  const backups = off ? [] : withinBudget(backupRoutes(ephoneModel, probe), usd).filter((r) => backupKey(env, r.provider));
+  return [{ provider: "ephone", usd }, ...backups.map((r) => ({ provider: r.provider as Provider, usd: r.usd ?? usd }))];
+}
+const STAND_IN = "https://app.kleooai.com/media/u/probe";
 
 /** One task's state from whichever provider holds it, read as an ePhone task. */
 export async function readTask(env: StudioEnv, task: string, provider: BackupProvider | undefined, routing?: Record<string, string>): Promise<EphoneTask> {
@@ -177,7 +198,20 @@ export function parseSlots(g: Pick<GenerationRow, "slots">): Slot[] {
   try { const v = JSON.parse(g.slots ?? "[]"); return Array.isArray(v) ? v : []; } catch { return []; }
 }
 
-type Gate = { freeOk: boolean; lockedMessage: string; credits: number; usd: number; noun: string };
+/**
+ * `routes`: the ways the order can reach a provider (src/studio/providers.ts); none of them able to pay for it stops the
+ * order before the charge with `pausedName` in the sentence. Without routes nothing is checked.
+ */
+type Gate = { freeOk: boolean; lockedMessage: string; credits: number; usd: number; noun: string; routes?: Route[][]; pausedName?: string };
+
+/** Every part of the order (an app may need two providers) must have a route that can pay for it. */
+async function providersReady(env: StudioEnv, userId: string, o: Gate): Promise<void> {
+  for (const part of o.routes ?? []) {
+    if (await anyRouteReady(env, part)) continue;
+    await audit(asEnv(env), userId, null, "studio.provider_paused", { routes: part, usd: o.usd });
+    throw new StudioError(pausedText(o.pausedName ?? `This ${o.noun}`), 503, "paused");
+  }
+}
 
 /**
  * THE OWNER'S ADMIN ACCOUNT (15 October 2026, "un account admin con accesso illimitato a tutti i modelli, per me").
@@ -199,6 +233,7 @@ async function gate(env: StudioEnv, userId: string, o: Gate): Promise<void> {
   if (!user) throw new StudioError("Please sign in again.", 401, "signin");
   if (isAdmin(env, userId)) {
     if ((await runningCount(env, userId)) >= 12) throw new StudioError("You already have 12 things generating. Wait for one to finish.", 429, "busy");
+    await providersReady(env, userId, o);
     return;
   }
   const paid = await hasPaid(asEnv(env), userId);
@@ -238,6 +273,7 @@ async function gate(env: StudioEnv, userId: string, o: Gate): Promise<void> {
     }
   }
   if (user.credits < o.credits) throw new StudioError(`This ${o.noun} costs ${o.credits} credits and you have ${user.credits}.`, 402, "credits");
+  await providersReady(env, userId, o);
 }
 
 /** The gate, then the debit itself. Answers the new generation's id. `freeOk` = open to accounts that never paid. */
@@ -485,7 +521,9 @@ async function wanPrompt(env: StudioEnv, prompt: string, presetKey: string | nul
 async function startWan(env: StudioEnv, s: ClipSettings, english: string, pictures: UploadRow[], origin: string): Promise<{ taskId: string; slug: string }> {
   const links = await Promise.all(pictures.map(async (r) => (await copyToWavespeed(env, r)) ?? `${origin}${await signPath(env.INTERNAL_SECRET, `/media/u/${r.id}`, IMAGE_LINK_TTL_S)}`));
   const order = wanOrder(s, english, links);
-  const task = await wavespeedSubmit(env, order.slug, order.body);
+  let task: string;
+  try { task = await wavespeedSubmit(env, order.slug, order.body); } catch (e) { await noticeMoney(env, "wavespeed", e); throw e; }
+  await spent(env, "wavespeed", wanCostUsd(s));
   return { taskId: clipTaskId({ task, provider: "wavespeed" }), slug: order.slug };
 }
 
@@ -562,8 +600,11 @@ export async function createGeneration(env: StudioEnv, userId: string, req: Crea
       }
     }
   }
+  // The ways this clip can be made: Wan 3.0 first when the name check sent it there, then ePhone and its backups.
+  const probe = taskInput(s, "", pictures.map(() => STAND_IN), "", { videos: videos.map(() => STAND_IN), audios: sounds.map(() => STAND_IN) });
+  const routes: Route[] = [...(preWan ? [{ provider: "wavespeed" as const, usd: wanCostUsd(s) }] : []), ...ephoneRoutes(env, model.ephoneModel, probe, usd)];
   const id = await charge(env, userId, {
-    freeOk: modelFree && freeRes.includes(s.resolution), credits, usd, noun: "video",
+    freeOk: modelFree && freeRes.includes(s.resolution), credits, usd, noun: "video", routes: [routes], pausedName: model.name,
     lockedMessage: modelFree
       ? `${s.resolution} unlocks with your first credit pack. Free credits make ${freeRes.join(" and ")} videos.`
       : `${model.name} unlocks with your first credit pack. Free credits work with ${free.map((k) => modelByKey(k)!.name).join(", ")}.`,
@@ -630,9 +671,12 @@ async function createImageGeneration(env: StudioEnv, userId: string, req: Create
   const free = freeImageModels(env.STUDIO_FREE_IMAGE_MODELS);
   const credits = over ? over.credits : imageCredits(s, marginOf(env));
   const usd = imageCostUsd(s);
+  // Each picture is its own task; the check asks for all of them at once.
+  const perPicture = ephoneRoutes(env, model.ephoneModel, imageTaskInput(s, "", uploads.map(() => STAND_IN)), usd / s.count);
   const id = await charge(env, userId, {
     // A rewrite of a refused picture: the refused one proves the account could order it.
     freeOk: !!over || free.includes(s.model), credits, usd, noun: s.count > 1 ? "set of pictures" : "picture",
+    routes: [perPicture.map((r) => ({ ...r, usd: r.usd * s.count }))], pausedName: model.name,
     lockedMessage: `${model.name} unlocks with your first credit pack. Free credits work with ${free.map((k) => imageModelByKey(k)!.name).join(", ")}.`,
   });
   if (over && !(await over.claim(id))) {
@@ -1074,7 +1118,10 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
   // the result. Speech is made before the charge, so the order first passes every check the charge will make, on the
   // price estimated from the script (an empty or locked account cannot make Kleo speak for free in a loop).
   const free = freeTools(env.STUDIO_FREE_TOOLS);
-  const gateFor = (p: Plan): Gate => ({ freeOk: free.includes(tool.key), credits: toolCredits(p.usd, marginOf(env)), usd: p.usd, noun: tool.name.toLowerCase(), lockedMessage: `${tool.name} unlocks with your first credit pack.` });
+  // Every task of the app (and the step that follows one) needs a provider that can pay for it.
+  const partsOf = (p: Plan): Route[][] => p.tasks.flatMap((t) => [t, ...(t.then ? [t.then] : [])])
+    .map((t) => (t.provider === "wavespeed" ? [{ provider: "wavespeed" as const, usd: p.usd }] : ephoneRoutes(env, t.model, t.input, p.usd)));
+  const gateFor = (p: Plan): Gate => ({ freeOk: free.includes(tool.key), credits: toolCredits(p.usd, marginOf(env)), usd: p.usd, noun: tool.name.toLowerCase(), lockedMessage: `${tool.name} unlocks with your first credit pack.`, routes: partsOf(p), pausedName: tool.name });
   let spoken: { id: string; key: string; size: number; seconds: number | null } | null = null;
   if (plan.speech) {
     await gate(env, userId, gateFor(plan));
@@ -1136,7 +1183,10 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
       const input = fill(task.input);
       if (task.provider === "wavespeed") {
         if (Array.isArray(input.reference_images)) input.reference_images = await rehostForWavespeed(env, input.reference_images as string[], media, rows);
-        slots.push({ task: await wavespeedSubmit(env, task.model, input), status: "running", type: task.output, model: task.model, provider: "wavespeed" });
+        let wtask: string;
+        try { wtask = await wavespeedSubmit(env, task.model, input); } catch (e) { await noticeMoney(env, "wavespeed", e); throw e; }
+        await spent(env, "wavespeed", plan.usd);
+        slots.push({ task: wtask, status: "running", type: task.output, model: task.model, provider: "wavespeed" });
         continue;
       }
       let t: Placed;
