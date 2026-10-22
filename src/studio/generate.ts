@@ -26,6 +26,8 @@ import { publicText, rid } from "../util.ts";
 import { clampFreeResolution, clipCostUsd, clipCredits, freeModels, freeResolutions, modelByKey, normalizeSettings, pictureProblem, taskInput, wanCostUsd, wanOffered, wanOrder, DEFAULT_MARGIN, WAN_KEY, WAN_NAME, type ClipSettings } from "./models.ts";
 import { presetByKey, withPreset } from "./presets.ts";
 import { planTool, toolByKey, toolCredits, toneText, ToolRefusal, TOOLS, type Media, type Plan, type ToolKey } from "./tools.ts";
+import { trendByKey } from "./trends.ts";
+import { noPersonText, personCheckInput, readPersonAnswer, PERSON_CHECK_MAX_BYTES, PERSON_CHECK_MODEL } from "./person-check.ts";
 import { mediaInfo } from "./media.ts";
 import { refreshFilm } from "./films.ts";
 import { alternativeFor, FALLBACK_IMAGE_MODEL, freeImageModels, imageAlternatives, imageCostUsd, imageCredits, imageModelByKey, imageModelOfProvider, imageTaskInput, isQualityRefusal, normalizeImageSettings, otherQualitySpelling, pausedImageModels, type ImageSettings } from "./image-models.ts";
@@ -1012,6 +1014,23 @@ async function copyToWavespeed(env: StudioEnv, row: { id: string; key: string; c
   }
 }
 
+/**
+ * Whether a photo shows a real person (./person-check.ts): true, false, or null when the check could not run (no
+ * Workers AI binding, a photo over the size limit, an error, an answer it cannot read). Only false ever stops an order.
+ */
+async function photoShowsPerson(env: StudioEnv, row: { key: string; content_type: string | null }): Promise<boolean | null> {
+  const ai = env.AI as unknown as { run(model: string, input: Record<string, unknown>): Promise<unknown> } | undefined;
+  if (!ai) return null;
+  try {
+    const obj = await env.RENDERS.get(row.key);
+    if (!obj || obj.size > PERSON_CHECK_MAX_BYTES) return null;
+    const bytes = new Uint8Array(await obj.arrayBuffer());
+    return readPersonAnswer(await ai.run(PERSON_CHECK_MODEL, personCheckInput(bytes, row.content_type || obj.httpMetadata?.contentType || "image/jpeg")));
+  } catch {
+    return null;
+  }
+}
+
 /** Runs one app: reads the attached files, speaks the words if any, prices, charges, orders. */
 export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, origin: string): Promise<GenerationRow> {
   const tool = toolByKey(req.tool);
@@ -1037,6 +1056,18 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
   const pausedImages = pausedImageModels(env.STUDIO_PAUSED_IMAGE_MODELS);
   if (plan.tasks.some((t) => { const k = imageModelOfProvider(t.model); return !!k && pausedImages.includes(k); })) {
     throw new StudioError(`${tool.name} is paused for a little while: its provider is having trouble. Try again later — nothing was charged.`, 503, "paused");
+  }
+  // A viral template swaps PEOPLE (22 October 2026: a cartoon sausage in "Bby Wow" came back as the original dancer, and
+  // the run was paid for). A seat whose photo shows no person is refused here, before any charge.
+  const trend = trendByKey(tool.key);
+  if (trend) {
+    for (const [i, seat] of trend.seats.entries()) {
+      const row = media[seat.key] ? rows.find((r) => r.id === media[seat.key]!.id) : undefined;
+      if (row && (await photoShowsPerson(env, row)) === false) {
+        await audit(asEnv(env), userId, null, "studio.no_person", { tool: tool.key, seat: seat.key });
+        throw new StudioError(noPersonText(tool.name, `Person ${i + 1}`), 400, "no_person");
+      }
+    }
   }
 
   // Words to speak become a sound clip first: its exact length prices the talking video, and for a voiceover it IS

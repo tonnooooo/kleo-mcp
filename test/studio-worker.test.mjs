@@ -1816,3 +1816,53 @@ test("a template's video reaches the customer byte for byte: WaveSpeed's file is
     }
   } finally { p.restore(); }
 });
+
+test("a template refuses a photo with no person in it before any charge; a real person goes through; no check, no block", async () => {
+  const seen = [];
+  const ai = (answer) => ({ run: async (model, input) => { seen.push({ model, input }); return { response: answer }; } });
+  const order = async (env, cookie, photoId) => call(env, "/api/tools/run", { method: "POST", cookie, body: { tool: "trend-bby-wow", consent: true, inputs: { person1: photoId, quality: "480p" } } });
+  const wan = () => fakeProvider((u) => {
+    if (u === "https://api.wavespeed.ai/api/v3/media/uploads") return ok({ code: 200, data: { download_url: "https://cdn.wavespeed.test/p.jpg", upload: { method: "PUT", url: "https://up.wavespeed.test/put" } } });
+    if (u === "https://up.wavespeed.test/put") return new Response("", { status: 200 });
+    if (u === "https://api.wavespeed.ai/api/v3/alibaba/wan-3.0/video-edit") return ok({ code: 200, data: { id: "ws_bw", status: "created" } });
+    return new Response("?", { status: 404 });
+  });
+
+  // The cartoon sausage: refused, nothing charged, WaveSpeed never asked.
+  const env = newEnv({ WAVESPEED_API_KEY: "k", AI: ai('{"person": false}') });
+  const { cookie, id } = await paidAccount(env, "bw@example.com", 100);
+  const photo = (await call(env, "/api/uploads", { method: "POST", cookie, raw: jpegBytes(), headers: { "content-type": "image/jpeg", "x-width": "1080", "x-height": "1920" } })).json;
+  let p = wan();
+  try {
+    const r = await order(env, cookie, photo.id);
+    assert.equal(r.status, 400, r.text);
+    assert.equal(r.json.code, "no_person");
+    assert.match(r.json.error, /Bby Wow swaps people: Person 1 needs a clear photo of a real person/);
+    assert.equal(credits(env, id), 100, "nothing was charged");
+    assert.ok(!p.sent.some((s) => s.url.includes("wavespeed")), "WaveSpeed was never asked");
+    assert.equal(seen.length, 1);
+    assert.match(seen[0].model, /llama-4-scout/);
+    assert.match(seen[0].input.messages[0].content[1].image_url.url, /^data:image\/jpeg;base64,/);
+    assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE event = 'studio.no_person'").get().n, 1);
+  } finally { p.restore(); }
+
+  // A real person: the order goes on as before.
+  const env2 = newEnv({ WAVESPEED_API_KEY: "k", AI: ai('{"person": true}') });
+  const a2 = await paidAccount(env2, "bw2@example.com", 100);
+  const photo2 = (await call(env2, "/api/uploads", { method: "POST", cookie: a2.cookie, raw: jpegBytes(), headers: { "content-type": "image/jpeg", "x-width": "1080", "x-height": "1920" } })).json;
+  p = wan();
+  try {
+    const r = await order(env2, a2.cookie, photo2.id);
+    assert.equal(r.status, 200, r.text);
+    assert.ok(p.sent.some((s) => s.url.endsWith("/alibaba/wan-3.0/video-edit")));
+  } finally { p.restore(); }
+
+  // A check that cannot answer (an error) never blocks the order.
+  const env3 = newEnv({ WAVESPEED_API_KEY: "k", AI: { run: async () => { throw new Error("quota"); } } });
+  const a3 = await paidAccount(env3, "bw3@example.com", 100);
+  const photo3 = (await call(env3, "/api/uploads", { method: "POST", cookie: a3.cookie, raw: jpegBytes(), headers: { "content-type": "image/jpeg", "x-width": "1080", "x-height": "1920" } })).json;
+  p = wan();
+  try {
+    assert.equal((await order(env3, a3.cookie, photo3.id)).status, 200);
+  } finally { p.restore(); }
+});

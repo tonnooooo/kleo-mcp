@@ -241,3 +241,23 @@ test("wavespeed upload: a ticket, then the bytes PUT to the ticket's address wit
     assert.equal(calls[1].headers["If-None-Match"], "*");
   } finally { globalThis.fetch = real; }
 });
+
+// ── 22 October 2026: a template swaps PEOPLE; a photo with no person is refused before any charge ─────────────────────
+import { readPersonAnswer, personCheckInput, noPersonText, PERSON_CHECK_MODEL } from "../src/studio/person-check.ts";
+
+test("the person check reads the vision model's answer, and only a clear no counts as no", () => {
+  assert.equal(readPersonAnswer({ response: '{"person": true}' }), true);
+  assert.equal(readPersonAnswer({ response: '```json\n{"person": false}\n```' }), false);
+  assert.equal(readPersonAnswer({ response: { person: false } }), false);
+  assert.equal(readPersonAnswer("No."), false);
+  assert.equal(readPersonAnswer("Yes, a man in a white tee"), true);
+  assert.equal(readPersonAnswer({ response: "I can't tell" }), null, "an unreadable answer never blocks an order");
+  assert.equal(readPersonAnswer(undefined), null);
+  const input = personCheckInput(new Uint8Array([0xff, 0xd8, 0xff, 0xe0]), "image/jpg");
+  const parts = input.messages[0].content;
+  assert.match(parts[0].text, /real human being/);
+  assert.equal(parts[1].image_url.url, "data:image/jpeg;base64,/9j/4A==");
+  assert.equal(input.max_tokens, 20);
+  assert.match(PERSON_CHECK_MODEL, /^@cf\//);
+  assert.equal(noPersonText("Bby Wow", "Person 1"), "Bby Wow swaps people: Person 1 needs a clear photo of a real person. Cartoon characters, toys, animals and objects can't be swapped in — nothing was charged.");
+});
