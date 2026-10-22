@@ -38,6 +38,8 @@
     { "binding": "DB", "database_name": "kleo-db", "database_id": "ffaa0767-9df1-4e5c-84f2-552e37851d63", "migrations_dir": "migrations" }
   ],
   "r2_buckets": [ { "binding": "RENDERS", "bucket_name": "kleo-renders" } ],
+  // Workers AI: a viral template's photo must show a real person before any charge (src/studio/person-check.ts).
+  "ai": { "binding": "AI" },
   // Kleo films are ordered from the MCP Worker (src/studio-film.ts there): same prices, same two-products rule.
   "services": [ { "binding": "MCP", "service": "kleo-mcp" } ],
   "ratelimits": [

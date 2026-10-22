@@ -4,6 +4,8 @@
  */
 export interface StudioEnv {
   DB: D1Database;
+  /** Workers AI: checks that a viral template's photo shows a real person before any charge (src/studio/person-check.ts). */
+  AI?: Ai;
   RENDERS: R2Bucket;
   ASSETS: Fetcher;
   /** The MCP Worker (service binding): Kleo films are ordered there (src/studio-film.ts). */
