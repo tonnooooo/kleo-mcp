@@ -1,0 +1,747 @@
+// Kleo Studio — the admin console (app.kleooai.com/admin, 23 October 2026). app.js loads this module only when an
+// admin opens /admin, and hands it the app's own helpers (the kit): the element builder, the icons, toasts, sheets and
+// the ask() questions, never a browser pop-up. API: src/studio/admin.ts. With ?demo=1 everything runs on fake data.
+//
+// Pages: Overview · Users (and one account) · Payments · Creations · Providers & keys. Desktop: a side list of pages;
+// phones: the same pages as a row of pills.
+
+let K = null;
+const SECTIONS = [
+  { key: "overview", label: "Overview", ic: "grid" },
+  { key: "users", label: "Users", ic: "user" },
+  { key: "payments", label: "Payments", ic: "bag" },
+  { key: "creations", label: "Creations", ic: "film" },
+  { key: "providers", label: "Providers & keys", ic: "key" },
+];
+const h = (...a) => K.h(...a);
+const icon = (...a) => K.icon(...a);
+const call = (path, opts = {}) => (K.DEMO ? demo(path, opts) : K.api(path, opts));
+
+// ── formatting ───────────────────────────────────────────────────────────────────────────────────────────────────
+const toDate = (iso) => new Date(String(iso).endsWith("Z") ? iso : `${iso}Z`);
+function money(cents, cur = "eur") {
+  try { return new Intl.NumberFormat("en-GB", { style: "currency", currency: String(cur || "eur").toUpperCase() }).format((Number(cents) || 0) / 100); }
+  catch { return `${((Number(cents) || 0) / 100).toFixed(2)} ${String(cur).toUpperCase()}`; }
+}
+const usd = (n) => `$${(Number(n) || 0).toFixed(Math.abs(Number(n) || 0) >= 1000 ? 0 : 2)}`;
+const num = (n) => new Intl.NumberFormat("en-GB").format(Number(n) || 0);
+/** "1 credit", "3 credits". */
+const count = (n, one, many = `${one}s`) => `${num(n)} ${Number(n) === 1 ? one : many}`;
+function day(iso, withYear = false) {
+  if (!iso) return "—";
+  const d = toDate(iso);
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", ...(withYear || d.getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}) });
+}
+function stamp(iso) {
+  if (!iso) return "—";
+  const d = toDate(iso);
+  return `${day(iso)}, ${d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
+}
+function ago(iso) {
+  if (!iso) return "never";
+  const s = (Date.now() - toDate(iso).getTime()) / 1000;
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  if (s < 86400 * 7) return Math.floor(s / 86400) === 1 ? "yesterday" : `${Math.floor(s / 86400)} days ago`;
+  return day(iso);
+}
+const FLAGS = !/Windows/.test(navigator.userAgent);
+const flag = (cc) => (FLAGS && /^[A-Z]{2}$/i.test(cc || "") && !/^(XX|T1)$/i.test(cc) ? String.fromCodePoint(...[...cc.toUpperCase()].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65)) : "");
+function countryName(cc) {
+  if (!cc) return null;
+  if (/^T1$/i.test(cc)) return "Tor network";
+  try { return new Intl.DisplayNames(["en"], { type: "region" }).of(cc.toUpperCase()) || cc; } catch { return cc; }
+}
+const place = (o) => [o.city, o.region && o.region !== o.city ? o.region : null, countryName(o.country)].filter(Boolean).join(", ");
+const shortUa = (ua) => {
+  if (!ua) return null;
+  const os = /iPhone|iPad/.test(ua) ? "iPhone" : /Android/.test(ua) ? "Android" : /Mac OS X/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : /Linux/.test(ua) ? "Linux" : null;
+  const br = /Edg\//.test(ua) ? "Edge" : /CriOS|Chrome\//.test(ua) ? "Chrome" : /FxiOS|Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : null;
+  return [os, br].filter(Boolean).join(" · ") || ua.slice(0, 40);
+};
+const who = (u) => u.name || u.email || u.id;
+const PROVIDER = { ephone: "ePhone", wavespeed: "WaveSpeed", apimart: "APIMart", "kleo-mcp": "Kleo films" };
+const KIND = { video: "Video", image: "Picture", tool: "App", film: "Film" };
+const modelName = (m) => (K.nameOf ? K.nameOf(m) : m) || m;
+
+// ── building blocks ──────────────────────────────────────────────────────────────────────────────────────────────
+const pill = (text, tone = "") => h("span", { class: `adm-pill ${tone}` }, text);
+const statusPill = (s) => pill(s === "done" ? "Done" : s === "failed" ? "Failed" : "Running", s === "done" ? "ok" : s === "failed" ? "bad" : "info");
+const payPill = (s) => pill(s === "paid" ? "Paid" : s === "refunded" ? "Refunded" : s === "disputed" ? "Disputed" : s, s === "paid" ? "ok" : "bad");
+function head(title, sub, ...actions) {
+  return h("header", { class: "adm-head" }, h("div", { class: "adm-head-t" }, h("h1", {}, title), sub ? h("p", {}, sub) : null), actions.length ? h("div", { class: "adm-head-a" }, actions) : null);
+}
+const card = (title, sub, ...kids) => h("section", { class: "adm-card" }, title ? h("h2", {}, title) : null, sub ? h("p", { class: "adm-sub" }, sub) : null, ...kids);
+const tile = (label, value, sub, tone = "") => h("div", { class: `adm-tile ${tone}` }, h("span", { class: "adm-tile-l" }, label), h("b", {}, value), sub ? h("span", { class: "adm-tile-s" }, sub) : null);
+const tiles = (...t) => h("div", { class: "adm-tiles" }, t);
+const cap = (t) => (t ? String(t)[0].toUpperCase() + String(t).slice(1) : t);
+const empty = (text) => h("div", { class: "adm-empty" }, text);
+const loading = () => h("div", { class: "adm-loading" }, K.spinner(24));
+const kv = (rows) => h("dl", { class: "adm-kv" }, rows.filter((r) => r && r[1] !== null && r[1] !== undefined && r[1] !== "").map(([k, v]) => [h("dt", {}, k), h("dd", {}, v)]));
+const avatar = (u) => h("span", { class: "adm-av" }, String(who(u) || "K")[0].toUpperCase());
+function copyBtn(text, label = "Copy") {
+  return h("button", { class: "icon-btn adm-copy", "aria-label": label, title: label, onclick: (e) => { e.stopPropagation(); navigator.clipboard?.writeText(text); K.toast("Copied"); } }, icon("copy", 16));
+}
+const refreshBtn = (fn) => h("button", { class: "btn btn-quiet btn-sm", onclick: fn }, icon("redo", 16), "Refresh");
+function failed(box, e, retry) {
+  K.fill(box, card("This didn't load", e?.message || "Something went wrong.", h("button", { class: "btn btn-primary btn-sm", onclick: retry }, icon("redo", 16), "Try again")));
+  if (e?.code === "signin") K.handleError(e);
+}
+function chips(options, current, pick) {
+  return h("div", { class: "adm-chips", role: "tablist" }, options.map(([k, label]) =>
+    h("button", { class: "chip" + (k === current ? " on" : ""), role: "tab", "aria-selected": String(k === current), onclick: () => pick(k) }, label)));
+}
+function seg(options, current, pick) {
+  return h("div", { class: "seg2 adm-seg" }, options.map(([k, label]) => h("button", { class: k === current ? "on" : "", onclick: () => pick(k) }, label)));
+}
+function mediaEl(o, controls = false) {
+  if (!o) return null;
+  if (o.type === "video") {
+    const v = h("video", { src: controls ? o.url : `${o.url}#t=0.1`, playsinline: "", preload: "metadata", loop: "", ...(controls ? { controls: "" } : {}) });
+    v.muted = !controls;
+    if (!controls) { v.addEventListener("mouseenter", () => v.play().catch(() => {})); v.addEventListener("mouseleave", () => v.pause()); }
+    return v;
+  }
+  if (o.type === "audio") return controls ? h("audio", { src: o.url, controls: "" }) : h("div", { class: "adm-gen-ph" }, icon("music", 28));
+  return h("img", { src: o.url, alt: "", loading: "lazy", decoding: "async" });
+}
+
+// ── the frame ────────────────────────────────────────────────────────────────────────────────────────────────────
+export function render(kit) {
+  K = kit;
+  const [, , section = "overview", id] = location.pathname.split("/");
+  const key = SECTIONS.some((s) => s.key === section) ? section : "overview";
+  const nav = h("nav", { class: "adm-nav", "aria-label": "Admin pages" },
+    h("div", { class: "adm-brand" }, icon("grid", 18), "Admin"),
+    SECTIONS.map((s) => h("button", { class: "adm-link" + (s.key === key ? " on" : ""), "aria-current": s.key === key ? "page" : null, onclick: () => K.go(s.key === "overview" ? "/admin" : `/admin/${s.key}`) }, icon(s.ic, 18), s.label)));
+  const main = h("div", { class: "adm-main" });
+  K.setView("admin-view", h("div", { class: "adm" }, nav, main));
+  const pages = { overview: overviewPage, users: id ? (m) => userPage(m, id) : usersPage, payments: paymentsPage, creations: creationsPage, providers: providersPage };
+  pages[key](main);
+}
+const openUser = (id) => K.go(`/admin/users/${id}`);
+
+// ── Overview ─────────────────────────────────────────────────────────────────────────────────────────────────────
+async function overviewPage(main) {
+  const body = h("div", { class: "adm-stack" }, loading());
+  const bal = h("div", { class: "adm-bal" }, loading());
+  K.fill(main, head("Overview", K.DEMO ? "Demo data: nothing here is real." : "Everything at a glance.", refreshBtn(() => overviewPage(main))), body);
+  balancesInto(bal);
+  let o;
+  try { o = await call("/api/admin/overview"); } catch (e) { return failed(body, e, () => overviewPage(main)); }
+  const c = o.counts || {};
+  const main$ = (o.revenue || []).slice().sort((a, b) => b.total - a.total)[0];
+  const budgetPct = o.budget.day ? Math.min(100, (o.budget.spent / o.budget.day) * 100) : 0;
+  const trouble = (o.trouble || []).map((t) => `${t.n} ${t.status}`).join(" · ");
+  K.fill(body,
+    tiles(
+      tile("Accounts", num(c.users), `+${num(c.users_7d)} this week · +${num(c.users_1d)} today`),
+      tile("Paying", num(c.payers), c.blocked ? `${num(c.blocked)} closed · ${count(c.blocked_addresses, "address", "addresses")} blocked` : `${count(c.blocked_addresses, "address", "addresses")} blocked`),
+      tile("Money in, 30 days", main$ ? money(main$.d30, main$.currency) : money(0), main$ ? `${money(main$.total, main$.currency)} in all${trouble ? ` · ${trouble}` : ""}` : "No payments yet"),
+      tile("Provider cost, 7 days", usd(c.spend_7d), `${usd(c.spend_30d)} in 30 days`),
+      h("div", { class: "adm-tile" }, h("span", { class: "adm-tile-l" }, "Spent today"), h("b", {}, usd(o.budget.spent)),
+        h("div", { class: "adm-bar" }, h("i", { style: { width: `${budgetPct}%` }, class: budgetPct > 80 ? "hot" : "" })),
+        h("span", { class: "adm-tile-s" }, `Budget ${usd(o.budget.day)} a day · free accounts ${usd(o.budget.freeSpent)} of ${usd(o.budget.freeDay)} · since midnight UTC`)),
+      tile("Creations today", num(c.gens_today), `${num(c.running)} running now`),
+      tile("Failed, 24 h", num(c.failed_1d), c.gens_1d ? `${Math.round((c.failed_1d / c.gens_1d) * 100)}% of ${num(c.gens_1d)}` : "Nothing made", c.failed_1d && c.failed_1d / Math.max(1, c.gens_1d) > 0.3 ? "warn" : "")),
+    card("Provider balances", null, bal),
+    h("div", { class: "adm-two" },
+      card("Newest accounts", null, h("div", { class: "list" }, (o.newest || []).map((u) => h("button", { class: "row", onclick: () => openUser(u.id) }, avatar(u),
+        h("div", { class: "lbl" }, h("b", {}, who(u)), h("span", {}, [flag(u.country), place(u) || "Place not recorded", ago(u.created_at)].filter(Boolean).join(" · "))), icon("right", 16))),
+        !(o.newest || []).length ? empty("No accounts yet.") : null), h("button", { class: "btn btn-quiet btn-sm adm-more", onclick: () => K.go("/admin/users") }, "All users", icon("right", 15))),
+      card("Latest payments", null, h("div", { class: "list" }, (o.payments || []).map((p) => h("button", { class: "row", onclick: () => p.user_id && openUser(p.user_id) }, icon("bag", 19),
+        h("div", { class: "lbl" }, h("b", {}, money(p.amount_cent, p.currency)), h("span", {}, [p.email || p.user_id || "No account", stamp(p.at)].join(" · "))), payPill(p.status))),
+        !(o.payments || []).length ? empty("No payments yet.") : null), h("button", { class: "btn btn-quiet btn-sm adm-more", onclick: () => K.go("/admin/payments") }, "All payments", icon("right", 15)))),
+    card("Latest failures", null, (o.failed || []).length ? h("div", { class: "adm-gens" }, o.failed.map((g) => genCard(g, true))) : empty("Nothing failed."),
+      h("button", { class: "btn btn-quiet btn-sm adm-more", onclick: () => { CQ.tab = "failures"; K.go("/admin/creations"); } }, "Failures by reason", icon("right", 15))));
+}
+
+// ── Users ────────────────────────────────────────────────────────────────────────────────────────────────────────
+const UQ = { q: "", filter: "all", sort: "created", dir: "desc" };
+const USER_FILTERS = [["all", "All"], ["paid", "Paid"], ["free", "Never paid"], ["new", "New this week"], ["blocked", "Closed"], ["deleted", "Deleted"]];
+const USER_SORTS = [["created", "Joined"], ["seen", "Last seen"], ["paid", "Paid"], ["credits", "Credits"], ["spend", "Provider cost"], ["gens", "Creations"], ["name", "Name"]];
+async function usersPage(main) {
+  let offset = 0, total = 0, busy = false;
+  const list = h("div", { class: "adm-users" });
+  const more = h("button", { class: "btn btn-quiet adm-more", style: { display: "none" } }, "Show more");
+  const countEl = h("p", {}, " ");
+  const search = h("input", { class: "input adm-search", type: "search", placeholder: "Search e-mail, name, id, IP or city", value: UQ.q, autocomplete: "off", spellcheck: "false", "aria-label": "Search users" });
+  const sortLabel = () => USER_SORTS.find(([k]) => k === UQ.sort)?.[1] || "Joined";
+  const sortBtn = h("button", { class: "btn btn-quiet btn-sm", onclick: openSort }, icon("down", 15), `Sort: ${sortLabel()}`);
+  const dirBtn = h("button", { class: "btn btn-quiet btn-sm", "aria-label": "Order", onclick: () => { UQ.dir = UQ.dir === "desc" ? "asc" : "desc"; redraw(); } }, UQ.dir === "desc" ? "High to low" : "Low to high");
+  const filters = h("div");
+  const header = h("div", { class: "adm-urow adm-uhead", role: "row" },
+    h("span", { class: "c-av" }), sortCell("Account", "name", "c-who"), h("span", { class: "c-place" }, "Place"), h("span", { class: "c-ip" }, "Last IP"),
+    sortCell("Credits", "credits", "c-credits"), sortCell("Paid", "paid", "c-paid"), sortCell("Joined", "created", "c-joined"), sortCell("Last seen", "seen", "c-seen"));
+  function sortCell(label, key, cls) {
+    return h("button", { class: `${cls} sortable${UQ.sort === key ? " on" : ""}`, onclick: () => { if (UQ.sort === key) UQ.dir = UQ.dir === "desc" ? "asc" : "desc"; else { UQ.sort = key; UQ.dir = key === "name" ? "asc" : "desc"; } redraw(); } },
+      label, UQ.sort === key ? (UQ.dir === "desc" ? " ↓" : " ↑") : "");
+  }
+  function openSort() {
+    K.sheet("Sort users", null, h("div", { class: "list" }, USER_SORTS.map(([k, label]) => h("button", { class: "row" + (UQ.sort === k ? " on" : ""), onclick: () => { K.closeLayer(); UQ.sort = k; redraw(); } },
+      h("div", { class: "lbl" }, h("b", {}, label)), h("span", { class: "check", style: { visibility: UQ.sort === k ? "visible" : "hidden" } }, icon("check", 17, 2.4))))));
+  }
+  const redraw = () => usersPage(main);
+  K.fill(filters, chips(USER_FILTERS, UQ.filter, (k) => { UQ.filter = k; redraw(); }));
+  const top = head("Users", null);
+  top.querySelector(".adm-head-t").append(countEl);
+  K.fill(main, top, h("div", { class: "adm-toolbar" }, search, h("div", { class: "adm-toolbar-r" }, sortBtn, dirBtn)), filters, h("div", { class: "adm-table" }, header, list), more);
+  let timer;
+  search.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => { UQ.q = search.value.trim(); offset = 0; load(true); }, 280); });
+  more.addEventListener("click", () => load(false));
+  async function load(reset) {
+    if (busy) return;
+    busy = true;
+    if (reset) K.fill(list, loading());
+    more.disabled = true;
+    try {
+      const p = new URLSearchParams({ q: UQ.q, filter: UQ.filter, sort: UQ.sort, dir: UQ.dir, offset: String(offset), limit: "50" });
+      const r = await call(`/api/admin/users?${p}`);
+      total = r.total;
+      if (reset) K.fill(list);
+      list.append(...r.users.map(userRow));
+      offset += r.users.length;
+      if (!total) K.fill(list, empty(UQ.q ? "No account matches that search." : "No accounts here."));
+      countEl.textContent = `${num(total)} ${total === 1 ? "account" : "accounts"}${UQ.q ? ` for “${UQ.q}”` : ""}`;
+      more.style.display = offset < total ? "" : "none";
+    } catch (e) { failed(list, e, () => load(true)); }
+    busy = false; more.disabled = false;
+  }
+  load(true);
+}
+function userRow(u) {
+  const tags = [u.admin ? pill("Admin", "info") : null, u.blocked_at ? pill("Closed", "bad") : null, u.deleted ? pill("Deleted", "bad") : null,
+    u.merged_into ? pill("Merged", "") : null, u.anonymous ? pill("Assistant only", "") : null, u.plan_until && toDate(u.plan_until) > new Date() && u.plan !== "trial" ? pill(cap(u.plan), "ok") : null].filter(Boolean);
+  const where = [flag(u.country), u.city || countryName(u.country)].filter(Boolean).join(" ");
+  return h("button", { class: "adm-urow", role: "row", onclick: () => openUser(u.id) },
+    h("span", { class: "c-av" }, avatar(u)),
+    h("span", { class: "c-who" }, h("b", {}, h("span", { class: "nm" }, who(u)), tags), h("span", {}, u.name && u.email ? u.email : u.id)),
+    h("span", { class: "c-place" }, where || "—", h("span", { class: "c-seen-m" }, ` · ${ago(u.last_seen)}`)),
+    h("span", { class: "c-ip mono" }, u.ip || "—"),
+    h("span", { class: "c-credits num" }, u.admin ? "∞" : num(u.credits), h("span", { class: "u-m" }, " credits")),
+    h("span", { class: "c-paid num" + (u.paid_cent ? " paid" : "") }, u.paid_cent ? money(u.paid_cent, u.currency) : "—"),
+    h("span", { class: "c-joined" }, day(u.created_at)),
+    h("span", { class: "c-seen" }, ago(u.last_seen)));
+}
+
+// ── One account ──────────────────────────────────────────────────────────────────────────────────────────────────
+const EVENTS = {
+  "user.created": "Account opened", "studio.key_signin": "Signed in with the Kleo key", "pay.session": "Opened a payment", "credits.purchased": "Bought credits",
+  "credits.debit": "Credits spent on a film", "credits.refund": "Credits given back", "studio.create": "Started a creation", "studio.submitted": "Sent to the provider",
+  "studio.done": "Creation finished", "studio.failed": "Creation failed", "studio.deleted": "Deleted a creation", "studio.enhance": "Used Enhance",
+  "studio.signout_all": "Signed out everywhere", "studio.key_rotated": "Made a new Kleo key", "studio.password_changed": "Changed the password",
+  "studio.account_deleted": "Account deleted", "studio.login_linked": "Connected a sign-in", "oauth.granted": "Connected an AI assistant",
+  "studio.backup": "Moved to a backup provider", "studio.reset_done": "Reset the password", "studio.reset_sent": "Asked for a password reset", "studio.auto_wan": "Changed the Wan 3.0 switch",
+  "job.created": "Ordered a film", "job.done": "Film finished", "job.failed": "Film failed", "studio.budget": "Stopped by the daily budget", "studio.free_budget": "Stopped by the free pool",
+  "studio.address_blocked": "Stopped: address blocked", "studio.free_address": "Stopped: free allowance of the address", "studio.wan_retry": "Made again on Wan 3.0",
+  "admin.credits": "Admin changed credits", "admin.block": "Admin closed the account", "admin.unblock": "Admin reopened the account", "admin.address_block": "Admin blocked the address",
+  "admin.address_unblock": "Admin freed the address", "admin.key_reset": "Admin made a new Kleo key", "admin.signout": "Admin signed it out everywhere", "admin.delete": "Admin deleted the account",
+  "admin.ip_lookup": "Admin looked up an address",
+};
+const LOOKUP_EVENTS = new Set(["user.created", "pay.session", "studio.key_signin", "oauth.granted", "studio.reset_done", "studio.login_linked", "credits.purchased"]);
+const TIMELINE_FILTERS = [["all", "All"], ["money", "Money"], ["make", "Creations"], ["account", "Account"], ["admin", "Admin"]];
+const eventGroup = (e) => (e.startsWith("admin.") ? "admin" : /^(credits\.|pay\.)/.test(e) ? "money" : /^(studio\.(create|submitted|done|failed|deleted|enhance|backup|fallback|wan|rewrite|next)|job\.)/.test(e) ? "make" : "account");
+function detailText(raw) {
+  let d;
+  try { d = JSON.parse(raw || "null"); } catch { return String(raw || "").slice(0, 160); }
+  if (!d || typeof d !== "object") return d === null ? "" : String(d);
+  return Object.entries(d).filter(([, v]) => v !== null && v !== undefined && v !== "").slice(0, 5)
+    .map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v).slice(0, 80) : String(v).slice(0, 90)}`).join(" · ");
+}
+
+async function userPage(main, id) {
+  const body = h("div", { class: "adm-stack" }, loading());
+  const back = h("button", { class: "btn btn-quiet btn-sm adm-back", onclick: () => K.go("/admin/users") }, h("span", { class: "flip" }, icon("right", 15)), "Users");
+  K.fill(main, h("div", { class: "adm-backrow" }, back), body);
+  let d;
+  try { d = await call(`/api/admin/users/${id}`); } catch (e) { return failed(body, e, () => userPage(main, id)); }
+  const u = d.user;
+  const reload = () => userPage(main, id);
+  const lastIp = d.ips?.[0] || null;
+  const paidText = (d.totals.paid || []).map((p) => money(p.cents, p.currency)).join(" + ") || money(0);
+  const methods = (d.logins || []).map((l) => ({ password: "E-mail and password", google: "Google", microsoft: "Microsoft", apple: "Apple" })[l.provider] || l.provider);
+
+  // What the owner can do to the account; every action asks why, and the reason goes into the audit log.
+  const post = (what, b) => call(`/api/admin/users/${id}/${what}`, { method: "POST", body: b });
+  async function act(o) {
+    const v = await K.ask({ title: o.title, text: o.text, ok: o.ok, danger: !!o.danger, ic: o.ic, word: o.word || null,
+      fields: [...(o.fields || []), { key: "reason", label: "Reason, kept in the audit log", placeholder: "Why you are doing this", required: true }] });
+    if (!v) return;
+    try { await o.run(v); K.toast(o.done); reload(); } catch (e) { K.handleError(e); }
+  }
+  const credit = (sign) => act({
+    title: sign > 0 ? "Add credits" : "Take credits away", ic: "star", ok: sign > 0 ? "Add" : "Take away", danger: sign < 0,
+    text: `${who(u)} has ${u.admin ? "unlimited" : num(u.credits)} credits.${sign < 0 ? " The balance never goes under zero." : ""}`,
+    fields: [{ key: "amount", label: "Credits", type: "number", placeholder: "10", required: true }],
+    run: (v) => { const n = Math.abs(Math.trunc(Number(v.amount))); if (!n) throw new Error("Type a number of credits."); return post("credits", { delta: sign * n, reason: v.reason }); },
+    done: sign > 0 ? "Credits added" : "Credits taken away",
+  });
+  const blocked = !!u.blocked_at;
+  const addrBlocked = (d.address.blocks || []).some((b) => b.ip_hash === d.address.hash);
+  const actions = h("div", { class: "adm-actions" },
+    h("button", { class: "btn btn-quiet", onclick: () => credit(1) }, icon("plus", 17), "Add credits"),
+    h("button", { class: "btn btn-quiet", onclick: () => credit(-1) }, icon("star", 17), "Take credits away"),
+    u.admin ? null : h("button", { class: "btn btn-quiet", onclick: () => act(blocked
+      ? { title: "Reopen this account?", text: "It can sign in again. Its Kleo key is the new one made when it was closed.", ok: "Reopen", ic: "check", run: (v) => post("block", { on: false, reason: v.reason }), done: "Account reopened" }
+      : { title: "Close this account?", text: "It is signed out everywhere at once and can't sign in again. Its Kleo key is renewed, so assistants connected with it stop too.", ok: "Close account", danger: true, ic: "lock", run: (v) => post("block", { on: true, reason: v.reason }), done: "Account closed" }) },
+      icon("lock", 17), blocked ? "Reopen account" : "Close account"),
+    u.admin || !d.address.hash ? null : h("button", { class: "btn btn-quiet", onclick: () => act(addrBlocked
+      ? { title: "Free this address?", text: "New accounts can be opened from it again.", ok: "Free address", ic: "globe", run: (v) => post("address", { on: false, reason: v.reason }), done: "Address freed" }
+      : { title: "Block the sign-up address?", text: `No new account can be opened from it, and its never-paid accounts stop making things for free. ${d.address.twins.length ? `${d.address.twins.length} other accounts came from it.` : ""}`, ok: "Block address", danger: true, ic: "globe",
+        fields: [{ key: "days", label: "Days", type: "number", value: "30", required: true }], run: (v) => post("address", { on: true, days: Number(v.days) || 30, reason: v.reason }), done: "Address blocked" }) },
+      icon("globe", 17), addrBlocked ? "Free address" : "Block address"),
+    h("button", { class: "btn btn-quiet", onclick: () => act({ title: "Make a new Kleo key?", text: "The old key stops working everywhere: assistants connected with it are disconnected, and every browser and phone is signed out.", ok: "New key", ic: "key", run: (v) => post("key", { reason: v.reason }), done: "New Kleo key made" }) },
+      icon("key", 17), "New Kleo key"),
+    h("button", { class: "btn btn-quiet", onclick: () => act({ title: "Sign out everywhere?", text: "Every browser and phone signed in to this account is signed out.", ok: "Sign out", ic: "out", run: (v) => post("signout", { reason: v.reason }), done: "Signed out everywhere" }) },
+      icon("out", 17), "Sign out everywhere"),
+    u.admin || u.deleted ? null : h("button", { class: "btn btn-danger", onclick: () => act({ title: "Delete this account?", text: "Its videos, pictures, sounds, chats, sign-in methods and credits are deleted for good. Payments stay on record. To confirm, type DELETE.", ok: "Delete account", danger: true, word: "DELETE",
+      run: (v) => post("delete", { reason: v.reason, confirm: "DELETE" }), done: "Account deleted" }) }, icon("trash", 17), "Delete account"));
+
+  const hero = h("div", { class: "adm-hero" }, h("span", { class: "adm-av big" }, String(who(u))[0].toUpperCase()),
+    h("div", { class: "adm-hero-t" }, h("h1", {}, who(u)), h("p", {}, u.name && u.email ? u.email : u.email ? "" : "No e-mail on record"),
+      h("div", { class: "adm-tags" }, u.admin ? pill("Admin", "info") : null, u.paid_cent ? pill("Paid", "ok") : pill("Never paid"), blocked ? pill("Closed", "bad") : null, u.deleted ? pill("Deleted", "bad") : null,
+        addrBlocked ? pill("Address blocked", "bad") : null, u.merged_into ? pill("Merged", "") : null, u.anonymous ? pill("Assistant only", "") : null)),
+    h("div", { class: "adm-id" }, h("span", { class: "mono" }, u.id), copyBtn(u.id, "Copy id")));
+
+  const stats = h("div", { class: "adm-tiles four" },
+    tile("Credits", u.admin ? "∞" : num(u.credits), u.plan_until && u.plan !== "trial" ? `Plan ${cap(u.plan)}, until ${day(u.plan_until)}` : "No plan"),
+    tile("Paid", paidText, count((d.payments || []).length, "payment")),
+    tile("Provider cost", usd(d.totals.spend_usd + d.totals.films_usd), `${num(d.totals.credits_spent)} credits used`),
+    tile("Creations", num((d.generations || []).length), `${d.totals.failed} failed`));
+
+  const profile = card("Profile", null, kv([
+    ["E-mail", u.email || "—"],
+    ["Name", u.name || "—"],
+    ["Sign-in", methods.join(", ") || "Kleo key only"],
+    ["Joined", stamp(u.created_at)],
+    ["Last seen", u.last_seen ? `${ago(u.last_seen)} (${stamp(u.last_seen)})` : "—"],
+    ["Place", lastIp ? `${flag(lastIp.country)} ${place(lastIp) || "—"}` : u.country ? `${flag(u.country)} ${countryName(u.country)}` : "Not recorded yet"],
+    ["Last IP", lastIp?.ip ? h("span", { class: "adm-inline" }, h("span", { class: "mono" }, lastIp.ip), copyBtn(lastIp.ip, "Copy IP")) : "—"],
+    ["Network", lastIp?.as_org ? `${lastIp.as_org}${lastIp.asn ? ` (AS${lastIp.asn})` : ""}` : null],
+    ["Device", shortUa(lastIp?.ua)],
+    ["Came from", u.src || null],
+    ["Free credits at sign-up", u.gift ? `${u.gift}` : "None"],
+    ["Plan", u.plan && u.plan !== "trial" ? `${cap(u.plan)}, ${u.plan_period === "year" ? "yearly" : "monthly"}, ${u.plan_status || "active"}, until ${day(u.plan_until, true)}` : null],
+    ["Stripe customer", u.plan_customer ? h("a", { href: `https://dashboard.stripe.com/customers/${encodeURIComponent(u.plan_customer)}`, target: "_blank", rel: "noopener" }, u.plan_customer) : null],
+    ["Kleo key version", String(u.key_version ?? 0)],
+    ["Closed because", blocked ? `${u.blocked_reason || "—"} (${stamp(u.blocked_at)})` : null],
+    ["Account address", u.account_email && u.account_email !== u.email ? u.account_email : null],
+    ["Launch code", d.redemption ? `${d.redemption.code} (${d.redemption.credits} credits, ${day(d.redemption.at)})` : null],
+    ["Merged into it", d.merged?.length ? h("span", { class: "adm-links" }, d.merged.map((m) => h("button", { class: "adm-a", onclick: () => openUser(m) }, m))) : null],
+    ["Merged into", u.merged_into ? h("button", { class: "adm-a", onclick: () => openUser(u.merged_into) }, u.merged_into) : null],
+  ]));
+
+  const payments = card("Payments", d.payments?.length ? null : "No payments.", d.payments?.length ? h("div", { class: "list" }, d.payments.map(payRow)) : null);
+
+  const gens = d.generations || [];
+  let shown = 12;
+  const genGrid = h("div", { class: "adm-gens" });
+  const genMore = h("button", { class: "btn btn-quiet btn-sm adm-more" }, "Show more");
+  const drawGens = () => { K.fill(genGrid, gens.slice(0, shown).map((g) => genCard(g))); genMore.style.display = gens.length > shown ? "" : "none"; };
+  genMore.addEventListener("click", () => { shown += 24; drawGens(); });
+  drawGens();
+  const creations = card("Creations", gens.length ? `${gens.length} in all, newest first.` : "Nothing made yet.", gens.length ? [genGrid, genMore] : null);
+  const films = d.jobs?.length ? card("Films ordered through assistants", null, h("div", { class: "list" }, d.jobs.map((j) => h("div", { class: "row" }, icon("film", 19),
+    h("div", { class: "lbl" }, h("b", {}, `${j.template} · ${j.state}`), h("span", {}, [stamp(j.created_at), count(j.credits, "credit"), j.cost_usd ? usd(j.cost_usd) : null, j.error ? j.error.slice(0, 120) : null].filter(Boolean).join(" · "))),
+    h("span", { class: "val mono" }, j.id))))) : null;
+
+  const signins = card("Sign-in methods", d.logins?.length ? null : "Only the Kleo key opens this account.", d.logins?.length ? h("div", { class: "list" }, d.logins.map((l) => h("div", { class: "row" }, icon(l.provider === "password" ? "key" : "user", 19),
+    h("div", { class: "lbl" }, h("b", {}, methods[d.logins.indexOf(l)]), h("span", {}, [l.email || l.subject, `added ${day(l.created_at, true)}`, l.last_login_at ? `last used ${ago(l.last_login_at)}` : null].filter(Boolean).join(" · ")))))) : null);
+
+  const addresses = card("Addresses and places", `Recorded at every sign-up, sign-in, assistant connection and payment since 23 October 2026, kept ${d.retentionDays} days.${d.lookup ? " For older events, use Find address in the timeline." : " To find the address of older events, add the CF_ANALYTICS_TOKEN secret: a Find address button then appears in the timeline."}`,
+    d.ips?.length ? h("div", { class: "list" }, d.ips.map((i) => h("div", { class: "row" }, icon("globe", 19),
+      h("div", { class: "lbl" }, h("b", { class: "mono" }, i.ip || "—", i.ip ? copyBtn(i.ip, "Copy IP") : null), h("span", {}, [`${flag(i.country)} ${place(i) || "—"}`, i.as_org, shortUa(i.ua)].filter(Boolean).join(" · "))),
+      h("span", { class: "val" }, h("span", {}, { signup: "Sign-up", signin: "Sign-in", connect: "Assistant", pay: "Payment", lookup: "Found" }[i.event] || i.event), h("span", {}, ago(i.at))))))
+      : empty("No address recorded yet."),
+    (d.address.blocks || []).length ? h("div", { class: "adm-note bad" }, icon("lock", 17), `Blocked address until ${day(d.address.blocks[0].until, true)}: ${d.address.blocks[0].reason}`) : null,
+    d.address.twins?.length ? [h("h3", {}, `${d.address.twins.length} other ${d.address.twins.length === 1 ? "account" : "accounts"} from the sign-up address`),
+      h("div", { class: "list" }, d.address.twins.map((t) => h("button", { class: "row", onclick: () => openUser(t.id) }, avatar(t), h("div", { class: "lbl" }, h("b", {}, t.email || t.id), h("span", {}, `joined ${day(t.created_at, true)}`)), icon("right", 16))))] : null);
+
+  // The timeline: every audit row of the account, newest first.
+  let tf = "all", tShown = 40;
+  const tList = h("div", { class: "adm-timeline" });
+  const tMore = h("button", { class: "btn btn-quiet btn-sm adm-more" }, "Show more");
+  const tChips = h("div");
+  const drawTimeline = () => {
+    K.fill(tChips, chips(TIMELINE_FILTERS, tf, (k) => { tf = k; tShown = 40; drawTimeline(); }));
+    const rows = (d.audit || []).filter((a) => tf === "all" || eventGroup(a.event) === tf);
+    K.fill(tList, rows.slice(0, tShown).map((a) => h("div", { class: `adm-ev ${eventGroup(a.event)}` }, h("i", { class: "dot" }),
+      h("div", { class: "adm-ev-t" }, h("b", {}, EVENTS[a.event] || a.event), h("span", {}, stamp(a.at)), detailText(a.detail) ? h("p", {}, detailText(a.detail)) : null,
+        d.lookup && LOOKUP_EVENTS.has(a.event) ? h("button", { class: "btn btn-quiet btn-sm", onclick: (e) => findAddress(a, e.currentTarget) }, icon("globe", 15), "Find address") : null))),
+      rows.length ? null : empty("Nothing here."));
+    tMore.style.display = rows.length > tShown ? "" : "none";
+  };
+  tMore.addEventListener("click", () => { tShown += 60; drawTimeline(); });
+  drawTimeline();
+  const timeline = card("Timeline", "Everything the account did, and everything done to it.", tChips, tList, tMore);
+
+  async function findAddress(a, btn) {
+    btn.disabled = true;
+    const old = [...btn.childNodes];
+    K.fill(btn, K.spinner(15), "Asking Cloudflare");
+    try {
+      const r = await call(`/api/admin/users/${id}/ip-lookup`, { method: "POST", body: { audit: a.id } });
+      const b = r.best;
+      K.sheet("Address found", `${EVENTS[a.event] || a.event}, ${stamp(a.at)}. Cloudflare's requests five seconds either side of it.`,
+        b ? h("div", { class: "adm-found" }, h("b", { class: "mono" }, b.ip), copyBtn(b.ip, "Copy IP"), h("span", {}, `${flag(b.country)} ${countryName(b.country) || ""} · ${b.method} ${b.path} · ${shortUa(b.ua) || ""}`)) : empty("No request from a person in that window."),
+        r.rows?.length ? h("div", { class: "list" }, r.rows.map((x) => h("div", { class: "row" + (x.match ? " on" : "") }, h("div", { class: "lbl" }, h("b", { class: "mono" }, x.ip), h("span", {}, `${x.at.slice(11, 19)} UTC · ${flag(x.country)} ${x.method} ${x.host}${x.path}`)), x.match ? pill("This event", "ok") : null))) : null);
+      if (b) userPage(main, id).catch(() => {});
+    } catch (e) { K.handleError(e); }
+    btn.disabled = false; K.fill(btn, old);
+  }
+
+  K.fill(body, hero, stats, card("Actions", "Every action asks for a reason and is written to the audit log with your id.", actions),
+    h("div", { class: "adm-two" }, profile, h("div", { class: "adm-stack" }, payments, signins)), creations, films, addresses, timeline);
+}
+function payRow(p) {
+  return h("div", { class: "row adm-pay" }, icon("bag", 19),
+    h("div", { class: "lbl" }, h("b", {}, money(p.amount_cent, p.currency), h("span", { class: "adm-dim" }, ` · ${count(p.credits, "credit")}`)),
+      h("span", {}, [p.account_email || p.email || (p.user_id ? p.user_id : "No account"), p.country ? `${flag(p.country)} ${p.country}` : null, stamp(p.at)].filter(Boolean).join(" · "))),
+    h("span", { class: "val adm-pay-r" }, payPill(p.status), (p.links || []).map((l) => h("a", { class: "btn btn-quiet btn-sm", href: l.url, target: "_blank", rel: "noopener", onclick: (e) => e.stopPropagation() }, l.label))));
+}
+
+// ── creations, as cards ──────────────────────────────────────────────────────────────────────────────────────────
+function genCard(g, showUser = false) {
+  const out = g.outputs?.[0];
+  const media = out ? mediaEl(out) : h("div", { class: "adm-gen-ph" }, icon(g.status === "failed" ? "x" : g.kind === "image" ? "photo" : "film", 26));
+  return h("button", { class: `adm-gen ${g.status}`, onclick: () => genSheet(g) },
+    h("div", { class: "adm-gen-media" }, media, h("span", { class: "adm-gen-st" }, statusPill(g.status))),
+    h("div", { class: "adm-gen-meta" }, h("b", {}, modelName(g.model)),
+      h("span", {}, `${KIND[g.kind] || g.kind} · ${count(g.credits, "credit")} · ${usd(g.est_usd)}`),
+      h("span", {}, `${PROVIDER[g.provider] || g.provider} · ${ago(g.created_at)}`),
+      showUser ? h("span", { class: "adm-gen-u" }, g.email || g.user_id) : null,
+      g.status === "failed" && g.error ? h("p", { class: "adm-gen-err" }, g.error) : null));
+}
+function genSheet(g) {
+  const s = g.settings || {};
+  const set = [s.resolution, s.duration ? `${s.duration} s` : null, s.aspect, s.quality, s.count ? `${s.count} pictures` : null, s.tool].filter(Boolean).join(" · ");
+  K.sheet(modelName(g.model), `${KIND[g.kind] || g.kind} · ${stamp(g.created_at)}`,
+    g.outputs?.length ? h("div", { class: "adm-sheet-media" }, g.outputs.map((o) => mediaEl(o, true))) : null,
+    h("div", { class: "adm-sheet-body" }, kv([
+      ["Status", statusPill(g.status)], ["Account", h("button", { class: "adm-a", onclick: () => { K.closeLayer(); openUser(g.user_id); } }, g.email || g.user_id)],
+      ["Credits", `${num(g.credits)}${g.refunded ? " (given back)" : ""}`], ["Provider cost", usd(g.est_usd)], ["Provider", PROVIDER[g.provider] || g.provider],
+      ["Settings", set || null], ["Finished", g.finished_at ? stamp(g.finished_at) : null], ["Error", g.error || null], ["Prompt", g.prompt || null],
+      ["Id", h("span", { class: "adm-inline" }, h("span", { class: "mono" }, g.id), copyBtn(g.id, "Copy id"))],
+    ]), g.outputs?.length ? h("div", { class: "adm-actions" }, g.outputs.map((o, i) => h("a", { class: "btn btn-quiet btn-sm", href: o.url, target: "_blank", rel: "noopener" }, icon("dl", 16), g.outputs.length > 1 ? `Open file ${i + 1}` : "Open file"))) : null));
+}
+
+// ── Payments ─────────────────────────────────────────────────────────────────────────────────────────────────────
+let PQ = "all";
+async function paymentsPage(main) {
+  const body = h("div", { class: "adm-stack" }, loading());
+  K.fill(main, head("Payments", "Every payment Stripe told Kleo about.", refreshBtn(() => paymentsPage(main))), body);
+  let r;
+  try { r = await call(`/api/admin/payments${PQ === "all" ? "" : `?status=${PQ}`}`); } catch (e) { return failed(body, e, () => paymentsPage(main)); }
+  const totals = (r.totals || []).slice().sort((a, b) => b.total - a.total);
+  const cur = totals[0]?.currency || "eur";
+  const t = totals[0] || { total: 0, d30: 0, month: 0, today: 0, n: 0, payers: 0 };
+  const st = Object.fromEntries((r.states || []).map((s) => [s.status, s]));
+  const others = totals.slice(1).map((x) => money(x.total, x.currency)).join(" + ");
+  // The last 30 days as bars, in the main currency.
+  const byDay = new Map((r.days || []).filter((x) => x.currency === cur).map((x) => [x.day, x]));
+  const days = Array.from({ length: 30 }, (_, i) => { const d = new Date(Date.now() - (29 - i) * 86400e3); const k = d.toISOString().slice(0, 10); return { k, d, v: byDay.get(k)?.cents || 0, n: byDay.get(k)?.n || 0 }; });
+  const max = Math.max(1, ...days.map((x) => x.v));
+  const chart = h("div", { class: "adm-chart", role: "img", "aria-label": "Money in per day, last 30 days" },
+    days.map((x, i) => h("div", { class: "adm-col", title: `${day(x.k)}: ${money(x.v, cur)} (${x.n})` },
+      h("i", { style: { height: `${Math.max(x.v ? 4 : 0, (x.v / max) * 100)}%` } }), i % 6 === 0 || i === 29 ? h("span", {}, x.d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })) : null)));
+  const months = (r.months || []).filter((m) => m.currency === cur);
+  K.fill(body,
+    tiles(tile("Today", money(t.today, cur)), tile("This month", money(t.month, cur)), tile("Last 30 days", money(t.d30, cur)),
+      tile("All time", money(t.total, cur), `${count(t.n, "payment")} · ${count(t.payers, "person", "people")}${others ? ` · plus ${others}` : ""}`),
+      tile("Refunded", num(st.refunded?.n || 0), st.refunded?.n ? money(st.refunded.cents, cur) : null, st.refunded?.n ? "warn" : ""),
+      tile("Disputed", num(st.disputed?.n || 0), st.disputed?.n ? money(st.disputed.cents, cur) : null, st.disputed?.n ? "bad" : "")),
+    card("Last 30 days", `Paid money in ${cur.toUpperCase()}, per day.`, chart),
+    months.length ? card("By month", null, h("div", { class: "list" }, months.map((m) => h("div", { class: "row" }, icon("clock", 19),
+      h("div", { class: "lbl" }, h("b", {}, toDate(`${m.month}-01T00:00:00Z`).toLocaleDateString("en-GB", { month: "long", year: "numeric" }))), h("span", { class: "val" }, `${money(m.cents, cur)} · ${m.n}`))))) : null,
+    card("All payments", `${num(r.total)} ${PQ === "all" ? "in all" : PQ}.`, chips([["all", "All"], ["paid", "Paid"], ["refunded", "Refunded"], ["disputed", "Disputed"]], PQ, (k) => { PQ = k; paymentsPage(main); }),
+      r.payments.length ? h("div", { class: "list" }, r.payments.map((p) => {
+        const row = payRow(p);
+        if (p.user_id) { row.classList.add("tap"); row.addEventListener("click", () => openUser(p.user_id)); }
+        return row;
+      })) : empty("No payments here.")));
+}
+
+// ── Creations ────────────────────────────────────────────────────────────────────────────────────────────────────
+const CQ = { tab: "recent", status: "all", kind: "all", days: 7, spendDays: 30 };
+async function creationsPage(main) {
+  const body = h("div", { class: "adm-stack" });
+  const tabs = seg([["recent", "Recent"], ["failures", "Failures"], ["spend", "Cost"]], CQ.tab, (k) => { CQ.tab = k; creationsPage(main); });
+  K.fill(main, head("Creations", "Every account's videos, pictures and apps.", refreshBtn(() => creationsPage(main))), tabs, body);
+  if (CQ.tab === "failures") return failuresTab(body, main);
+  if (CQ.tab === "spend") return spendTab(body, main);
+  const grid = h("div", { class: "adm-gens" }, loading());
+  const more = h("button", { class: "btn btn-quiet adm-more", style: { display: "none" } }, "Show more");
+  K.fill(body, chips([["all", "All"], ["done", "Done"], ["failed", "Failed"], ["running", "Running"]], CQ.status, (k) => { CQ.status = k; creationsPage(main); }),
+    chips([["all", "Every kind"], ["video", "Videos"], ["image", "Pictures"], ["tool", "Apps"], ["film", "Films"]], CQ.kind, (k) => { CQ.kind = k; creationsPage(main); }), grid, more);
+  let before = "";
+  const load = async (reset) => {
+    more.disabled = true;
+    try {
+      const p = new URLSearchParams({ ...(CQ.status !== "all" ? { status: CQ.status } : {}), ...(CQ.kind !== "all" ? { kind: CQ.kind } : {}), ...(before ? { before } : {}) });
+      const r = await call(`/api/admin/generations?${p}`);
+      if (reset) K.fill(grid);
+      grid.append(...r.generations.map((g) => genCard(g, true)));
+      if (reset && !r.generations.length) K.fill(grid, empty("Nothing here."));
+      before = r.generations.at(-1)?.created_at || before;
+      more.style.display = r.more ? "" : "none";
+    } catch (e) { failed(grid, e, () => load(true)); }
+    more.disabled = false;
+  };
+  more.addEventListener("click", () => load(false));
+  load(true);
+}
+async function failuresTab(body, main) {
+  K.fill(body, seg([[1, "24 hours"], [7, "7 days"], [30, "30 days"]], CQ.days, (k) => { CQ.days = k; creationsPage(main); }), loading());
+  let r;
+  try { r = await call(`/api/admin/failures?days=${CQ.days}`); } catch (e) { return failed(body, e, () => creationsPage(main)); }
+  body.lastChild.remove();
+  body.append(r.groups.length ? card(`${num(r.total)} failed`, "Grouped by what went wrong and where.", h("div", { class: "list" }, r.groups.map((g) => h("div", { class: "row adm-fail" },
+    h("div", { class: "adm-fail-n" }, num(g.count)),
+    h("div", { class: "lbl" }, h("b", {}, g.kind, pill(PROVIDER[g.provider] || g.provider, "")), h("span", {}, `${g.users} ${g.users === 1 ? "account" : "accounts"} · last ${ago(g.last)} · ${g.models.map(modelName).join(", ")}`),
+      g.sample ? h("p", { class: "adm-fail-s" }, g.sample) : null))))) : card("Nothing failed", `No failed creation in the last ${CQ.days === 1 ? "24 hours" : `${CQ.days} days`}.`),
+    h("button", { class: "btn btn-quiet adm-more", onclick: () => { CQ.tab = "recent"; CQ.status = "failed"; creationsPage(main); } }, "See every failed creation", icon("right", 15)));
+}
+async function spendTab(body, main) {
+  K.fill(body, seg([[1, "24 hours"], [7, "7 days"], [30, "30 days"], [0, "All time"]], CQ.spendDays, (k) => { CQ.spendDays = k; creationsPage(main); }), loading());
+  let r;
+  try { r = await call(`/api/admin/spend?days=${CQ.spendDays}`); } catch (e) { return failed(body, e, () => creationsPage(main)); }
+  body.lastChild.remove();
+  body.append(card(`${usd(r.usd)} provider cost`, "What each account cost Kleo at the providers, next to what it paid.", r.users.length ? h("div", { class: "list" }, r.users.map((u) =>
+    h("button", { class: "row", onclick: () => openUser(u.id) }, avatar({ id: u.id, email: u.email }),
+      h("div", { class: "lbl" }, h("b", {}, u.email || u.id, u.admin ? pill("Admin", "info") : null), h("span", {}, `${count(u.gens, "creation")} · ${num(u.failed)} failed · ${count(u.credits, "credit")} · last ${ago(u.last)}`)),
+      h("span", { class: "val adm-cost" }, h("b", {}, usd(u.usd)), h("span", { class: u.paid_cent ? "paid" : "" }, u.paid_cent ? `paid ${money(u.paid_cent, u.currency)}` : "never paid"))))) : empty("Nothing made in that time.")));
+}
+
+// ── Providers & keys ─────────────────────────────────────────────────────────────────────────────────────────────
+async function balancesInto(box, data) {
+  let r = data;
+  if (!r) { try { r = await call("/api/admin/providers"); } catch (e) { K.fill(box, empty(e.message || "Balances didn't load.")); return null; } }
+  K.fill(box, r.balances.map((b) => h("div", { class: `adm-balance${b.usd !== null && b.usd < 5 ? " low" : ""}` },
+    h("span", { class: "adm-tile-l" }, b.name), h("b", {}, b.usd === null ? "—" : usd(b.usd)),
+    h("span", { class: "adm-tile-s" }, b.error ? b.error : b.source === "live" ? "Live" : `From its last refusal, ${ago(b.at)}`))));
+  return r;
+}
+async function providersPage(main) {
+  const body = h("div", { class: "adm-stack" }, loading());
+  K.fill(main, head("Providers & keys", "Balances, which keys are set, and the app's settings.", refreshBtn(() => providersPage(main))), body);
+  let r;
+  try { r = await call("/api/admin/providers"); } catch (e) { return failed(body, e, () => providersPage(main)); }
+  const bal = h("div", { class: "adm-bal" });
+  balancesInto(bal, r);
+  K.fill(body,
+    card("Balances", "ePhone's key can't read its balance: Kleo shows what ePhone said when it last refused an order for money. Under $5 shows in red.", bal),
+    card("Keys", "Only the names: a key's value never leaves the Worker.", h("div", { class: "list" }, r.secrets.map((s) => h("div", { class: "row" }, icon("key", 19),
+      h("div", { class: "lbl" }, h("b", { class: "mono" }, s.name), h("span", {}, s.purpose)), s.set ? pill("Set", "ok") : pill("Not set", "")))),
+      h("div", { class: "adm-note" }, icon("lock", 17), h("span", {}, "To change a key, run this in a terminal in the kleo-mcp folder, then paste the new value when asked: ", h("code", {}, "npx wrangler secret put NAME --config wrangler.studio.jsonc")))),
+    card("Settings", "The Worker's settings as deployed (wrangler.studio.jsonc).", kv(r.settings.map((s) => [s.name, h("span", { class: "mono" }, s.value === null || s.value === "" ? "—" : s.value)]))),
+    card("Address lookup", r.lookup ? "On: past sign-ins can be looked up in Cloudflare's logs from each account's timeline." : "Off: add the CF_ANALYTICS_TOKEN secret (a Cloudflare API token with Analytics read on kleooai.com) to look up the address of sign-ins made before 23 October 2026."));
+}
+
+// ── demo data (?demo=1): nothing here is real ────────────────────────────────────────────────────────────────────
+let D = null;
+function demoDb() {
+  if (D) return D;
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const pickOf = (a) => a[Math.floor(rnd() * a.length)];
+  const iso = (msAgo) => new Date(Date.now() - msAgo).toISOString();
+  const names = ["Ana Lima", "Marco Bianchi", "Sofia Rossi", "Liam O'Brien", "Yuki Tanaka", "Lena Weber", "Noah Smith", "Chloé Martin", "Diego Ruiz", "Aisha Khan", "Tom Becker", "Elena Popescu",
+    "Jonas Berg", "Mia Novak", "Omar Haddad", "Grace Kim", "Lucas Silva", "Hana Sato", "Ivan Petrov", "Emma Jones", "Pablo Gómez", "Zoe Clarke"];
+  const places = [["DE", "Berlin", "Berlin"], ["IT", "Milan", "Lombardy"], ["US", "Austin", "Texas"], ["GB", "London", "England"], ["JP", "Osaka", "Osaka"], ["BR", "São Paulo", "São Paulo"],
+    ["FR", "Lyon", "Auvergne-Rhône-Alpes"], ["IN", "Pune", "Maharashtra"], ["NZ", "Auckland", "Auckland"], ["ES", "Valencia", "Valencia"], ["CA", "Toronto", "Ontario"], ["AU", "Sydney", "New South Wales"]];
+  const uas = ["Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 Version/18.7 Mobile/15E148 Safari/604.1", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/141.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_6) AppleWebKit/605.1.15 Version/18.6 Safari/605.1.15", "Mozilla/5.0 (Linux; Android 16; Pixel 9) AppleWebKit/537.36 Chrome/141.0 Mobile Safari/537.36"];
+  const nets = [["Deutsche Telekom AG", 3320], ["Vodafone Italia", 30722], ["Comcast Cable", 7922], ["BT", 2856], ["NTT", 4713], ["Claro", 28573], ["Orange", 3215], ["Jio", 55836], ["Spark New Zealand", 4771]];
+  const VIDS = ["https://kleooai.com/samples/shot-dunes.mp4", "https://kleooai.com/samples/realistic-tether.mp4", "https://kleooai.com/samples/animation-octopus.mp4", "https://kleooai.com/samples/shot-moon.mp4"];
+  const PICS = ["https://kleooai.com/samples/realistic-tether.jpg", "https://kleooai.com/samples/shot-moon.jpg", "https://kleooai.com/samples/animation-octopus.jpg", "https://kleooai.com/samples/shot-dunes.jpg"];
+  const MODELS = [["seedance-2.5", "video", 0.86], ["seedance-2.0-fast", "video", 0.24], ["veo-3.1-fast", "video", 0.64], ["nano-banana-2", "image", 0.04], ["flux-2-pro", "image", 0.06], ["face-swap", "tool", 0.05], ["kleo-film", "film", 1.9]];
+  const ERRORS = [["Our generation engine is being recharged. Your credits are back — please try again in a little while.", "ephone"],
+    ["Seedance 2.5 won't make this one: it recognised characters, people or music protected by copyright. Your credits are back.", "ephone"],
+    ["The picture is too small for this model: use one at least 300 pixels on its short side.", "ephone"], ["The provider took too long and the clip was cancelled. Your credits are back.", "apimart"]];
+  const users = [], payments = [], gens = [], ips = [], audit = [];
+  let aid = 1;
+  names.forEach((name, i) => {
+    const id = `u_demo${String(i).padStart(2, "0")}${"abcdefgh"[i % 8]}`;
+    const [country, city, region] = places[i % places.length];
+    const created = iso((i * 2.6 + rnd()) * 86400e3);
+    const ip = i % 3 === 0 ? `2001:db8:${(i * 37).toString(16)}:1::${i + 10}` : `${["192.0.2", "198.51.100", "203.0.113"][i % 3]}.${10 + i * 7}`;
+    const net = nets[i % nets.length];
+    const u = { id, name: i % 4 === 3 ? null : name, email: `${name.toLowerCase().replace(/[^a-z]+/g, ".")}@example.com`, credits: Math.floor(rnd() * 120), plan: i === 2 ? "pro" : "trial", plan_period: i === 2 ? "month" : null,
+      plan_until: i === 2 ? iso(-20 * 86400e3) : null, plan_status: i === 2 ? "active" : null, created_at: created, src: pickOf(["studio", "tiktok", "x", null]), merged_into: null,
+      blocked_at: i === 9 ? iso(86400e3) : null, blocked_reason: i === 9 ? "Card testing from many cards" : null, ip_hash: `demo_hash_${i}`, deleted: 0, anonymous: 0,
+      methods: i % 5 === 0 ? "password" : "google", gift: i % 6 === 5 ? 0 : 5, key_version: i % 7 === 0 ? 1 : 0, account_email: null };
+    users.push(u);
+    ips.push({ id: aid++, user_id: id, at: created, event: "signup", ip, ip_hash: u.ip_hash, country, region, city, asn: net[1], as_org: net[0], ua: uas[i % uas.length] });
+    if (i % 2 === 0) ips.push({ id: aid++, user_id: id, at: iso(rnd() * 3 * 86400e3), event: "signin", ip, ip_hash: u.ip_hash, country, region, city, asn: net[1], as_org: net[0], ua: uas[i % uas.length] });
+    audit.push({ id: aid++, at: created, user_id: id, event: "user.created", job_id: null, detail: JSON.stringify({ via: "studio", credits: u.gift, ip: u.ip_hash }) });
+    if (i % 3 !== 1) {
+      const n = 1 + (i % 3);
+      for (let k = 0; k < n; k++) {
+        const cents = pickOf([500, 1500, 4000, 900, 1900]);
+        const at = iso(((i * 2.6 + rnd()) * 86400e3) * (k + 1) / (n + 1));
+        payments.push({ session_id: `cs_live_demo${i}${k}`, user_id: id, credits: Math.round(cents / 40), amount_cent: cents, currency: "eur", email: u.email, payment_intent: `pi_demo${i}${k}`, status: i === 5 && k === 0 ? "refunded" : i === 8 && k === 1 ? "disputed" : "paid", country, event_type: "checkout.session.completed", at });
+        audit.push({ id: aid++, at, user_id: id, event: "credits.purchased", job_id: null, detail: JSON.stringify({ credits: Math.round(cents / 40), amount_cent: cents, currency: "eur" }) });
+      }
+    }
+    const m = 2 + (i % 5);
+    for (let k = 0; k < m; k++) {
+      const [model, kind, cost] = pickOf(MODELS);
+      const fail = rnd() < 0.22;
+      const [err, provider] = pickOf(ERRORS);
+      const at = iso(rnd() * 9 * 86400e3);
+      const gid = `g_demo${i}x${k}`;
+      gens.push({ id: gid, user_id: id, email: u.email, kind, model, status: fail ? "failed" : k === 0 && i === 1 ? "running" : "done", credits: Math.max(1, Math.round(cost * 6)), est_usd: cost, refunded: fail, error: fail ? err : null,
+        prompt: pickOf(["A lone rider crosses golden dunes at sunset", "An astronaut floats outside a space station", "A playful octopus explores a coral reef", "A giant moon rises over a calm sea"]),
+        created_at: at, finished_at: fail ? at : iso(Date.now() - Date.parse(at) - 90e3), provider: fail ? provider : pickOf(["ephone", "ephone", "apimart", "wavespeed"]),
+        outputs: fail ? [] : kind === "image" || model === "face-swap" ? [{ type: "image", url: pickOf(PICS) }] : [{ type: "video", url: pickOf(VIDS) }],
+        settings: kind === "image" ? { quality: "2K", aspect: "1:1", count: 1 } : { resolution: "720p", duration: 5, aspect: "16:9" } });
+      audit.push({ id: aid++, at, user_id: id, event: "studio.create", job_id: gid, detail: JSON.stringify({ model, credits: Math.round(cost * 6), usd: cost }) });
+      if (fail) audit.push({ id: aid++, at, user_id: id, event: "studio.failed", job_id: gid, detail: JSON.stringify({ why: err }) });
+    }
+  });
+  users[0].name = "You (owner)"; users[0].email = "owner@example.com"; users[0].admin = true;
+  D = { users, payments, gens, ips, audit, aid, blocks: [{ ip_hash: "demo_hash_9", reason: "admin: farm of accounts", until: iso(-25 * 86400e3), created_at: iso(5 * 86400e3) }] };
+  return D;
+}
+function demoUser(u) {
+  const db = demoDb();
+  const pays = db.payments.filter((p) => p.user_id === u.id && p.status === "paid");
+  const g = db.gens.filter((x) => x.user_id === u.id);
+  const ip = db.ips.filter((x) => x.user_id === u.id).sort((a, b) => b.at.localeCompare(a.at))[0];
+  const seen = [ip?.at, ...g.map((x) => x.created_at)].filter(Boolean).sort().at(-1) || u.created_at;
+  return { ...u, paid_cent: pays.reduce((a, p) => a + p.amount_cent, 0), currency: pays.length ? "eur" : null, gens: g.length, spend_usd: g.filter((x) => x.status !== "failed").reduce((a, x) => a + x.est_usd, 0),
+    ip: ip?.ip ?? null, city: ip?.city ?? null, region: ip?.region ?? null, country: ip?.country ?? null, last_seen: seen };
+}
+async function demo(path, opts) {
+  await new Promise((r) => setTimeout(r, 160));
+  const db = demoDb();
+  const [p, qs] = path.split("?");
+  const q = new URLSearchParams(qs || "");
+  const b = opts.body || {};
+  const daysAgo = (iso) => (Date.now() - Date.parse(iso)) / 86400e3;
+  if (p === "/api/admin/overview") {
+    const all = db.users.map(demoUser);
+    const paid = db.payments.filter((x) => x.status === "paid");
+    return {
+      counts: { users: all.length, users_1d: all.filter((u) => daysAgo(u.created_at) < 1).length, users_7d: all.filter((u) => daysAgo(u.created_at) < 7).length, payers: new Set(paid.map((x) => x.user_id)).size,
+        blocked: all.filter((u) => u.blocked_at).length, blocked_addresses: db.blocks.length, gens_today: db.gens.filter((g) => daysAgo(g.created_at) < 1).length,
+        failed_1d: db.gens.filter((g) => g.status === "failed" && daysAgo(g.created_at) < 1).length, gens_1d: db.gens.filter((g) => daysAgo(g.created_at) < 1).length,
+        running: db.gens.filter((g) => g.status === "running").length, spend_7d: db.gens.filter((g) => g.status !== "failed" && daysAgo(g.created_at) < 7).reduce((a, g) => a + g.est_usd, 0),
+        spend_30d: db.gens.filter((g) => g.status !== "failed").reduce((a, g) => a + g.est_usd, 0) },
+      revenue: [{ currency: "eur", total: paid.reduce((a, x) => a + x.amount_cent, 0), d30: paid.filter((x) => daysAgo(x.at) < 30).reduce((a, x) => a + x.amount_cent, 0), today: paid.filter((x) => daysAgo(x.at) < 1).reduce((a, x) => a + x.amount_cent, 0), n: paid.length }],
+      trouble: [{ status: "refunded", n: 1, cents: 500 }, { status: "disputed", n: 1, cents: 1500 }],
+      newest: all.slice().sort((x, y) => y.created_at.localeCompare(x.created_at)).slice(0, 6),
+      payments: db.payments.slice().sort((x, y) => y.at.localeCompare(x.at)).slice(0, 6),
+      failed: db.gens.filter((g) => g.status === "failed").sort((x, y) => y.created_at.localeCompare(x.created_at)).slice(0, 6),
+      budget: { day: 30, spent: 4.82, freeDay: 8, freeSpent: 1.12 },
+    };
+  }
+  if (p === "/api/admin/users") {
+    const s = (q.get("q") || "").toLowerCase();
+    const f = q.get("filter") || "all";
+    let list = db.users.map(demoUser).filter((u) => !s || [u.id, u.email, u.name, u.ip, u.city, u.country].some((x) => String(x || "").toLowerCase().includes(s)));
+    list = list.filter((u) => f === "all" || (f === "paid" && u.paid_cent) || (f === "free" && !u.paid_cent && !u.deleted) || (f === "blocked" && u.blocked_at) || (f === "deleted" && u.deleted) || (f === "new" && daysAgo(u.created_at) < 7));
+    const key = { created: "created_at", seen: "last_seen", credits: "credits", paid: "paid_cent", spend: "spend_usd", gens: "gens", name: "name" }[q.get("sort")] || "created_at";
+    const dir = q.get("dir") === "asc" ? 1 : -1;
+    list.sort((x, y) => { const a = key === "name" ? who(x).toLowerCase() : x[key] ?? "", c = key === "name" ? who(y).toLowerCase() : y[key] ?? ""; return (a > c ? 1 : a < c ? -1 : 0) * dir; });
+    const off = Number(q.get("offset") || 0);
+    return { users: list.slice(off, off + 50), total: list.length };
+  }
+  const um = p.match(/^\/api\/admin\/users\/(u_\w+)$/);
+  if (um) {
+    const raw = db.users.find((u) => u.id === um[1]);
+    if (!raw) throw Object.assign(new Error("No account with that id."), { code: "not_found" });
+    const u = demoUser(raw);
+    const gens = db.gens.filter((g) => g.user_id === u.id).sort((x, y) => y.created_at.localeCompare(x.created_at));
+    const pays = db.payments.filter((x) => x.user_id === u.id).sort((x, y) => y.at.localeCompare(x.at)).map((x) => ({ ...x, links: [{ label: "Payment", url: "https://dashboard.stripe.com/payments" }, { label: "Checkout", url: "https://dashboard.stripe.com/search" }] }));
+    return {
+      user: u, logins: [{ provider: raw.methods, subject: raw.methods === "google" ? "1048…" : u.email, email: u.email, created_at: u.created_at, last_login_at: u.last_seen }],
+      payments: pays, generations: gens, jobs: [], audit: db.audit.filter((a) => a.user_id === u.id).sort((x, y) => y.at.localeCompare(x.at)),
+      ips: db.ips.filter((x) => x.user_id === u.id).sort((x, y) => y.at.localeCompare(x.at)), merged: [], redemption: null,
+      address: { hash: raw.ip_hash, blocks: db.blocks.filter((x) => x.ip_hash === raw.ip_hash), twins: u.id === "u_demo09b" ? [demoUser(db.users[3]), demoUser(db.users[14])] : [] },
+      totals: { paid: u.paid_cent ? [{ currency: "eur", cents: u.paid_cent }] : [], spend_usd: u.spend_usd, credits_spent: gens.filter((g) => g.status !== "failed").reduce((a, g) => a + g.credits, 0), failed: gens.filter((g) => g.status === "failed").length, films_usd: 0 },
+      lookup: true, retentionDays: 90,
+    };
+  }
+  const am = p.match(/^\/api\/admin\/users\/(u_\w+)\/([a-z-]+)$/);
+  if (am) {
+    const u = db.users.find((x) => x.id === am[1]);
+    const log = (event, extra = {}) => db.audit.push({ id: db.aid++, at: new Date().toISOString(), user_id: u.id, event, job_id: null, detail: JSON.stringify({ admin: "u_demo00a", reason: b.reason, ...extra }) });
+    if (am[2] === "credits") { const before = u.credits; u.credits = Math.max(0, u.credits + Number(b.delta)); log("admin.credits", { delta: b.delta, before, after: u.credits }); return { ok: true, credits: u.credits }; }
+    if (am[2] === "block") { u.blocked_at = b.on ? new Date().toISOString() : null; u.blocked_reason = b.on ? b.reason : null; log(b.on ? "admin.block" : "admin.unblock"); return { ok: true }; }
+    if (am[2] === "address") {
+      db.blocks = db.blocks.filter((x) => x.ip_hash !== u.ip_hash);
+      if (b.on) db.blocks.push({ ip_hash: u.ip_hash, reason: `admin: ${b.reason}`, until: new Date(Date.now() + (b.days || 30) * 86400e3).toISOString() });
+      log(b.on ? "admin.address_block" : "admin.address_unblock", { days: b.days }); return { ok: true };
+    }
+    if (am[2] === "key") { u.key_version = (u.key_version || 0) + 1; log("admin.key_reset"); return { ok: true }; }
+    if (am[2] === "signout") { log("admin.signout"); return { ok: true }; }
+    if (am[2] === "delete") { u.email = `${u.id}@deleted.kleo.invalid`; u.name = null; u.credits = 0; u.deleted = 1; log("admin.delete"); return { ok: true }; }
+    if (am[2] === "ip-lookup") {
+      const a = db.audit.find((x) => x.id === b.audit);
+      const best = { at: a.at.slice(0, 19) + "Z", ip: "198.51.100.77", country: "DE", host: "app.kleooai.com", method: "GET", path: "/auth/google/callback", status: 302, ua: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X)", count: 1, match: true };
+      db.ips.push({ id: db.aid++, user_id: u.id, at: a.at, event: "lookup", ip: best.ip, country: "DE", ua: best.ua });
+      log("admin.ip_lookup", { audit: a.id, found: true });
+      return { event: a, best, rows: [best, { ...best, ip: "203.0.113.200", country: "US", path: "/", match: false }] };
+    }
+  }
+  if (p === "/api/admin/payments") {
+    const st = q.get("status");
+    const rows = db.payments.filter((x) => !st || x.status === st).sort((x, y) => y.at.localeCompare(x.at)).map((x) => ({ ...x, account_email: x.email, links: [{ label: "Payment", url: "https://dashboard.stripe.com/payments" }, { label: "Checkout", url: "https://dashboard.stripe.com/search" }] }));
+    const paid = db.payments.filter((x) => x.status === "paid");
+    const days = new Map(), months = new Map();
+    for (const x of paid) {
+      const d = x.at.slice(0, 10), m = x.at.slice(0, 7);
+      if (daysAgo(x.at) < 30) days.set(d, { day: d, currency: "eur", cents: (days.get(d)?.cents || 0) + x.amount_cent, n: (days.get(d)?.n || 0) + 1 });
+      months.set(m, { month: m, currency: "eur", cents: (months.get(m)?.cents || 0) + x.amount_cent, n: (months.get(m)?.n || 0) + 1 });
+    }
+    const sum = (f) => paid.filter(f).reduce((a, x) => a + x.amount_cent, 0);
+    return { payments: rows, total: rows.length, days: [...days.values()], months: [...months.values()].sort((x, y) => y.month.localeCompare(x.month)),
+      totals: [{ currency: "eur", total: sum(() => true), d30: sum((x) => daysAgo(x.at) < 30), month: sum((x) => x.at.slice(0, 7) === new Date().toISOString().slice(0, 7)), today: sum((x) => daysAgo(x.at) < 1), n: paid.length, payers: new Set(paid.map((x) => x.user_id)).size }],
+      states: ["paid", "refunded", "disputed"].map((s) => ({ status: s, n: db.payments.filter((x) => x.status === s).length, cents: db.payments.filter((x) => x.status === s).reduce((a, x) => a + x.amount_cent, 0) })) };
+  }
+  if (p === "/api/admin/generations") {
+    const st = q.get("status"), kind = q.get("kind"), before = q.get("before");
+    const list = db.gens.filter((g) => (!st || g.status === st) && (!kind || g.kind === kind) && (!before || g.created_at < before)).sort((x, y) => y.created_at.localeCompare(x.created_at));
+    return { generations: list.slice(0, 24), more: list.length > 24 };
+  }
+  if (p === "/api/admin/failures") {
+    const days = Number(q.get("days") || 7);
+    const list = db.gens.filter((g) => g.status === "failed" && daysAgo(g.created_at) < days);
+    const groups = new Map();
+    for (const g of list) {
+      const kind = /recharged/.test(g.error) ? "Provider out of credit" : /copyright/.test(g.error) ? "Copyright refusal" : /too small/.test(g.error) ? "Picture too small" : "Took too long";
+      const k = `${kind}|${g.provider}`;
+      const e = groups.get(k) || { kind, provider: g.provider, count: 0, users: new Set(), models: new Set(), last: g.created_at, sample: g.error, ids: [] };
+      e.count++; e.users.add(g.user_id); e.models.add(g.model); if (g.created_at > e.last) e.last = g.created_at;
+      groups.set(k, e);
+    }
+    return { days, total: list.length, groups: [...groups.values()].sort((x, y) => y.count - x.count).map((e) => ({ ...e, users: e.users.size, models: [...e.models] })) };
+  }
+  if (p === "/api/admin/spend") {
+    const days = Number(q.get("days") ?? 30);
+    const by = new Map();
+    for (const g of db.gens.filter((x) => !days || daysAgo(x.created_at) < days)) {
+      const e = by.get(g.user_id) || { id: g.user_id, email: g.email, gens: 0, failed: 0, usd: 0, credits: 0, last: g.created_at };
+      e.gens++; if (g.status === "failed") e.failed++; else { e.usd += g.est_usd; e.credits += g.credits; }
+      if (g.created_at > e.last) e.last = g.created_at;
+      by.set(g.user_id, e);
+    }
+    const users = [...by.values()].map((e) => { const u = demoUser(db.users.find((x) => x.id === e.id)); return { ...e, paid_cent: u.paid_cent, currency: u.currency, admin: !!u.admin }; }).sort((x, y) => y.usd - x.usd);
+    return { days, users, usd: users.reduce((a, x) => a + x.usd, 0) };
+  }
+  if (p === "/api/admin/providers") {
+    const names = [["INTERNAL_SECRET", "Signs sessions, links and Kleo keys", true], ["EPHONE_API_KEY", "ePhone: every video, picture and app, and the chat agent", true], ["WAVESPEED_API_KEY", "WaveSpeed: viral templates and backups", true],
+      ["APIMART_API_KEY", "APIMart: backup of most models", true], ["STRIPE_SECRET_KEY", "Stripe: Apple Pay and Google Pay inside the app", true], ["RESEND_API_KEY", "Password reset e-mails", false], ["GOOGLE_CLIENT_ID", "Sign in with Google", true],
+      ["GOOGLE_CLIENT_SECRET", "Sign in with Google", true], ["TURNSTILE_SECRET", "The bot check on sign-up", true], ["CF_ANALYTICS_TOKEN", "Finds the address of past sign-ins in Cloudflare's logs", false]];
+    return {
+      secrets: names.map(([name, purpose, set]) => ({ name, purpose, set })),
+      balances: [{ provider: "ephone", name: "ePhone", usd: 1.09, at: new Date(Date.now() - 5 * 3600e3).toISOString(), source: "last_refusal" }, { provider: "wavespeed", name: "WaveSpeed", usd: 11.25, at: new Date().toISOString(), source: "live" },
+        { provider: "apimart", name: "APIMart", usd: 3.5, at: new Date().toISOString(), source: "live" }],
+      lookup: false,
+      settings: [["STUDIO_DAILY_BUDGET_USD", "30"], ["STUDIO_FREE_DAILY_BUDGET_USD", "8"], ["STUDIO_MARGIN", "1.6"], ["FREE_CREDITS", "5"], ["STUDIO_FREE_MODELS", "seedance-2.0-fast"], ["STUDIO_MAX_RUNNING", "3"], ["STUDIO_ADMINS", "u_demo00a"]].map(([name, value]) => ({ name, value })),
+    };
+  }
+  throw Object.assign(new Error("Not in the demo."), { code: "demo" });
+}

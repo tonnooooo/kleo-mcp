@@ -27,6 +27,7 @@ import { addLogin, getLogin, loginsOf, touchLogin } from "./store.ts";
 import { EMAIL_RE, checkPassword, hashPassword, makeSession, normalizeEmail, passwordProblem, readCookie, safeEqual, sessionCookie } from "./session.ts";
 import { StudioError } from "./generate.ts";
 import { canonicalEmail, giftBlocker, giftCookie, mailDomainOk, type Visitor } from "../abuse.ts";
+import { recordIp } from "./ips.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const int = (v: string | undefined, d: number): number => { const n = parseInt(v ?? "", 10); return Number.isFinite(n) ? n : d; };
@@ -51,8 +52,17 @@ export async function endAllSessions(env: StudioEnv, userId: string): Promise<vo
 const newSession = async (env: StudioEnv, userId: string): Promise<string> =>
   sessionCookie(await makeSession(env.INTERNAL_SECRET, userId, Date.now(), await epochOf(env, userId)));
 
+/** What a person reads when the owner closed their account from the console (src/studio/admin.ts). */
+export const BLOCKED_SENTENCE = "This account is closed. If you think this is a mistake, write to hello@kleooai.com.";
+/** True while the owner keeps the account closed (users.blocked_at): no session opens it, and no sign-in. */
+export async function accountBlocked(env: StudioEnv, userId: string): Promise<boolean> {
+  const r = await env.DB.prepare("SELECT blocked_at FROM users WHERE id = ?").bind(userId).first<{ blocked_at: string | null }>().catch(() => null);
+  return !!r?.blocked_at;
+}
+
 /** Sets the session cookie for an account on a JSON answer. */
 export async function signedIn(env: StudioEnv, userId: string, body: unknown = { ok: true }): Promise<Response> {
+  if (await accountBlocked(env, userId)) throw new StudioError(BLOCKED_SENTENCE, 403, "blocked");
   return new Response(JSON.stringify(body), {
     headers: { "content-type": "application/json; charset=utf-8", "set-cookie": await newSession(env, userId) },
   });
@@ -523,7 +533,10 @@ export async function socialCallback(env: StudioEnv, key: SocialKey, request: Re
   }
   // Only a vouched-for address is stored on the sign-in: it is what finds and joins accounts later.
   if (!owner) await addLogin(env, { provider: key, subject, userId, email: verified, secret: null });
+  // An account the owner closed from the console opens no session (src/studio/admin.ts).
+  if (await accountBlocked(env, userId)) return back("signin_error=blocked");
   await touchLogin(env, key, subject);
+  await recordIp(env, userId, gifted === null ? "signin" : "signup", request);
   // A new account that started without the gift lands on "/?gift=none", where the page says why (src/abuse.ts).
   const headers: [string, string][] = [["location", gifted === 0 ? "/?gift=none" : "/"], ["set-cookie", await newSession(env, userId)], ["set-cookie", clearState(key)]];
   if (gifted) headers.push(["set-cookie", giftCookie()]);

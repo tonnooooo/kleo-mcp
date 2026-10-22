@@ -38,6 +38,8 @@ import { ipBucket } from "../accounts.ts";
 import { studioConnect } from "../connect.ts";
 import { publicPlans } from "../plans.ts";
 import { createPaySession } from "./pay.ts";
+import { adminApi } from "./admin.ts";
+import { pruneIps, recordIp } from "./ips.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const json = (data: unknown, status = 200, headers: Record<string, string> = {}): Response =>
@@ -55,12 +57,15 @@ async function body<T = Record<string, unknown>>(request: Request): Promise<T> {
   try { return (await request.json()) as T; } catch { throw new StudioError("Bad request."); }
 }
 
-/** The signed-in account, or null. A cookie from before the account's last "sign out everywhere" no longer counts. */
+/**
+ * The signed-in account, or null. A cookie from before the account's last "sign out everywhere" no longer counts, and
+ * neither does any cookie of an account the owner closed from the admin console (users.blocked_at).
+ */
 async function sessionUser(env: StudioEnv, request: Request): Promise<string | null> {
   const s = await readSessionFull(env.INTERNAL_SECRET, readCookie(request.headers.get("cookie"), SESSION_COOKIE));
   if (!s) return null;
-  const row = await env.DB.prepare("SELECT studio_epoch FROM users WHERE id = ?").bind(s.userId).first<{ studio_epoch: number | null }>().catch(() => null);
-  return row && Number(row.studio_epoch ?? 0) === s.epoch ? s.userId : null;
+  const row = await env.DB.prepare("SELECT studio_epoch, blocked_at FROM users WHERE id = ?").bind(s.userId).first<{ studio_epoch: number | null; blocked_at: string | null }>().catch(() => null);
+  return row && !row.blocked_at && Number(row.studio_epoch ?? 0) === s.epoch ? s.userId : null;
 }
 
 /** Ten tries a minute per visitor (an IPv6 visitor is its /64) and, for a sign-in, per e-mail address as well. */
@@ -200,22 +205,34 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       const made = await signUp(env, b, visitorOf(request));
       const res = await signedIn(env, made.userId, { ok: true, gift: made.gifted, ...(made.gifted ? {} : { note: NO_GIFT_SENTENCE }) });
       if (made.gifted) res.headers.append("set-cookie", giftCookie());
+      ctx.waitUntil(recordIp(env, made.userId, "signup", request));
       return res;
     }
-    if (path === "/api/auth/signin") return signedIn(env, await signIn(env, b));
-    if (path === "/api/auth/key") return signedIn(env, await signInWithKey(env, String(b.key ?? "")));
+    // Where each sign-in came from is kept 90 days (src/studio/ips.ts), for the admin console.
+    const signedInHere = async (id: string) => { const res = await signedIn(env, id); ctx.waitUntil(recordIp(env, id, "signin", request)); return res; };
+    if (path === "/api/auth/signin") return signedInHere(await signIn(env, b));
+    if (path === "/api/auth/key") return signedInHere(await signInWithKey(env, String(b.key ?? "")));
     if (path === "/api/auth/forgot") { ctx.waitUntil(forgotPassword(env, b, origin)); return json({ ok: true }); }
-    if (path === "/api/auth/reset") return signedIn(env, await resetPassword(env, b));
+    if (path === "/api/auth/reset") return signedInHere(await resetPassword(env, b));
     return json({ error: "Not found." }, 404);
   }
 
   const userId = await sessionUser(env, request);
   if (!userId) return json({ error: "Please sign in.", code: "signin" }, 401);
 
+  // THE ADMIN CONSOLE (23 October 2026, src/studio/admin.ts): the accounts in STUDIO_ADMINS only, checked here on the
+  // session; to anybody else it does not exist. Its reads want the X-Kleo header too.
+  if (path.startsWith("/api/admin/")) {
+    if (!isAdmin(env, userId)) return json({ error: "Not found." }, 404);
+    if (request.headers.get("x-kleo") !== "1") return json({ error: "Forbidden" }, 403);
+    return adminApi(env, request, url, userId);
+  }
+
   // ONE ACCOUNT EVERYWHERE (19 October 2026, src/connect.ts): this account finishes an assistant's connection, and takes in
   // the old anonymous account that came with it, credits and films included.
   if (path === "/api/connect" && method === "POST") {
     const r = await studioConnect(asEnv(env), userId, await body(request));
+    if (!("error" in r)) ctx.waitUntil(recordIp(env, userId, "connect", request));
     return "error" in r ? json({ error: r.error, code: r.code ?? "connect" }, 400) : json(r);
   }
   if (path === "/api/auth/password" && method === "POST") { await addPassword(env, userId, await body(request)); return json({ ok: true }); }
@@ -257,6 +274,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     const u = await getUser(asEnv(env), userId);
     const s = await createPaySession(env, userId, (u as { email?: string | null } | null)?.email ?? null, b, origin);
     await audit(asEnv(env), userId, null, "pay.session", { label: s.label, cents: s.cents });
+    ctx.waitUntil(recordIp(env, userId, "pay", request));
     return json(s);
   }
   if (path === "/api/me/auto-wan" && method === "POST") {
@@ -564,6 +582,10 @@ export default {
     const rows = await staleGenerations(env, 20, 25);
     for (const g of rows) {
       try { await refreshGeneration(env, g, 15); } catch (e) { console.error("studio cron", g.id, e instanceof Error ? e.message : e); }
+    }
+    // Sign-in addresses older than 90 days go, once an hour (src/studio/ips.ts; the privacy page promises it).
+    if (new Date(_event.scheduledTime || Date.now()).getUTCMinutes() === 17) {
+      try { await pruneIps(env); } catch (e) { console.error("studio ip prune", e instanceof Error ? e.message : e); }
     }
   },
 };

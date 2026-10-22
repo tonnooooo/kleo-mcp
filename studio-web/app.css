@@ -1547,3 +1547,11 @@ img.fx-in { animation: fx-img-in .7s var(--ease-out) both; }
   .nav-right .nav-upgrade { padding: 0 10px; }
   .nav-right .credits-pill { padding: 0 10px; }
 }
+
+/* ── typed answers in a question (23 October 2026, the admin console's reasons and amounts) ── */
+.ask-fields { display: grid; gap: 12px; margin: 0 0 16px; text-align: left; }
+.ask-fields label { display: grid; gap: 6px; }
+.ask-fields label > span { font-size: 15px; font-weight: 600; color: var(--ink-2); }
+.ask .ask-fields .input { margin: 0; text-align: left; letter-spacing: inherit; height: 48px; font-size: 16px; }
+.acct-admin { margin: 0; }
+.acct-admin .row { min-height: 60px; }

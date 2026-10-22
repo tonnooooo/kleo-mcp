@@ -39,6 +39,29 @@ export const STUDIO_SCHEMA: string[] = [
 ];
 
 /**
+ * THE ADMIN CONSOLE (migrations/0026_studio_admin.sql, 23 October 2026): where people sign in from (src/studio/ips.ts),
+ * kept 90 days, created with the tables above.
+ */
+export const STUDIO_ADMIN_SCHEMA: string[] = [
+  `CREATE TABLE IF NOT EXISTS studio_ips (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, at TEXT NOT NULL DEFAULT ${NOW}, event TEXT NOT NULL,
+    ip TEXT, ip_hash TEXT, country TEXT, region TEXT, city TEXT, asn INTEGER, as_org TEXT, ua TEXT)`,
+  `CREATE INDEX IF NOT EXISTS studio_ips_user ON studio_ips (user_id, at)`,
+  `CREATE INDEX IF NOT EXISTS studio_ips_at ON studio_ips (at)`,
+  `CREATE INDEX IF NOT EXISTS studio_ips_ip ON studio_ips (ip)`,
+];
+
+/**
+ * The admin console's indexes on the MCP server's audit table (its user timeline and its failure list), made once per
+ * isolate after the tables above. Best effort: the audit table is the MCP server's, and a database without it (a test's)
+ * simply goes without them.
+ */
+export const STUDIO_AUDIT_INDEXES: string[] = [
+  `CREATE INDEX IF NOT EXISTS audit_user ON audit (user_id, id)`,
+  `CREATE INDEX IF NOT EXISTS audit_job ON audit (job_id)`,
+];
+
+/**
  * Columns added after the tables first went live (migrations/0018_studio_images.sql): images made one generation of
  * several pictures, each its own provider task ("slots").
  */
@@ -53,6 +76,9 @@ export const STUDIO_COLUMNS: string[] = [
   "ALTER TABLE users ADD COLUMN studio_epoch INTEGER NOT NULL DEFAULT 0",
   // migrations/0024_studio_auto_wan.sql: the account's "switch to Wan 3.0 by itself" choice (generate.ts switchToWan).
   "ALTER TABLE users ADD COLUMN studio_auto_wan INTEGER NOT NULL DEFAULT 0",
+  // migrations/0026_studio_admin.sql: an account the owner closed from the console (src/studio/admin.ts).
+  "ALTER TABLE users ADD COLUMN blocked_at TEXT",
+  "ALTER TABLE users ADD COLUMN blocked_reason TEXT",
 ];
 
 /** Whether the account chose to have copyright refusals made on Wan 3.0 by themselves. */
@@ -72,7 +98,8 @@ export const setAutoWan = (env: StudioEnv, userId: string, on: boolean) =>
 let schemaChecked = false;
 export async function ensureStudioSchema(env: StudioEnv): Promise<void> {
   if (schemaChecked) return;
-  await env.DB.batch(STUDIO_SCHEMA.map((s) => env.DB.prepare(s)));
+  await env.DB.batch([...STUDIO_SCHEMA, ...STUDIO_ADMIN_SCHEMA].map((s) => env.DB.prepare(s)));
+  try { await env.DB.batch(STUDIO_AUDIT_INDEXES.map((s) => env.DB.prepare(s))); } catch { /* no audit table here */ }
   for (const sql of await missingColumns(env, STUDIO_COLUMNS)) {
     try { await env.DB.prepare(sql).run(); } catch (e) { if (!/duplicate column/i.test(String(e))) throw e; }
   }
