@@ -130,6 +130,28 @@ test("Garden Dunk and Branch Chop (22 October 2026): one seat each, 15 s clips o
   assert.match(c, /the big white splash/);
 });
 
+test("Stall Grabber (22 October 2026): one seat, the whole 6.6 s clip on R2, priced as WaveSpeed quoted it", () => {
+  const t = trendByKey("trend-stall-grabber");
+  assert.ok(t && !t.prompt, "a seat-by-seat prompt, not a fixed one");
+  assert.equal(t.seats.length, 1);
+  for (const [field, file] of [["baseUrl", "base.mp4"], ["preview", "preview3-p.mp4"], ["guide", "guide.jpg"]]) {
+    assert.equal(t[field], `https://media.kleooai.com/app/templates/stall-grabber/${file}`);
+  }
+  // WaveSpeed's price API, 22 October 2026, on this clip: $0.70 / $1.40 / $2.80 (7 s in + 7 s out).
+  assert.equal(trendBilledSeconds(t), 14);
+  assert.deepEqual(["480p", "720p", "1080p"].map((q) => trendCostUsd(t, q)), [0.7, 1.4, 2.8]);
+  assert.deepEqual(["480p", "720p", "1080p"].map((q) => toolCredits(trendCostUsd(t, q))), [3, 6, 11]);
+  const input = planTool(t.key, { quality: "720p" }, { person1: photo("up_s") }).tasks[0].input;
+  assert.equal(input.video, t.baseUrl);
+  assert.deepEqual(input.reference_images, [photo("up_s").url]);
+  assert.equal(input.generate_audio, false);
+  assert.match(input.prompt, /Image 1 replaces the person OUTSIDE the stall/);
+  assert.match(input.prompt, /no cream oversized hoodie/);
+  assert.match(input.prompt, /reacher-grabber/);
+  assert.match(input.prompt, /lunges/);
+  assert.ok(input.prompt.length < 6500, `prompt ${input.prompt.length} characters`);
+});
+
 test("plan: no photo is a refusal a person can act on; a video in a seat is refused", () => {
   assert.throws(() => planTool(YTBM, {}, {}), (e) => e instanceof ToolRefusal && /at least one person/.test(e.message));
   assert.throws(() => planTool(YTBM, {}, { person1: { ...photo("up_v"), kind: "video" } }), (e) => e instanceof ToolRefusal && /picture/.test(e.message));
