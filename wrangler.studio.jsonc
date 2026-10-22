@@ -45,6 +45,9 @@
   "ratelimits": [
     { "name": "AUTH_LIMIT", "namespace_id": "1002", "simple": { "limit": 10, "period": 60 } }
   ],
+  // The owner's alerts (src/studio/providers.ts): a provider out of money or running low. Email Routing is on for
+  // kleooai.com and kleooai@gmail.com is its one verified destination (23 Oct 2026); alerts come from alerts@kleooai.com.
+  "send_email": [ { "name": "OWNER_MAIL", "destination_address": "kleooai@gmail.com" } ],
   "triggers": { "crons": ["* * * * *"] }, // every minute: refresh clips still with the provider, save finished ones, refund failed ones
   "vars": {
     "PUBLIC_URL": "https://mcp.kleooai.com",
