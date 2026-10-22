@@ -10,6 +10,7 @@
  *   studio_generations  one clip: settings, credits, provider task, state, stored file
  */
 import type { StudioEnv } from "./env.ts";
+import { PROVIDER_STATUS_SCHEMA } from "./providers.ts";
 
 const NOW = "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))";
 export const STUDIO_SCHEMA: string[] = [
@@ -36,6 +37,8 @@ export const STUDIO_SCHEMA: string[] = [
     created_at TEXT NOT NULL DEFAULT ${NOW}, updated_at TEXT NOT NULL DEFAULT ${NOW}, checked_at TEXT, finished_at TEXT)`,
   `CREATE INDEX IF NOT EXISTS studio_generations_user ON studio_generations (user_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS studio_generations_status ON studio_generations (status, checked_at)`,
+  // What each provider can still spend, and when the owner was last told (src/studio/providers.ts, 23 October 2026).
+  PROVIDER_STATUS_SCHEMA,
 ];
 
 /**

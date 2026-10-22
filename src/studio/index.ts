@@ -28,6 +28,7 @@ import { publicPresets } from "./presets.ts";
 import { planTool, publicTools, toolByKey, toolCredits, ToolRefusal, type Media } from "./tools.ts";
 import { mediaInfo } from "./media.ts";
 import { APP_PATH, serveSite } from "./site.ts";
+import { handleProviderResume, refreshBalances, type Provider } from "./providers.ts";
 import { normalizeFilm, orderFilm, quoteFilm } from "./films.ts";
 import { runAgent, chatTitle, enhancePrompt, type Proposal } from "./agent.ts";
 import { NO_GIFT_SENTENCE, giftCookie, visitorOf } from "../abuse.ts";
@@ -544,6 +545,13 @@ async function route(request: Request, env: StudioEnv, ctx: ExecutionContext, ur
   }
   try {
     if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/media/") || url.pathname.startsWith("/auth/")) await ensureStudioSchema(env);
+    // The owner's "it's topped up" link from an alert e-mail (src/studio/providers.ts): its signature is the authorisation,
+    // so it is answered before api(), whose POSTs need the page's own header.
+    const resume = url.pathname.match(/^\/api\/provider-resume\/(ephone|wavespeed|apimart)$/);
+    if (resume && (request.method === "GET" || request.method === "POST")) {
+      const signed = await checkSignedPath(env.INTERNAL_SECRET, url.pathname, url.searchParams.get("exp"), url.searchParams.get("sig"));
+      return await handleProviderResume(env, request, url, resume[1] as Provider, signed);
+    }
     if (url.pathname.startsWith("/api/")) return await api(env, request, url, ctx);
     if (url.pathname.startsWith("/media/")) return await handleMedia(env, request, url);
     const social = url.pathname.match(/^\/auth\/(google|microsoft|apple)(\/callback)?$/);
@@ -579,6 +587,8 @@ export default {
 
   async scheduled(_event: ScheduledController, env: StudioEnv, ctx: ExecutionContext): Promise<void> {
     await ensureStudioSchema(env);
+    // What each provider can still spend, so an order it cannot pay for stops before the charge (providers.ts).
+    ctx.waitUntil(refreshBalances(env));
     const rows = await staleGenerations(env, 20, 25);
     for (const g of rows) {
       try { await refreshGeneration(env, g, 15); } catch (e) { console.error("studio cron", g.id, e instanceof Error ? e.message : e); }

@@ -21,6 +21,12 @@ export interface StudioEnv {
   APIMART_API_KEY?: string;
   /** "off" keeps every order on ePhone, even when it is out of credit (default: backups on). */
   STUDIO_BACKUPS?: string;
+  /** Where the owner's alerts go (src/studio/providers.ts): a send_email binding whose destination is verified in
+   *  Email Routing, and that address (default kleooai@gmail.com, the only one verified on 23 October 2026). */
+  OWNER_MAIL?: SendEmail;
+  OWNER_MAIL_TO?: string;
+  /** Dollars under which a provider's balance warns the owner, e.g. "wavespeed:20,apimart:5" (defaults in providers.ts). */
+  STUDIO_PROVIDER_LOW_USD?: string;
   /** Public address of the MCP server (for the "use Kleo in Claude/ChatGPT" line). */
   PUBLIC_URL: string;
   /** The one host of the app (kleooai.com); www. and app. hosts redirect to it. Empty: no redirect. */
