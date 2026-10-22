@@ -201,6 +201,10 @@ export interface Env {
   STRIPE_LINK_5?: string;
   STRIPE_LINK_15?: string;
   STRIPE_LINK_40?: string;
+  // The Italy account's RESTRICTED key, the same one kleo-studio holds (Checkout Sessions, Subscriptions and Invoices
+  // read are all it needs here). Only read: it finds the payment intent behind a plan's invoice, the one link a refund
+  // or a dispute on a plan can be traced back by (src/stripe.ts invoicePaymentIntent, 23 October 2026).
+  STRIPE_SECRET_KEY?: string;
 
   RESEND_API_KEY?: string;
   NOTIFY_FROM?: string;

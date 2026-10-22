@@ -205,6 +205,62 @@ export async function handleStripeWebhook(request: Request, env: Env): Promise<R
 
 /* ------------------------------------------------------------------ the plans (19 October 2026, src/plans.ts) */
 
+/**
+ * THE PAYMENT INTENT BEHIND A PLAN (23 October 2026, the owner after a night of PayPal payments: "non voglio che ci
+ * siano brecce"). A refund or a dispute names its payment only by payment intent (handleChargeTrouble). A pack's
+ * Checkout Session carries it; a plan's Session does not, and since Stripe's API 2025-03-31 neither does the invoice:
+ * the link lives in an InvoicePayment. So every plan payment was written down with payment_intent NULL, and a
+ * disputed plan — Agency is 249 EUR, a PayPal dispute one click — found no row and kept every credit it bought.
+ *
+ * One read with the restricted key finds it. Null when there is no key, or Stripe does not answer within five seconds:
+ * the payment is credited all the same (money that arrived is never made to wait on a lookup), the audit says so, a
+ * redelivery of the same event fills it in, and the dispute itself asks Stripe again (planPaymentByIntent).
+ */
+async function stripeGet(env: Env, path: string): Promise<Record<string, any> | null> {
+  const key = (env.STRIPE_SECRET_KEY ?? "").trim();
+  if (!key) return null;
+  try {
+    const res = await fetch(`https://api.stripe.com${path}`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(5_000) });
+    return res.ok ? ((await res.json()) as Record<string, any>) : null;
+  } catch { return null; }
+}
+
+export async function invoicePaymentIntent(env: Env, invoiceId: string): Promise<string | null> {
+  const list = await stripeGet(env, `/v1/invoice_payments?${new URLSearchParams({ invoice: invoiceId })}`);
+  const paid = (list?.data ?? []).find((p: any) => p?.status === "paid" && p?.payment?.type === "payment_intent");
+  const pi = typeof paid?.payment?.payment_intent === "string" ? paid.payment.payment_intent : null;
+  if (!pi) await audit(env, null, null, "stripe.plan_intent_missing", { invoice: invoiceId, key: !!env.STRIPE_SECRET_KEY });
+  return pi;
+}
+
+/** Writes the payment intent on a row that lacks it: a redelivered event repairs what a failed lookup left empty. */
+async function keepPaymentIntent(env: Env, sessionId: string, pi: string | null): Promise<void> {
+  if (pi) await env.DB.prepare("UPDATE payments SET payment_intent = ? WHERE session_id = ? AND payment_intent IS NULL").bind(pi, sessionId).run();
+}
+
+/**
+ * The plan payment a refund or a dispute is about, when no row carries its payment intent yet (written before 23
+ * October 2026, or the lookup failed). Stripe says which invoice the intent paid. A renewal's row IS that invoice; the
+ * first month's row is the Checkout Session that started the subscription — and only the FIRST invoice may be traced
+ * there, or a dispute on a renewal that was never credited would take back the first month. The intent is then written
+ * down, so the next event about it finds the row directly.
+ */
+async function planPaymentByIntent(env: Env, pi: string) {
+  const list = await stripeGet(env, `/v1/invoice_payments?${new URLSearchParams({ "payment[type]": "payment_intent", "payment[payment_intent]": pi })}`);
+  const invoiceId = list?.data?.[0]?.invoice;
+  if (typeof invoiceId !== "string") return null;
+  let sessionId: string | null = invoiceId;
+  if (!(await env.DB.prepare("SELECT 1 AS one FROM payments WHERE session_id = ?").bind(invoiceId).first())) {
+    const inv = await stripeGet(env, `/v1/invoices/${encodeURIComponent(invoiceId)}`);
+    const sub = inv?.billing_reason === "subscription_create" ? subscriptionOf(inv) : null;
+    const sessions = sub ? await stripeGet(env, `/v1/checkout/sessions?${new URLSearchParams({ subscription: sub, limit: "1" })}`) : null;
+    sessionId = typeof sessions?.data?.[0]?.id === "string" ? sessions.data[0].id : null;
+  }
+  if (!sessionId) return null;
+  await keepPaymentIntent(env, sessionId, pi);
+  return paymentByIntent(env, pi);
+}
+
 const DAY_MS = 86_400_000;
 const iso = (ms: number) => new Date(ms).toISOString();
 /** The plan an account is on right now (paid through plan_until, even when cancelled), or null. */
@@ -236,11 +292,15 @@ async function handlePlanCheckout(env: Env, event: { id?: string; type?: string 
   const known = userId && (await getUser(env, userId)) ? userId : null;
   const email = typeof s.customer_details?.email === "string" ? s.customer_details.email : null;
   const country = typeof s.customer_details?.address?.country === "string" ? s.customer_details.address.country : null;
+  // A subscription's Checkout Session carries no payment intent; its first invoice is paid by one (invoicePaymentIntent).
+  const pi = typeof s.payment_intent === "string" ? s.payment_intent
+    : typeof s.invoice === "string" ? await invoicePaymentIntent(env, s.invoice) : null;
   const credited = await creditPurchase(env, {
     sessionId, userId: known, credits: match.tier.credits, cents, currency, email,
-    paymentIntent: typeof s.payment_intent === "string" ? s.payment_intent : null, eventId: event.id ?? null, eventType: event.type ?? null,
+    paymentIntent: pi, eventId: event.id ?? null, eventType: event.type ?? null,
     country, rawRef: userId || null,
   });
+  await keepPaymentIntent(env, sessionId, pi);
   if (known && credited) {
     const now = Date.now();
     await env.DB.prepare(`UPDATE users SET plan = ?, plan_period = ?, plan_credits = ?, plan_until = ?, plan_status = 'active', plan_sub = ?, plan_customer = ?, plan_next_grant = ? WHERE id = ?`)
@@ -275,11 +335,15 @@ async function handleInvoicePaid(env: Env, event: { id?: string; type?: string; 
   if (!match) return json({ ok: true, ignored: `no plan costs ${paidAmount} ${inv.currency ?? ""}`.trim() });
   const cents = periodCents(match.tier, match.period); // recorded in EUR, what the plan costs
   const userId = row?.id ?? null;
-  const pi = typeof inv.payment_intent === "string" ? inv.payment_intent : null;
+  // Invoices lost payment_intent in Stripe's API 2025-03-31; older payloads still have it.
+  const pi = typeof inv.payment_intent === "string" ? inv.payment_intent
+    : typeof inv.id === "string" ? await invoicePaymentIntent(env, inv.id) : null;
+  const sessionId = String(inv.id ?? `inv_${event.id}`);
   const credited = await creditPurchase(env, {
-    sessionId: String(inv.id ?? `inv_${event.id}`), userId, credits: match.tier.credits, cents, currency: "eur",
+    sessionId, userId, credits: match.tier.credits, cents, currency: "eur",
     email: typeof inv.customer_email === "string" ? inv.customer_email : null, paymentIntent: pi, eventId: event.id ?? null, eventType: event.type ?? null, country: null, rawRef: sub,
   });
+  await keepPaymentIntent(env, sessionId, pi);
   if (userId && credited) {
     const end = Number(inv.lines?.data?.[0]?.period?.end ?? inv.period_end ?? 0) * 1000;
     const now = Date.now();
@@ -348,7 +412,7 @@ export async function grantDuePlanCredits(env: Env, nowMs = Date.now()): Promise
 async function handleChargeTrouble(env: Env, type: string, charge: Record<string, unknown>): Promise<Response> {
   const pi = typeof charge.payment_intent === "string" ? charge.payment_intent : null;
   if (!pi) return json({ ok: true, ignored: "charge without a payment intent" });
-  const row = await paymentByIntent(env, pi);
+  const row = (await paymentByIntent(env, pi)) ?? (await planPaymentByIntent(env, pi));
   if (!row) return json({ ok: true, ignored: "no payment of ours matches that charge" });
 
   if (type === "charge.refunded") {

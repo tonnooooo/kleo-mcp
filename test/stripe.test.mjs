@@ -278,6 +278,113 @@ test("plans: an amount no plan costs, or another currency, buys nothing", async 
   assert.equal(balance(env, "u_sub"), 0);
 });
 
+/* ------------------------------------------------------------------ a dispute on a plan (23 October 2026) */
+// Stripe's API as Kleo's restricted key sees it, for one subscription: its first invoice in_1 and a renewal in_2,
+// each paid by its own payment intent. Since API 2025-03-31 neither the subscription's Checkout Session nor an invoice
+// carries the intent: only /v1/invoice_payments links them.
+const KEY = { STRIPE_SECRET_KEY: "rk_live_test" };
+const STRIPE = {
+  invoices: { in_1: { billing_reason: "subscription_create", pi: "pi_first" }, in_2: { billing_reason: "subscription_cycle", pi: "pi_renew" } },
+  sessions: { sub_1: "cs_sub1" },
+};
+async function withStripe(fn, { down = false } = {}) {
+  const real = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push(String(url));
+    if (down) throw new Error("network down");
+    assert.equal(init?.headers?.authorization, "Bearer rk_live_test", "the restricted key, as a bearer token");
+    const u = new URL(String(url));
+    const reply = (body) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    const pay = (id) => ({ object: "invoice_payment", invoice: id, status: "paid", payment: { type: "payment_intent", payment_intent: STRIPE.invoices[id].pi } });
+    if (u.pathname === "/v1/invoice_payments" && u.searchParams.get("invoice"))
+      return reply({ data: STRIPE.invoices[u.searchParams.get("invoice")] ? [pay(u.searchParams.get("invoice"))] : [] });
+    if (u.pathname === "/v1/invoice_payments" && u.searchParams.get("payment[payment_intent]"))
+      return reply({ data: Object.keys(STRIPE.invoices).filter((id) => STRIPE.invoices[id].pi === u.searchParams.get("payment[payment_intent]")).map(pay) });
+    if (u.pathname.startsWith("/v1/invoices/")) {
+      const id = u.pathname.split("/").pop();
+      return reply({ id, billing_reason: STRIPE.invoices[id]?.billing_reason, parent: { subscription_details: { subscription: "sub_1" } } });
+    }
+    if (u.pathname === "/v1/checkout/sessions") return reply({ data: STRIPE.sessions[u.searchParams.get("subscription")] ? [{ id: STRIPE.sessions[u.searchParams.get("subscription")] }] : [] });
+    return new Response("{}", { status: 404 });
+  };
+  try { return await fn(calls); } finally { globalThis.fetch = real; }
+}
+const dispute = (pi, id = "evt_dp") => ({ id, type: "charge.dispute.created", livemode: true, data: { object: { object: "dispute", payment_intent: pi } } });
+const piOf = (env, sessionId) => env.DB.db.prepare("SELECT payment_intent FROM payments WHERE session_id = ?").get(sessionId)?.payment_intent;
+const newInvoice = (o = {}) => { const e = invoice(o); delete e.data.object.payment_intent; return e; }; // today's shape
+
+test("plans: the first month's payment intent is found through its invoice, and a dispute on it takes the credits back", async () => {
+  const env = newEnv(KEY); user(env, "u_sub");
+  await withStripe(async () => {
+    await post(env, subCheckout({ invoice: "in_1" }));
+    assert.equal(balance(env, "u_sub"), 110);
+    assert.equal(piOf(env, "cs_sub1"), "pi_first", "written down with the payment it was paid by");
+    env.DB.db.exec("UPDATE users SET credits = 30 WHERE id = 'u_sub'"); // 80 already spent
+    const r = await post(env, dispute("pi_first"));
+    assert.equal(r.status, 200);
+  });
+  assert.equal(balance(env, "u_sub"), -80, "a disputed plan gives its credits back like a disputed pack");
+  assert.equal(env.DB.db.prepare("SELECT status FROM payments WHERE session_id = 'cs_sub1'").get().status, "disputed");
+  await post(env, dispute("pi_first", "evt_dp2"));
+  assert.equal(balance(env, "u_sub"), -80, "delivered twice, taken once");
+});
+
+test("plans: a renewal invoice without payment_intent (API 2025-03-31 and later) is traced too", async () => {
+  const env = newEnv(KEY); user(env, "u_sub");
+  await withStripe(async () => {
+    await post(env, subCheckout({ invoice: "in_1" }));
+    await post(env, newInvoice());
+    assert.equal(balance(env, "u_sub"), 220);
+    assert.equal(piOf(env, "in_2"), "pi_renew");
+    await post(env, dispute("pi_renew"));
+  });
+  assert.equal(balance(env, "u_sub"), 110, "only the disputed month goes");
+  assert.equal(env.DB.db.prepare("SELECT status FROM payments WHERE session_id = 'cs_sub1'").get().status, "paid");
+});
+
+test("plans: a row written before the fix (no payment intent) is still found when the dispute comes", async () => {
+  const env = newEnv(); user(env, "u_sub"); // no key yet: piperwilliam's 9 EUR Lite on 21 October was written like this
+  await post(env, subCheckout({ invoice: "in_1" }));
+  assert.equal(piOf(env, "cs_sub1"), null);
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE event = 'stripe.plan_intent_missing'").get().n, 1, "the gap is written down");
+  Object.assign(env, KEY);
+  await withStripe(async () => { await post(env, dispute("pi_first")); });
+  assert.equal(balance(env, "u_sub"), 0);
+  assert.equal(piOf(env, "cs_sub1"), "pi_first", "and the intent is kept for the next event");
+});
+
+test("plans: a dispute on a renewal Kleo never credited takes nothing from the first month", async () => {
+  const env = newEnv(KEY); user(env, "u_sub");
+  await withStripe(async () => {
+    await post(env, subCheckout({ invoice: "in_1" }));
+    const r = await post(env, dispute("pi_renew"));
+    assert.match(await r.text(), /no payment of ours/);
+  });
+  assert.equal(balance(env, "u_sub"), 110);
+});
+
+test("plans: Stripe unreachable or no key, the plan is credited all the same and a redelivery fills the intent in", async () => {
+  const env = newEnv(KEY); user(env, "u_sub");
+  await withStripe(async () => { assert.equal((await post(env, subCheckout({ invoice: "in_1" }))).status, 200); }, { down: true });
+  assert.equal(balance(env, "u_sub"), 110, "money that arrived never waits on a lookup");
+  assert.equal(piOf(env, "cs_sub1"), null);
+  await withStripe(async () => { await post(env, subCheckout({ invoice: "in_1" })); });
+  assert.equal(balance(env, "u_sub"), 110, "the redelivery credits nothing twice");
+  assert.equal(piOf(env, "cs_sub1"), "pi_first", "but repairs the row");
+});
+
+test("packs: a dispute on a pack never asks Stripe anything", async () => {
+  const env = newEnv(KEY); user(env, "u_buyer");
+  await withStripe(async (calls) => {
+    await post(env, session());
+    await post(env, dispute("pi_1"));
+    await post(env, dispute("pi_unknown", "evt_u"));
+    assert.deepEqual(calls.filter((c) => !c.includes("payment%5Bpayment_intent%5D=pi_unknown")), [], "only the unknown intent is looked up");
+  });
+  assert.equal(balance(env, "u_buyer"), 0);
+});
+
 /* ------------------------------------------------------------------ buyers abroad (Adaptive Pricing, 19 October 2026) */
 const fx = (eurCents, local = "usd", localCents = Math.round(eurCents * 1.16)) => ({ currency: local, amount_total: localCents,
   currency_conversion: { source_currency: "eur", amount_total: eurCents, amount_subtotal: eurCents, fx_rate: "1.16" } });
