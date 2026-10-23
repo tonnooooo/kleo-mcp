@@ -2,20 +2,65 @@
 // admin opens /admin, and hands it the app's own helpers (the kit): the element builder, the icons, toasts, sheets and
 // the ask() questions, never a browser pop-up. API: src/studio/admin.ts. With ?demo=1 everything runs on fake data.
 //
-// Pages: Overview · Users (and one account) · Payments · Creations · Providers & keys. Desktop: a side list of pages;
-// phones: the same pages as a row of pills.
+// Pages: Overview · Users (and one account) · Payments · Creations · Providers & keys · Security. Desktop: a side list
+// of pages; phones: the same pages as a row of pills.
+//
+// The console opens with a second factor (src/studio/admin-auth.ts): the first visit sets up a code on the owner's phone
+// (a QR code drawn by qr.js, on this origin), every later visit asks for the 6-digit code, and the dangerous actions
+// ask for a new one.
+
+import { qrSvg } from "./qr.js?v=73";
 
 let K = null;
+const DEMO_MODE = new URLSearchParams(location.search).get("demo");
+/** Whether this page load has an open admin session (the server says so; a 401 closes it again). */
+const GATE = { open: false };
 const SECTIONS = [
   { key: "overview", label: "Overview", ic: "grid" },
   { key: "users", label: "Users", ic: "user" },
   { key: "payments", label: "Payments", ic: "bag" },
   { key: "creations", label: "Creations", ic: "film" },
   { key: "providers", label: "Providers & keys", ic: "key" },
+  { key: "security", label: "Security", ic: "lock" },
 ];
 const h = (...a) => K.h(...a);
 const icon = (...a) => K.icon(...a);
-const call = (path, opts = {}) => (K.DEMO ? demo(path, opts) : K.api(path, opts));
+// The console's own fetch: the app's header and cookie, plus two answers of its own. An admin session that ended (401
+// admin_signin or admin_enroll) brings back the code screen; a redirect means Cloudflare Access, when the owner put it in
+// front of /admin (docs/ADMIN-SECURITY.md), wants its own sign-in again.
+class AdminError extends Error { constructor(msg, status, code, data = {}) { super(msg); this.status = status; this.code = code; this.data = data; } }
+async function call(path, opts = {}) {
+  if (K.DEMO) return demo(path, opts);
+  const init = { method: opts.method || "GET", headers: { "x-kleo": "1" }, credentials: "same-origin", redirect: "manual" };
+  if (opts.body !== undefined) { init.body = JSON.stringify(opts.body); init.headers["content-type"] = "application/json"; }
+  let res;
+  try { res = await fetch(path, init); } catch { throw new AdminError("You seem to be offline.", 0, "offline"); }
+  if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) throw new AdminError("Your Cloudflare Access sign-in has ended. Reload the page to sign in again.", 401, "access");
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new AdminError(data.error || "Something went wrong.", res.status, data.code, data);
+  return data;
+}
+/** What every page does with an error: back to the code screen when the admin session ended, else the app's toast. */
+function oops(e) {
+  if (e?.code === "admin_signin" || e?.code === "admin_enroll") { GATE.open = false; render(K); return; }
+  K.handleError(e);
+}
+/** A code from the phone, asked in the app's own sheet; null when cancelled. */
+async function askCode(title, text) {
+  const v = await K.ask({ title, text, ok: "Confirm", ic: "lock",
+    fields: [{ key: "code", label: "6-digit code", placeholder: "123456", inputmode: "numeric", autocomplete: "one-time-code", required: true }] });
+  return v ? v.code : null;
+}
+/** A write that may want a fresh code: asked for, then the write is sent again with it. */
+async function postFresh(path, body) {
+  try { return await call(path, { method: "POST", body }); }
+  catch (e) {
+    if (e?.code !== "fresh_code") throw e;
+    const code = await askCode("Type a new code", "This action needs a code from your phone, typed now.");
+    if (!code) throw new AdminError("Cancelled.", 0, "dismissed");
+    return call(path, { method: "POST", body: { ...body, code } });
+  }
+}
 
 // ── formatting ───────────────────────────────────────────────────────────────────────────────────────────────────
 const toDate = (iso) => new Date(String(iso).endsWith("Z") ? iso : `${iso}Z`);
@@ -86,7 +131,7 @@ function copyBtn(text, label = "Copy") {
 const refreshBtn = (fn) => h("button", { class: "btn btn-quiet btn-sm", onclick: fn }, icon("redo", 16), "Refresh");
 function failed(box, e, retry) {
   K.fill(box, card("This didn't load", e?.message || "Something went wrong.", h("button", { class: "btn btn-primary btn-sm", onclick: retry }, icon("redo", 16), "Try again")));
-  if (e?.code === "signin") K.handleError(e);
+  if (e?.code === "signin" || e?.code === "admin_signin" || e?.code === "admin_enroll") oops(e);
 }
 function chips(options, current, pick) {
   return h("div", { class: "adm-chips", role: "tablist" }, options.map(([k, label]) =>
@@ -110,6 +155,7 @@ function mediaEl(o, controls = false) {
 // ── the frame ────────────────────────────────────────────────────────────────────────────────────────────────────
 export function render(kit) {
   K = kit;
+  if (!GATE.open) { gate(); return; }
   const [, , section = "overview", id] = location.pathname.split("/");
   const key = SECTIONS.some((s) => s.key === section) ? section : "overview";
   const nav = h("nav", { class: "adm-nav", "aria-label": "Admin pages" },
@@ -117,10 +163,175 @@ export function render(kit) {
     SECTIONS.map((s) => h("button", { class: "adm-link" + (s.key === key ? " on" : ""), "aria-current": s.key === key ? "page" : null, onclick: () => K.go(s.key === "overview" ? "/admin" : `/admin/${s.key}`) }, icon(s.ic, 18), s.label)));
   const main = h("div", { class: "adm-main" });
   K.setView("admin-view", h("div", { class: "adm" }, nav, main));
-  const pages = { overview: overviewPage, users: id ? (m) => userPage(m, id) : usersPage, payments: paymentsPage, creations: creationsPage, providers: providersPage };
+  const pages = { overview: overviewPage, users: id ? (m) => userPage(m, id) : usersPage, payments: paymentsPage, creations: creationsPage, providers: providersPage, security: securityPage };
   pages[key](main);
 }
 const openUser = (id) => K.go(`/admin/users/${id}`);
+
+// ── the door: setting up the code, then the code at every visit ─────────────────────────────────────────────────
+const LOST_PHONE = [
+  "Open the console with one of your recovery codes instead of the 6-digit code. Each works once.",
+  "In Security, make new recovery codes, and keep them in iPhone Passwords (a note on the Kleo entry).",
+  "To move the code to a new phone, ask for a reset: the second factor is reset from a terminal, never from this page (docs/ADMIN-SECURITY.md in kleo-mcp). Then open /admin and set it up again.",
+  "No recovery code left and no phone: the same reset from a terminal is the way back in.",
+];
+function gateFrame(title, sub, ...kids) {
+  K.setView("admin-view", h("div", { class: "adm-gate" }, h("div", { class: "adm-gate-card" },
+    h("div", { class: "adm-gate-ic" }, icon("lock", 28, 2)), h("h1", {}, title), sub ? h("p", { class: "adm-gate-sub" }, sub) : null, ...kids)));
+}
+async function gate() {
+  K.setView("admin-view", h("div", { class: "adm-gate" }, loading()));
+  let st;
+  try { st = await call("/api/admin/auth"); }
+  catch (e) {
+    gateFrame("The console didn't open", e?.message || "Something went wrong.", h("button", { class: "btn btn-primary adm-gate-btn", onclick: () => gate() }, "Try again"));
+    if (e?.code === "signin") K.handleError(e);
+    return;
+  }
+  if (st.signedIn) { GATE.open = true; render(K); return; }
+  if (!st.enrolled) enrollStart(st); else signinScreen(st);
+}
+function signinScreen(st) {
+  let recovery = false;
+  const input = h("input", { class: "input adm-code", inputmode: "numeric", autocomplete: "one-time-code", maxlength: "6", placeholder: "123456", "aria-label": "Code", spellcheck: "false" });
+  const err = h("p", { class: "adm-gate-err", role: "alert" });
+  const go = h("button", { class: "btn btn-primary adm-gate-btn" }, "Open the console");
+  const swap = h("button", { class: "adm-a adm-gate-link" }, "Use a recovery code");
+  const submit = async () => {
+    const code = input.value.trim();
+    if (!code || go.disabled) return;
+    go.disabled = true; err.textContent = "";
+    try { await call("/api/admin/auth/signin", { method: "POST", body: { code } }); GATE.open = true; K.toast("Console open"); render(K); return; }
+    catch (e) {
+      if (e?.code === "admin_locked") { gateFrame("The console is locked", e.message, lostLink()); return; }
+      err.textContent = e?.data?.left ? `${e.message} ${e.data.left} ${e.data.left === 1 ? "try" : "tries"} left before it locks for 15 minutes.` : e?.message || "That didn't work.";
+      input.select();
+    }
+    go.disabled = false;
+  };
+  input.addEventListener("input", () => { if (!recovery && /^\d{6}$/.test(input.value.trim())) submit(); });
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+  go.addEventListener("click", submit);
+  swap.addEventListener("click", () => {
+    recovery = !recovery;
+    Object.assign(input, { value: "", placeholder: recovery ? "abcd-efgh-jkmn" : "123456", maxLength: recovery ? 16 : 6, inputMode: recovery ? "text" : "numeric", autocomplete: recovery ? "off" : "one-time-code" });
+    swap.textContent = recovery ? "Use the code from my phone" : "Use a recovery code";
+    input.focus();
+  });
+  if (st.lockedMinutes) { gateFrame("The console is locked", `Too many wrong codes. Try again in ${st.lockedMinutes} ${st.lockedMinutes === 1 ? "minute" : "minutes"}.`, lostLink()); return; }
+  gateFrame("Admin console", "Type the 6-digit code for “Kleo admin” from the Passwords app on your iPhone.", input, err, go, h("div", { class: "adm-gate-links" }, swap, lostLink()));
+  setTimeout(() => input.focus(), 50);
+}
+const lostLink = () => h("button", { class: "adm-a adm-gate-link", onclick: () => K.sheet("Lost your phone?", null, h("ol", { class: "adm-steps" }, LOST_PHONE.map((t) => h("li", {}, t)))) }, "Lost your phone?");
+
+function enrollStart(st) {
+  const pw = st.hasPassword ? h("input", { class: "input", type: "password", placeholder: "Your Kleo password", autocomplete: "current-password", "aria-label": "Password" }) : null;
+  const err = h("p", { class: "adm-gate-err", role: "alert" });
+  const go = h("button", { class: "btn btn-primary adm-gate-btn" }, "Continue");
+  const submit = async () => {
+    if (go.disabled) return;
+    go.disabled = true; err.textContent = "";
+    try { enrollCode(await call("/api/admin/auth/enroll", { method: "POST", body: { password: pw?.value ?? "" } })); return; }
+    catch (e) { if (e?.code === "admin_locked") { gateFrame("The console is locked", e.message); return; } err.textContent = e?.message || "That didn't work."; }
+    go.disabled = false;
+  };
+  pw?.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+  go.addEventListener("click", submit);
+  gateFrame("Set up the admin console", "Once only: a 6-digit code from your iPhone will open the console from now on. First, prove it's you.",
+    pw ? [h("p", { class: "adm-gate-note" }, "Type your Kleo password again. An admin password needs at least 14 characters, and can't contain your e-mail or name."), pw]
+      : h("p", { class: "adm-gate-note" }, "Sign out, sign in with Google again, and come back here within 5 minutes."),
+    err, go);
+  setTimeout(() => pw?.focus(), 50);
+}
+function enrollCode(r) {
+  const input = h("input", { class: "input adm-code", inputmode: "numeric", autocomplete: "one-time-code", maxlength: "6", placeholder: "123456", "aria-label": "Code" });
+  const err = h("p", { class: "adm-gate-err", role: "alert" });
+  const go = h("button", { class: "btn btn-primary adm-gate-btn" }, "Finish set-up");
+  const submit = async () => {
+    if (go.disabled) return;
+    go.disabled = true; err.textContent = "";
+    try { const done = await call("/api/admin/auth/enroll/confirm", { method: "POST", body: { code: input.value.trim() } }); showRecovery(done.recovery, true); return; }
+    catch (e) { err.textContent = e?.message || "That didn't work."; }
+    go.disabled = false;
+  };
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+  go.addEventListener("click", submit);
+  const grouped = r.secret.match(/.{1,4}/g).join(" ");
+  gateFrame("Add the code to your iPhone", null,
+    h("ol", { class: "adm-steps" },
+      h("li", {}, "On this iPhone, tap the button below: Passwords opens and adds the “Kleo admin” code. Save it on the entry of your Kleo password."),
+      h("li", {}, "On a computer: open Passwords on the iPhone, Codes, the + button, and scan this QR code with the camera."),
+      h("li", {}, "Type the 6-digit code it shows.")),
+    h("a", { class: "btn btn-quiet adm-gate-btn", href: r.uri }, icon("key", 17), "Add to Passwords"),
+    h("div", { class: "adm-qr", html: qrSvg(r.uri) }),
+    h("div", { class: "adm-secret" }, h("span", {}, "Or type this set-up key by hand"), h("b", { class: "mono" }, grouped), copyBtn(r.secret, "Copy the set-up key")),
+    input, err, go);
+}
+function showRecovery(codes, firstTime) {
+  const text = `Kleo admin console — recovery codes\nEach one opens the console once, instead of the code from your phone.\n\n${codes.join("\n")}\n`;
+  const file = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+  const body = [
+    h("div", { class: "adm-recovery" }, codes.map((c) => h("b", { class: "mono" }, c))),
+    h("div", { class: "adm-actions" },
+      h("button", { class: "btn btn-quiet", onclick: () => { navigator.clipboard?.writeText(text); K.toast("Recovery codes copied"); } }, icon("copy", 17), "Copy all"),
+      h("a", { class: "btn btn-quiet", href: file, download: "kleo-admin-recovery-codes.txt" }, icon("dl", 17), "Download")),
+  ];
+  if (!firstTime) { K.sheet("New recovery codes", "Save them now: they are shown only this once. The old ones no longer work.", h("div", { class: "adm-sheet-body" }, body)); return; }
+  gateFrame("Save your recovery codes", "They open the console if you lose your phone, each one once. They are shown only now: keep them in iPhone Passwords, in the notes of your Kleo entry.",
+    ...body, h("button", { class: "btn btn-primary adm-gate-btn", onclick: () => { GATE.open = true; K.toast("The console is set up"); render(K); } }, "I've saved them"));
+}
+
+// ── Security ─────────────────────────────────────────────────────────────────────────────────────────────────────
+const SECURITY_EVENTS = { "admin.signin": "Console opened", "admin.code_wrong": "Wrong code", "admin.locked": "Console locked", "admin.2fa_enrolled": "Phone set up",
+  "admin.recovery_used": "Recovery code used", "admin.recovery_renewed": "New recovery codes", "admin.signout_sessions": "Console signed out everywhere" };
+const HOW_TO = [
+  "Open app.kleooai.com/admin (bookmark it). Kleo asks you to sign in if you aren't.",
+  "Sign in with your e-mail and your Kleo password. Keep the password in iPhone Passwords: it fills it in for you.",
+  "Type the 6-digit code for “Kleo admin”. In iPhone Passwords it sits on the same entry as the password, and Safari offers it by itself.",
+  "The console stays open 30 minutes without use, 12 hours at most. Deleting or closing an account, a big credit change, a new key and signing someone out ask for a new code.",
+  "Every sign-in to the console sends an e-mail to kleooai@gmail.com with the address, place and device. If one wasn't you, change your password and ask for a reset of the code.",
+];
+async function securityPage(main) {
+  const body = h("div", { class: "adm-stack" }, loading());
+  K.fill(main, head("Security", "How the console is locked, and who opened it.", refreshBtn(() => securityPage(main))), body);
+  let r;
+  try { r = await call("/api/admin/security"); } catch (e) { return failed(body, e, () => securityPage(main)); }
+  const signout = async (everywhere) => {
+    if (everywhere && !(await K.ask({ title: "Sign the console out everywhere?", text: "Every browser with the console open has to type a code again, this one included.", ok: "Sign out", ic: "out" }))) return;
+    try { await call("/api/admin/auth/signout", { method: "POST", body: { everywhere } }); } catch (e) { return oops(e); }
+    GATE.open = false; K.toast("Console signed out"); render(K);
+  };
+  const newCodes = async () => {
+    const code = await askCode("Make new recovery codes?", "The old ones stop working. Type a code from your phone to go on.");
+    if (!code) return;
+    try { const x = await call("/api/admin/auth/recovery", { method: "POST", body: { code } }); showRecovery(x.recovery, false); securityPage(main); }
+    catch (e) { oops(e); }
+  };
+  const methods = { password: "E-mail and password", google: "Google", microsoft: "Microsoft", apple: "Apple" };
+  K.fill(body,
+    card("This console session", `It ends after ${r.idleMinutes} minutes without use and after ${r.maxHours} hours at most. The dangerous actions want a code typed in the last ${r.freshMinutes} minutes.`,
+      kv([["Opened", stamp(r.session.issued)], ["Last used", ago(r.session.seen)], ["Last code", ago(r.session.fresh)], ["Phone set up", stamp(r.enrolledAt)]]),
+      h("div", { class: "adm-actions" },
+        h("button", { class: "btn btn-quiet", onclick: () => signout(false) }, icon("out", 17), "Sign out of the console"),
+        h("button", { class: "btn btn-quiet", onclick: () => signout(true) }, icon("out", 17), "Sign out everywhere"))),
+    card("Recovery codes", `${count(r.recoveryLeft, "code")} of 10 left. Each one opens the console once if your phone is lost.`,
+      r.recoveryLeft <= 3 ? h("div", { class: "adm-note bad" }, icon("key", 17), "Few left: make new ones and save them in iPhone Passwords.") : null,
+      h("div", { class: "adm-actions" }, h("button", { class: "btn btn-quiet", onclick: newCodes }, icon("redo", 17), "Make new codes"))),
+    card("How you sign in to Kleo", null, h("div", { class: "list" }, (r.methods || []).map((m) => h("div", { class: "row" }, icon(m.provider === "password" ? "key" : "user", 19),
+      h("div", { class: "lbl" }, h("b", {}, methods[m.provider] || m.provider), h("span", {}, [m.email, m.last_login_at ? `last used ${ago(m.last_login_at)}` : null].filter(Boolean).join(" · ")))))),
+      h("div", { class: "adm-actions" }, h("button", { class: "btn btn-quiet", onclick: () => K.go("/account") }, icon("key", 17), "Change password"))),
+    card("Recent console activity", r.events?.length ? null : "Nothing yet.", r.events?.length ? h("div", { class: "adm-timeline" }, r.events.map((a) => {
+      let d = {};
+      try { d = JSON.parse(a.detail || "{}"); } catch { /* none */ }
+      return h("div", { class: `adm-ev ${a.event === "admin.signin" ? "money" : "admin"}` }, h("i", { class: "dot" }),
+        h("div", { class: "adm-ev-t" }, h("b", {}, SECURITY_EVENTS[a.event] || a.event), h("span", {}, stamp(a.at)),
+          h("p", {}, [d.ip, [d.city, countryName(d.country)].filter(Boolean).join(", "), d.network, shortUa(d.ua)].filter(Boolean).join(" · "))));
+    })) : null),
+    card("How to sign in", null, h("ol", { class: "adm-steps" }, HOW_TO.map((t) => h("li", {}, t)))),
+    card("If your phone is lost", null, h("ol", { class: "adm-steps" }, LOST_PHONE.map((t) => h("li", {}, t)))),
+    card("An extra lock, if you want it", "Cloudflare Access (free) can ask for a one-time PIN sent to kleooai@gmail.com before anyone even sees the console. The steps are in docs/ADMIN-SECURITY.md in kleo-mcp.",
+      h("a", { class: "btn btn-quiet btn-sm", href: "https://github.com/tonnooooo/kleo-mcp/blob/main/docs/ADMIN-SECURITY.md", target: "_blank", rel: "noopener" }, "Open the steps", icon("right", 15))));
+}
 
 // ── Overview ─────────────────────────────────────────────────────────────────────────────────────────────────────
 async function overviewPage(main) {
@@ -263,12 +474,12 @@ async function userPage(main, id) {
   const methods = (d.logins || []).map((l) => ({ password: "E-mail and password", google: "Google", microsoft: "Microsoft", apple: "Apple" })[l.provider] || l.provider);
 
   // What the owner can do to the account; every action asks why, and the reason goes into the audit log.
-  const post = (what, b) => call(`/api/admin/users/${id}/${what}`, { method: "POST", body: b });
+  const post = (what, b) => postFresh(`/api/admin/users/${id}/${what}`, b);
   async function act(o) {
     const v = await K.ask({ title: o.title, text: o.text, ok: o.ok, danger: !!o.danger, ic: o.ic, word: o.word || null,
       fields: [...(o.fields || []), { key: "reason", label: "Reason, kept in the audit log", placeholder: "Why you are doing this", required: true }] });
     if (!v) return;
-    try { await o.run(v); K.toast(o.done); reload(); } catch (e) { K.handleError(e); }
+    try { await o.run(v); K.toast(o.done); reload(); } catch (e) { oops(e); }
   }
   const credit = (sign) => act({
     title: sign > 0 ? "Add credits" : "Take credits away", ic: "star", ok: sign > 0 ? "Add" : "Take away", danger: sign < 0,
@@ -387,7 +598,7 @@ async function userPage(main, id) {
         b ? h("div", { class: "adm-found" }, h("b", { class: "mono" }, b.ip), copyBtn(b.ip, "Copy IP"), h("span", {}, `${flag(b.country)} ${countryName(b.country) || ""} · ${b.method} ${b.path} · ${shortUa(b.ua) || ""}`)) : empty("No request from a person in that window."),
         r.rows?.length ? h("div", { class: "list" }, r.rows.map((x) => h("div", { class: "row" + (x.match ? " on" : "") }, h("div", { class: "lbl" }, h("b", { class: "mono" }, x.ip), h("span", {}, `${x.at.slice(11, 19)} UTC · ${flag(x.country)} ${x.method} ${x.host}${x.path}`)), x.match ? pill("This event", "ok") : null))) : null);
       if (b) userPage(main, id).catch(() => {});
-    } catch (e) { K.handleError(e); }
+    } catch (e) { oops(e); }
     btn.disabled = false; K.fill(btn, old);
   }
 
@@ -601,7 +812,9 @@ function demoDb() {
     }
   });
   users[0].name = "You (owner)"; users[0].email = "owner@example.com"; users[0].admin = true;
-  D = { users, payments, gens, ips, audit, aid, blocks: [{ ip_hash: "demo_hash_9", reason: "admin: farm of accounts", until: iso(-25 * 86400e3), created_at: iso(5 * 86400e3) }] };
+  // The console's own door: ?demo=enroll shows the first set-up, ?demo=signin the code screen; 123456 is the demo code.
+  const auth = { enrolled: DEMO_MODE !== "enroll", signedIn: DEMO_MODE !== "enroll" && DEMO_MODE !== "signin", recovery: 8, fresh: 0, wrong: 0, enrolledAt: iso(12 * 86400e3) };
+  D = { auth, users, payments, gens, ips, audit, aid, blocks: [{ ip_hash: "demo_hash_9", reason: "admin: farm of accounts", until: iso(-25 * 86400e3), created_at: iso(5 * 86400e3) }] };
   return D;
 }
 function demoUser(u) {
@@ -620,6 +833,41 @@ async function demo(path, opts) {
   const q = new URLSearchParams(qs || "");
   const b = opts.body || {};
   const daysAgo = (iso) => (Date.now() - Date.parse(iso)) / 86400e3;
+  const A = db.auth;
+  const fail = (msg, code, status = 400, data = {}) => new AdminError(msg, status, code, data);
+  const wrongCode = () => { A.wrong++; return fail("That code isn't right. Check the time on your phone and try the newest code.", "admin_wrong", 401, { left: Math.max(1, 5 - A.wrong) }); };
+  const codes = () => ["k7m2-q9xd-4tpa", "h3nw-8zrc-u5ke", "p2fy-6jtm-x9qa", "r4vd-7hne-c2wu", "m8ka-3qzp-t6yf", "w5ub-9xmr-e2jh", "n6tc-4pya-z8dk", "s3qe-7fwm-b5ru", "y9hd-2nkx-a4vt", "e7rp-5cuj-q3mw"];
+  if (p === "/api/admin/auth" && !opts.method) return { enrolled: A.enrolled, signedIn: A.signedIn, lockedMinutes: 0, recoveryLeft: A.recovery, hasPassword: true, email: "owner@example.com", enrolledAt: A.enrolled ? A.enrolledAt : null, session: null };
+  if (p === "/api/admin/auth/enroll") {
+    if (String(b.password || "").length < 14) throw fail("An admin password needs at least 14 characters. A sentence of four or five words works well. Change it on the Account page first, then come back.", "weak_password");
+    return { secret: "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP", uri: "otpauth://totp/Kleo%20admin:owner%40example.com?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&issuer=Kleo" };
+  }
+  if (p === "/api/admin/auth/enroll/confirm") { if (b.code !== "123456") throw wrongCode(); Object.assign(A, { enrolled: true, signedIn: true, fresh: Date.now(), recovery: 10, enrolledAt: new Date().toISOString() }); return { ok: true, recovery: codes() }; }
+  if (p === "/api/admin/auth/signin") {
+    const rec = String(b.code || "").toLowerCase().replace(/[^a-z0-9]/g, "") === "k7m2q9xd4tpa";
+    if (b.code !== "123456" && !rec) throw wrongCode();
+    if (rec) A.recovery--;
+    Object.assign(A, { signedIn: true, fresh: Date.now(), wrong: 0 });
+    return { ok: true, via: rec ? "recovery" : "code" };
+  }
+  if (p === "/api/admin/auth/signout") { A.signedIn = false; return { ok: true }; }
+  if (p === "/api/admin/auth/recovery") { if (b.code !== "123456") throw wrongCode(); Object.assign(A, { recovery: 10, fresh: Date.now() }); return { ok: true, recovery: codes() }; }
+  if (!A.signedIn) throw fail("Type the code from your phone to open the console.", A.enrolled ? "admin_signin" : "admin_enroll", 401);
+  if (p === "/api/admin/security") {
+    const ago_ = (h) => new Date(Date.now() - h * 3600e3).toISOString();
+    const where = { ip: "203.0.113.9", country: "NZ", city: "Auckland", network: "Spark New Zealand", ua: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) Safari/604.1" };
+    return {
+      events: [
+        { id: 3, at: ago_(0.1), event: "admin.signin", detail: JSON.stringify({ ...where, via: "code" }) },
+        { id: 2, at: ago_(26), event: "admin.code_wrong", detail: JSON.stringify({ ...where, ip: "198.51.100.40", country: "US", city: "Dallas", network: "Comcast Cable", ua: "Mozilla/5.0 (Windows NT 10.0) Chrome/141.0" }) },
+        { id: 1, at: A.enrolledAt, event: "admin.2fa_enrolled", detail: JSON.stringify(where) },
+      ],
+      methods: [{ provider: "password", email: "owner@example.com", created_at: ago_(500), last_login_at: ago_(0.2) }],
+      recoveryLeft: A.recovery, enrolledAt: A.enrolledAt,
+      session: { issued: ago_(0.4), seen: ago_(0.01), fresh: A.fresh ? new Date(A.fresh).toISOString() : ago_(0.4) },
+      idleMinutes: 30, maxHours: 12, freshMinutes: 5, lockAfter: 5, lockMinutes: 15,
+    };
+  }
   if (p === "/api/admin/overview") {
     const all = db.users.map(demoUser);
     const paid = db.payments.filter((x) => x.status === "paid");
@@ -667,6 +915,12 @@ async function demo(path, opts) {
   const am = p.match(/^\/api\/admin\/users\/(u_\w+)\/([a-z-]+)$/);
   if (am) {
     const u = db.users.find((x) => x.id === am[1]);
+    const risky = am[2] === "delete" || am[2] === "key" || (am[2] === "block" && b.on) || (am[2] === "signout" && u.id !== "u_demo00a") || (am[2] === "credits" && Math.abs(Number(b.delta)) > 100);
+    if (risky && Date.now() - A.fresh > 5 * 60e3) {
+      if (!b.code) throw fail("Type a new code from your phone to do this.", "fresh_code", 403);
+      if (b.code !== "123456") throw wrongCode();
+      A.fresh = Date.now();
+    }
     const log = (event, extra = {}) => db.audit.push({ id: db.aid++, at: new Date().toISOString(), user_id: u.id, event, job_id: null, detail: JSON.stringify({ admin: "u_demo00a", reason: b.reason, ...extra }) });
     if (am[2] === "credits") { const before = u.credits; u.credits = Math.max(0, u.credits + Number(b.delta)); log("admin.credits", { delta: b.delta, before, after: u.credits }); return { ok: true, credits: u.credits }; }
     if (am[2] === "block") { u.blocked_at = b.on ? new Date().toISOString() : null; u.blocked_reason = b.on ? b.reason : null; log(b.on ? "admin.block" : "admin.unblock"); return { ok: true }; }

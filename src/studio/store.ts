@@ -52,6 +52,11 @@ export const STUDIO_ADMIN_SCHEMA: string[] = [
   `CREATE INDEX IF NOT EXISTS studio_ips_user ON studio_ips (user_id, at)`,
   `CREATE INDEX IF NOT EXISTS studio_ips_at ON studio_ips (at)`,
   `CREATE INDEX IF NOT EXISTS studio_ips_ip ON studio_ips (ip)`,
+  // The console's second factor and its own sessions (src/studio/admin-auth.ts): the sealed secret, the hashed recovery
+  // codes, the lock after wrong codes, the last code step used.
+  `CREATE TABLE IF NOT EXISTS studio_admin (
+    user_id TEXT PRIMARY KEY, secret TEXT, pending TEXT, pending_at TEXT, enrolled_at TEXT, recovery TEXT,
+    session_epoch INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, locked_until TEXT, last_step INTEGER NOT NULL DEFAULT 0)`,
 ];
 
 /**

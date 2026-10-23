@@ -582,7 +582,9 @@ export default {
     const url = new URL(request.url);
     const toHttps = httpsRedirect(url);
     if (toHttps) return toHttps;
-    return secureResponse(await route(request, env, ctx, url), { site: !APP_PATH.test(url.pathname) });
+    // The admin console's page and API: its own CSP, never indexed, never cached.
+    const admin = /^\/(?:api\/)?admin(?:\/|$)/.test(url.pathname);
+    return secureResponse(await route(request, env, ctx, url), { site: !APP_PATH.test(url.pathname), admin });
   },
 
   async scheduled(_event: ScheduledController, env: StudioEnv, ctx: ExecutionContext): Promise<void> {

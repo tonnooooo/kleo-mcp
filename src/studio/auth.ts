@@ -25,7 +25,8 @@ import { verifyHandle, ipFingerprint, verifyTurnstile, makeHandle, rotateKey } f
 import { rid } from "../util.ts";
 import { addLogin, getLogin, loginsOf, touchLogin } from "./store.ts";
 import { EMAIL_RE, checkPassword, hashPassword, makeSession, normalizeEmail, passwordProblem, readCookie, safeEqual, sessionCookie } from "./session.ts";
-import { StudioError } from "./generate.ts";
+import { StudioError, isAdmin } from "./generate.ts";
+import { adminPasswordProblem } from "./admin-auth.ts";
 import { canonicalEmail, giftBlocker, giftCookie, mailDomainOk, type Visitor } from "../abuse.ts";
 import { recordIp } from "./ips.ts";
 
@@ -138,12 +139,22 @@ export async function signInWithKey(env: StudioEnv, key: string): Promise<string
   return userId;
 }
 
+/** An admin account's password follows the console's stricter rule (admin-auth.ts): 14 characters, not its e-mail or name. */
+async function adminRule(env: StudioEnv, userId: string, password: string, email: string | null = null): Promise<void> {
+  if (!isAdmin(env, userId)) return;
+  const u = await env.DB.prepare("SELECT email, display_name FROM users WHERE id = ?").bind(userId).first<{ email: string; display_name: string | null }>();
+  const login = (await loginsOf(env, userId)).find((l) => l.email)?.email ?? null;
+  const bad = adminPasswordProblem(password, email ?? login ?? u?.email ?? null, u?.display_name ?? null);
+  if (bad) throw new StudioError(bad, 400, "weak_password");
+}
+
 /** Adds an e-mail and password to an account that has none (an MCP account brought in with its key). */
 export async function addPassword(env: StudioEnv, userId: string, body: { email?: string; password?: string }): Promise<void> {
   const email = normalizeEmail(String(body.email ?? ""));
   if (!EMAIL_RE.test(email)) throw new StudioError("That e-mail doesn't look right.");
   const bad = passwordProblem(String(body.password ?? ""));
   if (bad) throw new StudioError(bad);
+  await adminRule(env, userId, String(body.password), email);
   if ((await loginsOf(env, userId)).some((l) => l.provider === "password")) throw new StudioError("This account already has a password.", 409, "exists");
   if (!(await addLogin(env, { provider: "password", subject: email, userId, email, secret: await hashPassword(String(body.password)) }))) {
     throw new StudioError("This e-mail is already used by another account.", 409, "taken");
@@ -185,6 +196,7 @@ export async function changePassword(env: StudioEnv, userId: string, body: { cur
   if (!(await checkPassword(String(body.current ?? ""), full.secret))) throw new StudioError("Your current password isn't right.", 401, "wrong");
   const bad = passwordProblem(String(body.password ?? ""));
   if (bad) throw new StudioError(bad);
+  await adminRule(env, userId, String(body.password), full.subject);
   await env.DB.prepare("UPDATE studio_logins SET secret = ? WHERE provider = 'password' AND subject = ?").bind(await hashPassword(String(body.password)), full.subject).run();
   await endAllSessions(env, userId);
   await audit(asEnv(env), userId, null, "studio.password_changed", {});
@@ -289,6 +301,7 @@ export async function resetPassword(env: StudioEnv, body: { token?: string; pass
   if (!full?.secret || !safeEqual(m[3], await resetSig(env, m[1], Number(m[2]), full.secret))) throw bad();
   const problem = passwordProblem(String(body.password ?? ""));
   if (problem) throw new StudioError(problem);
+  await adminRule(env, m[1], String(body.password), full.subject);
   await env.DB.prepare("UPDATE studio_logins SET secret = ? WHERE provider = 'password' AND subject = ?").bind(await hashPassword(String(body.password)), full.subject).run();
   // Whoever had the old password may still hold a session: every one of them ends here (the new one is made after).
   // And the Kleo key is renewed (the review's second pass): with the password one could ask for the key and connect an

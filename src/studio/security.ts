@@ -47,6 +47,24 @@ export const APP_CSP = [
   ...COMMON,
 ].join("; ");
 
+/**
+ * The admin console (/admin, 23 October 2026): the app's page with nothing from anybody else. No Stripe, no Turnstile, no
+ * analytics beacon: scripts and connections to this origin only, no frames at all.
+ */
+export const ADMIN_CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  `img-src 'self' data: blob: ${SITE_HOST} ${MEDIA_HOST}`,
+  `media-src 'self' blob: ${SITE_HOST} ${MEDIA_HOST}`,
+  "font-src 'self'",
+  "connect-src 'self'",
+  "frame-src 'none'",
+  "worker-src 'none'",
+  "manifest-src 'self'",
+  ...COMMON,
+].join("; ");
+
 export const SITE_CSP = [
   "default-src 'self'",
   `script-src 'self' ${SITE_INLINE_SCRIPT} 'unsafe-hashes' ${SITE_ONERROR} ${CF_INSIGHTS}`,
@@ -73,8 +91,11 @@ export function httpsRedirect(url: URL): Response | null {
   return new Response(null, { status: 301, headers: { location: `https://${url.host}${url.pathname}${url.search}`, "cache-control": "max-age=3600" } });
 }
 
-/** Adds the security headers; `site` says the body is a proxied Kleo site page rather than the app. */
-export function secureResponse(res: Response, opts: { site?: boolean } = {}): Response {
+/**
+ * Adds the security headers; `site` says the body is a proxied Kleo site page rather than the app, `admin` that it is
+ * the admin console (its own CSP, never indexed, never cached).
+ */
+export function secureResponse(res: Response, opts: { site?: boolean; admin?: boolean } = {}): Response {
   if (res.status === 101) return res;
   const out = new Response(res.body, res);
   const h = out.headers;
@@ -86,8 +107,9 @@ export function secureResponse(res: Response, opts: { site?: boolean } = {}): Re
   h.set("permissions-policy", PERMISSIONS);
   h.set("cross-origin-opener-policy", "same-origin");
   h.set("cross-origin-resource-policy", opts.site ? "cross-origin" : "same-origin");
-  if (type.includes("text/html")) h.set("content-security-policy", opts.site ? SITE_CSP : APP_CSP);
+  if (type.includes("text/html")) h.set("content-security-policy", opts.admin ? ADMIN_CSP : opts.site ? SITE_CSP : APP_CSP);
   else if (!type.includes("javascript") && !type.includes("text/css") && !type.includes("manifest")) h.set("content-security-policy", LOCKED_CSP);
+  if (opts.admin) { h.set("x-robots-tag", "noindex, nofollow"); h.set("cache-control", "no-store"); }
   h.delete("x-powered-by");
   return out;
 }

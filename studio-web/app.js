@@ -2012,7 +2012,7 @@ function sheet(title, sub, ...content) {
 function ask({ title, text = "", ok = "OK", cancel = "Cancel", danger = false, ic = danger ? "trash" : "check", word = null, fields = null }) {
   return new Promise((done) => {
     const input = word ? h("input", { class: "input", placeholder: `Type ${word}`, autocomplete: "off", autocapitalize: "characters", spellcheck: "false" }) : null;
-    const boxes = (fields || []).map((f) => ({ f, el: h("input", { class: "input", type: f.type || "text", placeholder: f.placeholder || "", value: f.value ?? "", autocomplete: "off", inputmode: f.type === "number" ? "numeric" : null }) }));
+    const boxes = (fields || []).map((f) => ({ f, el: h("input", { class: "input", type: f.type || "text", placeholder: f.placeholder || "", value: f.value ?? "", autocomplete: f.autocomplete || "off", inputmode: f.inputmode || (f.type === "number" ? "numeric" : null) }) }));
     const yes = h("button", { class: "btn " + (danger ? "btn-destroy" : "btn-primary"), type: "button" }, ok);
     const no = h("button", { class: "btn btn-quiet", type: "button" }, cancel);
     const card = h("div", { class: "ask", role: "alertdialog", "aria-modal": "true", "aria-label": title, onclick: (e) => e.stopPropagation() },
@@ -2389,10 +2389,10 @@ async function adminView() {
     setView("admin-view", h("div", { class: "connect-view" }, spinner(24)));
     try {
       if (!$('link[data-admin]')) {
-        const css = h("link", { rel: "stylesheet", href: "/admin.css?v=72", "data-admin": "" });
+        const css = h("link", { rel: "stylesheet", href: "/admin.css?v=73", "data-admin": "" });
         await new Promise((ok) => { css.onload = ok; css.onerror = ok; document.head.append(css); });
       }
-      adminModule = await import("/admin.js?v=72");
+      adminModule = await import("/admin.js?v=73");
     } catch {
       setView("connect-view", connectCard("The console didn't load", "Check the connection and try again.", h("button", { class: "btn btn-primary", onclick: () => location.reload() }, "Try again")));
       return;

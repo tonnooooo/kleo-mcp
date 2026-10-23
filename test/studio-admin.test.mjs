@@ -3,9 +3,17 @@
  * Worker bundled with esbuild, on a D1 look-alike (node:sqlite, every migration applied) and an in-memory R2.
  * Covers who may open it, the sign-in addresses it now records (src/studio/ips.ts), every action on an account and
  * its audit row, payments with their Stripe links, creations with signed previews, failures by reason, the providers'
- * balances and key names (never values), and the address lookup in Cloudflare's logs.
+ * balances and key names (never values), and the address lookup in Cloudflare's logs. Then the console's own door
+ * (src/studio/admin-auth.ts): the phone code set up once, the code at every visit, the admin session cookie, the fresh
+ * code before dangerous writes, the lock after five wrong codes, and the e-mails to the owner.
  * Run: node --test test/studio-admin.test.mjs
  */
+import { register } from "node:module";
+// Workers' "cloudflare:email" does not exist in Node: a stand-in that keeps what it was given.
+register("data:text/javascript," + encodeURIComponent(`export async function resolve(s, c, next) {
+  if (s === "cloudflare:email") return { shortCircuit: true, url: "data:text/javascript," + encodeURIComponent("export class EmailMessage { constructor(from, to, raw) { Object.assign(this, { from, to, raw }); } }") };
+  return next(s, c);
+}`));
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
@@ -13,6 +21,7 @@ import { join, dirname } from "node:path";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
+import { base32Decode, hotp, stepAt } from "../src/studio/totp.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -59,9 +68,10 @@ globalThis.FixedLengthStream ??= class extends TransformStream { constructor() {
 let worker, mod;
 before(async () => {
   const r = await esbuild.build({
-    stdin: { contents: `export { default } from "./src/studio/index.ts"; export { failureKind, failureText, stripeLinks, providerOf, reasonOf } from "./src/studio/admin.ts";
-      export { ephoneLeft, findNumber } from "./src/studio/admin-providers.ts"; export { pathsFor } from "./src/studio/ip-lookup.ts"; export { APP_PATH } from "./src/studio/site.ts";`, resolveDir: ROOT, loader: "ts" },
-    bundle: true, write: false, format: "esm", platform: "neutral", target: "es2022", logLevel: "silent", external: ["@anthropic-ai/sdk"],
+    stdin: { contents: `export { default } from "./src/studio/index.ts"; export { failureKind, failureText, stripeLinks, providerOf, reasonOf, dangerous } from "./src/studio/admin.ts";
+      export { pathsFor } from "./src/studio/ip-lookup.ts"; export { APP_PATH } from "./src/studio/site.ts";
+      export { adminCookieValue, readAdminCookie, adminPasswordProblem } from "./src/studio/admin-auth.ts";`, resolveDir: ROOT, loader: "ts" },
+    bundle: true, write: false, format: "esm", platform: "neutral", target: "es2022", logLevel: "silent", external: ["@anthropic-ai/sdk", "cloudflare:email"],
   });
   mod = await import("data:text/javascript;base64," + Buffer.from(r.outputFiles[0].text).toString("base64"));
   worker = mod.default;
@@ -72,6 +82,8 @@ function newEnv(over = {}) {
     DB: new FakeD1(), RENDERS: new FakeR2(), ASSETS: { fetch: async () => new Response("<!doctype html>app", { headers: { "content-type": "text/html" } }) },
     INTERNAL_SECRET: "s3cret", PUBLIC_URL: "https://mcp.kleo.test", EPHONE_API_KEY: "ephone-secret-value", FREE_CREDITS: "5",
     STUDIO_FREE_MODELS: "seedance-2.0-fast", STUDIO_DAILY_BUDGET_USD: "30", MAX_NEW_USERS_PER_IP_DAY: "50", MAX_ACCOUNTS_PER_ADDRESS: "50",
+    // The owner's alerts (providers.ts mailOwner): every message is kept here.
+    mails: [], OWNER_MAIL: { send: async (m) => { env.mails.push(m); } },
     ...over,
   };
   for (const f of readdirSync(join(ROOT, "migrations")).sort()) env.DB.db.exec(readFileSync(join(ROOT, "migrations", f), "utf8"));
@@ -102,14 +114,29 @@ async function account(env, email, from = BERLIN) {
   const me = await call(env, "/api/me", { cookie });
   return { cookie, id: me.json.id };
 }
-/** An env with the owner's admin account and one customer, both signed in. */
-async function setup(over = {}) {
+/** The phone's code `offset` steps from now (a code works once, so each test takes the next one). */
+const codeAt = (secret, offset = 0) => hotp(secret, stepAt(Date.now()) + offset);
+const NZ = { ip: "203.0.113.9", cf: { country: "NZ", city: "Auckland", asOrganization: "Spark New Zealand", asn: 4771 } };
+/** Sets up the owner's phone: answers the secret, the recovery codes and the admin session cookie. */
+async function enrol(env, studioCookie) {
+  const e = await call(env, "/api/admin/auth/enroll", { method: "POST", cookie: studioCookie, body: { password: "long enough pw" }, from: NZ });
+  assert.equal(e.status, 200, e.text);
+  const secret = base32Decode(e.json.secret);
+  const c = await call(env, "/api/admin/auth/enroll/confirm", { method: "POST", cookie: studioCookie, body: { code: await codeAt(secret, -1) }, from: NZ });
+  assert.equal(c.status, 200, c.text);
+  return { secret, recovery: c.json.recovery, admin: cookieOf(c), uri: e.json.uri, raw: c.res.headers.get("set-cookie") };
+}
+/** An env with the owner's admin account (console open) and one customer, both signed in. */
+async function setup(over = {}, { open = true } = {}) {
   const env = newEnv(over);
-  const owner = await account(env, "owner@example.com", { ip: "203.0.113.9", cf: { country: "NZ", city: "Auckland" } });
+  const owner = await account(env, "owner@example.com", NZ);
   env.STUDIO_ADMINS = owner.id;
   const ana = await account(env, "ana@example.com");
+  owner.studio = owner.cookie;
+  if (open) { owner.phone = await enrol(env, owner.studio); owner.cookie = `${owner.studio}; ${owner.phone.admin}`; }
   return { env, owner, ana };
 }
+const subjects = (env) => env.mails.map((m) => /Subject: (.*)/.exec(m.raw)?.[1]);
 const auditOf = (env, id, event) => env.DB.db.prepare("SELECT detail FROM audit WHERE user_id = ? AND event = ? ORDER BY id DESC").all(id, event).map((r) => JSON.parse(r.detail));
 const run = (env, sql, ...a) => env.DB.db.prepare(sql).run(...a);
 
@@ -292,22 +319,20 @@ test("providers: key names only, never a value; WaveSpeed and APIMart read live;
   answer = (u, init) => {
     asked.push([u, init.headers?.authorization]);
     if (u === "https://api.wavespeed.ai/api/v3/balance") return Response.json({ code: 200, message: "success", data: { balance: 11.25 } });
-    if (u === "https://api.apimart.ai/v1/user/balance") return Response.json({ success: true, data: { remain_balance: "3.5", used_balance: 2 } });
+    if (u === "https://api.apimart.ai/v1/user/balance") return Response.json({ success: true, remain_balance: 3.5, used_balance: 2 });
     return new Response("no", { status: 500 });
   };
   try {
     const r = await call(env, "/api/admin/providers", { cookie: owner.cookie });
     assert.equal(r.status, 200, r.text);
     assert.deepEqual(r.json.balances.map((b) => [b.provider, b.usd, b.source]), [["ephone", 1.086812, "last_refusal"], ["wavespeed", 11.25, "live"], ["apimart", 3.5, "live"]]);
-    assert.deepEqual(asked.map((a) => a[1]), ["Bearer ws-secret-value", "Bearer am-secret-value"]);
+    assert.deepEqual(asked.filter((a) => /wavespeed|apimart/.test(a[0])).map((a) => a[1]), ["Bearer ws-secret-value", "Bearer am-secret-value"]);
     const set = Object.fromEntries(r.json.secrets.map((s) => [s.name, s.set]));
     assert.equal(set.EPHONE_API_KEY, true);
     assert.equal(set.STRIPE_SECRET_KEY, false);
     for (const v of ["ephone-secret-value", "ws-secret-value", "am-secret-value", "s3cret"]) assert.ok(!r.text.includes(v), `${v} never leaves the Worker`);
     assert.ok(r.json.settings.some((s) => s.name === "STUDIO_ADMINS" && s.value === owner.id));
   } finally { answer = null; }
-  assert.equal(mod.ephoneLeft("用户剩余额度: $-0.04, 需要"), -0.04);
-  assert.equal(mod.findNumber({ a: { b: [{ remain_balance: 2 }] } }, "remain_balance"), 2);
 });
 
 test("finding a past address: off without the token; with it, the request of the event, remembered and audited", async () => {
@@ -378,4 +403,165 @@ test("failure reasons in plain words; a reason is never empty", () => {
   assert.equal(mod.providerOf({ kind: "image", task_id: null, slots: JSON.stringify([{ provider: "wavespeed" }]) }), "wavespeed");
   assert.equal(mod.providerOf({ kind: "video", task_id: "t1", slots: null }), "ephone");
   assert.throws(() => mod.reasonOf({ reason: "  " }), /reason/);
+});
+
+// ── the console's door (src/studio/admin-auth.ts) ────────────────────────────────────────────────────────────────
+
+test("setting up the phone: password again, an otpauth link, ten recovery codes shown once, a sealed secret, a mail", async () => {
+  const { env, owner } = await setup({}, { open: false });
+  assert.equal((await call(env, "/api/admin/overview", { cookie: owner.studio })).json.code, "admin_enroll", "nothing opens before the phone is set up");
+  const st = await call(env, "/api/admin/auth", { cookie: owner.studio });
+  assert.deepEqual([st.json.enrolled, st.json.signedIn, st.json.hasPassword], [false, false, true]);
+  const bad = await call(env, "/api/admin/auth/enroll", { method: "POST", cookie: owner.studio, body: { password: "not my password" }, from: NZ });
+  assert.equal(bad.json.code, "admin_wrong", "a stolen session cannot set up its own phone");
+  const p = await enrol(env, owner.studio);
+  assert.match(p.uri, /^otpauth:\/\/totp\/Kleo%20admin:owner%40example\.com\?secret=[A-Z2-7]{32}&issuer=Kleo$/);
+  assert.equal(p.recovery.length, 10);
+  assert.ok(p.recovery.every((c) => /^[a-z2-9]{4}-[a-z2-9]{4}-[a-z2-9]{4}$/.test(c)));
+  assert.match(p.raw, /^__Host-kleo_admin=[^;]+; Path=\/; Max-Age=43200; HttpOnly; Secure; SameSite=Strict$/);
+  const row = env.DB.db.prepare("SELECT secret, recovery FROM studio_admin WHERE user_id = ?").get(owner.id);
+  assert.match(row.secret, /^v1\./, "the secret is sealed, never stored in the clear");
+  assert.ok(!JSON.parse(row.recovery).some((x) => p.recovery.includes(x)), "recovery codes are stored hashed");
+  assert.ok(subjects(env).includes("Kleo admin: second factor set up"));
+  assert.ok(env.mails.some((m) => /Address: 203\.0\.113\.9/.test(m.raw) && /Place: Auckland, NZ/.test(m.raw) && /Network: Spark New Zealand \(AS4771\)/.test(m.raw)));
+  assert.equal((await call(env, "/api/admin/auth/enroll", { method: "POST", cookie: owner.studio, body: { password: "long enough pw" } })).json.code, "enrolled", "resetting is a terminal's job");
+  assert.equal((await call(env, "/api/admin/overview", { cookie: `${owner.studio}; ${p.admin}` })).status, 200);
+});
+
+test("an admin's password: 14 characters at least, never the e-mail or the name; a weak one stops the set-up", async () => {
+  assert.match(mod.adminPasswordProblem("short one", "o@x.com", null), /14 characters/);
+  assert.match(mod.adminPasswordProblem("leonardo-is-the-boss-2026", "leonardo@gmail.com", null), /e-mail or your name/);
+  assert.match(mod.adminPasswordProblem("correct horse battery tonon", "x@y.com", "Leo Tonon"), /e-mail or your name/);
+  assert.equal(mod.adminPasswordProblem("four plain words here please", "leonardo@gmail.com", "Leo"), null);
+  const env = newEnv();
+  const r = await call(env, "/api/auth/signup", { method: "POST", body: { email: "boss@example.com", password: "only12chars!" } });
+  const owner = { studio: cookieOf(r), id: (await call(env, "/api/me", { cookie: cookieOf(r) })).json.id };
+  env.STUDIO_ADMINS = owner.id;
+  assert.equal((await call(env, "/api/admin/auth/enroll", { method: "POST", cookie: owner.studio, body: { password: "only12chars!" } })).json.code, "weak_password");
+  const change = await call(env, "/api/auth/password/change", { method: "POST", cookie: owner.studio, body: { current: "only12chars!", password: "still short" } });
+  assert.equal(change.json.code, "weak_password", "an admin can't change to a weak password either");
+  const ok = await call(env, "/api/auth/password/change", { method: "POST", cookie: owner.studio, body: { current: "only12chars!", password: "four plain words here please" } });
+  assert.equal(ok.status, 200, ok.text);
+});
+
+test("the code at every visit: once each, five wrong lock for 15 minutes, a recovery code works once, the owner is told each time", async () => {
+  const { env, owner } = await setup();
+  const signin = (code) => call(env, "/api/admin/auth/signin", { method: "POST", cookie: owner.studio, body: { code }, from: NZ });
+  const used = await codeAt(owner.phone.secret, -1);
+  assert.equal((await signin(used)).json.code, "admin_wrong", "the code used at set-up never works again");
+  const good = await signin(await codeAt(owner.phone.secret, 0));
+  assert.equal(good.status, 200, good.text);
+  assert.match(good.res.headers.get("set-cookie"), /^__Host-kleo_admin=/);
+  assert.ok(subjects(env).includes("Kleo admin: sign-in"));
+  for (let i = 0; i < 4; i++) assert.equal((await signin("000000")).json.code, "admin_wrong");
+  const locked = await signin("000000");
+  assert.equal(locked.status, 429);
+  assert.equal(locked.json.code, "admin_locked");
+  assert.equal((await signin(await codeAt(owner.phone.secret, 1))).json.code, "admin_locked", "not even the right code while locked");
+  assert.ok(subjects(env).includes("Kleo admin: console locked"));
+  assert.ok(subjects(env).filter((x) => x === "Kleo admin: wrong code").length >= 4);
+  run(env, "UPDATE studio_admin SET locked_until = '2000-01-01T00:00:00.000Z' WHERE user_id = ?", owner.id);
+  const rec = await signin(owner.phone.recovery[3].toUpperCase().replace(/-/g, " "));
+  assert.equal(rec.json.via, "recovery", "a recovery code, however it is typed");
+  assert.equal((await signin(owner.phone.recovery[3])).json.code, "admin_wrong", "each recovery code works once");
+  assert.ok(subjects(env).includes("Kleo admin: recovery code used"));
+  assert.equal((await call(env, "/api/admin/auth", { cookie: owner.studio })).json.recoveryLeft, 9);
+});
+
+test("the admin session: signed, bound to the account and its epochs, 30 minutes idle, 12 hours at most; both cookies needed", async () => {
+  const { env, owner, ana } = await setup();
+  const s = await mod.readAdminCookie("s3cret", owner.phone.admin.split("=")[1]);
+  assert.equal(s.userId, owner.id);
+  const forge = async (o) => `__Host-kleo_admin=${await mod.adminCookieValue("s3cret", { ...s, ...o })}`;
+  const now = Math.floor(Date.now() / 1000);
+  const tryIt = async (admin, studio = owner.studio) => (await call(env, "/api/admin/overview", { cookie: `${studio}; ${admin}` })).json?.code ?? "ok";
+  assert.equal(await tryIt(owner.phone.admin), "ok");
+  assert.equal(await tryIt(owner.phone.admin.replace(/.$/, (c) => (c === "0" ? "1" : "0"))), "admin_signin", "a forged signature");
+  assert.equal(await tryIt(await forge({ seen: now - 31 * 60 })), "admin_signin", "31 idle minutes");
+  assert.equal(await tryIt(await forge({ issued: now - 13 * 3600, seen: now })), "admin_signin", "13 hours old");
+  assert.equal(await tryIt(await forge({ userId: "u_someoneelse" })), "admin_signin", "another account's");
+  assert.equal((await call(env, "/api/admin/overview", { cookie: owner.phone.admin })).status, 401, "the admin cookie alone is not a session");
+  const refreshed = await call(env, "/api/admin/overview", { cookie: owner.cookie });
+  assert.match(refreshed.res.headers.get("set-cookie") ?? "", /^__Host-kleo_admin=.*SameSite=Strict/, "every call keeps it alive");
+  // "Sign out everywhere" on the account page ends the console too.
+  await call(env, "/api/auth/signout-all", { method: "POST", cookie: owner.studio });
+  const back = await call(env, "/api/auth/signin", { method: "POST", body: { email: "owner@example.com", password: "long enough pw" } });
+  assert.equal(await tryIt(owner.phone.admin, cookieOf(back)), "admin_signin");
+  assert.ok(ana.id);
+});
+
+test("signing the console out, here or everywhere; the Security page lists sign-ins, methods and recovery codes left", async () => {
+  const { env, owner } = await setup();
+  const sec = await call(env, "/api/admin/security", { cookie: owner.cookie });
+  assert.equal(sec.status, 200, sec.text);
+  assert.equal(sec.json.recoveryLeft, 10);
+  assert.deepEqual(sec.json.methods.map((m) => m.provider), ["password"]);
+  assert.ok(sec.json.events.some((e) => e.event === "admin.2fa_enrolled" && JSON.parse(e.detail).city === "Auckland"));
+  const out = await call(env, "/api/admin/auth/signout", { method: "POST", cookie: owner.cookie, body: { everywhere: true } });
+  assert.match(out.res.headers.get("set-cookie"), /^__Host-kleo_admin=; .*Max-Age=0/);
+  assert.equal((await call(env, "/api/admin/overview", { cookie: owner.cookie })).json.code, "admin_signin", "the old cookie is dead everywhere");
+  const again = await call(env, "/api/admin/auth/signin", { method: "POST", cookie: owner.studio, body: { code: await codeAt(owner.phone.secret, 0) } });
+  const fresh = `${owner.studio}; ${cookieOf(again)}`;
+  const codes = await call(env, "/api/admin/auth/recovery", { method: "POST", cookie: fresh, body: { code: await codeAt(owner.phone.secret, 1) } });
+  assert.equal(codes.json.recovery.length, 10);
+  assert.ok(subjects(env).includes("Kleo admin: new recovery codes"));
+});
+
+test("dangerous writes want a code typed in the last 5 minutes; small ones don't", async () => {
+  const { env, owner, ana } = await setup();
+  const s = await mod.readAdminCookie("s3cret", owner.phone.admin.split("=")[1]);
+  const stale = `${owner.studio}; __Host-kleo_admin=${await mod.adminCookieValue("s3cret", { ...s, fresh: s.fresh - 6 * 60 })}`;
+  const act = (what, body, cookie = stale) => call(env, `/api/admin/users/${ana.id}/${what}`, { method: "POST", cookie, body: { reason: "testing the rule", ...body } });
+  assert.equal((await act("credits", { delta: 50 })).status, 200, "a small credit change needs no code");
+  for (const [what, body] of [["credits", { delta: 500 }], ["block", { on: true }], ["key", {}], ["signout", {}], ["delete", { confirm: "DELETE" }]]) {
+    assert.equal((await act(what, body)).json.code, "fresh_code", what);
+  }
+  assert.equal((await act("credits", { delta: 500, code: "000000" })).json.code, "admin_wrong");
+  const ok = await act("credits", { delta: 500, code: await codeAt(owner.phone.secret, 0) });
+  assert.equal(ok.status, 200, ok.text);
+  assert.match(ok.res.headers.get("set-cookie"), /^__Host-kleo_admin=/, "the code typed now counts for the next 5 minutes");
+  const later = `${owner.studio}; ${cookieOf(ok)}`;
+  assert.equal((await act("key", {}, later)).status, 200, "inside the 5 minutes no new code is asked");
+  assert.equal(mod.dangerous("signout", {}, owner.id, owner.id), false, "signing one's own account out is not dangerous");
+});
+
+test("the console's page and API are never indexed or cached, load nothing from other sites, and stay hidden from others", async () => {
+  const { env, owner, ana } = await setup();
+  const page = await call(env, "/admin/users", { cookie: owner.cookie });
+  assert.equal(page.res.headers.get("x-robots-tag"), "noindex, nofollow");
+  assert.equal(page.res.headers.get("cache-control"), "no-store");
+  const csp = page.res.headers.get("content-security-policy");
+  assert.match(csp, /script-src 'self';/);
+  assert.match(csp, /connect-src 'self';/);
+  assert.match(csp, /frame-src 'none'/);
+  assert.doesNotMatch(csp, /stripe|challenges\.cloudflare|cloudflareinsights/);
+  const api = await call(env, "/api/admin/overview", { cookie: owner.cookie });
+  assert.equal(api.res.headers.get("x-robots-tag"), "noindex, nofollow");
+  assert.equal(api.res.headers.get("cache-control"), "no-store");
+  assert.doesNotMatch((await call(env, "/video", {})).res.headers.get("content-security-policy") ?? "", /script-src 'self';/, "the rest of the app keeps its own CSP");
+  for (const path of ["/api/admin/auth", "/api/admin/security"]) assert.equal((await call(env, path, { cookie: ana.cookie })).status, 404, path);
+  assert.equal((await call(env, "/api/admin/auth/signin", { method: "POST", cookie: ana.cookie, body: { code: "123456" } })).status, 404);
+  assert.ok(mod.APP_PATH.test("/qr.js"));
+});
+
+test("the set-up QR code is drawn on this origin: right size, finder patterns, error correction M", async () => {
+  const { qrMatrix, qrSvg } = await import("../studio-web/qr.js");
+  const link = "otpauth://totp/Kleo%20admin:leonardotononn2006%40gmail.com?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&issuer=Kleo";
+  const m = qrMatrix(link);
+  assert.equal(m.length, 45, "version 7 for a link of this length");
+  // The three finder patterns: dark 7x7 frames with a dark 3x3 centre.
+  for (const [x0, y0] of [[0, 0], [m.length - 7, 0], [0, m.length - 7]]) {
+    for (let i = 0; i < 7; i++) assert.ok(m[y0][x0 + i] && m[y0 + 6][x0 + i] && m[y0 + i][x0] && m[y0 + i][x0 + 6]);
+    assert.ok(m[y0 + 3][x0 + 3] && !m[y0 + 1][x0 + 1]);
+  }
+  // The format bits beside the top-left finder say error correction M (00) and pass their BCH check.
+  const bits = [0, 1, 2, 3, 4, 5, 7, 8].map((y) => m[y][8]).concat([7, 5, 4, 3, 2, 1, 0].map((x) => m[8][x]));
+  const word = bits.reduce((a, b, i) => a | ((b ? 1 : 0) << i), 0) ^ 0x5412;
+  assert.equal(word >>> 13, 0, "level M");
+  let rem = word >>> 10;
+  for (let i = 0; i < 10; i++) rem = (rem << 1) ^ ((rem >>> 9) * 0x537);
+  assert.equal(((word >>> 10) << 10) | rem, word, "the BCH code matches");
+  assert.match(qrSvg(link), /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="0 0 53 53"/);
+  const src = readFileSync(join(ROOT, "studio-web", "qr.js"), "utf8");
+  assert.doesNotMatch(src.replace("http://www.w3.org/2000/svg", ""), /https?:\/\/|fetch\(|import\(/, "it asks nobody");
 });

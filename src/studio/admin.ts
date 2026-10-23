@@ -5,6 +5,11 @@
  * Who: only the accounts in STUDIO_ADMINS. The router (src/studio/index.ts) checks the session cookie server-side,
  * answers 404 to anybody else, and wants the X-Kleo header on every call here, reads included (the same CSRF guard as
  * every other write of the app: a cross-site page cannot add the header without a preflight, and none is answered).
+ * Then the console's own sign-in (src/studio/admin-auth.ts): a code from the owner's phone opens a separate admin
+ * session, and the dangerous writes want a code typed in the last 5 minutes.
+ *
+ *   /api/admin/auth/*                         the console's sign-in, set-up and sign-out (admin-auth.ts)
+ *   GET  /api/admin/security                  the console's sign-ins, the account's sign-in methods, recovery codes left
  *
  *   GET  /api/admin/overview                 accounts, money in, provider spend, budgets, the newest of each
  *   GET  /api/admin/users?q&filter&sort&dir  every account, searchable and sortable
@@ -39,10 +44,11 @@ import { studioSpentTodayUsd, type GenerationRow, type Slot } from "./store.ts";
 import { balances, secretStatus } from "./admin-providers.ts";
 import { KLEO_ZONE, lookupRequests, pathsFor } from "./ip-lookup.ts";
 import { IP_RETENTION_DAYS } from "./ips.ts";
+import { adminAuthApi, adminSessionOf, checkFreshCode, isFresh, securityInfo, touchSession, type AdminSession } from "./admin-auth.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const json = (data: unknown, status = 200): Response =>
-  new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
+  new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex, nofollow" } });
 const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 const TODAY = "strftime('%Y-%m-%dT00:00:00.000Z','now')";
 const ago = (days: number) => `strftime('%Y-%m-%dT%H:%M:%fZ','now','-${Math.max(0, Math.floor(days))} days')`;
@@ -201,11 +207,25 @@ const notAdmin = (env: StudioEnv, id: string, what: string) => {
   if (isAdmin(env, id)) throw new StudioError(`An admin account can't be ${what} from the console.`, 400, "admin_target");
 };
 
-async function userAction(env: StudioEnv, request: Request, adminId: string, id: string, action: string): Promise<Response> {
+/** The admin session of this call, and whether a code was typed in it (the answer's cookie then says so). */
+interface Gate { session: AdminSession; fresh: boolean }
+
+/** The writes that want a code typed in the last 5 minutes (admin-auth.ts FRESH_MIN). */
+export function dangerous(action: string, b: Record<string, unknown>, id: string, adminId: string): boolean {
+  return action === "delete" || action === "key" || (action === "block" && b.on === true) || (action === "signout" && id !== adminId)
+    || (action === "credits" && Math.abs(Math.trunc(Number(b.delta))) > 100);
+}
+
+async function userAction(env: StudioEnv, request: Request, gate: Gate, adminId: string, id: string, action: string): Promise<Response> {
   const u = await targetUser(env, id);
   const b = await body(request);
   // A lookup only reads; its audit row says what it was when no reason is typed.
   const reason = reasonOf(action === "ip-lookup" && !b.reason ? { reason: "Looked up the address of a past event" } : b);
+  if (dangerous(action, b, id, adminId) && !isFresh(gate.session)) {
+    if (!b.code) throw new StudioError("Type a new code from your phone to do this.", 403, "fresh_code");
+    await checkFreshCode(env, request, adminId, b.code);
+    gate.fresh = true;
+  }
   const log = (event: string, detail: Record<string, unknown> = {}) => audit(asEnv(env), id, null, event, { admin: adminId, reason, ...detail });
 
   if (action === "credits") {
@@ -442,8 +462,25 @@ const SETTINGS = ["STUDIO_DAILY_BUDGET_USD", "STUDIO_FREE_DAILY_BUDGET_USD", "ST
 // ── the router ────────────────────────────────────────────────────────────────────────────────────────────────────
 
 export async function adminApi(env: StudioEnv, request: Request, url: URL, adminId: string): Promise<Response> {
+  // The console's own sign-in first; every other route wants its admin session.
+  const auth = await adminAuthApi(env, request, url, adminId);
+  if (auth) return auth;
+  const session = await adminSessionOf(env, request, adminId);
+  if (!session) {
+    const enrolled = !!(await env.DB.prepare("SELECT secret FROM studio_admin WHERE user_id = ? AND secret IS NOT NULL").bind(adminId).first());
+    return json({ error: enrolled ? "Type the code from your phone to open the console." : "Set up the console's second factor first.", code: enrolled ? "admin_signin" : "admin_enroll" }, 401);
+  }
+  const gate: Gate = { session, fresh: false };
+  const res = await adminRoute(env, request, url, adminId, gate);
+  // Every call keeps the admin session alive for another 30 minutes, up to its 12 hours.
+  res.headers.append("set-cookie", await touchSession(env, session, Date.now(), gate.fresh));
+  return res;
+}
+
+async function adminRoute(env: StudioEnv, request: Request, url: URL, adminId: string, gate: Gate): Promise<Response> {
   const path = url.pathname, method = request.method;
   if (method === "GET") {
+    if (path === "/api/admin/security") return json(await securityInfo(env, adminId, gate.session));
     if (path === "/api/admin/overview") return json(await overview(env));
     if (path === "/api/admin/users") return json(await listUsers(env, url));
     const um = path.match(/^\/api\/admin\/users\/(u_[a-z0-9]+)$/);
@@ -459,7 +496,7 @@ export async function adminApi(env: StudioEnv, request: Request, url: URL, admin
   }
   if (method === "POST") {
     const am = path.match(/^\/api\/admin\/users\/(u_[a-z0-9]+)\/(credits|block|address|key|signout|delete|ip-lookup)$/);
-    if (am) return userAction(env, request, adminId, am[1], am[2]);
+    if (am) return userAction(env, request, gate, adminId, am[1], am[2]);
   }
   return json({ error: "Not found." }, 404);
 }
