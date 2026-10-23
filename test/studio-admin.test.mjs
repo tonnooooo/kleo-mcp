@@ -623,10 +623,20 @@ test("the admin host opens only with the owner's certificate: none, unverified, 
   const rows = env.DB.db.prepare("SELECT detail FROM audit WHERE event = 'admin.cert_refused'").all().map((r) => JSON.parse(r.detail));
   assert.equal(rows.length, 1, "one audit row a minute per address, however many requests");
   assert.deepEqual([rows[0].ip, rows[0].country, rows[0].why], ["198.51.100.66", "US", "no_cert"]);
+  assert.deepEqual(rows[0].cert, { tls: null }, "what Cloudflare said about the certificate is kept");
+  await call(env, "/admin", { host: "admin", tls: { ...GOOD_TLS, certFingerprintSHA256: "ab".repeat(32) }, from: { ip: "198.51.100.77" } });
+  const seen = JSON.parse(env.DB.db.prepare("SELECT detail FROM audit WHERE event = 'admin.cert_refused' ORDER BY id DESC").get().detail);
+  assert.deepEqual([seen.why, seen.cert.fingerprint, seen.cert.verified], ["wrong_cert", "ab".repeat(32), "SUCCESS"], "the fingerprint seen is logged: it is not a secret");
   assert.equal(subjects(env).filter((x) => /without your certificate/.test(x)).length, 1, "one e-mail an hour");
-  // The certificate's fingerprint may be written with colons and capitals in the setting.
+  // The certificate's fingerprint may be written with colons and capitals, in the setting or in what Cloudflare sends.
   env.ADMIN_CERT_SHA256 = `ab12, ${CERT_FP.toUpperCase().match(/../g).join(":")}`;
   assert.equal((await call(env, "/api/admin/overview", { cookie: owner.cookie })).status, 200);
+  env.ADMIN_CERT_SHA256 = CERT_FP;
+  assert.equal((await call(env, "/api/admin/overview", { cookie: owner.cookie, tls: { ...GOOD_TLS, certFingerprintSHA256: CERT_FP.toUpperCase().match(/../g).join(":") } })).status, 200);
+  // The live setting: the owner's certificate, and the admin host among the Worker's custom domains.
+  const cfg = readFileSync(join(ROOT, "wrangler.studio.jsonc"), "utf8");
+  assert.match(cfg, /"ADMIN_CERT_SHA256": "47f40b62f8a92ed84e56a939ad3f929cd6b3b501fdb2b5ab5cd204226e929f18"/);
+  assert.match(cfg, /\{ "pattern": "admin\.kleooai\.com", "custom_domain": true \}/);
 });
 
 test("with no fingerprint set the admin host opens for nobody, even with a valid certificate", async () => {

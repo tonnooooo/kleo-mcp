@@ -31,7 +31,8 @@
   "routes": [
     // { "pattern": "kleooai.com", "custom_domain": true },      ← after the owner deletes the GitHub Pages A records
     // { "pattern": "www.kleooai.com", "custom_domain": true },  ← after the owner deletes the www CNAME
-    { "pattern": "app.kleooai.com", "custom_domain": true }
+    { "pattern": "app.kleooai.com", "custom_domain": true },
+    { "pattern": "admin.kleooai.com", "custom_domain": true } // 23 Oct 2026: the admin console's own host, mTLS-only (src/studio/admin-host.ts)
   ],
   "assets": { "directory": "./studio-web", "binding": "ASSETS", "run_worker_first": true, "not_found_handling": "single-page-application" },
   "d1_databases": [
@@ -75,6 +76,6 @@
     "STUDIO_AGENT_MODEL": "claude-haiku-5-5",
     "STUDIO_AGENT_PER_DAY": "200",
     "ADMIN_HOST": "admin.kleooai.com", // 23 Oct 2026: the admin console lives only here (src/studio/admin-host.ts); /admin on every other host is the site's 404
-    "ADMIN_CERT_SHA256": "" // SHA-256 fingerprint(s) of the owner's client certificate (Cloudflare Client Certificates); EMPTY = the admin host opens for nobody (fail closed)
+    "ADMIN_CERT_SHA256": "47f40b62f8a92ed84e56a939ad3f929cd6b3b501fdb2b5ab5cd204226e929f18" // SHA-256 of the owner's client certificate "CN=Kleo admin - owner PC, O=Kleo" (Cloudflare Managed CA, ECDSA P-256, valid to 22 Oct 2028); not a secret. Several: comma separated. EMPTY = the admin host opens for nobody (fail closed)
   }
 }

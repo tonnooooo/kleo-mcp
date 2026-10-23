@@ -39,7 +39,7 @@ export const ADMIN_SITE_API = /^\/api\/(?:config|me|auth\/signin|auth\/signout|a
 
 /** The pinned fingerprints: lowercase hex, colons dropped; anything malformed is ignored. */
 export function certPins(env: Pick<StudioEnv, "ADMIN_CERT_SHA256">): string[] {
-  return (env.ADMIN_CERT_SHA256 ?? "").split(",").map((s) => s.trim().toLowerCase().replace(/:/g, "")).filter((s) => /^[0-9a-f]{64}$/.test(s));
+  return (env.ADMIN_CERT_SHA256 ?? "").split(",").map(normalFingerprint).filter((s) => /^[0-9a-f]{64}$/.test(s));
 }
 
 type TlsClientAuth = { certPresented?: string; certVerified?: string; certRevoked?: string; certFingerprintSHA256?: string };
@@ -54,7 +54,16 @@ export function certProblem(env: Pick<StudioEnv, "ADMIN_CERT_SHA256">, request: 
   if (!t || t.certPresented !== "1") return "no_cert";
   if (t.certVerified !== "SUCCESS") return "not_verified";
   if (t.certRevoked === "1") return "revoked";
-  return pins.includes(String(t.certFingerprintSHA256 ?? "").toLowerCase()) ? null : "wrong_cert";
+  return pins.includes(normalFingerprint(t.certFingerprintSHA256)) ? null : "wrong_cert";
+}
+/** A fingerprint as the pins are written: lowercase hex, colons and spaces dropped, whatever shape Cloudflare sends. */
+export const normalFingerprint = (v: unknown): string => String(v ?? "").toLowerCase().replace(/[:\s]/g, "");
+
+/** What Cloudflare said about the certificate, for the audit: the fingerprint is not a secret. */
+export function certSeen(request: Request): Record<string, unknown> {
+  const t = tlsOf(request);
+  if (!t) return { tls: null };
+  return { presented: t.certPresented ?? null, verified: t.certVerified ?? null, revoked: t.certRevoked ?? null, fingerprint: t.certFingerprintSHA256 ?? null };
 }
 
 /** The bare answer to a request without the owner's certificate. */
@@ -73,7 +82,8 @@ export async function noteRefused(env: StudioEnv, request: Request, why: string,
         ${ipOnly ? "AND json_extract(detail, '$.ip') = ?" : ""} LIMIT 1`).bind(event, Math.floor(nowMs / 1000) - seconds, ...(ipOnly ? [ip] : [])).first();
     if (await recent("admin.cert_refused", 60, true)) return;
     const path = new URL(request.url).pathname.slice(0, 120);
-    await audit(env as unknown as Env, null, null, "admin.cert_refused", { ip, country: cf.country ?? null, city: cf.city ?? null, network: cf.asOrganization ?? null, why, path });
+    // The certificate as Cloudflare reported it, so a refusal of the owner's own certificate shows why at once.
+    await audit(env as unknown as Env, null, null, "admin.cert_refused", { ip, country: cf.country ?? null, city: cf.city ?? null, network: cf.asOrganization ?? null, why, path, cert: certSeen(request) });
     if (await recent("admin.cert_alert", 3600, false)) return;
     await audit(env as unknown as Env, null, null, "admin.cert_alert", { ip, why });
     await mailOwner(env, "Kleo admin: a computer without your certificate tried the console",

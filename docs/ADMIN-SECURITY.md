@@ -110,6 +110,13 @@ Any other device, your phone included, gets "Forbidden". That is the lock workin
 
 These steps are done once, in this order, by the owner (or a Claude session he signs in for). The key never leaves the PC.
 
+**Status on 23 October 2026: done.**
+- The certificate is "CN=Kleo admin - owner PC, O=Kleo", from the Cloudflare Managed CA, ECDSA P-256, valid to 22 October 2028.
+- Its SHA-256 is `47f40b62f8a92ed84e56a939ad3f929cd6b3b501fdb2b5ab5cd204226e929f18`.
+- mTLS is on for `admin.kleooai.com` only.
+- The WAF rule is live.
+- The custom domain is on kleo-studio.
+
 1. **The key and the request.** An ECDSA P-256 private key and a CSR are made on the PC, in `C:\Users\leona_wadij0y\KleoAdminCert`. This is already done.
 2. **The certificate.** In the Cloudflare dashboard:
    1. Select the kleooai.com zone, then **SSL/TLS → Client Certificates → Create Certificate**.
@@ -120,9 +127,16 @@ These steps are done once, in this order, by the owner (or a Claude session he s
    1. Go to **Workers & Pages → kleo-studio → Settings → Domains & Routes → Add → Custom domain**, and add `admin.kleooai.com`.
    2. Then add `{ "pattern": "admin.kleooai.com", "custom_domain": true }` to `routes` in `wrangler.studio.jsonc`, so later deploys keep it.
 5. **The WAF rule.** Go to **Security → WAF → Custom rules → Create**:
-   - Name: `Admin only with the Kleo certificate`.
-   - Expression: `(http.host eq "admin.kleooai.com" and (not cf.tls_client_auth.cert_verified or cf.tls_client_auth.cert_revoked or cf.tls_client_auth.cert_fingerprint_sha256 ne "<fingerprint>"))`
+   - Name: `Admin only from the owner's certificate`.
+   - Expression:
+
+     ```text
+     (http.host eq "admin.kleooai.com" and (not cf.tls_client_auth.cert_verified or cf.tls_client_auth.cert_revoked)) or (http.host ne "admin.kleooai.com" and (lower(http.request.uri.path) eq "/admin" or starts_with(lower(http.request.uri.path), "/admin/") or starts_with(lower(http.request.uri.path), "/api/admin")))
+     ```
+
    - Action: **Block**.
+   - The rule also blocks the console's paths on every other host.
+   - The fingerprint itself is checked by the Worker (`ADMIN_CERT_SHA256`), on every request.
 6. **The certificate in Windows.** In `C:\Users\leona_wadij0y\KleoAdminCert`, run:
 
    ```bash
