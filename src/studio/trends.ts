@@ -121,7 +121,8 @@ const fromCatalog = (c: CatalogTrend): Trend => ({
 // a park court in China. The player crosses over his defender, flies at the basket, flips the ball over the backboard
 // and it drops in; then a replay, half at normal speed and half in slow motion, and the defender laughing. The owner:
 // "taglialo e metti due template, pt1 e pt2": Part 1 is the play (0-5.8 s, up to the cut, no slow motion), Part 2 the
-// replay to the end (5.8-15.75 s, without the black last frames). Both let the person change the world around them.
+// replay's first 6 s (5.8-11.8 s: the drive, the flight in slow motion, the ball dropping in). Both let the person change
+// the world around them.
 const COURT_SCENE = "Same outdoor public basketball court in a park at night: a green court with white lines, a red key and a red area under the basket; a thick light-blue steel pole with an angled arm holding a clear glass backboard with a mint-green frame and a small blue circle sign with a white \"1\", an orange rim with a white-and-red net; tall floodlight poles with clusters of bright white lamps and a violet glow in the dark sky, park street lamps, dense dark trees, a concrete pergola with square white pillars and distant high-rise towers; spectators standing in a line behind the basket behind red oval sponsor boards with white Chinese lettering and \"APP\", mostly young, in black or white T-shirts, a few filming with phones; in the wide shots more people sit and stand on a dark paved area beside the court; the same worn golden-tan basketball. Same handheld vertical phone camera at court level, running with the play and tilting up to the basket, the same fast pans, bright white floodlight on the court.";
 const COURT_CHANGES: TrendChange[] = [
   { key: "court", label: "Court", custom: "Change the court and everything around it into",
@@ -143,7 +144,7 @@ const COURT_CHANGES: TrendChange[] = [
     options: [
       { value: "packed", label: "Packed", text: "Fill every space around the court with a much bigger crowd of excited fans, several rows deep, many filming with phones, jumping and grabbing their heads when the ball drops in." },
       { value: "cheer", label: "Cheerleaders", text: "Add a row of cheerleaders in matching red and white uniforms with silver pom-poms in front of the crowd, dancing and cheering at the play." },
-      { value: "empty", label: "Empty", text: "Remove the spectators: nobody watches behind the basket or beside the court. The young man filming behind the defender at the very end stays." },
+      { value: "empty", label: "Empty", text: "Remove the spectators: nobody watches behind the basket or beside the court." },
     ] },
   { key: "light", label: "Light",
     options: [
@@ -198,17 +199,18 @@ export const TRENDS: Trend[] = [
     ],
   },
   {
-    key: "trend-crossover-king-pt2", name: "Crossover King Pt 2", blurb: "The replay, half in slow motion, on any court", tint: "#0a84ff",
-    baseUrl: `${TRENDS_MEDIA}/crossover-king-pt2/base.mp4`, baseSeconds: 9.92,
-    preview: `${TRENDS_MEDIA}/crossover-king-pt2/preview4-p.mp4`, guide: `${TRENDS_MEDIA}/crossover-king-pt2/guide.jpg`,
+    key: "trend-crossover-king-pt2", name: "Crossover King Pt 2", blurb: "The replay in slow motion, on any court", tint: "#0a84ff",
+    // The owner, 23 October 2026: "per pt2 mi andava bene solo 6 secondi": the replay's first 6.0 s, to the catch.
+    baseUrl: `${TRENDS_MEDIA}/crossover-king-pt2/base-6s.mp4`, baseSeconds: 6,
+    preview: `${TRENDS_MEDIA}/crossover-king-pt2/preview3-p.mp4`, guide: `${TRENDS_MEDIA}/crossover-king-pt2/guide.jpg`,
     scene: COURT_SCENE, changes: COURT_CHANGES,
-    edit: "Same edit as Video 1: the drive at normal speed (0-1.6 s); from 1.6 s the flight in slow motion, about 8 times slower and slightly darker, on the same framing (1.6-4.4 s); a cut at 4.4 s back to normal speed, from behind the defender, just as the ball leaves the dunker's hand; the ball dropping in and the celebration (4.4-8.3 s); a fast whip pan at 8.35-8.7 s to the defender laughing (8.7-9.9 s), with a glowing yellow basketball-shaped lantern at the left and high-rise towers on the skyline.",
+    edit: "Same edit as Video 1: the drive at normal speed (0-1.6 s); from 1.6 s the flight in slow motion, about 8 times slower and slightly darker, on the same framing (1.6-4.4 s); a cut at 4.4 s back to normal speed, from behind the defender, just as the ball leaves the dunker's hand; the ball dropping in (4.4-6.0 s).",
     seats: [
       { ...DUNKER, at: [61, 49],
-        motion: "0-0.5s dribbles low at the defender and crosses the ball over; 0.5-1.2s bursts past him to the right with the ball in both hands and drives to the basket; 1.2-1.4s takes off under the basket lifting the ball over his head with both hands; 1.4-3.3s (slow motion from 1.6s) hangs in the air in front of the backboard, legs split wide, the ball by his head in the left hand, the right hand raised with one finger up; 3.4-4.4s still in slow motion slowly pushes the ball high above his head with the left hand alone, the finger still up; 4.4-4.5s tosses the ball straight up with the left hand so it rises above the backboard; 4.5-4.7s drops down past the defender and lands on the right; 4.7-5.5s stands on the right, the right hand at his mouth, watching the ball fall through the hoop (5.3-5.6s); 5.5-5.9s walks to the middle with the left arm out, palm open; 5.9-6.1s catches the falling ball, raises the right hand with one finger up and slams the ball down; 6.2-7.3s keeps the finger up as the ball bounces back to head height, tongue out; 7.3-8.2s a cocky grin, dribbling with the left hand and stepping toward the camera, the ball bouncing up toward it; 8.2-8.4s walks right past the camera on the right, grinning, the finger still up; then out of the shot" },
+        motion: "0-0.5s dribbles low at the defender and crosses the ball over; 0.5-1.2s bursts past him to the right with the ball in both hands and drives to the basket; 1.2-1.4s takes off under the basket lifting the ball over his head with both hands; 1.4-3.3s (slow motion from 1.6s) hangs in the air in front of the backboard, legs split wide, the ball by his head in the left hand, the right hand raised with one finger up; 3.4-4.4s still in slow motion slowly pushes the ball high above his head with the left hand alone, the finger still up; 4.4-4.5s tosses the ball straight up with the left hand so it rises above the backboard; 4.5-4.7s drops down past the defender and lands on the right; 4.7-5.5s stands on the right, the right hand at his mouth, watching the ball fall through the hoop (5.3-5.6s); 5.5-5.9s walks to the middle with the left arm out, palm open; 5.9-6.0s reaches out and catches the falling ball" },
       { ...DEFENDER, at: [11, 44],
-        where: "DEFENDING in the black long-sleeve top: he gets crossed over, stands under the basket with his back to the camera while the ball goes up above the backboard, grabs his head when it drops in, and laughs and hides his face at the end",
-        motion: "0-0.5s guards the dribbler low with the arms out; 0.5-1.3s gets beaten and chases behind him on the left; 1.3-4.4s (slow motion from 1.6s) stands on the left with his back half-turned to the camera, arms down, looking up at the player in the air; 4.4-5.2s the left arm out to the side, follows the ball up above the backboard with his head; 5.3-5.6s watches the ball drop through the net; 5.7-5.9s swings the right arm up; 6.0-6.2s puts the right hand on top of his head as the camera passes him, out of the shot by 6.4s; 8.7-9.1s walks in from the left doubled over laughing, a hand on his chest, while a young man with bleached blond hair and glasses in a white T-shirt holds his shoulder from behind, then steps back; 9.2-9.6s turns to the right and covers his face with one hand; 9.7-9.9s drops the hand and grins at the camera" },
+        where: "DEFENDING in the black long-sleeve top: he gets crossed over, stands under the basket with his back to the camera while the ball goes up above the backboard, and swings his arm up when it drops in",
+        motion: "0-0.5s guards the dribbler low with the arms out; 0.5-1.3s gets beaten and chases behind him on the left; 1.3-4.4s (slow motion from 1.6s) stands on the left with his back half-turned to the camera, arms down, looking up at the player in the air; 4.4-5.2s the left arm out to the side, follows the ball up above the backboard with his head; 5.3-5.6s watches the ball drop through the net; 5.7-5.9s swings the right arm up; 6.0s raises the right hand toward his head at the left edge of the frame" },
     ],
   },
   // 22 October 2026, the owner sent an Instagram reel by @collinskey (6.6 s, one take, 1080x1080 30 fps): from inside a
