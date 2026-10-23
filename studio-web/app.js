@@ -1802,7 +1802,8 @@ function toolBody(key, compact, top = null) {
       return h("div", { class: "field" }, h("div", { class: "field-h" }, f.label, h("span", { class: "row-gap" }, enh, f.maxLength ? h("span", { class: "count", style: { fontWeight: 500 } }, `${(st.inputs[f.key] || "").length}/${f.maxLength}`) : null)), ta2);
     }
     if (f.kind === "select") return h("div", { class: "field" }, h("div", { class: "field-h" }, f.label),
-      h("div", { class: "seg2" }, f.options.map((o) => h("button", { class: (st.inputs[f.key] ?? f.default) === o.value ? "on" : "", onclick: () => { st.inputs[f.key] = o.value; draw(); } }, o.label))));
+      // A template's change with many choices (the court, the opponent …) wraps onto more lines.
+      h("div", { class: t.group === "trend" && f.options.length > 4 ? "seg2 wrap" : "seg2" }, f.options.map((o) => h("button", { class: (st.inputs[f.key] ?? f.default) === o.value ? "on" : "", onclick: () => { st.inputs[f.key] = o.value; draw(); } }, o.label))));
     if (f.kind === "voice") {
       const voices = [["nova", "Nova"], ["shimmer", "Shimmer"], ["coral", "Coral"], ["sage", "Sage"], ["alloy", "Alloy"], ["ash", "Ash"], ["onyx", "Onyx"], ["echo", "Echo"], ["ballad", "Ballad"], ["verse", "Verse"], ["fable", "Fable"]];
       return h("div", { class: "field" }, h("div", { class: "field-h" }, f.label),

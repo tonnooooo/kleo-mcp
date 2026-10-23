@@ -130,6 +130,74 @@ test("Garden Dunk and Branch Chop (22 October 2026): one seat each, 15 s clips o
   assert.match(c, /the big white splash/);
 });
 
+test("Crossover King Pt 1 and Pt 2 (23 October 2026): two seats, cut at the reel's own cut, priced as WaveSpeed quoted them", () => {
+  const p1 = trendByKey("trend-crossover-king-pt1"), p2 = trendByKey("trend-crossover-king-pt2");
+  for (const [t, slug] of [[p1, "crossover-king-pt1"], [p2, "crossover-king-pt2"]]) {
+    assert.ok(t && !t.prompt, `${slug}: a seat-by-seat prompt`);
+    assert.deepEqual(t.seats.map((s) => s.key), ["person1", "person2"]);
+    for (const [field, file] of [["baseUrl", "base.mp4"], ["preview", "preview3-p.mp4"], ["guide", "guide.jpg"]]) assert.equal(t[field], `https://media.kleooai.com/app/templates/${slug}/${file}`);
+  }
+  // WaveSpeed's price API, 23 October 2026: Pt 1 (5.83 s) $0.60 / $1.20 / $2.40, Pt 2 (9.92 s) $1.00 / $2.00 / $4.00.
+  assert.deepEqual(["480p", "720p", "1080p"].map((q) => trendCostUsd(p1, q)), [0.6, 1.2, 2.4]);
+  assert.deepEqual(["480p", "720p", "1080p"].map((q) => trendCostUsd(p2, q)), [1, 2, 4]);
+  assert.deepEqual(["480p", "720p", "1080p"].map((q) => toolCredits(trendCostUsd(p1, q))), [3, 5, 9]);
+  assert.deepEqual(["480p", "720p", "1080p"].map((q) => toolCredits(trendCostUsd(p2, q))), [4, 8, 15]);
+  const plain = trendPrompt(p1, ["person1"]);
+  assert.match(plain, /One continuous handheld shot at normal speed, no cuts\./);
+  assert.doesNotMatch(plain, /WORLD CHANGES/);
+  assert.match(plain, /The person DEFENDING[^\n]* stays exactly as in Video 1/);
+  assert.match(trendPrompt(p2, ["person1", "person2"]), /the flight in slow motion \(1\.6-4\.4 s\)/);
+});
+
+test("template changes (23 October 2026): the court, the opponent, the crowd, the light and the boards are choices on the page", () => {
+  const app = toolByKey("trend-crossover-king-pt1");
+  const field = (k) => app.fields.find((f) => f.key === k);
+  for (const k of ["court", "rival", "crowd", "light", "boards"]) {
+    assert.equal(field(k).kind, "select");
+    assert.equal(field(k).default, "original");
+    assert.equal(field(k).options[0].value, "original");
+  }
+  assert.ok(field("court").options.some((o) => o.value === "nba"));
+  assert.equal(field("court").options.at(-1).value, "custom");
+  assert.deepEqual(field("courtText").when, { field: "court", is: ["custom"] });
+  assert.equal(field("light").options.some((o) => o.value === "custom"), false, "no free line for the light");
+  assert.equal(field("extra").kind, "text");
+  // The order on the page: the photos, the changes, the free line, the quality.
+  assert.deepEqual(app.fields.map((f) => f.key).slice(0, 3), ["person1", "person2", "court"]);
+  assert.equal(app.fields.at(-1).key, "quality");
+  // A template without changes keeps its short form.
+  assert.deepEqual(toolByKey("trend-stall-grabber").fields.map((f) => f.key), ["person1", "quality"]);
+
+  const one = { person1: photo("up_1") };
+  const input = (picks, media = one) => planTool("trend-crossover-king-pt1", { quality: "720p", ...picks }, media).tasks[0].input;
+  const p = input({ court: "nba", rival: "grandpa", crowd: "original", light: "golden", boards: "kleo", extra: "  make it\nrain " });
+  assert.match(p.prompt, /except the WORLD CHANGES below/);
+  assert.match(p.prompt, /WORLD CHANGES \(only these; every position/);
+  assert.match(p.prompt, /- Turn the outdoor court into a packed NBA arena/);
+  assert.match(p.prompt, /- The defender becomes a grey-haired grandpa/);
+  assert.match(p.prompt, /- Change the time to golden hour/);
+  assert.match(p.prompt, /read "KLEO"/);
+  assert.match(p.prompt, /- Also: make it rain\./);
+  assert.doesNotMatch(p.prompt, /bigger crowd/, "Original changes nothing");
+  assert.match(p.prompt, /The person DEFENDING[^\n]*\. This person keeps the exact movements of Video 1 and changes only as the WORLD CHANGES say\./);
+  assert.match(p.prompt, /Video 1's world before the changes: Same outdoor public basketball court/);
+  assert.match(p.prompt, /No other new objects or text\./);
+  assert.equal(p.video, trendByKey("trend-crossover-king-pt1").baseUrl);
+  assert.equal(p.generate_audio, false);
+  // A photo of the defender wins over the opponent choice.
+  const two = input({ rival: "robot", court: "custom", courtText: "a volcano crater. " }, { person1: photo("up_1"), person2: photo("up_2") });
+  assert.doesNotMatch(two.prompt, /robot/);
+  assert.match(two.prompt, /- Change the court and everything around it into a volcano crater\./);
+  assert.match(two.prompt, /Image 2 replaces the person DEFENDING/);
+  assert.deepEqual(two.reference_images, [photo("up_1").url, photo("up_2").url]);
+  // "Your idea" with no words, or a value the page never offers, changes nothing.
+  assert.doesNotMatch(input({ court: "custom", courtText: "  ", crowd: "moon" }).prompt, /WORLD CHANGES/);
+  // The price never moves with the changes; the summary counts them.
+  const plan = planTool("trend-crossover-king-pt1", { quality: "720p", court: "beach", crowd: "packed" }, one);
+  assert.equal(plan.usd, 1.2);
+  assert.match(plan.summary, /2 changes/);
+});
+
 test("Stall Grabber (22 October 2026): one seat, the whole 6.6 s clip on R2, priced as WaveSpeed quoted it", () => {
   const t = trendByKey("trend-stall-grabber");
   assert.ok(t && !t.prompt, "a seat-by-seat prompt, not a fixed one");
