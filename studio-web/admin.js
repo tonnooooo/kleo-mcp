@@ -9,7 +9,7 @@
 // (a QR code drawn by qr.js, on this origin), every later visit asks for the 6-digit code, and the dangerous actions
 // ask for a new one.
 
-import { qrSvg } from "./qr.js?v=75";
+import { qrSvg } from "./qr.js?v=76";
 
 let K = null;
 const DEMO_MODE = new URLSearchParams(location.search).get("demo");
@@ -804,9 +804,9 @@ async function providersPage(main, opts = {}) {
   const bal = h("div", { class: "adm-bal" });
   balancesInto(bal, r);
   K.fill(body,
-    card("Balances", r.secrets.some((s) => s.name === "EPHONE_ACCESS_TOKEN" && s.set)
+    card("Balances", r.secrets.some((s) => s.name === "EPHONE_ADMIN_KEY" && s.set)
       ? "Read live from each provider; this page updates itself. Under $5 shows in red."
-      : "WaveSpeed and APIMart are read live. ePhone needs its console token (EPHONE_ACCESS_TOKEN) to be read live; without it Kleo knows only what ePhone said when it last refused an order. Under $5 shows in red.", bal),
+      : "WaveSpeed and APIMart are read live. ePhone needs its read-only admin key (EPHONE_ADMIN_KEY) to be read live; without it Kleo knows only what ePhone said when it last refused an order. Under $5 shows in red.", bal),
     card("Keys", "Only the names: a key's value never leaves the Worker.", h("div", { class: "list" }, r.secrets.map((s) => h("div", { class: "row" }, icon("key", 19),
       h("div", { class: "lbl" }, h("b", { class: "mono" }, s.name), h("span", {}, s.purpose)), s.set ? pill("Set", "ok") : pill("Not set", "")))),
       h("div", { class: "adm-note" }, icon("lock", 17), h("span", {}, "To change a key, run this in a terminal in the kleo-mcp folder, then paste the new value when asked: ", h("code", {}, "npx wrangler secret put NAME --config wrangler.studio.jsonc")))),
