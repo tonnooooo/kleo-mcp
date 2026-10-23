@@ -609,9 +609,9 @@ test("on any other host the console does not exist: its page, files and API are 
   assert.equal(me.json.adminUrl, "https://admin.kleo.test/admin", "the owner's app shows the way to the console");
 });
 
-test("the admin host opens only with the owner's certificate: none, unverified, revoked or another one get a bare 403", async () => {
+test("the admin host opens only with the owner's certificate: unverified, revoked or another one get a bare 403", async () => {
   const { env, owner } = await setup();
-  const cases = [["no certificate", null], ["not presented", { ...GOOD_TLS, certPresented: "0" }], ["not verified", { ...GOOD_TLS, certVerified: "FAILED:self signed certificate" }],
+  const cases = [["not verified", { ...GOOD_TLS, certVerified: "FAILED:self signed certificate" }],
     ["revoked", { ...GOOD_TLS, certRevoked: "1" }], ["another certificate", { ...GOOD_TLS, certFingerprintSHA256: "ab".repeat(32) }]];
   for (const [what, tls] of cases) {
     for (const path of ["/admin", "/api/admin/overview", "/admin.js", "/api/config", "/"]) {
@@ -622,8 +622,8 @@ test("the admin host opens only with the owner's certificate: none, unverified, 
   }
   const rows = env.DB.db.prepare("SELECT detail FROM audit WHERE event = 'admin.cert_refused'").all().map((r) => JSON.parse(r.detail));
   assert.equal(rows.length, 1, "one audit row a minute per address, however many requests");
-  assert.deepEqual([rows[0].ip, rows[0].country, rows[0].why], ["198.51.100.66", "US", "no_cert"]);
-  assert.deepEqual(rows[0].cert, { tls: null }, "what Cloudflare said about the certificate is kept");
+  assert.deepEqual([rows[0].ip, rows[0].country, rows[0].why], ["198.51.100.66", "US", "not_verified"]);
+  assert.deepEqual([rows[0].cert.presented, rows[0].cert.verified], ["1", "FAILED:self signed certificate"], "what Cloudflare said about the certificate is kept");
   await call(env, "/admin", { host: "admin", tls: { ...GOOD_TLS, certFingerprintSHA256: "ab".repeat(32) }, from: { ip: "198.51.100.77" } });
   const seen = JSON.parse(env.DB.db.prepare("SELECT detail FROM audit WHERE event = 'admin.cert_refused' ORDER BY id DESC").get().detail);
   assert.deepEqual([seen.why, seen.cert.fingerprint, seen.cert.verified], ["wrong_cert", "ab".repeat(32), "SUCCESS"], "the fingerprint seen is logged: it is not a secret");
@@ -735,10 +735,10 @@ test("on the admin host a missing or wrong certificate is refused before any wor
   let files = 0;
   const assets = env.ASSETS.fetch;
   env.ASSETS.fetch = (...a) => { files++; return assets(...a); };
-  for (const tls of [null, { ...GOOD_TLS, certFingerprintSHA256: "cd".repeat(32) }]) {
+  for (const [tls, status] of [[null, 421], [{ ...GOOD_TLS, certPresented: "0" }, 421], [{ ...GOOD_TLS, certFingerprintSHA256: "cd".repeat(32) }, 403]]) {
     for (const path of ["/admin", "/admin.js", "/api/admin/overview", "/api/config", "/api/auth/signin", "/media/g_x.mp4"]) {
       const r = await call(env, path, { host: "admin", tls, cookie: owner.cookie, method: path === "/api/auth/signin" ? "POST" : "GET", body: path === "/api/auth/signin" ? {} : undefined });
-      assert.equal(r.status, 403, path);
+      assert.equal(r.status, status, path);
     }
   }
   assert.equal(files, 0, "no file was served");
@@ -751,7 +751,24 @@ test("a request that names the admin host but carries no TLS facts at all is ref
     const req = new Request("https://admin.kleo.test/api/admin/overview", { headers: { "x-kleo": "1", ...headers } });
     const res = await worker.fetch(req, env, ctx);
     await Promise.allSettled(pending.splice(0));
-    assert.equal(res.status, 403);
-    assert.equal(await res.text(), "Forbidden");
+    assert.equal(res.status, 421);
+    assert.equal(await res.text(), "Misdirected Request");
   }
+});
+
+test("23 October 2026: with no certificate at all the answer is 421, so Chrome leaves the app's reused connection and asks again on its own", async () => {
+  // The owner's first visit: Chrome sent admin.kleooai.com down its open HTTP/2 connection to app.kleooai.com (same
+  // *.kleooai.com certificate, same addresses), where no client certificate is ever asked for. A 403 there was a dead end.
+  const { env, owner } = await setup();
+  for (const tls of [null, { ...GOOD_TLS, certPresented: "0", certVerified: "NONE", certFingerprintSHA256: "" }]) {
+    for (const path of ["/", "/admin", "/api/admin/overview", "/api/config", "/favicon.ico", "/.env"]) {
+      const r = await call(env, path, { host: "admin", tls, cookie: owner.cookie, from: { ip: "203.0.113.9" } });
+      assert.equal(r.status, 421, path);
+      assert.equal(r.text, "Misdirected Request", "nothing else: no page, no hint");
+      assert.equal(r.res.headers.get("cache-control"), "no-store");
+    }
+  }
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE event LIKE 'admin.cert_%'").get().n, 0, "scanners without a certificate write nothing");
+  assert.equal(subjects(env).filter((x) => /without your certificate/.test(x)).length, 0, "and mail nobody");
+  assert.equal((await call(env, "/api/admin/overview", { cookie: owner.cookie })).status, 200, "the owner's certificate on its own connection opens it");
 });
