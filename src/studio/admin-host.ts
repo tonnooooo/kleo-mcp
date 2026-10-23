@@ -66,8 +66,18 @@ export function certSeen(request: Request): Record<string, unknown> {
   return { presented: t.certPresented ?? null, verified: t.certVerified ?? null, revoked: t.certRevoked ?? null, fingerprint: t.certFingerprintSHA256 ?? null };
 }
 
-/** The bare answer to a request without the owner's certificate. */
+/** The bare answer to a request with a certificate that is not the owner's. */
 export const refused = (): Response => new Response("Forbidden", { status: 403, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+
+/**
+ * The answer to a request that came with NO certificate (23 October 2026, the owner's first visit: "Sorry, you have
+ * been blocked"). app.kleooai.com and admin.kleooai.com share Cloudflare's *.kleooai.com certificate and its addresses,
+ * so Chrome sends a request for the admin host down a connection it already has open to the app (HTTP/2 connection
+ * reuse), and on that connection no client certificate was ever asked for. 421 Misdirected Request is the answer HTTP
+ * keeps for exactly that (RFC 9110 15.5.20): the browser retries on a new connection of the admin host's own, where
+ * Cloudflare asks for the certificate. Nothing is opened, nothing written: scanners get the same 421 every time.
+ */
+export const misdirected = (): Response => new Response("Misdirected Request", { status: 421, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
 
 /**
  * Writes the refusal down: an audit row at most once a minute per address, an e-mail to the owner at most once an hour.

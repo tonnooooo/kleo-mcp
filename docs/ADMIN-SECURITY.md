@@ -19,9 +19,10 @@ Every request passes all of these locks, checked on the server.
    - presented, verified by Cloudflare's CA, and not revoked;
    - its SHA-256 fingerprint listed in `ADMIN_CERT_SHA256`.
 
-   Cloudflare's WAF blocks everything else at the edge, and the Worker checks the same things again.
-   - Without the certificate the answer is a bare `403 Forbidden`.
-   - The refusal is written to the audit (`admin.cert_refused`, at most once a minute per address).
+   Cloudflare's WAF blocks a certificate that is unverified or revoked at the edge, and the Worker checks everything again.
+   - With **no** certificate the answer is a bare `421 Misdirected Request`, and nothing is written. Chrome reuses its open connection to app.kleooai.com for admin.kleooai.com: both hosts share the `*.kleooai.com` certificate and the same addresses, and no client certificate is asked for on that connection. A 421 makes the browser retry on a connection of its own, where Cloudflare asks for the certificate (23 October 2026, the owner's first visit was blocked this way).
+   - With a certificate that is not the owner's (unverified, revoked, or another fingerprint) the answer is a bare `403 Forbidden`.
+   - Such a refusal is written to the audit (`admin.cert_refused`, at most once a minute per address).
    - The owner gets an e-mail, at most once an hour.
    - **With `ADMIN_CERT_SHA256` empty, the admin host opens for nobody.**
 3. **The Kleo account.**
@@ -131,11 +132,12 @@ These steps are done once, in this order, by the owner (or a Claude session he s
    - Expression:
 
      ```text
-     (http.host eq "admin.kleooai.com" and (not cf.tls_client_auth.cert_verified or cf.tls_client_auth.cert_revoked)) or (http.host ne "admin.kleooai.com" and (lower(http.request.uri.path) eq "/admin" or starts_with(lower(http.request.uri.path), "/admin/") or starts_with(lower(http.request.uri.path), "/api/admin")))
+     (http.host eq "admin.kleooai.com" and cf.tls_client_auth.cert_presented and (not cf.tls_client_auth.cert_verified or cf.tls_client_auth.cert_revoked)) or (http.host ne "admin.kleooai.com" and (lower(http.request.uri.path) eq "/admin" or starts_with(lower(http.request.uri.path), "/admin/") or starts_with(lower(http.request.uri.path), "/api/admin")))
      ```
 
    - Action: **Block**.
    - The rule also blocks the console's paths on every other host.
+   - A request with no certificate at all is NOT blocked here. It goes on to the Worker, which answers 421 before any other work, so the browser retries on its own connection (see above). Blocking it at the edge left the owner's own Chrome stuck on "Sorry, you have been blocked".
    - The fingerprint itself is checked by the Worker (`ADMIN_CERT_SHA256`), on every request.
 6. **The certificate in Windows.** In `C:\Users\leona_wadij0y\KleoAdminCert`, run:
 

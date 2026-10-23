@@ -41,7 +41,7 @@ import { publicPlans } from "../plans.ts";
 import { createPaySession } from "./pay.ts";
 import { adminApi } from "./admin.ts";
 import { pruneIps, recordIp } from "./ips.ts";
-import { ADMIN_SITE_API, ADMIN_SITE_PATH, CONSOLE_PATH, adminUrl, certProblem, isAdminHost, noteRefused, refused } from "./admin-host.ts";
+import { ADMIN_SITE_API, ADMIN_SITE_PATH, CONSOLE_PATH, adminUrl, certProblem, isAdminHost, misdirected, noteRefused, refused } from "./admin-host.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const json = (data: unknown, status = 200, headers: Record<string, string> = {}): Response =>
@@ -546,6 +546,8 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
  */
 async function adminSite(request: Request, env: StudioEnv, ctx: ExecutionContext, url: URL): Promise<Response> {
   const why = certProblem(env, request);
+  // No certificate at all: most often the browser reused the app's connection; 421 sends it to a connection of its own.
+  if (why === "no_cert") return misdirected();
   if (why) { ctx.waitUntil(noteRefused(env, request, why)); return refused(); }
   const p = url.pathname;
   if (p === "/") return Response.redirect(url.origin + "/admin", 302);
