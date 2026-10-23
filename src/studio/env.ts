@@ -19,6 +19,9 @@ export interface StudioEnv {
    *  /api/user/self (src/studio/providers.ts readBalance). Secrets. */
   EPHONE_ACCESS_TOKEN?: string;
   EPHONE_USER_ID?: string;
+  /** ePhone's admin key ("sk-admin-…", scope account:read only): reads the account balance with nothing else allowed.
+   *  Preferred over the console token above. Secret. */
+  EPHONE_ADMIN_KEY?: string;
   /** WaveSpeed AI (src/wavespeed.ts): the viral templates' Wan 3.0 video edit, and the backup of GPT Image 2.5 and
    *  Character Swap's first frame when ePhone cannot take an order (src/studio/backups.ts). */
   WAVESPEED_API_KEY?: string;

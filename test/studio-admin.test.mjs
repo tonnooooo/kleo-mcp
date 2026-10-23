@@ -795,12 +795,13 @@ test("the page's own refreshes (X-Kleo-Auto) read everything but never keep the 
   assert.equal(post.status, 200);
 });
 
-test("ePhone's balance is read live with its console token, and the token never leaves the Worker", async () => {
-  const { env, owner } = await setup({ EPHONE_ACCESS_TOKEN: "console-token-value", EPHONE_USER_ID: "4242" });
+test("ePhone's balance is read live with its read-only admin key, and the key never leaves the Worker", async () => {
+  // The answer ePhone gave Kleo's real admin key on 23 October 2026 (scope account:read): data.balance in dollars.
+  const { env, owner } = await setup({ EPHONE_ADMIN_KEY: "sk-admin-test-value" });
   const asked = [];
   answer = (u, init) => {
     asked.push([u, init.headers?.authorization, init.headers?.["new-api-user"]]);
-    if (u === "https://api.ephone.ai/api/user/self") return Response.json({ success: true, message: "", data: { id: 4242, quota: 5_000_000, used_quota: 7_000_000 } });
+    if (u === "https://api.ephone.ai/api/user/self") return Response.json({ success: true, message: "", data: { username: "tonnooooo", balance: "10.367990168576" } });
     if (u.includes("wavespeed")) return Response.json({ code: 200, data: { balance: 3.86 } });
     if (u.includes("apimart")) return Response.json({ success: true, remain_balance: 8.16 });
     return new Response("no", { status: 500 });
@@ -809,11 +810,26 @@ test("ePhone's balance is read live with its console token, and the token never 
     const r = await call(env, "/api/admin/providers", { cookie: owner.cookie });
     assert.equal(r.status, 200, r.text);
     const eph = r.json.balances.find((b) => b.provider === "ephone");
-    assert.deepEqual([eph.usd, eph.source, eph.stale], [10, "live", undefined], "5,000,000 quota units at 500,000 a dollar: the $10 the owner topped up");
-    assert.deepEqual(asked.find((a) => a[0].endsWith("/api/user/self")).slice(1), ["Bearer console-token-value", "4242"]);
+    assert.deepEqual([eph.usd, eph.source, eph.stale], [10.368, "live", undefined], "the $10.37 ePhone's own console showed");
+    assert.deepEqual(asked.find((a) => a[0].endsWith("/api/user/self")).slice(1), ["Bearer sk-admin-test-value", undefined], "an admin key needs no account id");
     const set = Object.fromEntries(r.json.secrets.map((s) => [s.name, s.set]));
-    assert.deepEqual([set.EPHONE_ACCESS_TOKEN, set.EPHONE_USER_ID], [true, true]);
-    assert.ok(!r.text.includes("console-token-value"), "the token's value never leaves the Worker");
+    assert.equal(set.EPHONE_ADMIN_KEY, true);
+    assert.ok(!r.text.includes("sk-admin-test-value"), "the key's value never leaves the Worker");
+  } finally { answer = null; }
+});
+
+test("a new-api console token still works: quota at 500,000 units a dollar, with the account id", async () => {
+  const { env, owner } = await setup({ EPHONE_ACCESS_TOKEN: "console-token-value", EPHONE_USER_ID: "4242" });
+  const asked = [];
+  answer = (u, init) => {
+    asked.push([u, init.headers?.authorization, init.headers?.["new-api-user"]]);
+    if (u === "https://api.ephone.ai/api/user/self") return Response.json({ success: true, data: { id: 4242, quota: 5_000_000 } });
+    return Response.json({ code: 200, data: { balance: 3 }, remain_balance: 3 });
+  };
+  try {
+    const eph = (await call(env, "/api/admin/providers", { cookie: owner.cookie })).json.balances.find((b) => b.provider === "ephone");
+    assert.deepEqual([eph.usd, eph.source], [10, "live"]);
+    assert.deepEqual(asked.find((a) => a[0].endsWith("/api/user/self")).slice(1), ["Bearer console-token-value", "4242"]);
   } finally { answer = null; }
 });
 

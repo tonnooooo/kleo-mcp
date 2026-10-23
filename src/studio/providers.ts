@@ -122,24 +122,32 @@ export async function noteNoMoney(env: StudioEnv, p: Provider, message: string, 
 }
 
 /**
- * ePhone's account balance through its console (23 October 2026). ePhone runs new-api: the API key cannot see the
- * account, its console access token can, as the account named by New-Api-User. `quota` counts QUOTA_PER_USD units a
- * dollar, new-api's own scale. Null without the token and the id, or when ePhone does not answer.
+ * ePhone's account balance (23 October 2026). The API key that makes videos cannot see the account. ePhone's answer is
+ * an ADMIN KEY ("sk-admin-…", platform.ephone.ai/admin-keys): scoped, expiring, and unable to move money or touch
+ * security. Kleo's has the single scope account:read. With it `GET /api/user/self` answers `data.balance` in dollars
+ * ("10.367990168576", the figure the console shows). A new-api console token (EPHONE_ACCESS_TOKEN + EPHONE_USER_ID)
+ * answers `data.quota` instead, QUOTA_PER_USD units a dollar. Null without either, or when ePhone does not answer.
  */
 export const EPHONE_QUOTA_PER_USD = 500_000;
-export async function ephoneConsoleBalanceUsd(env: Pick<StudioEnv, "EPHONE_ACCESS_TOKEN" | "EPHONE_USER_ID" | "EPHONE_API_URL">): Promise<number | null> {
-  const token = (env.EPHONE_ACCESS_TOKEN ?? "").trim(), user = (env.EPHONE_USER_ID ?? "").trim();
-  if (!token || !/^\d+$/.test(user)) return null;
+type EphoneConsoleEnv = Pick<StudioEnv, "EPHONE_ADMIN_KEY" | "EPHONE_ACCESS_TOKEN" | "EPHONE_USER_ID" | "EPHONE_API_URL">;
+export async function ephoneConsoleBalanceUsd(env: EphoneConsoleEnv): Promise<number | null> {
+  const admin = (env.EPHONE_ADMIN_KEY ?? "").trim();
+  const token = admin || (env.EPHONE_ACCESS_TOKEN ?? "").trim(), user = (env.EPHONE_USER_ID ?? "").trim();
+  if (!token || (!admin && !/^\d+$/.test(user))) return null;
   try {
     const base = (env.EPHONE_API_URL ?? "https://api.ephone.ai").replace(/\/v1\/?$/, "").replace(/\/$/, "");
-    const res = await fetch(`${base}/api/user/self`, { headers: { authorization: `Bearer ${token}`, "new-api-user": user }, signal: AbortSignal.timeout(8_000) });
+    const headers: Record<string, string> = { authorization: `Bearer ${token}` };
+    if (!admin) headers["new-api-user"] = user;
+    const res = await fetch(`${base}/api/user/self`, { headers, signal: AbortSignal.timeout(8_000) });
     if (!res.ok) return null;
-    const d = (await res.json()) as { success?: boolean; data?: { quota?: unknown } };
-    const q = Number(d.data?.quota);
-    return d.success !== false && Number.isFinite(q) ? Math.round((q / EPHONE_QUOTA_PER_USD) * 10_000) / 10_000 : null;
+    const d = (await res.json()) as { success?: boolean; data?: { balance?: unknown; quota?: unknown } };
+    if (d.success === false || !d.data) return null;
+    const usd = d.data.balance !== undefined && d.data.balance !== null ? Number(d.data.balance) : Number(d.data.quota) / EPHONE_QUOTA_PER_USD;
+    return Number.isFinite(usd) ? Math.round(usd * 10_000) / 10_000 : null;
   } catch { return null; }
 }
-const hasEphoneConsole = (env: Pick<StudioEnv, "EPHONE_ACCESS_TOKEN" | "EPHONE_USER_ID">): boolean => !!(env.EPHONE_ACCESS_TOKEN ?? "").trim() && !!(env.EPHONE_USER_ID ?? "").trim();
+const hasEphoneConsole = (env: Omit<EphoneConsoleEnv, "EPHONE_API_URL">): boolean =>
+  !!(env.EPHONE_ADMIN_KEY ?? "").trim() || (!!(env.EPHONE_ACCESS_TOKEN ?? "").trim() && !!(env.EPHONE_USER_ID ?? "").trim());
 
 /** The dollars a provider says it holds, or null (no key, no answer, or ePhone's "unlimited" token). */
 export async function readBalance(env: StudioEnv, p: Provider): Promise<number | null> {

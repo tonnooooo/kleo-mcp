@@ -15,8 +15,7 @@ import { PROVIDERS, PROVIDER_NAMES, SHORT_MIN, leftInRefusal, readBalance, spend
 export const SECRET_NAMES: [string, string][] = [
   ["INTERNAL_SECRET", "Signs sessions, links and Kleo keys, and seals the admin code"],
   ["EPHONE_API_KEY", "ePhone: every video, picture and app, and the chat agent"],
-  ["EPHONE_ACCESS_TOKEN", "ePhone's console token: reads the account's balance live"],
-  ["EPHONE_USER_ID", "ePhone's account id, which the console token needs"],
+  ["EPHONE_ADMIN_KEY", "ePhone admin key, read only (account:read): reads the account's balance live"],
   ["WAVESPEED_API_KEY", "WaveSpeed: viral templates and backups"],
   ["APIMART_API_KEY", "APIMart: backup of most models"],
   ["STRIPE_SECRET_KEY", "Stripe: Apple Pay and Google Pay inside the app"],
