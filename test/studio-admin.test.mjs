@@ -6,7 +6,8 @@
  * balances and key names (never values), and the address lookup in Cloudflare's logs. Then the console's own door
  * (src/studio/admin-auth.ts): the phone code set up once, the code at every visit, the admin session cookie, the fresh
  * code before dangerous writes, the lock after five wrong codes, and the e-mails to the owner. And the console's own host
- * (src/studio/admin-host.ts): nowhere else, and there only with the owner's client certificate.
+ * (src/studio/admin-host.ts): nowhere else, and there only with the owner's client certificate. And the API keys page
+ * (src/studio/admin-keys.ts, src/key-overrides.ts): a key changed there is tried live, stored sealed, used by both Workers.
  * Run: node --test test/studio-admin.test.mjs
  */
 import { register } from "node:module";
@@ -71,7 +72,8 @@ before(async () => {
   const r = await esbuild.build({
     stdin: { contents: `export { default } from "./src/studio/index.ts"; export { failureKind, failureText, stripeLinks, providerOf, reasonOf, dangerous } from "./src/studio/admin.ts";
       export { pathsFor } from "./src/studio/ip-lookup.ts"; export { APP_PATH } from "./src/studio/site.ts"; export { ADMIN_SITE_PATH, CONSOLE_PATH } from "./src/studio/admin-host.ts";
-      export { adminCookieValue, readAdminCookie, adminPasswordProblem } from "./src/studio/admin-auth.ts";`, resolveDir: ROOT, loader: "ts" },
+      export { adminCookieValue, readAdminCookie, adminPasswordProblem } from "./src/studio/admin-auth.ts";
+      export { sealKey, openKey, withKeys, forgetKeys, keyShapeProblem, KEY_OVERRIDES_SCHEMA } from "./src/key-overrides.ts";`, resolveDir: ROOT, loader: "ts" },
     bundle: true, write: false, format: "esm", platform: "neutral", target: "es2022", logLevel: "silent", external: ["@anthropic-ai/sdk", "cloudflare:email"],
   });
   mod = await import("data:text/javascript;base64," + Buffer.from(r.outputFiles[0].text).toString("base64"));
@@ -859,10 +861,149 @@ test("admin.js refreshes the page on its own: off screen, with X-Kleo-Auto, and 
   const waits = js.slice(js.indexOf("function liveWaits()"), js.indexOf("async function live("));
   for (const s of ["document.hidden", "LIVE.hold", "INPUT|TEXTAREA|SELECT", "[role=dialog]", "getSelection"]) assert.ok(waits.includes(s), s);
   // Every page builds into the off-screen target and resolves only once its data is on it.
-  for (const page of ["securityPage", "overviewPage", "usersPage", "userPage", "paymentsPage", "creationsPage", "providersPage"]) {
+  for (const page of ["securityPage", "overviewPage", "usersPage", "userPage", "paymentsPage", "creationsPage", "providersPage", "keysPage"]) {
     const body = js.slice(js.indexOf(`async function ${page}(`), js.indexOf("\n}\n", js.indexOf(`async function ${page}(`)));
     assert.match(body, /K\.fill\(opts\.into \|\| main,/, page);
   }
   assert.match(js, /await load\(true\);\n\}/, "the lists wait for their first page");
   assert.match(js, /await balances;\n\}/, "the overview waits for the balances");
+});
+
+// ── API keys changed from the console (23 October 2026, src/studio/admin-keys.ts and src/key-overrides.ts) ─────────
+// The keys' cache lives in the module, which every test shares: each of these tests starts and ends with forgetKeys().
+
+test("API keys: a change wants a fresh code, a reason, the right shape and a live test; only then it is stored sealed and used", async () => {
+  const OLD = "sk-admin-old-value-1234", NEW = "sk-admin-new-value-9876";
+  const { env, owner, ana } = await setup({ EPHONE_ADMIN_KEY: OLD });
+  mod.forgetKeys();
+  const asked = [];
+  answer = (u, init) => {
+    const auth = init.headers?.authorization;
+    asked.push([u, auth]);
+    if (u === "https://api.ephone.ai/api/user/self") return auth === `Bearer ${NEW}` ? Response.json({ success: true, data: { balance: "12.5" } }) : Response.json({ success: false, message: "invalid token" }, { status: 401 });
+    if (u.includes("wavespeed")) return Response.json({ code: 200, data: { balance: 3 } });
+    if (u.includes("apimart")) return Response.json({ success: true, remain_balance: 3 });
+    return new Response("no", { status: 500 });
+  };
+  const s = await mod.readAdminCookie("s3cret", owner.phone.admin.split("=")[1]);
+  const stale = `${owner.studio}; __Host-kleo_admin=${await mod.adminCookieValue("s3cret", { ...s, fresh: s.fresh - 6 * 60 })}`;
+  const set = (name, body, cookie = owner.cookie) => call(env, `/api/admin/keys/${name}`, { method: "POST", cookie, body });
+  const rows = () => env.DB.db.prepare("SELECT * FROM key_overrides").all();
+  const audits = (event) => env.DB.db.prepare("SELECT detail FROM audit WHERE event = ? ORDER BY id").all(event).map((r) => JSON.parse(r.detail));
+  try {
+    const before = await call(env, "/api/admin/keys", { cookie: owner.cookie });
+    assert.equal(before.status, 200, before.text);
+    const k0 = before.json.keys.find((k) => k.name === "EPHONE_ADMIN_KEY");
+    assert.deepEqual([k0.source, k0.last4], ["worker", "1234"]);
+    assert.equal(before.json.keys.find((k) => k.name === "RESEND_API_KEY").source, "none");
+    assert.deepEqual(before.json.terminalOnly.map((t) => t.name), ["INTERNAL_SECRET", "STRIPE_SECRET_KEY", "GOOGLE_CLIENT_SECRET", "TURNSTILE_SECRET"]);
+    assert.equal(before.json.terminalOnly.find((t) => t.name === "INTERNAL_SECRET").set, true);
+
+    // Who may: nobody but the admin, and the terminal-only secrets not even the admin.
+    assert.equal((await call(env, "/api/admin/keys", { cookie: ana.cookie })).status, 404);
+    assert.equal((await set("EPHONE_ADMIN_KEY", { value: NEW, reason: "renewed" }, ana.cookie)).status, 404);
+    for (const name of ["INTERNAL_SECRET", "STRIPE_SECRET_KEY", "GOOGLE_CLIENT_SECRET"]) {
+      assert.equal((await set(name, { value: "x".repeat(40), reason: "trying" })).status, 404, name);
+    }
+    // A code typed in the last 5 minutes, and a reason.
+    assert.equal((await set("EPHONE_ADMIN_KEY", { value: NEW, reason: "renewed" }, stale)).json.code, "fresh_code");
+    assert.equal((await set("EPHONE_ADMIN_KEY", { value: NEW }, stale)).json.code, "reason", "the reason is asked before the code");
+    assert.equal((await set("EPHONE_ADMIN_KEY", { value: NEW, reason: "renewed", code: "000000" }, stale)).json.code, "admin_wrong");
+    // The shape: whole, no spaces, and the admin key is never taken as the key that makes videos.
+    assert.equal((await set("EPHONE_API_KEY", { value: NEW, reason: "renewed" })).json.code, "key_shape");
+    assert.equal((await set("EPHONE_ADMIN_KEY", { value: "sk-admin-has space", reason: "renewed" })).json.code, "key_shape");
+    assert.equal(mod.keyShapeProblem("RESEND_API_KEY", "re_abcdefgh12"), null);
+    assert.ok(mod.keyShapeProblem("APIMART_API_KEY", "abc"));
+    // A key the provider refuses is not stored.
+    const refused = await set("EPHONE_ADMIN_KEY", { value: "sk-admin-wrong-value-0000", reason: "renewed" });
+    assert.equal(refused.json.code, "key_test", refused.text);
+    assert.match(refused.json.error, /ePhone refused this key \(401\)\. Nothing was changed\./);
+    assert.equal(rows().length, 0);
+    assert.equal(env.mails.filter((m) => /EPHONE_ADMIN_KEY/.test(m.raw)).length, 0);
+
+    // The new key: tried live, stored sealed, mailed, audited with its last 4 characters only.
+    const ok = await set("EPHONE_ADMIN_KEY", { value: `  ${NEW}  `, reason: "renewed on ePhone", code: await codeAt(owner.phone.secret, 0) }, stale);
+    assert.equal(ok.status, 200, ok.text);
+    assert.deepEqual([ok.json.last4, ok.json.detail], ["9876", "ePhone accepts this key: $12.50 on the account."]);
+    assert.ok(asked.some(([u, a]) => u.endsWith("/api/user/self") && a === `Bearer ${NEW}`), "tried with the provider first");
+    const [row] = rows();
+    assert.deepEqual([row.name, row.last4, row.set_by], ["EPHONE_ADMIN_KEY", "9876", owner.id]);
+    assert.ok(!row.sealed.includes(NEW) && !row.sealed.includes("new-value"), "D1 holds no key in clear");
+    assert.equal(await mod.openKey("s3cret", "EPHONE_ADMIN_KEY", row.sealed), NEW);
+    await assert.rejects(mod.openKey("s3cret", "EPHONE_API_KEY", row.sealed), "bound to its name");
+    await assert.rejects(mod.openKey("another secret", "EPHONE_ADMIN_KEY", row.sealed), "and to INTERNAL_SECRET");
+    const [log] = audits("admin.key_set");
+    assert.deepEqual([log.admin, log.key, log.last4, log.reason], [owner.id, "EPHONE_ADMIN_KEY", "9876", "renewed on ePhone"]);
+    assert.ok(subjects(env).includes("Kleo admin: EPHONE_ADMIN_KEY was changed (…9876)"), subjects(env).join(" | "));
+    assert.ok(!env.mails.some((m) => m.raw.includes(NEW)), "the mail names the last 4 characters only");
+
+    // Used at once: the listing says so, the balance is read with it, and no answer ever carries it.
+    const after = await call(env, "/api/admin/keys", { cookie: owner.cookie });
+    const k1 = after.json.keys.find((k) => k.name === "EPHONE_ADMIN_KEY");
+    assert.deepEqual([k1.source, k1.last4, k1.setBy], ["console", "9876", owner.id]);
+    asked.length = 0;
+    const prov = await call(env, "/api/admin/providers", { cookie: owner.cookie });
+    assert.equal(prov.json.balances.find((b) => b.provider === "ephone").usd, 12.5);
+    assert.ok(asked.some(([u, a]) => u.endsWith("/api/user/self") && a === `Bearer ${NEW}`));
+    const tested = await call(env, "/api/admin/keys/EPHONE_ADMIN_KEY/test", { method: "POST", cookie: owner.cookie, body: {} });
+    assert.deepEqual(tested.json, { ok: true, detail: "ePhone accepts this key: $12.50 on the account." });
+    const none = await call(env, "/api/admin/keys/RESEND_API_KEY/test", { method: "POST", cookie: owner.cookie, body: {} });
+    assert.deepEqual(none.json, { ok: false, detail: "No key is set." });
+    for (const r of [ok, after, prov, tested]) assert.ok(!r.text.includes(NEW) && !r.text.includes(OLD), "never a key in an answer");
+    const all = env.DB.db.prepare("SELECT detail FROM audit").all().map((r) => r.detail).join("\n");
+    assert.ok(!all.includes(NEW) && !all.includes("wrong-value"), "never a key in the audit log");
+
+    // Back to the Worker secret: a reason and a fresh code, the row deleted, the old key in use again.
+    assert.equal((await call(env, "/api/admin/keys/EPHONE_ADMIN_KEY/revert", { method: "POST", cookie: stale, body: { reason: "back" } })).json.code, "fresh_code");
+    const back = await call(env, "/api/admin/keys/EPHONE_ADMIN_KEY/revert", { method: "POST", cookie: owner.cookie, body: { reason: "back to the old key" } });
+    assert.equal(back.status, 200, back.text);
+    assert.equal(rows().length, 0);
+    const k2 = (await call(env, "/api/admin/keys", { cookie: owner.cookie })).json.keys.find((k) => k.name === "EPHONE_ADMIN_KEY");
+    assert.deepEqual([k2.source, k2.last4], ["worker", "1234"]);
+    assert.ok(subjects(env).includes("Kleo admin: EPHONE_ADMIN_KEY is back to its Worker secret"));
+    assert.equal(audits("admin.key_revert").length, 1);
+  } finally { answer = null; mod.forgetKeys(); }
+});
+
+test("withKeys: a sealed row replaces the Worker secret; a row moved to another name, a terminal-only name or another secret is ignored; each isolate re-reads within a minute", async () => {
+  mod.forgetKeys();
+  const env = newEnv();
+  try {
+    const t0 = Date.now();
+    env.DB.db.exec("DROP TABLE key_overrides");
+    assert.equal(await mod.withKeys(env, t0), env, "no table yet: the same env, and no error");
+    mod.forgetKeys();
+    env.DB.db.exec(mod.KEY_OVERRIDES_SCHEMA);
+    const put = (name, sealed) => env.DB.db.prepare("INSERT INTO key_overrides (name, sealed, last4, set_at) VALUES (?, ?, 'xxxx', 'now')").run(name, sealed);
+    put("EPHONE_API_KEY", await mod.sealKey("s3cret", "EPHONE_API_KEY", "sk-from-the-console-0001"));
+    put("WAVESPEED_API_KEY", await mod.sealKey("s3cret", "EPHONE_API_KEY", "sk-moved-row-0002"));
+    put("INTERNAL_SECRET", await mod.sealKey("s3cret", "INTERNAL_SECRET", "attacker-chosen"));
+    put("APIMART_API_KEY", await mod.sealKey("another secret", "APIMART_API_KEY", "sk-other-secret-0003"));
+    put("RESEND_API_KEY", "not a sealed key");
+    const keyed = await mod.withKeys(env, t0);
+    assert.equal(keyed.EPHONE_API_KEY, "sk-from-the-console-0001");
+    assert.equal(keyed.INTERNAL_SECRET, "s3cret", "INTERNAL_SECRET is never replaced");
+    for (const k of ["WAVESPEED_API_KEY", "APIMART_API_KEY", "RESEND_API_KEY"]) assert.equal(keyed[k], env[k], k);
+    assert.equal(keyed.DB, env.DB, "the bindings stay");
+    assert.equal(env.EPHONE_API_KEY, "ephone-secret-value", "the Worker's own env is not changed");
+    // Another isolate's change shows within a minute.
+    env.DB.db.exec("DELETE FROM key_overrides");
+    assert.equal((await mod.withKeys(env, t0 + 30_000)).EPHONE_API_KEY, "sk-from-the-console-0001", "inside the minute: what this isolate read");
+    assert.equal(await mod.withKeys(env, t0 + 61_000), env, "after it: read again");
+  } finally { mod.forgetKeys(); }
+});
+
+test("both Workers read env through withKeys, the console only after the certificate check, and the page never shows a key", () => {
+  const mcp = readFileSync(join(ROOT, "src/index.ts"), "utf8");
+  assert.match(mcp, /provider\.fetch\(request, await withKeys\(env\), ctx\)/);
+  assert.match(mcp, /const env = await withKeys\(raw\);/);
+  const studio = readFileSync(join(ROOT, "src/studio/index.ts"), "utf8");
+  assert.match(studio, /const keyed = adminHost && certProblem\(env, request\) \? env : await withKeys\(env\);/);
+  assert.match(studio, /const env = await withKeys\(raw\);/);
+  const js = readFileSync(join(ROOT, "studio-web/admin.js"), "utf8");
+  assert.match(js, /\{ key: "keys", label: "API keys", ic: "key" \}/);
+  const page = js.slice(js.indexOf("async function keysPage("), js.indexOf("\n}\n", js.indexOf("async function keysPage(")));
+  assert.match(page, /type: "password"/, "the new key is typed in a password field");
+  assert.match(page, /postFresh\(`\/api\/admin\/keys\/\$\{k\.name\}`/);
+  assert.match(page, /postFresh\(`\/api\/admin\/keys\/\$\{k\.name\}\/revert`/);
 });
