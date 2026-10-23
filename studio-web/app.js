@@ -193,7 +193,7 @@ async function api(path, opts = {}) {
 }
 function handleError(e) {
   if (e?.code === "dismissed") return; // the person closed a question: nothing to say
-  if (e?.code === "signin") { S.me = null; renderAuth("signin", true); return; }
+  if (e?.code === "signin") { S.me = null; if (adminSite()) adminSignIn(); else renderAuth("signin", true); return; }
   if (e?.code === "locked" || e?.code === "credits") { toast(e.message, true); setTimeout(() => openBuy(), 350); return; }
   toast(e?.message || "Something went wrong.", true);
 }
@@ -280,6 +280,7 @@ async function boot() {
       : err === "day_full" ? "Kleo is full for new accounts today. Please come back tomorrow."
       : err === "address_full" ? "Too many new accounts from this connection today."
       : err === "address_blocked" ? "No new accounts can be opened from this connection for now. Sign in to the account you already have."
+      : err === "blocked" ? "This account is closed. If you think this is a mistake, write to hello@kleooai.com."
       : /^taken_/.test(err) ? `That ${who(err.slice(6))} account already belongs to another Kleo account.`
       : /^claimed_/.test(err) ? `This e-mail already has a Kleo account. Sign in to it with your password or Kleo key, then connect ${who(err.slice(8))} from Account.`
       : err === "cancelled" ? "Sign-in was cancelled." : `${who(err)} sign-in didn't finish. Please try again.`;
@@ -325,6 +326,7 @@ async function connectView() {
 function requireAccount(mode = "signup") { renderAuth(mode, true); return false; }
 const signedIn = () => !!S.me;
 async function enter() {
+  if (adminSite()) return adminEnter();
   S.settings = fix(S.settings);
   if (S.me && !allowed(S.settings.model)) S.settings = fix({ ...S.settings, model: S.me.allowed[0] });
   S.imageSettings = ifix(S.imageSettings);
@@ -362,6 +364,8 @@ async function route() {
   if (p === "/plans") return show("plans", () => plansView());
   if (p === "/explore") return show("explore", () => exploreView());
   if (p === "/account") return show("account", () => accountView());
+  // The admin host shows the console and nothing else (src/studio/admin-host.ts).
+  if (adminSite()) return show("admin", () => adminView());
   const m = p.match(/^\/c\/(c_[a-z0-9]+)/);
   const app = p.match(/^\/apps\/([a-z0-9-]+)/);
   if (m) return show("chat", () => openChat(m[1]));
@@ -2003,27 +2007,36 @@ function sheet(title, sub, ...content) {
  * Kleo's own "are you sure?" (15 October 2026, the owner: no browser pop-ups, ever). A card over the page with the
  * question, Cancel and the action; Enter confirms, Escape and a tap outside cancel. Answers true or false. With `word`
  * the action stays off until that word is typed (deleting the account). It never closes the sheet or viewer beneath it.
+ * With `fields` ([{ key, label, placeholder, type, value, required }], the admin console's reasons and amounts) it
+ * answers the typed values as an object, or false/null when cancelled; the action stays off until every required one
+ * is filled in.
  */
-function ask({ title, text = "", ok = "OK", cancel = "Cancel", danger = false, ic = danger ? "trash" : "check", word = null }) {
+function ask({ title, text = "", ok = "OK", cancel = "Cancel", danger = false, ic = danger ? "trash" : "check", word = null, fields = null }) {
   return new Promise((done) => {
     const input = word ? h("input", { class: "input", placeholder: `Type ${word}`, autocomplete: "off", autocapitalize: "characters", spellcheck: "false" }) : null;
+    const boxes = (fields || []).map((f) => ({ f, el: h("input", { class: "input", type: f.type || "text", placeholder: f.placeholder || "", value: f.value ?? "", autocomplete: f.autocomplete || "off", inputmode: f.inputmode || (f.type === "number" ? "numeric" : null) }) }));
     const yes = h("button", { class: "btn " + (danger ? "btn-destroy" : "btn-primary"), type: "button" }, ok);
     const no = h("button", { class: "btn btn-quiet", type: "button" }, cancel);
     const card = h("div", { class: "ask", role: "alertdialog", "aria-modal": "true", "aria-label": title, onclick: (e) => e.stopPropagation() },
-      h("div", { class: "ask-ic" + (danger ? " danger" : "") }, icon(ic, 24, 2)), h("h3", {}, title), text ? h("p", {}, text) : null, input, h("div", { class: "ask-btns" }, no, yes));
+      h("div", { class: "ask-ic" + (danger ? " danger" : "") }, icon(ic, 24, 2)), h("h3", {}, title), text ? h("p", {}, text) : null,
+      boxes.length ? h("div", { class: "ask-fields" }, boxes.map(({ f, el }) => h("label", {}, h("span", {}, f.label), el))) : null,
+      input, h("div", { class: "ask-btns" }, no, yes));
     const scrim = h("div", { class: "ask-scrim" }, card);
+    const values = () => Object.fromEntries(boxes.map(({ f, el }) => [f.key, el.value.trim()]));
+    const check = () => { yes.disabled = (!!input && input.value.trim().toUpperCase() !== word) || boxes.some(({ f, el }) => f.required && !el.value.trim()); };
     const key = (e) => {
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(null); }
       else if (e.key === "Enter" && !yes.disabled) { e.preventDefault(); e.stopPropagation(); finish(true); }
     };
-    const finish = (v) => { document.removeEventListener("keydown", key, true); scrim.classList.add("out"); setTimeout(() => scrim.remove(), 160); done(v); };
+    const finish = (v) => { document.removeEventListener("keydown", key, true); scrim.classList.add("out"); setTimeout(() => scrim.remove(), 160); done(v === true && boxes.length ? values() : v); };
     scrim.addEventListener("click", () => finish(null));
     no.addEventListener("click", () => finish(false));
     yes.addEventListener("click", () => finish(true));
-    if (input) { yes.disabled = true; input.addEventListener("input", () => { yes.disabled = input.value.trim().toUpperCase() !== word; }); }
+    for (const x of [input, ...boxes.map((b) => b.el)]) x?.addEventListener("input", check);
+    check();
     document.addEventListener("keydown", key, true);
     document.body.append(scrim);
-    setTimeout(() => (input || yes).focus(), 30);
+    setTimeout(() => (boxes[0]?.el || input || yes).focus(), 30);
   });
 }
 function openMenu(anchor, options, pick) {
@@ -2221,6 +2234,7 @@ function openAccount(e) {
     h("div", { class: "am-credits" }, h("div", {}, bolt(18), h("b", { "data-credits": "" }, S.me.admin ? "∞" : S.me.credits), h("span", {}, S.me.admin ? "admin" : "credits")),
       S.me.admin ? null : h("button", { class: "btn btn-cta btn-sm", onclick: () => { closeLayer(); openBuy(); } }, "Get credits")),
     item("user", "Account settings", () => go("/account")),
+    S.me.adminUrl || DEMO ? item("grid", "Admin console", openConsole) : null,
     item("library", "My creations", () => go("/library")),
     item("plug", "Kleo in Claude & ChatGPT", () => window.open("https://kleooai.com/mcp/", "_blank", "noopener")),
     h("div", { class: "am-theme" }, h("span", {}, "Appearance"), h("div", { class: "seg2" }, [["system", "Auto"], ["light", "Light"], ["dark", "Dark"]].map(([k, l]) =>
@@ -2358,8 +2372,74 @@ function accountView() {
       signOut(true); toast("Your account was deleted");
     } }, icon("trash", 17), "Delete my account"));
 
+  // The owner's way into the admin console on a phone, where the avatar opens this page instead of a menu.
+  const console_ = me.adminUrl || DEMO ? h("div", { class: "list acct-admin" }, h("button", { class: "row", onclick: openConsole }, icon("grid", 20),
+    h("div", { class: "lbl" }, h("b", {}, "Admin console"), h("span", {}, "Users, payments, creations, providers and keys")), icon("right", 16))) : null;
   setView("account-view", h("div", { class: "acct" }, nav,
-    h("div", { class: "acct-main" }, h("h1", { class: "acct-title" }, "Account"), profile, credits, activity, security, assistant, videos, appearance, help, danger)));
+    h("div", { class: "acct-main" }, h("h1", { class: "acct-title" }, "Account"), console_, profile, credits, activity, security, assistant, videos, appearance, help, danger)));
+}
+
+// ── the admin console (23 October 2026): studio-web/admin.js, loaded only on the admin host ─────────────────────────
+// The console lives on its own host (admin.kleooai.com), which opens only with the owner's client certificate
+// (src/studio/admin-host.ts). There the page is the console alone: a sign-in with the password, then the code from the
+// phone (admin.js), and no customer pages. In ?demo mode on localhost, /admin stands for that host.
+const adminSite = () => !!S.config?.adminSite;
+/** The app's link to the console: its own host, opened in this tab. */
+function openConsole() { location.href = DEMO ? "/admin?demo=1" : S.me.adminUrl; }
+let adminCss = null;
+function loadAdminCss() {
+  adminCss ??= new Promise((ok) => { const css = h("link", { rel: "stylesheet", href: "/admin.css?v=74", "data-admin": "" }); css.onload = ok; css.onerror = ok; document.head.append(css); });
+  return adminCss;
+}
+async function adminEnter() {
+  await loadAdminCss();
+  if (!location.pathname.startsWith("/admin")) history.replaceState(null, "", "/admin" + location.search);
+  if (!S.me) return adminSignIn();
+  const nav = h("header", { class: "nav" }, h("div", { class: "brand" }, h("img", { src: "/kleo-mark.svg", alt: "" }), "Kleo admin"),
+    h("div", { class: "nav-right" }, h("span", { class: "nav-who" }, S.me.email || ""), h("button", { class: "btn btn-quiet btn-sm", onclick: () => signOut() }, icon("out", 16), "Sign out")));
+  fill($("#app"), h("div", { class: "frame admin-frame" }, nav, h("div", { class: "views" }, h("section", { class: "view", id: "view" }))));
+  lastSection = null;
+  await route();
+}
+/** The admin host's sign-in: e-mail and password only, then the console asks for the code from the phone. */
+function adminSignIn() {
+  const email = h("input", { class: "input", type: "email", placeholder: "E-mail", autocomplete: "username", inputmode: "email", autocapitalize: "off", "aria-label": "E-mail" });
+  const pass = h("input", { class: "input", type: "password", placeholder: "Password", autocomplete: "current-password", "aria-label": "Password" });
+  const err = h("p", { class: "adm-gate-err", role: "alert" });
+  const submit = h("button", { class: "btn btn-primary adm-gate-btn", type: "submit" }, "Sign in");
+  const form = h("form", { class: "adm-gate-form", onsubmit: async (ev) => {
+    ev.preventDefault(); err.textContent = "";
+    const restore = busyButton(submit);
+    try {
+      await api("/api/auth/signin", { method: "POST", body: { email: email.value, password: pass.value } });
+      S.me = await api("/api/me");
+      await enter();
+    } catch (e) { err.textContent = e.message; restore(); }
+  } }, email, pass, err, submit);
+  fill($("#app"), h("div", { class: "adm-gate adm-signin" }, h("div", { class: "adm-gate-card" },
+    h("div", { class: "adm-gate-ic" }, icon("lock", 28, 2)), h("h1", {}, "Kleo admin"),
+    h("p", { class: "adm-gate-sub" }, "Sign in with your Kleo e-mail and password. iPhone Passwords and Chrome fill them in."), form)));
+  setTimeout(() => email.focus(), 50);
+}
+let adminModule = null;
+async function adminView() {
+  if (!S.me) { if (adminSite()) adminSignIn(); else requireAccount("signin"); return; }
+  if (!S.me.admin && !DEMO) {
+    setView("connect-view", connectCard("Nothing here", "This page is for the Kleo team.", h("button", { class: "btn btn-primary", onclick: () => go("/") }, "Open Kleo")));
+    return;
+  }
+  if (!adminModule) {
+    setView("admin-view", h("div", { class: "connect-view" }, spinner(24)));
+    try {
+      await loadAdminCss();
+      adminModule = await import("/admin.js?v=74");
+    } catch {
+      setView("connect-view", connectCard("The console didn't load", "Check the connection and try again.", h("button", { class: "btn btn-primary", onclick: () => location.reload() }, "Try again")));
+      return;
+    }
+    if (S.view !== "admin") return; // the person went somewhere else meanwhile
+  }
+  adminModule.render({ h, fill, icon, bolt, toast, ask, sheet, closeLayer, api, setView, go, spinner, handleError, viewEl, nameOf, DEMO, me: S.me });
 }
 function addPasswordForm() {
   const e = h("input", { class: "input", type: "email", placeholder: "E-mail", autocomplete: "email" });
@@ -2519,7 +2599,7 @@ async function demoApi(path, opts) {
   await new Promise((r) => setTimeout(r, path === "/api/chat" ? 1100 : 150));
   const method = opts.method || "GET", b = opts.body || {};
   const now = () => new Date().toISOString();
-  if (path === "/api/config") return { google: true, microsoft: true, social: ["google"], emailReset: true, defaultModel: "seedance-2.5", models: demoCatalog(), defaultImageModel: "nano-banana-2", imageModels: demoImageCatalog(), freeCredits: 5, presets: DEMO_PRESETS, tools: DEMO_TOOLS, plans: DEMO_PLANS };
+  if (path === "/api/config") return { adminSite: location.pathname.startsWith("/admin"), google: true, microsoft: true, social: ["google"], emailReset: true, defaultModel: "seedance-2.5", models: demoCatalog(), defaultImageModel: "nano-banana-2", imageModels: demoImageCatalog(), freeCredits: 5, presets: DEMO_PRESETS, tools: DEMO_TOOLS, plans: DEMO_PLANS };
   if (path === "/api/me" && DEMO_GUEST) throw new ApiError("Sign in first.", 401, "signin");
   if (path === "/api/me" && DEMO_FREE) return { id: "u_demo", email: "you@example.com", name: "Demo", since: "2026-10-01T09:00:00Z", credits: 5, paid: false, allowed: ["seedance-2.0-fast"], freeResolutions: ["480p"], allowedImages: ["nano-banana-2"], allowedTools: [], methods: ["password"], mcpUrl: "https://mcp.kleooai.com/mcp", packs: [{ label: "5 EUR", credits: 10, url: "https://kleooai.com/pricing/" }, { label: "15 EUR", credits: 35, url: "https://kleooai.com/pricing/" }, { label: "40 EUR", credits: 100, url: "https://kleooai.com/pricing/" }] };
   if (path === "/api/me") return { id: "u_demo", email: "you@example.com", name: "Demo", since: "2026-10-01T09:00:00Z", credits: demoDb.credits, paid: true, allowed: demoCatalog().map((m) => m.key), allowedImages: demoImageCatalog().map((m) => m.key), allowedTools: DEMO_TOOLS.map((t) => t.key), methods: ["password", "google"], mcpUrl: "https://mcp.kleooai.com/mcp", autoWan: !!demoDb.autoWan, packs: [{ label: "5 EUR", credits: 10, url: "https://kleooai.com/pricing/" }, { label: "15 EUR", credits: 35, url: "https://kleooai.com/pricing/" }, { label: "40 EUR", credits: 100, url: "https://kleooai.com/pricing/" }] };

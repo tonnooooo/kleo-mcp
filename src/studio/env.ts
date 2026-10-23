@@ -103,4 +103,13 @@ export interface StudioEnv {
   TURNSTILE_SECRET?: string;
   /** Workers rate limit on the sign-in routes (per hashed address). */
   AUTH_LIMIT?: RateLimit;
+  /** A Cloudflare API token with Zone > Analytics > Read on kleooai.com (secret): the admin console's "Find the
+   *  address" button reads the request logs of past sign-ins with it (src/studio/ip-lookup.ts). Unset: no button. */
+  CF_ANALYTICS_TOKEN?: string;
+  /** The kleooai.com zone those logs belong to (default the live zone's id). */
+  CF_ZONE_ID?: string;
+  /** The admin console's own host(s), comma separated (default admin.kleooai.com; src/studio/admin-host.ts). */
+  ADMIN_HOST?: string;
+  /** SHA-256 fingerprints (hex) of the client certificates that open the admin host; empty: nothing opens. */
+  ADMIN_CERT_SHA256?: string;
 }

@@ -25,8 +25,10 @@ import { verifyHandle, ipFingerprint, verifyTurnstile, makeHandle, rotateKey } f
 import { rid } from "../util.ts";
 import { addLogin, getLogin, loginsOf, touchLogin } from "./store.ts";
 import { EMAIL_RE, checkPassword, hashPassword, makeSession, normalizeEmail, passwordProblem, readCookie, safeEqual, sessionCookie } from "./session.ts";
-import { StudioError } from "./generate.ts";
+import { StudioError, isAdmin } from "./generate.ts";
+import { adminPasswordProblem } from "./admin-auth.ts";
 import { canonicalEmail, giftBlocker, giftCookie, mailDomainOk, type Visitor } from "../abuse.ts";
+import { recordIp } from "./ips.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const int = (v: string | undefined, d: number): number => { const n = parseInt(v ?? "", 10); return Number.isFinite(n) ? n : d; };
@@ -51,8 +53,17 @@ export async function endAllSessions(env: StudioEnv, userId: string): Promise<vo
 const newSession = async (env: StudioEnv, userId: string): Promise<string> =>
   sessionCookie(await makeSession(env.INTERNAL_SECRET, userId, Date.now(), await epochOf(env, userId)));
 
+/** What a person reads when the owner closed their account from the console (src/studio/admin.ts). */
+export const BLOCKED_SENTENCE = "This account is closed. If you think this is a mistake, write to hello@kleooai.com.";
+/** True while the owner keeps the account closed (users.blocked_at): no session opens it, and no sign-in. */
+export async function accountBlocked(env: StudioEnv, userId: string): Promise<boolean> {
+  const r = await env.DB.prepare("SELECT blocked_at FROM users WHERE id = ?").bind(userId).first<{ blocked_at: string | null }>().catch(() => null);
+  return !!r?.blocked_at;
+}
+
 /** Sets the session cookie for an account on a JSON answer. */
 export async function signedIn(env: StudioEnv, userId: string, body: unknown = { ok: true }): Promise<Response> {
+  if (await accountBlocked(env, userId)) throw new StudioError(BLOCKED_SENTENCE, 403, "blocked");
   return new Response(JSON.stringify(body), {
     headers: { "content-type": "application/json; charset=utf-8", "set-cookie": await newSession(env, userId) },
   });
@@ -128,12 +139,22 @@ export async function signInWithKey(env: StudioEnv, key: string): Promise<string
   return userId;
 }
 
+/** An admin account's password follows the console's stricter rule (admin-auth.ts): 14 characters, not its e-mail or name. */
+async function adminRule(env: StudioEnv, userId: string, password: string, email: string | null = null): Promise<void> {
+  if (!isAdmin(env, userId)) return;
+  const u = await env.DB.prepare("SELECT email, display_name FROM users WHERE id = ?").bind(userId).first<{ email: string; display_name: string | null }>();
+  const login = (await loginsOf(env, userId)).find((l) => l.email)?.email ?? null;
+  const bad = adminPasswordProblem(password, email ?? login ?? u?.email ?? null, u?.display_name ?? null);
+  if (bad) throw new StudioError(bad, 400, "weak_password");
+}
+
 /** Adds an e-mail and password to an account that has none (an MCP account brought in with its key). */
 export async function addPassword(env: StudioEnv, userId: string, body: { email?: string; password?: string }): Promise<void> {
   const email = normalizeEmail(String(body.email ?? ""));
   if (!EMAIL_RE.test(email)) throw new StudioError("That e-mail doesn't look right.");
   const bad = passwordProblem(String(body.password ?? ""));
   if (bad) throw new StudioError(bad);
+  await adminRule(env, userId, String(body.password), email);
   if ((await loginsOf(env, userId)).some((l) => l.provider === "password")) throw new StudioError("This account already has a password.", 409, "exists");
   if (!(await addLogin(env, { provider: "password", subject: email, userId, email, secret: await hashPassword(String(body.password)) }))) {
     throw new StudioError("This e-mail is already used by another account.", 409, "taken");
@@ -175,6 +196,7 @@ export async function changePassword(env: StudioEnv, userId: string, body: { cur
   if (!(await checkPassword(String(body.current ?? ""), full.secret))) throw new StudioError("Your current password isn't right.", 401, "wrong");
   const bad = passwordProblem(String(body.password ?? ""));
   if (bad) throw new StudioError(bad);
+  await adminRule(env, userId, String(body.password), full.subject);
   await env.DB.prepare("UPDATE studio_logins SET secret = ? WHERE provider = 'password' AND subject = ?").bind(await hashPassword(String(body.password)), full.subject).run();
   await endAllSessions(env, userId);
   await audit(asEnv(env), userId, null, "studio.password_changed", {});
@@ -279,6 +301,7 @@ export async function resetPassword(env: StudioEnv, body: { token?: string; pass
   if (!full?.secret || !safeEqual(m[3], await resetSig(env, m[1], Number(m[2]), full.secret))) throw bad();
   const problem = passwordProblem(String(body.password ?? ""));
   if (problem) throw new StudioError(problem);
+  await adminRule(env, m[1], String(body.password), full.subject);
   await env.DB.prepare("UPDATE studio_logins SET secret = ? WHERE provider = 'password' AND subject = ?").bind(await hashPassword(String(body.password)), full.subject).run();
   // Whoever had the old password may still hold a session: every one of them ends here (the new one is made after).
   // And the Kleo key is renewed (the review's second pass): with the password one could ask for the key and connect an
@@ -523,7 +546,10 @@ export async function socialCallback(env: StudioEnv, key: SocialKey, request: Re
   }
   // Only a vouched-for address is stored on the sign-in: it is what finds and joins accounts later.
   if (!owner) await addLogin(env, { provider: key, subject, userId, email: verified, secret: null });
+  // An account the owner closed from the console opens no session (src/studio/admin.ts).
+  if (await accountBlocked(env, userId)) return back("signin_error=blocked");
   await touchLogin(env, key, subject);
+  await recordIp(env, userId, gifted === null ? "signin" : "signup", request);
   // A new account that started without the gift lands on "/?gift=none", where the page says why (src/abuse.ts).
   const headers: [string, string][] = [["location", gifted === 0 ? "/?gift=none" : "/"], ["set-cookie", await newSession(env, userId)], ["set-cookie", clearState(key)]];
   if (gifted) headers.push(["set-cookie", giftCookie()]);
