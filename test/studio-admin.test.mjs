@@ -674,3 +674,84 @@ test("with the certificate the admin host is the console and nothing else; its o
   assert.equal((await call(env, "/api/admin/overview", { cookie: ana.cookie })).status, 404, "a customer with the certificate still finds nothing");
   assert.equal((await call(env, "/api/admin/overview", { host: "app", cookie: owner.cookie })).status, 404);
 });
+
+// ── races and the door's edges (the security review of 23 October 2026) ─────────────────────────────────────────
+
+test("20 wrong codes sent at once still lock the console after 5; the right code is refused while it is locked", async () => {
+  const { env, owner } = await setup();
+  const signin = (code) => call(env, "/api/admin/auth/signin", { method: "POST", cookie: owner.studio, body: { code }, from: NZ });
+  const all = await Promise.all(Array.from({ length: 20 }, (_, i) => signin(String(100000 + i))));
+  const codes = all.map((r) => r.json.code);
+  assert.equal(codes.filter((c) => c === "admin_wrong").length + codes.filter((c) => c === "admin_locked").length, 20);
+  assert.ok(codes.filter((c) => c === "admin_wrong").length <= 4, `at most 4 plain refusals before the lock, got ${codes.join(",")}`);
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE event = 'admin.code_wrong'").get().n, 5, "only 5 codes were ever checked");
+  assert.equal(subjects(env).filter((x) => x === "Kleo admin: console locked").length, 1, "one lock, one e-mail");
+  assert.ok(env.DB.db.prepare("SELECT locked_until FROM studio_admin WHERE user_id = ?").get(owner.id).locked_until > new Date().toISOString());
+  const right = await signin(await codeAt(owner.phone.secret, 0));
+  assert.equal(right.status, 429);
+  assert.equal(right.json.code, "admin_locked");
+  // The same limit holds on the fresh code before a dangerous write.
+  run(env, "UPDATE studio_admin SET locked_until = NULL, failed = 0 WHERE user_id = ?", owner.id);
+  const s = await mod.readAdminCookie("s3cret", owner.phone.admin.split("=")[1]);
+  const stale = `${owner.studio}; __Host-kleo_admin=${await mod.adminCookieValue("s3cret", { ...s, fresh: s.fresh - 600 })}`;
+  const steps = await Promise.all(Array.from({ length: 12 }, (_, i) => call(env, "/api/admin/auth/step-up", { method: "POST", cookie: stale, body: { code: String(200000 + i) } })));
+  assert.ok(steps.every((r) => r.status === 401 || r.status === 429));
+  assert.equal((await call(env, "/api/admin/auth/step-up", { method: "POST", cookie: stale, body: { code: await codeAt(owner.phone.secret, 0) } })).json.code, "admin_locked");
+});
+
+test("one code from the phone opens one session, however many requests carry it at the same moment", async () => {
+  const { env, owner } = await setup();
+  const code = await codeAt(owner.phone.secret, 0);
+  const both = await Promise.all([1, 2, 3].map(() => call(env, "/api/admin/auth/signin", { method: "POST", cookie: owner.studio, body: { code } })));
+  assert.deepEqual(both.map((r) => r.status).sort(), [200, 401, 401]);
+  assert.equal(both.filter((r) => /__Host-kleo_admin=[^;]/.test(r.res.headers.get("set-cookie") ?? "")).length, 1, "one admin session");
+});
+
+test("one recovery code opens one session, however many requests carry it at the same moment", async () => {
+  const { env, owner } = await setup();
+  const code = owner.phone.recovery[0];
+  const both = await Promise.all([1, 2, 3].map(() => call(env, "/api/admin/auth/signin", { method: "POST", cookie: owner.studio, body: { code } })));
+  assert.deepEqual(both.map((r) => r.status).sort(), [200, 401, 401]);
+  assert.equal((await call(env, "/api/admin/auth", { cookie: owner.studio })).json.recoveryLeft, 9, "the code is gone, and only that one");
+});
+
+test("on other hosts every spelling of the console's paths is the site's 404", async () => {
+  const { env, owner } = await setup();
+  siteStub();
+  try {
+    for (const path of ["/admin", "/ADMIN", "/Admin/users", "/admin/x", "/API/ADMIN/overview", "/api/Admin/users", "/api/admin/auth", "/admin.js", "/ADMIN.JS", "/Admin.css", "/QR.js", "/qr.js"]) {
+      const r = await call(env, path, { host: "app", cookie: owner.cookie });
+      assert.equal(r.status, 404, path);
+      assert.match(r.text, /Page not found/, path);
+    }
+  } finally { answer = null; }
+});
+
+test("on the admin host a missing or wrong certificate is refused before any work: no Kleo table, no file, no session read", async () => {
+  const { env, owner } = await setup();
+  const sql = [];
+  const prepare = env.DB.prepare.bind(env.DB);
+  env.DB.prepare = (q) => { sql.push(q); return prepare(q); };
+  let files = 0;
+  const assets = env.ASSETS.fetch;
+  env.ASSETS.fetch = (...a) => { files++; return assets(...a); };
+  for (const tls of [null, { ...GOOD_TLS, certFingerprintSHA256: "cd".repeat(32) }]) {
+    for (const path of ["/admin", "/admin.js", "/api/admin/overview", "/api/config", "/api/auth/signin", "/media/g_x.mp4"]) {
+      const r = await call(env, path, { host: "admin", tls, cookie: owner.cookie, method: path === "/api/auth/signin" ? "POST" : "GET", body: path === "/api/auth/signin" ? {} : undefined });
+      assert.equal(r.status, 403, path);
+    }
+  }
+  assert.equal(files, 0, "no file was served");
+  assert.ok(sql.length > 0 && sql.every((q) => /\baudit\b/.test(q) && !/studio_|users|CREATE/i.test(q)), `only the refusal's own audit note touched D1:\n${sql.join("\n")}`);
+});
+
+test("a request that names the admin host but carries no TLS facts at all is refused", async () => {
+  const { env } = await setup();
+  for (const headers of [{ host: "admin.kleo.test" }, { "x-forwarded-host": "admin.kleo.test" }]) {
+    const req = new Request("https://admin.kleo.test/api/admin/overview", { headers: { "x-kleo": "1", ...headers } });
+    const res = await worker.fetch(req, env, ctx);
+    await Promise.allSettled(pending.splice(0));
+    assert.equal(res.status, 403);
+    assert.equal(await res.text(), "Forbidden");
+  }
+});

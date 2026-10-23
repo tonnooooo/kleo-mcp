@@ -132,38 +132,66 @@ function lockedFor(row: AdminRow | null, nowMs: number): number {
 }
 const lockedError = (min: number) => new StudioError(`Too many wrong codes. The console is locked for ${min} more ${min === 1 ? "minute" : "minutes"}.`, 429, "admin_locked", { minutes: min });
 
-/** A wrong code (or password at set-up): counted, audited, mailed; the fifth in a row locks the console. */
-async function wrong(env: StudioEnv, request: Request, userId: string, what: string, nowMs: number): Promise<never> {
-  const row = await ensureRow(env, userId);
-  const failed = (row.failed ?? 0) + 1;
-  const lock = failed >= LOCK_AFTER;
-  await env.DB.prepare("UPDATE studio_admin SET failed = ?, locked_until = ? WHERE user_id = ?")
-    .bind(lock ? 0 : failed, lock ? new Date(nowMs + LOCK_MIN * 60_000).toISOString() : row.locked_until, userId).run();
-  await audit(asEnv(env), userId, null, lock ? "admin.locked" : "admin.code_wrong", auditDetail(request, { what, tries: failed }));
-  await tell(env, request, lock ? "console locked" : `wrong ${what}`,
-    lock ? `${LOCK_AFTER} wrong codes in a row: the admin console is locked for ${LOCK_MIN} minutes.` : `A wrong ${what} was typed on the admin console (${failed} of ${LOCK_AFTER} before it locks).`, nowMs);
-  if (lock) throw lockedError(LOCK_MIN);
-  throw new StudioError(what === "password" ? "That password isn't right." : "That code isn't right. Check the time on your phone and try the newest code.", 401, "admin_wrong", { left: LOCK_AFTER - failed });
-}
+const iso = (ms: number) => new Date(ms).toISOString();
 
-/** The step of a right code (TOTP only), or null. A code is never accepted twice. */
+/**
+ * One try at a code (or at the password while setting up), counted BEFORE it is checked and in one statement, so tries
+ * sent in parallel cannot all slip under the limit (the security review of 23 October 2026). Answers the tries so far,
+ * this one included; throws while the console is locked, and locks it when the limit is passed.
+ */
+async function attempt(env: StudioEnv, request: Request, userId: string, nowMs: number): Promise<number> {
+  await ensureRow(env, userId);
+  const r = await env.DB.prepare("UPDATE studio_admin SET failed = failed + 1 WHERE user_id = ? AND (locked_until IS NULL OR locked_until <= ?) RETURNING failed")
+    .bind(userId, iso(nowMs)).first<{ failed: number }>();
+  if (!r) throw lockedError(lockedFor(await rowOf(env, userId), nowMs) || LOCK_MIN);
+  if (r.failed > LOCK_AFTER) { await lockNow(env, request, userId, nowMs); throw lockedError(LOCK_MIN); }
+  return r.failed;
+}
+/** Locks the console for LOCK_MIN minutes. Only the request that set the lock writes it down and tells the owner. */
+async function lockNow(env: StudioEnv, request: Request, userId: string, nowMs: number): Promise<void> {
+  const r = await env.DB.prepare("UPDATE studio_admin SET locked_until = ?, failed = 0 WHERE user_id = ? AND (locked_until IS NULL OR locked_until <= ?)")
+    .bind(iso(nowMs + LOCK_MIN * 60_000), userId, iso(nowMs)).run();
+  if ((r.meta.changes ?? 0) !== 1) return;
+  await audit(asEnv(env), userId, null, "admin.locked", auditDetail(request, { tries: LOCK_AFTER }));
+  await tell(env, request, "console locked", `${LOCK_AFTER} wrong codes in a row: the admin console is locked for ${LOCK_MIN} minutes.`, nowMs);
+}
+/** A wrong code (or password), already counted by attempt(): audited and mailed; the fifth in a row locks the console. */
+async function wrong(env: StudioEnv, request: Request, userId: string, what: string, tries: number, nowMs: number): Promise<never> {
+  await audit(asEnv(env), userId, null, "admin.code_wrong", auditDetail(request, { what, tries }));
+  await tell(env, request, `wrong ${what}`, `A wrong ${what} was typed on the admin console (${Math.min(tries, LOCK_AFTER)} of ${LOCK_AFTER} before it locks).`, nowMs);
+  if (tries >= LOCK_AFTER) { await lockNow(env, request, userId, nowMs); throw lockedError(LOCK_MIN); }
+  throw new StudioError(what === "password" ? "That password isn't right." : "That code isn't right. Check the time on your phone and try the newest code.", 401, "admin_wrong", { left: LOCK_AFTER - tries });
+}
+/** A right answer starts the count again. */
+const triesOk = (env: StudioEnv, userId: string) => env.DB.prepare("UPDATE studio_admin SET failed = 0 WHERE user_id = ?").bind(userId).run();
+
+/** The step of a right code from the phone (TOTP only), or null. */
 async function totpStep(env: StudioEnv, row: AdminRow, code: string, nowMs: number): Promise<number | null> {
   if (!row.secret) return null;
   const secret = await openSecret(env.INTERNAL_SECRET, row.user_id, row.secret);
   return verifyTotp(secret, code, nowMs, row.last_step ?? 0);
 }
-async function codeOk(env: StudioEnv, userId: string, step: number): Promise<void> {
-  await env.DB.prepare("UPDATE studio_admin SET failed = 0, locked_until = NULL, last_step = MAX(last_step, ?) WHERE user_id = ?").bind(step, userId).run();
+/**
+ * Takes a code's step for this request in one conditional statement: of two requests sending the same code at the same
+ * moment only one wins, so a code is never accepted twice. False when another request used it first.
+ */
+async function claimStep(env: StudioEnv, userId: string, step: number): Promise<boolean> {
+  const r = await env.DB.prepare("UPDATE studio_admin SET last_step = ?, failed = 0, locked_until = NULL WHERE user_id = ? AND last_step < ?").bind(step, userId, step).run();
+  return (r.meta.changes ?? 0) === 1;
+}
+/** Uses up one recovery code: the list is replaced only if nobody changed it meanwhile, so a code works once. */
+async function claimRecovery(env: StudioEnv, userId: string, before: string | null, rest: string[]): Promise<boolean> {
+  const r = await env.DB.prepare("UPDATE studio_admin SET recovery = ?, failed = 0, locked_until = NULL WHERE user_id = ? AND recovery = ?")
+    .bind(JSON.stringify(rest), userId, before ?? "").run();
+  return (r.meta.changes ?? 0) === 1;
 }
 
-/** A fresh code for a dangerous write: right, or counted as wrong. */
+/** A fresh code for a dangerous write (or new recovery codes): counted, then right and unused, or wrong. */
 export async function checkFreshCode(env: StudioEnv, request: Request, userId: string, code: unknown, nowMs = Date.now()): Promise<void> {
+  const tries = await attempt(env, request, userId, nowMs);
   const row = await rowOf(env, userId);
-  const min = lockedFor(row, nowMs);
-  if (min) throw lockedError(min);
   const step = row ? await totpStep(env, row, String(code ?? ""), nowMs) : null;
-  if (step === null) await wrong(env, request, userId, "code", nowMs);
-  await codeOk(env, userId, step!);
+  if (step === null || !(await claimStep(env, userId, step))) await wrong(env, request, userId, "code", tries, nowMs);
 }
 
 // ── the admin password rule ──────────────────────────────────────────────────────────────────────────────────────
@@ -217,15 +245,15 @@ export async function adminAuthApi(env: StudioEnv, request: Request, url: URL, u
   }
   if (method !== "POST") return json({ error: "Not found." }, 404);
   const b = await body(request);
-  const min = lockedFor(row, nowMs);
 
   // Setting up, step 1: who is asking is proved again (password, or a Google sign-in just now), then a new secret.
   if (path === "/api/admin/auth/enroll") {
     if (row?.secret) throw new StudioError("The second factor is already set up. Resetting it is done from a terminal (docs/ADMIN-SECURITY.md).", 409, "enrolled");
-    if (min) throw lockedError(min);
     if (acct.hasPassword) {
+      const tries = await attempt(env, request, userId, nowMs);
       const full = await getLogin(env, "password", acct.passwordSubject!);
-      if (!(await checkPassword(String(b.password ?? ""), full?.secret))) await wrong(env, request, userId, "password", nowMs);
+      if (!(await checkPassword(String(b.password ?? ""), full?.secret))) await wrong(env, request, userId, "password", tries, nowMs);
+      await triesOk(env, userId);
       const weak = adminPasswordProblem(String(b.password), acct.email, acct.name);
       if (weak) throw new StudioError(`${weak} Change it on the Account page first, then come back.`, 400, "weak_password");
     } else {
@@ -242,16 +270,18 @@ export async function adminAuthApi(env: StudioEnv, request: Request, url: URL, u
   // Setting up, step 2: the first code proves the phone has it; the recovery codes are shown this once.
   if (path === "/api/admin/auth/enroll/confirm") {
     if (row?.secret) throw new StudioError("The second factor is already set up.", 409, "enrolled");
-    if (min) throw lockedError(min);
     if (!row?.pending || !row.pending_at || Date.parse(row.pending_at.endsWith("Z") ? row.pending_at : `${row.pending_at}Z`) < nowMs - PENDING_MIN * 60_000) {
       throw new StudioError("Setting up took too long. Start again.", 400, "pending_expired");
     }
+    const tries = await attempt(env, request, userId, nowMs);
     const step = await verifyTotp(await openSecret(env.INTERNAL_SECRET, userId, row.pending), String(b.code ?? ""), nowMs);
-    if (step === null) await wrong(env, request, userId, "code", nowMs);
+    if (step === null) await wrong(env, request, userId, "code", tries, nowMs);
     const codes = newRecoveryCodes();
     const hashes = await Promise.all(codes.map((c) => hashRecovery(env.INTERNAL_SECRET, userId, c)));
-    await env.DB.prepare(`UPDATE studio_admin SET secret = pending, pending = NULL, pending_at = NULL, enrolled_at = ${NOW}, recovery = ?, failed = 0,
-        locked_until = NULL, last_step = ?, session_epoch = session_epoch + 1 WHERE user_id = ?`).bind(JSON.stringify(hashes), step, userId).run();
+    // Only for the secret this phone scanned, and only once: two confirmations at once set up one phone.
+    const done = await env.DB.prepare(`UPDATE studio_admin SET secret = pending, pending = NULL, pending_at = NULL, enrolled_at = ${NOW}, recovery = ?, failed = 0,
+        locked_until = NULL, last_step = ?, session_epoch = session_epoch + 1 WHERE user_id = ? AND secret IS NULL AND pending = ?`).bind(JSON.stringify(hashes), step, userId, row.pending).run();
+    if ((done.meta.changes ?? 0) !== 1) throw new StudioError("The second factor is already set up.", 409, "enrolled");
     await audit(asEnv(env), userId, null, "admin.2fa_enrolled", auditDetail(request));
     await tell(env, request, "second factor set up", "A phone was set up for the Kleo admin console's codes.", nowMs);
     return json({ ok: true, recovery: codes }, 200, await openSession(env, userId, nowMs));
@@ -259,17 +289,18 @@ export async function adminAuthApi(env: StudioEnv, request: Request, url: URL, u
   // Signing in to the console: a code from the phone, or a recovery code.
   if (path === "/api/admin/auth/signin") {
     if (!row?.secret) throw new StudioError("Set up the second factor first.", 400, "not_enrolled");
-    if (min) throw lockedError(min);
+    const tries = await attempt(env, request, userId, nowMs);
     const typed = String(b.code ?? "").trim();
     let via = "code";
     const step = await totpStep(env, row, typed, nowMs);
-    if (step !== null) await codeOk(env, userId, step);
-    else {
+    if (step !== null) {
+      if (!(await claimStep(env, userId, step))) await wrong(env, request, userId, "code", tries, nowMs);
+    } else {
       const left = recoveryOf(row);
       const h = normalizeRecovery(typed).length === 12 ? await hashRecovery(env.INTERNAL_SECRET, userId, typed) : "";
-      if (!h || !left.includes(h)) await wrong(env, request, userId, "code", nowMs);
+      if (!h || !left.includes(h)) await wrong(env, request, userId, "code", tries, nowMs);
       const rest = left.filter((x) => x !== h);
-      await env.DB.prepare("UPDATE studio_admin SET recovery = ?, failed = 0, locked_until = NULL WHERE user_id = ?").bind(JSON.stringify(rest), userId).run();
+      if (!(await claimRecovery(env, userId, row.recovery, rest))) await wrong(env, request, userId, "code", tries, nowMs);
       via = "recovery";
       await audit(asEnv(env), userId, null, "admin.recovery_used", auditDetail(request, { left: rest.length }));
       await tell(env, request, "recovery code used", `A recovery code opened the admin console. ${rest.length} ${rest.length === 1 ? "is" : "are"} left.`, nowMs);

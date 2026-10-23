@@ -31,7 +31,7 @@ export const isAdminHost = (env: Pick<StudioEnv, "ADMIN_HOST">, hostname: string
 export const adminUrl = (env: Pick<StudioEnv, "ADMIN_HOST">): string => `https://${adminHosts(env)[0] ?? DEFAULT_ADMIN_HOST}/admin`;
 
 /** Paths that belong to the console: on any other host they do not exist. */
-export const CONSOLE_PATH = /^\/(?:api\/)?admin(?:\/|$)|^\/(?:admin\.(?:js|css)|qr\.js)$/;
+export const CONSOLE_PATH = /^\/(?:api\/)?admin(?:\/|$)|^\/(?:admin\.(?:js|css)|qr\.js)$/i;
 /** What the admin host answers: the console page and its files, media previews, its API and its sign-in. */
 export const ADMIN_SITE_PATH = /^\/(?:admin(?:\/[a-z0-9_-]+){0,2}|api\/admin\/.+|api\/(?:config|me|auth\/signin|auth\/signout)|media\/.+|(?:app|admin)\.(?:js|css)|qr\.js|manifest\.webmanifest|kleo-(?:mark|favicon)\.svg|kleo-icon-dark-(?:192|512)\.png)$/;
 /** The API routes the admin host answers. */
