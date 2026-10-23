@@ -45,6 +45,7 @@ import { balances, secretStatus } from "./admin-providers.ts";
 import { KLEO_ZONE, lookupRequests, pathsFor } from "./ip-lookup.ts";
 import { IP_RETENTION_DAYS } from "./ips.ts";
 import { adminAuthApi, adminSessionOf, checkFreshCode, isFresh, securityInfo, touchSession, type AdminSession } from "./admin-auth.ts";
+import { keyAction, listKeys } from "./admin-keys.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const json = (data: unknown, status = 200): Response =>
@@ -495,10 +496,26 @@ async function adminRoute(env: StudioEnv, request: Request, url: URL, adminId: s
       const e = env as unknown as Record<string, string | undefined>;
       return json({ secrets: secretStatus(env), balances: await balances(env), lookup: !!env.CF_ANALYTICS_TOKEN, settings: SETTINGS.map((name) => ({ name, value: e[name] ?? null })) });
     }
+    if (path === "/api/admin/keys") return json(await listKeys(env));
   }
   if (method === "POST") {
     const am = path.match(/^\/api\/admin\/users\/(u_[a-z0-9]+)\/(credits|block|address|key|signout|delete|ip-lookup)$/);
     if (am) return userAction(env, request, gate, adminId, am[1], am[2]);
+    const km = path.match(/^\/api\/admin\/keys\/([A-Z0-9_]{3,64})(?:\/(test|revert))?$/);
+    if (km) return keyRoute(env, request, gate, adminId, km[1], (km[2] ?? "set") as "set" | "revert" | "test");
   }
   return json({ error: "Not found." }, 404);
+}
+
+/** The Keys page's writes (admin-keys.ts): a change or a revert wants a reason and a code typed in the last 5 minutes. */
+async function keyRoute(env: StudioEnv, request: Request, gate: Gate, adminId: string, name: string, action: "set" | "revert" | "test"): Promise<Response> {
+  const b = await body(request);
+  if (action === "test") return keyAction(env, adminId, name, "test", b, "");
+  const reason = reasonOf(b);
+  if (!isFresh(gate.session)) {
+    if (!b.code) throw new StudioError("Type a new code from your phone to do this.", 403, "fresh_code");
+    await checkFreshCode(env, request, adminId, b.code);
+    gate.fresh = true;
+  }
+  return keyAction(env, adminId, name, action, b, reason);
 }

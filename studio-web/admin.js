@@ -9,7 +9,7 @@
 // (a QR code drawn by qr.js, on this origin), every later visit asks for the 6-digit code, and the dangerous actions
 // ask for a new one.
 
-import { qrSvg } from "./qr.js?v=76";
+import { qrSvg } from "./qr.js?v=77";
 
 let K = null;
 const DEMO_MODE = new URLSearchParams(location.search).get("demo");
@@ -20,7 +20,8 @@ const SECTIONS = [
   { key: "users", label: "Users", ic: "user" },
   { key: "payments", label: "Payments", ic: "bag" },
   { key: "creations", label: "Creations", ic: "film" },
-  { key: "providers", label: "Providers & keys", ic: "key" },
+  { key: "providers", label: "Providers", ic: "plug" },
+  { key: "keys", label: "API keys", ic: "key" },
   { key: "security", label: "Security", ic: "lock" },
 ];
 const h = (...a) => K.h(...a);
@@ -216,7 +217,7 @@ export function render(kit) {
     h("button", { class: "adm-live", title: "Update now", onclick: () => live(true) }, h("i", { class: "adm-live-dot" }), h("span", { class: "adm-live-t" }, "Live")));
   const main = h("div", { class: "adm-main" });
   K.setView("admin-view", h("div", { class: "adm" }, nav, main));
-  const pages = { overview: overviewPage, users: id ? (m, o) => userPage(m, id, o) : usersPage, payments: paymentsPage, creations: creationsPage, providers: providersPage, security: securityPage };
+  const pages = { overview: overviewPage, users: id ? (m, o) => userPage(m, id, o) : usersPage, payments: paymentsPage, creations: creationsPage, providers: providersPage, keys: keysPage, security: securityPage };
   pages[key](main);
   // The same page, built again off screen every LIVE_MS (live() above).
   liveStart((into) => pages[key](main, { into }));
@@ -798,7 +799,7 @@ async function balancesInto(box, data) {
 }
 async function providersPage(main, opts = {}) {
   const body = h("div", { class: "adm-stack" }, loading());
-  K.fill(opts.into || main, head("Providers & keys", "Balances, which keys are set, and the app's settings.", refreshBtn(() => providersPage(main))), body);
+  K.fill(opts.into || main, head("Providers", "Balances, which keys are set, and the app's settings.", refreshBtn(() => providersPage(main))), body);
   let r;
   try { r = await call("/api/admin/providers"); } catch (e) { return failed(body, e, () => providersPage(main)); }
   const bal = h("div", { class: "adm-bal" });
@@ -809,9 +810,59 @@ async function providersPage(main, opts = {}) {
       : "WaveSpeed and APIMart are read live. ePhone needs its read-only admin key (EPHONE_ADMIN_KEY) to be read live; without it Kleo knows only what ePhone said when it last refused an order. Under $5 shows in red.", bal),
     card("Keys", "Only the names: a key's value never leaves the Worker.", h("div", { class: "list" }, r.secrets.map((s) => h("div", { class: "row" }, icon("key", 19),
       h("div", { class: "lbl" }, h("b", { class: "mono" }, s.name), h("span", {}, s.purpose)), s.set ? pill("Set", "ok") : pill("Not set", "")))),
-      h("div", { class: "adm-note" }, icon("lock", 17), h("span", {}, "To change a key, run this in a terminal in the kleo-mcp folder, then paste the new value when asked: ", h("code", {}, "npx wrangler secret put NAME --config wrangler.studio.jsonc")))),
+      h("button", { class: "btn btn-quiet btn-sm adm-more", onclick: () => K.go("/admin/keys") }, "Change a key", icon("right", 15))),
     card("Settings", "The Worker's settings as deployed (wrangler.studio.jsonc).", kv(r.settings.map((s) => [s.name, h("span", { class: "mono" }, s.value === null || s.value === "" ? "—" : s.value)]))),
     card("Address lookup", r.lookup ? "On: past sign-ins can be looked up in Cloudflare's logs from each account's timeline." : "Off: add the CF_ANALYTICS_TOKEN secret (a Cloudflare API token with Analytics read on kleooai.com) to look up the address of sign-ins made before 23 October 2026."));
+}
+
+// ── API keys (23 October 2026, the owner: "una sezione per le key, in modo che posso cambiare le api key quando ho
+// bisogno"): a new key is tried live by the Worker before it is kept, and no answer ever carries a key ─────────────
+async function keysPage(main, opts = {}) {
+  const body = h("div", { class: "adm-stack" }, loading());
+  K.fill(opts.into || main, head("API keys", "The keys Kleo uses to pay its providers. Change one here when you renew it.", refreshBtn(() => keysPage(main))), body);
+  let r;
+  try { r = await call("/api/admin/keys"); } catch (e) { return failed(body, e, () => keysPage(main)); }
+  const reload = () => keysPage(main);
+  const where = (k) => k.source === "console" ? `Changed here ${ago(k.setAt)}, ends in ${k.last4}`
+    : k.source === "worker" ? `Worker secret, ends in ${k.last4}` : "Not set";
+  async function test(k, btn) {
+    btn.disabled = true;
+    try {
+      const t = await call(`/api/admin/keys/${k.name}/test`, { method: "POST", body: {} });
+      t.ok ? K.toast(t.detail) : K.handleError(new AdminError(t.detail, 400, "key_test"));
+    } catch (e) { oops(e); } finally { btn.disabled = false; }
+  }
+  async function change(k) {
+    const v = await K.ask({ title: `Change ${k.name}`, ic: "key", ok: "Try and save",
+      text: `${k.purpose}. Kleo tries the new key with the provider first and keeps it only if it works. Every Kleo server uses it within a minute.`,
+      fields: [{ key: "value", label: "New key", type: "password", placeholder: "Paste the new key", required: true },
+        { key: "reason", label: "Reason, kept in the audit log", placeholder: "Why you are changing it", required: true }] });
+    if (!v) return;
+    try { const res = await postFresh(`/api/admin/keys/${k.name}`, { value: v.value, reason: v.reason }); K.toast(`Saved. ${res.detail || ""}`.trim()); reload(); } catch (e) { oops(e); }
+  }
+  async function revert(k) {
+    const v = await K.ask({ title: `Go back to the Worker secret?`, ic: "redo", ok: "Go back",
+      text: `The key changed here is forgotten, and ${k.name} is again the one set with wrangler.`,
+      fields: [{ key: "reason", label: "Reason, kept in the audit log", placeholder: "Why you are going back", required: true }] });
+    if (!v) return;
+    try { await postFresh(`/api/admin/keys/${k.name}/revert`, { reason: v.reason }); K.toast("Back to the Worker secret"); reload(); } catch (e) { oops(e); }
+  }
+  const row = (k) => {
+    const tbtn = h("button", { class: "btn btn-quiet btn-sm", onclick: () => test(k, tbtn), disabled: k.source === "none" }, icon("check", 16), "Test");
+    return h("div", { class: "adm-keyrow" },
+      h("div", { class: "row" }, icon("key", 19),
+        h("div", { class: "lbl" }, h("b", { class: "mono" }, k.name), h("span", {}, k.purpose), h("span", {}, where(k))),
+        k.source === "console" ? pill("Changed here", "info") : k.source === "worker" ? pill("Set", "ok") : pill("Not set", "")),
+      h("div", { class: "adm-actions" }, tbtn,
+        h("button", { class: "btn btn-quiet btn-sm", onclick: () => change(k) }, icon("key", 16), "Change"),
+        k.source === "console" ? h("button", { class: "btn btn-quiet btn-sm", onclick: () => revert(k) }, icon("redo", 16), "Use Worker secret") : null));
+  };
+  K.fill(body,
+    card("Provider keys", "A change needs a new code from your phone, is written in the audit log with the key's last 4 characters, and is mailed to you.",
+      h("div", { class: "list" }, r.keys.map(row))),
+    card("Changed only in a terminal", "These open payments and sign-ins, so the console can't change them. Run this in the kleo-mcp folder and paste the new value when asked:",
+      h("div", { class: "list" }, r.terminalOnly.map((s) => h("div", { class: "row" }, icon("lock", 19), h("div", { class: "lbl" }, h("b", { class: "mono" }, s.name)), s.set ? pill("Set", "ok") : pill("Not set", "")))),
+      h("div", { class: "adm-note" }, icon("lock", 17), h("span", {}, h("code", {}, "npx wrangler secret put NAME --config wrangler.studio.jsonc")))));
 }
 
 // ── demo data (?demo=1): nothing here is real ────────────────────────────────────────────────────────────────────
@@ -1061,6 +1112,29 @@ async function demo(path, opts) {
       lookup: false,
       settings: [["STUDIO_DAILY_BUDGET_USD", "30"], ["STUDIO_FREE_DAILY_BUDGET_USD", "8"], ["STUDIO_MARGIN", "1.6"], ["FREE_CREDITS", "5"], ["STUDIO_FREE_MODELS", "seedance-2.0-fast"], ["STUDIO_MAX_RUNNING", "3"], ["STUDIO_ADMINS", "u_demo00a"]].map(([name, value]) => ({ name, value })),
     };
+  }
+  if (p === "/api/admin/keys") {
+    db.keys ??= [["EPHONE_API_KEY", "ePhone: every video, picture and app, and the chat agent", "worker", "x7Qa"], ["EPHONE_ADMIN_KEY", "ePhone admin key, read only (account:read): reads the balance live", "console", "m2Kd"],
+      ["WAVESPEED_API_KEY", "WaveSpeed: viral templates and backups", "worker", "9fTb"], ["APIMART_API_KEY", "APIMart: backup of most models", "worker", "Lw3e"], ["RESEND_API_KEY", "Password reset e-mails", "none", null],
+      ["CF_ANALYTICS_TOKEN", "Finds the address of past sign-ins in Cloudflare's logs", "none", null]]
+      .map(([name, purpose, source, last4]) => ({ name, purpose, source, last4, ...(source === "console" ? { setAt: new Date(Date.now() - 2 * 3600e3).toISOString(), setBy: "u_demo00a" } : {}) }));
+    return { keys: db.keys, terminalOnly: ["INTERNAL_SECRET", "STRIPE_SECRET_KEY", "GOOGLE_CLIENT_SECRET", "TURNSTILE_SECRET"].map((name) => ({ name, set: true })) };
+  }
+  const km = p.match(/^\/api\/admin\/keys\/([A-Z0-9_]+)(?:\/(test|revert))?$/);
+  if (km) {
+    const k = (db.keys || []).find((x) => x.name === km[1]);
+    if (!k) throw fail("That key can't be changed from the console.", "not_found", 404);
+    if (km[2] === "test") return k.source === "none" ? { ok: false, detail: "No key is set." } : { ok: true, detail: "The provider accepts this key." };
+    if (Date.now() - A.fresh > 5 * 60e3) {
+      if (!b.code) throw fail("Type a new code from your phone to do this.", "fresh_code", 403);
+      if (b.code !== "123456") throw wrongCode();
+      A.fresh = Date.now();
+    }
+    if (km[2] === "revert") { Object.assign(k, { source: "worker", last4: "x7Qa", setAt: null, setBy: null }); return { ok: true }; }
+    const v = String(b.value || "").trim();
+    if (v.length < 16) throw fail("That doesn't look like a key. Paste the whole key.", "key_shape");
+    Object.assign(k, { source: "console", last4: v.slice(-4), setAt: new Date().toISOString(), setBy: "u_demo00a" });
+    return { ok: true, last4: k.last4, detail: "The provider accepts this key." };
   }
   throw Object.assign(new Error("Not in the demo."), { code: "demo" });
 }

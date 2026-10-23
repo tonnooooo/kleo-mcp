@@ -11,6 +11,7 @@
  */
 import type { StudioEnv } from "./env.ts";
 import { PROVIDER_STATUS_SCHEMA } from "./providers.ts";
+import { KEY_OVERRIDES_SCHEMA } from "../key-overrides.ts";
 
 const NOW = "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))";
 export const STUDIO_SCHEMA: string[] = [
@@ -39,6 +40,8 @@ export const STUDIO_SCHEMA: string[] = [
   `CREATE INDEX IF NOT EXISTS studio_generations_status ON studio_generations (status, checked_at)`,
   // What each provider can still spend, and when the owner was last told (src/studio/providers.ts, 23 October 2026).
   PROVIDER_STATUS_SCHEMA,
+  // API keys changed in the admin console, sealed (src/key-overrides.ts, 23 October 2026).
+  KEY_OVERRIDES_SCHEMA,
 ];
 
 /**

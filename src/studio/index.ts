@@ -29,6 +29,7 @@ import { planTool, publicTools, toolByKey, toolCredits, ToolRefusal, type Media 
 import { mediaInfo } from "./media.ts";
 import { APP_PATH, serveSite } from "./site.ts";
 import { handleProviderResume, refreshBalances, type Provider } from "./providers.ts";
+import { withKeys } from "../key-overrides.ts";
 import { normalizeFilm, orderFilm, quoteFilm } from "./films.ts";
 import { runAgent, chatTitle, enhancePrompt, type Proposal } from "./agent.ts";
 import { NO_GIFT_SENTENCE, giftCookie, visitorOf } from "../abuse.ts";
@@ -620,10 +621,14 @@ export default {
     // The admin host: its own CSP, never indexed, never cached (src/studio/admin-host.ts).
     const adminHost = isAdminHost(env, url.hostname);
     const app = APP_PATH.test(url.pathname) && !CONSOLE_PATH.test(url.pathname);
-    return secureResponse(await route(request, env, ctx, url, adminHost), { site: !adminHost && !app, admin: adminHost });
+    // The keys changed in the admin console replace the Worker secrets (src/key-overrides.ts). A request the admin host
+    // refuses for its certificate is answered before even that read.
+    const keyed = adminHost && certProblem(env, request) ? env : await withKeys(env);
+    return secureResponse(await route(request, keyed, ctx, url, adminHost), { site: !adminHost && !app, admin: adminHost });
   },
 
-  async scheduled(_event: ScheduledController, env: StudioEnv, ctx: ExecutionContext): Promise<void> {
+  async scheduled(_event: ScheduledController, raw: StudioEnv, ctx: ExecutionContext): Promise<void> {
+    const env = await withKeys(raw);
     await ensureStudioSchema(env);
     // What each provider can still spend, so an order it cannot pay for stops before the charge (providers.ts).
     ctx.waitUntil(refreshBalances(env));

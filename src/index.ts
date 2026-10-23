@@ -19,6 +19,7 @@ import { tick } from "./orchestrator";
 import { json } from "./util";
 import { ensureSchema } from "./schema";
 import { httpsRedirect, hardenResponse } from "./security-headers";
+import { withKeys } from "./key-overrides.ts";
 
 /** /mcp — only reached with a valid OAuth token; the provider puts the token props on ctx.props. */
 const mcpApi: ExportedHandler<Env> = {
@@ -131,10 +132,13 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const toHttps = httpsRedirect(new URL(request.url));
     if (toHttps) return toHttps;
-    return hardenResponse(await provider.fetch(request, env, ctx));
+    // The API keys the owner changed in Kleo Studio's admin console replace the Worker secrets here too: one ePhone
+    // key for the films and for Studio (src/key-overrides.ts, 23 October 2026).
+    return hardenResponse(await provider.fetch(request, await withKeys(env), ctx));
   },
-  scheduled: (_controller: ScheduledController, env: Env, ctx: ExecutionContext) => {
+  scheduled: (_controller: ScheduledController, raw: Env, ctx: ExecutionContext) => {
     ctx.waitUntil((async () => {
+      const env = await withKeys(raw);
       try {
         await ensureSchema(env);
         const stats = await tick(env, { plan: true });

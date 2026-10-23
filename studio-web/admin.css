@@ -86,6 +86,10 @@
 .adm-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .adm-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .adm-actions .btn { height: 44px; }
+/* the API keys page: each key with its buttons under it (23 October 2026) */
+.adm-keyrow { position: relative; padding-bottom: 14px; }
+.adm-keyrow + .adm-keyrow::before { content: ""; position: absolute; top: 0; left: 14px; right: 0; border-top: 1px solid var(--sep); }
+.adm-keyrow .adm-actions { padding: 0 14px 0 45px; }
 .flip svg { transform: rotate(180deg); }
 .adm-backrow { display: flex; }
 
@@ -231,6 +235,7 @@ button.adm-urow:hover { background: var(--fill-2); }
   .adm-kv { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .adm-kv dd { margin-bottom: 10px; }
   .adm-actions .btn { flex: 1 1 calc(50% - 5px); padding: 0 12px; font-size: 15.5px; }
+  .adm-keyrow .adm-actions { padding-left: 14px; }
   .adm-chart { gap: 2px; height: 160px; }
   .adm-col span { font-size: 13px; }
   .adm-id { width: 100%; justify-content: space-between; }
