@@ -62,11 +62,32 @@ export interface Trend {
   seats: TrendSeat[];
   /** The room and the camera, to keep identical (templates whose prompt Kleo writes per seat). */
   scene?: string;
+  /** The clip's cuts and speed changes, when it is not one continuous shot. */
+  edit?: string;
+  /** What the person may change around the people (the court, the opponent, the crowd …), each a choice on the page. */
+  changes?: TrendChange[];
   /**
    * A fixed edit instruction ("Image 1", "Image 2", "Video 1"): the imported templates (./trends-catalog.ts). Every seat
    * then needs its photo, as on ausar.ai; without one, Kleo writes the prompt for the seats that have one (trendPrompt).
    */
   prompt?: string;
+}
+
+/**
+ * One thing around the people that the person may change (23 October 2026, the owner: "voglio anche che sostituisca
+ * l'esterno … il campo, l'avversario, gli spettatori … dai più opzioni per cambiare"). The page shows "Original" (no
+ * change), the choices, and "Your idea" with a line of the person's own words when `custom` is set.
+ */
+export interface TrendChange {
+  /** The form field: court, rival, crowd … */
+  key: string;
+  label: string;
+  /** The choices after "Original": the button's words and the instruction the prompt carries. */
+  options: { value: string; label: string; text: string }[];
+  /** The start of the sentence the person's own words finish ("Change the court and everything around it into"). */
+  custom?: string;
+  /** The seat this change is about: when that seat has a photo, the photo wins and the choice is ignored. */
+  seat?: string;
 }
 
 /** One imported template as the catalog stores it (./trends-catalog.ts). */
@@ -81,12 +102,63 @@ export const WAN30_EDIT_MODEL = "alibaba/wan-3.0/video-edit";
 export const TREND_QUALITIES: TrendQuality[] = ["480p", "720p", "1080p"];
 export const DEFAULT_TREND_QUALITY: TrendQuality = "720p";
 
+/** The free line under every template that has changes: anything else the person wants different. */
+export const TREND_EXTRA_MAX = 300;
+/** The person's own words for a "Your idea" choice. */
+export const TREND_CUSTOM_MAX = 200;
+
 const fromCatalog = (c: CatalogTrend): Trend => ({
   key: `trend-${c.slug}`, name: c.name, blurb: c.blurb, tint: c.tint,
   baseUrl: `${TRENDS_MEDIA}/${c.slug}/base.mp4`, baseSeconds: c.seconds,
   preview: `${TRENDS_MEDIA}/${c.slug}/preview3-p.mp4`, guide: `${TRENDS_MEDIA}/${c.slug}/guide.jpg`,
   seats: c.seats, prompt: c.prompt,
 });
+
+// 23 October 2026, the owner sent an Instagram reel (@chipmunk.7664054, 15.8 s at 1080x1920 60 fps): a night 1-on-1 on
+// a park court in China. The player crosses over his defender, flies at the basket, flips the ball over the backboard
+// and it drops in; then a replay, half at normal speed and half in slow motion, and the defender laughing. The owner:
+// "taglialo e metti due template, pt1 e pt2": Part 1 is the play (0-5.8 s, up to the cut, no slow motion), Part 2 the
+// replay to the end (5.8-15.75 s, without the black last frames). Both let the person change the world around them.
+const COURT_SCENE = "Same outdoor public basketball court in a park at night: a green court with white lines, a red key and a red area under the basket; a thick light-blue steel pole with an angled arm holding a clear glass backboard with a mint-green frame and a small blue circle sign with a white \"1\", an orange rim with a white-and-red net; tall floodlight poles with clusters of bright white lamps and a violet glow in the dark sky, park street lamps, dense dark trees, a concrete pergola with square white pillars and distant high-rise towers; spectators standing in a line behind the basket behind red oval sponsor boards with white Chinese lettering and \"APP\", mostly young, in black or white T-shirts, a few filming with phones; in the wide shots more people sit and stand on a dark paved area beside the court; the same worn golden-tan basketball. Same handheld vertical phone camera at court level, running with the play and tilting up to the basket, the same fast pans, bright white floodlight on the court.";
+const COURT_CHANGES: TrendChange[] = [
+  { key: "court", label: "Court", custom: "Change the court and everything around it into",
+    options: [
+      { value: "nba", label: "NBA arena", text: "Turn the outdoor court into a packed NBA arena on game night: a glossy light hardwood floor with painted lines and a big centre logo, a professional glass backboard on a padded stanchion with an orange rim and a white net in the same place, bright arena lights from above, big screens and dark tiered stands full of fans. The trees, the floodlight poles, the shelter and the green and red court surface are gone." },
+      { value: "street", label: "New York street", text: "Turn the court into a New York street court at night inside a chain-link fence: cracked dark asphalt with faded white lines, a steel backboard with a chain net in the same place, red-brick buildings with fire escapes and graffiti walls around it, yellow street lights. The park trees, the floodlight poles and the shelter are gone." },
+      { value: "beach", label: "Beach at sunset", text: "Turn the court into a basketball court on a sandy beach at sunset: a sand-coloured hard court with white lines, the basket in the same place, palm trees, the ocean and a golden-orange sky behind, warm low sunlight with long shadows. The park, the trees and the floodlights are gone." },
+      { value: "rooftop", label: "City rooftop", text: "Turn the court into a rooftop court high above a big city at night: a blue court with white lines, the basket in the same place, a tall fence at the edge and glass skyscrapers with lit windows all around. The park and the trees are gone." },
+      { value: "snow", label: "Snowy night", text: "Cover the court and the park in fresh snow at night: snow on the ground around the court, on the trees and on the shelter roof, snowflakes falling through the floodlight beams, everyone's breath steaming. The court lines stay visible." },
+    ] },
+  { key: "rival", label: "Opponent", seat: "person2", custom: "The defender becomes",
+    options: [
+      { value: "giant", label: "Giant", text: "The defender becomes a huge 2.2-metre-tall centre in a plain black long-sleeve top and grey shorts, towering over everyone, with the same movements." },
+      { value: "grandpa", label: "Grandpa", text: "The defender becomes a grey-haired grandpa in his seventies with glasses, in a burgundy tracksuit and white sneakers, with the same movements." },
+      { value: "mascot", label: "Mascot", text: "The defender becomes a person in a big furry bear mascot costume with a huge smiling head, with the same movements." },
+      { value: "robot", label: "Robot", text: "The defender becomes a sleek white-and-black humanoid robot with a glowing visor for a face, with the same movements." },
+    ] },
+  { key: "crowd", label: "Crowd", custom: "Change the spectators into",
+    options: [
+      { value: "packed", label: "Packed", text: "Fill every space around the court with a much bigger crowd of excited fans, several rows deep, many filming with phones, jumping and grabbing their heads when the ball drops in." },
+      { value: "cheer", label: "Cheerleaders", text: "Add a row of cheerleaders in matching red and white uniforms with silver pom-poms in front of the crowd, dancing and cheering at the play." },
+      { value: "empty", label: "Empty", text: "Remove the spectators: nobody watches behind the basket or beside the court. The young man filming behind the defender at the very end stays." },
+    ] },
+  { key: "light", label: "Light",
+    options: [
+      { value: "golden", label: "Sunset", text: "Change the time to golden hour: low warm sunlight, long shadows across the court and an orange and pink sky; the floodlights are off." },
+      { value: "day", label: "Daytime", text: "Change the time to a bright sunny day: a blue sky with a few clouds, short shadows, the floodlights off." },
+      { value: "neon", label: "Neon", text: "Light the night with pink and blue neon: neon tubes along the fences and buildings, coloured light on the court and on everyone." },
+    ] },
+  { key: "boards", label: "Sponsor boards", custom: "Change the red oval sponsor boards into boards that read",
+    options: [
+      { value: "kleo", label: "KLEO", text: "Change the red oval sponsor boards into black oval boards that read \"KLEO\" in bold white letters." },
+      { value: "none", label: "None", text: "Remove the red oval sponsor boards." },
+    ] },
+];
+const DUNKER = { key: "person1", label: "The dunker", color: "#ff9f0a",
+  where: "with the BALL in the black sleeveless top: he crosses over the defender, leaps at the basket, tosses the ball straight up from beside the rim so it rises above the backboard and falls back through the hoop, then shows off in front of the crowd",
+  original: "no black sleeveless compression top with a small grey-white logo on the chest and a white print down the side seam, no thin gold chain with a small gold pendant, no grey iridescent shorts with a teal-and-pink sheen, long black drawstrings and orange-red patches on the back, no black compression shorts ending just above the knees, no white crew socks, no white sneakers with black trim, no curly twisted dark hair with bleached blond tips and a high skin fade at the sides" };
+const DEFENDER = { key: "person2", label: "The defender", color: "#0a84ff",
+  original: "no black long-sleeve compression top with thin white piping over the shoulders, chest and sleeves and white lettering down the spine, no white snakeskin-print shorts with a grey-black python pattern and a black side stripe, no white crew socks, no black basketball shoes, no black hair with frosted silver-blond tips on top and short tapered sides" };
 
 export const TRENDS: Trend[] = [
   {
@@ -107,6 +179,33 @@ export const TRENDS: Trend[] = [
         original: "no red patterned shirt, no blond twisted hair",
         motion: "sits at the counter, looking down at a phone in the hands most of the time, glancing up briefly",
         color: "#30d158", at: [34, 80] },
+    ],
+  },
+  {
+    key: "trend-crossover-king-pt1", name: "Crossover King Pt 1", blurb: "Put yourself in this viral clip, on any court", tint: "#ff9f0a",
+    baseUrl: `${TRENDS_MEDIA}/crossover-king-pt1/base.mp4`, baseSeconds: 5.83,
+    preview: `${TRENDS_MEDIA}/crossover-king-pt1/preview3-p.mp4`, guide: `${TRENDS_MEDIA}/crossover-king-pt1/guide.jpg`,
+    scene: COURT_SCENE, edit: "One continuous handheld shot at normal speed, no cuts.", changes: COURT_CHANGES,
+    seats: [
+      { ...DUNKER, at: [46, 49],
+        motion: "0-0.5s dribbles low at the defender on the left of the court and crosses the ball over; 0.5-1.0s bursts past him to the right with the ball in both hands; 1.0-1.4s drives to the basket and gathers; 1.4-1.6s takes off under the basket lifting the ball over his head with both hands; 1.6-2.0s hangs in the air in front of the backboard, legs split wide, the ball by his head in the left hand, the right hand raised with one finger up; 2.0-2.1s tosses the ball straight up with the left hand instead of dunking, so it rises above the backboard; 2.1-2.4s drops down past the defender and lands on the right; 2.4-3.1s stands on the right, the right hand at his mouth, watching the ball fall through the hoop (in at 3.0s, out of the net at 3.3s); 3.1-3.6s walks to the middle with the left arm out, palm open; 3.6-3.8s catches the ball falling from the net, raises the right hand with one finger up and slams the ball down; 3.9-4.7s keeps the finger up as the ball bounces back past his face to head height; 4.7-5.8s dribbles with the left hand, tongue out, then a cocky grin, the right hand still up with one finger, stepping toward the camera as the ball bounces up toward it" },
+      { ...DEFENDER, at: [17, 44],
+        where: "DEFENDING in the black long-sleeve top: he gets crossed over, stands under the basket with his back to the camera watching the ball go up above the backboard, and grabs his head when it drops in",
+        motion: "0-0.5s guards the dribbler low with the arms out; 0.5-1.4s gets beaten and chases behind him on the left; 1.4-1.9s comes in on the left, side-on to the camera, looking up at the player in the air; 2.0-2.9s turns his back to the camera, the left arm out to the side, and follows the ball up above the backboard with his head; 3.0-3.3s watches the ball drop through the net; 3.4-3.6s swings the right arm up; 3.7-3.9s puts the right hand on top of his head as the camera passes him; from 4.1s out of the shot" },
+    ],
+  },
+  {
+    key: "trend-crossover-king-pt2", name: "Crossover King Pt 2", blurb: "The replay, half in slow motion, on any court", tint: "#0a84ff",
+    baseUrl: `${TRENDS_MEDIA}/crossover-king-pt2/base.mp4`, baseSeconds: 9.92,
+    preview: `${TRENDS_MEDIA}/crossover-king-pt2/preview3-p.mp4`, guide: `${TRENDS_MEDIA}/crossover-king-pt2/guide.jpg`,
+    scene: COURT_SCENE, changes: COURT_CHANGES,
+    edit: "Same edit as Video 1: the drive at normal speed (0-1.6 s); from 1.6 s the flight in slow motion, about 8 times slower and slightly darker, on the same framing (1.6-4.4 s); a cut at 4.4 s back to normal speed, from behind the defender, just as the ball leaves the dunker's hand; the ball dropping in and the celebration (4.4-8.3 s); a fast whip pan at 8.35-8.7 s to the defender laughing (8.7-9.9 s), with a glowing yellow basketball-shaped lantern at the left and high-rise towers on the skyline.",
+    seats: [
+      { ...DUNKER, at: [61, 49],
+        motion: "0-0.5s dribbles low at the defender and crosses the ball over; 0.5-1.2s bursts past him to the right with the ball in both hands and drives to the basket; 1.2-1.4s takes off under the basket lifting the ball over his head with both hands; 1.4-3.3s (slow motion from 1.6s) hangs in the air in front of the backboard, legs split wide, the ball by his head in the left hand, the right hand raised with one finger up; 3.4-4.4s still in slow motion slowly pushes the ball high above his head with the left hand alone, the finger still up; 4.4-4.5s tosses the ball straight up with the left hand so it rises above the backboard; 4.5-4.7s drops down past the defender and lands on the right; 4.7-5.5s stands on the right, the right hand at his mouth, watching the ball fall through the hoop (5.3-5.6s); 5.5-5.9s walks to the middle with the left arm out, palm open; 5.9-6.1s catches the falling ball, raises the right hand with one finger up and slams the ball down; 6.2-7.3s keeps the finger up as the ball bounces back to head height, tongue out; 7.3-8.2s a cocky grin, dribbling with the left hand and stepping toward the camera, the ball bouncing up toward it; 8.2-8.4s walks right past the camera on the right, grinning, the finger still up; then out of the shot" },
+      { ...DEFENDER, at: [11, 44],
+        where: "DEFENDING in the black long-sleeve top: he gets crossed over, stands under the basket with his back to the camera while the ball goes up above the backboard, grabs his head when it drops in, and laughs and hides his face at the end",
+        motion: "0-0.5s guards the dribbler low with the arms out; 0.5-1.3s gets beaten and chases behind him on the left; 1.3-4.4s (slow motion from 1.6s) stands on the left with his back half-turned to the camera, arms down, looking up at the player in the air; 4.4-5.2s the left arm out to the side, follows the ball up above the backboard with his head; 5.3-5.6s watches the ball drop through the net; 5.7-5.9s swings the right arm up; 6.0-6.2s puts the right hand on top of his head as the camera passes him, out of the shot by 6.4s; 8.7-9.1s walks in from the left doubled over laughing, a hand on his chest, while a young man with bleached blond hair and glasses in a white T-shirt holds his shoulder from behind, then steps back; 9.2-9.6s turns to the right and covers his face with one hand; 9.7-9.9s drops the hand and grins at the camera" },
     ],
   },
   // 22 October 2026, the owner sent an Instagram reel by @collinskey (6.6 s, one take, 1080x1080 30 fps): from inside a
@@ -207,22 +306,47 @@ export function trendCostUsd(t: Pick<Trend, "baseSeconds">, q: TrendQuality): nu
 
 const ORDINAL = ["Image 1", "Image 2", "Image 3"];
 
+/** What the person picked on the page: a value per change ("original" or none = no change), `<key>Text`, `extra`. */
+export type TrendPicks = Record<string, string | undefined>;
+const oneLine = (s: string | undefined, max: number) => String(s ?? "").replace(/\s+/g, " ").trim().slice(0, max);
+
+/** The picked changes in the template's order, each with the seat it restyles (a seat's photo wins over its change). */
+function pickedChanges(t: Trend, filled: string[], picks: TrendPicks): { text: string; seat?: string }[] {
+  const out: { text: string; seat?: string }[] = [];
+  for (const c of t.changes ?? []) {
+    if (c.seat && filled.includes(c.seat)) continue;
+    const v = picks[c.key];
+    const own = v === "custom" && c.custom ? oneLine(picks[`${c.key}Text`], TREND_CUSTOM_MAX).replace(/[.\s]+$/, "") : "";
+    const text = own ? `${c.custom} ${own}.` : c.options.find((o) => o.value === v)?.text;
+    if (text) out.push({ text, seat: c.seat });
+  }
+  const extra = t.changes?.length ? oneLine(picks.extra, TREND_EXTRA_MAX) : "";
+  if (extra) out.push({ text: `Also: ${extra}${/[.!?]$/.test(extra) ? "" : "."}` });
+  return out;
+}
+/** The instructions the person's picks add to the prompt, in order. */
+export const trendChangeLines = (t: Trend, filled: string[], picks: TrendPicks = {}): string[] => pickedChanges(t, filled, picks).map((c) => c.text);
+
 /**
  * The edit instruction for the seats that have a photo, in seat order (Image 1 is the first filled seat). A seat
  * without a photo keeps its original person. The structure is the one that came out clean on 20 October 2026.
  */
-export function trendPrompt(t: Trend, filled: string[]): string {
+export function trendPrompt(t: Trend, filled: string[], picks: TrendPicks = {}): string {
   const seats = t.seats.filter((s) => filled.includes(s.key));
   const kept = t.seats.filter((s) => !filled.includes(s.key));
+  const world = pickedChanges(t, filled, picks);
+  const restyled = new Set(world.map((c) => c.seat).filter(Boolean));
   const img = (s: TrendSeat) => ORDINAL[seats.indexOf(s)];
   const one = seats.length === 1;
   const who = one ? `the person from ${img(seats[0])}` : `the people from ${seats.map(img).join(", ").replace(/, ([^,]*)$/, " and $1")}`;
   const lines: string[] = [];
-  lines.push(`Recreate Video 1 exactly, frame for frame, with a new cast: ${one ? "one person is" : `${seats.length} people are`} replaced by ${who}. Everything else stays identical to Video 1${kept.length ? ", including the other people" : ""}.`);
+  lines.push(`Recreate Video 1 exactly, frame for frame, with a new cast: ${one ? "one person is" : `${seats.length} people are`} replaced by ${who}. Everything else stays identical to Video 1${kept.length ? ", including the other people" : ""}${world.length ? ", except the WORLD CHANGES below" : ""}.`);
   lines.push("", "CAST (identification only, nothing of the original look is kept)");
   for (const s of seats) lines.push(`- ${img(s)} replaces the person ${s.where ?? ""}.`);
-  for (const s of kept) lines.push(`- The person ${s.where ?? ""} stays exactly as in Video 1: the same face, hair, clothes and movements.`);
+  for (const s of kept) lines.push(restyled.has(s.key) ? `- The person ${s.where ?? ""}. This person keeps the exact movements of Video 1 and changes only as the WORLD CHANGES say.`
+    : `- The person ${s.where ?? ""} stays exactly as in Video 1: the same face, hair, clothes and movements.`);
   lines.push("This mapping is fixed for the whole video. Each new person appears exactly once per frame, only in their own seat. No swapping, no merging, no sharing faces, hair or clothes.");
+  if (world.length) lines.push("", "WORLD CHANGES (only these; every position, every movement, the ball's path and the timing stay exactly as in Video 1)", ...world.map((c) => `- ${c.text}`));
   lines.push("", "EXACT LIKENESS - THE MOST IMPORTANT RULE",
     "Each new person must look IDENTICAL to their reference image, as if they were really filmed in this scene. Copy everything 1:1 and change nothing:",
     "- FACE: the exact face shape, bone structure, eyes, eye colour, eyebrows, nose, lips, ears, jawline, marks and facial hair.",
@@ -241,17 +365,21 @@ export function trendPrompt(t: Trend, filled: string[]): string {
   lines.push("All lips move in perfect sync with the original speech and laughter, with natural expressions and eye movement.");
   lines.push("", "IDENTITY LOCK",
     "Each new person keeps exactly the same face, hair and outfit from the first frame to the last, also when partly out of frame, turned away or out of focus. No morphing, no drift back to the original people.");
-  lines.push("", "NO NEW PEOPLE", "The number of people stays exactly the same, and no new people appear anywhere.");
-  lines.push("", "SCENE AND CAMERA", `Identical to Video 1. ${t.scene ?? ""} One continuous shot, no cuts. No new objects, no new text.`.replace("  ", " "));
+  lines.push("", "NO NEW PEOPLE", world.length ? "The players stay exactly the same in number, and no new people appear except as the WORLD CHANGES say."
+    : "The number of people stays exactly the same, and no new people appear anywhere.");
+  const edit = t.edit ?? "One continuous shot, no cuts.";
+  lines.push("", "SCENE AND CAMERA", (world.length
+    ? `The camera, the framing, the cuts and the timing are identical to Video 1. Video 1's world before the changes: ${t.scene ?? ""} The WORLD CHANGES replace only what they name; everything else stays as in Video 1. ${edit} No other new objects or text.`
+    : `Identical to Video 1. ${t.scene ?? ""} ${edit} No new objects, no new text.`).replace("  ", " "));
   lines.push("", "STYLE",
     "Natural handheld footage, looking like it was really filmed there. Each new person is lit naturally by the room's light with matching shadows. Anatomically correct hands with five fingers. No beauty filter, no skin smoothing, no over-sharpening, no face flicker, no morphing, no distorted faces in the background.");
   return lines.join("\n");
 }
 
 /** The WaveSpeed input of one run. `photos` are the filled seats' links, in seat order (all of them for a fixed prompt). */
-export function trendTaskInput(t: Trend, filled: string[], photos: string[], q: TrendQuality): Record<string, unknown> {
+export function trendTaskInput(t: Trend, filled: string[], photos: string[], q: TrendQuality, picks: TrendPicks = {}): Record<string, unknown> {
   return {
-    prompt: t.prompt ?? trendPrompt(t, filled), video: t.baseUrl, reference_images: photos.slice(0, t.seats.length), resolution: q,
+    prompt: t.prompt ?? trendPrompt(t, filled, picks), video: t.baseUrl, reference_images: photos.slice(0, t.seats.length), resolution: q,
     // false keeps the clip's own sound on the result (WaveSpeed: "the source audio track is preserved").
     generate_audio: false, enable_prompt_expansion: false, seed: -1,
   };

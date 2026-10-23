@@ -1094,6 +1094,8 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
   // descriptions are not touched (a song asked for in Italian may well be sung in Italian).
   const kind = ({ "video-edit": "edit", "motion-control": "video", "character-swap": "edit", "photo-character-swap": "image", sfx: "sound" } as const)[tool.key as "video-edit" | "motion-control" | "character-swap" | "photo-character-swap" | "sfx"];
   if (kind && inputs.prompt) inputs.prompt = (await toEnglish(env, inputs.prompt, kind)).slice(0, tool.fields.find((f) => f.key === "prompt")?.maxLength ?? 1000);
+  // A template's own words for its changes ("Your idea", "Anything else") reach Wan 3.0 in English too.
+  if (tool.group === "trend") for (const f of tool.fields) if (f.kind === "text" && inputs[f.key]) inputs[f.key] = (await toEnglish(env, inputs[f.key], "edit")).slice(0, f.maxLength ?? 200);
   let plan: Plan;
   try { plan = planTool(tool.key, inputs, media); } catch (e) { if (e instanceof ToolRefusal) throw new StudioError(e.message); throw e; }
   // An app that runs on a paused picture model (Face Swap on Nano Banana Pro) is paused with it, before any charge.

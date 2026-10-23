@@ -30,7 +30,7 @@
  * audit table with the account. Kleo never removes a provider's own refusal.
  */
 import { CREDIT_USD, DEFAULT_MARGIN } from "./models.ts";
-import { DEFAULT_TREND_QUALITY, TRENDS, TREND_QUALITIES, WAN30_EDIT_MODEL, trendByKey, trendCostUsd, trendNeedsAllSeats, trendQuality, trendTaskInput, type Trend } from "./trends.ts";
+import { DEFAULT_TREND_QUALITY, TRENDS, TREND_CUSTOM_MAX, TREND_EXTRA_MAX, TREND_QUALITIES, WAN30_EDIT_MODEL, trendByKey, trendChangeLines, trendCostUsd, trendNeedsAllSeats, trendQuality, trendTaskInput, type Trend, type TrendChange } from "./trends.ts";
 
 export type ToolKey = "face-swap" | "video-face-swap" | "talking-photo" | "lipsync" | "character-swap" | "photo-character-swap" | "motion-control" | "outfit-swap" | "video-edit" | "video-upscale" | "voice" | "music" | "sfx" | `trend-${string}`;
 export type FieldKind = "image" | "video" | "audio" | "text" | "select" | "voice";
@@ -161,7 +161,16 @@ export const TOOLS: ToolDef[] = [
   ...TRENDS.map(trendTool),
 ];
 
-/** One viral template as an app: a photo box per seat (any of them may stay empty) and the output quality. */
+/** A template's change as the page shows it: "Original", the choices, "Your idea" with a line for the person's words. */
+function changeFields(c: TrendChange): ToolField[] {
+  const options = [{ value: "original", label: "Original" }, ...c.options.map((o) => ({ value: o.value, label: o.label })), ...(c.custom ? [{ value: "custom", label: "Your idea" }] : [])];
+  return [
+    { key: c.key, kind: "select", label: c.label, options, default: "original" },
+    ...(c.custom ? [{ key: `${c.key}Text`, kind: "text" as const, label: `Your ${c.label.toLowerCase()}`, maxLength: TREND_CUSTOM_MAX, placeholder: "Describe it in a few words", when: { field: c.key, is: ["custom"] } }] : []),
+  ];
+}
+
+/** One viral template as an app: a photo box per seat (any of them may stay empty), its changes and the output quality. */
 function trendTool(t: Trend): ToolDef {
   return {
     key: t.key, name: t.name, blurb: t.blurb, group: "trend", icon: "film", tint: t.tint, output: "video", consent: true, badge: "Viral",
@@ -171,6 +180,8 @@ function trendTool(t: Trend): ToolDef {
       ...t.seats.map((s, i): ToolField => trendNeedsAllSeats(t)
         ? { key: s.key, kind: "image", label: `Person ${i + 1}`, hint: s.hint ?? "A clear photo", required: true }
         : { key: s.key, kind: "image", label: `Person ${i + 1}`, hint: i === 0 ? `${s.label} · a clear photo` : `${s.label} · optional` }),
+      ...(t.changes ?? []).flatMap(changeFields),
+      ...(t.changes?.length ? [{ key: "extra", kind: "text" as const, label: "Anything else to change? (optional)", maxLength: TREND_EXTRA_MAX, placeholder: "Make it rain · everyone in red jerseys" }] : []),
       { key: "quality", kind: "select", label: "Quality", options: TREND_QUALITIES.map((q) => ({ value: q, label: q })), default: DEFAULT_TREND_QUALITY },
     ],
   };
@@ -258,10 +269,12 @@ function planTrend(trend: Trend, inputs: Record<string, string>, media: Record<s
   if (trendNeedsAllSeats(trend) && filled.length < trend.seats.length) throw new ToolRefusal(trend.seats.length === 1 ? "Add your photo." : `Add a photo for each of the ${trend.seats.length} people.`);
   if (!filled.length) throw new ToolRefusal("Add a photo of at least one person.");
   const q = trendQuality(inputs.quality);
+  const changes = trendChangeLines(trend, filled.map((s) => s.key), inputs).length;
   return {
-    usd: trendCostUsd(trend, q), output: "video", summary: `${trend.name} · ${filled.length === 1 ? "1 person" : `${filled.length} people`} · ${q}`,
+    usd: trendCostUsd(trend, q), output: "video",
+    summary: `${trend.name} · ${filled.length === 1 ? "1 person" : `${filled.length} people`}${changes ? ` · ${changes === 1 ? "1 change" : `${changes} changes`}` : ""} · ${q}`,
     tasks: [{ provider: "wavespeed", model: WAN30_EDIT_MODEL, output: "video",
-      input: trendTaskInput(trend, filled.map((s) => s.key), filled.map((s) => media[s.key]!.url), q) }],
+      input: trendTaskInput(trend, filled.map((s) => s.key), filled.map((s) => media[s.key]!.url), q, inputs) }],
   };
 }
 
