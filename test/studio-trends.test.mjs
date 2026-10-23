@@ -146,7 +146,7 @@ test("Crossover King Pt 1 and Pt 2 (23 October 2026): two seats, cut at the reel
   assert.match(plain, /One continuous handheld shot at normal speed, no cuts\./);
   assert.doesNotMatch(plain, /WORLD CHANGES/);
   assert.match(plain, /The person DEFENDING[^\n]* stays exactly as in Video 1/);
-  assert.match(trendPrompt(p2, ["person1", "person2"]), /the flight in slow motion \(1\.6-4\.4 s\)/);
+  assert.match(trendPrompt(p2, ["person1", "person2"]), /the flight in slow motion with a darker, washed-out grade \(1\.6-4\.4 s\)/);
 });
 
 test("template changes (23 October 2026): the court, the opponent, the crowd, the light and the boards are choices on the page", () => {
