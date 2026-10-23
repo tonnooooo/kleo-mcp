@@ -1124,7 +1124,8 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
       }
       if (facts) {
         media[seat.key]!.facts = facts;
-        await audit(asEnv(env), userId, null, "studio.photo_facts", { tool: tool.key, seat: seat.key, ...facts });
+        // Only what kind of photo it was: nothing about how the person looks is kept.
+        await audit(asEnv(env), userId, null, "studio.photo_facts", { tool: tool.key, seat: seat.key, colour: facts.colour, framing: facts.framing, face: facts.face });
       }
     }
     // A template written shot by shot tells the photos apart with these facts: its instruction is written again.

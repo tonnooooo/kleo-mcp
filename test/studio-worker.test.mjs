@@ -1836,7 +1836,7 @@ test("a shot-by-shot template reads the photo facts into its instruction, and a 
     const sent = p.sent.find((x) => x.url.endsWith("/alibaba/wan-3.0/video-edit")).body;
     assert.match(sent.prompt, /^Edit Video 1: replace THE DUNKER with the person from Image 1/);
     assert.match(sent.prompt, /Image 1 is a black-and-white photo: give that person natural, realistic colour/);
-    assert.match(sent.prompt, /- LIGHT: a bright sunny day/);
+    assert.match(sent.prompt, /- LIGHT: bright daylight/);
     assert.doesNotMatch(sent.prompt, /night/);
     assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE event = 'studio.photo_facts'").get().n, 1);
 

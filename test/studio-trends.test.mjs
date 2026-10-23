@@ -146,11 +146,14 @@ test("Crossover King Pt 1 and Pt 2 (23 October 2026): two seats, cut at the reel
   assert.match(plain, /^Edit Video 1: replace THE DUNKER with the person from Image 1\. Keep Video 1's camera/);
   assert.match(plain, /SHOTS \(Video 1 has exactly 1 shot;/);
   assert.match(plain, /- THE DEFENDER, the player guarding him \(in Video 1: [^)]*\), stays exactly as in Video 1/);
-  assert.match(plain, /THE PLACE\nExactly as in Video 1: an outdoor park basketball court at night/);
+  assert.match(plain, /THE PLACE\nExactly as in Video 1: an outdoor park basketball court: [^\n]*; night under floodlights on tall poles; /);
+  // Pt 2 is one continuous shot: at 4.4 s only the speed and the grade come back (the frames hold the same framing).
   const both = trendTaskInput(p2, ["person1", "person2"], [photo("up_1").url, photo("up_2").url], "720p").prompt;
-  assert.match(both, /SHOTS \(Video 1 has exactly 2 shots;/);
-  assert.match(both, /- Hard cut at 4\.4 s\.\n- Shot 2, 4\.4-6 s/);
-  assert.match(both, /slow motion, about 8 times slower/);
+  assert.match(both, /SHOTS \(Video 1 has exactly 1 shot;/);
+  assert.doesNotMatch(both, /Hard cut|cuts, /);
+  assert.match(both, /slow motion about 8 times slower with a darker grade from 1\.6 to 4\.4 s, then back to normal speed and normal colour at 4\.4 s on the same framing/);
+  // The end of each clip as it really is: no catch in either part.
+  assert.doesNotMatch(both + plain, /catches/);
 });
 
 test("a template says how long its video is, and Crossover King Pt 2's preview is the whole clip (23 October 2026)", () => {
@@ -183,14 +186,15 @@ test("template changes (23 October 2026): the court, the opponent, the crowd, th
   const one = { person1: photo("up_1") };
   const input = (picks, media = one) => planTool("trend-crossover-king-pt1", { quality: "720p", ...picks }, media).tasks[0].input;
   const p = input({ court: "nba", rival: "grandpa", crowd: "original", light: "golden", boards: "kleo", extra: "  make it\nrain " });
-  assert.match(p.prompt, /, change THE DEFENDER as written below, and change the place around them as written under THE PLACE\./);
+  assert.match(p.prompt, /, change THE DEFENDER as written under WHO IS WHO, and change the place around them as written under THE PLACE\./);
   assert.match(p.prompt, /- PLACE: a packed NBA arena/);
   assert.match(p.prompt, /- THE DEFENDER, the player guarding him \(in Video 1: [^)]*\): The defender becomes a grey-haired grandpa/);
-  assert.match(p.prompt, /- LIGHT: sunset: low warm sunlight/);
+  assert.match(p.prompt, /THE DUNKER and THE DEFENDER \(in the clip 0-4\.0 s\) are changed from the first frame/, "a restyled seat is anchored too");
+  assert.match(p.prompt, /- LIGHT: sunset: low warm golden light/);
   assert.doesNotMatch(p.prompt, /arena lights/, "a picked light wins over the light the place brings");
   assert.match(p.prompt, /- BOARDS: black oval boards that read "KLEO"/);
   assert.match(p.prompt, /- ALSO: make it rain\./);
-  assert.doesNotMatch(p.prompt, /SPECTATORS/, "Original changes nothing");
+  assert.doesNotMatch(p.prompt, /SPECTATORS/, "Original changes nothing, and a new place does not keep the old crowd's description");
   assert.match(p.prompt, /No new text except "KLEO" on the boards\./);
   assert.equal(p.video, trendByKey("trend-crossover-king-pt1").baseUrl);
   assert.equal(p.generate_audio, false);
@@ -219,13 +223,17 @@ test("the failed Crossover King order, written shot by shot: who is who first, b
   assert.ok(p.length < TREND_PROMPT_V2_MAX, `${p.length} characters`);
   assert.ok(p.startsWith("Edit Video 1: replace THE DUNKER with the person from Image 1 and THE DEFENDER with the person from Image 2, and change the place"));
   assert.ok(p.indexOf("- Image 2 = THE DEFENDER") < 900, "both seats are named in the first lines");
+  assert.match(p, /His face is seen from the front in the first 1\.4 s, large at the left edge from 0\.8 to 1\.4 s/);
   assert.match(p, /When THE DEFENDER is seen from the side or from behind, show the hair, head shape, build and the back of the outfit of the person in Image 2\./);
   assert.match(p, /their face never moves to anyone else, and no spectator becomes either of them/);
-  assert.match(p, /Image 1 and Image 2 are different people and must not look alike: Image 1 has brown hair, no beard; Image 2 has brown hair, a beard\./);
-  assert.ok(p.indexOf("SHOTS (Video 1 has exactly 2 shots;") < p.indexOf("\nTHE PLACE\n"));
-  assert.match(p, /THE DUNKER and THE DEFENDER and the new place are there from the first frame, 0\.0 s, to the last, in every shot/);
+  assert.match(p, /- Image 1's face goes only on THE DUNKER, Image 2's face goes only on THE DEFENDER\./);
+  // Hair colour read from a black-and-white photo is a guess: only the beard tells them apart.
+  assert.match(p, /To tell them apart: Image 1 has no beard; Image 2 has a beard\./);
+  assert.doesNotMatch(p, /must not look alike|brown hair/);
+  assert.ok(p.indexOf("SHOTS (Video 1 has exactly 1 shot;") < p.indexOf("\nTHE PLACE\n"));
+  assert.match(p, /THE DUNKER and THE DEFENDER are changed from the first frame, 0\.0 s, wherever Video 1 shows them; the changes under THE PLACE hold from the first frame to the last/);
   // One light: the street brings "night", the picked daytime wins.
-  assert.match(p, /- LIGHT: a bright sunny day/);
+  assert.match(p, /- LIGHT: bright daylight/);
   assert.doesNotMatch(p, /night|street lights|floodlights on/);
   // The old park is named only as gone, never as something to keep.
   const park = p.slice(p.indexOf("\nTHE PLACE\n"));
@@ -254,8 +262,19 @@ test("shot-by-shot prompts: a picked light always wins, kept boards stay, and ev
   }
   // A new place with the boards left as they are keeps the boards, and does not call them gone.
   const kept = trendPromptV2(t, ["person1"], { court: "beach" });
-  assert.match(kept, /The red oval sponsor boards stay where they stand\./);
-  assert.doesNotMatch(kept, /no red boards with Chinese lettering/);
+  assert.match(kept, /Of Video 1's park only the red oval sponsor boards stay; there is no green or red court surface/);
+  assert.doesNotMatch(kept, /no red boards with Chinese lettering|Nothing of Video 1's park is left/);
+  // The place left Original never re-describes what another change changes (the review of 23 October 2026).
+  const same = trendPromptV2(t, ["person1"], { light: "day", crowd: "empty", boards: "kleo" });
+  assert.match(same, /^Edit Video 1: replace THE DUNKER with the person from Image 1, and change the light, the spectators and the boards as written under THE PLACE\./);
+  assert.match(same, /- PLACE: the same place as in Video 1, an outdoor park basketball court: a green court with a red key/);
+  assert.doesNotMatch(same, /night|floodlights on tall poles|young spectators|Chinese lettering|the new place/);
+  const night = trendPromptV2(t, ["person1"], { crowd: "packed" });
+  assert.match(night, /- LIGHT: as in Video 1, night under floodlights on tall poles\./);
+  assert.match(night, /- BOARDS: as in Video 1, red oval sponsor boards with white Chinese lettering\./);
+  // A place in the person's own words brings its own light: no night is forced on it, no floodlights put back.
+  const own = trendPromptV2(t, ["person1"], { court: "custom", courtText: "a sunny beach in Hawaii at noon" });
+  assert.doesNotMatch(own, /- LIGHT:|night/);
   // Snow keeps the park: nothing of it is called gone.
   assert.doesNotMatch(trendPromptV2(t, ["person1"], { court: "snow" }), /Nothing of Video 1's park is left/);
   // Custom words on the boards are the only new text, without quotes of their own.
@@ -295,10 +314,13 @@ test("photo facts: fixed words only, a missing word is left out, free text never
   assert.equal(input.max_tokens, 120);
   assert.equal(photoMissingText("Person 2"), "Person 2's photo could not be read. Add it again — nothing was charged.");
   // The facts reach the prompt through the plan.
-  const media = { person1: { ...photo("up_a"), facts: { person: true, colour: "greyscale" } }, person2: { ...photo("up_b"), facts: { person: true, hair: "black" } } };
+  const media = { person1: { ...photo("up_a"), facts: { person: true, colour: "greyscale", beard: true } }, person2: { ...photo("up_b"), facts: { person: true, hair: "black", beard: false } } };
   const prompt = planTool("trend-crossover-king-pt2", { quality: "480p" }, media).tasks[0].input.prompt;
   assert.match(prompt, /Image 1 is a black-and-white photo/);
-  assert.match(prompt, /Image 2 has black hair/);
+  assert.match(prompt, /To tell them apart: Image 1 has a beard; Image 2 has black hair, no beard\./);
+  // Words that tell nobody apart are left out: "other" hair, or the same words for both photos.
+  const same = { person1: { ...photo("up_a"), facts: { person: true, hair: "other", beard: false } }, person2: { ...photo("up_b"), facts: { person: true, hair: "other", beard: false } } };
+  assert.doesNotMatch(planTool("trend-crossover-king-pt2", { quality: "480p" }, same).tasks[0].input.prompt, /To tell them apart|other hair/);
 });
 
 test("Stall Grabber (22 October 2026): one seat, the whole 6.6 s clip on R2, priced as WaveSpeed quoted it", () => {
