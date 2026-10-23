@@ -14,6 +14,11 @@ export interface StudioEnv {
   INTERNAL_SECRET: string;
   EPHONE_API_KEY?: string;
   EPHONE_API_URL?: string;
+  /** ePhone's CONSOLE access token and the account's user id (23 October 2026): the API key above cannot read the
+   *  account's balance ("This is an API key (sk-...) for model calls, not a console access token"); these can, through
+   *  /api/user/self (src/studio/providers.ts readBalance). Secrets. */
+  EPHONE_ACCESS_TOKEN?: string;
+  EPHONE_USER_ID?: string;
   /** WaveSpeed AI (src/wavespeed.ts): the viral templates' Wan 3.0 video edit, and the backup of GPT Image 2.5 and
    *  Character Swap's first frame when ePhone cannot take an order (src/studio/backups.ts). */
   WAVESPEED_API_KEY?: string;

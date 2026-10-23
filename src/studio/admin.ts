@@ -472,8 +472,10 @@ export async function adminApi(env: StudioEnv, request: Request, url: URL, admin
   }
   const gate: Gate = { session, fresh: false };
   const res = await adminRoute(env, request, url, adminId, gate);
-  // Every call keeps the admin session alive for another 30 minutes, up to its 12 hours.
-  res.headers.append("set-cookie", await touchSession(env, session, Date.now(), gate.fresh));
+  // Every call the owner makes keeps the admin session alive for another 30 minutes, up to its 12 hours. The page's own
+  // refreshes (admin.js live(), header X-Kleo-Auto on reads) do not: a console left open still closes after 30 idle minutes.
+  const auto = request.method === "GET" && request.headers.get("x-kleo-auto") === "1";
+  if (!auto) res.headers.append("set-cookie", await touchSession(env, session, Date.now(), gate.fresh));
   return res;
 }
 
