@@ -41,6 +41,7 @@ import { publicPlans } from "../plans.ts";
 import { createPaySession } from "./pay.ts";
 import { adminApi } from "./admin.ts";
 import { pruneIps, recordIp } from "./ips.ts";
+import { ADMIN_SITE_API, ADMIN_SITE_PATH, CONSOLE_PATH, adminUrl, certProblem, isAdminHost, noteRefused, refused } from "./admin-host.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const json = (data: unknown, status = 200, headers: Record<string, string> = {}): Response =>
@@ -179,20 +180,25 @@ async function handleMedia(env: StudioEnv, request: Request, url: URL): Promise<
   return new Response("Not found", { status: 404 });
 }
 
-async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionContext): Promise<Response> {
+async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionContext, adminHost = false): Promise<Response> {
   const path = url.pathname;
   const method = request.method;
   if (method !== "GET" && method !== "HEAD" && request.headers.get("x-kleo") !== "1") return json({ error: "Forbidden" }, 403);
+  // The admin host answers only the console's own routes and its sign-in (src/studio/admin-host.ts).
+  if (adminHost && !ADMIN_SITE_API.test(path)) return json({ error: "Not found." }, 404);
   const origin = url.origin;
 
   // ── no session needed ──
   if (path === "/api/config" && method === "GET") {
     return json({
+      // On the admin host the page shows only the console, signed in with a password (no Google redirect is registered there).
+      ...(adminHost ? { adminSite: true } : {}),
       google: googleEnabled(env), microsoft: microsoftEnabled(env), social: enabledSocial(env), signup: signupMode(env), noGift: NO_GIFT_SENTENCE, turnstile: env.TURNSTILE_SITEKEY ?? null, defaultModel: DEFAULT_MODEL,
       models: publicCatalog(marginOf(env), freeModels(env.STUDIO_FREE_MODELS)), freeCredits: Number(env.FREE_CREDITS ?? 5),
       defaultImageModel: defaultImageModel(pausedImageModels(env.STUDIO_PAUSED_IMAGE_MODELS)),
       imageModels: publicImageCatalog(marginOf(env), freeImageModels(env.STUDIO_FREE_IMAGE_MODELS), pausedImageModels(env.STUDIO_PAUSED_IMAGE_MODELS)),
       emailReset: resetAvailable(env), plans: publicPlans(env.STRIPE_PLAN_LINKS, null), presets: publicPresets(), tools: publicTools(marginOf(env)), freeTools: freeTools(env.STUDIO_FREE_TOOLS),
+      ...(adminHost ? { google: false, microsoft: false, social: [], signup: "none" } : {}),
     });
   }
   if (path.startsWith("/api/auth/") && method === "POST" && path !== "/api/auth/password" && path !== "/api/auth/password/change" && path !== "/api/auth/signout-all") {
@@ -221,10 +227,11 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
   const userId = await sessionUser(env, request);
   if (!userId) return json({ error: "Please sign in.", code: "signin" }, 401);
 
-  // THE ADMIN CONSOLE (23 October 2026, src/studio/admin.ts): the accounts in STUDIO_ADMINS only, checked here on the
-  // session; to anybody else it does not exist. Its reads want the X-Kleo header too.
+  // THE ADMIN CONSOLE (23 October 2026, src/studio/admin.ts): on the admin host only (whose every request carried the
+  // owner's certificate), for the accounts in STUDIO_ADMINS only, checked here on the session; to anybody else it does
+  // not exist. Its reads want the X-Kleo header too.
   if (path.startsWith("/api/admin/")) {
-    if (!isAdmin(env, userId)) return json({ error: "Not found." }, 404);
+    if (!adminHost || !isAdmin(env, userId)) return json({ error: "Not found." }, 404);
     if (request.headers.get("x-kleo") !== "1") return json({ error: "Forbidden" }, 403);
     return adminApi(env, request, url, userId);
   }
@@ -259,7 +266,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     if (!info) return json({ error: "Please sign in.", code: "signin" }, 401, { "set-cookie": clearSessionCookie() });
     const paid = (await hasPaid(asEnv(env), userId)) || isAdmin(env, userId);
     return json({
-      ...info, paid, admin: isAdmin(env, userId), allowed: paid ? publicCatalog().map((m: any) => m.key) : freeModels(env.STUDIO_FREE_MODELS),
+      ...info, paid, admin: isAdmin(env, userId), adminUrl: isAdmin(env, userId) ? adminUrl(env) : undefined, allowed: paid ? publicCatalog().map((m: any) => m.key) : freeModels(env.STUDIO_FREE_MODELS),
       freeResolutions: paid ? null : freeResolutions(env.STUDIO_FREE_RESOLUTIONS),
       allowedImages: (paid ? IMAGE_MODELS.map((m) => m.key) : freeImageModels(env.STUDIO_FREE_IMAGE_MODELS)).filter((k) => !pausedImageModels(env.STUDIO_PAUSED_IMAGE_MODELS).includes(k)), packs: packsFor(env, userId),
       allowedTools: paid ? freeTools("*") : freeTools(env.STUDIO_FREE_TOOLS),
@@ -533,14 +540,48 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
   return json({ error: "Not found." }, 404);
 }
 
-async function route(request: Request, env: StudioEnv, ctx: ExecutionContext, url: URL): Promise<Response> {
+/**
+ * admin.kleooai.com (src/studio/admin-host.ts): the owner's client certificate first, on every request, then only the
+ * console: its page and files, media previews, its API and its sign-in. Everything else is 404 there.
+ */
+async function adminSite(request: Request, env: StudioEnv, ctx: ExecutionContext, url: URL): Promise<Response> {
+  const why = certProblem(env, request);
+  if (why) { ctx.waitUntil(noteRefused(env, request, why)); return refused(); }
+  const p = url.pathname;
+  if (p === "/") return Response.redirect(url.origin + "/admin", 302);
+  if (!ADMIN_SITE_PATH.test(p)) return new Response("Not found", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
+  try {
+    if (p.startsWith("/api/") || p.startsWith("/media/")) await ensureStudioSchema(env);
+    if (p.startsWith("/api/")) return await api(env, request, url, ctx, true);
+    if (p.startsWith("/media/")) return await handleMedia(env, request, url);
+  } catch (e) {
+    return fail(e);
+  }
+  return appAsset(request, env, url);
+}
+
+/** The single-page app: real files as they are, every other path gets index.html (client-side routes). */
+async function appAsset(request: Request, env: StudioEnv, url: URL): Promise<Response> {
+  let asset = await env.ASSETS.fetch(request);
+  if (asset.status === 404 && request.method === "GET") asset = await env.ASSETS.fetch(new Request(new URL("/", url).toString(), request));
+  // The page itself is never cached, so a release reaches everybody on the next load (its scripts carry ?v=).
+  if ((asset.headers.get("content-type") ?? "").includes("text/html")) {
+    asset = new Response(asset.body, asset);
+    asset.headers.set("cache-control", "no-store");
+  }
+  return asset;
+}
+
+async function route(request: Request, env: StudioEnv, ctx: ExecutionContext, url: URL, adminHost: boolean): Promise<Response> {
+  if (adminHost) return adminSite(request, env, ctx, url);
   // One address for the app: www and the old app.kleooai.com send people to the canonical host.
   const canonical = (env.CANONICAL_HOST ?? "").trim();
   if (canonical && url.hostname !== canonical && (url.hostname === `www.${canonical}` || url.hostname.startsWith("app."))) {
     return Response.redirect(`https://${canonical}${url.pathname}${url.search}`, 301);
   }
-  // Everything that is not the app is the Kleo site (kleooai.com/mcp, /pricing/, /guides/…).
-  if (!APP_PATH.test(url.pathname)) {
+  // Everything that is not the app is the Kleo site (kleooai.com/mcp, /pricing/, /guides/…). The admin console does not
+  // exist on this host: its paths get the site's 404, like any page that is not there.
+  if (!APP_PATH.test(url.pathname) || CONSOLE_PATH.test(url.pathname)) {
     try { return await serveSite(request, url); } catch { return new Response("The site is not reachable right now.", { status: 502 }); }
   }
   try {
@@ -566,15 +607,7 @@ async function route(request: Request, env: StudioEnv, ctx: ExecutionContext, ur
   } catch (e) {
     return fail(e);
   }
-  // The single-page app: real files as they are, every other path gets index.html (client-side routes).
-  let asset = await env.ASSETS.fetch(request);
-  if (asset.status === 404 && request.method === "GET") asset = await env.ASSETS.fetch(new Request(new URL("/", url).toString(), request));
-  // The page itself is never cached, so a release reaches everybody on the next load (its scripts carry ?v=).
-  if ((asset.headers.get("content-type") ?? "").includes("text/html")) {
-    asset = new Response(asset.body, asset);
-    asset.headers.set("cache-control", "no-store");
-  }
-  return asset;
+  return appAsset(request, env, url);
 }
 
 export default {
@@ -582,9 +615,10 @@ export default {
     const url = new URL(request.url);
     const toHttps = httpsRedirect(url);
     if (toHttps) return toHttps;
-    // The admin console's page and API: its own CSP, never indexed, never cached.
-    const admin = /^\/(?:api\/)?admin(?:\/|$)/.test(url.pathname);
-    return secureResponse(await route(request, env, ctx, url), { site: !APP_PATH.test(url.pathname), admin });
+    // The admin host: its own CSP, never indexed, never cached (src/studio/admin-host.ts).
+    const adminHost = isAdminHost(env, url.hostname);
+    const app = APP_PATH.test(url.pathname) && !CONSOLE_PATH.test(url.pathname);
+    return secureResponse(await route(request, env, ctx, url, adminHost), { site: !adminHost && !app, admin: adminHost });
   },
 
   async scheduled(_event: ScheduledController, env: StudioEnv, ctx: ExecutionContext): Promise<void> {

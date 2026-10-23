@@ -9,7 +9,7 @@
 // (a QR code drawn by qr.js, on this origin), every later visit asks for the 6-digit code, and the dangerous actions
 // ask for a new one.
 
-import { qrSvg } from "./qr.js?v=73";
+import { qrSvg } from "./qr.js?v=74";
 
 let K = null;
 const DEMO_MODE = new URLSearchParams(location.search).get("demo");
@@ -259,10 +259,8 @@ function enrollCode(r) {
   const grouped = r.secret.match(/.{1,4}/g).join(" ");
   gateFrame("Add the code to your iPhone", null,
     h("ol", { class: "adm-steps" },
-      h("li", {}, "On this iPhone, tap the button below: Passwords opens and adds the “Kleo admin” code. Save it on the entry of your Kleo password."),
-      h("li", {}, "On a computer: open Passwords on the iPhone, Codes, the + button, and scan this QR code with the camera."),
+      h("li", {}, "On your iPhone, open Passwords, then Codes, then the + button, and scan this QR code. Save it on the entry of your Kleo password."),
       h("li", {}, "Type the 6-digit code it shows.")),
-    h("a", { class: "btn btn-quiet adm-gate-btn", href: r.uri }, icon("key", 17), "Add to Passwords"),
     h("div", { class: "adm-qr", html: qrSvg(r.uri) }),
     h("div", { class: "adm-secret" }, h("span", {}, "Or type this set-up key by hand"), h("b", { class: "mono" }, grouped), copyBtn(r.secret, "Copy the set-up key")),
     input, err, go);
@@ -285,9 +283,10 @@ function showRecovery(codes, firstTime) {
 const SECURITY_EVENTS = { "admin.signin": "Console opened", "admin.code_wrong": "Wrong code", "admin.locked": "Console locked", "admin.2fa_enrolled": "Phone set up",
   "admin.recovery_used": "Recovery code used", "admin.recovery_renewed": "New recovery codes", "admin.signout_sessions": "Console signed out everywhere" };
 const HOW_TO = [
-  "Open app.kleooai.com/admin (bookmark it). Kleo asks you to sign in if you aren't.",
-  "Sign in with your e-mail and your Kleo password. Keep the password in iPhone Passwords: it fills it in for you.",
-  "Type the 6-digit code for “Kleo admin”. In iPhone Passwords it sits on the same entry as the password, and Safari offers it by itself.",
+  "On your own computer, open admin.kleooai.com in Chrome (bookmark it). It opens only where your Kleo admin certificate is installed: anywhere else it says Forbidden.",
+  "If Chrome asks which certificate to use, pick “Kleo admin”.",
+  "Sign in with your e-mail and your Kleo password. Keep the password in iPhone Passwords (and let Chrome fill it in).",
+  "Type the 6-digit code for “Kleo admin” from the Passwords app on your iPhone (Codes). It changes every 30 seconds.",
   "The console stays open 30 minutes without use, 12 hours at most. Deleting or closing an account, a big credit change, a new key and signing someone out ask for a new code.",
   "Every sign-in to the console sends an e-mail to kleooai@gmail.com with the address, place and device. If one wasn't you, change your password and ask for a reset of the code.",
 ];
@@ -319,7 +318,7 @@ async function securityPage(main) {
       h("div", { class: "adm-actions" }, h("button", { class: "btn btn-quiet", onclick: newCodes }, icon("redo", 17), "Make new codes"))),
     card("How you sign in to Kleo", null, h("div", { class: "list" }, (r.methods || []).map((m) => h("div", { class: "row" }, icon(m.provider === "password" ? "key" : "user", 19),
       h("div", { class: "lbl" }, h("b", {}, methods[m.provider] || m.provider), h("span", {}, [m.email, m.last_login_at ? `last used ${ago(m.last_login_at)}` : null].filter(Boolean).join(" · ")))))),
-      h("div", { class: "adm-actions" }, h("button", { class: "btn btn-quiet", onclick: () => K.go("/account") }, icon("key", 17), "Change password"))),
+      h("div", { class: "adm-actions" }, h("a", { class: "btn btn-quiet", href: K.DEMO ? "/account?demo=1" : "https://app.kleooai.com/account", target: K.DEMO ? null : "_blank", rel: "noopener" }, icon("key", 17), "Change password in the app"))),
     card("Recent console activity", r.events?.length ? null : "Nothing yet.", r.events?.length ? h("div", { class: "adm-timeline" }, r.events.map((a) => {
       let d = {};
       try { d = JSON.parse(a.detail || "{}"); } catch { /* none */ }
@@ -329,7 +328,9 @@ async function securityPage(main) {
     })) : null),
     card("How to sign in", null, h("ol", { class: "adm-steps" }, HOW_TO.map((t) => h("li", {}, t)))),
     card("If your phone is lost", null, h("ol", { class: "adm-steps" }, LOST_PHONE.map((t) => h("li", {}, t)))),
-    card("An extra lock, if you want it", "Cloudflare Access (free) can ask for a one-time PIN sent to kleooai@gmail.com before anyone even sees the console. The steps are in docs/ADMIN-SECURITY.md in kleo-mcp.",
+    card("Only your computer", "The console lives on admin.kleooai.com, and opens only with the Kleo admin certificate installed on your PC: Cloudflare refuses every other device before Kleo even sees it, and Kleo checks the certificate again on every request. A new computer needs the certificate installed (docs/ADMIN-SECURITY.md).",
+      h("a", { class: "btn btn-quiet btn-sm", href: "https://github.com/tonnooooo/kleo-mcp/blob/main/docs/ADMIN-SECURITY.md", target: "_blank", rel: "noopener" }, "How it works", icon("right", 15))),
+    card("An extra lock, if you want it", "Cloudflare Access (free) can also ask for a one-time PIN sent to kleooai@gmail.com. The steps are in docs/ADMIN-SECURITY.md in kleo-mcp.",
       h("a", { class: "btn btn-quiet btn-sm", href: "https://github.com/tonnooooo/kleo-mcp/blob/main/docs/ADMIN-SECURITY.md", target: "_blank", rel: "noopener" }, "Open the steps", icon("right", 15))));
 }
 

@@ -73,6 +73,8 @@
     "STUDIO_PAUSED_IMAGE_MODELS": "", // 18 Oct 2026, the owner: Nano Banana Pro and 2 back online (paused 15 Oct for "invalid channel id"); a model listed here takes no orders
     "STUDIO_MAX_RUNNING": "3",
     "STUDIO_AGENT_MODEL": "claude-haiku-5-5",
-    "STUDIO_AGENT_PER_DAY": "200"
+    "STUDIO_AGENT_PER_DAY": "200",
+    "ADMIN_HOST": "admin.kleooai.com", // 23 Oct 2026: the admin console lives only here (src/studio/admin-host.ts); /admin on every other host is the site's 404
+    "ADMIN_CERT_SHA256": "" // SHA-256 fingerprint(s) of the owner's client certificate (Cloudflare Client Certificates); EMPTY = the admin host opens for nobody (fail closed)
   }
 }

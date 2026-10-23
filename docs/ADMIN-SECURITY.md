@@ -1,43 +1,65 @@
 # Admin console security
 
-The admin console is at **https://app.kleooai.com/admin**. It moves to `https://kleooai.com/admin` when the app moves to the apex domain. The code is in `src/studio/admin.ts`, `src/studio/admin-auth.ts` and `studio-web/admin.js`.
+The admin console is at **https://admin.kleooai.com**, and **only there**. It opens only on the owner's own computer, the one with the Kleo admin client certificate. The code is in:
+
+- `src/studio/admin-host.ts`: the host and the certificate;
+- `src/studio/admin-auth.ts` and `src/studio/totp.ts`: the code from the phone and the console's session;
+- `src/studio/admin.ts`: the console's API;
+- `studio-web/admin.js`: the page.
 
 ## The locks
 
-Every call to `/api/admin/*` passes all of these locks, checked on the server.
+Every request passes all of these locks, checked on the server.
 
-1. **The Kleo account.**
+1. **The host.**
+   - The console exists only on `ADMIN_HOST` (`admin.kleooai.com`).
+   - On app.kleooai.com, kleooai.com and any other host, `/admin`, `/api/admin/*` and the console's files answer the site's 404, like a page that does not exist.
+   - On the admin host nothing else answers: only the console page and its files, media previews, `/api/admin/*`, and the sign-in it needs (`/api/config`, `/api/me`, `/api/auth/signin`, `/api/auth/signout`). Customers' pages and routes are 404 there.
+2. **The owner's computer.** Every request to the admin host must carry the owner's client certificate (mutual TLS):
+   - presented, verified by Cloudflare's CA, and not revoked;
+   - its SHA-256 fingerprint listed in `ADMIN_CERT_SHA256`.
+
+   Cloudflare's WAF blocks everything else at the edge, and the Worker checks the same things again.
+   - Without the certificate the answer is a bare `403 Forbidden`.
+   - The refusal is written to the audit (`admin.cert_refused`, at most once a minute per address).
+   - The owner gets an e-mail, at most once an hour.
+   - **With `ADMIN_CERT_SHA256` empty, the admin host opens for nobody.**
+3. **The Kleo account.**
    - The browser is signed in to an account listed in `STUDIO_ADMINS` (wrangler.studio.jsonc), today `u_6avhjrtnzrsa`.
    - Any other account gets 404, as if the console did not exist.
-2. **The code from the phone.**
+4. **The code from the phone.**
    - A 6-digit code, RFC 6238 TOTP: SHA-1, 30 seconds, one step of clock drift either side.
    - The iPhone Passwords app shows it, as do Google Authenticator and 1Password.
    - Each code works once.
    - One of ten recovery codes works instead; each recovery code works once.
-3. **The console's own session.** The code opens a second cookie, `__Host-kleo_admin`:
+5. **The console's own session.** The code opens a second cookie, `__Host-kleo_admin`:
    - HttpOnly, Secure, SameSite=Strict, signed with `INTERNAL_SECRET`.
    - Bound to the account, to its Studio epoch and to the console's own epoch.
    - It ends after **30 minutes** without use and after **12 hours** at most.
    - It also ends at "Sign out everywhere" on the account page, and at "Sign out of the console everywhere" on the Security page.
-4. **A new code for the dangerous actions.** These want a code typed in the last **5 minutes**:
+6. **A new code for the dangerous actions.** These want a code typed in the last **5 minutes**:
    - deleting an account;
    - closing an account;
    - a credit change over 100;
    - a new Kleo key;
    - signing another account out everywhere.
-5. **Lockout.** Five wrong codes in a row lock the console for **15 minutes**.
-6. **E-mails to kleooai@gmail.com.** Each one gives the address, place, network and device. One is sent at:
+7. **Lockout.** Five wrong codes in a row lock the console for **15 minutes**.
+8. **E-mails to kleooai@gmail.com.** Each one gives the address, place, network and device. One is sent at:
    - every console sign-in;
    - every wrong code;
    - every lock;
    - a phone set up;
    - a recovery code used;
    - new recovery codes.
-7. **The page itself.**
+9. **The page itself.**
    - It loads nothing from other sites: its CSP is `script-src 'self'`, `connect-src 'self'`, `frame-src 'none'`.
    - The QR code is drawn by `studio-web/qr.js`, not by an online service.
-   - `/admin` and `/api/admin/*` answer `cache-control: no-store` and `x-robots-tag: noindex`.
-8. **Every action on an account needs a reason.** It is written to the `audit` table with the admin's id.
+   - Everything on the admin host answers `cache-control: no-store` and `x-robots-tag: noindex`.
+10. **Session cookies are host-only.**
+    - They use the `__Host-` prefix and no Domain.
+    - A session made on app.kleooai.com never reaches the admin host, and the other way round.
+    - The owner signs in on admin.kleooai.com itself, with the password. Google is not offered there: its sign-in has no redirect address registered for that host.
+11. **Every action on an account needs a reason.** It is written to the `audit` table with the admin's id.
 
 ## The password
 
@@ -45,19 +67,21 @@ Every call to `/api/admin/*` passes all of these locks, checked on the server.
 - It must not contain the account's e-mail or name.
 - The rule is checked when the password is set, changed or reset, and when the phone is set up.
 - A sentence of four or five words is easy to remember and hard to guess.
-- Keep it in **iPhone Passwords**. Safari fills in the password, and the 6-digit code from the same entry.
+- Keep it in **iPhone Passwords**, with the 6-digit code on the same entry. Chrome on the PC can save the password too.
 
 ## Signing in
 
-1. Open **app.kleooai.com/admin**.
-2. If Kleo asks, sign in with your e-mail and password. iPhone Passwords fills them in.
-3. Type the 6-digit code for **"Kleo admin"** from iPhone Passwords. Safari usually offers it above the keyboard.
+1. On your PC, open **https://admin.kleooai.com** in Chrome. Bookmark it.
+2. If Chrome asks which certificate to use, choose **Kleo admin**.
+3. Sign in with your e-mail and Kleo password.
+4. Type the 6-digit code for **"Kleo admin"**: on the iPhone, open Passwords → Codes.
+
+Any other device, your phone included, gets "Forbidden". That is the lock working.
 
 ### The first time
 
-1. Open **app.kleooai.com/admin** and type your Kleo password again. This proves a stolen session is not setting up its own phone.
-2. **On the iPhone:** tap **Add to Passwords**, choose your Kleo entry, and save.
-   **On a computer:** open Passwords on the iPhone, go to **Codes**, tap **+**, and scan the QR code.
+1. Open **https://admin.kleooai.com** on the PC, sign in, and type your Kleo password again. This proves a stolen session is not setting up its own phone.
+2. On the iPhone, open Passwords → **Codes** → **+**, and scan the QR code shown on the PC.
 3. Type the 6-digit code it shows.
 4. Save the **ten recovery codes**, for example in the notes of the Kleo entry in iPhone Passwords. They are shown only once.
 
@@ -82,6 +106,49 @@ Every call to `/api/admin/*` passes all of these locks, checked on the server.
   2. Run the reset above, then set the phone up again.
 - **If `INTERNAL_SECRET` is ever changed:** the sealed code secret can no longer be opened. Run the reset above and set the phone up again.
 
+## Only the owner's computer: what is set up outside the code
+
+These steps are done once, in this order, by the owner (or a Claude session he signs in for). The key never leaves the PC.
+
+1. **The key and the request.** An ECDSA P-256 private key and a CSR are made on the PC, in `C:\Users\leona_wadij0y\KleoAdminCert`. This is already done.
+2. **The certificate.** In the Cloudflare dashboard:
+   1. Select the kleooai.com zone, then **SSL/TLS → Client Certificates → Create Certificate**.
+   2. Choose **Use my private key and CSR**, paste the CSR, and pick a validity (for example 2 years).
+   3. Save the certificate it returns as `kleo-admin.pem` next to the key.
+3. **The host.** Still in **Client Certificates**, under **Hosts → Edit**, add `admin.kleooai.com`. Cloudflare then asks browsers on that host for a certificate.
+4. **The custom domain.**
+   1. Go to **Workers & Pages → kleo-studio → Settings → Domains & Routes → Add → Custom domain**, and add `admin.kleooai.com`.
+   2. Then add `{ "pattern": "admin.kleooai.com", "custom_domain": true }` to `routes` in `wrangler.studio.jsonc`, so later deploys keep it.
+5. **The WAF rule.** Go to **Security → WAF → Custom rules → Create**:
+   - Name: `Admin only with the Kleo certificate`.
+   - Expression: `(http.host eq "admin.kleooai.com" and (not cf.tls_client_auth.cert_verified or cf.tls_client_auth.cert_revoked or cf.tls_client_auth.cert_fingerprint_sha256 ne "<fingerprint>"))`
+   - Action: **Block**.
+6. **The certificate in Windows.** In `C:\Users\leona_wadij0y\KleoAdminCert`, run:
+
+   ```bash
+   openssl pkcs12 -export -inkey kleo-admin.key -in kleo-admin.pem -name "Kleo admin" -out kleo-admin.p12
+   ```
+
+   Then double-click `kleo-admin.p12`:
+   - choose **Current User**;
+   - leave **Mark this key as exportable** off;
+   - place it in **Personal**.
+
+   Chrome on Windows uses this store.
+7. **The fingerprint.**
+   1. Run `openssl x509 -in kleo-admin.pem -noout -fingerprint -sha256`. Cloudflare also shows it.
+   2. Put it in `ADMIN_CERT_SHA256` in `wrangler.studio.jsonc`. Colons and capitals are fine, and several fingerprints are separated by commas.
+   3. Deploy kleo-studio.
+
+   The fingerprint is not a secret. Until it is set, the admin host opens for nobody.
+8. **Test.**
+   - Chrome on the PC opens https://admin.kleooai.com after the certificate prompt.
+   - The phone, and any other browser, get "Forbidden".
+   - Each refusal is in the audit as `admin.cert_refused`.
+
+- **A new computer:** install the same `.p12` there, or make a second certificate and add its fingerprint after a comma.
+- **A stolen or lost PC:** revoke the certificate in **Client Certificates**, and remove its fingerprint from `ADMIN_CERT_SHA256`.
+
 ## Optional: an extra lock in front with Cloudflare Access
 
 Cloudflare Access (Zero Trust) can ask for a one-time PIN, sent to your e-mail, before anyone even reaches the console. It is free for up to 50 people. The wrangler token cannot set it up, so these steps are done by hand in the dashboard.
@@ -94,9 +161,7 @@ Cloudflare Access (Zero Trust) can ask for a one-time PIN, sent to your e-mail, 
    - Optionally, add **Google** too.
 3. Go to **Access → Applications → Add an application → Self-hosted**, and fill it in:
    - Name: `Kleo admin`. Session duration: `24 hours`.
-   - Public hostname: domain `app.kleooai.com`, path `admin`.
-   - **Add another public hostname**: domain `app.kleooai.com`, path `api/admin`.
-   - When the app moves to `kleooai.com`, add the same two for `kleooai.com`.
+   - Public hostname: domain `admin.kleooai.com`, with no path (the whole host).
 4. Add a policy:
    - Name `Owner`, action **Allow**.
    - Include **Emails**: `kleooai@gmail.com` (and `leonardotononn2006@gmail.com` if you want to receive the PIN there).

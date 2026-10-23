@@ -108,4 +108,8 @@ export interface StudioEnv {
   CF_ANALYTICS_TOKEN?: string;
   /** The kleooai.com zone those logs belong to (default the live zone's id). */
   CF_ZONE_ID?: string;
+  /** The admin console's own host(s), comma separated (default admin.kleooai.com; src/studio/admin-host.ts). */
+  ADMIN_HOST?: string;
+  /** SHA-256 fingerprints (hex) of the client certificates that open the admin host; empty: nothing opens. */
+  ADMIN_CERT_SHA256?: string;
 }

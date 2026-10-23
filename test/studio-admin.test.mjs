@@ -5,7 +5,8 @@
  * its audit row, payments with their Stripe links, creations with signed previews, failures by reason, the providers'
  * balances and key names (never values), and the address lookup in Cloudflare's logs. Then the console's own door
  * (src/studio/admin-auth.ts): the phone code set up once, the code at every visit, the admin session cookie, the fresh
- * code before dangerous writes, the lock after five wrong codes, and the e-mails to the owner.
+ * code before dangerous writes, the lock after five wrong codes, and the e-mails to the owner. And the console's own host
+ * (src/studio/admin-host.ts): nowhere else, and there only with the owner's client certificate.
  * Run: node --test test/studio-admin.test.mjs
  */
 import { register } from "node:module";
@@ -69,7 +70,7 @@ let worker, mod;
 before(async () => {
   const r = await esbuild.build({
     stdin: { contents: `export { default } from "./src/studio/index.ts"; export { failureKind, failureText, stripeLinks, providerOf, reasonOf, dangerous } from "./src/studio/admin.ts";
-      export { pathsFor } from "./src/studio/ip-lookup.ts"; export { APP_PATH } from "./src/studio/site.ts";
+      export { pathsFor } from "./src/studio/ip-lookup.ts"; export { APP_PATH } from "./src/studio/site.ts"; export { ADMIN_SITE_PATH, CONSOLE_PATH } from "./src/studio/admin-host.ts";
       export { adminCookieValue, readAdminCookie, adminPasswordProblem } from "./src/studio/admin-auth.ts";`, resolveDir: ROOT, loader: "ts" },
     bundle: true, write: false, format: "esm", platform: "neutral", target: "es2022", logLevel: "silent", external: ["@anthropic-ai/sdk", "cloudflare:email"],
   });
@@ -82,6 +83,8 @@ function newEnv(over = {}) {
     DB: new FakeD1(), RENDERS: new FakeR2(), ASSETS: { fetch: async () => new Response("<!doctype html>app", { headers: { "content-type": "text/html" } }) },
     INTERNAL_SECRET: "s3cret", PUBLIC_URL: "https://mcp.kleo.test", EPHONE_API_KEY: "ephone-secret-value", FREE_CREDITS: "5",
     STUDIO_FREE_MODELS: "seedance-2.0-fast", STUDIO_DAILY_BUDGET_USD: "30", MAX_NEW_USERS_PER_IP_DAY: "50", MAX_ACCOUNTS_PER_ADDRESS: "50",
+    // The console's host and the owner's certificate (src/studio/admin-host.ts).
+    ADMIN_HOST: "admin.kleo.test", ADMIN_CERT_SHA256: CERT_FP,
     // The owner's alerts (providers.ts mailOwner): every message is kept here.
     mails: [], OWNER_MAIL: { send: async (m) => { env.mails.push(m); } },
     ...over,
@@ -89,17 +92,26 @@ function newEnv(over = {}) {
   for (const f of readdirSync(join(ROOT, "migrations")).sort()) env.DB.db.exec(readFileSync(join(ROOT, "migrations", f), "utf8"));
   return env;
 }
+/** The owner's client certificate as Cloudflare reports it on the admin host (request.cf.tlsClientAuth). */
+const CERT_FP = "3f".repeat(32);
+const GOOD_TLS = { certPresented: "1", certVerified: "SUCCESS", certRevoked: "0", certFingerprintSHA256: CERT_FP, certIssuerDN: "CN=Cloudflare" };
 const pending = [];
 const ctx = { waitUntil(p) { pending.push(p); }, passThroughOnException() {} };
 const BERLIN = { ip: "95.33.163.20", cf: { country: "DE", region: "Berlin", city: "Berlin", asn: 3320, asOrganization: "Deutsche Telekom AG" } };
-async function call(env, path, { method = "GET", body, cookie, header = true, from } = {}) {
+/**
+ * One request. The console's paths (/admin, /api/admin/*) go to the admin host with the owner's certificate unless the
+ * test says otherwise: `host: "app"` or `host: "admin"`, `tls` for another certificate (null: none).
+ */
+async function call(env, path, { method = "GET", body, cookie, header = true, from, host, tls } = {}) {
+  const admin = host === "admin" || (host === undefined && /^\/(?:api\/)?admin(?:\/|$)/.test(path));
   const h = { "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X)" };
   if (header) h["x-kleo"] = "1";
   if (cookie) h.cookie = cookie;
   if (from?.ip) h["cf-connecting-ip"] = from.ip;
   if (body !== undefined) h["content-type"] = "application/json";
-  const req = new Request(`https://app.kleo.test${path}`, { method, headers: h, body: body === undefined ? undefined : JSON.stringify(body) });
-  if (from?.cf) Object.defineProperty(req, "cf", { value: from.cf });
+  const req = new Request(`https://${admin ? "admin" : "app"}.kleo.test${path}`, { method, headers: h, body: body === undefined ? undefined : JSON.stringify(body), redirect: "manual" });
+  const cf = admin ? { ...(from?.cf ?? {}), ...(tls === null ? {} : { tlsClientAuth: tls ?? GOOD_TLS }) } : from?.cf;
+  if (cf) Object.defineProperty(req, "cf", { value: cf });
   const res = await worker.fetch(req, env, ctx);
   await Promise.allSettled(pending.splice(0));
   const text = await res.text();
@@ -150,9 +162,12 @@ test("only an admin opens the console: others are told it does not exist, and ev
   assert.equal(o.status, 200, o.text);
   assert.equal(o.json.counts.users, 2);
   assert.equal(o.json.newest.length, 2);
-  // The page itself is the app's: /admin and its deeper paths get index.html, as do the two files it loads.
-  for (const p of ["/admin", "/admin/users", `/admin/users/${ana.id}`, "/admin.js", "/admin.css"]) assert.ok(mod.APP_PATH.test(p), p);
-  assert.ok(!mod.APP_PATH.test("/admin/users/u_x/../../x"));
+  // The console's page and files belong to the admin host only.
+  for (const p of ["/admin", "/admin/users", `/admin/users/${ana.id}`, "/admin.js", "/admin.css", "/qr.js"]) {
+    assert.ok(mod.ADMIN_SITE_PATH.test(p), p);
+    assert.ok(mod.CONSOLE_PATH.test(p) || !mod.APP_PATH.test(p), p);
+  }
+  assert.ok(!mod.ADMIN_SITE_PATH.test("/admin/users/u_x/../../x"));
 });
 
 test("sign-up and sign-in leave the address and the place Cloudflare saw; the list shows, searches and sorts them", async () => {
@@ -541,7 +556,7 @@ test("the console's page and API are never indexed or cached, load nothing from 
   assert.doesNotMatch((await call(env, "/video", {})).res.headers.get("content-security-policy") ?? "", /script-src 'self';/, "the rest of the app keeps its own CSP");
   for (const path of ["/api/admin/auth", "/api/admin/security"]) assert.equal((await call(env, path, { cookie: ana.cookie })).status, 404, path);
   assert.equal((await call(env, "/api/admin/auth/signin", { method: "POST", cookie: ana.cookie, body: { code: "123456" } })).status, 404);
-  assert.ok(mod.APP_PATH.test("/qr.js"));
+  assert.ok(mod.ADMIN_SITE_PATH.test("/qr.js"));
 });
 
 test("the set-up QR code is drawn on this origin: right size, finder patterns, error correction M", async () => {
@@ -564,4 +579,88 @@ test("the set-up QR code is drawn on this origin: right size, finder patterns, e
   assert.match(qrSvg(link), /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="0 0 53 53"/);
   const src = readFileSync(join(ROOT, "studio-web", "qr.js"), "utf8");
   assert.doesNotMatch(src.replace("http://www.w3.org/2000/svg", ""), /https?:\/\/|fetch\(|import\(/, "it asks nobody");
+});
+
+// ── the console's own host (src/studio/admin-host.ts) ────────────────────────────────────────────────────────────
+
+/** The Kleo site behind the app, as GitHub serves it: only its 404 page exists here. */
+function siteStub() {
+  const asked = [];
+  answer = (u) => {
+    asked.push(u);
+    if (u.startsWith("https://raw.githubusercontent.com/")) return u.endsWith("/404.html") ? new Response("<h1>Page not found</h1>", { status: 200 }) : new Response("404: Not Found", { status: 404 });
+    return new Response("no", { status: 500 });
+  };
+  return asked;
+}
+
+test("on any other host the console does not exist: its page, files and API are the site's 404, whoever asks", async () => {
+  const { env, owner } = await setup();
+  const asked = siteStub();
+  try {
+    for (const path of ["/admin", "/admin/users", "/admin.js", "/admin.css", "/qr.js", "/api/admin/overview", "/api/admin/auth"]) {
+      const r = await call(env, path, { host: "app", cookie: owner.cookie });
+      assert.equal(r.status, 404, path);
+      assert.match(r.text, /Page not found/, `${path}: the site's own 404 page, no hint`);
+    }
+    assert.ok(asked.some((u) => u.endsWith("/404.html")));
+  } finally { answer = null; }
+  const me = await call(env, "/api/me", { host: "app", cookie: owner.studio });
+  assert.equal(me.json.adminUrl, "https://admin.kleo.test/admin", "the owner's app shows the way to the console");
+});
+
+test("the admin host opens only with the owner's certificate: none, unverified, revoked or another one get a bare 403", async () => {
+  const { env, owner } = await setup();
+  const cases = [["no certificate", null], ["not presented", { ...GOOD_TLS, certPresented: "0" }], ["not verified", { ...GOOD_TLS, certVerified: "FAILED:self signed certificate" }],
+    ["revoked", { ...GOOD_TLS, certRevoked: "1" }], ["another certificate", { ...GOOD_TLS, certFingerprintSHA256: "ab".repeat(32) }]];
+  for (const [what, tls] of cases) {
+    for (const path of ["/admin", "/api/admin/overview", "/admin.js", "/api/config", "/"]) {
+      const r = await call(env, path, { host: "admin", tls, cookie: owner.cookie, from: { ip: "198.51.100.66", cf: { country: "US" } } });
+      assert.equal(r.status, 403, `${what} ${path}`);
+      assert.equal(r.text, "Forbidden", "nothing says why");
+    }
+  }
+  const rows = env.DB.db.prepare("SELECT detail FROM audit WHERE event = 'admin.cert_refused'").all().map((r) => JSON.parse(r.detail));
+  assert.equal(rows.length, 1, "one audit row a minute per address, however many requests");
+  assert.deepEqual([rows[0].ip, rows[0].country, rows[0].why], ["198.51.100.66", "US", "no_cert"]);
+  assert.equal(subjects(env).filter((x) => /without your certificate/.test(x)).length, 1, "one e-mail an hour");
+  // The certificate's fingerprint may be written with colons and capitals in the setting.
+  env.ADMIN_CERT_SHA256 = `ab12, ${CERT_FP.toUpperCase().match(/../g).join(":")}`;
+  assert.equal((await call(env, "/api/admin/overview", { cookie: owner.cookie })).status, 200);
+});
+
+test("with no fingerprint set the admin host opens for nobody, even with a valid certificate", async () => {
+  const { env, owner } = await setup();
+  for (const pin of ["", "   ", "not-a-fingerprint"]) {
+    env.ADMIN_CERT_SHA256 = pin;
+    assert.equal((await call(env, "/api/admin/overview", { cookie: owner.cookie })).status, 403, JSON.stringify(pin));
+    assert.equal((await call(env, "/admin", {})).status, 403);
+  }
+  delete env.ADMIN_CERT_SHA256;
+  assert.equal((await call(env, "/admin", {})).status, 403, "missing setting: closed too");
+});
+
+test("with the certificate the admin host is the console and nothing else; its own sign-in is a password; app sessions don't carry over", async () => {
+  const { env, owner, ana } = await setup();
+  assert.equal((await call(env, "/api/admin/overview", { cookie: owner.cookie })).status, 200, "certificate + Studio session + admin session");
+  const root = await call(env, "/", { host: "admin" });
+  assert.equal(root.status, 302);
+  assert.equal(root.res.headers.get("location"), "https://admin.kleo.test/admin");
+  const page = await call(env, "/admin/users", { host: "admin" });
+  assert.equal(page.status, 200);
+  assert.equal(page.res.headers.get("x-robots-tag"), "noindex, nofollow");
+  for (const path of ["/video", "/account", "/library", "/c/c_abc", "/mcp", "/pricing/", "/health", "/auth/google"]) {
+    assert.equal((await call(env, path, { host: "admin" })).status, 404, `${path}: customers' pages are not on the admin host`);
+  }
+  for (const [path, method] of [["/api/chats", "GET"], ["/api/generations", "GET"], ["/api/auth/signup", "POST"], ["/api/auth/key", "POST"], ["/api/auth/forgot", "POST"], ["/api/pay/session", "POST"]]) {
+    assert.equal((await call(env, path, { host: "admin", method, cookie: owner.studio, body: method === "POST" ? {} : undefined })).status, 404, path);
+  }
+  const cfg = await call(env, "/api/config", { host: "admin" });
+  assert.deepEqual([cfg.json.adminSite, cfg.json.social, cfg.json.google], [true, [], false], "a password sign-in only there");
+  const signin = await call(env, "/api/auth/signin", { host: "admin", method: "POST", body: { email: "owner@example.com", password: "long enough pw" } });
+  assert.equal(signin.status, 200, signin.text);
+  assert.match(signin.res.headers.get("set-cookie"), /^__Host-kleo_studio=[^;]+; Path=\/;.*HttpOnly; Secure/);
+  assert.doesNotMatch(signin.res.headers.get("set-cookie"), /Domain=/i, "host-only: an app.kleooai.com session never reaches the admin host, nor the other way");
+  assert.equal((await call(env, "/api/admin/overview", { cookie: ana.cookie })).status, 404, "a customer with the certificate still finds nothing");
+  assert.equal((await call(env, "/api/admin/overview", { host: "app", cookie: owner.cookie })).status, 404);
 });

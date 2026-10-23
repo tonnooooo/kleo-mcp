@@ -257,3 +257,13 @@ button.adm-urow:hover { background: var(--fill-2); }
   .adm-gate { place-items: start center; min-height: 0; }
   .adm-gate-card { padding: 24px 16px 20px; border-radius: 22px; }
 }
+
+/* the admin host (admin.kleooai.com): the console alone, no customer tabs */
+.frame.admin-frame { grid-template-rows: calc(var(--nav-h) + env(safe-area-inset-top)) 1fr; }
+.admin-frame .nav-who { color: var(--ink-2); font-size: 15px; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adm-signin { min-height: 100dvh; padding: 24px 16px; }
+.adm-gate-form { display: grid; gap: 10px; }
+@media (max-width: 760px) {
+  .frame.admin-frame { grid-template-rows: calc(52px + env(safe-area-inset-top)) 1fr; }
+  .admin-frame .nav-who { display: none; }
+}
