@@ -102,9 +102,9 @@ const BERLIN = { ip: "95.33.163.20", cf: { country: "DE", region: "Berlin", city
  * One request. The console's paths (/admin, /api/admin/*) go to the admin host with the owner's certificate unless the
  * test says otherwise: `host: "app"` or `host: "admin"`, `tls` for another certificate (null: none).
  */
-async function call(env, path, { method = "GET", body, cookie, header = true, from, host, tls } = {}) {
+async function call(env, path, { method = "GET", body, cookie, header = true, from, host, tls, headers = {} } = {}) {
   const admin = host === "admin" || (host === undefined && /^\/(?:api\/)?admin(?:\/|$)/.test(path));
-  const h = { "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X)" };
+  const h = { "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X)", ...headers };
   if (header) h["x-kleo"] = "1";
   if (cookie) h.cookie = cookie;
   if (from?.ip) h["cf-connecting-ip"] = from.ip;
@@ -771,4 +771,82 @@ test("23 October 2026: with no certificate at all the answer is 421, so Chrome l
   assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE event LIKE 'admin.cert_%'").get().n, 0, "scanners without a certificate write nothing");
   assert.equal(subjects(env).filter((x) => /without your certificate/.test(x)).length, 0, "and mail nobody");
   assert.equal((await call(env, "/api/admin/overview", { cookie: owner.cookie })).status, 200, "the owner's certificate on its own connection opens it");
+});
+
+// ── live data (23 October 2026, the owner: "la pagina admin deve aggiornarsi in automatico, deve dire dati reali") ──
+
+test("the page's own refreshes (X-Kleo-Auto) read everything but never keep the console's session open", async () => {
+  const { env, owner } = await setup();
+  const manual = await call(env, "/api/admin/overview", { cookie: owner.cookie });
+  assert.equal(manual.status, 200);
+  assert.match(manual.res.headers.get("set-cookie") ?? "", /__Host-kleo_admin=/, "the owner's own click keeps the session alive");
+  const auto = await call(env, "/api/admin/overview", { cookie: owner.cookie, headers: { "x-kleo-auto": "1" } });
+  assert.equal(auto.status, 200, "a refresh reads the same data");
+  assert.doesNotMatch(auto.res.headers.get("set-cookie") ?? "", /__Host-kleo_admin=/, "but leaves the session's clock alone");
+  // A console left open: 31 idle minutes later its refreshes are refused, and the page goes back to the code screen.
+  const s = await mod.readAdminCookie("s3cret", owner.phone.admin.split("=")[1]);
+  const idle = Math.floor(Date.now() / 1000) - 31 * 60;
+  const stale = `${owner.studio}; __Host-kleo_admin=${await mod.adminCookieValue("s3cret", { ...s, seen: idle, issued: idle, fresh: idle })}`;
+  const late = await call(env, "/api/admin/overview", { cookie: stale, headers: { "x-kleo-auto": "1" } });
+  assert.equal(late.status, 401);
+  assert.equal(late.json.code, "admin_signin");
+  // Writes are never "automatic": the header on a POST changes nothing.
+  const post = await call(env, "/api/admin/auth/signout", { method: "POST", cookie: owner.cookie, body: {}, headers: { "x-kleo-auto": "1" } });
+  assert.equal(post.status, 200);
+});
+
+test("ePhone's balance is read live with its console token, and the token never leaves the Worker", async () => {
+  const { env, owner } = await setup({ EPHONE_ACCESS_TOKEN: "console-token-value", EPHONE_USER_ID: "4242" });
+  const asked = [];
+  answer = (u, init) => {
+    asked.push([u, init.headers?.authorization, init.headers?.["new-api-user"]]);
+    if (u === "https://api.ephone.ai/api/user/self") return Response.json({ success: true, message: "", data: { id: 4242, quota: 5_000_000, used_quota: 7_000_000 } });
+    if (u.includes("wavespeed")) return Response.json({ code: 200, data: { balance: 3.86 } });
+    if (u.includes("apimart")) return Response.json({ success: true, remain_balance: 8.16 });
+    return new Response("no", { status: 500 });
+  };
+  try {
+    const r = await call(env, "/api/admin/providers", { cookie: owner.cookie });
+    assert.equal(r.status, 200, r.text);
+    const eph = r.json.balances.find((b) => b.provider === "ephone");
+    assert.deepEqual([eph.usd, eph.source, eph.stale], [10, "live", undefined], "5,000,000 quota units at 500,000 a dollar: the $10 the owner topped up");
+    assert.deepEqual(asked.find((a) => a[0].endsWith("/api/user/self")).slice(1), ["Bearer console-token-value", "4242"]);
+    const set = Object.fromEntries(r.json.secrets.map((s) => [s.name, s.set]));
+    assert.deepEqual([set.EPHONE_ACCESS_TOKEN, set.EPHONE_USER_ID], [true, true]);
+    assert.ok(!r.text.includes("console-token-value"), "the token's value never leaves the Worker");
+  } finally { answer = null; }
+});
+
+test("a balance from an old refusal is history: marked stale after 30 minutes, never shown as today's balance", async () => {
+  const { env, owner } = await setup();
+  const said = (minutesAgo) => {
+    env.DB.db.exec("DELETE FROM audit WHERE detail LIKE '%剩余额度%'");
+    env.DB.db.prepare("INSERT INTO audit (at, user_id, event, detail) VALUES (?, NULL, 'studio.failed', ?)")
+      .run(new Date(Date.now() - minutesAgo * 60_000).toISOString(), JSON.stringify({ provider: "ephone.ai POST /v1/task/submit → 403: 预扣费额度失败, 用户剩余额度: ＄1.086812, 需要预扣费额度: ＄1.35" }));
+  };
+  answer = (u) => (u.includes("wavespeed") || u.includes("apimart") ? Response.json({ code: 200, data: { balance: 3 }, remain_balance: 3 }) : new Response("no", { status: 500 }));
+  try {
+    said(5);
+    let eph = (await call(env, "/api/admin/providers", { cookie: owner.cookie })).json.balances.find((b) => b.provider === "ephone");
+    assert.deepEqual([eph.usd, eph.source, eph.stale], [1.086812, "last_refusal", undefined], "five minutes old: still what ePhone holds");
+    said(180);
+    eph = (await call(env, "/api/admin/providers", { cookie: owner.cookie })).json.balances.find((b) => b.provider === "ephone");
+    assert.deepEqual([eph.usd, eph.source, eph.stale], [1.086812, "last_refusal", true], "three hours old (23 October: the owner had topped up meanwhile)");
+  } finally { answer = null; }
+});
+
+test("admin.js refreshes the page on its own: off screen, with X-Kleo-Auto, and never over the owner's typing or an open sheet", () => {
+  const js = readFileSync(join(ROOT, "studio-web/admin.js"), "utf8");
+  assert.match(js, /const LIVE_MS = 20_000;/);
+  assert.match(js, /if \(LIVE\.auto && init\.method === "GET"\) init\.headers\["x-kleo-auto"\] = "1";/);
+  assert.match(js, /liveStart\(\(into\) => pages\[key\]\(main, \{ into \}\)\);/);
+  const waits = js.slice(js.indexOf("function liveWaits()"), js.indexOf("async function live("));
+  for (const s of ["document.hidden", "LIVE.hold", "INPUT|TEXTAREA|SELECT", "[role=dialog]", "getSelection"]) assert.ok(waits.includes(s), s);
+  // Every page builds into the off-screen target and resolves only once its data is on it.
+  for (const page of ["securityPage", "overviewPage", "usersPage", "userPage", "paymentsPage", "creationsPage", "providersPage"]) {
+    const body = js.slice(js.indexOf(`async function ${page}(`), js.indexOf("\n}\n", js.indexOf(`async function ${page}(`)));
+    assert.match(body, /K\.fill\(opts\.into \|\| main,/, page);
+  }
+  assert.match(js, /await load\(true\);\n\}/, "the lists wait for their first page");
+  assert.match(js, /await balances;\n\}/, "the overview waits for the balances");
 });

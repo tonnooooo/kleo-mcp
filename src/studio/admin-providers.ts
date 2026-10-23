@@ -9,12 +9,14 @@
  *   - with neither, the newest audit row quoting an ePhone refusal is the last balance anybody saw.
  */
 import type { StudioEnv } from "./env.ts";
-import { PROVIDERS, PROVIDER_NAMES, leftInRefusal, readBalance, spendable, type Provider, type StatusRow } from "./providers.ts";
+import { PROVIDERS, PROVIDER_NAMES, SHORT_MIN, leftInRefusal, readBalance, spendable, type Provider, type StatusRow } from "./providers.ts";
 
 /** The Worker secrets the console reports on, with what each one is for. */
 export const SECRET_NAMES: [string, string][] = [
   ["INTERNAL_SECRET", "Signs sessions, links and Kleo keys, and seals the admin code"],
   ["EPHONE_API_KEY", "ePhone: every video, picture and app, and the chat agent"],
+  ["EPHONE_ACCESS_TOKEN", "ePhone's console token: reads the account's balance live"],
+  ["EPHONE_USER_ID", "ePhone's account id, which the console token needs"],
   ["WAVESPEED_API_KEY", "WaveSpeed: viral templates and backups"],
   ["APIMART_API_KEY", "APIMart: backup of most models"],
   ["STRIPE_SECRET_KEY", "Stripe: Apple Pay and Google Pay inside the app"],
@@ -39,9 +41,14 @@ export function secretStatus(env: StudioEnv): { name: string; purpose: string; s
   return set;
 }
 
+/**
+ * `stale`: a figure from a refusal older than providers.ts SHORT_MIN. It is what the provider held THEN, not now (on
+ * 23 October the console showed ePhone at $1.09 three hours after the owner had topped it up to $10), so the page shows
+ * it as history, never as the balance.
+ */
 export interface Balance {
   provider: Provider; name: string; usd: number | null; at: string | null; source: "live" | "last_read" | "last_refusal" | "none";
-  paused: boolean; error?: string;
+  paused: boolean; stale?: boolean; error?: string;
 }
 
 /** What ePhone's newest refusal in the audit said it held, or null. */
@@ -65,12 +72,14 @@ export async function balances(env: StudioEnv, nowMs = Date.now()): Promise<Bala
     const base = { provider: p, name: PROVIDER_NAMES[p], paused };
     const live = await readBalance(env, p);
     if (live !== null) return { ...base, usd: live, at: new Date(nowMs).toISOString(), source: "live" };
+    const old = (at: string) => nowMs - Date.parse(at.endsWith("Z") ? at : `${at}Z`) > SHORT_MIN * 60_000;
     if (row?.balance_usd !== null && row?.balance_usd !== undefined && row.balance_at) {
-      return { ...base, usd: row.balance_usd, at: row.balance_at, source: row.source === "refusal" ? "last_refusal" : "last_read" };
+      const refusal = row.source === "refusal";
+      return { ...base, usd: row.balance_usd, at: row.balance_at, source: refusal ? "last_refusal" : "last_read", ...(refusal && old(row.balance_at) ? { stale: true } : {}) };
     }
     if (p === "ephone") {
       const r = await lastRefusal(env);
-      if (r) return { ...base, usd: r.usd, at: r.at, source: "last_refusal" };
+      if (r) return { ...base, usd: r.usd, at: r.at, source: "last_refusal", ...(old(r.at) ? { stale: true } : {}) };
     }
     const key = p === "ephone" ? env.EPHONE_API_KEY : p === "wavespeed" ? env.WAVESPEED_API_KEY : env.APIMART_API_KEY;
     return { ...base, usd: null, at: null, source: "none", error: !key ? "No key set" : p === "ephone" ? "Its key can't read the balance, and no refusal has said it yet" : "The provider did not answer" };

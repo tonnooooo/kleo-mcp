@@ -121,10 +121,30 @@ export async function noteNoMoney(env: StudioEnv, p: Provider, message: string, 
   } catch (e) { console.error("provider status", p, e instanceof Error ? e.message : e); }
 }
 
+/**
+ * ePhone's account balance through its console (23 October 2026). ePhone runs new-api: the API key cannot see the
+ * account, its console access token can, as the account named by New-Api-User. `quota` counts QUOTA_PER_USD units a
+ * dollar, new-api's own scale. Null without the token and the id, or when ePhone does not answer.
+ */
+export const EPHONE_QUOTA_PER_USD = 500_000;
+export async function ephoneConsoleBalanceUsd(env: Pick<StudioEnv, "EPHONE_ACCESS_TOKEN" | "EPHONE_USER_ID" | "EPHONE_API_URL">): Promise<number | null> {
+  const token = (env.EPHONE_ACCESS_TOKEN ?? "").trim(), user = (env.EPHONE_USER_ID ?? "").trim();
+  if (!token || !/^\d+$/.test(user)) return null;
+  try {
+    const base = (env.EPHONE_API_URL ?? "https://api.ephone.ai").replace(/\/v1\/?$/, "").replace(/\/$/, "");
+    const res = await fetch(`${base}/api/user/self`, { headers: { authorization: `Bearer ${token}`, "new-api-user": user }, signal: AbortSignal.timeout(8_000) });
+    if (!res.ok) return null;
+    const d = (await res.json()) as { success?: boolean; data?: { quota?: unknown } };
+    const q = Number(d.data?.quota);
+    return d.success !== false && Number.isFinite(q) ? Math.round((q / EPHONE_QUOTA_PER_USD) * 10_000) / 10_000 : null;
+  } catch { return null; }
+}
+const hasEphoneConsole = (env: Pick<StudioEnv, "EPHONE_ACCESS_TOKEN" | "EPHONE_USER_ID">): boolean => !!(env.EPHONE_ACCESS_TOKEN ?? "").trim() && !!(env.EPHONE_USER_ID ?? "").trim();
+
 /** The dollars a provider says it holds, or null (no key, no answer, or ePhone's "unlimited" token). */
 export async function readBalance(env: StudioEnv, p: Provider): Promise<number | null> {
   try {
-    if (p === "ephone") return await ephoneBalanceUsd(env);
+    if (p === "ephone") return (await ephoneConsoleBalanceUsd(env)) ?? (await ephoneBalanceUsd(env));
     const key = (p === "wavespeed" ? env.WAVESPEED_API_KEY : env.APIMART_API_KEY)?.trim();
     if (!key) return null;
     const url = p === "wavespeed" ? "https://api.wavespeed.ai/api/v3/balance" : "https://api.apimart.ai/v1/user/balance";
@@ -145,7 +165,9 @@ export async function refreshBalances(env: StudioEnv, nowMs = Date.now()): Promi
   for (const p of PROVIDERS) {
     try {
       const r = await statusOf(env, p);
-      if (r?.checked_at && nowMs - Date.parse(r.checked_at) < REFRESH_MIN[p] * 60_000) continue;
+      // ePhone is read as often as the others once its console token is set (ephoneConsoleBalanceUsd).
+      const every = p === "ephone" && hasEphoneConsole(env) ? REFRESH_MIN.wavespeed : REFRESH_MIN[p];
+      if (r?.checked_at && nowMs - Date.parse(r.checked_at) < every * 60_000) continue;
       const bal = await readBalance(env, p);
       if (bal === null) {
         await env.DB.prepare(`INSERT INTO provider_status (provider, checked_at) VALUES (?, ?) ON CONFLICT(provider) DO UPDATE SET checked_at = excluded.checked_at`).bind(p, iso(nowMs)).run();

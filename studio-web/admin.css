@@ -10,6 +10,13 @@
 .adm-link:hover { background: var(--fill-2); color: var(--ink); }
 .adm-link.on { background: var(--fill); color: var(--ink); }
 .adm-link.on svg { color: var(--amber); }
+/* The page keeps itself up to date (admin.js live()): a green dot, "Live · 12 s ago"; a tap updates now. */
+.adm-live { display: flex; align-items: center; gap: 9px; margin-top: 14px; padding: 10px 12px; border-radius: 12px; font-size: 15px; font-weight: 550; color: var(--ink-2); text-align: left; }
+.adm-live:hover { background: var(--fill-2); color: var(--ink); }
+.adm-live-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--green); flex: none; animation: adm-live 2.4s ease-in-out infinite; }
+.adm-live.bad .adm-live-dot { background: var(--red); animation: none; }
+@keyframes adm-live { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .adm-live-dot { animation: none; } }
 .adm-main { min-width: 0; display: grid; gap: 18px; align-content: start; }
 .adm-stack { display: grid; gap: 18px; min-width: 0; align-content: start; }
 
@@ -195,6 +202,7 @@ button.adm-urow:hover { background: var(--fill-2); }
   .adm-link { white-space: nowrap; background: var(--fill-2); padding: 9px 14px; border-radius: 999px; flex: none; }
   .adm-link.on { background: var(--ink); color: var(--bg); }
   .adm-link.on svg { color: var(--bg); }
+  .adm-live { margin-top: 0; white-space: nowrap; background: var(--fill-2); padding: 9px 14px; border-radius: 999px; flex: none; }
   .adm-two { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 760px) {

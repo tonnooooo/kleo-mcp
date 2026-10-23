@@ -32,6 +32,8 @@ class AdminError extends Error { constructor(msg, status, code, data = {}) { sup
 async function call(path, opts = {}) {
   if (K.DEMO) return demo(path, opts);
   const init = { method: opts.method || "GET", headers: { "x-kleo": "1" }, credentials: "same-origin", redirect: "manual" };
+  // A read made by the page refreshing itself, not by the owner: it never keeps the console's session open (admin.ts).
+  if (LIVE.auto && init.method === "GET") init.headers["x-kleo-auto"] = "1";
   if (opts.body !== undefined) { init.body = JSON.stringify(opts.body); init.headers["content-type"] = "application/json"; }
   let res;
   try { res = await fetch(path, init); } catch { throw new AdminError("You seem to be offline.", 0, "offline"); }
@@ -130,9 +132,59 @@ function copyBtn(text, label = "Copy") {
 }
 const refreshBtn = (fn) => h("button", { class: "btn btn-quiet btn-sm", onclick: fn }, icon("redo", 16), "Refresh");
 function failed(box, e, retry) {
+  if (LIVE.auto) LIVE.failed = true; // a refresh that failed keeps what is on screen (live() below)
   K.fill(box, card("This didn't load", e?.message || "Something went wrong.", h("button", { class: "btn btn-primary btn-sm", onclick: retry }, icon("redo", 16), "Try again")));
   if (e?.code === "signin" || e?.code === "admin_signin" || e?.code === "admin_enroll") oops(e);
 }
+
+// ── live: every page keeps itself up to date (23 October 2026, the owner: "la pagina admin deve aggiornarsi in
+// automatico, deve dire dati reali") ─────────────────────────────────────────────────────────────────────────────
+// Every LIVE_MS the page on screen is built again off screen and swapped in only when its data arrived, so nothing
+// flickers and a failed refresh leaves the last good figures up. It waits while the tab is hidden, while a sheet or a
+// question is open, while the owner types or selects text, and after "Show more" (that list would shrink back). Its
+// reads carry X-Kleo-Auto, so a console left open still closes after 30 idle minutes (src/studio/admin.ts).
+const LIVE_MS = 20_000;
+const LIVE = { timer: 0, clock: 0, run: null, at: 0, busy: false, failed: false, auto: false, hold: false };
+function liveStart(run) {
+  LIVE.run = run; LIVE.at = Date.now(); LIVE.failed = false; LIVE.hold = false;
+  clearInterval(LIVE.timer); clearInterval(LIVE.clock);
+  LIVE.timer = setInterval(() => live(false), LIVE_MS);
+  LIVE.clock = setInterval(liveLabel, 5_000);
+  liveLabel();
+}
+function liveStop() { clearInterval(LIVE.timer); clearInterval(LIVE.clock); LIVE.run = null; }
+function liveWaits() {
+  if (document.hidden || LIVE.hold) return true;
+  const a = document.activeElement;
+  if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.closest(".adm-main")) return true;
+  if (document.querySelector(".layer, .sheet, [role=dialog]")) return true;
+  return !!window.getSelection?.()?.toString();
+}
+async function live(now) {
+  const main = document.querySelector(".adm-main");
+  if (!main || !GATE.open || !LIVE.run) { if (!main) liveStop(); return; }
+  if (LIVE.busy || (!now && liveWaits())) return;
+  const run = LIVE.run, stage = h("div");
+  LIVE.busy = true; LIVE.failed = false; LIVE.auto = !now;
+  try { await run(stage); } catch { LIVE.failed = true; }
+  LIVE.busy = false; LIVE.auto = false;
+  if (run !== LIVE.run || !GATE.open || !main.isConnected) return; // the page changed meanwhile
+  if (!LIVE.failed && !(!now && liveWaits())) {
+    const y = window.scrollY;
+    main.replaceChildren(...stage.childNodes);
+    window.scrollTo(0, y);
+    LIVE.at = Date.now();
+  }
+  liveLabel();
+}
+function liveLabel() {
+  const el = document.querySelector(".adm-live-t");
+  if (!el) return;
+  const s = Math.round((Date.now() - LIVE.at) / 1000);
+  el.textContent = LIVE.failed ? "Couldn't update" : s < 10 ? "Live · just updated" : s < 60 ? `Live · ${s} s ago` : `Live · ${Math.floor(s / 60)} min ago`;
+  el.parentElement?.classList.toggle("bad", LIVE.failed);
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden && LIVE.run && Date.now() - LIVE.at > 5_000) live(false); });
 function chips(options, current, pick) {
   return h("div", { class: "adm-chips", role: "tablist" }, options.map(([k, label]) =>
     h("button", { class: "chip" + (k === current ? " on" : ""), role: "tab", "aria-selected": String(k === current), onclick: () => pick(k) }, label)));
@@ -160,11 +212,14 @@ export function render(kit) {
   const key = SECTIONS.some((s) => s.key === section) ? section : "overview";
   const nav = h("nav", { class: "adm-nav", "aria-label": "Admin pages" },
     h("div", { class: "adm-brand" }, icon("grid", 18), "Admin"),
-    SECTIONS.map((s) => h("button", { class: "adm-link" + (s.key === key ? " on" : ""), "aria-current": s.key === key ? "page" : null, onclick: () => K.go(s.key === "overview" ? "/admin" : `/admin/${s.key}`) }, icon(s.ic, 18), s.label)));
+    SECTIONS.map((s) => h("button", { class: "adm-link" + (s.key === key ? " on" : ""), "aria-current": s.key === key ? "page" : null, onclick: () => K.go(s.key === "overview" ? "/admin" : `/admin/${s.key}`) }, icon(s.ic, 18), s.label)),
+    h("button", { class: "adm-live", title: "Update now", onclick: () => live(true) }, h("i", { class: "adm-live-dot" }), h("span", { class: "adm-live-t" }, "Live")));
   const main = h("div", { class: "adm-main" });
   K.setView("admin-view", h("div", { class: "adm" }, nav, main));
-  const pages = { overview: overviewPage, users: id ? (m) => userPage(m, id) : usersPage, payments: paymentsPage, creations: creationsPage, providers: providersPage, security: securityPage };
+  const pages = { overview: overviewPage, users: id ? (m, o) => userPage(m, id, o) : usersPage, payments: paymentsPage, creations: creationsPage, providers: providersPage, security: securityPage };
   pages[key](main);
+  // The same page, built again off screen every LIVE_MS (live() above).
+  liveStart((into) => pages[key](main, { into }));
 }
 const openUser = (id) => K.go(`/admin/users/${id}`);
 
@@ -290,9 +345,9 @@ const HOW_TO = [
   "The console stays open 30 minutes without use, 12 hours at most. Deleting or closing an account, a big credit change, a new key and signing someone out ask for a new code.",
   "Every sign-in to the console sends an e-mail to kleooai@gmail.com with the address, place and device. If one wasn't you, change your password and ask for a reset of the code.",
 ];
-async function securityPage(main) {
+async function securityPage(main, opts = {}) {
   const body = h("div", { class: "adm-stack" }, loading());
-  K.fill(main, head("Security", "How the console is locked, and who opened it.", refreshBtn(() => securityPage(main))), body);
+  K.fill(opts.into || main, head("Security", "How the console is locked, and who opened it.", refreshBtn(() => securityPage(main))), body);
   let r;
   try { r = await call("/api/admin/security"); } catch (e) { return failed(body, e, () => securityPage(main)); }
   const signout = async (everywhere) => {
@@ -335,11 +390,11 @@ async function securityPage(main) {
 }
 
 // ── Overview ─────────────────────────────────────────────────────────────────────────────────────────────────────
-async function overviewPage(main) {
+async function overviewPage(main, opts = {}) {
   const body = h("div", { class: "adm-stack" }, loading());
   const bal = h("div", { class: "adm-bal" }, loading());
-  K.fill(main, head("Overview", K.DEMO ? "Demo data: nothing here is real." : "Everything at a glance.", refreshBtn(() => overviewPage(main))), body);
-  balancesInto(bal);
+  K.fill(opts.into || main, head("Overview", K.DEMO ? "Demo data: nothing here is real." : "Everything at a glance.", refreshBtn(() => overviewPage(main))), body);
+  const balances = balancesInto(bal);
   let o;
   try { o = await call("/api/admin/overview"); } catch (e) { return failed(body, e, () => overviewPage(main)); }
   const c = o.counts || {};
@@ -367,13 +422,14 @@ async function overviewPage(main) {
         !(o.payments || []).length ? empty("No payments yet.") : null), h("button", { class: "btn btn-quiet btn-sm adm-more", onclick: () => K.go("/admin/payments") }, "All payments", icon("right", 15)))),
     card("Latest failures", null, (o.failed || []).length ? h("div", { class: "adm-gens" }, o.failed.map((g) => genCard(g, true))) : empty("Nothing failed."),
       h("button", { class: "btn btn-quiet btn-sm adm-more", onclick: () => { CQ.tab = "failures"; K.go("/admin/creations"); } }, "Failures by reason", icon("right", 15))));
+  await balances;
 }
 
 // ── Users ────────────────────────────────────────────────────────────────────────────────────────────────────────
 const UQ = { q: "", filter: "all", sort: "created", dir: "desc" };
 const USER_FILTERS = [["all", "All"], ["paid", "Paid"], ["free", "Never paid"], ["new", "New this week"], ["blocked", "Closed"], ["deleted", "Deleted"]];
 const USER_SORTS = [["created", "Joined"], ["seen", "Last seen"], ["paid", "Paid"], ["credits", "Credits"], ["spend", "Provider cost"], ["gens", "Creations"], ["name", "Name"]];
-async function usersPage(main) {
+async function usersPage(main, opts = {}) {
   let offset = 0, total = 0, busy = false;
   const list = h("div", { class: "adm-users" });
   const more = h("button", { class: "btn btn-quiet adm-more", style: { display: "none" } }, "Show more");
@@ -398,10 +454,10 @@ async function usersPage(main) {
   K.fill(filters, chips(USER_FILTERS, UQ.filter, (k) => { UQ.filter = k; redraw(); }));
   const top = head("Users", null);
   top.querySelector(".adm-head-t").append(countEl);
-  K.fill(main, top, h("div", { class: "adm-toolbar" }, search, h("div", { class: "adm-toolbar-r" }, sortBtn, dirBtn)), filters, h("div", { class: "adm-table" }, header, list), more);
+  K.fill(opts.into || main, top, h("div", { class: "adm-toolbar" }, search, h("div", { class: "adm-toolbar-r" }, sortBtn, dirBtn)), filters, h("div", { class: "adm-table" }, header, list), more);
   let timer;
   search.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => { UQ.q = search.value.trim(); offset = 0; load(true); }, 280); });
-  more.addEventListener("click", () => load(false));
+  more.addEventListener("click", () => { LIVE.hold = true; load(false); });
   async function load(reset) {
     if (busy) return;
     busy = true;
@@ -420,7 +476,7 @@ async function usersPage(main) {
     } catch (e) { failed(list, e, () => load(true)); }
     busy = false; more.disabled = false;
   }
-  load(true);
+  await load(true);
 }
 function userRow(u) {
   const tags = [u.admin ? pill("Admin", "info") : null, u.blocked_at ? pill("Closed", "bad") : null, u.deleted ? pill("Deleted", "bad") : null,
@@ -462,10 +518,10 @@ function detailText(raw) {
     .map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v).slice(0, 80) : String(v).slice(0, 90)}`).join(" · ");
 }
 
-async function userPage(main, id) {
+async function userPage(main, id, opts = {}) {
   const body = h("div", { class: "adm-stack" }, loading());
   const back = h("button", { class: "btn btn-quiet btn-sm adm-back", onclick: () => K.go("/admin/users") }, h("span", { class: "flip" }, icon("right", 15)), "Users");
-  K.fill(main, h("div", { class: "adm-backrow" }, back), body);
+  K.fill(opts.into || main, h("div", { class: "adm-backrow" }, back), body);
   let d;
   try { d = await call(`/api/admin/users/${id}`); } catch (e) { return failed(body, e, () => userPage(main, id)); }
   const u = d.user;
@@ -640,9 +696,9 @@ function genSheet(g) {
 
 // ── Payments ─────────────────────────────────────────────────────────────────────────────────────────────────────
 let PQ = "all";
-async function paymentsPage(main) {
+async function paymentsPage(main, opts = {}) {
   const body = h("div", { class: "adm-stack" }, loading());
-  K.fill(main, head("Payments", "Every payment Stripe told Kleo about.", refreshBtn(() => paymentsPage(main))), body);
+  K.fill(opts.into || main, head("Payments", "Every payment Stripe told Kleo about.", refreshBtn(() => paymentsPage(main))), body);
   let r;
   try { r = await call(`/api/admin/payments${PQ === "all" ? "" : `?status=${PQ}`}`); } catch (e) { return failed(body, e, () => paymentsPage(main)); }
   const totals = (r.totals || []).slice().sort((a, b) => b.total - a.total);
@@ -676,10 +732,10 @@ async function paymentsPage(main) {
 
 // ── Creations ────────────────────────────────────────────────────────────────────────────────────────────────────
 const CQ = { tab: "recent", status: "all", kind: "all", days: 7, spendDays: 30 };
-async function creationsPage(main) {
+async function creationsPage(main, opts = {}) {
   const body = h("div", { class: "adm-stack" });
   const tabs = seg([["recent", "Recent"], ["failures", "Failures"], ["spend", "Cost"]], CQ.tab, (k) => { CQ.tab = k; creationsPage(main); });
-  K.fill(main, head("Creations", "Every account's videos, pictures and apps.", refreshBtn(() => creationsPage(main))), tabs, body);
+  K.fill(opts.into || main, head("Creations", "Every account's videos, pictures and apps.", refreshBtn(() => creationsPage(main))), tabs, body);
   if (CQ.tab === "failures") return failuresTab(body, main);
   if (CQ.tab === "spend") return spendTab(body, main);
   const grid = h("div", { class: "adm-gens" }, loading());
@@ -700,8 +756,8 @@ async function creationsPage(main) {
     } catch (e) { failed(grid, e, () => load(true)); }
     more.disabled = false;
   };
-  more.addEventListener("click", () => load(false));
-  load(true);
+  more.addEventListener("click", () => { LIVE.hold = true; load(false); });
+  await load(true);
 }
 async function failuresTab(body, main) {
   K.fill(body, seg([[1, "24 hours"], [7, "7 days"], [30, "30 days"]], CQ.days, (k) => { CQ.days = k; creationsPage(main); }), loading());
@@ -729,20 +785,28 @@ async function spendTab(body, main) {
 async function balancesInto(box, data) {
   let r = data;
   if (!r) { try { r = await call("/api/admin/providers"); } catch (e) { K.fill(box, empty(e.message || "Balances didn't load.")); return null; } }
-  K.fill(box, r.balances.map((b) => h("div", { class: `adm-balance${b.usd !== null && b.usd < 5 ? " low" : ""}` },
-    h("span", { class: "adm-tile-l" }, b.name), h("b", {}, b.usd === null ? "—" : usd(b.usd)),
-    h("span", { class: "adm-tile-s" }, b.error ? b.error : b.source === "live" ? "Live" : `From its last refusal, ${ago(b.at)}`))));
+  K.fill(box, r.balances.map((b) => {
+    // A figure from an old refusal is history, not the balance: shown as unknown, with what it said and when.
+    const known = b.usd !== null && !b.stale;
+    const said = b.source === "live" ? "Live, read just now" : b.source === "last_read" ? `Read ${ago(b.at)}`
+      : b.source === "last_refusal" ? (b.stale ? `Unknown now. Its last refusal said ${usd(b.usd)}, ${ago(b.at)}.` : `From its refusal ${ago(b.at)}`) : b.error;
+    return h("div", { class: `adm-balance${known && b.usd < 5 ? " low" : ""}${b.paused ? " low" : ""}` },
+      h("span", { class: "adm-tile-l" }, b.name), h("b", {}, known ? usd(b.usd) : "Unknown"),
+      h("span", { class: "adm-tile-s" }, said, b.paused ? " · orders on it are paused" : ""));
+  }));
   return r;
 }
-async function providersPage(main) {
+async function providersPage(main, opts = {}) {
   const body = h("div", { class: "adm-stack" }, loading());
-  K.fill(main, head("Providers & keys", "Balances, which keys are set, and the app's settings.", refreshBtn(() => providersPage(main))), body);
+  K.fill(opts.into || main, head("Providers & keys", "Balances, which keys are set, and the app's settings.", refreshBtn(() => providersPage(main))), body);
   let r;
   try { r = await call("/api/admin/providers"); } catch (e) { return failed(body, e, () => providersPage(main)); }
   const bal = h("div", { class: "adm-bal" });
   balancesInto(bal, r);
   K.fill(body,
-    card("Balances", "ePhone's key can't read its balance: Kleo shows what ePhone said when it last refused an order for money. Under $5 shows in red.", bal),
+    card("Balances", r.secrets.some((s) => s.name === "EPHONE_ACCESS_TOKEN" && s.set)
+      ? "Read live from each provider; this page updates itself. Under $5 shows in red."
+      : "WaveSpeed and APIMart are read live. ePhone needs its console token (EPHONE_ACCESS_TOKEN) to be read live; without it Kleo knows only what ePhone said when it last refused an order. Under $5 shows in red.", bal),
     card("Keys", "Only the names: a key's value never leaves the Worker.", h("div", { class: "list" }, r.secrets.map((s) => h("div", { class: "row" }, icon("key", 19),
       h("div", { class: "lbl" }, h("b", { class: "mono" }, s.name), h("span", {}, s.purpose)), s.set ? pill("Set", "ok") : pill("Not set", "")))),
       h("div", { class: "adm-note" }, icon("lock", 17), h("span", {}, "To change a key, run this in a terminal in the kleo-mcp folder, then paste the new value when asked: ", h("code", {}, "npx wrangler secret put NAME --config wrangler.studio.jsonc")))),
@@ -992,7 +1056,7 @@ async function demo(path, opts) {
       ["GOOGLE_CLIENT_SECRET", "Sign in with Google", true], ["TURNSTILE_SECRET", "The bot check on sign-up", true], ["CF_ANALYTICS_TOKEN", "Finds the address of past sign-ins in Cloudflare's logs", false]];
     return {
       secrets: names.map(([name, purpose, set]) => ({ name, purpose, set })),
-      balances: [{ provider: "ephone", name: "ePhone", usd: 1.09, at: new Date(Date.now() - 5 * 3600e3).toISOString(), source: "last_refusal" }, { provider: "wavespeed", name: "WaveSpeed", usd: 11.25, at: new Date().toISOString(), source: "live" },
+      balances: [{ provider: "ephone", name: "ePhone", usd: 1.09, at: new Date(Date.now() - 5 * 3600e3).toISOString(), source: "last_refusal", stale: true }, { provider: "wavespeed", name: "WaveSpeed", usd: 11.25, at: new Date().toISOString(), source: "live" },
         { provider: "apimart", name: "APIMart", usd: 3.5, at: new Date().toISOString(), source: "live" }],
       lookup: false,
       settings: [["STUDIO_DAILY_BUDGET_USD", "30"], ["STUDIO_FREE_DAILY_BUDGET_USD", "8"], ["STUDIO_MARGIN", "1.6"], ["FREE_CREDITS", "5"], ["STUDIO_FREE_MODELS", "seedance-2.0-fast"], ["STUDIO_MAX_RUNNING", "3"], ["STUDIO_ADMINS", "u_demo00a"]].map(([name, value]) => ({ name, value })),
