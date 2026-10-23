@@ -1779,6 +1779,47 @@ test("the in-app wallet button pays a Checkout Session for the same Stripe Price
   assert.match(page.res.headers.get("content-security-policy"), /connect-src 'self' https:\/\/cloudflareinsights\.com https:\/\/api\.stripe\.com;/);
 });
 
+// ── Two people in a template written shot by shot: two runs, one person each (23 October 2026) ──────────────────────
+test("a two-person shot-by-shot template runs twice: the first person and the place, then the second person alone on that video", async () => {
+  const env = newEnv({ WAVESPEED_API_KEY: "k" });
+  const { cookie, id } = await paidAccount(env, "two@example.com", 100);
+  const up = async () => (await call(env, "/api/uploads", { method: "POST", cookie, raw: jpegBytes(), headers: { "content-type": "image/jpeg", "x-width": "1080", "x-height": "1920" } })).json;
+  const a = await up(), b = await up();
+  const made = new Uint8Array(Buffer.from(mp4Bytes(6, 480, 854)));
+  let n = 0;
+  const p = fakeProvider((u) => {
+    if (u === "https://api.wavespeed.ai/api/v3/media/uploads") { n++; return ok({ code: 200, data: { download_url: `https://cdn.wavespeed.test/photo${n}.jpg`, upload: { method: "PUT", url: "https://up.wavespeed.test/put" } } }); }
+    if (u === "https://up.wavespeed.test/put") return new Response("", { status: 200 });
+    if (u === "https://api.wavespeed.ai/api/v3/alibaba/wan-3.0/video-edit") return ok({ code: 200, data: { id: p.sent.filter((x) => x.url === u).length === 1 ? "ws_one" : "ws_two", status: "created" } });
+    if (u === "https://api.wavespeed.ai/api/v3/predictions/ws_one/result") return ok({ code: 200, data: { id: "ws_one", status: "completed", outputs: ["https://cdn.wavespeed.test/one.mp4"] } });
+    if (u === "https://api.wavespeed.ai/api/v3/predictions/ws_two/result") return ok({ code: 200, data: { id: "ws_two", status: "completed", outputs: ["https://cdn.wavespeed.test/two.mp4"] } });
+    if (u === "https://cdn.wavespeed.test/two.mp4") return new Response(made, { status: 200, headers: { "content-type": "video/mp4", "content-length": String(made.byteLength) } });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const before = credits(env, id);
+    const run = await call(env, "/api/tools/run", { method: "POST", cookie, body: { tool: "trend-crossover-king-pt2", consent: true, inputs: { person1: a.id, person2: b.id, court: "street", quality: "480p" } } });
+    assert.equal(run.status, 200, run.text);
+    assert.equal(before - credits(env, id), 5, "two runs at 480p: $1.20, 5 credits");
+    let edits = p.sent.filter((x) => x.url.endsWith("/alibaba/wan-3.0/video-edit"));
+    assert.equal(edits.length, 1, "the second run waits for the first");
+    assert.match(edits[0].body.prompt, /^Edit Video 1: replace THE DUNKER with the person from Image 1, and change the place/);
+    assert.equal(edits[0].body.reference_images.length, 1);
+    old(env);
+    let g = await call(env, `/api/generations/${run.json.generation.id}`, { cookie });
+    edits = p.sent.filter((x) => x.url.endsWith("/alibaba/wan-3.0/video-edit"));
+    assert.equal(edits.length, 2, g.text);
+    assert.equal(edits[1].body.video, "https://cdn.wavespeed.test/one.mp4", "the second run works on the first run's video");
+    assert.match(edits[1].body.prompt, /^Edit Video 1: replace only THE DEFENDER with the person from the reference image\./);
+    assert.equal(edits[1].body.reference_images.length, 1);
+    assert.notEqual(edits[1].body.reference_images[0], edits[0].body.reference_images[0], "each run has its own photo");
+    old(env);
+    g = await call(env, `/api/generations/${run.json.generation.id}`, { cookie });
+    assert.equal(g.json.generation.status, "done", g.text);
+    assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE event = 'studio.next_step'").get().n, 1);
+  } finally { p.restore(); }
+});
+
 // ── A template's video reaches the customer byte for byte (21 October 2026) ─────────────────────────────────────────
 // The owner: "assicurati che kleo prenda il contenuto generato da WaveSpeed e lo dia al cliente alla massima qualità".
 test("a template's video reaches the customer byte for byte: WaveSpeed's file is stored, shown and downloaded unchanged, at the quality chosen", async () => {
