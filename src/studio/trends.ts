@@ -55,7 +55,10 @@ export interface Trend {
   baseUrl: string;
   /** Its length in seconds. */
   baseSeconds: number;
-  /** The clip looping on the app's card (its first 6 s at up to 1080p, with its "-p.mp4" → ".jpg" poster). */
+  /**
+   * The clip looping on the app's card, with its "-p.mp4" → ".jpg" poster: the first 6 s for the older templates, the
+   * whole clip since 23 October 2026 (the owner paid for Crossover King Pt 2 thinking its 6 s preview was the clip).
+   */
   preview: string;
   /** A still of the fixed clip, with the seats marked on it by the page. */
   guide: string;
@@ -197,7 +200,7 @@ export const TRENDS: Trend[] = [
   {
     key: "trend-crossover-king-pt2", name: "Crossover King Pt 2", blurb: "The replay, half in slow motion, on any court", tint: "#0a84ff",
     baseUrl: `${TRENDS_MEDIA}/crossover-king-pt2/base.mp4`, baseSeconds: 9.92,
-    preview: `${TRENDS_MEDIA}/crossover-king-pt2/preview3-p.mp4`, guide: `${TRENDS_MEDIA}/crossover-king-pt2/guide.jpg`,
+    preview: `${TRENDS_MEDIA}/crossover-king-pt2/preview4-p.mp4`, guide: `${TRENDS_MEDIA}/crossover-king-pt2/guide.jpg`,
     scene: COURT_SCENE, changes: COURT_CHANGES,
     edit: "Same edit as Video 1: the drive at normal speed (0-1.6 s); from 1.6 s the flight in slow motion, about 8 times slower and slightly darker, on the same framing (1.6-4.4 s); a cut at 4.4 s back to normal speed, from behind the defender, just as the ball leaves the dunker's hand; the ball dropping in and the celebration (4.4-8.3 s); a fast whip pan at 8.35-8.7 s to the defender laughing (8.7-9.9 s), with a glowing yellow basketball-shaped lantern at the left and high-rise towers on the skyline.",
     seats: [

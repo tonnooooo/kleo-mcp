@@ -132,10 +132,10 @@ test("Garden Dunk and Branch Chop (22 October 2026): one seat each, 15 s clips o
 
 test("Crossover King Pt 1 and Pt 2 (23 October 2026): two seats, cut at the reel's own cut, priced as WaveSpeed quoted them", () => {
   const p1 = trendByKey("trend-crossover-king-pt1"), p2 = trendByKey("trend-crossover-king-pt2");
-  for (const [t, slug] of [[p1, "crossover-king-pt1"], [p2, "crossover-king-pt2"]]) {
+  for (const [t, slug, preview] of [[p1, "crossover-king-pt1", "preview3-p.mp4"], [p2, "crossover-king-pt2", "preview4-p.mp4"]]) {
     assert.ok(t && !t.prompt, `${slug}: a seat-by-seat prompt`);
     assert.deepEqual(t.seats.map((s) => s.key), ["person1", "person2"]);
-    for (const [field, file] of [["baseUrl", "base.mp4"], ["preview", "preview3-p.mp4"], ["guide", "guide.jpg"]]) assert.equal(t[field], `https://media.kleooai.com/app/templates/${slug}/${file}`);
+    for (const [field, file] of [["baseUrl", "base.mp4"], ["preview", preview], ["guide", "guide.jpg"]]) assert.equal(t[field], `https://media.kleooai.com/app/templates/${slug}/${file}`);
   }
   // WaveSpeed's price API, 23 October 2026: Pt 1 (5.83 s) $0.60 / $1.20 / $2.40, Pt 2 (9.92 s) $1.00 / $2.00 / $4.00.
   assert.deepEqual(["480p", "720p", "1080p"].map((q) => trendCostUsd(p1, q)), [0.6, 1.2, 2.4]);
@@ -147,6 +147,14 @@ test("Crossover King Pt 1 and Pt 2 (23 October 2026): two seats, cut at the reel
   assert.doesNotMatch(plain, /WORLD CHANGES/);
   assert.match(plain, /The person DEFENDING[^\n]* stays exactly as in Video 1/);
   assert.match(trendPrompt(p2, ["person1", "person2"]), /the flight in slow motion, about 8 times slower/);
+});
+
+test("a template says how long its video is, and Crossover King Pt 2's preview is the whole clip (23 October 2026)", () => {
+  for (const t of TRENDS) assert.equal(toolByKey(t.key).seconds, Math.round(t.baseSeconds), t.key);
+  assert.equal(toolByKey("trend-crossover-king-pt2").seconds, 10);
+  assert.equal(toolByKey("trend-crossover-king-pt1").seconds, 6);
+  assert.equal(trendByKey("trend-crossover-king-pt2").preview, "https://media.kleooai.com/app/templates/crossover-king-pt2/preview4-p.mp4");
+  assert.equal(publicTools().find((x) => x.key === "trend-crossover-king-pt2").seconds, 10);
 });
 
 test("template changes (23 October 2026): the court, the opponent, the crowd, the light and the boards are choices on the page", () => {

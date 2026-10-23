@@ -48,6 +48,8 @@ export interface ToolDef {
   fields: ToolField[];
   /** Viral templates only (src/studio/trends.ts): the looping example, the seat guide still and its seat marks. */
   preview?: string; guide?: string; seats?: { key: string; color: string; at?: [number, number] }[];
+  /** Viral templates only: how long the video is, in whole seconds, shown beside the price. */
+  seconds?: number;
 }
 
 export const VOICES = [
@@ -175,6 +177,7 @@ function trendTool(t: Trend): ToolDef {
   return {
     key: t.key, name: t.name, blurb: t.blurb, group: "trend", icon: "film", tint: t.tint, output: "video", consent: true, badge: "Viral",
     preview: t.preview, guide: t.guide, seats: t.seats.map((s) => ({ key: s.key, color: s.color, ...(s.at ? { at: s.at } : {}) })),
+    seconds: Math.round(t.baseSeconds),
     fields: [
       // A template with its own fixed prompt needs every seat (as on ausar.ai); Kleo's own may leave seats empty.
       ...t.seats.map((s, i): ToolField => trendNeedsAllSeats(t)

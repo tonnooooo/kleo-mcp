@@ -1694,7 +1694,7 @@ function templateCard(t) {
       onmouseleave: () => v?.pause() },
     art,
     h("div", { class: "tx" }, h("b", {}, t.name), h("span", {}, t.blurb),
-      h("span", { class: "from" }, tallowed(t.key) ? [h("span", {}, "from"), bolt(12), t.from] : [icon("lock", 13), "Unlocks with any pack"])));
+      h("span", { class: "from" }, tallowed(t.key) ? [h("span", {}, "from"), bolt(12), t.from, t.seconds ? h("span", {}, ` · ${t.seconds} s`) : null] : [icon("lock", 13), "Unlocks with any pack"])));
 }
 function appView(key) {
   const t = tool(key);
@@ -1708,7 +1708,8 @@ function appView(key) {
         h("h1", {}, t.name), h("p", {}, t.blurb),
         // How it works, read from the app's own fields: what to add, then Generate (the way Higgsfield's pages say it).
         h("ol", { class: "app-steps" }, [...t.fields.filter((f) => !f.hidden && (f.required || ["image", "video", "audio"].includes(f.kind))).map((f) => f.label), t.output === "audio" ? "Create" : "Generate"].map((l, i) => h("li", {}, h("i", {}, i + 1), l))),
-        h("span", { class: "app-hero-price" }, tallowed(t.key) ? [bolt(15), `from ${t.from} credits`] : [icon("lock", 15), "Unlocks with any credit pack"]))),
+        // A template says how long its video is, so the price reads against the real length, not the short preview.
+        h("span", { class: "app-hero-price" }, tallowed(t.key) ? [bolt(15), `from ${t.from} credits${t.seconds ? ` · ${t.seconds}-second video` : ""}`] : [icon("lock", 15), "Unlocks with any credit pack"]))),
     toolBody(key, false)));
 }
 /** The form of one app with its results beside it. */
