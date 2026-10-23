@@ -30,6 +30,7 @@
  * audit table with the account. Kleo never removes a provider's own refusal.
  */
 import { CREDIT_USD, DEFAULT_MARGIN } from "./models.ts";
+import type { PhotoFacts } from "./person-check.ts";
 import { DEFAULT_TREND_QUALITY, TRENDS, TREND_CUSTOM_MAX, TREND_EXTRA_MAX, TREND_QUALITIES, WAN30_EDIT_MODEL, trendByKey, trendChangeLines, trendCostUsd, trendNeedsAllSeats, trendQuality, trendTaskInput, type Trend, type TrendChange } from "./trends.ts";
 
 export type ToolKey = "face-swap" | "video-face-swap" | "talking-photo" | "lipsync" | "character-swap" | "photo-character-swap" | "motion-control" | "outfit-swap" | "video-edit" | "video-upscale" | "voice" | "music" | "sfx" | `trend-${string}`;
@@ -193,7 +194,7 @@ function trendTool(t: Trend): ToolDef {
 export const toolByKey = (key: string | null | undefined): ToolDef | null => TOOLS.find((t) => t.key === key) ?? null;
 
 /** What the plan knows about an attached file. */
-export interface Media { id: string; url: string; kind: "image" | "video" | "audio"; seconds: number | null; width: number | null; height: number | null; type: string }
+export interface Media { id: string; url: string; kind: "image" | "video" | "audio"; seconds: number | null; width: number | null; height: number | null; type: string; facts?: PhotoFacts }
 /** One provider call. `{{speech}}` in the input is replaced by the link to the spoken audio once it exists. */
 export interface PlannedTask {
   model: string; input: Record<string, unknown>; routing?: Record<string, string>; output: "image" | "video" | "audio";
@@ -277,7 +278,7 @@ function planTrend(trend: Trend, inputs: Record<string, string>, media: Record<s
     usd: trendCostUsd(trend, q), output: "video",
     summary: `${trend.name} · ${filled.length === 1 ? "1 person" : `${filled.length} people`}${changes ? ` · ${changes === 1 ? "1 change" : `${changes} changes`}` : ""} · ${q}`,
     tasks: [{ provider: "wavespeed", model: WAN30_EDIT_MODEL, output: "video",
-      input: trendTaskInput(trend, filled.map((s) => s.key), filled.map((s) => media[s.key]!.url), q, inputs) }],
+      input: trendTaskInput(trend, filled.map((s) => s.key), filled.map((s) => media[s.key]!.url), q, inputs, Object.fromEntries(filled.map((s) => [s.key, media[s.key]!.facts]))) }],
   };
 }
 

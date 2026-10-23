@@ -27,7 +27,7 @@ import { clampFreeResolution, clipCostUsd, clipCredits, freeModels, freeResoluti
 import { presetByKey, withPreset } from "./presets.ts";
 import { planTool, toolByKey, toolCredits, toneText, ToolRefusal, TOOLS, type Media, type Plan, type ToolKey } from "./tools.ts";
 import { trendByKey } from "./trends.ts";
-import { noPersonText, personCheckInput, readPersonAnswer, PERSON_CHECK_MAX_BYTES, PERSON_CHECK_MODEL } from "./person-check.ts";
+import { noPersonText, photoFactsInput, photoMissingText, readPhotoFacts, PERSON_CHECK_MAX_BYTES, PERSON_CHECK_MODEL, type PhotoFacts } from "./person-check.ts";
 import { mediaInfo } from "./media.ts";
 import { refreshFilm } from "./films.ts";
 import { alternativeFor, FALLBACK_IMAGE_MODEL, freeImageModels, imageAlternatives, imageCostUsd, imageCredits, imageModelByKey, imageModelOfProvider, imageTaskInput, isQualityRefusal, normalizeImageSettings, otherQualitySpelling, pausedImageModels, type ImageSettings } from "./image-models.ts";
@@ -1059,17 +1059,20 @@ async function copyToWavespeed(env: StudioEnv, row: { id: string; key: string; c
 }
 
 /**
- * Whether a photo shows a real person (./person-check.ts): true, false, or null when the check could not run (no
- * Workers AI binding, a photo over the size limit, an error, an answer it cannot read). Only false ever stops an order.
+ * What a template photo is (./person-check.ts): whether it shows a real person, and since 23 October 2026 its colour,
+ * framing and a few fixed words about the person. Null when the check could not run (no Workers AI binding, a photo
+ * over the size limit, an error, an answer it cannot read): only a clear "no person" ever stops an order. "missing"
+ * when the photo is not in storage at all: Wan 3.0 could not read it either, so that order stops before the charge.
  */
-async function photoShowsPerson(env: StudioEnv, row: { key: string; content_type: string | null }): Promise<boolean | null> {
+async function photoFacts(env: StudioEnv, row: { key: string; content_type: string | null }): Promise<PhotoFacts | null | "missing"> {
+  let obj: R2ObjectBody | null;
+  try { obj = await env.RENDERS.get(row.key); } catch { return null; }
+  if (!obj) return "missing";
   const ai = env.AI as unknown as { run(model: string, input: Record<string, unknown>): Promise<unknown> } | undefined;
-  if (!ai) return null;
+  if (!ai || obj.size > PERSON_CHECK_MAX_BYTES) return null;
   try {
-    const obj = await env.RENDERS.get(row.key);
-    if (!obj || obj.size > PERSON_CHECK_MAX_BYTES) return null;
     const bytes = new Uint8Array(await obj.arrayBuffer());
-    return readPersonAnswer(await ai.run(PERSON_CHECK_MODEL, personCheckInput(bytes, row.content_type || obj.httpMetadata?.contentType || "image/jpeg")));
+    return readPhotoFacts(await ai.run(PERSON_CHECK_MODEL, photoFactsInput(bytes, row.content_type || obj.httpMetadata?.contentType || "image/jpeg")));
   } catch {
     return null;
   }
@@ -1109,11 +1112,23 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
   if (trend) {
     for (const [i, seat] of trend.seats.entries()) {
       const row = media[seat.key] ? rows.find((r) => r.id === media[seat.key]!.id) : undefined;
-      if (row && (await photoShowsPerson(env, row)) === false) {
+      if (!row) continue;
+      const facts = await photoFacts(env, row);
+      if (facts === "missing") {
+        await audit(asEnv(env), userId, null, "studio.photo_missing", { tool: tool.key, seat: seat.key });
+        throw new StudioError(photoMissingText(`Person ${i + 1}`), 400, "photo_missing");
+      }
+      if (facts?.person === false) {
         await audit(asEnv(env), userId, null, "studio.no_person", { tool: tool.key, seat: seat.key });
         throw new StudioError(noPersonText(tool.name, `Person ${i + 1}`), 400, "no_person");
       }
+      if (facts) {
+        media[seat.key]!.facts = facts;
+        await audit(asEnv(env), userId, null, "studio.photo_facts", { tool: tool.key, seat: seat.key, ...facts });
+      }
     }
+    // A template written shot by shot tells the photos apart with these facts: its instruction is written again.
+    if (trend.shots) plan = planTool(tool.key, inputs, media);
   }
 
   // Words to speak become a sound clip first: its exact length prices the talking video, and for a voiceover it IS

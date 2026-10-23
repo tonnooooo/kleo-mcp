@@ -1817,6 +1817,42 @@ test("a template's video reaches the customer byte for byte: WaveSpeed's file is
   } finally { p.restore(); }
 });
 
+test("a shot-by-shot template reads the photo facts into its instruction, and a photo gone from storage is refused before any charge", async () => {
+  const ai = { run: async () => ({ response: '{"person": true, "people": 1, "colour": "greyscale", "framing": "knees-up", "face": "medium", "hair": "brown", "beard": false, "glasses": false}' }) };
+  const env = newEnv({ WAVESPEED_API_KEY: "k", AI: ai });
+  const { cookie, id } = await paidAccount(env, "ck@example.com", 100);
+  const up = async () => (await call(env, "/api/uploads", { method: "POST", cookie, raw: jpegBytes(), headers: { "content-type": "image/jpeg", "x-width": "1080", "x-height": "1920" } })).json;
+  const order = (photoId) => call(env, "/api/tools/run", { method: "POST", cookie, body: { tool: "trend-crossover-king-pt1", consent: true, inputs: { person1: photoId, court: "street", light: "day", quality: "480p" } } });
+  const p = fakeProvider((u) => {
+    if (u === "https://api.wavespeed.ai/api/v3/media/uploads") return ok({ code: 200, data: { download_url: "https://cdn.wavespeed.test/p.jpg", upload: { method: "PUT", url: "https://up.wavespeed.test/put" } } });
+    if (u === "https://up.wavespeed.test/put") return new Response("", { status: 200 });
+    if (u === "https://api.wavespeed.ai/api/v3/alibaba/wan-3.0/video-edit") return ok({ code: 200, data: { id: "ws_ck", status: "created" } });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const photo = await up();
+    const r = await order(photo.id);
+    assert.equal(r.status, 200, r.text);
+    const sent = p.sent.find((x) => x.url.endsWith("/alibaba/wan-3.0/video-edit")).body;
+    assert.match(sent.prompt, /^Edit Video 1: replace THE DUNKER with the person from Image 1/);
+    assert.match(sent.prompt, /Image 1 is a black-and-white photo: give that person natural, realistic colour/);
+    assert.match(sent.prompt, /- LIGHT: a bright sunny day/);
+    assert.doesNotMatch(sent.prompt, /night/);
+    assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE event = 'studio.photo_facts'").get().n, 1);
+
+    // The photo is gone from storage: Wan 3.0 could not read it either, so nothing is ordered and nothing charged.
+    const gone = await up();
+    for (const k of [...env.RENDERS.m.keys()]) if (k.includes(gone.id)) env.RENDERS.m.delete(k);
+    const before = credits(env, id), asked = p.sent.length;
+    const r2 = await order(gone.id);
+    assert.equal(r2.status, 400, r2.text);
+    assert.equal(r2.json.code, "photo_missing");
+    assert.match(r2.json.error, /Person 1's photo could not be read\. Add it again — nothing was charged\./);
+    assert.equal(credits(env, id), before, "nothing was charged");
+    assert.equal(p.sent.length, asked, "WaveSpeed was never asked");
+  } finally { p.restore(); }
+});
+
 test("a template refuses a photo with no person in it before any charge; a real person goes through; no check, no block", async () => {
   const seen = [];
   const ai = (answer) => ({ run: async (model, input) => { seen.push({ model, input }); return { response: answer }; } });
