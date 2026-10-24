@@ -1779,6 +1779,129 @@ test("the in-app wallet button pays a Checkout Session for the same Stripe Price
   assert.match(page.res.headers.get("content-security-policy"), /connect-src 'self' https:\/\/cloudflareinsights\.com https:\/\/api\.stripe\.com;/);
 });
 
+// ── Two people in a template written shot by shot: two runs, one person each (23 October 2026) ──────────────────────
+test("a two-person shot-by-shot template runs twice: the first person and the place, then the second person alone on that video", async () => {
+  const env = newEnv({ WAVESPEED_API_KEY: "k" });
+  const { cookie, id } = await paidAccount(env, "two@example.com", 100);
+  const up = async () => (await call(env, "/api/uploads", { method: "POST", cookie, raw: jpegBytes(), headers: { "content-type": "image/jpeg", "x-width": "1080", "x-height": "1920" } })).json;
+  const a = await up(), b = await up();
+  const made = new Uint8Array(Buffer.from(mp4Bytes(6, 480, 854)));
+  let n = 0;
+  const p = fakeProvider((u) => {
+    if (u === "https://api.wavespeed.ai/api/v3/media/uploads") { n++; return ok({ code: 200, data: { download_url: `https://cdn.wavespeed.test/photo${n}.jpg`, upload: { method: "PUT", url: "https://up.wavespeed.test/put" } } }); }
+    if (u === "https://up.wavespeed.test/put") return new Response("", { status: 200 });
+    if (u === "https://api.wavespeed.ai/api/v3/alibaba/wan-3.0/video-edit") return ok({ code: 200, data: { id: p.sent.filter((x) => x.url === u).length === 1 ? "ws_one" : "ws_two", status: "created" } });
+    if (u === "https://api.wavespeed.ai/api/v3/predictions/ws_one/result") return ok({ code: 200, data: { id: "ws_one", status: "completed", outputs: ["https://cdn.wavespeed.test/one.mp4"] } });
+    if (u === "https://api.wavespeed.ai/api/v3/predictions/ws_two/result") return ok({ code: 200, data: { id: "ws_two", status: "completed", outputs: ["https://cdn.wavespeed.test/two.mp4"] } });
+    if (u === "https://cdn.wavespeed.test/two.mp4") return new Response(made, { status: 200, headers: { "content-type": "video/mp4", "content-length": String(made.byteLength) } });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const before = credits(env, id);
+    const run = await call(env, "/api/tools/run", { method: "POST", cookie, body: { tool: "trend-crossover-king-pt2", consent: true, inputs: { person1: a.id, person2: b.id, court: "street", quality: "480p" } } });
+    assert.equal(run.status, 200, run.text);
+    assert.equal(before - credits(env, id), 5, "two runs at 480p: $1.20, 5 credits");
+    let edits = p.sent.filter((x) => x.url.endsWith("/alibaba/wan-3.0/video-edit"));
+    assert.equal(edits.length, 1, "the second run waits for the first");
+    assert.match(edits[0].body.prompt, /^Edit Video 1: replace THE DUNKER with the person from Image 1, and change the place/);
+    assert.equal(edits[0].body.reference_images.length, 1);
+    old(env);
+    let g = await call(env, `/api/generations/${run.json.generation.id}`, { cookie });
+    edits = p.sent.filter((x) => x.url.endsWith("/alibaba/wan-3.0/video-edit"));
+    assert.equal(edits.length, 2, g.text);
+    assert.equal(edits[1].body.video, "https://cdn.wavespeed.test/one.mp4", "the second run works on the first run's video");
+    assert.match(edits[1].body.prompt, /^Edit Video 1: replace only THE DEFENDER with the person from the reference image\./);
+    assert.equal(edits[1].body.reference_images.length, 1);
+    assert.notEqual(edits[1].body.reference_images[0], edits[0].body.reference_images[0], "each run has its own photo");
+    old(env);
+    g = await call(env, `/api/generations/${run.json.generation.id}`, { cookie });
+    assert.equal(g.json.generation.status, "done", g.text);
+    assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE event = 'studio.next_step'").get().n, 1);
+  } finally { p.restore(); }
+});
+
+// The review of the two runs (24 October 2026): a second run starts once, survives a busy WaveSpeed, and when WaveSpeed
+// refuses it the customer gets the first run's video with half the credits back.
+async function twoPhotoOrder(env, cookie) {
+  const up = async () => (await call(env, "/api/uploads", { method: "POST", cookie, raw: jpegBytes(), headers: { "content-type": "image/jpeg", "x-width": "1080", "x-height": "1920" } })).json;
+  const a = await up(), b = await up();
+  const run = await call(env, "/api/tools/run", { method: "POST", cookie, body: { tool: "trend-crossover-king-pt2", consent: true, inputs: { person1: a.id, person2: b.id, quality: "480p" } } });
+  assert.equal(run.status, 200, run.text);
+  return run.json.generation.id;
+}
+const wanScript = (second) => {
+  let n = 0, e = 0;
+  return (u) => {
+    if (u === "https://api.wavespeed.ai/api/v3/media/uploads") { n++; return ok({ code: 200, data: { download_url: `https://cdn.wavespeed.test/photo${n}.jpg`, upload: { method: "PUT", url: "https://up.wavespeed.test/put" } } }); }
+    if (u === "https://up.wavespeed.test/put") return new Response("", { status: 200 });
+    if (u === "https://api.wavespeed.ai/api/v3/alibaba/wan-3.0/video-edit") { e++; return e === 1 ? ok({ code: 200, data: { id: "ws_one", status: "created" } }) : second(e); }
+    if (u === "https://api.wavespeed.ai/api/v3/predictions/ws_one/result") return ok({ code: 200, data: { id: "ws_one", status: "completed", outputs: ["https://cdn.wavespeed.test/one.mp4"] } });
+    if (u.includes("/predictions/ws_two")) return ok({ code: 200, data: { status: "processing" } });
+    if (u === "https://cdn.wavespeed.test/one.mp4") { const m = mp4Bytes(6, 480, 854); return new Response(m, { status: 200, headers: { "content-type": "video/mp4", "content-length": String(m.byteLength) } }); }
+    return new Response("?", { status: 404 });
+  };
+};
+
+test("a template's second run starts once, even when the cron works from a copy read before a poll started it", async () => {
+  const env = newEnv({ WAVESPEED_API_KEY: "k" });
+  const { cookie } = await paidAccount(env, "race@example.com", 100);
+  const p = fakeProvider(wanScript((e) => ok({ code: 200, data: { id: `ws_two_${e}`, status: "created" } })));
+  try {
+    const gid = await twoPhotoOrder(env, cookie);
+    old(env);
+    // The cron reads its rows; before it reaches this one, the customer's poll starts the second run.
+    const realPrepare = env.DB.prepare.bind(env.DB);
+    let fired = false;
+    env.DB.prepare = (sql) => {
+      const st = realPrepare(sql);
+      if (!fired && /checked_at IS NULL OR checked_at </.test(sql)) {
+        const all = st.all.bind(st);
+        st.all = async () => { const r = await all(); fired = true; env.DB.prepare = realPrepare; await call(env, `/api/generations/${gid}`, { cookie }); return r; };
+      }
+      return st;
+    };
+    await worker.scheduled({ scheduledTime: Date.now() }, env, ctx);
+    await Promise.allSettled(pending.splice(0));
+    assert.ok(fired, "the poll ran inside the cron's window");
+    assert.equal(p.sent.filter((x) => x.url.endsWith("/alibaba/wan-3.0/video-edit")).length, 2, "one first run, one second run, never a third");
+    assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE event = 'studio.next_step'").get().n, 1);
+  } finally { p.restore(); }
+});
+
+test("a template's second run waits out a busy WaveSpeed, and a refused one leaves the first video and half the credits", async () => {
+  // Busy (429) once: tried again on the next pass, not failed.
+  const env = newEnv({ WAVESPEED_API_KEY: "k" });
+  const a1 = await paidAccount(env, "busy@example.com", 100);
+  let p = fakeProvider(wanScript((e) => (e === 2 ? new Response("too many requests", { status: 429 }) : ok({ code: 200, data: { id: "ws_two", status: "created" } }))));
+  try {
+    const gid = await twoPhotoOrder(env, a1.cookie);
+    old(env);
+    let g = await call(env, `/api/generations/${gid}`, { cookie: a1.cookie });
+    assert.equal(g.json.generation.status, "running", g.text);
+    old(env);
+    g = await call(env, `/api/generations/${gid}`, { cookie: a1.cookie });
+    assert.equal(p.sent.filter((x) => x.url.endsWith("/alibaba/wan-3.0/video-edit")).length, 3, "the busy answer was tried again");
+    assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE event = 'studio.next_step'").get().n, 1);
+    assert.equal(g.json.generation.status, "running");
+  } finally { p.restore(); }
+
+  // Refused (400): the first run's video is the result, half the credits come back.
+  const env2 = newEnv({ WAVESPEED_API_KEY: "k" });
+  const a2 = await paidAccount(env2, "refused@example.com", 100);
+  p = fakeProvider(wanScript(() => new Response(JSON.stringify({ code: 400, message: "bad input" }), { status: 400 })));
+  try {
+    const gid = await twoPhotoOrder(env2, a2.cookie);
+    const after = credits(env2, a2.id);
+    assert.equal(100 - after, 5, "two runs at 480p");
+    old(env2);
+    const g = await call(env2, `/api/generations/${gid}`, { cookie: a2.cookie });
+    assert.equal(g.json.generation.status, "done", g.text);
+    assert.equal(g.json.generation.outputs.length, 1, "the first run's video");
+    assert.equal(credits(env2, a2.id), after + 2, "half of the 5 credits back, rounded down");
+    assert.equal(env2.DB.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE event = 'studio.next_step_failed'").get().n, 1);
+  } finally { p.restore(); }
+});
+
 // ── A template's video reaches the customer byte for byte (21 October 2026) ─────────────────────────────────────────
 // The owner: "assicurati che kleo prenda il contenuto generato da WaveSpeed e lo dia al cliente alla massima qualità".
 test("a template's video reaches the customer byte for byte: WaveSpeed's file is stored, shown and downloaded unchanged, at the quality chosen", async () => {

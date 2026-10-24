@@ -875,6 +875,9 @@ async function secondTry(env: StudioEnv, g: GenerationRow, slot: Slot, why: stri
  */
 async function refreshImages(env: StudioEnv, g: GenerationRow, ageMin: number): Promise<GenerationRow> {
   if (!(await moveGeneration(env, g.id, ["running"], "saving"))) return (await getGeneration(env, g.id))!;
+  // The row as it is now, not the copy the caller read: another pass may have started a second step since (the cron
+  // works through rows it read up to a minute before), and that step must never start twice.
+  g = (await getGeneration(env, g.id)) ?? g;
   const slots = parseSlots(g);
   const routing = g.kind === "tool" ? undefined : imageModelByKey(g.model)?.routing;
   const timeout = g.kind === "tool" ? GENERATION_TIMEOUT_MIN : IMAGE_TIMEOUT_MIN;
@@ -882,7 +885,9 @@ async function refreshImages(env: StudioEnv, g: GenerationRow, ageMin: number): 
   for (let i = 0; i < slots.length; i++) {
     const slot = slots[i];
     if (slot.status !== "running" || !slot.task) continue;
-    if (ageMin > timeout) { slot.status = "failed"; slot.error = "timeout"; continue; }
+    // A second step has its own time from when it started (a template's second run, 23 October 2026).
+    const slotAge = slot.startedAt ? (Date.now() - Date.parse(slot.startedAt)) / 60_000 : ageMin;
+    if (slotAge > timeout) { slot.status = "failed"; slot.error = "timeout"; continue; }
     let t: EphoneTask;
     try {
       t = await readTask(env, slot.task, slot.provider, slot.model ? toolRouting(slot.model) : routing);
@@ -904,17 +909,32 @@ async function refreshImages(env: StudioEnv, g: GenerationRow, ageMin: number): 
     if (slot.then) {
       const next = slot.then;
       delete slot.then;
+      let started = false;
       try {
         const input = JSON.parse(JSON.stringify(next.input).split("{{prev}}").join(urls[0]));
-        const t2 = await placeTask(env, next.model, input, next.routing, { userId: g.user_id, genId: g.id }, g.est_usd);
-        Object.assign(slot, { task: t2.task, model: next.model, type: next.output, status: "running" });
+        let t2: { task: string; provider?: "wavespeed" | "apimart" };
+        if (next.provider === "wavespeed") {
+          try { t2 = { task: await wavespeedSubmit(env, next.model, input), provider: "wavespeed" }; } catch (e) { await noticeMoney(env, "wavespeed", e); throw e; }
+        } else t2 = await placeTask(env, next.model, input, next.routing, { userId: g.user_id, genId: g.id }, g.est_usd);
+        Object.assign(slot, { task: t2.task, model: next.model, type: next.output, status: "running", startedAt: new Date().toISOString() });
         if (t2.provider) slot.provider = t2.provider; else delete slot.provider;
+        started = true;
         await audit(asEnv(env), g.user_id, g.id, "studio.next_step", { task: t2.task, model: next.model, provider: t2.provider ?? "ephone" });
       } catch (e) {
-        slot.status = "failed";
-        slot.error = publicText(e instanceof Error ? e.message : String(e)).slice(0, 200);
+        if (!started && next.provider === "wavespeed") {
+          // A template's second run that WaveSpeed could not take right now (busy, a server error) is tried again on the
+          // next pass; one it refused (no money, a bad input) leaves the customer the first run's video, with the
+          // second run's half of the credits back (the failed slot below), instead of nothing.
+          const busy = e instanceof KieError && e.retryable && e.name !== "TimeoutError" && e.name !== "AbortError";
+          if (busy && slotAge < timeout) { slot.then = next; continue; }
+          await audit(asEnv(env), g.user_id, g.id, "studio.next_step_failed", { model: next.model, why: (e instanceof Error ? e.message : String(e)).slice(0, 200) });
+          extra.push({ task: null, status: "failed", type: next.output, error: "second step" });
+        } else if (!started) {
+          slot.status = "failed";
+          slot.error = publicText(e instanceof Error ? e.message : String(e)).slice(0, 200);
+        }
       }
-      continue;
+      if (started || slot.status === "failed") continue;
     }
     try {
       // Suno answers two songs (and their covers): every result of the wanted kind becomes its own picture/clip.
@@ -1201,10 +1221,18 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
       const input = fill(task.input);
       if (task.provider === "wavespeed") {
         if (Array.isArray(input.reference_images)) input.reference_images = await rehostForWavespeed(env, input.reference_images as string[], media, rows);
+        // A two-person template written shot by shot runs twice (src/studio/trends.ts trendPasses): the second run's
+        // photo is copied now, and the run starts on the first one's video when it is done.
+        let next: Slot["then"];
+        if (task.then) {
+          const nin = fill(task.then.input);
+          if (Array.isArray(nin.reference_images)) nin.reference_images = await rehostForWavespeed(env, nin.reference_images as string[], media, rows);
+          next = { model: task.then.model, input: nin, output: task.then.output, ...(task.then.provider ? { provider: task.then.provider } : {}) };
+        }
         let wtask: string;
         try { wtask = await wavespeedSubmit(env, task.model, input); } catch (e) { await noticeMoney(env, "wavespeed", e); throw e; }
         await spent(env, "wavespeed", plan.usd);
-        slots.push({ task: wtask, status: "running", type: task.output, model: task.model, provider: "wavespeed" });
+        slots.push({ task: wtask, status: "running", type: task.output, model: task.model, provider: "wavespeed", ...(next ? { then: next } : {}) });
         continue;
       }
       let t: Placed;

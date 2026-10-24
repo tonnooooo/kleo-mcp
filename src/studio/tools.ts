@@ -31,7 +31,7 @@
  */
 import { CREDIT_USD, DEFAULT_MARGIN } from "./models.ts";
 import type { PhotoFacts } from "./person-check.ts";
-import { DEFAULT_TREND_QUALITY, TRENDS, TREND_CUSTOM_MAX, TREND_EXTRA_MAX, TREND_QUALITIES, WAN30_EDIT_MODEL, trendByKey, trendChangeLines, trendCostUsd, trendNeedsAllSeats, trendQuality, trendTaskInput, type Trend, type TrendChange } from "./trends.ts";
+import { DEFAULT_TREND_QUALITY, TRENDS, TREND_CUSTOM_MAX, TREND_EXTRA_MAX, TREND_QUALITIES, WAN30_EDIT_MODEL, trendByKey, trendChangeLines, trendCostUsd, trendNeedsAllSeats, trendPasses, trendQuality, type Trend, type TrendChange } from "./trends.ts";
 
 export type ToolKey = "face-swap" | "video-face-swap" | "talking-photo" | "lipsync" | "character-swap" | "photo-character-swap" | "motion-control" | "outfit-swap" | "video-edit" | "video-upscale" | "voice" | "music" | "sfx" | `trend-${string}`;
 export type FieldKind = "image" | "video" | "audio" | "text" | "select" | "voice";
@@ -274,11 +274,13 @@ function planTrend(trend: Trend, inputs: Record<string, string>, media: Record<s
   if (!filled.length) throw new ToolRefusal("Add a photo of at least one person.");
   const q = trendQuality(inputs.quality);
   const changes = trendChangeLines(trend, filled.map((s) => s.key), inputs).length;
+  // Two people in a template written shot by shot: two runs, one person each (trendPasses), and twice the price.
+  const passes = trendPasses(trend, filled.map((s) => s.key), filled.map((s) => media[s.key]!.url), q, inputs, Object.fromEntries(filled.map((s) => [s.key, media[s.key]!.facts])));
   return {
-    usd: trendCostUsd(trend, q), output: "video",
+    usd: Math.round(trendCostUsd(trend, q) * passes.length * 1000) / 1000, output: "video",
     summary: `${trend.name} · ${filled.length === 1 ? "1 person" : `${filled.length} people`}${changes ? ` · ${changes === 1 ? "1 change" : `${changes} changes`}` : ""} · ${q}`,
-    tasks: [{ provider: "wavespeed", model: WAN30_EDIT_MODEL, output: "video",
-      input: trendTaskInput(trend, filled.map((s) => s.key), filled.map((s) => media[s.key]!.url), q, inputs, Object.fromEntries(filled.map((s) => [s.key, media[s.key]!.facts]))) }],
+    tasks: [{ provider: "wavespeed", model: WAN30_EDIT_MODEL, output: "video", input: passes[0],
+      ...(passes[1] ? { then: { provider: "wavespeed" as const, model: WAN30_EDIT_MODEL, output: "video" as const, input: passes[1] } } : {}) }],
   };
 }
 

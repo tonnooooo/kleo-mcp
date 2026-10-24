@@ -153,7 +153,9 @@ export interface Slot {
    *  order went to a backup (src/studio/backups.ts). */
   provider?: "wavespeed" | "apimart";
   /** The task to start when this one finishes ("{{prev}}" in its input = this task's result link); see generate.ts. */
-  then?: { model: string; input: Record<string, unknown>; output: "image" | "video" | "audio"; routing?: Record<string, string> };
+  then?: { model: string; input: Record<string, unknown>; output: "image" | "video" | "audio"; routing?: Record<string, string>; provider?: "wavespeed" };
+  /** When the slot's current task started, for a second step (it gets its own time, not what the first one used). */
+  startedAt?: string;
   /** Second tries on FLUX 3 when the provider refuses this picture (src/studio/image-models.ts imageAlternatives). */
   alts?: { model: string; input: Record<string, unknown>; when: "refusal" | "protected" }[];
 }

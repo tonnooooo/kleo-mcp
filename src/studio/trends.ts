@@ -222,7 +222,7 @@ const COURT_CHANGES: TrendChange[] = [
 ];
 const DUNKER = { key: "person1", label: "The dunker", color: "#ff9f0a", role: "THE DUNKER", who: "the player with the ball",
   wears: "black sleeveless top, grey shiny shorts over black knee-length tights, white socks", seen: "He faces the camera most of the time." };
-const DEFENDER = { key: "person2", label: "The defender", color: "#0a84ff", role: "THE DEFENDER", who: "the player guarding him", back: true,
+const DEFENDER = { key: "person2", label: "The defender", color: "#0a84ff", role: "THE DEFENDER", who: "the player guarding the player with the ball", back: true,
   wears: "black long-sleeve top with thin white lines, white snakeskin-print shorts" };
 
 export const TRENDS: Trend[] = [
@@ -253,7 +253,7 @@ export const TRENDS: Trend[] = [
     changes: COURT_CHANGES, world: COURT_WORLD, worldParts: COURT_GONE,
     shots: [
       { from: 0, to: 5.8, view: "one continuous handheld shot at court level, running with the play, at normal speed",
-        cast: "THE DUNKER crosses over THE DEFENDER and drives to the basket (0-1.4 s), takes off and hangs in the air in front of the backboard, legs split wide, the ball in his left hand and his right hand raised with one finger up (1.4-2.0 s), tosses the ball straight up with his left hand instead of dunking (2.0-2.1 s) and lands on the right (2.4 s); he watches the ball fall through the hoop (3.0-3.3 s) with his right hand at his mouth, walks to the middle with his left arm out, then stands with his right hand raised, one finger up, while the ball drops from the net and bounces in front of him, up past his face (4.3-4.7 s) and toward the lens (5.4-5.8 s); he steps toward the camera smiling, looking off to his right (4.7-5.8 s). THE DEFENDER guards him, chases him, looks up from the left, swings his right arm up and puts a hand on his head (to 3.9 s), then leaves the shot on the left (4.0 s)." },
+        cast: "THE DUNKER crosses over THE DEFENDER and drives to the basket (0-1.4 s), takes off and hangs in the air in front of the backboard, legs split wide, the ball in his left hand and his right hand raised with one finger up, his head turned to his right and down, looking straight at THE DEFENDER below him with a cocky, mocking face (1.4-2.0 s), tosses the ball straight up with his left hand instead of dunking (2.0-2.1 s) and lands on the right (2.4 s); he watches the ball fall through the hoop (3.0-3.3 s) with his right hand at his mouth, walks to the middle with his left arm out, then stands with his right hand raised, one finger up, while the ball drops from the net and bounces in front of him, up past his face (4.3-4.7 s) and toward the lens (5.4-5.8 s); he steps toward the camera smiling, looking off to his right (4.7-5.8 s). THE DEFENDER guards him, chases him, looks up from the left, swings his right arm up and puts a hand on his head (to 3.9 s), then leaves the shot on the left (4.0 s)." },
     ],
     seats: [
       { ...DUNKER, at: [46, 49] },
@@ -269,7 +269,7 @@ export const TRENDS: Trend[] = [
     changes: COURT_CHANGES, world: COURT_WORLD, worldParts: COURT_GONE,
     shots: [
       { from: 0, to: 6, view: "one continuous handheld shot at court level beside and then behind THE DEFENDER, no cut: normal speed to 1.6 s, slow motion about 8 times slower with a darker grade from 1.6 to 4.4 s, then back to normal speed and normal colour at 4.4 s on the same framing; the place and the light stay the same through the slow motion",
-        cast: "THE DUNKER crosses over THE DEFENDER and drives (0-1.2 s), takes off (1.2-1.4 s) and hangs in the air in front of the backboard, legs split wide, the ball in his left hand by his head, half covering his face, and his right hand raised with one finger up, then slowly pushes the ball high with his left hand (3.4-4.4 s); THE DEFENDER stands below on the left, back half-turned to the camera, looking up. At normal speed again THE DUNKER tosses the ball straight up (4.4 s) and lands on the right of THE DEFENDER; he stands there, right hand at his mouth (5.0-5.4 s), then left arm out, palm open (5.4-5.7 s), while the ball falls through the hoop (5.3-5.6 s); THE DEFENDER, his back to the camera in the foreground, swings his right arm up (5.7-5.9 s) and raises his hand to his head as the clip ends at 6.0 s with the ball still falling." },
+        cast: "THE DUNKER crosses over THE DEFENDER and drives (0-1.2 s), takes off (1.2-1.4 s) and hangs in the air in front of the backboard, legs split wide, the ball in his left hand by his head, half covering his face, and his right hand raised with one finger up, his head turned to his right and down, looking straight at THE DEFENDER below him with a cocky, mocking face the whole time he is in the air, then slowly pushes the ball high with his left hand (3.4-4.4 s); THE DEFENDER stands below on the left, back half-turned to the camera, looking up. At normal speed again THE DUNKER tosses the ball straight up (4.4 s) and lands on the right of THE DEFENDER; he stands there, right hand at his mouth (5.0-5.4 s), then left arm out, palm open (5.4-5.7 s), while the ball falls through the hoop (5.3-5.6 s); THE DEFENDER, his back to the camera in the foreground, swings his right arm up (5.7-5.9 s) and raises his hand to his head as the clip ends at 6.0 s with the ball still falling." },
     ],
     seats: [
       { ...DUNKER, at: [61, 49] },
@@ -446,7 +446,7 @@ export function trendPrompt(t: Trend, filled: string[], picks: TrendPicks = {}):
 }
 
 /** The prompt of a template written shot by shot stays under this many characters, whatever the picks. */
-export const TREND_PROMPT_V2_MAX = 5000;
+export const TREND_PROMPT_V2_MAX = 6000;
 
 /** The few photo facts the prompt may use: fixed words read from the vision check, never its free text. */
 function factLine(f: PhotoFacts | undefined): string {
@@ -468,7 +468,7 @@ function factLine(f: PhotoFacts | undefined): string {
  * role, with what the original person wears only to find them), the shots with the cut, the place written once and
  * never contradicted, how the new people look, the style. Nothing re-describes the original place after a change.
  */
-export function trendPromptV2(t: Trend, filled: string[], picks: TrendPicks = {}, facts: Record<string, PhotoFacts | undefined> = {}): string {
+export function trendPromptV2(t: Trend, filled: string[], picks: TrendPicks = {}, facts: Record<string, PhotoFacts | undefined> = {}, later: string[] = []): string {
   const seats = t.seats.filter((s) => filled.includes(s.key));
   const img = (s: TrendSeat) => ORDINAL[seats.indexOf(s)];
   const changes = t.changes ?? [];
@@ -496,7 +496,8 @@ export function trendPromptV2(t: Trend, filled: string[], picks: TrendPicks = {}
   const role = (s: TrendSeat) => s.role ?? s.label;
 
   const roles = seats.map((s) => `${role(s)} with the person from ${img(s)}`);
-  const restyled = t.seats.filter((s) => !filled.includes(s.key)).map((s) => ({ s, c: seatChange(s) })).filter(({ c }) => c && (chosen(c).option || chosen(c).own));
+  // A seat swapped in a later pass (trendPasses) stays exactly as it is in this one, whatever its own change says.
+  const restyled = t.seats.filter((s) => !filled.includes(s.key) && !later.includes(s.key)).map((s) => ({ s, c: seatChange(s) })).filter(({ c }) => c && (chosen(c).option || chosen(c).own));
   const what = placeChanged ? "the place around them" : [lightChanged ? "the light" : "", peopleChanged ? "the spectators" : "", signsChanged ? "the boards" : "", extra && !lightChanged && !peopleChanged && !signsChanged ? "what is asked" : ""].filter(Boolean).join(", ").replace(/, ([^,]*)$/, " and $1");
   const lines: string[] = [];
   const asks = [`replace ${roles.join(" and ")}`, restyled.length ? `change ${restyled.map(({ s }) => role(s)).join(" and ")} as written under WHO IS WHO` : "", worldChanged ? `change ${what} as written under THE PLACE` : ""].filter(Boolean);
@@ -509,7 +510,7 @@ export function trendPromptV2(t: Trend, filled: string[], picks: TrendPicks = {}
       lines.push(`- ${img(s)} = ${id}. ${s.seen ?? ""}`.trim());
       if (s.back) lines.push(`  When ${s.role ?? "this person"} is seen from the side or from behind, show the hair, head shape, build and the back of the outfit of the person in ${img(s)}.`);
     } else {
-      const c = seatChange(s), pick = c ? chosen(c) : {};
+      const c = later.includes(s.key) ? undefined : seatChange(s), pick = c ? chosen(c) : {};
       if (pick.option) lines.push(`- ${id}: ${pick.option.text}`);
       else if (pick.own && c?.custom) lines.push(`- ${id}: ${c.custom} ${pick.own}.`);
       else lines.push(`- ${id}, stays exactly as in Video 1: the same face, hair, clothes and movements.`);
@@ -570,6 +571,52 @@ export function trendPromptV2(t: Trend, filled: string[], picks: TrendPicks = {}
   lines.push("", "STYLE",
     `Real handheld phone footage, photorealistic, natural skin, five fingers on each hand. No beauty filter, no morphing, no face flicker. No new text${words ? ` except "${words.replace(/"/g, "")}" on the boards` : ""}.`);
   return lines.join("\n");
+}
+
+/**
+ * The second pass of a two-person template written shot by shot (23 October 2026). With both photos in one run Wan 3.0
+ * put the faces on the player it could see best and left the defender, seen mostly from behind, as he was (paid probe,
+ * Crossover King Pt 2). Alibaba's own advice is one change at a time, so the second person goes in alone, on the first
+ * pass's result: one reference image, one person to change, everything else (the first person, the new place) kept.
+ */
+export function trendPromptPass(t: Trend, seatKey: string, facts: Record<string, PhotoFacts | undefined> = {}): string {
+  const seat = t.seats.find((s) => s.key === seatKey);
+  if (!seat) throw new Error(`no seat ${seatKey}`);
+  const role = (s: TrendSeat) => s.role ?? s.label;
+  const others = t.seats.filter((s) => s.key !== seatKey);
+  const lines: string[] = [];
+  lines.push(`Edit Video 1: replace only ${role(seat)} with the person from the reference image. Keep everything else in Video 1 exactly as it is: ${others.length ? `${others.map((s) => `${role(s)} with his own face`).join(", ")}, ` : ""}the place, the light, the spectators, the boards, the camera, the speed, every movement and the timing.`);
+  lines.push("", "WHO IS WHO",
+    `- ${role(seat)} is ${seat.who ?? "the person"}, in Video 1 wearing ${seat.wears ?? "his own clothes"}. ${seat.seen ?? ""}`.trim());
+  if (seat.back) lines.push(`  When ${role(seat)} is seen from the side or from behind, show the hair, head shape, build and the back of the outfit of the person in the reference image.`);
+  for (const s of others) lines.push(`- ${role(s)} is ${s.who ?? "the other person"}: he stays exactly as in Video 1, with the same face, hair, clothes and movements. The reference image's face never goes on him or on any spectator.`);
+  const shots = t.shots ?? [];
+  lines.push("", `SHOTS (Video 1 has exactly ${shots.length === 1 ? "1 shot" : `${shots.length} shots`}; ${role(seat)}${seat.onScreen ? ` (in the clip ${seat.onScreen})` : ""} is changed from the first frame, 0.0 s, wherever Video 1 shows him)`);
+  shots.forEach((sh, i) => {
+    if (i > 0) lines.push(`- Hard cut at ${sh.from} s.`);
+    lines.push(`- Shot ${i + 1}, ${sh.from}-${sh.to} s, ${sh.view}: ${sh.cast}`);
+  });
+  lines.push("", "THE NEW PERSON",
+    `${role(seat)} looks exactly like the person in the reference image: the face, skin tone, hair, age and build, and the complete outfit from the image, head to toe, in every frame. What the image does not show is completed in the same style, never with what he wears in Video 1 (${seat.wears ?? "his old clothes"}).`);
+  if (facts[seatKey]?.colour === "greyscale") lines.push("The reference image is a black-and-white photo: give the person natural, realistic colour (skin, hair and clothes).");
+  lines.push("", "STYLE", "Real handheld phone footage, photorealistic, natural skin, five fingers on each hand. No beauty filter, no morphing, no face flicker. No new text.");
+  return lines.join("\n");
+}
+
+/**
+ * The WaveSpeed runs of one order, in order. One run for a template with its own prompt, for one person, or for a
+ * template not written shot by shot. Two runs for two people in a template written shot by shot: the first person and
+ * the world first, then the second person alone on that result ("{{prev}}" is the first run's video).
+ */
+export function trendPasses(t: Trend, filled: string[], photos: string[], q: TrendQuality, picks: TrendPicks = {}, facts: Record<string, PhotoFacts | undefined> = {}): Record<string, unknown>[] {
+  if (t.prompt || !t.shots || filled.length < 2) return [trendTaskInput(t, filled, photos, q, picks, facts)];
+  const [first, ...rest] = filled;
+  if (rest.length > 1) throw new Error("two-pass templates take two people");
+  const base = { resolution: q, generate_audio: false, enable_prompt_expansion: false, seed: -1 };
+  return [
+    { prompt: trendPromptV2(t, [first], picks, facts, rest).slice(0, TREND_PROMPT_V2_MAX), video: t.baseUrl, reference_images: [photos[0]], ...base },
+    { prompt: trendPromptPass(t, rest[0], facts).slice(0, TREND_PROMPT_V2_MAX), video: "{{prev}}", reference_images: [photos[1]], ...base },
+  ];
 }
 
 /** The WaveSpeed input of one run. `photos` are the filled seats' links, in seat order (all of them for a fixed prompt). */
