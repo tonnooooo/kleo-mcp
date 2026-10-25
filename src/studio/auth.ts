@@ -29,6 +29,7 @@ import { StudioError, isAdmin } from "./generate.ts";
 import { adminPasswordProblem } from "./admin-auth.ts";
 import { canonicalEmail, giftBlocker, giftCookie, mailDomainOk, type Visitor } from "../abuse.ts";
 import { recordIp } from "./ips.ts";
+import { arrivalOf, clearTouchCookie, recordAttribution, type Arrival } from "./attribution.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const int = (v: string | undefined, d: number): number => { const n = parseInt(v ?? "", 10); return Number.isFinite(n) ? n : d; };
@@ -69,8 +70,11 @@ export async function signedIn(env: StudioEnv, userId: string, body: unknown = {
   });
 }
 
-/** Creates a brand-new Kleo account for a person who signs up in Studio; answers it with the credits it was given. */
-async function newAccount(env: StudioEnv, email: string | null, v: Visitor): Promise<{ id: string; gifted: number }> {
+/**
+ * Creates a brand-new Kleo account for a person who signs up in Studio; answers it with the credits it was given. `from`
+ * is where the browser came from (src/studio/attribution.ts): it becomes the account's user_attribution row.
+ */
+async function newAccount(env: StudioEnv, email: string | null, v: Visitor, from: Arrival | null = null): Promise<{ id: string; gifted: number }> {
   const id = rid("u", 12);
   const ipHash = await ipFingerprint(asEnv(env), v.ip);
   const blocker = giftBlocker(v);
@@ -84,10 +88,11 @@ async function newAccount(env: StudioEnv, email: string | null, v: Visitor): Pro
   await env.DB.prepare("UPDATE users SET src = COALESCE(src, 'studio') WHERE id = ?").bind(id).run().catch(() => undefined);
   const gifted = r.gifted ?? 0;
   await audit(asEnv(env), id, null, "user.created", { via: "studio", credits: gifted, ip: ipHash, ...(gifted ? {} : { no_gift: blocker ?? "address" }) });
+  await recordAttribution(env, id, from);
   return { id, gifted };
 }
 
-export async function signUp(env: StudioEnv, body: { email?: string; password?: string; turnstile?: string }, v: Visitor): Promise<{ userId: string; gifted: number }> {
+export async function signUp(env: StudioEnv, body: { email?: string; password?: string; turnstile?: string }, v: Visitor, from: Arrival | null = null): Promise<{ userId: string; gifted: number }> {
   if (signupMode(env) === "google") throw new StudioError("New Kleo accounts are opened with Google. Use “Continue with Google”.", 403, "use_google");
   const email = normalizeEmail(String(body.email ?? ""));
   const password = String(body.password ?? "");
@@ -110,7 +115,7 @@ export async function signUp(env: StudioEnv, body: { email?: string; password?: 
     throw new StudioError("Please use an e-mail address you keep: this one can't receive mail, or it is a throwaway mailbox.", 400, "email_domain");
   }
   const existing = await getUserByEmail(asEnv(env), email);
-  const made = existing ? null : await newAccount(env, email, v);
+  const made = existing ? null : await newAccount(env, email, v, from);
   if (!made) throw new StudioError("You already have an account with this e-mail. Sign in instead.", 409, "exists");
   if (!(await addLogin(env, { provider: "password", subject: email, userId: made.id, email, secret: await hashPassword(password) }))) {
     throw new StudioError("You already have an account with this e-mail. Sign in instead.", 409, "exists");
@@ -232,6 +237,8 @@ export async function deleteAccount(env: StudioEnv, userId: string, confirm: unk
     env.DB.prepare("DELETE FROM studio_messages WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM studio_chats WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM studio_logins WHERE user_id = ?").bind(userId),
+    // Where the account came from (attribution.ts): the privacy page promises it goes with the account.
+    env.DB.prepare("DELETE FROM user_attribution WHERE user_id = ?").bind(userId),
     env.DB.prepare("UPDATE users SET email = ?, display_name = NULL, contact_email = NULL, credits = 0 WHERE id = ?").bind(`${userId}@deleted.kleo.invalid`, userId),
   ]);
   await endAllSessions(env, userId);
@@ -517,6 +524,9 @@ export async function socialCallback(env: StudioEnv, key: SocialKey, request: Re
 
   let userId = owner;
   let gifted: number | null = null;
+  // Where the browser came from (attribution.ts): Google's redirect back here carries the first-touch cookie (SameSite=Lax).
+  // Apple's form POST would not; Apple sign-in is off.
+  const from = arrivalOf(request);
   if (!userId && verified) {
     // The address is already VOUCHED for by the other provider: same person, same account.
     userId = (await env.DB.prepare(`SELECT user_id FROM studio_logins WHERE provider IN (${SOCIAL_SQL}) AND email = ? LIMIT 1`).bind(verified).first<{ user_id: string }>())?.user_id ?? null;
@@ -535,7 +545,7 @@ export async function socialCallback(env: StudioEnv, key: SocialKey, request: Re
   }
   try {
     if (!userId) {
-      const made = await newAccount(env, verified, v);
+      const made = await newAccount(env, verified, v, from);
       userId = made.id;
       gifted = made.gifted;
       // An address the provider does not vouch for is kept only as the contact address, to show; it finds no account.
@@ -553,6 +563,8 @@ export async function socialCallback(env: StudioEnv, key: SocialKey, request: Re
   // A new account that started without the gift lands on "/?gift=none", where the page says why (src/abuse.ts).
   const headers: [string, string][] = [["location", gifted === 0 ? "/?gift=none" : "/"], ["set-cookie", await newSession(env, userId)], ["set-cookie", clearState(key)]];
   if (gifted) headers.push(["set-cookie", giftCookie()]);
+  // The account exists now: the first-touch cookie has done its job.
+  if (from.hadCookie) headers.push(["set-cookie", clearTouchCookie()]);
   return new Response(null, { status: 302, headers });
 }
 

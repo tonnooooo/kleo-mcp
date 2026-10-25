@@ -2,14 +2,14 @@
 // admin opens /admin, and hands it the app's own helpers (the kit): the element builder, the icons, toasts, sheets and
 // the ask() questions, never a browser pop-up. API: src/studio/admin.ts. With ?demo=1 everything runs on fake data.
 //
-// Pages: Overview · Users (and one account) · Payments · Creations · Providers & keys · Security. Desktop: a side list
-// of pages; phones: the same pages as a row of pills.
+// Pages: Overview · Users (and one account) · Sources · Payments · Creations · Providers & keys · Security. Desktop: a
+// side list of pages; phones: the same pages as a row of pills.
 //
 // The console opens with a second factor (src/studio/admin-auth.ts): the first visit sets up a code on the owner's phone
 // (a QR code drawn by qr.js, on this origin), every later visit asks for the 6-digit code, and the dangerous actions
 // ask for a new one.
 
-import { qrSvg } from "./qr.js?v=77";
+import { qrSvg } from "./qr.js?v=81";
 
 let K = null;
 const DEMO_MODE = new URLSearchParams(location.search).get("demo");
@@ -18,6 +18,7 @@ const GATE = { open: false };
 const SECTIONS = [
   { key: "overview", label: "Overview", ic: "grid" },
   { key: "users", label: "Users", ic: "user" },
+  { key: "sources", label: "Sources", ic: "share" },
   { key: "payments", label: "Payments", ic: "bag" },
   { key: "creations", label: "Creations", ic: "film" },
   { key: "providers", label: "Providers", ic: "plug" },
@@ -217,7 +218,7 @@ export function render(kit) {
     h("button", { class: "adm-live", title: "Update now", onclick: () => live(true) }, h("i", { class: "adm-live-dot" }), h("span", { class: "adm-live-t" }, "Live")));
   const main = h("div", { class: "adm-main" });
   K.setView("admin-view", h("div", { class: "adm" }, nav, main));
-  const pages = { overview: overviewPage, users: id ? (m, o) => userPage(m, id, o) : usersPage, payments: paymentsPage, creations: creationsPage, providers: providersPage, keys: keysPage, security: securityPage };
+  const pages = { overview: overviewPage, users: id ? (m, o) => userPage(m, id, o) : usersPage, sources: sourcesPage, payments: paymentsPage, creations: creationsPage, providers: providersPage, keys: keysPage, security: securityPage };
   pages[key](main);
   // The same page, built again off screen every LIVE_MS (live() above).
   liveStart((into) => pages[key](main, { into }));
@@ -589,7 +590,7 @@ async function userPage(main, id, opts = {}) {
     ["Last IP", lastIp?.ip ? h("span", { class: "adm-inline" }, h("span", { class: "mono" }, lastIp.ip), copyBtn(lastIp.ip, "Copy IP")) : "—"],
     ["Network", lastIp?.as_org ? `${lastIp.as_org}${lastIp.asn ? ` (AS${lastIp.asn})` : ""}` : null],
     ["Device", shortUa(lastIp?.ua)],
-    ["Came from", u.src || null],
+    ...cameFrom(d.attribution, u),
     ["Free credits at sign-up", u.gift ? `${u.gift}` : "None"],
     ["Plan", u.plan && u.plan !== "trial" ? `${cap(u.plan)}, ${u.plan_period === "year" ? "yearly" : "monthly"}, ${u.plan_status || "active"}, until ${day(u.plan_until, true)}` : null],
     ["Stripe customer", u.plan_customer ? h("a", { href: `https://dashboard.stripe.com/customers/${encodeURIComponent(u.plan_customer)}`, target: "_blank", rel: "noopener" }, u.plan_customer) : null],
@@ -729,6 +730,143 @@ async function paymentsPage(main, opts = {}) {
         if (p.user_id) { row.classList.add("tap"); row.addEventListener("click", () => openUser(p.user_id)); }
         return row;
       })) : empty("No payments here.")));
+}
+
+// ── Sources (25 October 2026, the owner: which network, which post or video and which link brought each account;
+// src/studio/attribution.ts) ─────────────────────────────────────────────────────────────────────────────────────
+const CHANNEL = { instagram: "Instagram", tiktok: "TikTok", x: "X", youtube: "YouTube", facebook: "Facebook", threads: "Threads", reddit: "Reddit",
+  linkedin: "LinkedIn", pinterest: "Pinterest", snapchat: "Snapchat", whatsapp: "WhatsApp", telegram: "Telegram", discord: "Discord", line: "LINE",
+  linktree: "Linktree", chatgpt: "ChatGPT", perplexity: "Perplexity", claude: "Claude", gemini: "Gemini", copilot: "Copilot", producthunt: "Product Hunt",
+  hn: "Hacker News", github: "GitHub", google: "Google", bing: "Bing", duckduckgo: "DuckDuckGo", yahoo: "Yahoo", ecosia: "Ecosia", brave: "Brave Search",
+  email: "E-mail", dm: "Direct messages", site: "Kleo website", other: "Other sites", direct: "Direct: typed or saved",
+  untracked: "No record kept", assistant: "Opened in an assistant", before: "Unknown (before tracking)", deleted: "Deleted accounts" };
+/** What a bucket means, under its name. */
+const CHANNEL_NOTE = {
+  direct: "No link, no tag and no site before Kleo.",
+  untracked: "A private browser, or the first visit was more than 7 days before.",
+  assistant: "Opened by the MCP server, not in the app.",
+  before: "Opened before Kleo began recording where accounts come from.",
+  deleted: "Where they came from was deleted with their data.",
+};
+const channelName = (c) => CHANNEL[c] || cap(c || "—");
+const LINK_NETS = [["instagram", "Instagram"], ["tiktok", "TikTok"], ["x", "X"], ["youtube", "YouTube"], ["dm", "Direct messages"], ["other", "Other"]];
+/** Money in each currency, EUR first: "€40.00 + $12.00". */
+function moneyOf(paid) {
+  const e = Object.entries(paid || {}).filter(([, c]) => c > 0).sort(([a], [b]) => (a === "eur" ? -1 : b === "eur" ? 1 : a.localeCompare(b)));
+  return e.length ? e.map(([cur, c]) => money(c, cur)).join(" + ") : "—";
+}
+const share = (n, of) => (of ? ` (${Math.round((n / of) * 100)}%)` : "");
+/** Where an account came from, as Profile rows. */
+function cameFrom(a, u) {
+  if (!a) return [["Came from", u.src && u.src !== "studio" ? u.src : "Not recorded: the account is older than tracking, or was opened in an assistant"]];
+  const tags = [a.utm_source && `utm_source=${a.utm_source}`, a.utm_medium && `utm_medium=${a.utm_medium}`, a.utm_campaign && `utm_campaign=${a.utm_campaign}`,
+    a.utm_content && `utm_content=${a.utm_content}`, a.src && `src=${a.src}`].filter(Boolean).join(" · ");
+  return [
+    ["Came from", `${channelName(a.channel)}${a.guessed ? ", guessed from the in-app browser" : ""}`],
+    ["Short link", a.link_code ? `${a.link_label || a.link_code} (/r/${a.link_code})` : null],
+    ["Site before Kleo", a.ref_host],
+    ["First page", a.landing],
+    ["Tags", tags || null],
+    ["In-app browser", a.in_app ? channelName(a.in_app) : null],
+    ["First visit", a.first_seen_at ? stamp(a.first_seen_at) : null],
+  ];
+}
+const SQ = { days: 30, hidden: false, made: null, form: { channel: "instagram", label: "", code: "", target: "/" } };
+async function sourcesPage(main, opts = {}) {
+  const body = h("div", { class: "adm-stack" }, loading());
+  K.fill(opts.into || main, head("Sources", "Which network, post and link brought each account.", refreshBtn(() => sourcesPage(main))),
+    seg([[7, "7 days"], [30, "30 days"], [90, "90 days"], [0, "All time"]], SQ.days, (k) => { SQ.days = k; sourcesPage(main); }), body);
+  let r;
+  try { r = await call(`/api/admin/sources?days=${SQ.days}`); } catch (e) { return failed(body, e, () => sourcesPage(main)); }
+  const reload = () => sourcesPage(main);
+  const t = r.total;
+  const period = SQ.days ? `in the last ${SQ.days} days` : "in all";
+
+  // One row of a funnel table: the name, then the six figures (each with its label on a phone).
+  const cell = (label, value, cls = "") => h("span", { class: `f-c ${cls}` }, h("span", { class: "f-l" }, label), h("b", {}, value));
+  const figures = (x) => [cell("First visits", num(x.visits)), cell("Link clicks", x.clicks ? num(x.clicks) : "—"), cell("Sign-ups", num(x.signups)),
+    cell("Made something", x.signups ? `${num(x.made)}${share(x.made, x.signups)}` : "—"), cell("Paying", x.signups ? `${num(x.paying)}${share(x.paying, x.signups)}` : "—"),
+    cell("Money", moneyOf(x.paid), x.paying ? "paid" : "")];
+  const tableHead = (first) => h("div", { class: "adm-frow adm-fhead", role: "row" }, h("span", { class: "f-name" }, first),
+    ["First visits", "Link clicks", "Sign-ups", "Made something", "Paying", "Money"].map((x) => h("span", { class: "f-c" }, x)));
+
+  const channelRows = (r.channels || []).map((c) => h("div", { class: "adm-frow", role: "row" },
+    h("span", { class: "f-name" }, h("b", {}, channelName(c.channel)),
+      c.guessed ? h("span", {}, `${num(c.guessed)} guessed from the in-app browser`) : CHANNEL_NOTE[c.channel] ? h("span", {}, CHANNEL_NOTE[c.channel]) : null),
+    figures(c)));
+
+  // Making a link: the form keeps what was typed in SQ.form, so the page refreshing itself loses nothing.
+  const F = SQ.form;
+  const nets = h("div");
+  const drawNets = () => K.fill(nets, chips(LINK_NETS, F.channel, (k) => { F.channel = k; drawNets(); }));
+  drawNets();
+  const input = (key, placeholder, extra = {}) => {
+    const el = h("input", { class: "input", value: F[key], placeholder, autocomplete: "off", spellcheck: "false", ...extra });
+    el.addEventListener("input", () => { F[key] = el.value; });
+    return el;
+  };
+  const labelIn = input("label", "Bio, or the post or video it goes under", { "aria-label": "Post or video" });
+  const codeIn = input("code", "Made from the name when empty", { autocapitalize: "off", "aria-label": "Code" });
+  const targetIn = input("target", "/", { autocapitalize: "off", "aria-label": "Page it opens" });
+  const makeBtn = h("button", { class: "btn btn-primary", onclick: make }, icon("plus", 17), "Make link");
+  async function make() {
+    if (F.label.trim().length < 2) { K.toast("Say which bio, post or video the link is for.", true); labelIn.focus(); return; }
+    makeBtn.disabled = true;
+    try {
+      const res = await call("/api/admin/sources/links", { method: "POST", body: { channel: F.channel, label: F.label.trim(), code: F.code.trim(), target: F.target.trim() || "/" } });
+      SQ.made = res.link;
+      Object.assign(F, { label: "", code: "", target: "/" });
+      navigator.clipboard?.writeText(res.link.url).catch(() => {});
+      K.toast("Link made and copied");
+      reload();
+    } catch (e) { oops(e); makeBtn.disabled = false; }
+  }
+  const field = (label, el) => h("label", { class: "adm-field" }, h("span", {}, label), el);
+  const made = SQ.made ? h("div", { class: "adm-made" }, icon("check", 18, 2.2),
+    h("div", { class: "lbl" }, h("b", {}, SQ.made.label), h("span", { class: "mono" }, SQ.made.url)), copyBtn(SQ.made.url, "Copy link")) : null;
+  const form = card("Make a short link", "Put it in a bio or under a post. Every click is counted, and the accounts it brings show up below.",
+    made, field("Network", nets), h("div", { class: "adm-form2" }, field("Post or video", labelIn), field("Code", codeIn)), field("Page it opens", targetIn),
+    h("div", { class: "adm-actions" }, makeBtn));
+
+  // The links, newest first; hidden ones only on request.
+  async function edit(l) {
+    const v = await K.ask({ title: "Change this link", ic: "share", ok: "Save", text: `${l.url} keeps working; only its name and page change.`,
+      fields: [{ key: "label", label: "Post or video", value: l.label, required: true }, { key: "target", label: "Page it opens", value: l.target, required: true }] });
+    if (!v) return;
+    try { await call(`/api/admin/sources/links/${l.code}`, { method: "POST", body: { label: v.label, target: v.target } }); K.toast("Link changed"); reload(); } catch (e) { oops(e); }
+  }
+  async function hide(l) {
+    try { await call(`/api/admin/sources/links/${l.code}`, { method: "POST", body: { archived: !l.archived } }); K.toast(l.archived ? "Link shown again" : "Link hidden. It still works."); reload(); } catch (e) { oops(e); }
+  }
+  const shownLinks = (r.links || []).filter((l) => SQ.hidden || !l.archived);
+  const hiddenCount = (r.links || []).filter((l) => l.archived).length;
+  const linkRows = shownLinks.map((l) => h("div", { class: "adm-frow adm-flink", role: "row" },
+    h("span", { class: "f-name" }, h("b", {}, l.label, pill(channelName(l.channel), ""), l.archived ? pill("Hidden", "") : null),
+      h("span", { class: "adm-inline" }, h("span", { class: "mono" }, l.url.replace(/^https:\/\//, "")), copyBtn(l.url, "Copy link")),
+      h("span", {}, `Opens ${l.target} · ${count(l.clicks_all, "click")} in all · made ${day(l.created_at)}`),
+      h("span", { class: "adm-link-a" }, h("button", { class: "btn btn-quiet btn-sm", onclick: () => edit(l) }, icon("wand", 15), "Change"),
+        h("button", { class: "btn btn-quiet btn-sm", onclick: () => hide(l) }, icon(l.archived ? "redo" : "x", 15), l.archived ? "Show" : "Hide"))),
+    figures(l)));
+
+  const newest = (r.newest || []).map((u) => h("button", { class: "row", onclick: () => openUser(u.id) }, avatar(u),
+    h("div", { class: "lbl" }, h("b", {}, who(u), u.paid ? pill("Paid", "ok") : null),
+      h("span", {}, [channelName(u.channel) + (u.guessed ? " (guessed)" : ""), u.link_label || (u.link_code ? `/r/${u.link_code}` : null), u.ref_host, u.landing && u.landing !== "/" ? `first page ${u.landing}` : null].filter(Boolean).join(" · "))),
+    h("span", { class: "val" }, ago(u.created_at))));
+
+  K.fill(body,
+    tiles(tile("First visits", num(t.visits), "Browsers opening Kleo for the first time"), tile("Link clicks", num(t.clicks), "On your short links"),
+      tile("Sign-ups", num(t.signups), `Accounts opened ${period}`), tile("Made something", num(t.made), t.signups ? `${Math.round((t.made / t.signups) * 100)}% of the sign-ups` : null),
+      tile("Paying", num(t.paying), t.signups ? `${Math.round((t.paying / t.signups) * 100)}% of the sign-ups` : null), tile("Money", moneyOf(t.paid), "What these accounts paid so far")),
+    form,
+    card("By network", "Sign-ups are the accounts opened in this period. Made something, Paying and Money are what those accounts did since. Guessed: the in-app browser sent no address, so the network was read from the browser's name.",
+      channelRows.length ? h("div", { class: "adm-ftable" }, tableHead("Network"), channelRows) : empty("No visit or account in this period.")),
+    card("By link", r.links?.length ? `${count(r.links.length, "link")}. Clicks and first visits ${period}.` : "No short link yet. Make one above.",
+      linkRows.length ? h("div", { class: "adm-ftable links" }, tableHead("Link"), linkRows) : null,
+      hiddenCount ? h("button", { class: "btn btn-quiet btn-sm adm-more", onclick: () => { SQ.hidden = !SQ.hidden; reload(); } }, SQ.hidden ? "Leave out hidden links" : `Show ${count(hiddenCount, "hidden link")}`) : null),
+    r.others?.length ? card("Other sites", "The sites behind “Other sites”, by sign-ups.", h("div", { class: "list" }, r.others.map((o) => h("div", { class: "row" }, icon("globe", 19),
+      h("div", { class: "lbl" }, h("b", { class: "mono" }, o.label)), h("span", { class: "val" }, count(o.signups, "sign-up")))))) : null,
+    card("Newest accounts", "Where each one came from.", newest.length ? h("div", { class: "list" }, newest) : empty("No account in this period.")),
+    r.tracking ? h("p", { class: "adm-foot" }, `Recording since ${stamp(r.tracking)}. A first visit is kept in one cookie for ${7} days, then forgotten.`) : null);
 }
 
 // ── Creations ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -942,6 +1080,73 @@ function demoUser(u) {
   return { ...u, paid_cent: pays.reduce((a, p) => a + p.amount_cent, 0), currency: pays.length ? "eur" : null, gens: g.length, spend_usd: g.filter((x) => x.status !== "failed").reduce((a, x) => a + x.est_usd, 0),
     ip: ip?.ip ?? null, city: ip?.city ?? null, region: ip?.region ?? null, country: ip?.country ?? null, last_seen: seen };
 }
+const DEMO_CHANNELS = ["tiktok", "instagram", "tiktok", "instagram", "chatgpt", "google", "direct", "youtube", "x", "site", "untracked"];
+function demoLinks() {
+  const db = demoDb();
+  db.links ??= [["ig-bio", "instagram", "Instagram bio", "/", 9, 412], ["tt-bio", "tiktok", "TikTok bio", "/", 9, 655], ["tt-lupin-paris-fire-dance", "tiktok", "Lupin Paris Fire Dance", "/templates", 3, 233],
+    ["ig-michael-scott-quinceanera", "instagram", "Michael Scott quinceañera", "/templates", 3, 141], ["dm", "dm", "Comment KLEO replies", "/", 2, 37]]
+    .map(([code, channel, label, target, d, clicks]) => ({ code, channel, label, target, created_at: new Date(Date.now() - d * 86400e3).toISOString(), archived_at: null, clicks }));
+  return db.links;
+}
+function demoAttribution(u) {
+  const i = Number(u.id.slice(6, 8)) || 0;
+  if (i > 16) return null;
+  const channel = DEMO_CHANNELS[i % DEMO_CHANNELS.length];
+  const link = demoLinks().find((l) => l.channel === channel && i % 2 === 0) || null;
+  return { channel, guessed: !link && (channel === "instagram" || channel === "tiktok") ? 1 : 0, link_code: link?.code ?? null, link_label: link?.label ?? null,
+    utm_source: link ? channel : null, utm_medium: link ? "social" : null, utm_campaign: link?.code ?? null, utm_content: null, src: null,
+    ref_host: channel === "chatgpt" ? "chatgpt.com" : channel === "google" ? "google.com" : channel === "site" ? "kleooai.com" : null,
+    landing: link?.target ?? "/", in_app: channel === "instagram" || channel === "tiktok" ? channel : null, first_seen_at: u.created_at };
+}
+function demoSources(p, q, b) {
+  const db = demoDb();
+  const links = demoLinks();
+  const base = "https://app.kleooai.com";
+  const out = (l) => ({ ...l, url: `${base}/r/${l.code}`, archived: !!l.archived_at });
+  if (p === "/api/admin/sources/links") {
+    if (!LINK_NETS.some(([k]) => k === b.channel)) throw new AdminError("Pick the network the link is for.", 400, "channel");
+    const slug = String(b.label || "").normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24);
+    const code = String(b.code || "").toLowerCase() || `${{ instagram: "ig", tiktok: "tt", x: "x", youtube: "yt", dm: "dm", other: "go" }[b.channel]}-${slug || "link"}`;
+    if (links.some((l) => l.code === code)) throw new AdminError("That code is taken. Pick another one.", 409, "code_taken");
+    const l = { code, channel: b.channel, label: b.label, target: b.target || "/", created_at: new Date().toISOString(), archived_at: null, clicks: 0 };
+    links.unshift(l);
+    return { link: out(l) };
+  }
+  const lm = p.match(/^\/api\/admin\/sources\/links\/([a-z0-9-]+)$/);
+  if (lm) {
+    const l = links.find((x) => x.code === lm[1]);
+    if (!l) throw new AdminError("No short link with that code.", 404, "not_found");
+    if (b.label !== undefined) l.label = b.label;
+    if (b.target !== undefined) l.target = b.target;
+    if (b.archived !== undefined) l.archived_at = b.archived ? new Date().toISOString() : null;
+    return { link: out(l) };
+  }
+  const days = Number(q.get("days") ?? 30);
+  const inPeriod = (iso) => !days || Date.now() - Date.parse(iso) < days * 86400e3;
+  const blank = () => ({ visits: 0, clicks: 0, signups: 0, guessed: 0, made: 0, paying: 0, paid: {} });
+  const ch = new Map(), bl = new Map();
+  const get = (m, k) => { if (!m.has(k)) m.set(k, blank()); return m.get(k); };
+  const users = db.users.filter((u) => !u.admin && inPeriod(u.created_at)).map((u) => ({ u: demoUser(u), a: demoAttribution(u) }));
+  for (const { u, a } of users) {
+    for (const r of [get(ch, a ? a.channel : "before"), ...(a?.link_code ? [get(bl, a.link_code)] : [])]) {
+      r.signups++; if (a?.guessed) r.guessed++; if (u.gens) r.made++;
+      if (u.paid_cent) { r.paying++; r.paid.eur = (r.paid.eur || 0) + u.paid_cent; }
+    }
+  }
+  const f = days ? Math.min(1, days / 30) : 1.4;
+  for (const [k, n] of [["tiktok", 820], ["instagram", 515], ["chatgpt", 78], ["google", 14], ["direct", 160], ["youtube", 3], ["x", 0], ["site", 40]]) get(ch, k).visits += Math.round(n * f);
+  for (const l of links) { const r = get(bl, l.code); r.clicks = Math.round(l.clicks * f); r.visits = Math.round(l.clicks * f * 0.7); get(ch, l.channel).clicks += r.clicks; }
+  const total = blank();
+  for (const r of ch.values()) { for (const k of ["visits", "clicks", "signups", "guessed", "made", "paying"]) total[k] += r[k]; total.paid.eur = (total.paid.eur || 0) + (r.paid.eur || 0); }
+  return {
+    days, tracking: new Date(Date.now() - 9 * 86400e3).toISOString(), base, total,
+    channels: [...ch.entries()].map(([channel, r]) => ({ channel, ...r })).sort((x, y) => y.signups - x.signups || y.visits - x.visits),
+    links: links.map((l) => ({ ...out(l), clicks_all: l.clicks, ...(bl.get(l.code) || blank()) })),
+    others: [{ label: "linktr.ee", signups: 1 }],
+    newest: users.slice().sort((x, y) => y.u.created_at.localeCompare(x.u.created_at)).slice(0, 12)
+      .map(({ u, a }) => ({ id: u.id, name: u.name, email: u.email, created_at: u.created_at, channel: a ? a.channel : "before", guessed: a?.guessed, link_code: a?.link_code, link_label: a?.link_label, ref_host: a?.ref_host, landing: a?.landing, paid: u.paid_cent ? { eur: u.paid_cent } : null })),
+  };
+}
 async function demo(path, opts) {
   await new Promise((r) => setTimeout(r, 160));
   const db = demoDb();
@@ -1026,6 +1231,7 @@ async function demo(path, opts) {
       address: { hash: raw.ip_hash, blocks: db.blocks.filter((x) => x.ip_hash === raw.ip_hash), twins: u.id === "u_demo09b" ? [demoUser(db.users[3]), demoUser(db.users[14])] : [] },
       totals: { paid: u.paid_cent ? [{ currency: "eur", cents: u.paid_cent }] : [], spend_usd: u.spend_usd, credits_spent: gens.filter((g) => g.status !== "failed").reduce((a, g) => a + g.credits, 0), failed: gens.filter((g) => g.status === "failed").length, films_usd: 0 },
       lookup: true, retentionDays: 90,
+      attribution: demoAttribution(u),
     };
   }
   const am = p.match(/^\/api\/admin\/users\/(u_\w+)\/([a-z-]+)$/);
@@ -1056,6 +1262,7 @@ async function demo(path, opts) {
       return { event: a, best, rows: [best, { ...best, ip: "203.0.113.200", country: "US", path: "/", match: false }] };
     }
   }
+  if (p === "/api/admin/sources" || p.startsWith("/api/admin/sources/links")) return demoSources(p, q, b);
   if (p === "/api/admin/payments") {
     const st = q.get("status");
     const rows = db.payments.filter((x) => !st || x.status === st).sort((x, y) => y.at.localeCompare(x.at)).map((x) => ({ ...x, account_email: x.email, links: [{ label: "Payment", url: "https://dashboard.stripe.com/payments" }, { label: "Checkout", url: "https://dashboard.stripe.com/search" }] }));

@@ -2390,7 +2390,7 @@ const adminSite = () => !!S.config?.adminSite;
 function openConsole() { location.href = DEMO ? "/admin?demo=1" : S.me.adminUrl; }
 let adminCss = null;
 function loadAdminCss() {
-  adminCss ??= new Promise((ok) => { const css = h("link", { rel: "stylesheet", href: "/admin.css?v=77", "data-admin": "" }); css.onload = ok; css.onerror = ok; document.head.append(css); });
+  adminCss ??= new Promise((ok) => { const css = h("link", { rel: "stylesheet", href: "/admin.css?v=81", "data-admin": "" }); css.onload = ok; css.onerror = ok; document.head.append(css); });
   return adminCss;
 }
 async function adminEnter() {
@@ -2434,7 +2434,7 @@ async function adminView() {
     setView("admin-view", h("div", { class: "connect-view" }, spinner(24)));
     try {
       await loadAdminCss();
-      adminModule = await import("/admin.js?v=77");
+      adminModule = await import("/admin.js?v=81");
     } catch {
       setView("connect-view", connectCard("The console didn't load", "Check the connection and try again.", h("button", { class: "btn btn-primary", onclick: () => location.reload() }, "Try again")));
       return;

@@ -8,10 +8,12 @@
  *   studio_messages     one line of it (role user|assistant; `data` holds attachments, a proposal or a clip id)
  *   studio_uploads      a picture a person attached
  *   studio_generations  one clip: settings, credits, provider task, state, stored file
+ *   user_attribution    where an account came from; short_links, short_link_clicks, first_visits (attribution.ts)
  */
 import type { StudioEnv } from "./env.ts";
 import { PROVIDER_STATUS_SCHEMA } from "./providers.ts";
 import { KEY_OVERRIDES_SCHEMA } from "../key-overrides.ts";
+import { ATTRIBUTION_SCHEMA } from "./attribution.ts";
 
 const NOW = "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))";
 export const STUDIO_SCHEMA: string[] = [
@@ -42,6 +44,8 @@ export const STUDIO_SCHEMA: string[] = [
   PROVIDER_STATUS_SCHEMA,
   // API keys changed in the admin console, sealed (src/key-overrides.ts, 23 October 2026).
   KEY_OVERRIDES_SCHEMA,
+  // Where each account came from, short links and their clicks (src/studio/attribution.ts, 25 October 2026).
+  ...ATTRIBUTION_SCHEMA,
 ];
 
 /**
