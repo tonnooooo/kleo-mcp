@@ -440,7 +440,8 @@ const funnel = (): Funnel => ({ visits: 0, clicks: 0, signups: 0, guessed: 0, ma
 /**
  * The Sources page. The accounts are the ones opened in the period (a cohort): how many made something since, how many
  * paid, and what they paid so far. First visits and clicks are the ones counted in the period. An account with no
- * attribution row is "before" (opened before tracking began) or "assistant" (opened outside the app, by the MCP server).
+ * attribution row is "before" (opened before tracking began), "assistant" (opened outside the app, by the MCP server) or
+ * "deleted" (its row went with the account's data).
  * Admin accounts are left out.
  */
 async function sources(env: StudioEnv, url: URL): Promise<Record<string, unknown>> {
@@ -451,7 +452,7 @@ async function sources(env: StudioEnv, url: URL): Promise<Record<string, unknown
   const tracking = (await env.DB.prepare("SELECT value FROM studio_meta WHERE key = 'attribution_since'").first<{ value: string }>().catch(() => null))?.value ?? null;
   const [accounts, pays, links, clicks, visits, newest] = await Promise.all([
     all(`SELECT u.id, u.created_at, a.channel, a.guessed, a.link_code, a.utm_source, a.src, a.ref_host,
-        EXISTS (SELECT 1 FROM studio_generations g WHERE g.user_id = u.id AND g.status = 'done') AS made
+        CASE WHEN u.email LIKE '%@deleted.kleo.invalid' THEN 1 ELSE 0 END AS deleted, EXISTS (SELECT 1 FROM studio_generations g WHERE g.user_id = u.id AND g.status = 'done') AS made
       FROM users u LEFT JOIN user_attribution a ON a.user_id = u.id WHERE u.created_at >= ?1 AND u.merged_into IS NULL ORDER BY u.created_at DESC LIMIT 20000`, since),
     all(`SELECT p.user_id, p.currency, SUM(p.amount_cent) AS cents FROM payments p JOIN users u ON u.id = p.user_id
       WHERE u.created_at >= ?1 AND u.merged_into IS NULL AND p.status = 'paid' AND p.amount_cent > 0 GROUP BY p.user_id, p.currency`, since),
@@ -459,14 +460,15 @@ async function sources(env: StudioEnv, url: URL): Promise<Record<string, unknown
     all("SELECT code, SUM(clicks) AS total, SUM(CASE WHEN day >= ?1 THEN clicks ELSE 0 END) AS period FROM short_link_clicks GROUP BY code", sinceDay),
     all("SELECT channel, link_code, SUM(n) AS n FROM first_visits WHERE day >= ?1 GROUP BY channel, link_code", sinceDay),
     all(`SELECT u.id, u.created_at, u.display_name AS name, ${EMAIL_SQL} AS email, a.channel, a.guessed, a.link_code, l.label AS link_label, a.utm_source, a.utm_campaign,
-        a.src, a.ref_host, a.landing, a.in_app FROM users u LEFT JOIN user_attribution a ON a.user_id = u.id LEFT JOIN short_links l ON l.code = a.link_code
+        a.src, a.ref_host, a.landing, a.in_app, CASE WHEN u.email LIKE '%@deleted.kleo.invalid' THEN 1 ELSE 0 END AS deleted FROM users u LEFT JOIN user_attribution a ON a.user_id = u.id LEFT JOIN short_links l ON l.code = a.link_code
       WHERE u.created_at >= ?1 AND u.merged_into IS NULL ORDER BY u.created_at DESC LIMIT 40`, since),
   ]);
   const paidBy = new Map<string, Record<string, number>>();
   for (const p of pays) paidBy.set(p.user_id, { ...(paidBy.get(p.user_id) ?? {}), [p.currency]: Number(p.cents) || 0 });
   const channels = new Map<string, Funnel>(), byLink = new Map<string, Funnel>(), others = new Map<string, number>();
   const row = (m: Map<string, Funnel>, k: string) => { let r = m.get(k); if (!r) m.set(k, (r = funnel())); return r; };
-  const bucket = (a: Record<string, any>) => a.channel ?? (tracking && String(a.created_at) >= tracking ? "assistant" : "before");
+  // No row: deleted with its account, opened before tracking began, or opened outside the app (the MCP server's sign-in).
+  const bucket = (a: Record<string, any>) => a.channel ?? (a.deleted ? "deleted" : tracking && String(a.created_at) >= tracking ? "assistant" : "before");
   for (const a of accounts) {
     if (isAdmin(env, a.id)) continue;
     const paid = paidBy.get(a.id);

@@ -133,8 +133,9 @@ async function setup(over = {}) {
   owner.admin = `${owner.cookie}; ${cookiesOf(c.res).find((x) => x.startsWith("__Host-kleo_admin="))?.split(";")[0]}`;
   return { env, owner };
 }
-const rows = (env, sql, ...a) => env.DB.db.prepare(sql).all(...a);
-const one = (env, sql, ...a) => env.DB.db.prepare(sql).get(...a);
+// node:sqlite answers objects with no prototype: copied into plain ones, so deepStrictEqual compares the values.
+const rows = (env, sql, ...a) => env.DB.db.prepare(sql).all(...a).map((r) => ({ ...r }));
+const one = (env, sql, ...a) => { const r = env.DB.db.prepare(sql).get(...a); return r ? { ...r } : r; };
 const today = () => new Date().toISOString().slice(0, 10);
 
 test("a visit's source: a short link, its tags, ?src=, the referring host, else the in-app browser as a guess", () => {
@@ -366,6 +367,12 @@ test("the Sources page: a funnel per network and per link, accounts from before 
   const d = await call(env, `/api/admin/users/${mia.id}`, { cookie: owner.admin });
   assert.deepEqual([d.json.attribution.channel, d.json.attribution.link_code, d.json.attribution.link_label], ["tiktok", "tt-lupin", "Lupin Paris Fire Dance"]);
   assert.equal((await call(env, "/api/admin/users/u_old", { cookie: owner.admin })).json.attribution, null);
+  // A deleted account's row goes with its data; the account still counts, as "deleted".
+  const del = await call(env, `/api/admin/users/${leo.id}/delete`, { method: "POST", cookie: owner.admin, body: { reason: "Asked by mail", confirm: "DELETE" } });
+  assert.equal(del.status, 200, del.text);
+  assert.equal(one(env, "SELECT COUNT(*) AS n FROM user_attribution WHERE user_id = ?", leo.id).n, 0);
+  const after = Object.fromEntries((await call(env, "/api/admin/sources?days=30", { cookie: owner.admin })).json.channels.map((c) => [c.channel, c.signups]));
+  assert.deepEqual([after.deleted, after.instagram], [1, 0]);
 });
 
 test("the Sources page follows the console's rules: drawn, no browser pop-ups, nothing under 13 px", () => {

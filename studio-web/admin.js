@@ -739,13 +739,14 @@ const CHANNEL = { instagram: "Instagram", tiktok: "TikTok", x: "X", youtube: "Yo
   linktree: "Linktree", chatgpt: "ChatGPT", perplexity: "Perplexity", claude: "Claude", gemini: "Gemini", copilot: "Copilot", producthunt: "Product Hunt",
   hn: "Hacker News", github: "GitHub", google: "Google", bing: "Bing", duckduckgo: "DuckDuckGo", yahoo: "Yahoo", ecosia: "Ecosia", brave: "Brave Search",
   email: "E-mail", dm: "Direct messages", site: "Kleo website", other: "Other sites", direct: "Direct: typed or saved",
-  untracked: "No record kept", assistant: "Opened in an assistant", before: "Unknown (before tracking)" };
+  untracked: "No record kept", assistant: "Opened in an assistant", before: "Unknown (before tracking)", deleted: "Deleted accounts" };
 /** What a bucket means, under its name. */
 const CHANNEL_NOTE = {
   direct: "No link, no tag and no site before Kleo.",
   untracked: "A private browser, or the first visit was more than 7 days before.",
   assistant: "Opened by the MCP server, not in the app.",
   before: "Opened before Kleo began recording where accounts come from.",
+  deleted: "Where they came from was deleted with their data.",
 };
 const channelName = (c) => CHANNEL[c] || cap(c || "—");
 const LINK_NETS = [["instagram", "Instagram"], ["tiktok", "TikTok"], ["x", "X"], ["youtube", "YouTube"], ["dm", "Direct messages"], ["other", "Other"]];
