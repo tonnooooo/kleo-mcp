@@ -355,8 +355,10 @@ test("You Tweaking (25 October 2026): two seats in alternating shots, one run wi
   const t = trendByKey("trend-you-tweaking");
   assert.ok(t && !t.prompt && !t.shots, "a seat-by-seat prompt, one run");
   assert.deepEqual(t.seats.map((s) => s.key), ["person1", "person2"]);
-  for (const [field, file] of [["baseUrl", "base.mp4"], ["preview", "preview3-p.mp4"], ["guide", "guide.jpg"]]) assert.equal(t[field], `https://media.kleooai.com/app/templates/you-tweaking/${file}`);
-  // WaveSpeed's price API, 25 October 2026: $1.50 / $3.00 / $6.00 (15 s in + 15 s out), the same with one or two photos.
+  // The original 1080p source, cropped without scaling, under Wan's 15 s limit (359 frames at 23.976 fps).
+  for (const [field, file] of [["baseUrl", "base-hd.mp4"], ["preview", "preview4-p.mp4"], ["guide", "guide-hd.jpg"]]) assert.equal(t[field], `https://media.kleooai.com/app/templates/you-tweaking/${file}`);
+  assert.ok(t.baseSeconds <= 15);
+  // WaveSpeed's price API on base-hd.mp4, 25 October 2026: $1.50 / $3.00 / $6.00 (15 s in + 15 s out), the same with one or two photos.
   assert.deepEqual(["480p", "720p", "1080p"].map((q) => trendCostUsd(t, q)), [1.5, 3, 6]);
   assert.equal(toolByKey(t.key).seconds, 15);
   const both = planTool(t.key, { quality: "720p" }, { person1: photo("up_m"), person2: photo("up_f") });
@@ -366,10 +368,11 @@ test("You Tweaking (25 October 2026): two seats in alternating shots, one run wi
   assert.equal(input.video, t.baseUrl);
   assert.deepEqual(input.reference_images, [photo("up_m").url, photo("up_f").url]);
   assert.equal(input.generate_audio, false);
-  assert.match(input.prompt, /Image 1 replaces the person ALONE on the white backdrop in the shots at 0-1\.9 s, 3\.1-5\.1 s/);
-  assert.match(input.prompt, /Image 2 replaces the person ALONE on the white backdrop in the shots at 1\.9-3\.1 s, 5\.1-6\.3 s/);
+  assert.match(input.prompt, /Image 1 replaces the person ALONE on the white backdrop in the shots at 0-2\.0 s, 3\.2-5\.2 s/);
+  assert.match(input.prompt, /Image 2 replaces the person ALONE on the white backdrop in the shots at 2\.0-3\.2 s, 5\.2-6\.3 s/);
   assert.match(input.prompt, /no black durag[\s\S]*no white cropped baby tee with red "MOTHER" lettering/);
-  assert.match(input.prompt, /hard cuts at 1\.93, 3\.13, 5\.13, 6\.27, 8\.67, 10\.1, 11\.5, 12\.27, 13\.83 and 14\.6 s/);
+  assert.match(input.prompt, /hard cuts at 1\.96, 3\.17, 5\.17, 6\.30, 8\.72, 10\.14, 11\.51, 12\.30, 13\.89 and 14\.64 s/);
+  assert.match(input.prompt, /1\.2-1\.7s holds the elbow out at shoulder height/);
   assert.match(input.prompt, /STYLE\nClean studio footage on a white backdrop/);
   assert.doesNotMatch(input.prompt, /handheld/);
   assert.match(input.prompt, /Each new person appears only in their own shots, always alone in the frame\./);
@@ -378,7 +381,7 @@ test("You Tweaking (25 October 2026): two seats in alternating shots, one run wi
   // One photo: the other person stays as in Video 1, at the same price.
   const one = planTool(t.key, { quality: "720p" }, { person2: photo("up_f") });
   assert.equal(one.tasks.length, 1);
-  assert.match(one.tasks[0].input.prompt, /Image 1 replaces the person ALONE on the white backdrop in the shots at 1\.9-3\.1 s[\s\S]*The person ALONE on the white backdrop in the shots at 0-1\.9 s[^\n]*stays exactly as in Video 1/);
+  assert.match(one.tasks[0].input.prompt, /Image 1 replaces the person ALONE on the white backdrop in the shots at 2\.0-3\.2 s[\s\S]*The person ALONE on the white backdrop in the shots at 0-2\.0 s[^\n]*stays exactly as in Video 1/);
   assert.equal(one.usd, both.usd);
 });
 
