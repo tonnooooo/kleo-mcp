@@ -9,7 +9,7 @@
 // (a QR code drawn by qr.js, on this origin), every later visit asks for the 6-digit code, and the dangerous actions
 // ask for a new one.
 
-import { qrSvg } from "./qr.js?v=82";
+import { qrSvg } from "./qr.js?v=83";
 
 let K = null;
 const DEMO_MODE = new URLSearchParams(location.search).get("demo");
