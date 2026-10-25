@@ -26,7 +26,7 @@ import { publicText, rid } from "../util.ts";
 import { clampFreeResolution, clipCostUsd, clipCredits, freeModels, freeResolutions, modelByKey, normalizeSettings, pictureProblem, taskInput, videoFactor, wanCostUsd, wanOffered, wanOrder, DEFAULT_MARGIN, WAN_KEY, WAN_NAME, type ClipSettings } from "./models.ts";
 import { presetByKey, withPreset } from "./presets.ts";
 import { planTool, toolByKey, toolCredits, toolFactor, toneText, ToolRefusal, TOOLS, type Media, type Plan, type ToolKey } from "./tools.ts";
-import { trendByKey } from "./trends.ts";
+import { trendByKey, trendQuality } from "./trends.ts";
 import { noPersonText, photoFactsInput, photoMissingText, readPhotoFacts, PERSON_CHECK_MAX_BYTES, PERSON_CHECK_MODEL, type PhotoFacts } from "./person-check.ts";
 import { mediaInfo } from "./media.ts";
 import { refreshFilm } from "./films.ts";
@@ -59,6 +59,23 @@ const num = (v: string | undefined, d: number): number => { const n = parseFloat
 export const marginOf = (env: StudioEnv): number => Math.max(1, num(env.STUDIO_MARGIN, DEFAULT_MARGIN));
 /** The video price factor (models.ts videoFactor): videos and templates cost their credits times it. */
 export const videoFactorOf = (env: StudioEnv): number => videoFactor(env.STUDIO_VIDEO_FACTOR);
+
+/**
+ * HD TEMPLATES COME WITH A PLAN (25 October 2026, the owner: "480p con qualsiasi acquisto, 720p e 1080p solo con
+ * abbonamento, e prezzi nascosti fino ad allora"). Any paying account makes a template at 480p; 720p and 1080p need a
+ * monthly or yearly plan that is running (users.plan_until in the future, src/stripe.ts). Until then the page is told
+ * only the 480p price (src/studio/index.ts /api/tools/price), and an order above 480p is refused before any charge.
+ */
+export const TEMPLATE_OPEN_QUALITY = "480p";
+export async function hasActivePlan(env: StudioEnv, userId: string): Promise<boolean> {
+  if (isAdmin(env, userId)) return true;
+  const r = await env.DB.prepare("SELECT plan, plan_until FROM users WHERE id = ?").bind(userId).first<{ plan: string | null; plan_until: string | null }>().catch(() => null);
+  return !!r?.plan && r.plan !== "trial" && !!r.plan_until && Date.parse(r.plan_until) > Date.now();
+}
+/** True when this template order is above 480p (no quality means the default, 720p). */
+export const templateIsHd = (key: string | null | undefined, inputs: Record<string, unknown>): boolean =>
+  !!trendByKey(key) && trendQuality(typeof inputs.quality === "string" ? inputs.quality : undefined) !== TEMPLATE_OPEN_QUALITY;
+export const PLAN_REQUIRED_SENTENCE = "720p and 1080p templates come with a plan. Make it at 480p, or pick a plan.";
 
 /**
  * ePhone first, then the backup (20 October 2026, src/studio/backups.ts). An order moves to the backup only when ePhone
@@ -1115,6 +1132,8 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
     const u = rows.find((r) => r.id === inputs[f.key]);
     if (u) media[f.key] = { id: u.id, url: await link(u.id), kind: u.kind ?? "image", seconds: u.duration ?? null, width: u.width, height: u.height, type: u.content_type ?? "" };
   }
+  // HD templates come with a plan: refused here, before any translation, photo check or charge.
+  if (templateIsHd(tool.key, inputs) && !(await hasActivePlan(env, userId))) throw new StudioError(PLAN_REQUIRED_SENTENCE, 402, "plan_required");
   // An app's description of what to make or change is read in English by its model; words to SPEAK and song
   // descriptions are not touched (a song asked for in Italian may well be sung in Italian).
   const kind = ({ "video-edit": "edit", "motion-control": "video", "character-swap": "edit", "photo-character-swap": "image", sfx: "sound" } as const)[tool.key as "video-edit" | "motion-control" | "character-swap" | "photo-character-swap" | "sfx"];

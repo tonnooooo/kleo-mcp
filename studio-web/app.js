@@ -3,7 +3,7 @@
 //
 // Pages: Create (chat with Kleo) · Video · Image · Audio · Apps · Library. Desktop: a top bar; phones: a tab bar.
 
-import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=84";
+import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=85";
 
 const DEMO = new URLSearchParams(location.search).has("demo");
 const DEMO_FREE = new URLSearchParams(location.search).get("demo") === "free"; // ?demo=free: an account that never paid
@@ -180,6 +180,8 @@ function ifix(s) {
 const iprice = (s) => imodel(s.model).prices[s.quality]?.[s.count] ?? 1;
 const iallowed = (key) => !S.me || (S.me.allowedImages || []).includes(key);
 const tallowed = (key) => !S.me || (S.me.allowedTools || []).includes(key);
+/** Templates in 720p and 1080p: a running plan (the server's hdTemplates, src/studio/generate.ts hasActivePlan). */
+const hdTemplates = () => !!(S.me?.hdTemplates || S.me?.admin);
 const tool = (key) => (S.config.tools || []).find((t) => t.key === key);
 const isImage = (p) => p?.kind === "image";
 const RATIOS = { "16:9": [34, 19, "YouTube"], "9:16": [19, 34, "TikTok · Reels"], "1:1": [26, 26, "Square"], "4:3": [30, 23, "Classic"], "3:4": [23, 30, "Portrait"], "21:9": [38, 16, "Cinema"], "4:5": [24, 30, "Instagram"], "2:3": [21, 31, "Poster"], "3:2": [31, 21, "Photo"] };
@@ -1727,7 +1729,7 @@ function appsView() {
         h("div", { class: "app-grid" }, list.map((t) => h("button", { class: "app-card", onclick: () => go(`/apps/${t.key}`) },
           appArt(t),
           h("div", { class: "tx" }, h("b", {}, t.name), h("span", {}, t.blurb),
-            h("span", { class: "from" }, tallowed(t.key) ? [h("span", {}, "from"), bolt(12), t.from] : [icon("lock", 13), "Unlocks with any pack"]))))),
+            h("span", { class: "from" }, tallowed(t.key) || t.group === "trend" ? [h("span", {}, "from"), bolt(12), t.from] : [icon("lock", 13), "Unlocks with any pack"]))))),
         all.length > list.length ? h("button", { class: "btn btn-quiet see-all", onclick: () => go("/templates") }, `See all ${all.length} templates`, icon("right", 16, 2.2)) : null];
     })));
 }
@@ -1755,7 +1757,7 @@ function templateCard(t) {
       onmouseleave: () => v?.pause() },
     art,
     h("div", { class: "tx" }, h("b", {}, t.name), h("span", {}, t.blurb),
-      h("span", { class: "from" }, tallowed(t.key) ? [h("span", {}, "from"), bolt(12), t.from, t.seconds ? h("span", {}, ` · ${t.seconds} s`) : null] : [icon("lock", 13), "Unlocks with any pack"])));
+      h("span", { class: "from" }, tallowed(t.key) || t.group === "trend" ? [h("span", {}, "from"), bolt(12), t.from, t.seconds ? h("span", {}, ` · ${t.seconds} s`) : null] : [icon("lock", 13), "Unlocks with any pack"])));
 }
 function appView(key) {
   const t = tool(key);
@@ -1770,7 +1772,7 @@ function appView(key) {
         // How it works, read from the app's own fields: what to add, then Generate (the way Higgsfield's pages say it).
         h("ol", { class: "app-steps" }, [...t.fields.filter((f) => !f.hidden && (f.required || ["image", "video", "audio"].includes(f.kind))).map((f) => f.label), t.output === "audio" ? "Create" : "Generate"].map((l, i) => h("li", {}, h("i", {}, i + 1), l))),
         // A template says how long its video is, so the price reads against the real length, not the short preview.
-        h("span", { class: "app-hero-price" }, tallowed(t.key) ? [bolt(15), `from ${t.from} credits${t.fromAll ? ` · with ${t.seats.length} people from ${t.fromAll}` : ""}${t.seconds ? ` · ${t.seconds}-second video` : ""}`] : [icon("lock", 15), "Unlocks with any credit pack"]))),
+        h("span", { class: "app-hero-price" }, tallowed(t.key) || t.group === "trend" ? [bolt(15), `from ${t.from} credits${t.fromAll ? ` · with ${t.seats.length} people from ${t.fromAll}` : ""}${t.seconds ? ` · ${t.seconds}-second video` : ""}`] : [icon("lock", 15), "Unlocks with any credit pack"]))),
     toolBody(key, false)));
 }
 /** The form of one app with its results beside it. */
@@ -1800,6 +1802,10 @@ function videoToolView(key, tab) {
 function toolBody(key, compact, top = null) {
   const t = tool(key);
   const st = (S.toolState ||= {})[key] ||= { inputs: Object.fromEntries(t.fields.filter((f) => f.default).map((f) => [f.key, f.default])), files: {}, consent: false };
+  // A template opens at 480p for an account without a plan: the quality its "from" price is for, and the one it can buy.
+  const trend = t.group === "trend";
+  if (trend && !hdTemplates() && !st.hdChecked) { st.hdChecked = true; if (t.fields.some((f) => f.key === "quality")) st.inputs.quality = "480p"; }
+  const hdLocked = () => trend && !hdTemplates() && (st.inputs.quality ?? t.fields.find((f) => f.key === "quality")?.default) !== "480p";
   const form = h("div", { class: "panel" });
   const feed = h("div");
   const ctaBox = h("div", { class: "cta-wrap" });
@@ -1865,7 +1871,11 @@ function toolBody(key, compact, top = null) {
     }
     if (f.kind === "select") return h("div", { class: "field" }, h("div", { class: "field-h" }, f.label),
       // A template's change with many choices (the court, the opponent …) wraps onto more lines.
-      h("div", { class: t.group === "trend" && f.options.length > 4 ? "seg2 wrap" : "seg2" }, f.options.map((o) => h("button", { class: (st.inputs[f.key] ?? f.default) === o.value ? "on" : "", onclick: () => { st.inputs[f.key] = o.value; draw(); } }, o.label))));
+      h("div", { class: t.group === "trend" && f.options.length > 4 ? "seg2 wrap" : "seg2" }, f.options.map((o) => {
+        const plan = trend && f.key === "quality" && o.value !== "480p" && !hdTemplates();
+        return h("button", { class: (st.inputs[f.key] ?? f.default) === o.value ? "on" : "", onclick: () => { st.inputs[f.key] = o.value; draw(); } }, plan ? [icon("lock", 13), o.label] : o.label);
+      })),
+      trend && f.key === "quality" && !hdTemplates() ? h("p", { class: "field-note" }, "720p and 1080p come with a plan.") : null);
     if (f.kind === "voice") {
       const voices = [["nova", "Nova"], ["shimmer", "Shimmer"], ["coral", "Coral"], ["sage", "Sage"], ["alloy", "Alloy"], ["ash", "Ash"], ["onyx", "Onyx"], ["echo", "Echo"], ["ballad", "Ballad"], ["verse", "Verse"], ["fable", "Fable"]];
       return h("div", { class: "field" }, h("div", { class: "field-h" }, f.label),
@@ -1876,15 +1886,21 @@ function toolBody(key, compact, top = null) {
   function drawCta() {
     const missing = quote?.missing;
     const busy = Object.values(st.files).some((x) => !x.id);
-    const lockd = !tallowed(key);
-    const ready = !S.me || (quote && quote.credits && !busy && (!t.consent || st.consent));
+    const hd = hdLocked();
+    const lockd = !tallowed(key) || hd;
+    // A template the account cannot make yet opens its offer (openTemplatePay) once the photos are in and the box is
+    // ticked: the offer comes when the person has already put themselves in it. Its price is the 480p one only.
+    const ready = !S.me || (hd && !busy) || (trend && lockd && !busy && !missing && (!t.consent || st.consent)) || (quote && quote.credits && !busy && (!t.consent || st.consent));
+    const cost = quote?.credits ? `${quote.estimate ? "~" : ""}${quote.credits}` : quote?.from ? `from ${quote.from}` : trend && !tallowed(key) ? `from ${t.from}` : "…";
+    const firstPack = (S.me?.packs || []).find((p) => p.url);
     fill(ctaBox, h("button", { class: "btn btn-cta btn-xl", disabled: !ready || st.sending, onclick: run },
-      st.sending ? spinner(18) : [lockd ? icon("lock", 17) : icon("sparkle", 18, 2.2), t.output === "audio" ? "Create" : "Generate", h("span", { class: "cost" }, bolt(15), quote?.credits ? `${quote.estimate ? "~" : ""}${quote.credits}` : "…")]),
-      h("div", { class: "cta-note" }, !S.me ? "Free account · 5 credits to start" : lockd ? "Unlocks with any credit pack" : missing || (t.consent && !st.consent ? "Tick the box above to continue" : `You have ${S.me.credits} credits`)));
+      st.sending ? spinner(18) : [lockd ? icon("lock", 17) : icon("sparkle", 18, 2.2), hd ? "Get a plan" : t.output === "audio" ? "Create" : "Generate", hd ? null : h("span", { class: "cost" }, bolt(15), cost)]),
+      h("div", { class: "cta-note" }, !S.me ? "Free account · 5 credits to start" : hd ? "720p and 1080p templates come with a plan" : lockd ? (trend && firstPack ? `Your first video from €${firstPack.label.split(" ")[0]}` : "Unlocks with any credit pack") : missing || (t.consent && !st.consent ? "Tick the box above to continue" : `You have ${S.me.credits} credits`)));
   }
   async function run() {
     if (!signedIn()) return requireAccount();
-    if (!tallowed(key)) return openBuy(`${t.name} unlocks with your first credit pack.`);
+    if (hdLocked()) return openTemplatePay(t, "hd", quote?.from, () => { st.inputs.quality = "480p"; draw(); });
+    if (!tallowed(key)) return trend ? openTemplatePay(t, "first", quote?.from) : openBuy(`${t.name} unlocks with your first credit pack.`);
     st.sending = true; drawCta();
     try {
       const r = await api("/api/tools/run", { method: "POST", body: { tool: key, inputs: st.inputs, consent: st.consent } });
@@ -2276,15 +2292,45 @@ function packRows(note) {
   const packs = S.me.packs || [];
   if (!packs.some((p) => p.url)) return [h("p", { class: "sheet-sub" }, "Credit packs are not on sale right now. Please check back soon.")];
   const tags = ["", "Popular", "Best value"];
-  const checkout = (p) => { window.open(p.url, "_blank", "noopener"); toast("Finish the payment, then come back — credits appear by themselves."); };
-  return [note ? h("p", { class: "sheet-sub" }, note) : null, h("div", { class: "list" }, packs.map((p, i) => h("button", { class: "row", disabled: !p.url, onclick: () => {
-    if (WALLET && !DEMO) walletPay({ pack: p.credits }, "Get credits", () => { location.href = p.url; }, () => checkout(p),
-      { name: `${p.credits} credits`, sub: "One payment, no subscription", points: ["Credits never expire", "Every model and app unlocked"] });
-    else checkout(p);
-  } }, h("div", { class: "pack lbl" }, h("span", { class: "amt" }, bolt(18), p.credits), h("div", {}, h("b", {}, p.label.replace(" EUR", " €"), tags[i] ? h("span", { class: "badge" }, tags[i]) : null),
+  return [note ? h("p", { class: "sheet-sub" }, note) : null, h("div", { class: "list" }, packs.map((p, i) => h("button", { class: "row", disabled: !p.url, onclick: () => buyPack(p) }, h("div", { class: "pack lbl" }, h("span", { class: "amt" }, bolt(18), p.credits), h("div", {}, h("b", {}, p.label.replace(" EUR", " €"), tags[i] ? h("span", { class: "badge" }, tags[i]) : null),
       h("span", {}, `${(Number(p.label.split(" ")[0]) / p.credits).toFixed(2)} € per credit`))), icon("right", 18)))),
     WALLET ? walletLine() : null,
     h("p", { class: "sheet-sub", style: { paddingTop: "10px" } }, WALLET ? "Secure checkout by Stripe. Your first pack unlocks every model and app." : "Secure checkout by Stripe: card, Apple Pay, Google Pay, PayPal. Your first pack unlocks every model and app.")];
+}
+/** One pack's checkout: the phone's wallet inside the app when it can, Stripe's page otherwise. */
+function buyPack(p) {
+  const checkout = () => { window.open(p.url, "_blank", "noopener"); toast("Finish the payment, then come back — credits appear by themselves."); };
+  if (WALLET && !DEMO) walletPay({ pack: p.credits }, "Get credits", () => { location.href = p.url; }, checkout,
+    { name: `${p.credits} credits`, sub: "One payment, no subscription", points: ["Credits never expire", "Every model and app unlocked"] });
+  else checkout();
+}
+/**
+ * The offer a template opens (25 October 2026, the owner: "480p con qualsiasi acquisto, 720p e 1080p solo con
+ * abbonamento, e prezzi nascosti fino ad allora"). It comes when the person has picked a template and taps Generate:
+ *   "first"  never paid: the plan first (every quality, new credits every month), then the one-off pack that pays for
+ *            this template at 480p ("Just this video · €5");
+ *   "hd"     paid, no plan, 720p or 1080p picked: the plans, and the same template at 480p instead.
+ */
+function openTemplatePay(t, mode, need480, toLow) {
+  if (!S.me) return requireAccount("signup");
+  const need = Number(need480) || t.from || 10;
+  const plans = plansList().filter((p) => p.tiers?.[0]?.month);
+  const planRow = (p, best) => {
+    const tier = p.tiers[0];
+    return h("button", { class: "row tp-opt" + (best ? " best" : ""), onclick: () => { closeLayer(); buyPlan(p, tier, "month"); } },
+      h("div", { class: "lbl" }, h("b", {}, `Kleo ${p.name} · ${eur(tier.month.cents)}/month`, best ? h("span", { class: "badge" }, "Best value") : null),
+        h("span", {}, `${tier.credits} credits every month · templates in 720p and 1080p unlocked · cancel any time`)), icon("right", 18));
+  };
+  const pack = (S.me.packs || []).filter((p) => p.url).find((p) => p.credits >= need);
+  const packRow = mode === "first" && pack ? h("button", { class: "row tp-opt", onclick: () => { closeLayer(); buyPack(pack); } },
+    h("div", { class: "lbl" }, h("b", {}, `Just this video · €${pack.label.split(" ")[0]}`), h("span", {}, `${pack.credits} credits, one payment: this template at 480p`)), icon("right", 18)) : null;
+  const rows = mode === "hd" ? plans.slice(0, 3).map((p, i) => planRow(p, i === 0)) : [plans[0] ? planRow(plans[0], true) : null, packRow];
+  sheet(mode === "hd" ? "HD templates come with a plan" : "Make your video",
+    mode === "hd" ? "720p and 1080p are for subscribers. A plan also brings new credits every month." : `${t.name}: put yourself in it.`,
+    h("div", { class: "list tp-list" }, rows),
+    mode === "hd" && toLow ? h("button", { class: "btn btn-quiet tp-low", onclick: () => { closeLayer(); toLow(); } }, "Make it at 480p instead") : null,
+    h("button", { class: "btn btn-quiet tp-low", onclick: () => { closeLayer(); go("/plans"); } }, "See every plan", icon("right", 15, 2.2)),
+    h("p", { class: "sheet-sub", style: { paddingTop: "8px" } }, "Secure checkout by Stripe: card, Apple Pay, Google Pay, PayPal."));
 }
 function bigCredits(sub) { return h("div", { class: "big-credits" }, h("b", {}, bolt(34), h("span", { "data-credits": "" }, S.me.admin ? "∞" : S.me.credits)), h("span", {}, S.me.admin ? "Admin account: no limits" : sub)); }
 function openBuy(note) {
@@ -2665,6 +2711,10 @@ const DEMO_TOOLS = [
   ["music", "Music", "Songs and soundtracks", "audio", "music", "#af52de", "audio", false, null, [["prompt", "text", "Describe the music"]], 1],
   ["sfx", "Sound Effects", "Any sound from words", "audio", "wave", "#32ade6", "audio", false, null, [["prompt", "text", "Describe the sound"]], 1],
 ].map(([key, name, blurb, group, ic, tint, output, consent, badge, fields, from]) => ({ key, name, blurb, group, icon: ic, tint, output, consent, badge, from, fields: fields.map(([k, kind, label, hint]) => ({ key: k, kind, label, hint, default: kind === "voice" ? "nova" : undefined, maxLength: kind === "text" ? 1000 : undefined })) }));
+// One template, so the template page and its offer (openTemplatePay) can be seen in the demo too.
+DEMO_TOOLS.push({ key: "trend-paris-fire-dance", name: "Paris Fire Dance", blurb: "Put yourself in this viral clip", group: "trend", icon: "film", tint: "#ff453a", output: "video", consent: true, badge: "Viral",
+  preview: "https://media.kleooai.com/app/templates/paris-fire-dance/preview3-p.mp4", seats: [{ key: "person1", color: "#ff453a", at: [51, 50] }], seconds: 14, from: 10,
+  fields: [{ key: "person1", kind: "image", label: "Person 1", hint: "The dancer · a clear photo" }, { key: "quality", kind: "select", label: "Quality", options: [{ value: "480p", label: "480p" }, { value: "720p", label: "720p" }, { value: "1080p", label: "1080p" }], default: "720p" }] });
 async function demoApi(path, opts) {
   if (/^\/api\/generations\/g_[a-z0-9]+$/.test(path) && opts?.method === "DELETE") { demoDb.gens.delete(path.split("/").pop()); return { ok: true }; }
   if (path === "/api/me/activity") return { usage: [...demoDb.gens.values()].map((g) => ({ id: g.id, kind: g.kind, model: g.model, credits: g.credits, status: g.status, refunded: 0, created_at: g.createdAt, prompt: (g.prompt || "").slice(0, 90) })), purchases: [{ credits: 35, amount_cent: 1500, currency: "eur", status: "paid", at: new Date(Date.now() - 86400e3).toISOString() }] };
@@ -2683,7 +2733,15 @@ async function demoApi(path, opts) {
   if (path === "/api/chats" && method === "GET") return { chats: demoDb.chats };
   if (path === "/api/enhance") return { prompt: `${b.prompt}. Cinematic composition, rich detail, soft directional light, shallow depth of field, smooth camera movement, vivid but natural colors, immersive ambient sound.` };
   if (path === "/api/price") return { credits: 3 };
-  if (path === "/api/tools/price") { const t = DEMO_TOOLS.find((x) => x.key === b.tool); const missing = t.fields.find((f) => ["image", "video", "audio"].includes(f.kind) && !b.inputs[f.key]); return missing ? { credits: null, missing: `Add the ${missing.label.toLowerCase()}.` } : { credits: t.from, estimate: t.key === "talking-photo" }; }
+  if (path === "/api/tools/price") {
+    const t = DEMO_TOOLS.find((x) => x.key === b.tool);
+    const missing = t.fields.find((f) => ["image", "video", "audio"].includes(f.kind) && !b.inputs[f.key]);
+    if (missing) return { credits: null, missing: `Add the ${missing.label.toLowerCase()}.` };
+    // Like the server: a template's full price only to whoever can make it (src/studio/index.ts /api/tools/price).
+    const q = b.inputs.quality || "720p";
+    if (t.group === "trend" && (DEMO_FREE || (q !== "480p" && !hdTemplates()))) return { credits: null, from: t.from, locked: DEMO_FREE ? "pack" : "plan" };
+    return { credits: t.group === "trend" ? Math.ceil(t.from * ({ "480p": 1, "720p": 1.9, "1080p": 3.7 })[q]) : t.from, estimate: t.key === "talking-photo" };
+  }
   const cm = path.match(/^\/api\/chats\/(c_\w+)$/);
   if (cm) { if (method === "DELETE") { demoDb.chats = demoDb.chats.filter((c) => c.id !== cm[1]); return { ok: true }; } const chat = demoDb.chats.find((c) => c.id === cm[1]); if (!chat) throw new ApiError("Chat not found.", 404); return { chat, messages: demoDb.messages.get(chat.id) }; }
   const ensureChat = (title) => {
