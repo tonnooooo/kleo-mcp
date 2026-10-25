@@ -1569,3 +1569,10 @@ img.fx-in { animation: fx-img-in .7s var(--ease-out) both; }
 .hop-dots { display: inline-grid; place-items: center; width: 36px; height: 26px; border-radius: 13px; background: var(--fill); }
 .auth .hop .btn { gap: 8px; }
 .hop-addr { margin: 0; }
+/* Templates: HD comes with a plan, and the offer a template opens (25 October 2026, app.js openTemplatePay) */
+.field-note { margin: 8px 0 0; font-size: 16px; line-height: 1.4; color: var(--ink-2); }
+.tp-list { margin: 4px 16px 0; }
+.tp-opt { align-items: center; }
+.tp-opt.best { background: var(--amber-soft); }
+.tp-opt .lbl b { flex-wrap: wrap; font-weight: 650; }
+.tp-low { display: flex; margin: 10px 16px 0; height: 44px; font-size: 16px; }

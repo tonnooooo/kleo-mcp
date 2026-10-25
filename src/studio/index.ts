@@ -24,7 +24,7 @@ import {
   getMessage, setMessageData, agentMessagesToday, addUpload, getUpload, uploadsOf, getGeneration, listGenerations,
   staleGenerations, autoWanOn, setAutoWan, type MessageRow, type GenerationRow,
 } from "./store.ts";
-import { deleteGeneration, StudioError, createGeneration, refreshGeneration, publicGeneration, marginOf, videoFactorOf, runTool, freeTools, isAdmin, retryOnWan, declineWan, retryDescribed, declineRewrite } from "./generate.ts";
+import { deleteGeneration, StudioError, createGeneration, refreshGeneration, publicGeneration, marginOf, videoFactorOf, hasActivePlan, templateIsHd, runTool, freeTools, isAdmin, retryOnWan, declineWan, retryDescribed, declineRewrite } from "./generate.ts";
 import { publicPresets } from "./presets.ts";
 import { planTool, publicTools, toolByKey, toolCredits, toolFactor, ToolRefusal, type Media } from "./tools.ts";
 import { mediaInfo } from "./media.ts";
@@ -276,6 +276,8 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       freeResolutions: paid ? null : freeResolutions(env.STUDIO_FREE_RESOLUTIONS),
       allowedImages: (paid ? IMAGE_MODELS.map((m) => m.key) : freeImageModels(env.STUDIO_FREE_IMAGE_MODELS)).filter((k) => !pausedImageModels(env.STUDIO_PAUSED_IMAGE_MODELS).includes(k)), packs: packsFor(env, userId),
       allowedTools: paid ? freeTools("*") : freeTools(env.STUDIO_FREE_TOOLS),
+      // Templates in 720p and 1080p (src/studio/generate.ts hasActivePlan): a running plan, or an admin.
+      hdTemplates: await hasActivePlan(env, userId),
       // Monthly plans (src/plans.ts): the buy links with this account tied in, and the plan it is on now.
       plans: publicPlans(env.STRIPE_PLAN_LINKS, userId), plan: await planOf(env, userId),
       // Copyright refusals made on Wan 3.0 by themselves (generate.ts switchToWan).
@@ -458,7 +460,18 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     }
     try {
       const plan = planTool(tool.key, inputs, media);
-      return json({ credits: toolCredits(plan.usd, marginOf(env), toolFactor(tool.key, videoFactorOf(env))), summary: plan.summary, estimate: !!plan.speech });
+      const factor = toolFactor(tool.key, videoFactorOf(env));
+      // A template's price is told in full only to whoever can make it (25 October 2026): an account that never paid,
+      // or one without a plan asking for 720p or 1080p, is told the 480p price only, and what opens the rest.
+      if (tool.group === "trend") {
+        const paid = (await hasPaid(asEnv(env), userId)) || isAdmin(env, userId);
+        const hd = templateIsHd(tool.key, inputs);
+        if (!paid || (hd && !(await hasActivePlan(env, userId)))) {
+          const low = planTool(tool.key, { ...inputs, quality: "480p" }, media);
+          return json({ credits: null, from: toolCredits(low.usd, marginOf(env), factor), locked: paid ? "plan" : "pack", summary: low.summary });
+        }
+      }
+      return json({ credits: toolCredits(plan.usd, marginOf(env), factor), summary: plan.summary, estimate: !!plan.speech });
     } catch (e) {
       if (e instanceof ToolRefusal) return json({ credits: null, missing: e.message });
       throw e;

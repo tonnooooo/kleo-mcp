@@ -1906,7 +1906,9 @@ test("a template's second run waits out a busy WaveSpeed, and a refused one leav
 // The owner: "assicurati che kleo prenda il contenuto generato da WaveSpeed e lo dia al cliente alla massima qualità".
 test("a template's video reaches the customer byte for byte: WaveSpeed's file is stored, shown and downloaded unchanged, at the quality chosen", async () => {
   const env = newEnv({ WAVESPEED_API_KEY: "k" });
-  const { cookie } = await paidAccount(env, "tpl@example.com", 100);
+  const { cookie, id } = await paidAccount(env, "tpl@example.com", 100);
+  // 1080p templates come with a plan (25 October 2026): this account has one.
+  env.DB.db.exec(`UPDATE users SET plan = 'pro', plan_until = '2099-01-01T00:00:00.000Z' WHERE id = '${id}'`);
   const photo = await call(env, "/api/uploads", { method: "POST", cookie, raw: jpegBytes(), headers: { "content-type": "image/jpeg", "x-width": "1080", "x-height": "1920" } });
   assert.equal(photo.status, 200, photo.text);
   // A 14 s 1080p clip with a long patterned tail, so a change to any single byte shows.
@@ -1938,6 +1940,50 @@ test("a template's video reaches the customer byte for byte: WaveSpeed's file is
       assert.ok(Buffer.from(got).equals(Buffer.from(made)), `${path}: the very bytes WaveSpeed made, nothing re-encoded or shrunk`);
     }
   } finally { p.restore(); }
+});
+
+// ── HD templates come with a plan (25 October 2026) ──────────────────────────────────────────────────────────────
+// The owner: "480p con qualsiasi acquisto, 720p e 1080p solo con abbonamento, e prezzi nascosti fino ad allora".
+test("templates: 480p for any paying account; 720p and 1080p need a running plan, refused before any charge; the price check tells only the 480p price until then", async () => {
+  const env = newEnv({ WAVESPEED_API_KEY: "k" });
+  const tpl = "trend-paris-fire-dance";
+  // Never paid: the 480p price only, whatever quality is asked.
+  const free = await signUp(env, "free-tpl@example.com");
+  const freePhoto = await upload(env, free, jpegBytes(), "image/jpeg");
+  const fp = await call(env, "/api/tools/price", { method: "POST", cookie: free, body: { tool: tpl, inputs: { person1: freePhoto.id, quality: "1080p" } } });
+  assert.deepEqual([fp.json.credits, fp.json.locked, fp.json.from], [null, "pack", 6], fp.text);
+  // Paid with a pack, no plan: 480p in full, HD only as "from" and refused at the order.
+  const { cookie, id } = await paidAccount(env, "pack-tpl@example.com", 100);
+  const photo = await upload(env, cookie, jpegBytes(), "image/jpeg");
+  const price = (quality) => call(env, "/api/tools/price", { method: "POST", cookie, body: { tool: tpl, inputs: { person1: photo.id, ...(quality ? { quality } : {}) } } });
+  assert.equal((await price("480p")).json.credits, 6);
+  for (const q of ["720p", "1080p", null]) {
+    const r = await price(q);
+    assert.deepEqual([r.json.credits, r.json.locked, r.json.from], [null, "plan", 6], `${q}: ${r.text}`);
+  }
+  assert.equal((await call(env, "/api/me", { cookie })).json.hdTemplates, false);
+  const p = fakeProvider(() => ok({}));
+  try {
+    for (const q of ["720p", "1080p"]) {
+      const r = await call(env, "/api/tools/run", { method: "POST", cookie, body: { tool: tpl, consent: true, inputs: { person1: photo.id, quality: q } } });
+      assert.equal(r.status, 402, r.text);
+      assert.equal(r.json.code, "plan_required");
+    }
+    assert.equal(p.sent.length, 0, "no provider was asked");
+    assert.equal(credits(env, id), 100, "nothing was charged");
+  } finally { p.restore(); }
+  // A running plan: every quality, the full price.
+  env.DB.db.exec(`UPDATE users SET plan = 'lite', plan_until = '2099-01-01T00:00:00.000Z' WHERE id = '${id}'`);
+  assert.equal((await call(env, "/api/me", { cookie })).json.hdTemplates, true);
+  assert.equal((await price("720p")).json.credits, 11);
+  assert.equal((await price("1080p")).json.credits, 21);
+  // A plan that ran out is no plan.
+  env.DB.db.exec(`UPDATE users SET plan_until = '2020-01-01T00:00:00.000Z' WHERE id = '${id}'`);
+  assert.equal((await price("720p")).json.locked, "plan");
+  // The app's other apps are untouched: a video app's price is told in full to a paying account.
+  const pic = await upload(env, cookie, jpegBytes(), "image/jpeg");
+  const swap = await call(env, "/api/tools/price", { method: "POST", cookie, body: { tool: "face-swap", inputs: { target: pic.id, face: pic.id } } });
+  assert.ok(swap.json.credits > 0, swap.text);
 });
 
 test("a shot-by-shot template reads the photo facts into its instruction, and a photo gone from storage is refused before any charge", async () => {
