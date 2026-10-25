@@ -718,6 +718,8 @@ const IDEAS = {
 function renderMessages(jump = false) {
   const col = $("#col"); if (!col) return;
   col.classList.toggle("wide", !S.messages.length && S.mode !== "image");
+  // The empty home shows the prompt box on top (26 October 2026, app.css "The home's prompt box on top").
+  col.closest(".chat-main")?.classList.toggle("home", !S.messages.length && S.mode !== "image");
   if (!S.messages.length && S.mode !== "image") {
     fill(col, homeView());
     if (S.prefill) { const t = $("#prompt"); if (t) { t.value = S.prefill; autosize(t); updateSend(); t.focus(); } S.prefill = ""; }

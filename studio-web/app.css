@@ -1576,3 +1576,17 @@ img.fx-in { animation: fx-img-in .7s var(--ease-out) both; }
 .tp-opt.best { background: var(--amber-soft); }
 .tp-opt .lbl b { flex-wrap: wrap; font-weight: 650; }
 .tp-low { display: flex; margin: 10px 16px 0; height: 44px; font-size: 16px; }
+/* ── The home's prompt box on top (26 October 2026) ───────────────────────────────────────────────────────────────
+   A predicted-attention test (Foveacast, marketing/foveacast) gave the box at the bottom 0% of the first three seconds
+   on a desktop and 0.3% on an iPhone: the template films took everything. On top, with a lit border, it got 17% and
+   38%. Only the empty home moves it (.chat-main.home, set by renderMessages); once a chat starts it goes back down. */
+.chat-main.home { display: flex; flex-direction: column; }
+.chat-main.home .dock { position: relative; order: -1; flex: none; bottom: auto; padding-top: 14px; padding-bottom: 6px; background: none; }
+.chat-main.home .scroll { position: relative; inset: auto; flex: 1; padding-top: 18px; }
+.chat-main.home .composer, .chat-main.home .composer:focus-within { border: 2px solid rgba(255, 196, 80, .9); box-shadow: 0 0 0 4px rgba(255, 196, 80, .18), 0 0 48px rgba(255, 180, 60, .4), var(--shadow-l); }
+.chat-main.home .composer textarea { font-size: 19px; }
+.chat-main.home .composer textarea::placeholder { color: var(--ink-2); }
+@media (max-width: 980px) {
+  .chat-main.home .chat-top ~ .dock { padding-top: 58px; }
+  .chat-main.home .scroll { padding-top: 12px; }
+}
