@@ -379,6 +379,7 @@ test("the Sources page follows the console's rules: drawn, no browser pop-ups, n
   const js = readFileSync(join(ROOT, "studio-web", "admin.js"), "utf8");
   const css = readFileSync(join(ROOT, "studio-web", "admin.css"), "utf8");
   assert.match(js, /async function sourcesPage\(/);
+  for (const card of ["Your links, ready to paste", "How Sources works"]) assert.ok(js.includes(card), card);
   assert.match(js, /key: "sources", label: "Sources"/);
   assert.doesNotMatch(js, /\b(?:window\.)?(?:alert|confirm|prompt)\(/);
   for (const m of css.matchAll(/font-size:\s*([\d.]+)px/g)) assert.ok(Number(m[1]) >= 13, `font-size ${m[1]}px`);
