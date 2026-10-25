@@ -315,8 +315,10 @@ test("every template not written shot by shot sends exactly the instruction it s
   const { createHash } = await import("node:crypto");
   const h = createHash("sha256");
   let n = 0;
+  // The templates there were on 23 October 2026; the ones added since are pinned by their own tests.
+  const since = ["trend-window-peeper"];
   for (const t of TRENDS) {
-    if (t.shots) continue;
+    if (t.shots || since.includes(t.key)) continue;
     const all = t.seats.map((s) => s.key);
     for (const f of [all, all.slice(0, 1)]) { h.update(t.key + "|" + f.join(",") + "|" + JSON.stringify(trendTaskInput(t, f, f.map((k) => `https://x/${k}`), "720p"))); n++; }
   }
@@ -347,6 +349,24 @@ test("photo facts: fixed words only, a missing word is left out, free text never
   const t = trendByKey("trend-crossover-king-pt2");
   assert.match(trendPromptV2(t, ["person1", "person2"], {}, { person1: media.person1.facts, person2: media.person2.facts }), /To tell them apart: Image 1 has a beard; Image 2 has black hair, no beard\./);
   assert.doesNotMatch(trendPromptV2(t, ["person1", "person2"], {}, { person1: { person: true, hair: "other", beard: false }, person2: { person: true, hair: "other", beard: false } }), /To tell them apart|other hair/);
+});
+
+test("Window Peeper (25 October 2026): one seat, the whole 14 s clip on R2, priced as WaveSpeed quoted it", () => {
+  const t = trendByKey("trend-window-peeper");
+  assert.ok(t && !t.prompt && !t.shots, "a seat-by-seat prompt");
+  assert.equal(t.seats.length, 1);
+  for (const [field, file] of [["baseUrl", "base.mp4"], ["preview", "preview3-p.mp4"], ["guide", "guide.jpg"]]) assert.equal(t[field], `https://media.kleooai.com/app/templates/window-peeper/${file}`);
+  // WaveSpeed's price API, 25 October 2026: $1.40 / $2.80 / $5.60 (14 s in + 14 s out).
+  assert.deepEqual(["480p", "720p", "1080p"].map((q) => trendCostUsd(t, q)), [1.4, 2.8, 5.6]);
+  assert.deepEqual(["480p", "720p", "1080p"].map((q) => toolCredits(trendCostUsd(t, q))), [6, 11, 21]);
+  assert.equal(toolByKey(t.key).seconds, 14);
+  const input = planTool(t.key, { quality: "720p" }, { person1: photo("up_w") }).tasks[0].input;
+  assert.equal(input.then, undefined);
+  assert.deepEqual(input.reference_images, [photo("up_w").url]);
+  assert.match(input.prompt, /Image 1 replaces the person at the small table BEHIND THE WINDOW/);
+  assert.match(input.prompt, /no olive-brown tweed jacket/);
+  assert.match(input.prompt, /13\.5-14\.0s yanks the curtain fully closed/);
+  assert.ok(input.prompt.length < 6500, `${input.prompt.length} characters`);
 });
 
 test("Stall Grabber (22 October 2026): one seat, the whole 6.6 s clip on R2, priced as WaveSpeed quoted it", () => {
