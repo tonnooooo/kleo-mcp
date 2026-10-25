@@ -351,38 +351,41 @@ test("photo facts: fixed words only, a missing word is left out, free text never
   assert.doesNotMatch(trendPromptV2(t, ["person1", "person2"], {}, { person1: { person: true, hair: "other", beard: false }, person2: { person: true, hair: "other", beard: false } }), /To tell them apart|other hair/);
 });
 
-test("You Tweaking (25 October 2026): two seats in alternating shots, one run with both photos, priced once", () => {
+test("You Tweaking (25 October 2026): Ausar's way, Wan 3.0 Prime, both photos, a fixed prompt with no times, one run", () => {
   const t = trendByKey("trend-you-tweaking");
-  assert.ok(t && !t.prompt && !t.shots, "a seat-by-seat prompt, one run");
+  assert.ok(t && t.prompt && !t.shots && t.prime, "a fixed prompt on Prime");
   assert.deepEqual(t.seats.map((s) => s.key), ["person1", "person2"]);
-  // The original 1080p source, cropped without scaling, under Wan's 15 s limit (359 frames at 23.976 fps).
-  for (const [field, file] of [["baseUrl", "base-hd.mp4"], ["preview", "preview4-p.mp4"], ["guide", "guide-hd.jpg"]]) assert.equal(t[field], `https://media.kleooai.com/app/templates/you-tweaking/${file}`);
+  // The original 1080p source at 30 fps, cut to exactly 4:3, under Wan's 15 s limit (449 frames).
+  for (const [field, file] of [["baseUrl", "base-30.mp4"], ["preview", "preview5-p.mp4"], ["guide", "guide-hd.jpg"]]) assert.equal(t[field], `https://media.kleooai.com/app/templates/you-tweaking/${file}`);
   assert.ok(t.baseSeconds <= 15);
-  // WaveSpeed's price API on base-hd.mp4, 25 October 2026: $1.50 / $3.00 / $6.00 (15 s in + 15 s out), the same with one or two photos.
-  assert.deepEqual(["480p", "720p", "1080p"].map((q) => trendCostUsd(t, q)), [1.5, 3, 6]);
-  assert.equal(toolByKey(t.key).seconds, 15);
-  const both = planTool(t.key, { quality: "720p" }, { person1: photo("up_m"), person2: photo("up_f") });
-  assert.equal(both.tasks.length, 1);
-  const input = both.tasks[0].input;
-  assert.equal(input.then, undefined, "no second run");
+  // WaveSpeed's price API on base-30.mp4 for Wan 3.0 Prime, 25 October 2026: $2.25 / $4.50 / $9.00 (15 s in + 15 s out).
+  assert.deepEqual(["480p", "720p", "1080p"].map((q) => trendCostUsd(t, q)), [2.25, 4.5, 9]);
+  const app = toolByKey(t.key);
+  assert.equal(app.seconds, 15);
+  assert.deepEqual(app.fields.filter((f) => f.kind === "image").map((f) => [f.key, f.required, f.hint]),
+    [["person1", true, "The one in black · a clear photo"], ["person2", true, "The one in white · a clear photo"]]);
+  const plan = planTool(t.key, { quality: "720p" }, { person1: photo("up_m"), person2: photo("up_f") });
+  assert.equal(plan.usd, 4.5);
+  assert.equal(plan.tasks.length, 1);
+  assert.equal(plan.tasks[0].model, "alibaba/wan-3.0-prime/video-edit");
+  const input = plan.tasks[0].input;
+  assert.equal(plan.tasks[0].then, undefined, "no second run");
   assert.equal(input.video, t.baseUrl);
   assert.deepEqual(input.reference_images, [photo("up_m").url, photo("up_f").url]);
   assert.equal(input.generate_audio, false);
-  assert.match(input.prompt, /Image 1 replaces the person ALONE on the white backdrop in the shots at 0-2\.0 s, 3\.2-5\.2 s/);
-  assert.match(input.prompt, /Image 2 replaces the person ALONE on the white backdrop in the shots at 2\.0-3\.2 s, 5\.2-6\.3 s/);
-  assert.match(input.prompt, /no black durag[\s\S]*no white cropped baby tee with red "MOTHER" lettering/);
-  assert.match(input.prompt, /hard cuts at 1\.96, 3\.17, 5\.17, 6\.30, 8\.72, 10\.14, 11\.51, 12\.30, 13\.89 and 14\.64 s/);
-  assert.match(input.prompt, /1\.2-1\.7s holds the elbow out at shoulder height/);
-  assert.match(input.prompt, /STYLE\nClean studio footage on a white backdrop/);
-  assert.doesNotMatch(input.prompt, /handheld/);
-  assert.match(input.prompt, /Each new person appears only in their own shots, always alone in the frame\./);
-  assert.doesNotMatch(input.prompt, /exactly once per frame/);
-  assert.ok(input.prompt.length < 7000, `${input.prompt.length} characters`);
-  // One photo: the other person stays as in Video 1, at the same price.
-  const one = planTool(t.key, { quality: "720p" }, { person2: photo("up_f") });
-  assert.equal(one.tasks.length, 1);
-  assert.match(one.tasks[0].input.prompt, /Image 1 replaces the person ALONE on the white backdrop in the shots at 2\.0-3\.2 s[\s\S]*The person ALONE on the white backdrop in the shots at 0-2\.0 s[^\n]*stays exactly as in Video 1/);
-  assert.equal(one.usd, both.usd);
+  assert.equal(input.prompt, t.prompt);
+  // Ausar's style: the two told apart by what they look like, never by times (the standard run re-timed the cuts).
+  assert.doesNotMatch(input.prompt, /\d\.\d\s*s\b|\ds;/);
+  assert.match(input.prompt, /PERSON 1 -> Image 1\nOriginal: the young man in a black durag/);
+  assert.match(input.prompt, /PERSON 2 -> Image 2\nOriginal: the young woman with very long straight black hair, a white cropped T-shirt with red "MOTHER" lettering/);
+  assert.match(input.prompt, /Never add a second person to a shot\./);
+  assert.match(input.prompt, /If a person in an image is a different gender, they replace the original in that position as they are in the image\./);
+  assert.match(input.prompt, /exactly as long or short as it is in Image 2/);
+  assert.ok(input.prompt.length < 3000, `${input.prompt.length} characters`);
+  // Both photos are needed, as on Ausar.
+  assert.throws(() => planTool(t.key, { quality: "720p" }, { person2: photo("up_f") }), (e) => e instanceof ToolRefusal && /each of the 2 people/.test(e.message));
+  // Every other template stays on the standard model and its price.
+  for (const x of TRENDS) if (x.key !== t.key) assert.equal(planTool(x.key, { quality: "480p" }, Object.fromEntries(x.seats.map((s) => [s.key, photo(`up_${s.key}`)]))).tasks[0].model, WAN30_EDIT_MODEL, x.key);
 });
 
 test("Window Peeper (25 October 2026): one seat, the whole 14 s clip on R2, priced as WaveSpeed quoted it", () => {
@@ -476,7 +479,8 @@ test("imported templates: their own prompt in WaveSpeed's words, every seat need
     assert.doesNotMatch(t.prompt, /@\[|@Image|@Video|@photo|@Bild/, t.key);
     assert.match(t.prompt, /image 1/i, t.key);
     assert.ok(t.baseSeconds > 0 && t.baseSeconds <= 15.05, t.key);
-    assert.ok(trendCostUsd(t, "720p") <= 3, t.key);
+    // Prime (You Tweaking, 25 October 2026) is half again the standard model's price.
+    assert.ok(trendCostUsd(t, "720p") <= (t.prime ? 4.5 : 3), t.key);
     assert.ok(t.baseUrl.startsWith("https://media.kleooai.com/app/templates/"), t.key);
     const app = toolByKey(t.key);
     const photos = app.fields.filter((f) => f.kind === "image");
