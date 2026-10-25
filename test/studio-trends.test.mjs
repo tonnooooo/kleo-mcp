@@ -316,7 +316,7 @@ test("every template not written shot by shot sends exactly the instruction it s
   const h = createHash("sha256");
   let n = 0;
   // The templates there were on 23 October 2026; the ones added since are pinned by their own tests.
-  const since = ["trend-window-peeper"];
+  const since = ["trend-window-peeper", "trend-you-tweaking"];
   for (const t of TRENDS) {
     if (t.shots || since.includes(t.key)) continue;
     const all = t.seats.map((s) => s.key);
@@ -349,6 +349,37 @@ test("photo facts: fixed words only, a missing word is left out, free text never
   const t = trendByKey("trend-crossover-king-pt2");
   assert.match(trendPromptV2(t, ["person1", "person2"], {}, { person1: media.person1.facts, person2: media.person2.facts }), /To tell them apart: Image 1 has a beard; Image 2 has black hair, no beard\./);
   assert.doesNotMatch(trendPromptV2(t, ["person1", "person2"], {}, { person1: { person: true, hair: "other", beard: false }, person2: { person: true, hair: "other", beard: false } }), /To tell them apart|other hair/);
+});
+
+test("You Tweaking (25 October 2026): two seats in alternating shots, one run with both photos, priced once", () => {
+  const t = trendByKey("trend-you-tweaking");
+  assert.ok(t && !t.prompt && !t.shots, "a seat-by-seat prompt, one run");
+  assert.deepEqual(t.seats.map((s) => s.key), ["person1", "person2"]);
+  for (const [field, file] of [["baseUrl", "base.mp4"], ["preview", "preview3-p.mp4"], ["guide", "guide.jpg"]]) assert.equal(t[field], `https://media.kleooai.com/app/templates/you-tweaking/${file}`);
+  // WaveSpeed's price API, 25 October 2026: $1.50 / $3.00 / $6.00 (15 s in + 15 s out), the same with one or two photos.
+  assert.deepEqual(["480p", "720p", "1080p"].map((q) => trendCostUsd(t, q)), [1.5, 3, 6]);
+  assert.equal(toolByKey(t.key).seconds, 15);
+  const both = planTool(t.key, { quality: "720p" }, { person1: photo("up_m"), person2: photo("up_f") });
+  assert.equal(both.tasks.length, 1);
+  const input = both.tasks[0].input;
+  assert.equal(input.then, undefined, "no second run");
+  assert.equal(input.video, t.baseUrl);
+  assert.deepEqual(input.reference_images, [photo("up_m").url, photo("up_f").url]);
+  assert.equal(input.generate_audio, false);
+  assert.match(input.prompt, /Image 1 replaces the person ALONE on the white backdrop in the shots at 0-1\.9 s, 3\.1-5\.1 s/);
+  assert.match(input.prompt, /Image 2 replaces the person ALONE on the white backdrop in the shots at 1\.9-3\.1 s, 5\.1-6\.3 s/);
+  assert.match(input.prompt, /no black durag[\s\S]*no white cropped baby tee with red "MOTHER" lettering/);
+  assert.match(input.prompt, /hard cuts at 1\.93, 3\.13, 5\.13, 6\.27, 8\.67, 10\.1, 11\.5, 12\.27, 13\.83 and 14\.6 s/);
+  assert.match(input.prompt, /STYLE\nClean studio footage on a white backdrop/);
+  assert.doesNotMatch(input.prompt, /handheld/);
+  assert.match(input.prompt, /Each new person appears only in their own shots, always alone in the frame\./);
+  assert.doesNotMatch(input.prompt, /exactly once per frame/);
+  assert.ok(input.prompt.length < 7000, `${input.prompt.length} characters`);
+  // One photo: the other person stays as in Video 1, at the same price.
+  const one = planTool(t.key, { quality: "720p" }, { person2: photo("up_f") });
+  assert.equal(one.tasks.length, 1);
+  assert.match(one.tasks[0].input.prompt, /Image 1 replaces the person ALONE on the white backdrop in the shots at 1\.9-3\.1 s[\s\S]*The person ALONE on the white backdrop in the shots at 0-1\.9 s[^\n]*stays exactly as in Video 1/);
+  assert.equal(one.usd, both.usd);
 });
 
 test("Window Peeper (25 October 2026): one seat, the whole 14 s clip on R2, priced as WaveSpeed quoted it", () => {

@@ -90,6 +90,10 @@ export interface Trend {
   scene?: string;
   /** The clip's cuts and speed changes, when it is not one continuous shot. */
   edit?: string;
+  /** The look in one sentence, when the clip is not handheld phone footage (a static studio camera). */
+  look?: string;
+  /** The people are never in the same shot: the clip cuts from one to the other. */
+  apart?: boolean;
   /** What the person may change around the people (the court, the opponent, the crowd …), each a choice on the page. */
   changes?: TrendChange[];
   /**
@@ -244,6 +248,30 @@ export const TRENDS: Trend[] = [
         original: "no red patterned shirt, no blond twisted hair",
         motion: "sits at the counter, looking down at a phone in the hands most of the time, glancing up briefly",
         color: "#30d158", at: [34, 80] },
+    ],
+  },
+  // 25 October 2026, the owner: "riesci a trovare la clip originale? … scarica quella max quality" (an Instagram reel
+  // of Ausar's own "You Tweaking" result, with its watermark). The clean clip is the one on Ausar's public template page,
+  // 524x360 at 30 fps; no cleaner copy is online (the 2024 TikTok repost has a caption burned in), so it was upscaled
+  // x3 to 1572x1080 on the RTX (Real-ESRGAN with the guided blend). Two people on a white backdrop, alternating in 11
+  // shots, never in the same frame: one run with both photos, as on Ausar, so the price does not double.
+  {
+    key: "trend-you-tweaking", name: "You Tweaking", blurb: "Put two friends in this viral clip", tint: "#ff375f",
+    baseUrl: `${TRENDS_MEDIA}/you-tweaking/base.mp4`, baseSeconds: 15,
+    preview: `${TRENDS_MEDIA}/you-tweaking/preview3-p.mp4`, guide: `${TRENDS_MEDIA}/you-tweaking/guide.jpg`,
+    scene: "Same plain bright white studio backdrop filling the whole frame, seamless, with no floor line, no objects and nothing else in it. Each shot shows one person alone near the middle of the frame, from the head to the thighs. Same static landscape camera at chest height with the same framing in every shot, and one quick punch-in close on the face from 6.6 to 7.1 s. Same soft, even, shadowless studio light. The same two props in the shots at 1.9-3.1, 5.1-6.3, 8.7-10.1, 11.5-12.3 and 13.8-14.6 s: a small red handbag with a pale chevron pattern hanging on that person's right forearm, and a small black object held in the right hand.",
+    edit: "Eleven shots with hard cuts at 1.93, 3.13, 5.13, 6.27, 8.67, 10.1, 11.5, 12.27, 13.83 and 14.6 s, alternating between the two people: one person alone in each shot, the two never in the same frame. Every cut stays exactly where it is.",
+    look: "Clean studio footage on a white backdrop, looking like it was really filmed there.",
+    apart: true,
+    seats: [
+      { key: "person1", label: "The one in black", where: "ALONE on the white backdrop in the shots at 0-1.9 s, 3.1-5.1 s, 6.3-8.7 s, 10.1-11.5 s, 12.3-13.8 s and 14.6-15 s, standing and reacting, mostly looking off to the right of the frame",
+        original: "no black durag, no black T-shirt with the small white script print on the chest, no silver chain with the big iced-out letter pendant, no light-blue jeans, no tattoos on the right forearm",
+        motion: "0-0.9s stands three-quarters turned to the right of the frame, looking off to the right with a smirk, the left hand raised by the chin; 1.0-1.7s swings the left arm up high, the elbow above the shoulder, the wrist dropped and one finger pointing down, grinning; 1.8-1.9s lowers the arm to shoulder height, the hand still hanging down; 3.1-3.7s rubs the nose with the left fist, laughing, eyes to the right; 3.8-5.1s lowers the hand to the chin and bites a fingertip, head bowed, looking down to the right with a shy grin; 6.3-6.6s head down, the hand at the mouth, giggling; 6.6-7.1s seen close up, laughing hard behind the hand; 7.1-8.7s a finger on the lips, looking down and to the right, smirking and holding back laughter; 10.1-11.5s turned in profile to the right, talking, the left hand raised in front of the chest with the fingers pinched, then rubbing the chin; 12.3-13.8s again in profile to the right, talking and explaining with the pinched fingers of the left hand, then a hand at the mouth; 14.6-15s in profile to the right, smiling, the hand raised in front of the chest",
+        color: "#0a84ff", at: [25, 50] },
+      { key: "person2", label: "The one in white", where: "ALONE on the white backdrop in the shots at 1.9-3.1 s, 5.1-6.3 s, 8.7-10.1 s, 11.5-12.3 s and 13.8-14.6 s, carrying the red handbag and the small black object, smiling and talking to the camera",
+        original: "no white cropped baby tee with red \"MOTHER\" lettering, no low-rise blue jeans with frayed patchwork side panels, no long straight black hair with a middle part, no gold bangles",
+        motion: "1.9-2.4s stands angled to the left of the frame, smiling at the camera, the left hand pulling a long lock of hair out to the side, the small black object in the right hand and the red handbag on the right forearm; 2.4-3.1s turns to the right of the frame and away with a hip sway until the back is to the camera, the hair down the back, looking down at the object held up in the right hand; 5.1-6.3s faces the camera, swaying a little and laughing with a big smile, the object held up at the chin in the right hand, the handbag on the right forearm, the left arm down at the side; 8.7-10.1s faces the camera, talking and smiling, the object at the chest, small head tilts; 11.5-12.3s faces the camera, smiling and talking, glancing to the side; 13.8-14.6s faces the camera and laughs with a wide smile, the object at the chest",
+        color: "#ff375f", at: [75, 50] },
     ],
   },
   // 25 October 2026, the owner: "nuovo template … i video sono tutti uguali ma con persone diverse" (TikTok
@@ -429,7 +457,7 @@ export function trendPrompt(t: Trend, filled: string[], picks: TrendPicks = {}):
   for (const s of seats) lines.push(`- ${img(s)} replaces the person ${s.where ?? ""}.`);
   for (const s of kept) lines.push(restyled.has(s.key) ? `- The person ${s.where ?? ""}. This person keeps the exact movements of Video 1 and changes only as the WORLD CHANGES say.`
     : `- The person ${s.where ?? ""} stays exactly as in Video 1: the same face, hair, clothes and movements.`);
-  lines.push("This mapping is fixed for the whole video. Each new person appears exactly once per frame, only in their own seat. No swapping, no merging, no sharing faces, hair or clothes.");
+  lines.push(`This mapping is fixed for the whole video. ${t.apart ? "Each new person appears only in their own shots, always alone in the frame." : "Each new person appears exactly once per frame, only in their own seat."} No swapping, no merging, no sharing faces, hair or clothes.`);
   if (world.length) lines.push("", "WORLD CHANGES (only these; every position, every movement, the ball's path and the timing stay exactly as in Video 1)", ...world.map((c) => `- ${c.text}`));
   lines.push("", "EXACT LIKENESS - THE MOST IMPORTANT RULE",
     "Each new person must look IDENTICAL to their reference image, as if they were really filmed in this scene. Copy everything 1:1 and change nothing:",
@@ -456,7 +484,7 @@ export function trendPrompt(t: Trend, filled: string[], picks: TrendPicks = {}):
     ? `The camera, the framing, the cuts and the timing are identical to Video 1. Video 1's world before the changes: ${t.scene ?? ""} The WORLD CHANGES replace only what they name; everything else stays as in Video 1. ${edit} No other new objects or text.`
     : `Identical to Video 1. ${t.scene ?? ""} ${edit} No new objects, no new text.`).replace("  ", " "));
   lines.push("", "STYLE",
-    "Natural handheld footage, looking like it was really filmed there. Each new person is lit naturally by the room's light with matching shadows. Anatomically correct hands with five fingers. No beauty filter, no skin smoothing, no over-sharpening, no face flicker, no morphing, no distorted faces in the background.");
+    `${t.look ?? "Natural handheld footage, looking like it was really filmed there."} Each new person is lit naturally by the room's light with matching shadows. Anatomically correct hands with five fingers. No beauty filter, no skin smoothing, no over-sharpening, no face flicker, no morphing, no distorted faces in the background.`);
   return lines.join("\n");
 }
 
