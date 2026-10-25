@@ -749,6 +749,35 @@ const CHANNEL_NOTE = {
   deleted: "Where they came from was deleted with their data.",
 };
 const channelName = (c) => CHANNEL[c] || cap(c || "—");
+/**
+ * Where a short link can be pasted so that a tap opens it (25 October 2026, the owner: "metti i link a disposizione per
+ * copiarli"). Instagram and TikTok captions and Shorts descriptions are plain text: a link there is never tapped.
+ */
+function linkPlace(l) {
+  if (l.channel === "dm") return "Paste it in DM replies, for example to people who comment KLEO. A link in a DM opens with a tap.";
+  if (/\bbio\b|\bchannel\b/i.test(l.label)) return {
+    instagram: "Instagram: Edit profile, then Links.",
+    tiktok: "TikTok: Edit profile, then Website. TikTok shows that field only on a Business account or from 1,000 followers.",
+    x: "X: Edit profile, then Website.",
+    youtube: "YouTube: Customise channel, then Links. YouTube allows links only on a verified channel.",
+  }[l.channel] || "Paste it where your profile takes a link.";
+  return {
+    instagram: "Captions can't be tapped. Use it in a story link sticker, in DMs, or in the bio while this post takes off.",
+    tiktok: "Captions can't be tapped. Use it in the bio while this post takes off, or in DMs.",
+    youtube: "Shorts descriptions can't be tapped. Use it in the description of a long video.",
+    x: "A link opens with a tap in the post and in replies.",
+  }[l.channel] || "Paste it wherever a link opens with a tap.";
+}
+/** What the page counts and how, in plain words (the owner: "salva questo nella pagina admin"). */
+const HOW_SOURCES = [
+  "The first time a browser opens Kleo, or one of your short links, Kleo keeps where it came from in one cookie for 7 days: the network, the short link, the tags in the address, the site before Kleo, the first page, and the app whose built-in browser was used (Instagram, TikTok…).",
+  "When that browser opens an account, with Google or with an e-mail, its source is saved with the account and the cookie is deleted. Deleting an account deletes its source too.",
+  "Instagram and TikTok often hide the site a visit came from. With no short link and no site before Kleo, the network is read from the name of the app's built-in browser, and the account is marked as guessed.",
+  "Without a short link Kleo still knows the network, but not the post. Only a tap on a /r/ link says which post or bio brought the person.",
+  "Robots, link previews and people already signed in are never counted. Browsers that ask not to be tracked (Global Privacy Control, Do Not Track) get no cookie: their new accounts show as No record kept, like accounts whose first visit was more than 7 days before.",
+  "Accounts opened before tracking began show as Unknown (before tracking). Accounts opened from an assistant, outside the app, show as Opened in an assistant.",
+  "Each short link opens its page with utm tags, so the source stays in the address even when someone moves from Instagram's browser to Safari or Chrome.",
+];
 const LINK_NETS = [["instagram", "Instagram"], ["tiktok", "TikTok"], ["x", "X"], ["youtube", "YouTube"], ["dm", "Direct messages"], ["other", "Other"]];
 /** Money in each currency, EUR first: "€40.00 + $12.00". */
 function moneyOf(paid) {
@@ -824,7 +853,7 @@ async function sourcesPage(main, opts = {}) {
   const field = (label, el) => h("label", { class: "adm-field" }, h("span", {}, label), el);
   const made = SQ.made ? h("div", { class: "adm-made" }, icon("check", 18, 2.2),
     h("div", { class: "lbl" }, h("b", {}, SQ.made.label), h("span", { class: "mono" }, SQ.made.url)), copyBtn(SQ.made.url, "Copy link")) : null;
-  const form = card("Make a short link", "Put it in a bio or under a post. Every click is counted, and the accounts it brings show up below.",
+  const form = card("Make a short link", "Put it in a bio, a story or a DM, where a tap opens it. Every click is counted, and the accounts it brings show up below.",
     made, field("Network", nets), h("div", { class: "adm-form2" }, field("Post or video", labelIn), field("Code", codeIn)), field("Page it opens", targetIn),
     h("div", { class: "adm-actions" }, makeBtn));
 
@@ -853,10 +882,16 @@ async function sourcesPage(main, opts = {}) {
       h("span", {}, [channelName(u.channel) + (u.guessed ? " (guessed)" : ""), u.link_label || (u.link_code ? `/r/${u.link_code}` : null), u.ref_host, u.landing && u.landing !== "/" ? `first page ${u.landing}` : null].filter(Boolean).join(" · "))),
     h("span", { class: "val" }, ago(u.created_at))));
 
+  // Every link ready to paste, with where a tap opens it. Hidden links are left out.
+  const ready = (r.links || []).filter((l) => !l.archived).map((l) => h("div", { class: "row adm-ready" },
+    h("div", { class: "lbl" }, h("b", {}, l.label, pill(channelName(l.channel), "")), h("span", { class: "mono" }, l.url.replace(/^https:\/\//, "")), h("span", {}, linkPlace(l))),
+    h("button", { class: "btn btn-quiet btn-sm", "aria-label": `Copy ${l.url}`, onclick: () => { navigator.clipboard?.writeText(l.url); K.toast("Link copied"); } }, icon("copy", 16), "Copy")));
+
   K.fill(body,
     tiles(tile("First visits", num(t.visits), "Browsers opening Kleo for the first time"), tile("Link clicks", num(t.clicks), "On your short links"),
       tile("Sign-ups", num(t.signups), `Accounts opened ${period}`), tile("Made something", num(t.made), t.signups ? `${Math.round((t.made / t.signups) * 100)}% of the sign-ups` : null),
       tile("Paying", num(t.paying), t.signups ? `${Math.round((t.paying / t.signups) * 100)}% of the sign-ups` : null), tile("Money", moneyOf(t.paid), "What these accounts paid so far")),
+    ready.length ? card("Your links, ready to paste", "Copy one when you want to use it. Until a link is in a bio, a DM or a story, it counts nothing.", h("div", { class: "list" }, ready)) : null,
     form,
     card("By network", "Sign-ups are the accounts opened in this period. Made something, Paying and Money are what those accounts did since. Guessed: the in-app browser sent no address, so the network was read from the browser's name.",
       channelRows.length ? h("div", { class: "adm-ftable" }, tableHead("Network"), channelRows) : empty("No visit or account in this period.")),
@@ -866,6 +901,7 @@ async function sourcesPage(main, opts = {}) {
     r.others?.length ? card("Other sites", "The sites behind “Other sites”, by sign-ups.", h("div", { class: "list" }, r.others.map((o) => h("div", { class: "row" }, icon("globe", 19),
       h("div", { class: "lbl" }, h("b", { class: "mono" }, o.label)), h("span", { class: "val" }, count(o.signups, "sign-up")))))) : null,
     card("Newest accounts", "Where each one came from.", newest.length ? h("div", { class: "list" }, newest) : empty("No account in this period.")),
+    card("How Sources works", null, h("ol", { class: "adm-steps adm-how" }, HOW_SOURCES.map((x) => h("li", {}, x)))),
     r.tracking ? h("p", { class: "adm-foot" }, `Recording since ${stamp(r.tracking)}. A first visit is kept in one cookie for ${7} days, then forgotten.`) : null);
 }
 
