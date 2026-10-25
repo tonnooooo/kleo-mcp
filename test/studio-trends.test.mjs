@@ -365,7 +365,8 @@ test("Window Peeper (25 October 2026): one seat, the whole 14 s clip on R2, pric
   assert.deepEqual(input.reference_images, [photo("up_w").url]);
   assert.match(input.prompt, /Image 1 replaces the person at the small table BEHIND THE WINDOW/);
   assert.match(input.prompt, /no olive-brown tweed jacket/);
-  assert.match(input.prompt, /13\.5-14\.0s yanks the curtain fully closed/);
+  assert.match(input.prompt, /13\.5-14\.0s swings the curtain fully closed/);
+  assert.match(input.prompt, /0-2\.2s already the new person from the very first frame/);
   assert.ok(input.prompt.length < 6500, `${input.prompt.length} characters`);
 });
 
