@@ -1557,3 +1557,15 @@ img.fx-in { animation: fx-img-in .7s var(--ease-out) both; }
 .ask .ask-fields .input { margin: 0; text-align: left; letter-spacing: inherit; height: 48px; font-size: 16px; }
 .acct-admin { margin: 0; }
 .acct-admin .row { min-height: 60px; }
+
+/* Out of Instagram's or TikTok's own browser to sign in (25 October 2026, studio-web/inapp.js): Google refuses its
+   sign-in there, so the sign-in screen first opens the page in Safari or Chrome. */
+.hop { display: grid; gap: 12px; text-align: left; background: var(--card); border: 1px solid var(--sep); border-radius: 22px; padding: 18px; margin: 0 0 14px; }
+.hop-h { font-size: 17px; font-weight: 700; letter-spacing: -.01em; }
+.hop p { margin: -4px 0 2px; font-size: 16px; line-height: 1.4; color: var(--ink-2); }
+.hop-steps { margin: 0 0 2px; padding: 0; list-style: none; counter-reset: hop; display: grid; gap: 10px; }
+.hop-steps li { counter-increment: hop; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 16px; line-height: 1.35; }
+.hop-steps li::before { content: counter(hop); flex: none; width: 26px; height: 26px; margin-right: 4px; border-radius: 13px; background: var(--fill); display: inline-grid; place-items: center; font-size: 16px; font-weight: 700; }
+.hop-dots { display: inline-grid; place-items: center; width: 36px; height: 26px; border-radius: 13px; background: var(--fill); }
+.auth .hop .btn { gap: 8px; }
+.hop-addr { margin: 0; }
