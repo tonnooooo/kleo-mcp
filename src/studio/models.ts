@@ -144,6 +144,23 @@ export const CREDIT_USD = 0.44;
 /** What a clip is sold at over its cost. */
 export const DEFAULT_MARGIN = 1.6;
 
+/**
+ * THE VIDEO PRICE FACTOR (25 October 2026, the owner: "alza il costo dei template e delle creazioni video … da 6 crediti
+ * per 480p fai 10, stessa cosa con le altre risoluzioni"). Every video clip, and every template run (src/studio/tools.ts),
+ * costs its credits from the margin above times this factor, rounded up: 6 becomes 10, 3 becomes 5, 11 becomes 19.
+ * The apps that make a video take it too (tools.ts toolFactor). Pictures, sounds and Kleo films keep their price. It is STUDIO_VIDEO_FACTOR in wrangler.studio.jsonc,
+ * written as a fraction ("5/3") so that 6 × 5/3 is exactly 10; unset, malformed, under 1 or over 10 means no change.
+ */
+export function videoFactor(raw: string | undefined): number {
+  const m = /^\s*(\d+(?:\.\d+)?)\s*(?:\/\s*(\d+(?:\.\d+)?))?\s*$/.exec(raw ?? "");
+  if (!m) return 1;
+  const f = Number(m[1]) / (m[2] ? Number(m[2]) : 1);
+  return Number.isFinite(f) && f >= 1 && f <= 10 ? f : 1;
+}
+/** Credits times the video factor, rounded up (the small epsilon keeps 6 × 5/3 at 10, not 11). */
+export const raiseCredits = (credits: number, factor = 1): number =>
+  (factor === 1 ? credits : Math.max(1, Math.ceil(credits * factor - 1e-9)));
+
 /** The settings of one clip after they were checked against the model. */
 export interface ClipSettings {
   model: ModelKey;
@@ -221,9 +238,9 @@ export function clipCostUsd(s: ClipSettings, refVideoSeconds = 0): number {
 }
 
 /** Credits one clip costs the person. */
-export function clipCredits(s: ClipSettings, margin = DEFAULT_MARGIN, refVideoSeconds = 0): number {
+export function clipCredits(s: ClipSettings, margin = DEFAULT_MARGIN, refVideoSeconds = 0, video = 1): number {
   const factor = modelByKey(s.model)?.creditFactor?.[s.resolution] ?? 1;
-  return Math.max(1, Math.ceil((clipCostUsd(s, refVideoSeconds) * margin * factor) / CREDIT_USD - 1e-9));
+  return raiseCredits(Math.max(1, Math.ceil((clipCostUsd(s, refVideoSeconds) * margin * factor) / CREDIT_USD - 1e-9)), video);
 }
 
 /**
@@ -379,13 +396,13 @@ export function wanOrder(s: ClipSettings, prompt: string, images: string[]): { s
 }
 
 /** The catalog the page draws its picker from (no provider names, no costs in dollars). */
-export function publicCatalog(margin = DEFAULT_MARGIN, free: ModelKey[] = []): unknown[] {
+export function publicCatalog(margin = DEFAULT_MARGIN, free: ModelKey[] = [], video = 1): unknown[] {
   return MODELS.map((m) => ({
     key: m.key, name: m.name, blurb: m.blurb, badge: m.badge ?? null, family: m.family, motionOnly: !!m.motionOnly,
     durations: m.durations, defaultDuration: m.defaultDuration, resolutions: m.resolutions,
     defaultResolution: m.defaultResolution, aspects: m.aspects, maxReferences: m.maxReferences,
     free: free.includes(m.key),
     // Credits for every duration × resolution, so the page prices a clip without a round trip.
-    prices: Object.fromEntries(m.resolutions.map((res) => [res, Object.fromEntries(m.durations.map((d) => [d, clipCredits({ model: m.key, duration: d, resolution: res, aspect: "16:9", audio: true, imageRole: "none" }, margin)]))])),
+    prices: Object.fromEntries(m.resolutions.map((res) => [res, Object.fromEntries(m.durations.map((d) => [d, clipCredits({ model: m.key, duration: d, resolution: res, aspect: "16:9", audio: true, imageRole: "none" }, margin, 0, video)]))])),
   }));
 }

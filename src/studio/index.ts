@@ -24,9 +24,9 @@ import {
   getMessage, setMessageData, agentMessagesToday, addUpload, getUpload, uploadsOf, getGeneration, listGenerations,
   staleGenerations, autoWanOn, setAutoWan, type MessageRow, type GenerationRow,
 } from "./store.ts";
-import { deleteGeneration, StudioError, createGeneration, refreshGeneration, publicGeneration, marginOf, runTool, freeTools, isAdmin, retryOnWan, declineWan, retryDescribed, declineRewrite } from "./generate.ts";
+import { deleteGeneration, StudioError, createGeneration, refreshGeneration, publicGeneration, marginOf, videoFactorOf, runTool, freeTools, isAdmin, retryOnWan, declineWan, retryDescribed, declineRewrite } from "./generate.ts";
 import { publicPresets } from "./presets.ts";
-import { planTool, publicTools, toolByKey, toolCredits, ToolRefusal, type Media } from "./tools.ts";
+import { planTool, publicTools, toolByKey, toolCredits, toolFactor, ToolRefusal, type Media } from "./tools.ts";
 import { mediaInfo } from "./media.ts";
 import { APP_PATH, serveSite } from "./site.ts";
 import { handleProviderResume, refreshBalances, type Provider } from "./providers.ts";
@@ -197,10 +197,10 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       // On the admin host the page shows only the console, signed in with a password (no Google redirect is registered there).
       ...(adminHost ? { adminSite: true } : {}),
       google: googleEnabled(env), microsoft: microsoftEnabled(env), social: enabledSocial(env), signup: signupMode(env), noGift: NO_GIFT_SENTENCE, turnstile: env.TURNSTILE_SITEKEY ?? null, defaultModel: DEFAULT_MODEL,
-      models: publicCatalog(marginOf(env), freeModels(env.STUDIO_FREE_MODELS)), freeCredits: Number(env.FREE_CREDITS ?? 5),
+      models: publicCatalog(marginOf(env), freeModels(env.STUDIO_FREE_MODELS), videoFactorOf(env)), freeCredits: Number(env.FREE_CREDITS ?? 5),
       defaultImageModel: defaultImageModel(pausedImageModels(env.STUDIO_PAUSED_IMAGE_MODELS)),
       imageModels: publicImageCatalog(marginOf(env), freeImageModels(env.STUDIO_FREE_IMAGE_MODELS), pausedImageModels(env.STUDIO_PAUSED_IMAGE_MODELS)),
-      emailReset: resetAvailable(env), plans: publicPlans(env.STRIPE_PLAN_LINKS, null), presets: publicPresets(), tools: publicTools(marginOf(env)), freeTools: freeTools(env.STUDIO_FREE_TOOLS),
+      emailReset: resetAvailable(env), plans: publicPlans(env.STRIPE_PLAN_LINKS, null), presets: publicPresets(), tools: publicTools(marginOf(env), videoFactorOf(env)), freeTools: freeTools(env.STUDIO_FREE_TOOLS),
       ...(adminHost ? { google: false, microsoft: false, social: [], signup: "none" } : {}),
     });
   }
@@ -342,7 +342,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     const allowedImages = (paid ? IMAGE_MODELS.map((m) => m.key) : freeImageModels(env.STUDIO_FREE_IMAGE_MODELS)).filter((k) => !pausedImageModels(env.STUDIO_PAUSED_IMAGE_MODELS).includes(k));
     const reply = await runAgent(env, {
       history, text, uploads, ui: b.settings ?? {}, uiImage: b.imageSettings ?? {}, mode: b.mode === "image" ? "image" : "video",
-      credits: user.credits, allowed, allowedImages, margin: marginOf(env), freeResolutions: paid ? undefined : freeResolutions(env.STUDIO_FREE_RESOLUTIONS),
+      credits: user.credits, allowed, allowedImages, margin: marginOf(env), videoFactor: videoFactorOf(env), freeResolutions: paid ? undefined : freeResolutions(env.STUDIO_FREE_RESOLUTIONS),
     },
       await picturesForAgent(env, uploads.filter((u) => (u.kind ?? "image") === "image").map((u) => u.key)));
     // A film card carries the MCP server's price (and what this account may order: film or animatic).
@@ -432,7 +432,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     const vids = all.filter((u) => u.kind === "video");
     const secs = vids.reduce((a, v) => a + (v.duration ?? 0), 0);
     const s = normalizeSettings(b.settings ?? {}, pics, { images: pics, videos: vids.length, audios: all.filter((u) => u.kind === "audio").length, videoSeconds: secs });
-    return json({ settings: s, credits: clipCredits(s, marginOf(env), secs) });
+    return json({ settings: s, credits: clipCredits(s, marginOf(env), secs, videoFactorOf(env)) });
   }
   if (path === "/api/film/quote" && method === "POST") {
     const b = await body<{ settings?: Record<string, unknown> }>(request);
@@ -458,7 +458,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     }
     try {
       const plan = planTool(tool.key, inputs, media);
-      return json({ credits: toolCredits(plan.usd, marginOf(env)), summary: plan.summary, estimate: !!plan.speech });
+      return json({ credits: toolCredits(plan.usd, marginOf(env), toolFactor(tool.key, videoFactorOf(env))), summary: plan.summary, estimate: !!plan.speech });
     } catch (e) {
       if (e instanceof ToolRefusal) return json({ credits: null, missing: e.message });
       throw e;

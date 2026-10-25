@@ -23,9 +23,9 @@ import { backupRoutes, withinBudget, type BackupProvider } from "./backups.ts";
 import { KieError } from "../kie.ts";
 import { debitCredits, refundCredits, getUser, hasPaid, audit, countAuditTodayForUser } from "../db.ts";
 import { publicText, rid } from "../util.ts";
-import { clampFreeResolution, clipCostUsd, clipCredits, freeModels, freeResolutions, modelByKey, normalizeSettings, pictureProblem, taskInput, wanCostUsd, wanOffered, wanOrder, DEFAULT_MARGIN, WAN_KEY, WAN_NAME, type ClipSettings } from "./models.ts";
+import { clampFreeResolution, clipCostUsd, clipCredits, freeModels, freeResolutions, modelByKey, normalizeSettings, pictureProblem, taskInput, videoFactor, wanCostUsd, wanOffered, wanOrder, DEFAULT_MARGIN, WAN_KEY, WAN_NAME, type ClipSettings } from "./models.ts";
 import { presetByKey, withPreset } from "./presets.ts";
-import { planTool, toolByKey, toolCredits, toneText, ToolRefusal, TOOLS, type Media, type Plan, type ToolKey } from "./tools.ts";
+import { planTool, toolByKey, toolCredits, toolFactor, toneText, ToolRefusal, TOOLS, type Media, type Plan, type ToolKey } from "./tools.ts";
 import { trendByKey } from "./trends.ts";
 import { noPersonText, photoFactsInput, photoMissingText, readPhotoFacts, PERSON_CHECK_MAX_BYTES, PERSON_CHECK_MODEL, type PhotoFacts } from "./person-check.ts";
 import { mediaInfo } from "./media.ts";
@@ -57,6 +57,8 @@ export class StudioError extends Error {
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const num = (v: string | undefined, d: number): number => { const n = parseFloat(v ?? ""); return Number.isFinite(n) ? n : d; };
 export const marginOf = (env: StudioEnv): number => Math.max(1, num(env.STUDIO_MARGIN, DEFAULT_MARGIN));
+/** The video price factor (models.ts videoFactor): videos and templates cost their credits times it. */
+export const videoFactorOf = (env: StudioEnv): number => videoFactor(env.STUDIO_VIDEO_FACTOR);
 
 /**
  * ePhone first, then the backup (20 October 2026, src/studio/backups.ts). An order moves to the backup only when ePhone
@@ -578,7 +580,7 @@ export async function createGeneration(env: StudioEnv, userId: string, req: Crea
   if (!(req.settings as Record<string, unknown> | undefined)?.resolution && modelFree && !freeRes.includes(s.resolution) && !(await hasPaid(asEnv(env), userId))) {
     s = clampFreeResolution(s, freeRes);
   }
-  const credits = clipCredits(s, marginOf(env), videoSeconds);
+  const credits = clipCredits(s, marginOf(env), videoSeconds, videoFactorOf(env));
   const usd = clipCostUsd(s, videoSeconds);
   // THE NAME CHECK (21 October 2026, the owner: "cerca di diminuire i problemi"). A Seedance clip whose prompt names
   // well-known characters, franchises, brands or famous people would be refused after a wait. Before any charge the
@@ -1159,7 +1161,8 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
   // Every task of the app (and the step that follows one) needs a provider that can pay for it.
   const partsOf = (p: Plan): Route[][] => p.tasks.flatMap((t) => [t, ...(t.then ? [t.then] : [])])
     .map((t) => (t.provider === "wavespeed" ? [{ provider: "wavespeed" as const, usd: p.usd }] : ephoneRoutes(env, t.model, t.input, p.usd)));
-  const gateFor = (p: Plan): Gate => ({ freeOk: free.includes(tool.key), credits: toolCredits(p.usd, marginOf(env)), usd: p.usd, noun: tool.name.toLowerCase(), lockedMessage: `${tool.name} unlocks with your first credit pack.`, routes: partsOf(p), pausedName: tool.name });
+  const factor = toolFactor(tool.key, videoFactorOf(env));
+  const gateFor = (p: Plan): Gate => ({ freeOk: free.includes(tool.key), credits: toolCredits(p.usd, marginOf(env), factor), usd: p.usd, noun: tool.name.toLowerCase(), lockedMessage: `${tool.name} unlocks with your first credit pack.`, routes: partsOf(p), pausedName: tool.name });
   let spoken: { id: string; key: string; size: number; seconds: number | null } | null = null;
   if (plan.speech) {
     await gate(env, userId, gateFor(plan));
@@ -1190,7 +1193,7 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
       try { plan = planTool(tool.key, { ...inputs, source: "audio" }, media); } catch (e) { if (e instanceof ToolRefusal) throw new StudioError(e.message); throw e; }
       plan.usd += 0.01;
     }
-    credits = toolCredits(plan.usd, marginOf(env));
+    credits = toolCredits(plan.usd, marginOf(env), factor);
     id = await charge(env, userId, gateFor(plan));
   } catch (e) {
     // Refused after the voice was made: the clip and its row go (nobody can use them), and the refusal is counted.

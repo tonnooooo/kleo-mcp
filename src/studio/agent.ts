@@ -49,6 +49,8 @@ export interface AgentContext {
   freeResolutions?: Resolution[];
   allowedImages?: ImageModelKey[];
   margin: number;
+  /** The video price factor (models.ts videoFactor); 1 when absent. */
+  videoFactor?: number;
 }
 
 const TOOL = {
@@ -120,7 +122,7 @@ const FILM_TOOL = {
 export function systemPrompt(ctx: AgentContext): string {
   const ui = normalizeSettings(ctx.ui, ctx.uploads.length);
   const lines = MODELS.map((m) => {
-    const p5 = clipCredits({ model: m.key, duration: m.defaultDuration, resolution: m.defaultResolution, aspect: "16:9", audio: true, imageRole: "none" }, ctx.margin);
+    const p5 = clipCredits({ model: m.key, duration: m.defaultDuration, resolution: m.defaultResolution, aspect: "16:9", audio: true, imageRole: "none" }, ctx.margin, 0, ctx.videoFactor ?? 1);
     const lock = ctx.allowed.includes(m.key)
       ? ctx.freeResolutions ? ` [this user may use only ${ctx.freeResolutions.join("/")} until they buy a pack]` : ""
       : " [LOCKED for this user until they buy a pack]";
@@ -231,7 +233,7 @@ export function proposalFrom(args: Record<string, unknown>, ctx: AgentContext): 
     title: String(args.title ?? "").trim().slice(0, 60) || "Your video",
     prompt: prompt.slice(0, 2000),
     settings,
-    credits: clipCredits(settings, ctx.margin, videoSeconds),
+    credits: clipCredits(settings, ctx.margin, videoSeconds, ctx.videoFactor ?? 1),
     imageIds: uploads.map((u) => u.id),
   };
 }
