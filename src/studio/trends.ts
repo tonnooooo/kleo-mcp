@@ -246,6 +246,21 @@ export const TRENDS: Trend[] = [
         color: "#30d158", at: [34, 80] },
     ],
   },
+  // 25 October 2026, the owner: "nuovo template … i video sono tutti uguali ma con persone diverse" (TikTok
+  // @therealrodentspawn, CapCut "window peeper" filters, 14 s at 1080x1920 30 fps). The format has no real original: every
+  // post is already AI-made, the first one (Mr Bean) at the highest bitrate is the base. One seat, one continuous shot.
+  {
+    key: "trend-window-peeper", name: "Window Peeper", blurb: "Caught eating at the window", tint: "#ffd60a",
+    baseUrl: `${TRENDS_MEDIA}/window-peeper/base.mp4`, baseSeconds: 14,
+    preview: `${TRENDS_MEDIA}/window-peeper/preview3-p.mp4`, guide: `${TRENDS_MEDIA}/window-peeper/guide.jpg`,
+    scene: "Same night shot of a tall concrete apartment block: a dark facade with rows of windows, a few of them lit, and one warm-lit window on an upper floor. The camera pushes in from the wide facade to that window (0-2.2 s), then holds close on it with a slow drift, the dark window frame and the sill in the foreground. Inside the room: warm indoor light, white walls, a framed painting with orange flowers at the top left, a small light-wood table with a fast-food burger box (orange, with a dark sleeve and a white sticker) and a brown paper fast-food bag with yellow arches on the left, a grey chair, and a long beige curtain on the right that is pulled across the window at the end (12-14 s). Same long-lens look through the glass, the same reflections and soft focus, the same warm orange room against the dark night outside.",
+    seats: [
+      { key: "person1", label: "The eater", where: "at the small table BEHIND THE WINDOW, eating a burger and staring out at the camera, then getting up and pulling the curtain closed",
+        original: "no olive-brown tweed jacket, no white shirt, no thin dark red tie, no silver wristwatch, no short dark hair with a side parting",
+        motion: "0-2.2s seen small through the lit window far away, sitting at the table eating, while the camera pushes in from the dark apartment block; 2.2-4.0s holds a burger in both hands at the mouth and takes big bites, eyes down on the burger; 4.0-7.0s chews slowly with the burger held at the chin, the eyes turned up to stare straight out of the window at the camera; 7.0-10.5s keeps chewing and staring at the camera with a suspicious, wide-eyed look; 10.7-11.3s lowers the burger onto its box, still staring; 11.5-11.8s stands up from the chair, both arms out, eyes on the camera; 12.0-12.4s steps to the right, to the edge of the window, and grabs the curtain with the right hand; 12.5-13.3s pulls the curtain across and peeks out at the camera from behind it, only part of the face and one hand showing; 13.5-14.0s yanks the curtain fully closed and the window is covered",
+        color: "#ffd60a", at: [56, 48] },
+    ],
+  },
   {
     key: "trend-crossover-king-pt1", name: "Crossover King Pt 1", blurb: "Put yourself in this viral clip, on any court", tint: "#ff9f0a",
     baseUrl: `${TRENDS_MEDIA}/crossover-king-pt1/base.mp4`, baseSeconds: 5.83,
