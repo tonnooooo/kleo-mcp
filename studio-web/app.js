@@ -3,10 +3,18 @@
 //
 // Pages: Create (chat with Kleo) · Video · Image · Audio · Apps · Library. Desktop: a top bar; phones: a tab bar.
 
+import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=83";
+
 const DEMO = new URLSearchParams(location.search).has("demo");
 const DEMO_FREE = new URLSearchParams(location.search).get("demo") === "free"; // ?demo=free: an account that never paid
 const DEMO_GUEST = new URLSearchParams(location.search).get("demo") === "guest"; // ?demo=guest: a visitor, not signed in
 const IS_TOUCH = matchMedia("(hover: none)").matches;
+// The query this visit started with, before the app tidies the address: its utm tags go along to Safari or Chrome.
+const LANDING_QUERY = location.search;
+// Instagram's, TikTok's, Facebook's or Threads' own browser, where Google's sign-in is refused (studio-web/inapp.js).
+// ?demo=guest&inapp=tiktok&os=android shows that screen in the demo.
+const HOP = DEMO ? hopFor(new URLSearchParams(location.search).get("inapp"), new URLSearchParams(location.search).get("os") || "ios")
+  : signInHop(navigator.userAgent, navigator.maxTouchPoints);
 
 // ── tiny DOM helpers ─────────────────────────────────────────────────────────────────────────────────────────────
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -445,8 +453,59 @@ function loadTurnstile() {
   });
   return turnstileLoad;
 }
+// ── out of Instagram's or TikTok's own browser to sign in (25 October 2026, studio-web/inapp.js) ───────────────────
+/** Copies text. In-app browsers often refuse the clipboard API, so a hidden field is the second try. */
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch { /* refused: the old way */ }
+  const ta = h("textarea", { readonly: true, style: { position: "fixed", top: "0", left: "0", opacity: "0", fontSize: "16px" } });
+  ta.value = text; document.body.append(ta); ta.focus(); ta.select(); ta.setSelectionRange(0, text.length);
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch { ok = false; }
+  ta.remove();
+  return ok;
+}
+/** The address for Safari or Chrome. It becomes this page's address too: the app's "Open in browser" takes that one. */
+function hopHere() {
+  const to = hopAddress(location.href, LANDING_QUERY, HOP.app);
+  if (to !== location.href) history.replaceState(null, "", to.slice(location.origin.length));
+  return to;
+}
+async function copyHop(box) {
+  const to = hopHere();
+  if (await copyText(to)) return toast(`Link copied. Open ${HOP.browser} and paste it in the address bar.`);
+  // Nothing could be copied: the link is shown, ready to be selected by hand.
+  const field = h("input", { class: "input hop-addr", readonly: true, value: to, "aria-label": "Link to this page", onfocus: (e) => e.target.select() });
+  box?.querySelector(".hop-addr")?.remove();
+  box?.append(field); field.focus(); field.select();
+  toast("Press and hold the link, then tap Copy.", true);
+}
+const hopWhy = () => `Google doesn't allow sign-in inside ${HOP.name}. Open this page in ${HOP.browser} to continue.`;
+/** The step on the sign-in screen: Chrome in one tap on Android; on iPhone the app's menu, or a link to paste in Safari. */
+function hopBox(mode) {
+  const box = h("div", { class: "hop" },
+    h("b", { class: "hop-h" }, `Open in ${HOP.browser} to ${mode === "signup" ? "sign up" : "sign in"}`), h("p", {}, hopWhy()));
+  const copy = (primary) => h("button", { class: `btn ${primary ? "btn-primary" : "btn-quiet"}`, type: "button", onclick: () => copyHop(box) }, icon("copy", 18), "Copy link");
+  if (HOP.os === "android") box.append(h("a", { class: "btn btn-primary", href: chromeIntent(hopHere()) }, icon("globe", 18), "Open in Chrome"), copy(false));
+  else {
+    if (HOP.os === "ios") box.append(h("ol", { class: "hop-steps" },
+      h("li", {}, "Tap ", h("span", { class: "hop-dots", role: "img", "aria-label": "More" }, icon("more", 18, 2.4)), " at the top right"),
+      h("li", {}, "Tap ", h("b", {}, HOP.menu))));
+    box.append(copy(true));
+  }
+  return box;
+}
+/** "Continue with Google" in an app's browser: the same step as a question first, then Google here only if asked. */
+async function hopAsk() {
+  const android = HOP.os === "android";
+  const how = HOP.os === "ios" ? ` Tap ••• at the top right, then ${HOP.menu}. Or copy the link and paste it in Safari.` : "";
+  const yes = await ask({ title: `Open in ${HOP.browser} first`, text: hopWhy() + how, ok: android ? "Open in Chrome" : "Copy link", cancel: "Try here anyway", ic: "globe" });
+  if (yes === true) { if (android) location.href = chromeIntent(hopHere()); else copyHop($(".hop")); }
+  else if (yes === false) location.href = "/auth/google";
+}
 function renderAuth(mode = "signup", fromApp = false) {
   let showKey = false;
+  const hop = HOP && socialList().includes("google");
+  if (hop) hopHere();
   // Once Google sign-in is on, new accounts are opened with Google only (STUDIO_SIGNUP): the e-mail form is for signing in.
   const googleOnly = mode === "signup" && S.config?.signup === "google" && socialList().includes("google");
   let checkToken = "", checkId = null, checkWaiters = [];
@@ -495,7 +554,9 @@ function renderAuth(mode = "signup", fromApp = false) {
   authFrame(S.connecting ? "Connect Kleo to your assistant" : mode === "signup" ? "Create with Kleo" : "Welcome back",
     S.connecting ? "Sign in or create your free account. Your credits are the same here and in Grok, Claude or ChatGPT." : "Videos, pictures, voices and films — just by chatting.",
     mode === "signup" ? h("div", { class: "gift" }, bolt(15), `${S.config?.freeCredits ?? 5} free credits to start`) : null,
-    socialList().length ? [h("div", { class: "socials" }, socialList().map((k) => h("a", { class: `btn social social-${k}`, href: `/auth/${k}` }, SOCIAL[k].logo(), `Continue with ${SOCIAL[k].label}`))), googleOnly ? null : h("div", { class: "or" }, "or use e-mail")] : null,
+    hop ? hopBox(mode) : null,
+    socialList().length ? [h("div", { class: "socials" }, socialList().map((k) => h("a", { class: `btn social social-${k}`, href: `/auth/${k}`,
+      onclick: hop && k === "google" ? (e) => { e.preventDefault(); hopAsk(); } : null }, SOCIAL[k].logo(), `Continue with ${SOCIAL[k].label}`))), googleOnly ? null : h("div", { class: "or" }, "or use e-mail")] : null,
     form,
     h("div", { class: "auth-switch" },
       mode === "signup" ? ["Already have an account? ", h("button", { type: "button", onclick: () => renderAuth("signin") }, "Sign in")]
@@ -2390,7 +2451,7 @@ const adminSite = () => !!S.config?.adminSite;
 function openConsole() { location.href = DEMO ? "/admin?demo=1" : S.me.adminUrl; }
 let adminCss = null;
 function loadAdminCss() {
-  adminCss ??= new Promise((ok) => { const css = h("link", { rel: "stylesheet", href: "/admin.css?v=82", "data-admin": "" }); css.onload = ok; css.onerror = ok; document.head.append(css); });
+  adminCss ??= new Promise((ok) => { const css = h("link", { rel: "stylesheet", href: "/admin.css?v=83", "data-admin": "" }); css.onload = ok; css.onerror = ok; document.head.append(css); });
   return adminCss;
 }
 async function adminEnter() {
@@ -2434,7 +2495,7 @@ async function adminView() {
     setView("admin-view", h("div", { class: "connect-view" }, spinner(24)));
     try {
       await loadAdminCss();
-      adminModule = await import("/admin.js?v=82");
+      adminModule = await import("/admin.js?v=83");
     } catch {
       setView("connect-view", connectCard("The console didn't load", "Check the connection and try again.", h("button", { class: "btn btn-primary", onclick: () => location.reload() }, "Try again")));
       return;
