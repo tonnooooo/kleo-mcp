@@ -164,6 +164,18 @@ test("a template says how long its video is, and Crossover King Pt 2's preview i
   assert.equal(publicTools().find((x) => x.key === "trend-crossover-king-pt2").seconds, 6);
 });
 
+test("a two-run template shows its price with every person, and its second photo box says it doubles the price (24 October 2026)", () => {
+  for (const key of ["trend-crossover-king-pt1", "trend-crossover-king-pt2"]) {
+    const card = publicTools().find((x) => x.key === key);
+    assert.equal(card.from, 3, `${key}: one person at 480p`);
+    assert.equal(card.fromAll, 5, `${key}: two people at 480p, two runs`);
+    assert.equal(card.fields.find((f) => f.key === "person2").hint, "The defender · optional, doubles the price");
+  }
+  // One-run templates say nothing more.
+  for (const key of ["trend-stall-grabber", "trend-you-talking-bout-me", "trend-garden-dunk"]) assert.equal(publicTools().find((x) => x.key === key).fromAll, undefined, key);
+  assert.equal(toolByKey("trend-you-talking-bout-me").fields.find((f) => f.key === "person2").hint, "Middle · optional");
+});
+
 test("template changes (23 October 2026): the court, the opponent, the crowd, the light and the boards are choices on the page", () => {
   const app = toolByKey("trend-crossover-king-pt1");
   const field = (k) => app.fields.find((f) => f.key === k);

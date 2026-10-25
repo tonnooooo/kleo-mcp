@@ -51,6 +51,8 @@ export interface ToolDef {
   preview?: string; guide?: string; seats?: { key: string; color: string; at?: [number, number] }[];
   /** Viral templates only: how long the video is, in whole seconds, shown beside the price. */
   seconds?: number;
+  /** Viral templates made in two runs when every seat has a photo: the "from" price with all the people (24 October 2026). */
+  fromAll?: number;
 }
 
 export const VOICES = [
@@ -173,6 +175,11 @@ function changeFields(c: TrendChange): ToolField[] {
   ];
 }
 
+/** A template that makes two runs when every seat has a photo (src/studio/trends.ts trendPasses): it costs twice as much then. */
+function twoRuns(t: Trend): boolean {
+  return trendPasses(t, t.seats.map((s) => s.key), t.seats.map(() => ""), DEFAULT_TREND_QUALITY).length > 1;
+}
+
 /** One viral template as an app: a photo box per seat (any of them may stay empty), its changes and the output quality. */
 function trendTool(t: Trend): ToolDef {
   return {
@@ -183,7 +190,7 @@ function trendTool(t: Trend): ToolDef {
       // A template with its own fixed prompt needs every seat (as on ausar.ai); Kleo's own may leave seats empty.
       ...t.seats.map((s, i): ToolField => trendNeedsAllSeats(t)
         ? { key: s.key, kind: "image", label: `Person ${i + 1}`, hint: s.hint ?? "A clear photo", required: true }
-        : { key: s.key, kind: "image", label: `Person ${i + 1}`, hint: i === 0 ? `${s.label} · a clear photo` : `${s.label} · optional` }),
+        : { key: s.key, kind: "image", label: `Person ${i + 1}`, hint: i === 0 ? `${s.label} · a clear photo` : `${s.label} · optional${twoRuns(t) ? ", doubles the price" : ""}` }),
       ...(t.changes ?? []).flatMap(changeFields),
       ...(t.changes?.length ? [{ key: "extra", kind: "text" as const, label: "Anything else to change? (optional)", maxLength: TREND_EXTRA_MAX, placeholder: "Make it rain · everyone in red jerseys" }] : []),
       { key: "quality", kind: "select", label: "Quality", options: TREND_QUALITIES.map((q) => ({ value: q, label: q })), default: DEFAULT_TREND_QUALITY },
@@ -453,5 +460,10 @@ export function publicTools(margin = DEFAULT_MARGIN): unknown[] {
   };
   // A template's "from" is its cheapest quality (480p).
   const usd = (k: ToolKey) => typical[k] ?? (trendByKey(k) ? trendCostUsd(trendByKey(k)!, "480p") : 0.1);
-  return TOOLS.map((t) => ({ ...t, from: toolCredits(usd(t.key), margin) }));
+  return TOOLS.map((t) => {
+    const trend = trendByKey(t.key);
+    // The owner, 24 October 2026: "metti che costa il doppio": a template that makes two runs with every photo says so.
+    const all = trend && twoRuns(trend) ? { fromAll: toolCredits(trendCostUsd(trend, "480p") * 2, margin) } : {};
+    return { ...t, from: toolCredits(usd(t.key), margin), ...all };
+  });
 }

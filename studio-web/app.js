@@ -1709,7 +1709,7 @@ function appView(key) {
         // How it works, read from the app's own fields: what to add, then Generate (the way Higgsfield's pages say it).
         h("ol", { class: "app-steps" }, [...t.fields.filter((f) => !f.hidden && (f.required || ["image", "video", "audio"].includes(f.kind))).map((f) => f.label), t.output === "audio" ? "Create" : "Generate"].map((l, i) => h("li", {}, h("i", {}, i + 1), l))),
         // A template says how long its video is, so the price reads against the real length, not the short preview.
-        h("span", { class: "app-hero-price" }, tallowed(t.key) ? [bolt(15), `from ${t.from} credits${t.seconds ? ` · ${t.seconds}-second video` : ""}`] : [icon("lock", 15), "Unlocks with any credit pack"]))),
+        h("span", { class: "app-hero-price" }, tallowed(t.key) ? [bolt(15), `from ${t.from} credits${t.fromAll ? ` · with ${t.seats.length} people from ${t.fromAll}` : ""}${t.seconds ? ` · ${t.seconds}-second video` : ""}`] : [icon("lock", 15), "Unlocks with any credit pack"]))),
     toolBody(key, false)));
 }
 /** The form of one app with its results beside it. */
