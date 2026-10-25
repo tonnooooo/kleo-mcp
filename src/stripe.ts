@@ -346,9 +346,13 @@ async function handleInvoicePaid(env: Env, event: { id?: string; type?: string; 
   await keepPaymentIntent(env, sessionId, pi);
   if (userId && credited) {
     const end = Number(inv.lines?.data?.[0]?.period?.end ?? inv.period_end ?? 0) * 1000;
+    const start = Number(inv.lines?.data?.[0]?.period?.start ?? 0) * 1000; // never inv.period_start: on a renewal that is the period just ended
     const now = Date.now();
+    // A renewed year's monthly grants count from the day its period began, not from the day a retried payment went
+    // through: grantDuePlanCredits then gives the same eleven more however late the money came (25 October 2026).
+    const from = start > 0 && start <= now && end > now ? start : now;
     await env.DB.prepare(`UPDATE users SET plan = ?, plan_period = ?, plan_credits = ?, plan_until = ?, plan_status = 'active', plan_next_grant = ? WHERE id = ?`)
-      .bind(match.plan.key, match.period, match.tier.credits, iso(end > now ? end : now + (match.period === "year" ? 366 : 31) * DAY_MS), iso(now + 28 * DAY_MS), userId).run();
+      .bind(match.plan.key, match.period, match.tier.credits, iso(end > now ? end : now + (match.period === "year" ? 366 : 31) * DAY_MS), iso(from + 28 * DAY_MS), userId).run();
     await audit(env, userId, null, "plan.renewed", { plan: match.plan.key, period: match.period, credits: match.tier.credits, invoice: inv.id ?? null });
   }
   return json({ ok: true, credits: userId ? match.tier.credits : 0, orphan: !userId, already: !credited });
@@ -369,10 +373,15 @@ async function handleSubscriptionEnded(env: Env, sub: Record<string, any>): Prom
 /**
  * The cron's part (src/index.ts scheduled): an ANNUAL plan is paid once a year but gets its credits every month.
  * Monthly plans get theirs with each invoice. One conditional UPDATE per account, so two ticks never pay twice.
+ *
+ * Exactly twelve grants per paid year (25 October 2026; it was thirteen): the checkout or the renewal gives the first,
+ * then this gives one on day 28, 58, … 328 of the year, and only while a whole month of the paid year is left after
+ * the grant. Day 358 fails that (358 + 30 > 365 or 366), so the year's next credits come with its renewal.
  */
 export async function grantDuePlanCredits(env: Env, nowMs = Date.now()): Promise<number> {
   const now = iso(nowMs);
-  const due = await env.DB.prepare(`SELECT id, plan_credits, plan_next_grant FROM users WHERE plan_period = 'year' AND plan_until > ? AND plan_next_grant <= ? AND plan_credits > 0 LIMIT 100`)
+  const due = await env.DB.prepare(`SELECT id, plan_credits, plan_next_grant FROM users WHERE plan_period = 'year' AND plan_until > ? AND plan_next_grant <= ?
+      AND julianday(plan_next_grant) + 30 <= julianday(plan_until) AND plan_credits > 0 LIMIT 100`)
     .bind(now, now).all<{ id: string; plan_credits: number; plan_next_grant: string }>();
   let n = 0;
   for (const u of due.results ?? []) {

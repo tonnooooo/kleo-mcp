@@ -271,6 +271,29 @@ test("plans: an annual plan is paid once and gets its credits every month from t
   assert.equal(await m.grantDuePlanCredits(env, Date.now() + 400 * day), 0, "after the paid year, nothing");
 });
 
+test("plans: an annual plan gives exactly twelve months of credits per paid year, the renewed year too, even renewed late (25 October 2026)", async () => {
+  // It gave thirteen: the checkout's month, then the cron on day 28, 58, … 358, all inside the 366 paid days.
+  const realNow = Date.now;
+  const day = 86_400_000;
+  const t0 = realNow();
+  const env = newEnv(); user(env, "u_year");
+  const ticks = async (from, to) => { let n = 0; for (let d = from; d <= to; d++) n += await m.grantDuePlanCredits(env, t0 + d * day); return n; };
+  try {
+    await post(env, subCheckout({ id: "cs_y", client_reference_id: "u_year", amount_total: 37200, subscription: "sub_y" }));
+    assert.equal(await ticks(1, 364), 11, "the cron's part of the first year");
+    assert.equal(balance(env, "u_year"), 12 * 110, "twelve months in the first year");
+    // Stripe's second period starts on day 365; the card failed and a retry got the money on day 375.
+    assert.equal(await ticks(365, 374), 0, "nothing while the renewal is being retried");
+    Date.now = () => t0 + 375 * day;
+    const sec = (d) => Math.floor((t0 + d * day) / 1000);
+    await post(env, invoice({ id: "in_y2", amount_paid: 37200, parent: { subscription_details: { subscription: "sub_y" } },
+      lines: { data: [{ period: { start: sec(365), end: sec(730) } }] } }));
+    assert.equal(balance(env, "u_year"), 13 * 110, "the renewal gives the new year's first month");
+    assert.equal(await ticks(375, 800), 11, "the cron's part of the second year, nothing after it");
+    assert.equal(balance(env, "u_year"), 24 * 110, "twelve months in the second year as well");
+  } finally { Date.now = realNow; }
+});
+
 test("plans: an amount no plan costs, or another currency, buys nothing", async () => {
   const env = newEnv(); user(env, "u_sub");
   await post(env, subCheckout({ amount_total: 4100 }));
