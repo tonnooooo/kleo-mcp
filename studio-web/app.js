@@ -3,7 +3,7 @@
 //
 // Pages: Create (chat with Kleo) · Video · Image · Audio · Apps · Library. Desktop: a top bar; phones: a tab bar.
 
-import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=83";
+import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=84";
 
 const DEMO = new URLSearchParams(location.search).has("demo");
 const DEMO_FREE = new URLSearchParams(location.search).get("demo") === "free"; // ?demo=free: an account that never paid
@@ -1933,21 +1933,33 @@ function toolBody(key, compact, top = null) {
 // Ausar's pricing page, in Kleo's credits (src/plans.ts): Monthly/Annually, four cards, a plan finder and a table.
 const eur = (cents) => `€${(cents / 100).toFixed(cents % 100 ? 2 : 0)}`;
 const plansList = () => (S.me?.plans || S.config.plans || []);
-// What one thing costs in credits, for the plan finder (Kleo's own prices: src/studio/models.ts, tools.ts).
-const USES = [
-  { key: "video", label: "Videos", each: 4, hint: "≈ 4 credits · 5-second clip" },
-  { key: "image", label: "Pictures", each: 1, hint: "1 credit · picture" },
-  { key: "swap", label: "Character swap & edits", each: 3, hint: "≈ 3 credits · swap" },
-  { key: "motion", label: "Motion control", each: 3, hint: "≈ 3 credits · motion" },
-  { key: "film", label: "Kleo films", each: 20, hint: "≈ 20 credits · 30-second film" },
-  { key: "chat", label: "Chat-assisted creation", each: 3, hint: "≈ 3 credits · idea to clip" },
-];
+// What one thing costs in credits, for the plan finder. Videos and templates are read from the catalog the server sends
+// (the prices the charge uses, src/studio/models.ts and tools.ts, video price factor included), so the finder follows
+// every price change; the other uses are typical figures.
+function usesList() {
+  const m = (S.config?.models || []).find((x) => x.key === S.config?.defaultModel);
+  const clip = Number(m?.prices?.[m.defaultResolution]?.[5] ?? m?.prices?.[m?.defaultResolution]?.[m?.defaultDuration]) || 7;
+  const tpl = (S.config?.tools || []).filter((t) => String(t.key).startsWith("trend-")).map((t) => Number(t.from)).filter((n) => n > 0).sort((a, b) => a - b);
+  const template = tpl.length ? tpl[Math.floor(tpl.length / 2)] : 10;
+  const app = (key, d) => Number((S.config?.tools || []).find((t) => t.key === key)?.from) || d;
+  const swap = app("character-swap", 5), motion = app("motion-control", 5);
+  return [
+    { key: "video", label: "Videos", each: clip, hint: `≈ ${clip} credits · 5-second clip` },
+    { key: "template", label: "Templates", each: template, hint: `≈ ${template} credits · template` },
+    { key: "image", label: "Pictures", each: 1, hint: "1 credit · picture" },
+    { key: "swap", label: "Character swap & edits", each: swap, hint: `≈ ${swap} credits · swap` },
+    { key: "motion", label: "Motion control", each: motion, hint: `≈ ${motion} credits · motion` },
+    { key: "film", label: "Kleo films", each: 20, hint: "≈ 20 credits · 30-second film" },
+    { key: "chat", label: "Chat-assisted creation", each: clip, hint: `≈ ${clip} credits · idea to clip` },
+  ];
+}
 function plansView() {
   const ui = (S.plansUi ||= { period: store.get("planPeriod", "year"), tier: 0, uses: ["video", "image"], count: 20 });
   const page = h("div", { class: "page wide plans-page" });
   const draw = () => {
     const list = plansList();
     const per = ui.period;
+    const USES = usesList();
     const toggle = h("div", { class: "pl-toggle" },
       h("span", { class: per === "month" ? "on" : "" }, "Monthly"),
       h("button", { class: "pl-switch" + (per === "year" ? " year" : ""), role: "switch", "aria-checked": String(per === "year"), "aria-label": "Billed annually",

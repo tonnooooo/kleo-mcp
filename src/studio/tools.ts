@@ -29,7 +29,7 @@
  * themselves beyond that: the providers moderate public figures, minors and sexual content, and every use is in the
  * audit table with the account. Kleo never removes a provider's own refusal.
  */
-import { CREDIT_USD, DEFAULT_MARGIN } from "./models.ts";
+import { CREDIT_USD, DEFAULT_MARGIN, raiseCredits } from "./models.ts";
 import type { PhotoFacts } from "./person-check.ts";
 import { DEFAULT_TREND_QUALITY, TRENDS, TREND_CUSTOM_MAX, TREND_EXTRA_MAX, TREND_QUALITIES, WAN30_EDIT_MODEL, trendByKey, trendChangeLines, trendCostUsd, trendNeedsAllSeats, trendPasses, trendQuality, type Trend, type TrendChange } from "./trends.ts";
 
@@ -228,9 +228,15 @@ const SPEECH_USD = 0.01;
 export const CHARS_PER_SECOND = 12;
 const r3 = (n: number) => Math.round(n * 1000) / 1000;
 
-export function toolCredits(usd: number, margin = DEFAULT_MARGIN): number {
-  return Math.max(1, Math.ceil((usd * margin) / CREDIT_USD - 1e-9));
+export function toolCredits(usd: number, margin = DEFAULT_MARGIN, video = 1): number {
+  return raiseCredits(Math.max(1, Math.ceil((usd * margin) / CREDIT_USD - 1e-9)), video);
 }
+/**
+ * The video price factor (models.ts videoFactor) of an app: every app that makes a video (the templates, face swap in a
+ * video, talking photo, lipsync, character swap, motion control, video edit and upscale) takes it; pictures and sounds
+ * do not (25 October 2026, the owner: "questo fallo per tutti i template e creazioni video").
+ */
+export const toolFactor = (key: string | null | undefined, video: number): number => (toolByKey(key)?.output === "video" ? video : 1);
 
 /** Seconds a script takes to say, for the price shown before it is spoken. */
 export const scriptSeconds = (text: string): number => Math.max(2, Math.ceil(text.trim().length / CHARS_PER_SECOND));
@@ -452,7 +458,7 @@ export function planTool(key: ToolKey, inputs: Record<string, string>, media: Re
 export const toneText = (tone: string): string => TONE_TEXT[tone] ?? TONE_TEXT.natural;
 
 /** The catalog the page draws the Apps grid from (prices are credit estimates for a typical use). */
-export function publicTools(margin = DEFAULT_MARGIN): unknown[] {
+export function publicTools(margin = DEFAULT_MARGIN, video = 1): unknown[] {
   const typical: Partial<Record<ToolKey, number>> = {
     "face-swap": 0.075, "video-face-swap": 2 * 8 * 0.9 * 0.8 * CNY, "talking-photo": 10 * 0.4 * KLING_CREDIT_USD + SPEECH_USD,
     lipsync: 10 / 5 * 0.5 * KLING_CREDIT_USD, "character-swap": FLUX_EDIT_USD + 5 * 1.2 * KLING_CREDIT_USD, "photo-character-swap": NBP_MAX_USD, "motion-control": 8 * 0.9 * KLING_CREDIT_USD, "outfit-swap": 0.035,
@@ -463,7 +469,7 @@ export function publicTools(margin = DEFAULT_MARGIN): unknown[] {
   return TOOLS.map((t) => {
     const trend = trendByKey(t.key);
     // The owner, 24 October 2026: "metti che costa il doppio": a template that makes two runs with every photo says so.
-    const all = trend && twoRuns(trend) ? { fromAll: toolCredits(trendCostUsd(trend, "480p") * 2, margin) } : {};
-    return { ...t, from: toolCredits(usd(t.key), margin), ...all };
+    const all = trend && twoRuns(trend) ? { fromAll: toolCredits(trendCostUsd(trend, "480p") * 2, margin, video) } : {};
+    return { ...t, from: toolCredits(usd(t.key), margin, toolFactor(t.key, video)), ...all };
   });
 }

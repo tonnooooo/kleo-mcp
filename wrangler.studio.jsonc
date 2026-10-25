@@ -65,6 +65,7 @@
     "STUDIO_FREE_IMAGE_MODELS": "nano-banana-2,seedream-5,flux-2-pro", // 20 Oct 2026, the owner: Nano Banana 2.1 and FLUX 3 unlock with the first purchase too (2.1 made four 4K pictures for one credit, FLUX 3 costs $0.32 a 4K picture); Nano Banana Pro and GPT Image 2.5 were never open
     "NOTIFY_FROM": "Kleo <noreply@kleooai.com>", // sender of the password-reset e-mail; nothing is sent until the RESEND_API_KEY secret is set
     "STUDIO_MARGIN": "1.6",
+    "STUDIO_VIDEO_FACTOR": "5/3", // 25 Oct 2026, the owner: "da 6 crediti per 480p fai 10": every video clip and template run costs its credits x 5/3, rounded up (src/studio/models.ts videoFactor)
     "STUDIO_DAILY_BUDGET_USD": "30",
     "TURNSTILE_SITEKEY": "0x4AAAAAAFWD13GJ3SI11_Ww", // public key of the Turnstile widget "Kleo sign-up" (14 Oct 2026); TURNSTILE_SECRET is a secret
     "STUDIO_FREE_DAILY_BUDGET_USD": "8", // accounts that never paid share this part of the day (14 Oct 2026)

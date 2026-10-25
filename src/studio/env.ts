@@ -39,6 +39,8 @@ export interface StudioEnv {
   PUBLIC_URL: string;
   /** The one host of the app (kleooai.com); www. and app. hosts redirect to it. Empty: no redirect. */
   CANONICAL_HOST?: string;
+  /** Videos and templates cost their credits times this, rounded up ("5/3": 6 credits become 10). src/studio/models.ts videoFactor. */
+  STUDIO_VIDEO_FACTOR?: string;
   /** Public address of Studio itself, used when no request is at hand (cron). */
   STUDIO_URL?: string;
   STRIPE_LINK_5?: string;
