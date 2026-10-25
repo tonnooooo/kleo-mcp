@@ -332,10 +332,19 @@ export async function resetPassword(env: StudioEnv, body: { token?: string; pass
 // CLAIMED vs VOUCHED (14 October 2026). An e-mail typed at sign-up (or added with a password) was never checked: anybody
 // can sign up with somebody else's address before they arrive. So a vouched-for social sign-in joins an account by
 // e-mail only when that account holds the address through another VOUCHED sign-in. An account that merely CLAIMS it
-// (password login or users.email, never verified) is handed to the verified person only while it is untouched — no
-// generation, upload, chat, film or payment — and then the claimant is evicted: the password login goes, every session
-// ends, the Kleo key is retired. An account that was used is never handed over automatically: the person signs in to
-// it (password or Kleo key) and connects Google or Microsoft from the account page.
+// (password login or users.email, never verified) is handed to the verified person, and the claimant is evicted: every
+// sign-in of it goes, every session ends, the Kleo key is retired. The verified person comes in through Google or
+// Microsoft from then on and keeps everything the account holds.
+//
+// USED ACCOUNTS TOO (25 October 2026, the owner, refused with his own old test account: "devi venire incontro al
+// cliente"). Until today an account that had been used (a creation, an upload, a chat, a film or a payment) was never
+// handed over: the person had to sign in with the password and connect Google from the account page, and someone who no
+// longer knew that password (no reset e-mail is sent) was locked out of their own account. Two things changed since the
+// rule was written: new accounts open with Google only (since 18 October, STUDIO_SIGNUP), so nobody can register a
+// stranger's address with a password at sign-up any more; and the inbox's owner is who the address belongs to. Whoever
+// typed an address that Google now vouches for is evicted either way, so a planted password never keeps a way in. What
+// is still refused: an admin account (STUDIO_ADMINS), whose password and phone code open the console and must never be
+// replaced by a Google sign-in; the person signs in with the password and connects Google from the account page.
 //
 // PKCE (S256) and a nonce bind the provider's answer to the browser that started the sign-in; the state cookie is
 // `__Host-` (this host only, HTTPS, Path=/), so no sibling *.kleooai.com host can plant one.
@@ -479,11 +488,11 @@ async function untouched(env: StudioEnv, userId: string): Promise<boolean> {
  * mcpApi). Every sign-in, not only the password (the review's second pass): a claimant who had linked their own Google
  * or Microsoft account to it would otherwise sign straight back in. The verified person's sign-in is added right after.
  */
-async function evictClaimant(env: StudioEnv, userId: string, provider: SocialKey): Promise<void> {
+async function evictClaimant(env: StudioEnv, userId: string, provider: SocialKey, used = false): Promise<void> {
   await env.DB.prepare("DELETE FROM studio_logins WHERE user_id = ?").bind(userId).run();
   await endAllSessions(env, userId);
   await rotateKey(asEnv(env), userId);
-  await audit(asEnv(env), userId, null, "studio.email_claim_evicted", { provider });
+  await audit(asEnv(env), userId, null, "studio.email_claim_evicted", { provider, ...(used ? { used: true } : {}) });
 }
 
 /** The provider's answer: code, then id_token, then the account (found, linked or created), then the session. */
@@ -524,6 +533,7 @@ export async function socialCallback(env: StudioEnv, key: SocialKey, request: Re
 
   let userId = owner;
   let gifted: number | null = null;
+  let handedOver = false;
   // Where the browser came from (attribution.ts): Google's redirect back here carries the first-touch cookie (SameSite=Lax).
   // Apple's form POST would not; Apple sign-in is off.
   const from = arrivalOf(request);
@@ -534,12 +544,15 @@ export async function socialCallback(env: StudioEnv, key: SocialKey, request: Re
       // An account that only CLAIMS the address (a password sign-up, or the e-mail on the account row).
       const claimant = (await getLogin(env, "password", verified))?.user_id ?? (await getUserByEmail(asEnv(env), verified))?.id ?? null;
       if (claimant) {
-        if (!(await untouched(env, claimant))) {
-          await audit(asEnv(env), claimant, null, "studio.email_claim_refused", { provider: key });
+        // An admin account is never handed over: its password opens the console (see USED ACCOUNTS TOO above).
+        if (isAdmin(env, claimant)) {
+          await audit(asEnv(env), claimant, null, "studio.email_claim_refused", { provider: key, admin: true });
           return back(`signin_error=claimed_${key}`);
         }
-        await evictClaimant(env, claimant, key);
+        const used = !(await untouched(env, claimant));
+        await evictClaimant(env, claimant, key, used);
         userId = claimant;
+        handedOver = true;
       }
     }
   }
@@ -560,8 +573,9 @@ export async function socialCallback(env: StudioEnv, key: SocialKey, request: Re
   if (await accountBlocked(env, userId)) return back("signin_error=blocked");
   await touchLogin(env, key, subject);
   await recordIp(env, userId, gifted === null ? "signin" : "signup", request);
-  // A new account that started without the gift lands on "/?gift=none", where the page says why (src/abuse.ts).
-  const headers: [string, string][] = [["location", gifted === 0 ? "/?gift=none" : "/"], ["set-cookie", await newSession(env, userId)], ["set-cookie", clearState(key)]];
+  // A new account that started without the gift lands on "/?gift=none", where the page says why (src/abuse.ts); an
+  // account handed over to its address's owner lands on "/?linked=<provider>", where the page says it now opens that way.
+  const headers: [string, string][] = [["location", gifted === 0 ? "/?gift=none" : handedOver ? `/?linked=${key}` : "/"], ["set-cookie", await newSession(env, userId)], ["set-cookie", clearState(key)]];
   if (gifted) headers.push(["set-cookie", giftCookie()]);
   // The account exists now: the first-touch cookie has done its job.
   if (from.hadCookie) headers.push(["set-cookie", clearTouchCookie()]);
