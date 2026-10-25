@@ -535,14 +535,31 @@ test("Google and Microsoft: off until configured; new accounts; verified e-mails
   assert.equal((await call(env, "/api/me", { cookie: pw })).status, 401, "the claimant's session ended");
   assert.equal((await call(env, "/api/auth/signin", { method: "POST", body: { email: "anna@outlook.com", password: "long enough pw" } })).status, 401, "and the claimed password no longer opens it");
   assert.equal((await call(env, "/api/auth/signup", { method: "POST", body: { email: "luca@gmail.com", password: "long enough pw" } })).json.code, "use_google");
-  // A NOBODY-checked address on an account that was USED is never handed over: sign in to it, then connect.
+  // An account that was USED, holding the address only by a password, goes to the address's owner too (25 October 2026,
+  // the owner's own old account was refused): Google signs in to it, its creations and credits stay, and whoever typed
+  // the address is out — the password no longer opens it and the old session has ended.
   const used = await signUp(env, "carla@gmail.com");
   const usedId = (await call(env, "/api/me", { cookie: used })).json.id;
-  env.DB.db.exec(`INSERT INTO studio_chats (id, user_id, title) VALUES ('c_used00000001', '${usedId}', 'x')`);
-  const refused = await social(env, "google", { sub: "g-carla", aud: "gid", email: "carla@gmail.com", email_verified: true });
+  env.DB.db.exec(`INSERT INTO studio_chats (id, user_id, title) VALUES ('c_used00000001', '${usedId}', 'x'); UPDATE users SET credits = 42 WHERE id = '${usedId}'`);
+  const handed = await social(env, "google", { sub: "g-carla", aud: "gid", email: "carla@gmail.com", email_verified: true });
+  assert.equal(handed.location, "/?linked=google", "the page says the account now opens with Google");
+  const carla = (await call(env, "/api/me", { cookie: handed.cookie })).json;
+  assert.deepEqual([carla.id, carla.credits, carla.methods], [usedId, 42, ["google"]], "the same account, its credits kept, Google its only way in");
+  assert.equal((await call(env, `/api/chats/c_used00000001`, { cookie: handed.cookie })).status, 200, "its chats are there");
+  assert.equal((await call(env, "/api/me", { cookie: used })).status, 401, "the password's old session has ended");
+  assert.equal((await call(env, "/api/auth/signin", { method: "POST", body: { email: "carla@gmail.com", password: "long enough pw" } })).status, 401, "and the password no longer opens it");
+  assert.equal(JSON.parse(env.DB.db.prepare("SELECT detail FROM audit WHERE user_id = ? AND event = 'studio.email_claim_evicted'").get(usedId).detail).used, true);
+  // The same Google account again: straight in, no second hand-over.
+  assert.equal((await social(env, "google", { sub: "g-carla", aud: "gid", email: "carla@gmail.com", email_verified: true })).location, "/");
+  // An ADMIN account is never handed over: its password and phone code open the console.
+  const boss = await signUp(env, "boss@gmail.com");
+  const bossId = (await call(env, "/api/me", { cookie: boss })).json.id;
+  env.STUDIO_ADMINS = bossId;
+  const refused = await social(env, "google", { sub: "g-boss", aud: "gid", email: "boss@gmail.com", email_verified: true });
   assert.equal(refused.location, "/?signin_error=claimed_google");
   assert.equal(refused.cookie, null);
-  assert.equal((await call(env, "/api/me", { cookie: used })).json.id, usedId, "the used account is untouched by the refusal");
+  assert.equal((await call(env, "/api/me", { cookie: boss })).json.id, bossId, "the admin account is untouched by the refusal");
+  delete env.STUDIO_ADMINS;
   // A reply from the provider made for another sign-in (wrong nonce) is refused.
   assert.match((await social(env, "google", { sub: "g-1", aud: "gid", nonce: "someone-elses" })).location, /signin_error=google/);
 });
