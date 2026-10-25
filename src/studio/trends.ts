@@ -90,6 +90,10 @@ export interface Trend {
   scene?: string;
   /** The clip's cuts and speed changes, when it is not one continuous shot. */
   edit?: string;
+  /** The look in one sentence, when the clip is not handheld phone footage (a static studio camera). */
+  look?: string;
+  /** The people are never in the same shot: the clip cuts from one to the other. */
+  apart?: boolean;
   /** What the person may change around the people (the court, the opponent, the crowd …), each a choice on the page. */
   changes?: TrendChange[];
   /**
@@ -244,6 +248,31 @@ export const TRENDS: Trend[] = [
         original: "no red patterned shirt, no blond twisted hair",
         motion: "sits at the counter, looking down at a phone in the hands most of the time, glancing up briefly",
         color: "#30d158", at: [34, 80] },
+    ],
+  },
+  // 25 October 2026, the owner: "riesci a trovare la clip originale? … scarica quella max quality" (an Instagram reel
+  // of Ausar's own "You Tweaking" result, with its watermark). The source is Quante Savage's YouTube show "20 GUYS VS 1
+  // OF MODEL: LADIISCORPIO" (the 2024 upload is members-only; its public re-upload ov0xf73JxnE, 12:00.9-12:15.9, VP9
+  // 1920x1080 at 23.976 fps). Cropped where Ausar cropped it (x 256, y 76, 1432x1004), below the channel's logo at the
+  // top, with no scaling; 359 frames, so the clip stays under Wan's 15 s. Two people on a white backdrop, alternating
+  // in 11 shots, never in the same frame: one run with both photos, as on Ausar, so the price does not double.
+  {
+    key: "trend-you-tweaking", name: "You Tweaking", blurb: "Put two friends in this viral clip", tint: "#ff375f",
+    baseUrl: `${TRENDS_MEDIA}/you-tweaking/base-hd.mp4`, baseSeconds: 14.97,
+    preview: `${TRENDS_MEDIA}/you-tweaking/preview4-p.mp4`, guide: `${TRENDS_MEDIA}/you-tweaking/guide-hd.jpg`,
+    scene: "Same plain bright white studio backdrop filling the whole frame, seamless, with no floor line, no objects and nothing else in it. Each shot shows one person alone near the middle of the frame, from the head to the thighs. Same static landscape camera at chest height with the same framing in every shot, and one quick punch-in, closer on the person in that shot, from 6.65 to 7.1 s. Same soft, even, shadowless studio light. The same two props in the shots at 2.0-3.2, 5.2-6.3, 8.7-10.1, 11.5-12.3 and 13.9-14.6 s: a small red handbag with a pale chevron pattern hanging on that person's right forearm, and a small black object held in the right hand.",
+    edit: "Eleven shots with hard cuts at 1.96, 3.17, 5.17, 6.30, 8.72, 10.14, 11.51, 12.30, 13.89 and 14.64 s, alternating between the two people: one person alone in each shot, the two never in the same frame. Every cut stays exactly where it is.",
+    look: "Clean studio footage on a white backdrop, looking like it was really filmed there.",
+    apart: true,
+    seats: [
+      { key: "person1", label: "The one in black", where: "ALONE on the white backdrop in the shots at 0-2.0 s, 3.2-5.2 s, 6.3-8.7 s, 10.1-11.5 s, 12.3-13.9 s and 14.6-15.0 s, standing and reacting, mostly looking off to the right of the frame",
+        original: "no black durag, no black T-shirt with the small white script print on the chest, no silver chain with the big iced-out letter pendant, no light-blue jeans, no tattoo sleeve on the right forearm",
+        motion: "0-0.7s stands three-quarters turned to the right of the frame, looking off to the right with a smirk, the left hand raised by the chin; 0.8-1.1s lowers the hand and swings the left arm up, the fist raised; 1.2-1.7s holds the elbow out at shoulder height with the forearm up, the wrist bent and one finger pointing down, grinning and looking down to the left of the frame; 1.7-2.0s lowers the forearm across at head height, the hand hanging down, grinning; 3.2-3.7s rubs the nose with the left fist, the elbow out, laughing, eyes to the right; 3.8-4.3s lowers the hand to the chest under the chin, smiling, looking down to the right; 4.3-5.2s the fingertips at the lips, biting a fingertip, head bowed, with a shy grin; 6.3-6.6s head down, a finger at the lips, giggling; 6.65-7.1s seen in the punch-in, closer and larger in the frame, laughing hard behind the hand; 7.1-7.5s back at the normal framing, a finger at the lips, giggling, drifting a step to the right of the frame; 7.5-8.7s head up, looking off to the right of the frame with a wide grin, a finger at the lower lip; 10.1-11.5s turned in profile to the right, talking, the left hand raised in front of the chest with the fingers pinched, then rubbing the chin; 12.3-13.1s again in profile to the right, talking and smiling, explaining with the pinched fingers of the left hand; 13.2-13.9s the fingers at the chin, talking; 14.6-15.0s in profile to the right, smiling and talking, the left hand raised in front of the chest",
+        color: "#0a84ff", at: [24, 45] },
+      { key: "person2", label: "The one in white", where: "ALONE on the white backdrop in the shots at 2.0-3.2 s, 5.2-6.3 s, 8.7-10.1 s, 11.5-12.3 s and 13.9-14.6 s, carrying the red handbag and the small black object, smiling and talking to the camera",
+        original: "no white cropped baby tee with red \"MOTHER\" lettering, no low-rise dark-blue jeans with frayed lace-up side panels, no long straight black hair with a middle part, no nose ring, no gold teeth grill, no belly-button piercing, no forearm tattoos, no gold bangles",
+        motion: "2.0-2.4s stands angled to the left of the frame, head tilted, smiling at the camera, the left hand pulling a long lock of hair out to the side, the small black object in the right hand and the red handbag on the right forearm; 2.4-3.2s turns to the right of the frame and away with a hip sway until the back is to the camera, the hair down the back, looking down at the object held up in the right hand; 5.2-6.3s sways in place facing the camera, laughing with a big smile and looking off to the left of the frame, the object held up by the chin in the right hand, the handbag on the right forearm, the left arm swinging at the side; 8.7-10.1s faces the camera, talking and smiling, the object held up by the chin, small head tilts; 11.5-12.3s faces the camera, talking and smiling, glancing off to the left of the frame; 13.9-14.6s faces the camera with a wide smile, looking off to the left of the frame, the object by the chin",
+        color: "#ff375f", at: [77, 45] },
     ],
   },
   // 25 October 2026, the owner: "nuovo template … i video sono tutti uguali ma con persone diverse" (TikTok
@@ -429,7 +458,7 @@ export function trendPrompt(t: Trend, filled: string[], picks: TrendPicks = {}):
   for (const s of seats) lines.push(`- ${img(s)} replaces the person ${s.where ?? ""}.`);
   for (const s of kept) lines.push(restyled.has(s.key) ? `- The person ${s.where ?? ""}. This person keeps the exact movements of Video 1 and changes only as the WORLD CHANGES say.`
     : `- The person ${s.where ?? ""} stays exactly as in Video 1: the same face, hair, clothes and movements.`);
-  lines.push("This mapping is fixed for the whole video. Each new person appears exactly once per frame, only in their own seat. No swapping, no merging, no sharing faces, hair or clothes.");
+  lines.push(`This mapping is fixed for the whole video. ${t.apart ? "Each new person appears only in their own shots, always alone in the frame." : "Each new person appears exactly once per frame, only in their own seat."} No swapping, no merging, no sharing faces, hair or clothes.`);
   if (world.length) lines.push("", "WORLD CHANGES (only these; every position, every movement, the ball's path and the timing stay exactly as in Video 1)", ...world.map((c) => `- ${c.text}`));
   lines.push("", "EXACT LIKENESS - THE MOST IMPORTANT RULE",
     "Each new person must look IDENTICAL to their reference image, as if they were really filmed in this scene. Copy everything 1:1 and change nothing:",
@@ -456,7 +485,7 @@ export function trendPrompt(t: Trend, filled: string[], picks: TrendPicks = {}):
     ? `The camera, the framing, the cuts and the timing are identical to Video 1. Video 1's world before the changes: ${t.scene ?? ""} The WORLD CHANGES replace only what they name; everything else stays as in Video 1. ${edit} No other new objects or text.`
     : `Identical to Video 1. ${t.scene ?? ""} ${edit} No new objects, no new text.`).replace("  ", " "));
   lines.push("", "STYLE",
-    "Natural handheld footage, looking like it was really filmed there. Each new person is lit naturally by the room's light with matching shadows. Anatomically correct hands with five fingers. No beauty filter, no skin smoothing, no over-sharpening, no face flicker, no morphing, no distorted faces in the background.");
+    `${t.look ?? "Natural handheld footage, looking like it was really filmed there."} Each new person is lit naturally by the room's light with matching shadows. Anatomically correct hands with five fingers. No beauty filter, no skin smoothing, no over-sharpening, no face flicker, no morphing, no distorted faces in the background.`);
   return lines.join("\n");
 }
 
