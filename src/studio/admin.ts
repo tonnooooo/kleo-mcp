@@ -26,6 +26,10 @@
  *   GET  /api/admin/failures?days            failed creations grouped by reason and provider
  *   GET  /api/admin/spend?days               what each account cost in provider dollars, next to what it paid
  *   GET  /api/admin/providers                which secrets are set (names only), live balances, the settings
+ *   GET  /api/admin/sources?days             where accounts came from: per network and per short link, first visits,
+ *                                            clicks, sign-ups, accounts that made something, paying accounts, money
+ *   POST /api/admin/sources/links            {channel, label, target?, code?}   a new short link (app.kleooai.com/r/<code>)
+ *   POST /api/admin/sources/links/:code      {label?, target?, archived?}      change or hide one
  *
  * EVERY WRITE IS AUDITED: one `admin.*` row on the account it touched, with the admin's id and the reason typed.
  * Previews are signed links valid one hour (session.ts signPath): the admin is not the owner of the files.
@@ -46,6 +50,7 @@ import { KLEO_ZONE, lookupRequests, pathsFor } from "./ip-lookup.ts";
 import { IP_RETENTION_DAYS } from "./ips.ts";
 import { adminAuthApi, adminSessionOf, checkFreshCode, isFresh, securityInfo, touchSession, type AdminSession } from "./admin-auth.ts";
 import { keyAction, listKeys } from "./admin-keys.ts";
+import { CODE_RE, LINK_CHANNELS, getLink, type LinkChannel, type LinkRow } from "./attribution.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const json = (data: unknown, status = 200): Response =>
@@ -196,6 +201,8 @@ async function userDetail(env: StudioEnv, id: string): Promise<Record<string, un
       films_usd: jobs.reduce((a, j) => a + Number((j as { cost_usd?: number }).cost_usd || 0), 0),
     },
     lookup: !!env.CF_ANALYTICS_TOKEN, retentionDays: IP_RETENTION_DAYS,
+    attribution: await env.DB.prepare(`SELECT a.*, l.label AS link_label FROM user_attribution a LEFT JOIN short_links l ON l.code = a.link_code WHERE a.user_id = ?`)
+      .bind(id).first().catch(() => null),
   };
 }
 
@@ -422,6 +429,142 @@ async function spend(env: StudioEnv, url: URL): Promise<Record<string, unknown>>
   return { days, users: rows.map((r) => ({ ...r, admin: isAdmin(env, String(r.id)) })), usd: rows.reduce((a, r) => a + Number(r.usd || 0), 0) };
 }
 
+// ── sources: where accounts come from (25 October 2026, src/studio/attribution.ts) ────────────────────────────────
+
+/** The address short links are written with: the app's own public host. */
+export const linkBase = (env: StudioEnv): string => `https://${(env.CANONICAL_HOST ?? "").trim() || "app.kleooai.com"}`;
+
+interface Funnel { visits: number; clicks: number; signups: number; guessed: number; made: number; paying: number; paid: Record<string, number> }
+const funnel = (): Funnel => ({ visits: 0, clicks: 0, signups: 0, guessed: 0, made: 0, paying: 0, paid: {} });
+
+/**
+ * The Sources page. The accounts are the ones opened in the period (a cohort): how many made something since, how many
+ * paid, and what they paid so far. First visits and clicks are the ones counted in the period. An account with no
+ * attribution row is "before" (opened before tracking began) or "assistant" (opened outside the app, by the MCP server).
+ * Admin accounts are left out.
+ */
+async function sources(env: StudioEnv, url: URL): Promise<Record<string, unknown>> {
+  const days = int(url.searchParams.get("days"), 30, 0, 3650);
+  const since = days ? new Date(Date.now() - days * 86400e3).toISOString() : "";
+  const sinceDay = since.slice(0, 10);
+  const all = async <T = Record<string, any>>(sql: string, ...args: unknown[]) => (await env.DB.prepare(sql).bind(...args).all<T>()).results;
+  const tracking = (await env.DB.prepare("SELECT value FROM studio_meta WHERE key = 'attribution_since'").first<{ value: string }>().catch(() => null))?.value ?? null;
+  const [accounts, pays, links, clicks, visits, newest] = await Promise.all([
+    all(`SELECT u.id, u.created_at, a.channel, a.guessed, a.link_code, a.utm_source, a.src, a.ref_host,
+        EXISTS (SELECT 1 FROM studio_generations g WHERE g.user_id = u.id AND g.status = 'done') AS made
+      FROM users u LEFT JOIN user_attribution a ON a.user_id = u.id WHERE u.created_at >= ?1 AND u.merged_into IS NULL ORDER BY u.created_at DESC LIMIT 20000`, since),
+    all(`SELECT p.user_id, p.currency, SUM(p.amount_cent) AS cents FROM payments p JOIN users u ON u.id = p.user_id
+      WHERE u.created_at >= ?1 AND u.merged_into IS NULL AND p.status = 'paid' AND p.amount_cent > 0 GROUP BY p.user_id, p.currency`, since),
+    all<LinkRow & { created_at: string; created_by: string | null }>("SELECT code, channel, label, target, created_at, created_by, archived_at FROM short_links ORDER BY created_at DESC, code"),
+    all("SELECT code, SUM(clicks) AS total, SUM(CASE WHEN day >= ?1 THEN clicks ELSE 0 END) AS period FROM short_link_clicks GROUP BY code", sinceDay),
+    all("SELECT channel, link_code, SUM(n) AS n FROM first_visits WHERE day >= ?1 GROUP BY channel, link_code", sinceDay),
+    all(`SELECT u.id, u.created_at, u.display_name AS name, ${EMAIL_SQL} AS email, a.channel, a.guessed, a.link_code, l.label AS link_label, a.utm_source, a.utm_campaign,
+        a.src, a.ref_host, a.landing, a.in_app FROM users u LEFT JOIN user_attribution a ON a.user_id = u.id LEFT JOIN short_links l ON l.code = a.link_code
+      WHERE u.created_at >= ?1 AND u.merged_into IS NULL ORDER BY u.created_at DESC LIMIT 40`, since),
+  ]);
+  const paidBy = new Map<string, Record<string, number>>();
+  for (const p of pays) paidBy.set(p.user_id, { ...(paidBy.get(p.user_id) ?? {}), [p.currency]: Number(p.cents) || 0 });
+  const channels = new Map<string, Funnel>(), byLink = new Map<string, Funnel>(), others = new Map<string, number>();
+  const row = (m: Map<string, Funnel>, k: string) => { let r = m.get(k); if (!r) m.set(k, (r = funnel())); return r; };
+  const bucket = (a: Record<string, any>) => a.channel ?? (tracking && String(a.created_at) >= tracking ? "assistant" : "before");
+  for (const a of accounts) {
+    if (isAdmin(env, a.id)) continue;
+    const paid = paidBy.get(a.id);
+    const targets = [row(channels, bucket(a)), ...(a.link_code ? [row(byLink, a.link_code)] : [])];
+    for (const r of targets) {
+      r.signups++;
+      if (a.guessed) r.guessed++;
+      if (a.made) r.made++;
+      if (paid) { r.paying++; for (const [c, cents] of Object.entries(paid)) r.paid[c] = (r.paid[c] ?? 0) + cents; }
+    }
+    if (a.channel === "other") { const k = a.ref_host ?? a.utm_source ?? a.src ?? "?"; others.set(k, (others.get(k) ?? 0) + 1); }
+  }
+  for (const v of visits) {
+    row(channels, v.channel).visits += Number(v.n) || 0;
+    if (v.link_code) row(byLink, v.link_code).visits += Number(v.n) || 0;
+  }
+  const clickOf = new Map(clicks.map((c) => [c.code, c]));
+  for (const l of links) {
+    const n = Number(clickOf.get(l.code)?.period) || 0;
+    row(byLink, l.code).clicks += n;
+    if (n) row(channels, l.channel).clicks += n;
+  }
+  const total = funnel();
+  for (const r of channels.values()) {
+    for (const k of ["visits", "clicks", "signups", "guessed", "made", "paying"] as const) total[k] += r[k];
+    for (const [c, cents] of Object.entries(r.paid)) total.paid[c] = (total.paid[c] ?? 0) + cents;
+  }
+  const base = linkBase(env);
+  return {
+    days, since: since || null, tracking, base, total,
+    channels: [...channels.entries()].map(([channel, r]) => ({ channel, ...r })).sort((a, b) => b.signups - a.signups || b.visits - a.visits || b.clicks - a.clicks),
+    links: links.map((l) => ({ ...l, url: `${base}/r/${l.code}`, archived: !!l.archived_at, clicks_all: Number(clickOf.get(l.code)?.total) || 0, ...(byLink.get(l.code) ?? funnel()) })),
+    others: [...others.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([label, signups]) => ({ label, signups })),
+    newest: newest.filter((u) => !isAdmin(env, u.id)).map((u) => ({ ...u, channel: bucket(u), paid: paidBy.get(u.id) ?? null })),
+  };
+}
+
+const LINK_PREFIX: Record<LinkChannel, string> = { instagram: "ig", tiktok: "tt", x: "x", youtube: "yt", dm: "dm", other: "go" };
+/** A label in plain letters and dashes, for a code: "Lupin Paris Fire Dance" is "lupin-paris-fire-dance". */
+export const slugOf = (label: string): string =>
+  label.normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24).replace(/-+$/, "");
+/** Why a page can't be a short link's target, or null: a path of the app or the site, never another host or a loop. */
+export function linkTargetProblem(target: string): string | null {
+  const shape = "The page is a path of the app, like / or /templates.";
+  if (!target.startsWith("/") || target.startsWith("//") || target.includes("\\") || target.length > 300) return shape;
+  let u: URL;
+  try { u = new URL(target, "https://kleo.invalid"); } catch { return shape; }
+  if (u.origin !== "https://kleo.invalid") return shape;
+  if (/^\/(?:r|api|auth|media)\//i.test(u.pathname) || /^\/admin(?:\/|$)/i.test(u.pathname)) return "A short link can't open that page.";
+  return null;
+}
+const linkOut = (env: StudioEnv, l: LinkRow) => ({ ...l, url: `${linkBase(env)}/r/${l.code}`, archived: !!l.archived_at });
+const labelOf = (v: unknown): string => {
+  const label = String(v ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
+  if (label.length < 2) throw new StudioError("Say which bio, post or video the link is for.", 400, "label");
+  return label;
+};
+const targetOf = (v: unknown): string => {
+  const target = String(v ?? "").trim() || "/";
+  const bad = linkTargetProblem(target);
+  if (bad) throw new StudioError(bad, 400, "target");
+  return target;
+};
+
+/** A new short link. With no code, one is made from the network and the label ("tt-lupin-paris-fire-dance"). */
+async function createLink(env: StudioEnv, adminId: string, b: Record<string, unknown>): Promise<Response> {
+  const channel = LINK_CHANNELS.find((c) => c === b.channel);
+  if (!channel) throw new StudioError("Pick the network the link is for.", 400, "channel");
+  const label = labelOf(b.label), target = targetOf(b.target);
+  const taken = async (c: string) => !!(await getLink(env, c));
+  let code = String(b.code ?? "").trim().toLowerCase();
+  if (code) {
+    if (code.length < 2 || !CODE_RE.test(code)) throw new StudioError("A code is 2 to 32 small letters, digits or dashes, like ig-bio.", 400, "code");
+    if (await taken(code)) throw new StudioError("That code is taken. Pick another one.", 409, "code_taken");
+  } else {
+    const base = `${LINK_PREFIX[channel]}-${slugOf(label) || "link"}`.slice(0, 32).replace(/-+$/, "");
+    code = base;
+    for (let i = 2; await taken(code); i++) code = `${base.slice(0, 31 - String(i).length).replace(/-+$/, "")}-${i}`;
+  }
+  const r = await env.DB.prepare("INSERT OR IGNORE INTO short_links (code, channel, label, target, created_by) VALUES (?, ?, ?, ?, ?)").bind(code, channel, label, target, adminId).run();
+  if (!r.meta?.changes) throw new StudioError("That code is taken. Pick another one.", 409, "code_taken");
+  await audit(asEnv(env), adminId, null, "admin.link_created", { admin: adminId, code, channel, label, target });
+  return json({ link: linkOut(env, (await getLink(env, code))!) });
+}
+
+/** Changes a link's label or page, or hides it from the list (a hidden link keeps working: posts keep their links). */
+async function changeLink(env: StudioEnv, adminId: string, code: string, b: Record<string, unknown>): Promise<Response> {
+  const link = await getLink(env, code);
+  if (!link) throw new StudioError("No short link with that code.", 404, "not_found");
+  const label = b.label === undefined ? link.label : labelOf(b.label);
+  const target = b.target === undefined ? link.target : targetOf(b.target);
+  const archived = b.archived === undefined ? !!link.archived_at : b.archived === true;
+  await env.DB.prepare(`UPDATE short_links SET label = ?, target = ?, archived_at = CASE WHEN ? THEN COALESCE(archived_at, ${NOW}) ELSE NULL END WHERE code = ?`)
+    .bind(label, target, archived ? 1 : 0, link.code).run();
+  await audit(asEnv(env), adminId, null, "admin.link_changed", { admin: adminId, code: link.code, before: { label: link.label, target: link.target, archived: !!link.archived_at }, after: { label, target, archived } });
+  return json({ link: linkOut(env, (await getLink(env, link.code))!) });
+}
+
 // ── the first page ────────────────────────────────────────────────────────────────────────────────────────────────
 
 async function overview(env: StudioEnv): Promise<Record<string, unknown>> {
@@ -497,10 +640,14 @@ async function adminRoute(env: StudioEnv, request: Request, url: URL, adminId: s
       return json({ secrets: secretStatus(env), balances: await balances(env), lookup: !!env.CF_ANALYTICS_TOKEN, settings: SETTINGS.map((name) => ({ name, value: e[name] ?? null })) });
     }
     if (path === "/api/admin/keys") return json(await listKeys(env));
+    if (path === "/api/admin/sources") return json(await sources(env, url));
   }
   if (method === "POST") {
     const am = path.match(/^\/api\/admin\/users\/(u_[a-z0-9]+)\/(credits|block|address|key|signout|delete|ip-lookup)$/);
     if (am) return userAction(env, request, gate, adminId, am[1], am[2]);
+    if (path === "/api/admin/sources/links") return createLink(env, adminId, await body(request));
+    const lm = path.match(/^\/api\/admin\/sources\/links\/([a-z0-9-]{1,40})$/);
+    if (lm) return changeLink(env, adminId, lm[1], await body(request));
     const km = path.match(/^\/api\/admin\/keys\/([A-Z0-9_]{3,64})(?:\/(test|revert))?$/);
     if (km) return keyRoute(env, request, gate, adminId, km[1], (km[2] ?? "set") as "set" | "revert" | "test");
   }

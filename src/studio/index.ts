@@ -8,6 +8,7 @@
  *   /auth/<google|microsoft|apple>[/callback]   social sign-in round trip (?link=1 adds it to the signed-in account;
  *                                              Apple's callback is a form POST)
  *   /media/...      the person's pictures and clips (cookie, or a signed link for the provider and for sharing)
+ *   /r/<code>       a short link: counts the click, tags the visit, opens the link's page (src/studio/attribution.ts)
  *   everything else the single-page app in studio-web/ (served by the ASSETS binding, index.html for app routes)
  *   cron            every minute: refresh the clips still with the provider, save the finished ones, refund the failed
  */
@@ -43,6 +44,7 @@ import { createPaySession } from "./pay.ts";
 import { adminApi } from "./admin.ts";
 import { pruneIps, recordIp } from "./ips.ts";
 import { ADMIN_SITE_API, ADMIN_SITE_PATH, CONSOLE_PATH, adminUrl, certProblem, isAdminHost, misdirected, noteRefused, refused } from "./admin-host.ts";
+import { SHORT_LINK_PATH, arrivalOf, clearTouchCookie, firstVisit, shortLink } from "./attribution.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const json = (data: unknown, status = 200, headers: Record<string, string> = {}): Response =>
@@ -209,10 +211,13 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     const email = path === "/api/auth/signin" ? normalizeEmail(String(b.email ?? "")) : undefined;
     if (await rateLimited(env, request, email)) return json({ error: "Too many tries. Wait a minute.", code: "rate" }, 429);
     if (path === "/api/auth/signup") {
-      // The answer says whether the gift came, and a gifted browser keeps a mark of it (src/abuse.ts).
-      const made = await signUp(env, b, visitorOf(request));
+      // The answer says whether the gift came, and a gifted browser keeps a mark of it (src/abuse.ts). Where the browser
+      // came from becomes the account's attribution row, and its first-touch cookie goes (src/studio/attribution.ts).
+      const from = arrivalOf(request);
+      const made = await signUp(env, b, visitorOf(request), from);
       const res = await signedIn(env, made.userId, { ok: true, gift: made.gifted, ...(made.gifted ? {} : { note: NO_GIFT_SENTENCE }) });
       if (made.gifted) res.headers.append("set-cookie", giftCookie());
+      if (from.hadCookie) res.headers.append("set-cookie", clearTouchCookie());
       ctx.waitUntil(recordIp(env, made.userId, "signup", request));
       return res;
     }
@@ -563,6 +568,19 @@ async function adminSite(request: Request, env: StudioEnv, ctx: ExecutionContext
   return appAsset(request, env, url);
 }
 
+/**
+ * A browser's first page of the app gets the first-touch cookie, and the visit is counted (src/studio/attribution.ts).
+ * Only pages: scripts, pictures and the site behind the app never set it.
+ */
+function withFirstVisit(env: StudioEnv, request: Request, url: URL, ctx: ExecutionContext, res: Response): Response {
+  if (res.status !== 200 || !(res.headers.get("content-type") ?? "").includes("text/html")) return res;
+  const cookie = firstVisit(env, request, url, ctx);
+  if (!cookie) return res;
+  const out = new Response(res.body, res);
+  out.headers.append("set-cookie", cookie);
+  return out;
+}
+
 /** The single-page app: real files as they are, every other path gets index.html (client-side routes). */
 async function appAsset(request: Request, env: StudioEnv, url: URL): Promise<Response> {
   let asset = await env.ASSETS.fetch(request);
@@ -581,6 +599,18 @@ async function route(request: Request, env: StudioEnv, ctx: ExecutionContext, ur
   const canonical = (env.CANONICAL_HOST ?? "").trim();
   if (canonical && url.hostname !== canonical && (url.hostname === `www.${canonical}` || url.hostname.startsWith("app."))) {
     return Response.redirect(`https://${canonical}${url.pathname}${url.search}`, 301);
+  }
+  // A short link (src/studio/attribution.ts): the click is counted, the visit tagged, and the link's page opened. Whatever
+  // goes wrong, the person still lands in the app.
+  const short = url.pathname.match(SHORT_LINK_PATH);
+  if (short) {
+    try {
+      await ensureStudioSchema(env);
+      return await shortLink(env, request, url, short[1], ctx);
+    } catch (e) {
+      console.error("studio short link", e instanceof Error ? e.message : e);
+      return new Response(null, { status: 302, headers: { location: "/", "cache-control": "no-store" } });
+    }
   }
   // Everything that is not the app is the Kleo site (kleooai.com/mcp, /pricing/, /guides/…). The admin console does not
   // exist on this host: its paths get the site's 404, like any page that is not there.
@@ -610,7 +640,7 @@ async function route(request: Request, env: StudioEnv, ctx: ExecutionContext, ur
   } catch (e) {
     return fail(e);
   }
-  return appAsset(request, env, url);
+  return withFirstVisit(env, request, url, ctx, await appAsset(request, env, url));
 }
 
 export default {
