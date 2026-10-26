@@ -56,12 +56,18 @@ const MULTIPART_PART_MIN = 32 * MIB;
  */
 export const WORKER_TRACKS: ReadonlySet<string> = new Set(["script", "voice", "music", "clips", "film", "edit", "finishing"]);
 /**
- * The longest text from a box that is stored (14 October 2026): a progress message, the error of a /failed call. The
- * error is what jobView shows the user's assistant (through publicText, which renames providers but does not shorten),
- * so a box's text is cut here, before it reaches the row, whatever it is.
+ * The longest text from a box that is stored (14 October 2026): a progress message, the error of a /failed call. Both
+ * are kept for the owner in the audit table only (26 October 2026), cut here whatever they are.
  */
 export const BOX_TEXT_MAX = 300;
 const boxText = (v: unknown): string => (typeof v === "string" ? v : v === undefined || v === null ? "" : String(v)).slice(0, BOX_TEXT_MAX);
+/**
+ * What a box's /failed writes on the job's `error` (26 October 2026, the security review): jobView, kleo_get_job and
+ * kleo_wait_for_video read `error` to the user's assistant (publicText renames providers, it does not neutralise
+ * instructions), so a box's own words there were a way into its context, like a free-text track. The row carries this
+ * server sentence; the box's words go to the audit table as worker.failed, for the owner.
+ */
+export const WORKER_FAILED = "worker: the render machine stopped with an error";
 /** The longest estimate a box may report, in minutes (a day): eta_min is shown as a number of minutes, nothing else. */
 const ETA_MAX_MIN = 24 * 60;
 
@@ -133,6 +139,8 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
   if (rest === "phase" && request.method === "POST") {
     const b = (await request.json().catch(() => ({}))) as { phase?: string };
     if (b.phase !== "finish") return json({ error: "phase must be 'finish'" }, 400);
+    // Only the GPU box hands over: a finish box calling this would reset its own attempts and timeouts, again and again.
+    if ((job.phase ?? "gen") !== "gen") return json({ error: `only a job in its gen phase can hand over (this one is in phase ${job.phase})` }, 409);
     if (!(await listFiles(env, job.id)).some((f) => f.name === "gen.tgz")) return json({ error: "gen.tgz was not uploaded" }, 409);
     const ok = await handoverToFinish(env, job);
     return ok ? json({ ok: true, phase: "finish" }) : json({ error: `job is ${(await getJob(env, job.id))?.state}` }, 409);
@@ -307,8 +315,10 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
   }
   if (rest === "failed" && request.method === "POST") {
     const b = (await request.json().catch(() => ({}))) as { error?: unknown; retry?: boolean };
-    // The box's words become job.error, which jobView shows the user's assistant: cut to BOX_TEXT_MAX (14 October 2026).
-    const outcome = await failJob(env, job, `worker: ${boxText(b.error) || "unknown error"}`, b.retry !== false);
+    // The box's words are the owner's (audited, cut to BOX_TEXT_MAX); job.error, which the user's assistant reads, is
+    // the server's sentence (WORKER_FAILED, 26 October 2026).
+    await audit(env, job.user_id, job.id, "worker.failed", { error: boxText(b.error) || null, retry: b.retry !== false });
+    const outcome = await failJob(env, job, WORKER_FAILED, b.retry !== false);
     if (outcome !== "ignored") return json({ ok: true, state: outcome === "requeued" ? "queued" : "failed", outcome });
     const now = (await getJob(env, job.id))?.state ?? job.state;
     return now === "failed" ? json({ ok: true, state: now, already: true }) : json({ error: `job is ${now}`, state: now }, 409);
@@ -528,10 +538,12 @@ export async function handleAdmin(request: Request, env: Env): Promise<Response>
  */
 async function handlePoolClaim(request: Request, env: Env): Promise<Response> {
   if (!env.POOL_SECRET) return json({ error: "pool disabled" }, 404);
-  if (request.method !== "POST") return json({ error: "method" }, 405);
+  // The secret before the method: index.ts fires a tick for any /internal/ answer that is not 401 or 404, so an
+  // unauthenticated request must never get a 405 (or anything else) from here.
   const auth = request.headers.get("authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
   if (!token || !safeEqual(token, env.POOL_SECRET)) return json({ error: "unauthorized" }, 401);
+  if (request.method !== "POST") return json({ error: "method" }, 405);
   // The money pause leaves the free runners alone on purpose; "paused_all" is the switch that stops rendering itself.
   if (await isFlagActive(env, "paused_all")) return json({ job: null, paused: true });
   const body = (await request.json().catch(() => ({}))) as { runner?: string };

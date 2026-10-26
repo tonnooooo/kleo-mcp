@@ -42,7 +42,7 @@ class FakeKV {
 let m;
 before(async () => {
   const r = await esbuild.build({
-    stdin: { contents: `export { buildServer, summarizeFidelity } from "./src/mcp.ts"; export { handleAdmin, handleInternal } from "./src/internal.ts"; export * from "./src/db.ts";`, resolveDir: ROOT, loader: "ts" },
+    stdin: { contents: `export { buildServer, summarizeFidelity } from "./src/mcp.ts"; export { handleAdmin, handleInternal } from "./src/internal.ts"; export * from "./src/db.ts"; export { makeHandle } from "./src/accounts.ts";`, resolveDir: ROOT, loader: "ts" },
     bundle: true, write: false, format: "esm", platform: "node", target: "es2022", logLevel: "silent", external: ["@anthropic-ai/sdk"],
   });
   m = await import("data:text/javascript;base64," + Buffer.from(r.outputFiles[0].text).toString("base64"));
@@ -138,6 +138,20 @@ test("kleo_account quotes the film's price and the real state of the shop, never
   const b = await open.call("kleo_account", {});
   assert.match(b.text, /Credit packs are on the account page, paid through Stripe \(from 5 EUR for 10 credits/);
   assert.equal(b.structuredContent.payments_open, true, "with live links and a webhook secret the tool reports the shop open");
+});
+
+test("kleo_account never hands the Kleo key to the assistant: it says where the user can see it themselves", async () => {
+  // The key signs in to Kleo Studio with full control; any OAuth client the user connected could read it here.
+  const s = await studio(fakeAi(() => { throw new Error("must not be called"); }));
+  const key = await m.makeHandle(s.env, "u_test");
+  const a = await s.call("kleo_account", {});
+  assert.equal("account_key" in a.structuredContent, false, "no account_key field");
+  assert.ok(!JSON.stringify(a.structuredContent).includes(key) && !a.text.includes(key), "the key is nowhere in the answer");
+  assert.match(a.structuredContent.account_url, /^http:\/\/kleo\.test\/credits\?k=/, "the read-only link is still given");
+  assert.match(a.text, /Kleo Studio under Account → Kleo key \(https:\/\/app\.kleooai\.com\/account\)/, "and where to see the key under a Studio session");
+  const tool = (await s.client.listTools()).tools.find((t) => t.name === "kleo_account");
+  assert.doesNotMatch(tool.description, /account_key/);
+  assert.match(tool.description, /never given out here/);
 });
 
 test("the models are named where the user reads about the film, and no model gateway is (26 September 2026)", async () => {
@@ -876,10 +890,14 @@ test("the AI upscale is paid with the film, refunded automatically when the fini
   assert.equal((await m.getUser(s.env, "u_test")).credits, 50, "the upscale's 20 credits are given back, the film's 20 are not");
   const rows = await s.audit("ai_upscale.refunded");
   assert.equal(rows.length, 1); assert.equal(rows[0].refunded, 20); assert.equal(rows[0].upscaled, 2); assert.equal(rows[0].parts, 3);
-  assert.match((await s.audit("credits.refund"))[0].reason, /^AI upscale not applied: 01-hook shot 3: CUDA error/);
+  // The box's own reason is free text from a rented machine: the owner's audit keeps it, the user's assistant reads the
+  // server's sentence (26 October 2026, the security review).
+  assert.equal(rows[0].said, "01-hook shot 3: CUDA error");
+  assert.match((await s.audit("credits.refund"))[0].reason, /^AI upscale not applied: 2 of 3 shots were upscaled/);
   const got = await s.call("kleo_get_result", { job_id: id });
-  assert.match(got.text, /AI upscale: not applied \(01-hook shot 3: CUDA error\), 20 credits refunded; the film is in the classic 4K 60 fps\./);
-  assert.deepEqual(got.structuredContent.ai_upscale, { applied: false, refunded: 20, reason: "01-hook shot 3: CUDA error" });
+  assert.match(got.text, /AI upscale: not applied \(2 of 3 shots were upscaled\), 20 credits refunded; the film is in the classic 4K 60 fps\./);
+  assert.deepEqual(got.structuredContent.ai_upscale, { applied: false, refunded: 20, reason: "2 of 3 shots were upscaled" });
+  assert.doesNotMatch(got.text + JSON.stringify(got.structuredContent), /CUDA error/);
   // A repeated /done changes nothing: the credits moved once.
   await done(id, { sr: { parts: 3, applied: 3 } });
   assert.equal((await m.getUser(s.env, "u_test")).credits, 50);
@@ -920,7 +938,7 @@ test("an upscale film retried by the owner after a failure is not refunded twice
   assert.equal((await post(id, "done", { sr: { parts: 3, applied: 0, model: null, gpu: null, reason: "no card" } })).status, 200);
   assert.equal(await credits(), 50, "the 20 upscale credits come back once, from the retry's own debit");
   const got = await s.call("kleo_get_result", { job_id: id });
-  assert.match(got.text, /AI upscale: not applied \(no card\), 20 credits refunded; the film is in the classic 4K 60 fps\./);
+  assert.match(got.text, /AI upscale: not applied \(0 of 3 shots were upscaled\), 20 credits refunded; the film is in the classic 4K 60 fps\./);
   const refunds = await s.audit("credits.refund");
   assert.deepEqual(refunds.map((x) => x.amount), [40, 20], "the failure's 40, then the upscale's 20: each credit given back once");
   await s.env.DB.prepare("UPDATE users SET credits = 100 WHERE id = 'u_test'").run(); // the cancel below starts from 100

@@ -18,6 +18,12 @@
  * account gets, on its next tool call, a sign-in link instead of a result (`signInRequiredReply`), and after the merge
  * its existing grant keeps working on the real account through users.merged_into (src/index.ts).
  *
+ * A MERGE NEEDS THE BROWSER THAT HOLDS THE ACCOUNT (26 October 2026, the security review): a signed link alone proves
+ * nothing about who opened it, and a forwarded or leaked one used to pour a stranger's anonymous account into whoever
+ * was signed in. The request's account is merged only at /authorize/finish, behind its nonce cookie; an assistant's
+ * sign-in link first sends the browser to this worker's /authorize/merge, which checks the kleo_id cookie of that very
+ * account and only then hands Studio a short "held" ticket for the same Studio account (src/auth.ts handleConnectMerge).
+ *
  * Every token here is HMAC-signed with INTERNAL_SECRET, which both workers share; each kind has its own label, so one
  * can never be passed off as another.
  */
@@ -30,10 +36,14 @@ const REQUEST_TTL_S = 30 * 60;
 const FINISH_TTL_S = 5 * 60;
 const MERGE_TTL_S = 14 * 24 * 3600;
 
-export type ConnectLabel = "request" | "finish" | "merge";
+export type ConnectLabel = "request" | "finish" | "merge" | "claim" | "held";
 export interface RequestToken { q: string; n: string; a: string | null; c: string; o: string; exp: number }
-export interface FinishToken { u: string; n: string; q: string; exp: number }
-export interface MergeToken { a: string; exp: number }
+/** `a`: the anonymous account the starting browser held, merged at /authorize/finish once the nonce matches. */
+export interface FinishToken { u: string; n: string; q: string; a?: string | null; exp: number }
+/** `o`: the origin of this worker the assistant reached, where its browser keeps the kleo_id cookie (older links: none). */
+export interface MergeToken { a: string; o?: string; exp: number }
+/** "claim": Studio asks this worker whether the browser holds `a` for account `u`; "held": this worker's yes, for Studio. */
+export interface ClaimToken { u: string; a: string; exp: number }
 
 const enc = new TextEncoder();
 const b64url = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -129,8 +139,8 @@ export async function mergeAnonymous(env: Env, fromId: string, intoId: string, w
 }
 
 /** What an assistant connected to an anonymous account is told instead of running a tool: sign in, here. */
-export async function signInLink(env: Env, userId: string): Promise<string> {
-  return `${studioUrl(env)}/connect?m=${await signToken(env, "merge", { a: userId, exp: mergeTtl() } satisfies MergeToken)}`;
+export async function signInLink(env: Env, userId: string, origin?: string): Promise<string> {
+  return `${studioUrl(env)}/connect?m=${await signToken(env, "merge", { a: userId, ...(origin ? { o: origin } : {}), exp: mergeTtl() } satisfies MergeToken)}`;
 }
 export function signInRequiredReply(rpcId: unknown, link: string): Record<string, unknown> {
   const text = "Kleo now works with a Kleo account, so your credits are the same here and in the Kleo app. "
@@ -140,8 +150,10 @@ export function signInRequiredReply(rpcId: unknown, link: string): Record<string
 
 /**
  * Step 2, on Kleo Studio (POST /api/connect, src/studio/index.ts), for the signed-in account:
- *   { r } — an assistant is connecting: take in the browser's old anonymous account, then hand back the finish link;
- *   { m } — an assistant still on an anonymous account sent its owner here: take that account in.
+ *   { r } — an assistant is connecting: hand back the finish link, which takes in the browser's old anonymous account
+ *           at /authorize/finish, once its nonce cookie proves it is the browser that started;
+ *   { m } — an assistant still on an anonymous account sent its owner here: send the browser to /authorize/merge to show
+ *           it holds that account, which comes back here as { m: <held ticket> } and only then takes the account in.
  */
 export async function studioConnect(env: Env, userId: string, b: { r?: unknown; m?: unknown }): Promise<{ url?: string; client?: string; merged: number | null } | { error: string; code?: string }> {
   // A Kleo key alone is not an account any more: the assistant must land on an account with Google or an e-mail.
@@ -150,17 +162,23 @@ export async function studioConnect(env: Env, userId: string, b: { r?: unknown; 
   if (typeof b.r === "string" && b.r) {
     const r = await readToken<RequestToken>(env, "request", b.r);
     if (!r) return { error: "This connection link has expired. Go back to your assistant and connect Kleo again." };
-    const merged = r.a ? await mergeAnonymous(env, r.a, userId, "connect") : null;
-    const ticket = await signToken(env, "finish", { u: userId, n: r.n, q: r.q, exp: finishTtl() } satisfies FinishToken);
-    return { url: `${r.o}/authorize/finish?t=${ticket}`, client: r.c, merged };
+    const ticket = await signToken(env, "finish", { u: userId, n: r.n, q: r.q, a: r.a, exp: finishTtl() } satisfies FinishToken);
+    return { url: `${r.o}/authorize/finish?t=${ticket}`, client: r.c, merged: null };
   }
   if (typeof b.m === "string" && b.m) {
-    const m = await readToken<MergeToken>(env, "merge", b.m);
+    // A "held" ticket: /authorize/merge saw this browser hold the account, for this same signed-in account only.
+    const held = await readToken<ClaimToken>(env, "held", b.m);
+    if (held && held.u !== userId) return { error: "This link was opened in another Kleo account, so nothing was moved. Ask your assistant to use Kleo again for a new one." };
+    const m: { a: string; o?: string } | null = held ?? await readToken<MergeToken>(env, "merge", b.m);
     if (!m) return { error: "This sign-in link has expired. Ask your assistant to use Kleo again for a new one." };
     const from = await getUser(env, m.a) as (User & { merged_into?: string | null }) | null;
     if (from?.merged_into === userId) return { merged: 0 }; // already done: the link was opened twice
     if (from?.merged_into) return { error: "That assistant is already connected to another Kleo account." };
-    return { merged: await mergeAnonymous(env, m.a, userId, "assistant-link") };
+    if (held) return { merged: await mergeAnonymous(env, m.a, userId, "assistant-link") };
+    // Nothing a merge could take in (mergeAnonymous's own guards): the same answer as ever, with no detour.
+    if (!from || m.a === userId || (me as User & { merged_into?: string | null }).merged_into || !(await isAnonymous(env, from))) return { merged: null };
+    const claim = await signToken(env, "claim", { u: userId, a: m.a, exp: finishTtl() } satisfies ClaimToken);
+    return { url: `${String(m.o || env.PUBLIC_URL).replace(/\/+$/, "")}/authorize/merge?t=${claim}`, merged: null };
   }
   return { error: "Nothing to connect." };
 }

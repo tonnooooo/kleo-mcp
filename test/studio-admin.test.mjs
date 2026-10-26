@@ -542,6 +542,30 @@ test("dangerous writes want a code typed in the last 5 minutes; small ones don't
   assert.equal(mod.dangerous("signout", {}, owner.id, owner.id), false, "signing one's own account out is not dangerous");
 });
 
+test("small credit changes without a fresh code add up: past 100 in all, on any account, the next one wants a code", async () => {
+  const { env, owner, ana } = await setup();
+  const bo = await account(env, "bo@example.com");
+  const s = await mod.readAdminCookie("s3cret", owner.phone.admin.split("=")[1]);
+  const stale = `${owner.studio}; __Host-kleo_admin=${await mod.adminCookieValue("s3cret", { ...s, fresh: s.fresh - 6 * 60 })}`;
+  const give = (who, delta, extra = {}, cookie = stale) => call(env, `/api/admin/users/${who}/credits`, { method: "POST", cookie, body: { reason: "a grant in pieces", delta, ...extra } });
+  assert.equal((await give(ana.id, 60)).json.credits, 65);
+  assert.equal((await give(ana.id, -40)).json.credits, 25, "taking away counts as much as adding");
+  assert.deepEqual(auditOf(env, ana.id, "admin.credits"), [
+    { admin: owner.id, reason: "a grant in pieces", delta: -40, before: 65, after: 25 },
+    { admin: owner.id, reason: "a grant in pieces", delta: 60, before: 5, after: 65 },
+  ]);
+  assert.equal((await give(ana.id, 1)).json.code, "fresh_code", "the 101st credit wants a code");
+  assert.equal((await give(bo.id, 1)).json.code, "fresh_code", "on another account too");
+  assert.equal(auditOf(env, ana.id, "admin.credits").length + auditOf(env, bo.id, "admin.credits").length, 2, "a refused change moves nothing");
+  const ok = await give(ana.id, 1, { code: await codeAt(owner.phone.secret, 0) });
+  assert.equal(ok.status, 200, ok.text);
+  assert.equal(ok.json.credits, 26);
+  assert.equal((await give(bo.id, 90, {}, `${owner.studio}; ${cookieOf(ok)}`)).status, 200, "inside the 5 minutes no new code is asked");
+  // Changes from before the last code stopped counting are not added up.
+  run(env, "UPDATE audit SET at = '2000-01-01T00:00:00.000Z' WHERE event = 'admin.credits'");
+  assert.equal((await give(ana.id, 100)).status, 200);
+});
+
 test("the console's page and API are never indexed or cached, load nothing from other sites, and stay hidden from others", async () => {
   const { env, owner, ana } = await setup();
   const page = await call(env, "/admin/users", { cookie: owner.cookie });

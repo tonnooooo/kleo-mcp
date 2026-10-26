@@ -8,7 +8,7 @@ import { linkReferral, normalizeReferral, cookieReferral } from "./referral.ts";
 import { recordSignupSource } from "./growth.ts";
 import { giftBlocker, giftCookie, visitorOf, type Visitor } from "./abuse.ts";
 import { normalizeChannel } from "./launch.ts";
-import { ANON_DOMAIN, clearConnectCookie, connectCookie, finishTtl, isAnonymous, newNonce, readConnectCookie, readToken, requestTtl, signToken, studioSignIn, studioUrl, type FinishToken, type RequestToken } from "./connect.ts";
+import { ANON_DOMAIN, clearConnectCookie, connectCookie, finishTtl, isAnonymous, mergeAnonymous, newNonce, readConnectCookie, readToken, requestTtl, signToken, studioSignIn, studioUrl, type ClaimToken, type FinishToken, type RequestToken } from "./connect.ts";
 
 /**
  * Where a sign-up came from, read off the connection request (27 September 2026): the connector address the user
@@ -137,6 +137,8 @@ export async function handleConnectFinish(request: Request, env: Env): Promise<R
   if (!nonce || nonce !== t.n) return fail("Finish connecting Kleo in the same browser where you started. Go back to your assistant and connect Kleo again.", 403);
   const user = await getUser(env, t.u);
   if (!user) return fail("That Kleo account no longer exists. Go back to your assistant and connect Kleo again.", 404);
+  // The old anonymous account this browser held when it started (src/connect.ts): merged only here, behind the nonce.
+  if (t.a) await mergeAnonymous(env, t.a, user.id, "connect");
   const parsed = await parseOrError(new Request(`${url.origin}/authorize?${t.q}`, { method: "GET", headers: request.headers }), env);
   if (parsed instanceof Response) return parsed;
   const client = await env.OAUTH_PROVIDER.lookupClient(parsed.clientId);
@@ -158,6 +160,23 @@ export async function handleConnectFinish(request: Request, env: Env): Promise<R
   headers.append("set-cookie", accountCookie(await makeHandle(env, user.id)));
   headers.append("set-cookie", clearConnectCookie());
   return new Response(null, { status: 302, headers });
+}
+
+/**
+ * GET /authorize/merge?t=<claim Studio signed> (src/connect.ts studioConnect): an assistant's sign-in link asks to take
+ * its anonymous account into the Studio account that opened it. Only the browser holding that anonymous account's
+ * kleo_id cookie may do so; nothing is merged here. The browser goes back to Studio (the configured address, never one
+ * from the request) with a five-minute "held" ticket naming the same Studio account, where the merge is made and shown.
+ */
+export async function handleConnectMerge(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const fail = (text: string, status = 400) => new Response(text, { status, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+  const t = await readToken<ClaimToken>(env, "claim", url.searchParams.get("t"));
+  if (!t?.u || !t.a) return fail("This sign-in link has expired. Ask your assistant to use Kleo again for a new one.");
+  if ((await verifyHandle(env, cookieHandle(request.headers.get("cookie")))) !== t.a)
+    return fail("Nothing was moved: this is not the browser your assistant's Kleo account was opened in. Open the link your assistant gave you in that browser.", 403);
+  const held = await signToken(env, "held", { u: t.u, a: t.a, exp: finishTtl() } satisfies ClaimToken);
+  return new Response(null, { status: 302, headers: { location: `${studioUrl(env)}/connect?m=${held}`, "cache-control": "no-store" } });
 }
 
 /** The account this browser already owns, if its cookie is valid and the row still exists. */

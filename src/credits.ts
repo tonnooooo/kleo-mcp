@@ -117,7 +117,7 @@ function page(o: PageOpts): string {
 <code class="key">${escapeHtml(handle)}</code>
 <div class="foot">Kleo remembers this account in this browser. Clearing your cookies loses it unless you saved the key above.</div>`
     : `<h2>Using Kleo somewhere else</h2>
-<p>This page is read-only, so it does not show the key that carries the account to another browser: ask your assistant for kleo_account and it will show it to you there.</p>`;
+<p>This page is read-only, so it does not show the key that carries the account to another browser: see it in Kleo Studio under Account → Kleo key, or open this page in the browser you connected Kleo from. Your assistant cannot show it to you.</p>`;
   const hidden = `<input type="hidden" name="k" value="${escapeHtml(o.viewToken)}">`;
   // THE LAUNCH CODE (27 September 2026, src/launch.ts): the box while the account has none; its state once it has one.
   const launch = paid ? "" : trial
@@ -142,7 +142,7 @@ ${o.invite ? `<h2>Invite a friend</h2>
 <div class="foot">Out of credits, or something went wrong? Write to <a href="mailto:${CONTACT}">${CONTACT}</a>.</div>
 ${key}`
     : `<h1>This account link is not valid</h1>
-<p>The link may have been cut short when it was copied. Ask your assistant for kleo_account: it gives you the full link and your Kleo key.</p>
+<p>The link may have been cut short when it was copied. Ask your assistant for kleo_account: it gives you the full link.</p>
 <div class="foot">Still stuck? Write to <a href="mailto:${CONTACT}">${CONTACT}</a>.</div>`;
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Your Kleo account</title>

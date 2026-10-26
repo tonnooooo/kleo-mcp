@@ -452,25 +452,28 @@ test("merging an old anonymous account: credits and films move, the old id point
   assert.equal(audits(env, "account.merged_in").length, 1);
 });
 
-test("studio connect: the signed-in account takes in the anonymous one and gets a finish ticket; a bare Kleo key is not enough", async () => {
+test("studio connect: the signed-in account gets a finish ticket naming the browser's anonymous account; a bare Kleo key is not enough", async () => {
   const env = await newEnv();
   addUser(env, "u_anon00000004", "u_anon00000004@anon.kleo.invalid", 7);
   addUser(env, "u_real00000004", "di@example.com", 1);
   const r = await m.signToken(env, "request", { q: OAUTH_QUERY, n: "n4", a: "u_anon00000004", c: "Grok", o: "https://mcp.kleo.test", exp: Math.floor(Date.now() / 1000) + 600 });
   const out = await m.studioConnect(env, "u_real00000004", { r });
-  assert.equal(out.merged, 7);
+  assert.equal(out.merged, null, "nothing is merged until the browser that started proves it at /authorize/finish");
   assert.equal(out.client, "Grok");
   const t = new URL(out.url);
   assert.equal(t.origin + t.pathname, "https://mcp.kleo.test/authorize/finish");
   const fin = await m.readToken(env, "finish", t.searchParams.get("t"));
-  assert.deepEqual({ u: fin.u, n: fin.n, q: fin.q }, { u: "u_real00000004", n: "n4", q: OAUTH_QUERY });
-  assert.equal(userRow(env, "u_real00000004").credits, 8);
-  // The link an assistant on an anonymous account hands out.
+  assert.deepEqual({ u: fin.u, n: fin.n, q: fin.q, a: fin.a }, { u: "u_real00000004", n: "n4", q: OAUTH_QUERY, a: "u_anon00000004" });
+  assert.equal(userRow(env, "u_real00000004").credits, 1);
+  assert.equal(userRow(env, "u_anon00000004").merged_into, null);
+  // The link an assistant on an anonymous account hands out: alone it merges nothing, it sends the browser to prove it.
   addUser(env, "u_anon00000005", "u_anon00000005@anon.kleo.invalid", 2);
   const link = new URL(await m.signInLink({ ...env, STUDIO_URL: "https://app.kleo.test" }, "u_anon00000005"));
   assert.equal(link.origin + link.pathname, "https://app.kleo.test/connect");
-  assert.deepEqual(await m.studioConnect(env, "u_real00000004", { m: link.searchParams.get("m") }), { merged: 2 });
-  assert.deepEqual(await m.studioConnect(env, "u_real00000004", { m: link.searchParams.get("m") }), { merged: 0 }, "opening it twice is fine");
+  const first = await m.studioConnect(env, "u_real00000004", { m: link.searchParams.get("m") });
+  assert.equal(first.merged, null);
+  assert.match(first.url, /^http:\/\/kleo\.test\/authorize\/merge\?t=/, "a link without an origin in it goes to PUBLIC_URL");
+  assert.equal(userRow(env, "u_anon00000005").merged_into, null);
   // Signed in to Studio with nothing but an anonymous account's key: refused, so the assistant lands on a real account.
   addUser(env, "u_anon00000006", "u_anon00000006@anon.kleo.invalid", 5);
   assert.equal((await m.studioConnect(env, "u_anon00000006", { r })).code, "anonymous");
@@ -479,5 +482,103 @@ test("studio connect: the signed-in account takes in the anonymous one and gets 
   assert.equal(reply.id, 9);
   assert.equal(reply.result.isError, true);
   assert.match(reply.result.content[0].text, /https:\/\/app\.kleo\.test\/connect\?m=x/);
+});
+
+const inSeconds = (s) => Math.floor(Date.now() / 1000) + s;
+
+test("studio connect: a forwarded r link merges nothing; only the browser that started merges its account, at /authorize/finish", async () => {
+  const env = await newEnv({ MCP_SIGNIN: "studio" });
+  addUser(env, "u_anon00000007", "u_anon00000007@anon.kleo.invalid", 6);
+  addUser(env, "u_evil00000007", "eve@example.com", 0);
+  addUser(env, "u_real00000007", "fay@example.com", 1);
+  const r = await m.signToken(env, "request", { q: OAUTH_QUERY, n: "n7", a: "u_anon00000007", c: "Grok", o: "http://kleo.test", exp: inSeconds(600) });
+  // Somebody else, signed in to Studio, opens the forwarded link: nothing moves, and their finish link is dead elsewhere.
+  const evil = new URL((await m.studioConnect(env, "u_evil00000007", { r })).url);
+  assert.equal(userRow(env, "u_anon00000007").merged_into, null);
+  for (const cookie of [undefined, "__Host-kleo_connect=other"]) {
+    assert.equal((await m.handleConnectFinish(finishRequest(evil.pathname + evil.search, cookie), env)).status, 403);
+  }
+  assert.equal(userRow(env, "u_anon00000007").merged_into, null, "a browser without the nonce merges nothing");
+  assert.equal(userRow(env, "u_evil00000007").credits, 0);
+  assert.equal(env.OAUTH_PROVIDER.granted.length, 0);
+  // The browser that started, with its nonce cookie: the anonymous account comes in as the grant is made.
+  const mine = new URL((await m.studioConnect(env, "u_real00000007", { r })).url);
+  const ok = await m.handleConnectFinish(finishRequest(mine.pathname + mine.search, "__Host-kleo_connect=n7"), env);
+  assert.equal(ok.status, 302);
+  assert.equal(userRow(env, "u_anon00000007").merged_into, "u_real00000007");
+  assert.equal(userRow(env, "u_real00000007").credits, 7);
+  assert.equal(audits(env, "account.merged_in").at(-1).detail.why, "connect");
+});
+
+test("studio connect: an assistant's sign-in link merges only in the browser holding that account, then ends on Studio's confirmation", async () => {
+  const env = await newEnv({ STUDIO_URL: "https://app.kleo.test" });
+  addUser(env, "u_anon00000008", "u_anon00000008@anon.kleo.invalid", 3);
+  addUser(env, "u_anon00000009", "u_anon00000009@anon.kleo.invalid", 4); // another browser's anonymous account
+  addUser(env, "u_real00000008", "gus@example.com", 1);
+  const link = new URL(await m.signInLink(env, "u_anon00000008", "https://mcp.kleo.test"));
+  const out = await m.studioConnect(env, "u_real00000008", { m: link.searchParams.get("m") });
+  assert.equal(out.merged, null);
+  const claim = new URL(out.url);
+  assert.equal(claim.origin + claim.pathname, "https://mcp.kleo.test/authorize/merge", "the host the assistant reached, where its cookie is");
+  const at = (cookie, path = claim.pathname + claim.search) => m.handleConnectMerge(finishRequest(path, cookie), env);
+  // Forwarded to a browser without that account's cookie, or holding another one: refused, nothing moved.
+  for (const cookie of [undefined, `kleo_id=${await m.makeHandle(env, "u_anon00000009")}`, `kleo_id=${await m.makeHandle(env, "u_real00000008")}`, "kleo_id=u_anon00000008.00000000000000000000000000000000"]) {
+    const res = await at(cookie);
+    assert.equal(res.status, 403);
+    assert.equal(res.headers.get("location"), null);
+  }
+  const holder = `kleo_id=${await m.makeHandle(env, "u_anon00000008")}`;
+  const expired = await m.signToken(env, "claim", { u: "u_real00000008", a: "u_anon00000008", exp: 1 });
+  assert.equal((await at(holder, `/authorize/merge?t=${expired}`)).status, 400, "an old claim is dead");
+  assert.equal((await at(holder, `/authorize/merge?t=${link.searchParams.get("m")}`)).status, 400, "a sign-in link is not a claim");
+  assert.equal(userRow(env, "u_anon00000008").merged_into, null);
+  assert.equal(userRow(env, "u_real00000008").credits, 1);
+  // The claim is no proof by itself: Studio does not take it back as a link.
+  assert.match((await m.studioConnect(env, "u_real00000008", { m: claim.searchParams.get("t") })).error, /expired/);
+  // The browser that holds it is sent back to Studio, at its configured address, with a held ticket; nothing merged here.
+  const res = await at(holder);
+  assert.equal(res.status, 302);
+  const back = new URL(res.headers.get("location"));
+  assert.equal(back.origin + back.pathname, "https://app.kleo.test/connect");
+  assert.equal(userRow(env, "u_anon00000008").merged_into, null);
+  const held = back.searchParams.get("m");
+  assert.equal(await m.readToken(env, "merge", held), null, "a held ticket is not a sign-in link");
+  // Studio's /connect posts it: the merge is made there and confirmed with the credits it moved.
+  assert.deepEqual(await m.studioConnect(env, "u_real00000008", { m: held }), { merged: 3 });
+  assert.equal(userRow(env, "u_anon00000008").merged_into, "u_real00000008");
+  assert.equal(userRow(env, "u_real00000008").credits, 4);
+  assert.equal(audits(env, "account.merged_in").at(-1).detail.why, "assistant-link");
+  assert.deepEqual(await m.studioConnect(env, "u_real00000008", { m: held }), { merged: 0 }, "a second post is fine");
+  assert.deepEqual(await m.studioConnect(env, "u_real00000008", { m: link.searchParams.get("m") }), { merged: 0 }, "and so is opening the link again");
+  assert.equal(userRow(env, "u_anon00000009").merged_into, null);
+});
+
+test("studio connect: a claim forwarded to the account's owner cannot pour it into the account that made the claim", async () => {
+  const env = await newEnv({ STUDIO_URL: "https://app.kleo.test" });
+  addUser(env, "u_anon00000010", "u_anon00000010@anon.kleo.invalid", 5); // the owner's anonymous account
+  addUser(env, "u_evil00000010", "eve@example.com", 0);
+  addUser(env, "u_real00000010", "hal@example.com", 0); // the owner's own Studio account
+  const leaked = new URL(await m.signInLink(env, "u_anon00000010", "http://kleo.test"));
+  const claim = new URL((await m.studioConnect(env, "u_evil00000010", { m: leaked.searchParams.get("m") })).url);
+  // The owner's browser follows the forwarded claim: it holds the account, so it is sent back to Studio…
+  const res = await m.handleConnectMerge(finishRequest(claim.pathname + claim.search, `kleo_id=${await m.makeHandle(env, "u_anon00000010")}`), env);
+  const held = new URL(res.headers.get("location")).searchParams.get("m");
+  // …where the session is not the account that made the claim: refused, whoever is signed in there.
+  assert.match((await m.studioConnect(env, "u_real00000010", { m: held })).error, /another Kleo account/);
+  assert.equal(userRow(env, "u_anon00000010").merged_into, null);
+  assert.equal(userRow(env, "u_evil00000010").credits, 0);
+});
+
+test("studio connect: a sign-in link with nothing to take in answers { merged: null } as before, with no detour", async () => {
+  const env = await newEnv();
+  addUser(env, "u_real00000011", "ida@example.com", 2);
+  addUser(env, "u_anon00000011", "u_anon00000011@anon.kleo.invalid", 3);
+  env.DB.db.prepare("INSERT INTO studio_logins (provider, subject, user_id, email) VALUES ('google', 'g-11', 'u_anon00000011', 'ida2@example.com')").run();
+  const mOf = async (a) => new URL(await m.signInLink(env, a, "http://kleo.test")).searchParams.get("m");
+  assert.deepEqual(await m.studioConnect(env, "u_real00000011", { m: await mOf("u_anon00000011") }), { merged: null }, "signed in to Studio since: no longer anonymous");
+  assert.deepEqual(await m.studioConnect(env, "u_real00000011", { m: await mOf("u_real00000011") }), { merged: null }, "the account's own link");
+  assert.deepEqual(await m.studioConnect(env, "u_real00000011", { m: await mOf("u_gone00000011") }), { merged: null }, "an account that no longer exists");
+  assert.equal(userRow(env, "u_anon00000011").merged_into, null);
+  assert.equal(userRow(env, "u_real00000011").credits, 2);
 });
 

@@ -51,6 +51,15 @@ export async function endAllSessions(env: StudioEnv, userId: string): Promise<vo
   await env.DB.prepare("UPDATE users SET studio_epoch = COALESCE(studio_epoch, 0) + 1 WHERE id = ?").bind(userId).run();
 }
 
+/**
+ * Signs out every old anonymous account merged into this one (users.merged_into, src/connect.ts). Called wherever the
+ * account's key is retired (rotateKey retires theirs with it): a merged account's key opens this one (signInWithKey),
+ * so a session left open on it could simply ask for its new key.
+ */
+export async function endMergedSessions(env: StudioEnv, userId: string): Promise<void> {
+  await env.DB.prepare("UPDATE users SET studio_epoch = COALESCE(studio_epoch, 0) + 1 WHERE merged_into = ?").bind(userId).run();
+}
+
 const newSession = async (env: StudioEnv, userId: string): Promise<string> =>
   sessionCookie(await makeSession(env.INTERNAL_SECRET, userId, Date.now(), await epochOf(env, userId)));
 
@@ -138,10 +147,16 @@ export async function signInWithKey(env: StudioEnv, key: string): Promise<string
   const keyId = await verifyHandle(asEnv(env), key.trim());
   const held = keyId ? await getUser(asEnv(env), keyId) as (Awaited<ReturnType<typeof getUser>> & { merged_into?: string | null }) | null : null;
   if (!keyId || !held) throw new StudioError("That Kleo key isn't valid.", 401, "wrong_key");
-  // The key of an old connector account that was merged into a real one (src/connect.ts) opens the real one.
-  const userId = held.merged_into && (await getUser(asEnv(env), held.merged_into)) ? held.merged_into : keyId;
-  await audit(asEnv(env), userId, null, "studio.key_signin", userId !== keyId ? { via: keyId } : {});
-  return userId;
+  // The key of an old connector account that was merged into another one (src/connect.ts mergeAnonymous) opens
+  // nothing. It must never open the account it was merged into: that account's owner never held this key and none of
+  // their controls (new Kleo key, password change, sign out everywhere) can retire it, so whoever kept the old key would
+  // hold a permanent way into somebody else's account. Its credits and films moved with the merge; that account signs
+  // in with its own sign-in.
+  if (held.merged_into) {
+    throw new StudioError("This Kleo key's account is now part of another Kleo account. Sign in to that account with Google or your e-mail instead.", 401, "merged_key");
+  }
+  await audit(asEnv(env), keyId, null, "studio.key_signin", {});
+  return keyId;
 }
 
 /** An admin account's password follows the console's stricter rule (admin-auth.ts): 14 characters, not its e-mail or name. */
@@ -236,13 +251,14 @@ export async function deleteAccount(env: StudioEnv, userId: string, confirm: unk
     env.DB.prepare("DELETE FROM studio_uploads WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM studio_messages WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM studio_chats WHERE user_id = ?").bind(userId),
-    env.DB.prepare("DELETE FROM studio_logins WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM studio_logins WHERE user_id = ?1 OR user_id IN (SELECT id FROM users WHERE merged_into = ?1)").bind(userId),
     // Where the account came from (attribution.ts): the privacy page promises it goes with the account.
     env.DB.prepare("DELETE FROM user_attribution WHERE user_id = ?").bind(userId),
     env.DB.prepare("UPDATE users SET email = ?, display_name = NULL, contact_email = NULL, credits = 0 WHERE id = ?").bind(`${userId}@deleted.kleo.invalid`, userId),
   ]);
   await endAllSessions(env, userId);
   await rotateKey(asEnv(env), userId);
+  await endMergedSessions(env, userId);
   await audit(asEnv(env), userId, null, "studio.account_deleted", {});
 }
 
@@ -256,6 +272,7 @@ export async function kleoKeyOf(env: StudioEnv, userId: string, fresh = false): 
   if (!fresh) return makeHandle(asEnv(env), userId);
   const key = await rotateKey(asEnv(env), userId);
   await endAllSessions(env, userId);
+  await endMergedSessions(env, userId);
   await audit(asEnv(env), userId, null, "studio.key_rotated", {});
   return key;
 }
@@ -316,6 +333,7 @@ export async function resetPassword(env: StudioEnv, body: { token?: string; pass
   // A new key ends those assistants' grants (src/index.ts mcpApi); the page tells the person to reconnect them.
   await endAllSessions(env, m[1]);
   await rotateKey(asEnv(env), m[1]);
+  await endMergedSessions(env, m[1]);
   await audit(asEnv(env), m[1], null, "studio.reset_done", {});
   return m[1];
 }
@@ -489,9 +507,10 @@ async function untouched(env: StudioEnv, userId: string): Promise<boolean> {
  * or Microsoft account to it would otherwise sign straight back in. The verified person's sign-in is added right after.
  */
 async function evictClaimant(env: StudioEnv, userId: string, provider: SocialKey, used = false): Promise<void> {
-  await env.DB.prepare("DELETE FROM studio_logins WHERE user_id = ?").bind(userId).run();
+  await env.DB.prepare("DELETE FROM studio_logins WHERE user_id = ?1 OR user_id IN (SELECT id FROM users WHERE merged_into = ?1)").bind(userId).run();
   await endAllSessions(env, userId);
   await rotateKey(asEnv(env), userId);
+  await endMergedSessions(env, userId);
   await audit(asEnv(env), userId, null, "studio.email_claim_evicted", { provider, ...(used ? { used: true } : {}) });
 }
 

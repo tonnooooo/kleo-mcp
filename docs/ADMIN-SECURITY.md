@@ -41,7 +41,7 @@ Every request passes all of these locks, checked on the server.
 6. **A new code for the dangerous actions.** These want a code typed in the last **5 minutes**:
    - deleting an account;
    - closing an account;
-   - a credit change over 100;
+   - a credit change over 100, or one that takes the credits changed without a code since the last one (on any account, added or taken away) past 100;
    - a new Kleo key;
    - signing another account out everywhere.
 7. **Lockout.** Five wrong codes in a row lock the console for **15 minutes**.
