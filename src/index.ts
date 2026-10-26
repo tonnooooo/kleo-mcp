@@ -4,7 +4,7 @@ import { getUser, touchUser, audit } from "./db";
 import { grantStillValid } from "./accounts";
 import { mcpHandlerFor, MCP_MAX_BODY_BYTES } from "./mcp";
 import { handleAuthorize, handleConnectFinish, handleConnectMerge } from "./auth";
-import { activeAccount, isAnonymous, signInLink, signInRequiredReply, studioSignIn } from "./connect.ts";
+import { activeAccount, firstToolCall, isAnonymous, signInLink, signInRequiredReply, studioSignIn } from "./connect.ts";
 import { handleInternal, handleDevPlan, handleAdmin } from "./internal";
 import { handleCredits } from "./credits";
 import { handleStudioFilm } from "./studio-film";
@@ -16,29 +16,10 @@ import { handleReferralPage, linkReferral } from "./referral.ts";
 import { handleEmailLink } from "./email.ts";
 import { handleBeacon, recordSignupSource } from "./growth.ts";
 import { tick } from "./orchestrator";
-import { json } from "./util";
+import { json, readJsonBounded } from "./util";
 import { ensureSchema } from "./schema";
 import { httpsRedirect, hardenResponse } from "./security-headers";
 import { withKeys } from "./key-overrides.ts";
-
-/** A request's JSON body read up to `max` bytes; null past it, or when it is not JSON (the SDK then answers 413 or 400). */
-async function readJsonBounded(request: Request, max: number): Promise<unknown> {
-  if (!request.body) return null;
-  const reader = request.body.getReader();
-  const parts: Uint8Array[] = [];
-  let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > max) { await reader.cancel().catch(() => undefined); return null; }
-    parts.push(value);
-  }
-  const all = new Uint8Array(size);
-  let at = 0;
-  for (const p of parts) { all.set(p, at); at += p.byteLength; }
-  try { return JSON.parse(new TextDecoder().decode(all)); } catch { return null; }
-}
 
 /** /mcp — only reached with a valid OAuth token; the provider puts the token props on ctx.props. */
 const mcpApi: ExportedHandler<Env> = {
@@ -62,8 +43,8 @@ const mcpApi: ExportedHandler<Env> = {
     // account it was merged into; one that nobody has signed in to yet runs no tool until its owner signs in.
     const user = await activeAccount(env, granted);
     if (studioSignIn(env) && request.method === "POST" && (await isAnonymous(env, user))) {
-      const rpc = await readJsonBounded(request.clone(), MCP_MAX_BODY_BYTES) as { method?: string; id?: unknown } | null;
-      if (rpc?.method === "tools/call") return json(signInRequiredReply(rpc.id, await signInLink(env, user.id, new URL(request.url).origin)));
+      const call = firstToolCall(await readJsonBounded(request.clone(), MCP_MAX_BODY_BYTES));
+      if (call) return json(signInRequiredReply(call.id, await signInLink(env, user.id, new URL(request.url).origin)));
     }
     ctx.waitUntil(touchUser(env, user.id));
     // THE CONNECTOR ADDRESS'S HINTS (27 September 2026): a new account's first calls carry the ?ref= of the address the

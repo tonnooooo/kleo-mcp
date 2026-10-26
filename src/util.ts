@@ -88,3 +88,24 @@ export function crossSiteRequest(request: Request): boolean {
   if (origin === null) return false;
   try { return origin.trim() !== new URL(request.url).origin; } catch { return true; }
 }
+
+/** A request's JSON body read up to `max` bytes; null past it, or when it is not JSON (the SDK then answers 413 or 400). */
+export async function readJsonBounded(request: Request, max: number): Promise<unknown> {
+  if (!request.body) return null;
+  const reader = request.body.getReader();
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > max) { await reader.cancel().catch(() => undefined); return null; }
+      parts.push(value);
+    }
+  } catch { return null; } // an upload broken part-way: the SDK answers that body itself
+  const all = new Uint8Array(size);
+  let at = 0;
+  for (const p of parts) { all.set(p, at); at += p.byteLength; }
+  try { return JSON.parse(new TextDecoder().decode(all)); } catch { return null; }
+}

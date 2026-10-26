@@ -142,6 +142,14 @@ export async function mergeAnonymous(env: Env, fromId: string, intoId: string, w
 export async function signInLink(env: Env, userId: string, origin?: string): Promise<string> {
   return `${studioUrl(env)}/connect?m=${await signToken(env, "merge", { a: userId, ...(origin ? { o: origin } : {}), exp: mergeTtl() } satisfies MergeToken)}`;
 }
+/**
+ * The tools/call in an MCP request body, if any: one message, or one inside a JSON-RPC batch (27 October 2026, the
+ * security review: a batch used to slip past the sign-in gate in src/index.ts). Null when there is none.
+ */
+export function firstToolCall(body: unknown): { method: string; id?: unknown } | null {
+  const messages = Array.isArray(body) ? body : [body];
+  return (messages.find((x) => x && typeof x === "object" && (x as { method?: unknown }).method === "tools/call") as { method: string; id?: unknown } | undefined) ?? null;
+}
 export function signInRequiredReply(rpcId: unknown, link: string): Record<string, unknown> {
   const text = "Kleo now works with a Kleo account, so your credits are the same here and in the Kleo app. "
     + `Sign in or create your free account here, then ask again — your credits and videos come with you: ${link}`;

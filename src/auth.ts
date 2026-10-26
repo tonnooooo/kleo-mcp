@@ -197,9 +197,11 @@ type Resolved = { user: User; gifted?: number } | { error: string; status: numbe
  * The daily caps are part of the INSERT itself, so a day that is over creates neither a user nor credits.
  */
 async function resolveAccount(env: Env, o: { cookie: string | null; key: string; bonus: string; ip: string | null; ref: string | null; src: string | null; visitor?: Visitor }): Promise<Resolved> {
+  // An old account merged into another opens nothing here: its grant would act on that other account (27 October 2026).
   const accountFor = async (handle: string | null) => {
     const userId = await verifyHandle(env, handle);
-    return userId ? await getUser(env, userId) : null;
+    const user = userId ? await getUser(env, userId) as (User & { merged_into?: string | null }) | null : null;
+    return user && !user.merged_into ? user : null;
   };
   if (o.key) {
     // A typed key that does not work is always an error, even here where the cookie would have done: silently signing

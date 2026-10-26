@@ -33,7 +33,7 @@ before(async () => {
   const r = await esbuild.build({
     stdin: {
       contents: `export * from "./src/auth.ts"; export * from "./src/accounts.ts"; export * from "./src/credits.ts";
-        export * from "./src/db.ts"; export * from "./src/schema.ts"; export * from "./src/connect.ts";`,
+        export * from "./src/db.ts"; export * from "./src/schema.ts"; export * from "./src/connect.ts"; export { readJsonBounded } from "./src/util.ts";`,
       resolveDir: ROOT, loader: "ts",
     },
     // The OAuth library cannot be bundled outside the Workers runtime; see the stub's own comment.
@@ -497,6 +497,20 @@ test("studio connect: the signed-in account gets a finish ticket naming the brow
   assert.equal(reply.id, 9);
   assert.equal(reply.result.isError, true);
   assert.match(reply.result.content[0].text, /https:\/\/app\.kleo\.test\/connect\?m=x/);
+});
+
+test("the sign-in gate sees a tools/call alone or inside a batch, and reads at most the size limit (27 October 2026)", async () => {
+  assert.deepEqual(m.firstToolCall({ jsonrpc: "2.0", id: 3, method: "tools/call" }), { jsonrpc: "2.0", id: 3, method: "tools/call" });
+  assert.equal(m.firstToolCall([{ jsonrpc: "2.0", id: 1, method: "tools/list" }, { jsonrpc: "2.0", id: 2, method: "tools/call" }]).id, 2, "a batch does not slip past");
+  assert.equal(m.firstToolCall({ jsonrpc: "2.0", id: 1, method: "tools/list" }), null);
+  assert.equal(m.firstToolCall(null), null);
+  assert.equal(m.firstToolCall([null, 7, "x"]), null);
+  const req = (body) => new Request("https://mcp.kleo.test/mcp", { method: "POST", body });
+  assert.deepEqual(await m.readJsonBounded(req('{"a":1}'), 100), { a: 1 });
+  assert.equal(await m.readJsonBounded(req("x".repeat(101)), 100), null, "past the limit: nothing is parsed");
+  assert.equal(await m.readJsonBounded(req("not json"), 100), null);
+  const broken = new ReadableStream({ pull(c) { c.error(new Error("upload cut")); } });
+  assert.equal(await m.readJsonBounded(new Request("https://mcp.kleo.test/mcp", { method: "POST", body: broken, duplex: "half" }), 100), null, "a broken upload is null, not a throw");
 });
 
 const inSeconds = (s) => Math.floor(Date.now() / 1000) + s;

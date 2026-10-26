@@ -469,6 +469,19 @@ test("plans: a Payment Link's bare account id never takes over a held subscripti
   assert.match(ref, /^u_v-[0-9a-f]{32}$/, "letters, digits and dashes only, as Stripe wants");
 });
 
+test("a payment naming an old account merged into another lands on that other account, a pack or a plan (27 October 2026)", async () => {
+  const env = newEnv(); user(env, "u_old"); user(env, "u_target");
+  env.DB.db.prepare("UPDATE users SET merged_into = 'u_target' WHERE id = 'u_old'").run();
+  // An old /credits link still carries the merged id on its buy buttons.
+  await post(env, session({ id: "cs_old_pack", client_reference_id: "u_old", amount_total: 500, payment_intent: "pi_old" }));
+  assert.equal(balance(env, "u_old"), 0, "nothing on the account nobody can reach");
+  assert.ok(balance(env, "u_target") > 0, "the credits are where the person now signs in");
+  assert.equal(env.DB.db.prepare("SELECT user_id FROM payments WHERE session_id = 'cs_old_pack'").get().user_id, "u_target");
+  await post(env, subCheckout({ id: "cs_old_plan", client_reference_id: "u_old", subscription: "sub_old" }));
+  assert.equal(planRow(env, "u_target").plan_sub, "sub_old");
+  assert.equal(planRow(env, "u_old").plan_sub, null);
+});
+
 test("abroad: every buy link opens in English", () => {
   const env = newEnv();
   assert.match(m.buyUrl(env, m.PACKS[0], "u_1"), /\?client_reference_id=u_1&locale=en$/);

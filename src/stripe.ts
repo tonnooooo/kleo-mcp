@@ -186,7 +186,7 @@ export async function handleStripeWebhook(request: Request, env: Env): Promise<R
   // An account that does not exist does not stop the row being written: money that arrived has to be written down
   // even when nobody can be credited for it, or the payment exists and the record does not. Only the credits are
   // withheld, and the audit says orphan so it can be found and fixed by hand.
-  const known = userId && (await getUser(env, userId)) ? userId : null;
+  const known = await buyerOf(env, userId);
 
   const credited = await creditPurchase(env, {
     sessionId, userId: known, credits: pack.credits + bonus, cents, currency, email,
@@ -261,6 +261,17 @@ async function planPaymentByIntent(env: Env, pi: string) {
   return paymentByIntent(env, pi);
 }
 
+/**
+ * The account a payment belongs to: the id the checkout names, or, for an old anonymous account merged into another
+ * (src/connect.ts mergeAnonymous), the account it went into. An old /credits link still carries the merged id, and
+ * nothing can reach a merged account's credits any more (27 October 2026, the security review). Null for no account.
+ */
+async function buyerOf(env: Env, id: string): Promise<string | null> {
+  const u = id ? await getUser(env, id) as (Awaited<ReturnType<typeof getUser>> & { merged_into?: string | null }) | null : null;
+  if (!u) return null;
+  return u.merged_into && (await getUser(env, u.merged_into)) ? u.merged_into : u.id;
+}
+
 const DAY_MS = 86_400_000;
 const iso = (ms: number) => new Date(ms).toISOString();
 /** The plan an account is on right now (paid through plan_until, even when cancelled), or null. */
@@ -293,7 +304,7 @@ async function handlePlanCheckout(env: Env, event: { id?: string; type?: string 
   const trusted = signed || !s.payment_link;
   const match = planForAmount(cents);
   if (!match) return json({ ok: true, ignored: `no plan costs ${cents} ${currency}` });
-  const known = userId && (await getUser(env, userId)) ? userId : null;
+  const known = await buyerOf(env, userId);
   const email = typeof s.customer_details?.email === "string" ? s.customer_details.email : null;
   const country = typeof s.customer_details?.address?.country === "string" ? s.customer_details.address.country : null;
   // A subscription's Checkout Session carries no payment intent; its first invoice is paid by one (invoicePaymentIntent).
