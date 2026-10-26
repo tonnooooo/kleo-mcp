@@ -1,32 +1,38 @@
 /**
  * KLEO STUDIO — OUTREACH (27 October 2026, the owner: "vorrei che la mia gmail facesse questa cosa ogni notte … sparsa
- * senza destare troppo sospetto per spam o ban … in automatico, senza l'uso di claude").
+ * senza destare troppo sospetto per spam o ban … in automatico, senza l'uso di claude"; then "finiscilo, perfezionalo,
+ * dobbiamo avere infinità di clienti").
  *
  * Kleo writes, on its own, a short personal first e-mail to businesses whose work is short-form video (social media,
  * UGC and paid-social agencies, TikTok Shop and e-commerce creative studios), and two follow-ups in the same thread when
- * nobody answers. It reads the replies itself, stops at the first one, tells the owner when someone is interested, and
- * never writes again to anyone who said no or whose address bounced.
+ * nobody answers. It reads the replies itself, stops at the first one, answers a "yes" by itself with a personal link
+ * whose sign-up gets free trial credits, tells the owner about every real answer, and never writes again to anyone who
+ * said no or whose address bounced. The scout (src/studio/scout.ts) finds new businesses every day.
  *
  * THE RULES IT KEEPS (New Zealand's Unsolicited Electronic Messages Act 2007, CAN-SPAM, CASL, the UK's PECR, Australia's
  * Spam Act): only addresses a business publishes on its own website for business contact, relevant to its work (the
- * "deemed / implied consent" every one of those laws allows), each with the page where it was seen (source_url); never
- * a bought or harvested list; the sender named, the postal address in every e-mail, a working unsubscribe link and
- * "reply no", honoured at once. Every prospect waits for the owner's approval before its first e-mail. Countries:
- * US, CA, GB, AU, NZ only (the EU's rules for this are stricter).
+ * "deemed / inferred / implied consent" those laws allow), each with the page where it was seen (source_url); never a
+ * bought list; the sender named, the postal address in every e-mail, a working unsubscribe link and "reply no", honoured
+ * at once. Prospects wait for the owner's approval unless the owner chose to approve the scout's finds automatically.
+ * Countries: US, CA, GB, AU, NZ only.
  *
- * HOW IT SENDS: from a real mailbox through SMTP (src/studio/mailbox.ts) — a separate domain and Google Workspace or
- * any provider with SMTP+IMAP and an app password — never through Cloudflare Email Sending (transactional mail only)
- * and never from kleooai@gmail.com. Warm-up: 5 a day the first three days, then 10, 15, 25, up to the owner's maximum
- * (default 40); one e-mail every 7 to 14 minutes at most; only Monday to Friday, 9:00 to 16:30 where the business is.
+ * HOW IT SENDS: from real mailboxes through SMTP (src/studio/mailbox.ts) on domains of their own — never Cloudflare Email
+ * Sending (transactional mail only) and never kleooai.com or Gmail. As many mailboxes as the owner adds (outreach_senders),
+ * each with its own warm-up (5 a day the first three days, then 10, 15, 25, up to its maximum), one e-mail every 7 to 14
+ * minutes at most, only Monday to Friday, 9:00 to 16:30 where the business is. A prospect keeps the mailbox that wrote
+ * to it first, so its thread stays in one place.
  *
- * THE SWITCH is studio_meta 'outreach_mode' ('on' | 'off'); turning it on needs the sender, its password, the postal
- * address and approved prospects. The mailbox password is sealed in key_overrides (OUTREACH_SMTP_PASS).
+ * IT LEARNS: the first e-mail has a few versions (VARIANTS); each new prospect gets one picked by Thompson sampling on
+ * the replies so far, so the version that gets answered more is sent more.
+ *
+ * THE SWITCH is studio_meta 'outreach_mode' ('on' | 'off'); turning it on needs a mailbox with its password, the postal
+ * address and approved prospects. Settings: 'outreach_settings' (JSON). Each mailbox password is sealed in its own row.
  */
 import type { StudioEnv } from "./env.ts";
 import type { Env } from "../env";
 import { audit } from "../db.ts";
 import { escapeHtml, hmacHex, safeEqual } from "../util.ts";
-import { forgetKeys, last4, sealKey } from "../key-overrides.ts";
+import { last4, openKey, sealKey } from "../key-overrides.ts";
 import { mailOwner } from "./providers.ts";
 import { buildMime, imapFetch, imapLogin, smtpSend, smtpTrouble, socketDial, type Dial, type Incoming } from "./mailbox.ts";
 import { StudioError } from "./generate.ts";
@@ -35,37 +41,60 @@ const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const NOW = "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))";
 const APP = "https://app.kleooai.com";
 export const COUNTRIES = ["US", "CA", "GB", "AU", "NZ"] as const;
-const AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+export const AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
 // ── settings ─────────────────────────────────────────────────────────────────────────────────────────────────────
 
-export interface Sender {
-  fromName: string; fromAddr: string; user: string;
-  smtpHost: string; smtpPort: number; imapHost: string; imapPort: number;
-  postal: string; dailyMax: number;
+export interface Settings {
+  /** The postal address every e-mail carries (CAN-SPAM, CASL). */
+  postal: string;
+  /** Credits a business gets when it signs up through its personal link (0: none offered). */
+  trialCredits: number;
+  /** Answer a "yes" by itself with the personal link. */
+  autoReply: boolean;
+  /** The scout's finds go straight to "approved" instead of waiting for the owner. */
+  autoApprove: boolean;
+  /** The scout looks for new businesses (src/studio/scout.ts), at most scoutDaily searches a UTC day. */
+  scoutOn: boolean;
+  scoutDaily: number;
 }
-const EMPTY_SENDER: Sender = { fromName: "Leonardo", fromAddr: "", user: "", smtpHost: "smtp.gmail.com", smtpPort: 465, imapHost: "imap.gmail.com", imapPort: 993, postal: "", dailyMax: 40 };
+export const DEFAULT_SETTINGS: Settings = { postal: "", trialCredits: 20, autoReply: true, autoApprove: false, scoutOn: false, scoutDaily: 30 };
 
-async function meta(env: StudioEnv, key: string): Promise<string | null> {
+export async function meta(env: StudioEnv, key: string): Promise<string | null> {
   return (await env.DB.prepare("SELECT value FROM studio_meta WHERE key = ?").bind(key).first<{ value: string }>())?.value ?? null;
 }
-async function setMeta(env: StudioEnv, key: string, value: string): Promise<void> {
+export async function setMeta(env: StudioEnv, key: string, value: string): Promise<void> {
   await env.DB.prepare("INSERT INTO studio_meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").bind(key, value).run();
 }
-export async function senderOf(env: StudioEnv): Promise<Sender> {
-  try { return { ...EMPTY_SENDER, ...JSON.parse((await meta(env, "outreach_sender")) ?? "{}") }; } catch { return { ...EMPTY_SENDER }; }
+export async function settingsOf(env: StudioEnv): Promise<Settings> {
+  try { return { ...DEFAULT_SETTINGS, ...JSON.parse((await meta(env, "outreach_settings")) ?? "{}") }; } catch { return { ...DEFAULT_SETTINGS }; }
 }
-const passOf = (env: StudioEnv): string => String((env as unknown as Record<string, unknown>).OUTREACH_SMTP_PASS ?? "").replace(/\s+/g, "");
 
-export interface Readiness { sender: boolean; password: boolean; postal: boolean; approved: number; ok: boolean }
+// ── the mailboxes ────────────────────────────────────────────────────────────────────────────────────────────────
+
+export interface SenderRow {
+  id: string; from_name: string; from_addr: string; user: string; smtp_host: string; smtp_port: number; imap_host: string; imap_port: number;
+  daily_max: number; sealed_pass: string | null; pass_last4: string | null; status: string; paused_reason: string | null; paused_at: string | null;
+  imap_state: string | null; checked_at: string | null; next_send_at: string | null; created_at: string;
+}
+const passName = (id: string) => `OUTREACH_SENDER:${id}`;
+async function passOf(env: StudioEnv, s: SenderRow): Promise<string> {
+  if (!s.sealed_pass) return "";
+  try { return await openKey(env.INTERNAL_SECRET, passName(s.id), s.sealed_pass); } catch { return ""; }
+}
+export async function senders(env: StudioEnv): Promise<SenderRow[]> {
+  return (await env.DB.prepare("SELECT * FROM outreach_senders ORDER BY created_at, id").all<SenderRow>()).results ?? [];
+}
+
+export interface Readiness { senders: number; postal: boolean; approved: number; ok: boolean }
 export async function readiness(env: StudioEnv): Promise<Readiness> {
-  const s = await senderOf(env);
+  const ready = (await senders(env)).filter((s) => s.status !== "off" && s.sealed_pass).length;
   const approved = Number((await env.DB.prepare("SELECT COUNT(*) AS n FROM outreach_prospects WHERE status IN ('approved', 'active')").first<{ n: number }>())?.n ?? 0);
-  const r = { sender: !!(s.fromAddr && s.user && s.smtpHost && s.imapHost), password: !!passOf(env), postal: s.postal.trim().length >= 10, approved };
-  return { ...r, ok: r.sender && r.password && r.postal && approved > 0 };
+  const postal = (await settingsOf(env)).postal.trim().length >= 10;
+  return { senders: ready, postal, approved, ok: ready > 0 && postal && approved > 0 };
 }
 
-/** The daily number for the n-th day of sending (day 1 = the first): a new mailbox earns trust slowly. */
+/** The daily number for a mailbox's n-th day of sending (day 1 = its first): a new mailbox earns trust slowly. */
 export function warmupQuota(day: number, max: number): number {
   const q = day <= 3 ? 5 : day <= 7 ? 10 : day <= 14 ? 15 : day <= 21 ? 25 : max;
   return Math.max(0, Math.min(q, max));
@@ -98,7 +127,6 @@ export function businessTime(ms: number, zone: string): boolean {
 export function afterBusinessDays(fromMs: number, days: number, zone: string, jitter: number): number {
   let t = fromMs, left = days;
   while (left > 0) { t += 86_400_000; const d = localParts(t, zone).day; if (d >= 1 && d <= 5) left--; }
-  // Walk to 9:30 that day, then add the jitter.
   const p = localParts(t, zone);
   t += (9 * 60 + 30 - p.minutes) * 60_000;
   return Math.floor(t + jitter * 6 * 3_600_000);
@@ -110,11 +138,12 @@ export interface Prospect {
   id: string; email: string; domain: string; company: string; website: string | null; country: string; region: string | null; city: string | null;
   type: string | null; contact_name: string | null; source_url: string; opener: string | null; fit_reason: string | null; status: string; step: number;
   next_at: string | null; tz: string | null; thread_id: string | null; subject: string | null; batch: string | null;
+  sender_id: string | null; variant: string | null; link_code: string | null; converted_user: string | null; reply_class: string | null;
 }
 
 const EMAIL_RE = /^[^\s@<>"',;]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
-const FREEMAIL = /@(gmail|googlemail|yahoo|ymail|outlook|hotmail|live|msn|icloud|me|mac|aol|proton|protonmail|gmx|mail|yandex|zoho|bigpond|xtra)\./i;
-const pid = (): string => `p_${[...crypto.getRandomValues(new Uint8Array(8))].map((b) => "abcdefghjkmnpqrstuvwxyz23456789"[b % 31]).join("")}`;
+export const FREEMAIL = /@(gmail|googlemail|yahoo|ymail|outlook|hotmail|live|msn|icloud|me|mac|aol|proton|protonmail|gmx|mail|yandex|zoho|bigpond|xtra)\./i;
+const rid = (prefix: string, n = 8): string => `${prefix}_${[...crypto.getRandomValues(new Uint8Array(n))].map((b) => "abcdefghjkmnpqrstuvwxyz23456789"[b % 31]).join("")}`;
 
 export interface ProspectInput {
   company?: unknown; website?: unknown; email?: unknown; email_source_url?: unknown; source_url?: unknown; country?: unknown; state?: unknown; region?: unknown; city?: unknown;
@@ -134,8 +163,8 @@ export function prospectProblem(p: ProspectInput): string | null {
   return null;
 }
 
-/** Adds prospects as "new" (waiting for the owner's approval); an address already known, or stopped, is skipped. */
-export async function addProspects(env: StudioEnv, list: ProspectInput[], batch: string): Promise<{ added: number; skipped: { email: string; why: string }[] }> {
+/** Adds prospects ("new", or "approved" when asked); an address already known, or one that said no, is skipped. */
+export async function addProspects(env: StudioEnv, list: ProspectInput[], batch: string, status: "new" | "approved" = "new"): Promise<{ added: number; skipped: { email: string; why: string }[] }> {
   const skipped: { email: string; why: string }[] = [];
   let added = 0;
   for (const p of list) {
@@ -146,10 +175,10 @@ export async function addProspects(env: StudioEnv, list: ProspectInput[], batch:
     const country = String(p.country).toUpperCase();
     const region = str(p.state ?? p.region, 40);
     const r = await env.DB.prepare(`INSERT OR IGNORE INTO outreach_prospects (id, email, domain, company, website, country, region, city, type, size_hint, contact_name,
-        contact_role, email_kind, source_url, fit_reason, evidence, opener, batch, status, tz) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)`)
-      .bind(pid(), email, email.split("@")[1], str(p.company, 120), str(p.website, 300), country, region, str(p.city, 80), str(p.type, 40), str(p.size_hint, 20),
+        contact_role, email_kind, source_url, fit_reason, evidence, opener, batch, status, approved_at, tz) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(rid("p"), email, email.split("@")[1], str(p.company, 120), str(p.website, 300), country, region, str(p.city, 80), str(p.type, 40), str(p.size_hint, 20),
         str(p.contact_first_name ?? p.contact_name, 60), str(p.contact_role, 80), str(p.email_kind, 10), str(p.email_source_url ?? p.source_url, 500),
-        str(p.fit_reason, 400), str(p.evidence, 300), str(p.opener, 300), batch.slice(0, 40), zoneFor(country, region)).run();
+        str(p.fit_reason, 400), str(p.evidence, 300), str(p.opener, 300), batch.slice(0, 40), status, status === "approved" ? new Date().toISOString() : null, zoneFor(country, region)).run();
     if ((r.meta.changes ?? 0) === 1) added++; else skipped.push({ email, why: "already in the list" });
   }
   return { added, skipped };
@@ -183,28 +212,86 @@ const PHRASE: Record<string, string> = {
 };
 const hostOf = (url: string | null): string => { try { return new URL(String(url)).hostname.replace(/^www\./, ""); } catch { return "your website"; } };
 const firstOf = (name: string | null): string | null => { const w = (name ?? "").trim().split(/\s+/)[0]; return w && /^\p{L}[\p{L}'’-]{0,23}$/u.test(w) ? w : null; };
+const phraseOf = (p: Prospect): string => PHRASE[p.type ?? ""] ?? "teams like yours";
+
+/** The versions of the first e-mail Kleo tries against each other (subject and pitch; the opener is the business's own). */
+export const VARIANTS: { id: string; name: string; subject: (p: Prospect) => string; pitch: (p: Prospect, credits: number) => string[] }[] = [
+  { id: "a", name: "Ten hooks in an afternoon", subject: (p) => `Short-form video for ${p.company}`, pitch: (p, credits) => [
+    "I'm Leonardo, and I build Kleo (kleooai.com): an AI video studio in a chat. Type an idea or drop in one photo and you get vertical clips for TikTok, Reels and Shorts, with trend templates, face and outfit swap, voiceover and music in the same place.",
+    `For ${phraseOf(p)} it means testing ten hooks for a client in an afternoon instead of booking a shoot.`,
+    credits ? "Would it help if I set your team up with free credits to try it on a real brief?" : "Would it be worth a look for your team?"] },
+  { id: "b", name: "The slow-to-shoot parts", subject: (p) => `${p.company} + AI video`, pitch: (_p, credits) => [
+    "I build Kleo (kleooai.com), where one sentence or one photo becomes a vertical video for TikTok, Reels or Shorts in a few minutes, with the newest video models in one place.",
+    "It's made for the parts that are slow to shoot: hook variations, product clips, trend formats, a talking photo, a voiceover.",
+    credits ? "Worth a look? I can add free credits for your team to try it." : "Worth a look?"] },
+  { id: "c", name: "Ten hooks to test", subject: (p) => `10 hooks for ${p.company}'s next client`, pitch: (_p, credits) => [
+    "A quick idea: with Kleo (kleooai.com) you type one line or drop one photo and get a vertical clip in minutes, so a client's next campaign can start with ten hooks to test instead of one.",
+    "Face swap, outfit swap, voiceover and music sit in the same place.",
+    credits ? "Want me to set your team up with free credits to try it?" : "Would that help?"] },
+];
+export const variantById = (id: string | null) => VARIANTS.find((v) => v.id === id) ?? VARIANTS[0];
 
 export interface Written { subject: string; text: string }
+export interface Signature { fromName: string; postal: string; credits: number }
 
 /** The three e-mails of the sequence, for one prospect. Plain text, short, no tracking, one link in the first. */
-export function writeStep(p: Prospect, step: number, s: Sender, unsubscribeUrl: string): Written {
+export function writeStep(p: Prospect, step: number, s: Signature, unsubscribeUrl: string): Written {
+  const name = s.fromName || "Leonardo";
   const hi = `Hi ${firstOf(p.contact_name) ?? "there"},`;
-  const sign = `${s.fromName || "Leonardo"}\nFounder, Kleo`;
+  const sign = `${name}\nFounder, Kleo`;
   const footer = `--\nYou're getting this one-off business e-mail because ${p.email} is listed on ${hostOf(p.source_url)}. If it isn't relevant, reply "no" or open ${unsubscribeUrl} and I won't write again.\nKleo (Kanaky Tech, New Zealand), ${s.postal.trim()}`;
-  const subject0 = p.subject || `Short-form video for ${p.company}`;
+  const v = variantById(p.variant);
+  const subject0 = p.subject || v.subject(p);
   const opener = (p.opener ?? "").trim() || `I came across ${p.company} while looking at ${PHRASE[p.type ?? ""] ?? "studios that make short-form video"}${p.city ? ` in ${p.city}` : ""}.`;
-  if (step === 0) return { subject: subject0, text: [hi, opener,
-    "I'm Leonardo, and I build Kleo (kleooai.com): an AI video studio in a chat. Type an idea or drop in one photo and you get vertical clips for TikTok, Reels and Shorts, with trend templates, face and outfit swap, voiceover and music in the same place.",
-    `For ${PHRASE[p.type ?? ""] ?? "teams like yours"} it means testing ten hooks for a client in an afternoon instead of booking a shoot.`,
-    "Would it help if I set your team up with free credits to try it on a real brief?",
-    sign, footer].join("\n\n") };
+  if (step === 0) return { subject: subject0, text: [hi, opener, ...v.pitch(p, s.credits), sign, footer].join("\n\n") };
   if (step === 1) return { subject: `Re: ${subject0}`, text: [hi,
     "A quick follow-up with something you can judge in ten seconds: app.kleooai.com/explore has clips made entirely in Kleo, each from one line or one photo.",
-    `If a free trial for ${p.company} sounds useful, reply "yes" and I'll set it up today.`,
+    s.credits ? `If a free trial for ${p.company} sounds useful, reply "yes" and I'll send it over.` : `If it sounds useful for ${p.company}, reply "yes" and I'll send the details.`,
     sign, footer].join("\n\n") };
   return { subject: `Re: ${subject0}`, text: [hi,
     `I'll stop here so I don't crowd your inbox. If short-form video ever becomes the bottleneck at ${p.company}, a reply to this e-mail still reaches me.`,
-    `Thanks,\n${s.fromName || "Leonardo"}`, footer].join("\n\n") };
+    `Thanks,\n${name}`, footer].join("\n\n") };
+}
+
+/** Kleo's own answer to a "yes": the personal link, and what signing up through it gives. */
+export function writeYes(p: Prospect, s: Signature, link: string): string {
+  const name = s.fromName || "Leonardo";
+  return [`Hi ${firstOf(p.contact_name) ?? "there"},`,
+    `Great, here's ${p.company}'s link: ${link}`,
+    s.credits
+      ? `Sign up through it (Google or e-mail, about a minute) and ${s.credits} free credits land on the account by themselves, enough for a few clips on the fast model to judge Kleo on a real brief. The plans for more are at app.kleooai.com/plans.`
+      : "Sign up through it (Google or e-mail, about a minute) and you can start right away. The plans are at app.kleooai.com/plans.",
+    "If anything is unclear, just reply here.",
+    name].join("\n\n");
+}
+
+// ── choosing the version: Thompson sampling on the replies so far ────────────────────────────────────────────────
+
+function gamma(k: number, rnd: () => number): number {
+  if (k < 1) return gamma(k + 1, rnd) * Math.pow(Math.max(rnd(), 1e-12), 1 / k);
+  const d = k - 1 / 3, c = 1 / Math.sqrt(9 * d);
+  for (let i = 0; i < 200; i++) {
+    // Box–Muller from two uniforms.
+    const n = Math.sqrt(-2 * Math.log(Math.max(rnd(), 1e-12))) * Math.cos(2 * Math.PI * rnd());
+    const v = Math.pow(1 + c * n, 3);
+    if (v <= 0) continue;
+    const u = Math.max(rnd(), 1e-12);
+    if (Math.log(u) < 0.5 * n * n + d - d * v + d * Math.log(v)) return d * v;
+  }
+  return k;
+}
+const betaSample = (a: number, b: number, rnd: () => number): number => { const x = gamma(a, rnd), y = gamma(b, rnd); return x / (x + y); };
+
+export interface VariantStat { id: string; name: string; sent: number; answered: number }
+export async function variantStats(env: StudioEnv): Promise<VariantStat[]> {
+  const rows = (await env.DB.prepare(`SELECT variant, COUNT(*) AS sent, SUM(CASE WHEN reply_class IN ('interested', 'question') OR converted_user IS NOT NULL THEN 1 ELSE 0 END) AS answered
+      FROM outreach_prospects WHERE step > 0 AND variant IS NOT NULL GROUP BY variant`).all<{ variant: string; sent: number; answered: number }>()).results ?? [];
+  return VARIANTS.map((v) => { const r = rows.find((x) => x.variant === v.id); return { id: v.id, name: v.name, sent: Number(r?.sent ?? 0), answered: Number(r?.answered ?? 0) }; });
+}
+export function pickVariant(stats: VariantStat[], rnd: () => number): string {
+  let best = stats[0]?.id ?? "a", top = -1;
+  for (const s of stats) { const x = betaSample(1 + s.answered, 1 + Math.max(0, s.sent - s.answered), rnd); if (x > top) { top = x; best = s.id; } }
+  return best;
 }
 
 // ── the unsubscribe link (on the app's host, so it works whatever domain the mailbox has) ────────────────────────
@@ -246,105 +333,155 @@ async function hasMx(domain: string): Promise<boolean> {
   } catch { return true; } // the DNS check failing is not the address's fault
 }
 
-const messageId = (s: Sender): string => `<${Date.now().toString(36)}.${[...crypto.getRandomValues(new Uint8Array(6))].map((b) => b.toString(16).padStart(2, "0")).join("")}@${s.fromAddr.split("@")[1] ?? "kleooai.com"}>`;
+const messageId = (s: SenderRow): string => `<${Date.now().toString(36)}.${[...crypto.getRandomValues(new Uint8Array(6))].map((b) => b.toString(16).padStart(2, "0")).join("")}@${s.from_addr.split("@")[1] ?? "kleooai.com"}>`;
+const smtpOf = async (env: StudioEnv, s: SenderRow) => ({ host: s.smtp_host, port: s.smtp_port, user: s.user, pass: await passOf(env, s) });
 
 export interface OutreachDeps { dial?: Dial; random?: () => number }
 
-/** Sends one step to one prospect; the bookkeeping that follows depends on how it went. */
-async function sendTo(env: StudioEnv, p: Prospect, s: Sender, nowMs: number, deps: OutreachDeps): Promise<"sent" | "address" | "sender" | "later"> {
+async function threadRefs(env: StudioEnv, p: Prospect): Promise<string[]> {
+  return p.thread_id ? ((await env.DB.prepare("SELECT message_id FROM outreach_log WHERE prospect_id = ? AND ok = 1 AND message_id IS NOT NULL ORDER BY id").bind(p.id).all<{ message_id: string }>()).results ?? []).map((r) => r.message_id) : [];
+}
+
+/** Sends one step to one prospect from one mailbox; the bookkeeping that follows depends on how it went. */
+async function sendTo(env: StudioEnv, s: SenderRow, p: Prospect, set: Settings, nowMs: number, deps: OutreachDeps): Promise<"sent" | "address" | "sender" | "later"> {
   const rnd = deps.random ?? Math.random;
-  const w = writeStep(p, p.step, s, await outreachStopLink(env, p.id));
+  const sig = { fromName: s.from_name, postal: set.postal, credits: set.trialCredits };
+  if (p.step === 0 && !p.variant) p.variant = pickVariant(await variantStats(env), rnd);
+  const stop = await outreachStopLink(env, p.id);
+  const w = writeStep(p, p.step, sig, stop);
   const mid = messageId(s);
-  const refs = p.thread_id ? ((await env.DB.prepare("SELECT message_id FROM outreach_log WHERE prospect_id = ? AND ok = 1 AND message_id IS NOT NULL ORDER BY id").bind(p.id).all<{ message_id: string }>()).results ?? []).map((r) => r.message_id) : [];
-  const raw = buildMime({ fromName: s.fromName, fromAddr: s.fromAddr, to: p.email, subject: w.subject, text: w.text, messageId: mid,
-    inReplyTo: refs.at(-1) ?? null, references: refs, unsubscribeUrl: await outreachStopLink(env, p.id), unsubscribeMailto: s.fromAddr, date: new Date(nowMs) });
+  const refs = await threadRefs(env, p);
+  const raw = buildMime({ fromName: s.from_name, fromAddr: s.from_addr, to: p.email, subject: w.subject, text: w.text, messageId: mid,
+    inReplyTo: refs.at(-1) ?? null, references: refs, unsubscribeUrl: stop, unsubscribeMailto: s.from_addr, date: new Date(nowMs) });
   try {
-    await smtpSend(deps.dial ?? socketDial, { host: s.smtpHost, port: s.smtpPort, user: s.user, pass: passOf(env) }, { from: s.fromAddr, to: p.email, raw });
+    await smtpSend(deps.dial ?? socketDial, await smtpOf(env, s), { from: s.from_addr, to: p.email, raw });
   } catch (e) {
     const why = smtpTrouble(e);
-    await env.DB.prepare("INSERT INTO outreach_log (prospect_id, email, step, ok, error, at) VALUES (?, ?, ?, 0, ?, ?)").bind(p.id, p.email, p.step, String((e as Error)?.message ?? e).slice(0, 300), new Date(nowMs).toISOString()).run();
+    await env.DB.prepare("INSERT INTO outreach_log (prospect_id, email, step, ok, error, sender_id, at) VALUES (?, ?, ?, 0, ?, ?, ?)")
+      .bind(p.id, p.email, p.step, String((e as Error)?.message ?? e).slice(0, 300), s.id, new Date(nowMs).toISOString()).run();
     if (why === "address") await stopProspect(env, p.id, p.email, "bounce", true);
     return why;
   }
-  await env.DB.prepare("INSERT INTO outreach_log (prospect_id, email, step, ok, message_id, at) VALUES (?, ?, ?, 1, ?, ?)").bind(p.id, p.email, p.step, mid, new Date(nowMs).toISOString()).run();
+  await env.DB.prepare("INSERT INTO outreach_log (prospect_id, email, step, ok, message_id, sender_id, at) VALUES (?, ?, ?, 1, ?, ?, ?)")
+    .bind(p.id, p.email, p.step, mid, s.id, new Date(nowMs).toISOString()).run();
   const zone = p.tz ?? zoneFor(p.country, p.region);
   const next = p.step === 0 ? afterBusinessDays(nowMs, 3, zone, rnd()) : p.step === 1 ? afterBusinessDays(nowMs, 5, zone, rnd()) : null;
   await env.DB.prepare(`UPDATE outreach_prospects SET step = ?, status = ?, next_at = ?, thread_id = COALESCE(thread_id, ?), subject = COALESCE(subject, ?),
-      last_sent_at = ?, updated_at = ${NOW} WHERE id = ?`)
-    .bind(p.step + 1, next === null ? "done" : "active", next === null ? null : new Date(next).toISOString(), mid, w.subject, new Date(nowMs).toISOString(), p.id).run();
+      sender_id = ?, variant = COALESCE(variant, ?), last_sent_at = ?, updated_at = ${NOW} WHERE id = ?`)
+    .bind(p.step + 1, next === null ? "done" : "active", next === null ? null : new Date(next).toISOString(), mid, w.subject, s.id, p.variant, new Date(nowMs).toISOString(), p.id).run();
   return "sent";
 }
 
-async function sentInLastDay(env: StudioEnv, nowMs: number): Promise<number> {
-  return Number((await env.DB.prepare("SELECT COUNT(*) AS n FROM outreach_log WHERE ok = 1 AND at >= ?").bind(new Date(nowMs - 86_400_000).toISOString()).first<{ n: number }>())?.n ?? 0);
+async function sentInLastDay(env: StudioEnv, senderId: string, nowMs: number): Promise<number> {
+  return Number((await env.DB.prepare("SELECT COUNT(*) AS n FROM outreach_log WHERE ok = 1 AND sender_id = ? AND at >= ?").bind(senderId, new Date(nowMs - 86_400_000).toISOString()).first<{ n: number }>())?.n ?? 0);
 }
-
-/** Which warm-up day it is (1 = the first day anything was sent). */
-async function warmupDay(env: StudioEnv, nowMs: number): Promise<number> {
-  const first = await env.DB.prepare("SELECT MIN(at) AS at FROM outreach_log WHERE ok = 1").first<{ at: string | null }>();
+/** Which warm-up day a mailbox is on (1 = the first day it sent anything). */
+async function warmupDay(env: StudioEnv, senderId: string, nowMs: number): Promise<number> {
+  const first = await env.DB.prepare("SELECT MIN(at) AS at FROM outreach_log WHERE ok = 1 AND sender_id = ?").bind(senderId).first<{ at: string | null }>();
   return first?.at ? Math.floor((nowMs - Date.parse(first.at)) / 86_400_000) + 1 : 1;
 }
+const quotaOf = async (env: StudioEnv, s: SenderRow, nowMs: number) => warmupQuota(await warmupDay(env, s.id, nowMs), Math.max(1, Math.min(Number(s.daily_max) || 40, 60)));
 
-export interface OutreachTick { sent: number; replies: number; paused?: string }
+export interface OutreachTick { sent: number; replies: number; converted: number; paused?: string }
 
-/** The cron's turn (every 5 minutes): read the replies every quarter of an hour, then send at most one e-mail. */
+/**
+ * The cron's turn (every 5 minutes): trial credits for businesses that signed up through their link, each mailbox's
+ * replies every quarter of an hour, then at most one e-mail per mailbox. The scout runs on its own (scout.ts).
+ */
 export async function outreachTick(env: StudioEnv, nowMs = Date.now(), deps: OutreachDeps = {}): Promise<OutreachTick> {
-  const out: OutreachTick = { sent: 0, replies: 0 };
+  const out: OutreachTick = { sent: 0, replies: 0, converted: 0 };
+  const set = await settingsOf(env);
+  // Sign-ups through a personal link get their trial credits even when outreach is off again.
+  try { out.converted = await grantTrials(env, set, nowMs); } catch (e) { console.error("outreach trials", e instanceof Error ? e.message : e); }
   if ((await meta(env, "outreach_mode")) !== "on") return out;
-  const ready = await readiness(env);
-  if (!ready.sender || !ready.password || !ready.postal) return { ...out, paused: "setup" };
-  const s = await senderOf(env);
-  const lastCheck = Date.parse((await meta(env, "outreach_checked_at")) ?? "") || 0;
-  if (nowMs - lastCheck >= 14 * 60_000) {
-    try { out.replies = await checkReplies(env, s, nowMs, deps); } catch (e) { console.error("outreach imap", e instanceof Error ? e.message : e); }
-  }
-  if ((await meta(env, "outreach_paused")) && nowMs - (Date.parse((await meta(env, "outreach_paused_at")) ?? "") || 0) < 6 * 3_600_000) return { ...out, paused: "sender" };
-  const nextSend = Date.parse((await meta(env, "outreach_next_send")) ?? "") || 0;
-  if (nowMs < nextSend) return out;
-  const quota = warmupQuota(await warmupDay(env, nowMs), Math.max(1, Math.min(Number(s.dailyMax) || 40, 60)));
-  if ((await sentInLastDay(env, nowMs)) >= quota) return { ...out, paused: "quota" };
-  const p = await pickNext(env, nowMs);
-  if (!p) return out;
-  if (p.step === 0) {
-    if (await env.DB.prepare("SELECT 1 AS one FROM mail_suppress WHERE email = ?").bind(p.email).first()) { await stopProspect(env, p.id, p.email, "suppressed", false); return out; }
-    if (!(await hasMx(p.domain))) { await env.DB.prepare(`UPDATE outreach_prospects SET status = 'invalid', stop_reason = 'no MX', updated_at = ${NOW} WHERE id = ?`).bind(p.id).run(); return out; }
-    // Added without a first line (a CSV from the console): Workers AI writes one from the business's home page.
-    if (!p.opener?.trim()) {
-      const line = await writeOpener(env, p);
-      if (line) { p.opener = line; await env.DB.prepare(`UPDATE outreach_prospects SET opener = ?, updated_at = ${NOW} WHERE id = ?`).bind(line, p.id).run(); }
+  if (set.postal.trim().length < 10) return { ...out, paused: "setup" };
+  const list = (await senders(env)).filter((s) => s.status !== "off" && s.sealed_pass);
+  if (!list.length) return { ...out, paused: "setup" };
+  for (const s of list) {
+    if (nowMs - (Date.parse(s.checked_at ?? "") || 0) >= 14 * 60_000) {
+      try { out.replies += await checkReplies(env, s, set, nowMs, deps); } catch (e) { console.error("outreach imap", s.from_addr, e instanceof Error ? e.message : e); }
     }
-  }
-  const r = await sendTo(env, p, s, nowMs, deps);
-  const rnd = deps.random ?? Math.random;
-  if (r === "sent") {
-    out.sent = 1;
-    await setMeta(env, "outreach_next_send", new Date(nowMs + (7 + rnd() * 7) * 60_000).toISOString());
-    await env.DB.prepare("DELETE FROM studio_meta WHERE key IN ('outreach_paused', 'outreach_paused_at')").run();
-  } else if (r === "sender") {
-    await setMeta(env, "outreach_paused", "sender"); await setMeta(env, "outreach_paused_at", new Date(nowMs).toISOString());
-    const last = await env.DB.prepare("SELECT error FROM outreach_log WHERE ok = 0 ORDER BY id DESC LIMIT 1").first<{ error: string }>();
-    await mailOwner(env, "Kleo outreach is paused: the mailbox refused to send", `The outreach mailbox ${s.fromAddr} refused Kleo's sign-in or sender:\n\n${last?.error ?? ""}\n\nKleo tries again in 6 hours. Check the app password in the admin console (Outreach, Sender).`, nowMs);
-    out.paused = "sender";
-  } else if (r === "later") {
-    await setMeta(env, "outreach_next_send", new Date(nowMs + 30 * 60_000).toISOString());
+    if (s.status === "paused" && nowMs - (Date.parse(s.paused_at ?? "") || 0) < 6 * 3_600_000) { out.paused = "sender"; continue; }
+    if (nowMs < (Date.parse(s.next_send_at ?? "") || 0)) continue;
+    if ((await sentInLastDay(env, s.id, nowMs)) >= (await quotaOf(env, s, nowMs))) { out.paused ??= "quota"; continue; }
+    const p = await pickNext(env, s, nowMs);
+    if (!p) continue;
+    if (p.step === 0) {
+      if (await env.DB.prepare("SELECT 1 AS one FROM mail_suppress WHERE email = ?").bind(p.email).first()) { await stopProspect(env, p.id, p.email, "suppressed", false); continue; }
+      if (!(await hasMx(p.domain))) { await env.DB.prepare(`UPDATE outreach_prospects SET status = 'invalid', stop_reason = 'no MX', updated_at = ${NOW} WHERE id = ?`).bind(p.id).run(); continue; }
+      if (!p.opener?.trim()) {
+        const line = await writeOpener(env, p);
+        if (line) { p.opener = line; await env.DB.prepare(`UPDATE outreach_prospects SET opener = ?, updated_at = ${NOW} WHERE id = ?`).bind(line, p.id).run(); }
+      }
+    }
+    const r = await sendTo(env, s, p, set, nowMs, deps);
+    const rnd = deps.random ?? Math.random;
+    if (r === "sent") {
+      out.sent++;
+      await env.DB.prepare(`UPDATE outreach_senders SET next_send_at = ?, status = 'active', paused_reason = NULL, paused_at = NULL WHERE id = ?`)
+        .bind(new Date(nowMs + (7 + rnd() * 7) * 60_000).toISOString(), s.id).run();
+    } else if (r === "sender") {
+      const last = await env.DB.prepare("SELECT error FROM outreach_log WHERE ok = 0 AND sender_id = ? ORDER BY id DESC LIMIT 1").bind(s.id).first<{ error: string }>();
+      const already = s.status === "paused";
+      await env.DB.prepare("UPDATE outreach_senders SET status = 'paused', paused_reason = ?, paused_at = ? WHERE id = ?").bind(last?.error ?? "refused", new Date(nowMs).toISOString(), s.id).run();
+      if (!already) await mailOwner(env, `Kleo outreach: ${s.from_addr} refused to send`, `The outreach mailbox ${s.from_addr} refused Kleo's sign-in or sender:\n\n${last?.error ?? ""}\n\nKleo tries it again every 6 hours; the other mailboxes go on. Check its app password in the admin console (Outreach, Mailboxes).`, nowMs);
+      out.paused = "sender";
+    } else if (r === "later") {
+      await env.DB.prepare("UPDATE outreach_senders SET next_send_at = ? WHERE id = ?").bind(new Date(nowMs + 30 * 60_000).toISOString(), s.id).run();
+    }
   }
   return out;
 }
 
-/** A follow-up that is due first, else the next approved prospect; only where it is business time now. */
-async function pickNext(env: StudioEnv, nowMs: number): Promise<Prospect | null> {
+/** This mailbox's follow-up that is due first, else the next approved prospect nobody has written to; business time only. */
+async function pickNext(env: StudioEnv, s: SenderRow, nowMs: number): Promise<Prospect | null> {
   const now = new Date(nowMs).toISOString();
-  const due = (await env.DB.prepare("SELECT * FROM outreach_prospects WHERE status = 'active' AND next_at <= ? ORDER BY next_at LIMIT 40").bind(now).all<Prospect>()).results ?? [];
+  const due = (await env.DB.prepare("SELECT * FROM outreach_prospects WHERE status = 'active' AND sender_id = ? AND next_at <= ? ORDER BY next_at LIMIT 40").bind(s.id, now).all<Prospect>()).results ?? [];
   const f = due.find((p) => businessTime(nowMs, p.tz ?? zoneFor(p.country, p.region)));
   if (f) return f;
-  const fresh = (await env.DB.prepare("SELECT * FROM outreach_prospects WHERE status = 'approved' ORDER BY approved_at, added_at, rowid LIMIT 80").all<Prospect>()).results ?? [];
+  // Not written to yet: nobody's, this mailbox's (a send that failed), or a mailbox's that is no longer sending.
+  const free = "status = 'approved' AND step = 0 AND (sender_id IS NULL OR sender_id = ? OR sender_id NOT IN (SELECT id FROM outreach_senders WHERE status = 'active'))";
+  const fresh = (await env.DB.prepare(`SELECT * FROM outreach_prospects WHERE ${free} ORDER BY approved_at, added_at, rowid LIMIT 80`).bind(s.id).all<Prospect>()).results ?? [];
   for (const p of fresh) {
     if (!businessTime(nowMs, p.tz ?? zoneFor(p.country, p.region))) continue;
     // Never two people at one business on the same day.
     const busy = await env.DB.prepare("SELECT 1 AS one FROM outreach_prospects WHERE domain = ? AND id != ? AND last_sent_at >= ?").bind(p.domain, p.id, new Date(nowMs - 86_400_000).toISOString()).first();
-    if (!busy) return p;
+    if (busy) continue;
+    // Claim it for this mailbox (another mailbox in the same tick takes the next one).
+    const claimed = await env.DB.prepare(`UPDATE outreach_prospects SET sender_id = ? WHERE id = ? AND ${free}`).bind(s.id, p.id, s.id).run();
+    if ((claimed.meta.changes ?? 0) === 1) return { ...p, sender_id: s.id };
   }
   return null;
+}
+
+// ── trial credits for the businesses that sign up through their link ──────────────────────────────────────────────
+
+async function grantTrials(env: StudioEnv, set: Settings, nowMs: number): Promise<number> {
+  const rows = (await env.DB.prepare(`SELECT p.id, p.company, p.email, p.link_code, a.user_id FROM outreach_prospects p JOIN user_attribution a ON a.link_code = p.link_code
+      WHERE p.link_code IS NOT NULL AND p.converted_user IS NULL ORDER BY a.created_at LIMIT 20`).all<{ id: string; company: string; email: string; link_code: string; user_id: string }>()).results ?? [];
+  let n = 0;
+  for (const r of rows) {
+    // One account per business: the first that signs up through the link.
+    const mark = await env.DB.prepare(`UPDATE outreach_prospects SET converted_user = ?, converted_at = ?, updated_at = ${NOW} WHERE id = ? AND converted_user IS NULL`).bind(r.user_id, new Date(nowMs).toISOString(), r.id).run();
+    if ((mark.meta.changes ?? 0) !== 1) continue;
+    const credits = Math.max(0, Math.min(200, Math.floor(set.trialCredits)));
+    if (credits) await env.DB.prepare("UPDATE users SET credits = credits + ? WHERE id = ?").bind(credits, r.user_id).run();
+    await audit(asEnv(env), r.user_id, null, "outreach.trial", { prospect: r.id, credits });
+    await mailOwner(env, `Kleo outreach: ${r.company} signed up`, `${r.company} (${r.email}) opened a Kleo account through its personal link${credits ? `, and ${credits} trial credits were added to it` : ""}.\n\nAccount: ${r.user_id} (admin console, Users).`, nowMs);
+    n++;
+  }
+  return n;
+}
+
+/** The personal link of a business: a hidden short link (Sources leaves it out) that opens the app and tags the sign-up. */
+async function linkFor(env: StudioEnv, p: Prospect): Promise<string> {
+  if (p.link_code) return `${APP}/r/${p.link_code}`;
+  const slug = p.company.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 18) || "kleo";
+  const code = `${slug}-${rid("x", 4).slice(2)}`.replace(/-+/g, "-");
+  await env.DB.prepare(`INSERT INTO short_links (code, channel, label, target, created_by, archived_at) VALUES (?, 'other', ?, '/', 'outreach', ${NOW})`)
+    .bind(code, `Outreach: ${p.company}`.slice(0, 80)).run();
+  await env.DB.prepare(`UPDATE outreach_prospects SET link_code = ?, updated_at = ${NOW} WHERE id = ?`).bind(code, p.id).run();
+  return `${APP}/r/${code}`;
 }
 
 // ── the replies ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -359,7 +496,7 @@ export function ruleClass(m: Pick<Incoming, "from" | "fromName" | "subject" | "a
   if (/auto-replied|auto-generated/i.test(m.autoSubmitted ?? "") || /out of (the )?office|automatic reply|auto.?reply|on (annual )?leave|away until|on vacation/i.test(m.subject)) return "out_of_office";
   const t = m.text.trim().toLowerCase();
   if (/^(no|nope|no thanks|no thank you|not interested|stop|unsubscribe|remove)[.!]?\s*$/i.test(t) || /\b(unsubscribe|remove (me|us)|take (me|us) off|stop (e-?mailing|contacting)|do not (contact|e-?mail)|don't (contact|e-?mail))\b/i.test(t)) return "unsubscribe";
-  if (/^(yes|yes please|sure|interested|sounds good)[.!]?\s*$/i.test(t)) return "interested";
+  if (/^(yes|yes please|yes!|sure|interested|sounds good|send it over|please do)[.!]?\s*$/i.test(t)) return "interested";
   return null;
 }
 
@@ -369,7 +506,7 @@ async function aiClass(env: StudioEnv, m: Incoming, p: Prospect): Promise<{ cls:
   try {
     const r = await env.AI.run(AI_MODEL as never, {
       messages: [
-        { role: "system", content: "You sort replies to a short sales e-mail from Kleo, an AI video app, sent to a business. Answer only with JSON: {\"class\": one of \"interested\", \"question\", \"not_interested\", \"unsubscribe\", \"out_of_office\", \"wrong_person\", \"other\", \"summary\": one plain English sentence of what they said}. interested = wants to try or talk; question = asks something before deciding; not_interested = declines politely; unsubscribe = asks not to be e-mailed again; wrong_person = says someone else handles it or they left." },
+        { role: "system", content: "You sort replies to a short sales e-mail from Kleo, an AI video app, sent to a business. Answer only with JSON: {\"class\": one of \"interested\", \"question\", \"not_interested\", \"unsubscribe\", \"out_of_office\", \"wrong_person\", \"other\", \"summary\": one plain English sentence of what they said}. interested = wants to try it, says yes, asks for the link or the free credits; question = asks something before deciding; not_interested = declines politely; unsubscribe = asks not to be e-mailed again; wrong_person = says someone else handles it or they left." },
         { role: "user", content: `Business: ${p.company}\nSubject: ${m.subject}\nReply:\n${m.text.slice(0, 2500)}` },
       ],
       max_tokens: 160, temperature: 0,
@@ -396,15 +533,14 @@ async function prospectFor(env: StudioEnv, m: Incoming): Promise<Prospect | null
   return same.length === 1 ? same[0] : null;
 }
 
-export async function checkReplies(env: StudioEnv, s: Sender, nowMs: number, deps: OutreachDeps = {}): Promise<number> {
+export async function checkReplies(env: StudioEnv, s: SenderRow, set: Settings, nowMs: number, deps: OutreachDeps = {}): Promise<number> {
   let state: { uidValidity: number | null; lastUid: number } = { uidValidity: null, lastUid: 0 };
-  try { state = { uidValidity: null, lastUid: 0, ...JSON.parse((await meta(env, "outreach_imap")) ?? "{}") }; } catch { /* first time */ }
-  const got = await imapFetch(deps.dial ?? socketDial, { host: s.imapHost, port: s.imapPort, user: s.user, pass: passOf(env) },
+  try { state = { uidValidity: null, lastUid: 0, ...JSON.parse(s.imap_state ?? "{}") }; } catch { /* first time */ }
+  const got = await imapFetch(deps.dial ?? socketDial, { host: s.imap_host, port: s.imap_port, user: s.user, pass: await passOf(env, s) },
     { uidValidity: state.uidValidity, afterUid: state.lastUid, days: 14 }, new Date(nowMs));
   let handled = 0;
   for (const m of got.messages) {
-    if (m.from === s.fromAddr.toLowerCase()) continue;
-    // A bounce names the address it could not reach; any prospect named in it is done.
+    if (m.from === s.from_addr.toLowerCase()) continue;
     const rule = ruleClass(m);
     if (rule === "bounce") {
       const named = new Set([...m.failedRecipients, ...(m.text.match(/[^\s<>"'():;,]+@[a-z0-9.-]+\.[a-z]{2,}/gi) ?? []).map((x) => x.toLowerCase())]);
@@ -423,19 +559,30 @@ export async function checkReplies(env: StudioEnv, s: Sender, nowMs: number, dep
     if (cls === "out_of_office") {
       await env.DB.prepare(`UPDATE outreach_prospects SET next_at = ?, updated_at = ${NOW} WHERE id = ? AND status = 'active'`)
         .bind(new Date(Math.max(Date.parse(p.next_at ?? "") || 0, nowMs + 7 * 86_400_000)).toISOString(), p.id).run();
-    } else if (cls === "unsubscribe" || cls === "not_interested") {
-      await stopProspect(env, p.id, p.email, cls, true);
-    } else if (cls === "wrong_person") {
-      await stopProspect(env, p.id, p.email, "wrong_person", false);
-    } else {
-      await env.DB.prepare(`UPDATE outreach_prospects SET status = 'replied', next_at = NULL, replied_at = ?, reply_class = ?, reply_summary = ?, updated_at = ${NOW} WHERE id = ?`)
-        .bind(new Date(nowMs).toISOString(), cls, summary, p.id).run();
-      await mailOwner(env, `Kleo outreach: ${p.company} replied (${cls.replace("_", " ")})`,
-        `${p.company} (${m.from}) answered Kleo's e-mail.\n\nWhat they said, in one line: ${summary}\n\nTheir reply:\n${m.text.slice(0, 1500)}\n\nAnswer them from the outreach mailbox, ${s.fromAddr}: the thread is there. Kleo will not write to them again on its own.\n\nTo give their team free credits, open their account in the admin console once they sign up.`, nowMs);
+      continue;
     }
+    if (cls === "unsubscribe" || cls === "not_interested") { await stopProspect(env, p.id, p.email, cls, true); continue; }
+    if (cls === "wrong_person") { await stopProspect(env, p.id, p.email, "wrong_person", false); continue; }
+    await env.DB.prepare(`UPDATE outreach_prospects SET status = 'replied', next_at = NULL, replied_at = ?, reply_class = ?, reply_summary = ?, updated_at = ${NOW} WHERE id = ?`)
+      .bind(new Date(nowMs).toISOString(), cls, summary, p.id).run();
+    // A "yes": Kleo answers by itself, in the same thread, with the business's personal link.
+    let answered = "";
+    if (cls === "interested" && set.autoReply) {
+      try {
+        const link = await linkFor(env, p);
+        const refs = await threadRefs(env, p);
+        const all = [...refs, ...(m.messageId ? [m.messageId] : [])];
+        const raw = buildMime({ fromName: s.from_name, fromAddr: s.from_addr, to: m.from || p.email, subject: /^re:/i.test(m.subject) ? m.subject : `Re: ${m.subject || p.subject || p.company}`,
+          text: writeYes(p, { fromName: s.from_name, postal: set.postal, credits: set.trialCredits }, link), messageId: messageId(s), inReplyTo: m.messageId ?? refs.at(-1) ?? null, references: all, date: new Date(nowMs) });
+        await smtpSend(deps.dial ?? socketDial, await smtpOf(env, s), { from: s.from_addr, to: m.from || p.email, raw });
+        await env.DB.prepare("INSERT INTO outreach_log (prospect_id, email, step, ok, sender_id, at) VALUES (?, ?, 9, 1, ?, ?)").bind(p.id, m.from || p.email, s.id, new Date(nowMs).toISOString()).run();
+        answered = `Kleo already answered with their personal link (${link})${set.trialCredits ? `; their account gets ${set.trialCredits} trial credits when they sign up through it` : ""}. You'll get an e-mail when they do.`;
+      } catch (e) { answered = `Kleo could not send their link (${(e as Error).message}): answer them yourself.`; }
+    }
+    await mailOwner(env, `Kleo outreach: ${p.company} replied (${cls.replace("_", " ")})`,
+      `${p.company} (${m.from}) answered Kleo's e-mail.\n\nWhat they said, in one line: ${summary}\n\nTheir reply:\n${m.text.slice(0, 1500)}\n\n${answered || `Answer them from ${s.from_addr}: the thread is there. Kleo will not write to them again on its own.`}`, nowMs);
   }
-  await setMeta(env, "outreach_imap", JSON.stringify({ uidValidity: got.uidValidity, lastUid: got.lastUid }));
-  await setMeta(env, "outreach_checked_at", new Date(nowMs).toISOString());
+  await env.DB.prepare("UPDATE outreach_senders SET imap_state = ?, checked_at = ? WHERE id = ?").bind(JSON.stringify({ uidValidity: got.uidValidity, lastUid: got.lastUid }), new Date(nowMs).toISOString(), s.id).run();
   return handled;
 }
 
@@ -446,46 +593,70 @@ async function saveReply(env: StudioEnv, p: Prospect, m: Incoming, cls: string, 
 
 // ── openers for prospects added without one (Workers AI reads their home page) ───────────────────────────────────
 
-export async function writeOpener(env: StudioEnv, p: Prospect): Promise<string | null> {
-  if (!env.AI || !p.website) return null;
-  let page = "";
-  try {
-    const r = await fetch(p.website, { headers: { "user-agent": "Mozilla/5.0 (compatible; KleoBot/1.0; +https://kleooai.com)" }, signal: AbortSignal.timeout(8000) });
-    page = (await r.text()).replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 3500);
-  } catch { return null; }
+export const pageText = (html: string): string => html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>|<noscript[\s\S]*?<\/noscript>/gi, " ")
+  .replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&#39;|&rsquo;/g, "'").replace(/&quot;/g, '"').replace(/\s+/g, " ").trim();
+
+/** One sentence about something real on the business's site, or null when Workers AI can't write a good one. */
+export function goodOpener(line: unknown): string | null {
+  const s = String(line ?? "").trim().replace(/^["'“]|["'”]$/g, "").split("\n")[0].trim();
+  return s.length > 20 && s.length < 220 && s.split(/\s+/).length <= 30 && !/!|https?:|www\.|love your|impressive|amazing|awesome/i.test(s) ? s : null;
+}
+
+export async function writeOpener(env: StudioEnv, p: Pick<Prospect, "company" | "website">, text?: string): Promise<string | null> {
+  if (!env.AI) return null;
+  let page = text ?? "";
+  if (!page && p.website) {
+    try {
+      const r = await fetch(p.website, { headers: { "user-agent": "Mozilla/5.0 (compatible; KleoBot/1.0; +https://kleooai.com)" }, signal: AbortSignal.timeout(8000) });
+      page = pageText(await r.text()).slice(0, 3500);
+    } catch { return null; }
+  }
   if (page.length < 200) return null;
   try {
     const r = await env.AI.run(AI_MODEL as never, {
       messages: [
-        { role: "system", content: "Write the first line of a short, personal business e-mail to this company, from the founder of an AI video app. One sentence, at most 25 words, about something specific and real on their website (a service, a niche they serve, a named client or project). No flattery, no exclamation marks, no emoji, nothing you cannot see in the text. Answer with the sentence only." },
-        { role: "user", content: `Company: ${p.company}\nWebsite text:\n${page}` },
+        { role: "system", content: "Write the first line of a short, personal business e-mail to this company, from the founder of an AI video app. One sentence, at most 25 words, about something specific and real on their website (a service, a niche they serve, a named client or project), starting with \"Saw\" or \"Noticed\". No flattery, no exclamation marks, no emoji, nothing you cannot see in the text. Answer with the sentence only." },
+        { role: "user", content: `Company: ${p.company}\nWebsite text:\n${page.slice(0, 3500)}` },
       ],
       max_tokens: 80, temperature: 0.3,
     } as never) as { response?: unknown };
-    const line = String(r?.response ?? "").trim().replace(/^["']|["']$/g, "").split("\n")[0];
-    return line.length > 20 && line.length < 220 && !/!|https?:/.test(line) ? line : null;
+    return goodOpener(r?.response);
   } catch { return null; }
 }
 
 // ── the admin console's side (routed from src/studio/admin.ts) ───────────────────────────────────────────────────
 
 export async function outreachOverview(env: StudioEnv, nowMs = Date.now()): Promise<unknown> {
-  const s = await senderOf(env);
+  const set = await settingsOf(env);
   const ready = await readiness(env);
   const counts = Object.fromEntries(((await env.DB.prepare("SELECT status, COUNT(*) AS n FROM outreach_prospects GROUP BY status").all<{ status: string; n: number }>()).results ?? []).map((r) => [r.status, r.n]));
-  const day = await warmupDay(env, nowMs);
-  const sent = await sentInLastDay(env, nowMs);
-  const total = Number((await env.DB.prepare("SELECT COUNT(DISTINCT prospect_id) AS n FROM outreach_log WHERE ok = 1").first<{ n: number }>())?.n ?? 0);
-  const replied = Number((await env.DB.prepare("SELECT COUNT(DISTINCT prospect_id) AS n FROM outreach_replies WHERE class NOT IN ('bounce', 'out_of_office')").first<{ n: number }>())?.n ?? 0);
+  const one = async (sql: string, ...a: unknown[]) => Number((await env.DB.prepare(sql).bind(...a).first<{ n: number }>())?.n ?? 0);
+  const mailboxes = [];
+  for (const s of await senders(env)) {
+    const day = await warmupDay(env, s.id, nowMs);
+    mailboxes.push({ id: s.id, fromName: s.from_name, fromAddr: s.from_addr, user: s.user, smtpHost: s.smtp_host, smtpPort: s.smtp_port, imapHost: s.imap_host, imapPort: s.imap_port,
+      dailyMax: s.daily_max, passwordEnds: s.pass_last4, status: s.status, pausedReason: s.paused_reason, checkedAt: s.checked_at,
+      warmupDay: day, quota: warmupQuota(day, Math.max(1, Math.min(Number(s.daily_max) || 40, 60))), sentLastDay: await sentInLastDay(env, s.id, nowMs) });
+  }
   const replies = (await env.DB.prepare(`SELECT r.prospect_id, r.from_addr, r.subject, r.class, r.summary, r.at, p.company FROM outreach_replies r
       LEFT JOIN outreach_prospects p ON p.id = r.prospect_id ORDER BY r.id DESC LIMIT 30`).all()).results ?? [];
-  const sends = (await env.DB.prepare(`SELECT l.prospect_id, l.email, l.step, l.ok, l.error, l.at, p.company FROM outreach_log l
-      LEFT JOIN outreach_prospects p ON p.id = l.prospect_id ORDER BY l.id DESC LIMIT 30`).all()).results ?? [];
+  const sends = (await env.DB.prepare(`SELECT l.prospect_id, l.email, l.step, l.ok, l.error, l.at, p.company, s.from_addr AS sender FROM outreach_log l
+      LEFT JOIN outreach_prospects p ON p.id = l.prospect_id LEFT JOIN outreach_senders s ON s.id = l.sender_id ORDER BY l.id DESC LIMIT 30`).all()).results ?? [];
   return {
-    on: (await meta(env, "outreach_mode")) === "on", paused: await meta(env, "outreach_paused"),
-    sender: { ...s, hasPassword: !!passOf(env), passwordEnds: passOf(env) ? last4(passOf(env)) : null }, ready,
-    warmup: { day, quota: warmupQuota(day, Math.max(1, Math.min(Number(s.dailyMax) || 40, 60))), sentLastDay: sent },
-    counts, contacted: total, replied, replies, sends, countries: COUNTRIES,
+    on: (await meta(env, "outreach_mode")) === "on", settings: set, ready, mailboxes, counts,
+    contacted: await one("SELECT COUNT(DISTINCT prospect_id) AS n FROM outreach_log WHERE ok = 1 AND step = 0"),
+    replied: await one("SELECT COUNT(DISTINCT prospect_id) AS n FROM outreach_replies WHERE class NOT IN ('bounce', 'out_of_office')"),
+    signedUp: await one("SELECT COUNT(*) AS n FROM outreach_prospects WHERE converted_user IS NOT NULL"),
+    paying: await one("SELECT COUNT(DISTINCT p.converted_user) AS n FROM outreach_prospects p JOIN payments y ON y.user_id = p.converted_user AND y.status = 'paid' AND y.amount_cent > 0"),
+    variants: await variantStats(env), replies, sends, countries: COUNTRIES,
+    scout: {
+      today: Number((await meta(env, `scout_day_${new Date(nowMs).toISOString().slice(0, 10)}`)) ?? 0),
+      queued: await one("SELECT COUNT(*) AS n FROM outreach_seen WHERE status = 'queued'"),
+      checked: await one("SELECT COUNT(*) AS n FROM outreach_seen WHERE status != 'queued'"),
+      added: await one("SELECT COUNT(*) AS n FROM outreach_prospects WHERE batch LIKE 'scout%'"),
+      addedWeek: await one("SELECT COUNT(*) AS n FROM outreach_prospects WHERE batch LIKE 'scout%' AND added_at >= ?", new Date(nowMs - 7 * 86_400_000).toISOString()),
+      lastError: await meta(env, "scout_error"),
+    },
   };
 }
 
@@ -497,7 +668,7 @@ export async function listProspects(env: StudioEnv, url: URL): Promise<unknown> 
   if (status) { where.push("status = ?"); args.push(status); }
   if (q) { where.push("(LOWER(company) LIKE ? OR email LIKE ? OR LOWER(city) LIKE ?)"); args.push(`%${q}%`, `%${q}%`, `%${q}%`); }
   const sql = `SELECT id, email, company, website, country, region, city, type, contact_name, source_url, opener, fit_reason, status, stop_reason, step, next_at, batch,
-      reply_class, reply_summary, added_at, last_sent_at FROM outreach_prospects ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY added_at DESC, company LIMIT 60 OFFSET ?`;
+      reply_class, reply_summary, variant, converted_user, added_at, last_sent_at FROM outreach_prospects ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY added_at DESC, company LIMIT 60 OFFSET ?`;
   const rows = (await env.DB.prepare(sql).bind(...args, offset).all()).results ?? [];
   return { prospects: rows, more: rows.length === 60 };
 }
@@ -505,10 +676,17 @@ export async function listProspects(env: StudioEnv, url: URL): Promise<unknown> 
 export async function previewFor(env: StudioEnv, url: URL): Promise<unknown> {
   const p = await env.DB.prepare("SELECT * FROM outreach_prospects WHERE id = ?").bind(url.searchParams.get("id") ?? "").first<Prospect>();
   if (!p) throw new StudioError("No such prospect.", 404, "not_found");
-  const s = await senderOf(env);
-  const sample = { ...s, postal: s.postal || "[your postal address goes here]", fromName: s.fromName || "Leonardo" };
+  const set = await settingsOf(env);
+  const s = (await senders(env))[0];
+  const sig = { fromName: s?.from_name || "Leonardo", postal: set.postal || "[your postal address goes here]", credits: set.trialCredits };
   const link = await outreachStopLink(env, p.id);
-  return { prospect: { id: p.id, company: p.company, email: p.email }, steps: [0, 1, 2].map((i) => writeStep({ ...p, step: i }, i, sample, link)) };
+  const versions = p.variant ? [p.variant] : VARIANTS.map((v) => v.id);
+  return {
+    prospect: { id: p.id, company: p.company, email: p.email, variant: p.variant },
+    first: versions.map((v) => ({ variant: v, name: variantById(v).name, ...writeStep({ ...p, variant: v, step: 0 }, 0, sig, link) })),
+    followUps: [1, 2].map((i) => writeStep({ ...p, variant: p.variant ?? "a" }, i, sig, link)),
+    yes: writeYes(p, sig, `${APP}/r/${p.link_code ?? "their-link"}`),
+  };
 }
 
 /** Approve, reject or reset one prospect; "approve-new" approves every one still waiting. */
@@ -521,67 +699,109 @@ export async function prospectAction(env: StudioEnv, adminId: string, id: string
   }
   const set = action === "approve" ? "status = 'approved', approved_at = ?" : action === "reject" ? "status = 'rejected', approved_at = ?" : action === "reset" ? "status = 'new', approved_at = ?" : null;
   if (!set) throw new StudioError("Unknown action.", 400, "action");
-  const r = await env.DB.prepare(`UPDATE outreach_prospects SET ${set}, updated_at = ${NOW} WHERE id = ? AND status IN ('new', 'approved', 'rejected')`).bind(now, id).run();
+  const r = await env.DB.prepare(`UPDATE outreach_prospects SET ${set}, updated_at = ${NOW} WHERE id = ? AND status IN ('new', 'approved', 'rejected') AND step = 0`).bind(now, id).run();
   if (!(r.meta.changes ?? 0)) throw new StudioError("This prospect has already been written to; it can't change now.", 409, "busy");
   return { ok: true };
 }
 
-/** Saves the sender; with a new password, both halves (SMTP and IMAP) must sign in before anything is kept. */
+const hostName = (v: unknown, d: string): string => { const h = String(v ?? d).trim().toLowerCase(); if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(h)) throw new StudioError(`"${h}" isn't a server name.`, 400, "host"); return h; };
+const portOf = (v: unknown, d: number): number => { const n = Number(v); return Number.isInteger(n) && n > 0 && n < 65536 ? n : d; };
+
+/**
+ * Adds or changes one mailbox. With a password (new, or changed), sending and reading must both sign in before
+ * anything is kept; the password is sealed in the row, bound to its id.
+ */
 export async function saveSender(env: StudioEnv, adminId: string, b: Record<string, unknown>, deps: OutreachDeps = {}): Promise<unknown> {
-  const cur = await senderOf(env);
-  const port = (v: unknown, d: number) => { const n = Number(v); return Number.isInteger(n) && n > 0 && n < 65536 ? n : d; };
-  const host = (v: unknown, d: string) => { const h = String(v ?? d).trim().toLowerCase(); if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(h)) throw new StudioError(`"${h}" isn't a server name.`, 400, "host"); return h; };
-  const next: Sender = {
-    fromName: String(b.fromName ?? cur.fromName).trim().slice(0, 60) || "Leonardo",
-    fromAddr: String(b.fromAddr ?? cur.fromAddr).trim().toLowerCase(),
-    user: String(b.user ?? "").trim() || String(b.fromAddr ?? cur.fromAddr).trim() || cur.user,
-    smtpHost: host(b.smtpHost, cur.smtpHost), smtpPort: port(b.smtpPort, cur.smtpPort),
-    imapHost: host(b.imapHost, cur.imapHost), imapPort: port(b.imapPort, cur.imapPort),
-    postal: String(b.postal ?? cur.postal).trim().slice(0, 200),
-    dailyMax: Math.max(5, Math.min(60, Number(b.dailyMax ?? cur.dailyMax) || 40)),
+  const id = String(b.id ?? "").trim();
+  const cur = id ? await env.DB.prepare("SELECT * FROM outreach_senders WHERE id = ?").bind(id).first<SenderRow>() : null;
+  if (id && !cur) throw new StudioError("No such mailbox.", 404, "not_found");
+  const fromAddr = String(b.fromAddr ?? cur?.from_addr ?? "").trim().toLowerCase();
+  if (!EMAIL_RE.test(fromAddr)) throw new StudioError("The sender address doesn't look right.", 400, "from");
+  if (/@kleooai\.com$/i.test(fromAddr) || FREEMAIL.test(fromAddr)) throw new StudioError("Use a mailbox on its own domain, never kleooai.com or a Gmail, Outlook or other free address: if that mailbox ever gets a bad name, Kleo's own e-mail stays clean.", 400, "from_domain");
+  const row = {
+    from_name: String(b.fromName ?? cur?.from_name ?? "Leonardo").trim().slice(0, 60) || "Leonardo",
+    from_addr: fromAddr,
+    user: String(b.user ?? "").trim() || cur?.user || fromAddr,
+    smtp_host: hostName(b.smtpHost, cur?.smtp_host ?? "smtp.gmail.com"), smtp_port: portOf(b.smtpPort, cur?.smtp_port ?? 465),
+    imap_host: hostName(b.imapHost, cur?.imap_host ?? "imap.gmail.com"), imap_port: portOf(b.imapPort, cur?.imap_port ?? 993),
+    daily_max: Math.max(5, Math.min(60, Number(b.dailyMax ?? cur?.daily_max ?? 40) || 40)),
   };
-  if (!EMAIL_RE.test(next.fromAddr)) throw new StudioError("The sender address doesn't look right.", 400, "from");
-  if (/@kleooai\.com$|@gmail\.com$/i.test(next.fromAddr)) throw new StudioError("Use the outreach mailbox on its own domain, never kleooai.com or a Gmail address: if that mailbox ever gets a bad name, Kleo's own e-mail stays clean.", 400, "from_domain");
   const newPass = String(b.password ?? "").replace(/\s+/g, "");
-  const pass = newPass || passOf(env);
-  if (pass) {
-    const dial = deps.dial ?? socketDial;
-    try { await smtpSend(dial, { host: next.smtpHost, port: next.smtpPort, user: next.user, pass }); }
-    catch (e) { throw new StudioError(`Sending didn't sign in: ${(e as Error).message}. Nothing was saved.`, 400, "smtp"); }
-    try { await imapLogin(dial, { host: next.imapHost, port: next.imapPort, user: next.user, pass }); }
-    catch (e) { throw new StudioError(`Reading replies didn't sign in: ${(e as Error).message}. Nothing was saved.`, 400, "imap"); }
+  const pass = newPass || (cur ? await passOf(env, cur) : "");
+  if (!pass) throw new StudioError("Add the mailbox's app password.", 400, "password");
+  const dial = deps.dial ?? socketDial;
+  try { await smtpSend(dial, { host: row.smtp_host, port: row.smtp_port, user: row.user, pass }); }
+  catch (e) { throw new StudioError(`Sending didn't sign in: ${(e as Error).message}. Nothing was saved.`, 400, "smtp"); }
+  try { await imapLogin(dial, { host: row.imap_host, port: row.imap_port, user: row.user, pass }); }
+  catch (e) { throw new StudioError(`Reading replies didn't sign in: ${(e as Error).message}. Nothing was saved.`, 400, "imap"); }
+  const sid = cur?.id ?? rid("s", 6);
+  const sealed = await sealKey(env.INTERNAL_SECRET, passName(sid), pass);
+  if (cur) {
+    await env.DB.prepare(`UPDATE outreach_senders SET from_name = ?, from_addr = ?, user = ?, smtp_host = ?, smtp_port = ?, imap_host = ?, imap_port = ?, daily_max = ?,
+        sealed_pass = ?, pass_last4 = ?, status = 'active', paused_reason = NULL, paused_at = NULL WHERE id = ?`)
+      .bind(row.from_name, row.from_addr, row.user, row.smtp_host, row.smtp_port, row.imap_host, row.imap_port, row.daily_max, sealed, last4(pass), sid).run();
+  } else {
+    try {
+      await env.DB.prepare(`INSERT INTO outreach_senders (id, from_name, from_addr, user, smtp_host, smtp_port, imap_host, imap_port, daily_max, sealed_pass, pass_last4, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`)
+        .bind(sid, row.from_name, row.from_addr, row.user, row.smtp_host, row.smtp_port, row.imap_host, row.imap_port, row.daily_max, sealed, last4(pass)).run();
+    } catch { throw new StudioError("That mailbox is already in the list.", 409, "exists"); }
   }
-  await setMeta(env, "outreach_sender", JSON.stringify(next));
-  if (newPass) {
-    await env.DB.prepare(`INSERT INTO key_overrides (name, sealed, last4, set_at, set_by) VALUES ('OUTREACH_SMTP_PASS', ?, ?, ${NOW}, ?)
-        ON CONFLICT(name) DO UPDATE SET sealed = excluded.sealed, last4 = excluded.last4, set_at = excluded.set_at, set_by = excluded.set_by`)
-      .bind(await sealKey(env.INTERNAL_SECRET, "OUTREACH_SMTP_PASS", newPass), last4(newPass), adminId).run();
-    forgetKeys();
-  }
-  await env.DB.prepare("DELETE FROM studio_meta WHERE key IN ('outreach_paused', 'outreach_paused_at')").run();
-  await audit(asEnv(env), adminId, null, "admin.outreach_sender", { from: next.fromAddr, smtp: next.smtpHost, password: newPass ? last4(newPass) : null });
-  return { ok: true, tested: !!pass };
+  await audit(asEnv(env), adminId, null, "admin.outreach_sender", { id: sid, from: row.from_addr, smtp: row.smtp_host, password: newPass ? last4(newPass) : null });
+  return { ok: true, id: sid };
+}
+
+/** A mailbox off (its prospects stay with it and wait) or on again; "remove" only when it never sent anything. */
+export async function senderAction(env: StudioEnv, adminId: string, id: string, action: string): Promise<unknown> {
+  if (action === "remove") {
+    const used = await env.DB.prepare("SELECT 1 AS one FROM outreach_log WHERE sender_id = ? LIMIT 1").bind(id).first();
+    if (used) throw new StudioError("This mailbox has threads going; switch it off instead, so their replies are still read.", 409, "busy");
+    await env.DB.prepare("DELETE FROM outreach_senders WHERE id = ?").bind(id).run();
+  } else if (action === "off" || action === "on") {
+    await env.DB.prepare("UPDATE outreach_senders SET status = ?, paused_reason = NULL, paused_at = NULL WHERE id = ?").bind(action === "off" ? "off" : "active", id).run();
+  } else throw new StudioError("Unknown action.", 400, "action");
+  await audit(asEnv(env), adminId, null, "admin.outreach_sender_action", { id, action });
+  return { ok: true };
+}
+
+export async function saveSettings(env: StudioEnv, adminId: string, b: Record<string, unknown>): Promise<Settings> {
+  const cur = await settingsOf(env);
+  const next: Settings = {
+    postal: b.postal === undefined ? cur.postal : String(b.postal).trim().slice(0, 200),
+    trialCredits: b.trialCredits === undefined ? cur.trialCredits : Math.max(0, Math.min(200, Math.floor(Number(b.trialCredits) || 0))),
+    autoReply: b.autoReply === undefined ? cur.autoReply : b.autoReply === true,
+    autoApprove: b.autoApprove === undefined ? cur.autoApprove : b.autoApprove === true,
+    scoutOn: b.scoutOn === undefined ? cur.scoutOn : b.scoutOn === true,
+    scoutDaily: b.scoutDaily === undefined ? cur.scoutDaily : Math.max(5, Math.min(200, Math.floor(Number(b.scoutDaily) || 30))),
+  };
+  await setMeta(env, "outreach_settings", JSON.stringify(next));
+  await audit(asEnv(env), adminId, null, "admin.outreach_settings", { ...next, postal: next.postal ? "set" : "" });
+  return next;
 }
 
 export async function setOutreachMode(env: StudioEnv, adminId: string, on: boolean): Promise<unknown> {
   if (on) {
     const r = await readiness(env);
-    if (!r.ok) throw new StudioError(!r.sender ? "Set the sender first." : !r.password ? "Add the mailbox's app password first." : !r.postal ? "Add the postal address first: the law wants it in every e-mail." : "Approve some prospects first.", 400, "not_ready");
+    if (!r.ok) throw new StudioError(!r.senders ? "Add a mailbox first." : !r.postal ? "Add the postal address first: the law wants it in every e-mail." : "Approve some businesses first.", 400, "not_ready");
   }
   await setMeta(env, "outreach_mode", on ? "on" : "off");
   await audit(asEnv(env), adminId, null, "admin.outreach_mode", { on });
   return { ok: true, on };
 }
 
-/** The first e-mail for a sample prospect, through the real mailbox, to the sender's own address. */
-export async function sendOutreachTest(env: StudioEnv, deps: OutreachDeps = {}): Promise<unknown> {
-  const s = await senderOf(env);
-  if (!s.fromAddr || !passOf(env)) throw new StudioError("Set the sender and its app password first.", 400, "not_ready");
+/** The first e-mail for a sample prospect, through one real mailbox, to that mailbox itself. */
+export async function sendOutreachTest(env: StudioEnv, senderId: string | null, deps: OutreachDeps = {}): Promise<unknown> {
+  const list = await senders(env);
+  const s = list.find((x) => x.id === senderId) ?? list[0];
+  if (!s?.sealed_pass) throw new StudioError("Add a mailbox first.", 400, "not_ready");
+  const set = await settingsOf(env);
   const p = await env.DB.prepare("SELECT * FROM outreach_prospects WHERE status IN ('new', 'approved') ORDER BY RANDOM() LIMIT 1").first<Prospect>();
-  const sample: Prospect = p ?? { id: "p_sample", email: s.fromAddr, domain: "", company: "Sample Agency", website: null, country: "US", region: null, city: "Austin", type: "social-media-agency",
-    contact_name: "Sam", source_url: "https://example.com/contact", opener: null, fit_reason: null, status: "new", step: 0, next_at: null, tz: null, thread_id: null, subject: null, batch: null };
-  const w = writeStep({ ...sample, email: sample.email }, 0, { ...s, postal: s.postal || "[postal address]" }, await outreachStopLink(env, sample.id));
-  const raw = buildMime({ fromName: s.fromName, fromAddr: s.fromAddr, to: s.fromAddr, subject: `[Test, as ${sample.company} would get it] ${w.subject}`, text: w.text, messageId: messageId(s) });
-  await smtpSend(deps.dial ?? socketDial, { host: s.smtpHost, port: s.smtpPort, user: s.user, pass: passOf(env) }, { from: s.fromAddr, to: s.fromAddr, raw });
-  return { ok: true, to: s.fromAddr };
+  const sample: Prospect = p ?? { id: "p_sample", email: s.from_addr, domain: "", company: "Sample Agency", website: null, country: "US", region: null, city: "Austin", type: "social-media-agency",
+    contact_name: "Sam", source_url: "https://example.com/contact", opener: null, fit_reason: null, status: "new", step: 0, next_at: null, tz: null, thread_id: null, subject: null, batch: null,
+    sender_id: null, variant: null, link_code: null, converted_user: null, reply_class: null };
+  const w = writeStep({ ...sample, variant: sample.variant ?? pickVariant(await variantStats(env), deps.random ?? Math.random) }, 0,
+    { fromName: s.from_name, postal: set.postal || "[postal address]", credits: set.trialCredits }, await outreachStopLink(env, sample.id));
+  const raw = buildMime({ fromName: s.from_name, fromAddr: s.from_addr, to: s.from_addr, subject: `[Test, as ${sample.company} would get it] ${w.subject}`, text: w.text, messageId: messageId(s) });
+  await smtpSend(deps.dial ?? socketDial, await smtpOf(env, s), { from: s.from_addr, to: s.from_addr, raw });
+  return { ok: true, to: s.from_addr };
 }

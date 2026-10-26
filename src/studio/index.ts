@@ -50,7 +50,8 @@ import { pruneIps, recordIp } from "./ips.ts";
 import { ADMIN_SITE_API, ADMIN_SITE_PATH, CONSOLE_PATH, adminUrl, certProblem, isAdminHost, misdirected, noteRefused, refused } from "./admin-host.ts";
 import { SHORT_LINK_PATH, arrivalOf, clearTouchCookie, firstVisit, shortLink } from "./attribution.ts";
 import { handleStop, livePrices, mailTick, sendSeriesToOwner } from "./onboarding.ts";
-import { handleOutreachStop, outreachTick } from "./outreach.ts";
+import { handleOutreachStop, outreachTick, settingsOf } from "./outreach.ts";
+import { scoutTick } from "./scout.ts";
 import { morningDigest } from "./digest.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
@@ -710,6 +711,8 @@ export default {
     // Outreach, two minutes later: the mailbox's replies every quarter of an hour, one e-mail at most (outreach.ts).
     if (new Date(_event.scheduledTime || Date.now()).getUTCMinutes() % 5 === 4) {
       try { await outreachTick(env); } catch (e) { console.error("studio outreach", e instanceof Error ? e.message : e); }
+      // The scout: one search and a few websites checked, while the owner keeps it on (src/studio/scout.ts).
+      try { await scoutTick(env, await settingsOf(env)); } catch (e) { console.error("studio scout", e instanceof Error ? e.message : e); }
       // The owner's morning e-mail about both, at 8:00 in Auckland (src/studio/digest.ts).
       try { await morningDigest(env); } catch (e) { console.error("studio digest", e instanceof Error ? e.message : e); }
     }

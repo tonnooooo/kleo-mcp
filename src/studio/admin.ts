@@ -36,14 +36,16 @@
  *   POST /api/admin/emails/mode              {on, code?}                    switch them on (a fresh code) or off
  *   POST /api/admin/emails/test              {}                             every e-mail to the owner's own inbox
  *   POST /api/admin/emails/suppress          {email, on}                    stop (or allow again) one address
- *   GET  /api/admin/outreach                 outreach: the switch, the sender (never its password), warm-up, counts,
- *                                            the last sends and replies (src/studio/outreach.ts)
+ *   GET  /api/admin/outreach                 outreach: the switch, the mailboxes (never a password), warm-up, settings,
+ *                                            counts, sign-ups, the versions' replies, the scout, the last sends and replies
  *   GET  /api/admin/outreach/prospects?status&q&offset    the businesses, 60 at a time
- *   GET  /api/admin/outreach/preview?id      the three e-mails one prospect would get
- *   POST /api/admin/outreach/sender          {fromName, fromAddr, user, smtpHost, smtpPort, imapHost, imapPort, postal,
- *                                            dailyMax, password?, code?}  saved only once SMTP and IMAP sign in
+ *   GET  /api/admin/outreach/preview?id      every e-mail one prospect would get (src/studio/outreach.ts)
+ *   POST /api/admin/outreach/senders         {id?, fromName, fromAddr, user, smtpHost, smtpPort, imapHost, imapPort,
+ *                                            dailyMax, password?, code}   a mailbox, kept only once SMTP and IMAP sign in
+ *   POST /api/admin/outreach/senders/:id     {action: on|off|remove}
+ *   POST /api/admin/outreach/settings        {postal?, trialCredits?, autoReply?, autoApprove?, scoutOn?, scoutDaily?, code?}
  *   POST /api/admin/outreach/mode            {on, code?}                    on needs everything ready and a fresh code
- *   POST /api/admin/outreach/test            {}                             the first e-mail to the mailbox itself
+ *   POST /api/admin/outreach/test            {sender?}                      the first e-mail to the mailbox itself
  *   POST /api/admin/outreach/prospects/:id   {action: approve|reject|reset}
  *   POST /api/admin/outreach/approve-new     {}                             every prospect still waiting
  *   POST /api/admin/outreach/import          {csv, batch}                   more prospects, checked like the first
@@ -68,7 +70,7 @@ import { IP_RETENTION_DAYS } from "./ips.ts";
 import { adminAuthApi, adminSessionOf, checkFreshCode, FRESH_MIN, isFresh, securityInfo, touchSession, type AdminSession } from "./admin-auth.ts";
 import { keyAction, listKeys } from "./admin-keys.ts";
 import { CODE_RE, LINK_CHANNELS, getLink, type LinkChannel, type LinkRow } from "./attribution.ts";
-import { addProspects, listProspects, outreachOverview, parseCsv, previewFor, prospectAction, saveSender, sendOutreachTest, setOutreachMode } from "./outreach.ts";
+import { addProspects, listProspects, outreachOverview, parseCsv, previewFor, prospectAction, saveSender, saveSettings, sendOutreachTest, senderAction, setOutreachMode } from "./outreach.ts";
 import { ALL_MAILS, SERIES, comebackMail, compose, factsOf, livePrices, mailMode, renderHtml, renderText, sampleFacts, sendSeriesToOwner, setMailMode, type MailKey } from "./onboarding.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
@@ -828,15 +830,22 @@ async function freshGate(env: StudioEnv, request: Request, gate: Gate, adminId: 
 }
 
 async function outreachRoute(env: StudioEnv, request: Request, gate: Gate, adminId: string, path: string, b: Record<string, unknown>): Promise<Response> {
-  if (path === "/api/admin/outreach/sender") {
-    if (String(b.password ?? "").trim()) await freshGate(env, request, gate, adminId, b);
+  // A mailbox's password, and the settings that write to strangers or spend money, want a fresh code.
+  if (path === "/api/admin/outreach/senders") {
+    await freshGate(env, request, gate, adminId, b);
     return json(await saveSender(env, adminId, b));
+  }
+  const sm = path.match(/^\/api\/admin\/outreach\/senders\/(s_[a-z0-9]{4,20})$/);
+  if (sm) return json(await senderAction(env, adminId, sm[1], String(b.action ?? "")));
+  if (path === "/api/admin/outreach/settings") {
+    if (b.scoutOn === true || b.autoApprove === true || (b.trialCredits !== undefined && Number(b.trialCredits) > 50)) await freshGate(env, request, gate, adminId, b);
+    return json(await saveSettings(env, adminId, b));
   }
   if (path === "/api/admin/outreach/mode") {
     if (b.on === true) await freshGate(env, request, gate, adminId, b);
     return json(await setOutreachMode(env, adminId, b.on === true));
   }
-  if (path === "/api/admin/outreach/test") return json(await sendOutreachTest(env));
+  if (path === "/api/admin/outreach/test") return json(await sendOutreachTest(env, typeof b.sender === "string" ? b.sender : null));
   if (path === "/api/admin/outreach/approve-new") return json(await prospectAction(env, adminId, "", "approve-new"));
   if (path === "/api/admin/outreach/import") {
     const rows = typeof b.csv === "string" ? parseCsv(b.csv) : Array.isArray(b.prospects) ? b.prospects as Record<string, unknown>[] : [];

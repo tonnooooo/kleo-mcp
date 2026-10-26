@@ -334,3 +334,6 @@ button.adm-urow:hover { background: var(--fill-2); }
 .adm-mail { border-radius: 12px; overflow: hidden; }
 .adm-mailtext { white-space: pre-wrap; word-break: break-word; margin: 8px 0 0; font-family: inherit; font-size: 16px; line-height: 1.55; color: var(--ink); }
 .adm-csv { width: 100%; min-height: 120px; resize: vertical; font: 15px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.adm-subhead { font-size: 17px; margin: 22px 0 6px; }
+.adm-toggle { margin: 12px 0 4px; }
+.adm-toggle span span { color: var(--ink-2); font-weight: 400; }
