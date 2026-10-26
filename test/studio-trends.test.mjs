@@ -363,7 +363,7 @@ test("You Tweaking (25 October 2026): Ausar's way, Wan 3.0 Prime, both photos, a
   const app = toolByKey(t.key);
   assert.equal(app.seconds, 15);
   assert.deepEqual(app.fields.filter((f) => f.kind === "image").map((f) => [f.key, f.required, f.hint]),
-    [["person1", true, "The one in black · a clear photo"], ["person2", true, "The one in white · a clear photo"]]);
+    [["person1", true, "Takes the place of the guy in black · a clear photo"], ["person2", true, "Takes the place of the girl in white · a clear photo"]]);
   const plan = planTool(t.key, { quality: "720p" }, { person1: photo("up_m"), person2: photo("up_f") });
   assert.equal(plan.usd, 4.5);
   assert.equal(plan.tasks.length, 1);
@@ -374,6 +374,14 @@ test("You Tweaking (25 October 2026): Ausar's way, Wan 3.0 Prime, both photos, a
   assert.deepEqual(input.reference_images, [photo("up_m").url, photo("up_f").url]);
   assert.equal(input.generate_audio, false);
   assert.equal(input.prompt, t.prompt);
+  assert.match(input.prompt, /Nothing of her long hair, crop top, bare midriff, jeans, long nails or piercings stays unless Image 2 has them\./);
+  assert.match(input.prompt, /the same pure white backdrop, as bright as in Video 1/);
+  // What the vision check read on the photos reaches the prompt, numbered like the photos; ordinary photos add nothing.
+  const odd = planTool(t.key, { quality: "720p" }, { person1: { ...photo("up_m"), facts: { person: true, people: 1, colour: "colour", framing: "waist-up" } }, person2: { ...photo("up_f"), facts: { person: true, people: 3, colour: "greyscale", framing: "head" } } }).tasks[0].input.prompt;
+  assert.ok(odd.startsWith(t.prompt + "\n\nABOUT THE PHOTOS\n"), odd.slice(-400));
+  assert.match(odd, /\nImage 2 is a black-and-white photo: give that person natural, realistic colour \(skin, hair and clothes\)\.\nImage 2 shows more than one person: use only the main person in it, the largest and closest to the camera, and nobody else from it\.\nImage 2 shows only the head: take the face and hair from it/);
+  assert.doesNotMatch(odd, /Image 1 (is a black|shows)/);
+  assert.equal(planTool(t.key, { quality: "720p" }, { person1: { ...photo("up_m"), facts: { person: true, people: 1, colour: "colour", framing: "full-body" } }, person2: { ...photo("up_f"), facts: { person: true } } }).tasks[0].input.prompt, t.prompt);
   // Ausar's style: the two told apart by what they look like, never by times (the standard run re-timed the cuts).
   assert.doesNotMatch(input.prompt, /\d\.\d\s*s\b|\ds;/);
   assert.match(input.prompt, /PERSON 1 -> Image 1\nOriginal: the young man in a black durag/);
@@ -386,6 +394,16 @@ test("You Tweaking (25 October 2026): Ausar's way, Wan 3.0 Prime, both photos, a
   assert.throws(() => planTool(t.key, { quality: "720p" }, { person2: photo("up_f") }), (e) => e instanceof ToolRefusal && /each of the 2 people/.test(e.message));
   // Every other template stays on the standard model and its price.
   for (const x of TRENDS) if (x.key !== t.key) assert.equal(planTool(x.key, { quality: "480p" }, Object.fromEntries(x.seats.map((s) => [s.key, photo(`up_${s.key}`)]))).tasks[0].model, WAN30_EDIT_MODEL, x.key);
+});
+
+test("photo notes (27 October 2026): a seat-by-seat template is told about a black-and-white or head-only photo; a template written shot by shot keeps its own words", () => {
+  const w = trendByKey("trend-window-peeper");
+  const plain = planTool(w.key, { quality: "480p" }, { person1: photo("up_w") }).tasks[0].input.prompt;
+  const grey = planTool(w.key, { quality: "480p" }, { person1: { ...photo("up_w"), facts: { person: true, colour: "greyscale", framing: "head" } } }).tasks[0].input.prompt;
+  assert.equal(grey, `${plain}\n\nABOUT THE PHOTOS\nImage 1 is a black-and-white photo: give that person natural, realistic colour (skin, hair and clothes).\nImage 1 shows only the head: take the face and hair from it, and give that person simple everyday clothes that suit them, never the clothes of the person they replace.`);
+  const ck = planTool("trend-crossover-king-pt1", { quality: "480p" }, { person1: { ...photo("up_c"), facts: { person: true, colour: "greyscale" } } }).tasks[0].input.prompt;
+  assert.doesNotMatch(ck, /ABOUT THE PHOTOS/);
+  assert.match(ck, /Image 1 is a black-and-white photo/);
 });
 
 test("Window Peeper (25 October 2026): one seat, the whole 14 s clip on R2, priced as WaveSpeed quoted it", () => {

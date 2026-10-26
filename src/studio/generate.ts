@@ -1169,8 +1169,9 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
         await audit(asEnv(env), userId, null, "studio.photo_facts", { tool: tool.key, seat: seat.key, colour: facts.colour, framing: facts.framing, face: facts.face });
       }
     }
-    // A template written shot by shot tells the photos apart with these facts: its instruction is written again.
-    if (trend.shots) plan = planTool(tool.key, inputs, media);
+    // The instruction is written again with these facts: a template written shot by shot tells the photos apart with
+    // them, and every template is told about a black-and-white photo, a photo of several people or of the head only.
+    plan = planTool(tool.key, inputs, media);
   }
 
   // Words to speak become a sound clip first: its exact length prices the talking video, and for a voiceover it IS
