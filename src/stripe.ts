@@ -3,7 +3,7 @@ import { getUser, creditPurchase, paymentByIntent, takeBackCredits, audit } from
 import { json, hmacHex, safeEqual } from "./util";
 import { isFlagActive } from "./schema";
 import { rewardReferral, takeBackReferral } from "./referral.ts";
-import { periodCents, planByKey, planForAmount, topupBonusCredits, type Plan } from "./plans.ts";
+import { periodCents, planByKey, planForAmount, readPlanRef, topupBonusCredits, type Plan } from "./plans.ts";
 
 /**
  * The credit packs. ONE list, and it is the only place a price and a number of credits are tied together: the
@@ -279,7 +279,7 @@ const subscriptionOf = (o: Record<string, any>): string | null => {
  */
 async function handlePlanCheckout(env: Env, event: { id?: string; type?: string }, s: Record<string, any>): Promise<Response> {
   const sessionId = typeof s.id === "string" ? s.id : "";
-  const userId = typeof s.client_reference_id === "string" ? s.client_reference_id : "";
+  const ref = typeof s.client_reference_id === "string" ? s.client_reference_id : "";
   const eur = eurCents(s);
   const cents = eur ?? -1;
   const currency = "eur";
@@ -287,6 +287,10 @@ async function handlePlanCheckout(env: Env, event: { id?: string; type?: string 
   const paid = s.payment_status === "paid" || s.payment_status === "no_payment_required";
   if (!sessionId || !paid) return json({ ok: true, ignored: "not a completed payment" });
   if (eur === null) { await audit(env, null, null, "stripe.wrong_currency", { session: sessionId, currency: shown || null }); return json({ ok: true, ignored: `unsupported currency ${shown || "unknown"}` }); }
+  // The account the checkout names (src/plans.ts planRef): Kleo's signed reference, or a bare id. A session Kleo's own
+  // server made (studio/pay.ts, no payment_link) names the signed-in account; a Payment Link's bare id is the buyer's word.
+  const { userId, signed } = ref ? await readPlanRef(env.INTERNAL_SECRET, ref) : { userId: "", signed: false };
+  const trusted = signed || !s.payment_link;
   const match = planForAmount(cents);
   if (!match) return json({ ok: true, ignored: `no plan costs ${cents} ${currency}` });
   const known = userId && (await getUser(env, userId)) ? userId : null;
@@ -298,14 +302,26 @@ async function handlePlanCheckout(env: Env, event: { id?: string; type?: string 
   const credited = await creditPurchase(env, {
     sessionId, userId: known, credits: match.tier.credits, cents, currency, email,
     paymentIntent: pi, eventId: event.id ?? null, eventType: event.type ?? null,
-    country, rawRef: userId || null,
+    country, rawRef: ref || null,
   });
   await keepPaymentIntent(env, sessionId, pi);
   if (known && credited) {
     const now = Date.now();
+    const sub = typeof s.subscription === "string" ? s.subscription : null;
+    // A bare id from a Payment Link never takes over a subscription the account already holds (26 October 2026, the
+    // security review): its renewals would stop finding the account. The credits stay where they went (a stranger's
+    // gift); the owner sees the payment in the audit and binds it by hand if it was really the account's own.
+    if (!trusted) {
+      const held = await env.DB.prepare("SELECT plan_sub FROM users WHERE id = ? AND plan_sub IS NOT NULL AND plan_sub != ? AND (plan_status = 'active' OR plan_until > ?)")
+        .bind(known, sub ?? "", iso(now)).first<{ plan_sub: string }>();
+      if (held) {
+        await audit(env, known, null, "plan.not_bound", { plan: match.plan.key, period: match.period, session: sessionId, subscription: sub, held: held.plan_sub, why: "unsigned payment-link reference" });
+        return json({ ok: true, plan: match.plan.key, period: match.period, credits: match.tier.credits, bound: false });
+      }
+    }
     await env.DB.prepare(`UPDATE users SET plan = ?, plan_period = ?, plan_credits = ?, plan_until = ?, plan_status = 'active', plan_sub = ?, plan_customer = ?, plan_next_grant = ? WHERE id = ?`)
       .bind(match.plan.key, match.period, match.tier.credits, iso(now + (match.period === "year" ? 366 : 31) * DAY_MS),
-        typeof s.subscription === "string" ? s.subscription : null, typeof s.customer === "string" ? s.customer : null, iso(now + 28 * DAY_MS), known).run();
+        sub, typeof s.customer === "string" ? s.customer : null, iso(now + 28 * DAY_MS), known).run();
     await audit(env, known, null, "plan.started", { plan: match.plan.key, period: match.period, credits: match.tier.credits, cents, session: sessionId });
     try { await rewardReferral(env, known, sessionId); } catch (e) { await audit(env, known, null, "referral.error", { session: sessionId, error: String(e).slice(0, 300) }); }
   }

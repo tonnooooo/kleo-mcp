@@ -23,6 +23,7 @@
  *
  * Pure module: no Env, no I/O.
  */
+import { hmacHex, safeEqual } from "./util";
 
 export type PlanKey = "lite" | "starter" | "pro" | "agency";
 export type PlanPeriod = "month" | "year";
@@ -81,7 +82,26 @@ export function planLinks(raw: string | undefined): Record<string, string> {
   } catch { return {}; }
 }
 
-/** The catalog the pricing page draws: prices, credits, discounts and the buy links (with the account tied in). */
+/**
+ * THE PLAN LINK'S ACCOUNT REFERENCE (26 October 2026, the security review). A Payment Link takes any
+ * client_reference_id its buyer types into the address, so a bare account id let a stranger, for the price of the
+ * cheapest plan, bind their own subscription to somebody else's account (src/stripe.ts handlePlanCheckout). The links
+ * Kleo hands a signed-in account carry `<account>-<HMAC of it>` instead: only Kleo can make one, so the webhook knows
+ * the account asked for this plan itself. Stripe allows letters, digits, dashes and underscores here, 200 at most.
+ */
+const PLAN_REF_HEX = 32;
+const planRefSig = async (secret: string, userId: string): Promise<string> => (await hmacHex(secret, `plan-ref:${userId}`)).slice(0, PLAN_REF_HEX);
+export async function planRef(secret: string, userId: string): Promise<string> {
+  return `${userId}-${await planRefSig(secret, userId)}`;
+}
+/** The account a plan checkout names, and whether Kleo signed it (planRef). Anything else is a bare id, unsigned. */
+export async function readPlanRef(secret: string, ref: string): Promise<{ userId: string; signed: boolean }> {
+  const m = /^(.+)-([0-9a-f]{32})$/.exec(ref);
+  if (m && safeEqual(m[2], await planRefSig(secret, m[1]))) return { userId: m[1], signed: true };
+  return { userId: ref, signed: false };
+}
+
+/** The catalog the pricing page draws: prices, credits, discounts and the buy links (with the account's planRef tied in). */
 export function publicPlans(raw: string | undefined, userId: string | null): unknown[] {
   const links = planLinks(raw);
   const base = PLANS[0].tiers[0].cents / PLANS[0].tiers[0].credits; // Lite monthly cents per credit
