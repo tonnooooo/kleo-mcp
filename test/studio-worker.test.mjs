@@ -597,46 +597,45 @@ test("an evicted claimant is out by every road: their linked Google, their Kleo 
   assert.equal((await call(env, "/api/me", { cookie: squat })).status, 401, "and their session ended");
 });
 
-test("an old anonymous account merged into another is retired with that account's key: eviction and a new Kleo key end its key, session and password; a sign-out does not", async () => {
+test("an old anonymous account merged into another opens nothing in Studio: its session ends at the merge, and no key, password, Google sign-in or connection opens it (27 October 2026)", async () => {
   const env = newEnv({ GOOGLE_CLIENT_ID: "gid", GOOGLE_CLIENT_SECRET: "gs", STUDIO_SIGNUP: "all" });
-  // Someone signs up with Vera's address; an old anonymous account of theirs, signed in to Studio with its key, is merged
-  // into it (src/connect.ts mergeAnonymous), and that old account's own session then adds a password to it.
-  const squat = await signUp(env, "vera@gmail.com");
-  const squatId = (await call(env, "/api/me", { cookie: squat })).json.id;
+  // Vera's account, and an old anonymous account whose holder signed in to Studio with its key BEFORE it was merged into
+  // Vera's (src/connect.ts mergeAnonymous). That session used to survive and could add a password or a Google sign-in.
+  const vera = await signUp(env, "vera@gmail.com");
+  const veraId = (await call(env, "/api/me", { cookie: vera })).json.id;
   env.DB.db.exec("INSERT INTO users (id, email, credits) VALUES ('u_anonmerged01', 'u_anonmerged01@anon.kleo.invalid', 0)");
   const anonKey = await accounts.makeHandle(env, "u_anonmerged01");
   const anon = cookieOf(await call(env, "/api/auth/key", { method: "POST", body: { key: anonKey } }));
-  env.DB.db.prepare("UPDATE users SET merged_into = ? WHERE id = 'u_anonmerged01'").run(squatId);
-  assert.equal((await call(env, "/api/auth/password", { method: "POST", cookie: anon, body: { email: "anon@x.io", password: "long enough pw" } })).status, 200);
-  // Merging retires no key, but a merged key opens nothing any more (signInWithKey): never the account it went into.
-  assert.equal(await accounts.verifyHandle(env, anonKey), "u_anonmerged01");
+  assert.equal((await call(env, "/api/me", { cookie: anon })).json.id, "u_anonmerged01");
+  env.DB.db.prepare("UPDATE users SET merged_into = ? WHERE id = 'u_anonmerged01'").run(veraId);
+  // The merge ends that session at once: nothing can be added to the merged account, and nothing connected from it.
+  assert.equal((await call(env, "/api/me", { cookie: anon })).status, 401, "its session ended with the merge");
+  assert.equal((await call(env, "/api/auth/password", { method: "POST", cookie: anon, body: { email: "anon@x.io", password: "long enough pw" } })).status, 401);
+  assert.equal((await call(env, "/api/connect", { method: "POST", cookie: anon, body: { r: "x" } })).status, 401);
+  const linked = await social(env, "google", { sub: "g-anon", aud: "gid", email: "anon@gmail.com", email_verified: true }, { cookie: anon, link: true });
+  assert.match(linked.location ?? "", /signin_error=signin/, "no session, so no Google sign-in is added to it");
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM studio_logins WHERE user_id = 'u_anonmerged01'").get().n, 0);
+  // Its key opens nothing either: never the account it went into.
+  assert.equal(await accounts.verifyHandle(env, anonKey), "u_anonmerged01", "merging alone retires no key");
   const viaKey = await call(env, "/api/auth/key", { method: "POST", body: { key: anonKey } });
   assert.equal(viaKey.status, 401);
   assert.equal(viaKey.json.code, "merged_key");
-  // A password change and "sign out everywhere" retire no key: the merged account's session and key are left alone.
-  const changed = await call(env, "/api/auth/password/change", { method: "POST", cookie: squat, body: { current: "long enough pw", password: "brand new pass" } });
-  assert.equal(changed.status, 200, changed.text);
-  assert.equal((await call(env, "/api/auth/signout-all", { method: "POST", cookie: cookieOf(changed) })).status, 200);
-  assert.equal((await call(env, "/api/me", { cookie: anon })).json.id, "u_anonmerged01", "the merged account's session outlives a sign-out of the other");
-  assert.equal(await accounts.verifyHandle(env, anonKey), "u_anonmerged01");
-  // Vera signs in with Google: the account is handed to her, and every road in through the merged account goes with the claimant.
-  const vera = await social(env, "google", { sub: "g-vera", aud: "gid", email: "vera@gmail.com", email_verified: true });
-  assert.equal((await call(env, "/api/me", { cookie: vera.cookie })).json.id, squatId);
-  assert.equal(await accounts.verifyHandle(env, anonKey), null, "the merged account's key is retired");
-  assert.equal((await call(env, "/api/auth/key", { method: "POST", body: { key: anonKey } })).status, 401);
-  assert.equal((await call(env, "/api/me", { cookie: anon })).status, 401, "its session ended");
-  assert.equal((await call(env, "/api/auth/signin", { method: "POST", body: { email: "anon@x.io", password: "long enough pw" } })).status, 401, "and its password no longer opens it");
-  // New Kleo key: another old account merged into Vera's loses its key and its session too.
+  // A sign-in the merged account already held (an account merged by hand) opens nothing: password or Google.
   env.DB.db.exec("INSERT INTO users (id, email, credits) VALUES ('u_anonmerged02', 'u_anonmerged02@anon.kleo.invalid', 0)");
-  const key2 = await accounts.makeHandle(env, "u_anonmerged02");
-  const anon2 = cookieOf(await call(env, "/api/auth/key", { method: "POST", body: { key: key2 } }));
-  env.DB.db.prepare("UPDATE users SET merged_into = ? WHERE id = 'u_anonmerged02'").run(squatId);
-  assert.equal((await call(env, "/api/me", { cookie: anon2 })).json.id, "u_anonmerged02");
-  const rotated = await call(env, "/api/me/key", { method: "POST", cookie: vera.cookie, body: { reset: true } });
+  const pw = await call(env, "/api/auth/signup", { method: "POST", body: { email: "old@x.io", password: "long enough pw" } });
+  const oldId = (await call(env, "/api/me", { cookie: cookieOf(pw) })).json.id;
+  env.DB.db.prepare("UPDATE users SET merged_into = ? WHERE id = ?").run(veraId, oldId);
+  const signin = await call(env, "/api/auth/signin", { method: "POST", body: { email: "old@x.io", password: "long enough pw" } });
+  assert.equal(signin.status, 403, signin.text);
+  assert.equal(signin.json.code, "merged");
+  env.DB.db.prepare("INSERT INTO studio_logins (provider, subject, user_id, email) VALUES ('google', 'g-old', ?, 'old@gmail.com')").run(oldId);
+  const g = await social(env, "google", { sub: "g-old", aud: "gid", email: "old@gmail.com", email_verified: true });
+  assert.match(g.location ?? "", /signin_error=merged/);
+  assert.equal(g.cookie, null, "no session");
+  // Vera's controls still retire the merged accounts' keys (src/accounts.ts rotateKey).
+  const rotated = await call(env, "/api/me/key", { method: "POST", cookie: vera, body: { reset: true } });
   assert.equal(rotated.status, 200, rotated.text);
-  assert.equal(await accounts.verifyHandle(env, key2), null, "a new Kleo key retires the merged account's key");
-  assert.equal((await call(env, "/api/auth/key", { method: "POST", body: { key: key2 } })).status, 401);
-  assert.equal((await call(env, "/api/me", { cookie: anon2 })).status, 401, "and ends its session");
+  assert.equal(await accounts.verifyHandle(env, anonKey), null, "a new Kleo key retires the merged account's key");
 });
 
 test("Apple: off until its four keys are set; the answer is a form POST; our client secret is a signed ES256 JWT; a verified e-mail opens the account", async () => {

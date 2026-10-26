@@ -33,7 +33,7 @@ before(async () => {
   const r = await esbuild.build({
     stdin: {
       contents: `export * from "./src/auth.ts"; export * from "./src/accounts.ts"; export * from "./src/credits.ts";
-        export * from "./src/db.ts"; export * from "./src/schema.ts"; export * from "./src/connect.ts";`,
+        export * from "./src/db.ts"; export * from "./src/schema.ts"; export * from "./src/connect.ts"; export { readJsonBounded } from "./src/util.ts";`,
       resolveDir: ROOT, loader: "ts",
     },
     // The OAuth library cannot be bundled outside the Workers runtime; see the stub's own comment.
@@ -452,6 +452,21 @@ test("merging an old anonymous account: credits and films move, the old id point
   assert.equal(audits(env, "account.merged_in").length, 1);
 });
 
+test("an account merged into another connects no assistant: neither Studio's ticket nor /authorize/finish (27 October 2026)", async () => {
+  const env = await newEnv({ MCP_SIGNIN: "studio" });
+  addUser(env, "u_real00000020", "target@example.com", 5);
+  addUser(env, "u_real00000021", "old@example.com", 0);
+  env.DB.db.prepare("UPDATE users SET merged_into = 'u_real00000020' WHERE id = 'u_real00000021'").run();
+  const r = await m.signToken(env, "request", { q: OAUTH_QUERY, n: "n21", a: null, c: "Grok", o: "https://mcp.kleo.test", exp: Math.floor(Date.now() / 1000) + 600 });
+  const out = await m.studioConnect(env, "u_real00000021", { r });
+  assert.equal(out.code, "merged");
+  assert.equal(out.url, undefined);
+  const before = env.OAUTH_PROVIDER.granted.length;
+  const t = await m.signToken(env, "finish", { u: "u_real00000021", n: "nonce-21", q: OAUTH_QUERY, exp: Math.floor(Date.now() / 1000) + 300 });
+  assert.equal((await m.handleConnectFinish(finishRequest(`/authorize/finish?t=${t}`, "__Host-kleo_connect=nonce-21"), env)).status, 403);
+  assert.equal(env.OAUTH_PROVIDER.granted.length, before, "no grant that would act on the account it went into");
+});
+
 test("studio connect: the signed-in account gets a finish ticket naming the browser's anonymous account; a bare Kleo key is not enough", async () => {
   const env = await newEnv();
   addUser(env, "u_anon00000004", "u_anon00000004@anon.kleo.invalid", 7);
@@ -482,6 +497,20 @@ test("studio connect: the signed-in account gets a finish ticket naming the brow
   assert.equal(reply.id, 9);
   assert.equal(reply.result.isError, true);
   assert.match(reply.result.content[0].text, /https:\/\/app\.kleo\.test\/connect\?m=x/);
+});
+
+test("the sign-in gate sees a tools/call alone or inside a batch, and reads at most the size limit (27 October 2026)", async () => {
+  assert.deepEqual(m.firstToolCall({ jsonrpc: "2.0", id: 3, method: "tools/call" }), { jsonrpc: "2.0", id: 3, method: "tools/call" });
+  assert.equal(m.firstToolCall([{ jsonrpc: "2.0", id: 1, method: "tools/list" }, { jsonrpc: "2.0", id: 2, method: "tools/call" }]).id, 2, "a batch does not slip past");
+  assert.equal(m.firstToolCall({ jsonrpc: "2.0", id: 1, method: "tools/list" }), null);
+  assert.equal(m.firstToolCall(null), null);
+  assert.equal(m.firstToolCall([null, 7, "x"]), null);
+  const req = (body) => new Request("https://mcp.kleo.test/mcp", { method: "POST", body });
+  assert.deepEqual(await m.readJsonBounded(req('{"a":1}'), 100), { a: 1 });
+  assert.equal(await m.readJsonBounded(req("x".repeat(101)), 100), null, "past the limit: nothing is parsed");
+  assert.equal(await m.readJsonBounded(req("not json"), 100), null);
+  const broken = new ReadableStream({ pull(c) { c.error(new Error("upload cut")); } });
+  assert.equal(await m.readJsonBounded(new Request("https://mcp.kleo.test/mcp", { method: "POST", body: broken, duplex: "half" }), 100), null, "a broken upload is null, not a throw");
 });
 
 const inSeconds = (s) => Math.floor(Date.now() / 1000) + s;

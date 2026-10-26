@@ -42,7 +42,7 @@ class FakeKV {
 let m;
 before(async () => {
   const r = await esbuild.build({
-    stdin: { contents: `export { buildServer, summarizeFidelity } from "./src/mcp.ts"; export { handleAdmin, handleInternal } from "./src/internal.ts"; export * from "./src/db.ts"; export { makeHandle } from "./src/accounts.ts";`, resolveDir: ROOT, loader: "ts" },
+    stdin: { contents: `export { buildServer, summarizeFidelity, mcpHandlerFor, MCP_MAX_BODY_BYTES, MCP_MAX_INPUT_ELEMENTS } from "./src/mcp.ts"; export { handleAdmin, handleInternal } from "./src/internal.ts"; export * from "./src/db.ts"; export { makeHandle } from "./src/accounts.ts";`, resolveDir: ROOT, loader: "ts" },
     bundle: true, write: false, format: "esm", platform: "node", target: "es2022", logLevel: "silent", external: ["@anthropic-ai/sdk"],
   });
   m = await import("data:text/javascript;base64," + Buffer.from(r.outputFiles[0].text).toString("base64"));
@@ -104,6 +104,25 @@ async function studio(ai, extra = {}, opts = {}) {
   const audit = async (event) => (await env.DB.prepare("SELECT detail FROM audit WHERE event = ? ORDER BY id").bind(event).all()).results.map((r) => JSON.parse(r.detail));
   return { env, user, client, call, audit };
 }
+
+test("one MCP request has a size: a body over 1 MiB is refused before it is parsed, and a tool input over 50,000 elements is refused (27 October 2026)", async () => {
+  const s = await studio(fakeAi(() => TREATMENT_FIXTURE(60)));
+  assert.equal(m.MCP_MAX_BODY_BYTES, 1024 * 1024);
+  // A normal call still works.
+  assert.match((await s.call("kleo_account", {})).text, /credit/);
+  // A huge argument object: refused by the SDK before the tool's own schema walks it.
+  const huge = Array.from({ length: m.MCP_MAX_INPUT_ELEMENTS + 10 }, (_, i) => i);
+  let refused = null;
+  try { const r = await s.client.callTool({ name: "kleo_adapt_prompt", arguments: { prompt: "a film", language: "en", extra: huge } }); refused = r.isError ? r : null; }
+  catch (e) { refused = e; }
+  assert.match(String(refused?.message ?? refused?.content?.[0]?.text ?? ""), /more than the maximum of 50000 elements/, "refused for its size, not for anything else");
+  // A body over the limit, through the HTTP handler the Worker uses.
+  const handler = m.mcpHandlerFor(s.env, s.user, "http://kleo.test");
+  const big = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "kleo_account", arguments: { pad: "x".repeat(m.MCP_MAX_BODY_BYTES) } } });
+  const res = await handler.fetch(new Request("http://kleo.test/mcp", { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream" }, body: big }));
+  assert.equal(res.status, 413);
+  await handler.close();
+});
 
 test("the tools an assistant sees: adapt first, and create_video takes the treatment back", async () => {
   const s = await studio(fakeAi(() => TREATMENT_FIXTURE(60)));

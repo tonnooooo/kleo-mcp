@@ -142,6 +142,14 @@ export async function mergeAnonymous(env: Env, fromId: string, intoId: string, w
 export async function signInLink(env: Env, userId: string, origin?: string): Promise<string> {
   return `${studioUrl(env)}/connect?m=${await signToken(env, "merge", { a: userId, ...(origin ? { o: origin } : {}), exp: mergeTtl() } satisfies MergeToken)}`;
 }
+/**
+ * The tools/call in an MCP request body, if any: one message, or one inside a JSON-RPC batch (27 October 2026, the
+ * security review: a batch used to slip past the sign-in gate in src/index.ts). Null when there is none.
+ */
+export function firstToolCall(body: unknown): { method: string; id?: unknown } | null {
+  const messages = Array.isArray(body) ? body : [body];
+  return (messages.find((x) => x && typeof x === "object" && (x as { method?: unknown }).method === "tools/call") as { method: string; id?: unknown } | undefined) ?? null;
+}
 export function signInRequiredReply(rpcId: unknown, link: string): Record<string, unknown> {
   const text = "Kleo now works with a Kleo account, so your credits are the same here and in the Kleo app. "
     + `Sign in or create your free account here, then ask again — your credits and videos come with you: ${link}`;
@@ -159,6 +167,8 @@ export async function studioConnect(env: Env, userId: string, b: { r?: unknown; 
   // A Kleo key alone is not an account any more: the assistant must land on an account with Google or an e-mail.
   const me = await getUser(env, userId);
   if (!me || (await isAnonymous(env, me))) return { error: "Sign in with Google or your e-mail to connect Kleo. Your Kleo key's credits come with you.", code: "anonymous" };
+  // An old account merged into another one connects nothing: its assistant would act on that other account (27 October 2026).
+  if ((me as User & { merged_into?: string | null }).merged_into) return { error: "This account is now part of another Kleo account. Sign in to that account to connect Kleo.", code: "merged" };
   if (typeof b.r === "string" && b.r) {
     const r = await readToken<RequestToken>(env, "request", b.r);
     if (!r) return { error: "This connection link has expired. Go back to your assistant and connect Kleo again." };

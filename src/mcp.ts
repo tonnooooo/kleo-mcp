@@ -313,7 +313,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
   const modeNote = simulated
     ? "IMPORTANT: Kleo is running in SIMULATED mode (test). Renders finish in about a minute and the files are small placeholders (a 1-second test MP4, a sample subtitle file, a plain thumbnail), not real videos. Tell the user this every time they create a video or get the links. "
     : "";
-  const server = new McpServer({ name: "Kleo", version: "0.1.0" }, { instructions: modeNote + INSTRUCTIONS });
+  const server = new McpServer({ name: "Kleo", version: "0.1.0" }, { instructions: modeNote + INSTRUCTIONS, maxToolInputElements: MCP_MAX_INPUT_ELEMENTS });
 
   server.registerTool("kleo_adapt_prompt", {
     title: "Adapt a video request into the film's spec and treatment",
@@ -828,7 +828,16 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
 
 export const FILE_KINDS = FILE_NAMES;
 
+/**
+ * THE SIZE OF ONE MCP REQUEST (27 October 2026, the security review; advisories GHSA-46jr-4wx8-v453 on the MCP SDK and
+ * GHSA-mrhx-c7xc-m3w5 on zod): an oversized body or tool input could fill the Worker isolate's 128 MB while it was
+ * parsed. The biggest real input is a storyboard: about 500 elements and 14 KB for a short film, a few thousand
+ * elements for five minutes. The body limit is also checked in src/index.ts before anything reads the request.
+ */
+export const MCP_MAX_BODY_BYTES = 1024 * 1024;
+export const MCP_MAX_INPUT_ELEMENTS = 50_000;
+
 /** Builds a per-request stateless MCP handler bound to the authenticated user. */
 export function mcpHandlerFor(env: Env, user: User, base: string) {
-  return createMcpHandler(() => buildServer(env, user, base), { legacy: "stateless" });
+  return createMcpHandler(() => buildServer(env, user, base), { legacy: "stateless", maxRequestBodySize: MCP_MAX_BODY_BYTES });
 }

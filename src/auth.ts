@@ -137,6 +137,8 @@ export async function handleConnectFinish(request: Request, env: Env): Promise<R
   if (!nonce || nonce !== t.n) return fail("Finish connecting Kleo in the same browser where you started. Go back to your assistant and connect Kleo again.", 403);
   const user = await getUser(env, t.u);
   if (!user) return fail("That Kleo account no longer exists. Go back to your assistant and connect Kleo again.", 404);
+  // A grant for an old account merged into another would act on that other account (src/index.ts activeAccount).
+  if ((user as User & { merged_into?: string | null }).merged_into) return fail("This Kleo account is now part of another one. Go back to your assistant and connect Kleo again.", 403);
   // The old anonymous account this browser held when it started (src/connect.ts): merged only here, behind the nonce.
   if (t.a) await mergeAnonymous(env, t.a, user.id, "connect");
   const parsed = await parseOrError(new Request(`${url.origin}/authorize?${t.q}`, { method: "GET", headers: request.headers }), env);
@@ -195,9 +197,11 @@ type Resolved = { user: User; gifted?: number } | { error: string; status: numbe
  * The daily caps are part of the INSERT itself, so a day that is over creates neither a user nor credits.
  */
 async function resolveAccount(env: Env, o: { cookie: string | null; key: string; bonus: string; ip: string | null; ref: string | null; src: string | null; visitor?: Visitor }): Promise<Resolved> {
+  // An old account merged into another opens nothing here: its grant would act on that other account (27 October 2026).
   const accountFor = async (handle: string | null) => {
     const userId = await verifyHandle(env, handle);
-    return userId ? await getUser(env, userId) : null;
+    const user = userId ? await getUser(env, userId) as (User & { merged_into?: string | null }) | null : null;
+    return user && !user.merged_into ? user : null;
   };
   if (o.key) {
     // A typed key that does not work is always an error, even here where the cookie would have done: silently signing

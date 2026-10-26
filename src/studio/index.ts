@@ -74,13 +74,15 @@ async function body<T = Record<string, unknown>>(request: Request): Promise<T> {
 
 /**
  * The signed-in account, or null. A cookie from before the account's last "sign out everywhere" no longer counts, and
- * neither does any cookie of an account the owner closed from the admin console (users.blocked_at).
+ * neither does any cookie of an account the owner closed from the admin console (users.blocked_at) or of an old
+ * anonymous account merged into another one (users.merged_into, auth.ts accountMerged).
  */
 async function sessionUser(env: StudioEnv, request: Request): Promise<string | null> {
   const s = await readSessionFull(env.INTERNAL_SECRET, readCookie(request.headers.get("cookie"), SESSION_COOKIE));
   if (!s) return null;
-  const row = await env.DB.prepare("SELECT studio_epoch, blocked_at FROM users WHERE id = ?").bind(s.userId).first<{ studio_epoch: number | null; blocked_at: string | null }>().catch(() => null);
-  return row && !row.blocked_at && Number(row.studio_epoch ?? 0) === s.epoch ? s.userId : null;
+  const row = await env.DB.prepare("SELECT studio_epoch, blocked_at, merged_into FROM users WHERE id = ?").bind(s.userId)
+    .first<{ studio_epoch: number | null; blocked_at: string | null; merged_into: string | null }>().catch(() => null);
+  return row && !row.blocked_at && !row.merged_into && Number(row.studio_epoch ?? 0) === s.epoch ? s.userId : null;
 }
 
 /** Ten tries a minute per visitor (an IPv6 visitor is its /64) and, for a sign-in, per e-mail address as well. */

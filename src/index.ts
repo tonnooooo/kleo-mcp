@@ -2,9 +2,9 @@ import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import type { Env, AuthProps } from "./env";
 import { getUser, touchUser, audit } from "./db";
 import { grantStillValid } from "./accounts";
-import { mcpHandlerFor } from "./mcp";
+import { mcpHandlerFor, MCP_MAX_BODY_BYTES } from "./mcp";
 import { handleAuthorize, handleConnectFinish, handleConnectMerge } from "./auth";
-import { activeAccount, isAnonymous, signInLink, signInRequiredReply, studioSignIn } from "./connect.ts";
+import { activeAccount, firstToolCall, isAnonymous, signInLink, signInRequiredReply, studioSignIn } from "./connect.ts";
 import { handleInternal, handleDevPlan, handleAdmin } from "./internal";
 import { handleCredits } from "./credits";
 import { handleStudioFilm } from "./studio-film";
@@ -16,7 +16,7 @@ import { handleReferralPage, linkReferral } from "./referral.ts";
 import { handleEmailLink } from "./email.ts";
 import { handleBeacon, recordSignupSource } from "./growth.ts";
 import { tick } from "./orchestrator";
-import { json } from "./util";
+import { json, readJsonBounded } from "./util";
 import { ensureSchema } from "./schema";
 import { httpsRedirect, hardenResponse } from "./security-headers";
 import { withKeys } from "./key-overrides.ts";
@@ -27,6 +27,9 @@ const mcpApi: ExportedHandler<Env> = {
     await ensureSchema(env);
     const props = (ctx as ExecutionContext & { props?: AuthProps }).props;
     if (!props?.userId) return json({ error: "unauthorized" }, 401);
+    // A body over the limit is refused before anything reads it (src/mcp.ts MCP_MAX_BODY_BYTES); the SDK checks the
+    // bytes it actually reads too, for a request that does not say its length.
+    if (Number(request.headers.get("content-length") ?? 0) > MCP_MAX_BODY_BYTES) return json({ error: "request too large" }, 413);
     if (request.method === "POST") ctx.waitUntil(tick(env).catch(() => undefined)); // progress also without cron
     const granted = await getUser(env, props.userId);
     if (!granted) return json({ error: "account not found; reconnect Kleo" }, 401);
@@ -40,8 +43,8 @@ const mcpApi: ExportedHandler<Env> = {
     // account it was merged into; one that nobody has signed in to yet runs no tool until its owner signs in.
     const user = await activeAccount(env, granted);
     if (studioSignIn(env) && request.method === "POST" && (await isAnonymous(env, user))) {
-      const rpc = await request.clone().json().catch(() => null) as { method?: string; id?: unknown } | null;
-      if (rpc?.method === "tools/call") return json(signInRequiredReply(rpc.id, await signInLink(env, user.id, new URL(request.url).origin)));
+      const call = firstToolCall(await readJsonBounded(request.clone(), MCP_MAX_BODY_BYTES));
+      if (call) return json(signInRequiredReply(call.id, await signInLink(env, user.id, new URL(request.url).origin)));
     }
     ctx.waitUntil(touchUser(env, user.id));
     // THE CONNECTOR ADDRESS'S HINTS (27 September 2026): a new account's first calls carry the ?ref= of the address the

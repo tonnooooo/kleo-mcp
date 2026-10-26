@@ -200,17 +200,16 @@ test("create: the animation look is the same film in the drawn look — filmed, 
   assert.equal(JSON.parse(unnamed.params).style, "animation", "no style named: the storyboard's kleo_style is the look");
 });
 
-test("create: a filmed job on a gated model with no token on the server is refused before anything is charged", async () => {
-  const env = { ...(await newEnv()), KLEO_VIDEO_MODEL: "Lightricks/LTX-2.5-Diffusers" };   // no HF_TOKEN
+test("create: a filmed job on a gated model on the local road is refused before anything is charged, token or not (27 October 2026)", async () => {
+  const env = { ...(await newEnv()), KLEO_VIDEO_MODEL: "Lightricks/LTX-2.5-Diffusers" };
   const u = await user(env, 20 * P);
   const sb = JSON.parse(readFileSync(join(ROOT, "scripts", "motion-demo", "samples", "venezia-16x9.json"), "utf8"));
-  await assert.rejects(
-    () => m.createJob(env, u, { template: "film", prompt: "L'acqua alta a Venezia", duration_s: 30, format: "16:9", language: "it", style: "realistic", storyboard: sb }),
-    /Hugging Face token.*Nothing was charged/);
-  assert.equal(await balance(env), 20 * P, "nothing was charged");
+  const order = () => m.createJob(env, u, { template: "film", prompt: "L'acqua alta a Venezia", duration_s: 30, format: "16:9", language: "it", style: "realistic", storyboard: sb });
+  await assert.rejects(order, /own video model.*Nothing was charged/);
+  // A token left on the server changes nothing: no token ever goes to a rented box (backends/vast.ts).
   env.HF_TOKEN = "hf_x";
-  const job = await m.createJob(env, u, { template: "film", prompt: "L'acqua alta a Venezia", duration_s: 30, format: "16:9", language: "it", style: "realistic", storyboard: sb });
-  assert.equal(job.credits, P30, "with the token configured the same request goes through");
+  await assert.rejects(order, /own video model.*Nothing was charged/);
+  assert.equal(await balance(env), 20 * P, "nothing was charged");
 });
 
 test("create: validation errors say nothing was charged and move no credits", async () => {
