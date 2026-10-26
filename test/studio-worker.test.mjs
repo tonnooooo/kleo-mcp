@@ -2016,6 +2016,64 @@ test("a template's video reaches the customer byte for byte: WaveSpeed's file is
   } finally { p.restore(); }
 });
 
+// ── You Tweaking on Wan 3.0 Prime (26 October 2026) ───────────────────────────────────────────────────────────────
+// The owner, after the standard model's run came back wrong: "no niente prova, costa troppo devi essere sicuro che tutto
+// funzioni". The whole order with WaveSpeed faked: what is sent, what is charged, what the customer gets.
+test("You Tweaking: one photo is refused before any charge; two photos make one Prime run with the fixed prompt, charged as priced, its video delivered byte for byte", async () => {
+  const env = newEnv({ WAVESPEED_API_KEY: "k" });
+  const { cookie, id } = await paidAccount(env, "tweak@example.com", 100);
+  env.DB.db.exec(`UPDATE users SET plan = 'pro', plan_until = '2099-01-01T00:00:00.000Z' WHERE id = '${id}'`);
+  const up = async () => (await call(env, "/api/uploads", { method: "POST", cookie, raw: jpegBytes(), headers: { "content-type": "image/jpeg", "x-width": "1080", "x-height": "1920" } })).json;
+  const a = await up(), b = await up();
+  // Wan answers 4:3 at 720p: 1108x832.
+  const made = new Uint8Array(Buffer.concat([Buffer.from(mp4Bytes(15, 1108, 832)), Buffer.from(Array.from({ length: 20_000 }, (_, i) => (i * 13 + 5) % 256))]));
+  let n = 0;
+  const p = fakeProvider((u) => {
+    if (u === "https://api.wavespeed.ai/api/v3/media/uploads") { n++; return ok({ code: 200, data: { download_url: `https://cdn.wavespeed.test/photo${n}.jpg`, upload: { method: "PUT", url: "https://up.wavespeed.test/put" } } }); }
+    if (u === "https://up.wavespeed.test/put") return new Response("", { status: 200 });
+    if (u === "https://api.wavespeed.ai/api/v3/alibaba/wan-3.0-prime/video-edit") return ok({ code: 200, data: { id: "ws_yt", status: "created" } });
+    if (u === "https://api.wavespeed.ai/api/v3/predictions/ws_yt/result") return ok({ code: 200, data: { id: "ws_yt", status: "completed", outputs: ["https://cdn.wavespeed.test/yt.mp4"] } });
+    if (u === "https://cdn.wavespeed.test/yt.mp4") return new Response(made, { status: 200, headers: { "content-type": "video/mp4", "content-length": String(made.byteLength) } });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const tool = "trend-you-tweaking";
+    const start = credits(env, id);
+    // One photo: refused before any charge, nothing sent to WaveSpeed.
+    const one = await call(env, "/api/tools/run", { method: "POST", cookie, body: { tool, consent: true, inputs: { person1: a.id, quality: "720p" } } });
+    assert.equal(one.status, 400, one.text);
+    assert.match(one.text, /each of the 2 people/);
+    assert.equal(credits(env, id), start);
+    assert.equal(p.sent.filter((s) => s.url.includes("video-edit")).length, 0);
+    // The price the page shows is the price charged.
+    const price = await call(env, "/api/tools/price", { method: "POST", cookie, body: { tool, inputs: { person1: a.id, person2: b.id, quality: "720p" } } });
+    assert.equal(price.status, 200, price.text);
+    assert.ok(price.json.credits > 0, price.text);
+    const run = await call(env, "/api/tools/run", { method: "POST", cookie, body: { tool, consent: true, inputs: { person1: a.id, person2: b.id, quality: "720p" } } });
+    assert.equal(run.status, 200, run.text);
+    assert.equal(start - credits(env, id), price.json.credits);
+    const sent = p.sent.filter((s) => s.url.includes("video-edit"));
+    assert.deepEqual(sent.map((s) => s.url), ["https://api.wavespeed.ai/api/v3/alibaba/wan-3.0-prime/video-edit"], "one run, on Prime");
+    const body = sent[0].body;
+    assert.equal(body.video, "https://media.kleooai.com/app/templates/you-tweaking/base-30.mp4");
+    assert.deepEqual(body.reference_images, ["https://cdn.wavespeed.test/photo1.jpg", "https://cdn.wavespeed.test/photo2.jpg"], "both photos, in seat order, on WaveSpeed's own storage");
+    assert.equal(body.resolution, "720p");
+    assert.equal(body.generate_audio, false, "the clip's own sound");
+    assert.equal(body.enable_prompt_expansion, false);
+    assert.match(body.prompt, /^Replace the two people in Video 1 with the people from Image 1 and Image 2/);
+    assert.match(body.prompt, /Never add a second person to a shot\./);
+    old(env);
+    const done = await call(env, `/api/generations/${run.json.generation.id}`, { cookie });
+    assert.equal(done.json.generation.status, "done", done.text);
+    const out = done.json.generation.outputs[0];
+    assert.equal(out.type, "video");
+    const res = await worker.fetch(new Request(`https://app.kleo.test${out.url}?dl=1`, { headers: { cookie } }), env, ctx);
+    assert.equal(res.status, 200);
+    assert.ok(Buffer.from(new Uint8Array(await res.arrayBuffer())).equals(Buffer.from(made)), "WaveSpeed's very bytes");
+    assert.equal(sent.length, 1, "never a second run");
+  } finally { p.restore(); }
+});
+
 // ── HD templates come with a plan (25 October 2026) ──────────────────────────────────────────────────────────────
 // The owner: "480p con qualsiasi acquisto, 720p e 1080p solo con abbonamento, e prezzi nascosti fino ad allora".
 test("templates: 480p for any paying account; 720p and 1080p need a running plan, refused before any charge; the price check tells only the 480p price until then", async () => {
