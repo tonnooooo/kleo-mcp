@@ -302,7 +302,7 @@ test("first e-mail: in New York's working hours, from the mailbox, personal, the
   assert.match(text, /^Hi Maya,\r?\n\r?\nSaw that you run TikTok for three Brooklyn coffee roasters\./);
   assert.match(text, /free credits to try it on a real brief\?/);
   assert.match(text, /hello@brightreels\.example is listed on brightreels\.example/);
-  assert.match(text, /Kleo, PO Box 123, Auckland 1010, New Zealand/);
+  assert.match(text, /Kleo \(Kanaky Tech, New Zealand\), PO Box 123, Auckland 1010, New Zealand/);
   assert.match(header(m.raw, "List-Unsubscribe"), /^<https:\/\/app\.kleooai\.com\/email\/out\?p=p_[a-z0-9]+&s=[0-9a-f]{32}>, <mailto:leo@getkleo\.test\?subject=unsubscribe>$/);
   assert.doesNotMatch(m.raw, /<img|<html|utm_/i, "plain text, no tracking");
   const p = one(env, "SELECT * FROM outreach_prospects WHERE email = 'hello@brightreels.example'");

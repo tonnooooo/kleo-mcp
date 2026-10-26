@@ -190,7 +190,7 @@ export interface Written { subject: string; text: string }
 export function writeStep(p: Prospect, step: number, s: Sender, unsubscribeUrl: string): Written {
   const hi = `Hi ${firstOf(p.contact_name) ?? "there"},`;
   const sign = `${s.fromName || "Leonardo"}\nFounder, Kleo`;
-  const footer = `--\nYou're getting this one-off business e-mail because ${p.email} is listed on ${hostOf(p.source_url)}. If it isn't relevant, reply "no" or open ${unsubscribeUrl} and I won't write again.\nKleo, ${s.postal.trim()}`;
+  const footer = `--\nYou're getting this one-off business e-mail because ${p.email} is listed on ${hostOf(p.source_url)}. If it isn't relevant, reply "no" or open ${unsubscribeUrl} and I won't write again.\nKleo (Kanaky Tech, New Zealand), ${s.postal.trim()}`;
   const subject0 = p.subject || `Short-form video for ${p.company}`;
   const opener = (p.opener ?? "").trim() || `I came across ${p.company} while looking at ${PHRASE[p.type ?? ""] ?? "studios that make short-form video"}${p.city ? ` in ${p.city}` : ""}.`;
   if (step === 0) return { subject: subject0, text: [hi, opener,
