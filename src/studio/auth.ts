@@ -53,8 +53,8 @@ export async function endAllSessions(env: StudioEnv, userId: string): Promise<vo
 
 /**
  * Signs out every old anonymous account merged into this one (users.merged_into, src/connect.ts). Called wherever the
- * account's key is retired (rotateKey retires theirs with it): a merged account's key opens this one (signInWithKey),
- * so a session left open on it could simply ask for its new key.
+ * account's key is retired (rotateKey retires theirs with it). Since 27 October 2026 a merged account opens no
+ * session at all (accountMerged); this stays as a second lock.
  */
 export async function endMergedSessions(env: StudioEnv, userId: string): Promise<void> {
   await env.DB.prepare("UPDATE users SET studio_epoch = COALESCE(studio_epoch, 0) + 1 WHERE merged_into = ?").bind(userId).run();
@@ -71,9 +71,23 @@ export async function accountBlocked(env: StudioEnv, userId: string): Promise<bo
   return !!r?.blocked_at;
 }
 
+/** What a person reads when they try to open an old anonymous account that was merged into another one. */
+export const MERGED_SENTENCE = "This account is now part of another Kleo account. Sign in to that account with Google or your e-mail instead.";
+/**
+ * True for an old anonymous account merged into another one (users.merged_into, src/connect.ts mergeAnonymous). Its
+ * credits and films moved with the merge, so it opens no session and no sign-in (27 October 2026, the security
+ * review): a session kept on it could otherwise add a password or a Google sign-in and connect an assistant that,
+ * through merged_into, acts on the account it went into, out of reach of that account's own controls.
+ */
+export async function accountMerged(env: StudioEnv, userId: string): Promise<boolean> {
+  const r = await env.DB.prepare("SELECT merged_into FROM users WHERE id = ?").bind(userId).first<{ merged_into: string | null }>().catch(() => null);
+  return !!r?.merged_into;
+}
+
 /** Sets the session cookie for an account on a JSON answer. */
 export async function signedIn(env: StudioEnv, userId: string, body: unknown = { ok: true }): Promise<Response> {
   if (await accountBlocked(env, userId)) throw new StudioError(BLOCKED_SENTENCE, 403, "blocked");
+  if (await accountMerged(env, userId)) throw new StudioError(MERGED_SENTENCE, 403, "merged");
   return new Response(JSON.stringify(body), {
     headers: { "content-type": "application/json; charset=utf-8", "set-cookie": await newSession(env, userId) },
   });
@@ -551,6 +565,8 @@ export async function socialCallback(env: StudioEnv, key: SocialKey, request: Re
   }
 
   let userId = owner;
+  // A sign-in held by an old account merged into another one opens nothing (accountMerged).
+  if (userId && (await accountMerged(env, userId))) return back("signin_error=merged");
   let gifted: number | null = null;
   let handedOver = false;
   // Where the browser came from (attribution.ts): Google's redirect back here carries the first-touch cookie (SameSite=Lax).
@@ -587,6 +603,7 @@ export async function socialCallback(env: StudioEnv, key: SocialKey, request: Re
     return back(`signin_error=${encodeURIComponent(e instanceof StudioError ? e.code : "error")}`);
   }
   // Only a vouched-for address is stored on the sign-in: it is what finds and joins accounts later.
+  if (await accountMerged(env, userId)) return back("signin_error=merged");
   if (!owner) await addLogin(env, { provider: key, subject, userId, email: verified, secret: null });
   // An account the owner closed from the console opens no session (src/studio/admin.ts).
   if (await accountBlocked(env, userId)) return back("signin_error=blocked");

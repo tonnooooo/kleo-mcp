@@ -2,7 +2,7 @@ import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import type { Env, AuthProps } from "./env";
 import { getUser, touchUser, audit } from "./db";
 import { grantStillValid } from "./accounts";
-import { mcpHandlerFor } from "./mcp";
+import { mcpHandlerFor, MCP_MAX_BODY_BYTES } from "./mcp";
 import { handleAuthorize, handleConnectFinish, handleConnectMerge } from "./auth";
 import { activeAccount, isAnonymous, signInLink, signInRequiredReply, studioSignIn } from "./connect.ts";
 import { handleInternal, handleDevPlan, handleAdmin } from "./internal";
@@ -21,12 +21,34 @@ import { ensureSchema } from "./schema";
 import { httpsRedirect, hardenResponse } from "./security-headers";
 import { withKeys } from "./key-overrides.ts";
 
+/** A request's JSON body read up to `max` bytes; null past it, or when it is not JSON (the SDK then answers 413 or 400). */
+async function readJsonBounded(request: Request, max: number): Promise<unknown> {
+  if (!request.body) return null;
+  const reader = request.body.getReader();
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) { await reader.cancel().catch(() => undefined); return null; }
+    parts.push(value);
+  }
+  const all = new Uint8Array(size);
+  let at = 0;
+  for (const p of parts) { all.set(p, at); at += p.byteLength; }
+  try { return JSON.parse(new TextDecoder().decode(all)); } catch { return null; }
+}
+
 /** /mcp — only reached with a valid OAuth token; the provider puts the token props on ctx.props. */
 const mcpApi: ExportedHandler<Env> = {
   async fetch(request, env, ctx) {
     await ensureSchema(env);
     const props = (ctx as ExecutionContext & { props?: AuthProps }).props;
     if (!props?.userId) return json({ error: "unauthorized" }, 401);
+    // A body over the limit is refused before anything reads it (src/mcp.ts MCP_MAX_BODY_BYTES); the SDK checks the
+    // bytes it actually reads too, for a request that does not say its length.
+    if (Number(request.headers.get("content-length") ?? 0) > MCP_MAX_BODY_BYTES) return json({ error: "request too large" }, 413);
     if (request.method === "POST") ctx.waitUntil(tick(env).catch(() => undefined)); // progress also without cron
     const granted = await getUser(env, props.userId);
     if (!granted) return json({ error: "account not found; reconnect Kleo" }, 401);
@@ -40,7 +62,7 @@ const mcpApi: ExportedHandler<Env> = {
     // account it was merged into; one that nobody has signed in to yet runs no tool until its owner signs in.
     const user = await activeAccount(env, granted);
     if (studioSignIn(env) && request.method === "POST" && (await isAnonymous(env, user))) {
-      const rpc = await request.clone().json().catch(() => null) as { method?: string; id?: unknown } | null;
+      const rpc = await readJsonBounded(request.clone(), MCP_MAX_BODY_BYTES) as { method?: string; id?: unknown } | null;
       if (rpc?.method === "tools/call") return json(signInRequiredReply(rpc.id, await signInLink(env, user.id, new URL(request.url).origin)));
     }
     ctx.waitUntil(touchUser(env, user.id));

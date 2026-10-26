@@ -452,6 +452,21 @@ test("merging an old anonymous account: credits and films move, the old id point
   assert.equal(audits(env, "account.merged_in").length, 1);
 });
 
+test("an account merged into another connects no assistant: neither Studio's ticket nor /authorize/finish (27 October 2026)", async () => {
+  const env = await newEnv({ MCP_SIGNIN: "studio" });
+  addUser(env, "u_real00000020", "target@example.com", 5);
+  addUser(env, "u_real00000021", "old@example.com", 0);
+  env.DB.db.prepare("UPDATE users SET merged_into = 'u_real00000020' WHERE id = 'u_real00000021'").run();
+  const r = await m.signToken(env, "request", { q: OAUTH_QUERY, n: "n21", a: null, c: "Grok", o: "https://mcp.kleo.test", exp: Math.floor(Date.now() / 1000) + 600 });
+  const out = await m.studioConnect(env, "u_real00000021", { r });
+  assert.equal(out.code, "merged");
+  assert.equal(out.url, undefined);
+  const before = env.OAUTH_PROVIDER.granted.length;
+  const t = await m.signToken(env, "finish", { u: "u_real00000021", n: "nonce-21", q: OAUTH_QUERY, exp: Math.floor(Date.now() / 1000) + 300 });
+  assert.equal((await m.handleConnectFinish(finishRequest(`/authorize/finish?t=${t}`, "__Host-kleo_connect=nonce-21"), env)).status, 403);
+  assert.equal(env.OAUTH_PROVIDER.granted.length, before, "no grant that would act on the account it went into");
+});
+
 test("studio connect: the signed-in account gets a finish ticket naming the browser's anonymous account; a bare Kleo key is not enough", async () => {
   const env = await newEnv();
   addUser(env, "u_anon00000004", "u_anon00000004@anon.kleo.invalid", 7);

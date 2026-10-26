@@ -128,10 +128,10 @@ const listCalls = (state, version) => state.rawCalls.filter((c) => c.startsWith(
 
 /* ------------------------------------------------------------------ lost create answer */
 /* ------------------------------------------------------------------ the generator model shapes the rental */
-test("start: a filmed job on LTX-2.5 asks for an 80 GB card, 150 GB of disk, and hands the box the model and the token", async () => {
-  // 13 September: the owner replaced Wan 2.2 with LTX-2.5. The weights are gated (HF_TOKEN), 72 GB on disk, and the
-  // 22B transformer needs an 80 GB card. Every one of those is a fact the RENTAL has to know, or the card is paid
-  // for and the download fails on it.
+test("start: a filmed job on LTX-2.5 asks for an 80 GB card and 150 GB of disk, and hands the box the model but never a Hugging Face token", async () => {
+  // 13 September: the owner replaced Wan 2.2 with LTX-2.5: 72 GB on disk, and the 22B transformer needs an 80 GB card.
+  // Both are facts the RENTAL has to know. 27 October (security review): a token set on the server by mistake still
+  // never reaches the rented box, whose operator has root.
   const env = { ...(await newEnv()), KLEO_VIDEO_MODEL: "Lightricks/LTX-2.5-Diffusers", HF_TOKEN: "hf_secret_xyz" };
   const job = { id: "gt_ltx1", worker_secret: "wk_1", params: JSON.stringify({ style: "realistic", format: "16:9" }) };
   let query = null, body = null;
@@ -144,7 +144,8 @@ test("start: a filmed job on LTX-2.5 asks for an 80 GB card, 150 GB of disk, and
   assert.ok(query.dph_total.lte >= 1.9, `a ceiling that 80 GB cards exist under (${query.dph_total.lte})`);
   assert.equal(body.disk, 150);
   assert.equal(body.env.KLEO_VIDEO_MODEL, "Lightricks/LTX-2.5-Diffusers");
-  assert.equal(body.env.HF_TOKEN, "hf_secret_xyz", "the token reaches the box, which is the only place it may go");
+  assert.equal(body.env.HF_TOKEN, undefined, "no token on a stranger's machine");
+  assert.ok(!JSON.stringify(body).includes("hf_secret_xyz"), "not under any other name either");
 });
 
 test("start: with no model configured the filmed job still gets the LTX-2.5 profile — there is no other generator", async () => {

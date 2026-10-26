@@ -3,7 +3,7 @@
 //
 // Pages: Create (chat with Kleo) · Video · Image · Audio · Apps · Library. Desktop: a top bar; phones: a tab bar.
 
-import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=89";
+import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=90";
 
 const DEMO = new URLSearchParams(location.search).has("demo");
 const DEMO_FREE = new URLSearchParams(location.search).get("demo") === "free"; // ?demo=free: an account that never paid
@@ -293,6 +293,7 @@ async function boot() {
       : err === "address_full" ? "Too many new accounts from this connection today."
       : err === "address_blocked" ? "No new accounts can be opened from this connection for now. Sign in to the account you already have."
       : err === "blocked" ? "This account is closed. If you think this is a mistake, write to hello@kleooai.com."
+      : err === "merged" ? "This account is now part of another Kleo account. Sign in to that account with Google or your e-mail instead."
       : /^taken_/.test(err) ? `That ${who(err.slice(6))} account already belongs to another Kleo account.`
       : /^claimed_/.test(err) ? `This e-mail already has a Kleo account. Sign in to it with your password or Kleo key, then connect ${who(err.slice(8))} from Account.`
       : err === "cancelled" ? "Sign-in was cancelled." : `${who(err)} sign-in didn't finish. Please try again.`;

@@ -3,7 +3,7 @@ import type { Env } from "../env";
 import type { Job } from "../db";
 import { triedMachines } from "../db";
 import { int, num, minutesSince } from "../util";
-import { jobTimeoutMin, machineFor, styleOfJob, isVideoStyle, filmedJob, videoMachineFor, videoModelIsGated, videoDiskGb, FINISH, FINISH_SR, aiUpscaleJob, aiUpscaleOn, type Machine } from "../templates";
+import { jobTimeoutMin, machineFor, styleOfJob, isVideoStyle, filmedJob, videoMachineFor, videoDiskGb, FINISH, FINISH_SR, aiUpscaleJob, aiUpscaleOn, type Machine } from "../templates";
 import { footageBackendFor, footageConfig, kieModelFor, type FootageBackend } from "../footage";
 
 /**
@@ -309,10 +309,9 @@ export const vastBackend: RenderBackend = {
             KLEO_DPH: String(offer.dph_total),
             KLEO_KEOU_WORKERS: String(Math.min(16, Math.max(2, Math.floor(offer.cpu_cores_effective ?? 8)))), // whole box, but the engine caps render workers at 16
             ...renderEnv(env),
-            // The generator and, when its weights are gated, the token that fetches them. HF_TOKEN is a Cloudflare
-            // secret: it reaches the box's environment and nothing else — not the audit, not the job row.
+            // The generator. No Hugging Face token ever goes with it (27 October 2026, the security review): the box is
+            // a stranger's machine whose operator has root, and a token there is the owner's account for good.
             ...(env.KLEO_VIDEO_MODEL ? { KLEO_VIDEO_MODEL: env.KLEO_VIDEO_MODEL } : {}),
-            ...(env.HF_TOKEN && videoModelIsGated(env.KLEO_VIDEO_MODEL) && job.phase !== "finish" && footage !== "kie" && !drawn ? { HF_TOKEN: env.HF_TOKEN } : {}),
             // Where the clips come from. "kie": the box uploads the frames and waits for the server (footage.ts);
             // the kie.ai key itself never travels. The model name is for the log only.
             KLEO_FOOTAGE_BACKEND: footage,

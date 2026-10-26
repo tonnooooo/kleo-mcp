@@ -137,6 +137,8 @@ export async function handleConnectFinish(request: Request, env: Env): Promise<R
   if (!nonce || nonce !== t.n) return fail("Finish connecting Kleo in the same browser where you started. Go back to your assistant and connect Kleo again.", 403);
   const user = await getUser(env, t.u);
   if (!user) return fail("That Kleo account no longer exists. Go back to your assistant and connect Kleo again.", 404);
+  // A grant for an old account merged into another would act on that other account (src/index.ts activeAccount).
+  if ((user as User & { merged_into?: string | null }).merged_into) return fail("This Kleo account is now part of another one. Go back to your assistant and connect Kleo again.", 403);
   // The old anonymous account this browser held when it started (src/connect.ts): merged only here, behind the nonce.
   if (t.a) await mergeAnonymous(env, t.a, user.id, "connect");
   const parsed = await parseOrError(new Request(`${url.origin}/authorize?${t.q}`, { method: "GET", headers: request.headers }), env);

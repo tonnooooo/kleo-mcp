@@ -137,10 +137,9 @@ export interface Env {
   VAST_MAX_DPH?: string;
   VAST_DISK_GB?: string;
   /** The generated-motion model the worker runs (KLEO_VIDEO_MODEL). Default Wan-AI/Wan2.2-TI2V-5B-Diffusers (32 GB card);
-   *  Lightricks/LTX-2.5-Diffusers is the owner's choice of 13 September (80 GB card, 150 GB disk, gated: needs HF_TOKEN). */
+   *  Lightricks/LTX-2.5-Diffusers is the owner's choice of 13 September (80 GB card, 150 GB disk). Its weights are gated,
+   *  and since 27 October 2026 no Hugging Face token goes to rented boxes, so the local road refuses it (jobs.ts). */
   KLEO_VIDEO_MODEL?: string;
-  /** Hugging Face token (secret) for gated video weights. Passed to the worker only; never logged. */
-  HF_TOKEN?: string;
   /** Optional overrides for the video machine profile (see templates.ts VIDEO): VRAM floor and price ceiling. */
   VIDEO_MIN_VRAM_GB?: string;
   /** Disk for the finish box (default 40 GB: the image, the clips, the 4K film). */

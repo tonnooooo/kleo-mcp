@@ -159,6 +159,8 @@ export async function studioConnect(env: Env, userId: string, b: { r?: unknown; 
   // A Kleo key alone is not an account any more: the assistant must land on an account with Google or an e-mail.
   const me = await getUser(env, userId);
   if (!me || (await isAnonymous(env, me))) return { error: "Sign in with Google or your e-mail to connect Kleo. Your Kleo key's credits come with you.", code: "anonymous" };
+  // An old account merged into another one connects nothing: its assistant would act on that other account (27 October 2026).
+  if ((me as User & { merged_into?: string | null }).merged_into) return { error: "This account is now part of another Kleo account. Sign in to that account to connect Kleo.", code: "merged" };
   if (typeof b.r === "string" && b.r) {
     const r = await readToken<RequestToken>(env, "request", b.r);
     if (!r) return { error: "This connection link has expired. Go back to your assistant and connect Kleo again." };

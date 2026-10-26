@@ -397,13 +397,13 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
 
   if (!input.storyboard && (await isFlagActive(env, "plan_pause")))
     throw new JobError("Kleo cannot write the storyboard itself right now: it has used up today's free planning. You can still make the video, and it costs the same: call kleo_storyboard_guide, write the storyboard yourself, then call kleo_create_video again with the storyboard argument. Nothing was charged.");
-  // A filmed style needs the generator's weights on the box. When the configured model is gated on Hugging Face
-  // and no token is configured, the download would fail after the card was rented and paid for — so the job is
-  // refused here, in words that say what is missing, and nothing is charged.
-  // On the kie.ai road (footage.ts) no weights are fetched, so the token is not needed: the same decision the
-  // renter will make, taken here on the same params, so a job is never refused for a token it will not use.
-  if (product === "film" && isVideoStyle(style) && !onKie && videoModelIsGated(env.KLEO_VIDEO_MODEL) && !(env.HF_TOKEN && env.HF_TOKEN.trim()))
-    throw new JobError(`Kleo's video model (${env.KLEO_VIDEO_MODEL}) needs a Hugging Face token that is not configured on the server yet. Nothing was charged; try again later.`);
+  // A filmed style on the local road needs the generator's weights on the box. Gated weights would need a Hugging Face
+  // token on the rented box, and since 27 October 2026 no token ever goes there (backends/vast.ts), so the download
+  // would fail after the card was rented and paid for: the job is refused here and nothing is charged.
+  // On the kie.ai road (footage.ts) no weights are fetched: the same decision the renter will make, taken here on the
+  // same params, so a job is never refused for weights it will not fetch.
+  if (product === "film" && isVideoStyle(style) && !onKie && videoModelIsGated(env.KLEO_VIDEO_MODEL))
+    throw new JobError(`Kleo cannot make filmed shots with its own video model (${env.KLEO_VIDEO_MODEL}) right now. Nothing was charged; try again later.`);
   const maxOpen = int(env.MAX_JOBS_PER_USER, 2);
   const open = await countOpenForUser(env, user.id);
   if (open >= maxOpen)
