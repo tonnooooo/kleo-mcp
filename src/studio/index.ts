@@ -51,6 +51,7 @@ import { ADMIN_SITE_API, ADMIN_SITE_PATH, CONSOLE_PATH, adminUrl, certProblem, i
 import { SHORT_LINK_PATH, arrivalOf, clearTouchCookie, firstVisit, shortLink } from "./attribution.ts";
 import { handleStop, livePrices, mailTick, sendSeriesToOwner } from "./onboarding.ts";
 import { handleOutreachStop, outreachTick } from "./outreach.ts";
+import { morningDigest } from "./digest.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const json = (data: unknown, status = 200, headers: Record<string, string> = {}): Response =>
@@ -709,6 +710,8 @@ export default {
     // Outreach, two minutes later: the mailbox's replies every quarter of an hour, one e-mail at most (outreach.ts).
     if (new Date(_event.scheduledTime || Date.now()).getUTCMinutes() % 5 === 4) {
       try { await outreachTick(env); } catch (e) { console.error("studio outreach", e instanceof Error ? e.message : e); }
+      // The owner's morning e-mail about both, at 8:00 in Auckland (src/studio/digest.ts).
+      try { await morningDigest(env); } catch (e) { console.error("studio digest", e instanceof Error ? e.message : e); }
     }
     // Sign-in addresses older than 90 days go, once an hour (src/studio/ips.ts; the privacy page promises it).
     if (new Date(_event.scheduledTime || Date.now()).getUTCMinutes() === 17) {
