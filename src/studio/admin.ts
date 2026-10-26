@@ -30,6 +30,23 @@
  *                                            clicks, sign-ups, accounts that made something, paying accounts, money
  *   POST /api/admin/sources/links            {channel, label, target?, code?}   a new short link (app.kleooai.com/r/<code>)
  *   POST /api/admin/sources/links/:code      {label?, target?, archived?}      change or hide one
+ *   GET  /api/admin/emails                   the welcome e-mails: the switch, what was sent, what comes next, who the
+ *                                            comeback e-mail would reach if they went on now (src/studio/onboarding.ts)
+ *   GET  /api/admin/emails/preview?key       one e-mail as a sample account would get it
+ *   POST /api/admin/emails/mode              {on, code?}                    switch them on (a fresh code) or off
+ *   POST /api/admin/emails/test              {}                             every e-mail to the owner's own inbox
+ *   POST /api/admin/emails/suppress          {email, on}                    stop (or allow again) one address
+ *   GET  /api/admin/outreach                 outreach: the switch, the sender (never its password), warm-up, counts,
+ *                                            the last sends and replies (src/studio/outreach.ts)
+ *   GET  /api/admin/outreach/prospects?status&q&offset    the businesses, 60 at a time
+ *   GET  /api/admin/outreach/preview?id      the three e-mails one prospect would get
+ *   POST /api/admin/outreach/sender          {fromName, fromAddr, user, smtpHost, smtpPort, imapHost, imapPort, postal,
+ *                                            dailyMax, password?, code?}  saved only once SMTP and IMAP sign in
+ *   POST /api/admin/outreach/mode            {on, code?}                    on needs everything ready and a fresh code
+ *   POST /api/admin/outreach/test            {}                             the first e-mail to the mailbox itself
+ *   POST /api/admin/outreach/prospects/:id   {action: approve|reject|reset}
+ *   POST /api/admin/outreach/approve-new     {}                             every prospect still waiting
+ *   POST /api/admin/outreach/import          {csv, batch}                   more prospects, checked like the first
  *
  * EVERY WRITE IS AUDITED: one `admin.*` row on the account it touched, with the admin's id and the reason typed.
  * Previews are signed links valid one hour (session.ts signPath): the admin is not the owner of the files.
@@ -51,6 +68,8 @@ import { IP_RETENTION_DAYS } from "./ips.ts";
 import { adminAuthApi, adminSessionOf, checkFreshCode, FRESH_MIN, isFresh, securityInfo, touchSession, type AdminSession } from "./admin-auth.ts";
 import { keyAction, listKeys } from "./admin-keys.ts";
 import { CODE_RE, LINK_CHANNELS, getLink, type LinkChannel, type LinkRow } from "./attribution.ts";
+import { addProspects, listProspects, outreachOverview, parseCsv, previewFor, prospectAction, saveSender, sendOutreachTest, setOutreachMode } from "./outreach.ts";
+import { ALL_MAILS, SERIES, comebackMail, compose, factsOf, livePrices, mailMode, renderHtml, renderText, sampleFacts, sendSeriesToOwner, setMailMode, type MailKey } from "./onboarding.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const json = (data: unknown, status = 200): Response =>
@@ -677,6 +696,11 @@ async function adminRoute(env: StudioEnv, request: Request, url: URL, adminId: s
     }
     if (path === "/api/admin/keys") return json(await listKeys(env));
     if (path === "/api/admin/sources") return json(await sources(env, url));
+    if (path === "/api/admin/emails") return json(await emails(env));
+    if (path === "/api/admin/emails/preview") return json(emailPreview(env, url));
+    if (path === "/api/admin/outreach") return json(await outreachOverview(env));
+    if (path === "/api/admin/outreach/prospects") return json(await listProspects(env, url));
+    if (path === "/api/admin/outreach/preview") return json(await previewFor(env, url));
   }
   if (method === "POST") {
     const am = path.match(/^\/api\/admin\/users\/(u_[a-z0-9]+)\/(credits|block|address|key|signout|delete|ip-lookup)$/);
@@ -684,9 +708,145 @@ async function adminRoute(env: StudioEnv, request: Request, url: URL, adminId: s
     if (path === "/api/admin/sources/links") return createLink(env, adminId, await body(request));
     const lm = path.match(/^\/api\/admin\/sources\/links\/([a-z0-9-]{1,40})$/);
     if (lm) return changeLink(env, adminId, lm[1], await body(request));
+    if (path === "/api/admin/emails/mode") return emailSwitch(env, request, gate, adminId, await body(request));
+    if (path === "/api/admin/emails/test") return json(await sendSeriesToOwner(env, livePrices(env)));
+    if (path === "/api/admin/emails/suppress") return emailSuppress(env, adminId, await body(request));
+    if (path.startsWith("/api/admin/outreach/")) return outreachRoute(env, request, gate, adminId, path, await body(request));
     const km = path.match(/^\/api\/admin\/keys\/([A-Z0-9_]{3,64})(?:\/(test|revert))?$/);
     if (km) return keyRoute(env, request, gate, adminId, km[1], (km[2] ?? "set") as "set" | "revert" | "test");
   }
+  return json({ error: "Not found." }, 404);
+}
+
+// ── the welcome e-mails (src/studio/onboarding.ts) ─────────────────────────────────────────────────────────────
+
+const MAIL_NAMES: Record<MailKey, string> = {
+  "w0-welcome": "Day 1 · Welcome", "w1-templates": "Day 2 · Templates", "w2-prompts": "Day 3 · Prompts", "w3-apps": "Day 4 · Apps",
+  "w4-share": "Day 5 · Sizes and sharing", "w5-credits": "Day 6 · Credits", "w6-founder": "Day 7 · Founder's question",
+  rescue: "Rescue · first try failed", "c0-failed": "Comeback · first try failed", "c0-unused": "Comeback · nothing made yet",
+  "c0-next": "Comeback · made something", "c1-founder": "Comeback · founder's question",
+};
+/** The sample account each preview is written for: a new one, one that failed, one that made something. */
+const sampleFor = (k: MailKey) => sampleFacts(k === "c0-next" ? { made: 2, credits: 1 } : k === "c0-failed" || k === "rescue" ? { failed: 1 } : {});
+
+async function emails(env: StudioEnv): Promise<unknown> {
+  const mode = await mailMode(env);
+  const q = async <T>(sql: string, ...a: unknown[]): Promise<T[]> => ((await env.DB.prepare(sql).bind(...a).all<T>()).results ?? []);
+  const one = async (sql: string, ...a: unknown[]): Promise<number> => Number((await env.DB.prepare(sql).bind(...a).first<{ n: number }>())?.n ?? 0);
+  const [series, today, week, total, failures, unsub, bounced, paidAfter, upcoming, recent] = await Promise.all([
+    q<{ track: string; status: string; n: number }>("SELECT track, status, COUNT(*) AS n FROM studio_mail GROUP BY track, status"),
+    one(`SELECT COUNT(*) AS n FROM studio_mail_log WHERE kind = 'live' AND ok = 1 AND at >= ${TODAY}`),
+    one(`SELECT COUNT(*) AS n FROM studio_mail_log WHERE kind = 'live' AND ok = 1 AND at >= ${ago(7)}`),
+    one("SELECT COUNT(*) AS n FROM studio_mail_log WHERE kind = 'live' AND ok = 1"),
+    one(`SELECT COUNT(*) AS n FROM studio_mail_log WHERE kind = 'live' AND ok = 0 AND at >= ${ago(7)}`),
+    one("SELECT COUNT(*) AS n FROM mail_suppress WHERE reason = 'unsubscribe'"),
+    one("SELECT COUNT(*) AS n FROM mail_suppress WHERE reason = 'bounce'"),
+    one("SELECT COUNT(DISTINCT m.user_id) AS n FROM studio_mail m JOIN payments p ON p.user_id = m.user_id AND p.status = 'paid' AND p.amount_cent > 0 AND p.at >= m.started_at"),
+    q<{ user_id: string; email: string; track: "welcome" | "comeback"; step: number; next_at: string }>("SELECT user_id, email, track, step, next_at FROM studio_mail WHERE status = 'active' ORDER BY next_at LIMIT 20"),
+    q<{ user_id: string | null; email: string; mail: MailKey; kind: string; ok: number; error: string | null; at: string }>("SELECT user_id, email, mail, kind, ok, error, at FROM studio_mail_log ORDER BY id DESC LIMIT 40"),
+  ]);
+  // Before the first switch-on: who the comeback e-mail would reach, and which one each would get.
+  let comeback: { total: number; byMail: Record<string, number> } | null = null;
+  if (!mode.since) {
+    const admins = (env.STUDIO_ADMINS ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+    const ids = await q<{ id: string }>(`SELECT u.id FROM users u WHERE u.created_at >= ${ago(30)}
+      AND EXISTS (SELECT 1 FROM studio_logins l WHERE l.user_id = u.id)
+      AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.user_id = u.id AND p.status = 'paid' AND p.amount_cent > 0)
+      ${admins.length ? `AND u.id NOT IN (${admins.map(() => "?").join(",")})` : ""}`, ...admins);
+    const byMail: Record<string, number> = {};
+    let n = 0;
+    for (const { id } of ids) {
+      const f = await factsOf(env, id);
+      if (!f?.email || f.closed) continue;
+      if (await env.DB.prepare("SELECT 1 AS one FROM mail_suppress WHERE email = ?").bind(f.email.toLowerCase()).first()) continue;
+      const k = MAIL_NAMES[comebackMail(f)];
+      byMail[k] = (byMail[k] ?? 0) + 1;
+      n++;
+    }
+    comeback = { total: n, byMail };
+  }
+  const nextName = (r: { track: "welcome" | "comeback"; step: number }): string => {
+    const m = SERIES[r.track]?.[r.step]?.mail;
+    return m === "c0" ? "Comeback · the one that fits" : m ? MAIL_NAMES[m] : "—";
+  };
+  const counts = { active: 0, done: 0, stopped: 0, welcome: 0, comeback: 0 };
+  for (const r of series) {
+    counts[r.track === "comeback" ? "comeback" : "welcome"] += r.n;
+    if (r.status === "active" || r.status === "done" || r.status === "stopped") counts[r.status] += r.n;
+  }
+  const prices = livePrices(env);
+  return {
+    on: mode.on, since: mode.since, from: "Leonardo from Kleo <hello@kleooai.com>", dailyCap: Number(env.STUDIO_MAIL_DAILY_CAP ?? 300),
+    counts, sent: { today, week, total }, failures, unsubscribed: unsub, bounced, paidAfter, comeback,
+    upcoming: upcoming.map((r) => ({ ...r, mail: nextName(r) })),
+    recent: recent.map((r) => ({ ...r, name: MAIL_NAMES[r.mail] ?? r.mail })),
+    mails: ALL_MAILS.map((k) => ({ key: k, name: MAIL_NAMES[k], subject: compose(k, sampleFor(k), prices).subject })),
+  };
+}
+
+function emailPreview(env: StudioEnv, url: URL): unknown {
+  const key = url.searchParams.get("key") as MailKey;
+  if (!ALL_MAILS.includes(key)) throw new StudioError("No such e-mail.", 404, "not_found");
+  const m = compose(key, sampleFor(key), livePrices(env));
+  const stop = "https://app.kleooai.com/email/stop?u=u_preview&s=preview";
+  return { key, name: MAIL_NAMES[key], subject: m.subject, preheader: m.preheader, html: renderHtml(m, stop), text: renderText(m, stop) };
+}
+
+/** Switching on writes to real people: a code from the phone typed in the last 5 minutes. Off needs nothing. */
+async function emailSwitch(env: StudioEnv, request: Request, gate: Gate, adminId: string, b: Record<string, unknown>): Promise<Response> {
+  const on = b.on === true;
+  if (on && !isFresh(gate.session)) {
+    if (!b.code) throw new StudioError("Type a new code from your phone to do this.", 403, "fresh_code");
+    await checkFreshCode(env, request, adminId, b.code);
+    gate.fresh = true;
+  }
+  await setMailMode(env, on, adminId);
+  return json({ ok: true, on });
+}
+
+/** One address stopped by hand (or allowed again): whatever wrote to it, welcome e-mails or outreach. */
+async function emailSuppress(env: StudioEnv, adminId: string, b: Record<string, unknown>): Promise<Response> {
+  const email = String(b.email ?? "").trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/.test(email)) throw new StudioError("That doesn't look like an e-mail address.", 400, "email");
+  if (b.on === false) await env.DB.prepare("DELETE FROM mail_suppress WHERE email = ?").bind(email).run();
+  else {
+    await env.DB.prepare("INSERT OR IGNORE INTO mail_suppress (email, reason, source) VALUES (?, 'manual', 'admin')").bind(email).run();
+    await env.DB.prepare(`UPDATE studio_mail SET status = 'stopped', stop_reason = 'manual', updated_at = ${NOW} WHERE email = ? AND status = 'active'`).bind(email).run();
+  }
+  await audit(asEnv(env), adminId, null, "admin.mail_suppress", { domain: email.split("@")[1], on: b.on !== false });
+  return json({ ok: true });
+}
+
+// ── outreach (src/studio/outreach.ts) ───────────────────────────────────────────────────────────────────────────
+
+/** A fresh code for what writes to strangers or changes the mailbox password; reads and approvals need none. */
+async function freshGate(env: StudioEnv, request: Request, gate: Gate, adminId: string, b: Record<string, unknown>): Promise<void> {
+  if (gate.fresh || isFresh(gate.session)) return;
+  if (!b.code) throw new StudioError("Type a new code from your phone to do this.", 403, "fresh_code");
+  await checkFreshCode(env, request, adminId, b.code);
+  gate.fresh = true;
+}
+
+async function outreachRoute(env: StudioEnv, request: Request, gate: Gate, adminId: string, path: string, b: Record<string, unknown>): Promise<Response> {
+  if (path === "/api/admin/outreach/sender") {
+    if (String(b.password ?? "").trim()) await freshGate(env, request, gate, adminId, b);
+    return json(await saveSender(env, adminId, b));
+  }
+  if (path === "/api/admin/outreach/mode") {
+    if (b.on === true) await freshGate(env, request, gate, adminId, b);
+    return json(await setOutreachMode(env, adminId, b.on === true));
+  }
+  if (path === "/api/admin/outreach/test") return json(await sendOutreachTest(env));
+  if (path === "/api/admin/outreach/approve-new") return json(await prospectAction(env, adminId, "", "approve-new"));
+  if (path === "/api/admin/outreach/import") {
+    const rows = typeof b.csv === "string" ? parseCsv(b.csv) : Array.isArray(b.prospects) ? b.prospects as Record<string, unknown>[] : [];
+    if (!rows.length) throw new StudioError("Paste the CSV with a header line first.", 400, "empty");
+    const r = await addProspects(env, rows, String(b.batch ?? "console").slice(0, 40) || "console");
+    await audit(asEnv(env), adminId, null, "admin.outreach_import", { added: r.added, skipped: r.skipped.length });
+    return json(r);
+  }
+  const pm = path.match(/^\/api\/admin\/outreach\/prospects\/(p_[a-z0-9]{6,20})$/);
+  if (pm) return json(await prospectAction(env, adminId, pm[1], String(b.action ?? "")));
   return json({ error: "Not found." }, 404);
 }
 
