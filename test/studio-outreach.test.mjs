@@ -132,7 +132,8 @@ before(async () => {
   const r = await esbuild.build({
     stdin: { contents: `export { default } from "./src/studio/index.ts";
       export * from "./src/studio/outreach.ts";
-      export * as box from "./src/studio/mailbox.ts";`, resolveDir: ROOT, loader: "ts" },
+      export * as box from "./src/studio/mailbox.ts";
+      export { morningDigest } from "./src/studio/digest.ts";`, resolveDir: ROOT, loader: "ts" },
     bundle: true, write: false, format: "esm", platform: "neutral", target: "es2022", logLevel: "silent", external: ["@anthropic-ai/sdk", "cloudflare:email", "cloudflare:sockets"],
   });
   mod = await import("data:text/javascript;base64," + Buffer.from(r.outputFiles[0].text).toString("base64"));
@@ -302,7 +303,7 @@ test("first e-mail: in New York's working hours, from the mailbox, personal, the
   assert.match(text, /^Hi Maya,\r?\n\r?\nSaw that you run TikTok for three Brooklyn coffee roasters\./);
   assert.match(text, /free credits to try it on a real brief\?/);
   assert.match(text, /hello@brightreels\.example is listed on brightreels\.example/);
-  assert.match(text, /Kleo, PO Box 123, Auckland 1010, New Zealand/);
+  assert.match(text, /Kleo \(Kanaky Tech, New Zealand\), PO Box 123, Auckland 1010, New Zealand/);
   assert.match(header(m.raw, "List-Unsubscribe"), /^<https:\/\/app\.kleooai\.com\/email\/out\?p=p_[a-z0-9]+&s=[0-9a-f]{32}>, <mailto:leo@getkleo\.test\?subject=unsubscribe>$/);
   assert.doesNotMatch(m.raw, /<img|<html|utm_/i, "plain text, no tracking");
   const p = one(env, "SELECT * FROM outreach_prospects WHERE email = 'hello@brightreels.example'");
@@ -486,4 +487,28 @@ test("console: overview, the sender saved only after both sign-ins, approvals, p
   r = await call(env, "/api/admin/outreach/mode", { method: "POST", cookie: o.admin, body: { on: true, code: await o.code() } });
   assert.equal(r.status, 200, r.text);
   assert.equal((await call(env, "/api/admin/outreach", { cookie: o.admin })).json.on, true);
+});
+
+test("morning e-mail: at 8:00 in Auckland, once a day, only while something is on, with the interested replies by name", async () => {
+  const env = newEnv();
+  configure(env);
+  await addApproved(env, [P(), P({ email: "hi@two.example", company: "Two" })]);
+  for (let t = 0; t < HOUR; t += 15 * MIN) await mod.outreachTick(env, MON + t, { random: () => 0 });
+  env.AI.answer = '{"class":"interested","summary":"Wants a trial for the team."}';
+  MB.inbox = [{ uid: 21, headers: ["From: maya@brightreels.example", "Subject: Re: Short-form video for Bright Reels", `In-Reply-To: ${header(MB.sent[0].raw, "Message-ID")}`], body: "Yes, we'd like to try it with the team next week.\r\n" }];
+  await mod.outreachTick(env, MON + HOUR + 15 * MIN, { random: () => 0 });
+  env.mails.length = 0;
+  // Tuesday 3 November 2026, 8:10 in Auckland (NZDT, UTC+13) = Monday 19:10 UTC.
+  const eight = Date.parse("2026-11-02T19:10:00.000Z");
+  assert.equal(await mod.morningDigest(env, eight - HOUR), false, "7:10 is not 8");
+  assert.equal(await mod.morningDigest(env, eight), true);
+  assert.equal(await mod.morningDigest(env, eight + 20 * MIN), false, "once a day");
+  assert.equal(env.mails.length, 1);
+  const raw = env.mails[0].raw;
+  assert.match(raw, /Subject: Kleo e-mails, 2026-11-03/);
+  assert.match(raw, /Sent in the last 24 hours: 2 \(2 first e-mails, 0 follow-ups\)/);
+  assert.match(raw, /Bright Reels \(interested\): Wants a trial for the team\./);
+  assert.doesNotMatch(raw, /WELCOME E-MAILS/, "the welcome e-mails are off");
+  env.DB.db.prepare("UPDATE studio_meta SET value = 'off' WHERE key = 'outreach_mode'").run();
+  assert.equal(await mod.morningDigest(env, eight + DAY), false, "nothing on, nothing sent");
 });

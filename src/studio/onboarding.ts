@@ -187,7 +187,7 @@ export function compose(key: MailKey, f: Facts, x: Prices): Mail {
       ] },
       { p: `Put together: "${PROMPT}."` },
       { p: "Keep it to one scene per clip. For TikTok, Reels and Shorts pick 9:16; for YouTube, 16:9. Not sure which model? Keep the one Kleo suggests and press Enhance first." },
-      { button: { label: "Try this prompt", url: u(`/?prompt=${encodeURIComponent(PROMPT)}&aspect=9:16`, key) } },
+      { button: { label: "Try this prompt", url: u(`/video?prompt=${encodeURIComponent(PROMPT)}&aspect=9:16`, key) } },
       ...SIGN] };
     case "w3-apps": return { key, subject: day(4, "The apps inside Kleo"), preheader: "Face swap, voiceover, music and more.", blocks: [
       { p: hi(f) },
@@ -249,7 +249,7 @@ export function compose(key: MailKey, f: Facts, x: Prices): Mail {
         ? "The model refused it because it thought the prompt or the photo showed a famous person, a brand or a protected character. Describe your own character instead of naming one, or use a photo of yourself, and it goes through."
         : "What usually works: one clear scene per prompt, a sharp photo that faces the camera, and a second try a few minutes later if the model is busy." },
       { p: `A prompt to start from: "${PROMPT}."` },
-      { button: { label: "Try it now", url: u(`/?prompt=${encodeURIComponent(PROMPT)}&aspect=9:16`, key) } },
+      { button: { label: "Try it now", url: u(`/video?prompt=${encodeURIComponent(PROMPT)}&aspect=9:16`, key) } },
       { p: "If it fails again, reply and tell me what you typed. I'll look at it myself." },
       ...SIGN] };
     case "c0-unused": return { key, subject: f.credits > 0 ? `Your ${f.credits} Kleo credits are still here` : "Your first Kleo video is one sentence away", preheader: "Your first video is one sentence away.", blocks: [

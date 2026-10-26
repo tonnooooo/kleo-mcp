@@ -190,7 +190,7 @@ export interface Written { subject: string; text: string }
 export function writeStep(p: Prospect, step: number, s: Sender, unsubscribeUrl: string): Written {
   const hi = `Hi ${firstOf(p.contact_name) ?? "there"},`;
   const sign = `${s.fromName || "Leonardo"}\nFounder, Kleo`;
-  const footer = `--\nYou're getting this one-off business e-mail because ${p.email} is listed on ${hostOf(p.source_url)}. If it isn't relevant, reply "no" or open ${unsubscribeUrl} and I won't write again.\nKleo, ${s.postal.trim()}`;
+  const footer = `--\nYou're getting this one-off business e-mail because ${p.email} is listed on ${hostOf(p.source_url)}. If it isn't relevant, reply "no" or open ${unsubscribeUrl} and I won't write again.\nKleo (Kanaky Tech, New Zealand), ${s.postal.trim()}`;
   const subject0 = p.subject || `Short-form video for ${p.company}`;
   const opener = (p.opener ?? "").trim() || `I came across ${p.company} while looking at ${PHRASE[p.type ?? ""] ?? "studios that make short-form video"}${p.city ? ` in ${p.city}` : ""}.`;
   if (step === 0) return { subject: subject0, text: [hi, opener,
@@ -410,7 +410,7 @@ export async function checkReplies(env: StudioEnv, s: Sender, nowMs: number, dep
       const named = new Set([...m.failedRecipients, ...(m.text.match(/[^\s<>"'():;,]+@[a-z0-9.-]+\.[a-z]{2,}/gi) ?? []).map((x) => x.toLowerCase())]);
       for (const email of named) {
         const p = await env.DB.prepare("SELECT * FROM outreach_prospects WHERE email = ? AND step > 0").bind(email).first<Prospect>();
-        if (p) { await stopProspect(env, p.id, p.email, "bounce", true); await saveReply(env, p, m, "bounce", "The address bounced."); handled++; }
+        if (p) { await stopProspect(env, p.id, p.email, "bounce", true); await saveReply(env, p, m, "bounce", "The address bounced.", nowMs); handled++; }
       }
       continue;
     }
@@ -418,7 +418,7 @@ export async function checkReplies(env: StudioEnv, s: Sender, nowMs: number, dep
     if (!p) continue;
     if (await env.DB.prepare("SELECT 1 AS one FROM outreach_replies WHERE prospect_id = ? AND uid = ?").bind(p.id, m.uid).first()) continue;
     const { cls, summary } = rule ? { cls: rule, summary: rule === "out_of_office" ? "Automatic out-of-office reply." : m.text.slice(0, 200) } : await aiClass(env, m, p);
-    await saveReply(env, p, m, cls, summary);
+    await saveReply(env, p, m, cls, summary, nowMs);
     handled++;
     if (cls === "out_of_office") {
       await env.DB.prepare(`UPDATE outreach_prospects SET next_at = ?, updated_at = ${NOW} WHERE id = ? AND status = 'active'`)
@@ -439,9 +439,9 @@ export async function checkReplies(env: StudioEnv, s: Sender, nowMs: number, dep
   return handled;
 }
 
-async function saveReply(env: StudioEnv, p: Prospect, m: Incoming, cls: string, summary: string): Promise<void> {
-  await env.DB.prepare("INSERT INTO outreach_replies (prospect_id, from_addr, subject, text, class, summary, uid) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .bind(p.id, m.from, m.subject.slice(0, 200), m.text.slice(0, 4000), cls, summary.slice(0, 300), m.uid).run();
+async function saveReply(env: StudioEnv, p: Prospect, m: Incoming, cls: string, summary: string, nowMs: number): Promise<void> {
+  await env.DB.prepare("INSERT INTO outreach_replies (prospect_id, from_addr, subject, text, class, summary, uid, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .bind(p.id, m.from, m.subject.slice(0, 200), m.text.slice(0, 4000), cls, summary.slice(0, 300), m.uid, new Date(nowMs).toISOString()).run();
 }
 
 // ── openers for prospects added without one (Workers AI reads their home page) ───────────────────────────────────
