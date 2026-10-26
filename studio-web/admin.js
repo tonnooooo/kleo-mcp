@@ -2,7 +2,8 @@
 // admin opens /admin, and hands it the app's own helpers (the kit): the element builder, the icons, toasts, sheets and
 // the ask() questions, never a browser pop-up. API: src/studio/admin.ts. With ?demo=1 everything runs on fake data.
 //
-// Pages: Overview · Users (and one account) · Sources · Emails · Payments · Creations · Providers & keys · Security. Desktop: a
+// Pages: Overview · Users (and one account) · Sources · Emails · Outreach · Payments · Creations · Providers & keys ·
+// Security. Desktop: a
 // side list of pages; phones: the same pages as a row of pills.
 //
 // The console opens with a second factor (src/studio/admin-auth.ts): the first visit sets up a code on the owner's phone
@@ -20,6 +21,7 @@ const SECTIONS = [
   { key: "users", label: "Users", ic: "user" },
   { key: "sources", label: "Sources", ic: "share" },
   { key: "emails", label: "Emails", ic: "mail" },
+  { key: "outreach", label: "Outreach", ic: "send" },
   { key: "payments", label: "Payments", ic: "bag" },
   { key: "creations", label: "Creations", ic: "film" },
   { key: "providers", label: "Providers", ic: "plug" },
@@ -219,7 +221,7 @@ export function render(kit) {
     h("button", { class: "adm-live", title: "Update now", onclick: () => live(true) }, h("i", { class: "adm-live-dot" }), h("span", { class: "adm-live-t" }, "Live")));
   const main = h("div", { class: "adm-main" });
   K.setView("admin-view", h("div", { class: "adm" }, nav, main));
-  const pages = { overview: overviewPage, users: id ? (m, o) => userPage(m, id, o) : usersPage, sources: sourcesPage, emails: emailsPage, payments: paymentsPage, creations: creationsPage, providers: providersPage, keys: keysPage, security: securityPage };
+  const pages = { overview: overviewPage, users: id ? (m, o) => userPage(m, id, o) : usersPage, sources: sourcesPage, emails: emailsPage, outreach: outreachPage, payments: paymentsPage, creations: creationsPage, providers: providersPage, keys: keysPage, security: securityPage };
   pages[key](main);
   // The same page, built again off screen every LIVE_MS (live() above).
   liveStart((into) => pages[key](main, { into }));
@@ -1114,6 +1116,143 @@ async function emailsPage(main, opts = {}) {
     card("Sent", null, recent.length ? h("div", { class: "list" }, recent) : empty("Nothing sent yet.")));
 }
 
+// ── outreach: Kleo writes to agencies on its own (src/studio/outreach.ts, 27 October 2026) ───────────────────────
+// The switch and what it waits for, the warm-up, the replies, the businesses (approve before anything is sent), the
+// sender (the mailbox Kleo sends from and reads replies in), and a box to add more businesses as CSV.
+const OQ = { status: "new", q: "", offset: 0, form: null, csv: "", batch: "" };
+const OUT_STATUS = [["new", "To approve"], ["approved", "Approved"], ["active", "Writing to"], ["replied", "Replied"], ["done", "No answer"], ["stopped", "Stopped"], ["", "All"]];
+const OUT_CLASS = { interested: ["Interested", "ok"], question: ["Question", "info"], not_interested: ["Not interested", ""], unsubscribe: ["Said no", ""],
+  out_of_office: ["Out of office", ""], wrong_person: ["Wrong person", ""], bounce: ["Bounced", "bad"], other: ["Replied", "info"] };
+async function outreachPage(main, opts = {}) {
+  const body = h("div", { class: "adm-stack" }, loading());
+  K.fill(opts.into || main, head("Outreach", "Kleo writes to agencies on its own from your outreach mailbox, follows up twice, and reads their replies.", refreshBtn(() => outreachPage(main))), body);
+  let r, list;
+  try {
+    [r, list] = await Promise.all([call("/api/admin/outreach"),
+      call(`/api/admin/outreach/prospects?status=${encodeURIComponent(OQ.status)}&q=${encodeURIComponent(OQ.q)}&offset=${OQ.offset}`)]);
+  } catch (e) { return failed(body, e, () => outreachPage(main)); }
+  const reload = () => outreachPage(main);
+  const s = r.sender, c = r.counts || {};
+  const n = (k) => Number(c[k] || 0);
+
+  // The switch, and what it waits for.
+  const check = (ok, text) => h("div", { class: "row" }, icon(ok ? "check" : "x", 19), h("div", { class: "lbl" }, h("b", {}, text)), pill(ok ? "Ready" : "Missing", ok ? "ok" : ""));
+  async function toggle() {
+    if (r.on) {
+      try { await call("/api/admin/outreach/mode", { method: "POST", body: { on: false } }); K.toast("Outreach is off"); reload(); } catch (e) { oops(e); }
+      return;
+    }
+    if (!(await K.ask({ title: "Start writing to agencies?", ok: "Start", ic: "send",
+      text: `Kleo writes from ${s.fromAddr} to the ${count(r.ready.approved, "approved business", "approved businesses")}, ${r.warmup.quota} a day to start, only Monday to Friday in their working hours, and follows up twice when nobody answers.` }))) return;
+    try { await postFresh("/api/admin/outreach/mode", { on: true }); K.toast("Outreach is on"); reload(); } catch (e) { oops(e); }
+  }
+  async function test(btn) {
+    btn.disabled = true;
+    try { const t = await call("/api/admin/outreach/test", { method: "POST", body: {} }); K.toast(`Test sent to ${t.to}`); } catch (e) { oops(e); } finally { btn.disabled = false; }
+  }
+  const sw = h("button", { class: "btn " + (r.on ? "btn-quiet" : "btn-primary"), onclick: toggle, disabled: !r.on && !r.ready.ok }, icon(r.on ? "pause" : "send", 17), r.on ? "Turn off" : "Turn on");
+  const testBtn = h("button", { class: "btn btn-quiet btn-sm", onclick: () => test(testBtn), disabled: !(r.ready.sender && r.ready.password) }, icon("mail", 16), "Send me a test");
+  const state = card("Outreach",
+    r.on ? (r.paused === "sender" ? "On, but paused: the mailbox refused to send. Check the app password below." : `On. Warm-up day ${r.warmup.day}: up to ${r.warmup.quota} e-mails today, ${r.warmup.sentLastDay} sent in the last 24 hours.`)
+      : r.ready.ok ? "Off. Everything is ready." : "Off. It starts once these four are ready:",
+    r.on ? null : h("div", { class: "list" }, check(r.ready.sender, `Sender: ${s.fromAddr || "not set"}`), check(r.ready.password, s.hasPassword ? `App password, ends in ${s.passwordEnds}` : "The mailbox's app password"),
+      check(r.ready.postal, "Postal address (the law wants it in every e-mail)"), check(r.ready.approved > 0, `${count(r.ready.approved, "approved business", "approved businesses")}`)),
+    h("div", { class: "adm-actions" }, sw, testBtn, pill(r.on ? "On" : "Off", r.on ? "ok" : "")));
+
+  // The businesses: approve before anything is sent.
+  async function act(p, action) {
+    try { await call(`/api/admin/outreach/prospects/${p.id}`, { method: "POST", body: { action } }); K.toast(action === "approve" ? `${p.company} approved` : action === "reject" ? `${p.company} left out` : "Back to waiting"); reload(); } catch (e) { oops(e); }
+  }
+  async function approveAll() {
+    if (!(await K.ask({ title: `Approve all ${n("new")} waiting?`, ok: "Approve all", ic: "check", text: "Each one is a business that publishes this address on its own site for business contact, in the US, Canada, the UK, Australia or New Zealand. Kleo writes to them only once outreach is on." }))) return;
+    try { const a = await call("/api/admin/outreach/approve-new", { method: "POST", body: {} }); K.toast(`${a.approved} approved`); reload(); } catch (e) { oops(e); }
+  }
+  async function preview(p) {
+    let v;
+    try { v = await call(`/api/admin/outreach/preview?id=${encodeURIComponent(p.id)}`); } catch (e) { return oops(e); }
+    K.sheet(p.company, `What ${p.email} gets: the first e-mail, then the two follow-ups if nobody answers.`,
+      h("div", { class: "adm-sheet-body" }, v.steps.map((w, i) => h("section", { class: "adm-card" }, h("h2", {}, i === 0 ? "First e-mail" : i === 1 ? "Follow-up, 3 working days later" : "Last one, 5 working days later"),
+        h("p", { class: "adm-sub" }, w.subject), h("pre", { class: "adm-mailtext" }, w.text)))));
+  }
+  const search = h("input", { class: "input", value: OQ.q, placeholder: "Search a company, address or city", "aria-label": "Search", autocomplete: "off" });
+  search.addEventListener("keydown", (e) => { if (e.key === "Enter") { OQ.q = search.value.trim(); OQ.offset = 0; reload(); } });
+  const rows = list.prospects.map((p) => h("div", { class: "adm-keyrow" },
+    h("div", { class: "row" }, h("span", { class: "adm-av" }, String(p.company || "?")[0].toUpperCase()),
+      h("div", { class: "lbl" }, h("b", {}, p.company, " ", p.reply_class ? pill((OUT_CLASS[p.reply_class] || OUT_CLASS.other)[0], (OUT_CLASS[p.reply_class] || OUT_CLASS.other)[1]) : null),
+        h("span", {}, [p.email, [p.city, p.region, p.country].filter(Boolean).join(", "), p.contact_name].filter(Boolean).join(" · ")),
+        p.reply_summary ? h("span", {}, `They said: ${p.reply_summary}`) : p.opener ? h("span", {}, `“${p.opener}”`) : null,
+        h("span", {}, h("a", { class: "adm-a", href: p.source_url, target: "_blank", rel: "noopener noreferrer" }, `Address seen on ${String(p.source_url).replace(/^https:\/\/(www\.)?/, "").slice(0, 60)}`),
+          p.step ? ` · ${count(p.step, "e-mail")} sent${p.next_at ? `, next ${stamp(p.next_at)}` : ""}` : "", p.stop_reason ? ` · ${p.stop_reason.replace(/_/g, " ")}` : ""))),
+    h("div", { class: "adm-actions" },
+      h("button", { class: "btn btn-quiet btn-sm", onclick: () => preview(p) }, icon("mail", 15), "Read the e-mails"),
+      p.status === "new" || p.status === "rejected" ? h("button", { class: "btn btn-quiet btn-sm", onclick: () => act(p, "approve") }, icon("check", 15), "Approve") : null,
+      p.status === "new" || p.status === "approved" ? h("button", { class: "btn btn-quiet btn-sm", onclick: () => act(p, "reject") }, icon("x", 15), "Leave out") : null)));
+  const prospects = card("Businesses", `${num(n("new"))} waiting for you, ${num(n("approved"))} approved, ${num(n("active"))} being written to. Every address was seen on the business's own site; the link shows where.`,
+    chips(OUT_STATUS.map(([k, label]) => [k, k ? `${label} ${num(n(k) + (k === "stopped" ? n("bounced") + n("invalid") : 0))}` : label]), OQ.status, (k) => { OQ.status = k; OQ.offset = 0; reload(); }),
+    h("div", { class: "adm-actions" }, search, OQ.status === "new" && n("new") ? h("button", { class: "btn btn-primary btn-sm", onclick: approveAll }, icon("check", 16), `Approve all ${num(n("new"))}`) : null),
+    rows.length ? h("div", { class: "list" }, rows) : empty("Nobody here."),
+    list.more || OQ.offset ? h("div", { class: "adm-actions" },
+      OQ.offset ? h("button", { class: "btn btn-quiet btn-sm", onclick: () => { OQ.offset = Math.max(0, OQ.offset - 60); reload(); } }, "Previous") : null,
+      list.more ? h("button", { class: "btn btn-quiet btn-sm", onclick: () => { LIVE.hold = true; OQ.offset += 60; reload(); } }, "Next 60") : null) : null);
+
+  // The replies Kleo read.
+  const replies = (r.replies || []).map((x) => h("div", { class: "row" }, icon(x.class === "interested" ? "star" : "chat", 19),
+    h("div", { class: "lbl" }, h("b", {}, x.company || x.from_addr, " ", pill(...(OUT_CLASS[x.class] || OUT_CLASS.other))), h("span", {}, x.summary || x.subject || "")), h("span", { class: "val" }, ago(x.at))));
+
+  // The sender: the mailbox Kleo writes from. The form keeps what was typed while the page refreshes itself.
+  const F = (OQ.form ||= { fromName: s.fromName, fromAddr: s.fromAddr, user: s.user, smtpHost: s.smtpHost, smtpPort: String(s.smtpPort), imapHost: s.imapHost, imapPort: String(s.imapPort), postal: s.postal, dailyMax: String(s.dailyMax), password: "" });
+  const field = (label, key, extra = {}) => {
+    const el = h("input", { class: "input", value: F[key] ?? "", autocomplete: "off", spellcheck: "false", ...extra });
+    el.addEventListener("input", () => { F[key] = el.value; });
+    return h("label", { class: "adm-field" }, h("span", {}, label), el);
+  };
+  const saveBtn = h("button", { class: "btn btn-primary", onclick: save }, icon("check", 17), "Check and save");
+  async function save() {
+    saveBtn.disabled = true;
+    try {
+      const res = await postFresh("/api/admin/outreach/sender", { ...F, smtpPort: Number(F.smtpPort), imapPort: Number(F.imapPort), dailyMax: Number(F.dailyMax) });
+      F.password = "";
+      K.toast(res.tested ? "Saved. Kleo signed in to send and to read." : "Saved. Add the app password to finish.");
+      OQ.form = null; reload();
+    } catch (e) { oops(e); saveBtn.disabled = false; }
+  }
+  const sender = card("Sender", "The mailbox Kleo writes from and reads replies in: on a domain of its own (not kleooai.com, not Gmail), so Kleo's own e-mail never shares its reputation.",
+    h("div", { class: "adm-form2" }, field("Your name in the From line", "fromName"), field("Address", "fromAddr", { placeholder: "leo@yourdomain.com", inputmode: "email" })),
+    h("div", { class: "adm-form2" }, field("Sign-in name", "user", { placeholder: "Usually the address" }), field("App password", "password", { type: "password", placeholder: s.hasPassword ? `Saved, ends in ${s.passwordEnds}` : "16 characters from the mailbox's settings" })),
+    h("div", { class: "adm-form2" }, field("Sending server", "smtpHost"), field("Port", "smtpPort", { inputmode: "numeric" })),
+    h("div", { class: "adm-form2" }, field("Reading server", "imapHost"), field("Port", "imapPort", { inputmode: "numeric" })),
+    field("Postal address", "postal", { placeholder: "A street address or PO box, with the country" }),
+    field("Most e-mails in a day, once warmed up (5 to 60)", "dailyMax", { inputmode: "numeric" }),
+    h("div", { class: "adm-note" }, icon("lock", 17), h("span", {}, "Google Workspace: smtp.gmail.com 465 and imap.gmail.com 993, an app password from myaccount.google.com/apppasswords (2-step verification on). Kleo signs in to both before it saves anything, and keeps the password sealed.")),
+    h("div", { class: "adm-actions" }, saveBtn));
+
+  // More businesses, as CSV.
+  const csv = h("textarea", { class: "input adm-csv", rows: 5, placeholder: "company,website,email,source_url,country,state,city,contact_first_name,type,opener" }, OQ.csv);
+  csv.addEventListener("input", () => { OQ.csv = csv.value; });
+  async function importCsv() {
+    try {
+      const res = await call("/api/admin/outreach/import", { method: "POST", body: { csv: OQ.csv, batch: "console" } });
+      K.toast(`${res.added} added${res.skipped.length ? `, ${res.skipped.length} skipped (${res.skipped[0].why})` : ""}`);
+      if (res.added) { OQ.csv = ""; reload(); }
+    } catch (e) { oops(e); }
+  }
+  const add = card("Add businesses", "One per line, with a header line. source_url is the page on their own site where the address is published: without it a line is skipped. Only US, CA, GB, AU and NZ.",
+    csv, h("div", { class: "adm-actions" }, h("button", { class: "btn btn-quiet btn-sm", onclick: importCsv }, icon("plus", 16), "Add")));
+
+  const sends = (r.sends || []).map((x) => h("div", { class: "row" }, icon(x.ok ? "check" : "x", 19),
+    h("div", { class: "lbl" }, h("b", {}, x.company || x.email, " ", pill(x.step === 0 ? "First" : x.step === 1 ? "Follow-up" : "Last", "")), h("span", {}, x.ok ? x.email : `${x.email} · ${x.error}`)), h("span", { class: "val" }, ago(x.at))));
+
+  K.fill(body,
+    state,
+    tiles(tile("To approve", num(n("new")), "Waiting for you"), tile("Being written to", num(n("active")), `${num(n("approved"))} approved, not started`),
+      tile("Contacted", num(r.contacted), "Businesses that got at least one e-mail"), tile("Replied", num(r.replied), r.contacted ? `${Math.round((r.replied / r.contacted) * 100)}% of those contacted` : null, r.replied ? "ok" : ""),
+      tile("No answer", num(n("done")), "All three e-mails, no reply"), tile("Stopped", num(n("stopped") + n("bounced") + n("invalid")), "Said no, bounced or no mail server")),
+    card("Replies", replies.length ? "Kleo reads the mailbox every 15 minutes, stops writing to anyone who answered, and e-mails you when someone is interested." : null,
+      replies.length ? h("div", { class: "list" }, replies) : empty("No reply yet.")),
+    prospects, sender, add,
+    card("Sent", null, sends.length ? h("div", { class: "list" }, sends) : empty("Nothing sent yet.")));
+}
+
 // ── demo data (?demo=1): nothing here is real ────────────────────────────────────────────────────────────────────
 let D = null;
 function demoDb() {
@@ -1279,6 +1418,21 @@ function demoEmails(p, q, b) {
     recent: [{ user_id: "u_demo2", email: "liam@example.com", mail: "w1-templates", name: "Day 2 · Templates", kind: "live", ok: 1, error: null, at: iso(12) }],
     mails: names.map(([key, name, subject]) => ({ key, name, subject })) };
 }
+/** The Outreach page on fake data (?demo=1). */
+function demoOutreach(p, q, b) {
+  const list = [
+    { id: "p_demo1", email: "hello@brightreels.example", company: "Bright Reels", website: "https://brightreels.example", country: "US", region: "NY", city: "Brooklyn", type: "social-media-agency", contact_name: "Maya", source_url: "https://brightreels.example/contact", opener: "Saw that you run TikTok for three Brooklyn coffee roasters; the bean-to-cup series on your work page is a smart format.", status: "new", step: 0 },
+    { id: "p_demo2", email: "studio@northugc.example", company: "North UGC", website: "https://northugc.example", country: "GB", region: null, city: "Manchester", type: "ugc-agency", contact_name: null, source_url: "https://northugc.example/", opener: "Noticed you produce creator-style ads for skincare brands out of Manchester.", status: "active", step: 1, next_at: new Date(Date.now() + 86_400_000).toISOString() },
+  ];
+  if (p === "/api/admin/outreach/prospects") return { prospects: list.filter((x) => !q.get("status") || x.status === q.get("status")), more: false };
+  if (p === "/api/admin/outreach/preview") return { steps: [0, 1, 2].map((i) => ({ subject: i ? "Re: Short-form video for Bright Reels" : "Short-form video for Bright Reels", text: "Hi Maya,\n\n(demo)\n\nLeonardo\nFounder, Kleo" })) };
+  if (p === "/api/admin/outreach/approve-new") return { ok: true, approved: 1 };
+  if (p === "/api/admin/outreach/import") return { added: 0, skipped: [] };
+  if (p.startsWith("/api/admin/outreach/")) return { ok: true, to: "leo@outreach.example", tested: true, on: !!b?.on };
+  return { on: false, paused: null, sender: { fromName: "Leonardo", fromAddr: "", user: "", smtpHost: "smtp.gmail.com", smtpPort: 465, imapHost: "imap.gmail.com", imapPort: 993, postal: "", dailyMax: 40, hasPassword: false, passwordEnds: null },
+    ready: { sender: false, password: false, postal: false, approved: 0, ok: false }, warmup: { day: 1, quota: 5, sentLastDay: 0 },
+    counts: { new: 1, active: 1 }, contacted: 1, replied: 0, replies: [], sends: [], countries: ["US", "CA", "GB", "AU", "NZ"] };
+}
 async function demo(path, opts) {
   await new Promise((r) => setTimeout(r, 160));
   const db = demoDb();
@@ -1396,6 +1550,7 @@ async function demo(path, opts) {
   }
   if (p === "/api/admin/sources" || p.startsWith("/api/admin/sources/links")) return demoSources(p, q, b);
   if (p.startsWith("/api/admin/emails")) return demoEmails(p, q, b);
+  if (p.startsWith("/api/admin/outreach")) return demoOutreach(p, q, b);
   if (p === "/api/admin/payments") {
     const st = q.get("status");
     const rows = db.payments.filter((x) => !st || x.status === st).sort((x, y) => y.at.localeCompare(x.at)).map((x) => ({ ...x, account_email: x.email, links: [{ label: "Payment", url: "https://dashboard.stripe.com/payments" }, { label: "Checkout", url: "https://dashboard.stripe.com/search" }] }));

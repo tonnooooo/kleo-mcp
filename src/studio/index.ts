@@ -10,9 +10,11 @@
  *   /media/...      the person's pictures and clips (cookie, or a signed link for the provider and for sharing)
  *   /r/<code>       a short link: counts the click, tags the visit, opens the link's page (src/studio/attribution.ts)
  *   /email/stop     the welcome e-mails' unsubscribe page and one-click POST (src/studio/onboarding.ts)
+ *   /email/out      the outreach e-mails' unsubscribe page and one-click POST (src/studio/outreach.ts)
  *   everything else the single-page app in studio-web/ (served by the ASSETS binding, index.html for app routes)
  *   cron            every minute: refresh the clips still with the provider, save the finished ones, refund the failed;
- *                   every 5 minutes the welcome e-mails that are due (src/studio/onboarding.ts)
+ *                   every 5 minutes the welcome e-mails that are due (src/studio/onboarding.ts) and, when the owner
+ *                   switched it on, the outreach mailbox's replies and its next e-mail (src/studio/outreach.ts)
  */
 import type { StudioEnv } from "./env.ts";
 import type { Env } from "../env";
@@ -48,6 +50,7 @@ import { pruneIps, recordIp } from "./ips.ts";
 import { ADMIN_SITE_API, ADMIN_SITE_PATH, CONSOLE_PATH, adminUrl, certProblem, isAdminHost, misdirected, noteRefused, refused } from "./admin-host.ts";
 import { SHORT_LINK_PATH, arrivalOf, clearTouchCookie, firstVisit, shortLink } from "./attribution.ts";
 import { handleStop, livePrices, mailTick, sendSeriesToOwner } from "./onboarding.ts";
+import { handleOutreachStop, outreachTick } from "./outreach.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const json = (data: unknown, status = 200, headers: Record<string, string> = {}): Response =>
@@ -630,10 +633,10 @@ async function route(request: Request, env: StudioEnv, ctx: ExecutionContext, ur
   }
   // The welcome e-mails' unsubscribe link (src/studio/onboarding.ts): its signature is the authorisation, and the mail
   // client's one-click POST comes without the page's header or any cookie.
-  if (url.pathname === "/email/stop" && (request.method === "GET" || request.method === "POST")) {
+  if ((url.pathname === "/email/stop" || url.pathname === "/email/out") && (request.method === "GET" || request.method === "POST")) {
     try {
       await ensureStudioSchema(env);
-      return await handleStop(env, request, url);
+      return url.pathname === "/email/out" ? await handleOutreachStop(env, request, url) : await handleStop(env, request, url);
     } catch (e) {
       return fail(e);
     }
@@ -702,6 +705,10 @@ export default {
     // The welcome e-mails that are due, every 5 minutes, when the owner switched them on (src/studio/onboarding.ts).
     if (new Date(_event.scheduledTime || Date.now()).getUTCMinutes() % 5 === 2) {
       try { await mailTick(env, livePrices(env)); } catch (e) { console.error("studio mail", e instanceof Error ? e.message : e); }
+    }
+    // Outreach, two minutes later: the mailbox's replies every quarter of an hour, one e-mail at most (outreach.ts).
+    if (new Date(_event.scheduledTime || Date.now()).getUTCMinutes() % 5 === 4) {
+      try { await outreachTick(env); } catch (e) { console.error("studio outreach", e instanceof Error ? e.message : e); }
     }
     // Sign-in addresses older than 90 days go, once an hour (src/studio/ips.ts; the privacy page promises it).
     if (new Date(_event.scheduledTime || Date.now()).getUTCMinutes() === 17) {

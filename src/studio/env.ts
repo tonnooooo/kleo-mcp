@@ -39,6 +39,8 @@ export interface StudioEnv {
   /** Welcome e-mails one UTC day may send (default 300) and one 5-minute tick (default 12). */
   STUDIO_MAIL_DAILY_CAP?: string;
   STUDIO_MAIL_PER_TICK?: string;
+  /** The outreach mailbox's app password (src/studio/outreach.ts), normally sealed in key_overrides from the console. */
+  OUTREACH_SMTP_PASS?: string;
   /** Dollars under which a provider's balance warns the owner, e.g. "wavespeed:20,apimart:5" (defaults in providers.ts). */
   STUDIO_PROVIDER_LOW_USD?: string;
   /** Public address of the MCP server (for the "use Kleo in Claude/ChatGPT" line). */

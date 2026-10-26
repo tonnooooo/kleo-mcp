@@ -11,12 +11,13 @@
  *   user_attribution    where an account came from; short_links, short_link_clicks, first_visits (attribution.ts)
  *   studio_mail         the welcome e-mails: one row per account in a series; studio_mail_log every send; mail_suppress
  *                       the addresses never to write to again (onboarding.ts, mail-schema.ts)
+ *   outreach_prospects  the businesses Kleo may write to; outreach_log every send, outreach_replies every reply (outreach.ts)
  */
 import type { StudioEnv } from "./env.ts";
 import { PROVIDER_STATUS_SCHEMA } from "./providers.ts";
 import { KEY_OVERRIDES_SCHEMA } from "../key-overrides.ts";
 import { ATTRIBUTION_SCHEMA } from "./attribution.ts";
-import { ONBOARDING_SCHEMA } from "./mail-schema.ts";
+import { ONBOARDING_SCHEMA, OUTREACH_SCHEMA } from "./mail-schema.ts";
 
 const NOW = "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))";
 export const STUDIO_SCHEMA: string[] = [
@@ -51,6 +52,8 @@ export const STUDIO_SCHEMA: string[] = [
   ...ATTRIBUTION_SCHEMA,
   // The welcome e-mails and the stop list (src/studio/onboarding.ts, 27 October 2026).
   ...ONBOARDING_SCHEMA,
+  // The outreach e-mails (src/studio/outreach.ts, 27 October 2026).
+  ...OUTREACH_SCHEMA,
 ];
 
 /**

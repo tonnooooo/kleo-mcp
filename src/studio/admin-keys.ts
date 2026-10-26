@@ -17,6 +17,8 @@ import { audit } from "../db.ts";
 import { StudioError } from "./generate.ts";
 import { mailOwner } from "./providers.ts";
 import { EDITABLE_KEYS, forgetKeys, isEditableKey, keyShapeProblem, last4, sealKey, type OverrideRow } from "../key-overrides.ts";
+import { senderOf } from "./outreach.ts";
+import { smtpSend, socketDial } from "./mailbox.ts";
 
 /** Secrets that stay terminal-only, listed so the page says where they are changed. */
 export const TERMINAL_ONLY = ["INTERNAL_SECRET", "STRIPE_SECRET_KEY", "GOOGLE_CLIENT_SECRET", "TURNSTILE_SECRET"];
@@ -58,6 +60,12 @@ export async function testKey(env: Pick<StudioEnv, "EPHONE_API_URL">, name: stri
       // A sending-only key may not list domains (401 restricted_api_key), and that still proves the key exists.
       const r = await getJson("https://api.resend.com/domains", `Bearer ${value}`);
       return r.status === 200 || (r.status === 401 && /restricted/i.test(JSON.stringify(r.body ?? ""))) ? { ok: true, detail: "Resend accepts this key." } : { ok: false, detail: `Resend refused this key (${r.status}).` };
+    }
+    if (name === "OUTREACH_SMTP_PASS") {
+      const s = await senderOf(env as StudioEnv);
+      if (!s.smtpHost || !s.user) return { ok: false, detail: "Set the outreach sender first, on the Outreach page." };
+      await smtpSend(socketDial, { host: s.smtpHost, port: s.smtpPort, user: s.user, pass: value.replace(/\s+/g, "") });
+      return { ok: true, detail: `${s.smtpHost} accepts this password for ${s.user}.` };
     }
     if (name === "CF_ANALYTICS_TOKEN") {
       const r = await getJson("https://api.cloudflare.com/client/v4/user/tokens/verify", `Bearer ${value}`);

@@ -36,6 +36,17 @@
  *   POST /api/admin/emails/mode              {on, code?}                    switch them on (a fresh code) or off
  *   POST /api/admin/emails/test              {}                             every e-mail to the owner's own inbox
  *   POST /api/admin/emails/suppress          {email, on}                    stop (or allow again) one address
+ *   GET  /api/admin/outreach                 outreach: the switch, the sender (never its password), warm-up, counts,
+ *                                            the last sends and replies (src/studio/outreach.ts)
+ *   GET  /api/admin/outreach/prospects?status&q&offset    the businesses, 60 at a time
+ *   GET  /api/admin/outreach/preview?id      the three e-mails one prospect would get
+ *   POST /api/admin/outreach/sender          {fromName, fromAddr, user, smtpHost, smtpPort, imapHost, imapPort, postal,
+ *                                            dailyMax, password?, code?}  saved only once SMTP and IMAP sign in
+ *   POST /api/admin/outreach/mode            {on, code?}                    on needs everything ready and a fresh code
+ *   POST /api/admin/outreach/test            {}                             the first e-mail to the mailbox itself
+ *   POST /api/admin/outreach/prospects/:id   {action: approve|reject|reset}
+ *   POST /api/admin/outreach/approve-new     {}                             every prospect still waiting
+ *   POST /api/admin/outreach/import          {csv, batch}                   more prospects, checked like the first
  *
  * EVERY WRITE IS AUDITED: one `admin.*` row on the account it touched, with the admin's id and the reason typed.
  * Previews are signed links valid one hour (session.ts signPath): the admin is not the owner of the files.
@@ -57,6 +68,7 @@ import { IP_RETENTION_DAYS } from "./ips.ts";
 import { adminAuthApi, adminSessionOf, checkFreshCode, FRESH_MIN, isFresh, securityInfo, touchSession, type AdminSession } from "./admin-auth.ts";
 import { keyAction, listKeys } from "./admin-keys.ts";
 import { CODE_RE, LINK_CHANNELS, getLink, type LinkChannel, type LinkRow } from "./attribution.ts";
+import { addProspects, listProspects, outreachOverview, parseCsv, previewFor, prospectAction, saveSender, sendOutreachTest, setOutreachMode } from "./outreach.ts";
 import { ALL_MAILS, SERIES, comebackMail, compose, factsOf, livePrices, mailMode, renderHtml, renderText, sampleFacts, sendSeriesToOwner, setMailMode, type MailKey } from "./onboarding.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
@@ -686,6 +698,9 @@ async function adminRoute(env: StudioEnv, request: Request, url: URL, adminId: s
     if (path === "/api/admin/sources") return json(await sources(env, url));
     if (path === "/api/admin/emails") return json(await emails(env));
     if (path === "/api/admin/emails/preview") return json(emailPreview(env, url));
+    if (path === "/api/admin/outreach") return json(await outreachOverview(env));
+    if (path === "/api/admin/outreach/prospects") return json(await listProspects(env, url));
+    if (path === "/api/admin/outreach/preview") return json(await previewFor(env, url));
   }
   if (method === "POST") {
     const am = path.match(/^\/api\/admin\/users\/(u_[a-z0-9]+)\/(credits|block|address|key|signout|delete|ip-lookup)$/);
@@ -696,6 +711,7 @@ async function adminRoute(env: StudioEnv, request: Request, url: URL, adminId: s
     if (path === "/api/admin/emails/mode") return emailSwitch(env, request, gate, adminId, await body(request));
     if (path === "/api/admin/emails/test") return json(await sendSeriesToOwner(env, livePrices(env)));
     if (path === "/api/admin/emails/suppress") return emailSuppress(env, adminId, await body(request));
+    if (path.startsWith("/api/admin/outreach/")) return outreachRoute(env, request, gate, adminId, path, await body(request));
     const km = path.match(/^\/api\/admin\/keys\/([A-Z0-9_]{3,64})(?:\/(test|revert))?$/);
     if (km) return keyRoute(env, request, gate, adminId, km[1], (km[2] ?? "set") as "set" | "revert" | "test");
   }
@@ -799,6 +815,39 @@ async function emailSuppress(env: StudioEnv, adminId: string, b: Record<string, 
   }
   await audit(asEnv(env), adminId, null, "admin.mail_suppress", { domain: email.split("@")[1], on: b.on !== false });
   return json({ ok: true });
+}
+
+// ── outreach (src/studio/outreach.ts) ───────────────────────────────────────────────────────────────────────────
+
+/** A fresh code for what writes to strangers or changes the mailbox password; reads and approvals need none. */
+async function freshGate(env: StudioEnv, request: Request, gate: Gate, adminId: string, b: Record<string, unknown>): Promise<void> {
+  if (gate.fresh || isFresh(gate.session)) return;
+  if (!b.code) throw new StudioError("Type a new code from your phone to do this.", 403, "fresh_code");
+  await checkFreshCode(env, request, adminId, b.code);
+  gate.fresh = true;
+}
+
+async function outreachRoute(env: StudioEnv, request: Request, gate: Gate, adminId: string, path: string, b: Record<string, unknown>): Promise<Response> {
+  if (path === "/api/admin/outreach/sender") {
+    if (String(b.password ?? "").trim()) await freshGate(env, request, gate, adminId, b);
+    return json(await saveSender(env, adminId, b));
+  }
+  if (path === "/api/admin/outreach/mode") {
+    if (b.on === true) await freshGate(env, request, gate, adminId, b);
+    return json(await setOutreachMode(env, adminId, b.on === true));
+  }
+  if (path === "/api/admin/outreach/test") return json(await sendOutreachTest(env));
+  if (path === "/api/admin/outreach/approve-new") return json(await prospectAction(env, adminId, "", "approve-new"));
+  if (path === "/api/admin/outreach/import") {
+    const rows = typeof b.csv === "string" ? parseCsv(b.csv) : Array.isArray(b.prospects) ? b.prospects as Record<string, unknown>[] : [];
+    if (!rows.length) throw new StudioError("Paste the CSV with a header line first.", 400, "empty");
+    const r = await addProspects(env, rows, String(b.batch ?? "console").slice(0, 40) || "console");
+    await audit(asEnv(env), adminId, null, "admin.outreach_import", { added: r.added, skipped: r.skipped.length });
+    return json(r);
+  }
+  const pm = path.match(/^\/api\/admin\/outreach\/prospects\/(p_[a-z0-9]{6,20})$/);
+  if (pm) return json(await prospectAction(env, adminId, pm[1], String(b.action ?? "")));
+  return json({ error: "Not found." }, 404);
 }
 
 /** The Keys page's writes (admin-keys.ts): a change or a revert wants a reason and a code typed in the last 5 minutes. */
