@@ -42,13 +42,13 @@ import { blockAddress } from "../abuse.ts";
 import { EPHONE_NO_MONEY_RE } from "../ephone.ts";
 import { APIMART_NO_MONEY_RE } from "../apimart.ts";
 import { isAdmin, parseSlots, StudioError } from "./generate.ts";
-import { deleteAccount, endAllSessions } from "./auth.ts";
+import { deleteAccount, endAllSessions, endMergedSessions } from "./auth.ts";
 import { signPath } from "./session.ts";
 import { studioSpentTodayUsd, type GenerationRow, type Slot } from "./store.ts";
 import { balances, secretStatus } from "./admin-providers.ts";
 import { KLEO_ZONE, lookupRequests, pathsFor } from "./ip-lookup.ts";
 import { IP_RETENTION_DAYS } from "./ips.ts";
-import { adminAuthApi, adminSessionOf, checkFreshCode, isFresh, securityInfo, touchSession, type AdminSession } from "./admin-auth.ts";
+import { adminAuthApi, adminSessionOf, checkFreshCode, FRESH_MIN, isFresh, securityInfo, touchSession, type AdminSession } from "./admin-auth.ts";
 import { keyAction, listKeys } from "./admin-keys.ts";
 import { CODE_RE, LINK_CHANNELS, getLink, type LinkChannel, type LinkRow } from "./attribution.ts";
 
@@ -218,10 +218,33 @@ const notAdmin = (env: StudioEnv, id: string, what: string) => {
 /** The admin session of this call, and whether a code was typed in it (the answer's cookie then says so). */
 interface Gate { session: AdminSession; fresh: boolean }
 
+/** The credits a change may move without a code typed in the last 5 minutes: alone, and added up (creditWithoutCode). */
+const CREDITS_WITHOUT_CODE = 100;
+
 /** The writes that want a code typed in the last 5 minutes (admin-auth.ts FRESH_MIN). */
 export function dangerous(action: string, b: Record<string, unknown>, id: string, adminId: string): boolean {
   return action === "delete" || action === "key" || (action === "block" && b.on === true) || (action === "signout" && id !== adminId)
-    || (action === "credits" && Math.abs(Math.trunc(Number(b.delta))) > 100);
+    || (action === "credits" && Math.abs(Math.trunc(Number(b.delta))) > CREDITS_WITHOUT_CODE);
+}
+
+/**
+ * A credit change made without a code typed in the last 5 minutes, only while such changes add up to no more than
+ * CREDITS_WITHOUT_CODE: this admin's admin.credits rows on every account (added or taken away alike) since the code last
+ * typed in this session stopped counting, plus this one. Otherwise many small changes would make one big one with no
+ * code. The total is read and the change and its row written in one batch (one transaction), so changes sent at once
+ * cannot all read the same total. The row is the one log() writes. True when the change was made; false when it wants
+ * a code.
+ */
+async function creditWithoutCode(env: StudioEnv, s: AdminSession, adminId: string, id: string, delta: number, detail: Record<string, unknown>): Promise<boolean> {
+  const since = new Date((s.fresh + FRESH_MIN * 60) * 1000).toISOString();
+  const within = `(SELECT COALESCE(SUM(ABS(json_extract(a.detail, '$.delta'))), 0) FROM audit a
+    WHERE a.event = 'admin.credits' AND a.at > ? AND json_extract(a.detail, '$.admin') = ?) + ? <= ${CREDITS_WITHOUT_CODE}`;
+  const [moved] = await env.DB.batch([
+    env.DB.prepare(`UPDATE users SET credits = MAX(0, credits + ?) WHERE id = ? AND ${within}`).bind(delta, id, since, adminId, Math.abs(delta)),
+    env.DB.prepare(`INSERT INTO audit (user_id, job_id, event, detail) SELECT u.id, NULL, 'admin.credits', json_set(?, '$.after', u.credits) FROM users u
+      WHERE u.id = ? AND ${within}`).bind(JSON.stringify(detail), id, since, adminId, Math.abs(delta)),
+  ]);
+  return (moved?.meta.changes ?? 0) === 1;
 }
 
 async function userAction(env: StudioEnv, request: Request, gate: Gate, adminId: string, id: string, action: string): Promise<Response> {
@@ -239,6 +262,15 @@ async function userAction(env: StudioEnv, request: Request, gate: Gate, adminId:
   if (action === "credits") {
     const delta = Math.trunc(Number(b.delta));
     if (!Number.isFinite(delta) || delta === 0 || Math.abs(delta) > 100_000) throw new StudioError("Type a whole number of credits, not zero.", 400, "delta");
+    // Without a code typed in the last 5 minutes the small changes add up: past CREDITS_WITHOUT_CODE, this one wants a code.
+    if (!gate.fresh && !isFresh(gate.session)) {
+      if (await creditWithoutCode(env, gate.session, adminId, id, delta, { admin: adminId, reason, delta, before: u.credits })) {
+        return json({ ok: true, credits: (await env.DB.prepare("SELECT credits FROM users WHERE id = ?").bind(id).first<{ credits: number }>())?.credits ?? 0 });
+      }
+      if (!b.code) throw new StudioError("Type a new code from your phone to do this.", 403, "fresh_code");
+      await checkFreshCode(env, request, adminId, b.code);
+      gate.fresh = true;
+    }
     await env.DB.prepare("UPDATE users SET credits = MAX(0, credits + ?) WHERE id = ?").bind(delta, id).run();
     const after = (await env.DB.prepare("SELECT credits FROM users WHERE id = ?").bind(id).first<{ credits: number }>())?.credits ?? 0;
     await log("admin.credits", { delta, before: u.credits, after });
@@ -252,6 +284,7 @@ async function userAction(env: StudioEnv, request: Request, gate: Gate, adminId:
       // Out everywhere: every session, and every assistant connected with the old key (its grant carries the version).
       await endAllSessions(env, id);
       await rotateKey(asEnv(env), id);
+      await endMergedSessions(env, id);
       await log("admin.block");
     } else {
       await env.DB.prepare("UPDATE users SET blocked_at = NULL, blocked_reason = NULL WHERE id = ?").bind(id).run();
@@ -279,6 +312,7 @@ async function userAction(env: StudioEnv, request: Request, gate: Gate, adminId:
   if (action === "key") {
     await rotateKey(asEnv(env), id);
     await endAllSessions(env, id);
+    await endMergedSessions(env, id);
     await log("admin.key_reset");
     return json({ ok: true });
   }

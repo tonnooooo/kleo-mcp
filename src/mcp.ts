@@ -12,7 +12,8 @@ import { getFile } from "./storage";
 import { ACTIVE_TEMPLATE, PUBLIC_TEMPLATES as TEMPLATES, PUBLIC_TEMPLATE_IDS as ACTIVE_TEMPLATE_IDS, findTemplate, creditsFor, creditsForProduct, filmCredits, freeCreditsFor, tariffSentence, MIN_FILM_CREDITS, SECONDS_PER_CREDIT, PRODUCTS, ANIMATIC_CREDITS, ANIMATIC_MAX_S, ANIMATIC_SHORT_MAX_S, animaticCredits, animaticRule, MIN_FILM_SECONDS, FILM_STYLE, productOf, aiUpscaleCredits, aiUpscaleRule, aiUpscaleOn, MODELS, modelsSentence } from "./templates";
 import { PACKS, sellingAvailable } from "./stripe";
 import { createJob, cancelJob, jobView, resultLinks, JobError, FILE_NAMES } from "./jobs";
-import { accountUrl, makeHandle } from "./accounts";
+import { accountUrl } from "./accounts";
+import { studioUrl } from "./connect.ts";
 import { audit } from "./db";
 import { FORMATS, FILM_LOOKS, wordBudget, shotRangeText, pictureScenes } from "./keou-contract";
 import { musicNote, clipFloorFor, footageConfig } from "./footage";
@@ -741,7 +742,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
 
   server.registerTool("kleo_account", {
     title: "Account and credits",
-    description: "The credits left on this account, whether it can order a FILM (has_paid: films are for accounts that have bought a pack, or film_trial: the one free 15-second film a launch code opened; every account can order the animatic), the account's invitation link (referral: a friend who joins through it and buys a first pack earns both of you credits), the link to its page, and the \"Kleo key\" that carries the same account (and the same credits) to another browser or another computer. Call it before the first kleo_create_video of a conversation and when the user asks how many credits they have, how to get more, or how to use Kleo somewhere else. Give them account_url as a plain link: it opens a read-only page (balance, prices, where to write) and cannot sign anybody in. Show account_key only if they ask for it, because anyone who has it can take the account over and spend its credits.",
+    description: "The credits left on this account, whether it can order a FILM (has_paid: films are for accounts that have bought a pack, or film_trial: the one free 15-second film a launch code opened; every account can order the animatic), the account's invitation link (referral: a friend who joins through it and buys a first pack earns both of you credits), and the link to its page. Call it before the first kleo_create_video of a conversation and when the user asks how many credits they have, how to get more, or how to use Kleo somewhere else. Give them account_url as a plain link: it opens a read-only page (balance, prices, where to write) and cannot sign anybody in. The \"Kleo key\" that carries the account to another browser or another computer is never given out here and you cannot fetch it, because anyone who has it can take the account over: if the user asks for it, tell them to see it themselves in Kleo Studio under Account → Kleo key, or on the account page opened in the browser they connected Kleo from (the answer gives both).",
     inputSchema: z.object({}),
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   }, async () => {
@@ -793,7 +794,9 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
       free_tier: free > 0
         ? `${plural(free, "credit")} on sign-up, no signup form; they buy a short animatic (${ANIMATIC_CREDITS} credits, up to ${ANIMATIC_SHORT_MAX_S} s), and the shortest film is ${MIN_FILM_CREDITS} credits (${MIN_FILM_SECONDS} s) and needs a pack (from ${cheapest.label}: ${cheapest.credits} credits, a ${MIN_FILM_SECONDS}-second film)`
         : "no free credits: connecting is free, every video is paid (no subscription, credit packs only)",
-      account_key: await makeHandle(env, user.id),
+      // No account_key: the Kleo key is the account's master credential (it signs in to Studio with full control), and
+      // any OAuth client the user connected could read it here. The owner sees it under a Studio session (Account →
+      // Kleo key) or on account_url in the browser that owns the account (src/credits.ts), never over MCP.
       account_url: url,
       referral: invite,
       // The optional verified email (src/email.ts): whether the account has one, never the address itself.
@@ -817,7 +820,7 @@ export function buildServer(env: Env, user: User, base: string): McpServer {
     const inviteSentence = invite ? ` Invite friends with ${invite.link}: ${invite.rule}.` : "";
     // Offered only while Kleo can send the verification link (RESEND_API_KEY): a bonus nobody can claim is not offered.
     const emailSentence = contactVerified || !emailConfigured(env) ? "" : ` Adding a verified email on the account page gives ${EMAIL_BONUS} credits once, and every finished video's links by email.`;
-    return ok(data, `You have ${plural(fresh.credits, "credit")}. ${tariffSentence()}.${enough}${films}${paid ? upscaleSentence : ""} ${buy}.${inviteSentence}${emailSentence} Your account page, which also shows the key that carries this account to another browser: ${url}`);
+    return ok(data, `You have ${plural(fresh.credits, "credit")}. ${tariffSentence()}.${enough}${films}${paid ? upscaleSentence : ""} ${buy}.${inviteSentence}${emailSentence} The Kleo key that carries this account to another browser is not given out here: you can see it yourself in Kleo Studio under Account → Kleo key (${studioUrl(env)}/account), or on your account page opened in the browser you connected Kleo from. Your account page: ${url}`);
   });
 
   return server;

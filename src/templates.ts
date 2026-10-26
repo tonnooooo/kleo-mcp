@@ -634,21 +634,29 @@ export function aiUpscaleJob(job: Pick<Job, "params">): boolean {
  * verdict: applied only when every part with a clip went through Real-ESRGAN (a model is named). Anything else — no report, no card, the
  * benchmark over budget, the breaker, one part on the classic chain, KLEO_SR off on the box — is "not applied".
  */
-export interface AiUpscaleVerdict { applied: boolean; parts: number; upscaled: number; model: string | null; gpu: string | null; reason: string | null }
+export interface AiUpscaleVerdict { applied: boolean; parts: number; upscaled: number; model: string | null; gpu: string | null; reason: string | null; said: string | null }
+/** Two reasons the server writes itself and the finish box also sends word for word (worker/kleo_video.py). */
+const UPSCALE_NO_CLIP = "no shot had a clip to upscale";
+const UPSCALE_NEAR_4K = "the clips are already near 4K: no Real-ESRGAN pass, RIFE only";
 export function aiUpscaleVerdict(sr: unknown): AiUpscaleVerdict {
   const o = sr && typeof sr === "object" && !Array.isArray(sr) ? (sr as Record<string, unknown>) : null;
   const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.floor(v)) : 0);
   const s = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim().slice(0, 200) : null);
-  if (!o) return { applied: false, parts: 0, upscaled: 0, model: null, gpu: null, reason: "the finish box sent no report of the upscale" };
+  if (!o) return { applied: false, parts: 0, upscaled: 0, model: null, gpu: null, reason: "the finish box sent no report of the upscale", said: null };
   const parts = n(o.parts), model = s(o.model);
   // No upscaler named (factor 1: RIFE only, the clips already near 4K; an older box says "no upscaler") is not the
   // Real-ESRGAN pass the user paid for, even when every part went through the GPU (review, 25 September 2026).
   const esrgan = model !== null && !/^no upscaler$/i.test(model);
   const upscaled = esrgan ? Math.min(parts, n(o.applied)) : 0;
   const applied = parts > 0 && upscaled === parts;
-  const reason = applied ? null : s(o.reason) ?? (parts === 0 ? "no shot had a clip to upscale"
-    : !esrgan ? "the clips are already near 4K: no Real-ESRGAN pass, RIFE only" : `${upscaled} of ${parts} shots were upscaled`);
-  return { applied, parts, upscaled, model, gpu: s(o.gpu), reason };
+  // `reason` is read to the user's assistant (src/mcp.ts upscaleOf), and the box's own reason is free text from a
+  // rented machine (an exception, anything its root user writes): it is kept as `said`, for the owner's audit only.
+  // `reason` is the server's sentence: the box's when it is one of the server's own, else what the numbers say
+  // (26 October 2026, the security review).
+  const said = s(o.reason);
+  const reason = applied ? null : said === UPSCALE_NO_CLIP || said === UPSCALE_NEAR_4K ? said : (parts === 0 ? UPSCALE_NO_CLIP
+    : !esrgan && said === null ? UPSCALE_NEAR_4K : `${upscaled} of ${parts} shots were upscaled`);
+  return { applied, parts, upscaled, model, gpu: s(o.gpu), reason, said };
 }
 
 /**

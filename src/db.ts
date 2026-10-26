@@ -119,7 +119,8 @@ export interface JobParams {
    */
   trial?: boolean;
   ai_upscale_credits?: number;
-  ai_upscale_result?: { applied: boolean; parts: number; upscaled: number; model: string | null; gpu: string | null; reason: string | null; refunded: number; at: string };
+  /** `reason` is the server's sentence (the user's assistant reads it); `said` is the box's own reason, for the owner's audit. */
+  ai_upscale_result?: { applied: boolean; parts: number; upscaled: number; model: string | null; gpu: string | null; reason: string | null; said?: string | null; refunded: number; at: string };
   /** Set by POST /internal/admin/retry: failJob already gave back every credit, the upscale's included. */
   ai_upscale_refunded?: boolean;
   /** The intake's optional answers, as the user gave them: they used to die between kleo_adapt_prompt and the planner. */

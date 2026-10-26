@@ -424,11 +424,14 @@ async function runningVideoJobs(env: Env): Promise<number> {
  * part succeeded, and a finish box that fails must not burn the GPU's retries. Returns whether it applied.
  */
 export async function handoverToFinish(env: Env, job: Job): Promise<boolean> {
+  // Only the GPU phase hands over, and only if the row is still in it when written (compare-and-set on the phase read
+  // here): a job already in its finish phase must never get its attempts and timeouts reset by this transition.
+  if ((job.phase ?? "gen") !== "gen") return false;
   await releaseGpu(env, job);
   const ok = await transitionJob(env, job.id, ACTIVE_STATES, {
     state: "queued", phase: "finish", backend: null, instance_id: null, instance_meta: null, started_at: null, queued_at: nowIso(),
     attempts: 0, tried_machines: null, percent: 60, track: "clips", error: null, worker_secret: rid("wk", 32),
-  });
+  }, { phase: job.phase ?? null });
   await audit(env, job.user_id, job.id, ok ? "job.phase.finish" : "job.phase.finish.ignored", { note: ok ? "GPU released; a finish box will lay the track" : "job was no longer active" });
   return ok;
 }
@@ -628,7 +631,7 @@ async function refundAiUpscale(env: Env, job: Job): Promise<void> {
   if (!r) return;
   const refunded = r.applied || r.refunded <= 0 ? 0 : await refundJobCredits(env, job.user_id, job, r.refunded, `AI upscale not applied: ${(r.reason ?? "no reason given").slice(0, 120)}`);
   await audit(env, job.user_id, job.id, r.applied ? "ai_upscale.applied" : "ai_upscale.refunded",
-    { applied: r.applied, parts: r.parts, upscaled: r.upscaled, model: r.model, gpu: r.gpu, reason: r.reason, refunded });
+    { applied: r.applied, parts: r.parts, upscaled: r.upscaled, model: r.model, gpu: r.gpu, reason: r.reason, said: r.said ?? null, refunded });
 }
 
 /**

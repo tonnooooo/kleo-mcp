@@ -57,7 +57,7 @@ export async function verifyHandle(env: Env, value: string | null | undefined): 
  * assistants connected while it was current: grantStillValid); answers the new key.
  */
 export async function rotateKey(env: Env, userId: string): Promise<string> {
-  await env.DB.prepare("UPDATE users SET key_version = COALESCE(key_version, 0) + 1 WHERE id = ?").bind(userId).run();
+  await env.DB.prepare("UPDATE users SET key_version = COALESCE(key_version, 0) + 1 WHERE id = ? OR merged_into = ?").bind(userId, userId).run();
   return makeHandle(env, userId);
 }
 

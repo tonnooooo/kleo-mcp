@@ -85,13 +85,12 @@ Le descrizioni sono il manuale del modello: se sono scritte bene, il modello sce
 { "job_id": { "type": "string" } }
 // → { job_id, state: "cancelled", refunded }
 
-// kleo_account — "The credits left, the link to the account page and the Kleo key that carries the same account
-//                 to another browser."
+// kleo_account — "The credits left and the link to the account page."
 { } // nessun parametro
-// → { credits_available, has_paid, can_order_film, animatic_credits, animatic_max_s, products, free_tier, account_key, account_url, payments_open }
+// → { credits_available, has_paid, can_order_film, animatic_credits, animatic_max_s, products, free_tier, account_url, payments_open }
 ```
 
-`account_key` è la "chiave Kleo": è la stessa stringa del cookie, quindi chi ce l'ha prende l'account e ne spende i crediti. Il modello la mostra solo se l'utente la chiede; la pagina `/credits` la mostra solo al browser che quell'account ce l'ha già. Il link `account_url` invece lo può dare sempre: porta a una pagina di sola lettura (saldo, prezzi, indirizzo a cui scrivere) che non fa entrare nessuno, ed è quello che `kleo_create_video` restituisce quando i crediti sono finiti.
+La "chiave Kleo" non passa mai dall'MCP: è la stessa stringa del cookie, quindi chi ce l'ha prende l'account e ne spende i crediti, e qualunque client OAuth collegato potrebbe leggerla. L'utente la vede da sé su Kleo Studio (Account → Kleo key) oppure sulla pagina `/credits`, che la mostra solo al browser che quell'account ce l'ha già; `kleo_account` gli dice dove, il modello non la può prendere. Il link `account_url` invece lo può dare sempre: porta a una pagina di sola lettura (saldo, prezzi, indirizzo a cui scrivere) che non fa entrare nessuno, ed è quello che `kleo_create_video` restituisce quando i crediti sono finiti.
 
 Regole che il server applica sempre, indipendentemente da cosa chiede il modello:
 - due prodotti dallo stesso storyboard (15 set): il **film** (ogni inquadratura una clip generata) e l'**animatic** (gli stessi fotogrammi disegnati con la camera che si muove su ciascuno, narrato, 4K 60 fps, senza clip generate: 5 crediti fissi, fino a 60 s, `product: "animatic"` in `kleo_create_video`). Il film si fa **solo a chi ha comprato un pacchetto** (`has_paid` in `kleo_account`): i crediti regalati o scritti a mano comprano l'animatic, mai un film;

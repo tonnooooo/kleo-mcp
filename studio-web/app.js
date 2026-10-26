@@ -3,7 +3,7 @@
 //
 // Pages: Create (chat with Kleo) · Video · Image · Audio · Apps · Library. Desktop: a top bar; phones: a tab bar.
 
-import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=85";
+import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=87";
 
 const DEMO = new URLSearchParams(location.search).has("demo");
 const DEMO_FREE = new URLSearchParams(location.search).get("demo") === "free"; // ?demo=free: an account that never paid
@@ -314,6 +314,9 @@ async function connectView() {
     return;
   }
   if (!S.me) { S.connecting = true; renderAuth("signin", true); return; }
+  // Anyone can send a /connect link, so opening one never finishes it (security review, 26 October 2026): the signed-in
+  // person reads what it does to this account and says yes, or no. A no forgets the link.
+  if (!(await confirmConnect(pend))) { store.set("connect", null); S.connecting = false; go("/"); return; }
   setView("connect-view", connectCard("Connecting Kleo…", "One moment.", spinner(22)));
   try {
     const r = await api("/api/connect", { method: "POST", body: { r: pend.r, m: pend.m } });
@@ -331,6 +334,16 @@ async function connectView() {
     store.set("connect", null); S.connecting = false;
     setView("connect-view", connectCard("Kleo couldn't connect", e.message || "Please try again from your assistant.", h("button", { class: "btn btn-primary", onclick: () => go("/") }, "Open Kleo")));
   }
+}
+/** What a /connect link would do to the signed-in account, then Connect (true) or Not now (false). Posts nothing. */
+function confirmConnect(pend) {
+  const acct = S.me.email || "this account";
+  return new Promise((done) => setView("connect-view", connectCard(
+    pend.r ? "Connect your assistant?" : "Bring your assistant's account in?",
+    pend.r ? `The AI assistant that sent you here will use ${acct} and its credits; a Kleo account an assistant opened in this browser before, if any, moves into it too. Only continue if you just added Kleo to Grok, Claude or ChatGPT yourself.`
+      : `The Kleo account an AI assistant has been using moves into ${acct}, credits and videos included, and that assistant uses ${acct} from now on. Only continue if your own assistant just gave you this link.`,
+    h("button", { class: "btn btn-primary", onclick: () => done(true) }, "Connect"),
+    h("button", { class: "btn btn-quiet", onclick: () => done(false) }, "Not now"))));
 }
 /** Visitors browse everything; the account is asked for at the first Generate (or Sign in). */
 function requireAccount(mode = "signup") { renderAuth(mode, true); return false; }

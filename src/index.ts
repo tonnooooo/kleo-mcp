@@ -3,7 +3,7 @@ import type { Env, AuthProps } from "./env";
 import { getUser, touchUser, audit } from "./db";
 import { grantStillValid } from "./accounts";
 import { mcpHandlerFor } from "./mcp";
-import { handleAuthorize, handleConnectFinish } from "./auth";
+import { handleAuthorize, handleConnectFinish, handleConnectMerge } from "./auth";
 import { activeAccount, isAnonymous, signInLink, signInRequiredReply, studioSignIn } from "./connect.ts";
 import { handleInternal, handleDevPlan, handleAdmin } from "./internal";
 import { handleCredits } from "./credits";
@@ -41,7 +41,7 @@ const mcpApi: ExportedHandler<Env> = {
     const user = await activeAccount(env, granted);
     if (studioSignIn(env) && request.method === "POST" && (await isAnonymous(env, user))) {
       const rpc = await request.clone().json().catch(() => null) as { method?: string; id?: unknown } | null;
-      if (rpc?.method === "tools/call") return json(signInRequiredReply(rpc.id, await signInLink(env, user.id)));
+      if (rpc?.method === "tools/call") return json(signInRequiredReply(rpc.id, await signInLink(env, user.id, new URL(request.url).origin)));
     }
     ctx.waitUntil(touchUser(env, user.id));
     // THE CONNECTOR ADDRESS'S HINTS (27 September 2026): a new account's first calls carry the ?ref= of the address the
@@ -81,6 +81,7 @@ const app: ExportedHandler<Env> = {
     if (p.startsWith("/internal/studio/")) return handleStudioFilm(request, env);
     if (p === "/authorize") return handleAuthorize(request, env);
     if (p === "/authorize/finish") return handleConnectFinish(request, env);
+    if (p === "/authorize/merge") return handleConnectMerge(request, env);
     if (p === "/credits") return handleCredits(request, env);
     // A referral link (27 September 2026, src/referral.ts): the invitation page, which remembers the code for sign-in.
     if (p.startsWith("/r/")) return handleReferralPage(request, env);

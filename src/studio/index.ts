@@ -39,7 +39,7 @@ import { httpsRedirect, secureResponse } from "./security.ts";
 import { SESSION_COOKIE, clearSessionCookie, readCookie, readSessionFull, normalizeEmail, signPath, checkSignedPath } from "./session.ts";
 import { ipBucket } from "../accounts.ts";
 import { studioConnect } from "../connect.ts";
-import { publicPlans } from "../plans.ts";
+import { planRef, publicPlans } from "../plans.ts";
 import { createPaySession } from "./pay.ts";
 import { adminApi } from "./admin.ts";
 import { pruneIps, recordIp } from "./ips.ts";
@@ -279,7 +279,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       // Templates in 720p and 1080p (src/studio/generate.ts hasActivePlan): a running plan, or an admin.
       hdTemplates: await hasActivePlan(env, userId),
       // Monthly plans (src/plans.ts): the buy links with this account tied in, and the plan it is on now.
-      plans: publicPlans(env.STRIPE_PLAN_LINKS, userId), plan: await planOf(env, userId),
+      plans: publicPlans(env.STRIPE_PLAN_LINKS, await planRef(env.INTERNAL_SECRET, userId)), plan: await planOf(env, userId),
       // Copyright refusals made on Wan 3.0 by themselves (generate.ts switchToWan).
       autoWan: await autoWanOn(env, userId),
     });

@@ -436,6 +436,39 @@ test("abroad: a plan bought in another currency starts, and its renewals in that
   assert.equal(balance(env, "u_sub"), 220, "an unknown subscription names no plan");
 });
 
+test("plans: a Payment Link's bare account id never takes over a held subscription; Kleo's signed reference and its own sessions do (26 October 2026)", async () => {
+  const env = newEnv(); user(env, "u_v"); user(env, "u_new");
+  // The victim's own plan, from a session Kleo's server made (studio/pay.ts: no payment_link).
+  await post(env, subCheckout({ client_reference_id: "u_v" }));
+  assert.equal(planRow(env, "u_v").plan_sub, "sub_1");
+  // A stranger pays Lite through a Payment Link with the victim's bare id: the credits land (a gift), the binding stays.
+  const att = await post(env, subCheckout({ id: "cs_att", client_reference_id: "u_v", amount_total: 900, subscription: "sub_att", customer: "cus_att", payment_link: "plink_lite" }));
+  assert.equal(att.status, 200);
+  assert.deepEqual(planRow(env, "u_v"), { plan: "pro", plan_period: "month", plan_credits: 110, plan_status: "active", plan_sub: "sub_1" });
+  assert.equal(balance(env, "u_v"), 132, "110 + Lite's 22");
+  assert.ok(env.DB.db.prepare("SELECT 1 FROM audit WHERE event = 'plan.not_bound' AND user_id = 'u_v'").get(), "the owner sees it");
+  // The victim's renewals still find the account.
+  await post(env, invoice());
+  assert.equal(balance(env, "u_v"), 242);
+  // A forged signature is no signature: the whole string names no account, so nothing is bound and nothing credited.
+  await post(env, subCheckout({ id: "cs_forged", client_reference_id: `u_v-${"0".repeat(32)}`, amount_total: 900, subscription: "sub_f", payment_link: "plink_lite" }));
+  assert.equal(planRow(env, "u_v").plan_sub, "sub_1");
+  assert.equal(balance(env, "u_v"), 242);
+  // The account's own link (planRef, what publicPlans hands it) switches the plan as before.
+  const ref = await m.planRef(env.INTERNAL_SECRET, "u_v");
+  assert.deepEqual(await m.readPlanRef(env.INTERNAL_SECRET, ref), { userId: "u_v", signed: true });
+  await post(env, subCheckout({ id: "cs_switch", client_reference_id: ref, amount_total: 1900, subscription: "sub_2", customer: "cus_1", payment_link: "plink_starter" }));
+  assert.equal(planRow(env, "u_v").plan_sub, "sub_2");
+  assert.equal(planRow(env, "u_v").plan, "starter");
+  // A bare id on an account that holds no plan (a page opened before signed links) still starts it.
+  await post(env, subCheckout({ id: "cs_old", client_reference_id: "u_new", amount_total: 900, subscription: "sub_3", payment_link: "plink_lite" }));
+  assert.equal(planRow(env, "u_new").plan_sub, "sub_3");
+  // The pricing page's links carry the signed reference.
+  const lite = m.publicPlans(JSON.stringify({ "lite:month": "https://buy.stripe.com/abc" }), ref).find((p) => p.key === "lite");
+  assert.equal(lite.tiers[0].month.url, `https://buy.stripe.com/abc?client_reference_id=${ref}&locale=en`);
+  assert.match(ref, /^u_v-[0-9a-f]{32}$/, "letters, digits and dashes only, as Stripe wants");
+});
+
 test("abroad: every buy link opens in English", () => {
   const env = newEnv();
   assert.match(m.buyUrl(env, m.PACKS[0], "u_1"), /\?client_reference_id=u_1&locale=en$/);
