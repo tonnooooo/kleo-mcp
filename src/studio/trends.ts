@@ -273,25 +273,25 @@ export const TRENDS: Trend[] = [
     preview: `${TRENDS_MEDIA}/you-tweaking/preview5-p.mp4`, guide: `${TRENDS_MEDIA}/you-tweaking/guide-hd.jpg`,
     prime: true,
     seats: [
-      { key: "person1", label: "Person 1", hint: "The one in black · a clear photo", color: "#0a84ff", at: [24, 45] },
-      { key: "person2", label: "Person 2", hint: "The one in white · a clear photo", color: "#ff375f", at: [77, 45] },
+      { key: "person1", label: "Person 1", hint: "Takes the place of the guy in black · a clear photo", color: "#0a84ff", at: [24, 45] },
+      { key: "person2", label: "Person 2", hint: "Takes the place of the girl in white · a clear photo", color: "#ff375f", at: [77, 45] },
     ],
     prompt: [
       "Replace the two people in Video 1 with the people from Image 1 and Image 2, for the entire video, in every shot, from the first frame to the last.",
       "",
       "PERSON 1 -> Image 1",
       "Original: the young man in a black durag, a black T-shirt with a small white script print on the chest, a silver chain with a big iced-out letter pendant and light-blue jeans, with a tattoo sleeve on his right forearm. He laughs shyly with a hand at his mouth, raises his left arm and points down, and talks in profile with small hand gestures.",
-      "Replace his face with the face from Image 1 - the face is the most important part: it must clearly be the person from Image 1 in every frame, including the quick close-up and the shots in profile. Replace his durag, hair, chain, hands and clothes with the hair, accessories, hands and clothes from Image 1.",
+      "Replace his face with the face from Image 1 - the face is the most important part: it must clearly be the person from Image 1 in every frame, including the quick close-up and the shots in profile. Replace his durag, hair, chain, build, hands and clothes with the hair, accessories, build, hands and clothes from Image 1. Nothing of his durag, black T-shirt, chain, jeans or tattoos stays unless Image 1 has them.",
       "",
       "PERSON 2 -> Image 2",
       "Original: the young woman with very long straight black hair, a white cropped T-shirt with red \"MOTHER\" lettering and low-rise dark-blue lace-up jeans. She holds a small black object in her right hand and carries a small red handbag on her right forearm; she pulls her hair out to the side, turns her back to the camera, then smiles and talks to the camera.",
-      "Replace her face with the face from Image 2 - clearly the person from Image 2 in every frame, including when she turns away. Replace her hair, jewellery, piercings, hands and clothes with the hair, accessories, hands and clothes from Image 2. The person from Image 2 keeps the red handbag and the small black object. When she pulls her long hair out to the side, the person from Image 2 makes the same hand movement with their own hair, exactly as long or short as it is in Image 2.",
+      "Replace her face with the face from Image 2 - clearly the person from Image 2 in every frame, including when she turns away. Replace her hair, jewellery, piercings, nails, build, hands and clothes with the hair, accessories, build, hands and clothes from Image 2. Nothing of her long hair, crop top, bare midriff, jeans, long nails or piercings stays unless Image 2 has them. The person from Image 2 keeps the red handbag and the small black object. When she pulls her long hair out to the side, the person from Image 2 makes the same hand movement with their own hair, exactly as long or short as it is in Image 2.",
       "",
       "The video cuts back and forth between the two: every shot shows only ONE person, alone on the white backdrop, and the two never appear together. Every shot of the man shows only the person from Image 1; every shot of the woman shows only the person from Image 2. Never add a second person to a shot.",
       "",
       "Both keep their exact movement, gestures, facial expressions, mouth movement and timing from Video 1. If a person in an image is a different gender, they replace the original in that position as they are in the image. No part of the original two people appears anywhere.",
       "",
-      "Nothing else in the video changes: the same plain bright white backdrop, the same static camera, framing, quick zoom-in, cuts, speed and timing.",
+      "Nothing else in the video changes: the same pure white backdrop, as bright as in Video 1, the same static camera, framing, quick zoom-in, cuts, speed and timing.",
     ].join("\n"),
   },
   // 25 October 2026, the owner: "nuovo template … i video sono tutti uguali ma con persone diverse" (TikTok
@@ -682,10 +682,29 @@ export function trendPasses(t: Trend, filled: string[], photos: string[], q: Tre
   ];
 }
 
+/**
+ * What the prompt is told about the photos themselves, from the fixed words of the vision check (27 October 2026, before
+ * the owner's next paid run of You Tweaking): a black-and-white photo, a photo with several people in it, a photo of
+ * the head only. Nothing when the photos are ordinary, so every prompt sent without these facts stays as it was. The
+ * templates written shot by shot say it in their own words (trendPromptV2).
+ */
+export function photoNotes(filled: string[], facts: Record<string, PhotoFacts | undefined> = {}): string[] {
+  const out: string[] = [];
+  filled.forEach((k, i) => {
+    const f = facts[k], img = ORDINAL[i];
+    if (!f || !img) return;
+    if (f.colour === "greyscale") out.push(`${img} is a black-and-white photo: give that person natural, realistic colour (skin, hair and clothes).`);
+    if ((f.people ?? 1) > 1) out.push(`${img} shows more than one person: use only the main person in it, the largest and closest to the camera, and nobody else from it.`);
+    if (f.framing === "head") out.push(`${img} shows only the head: take the face and hair from it, and give that person simple everyday clothes that suit them, never the clothes of the person they replace.`);
+  });
+  return out;
+}
+const withNotes = (prompt: string, notes: string[]): string => (notes.length ? `${prompt}\n\nABOUT THE PHOTOS\n${notes.join("\n")}` : prompt);
+
 /** The WaveSpeed input of one run. `photos` are the filled seats' links, in seat order (all of them for a fixed prompt). */
 export function trendTaskInput(t: Trend, filled: string[], photos: string[], q: TrendQuality, picks: TrendPicks = {}, facts: Record<string, PhotoFacts | undefined> = {}): Record<string, unknown> {
   return {
-    prompt: t.prompt ?? (t.shots ? trendPromptV2(t, filled, picks, facts).slice(0, TREND_PROMPT_V2_MAX) : trendPrompt(t, filled, picks)), video: t.baseUrl, reference_images: photos.slice(0, t.seats.length), resolution: q,
+    prompt: t.shots ? trendPromptV2(t, filled, picks, facts).slice(0, TREND_PROMPT_V2_MAX) : withNotes(t.prompt ?? trendPrompt(t, filled, picks), photoNotes(filled, facts)), video: t.baseUrl, reference_images: photos.slice(0, t.seats.length), resolution: q,
     // false keeps the clip's own sound on the result (WaveSpeed: "the source audio track is preserved").
     generate_audio: false, enable_prompt_expansion: false, seed: -1,
   };

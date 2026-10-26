@@ -2019,6 +2019,27 @@ test("a template's video reaches the customer byte for byte: WaveSpeed's file is
 // ── You Tweaking on Wan 3.0 Prime (26 October 2026) ───────────────────────────────────────────────────────────────
 // The owner, after the standard model's run came back wrong: "no niente prova, costa troppo devi essere sicuro che tutto
 // funzioni". The whole order with WaveSpeed faked: what is sent, what is charged, what the customer gets.
+test("You Tweaking: what the vision check reads on the photos reaches the fixed prompt, numbered like the photos", async () => {
+  const ai = { run: async () => ({ response: '{"person": true, "people": 2, "colour": "greyscale", "framing": "waist-up", "face": "medium", "hair": "black", "beard": false, "glasses": false}' }) };
+  const env = newEnv({ WAVESPEED_API_KEY: "k", AI: ai });
+  const { cookie } = await paidAccount(env, "tweak-facts@example.com", 100);
+  const up = async () => (await call(env, "/api/uploads", { method: "POST", cookie, raw: jpegBytes(), headers: { "content-type": "image/jpeg", "x-width": "1080", "x-height": "1920" } })).json;
+  const a = await up(), b = await up();
+  const p = fakeProvider((u) => {
+    if (u === "https://api.wavespeed.ai/api/v3/media/uploads") return ok({ code: 200, data: { download_url: "https://cdn.wavespeed.test/p.jpg", upload: { method: "PUT", url: "https://up.wavespeed.test/put" } } });
+    if (u === "https://up.wavespeed.test/put") return new Response("", { status: 200 });
+    if (u === "https://api.wavespeed.ai/api/v3/alibaba/wan-3.0-prime/video-edit") return ok({ code: 200, data: { id: "ws_ytf", status: "created" } });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const r = await call(env, "/api/tools/run", { method: "POST", cookie, body: { tool: "trend-you-tweaking", consent: true, inputs: { person1: a.id, person2: b.id, quality: "480p" } } });
+    assert.equal(r.status, 200, r.text);
+    const sent = p.sent.find((x) => x.url.endsWith("/alibaba/wan-3.0-prime/video-edit")).body;
+    assert.match(sent.prompt, /^Replace the two people in Video 1/);
+    assert.match(sent.prompt, /\n\nABOUT THE PHOTOS\nImage 1 is a black-and-white photo[^\n]*\nImage 1 shows more than one person[^\n]*\nImage 2 is a black-and-white photo[^\n]*\nImage 2 shows more than one person[^\n]*$/);
+  } finally { p.restore(); }
+});
+
 test("You Tweaking: one photo is refused before any charge; two photos make one Prime run with the fixed prompt, charged as priced, its video delivered byte for byte", async () => {
   const env = newEnv({ WAVESPEED_API_KEY: "k" });
   const { cookie, id } = await paidAccount(env, "tweak@example.com", 100);
