@@ -17,7 +17,7 @@ import type { StudioEnv } from "./env.ts";
 import { PROVIDER_STATUS_SCHEMA } from "./providers.ts";
 import { KEY_OVERRIDES_SCHEMA } from "../key-overrides.ts";
 import { ATTRIBUTION_SCHEMA } from "./attribution.ts";
-import { ONBOARDING_SCHEMA, OUTREACH_COLUMNS, OUTREACH_SCHEMA } from "./mail-schema.ts";
+import { ONBOARDING_SCHEMA, OUTREACH_COLUMNS, OUTREACH_SCHEMA, RECEIPTS_SCHEMA } from "./mail-schema.ts";
 
 const NOW = "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))";
 export const STUDIO_SCHEMA: string[] = [
@@ -54,6 +54,8 @@ export const STUDIO_SCHEMA: string[] = [
   ...ONBOARDING_SCHEMA,
   // The outreach e-mails (src/studio/outreach.ts, 27 October 2026).
   ...OUTREACH_SCHEMA,
+  // The payment e-mails (src/studio/receipts.ts, 27 October 2026).
+  ...RECEIPTS_SCHEMA,
 ];
 
 /**

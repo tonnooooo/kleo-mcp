@@ -53,6 +53,15 @@ export const OUTREACH_SCHEMA: string[] = [
   `CREATE INDEX IF NOT EXISTS outreach_seen_status ON outreach_seen (status, at)`,
 ];
 
+/**
+ * The payment e-mails (src/studio/receipts.ts, migrations/0032_receipts.sql): one row per payment that got its e-mail
+ * (or was skipped, with why), so none gets two.
+ */
+export const RECEIPTS_SCHEMA: string[] = [
+  `CREATE TABLE IF NOT EXISTS studio_receipts (
+    session_id TEXT PRIMARY KEY, user_id TEXT, kind TEXT NOT NULL, email TEXT, ok INTEGER NOT NULL, error TEXT, at TEXT NOT NULL DEFAULT ${NOW})`,
+];
+
 /** Columns added to the outreach tables after they first went live (migrations/0031_outreach_v2.sql). */
 export const OUTREACH_COLUMNS: string[] = [
   "ALTER TABLE outreach_prospects ADD COLUMN sender_id TEXT",
