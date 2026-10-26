@@ -38,19 +38,26 @@ export async function morningDigest(env: StudioEnv, nowMs = Date.now()): Promise
       `Accounts in a series that paid in the last 24 hours: ${paid}.`, "");
   }
   if (outreachOn) {
-    const sent = await n(env, "SELECT COUNT(*) AS n FROM outreach_log WHERE ok = 1 AND at >= ?", since);
+    const sent = await n(env, "SELECT COUNT(*) AS n FROM outreach_log WHERE ok = 1 AND step < 9 AND at >= ?", since);
+    const yeses = await n(env, "SELECT COUNT(*) AS n FROM outreach_log WHERE ok = 1 AND step = 9 AND at >= ?", since);
     const firsts = await n(env, "SELECT COUNT(*) AS n FROM outreach_log WHERE ok = 1 AND step = 0 AND at >= ?", since);
     const replies = ((await env.DB.prepare(`SELECT r.class, r.summary, r.from_addr, p.company FROM outreach_replies r LEFT JOIN outreach_prospects p ON p.id = r.prospect_id
         WHERE r.at >= ? ORDER BY r.id`).bind(since).all<{ class: string; summary: string | null; from_addr: string; company: string | null }>()).results ?? []);
     const waiting = await n(env, "SELECT COUNT(*) AS n FROM outreach_prospects WHERE status = 'approved'");
     const toApprove = await n(env, "SELECT COUNT(*) AS n FROM outreach_prospects WHERE status = 'new'");
-    const paused = await meta("outreach_paused");
-    const warm = ((await env.DB.prepare("SELECT MIN(at) AS at FROM outreach_log WHERE ok = 1").first<{ at: string | null }>())?.at) ?? null;
+    const paused = ((await env.DB.prepare("SELECT from_addr FROM outreach_senders WHERE status = 'paused'").all<{ from_addr: string }>()).results ?? []).map((r) => r.from_addr);
+    const boxes = await n(env, "SELECT COUNT(*) AS n FROM outreach_senders WHERE status != 'off'");
+    const signedUp = ((await env.DB.prepare("SELECT company FROM outreach_prospects WHERE converted_at >= ?").bind(since).all<{ company: string }>()).results ?? []).map((r) => r.company);
+    const scouted = await n(env, "SELECT COUNT(*) AS n FROM outreach_prospects WHERE batch LIKE 'scout%' AND added_at >= ?", since);
+    const scoutError = await meta("scout_error");
     const by = (c: string) => replies.filter((r) => r.class === c).length;
-    lines.push("OUTREACH", `Sent in the last 24 hours: ${sent} (${firsts} first e-mails, ${sent - firsts} follow-ups).${paused ? " PAUSED: the mailbox refused to send, check the app password in the console." : ""}`,
+    lines.push("OUTREACH", `Sent in the last 24 hours: ${sent} (${firsts} first e-mails, ${sent - firsts} follow-ups) from ${boxes} mailbox${boxes === 1 ? "" : "es"}.${paused.length ? ` PAUSED: ${paused.join(", ")} refused to send, check the app password in the console.` : ""}`,
       `Replies: ${replies.length - by("bounce")} (interested ${by("interested")}, questions ${by("question")}, no ${by("not_interested") + by("unsubscribe")}, out of office ${by("out_of_office")}). Bounced: ${by("bounce")}.`);
     for (const r of replies.filter((x) => x.class === "interested" || x.class === "question" || x.class === "other")) lines.push(`  - ${r.company ?? r.from_addr} (${r.class}): ${r.summary ?? ""}`);
-    lines.push(`Approved and not written to yet: ${waiting}. Waiting for your approval: ${toApprove}.${warm ? ` Warm-up day ${Math.floor((nowMs - Date.parse(warm)) / 86_400_000) + 1}.` : ""}`, "");
+    if (yeses) lines.push(`Answers to a yes, with their link: ${yeses}.`);
+    if (signedUp.length) lines.push(`Signed up through their link: ${signedUp.join(", ")}.`);
+    lines.push(`New businesses found by the scout: ${scouted}.${scoutError ? ` Scout trouble: ${scoutError}` : ""}`,
+      `Approved and not written to yet: ${waiting}. Waiting for your approval: ${toApprove}.`, "");
   }
   lines.push("Details: https://admin.kleooai.com/admin/emails and https://admin.kleooai.com/admin/outreach", "One e-mail a day at 8:00 Auckland time while either is on.");
   return mailOwner(env, `Kleo e-mails, ${day}`, lines.join("\n"), nowMs);

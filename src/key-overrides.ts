@@ -23,8 +23,6 @@ export const EDITABLE_KEYS: { name: string; purpose: string; shape: RegExp }[] =
   { name: "APIMART_API_KEY", purpose: "APIMart: backup of most models", shape: /^sk-[A-Za-z0-9_-]{16,200}$/ },
   { name: "RESEND_API_KEY", purpose: "Password reset e-mails", shape: /^re_[A-Za-z0-9_-]{8,200}$/ },
   { name: "CF_ANALYTICS_TOKEN", purpose: "Finds the address of past sign-ins in Cloudflare's logs", shape: /^[A-Za-z0-9_-]{30,200}$/ },
-  // 27 Oct 2026: the outreach mailbox (src/studio/outreach.ts), usually set on the console's Outreach page with the sender.
-  { name: "OUTREACH_SMTP_PASS", purpose: "Outreach mailbox: the app password Kleo sends and reads replies with", shape: /^[\x21-\x7e]{8,200}$/ },
 ];
 export const isEditableKey = (name: string): boolean => EDITABLE_KEYS.some((k) => k.name === name);
 /** Why a value cannot be the key `name`, or null. An ePhone admin key is never accepted as the model key (and back). */

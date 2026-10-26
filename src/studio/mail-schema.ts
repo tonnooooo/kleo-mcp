@@ -42,4 +42,23 @@ export const OUTREACH_SCHEMA: string[] = [
     id INTEGER PRIMARY KEY AUTOINCREMENT, prospect_id TEXT, from_addr TEXT NOT NULL, subject TEXT, text TEXT, class TEXT NOT NULL,
     summary TEXT, uid INTEGER, at TEXT NOT NULL DEFAULT ${NOW})`,
   `CREATE INDEX IF NOT EXISTS outreach_replies_prospect ON outreach_replies (prospect_id, uid)`,
+  // 27 October 2026, outreach v2 (migrations/0031_outreach_v2.sql): the mailboxes Kleo sends from (each password sealed,
+  // bound to the row's id), and every website the scout has looked at, so none is read twice.
+  `CREATE TABLE IF NOT EXISTS outreach_senders (
+    id TEXT PRIMARY KEY, from_name TEXT NOT NULL, from_addr TEXT NOT NULL UNIQUE, user TEXT NOT NULL, smtp_host TEXT NOT NULL, smtp_port INTEGER NOT NULL,
+    imap_host TEXT NOT NULL, imap_port INTEGER NOT NULL, daily_max INTEGER NOT NULL DEFAULT 40, sealed_pass TEXT, pass_last4 TEXT,
+    status TEXT NOT NULL DEFAULT 'active', paused_reason TEXT, paused_at TEXT, imap_state TEXT, checked_at TEXT, next_send_at TEXT,
+    created_at TEXT NOT NULL DEFAULT ${NOW})`,
+  `CREATE TABLE IF NOT EXISTS outreach_seen (domain TEXT PRIMARY KEY, status TEXT NOT NULL, result TEXT, url TEXT, hint TEXT, at TEXT NOT NULL DEFAULT ${NOW})`,
+  `CREATE INDEX IF NOT EXISTS outreach_seen_status ON outreach_seen (status, at)`,
+];
+
+/** Columns added to the outreach tables after they first went live (migrations/0031_outreach_v2.sql). */
+export const OUTREACH_COLUMNS: string[] = [
+  "ALTER TABLE outreach_prospects ADD COLUMN sender_id TEXT",
+  "ALTER TABLE outreach_prospects ADD COLUMN variant TEXT",
+  "ALTER TABLE outreach_prospects ADD COLUMN link_code TEXT",
+  "ALTER TABLE outreach_prospects ADD COLUMN converted_user TEXT",
+  "ALTER TABLE outreach_prospects ADD COLUMN converted_at TEXT",
+  "ALTER TABLE outreach_log ADD COLUMN sender_id TEXT",
 ];

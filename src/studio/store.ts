@@ -17,7 +17,7 @@ import type { StudioEnv } from "./env.ts";
 import { PROVIDER_STATUS_SCHEMA } from "./providers.ts";
 import { KEY_OVERRIDES_SCHEMA } from "../key-overrides.ts";
 import { ATTRIBUTION_SCHEMA } from "./attribution.ts";
-import { ONBOARDING_SCHEMA, OUTREACH_SCHEMA } from "./mail-schema.ts";
+import { ONBOARDING_SCHEMA, OUTREACH_COLUMNS, OUTREACH_SCHEMA } from "./mail-schema.ts";
 
 const NOW = "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))";
 export const STUDIO_SCHEMA: string[] = [
@@ -102,6 +102,8 @@ export const STUDIO_COLUMNS: string[] = [
   // migrations/0026_studio_admin.sql: an account the owner closed from the console (src/studio/admin.ts).
   "ALTER TABLE users ADD COLUMN blocked_at TEXT",
   "ALTER TABLE users ADD COLUMN blocked_reason TEXT",
+  // migrations/0031_outreach_v2.sql: mailboxes, versions, personal links and sign-ups of the outreach (outreach.ts).
+  ...OUTREACH_COLUMNS,
 ];
 
 /** Whether the account chose to have copyright refusals made on Wan 3.0 by themselves. */
