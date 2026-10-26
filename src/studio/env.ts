@@ -33,6 +33,12 @@ export interface StudioEnv {
    *  Email Routing, and that address (default kleooai@gmail.com, the only one verified on 23 October 2026). */
   OWNER_MAIL?: SendEmail;
   OWNER_MAIL_TO?: string;
+  /** Cloudflare Email Sending (27 October 2026): the welcome e-mails from hello@kleooai.com to any address, the domain
+   *  onboarded in Email Sending (src/studio/onboarding.ts). Before that it reaches only the verified Email Routing address. */
+  EMAIL?: SendEmail;
+  /** Welcome e-mails one UTC day may send (default 300) and one 5-minute tick (default 12). */
+  STUDIO_MAIL_DAILY_CAP?: string;
+  STUDIO_MAIL_PER_TICK?: string;
   /** Dollars under which a provider's balance warns the owner, e.g. "wavespeed:20,apimart:5" (defaults in providers.ts). */
   STUDIO_PROVIDER_LOW_USD?: string;
   /** Public address of the MCP server (for the "use Kleo in Claude/ChatGPT" line). */

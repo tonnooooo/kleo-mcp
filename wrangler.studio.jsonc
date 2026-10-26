@@ -48,7 +48,12 @@
   ],
   // The owner's alerts (src/studio/providers.ts): a provider out of money or running low. Email Routing is on for
   // kleooai.com and kleooai@gmail.com is its one verified destination (23 Oct 2026); alerts come from alerts@kleooai.com.
-  "send_email": [ { "name": "OWNER_MAIL", "destination_address": "kleooai@gmail.com" } ],
+  "send_email": [
+    { "name": "OWNER_MAIL", "destination_address": "kleooai@gmail.com" },
+    // 27 Oct 2026: the welcome e-mails (src/studio/onboarding.ts) through Cloudflare Email Sending, kleooai.com onboarded
+    // as a sending domain; only from hello@kleooai.com.
+    { "name": "EMAIL", "allowed_sender_addresses": ["hello@kleooai.com"] }
+  ],
   "triggers": { "crons": ["* * * * *"] }, // every minute: refresh clips still with the provider, save finished ones, refund failed ones
   "vars": {
     "PUBLIC_URL": "https://mcp.kleooai.com",
@@ -74,6 +79,8 @@
     "STUDIO_ADMINS": "u_6avhjrtnzrsa", // 15 Oct 2026: the owner's own account (leo…@gmail.com): every model, no limits (src/studio/generate.ts isAdmin)
     "STUDIO_PAUSED_IMAGE_MODELS": "", // 18 Oct 2026, the owner: Nano Banana Pro and 2 back online (paused 15 Oct for "invalid channel id"); a model listed here takes no orders
     "STUDIO_MAX_RUNNING": "3",
+    "STUDIO_MAIL_DAILY_CAP": "300", // 27 Oct 2026: welcome e-mails one UTC day may send (src/studio/onboarding.ts); the switch is in the admin console's Emails page
+    "STUDIO_MAIL_PER_TICK": "12",
     "STUDIO_AGENT_MODEL": "claude-haiku-5-5",
     "STUDIO_AGENT_PER_DAY": "200",
     "ADMIN_HOST": "admin.kleooai.com", // 23 Oct 2026: the admin console lives only here (src/studio/admin-host.ts); /admin on every other host is the site's 404

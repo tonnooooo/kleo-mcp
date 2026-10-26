@@ -2,7 +2,7 @@
 // admin opens /admin, and hands it the app's own helpers (the kit): the element builder, the icons, toasts, sheets and
 // the ask() questions, never a browser pop-up. API: src/studio/admin.ts. With ?demo=1 everything runs on fake data.
 //
-// Pages: Overview · Users (and one account) · Sources · Payments · Creations · Providers & keys · Security. Desktop: a
+// Pages: Overview · Users (and one account) · Sources · Emails · Payments · Creations · Providers & keys · Security. Desktop: a
 // side list of pages; phones: the same pages as a row of pills.
 //
 // The console opens with a second factor (src/studio/admin-auth.ts): the first visit sets up a code on the owner's phone
@@ -19,6 +19,7 @@ const SECTIONS = [
   { key: "overview", label: "Overview", ic: "grid" },
   { key: "users", label: "Users", ic: "user" },
   { key: "sources", label: "Sources", ic: "share" },
+  { key: "emails", label: "Emails", ic: "mail" },
   { key: "payments", label: "Payments", ic: "bag" },
   { key: "creations", label: "Creations", ic: "film" },
   { key: "providers", label: "Providers", ic: "plug" },
@@ -218,7 +219,7 @@ export function render(kit) {
     h("button", { class: "adm-live", title: "Update now", onclick: () => live(true) }, h("i", { class: "adm-live-dot" }), h("span", { class: "adm-live-t" }, "Live")));
   const main = h("div", { class: "adm-main" });
   K.setView("admin-view", h("div", { class: "adm" }, nav, main));
-  const pages = { overview: overviewPage, users: id ? (m, o) => userPage(m, id, o) : usersPage, sources: sourcesPage, payments: paymentsPage, creations: creationsPage, providers: providersPage, keys: keysPage, security: securityPage };
+  const pages = { overview: overviewPage, users: id ? (m, o) => userPage(m, id, o) : usersPage, sources: sourcesPage, emails: emailsPage, payments: paymentsPage, creations: creationsPage, providers: providersPage, keys: keysPage, security: securityPage };
   pages[key](main);
   // The same page, built again off screen every LIVE_MS (live() above).
   liveStart((into) => pages[key](main, { into }));
@@ -1039,6 +1040,80 @@ async function keysPage(main, opts = {}) {
       h("div", { class: "adm-note" }, icon("lock", 17), h("span", {}, h("code", {}, "npx wrangler secret put NAME --config wrangler.studio.jsonc")))));
 }
 
+// ── emails: the welcome e-mails (src/studio/onboarding.ts, 27 October 2026) ──────────────────────────────────────
+// The switch (on needs a new code from the phone: it writes to real people), what was sent and what comes next, and
+// every e-mail readable as a new account gets it.
+async function emailsPage(main, opts = {}) {
+  const body = h("div", { class: "adm-stack" }, loading());
+  K.fill(opts.into || main, head("Emails", "The welcome e-mails every new account gets from Leonardo, at hello@kleooai.com.", refreshBtn(() => emailsPage(main))), body);
+  let r;
+  try { r = await call("/api/admin/emails"); } catch (e) { return failed(body, e, () => emailsPage(main)); }
+  const reload = () => emailsPage(main);
+  async function toggle() {
+    if (r.on) {
+      if (!(await K.ask({ title: "Turn the e-mails off?", text: "Nothing more is sent until you turn them on again. Every series waits where it is.", ok: "Turn off", ic: "pause" }))) return;
+      try { await call("/api/admin/emails/mode", { method: "POST", body: { on: false } }); K.toast("Welcome e-mails are off"); reload(); } catch (e) { oops(e); }
+      return;
+    }
+    const first = r.comeback ? `Kleo writes once to ${count(r.comeback.total, "account")} from the last 30 days that never paid, spread over the day, and` : "From now on";
+    if (!(await K.ask({ title: "Turn the e-mails on?", text: `${first} every new account gets the 7-day series. They go out only between 9:00 and 20:00 where each person is.`, ok: "Turn on", ic: "play" }))) return;
+    try { await postFresh("/api/admin/emails/mode", { on: true }); K.toast("Welcome e-mails are on"); reload(); } catch (e) { oops(e); }
+  }
+  async function preview(m) {
+    let p;
+    try { p = await call(`/api/admin/emails/preview?key=${encodeURIComponent(m.key)}`); } catch (e) { return oops(e); }
+    // The e-mail's own HTML in a shadow root: its inline styles stay inside, the console's stay out.
+    const host = h("div", { class: "adm-mail" });
+    const doc = new DOMParser().parseFromString(p.html, "text/html");
+    host.attachShadow({ mode: "open" }).innerHTML = `<div style="background:#ffffff;border-radius:12px;overflow:hidden">${doc.body.innerHTML}</div>`;
+    K.sheet(p.subject, `${p.name}. Inbox preview: ${p.preheader}`, h("div", { class: "adm-sheet-body" }, host));
+  }
+  async function test(btn) {
+    if (!(await K.ask({ title: "Send every e-mail to you?", text: `All ${r.mails.length} e-mails, as a sample account gets them, go to your own inbox. Nobody else gets anything.`, ok: "Send", ic: "check" }))) return;
+    btn.disabled = true;
+    try {
+      const t = await call("/api/admin/emails/test", { method: "POST", body: {} });
+      if (t.failed?.length) K.handleError(new AdminError(`${t.sent} sent, ${t.failed.length} refused. ${t.failed[0]}`, 400, "mail_test"));
+      else K.toast(`${t.sent} e-mails sent to your inbox`);
+      reload();
+    } catch (e) { oops(e); } finally { btn.disabled = false; }
+  }
+  async function stopAddress() {
+    const v = await K.ask({ title: "Stop one address", ic: "x", ok: "Stop it", text: "Kleo never writes to it again: no welcome e-mails and no outreach.",
+      fields: [{ key: "email", label: "E-mail address", placeholder: "name@example.com", required: true }] });
+    if (!v) return;
+    try { await call("/api/admin/emails/suppress", { method: "POST", body: { email: v.email, on: true } }); K.toast("That address won't hear from Kleo again"); reload(); } catch (e) { oops(e); }
+  }
+  const sw = h("button", { class: "btn " + (r.on ? "btn-quiet" : "btn-primary"), onclick: toggle }, icon(r.on ? "pause" : "play", 17), r.on ? "Turn off" : "Turn on");
+  const testBtn = h("button", { class: "btn btn-quiet btn-sm", onclick: () => test(testBtn) }, icon("mail", 16), "Send them all to me");
+  const comeback = r.comeback && !r.on ? h("div", { class: "adm-note" }, icon("chat", 17), h("span", {},
+    `Turning them on writes once to ${count(r.comeback.total, "account")} from the last 30 days that never paid` +
+    (Object.keys(r.comeback.byMail).length ? `: ${Object.entries(r.comeback.byMail).map(([k, n]) => `${n} get "${k}"`).join(", ")}.` : ".") +
+    " Every new account then gets the 7-day series.")) : null;
+  const state = card("Welcome e-mails",
+    r.on ? `On since ${stamp(r.since)}. From ${r.from}.` : r.since ? `Off. They were on from ${stamp(r.since)}; every series waits where it stopped.` : "Off. Nothing has been sent to anybody yet.",
+    comeback, h("div", { class: "adm-actions" }, sw, pill(r.on ? "On" : "Off", r.on ? "ok" : "")));
+  const upcoming = r.upcoming.map((x) => h("button", { class: "row", onclick: () => openUser(x.user_id) }, icon("clock", 19),
+    h("div", { class: "lbl" }, h("b", {}, x.mail), h("span", {}, x.email)), h("span", { class: "val" }, stamp(x.next_at))));
+  const recent = r.recent.map((x) => h("div", { class: "row" }, icon(x.ok ? "check" : "x", 19),
+    h("div", { class: "lbl" }, h("b", {}, x.name, x.kind === "preview" ? pill("Preview", "info") : null, x.ok ? null : pill("Refused", "bad")),
+      h("span", {}, x.ok ? x.email : `${x.email} · ${x.error}`)), h("span", { class: "val" }, ago(x.at))));
+  const list = r.mails.map((m) => h("button", { class: "row", onclick: () => preview(m) }, icon("mail", 19),
+    h("div", { class: "lbl" }, h("b", {}, m.name), h("span", {}, m.subject)), icon("right", 16)));
+  K.fill(body,
+    state,
+    tiles(tile("Sent today", num(r.sent.today), `Up to ${num(r.dailyCap)} a day`), tile("Sent, 7 days", num(r.sent.week), `${num(r.sent.total)} in all`),
+      tile("In a series", num(r.counts.active), `${num(r.counts.done)} finished · ${num(r.counts.stopped)} stopped`),
+      tile("Unsubscribed", num(r.unsubscribed), `${num(r.bounced)} bounced`),
+      tile("Paid after an e-mail", num(r.paidAfter), "Accounts that paid after their series began", r.paidAfter ? "ok" : ""),
+      tile("Refused, 7 days", num(r.failures), "Sends Cloudflare said no to", r.failures ? "bad" : "")),
+    card("The e-mails", "Tap one to read it as a new account gets it. Prices and the number of templates come from the live app.",
+      h("div", { class: "list" }, list), h("div", { class: "adm-actions" }, testBtn, h("button", { class: "btn btn-quiet btn-sm", onclick: stopAddress }, icon("x", 16), "Stop one address"))),
+    card("Coming up", upcoming.length ? "The next e-mails due, each in its person's daytime." : null,
+      upcoming.length ? h("div", { class: "list" }, upcoming) : empty(r.on ? "Nothing is due right now." : "Nothing is scheduled while the e-mails are off.")),
+    card("Sent", null, recent.length ? h("div", { class: "list" }, recent) : empty("Nothing sent yet.")));
+}
+
 // ── demo data (?demo=1): nothing here is real ────────────────────────────────────────────────────────────────────
 let D = null;
 function demoDb() {
@@ -1183,6 +1258,27 @@ function demoSources(p, q, b) {
       .map(({ u, a }) => ({ id: u.id, name: u.name, email: u.email, created_at: u.created_at, channel: a ? a.channel : "before", guessed: a?.guessed, link_code: a?.link_code, link_label: a?.link_label, ref_host: a?.ref_host, landing: a?.landing, paid: u.paid_cent ? { eur: u.paid_cent } : null })),
   };
 }
+/** The Emails page on fake data (?demo=1). */
+const DEMO_MAILS = { on: false };
+function demoEmails(p, q, b) {
+  const names = [["w0-welcome", "Day 1 · Welcome", "Welcome to Kleo, Alex"], ["w1-templates", "Day 2 · Templates", "Day 2 of 7: Put yourself in a viral video"],
+    ["w2-prompts", "Day 3 · Prompts", "Day 3 of 7: Prompts that look like film"], ["rescue", "Rescue · first try failed", "Your first video didn't come out"]];
+  if (p === "/api/admin/emails/mode") { DEMO_MAILS.on = !!b.on; DEMO_MAILS.since ??= new Date().toISOString(); return { ok: true, on: DEMO_MAILS.on }; }
+  if (p === "/api/admin/emails/test") return { sent: names.length, failed: [] };
+  if (p === "/api/admin/emails/suppress") return { ok: true };
+  if (p === "/api/admin/emails/preview") {
+    const n = names.find((x) => x[0] === q.get("key")) || names[0];
+    return { key: n[0], name: n[1], subject: n[2], preheader: "Your first video is one sentence away.",
+      html: `<p style="font:16px/1.6 -apple-system,sans-serif;padding:24px;color:#111">Hi Alex,<br><br>This is a demo of <b>${n[1]}</b>.</p>`, text: "" };
+  }
+  const iso = (m) => new Date(Date.now() - m * 60_000).toISOString();
+  return { on: DEMO_MAILS.on, since: DEMO_MAILS.since || null, from: "Leonardo from Kleo <hello@kleooai.com>", dailyCap: 300,
+    counts: { active: 18, done: 4, stopped: 2, welcome: 9, comeback: 15 }, sent: { today: 6, week: 41, total: 41 }, failures: 0, unsubscribed: 1, bounced: 1, paidAfter: 2,
+    comeback: DEMO_MAILS.since ? null : { total: 31, byMail: { "Comeback · nothing made yet": 22, "Comeback · first try failed": 6, "Comeback · made something": 3 } },
+    upcoming: [{ user_id: "u_demo1", email: "ana@example.com", mail: "Day 3 · Prompts", next_at: iso(-90) }],
+    recent: [{ user_id: "u_demo2", email: "liam@example.com", mail: "w1-templates", name: "Day 2 · Templates", kind: "live", ok: 1, error: null, at: iso(12) }],
+    mails: names.map(([key, name, subject]) => ({ key, name, subject })) };
+}
 async function demo(path, opts) {
   await new Promise((r) => setTimeout(r, 160));
   const db = demoDb();
@@ -1299,6 +1395,7 @@ async function demo(path, opts) {
     }
   }
   if (p === "/api/admin/sources" || p.startsWith("/api/admin/sources/links")) return demoSources(p, q, b);
+  if (p.startsWith("/api/admin/emails")) return demoEmails(p, q, b);
   if (p === "/api/admin/payments") {
     const st = q.get("status");
     const rows = db.payments.filter((x) => !st || x.status === st).sort((x, y) => y.at.localeCompare(x.at)).map((x) => ({ ...x, account_email: x.email, links: [{ label: "Payment", url: "https://dashboard.stripe.com/payments" }, { label: "Checkout", url: "https://dashboard.stripe.com/search" }] }));

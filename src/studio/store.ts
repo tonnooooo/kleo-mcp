@@ -9,11 +9,14 @@
  *   studio_uploads      a picture a person attached
  *   studio_generations  one clip: settings, credits, provider task, state, stored file
  *   user_attribution    where an account came from; short_links, short_link_clicks, first_visits (attribution.ts)
+ *   studio_mail         the welcome e-mails: one row per account in a series; studio_mail_log every send; mail_suppress
+ *                       the addresses never to write to again (onboarding.ts, mail-schema.ts)
  */
 import type { StudioEnv } from "./env.ts";
 import { PROVIDER_STATUS_SCHEMA } from "./providers.ts";
 import { KEY_OVERRIDES_SCHEMA } from "../key-overrides.ts";
 import { ATTRIBUTION_SCHEMA } from "./attribution.ts";
+import { ONBOARDING_SCHEMA } from "./mail-schema.ts";
 
 const NOW = "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))";
 export const STUDIO_SCHEMA: string[] = [
@@ -46,6 +49,8 @@ export const STUDIO_SCHEMA: string[] = [
   KEY_OVERRIDES_SCHEMA,
   // Where each account came from, short links and their clicks (src/studio/attribution.ts, 25 October 2026).
   ...ATTRIBUTION_SCHEMA,
+  // The welcome e-mails and the stop list (src/studio/onboarding.ts, 27 October 2026).
+  ...ONBOARDING_SCHEMA,
 ];
 
 /**

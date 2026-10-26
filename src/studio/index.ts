@@ -9,14 +9,16 @@
  *                                              Apple's callback is a form POST)
  *   /media/...      the person's pictures and clips (cookie, or a signed link for the provider and for sharing)
  *   /r/<code>       a short link: counts the click, tags the visit, opens the link's page (src/studio/attribution.ts)
+ *   /email/stop     the welcome e-mails' unsubscribe page and one-click POST (src/studio/onboarding.ts)
  *   everything else the single-page app in studio-web/ (served by the ASSETS binding, index.html for app routes)
- *   cron            every minute: refresh the clips still with the provider, save the finished ones, refund the failed
+ *   cron            every minute: refresh the clips still with the provider, save the finished ones, refund the failed;
+ *                   every 5 minutes the welcome e-mails that are due (src/studio/onboarding.ts)
  */
 import type { StudioEnv } from "./env.ts";
 import type { Env } from "../env";
 import { getUser, hasPaid, audit, countAuditTodayForUser } from "../db.ts";
 import { PACKS, buyUrl } from "../stripe.ts";
-import { rid } from "../util.ts";
+import { rid, safeEqual } from "../util.ts";
 import { DEFAULT_MODEL, freeModels, freeResolutions, publicCatalog, normalizeSettings, clipCredits } from "./models.ts";
 import { IMAGE_MODELS, defaultImageModel, freeImageModels, pausedImageModels, publicImageCatalog } from "./image-models.ts";
 import {
@@ -45,6 +47,7 @@ import { adminApi } from "./admin.ts";
 import { pruneIps, recordIp } from "./ips.ts";
 import { ADMIN_SITE_API, ADMIN_SITE_PATH, CONSOLE_PATH, adminUrl, certProblem, isAdminHost, misdirected, noteRefused, refused } from "./admin-host.ts";
 import { SHORT_LINK_PATH, arrivalOf, clearTouchCookie, firstVisit, shortLink } from "./attribution.ts";
+import { handleStop, livePrices, mailTick, sendSeriesToOwner } from "./onboarding.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const json = (data: unknown, status = 200, headers: Record<string, string> = {}): Response =>
@@ -625,6 +628,16 @@ async function route(request: Request, env: StudioEnv, ctx: ExecutionContext, ur
       return new Response(null, { status: 302, headers: { location: "/", "cache-control": "no-store" } });
     }
   }
+  // The welcome e-mails' unsubscribe link (src/studio/onboarding.ts): its signature is the authorisation, and the mail
+  // client's one-click POST comes without the page's header or any cookie.
+  if (url.pathname === "/email/stop" && (request.method === "GET" || request.method === "POST")) {
+    try {
+      await ensureStudioSchema(env);
+      return await handleStop(env, request, url);
+    } catch (e) {
+      return fail(e);
+    }
+  }
   // Everything that is not the app is the Kleo site (kleooai.com/mcp, /pricing/, /guides/…). The admin console does not
   // exist on this host: its paths get the site's 404, like any page that is not there.
   if (!APP_PATH.test(url.pathname) || CONSOLE_PATH.test(url.pathname)) {
@@ -634,6 +647,13 @@ async function route(request: Request, env: StudioEnv, ctx: ExecutionContext, ur
     if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/media/") || url.pathname.startsWith("/auth/")) await ensureStudioSchema(env);
     // The owner's "it's topped up" link from an alert e-mail (src/studio/providers.ts): its signature is the authorisation,
     // so it is answered before api(), whose POSTs need the page's own header.
+    // The owner's own preview of the welcome e-mails, sent to the Email Routing address only (src/studio/onboarding.ts):
+    // for scripts on the owner's machine, with the INTERNAL_SECRET as bearer, like the MCP server's admin routes.
+    if (url.pathname === "/api/internal/mail/preview" && request.method === "POST") {
+      const auth = request.headers.get("authorization") ?? "";
+      if (!env.INTERNAL_SECRET || !safeEqual(auth, `Bearer ${env.INTERNAL_SECRET}`)) return json({ error: "Not found." }, 404);
+      return json(await sendSeriesToOwner(env, livePrices(env)));
+    }
     const resume = url.pathname.match(/^\/api\/provider-resume\/(ephone|wavespeed|apimart)$/);
     if (resume && (request.method === "GET" || request.method === "POST")) {
       const signed = await checkSignedPath(env.INTERNAL_SECRET, url.pathname, url.searchParams.get("exp"), url.searchParams.get("sig"));
@@ -678,6 +698,10 @@ export default {
     const rows = await staleGenerations(env, 20, 25);
     for (const g of rows) {
       try { await refreshGeneration(env, g, 15); } catch (e) { console.error("studio cron", g.id, e instanceof Error ? e.message : e); }
+    }
+    // The welcome e-mails that are due, every 5 minutes, when the owner switched them on (src/studio/onboarding.ts).
+    if (new Date(_event.scheduledTime || Date.now()).getUTCMinutes() % 5 === 2) {
+      try { await mailTick(env, livePrices(env)); } catch (e) { console.error("studio mail", e instanceof Error ? e.message : e); }
     }
     // Sign-in addresses older than 90 days go, once an hour (src/studio/ips.ts; the privacy page promises it).
     if (new Date(_event.scheduledTime || Date.now()).getUTCMinutes() === 17) {
