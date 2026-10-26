@@ -3,7 +3,7 @@
 //
 // Pages: Create (chat with Kleo) · Video · Image · Audio · Apps · Library. Desktop: a top bar; phones: a tab bar.
 
-import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=89";
+import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=90";
 
 const DEMO = new URLSearchParams(location.search).has("demo");
 const DEMO_FREE = new URLSearchParams(location.search).get("demo") === "free"; // ?demo=free: an account that never paid
@@ -2526,7 +2526,7 @@ const adminSite = () => !!S.config?.adminSite;
 function openConsole() { location.href = DEMO ? "/admin?demo=1" : S.me.adminUrl; }
 let adminCss = null;
 function loadAdminCss() {
-  adminCss ??= new Promise((ok) => { const css = h("link", { rel: "stylesheet", href: "/admin.css?v=89", "data-admin": "" }); css.onload = ok; css.onerror = ok; document.head.append(css); });
+  adminCss ??= new Promise((ok) => { const css = h("link", { rel: "stylesheet", href: "/admin.css?v=90", "data-admin": "" }); css.onload = ok; css.onerror = ok; document.head.append(css); });
   return adminCss;
 }
 async function adminEnter() {
@@ -2570,7 +2570,7 @@ async function adminView() {
     setView("admin-view", h("div", { class: "connect-view" }, spinner(24)));
     try {
       await loadAdminCss();
-      adminModule = await import("/admin.js?v=89");
+      adminModule = await import("/admin.js?v=90");
     } catch {
       setView("connect-view", connectCard("The console didn't load", "Check the connection and try again.", h("button", { class: "btn btn-primary", onclick: () => location.reload() }, "Try again")));
       return;

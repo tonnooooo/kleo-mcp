@@ -1095,6 +1095,13 @@ async function emailsPage(main, opts = {}) {
   const state = card("Welcome e-mails",
     r.on ? `On since ${stamp(r.since)}. From ${r.from}.` : r.since ? `Off. They were on from ${stamp(r.since)}; every series waits where it stopped.` : "Off. Nothing has been sent to anybody yet.",
     comeback, h("div", { class: "adm-actions" }, sw, pill(r.on ? "On" : "Off", r.on ? "ok" : "")));
+  // The payment e-mails (src/studio/receipts.ts): on by default, for every payment since they began.
+  async function receipts() {
+    try { await call("/api/admin/emails/receipts", { method: "POST", body: { on: !r.receipts.on } }); K.toast(r.receipts.on ? "Payment e-mails are off" : "Payment e-mails are on"); reload(); } catch (e) { oops(e); }
+  }
+  const pay = card("Payment e-mails", `${r.receipts.on ? "On" : "Off"}. After every payment: the credits, and for a plan or a first purchase everything it unlocked. ${num(r.receipts.sent)} sent, ${num(r.receipts.week)} in the last 7 days.`,
+    h("div", { class: "adm-actions" }, h("button", { class: "btn btn-quiet", onclick: receipts }, icon(r.receipts.on ? "pause" : "play", 17), r.receipts.on ? "Turn off" : "Turn on"),
+      pill(r.receipts.on ? "On" : "Off", r.receipts.on ? "ok" : "")));
   const upcoming = r.upcoming.map((x) => h("button", { class: "row", onclick: () => openUser(x.user_id) }, icon("clock", 19),
     h("div", { class: "lbl" }, h("b", {}, x.mail), h("span", {}, x.email)), h("span", { class: "val" }, stamp(x.next_at))));
   const recent = r.recent.map((x) => h("div", { class: "row" }, icon(x.ok ? "check" : "x", 19),
@@ -1103,7 +1110,7 @@ async function emailsPage(main, opts = {}) {
   const list = r.mails.map((m) => h("button", { class: "row", onclick: () => preview(m) }, icon("mail", 19),
     h("div", { class: "lbl" }, h("b", {}, m.name), h("span", {}, m.subject)), icon("right", 16)));
   K.fill(body,
-    state,
+    state, pay,
     tiles(tile("Sent today", num(r.sent.today), `Up to ${num(r.dailyCap)} a day`), tile("Sent, 7 days", num(r.sent.week), `${num(r.sent.total)} in all`),
       tile("In a series", num(r.counts.active), `${num(r.counts.done)} finished · ${num(r.counts.stopped)} stopped`),
       tile("Unsubscribed", num(r.unsubscribed), `${num(r.bounced)} bounced`),
@@ -1466,6 +1473,7 @@ function demoEmails(p, q, b) {
   if (p === "/api/admin/emails/mode") { DEMO_MAILS.on = !!b.on; DEMO_MAILS.since ??= new Date().toISOString(); return { ok: true, on: DEMO_MAILS.on }; }
   if (p === "/api/admin/emails/test") return { sent: names.length, failed: [] };
   if (p === "/api/admin/emails/suppress") return { ok: true };
+  if (p === "/api/admin/emails/receipts") { DEMO_MAILS.receipts = !!b.on; return { ok: true, on: !!b.on }; }
   if (p === "/api/admin/emails/preview") {
     const n = names.find((x) => x[0] === q.get("key")) || names[0];
     return { key: n[0], name: n[1], subject: n[2], preheader: "Your first video is one sentence away.",
@@ -1477,7 +1485,7 @@ function demoEmails(p, q, b) {
     comeback: DEMO_MAILS.since ? null : { total: 31, byMail: { "Comeback · nothing made yet": 22, "Comeback · first try failed": 6, "Comeback · made something": 3 } },
     upcoming: [{ user_id: "u_demo1", email: "ana@example.com", mail: "Day 3 · Prompts", next_at: iso(-90) }],
     recent: [{ user_id: "u_demo2", email: "liam@example.com", mail: "w1-templates", name: "Day 2 · Templates", kind: "live", ok: 1, error: null, at: iso(12) }],
-    mails: names.map(([key, name, subject]) => ({ key, name, subject })) };
+    mails: names.map(([key, name, subject]) => ({ key, name, subject })), receipts: { on: DEMO_MAILS.receipts ?? true, sent: 3, week: 3 } };
 }
 /** The Outreach page on fake data (?demo=1). */
 function demoOutreach(p, q, b) {

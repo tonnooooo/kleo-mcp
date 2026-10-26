@@ -36,6 +36,7 @@
  *   POST /api/admin/emails/mode              {on, code?}                    switch them on (a fresh code) or off
  *   POST /api/admin/emails/test              {}                             every e-mail to the owner's own inbox
  *   POST /api/admin/emails/suppress          {email, on}                    stop (or allow again) one address
+ *   POST /api/admin/emails/receipts          {on}                           the payment e-mails on or off (receipts.ts)
  *   GET  /api/admin/outreach                 outreach: the switch, the mailboxes (never a password), warm-up, settings,
  *                                            counts, sign-ups, the versions' replies, the scout, the last sends and replies
  *   GET  /api/admin/outreach/prospects?status&q&offset    the businesses, 60 at a time
@@ -71,6 +72,7 @@ import { adminAuthApi, adminSessionOf, checkFreshCode, FRESH_MIN, isFresh, secur
 import { keyAction, listKeys } from "./admin-keys.ts";
 import { CODE_RE, LINK_CHANNELS, getLink, type LinkChannel, type LinkRow } from "./attribution.ts";
 import { addProspects, listProspects, outreachOverview, parseCsv, previewFor, prospectAction, saveSender, saveSettings, sendOutreachTest, senderAction, setOutreachMode } from "./outreach.ts";
+import { RECEIPT_KINDS, composeReceipt, receiptsOn, sampleReceipt } from "./receipts.ts";
 import { ALL_MAILS, SERIES, comebackMail, compose, factsOf, livePrices, mailMode, renderHtml, renderText, sampleFacts, sendSeriesToOwner, setMailMode, type MailKey } from "./onboarding.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
@@ -713,6 +715,12 @@ async function adminRoute(env: StudioEnv, request: Request, url: URL, adminId: s
     if (path === "/api/admin/emails/mode") return emailSwitch(env, request, gate, adminId, await body(request));
     if (path === "/api/admin/emails/test") return json(await sendSeriesToOwner(env, livePrices(env)));
     if (path === "/api/admin/emails/suppress") return emailSuppress(env, adminId, await body(request));
+    if (path === "/api/admin/emails/receipts") {
+      const on = (await body(request)).on === true;
+      await env.DB.prepare("INSERT INTO studio_meta (key, value) VALUES ('receipts_mode', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").bind(on ? "on" : "off").run();
+      await audit(asEnv(env), adminId, null, "admin.receipts_mode", { on });
+      return json({ ok: true, on });
+    }
     if (path.startsWith("/api/admin/outreach/")) return outreachRoute(env, request, gate, adminId, path, await body(request));
     const km = path.match(/^\/api\/admin\/keys\/([A-Z0-9_]{3,64})(?:\/(test|revert))?$/);
     if (km) return keyRoute(env, request, gate, adminId, km[1], (km[2] ?? "set") as "set" | "revert" | "test");
@@ -781,12 +789,23 @@ async function emails(env: StudioEnv): Promise<unknown> {
     on: mode.on, since: mode.since, from: "Leonardo from Kleo <hello@kleooai.com>", dailyCap: Number(env.STUDIO_MAIL_DAILY_CAP ?? 300),
     counts, sent: { today, week, total }, failures, unsubscribed: unsub, bounced, paidAfter, comeback,
     upcoming: upcoming.map((r) => ({ ...r, mail: nextName(r) })),
-    recent: recent.map((r) => ({ ...r, name: MAIL_NAMES[r.mail] ?? r.mail })),
-    mails: ALL_MAILS.map((k) => ({ key: k, name: MAIL_NAMES[k], subject: compose(k, sampleFor(k), prices).subject })),
+    recent: recent.map((r) => ({ ...r, name: MAIL_NAMES[r.mail] ?? RECEIPT_KINDS.find((k) => k.key === r.mail)?.name ?? r.mail })),
+    mails: [...ALL_MAILS.map((k) => ({ key: k, name: MAIL_NAMES[k], subject: compose(k, sampleFor(k), prices).subject })),
+      ...RECEIPT_KINDS.map((r) => ({ key: r.key, name: r.name, subject: composeReceipt(r.kind, sampleReceipt(r.kind)).subject }))],
+    receipts: {
+      on: await receiptsOn(env),
+      sent: Number((await env.DB.prepare("SELECT COUNT(*) AS n FROM studio_receipts WHERE ok = 1").first<{ n: number }>())?.n ?? 0),
+      week: Number((await env.DB.prepare(`SELECT COUNT(*) AS n FROM studio_receipts WHERE ok = 1 AND at >= ${ago(7)}`).first<{ n: number }>())?.n ?? 0),
+    },
   };
 }
 
 function emailPreview(env: StudioEnv, url: URL): unknown {
+  const rk = RECEIPT_KINDS.find((r) => r.key === url.searchParams.get("key"));
+  if (rk) {
+    const m = composeReceipt(rk.kind, sampleReceipt(rk.kind));
+    return { key: rk.key, name: rk.name, subject: m.subject, preheader: m.preheader, html: renderHtml(m, null), text: renderText(m, null) };
+  }
   const key = url.searchParams.get("key") as MailKey;
   if (!ALL_MAILS.includes(key)) throw new StudioError("No such e-mail.", 404, "not_found");
   const m = compose(key, sampleFor(key), livePrices(env));

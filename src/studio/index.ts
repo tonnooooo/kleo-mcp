@@ -12,7 +12,8 @@
  *   /email/stop     the welcome e-mails' unsubscribe page and one-click POST (src/studio/onboarding.ts)
  *   /email/out      the outreach e-mails' unsubscribe page and one-click POST (src/studio/outreach.ts)
  *   everything else the single-page app in studio-web/ (served by the ASSETS binding, index.html for app routes)
- *   cron            every minute: refresh the clips still with the provider, save the finished ones, refund the failed;
+ *   cron            every minute: refresh the clips still with the provider, save the finished ones, refund the failed,
+ *                   mail every new payment its receipt (src/studio/receipts.ts);
  *                   every 5 minutes the welcome e-mails that are due (src/studio/onboarding.ts) and, when the owner
  *                   switched it on, the outreach mailbox's replies and its next e-mail (src/studio/outreach.ts)
  */
@@ -53,6 +54,7 @@ import { handleStop, livePrices, mailTick, sendSeriesToOwner } from "./onboardin
 import { handleOutreachStop, outreachTick, settingsOf } from "./outreach.ts";
 import { scoutTick } from "./scout.ts";
 import { morningDigest } from "./digest.ts";
+import { receiptsTick } from "./receipts.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const json = (data: unknown, status = 200, headers: Record<string, string> = {}): Response =>
@@ -704,6 +706,8 @@ export default {
     for (const g of rows) {
       try { await refreshGeneration(env, g, 15); } catch (e) { console.error("studio cron", g.id, e instanceof Error ? e.message : e); }
     }
+    // The payment e-mails, every minute, so a buyer hears within one (src/studio/receipts.ts).
+    try { await receiptsTick(env); } catch (e) { console.error("studio receipts", e instanceof Error ? e.message : e); }
     // The welcome e-mails that are due, every 5 minutes, when the owner switched them on (src/studio/onboarding.ts).
     if (new Date(_event.scheduledTime || Date.now()).getUTCMinutes() % 5 === 2) {
       try { await mailTick(env, livePrices(env)); } catch (e) { console.error("studio mail", e instanceof Error ? e.message : e); }

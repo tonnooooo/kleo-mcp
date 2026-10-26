@@ -120,7 +120,7 @@ export function firstName(full: string | null): string | null {
 
 /** One block of an e-mail: a paragraph, a heading, a list, a button. Inline: **bold** and [label](url). */
 type Block = { p: string } | { h: string } | { list: string[] } | { button: { label: string; url: string } };
-export interface Mail { key: MailKey; subject: string; preheader: string; blocks: Block[] }
+export interface Mail { key: string; subject: string; preheader: string; blocks: Block[] }
 
 /** What the words need besides the person: prices read from the live catalogue, never typed twice. */
 export interface Prices { freeModel: string; freeVideo: number; bestVideo: number; packFrom: string; lite: string; starter: string; pro: string; agency: string; templates: number }
@@ -292,7 +292,10 @@ const inlineText = (s: string): string => s.replace(/\*\*(.+?)\*\*/g, "$1").repl
 
 const FONT = "-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 
-export function renderHtml(m: Mail, stopUrl: string): string {
+/** The footer of an e-mail with a stop link (the welcome series), or of a receipt (stopUrl null: nothing to stop). */
+const RECEIPT_FOOTER = "This e-mail confirms a payment on your Kleo account.";
+
+export function renderHtml(m: Mail, stopUrl: string | null): string {
   const body = m.blocks.map((b) => {
     if ("p" in b) return `<p style="margin:0 0 16px">${inlineHtml(b.p)}</p>`;
     if ("h" in b) return `<p style="margin:24px 0 6px;font-weight:600;font-size:17px">${inlineHtml(b.h)}</p>`;
@@ -304,18 +307,19 @@ export function renderHtml(m: Mail, stopUrl: string): string {
 <div style="display:none;max-height:0;overflow:hidden;opacity:0">${escapeHtml(m.preheader)}&#8199;&#65279;&#847;&#8199;&#65279;&#847;&#8199;&#65279;&#847;</div>
 <div style="max-width:560px;margin:0 auto;padding:32px 20px;font-family:${FONT};font-size:16px;line-height:1.6;color:#111111">
 ${body}
-<p style="margin:32px 0 0;padding-top:16px;border-top:1px solid #e5e5e5;font-size:15px;color:#6b6b6b">You're getting this because you opened a Kleo account with this address. <a href="${escapeHtml(stopUrl)}" style="color:#6b6b6b">Stop these e-mails</a>. Kleo · <a href="https://kleooai.com" style="color:#6b6b6b">kleooai.com</a></p>
+<p style="margin:32px 0 0;padding-top:16px;border-top:1px solid #e5e5e5;font-size:15px;color:#6b6b6b">${stopUrl ? `You're getting this because you opened a Kleo account with this address. <a href="${escapeHtml(stopUrl)}" style="color:#6b6b6b">Stop these e-mails</a>.` : escapeHtml(RECEIPT_FOOTER)} Kleo · <a href="https://kleooai.com" style="color:#6b6b6b">kleooai.com</a></p>
 </div></body></html>`;
 }
 
-export function renderText(m: Mail, stopUrl: string): string {
+export function renderText(m: Mail, stopUrl: string | null): string {
   const lines = m.blocks.map((b) => {
     if ("p" in b) return inlineText(b.p);
     if ("h" in b) return inlineText(b.h);
     if ("list" in b) return b.list.map((li) => `- ${inlineText(li)}`).join("\n");
     return `${b.button.label}: ${b.button.url}`;
   });
-  return `${lines.join("\n\n")}\n\n--\nYou're getting this because you opened a Kleo account with this address.\nStop these e-mails: ${stopUrl}\nKleo, https://kleooai.com\n`;
+  const foot = stopUrl ? `You're getting this because you opened a Kleo account with this address.\nStop these e-mails: ${stopUrl}` : RECEIPT_FOOTER;
+  return `${lines.join("\n\n")}\n\n--\n${foot}\nKleo, https://kleooai.com\n`;
 }
 
 // ── the unsubscribe link ─────────────────────────────────────────────────────────────────────────────────────────
@@ -408,14 +412,15 @@ export function inDaytime(ms: number, zone: string, jitterMin = 0): number {
 interface Sender { send(m: Record<string, unknown>): Promise<{ messageId?: string } | void> }
 export type SendResult = { ok: true; id: string | null } | { ok: false; code: string; error: string };
 
-export async function deliver(env: StudioEnv, to: string, m: Mail, stopUrl: string, tag: string): Promise<SendResult> {
+/** One e-mail through Email Sending; a receipt (stopUrl null) carries no unsubscribe headers: it is not a mailing. */
+export async function deliver(env: StudioEnv, to: string, m: Mail, stopUrl: string | null, tag: string): Promise<SendResult> {
   const sender = env.EMAIL as unknown as Sender | undefined;
   if (!sender) return { ok: false, code: "E_NO_BINDING", error: "The EMAIL binding is missing." };
   try {
     const r = await sender.send({
       to, from: { email: MAIL_FROM, name: MAIL_FROM_NAME }, replyTo: MAIL_FROM, subject: m.subject,
       html: renderHtml(m, stopUrl), text: renderText(m, stopUrl),
-      headers: { "List-Unsubscribe": `<${stopUrl}>, <mailto:${MAIL_FROM}?subject=unsubscribe>`, "List-Unsubscribe-Post": "List-Unsubscribe=One-Click", "X-Kleo-Mail": tag },
+      headers: stopUrl ? { "List-Unsubscribe": `<${stopUrl}>, <mailto:${MAIL_FROM}?subject=unsubscribe>`, "List-Unsubscribe-Post": "List-Unsubscribe=One-Click", "X-Kleo-Mail": tag } : { "X-Kleo-Mail": tag },
     });
     return { ok: true, id: (r && typeof r === "object" && "messageId" in r ? String(r.messageId ?? "") : "") || null };
   } catch (e) {
@@ -570,6 +575,14 @@ export async function sendSeriesToOwner(env: StudioEnv, prices: Prices, to = (en
     const r = await deliver(env, to, { ...m, subject: `[Preview ${i + 1}/${ALL_MAILS.length}] ${m.subject}` }, stopUrl, `preview:${key}`);
     await logSend(env, null, to, key, "preview", r);
     if (r.ok) sent++; else failed.push(`${key}: ${r.code} ${r.error}`);
+  }
+  // The payment e-mails too (src/studio/receipts.ts), after the series.
+  const { RECEIPT_KINDS, composeReceipt, sampleReceipt } = await import("./receipts.ts");
+  for (const [i, r0] of RECEIPT_KINDS.entries()) {
+    const m = composeReceipt(r0.kind, sampleReceipt(r0.kind));
+    const r = await deliver(env, to, { ...m, subject: `[Preview receipt ${i + 1}/${RECEIPT_KINDS.length}] ${m.subject}` }, null, `preview:${r0.key}`);
+    await logSend(env, null, to, r0.key, "preview", r);
+    if (r.ok) sent++; else failed.push(`${r0.key}: ${r.code} ${r.error}`);
   }
   return { sent, failed };
 }

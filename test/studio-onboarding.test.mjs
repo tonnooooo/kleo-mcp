@@ -362,7 +362,7 @@ test("console: the Emails page, every preview, the switch, the test send to the 
   let r = await call(env, "/api/admin/emails", { cookie: owner.admin });
   assert.equal(r.status, 200, r.text);
   assert.equal(r.json.on, false);
-  assert.equal(r.json.mails.length, 12);
+  assert.equal(r.json.mails.length, 15, "the twelve of the series and three receipts");
   assert.equal(r.json.comeback.total, 1, "the customer, never the owner");
   for (const m of r.json.mails) {
     const p = await call(env, `/api/admin/emails/preview?key=${m.key}`, { cookie: owner.admin });
@@ -376,8 +376,8 @@ test("console: the Emails page, every preview, the switch, the test send to the 
   assert.equal(r.status, 200, r.text);
   assert.equal((await call(env, "/api/admin/emails", { cookie: owner.admin })).json.on, true);
   r = await call(env, "/api/admin/emails/test", { method: "POST", cookie: owner.admin, body: {} });
-  assert.equal(r.json.sent, 12);
-  assert.ok(env.EMAIL.sent.every((m) => m.to === "kleooai@gmail.com" && /^\[Preview \d+\/12\]/.test(m.subject)));
+  assert.equal(r.json.sent, 15);
+  assert.ok(env.EMAIL.sent.every((m) => m.to === "kleooai@gmail.com" && /^\[Preview (\d+\/12|receipt \d+\/3)\]/.test(m.subject)));
   r = await call(env, "/api/admin/emails/suppress", { method: "POST", cookie: owner.admin, body: { email: "Someone@Example.com", on: true } });
   assert.equal(r.status, 200);
   assert.equal(one(env, "SELECT reason FROM mail_suppress WHERE email = 'someone@example.com'").reason, "manual");
@@ -391,6 +391,6 @@ test("the owner's preview route: the INTERNAL_SECRET as bearer, and only to the 
   assert.equal((await call(env, "/api/internal/mail/preview", { method: "POST", header: false, headers: { authorization: "Bearer nope" } })).status, 404);
   const r = await call(env, "/api/internal/mail/preview", { method: "POST", header: false, headers: { authorization: "Bearer s3cret" } });
   assert.equal(r.status, 200, r.text);
-  assert.equal(r.json.sent, 12);
+  assert.equal(r.json.sent, 15);
   assert.deepEqual([...new Set(env.EMAIL.sent.map((m) => m.to))], ["kleooai@gmail.com"]);
 });
