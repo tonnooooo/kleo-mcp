@@ -418,7 +418,7 @@ test("replies: interested stops the sequence and tells the owner; 'remove me' an
   assert.deepEqual(MB.sent.slice(4).map((m) => m.to), [], "no follow-up to anyone who answered, bounced or is away");
 });
 
-test("refusals: a dead address is bounced and suppressed; a refused password pauses that mailbox and tells the owner once", async () => {
+test("refusals: a dead address is bounced and suppressed; a refused password pauses that mailbox, tries again in 30 minutes, and tells the owner on the second", async () => {
   const env = newEnv();
   await configure(env);
   await addApproved(env, [P({ email: "gone@dead.example", company: "Dead" }), P()]);
@@ -429,10 +429,14 @@ test("refusals: a dead address is bounced and suppressed; a refused password pau
   MB.refuseAuth = true;
   const t = await mod.outreachTick(env, MON + 15 * MIN, { random: () => 0 });
   assert.equal(t.paused, "sender");
-  assert.equal(env.mails.length, 1);
-  assert.match(env.mails[0].raw, /leo@getkleo\.test refused to send/);
+  assert.equal(env.mails.length, 0, "one refusal is often Google's hiccup: no alarm yet");
   assert.equal(one(env, "SELECT status FROM outreach_senders").status, "paused");
-  assert.equal((await mod.outreachTick(env, MON + 30 * MIN, { random: () => 0 })).paused, "sender");
+  assert.equal((await mod.outreachTick(env, MON + 30 * MIN, { random: () => 0 })).paused, "sender", "waits 30 minutes");
+  assert.equal(MB.connections.filter((c) => c.startsWith("smtp.")).length, 2, "no sign-in tried while it waits");
+  await mod.outreachTick(env, MON + 50 * MIN, { random: () => 0 });
+  assert.equal(env.mails.length, 1, "the second refusal in a row tells the owner");
+  assert.match(env.mails[0].raw, /leo@getkleo\.test refused to send/);
+  assert.equal((await mod.outreachTick(env, MON + 90 * MIN, { random: () => 0 })).paused, "sender", "then waits 2 hours");
   assert.equal(env.mails.length, 1, "once");
   assert.equal(one(env, "SELECT status FROM outreach_prospects WHERE email = 'hello@brightreels.example'").status, "approved", "nobody is lost");
   // The next working day it tries again by itself; with no mail server at the business, that one is never written to.
@@ -440,6 +444,12 @@ test("refusals: a dead address is bounced and suppressed; a refused password pau
   MB.refuseAuth = false;
   await mod.outreachTick(env, MON + DAY, { random: () => 0 });
   assert.equal(one(env, "SELECT status FROM outreach_prospects WHERE email = 'hello@brightreels.example'").status, "invalid");
+  // A good send clears the count: the next refusal is again a hiccup first.
+  mxOk = true;
+  await addApproved(env, [P({ email: "hi@third.example", company: "Third" })]);
+  await mod.outreachTick(env, MON + DAY + 20 * MIN, { random: () => 0 });
+  assert.equal(one(env, "SELECT status FROM outreach_senders").status, "active");
+  assert.equal(one(env, "SELECT value FROM studio_meta WHERE key LIKE 'sender_fails_%'"), undefined);
 });
 
 test("off, or not set up: nothing is read or sent", async () => {
