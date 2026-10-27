@@ -1159,14 +1159,16 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
         await audit(asEnv(env), userId, null, "studio.photo_missing", { tool: tool.key, seat: seat.key });
         throw new StudioError(photoMissingText(`Person ${i + 1}`), 400, "photo_missing");
       }
-      if (facts?.person === false) {
+      // A template that takes characters (Locker Room, 27 October 2026: Ted) lets such a photo through; its instruction
+      // then gets a note for that photo (trends.ts photoNotes).
+      if (facts?.person === false && !trend.characters) {
         await audit(asEnv(env), userId, null, "studio.no_person", { tool: tool.key, seat: seat.key });
         throw new StudioError(noPersonText(tool.name, `Person ${i + 1}`), 400, "no_person");
       }
       if (facts) {
         media[seat.key]!.facts = facts;
         // Only what kind of photo it was: nothing about how the person looks is kept.
-        await audit(asEnv(env), userId, null, "studio.photo_facts", { tool: tool.key, seat: seat.key, colour: facts.colour, framing: facts.framing, face: facts.face });
+        await audit(asEnv(env), userId, null, "studio.photo_facts", { tool: tool.key, seat: seat.key, colour: facts.colour, framing: facts.framing, face: facts.face, ...(facts.person === false ? { character: true } : {}) });
       }
     }
     // The instruction is written again with these facts: a template written shot by shot tells the photos apart with

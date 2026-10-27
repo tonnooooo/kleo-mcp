@@ -450,6 +450,22 @@ test("Locker Room (27 October 2026): the original edit without its watermark, Wa
   assert.equal(createHash("sha256").update(t.prompt).digest("hex"), "5215c79a7aefe505f4e41d0e2ce837715f583eab6c9dfcb6e669545ced6f55dd");
   // Both photos are needed.
   assert.throws(() => planTool(t.key, { quality: "720p" }, { person1: photo("up_a") }), (e) => e instanceof ToolRefusal && /each of the 2 people/.test(e.message));
+  // It takes characters (the owner, 27 October: Ted): a photo the check reads as no real person gets a note of its own,
+  // in place of the person notes; real people's words stay exactly as pinned above.
+  assert.equal(t.characters, true);
+  assert.equal(toolByKey(t.key).characters, true);
+  assert.deepEqual(TRENDS.filter((x) => x.characters).map((x) => x.key), ["trend-locker-room"]);
+  const bear = { person: false, people: 0, colour: "greyscale", framing: "head" };
+  const ted = planTool(t.key, { quality: "720p" }, { person1: { ...photo("up_a"), facts: { person: true, people: 1 } }, person2: { ...photo("up_b"), facts: bear } }).tasks[0].input.prompt;
+  assert.ok(ted.startsWith(`${t.prompt}\n\nABOUT THE PHOTOS\n`), ted.slice(-600));
+  const note = ted.slice(t.prompt.length + "\n\nABOUT THE PHOTOS\n".length);
+  assert.match(note, /^Image 2 shows a character, not a real person \(a teddy bear, a toy, an animal, a cartoon or CGI character\): that character takes the place of the person it replaces exactly as it looks in Image 2/);
+  assert.match(note, /holds the same items in its own hands or paws\. Never turn it into a human/);
+  assert.doesNotMatch(note, /\n|black-and-white|only the head|Image 1/, "one line, about Image 2 only");
+  assert.doesNotMatch(note, /gun|pistol|knife|spray|handcuff|weapon|\d+\s*s\b/i);
+  // A template that does not take characters never gets the note (its photo is refused before the plan anyway).
+  const yt = trendByKey("trend-you-tweaking");
+  assert.doesNotMatch(planTool(yt.key, { quality: "720p" }, { person1: photo("up_a"), person2: { ...photo("up_b"), facts: { person: false } } }).tasks[0].input.prompt, /shows a character/);
 });
 
 test("photo notes (27 October 2026): a seat-by-seat template is told about a black-and-white or head-only photo; a template written shot by shot keeps its own words", () => {

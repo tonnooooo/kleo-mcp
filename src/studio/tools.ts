@@ -53,6 +53,8 @@ export interface ToolDef {
   seconds?: number;
   /** Viral templates made in two runs when every seat has a photo: the "from" price with all the people (24 October 2026). */
   fromAll?: number;
+  /** Viral templates whose seats also take a character, such as a teddy bear (27 October 2026): the page says so. */
+  characters?: boolean;
 }
 
 export const VOICES = [
@@ -185,7 +187,7 @@ function trendTool(t: Trend): ToolDef {
   return {
     key: t.key, name: t.name, blurb: t.blurb, group: "trend", icon: "film", tint: t.tint, output: "video", consent: true, badge: "Viral",
     preview: t.preview, guide: t.guide, seats: t.seats.map((s) => ({ key: s.key, color: s.color, ...(s.at ? { at: s.at } : {}) })),
-    seconds: Math.round(t.baseSeconds),
+    seconds: Math.round(t.baseSeconds), ...(t.characters ? { characters: true } : {}),
     fields: [
       // A template with its own fixed prompt needs every seat (as on ausar.ai); Kleo's own may leave seats empty.
       ...t.seats.map((s, i): ToolField => trendNeedsAllSeats(t)
