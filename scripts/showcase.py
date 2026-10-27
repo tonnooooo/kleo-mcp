@@ -48,6 +48,8 @@ HIDDEN = {
     "tether-not-filmed-wide", "films-in-claude-52s", "type-the-film-30s",
     "tether-not-filmed-tall", "connect-once-tall", "this-film-cost-5-euro", "it-writes-it-directs-r5",
     "one-sentence-r6",
+    # 27 October 2026, the owner: Level One out of the app everywhere (the site's gallery keeps it).
+    "level-one-film",
 }
 
 
