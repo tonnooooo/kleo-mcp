@@ -1954,7 +1954,7 @@ function toolBody(key, compact, top = null) {
     fill(form, top,
       compact || trend ? null : h("div", { class: "engine-card" }, engineThumb(key), h("div", { class: "ec-tx" }, h("b", {}, eng[0]), h("span", {}, eng[1]))),
       trend ? h("p", { class: "seat-note" }, t.fields.some((f) => f.required) ? (t.seats.length === 1 ? "Add a clear, well-lit photo of yourself, face to the camera: you take the place of the person in this clip."
-        : t.characters ? `Add a clear, well-lit photo for each of the ${t.seats.length} people, face to the camera, the way the boxes below describe them. A character works too, like a teddy bear or a pet.`
+        : t.characters ? `Add a clear, well-lit photo for each of the ${t.seats.length} people, face to the camera, the way the boxes below describe them. A character works too, like a teddy bear or a pet: say which one under "Is anyone a character?".`
           : `Add a clear, well-lit photo of one person for each of the ${t.seats.length} people, face to the camera, the way the boxes below describe them.`)
         : "Add a photo for each person you want in the clip. Empty seats keep the original person.") : null,
       files.length ? h("div", { class: "drops" }, files.map((f, i) => { const z = dropZone(f); if (files.length === 1 || (files.length % 2 === 1 && i === files.length - 1)) z.classList.add("one"); return z; })) : null,

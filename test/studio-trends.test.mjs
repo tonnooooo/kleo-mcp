@@ -6,7 +6,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TRENDS, trendByKey, trendCostUsd, trendBilledSeconds, trendPrompt, trendPromptV2, trendTaskInput, trendQuality, TREND_PROMPT_V2_MAX, WAN30_EDIT_MODEL } from "../src/studio/trends.ts";
+import { TRENDS, trendByKey, trendCostUsd, trendBilledSeconds, trendPrompt, trendPromptV2, trendTaskInput, trendQuality, TREND_PROMPT_V2_MAX, WAN30_EDIT_MODEL, photoNotes } from "../src/studio/trends.ts";
 import { TOOLS, planTool, publicTools, toolByKey, toolCredits, ToolRefusal } from "../src/studio/tools.ts";
 import { wavespeed, wavespeedSubmit, wavespeedTask } from "../src/wavespeed.ts";
 
@@ -450,22 +450,58 @@ test("Locker Room (27 October 2026): the original edit without its watermark, Wa
   assert.equal(createHash("sha256").update(t.prompt).digest("hex"), "5215c79a7aefe505f4e41d0e2ce837715f583eab6c9dfcb6e669545ced6f55dd");
   // Both photos are needed.
   assert.throws(() => planTool(t.key, { quality: "720p" }, { person1: photo("up_a") }), (e) => e instanceof ToolRefusal && /each of the 2 people/.test(e.message));
-  // It takes characters (the owner, 27 October: Ted): a photo the check reads as no real person gets a note of its own,
-  // in place of the person notes; real people's words stay exactly as pinned above.
+  // It takes characters (the owner, 27 October: Ted). The person says which seats are characters; that seat's own
+  // "Replace his face …" line is swapped in place for its character line (a free check found the end-of-prompt note too
+  // weak against "never shirtless" and "as many people"). Real people's words stay exactly as pinned above.
   assert.equal(t.characters, true);
   assert.equal(toolByKey(t.key).characters, true);
   assert.deepEqual(TRENDS.filter((x) => x.characters).map((x) => x.key), ["trend-locker-room"]);
-  const bear = { person: false, people: 0, colour: "greyscale", framing: "head" };
-  const ted = planTool(t.key, { quality: "720p" }, { person1: { ...photo("up_a"), facts: { person: true, people: 1 } }, person2: { ...photo("up_b"), facts: bear } }).tasks[0].input.prompt;
-  assert.ok(ted.startsWith(`${t.prompt}\n\nABOUT THE PHOTOS\n`), ted.slice(-600));
-  const note = ted.slice(t.prompt.length + "\n\nABOUT THE PHOTOS\n".length);
-  assert.match(note, /^Image 2 shows a character, not a real person \(a teddy bear, a toy, an animal, a cartoon or CGI character\): that character takes the place of the person it replaces exactly as it looks in Image 2/);
-  assert.match(note, /holds the same items in its own hands or paws\. Never turn it into a human/);
-  assert.doesNotMatch(note, /\n|black-and-white|only the head|Image 1/, "one line, about Image 2 only");
-  assert.doesNotMatch(note, /gun|pistol|knife|spray|handcuff|weapon|\d+\s*s\b/i);
-  // A template that does not take characters never gets the note (its photo is refused before the plan anyway).
+  const choice = toolByKey(t.key).fields.find((f) => f.key === "character");
+  assert.deepEqual([choice.kind, choice.label, choice.default, choice.options.map((o) => `${o.value}:${o.label}`)],
+    ["select", "Is anyone a character?", "none", ["none:No", "person1:Person 1", "person2:Person 2", "both:Both"]]);
+  assert.deepEqual(TRENDS.filter((x) => toolByKey(x.key).fields.some((f) => f.key === "character")).map((x) => x.key), ["trend-locker-room"]);
+  const lines = t.prompt.split("\n");
+  const human = t.seats.map((s) => { const found = lines.filter((l) => l.startsWith(s.asCharacter.line)); assert.equal(found.length, 1, s.key); return found[0]; });
+  const people = { person1: { ...photo("up_a"), facts: { person: true, people: 1 } }, person2: { ...photo("up_b"), facts: { person: false, people: 0 } } };
+  const sent = (character, media = people) => planTool(t.key, { quality: "480p", character }, media).tasks[0].input.prompt;
+  // Ted as Person 2: his line, in place; nothing at the end; nothing about Person 1 changes.
+  const ted = sent("person2");
+  assert.equal(ted, t.prompt.replace(human[1], t.seats[1].asCharacter.text));
+  assert.doesNotMatch(ted, /ABOUT THE PHOTOS|never shirtless|clothes they wear in Image 2|Image 1 shows a character/);
+  assert.match(ted, /\nImage 2 shows a character, not a real person \(a teddy bear, a toy, an animal, a cartoon or CGI character\): everywhere this instruction speaks of Person 2 or of a person or people from Image 2, it means this character\./);
+  assert.match(ted, /so Person 1's place and pose, Person 1's arm round its shoulders and the camera stay exactly as in Video 1\./);
+  assert.match(ted, /It fills the friend's place at the friend's size, its head where his head is/);
+  assert.match(ted, /It counts as one of the two people, so the number of people stays as in Video 1\./);
+  // The choice decides, not the check: the same words when the check could not answer, or read the bear as a person.
+  assert.equal(sent("person2", { person1: photo("up_a"), person2: photo("up_b") }), ted);
+  assert.equal(sent("person2", { ...people, person2: { ...photo("up_b"), facts: { person: true } } }), ted);
+  // A seat marked as a character never gets a person note (black-and-white, several people, head only) after its line.
+  assert.equal(sent("person2", { ...people, person2: { ...photo("up_b"), facts: { person: false, people: 2, colour: "greyscale", framing: "head" } } }), ted);
+  // A seat whose own line is not found exactly once falls back to the end note, never to a half-swapped prompt.
+  const twice = { ...t, prompt: `${t.prompt}
+${human[1]}` };
+  const fallback = trendTaskInput(twice, ["person1", "person2"], ["a", "b"], "480p", { character: "person2" }).prompt;
+  assert.ok(fallback.startsWith(`${twice.prompt}
+
+ABOUT THE PHOTOS
+Image 2 shows a character, not a real person`), fallback.slice(-300));
+  // Person 1 a character (Masha), and both.
+  assert.equal(sent("person1"), t.prompt.replace(human[0], t.seats[0].asCharacter.text));
+  assert.equal(sent("both"), t.prompt.replace(human[0], t.seats[0].asCharacter.text).replace(human[1], t.seats[1].asCharacter.text));
+  // "No", no answer or a stray value: two real people, byte for byte the pinned words (facts or none).
+  for (const c of ["none", undefined, "person3", "PERSON2"]) assert.equal(sent(c, { person1: { ...photo("up_a"), facts: { person: true, people: 1, colour: "colour" } }, person2: { ...photo("up_b"), facts: { person: true, people: 1, colour: "colour" } } }), t.prompt, String(c));
+  for (const s of t.seats) {
+    assert.doesNotMatch(s.asCharacter.text, /\n/);
+    assert.doesNotMatch(s.asCharacter.text, /gun|pistol|rifle|firearm|knife|knives|blade|weapon|spray|mace|handcuff|cuffs|holster|taser|baton|bullet|ammo|ammunition|magazine|knuckle|shoot|\d+(?:\.\d+)?\s*(?:s|sec|secs|seconds?)\b|\d\s*-\s*\d/i, s.key);
+  }
+  assert.ok(sent("both").length < 5000, `${sent("both").length} characters`);
+  // The end note stays for a seat said to be a character that has no line of its own (photoNotes, direct).
+  assert.match(photoNotes(["person1", "person2"], {}, ["person2"]).join("\n"), /^Image 2 shows a character, not a real person[^\n]*Never turn it into a human/);
+  assert.deepEqual(photoNotes(["person1", "person2"], {}, ["person2"], ["person2"]), []);
+  // A template that does not take characters: the choice means nothing there, and the words never change.
   const yt = trendByKey("trend-you-tweaking");
-  assert.doesNotMatch(planTool(yt.key, { quality: "720p" }, { person1: photo("up_a"), person2: { ...photo("up_b"), facts: { person: false } } }).tasks[0].input.prompt, /shows a character/);
+  const ytPlain = planTool(yt.key, { quality: "720p" }, { person1: photo("up_a"), person2: photo("up_b") }).tasks[0].input.prompt;
+  assert.equal(planTool(yt.key, { quality: "720p", character: "person2" }, { person1: photo("up_a"), person2: { ...photo("up_b"), facts: { person: false } } }).tasks[0].input.prompt, ytPlain);
 });
 
 test("photo notes (27 October 2026): a seat-by-seat template is told about a black-and-white or head-only photo; a template written shot by shot keeps its own words", () => {

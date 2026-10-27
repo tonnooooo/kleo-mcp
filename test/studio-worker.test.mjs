@@ -2224,33 +2224,77 @@ test("a template refuses a photo with no person in it before any charge; a real 
   } finally { p.restore(); }
 });
 
-test("Locker Room takes a character (27 October 2026, Ted): the photo is not refused, its note reaches Wan, a real person's words stay the same", async () => {
-  // Person 1 is a real person, Person 2 a teddy bear: the check answers in seat order.
-  const answers = ['{"person": true, "people": 1, "colour": "colour", "framing": "waist-up", "face": "large"}', '{"person": false, "people": 0, "colour": "colour", "framing": "full-body", "face": "small"}'];
-  let calls = 0;
-  const env = newEnv({ WAVESPEED_API_KEY: "k", AI: { run: async () => ({ response: answers[calls++ % 2] }) } });
-  const { cookie, id } = await paidAccount(env, "ted@example.com", 100);
-  const up = async () => (await call(env, "/api/uploads", { method: "POST", cookie, raw: jpegBytes(), headers: { "content-type": "image/jpeg", "x-width": "1080", "x-height": "1920" } })).json;
-  const man = await up(), bear = await up();
-  const p = fakeProvider((u) => {
+test("Locker Room takes a character (27 October 2026, Ted): the person says which seat, that seat's line is swapped, a photo that looks like no person in an unmarked seat is refused for free", async () => {
+  const wan = () => fakeProvider((u) => {
     if (u === "https://api.wavespeed.ai/api/v3/media/uploads") return ok({ code: 200, data: { download_url: "https://cdn.wavespeed.test/p.jpg", upload: { method: "PUT", url: "https://up.wavespeed.test/put" } } });
     if (u === "https://up.wavespeed.test/put") return new Response("", { status: 200 });
     if (u === "https://api.wavespeed.ai/api/v3/alibaba/wan-3.0-prime/video-edit") return ok({ code: 200, data: { id: "ws_ted", status: "created" } });
     return new Response("?", { status: 404 });
   });
+  // The check reads the man as a person and the bear as no person, in seat order, as it did on the owner's photos.
+  const reads = (...answers) => { let n = 0; return { run: async () => { const a = answers[n++ % answers.length]; if (a instanceof Error) throw a; return { response: a }; } }; };
+  const man = '{"person": true, "people": 1, "colour": "colour", "framing": "waist-up", "face": "large"}', bear = '{"person": false, "people": 0, "colour": "colour", "framing": "full-body", "face": "small"}';
+  const setup = async (ai, email) => {
+    const env = newEnv({ WAVESPEED_API_KEY: "k", AI: ai });
+    const { cookie, id } = await paidAccount(env, email, 100);
+    const up = async () => (await call(env, "/api/uploads", { method: "POST", cookie, raw: jpegBytes(), headers: { "content-type": "image/jpeg", "x-width": "1494", "x-height": "806" } })).json;
+    const a = await up(), b = await up();
+    const order = (character) => call(env, "/api/tools/run", { method: "POST", cookie, body: { tool: "trend-locker-room", consent: true, inputs: { person1: a.id, person2: b.id, quality: "480p", ...(character ? { character } : {}) } } });
+    return { env, id, order };
+  };
+  const t = (await import("../src/studio/trends.ts")).trendByKey("trend-locker-room");
+  const { toolCredits } = await import("../src/studio/tools.ts");
+  const human = t.prompt.split("\n").find((l) => l.startsWith(t.seats[1].asCharacter.line));
+  const tedWords = t.prompt.replace(human, t.seats[1].asCharacter.text);
+
+  // Marked: Person 2 is a character. One Prime run, charged as priced, Ted's own line in place.
+  const one = await setup(reads(man, bear), "ted@example.com");
+  let p = wan();
   try {
-    const cfg = await call(env, "/api/config");
-    assert.equal(cfg.json.tools.find((t) => t.key === "trend-locker-room").characters, true);
-    assert.equal(cfg.json.tools.find((t) => t.key === "trend-bby-wow").characters, undefined);
-    const r = await call(env, "/api/tools/run", { method: "POST", cookie, body: { tool: "trend-locker-room", consent: true, inputs: { person1: man.id, person2: bear.id, quality: "480p" } } });
+    const cfg = await call(one.env, "/api/config");
+    assert.equal(cfg.json.tools.find((x) => x.key === "trend-locker-room").characters, true);
+    assert.ok(cfg.json.tools.find((x) => x.key === "trend-locker-room").fields.some((f) => f.key === "character"));
+    assert.equal(cfg.json.tools.find((x) => x.key === "trend-bby-wow").characters, undefined);
+    const r = await one.order("person2");
     assert.equal(r.status, 200, r.text);
-    const { toolCredits } = await import("../src/studio/tools.ts");
-    assert.equal(credits(env, id), 100 - toolCredits(1.65), "charged as priced: $1.65 at 480p, as for a real person");
-    const sent = p.sent.find((x) => x.url.endsWith("/alibaba/wan-3.0-prime/video-edit")).body;
-    const t = (await import("../src/studio/trends.ts")).trendByKey("trend-locker-room");
-    assert.ok(sent.prompt.startsWith(`${t.prompt}\n\nABOUT THE PHOTOS\nImage 2 shows a character, not a real person`), sent.prompt.slice(-700));
-    assert.doesNotMatch(sent.prompt, /Image 1 shows a character/);
-    assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE event = 'studio.no_person'").get().n, 0);
-    assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE event = 'studio.photo_facts' AND detail LIKE '%\"character\":true%'").get().n, 1);
+    assert.equal(credits(one.env, one.id), 100 - toolCredits(1.65), "charged as priced: $1.65 at 480p, as for a real person");
+    const sent = p.sent.filter((x) => x.url.endsWith("/alibaba/wan-3.0-prime/video-edit"));
+    assert.equal(sent.length, 1, "one paid run");
+    assert.equal(sent[0].body.prompt, tedWords);
+    assert.equal(one.env.DB.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE event = 'studio.no_person'").get().n, 0);
+    assert.equal(one.env.DB.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE event = 'studio.photo_facts' AND detail LIKE '%\"character\":true%'").get().n, 1);
+  } finally { p.restore(); }
+
+  // Not marked (forgotten, or "No"): the bear is refused before any charge, and the sentence says what to choose.
+  const two = await setup(reads(man, bear), "ted2@example.com");
+  p = wan();
+  try {
+    for (const c of [undefined, "none"]) {
+      const r = await two.order(c);
+      assert.equal(r.status, 400, r.text);
+      assert.equal(r.json.code, "no_person");
+      assert.equal(r.json.error, `Person 2's photo looks like a character, not a real person. If it is one, choose Person 2 under "Is anyone a character?" — nothing was charged.`);
+    }
+    assert.equal(credits(two.env, two.id), 100, "nothing was charged");
+    assert.ok(!p.sent.some((s) => s.url.includes("/alibaba/")), "WaveSpeed was never asked to make anything");
+  } finally { p.restore(); }
+
+  // Marked, and the check reads the bear as a person: Ted's words all the same, and the audit says it was a character.
+  const four = await setup(reads(man, man), "ted4@example.com");
+  p = wan();
+  try {
+    const r = await four.order("person2");
+    assert.equal(r.status, 200, r.text);
+    assert.equal(p.sent.find((x) => x.url.endsWith("/alibaba/wan-3.0-prime/video-edit")).body.prompt, tedWords);
+    assert.equal(four.env.DB.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE event = 'studio.photo_facts' AND detail LIKE '%\"character\":true%'").get().n, 1);
+  } finally { p.restore(); }
+
+  // Marked, but the check cannot answer: Ted's words all the same (they follow the choice, not the check).
+  const three = await setup(reads(new Error("Capacity temporarily exceeded")), "ted3@example.com");
+  p = wan();
+  try {
+    const r = await three.order("person2");
+    assert.equal(r.status, 200, r.text);
+    assert.equal(p.sent.find((x) => x.url.endsWith("/alibaba/wan-3.0-prime/video-edit")).body.prompt, tedWords);
   } finally { p.restore(); }
 });

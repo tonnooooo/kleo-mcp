@@ -31,7 +31,7 @@
  */
 import { CREDIT_USD, DEFAULT_MARGIN, raiseCredits } from "./models.ts";
 import type { PhotoFacts } from "./person-check.ts";
-import { DEFAULT_TREND_QUALITY, TRENDS, TREND_CUSTOM_MAX, TREND_EXTRA_MAX, TREND_QUALITIES, trendByKey, trendChangeLines, trendCostUsd, trendModel, trendNeedsAllSeats, trendPasses, trendQuality, type Trend, type TrendChange } from "./trends.ts";
+import { DEFAULT_TREND_QUALITY, TRENDS, TREND_CHARACTER_FIELD, TREND_CUSTOM_MAX, TREND_EXTRA_MAX, TREND_QUALITIES, trendByKey, trendChangeLines, trendCostUsd, trendModel, trendNeedsAllSeats, trendPasses, trendQuality, type Trend, type TrendChange } from "./trends.ts";
 
 export type ToolKey = "face-swap" | "video-face-swap" | "talking-photo" | "lipsync" | "character-swap" | "photo-character-swap" | "motion-control" | "outfit-swap" | "video-edit" | "video-upscale" | "voice" | "music" | "sfx" | `trend-${string}`;
 export type FieldKind = "image" | "video" | "audio" | "text" | "select" | "voice";
@@ -195,6 +195,9 @@ function trendTool(t: Trend): ToolDef {
         : { key: s.key, kind: "image", label: `Person ${i + 1}`, hint: i === 0 ? `${s.label} · a clear photo` : `${s.label} · optional${twoRuns(t) ? ", doubles the price" : ""}` }),
       ...(t.changes ?? []).flatMap(changeFields),
       ...(t.changes?.length ? [{ key: "extra", kind: "text" as const, label: "Anything else to change? (optional)", maxLength: TREND_EXTRA_MAX, placeholder: "Make it rain · everyone in red jerseys" }] : []),
+      // A template that takes characters asks which seats are characters: the prompt follows this answer, never the check.
+      ...(t.characters ? [{ key: TREND_CHARACTER_FIELD, kind: "select" as const, label: "Is anyone a character?", default: "none",
+        options: [{ value: "none", label: "No" }, ...t.seats.map((s, i) => ({ value: s.key, label: `Person ${i + 1}` })), ...(t.seats.length > 1 ? [{ value: "both", label: "Both" }] : [])] }] : []),
       { key: "quality", kind: "select", label: "Quality", options: TREND_QUALITIES.map((q) => ({ value: q, label: q })), default: DEFAULT_TREND_QUALITY },
     ],
   };

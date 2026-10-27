@@ -26,8 +26,8 @@ import { publicText, rid } from "../util.ts";
 import { clampFreeResolution, clipCostUsd, clipCredits, freeModels, freeResolutions, modelByKey, normalizeSettings, pictureProblem, taskInput, videoFactor, wanCostUsd, wanOffered, wanOrder, DEFAULT_MARGIN, WAN_KEY, WAN_NAME, type ClipSettings } from "./models.ts";
 import { presetByKey, withPreset } from "./presets.ts";
 import { planTool, toolByKey, toolCredits, toolFactor, toneText, ToolRefusal, TOOLS, type Media, type Plan, type ToolKey } from "./tools.ts";
-import { trendByKey, trendQuality } from "./trends.ts";
-import { noPersonText, photoFactsInput, photoMissingText, readPhotoFacts, PERSON_CHECK_MAX_BYTES, PERSON_CHECK_MODEL, type PhotoFacts } from "./person-check.ts";
+import { trendByKey, trendCharacterSeats, trendQuality } from "./trends.ts";
+import { characterUnmarkedText, noPersonText, photoFactsInput, photoMissingText, readPhotoFacts, PERSON_CHECK_MAX_BYTES, PERSON_CHECK_MODEL, type PhotoFacts } from "./person-check.ts";
 import { mediaInfo } from "./media.ts";
 import { refreshFilm } from "./films.ts";
 import { alternativeFor, FALLBACK_IMAGE_MODEL, freeImageModels, imageAlternatives, imageCostUsd, imageCredits, imageModelByKey, imageModelOfProvider, imageTaskInput, isQualityRefusal, normalizeImageSettings, otherQualitySpelling, pausedImageModels, type ImageSettings } from "./image-models.ts";
@@ -1159,16 +1159,19 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
         await audit(asEnv(env), userId, null, "studio.photo_missing", { tool: tool.key, seat: seat.key });
         throw new StudioError(photoMissingText(`Person ${i + 1}`), 400, "photo_missing");
       }
-      // A template that takes characters (Locker Room, 27 October 2026: Ted) lets such a photo through; its instruction
-      // then gets a note for that photo (trends.ts photoNotes).
-      if (facts?.person === false && !trend.characters) {
+      // A template that takes characters (Locker Room, 27 October 2026: Ted) asks the person which seats are characters,
+      // and its instruction follows that answer (trends.ts trendCharacterSeats), never the check. A seat marked as a
+      // character goes through whatever the check reads. A photo that looks like no person in a seat NOT marked is
+      // refused before any charge, on every template, so a misread or a forgotten choice never costs a run.
+      const character = trendCharacterSeats(trend, inputs).includes(seat.key);
+      if (facts?.person === false && !character) {
         await audit(asEnv(env), userId, null, "studio.no_person", { tool: tool.key, seat: seat.key });
-        throw new StudioError(noPersonText(tool.name, `Person ${i + 1}`), 400, "no_person");
+        throw new StudioError(trend.characters ? characterUnmarkedText(`Person ${i + 1}`) : noPersonText(tool.name, `Person ${i + 1}`), 400, "no_person");
       }
       if (facts) {
         media[seat.key]!.facts = facts;
         // Only what kind of photo it was: nothing about how the person looks is kept.
-        await audit(asEnv(env), userId, null, "studio.photo_facts", { tool: tool.key, seat: seat.key, colour: facts.colour, framing: facts.framing, face: facts.face, ...(facts.person === false ? { character: true } : {}) });
+        await audit(asEnv(env), userId, null, "studio.photo_facts", { tool: tool.key, seat: seat.key, colour: facts.colour, framing: facts.framing, face: facts.face, ...(character ? { character: true } : {}) });
       }
     }
     // The instruction is written again with these facts: a template written shot by shot tells the photos apart with

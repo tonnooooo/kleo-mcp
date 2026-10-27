@@ -56,6 +56,12 @@ export interface TrendSeat {
   onScreen?: string;
   /** Seen from behind for a long stretch: the prompt asks for the photo's hair, build and the back of its outfit. */
   back?: boolean;
+  /**
+   * A template with a fixed prompt that takes characters (Trend.characters): the start of this seat's own "Replace …"
+   * line in the prompt, and the line sent in its place when the person says this seat is a character. The words sent for
+   * real people never change.
+   */
+  asCharacter?: { line: string; text: string };
 }
 
 /** One shot of a template's clip, for the templates written shot by shot. */
@@ -117,8 +123,10 @@ export interface Trend {
   prime?: boolean;
   /**
    * A seat may also take a character that is not a real person: a teddy bear, a toy, an animal, a cartoon or CGI
-   * character (27 October 2026, the owner: Ted in Locker Room). Its photo is not refused by the person check, and the
-   * instruction gets a note for that photo only, so the words sent for real people stay exactly the same.
+   * character (27 October 2026, the owner: Ted in Locker Room). The person says which seats are characters ("Is anyone a
+   * character?"), so the words never hang on the vision model's reading; that seat's own line in the prompt is swapped
+   * for its character line (TrendSeat.asCharacter). A photo the check reads as no person in a seat not marked as a
+   * character is refused before any charge. The words sent for real people stay exactly the same.
    */
   characters?: boolean;
 }
@@ -279,14 +287,18 @@ export const TRENDS: Trend[] = [
   // the friend three places "on the left" and Person 1 none. Now the two are told apart by looks and actions, never by
   // place; that shot is Person 1's, alone; faces and clothes never cross or blend; nobody is added.
   // The owner then asked for Ted (the teddy bear from Ted) as the friend: the template takes characters (Trend.characters).
+  // A free check before his first paid try found the end-of-prompt note too weak: the Person 2 block still asked for a
+  // clothed human, "never shirtless", "as many people", at a child's size. So a character now replaces the seat's own line.
   {
     key: "trend-locker-room", name: "Locker Room", blurb: "Put yourself and a friend in this viral clip", tint: "#5e5ce6",
     baseUrl: `${TRENDS_MEDIA}/locker-room/base-30-v2.mp4`, baseSeconds: 11,
     preview: `${TRENDS_MEDIA}/locker-room/preview2-p.mp4`, guide: `${TRENDS_MEDIA}/locker-room/guide2.jpg`,
     prime: true, characters: true,
     seats: [
-      { key: "person1", label: "Person 1", hint: "Takes the place of the guy with the shaved head · a clear photo", color: "#5e5ce6", at: [58, 35] },
-      { key: "person2", label: "Person 2", hint: "Takes the place of his friend on the left · a clear photo", color: "#ff9f0a", at: [15, 52] },
+      { key: "person1", label: "Person 1", hint: "Takes the place of the guy with the shaved head · a clear photo", color: "#5e5ce6", at: [58, 35],
+        asCharacter: { line: "Replace his face with the face from Image 1 - ", text: "Image 1 shows a character, not a real person (a teddy bear, a toy, an animal, a cartoon or CGI character): everywhere this instruction speaks of Person 1 or of a person or people from Image 1, it means this character. It takes the main man's place in every frame, including the extreme close-ups at the lens, the shots in profile and the motion-blurred moments. It looks exactly as it does in Image 1 - its own face, head, body, shape, fur or skin and colours - and wears only what it wears in Image 1, even if that is almost nothing: never the main man's white T-shirt or anything else of his. It fills the main man's place at the main man's size, its head where his head is, so the camera, the close-ups and the arm round the friend's shoulders stay exactly as in Video 1. It counts as one of the two people, so the number of people stays as in Video 1. It does the same movements and holds every item in the same hand or hands, or paws, at the same distance from the lens and for the same time. It is never turned into a real-life person or blended with one, and no person is added in its place. Nothing of the main man's face, shaved head, hands, skin or white T-shirt stays: the hands or paws that hold each item up to the lens are its own." } },
+      { key: "person2", label: "Person 2", hint: "Takes the place of his friend on the left · a clear photo", color: "#ff9f0a", at: [15, 52],
+        asCharacter: { line: "Replace his face with the face from Image 2 - ", text: "Image 2 shows a character, not a real person (a teddy bear, a toy, an animal, a cartoon or CGI character): everywhere this instruction speaks of Person 2 or of a person or people from Image 2, it means this character. It takes the friend's place in every frame, in the background too: the one changing behind Person 1 is this character, not another officer. It looks exactly as it does in Image 2 - its own face, head, body, shape, fur or skin and colours - and wears only what it wears in Image 2, even if that is almost nothing: never the friend's uniform shirt, his tattoo or anything else of his. It fills the friend's place at the friend's size, its head where his head is, so Person 1's place and pose, Person 1's arm round its shoulders and the camera stay exactly as in Video 1. It counts as one of the two people, so the number of people stays as in Video 1. It does the same movements and holds the same items in its own hands or paws. It is never turned into a real-life person or blended with one, and no person is added in its place. Nothing of the friend's face, black hair, bare chest, uniform shirt or tattoo stays." } },
     ],
     prompt: [
       "Replace the two people in Video 1 with the people from Image 1 and Image 2, for the entire video, in every shot, from the first frame to the last. Tell the two apart by looks and actions, never by where they stand in the frame.",
@@ -735,16 +747,18 @@ export function trendPasses(t: Trend, filled: string[], photos: string[], q: Tre
  * the head only. Nothing when the photos are ordinary, so every prompt sent without these facts stays as it was. The
  * templates written shot by shot say it in their own words (trendPromptV2).
  */
-export function photoNotes(filled: string[], facts: Record<string, PhotoFacts | undefined> = {}, characters = false): string[] {
+export function photoNotes(filled: string[], facts: Record<string, PhotoFacts | undefined> = {}, characters: string[] = [], ownLine: string[] = []): string[] {
   const out: string[] = [];
   filled.forEach((k, i) => {
     const f = facts[k], img = ORDINAL[i];
-    if (!f || !img) return;
-    // A template that takes characters (Trend.characters): a photo the check read as no real person is a character.
-    if (characters && f.person === false) {
-      out.push(`${img} shows a character, not a real person (a teddy bear, a toy, an animal, a cartoon or CGI character): that character takes the place of the person it replaces exactly as it looks in ${img} - its own body, size, shape, fur or skin, face, colours, and only what it wears there, even if that is nothing - in every frame. It does the same movements and holds the same items in its own hands or paws. Never turn it into a human, never give it the hair, face or clothes of the person it replaces, and never add a person in its place.`);
+    if (!img) return;
+    // A seat the person said is a character (trendCharacterSeats): a note of its own, unless the seat has its own line
+    // for it in the prompt (TrendSeat.asCharacter), which already says it where the seat is described.
+    if (characters.includes(k)) {
+      if (!ownLine.includes(k)) out.push(`${img} shows a character, not a real person (a teddy bear, a toy, an animal, a cartoon or CGI character): that character takes the place of the person it replaces exactly as it looks in ${img} - its own body, size, shape, fur or skin, face, colours, and only what it wears there, even if that is nothing - in every frame. It does the same movements and holds the same items in its own hands or paws. Never turn it into a human, never give it the hair, face or clothes of the person it replaces, and never add a person in its place.`);
       return;
     }
+    if (!f) return;
     if (f.colour === "greyscale") out.push(`${img} is a black-and-white photo: give that person natural, realistic colour (skin, hair and clothes).`);
     if ((f.people ?? 1) > 1) out.push(`${img} shows more than one person: use only the main person in it, the largest and closest to the camera, and nobody else from it.`);
     if (f.framing === "head") out.push(`${img} shows only the head: take the face and hair from it, and give that person simple everyday clothes that suit them, never the clothes of the person they replace.`);
@@ -753,10 +767,31 @@ export function photoNotes(filled: string[], facts: Record<string, PhotoFacts | 
 }
 const withNotes = (prompt: string, notes: string[]): string => (notes.length ? `${prompt}\n\nABOUT THE PHOTOS\n${notes.join("\n")}` : prompt);
 
+/** The person's answer to "Is anyone a character?" on a template that takes characters, as seat keys. */
+export const TREND_CHARACTER_FIELD = "character";
+export function trendCharacterSeats(t: Pick<Trend, "characters" | "seats">, picks: TrendPicks = {}): string[] {
+  if (!t.characters) return [];
+  const v = picks[TREND_CHARACTER_FIELD];
+  return t.seats.map((s) => s.key).filter((k) => v === "both" ? true : v === k);
+}
+/** The seats said to be characters that have their own line for it in the fixed prompt, found there exactly once. */
+const ownCharacterSeats = (t: Trend, filled: string[], characters: string[]): TrendSeat[] =>
+  t.prompt ? t.seats.filter((s) => s.asCharacter && filled.includes(s.key) && characters.includes(s.key)
+    && t.prompt!.split("\n").filter((l) => l.startsWith(s.asCharacter!.line)).length === 1) : [];
+/** A fixed prompt with each such seat's own "Replace …" line swapped for its character line; unchanged otherwise. */
+function withCharacterLines(prompt: string, seats: TrendSeat[]): string {
+  if (!seats.length) return prompt;
+  return prompt.split("\n").map((l) => seats.find((s) => l.startsWith(s.asCharacter!.line))?.asCharacter!.text ?? l).join("\n");
+}
+
 /** The WaveSpeed input of one run. `photos` are the filled seats' links, in seat order (all of them for a fixed prompt). */
 export function trendTaskInput(t: Trend, filled: string[], photos: string[], q: TrendQuality, picks: TrendPicks = {}, facts: Record<string, PhotoFacts | undefined> = {}): Record<string, unknown> {
+  const characters = trendCharacterSeats(t, picks).filter((k) => filled.includes(k));
+  const own = ownCharacterSeats(t, filled, characters);
   return {
-    prompt: t.shots ? trendPromptV2(t, filled, picks, facts).slice(0, TREND_PROMPT_V2_MAX) : withNotes(t.prompt ?? trendPrompt(t, filled, picks), photoNotes(filled, facts, t.characters)), video: t.baseUrl, reference_images: photos.slice(0, t.seats.length), resolution: q,
+    prompt: t.shots ? trendPromptV2(t, filled, picks, facts).slice(0, TREND_PROMPT_V2_MAX)
+      : withNotes(t.prompt ? withCharacterLines(t.prompt, own) : trendPrompt(t, filled, picks), photoNotes(filled, facts, characters, own.map((s) => s.key))),
+    video: t.baseUrl, reference_images: photos.slice(0, t.seats.length), resolution: q,
     // false keeps the clip's own sound on the result (WaveSpeed: "the source audio track is preserved").
     generate_audio: false, enable_prompt_expansion: false, seed: -1,
   };
