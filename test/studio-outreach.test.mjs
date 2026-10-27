@@ -750,6 +750,11 @@ test("scout: no AI Gateway credits keeps today's allowance and says why; off doe
   assert.deepEqual([...new Set(mod.WALKS.na.map((p) => p[2]))].sort(), ["CA", "US"]);
   const intlPer = mod.SEGMENTS.length * mod.WALKS.intl.length;
   assert.ok(new Set(Array.from({ length: intlPer }, (_, i) => mod.queryAt(i, mod.WALKS.intl).q)).size === intlPer);
+  // A first line is spoken to the business and ends with a full stop (seen live: "Saw they scale 150+ D2C brands").
+  assert.equal(mod.goodOpener("Saw they scale 150+ D2C brands across the US"), null);
+  assert.equal(mod.goodOpener("Saw TikTok Shop Services in their offerings"), null);
+  assert.equal(mod.goodOpener("Saw that you make UGC ads for skincare brands"), "Saw that you make UGC ads for skincare brands.");
+  assert.equal(mod.goodOpener("Noticed your Leeds studio shoots Reels for gyms."), "Noticed your Leeds studio shoots Reels for gyms.");
   assert.deepEqual(["UK", "uk", "United Kingdom", "USA", "Australia", "nz", "GB", "DE", null].map(mod.isoCountry), ["GB", "GB", "GB", "US", "AU", "NZ", "GB", "DE", ""]);
   assert.deepEqual(mod.visibleAddresses("<p>hello@a-studio.com.au, jobs@a-studio.com.au, x@gmail.com, info@other.com, me@a-studio.com.au</p>", "www.a-studio.com.au"), ["hello@a-studio.com.au", "me@a-studio.com.au"]);
 });
