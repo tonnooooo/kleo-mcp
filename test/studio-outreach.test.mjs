@@ -568,11 +568,14 @@ test("scout: a site that is not a fit, too big, in another country, or a person'
   const sites = {
     "https://seoonly.com/": SITE("hello@seoonly.com"), "https://bigco.com/": SITE("hello@bigco.com"), "https://german.de/": SITE("hallo@german.de"),
     "https://maplecreative.ca/": SITE("jane@maplecreative.ca"), "https://maplerole.ca/": SITE("hello@maplerole.ca"),
+    "https://londonreels.co.uk/": SITE("hello@londonreels.co.uk"),
   };
   const verdicts = {
     "seoonly.com": { fit: false, reason: "SEO only." }, "bigco.com": { fit: true, size: "200+", country: "US" }, "german.de": { fit: true, size: "2-10", country: "DE" },
     "maplecreative.ca": { fit: true, size: "2-10", country: "CA", region: "ON", city: "Toronto", company: "Maple", type: "social-media-agency", opener: "Saw the Toronto restaurant reels on your site." },
     "maplerole.ca": { fit: true, size: "2-10", country: "CA", region: "ON", city: "Toronto", company: "Maple Role", type: "social-media-agency", opener: "Saw the Toronto restaurant reels on your site." },
+    // Workers AI says "UK", not GB (seen live on 27 October 2026).
+    "londonreels.co.uk": { fit: true, size: "2-10", country: "UK", city: "London", company: "London Reels", type: "short-form-video-agency", opener: "Saw the Reels you make for London restaurants." },
   };
   const realRun = env.AI.run.bind(env.AI);
   env.AI.run = async (m, input) => {
@@ -590,7 +593,9 @@ test("scout: a site that is not a fit, too big, in another country, or a person'
   assert.equal(seen["german.de"], "country DE");
   assert.equal(seen["maplecreative.ca"], "a person's address in Canada");
   assert.equal(seen["maplerole.ca"], "added");
-  assert.deepEqual(rows(env, "SELECT email, status, country, region FROM outreach_prospects"), [{ email: "hello@maplerole.ca", status: "approved", country: "CA", region: "ON" }]);
+  assert.equal(seen["londonreels.co.uk"], "added");
+  assert.deepEqual(rows(env, "SELECT email, status, country, region FROM outreach_prospects ORDER BY email"), [
+    { email: "hello@londonreels.co.uk", status: "approved", country: "GB", region: null }, { email: "hello@maplerole.ca", status: "approved", country: "CA", region: "ON" }]);
 });
 
 test("scout: the US and Canada are searched only with a postal address, in proportion; sites without video work cost no Workers AI", async () => {
@@ -682,6 +687,7 @@ test("scout: no AI Gateway credits keeps today's allowance and says why; off doe
   assert.deepEqual([...new Set(mod.WALKS.na.map((p) => p[2]))].sort(), ["CA", "US"]);
   const intlPer = mod.SEGMENTS.length * mod.WALKS.intl.length;
   assert.ok(new Set(Array.from({ length: intlPer }, (_, i) => mod.queryAt(i, mod.WALKS.intl).q)).size === intlPer);
+  assert.deepEqual(["UK", "uk", "United Kingdom", "USA", "Australia", "nz", "GB", "DE", null].map(mod.isoCountry), ["GB", "GB", "GB", "US", "AU", "NZ", "GB", "DE", ""]);
   assert.deepEqual(mod.visibleAddresses("<p>hello@a-studio.com.au, jobs@a-studio.com.au, x@gmail.com, info@other.com, me@a-studio.com.au</p>", "www.a-studio.com.au"), ["hello@a-studio.com.au", "me@a-studio.com.au"]);
 });
 

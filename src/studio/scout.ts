@@ -151,6 +151,12 @@ export function contactPages(html: string, base: URL): string[] {
 
 const TLD_COUNTRY: [RegExp, string][] = [[/\.(co\.uk|uk)$/, "GB"], [/\.(com\.au|au)$/, "AU"], [/\.(co\.nz|nz)$/, "NZ"], [/\.ca$/, "CA"], [/\.us$/, "US"]];
 const tldCountry = (host: string): string | null => TLD_COUNTRY.find(([re]) => re.test(host))?.[1] ?? null;
+/** Workers AI's country as a two-letter code: it says "UK" for Great Britain (seen live on 27 October), or a name. */
+const COUNTRY_NAMES: Record<string, string> = {
+  UK: "GB", GBR: "GB", "UNITED KINGDOM": "GB", "GREAT BRITAIN": "GB", ENGLAND: "GB", SCOTLAND: "GB", WALES: "GB", "NORTHERN IRELAND": "GB",
+  USA: "US", "UNITED STATES": "US", "UNITED STATES OF AMERICA": "US", CAN: "CA", CANADA: "CA", AUS: "AU", AUSTRALIA: "AU", NZL: "NZ", "NEW ZEALAND": "NZ",
+};
+export const isoCountry = (c: unknown): string => { const s = String(c ?? "").trim().toUpperCase(); return COUNTRY_NAMES[s] ?? s; };
 
 export interface ScoutDeps {
   search?: (q: string) => Promise<{ url: string; title?: string }[]>;
@@ -291,7 +297,7 @@ async function checkSite(env: StudioEnv, set: Settings, site: { domain: string; 
   let hint: { city?: string; region?: string; country?: string } = {};
   try { hint = JSON.parse(site.hint ?? "{}"); } catch { /* none */ }
   const tld = tldCountry(base.hostname);
-  const country = String(v.country ?? tld ?? hint.country ?? "").toUpperCase();
+  const country = isoCountry(v.country ?? tld ?? hint.country);
   if (!COUNTRIES.includes(country as (typeof COUNTRIES)[number])) return `country ${country || "unknown"}`;
   if (tld && tld !== country) return `country unclear (${tld} site, ${country} office)`;
   // Canada's privacy law treats a person's own address as personal information: role addresses only there.
