@@ -244,19 +244,21 @@ const hiOf = (p: Prospect): string => `Hi ${firstOf(p.contact_name) ?? `${nameOf
  * written to with one of them keeps its subject, and its follow-ups are the ones below.
  */
 const ASK = (credits: number) => credits ? "Want me to set your team up with free credits to try it on a real brief this week?" : "Would that be useful for your team?";
+/** Why Kleo, in one line (27 October 2026, the owner: the cheapest on the market, the same quality or better). */
+const WHY = "It runs the same top video models as the big platforms, like Seedance, Veo and Kling, at some of the lowest prices on the market.";
 export const VARIANTS: { id: string; name: string; subject: (p: Prospect) => string; pitch: (p: Prospect, credits: number) => string[] }[] = [
   { id: "d", name: "Ten hooks before the shoot", subject: (p) => `10 hooks for ${nameOfs(p)} next client`, pitch: (_p, credits) => [
     "That's the kind of work Kleo (kleooai.com) is built for: type one line or drop in one product photo and you get a vertical clip for TikTok, Reels or Shorts in a few minutes.",
     "So a client's next campaign can start with ten hooks to test, before anyone books a shoot.",
-    ASK(credits)] },
+    WHY, ASK(credits)] },
   { id: "e", name: "Show the client first", subject: (p) => `Hooks for ${nameOfs(p)} clients, before the shoot`, pitch: (_p, credits) => [
     "Kleo (kleooai.com) turns one line or one product photo into a vertical video in a few minutes, so you can show a client ten hook options on the first call instead of a moodboard.",
     "The ones that win get the real shoot; the rest cost you minutes, not a shoot day.",
-    ASK(credits)] },
+    WHY, ASK(credits)] },
   { id: "f", name: "Ten hooks in an afternoon", subject: (p) => `Testing more hooks at ${nameOf(p)}`, pitch: (p, credits) => [
     "With Kleo (kleooai.com) your team types one line or drops in one photo and gets a vertical clip for TikTok, Reels or Shorts in a few minutes.",
     `For ${phraseOf(p)}, that's ten hooks to test for a client in an afternoon, without booking a shoot.`,
-    ASK(credits)] },
+    WHY, ASK(credits)] },
 ];
 export const variantById = (id: string | null) => VARIANTS.find((v) => v.id === id) ?? VARIANTS[0];
 
@@ -269,11 +271,12 @@ export interface Signature { fromName: string; postal: string; credits: number; 
  * app.kleooai.com address "sembra scam"; then "fai il bottone pulito, bella grafica professionale", the logo where I
  * judge best). The first e-mail reads like a person's note: words only, no image, so a new domain's first contact stays
  * out of the filters. The second e-mail and the answer to a yes carry the offer as a card (the Kleo icon, the business's
- * name, what the link gives, one button) and a signature with the icon. Tables and inline styles, so Gmail, Apple Mail
+ * name, what the link gives, one button) and why teams pick Kleo; the signature is words only (the icon already shows
+ * as the sender's photo and in the card). Tables and inline styles, so Gmail, Apple Mail
  * and Outlook draw the same thing; no tracking; addresses sit behind words.
  */
 interface Offer { title: string; line: string; text: string; button: string; url: string }
-type Part = string | { offer: Offer } | { sign: string; logo: boolean };
+type Part = string | { offer: Offer } | { list: string[]; title: string } | { sign: string };
 interface Foot { why: string; stopUrl: string; who: string }
 const FONT = "-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 /** Kleo's icon (the golden play mark on black), from the public media bucket: the app host forbids embedding its files elsewhere. */
@@ -288,6 +291,7 @@ const buttonHtml = (label: string, url: string): string =>
 function partText(x: Part): string {
   if (typeof x === "string") return x;
   if ("offer" in x) return `${x.offer.title}\n${x.offer.text}\n${x.offer.button}: ${x.offer.url}`;
+  if ("list" in x) return `${x.title}\n${x.list.map((li) => `- ${li}`).join("\n")}`;
   return `${x.sign}\nFounder, Kleo`;
 }
 function partHtml(x: Part): string {
@@ -301,9 +305,9 @@ function partHtml(x: Part): string {
 ${buttonHtml(o.button, o.url)}
 </td></tr></table>`;
   }
-  if (!x.logo) return `<p style="margin:0 0 16px">${escapeHtml(x.sign)}<br><span style="color:#6b6b6b">Founder, <a href="https://kleooai.com" style="color:#6b6b6b">Kleo</a></span></p>`;
-  return `<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:6px 0 16px"><tr><td valign="middle" style="padding:0 12px 0 0">${icon(36)}</td>
-<td valign="middle" style="font-size:15px;line-height:20px;color:#111111"><span style="font-weight:600">${escapeHtml(x.sign)}</span><br><span style="color:#6b6b6b">Founder, <a href="https://kleooai.com" style="color:#6b6b6b;text-decoration:none">Kleo</a> · AI video studio</span></td></tr></table>`;
+  if ("list" in x) return `<p style="margin:4px 0 8px;font-weight:600">${escapeHtml(x.title)}</p>
+<ul style="margin:0 0 18px;padding:0 0 0 20px">${x.list.map((li) => `<li style="margin:0 0 8px">${inlineHtml(li)}</li>`).join("")}</ul>`;
+  return `<p style="margin:0 0 16px"><span style="font-weight:600">${escapeHtml(x.sign)}</span><br><span style="color:#6b6b6b">Founder, <a href="https://kleooai.com" style="color:#6b6b6b;text-decoration:none">Kleo</a> · AI video studio</span></p>`;
 }
 function asText(parts: Part[], foot: Foot | null): string {
   return [...parts.map(partText), ...(foot ? [`--\n${foot.why} If it isn't relevant, reply "no" or open ${foot.stopUrl} and I won't write again.\n${foot.who}`] : [])].join("\n\n");
@@ -316,6 +320,16 @@ function asHtml(parts: Part[], foot: Foot | null): string {
 ${parts.map(partHtml).join("\n")}${tail}
 </div></td></tr></table></body></html>`;
 }
+/**
+ * Who Kleo is and why a business would buy it (27 October 2026, the owner: the cheapest on the market with the same
+ * quality or better; from an MCP connector to a chat, building its own models, always adding new things; simple, clear).
+ * "Some of the lowest prices" rather than "the cheapest": a public claim has to stand up.
+ */
+const WHY_LIST: Part = { title: "Why teams pick Kleo", list: [
+  "Top quality for less: the same video models the big platforms use (Seedance, Veo, Kling), at some of the lowest prices on the market.",
+  "Simple and clear: one chat for video, pictures, voice and music, with ready-made viral templates.",
+  "Always growing: Kleo started as a connector inside Claude, became a full studio in a chat, and we're now building our own AI models, with new tools all the time.",
+] };
 /** The offer card: the business's own link, what it gives, one button. */
 const offerFor = (p: Prospect, s: Signature, url: string, after: string): Offer => ({
   title: `Kleo for ${nameOf(p)}`, line: "AI video for TikTok, Reels and Shorts", url, button: s.credits ? "Try Kleo free" : "Try Kleo",
@@ -341,18 +355,18 @@ export function writeStep(p: Prospect, step: number, s: Signature, unsubscribeUr
   const v = variantById(p.variant);
   const subject0 = p.subject || v.subject(p);
   const opener = (p.opener ?? "").trim() || `I came across ${nameOf(p)} while looking at ${PHRASE[p.type ?? ""] ?? "studios that make short-form video"}${p.city ? ` in ${p.city}` : ""}.`;
-  if (step === 0) return mail(subject0, [hi, opener, ...v.pitch(p, s.credits), { sign: name, logo: false }]);
+  if (step === 0) return mail(subject0, [hi, opener, ...v.pitch(p, s.credits), { sign: name }]);
   if (step === 1) return mail(`Re: ${subject0}`, [hi, ...(s.link ? [
     `Easier than a call: I've set up ${nameOfs(p)} own link to try Kleo.`,
     { offer: offerFor(p, s, s.link, "within a few minutes") },
-    "Every clip in Kleo's Explore tab was made from one line or one photo.",
+    WHY_LIST,
   ] : [
     "A quick follow-up with something you can judge in ten seconds: app.kleooai.com/explore has clips made entirely in Kleo, each from one line or one photo.",
     s.credits ? `If a free trial for ${nameOf(p)} sounds useful, reply "yes" and I'll send it over.` : `If it sounds useful for ${nameOf(p)}, reply "yes" and I'll send the details.`,
-  ]), { sign: name, logo: !!s.link }]);
+  ]), { sign: name }]);
   return mail(`Re: ${subject0}`, [hi,
     `I'll stop here so I don't crowd your inbox. If short-form video ever becomes the bottleneck at ${nameOf(p)}, a reply to this e-mail still reaches me.`,
-    "Thanks,", { sign: name, logo: false }]);
+    "Thanks,", { sign: name }]);
 }
 
 /** Kleo's own answer to a "yes": the personal link in the offer card, and the signature with the icon. */
@@ -360,8 +374,9 @@ export function yesMail(p: Prospect, s: Signature, link: string): { text: string
   const parts: Part[] = [hiOf(p),
     `Great, here's ${nameOfs(p)} own link to Kleo.`,
     { offer: offerFor(p, s, link, "by themselves") },
+    WHY_LIST,
     "If anything is unclear, just reply here.",
-    { sign: s.fromName || "Leonardo", logo: true }];
+    { sign: s.fromName || "Leonardo" }];
   return { text: asText(parts, null), html: asHtml(parts, null) };
 }
 export const writeYes = (p: Prospect, s: Signature, link: string): string => yesMail(p, s, link).text;
