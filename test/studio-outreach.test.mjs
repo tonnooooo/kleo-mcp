@@ -568,11 +568,14 @@ test("scout: a site that is not a fit, too big, in another country, or a person'
   const sites = {
     "https://seoonly.com/": SITE("hello@seoonly.com"), "https://bigco.com/": SITE("hello@bigco.com"), "https://german.de/": SITE("hallo@german.de"),
     "https://maplecreative.ca/": SITE("jane@maplecreative.ca"), "https://maplerole.ca/": SITE("hello@maplerole.ca"),
+    "https://londonreels.co.uk/": SITE("hello@londonreels.co.uk"),
   };
   const verdicts = {
     "seoonly.com": { fit: false, reason: "SEO only." }, "bigco.com": { fit: true, size: "200+", country: "US" }, "german.de": { fit: true, size: "2-10", country: "DE" },
     "maplecreative.ca": { fit: true, size: "2-10", country: "CA", region: "ON", city: "Toronto", company: "Maple", type: "social-media-agency", opener: "Saw the Toronto restaurant reels on your site." },
     "maplerole.ca": { fit: true, size: "2-10", country: "CA", region: "ON", city: "Toronto", company: "Maple Role", type: "social-media-agency", opener: "Saw the Toronto restaurant reels on your site." },
+    // Workers AI says "UK", not GB (seen live on 27 October 2026).
+    "londonreels.co.uk": { fit: true, size: "2-10", country: "UK", city: "London", company: "London Reels", type: "short-form-video-agency", opener: "Saw the Reels you make for London restaurants." },
   };
   const realRun = env.AI.run.bind(env.AI);
   env.AI.run = async (m, input) => {
@@ -590,7 +593,9 @@ test("scout: a site that is not a fit, too big, in another country, or a person'
   assert.equal(seen["german.de"], "country DE");
   assert.equal(seen["maplecreative.ca"], "a person's address in Canada");
   assert.equal(seen["maplerole.ca"], "added");
-  assert.deepEqual(rows(env, "SELECT email, status, country, region FROM outreach_prospects"), [{ email: "hello@maplerole.ca", status: "approved", country: "CA", region: "ON" }]);
+  assert.equal(seen["londonreels.co.uk"], "added");
+  assert.deepEqual(rows(env, "SELECT email, status, country, region FROM outreach_prospects ORDER BY email"), [
+    { email: "hello@londonreels.co.uk", status: "approved", country: "GB", region: null }, { email: "hello@maplerole.ca", status: "approved", country: "CA", region: "ON" }]);
 });
 
 test("scout: the US and Canada are searched only with a postal address, in proportion; sites without video work cost no Workers AI", async () => {
@@ -646,6 +651,22 @@ test("scout: searching waits while too many websites or businesses wait, keeping
   assert.equal(one(env, "SELECT value FROM studio_meta WHERE key = 'scout_paused'"), undefined);
 });
 
+test("scout: the day's searches are spread over it, one a minute at most", async () => {
+  const env = newEnv();
+  const deps = scoutDeps({}, []);
+  const MIDNIGHT = Date.parse("2026-11-02T00:00:20.000Z");
+  const set = { ...mod.DEFAULT_SETTINGS, scoutOn: true, scoutDaily: 2 };
+  assert.equal((await mod.scoutTick(env, set, MIDNIGHT, deps)).searched, 1, "the first of the day");
+  assert.equal((await mod.scoutTick(env, set, MIDNIGHT + 5 * MIN, deps)).searched, 0, "the second waits for the second half of the day");
+  assert.equal((await mod.scoutTick(env, set, MIDNIGHT + 12 * HOUR, deps)).searched, 1);
+  assert.equal((await mod.scoutTick(env, set, MIDNIGHT + 23 * HOUR, deps)).searched, 0, "two a day");
+  const fast = { ...set, scoutDaily: 1440 };
+  const env2 = newEnv(), deps2 = scoutDeps({}, []);
+  assert.equal((await mod.scoutTick(env2, fast, MIDNIGHT, deps2)).searched, 1);
+  assert.equal((await mod.scoutTick(env2, fast, MIDNIGHT + 20_000, deps2)).searched, 0, "one a minute");
+  assert.equal((await mod.scoutTick(env2, fast, MIDNIGHT + MIN, deps2)).searched, 1);
+});
+
 test("scout: no AI Gateway credits keeps today's allowance and says why; off does nothing", async () => {
   const env = newEnv();
   const set = { ...mod.DEFAULT_SETTINGS, scoutOn: true, scoutDaily: 3 };
@@ -666,6 +687,7 @@ test("scout: no AI Gateway credits keeps today's allowance and says why; off doe
   assert.deepEqual([...new Set(mod.WALKS.na.map((p) => p[2]))].sort(), ["CA", "US"]);
   const intlPer = mod.SEGMENTS.length * mod.WALKS.intl.length;
   assert.ok(new Set(Array.from({ length: intlPer }, (_, i) => mod.queryAt(i, mod.WALKS.intl).q)).size === intlPer);
+  assert.deepEqual(["UK", "uk", "United Kingdom", "USA", "Australia", "nz", "GB", "DE", null].map(mod.isoCountry), ["GB", "GB", "GB", "US", "AU", "NZ", "GB", "DE", ""]);
   assert.deepEqual(mod.visibleAddresses("<p>hello@a-studio.com.au, jobs@a-studio.com.au, x@gmail.com, info@other.com, me@a-studio.com.au</p>", "www.a-studio.com.au"), ["hello@a-studio.com.au", "me@a-studio.com.au"]);
 });
 
@@ -715,10 +737,10 @@ test("console: mailboxes saved only after both sign-ins, settings, approvals, pr
   // Switching the scout on, or approving its finds by itself, wants a fresh code.
   r = await call(env, "/api/admin/outreach/settings", { method: "POST", cookie: o.admin, body: { scoutOn: true, code: await o.code() } });
   assert.equal(r.json.scoutOn, true);
-  r = await call(env, "/api/admin/outreach/settings", { method: "POST", cookie: o.admin, body: { scoutDaily: 999 } });
-  assert.equal(r.json.scoutDaily, 280, "one search a turn at most");
-  r = await call(env, "/api/admin/outreach/settings", { method: "POST", cookie: o.admin, body: { scoutDaily: 240 } });
-  assert.equal(r.json.scoutDaily, 240);
+  r = await call(env, "/api/admin/outreach/settings", { method: "POST", cookie: o.admin, body: { scoutDaily: 9999 } });
+  assert.equal(r.json.scoutDaily, 1440, "one search a minute at most");
+  r = await call(env, "/api/admin/outreach/settings", { method: "POST", cookie: o.admin, body: { scoutDaily: 800 } });
+  assert.equal(r.json.scoutDaily, 800);
   r = await call(env, "/api/admin/outreach", { cookie: o.admin });
   assert.deepEqual(r.json.ready, { senders: 1, postal: true, approved: 0, sendable: 0, ok: false });
   assert.equal(r.json.mailboxes[0].passwordEnds, "abcd");

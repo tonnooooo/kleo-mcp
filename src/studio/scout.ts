@@ -3,8 +3,8 @@
  * (src/studio/outreach.ts) every day, on its own, without Claude.
  *
  * One web search at a time (Cloudflare's Web Search API through the AI binding, Ceramic, $0.25 per 1,000 searches,
- * billed to the account's AI Gateway credits), at most `scoutDaily` a UTC day (up to 280, the owner asked for 240 on
- * 27 October), walking through every pairing of a kind of business (TikTok agency, UGC agency, …) and one of 323
+ * billed to the account's AI Gateway credits), at most `scoutDaily` a UTC day spread evenly over it (up to 1,440, one a
+ * minute; the owner asked for 240 and then 800 on 27 October), walking through every pairing of a kind of business (TikTok agency, UGC agency, …) and one of 323
  * cities of the US, Canada, the UK, Australia and New Zealand, then again with other wordings. Without a postal address
  * in the settings only the UK, Australian and New Zealand cities are searched: the US and Canada would only wait.
  * Searching pauses (the allowance kept) while 600 websites wait to be read, or while 1,000 businesses per mailbox wait for
@@ -151,6 +151,12 @@ export function contactPages(html: string, base: URL): string[] {
 
 const TLD_COUNTRY: [RegExp, string][] = [[/\.(co\.uk|uk)$/, "GB"], [/\.(com\.au|au)$/, "AU"], [/\.(co\.nz|nz)$/, "NZ"], [/\.ca$/, "CA"], [/\.us$/, "US"]];
 const tldCountry = (host: string): string | null => TLD_COUNTRY.find(([re]) => re.test(host))?.[1] ?? null;
+/** Workers AI's country as a two-letter code: it says "UK" for Great Britain (seen live on 27 October), or a name. */
+const COUNTRY_NAMES: Record<string, string> = {
+  UK: "GB", GBR: "GB", "UNITED KINGDOM": "GB", "GREAT BRITAIN": "GB", ENGLAND: "GB", SCOTLAND: "GB", WALES: "GB", "NORTHERN IRELAND": "GB",
+  USA: "US", "UNITED STATES": "US", "UNITED STATES OF AMERICA": "US", CAN: "CA", CANADA: "CA", AUS: "AU", AUSTRALIA: "AU", NZL: "NZ", "NEW ZEALAND": "NZ",
+};
+export const isoCountry = (c: unknown): string => { const s = String(c ?? "").trim().toUpperCase(); return COUNTRY_NAMES[s] ?? s; };
 
 export interface ScoutDeps {
   search?: (q: string) => Promise<{ url: string; title?: string }[]>;
@@ -175,25 +181,28 @@ async function defaultFetch(url: string): Promise<string | null> {
 
 const today = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 /** How many queued websites one turn reads at most, and for how long. */
-const CHECKS_PER_TURN = 8, CHECK_BUDGET_MS = 40_000;
+const CHECKS_PER_TURN = 8, CHECK_BUDGET_MS = 30_000;
 /** Searching waits while this many websites are queued, or this many businesses per mailbox wait for their first e-mail. */
 const QUEUE_MAX = 600, WAITING_PER_MAILBOX = 1000;
 /** Workers AI reads at most this many websites a day per search allowed (a guard on the Cloudflare bill). */
 const JUDGES_PER_SEARCH = 3;
 
 /**
- * The scout's turn (every 5 minutes while it is on): one search while today's allowance lasts and nothing asks it to wait,
- * then up to eight queued sites checked. Returns what it did, for the tests and the logs.
+ * The scout's turn (every minute while it is on): one search while the allowance so far today lasts (the day's searches
+ * spread evenly over it) and nothing asks it to wait, then up to eight queued sites checked. Returns what it did, for
+ * the tests and the logs.
  */
 export async function scoutTick(env: StudioEnv, set: Settings, nowMs = Date.now(), deps: ScoutDeps = {}): Promise<{ searched: number; checked: number; added: number }> {
   const out = { searched: 0, checked: 0, added: 0 };
   if (!set.scoutOn) return out;
   const dayKey = `scout_day_${today(nowMs)}`;
   const done = Number((await meta(env, dayKey)) ?? 0);
+  const minute = Math.floor((nowMs % 86_400_000) / 60_000);
+  const allowed = Math.min(set.scoutDaily, Math.ceil((set.scoutDaily * (minute + 1)) / 1440));
   const postal = hasPostal(set);
-  const pause = done < set.scoutDaily ? await pauseReason(env, postal) : null;
+  const pause = done < allowed ? await pauseReason(env, postal) : null;
   if (pause) await setMeta(env, "scout_paused", pause);
-  else if (done < set.scoutDaily) {
+  else if (done < allowed) {
     await env.DB.prepare("DELETE FROM studio_meta WHERE key = 'scout_paused'").run();
     const a = Number((await meta(env, "scout_cursor_intl")) ?? 0), b = Number((await meta(env, "scout_cursor_na")) ?? 0);
     // With a postal address both walks run, each in proportion to its number of cities; without one, only the first.
@@ -288,7 +297,7 @@ async function checkSite(env: StudioEnv, set: Settings, site: { domain: string; 
   let hint: { city?: string; region?: string; country?: string } = {};
   try { hint = JSON.parse(site.hint ?? "{}"); } catch { /* none */ }
   const tld = tldCountry(base.hostname);
-  const country = String(v.country ?? tld ?? hint.country ?? "").toUpperCase();
+  const country = isoCountry(v.country ?? tld ?? hint.country);
   if (!COUNTRIES.includes(country as (typeof COUNTRIES)[number])) return `country ${country || "unknown"}`;
   if (tld && tld !== country) return `country unclear (${tld} site, ${country} office)`;
   // Canada's privacy law treats a person's own address as personal information: role addresses only there.

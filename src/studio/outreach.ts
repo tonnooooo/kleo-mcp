@@ -95,8 +95,8 @@ export interface Readiness { senders: number; postal: boolean; approved: number;
 /** The countries whose law wants a postal address in a commercial e-mail. */
 export const POSTAL_COUNTRIES = ["US", "CA"];
 export const hasPostal = (s: { postal: string }): boolean => s.postal.trim().length >= 10;
-/** The most searches a day the scout may make: one per turn, a turn every 5 minutes. */
-export const SCOUT_MAX_DAILY = 280;
+/** The most searches a day the scout may make: one per turn, a turn every minute. */
+export const SCOUT_MAX_DAILY = 1440;
 export async function readiness(env: StudioEnv): Promise<Readiness> {
   const ready = (await senders(env)).filter((s) => s.status !== "off" && s.sealed_pass).length;
   const approved = Number((await env.DB.prepare("SELECT COUNT(*) AS n FROM outreach_prospects WHERE status IN ('approved', 'active')").first<{ n: number }>())?.n ?? 0);
