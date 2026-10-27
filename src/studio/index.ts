@@ -13,7 +13,8 @@
  *   /email/out      the outreach e-mails' unsubscribe page and one-click POST (src/studio/outreach.ts)
  *   everything else the single-page app in studio-web/ (served by the ASSETS binding, index.html for app routes)
  *   cron            every minute: refresh the clips still with the provider, save the finished ones, refund the failed,
- *                   mail every new payment its receipt (src/studio/receipts.ts);
+ *                   mail every new payment its receipt (src/studio/receipts.ts), the scout's search and readings
+ *                   when the owner keeps it on (src/studio/scout.ts);
  *                   every 5 minutes the welcome e-mails that are due (src/studio/onboarding.ts) and, when the owner
  *                   switched it on, the outreach mailbox's replies and its next e-mail (src/studio/outreach.ts)
  */
@@ -717,11 +718,11 @@ export default {
     // Outreach, two minutes later: the mailbox's replies every quarter of an hour, one e-mail at most (outreach.ts).
     if (new Date(_event.scheduledTime || Date.now()).getUTCMinutes() % 5 === 4) {
       try { await outreachTick(env); } catch (e) { console.error("studio outreach", e instanceof Error ? e.message : e); }
-      // The scout: one search and a few websites checked, while the owner keeps it on (src/studio/scout.ts).
-      try { await scoutTick(env, await settingsOf(env)); } catch (e) { console.error("studio scout", e instanceof Error ? e.message : e); }
       // The owner's morning e-mail about both, at 8:00 in Auckland (src/studio/digest.ts).
       try { await morningDigest(env); } catch (e) { console.error("studio digest", e instanceof Error ? e.message : e); }
     }
+    // The scout, every minute: one search at most and a few websites checked, while the owner keeps it on (scout.ts).
+    try { await scoutTick(env, await settingsOf(env)); } catch (e) { console.error("studio scout", e instanceof Error ? e.message : e); }
     // Sign-in addresses older than 90 days go, once an hour (src/studio/ips.ts; the privacy page promises it).
     if (new Date(_event.scheduledTime || Date.now()).getUTCMinutes() === 17) {
       try { await pruneIps(env); } catch (e) { console.error("studio ip prune", e instanceof Error ? e.message : e); }

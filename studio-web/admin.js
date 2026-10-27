@@ -1278,7 +1278,7 @@ async function outreachPage(main, opts = {}) {
     field("Free credits for a business that signs up through its link (0 to 200)", S2, "trialCredits", { inputmode: "numeric" }),
     toggle("Answer a yes by itself", "with the business's personal link to sign up and get those credits.", S2, "autoReply"),
     toggle("Look for new businesses every day (the scout)", "with Cloudflare's web search, from your AI Gateway credits.", S2, "scoutOn"),
-    field("Searches a day (5 to 280)", S2, "scoutDaily", { inputmode: "numeric" }),
+    field("Searches a day (5 to 1,440)", S2, "scoutDaily", { inputmode: "numeric" }),
     toggle("Approve the scout's finds by itself", "instead of waiting for you here. Each one is still checked: its address on its own site, its work, its country.", S2, "autoApprove"),
     h("div", { class: "adm-actions" }, saveSet));
 

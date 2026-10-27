@@ -646,6 +646,22 @@ test("scout: searching waits while too many websites or businesses wait, keeping
   assert.equal(one(env, "SELECT value FROM studio_meta WHERE key = 'scout_paused'"), undefined);
 });
 
+test("scout: the day's searches are spread over it, one a minute at most", async () => {
+  const env = newEnv();
+  const deps = scoutDeps({}, []);
+  const MIDNIGHT = Date.parse("2026-11-02T00:00:20.000Z");
+  const set = { ...mod.DEFAULT_SETTINGS, scoutOn: true, scoutDaily: 2 };
+  assert.equal((await mod.scoutTick(env, set, MIDNIGHT, deps)).searched, 1, "the first of the day");
+  assert.equal((await mod.scoutTick(env, set, MIDNIGHT + 5 * MIN, deps)).searched, 0, "the second waits for the second half of the day");
+  assert.equal((await mod.scoutTick(env, set, MIDNIGHT + 12 * HOUR, deps)).searched, 1);
+  assert.equal((await mod.scoutTick(env, set, MIDNIGHT + 23 * HOUR, deps)).searched, 0, "two a day");
+  const fast = { ...set, scoutDaily: 1440 };
+  const env2 = newEnv(), deps2 = scoutDeps({}, []);
+  assert.equal((await mod.scoutTick(env2, fast, MIDNIGHT, deps2)).searched, 1);
+  assert.equal((await mod.scoutTick(env2, fast, MIDNIGHT + 20_000, deps2)).searched, 0, "one a minute");
+  assert.equal((await mod.scoutTick(env2, fast, MIDNIGHT + MIN, deps2)).searched, 1);
+});
+
 test("scout: no AI Gateway credits keeps today's allowance and says why; off does nothing", async () => {
   const env = newEnv();
   const set = { ...mod.DEFAULT_SETTINGS, scoutOn: true, scoutDaily: 3 };
@@ -715,10 +731,10 @@ test("console: mailboxes saved only after both sign-ins, settings, approvals, pr
   // Switching the scout on, or approving its finds by itself, wants a fresh code.
   r = await call(env, "/api/admin/outreach/settings", { method: "POST", cookie: o.admin, body: { scoutOn: true, code: await o.code() } });
   assert.equal(r.json.scoutOn, true);
-  r = await call(env, "/api/admin/outreach/settings", { method: "POST", cookie: o.admin, body: { scoutDaily: 999 } });
-  assert.equal(r.json.scoutDaily, 280, "one search a turn at most");
-  r = await call(env, "/api/admin/outreach/settings", { method: "POST", cookie: o.admin, body: { scoutDaily: 240 } });
-  assert.equal(r.json.scoutDaily, 240);
+  r = await call(env, "/api/admin/outreach/settings", { method: "POST", cookie: o.admin, body: { scoutDaily: 9999 } });
+  assert.equal(r.json.scoutDaily, 1440, "one search a minute at most");
+  r = await call(env, "/api/admin/outreach/settings", { method: "POST", cookie: o.admin, body: { scoutDaily: 800 } });
+  assert.equal(r.json.scoutDaily, 800);
   r = await call(env, "/api/admin/outreach", { cookie: o.admin });
   assert.deepEqual(r.json.ready, { senders: 1, postal: true, approved: 0, sendable: 0, ok: false });
   assert.equal(r.json.mailboxes[0].passwordEnds, "abcd");
