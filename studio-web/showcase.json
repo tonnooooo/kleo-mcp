@@ -360,18 +360,6 @@
   "poster": "https://media.kleooai.com/gallery/koi-supra-blender-previz.jpg"
  },
  {
-  "slug": "level-one-film",
-  "title": "Level One",
-  "line": "A Level 1 newcomer walks into the ring against four titans.",
-  "format": "wide",
-  "seconds": 76,
-  "prompt": "Make a short film like this: A Level 1 newcomer walks into the ring against four titans.",
-  "kind": "film",
-  "preview": "https://media.kleooai.com/gallery/level-one-film-p.mp4",
-  "full": "https://media.kleooai.com/gallery/level-one-film.mp4",
-  "poster": "https://media.kleooai.com/gallery/level-one-film.jpg"
- },
- {
   "slug": "made-in-kleo-ai-queen",
   "title": "Queen of the Nile",
   "line": "Headphones, a sports car, a basketball duel and a sign held high.",
