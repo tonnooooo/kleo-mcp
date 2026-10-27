@@ -370,7 +370,7 @@ test("follow-ups: in the same thread, Re: subject, then the last one, then done"
   const code = one(env, "SELECT link_code FROM outreach_prospects").link_code;
   assert.match(code, /^bright-reels-[a-z0-9]+$/);
   assert.match(bodyOf(MB.sent[1].raw), new RegExp(`Easier than a call: here's a link set up for Bright Reels: https://app\\.kleooai\\.com/r/${code}`));
-  assert.match(bodyOf(MB.sent[1].raw), /50 free credits land on the account within a few minutes/);
+  assert.match(bodyOf(MB.sent[1].raw), /20 free credits land on the account within a few minutes/);
   assert.equal(one(env, "SELECT created_by, archived_at IS NOT NULL AS hidden FROM short_links WHERE code = ?", code).hidden, 1);
   const p2 = one(env, "SELECT next_at FROM outreach_prospects");
   await mod.outreachTick(env, Date.parse(p2.next_at) + MIN, { random: () => 0 });

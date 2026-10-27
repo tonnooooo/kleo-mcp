@@ -63,7 +63,7 @@ export interface Settings {
   scoutOn: boolean;
   scoutDaily: number;
 }
-export const DEFAULT_SETTINGS: Settings = { postal: "", trialCredits: 50, autoReply: true, autoApprove: false, scoutOn: false, scoutDaily: 30 };
+export const DEFAULT_SETTINGS: Settings = { postal: "", trialCredits: 20, autoReply: true, autoApprove: false, scoutOn: false, scoutDaily: 30 };
 
 export async function meta(env: StudioEnv, key: string): Promise<string | null> {
   return (await env.DB.prepare("SELECT value FROM studio_meta WHERE key = ?").bind(key).first<{ value: string }>())?.value ?? null;
