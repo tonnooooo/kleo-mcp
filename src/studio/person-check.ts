@@ -116,6 +116,13 @@ export function photoFactsInput(bytes: Uint8Array, contentType: string): Record<
 export const photoMissingText = (seat: string): string =>
   `${seat}'s photo could not be read. Add it again — nothing was charged.`;
 
+/**
+ * The sentence a person reads on a template that takes characters (Trend.characters) when a seat's photo looks like no
+ * real person but the seat was not marked as a character: a misread or a forgotten choice is stopped before the charge.
+ */
+export const characterUnmarkedText = (seat: string): string =>
+  `${seat}'s photo looks like a character, not a real person. If it is one, choose ${seat} under "Is anyone a character?" — nothing was charged.`;
+
 /** The sentence a person reads when a seat's photo shows no person. */
 export const noPersonText = (template: string, seat: string): string =>
   `${template} swaps people: ${seat} needs a clear photo of a real person. Cartoon characters, toys, animals and objects can't be swapped in — nothing was charged.`;
