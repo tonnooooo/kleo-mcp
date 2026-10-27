@@ -579,7 +579,9 @@ test("scout: a site that is not a fit, too big, in another country, or a person'
     "https://seoonly.com/": SITE("hello@seoonly.com"), "https://bigco.com/": SITE("hello@bigco.com"), "https://german.de/": SITE("hallo@german.de"),
     "https://maplecreative.ca/": SITE("jane@maplecreative.ca"), "https://maplerole.ca/": SITE("hello@maplerole.ca"),
     "https://londonreels.co.uk/": SITE("hello@londonreels.co.uk"),
-    "https://solouk.co.uk/": SITE("jane@solouk.co.uk"), "https://ltduk.co.uk/": SITE("tom@ltduk.co.uk", "Ltduk Ltd, registered in England and Wales."),
+    "https://solouk.co.uk/": SITE("jane@solouk.co.uk", "Great work for brands with Limited Budgets."), "https://ltduk.co.uk/": SITE("tom@ltduk.co.uk", "Ltduk Ltd, registered in England and Wales."),
+    "https://privco.co.uk/": SITE("sam@privco.co.uk", '<a href="/privacy">Privacy policy</a>'),
+    "https://privco.co.uk/privacy": "<html><body>This website is run by PrivCo Media Limited, registered in England.</body></html>",
   };
   const verdicts = {
     "seoonly.com": { fit: false, reason: "SEO only." }, "bigco.com": { fit: true, size: "200+", country: "US" }, "german.de": { fit: true, size: "2-10", country: "DE" },
@@ -590,6 +592,7 @@ test("scout: a site that is not a fit, too big, in another country, or a person'
     // A person's address in the UK: only at a limited company (PECR).
     "solouk.co.uk": { fit: true, size: "solo", country: "GB", city: "Leeds", company: "Solo UK", type: "ugc-agency", opener: "Saw the UGC ads you make for Leeds cafes." },
     "ltduk.co.uk": { fit: true, size: "2-10", country: "GB", city: "Leeds", company: "Ltduk", type: "ugc-agency", opener: "Saw the UGC ads you make for Leeds gyms." },
+    "privco.co.uk": { fit: true, size: "2-10", country: "GB", city: "Bristol", company: "PrivCo", type: "ugc-agency", opener: "Saw the UGC ads you make for Bristol bakeries." },
   };
   const realRun = env.AI.run.bind(env.AI);
   env.AI.run = async (m, input) => {
@@ -610,9 +613,12 @@ test("scout: a site that is not a fit, too big, in another country, or a person'
   assert.equal(seen["londonreels.co.uk"], "added");
   assert.equal(seen["solouk.co.uk"], "a person's address at a UK business that may be a sole trader");
   assert.equal(seen["ltduk.co.uk"], "added");
+  assert.equal(seen["privco.co.uk"], "added", "the company named on its privacy page");
   assert.deepEqual(rows(env, "SELECT email, status, country, region FROM outreach_prospects ORDER BY email"), [
     { email: "hello@londonreels.co.uk", status: "approved", country: "GB", region: null }, { email: "hello@maplerole.ca", status: "approved", country: "CA", region: "ON" },
-    { email: "tom@ltduk.co.uk", status: "approved", country: "GB", region: null }]);
+    { email: "sam@privco.co.uk", status: "approved", country: "GB", region: null }, { email: "tom@ltduk.co.uk", status: "approved", country: "GB", region: null }]);
+  assert.deepEqual(["© OK COOL LTD 11 Richmond", "Socially Powerful Media Limited", "Company No: 12345678", "brands with Limited Budgets", "For Brands With Limited Budgets", "rather than being limited by", "Ltd Films and Plc talk"].map(mod.ukCompany),
+    [true, true, true, false, false, false, false]);
 });
 
 test("scout: the US and Canada are searched only with a postal address, in proportion; sites without video work cost no Workers AI", async () => {

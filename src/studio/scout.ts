@@ -110,12 +110,29 @@ export function queryAt(n: number, places = PLACES): { q: string; city: string; 
 
 /** Sites that are never a small agency's own (directories, networks, platforms, marketplaces, news). */
 const NOT_A_BUSINESS = /(^|\.)(linkedin|facebook|instagram|tiktok|youtube|twitter|x|pinterest|reddit|medium|wikipedia|clutch|sortlist|designrush|goodfirms|upwork|fiverr|yelp|glassdoor|indeed|crunchbase|bark|thumbtack|agencyspotter|themanifest|digitalagencynetwork|webtonic|hubspot|semrush|forbes|businessinsider|nytimes|google|apple|amazon|shopify|wix|squarespace|wordpress|godaddy|behance|dribbble|vimeo|trustpilot|g2|capterra|yellowpages|hellodarwin|expertise|topagencies|agencyvista|sprout|hootsuite|later|canva|adobe|substack|eventbrite|meetup|gov|edu)\.[a-z.]+$/i;
-const ROLE = /^(hello|hi|hey|info|contact|studio|team|work|projects|newbusiness|new\.business|business|enquiries|inquiries|enquiry|inquiry|sales|start|talk|create|office|admin|general|connect)@/i;
+const ROLE = /^(hello|hi|hey|info|contact|studio|team|work|projects|newbusiness|new\.business|newbiz|business|enquiries|inquiries|enquiry|inquiry|sales|start|talk|letstalk|create|office|admin|general|connect|brands?|welcome|(the)?crew|growth|partners|partnerships|collabs?|bookings?|production|marketing|agency)@/i;
 const SKIP_ADDR = /^(no-?reply|donotreply|privacy|careers|jobs|hiring|recruit|hr|legal|abuse|postmaster|webmaster|unsubscribe|billing|accounts|invoices|press|media|support|help|dpo|gdpr|example|name|your|email|user)@/i;
 /** A site that never says any of these does no video or social media work: not worth Workers AI's reading. */
 const VIDEO_WORK = /\b(video|videos|tiktok|reels?|ugc|shorts|short-form|social media|socials|paid social|influencers?|creators?|content creat\w*|branded content|social content)\b/i;
-/** A UK site that shows it is a company (Ltd, LLP, plc, a company number, Companies House). */
-export const UK_COMPANY = /\b(ltd|limited|llp|plc)\b|\bcompany (no|number|reg(istration)?)\b|\bregistered in (england|scotland|wales|northern ireland)\b|\bcompanies house\b/i;
+/**
+ * Whether a UK site shows it is a company: a name followed by Ltd, Limited, LLP or plc ("OK COOL LTD", not "limited
+ * budgets"), a company number, "registered in England", Companies House.
+ */
+const UK_SUFFIX = /[A-Z][A-Za-z0-9&.'’-]*\s+(?:Ltd\.?|LTD|Limited|LIMITED|LLP|PLC|plc)\b(\s+[A-Za-z]+)?/g;
+const NOT_A_SUFFIX = /^\s+(budgets?|time|editions?|offers?|availability|spaces?|places?|numbers?|stock|runs?|resources?|access|capacity)$/i;
+const UK_REGISTERED = /\bcompany (no\.?|number|reg(istration)?( no\.?| number)?)\s*[:.]?\s*[A-Z]{0,2}\d{6,8}\b|\b(registered|incorporated) in (england|scotland|wales|northern ireland)\b|\bcompanies house\b/i;
+export function ukCompany(text: string): boolean {
+  for (const m of text.matchAll(UK_SUFFIX)) if (!NOT_A_SUFFIX.test(m[1] ?? "")) return true;
+  return UK_REGISTERED.test(text);
+}
+/** A same-site privacy, terms or legal page (where a UK company names itself), or null. */
+function legalPage(html: string, base: URL): string | null {
+  for (const m of html.matchAll(/<a\b[^>]*href=["']([^"'#]+)["'][^>]*>([\s\S]{0,120}?)<\/a>/gi)) {
+    if (!/privacy|terms|legal|imprint/i.test(`${m[1]} ${pageText(m[2])}`)) continue;
+    try { const u = new URL(m[1], base); if (u.protocol === "https:" && registrable(u.hostname) === registrable(base.hostname)) return u.href.split("#")[0]; } catch { /* not a link */ }
+  }
+  return null;
+}
 const REFUSE = /\b(no unsolicited|unsolicited (e-?mails?|messages?|solicitations?|offers?|pitches) (are|will) not|we do not accept (unsolicited|sales)|no (sales )?solicitations|no vendor (pitches|solicitations|enquiries|inquiries)|please do not (send|contact).{0,40}(sales|solicit|pitch|vendor))/i;
 
 const registrable = (host: string): string => {
@@ -306,7 +323,10 @@ async function checkSite(env: StudioEnv, set: Settings, site: { domain: string; 
   if (country === "CA" && !ROLE.test(email)) return "a person's address in Canada";
   // The UK's PECR wants consent before marketing e-mail to a sole trader or a partnership, not to a company: a person's
   // address only where the site shows a limited company (27 October 2026).
-  if (country === "GB" && !ROLE.test(email) && !UK_COMPANY.test(all)) return "a person's address at a UK business that may be a sole trader";
+  if (country === "GB" && !ROLE.test(email) && !ukCompany(all)) {
+    const legal = legalPage(home, base), page = legal ? await fetchPage(legal) : null;
+    if (!page || !ukCompany(pageText(decodeEntities(page)))) return "a person's address at a UK business that may be a sole trader";
+  }
   const opener = goodOpener(v.opener);
   const r = await addProspects(env, [{
     company: String(v.company || site.domain).slice(0, 120), website: `https://${base.hostname}`, email, email_source_url: source, country,
