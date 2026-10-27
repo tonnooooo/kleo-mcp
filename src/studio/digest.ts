@@ -50,13 +50,16 @@ export async function morningDigest(env: StudioEnv, nowMs = Date.now()): Promise
     const signedUp = ((await env.DB.prepare("SELECT company FROM outreach_prospects WHERE converted_at >= ?").bind(since).all<{ company: string }>()).results ?? []).map((r) => r.company);
     const scouted = await n(env, "SELECT COUNT(*) AS n FROM outreach_prospects WHERE batch LIKE 'scout%' AND added_at >= ?", since);
     const scoutError = await meta("scout_error");
+    let scoutOn = false;
+    try { scoutOn = JSON.parse((await meta("outreach_settings")) ?? "{}").scoutOn === true; } catch { /* unreadable settings: the scout is off */ }
+    const scoutPaused = scoutOn ? await meta("scout_paused") : null;
     const by = (c: string) => replies.filter((r) => r.class === c).length;
     lines.push("OUTREACH", `Sent in the last 24 hours: ${sent} (${firsts} first e-mails, ${sent - firsts} follow-ups) from ${boxes} mailbox${boxes === 1 ? "" : "es"}.${paused.length ? ` PAUSED: ${paused.join(", ")} refused to send, check the app password in the console.` : ""}`,
       `Replies: ${replies.length - by("bounce")} (interested ${by("interested")}, questions ${by("question")}, no ${by("not_interested") + by("unsubscribe")}, out of office ${by("out_of_office")}). Bounced: ${by("bounce")}.`);
     for (const r of replies.filter((x) => x.class === "interested" || x.class === "question" || x.class === "other")) lines.push(`  - ${r.company ?? r.from_addr} (${r.class}): ${r.summary ?? ""}`);
     if (yeses) lines.push(`Answers to a yes, with their link: ${yeses}.`);
     if (signedUp.length) lines.push(`Signed up through their link: ${signedUp.join(", ")}.`);
-    lines.push(`New businesses found by the scout: ${scouted}.${scoutError ? ` Scout trouble: ${scoutError}` : ""}`,
+    lines.push(`New businesses found by the scout: ${scouted}.${scoutError ? ` Scout trouble: ${scoutError}` : ""}${scoutPaused ? ` Searching waits: ${scoutPaused}.` : ""}`,
       `Approved and not written to yet: ${waiting}. Waiting for your approval: ${toApprove}.`, "");
   }
   lines.push("Details: https://admin.kleooai.com/admin/emails and https://admin.kleooai.com/admin/outreach", "One e-mail a day at 8:00 Auckland time while either is on.");

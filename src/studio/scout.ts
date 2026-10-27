@@ -3,13 +3,19 @@
  * (src/studio/outreach.ts) every day, on its own, without Claude.
  *
  * One web search at a time (Cloudflare's Web Search API through the AI binding, Ceramic, $0.25 per 1,000 searches,
- * billed to the account's AI Gateway credits), at most `scoutDaily` a UTC day, walking through every pairing of a kind
- * of business (TikTok agency, UGC agency, …) and a city of the US, Canada, the UK, Australia and New Zealand. Each new
- * website it returns is queued once (outreach_seen) and checked a few per tick:
+ * billed to the account's AI Gateway credits), at most `scoutDaily` a UTC day (up to 280, the owner asked for 240 on
+ * 27 October), walking through every pairing of a kind of business (TikTok agency, UGC agency, …) and one of 323
+ * cities of the US, Canada, the UK, Australia and New Zealand, then again with other wordings. Without a postal address
+ * in the settings only the UK, Australian and New Zealand cities are searched: the US and Canada would only wait.
+ * Searching pauses (the allowance kept) while 600 websites wait to be read, or while 1,000 businesses per mailbox wait for
+ * their first e-mail: more finds than the mailboxes can write to would only grow old. Each new website it returns is
+ * queued once (outreach_seen) and up to eight are checked per turn, Workers AI reading at most three a day per allowed
+ * search (a guard on the Cloudflare bill):
  *  - its home page and its contact or about page are read like a visitor reads them;
  *  - a business address must be there as visible text, on the business's own domain (never a free mailbox, never one
  *    hidden from robots, never a mailto: alone), a role address (hello@, info@ …) preferred;
- *  - a site that says it refuses unsolicited messages or sales pitches is left alone;
+ *  - a site that says it refuses unsolicited messages or sales pitches is left alone, and so is one that never mentions
+ *    video, social media, TikTok, Reels, UGC or content (no Workers AI spent on it);
  *  - Workers AI decides whether the business makes short-form or social video for clients (or sells online with video
  *    ads), whether it is small enough (under about 200 people), where it is, and writes the first line of the e-mail
  *    from what the site says.
@@ -17,7 +23,7 @@
  * "approved" when the owner chose that. Everything else is remembered with its reason, so no site is read twice.
  */
 import type { StudioEnv } from "./env.ts";
-import { AI_MODEL, COUNTRIES, FREEMAIL, addProspects, goodOpener, meta, pageText, setMeta, type Settings } from "./outreach.ts";
+import { AI_MODEL, COUNTRIES, FREEMAIL, POSTAL_COUNTRIES, addProspects, goodOpener, hasPostal, meta, pageText, setMeta, type Settings } from "./outreach.ts";
 
 const NOW = "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))";
 
@@ -25,6 +31,8 @@ const NOW = "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))";
 export const SEGMENTS = [
   "TikTok marketing agency", "UGC agency", "short form video agency", "social media video agency", "paid social creative agency",
   "TikTok Shop agency", "Instagram Reels agency", "social media content agency", "video ad creative studio", "influencer and UGC content studio",
+  "video marketing agency", "content creation agency", "TikTok ads agency", "performance creative agency", "influencer marketing agency",
+  "social media management agency", "YouTube Shorts agency", "ecommerce video agency", "creator marketing agency", "brand video production company",
 ];
 /** Cities (with their state or province) in the five countries the outreach may write to. */
 export const PLACES: [string, string, string][] = [
@@ -36,20 +44,64 @@ export const PLACES: [string, string, string][] = [
   ["Raleigh", "NC", "US"], ["Kansas City", "MO", "US"], ["St. Louis", "MO", "US"], ["Pittsburgh", "PA", "US"], ["Cincinnati", "OH", "US"], ["Cleveland", "OH", "US"],
   ["Milwaukee", "WI", "US"], ["Sacramento", "CA", "US"], ["Scottsdale", "AZ", "US"], ["Boise", "ID", "US"], ["Richmond", "VA", "US"], ["Baltimore", "MD", "US"],
   ["New Orleans", "LA", "US"], ["Oklahoma City", "OK", "US"], ["Louisville", "KY", "US"], ["Memphis", "TN", "US"], ["Brooklyn", "NY", "US"], ["Fort Lauderdale", "FL", "US"],
+  ["Fort Worth", "TX", "US"], ["El Paso", "TX", "US"], ["Plano", "TX", "US"], ["Frisco", "TX", "US"], ["Irving", "TX", "US"], ["Arlington", "TX", "US"],
+  ["Corpus Christi", "TX", "US"], ["Lubbock", "TX", "US"], ["McAllen", "TX", "US"], ["The Woodlands", "TX", "US"], ["Albuquerque", "NM", "US"], ["Santa Fe", "NM", "US"],
+  ["Tucson", "AZ", "US"], ["Mesa", "AZ", "US"], ["Tempe", "AZ", "US"], ["Chandler", "AZ", "US"], ["Fresno", "CA", "US"], ["Long Beach", "CA", "US"],
+  ["Oakland", "CA", "US"], ["Irvine", "CA", "US"], ["Santa Monica", "CA", "US"], ["Pasadena", "CA", "US"], ["Newport Beach", "CA", "US"], ["Santa Barbara", "CA", "US"],
+  ["Riverside", "CA", "US"], ["Bakersfield", "CA", "US"], ["Palm Springs", "CA", "US"], ["San Luis Obispo", "CA", "US"], ["Santa Cruz", "CA", "US"], ["Berkeley", "CA", "US"],
+  ["Palo Alto", "CA", "US"], ["Burbank", "CA", "US"], ["Culver City", "CA", "US"], ["Hollywood", "CA", "US"], ["Honolulu", "HI", "US"], ["Anchorage", "AK", "US"],
+  ["Spokane", "WA", "US"], ["Tacoma", "WA", "US"], ["Bellevue", "WA", "US"], ["Eugene", "OR", "US"], ["Bend", "OR", "US"], ["Reno", "NV", "US"],
+  ["Henderson", "NV", "US"], ["Provo", "UT", "US"], ["Lehi", "UT", "US"], ["Colorado Springs", "CO", "US"], ["Boulder", "CO", "US"], ["Fort Collins", "CO", "US"],
+  ["Bozeman", "MT", "US"], ["Missoula", "MT", "US"], ["Omaha", "NE", "US"], ["Lincoln", "NE", "US"], ["Wichita", "KS", "US"], ["Tulsa", "OK", "US"],
+  ["Little Rock", "AR", "US"], ["Birmingham", "AL", "US"], ["Huntsville", "AL", "US"], ["Jackson", "MS", "US"], ["Baton Rouge", "LA", "US"], ["Knoxville", "TN", "US"],
+  ["Chattanooga", "TN", "US"], ["Lexington", "KY", "US"], ["Dayton", "OH", "US"], ["Toledo", "OH", "US"], ["Akron", "OH", "US"], ["Grand Rapids", "MI", "US"],
+  ["Ann Arbor", "MI", "US"], ["Madison", "WI", "US"], ["Des Moines", "IA", "US"], ["Saint Paul", "MN", "US"], ["Fargo", "ND", "US"], ["Sioux Falls", "SD", "US"],
+  ["Buffalo", "NY", "US"], ["Rochester", "NY", "US"], ["Albany", "NY", "US"], ["Syracuse", "NY", "US"], ["Long Island", "NY", "US"], ["White Plains", "NY", "US"],
+  ["Queens", "NY", "US"], ["Jersey City", "NJ", "US"], ["Newark", "NJ", "US"], ["Hoboken", "NJ", "US"], ["Princeton", "NJ", "US"], ["Stamford", "CT", "US"],
+  ["Hartford", "CT", "US"], ["New Haven", "CT", "US"], ["Providence", "RI", "US"], ["Worcester", "MA", "US"], ["Cambridge", "MA", "US"], ["Portland", "ME", "US"],
+  ["Burlington", "VT", "US"], ["Manchester", "NH", "US"], ["Wilmington", "DE", "US"], ["Arlington", "VA", "US"], ["Alexandria", "VA", "US"], ["Virginia Beach", "VA", "US"],
+  ["Norfolk", "VA", "US"], ["Durham", "NC", "US"], ["Greensboro", "NC", "US"], ["Asheville", "NC", "US"], ["Wilmington", "NC", "US"], ["Charleston", "SC", "US"],
+  ["Columbia", "SC", "US"], ["Greenville", "SC", "US"], ["Savannah", "GA", "US"], ["Augusta", "GA", "US"], ["St. Petersburg", "FL", "US"], ["West Palm Beach", "FL", "US"],
+  ["Boca Raton", "FL", "US"], ["Naples", "FL", "US"], ["Sarasota", "FL", "US"], ["Fort Myers", "FL", "US"], ["Tallahassee", "FL", "US"], ["Gainesville", "FL", "US"],
+  ["Pensacola", "FL", "US"], ["Miami Beach", "FL", "US"], ["Harrisburg", "PA", "US"], ["Allentown", "PA", "US"], ["Lancaster", "PA", "US"], ["Fort Wayne", "IN", "US"],
+  ["Bloomington", "IN", "US"], ["Evansville", "IN", "US"], ["Springfield", "MO", "US"], ["Columbia", "MO", "US"],
   ["Toronto", "ON", "CA"], ["Vancouver", "BC", "CA"], ["Montreal", "QC", "CA"], ["Calgary", "AB", "CA"], ["Edmonton", "AB", "CA"], ["Ottawa", "ON", "CA"],
   ["Winnipeg", "MB", "CA"], ["Halifax", "NS", "CA"], ["Victoria", "BC", "CA"], ["Mississauga", "ON", "CA"], ["Hamilton", "ON", "CA"], ["Kelowna", "BC", "CA"],
+  ["Quebec City", "QC", "CA"], ["Laval", "QC", "CA"], ["Gatineau", "QC", "CA"], ["London", "ON", "CA"], ["Kitchener", "ON", "CA"], ["Waterloo", "ON", "CA"],
+  ["Markham", "ON", "CA"], ["Vaughan", "ON", "CA"], ["Oakville", "ON", "CA"], ["Burlington", "ON", "CA"], ["Barrie", "ON", "CA"], ["Guelph", "ON", "CA"],
+  ["Kingston", "ON", "CA"], ["Windsor", "ON", "CA"], ["Saskatoon", "SK", "CA"], ["Regina", "SK", "CA"], ["Surrey", "BC", "CA"], ["Burnaby", "BC", "CA"],
+  ["Richmond", "BC", "CA"], ["Abbotsford", "BC", "CA"], ["Nanaimo", "BC", "CA"], ["Kamloops", "BC", "CA"], ["Whistler", "BC", "CA"], ["Red Deer", "AB", "CA"],
+  ["Lethbridge", "AB", "CA"], ["St. John's", "NL", "CA"], ["Moncton", "NB", "CA"], ["Fredericton", "NB", "CA"], ["Charlottetown", "PE", "CA"],
   ["London", "", "GB"], ["Manchester", "", "GB"], ["Birmingham", "", "GB"], ["Leeds", "", "GB"], ["Glasgow", "", "GB"], ["Edinburgh", "", "GB"],
   ["Bristol", "", "GB"], ["Liverpool", "", "GB"], ["Newcastle", "", "GB"], ["Sheffield", "", "GB"], ["Nottingham", "", "GB"], ["Brighton", "", "GB"],
   ["Cardiff", "", "GB"], ["Belfast", "", "GB"], ["Leicester", "", "GB"], ["Southampton", "", "GB"],
+  ["Oxford", "", "GB"], ["Cambridge", "", "GB"], ["Reading", "", "GB"], ["Milton Keynes", "", "GB"], ["Bournemouth", "", "GB"], ["Portsmouth", "", "GB"],
+  ["Plymouth", "", "GB"], ["Exeter", "", "GB"], ["Bath", "", "GB"], ["York", "", "GB"], ["Hull", "", "GB"], ["Bradford", "", "GB"],
+  ["Coventry", "", "GB"], ["Derby", "", "GB"], ["Stoke-on-Trent", "", "GB"], ["Wolverhampton", "", "GB"], ["Norwich", "", "GB"], ["Ipswich", "", "GB"],
+  ["Swansea", "", "GB"], ["Aberdeen", "", "GB"], ["Dundee", "", "GB"], ["Inverness", "", "GB"], ["Middlesbrough", "", "GB"], ["Sunderland", "", "GB"],
+  ["Preston", "", "GB"], ["Blackpool", "", "GB"], ["Bolton", "", "GB"], ["Warrington", "", "GB"], ["Chester", "", "GB"], ["Cheltenham", "", "GB"],
+  ["Gloucester", "", "GB"], ["Swindon", "", "GB"], ["Northampton", "", "GB"], ["Peterborough", "", "GB"], ["Luton", "", "GB"], ["Watford", "", "GB"],
+  ["Guildford", "", "GB"], ["Canterbury", "", "GB"], ["Maidstone", "", "GB"], ["Chelmsford", "", "GB"], ["Colchester", "", "GB"], ["Southend-on-Sea", "", "GB"],
+  ["Shoreditch", "", "GB"], ["Harrogate", "", "GB"], ["Lincoln", "", "GB"], ["Huddersfield", "", "GB"], ["Wakefield", "", "GB"], ["Derry", "", "GB"],
   ["Sydney", "NSW", "AU"], ["Melbourne", "VIC", "AU"], ["Brisbane", "QLD", "AU"], ["Perth", "WA", "AU"], ["Adelaide", "SA", "AU"], ["Gold Coast", "QLD", "AU"],
   ["Canberra", "ACT", "AU"], ["Newcastle NSW", "NSW", "AU"], ["Hobart", "TAS", "AU"], ["Sunshine Coast", "QLD", "AU"],
+  ["Geelong", "VIC", "AU"], ["Wollongong", "NSW", "AU"], ["Townsville", "QLD", "AU"], ["Cairns", "QLD", "AU"], ["Toowoomba", "QLD", "AU"], ["Darwin", "NT", "AU"],
+  ["Launceston", "TAS", "AU"], ["Ballarat", "VIC", "AU"], ["Bendigo", "VIC", "AU"], ["Albury", "NSW", "AU"], ["Byron Bay", "NSW", "AU"], ["Parramatta", "NSW", "AU"],
+  ["Fremantle", "WA", "AU"], ["Mandurah", "WA", "AU"], ["Central Coast", "NSW", "AU"], ["Noosa", "QLD", "AU"],
   ["Auckland", "", "NZ"], ["Wellington", "", "NZ"], ["Christchurch", "", "NZ"], ["Hamilton NZ", "", "NZ"], ["Tauranga", "", "NZ"], ["Dunedin", "", "NZ"], ["Queenstown", "", "NZ"],
+  ["Napier", "", "NZ"], ["Hastings", "", "NZ"], ["Nelson", "", "NZ"], ["Palmerston North", "", "NZ"], ["New Plymouth", "", "NZ"], ["Rotorua", "", "NZ"],
+  ["Whangarei", "", "NZ"], ["Invercargill", "", "NZ"], ["Wanaka", "", "NZ"], ["Gisborne", "", "NZ"], ["Whanganui", "", "NZ"], ["Blenheim", "", "NZ"], ["Timaru", "", "NZ"],
 ];
-/** The n-th search of the endless walk: every kind in every city, then again with another wording. */
-export function queryAt(n: number): { q: string; city: string; region: string; country: string } {
-  const per = SEGMENTS.length * PLACES.length;
+/** The two walks: the countries whose law needs no postal address, and the US and Canada, searched once one is set. */
+export const WALKS = {
+  intl: PLACES.filter((p) => !POSTAL_COUNTRIES.includes(p[2])),
+  na: PLACES.filter((p) => POSTAL_COUNTRIES.includes(p[2])),
+};
+/** The n-th search of an endless walk through these places: every kind in every city, then again with another wording. */
+export function queryAt(n: number, places = PLACES): { q: string; city: string; region: string; country: string } {
+  const per = SEGMENTS.length * places.length;
   const round = Math.floor(n / per), i = n % per;
-  const [city, region, country] = PLACES[Math.floor(i / SEGMENTS.length)];
+  const [city, region, country] = places[Math.floor(i / SEGMENTS.length)];
   const seg = SEGMENTS[i % SEGMENTS.length];
   const wording = ["", " contact", " small", " independent", " boutique"][round % 5];
   const where = country === "GB" ? `${city} UK` : country === "NZ" ? `${city.replace(/ NZ$/, "")} New Zealand` : country === "AU" ? `${city.replace(/ NSW$/, "")} Australia` : country === "CA" ? `${city} Canada` : `${city} ${region}`;
@@ -60,6 +112,8 @@ export function queryAt(n: number): { q: string; city: string; region: string; c
 const NOT_A_BUSINESS = /(^|\.)(linkedin|facebook|instagram|tiktok|youtube|twitter|x|pinterest|reddit|medium|wikipedia|clutch|sortlist|designrush|goodfirms|upwork|fiverr|yelp|glassdoor|indeed|crunchbase|bark|thumbtack|agencyspotter|themanifest|digitalagencynetwork|webtonic|hubspot|semrush|forbes|businessinsider|nytimes|google|apple|amazon|shopify|wix|squarespace|wordpress|godaddy|behance|dribbble|vimeo|trustpilot|g2|capterra|yellowpages|hellodarwin|expertise|topagencies|agencyvista|sprout|hootsuite|later|canva|adobe|substack|eventbrite|meetup|gov|edu)\.[a-z.]+$/i;
 const ROLE = /^(hello|hi|hey|info|contact|studio|team|work|projects|newbusiness|new\.business|business|enquiries|inquiries|enquiry|inquiry|sales|start|talk|create|office|admin|general|connect)@/i;
 const SKIP_ADDR = /^(no-?reply|donotreply|privacy|careers|jobs|hiring|recruit|hr|legal|abuse|postmaster|webmaster|unsubscribe|billing|accounts|invoices|press|media|support|help|dpo|gdpr|example|name|your|email|user)@/i;
+/** A site that never says any of these does no video or social media work: not worth Workers AI's reading. */
+const VIDEO_WORK = /\b(video|videos|tiktok|reels?|ugc|shorts|short-form|social media|socials|paid social|influencers?|creators?|content creat\w*|branded content|social content)\b/i;
 const REFUSE = /\b(no unsolicited|unsolicited (e-?mails?|messages?|solicitations?|offers?|pitches) (are|will) not|we do not accept (unsolicited|sales)|no (sales )?solicitations|no vendor (pitches|solicitations|enquiries|inquiries)|please do not (send|contact).{0,40}(sales|solicit|pitch|vendor))/i;
 
 const registrable = (host: string): string => {
@@ -120,20 +174,33 @@ async function defaultFetch(url: string): Promise<string | null> {
 }
 
 const today = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+/** How many queued websites one turn reads at most, and for how long. */
+const CHECKS_PER_TURN = 8, CHECK_BUDGET_MS = 40_000;
+/** Searching waits while this many websites are queued, or this many businesses per mailbox wait for their first e-mail. */
+const QUEUE_MAX = 600, WAITING_PER_MAILBOX = 1000;
+/** Workers AI reads at most this many websites a day per search allowed (a guard on the Cloudflare bill). */
+const JUDGES_PER_SEARCH = 3;
 
 /**
- * The scout's turn (every 5 minutes while it is on): one search while today's allowance lasts, then up to three queued
- * sites checked. Returns what it did, for the tests and the logs.
+ * The scout's turn (every 5 minutes while it is on): one search while today's allowance lasts and nothing asks it to wait,
+ * then up to eight queued sites checked. Returns what it did, for the tests and the logs.
  */
 export async function scoutTick(env: StudioEnv, set: Settings, nowMs = Date.now(), deps: ScoutDeps = {}): Promise<{ searched: number; checked: number; added: number }> {
   const out = { searched: 0, checked: 0, added: 0 };
   if (!set.scoutOn) return out;
   const dayKey = `scout_day_${today(nowMs)}`;
   const done = Number((await meta(env, dayKey)) ?? 0);
-  if (done < set.scoutDaily) {
-    const n = Number((await meta(env, "scout_cursor")) ?? 0);
-    const q = queryAt(n);
-    await setMeta(env, "scout_cursor", String(n + 1));
+  const postal = hasPostal(set);
+  const pause = done < set.scoutDaily ? await pauseReason(env, postal) : null;
+  if (pause) await setMeta(env, "scout_paused", pause);
+  else if (done < set.scoutDaily) {
+    await env.DB.prepare("DELETE FROM studio_meta WHERE key = 'scout_paused'").run();
+    const a = Number((await meta(env, "scout_cursor_intl")) ?? 0), b = Number((await meta(env, "scout_cursor_na")) ?? 0);
+    // With a postal address both walks run, each in proportion to its number of cities; without one, only the first.
+    const walk = postal && b * WALKS.intl.length < a * WALKS.na.length ? "na" : "intl";
+    const cursorKey = `scout_cursor_${walk}`, n = walk === "na" ? b : a;
+    const q = queryAt(n, WALKS[walk]);
+    await setMeta(env, cursorKey, String(n + 1));
     await setMeta(env, dayKey, String(done + 1));
     try {
       const items = await (deps.search ? deps.search(q.q) : defaultSearch(env, q.q));
@@ -151,18 +218,34 @@ export async function scoutTick(env: StudioEnv, set: Settings, nowMs = Date.now(
     } catch (e) {
       // Out of AI Gateway credits, or Web Search down: today's allowance is not spent on errors.
       await setMeta(env, dayKey, String(done));
-      await setMeta(env, "scout_cursor", String(n));
+      await setMeta(env, cursorKey, String(n));
       await setMeta(env, "scout_error", `${new Date(nowMs).toISOString()} ${(e as Error).message}`.slice(0, 300));
     }
   }
-  const queued = (await env.DB.prepare("SELECT domain, url, hint FROM outreach_seen WHERE status = 'queued' ORDER BY at LIMIT 3").all<{ domain: string; url: string; hint: string | null }>()).results ?? [];
+  const started = Date.now(), judges = set.scoutDaily * JUDGES_PER_SEARCH;
+  const queued = (await env.DB.prepare("SELECT domain, url, hint FROM outreach_seen WHERE status = 'queued' ORDER BY at LIMIT ?").bind(CHECKS_PER_TURN)
+    .all<{ domain: string; url: string; hint: string | null }>()).results ?? [];
   for (const site of queued) {
+    // Today's Workers AI readings spent, or this turn long enough: the rest wait in the queue.
+    if (Date.now() - started > CHECK_BUDGET_MS || Number((await meta(env, `scout_judged_${today(nowMs)}`)) ?? 0) >= judges) break;
     out.checked++;
     const result = await checkSite(env, set, site, nowMs, deps).catch((e) => `error: ${(e as Error).message}`.slice(0, 120));
     if (result === "added") out.added++;
     await env.DB.prepare(`UPDATE outreach_seen SET status = 'checked', result = ?, at = ${NOW} WHERE domain = ?`).bind(result, site.domain).run();
   }
   return out;
+}
+
+/** Why searching waits now (the allowance kept), or null: enough websites to read, or enough businesses to write to. */
+async function pauseReason(env: StudioEnv, postal: boolean): Promise<string | null> {
+  const count = async (sql: string, ...a: unknown[]) => Number((await env.DB.prepare(sql).bind(...a).first<{ n: number }>())?.n ?? 0);
+  const queued = await count("SELECT COUNT(*) AS n FROM outreach_seen WHERE status = 'queued'");
+  if (queued >= QUEUE_MAX) return `${queued} websites are waiting to be read`;
+  const boxes = await count("SELECT COUNT(*) AS n FROM outreach_senders WHERE status = 'active'");
+  const waiting = await count(`SELECT COUNT(*) AS n FROM outreach_prospects WHERE status IN ('new', 'approved') AND step = 0
+    ${postal ? "" : `AND country NOT IN (${POSTAL_COUNTRIES.map(() => "?").join(", ")})`}`, ...(postal ? [] : POSTAL_COUNTRIES));
+  if (waiting >= WAITING_PER_MAILBOX * Math.max(1, boxes)) return `${waiting} businesses already wait for their first e-mail; another mailbox would write to them sooner`;
+  return null;
 }
 
 interface Verdict { fit?: boolean; company?: string; type?: string; size?: string; country?: string | null; region?: string | null; city?: string | null; reason?: string; opener?: string }
@@ -192,9 +275,12 @@ async function checkSite(env: StudioEnv, set: Settings, site: { domain: string; 
   for (const u of contactPages(home, base)) { const h = await fetchPage(u); if (h) pages.push({ url: u, html: h }); }
   const all = pages.map((p) => pageText(decodeEntities(p.html))).join("\n");
   if (REFUSE.test(all)) return "refuses unsolicited messages";
+  if (!VIDEO_WORK.test(all)) return "no video or social media work on the site";
   let email: string | null = null, source = "";
   for (const p of pages) { const a = visibleAddresses(p.html, base.hostname)[0]; if (a && (!email || (ROLE.test(a) && !ROLE.test(email)))) { email = a; source = p.url; } }
   if (!email) return "no visible business address";
+  const judgedKey = `scout_judged_${today(nowMs)}`;
+  await setMeta(env, judgedKey, String(Number((await meta(env, judgedKey)) ?? 0) + 1));
   const v = await judge(env, site.domain, pages.map((p) => `[${p.url}]\n${pageText(decodeEntities(p.html)).slice(0, 3000)}`).join("\n\n"));
   if (!v) return "no verdict";
   if (!v.fit) return `not a fit: ${String(v.reason ?? "").slice(0, 80)}`;
