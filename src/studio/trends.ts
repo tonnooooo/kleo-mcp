@@ -257,6 +257,38 @@ export const TRENDS: Trend[] = [
         color: "#30d158", at: [34, 80] },
     ],
   },
+  // 27 October 2026, the owner: "trova la clip originale … tagliata con la musica in quel modo, senza masha e orso" (an
+  // Instagram reel by @a.aukhadiev, 11 s, an AI remake with Masha and the Bear). The original is TheSilentMan's edit of the
+  // locker-room scene of End of Watch (2012) on 22Gz's "Twirlanta" slowed down, YouTube lbgxRD0LEIY (AV1 1080p60,
+  // Topaz-upscaled): the reel's cuts within 0.1 s and its music at r 0.99. Its first loop, 0-11.0 s, at 30 fps (the
+  // more-duplicate frame of each 60 fps pair dropped, never blended), cropped to 1760x990 with no scaling so the
+  // "Thesilentman" watermark at the bottom is gone. Many cuts and two people, so Ausar's way, as You Tweaking: Prime, both
+  // photos, a fixed prompt with no times. The gear is never named, so no weapon word reaches the provider's filter.
+  {
+    key: "trend-locker-room", name: "Locker Room", blurb: "Put yourself and a friend in this viral clip", tint: "#5e5ce6",
+    baseUrl: `${TRENDS_MEDIA}/locker-room/base-30.mp4`, baseSeconds: 11,
+    preview: `${TRENDS_MEDIA}/locker-room/preview-p.mp4`, guide: `${TRENDS_MEDIA}/locker-room/guide.jpg`,
+    prime: true,
+    seats: [
+      { key: "person1", label: "Person 1", hint: "Takes the place of the guy in the white T-shirt · a clear photo", color: "#5e5ce6", at: [58, 35] },
+      { key: "person2", label: "Person 2", hint: "Takes the place of his shirtless friend · a clear photo", color: "#ff9f0a", at: [16, 52] },
+    ],
+    prompt: [
+      "Replace the two people in Video 1 with the people from Image 1 and Image 2, for the entire video, in every shot, from the first frame to the last.",
+      "",
+      "PERSON 1 -> Image 1",
+      "Original: the man with a shaved head in a plain white crew-neck T-shirt, with a tattoo on one forearm, who talks to a wide-angle camera very close in front of him in a police locker room. He grins into the lens up close, then shows his police gear to the camera one item at a time, and in the last shot he has an arm round his friend's shoulders and points at him with the other hand.",
+      "Replace his face with the face from Image 1 - the face is the most important part: it must clearly be the person from Image 1 in every frame, including the extreme close-ups at the lens, the shots in profile and the motion-blurred moments. Replace his head, hair, build, skin, hands and clothes with the hair, build, skin, hands and clothes from Image 1. Nothing of his shaved head, white T-shirt or forearm tattoo stays unless Image 1 has them. The person from Image 1 holds every item in the same hand, at the same distance from the lens and for the same time.",
+      "",
+      "PERSON 2 -> Image 2",
+      "Original: his friend, a man with short black hair and a thin goatee, shirtless, with a dark tattoo across his chest. He leans in from the left beside Person 1's shoulder and smiles into the lens, is seen changing in the background on the left, and in the last shot stands at the front on the left with Person 1's arm round his shoulders.",
+      "Replace his face with the face from Image 2 - clearly the person from Image 2 in every frame. Replace his hair, build, skin and body with those from Image 2. The person from Image 2 is never shirtless: in every shot they wear the clothes they wear in Image 2. Nothing of his black hair, goatee, bare chest or chest tattoo stays unless Image 2 has them.",
+      "",
+      "Person 2 appears only where the friend is in Video 1; every other shot shows only Person 1. Never put the face from Image 1 on Person 2 or the face from Image 2 on Person 1, and never add a second copy of anyone. Both keep their exact movement, gestures, facial expressions, mouth movement and timing from Video 1. If a person in an image is a different gender, they replace the original in that position as they are in the image. No part of the original two men appears anywhere.",
+      "",
+      "The other officers in the background stay exactly as in Video 1. Nothing else in the video changes: the same black lockers covered in stickers, the same gear, the same close wide-angle camera with its bent edges and its shake, the same white flashes, light flares and zoom blurs, the same dark teal colour grade, the same cuts, speed and timing.",
+    ].join("\n"),
+  },
   // 25 October 2026, the owner: "riesci a trovare la clip originale? … scarica quella max quality" (an Instagram reel
   // of Ausar's own "You Tweaking" result, with its watermark). The source is Quante Savage's YouTube show "20 GUYS VS 1
   // OF MODEL: LADIISCORPIO" (the 2024 upload is members-only; its public re-upload ov0xf73JxnE, 12:00.95-12:15.9, VP9
