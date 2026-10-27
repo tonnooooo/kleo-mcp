@@ -114,6 +114,8 @@ const ROLE = /^(hello|hi|hey|info|contact|studio|team|work|projects|newbusiness|
 const SKIP_ADDR = /^(no-?reply|donotreply|privacy|careers|jobs|hiring|recruit|hr|legal|abuse|postmaster|webmaster|unsubscribe|billing|accounts|invoices|press|media|support|help|dpo|gdpr|example|name|your|email|user)@/i;
 /** A site that never says any of these does no video or social media work: not worth Workers AI's reading. */
 const VIDEO_WORK = /\b(video|videos|tiktok|reels?|ugc|shorts|short-form|social media|socials|paid social|influencers?|creators?|content creat\w*|branded content|social content)\b/i;
+/** A UK site that shows it is a company (Ltd, LLP, plc, a company number, Companies House). */
+export const UK_COMPANY = /\b(ltd|limited|llp|plc)\b|\bcompany (no|number|reg(istration)?)\b|\bregistered in (england|scotland|wales|northern ireland)\b|\bcompanies house\b/i;
 const REFUSE = /\b(no unsolicited|unsolicited (e-?mails?|messages?|solicitations?|offers?|pitches) (are|will) not|we do not accept (unsolicited|sales)|no (sales )?solicitations|no vendor (pitches|solicitations|enquiries|inquiries)|please do not (send|contact).{0,40}(sales|solicit|pitch|vendor))/i;
 
 const registrable = (host: string): string => {
@@ -302,6 +304,9 @@ async function checkSite(env: StudioEnv, set: Settings, site: { domain: string; 
   if (tld && tld !== country) return `country unclear (${tld} site, ${country} office)`;
   // Canada's privacy law treats a person's own address as personal information: role addresses only there.
   if (country === "CA" && !ROLE.test(email)) return "a person's address in Canada";
+  // The UK's PECR wants consent before marketing e-mail to a sole trader or a partnership, not to a company: a person's
+  // address only where the site shows a limited company (27 October 2026).
+  if (country === "GB" && !ROLE.test(email) && !UK_COMPANY.test(all)) return "a person's address at a UK business that may be a sole trader";
   const opener = goodOpener(v.opener);
   const r = await addProspects(env, [{
     company: String(v.company || site.domain).slice(0, 120), website: `https://${base.hostname}`, email, email_source_url: source, country,
