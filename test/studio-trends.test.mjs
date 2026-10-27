@@ -397,13 +397,14 @@ test("You Tweaking (25 October 2026): Ausar's way, Wan 3.0 Prime, both photos, a
   for (const x of TRENDS) if (!x.prime) assert.equal(planTool(x.key, { quality: "480p" }, Object.fromEntries(x.seats.map((s) => [s.key, photo(`up_${s.key}`)]))).tasks[0].model, WAN30_EDIT_MODEL, x.key);
 });
 
-test("Locker Room (27 October 2026): the original edit without its watermark, Wan 3.0 Prime, both photos, a fixed prompt with no times", () => {
+test("Locker Room (27 October 2026): the original edit without its watermark, Wan 3.0 Prime, both photos, a fixed prompt with no times", async () => {
   const t = trendByKey("trend-locker-room");
   assert.ok(t && t.prompt && !t.shots && t.prime, "a fixed prompt on Prime");
   assert.equal(TRENDS[1], t, "second on the Templates page, after You Talking Bout Me");
   assert.deepEqual(t.seats.map((s) => s.key), ["person1", "person2"]);
-  // TheSilentMan's edit, its first 11.0 s at 30 fps (330 frames), 1760x990 with no scaling.
-  for (const [field, file] of [["baseUrl", "base-30.mp4"], ["preview", "preview-p.mp4"], ["guide", "guide.jpg"]]) assert.equal(t[field], `https://media.kleooai.com/app/templates/locker-room/${file}`);
+  // TheSilentMan's edit, its first 11.0 s at 30 fps (330 frames), 1728x972 with no scaling. New names: the CDN keeps a
+  // file it has served for hours, so the first cut (base-30.mp4, preview-p.mp4, guide.jpg) is never overwritten.
+  for (const [field, file] of [["baseUrl", "base-30-v2.mp4"], ["preview", "preview2-p.mp4"], ["guide", "guide2.jpg"]]) assert.equal(t[field], `https://media.kleooai.com/app/templates/locker-room/${file}`);
   assert.equal(t.baseSeconds, 11);
   // 11 s in + 11 s out on Prime: $0.075 / $0.15 / $0.30 a second.
   assert.equal(trendBilledSeconds(t), 22);
@@ -411,7 +412,7 @@ test("Locker Room (27 October 2026): the original edit without its watermark, Wa
   const app = toolByKey(t.key);
   assert.equal(app.seconds, 11);
   assert.deepEqual(app.fields.filter((f) => f.kind === "image").map((f) => [f.key, f.required, f.hint]),
-    [["person1", true, "Takes the place of the guy in the white T-shirt · a clear photo"], ["person2", true, "Takes the place of his shirtless friend · a clear photo"]]);
+    [["person1", true, "Takes the place of the guy with the shaved head · a clear photo"], ["person2", true, "Takes the place of his friend on the left · a clear photo"]]);
   const plan = planTool(t.key, { quality: "720p" }, { person1: photo("up_a"), person2: photo("up_b") });
   assert.equal(plan.usd, 3.3);
   assert.equal(plan.tasks.length, 1);
@@ -424,13 +425,23 @@ test("Locker Room (27 October 2026): the original edit without its watermark, Wa
   assert.equal(input.generate_audio, false);
   assert.equal(input.prompt, t.prompt);
   assert.match(input.prompt, /PERSON 1 -> Image 1\nOriginal: the man with a shaved head in a plain white crew-neck T-shirt/);
-  assert.match(input.prompt, /PERSON 2 -> Image 2\nOriginal: his friend, a man with short black hair and a thin goatee, shirtless/);
+  assert.match(input.prompt, /PERSON 2 -> Image 2\nOriginal: his friend, a man with short black hair and a thin goatee, shirtless in most shots/);
+  // The checks of 27 October: other officers are in the shots without the friend, he holds two items at once, the friend
+  // is also the man in a black uniform shirt, and there is no forearm tattoo (the Topaz upscale sharpened arm hair).
+  assert.match(input.prompt, /in every other shot Person 1 is the only one of the two\./);
+  assert.match(input.prompt, /The other officers in the background stay as they are in Video 1 and never get the face from Image 1 or Image 2\./);
+  assert.match(input.prompt, /sometimes one in each hand/);
+  assert.match(input.prompt, /once in a black uniform shirt with his head down/);
+  assert.doesNotMatch(input.prompt, /every other shot shows only|one item at a time|forearm|zoom blur|teal/);
   assert.match(input.prompt, /The person from Image 2 is never shirtless: in every shot they wear the clothes they wear in Image 2\./);
   assert.match(input.prompt, /If a person in an image is a different gender, they replace the original in that position as they are in the image\./);
   // No times (Wan re-times to them) and no weapon words for the provider's filter.
-  assert.doesNotMatch(input.prompt, /\d\.\d\s*s\b|\ds;|\d+ s\b/);
-  assert.doesNotMatch(input.prompt, /gun|pistol|knife|knives|weapon|spray|handcuff|blade|shoot/i);
+  assert.doesNotMatch(input.prompt, /\d+(?:\.\d+)?\s*(?:s|sec|secs|seconds?)\b|\d\s*-\s*\d/);
+  assert.doesNotMatch(input.prompt, /gun|pistol|rifle|firearm|knife|knives|blade|weapon|spray|mace|handcuff|cuffs|holster|taser|baton|bullet|ammo|ammunition|magazine|knuckle|shoot/i);
   assert.ok(input.prompt.length < 3000, `${input.prompt.length} characters`);
+  // The exact words, pinned: a change to them is a change to every customer's result.
+  const { createHash } = await import("node:crypto");
+  assert.equal(createHash("sha256").update(t.prompt).digest("hex"), "89f457a446609b8778f21fbf78ca33f12bbe840e190055d506d233047ceb9e1a");
   // Both photos are needed.
   assert.throws(() => planTool(t.key, { quality: "720p" }, { person1: photo("up_a") }), (e) => e instanceof ToolRefusal && /each of the 2 people/.test(e.message));
 });
