@@ -265,40 +265,74 @@ export interface Written { subject: string; text: string; html: string }
 export interface Signature { fromName: string; postal: string; credits: number; link?: string | null }
 
 /**
- * An e-mail is a list of parts, each a paragraph or a button, written out twice: as plain text and as plain-looking HTML
- * (27 October 2026, the owner: a bare app.kleooai.com address "sembra scam", make a button like Superhuman's). The HTML
- * reads like a person's e-mail: no logo, no images, no tracking, left-aligned; addresses sit behind words.
+ * An e-mail is a list of parts written out twice: as plain text and as HTML (27 October 2026, the owner: a bare
+ * app.kleooai.com address "sembra scam"; then "fai il bottone pulito, bella grafica professionale", the logo where I
+ * judge best). The first e-mail reads like a person's note: words only, no image, so a new domain's first contact stays
+ * out of the filters. The second e-mail and the answer to a yes carry the offer as a card (the Kleo icon, the business's
+ * name, what the link gives, one button) and a signature with the icon. Tables and inline styles, so Gmail, Apple Mail
+ * and Outlook draw the same thing; no tracking; addresses sit behind words.
  */
-type Part = string | { button: string; url: string };
+interface Offer { title: string; line: string; text: string; button: string; url: string }
+type Part = string | { offer: Offer } | { sign: string; logo: boolean };
 interface Foot { why: string; stopUrl: string; who: string }
 const FONT = "-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+/** Kleo's icon (the golden play mark on black), from the public media bucket: the app host forbids embedding its files elsewhere. */
+const ICON = "https://media.kleooai.com/email/kleo-icon-192.png";
 /** A paragraph as HTML: "Kleo (kleooai.com)" becomes the word Kleo linking there; line breaks stay. */
 const inlineHtml = (s: string): string => escapeHtml(s).replace(/Kleo \(kleooai\.com\)/g, '<a href="https://kleooai.com" style="color:#111111">Kleo</a>').replace(/\n/g, "<br>");
+const icon = (size: number): string => `<img src="${ICON}" width="${size}" height="${size}" alt="Kleo" style="display:block;width:${size}px;height:${size}px;border:0;border-radius:${Math.round(size / 4)}px">`;
+/** A button every client draws the same (a table cell, not a styled link alone). */
+const buttonHtml = (label: string, url: string): string =>
+  `<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="border-collapse:separate"><tr><td bgcolor="#111111" style="background:#111111;border-radius:12px">` +
+  `<a href="${escapeHtml(url)}" style="display:inline-block;padding:14px 24px;font-family:${FONT};font-size:16px;font-weight:600;line-height:20px;color:#ffffff;text-decoration:none;border-radius:12px">${escapeHtml(label)}&nbsp;&rarr;</a></td></tr></table>`;
+function partText(x: Part): string {
+  if (typeof x === "string") return x;
+  if ("offer" in x) return `${x.offer.title}\n${x.offer.text}\n${x.offer.button}: ${x.offer.url}`;
+  return `${x.sign}\nFounder, Kleo`;
+}
+function partHtml(x: Part): string {
+  if (typeof x === "string") return `<p style="margin:0 0 16px">${inlineHtml(x)}</p>`;
+  if ("offer" in x) {
+    const o = x.offer;
+    return `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:6px 0 22px;border-collapse:separate"><tr><td bgcolor="#F6F5F2" style="background:#F6F5F2;border:1px solid #ECEAE4;border-radius:16px;padding:22px 22px 24px">
+<table role="presentation" cellspacing="0" cellpadding="0" border="0"><tr><td valign="middle" style="padding:0 12px 0 0">${icon(40)}</td>
+<td valign="middle"><div style="font-size:17px;font-weight:600;line-height:22px;color:#111111">${escapeHtml(o.title)}</div><div style="font-size:15px;line-height:20px;color:#6b6b6b">${escapeHtml(o.line)}</div></td></tr></table>
+<p style="margin:16px 0 18px;font-size:16px;line-height:1.55;color:#111111">${escapeHtml(o.text)}</p>
+${buttonHtml(o.button, o.url)}
+</td></tr></table>`;
+  }
+  if (!x.logo) return `<p style="margin:0 0 16px">${escapeHtml(x.sign)}<br><span style="color:#6b6b6b">Founder, <a href="https://kleooai.com" style="color:#6b6b6b">Kleo</a></span></p>`;
+  return `<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:6px 0 16px"><tr><td valign="middle" style="padding:0 12px 0 0">${icon(36)}</td>
+<td valign="middle" style="font-size:15px;line-height:20px;color:#111111"><span style="font-weight:600">${escapeHtml(x.sign)}</span><br><span style="color:#6b6b6b">Founder, <a href="https://kleooai.com" style="color:#6b6b6b;text-decoration:none">Kleo</a> · AI video studio</span></td></tr></table>`;
+}
 function asText(parts: Part[], foot: Foot | null): string {
-  const body = parts.map((x) => (typeof x === "string" ? x : `${x.button}: ${x.url}`));
-  return [...body, ...(foot ? [`--\n${foot.why} If it isn't relevant, reply "no" or open ${foot.stopUrl} and I won't write again.\n${foot.who}`] : [])].join("\n\n");
+  return [...parts.map(partText), ...(foot ? [`--\n${foot.why} If it isn't relevant, reply "no" or open ${foot.stopUrl} and I won't write again.\n${foot.who}`] : [])].join("\n\n");
 }
 function asHtml(parts: Part[], foot: Foot | null): string {
-  const body = parts.map((x) => typeof x === "string"
-    ? `<p style="margin:0 0 16px">${inlineHtml(x)}</p>`
-    : `<p style="margin:22px 0 24px"><a href="${escapeHtml(x.url)}" style="display:inline-block;background:#111111;color:#ffffff;text-decoration:none;font-weight:600;font-size:16px;padding:13px 22px;border-radius:999px">${escapeHtml(x.button)}</a></p>`).join("\n");
-  const tail = foot ? `\n<p style="margin:28px 0 0;padding-top:14px;border-top:1px solid #e5e5e5;font-size:15px;line-height:1.5;color:#6b6b6b">${escapeHtml(foot.why)} If it isn't relevant, reply "no" or <a href="${escapeHtml(foot.stopUrl)}" style="color:#6b6b6b">unsubscribe here</a> and I won't write again.<br>${escapeHtml(foot.who)}</p>` : "";
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"></head>
-<body style="margin:0;padding:0;background:#ffffff"><div style="max-width:560px;padding:8px 4px;font-family:${FONT};font-size:16px;line-height:1.55;color:#111111">
-${body}${tail}
-</div></body></html>`;
+  const tail = foot ? `\n<p style="margin:26px 0 0;padding-top:14px;border-top:1px solid #ECEAE4;font-size:14px;line-height:1.5;color:#8a8a8a">${escapeHtml(foot.why)} If it isn't relevant, reply "no" or <a href="${escapeHtml(foot.stopUrl)}" style="color:#8a8a8a">unsubscribe here</a> and I won't write again.<br>${escapeHtml(foot.who)}</p>` : "";
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><meta name="supported-color-schemes" content="light"></head>
+<body style="margin:0;padding:0;background:#ffffff"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td align="left" style="padding:8px 4px">
+<div style="max-width:560px;font-family:${FONT};font-size:16px;line-height:1.55;color:#111111">
+${parts.map(partHtml).join("\n")}${tail}
+</div></td></tr></table></body></html>`;
 }
+/** The offer card: the business's own link, what it gives, one button. */
+const offerFor = (p: Prospect, s: Signature, url: string, after: string): Offer => ({
+  title: `Kleo for ${nameOf(p)}`, line: "AI video for TikTok, Reels and Shorts", url, button: s.credits ? "Try Kleo free" : "Try Kleo",
+  text: s.credits
+    ? `Sign up through this link in about a minute (Google or e-mail, no card needed) and ${s.credits} free credits land on the account ${after}, enough for a few test clips.`
+    : "Sign up through this link in about a minute (Google or e-mail, no card needed) and try it on a real brief.",
+});
 
 /**
  * The three e-mails of the sequence, for one prospect. Short, no tracking. The first asks for a reply (no link but the
- * word Kleo); the second carries the business's personal link as a button, so a curious reader signs up without writing
- * back; the third closes the thread. The footer names Kleo and New Zealand (27 October 2026: Kanaky Tech is no longer
- * part of it), and the postal address once there is one.
+ * word Kleo); the second carries the business's personal link in the offer card, so a curious reader signs up without
+ * writing back; the third closes the thread. The footer names Kleo and New Zealand (27 October 2026: Kanaky Tech is no
+ * longer part of it), and the postal address once there is one.
  */
 export function writeStep(p: Prospect, step: number, s: Signature, unsubscribeUrl: string): Written {
   const name = s.fromName || "Leonardo";
   const hi = hiOf(p);
-  const sign = `${name}\nFounder, Kleo`;
   const foot: Foot = {
     why: `You're getting this one-off business e-mail because ${p.email} is listed on ${hostOf(p.source_url)}.`, stopUrl: unsubscribeUrl,
     who: s.postal.trim() ? `Kleo, ${s.postal.trim()} · kleooai.com` : "Kleo · New Zealand · kleooai.com · hello@kleooai.com",
@@ -307,32 +341,27 @@ export function writeStep(p: Prospect, step: number, s: Signature, unsubscribeUr
   const v = variantById(p.variant);
   const subject0 = p.subject || v.subject(p);
   const opener = (p.opener ?? "").trim() || `I came across ${nameOf(p)} while looking at ${PHRASE[p.type ?? ""] ?? "studios that make short-form video"}${p.city ? ` in ${p.city}` : ""}.`;
-  if (step === 0) return mail(subject0, [hi, opener, ...v.pitch(p, s.credits), sign]);
+  if (step === 0) return mail(subject0, [hi, opener, ...v.pitch(p, s.credits), { sign: name, logo: false }]);
   if (step === 1) return mail(`Re: ${subject0}`, [hi, ...(s.link ? [
     `Easier than a call: I've set up ${nameOfs(p)} own link to try Kleo.`,
-    { button: s.credits ? `Try Kleo with ${s.credits} free credits` : "Try Kleo", url: s.link },
-    s.credits
-      ? "Sign up through it (Google or e-mail, about a minute) and the credits land on the account within a few minutes, enough for a few test clips. Every clip in Kleo's Explore tab was made from one line or one photo."
-      : "Sign up through it (Google or e-mail, about a minute) and try it on a real brief. Every clip in Kleo's Explore tab was made from one line or one photo.",
+    { offer: offerFor(p, s, s.link, "within a few minutes") },
+    "Every clip in Kleo's Explore tab was made from one line or one photo.",
   ] : [
     "A quick follow-up with something you can judge in ten seconds: app.kleooai.com/explore has clips made entirely in Kleo, each from one line or one photo.",
     s.credits ? `If a free trial for ${nameOf(p)} sounds useful, reply "yes" and I'll send it over.` : `If it sounds useful for ${nameOf(p)}, reply "yes" and I'll send the details.`,
-  ]), sign]);
+  ]), { sign: name, logo: !!s.link }]);
   return mail(`Re: ${subject0}`, [hi,
     `I'll stop here so I don't crowd your inbox. If short-form video ever becomes the bottleneck at ${nameOf(p)}, a reply to this e-mail still reaches me.`,
-    `Thanks,\n${name}`]);
+    "Thanks,", { sign: name, logo: false }]);
 }
 
-/** Kleo's own answer to a "yes": the personal link as a button, and what signing up through it gives. */
+/** Kleo's own answer to a "yes": the personal link in the offer card, and the signature with the icon. */
 export function yesMail(p: Prospect, s: Signature, link: string): { text: string; html: string } {
   const parts: Part[] = [hiOf(p),
     `Great, here's ${nameOfs(p)} own link to Kleo.`,
-    { button: s.credits ? `Try Kleo with ${s.credits} free credits` : "Open Kleo", url: link },
-    s.credits
-      ? `Sign up through it (Google or e-mail, about a minute) and the ${s.credits} free credits land on the account by themselves, enough for a few clips on the fast model to judge Kleo on a real brief.`
-      : "Sign up through it (Google or e-mail, about a minute) and you can start right away.",
+    { offer: offerFor(p, s, link, "by themselves") },
     "If anything is unclear, just reply here.",
-    s.fromName || "Leonardo"];
+    { sign: s.fromName || "Leonardo", logo: true }];
   return { text: asText(parts, null), html: asHtml(parts, null) };
 }
 export const writeYes = (p: Prospect, s: Signature, link: string): string => yesMail(p, s, link).text;
