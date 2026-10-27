@@ -316,7 +316,7 @@ test("every template not written shot by shot sends exactly the instruction it s
   const h = createHash("sha256");
   let n = 0;
   // The templates there were on 23 October 2026; the ones added since are pinned by their own tests.
-  const since = ["trend-window-peeper", "trend-you-tweaking"];
+  const since = ["trend-window-peeper", "trend-you-tweaking", "trend-locker-room"];
   for (const t of TRENDS) {
     if (t.shots || since.includes(t.key)) continue;
     const all = t.seats.map((s) => s.key);
@@ -392,8 +392,58 @@ test("You Tweaking (25 October 2026): Ausar's way, Wan 3.0 Prime, both photos, a
   assert.ok(input.prompt.length < 3000, `${input.prompt.length} characters`);
   // Both photos are needed, as on Ausar.
   assert.throws(() => planTool(t.key, { quality: "720p" }, { person2: photo("up_f") }), (e) => e instanceof ToolRefusal && /each of the 2 people/.test(e.message));
-  // Every other template stays on the standard model and its price.
-  for (const x of TRENDS) if (x.key !== t.key) assert.equal(planTool(x.key, { quality: "480p" }, Object.fromEntries(x.seats.map((s) => [s.key, photo(`up_${s.key}`)]))).tasks[0].model, WAN30_EDIT_MODEL, x.key);
+  // Every template not marked Prime stays on the standard model and its price.
+  assert.deepEqual(TRENDS.filter((x) => x.prime).map((x) => x.key), ["trend-locker-room", "trend-you-tweaking"]);
+  for (const x of TRENDS) if (!x.prime) assert.equal(planTool(x.key, { quality: "480p" }, Object.fromEntries(x.seats.map((s) => [s.key, photo(`up_${s.key}`)]))).tasks[0].model, WAN30_EDIT_MODEL, x.key);
+});
+
+test("Locker Room (27 October 2026): the original edit without its watermark, Wan 3.0 Prime, both photos, a fixed prompt with no times", async () => {
+  const t = trendByKey("trend-locker-room");
+  assert.ok(t && t.prompt && !t.shots && t.prime, "a fixed prompt on Prime");
+  assert.equal(TRENDS[1], t, "second on the Templates page, after You Talking Bout Me");
+  assert.deepEqual(t.seats.map((s) => s.key), ["person1", "person2"]);
+  // TheSilentMan's edit, its first 11.0 s at 30 fps (330 frames), 1728x972 with no scaling. New names: the CDN keeps a
+  // file it has served for hours, so the first cut (base-30.mp4, preview-p.mp4, guide.jpg) is never overwritten.
+  for (const [field, file] of [["baseUrl", "base-30-v2.mp4"], ["preview", "preview2-p.mp4"], ["guide", "guide2.jpg"]]) assert.equal(t[field], `https://media.kleooai.com/app/templates/locker-room/${file}`);
+  assert.equal(t.baseSeconds, 11);
+  // 11 s in + 11 s out on Prime: $0.075 / $0.15 / $0.30 a second.
+  assert.equal(trendBilledSeconds(t), 22);
+  assert.deepEqual(["480p", "720p", "1080p"].map((q) => trendCostUsd(t, q)), [1.65, 3.3, 6.6]);
+  const app = toolByKey(t.key);
+  assert.equal(app.seconds, 11);
+  assert.deepEqual(app.fields.filter((f) => f.kind === "image").map((f) => [f.key, f.required, f.hint]),
+    [["person1", true, "Takes the place of the guy with the shaved head · a clear photo"], ["person2", true, "Takes the place of his friend on the left · a clear photo"]]);
+  const plan = planTool(t.key, { quality: "720p" }, { person1: photo("up_a"), person2: photo("up_b") });
+  assert.equal(plan.usd, 3.3);
+  assert.equal(plan.tasks.length, 1);
+  assert.equal(plan.tasks[0].then, undefined, "no second run");
+  assert.equal(plan.tasks[0].model, "alibaba/wan-3.0-prime/video-edit");
+  const input = plan.tasks[0].input;
+  assert.equal(input.video, t.baseUrl);
+  assert.deepEqual(input.reference_images, [photo("up_a").url, photo("up_b").url]);
+  assert.equal(input.resolution, "720p");
+  assert.equal(input.generate_audio, false);
+  assert.equal(input.prompt, t.prompt);
+  assert.match(input.prompt, /PERSON 1 -> Image 1\nOriginal: the man with a shaved head in a plain white crew-neck T-shirt/);
+  assert.match(input.prompt, /PERSON 2 -> Image 2\nOriginal: his friend, a clean-shaven man with short black hair, shirtless in most shots/);
+  // The checks of 27 October: other officers are in the shots without the friend, he holds two items at once, the friend
+  // is also the man in a black uniform shirt, and there is no forearm tattoo (the Topaz upscale sharpened arm hair).
+  assert.match(input.prompt, /in every other shot Person 1 is the only one of the two\./);
+  assert.match(input.prompt, /The other officers in the background stay as they are in Video 1 and never get the face from Image 1 or Image 2\./);
+  assert.match(input.prompt, /sometimes one in each hand/);
+  assert.match(input.prompt, /once in a black uniform shirt with his head down/);
+  assert.doesNotMatch(input.prompt, /every other shot shows only|one item at a time|forearm|goatee|zoom blur|teal/);
+  assert.match(input.prompt, /The person from Image 2 is never shirtless: in every shot they wear the clothes they wear in Image 2\./);
+  assert.match(input.prompt, /If a person in an image is a different gender, they replace the original in that position as they are in the image\./);
+  // No times (Wan re-times to them) and no weapon words for the provider's filter.
+  assert.doesNotMatch(input.prompt, /\d+(?:\.\d+)?\s*(?:s|sec|secs|seconds?)\b|\d\s*-\s*\d/);
+  assert.doesNotMatch(input.prompt, /gun|pistol|rifle|firearm|knife|knives|blade|weapon|spray|mace|handcuff|cuffs|holster|taser|baton|bullet|ammo|ammunition|magazine|knuckle|shoot/i);
+  assert.ok(input.prompt.length < 3000, `${input.prompt.length} characters`);
+  // The exact words, pinned: a change to them is a change to every customer's result.
+  const { createHash } = await import("node:crypto");
+  assert.equal(createHash("sha256").update(t.prompt).digest("hex"), "7572d7cf824aed96f211e5df1ac3d328f3ab925804d8105f903634914a24fea6");
+  // Both photos are needed.
+  assert.throws(() => planTool(t.key, { quality: "720p" }, { person1: photo("up_a") }), (e) => e instanceof ToolRefusal && /each of the 2 people/.test(e.message));
 });
 
 test("photo notes (27 October 2026): a seat-by-seat template is told about a black-and-white or head-only photo; a template written shot by shot keeps its own words", () => {
