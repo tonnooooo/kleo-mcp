@@ -703,9 +703,17 @@ export const pageText = (html: string): string => html.replace(/<script[\s\S]*?<
   .replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&#39;|&rsquo;/g, "'").replace(/&quot;/g, '"').replace(/\s+/g, " ").trim();
 
 /** One sentence about something real on the business's site, or null when Workers AI can't write a good one. */
+/**
+ * A first line fit to send: one sentence ending in a full stop, short, no hype, no address, and spoken to the business
+ * ("Saw that you…", "Noticed your…"). 27 October 2026: the scout's model wrote "Saw they scale 150+ D2C brands" and
+ * "Saw TikTok Shop Services in their offerings" with no full stop; a line about the business in the third person is
+ * refused, and the e-mail writes a new one when it goes.
+ */
 export function goodOpener(line: unknown): string | null {
-  const s = String(line ?? "").trim().replace(/^["'“]|["'”]$/g, "").split("\n")[0].trim();
-  return s.length > 20 && s.length < 220 && s.split(/\s+/).length <= 30 && !/!|https?:|www\.|love your|impressive|amazing|awesome/i.test(s) ? s : null;
+  let s = String(line ?? "").trim().replace(/^["'“]|["'”]$/g, "").split("\n")[0].trim();
+  if (s && !/[.?]$/.test(s)) s = `${s.replace(/[,;:\s]+$/, "")}.`;
+  return s.length > 20 && s.length < 220 && s.split(/\s+/).length <= 30 && !/!|https?:|www\.|love your|impressive|amazing|awesome/i.test(s)
+    && !/\b(they|they're|their|theirs|them)\b/i.test(s) ? s : null;
 }
 
 export async function writeOpener(env: StudioEnv, p: Pick<Prospect, "company" | "website">, text?: string): Promise<string | null> {
@@ -721,7 +729,7 @@ export async function writeOpener(env: StudioEnv, p: Pick<Prospect, "company" | 
   try {
     const r = await env.AI.run(AI_MODEL as never, {
       messages: [
-        { role: "system", content: "Write the first line of a short, personal business e-mail to this company, from the founder of an AI video app. One sentence, at most 25 words, about something specific and real on their website (a service, a niche they serve, a named client or project), starting with \"Saw\" or \"Noticed\". No flattery, no exclamation marks, no emoji, nothing you cannot see in the text. Answer with the sentence only." },
+        { role: "system", content: "Write the first line of a short, personal business e-mail to this company, from the founder of an AI video app. One sentence, at most 25 words, ending with a full stop, about something specific and real on their website (a service, a niche they serve, a named client or project), starting with \"Saw\" or \"Noticed\". Speak to them directly: \"you\" and \"your\", never \"they\", \"their\" or \"them\" (for example: Saw that you make UGC ads for skincare brands in Leeds.). No flattery, no exclamation marks, no emoji, nothing you cannot see in the text. Answer with the sentence only." },
         { role: "user", content: `Company: ${p.company}\nWebsite text:\n${page.slice(0, 3500)}` },
       ],
       max_tokens: 80, temperature: 0.3,
