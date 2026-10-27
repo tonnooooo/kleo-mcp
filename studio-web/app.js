@@ -3,7 +3,7 @@
 //
 // Pages: Create (chat with Kleo) · Video · Image · Audio · Apps · Library. Desktop: a top bar; phones: a tab bar.
 
-import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=95";
+import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=96";
 
 const DEMO = new URLSearchParams(location.search).has("demo");
 const DEMO_FREE = new URLSearchParams(location.search).get("demo") === "free"; // ?demo=free: an account that never paid
@@ -774,7 +774,7 @@ const HOME_TILES = [
   { t: "Video", s: "Seedance 2.5 and Veo 3.1", art: () => artVideo(loop("kitten-knight-black-dragon")), go: () => go("/video") },
   { t: "Image", s: "FLUX.2, Seedream and Nano Banana", art: () => artImg(still("venice-high-water-kleo"), "kb"), go: () => go("/image") },
   // 27 October 2026, the owner: two of his template reels replace Photo Character Swap and Talking Photo here.
-  { t: "Bby Wow", s: "Your photo at the quinceañera", art: () => artVideo(loop("michael-scott-quinceanera")), go: () => go("/apps/trend-bby-wow") },
+  { t: "Bby Wow", s: "Your photo at the quinceañera", art: () => artVideo(loop("michael-scott-quinceanera"), "top"), go: () => go("/apps/trend-bby-wow") },
   { t: "Paris Fire Dance", s: "Your photo in a burning Paris", art: () => artVideo(loop("joker-in-paris")), go: () => go("/apps/trend-paris-fire-dance") },
   { t: "Motion Control", s: "Copy any dance or move", art: () => artVideo(loop("kitten-knight-jump")), go: () => go("/apps/motion-control") },
   { t: "Kleo in Claude & ChatGPT", s: "Make videos inside your AI chat", art: () => artVideo(loop("kleo-x-claude-ad")), href: "https://kleooai.com/mcp/" },
