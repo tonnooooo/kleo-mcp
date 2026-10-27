@@ -63,7 +63,7 @@ export interface Settings {
   scoutOn: boolean;
   scoutDaily: number;
 }
-export const DEFAULT_SETTINGS: Settings = { postal: "", trialCredits: 20, autoReply: true, autoApprove: false, scoutOn: false, scoutDaily: 30 };
+export const DEFAULT_SETTINGS: Settings = { postal: "", trialCredits: 50, autoReply: true, autoApprove: false, scoutOn: false, scoutDaily: 30 };
 
 export async function meta(env: StudioEnv, key: string): Promise<string | null> {
   return (await env.DB.prepare("SELECT value FROM studio_meta WHERE key = ?").bind(key).first<{ value: string }>())?.value ?? null;
@@ -226,52 +226,74 @@ const PHRASE: Record<string, string> = {
 const hostOf = (url: string | null): string => { try { return new URL(String(url)).hostname.replace(/^www\./, ""); } catch { return "your website"; } };
 const firstOf = (name: string | null): string | null => { const w = (name ?? "").trim().split(/\s+/)[0]; return w && /^\p{L}[\p{L}'’-]{0,23}$/u.test(w) ? w : null; };
 const phraseOf = (p: Prospect): string => PHRASE[p.type ?? ""] ?? "teams like yours";
+/** The business's name as a person says it, without its legal ending ("2MAG LTD" is 2MAG), and its possessive. */
+export const nameOf = (p: { company: string }): string =>
+  p.company.replace(/[\s,]+(pty\.?\s+ltd\.?|pty\.?\s+limited|ltd\.?|limited|l\.?l\.?c\.?|inc\.?|llp|plc|gmbh)$/i, "").trim() || p.company;
+const nameOfs = (p: { company: string }): string => { const n = nameOf(p); return /s$/i.test(n) ? `${n}'` : `${n}'s`; };
+/** "Hi Maya," with a first name, else "Hi Bright Reels team," (27 October 2026, the owner: "Hi {azienda} team"). */
+const hiOf = (p: Prospect): string => `Hi ${firstOf(p.contact_name) ?? `${nameOf(p)} team`},`;
 
-/** The versions of the first e-mail Kleo tries against each other (subject and pitch; the opener is the business's own). */
+/**
+ * The versions of the first e-mail Kleo tries against each other (subject and pitch; the opener is the business's own).
+ * 27 October 2026, the owner approved the rewrite: one hook (ten hooks for a client, each in a few minutes, before the
+ * shoot), no list of features, one question. The first versions (a, b, c) were retired after four e-mails; a business
+ * written to with one of them keeps its subject, and its follow-ups are the ones below.
+ */
+const ASK = (credits: number) => credits ? "Want me to set your team up with free credits to try it on a real brief this week?" : "Would that be useful for your team?";
 export const VARIANTS: { id: string; name: string; subject: (p: Prospect) => string; pitch: (p: Prospect, credits: number) => string[] }[] = [
-  { id: "a", name: "Ten hooks in an afternoon", subject: (p) => `Short-form video for ${p.company}`, pitch: (p, credits) => [
-    "I'm Leonardo, and I build Kleo (kleooai.com): an AI video studio in a chat. Type an idea or drop in one photo and you get vertical clips for TikTok, Reels and Shorts, with trend templates, face and outfit swap, voiceover and music in the same place.",
-    `For ${phraseOf(p)} it means testing ten hooks for a client in an afternoon instead of booking a shoot.`,
-    credits ? "Would it help if I set your team up with free credits to try it on a real brief?" : "Would it be worth a look for your team?"] },
-  { id: "b", name: "The slow-to-shoot parts", subject: (p) => `${p.company} + AI video`, pitch: (_p, credits) => [
-    "I build Kleo (kleooai.com), where one sentence or one photo becomes a vertical video for TikTok, Reels or Shorts in a few minutes, with the newest video models in one place.",
-    "It's made for the parts that are slow to shoot: hook variations, product clips, trend formats, a talking photo, a voiceover.",
-    credits ? "Worth a look? I can add free credits for your team to try it." : "Worth a look?"] },
-  { id: "c", name: "Ten hooks to test", subject: (p) => `10 hooks for ${p.company}'s next client`, pitch: (_p, credits) => [
-    "A quick idea: with Kleo (kleooai.com) you type one line or drop one photo and get a vertical clip in minutes, so a client's next campaign can start with ten hooks to test instead of one.",
-    "Face swap, outfit swap, voiceover and music sit in the same place.",
-    credits ? "Want me to set your team up with free credits to try it?" : "Would that help?"] },
+  { id: "d", name: "Ten hooks before the shoot", subject: (p) => `10 hooks for ${nameOfs(p)} next client`, pitch: (_p, credits) => [
+    "That's the kind of work Kleo (kleooai.com) is built for: type one line or drop in one product photo and you get a vertical clip for TikTok, Reels or Shorts in a few minutes.",
+    "So a client's next campaign can start with ten hooks to test, before anyone books a shoot.",
+    ASK(credits)] },
+  { id: "e", name: "Show the client first", subject: (p) => `Hooks for ${nameOfs(p)} clients, before the shoot`, pitch: (_p, credits) => [
+    "Kleo (kleooai.com) turns one line or one product photo into a vertical video in a few minutes, so you can show a client ten hook options on the first call instead of a moodboard.",
+    "The ones that win get the real shoot; the rest cost you minutes, not a shoot day.",
+    ASK(credits)] },
+  { id: "f", name: "Ten hooks in an afternoon", subject: (p) => `Testing more hooks at ${nameOf(p)}`, pitch: (p, credits) => [
+    "With Kleo (kleooai.com) your team types one line or drops in one photo and gets a vertical clip for TikTok, Reels or Shorts in a few minutes.",
+    `For ${phraseOf(p)}, that's ten hooks to test for a client in an afternoon, without booking a shoot.`,
+    ASK(credits)] },
 ];
 export const variantById = (id: string | null) => VARIANTS.find((v) => v.id === id) ?? VARIANTS[0];
 
 export interface Written { subject: string; text: string }
-export interface Signature { fromName: string; postal: string; credits: number }
+/** link: the business's personal sign-up link, which the second e-mail carries (it brings the trial credits). */
+export interface Signature { fromName: string; postal: string; credits: number; link?: string | null }
 
-/** The three e-mails of the sequence, for one prospect. Plain text, short, no tracking, one link in the first. */
+/**
+ * The three e-mails of the sequence, for one prospect. Plain text, short, no tracking. The first asks for a reply (no link
+ * but the website's name); the second carries the business's personal link, so a curious reader signs up without
+ * writing back; the third closes the thread.
+ */
 export function writeStep(p: Prospect, step: number, s: Signature, unsubscribeUrl: string): Written {
   const name = s.fromName || "Leonardo";
-  const hi = `Hi ${firstOf(p.contact_name) ?? "there"},`;
+  const hi = hiOf(p);
   const sign = `${name}\nFounder, Kleo`;
   const who = `Kleo (Kanaky Tech, New Zealand), ${s.postal.trim() || "kleooai.com, hello@kleooai.com"}`;
   const footer = `--\nYou're getting this one-off business e-mail because ${p.email} is listed on ${hostOf(p.source_url)}. If it isn't relevant, reply "no" or open ${unsubscribeUrl} and I won't write again.\n${who}`;
   const v = variantById(p.variant);
   const subject0 = p.subject || v.subject(p);
-  const opener = (p.opener ?? "").trim() || `I came across ${p.company} while looking at ${PHRASE[p.type ?? ""] ?? "studios that make short-form video"}${p.city ? ` in ${p.city}` : ""}.`;
+  const opener = (p.opener ?? "").trim() || `I came across ${nameOf(p)} while looking at ${PHRASE[p.type ?? ""] ?? "studios that make short-form video"}${p.city ? ` in ${p.city}` : ""}.`;
   if (step === 0) return { subject: subject0, text: [hi, opener, ...v.pitch(p, s.credits), sign, footer].join("\n\n") };
-  if (step === 1) return { subject: `Re: ${subject0}`, text: [hi,
+  if (step === 1) return { subject: `Re: ${subject0}`, text: [hi, ...(s.link ? [
+    `Easier than a call: here's a link set up for ${nameOf(p)}: ${s.link}`,
+    s.credits
+      ? `Sign up through it (Google or e-mail, about a minute) and ${s.credits} free credits land on the account within a few minutes, enough for a few test clips. Every clip in Kleo's Explore tab was made from one line or one photo.`
+      : "Sign up through it (Google or e-mail, about a minute) and try it on a real brief. Every clip in Kleo's Explore tab was made from one line or one photo.",
+  ] : [
     "A quick follow-up with something you can judge in ten seconds: app.kleooai.com/explore has clips made entirely in Kleo, each from one line or one photo.",
-    s.credits ? `If a free trial for ${p.company} sounds useful, reply "yes" and I'll send it over.` : `If it sounds useful for ${p.company}, reply "yes" and I'll send the details.`,
-    sign, footer].join("\n\n") };
+    s.credits ? `If a free trial for ${nameOf(p)} sounds useful, reply "yes" and I'll send it over.` : `If it sounds useful for ${nameOf(p)}, reply "yes" and I'll send the details.`,
+  ]), sign, footer].join("\n\n") };
   return { subject: `Re: ${subject0}`, text: [hi,
-    `I'll stop here so I don't crowd your inbox. If short-form video ever becomes the bottleneck at ${p.company}, a reply to this e-mail still reaches me.`,
+    `I'll stop here so I don't crowd your inbox. If short-form video ever becomes the bottleneck at ${nameOf(p)}, a reply to this e-mail still reaches me.`,
     `Thanks,\n${name}`, footer].join("\n\n") };
 }
 
 /** Kleo's own answer to a "yes": the personal link, and what signing up through it gives. */
 export function writeYes(p: Prospect, s: Signature, link: string): string {
   const name = s.fromName || "Leonardo";
-  return [`Hi ${firstOf(p.contact_name) ?? "there"},`,
-    `Great, here's ${p.company}'s link: ${link}`,
+  return [hiOf(p),
+    `Great, here's ${nameOfs(p)} link: ${link}`,
     s.credits
       ? `Sign up through it (Google or e-mail, about a minute) and ${s.credits} free credits land on the account by themselves, enough for a few clips on the fast model to judge Kleo on a real brief. The plans for more are at app.kleooai.com/plans.`
       : "Sign up through it (Google or e-mail, about a minute) and you can start right away. The plans are at app.kleooai.com/plans.",
@@ -359,7 +381,8 @@ async function threadRefs(env: StudioEnv, p: Prospect): Promise<string[]> {
 /** Sends one step to one prospect from one mailbox; the bookkeeping that follows depends on how it went. */
 async function sendTo(env: StudioEnv, s: SenderRow, p: Prospect, set: Settings, nowMs: number, deps: OutreachDeps): Promise<"sent" | "address" | "sender" | "later"> {
   const rnd = deps.random ?? Math.random;
-  const sig = { fromName: s.from_name, postal: set.postal, credits: set.trialCredits };
+  // The second e-mail carries the business's personal link (made now, kept for its answer to a yes).
+  const sig = { fromName: s.from_name, postal: set.postal, credits: set.trialCredits, link: p.step === 1 ? await linkFor(env, p) : null };
   if (p.step === 0 && !p.variant) p.variant = pickVariant(await variantStats(env), rnd);
   const stop = await outreachStopLink(env, p.id);
   const w = writeStep(p, p.step, sig, stop);
@@ -692,14 +715,16 @@ export async function previewFor(env: StudioEnv, url: URL): Promise<unknown> {
   if (!p) throw new StudioError("No such prospect.", 404, "not_found");
   const set = await settingsOf(env);
   const s = (await senders(env))[0];
-  const sig = { fromName: s?.from_name || "Leonardo", postal: set.postal, credits: set.trialCredits };
+  // The personal link is made only when the second e-mail goes; the preview shows where it will be.
+  const personal = `${APP}/r/${p.link_code ?? "their-link"}`;
+  const sig = { fromName: s?.from_name || "Leonardo", postal: set.postal, credits: set.trialCredits, link: personal };
   const link = await outreachStopLink(env, p.id);
-  const versions = p.variant ? [p.variant] : VARIANTS.map((v) => v.id);
+  const versions = p.variant && VARIANTS.some((v) => v.id === p.variant) ? [p.variant] : VARIANTS.map((v) => v.id);
   return {
     prospect: { id: p.id, company: p.company, email: p.email, variant: p.variant },
     first: versions.map((v) => ({ variant: v, name: variantById(v).name, ...writeStep({ ...p, variant: v, step: 0 }, 0, sig, link) })),
-    followUps: [1, 2].map((i) => writeStep({ ...p, variant: p.variant ?? "a" }, i, sig, link)),
-    yes: writeYes(p, sig, `${APP}/r/${p.link_code ?? "their-link"}`),
+    followUps: [1, 2].map((i) => writeStep(p, i, sig, link)),
+    yes: writeYes(p, sig, personal),
   };
 }
 

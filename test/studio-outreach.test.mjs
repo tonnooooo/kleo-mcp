@@ -315,9 +315,11 @@ test("first e-mail: in New York's working hours, from the mailbox, personal, the
   assert.equal(m.from, "leo@getkleo.test");
   assert.equal(m.to, "hello@brightreels.example");
   const text = bodyOf(m.raw);
-  assert.match(header(m.raw, "Subject"), /^Short-form video for Bright Reels$/);
-  assert.match(text, /^Hi Maya,\r?\n\r?\nSaw that you run TikTok for three Brooklyn coffee roasters\./);
-  assert.match(text, /free credits to try it on a real brief\?/);
+  assert.match(header(m.raw, "Subject"), /^10 hooks for Bright Reels' next client$/);
+  assert.match(text, /^Hi Maya,\r?\n\r?\nSaw that you run TikTok for three Brooklyn coffee roasters\.\r?\n\r?\nThat's the kind of work Kleo/);
+  assert.match(text, /ten hooks to test, before anyone books a shoot/);
+  assert.match(text, /free credits to try it on a real brief this week\?/);
+  assert.doesNotMatch(text, /face swap|outfit swap|https:\/\/app\.kleooai\.com\/r\//i, "one hook, no list of features, no sign-up link in the first");
   assert.match(text, /hello@brightreels\.example is listed on brightreels\.example/);
   assert.match(text, /Kleo \(Kanaky Tech, New Zealand\), PO Box 123, Auckland 1010, New Zealand/);
   assert.match(header(m.raw, "List-Unsubscribe"), /^<https:\/\/app\.kleooai\.com\/email\/out\?p=p_[a-z0-9]+&s=[0-9a-f]{32}>, <mailto:leo@getkleo\.test\?subject=unsubscribe>$/);
@@ -333,9 +335,12 @@ test("first e-mail: in New York's working hours, from the mailbox, personal, the
   assert.ok(Number(ny.find((x) => x.type === "hour").value) >= 9 && Number(ny.find((x) => x.type === "hour").value) <= 15);
   // Five minutes later: still inside the 7–14 minute gap.
   assert.equal((await mod.outreachTick(env, MON + 5 * MIN, { random: () => 0.5 })).sent, 0);
-  // Fifteen minutes later the second business, "Hi there" without a name.
+  // Fifteen minutes later the second business, "Hi Second Studio team" without a name.
   assert.equal((await mod.outreachTick(env, MON + 15 * MIN, { random: () => 0.5 })).sent, 1);
-  assert.match(bodyOf(MB.sent[1].raw), /^Hi there,/);
+  assert.match(bodyOf(MB.sent[1].raw), /^Hi Second Studio team,/);
+  // The legal ending is not part of the name a person says.
+  assert.deepEqual(["2MAG LTD", "Acme Pty Ltd", "Bright Reels", "Studio Limited", "Loop, LLC", "Ltd Films"].map((company) => mod.nameOf({ company })),
+    ["2MAG", "Acme", "Bright Reels", "Studio", "Loop", "Ltd Films"]);
 });
 
 test("warm-up: five e-mails in the first 24 hours, however many are approved", async () => {
@@ -359,9 +364,14 @@ test("follow-ups: in the same thread, Re: subject, then the last one, then done"
   const p1 = one(env, "SELECT next_at FROM outreach_prospects");
   await mod.outreachTick(env, Date.parse(p1.next_at) + MIN, { random: () => 0 });
   assert.equal(MB.sent.length, 2);
-  assert.equal(header(MB.sent[1].raw, "Subject"), "Re: Short-form video for Bright Reels");
+  assert.equal(header(MB.sent[1].raw, "Subject"), "Re: 10 hooks for Bright Reels' next client");
   assert.equal(header(MB.sent[1].raw, "In-Reply-To"), first);
-  assert.match(bodyOf(MB.sent[1].raw), /app\.kleooai\.com\/explore/);
+  // The second carries the business's personal link with the trial credits: no need to write back.
+  const code = one(env, "SELECT link_code FROM outreach_prospects").link_code;
+  assert.match(code, /^bright-reels-[a-z0-9]+$/);
+  assert.match(bodyOf(MB.sent[1].raw), new RegExp(`Easier than a call: here's a link set up for Bright Reels: https://app\\.kleooai\\.com/r/${code}`));
+  assert.match(bodyOf(MB.sent[1].raw), /50 free credits land on the account within a few minutes/);
+  assert.equal(one(env, "SELECT created_by, archived_at IS NOT NULL AS hidden FROM short_links WHERE code = ?", code).hidden, 1);
   const p2 = one(env, "SELECT next_at FROM outreach_prospects");
   await mod.outreachTick(env, Date.parse(p2.next_at) + MIN, { random: () => 0 });
   assert.equal(MB.sent.length, 3);
@@ -569,6 +579,9 @@ test("scout: a site that is not a fit, too big, in another country, or a person'
     "https://seoonly.com/": SITE("hello@seoonly.com"), "https://bigco.com/": SITE("hello@bigco.com"), "https://german.de/": SITE("hallo@german.de"),
     "https://maplecreative.ca/": SITE("jane@maplecreative.ca"), "https://maplerole.ca/": SITE("hello@maplerole.ca"),
     "https://londonreels.co.uk/": SITE("hello@londonreels.co.uk"),
+    "https://solouk.co.uk/": SITE("jane@solouk.co.uk", "Great work for brands with Limited Budgets."), "https://ltduk.co.uk/": SITE("tom@ltduk.co.uk", "Ltduk Ltd, registered in England and Wales."),
+    "https://privco.co.uk/": SITE("sam@privco.co.uk", '<a href="/privacy">Privacy policy</a>'),
+    "https://privco.co.uk/privacy": "<html><body>This website is run by PrivCo Media Limited, registered in England.</body></html>",
   };
   const verdicts = {
     "seoonly.com": { fit: false, reason: "SEO only." }, "bigco.com": { fit: true, size: "200+", country: "US" }, "german.de": { fit: true, size: "2-10", country: "DE" },
@@ -576,6 +589,10 @@ test("scout: a site that is not a fit, too big, in another country, or a person'
     "maplerole.ca": { fit: true, size: "2-10", country: "CA", region: "ON", city: "Toronto", company: "Maple Role", type: "social-media-agency", opener: "Saw the Toronto restaurant reels on your site." },
     // Workers AI says "UK", not GB (seen live on 27 October 2026).
     "londonreels.co.uk": { fit: true, size: "2-10", country: "UK", city: "London", company: "London Reels", type: "short-form-video-agency", opener: "Saw the Reels you make for London restaurants." },
+    // A person's address in the UK: only at a limited company (PECR).
+    "solouk.co.uk": { fit: true, size: "solo", country: "GB", city: "Leeds", company: "Solo UK", type: "ugc-agency", opener: "Saw the UGC ads you make for Leeds cafes." },
+    "ltduk.co.uk": { fit: true, size: "2-10", country: "GB", city: "Leeds", company: "Ltduk", type: "ugc-agency", opener: "Saw the UGC ads you make for Leeds gyms." },
+    "privco.co.uk": { fit: true, size: "2-10", country: "GB", city: "Bristol", company: "PrivCo", type: "ugc-agency", opener: "Saw the UGC ads you make for Bristol bakeries." },
   };
   const realRun = env.AI.run.bind(env.AI);
   env.AI.run = async (m, input) => {
@@ -585,7 +602,7 @@ test("scout: a site that is not a fit, too big, in another country, or a person'
     return realRun(m, input);
   };
   const deps = scoutDeps(sites, [Object.keys(sites).map((u) => ({ url: u }))]);
-  const set = { ...mod.DEFAULT_SETTINGS, scoutOn: true, scoutDaily: 2, autoApprove: true };
+  const set = { ...mod.DEFAULT_SETTINGS, scoutOn: true, scoutDaily: 3, autoApprove: true };
   for (let i = 0; i < 3; i++) await mod.scoutTick(env, set, MON + i * 5 * MIN, deps);
   const seen = Object.fromEntries(rows(env, "SELECT domain, result FROM outreach_seen").map((x) => [x.domain, x.result]));
   assert.match(seen["seoonly.com"], /^not a fit/);
@@ -594,8 +611,14 @@ test("scout: a site that is not a fit, too big, in another country, or a person'
   assert.equal(seen["maplecreative.ca"], "a person's address in Canada");
   assert.equal(seen["maplerole.ca"], "added");
   assert.equal(seen["londonreels.co.uk"], "added");
+  assert.equal(seen["solouk.co.uk"], "a person's address at a UK business that may be a sole trader");
+  assert.equal(seen["ltduk.co.uk"], "added");
+  assert.equal(seen["privco.co.uk"], "added", "the company named on its privacy page");
   assert.deepEqual(rows(env, "SELECT email, status, country, region FROM outreach_prospects ORDER BY email"), [
-    { email: "hello@londonreels.co.uk", status: "approved", country: "GB", region: null }, { email: "hello@maplerole.ca", status: "approved", country: "CA", region: "ON" }]);
+    { email: "hello@londonreels.co.uk", status: "approved", country: "GB", region: null }, { email: "hello@maplerole.ca", status: "approved", country: "CA", region: "ON" },
+    { email: "sam@privco.co.uk", status: "approved", country: "GB", region: null }, { email: "tom@ltduk.co.uk", status: "approved", country: "GB", region: null }]);
+  assert.deepEqual(["© OK COOL LTD 11 Richmond", "Socially Powerful Media Limited", "Company No: 12345678", "brands with Limited Budgets", "For Brands With Limited Budgets", "rather than being limited by", "Ltd Films and Plc talk"].map(mod.ukCompany),
+    [true, true, true, false, false, false, false]);
 });
 
 test("scout: the US and Canada are searched only with a postal address, in proportion; sites without video work cost no Workers AI", async () => {
