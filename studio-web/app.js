@@ -3,7 +3,7 @@
 //
 // Pages: Create (chat with Kleo) · Video · Image · Audio · Apps · Library. Desktop: a top bar; phones: a tab bar.
 
-import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=94";
+import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=95";
 
 const DEMO = new URLSearchParams(location.search).has("demo");
 const DEMO_FREE = new URLSearchParams(location.search).get("demo") === "free"; // ?demo=free: an account that never paid
@@ -773,8 +773,9 @@ const HOME_BANNERS = [
 const HOME_TILES = [
   { t: "Video", s: "Seedance 2.5 and Veo 3.1", art: () => artVideo(loop("kitten-knight-black-dragon")), go: () => go("/video") },
   { t: "Image", s: "FLUX.2, Seedream and Nano Banana", art: () => artImg(still("venice-high-water-kleo"), "kb"), go: () => go("/image") },
-  { t: "Photo Character Swap", s: "Your character in any photo", art: () => xfade(pic("photoswap3-a"), pic("photoswap3-b")), go: () => go("/apps/photo-character-swap") },
-  { t: "Talking Photo", s: "Make any portrait speak", art: () => artImg(pic("speaker"), "kb"), go: () => go("/apps/talking-photo") },
+  // 27 October 2026, the owner: two of his template reels replace Photo Character Swap and Talking Photo here.
+  { t: "Bby Wow", s: "Your photo at the quinceañera", art: () => artVideo(loop("michael-scott-quinceanera")), go: () => go("/apps/trend-bby-wow") },
+  { t: "Paris Fire Dance", s: "Your photo in a burning Paris", art: () => artVideo(loop("joker-in-paris")), go: () => go("/apps/trend-paris-fire-dance") },
   { t: "Motion Control", s: "Copy any dance or move", art: () => artVideo(loop("kitten-knight-jump")), go: () => go("/apps/motion-control") },
   { t: "Kleo in Claude & ChatGPT", s: "Make videos inside your AI chat", art: () => artVideo(loop("kleo-x-claude-ad")), href: "https://kleooai.com/mcp/" },
 ];
@@ -1603,7 +1604,9 @@ function showcaseCard(x, pick) {
 function openShowcase(x) {
   const v = h("video", { src: x.full, poster: x.poster, autoplay: true, muted: true, loop: true, playsinline: true, controls: true });
   v.muted = true;
-  // A film shows its prompt and can be recreated on the Video page; an ad has no prompt, so Kleo starts from it in the chat.
+  // A film shows its prompt and can be recreated on the Video page; an ad has no prompt, so Kleo starts from it in the chat;
+  // a Kleo Templates result opens its template (27 October 2026).
+  if (x.app) return viewerFrame(v, x.line, [h("button", { class: "btn btn-cta btn-sm", onclick: () => { closeLayer(); go(`/apps/${x.app}`); } }, icon("wand", 16), "Use this template")]);
   viewerFrame(v, x.kind === "ad" ? x.line : x.prompt, x.kind === "ad"
     ? [h("button", { class: "btn btn-cta btn-sm", onclick: () => askKleo(x) }, icon("chat", 16), "Make one like this")]
     : [h("button", { class: "btn btn-cta btn-sm", onclick: () => recreate(x) }, icon("wand", 16), "Recreate"),
@@ -1640,13 +1643,14 @@ function exploreView() {
   const draw = () => {
     fill(chips, [[null, "All"], ["wide", "Wide"], ["tall", "Vertical"]].map(([k, label]) =>
       h("button", { class: only === k ? "on" : "", onclick: () => { only = k; draw(); } }, label)));
-    // Films first (each one can be recreated), then the Kleo ads.
+    // Films first (each one can be recreated), then the Kleo Templates results (each opens its template), then the Kleo ads.
     fill(grids, h("h2", { class: "sc-title" }, "Films"), showcaseGrid(null, 0, only, "film"),
+      h("h2", { class: "sc-title" }, "Templates"), showcaseGrid(null, 0, only, "template"),
       h("h2", { class: "sc-title" }, "Kleo ads"), showcaseGrid(null, 0, only, "ad"));
   };
   draw();
   setView("explore-view",
-    h("div", { class: "page-head" }, h("h1", {}, "Explore"), h("p", {}, "Films made by the Kleo team. Tap one, then Recreate it.")),
+    h("div", { class: "page-head" }, h("h1", {}, "Explore"), h("p", {}, "Films and templates made by the Kleo team. Tap one to make your own.")),
     chips, grids);
 }
 
