@@ -260,10 +260,11 @@ export const TRENDS: Trend[] = [
   // 27 October 2026, the owner: "trova la clip originale … tagliata con la musica in quel modo, senza masha e orso" (an
   // Instagram reel by @a.aukhadiev, 11 s, an AI remake with Masha and the Bear). The original is TheSilentMan's edit of the
   // locker-room scene of End of Watch (2012) on 22Gz's "Twirlanta" slowed down, YouTube lbgxRD0LEIY (AV1 1080p60,
-  // Topaz-upscaled): the reel's cuts within 0.1 s and its music at r 0.99; no cleaner copy of that edit is published. Its
-  // first loop, 0-11.0 s, at 30 fps: of each 60 fps pair the first frame, or the second when the first only repeats the
-  // last picture (298 distinct pictures, never blended, no freeze-then-skip), cropped to 1728x972 with no scaling, clear
-  // of the edit's dark top band and of the "Thesilentman" watermark at the bottom. Many cuts and two people, so Ausar's
+  // Topaz-upscaled): the reel's 10 cuts map one to one, 0.08-0.16 s late (the reel's own lag), its music at r 0.99; no
+  // cleaner copy of that edit is published. Its first loop, 0-11.0 s, at 30 fps: of each 60 fps pair the first frame, or
+  // the second when the first only repeats the last picture (298 distinct pictures, never blended, no freeze-then-skip),
+  // cropped to 1728x972 with no scaling, clear of the edit's dark top band and of the "Thesilentman" watermark at the
+  // bottom. Many cuts and two people, so Ausar's
   // way, as You Tweaking: Prime, both photos, a fixed prompt with no times. The gear is never named, so no weapon word
   // reaches the provider's filter. The friend is shirtless in most shots, so Image 2 always keeps its own clothes.
   {
@@ -283,12 +284,12 @@ export const TRENDS: Trend[] = [
       "Replace his face with the face from Image 1 - the face is the most important part: it must clearly be the person from Image 1 in every frame, including the extreme close-ups at the lens, the shots in profile and the motion-blurred moments. Replace his head, hair, build, skin, hands and clothes with the hair, build, skin, hands and clothes from Image 1. Nothing of his shaved head or white T-shirt stays unless Image 1 has them. The person from Image 1 holds every item in the same hand or hands, at the same distance from the lens and for the same time.",
       "",
       "PERSON 2 -> Image 2",
-      "Original: his friend, a man with short black hair and a thin goatee, shirtless in most shots, with a small line of script tattooed on his chest. He leans in from the left beside Person 1's shoulder and smiles into the lens; he is also seen in the background on the left, changing, and once in a black uniform shirt with his head down; in the last shot he stands at the front on the left with Person 1's arm round his shoulders.",
-      "Replace his face with the face from Image 2 - clearly the person from Image 2 in every frame, in the background too. Replace his hair, build, skin and body with those from Image 2. The person from Image 2 is never shirtless: in every shot they wear the clothes they wear in Image 2. Nothing of his black hair, goatee, bare chest, uniform shirt or tattoo stays unless Image 2 has them.",
+      "Original: his friend, a clean-shaven man with short black hair, shirtless in most shots, with a small line of script tattooed on his chest. He leans in from the left beside Person 1's shoulder and smiles into the lens; he is also seen in the background on the left, changing, and once in a black uniform shirt with his head down; in the last shot he stands at the front on the left with Person 1's arm round his shoulders.",
+      "Replace his face with the face from Image 2 - clearly the person from Image 2 in every frame, in the background too. Replace his hair, build, skin and body with those from Image 2. The person from Image 2 is never shirtless: in every shot they wear the clothes they wear in Image 2. Nothing of his black hair, bare chest, uniform shirt or tattoo stays unless Image 2 has them.",
       "",
       "Person 2 appears only where the friend is in Video 1, and in every other shot Person 1 is the only one of the two. Never put the face from Image 1 on Person 2 or the face from Image 2 on Person 1, and never add a second copy of anyone. Both keep their exact movement, gestures, facial expressions, mouth movement and timing from Video 1. If a person in an image is a different gender, they replace the original in that position as they are in the image. No part of the original two men appears anywhere.",
       "",
-      "The other officers in the background stay as they are in Video 1 and never get the face from Image 1 or Image 2. Nothing else in the video changes: the same black lockers covered in stickers, the same gear, the same close wide-angle camera with its bent edges and its shake, the same white flashes, the same light flare and the same horizontal whip-pan smears between shots, the same dark, contrasty, slightly desaturated grade with near-black shadows, the same cuts, speed and timing.",
+      "The other officers in the background stay as they are in Video 1 and never get the face from Image 1 or Image 2. Nothing else in the video changes: the same black lockers covered in stickers, the same gear, the same close wide-angle camera with its bent edges and its shake, the same white flashes, the same light flare and the same horizontal whip-pan smears between shots, the same dark, contrasty, slightly desaturated grade with near-black shadows (the shot with the bright light keeps its cold blue-green cast and glow), the same cuts, speed and timing.",
     ].join("\n"),
   },
   // 25 October 2026, the owner: "riesci a trovare la clip originale? … scarica quella max quality" (an Instagram reel

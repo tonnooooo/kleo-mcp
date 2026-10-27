@@ -425,14 +425,14 @@ test("Locker Room (27 October 2026): the original edit without its watermark, Wa
   assert.equal(input.generate_audio, false);
   assert.equal(input.prompt, t.prompt);
   assert.match(input.prompt, /PERSON 1 -> Image 1\nOriginal: the man with a shaved head in a plain white crew-neck T-shirt/);
-  assert.match(input.prompt, /PERSON 2 -> Image 2\nOriginal: his friend, a man with short black hair and a thin goatee, shirtless in most shots/);
+  assert.match(input.prompt, /PERSON 2 -> Image 2\nOriginal: his friend, a clean-shaven man with short black hair, shirtless in most shots/);
   // The checks of 27 October: other officers are in the shots without the friend, he holds two items at once, the friend
   // is also the man in a black uniform shirt, and there is no forearm tattoo (the Topaz upscale sharpened arm hair).
   assert.match(input.prompt, /in every other shot Person 1 is the only one of the two\./);
   assert.match(input.prompt, /The other officers in the background stay as they are in Video 1 and never get the face from Image 1 or Image 2\./);
   assert.match(input.prompt, /sometimes one in each hand/);
   assert.match(input.prompt, /once in a black uniform shirt with his head down/);
-  assert.doesNotMatch(input.prompt, /every other shot shows only|one item at a time|forearm|zoom blur|teal/);
+  assert.doesNotMatch(input.prompt, /every other shot shows only|one item at a time|forearm|goatee|zoom blur|teal/);
   assert.match(input.prompt, /The person from Image 2 is never shirtless: in every shot they wear the clothes they wear in Image 2\./);
   assert.match(input.prompt, /If a person in an image is a different gender, they replace the original in that position as they are in the image\./);
   // No times (Wan re-times to them) and no weapon words for the provider's filter.
@@ -441,7 +441,7 @@ test("Locker Room (27 October 2026): the original edit without its watermark, Wa
   assert.ok(input.prompt.length < 3000, `${input.prompt.length} characters`);
   // The exact words, pinned: a change to them is a change to every customer's result.
   const { createHash } = await import("node:crypto");
-  assert.equal(createHash("sha256").update(t.prompt).digest("hex"), "89f457a446609b8778f21fbf78ca33f12bbe840e190055d506d233047ceb9e1a");
+  assert.equal(createHash("sha256").update(t.prompt).digest("hex"), "7572d7cf824aed96f211e5df1ac3d328f3ab925804d8105f903634914a24fea6");
   // Both photos are needed.
   assert.throws(() => planTool(t.key, { quality: "720p" }, { person1: photo("up_a") }), (e) => e instanceof ToolRefusal && /each of the 2 people/.test(e.message));
 });
