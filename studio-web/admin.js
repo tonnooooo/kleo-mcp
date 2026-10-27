@@ -1131,7 +1131,7 @@ const OQ = { status: "new", q: "", offset: 0, form: null, csv: "", settings: nul
 const OUT_STATUS = [["new", "To approve"], ["approved", "Approved"], ["active", "Writing to"], ["replied", "Replied"], ["done", "No answer"], ["stopped", "Stopped"], ["", "All"]];
 const OUT_CLASS = { interested: ["Interested", "ok"], question: ["Question", "info"], not_interested: ["Not interested", ""], unsubscribe: ["Said no", ""],
   out_of_office: ["Out of office", ""], wrong_person: ["Wrong person", ""], bounce: ["Bounced", "bad"], other: ["Replied", "info"] };
-const NEW_BOX = () => ({ id: "", fromName: "Leonardo", fromAddr: "", user: "", smtpHost: "smtp.gmail.com", smtpPort: "465", imapHost: "imap.gmail.com", imapPort: "993", dailyMax: "40", password: "" });
+const NEW_BOX = () => ({ id: "", fromName: "Leonardo", fromAddr: "", user: "", smtpHost: "smtp.gmail.com", smtpPort: "465", imapHost: "imap.gmail.com", imapPort: "993", dailyMax: "60", password: "" });
 async function outreachPage(main, opts = {}) {
   const body = h("div", { class: "adm-stack" }, loading());
   K.fill(opts.into || main, head("Outreach", "Kleo finds agencies, writes to them from your mailboxes, follows up twice, answers a yes with a free trial, and reads every reply.", refreshBtn(() => outreachPage(main))), body);

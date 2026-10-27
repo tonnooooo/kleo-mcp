@@ -63,7 +63,7 @@ export interface Settings {
   scoutOn: boolean;
   scoutDaily: number;
 }
-export const DEFAULT_SETTINGS: Settings = { postal: "", trialCredits: 50, autoReply: true, autoApprove: false, scoutOn: false, scoutDaily: 30 };
+export const DEFAULT_SETTINGS: Settings = { postal: "", trialCredits: 20, autoReply: true, autoApprove: false, scoutOn: false, scoutDaily: 30 };
 
 export async function meta(env: StudioEnv, key: string): Promise<string | null> {
   return (await env.DB.prepare("SELECT value FROM studio_meta WHERE key = ?").bind(key).first<{ value: string }>())?.value ?? null;
@@ -107,9 +107,13 @@ export async function readiness(env: StudioEnv): Promise<Readiness> {
   return { senders: ready, postal, approved, sendable, ok: ready > 0 && sendable > 0 };
 }
 
-/** The daily number for a mailbox's n-th day of sending (day 1 = its first): a new mailbox earns trust slowly. */
+/**
+ * The daily number for a mailbox's n-th day of sending (day 1 = its first): a new mailbox earns trust slowly. Since
+ * 27 October 2026 (the owner: "inviane il più possibile") the ramp goes on in steps of ten a week to its maximum (60 by
+ * default) instead of jumping from 25 to it on day 22.
+ */
 export function warmupQuota(day: number, max: number): number {
-  const q = day <= 3 ? 5 : day <= 7 ? 10 : day <= 14 ? 15 : day <= 21 ? 25 : max;
+  const q = day <= 3 ? 5 : day <= 7 ? 10 : day <= 14 ? 15 : day <= 21 ? 25 : day <= 28 ? 35 : day <= 35 ? 45 : max;
   return Math.max(0, Math.min(q, max));
 }
 
@@ -417,7 +421,7 @@ async function warmupDay(env: StudioEnv, senderId: string, nowMs: number): Promi
   const first = await env.DB.prepare("SELECT MIN(at) AS at FROM outreach_log WHERE ok = 1 AND sender_id = ?").bind(senderId).first<{ at: string | null }>();
   return first?.at ? Math.floor((nowMs - Date.parse(first.at)) / 86_400_000) + 1 : 1;
 }
-const quotaOf = async (env: StudioEnv, s: SenderRow, nowMs: number) => warmupQuota(await warmupDay(env, s.id, nowMs), Math.max(1, Math.min(Number(s.daily_max) || 40, 60)));
+const quotaOf = async (env: StudioEnv, s: SenderRow, nowMs: number) => warmupQuota(await warmupDay(env, s.id, nowMs), Math.max(1, Math.min(Number(s.daily_max) || 60, 60)));
 
 export interface OutreachTick { sent: number; replies: number; converted: number; paused?: string }
 
@@ -437,7 +441,10 @@ export async function outreachTick(env: StudioEnv, nowMs = Date.now(), deps: Out
     if (nowMs - (Date.parse(s.checked_at ?? "") || 0) >= 14 * 60_000) {
       try { out.replies += await checkReplies(env, s, set, nowMs, deps); } catch (e) { console.error("outreach imap", s.from_addr, e instanceof Error ? e.message : e); }
     }
-    if (s.status === "paused" && nowMs - (Date.parse(s.paused_at ?? "") || 0) < 6 * 3_600_000) { out.paused = "sender"; continue; }
+    // A refused sign-in is often Google's passing hiccup (27 October 2026: one 535 between good sends, the next try at
+    // once fine): the first refusal waits 30 minutes, the second 2 hours, then 6.
+    const fails = Number((await meta(env, `sender_fails_${s.id}`)) ?? 0);
+    if (s.status === "paused" && nowMs - (Date.parse(s.paused_at ?? "") || 0) < ([0, 30, 120][fails] ?? 360) * 60_000) { out.paused = "sender"; continue; }
     if (nowMs < (Date.parse(s.next_send_at ?? "") || 0)) continue;
     if ((await sentInLastDay(env, s.id, nowMs)) >= (await quotaOf(env, s, nowMs))) { out.paused ??= "quota"; continue; }
     const p = await pickNext(env, s, nowMs, hasPostal(set));
@@ -456,11 +463,13 @@ export async function outreachTick(env: StudioEnv, nowMs = Date.now(), deps: Out
       out.sent++;
       await env.DB.prepare(`UPDATE outreach_senders SET next_send_at = ?, status = 'active', paused_reason = NULL, paused_at = NULL WHERE id = ?`)
         .bind(new Date(nowMs + (7 + rnd() * 7) * 60_000).toISOString(), s.id).run();
+      if (fails) await env.DB.prepare("DELETE FROM studio_meta WHERE key = ?").bind(`sender_fails_${s.id}`).run();
     } else if (r === "sender") {
       const last = await env.DB.prepare("SELECT error FROM outreach_log WHERE ok = 0 AND sender_id = ? ORDER BY id DESC LIMIT 1").bind(s.id).first<{ error: string }>();
-      const already = s.status === "paused";
+      await setMeta(env, `sender_fails_${s.id}`, String(fails + 1));
       await env.DB.prepare("UPDATE outreach_senders SET status = 'paused', paused_reason = ?, paused_at = ? WHERE id = ?").bind(last?.error ?? "refused", new Date(nowMs).toISOString(), s.id).run();
-      if (!already) await mailOwner(env, `Kleo outreach: ${s.from_addr} refused to send`, `The outreach mailbox ${s.from_addr} refused Kleo's sign-in or sender:\n\n${last?.error ?? ""}\n\nKleo tries it again every 6 hours; the other mailboxes go on. Check its app password in the admin console (Outreach, Mailboxes).`, nowMs);
+      // The owner hears when it is not a hiccup: the second refusal in a row, once.
+      if (fails + 1 === 2) await mailOwner(env, `Kleo outreach: ${s.from_addr} refused to send`, `The outreach mailbox ${s.from_addr} refused Kleo's sign-in or sender twice in a row:\n\n${last?.error ?? ""}\n\nKleo tries it again every 6 hours; the other mailboxes go on. Check its app password in the admin console (Outreach, Mailboxes).`, nowMs);
       out.paused = "sender";
     } else if (r === "later") {
       await env.DB.prepare("UPDATE outreach_senders SET next_send_at = ? WHERE id = ?").bind(new Date(nowMs + 30 * 60_000).toISOString(), s.id).run();
@@ -672,7 +681,7 @@ export async function outreachOverview(env: StudioEnv, nowMs = Date.now()): Prom
     const day = await warmupDay(env, s.id, nowMs);
     mailboxes.push({ id: s.id, fromName: s.from_name, fromAddr: s.from_addr, user: s.user, smtpHost: s.smtp_host, smtpPort: s.smtp_port, imapHost: s.imap_host, imapPort: s.imap_port,
       dailyMax: s.daily_max, passwordEnds: s.pass_last4, status: s.status, pausedReason: s.paused_reason, checkedAt: s.checked_at,
-      warmupDay: day, quota: warmupQuota(day, Math.max(1, Math.min(Number(s.daily_max) || 40, 60))), sentLastDay: await sentInLastDay(env, s.id, nowMs) });
+      warmupDay: day, quota: warmupQuota(day, Math.max(1, Math.min(Number(s.daily_max) || 60, 60))), sentLastDay: await sentInLastDay(env, s.id, nowMs) });
   }
   const replies = (await env.DB.prepare(`SELECT r.prospect_id, r.from_addr, r.subject, r.class, r.summary, r.at, p.company FROM outreach_replies r
       LEFT JOIN outreach_prospects p ON p.id = r.prospect_id ORDER BY r.id DESC LIMIT 30`).all()).results ?? [];
@@ -763,7 +772,7 @@ export async function saveSender(env: StudioEnv, adminId: string, b: Record<stri
     user: String(b.user ?? "").trim() || cur?.user || fromAddr,
     smtp_host: hostName(b.smtpHost, cur?.smtp_host ?? "smtp.gmail.com"), smtp_port: portOf(b.smtpPort, cur?.smtp_port ?? 465),
     imap_host: hostName(b.imapHost, cur?.imap_host ?? "imap.gmail.com"), imap_port: portOf(b.imapPort, cur?.imap_port ?? 993),
-    daily_max: Math.max(5, Math.min(60, Number(b.dailyMax ?? cur?.daily_max ?? 40) || 40)),
+    daily_max: Math.max(5, Math.min(60, Number(b.dailyMax ?? cur?.daily_max ?? 60) || 60)),
   };
   const newPass = String(b.password ?? "").replace(/\s+/g, "");
   const pass = newPass || (cur ? await passOf(env, cur) : "");
