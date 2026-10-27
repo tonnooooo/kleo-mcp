@@ -1175,7 +1175,8 @@ async function outreachPage(main, opts = {}) {
     r.on ? (paused.length ? `On, but ${paused.map((m) => m.fromAddr).join(", ")} refused to send: check its app password below.` : `On, from ${count(r.ready.senders, "mailbox", "mailboxes")}.`)
       : r.ready.ok ? "Off. Everything is ready." : "Off. It starts once these are ready:",
     r.on ? null : h("div", { class: "list" }, check(r.ready.senders > 0, r.ready.senders ? count(r.ready.senders, "mailbox", "mailboxes") : "A mailbox to send from"),
-      check(r.ready.postal, "Postal address (the law wants it in every e-mail)"), check(r.ready.approved > 0, `${count(r.ready.approved, "approved business", "approved businesses")}`)),
+      check(r.ready.sendable > 0, `${count(r.ready.approved, "approved business", "approved businesses")}${r.ready.postal ? "" : `, ${num(r.ready.sendable)} outside the US and Canada`}`)),
+    r.ready.postal ? null : h("div", { class: "adm-note" }, icon("mail", 17), h("span", {}, "No postal address yet: Kleo writes to the UK, Australia and New Zealand, and the US and Canadian businesses wait. Their law wants a postal address in every e-mail; add one in Settings to include them.")),
     h("div", { class: "adm-actions" }, sw, pill(r.on ? "On" : "Off", r.on ? "ok" : "")));
 
   // The businesses: approve before anything is sent.
@@ -1273,7 +1274,7 @@ async function outreachPage(main, opts = {}) {
     } catch (e) { oops(e); saveSet.disabled = false; }
   }
   const settings = card("Settings", null,
-    field("Postal address, in every e-mail's footer", S2, "postal", { placeholder: "A street address or PO box, with the country" }),
+    field("Postal address, in the footer (needed for the US and Canada)", S2, "postal", { placeholder: "A street address or PO box, with the country" }),
     field("Free credits for a business that signs up through its link (0 to 200)", S2, "trialCredits", { inputmode: "numeric" }),
     toggle("Answer a yes by itself", "with the business's personal link to sign up and get those credits.", S2, "autoReply"),
     toggle("Look for new businesses every day (the scout)", "with Cloudflare's web search, from your AI Gateway credits.", S2, "scoutOn"),
@@ -1503,7 +1504,7 @@ function demoOutreach(p, q, b) {
   if (p === "/api/admin/outreach/import") return { added: 0, skipped: [] };
   if (p.startsWith("/api/admin/outreach/")) return { ok: true, to: "leo@outreach.example", on: !!b?.on, id: "s_demo1" };
   return { on: false, settings: { postal: "", trialCredits: 20, autoReply: true, autoApprove: false, scoutOn: false, scoutDaily: 30 },
-    ready: { senders: 0, postal: false, approved: 0, ok: false }, mailboxes: [], counts: { new: 1, replied: 1 }, contacted: 1, replied: 1, signedUp: 1, paying: 0,
+    ready: { senders: 0, postal: false, approved: 0, sendable: 0, ok: false }, mailboxes: [], counts: { new: 1, replied: 1 }, contacted: 1, replied: 1, signedUp: 1, paying: 0,
     variants: [{ id: "a", name: "Ten hooks in an afternoon", sent: 12, answered: 2 }, { id: "b", name: "The slow-to-shoot parts", sent: 9, answered: 0 }, { id: "c", name: "Ten hooks to test", sent: 4, answered: 1 }],
     replies: [{ prospect_id: "p_demo2", from_addr: "studio@northugc.example", subject: "Re: Short-form video for North UGC", class: "interested", summary: "Wants a trial for the team.", at: new Date().toISOString(), company: "North UGC" }],
     sends: [], countries: ["US", "CA", "GB", "AU", "NZ"], scout: { today: 0, queued: 0, checked: 0, added: 1, addedWeek: 1, lastError: null } };

@@ -12,7 +12,7 @@
  * THE RULES IT KEEPS (New Zealand's Unsolicited Electronic Messages Act 2007, CAN-SPAM, CASL, the UK's PECR, Australia's
  * Spam Act): only addresses a business publishes on its own website for business contact, relevant to its work (the
  * "deemed / inferred / implied consent" those laws allow), each with the page where it was seen (source_url); never a
- * bought list; the sender named, the postal address in every e-mail, a working unsubscribe link and "reply no", honoured
+ * bought list; the sender named with a way to reach it, a working unsubscribe link and "reply no", honoured
  * at once. Prospects wait for the owner's approval unless the owner chose to approve the scout's finds automatically.
  * Countries: US, CA, GB, AU, NZ only.
  *
@@ -24,6 +24,11 @@
  *
  * IT LEARNS: the first e-mail has a few versions (VARIANTS); each new prospect gets one picked by Thompson sampling on
  * the replies so far, so the version that gets answered more is sent more.
+ *
+ * POSTAL ADDRESS: CAN-SPAM (US) and CASL (Canada) want a postal address in every commercial e-mail; New Zealand's, the
+ * UK's and Australia's laws want the sender identified and reachable, which the footer's name, website and e-mail do.
+ * Without a postal address in the settings, Kleo writes only to the UK, Australia and New Zealand; US and Canadian
+ * businesses wait, approved, until one is added.
  *
  * THE SWITCH is studio_meta 'outreach_mode' ('on' | 'off'); turning it on needs a mailbox with its password, the postal
  * address and approved prospects. Settings: 'outreach_settings' (JSON). Each mailbox password is sealed in its own row.
@@ -46,7 +51,7 @@ export const AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 // ── settings ─────────────────────────────────────────────────────────────────────────────────────────────────────
 
 export interface Settings {
-  /** The postal address every e-mail carries (CAN-SPAM, CASL). */
+  /** The postal address the e-mails carry (CAN-SPAM, CASL); without one, US and Canadian businesses wait. */
   postal: string;
   /** Credits a business gets when it signs up through its personal link (0: none offered). */
   trialCredits: number;
@@ -86,12 +91,18 @@ export async function senders(env: StudioEnv): Promise<SenderRow[]> {
   return (await env.DB.prepare("SELECT * FROM outreach_senders ORDER BY created_at, id").all<SenderRow>()).results ?? [];
 }
 
-export interface Readiness { senders: number; postal: boolean; approved: number; ok: boolean }
+export interface Readiness { senders: number; postal: boolean; approved: number; sendable: number; ok: boolean }
+/** The countries whose law wants a postal address in a commercial e-mail. */
+export const POSTAL_COUNTRIES = ["US", "CA"];
+const hasPostal = (s: { postal: string }): boolean => s.postal.trim().length >= 10;
 export async function readiness(env: StudioEnv): Promise<Readiness> {
   const ready = (await senders(env)).filter((s) => s.status !== "off" && s.sealed_pass).length;
   const approved = Number((await env.DB.prepare("SELECT COUNT(*) AS n FROM outreach_prospects WHERE status IN ('approved', 'active')").first<{ n: number }>())?.n ?? 0);
-  const postal = (await settingsOf(env)).postal.trim().length >= 10;
-  return { senders: ready, postal, approved, ok: ready > 0 && postal && approved > 0 };
+  const postal = hasPostal(await settingsOf(env));
+  // What can be written to now: every approved business, or without a postal address only those outside the US and Canada.
+  const sendable = postal ? approved : Number((await env.DB.prepare(`SELECT COUNT(*) AS n FROM outreach_prospects WHERE status IN ('approved', 'active')
+      AND country NOT IN (${POSTAL_COUNTRIES.map(() => "?").join(",")})`).bind(...POSTAL_COUNTRIES).first<{ n: number }>())?.n ?? 0);
+  return { senders: ready, postal, approved, sendable, ok: ready > 0 && sendable > 0 };
 }
 
 /** The daily number for a mailbox's n-th day of sending (day 1 = its first): a new mailbox earns trust slowly. */
@@ -239,7 +250,8 @@ export function writeStep(p: Prospect, step: number, s: Signature, unsubscribeUr
   const name = s.fromName || "Leonardo";
   const hi = `Hi ${firstOf(p.contact_name) ?? "there"},`;
   const sign = `${name}\nFounder, Kleo`;
-  const footer = `--\nYou're getting this one-off business e-mail because ${p.email} is listed on ${hostOf(p.source_url)}. If it isn't relevant, reply "no" or open ${unsubscribeUrl} and I won't write again.\nKleo (Kanaky Tech, New Zealand), ${s.postal.trim()}`;
+  const who = `Kleo (Kanaky Tech, New Zealand), ${s.postal.trim() || "kleooai.com, hello@kleooai.com"}`;
+  const footer = `--\nYou're getting this one-off business e-mail because ${p.email} is listed on ${hostOf(p.source_url)}. If it isn't relevant, reply "no" or open ${unsubscribeUrl} and I won't write again.\n${who}`;
   const v = variantById(p.variant);
   const subject0 = p.subject || v.subject(p);
   const opener = (p.opener ?? "").trim() || `I came across ${p.company} while looking at ${PHRASE[p.type ?? ""] ?? "studios that make short-form video"}${p.city ? ` in ${p.city}` : ""}.`;
@@ -394,7 +406,6 @@ export async function outreachTick(env: StudioEnv, nowMs = Date.now(), deps: Out
   // Sign-ups through a personal link get their trial credits even when outreach is off again.
   try { out.converted = await grantTrials(env, set, nowMs); } catch (e) { console.error("outreach trials", e instanceof Error ? e.message : e); }
   if ((await meta(env, "outreach_mode")) !== "on") return out;
-  if (set.postal.trim().length < 10) return { ...out, paused: "setup" };
   const list = (await senders(env)).filter((s) => s.status !== "off" && s.sealed_pass);
   if (!list.length) return { ...out, paused: "setup" };
   for (const s of list) {
@@ -404,7 +415,7 @@ export async function outreachTick(env: StudioEnv, nowMs = Date.now(), deps: Out
     if (s.status === "paused" && nowMs - (Date.parse(s.paused_at ?? "") || 0) < 6 * 3_600_000) { out.paused = "sender"; continue; }
     if (nowMs < (Date.parse(s.next_send_at ?? "") || 0)) continue;
     if ((await sentInLastDay(env, s.id, nowMs)) >= (await quotaOf(env, s, nowMs))) { out.paused ??= "quota"; continue; }
-    const p = await pickNext(env, s, nowMs);
+    const p = await pickNext(env, s, nowMs, hasPostal(set));
     if (!p) continue;
     if (p.step === 0) {
       if (await env.DB.prepare("SELECT 1 AS one FROM mail_suppress WHERE email = ?").bind(p.email).first()) { await stopProspect(env, p.id, p.email, "suppressed", false); continue; }
@@ -434,13 +445,13 @@ export async function outreachTick(env: StudioEnv, nowMs = Date.now(), deps: Out
 }
 
 /** This mailbox's follow-up that is due first, else the next approved prospect nobody has written to; business time only. */
-async function pickNext(env: StudioEnv, s: SenderRow, nowMs: number): Promise<Prospect | null> {
+async function pickNext(env: StudioEnv, s: SenderRow, nowMs: number, postal: boolean): Promise<Prospect | null> {
   const now = new Date(nowMs).toISOString();
   const due = (await env.DB.prepare("SELECT * FROM outreach_prospects WHERE status = 'active' AND sender_id = ? AND next_at <= ? ORDER BY next_at LIMIT 40").bind(s.id, now).all<Prospect>()).results ?? [];
   const f = due.find((p) => businessTime(nowMs, p.tz ?? zoneFor(p.country, p.region)));
   if (f) return f;
   // Not written to yet: nobody's, this mailbox's (a send that failed), or a mailbox's that is no longer sending.
-  const free = "status = 'approved' AND step = 0 AND (sender_id IS NULL OR sender_id = ? OR sender_id NOT IN (SELECT id FROM outreach_senders WHERE status = 'active'))";
+  const free = `status = 'approved' AND step = 0 AND (sender_id IS NULL OR sender_id = ? OR sender_id NOT IN (SELECT id FROM outreach_senders WHERE status = 'active'))${postal ? "" : ` AND country NOT IN (${POSTAL_COUNTRIES.map((c) => `'${c}'`).join(", ")})`}`;
   const fresh = (await env.DB.prepare(`SELECT * FROM outreach_prospects WHERE ${free} ORDER BY approved_at, added_at, rowid LIMIT 80`).bind(s.id).all<Prospect>()).results ?? [];
   for (const p of fresh) {
     if (!businessTime(nowMs, p.tz ?? zoneFor(p.country, p.region))) continue;
@@ -678,7 +689,7 @@ export async function previewFor(env: StudioEnv, url: URL): Promise<unknown> {
   if (!p) throw new StudioError("No such prospect.", 404, "not_found");
   const set = await settingsOf(env);
   const s = (await senders(env))[0];
-  const sig = { fromName: s?.from_name || "Leonardo", postal: set.postal || "[your postal address goes here]", credits: set.trialCredits };
+  const sig = { fromName: s?.from_name || "Leonardo", postal: set.postal, credits: set.trialCredits };
   const link = await outreachStopLink(env, p.id);
   const versions = p.variant ? [p.variant] : VARIANTS.map((v) => v.id);
   return {
@@ -782,7 +793,7 @@ export async function saveSettings(env: StudioEnv, adminId: string, b: Record<st
 export async function setOutreachMode(env: StudioEnv, adminId: string, on: boolean): Promise<unknown> {
   if (on) {
     const r = await readiness(env);
-    if (!r.ok) throw new StudioError(!r.senders ? "Add a mailbox first." : !r.postal ? "Add the postal address first: the law wants it in every e-mail." : "Approve some businesses first.", 400, "not_ready");
+    if (!r.ok) throw new StudioError(!r.senders ? "Add a mailbox first." : r.approved && !r.postal ? "Every approved business is in the US or Canada: add the postal address first, their law wants it in every e-mail." : "Approve some businesses first.", 400, "not_ready");
   }
   await setMeta(env, "outreach_mode", on ? "on" : "off");
   await audit(asEnv(env), adminId, null, "admin.outreach_mode", { on });
@@ -800,7 +811,7 @@ export async function sendOutreachTest(env: StudioEnv, senderId: string | null, 
     contact_name: "Sam", source_url: "https://example.com/contact", opener: null, fit_reason: null, status: "new", step: 0, next_at: null, tz: null, thread_id: null, subject: null, batch: null,
     sender_id: null, variant: null, link_code: null, converted_user: null, reply_class: null };
   const w = writeStep({ ...sample, variant: sample.variant ?? pickVariant(await variantStats(env), deps.random ?? Math.random) }, 0,
-    { fromName: s.from_name, postal: set.postal || "[postal address]", credits: set.trialCredits }, await outreachStopLink(env, sample.id));
+    { fromName: s.from_name, postal: set.postal, credits: set.trialCredits }, await outreachStopLink(env, sample.id));
   const raw = buildMime({ fromName: s.from_name, fromAddr: s.from_addr, to: s.from_addr, subject: `[Test, as ${sample.company} would get it] ${w.subject}`, text: w.text, messageId: messageId(s) });
   await smtpSend(deps.dial ?? socketDial, await smtpOf(env, s), { from: s.from_addr, to: s.from_addr, raw });
   return { ok: true, to: s.from_addr };

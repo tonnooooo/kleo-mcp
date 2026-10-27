@@ -635,7 +635,7 @@ test("console: mailboxes saved only after both sign-ins, settings, approvals, pr
   await mod.addProspects(env, [P(), P({ email: "hi@two.example", company: "Two" })], "research");
   let r = await call(env, "/api/admin/outreach", { cookie: o.admin });
   assert.equal(r.status, 200, r.text);
-  assert.deepEqual(r.json.ready, { senders: 0, postal: false, approved: 0, ok: false });
+  assert.deepEqual(r.json.ready, { senders: 0, postal: false, approved: 0, sendable: 0, ok: false });
   r = await call(env, "/api/admin/outreach/mode", { method: "POST", cookie: o.admin, body: { on: true, code: await o.code() } });
   assert.equal(r.status, 400);
   assert.equal(r.json.code, "not_ready");
@@ -658,7 +658,7 @@ test("console: mailboxes saved only after both sign-ins, settings, approvals, pr
   r = await call(env, "/api/admin/outreach/settings", { method: "POST", cookie: o.admin, body: { scoutOn: true, code: await o.code() } });
   assert.equal(r.json.scoutOn, true);
   r = await call(env, "/api/admin/outreach", { cookie: o.admin });
-  assert.deepEqual(r.json.ready, { senders: 1, postal: true, approved: 0, ok: false });
+  assert.deepEqual(r.json.ready, { senders: 1, postal: true, approved: 0, sendable: 0, ok: false });
   assert.equal(r.json.mailboxes[0].passwordEnds, "abcd");
   assert.ok(!JSON.stringify(r.json).includes(MB.pass), "the password never comes back");
   assert.equal(r.json.variants.length, 3);
@@ -713,4 +713,24 @@ test("morning e-mail: at 8:00 in Auckland, once a day, only while something is o
   assert.doesNotMatch(raw, /WELCOME E-MAILS/, "the welcome e-mails are off");
   env.DB.db.prepare("UPDATE studio_meta SET value = 'off' WHERE key = 'outreach_mode'").run();
   assert.equal(await mod.morningDigest(env, eight + DAY), false, "nothing on, nothing sent");
+});
+
+test("no postal address: the UK, Australia and New Zealand are written to, with the name, website and e-mail; the US and Canada wait", async () => {
+  const env = newEnv();
+  await configure(env, { settings: { postal: "" } });
+  await addApproved(env, [P({ email: "team@usagency.example", company: "US Agency" }), P({ email: "kia@ora.example", company: "Ora Studio", country: "NZ", state: "", city: "Auckland" }),
+    P({ email: "hi@maple.example", company: "Maple", country: "CA", state: "ON", city: "Toronto" })]);
+  const ready = await mod.readiness(env);
+  assert.deepEqual(ready, { senders: 1, postal: false, approved: 3, sendable: 1, ok: true });
+  // Tuesday 3 November 2026, 10:30 in Auckland; then the US and Canada's own working hours the same week.
+  const nzMorning = Date.parse("2026-11-02T21:30:00.000Z");
+  for (let t = 0; t < 3 * DAY; t += HOUR) await mod.outreachTick(env, nzMorning + t, { random: () => 0 });
+  assert.deepEqual([...new Set(MB.sent.map((m) => m.to))], ["kia@ora.example"], "the first e-mail and, three working days later, the follow-up");
+  assert.match(bodyOf(MB.sent[0].raw), /Kleo \(Kanaky Tech, New Zealand\), kleooai\.com, hello@kleooai\.com/);
+  assert.equal(one(env, "SELECT status FROM outreach_prospects WHERE email = 'team@usagency.example'").status, "approved", "waits, still approved");
+  // A postal address later: the US and Canada join.
+  await mod.saveSettings(env, "u_owner", { postal: POSTAL });
+  for (let t = 3 * DAY; t < 6 * DAY; t += HOUR) await mod.outreachTick(env, nzMorning + t, { random: () => 0 });
+  assert.ok(MB.sent.some((m) => m.to === "team@usagency.example") && MB.sent.some((m) => m.to === "hi@maple.example"));
+  assert.match(bodyOf(MB.sent.find((m) => m.to === "team@usagency.example").raw), /Kleo \(Kanaky Tech, New Zealand\), PO Box 123/);
 });
