@@ -353,6 +353,7 @@ test("warm-up: five e-mails in the first 24 hours, however many are approved", a
   assert.equal(mod.warmupQuota(10, 40), 15);
   assert.equal(mod.warmupQuota(30, 40), 40);
   assert.equal(mod.warmupQuota(30, 20), 20);
+  assert.deepEqual([18, 25, 33, 40].map((d) => mod.warmupQuota(d, 60)), [25, 35, 45, 60], "steps of ten a week to the maximum");
 });
 
 test("follow-ups: in the same thread, Re: subject, then the last one, then done", async () => {
