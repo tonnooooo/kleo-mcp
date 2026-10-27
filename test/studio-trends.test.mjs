@@ -429,19 +429,25 @@ test("Locker Room (27 October 2026): the original edit without its watermark, Wa
   // The checks of 27 October: other officers are in the shots without the friend, he holds two items at once, the friend
   // is also the man in a black uniform shirt, and there is no forearm tattoo (the Topaz upscale sharpened arm hair).
   assert.match(input.prompt, /in every other shot Person 1 is the only one of the two\./);
-  assert.match(input.prompt, /The other officers in the background stay as they are in Video 1 and never get the face from Image 1 or Image 2\./);
+  assert.match(input.prompt, /Other officers in the background stay as in Video 1, with nothing from Image 1 or Image 2\./);
+  // The first two paid runs gave the lone shot on the left to Person 2 (the prompt placed only the friend "on the left").
+  assert.match(input.prompt, /Tell the two apart by looks and actions, never by where they stand in the frame\./);
+  assert.match(input.prompt, /also when he is alone on the left half of the frame, closer, holds up a small black-and-red item, then touches his temple with one finger\./);
+  assert.match(input.prompt, /When Person 1 touches his temple he is alone, with no arm round him/);
+  assert.match(input.prompt, /never blend the two faces, never add anyone or a second copy of anyone: at every moment there are as many people as in Video 1, in the same places\./);
+  assert.match(input.prompt, /the man changing behind Person 1 is Person 2, not another officer\./);
   assert.match(input.prompt, /sometimes one in each hand/);
   assert.match(input.prompt, /once in a black uniform shirt with his head down/);
   assert.doesNotMatch(input.prompt, /every other shot shows only|one item at a time|forearm|goatee|zoom blur|teal/);
   assert.match(input.prompt, /The person from Image 2 is never shirtless: in every shot they wear the clothes they wear in Image 2\./);
-  assert.match(input.prompt, /If a person in an image is a different gender, they replace the original in that position as they are in the image\./);
+  assert.match(input.prompt, /If a person in an image is a different gender, they replace the original as they are in the image\./);
   // No times (Wan re-times to them) and no weapon words for the provider's filter.
   assert.doesNotMatch(input.prompt, /\d+(?:\.\d+)?\s*(?:s|sec|secs|seconds?)\b|\d\s*-\s*\d/);
   assert.doesNotMatch(input.prompt, /gun|pistol|rifle|firearm|knife|knives|blade|weapon|spray|mace|handcuff|cuffs|holster|taser|baton|bullet|ammo|ammunition|magazine|knuckle|shoot/i);
-  assert.ok(input.prompt.length < 3000, `${input.prompt.length} characters`);
+  assert.ok(input.prompt.length < 3600, `${input.prompt.length} characters`);
   // The exact words, pinned: a change to them is a change to every customer's result.
   const { createHash } = await import("node:crypto");
-  assert.equal(createHash("sha256").update(t.prompt).digest("hex"), "7572d7cf824aed96f211e5df1ac3d328f3ab925804d8105f903634914a24fea6");
+  assert.equal(createHash("sha256").update(t.prompt).digest("hex"), "5215c79a7aefe505f4e41d0e2ce837715f583eab6c9dfcb6e669545ced6f55dd");
   // Both photos are needed.
   assert.throws(() => planTool(t.key, { quality: "720p" }, { person1: photo("up_a") }), (e) => e instanceof ToolRefusal && /each of the 2 people/.test(e.message));
 });
