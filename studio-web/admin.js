@@ -1278,16 +1278,18 @@ async function outreachPage(main, opts = {}) {
     field("Free credits for a business that signs up through its link (0 to 200)", S2, "trialCredits", { inputmode: "numeric" }),
     toggle("Answer a yes by itself", "with the business's personal link to sign up and get those credits.", S2, "autoReply"),
     toggle("Look for new businesses every day (the scout)", "with Cloudflare's web search, from your AI Gateway credits.", S2, "scoutOn"),
-    field("Searches a day (5 to 200)", S2, "scoutDaily", { inputmode: "numeric" }),
+    field("Searches a day (5 to 280)", S2, "scoutDaily", { inputmode: "numeric" }),
     toggle("Approve the scout's finds by itself", "instead of waiting for you here. Each one is still checked: its address on its own site, its work, its country.", S2, "autoApprove"),
     h("div", { class: "adm-actions" }, saveSet));
 
   // The scout's numbers.
   const sc = r.scout || {};
-  const scout = card("Scout", r.settings.scoutOn ? `On: up to ${r.settings.scoutDaily} searches a day, ${sc.today} today.` : "Off. Switch it on in Settings.",
+  const daily = Number(r.settings.scoutDaily) || 0;
+  const scout = card("Scout", r.settings.scoutOn ? `On: up to ${daily} searches a day, ${sc.today} today.` : "Off. Switch it on in Settings.",
     tiles(tile("Found", num(sc.added), `${num(sc.addedWeek)} this week`), tile("Websites checked", num(sc.checked), `${num(sc.queued)} waiting to be checked`)),
+    r.settings.scoutOn && sc.paused ? h("div", { class: "adm-note" }, icon("clock", 17), h("span", {}, `Searching waits: ${sc.paused}. It starts again by itself.`)) : null,
     sc.lastError ? h("div", { class: "adm-note bad" }, icon("x", 17), h("span", {}, `Last trouble: ${sc.lastError}. If it says the AI Gateway credit balance is zero, add credits in Cloudflare: AI, AI Gateway, Credits.`)) : null,
-    h("div", { class: "adm-note" }, icon("globe", 17), h("span", {}, "One search costs $0.00025 (30 a day is about $0.25 a month); reading the websites with Workers AI is about $3 to $4 a month at that pace.")));
+    h("div", { class: "adm-note" }, icon("globe", 17), h("span", {}, `One search costs $0.00025: ${daily} a day is at most $${(daily * 30.4 * 0.00025).toFixed(2)} a month from the AI Gateway credits. Reading the websites with Workers AI is at most about $${(daily * 3 * 30.4 * 0.0008).toFixed(2)} a month on the Cloudflare bill, less when the free daily allowance covers it.`)));
 
   // Which version of the first e-mail gets answered.
   const versions = (r.variants || []).map((v) => h("div", { class: "row" }, icon("chat", 19),

@@ -94,7 +94,9 @@ export async function senders(env: StudioEnv): Promise<SenderRow[]> {
 export interface Readiness { senders: number; postal: boolean; approved: number; sendable: number; ok: boolean }
 /** The countries whose law wants a postal address in a commercial e-mail. */
 export const POSTAL_COUNTRIES = ["US", "CA"];
-const hasPostal = (s: { postal: string }): boolean => s.postal.trim().length >= 10;
+export const hasPostal = (s: { postal: string }): boolean => s.postal.trim().length >= 10;
+/** The most searches a day the scout may make: one per turn, a turn every 5 minutes. */
+export const SCOUT_MAX_DAILY = 280;
 export async function readiness(env: StudioEnv): Promise<Readiness> {
   const ready = (await senders(env)).filter((s) => s.status !== "off" && s.sealed_pass).length;
   const approved = Number((await env.DB.prepare("SELECT COUNT(*) AS n FROM outreach_prospects WHERE status IN ('approved', 'active')").first<{ n: number }>())?.n ?? 0);
@@ -667,6 +669,7 @@ export async function outreachOverview(env: StudioEnv, nowMs = Date.now()): Prom
       added: await one("SELECT COUNT(*) AS n FROM outreach_prospects WHERE batch LIKE 'scout%'"),
       addedWeek: await one("SELECT COUNT(*) AS n FROM outreach_prospects WHERE batch LIKE 'scout%' AND added_at >= ?", new Date(nowMs - 7 * 86_400_000).toISOString()),
       lastError: await meta(env, "scout_error"),
+      paused: await meta(env, "scout_paused"),
     },
   };
 }
@@ -783,7 +786,7 @@ export async function saveSettings(env: StudioEnv, adminId: string, b: Record<st
     autoReply: b.autoReply === undefined ? cur.autoReply : b.autoReply === true,
     autoApprove: b.autoApprove === undefined ? cur.autoApprove : b.autoApprove === true,
     scoutOn: b.scoutOn === undefined ? cur.scoutOn : b.scoutOn === true,
-    scoutDaily: b.scoutDaily === undefined ? cur.scoutDaily : Math.max(5, Math.min(200, Math.floor(Number(b.scoutDaily) || 30))),
+    scoutDaily: b.scoutDaily === undefined ? cur.scoutDaily : Math.max(5, Math.min(SCOUT_MAX_DAILY, Math.floor(Number(b.scoutDaily) || 30))),
   };
   await setMeta(env, "outreach_settings", JSON.stringify(next));
   await audit(asEnv(env), adminId, null, "admin.outreach_settings", { ...next, postal: next.postal ? "set" : "" });

@@ -539,7 +539,7 @@ test("scout: finds a business, checks its visible address, its work and its coun
     { url: "https://www.linkedin.com/company/x" }, { url: "https://clutch.co/agencies/ugc" }]]);
   const set = { ...mod.DEFAULT_SETTINGS, scoutOn: true, scoutDaily: 2 };
   let r = await mod.scoutTick(env, set, MON, deps);
-  assert.deepEqual(deps.searched, ["TikTok marketing agency New York NY"]);
+  assert.deepEqual(deps.searched, ["TikTok marketing agency London UK"], "no postal address: the UK, Australia and New Zealand only");
   assert.equal(r.searched, 1);
   assert.equal(rows(env, "SELECT * FROM outreach_seen").length, 4, "directories and networks are never queued");
   r = await mod.scoutTick(env, set, MON + 5 * MIN, deps);
@@ -560,7 +560,7 @@ test("scout: finds a business, checks its visible address, its work and its coun
   assert.match(p.source_url, /^https:\/\/www\.goodugc\.com\//);
   // Today's allowance: two searches, then none until tomorrow.
   assert.equal(deps.searched.length, 2, "two searches today, then none until tomorrow");
-  assert.equal(one(env, "SELECT value FROM studio_meta WHERE key = 'scout_cursor'").value, "2");
+  assert.equal(one(env, "SELECT value FROM studio_meta WHERE key = 'scout_cursor_intl'").value, "2");
 });
 
 test("scout: a site that is not a fit, too big, in another country, or a person's address in Canada is left out; auto-approve works", async () => {
@@ -582,7 +582,7 @@ test("scout: a site that is not a fit, too big, in another country, or a person'
     return realRun(m, input);
   };
   const deps = scoutDeps(sites, [Object.keys(sites).map((u) => ({ url: u }))]);
-  const set = { ...mod.DEFAULT_SETTINGS, scoutOn: true, scoutDaily: 1, autoApprove: true };
+  const set = { ...mod.DEFAULT_SETTINGS, scoutOn: true, scoutDaily: 2, autoApprove: true };
   for (let i = 0; i < 3; i++) await mod.scoutTick(env, set, MON + i * 5 * MIN, deps);
   const seen = Object.fromEntries(rows(env, "SELECT domain, result FROM outreach_seen").map((x) => [x.domain, x.result]));
   assert.match(seen["seoonly.com"], /^not a fit/);
@@ -593,6 +593,59 @@ test("scout: a site that is not a fit, too big, in another country, or a person'
   assert.deepEqual(rows(env, "SELECT email, status, country, region FROM outreach_prospects"), [{ email: "hello@maplerole.ca", status: "approved", country: "CA", region: "ON" }]);
 });
 
+test("scout: the US and Canada are searched only with a postal address, in proportion; sites without video work cost no Workers AI", async () => {
+  const env = newEnv();
+  const deps = scoutDeps({ "https://plumbco.com/": "<html><body><h1>Plumbing in Leeds</h1><p>Boilers and taps. hello@plumbco.com</p></body></html>" }, [[{ url: "https://plumbco.com/" }]]);
+  let set = { ...mod.DEFAULT_SETTINGS, scoutOn: true, scoutDaily: 200 };
+  for (let i = 0; i < 12; i++) await mod.scoutTick(env, set, MON + i * 5 * MIN, deps);
+  const na = (q) => (/ [A-Z]{2}$/.test(q) && !/ UK$/.test(q)) || /Canada$/.test(q);
+  assert.equal(deps.searched.filter(na).length, 0, "no US or Canadian city without a postal address");
+  assert.equal(one(env, "SELECT result FROM outreach_seen WHERE domain = 'plumbco.com'").result, "no video or social media work on the site");
+  assert.equal(env.AI.calls, 0, "Workers AI never read it");
+  assert.equal(one(env, "SELECT value FROM studio_meta WHERE key = 'scout_judged_2026-11-02'"), undefined);
+  // With a postal address both walks run, the US and Canada about twice as often (213 cities against 110).
+  const env2 = newEnv(), deps2 = scoutDeps({}, []);
+  set = { ...set, postal: POSTAL };
+  for (let i = 0; i < 30; i++) await mod.scoutTick(env2, set, MON + i * 5 * MIN, deps2);
+  const n = deps2.searched.filter(na).length;
+  assert.ok(n >= 18 && n <= 22, `${n} of 30 searches in the US or Canada`);
+  assert.equal(deps2.searched[0], "TikTok marketing agency London UK");
+  assert.equal(deps2.searched.filter(na)[0], "TikTok marketing agency New York NY");
+});
+
+test("scout: searching waits while too many websites or businesses wait, keeping the allowance; Workers AI reads at most three a day per search", async () => {
+  const env = newEnv();
+  const deps = { searched: [], search: async (q) => { deps.searched.push(q); return []; }, fetchPage: async (u) => SITE(`hello@${new URL(u).hostname}`) };
+  const set = { ...mod.DEFAULT_SETTINGS, scoutOn: true, scoutDaily: 1 };
+  const seen = env.DB.db.prepare("INSERT INTO outreach_seen (domain, status, url) VALUES (?, 'queued', ?)");
+  for (let i = 0; i < 600; i++) seen.run(`queued${i}.com`, `https://queued${i}.com/`);
+  let r = await mod.scoutTick(env, set, MON, deps);
+  assert.equal(r.searched, 0);
+  assert.match(one(env, "SELECT value FROM studio_meta WHERE key = 'scout_paused'").value, /^600 websites are waiting to be read/);
+  assert.equal(one(env, "SELECT value FROM studio_meta WHERE key = 'scout_day_2026-11-02'"), undefined, "the allowance is kept");
+  assert.equal(r.checked, 3, "three readings a day for one search a day");
+  r = await mod.scoutTick(env, set, MON + 5 * MIN, deps);
+  assert.equal(r.checked, 0, "today's readings are spent: the rest wait");
+  assert.equal(r.searched, 1, "597 queued: searching goes on");
+  assert.equal(one(env, "SELECT value FROM studio_meta WHERE key = 'scout_judged_2026-11-02'").value, "3");
+  assert.equal(one(env, "SELECT COUNT(*) AS n FROM outreach_seen WHERE status = 'queued'").n, 597);
+  env.DB.db.prepare("DELETE FROM outreach_seen").run();
+  env.DB.db.prepare("DELETE FROM outreach_prospects").run();
+  // A thousand businesses per mailbox already waiting for a first e-mail (the US and Canada not counted without a postal address).
+  const ins = env.DB.db.prepare("INSERT INTO outreach_prospects (id, email, domain, company, country, source_url, status) VALUES (?, ?, ?, 'Co', ?, 'https://x/', 'approved')");
+  for (let i = 0; i < 1000; i++) ins.run(`p${i}`, `hello@co${i}.com`, `co${i}.com`, i < 10 ? "US" : "GB");
+  r = await mod.scoutTick(env, set, MON + DAY, deps);
+  assert.equal(r.searched, 1, "990 sendable without a postal address: it searches");
+  env.DB.db.prepare("UPDATE outreach_prospects SET country = 'GB'").run();
+  r = await mod.scoutTick(env, set, MON + 2 * DAY, deps);
+  assert.equal(r.searched, 0);
+  assert.match(one(env, "SELECT value FROM studio_meta WHERE key = 'scout_paused'").value, /^1000 businesses already wait for their first e-mail/);
+  env.DB.db.prepare("DELETE FROM outreach_prospects WHERE id = 'p0'").run();
+  r = await mod.scoutTick(env, set, MON + 2 * DAY + 5 * MIN, deps);
+  assert.equal(r.searched, 1);
+  assert.equal(one(env, "SELECT value FROM studio_meta WHERE key = 'scout_paused'"), undefined);
+});
+
 test("scout: no AI Gateway credits keeps today's allowance and says why; off does nothing", async () => {
   const env = newEnv();
   const set = { ...mod.DEFAULT_SETTINGS, scoutOn: true, scoutDaily: 3 };
@@ -600,7 +653,7 @@ test("scout: no AI Gateway credits keeps today's allowance and says why; off doe
   const r = await mod.scoutTick(env, set, MON, deps);
   assert.equal(r.searched, 0);
   assert.match(one(env, "SELECT value FROM studio_meta WHERE key = 'scout_error'").value, /credit balance is zero/);
-  assert.equal(one(env, "SELECT value FROM studio_meta WHERE key = 'scout_cursor'").value, "0", "the same search is tried again");
+  assert.equal(one(env, "SELECT value FROM studio_meta WHERE key = 'scout_cursor_intl'").value, "0", "the same search is tried again");
   assert.deepEqual(await mod.scoutTick(env, { ...set, scoutOn: false }, MON, deps), { searched: 0, checked: 0, added: 0 });
   // The endless walk: every kind in every city, then other wordings.
   const per = mod.SEGMENTS.length * mod.PLACES.length;
@@ -608,6 +661,11 @@ test("scout: no AI Gateway credits keeps today's allowance and says why; off doe
   assert.equal(mod.queryAt(per).q, "TikTok marketing agency contact New York NY");
   assert.ok(new Set(Array.from({ length: per }, (_, i) => mod.queryAt(i).q)).size === per);
   assert.deepEqual(["GB", "AU", "NZ", "CA", "US"].map((c) => mod.PLACES.some((p) => p[2] === c)), [true, true, true, true, true]);
+  assert.ok(mod.PLACES.length >= 300 && mod.SEGMENTS.length >= 20, "enough cities and kinds for 240 searches a day");
+  assert.deepEqual([...new Set(mod.WALKS.intl.map((p) => p[2]))].sort(), ["AU", "GB", "NZ"]);
+  assert.deepEqual([...new Set(mod.WALKS.na.map((p) => p[2]))].sort(), ["CA", "US"]);
+  const intlPer = mod.SEGMENTS.length * mod.WALKS.intl.length;
+  assert.ok(new Set(Array.from({ length: intlPer }, (_, i) => mod.queryAt(i, mod.WALKS.intl).q)).size === intlPer);
   assert.deepEqual(mod.visibleAddresses("<p>hello@a-studio.com.au, jobs@a-studio.com.au, x@gmail.com, info@other.com, me@a-studio.com.au</p>", "www.a-studio.com.au"), ["hello@a-studio.com.au", "me@a-studio.com.au"]);
 });
 
@@ -657,6 +715,10 @@ test("console: mailboxes saved only after both sign-ins, settings, approvals, pr
   // Switching the scout on, or approving its finds by itself, wants a fresh code.
   r = await call(env, "/api/admin/outreach/settings", { method: "POST", cookie: o.admin, body: { scoutOn: true, code: await o.code() } });
   assert.equal(r.json.scoutOn, true);
+  r = await call(env, "/api/admin/outreach/settings", { method: "POST", cookie: o.admin, body: { scoutDaily: 999 } });
+  assert.equal(r.json.scoutDaily, 280, "one search a turn at most");
+  r = await call(env, "/api/admin/outreach/settings", { method: "POST", cookie: o.admin, body: { scoutDaily: 240 } });
+  assert.equal(r.json.scoutDaily, 240);
   r = await call(env, "/api/admin/outreach", { cookie: o.admin });
   assert.deepEqual(r.json.ready, { senders: 1, postal: true, approved: 0, sendable: 0, ok: false });
   assert.equal(r.json.mailboxes[0].passwordEnds, "abcd");
