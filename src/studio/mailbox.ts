@@ -172,12 +172,13 @@ export function quotedPrintable(text: string): string {
   }).join("\r\n");
 }
 
+/** html: the same e-mail as HTML, sent beside the plain text (multipart/alternative). */
 export interface Outgoing {
-  fromName: string; fromAddr: string; to: string; subject: string; text: string; messageId: string;
+  fromName: string; fromAddr: string; to: string; subject: string; text: string; html?: string; messageId: string;
   inReplyTo?: string | null; references?: string[]; unsubscribeUrl?: string; unsubscribeMailto?: string; date?: Date;
 }
 
-/** The whole message, headers and quoted-printable plain text, as the SMTP DATA wants it. */
+/** The whole message, headers and quoted-printable plain text (and its HTML twin), as the SMTP DATA wants it. */
 export function buildMime(o: Outgoing): string {
   const h = [
     `From: ${nameAddr(o.fromName, o.fromAddr)}`,
@@ -192,8 +193,17 @@ export function buildMime(o: Outgoing): string {
     h.push(`List-Unsubscribe: <${o.unsubscribeUrl}>${o.unsubscribeMailto ? `, <mailto:${o.unsubscribeMailto}?subject=unsubscribe>` : ""}`);
     h.push("List-Unsubscribe-Post: List-Unsubscribe=One-Click");
   }
-  h.push("MIME-Version: 1.0", "Content-Type: text/plain; charset=utf-8", "Content-Transfer-Encoding: quoted-printable");
-  return `${h.join("\r\n")}\r\n\r\n${quotedPrintable(o.text)}`;
+  h.push("MIME-Version: 1.0");
+  if (!o.html) {
+    h.push("Content-Type: text/plain; charset=utf-8", "Content-Transfer-Encoding: quoted-printable");
+    return `${h.join("\r\n")}\r\n\r\n${quotedPrintable(o.text)}`;
+  }
+  // The plain text and its HTML twin, links behind words and a button (27 October 2026, the owner: bare addresses look
+  // like a scam). The boundary comes from the Message-ID, so it never shows up inside a part.
+  const b = `kleo-${o.messageId.replace(/[^A-Za-z0-9]/g, "").slice(0, 32)}`;
+  h.push(`Content-Type: multipart/alternative; boundary="${b}"`);
+  const part = (type: string, body: string) => `--${b}\r\nContent-Type: ${type}; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n${quotedPrintable(body)}`;
+  return `${h.join("\r\n")}\r\n\r\n${part("text/plain", o.text)}\r\n${part("text/html", o.html)}\r\n--${b}--\r\n`;
 }
 
 // ── IMAP ─────────────────────────────────────────────────────────────────────────────────────────────────────────

@@ -218,7 +218,18 @@ async function addApproved(env, list) {
 const MON = Date.parse("2026-11-02T15:30:00.000Z");
 const MIN = 60_000, HOUR = 3_600_000, DAY = 24 * HOUR;
 const qpDecode = (s) => Buffer.from(s.replace(/=\r\n/g, "").replace(/=([0-9A-F]{2})/g, (_m, h) => String.fromCharCode(parseInt(h, 16))), "latin1").toString("utf8");
-const bodyOf = (raw) => qpDecode(raw.slice(raw.indexOf("\r\n\r\n") + 4));
+/** The plain-text part (the whole body of a plain e-mail), and the HTML part of a multipart one. */
+const partOf = (raw, type) => {
+  const body = raw.slice(raw.indexOf("\r\n\r\n") + 4);
+  const b = /boundary="([^"]+)"/.exec(raw.slice(0, raw.indexOf("\r\n\r\n")))?.[1];
+  if (!b) return type === "text/plain" ? qpDecode(body) : null;
+  const part = body.split(`--${b}`).find((x) => x.includes(`Content-Type: ${type}`));
+  return part ? qpDecode(part.slice(part.indexOf("\r\n\r\n") + 4).replace(/\r\n$/, "")) : null;
+};
+const bodyOf = (raw) => partOf(raw, "text/plain");
+const htmlOf = (raw) => partOf(raw, "text/html");
+/** What a reader sees of the HTML: the words, not the addresses behind them. */
+const visible = (html) => html.replace(/<head>[\s\S]*?<\/head>/, "").replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ");
 const header = (raw, name) => raw.split("\r\n").find((l) => l.toLowerCase().startsWith(`${name.toLowerCase()}:`))?.slice(name.length + 1).trim() ?? null;
 
 // ── the message ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -321,9 +332,17 @@ test("first e-mail: in New York's working hours, from the mailbox, personal, the
   assert.match(text, /free credits to try it on a real brief this week\?/);
   assert.doesNotMatch(text, /face swap|outfit swap|https:\/\/app\.kleooai\.com\/r\//i, "one hook, no list of features, no sign-up link in the first");
   assert.match(text, /hello@brightreels\.example is listed on brightreels\.example/);
-  assert.match(text, /Kleo \(Kanaky Tech, New Zealand\), PO Box 123, Auckland 1010, New Zealand/);
+  assert.match(text, /Kleo, PO Box 123, Auckland 1010, New Zealand · kleooai\.com/);
+  // The HTML twin: the same words, the addresses behind them ("Kleo" links to kleooai.com, "unsubscribe here" to the stop page).
+  assert.match(header(m.raw, "Content-Type"), /^multipart\/alternative; boundary="kleo-[A-Za-z0-9]+"$/);
+  const html = htmlOf(m.raw);
+  assert.match(html, /<a href="https:\/\/kleooai\.com"[^>]*>Kleo<\/a>/);
+  assert.match(html, /<a href="https:\/\/app\.kleooai\.com\/email\/out\?p=p_[a-z0-9]+&amp;s=[0-9a-f]{32}"[^>]*>unsubscribe here<\/a>/);
+  assert.doesNotMatch(visible(html), /app\.kleooai\.com|https?:/, "no bare address to read");
+  assert.match(visible(html), /Saw that you run TikTok for three Brooklyn coffee roasters\./);
+  assert.doesNotMatch(html, /<img|utm_/i);
   assert.match(header(m.raw, "List-Unsubscribe"), /^<https:\/\/app\.kleooai\.com\/email\/out\?p=p_[a-z0-9]+&s=[0-9a-f]{32}>, <mailto:leo@getkleo\.test\?subject=unsubscribe>$/);
-  assert.doesNotMatch(m.raw, /<img|<html|utm_/i, "plain text, no tracking");
+  assert.doesNotMatch(m.raw, /<img|utm_/i, "no images, no tracking");
   const p = one(env, "SELECT * FROM outreach_prospects WHERE email = 'hello@brightreels.example'");
   assert.equal(p.status, "active");
   assert.equal(p.step, 1);
@@ -370,8 +389,11 @@ test("follow-ups: in the same thread, Re: subject, then the last one, then done"
   // The second carries the business's personal link with the trial credits: no need to write back.
   const code = one(env, "SELECT link_code FROM outreach_prospects").link_code;
   assert.match(code, /^bright-reels-[a-z0-9]+$/);
-  assert.match(bodyOf(MB.sent[1].raw), new RegExp(`Easier than a call: here's a link set up for Bright Reels: https://app\\.kleooai\\.com/r/${code}`));
-  assert.match(bodyOf(MB.sent[1].raw), /20 free credits land on the account within a few minutes/);
+  assert.match(bodyOf(MB.sent[1].raw), new RegExp(`Easier than a call: I've set up Bright Reels' own link to try Kleo\\.\\r?\\n\\r?\\nTry Kleo with 20 free credits: https://app\\.kleooai\\.com/r/${code}`));
+  assert.match(bodyOf(MB.sent[1].raw), /the credits land on the account within a few minutes/);
+  // In the HTML it is a button, the address behind it.
+  assert.match(htmlOf(MB.sent[1].raw), new RegExp(`<a href="https://app\\.kleooai\\.com/r/${code}" style="display:inline-block;background:#111111[^"]*">Try Kleo with 20 free credits</a>`));
+  assert.doesNotMatch(visible(htmlOf(MB.sent[1].raw)), /app\.kleooai\.com/);
   assert.equal(one(env, "SELECT created_by, archived_at IS NOT NULL AS hidden FROM short_links WHERE code = ?", code).hidden, 1);
   const p2 = one(env, "SELECT next_at FROM outreach_prospects");
   await mod.outreachTick(env, Date.parse(p2.next_at) + MIN, { random: () => 0 });
@@ -497,6 +519,8 @@ test("a yes: Kleo answers in the thread with the business's personal link; signi
   assert.match(p.link_code, /^bright-reels-[a-z0-9]{4}$/);
   assert.match(bodyOf(answer.raw), new RegExp(`https://app\\.kleooai\\.com/r/${p.link_code}`));
   assert.match(bodyOf(answer.raw), /25 free credits land on the account/);
+  assert.match(htmlOf(answer.raw), new RegExp(`<a href="https://app\\.kleooai\\.com/r/${p.link_code}"[^>]*>Try Kleo with 25 free credits</a>`));
+  assert.doesNotMatch(visible(htmlOf(answer.raw)), /app\.kleooai\.com/);
   assert.ok(one(env, "SELECT archived_at FROM short_links WHERE code = ?", p.link_code).archived_at, "hidden from Sources, still working");
   assert.equal(env.AI.calls, 0, "a plain yes needs no AI");
   assert.match(env.mails.at(-1).raw, /Kleo already answered with their personal link/);
@@ -532,7 +556,8 @@ test("learning: the version of the first e-mail that gets answered is picked mor
   for (const v of mod.VARIANTS) for (const credits of [0, 20]) {
     const w = mod.writeStep({ ...p, variant: v.id }, 0, { fromName: "Leonardo", postal: POSTAL, credits }, "https://app.kleooai.com/email/out?p=p_x&s=y");
     assert.match(w.text, /^Hi Ann,\n\nSaw the UGC ads on your work page\.\n\n/);
-    assert.match(w.text, /Kleo \(Kanaky Tech, New Zealand\), PO Box 123/);
+    assert.match(w.text, /Kleo, PO Box 123, Auckland 1010, New Zealand · kleooai\.com/);
+    assert.doesNotMatch(w.text + w.html, /Kanaky/, "Kanaky Tech is no longer part of Kleo");
     assert.equal(/free credits/.test(w.text), credits > 0, `${v.id} credits ${credits}`);
     assert.doesNotMatch(w.text, /undefined|null|NaN/);
   }
@@ -803,6 +828,10 @@ test("console: mailboxes saved only after both sign-ins, settings, approvals, pr
   assert.equal(MB.sent.at(-1).to, "owner@example.com");
   r = await call(env, "/api/admin/outreach/test", { method: "POST", cookie: o.admin, body: { to: "not an address" } });
   assert.equal(r.json.to, "leo@getkleo.test", "anything else goes to the mailbox itself");
+  // The second e-mail, to see its button; its stop link belongs to no business.
+  r = await call(env, "/api/admin/outreach/test", { method: "POST", cookie: o.admin, body: { to: "owner@example.com", step: 1 } });
+  assert.match(htmlOf(MB.sent.at(-1).raw), /<a href="https:\/\/app\.kleooai\.com\/"[^>]*>Try Kleo with \d+ free credits<\/a>/);
+  assert.match(htmlOf(MB.sent.at(-1).raw), /email\/out\?p=p_testmail&amp;s=/);
   r = await call(env, "/api/admin/outreach/mode", { method: "POST", cookie: o.admin, body: { on: true, code: await o.code() } });
   assert.equal(r.status, 200, r.text);
   assert.equal((await call(env, "/api/admin/outreach", { cookie: o.admin })).json.on, true);
@@ -850,11 +879,11 @@ test("no postal address: the UK, Australia and New Zealand are written to, with 
   const nzMorning = Date.parse("2026-11-02T21:30:00.000Z");
   for (let t = 0; t < 3 * DAY; t += HOUR) await mod.outreachTick(env, nzMorning + t, { random: () => 0 });
   assert.deepEqual([...new Set(MB.sent.map((m) => m.to))], ["kia@ora.example"], "the first e-mail and, three working days later, the follow-up");
-  assert.match(bodyOf(MB.sent[0].raw), /Kleo \(Kanaky Tech, New Zealand\), kleooai\.com, hello@kleooai\.com/);
+  assert.match(bodyOf(MB.sent[0].raw), /Kleo · New Zealand · kleooai\.com · hello@kleooai\.com/);
   assert.equal(one(env, "SELECT status FROM outreach_prospects WHERE email = 'team@usagency.example'").status, "approved", "waits, still approved");
   // A postal address later: the US and Canada join.
   await mod.saveSettings(env, "u_owner", { postal: POSTAL });
   for (let t = 3 * DAY; t < 6 * DAY; t += HOUR) await mod.outreachTick(env, nzMorning + t, { random: () => 0 });
   assert.ok(MB.sent.some((m) => m.to === "team@usagency.example") && MB.sent.some((m) => m.to === "hi@maple.example"));
-  assert.match(bodyOf(MB.sent.find((m) => m.to === "team@usagency.example").raw), /Kleo \(Kanaky Tech, New Zealand\), PO Box 123/);
+  assert.match(bodyOf(MB.sent.find((m) => m.to === "team@usagency.example").raw), /Kleo, PO Box 123/);
 });

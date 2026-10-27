@@ -260,50 +260,82 @@ export const VARIANTS: { id: string; name: string; subject: (p: Prospect) => str
 ];
 export const variantById = (id: string | null) => VARIANTS.find((v) => v.id === id) ?? VARIANTS[0];
 
-export interface Written { subject: string; text: string }
+export interface Written { subject: string; text: string; html: string }
 /** link: the business's personal sign-up link, which the second e-mail carries (it brings the trial credits). */
 export interface Signature { fromName: string; postal: string; credits: number; link?: string | null }
 
 /**
- * The three e-mails of the sequence, for one prospect. Plain text, short, no tracking. The first asks for a reply (no link
- * but the website's name); the second carries the business's personal link, so a curious reader signs up without
- * writing back; the third closes the thread.
+ * An e-mail is a list of parts, each a paragraph or a button, written out twice: as plain text and as plain-looking HTML
+ * (27 October 2026, the owner: a bare app.kleooai.com address "sembra scam", make a button like Superhuman's). The HTML
+ * reads like a person's e-mail: no logo, no images, no tracking, left-aligned; addresses sit behind words.
+ */
+type Part = string | { button: string; url: string };
+interface Foot { why: string; stopUrl: string; who: string }
+const FONT = "-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+/** A paragraph as HTML: "Kleo (kleooai.com)" becomes the word Kleo linking there; line breaks stay. */
+const inlineHtml = (s: string): string => escapeHtml(s).replace(/Kleo \(kleooai\.com\)/g, '<a href="https://kleooai.com" style="color:#111111">Kleo</a>').replace(/\n/g, "<br>");
+function asText(parts: Part[], foot: Foot | null): string {
+  const body = parts.map((x) => (typeof x === "string" ? x : `${x.button}: ${x.url}`));
+  return [...body, ...(foot ? [`--\n${foot.why} If it isn't relevant, reply "no" or open ${foot.stopUrl} and I won't write again.\n${foot.who}`] : [])].join("\n\n");
+}
+function asHtml(parts: Part[], foot: Foot | null): string {
+  const body = parts.map((x) => typeof x === "string"
+    ? `<p style="margin:0 0 16px">${inlineHtml(x)}</p>`
+    : `<p style="margin:22px 0 24px"><a href="${escapeHtml(x.url)}" style="display:inline-block;background:#111111;color:#ffffff;text-decoration:none;font-weight:600;font-size:16px;padding:13px 22px;border-radius:999px">${escapeHtml(x.button)}</a></p>`).join("\n");
+  const tail = foot ? `\n<p style="margin:28px 0 0;padding-top:14px;border-top:1px solid #e5e5e5;font-size:15px;line-height:1.5;color:#6b6b6b">${escapeHtml(foot.why)} If it isn't relevant, reply "no" or <a href="${escapeHtml(foot.stopUrl)}" style="color:#6b6b6b">unsubscribe here</a> and I won't write again.<br>${escapeHtml(foot.who)}</p>` : "";
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"></head>
+<body style="margin:0;padding:0;background:#ffffff"><div style="max-width:560px;padding:8px 4px;font-family:${FONT};font-size:16px;line-height:1.55;color:#111111">
+${body}${tail}
+</div></body></html>`;
+}
+
+/**
+ * The three e-mails of the sequence, for one prospect. Short, no tracking. The first asks for a reply (no link but the
+ * word Kleo); the second carries the business's personal link as a button, so a curious reader signs up without writing
+ * back; the third closes the thread. The footer names Kleo and New Zealand (27 October 2026: Kanaky Tech is no longer
+ * part of it), and the postal address once there is one.
  */
 export function writeStep(p: Prospect, step: number, s: Signature, unsubscribeUrl: string): Written {
   const name = s.fromName || "Leonardo";
   const hi = hiOf(p);
   const sign = `${name}\nFounder, Kleo`;
-  const who = `Kleo (Kanaky Tech, New Zealand), ${s.postal.trim() || "kleooai.com, hello@kleooai.com"}`;
-  const footer = `--\nYou're getting this one-off business e-mail because ${p.email} is listed on ${hostOf(p.source_url)}. If it isn't relevant, reply "no" or open ${unsubscribeUrl} and I won't write again.\n${who}`;
+  const foot: Foot = {
+    why: `You're getting this one-off business e-mail because ${p.email} is listed on ${hostOf(p.source_url)}.`, stopUrl: unsubscribeUrl,
+    who: s.postal.trim() ? `Kleo, ${s.postal.trim()} · kleooai.com` : "Kleo · New Zealand · kleooai.com · hello@kleooai.com",
+  };
+  const mail = (subject: string, parts: Part[]): Written => ({ subject, text: asText(parts, foot), html: asHtml(parts, foot) });
   const v = variantById(p.variant);
   const subject0 = p.subject || v.subject(p);
   const opener = (p.opener ?? "").trim() || `I came across ${nameOf(p)} while looking at ${PHRASE[p.type ?? ""] ?? "studios that make short-form video"}${p.city ? ` in ${p.city}` : ""}.`;
-  if (step === 0) return { subject: subject0, text: [hi, opener, ...v.pitch(p, s.credits), sign, footer].join("\n\n") };
-  if (step === 1) return { subject: `Re: ${subject0}`, text: [hi, ...(s.link ? [
-    `Easier than a call: here's a link set up for ${nameOf(p)}: ${s.link}`,
+  if (step === 0) return mail(subject0, [hi, opener, ...v.pitch(p, s.credits), sign]);
+  if (step === 1) return mail(`Re: ${subject0}`, [hi, ...(s.link ? [
+    `Easier than a call: I've set up ${nameOfs(p)} own link to try Kleo.`,
+    { button: s.credits ? `Try Kleo with ${s.credits} free credits` : "Try Kleo", url: s.link },
     s.credits
-      ? `Sign up through it (Google or e-mail, about a minute) and ${s.credits} free credits land on the account within a few minutes, enough for a few test clips. Every clip in Kleo's Explore tab was made from one line or one photo.`
+      ? "Sign up through it (Google or e-mail, about a minute) and the credits land on the account within a few minutes, enough for a few test clips. Every clip in Kleo's Explore tab was made from one line or one photo."
       : "Sign up through it (Google or e-mail, about a minute) and try it on a real brief. Every clip in Kleo's Explore tab was made from one line or one photo.",
   ] : [
     "A quick follow-up with something you can judge in ten seconds: app.kleooai.com/explore has clips made entirely in Kleo, each from one line or one photo.",
     s.credits ? `If a free trial for ${nameOf(p)} sounds useful, reply "yes" and I'll send it over.` : `If it sounds useful for ${nameOf(p)}, reply "yes" and I'll send the details.`,
-  ]), sign, footer].join("\n\n") };
-  return { subject: `Re: ${subject0}`, text: [hi,
+  ]), sign]);
+  return mail(`Re: ${subject0}`, [hi,
     `I'll stop here so I don't crowd your inbox. If short-form video ever becomes the bottleneck at ${nameOf(p)}, a reply to this e-mail still reaches me.`,
-    `Thanks,\n${name}`, footer].join("\n\n") };
+    `Thanks,\n${name}`]);
 }
 
-/** Kleo's own answer to a "yes": the personal link, and what signing up through it gives. */
-export function writeYes(p: Prospect, s: Signature, link: string): string {
-  const name = s.fromName || "Leonardo";
-  return [hiOf(p),
-    `Great, here's ${nameOfs(p)} link: ${link}`,
+/** Kleo's own answer to a "yes": the personal link as a button, and what signing up through it gives. */
+export function yesMail(p: Prospect, s: Signature, link: string): { text: string; html: string } {
+  const parts: Part[] = [hiOf(p),
+    `Great, here's ${nameOfs(p)} own link to Kleo.`,
+    { button: s.credits ? `Try Kleo with ${s.credits} free credits` : "Open Kleo", url: link },
     s.credits
-      ? `Sign up through it (Google or e-mail, about a minute) and ${s.credits} free credits land on the account by themselves, enough for a few clips on the fast model to judge Kleo on a real brief. The plans for more are at app.kleooai.com/plans.`
-      : "Sign up through it (Google or e-mail, about a minute) and you can start right away. The plans are at app.kleooai.com/plans.",
+      ? `Sign up through it (Google or e-mail, about a minute) and the ${s.credits} free credits land on the account by themselves, enough for a few clips on the fast model to judge Kleo on a real brief.`
+      : "Sign up through it (Google or e-mail, about a minute) and you can start right away.",
     "If anything is unclear, just reply here.",
-    name].join("\n\n");
+    s.fromName || "Leonardo"];
+  return { text: asText(parts, null), html: asHtml(parts, null) };
 }
+export const writeYes = (p: Prospect, s: Signature, link: string): string => yesMail(p, s, link).text;
 
 // ── choosing the version: Thompson sampling on the replies so far ────────────────────────────────────────────────
 
@@ -392,7 +424,7 @@ async function sendTo(env: StudioEnv, s: SenderRow, p: Prospect, set: Settings, 
   const w = writeStep(p, p.step, sig, stop);
   const mid = messageId(s);
   const refs = await threadRefs(env, p);
-  const raw = buildMime({ fromName: s.from_name, fromAddr: s.from_addr, to: p.email, subject: w.subject, text: w.text, messageId: mid,
+  const raw = buildMime({ fromName: s.from_name, fromAddr: s.from_addr, to: p.email, subject: w.subject, text: w.text, html: w.html, messageId: mid,
     inReplyTo: refs.at(-1) ?? null, references: refs, unsubscribeUrl: stop, unsubscribeMailto: s.from_addr, date: new Date(nowMs) });
   try {
     await smtpSend(deps.dial ?? socketDial, await smtpOf(env, s), { from: s.from_addr, to: p.email, raw });
@@ -618,7 +650,7 @@ export async function checkReplies(env: StudioEnv, s: SenderRow, set: Settings, 
         const refs = await threadRefs(env, p);
         const all = [...refs, ...(m.messageId ? [m.messageId] : [])];
         const raw = buildMime({ fromName: s.from_name, fromAddr: s.from_addr, to: m.from || p.email, subject: /^re:/i.test(m.subject) ? m.subject : `Re: ${m.subject || p.subject || p.company}`,
-          text: writeYes(p, { fromName: s.from_name, postal: set.postal, credits: set.trialCredits }, link), messageId: messageId(s), inReplyTo: m.messageId ?? refs.at(-1) ?? null, references: all, date: new Date(nowMs) });
+          ...yesMail(p, { fromName: s.from_name, postal: set.postal, credits: set.trialCredits }, link), messageId: messageId(s), inReplyTo: m.messageId ?? refs.at(-1) ?? null, references: all, date: new Date(nowMs) });
         await smtpSend(deps.dial ?? socketDial, await smtpOf(env, s), { from: s.from_addr, to: m.from || p.email, raw });
         await env.DB.prepare("INSERT INTO outreach_log (prospect_id, email, step, ok, sender_id, at) VALUES (?, ?, 9, 1, ?, ?)").bind(p.id, m.from || p.email, s.id, new Date(nowMs).toISOString()).run();
         answered = `Kleo already answered with their personal link (${link})${set.trialCredits ? `; their account gets ${set.trialCredits} trial credits when they sign up through it` : ""}. You'll get an e-mail when they do.`;
@@ -839,7 +871,7 @@ export async function setOutreachMode(env: StudioEnv, adminId: string, on: boole
 
 /** The first e-mail for a sample prospect, through one real mailbox, to that mailbox itself. */
 /** A sample first e-mail from a mailbox, to the mailbox itself or to an address the owner names (to see it as a business would). */
-export async function sendOutreachTest(env: StudioEnv, senderId: string | null, deps: OutreachDeps = {}, toAddr: string | null = null): Promise<unknown> {
+export async function sendOutreachTest(env: StudioEnv, senderId: string | null, deps: OutreachDeps = {}, toAddr: string | null = null, step = 0): Promise<unknown> {
   const list = await senders(env);
   const s = list.find((x) => x.id === senderId) ?? list[0];
   if (!s?.sealed_pass) throw new StudioError("Add a mailbox first.", 400, "not_ready");
@@ -848,10 +880,13 @@ export async function sendOutreachTest(env: StudioEnv, senderId: string | null, 
   const sample: Prospect = p ?? { id: "p_sample", email: s.from_addr, domain: "", company: "Sample Agency", website: null, country: "US", region: null, city: "Austin", type: "social-media-agency",
     contact_name: "Sam", source_url: "https://example.com/contact", opener: null, fit_reason: null, status: "new", step: 0, next_at: null, tz: null, thread_id: null, subject: null, batch: null,
     sender_id: null, variant: null, link_code: null, converted_user: null, reply_class: null };
-  const w = writeStep({ ...sample, variant: sample.variant ?? pickVariant(await variantStats(env), deps.random ?? Math.random) }, 0,
-    { fromName: s.from_name, postal: set.postal, credits: set.trialCredits }, await outreachStopLink(env, sample.id));
+  // Which e-mail of the sequence (0, 1 or 2); the second's button opens the app, and the stop link belongs to no
+  // business, so the owner can click everything in a test without touching a real one.
+  const n = [0, 1, 2].includes(step) ? step : 0;
+  const w = writeStep({ ...sample, variant: sample.variant ?? pickVariant(await variantStats(env), deps.random ?? Math.random), subject: null }, n,
+    { fromName: s.from_name, postal: set.postal, credits: set.trialCredits, link: `${APP}/` }, await outreachStopLink(env, "p_testmail"));
   const to = toAddr && /^[^\s@<>,;"]+@[^\s@<>,;"]+\.[a-z]{2,}$/i.test(toAddr.trim()) ? toAddr.trim().toLowerCase() : s.from_addr;
-  const raw = buildMime({ fromName: s.from_name, fromAddr: s.from_addr, to, subject: `[Test, as ${sample.company} would get it] ${w.subject}`, text: w.text, messageId: messageId(s) });
+  const raw = buildMime({ fromName: s.from_name, fromAddr: s.from_addr, to, subject: `[Test, as ${sample.company} would get it] ${w.subject}`, text: w.text, html: w.html, messageId: messageId(s) });
   await smtpSend(deps.dial ?? socketDial, await smtpOf(env, s), { from: s.from_addr, to, raw });
   return { ok: true, to };
 }
