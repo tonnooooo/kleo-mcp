@@ -838,7 +838,8 @@ export async function setOutreachMode(env: StudioEnv, adminId: string, on: boole
 }
 
 /** The first e-mail for a sample prospect, through one real mailbox, to that mailbox itself. */
-export async function sendOutreachTest(env: StudioEnv, senderId: string | null, deps: OutreachDeps = {}): Promise<unknown> {
+/** A sample first e-mail from a mailbox, to the mailbox itself or to an address the owner names (to see it as a business would). */
+export async function sendOutreachTest(env: StudioEnv, senderId: string | null, deps: OutreachDeps = {}, toAddr: string | null = null): Promise<unknown> {
   const list = await senders(env);
   const s = list.find((x) => x.id === senderId) ?? list[0];
   if (!s?.sealed_pass) throw new StudioError("Add a mailbox first.", 400, "not_ready");
@@ -849,7 +850,8 @@ export async function sendOutreachTest(env: StudioEnv, senderId: string | null, 
     sender_id: null, variant: null, link_code: null, converted_user: null, reply_class: null };
   const w = writeStep({ ...sample, variant: sample.variant ?? pickVariant(await variantStats(env), deps.random ?? Math.random) }, 0,
     { fromName: s.from_name, postal: set.postal, credits: set.trialCredits }, await outreachStopLink(env, sample.id));
-  const raw = buildMime({ fromName: s.from_name, fromAddr: s.from_addr, to: s.from_addr, subject: `[Test, as ${sample.company} would get it] ${w.subject}`, text: w.text, messageId: messageId(s) });
-  await smtpSend(deps.dial ?? socketDial, await smtpOf(env, s), { from: s.from_addr, to: s.from_addr, raw });
-  return { ok: true, to: s.from_addr };
+  const to = toAddr && /^[^\s@<>,;"]+@[^\s@<>,;"]+\.[a-z]{2,}$/i.test(toAddr.trim()) ? toAddr.trim().toLowerCase() : s.from_addr;
+  const raw = buildMime({ fromName: s.from_name, fromAddr: s.from_addr, to, subject: `[Test, as ${sample.company} would get it] ${w.subject}`, text: w.text, messageId: messageId(s) });
+  await smtpSend(deps.dial ?? socketDial, await smtpOf(env, s), { from: s.from_addr, to, raw });
+  return { ok: true, to };
 }

@@ -46,7 +46,7 @@
  *   POST /api/admin/outreach/senders/:id     {action: on|off|remove}
  *   POST /api/admin/outreach/settings        {postal?, trialCredits?, autoReply?, autoApprove?, scoutOn?, scoutDaily?, code?}
  *   POST /api/admin/outreach/mode            {on, code?}                    on needs everything ready and a fresh code
- *   POST /api/admin/outreach/test            {sender?}                      the first e-mail to the mailbox itself
+ *   POST /api/admin/outreach/test            {sender?, to?}                 a sample first e-mail to the mailbox itself, or to `to`
  *   POST /api/admin/outreach/prospects/:id   {action: approve|reject|reset}
  *   POST /api/admin/outreach/approve-new     {}                             every prospect still waiting
  *   POST /api/admin/outreach/import          {csv, batch}                   more prospects, checked like the first
@@ -864,7 +864,7 @@ async function outreachRoute(env: StudioEnv, request: Request, gate: Gate, admin
     if (b.on === true) await freshGate(env, request, gate, adminId, b);
     return json(await setOutreachMode(env, adminId, b.on === true));
   }
-  if (path === "/api/admin/outreach/test") return json(await sendOutreachTest(env, typeof b.sender === "string" ? b.sender : null));
+  if (path === "/api/admin/outreach/test") return json(await sendOutreachTest(env, typeof b.sender === "string" ? b.sender : null, {}, typeof b.to === "string" ? b.to : null));
   if (path === "/api/admin/outreach/approve-new") return json(await prospectAction(env, adminId, "", "approve-new"));
   if (path === "/api/admin/outreach/import") {
     const rows = typeof b.csv === "string" ? parseCsv(b.csv) : Array.isArray(b.prospects) ? b.prospects as Record<string, unknown>[] : [];

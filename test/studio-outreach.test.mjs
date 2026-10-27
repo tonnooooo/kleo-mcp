@@ -797,6 +797,12 @@ test("console: mailboxes saved only after both sign-ins, settings, approvals, pr
   r = await call(env, "/api/admin/outreach/test", { method: "POST", cookie: o.admin, body: {} });
   assert.equal(r.status, 200, r.text);
   assert.equal(MB.sent.at(-1).to, "leo@getkleo.test");
+  // To an address the owner names, to see it as a business would.
+  r = await call(env, "/api/admin/outreach/test", { method: "POST", cookie: o.admin, body: { to: "Owner@Example.com" } });
+  assert.equal(r.json.to, "owner@example.com");
+  assert.equal(MB.sent.at(-1).to, "owner@example.com");
+  r = await call(env, "/api/admin/outreach/test", { method: "POST", cookie: o.admin, body: { to: "not an address" } });
+  assert.equal(r.json.to, "leo@getkleo.test", "anything else goes to the mailbox itself");
   r = await call(env, "/api/admin/outreach/mode", { method: "POST", cookie: o.admin, body: { on: true, code: await o.code() } });
   assert.equal(r.status, 200, r.text);
   assert.equal((await call(env, "/api/admin/outreach", { cookie: o.admin })).json.on, true);
