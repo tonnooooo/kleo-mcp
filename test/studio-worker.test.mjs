@@ -2223,3 +2223,34 @@ test("a template refuses a photo with no person in it before any charge; a real 
     assert.equal((await order(env3, a3.cookie, photo3.id)).status, 200);
   } finally { p.restore(); }
 });
+
+test("Locker Room takes a character (27 October 2026, Ted): the photo is not refused, its note reaches Wan, a real person's words stay the same", async () => {
+  // Person 1 is a real person, Person 2 a teddy bear: the check answers in seat order.
+  const answers = ['{"person": true, "people": 1, "colour": "colour", "framing": "waist-up", "face": "large"}', '{"person": false, "people": 0, "colour": "colour", "framing": "full-body", "face": "small"}'];
+  let calls = 0;
+  const env = newEnv({ WAVESPEED_API_KEY: "k", AI: { run: async () => ({ response: answers[calls++ % 2] }) } });
+  const { cookie, id } = await paidAccount(env, "ted@example.com", 100);
+  const up = async () => (await call(env, "/api/uploads", { method: "POST", cookie, raw: jpegBytes(), headers: { "content-type": "image/jpeg", "x-width": "1080", "x-height": "1920" } })).json;
+  const man = await up(), bear = await up();
+  const p = fakeProvider((u) => {
+    if (u === "https://api.wavespeed.ai/api/v3/media/uploads") return ok({ code: 200, data: { download_url: "https://cdn.wavespeed.test/p.jpg", upload: { method: "PUT", url: "https://up.wavespeed.test/put" } } });
+    if (u === "https://up.wavespeed.test/put") return new Response("", { status: 200 });
+    if (u === "https://api.wavespeed.ai/api/v3/alibaba/wan-3.0-prime/video-edit") return ok({ code: 200, data: { id: "ws_ted", status: "created" } });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const cfg = await call(env, "/api/config");
+    assert.equal(cfg.json.tools.find((t) => t.key === "trend-locker-room").characters, true);
+    assert.equal(cfg.json.tools.find((t) => t.key === "trend-bby-wow").characters, undefined);
+    const r = await call(env, "/api/tools/run", { method: "POST", cookie, body: { tool: "trend-locker-room", consent: true, inputs: { person1: man.id, person2: bear.id, quality: "480p" } } });
+    assert.equal(r.status, 200, r.text);
+    const { toolCredits } = await import("../src/studio/tools.ts");
+    assert.equal(credits(env, id), 100 - toolCredits(1.65), "charged as priced: $1.65 at 480p, as for a real person");
+    const sent = p.sent.find((x) => x.url.endsWith("/alibaba/wan-3.0-prime/video-edit")).body;
+    const t = (await import("../src/studio/trends.ts")).trendByKey("trend-locker-room");
+    assert.ok(sent.prompt.startsWith(`${t.prompt}\n\nABOUT THE PHOTOS\nImage 2 shows a character, not a real person`), sent.prompt.slice(-700));
+    assert.doesNotMatch(sent.prompt, /Image 1 shows a character/);
+    assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE event = 'studio.no_person'").get().n, 0);
+    assert.equal(env.DB.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE event = 'studio.photo_facts' AND detail LIKE '%\"character\":true%'").get().n, 1);
+  } finally { p.restore(); }
+});

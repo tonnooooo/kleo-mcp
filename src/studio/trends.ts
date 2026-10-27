@@ -115,6 +115,12 @@ export interface Trend {
    * the same clip kept every cut).
    */
   prime?: boolean;
+  /**
+   * A seat may also take a character that is not a real person: a teddy bear, a toy, an animal, a cartoon or CGI
+   * character (27 October 2026, the owner: Ted in Locker Room). Its photo is not refused by the person check, and the
+   * instruction gets a note for that photo only, so the words sent for real people stay exactly the same.
+   */
+  characters?: boolean;
 }
 
 /**
@@ -272,11 +278,12 @@ export const TRENDS: Trend[] = [
   // shot's pose, early), the other a stranger in Person 2's suit with a blended face; one also added a cop. The prompt gave
   // the friend three places "on the left" and Person 1 none. Now the two are told apart by looks and actions, never by
   // place; that shot is Person 1's, alone; faces and clothes never cross or blend; nobody is added.
+  // The owner then asked for Ted (the teddy bear from Ted) as the friend: the template takes characters (Trend.characters).
   {
     key: "trend-locker-room", name: "Locker Room", blurb: "Put yourself and a friend in this viral clip", tint: "#5e5ce6",
     baseUrl: `${TRENDS_MEDIA}/locker-room/base-30-v2.mp4`, baseSeconds: 11,
     preview: `${TRENDS_MEDIA}/locker-room/preview2-p.mp4`, guide: `${TRENDS_MEDIA}/locker-room/guide2.jpg`,
-    prime: true,
+    prime: true, characters: true,
     seats: [
       { key: "person1", label: "Person 1", hint: "Takes the place of the guy with the shaved head · a clear photo", color: "#5e5ce6", at: [58, 35] },
       { key: "person2", label: "Person 2", hint: "Takes the place of his friend on the left · a clear photo", color: "#ff9f0a", at: [15, 52] },
@@ -728,11 +735,16 @@ export function trendPasses(t: Trend, filled: string[], photos: string[], q: Tre
  * the head only. Nothing when the photos are ordinary, so every prompt sent without these facts stays as it was. The
  * templates written shot by shot say it in their own words (trendPromptV2).
  */
-export function photoNotes(filled: string[], facts: Record<string, PhotoFacts | undefined> = {}): string[] {
+export function photoNotes(filled: string[], facts: Record<string, PhotoFacts | undefined> = {}, characters = false): string[] {
   const out: string[] = [];
   filled.forEach((k, i) => {
     const f = facts[k], img = ORDINAL[i];
     if (!f || !img) return;
+    // A template that takes characters (Trend.characters): a photo the check read as no real person is a character.
+    if (characters && f.person === false) {
+      out.push(`${img} shows a character, not a real person (a teddy bear, a toy, an animal, a cartoon or CGI character): that character takes the place of the person it replaces exactly as it looks in ${img} - its own body, size, shape, fur or skin, face, colours, and only what it wears there, even if that is nothing - in every frame. It does the same movements and holds the same items in its own hands or paws. Never turn it into a human, never give it the hair, face or clothes of the person it replaces, and never add a person in its place.`);
+      return;
+    }
     if (f.colour === "greyscale") out.push(`${img} is a black-and-white photo: give that person natural, realistic colour (skin, hair and clothes).`);
     if ((f.people ?? 1) > 1) out.push(`${img} shows more than one person: use only the main person in it, the largest and closest to the camera, and nobody else from it.`);
     if (f.framing === "head") out.push(`${img} shows only the head: take the face and hair from it, and give that person simple everyday clothes that suit them, never the clothes of the person they replace.`);
@@ -744,7 +756,7 @@ const withNotes = (prompt: string, notes: string[]): string => (notes.length ? `
 /** The WaveSpeed input of one run. `photos` are the filled seats' links, in seat order (all of them for a fixed prompt). */
 export function trendTaskInput(t: Trend, filled: string[], photos: string[], q: TrendQuality, picks: TrendPicks = {}, facts: Record<string, PhotoFacts | undefined> = {}): Record<string, unknown> {
   return {
-    prompt: t.shots ? trendPromptV2(t, filled, picks, facts).slice(0, TREND_PROMPT_V2_MAX) : withNotes(t.prompt ?? trendPrompt(t, filled, picks), photoNotes(filled, facts)), video: t.baseUrl, reference_images: photos.slice(0, t.seats.length), resolution: q,
+    prompt: t.shots ? trendPromptV2(t, filled, picks, facts).slice(0, TREND_PROMPT_V2_MAX) : withNotes(t.prompt ?? trendPrompt(t, filled, picks), photoNotes(filled, facts, t.characters)), video: t.baseUrl, reference_images: photos.slice(0, t.seats.length), resolution: q,
     // false keeps the clip's own sound on the result (WaveSpeed: "the source audio track is preserved").
     generate_audio: false, enable_prompt_expansion: false, seed: -1,
   };
