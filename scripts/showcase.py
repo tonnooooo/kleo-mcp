@@ -60,12 +60,17 @@ def from_gallery(path):
         prompt = clean_prompt(f.get("prompt", "")) or (f"Make a short film like this: {line}" if line else "")
         # `full: false` in the site's list = only the clean loop may be shown (the whole cut has outdated parts).
         full = f"{MEDIA}/{slug}-p.mp4" if f.get("full") is False else f"{MEDIA}/{slug}.mp4"
-        out.append({
+        # A Kleo Templates result (27 October 2026) names its template: Explore opens that template, never Recreate.
+        kind = "template" if f.get("app") else "ad" if str(f.get("section", "")).startswith("ads") else "film"
+        item = {
             "slug": slug, "title": f.get("title", slug), "line": line,
             "format": SECTION_FORMAT.get(f.get("section")) or fmt_of(f.get("w"), f.get("h")),
-            "seconds": f.get("dur"), "prompt": prompt, "kind": "ad" if str(f.get("section", "")).startswith("ads") else "film",
+            "seconds": f.get("dur"), "prompt": prompt, "kind": kind,
             "preview": f"{MEDIA}/{slug}-p.mp4", "full": full, "poster": f"{MEDIA}/{slug}.jpg",
-        })
+        }
+        if f.get("app"):
+            item["app"] = f["app"]
+        out.append(item)
     return out
 
 
