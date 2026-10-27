@@ -389,10 +389,14 @@ test("follow-ups: in the same thread, Re: subject, then the last one, then done"
   // The second carries the business's personal link with the trial credits: no need to write back.
   const code = one(env, "SELECT link_code FROM outreach_prospects").link_code;
   assert.match(code, /^bright-reels-[a-z0-9]+$/);
-  assert.match(bodyOf(MB.sent[1].raw), new RegExp(`Easier than a call: I've set up Bright Reels' own link to try Kleo\\.\\r?\\n\\r?\\nTry Kleo with 20 free credits: https://app\\.kleooai\\.com/r/${code}`));
-  assert.match(bodyOf(MB.sent[1].raw), /the credits land on the account within a few minutes/);
+  assert.match(bodyOf(MB.sent[1].raw), new RegExp(`Easier than a call: I've set up Bright Reels' own link to try Kleo\\.\\r?\\n\\r?\\nKleo for Bright Reels\\r?\\n[^\\n]*\\r?\\nTry Kleo free: https://app\\.kleooai\\.com/r/${code}`));
+  assert.match(bodyOf(MB.sent[1].raw), /no card needed\) and 20 free credits land on the account within a few minutes/);
   // In the HTML it is a button, the address behind it.
-  assert.match(htmlOf(MB.sent[1].raw), new RegExp(`<a href="https://app\\.kleooai\\.com/r/${code}" style="display:inline-block;background:#111111[^"]*">Try Kleo with 20 free credits</a>`));
+  assert.match(htmlOf(MB.sent[1].raw), new RegExp(`<td bgcolor="#111111"[^>]*><a href="https://app\\.kleooai\\.com/r/${code}"[^>]*>Try Kleo free&nbsp;&rarr;</a></td>`));
+  // The offer card and the signature carry Kleo's icon from the public media bucket (the app host forbids embedding).
+  assert.match(htmlOf(MB.sent[1].raw), />Kleo for Bright Reels</);
+  assert.equal((htmlOf(MB.sent[1].raw).match(/<img src="https:\/\/media\.kleooai\.com\/email\/kleo-icon-192\.png"/g) ?? []).length, 2);
+  assert.doesNotMatch(htmlOf(MB.sent[0].raw), /<img/, "the first e-mail has no image");
   assert.doesNotMatch(visible(htmlOf(MB.sent[1].raw)), /app\.kleooai\.com/);
   assert.equal(one(env, "SELECT created_by, archived_at IS NOT NULL AS hidden FROM short_links WHERE code = ?", code).hidden, 1);
   const p2 = one(env, "SELECT next_at FROM outreach_prospects");
@@ -519,7 +523,7 @@ test("a yes: Kleo answers in the thread with the business's personal link; signi
   assert.match(p.link_code, /^bright-reels-[a-z0-9]{4}$/);
   assert.match(bodyOf(answer.raw), new RegExp(`https://app\\.kleooai\\.com/r/${p.link_code}`));
   assert.match(bodyOf(answer.raw), /25 free credits land on the account/);
-  assert.match(htmlOf(answer.raw), new RegExp(`<a href="https://app\\.kleooai\\.com/r/${p.link_code}"[^>]*>Try Kleo with 25 free credits</a>`));
+  assert.match(htmlOf(answer.raw), new RegExp(`<a href="https://app\\.kleooai\\.com/r/${p.link_code}"[^>]*>Try Kleo free&nbsp;&rarr;</a>`));
   assert.doesNotMatch(visible(htmlOf(answer.raw)), /app\.kleooai\.com/);
   assert.ok(one(env, "SELECT archived_at FROM short_links WHERE code = ?", p.link_code).archived_at, "hidden from Sources, still working");
   assert.equal(env.AI.calls, 0, "a plain yes needs no AI");
@@ -830,7 +834,7 @@ test("console: mailboxes saved only after both sign-ins, settings, approvals, pr
   assert.equal(r.json.to, "leo@getkleo.test", "anything else goes to the mailbox itself");
   // The second e-mail, to see its button; its stop link belongs to no business.
   r = await call(env, "/api/admin/outreach/test", { method: "POST", cookie: o.admin, body: { to: "owner@example.com", step: 1 } });
-  assert.match(htmlOf(MB.sent.at(-1).raw), /<a href="https:\/\/app\.kleooai\.com\/"[^>]*>Try Kleo with \d+ free credits<\/a>/);
+  assert.match(htmlOf(MB.sent.at(-1).raw), /<a href="https:\/\/app\.kleooai\.com\/"[^>]*>Try Kleo free&nbsp;&rarr;<\/a>/);
   assert.match(htmlOf(MB.sent.at(-1).raw), /email\/out\?p=p_testmail&amp;s=/);
   r = await call(env, "/api/admin/outreach/mode", { method: "POST", cookie: o.admin, body: { on: true, code: await o.code() } });
   assert.equal(r.status, 200, r.text);
