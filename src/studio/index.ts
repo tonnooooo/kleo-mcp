@@ -11,6 +11,7 @@
  *   /r/<code>       a short link: counts the click, tags the visit, opens the link's page (src/studio/attribution.ts)
  *   /email/stop     the welcome e-mails' unsubscribe page and one-click POST (src/studio/onboarding.ts)
  *   /email/out      the outreach e-mails' unsubscribe page and one-click POST (src/studio/outreach.ts)
+ *   /api/creators/* Kleo Creators: the public list, the application, the creator's posts and payout (src/studio/creators.ts)
  *   everything else the single-page app in studio-web/ (served by the ASSETS binding, index.html for app routes)
  *   cron            every minute: refresh the clips still with the provider, save the finished ones, refund the failed,
  *                   mail every new payment its receipt (src/studio/receipts.ts), the scout's search and readings
@@ -56,6 +57,7 @@ import { handleOutreachStop, outreachTick, settingsOf } from "./outreach.ts";
 import { scoutTick } from "./scout.ts";
 import { morningDigest } from "./digest.ts";
 import { receiptsTick } from "./receipts.ts";
+import { addPost, applyAsCreator, creatorStatus, creatorsTick, leaveProgram, publicCreators, removePost, setPayout } from "./creators.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const json = (data: unknown, status = 200, headers: Record<string, string> = {}): Response =>
@@ -217,6 +219,9 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       ...(adminHost ? { google: false, microsoft: false, social: [], signup: "none" } : {}),
     });
   }
+  // The creators in Kleo Creators (src/studio/creators.ts): public, so anybody can check that a creator is real; the
+  // site's /creators/ page (another origin) reads it too, with no cookie.
+  if (path === "/api/creators/public" && method === "GET") return json(await publicCreators(env), 200, { "cache-control": "public, max-age=300", "access-control-allow-origin": "*" });
   if (path.startsWith("/api/auth/") && method === "POST" && path !== "/api/auth/password" && path !== "/api/auth/password/change" && path !== "/api/auth/signout-all") {
     if (path === "/api/auth/signout") return json({ ok: true }, 200, { "set-cookie": clearSessionCookie() });
     const b = await body(request);
@@ -295,6 +300,8 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       plans: publicPlans(env.STRIPE_PLAN_LINKS, await planRef(env.INTERNAL_SECRET, userId)), plan: await planOf(env, userId),
       // Copyright refusals made on Wan 3.0 by themselves (generate.ts switchToWan).
       autoWan: await autoWanOn(env, userId),
+      // A place in Kleo Creators, for the menu (src/studio/creators.ts).
+      creator: await env.DB.prepare("SELECT status, level FROM creators WHERE user_id = ?").bind(userId).first<{ status: string; level: string }>().catch(() => null),
     });
   }
   // Apple Pay / Google Pay inside the app (src/studio/pay.ts): the Checkout Session a phone's wallet button pays.
@@ -305,6 +312,18 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
     await audit(asEnv(env), userId, null, "pay.session", { label: s.label, cents: s.cents });
     ctx.waitUntil(recordIp(env, userId, "pay", request));
     return json(s);
+  }
+  // ── Kleo Creators (src/studio/creators.ts) ──
+  if (path === "/api/creators/me" && method === "GET") return json(await creatorStatus(env, userId));
+  if (path === "/api/creators/apply" && method === "POST") return json(await applyAsCreator(env, userId, await body(request)));
+  if (path === "/api/creators/posts" && method === "POST") return json(await addPost(env, userId, await body(request)));
+  const cpM = path.match(/^\/api\/creators\/posts\/(cp_[a-z0-9]+)$/);
+  if (cpM && method === "DELETE") { await removePost(env, userId, cpM[1]); return json(await creatorStatus(env, userId)); }
+  if (path === "/api/creators/payout" && method === "POST") { await setPayout(env, userId, await body(request)); return json(await creatorStatus(env, userId)); }
+  if (path === "/api/creators/leave" && method === "POST") {
+    if ((await body(request)).confirm !== true) throw new StudioError("Confirm that you want to leave.", 400, "confirm");
+    await leaveProgram(env, userId);
+    return json(await creatorStatus(env, userId));
   }
   if (path === "/api/me/auto-wan" && method === "POST") {
     const on = (await body<{ on?: boolean }>(request)).on === true;
@@ -723,6 +742,10 @@ export default {
     }
     // The scout, every minute: one search at most and a few websites checked, while the owner keeps it on (scout.ts).
     try { await scoutTick(env, await settingsOf(env)); } catch (e) { console.error("studio scout", e instanceof Error ? e.message : e); }
+    // Kleo Creators, once an hour: commissions, program credits that expire, the month's grants and judgement (creators.ts).
+    if (new Date(_event.scheduledTime || Date.now()).getUTCMinutes() === 23) {
+      try { await creatorsTick(env); } catch (e) { console.error("studio creators", e instanceof Error ? e.message : e); }
+    }
     // Sign-in addresses older than 90 days go, once an hour (src/studio/ips.ts; the privacy page promises it).
     if (new Date(_event.scheduledTime || Date.now()).getUTCMinutes() === 17) {
       try { await pruneIps(env); } catch (e) { console.error("studio ip prune", e instanceof Error ? e.message : e); }

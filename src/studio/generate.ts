@@ -39,6 +39,7 @@ import { signPath } from "./session.ts";
 import { addressBlocked } from "../abuse.ts";
 import { anyRouteReady, noteNoMoney, pausedText, spent, type Provider, type Route } from "./providers.ts";
 import { describeWithoutNames, namedCharacters, toEnglish } from "./translate.ts";
+import { compPlanActive } from "./creators-schema.ts";
 
 /** A refusal the page shows as it is (no provider names in it). */
 export class StudioError extends Error {
@@ -70,7 +71,9 @@ export const TEMPLATE_OPEN_QUALITY = "480p";
 export async function hasActivePlan(env: StudioEnv, userId: string): Promise<boolean> {
   if (isAdmin(env, userId)) return true;
   const r = await env.DB.prepare("SELECT plan, plan_until FROM users WHERE id = ?").bind(userId).first<{ plan: string | null; plan_until: string | null }>().catch(() => null);
-  return !!r?.plan && r.plan !== "trial" && !!r.plan_until && Date.parse(r.plan_until) > Date.now();
+  if (!!r?.plan && r.plan !== "trial" && !!r.plan_until && Date.parse(r.plan_until) > Date.now()) return true;
+  // A Pro partner of Kleo Creators has a plan from the program, with no Stripe subscription (src/studio/creators.ts).
+  return compPlanActive(env, userId);
 }
 /** True when this template order is above 480p (no quality means the default, 720p). */
 export const templateIsHd = (key: string | null | undefined, inputs: Record<string, unknown>): boolean =>

@@ -2,7 +2,7 @@
 // admin opens /admin, and hands it the app's own helpers (the kit): the element builder, the icons, toasts, sheets and
 // the ask() questions, never a browser pop-up. API: src/studio/admin.ts. With ?demo=1 everything runs on fake data.
 //
-// Pages: Overview · Users (and one account) · Sources · Emails · Outreach · Payments · Creations · Providers & keys ·
+// Pages: Overview · Users (and one account) · Sources · Creators (and one creator) · Emails · Outreach · Payments · Creations · Providers & keys ·
 // Security. Desktop: a
 // side list of pages; phones: the same pages as a row of pills.
 //
@@ -20,6 +20,7 @@ const SECTIONS = [
   { key: "overview", label: "Overview", ic: "grid" },
   { key: "users", label: "Users", ic: "user" },
   { key: "sources", label: "Sources", ic: "share" },
+  { key: "creators", label: "Creators", ic: "star" },
   { key: "emails", label: "Emails", ic: "mail" },
   { key: "outreach", label: "Outreach", ic: "send" },
   { key: "payments", label: "Payments", ic: "bag" },
@@ -221,7 +222,7 @@ export function render(kit) {
     h("button", { class: "adm-live", title: "Update now", onclick: () => live(true) }, h("i", { class: "adm-live-dot" }), h("span", { class: "adm-live-t" }, "Live")));
   const main = h("div", { class: "adm-main" });
   K.setView("admin-view", h("div", { class: "adm" }, nav, main));
-  const pages = { overview: overviewPage, users: id ? (m, o) => userPage(m, id, o) : usersPage, sources: sourcesPage, emails: emailsPage, outreach: outreachPage, payments: paymentsPage, creations: creationsPage, providers: providersPage, keys: keysPage, security: securityPage };
+  const pages = { overview: overviewPage, users: id ? (m, o) => userPage(m, id, o) : usersPage, sources: sourcesPage, creators: id ? (m, o) => creatorPage(m, id, o) : creatorsPage, emails: emailsPage, outreach: outreachPage, payments: paymentsPage, creations: creationsPage, providers: providersPage, keys: keysPage, security: securityPage };
   pages[key](main);
   // The same page, built again off screen every LIVE_MS (live() above).
   liveStart((into) => pages[key](main, { into }));
@@ -906,6 +907,257 @@ async function sourcesPage(main, opts = {}) {
     card("Newest accounts", "Where each one came from.", newest.length ? h("div", { class: "list" }, newest) : empty("No account in this period.")),
     card("How Sources works", null, h("ol", { class: "adm-steps adm-how" }, HOW_SOURCES.map((x) => h("li", {}, x)))),
     r.tracking ? h("p", { class: "adm-foot" }, `Recording since ${stamp(r.tracking)}. A first visit is kept in one cookie for ${7} days, then forgotten.`) : null);
+}
+
+// ── Creators (28 October 2026, src/studio/creators.ts) ───────────────────────────────────────────────────────────
+// Kleo Creators, run by hand in a few minutes a day: the applications (with the automatic checks and the bio code),
+// the posts to read at day 7, the creators by level, and the cash to send. One creator's page has everything else.
+const CRQ = { views: {}, closed: false };
+const LEVEL_NAME = { creator: "Creator", partner: "Partner", pro: "Pro partner" };
+const NET_NAME = { instagram: "Instagram", tiktok: "TikTok", youtube: "YouTube", x: "X" };
+const STATUS_NAME = { applied: "Waiting", refused: "Refused", active: "Active", paused: "Paused: no plan", ended: "Ended", banned: "Banned" };
+const STATUS_TONE = { applied: "info", refused: "bad", active: "ok", paused: "", ended: "", banned: "bad" };
+const HOW_CREATORS = [
+  "An application needs a running paid plan. The numbers it gives are checked at once: too few followers, a young account, too few AI posts or too many username changes are refused automatically, and so are a second seat of the same person (same inbox or sign-up address) and a payment from another country.",
+  "For the rest: open the profile, check the numbers in “About this account”, look for the bio code, and press “Bio code seen”. Then approve or refuse. Approving makes the creator's /r/ link.",
+  "Posts: each creator sends the link of every post. After 7 days, type the views you see and press Count: the bonus follows the table and the 150-credit monthly cap. A post without the “Made with Kleo” mark, @kleooai, #kleo or #ad is “Not counted”.",
+  "On the 1st, Partners get Starter's 50 credits and Pro partners their free Pro plan (110). On the 8th, last month is judged: enough posts give the +50%; a full month without them moves the creator one level down, and two in a row end the place.",
+  "Commission: credits are given at once; cash waits 60 days and shows under “Cash to pay”. Send it by PayPal or Wise, then press Mark paid with the reference. A refund or a dispute takes back what that payment earned.",
+];
+const flagText = (f) => {
+  const [k, v] = String(f).split(":");
+  if (k === "seat") return { t: "Same person as another seat", tone: "bad", id: v };
+  if (k === "country") return { t: `Paid from ${countryName(v) || v}`, tone: "bad" };
+  if (k === "place") return { t: "Signs in where another creator does", tone: "", id: v };
+  return { t: f, tone: "" };
+};
+const flagPills = (flags) => (flags || []).map((f) => { const x = flagText(f); return pill(x.t, x.tone); });
+const creatorName = (c) => `@${c.handle}`;
+const openCreator = (id) => K.go(`/admin/creators/${id}`);
+const shortUrl = (u) => String(u || "").replace(/^https:\/\/(www\.)?/, "");
+const levelOf = (r, key) => (r.rules?.levels || []).find((l) => l.key === key);
+
+async function creatorsPage(main, opts = {}) {
+  const body = h("div", { class: "adm-stack" }, loading());
+  K.fill(opts.into || main, head("Creators", "Kleo Creators: applications, posts to read at day 7, and money to send.", refreshBtn(() => creatorsPage(main))), body);
+  let r;
+  try { r = await call("/api/admin/creators"); } catch (e) { return failed(body, e, () => creatorsPage(main)); }
+  const reload = () => creatorsPage(main);
+  const c = r.counts || {};
+  const readyPosts = (r.posts || []).filter((p) => p.ready);
+
+  const act = async (id, action, extra = {}, ok = "Done") => {
+    try { await postFresh(`/api/admin/creators/${id}/${action}`, extra); K.toast(ok); reload(); } catch (e) { if (e?.code !== "dismissed") oops(e); }
+  };
+  const refuse = async (a) => {
+    const v = await K.ask({ title: `Refuse ${creatorName(a)}?`, ic: "x", ok: "Refuse", danger: true, text: "They can apply again in 30 days. The reason stays in the audit log; they aren't shown it.",
+      fields: [{ key: "reason", label: "Reason", placeholder: "Bought followers, reposts, not their own work…", required: true }] });
+    if (v) act(a.user_id, "refuse", { reason: v.reason }, "Refused");
+  };
+  const invites = (r.members || []).filter((m) => m.invited && String(m.approved_at || "").slice(0, 7) === r.month).length;
+  const appRow = (a) => h("div", { class: "adm-crow" },
+    h("div", { class: "adm-crow-h" },
+      h("div", { class: "lbl" }, h("b", {}, creatorName(a), pill(NET_NAME[a.platform] || a.platform, ""), ...flagPills(a.flags)),
+        h("span", {}, [a.name, a.email, countryName(a.country), `applied ${ago(a.applied_at)}`].filter(Boolean).join(" · "))),
+      h("a", { class: "btn btn-quiet btn-sm", href: a.profile_url, target: "_blank", rel: "noopener" }, icon("share", 15), "Open profile")),
+    kv([
+      ["Followers", num(a.followers)], ["Best post views", num(a.best_views)], ["Account opened", a.account_since], ["AI posts", num(a.ai_posts)],
+      ["Username changes", num(a.username_changes)], ["Plan", a.plan_active ? cap(a.plan) : "None running"], ["Paid Kleo so far", money(a.paid_cents)],
+      ["Best post", a.best_url ? h("a", { class: "adm-a", href: a.best_url, target: "_blank", rel: "noopener" }, shortUrl(a.best_url)) : null],
+      ["About", a.about], ["Bio code", h("span", { class: "adm-inline" }, h("b", { class: "mono" }, a.bio_code), copyBtn(a.bio_code, "Copy code"), a.bio_seen_at ? pill("Seen", "ok") : pill("Not checked", ""))],
+    ]),
+    h("div", { class: "adm-actions" },
+      h("button", { class: "btn btn-quiet btn-sm", onclick: () => act(a.user_id, "bio", { on: !a.bio_seen_at }, a.bio_seen_at ? "Bio check cleared" : "Bio code seen") }, icon("check", 15), a.bio_seen_at ? "Clear bio check" : "Bio code seen"),
+      h("button", { class: "btn btn-primary btn-sm", disabled: a.bio_seen_at ? null : "", title: a.bio_seen_at ? null : "Check the bio code first", onclick: () => act(a.user_id, "approve", { reason: "Approved after review", level: "creator" }, "Approved as Creator") }, "Approve"),
+      h("button", { class: "btn btn-quiet btn-sm", disabled: a.bio_seen_at && invites < 2 ? null : "", title: invites >= 2 ? "Two invites this month already" : null,
+        onclick: () => act(a.user_id, "approve", { reason: "Invited straight to Partner", level: "partner" }, "Approved as Partner") }, "Approve as Partner"),
+      h("button", { class: "btn btn-quiet btn-sm", onclick: () => refuse(a) }, icon("x", 15), "Refuse")));
+
+  // Posts: the views typed are kept in CRQ.views, so the page refreshing itself loses nothing.
+  const postRow = (p) => {
+    const views = h("input", { class: "input adm-views", type: "number", inputmode: "numeric", min: "0", placeholder: "Views", value: CRQ.views[p.id] ?? "", "aria-label": "Views at day 7" });
+    views.addEventListener("input", () => { CRQ.views[p.id] = views.value; });
+    const countIt = async () => {
+      if (views.value === "") { K.toast("Type the views first.", true); views.focus(); return; }
+      try { const res = await call(`/api/admin/creators/posts/${p.id}`, { method: "POST", body: { action: "approve", views: Number(views.value) } }); delete CRQ.views[p.id]; K.toast(res.bonus ? `Counted: +${res.bonus} credits` : "Counted"); reload(); } catch (e) { oops(e); }
+    };
+    const reject = async () => {
+      const v = await K.ask({ title: "Not counted", ic: "x", ok: "Save", text: "The creator reads this reason.", fields: [{ key: "reason", label: "Why", placeholder: "No “Made with Kleo” mark", required: true }] });
+      if (!v) return;
+      try { await call(`/api/admin/creators/posts/${p.id}`, { method: "POST", body: { action: "reject", reason: v.reason } }); delete CRQ.views[p.id]; K.toast("Marked as not counted"); reload(); } catch (e) { oops(e); }
+    };
+    return h("div", { class: "adm-crow adm-prow" },
+      h("div", { class: "lbl" }, h("b", {}, h("a", { class: "adm-a", href: p.url, target: "_blank", rel: "noopener" }, shortUrl(p.url)), p.ready ? pill("Day 7 reached", "ok") : pill(`Day 7 on ${day(p.day7)}`, "")),
+        h("span", {}, `${creatorName(p)} · ${LEVEL_NAME[p.level] || p.level} · sent ${ago(p.created_at)}${p.creator_status !== "active" ? ` · ${STATUS_NAME[p.creator_status] || p.creator_status}` : ""}`)),
+      h("div", { class: "adm-actions" }, views, h("button", { class: "btn btn-primary btn-sm", onclick: countIt }, "Count"), h("button", { class: "btn btn-quiet btn-sm", onclick: reject }, "Not counted")));
+  };
+
+  const memberRow = (m) => h("button", { class: "row", onclick: () => openCreator(m.user_id) }, h("span", { class: "adm-av" }, String(m.handle || "K")[0].toUpperCase()),
+    h("div", { class: "lbl" }, h("b", {}, creatorName(m), pill(LEVEL_NAME[m.level] || m.level, m.level === "pro" ? "ok" : m.level === "partner" ? "info" : ""), m.status === "paused" ? pill("Paused", "") : null, m.misses ? pill("Missed last month", "bad") : null),
+      h("span", {}, [NET_NAME[m.platform], `${num(m.posts_month)} of ${levelOf(r, m.level)?.posts ?? 2} posts this month`, count(m.signups, "sign-up"), m.plan_active ? cap(m.plan) : m.level === "pro" ? "Pro from the program" : "No plan"].filter(Boolean).join(" · "))),
+    h("span", { class: "val" }, icon("right", 16)));
+
+  const pay = async (d) => {
+    const v = await K.ask({ title: `Mark ${money(d.cents)} paid`, ic: "bag", ok: "Mark paid", text: `Send it to ${d.payout_email || "the creator's e-mail"} first, then paste the reference here.`,
+      fields: [{ key: "method", label: "PayPal or Wise", value: "PayPal", required: true }, { key: "ref", label: "Reference", placeholder: "Transaction id", required: true }] });
+    if (!v) return;
+    act(d.user_id, "payout", { reason: "Commission paid", method: /wise/i.test(v.method) ? "wise" : "paypal", ref: v.ref }, "Payout recorded");
+  };
+  const dueRows = (r.due || []).map((d) => h("div", { class: "row" }, icon("bag", 19),
+    h("div", { class: "lbl" }, h("b", {}, creatorName(d), d.cents < (r.rules?.minCash ?? 50) * 100 ? pill("Under €50", "") : null), h("span", {}, `${d.payout_email || "No payout e-mail"} · ${count(d.n, "payment")}`)),
+    h("span", { class: "val" }, money(d.cents)), h("button", { class: "btn btn-quiet btn-sm", onclick: () => pay(d) }, "Mark paid")));
+
+  const closed = (r.closed || []).map((x) => h("button", { class: "row", onclick: () => openCreator(x.user_id) }, icon("user", 19),
+    h("div", { class: "lbl" }, h("b", {}, creatorName(x), pill(STATUS_NAME[x.status] || x.status, STATUS_TONE[x.status] || "")), h("span", {}, [NET_NAME[x.platform], x.refuse_reason || x.end_reason, day(x.ended_at || x.decided_at || x.applied_at)].filter(Boolean).join(" · "))),
+    h("span", { class: "val" }, icon("right", 16))));
+
+  K.fill(body,
+    tiles(tile("Waiting", num(c.applied), "Applications to review", c.applied ? "warn" : ""), tile("Posts to read", num(readyPosts.length), `${num((r.posts || []).length)} sent in all`, readyPosts.length ? "warn" : ""),
+      tile("Creators", num((c.creators || 0) + (c.partners || 0) + (c.pros || 0)), `${count(c.partners || 0, "Partner")} · ${count(c.pros || 0, "Pro partner")}`), tile("Cash to pay", money(c.ready), `${money(c.held)} still on hold`),
+      tile("Brought in", money(c.brought), "Paid by people from creators' links"), tile("Program credits", num(c.outstanding), `${num(c.granted_30d)} granted in 30 days`)),
+    card("Applications", r.applied?.length ? `${count(r.applied.length, "application")} waiting. Approve needs the bio code checked.` : "No application waiting.",
+      r.applied?.length ? h("div", { class: "adm-stack" }, r.applied.map(appRow)) : null),
+    card("Posts to read at day 7", (r.posts || []).length ? "Type the views the post shows, then Count." : "No post waiting.",
+      (r.posts || []).length ? h("div", { class: "adm-stack" }, (r.posts || []).map(postRow)) : null),
+    card("Creators", (r.members || []).length ? `${count(r.members.length, "creator")} in the program.` : "Nobody in the program yet.",
+      (r.members || []).length ? h("div", { class: "list" }, r.members.map(memberRow)) : null),
+    dueRows.length ? card("Cash to pay", "Commission held 60 days, with the payment still standing.", h("div", { class: "list" }, dueRows)) : null,
+    closed.length ? card("Refused and ended", null, CRQ.closed ? h("div", { class: "list" }, closed) : null,
+      h("button", { class: "btn btn-quiet btn-sm adm-more", onclick: () => { CRQ.closed = !CRQ.closed; reload(); } }, CRQ.closed ? "Hide" : `Show ${count(closed.length, "account")}`)) : null,
+    card("How Creators works", null, h("ol", { class: "adm-steps adm-how" }, HOW_CREATORS.map((x) => h("li", {}, x)))));
+}
+
+async function creatorPage(main, id, opts = {}) {
+  const body = h("div", { class: "adm-stack" }, loading());
+  const back = h("button", { class: "btn btn-quiet btn-sm", onclick: () => K.go("/admin/creators") }, "All creators");
+  K.fill(opts.into || main, head("Creator", null, back, refreshBtn(() => creatorPage(main, id))), body);
+  let r;
+  try { r = await call(`/api/admin/creators/${id}`); } catch (e) { return failed(body, e, () => creatorPage(main, id)); }
+  const c = r.creator, f = r.figures;
+  const reload = () => creatorPage(main, id);
+  const act = async (action, extra, ok) => {
+    try { await postFresh(`/api/admin/creators/${id}/${action}`, extra); K.toast(ok); reload(); } catch (e) { if (e?.code !== "dismissed") oops(e); }
+  };
+  const withReason = async (action, title, text, ok, extraFields = [], danger = false) => {
+    const v = await K.ask({ title, text: text || "", ok, danger, ic: danger ? "x" : "check", fields: [...extraFields, { key: "reason", label: "Reason", required: true }] });
+    if (v) act(action, v, ok);
+  };
+  const inProgram = c.status === "active" || c.status === "paused";
+  const changeLevel = async () => {
+    const v = await K.ask({ title: "Change level", ic: "star", ok: "Change", text: "Type creator, partner or pro. Moving up gives this month's credits at once.",
+      fields: [{ key: "level", label: "Level", value: c.level, required: true }, { key: "reason", label: "Reason", required: true }] });
+    if (!v) return;
+    const t = String(v.level).toLowerCase();
+    const lv = t.includes("pro") ? "pro" : t.startsWith("part") ? "partner" : "creator";
+    act("level", { level: lv, reason: v.reason }, `Now ${LEVEL_NAME[lv]}`);
+  };
+  const lotName = { boost: "+50% for the month's posts", bonus: "View bonus", commission: "Commission as credits", level: "Partner credits", comp: "Pro partner plan", manual: "Added by you" };
+  const actions = h("div", { class: "adm-actions" },
+    h("button", { class: "btn btn-quiet btn-sm", onclick: () => openUser(c.user_id) }, icon("user", 15), "Account"),
+    h("a", { class: "btn btn-quiet btn-sm", href: c.profile_url, target: "_blank", rel: "noopener" }, icon("share", 15), "Profile"),
+    inProgram ? h("button", { class: "btn btn-quiet btn-sm", onclick: changeLevel }, icon("star", 15), "Change level") : null,
+    inProgram ? h("button", { class: "btn btn-quiet btn-sm", onclick: () => withReason("credits", "Add program credits", "They expire in 90 days and are spent first.", "Add", [{ key: "credits", label: "Credits", type: "number", inputmode: "numeric", required: true }]) }, icon("plus", 15), "Add credits") : null,
+    h("button", { class: "btn btn-quiet btn-sm", onclick: async () => { const v = await K.ask({ title: "Note", ic: "wand", ok: "Save", fields: [{ key: "note", label: "Only you see it", value: c.notes || "" }] }); if (v) act("note", { note: v.note, reason: "note" }, "Note saved"); } }, icon("wand", 15), "Note"),
+    ["refused", "ended"].includes(c.status) ? h("button", { class: "btn btn-quiet btn-sm", onclick: () => withReason("reopen", c.status === "refused" ? "Open the application again?" : "Bring this creator back?", null, "Reopen") }, icon("redo", 15), "Reopen") : null,
+    inProgram || c.status === "applied" ? h("button", { class: "btn btn-quiet btn-sm", onclick: () => withReason("end", "End this place?", "Credits and earned commission stay with the creator.", "End", [], true) }, "End") : null,
+    inProgram || c.status === "applied" ? h("button", { class: "btn btn-quiet btn-sm", onclick: () => withReason("ban", "Ban for breaking the rules?", "Every program credit left and every unpaid commission go. It needs a fresh code.", "Ban", [], true) }, icon("lock", 15), "Ban") : null);
+  const totalCommission = f.commission.readyCents + f.commission.heldCents + f.commission.paidCents + f.commission.creditedCents;
+  K.fill(body,
+    card(null, null, h("div", { class: "adm-crow-h" }, h("div", { class: "lbl" }, h("b", {}, creatorName(c), pill(LEVEL_NAME[c.level] || c.level, "info"), pill(STATUS_NAME[c.status] || c.status, STATUS_TONE[c.status] || ""), ...flagPills(c.flags)),
+      h("span", {}, [NET_NAME[c.platform], c.name, c.email, countryName(c.country)].filter(Boolean).join(" · ")))), actions),
+    tiles(tile("Posts this month", `${num(f.posts.counted)} of ${num(f.posts.needed)}`, f.posts.pending ? `${num(f.posts.pending)} waiting` : null), tile("View bonuses", num(f.posts.bonus), "This month"),
+      tile("Sign-ups", num(f.people.signups), `${num(f.people.paying)} paying`), tile("Commission", money(totalCommission), `${money(f.commission.paidCents)} paid in cash`),
+      tile("Program credits", num(f.programCredits.left), f.programCredits.nextExpiry ? `Next expiry ${day(f.programCredits.nextExpiry)}` : null), tile("Paid Kleo", money(c.paid_cents), c.plan ? cap(c.plan) : "No plan")),
+    card("Application", null, kv([
+      ["Applied", stamp(c.applied_at)], ["Approved", c.approved_at ? stamp(c.approved_at) : null], ["Level since", c.level_since ? day(c.level_since) : null],
+      ["Link", c.link ? h("span", { class: "adm-inline" }, h("span", { class: "mono" }, c.link.replace(/^https:\/\//, "")), copyBtn(c.link, "Copy link")) : null],
+      ["Followers", num(c.followers)], ["Best post views", num(c.best_views)], ["Account opened", c.account_since], ["AI posts", num(c.ai_posts)], ["Username changes", num(c.username_changes)],
+      ["Best post", c.best_url ? h("a", { class: "adm-a", href: c.best_url, target: "_blank", rel: "noopener" }, shortUrl(c.best_url)) : null], ["About", c.about],
+      ["Bio code", `${c.bio_code}${c.bio_seen_at ? " · seen" : ""}`], ["Payout", c.payout_pref === "cash" ? `Cash to ${c.payout_email || "—"}` : "Credits at once"],
+      ["Missed months", c.misses ? num(c.misses) : null], ["Refused", c.refuse_reason], ["Ended", c.end_reason ? `${c.end_reason} · ${day(c.ended_at)}` : null], ["Note", c.notes], ["Agreement", `Version ${c.terms_version}, accepted ${day(c.terms_at)}`],
+    ])),
+    card("Posts", r.posts.length ? null : "No post sent yet.", r.posts.length ? h("div", { class: "list" }, r.posts.map((p) => h("div", { class: "row" }, icon(p.status === "eligible" ? "check" : p.status === "rejected" ? "x" : "clock", 19),
+      h("div", { class: "lbl" }, h("b", {}, h("a", { class: "adm-a", href: p.url, target: "_blank", rel: "noopener" }, shortUrl(p.url))),
+        h("span", {}, p.status === "eligible" ? `${num(p.views)} views · +${p.bonus} credits · ${p.month}` : p.status === "rejected" ? `Not counted: ${p.reason}` : `Waiting · sent ${day(p.created_at)}`))))) : null),
+    card("Commission", r.commissions.length ? null : "Nobody from this creator's link has paid yet.", r.commissions.length ? h("div", { class: "list" }, r.commissions.map((k) => h("button", { class: "row", onclick: () => openUser(k.buyer_id) }, icon("bag", 19),
+      h("div", { class: "lbl" }, h("b", {}, money(k.amount_cent), pill(cap(String(k.status).replace("_", " ")), k.status === "void" ? "bad" : k.status === "ready" ? "warn" : "ok")),
+        h("span", {}, `${day(k.paid_at)} · ${k.rate_bp / 100}% of ${money(k.net_cent)} after fees${k.mode === "credits" ? ` · ${num(k.credits)} credits` : k.status === "held" ? ` · ready ${day(k.hold_until)}` : ""}${k.reason ? ` · ${k.reason}` : ""}`)),
+      h("span", { class: "val" }, money(k.commission_cent))))) : null),
+    r.payouts.length ? card("Cash sent", null, h("div", { class: "list" }, r.payouts.map((p) => h("div", { class: "row" }, icon("send", 19),
+      h("div", { class: "lbl" }, h("b", {}, money(p.cents)), h("span", {}, `${cap(p.method)} · ${p.ref || ""} · ${stamp(p.at)}`)))))) : null,
+    card("Program credits", r.lots.length ? "Spent first, each kept 90 days." : "None granted yet.", r.lots.length ? h("div", { class: "list" }, r.lots.map((l) => h("div", { class: "row" }, icon("star", 19),
+      h("div", { class: "lbl" }, h("b", {}, lotName[l.kind] || l.kind), h("span", {}, `${day(l.granted_at)} · ${l.note || ""}${l.expired_at ? ` · ended ${day(l.expired_at)}` : ` · expires ${day(l.expires_at)}`}`)),
+      h("span", { class: "val" }, `${num(l.left_amount)} of ${num(l.amount)}`)))) : null));
+}
+
+// The console's demo: two applications, three creators, posts to read, cash to pay.
+function demoCreators(p, b) {
+  const D = (demoCreators.D ||= (() => {
+    const t = (d) => new Date(Date.now() - d * 864e5).toISOString();
+    const base = { plan: "lite", plan_until: t(-20), plan_active: true, credits: 40, program_credits: 12, paid_cents: 900, terms_version: "2026-10-28", terms_at: t(3), payout_pref: "credits", payout_email: null, misses: 0, invited: 0, notes: null };
+    return {
+      creators: [
+        { ...base, user_id: "u_demoapp1", status: "applied", level: "creator", platform: "instagram", handle: "neon.dreams.ai", profile_url: "https://www.instagram.com/", name: "Mia R.", email: "mia@example.com", country: "GB", followers: 18400, best_views: 210000, account_since: "2024-03", ai_posts: 64, username_changes: 0, best_url: "https://www.instagram.com/reel/DEMO1/", about: "Short AI horror films.", flags: [], bio_code: "KLEO-7QX2MP", bio_seen_at: null, applied_at: t(1) },
+        { ...base, user_id: "u_demoapp2", status: "applied", level: "creator", platform: "tiktok", handle: "freecredits4u", profile_url: "https://www.tiktok.com/", name: "Alex", email: "alex@example.com", country: "US", followers: 2300, best_views: 9000, account_since: "2025-11", ai_posts: 12, username_changes: 1, best_url: "https://www.tiktok.com/@freecredits4u/video/1", about: null, flags: ["place:u_democ1"], bio_code: "KLEO-K9WD3A", bio_seen_at: t(0.2), applied_at: t(0.5) },
+        { ...base, user_id: "u_democ1", status: "active", level: "partner", platform: "instagram", handle: "demo.partner", profile_url: "https://www.instagram.com/", name: "Sam", email: "sam@example.com", country: "IT", followers: 52000, best_views: 900000, account_since: "2022-06", ai_posts: 210, username_changes: 0, best_url: "https://www.instagram.com/reel/DEMO2/", about: "AI music videos.", flags: [], bio_code: "KLEO-PQ84ZN", bio_seen_at: t(40), applied_at: t(41), approved_at: t(40), level_since: t(9), link_code: "c-demo-partner", posts_month: 3, signups: 14 },
+        { ...base, user_id: "u_democ2", status: "active", level: "creator", platform: "youtube", handle: "demo.creator", profile_url: "https://www.youtube.com/", name: "Lee", email: "lee@example.com", country: "NZ", followers: 4100, best_views: 30000, account_since: "2023-01", ai_posts: 40, username_changes: 0, best_url: "https://www.youtube.com/shorts/DEMO3", about: null, flags: [], bio_code: "KLEO-2HD9QX", bio_seen_at: t(12), applied_at: t(13), approved_at: t(12), level_since: t(12), link_code: "c-demo-creator", posts_month: 1, signups: 3, payout_pref: "cash", payout_email: "lee@example.com" },
+        { ...base, user_id: "u_democ3", status: "refused", level: "creator", platform: "x", handle: "bulk.accounts", profile_url: "https://x.com/", name: "Kai", email: "kai@example.com", country: "VN", followers: 300, best_views: 800, account_since: "2026-09", ai_posts: 2, username_changes: 5, best_url: "https://x.com/bulk.accounts/status/1", flags: ["seat:u_democ2"], bio_code: "KLEO-ZZ11AA", applied_at: t(6), decided_at: t(6), refuse_reason: "The account needs to be at least 6 months old." },
+      ],
+      posts: [
+        { id: "cp_demo1", user_id: "u_democ1", url: "https://www.instagram.com/reel/DEMOA/", status: "pending", month: "2026-10", created_at: t(8), bonus: 0 },
+        { id: "cp_demo2", user_id: "u_democ2", url: "https://www.youtube.com/shorts/DEMOB", status: "pending", month: "2026-10", created_at: t(2), bonus: 0 },
+        { id: "cp_demo3", user_id: "u_democ1", url: "https://www.instagram.com/reel/DEMOC/", status: "eligible", month: "2026-10", views: 64000, bonus: 40, created_at: t(15) },
+      ],
+      commissions: [{ session_id: "cs_demo1", creator_id: "u_democ2", buyer_id: "u_demobuyer", paid_at: t(70), amount_cent: 3900, net_cent: 3757, rate_bp: 2500, commission_cent: 939, mode: "cash", status: "ready", hold_until: t(10), credits: 0 },
+        { session_id: "cs_demo2", creator_id: "u_democ1", buyer_id: "u_demobuyer2", paid_at: t(5), amount_cent: 1900, net_cent: 1815, rate_bp: 3000, commission_cent: 545, mode: "credits", status: "credited", hold_until: t(-55), credits: 16 }],
+      payouts: [], lots: [{ id: "cc_demo1", user_id: "u_democ1", kind: "level", ref: "2026-10", amount: 28, left_amount: 12, granted_at: t(27), expires_at: t(-63), note: "Partner credits, 2026-10" }],
+    };
+  })());
+  const fail = (msg, code) => new AdminError(msg, 400, code);
+  const byId = (id) => D.creators.find((x) => x.user_id === id);
+  const pm = p.match(/^\/api\/admin\/creators\/posts\/(cp_\w+)$/);
+  if (pm) {
+    const post = D.posts.find((x) => x.id === pm[1]);
+    if (b.action === "reject") { Object.assign(post, { status: "rejected", reason: b.reason }); return { ok: true }; }
+    const v = Number(b.views) || 0, bonus = v >= 100000 ? 80 : v >= 50000 ? 40 : v >= 10000 ? 15 : 0;
+    Object.assign(post, { status: "eligible", views: v, bonus }); return { ok: true, bonus };
+  }
+  const am = p.match(/^\/api\/admin\/creators\/(u_\w+)\/(\w+)$/);
+  if (am) {
+    const x = byId(am[1]);
+    const a = am[2];
+    if (a === "bio") x.bio_seen_at = b.on === false ? null : new Date().toISOString();
+    else if (a === "approve") { if (!x.bio_seen_at) throw fail("Check the code in the account's bio first.", "creator_bio"); Object.assign(x, { status: "active", level: b.level || "creator", approved_at: new Date().toISOString(), level_since: new Date().toISOString(), link_code: `c-${x.handle.replace(/[^a-z0-9]+/g, "-")}`, posts_month: 0, signups: 0, invited: b.level === "partner" ? 1 : 0 }); }
+    else if (a === "refuse") Object.assign(x, { status: "refused", refuse_reason: b.reason, decided_at: new Date().toISOString() });
+    else if (a === "level") Object.assign(x, { level: b.level, level_since: new Date().toISOString() });
+    else if (a === "end" || a === "ban") Object.assign(x, { status: a === "ban" ? "banned" : "ended", end_reason: b.reason, ended_at: new Date().toISOString() });
+    else if (a === "reopen") Object.assign(x, { status: x.status === "refused" ? "applied" : "active", refuse_reason: null, end_reason: null });
+    else if (a === "note") x.notes = b.note;
+    else if (a === "credits") D.lots.unshift({ id: `cc_${Date.now()}`, user_id: x.user_id, kind: "manual", amount: Number(b.credits), left_amount: Number(b.credits), granted_at: new Date().toISOString(), expires_at: new Date(Date.now() + 90 * 864e5).toISOString(), note: `Added by the owner: ${b.reason}` });
+    else if (a === "payout") { for (const k of D.commissions) if (k.creator_id === x.user_id && k.status === "ready") k.status = "paid_out"; D.payouts.unshift({ id: "po_demo", creator_id: x.user_id, cents: 939, method: b.method, ref: b.ref, at: new Date().toISOString() }); }
+    return { ok: true };
+  }
+  const one = p.match(/^\/api\/admin\/creators\/(u_\w+)$/);
+  if (one) {
+    const x = byId(one[1]);
+    const posts = D.posts.filter((q) => q.user_id === x.user_id), ks = D.commissions.filter((k) => k.creator_id === x.user_id);
+    const sum = (st) => ks.filter((k) => k.status === st).reduce((a, k) => a + k.commission_cent, 0);
+    return {
+      creator: { ...x, link: x.link_code ? `https://app.kleooai.com/r/${x.link_code}` : null }, posts, commissions: ks, payouts: D.payouts.filter((q) => q.creator_id === x.user_id), lots: D.lots.filter((l) => l.user_id === x.user_id),
+      figures: { posts: { needed: x.level === "creator" ? 2 : 4, counted: posts.filter((q) => q.status !== "rejected").length, pending: posts.filter((q) => q.status === "pending").length, bonus: posts.reduce((a, q) => a + (q.bonus || 0), 0) },
+        people: { signups: x.signups || 0, paying: Math.min(2, x.signups || 0) }, commission: { heldCents: sum("held"), readyCents: sum("ready"), paidCents: sum("paid_out"), creditedCents: sum("credited") },
+        programCredits: { left: x.program_credits, nextExpiry: new Date(Date.now() + 63 * 864e5).toISOString() } },
+    };
+  }
+  const members = D.creators.filter((x) => x.status === "active" || x.status === "paused");
+  const pending = D.posts.filter((q) => q.status === "pending").map((q) => { const x = byId(q.user_id); return { ...q, handle: x.handle, platform: x.platform, level: x.level, creator_status: x.status, day7: new Date(Date.parse(q.created_at) + 7 * 864e5).toISOString(), ready: Date.now() - Date.parse(q.created_at) >= 7 * 864e5 }; });
+  const due = D.commissions.filter((k) => k.status === "ready").map((k) => { const x = byId(k.creator_id); return { user_id: x.user_id, handle: x.handle, platform: x.platform, payout_email: x.payout_email, cents: k.commission_cent, n: 1 }; });
+  return {
+    month: new Date().toISOString().slice(0, 7), judgeDay: 8, rules: { levels: [{ key: "creator", posts: 2 }, { key: "partner", posts: 4 }, { key: "pro", posts: 4 }], minCash: 50 },
+    counts: { applied: D.creators.filter((x) => x.status === "applied").length, creators: members.filter((x) => x.level === "creator").length, partners: members.filter((x) => x.level === "partner").length, pros: members.filter((x) => x.level === "pro").length,
+      held: 0, ready: due.reduce((a, d) => a + d.cents, 0), paid: 0, brought: 5800, granted_30d: 84, outstanding: 24 },
+    applied: D.creators.filter((x) => x.status === "applied"), members, closed: D.creators.filter((x) => ["refused", "ended", "banned"].includes(x.status)), posts: pending, due,
+  };
 }
 
 // ── Creations ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1627,6 +1879,7 @@ async function demo(path, opts) {
     }
   }
   if (p === "/api/admin/sources" || p.startsWith("/api/admin/sources/links")) return demoSources(p, q, b);
+  if (p.startsWith("/api/admin/creators")) return demoCreators(p, b);
   if (p.startsWith("/api/admin/emails")) return demoEmails(p, q, b);
   if (p.startsWith("/api/admin/outreach")) return demoOutreach(p, q, b);
   if (p === "/api/admin/payments") {

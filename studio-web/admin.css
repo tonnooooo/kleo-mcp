@@ -337,3 +337,14 @@ button.adm-urow:hover { background: var(--fill-2); }
 .adm-subhead { font-size: 17px; margin: 22px 0 6px; }
 .adm-toggle { margin: 12px 0 4px; }
 .adm-toggle span span { color: var(--ink-2); font-weight: 400; }
+
+/* Creators (28 October 2026): an application, a post to read at day 7, one creator's head. */
+.adm-crow { background: var(--bg-3, var(--fill-2)); border-radius: 16px; padding: 16px; display: grid; gap: 12px; min-width: 0; }
+.adm-crow-h { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.adm-crow .lbl, .adm-crow-h .lbl { min-width: 0; flex: 1; }
+.adm-crow .lbl b, .adm-crow-h .lbl b { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 17px; font-weight: 650; }
+.adm-crow .lbl span, .adm-crow-h .lbl span { display: block; color: var(--ink-2); font-size: 15px; margin-top: 3px; overflow-wrap: anywhere; }
+.adm-crow .adm-kv { margin: 0; }
+.adm-prow { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+.adm-views { width: 130px; height: 44px; }
+@media (max-width: 720px) { .adm-prow { grid-template-columns: 1fr; } .adm-views { flex: 1; width: auto; } }

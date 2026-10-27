@@ -3,7 +3,7 @@
 //
 // Pages: Create (chat with Kleo) · Video · Image · Audio · Apps · Library. Desktop: a top bar; phones: a tab bar.
 
-import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=96";
+import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=97";
 
 const DEMO = new URLSearchParams(location.search).has("demo");
 const DEMO_FREE = new URLSearchParams(location.search).get("demo") === "free"; // ?demo=free: an account that never paid
@@ -371,6 +371,8 @@ const PAGES = [
   { key: "audio", path: "/audio", label: "Audio", ic: "music" },
   { key: "apps", path: "/apps", label: "Apps", ic: "apps" },
   { key: "library", path: "/library", label: "Library", ic: "library" },
+  // Kleo Creators (28 October 2026, studio-web/creators.js): in More and the account menu, not in the top bar.
+  { key: "creators", path: "/creators", label: "Creators", ic: "star", menuOnly: true },
 ];
 async function route() {
   const p = location.pathname;
@@ -388,6 +390,7 @@ async function route() {
   }
   if (p === "/connect") return show("chat", () => connectView());
   if (p === "/plans") return show("plans", () => plansView());
+  if (p === "/creators") return show("creators", () => creatorsView());
   if (p === "/explore") return show("explore", () => exploreView());
   if (p === "/account") return show("account", () => accountView());
   // The admin host shows the console and nothing else (src/studio/admin-host.ts).
@@ -629,7 +632,7 @@ function renderReset(token) {
 function renderShell() {
   const nav = h("header", { class: "nav" },
     h("div", { class: "brand", onclick: () => go("/") }, h("img", { src: "/kleo-mark.svg", alt: "" }), "Kleo"),
-    h("nav", { class: "nav-tabs", "aria-label": "Main" }, PAGES.map((p) => h("button", { class: "nav-tab", "data-page": p.key, onclick: () => go(p.path) },
+    h("nav", { class: "nav-tabs", "aria-label": "Main" }, PAGES.filter((p) => !p.menuOnly).map((p) => h("button", { class: "nav-tab", "data-page": p.key, onclick: () => go(p.path) },
       icon(p.ic, 17), p.label, p.isNew ? h("span", { class: "new" }, "NEW") : null))),
     h("div", { class: "nav-right" }, h("a", { class: "btn btn-quiet btn-sm nav-plugin", href: "https://kleooai.com/mcp/", target: "_blank", rel: "noopener" }, icon("plug", 16), "Install plugin"),
       // Upgrade (21 October 2026, the owner: on the phone too, in this order: credits, Upgrade, profile).
@@ -648,7 +651,7 @@ function renderShell() {
   fill($("#app"), h("div", { class: "frame" }, nav, h("div", { class: "views" }, h("section", { class: "view", id: "view" })), tabs));
 }
 const TAB_PAGES = ["chat", "templates", "video", "image"];
-const MORE_PAGES = [["library", "Your videos, pictures and sounds"], ["explore", "Videos made by the Kleo team"], ["audio", "Voices, music and sounds"], ["apps", "Swaps, talking photos and more"]];
+const MORE_PAGES = [["library", "Your videos, pictures and sounds"], ["explore", "Videos made by the Kleo team"], ["audio", "Voices, music and sounds"], ["apps", "Swaps, talking photos and more"], ["creators", "Get rewarded for posting your Kleo videos"]];
 function openMore() {
   sheet("More", null, h("div", { class: "list" }, MORE_PAGES.map(([k, hint]) => {
     const p = PAGES.find((x) => x.key === k);
@@ -2381,6 +2384,7 @@ function openAccount(e) {
     item("user", "Account settings", () => go("/account")),
     S.me.adminUrl || DEMO ? item("grid", "Admin console", openConsole) : null,
     item("library", "My creations", () => go("/library")),
+    item("star", "Kleo Creators", () => go("/creators")),
     item("plug", "Kleo in Claude & ChatGPT", () => window.open("https://kleooai.com/mcp/", "_blank", "noopener")),
     h("div", { class: "am-theme" }, h("span", {}, "Appearance"), h("div", { class: "seg2" }, [["system", "Auto"], ["light", "Light"], ["dark", "Dark"]].map(([k, l]) =>
       h("button", { class: theme === k ? "on" : "", onclick: () => { store.set("theme", k); applyTheme(); closeLayer(); } }, l)))),
@@ -2533,7 +2537,7 @@ const adminSite = () => !!S.config?.adminSite;
 function openConsole() { location.href = DEMO ? "/admin?demo=1" : S.me.adminUrl; }
 let adminCss = null;
 function loadAdminCss() {
-  adminCss ??= new Promise((ok) => { const css = h("link", { rel: "stylesheet", href: "/admin.css?v=90", "data-admin": "" }); css.onload = ok; css.onerror = ok; document.head.append(css); });
+  adminCss ??= new Promise((ok) => { const css = h("link", { rel: "stylesheet", href: "/admin.css?v=91", "data-admin": "" }); css.onload = ok; css.onerror = ok; document.head.append(css); });
   return adminCss;
 }
 async function adminEnter() {
@@ -2567,6 +2571,20 @@ function adminSignIn() {
   setTimeout(() => email.focus(), 50);
 }
 let adminModule = null;
+// Kleo Creators (28 October 2026): its own module, loaded when the page opens (studio-web/creators.js).
+let creatorsModule = null;
+async function creatorsView() {
+  if (!creatorsModule) {
+    setView("cr-view", h("div", { class: "connect-view" }, spinner(24)));
+    try { creatorsModule = await import("/creators.js?v=97"); }
+    catch {
+      setView("connect-view", connectCard("This page didn't load", "Check the connection and try again.", h("button", { class: "btn btn-primary", onclick: () => location.reload() }, "Try again")));
+      return;
+    }
+    if (S.view !== "creators") return; // the person went somewhere else meanwhile
+  }
+  creatorsModule.render({ h, fill, icon, toast, ask, sheet, api, setView, go, spinner, handleError, requireAccount, DEMO, me: S.me });
+}
 async function adminView() {
   if (!S.me) { if (adminSite()) adminSignIn(); else requireAccount("signin"); return; }
   if (!S.me.admin && !DEMO) {
@@ -2577,7 +2595,7 @@ async function adminView() {
     setView("admin-view", h("div", { class: "connect-view" }, spinner(24)));
     try {
       await loadAdminCss();
-      adminModule = await import("/admin.js?v=93");
+      adminModule = await import("/admin.js?v=94");
     } catch {
       setView("connect-view", connectCard("The console didn't load", "Check the connection and try again.", h("button", { class: "btn btn-primary", onclick: () => location.reload() }, "Try again")));
       return;
