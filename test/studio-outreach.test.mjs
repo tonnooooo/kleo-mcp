@@ -395,8 +395,12 @@ test("follow-ups: in the same thread, Re: subject, then the last one, then done"
   assert.match(htmlOf(MB.sent[1].raw), new RegExp(`<td bgcolor="#111111"[^>]*><a href="https://app\\.kleooai\\.com/r/${code}"[^>]*>Try Kleo free&nbsp;&rarr;</a></td>`));
   // The offer card and the signature carry Kleo's icon from the public media bucket (the app host forbids embedding).
   assert.match(htmlOf(MB.sent[1].raw), />Kleo for Bright Reels</);
-  assert.equal((htmlOf(MB.sent[1].raw).match(/<img src="https:\/\/media\.kleooai\.com\/email\/kleo-icon-192\.png"/g) ?? []).length, 2);
+  assert.equal((htmlOf(MB.sent[1].raw).match(/<img src="https:\/\/media\.kleooai\.com\/email\/kleo-icon-192\.png"/g) ?? []).length, 1, "the icon once, in the card: the signature is words only");
   assert.doesNotMatch(htmlOf(MB.sent[0].raw), /<img/, "the first e-mail has no image");
+  // Who Kleo is and why: one line in the first e-mail, a short list in the second.
+  assert.match(bodyOf(MB.sent[0].raw), /same top video models as the big platforms, like Seedance, Veo and Kling, at some of the lowest prices on the market/);
+  assert.match(htmlOf(MB.sent[1].raw), /Why teams pick Kleo<\/p>\s*<ul/);
+  assert.match(bodyOf(MB.sent[1].raw), /- Always growing: Kleo started as a connector inside Claude, became a full studio in a chat, and we're now building our own AI models/);
   assert.doesNotMatch(visible(htmlOf(MB.sent[1].raw)), /app\.kleooai\.com/);
   assert.equal(one(env, "SELECT created_by, archived_at IS NOT NULL AS hidden FROM short_links WHERE code = ?", code).hidden, 1);
   const p2 = one(env, "SELECT next_at FROM outreach_prospects");
