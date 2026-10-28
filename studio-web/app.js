@@ -3,7 +3,7 @@
 //
 // Pages: Create (chat with Kleo) · Video · Image · Audio · Apps · Library. Desktop: a top bar; phones: a tab bar.
 
-import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=99";
+import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=100";
 
 const DEMO = new URLSearchParams(location.search).has("demo");
 const DEMO_FREE = new URLSearchParams(location.search).get("demo") === "free"; // ?demo=free: an account that never paid
@@ -807,15 +807,27 @@ function homeView() {
   // A soft glow of the team's films behind the page (a blurred still: no video decoding for a background).
   return h("div", { class: "home" },
     h("div", { class: "home-glow", "aria-hidden": "true" }, h("i", { style: { backgroundImage: `url(${GALLERY}/koi-supra-night.jpg)` } }), h("i", { style: { backgroundImage: `url(${GALLERY}/tether-film.jpg)` } })),
+    creatorsStrip(),
     h("div", { class: "home-banners" }, HOME_BANNERS.map(banner)),
     h("div", { class: "home-row" + (promo ? "" : " solo") }, promo, h("div", { class: "home-tiles" }, HOME_TILES.map(tile))),
-    creatorsCard(),
     h("div", { class: "home-ideas" }, h("h2", {}, "What do you want to create?"),
       h("div", { class: "idea-grid" }, IDEAS.video.map(ideaCard))),
     showcaseStrip("Made by the Kleo team"));
 }
-// Kleo Creators on the home (28 October 2026, the owner: "le persone devono vedere come candidarsi"): what it is in one
-// line and the way in; a creator already in the program goes to their own page.
+// Kleo Creators at the top of the home (28 October 2026, the owner: "si è online ma non si vede dall'app"): one line
+// above the banners, seen without scrolling on a computer and a phone. The top bar has no room for a tab.
+function creatorsStrip() {
+  const c = S.me?.creator;
+  const mine = c && ["active", "paused"].includes(c.status);
+  const waiting = c && c.status === "applied";
+  return h("button", { class: "home-news", onclick: () => go("/creators") },
+    h("span", { class: "hn-ic" }, icon("star", 18, 2.2)),
+    h("span", { class: "hn-tx" }, h("b", {}, mine ? "Your Kleo Creators page" : waiting ? "Kleo Creators" : "New: Kleo Creators"),
+      h("span", {}, mine ? "Send your posts, see your views and your commission" : waiting ? "We have your application. We'll let you know." : "Get paid to create with Kleo")),
+    h("span", { class: "hn-go" }, mine ? "Open" : waiting ? "See it" : "Apply", icon("right", 16, 2.2)));
+}
+// Kleo Creators on the account page (28 October 2026): what it is in one line and the way in; a creator already in the
+// program goes to their own page.
 function creatorsCard() {
   const c = S.me?.creator;
   const mine = c && ["active", "paused"].includes(c.status);
@@ -2591,7 +2603,7 @@ let creatorsModule = null;
 async function creatorsView() {
   if (!creatorsModule) {
     setView("cr-view", h("div", { class: "connect-view" }, spinner(24)));
-    try { creatorsModule = await import("/creators.js?v=99"); }
+    try { creatorsModule = await import("/creators.js?v=100"); }
     catch {
       setView("connect-view", connectCard("This page didn't load", "Check the connection and try again.", h("button", { class: "btn btn-primary", onclick: () => location.reload() }, "Try again")));
       return;
