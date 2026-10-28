@@ -1,8 +1,9 @@
 /**
  * Kleo Creators (src/studio/creators.ts, studio-web/creators.js, the admin console's Creators page) inside one process:
  * the kleo-studio Worker bundled with esbuild, on a D1 look-alike (node:sqlite, every migration applied).
- * Covers the rules as numbers, the application with its automatic refusals (no plan, the thresholds, a second seat of
- * the same person, a payment from another country), the owner's review (bio code, approve, refuse, levels, ban), posts
+ * Covers the rules as numbers, the application (refused by itself only without any payment; the thresholds, a second
+ * seat of the same person and a payment from another country are flags, and every application is e-mailed to the
+ * owner's inbox), the owner's review (bio code, approve, refuse, levels, ban), posts
  * read at day 7 with the bonus table and the monthly cap, program credits spent first and expiring, commissions as
  * credits or cash (held 60 days, reversed on a refund, void for a buyer who is the creator), the month's grants and
  * judgement, the Pro partner's plan from the program, and the public list.
@@ -67,6 +68,8 @@ function newEnv(over = {}) {
     ASSETS: { fetch: async () => new Response("<!doctype html>app", { headers: { "content-type": "text/html" } }) },
     INTERNAL_SECRET: "s3cret", PUBLIC_URL: "https://mcp.kleo.test", FREE_CREDITS: "5", MAX_NEW_USERS_PER_IP_DAY: "50", MAX_ACCOUNTS_PER_ADDRESS: "50",
     ADMIN_HOST: "admin.kleo.test", ADMIN_CERT_SHA256: CERT_FP, mails: [], OWNER_MAIL: { send: async (m) => { env.mails.push(m); } },
+    // Cloudflare Email Sending (onboarding.ts deliver): every message is kept here.
+    sent: [], EMAIL: { send: async (m) => { env.sent.push(m); return { messageId: `m${env.sent.length}` }; } },
     ...over,
   };
   for (const f of readdirSync(join(ROOT, "migrations")).sort()) env.DB.db.exec(readFileSync(join(ROOT, "migrations", f), "utf8"));
@@ -114,6 +117,7 @@ async function setup() {
   return { env, owner, ana };
 }
 const run = (env, sql, ...a) => env.DB.db.prepare(sql).run(...a);
+const auditOf = (env, id, event) => env.DB.db.prepare("SELECT detail FROM audit WHERE user_id = ? AND event = ? ORDER BY id DESC").all(id, event).map((r) => JSON.parse(r.detail));
 const get = (env, sql, ...a) => env.DB.db.prepare(sql).get(...a);
 const giveLite = (env, id, country = "DE") => {
   run(env, "UPDATE users SET plan = 'lite', plan_period = 'month', plan_credits = 22, plan_until = ?, plan_status = 'active' WHERE id = ?", new Date(Date.now() + 20 * DAY).toISOString(), id);
@@ -159,16 +163,22 @@ test("the rules as numbers: bonus table, entry thresholds, handles, post links, 
   assert.equal(mod.nextMonth("2026-12"), "2027-01");
 });
 
-test("applying: a paid plan first, the agreement, then the numbers; a public list only of real creators", async () => {
+test("applying: a payment first (a pack is enough), the agreement, then the numbers; the owner's inbox gets it", async () => {
   const { env, owner, ana } = await setup();
   const none = await call(env, "/api/creators/me", { cookie: ana.cookie });
   assert.equal(none.json.state, "none");
-  assert.equal(none.json.plan, null);
+  assert.equal(none.json.paid, false);
   assert.equal(none.json.rules.levels.length, 3);
-  const noPlan = await call(env, "/api/creators/apply", { method: "POST", cookie: ana.cookie, body: APP });
-  assert.equal(noPlan.status, 402);
-  assert.equal(noPlan.json.code, "creator_plan");
-  giveLite(env, ana.id);
+  const unpaid = await call(env, "/api/creators/apply", { method: "POST", cookie: ana.cookie, body: APP });
+  assert.equal(unpaid.status, 402, "the one refusal the system makes: nothing ever paid");
+  assert.equal(unpaid.json.code, "creator_paid");
+  assert.equal(env.sent.length, 0);
+  // A refunded pack is not a payment.
+  run(env, "INSERT INTO payments (session_id, user_id, credits, amount_cent, currency, status, at) VALUES ('cs_ref', ?, 10, 500, 'eur', 'refunded', ?)", ana.id, new Date().toISOString());
+  assert.equal((await call(env, "/api/creators/apply", { method: "POST", cookie: ana.cookie, body: APP })).json.code, "creator_paid");
+  // A 5 EUR pack and no plan: enough to apply.
+  run(env, "INSERT INTO payments (session_id, user_id, credits, amount_cent, currency, status, country, at) VALUES ('cs_pack', ?, 10, 500, 'eur', 'paid', 'DE', ?)", ana.id, new Date().toISOString());
+  assert.equal((await call(env, "/api/creators/me", { cookie: ana.cookie })).json.paid, true);
   assert.equal((await call(env, "/api/creators/apply", { method: "POST", cookie: ana.cookie, body: { ...APP, accept: false } })).json.code, "creator_terms");
   assert.equal((await call(env, "/api/creators/apply", { method: "POST", cookie: ana.cookie, body: { ...APP, bestUrl: "https://example.com/x" } })).json.code, "creator_best");
   const a = await call(env, "/api/creators/apply", { method: "POST", cookie: ana.cookie, body: APP });
@@ -176,6 +186,15 @@ test("applying: a paid plan first, the agreement, then the numbers; a public lis
   assert.equal(a.json.state, "applied");
   assert.equal(a.json.handle, "Ana.Makes.AI");
   assert.match(a.json.bioCode, /^KLEO-[A-Z0-9]{6}$/);
+  // The application, every answer and the console's link, in the owner's inbox.
+  assert.equal(env.sent.length, 1);
+  const m = env.sent[0];
+  assert.equal(m.to, "leo@getkleooai.com");
+  assert.match(m.subject, /^Kleo Creators: @Ana\.Makes\.AI on Instagram applied$/);
+  for (const bit of ["ana@example.com", "12,400", "80,000", "2024-02", a.json.bioCode, "https://www.instagram.com/Ana.Makes.AI/", "https://www.instagram.com/reel/ABC123/", "https://admin.kleo.test/admin/creators/", "Paid Kleo so far: €5.00 in 1 payment, no plan running", "No flags"]) {
+    assert.ok(m.text.includes(bit), bit);
+  }
+  assert.ok(auditOf(env, ana.id, "creator.application_mailed").length === 1);
   assert.equal((await call(env, "/api/creators/apply", { method: "POST", cookie: ana.cookie, body: APP })).status, 409, "one application at a time");
   // Nobody is listed until the owner approves.
   assert.deepEqual((await call(env, "/api/creators/public")).json.creators, []);
@@ -193,14 +212,15 @@ test("applying: a paid plan first, the agreement, then the numbers; a public lis
   assert.ok(mod.APP_PATH.test("/creators") && mod.APP_PATH.test("/creators.js"), "the page and its module are the app's");
 });
 
-test("automatic refusals: the thresholds are said, a second seat or another country is not", async () => {
+test("nothing is refused by itself: the thresholds, a second seat and another country are flags in the e-mail", async () => {
   const { env, ana } = await setup();
   giveLite(env, ana.id);
-  const young = await call(env, "/api/creators/apply", { method: "POST", cookie: ana.cookie, body: { ...APP, followers: "300", bestViews: "900", accountSince: "2026-09" } });
-  assert.equal(young.json.state, "refused");
-  assert.match(young.json.why, /1,000 followers/);
-  assert.match(young.json.why, /6 months/);
-  assert.equal((await call(env, "/api/creators/apply", { method: "POST", cookie: ana.cookie, body: APP })).json.code, "creator_wait", "again only after 30 days");
+  const young = await call(env, "/api/creators/apply", { method: "POST", cookie: ana.cookie, body: { ...APP, followers: "300", bestViews: "900", accountSince: "2026-09", aiPosts: "3", usernameChanges: "4" } });
+  assert.equal(young.json.state, "applied", "told “we'll let you know”");
+  assert.deepEqual(get(env, "SELECT flags FROM creators WHERE user_id = ?", ana.id).flags.split(" "), ["rule:followers", "rule:age", "rule:posts", "rule:names"]);
+  const mail = env.sent.at(-1);
+  assert.match(mail.subject, /\(4 flags\)$/);
+  for (const bit of ["Under 1,000 followers", "under 6 months old", "Under 9 AI posts", "changed over 2 times"]) assert.ok(mail.text.includes(bit), bit);
 
   // The same person on a second account (same sign-up address): refused, and not told why.
   const bea = await account(env, "bea@example.com", ROME);
@@ -208,17 +228,25 @@ test("automatic refusals: the thresholds are said, a second seat or another coun
   const twin = await account(env, "bea.second@example.com", ROME);
   giveLite(env, twin.id, "IT");
   const t = await call(env, "/api/creators/apply", { method: "POST", cookie: twin.cookie, body: { ...APP, handle: "bea.two", country: "IT" } });
-  assert.equal(t.json.state, "refused");
-  assert.equal(t.json.why, null, "a shared seat is not explained");
-  assert.match(get(env, "SELECT flags FROM creators WHERE user_id = ?", twin.id).flags, /^seat:/);
+  assert.equal(t.json.state, "applied");
+  assert.match(get(env, "SELECT flags FROM creators WHERE user_id = ?", twin.id).flags, /seat:/);
+  assert.ok(env.sent.at(-1).text.includes("Same person as another applicant or creator"));
 
   // Paid from one country, says another.
   const cy = await account(env, "cy@example.com", NZ);
   giveLite(env, cy.id, "VN");
   const c = await call(env, "/api/creators/apply", { method: "POST", cookie: cy.cookie, body: { ...APP, handle: "cy.ai", country: "GB" } });
-  assert.equal(c.json.state, "refused");
-  assert.equal(c.json.why, null);
+  assert.equal(c.json.state, "applied");
   assert.match(get(env, "SELECT flags FROM creators WHERE user_id = ?", cy.id).flags, /country:VN/);
+  assert.ok(env.sent.at(-1).text.includes("Paid from VN, says another country"));
+  // A failed send still leaves the application in, and the alert address hears.
+  env.EMAIL = { send: async () => { throw Object.assign(new Error("not verified"), { code: "E_SENDER" }); } };
+  const dee = await account(env, "dee@example.com", { ip: "198.51.100.4", cf: { country: "AU" } });
+  giveLite(env, dee.id, "AU");
+  const d = await call(env, "/api/creators/apply", { method: "POST", cookie: dee.cookie, body: { ...APP, handle: "dee.makes", country: "AU" } });
+  assert.equal(d.json.state, "applied");
+  assert.equal(auditOf(env, dee.id, "creator.application_mail_failed").length, 1);
+  assert.ok(env.mails.some((x) => /dee\.makes/.test(x.raw)), "the alert address got it instead");
   // A handle belongs to one account.
   const dup = await call(env, "/api/creators/apply", { method: "POST", cookie: cy.cookie, body: APP });
   assert.ok(dup.status >= 400);
@@ -361,7 +389,7 @@ test("the month: Partner credits on the 1st, the +50% for enough posts, one leve
   assert.equal(get(env, "SELECT status FROM creators WHERE user_id = ?", ana.id).status, "ended");
 });
 
-test("Pro partner: a plan from the program opens HD templates; no paid plan pauses a Creator; a ban takes credits back", async () => {
+test("Pro partner: a plan from the program opens HD templates; no plan never pauses a Creator; a ban takes credits back", async () => {
   const { env, owner, ana } = await setup();
   await approved(env, owner, ana);
   run(env, "UPDATE users SET plan = 'trial', plan_until = NULL WHERE id = ?", ana.id);
@@ -371,12 +399,12 @@ test("Pro partner: a plan from the program opens HD templates; no paid plan paus
   assert.ok(get(env, "SELECT comp_until FROM creators WHERE user_id = ?", ana.id).comp_until);
   assert.equal(get(env, "SELECT amount FROM creator_credits WHERE user_id = ? AND kind = 'comp'", ana.id).amount, 110);
   assert.equal((await call(env, "/api/me", { cookie: ana.cookie })).json.hdTemplates, true, "the program's plan opens what a plan opens");
-  // Back to Creator with no plan: the next tick pauses the place.
+  // Back to Creator with no plan: the place stays (they paid to join), and a place paused before comes back.
   await call(env, `/api/admin/creators/${ana.id}/level`, { method: "POST", cookie: owner.admin, body: { level: "creator", reason: "test" } });
   assert.equal((await call(env, "/api/me", { cookie: ana.cookie })).json.hdTemplates, false);
   await mod.creatorsTick(env);
-  assert.equal(get(env, "SELECT status FROM creators WHERE user_id = ?", ana.id).status, "paused");
-  giveLite(env, ana.id);
+  assert.equal(get(env, "SELECT status FROM creators WHERE user_id = ?", ana.id).status, "active");
+  run(env, "UPDATE creators SET status = 'paused' WHERE user_id = ?", ana.id);
   await mod.creatorsTick(env);
   assert.equal(get(env, "SELECT status FROM creators WHERE user_id = ?", ana.id).status, "active");
   // Ban: every program credit left goes, the place ends, the public list drops it.

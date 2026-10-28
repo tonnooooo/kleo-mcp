@@ -918,14 +918,16 @@ const NET_NAME = { instagram: "Instagram", tiktok: "TikTok", youtube: "YouTube",
 const STATUS_NAME = { applied: "Waiting", refused: "Refused", active: "Active", paused: "Paused: no plan", ended: "Ended", banned: "Banned" };
 const STATUS_TONE = { applied: "info", refused: "bad", active: "ok", paused: "", ended: "", banned: "bad" };
 const HOW_CREATORS = [
-  "An application needs a running paid plan. The numbers it gives are checked at once: too few followers, a young account, too few AI posts or too many username changes are refused automatically, and so are a second seat of the same person (same inbox or sign-up address) and a payment from another country.",
+  "An application needs a payment on record (a credit pack or a plan): that is the only thing refused by itself. Every other check is a flag: too few followers, a young account, too few AI posts, too many username changes, a second seat of the same person (same inbox or sign-up address), a payment from another country. The applicant is told “we'll let you know”, and every application is e-mailed to leo@getkleooai.com.",
   "For the rest: open the profile, check the numbers in “About this account”, look for the bio code, and press “Bio code seen”. Then approve or refuse. Approving makes the creator's /r/ link.",
   "Posts: each creator sends the link of every post. After 7 days, type the views you see and press Count: the bonus follows the table and the 150-credit monthly cap. A post without the “Made with Kleo” mark, @kleooai, #kleo or #ad is “Not counted”.",
-  "On the 1st, Partners get Starter's 50 credits and Pro partners their free Pro plan (110). On the 8th, last month is judged: enough posts give the +50%; a full month without them moves the creator one level down, and two in a row end the place.",
+  "On the 1st, Partners with a plan get Starter's 50 credits and Pro partners their free Pro plan (110). On the 8th, last month is judged: enough posts give the +50%; a full month without them moves the creator one level down, and two in a row end the place.",
   "Commission: credits are given at once; cash waits 60 days and shows under “Cash to pay”. Send it by PayPal or Wise, then press Mark paid with the reference. A refund or a dispute takes back what that payment earned.",
 ];
+const RULE_FLAG = { followers: "Under 1,000 followers, no 10,000-view post", age: "Account under 6 months old", posts: "Under 9 AI posts", names: "Username changed over 2 times" };
 const flagText = (f) => {
   const [k, v] = String(f).split(":");
+  if (k === "rule") return { t: RULE_FLAG[v] || f, tone: "warn" };
   if (k === "seat") return { t: "Same person as another seat", tone: "bad", id: v };
   if (k === "country") return { t: `Paid from ${countryName(v) || v}`, tone: "bad" };
   if (k === "place") return { t: "Signs in where another creator does", tone: "", id: v };

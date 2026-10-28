@@ -50,25 +50,25 @@ function hero() {
 // ── the next step, by state ──────────────────────────────────────────────────────────────────────────────────────
 function nextStep(st, rules) {
   if (!st) {
-    return card("Start with a Kleo account", "Kleo Creators is for people who already create with Kleo. Make your account, pick a plan, then apply.",
+    return card("Start with a Kleo account", "Kleo Creators is for people who already create with Kleo. Make your account, buy a credit pack or a plan, then apply.",
       h("div", { class: "cr-actions" }, h("button", { class: "btn btn-cta", onclick: () => K.requireAccount("signup") }, icon("sparkle", 18), "Create your account"),
         h("button", { class: "btn btn-quiet", onclick: () => K.requireAccount("signin") }, "Sign in")));
   }
   const s = st.state;
-  if (s === "none" && !st.plan) {
-    return card("Kleo Creators starts with a plan", "Every creator is a Kleo subscriber first. Pick Lite (€9 a month) or higher, then come back to apply. It keeps the program for real creators.",
-      h("div", { class: "cr-actions" }, h("button", { class: "btn btn-cta", onclick: () => K.go("/plans") }, icon("sparkle", 18), "See plans")));
+  if (s === "none" && !st.paid) {
+    return card("Kleo Creators is for Kleo customers", "Buy a credit pack (from €5) or a plan, then come back to apply. It keeps the program for real creators.",
+      h("div", { class: "cr-actions" }, h("button", { class: "btn btn-cta", onclick: () => K.go("/plans") }, icon("sparkle", 18), "See plans and packs")));
   }
   if (s === "none") return applyForm(rules);
   if (s === "applied") {
     const net = rules.platforms.find((p) => p.key === st.platform)?.name || "social";
-    return card("We have your application", `Thanks. We review every application by hand and answer by e-mail within 3 days.`,
+    return card("Thanks, we have your application", "We review every application by hand. We'll let you know.",
       h("div", { class: "cr-step" }, h("span", { class: "cr-n" }, "1"), h("div", {},
         h("h3", {}, `Put this code in your ${net} bio`), h("p", {}, "It proves the account is yours. Keep it there until we accept you, then remove it."),
         h("div", { class: "cr-code" }, h("b", { class: "mono" }, st.bioCode), h("button", { class: "btn btn-quiet btn-sm", onclick: () => { navigator.clipboard?.writeText(st.bioCode); K.toast("Code copied"); } }, icon("copy", 16), "Copy")),
         st.bioSeen ? h("p", { class: "cr-ok" }, icon("check", 17, 2.4), "We've seen it. Thanks.") : null)),
       h("div", { class: "cr-step" }, h("span", { class: "cr-n" }, "2"), h("div", {},
-        h("h3", {}, "Keep your plan running"), h("p", {}, "Creators keep a Kleo plan while they're in the program."))),
+        h("h3", {}, "Keep posting with Kleo"), h("p", {}, "Your answer shows on this page."))),
       h("div", { class: "cr-actions" }, h("a", { class: "btn btn-quiet", href: st.profileUrl, target: "_blank", rel: "noopener" }, icon("share", 16), `@${st.handle}`),
         h("button", { class: "btn btn-quiet", onclick: () => leave(true) }, "Withdraw my application")));
   }
@@ -152,10 +152,10 @@ function dashboard(st, rules) {
       h("p", { class: "cr-sub" }, `@${st.handle} · since ${date(st.levelSince || st.approvedAt)} · ${lvl.rate}% commission`)),
     h("a", { class: "btn btn-quiet btn-sm", href: st.profileUrl, target: "_blank", rel: "noopener" }, icon("share", 16), "Your profile"));
   const pausedNote = paused ? h("div", { class: "cr-banner" }, icon("lock", 18),
-    h("div", {}, h("b", {}, "Your plan has ended"), h("span", {}, "Bonuses and the monthly +50% wait until a plan runs again.")),
+    h("div", {}, h("b", {}, "Your place is paused"), h("span", {}, "Bonuses wait until it runs again.")),
     h("button", { class: "btn btn-cta btn-sm", onclick: () => K.go("/plans") }, "See plans")) : null;
 
-  const month = card("This month", st.level === "pro" ? "Your Pro plan comes from the program while you keep posting." : `Make ${f.posts.needed} posts this month and Kleo adds ${Math.round(lvl.boost * 100)}% of your plan's credits.`,
+  const month = card("This month", st.level === "pro" ? "Your Pro plan comes from the program while you keep posting." : `Make ${f.posts.needed} posts this month. With a plan, Kleo adds ${Math.round(lvl.boost * 100)}% of its credits.`,
     h("div", { class: "cr-meter" }, h("i", { style: { width: `${pct}%` } })),
     h("div", { class: "cr-figs" },
       fig("Posts counted", `${f.posts.counted} of ${f.posts.needed}`, f.posts.pending ? `${f.posts.pending} waiting for day 7` : null),
@@ -235,7 +235,7 @@ async function leave(application) {
 function howItWorks() {
   const step = (n, title, text) => h("div", { class: "cr-step" }, h("span", { class: "cr-n" }, String(n)), h("div", {}, h("h3", {}, title), h("p", {}, text)));
   return card("How it works", null,
-    step(1, "Subscribe and apply", "Pick a Kleo plan, then tell us about your account. We review every application by hand."),
+    step(1, "Buy and apply", "Buy a credit pack or a plan, then tell us about your account. We review every application by hand."),
     step(2, "Make and post", "Create with Kleo, post on your account with the “Made with Kleo” mark, and send us the link."),
     step(3, "Earn", "Bonus credits for views, extra credits every month you post, and a share of what the people you bring pay."),
     step(4, "Move up", "Bring real views and real customers, and your plan becomes free."));
@@ -247,7 +247,7 @@ function levelsCard(rules) {
     h("ul", {}, gives.map((g) => h("li", {}, icon("check", 15, 2.6), g))), h("p", { class: "cr-owe" }, owes));
   return card("Three levels", "Everybody starts as a Creator. Every level keeps its commission for 12 months on each person you bring.",
     h("div", { class: "cr-levels" },
-      lv(L.creator, "You pay Lite, €9 a month", [`+${Math.round(L.creator.boost * 100)}% of your plan's credits in every month you post`, "Bonus credits for views", `${L.creator.rate}% commission`], `${L.creator.posts} posts a month`, "When we accept you"),
+      lv(L.creator, "You've bought a pack or a plan", ["Bonus credits for views", `With a plan: +${Math.round(L.creator.boost * 100)}% of its credits in every month you post`, `${L.creator.rate}% commission`], `${L.creator.posts} posts a month`, "When we accept you"),
       lv(L.partner, "You pay Lite, €9 a month", [`${L.partner.monthly} credits a month (Starter's), plus ${Math.round(L.partner.boost * 100)}% in months you post`, "Featured on Kleo's Instagram and in the app", "New templates a week early", `${L.partner.rate}% commission`], `${L.partner.posts} posts a month`, "After 2 months, with 30,000 views or 3 paying people"),
       lv(L.pro, "Free", [`A Pro plan at no charge (${L.pro.monthly} credits a month)`, "Everything Partners get", `${L.pro.rate}% commission`], `${L.pro.posts} posts a month`, "150,000 views or 10 paying people in a month", true)),
     h("p", { class: "cr-sub cr-gap" }, "A month without enough posts moves you down one level. Two months in a row end your place in the program."));
@@ -279,9 +279,9 @@ function postRules() {
 }
 function whoCanJoin(rules) {
   const e = rules.entry;
-  return card("Who can join", "We check every answer against the account itself.",
+  return card("Who can join", "What we look for. We check every answer against the account itself.",
     h("ul", { class: "cr-ticks" }, [
-      "18 or older, with a Kleo plan (Lite or higher).",
+      "18 or older, and you've bought Kleo credits or a plan.",
       `A public Instagram, TikTok, YouTube or X account at least ${e.minAccountMonths} months old.`,
       `${num(e.minFollowers)} followers, or a post with ${num(e.orViews)} views.`,
       `At least ${e.minAiPosts} posts of your own AI work.`,
@@ -297,7 +297,7 @@ function creatorsList(list) {
 }
 function faq(rules) {
   const qa = [
-    ["Why do I need a plan?", "It keeps the program for real creators. Kleo gives back much more than the plan costs once your posts get views and the people you bring subscribe."],
+    ["Why do I need to buy first?", "It keeps the program for real creators. Kleo gives back much more than a pack costs once your posts get views and the people you bring subscribe."],
     ["Can I get a free account instead?", "No. The only free plan is the Pro partner level, and it's paid for by the customers a creator brings."],
     ["Who owns my videos?", "You do. Kleo may share your posts on its own channels, with credit to you, and asks you first before using one in an ad."],
     ["Can I work with other AI tools?", "Yes. There's no exclusivity."],
@@ -330,7 +330,7 @@ async function demo(path, opts = {}) {
   if (path === "/api/creators/apply") { DEMO_STATE.s = "applied"; return {}; }
   if (path === "/api/creators/leave") { DEMO_STATE.s = s === "applied" ? "plan" : "ended"; return {}; }
   if (path === "/api/creators/posts" || path === "/api/creators/payout" || path.startsWith("/api/creators/posts/")) return {};
-  const base = { rules: DEFAULT_RULES, terms: { url: AGREEMENT }, plan: s === "none" ? null : "lite", platform: "instagram", handle: "demo.creator", profileUrl: "https://www.instagram.com/" };
+  const base = { rules: DEFAULT_RULES, terms: { url: AGREEMENT }, plan: s === "none" ? null : "lite", paid: s !== "none", platform: "instagram", handle: "demo.creator", profileUrl: "https://www.instagram.com/" };
   if (s === "none" || s === "plan") return { ...base, state: "none" };
   if (s === "applied") return { ...base, state: "applied", bioCode: "KLEO-7QX2MP", bioSeen: false };
   if (s === "refused") return { ...base, state: "refused", why: "The account needs to be at least 6 months old.", againAt: new Date(Date.now() + 20 * 864e5).toISOString() };

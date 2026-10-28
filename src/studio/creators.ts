@@ -3,8 +3,11 @@
  * esattamente come fa higgsfield", then "uno non può entrare a caso, sai quanti scammer ci sono … se li facciamo pagare
  * è meglio"). The program's rules are kleo\marketing\creators\PROGRAM.md and the agreement kleooai.com/creators/agreement.html.
  *
- * PAY UNTIL YOU PROVE IT. Every creator is a paying customer first: applying needs a running paid plan (Lite or higher),
- * the owner reviews every application by hand, and the social account is proved with a code placed in its bio. Kleo
+ * PAY UNTIL YOU PROVE IT. Every creator is a paying customer first: applying needs a payment on record (a credit pack
+ * or a plan), and that is the only thing the system refuses by itself (28 October 2026, the owner: "non fare rifiutare
+ * nulla dal sistema, fai rifiutare solo se non hanno pagato né crediti né abbonamenti"). Every other check only raises a
+ * flag; the applicant is told "we'll let you know", and the application goes by e-mail to the owner's inbox
+ * (CREATORS_INBOX, leo@getkleooai.com) for a review by hand. The social account is proved with a code in its bio. Kleo
  * gives more only for posts that really went out (the owner reads each one's views at day 7), and a free plan only at
  * the top level, when the people a creator brought in pay for it.
  *
@@ -31,11 +34,13 @@
  */
 import type { StudioEnv } from "./env.ts";
 import type { Env } from "../env";
-import { audit } from "../db.ts";
+import { audit, hasPaid } from "../db.ts";
 import { rid } from "../util.ts";
 import { StudioError, isAdmin } from "./generate.ts";
 import { CODE_RE } from "./attribution.ts";
 import { PROGRAM_TRIGGER } from "./creators-schema.ts";
+import { deliver, type Mail } from "./onboarding.ts";
+import { mailOwner } from "./providers.ts";
 export { CREATORS_COLUMNS, CREATORS_SCHEMA, CREATORS_TRIGGER, PROGRAM_TRIGGER, compPlanActive } from "./creators-schema.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
@@ -127,16 +132,32 @@ export function postAddress(platform: Platform, raw: unknown): { url: string; ke
   return { url, key: `${host}${path}${v ? `?v=${v}` : ""}`.toLowerCase().slice(0, 400) };
 }
 
-/** Why an application is refused at once by the entry thresholds, or [] when it passes them. Public wording. */
-export function entryProblems(a: { followers: number; bestViews: number; accountSince: string; aiPosts: number; usernameChanges: number }, nowMs = Date.now()): string[] {
-  const out: string[] = [];
-  if (a.followers < ENTRY.minFollowers && a.bestViews < ENTRY.orViews) out.push(`The account needs ${ENTRY.minFollowers.toLocaleString("en-GB")} followers, or a post with ${ENTRY.orViews.toLocaleString("en-GB")} views.`);
+type EntryAnswers = { followers: number; bestViews: number; accountSince: string; aiPosts: number; usernameChanges: number };
+/** The entry thresholds an application misses, as flags for the owner ("rule:…") with their sentence. Never a refusal. */
+export function entryChecks(a: EntryAnswers, nowMs = Date.now()): { flag: string; text: string }[] {
+  const out: { flag: string; text: string }[] = [];
+  if (a.followers < ENTRY.minFollowers && a.bestViews < ENTRY.orViews) out.push({ flag: "rule:followers", text: `Under ${ENTRY.minFollowers.toLocaleString("en-GB")} followers and no post with ${ENTRY.orViews.toLocaleString("en-GB")} views.` });
   const since = Date.parse(`${a.accountSince}-01T00:00:00.000Z`);
   const months = Number.isFinite(since) ? (nowMs - since) / (30.44 * DAY_MS) : 0;
-  if (months < ENTRY.minAccountMonths) out.push(`The account needs to be at least ${ENTRY.minAccountMonths} months old.`);
-  if (a.aiPosts < ENTRY.minAiPosts) out.push(`The account needs at least ${ENTRY.minAiPosts} posts of your own AI work.`);
-  if (a.usernameChanges > ENTRY.maxUsernameChanges) out.push(`Accounts that changed their username more than ${ENTRY.maxUsernameChanges} times can't join.`);
+  if (months < ENTRY.minAccountMonths) out.push({ flag: "rule:age", text: `Account younger than ${ENTRY.minAccountMonths} months.` });
+  if (a.aiPosts < ENTRY.minAiPosts) out.push({ flag: "rule:posts", text: `Fewer than ${ENTRY.minAiPosts} posts of their own AI work.` });
+  if (a.usernameChanges > ENTRY.maxUsernameChanges) out.push({ flag: "rule:names", text: `Username changed more than ${ENTRY.maxUsernameChanges} times.` });
   return out;
+}
+export const entryProblems = (a: EntryAnswers, nowMs = Date.now()): string[] => entryChecks(a, nowMs).map((c) => c.text);
+
+/** What a flag means, in the owner's words (the e-mail; the console has the same list in admin.js). */
+export function flagText(flag: string): string {
+  const [k, v] = flag.split(":");
+  const rules: Record<string, string> = {
+    followers: `Under ${ENTRY.minFollowers.toLocaleString("en-GB")} followers and no ${ENTRY.orViews.toLocaleString("en-GB")}-view post`,
+    age: `Account under ${ENTRY.minAccountMonths} months old`, posts: `Under ${ENTRY.minAiPosts} AI posts`, names: `Username changed over ${ENTRY.maxUsernameChanges} times`,
+  };
+  if (k === "rule") return rules[v] ?? flag;
+  if (k === "seat") return `Same person as another applicant or creator (${v}): same inbox or sign-up address`;
+  if (k === "country") return `Paid from ${v}, says another country`;
+  if (k === "place") return `Signs in from the same place as creator ${v}`;
+  return flag;
 }
 
 // ── tables ────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -265,8 +286,8 @@ async function payCountry(env: StudioEnv, userId: string): Promise<string | null
 }
 
 export async function applyAsCreator(env: StudioEnv, userId: string, b: Record<string, unknown>, nowMs = Date.now()): Promise<Record<string, unknown>> {
-  const plan = await paidPlanOf(env, userId);
-  if (!plan && !isAdmin(env, userId)) throw new StudioError("Kleo Creators starts with a plan. Pick Lite or higher, then apply.", 402, "creator_plan");
+  // The one refusal the system makes by itself: nothing ever paid (a credit pack or a plan; refunded ones do not count).
+  if (!isAdmin(env, userId) && !(await hasPaid(asEnv(env), userId))) throw new StudioError("Kleo Creators is for Kleo customers. Buy a credit pack or a plan first, then apply.", 402, "creator_paid");
   const old = await creatorOf(env, userId);
   if (old && old.status !== "refused") throw new StudioError("You've already applied.", 409, "creator_exists");
   if (old && Date.parse(old.decided_at ?? old.applied_at) > nowMs - 30 * DAY_MS) throw new StudioError("You can apply again 30 days after the last answer.", 429, "creator_wait");
@@ -291,18 +312,14 @@ export async function applyAsCreator(env: StudioEnv, userId: string, b: Record<s
   const taken = await env.DB.prepare("SELECT user_id FROM creators WHERE platform = ? AND handle_key = ?").bind(platform, handle.toLowerCase()).first<{ user_id: string }>();
   if (taken && taken.user_id !== userId) throw new StudioError("That account is already in Kleo Creators.", 409, "creator_handle_taken");
 
-  // Refused at once: the thresholds (said to the person), another seat of the same person or a payment from another
-  // country (not said: that would teach a scammer which check to dodge).
-  const public_ = entryProblems({ followers, bestViews, accountSince: since, aiPosts, usernameChanges: changes }, nowMs);
-  const flags: string[] = [];
+  // Nothing is refused here: every check becomes a flag the owner reads in the e-mail and the console.
+  const flags: string[] = entryChecks({ followers, bestViews, accountSince: since, aiPosts, usernameChanges: changes }, nowMs).map((c) => c.flag);
   const seat = await sharedSeat(env, userId);
   if (seat) flags.push(`seat:${seat}`);
   const paidFrom = await payCountry(env, userId);
   if (paidFrom && paidFrom !== country) flags.push(`country:${paidFrom}`);
   for (const other of await sharedPlaces(env, userId)) flags.push(`place:${other}`);
-  const hard = public_.length > 0 || flags.some((f) => f.startsWith("seat:") || f.startsWith("country:"));
-  const status = hard ? "refused" : "applied";
-  const refuse = public_.length ? public_.join(" ") : hard ? "auto: " + flags.filter((f) => !f.startsWith("place:")).join(", ") : null;
+  const status = "applied";
   const code = `KLEO-${rid("k", 6).slice(2).toUpperCase()}`;
   await env.DB.prepare(`INSERT INTO creators (user_id, status, level, platform, handle, handle_key, profile_url, name, country, followers, best_views, account_since,
       ai_posts, username_changes, best_url, about, flags, bio_code, terms_version, terms_at, applied_at, decided_at, decided_by, refuse_reason, updated_at)
@@ -316,9 +333,63 @@ export async function applyAsCreator(env: StudioEnv, userId: string, b: Record<s
         updated_at = excluded.updated_at`)
     .bind(userId, status, platform, handle, handle.toLowerCase(), PLATFORMS[platform].profile(handle), name, country, followers, bestViews, since,
       aiPosts, changes, bestUrl, about || null, flags.length ? flags.join(" ") : null, code, TERMS_VERSION, iso(nowMs),
-      hard ? iso(nowMs) : null, hard ? "auto" : null, refuse).run();
-  await audit(asEnv(env), userId, null, hard ? "creator.refused_auto" : "creator.applied", { platform, handle, followers, flags, refuse, terms: TERMS_VERSION });
+      null, null, null).run();
+  await audit(asEnv(env), userId, null, "creator.applied", { platform, handle, followers, flags, terms: TERMS_VERSION });
+  await mailApplication(env, userId);
   return creatorStatus(env, userId, nowMs);
+}
+
+/** Where every application goes, to be read by hand. */
+export const creatorsInbox = (env: StudioEnv): string => (env.CREATORS_INBOX ?? "").trim() || "leo@getkleooai.com";
+
+/** The e-mail the owner gets for one application: every answer, every flag, the links to check, the console's page. */
+export async function applicationMail(env: StudioEnv, userId: string): Promise<Mail | null> {
+  const c = await env.DB.prepare(`SELECT c.*,
+      COALESCE((SELECT l.email FROM studio_logins l WHERE l.user_id = u.id AND l.email IS NOT NULL ORDER BY l.created_at LIMIT 1), CASE WHEN u.email LIKE '%.invalid' THEN NULL ELSE u.email END) AS email,
+      (SELECT COALESCE(SUM(p.amount_cent), 0) FROM payments p WHERE p.user_id = u.id AND p.status = 'paid' AND p.amount_cent > 0) AS paid_cents,
+      (SELECT COUNT(*) FROM payments p WHERE p.user_id = u.id AND p.status = 'paid' AND p.amount_cent > 0) AS payments, u.plan, u.plan_until
+      FROM creators c JOIN users u ON u.id = c.user_id WHERE c.user_id = ?`).bind(userId)
+    .first<CreatorRow & { email: string | null; paid_cents: number; payments: number; plan: string | null; plan_until: string | null }>();
+  if (!c) return null;
+  const net = PLATFORMS[c.platform]?.name ?? c.platform;
+  const n = (v: number | null) => (Number(v) || 0).toLocaleString("en-GB");
+  const flags = c.flags ? c.flags.split(" ").filter(Boolean) : [];
+  const plan = c.plan && c.plan !== "trial" && c.plan_until && Date.parse(c.plan_until) > Date.now() ? c.plan : null;
+  const admin = `https://${(env.ADMIN_HOST ?? "").trim() || "admin.kleooai.com"}/admin/creators/${c.user_id}`;
+  const paid = `€${((Number(c.paid_cents) || 0) / 100).toFixed(2)} in ${n(c.payments)} payment${Number(c.payments) === 1 ? "" : "s"}${plan ? `, plan ${plan}` : ", no plan running"}`;
+  return {
+    key: "creator-application",
+    subject: `Kleo Creators: @${c.handle} on ${net} applied${flags.length ? ` (${flags.length} flag${flags.length === 1 ? "" : "s"})` : ""}`,
+    preheader: `${c.name ?? ""}, ${n(c.followers)} followers, ${n(c.ai_posts)} AI posts`,
+    blocks: [
+      { p: `**${c.name ?? "Someone"}** applied to Kleo Creators with **@${c.handle}** on ${net}. They were told “we'll let you know”: nothing was refused.` },
+      { h: flags.length ? "Flags" : "No flags" },
+      flags.length ? { list: flags.map(flagText) } : { p: "Every answer meets the entry rules. Check them against the account itself." },
+      { h: "Their answers" },
+      { list: [
+        `E-mail: ${c.email ?? "none"}`, `Country: ${c.country ?? "?"}`, `Followers: ${n(c.followers)}`, `Views on their best AI post: ${n(c.best_views)}`,
+        `Account opened: ${c.account_since ?? "?"}`, `Posts of their own AI work: ${n(c.ai_posts)}`, `Username changes: ${n(c.username_changes)}`,
+        `Paid Kleo so far: ${paid}`, `Bio code to look for: ${c.bio_code}`,
+      ] },
+      ...(c.about ? [{ h: "About them" }, { p: c.about }] : []),
+      { h: "Check" },
+      { list: [`Profile: ${c.profile_url}`, `Best post: ${c.best_url ?? "none"}`] },
+      { button: { label: "Open the application", url: admin } },
+      { p: "The console opens on your computer only (its certificate). Approve needs the bio code seen." },
+    ],
+  };
+}
+
+/** Sends the application to the inbox; if that send fails, the alert address hears instead. Never blocks applying. */
+async function mailApplication(env: StudioEnv, userId: string): Promise<void> {
+  try {
+    const m = await applicationMail(env, userId);
+    if (!m) return;
+    const to = creatorsInbox(env);
+    const r = await deliver(env, to, m, null, "creator-application");
+    await audit(asEnv(env), userId, null, r.ok ? "creator.application_mailed" : "creator.application_mail_failed", r.ok ? { to } : { to, code: r.code, error: r.error });
+    if (!r.ok) await mailOwner(env, m.subject, `${m.subject}\n\nThe e-mail to ${to} failed (${r.code}: ${r.error}).\nOpen the application in the admin console, Creators page.`);
+  } catch (e) { console.error("creator application mail", e instanceof Error ? e.message : e); }
 }
 
 /** A post the creator made: its link, once, on the creator's own network; at most MAX_PENDING_POSTS waiting. */
@@ -397,7 +468,8 @@ async function creatorFigures(env: StudioEnv, c: CreatorRow, nowMs: number) {
 export async function creatorStatus(env: StudioEnv, userId: string, nowMs = Date.now()): Promise<Record<string, unknown>> {
   const c = await creatorOf(env, userId);
   const plan = await paidPlanOf(env, userId);
-  const out: Record<string, unknown> = { plan: plan ? plan.plan : null, terms: { version: TERMS_VERSION, url: AGREEMENT_URL }, rules: publicRules() };
+  const paid = isAdmin(env, userId) || (await hasPaid(asEnv(env), userId));
+  const out: Record<string, unknown> = { plan: plan ? plan.plan : null, paid, terms: { version: TERMS_VERSION, url: AGREEMENT_URL }, rules: publicRules() };
   if (!c) return { ...out, state: "none" };
   const base = { state: c.status, platform: c.platform, handle: c.handle, profileUrl: c.profile_url, appliedAt: c.applied_at };
   if (c.status === "refused") {
@@ -604,8 +676,8 @@ export async function adminPostAction(env: StudioEnv, adminId: string, postId: s
   const views = whole(b.views, 0, 10_000_000_000);
   if (views === null) throw new StudioError("Type the views the post has.", 400, "creator_views");
   const used = (await env.DB.prepare("SELECT COALESCE(SUM(bonus), 0) AS n FROM creator_posts WHERE user_id = ? AND month = ? AND status = 'eligible'").bind(p.user_id, p.month).first<{ n: number }>())?.n ?? 0;
-  // Bonuses only while the creator holds a place and a plan (or the Pro partner's plan from the program).
-  const paying = !!c && c.status === "active" && (c.level === "pro" || !!(await paidPlanOf(env, p.user_id)));
+  // Bonuses while the creator holds a place (they paid Kleo to join; since 28 October 2026 no plan is needed for them).
+  const paying = !!c && c.status === "active";
   const bonus = paying ? Math.max(0, Math.min(bonusFor(views), BONUS_CAP_MONTH - used)) : 0;
   await env.DB.prepare(`UPDATE creator_posts SET status = 'eligible', views = ?, bonus = ?, checked_at = ${NOW}, checked_by = ? WHERE id = ?`).bind(views, bonus, adminId, postId).run();
   if (bonus) await grantProgram(env, p.user_id, "bonus", postId, bonus, `${views.toLocaleString("en-GB")} views at day 7`, nowMs);
@@ -723,13 +795,8 @@ export async function judgeMonth(env: StudioEnv, month: string, nowMs = Date.now
  */
 export async function creatorsTick(env: StudioEnv, nowMs = Date.now()): Promise<Record<string, unknown>> {
   const out: Record<string, unknown> = { commissions: await syncCommissions(env, nowMs), expired: await expireProgramCredits(env, nowMs) };
-  // No paid plan: the place is paused (no bonuses, no +50%) until one runs again. The Pro partner's plan is the program's.
-  const live = (await env.DB.prepare("SELECT * FROM creators WHERE status IN ('active', 'paused') AND level != 'pro'").all<CreatorRow>()).results;
-  for (const c of live) {
-    const has = !!(await paidPlanOf(env, c.user_id)) || isAdmin(env, c.user_id);
-    if (has && c.status === "paused") { await env.DB.prepare(`UPDATE creators SET status = 'active', updated_at = ${NOW} WHERE user_id = ?`).bind(c.user_id).run(); await audit(asEnv(env), c.user_id, null, "creator.resumed", {}); }
-    if (!has && c.status === "active") { await env.DB.prepare(`UPDATE creators SET status = 'paused', updated_at = ${NOW} WHERE user_id = ?`).bind(c.user_id).run(); await audit(asEnv(env), c.user_id, null, "creator.paused", { why: "no plan" }); }
-  }
+  // A place is no longer paused for want of a plan (28 October 2026): one paused before that comes back.
+  await env.DB.prepare(`UPDATE creators SET status = 'active', updated_at = ${NOW} WHERE status = 'paused'`).run();
   const month = monthOf(nowMs);
   if ((await meta(env, "creators_granted")) !== month) {
     await setMeta(env, "creators_granted", month);

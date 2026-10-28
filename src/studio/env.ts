@@ -33,6 +33,8 @@ export interface StudioEnv {
    *  Email Routing, and that address (default kleooai@gmail.com, the only one verified on 23 October 2026). */
   OWNER_MAIL?: SendEmail;
   OWNER_MAIL_TO?: string;
+  /** Where every Kleo Creators application is e-mailed for the owner's review (src/studio/creators.ts); default leo@getkleooai.com. */
+  CREATORS_INBOX?: string;
   /** Cloudflare Email Sending (27 October 2026): the welcome e-mails from hello@kleooai.com to any address, the domain
    *  onboarded in Email Sending (src/studio/onboarding.ts). Before that it reaches only the verified Email Routing address. */
   EMAIL?: SendEmail;
