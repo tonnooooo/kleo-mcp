@@ -3,7 +3,7 @@
 //
 // Pages: Create (chat with Kleo) · Video · Image · Audio · Apps · Library. Desktop: a top bar; phones: a tab bar.
 
-import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=98";
+import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=99";
 
 const DEMO = new URLSearchParams(location.search).has("demo");
 const DEMO_FREE = new URLSearchParams(location.search).get("demo") === "free"; // ?demo=free: an account that never paid
@@ -809,9 +809,24 @@ function homeView() {
     h("div", { class: "home-glow", "aria-hidden": "true" }, h("i", { style: { backgroundImage: `url(${GALLERY}/koi-supra-night.jpg)` } }), h("i", { style: { backgroundImage: `url(${GALLERY}/tether-film.jpg)` } })),
     h("div", { class: "home-banners" }, HOME_BANNERS.map(banner)),
     h("div", { class: "home-row" + (promo ? "" : " solo") }, promo, h("div", { class: "home-tiles" }, HOME_TILES.map(tile))),
+    creatorsCard(),
     h("div", { class: "home-ideas" }, h("h2", {}, "What do you want to create?"),
       h("div", { class: "idea-grid" }, IDEAS.video.map(ideaCard))),
     showcaseStrip("Made by the Kleo team"));
+}
+// Kleo Creators on the home (28 October 2026, the owner: "le persone devono vedere come candidarsi"): what it is in one
+// line and the way in; a creator already in the program goes to their own page.
+function creatorsCard() {
+  const c = S.me?.creator;
+  const mine = c && ["active", "paused"].includes(c.status);
+  const waiting = c && c.status === "applied";
+  return h("section", { class: "home-creators" },
+    h("div", { class: "hc-ic" }, icon("star", 26, 2)),
+    h("div", { class: "hc-tx" },
+      h("h2", {}, mine ? "Your Kleo Creators page" : "Get paid to create with Kleo"),
+      h("p", {}, mine ? "Send your posts, see your views, your link and your commission." : waiting ? "We have your application. We'll let you know."
+        : "Post your Kleo videos and earn bonus credits for your views, plus a share of what the people you bring pay.")),
+    h("button", { class: "btn btn-cta", onclick: () => go("/creators") }, mine ? "Open my page" : waiting ? "See my application" : "Become a Kleo creator"));
 }
 function useIdea(i) {
   if (i.photo) return pickFiles();
@@ -2525,7 +2540,7 @@ function accountView() {
   const console_ = me.adminUrl || DEMO ? h("div", { class: "list acct-admin" }, h("button", { class: "row", onclick: openConsole }, icon("grid", 20),
     h("div", { class: "lbl" }, h("b", {}, "Admin console"), h("span", {}, "Users, payments, creations, providers and keys")), icon("right", 16))) : null;
   setView("account-view", h("div", { class: "acct" }, nav,
-    h("div", { class: "acct-main" }, h("h1", { class: "acct-title" }, "Account"), console_, profile, credits, activity, security, assistant, videos, appearance, help, danger)));
+    h("div", { class: "acct-main" }, h("h1", { class: "acct-title" }, "Account"), console_, profile, credits, creatorsCard(), activity, security, assistant, videos, appearance, help, danger)));
 }
 
 // ── the admin console (23 October 2026): studio-web/admin.js, loaded only on the admin host ─────────────────────────
@@ -2576,7 +2591,7 @@ let creatorsModule = null;
 async function creatorsView() {
   if (!creatorsModule) {
     setView("cr-view", h("div", { class: "connect-view" }, spinner(24)));
-    try { creatorsModule = await import("/creators.js?v=98"); }
+    try { creatorsModule = await import("/creators.js?v=99"); }
     catch {
       setView("connect-view", connectCard("This page didn't load", "Check the connection and try again.", h("button", { class: "btn btn-primary", onclick: () => location.reload() }, "Try again")));
       return;
