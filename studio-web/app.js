@@ -3,7 +3,7 @@
 //
 // Pages: Create (chat with Kleo) · Video · Image · Audio · Apps · Library. Desktop: a top bar; phones: a tab bar.
 
-import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=97";
+import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=98";
 
 const DEMO = new URLSearchParams(location.search).has("demo");
 const DEMO_FREE = new URLSearchParams(location.search).get("demo") === "free"; // ?demo=free: an account that never paid
@@ -2576,7 +2576,7 @@ let creatorsModule = null;
 async function creatorsView() {
   if (!creatorsModule) {
     setView("cr-view", h("div", { class: "connect-view" }, spinner(24)));
-    try { creatorsModule = await import("/creators.js?v=97"); }
+    try { creatorsModule = await import("/creators.js?v=98"); }
     catch {
       setView("connect-view", connectCard("This page didn't load", "Check the connection and try again.", h("button", { class: "btn btn-primary", onclick: () => location.reload() }, "Try again")));
       return;
@@ -2595,7 +2595,7 @@ async function adminView() {
     setView("admin-view", h("div", { class: "connect-view" }, spinner(24)));
     try {
       await loadAdminCss();
-      adminModule = await import("/admin.js?v=94");
+      adminModule = await import("/admin.js?v=95");
     } catch {
       setView("connect-view", connectCard("The console didn't load", "Check the connection and try again.", h("button", { class: "btn btn-primary", onclick: () => location.reload() }, "Try again")));
       return;
