@@ -9,7 +9,8 @@
  *   pictures  Cloudflare Images (the IMAGES binding) draws the mark: one transformation per picture, 5,000 a month
  *             included, then $0.50 per 1,000.
  *   clips     the kleo-watermark Worker (the WATERMARK service binding, watermark/) burns it in with ffmpeg inside a
- *             Cloudflare Container, about $0.0003 per 10-second clip after the Workers Paid allowance (watermark/README.md).
+ *             Cloudflare Container: measured $0.000061 per 10-second 480p clip and $0.000125 at 720p after the Workers
+ *             Paid allowance, which alone covers about 11,000 free clips a month (watermark/README.md).
  *   serving   /media/... sends the marked copy while the owner still shows the mark and the copy exists; the first
  *             purchase takes the mark off everything the account made. Providers read the clean file through
  *             /media/raw/<upload> (signed links only), so a free picture animated into a clip is not marked twice.

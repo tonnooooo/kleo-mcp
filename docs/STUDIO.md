@@ -70,7 +70,8 @@ marked, nor the person's own uploads.
   copy while the owner still shows the mark, so the first purchase takes it off everything made before.
 - Pictures: Cloudflare Images (`IMAGES` binding), 5,000 a month included, then $0.50 per 1,000.
 - Clips and animatics: the `kleo-watermark` Worker (`watermark/`, ffmpeg in a Cloudflare Container, service binding
-  `WATERMARK`), well under $0.001 a clip; see `watermark/README.md` for the measured cost and how to deploy it.
+  `WATERMARK`): measured $0.000061 per 10 s 480p clip, $0.000125 at 720p, about 11,000 free clips a month inside the
+  Workers Paid allowance; see `watermark/README.md` for the measurements and how to deploy it.
 - Providers read a person's files through `/media/raw/<upload>` (signed links only): always the clean file.
 - Fails open: a file the mark could not be put on is served clean (`studio.mark_failed` in the audit).
 

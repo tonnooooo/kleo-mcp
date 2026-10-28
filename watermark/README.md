@@ -17,8 +17,8 @@ Workers cannot run ffmpeg. Measured or quoted on 28 Oct 2026 for one 10-second 7
 
 | Road | Per clip | Fixed | Latency | Effort |
 |---|---|---|---|---|
-| **Cloudflare Containers (chosen)** | ~$0.0002 after the allowance, $0 inside it | $0 (in Workers Paid) | ~10-25 s, + ~3 s cold start | this folder |
-| Cloudflare Stream watermark profile | ~$0.0002 (10 s delivered once) | $5/month prepaid storage | upload + encode + MP4 download, ~30-90 s | Stream subscription and a Stream token |
+| **Cloudflare Containers (chosen)** | $0.000125 measured, after the allowance; $0 inside it | $0 (in Workers Paid) | 16 s measured, + a cold start of a few seconds | this folder |
+| Cloudflare Stream watermark profile | ~$0.00017 (10 s delivered once) | $5/month prepaid storage | upload + encode + MP4 download, ~30-90 s | Stream subscription and a Stream token |
 | Vast.ai batch | ~$0.02 per batch (box minimum) | none | minutes to hours | queue, boot, image pull, guarding the box |
 | Media Transformations | - | - | - | no overlay option: cannot draw a mark |
 
@@ -26,6 +26,17 @@ Containers cost nothing extra on Workers Paid until 375 vCPU-minutes, 25 GiB-hou
 (thousands of free clips), then $0.000020 per vCPU-second, $0.0000025 per GiB-second and $0.00000007 per
 GB-second. An idle box bills memory and disk until it sleeps (2 minutes): about $0.0003 per wake-up. The exact
 measured numbers of every build are in the summary of the `watermark` workflow run (`try.sh`, on 1/4 vCPU).
+
+Measured on 28 Oct 2026 (`try.sh` on a GitHub runner capped at 1/4 vCPU and 1 GiB, like "basic"; test-pattern clips
+with sound, H.264 in, H.264 out, audio copied):
+
+| Clip | CPU | Wall | $ per clip after the allowance | Clips inside the monthly allowance |
+|---|---|---|---|---|
+| 10 s 1280x720 16:9 | 3.98 s | 16.4 s | $0.000125 | 5,491 |
+| 10 s 480x854 9:16 (the free tier) | 1.93 s | 8.1 s | $0.000061 | 11,111 |
+
+Memory (1 GiB for the whole wall time) is what runs out first. Real footage has more detail than a test pattern and
+may take somewhat longer; `studio.marked` in the audit records the CPU seconds of every real clip.
 
 ## Deploy (owner's OK first)
 
