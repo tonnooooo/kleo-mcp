@@ -1677,3 +1677,14 @@ img.fx-in { animation: fx-img-in .7s var(--ease-out) both; }
   .cr-form2 { grid-template-columns: 1fr; }
   .cr-post-form { flex-direction: column; }
 }
+
+/* Kleo Creators on the home and the account page (28 October 2026). */
+.home-creators { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin: 22px 0 6px; padding: 22px 24px; border-radius: 22px;
+  background: linear-gradient(120deg, var(--amber-soft), transparent 70%), var(--bg-2); border: 1px solid var(--sep); }
+.acct-main .home-creators { margin: 0; }
+.hc-ic { flex: none; width: 56px; height: 56px; border-radius: 18px; display: grid; place-items: center; color: var(--amber-ink);
+  background: linear-gradient(180deg, var(--cta-a), var(--cta-b)); box-shadow: 0 8px 24px rgba(243, 181, 63, .3); }
+.hc-tx { flex: 1; min-width: 220px; }
+.hc-tx h2 { margin: 0 0 4px; font-size: 22px; font-weight: 750; letter-spacing: -.02em; }
+.hc-tx p { margin: 0; color: var(--ink-2); font-size: 16px; line-height: 1.45; }
+@media (max-width: 640px) { .home-creators { padding: 18px 16px; } .home-creators .btn { width: 100%; } }
