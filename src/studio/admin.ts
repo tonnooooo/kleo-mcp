@@ -50,6 +50,11 @@
  *   POST /api/admin/outreach/prospects/:id   {action: approve|reject|reset}
  *   POST /api/admin/outreach/approve-new     {}                             every prospect still waiting
  *   POST /api/admin/outreach/import          {csv, batch}                   more prospects, checked like the first
+ *   GET  /api/admin/creators                 Kleo Creators: applications, creators, posts to read at day 7, cash due
+ *   GET  /api/admin/creators/:id             one creator: application, checks, posts, commissions, payouts, program credits
+ *   POST /api/admin/creators/:id/:action     {reason, …}  bio | approve {level?} | refuse | level {level} | end | ban |
+ *                                            reopen | note {note} | credits {credits} | payout {method, ref}
+ *   POST /api/admin/creators/posts/:id       {action: approve, views} | {action: reject, reason}   (src/studio/creators.ts)
  *
  * EVERY WRITE IS AUDITED: one `admin.*` row on the account it touched, with the admin's id and the reason typed.
  * Previews are signed links valid one hour (session.ts signPath): the admin is not the owner of the files.
@@ -73,6 +78,7 @@ import { keyAction, listKeys } from "./admin-keys.ts";
 import { CODE_RE, LINK_CHANNELS, getLink, type LinkChannel, type LinkRow } from "./attribution.ts";
 import { addProspects, listProspects, outreachOverview, parseCsv, previewFor, prospectAction, saveSender, saveSettings, sendOutreachTest, senderAction, setOutreachMode } from "./outreach.ts";
 import { RECEIPT_KINDS, composeReceipt, receiptsOn, sampleReceipt } from "./receipts.ts";
+import { adminCreator, adminCreatorAction, adminCreators, adminPostAction } from "./creators.ts";
 import { ALL_MAILS, SERIES, comebackMail, compose, factsOf, livePrices, mailMode, renderHtml, renderText, sampleFacts, sendSeriesToOwner, setMailMode, type MailKey } from "./onboarding.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
@@ -705,6 +711,9 @@ async function adminRoute(env: StudioEnv, request: Request, url: URL, adminId: s
     if (path === "/api/admin/outreach") return json(await outreachOverview(env));
     if (path === "/api/admin/outreach/prospects") return json(await listProspects(env, url));
     if (path === "/api/admin/outreach/preview") return json(await previewFor(env, url));
+    if (path === "/api/admin/creators") return json(await adminCreators(env));
+    const cm = path.match(/^\/api\/admin\/creators\/(u_[a-z0-9]+)$/);
+    if (cm) return json(await adminCreator(env, cm[1]));
   }
   if (method === "POST") {
     const am = path.match(/^\/api\/admin\/users\/(u_[a-z0-9]+)\/(credits|block|address|key|signout|delete|ip-lookup)$/);
@@ -722,6 +731,15 @@ async function adminRoute(env: StudioEnv, request: Request, url: URL, adminId: s
       return json({ ok: true, on });
     }
     if (path.startsWith("/api/admin/outreach/")) return outreachRoute(env, request, gate, adminId, path, await body(request));
+    const pm = path.match(/^\/api\/admin\/creators\/posts\/(cp_[a-z0-9]+)$/);
+    if (pm) return json(await adminPostAction(env, adminId, pm[1], await body(request)));
+    const ca = path.match(/^\/api\/admin\/creators\/(u_[a-z0-9]+)\/(bio|approve|refuse|level|end|ban|reopen|note|credits|payout)$/);
+    if (ca) {
+      const b = await body(request);
+      // A ban takes credits and money back, and a payout says money left: both want a code typed in the last 5 minutes.
+      if ((ca[2] === "ban" || ca[2] === "payout") && !isFresh(gate.session)) await freshGate(env, request, gate, adminId, b);
+      return json(await adminCreatorAction(env, adminId, ca[1], ca[2], b, ca[2] === "bio" || ca[2] === "note" ? String(b.reason ?? "").trim() || ca[2] : reasonOf(b)));
+    }
     const km = path.match(/^\/api\/admin\/keys\/([A-Z0-9_]{3,64})(?:\/(test|revert))?$/);
     if (km) return keyRoute(env, request, gate, adminId, km[1], (km[2] ?? "set") as "set" | "revert" | "test");
   }

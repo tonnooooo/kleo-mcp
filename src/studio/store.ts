@@ -12,12 +12,14 @@
  *   studio_mail         the welcome e-mails: one row per account in a series; studio_mail_log every send; mail_suppress
  *                       the addresses never to write to again (onboarding.ts, mail-schema.ts)
  *   outreach_prospects  the businesses Kleo may write to; outreach_log every send, outreach_replies every reply (outreach.ts)
+ *   creators            Kleo Creators: applications, places, posts, program credits, commissions, payouts (creators.ts)
  */
 import type { StudioEnv } from "./env.ts";
 import { PROVIDER_STATUS_SCHEMA } from "./providers.ts";
 import { KEY_OVERRIDES_SCHEMA } from "../key-overrides.ts";
 import { ATTRIBUTION_SCHEMA } from "./attribution.ts";
 import { ONBOARDING_SCHEMA, OUTREACH_COLUMNS, OUTREACH_SCHEMA, RECEIPTS_SCHEMA } from "./mail-schema.ts";
+import { CREATORS_COLUMNS, CREATORS_SCHEMA, CREATORS_TRIGGER } from "./creators-schema.ts";
 
 const NOW = "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))";
 export const STUDIO_SCHEMA: string[] = [
@@ -56,6 +58,8 @@ export const STUDIO_SCHEMA: string[] = [
   ...OUTREACH_SCHEMA,
   // The payment e-mails (src/studio/receipts.ts, 27 October 2026).
   ...RECEIPTS_SCHEMA,
+  // Kleo Creators (src/studio/creators.ts, 28 October 2026).
+  ...CREATORS_SCHEMA,
 ];
 
 /**
@@ -106,6 +110,8 @@ export const STUDIO_COLUMNS: string[] = [
   "ALTER TABLE users ADD COLUMN blocked_reason TEXT",
   // migrations/0031_outreach_v2.sql: mailboxes, versions, personal links and sign-ups of the outreach (outreach.ts).
   ...OUTREACH_COLUMNS,
+  // migrations/0033_creators.sql: the part of the balance that came from Kleo Creators and is not spent yet (creators.ts).
+  ...CREATORS_COLUMNS,
 ];
 
 /** Whether the account chose to have copyright refusals made on Wan 3.0 by themselves. */
@@ -130,6 +136,9 @@ export async function ensureStudioSchema(env: StudioEnv): Promise<void> {
   for (const sql of await missingColumns(env, STUDIO_COLUMNS)) {
     try { await env.DB.prepare(sql).run(); } catch (e) { if (!/duplicate column/i.test(String(e))) throw e; }
   }
+  // After the columns: program credits are spent first (creators.ts). A database that refuses the trigger only means
+  // program credits never expire, so the app goes on without it.
+  try { await env.DB.prepare(CREATORS_TRIGGER).run(); } catch (e) { console.error("studio creators trigger", e instanceof Error ? e.message : e); }
   schemaChecked = true;
 }
 
