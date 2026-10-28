@@ -9,7 +9,7 @@ The Kleo mark on a clip: the HTTP server inside the kleo-watermark Container (Do
   GET  /...    "ok" (the Container's readiness ping)
 
 Where the mark goes is the rule of src/studio/watermark.ts markPlacement: change both together.
-Kleo product code: it runs only in the Container and on GitHub's runners (.github/workflows/watermark.yml), never on
+Kleo product code: it runs only in the Container and on GitHub's runners (.github/workflows/watermark.yml, from github-workflow.yml), never on
 the owner's PC.
 """
 import json

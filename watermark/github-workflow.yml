@@ -1,0 +1,51 @@
+# TO ADD BY HAND: copy this file to .github/workflows/watermark.yml (GitHub's web editor, or a token with the
+# "workflow" scope; the session that wrote it had neither).
+# The kleo-watermark Container (watermark/): the Kleo mark burned into the clips of Studio accounts that never paid.
+# Built and tried on GitHub's servers, on a quarter of a CPU like Cloudflare's "basic" instance: two test clips go
+# through it, the answer is checked, and the cost of one clip is printed in the run's summary. Nothing runs on the
+# owner's computer. Deploying is by hand only ("Run workflow" on main, deploy ticked), after the owner's OK; it needs
+# the CLOUDFLARE_API_TOKEN secret (Workers Scripts: Edit and Containers: Edit on the Kleo account).
+name: watermark
+on:
+  push:
+    branches: ["**"]
+    paths: ["watermark/**", ".github/workflows/watermark.yml"]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Deploy kleo-watermark to Cloudflare (main only, the owner's OK first)"
+        type: boolean
+        default: false
+concurrency: { group: "watermark-${{ github.ref }}", cancel-in-progress: true }
+permissions:
+  contents: read
+jobs:
+  try:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -t kleo-watermark watermark
+      - name: Mark a 10 s 720p clip and a 10 s 480p 9:16 clip on 1/4 vCPU
+        run: OUT="$RUNNER_TEMP/marked" bash watermark/try.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: marked-frames
+          path: |
+            ${{ runner.temp }}/marked/*.png
+            ${{ runner.temp }}/marked/cost.json
+  deploy:
+    needs: try
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - name: Deploy kleo-watermark (wrangler builds the image with the runner's Docker and pushes it to Cloudflare)
+        working-directory: watermark
+        run: npm ci && npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

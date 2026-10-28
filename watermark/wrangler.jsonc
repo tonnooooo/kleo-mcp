@@ -1,6 +1,6 @@
 /**
  * kleo-watermark — the Kleo mark on free clips (README.md). Deployed on its own, from GitHub only:
- *   .github/workflows/watermark.yml, "Run workflow" with deploy = true (needs the CLOUDFLARE_API_TOKEN secret)
+ *   .github/workflows/watermark.yml, from github-workflow.yml, "Run workflow" with deploy = true (needs the CLOUDFLARE_API_TOKEN secret)
  * wrangler builds ./Dockerfile with the runner's Docker and pushes it to Cloudflare's registry.
  * kleo-studio reaches it through its WATERMARK service binding (wrangler.studio.jsonc).
  */

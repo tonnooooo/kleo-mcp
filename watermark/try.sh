@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tries the kleo-watermark image the way Cloudflare runs it (instance type "basic": 1/4 vCPU, 1 GiB) on two test clips,
-# checks what comes back, and prints what one clip costs. Runs on GitHub's runners (.github/workflows/watermark.yml),
+# checks what comes back, and prints what one clip costs. Runs on GitHub's runners (.github/workflows/watermark.yml, from github-workflow.yml),
 # never on the owner's PC. Writes frames with the mark to $OUT (uploaded as the run's artifact).
 set -euo pipefail
 IMAGE=${IMAGE:-kleo-watermark}
@@ -26,8 +26,8 @@ for name in 720p-16x9 480p-9x16; do
     localhost:8080/mark -o "$OUT/$name.mark.mp4"
   cpu=$(grep -i '^x-mark-cpu-s:' "$OUT/$name.headers" | tr -d '\r' | awk '{print $2}')
   wall=$(grep -i '^x-mark-wall-s:' "$OUT/$name.headers" | tr -d '\r' | awk '{print $2}')
-  read -r w0 h0 d0 < <(ff ffprobe -v error -select_streams v:0 -show_entries stream=width,height:format=duration -of csv=p=0:s=' ' "/w/$name.mp4" | tr '\n' ' ')
-  read -r w1 h1 d1 < <(ff ffprobe -v error -select_streams v:0 -show_entries stream=width,height:format=duration -of csv=p=0:s=' ' "/w/$name.mark.mp4" | tr '\n' ' ')
+  read -r w0 h0 d0 < <(ff ffprobe -v error -select_streams v:0 -show_entries stream=width,height:format=duration -of default=nw=1:nk=1 "/w/$name.mp4" | tr '\n' ' ')
+  read -r w1 h1 d1 < <(ff ffprobe -v error -select_streams v:0 -show_entries stream=width,height:format=duration -of default=nw=1:nk=1 "/w/$name.mark.mp4" | tr '\n' ' ')
   audio=$(ff ffprobe -v error -select_streams a -show_entries stream=codec_name -of csv=p=0 "/w/$name.mark.mp4")
   [ "${w0}x${h0}" = "${w1}x${h1}" ] || { echo "::error::$name came back ${w1}x${h1}, sent ${w0}x${h0}"; exit 1; }
   awk -v a="$d0" -v b="$d1" 'BEGIN { exit (a - b > 0.1 || b - a > 0.1) }' || { echo "::error::$name came back ${d1}s long, sent ${d0}s"; exit 1; }

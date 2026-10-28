@@ -29,13 +29,15 @@ measured numbers of every build are in the summary of the `watermark` workflow r
 
 ## Deploy (owner's OK first)
 
-1. Add the repository secret `CLOUDFLARE_API_TOKEN` (a token on the Kleo account with Workers Scripts: Edit and
+1. Copy `github-workflow.yml` to `.github/workflows/watermark.yml` (GitHub's web editor: Add file, Create new file).
+   Pushing workflow files needs the `workflow` scope, which Claude's GitHub token does not have.
+2. Add the repository secret `CLOUDFLARE_API_TOKEN` (a token on the Kleo account with Workers Scripts: Edit and
    Containers: Edit).
-2. Actions, `watermark`, "Run workflow" on `main` with deploy ticked. wrangler builds the image on GitHub's runner
-   and pushes it to Cloudflare's registry.
-3. In `wrangler.studio.jsonc`, uncomment the `WATERMARK` service binding, then deploy kleo-studio from main.
+3. Actions, `watermark`, "Run workflow" on `main` with deploy ticked. wrangler builds the image on GitHub's runner
+   and pushes it to Cloudflare's registry. Every run also tries the image on two test clips and prints the cost.
+4. In `wrangler.studio.jsonc`, uncomment the `WATERMARK` service binding, then deploy kleo-studio from main.
 
-Until step 3 free clips are kept and served clean (fail open); free pictures are marked as soon as kleo-studio is
+Until step 4 free clips are kept and served clean (fail open); free pictures are marked as soon as kleo-studio is
 deployed with the `IMAGES` binding.
 
 ## Changing the mark
