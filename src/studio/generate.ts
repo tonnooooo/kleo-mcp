@@ -40,6 +40,7 @@ import { addressBlocked } from "../abuse.ts";
 import { anyRouteReady, noteNoMoney, pausedText, spent, type Provider, type Route } from "./providers.ts";
 import { describeWithoutNames, namedCharacters, toEnglish } from "./translate.ts";
 import { compPlanActive } from "./creators-schema.ts";
+import { markedKey, saveMarkedCopy } from "./watermark.ts";
 
 /** A refusal the page shows as it is (no provider names in it). */
 export class StudioError extends Error {
@@ -164,6 +165,12 @@ export const GENERATION_TIMEOUT_MIN = 45;
 export const IMAGE_TIMEOUT_MIN = 15;
 /** How long a provider may keep fetching a person's picture through its signed link. */
 const IMAGE_LINK_TTL_S = 6 * 3600;
+/**
+ * The signed link a provider reads one of the person's files through. /media/raw/ sends the clean file even when the
+ * account shows the Kleo mark (src/studio/watermark.ts): a free picture animated into a clip is marked once, at the end.
+ */
+const providerLink = async (env: StudioEnv, origin: string, uploadId: string): Promise<string> =>
+  `${origin}${await signPath(env.INTERNAL_SECRET, `/media/raw/${uploadId}`, IMAGE_LINK_TTL_S)}`;
 
 export interface CreateRequest {
   kind?: "video" | "image";
@@ -246,6 +253,19 @@ export const adminIds = (env: StudioEnv): string[] => (env.STUDIO_ADMINS ?? "").
 export const isAdmin = (env: StudioEnv, userId: string): boolean => adminIds(env).includes(userId);
 
 /**
+ * THE KLEO MARK (28 October 2026, src/studio/watermark.ts): what an account that never paid makes carries "Made with
+ * Kleo", so every free creation shared online advertises Kleo. Any payment (a pack or a plan), an admin and a Pro
+ * partner of Kleo Creators (a plan from the program, with no Stripe payment) see no mark. STUDIO_WATERMARK = "off"
+ * turns it off. Asked when a creation is saved (whether a marked copy is made) and each time a file is served (which
+ * copy is sent), so the first purchase takes the mark off everything the account made before.
+ */
+export async function showsMark(env: StudioEnv, userId: string): Promise<boolean> {
+  if ((env.STUDIO_WATERMARK ?? "").trim() === "off" || isAdmin(env, userId)) return false;
+  if (await hasPaid(asEnv(env), userId)) return false;
+  return !(await compPlanActive(env, userId));
+}
+
+/**
  * The checks every order passes, in order, before any money moves (and before any paid work, such as speech).
  * TWO DAILY POOLS (14 October 2026): accounts that never paid draw on their own, smaller STUDIO_FREE_DAILY_BUDGET_USD,
  * so a crowd of throwaway accounts spending free credits can never fill the day for paying customers.
@@ -325,9 +345,12 @@ export async function deleteGeneration(env: StudioEnv, userId: string, g: Genera
     for (const r of mine) keys.add(r.key);
     if (mine.length) await env.DB.prepare(`DELETE FROM studio_uploads WHERE user_id = ? AND id IN (${mine.map(() => "?").join(",")})`).bind(userId, ...mine.map((r) => r.id)).run();
   }
+  const files = keys.size;
+  // With their Kleo-marked copies (src/studio/watermark.ts); a key with no copy is deleted as nothing.
+  for (const k of [...keys]) keys.add(markedKey(k));
   if (keys.size) await env.RENDERS.delete([...keys]);
   await env.DB.prepare("DELETE FROM studio_generations WHERE id = ? AND user_id = ?").bind(g.id, userId).run();
-  await audit(asEnv(env), userId, g.id, "studio.deleted", { kind: g.kind, files: keys.size });
+  await audit(asEnv(env), userId, g.id, "studio.deleted", { kind: g.kind, files });
 }
 
 /** The sentence a person reads when the provider refused an order. */
@@ -541,7 +564,7 @@ async function wanPrompt(env: StudioEnv, prompt: string, presetKey: string | nul
  * templates' photos do), each on a signed link of Studio's when it cannot be copied.
  */
 async function startWan(env: StudioEnv, s: ClipSettings, english: string, pictures: UploadRow[], origin: string): Promise<{ taskId: string; slug: string }> {
-  const links = await Promise.all(pictures.map(async (r) => (await copyToWavespeed(env, r)) ?? `${origin}${await signPath(env.INTERNAL_SECRET, `/media/u/${r.id}`, IMAGE_LINK_TTL_S)}`));
+  const links = await Promise.all(pictures.map(async (r) => (await copyToWavespeed(env, r)) ?? (await providerLink(env, origin, r.id))));
   const order = wanOrder(s, english, links);
   let task: string;
   try { task = await wavespeedSubmit(env, order.slug, order.body); } catch (e) { await noticeMoney(env, "wavespeed", e); throw e; }
@@ -643,7 +666,7 @@ export async function createGeneration(env: StudioEnv, userId: string, req: Crea
   await audit(asEnv(env), userId, id, "studio.create", { model: s.model, settings: s, credits, usd });
 
   // The provider fetches the pictures and clips through short signed links on this same host.
-  const link = async (u: { id: string }) => `${origin}${await signPath(env.INTERNAL_SECRET, `/media/u/${u.id}`, IMAGE_LINK_TTL_S)}`;
+  const link = (u: { id: string }) => providerLink(env, origin, u.id);
   const links = await Promise.all(pictures.map(link));
   const clipLinks = { videos: await Promise.all(videos.map(link)), audios: await Promise.all(sounds.map(link)) };
   let english = "";
@@ -712,7 +735,7 @@ async function createImageGeneration(env: StudioEnv, userId: string, req: Create
     throw e;
   }
   await audit(asEnv(env), userId, id, "studio.create", { kind: "image", model: s.model, settings: s, credits, usd });
-  const links = await Promise.all(uploads.map(async (u) => `${origin}${await signPath(env.INTERNAL_SECRET, `/media/u/${u.id}`, IMAGE_LINK_TTL_S)}`));
+  const links = await Promise.all(uploads.map((u) => providerLink(env, origin, u.id)));
   const english = await toEnglish(env, prompt, "image");
   let input = imageTaskInput(s, english, links);
   // A refusal of a well-known character (Google, ByteDance, OpenAI, BFL) is made again on FLUX 3 for the same credits.
@@ -841,6 +864,7 @@ export async function refreshGeneration(env: StudioEnv, g: GenerationRow, minGap
   if (!(await moveGeneration(env, g.id, ["running"], "saving", { usage: t.usage ? JSON.stringify(t.usage) : null }))) return (await getGeneration(env, g.id))!;
   try {
     const { key, size } = await saveVideo(env, g, url);
+    if (await showsMark(env, g.user_id)) await saveMarkedCopy(env, { userId: g.user_id, genId: g.id }, key, "video");
     await moveGeneration(env, g.id, ["saving"], "done", { file_key: key, size });
     await audit(asEnv(env), g.user_id, g.id, "studio.done", { size, usage: t.usage ?? null });
   } catch (e) {
@@ -904,6 +928,8 @@ async function refreshImages(env: StudioEnv, g: GenerationRow, ageMin: number): 
   const routing = g.kind === "tool" ? undefined : imageModelByKey(g.model)?.routing;
   const timeout = g.kind === "tool" ? GENERATION_TIMEOUT_MIN : IMAGE_TIMEOUT_MIN;
   const extra: Slot[] = [];
+  let marked: boolean | undefined;
+  const marks = async () => (marked ??= await showsMark(env, g.user_id));
   for (let i = 0; i < slots.length; i++) {
     const slot = slots[i];
     if (slot.status !== "running" || !slot.task) continue;
@@ -962,7 +988,7 @@ async function refreshImages(env: StudioEnv, g: GenerationRow, ageMin: number): 
       // Suno answers two songs (and their covers): every result of the wanted kind becomes its own picture/clip.
       const saved: { key: string; upload: string; type: Slot["type"] }[] = [];
       for (const [n, url] of urls.slice(0, want === "audio" ? 2 : 1).entries()) {
-        const out = await saveOutput(env, g, n === 0 ? `${i}` : `${i}-${n}`, url);
+        const out = await saveOutput(env, g, n === 0 ? `${i}` : `${i}-${n}`, url, marks);
         if (out.kind !== want) continue;
         const upload = rid("up", 12);
         await addUpload(env, { id: upload, userId: g.user_id, key: out.key, contentType: out.type, size: out.size, width: out.width, height: out.height, kind: out.kind, duration: out.duration });
@@ -1017,8 +1043,8 @@ export function kindOfUrl(u: string): "image" | "video" | "audio" | null {
 const TOOL_ROUTED = new Set(["gemini-3-pro-image", "flux-tools/vto-v1", "flux-tools/video-edit-v1", "flux-tools/video-upscale-v1", "flux-2-pro", "flux-3-image", "gpt-image-2.5-sunburst", "aleph2/video-to-video"]);
 const toolRouting = (model: string) => (TOOL_ROUTED.has(model) ? { "X-Provider-Order": "official_cheap", "X-Provider-Only": "true" } : undefined);
 
-/** Downloads one result into R2 and says what it is (by its bytes). */
-async function saveOutput(env: StudioEnv, g: GenerationRow, name: string, url: string) {
+/** Downloads one result into R2 and says what it is (by its bytes); a picture or clip of an account that shows the Kleo mark gets its marked copy. */
+async function saveOutput(env: StudioEnv, g: GenerationRow, name: string, url: string, marks: () => Promise<boolean>) {
   let bytes: Uint8Array;
   const data = /^data:[a-z]+\/[a-z0-9+.-]+;base64,(.*)$/i.exec(url);
   if (data) bytes = Uint8Array.from(atob(data[1]), (c) => c.charCodeAt(0));
@@ -1031,6 +1057,7 @@ async function saveOutput(env: StudioEnv, g: GenerationRow, name: string, url: s
   const info = mediaInfo(bytes) ?? { kind: "image" as const, type: "image/jpeg", ext: "jpg", duration: null, width: null, height: null };
   const key = `studio/${g.user_id}/${g.id}/${name}.${info.ext}`;
   await env.RENDERS.put(key, bytes, { httpMetadata: { contentType: info.type } });
+  if (info.kind !== "audio" && (await marks())) await saveMarkedCopy(env, { userId: g.user_id, genId: g.id }, key, info.kind, bytes, info.type);
   return { key, type: info.type, size: bytes.byteLength, kind: info.kind, duration: info.duration, width: info.width, height: info.height };
 }
 
@@ -1129,7 +1156,7 @@ export async function runTool(env: StudioEnv, userId: string, req: ToolRequest, 
   for (const f of tool.fields) if (req.inputs?.[f.key] !== undefined) inputs[f.key] = String(req.inputs[f.key]).slice(0, f.maxLength ?? 200);
   const fileFields = tool.fields.filter((f) => f.kind === "image" || f.kind === "video" || f.kind === "audio");
   const rows = await uploadsOf(env, userId, fileFields.map((f) => inputs[f.key]).filter(Boolean));
-  const link = async (id: string) => `${origin}${await signPath(env.INTERNAL_SECRET, `/media/u/${id}`, IMAGE_LINK_TTL_S)}`;
+  const link = (id: string) => providerLink(env, origin, id);
   const media: Record<string, Media | undefined> = {};
   for (const f of fileFields) {
     const u = rows.find((r) => r.id === inputs[f.key]);

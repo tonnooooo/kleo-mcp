@@ -7,7 +7,9 @@
  *   /api/*          JSON API for the page (session cookie; every POST/PATCH/DELETE needs the header X-Kleo: 1)
  *   /auth/<google|microsoft|apple>[/callback]   social sign-in round trip (?link=1 adds it to the signed-in account;
  *                                              Apple's callback is a form POST)
- *   /media/...      the person's pictures and clips (cookie, or a signed link for the provider and for sharing)
+ *   /media/...      the person's pictures and clips (cookie, or a signed link for sharing); an account that never paid
+ *                   gets the copies with the Kleo mark (src/studio/watermark.ts); /media/raw/<upload> is the provider's
+ *                   signed link to the clean file
  *   /r/<code>       a short link: counts the click, tags the visit, opens the link's page (src/studio/attribution.ts)
  *   /email/stop     the welcome e-mails' unsubscribe page and one-click POST (src/studio/onboarding.ts)
  *   /email/out      the outreach e-mails' unsubscribe page and one-click POST (src/studio/outreach.ts)
@@ -31,7 +33,8 @@ import {
   getMessage, setMessageData, agentMessagesToday, addUpload, getUpload, uploadsOf, getGeneration, listGenerations,
   staleGenerations, autoWanOn, setAutoWan, type MessageRow, type GenerationRow,
 } from "./store.ts";
-import { deleteGeneration, StudioError, createGeneration, refreshGeneration, publicGeneration, marginOf, videoFactorOf, hasActivePlan, templateIsHd, runTool, freeTools, isAdmin, retryOnWan, declineWan, retryDescribed, declineRewrite } from "./generate.ts";
+import { deleteGeneration, StudioError, createGeneration, refreshGeneration, publicGeneration, marginOf, videoFactorOf, hasActivePlan, templateIsHd, runTool, freeTools, isAdmin, retryOnWan, declineWan, retryDescribed, declineRewrite, showsMark } from "./generate.ts";
+import { servedKey } from "./watermark.ts";
 import { publicPresets } from "./presets.ts";
 import { planTool, publicTools, toolByKey, toolCredits, toolFactor, ToolRefusal, type Media } from "./tools.ts";
 import { mediaInfo } from "./media.ts";
@@ -180,6 +183,13 @@ async function serveFile(env: StudioEnv, request: Request, key: string, filename
 async function handleMedia(env: StudioEnv, request: Request, url: URL): Promise<Response> {
   const viewer = await sessionUser(env, request);
   const signed = await checkSignedPath(env.INTERNAL_SECRET, url.pathname, url.searchParams.get("exp"), url.searchParams.get("sig"));
+  // A provider reading one of the person's files: always the clean file, and only through a signed link (generate.ts providerLink).
+  const raw = url.pathname.match(/^\/media\/raw\/(up_[a-z0-9]+)$/);
+  if (raw) {
+    const u = signed ? await getUpload(env, raw[1]) : null;
+    if (!u) return new Response("Not found", { status: 404 });
+    return serveFile(env, request, u.key, `kleo-${u.id}.${(u.key.split(".").pop() ?? "jpg").replace("jpeg", "jpg")}`, false, "private, max-age=3600");
+  }
   const up = url.pathname.match(/^\/media\/u\/(up_[a-z0-9]+)$/);
   if (up) {
     const u = await getUpload(env, up[1]);
@@ -187,13 +197,17 @@ async function handleMedia(env: StudioEnv, request: Request, url: URL): Promise<
     const ext = (u.key.split(".").pop() ?? "jpg").replace("jpeg", "jpg");
     // ?name=song-1 names the download (two songs of one set were told apart by nothing but their ids).
     const name = /^[a-z0-9-]{1,40}$/.test(url.searchParams.get("name") ?? "") ? url.searchParams.get("name") : u.id;
-    return serveFile(env, request, u.key, `kleo-${name}.${ext}`, url.searchParams.get("dl") === "1", "private, max-age=86400");
+    // The Kleo mark (src/studio/watermark.ts) is on pictures and clips only; a marked copy is kept a short while by the
+    // browser, so the first purchase shows the clean file soon after.
+    const file = u.kind === "audio" ? { key: u.key, marked: false } : await servedKey(env, u.user_id, u.key, (id) => showsMark(env, id));
+    return serveFile(env, request, file.key, `kleo-${name}.${ext}`, url.searchParams.get("dl") === "1", file.marked ? "private, max-age=600" : "private, max-age=86400");
   }
   const clip = url.pathname.match(/^\/media\/(g_[a-z0-9]+)\.mp4$/);
   if (clip) {
     const g = await getGeneration(env, clip[1]);
     if (!g || g.status !== "done" || !g.file_key || (!signed && g.user_id !== viewer)) return new Response("Not found", { status: 404 });
-    return serveFile(env, request, g.file_key, `kleo-${g.id}.mp4`, url.searchParams.get("dl") === "1");
+    const file = await servedKey(env, g.user_id, g.file_key, (id) => showsMark(env, id));
+    return serveFile(env, request, file.key, `kleo-${g.id}.mp4`, url.searchParams.get("dl") === "1", file.marked ? "private, max-age=600" : undefined);
   }
   return new Response("Not found", { status: 404 });
 }

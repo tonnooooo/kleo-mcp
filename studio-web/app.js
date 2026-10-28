@@ -2322,7 +2322,7 @@ function packRows(note) {
   return [note ? h("p", { class: "sheet-sub" }, note) : null, h("div", { class: "list" }, packs.map((p, i) => h("button", { class: "row", disabled: !p.url, onclick: () => buyPack(p) }, h("div", { class: "pack lbl" }, h("span", { class: "amt" }, bolt(18), p.credits), h("div", {}, h("b", {}, p.label.replace(" EUR", " €"), tags[i] ? h("span", { class: "badge" }, tags[i]) : null),
       h("span", {}, `${(Number(p.label.split(" ")[0]) / p.credits).toFixed(2)} € per credit`))), icon("right", 18)))),
     WALLET ? walletLine() : null,
-    h("p", { class: "sheet-sub", style: { paddingTop: "10px" } }, WALLET ? "Secure checkout by Stripe. Your first pack unlocks every model and app." : "Secure checkout by Stripe: card, Apple Pay, Google Pay, PayPal. Your first pack unlocks every model and app.")];
+    h("p", { class: "sheet-sub", style: { paddingTop: "10px" } }, WALLET ? "Secure checkout by Stripe. Your first pack unlocks every model and app, and takes the Kleo mark off what you make." : "Secure checkout by Stripe: card, Apple Pay, Google Pay, PayPal. Your first pack unlocks every model and app, and takes the Kleo mark off what you make.")];
 }
 /** One pack's checkout: the phone's wallet inside the app when it can, Stripe's page otherwise. */
 function buyPack(p) {
@@ -2424,7 +2424,7 @@ function accountView() {
     h("label", { class: "acct-field" }, h("span", {}, "Name"), nameIn));
 
   // Credits
-  const credits = card("credits", "Credits", me.paid ? "Every model and app is unlocked." : "Your first pack unlocks every model and app.",
+  const credits = card("credits", "Credits", me.paid ? "Every model and app is unlocked." : "Your first pack unlocks every model and app, and takes the Kleo mark off what you make.",
     bigCredits("credits left"), packRows());
 
   // Activity: what the credits went on, and what was bought

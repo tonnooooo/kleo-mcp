@@ -59,6 +59,21 @@ finished picture is also a `studio_uploads` row, so the page can animate it into
 reference with one tap. The agent proposes pictures with a second tool, `propose_image`; the composer has a
 Video / Image switch.
 
+## The Kleo mark on free creations
+
+Since 28 Oct 2026 every picture, clip and animatic an account that never paid makes carries "Made with Kleo"
+(`studio-web/made-with-kleo.png`), so free creations shared online advertise Kleo. Any payment (a pack or a plan), an
+admin and a Kleo Creators Pro partner see no mark; `STUDIO_WATERMARK=off` turns it off for everyone. Sounds are never
+marked, nor the person's own uploads.
+
+- The clean file is saved as before; a marked copy goes next to it (`<name>.mark.<ext>`). `/media/...` sends the marked
+  copy while the owner still shows the mark, so the first purchase takes it off everything made before.
+- Pictures: Cloudflare Images (`IMAGES` binding), 5,000 a month included, then $0.50 per 1,000.
+- Clips and animatics: the `kleo-watermark` Worker (`watermark/`, ffmpeg in a Cloudflare Container, service binding
+  `WATERMARK`), well under $0.001 a clip; see `watermark/README.md` for the measured cost and how to deploy it.
+- Providers read a person's files through `/media/raw/<upload>` (signed links only): always the clean file.
+- Fails open: a file the mark could not be put on is served clean (`studio.mark_failed` in the audit).
+
 ## Password reset
 
 `POST /api/auth/forgot` mails a one-hour link (`/reset?t=<user>.<exp>.<sig>`, signed over the current password hash, so

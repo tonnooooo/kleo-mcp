@@ -10,6 +10,13 @@ export interface StudioEnv {
   ASSETS: Fetcher;
   /** The MCP Worker (service binding): Kleo films are ordered there (src/studio-film.ts). */
   MCP?: Fetcher;
+  /** Cloudflare Images (binding): draws the Kleo mark on the pictures of accounts that never paid (src/studio/watermark.ts). */
+  IMAGES?: ImagesBinding;
+  /** The kleo-watermark Worker (service binding; watermark/): burns the Kleo mark into their clips with ffmpeg in a
+   *  Cloudflare Container. Unset: their clips are kept without the mark. */
+  WATERMARK?: Fetcher;
+  /** "off" turns the Kleo mark off for everyone (default on for accounts that never paid). */
+  STUDIO_WATERMARK?: string;
   /** Same value as the MCP server's: it signs sessions, links and verifies a pasted Kleo key. */
   INTERNAL_SECRET: string;
   EPHONE_API_KEY?: string;

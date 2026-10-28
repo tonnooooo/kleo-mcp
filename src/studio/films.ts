@@ -9,7 +9,8 @@
  * database. The MCP Worker refunds a failed film itself, so Studio never refunds one.
  */
 import type { StudioEnv } from "./env.ts";
-import { StudioError } from "./generate.ts";
+import { StudioError, showsMark } from "./generate.ts";
+import { saveMarkedCopy } from "./watermark.ts";
 import { getGeneration, insertGeneration, moveGeneration, markChecked, type GenerationRow } from "./store.ts";
 import { rid } from "../util.ts";
 
@@ -83,6 +84,8 @@ export async function refreshFilm(env: StudioEnv, g: GenerationRow): Promise<Gen
       const src = await env.RENDERS.get(file.key);
       if (!src) throw new Error("film file missing");
       await env.RENDERS.put(key, src.body, { httpMetadata: { contentType: "video/mp4" } });
+      // An animatic bought with gifted credits carries the Kleo mark (src/studio/watermark.ts); films need a payment.
+      if (await showsMark(env, g.user_id)) await saveMarkedCopy(env, { userId: g.user_id, genId: g.id }, key, "video");
       await moveGeneration(env, g.id, ["saving"], "done", { file_key: key, size: src.size });
     } catch {
       await moveGeneration(env, g.id, ["saving"], "running");

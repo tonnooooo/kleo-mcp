@@ -42,7 +42,14 @@
   // Workers AI: a viral template's photo must show a real person before any charge (src/studio/person-check.ts).
   "ai": { "binding": "AI" },
   // Kleo films are ordered from the MCP Worker (src/studio-film.ts there): same prices, same two-products rule.
-  "services": [ { "binding": "MCP", "service": "kleo-mcp" } ],
+  "services": [
+    { "binding": "MCP", "service": "kleo-mcp" }
+    // 28 Oct 2026, the Kleo mark on clips of accounts that never paid (src/studio/watermark.ts): uncomment AFTER the
+    // kleo-watermark Worker exists (watermark/README.md), or every deploy of this Worker fails on the missing service.
+    // , { "binding": "WATERMARK", "service": "kleo-watermark" }
+  ],
+  // 28 Oct 2026: Cloudflare Images draws the Kleo mark on the pictures of accounts that never paid (src/studio/watermark.ts).
+  "images": { "binding": "IMAGES" },
   "ratelimits": [
     { "name": "AUTH_LIMIT", "namespace_id": "1002", "simple": { "limit": 10, "period": 60 } }
   ],
