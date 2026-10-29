@@ -11,16 +11,22 @@
  *   clips     the kleo-watermark Worker (the WATERMARK service binding, watermark/) burns it in with ffmpeg inside a
  *             Cloudflare Container: measured $0.000061 per 10-second 480p clip and $0.000125 at 720p after the Workers
  *             Paid allowance, which alone covers about 11,000 free clips a month (watermark/README.md).
+ *   films     animatics (and the launch-code trial film) are 4K 60 fps: the mark is burned in on the GPU box before the
+ *             video is uploaded (src/mark.ts decides at order time, params.mark; worker/kleo_mark.py), so Studio's
+ *             copy, the MCP /dl links and the job-done e-mail all carry it. Studio copies and serves them as they are.
  *   serving   /media/... sends the marked copy while the owner still shows the mark and the copy exists; the first
- *             purchase takes the mark off everything the account made. Providers read the clean file through
- *             /media/raw/<upload> (signed links only), so a free picture animated into a clip is not marked twice.
+ *             purchase takes the mark off every picture and clip the account made (not off an animatic: its mark is
+ *             in the video itself). Providers read the clean file through /media/raw/<upload> (signed links only),
+ *             so a free picture animated into a clip is not marked twice.
  *
  * Fails open: a picture or a clip the mark could not be put on is kept and served clean, and the miss is written to
- * the audit (studio.mark_failed). A creation never fails because of its mark.
+ * the audit (studio.mark_failed). A creation never fails because of its mark. A picture missing its copy gets one the
+ * next time it is served (servedKey, healPicture).
  */
 import type { StudioEnv } from "./env.ts";
 import type { Env } from "../env";
 import { audit } from "../db.ts";
+import { mailOwner } from "./providers.ts";
 
 /** The mark (studio-web/made-with-kleo.png, the same file as kleooai.com/brand/made-with-kleo.png) and its size. */
 export const MARK_PATH = "/made-with-kleo.png";
@@ -39,6 +45,9 @@ export const VIDEO_MARK_TIMEOUT_MS = 120_000;
 export const IMAGES_MAX_INPUT = 20 * 1024 * 1024;
 
 export interface MarkPlace { width: number; height: number; x: number; y: number }
+
+/** A picture over the Images binding's input: expected (a 4K PNG), written to the audit, never an alert. */
+class TooBigForImages extends Error {}
 
 /**
  * Where the mark goes on a frame of w × h pixels, as its size and its top-left corner. watermark/server.py has the
@@ -87,7 +96,7 @@ const PICTURE_FORMATS: Record<string, "image/jpeg" | "image/png" | "image/webp">
 export async function markPicture(env: StudioEnv, bytes: Uint8Array, type: string): Promise<{ bytes: Uint8Array; type: string } | null> {
   const format = PICTURE_FORMATS[type];
   if (!env.IMAGES || !format) return null;
-  if (bytes.byteLength > IMAGES_MAX_INPUT) throw new Error(`the picture is ${Math.round(bytes.byteLength / 1048576)} MB, over the Images binding's 20 MB input`);
+  if (bytes.byteLength > IMAGES_MAX_INPUT) throw new TooBigForImages(`the picture is ${Math.round(bytes.byteLength / 1048576)} MB, over the Images binding's 20 MB input`);
   const info = await env.IMAGES.info(streamOf(bytes));
   if (!("width" in info)) return null;
   const at = markPlacement(info.width, info.height);
@@ -147,9 +156,35 @@ export async function saveMarkedCopy(env: StudioEnv, who: { userId: string; genI
     }
     return false;
   } catch (e) {
-    await audit(env as unknown as Env, who.userId, who.genId, "studio.mark_failed", { kind, key, error: String(e instanceof Error ? e.message : e).slice(0, 300) }).catch(() => {});
+    const why = String(e instanceof Error ? e.message : e).slice(0, 300);
+    await audit(env as unknown as Env, who.userId, who.genId, "studio.mark_failed", { kind, key, error: why }).catch(() => {});
+    if (!(e instanceof TooBigForImages)) await alertOwner(env, kind, why);
     return false;
   }
+}
+
+/**
+ * The owner hears about a mark that failed for a reason other than a picture's size (Images' monthly limit, error
+ * 9422; a Container that does not answer): free files are going out clean. One e-mail every 6 hours at most, claimed
+ * in studio_meta first, so two requests never both send it.
+ */
+const ALERT_EVERY_MS = 6 * 3_600_000;
+async function alertOwner(env: StudioEnv, kind: string, why: string, nowMs = Date.now()): Promise<void> {
+  try {
+    const claim = await env.DB.prepare(`INSERT INTO studio_meta (key, value) VALUES ('mark_alerted_at', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE CAST(studio_meta.value AS INTEGER) < ?`).bind(String(nowMs), nowMs - ALERT_EVERY_MS).run();
+    if (claim.meta?.changes !== 1) return;
+    await mailOwner(env, "Kleo: free creations are going out without the Kleo mark", [
+      `A ${kind === "video" ? "clip" : "picture"} of an account that never paid could not be marked, so it is served without "Made with Kleo".`,
+      "",
+      `Error: ${why}`,
+      "",
+      "If it says 9422, the Cloudflare Images Free plan has used its 5,000 transformations this month: buy Images Paid in the Cloudflare dashboard (Images, Plans). Pictures get their mark the next time they are viewed once marking works again.",
+      "If it names kleo-watermark, the clip Container did not answer: open the kleo-watermark Worker in the Cloudflare dashboard.",
+      "",
+      "Every miss is in the audit as studio.mark_failed. This e-mail goes out at most once every 6 hours.",
+    ].join("\n"), nowMs);
+  } catch { /* an alert never breaks a save or a view */ }
 }
 
 /**
@@ -187,7 +222,9 @@ async function healPicture(env: StudioEnv, ownerId: string, key: string): Promis
     await audit(env as unknown as Env, ownerId, null, "studio.marked", { kind: "image", key, late: true }).catch(() => {});
     return true;
   } catch (e) {
-    await audit(env as unknown as Env, ownerId, null, "studio.mark_failed", { kind: "image", key, late: true, error: String(e instanceof Error ? e.message : e).slice(0, 300) }).catch(() => {});
+    const why = String(e instanceof Error ? e.message : e).slice(0, 300);
+    await audit(env as unknown as Env, ownerId, null, "studio.mark_failed", { kind: "image", key, late: true, error: why }).catch(() => {});
+    if (!(e instanceof TooBigForImages)) await alertOwner(env, "image", why);
     return miss();
   }
 }

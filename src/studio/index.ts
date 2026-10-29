@@ -206,7 +206,8 @@ async function handleMedia(env: StudioEnv, request: Request, url: URL): Promise<
   if (clip) {
     const g = await getGeneration(env, clip[1]);
     if (!g || g.status !== "done" || !g.file_key || (!signed && g.user_id !== viewer)) return new Response("Not found", { status: 404 });
-    const file = await servedKey(env, g.user_id, g.file_key, (id) => showsMark(env, id), "video");
+    // A film or an animatic carries its mark from the box (src/mark.ts): served as it is, with no account reads.
+    const file = g.kind === "film" ? { key: g.file_key, marked: false } : await servedKey(env, g.user_id, g.file_key, (id) => showsMark(env, id), "video");
     return serveFile(env, request, file.key, `kleo-${g.id}.mp4`, url.searchParams.get("dl") === "1", file.marked ? "private, max-age=600" : undefined);
   }
   return new Response("Not found", { status: 404 });

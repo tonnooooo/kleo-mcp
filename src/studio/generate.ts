@@ -41,6 +41,7 @@ import { anyRouteReady, noteNoMoney, pausedText, spent, type Provider, type Rout
 import { describeWithoutNames, namedCharacters, toEnglish } from "./translate.ts";
 import { compPlanActive } from "./creators-schema.ts";
 import { markedKey, saveMarkedCopy } from "./watermark.ts";
+import { marksAccount } from "../mark.ts";
 
 /** A refusal the page shows as it is (no provider names in it). */
 export class StudioError extends Error {
@@ -253,18 +254,14 @@ export const adminIds = (env: StudioEnv): string[] => (env.STUDIO_ADMINS ?? "").
 export const isAdmin = (env: StudioEnv, userId: string): boolean => adminIds(env).includes(userId);
 
 /**
- * THE KLEO MARK (28 October 2026, src/studio/watermark.ts): what an account that never paid makes carries "Made with
- * Kleo", so every free creation shared online advertises Kleo. Any payment (a pack or a plan), an admin and a Pro
- * partner of Kleo Creators (a plan from the program, with no Stripe payment) see no mark. STUDIO_WATERMARK = "off"
- * turns it off. Asked when a creation is saved (whether a marked copy is made) and each time a file is served (which
- * copy is sent), so the first purchase takes the mark off everything the account made before.
+ * THE KLEO MARK (28 October 2026, src/studio/watermark.ts; the rule itself is src/mark.ts, shared with kleo-mcp):
+ * what an account that never paid makes carries "Made with Kleo", so every free creation shared online advertises
+ * Kleo. Any payment (a pack or a plan), an admin and a Pro partner of Kleo Creators (a plan from the program, with no
+ * Stripe payment) see no mark. STUDIO_WATERMARK = "off" turns it off. Asked when a creation is saved (whether a marked
+ * copy is made) and each time a file is served (which copy is sent), so the first purchase takes the mark off every
+ * picture and clip the account made before. Animatics and films are marked on the GPU box for good (params.mark).
  */
-export async function showsMark(env: StudioEnv, userId: string): Promise<boolean> {
-  if ((env.STUDIO_WATERMARK ?? "").trim() === "off" || isAdmin(env, userId)) return false;
-  // Both reads at once: every /media request of such an account asks this, Range requests of a clip included.
-  const [paid, comp] = await Promise.all([hasPaid(asEnv(env), userId), compPlanActive(env, userId)]);
-  return !paid && !comp;
-}
+export const showsMark = (env: StudioEnv, userId: string): Promise<boolean> => marksAccount(env, userId);
 
 /**
  * The checks every order passes, in order, before any money moves (and before any paid work, such as speech).

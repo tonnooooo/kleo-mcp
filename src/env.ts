@@ -207,6 +207,12 @@ export interface Env {
 
   RESEND_API_KEY?: string;
   NOTIFY_FROM?: string;
+
+  // THE KLEO MARK on the videos of accounts that never paid (src/mark.ts): "off" stops it on the renders this Worker
+  // orders (kleo-studio has its own STUDIO_WATERMARK for its pictures and clips); STUDIO_ADMINS (comma separated user
+  // ids) are never marked. Both unset by default: the owner's account is let through by its tester payment.
+  STUDIO_WATERMARK?: string;
+  STUDIO_ADMINS?: string;
 }
 
 /** What the OAuth provider stores in the token and hands back as ctx.props on /mcp. */

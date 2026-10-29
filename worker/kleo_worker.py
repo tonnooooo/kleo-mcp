@@ -1931,6 +1931,18 @@ def upload_log(out_dir):
         log("log upload failed:", e)
 
 
+def mark_free_render(job, files, out_dir):
+    """THE KLEO MARK (29 October 2026): a job the server marked (params.mark, an account that had never paid) gets
+    "Made with Kleo" burned into video.mp4 before anything is uploaded, and its thumbnail cut again (kleo_mark.py).
+    Fails open: an image without kleo_mark, or a pass that fails, ships the video clean and says so in log.txt."""
+    try:
+        import kleo_mark
+    except Exception as e:
+        log("mark: kleo_mark could not be imported:", e)
+        return files
+    return kleo_mark.mark_files(job, files, out_dir, log=log, progress=progress, thumbnail=thumbnail_from)
+
+
 def main():
     if not (API and JOB and SECRET):
         log("missing KLEO_API / KLEO_JOB_ID / KLEO_SECRET"); sys.exit(2)
@@ -1968,6 +1980,7 @@ def main():
             files = film_finish(pdir, out_dir, lay_track=True)
         else:
             files = render(job, out_dir)
+        files = mark_free_render(job, files, out_dir)
         report = self_report(files, job, out_dir)
         for name, path in files.items():
             progress("finishing", 97, message=f"uploading {name}")

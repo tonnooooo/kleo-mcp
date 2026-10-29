@@ -199,6 +199,9 @@ RUN curl -fsSL --retry 3 --max-time 180 "https://raw.githubusercontent.com/googl
 #     comes before /usr/bin in every default PATH — execs the venv python by its real path, so venv detection
 #     still works (a symlink would not: python looks for pyvenv.cfg beside the name it was invoked as). ---
 COPY worker/kleo_pictures.py /opt/kleo/kleo_pictures.py
+# The Kleo mark on the videos of accounts that never paid (29 October 2026): the same two files as Dockerfile.keou.
+COPY worker/kleo_mark.py /opt/kleo/kleo_mark.py
+COPY worker/made-with-kleo.png /opt/kleo/made-with-kleo.png
 COPY worker/kleo_worker.py /opt/kleo/kleo_worker.py
 RUN printf '#!/bin/sh\nexec /opt/venv/bin/python3 "$@"\n' > /usr/local/bin/python3 \
     && chmod +x /usr/local/bin/python3 && ln -sf python3 /usr/local/bin/python \

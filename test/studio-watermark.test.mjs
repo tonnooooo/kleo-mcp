@@ -4,8 +4,9 @@
  * a fake Cloudflare Images binding and a fake kleo-watermark service. Covers who shows the mark (never paid: yes;
  * a payment, an admin, a Kleo Creators Pro partner, STUDIO_WATERMARK=off: no), where it sits (and that the
  * Container's server.py agrees), the picture and the clip saved clean with a marked copy beside them, which copy the
- * owner, a share link and a provider get, the first purchase taking the mark off, a free animatic, a failed or
- * missing marker leaving the creation clean and done, and deleting a creation deleting both files.
+ * owner, a share link and a provider get, the first purchase taking the mark off, a free animatic copied as the GPU
+ * box marked it, a failed or missing marker leaving the creation clean and done, a missing picture copy drawn when it is
+ * next served, the 2K cap of a free rewrite, and deleting a creation deleting both files.
  * Run: node --test test/studio-watermark.test.mjs
  */
 import { register } from "node:module";
@@ -365,7 +366,7 @@ test("a clip the marker fails on, or with no marker bound, is done and served cl
   } finally { p.restore(); }
 });
 
-test("an animatic bought with gifted credits gets the mark too", async () => {
+test("an animatic comes marked from the GPU box: Studio copies and serves it as it is, never through kleo-watermark", async () => {
   const marker = fakeMarker();
   const env = newEnv({ WATERMARK: marker });
   const ana = await account(env, "ana@example.com");
@@ -376,8 +377,9 @@ test("an animatic bought with gifted credits gets the mark too", async () => {
     VALUES ('g_anim1', ?, 'kleo-animatic', '{"product":"animatic","duration":20,"format":"9:16","style":"animation"}', 'a fox', 0, 'running', 'j_anim1', 'film')`).run(ana.id);
   const done = await call(env, "/api/generations/g_anim1", { cookie: ana.cookie });
   assert.equal(done.json.generation.status, "done", done.text);
-  assert.equal(marker.got.length, 1);
-  assert.ok(startsMarked((await call(env, done.json.generation.video, { cookie: ana.cookie })).bytes));
+  assert.equal(marker.got.length, 0, "the mark is burned in on the box (params.mark, worker/kleo_mark.py), never twice");
+  assert.ok(![...env.RENDERS.m.keys()].some((k) => k.includes(".mark.")));
+  assert.deepEqual((await call(env, done.json.generation.video, { cookie: ana.cookie })).bytes, CLIP, "served as the box made it");
 });
 
 test("a free account's rewrite on FLUX 3 runs at 2K, under the Images 20 MB input; a paying account keeps its 4K", async () => {
@@ -445,6 +447,9 @@ test("a free picture with no marked copy gets one when it is next served: made b
     assert.ok(startsMarked((await call(env, h.outputs[0].url, { cookie: bo.cookie })).bytes));
 
     // A mark Images refuses (its monthly limit, say) is tried again an hour later, not on every view; clean meanwhile.
+    // The owner gets one e-mail about it, not one per picture.
+    env.mails = [];
+    env.OWNER_MAIL = { send: async (msg) => { env.mails.push(msg); } };
     const cy = await account(env, "cy@example.com");
     images.fail = "ERROR 9422: transformation limit reached";
     const k = await picture(env, cy.cookie);
@@ -453,11 +458,15 @@ test("a free picture with no marked copy gets one when it is next served: made b
     assert.deepEqual((await call(env, k.outputs[0].url, { cookie: cy.cookie })).bytes, PNG);
     assert.equal(images.tries, tries + 1, "one late try, then the miss is remembered");
     assert.ok(events(env, "studio.mark_failed").some((e) => e.late === true && /9422/.test(e.error)));
+    assert.equal(env.mails.length, 1, "one alert for the save and the view that both failed");
+    assert.match(env.mails[0].raw, /without the Kleo mark/);
+    assert.match(env.mails[0].raw, /9422/);
   } finally { p.restore(); }
 });
 
 test("a picture over the Images binding's 20 MB input stays clean, says why in the audit, and is never sent to Images", async () => {
-  const env = newEnv();
+  const env = newEnv({ mails: [] });
+  env.OWNER_MAIL = { send: async (msg) => { env.mails.push(msg); } };
   const big = new Uint8Array(mod.IMAGES_MAX_INPUT + 1024).fill(5);
   big.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const p = studio(undefined, big);
@@ -469,5 +478,6 @@ test("a picture over the Images binding's 20 MB input stays clean, says why in t
     const seen = await call(env, g.outputs[0].url, { cookie: ana.cookie });
     assert.equal(seen.bytes.length, big.length, "served clean");
     assert.equal(env.IMAGES.tries, 0);
+    assert.equal(env.mails.length, 0, "an expected miss is no alert");
   } finally { p.restore(); }
 });
