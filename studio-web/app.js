@@ -3,7 +3,7 @@
 //
 // Pages: Create (chat with Kleo) · Video · Image · Audio · Apps · Library. Desktop: a top bar; phones: a tab bar.
 
-import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=100";
+import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=101";
 
 const DEMO = new URLSearchParams(location.search).has("demo");
 const DEMO_FREE = new URLSearchParams(location.search).get("demo") === "free"; // ?demo=free: an account that never paid
@@ -414,6 +414,7 @@ async function route() {
 let lastSection = null;
 function show(key, render) {
   S.view = key;
+  syncCreatorsBar();
   // The phone's tab bar has no Motion Control tab: Video stays lit there.
   for (const b of document.querySelectorAll("[data-page]")) b.classList.toggle("on", b.dataset.page === key || (key === "motion" && b.dataset.page === "video" && !!b.closest(".tabbar"))
     || (b.dataset.page === "more" && MORE_PAGES.some(([k]) => k === key)));
@@ -648,7 +649,33 @@ function renderShell() {
   const tabs = h("nav", { class: "tabbar", "aria-label": "Main" },
     TAB_PAGES.map((k) => PAGES.find((p) => p.key === k)).map((p) => h("button", { "data-page": p.key, onclick: () => go(p.path) }, icon(p.ic, 22), h("span", { class: "tl" }, p.label))),
     h("button", { "data-page": "more", "aria-haspopup": "dialog", onclick: openMore }, icon("more", 22), h("span", { class: "tl" }, "More")));
-  fill($("#app"), h("div", { class: "frame" }, nav, h("div", { class: "views" }, h("section", { class: "view", id: "view" })), tabs));
+  fill($("#app"), h("div", { class: "frame" }, nav, creatorsBar(), h("div", { class: "views" }, h("section", { class: "view", id: "view" })), tabs));
+  syncCreatorsBar();
+}
+// KLEO CREATORS, THE NOTICE (29 October 2026, the owner: "vorrei che si vedesse in quasi tutte le schermate come un
+// avviso … per eliminarlo c'è a disposizione una x"). One line under the top bar on every page of the app, until the
+// person closes it (kept in this browser), joins the program, or is on the Creators page itself. Never on the console.
+const CREATORS_BAR_KEY = "creatorsBarClosed";
+function creatorsBar() {
+  const close = h("button", { class: "crb-x", type: "button", "aria-label": "Close", title: "Close", onclick: (e) => {
+    e.stopPropagation();
+    store.set(CREATORS_BAR_KEY, true);
+    syncCreatorsBar();
+  } }, icon("x", 18, 2.2));
+  return h("div", { class: "cr-bar", role: "region", "aria-label": "Kleo Creators", hidden: "" },
+    h("button", { class: "crb-go", type: "button", onclick: () => go("/creators") },
+      h("span", { class: "crb-ic" }, icon("star", 15, 2.4)),
+      h("span", { class: "crb-tx" }, h("b", {}, "New: Kleo Creators"), h("span", { class: "crb-long" }, " · Get paid to create with Kleo")),
+      h("span", { class: "crb-cta" }, "Apply", icon("right", 15, 2.4))),
+    close);
+}
+/** Shown or hidden for this page and this person (called by the shell and by every route). */
+function syncCreatorsBar() {
+  const bar = document.querySelector(".cr-bar");
+  if (!bar) return;
+  const off = store.get(CREATORS_BAR_KEY, false) || adminSite() || !!S.me?.creator
+    || location.pathname === "/creators" || location.pathname.startsWith("/admin");
+  bar.hidden = !!off;
 }
 const TAB_PAGES = ["chat", "templates", "video", "image"];
 const MORE_PAGES = [["library", "Your videos, pictures and sounds"], ["explore", "Videos made by the Kleo team"], ["audio", "Voices, music and sounds"], ["apps", "Swaps, talking photos and more"], ["creators", "Get rewarded for posting your Kleo videos"]];
@@ -807,24 +834,11 @@ function homeView() {
   // A soft glow of the team's films behind the page (a blurred still: no video decoding for a background).
   return h("div", { class: "home" },
     h("div", { class: "home-glow", "aria-hidden": "true" }, h("i", { style: { backgroundImage: `url(${GALLERY}/koi-supra-night.jpg)` } }), h("i", { style: { backgroundImage: `url(${GALLERY}/tether-film.jpg)` } })),
-    creatorsStrip(),
     h("div", { class: "home-banners" }, HOME_BANNERS.map(banner)),
     h("div", { class: "home-row" + (promo ? "" : " solo") }, promo, h("div", { class: "home-tiles" }, HOME_TILES.map(tile))),
     h("div", { class: "home-ideas" }, h("h2", {}, "What do you want to create?"),
       h("div", { class: "idea-grid" }, IDEAS.video.map(ideaCard))),
     showcaseStrip("Made by the Kleo team"));
-}
-// Kleo Creators at the top of the home (28 October 2026, the owner: "si è online ma non si vede dall'app"): one line
-// above the banners, seen without scrolling on a computer and a phone. The top bar has no room for a tab.
-function creatorsStrip() {
-  const c = S.me?.creator;
-  const mine = c && ["active", "paused"].includes(c.status);
-  const waiting = c && c.status === "applied";
-  return h("button", { class: "home-news", onclick: () => go("/creators") },
-    h("span", { class: "hn-ic" }, icon("star", 18, 2.2)),
-    h("span", { class: "hn-tx" }, h("b", {}, mine ? "Your Kleo Creators page" : waiting ? "Kleo Creators" : "New: Kleo Creators"),
-      h("span", {}, mine ? "Send your posts, see your views and your commission" : waiting ? "We have your application. We'll let you know." : "Get paid to create with Kleo")),
-    h("span", { class: "hn-go" }, mine ? "Open" : waiting ? "See it" : "Apply", icon("right", 16, 2.2)));
 }
 // Kleo Creators on the account page (28 October 2026): what it is in one line and the way in; a creator already in the
 // program goes to their own page.
@@ -2603,7 +2617,7 @@ let creatorsModule = null;
 async function creatorsView() {
   if (!creatorsModule) {
     setView("cr-view", h("div", { class: "connect-view" }, spinner(24)));
-    try { creatorsModule = await import("/creators.js?v=100"); }
+    try { creatorsModule = await import("/creators.js?v=101"); }
     catch {
       setView("connect-view", connectCard("This page didn't load", "Check the connection and try again.", h("button", { class: "btn btn-primary", onclick: () => location.reload() }, "Try again")));
       return;
