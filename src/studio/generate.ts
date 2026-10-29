@@ -523,8 +523,9 @@ export async function retryDescribed(env: StudioEnv, userId: string, g: Generati
   }
   const clip = asked as unknown as ClipSettings;
   const usd = wanCostUsd(clip);
-  // A refused clip proves the account could order it: the free pools and the daily budget still apply in the gate.
-  const id = await charge(env, userId, { freeOk: true, credits: g.credits, usd, noun: "video", lockedMessage: "" });
+  // A refused clip proves the account could order it: the free pools and the daily budget still apply in the gate, and
+  // WaveSpeed must be able to pay for it (providers.ts), so an empty account refuses before the charge and the offer stays.
+  const id = await charge(env, userId, { freeOk: true, credits: g.credits, usd, noun: "video", lockedMessage: "", routes: [[{ provider: "wavespeed", usd }]], pausedName: WAN_NAME });
   if (!(await claim(id))) {
     await refundCredits(asEnv(env), userId, g.credits, id, "studio.rewrite_twice");
     throw new StudioError("This one is already being made again.", 409, "busy");
@@ -847,7 +848,7 @@ export async function createGeneration(env: StudioEnv, userId: string, req: Crea
   if (videoSeconds > (model.maxRefVideoSeconds ?? 0) + 0.5) throw new StudioError(`Video clips can add up to ${model.maxRefVideoSeconds} seconds with ${model.name}. Yours are ${Math.round(videoSeconds)} s.`);
   if (sounds.some((a) => !a.duration || a.duration < 2 || a.duration > 15.5)) throw new StudioError("Each sound clip must be 2–15 seconds long (MP3 or WAV).");
   for (const p of pictures) {
-    const problem = pictureProblem(model.name, model.family, p.width, p.height);
+    const problem = pictureProblem(model.name, model.family, p.width, p.height, p.size);
     if (problem) throw new StudioError(problem, 400, "picture_size");
   }
 

@@ -351,4 +351,8 @@ test("Wan 3.0's picture sizes: 240-8000 px a side, sides within 8:1", () => {
   assert.match(pictureProblem("Wan 3.0", "wan", 8001, 4000), /too big for Wan 3\.0/);
   assert.match(pictureProblem("Wan 3.0", "wan", 240, 1921), /too tall or too wide for Wan 3\.0 .*at most 8 times/);
   assert.equal(pictureProblem("Wan 3.0", "wan", null, 500), null);
+  assert.equal(pictureProblem("Wan 3.0", "wan", null, null, 25_000_000), "A picture is too big for Wan 3.0 (25.0 MB): it takes pictures up to 20 MB. Make the picture at 2K, or pick another model — nothing was charged.", "a picture Kleo made is not measured: its bytes are checked");
+  assert.match(pictureProblem("Wan 3.0", "wan", 4096, 4096, 20_000_001), /\(20\.1 MB\)/, "rounded up, never shown as the limit itself");
+  assert.equal(pictureProblem("Wan 3.0", "wan", 4096, 4096, 20_000_000), null, "20 MB exactly passes");
+  assert.equal(pictureProblem("Seedance 2.5", "seedance", null, null, 25_000_000), null, "Seedance takes up to 30 MB");
 });

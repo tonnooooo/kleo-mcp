@@ -1643,6 +1643,26 @@ test("a picture Seedance cannot take is refused before any charge; a provider's 
   } finally { p.restore(); }
 });
 
+test("a picture over 20 MB is refused for Wan 3.0 before any charge, even one Kleo made and never measured", async () => {
+  const env = newEnv();
+  const { cookie, id } = await paidAccount(env);
+  const pic = (await call(env, "/api/uploads", { method: "POST", cookie, raw: jpegBytes(), headers: { "content-type": "image/jpeg", "x-width": "1024", "x-height": "1024" } })).json;
+  // As a 4K FLUX 3 PNG Kleo saved: 25 MB, its sides never measured.
+  env.DB.db.exec(`UPDATE studio_uploads SET size = 25000000, width = NULL, height = NULL WHERE id = '${pic.id}'`);
+  const p = fakeProvider((u) => (u.endsWith("/v1/task/submit") ? ok({ id: "task_big" }) : new Response("?", { status: 404 })));
+  try {
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { noChat: true, prompt: "she turns", imageIds: [pic.id], settings: { model: "wan-3.0", resolution: "720p", duration: 5 } } });
+    assert.equal(r.status, 400, r.text);
+    assert.equal(r.json.code, "picture_size");
+    assert.match(r.json.error, /^A picture is too big for Wan 3\.0 \(25\.0 MB\): it takes pictures up to 20 MB\./);
+    assert.equal(credits(env, id), 100, "nothing was charged");
+    assert.ok(!p.sent.some((s) => s.url.endsWith("/v1/task/submit")), "nothing was ordered");
+    // Seedance takes up to 30 MB: the same picture goes to it.
+    const sd = await call(env, "/api/generate", { method: "POST", cookie, body: { noChat: true, prompt: "she turns", imageIds: [pic.id], settings: { model: "seedance-2.5", resolution: "480p", duration: 5 } } });
+    assert.equal(sd.status, 200, sd.text);
+  } finally { p.restore(); }
+});
+
 // ── Fewer copyright dead ends (21 October 2026) ─────────────────────────────────────────────────────────────────────
 const chatReply = (text) => ok({ choices: [{ message: { content: text } }] });
 const DESCRIBED = "Three young women in glittering stage outfits, one with a long purple braid, one with wild red hair, one with a short black bob, sing on a neon stage";
@@ -1823,6 +1843,16 @@ test("a Wan 3.0 clip refused for copyright is never switched to Wan again; it is
     assert.deepEqual(g.rewrite, { name: "Wan 3.0", credits: g.credits });
     assert.equal(g.error, "Wan 3.0 won't make this one: it recognised characters, people or music protected by copyright. Your credits are back.", "refused once: no \"either\"");
     assert.ok(!p.sent.some((s) => s.url.includes("wavespeed")), "the automatic switch leaves a Wan clip alone");
+
+    // WaveSpeed's account is empty: the rewrite is refused before any charge, and the offer stays on the card.
+    env.DB.db.exec(`INSERT OR REPLACE INTO provider_status (provider, balance_usd, balance_at, source) VALUES ('wavespeed', 0, '${new Date().toISOString()}', 'api')`);
+    const paused = await call(env, `/api/generations/${g.id}/describe`, { method: "POST", cookie, body: {} });
+    assert.equal(paused.status, 503, paused.text);
+    assert.equal(paused.json.code, "paused");
+    assert.equal(credits(env, id), 100, "nothing was charged");
+    assert.deepEqual((await call(env, `/api/generations/${g.id}`, { cookie })).json.generation.rewrite, { name: "Wan 3.0", credits: g.credits }, "the offer stays");
+    assert.ok(!p.sent.some((s) => s.url.includes("wavespeed")), "nothing went to WaveSpeed");
+    env.DB.db.exec("DELETE FROM provider_status WHERE provider = 'wavespeed'");
 
     const w = await call(env, `/api/generations/${g.id}/describe`, { method: "POST", cookie, body: {} });
     assert.equal(w.status, 200, w.text);

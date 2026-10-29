@@ -365,15 +365,19 @@ export function taskInput(s: ClipSettings, prompt: string, images: string[], saf
  * "aspect ratio 0.4-2.5, 300-6000px per side", read 20 October 2026). It said so only after the order went out, as
  * "资源同步失败 … InvalidParameter.HeightTooSmall": a customer's five clips from 387x297 pictures all failed that way.
  * Pictures uploaded since are enlarged by the page (app.js fitPicture); this check stops an older one before any charge.
- * Wan 3.0 states looser limits of its own (29 October 2026: 240-8000 px per side, sides within 8:1). The other models
- * state no such limit, so their pictures pass.
+ * Wan 3.0 states looser limits of its own (29 October 2026: 240-8000 px per side, sides within 8:1) and at most 20 MB a
+ * picture (Seedance's schema says 30 MB): a 4K FLUX 3 PNG Kleo made can be bigger, and Kleo does not measure the pictures
+ * it makes, so the bytes are checked even when the sides are unknown. The other models state no such limit, so their
+ * pictures pass.
  */
-export const SEEDANCE_PICTURE = { minSide: 300, maxSide: 6000, maxRatio: 2.5 };
-export const WAN_PICTURE = { minSide: 240, maxSide: 8000, maxRatio: 8 };
-const PICTURE_LIMITS: Partial<Record<StudioModel["family"], typeof SEEDANCE_PICTURE>> = { seedance: SEEDANCE_PICTURE, wan: WAN_PICTURE };
-/** Why `model` cannot take a picture of w×h pixels, as the sentence the person reads; null when it can (or the size is unknown). */
-export function pictureProblem(modelName: string, family: StudioModel["family"], w: number | null | undefined, h: number | null | undefined): string | null {
+type PictureLimits = { minSide: number; maxSide: number; maxRatio: number; maxBytes?: number };
+export const SEEDANCE_PICTURE: PictureLimits = { minSide: 300, maxSide: 6000, maxRatio: 2.5 };
+export const WAN_PICTURE: PictureLimits = { minSide: 240, maxSide: 8000, maxRatio: 8, maxBytes: 20_000_000 };
+const PICTURE_LIMITS: Partial<Record<StudioModel["family"], PictureLimits>> = { seedance: SEEDANCE_PICTURE, wan: WAN_PICTURE };
+/** Why `model` cannot take a picture of w×h pixels and `bytes` bytes, as the sentence the person reads; null when it can (or the size is unknown). */
+export function pictureProblem(modelName: string, family: StudioModel["family"], w: number | null | undefined, h: number | null | undefined, bytes?: number | null): string | null {
   const limits = PICTURE_LIMITS[family];
+  if (limits?.maxBytes && bytes && bytes > limits.maxBytes) return `A picture is too big for ${modelName} (${(Math.ceil(bytes / 1e5) / 10).toFixed(1)} MB): it takes pictures up to ${limits.maxBytes / 1e6} MB. Make the picture at 2K, or pick another model — nothing was charged.`;
   if (!limits || !w || !h || w <= 0 || h <= 0) return null;
   const { minSide, maxSide, maxRatio } = limits;
   // The shape first: a long, thin picture cannot be fixed by enlarging it.

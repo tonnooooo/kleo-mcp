@@ -3,7 +3,7 @@
 //
 // Pages: Create (chat with Kleo) · Video · Image · Audio · Apps · Library. Desktop: a top bar; phones: a tab bar.
 
-import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=103";
+import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=104";
 
 const DEMO = new URLSearchParams(location.search).has("demo");
 const DEMO_FREE = new URLSearchParams(location.search).get("demo") === "free"; // ?demo=free: an account that never paid
@@ -1207,7 +1207,12 @@ function remix(g) {
   page.prompt = g.prompt.replace(/\nCamera: .*$|\nEffect: .*$|\nStyle: .*$/s, "");
   page.refs = [];
   if (kind === "image") { S.imageSettings = ifix({ ...S.imageSettings, ...g.settings }); store.set("imageSettings", S.imageSettings); }
-  else { S.settings = fix({ ...S.settings, ...g.settings }); store.set("settings", S.settings); page.preset = g.settings?.preset || null; }
+  else {
+    // A clip Kleo remade on WaveSpeed's Wan 3.0 with its names in (it carries `from`) goes back to Seedance, so the name
+    // check and WaveSpeed's road apply again; Wan 3.0 from the picker, or a rewritten clip, remixes on Wan 3.0.
+    const back = g.model === "wan-3.0" && g.settings?.from && !g.settings?.rewritten ? { model: model(g.settings.from)?.key } : {};
+    S.settings = fix({ ...S.settings, ...g.settings, ...back }); store.set("settings", S.settings); page.preset = g.settings?.preset || null;
+  }
   go(`/${kind}`);
   toast("Prompt is back in the box — change anything");
 }
