@@ -39,6 +39,7 @@ class FakeR2 {
     if (!e) return null;
     return { size: e.bytes.byteLength, httpEtag: '"x"', httpMetadata: { contentType: e.type }, body: new Response(e.bytes).body, arrayBuffer: async () => e.bytes.buffer };
   }
+  async head(key) { const e = this.m.get(key); return e ? { size: e.bytes.byteLength, httpEtag: '"x"', httpMetadata: { contentType: e.type } } : null; }
   async delete(keys) { for (const k of [].concat(keys)) this.m.delete(k); }
   async list({ prefix = "" } = {}) { return { objects: [...this.m.keys()].filter((k) => k.startsWith(prefix)).map((key) => ({ key })), truncated: false }; }
 }
@@ -396,7 +397,7 @@ test("pictures: a set of four, two fail, the share they stood for comes back; ea
     // A finished picture can start a video at once (it is an upload of this account).
     const anim = await call(env, "/api/generate", { method: "POST", cookie, body: { prompt: "the fox winks", imageIds: [pic.upload], settings: { model: "seedance-2.0-fast" } } });
     assert.equal(anim.status, 200, anim.text);
-    assert.match(p.sent.filter((s) => s.url.endsWith("/v1/task/submit")).at(-1).body.input.first_frame, /\/media\/u\/up_/);
+    assert.match(p.sent.filter((s) => s.url.endsWith("/v1/task/submit")).at(-1).body.input.first_frame, /\/media\/raw\/up_/, "the provider reads the clean file");
     const share = await call(env, `/api/generations/${r.json.generation.id}/share`, { method: "POST", cookie, body: { upload: pic.upload } });
     assert.match(share.json.url, /\/media\/u\/up_.*sig=/);
   } finally { p.restore(); }
@@ -828,7 +829,7 @@ test("apps: face swap (consent, two pictures), talking photo (speech first, exac
     assert.deepEqual({ v: tts.body.voice, f: tts.body.response_format }, { v: "onyx", f: "wav" });
     const avatar = p.sent.filter((s) => s.url.endsWith("/v1/task/submit"))[1];
     assert.equal(avatar.body.model, "kling_avatar_image2video");
-    assert.match(avatar.body.input.sound_file, /^https:\/\/app\.kleo\.test\/media\/u\/up_.*sig=/, "the spoken clip, by signed link");
+    assert.match(avatar.body.input.sound_file, /^https:\/\/app\.kleo\.test\/media\/raw\/up_.*sig=/, "the spoken clip, by signed link");
     old(env);
     const talkDone = await call(env, `/api/generations/${talk.json.generation.id}`, { cookie });
     assert.equal(talkDone.json.generation.outputs[0].type, "video");
