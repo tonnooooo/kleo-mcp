@@ -569,7 +569,7 @@ function failedBusy(g: GenerationRow): boolean {
   const dropped = (why: string): boolean => why === "timeout" || isProviderBusy(why) || (g.kind === "image" && isRequestRefusal(why));
   return slots.length > 0 && !slots.some((x) => x.status === "done") && slots.some((x) => dropped(x.error ?? ""));
 }
-/** A clip's model as the person reads it (Wan 3.0 is not in the picker). */
+/** A clip's model as the person reads it (a WAN_KEY row is Wan 3.0 from the picker or a WaveSpeed second chance). */
 const clipModelName = (key: string): string | null => (key === WAN_KEY ? WAN_NAME : modelByKey(key)?.name ?? null);
 const busyText = (name: string): string => `${name} was busy and couldn't make this one. Your credits are back.`;
 /**
