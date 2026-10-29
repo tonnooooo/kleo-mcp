@@ -33,7 +33,7 @@ import {
   getMessage, setMessageData, agentMessagesToday, addUpload, getUpload, uploadsOf, getGeneration, listGenerations,
   staleGenerations, autoWanOn, setAutoWan, type MessageRow, type GenerationRow,
 } from "./store.ts";
-import { deleteGeneration, StudioError, createGeneration, refreshGeneration, publicGeneration, marginOf, videoFactorOf, hasActivePlan, templateIsHd, runTool, freeTools, isAdmin, retryOnWan, declineWan, retryDescribed, declineRewrite, showsMark } from "./generate.ts";
+import { deleteGeneration, StudioError, createGeneration, refreshGeneration, publicGeneration, marginOf, videoFactorOf, hasActivePlan, templateIsHd, runTool, freeTools, isAdmin, retryOnWan, declineWan, retryDescribed, declineRewrite, retryOnOther, declineOther, showsMark } from "./generate.ts";
 import { servedKey } from "./watermark.ts";
 import { publicPresets } from "./presets.ts";
 import { planTool, publicTools, toolByKey, toolCredits, toolFactor, ToolRefusal, type Media } from "./tools.ts";
@@ -535,16 +535,17 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       { model: url.searchParams.get("model") ?? undefined, kind: url.searchParams.get("kind") ?? undefined });
     return json({ generations: rows.map(publicGeneration) });
   }
-  const genM = path.match(/^\/api\/generations\/(g_[a-z0-9]+)(\/share|\/wan|\/describe)?$/);
+  const genM = path.match(/^\/api\/generations\/(g_[a-z0-9]+)(\/share|\/wan|\/describe|\/switch)?$/);
   if (genM) {
     let g = await getGeneration(env, genM[1]);
     if (!g || g.user_id !== userId) return json({ error: "Not found." }, 404);
-    if ((genM[2] === "/wan" || genM[2] === "/describe") && method === "POST") {
+    if ((genM[2] === "/wan" || genM[2] === "/describe" || genM[2] === "/switch") && method === "POST") {
       // A creation refused for copyright: "/wan" makes the clip again on Wan 3.0, "/describe" makes it again with its
-      // names turned into descriptions; {decline: true} drops the offer.
-      const wan = genM[2] === "/wan";
-      if ((await body<{ decline?: boolean }>(request)).decline === true) return json({ original: publicGeneration(await (wan ? declineWan : declineRewrite)(env, userId, g)) });
-      const made = await (wan ? retryOnWan : retryDescribed)(env, userId, g, origin);
+      // names turned into descriptions; a picture its busy model could not make: "/switch" makes it on a model that is
+      // working. {decline: true} drops the offer.
+      const [take, decline] = genM[2] === "/wan" ? [retryOnWan, declineWan] : genM[2] === "/describe" ? [retryDescribed, declineRewrite] : [retryOnOther, declineOther];
+      if ((await body<{ decline?: boolean }>(request)).decline === true) return json({ original: publicGeneration(await decline(env, userId, g)) });
+      const made = await take(env, userId, g, origin);
       // In a chat the new clip comes as Kleo's next message, under the refused one.
       let message: Record<string, unknown> | null = null;
       if (g.chat_id) {

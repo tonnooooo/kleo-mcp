@@ -183,6 +183,10 @@ export interface Slot {
   startedAt?: string;
   /** Second tries on FLUX 3 when the provider refuses this picture (src/studio/image-models.ts imageAlternatives). */
   alts?: { model: string; input: Record<string, unknown>; when: "refusal" | "protected" }[];
+  /** What the slot's current task was sent, so a picture the provider dropped for its own reasons can be sent again. */
+  input?: Record<string, unknown>;
+  /** The slot was sent again once already after such a drop (generate.ts busyRetry). */
+  retried?: boolean;
 }
 
 export const getLogin = (env: StudioEnv, provider: string, subject: string) =>
@@ -274,11 +278,12 @@ export const insertGeneration = (env: StudioEnv, g: { id: string; userId: string
     .bind(g.id, g.userId, g.chatId, g.messageId, g.model, JSON.stringify(g.settings), g.prompt, JSON.stringify(g.images), g.credits, g.estUsd, g.kind ?? "video").run();
 /**
  * Settles one offer on a refused creation (generate.ts): "wan" = make the clip again on Wan 3.0 (retryOnWan), "rewrite" =
- * make it again with its names turned into descriptions (retryDescribed). `settings.<field>` becomes the new creation's
+ * make it again with its names turned into descriptions (retryDescribed), "busy" = make a picture its busy model failed
+ * on another model (retryOnOther). `settings.<field>` becomes the new creation's
  * id, or "declined". One compare-and-set, so two taps can never start two: false when it was settled already. `null`
  * reopens it (the new creation could not even be written down).
  */
-export async function settleOffer(env: StudioEnv, id: string, userId: string, field: "wan" | "rewrite", value: string | null): Promise<boolean> {
+export async function settleOffer(env: StudioEnv, id: string, userId: string, field: "wan" | "rewrite" | "busy", value: string | null): Promise<boolean> {
   const path = `$.${field}`;
   const r = value === null
     ? await env.DB.prepare(`UPDATE studio_generations SET settings = json_remove(settings, ?), updated_at = ${NOW} WHERE id = ? AND user_id = ?`).bind(path, id, userId).run()
