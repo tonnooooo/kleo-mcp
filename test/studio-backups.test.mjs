@@ -25,6 +25,8 @@ test("only the models whose backup costs the same or less move; the dearer ones 
   for (const r of ["480p", "720p", "1080p"]) {
     assert.equal(moves("seedance-2.5", settings("seedance-2.5", r, 5)), false, `2.5 ${r}`);
     assert.equal(moves("seedance-2.0", settings("seedance-2.0", r, 5)), false, `2.0 ${r}`);
+    // WaveSpeed's Wan 3.0 is about 38% dearer than ePhone's (29 October 2026).
+    assert.equal(moves("wan-3.0", settings("wan-3.0", r, 10)), false, `Wan 3.0 ${r}`);
   }
   assert.equal(moves("veo-3.1", settings("veo-3.1", "720p", 8)), false);
   assert.equal(moves("veo-3.1-fast", settings("veo-3.1-fast", "1080p", 8)), false, "APIMart's 1080p Veo Fast is 21% dearer");

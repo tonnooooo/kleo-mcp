@@ -209,6 +209,8 @@ export function publicGeneration(g: GenerationRow): Record<string, unknown> {
   const madeBy = kind === "image" ? imageModelOfProvider(slots.find((x) => x.status === "done" && x.model)?.model ?? "") : null;
   const offer = kind === "video" ? wanOfferOf(g, settings as Partial<ClipSettings>) : null;
   const rewrite = offer ? null : rewriteOfferOf(g, kind, settings as Record<string, unknown>);
+  // A clip picked on Wan 3.0 itself (no `from`: not a second chance) was refused once, not "either".
+  const either = kind === "image" || !!(settings as { from?: unknown }).from ? " either" : "";
   const busy = offer || rewrite ? null : busyOfferOf(g, settings as Record<string, unknown>);
   const wasBusy = !offer && !rewrite && failedBusy(g);
   return {
@@ -219,7 +221,7 @@ export function publicGeneration(g: GenerationRow): Record<string, unknown> {
     // A clip with an offer says which model refused it; the page puts the offer right under it.
     error: offer ? `${offer.from} won't make this one: it recognised characters, people or music protected by copyright. Your credits are back.`
       : remadeOnWan(g, settings) ? `${modelByKey(g.model)?.name ?? "The video model"} won't make this one: it recognised characters, people or music protected by copyright. Your credits are back, and you sent it to ${WAN_NAME}.`
-      : rewrite ? `${kind === "image" ? "The image model" : WAN_NAME} won't make this one either: it recognised characters, people or music protected by copyright. Your credits are back.`
+      : rewrite ? `${kind === "image" ? "The image model" : WAN_NAME} won't make this one${either}: it recognised characters, people or music protected by copyright. Your credits are back.`
       // A picture or clip its model dropped for the provider's own reasons reads as that, not as the provider's words.
       : wasBusy ? busyText(kind === "image" ? imageModelByKey(g.model)?.name ?? "The image model" : clipModelName(g.model) ?? "The video model") : g.error,
     offer, rewrite, busy: busy ? { model: busy.model, name: busy.name, from: busy.from, credits: busy.credits } : null,
@@ -419,7 +421,8 @@ export function wanOfferOf(g: GenerationRow, settings: Partial<ClipSettings> & {
 
 /**
  * The last offer on a creation refused for copyright once the second model refused too (21 October 2026): a clip
- * Wan 3.0 refused, or a picture FLUX 3 refused, may be made once more with its names turned into descriptions
+ * Wan 3.0 refused (since 29 October 2026 also one picked on Wan 3.0 in the first place, which goes back to the WaveSpeed
+ * road here), or a picture FLUX 3 refused, may be made once more with its names turned into descriptions
  * (translate.ts describeWithoutNames), for the credits it cost. Never on a creation that already was rewritten.
  */
 export function rewriteOfferOf(g: GenerationRow, kind: string, settings: Record<string, unknown>): { name: string; credits: number } | null {
@@ -520,8 +523,9 @@ export async function retryDescribed(env: StudioEnv, userId: string, g: Generati
   }
   const clip = asked as unknown as ClipSettings;
   const usd = wanCostUsd(clip);
-  // A refused clip proves the account could order it: the free pools and the daily budget still apply in the gate.
-  const id = await charge(env, userId, { freeOk: true, credits: g.credits, usd, noun: "video", lockedMessage: "" });
+  // A refused clip proves the account could order it: the free pools and the daily budget still apply in the gate, and
+  // WaveSpeed must be able to pay for it (providers.ts), so an empty account refuses before the charge and the offer stays.
+  const id = await charge(env, userId, { freeOk: true, credits: g.credits, usd, noun: "video", lockedMessage: "", routes: [[{ provider: "wavespeed", usd }]], pausedName: WAN_NAME });
   if (!(await claim(id))) {
     await refundCredits(asEnv(env), userId, g.credits, id, "studio.rewrite_twice");
     throw new StudioError("This one is already being made again.", 409, "busy");
@@ -566,7 +570,7 @@ function failedBusy(g: GenerationRow): boolean {
   const dropped = (why: string): boolean => why === "timeout" || isProviderBusy(why) || (g.kind === "image" && isRequestRefusal(why));
   return slots.length > 0 && !slots.some((x) => x.status === "done") && slots.some((x) => dropped(x.error ?? ""));
 }
-/** A clip's model as the person reads it (Wan 3.0 is not in the picker). */
+/** A clip's model as the person reads it (a WAN_KEY row is Wan 3.0 from the picker or a WaveSpeed second chance). */
 const clipModelName = (key: string): string | null => (key === WAN_KEY ? WAN_NAME : modelByKey(key)?.name ?? null);
 const busyText = (name: string): string => `${name} was busy and couldn't make this one. Your credits are back.`;
 /**
@@ -844,7 +848,7 @@ export async function createGeneration(env: StudioEnv, userId: string, req: Crea
   if (videoSeconds > (model.maxRefVideoSeconds ?? 0) + 0.5) throw new StudioError(`Video clips can add up to ${model.maxRefVideoSeconds} seconds with ${model.name}. Yours are ${Math.round(videoSeconds)} s.`);
   if (sounds.some((a) => !a.duration || a.duration < 2 || a.duration > 15.5)) throw new StudioError("Each sound clip must be 2–15 seconds long (MP3 or WAV).");
   for (const p of pictures) {
-    const problem = pictureProblem(model.name, model.family, p.width, p.height);
+    const problem = pictureProblem(model.name, model.family, p.width, p.height, p.size);
     if (problem) throw new StudioError(problem, 400, "picture_size");
   }
 

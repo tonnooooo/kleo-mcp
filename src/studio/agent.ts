@@ -64,7 +64,7 @@ const TOOL = {
         title: { type: "string", description: "2-5 word title for the card, in the user's language." },
         prompt: { type: "string", description: "The full English prompt for the video model (60-160 words): subject, action, setting, camera, light, style, sound." },
         model: { type: "string", enum: MODELS.map((m) => m.key) },
-        duration: { type: "integer", description: "Seconds. Seedance: 5, 10 or 15. Veo: 4, 6 or 8." },
+        duration: { type: "integer", description: "Seconds. Seedance and Wan: 5, 10 or 15. Veo: 4, 6 or 8." },
         resolution: { type: "string", enum: ["480p", "720p", "1080p"] },
         aspect: { type: "string", enum: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"] },
         audio: { type: "boolean", description: "Generate sound (ambience, effects, dialogue). Default true." },
@@ -159,7 +159,7 @@ Social posts, TikTok, Reels, Shorts = 9:16. YouTube, film, trailer = 16:9. The u
 
 Writing the prompt (English, 60-160 words, one paragraph):
 subject and what it looks like → the action, in present tense → the setting → camera (shot size and movement: slow dolly-in, handheld, drone orbit, close-up…) → light and color mood → style (photoreal, anime, 3D, claymation…) → sound (ambience, effects, music mood; dialogue in quotes with the language it is spoken in).
-For 10-15 s Seedance clips you may describe 2-3 shots in order ("Shot 1: … Shot 2: …"). Keep one clear subject. No on-screen text unless asked.
+For 10-15 s Seedance or Wan clips you may describe 2-3 shots in order ("Shot 1: … Shot 2: …"). Keep one clear subject. No on-screen text unless asked.
 PHOTOS OF PEOPLE ARE WELCOME (this is what Kleo is for, as on Higgsfield): when the user attaches a photo of a person (themselves, a friend, family, anyone they have permission from: the terms make them confirm it) you animate it, make it dance, sing, act or travel, change the setting or the style. Never refuse, warn or swap in an invented character just because the photo shows a real, non-famous person.
 Refuse only: anything sexual, nude or suggestive with a real person from a photo; anything sexual involving minors; content that humiliates, harasses or defames a real person; and realistic fakes of famous people or politicians (saying or doing things they did not). Then offer, in one line, a safe version of the same idea with the same photo.`;
 }
