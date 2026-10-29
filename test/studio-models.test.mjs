@@ -5,7 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MODELS, normalizeSettings, clipCredits, clipCostUsd, taskInput, freeModels, publicCatalog, modelByKey, pictureProblem, wanCostUsd, wanOffered, wanOrder } from "../src/studio/models.ts";
+import { MODELS, normalizeSettings, clipCredits, clipCostUsd, taskInput, freeModels, publicCatalog, modelByKey, pictureProblem, wanCostUsd, wanOffered, wanOrder, WAN_KEY, WAN_NAME } from "../src/studio/models.ts";
 import { makeSession, readSession, hashPassword, checkPassword, passwordProblem, signPath, checkSignedPath, readCookie } from "../src/studio/session.ts";
 import { proposalFrom, fallbackProposal, systemPrompt, chatTitle, runAgent } from "../src/studio/agent.ts";
 
@@ -279,4 +279,73 @@ test("Seedance's picture sizes: 300-6000 px a side, sides at most 2.5 times each
   assert.equal(pictureProblem("Veo 3.1", "veo", 100, 100), null);
   assert.equal(pictureProblem("Seedance 2.5", "seedance", null, null), null);
   assert.equal(pictureProblem("Seedance 2.5", "seedance", 0, 297), null);
+});
+
+test("Wan 3.0 in the picker (29 October 2026): ePhone's wan3.0-video, its price table, its order", () => {
+  const m = modelByKey("wan-3.0");
+  assert.deepEqual({ key: m.key, name: m.name, family: m.family, ephone: m.ephoneModel, motionOnly: !!m.motionOnly, refs: m.maxReferences, durations: m.durations, resolutions: m.resolutions },
+    { key: WAN_KEY, name: WAN_NAME, family: "wan", ephone: "wan3.0-video", motionOnly: false, refs: 10, durations: [5, 10, 15], resolutions: ["480p", "720p", "1080p"] });
+  assert.deepEqual(m.aspects, ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]);
+  // ePhone's list price, ¥0.3 / 0.6 / 1.2 a second, × the Alibaba group's 0.8, at ¥7 to the dollar.
+  assert.deepEqual(m.usdPerSecond, { "480p": 0.0343, "720p": 0.0686, "1080p": 0.1371 });
+  assert.deepEqual([5, 10, 15].map((d) => clipCostUsd(normalizeSettings({ model: "wan-3.0", resolution: "720p", duration: d }, 0))), [0.343, 0.686, 1.029]);
+
+  // What the page shows, with the live factor (5/3): 10 s is 4 / 5 / 9, against Seedance 2.5's 7 / 14 / 30.
+  const cat = publicCatalog(1.6, [], 5 / 3);
+  const wan = cat.find((x) => x.key === "wan-3.0");
+  assert.equal(wan.motionOnly, false, "offered in the picker");
+  assert.deepEqual(wan.prices, { "480p": { 5: 2, 10: 4, 15: 4 }, "720p": { 5: 4, 10: 5, 15: 7 }, "1080p": { 5: 5, 10: 9, 15: 14 } });
+  assert.deepEqual(["480p", "720p", "1080p"].map((r) => cat.find((x) => x.key === "seedance-2.5").prices[r][10]), [7, 14, 30]);
+  assert.deepEqual(publicCatalog(1.6, []).find((x) => x.key === "wan-3.0").prices["720p"], { 5: 2, 10: 3, 15: 4 }, "before the factor");
+  assert.ok(!JSON.stringify(cat).includes("wan3.0-video"), "no provider names reach the page");
+  // The "Cheapest" badge moved with the price: Wan's cheapest clip costs less than any other model's in the picker.
+  const from = (x) => Math.min(...x.resolutions.map((r) => x.prices[r][x.durations[0]]));
+  assert.equal(wan.badge, "Cheapest");
+  for (const x of cat.filter((y) => !y.motionOnly && y.key !== "wan-3.0")) {
+    assert.ok(from(wan) < from(x), `${x.key}: ${from(x)}`);
+    assert.notEqual(x.badge, "Cheapest", x.key);
+  }
+
+  // Settings: Seedance's lengths, every shape; one picture is the first frame, more are references; video or sound
+  // clips are a Seedance feature, so such an order goes to Seedance 2.5 as a Veo one does.
+  assert.deepEqual(normalizeSettings({ model: "wan-3.0", duration: 30, resolution: "1080p", aspect: "21:9" }, 0),
+    { model: "wan-3.0", duration: 15, resolution: "1080p", aspect: "21:9", audio: true, imageRole: "none", videoRole: "none" });
+  assert.equal(normalizeSettings({ model: "wan-3.0" }, 1).imageRole, "first_frame");
+  assert.equal(normalizeSettings({ model: "wan-3.0" }, 3).imageRole, "reference");
+  assert.equal(normalizeSettings({ model: "wan-3.0" }, 0, { images: 0, videos: 1, audios: 0, videoSeconds: 5 }).model, "seedance-2.5");
+  assert.equal(normalizeSettings({ model: "wan-3.0" }, 1, { images: 1, videos: 0, audios: 1, videoSeconds: 0 }).model, "seedance-2.5");
+
+  // The order, as ePhone's task_input_schema has it: resolution in capitals (its price rules match '480P' and '720P'),
+  // "ratio", "audio"; a first frame keeps its own shape; at most 10 references; the two modes never mix.
+  const t2v = taskInput(normalizeSettings({ model: "wan-3.0", resolution: "720p", duration: 10, aspect: "21:9" }, 0), " a castle at dawn ", [], "safety");
+  assert.deepEqual(t2v, { prompt: "a castle at dawn", resolution: "720P", ratio: "21:9", duration: 10, audio: true, watermark: false });
+  const i2v = taskInput(normalizeSettings({ model: "wan-3.0", resolution: "480p", aspect: "9:16", audio: false }, 1), "she smiles", ["https://x/1.jpg"], "safety");
+  assert.deepEqual(i2v, { prompt: "she smiles", resolution: "480P", ratio: "adaptive", duration: 5, audio: false, watermark: false, first_frame: "https://x/1.jpg" });
+  const pics = Array.from({ length: 12 }, (_, i) => `https://x/${i}.jpg`);
+  const r2v = taskInput(normalizeSettings({ model: "wan-3.0", resolution: "1080p", duration: 15, aspect: "1:1" }, 12), "they meet", pics);
+  assert.deepEqual(r2v, { prompt: "they meet", resolution: "1080P", ratio: "1:1", duration: 15, audio: true, watermark: false, reference_images: pics.slice(0, 10) });
+  const schema = new Set(["prompt", "first_frame", "reference_images", "resolution", "ratio", "duration", "audio", "watermark"]);
+  for (const input of [t2v, i2v, r2v]) for (const k of Object.keys(input)) assert.ok(schema.has(k), `${k} is not in the schema`);
+
+  // The copyright second chance is for Seedance clips and keeps WaveSpeed's own price; a Wan clip never gets it.
+  const wan10 = normalizeSettings({ model: "wan-3.0", resolution: "720p", duration: 10 }, 0);
+  assert.equal(wanOffered(wan10), false);
+  assert.deepEqual([clipCostUsd(wan10), wanCostUsd(wan10)], [0.686, 0.95]);
+  assert.equal(wanOffered(normalizeSettings({ model: "seedance-2.5", resolution: "720p", duration: 10 }, 0)), true, "a Seedance clip still does");
+
+  // The chat agent knows it and prices it like the page.
+  const allowed = [...ctx().allowed, "wan-3.0"];
+  assert.ok(systemPrompt(ctx({ allowed })).includes("- wan-3.0 (Wan 3.0): Lifelike motion with sound, for less. Durations 5/10/15 s, 480p/720p/1080p"));
+  const card = proposalFrom({ title: "Castle", prompt: "A castle at dawn", model: "wan-3.0", duration: 10, resolution: "720p" }, ctx({ allowed, videoFactor: 5 / 3 }));
+  assert.deepEqual({ m: card.settings.model, c: card.credits }, { m: "wan-3.0", c: 5 });
+  assert.equal(proposalFrom({ title: "Castle", prompt: "A castle", model: "wan-3.0" }, ctx()).settings.model, "seedance-2.5", "locked for an account that may not use it");
+});
+
+test("Wan 3.0's picture sizes: 240-8000 px a side, sides within 8:1", () => {
+  assert.equal(pictureProblem("Wan 3.0", "wan", 240, 1920), null, "8:1 exactly passes");
+  assert.equal(pictureProblem("Wan 3.0", "wan", 387, 297), null, "a picture too small for Seedance is fine for Wan");
+  assert.match(pictureProblem("Wan 3.0", "wan", 239, 400), /too small for Wan 3\.0 \(239×400 px\): it needs at least 240 px/);
+  assert.match(pictureProblem("Wan 3.0", "wan", 8001, 4000), /too big for Wan 3\.0/);
+  assert.match(pictureProblem("Wan 3.0", "wan", 240, 1921), /too tall or too wide for Wan 3\.0 .*at most 8 times/);
+  assert.equal(pictureProblem("Wan 3.0", "wan", null, 500), null);
 });

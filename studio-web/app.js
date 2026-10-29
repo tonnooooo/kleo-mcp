@@ -1518,7 +1518,7 @@ function generatorView(kind) {
       h("div", { class: "prompt-box" }, ta, h("div", { class: "pb-tools" }, enhance, h("button", { class: "mini", onclick: () => { page.prompt = ""; ta.value = ""; refreshCta(); ta.focus(); } }, icon("x", 13), "Clear")))),
     presetBox, settingsBox, ctaBox);
   setView("", h("div", { class: "page wide" },
-    h("div", { class: "page-h" }, h("div", {}, h("h1", {}, isVid ? "Create video" : "Create image"), h("p", {}, isVid ? "Seedance 2.5, Seedance 2.0 and Google Veo 3.1, with references and camera presets." : "Nano Banana Pro, Nano Banana 2.1, Nano Banana 2, Seedream 5.0 and FLUX.2 Pro."))),
+    h("div", { class: "page-h" }, h("div", {}, h("h1", {}, isVid ? "Create video" : "Create image"), h("p", {}, isVid ? "Seedance 2.5, Seedance 2.0, Wan 3.0 and Google Veo 3.1, with references and camera presets." : "Nano Banana Pro, Nano Banana 2.1, Nano Banana 2, Seedream 5.0 and FLUX.2 Pro."))),
     h("div", { class: "gen-layout" }, panel, feed)));
   draw(); drawFeed();
   loadFeed(kind).then(drawFeed);
@@ -2115,7 +2115,7 @@ function compareTable(list, per) {
       row("Price per credit", list.map((p) => `€${(p.tiers[0][per].perMonth / p.tiers[0].credits / 100).toFixed(2)}`)),
       row("Extra credits on top-ups", list.map((p) => (p.topupBonus ? `+${Math.round(p.topupBonus * 100)}%` : "—"))),
       h("tr", { class: "ct-group" }, h("th", { colspan: String(list.length + 1) }, h("span", { class: "ct-g" }, "Create"))),
-      row("Video: Seedance 2.5, Veo 3.1, Kling 3.0", list.map(() => true)),
+      row("Video: Seedance 2.5, Wan 3.0, Veo 3.1, Kling 3.0", list.map(() => true)),
       row("Image: Nano Banana Pro, Seedream, FLUX.2", list.map(() => true)),
       row("Apps: swaps, motion control, talking photos", list.map(() => true)),
       row("Kleo films, up to 5 minutes", list.map(() => true)),
@@ -2745,15 +2745,16 @@ const demoCatalog = () => {
   const cfg = [
     ["seedance-2.5", "Seedance 2.5", "Best all-round motion, with sound", "Best", "seedance", [5, 10, 15], ["480p", "720p", "1080p"], 0.0861],
     ["seedance-2.0", "Seedance 2.0", "Great quality for less", null, "seedance", [5, 10, 15], ["480p", "720p", "1080p"], 0.0591],
-    ["seedance-2.0-fast", "Seedance 2.0 Fast", "Cheapest and quick, great for drafts", "Cheapest", "seedance", [5, 10, 15], ["480p", "720p"], 0.0476],
+    ["seedance-2.0-fast", "Seedance 2.0 Fast", "Quick and light, great for drafts", null, "seedance", [5, 10, 15], ["480p", "720p"], 0.0476],
+    ["wan-3.0", "Wan 3.0", "Lifelike motion with sound, for less", "Cheapest", "wan", [5, 10, 15], ["480p", "720p", "1080p"], 0.0343],
     ["veo-3.1", "Google Veo 3.1", "Maximum quality, cinematic, native audio", "Max quality", "veo", [4, 6, 8], ["720p", "1080p"], 0.212],
     ["veo-3.1-fast", "Veo 3.1 Fast", "The Veo look, faster and cheaper", null, "veo", [4, 6, 8], ["720p", "1080p"], 0.0795],
   ];
-  const mult = { "480p": 1, "720p": 2.25, "1080p": 5.6 };
+  const mult = { seedance: { "480p": 1, "720p": 2.25, "1080p": 5.6 }, wan: { "480p": 1, "720p": 2, "1080p": 4 }, veo: { "720p": 1, "1080p": 1 } };
   return cfg.map(([key, name, blurb, badge, family, durations, resolutions, base]) => ({
     key, name, blurb, badge, family, durations, defaultDuration: durations[0] === 4 ? 8 : 5, resolutions, defaultResolution: family === "veo" ? "1080p" : "720p",
-    aspects: family === "veo" ? ["16:9", "9:16"] : ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"], maxReferences: family === "veo" ? 3 : 9, free: key === "seedance-2.0-fast",
-    prices: Object.fromEntries(resolutions.map((r) => [r, Object.fromEntries(durations.map((d) => [d, Math.max(1, Math.ceil(base * (family === "veo" ? 1 : mult[r]) * d * 1.6 / 0.44))]))])),
+    aspects: family === "veo" ? ["16:9", "9:16"] : ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"], maxReferences: family === "veo" ? 3 : family === "wan" ? 10 : 9, free: key === "seedance-2.0-fast",
+    prices: Object.fromEntries(resolutions.map((r) => [r, Object.fromEntries(durations.map((d) => [d, Math.max(1, Math.ceil(base * mult[family][r] * d * 1.6 / 0.44))]))])),
   }));
 };
 const demoImageCatalog = () => [

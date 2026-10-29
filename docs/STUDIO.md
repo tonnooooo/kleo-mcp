@@ -32,12 +32,17 @@ All models are bought through ePhone AI's unified task API (`POST /v1/task/submi
 | `seedance-2.5` | Seedance 2.5 | `doubao-seedance-2-5-260628` | 5/10/15 s | 480p, 720p, 1080p | 4 (5 s 720p) |
 | `seedance-2.0` | Seedance 2.0 | `doubao-seedance-2-0-260128` | 5/10/15 s | 480p, 720p, 1080p | 3 (5 s 720p) |
 | `seedance-2.0-fast` | Seedance 2.0 Fast | `doubao-seedance-2-0-fast-260128` | 5/10/15 s | 480p, 720p | 2 (5 s 720p), 1 at 480p |
+| `wan-3.0` | Wan 3.0 | `wan3.0-video` | 5/10/15 s | 480p, 720p, 1080p | 2 (5 s 720p) |
 | `veo-3.1` | Google Veo 3.1 | `veo-3.1-generate-preview` | 4/6/8 s | 720p, 1080p | 7 (8 s) |
 | `veo-3.1-fast` | Veo 3.1 Fast | `veo-3.1-fast-generate-preview` | 4/6/8 s | 720p, 1080p | 3 (8 s) |
 
 Credits = `ceil(provider dollars × STUDIO_MARGIN / 0.44)`, at least 1. The provider dollars come from ePhone's public price
 list read on 13 October 2026 (`src/studio/models.ts` has the per-second figures and the channel ratios). Veo is routed to
 the `official_cheap` channel only; a Veo order that finds no such channel fails and is refunded.
+
+Since 25 October 2026 every clip costs the credits above × `STUDIO_VIDEO_FACTOR` (5/3), rounded up. Wan 3.0 was added
+on 29 October 2026 (ePhone's Alibaba group, ×0.8): 10 s cost 4 / 5 / 9 credits at 480p / 720p / 1080p with the factor,
+against 7 / 14 / 30 for Seedance 2.5. A Seedance clip refused for copyright is still offered once on WaveSpeed's Wan 3.0.
 
 **Free accounts** (no Stripe payment on record) can use only `STUDIO_FREE_MODELS` (default: Seedance 2.0 Fast). This is
 the owner's rule of 15 September 2026: gifted credits must not buy the expensive models. The first pack unlocks all.

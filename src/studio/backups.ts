@@ -5,7 +5,8 @@
  * refuses an order for money (402) or is down (429, 5xx, unreachable), the order goes to the cheapest other provider
  * that sells the SAME model — but only where that provider costs the same as ePhone or less. Where the other providers
  * are dearer (Seedance 2.5 and 2.0, Veo 3.1, FLUX 3, Kling Avatar and lip sync, speech, the chat models…) nothing moves:
- * the owner decides those himself (kleo\PROVIDER_COSTS.md, section 6).
+ * the owner decides those himself (kleo\PROVIDER_COSTS.md, section 6). Wan 3.0 (29 October 2026) is one of them:
+ * WaveSpeed asks $0.0475/$0.095/$0.19 a second at 480p/720p/1080p against ePhone's $0.0343/$0.0686/$0.1371.
  *
  * Every price below was read on 20 October 2026 from APIMart's playground estimate and price API (Gold level, what our
  * account pays) and from WaveSpeed's price API with our account's discount. ePhone's figures are the ones in

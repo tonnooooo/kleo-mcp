@@ -288,7 +288,7 @@ test("paid account: every model; not enough credits is refused; the daily budget
   const cookie = await signUp(env);
   const me = (await call(env, "/api/me", { cookie })).json;
   env.DB.db.exec(`INSERT INTO payments (session_id, user_id, credits, amount_cent, currency, status, raw_ref) VALUES ('manual_t', '${me.id}', 0, 0, 'eur', 'paid', 'tester')`);
-  assert.equal((await call(env, "/api/me", { cookie })).json.allowed.length, 6, "Seedance x3, Veo x2 and Kling 3.0 (copy motion)");
+  assert.equal((await call(env, "/api/me", { cookie })).json.allowed.length, 7, "Seedance x3, Wan 3.0, Veo x2 and Kling 3.0 (copy motion)");
   const poor = await call(env, "/api/generate", { method: "POST", cookie, body: { prompt: "x", settings: { model: "veo-3.1", duration: 8 } } });
   assert.equal(poor.status, 402);
   assert.equal(poor.json.code, "credits");
@@ -1764,6 +1764,71 @@ test("when Wan 3.0 refuses too, the clip can be made once more with its names tu
     const no = await call(env, `/api/generations/${r2.json.generation.id}/describe`, { method: "POST", cookie, body: { decline: true } });
     assert.equal(no.json.original.rewrite, null);
     assert.equal((await call(env, `/api/generations/${r2.json.generation.id}/describe`, { method: "POST", cookie, body: {} })).status, 409);
+  } finally { p.restore(); }
+});
+
+// ── Wan 3.0 in the model picker (29 October 2026) ──────────────────────────────────────────────────────────────────
+test("Wan 3.0 from the picker: listed with its prices, ordered on ePhone's wan3.0-video for what the page showed, saved like any clip", async () => {
+  const env = newEnv({ STUDIO_VIDEO_FACTOR: "5/3", WAVESPEED_API_KEY: "wk" });
+  const { cookie, id } = await paidAccount(env, "wan@example.com");
+  const listed = (await call(env, "/api/config")).json.models.find((m) => m.key === "wan-3.0");
+  assert.deepEqual({ n: listed.name, motion: listed.motionOnly, ten: ["480p", "720p", "1080p"].map((r) => listed.prices[r]["10"]) }, { n: "Wan 3.0", motion: false, ten: [4, 5, 9] });
+  assert.ok((await call(env, "/api/me", { cookie })).json.allowed.includes("wan-3.0"));
+  const p = fakeProvider((u, init) => {
+    const c = chatScript([], u, init); if (c) return c;
+    if (u.endsWith("/v1/task/submit")) return ok({ id: "task_wan", status: "queued" });
+    if (u.endsWith("/v1/task/task_wan")) return ok({ id: "task_wan", status: "completed", outputs: ["https://cdn.example/wan.mp4"], usage: { type: "duration", seconds: 10 } });
+    if (u === "https://cdn.example/wan.mp4") return new Response(new Uint8Array(4000).fill(3), { status: 200, headers: { "content-type": "video/mp4" } });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const prompt = "A lighthouse in a storm, waves crashing on the rocks";
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { noChat: true, prompt, settings: { model: "wan-3.0", resolution: "720p", duration: 10, aspect: "21:9" } } });
+    assert.equal(r.status, 200, r.text);
+    assert.deepEqual({ m: r.json.generation.model, n: r.json.generation.modelName, s: r.json.generation.status }, { m: "wan-3.0", n: "Wan 3.0", s: "running" });
+    assert.equal(credits(env, id), 95, "10 s at 720p: 5 credits, the price the page showed");
+    const submit = p.sent.find((s) => s.url.endsWith("/v1/task/submit"));
+    assert.equal(submit.url, "https://api.ephone.ai/v1/task/submit");
+    assert.equal(submit.body.model, "wan3.0-video");
+    assert.deepEqual(submit.body.input, { prompt, resolution: "720P", ratio: "21:9", duration: 10, audio: true, watermark: false });
+    assert.equal(submit.headers["X-Provider-Order"], "official");
+    assert.ok(!p.sent.some((s) => s.url.includes("wavespeed")), "ePhone only: no name check and no WaveSpeed for a Wan clip");
+    assert.deepEqual({ ...env.DB.db.prepare("SELECT task_id, est_usd FROM studio_generations WHERE id = ?").get(r.json.generation.id) }, { task_id: "task_wan", est_usd: 0.686 });
+    old(env);
+    const done = await call(env, `/api/generations/${r.json.generation.id}`, { cookie });
+    assert.equal(done.json.generation.status, "done", done.text);
+    assert.equal((await call(env, `/media/${r.json.generation.id}.mp4`, { cookie })).text.length, 4000);
+    assert.equal(credits(env, id), 95);
+  } finally { p.restore(); }
+});
+
+test("a Wan 3.0 clip refused for copyright is never switched to Wan again; it is refunded and offered the rewrite, which still goes to WaveSpeed", async () => {
+  const env = newEnv({ WAVESPEED_API_KEY: "wk" });
+  const { cookie, id } = await paidAccount(env, "wanfan@example.com");
+  assert.equal((await call(env, "/api/me/auto-wan", { method: "POST", cookie, body: { on: true } })).json.autoWan, true);
+  const p = fakeProvider((u, init) => {
+    const c = chatScript([], u, init); if (c) return c;
+    if (u.endsWith("/v1/task/submit")) return ok({ id: "task_wcr" });
+    if (u.endsWith("/v1/task/task_wcr")) return ok({ id: "task_wcr", status: "failed", error: "IPInfringementSuspect: the input may infringe intellectual property" });
+    if (u === "https://api.wavespeed.ai/api/v3/alibaba/wan-3.0/text-to-video") return ok({ code: 200, data: { id: "ws_wr" } });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { noChat: true, prompt: "A caped hero flies over the city", settings: { model: "wan-3.0", resolution: "480p", duration: 5 } } });
+    assert.equal(r.status, 200, r.text);
+    old(env);
+    const g = (await call(env, `/api/generations/${r.json.generation.id}`, { cookie })).json.generation;
+    assert.deepEqual({ s: g.status, m: g.model, offer: g.offer, switched: g.switchedFrom }, { s: "failed", m: "wan-3.0", offer: null, switched: null });
+    assert.equal(credits(env, id), 100, "refunded");
+    assert.deepEqual(g.rewrite, { name: "Wan 3.0", credits: g.credits });
+    assert.equal(g.error, "Wan 3.0 won't make this one: it recognised characters, people or music protected by copyright. Your credits are back.", "refused once: no \"either\"");
+    assert.ok(!p.sent.some((s) => s.url.includes("wavespeed")), "the automatic switch leaves a Wan clip alone");
+
+    const w = await call(env, `/api/generations/${g.id}/describe`, { method: "POST", cookie, body: {} });
+    assert.equal(w.status, 200, w.text);
+    assert.deepEqual({ n: w.json.generation.modelName, s: w.json.generation.status, prompt: w.json.generation.prompt }, { n: "Wan 3.0", s: "running", prompt: DESCRIBED });
+    assert.equal(p.sent.find((s) => s.url.endsWith("/wan-3.0/text-to-video")).body.prompt, DESCRIBED);
+    assert.equal(credits(env, id), 100 - g.credits, "the credits it cost");
   } finally { p.restore(); }
 });
 

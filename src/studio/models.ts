@@ -15,6 +15,8 @@
  *   Veo 3.1 Fast        720p/1080p $0.15/s                           group gemini-official-cheap ×0.53
  *   Kling 3.0 Omni      720p ¥0.9/s · 1080p ¥1.2/s (with a reference video, no sound)   group kling ×0.8
  *                       (19 October 2026: only for "copy this video's motion" — see videoRole "motion")
+ *   Wan 3.0             480P ¥0.3/s · 720P ¥0.6/s · 1080P ¥1.2/s, with or without sound   group alibaba ×0.8
+ *                       (29 October 2026, wan3.0-video, read from GET https://api.ephone.ai/api/pricing)
  * CNY is converted at 7 per dollar, a little under the market rate, so every figure here is an upper side.
  * Veo is routed to the official_cheap channel ONLY (see `routing`): the price below assumes it, and a Veo order that
  * found no such channel fails and is refunded instead of silently costing twice as much.
@@ -27,7 +29,7 @@
  * Pure module (no Env, no fetch), so the tests import it directly under Node's type stripping.
  */
 
-export type ModelKey = "seedance-2.5" | "seedance-2.0" | "seedance-2.0-fast" | "veo-3.1" | "veo-3.1-fast" | "kling-3-omni";
+export type ModelKey = "seedance-2.5" | "seedance-2.0" | "seedance-2.0-fast" | "wan-3.0" | "veo-3.1" | "veo-3.1-fast" | "kling-3-omni";
 export type Resolution = "480p" | "720p" | "1080p";
 export type ImageRole = "first_frame" | "reference" | "none";
 /**
@@ -47,7 +49,7 @@ export interface StudioModel {
   blurb: string;
   /** Badge in the picker ("Best", "Cheapest", "Max quality"). */
   badge?: string;
-  family: "seedance" | "veo" | "kling";
+  family: "seedance" | "veo" | "kling" | "wan";
   /** ePhone model id. */
   ephoneModel: string;
   /** Dollars per output second, per resolution (already times the channel ratio). */
@@ -77,6 +79,7 @@ const CNY = 1 / 7;
 const BYTEDANCE = 0.9;
 const GEMINI_CHEAP = 0.53;
 const KLING = 0.8;
+const ALIBABA = 0.8;
 const r4 = (n: number): number => Math.round(n * 10_000) / 10_000;
 
 export const MODELS: StudioModel[] = [
@@ -99,7 +102,8 @@ export const MODELS: StudioModel[] = [
     aspects: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"], maxReferences: 9,
   },
   {
-    key: "seedance-2.0-fast", name: "Seedance 2.0 Fast", blurb: "Cheapest and quick, great for drafts", badge: "Cheapest",
+    // 29 October 2026: no longer the cheapest (Wan 3.0 costs less at every resolution), so its badge went to Wan 3.0.
+    key: "seedance-2.0-fast", name: "Seedance 2.0 Fast", blurb: "Quick and light, great for drafts",
     family: "seedance", ephoneModel: "doubao-seedance-2-0-fast-260128",
     usdPerSecond: { "480p": r4(0.37 * BYTEDANCE * CNY), "720p": r4(0.80 * BYTEDANCE * CNY) },
     usdPerSecondRef: { "480p": r4(0.22 * BYTEDANCE * CNY), "720p": r4(0.48 * BYTEDANCE * CNY) },
@@ -109,6 +113,17 @@ export const MODELS: StudioModel[] = [
     // 15 October 2026, the owner: "Seedance 2.0 Fast mettimi 2 crediti invece di uno su 480p". 480p doubles (5 s = 2,
     // 10 s = 4, 15 s = 6) and 720p goes up by half (3, 6, 9), so 720p still costs more than 480p.
     creditFactor: { "480p": 2, "720p": 1.5 },
+  },
+  {
+    // 29 October 2026, the owner: "Aggiungi Wan a Kleo". Alibaba's Wan 3.0 on ePhone, in the picker like the others:
+    // text, a first frame or up to 10 reference pictures, with sound. ePhone takes 2-30 s; the picker offers Seedance's
+    // lengths. WaveSpeed sells the same model about 38% dearer, so it is no backup (backups.ts): it stays the road of
+    // the copyright second chance below, which a Wan clip never gets.
+    key: "wan-3.0", name: "Wan 3.0", blurb: "Lifelike motion with sound, for less", badge: "Cheapest",
+    family: "wan", ephoneModel: "wan3.0-video",
+    usdPerSecond: { "480p": r4(0.3 * ALIBABA * CNY), "720p": r4(0.6 * ALIBABA * CNY), "1080p": r4(1.2 * ALIBABA * CNY) },
+    durations: [5, 10, 15], defaultDuration: 5, resolutions: ["480p", "720p", "1080p"], defaultResolution: "720p",
+    aspects: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"], maxReferences: 10,
   },
   {
     key: "veo-3.1", name: "Google Veo 3.1", blurb: "Maximum quality, cinematic, native audio", badge: "Max quality",
@@ -279,6 +294,9 @@ export function freeModels(list: string | undefined): ModelKey[] {
  *   Seedance: text-to-video {prompt}, image-to-video {first_frame (+ prompt), aspect "adaptive"} or omni reference
  *             {reference_images[]}; duration 4-15 (2.5: 4-30); generate_audio; watermark false.
  *   Veo:      {prompt, images[1] first frame | reference_images[≤3], aspect 16:9|9:16, resolution, duration 4|6|8}.
+ *   Wan 3.0:  (read 29 October 2026) two modes that never mix: {first_frame, prompt, …} or {prompt, reference_images[≤10],
+ *             …}; resolution 480P|720P|1080P in capitals, ratio, duration 2-30, audio, watermark. No other field is
+ *             allowed (additionalProperties false), so no safety identifier.
  * `images` are absolute URLs the provider can fetch (signed links to the person's uploads).
  */
 export function taskInput(s: ClipSettings, prompt: string, images: string[], safetyId?: string, clips: { videos: string[]; audios: string[] } = { videos: [], audios: [] }): Record<string, unknown> {
@@ -303,6 +321,19 @@ export function taskInput(s: ClipSettings, prompt: string, images: string[], saf
     };
     if (images.length && s.imageRole === "first_frame") input.images = [images[0]];
     else if (images.length && s.imageRole === "reference") input.reference_images = images.slice(0, m.maxReferences);
+    return input;
+  }
+  if (m.family === "wan") {
+    // ePhone's price rules match '480P' and '720P' exactly, on the request it builds from this input (as its Seedance
+    // rules read the content[] it builds); any other spelling would be billed at the 1080P rate.
+    const input: Record<string, unknown> = {
+      prompt: text, resolution: s.resolution.toUpperCase(), ratio: s.aspect, duration: s.duration, audio: s.audio, watermark: false,
+    };
+    if (images.length && s.imageRole === "first_frame") {
+      input.first_frame = images[0];
+      // "adaptive" keeps the picture's own shape, as Seedance does with a first frame.
+      input.ratio = "adaptive";
+    } else if (images.length && s.imageRole === "reference") input.reference_images = images.slice(0, m.maxReferences);
     return input;
   }
   const input: Record<string, unknown> = {
@@ -334,13 +365,17 @@ export function taskInput(s: ClipSettings, prompt: string, images: string[], saf
  * "aspect ratio 0.4-2.5, 300-6000px per side", read 20 October 2026). It said so only after the order went out, as
  * "资源同步失败 … InvalidParameter.HeightTooSmall": a customer's five clips from 387x297 pictures all failed that way.
  * Pictures uploaded since are enlarged by the page (app.js fitPicture); this check stops an older one before any charge.
- * The other models state no such limit, so their pictures pass.
+ * Wan 3.0 states looser limits of its own (29 October 2026: 240-8000 px per side, sides within 8:1). The other models
+ * state no such limit, so their pictures pass.
  */
 export const SEEDANCE_PICTURE = { minSide: 300, maxSide: 6000, maxRatio: 2.5 };
+export const WAN_PICTURE = { minSide: 240, maxSide: 8000, maxRatio: 8 };
+const PICTURE_LIMITS: Partial<Record<StudioModel["family"], typeof SEEDANCE_PICTURE>> = { seedance: SEEDANCE_PICTURE, wan: WAN_PICTURE };
 /** Why `model` cannot take a picture of w×h pixels, as the sentence the person reads; null when it can (or the size is unknown). */
 export function pictureProblem(modelName: string, family: StudioModel["family"], w: number | null | undefined, h: number | null | undefined): string | null {
-  if (family !== "seedance" || !w || !h || w <= 0 || h <= 0) return null;
-  const { minSide, maxSide, maxRatio } = SEEDANCE_PICTURE;
+  const limits = PICTURE_LIMITS[family];
+  if (!limits || !w || !h || w <= 0 || h <= 0) return null;
+  const { minSide, maxSide, maxRatio } = limits;
   // The shape first: a long, thin picture cannot be fixed by enlarging it.
   if (Math.max(w, h) / Math.min(w, h) > maxRatio + 1e-9) return `A picture is too tall or too wide for ${modelName} (${w}×${h} px): one side can be at most ${maxRatio} times the other. Crop it and add it again — nothing was charged.`;
   if (Math.min(w, h) < minSide) return `A picture is too small for ${modelName} (${w}×${h} px): it needs at least ${minSide} px on each side. Add it again and Kleo will enlarge it — nothing was charged.`;
@@ -358,8 +393,12 @@ export function pictureProblem(modelName: string, family: StudioModel["family"],
  *
  * So a Seedance clip refused for copyright offers the person one more try on Wan 3.0, with the same prompt, pictures,
  * length, resolution, shape and sound, for the same credits the refused clip cost (they were given back). The person
- * chooses: "Use Wan 3.0" or "No thanks" (the owner, 20 October: "in modo tale da non perdere il cliente"). Wan 3.0 is
- * never in the model picker.
+ * chooses: "Use Wan 3.0" or "No thanks" (the owner, 20 October: "in modo tale da non perdere il cliente").
+ *
+ * Since 29 October 2026 Wan 3.0 is also a model of its own in the picker (MODELS, on ePhone). This second chance stays
+ * on WaveSpeed: ePhone's Wan goes through Alibaba's own content check, which refused a famous face on 21 October
+ * ("Green net check rejected image"), and WaveSpeed's does not. Both kinds of clip are stored under WAN_KEY; a second
+ * chance has `from` in its settings and a "wavespeed:" task id, and is priced with wanCostUsd.
  *
  * Prices from WaveSpeed's price API (POST /api/v3/model/price, our account's 5% discount), 20 October 2026: $0.0475,
  * $0.095 and $0.19 a second at 480p, 720p and 1080p, with or without sound and whatever the input. Seedance on ePhone

@@ -199,6 +199,8 @@ export function publicGeneration(g: GenerationRow): Record<string, unknown> {
   const madeBy = kind === "image" ? imageModelOfProvider(slots.find((x) => x.status === "done" && x.model)?.model ?? "") : null;
   const offer = kind === "video" ? wanOfferOf(g, settings as Partial<ClipSettings>) : null;
   const rewrite = offer ? null : rewriteOfferOf(g, kind, settings as Record<string, unknown>);
+  // A clip picked on Wan 3.0 itself (no `from`: not a second chance) was refused once, not "either".
+  const either = kind === "image" || !!(settings as { from?: unknown }).from ? " either" : "";
   return {
     id: g.id, kind, model: g.model,
     modelName: (kind === "image" ? imageModelByKey(madeBy ?? g.model)?.name : kind === "tool" ? toolByKey(g.model)?.name : kind === "film" ? (g.model === "kleo-animatic" ? "Kleo Animatic" : "Kleo Film") : g.model === WAN_KEY ? WAN_NAME : modelByKey(g.model)?.name) ?? g.model,
@@ -207,7 +209,7 @@ export function publicGeneration(g: GenerationRow): Record<string, unknown> {
     // A clip with an offer says which model refused it; the page puts the offer right under it.
     error: offer ? `${offer.from} won't make this one: it recognised characters, people or music protected by copyright. Your credits are back.`
       : remadeOnWan(g, settings) ? `${modelByKey(g.model)?.name ?? "The video model"} won't make this one: it recognised characters, people or music protected by copyright. Your credits are back, and you sent it to ${WAN_NAME}.`
-      : rewrite ? `${kind === "image" ? "The image model" : WAN_NAME} won't make this one either: it recognised characters, people or music protected by copyright. Your credits are back.` : g.error,
+      : rewrite ? `${kind === "image" ? "The image model" : WAN_NAME} won't make this one${either}: it recognised characters, people or music protected by copyright. Your credits are back.` : g.error,
     offer, rewrite, refunded: !!g.refunded, chatId: g.chat_id, messageId: g.message_id,
     // A clip that went straight to Wan 3.0 because its prompt names well-known characters (the name check).
     preRouted: kind === "video" && g.model === WAN_KEY && !!(settings as { pre?: boolean }).pre,
@@ -407,7 +409,8 @@ export function wanOfferOf(g: GenerationRow, settings: Partial<ClipSettings> & {
 
 /**
  * The last offer on a creation refused for copyright once the second model refused too (21 October 2026): a clip
- * Wan 3.0 refused, or a picture FLUX 3 refused, may be made once more with its names turned into descriptions
+ * Wan 3.0 refused (since 29 October 2026 also one picked on Wan 3.0 in the first place, which goes back to the WaveSpeed
+ * road here), or a picture FLUX 3 refused, may be made once more with its names turned into descriptions
  * (translate.ts describeWithoutNames), for the credits it cost. Never on a creation that already was rewritten.
  */
 export function rewriteOfferOf(g: GenerationRow, kind: string, settings: Record<string, unknown>): { name: string; credits: number } | null {
