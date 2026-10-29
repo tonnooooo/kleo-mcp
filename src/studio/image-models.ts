@@ -228,7 +228,8 @@ export const GEMINI_QUALITY: Record<ImageQuality, string> = { "1K": "medium", "2
 /**
  * The two spellings have each been refused at some point (the schema says 1K/2K/4K, the gateway took only
  * medium/high/max on 15 October). The first try uses the model's `qualityFirst`; a refusal that names the quality field
- * is retried once with the other spelling (src/studio/generate.ts), so a change on ePhone's side costs nobody a picture.
+ * is retried once with the other spelling, whether it comes when the order is placed or after ePhone took it
+ * (repairedInput, src/studio/generate.ts busyRetry), so a change on ePhone's side costs nobody a picture.
  */
 export function geminiQuality(m: ImageModel, q: ImageQuality, other = false): string {
   const tier = (m.qualityFirst === "tier") !== other;
@@ -239,6 +240,30 @@ export const isQualityRefusal = (message: string): boolean => /quality/i.test(me
 export function otherQualitySpelling(q: string): string {
   const pairs: Record<string, string> = { medium: "1K", high: "2K", max: "4K", "1K": "medium", "2K": "high", "4K": "max" };
   return pairs[q] ?? q;
+}
+/**
+ * A request the provider took and then refused as malformed: Kleo's order is at fault, not the picture. On 29 October
+ * 2026 ePhone did both in two or three seconds: `Invalid option: expected one of "auto"|…|"max"` for the quality its
+ * own schema lists, and `Unknown name "mimeType" at 'generation_config.image_config'` for an output_format. Never a
+ * refusal of the picture itself nor an empty balance: those keep their own roads (FLUX 3, the money alarm).
+ */
+export const isRequestRefusal = (message: string): boolean =>
+  !isContentRefusal(message) && !EPHONE_NO_MONEY_RE.test(message) && !/balance|insufficient|余额|额度|欠费/i.test(message) &&
+  /invalid[ _]value|invalid option|invalid json|invalid argument|invalid[ _]request|invalid param|unknown name|unknown field|cannot find field|unrecognized|not supported|unsupported/i.test(message);
+/**
+ * The order of one picture with what a request refusal names changed: the other spelling of a Gemini quality, or no
+ * output_format. Null when the refusal names nothing that can be changed: the same order would be refused again.
+ */
+export function repairedInput(input: Record<string, unknown>, message: string): Record<string, unknown> | null {
+  if (isQualityRefusal(message) && typeof input.quality === "string") {
+    const q = otherQualitySpelling(input.quality);
+    return q === input.quality ? null : { ...input, quality: q };
+  }
+  if (/mime.?type|output_format|image_config/i.test(message) && "output_format" in input) {
+    const { output_format: _dropped, ...rest } = input;
+    return rest;
+  }
+  return null;
 }
 export const IMAGE_COUNTS = [1, 2, 4];
 export const imageModelByKey = (key: string | null | undefined): ImageModel | null => IMAGE_MODELS.find((m) => m.key === key) ?? null;

@@ -424,6 +424,31 @@ export function wanOffered(s: Partial<ClipSettings> & { clips?: number }): boole
 
 /** What WaveSpeed charges for the clip on Wan 3.0. */
 export const wanCostUsd = (s: ClipSettings): number => Math.round((WAN_USD_PER_S[s.resolution] ?? WAN_USD_PER_S["1080p"]) * s.duration * 10_000) / 10_000;
+/** Credits for the clip on Wan 3.0 at WaveSpeed's price, worked out as every clip's are (clipCredits). */
+export const wanCredits = (s: ClipSettings, margin = DEFAULT_MARGIN, video = 1): number =>
+  raiseCredits(Math.max(1, Math.ceil((wanCostUsd(s) * margin) / CREDIT_USD - 1e-9)), video);
+
+/**
+ * WHERE A BUSY CLIP GOES (29 October 2026, the owner: "non deve più accadere, così abbiamo perso un cliente"; see
+ * src/studio/generate.ts busyClipRetry). A clip its provider dropped for its own reasons, even after Kleo's unseen
+ * retry, is offered one tap on a model that is working and never dearer than what the busy clip was priced at
+ * (`budgetUsd`):
+ *   a Seedance clip   Wan 3.0 on WaveSpeed: another provider and another maker, cheaper at every resolution, with the
+ *                     same prompt, pictures, length, resolution, shape and sound (wanOffered, as after a copyright refusal);
+ *   a Veo 3.1 clip    Veo 3.1 Fast, with the same settings.
+ * Null for every other clip: Veo 3.1 Fast and Kling's motion copy have nothing cheaper that makes the same clip, and a
+ * clip already on Wan 3.0 has nowhere else to go. For Wan the settings stay the busy clip's (wanOrder reads them).
+ */
+export function busySwitchClip(s: ClipSettings & { clips?: number }, budgetUsd: number): { model: string; settings: ClipSettings } | null {
+  const m = modelByKey(s.model);
+  const within = (usd: number): boolean => usd <= budgetUsd * 1.01 + 1e-9;
+  if (m?.family === "seedance" && wanOffered(s) && within(wanCostUsd(s))) return { model: WAN_KEY, settings: s };
+  if (m?.key === "veo-3.1") {
+    const fast: ClipSettings = { ...s, model: "veo-3.1-fast" };
+    return within(clipCostUsd(fast)) ? { model: fast.model, settings: fast } : null;
+  }
+  return null;
+}
 
 /** The WaveSpeed order for the clip on Wan 3.0: its model slug and its inputs. `images` are links WaveSpeed can fetch. */
 export function wanOrder(s: ClipSettings, prompt: string, images: string[]): { slug: string; body: Record<string, unknown> } {

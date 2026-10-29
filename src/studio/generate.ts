@@ -23,14 +23,14 @@ import { backupRoutes, withinBudget, type BackupProvider } from "./backups.ts";
 import { KieError } from "../kie.ts";
 import { debitCredits, refundCredits, getUser, hasPaid, audit, countAuditTodayForUser } from "../db.ts";
 import { publicText, rid } from "../util.ts";
-import { clampFreeResolution, clipCostUsd, clipCredits, freeModels, freeResolutions, modelByKey, normalizeSettings, pictureProblem, taskInput, videoFactor, wanCostUsd, wanOffered, wanOrder, DEFAULT_MARGIN, WAN_KEY, WAN_NAME, type ClipSettings } from "./models.ts";
+import { busySwitchClip, clampFreeResolution, clipCostUsd, clipCredits, freeModels, freeResolutions, modelByKey, normalizeSettings, pictureProblem, taskInput, videoFactor, wanCostUsd, wanCredits, wanOffered, wanOrder, DEFAULT_MARGIN, WAN_KEY, WAN_NAME, type ClipSettings } from "./models.ts";
 import { presetByKey, withPreset } from "./presets.ts";
 import { planTool, toolByKey, toolCredits, toolFactor, toneText, ToolRefusal, TOOLS, type Media, type Plan, type ToolKey } from "./tools.ts";
 import { trendByKey, trendCharacterSeats, trendQuality } from "./trends.ts";
 import { characterUnmarkedText, noPersonText, photoFactsInput, photoMissingText, readPhotoFacts, PERSON_CHECK_MAX_BYTES, PERSON_CHECK_MODEL, type PhotoFacts } from "./person-check.ts";
 import { mediaInfo } from "./media.ts";
 import { refreshFilm } from "./films.ts";
-import { alternativeFor, busySwitchFor, FALLBACK_IMAGE_MODEL, freeImageModels, imageAlternatives, imageCostUsd, imageCredits, imageModelByKey, imageModelOfProvider, imageTaskInput, isProviderBusy, isQualityRefusal, normalizeImageSettings, otherQualitySpelling, pausedImageModels, type ImageSettings } from "./image-models.ts";
+import { alternativeFor, busySwitchFor, FALLBACK_IMAGE_MODEL, freeImageModels, imageAlternatives, imageCostUsd, imageCredits, imageModelByKey, imageModelOfProvider, imageTaskInput, isProviderBusy, isQualityRefusal, isRequestRefusal, normalizeImageSettings, otherQualitySpelling, pausedImageModels, repairedInput, type ImageSettings } from "./image-models.ts";
 import {
   addUpload, autoWanOn, getGeneration, insertGeneration, moveGeneration, markChecked, runningCount, settleOffer, studioSpentTodayUsd, uploadsOf,
   type GenerationRow, type GenStatus, type Slot, type UploadRow,
@@ -222,8 +222,8 @@ export function publicGeneration(g: GenerationRow): Record<string, unknown> {
     error: offer ? `${offer.from} won't make this one: it recognised characters, people or music protected by copyright. Your credits are back.`
       : remadeOnWan(g, settings) ? `${modelByKey(g.model)?.name ?? "The video model"} won't make this one: it recognised characters, people or music protected by copyright. Your credits are back, and you sent it to ${WAN_NAME}.`
       : rewrite ? `${kind === "image" ? "The image model" : WAN_NAME} won't make this one${either}: it recognised characters, people or music protected by copyright. Your credits are back.`
-      // A picture its model dropped for the provider's own reasons reads as that, not as the provider's words.
-      : wasBusy ? `${imageModelByKey(g.model)?.name ?? "The image model"} was busy and couldn't make this one. Your credits are back.` : g.error,
+      // A picture or clip its model dropped for the provider's own reasons reads as that, not as the provider's words.
+      : wasBusy ? busyText(kind === "image" ? imageModelByKey(g.model)?.name ?? "The image model" : clipModelName(g.model) ?? "The video model") : g.error,
     offer, rewrite, busy: busy ? { model: busy.model, name: busy.name, from: busy.from, credits: busy.credits } : null,
     refunded: !!g.refunded, chatId: g.chat_id, messageId: g.message_id,
     // A clip that went straight to Wan 3.0 because its prompt names well-known characters (the name check).
@@ -470,7 +470,7 @@ export async function retryOnWan(env: StudioEnv, userId: string, g: GenerationRo
   await audit(asEnv(env), userId, id, "studio.create", { model: WAN_KEY, from: g.id, settings: asked, credits: g.credits, usd });
   try {
     const w = await startWan(env, s, await wanPrompt(env, g.prompt, s.preset), rows, origin);
-    await moveGeneration(env, id, ["submitting"], "running", { task_id: w.taskId });
+    await moveGeneration(env, id, ["submitting"], "running", { task_id: w.taskId, slots: w.slots });
     await audit(asEnv(env), userId, id, "studio.submitted", { task: w.taskId, model: w.slug, provider: "wavespeed" });
     await audit(asEnv(env), userId, g.id, "studio.wan_retry", { to: id, model: w.slug, usd });
   } catch (e) {
@@ -539,7 +539,7 @@ export async function retryDescribed(env: StudioEnv, userId: string, g: Generati
   await audit(asEnv(env), userId, id, "studio.create", { model: WAN_KEY, from: g.id, rewritten: true, credits: g.credits, usd });
   try {
     const w = await startWan(env, clip, described, rows, origin);
-    await moveGeneration(env, id, ["submitting"], "running", { task_id: w.taskId });
+    await moveGeneration(env, id, ["submitting"], "running", { task_id: w.taskId, slots: w.slots });
     await audit(asEnv(env), userId, id, "studio.submitted", { task: w.taskId, model: w.slug, provider: "wavespeed" });
     await audit(asEnv(env), userId, g.id, "studio.rewrite", { to: id, kind, model: w.slug, usd });
   } catch (e) {
@@ -558,20 +558,33 @@ export async function declineRewrite(env: StudioEnv, userId: string, g: Generati
   return (await getGeneration(env, g.id))!;
 }
 
-/** A failed set of pictures none of which was made, dropped by the provider for its own reasons or never answered. */
+/**
+ * A failed set of pictures none of which was made, or a failed clip, dropped by the provider for its own reasons or
+ * never answered. A clip's slot says "busy" or "timeout" (failBusyClip); clips from before 29 October 2026 have none.
+ * A picture whose order the provider refused as malformed (isRequestRefusal) counts too: the person did nothing wrong.
+ */
 function failedBusy(g: GenerationRow): boolean {
-  if (g.kind !== "image" || g.status !== "failed" || !g.refunded) return false;
+  if (g.kind === "tool" || g.kind === "film" || g.status !== "failed" || !g.refunded) return false;
   const slots = parseSlots(g);
-  return slots.length > 0 && !slots.some((x) => x.status === "done") && slots.some((x) => x.error === "timeout" || isProviderBusy(x.error ?? ""));
+  const dropped = (why: string): boolean => why === "timeout" || isProviderBusy(why) || (g.kind === "image" && isRequestRefusal(why));
+  return slots.length > 0 && !slots.some((x) => x.status === "done") && slots.some((x) => dropped(x.error ?? ""));
 }
+/** A clip's model as the person reads it (Wan 3.0 is not in the picker). */
+const clipModelName = (key: string): string | null => (key === WAN_KEY ? WAN_NAME : modelByKey(key)?.name ?? null);
+const busyText = (name: string): string => `${name} was busy and couldn't make this one. Your credits are back.`;
 /**
  * THE BUSY PICTURE (29 October 2026, the owner: "se non riesce gli chiedi di cambiare provider con il classico pop up di
  * avviso"). A picture its model could not make for the provider's own reasons, even after the unseen retry
  * (busyRetry), offers one tap to make it on a model that is working (image-models.ts BUSY_SWITCH), for the credits it
  * cost (they came back). The page shows it as a pop-up when it happens and under the card after. Never on a remake.
+ * A busy clip carries the offer it was priced with when it failed (busyClipOffer), for at most what it cost.
  */
 export function busyOfferOf(g: GenerationRow, settings: Record<string, unknown>): { model: string; name: string; from: string; credits: number } | null {
   if (settings.busy || settings.switched || settings.rewritten || !failedBusy(g)) return null;
+  if (g.kind !== "image") {
+    const o = parseSlots(g)[0]?.offer;
+    return o ? { model: o.model, name: clipModelName(o.model) ?? o.model, from: clipModelName(g.model) ?? "This model", credits: o.credits } : null;
+  }
   const s = normalizeImageSettings(settings);
   const to = busySwitchFor(s);
   if (!to) return null;
@@ -580,13 +593,15 @@ export function busyOfferOf(g: GenerationRow, settings: Record<string, unknown>)
 /**
  * "Use Seedream 5.0": the busy picture is made again on the model that is working, with its prompt, pictures,
  * shape and count, as a new creation charged the credits the failed one cost. The offer is settled first, so it is
- * taken once.
+ * taken once. A busy clip goes to switchClip.
  */
 export async function retryOnOther(env: StudioEnv, userId: string, g: GenerationRow, origin: string): Promise<GenerationRow> {
   if (g.user_id !== userId) throw new StudioError("Not found.", 404);
   let s: Record<string, unknown> = {};
   try { s = JSON.parse(g.settings); } catch { /* no offer */ }
-  if (!busyOfferOf(g, s)) throw new StudioError("This picture can't be made again on another model.", 409, "no_offer");
+  const offer = busyOfferOf(g, s);
+  if (!offer) throw new StudioError(`This ${g.kind === "image" ? "picture" : "video"} can't be made again on another model.`, 409, "no_offer");
+  if (g.kind !== "image") return switchClip(env, userId, g, s as unknown as ClipSettings & { preset?: string | null }, offer, origin);
   const to = busySwitchFor(normalizeImageSettings(s), pausedImageModels(env.STUDIO_PAUSED_IMAGE_MODELS));
   if (!to) throw new StudioError("No other picture model is free right now. Try again in a minute — nothing was charged.", 503, "unavailable");
   const rows = await clipPictures(env, g);
@@ -605,6 +620,151 @@ export async function declineOther(env: StudioEnv, userId: string, g: Generation
   if (!busyOfferOf(g, s)) return g;
   if (await settleOffer(env, g.id, userId, "busy", "declined")) await audit(asEnv(env), userId, g.id, "studio.busy_declined", {});
   return (await getGeneration(env, g.id))!;
+}
+
+/**
+ * "Use Wan 3.0" on a busy clip: it is made again on the model that is working (models.ts busySwitchClip), with its
+ * prompt, pictures and settings, as a new clip charged the offer's credits (the busy one gave its own back). The offer
+ * is settled first, so it is taken once. Wan 3.0 runs on WaveSpeed, as after a copyright refusal; a model of the picker
+ * (Veo 3.1 Fast) takes the road every clip takes.
+ */
+async function switchClip(env: StudioEnv, userId: string, g: GenerationRow, s: ClipSettings & { preset?: string | null }, offer: { model: string; credits: number }, origin: string): Promise<GenerationRow> {
+  const to = busySwitchClip(s, g.est_usd);
+  if (!to || to.model !== offer.model) throw new StudioError("This video can't be made again on another model.", 409, "no_offer");
+  const rows = await clipPictures(env, g);
+  if (!rows) throw new StudioError("A picture this video was made from was deleted, so it can't be made again. Add it again on the Video page.", 409, "gone");
+  const claim = (id: string) => settleOffer(env, g.id, userId, "busy", id);
+  if (to.model !== WAN_KEY) {
+    const preset = presetByKey(s.preset)?.text;
+    const own = (preset ? g.prompt.replace(preset, "") : g.prompt).trim();
+    const made = await createGeneration(env, userId, {
+      kind: "video", prompt: own, preset: s.preset ?? null, settings: to.settings, imageIds: rows.map((r) => r.id), chatId: g.chat_id, messageId: g.message_id,
+    }, origin, { credits: offer.credits, extra: { from: g.id, switched: true }, claim });
+    await audit(asEnv(env), userId, g.id, "studio.busy_switch", { to: made.id, model: to.model });
+    return made;
+  }
+  if (!wanReady(env)) throw new StudioError(`${WAN_NAME} isn't available right now. Try again later — nothing was charged.`, 503, "unavailable");
+  const usd = wanCostUsd(to.settings);
+  const free = freeModels(env.STUDIO_FREE_MODELS), freeRes = freeResolutions(env.STUDIO_FREE_RESOLUTIONS);
+  // The busy clip proves the account could order it, and Wan 3.0 costs no more: the same rule as after a copyright refusal.
+  const id = await charge(env, userId, {
+    freeOk: free.includes(s.model) && freeRes.includes(s.resolution), credits: offer.credits, usd, noun: "video",
+    lockedMessage: `${s.resolution} unlocks with your first credit pack.`, routes: [[{ provider: "wavespeed", usd }]], pausedName: WAN_NAME,
+  });
+  if (!(await claim(id))) {
+    await refundCredits(asEnv(env), userId, offer.credits, id, "studio.busy_twice");
+    throw new StudioError(`This video is already being made with ${WAN_NAME}.`, 409, "busy");
+  }
+  const { busy: _settled, ...asked } = s as ClipSettings & { preset?: string | null; busy?: unknown };
+  try {
+    await insertGeneration(env, { id, userId, chatId: g.chat_id, messageId: g.message_id, model: WAN_KEY, settings: { ...asked, model: WAN_KEY, from: g.id, switched: true }, prompt: g.prompt, images: rows.map((r) => `/media/u/${r.id}`), credits: offer.credits, estUsd: usd });
+  } catch (e) {
+    await refundCredits(asEnv(env), userId, offer.credits, id, "studio.insert_failed");
+    await settleOffer(env, g.id, userId, "busy", null);
+    throw e;
+  }
+  await audit(asEnv(env), userId, id, "studio.create", { model: WAN_KEY, from: g.id, switched: true, credits: offer.credits, usd });
+  try {
+    const w = await startWan(env, to.settings, await wanPrompt(env, g.prompt, s.preset), rows, origin);
+    await moveGeneration(env, id, ["submitting"], "running", { task_id: w.taskId, slots: w.slots });
+    await audit(asEnv(env), userId, id, "studio.submitted", { task: w.taskId, model: w.slug, provider: "wavespeed" });
+  } catch (e) {
+    await failClip(env, id, e);
+  }
+  await audit(asEnv(env), userId, g.id, "studio.busy_switch", { to: id, model: WAN_KEY, usd });
+  return (await getGeneration(env, id))!;
+}
+
+/**
+ * The offer a busy clip carries (models.ts busySwitchClip), priced when it failed: the model that is working, for its
+ * own price and never more than the busy clip cost. Null on a clip Kleo already made again, or when none can take it.
+ */
+async function busyClipOffer(env: StudioEnv, g: GenerationRow): Promise<{ model: string; credits: number } | null> {
+  let s: ClipSettings & { clips?: number; switched?: unknown; rewritten?: unknown };
+  try { s = JSON.parse(g.settings); } catch { return null; }
+  if (s.switched || s.rewritten) return null;
+  const to = busySwitchClip(s, g.est_usd);
+  if (!to || (to.model === WAN_KEY && !wanReady(env))) return null;
+  const own = to.model === WAN_KEY ? wanCredits(to.settings, marginOf(env), videoFactorOf(env)) : clipCredits(to.settings, marginOf(env), 0, videoFactorOf(env));
+  return { model: to.model, credits: Math.max(1, Math.min(g.credits, own)) };
+}
+
+/**
+ * A clip its provider dropped or never answered, after the unseen retry (busyClipRetry): the card says the model was
+ * busy, never the provider's words, the credits come back once, and the clip offers a model that is working
+ * (busyClipOffer). `why` is what the provider said ("timeout" when it said nothing in time), for the audit.
+ */
+async function failBusyClip(env: StudioEnv, id: string, why: string, detail: Record<string, unknown>): Promise<void> {
+  const g = await getGeneration(env, id);
+  if (!g) return;
+  const offer = await busyClipOffer(env, g);
+  const { offer: _old, ...slot } = parseSlots(g)[0] ?? ({ task: null, status: "running" } as Slot);
+  const failed: Slot = { ...slot, status: "failed", error: why === "timeout" ? "timeout" : "busy", ...(offer ? { offer } : {}) };
+  await failGeneration(env, id, busyText(clipModelName(g.model) ?? "The video model"), { ...detail, provider: why.slice(0, 300) }, { slots: JSON.stringify([failed]) });
+}
+
+/** A clip whose order could not be placed: busy (failBusyClip) when the provider could not take it, else its refusal. */
+async function failClip(env: StudioEnv, id: string, e: unknown): Promise<void> {
+  const why = String(e instanceof Error ? e.message : e);
+  if (doorBusy(e)) await failBusyClip(env, id, why, { stage: "submit" });
+  else await failGeneration(env, id, refusal(e, "video"), { provider: why.slice(0, 300) });
+}
+
+/**
+ * An order the provider could not take for its own reasons (a rate limit, a 5xx, an outage) or never answered: never
+ * sent again unseen (placeTask already tried the backup, and an order with no answer may have been taken), only
+ * offered elsewhere. Never an empty balance (the money road) nor a refusal of the clip itself (copyright keeps Wan).
+ */
+function doorBusy(e: unknown): boolean {
+  const why = e instanceof Error ? e.message : String(e);
+  if (isCopyrightRefusal(why)) return false;
+  if (e instanceof KieError) return e.status !== 402 && (e.status === 429 || e.status >= 500 || isProviderBusy(why));
+  const name = e instanceof Error ? e.name : "";
+  return name === "TimeoutError" || name === "AbortError" || /fetch failed|network|ECONN/i.test(why) || isProviderBusy(why);
+}
+/** A clip's task the provider dropped for its own reasons (image-models.ts isProviderBusy), never a copyright refusal. */
+const clipBusy = (why: string): boolean => !isCopyrightRefusal(why) && isProviderBusy(why);
+
+/** A clip's one slot: where its task went and what it was sent, so a clip its provider drops can be sent again. */
+function clipSlot(p: Placed, model: string, input: Record<string, unknown>): string {
+  const slot: Slot = { task: p.task, status: "running", model, input, ...(p.provider ? { provider: p.provider } : {}) };
+  return JSON.stringify([slot]);
+}
+
+/**
+ * A clip its provider took and then dropped for its own reasons (29 October 2026, as busyRetry does for pictures):
+ * sent once more, unseen, for the same credits, with what it was sent. A clip ePhone dropped goes to the model's
+ * backup first (backups.ts: the same model, never dearer), then to ePhone again; one a backup dropped goes back to
+ * ePhone; one WaveSpeed dropped (Wan 3.0) goes to WaveSpeed again. Only after the provider said the task is over, so it
+ * can never finish and be billed next to the new one. True when it went (or another poll holds the clip); false when it
+ * does not qualify or nobody took it: the clip then fails as busy (it may be left held in "saving" for that).
+ */
+async function busyClipRetry(env: StudioEnv, g: GenerationRow, why: string): Promise<boolean> {
+  const slot = parseSlots(g)[0];
+  if (!slot?.input || !slot.model || slot.retried) return false;
+  // Held while it is sent again, so two polls never send it twice; then read as it is now, since a pass that read it
+  // earlier (the cron works through rows it read up to a minute before) may find it sent again already.
+  if (!(await moveGeneration(env, g.id, ["running"], "saving"))) return true;
+  const now = await getGeneration(env, g.id);
+  if (!now || now.task_id !== g.task_id) { await moveGeneration(env, g.id, ["saving"], "running"); return true; }
+  const who = { userId: g.user_id, genId: g.id };
+  let t: Placed | null = null;
+  if (slot.provider === "wavespeed") {
+    try {
+      t = { task: await wavespeedSubmit(env, slot.model, slot.input), provider: "wavespeed" };
+      await spent(env, "wavespeed", g.est_usd);
+    } catch (e) { await noticeMoney(env, "wavespeed", e); }
+  } else {
+    const routing = modelByKey(g.model)?.routing;
+    if (!slot.provider) { try { t = await placeOnBackup(env, slot.model, slot.input, who, g.est_usd, new Error(why)); } catch { /* ePhone again */ } }
+    if (!t) { try { t = await placeTask(env, slot.model, slot.input, routing, who, g.est_usd); } catch { /* nobody took it */ } }
+  }
+  if (!t) return false;
+  const next: Slot = { ...slot, task: t.task, status: "running", retried: true, startedAt: new Date().toISOString() };
+  if (t.provider) next.provider = t.provider; else delete next.provider;
+  await moveGeneration(env, g.id, ["saving"], "running", { task_id: clipTaskId(t), slots: JSON.stringify([next]) });
+  await audit(asEnv(env), g.user_id, g.id, "studio.busy_retry", { model: slot.model, from: slot.provider ?? "ephone", to: t.provider ?? "ephone", why: why.slice(0, 200) });
+  return true;
 }
 
 const wanReady = (env: StudioEnv): boolean => !!(env.WAVESPEED_API_KEY ?? "").trim();
@@ -629,16 +789,18 @@ async function wanPrompt(env: StudioEnv, prompt: string, presetKey: string | nul
 }
 
 /**
- * Starts a clip on Wan 3.0 and answers its task id. The pictures go into WaveSpeed's own storage first (as the viral
- * templates' photos do), each on a signed link of Studio's when it cannot be copied.
+ * Starts a clip on Wan 3.0 and answers its task id, and its slot (clipSlot) for the row. The pictures go into
+ * WaveSpeed's own storage first (as the viral templates' photos do), each on a signed link of Studio's when it cannot be
+ * copied.
  */
-async function startWan(env: StudioEnv, s: ClipSettings, english: string, pictures: UploadRow[], origin: string): Promise<{ taskId: string; slug: string }> {
+async function startWan(env: StudioEnv, s: ClipSettings, english: string, pictures: UploadRow[], origin: string): Promise<{ taskId: string; slug: string; slots: string }> {
   const links = await Promise.all(pictures.map(async (r) => (await copyToWavespeed(env, r)) ?? (await providerLink(env, origin, r.id))));
   const order = wanOrder(s, english, links);
   let task: string;
   try { task = await wavespeedSubmit(env, order.slug, order.body); } catch (e) { await noticeMoney(env, "wavespeed", e); throw e; }
   await spent(env, "wavespeed", wanCostUsd(s));
-  return { taskId: clipTaskId({ task, provider: "wavespeed" }), slug: order.slug };
+  const placed: Placed = { task, provider: "wavespeed" };
+  return { taskId: clipTaskId(placed), slug: order.slug, slots: clipSlot(placed, order.slug, order.body) };
 }
 
 /**
@@ -648,14 +810,14 @@ async function startWan(env: StudioEnv, s: ClipSettings, english: string, pictur
  * the order went out or when the video was checked. Once per clip: the row's model becomes Wan 3.0. False when the clip
  * does not qualify or Wan could not be started; the clip then fails as before, its credits back and the offer on it.
  */
-async function switchToWan(env: StudioEnv, g: GenerationRow, s: ClipSettings & { preset?: string | null; clips?: number }, why: string, from: GenStatus, start: () => Promise<{ taskId: string; slug: string }>): Promise<boolean> {
+async function switchToWan(env: StudioEnv, g: GenerationRow, s: ClipSettings & { preset?: string | null; clips?: number }, why: string, from: GenStatus, start: () => Promise<{ taskId: string; slug: string; slots: string }>): Promise<boolean> {
   if (!isCopyrightRefusal(why) || !wanOffered(s) || !wanReady(env) || !(await autoWanOn(env, g.user_id))) return false;
   // The poll holds the clip while it switches, so two polls never start two clips.
   if (from === "running" && !(await moveGeneration(env, g.id, ["running"], "saving"))) return true;
   const held: GenStatus = from === "running" ? "saving" : from;
   try {
     const w = await start();
-    if (!(await moveGeneration(env, g.id, [held], "running", { task_id: w.taskId, model: WAN_KEY, settings: JSON.stringify({ ...s, model: WAN_KEY, from: s.model, auto: true }) }))) return true;
+    if (!(await moveGeneration(env, g.id, [held], "running", { task_id: w.taskId, slots: w.slots, model: WAN_KEY, settings: JSON.stringify({ ...s, model: WAN_KEY, from: s.model, auto: true }) }))) return true;
     await audit(asEnv(env), g.user_id, g.id, "studio.wan_auto", { from: s.model, to: w.slug, task: w.taskId, usd: wanCostUsd(s), why: why.slice(0, 200) });
     return true;
   } catch (e) {
@@ -665,7 +827,11 @@ async function switchToWan(env: StudioEnv, g: GenerationRow, s: ClipSettings & {
   }
 }
 
-export async function createGeneration(env: StudioEnv, userId: string, req: CreateRequest, origin: string): Promise<GenerationRow> {
+/**
+ * `over` (switchClip): the credits to charge instead of the model's price, settings to add to the row, and a claim made
+ * right after the charge (false = refund and refuse: the offer was taken already).
+ */
+export async function createGeneration(env: StudioEnv, userId: string, req: CreateRequest, origin: string, over?: { credits: number; extra: Record<string, unknown>; claim: (id: string) => Promise<boolean> }): Promise<GenerationRow> {
   if (req.kind === "image") return createImageGeneration(env, userId, req, origin);
   const prompt = withPreset((req.prompt ?? "").trim(), req.preset);
   const all = await uploadsOf(env, userId, req.imageIds ?? []);
@@ -692,7 +858,7 @@ export async function createGeneration(env: StudioEnv, userId: string, req: Crea
   if (!(req.settings as Record<string, unknown> | undefined)?.resolution && modelFree && !freeRes.includes(s.resolution) && !(await hasPaid(asEnv(env), userId))) {
     s = clampFreeResolution(s, freeRes);
   }
-  const credits = clipCredits(s, marginOf(env), videoSeconds, videoFactorOf(env));
+  const credits = over ? over.credits : clipCredits(s, marginOf(env), videoSeconds, videoFactorOf(env));
   const usd = clipCostUsd(s, videoSeconds);
   // THE NAME CHECK (21 October 2026, the owner: "cerca di diminuire i problemi"). A Seedance clip whose prompt names
   // well-known characters, franchises, brands or famous people would be refused after a wait. Before any charge the
@@ -718,14 +884,19 @@ export async function createGeneration(env: StudioEnv, userId: string, req: Crea
   const probe = taskInput(s, "", pictures.map(() => STAND_IN), "", { videos: videos.map(() => STAND_IN), audios: sounds.map(() => STAND_IN) });
   const routes: Route[] = [...(preWan ? [{ provider: "wavespeed" as const, usd: wanCostUsd(s) }] : []), ...ephoneRoutes(env, model.ephoneModel, probe, usd)];
   const id = await charge(env, userId, {
-    freeOk: modelFree && freeRes.includes(s.resolution), credits, usd, noun: "video", routes: [routes], pausedName: model.name,
+    // A clip made again from a busy one: the busy one proves the account could order it, and this one costs no more.
+    freeOk: !!over || (modelFree && freeRes.includes(s.resolution)), credits, usd, noun: "video", routes: [routes], pausedName: model.name,
     lockedMessage: modelFree
       ? `${s.resolution} unlocks with your first credit pack. Free credits make ${freeRes.join(" and ")} videos.`
       : `${model.name} unlocks with your first credit pack. Free credits work with ${free.map((k) => modelByKey(k)!.name).join(", ")}.`,
   });
+  if (over && !(await over.claim(id))) {
+    await refundCredits(asEnv(env), userId, credits, id, "studio.busy_twice");
+    throw new StudioError("This video is already being made again.", 409, "busy");
+  }
   const imagePaths = all.map((u) => `/media/u/${u.id}`);
   // The video and sound clips it came with are counted, so a refusal is never sent to Wan 3.0 without them.
-  const stored = { ...s, preset: req.preset ?? null, ...(videos.length + sounds.length ? { clips: videos.length + sounds.length } : {}) };
+  const stored = { ...s, preset: req.preset ?? null, ...(videos.length + sounds.length ? { clips: videos.length + sounds.length } : {}), ...(over?.extra ?? {}) };
   try {
     await insertGeneration(env, { id, userId, chatId: req.chatId ?? null, messageId: req.messageId ?? null, model: s.model, settings: stored, prompt, images: imagePaths, credits, estUsd: usd });
   } catch (e) {
@@ -746,7 +917,7 @@ export async function createGeneration(env: StudioEnv, userId: string, req: Crea
       // Straight to Wan 3.0; should WaveSpeed not take it, the order goes to Seedance as it would have.
       try {
         const w = await startWan(env, s, english, pictures, origin);
-        await moveGeneration(env, id, ["submitting"], "running", { task_id: w.taskId, model: WAN_KEY, settings: JSON.stringify({ ...stored, model: WAN_KEY, from: s.model, pre: true }) });
+        await moveGeneration(env, id, ["submitting"], "running", { task_id: w.taskId, slots: w.slots, model: WAN_KEY, settings: JSON.stringify({ ...stored, model: WAN_KEY, from: s.model, pre: true }) });
         await audit(asEnv(env), userId, id, "studio.wan_pre", { from: s.model, to: w.slug, task: w.taskId, names: preWan, chosen: req.engine === "wan" });
         return (await getGeneration(env, id))!;
       } catch (e) {
@@ -755,14 +926,12 @@ export async function createGeneration(env: StudioEnv, userId: string, req: Crea
     }
     const input = taskInput(s, english, links, await safetyId(env, userId), clipLinks);
     const placed = await placeTask(env, model.ephoneModel, input, model.routing, { userId, genId: id }, usd);
-    await moveGeneration(env, id, ["submitting"], "running", { task_id: clipTaskId(placed) });
+    await moveGeneration(env, id, ["submitting"], "running", { task_id: clipTaskId(placed), slots: clipSlot(placed, model.ephoneModel, input) });
     await audit(asEnv(env), userId, id, "studio.submitted", { task: placed.task, model: model.ephoneModel, provider: placed.provider ?? "ephone" });
   } catch (e) {
     const why = String(e instanceof Error ? e.message : e);
     const row = (await getGeneration(env, id))!;
-    if (!(await switchToWan(env, row, stored, why, "submitting", () => startWan(env, s, english, pictures, origin)))) {
-      await failGeneration(env, id, refusal(e, "video"), { provider: why.slice(0, 300) });
-    }
+    if (!(await switchToWan(env, row, stored, why, "submitting", () => startWan(env, s, english, pictures, origin)))) await failClip(env, id, e);
   }
   return (await getGeneration(env, id))!;
 }
@@ -862,11 +1031,11 @@ async function safetyId(env: StudioEnv, userId: string): Promise<string> {
   return [...sig.slice(0, 16)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** Marks a clip failed and gives its credits back — once, whoever calls first. */
-export async function failGeneration(env: StudioEnv, id: string, why: string, detail: Record<string, unknown> = {}): Promise<void> {
+/** Marks a clip failed and gives its credits back — once, whoever calls first. `fields` are written with the move. */
+export async function failGeneration(env: StudioEnv, id: string, why: string, detail: Record<string, unknown> = {}, fields: Record<string, string | number | null> = {}): Promise<void> {
   const g = await getGeneration(env, id);
   if (!g) return;
-  if (!(await moveGeneration(env, id, ["submitting", "running", "saving"], "failed", { error: why.slice(0, 400), refunded: 1 }))) return;
+  if (!(await moveGeneration(env, id, ["submitting", "running", "saving"], "failed", { ...fields, error: why.slice(0, 400), refunded: 1 }))) return;
   await refundCredits(asEnv(env), g.user_id, g.credits, id, "studio.failed");
   await audit(asEnv(env), g.user_id, id, "studio.failed", { why, ...detail });
 }
@@ -900,19 +1069,25 @@ export async function refreshGeneration(env: StudioEnv, g: GenerationRow, minGap
   if (g.kind === "image" || g.kind === "tool") return refreshImages(env, g, ageMin);
   if (!g.task_id) return g;
   // A clip the automatic switch moved to Wan 3.0 part way gets a second allowance of time (a clip made again on Wan
-  // after "Use Wan 3.0" is a new row, with its own clock).
-  if (ageMin > GENERATION_TIMEOUT_MIN * (g.model === WAN_KEY && /"auto":true/.test(g.settings) ? 2 : 1)) {
-    await failGeneration(env, g.id, "The video model took too long. Your credits are back.", { stage: "timeout", minutes: Math.round(ageMin) });
+  // after "Use Wan 3.0" is a new row, with its own clock); one sent again after its provider dropped it (busyClipRetry)
+  // has its time from then. Past it, the provider is asked once more: a clip it finished is saved, one it says failed
+  // takes the road below, and one it still holds is over for Kleo (busy, never sent again: it may still be billed).
+  const sentAt = parseSlots(g)[0]?.startedAt;
+  const minutes = sentAt ? (Date.now() - Date.parse(sentAt)) / 60_000 : ageMin;
+  const late = minutes > GENERATION_TIMEOUT_MIN * (g.model === WAN_KEY && /"auto":true/.test(g.settings) ? 2 : 1);
+  const timedOut = async (): Promise<GenerationRow> => {
+    // Only the task this pass read: one sent again since (busyClipRetry) has its own time.
+    if ((await getGeneration(env, g.id))?.task_id === g.task_id) await failBusyClip(env, g.id, "timeout", { stage: "timeout", minutes: Math.round(minutes) });
     return (await getGeneration(env, g.id))!;
-  }
+  };
   const model = modelByKey(g.model);
   const held = clipTask(g.task_id);
   let t: EphoneTask;
   try {
     t = await readTask(env, held.task, held.provider, model?.routing);
   } catch (e) {
-    // A failed status read is not a failed video: try again on the next refresh.
-    return g;
+    // A failed status read is not a failed video: try again on the next refresh (past its time, it is over).
+    return late ? timedOut() : g;
   }
   const status = String(t.status ?? "").toLowerCase();
   if (status === "failed" || status === "failure" || status === "cancelled") {
@@ -924,10 +1099,14 @@ export async function refreshGeneration(env: StudioEnv, g: GenerationRow, minGap
       if (!pictures) throw new Error("a picture of the clip was deleted");
       return startWan(env, s, await wanPrompt(env, g.prompt, s.preset), pictures, studioOrigin(env));
     });
-    if (!switched) await failGeneration(env, g.id, failureText("video model", why), { stage: "provider", usage: t.usage ?? null, provider: why.slice(0, 300) });
+    if (switched) return (await getGeneration(env, g.id))!;
+    // The provider's own trouble (a rate limit, a 5xx, an overloaded upstream): sent once more unseen, then "busy".
+    if (clipBusy(why)) {
+      if (!(await busyClipRetry(env, g, why))) await failBusyClip(env, g.id, why, { stage: "provider", usage: t.usage ?? null });
+    } else await failGeneration(env, g.id, failureText("video model", why), { stage: "provider", usage: t.usage ?? null, provider: why.slice(0, 300) });
     return (await getGeneration(env, g.id))!;
   }
-  if (status !== "completed" && status !== "succeeded" && status !== "success") return (await getGeneration(env, g.id))!;
+  if (status !== "completed" && status !== "succeeded" && status !== "success") return late ? timedOut() : (await getGeneration(env, g.id))!;
   const url = ephoneOutputs(t).find((u) => !/\.(png|jpe?g|webp)(\?|$)/i.test(u)) ?? ephoneOutputs(t)[0];
   if (!url) {
     await failGeneration(env, g.id, "The video model finished without a video. Your credits are back.", { stage: "no_output" });
@@ -992,26 +1171,28 @@ async function secondTry(env: StudioEnv, g: GenerationRow, slot: Slot, why: stri
  * the owner: "non deve più accadere"): the slot is sent once more, unseen, for the same credits. A picture ePhone
  * dropped goes to the model's backup first (it sells the same model, never dearer), then to ePhone again; one a backup
  * dropped goes back to ePhone. False when it does not qualify or nobody took it (the slot then fails as before).
+ * An order the provider took and then refused as malformed (isRequestRefusal, the same day: a quality spelling, an
+ * output_format) takes the same road, except that ePhone gets it again only changed (repairedInput), never as it was.
  */
 async function busyRetry(env: StudioEnv, g: GenerationRow, slot: Slot, why: string, budgetUsd: number): Promise<boolean> {
-  if (g.kind !== "image" || slot.retried || !slot.input || !isProviderBusy(why)) return false;
+  const busy = isProviderBusy(why);
+  const refused = !busy && isRequestRefusal(why);
+  if (g.kind !== "image" || slot.retried || !slot.input || (!busy && !refused)) return false;
   const own = imageModelByKey(g.model);
   const model = slot.model ?? own?.ephoneModel;
   if (!model) return false;
   slot.retried = true;
   const routing = slot.model ? toolRouting(slot.model) : own?.routing;
   const who = { userId: g.user_id, genId: g.id };
-  const cause = new Error(why);
-  let t: Placed;
-  try {
-    t = slot.provider ? await placeTask(env, model, slot.input, routing, who, budgetUsd) : await placeOnBackup(env, model, slot.input, who, budgetUsd, cause);
-  } catch {
-    try { t = await placeTask(env, model, slot.input, routing, who, budgetUsd); } catch { return false; }
-  }
+  const again = refused ? repairedInput(slot.input, why) : slot.input;
+  let t: Placed | null = null;
+  if (!slot.provider) { try { t = await placeOnBackup(env, model, slot.input, who, budgetUsd, new Error(why)); } catch { /* ePhone again */ } }
+  if (!t && again) { try { t = await placeTask(env, model, again, routing, who, budgetUsd); } catch { /* nobody took it */ } }
+  if (!t) return false;
   const from = slot.provider ?? "ephone";
   Object.assign(slot, { task: t.task, status: "running", startedAt: new Date().toISOString() });
-  if (t.provider) slot.provider = t.provider; else delete slot.provider;
-  await audit(asEnv(env), g.user_id, g.id, "studio.busy_retry", { model, from, to: t.provider ?? "ephone", why: why.slice(0, 200) });
+  if (t.provider) slot.provider = t.provider; else { delete slot.provider; if (again) slot.input = again; }
+  await audit(asEnv(env), g.user_id, g.id, "studio.busy_retry", { model, from, to: t.provider ?? "ephone", cause: busy ? "busy" : "request", why: why.slice(0, 200) });
   return true;
 }
 

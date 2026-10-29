@@ -4,7 +4,10 @@
  * contact the administrator", and the person left). The pure rules (which failures are "busy", where the picture goes
  * instead), then the kleo-studio Worker bundled with esbuild on a D1 look-alike (node:sqlite, every migration applied):
  * the unseen retry on APIMart, then on ePhone, the busy offer when both fail, taking it once, declining it, and a
- * refusal keeping its FLUX 3 road.
+ * refusal keeping its FLUX 3 road. An order ePhone took and then refused as malformed (a quality spelling, an
+ * output_format) is sent again changed, or to the backup, never as it was. Then the same net for video clips (29 October
+ * 2026): the retry on APIMart, ePhone or WaveSpeed, never after a timeout the provider has not ended, the "was busy"
+ * card with Wan 3.0 or Veo 3.1 Fast for no more than the clip cost, and the copyright and money roads left as they were.
  * Run: node --test test/studio-busy.test.mjs
  */
 import { register } from "node:module";
@@ -19,7 +22,8 @@ import { join, dirname } from "node:path";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
-import { busySwitchFor, closestAspect, isProviderBusy, alternativeFor, imageAlternatives } from "../src/studio/image-models.ts";
+import { busySwitchFor, closestAspect, isProviderBusy, isRequestRefusal, repairedInput, alternativeFor, imageAlternatives } from "../src/studio/image-models.ts";
+import { busySwitchClip, clipCostUsd, wanCredits } from "../src/studio/models.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -143,27 +147,39 @@ const ok = (data) => new Response(JSON.stringify(data), { status: 200, headers: 
 const PNG = (() => { const b = new Uint8Array(4000).fill(5); b.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]); return b; })();
 
 /**
- * A fake ePhone and APIMart: `ephone(n)` answers the n-th ePhone task (1-based) with a status object, `apimart(n)` the
- * n-th APIMart task (null = APIMart refuses the order).
+ * A fake ePhone, APIMart and WaveSpeed: `ephone(n)` answers the n-th ePhone task (1-based) with a status object,
+ * `apimart(n)` the n-th APIMart task and `wavespeed(n)` the n-th WaveSpeed prediction (null = that provider refuses
+ * the order), and `submit(n)` may answer the n-th ePhone order itself (a Response; null = ePhone takes it).
  */
-function providers({ ephone, apimart = () => null }) {
+function providers({ ephone, apimart = () => null, wavespeed = () => null, submit = () => null }) {
   const sent = [];
   const real = globalThis.fetch;
+  const refuse = () => new Response(JSON.stringify({ error: { code: 503, message: "busy" } }), { status: 503 });
   globalThis.fetch = async (url, init = {}) => {
     const u = String(url);
     let body = null;
     try { body = init.body ? JSON.parse(init.body) : null; } catch { body = String(init.body); }
     sent.push({ url: u, method: init.method ?? "GET", body });
     if (u.startsWith("https://cloudflare-dns.com/dns-query")) return new Response(JSON.stringify({ Status: 0, Answer: [{ type: 15 }] }), { headers: { "content-type": "application/dns-json" } });
-    if (u.endsWith("/v1/task/submit")) return ok({ id: `task_${sent.filter((s) => s.url.endsWith("/v1/task/submit")).length}` });
+    if (u.endsWith("/v1/task/submit")) {
+      const n = sent.filter((s) => s.url.endsWith("/v1/task/submit")).length;
+      return submit(n) ?? ok({ id: `task_${n}` });
+    }
     const et = /\/v1\/task\/task_(\d+)$/.exec(u);
     if (et) return ok(ephone(Number(et[1])));
-    if (u === "https://api.apimart.ai/v1/images/generations") {
-      const n = sent.filter((s) => s.url === u).length;
-      return apimart(n) ? ok({ code: 200, data: [{ status: "submitted", task_id: `am_${n}` }] }) : new Response(JSON.stringify({ error: { code: 503, message: "busy" } }), { status: 503 });
+    if (u === "https://api.apimart.ai/v1/images/generations" || u === "https://api.apimart.ai/v1/videos/generations") {
+      const n = sent.filter((s) => /^https:\/\/api\.apimart\.ai\/v1\/(images|videos)\/generations$/.test(s.url)).length;
+      return apimart(n) ? ok({ code: 200, data: [{ status: "submitted", task_id: `am_${n}` }] }) : refuse();
     }
     const at = /\/v1\/tasks\/am_(\d+)$/.exec(u);
     if (at) return ok({ code: 200, data: apimart(Number(at[1])) });
+    if (u.startsWith("https://api.wavespeed.ai/api/v3/alibaba/")) {
+      const n = sent.filter((s) => s.url.startsWith("https://api.wavespeed.ai/api/v3/alibaba/")).length;
+      return wavespeed(n) ? ok({ code: 200, data: { id: `ws_${n}`, status: "created" } }) : refuse();
+    }
+    const wt = /^https:\/\/api\.wavespeed\.ai\/api\/v3\/predictions\/ws_(\d+)\/result$/.exec(u);
+    if (wt) return ok({ code: 200, data: { id: `ws_${wt[1]}`, ...wavespeed(Number(wt[1])) } });
+    if (u.startsWith("https://cdn.example/") && u.endsWith(".mp4")) return new Response(new Uint8Array(5000).fill(7), { headers: { "content-type": "video/mp4" } });
     if (u.startsWith("https://cdn.example/")) return new Response(PNG, { headers: { "content-type": "image/png" } });
     return new Response("?", { status: 404 });
   };
@@ -277,5 +293,288 @@ test("busy: 'No thanks' drops the offer for good; a refused picture never gets i
     assert.equal(g.busy, null);
     assert.equal(events(env, "studio.busy_retry").filter((e) => e.id === refused).length, 0);
     assert.equal(events(env, "studio.fallback").filter((e) => e.id === refused).length, 1, "FLUX 3's second try");
+  } finally { p.restore(); }
+});
+
+// ── Orders ePhone took and then refused as malformed (29 October 2026, two approved probes) ─────────────────────────
+const QUALITY_REFUSAL = '[ { "code": "invalid_value", "values": [ "auto", "low", "medium", "high", "xhigh", "max" ], "path": [ "quality" ], "message": "Invalid option: expected one of \\"auto\\"|\\"low\\"|\\"medium\\"|\\"high\\"|\\"xhigh\\"|\\"max\\"" } ]';
+const MIME_REFUSAL = "Invalid JSON payload received. Unknown name \"mimeType\" at 'generation_config.image_config': Cannot find field.";
+
+test("refused orders: ePhone's two late refusals, and what changes in the order", () => {
+  for (const m of [QUALITY_REFUSAL, MIME_REFUSAL]) {
+    assert.equal(isRequestRefusal(m), true, m);
+    assert.equal(isProviderBusy(m), false, m);
+  }
+  for (const m of ["no image generated in response", "Content Moderated: Protected Content", "Insufficient balance", "预扣费额度失败, 用户剩余额度: $0.000000", "Rate limit exceeded, please retry later"]) {
+    assert.equal(isRequestRefusal(m), false, m);
+  }
+  const nb2 = { prompt: "a cup", aspect_ratio: "1:1", quality: "medium" };
+  assert.deepEqual(repairedInput(nb2, QUALITY_REFUSAL), { ...nb2, quality: "1K" }, "the other spelling");
+  assert.deepEqual(repairedInput({ ...nb2, quality: "1K" }, QUALITY_REFUSAL), nb2, "and back");
+  assert.deepEqual(repairedInput({ ...nb2, output_format: "jpeg" }, MIME_REFUSAL), nb2, "no output_format");
+  assert.equal(repairedInput(nb2, MIME_REFUSAL), null, "nothing to change: never the same order again");
+  assert.equal(repairedInput({ prompt: "x", size: "2K" }, QUALITY_REFUSAL), null);
+});
+
+test("refused orders: a quality ePhone refuses after taking the order goes again in the other spelling, unseen", async () => {
+  const env = newEnv({ APIMART_API_KEY: "" });
+  const cookie = await account(env, "ed@example.com");
+  const p = providers({ ephone: (n) => (n === 1 ? failed(QUALITY_REFUSAL) : done("second")) });
+  try {
+    const before = await creditsOf(env, cookie);
+    const g = await settle(env, cookie, await order(env, cookie));
+    assert.equal(g.status, "done", JSON.stringify(g));
+    const sent = submits(p, (u) => u.endsWith("/v1/task/submit"));
+    assert.equal(sent.length, 2);
+    assert.equal(sent[0].body.input.quality, "high");
+    assert.deepEqual(sent[1].body.input, { ...sent[0].body.input, quality: "2K" }, "only the quality changes");
+    const retry = events(env, "studio.busy_retry");
+    assert.equal(retry.length, 1);
+    assert.equal(retry[0].cause, "request");
+    assert.equal(await creditsOf(env, cookie), before - g.credits, "charged once");
+  } finally { p.restore(); }
+});
+
+test("refused orders: an order ePhone cannot read goes to the backup; with none, never the same order again", async () => {
+  const env = newEnv();
+  const cookie = await account(env, "fa@example.com");
+  const p = providers({ ephone: () => failed(MIME_REFUSAL), apimart: () => ({ status: "completed", result: { images: [{ url: ["https://cdn.example/am.png"] }] } }) });
+  try {
+    const g = await settle(env, cookie, await order(env, cookie));
+    assert.equal(g.status, "done", JSON.stringify(g));
+    assert.equal(submits(p, (u) => u.endsWith("/v1/task/submit")).length, 1);
+    assert.equal(events(env, "studio.busy_retry")[0].to, "apimart");
+  } finally { p.restore(); }
+
+  // No backup and nothing in the order to change: the credits come back, in plain words, with Seedream 5.0 offered.
+  const bare = newEnv({ APIMART_API_KEY: "" });
+  const c2 = await account(bare, "gi@example.com");
+  const q = providers({ ephone: () => failed(MIME_REFUSAL) });
+  try {
+    const g = await settle(bare, c2, await order(bare, c2));
+    assert.equal(g.status, "failed");
+    assert.equal(g.refunded, true);
+    assert.equal(submits(q, (u) => u.endsWith("/v1/task/submit")).length, 1, "the refused order is never sent again as it was");
+    assert.equal(g.error, "Nano Banana 2 was busy and couldn't make this one. Your credits are back.", "never the provider's words");
+    assert.equal(g.busy?.model, "seedream-5");
+  } finally { q.restore(); }
+});
+
+// ── Video clips (29 October 2026) ──────────────────────────────────────────────────────────────────────────────────
+test("busy clips: a Seedance clip goes to Wan 3.0 for less, a Veo 3.1 clip to Veo 3.1 Fast; nothing else moves", () => {
+  const s = { model: "seedance-2.5", duration: 10, resolution: "1080p", aspect: "16:9", audio: true, imageRole: "none", videoRole: "none" };
+  assert.deepEqual(busySwitchClip(s, clipCostUsd(s)), { model: "wan-3.0", settings: s });
+  const fast = { ...s, model: "seedance-2.0-fast", resolution: "480p", duration: 5 };
+  assert.equal(busySwitchClip(fast, clipCostUsd(fast))?.model, "wan-3.0", "Wan 3.0 costs no more than Seedance 2.0 Fast at 480p");
+  assert.equal(busySwitchClip({ ...s, clips: 1, videoRole: "reference" }, 10), null, "Wan 3.0 takes no video or sound clips");
+  assert.equal(busySwitchClip(s, 0.5), null, "never dearer than what the busy clip was priced at");
+  const veo = { model: "veo-3.1", duration: 8, resolution: "1080p", aspect: "9:16", audio: true, imageRole: "first_frame" };
+  assert.deepEqual(busySwitchClip(veo, clipCostUsd(veo)), { model: "veo-3.1-fast", settings: { ...veo, model: "veo-3.1-fast" } });
+  assert.equal(busySwitchClip({ ...veo, model: "veo-3.1-fast" }, 10), null);
+  assert.equal(busySwitchClip({ ...fast, model: "kling-3-omni", videoRole: "motion" }, 10), null);
+  assert.equal(busySwitchClip({ ...s, model: "wan-3.0" }, 10), null);
+  // Wan 3.0's credits are worked out as every clip's: WaveSpeed's price times the margin, then the video factor.
+  assert.equal(wanCredits(fast, 1.6, 5 / 3), 2);
+  assert.equal(wanCredits({ ...s, duration: 15 }, 1.6, 5 / 3), 19);
+});
+
+const PROMPT = "A red fox runs through the fresh snow at dawn, the camera close behind";
+const vdone = (name) => ({ status: "completed", outputs: [`https://cdn.example/${name}.mp4`] });
+async function clip(env, cookie, settings = { model: "seedance-2.0-fast", resolution: "480p", duration: 5, aspect: "9:16" }) {
+  const r = await call(env, "/api/generate", { method: "POST", cookie, body: { noChat: true, prompt: PROMPT, settings } });
+  assert.equal(r.status, 200, r.text);
+  return r.json.generation;
+}
+async function paidAccount(env, email, credits = 100) {
+  const cookie = await account(env, email);
+  const me = (await call(env, "/api/me", { cookie })).json;
+  env.DB.db.exec(`INSERT INTO payments (session_id, user_id, credits, amount_cent, currency, status, raw_ref) VALUES ('manual_${me.id}', '${me.id}', 0, 0, 'eur', 'paid', 'tester'); UPDATE users SET credits = ${credits} WHERE id = '${me.id}'`);
+  return cookie;
+}
+const ePhoneOrders = (p) => submits(p, (u) => u.endsWith("/v1/task/submit"));
+const wanOrders = (p) => submits(p, (u) => u.startsWith("https://api.wavespeed.ai/api/v3/alibaba/"));
+
+test("busy clips: ePhone drops the clip, APIMart makes it unseen, for the credits charged once", async () => {
+  const env = newEnv();
+  const cookie = await account(env, "eve@example.com");
+  const p = providers({ ephone: () => failed("Rate limit exceeded, please retry later"), apimart: () => ({ status: "completed", result: { videos: [{ url: ["https://cdn.example/am.mp4"] }] } }) });
+  try {
+    const before = await creditsOf(env, cookie);
+    const c = await clip(env, cookie);
+    assert.equal(c.status, "running", JSON.stringify(c));
+    const g = await settle(env, cookie, c.id);
+    assert.equal(g.status, "done", JSON.stringify(g));
+    assert.equal(g.video, `/media/${c.id}.mp4`);
+    assert.equal(ePhoneOrders(p).length, 1, "ePhone was asked once");
+    const am = submits(p, (u) => u === "https://api.apimart.ai/v1/videos/generations");
+    assert.equal(am.length, 1);
+    assert.deepEqual(am[0].body, { model: "seedance-2.0-fast", prompt: PROMPT, duration: 5, resolution: "480p", size: "9:16", generate_audio: true }, "the same clip on the backup");
+    assert.deepEqual(events(env, "studio.busy_retry").map((e) => [e.id, e.from, e.to]), [[c.id, "ephone", "apimart"]]);
+    assert.equal(await creditsOf(env, cookie), before - c.credits, "charged once, nothing refunded");
+  } finally { p.restore(); }
+});
+
+test("busy clips: with no backup the clip goes to ePhone once more with the same order, and only once", async () => {
+  const env = newEnv();
+  const cookie = await paidAccount(env, "fay@example.com");
+  const p = providers({ ephone: (n) => (n === 1 ? failed("当前分组上游负载已饱和，请稍后再试") : vdone("second")) });
+  try {
+    const c = await clip(env, cookie, { model: "seedance-2.5", resolution: "720p", duration: 5, aspect: "16:9" });
+    const g = await settle(env, cookie, c.id);
+    assert.equal(g.status, "done", JSON.stringify(g));
+    const sent = ePhoneOrders(p);
+    assert.equal(sent.length, 2);
+    assert.deepEqual(sent[1].body, sent[0].body, "the same order again");
+    assert.equal(events(env, "studio.busy_retry")[0].to, "ephone");
+    assert.ok(!p.sent.some((s) => s.url.includes("apimart")), "Seedance 2.5 has no backup at its price");
+  } finally { p.restore(); }
+});
+
+test("busy clips: when the retry fails too, the credits come back and the clip offers Wan 3.0 for less, taken once", async () => {
+  const env = newEnv({ APIMART_API_KEY: "", WAVESPEED_API_KEY: "wk", STUDIO_VIDEO_FACTOR: "5/3" });
+  const cookie = await account(env, "gus@example.com");
+  const p = providers({
+    ephone: (n) => failed(n === 1 ? "Rate limit exceeded, please retry later" : "Internal server error, Please contact the administrator"),
+    wavespeed: (n) => (n === 1 ? failed("Too many requests, please retry later") : vdone("wan")),
+  });
+  try {
+    const before = await creditsOf(env, cookie);
+    const c = await clip(env, cookie);
+    assert.equal(c.credits, 4, "Seedance 2.0 Fast at 480p is 4 credits with the video factor");
+    const g = await settle(env, cookie, c.id);
+    assert.equal(g.status, "failed");
+    assert.equal(g.refunded, true);
+    assert.equal(g.error, "Seedance 2.0 Fast was busy and couldn't make this one. Your credits are back.");
+    assert.deepEqual(g.busy, { model: "wan-3.0", name: "Wan 3.0", from: "Seedance 2.0 Fast", credits: 2 });
+    assert.equal(ePhoneOrders(p).length, 2, "one unseen retry, no more");
+    assert.equal(await creditsOf(env, cookie), before);
+
+    const r = await call(env, `/api/generations/${c.id}/switch`, { method: "POST", cookie, body: {} });
+    assert.equal(r.status, 200, r.text);
+    assert.deepEqual({ m: r.json.generation.model, n: r.json.generation.modelName, s: r.json.generation.status, c: r.json.generation.credits }, { m: "wan-3.0", n: "Wan 3.0", s: "running", c: 2 });
+    assert.equal(r.json.original.busy, null, "the offer is gone");
+    assert.equal(r.json.credits, before - 2, "Wan 3.0's own price, less than the busy clip cost");
+    assert.equal(wanOrders(p).length, 1);
+    assert.equal(wanOrders(p)[0].url, "https://api.wavespeed.ai/api/v3/alibaba/wan-3.0/text-to-video");
+    assert.deepEqual(wanOrders(p)[0].body, { prompt: PROMPT, duration: 5, resolution: "480p", generate_audio: true, aspect_ratio: "9:16" });
+    assert.equal((await call(env, `/api/generations/${c.id}/switch`, { method: "POST", cookie, body: {} })).status, 409, "taken once");
+    assert.ok(events(env, "studio.busy_switch").some((e) => e.id === c.id && e.model === "wan-3.0"));
+
+    // WaveSpeed drops the Wan clip once: it is sent there again, unseen, and made.
+    const made = await settle(env, cookie, r.json.generation.id);
+    assert.equal(made.status, "done", JSON.stringify(made));
+    assert.equal(made.busy, null);
+    assert.equal(wanOrders(p).length, 2);
+    assert.deepEqual(wanOrders(p)[1].body, wanOrders(p)[0].body);
+    assert.ok(events(env, "studio.busy_retry").some((e) => e.id === r.json.generation.id && e.from === "wavespeed" && e.to === "wavespeed"));
+    assert.equal(await creditsOf(env, cookie), before - 2);
+  } finally { p.restore(); }
+});
+
+test("busy clips: 'No thanks' drops the offer for good; a refusal and a copyright refusal keep their own roads", async () => {
+  const env = newEnv({ APIMART_API_KEY: "", WAVESPEED_API_KEY: "wk" });
+  const cookie = await account(env, "hal@example.com");
+  let said = "Rate limit exceeded, please retry later";
+  const p = providers({ ephone: () => failed(said) });
+  try {
+    const c = await clip(env, cookie);
+    assert.ok((await settle(env, cookie, c.id)).busy);
+    const no = await call(env, `/api/generations/${c.id}/switch`, { method: "POST", cookie, body: { decline: true } });
+    assert.equal(no.status, 200, no.text);
+    assert.equal(no.json.original.busy, null);
+    assert.equal((await call(env, `/api/generations/${c.id}/switch`, { method: "POST", cookie, body: {} })).status, 409);
+
+    said = "Content policy violation detected";
+    const refused = await settle(env, cookie, (await clip(env, cookie)).id);
+    assert.equal(refused.status, "failed");
+    assert.equal(refused.busy, null);
+    assert.equal(refused.error, "The video model could not make this one: Content policy violation detected. Your credits are back.");
+
+    said = "The request failed because the output video may be related to copyright restrictions.";
+    const cr = await settle(env, cookie, (await clip(env, cookie)).id);
+    assert.equal(cr.busy, null);
+    assert.equal(cr.offer?.name, "Wan 3.0", "a copyright refusal keeps its own offer");
+    assert.equal(events(env, "studio.busy_retry").length, 1, "only the busy clip was sent again");
+  } finally { p.restore(); }
+});
+
+test("busy clips: past its time a clip the provider still holds is never ordered twice; one it says failed is; one it finished is saved", async () => {
+  const env = newEnv({ APIMART_API_KEY: "", WAVESPEED_API_KEY: "wk" });
+  const cookie = await account(env, "ida@example.com");
+  const state = {};
+  const p = providers({ ephone: (n) => state[n] ?? { status: "in_progress" } });
+  const late = (id) => env.DB.db.prepare("UPDATE studio_generations SET created_at = ? WHERE id = ?").run(new Date(Date.now() - 50 * 60_000).toISOString(), id);
+  const poll = async (id) => { old(env); return (await call(env, `/api/generations/${id}`, { cookie })).json.generation; };
+  try {
+    const a = await clip(env, cookie);
+    late(a.id);
+    const ga = await poll(a.id);
+    assert.equal(ga.status, "failed");
+    assert.equal(ga.refunded, true);
+    assert.equal(ga.error, "Seedance 2.0 Fast was busy and couldn't make this one. Your credits are back.");
+    assert.equal(ga.busy?.model, "wan-3.0");
+    assert.equal(ePhoneOrders(p).length, 1, "never ordered again while it may still finish");
+
+    const b = await clip(env, cookie);
+    state[2] = failed("Rate limit exceeded, please retry later");
+    late(b.id);
+    assert.equal((await poll(b.id)).status, "running", "the provider said it is over: sent once more");
+    assert.equal(ePhoneOrders(p).length, 3);
+    state[3] = vdone("again");
+    assert.equal((await poll(b.id)).status, "done", "the new task has its own time");
+
+    const c = await clip(env, cookie);
+    state[4] = vdone("just");
+    late(c.id);
+    assert.equal((await poll(c.id)).status, "done", "finished just past its time: saved, not refunded");
+  } finally { p.restore(); }
+});
+
+test("busy clips: an order refused at the door for the provider's own reasons is busy at once, with no unseen retry; no money stays the money road", async () => {
+  const env = newEnv({ WAVESPEED_API_KEY: "wk" });
+  const cookie = await paidAccount(env, "jo@example.com");
+  let door = () => new Response(JSON.stringify({ error: { message: "upstream returned 503 Service Unavailable" } }), { status: 503 });
+  const p = providers({ ephone: () => ({ status: "in_progress" }), submit: () => door() });
+  try {
+    const c = await clip(env, cookie, { model: "seedance-2.5", resolution: "1080p", duration: 10, aspect: "16:9" });
+    assert.equal(c.status, "failed", JSON.stringify(c));
+    assert.equal(c.error, "Seedance 2.5 was busy and couldn't make this one. Your credits are back.");
+    assert.deepEqual(c.busy, { model: "wan-3.0", name: "Wan 3.0", from: "Seedance 2.5", credits: 7 });
+    assert.ok(c.busy.credits < c.credits, "Wan 3.0 at 1080p costs less than Seedance 2.5");
+    assert.equal(ePhoneOrders(p).length, 1, "no unseen retry at the door");
+
+    door = () => new Response(JSON.stringify({ error: { code: "insufficient_user_quota", message: "预扣费额度失败, 用户剩余额度: $0.000000" } }), { status: 403 });
+    const m = await clip(env, cookie, { model: "seedance-2.5", resolution: "720p", duration: 5, aspect: "16:9" });
+    assert.equal(m.status, "failed");
+    assert.match(m.error, /recharged/);
+    assert.equal(m.busy, null);
+  } finally { p.restore(); }
+});
+
+test("busy clips: a Veo 3.1 clip offers Veo 3.1 Fast at its own price, made on the road every clip takes", async () => {
+  const env = newEnv({ APIMART_API_KEY: "" });
+  const cookie = await paidAccount(env, "kai@example.com");
+  const p = providers({ ephone: (n) => (n <= 2 ? failed("Resource has been exhausted (e.g. check quota).") : vdone("fast")) });
+  try {
+    const c = await clip(env, cookie, { model: "veo-3.1", resolution: "1080p", duration: 8, aspect: "9:16" });
+    assert.equal(c.credits, 7);
+    const g = await settle(env, cookie, c.id);
+    assert.equal(g.status, "failed");
+    assert.equal(g.error, "Google Veo 3.1 was busy and couldn't make this one. Your credits are back.");
+    assert.deepEqual(g.busy, { model: "veo-3.1-fast", name: "Veo 3.1 Fast", from: "Google Veo 3.1", credits: 3 });
+    const first = ePhoneOrders(p);
+    assert.equal(first.length, 2);
+    assert.deepEqual(first[1].body, first[0].body);
+
+    const r = await call(env, `/api/generations/${c.id}/switch`, { method: "POST", cookie, body: {} });
+    assert.equal(r.status, 200, r.text);
+    assert.deepEqual({ m: r.json.generation.model, c: r.json.generation.credits, from: r.json.generation.settings.from }, { m: "veo-3.1-fast", c: 3, from: c.id });
+    assert.equal(r.json.credits, 100 - 3);
+    const order = ePhoneOrders(p).at(-1).body;
+    assert.equal(order.model, "veo-3.1-fast-generate-preview");
+    assert.deepEqual(order.input, first[0].body.input, "the same clip");
+    const made = await settle(env, cookie, r.json.generation.id);
+    assert.equal(made.status, "done", JSON.stringify(made));
+    assert.equal(made.busy, null);
   } finally { p.restore(); }
 });
