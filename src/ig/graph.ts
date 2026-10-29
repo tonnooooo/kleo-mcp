@@ -2,10 +2,11 @@
  * KLEO INSTAGRAM PUBLISHER — THE INSTAGRAM API CALLS (Instagram API with Instagram Login, graph.instagram.com).
  *
  * The token travels in the Authorization header, as in Meta's own curl examples, never in a URL. If Meta ever answers
- * that a call carried no token (codes 104 and 2500), the call is made once more with access_token as a parameter, the
- * older documented form, and this isolate keeps that form. Token renewal (refresh_access_token) is documented only
- * with the parameter, so it always uses it. Nothing here logs or stores a token: every error is rebuilt from Meta's
- * own message with the token taken out.
+ * as if a call carried no token or an unreadable one (codes 104, 2500 and 190), the call is made once more with
+ * access_token as a parameter, the older documented form; when that works, this isolate keeps the form. A call that
+ * Meta refused this way never ran, so repeating it (a media_publish too) cannot do anything twice. Token renewal
+ * (refresh_access_token) is documented only with the parameter, so it always uses it. Nothing here logs or stores a
+ * token: every error is rebuilt from Meta's own message with the token taken out.
  */
 
 export const GRAPH_HOST = "https://graph.instagram.com";
@@ -39,7 +40,7 @@ export function redact(text: string, secrets: (string | undefined)[]): string {
   return out;
 }
 
-const NO_TOKEN_CODES = new Set([104, 2500]);
+const NO_TOKEN_CODES = new Set([104, 190, 2500]);
 let headerWorks = true;
 
 interface MetaError { message?: string; code?: number; error_subcode?: number; error_user_title?: string; error_user_msg?: string }
@@ -73,8 +74,10 @@ export function graphClient(token: string, version: string, fetcher: Fetcher, op
     if (res.ok && parsed && typeof parsed === "object" && !parsed.error) return parsed as unknown as T;
     const err = parsed?.error;
     if (err && !asParam && NO_TOKEN_CODES.has(Number(err.code))) {
+      // Throws Meta's answer to the parameter form when that fails too (a token that is really refused).
+      const answer = await call<T>(method, path, params, true);
       headerWorks = false;
-      return call<T>(method, path, params, true);
+      return answer;
     }
     const uncertain = res.status >= 500 || res.status === 0;
     if (err) {

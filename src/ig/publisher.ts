@@ -8,18 +8,24 @@
  *   2. GET  /<container>?fields=status_code   once a minute until FINISHED, at most 5 times
  *   3. POST /<IG_ID>/media_publish   creation_id, at the chosen minute
  *   4. GET  /<media>?fields=permalink         into the log, and an e-mail to the owner
- *   with GET /<IG_ID>/content_publishing_limit (Meta's 24-hour quota) before 1 and 3. Step 1 runs LEAD_MIN minutes early
- *   so that the reel goes live on the minute; Meta has no schedule parameter of its own.
+ *   with GET /<IG_ID>/content_publishing_limit (Meta's 24-hour quota) before 1 and 3. Step 1 runs LEAD_MIN (20) minutes
+ *   early, so that the reel goes live on the minute and a failure still leaves the owner time to post by hand; Meta has
+ *   no schedule parameter of its own.
  *
  * A post enters through scripts/ig-schedule.mjs as 'new'. Every minute the cron moves each post one step:
  *   new        the cloud check, which is the dry-run: the entry's rules, the token and its account, the quota, three
  *              hours from the account's real last posts, the file in R2 and its moov box against Meta's specification,
- *              the public address Meta will fetch, and the exact request. Nothing is created  -> checked | invalid
+ *              the public address Meta will fetch, and the exact request. GET requests only  -> checked | invalid,
+ *              or -> probing when the post asks for the probe (the default)
+ *   probing    Meta's own verdict without publishing: a container made from the very request, polled like a real one,
+ *              never given to media_publish (it expires unpublished after 24 hours). FINISHED -> checked;
+ *              ERROR or EXPIRED -> invalid with Meta's words; still processing after 5 polls -> checked, with a warning
  *   checked    waits for the owner's "sì" for this one post (approved_at; approved_hash covers the post and the file's
  *              R2 etag as they were approved). LEAD_MIN before the time: the check again, then the container -> container
  *   container  FINISHED -> ready; ERROR or EXPIRED -> failed; still processing after 5 polls -> one more container,
  *              then failed
- *   ready      at the time: media_publish -> published, or publishing when Meta's answer was lost
+ *   ready      at the time: the account's last posts once more (a reel posted by hand meanwhile stops this one), then
+ *              media_publish -> published, or publishing when Meta's answer was lost
  *   publishing the container's status decides: PUBLISHED -> published, FINISHED -> ready again (3 tries in all)
  * A post that cannot go out within GRACE_MIN of its time becomes 'missed': late is never silent and never automatic.
  * The owner gets an e-mail when an approved post is published, failed, missed or refused at its last check.
@@ -56,6 +62,7 @@ export const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS ig_posts (
     id TEXT PRIMARY KEY, video_url TEXT NOT NULL, caption TEXT NOT NULL, publish_at TEXT NOT NULL, at_local TEXT NOT NULL,
     cover_url TEXT, thumb_offset_ms INTEGER, trial TEXT, outside_window INTEGER NOT NULL DEFAULT 0,
+    probe INTEGER NOT NULL DEFAULT 1, probe_container TEXT, probe_polls INTEGER NOT NULL DEFAULT 0, probe_at TEXT,
     state TEXT NOT NULL DEFAULT 'new', check_json TEXT, checked_at TEXT, video_etag TEXT,
     approved_at TEXT, approved_hash TEXT, approved_note TEXT,
     container_id TEXT, container_at TEXT, polls INTEGER NOT NULL DEFAULT 0, container_tries INTEGER NOT NULL DEFAULT 0,
@@ -68,6 +75,9 @@ export const SCHEMA = [
 ];
 
 export interface PostRow extends Post {
+  probe_container: string | null;
+  probe_polls: number;
+  probe_at: string | null;
   state: string;
   check_json: string | null;
   checked_at: string | null;
@@ -105,6 +115,8 @@ export interface Report {
   quotaFull: boolean;
   /** POST /<IG_ID>/media exactly as it would go; the token travels in the Authorization header. */
   request: Record<string, unknown>;
+  /** Meta's verdict on the probe container, once it came. */
+  probe: string | null;
 }
 
 const schemaReady = new WeakSet<object>();
@@ -222,7 +234,7 @@ export async function check(ctx: Ctx, p: PostRow): Promise<Report> {
 
   // Three hours from every other post in the schedule...
   const others = (await env.DB.prepare(`SELECT id, publish_at, published_at, media_id FROM ig_posts
-      WHERE id != ? AND state IN ('new', 'checked', 'container', 'ready', 'publishing', 'published')`).bind(p.id)
+      WHERE id != ? AND state IN ('new', 'probing', 'checked', 'container', 'ready', 'publishing', 'published')`).bind(p.id)
     .all<{ id: string; publish_at: string; published_at: string | null; media_id: string | null }>()).results ?? [];
   errors.push(...gapProblems(at, others.map((o) => {
     const ms = Date.parse(o.published_at ?? o.publish_at);
@@ -292,12 +304,19 @@ export async function check(ctx: Ctx, p: PostRow): Promise<Report> {
   return {
     ok: !errors.length && !soft.length, transient: !errors.length && soft.length > 0, at: iso(nowMs),
     errors: [...errors, ...soft], warnings, etag: etags.length ? etags.join("|") : null, video, account, quota, quotaFull,
-    request: containerParams(p),
+    request: containerParams(p), probe: null,
   };
 }
 
-const statusOf = async (g: Graph, container: string) =>
-  g.get<{ status_code?: string; status?: string }>(container, { fields: "status_code,status" });
+/** A container's status_code, with Meta's error text when it has one ("status"; asked without it if Meta knows no such field). */
+async function statusOf(g: Graph, container: string): Promise<{ status_code?: string; status?: string }> {
+  try {
+    return await g.get<{ status_code?: string; status?: string }>(container, { fields: "status_code,status" });
+  } catch (e) {
+    if (!(e instanceof GraphError) || e.code !== 100) throw e;
+    return g.get<{ status_code?: string }>(container, { fields: "status_code" });
+  }
+}
 
 async function permalinkOf(g: Graph, mediaId: string): Promise<string | null> {
   try { return (await g.get<{ permalink?: string }>(mediaId, { fields: "permalink" })).permalink ?? null; } catch { return null; }
@@ -319,6 +338,69 @@ async function settle(ctx: Ctx, a: Account & { ok: true }, p: PostRow): Promise<
   try { found = (await recentMedia(a.graph, a.igId, 5)).filter((m) => m.ms >= since).sort((x, y) => x.ms - y.ms)[0]; } catch { found = undefined; }
   if (found) await published(ctx, a, p, found.id);
   else await event(ctx.env, p.id, "Instagram says the reel went out; its id is not among the account's last posts yet", ctx.nowMs);
+}
+
+/** The check passed: Meta is asked to take the reel, in a container that will never be published. */
+async function startProbe(ctx: Ctx, p: PostRow, r: Report): Promise<void> {
+  const a = await accountOf(ctx);
+  if (!a.ok) return;
+  let id = "";
+  try {
+    id = String((await a.graph.post<{ id?: string | number }>(`${a.igId}/media`, containerParams(p))).id ?? "");
+    if (!id) throw new GraphError("Instagram answered without a container id", 200, null, null, false);
+  } catch (e) {
+    if (e instanceof GraphError && !e.uncertain) {
+      const text = `Meta refused the reel at the probe: ${e.message}`;
+      const report: Report = { ...r, ok: false, errors: [...r.errors, text], probe: text };
+      if (await move(ctx, p, "invalid", { check_json: JSON.stringify(report), checked_at: iso(ctx.nowMs), video_etag: r.etag, error: text })) {
+        await event(ctx.env, p.id, `check failed: ${text}`, ctx.nowMs);
+      }
+    } else await event(ctx.env, p.id, `the probe waits for Instagram: ${why(e)}`, ctx.nowMs);
+    return;
+  }
+  if (await move(ctx, p, "probing", { check_json: JSON.stringify(r), checked_at: iso(ctx.nowMs), video_etag: r.etag, probe_container: id, probe_polls: 0, probe_at: iso(ctx.nowMs), error: null })) {
+    await event(ctx.env, p.id, `probe container ${id}: Meta fetches the reel and judges the request; it is never published`, ctx.nowMs);
+  }
+}
+
+/** Meta's verdict joins the check's report: FINISHED and slow -> checked (slow with a warning), refused -> invalid. */
+async function probeDone(ctx: Ctx, p: PostRow, verdict: "taken" | "slow" | "refused", text: string): Promise<void> {
+  const r = JSON.parse(p.check_json ?? "null") as Report | null;
+  if (!r) return;
+  r.probe = text;
+  if (verdict === "refused") { r.ok = false; r.errors = [...r.errors, text]; }
+  if (verdict === "slow") r.warnings = [...r.warnings, text];
+  if (!(await move(ctx, p, verdict === "refused" ? "invalid" : "checked", { check_json: JSON.stringify(r), error: verdict === "refused" ? text : null }))) return;
+  const n = r.warnings.length;
+  await event(ctx.env, p.id, verdict === "refused" ? `check failed: ${text}`
+    : `checked, ${text} Waits for the owner's "sì"${n ? ` (${n} warning${n > 1 ? "s" : ""})` : ""}.`, ctx.nowMs);
+}
+
+async function pollProbe(ctx: Ctx, p: PostRow): Promise<void> {
+  const a = await accountOf(ctx);
+  if (!a.ok || !p.probe_container) return;
+  let st: { status_code?: string; status?: string };
+  try { st = await statusOf(a.graph, p.probe_container); } catch (e) {
+    if (e instanceof GraphError && !e.uncertain) await probeDone(ctx, p, "refused", `Meta lost the probe container: ${why(e)}`);
+    return;
+  }
+  const code = String(st.status_code ?? "").toUpperCase();
+  const took = Math.max(1, Math.round((ctx.nowMs - Date.parse(p.probe_at ?? p.updated_at)) / MIN));
+  if (code === "FINISHED") { await probeDone(ctx, p, "taken", `Meta fetched the video and accepted the request (FINISHED after ${took} min; the probe container is never published).`); return; }
+  if (code === "ERROR" || code === "EXPIRED") {
+    await probeDone(ctx, p, "refused", `Meta refused the reel at the probe (${code}${st.status ? `: ${st.status}` : ""}).`);
+    return;
+  }
+  if (code === "PUBLISHED") {
+    await probeDone(ctx, p, "refused", `The probe container ${p.probe_container} was published, and never by this Worker: look at @kleooai before anything else.`);
+    return;
+  }
+  const polls = p.probe_polls + 1;
+  if (polls < POLLS_MAX) {
+    await ctx.env.DB.prepare("UPDATE ig_posts SET probe_polls = ?, updated_at = ? WHERE id = ? AND state = 'probing'").bind(polls, iso(ctx.nowMs), p.id).run();
+    return;
+  }
+  await probeDone(ctx, p, "slow", `Meta was still processing the probe after ${POLLS_MAX} minutes: nothing was refused, and at the time the real container gets ${CONTAINER_TRIES} tries.`);
 }
 
 async function makeContainer(ctx: Ctx, p: PostRow): Promise<void> {
@@ -389,6 +471,13 @@ async function publish(ctx: Ctx, p: PostRow): Promise<void> {
     const q = await publishingQuota(a.graph, a.igId);
     if (q.usage >= q.total) { await event(ctx.env, p.id, `waiting for room in Meta's quota (${q.usage} of ${q.total})`, ctx.nowMs); return; }
   } catch { /* media_publish enforces the quota itself */ }
+  // The last check was LEAD_MIN ago: a reel the owner posted by hand since then (this one, maybe) stops it here.
+  try {
+    const ours = new Set(((await ctx.env.DB.prepare("SELECT media_id FROM ig_posts WHERE media_id IS NOT NULL").all<{ media_id: string }>()).results ?? []).map((r) => r.media_id));
+    const near = gapProblems(Date.parse(p.publish_at), (await recentMedia(a.graph, a.igId)).filter((m) => !ours.has(m.id))
+      .map((m) => ({ label: `the post ${m.permalink ?? m.id} (${fmtNz(m.ms)})`, ms: m.ms })));
+    if (near.length) { await fail(ctx, p, `Something went out on the account meanwhile, so this reel did not. ${near.join(" ")}`); return; }
+  } catch { /* the check LEAD_MIN ago saw none */ }
   if (!(await move(ctx, p, "publishing", { publish_tries: p.publish_tries + 1, publish_started_at: iso(ctx.nowMs) }))) return;
   let mediaId = "";
   try {
@@ -451,6 +540,7 @@ async function step(ctx: Ctx, p: PostRow): Promise<void> {
         .bind(JSON.stringify(r), iso(ctx.nowMs), r.errors[0] ?? null, iso(ctx.nowMs), p.id).run();
       return;
     }
+    if (r.ok && p.probe) { await startProbe(ctx, p, r); return; }
     if (!(await move(ctx, p, r.ok ? "checked" : "invalid", { check_json: JSON.stringify(r), checked_at: iso(ctx.nowMs), video_etag: r.etag, error: r.ok ? null : r.errors[0] }))) return;
     const n = r.warnings.length;
     await event(ctx.env, p.id, r.ok ? `checked: waits for the owner's "sì"${n ? ` (${n} warning${n > 1 ? "s" : ""})` : ""}` : `check failed: ${r.errors.join(" | ")}`, ctx.nowMs);
@@ -462,6 +552,7 @@ async function step(ctx: Ctx, p: PostRow): Promise<void> {
     else if (await move(ctx, p, "missed", { error: "never approved" })) await event(ctx.env, p.id, "missed: the owner never approved it", ctx.nowMs);
     return;
   }
+  if (p.state === "probing") { await pollProbe(ctx, p); return; }
   if (p.state === "checked") {
     if (p.approved_at && ctx.nowMs >= at - LEAD_MIN * MIN) await makeContainer(ctx, p);
     return;
@@ -484,7 +575,7 @@ export async function tick(env: IgEnv, nowMs = Date.now(), fetcher: Fetcher = (i
   await ensureSchema(env);
   const ctx: Ctx = { env, nowMs, fetcher, host: env.IG_MEDIA_HOST || MEDIA_HOST, account: null };
   const rows = (await env.DB.prepare(`SELECT id, state, publish_at, approved_at FROM ig_posts
-      WHERE state IN ('new', 'checked', 'container', 'ready', 'publishing')
+      WHERE state IN ('new', 'probing', 'checked', 'container', 'ready', 'publishing')
       OR (state = 'published' AND permalink IS NULL AND media_id IS NOT NULL AND published_at > ?) ORDER BY publish_at, id`)
     .bind(iso(nowMs - DAY)).all<{ id: string; state: string; publish_at: string; approved_at: string | null }>()).results ?? [];
   for (const { id } of rows.filter((p) => due(p, nowMs))) {

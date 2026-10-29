@@ -44,27 +44,35 @@ Optional fields:
 - `thumb_offset_ms`: the cover frame, in milliseconds.
 - `trial`: `MANUAL` or `SS_PERFORMANCE`, for a Trial Reel.
 - `outside_window`: `true` only when the owner asked for a time outside the slot.
+- `probe`: `false` skips Meta's probe (see `probing` below). It is on by default.
 - `id`
 
 The owner's side is `scripts/ig-schedule.mjs`. It runs on the PC with wrangler's own Cloudflare login, and it never
 talks to Instagram or sees the token:
 
 ```
-node scripts/ig-schedule.mjs upload reel.mp4 --name rx7-reveal   # checks the MP4, uploads under a new name, prints the URL
-node scripts/ig-schedule.mjs add entry.json --dry-run            # the rules here + the exact request; writes nothing
-node scripts/ig-schedule.mjs add entry.json                      # queues it as 'new' and prints the cloud check
+node scripts/ig-schedule.mjs upload reel.mp4 --check             # checks the MP4 against Meta's specification, uploads nothing
+node scripts/ig-schedule.mjs upload reel.mp4 --name rx7-reveal   # checks it, uploads under a new name, prints the URL
+node scripts/ig-schedule.mjs add entry.json --dry-run --offline  # the rules here + the exact request; no network at all
+node scripts/ig-schedule.mjs add entry.json --dry-run            # the same, plus 3 hours from the schedule in D1; writes nothing
+node scripts/ig-schedule.mjs add entry.json                      # queues it as 'new' and prints the cloud check and Meta's probe
 node scripts/ig-schedule.mjs approve <id> --owner "sì"           # ONLY after the owner's "sì" for this one post
 node scripts/ig-schedule.mjs list | show <id> | cancel <id> | recheck <id>
 ```
+
+The worktrees have no `node_modules`. Set `KLEO_WRANGLER` to another checkout's
+`node_modules/wrangler/bin/wrangler.js` for the commands that use D1 or R2; `upload --check` and
+`add --dry-run --offline` need no wrangler.
 
 Every minute the Worker moves each post one step (`src/ig/publisher.ts`):
 
 | State | What happens |
 |---|---|
-| `new` | **The cloud check, which is the dry-run.** It covers:<br>- the entry's rules;<br>- the token and its account (must be @kleooai, a Creator or Business account);<br>- Meta's 24-hour quota;<br>- 3 hours from the account's real last posts (app, web or API) and from the schedule;<br>- the file in R2 and its moov box against Meta's Reels specification;<br>- the public address Meta will fetch;<br>- the exact `POST /<IG_ID>/media` body.<br>Only GET requests: nothing is created. Next state: `checked` or `invalid`. |
-| `checked` | Waits for the owner's "sì". `approve` stores his words and a hash of the post plus the file's R2 etag. 7 minutes before the time, the check runs again. A post or file changed since the "sì" is refused. Then `POST /<IG_ID>/media` with `media_type=REELS`, `video_url`, `caption`, `share_to_feed=true`, `is_ai_generated=true`. |
-| `container` | `GET /<container>?fields=status_code` once a minute. `FINISHED` leads to `ready`. `ERROR` or `EXPIRED` leads to `failed`. Still processing after 5 polls: one more container, then `failed`. |
-| `ready` | At the minute: `content_publishing_limit`, then `POST /<IG_ID>/media_publish`. The media id and permalink go to `ig_events` and to the owner's e-mail. |
+| `new` | **The cloud check, which is the dry-run.** It covers:<br>- the entry's rules;<br>- the token and its account (must be @kleooai, a Creator or Business account);<br>- Meta's 24-hour quota;<br>- 3 hours from the account's real last posts (app, web or API) and from the schedule;<br>- the file in R2 and its moov box against Meta's Reels specification;<br>- the public address Meta will fetch;<br>- the exact `POST /<IG_ID>/media` body.<br>Only GET requests. Next state: `probing`, or `checked` without the probe, or `invalid`. |
+| `probing` | **Meta's own verdict, without publishing.** A container is made from the very request. Meta fetches the file from `media.kleooai.com` and judges it and the parameters. It is polled like a real one and is **never given to `media_publish`**: it expires unpublished after 24 hours.<br>- `FINISHED` leads to `checked`.<br>- `ERROR` or a refusal leads to `invalid`, with Meta's own words.<br>- Still processing after 5 polls leads to `checked`, with a warning. |
+| `checked` | Waits for the owner's "sì". `approve` stores his words and a hash of the post plus the file's R2 etag. 20 minutes before the time (`LEAD_MIN`), the check runs again. A post or file changed since the "sì" is refused. Then `POST /<IG_ID>/media` with `media_type=REELS`, `video_url`, `caption`, `share_to_feed=true`, `is_ai_generated=true`. |
+| `container` | `GET /<container>?fields=status_code` once a minute. `FINISHED` leads to `ready`. `ERROR` or `EXPIRED` leads to `failed`. Still processing after 5 polls: one more container, then `failed`. Even then the e-mail arrives about 9 minutes before the time, so the owner can still post by hand. |
+| `ready` | At the minute:<br>- `content_publishing_limit`;<br>- the account's last posts once more: a reel posted by hand since the last check stops this one, so there is never a double post;<br>- then `POST /<IG_ID>/media_publish`.<br>The media id and permalink go to `ig_events` and to the owner's e-mail. |
 | `publishing` | Meta's answer was lost. The container's status decides: `PUBLISHED` means it is done, `FINISHED` means publish again (3 tries in all). It never publishes twice. |
 
 More rules:
@@ -108,9 +116,14 @@ More rules:
 3. Set the sealing key once. It is random and never printed:
    `node -e "process.stdout.write(require('crypto').randomBytes(32).toString('base64'))" | npx wrangler secret put IG_TOKEN_KEY --config wrangler.ig.jsonc`
 4. The owner's steps below.
-5. Make a test entry and run `add`. The cloud check must report `@kleooai`.
+5. Make a test entry and run `add`, with the probe on. The cloud check must report `@kleooai`, and Meta's probe must
+   come back `FINISHED`. Nothing is published.
 
 With no token, the Worker does nothing but write "No Instagram token yet" into the check of any post that is added.
+
+Checked on 30 Oct 2026: `media.kleooai.com` serves its files to Meta's fetchers (`facebookexternalhit/1.1` and
+`meta-externalagent/1.1`) with `206 video/mp4` and no Cloudflare challenge. The probe confirms it from Meta's own
+servers on the first post.
 
 ## First post: the 1080p question
 

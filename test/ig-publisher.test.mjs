@@ -17,9 +17,14 @@ register("data:text/javascript," + encodeURIComponent(`export async function res
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
-  approvalHash, captionProblems, containerParams, defaultId, fmtNz, gapProblems, hashtags, inUsEvening, mediaKey, parseAt,
-  validateEntry, VIDEO_EXT,
+  approvalHash, captionProblems, containerParams, defaultId, fmtNz, gapProblems, hashtags, inUsEvening, LEAD_MIN, mediaKey,
+  parseAt, validateEntry, VIDEO_EXT,
 } from "../src/ig/rules.ts";
 import { inspectMp4, mp4Summary, specProblems } from "../src/ig/mp4.ts";
 import { POLLS_MAX, SCHEMA, tick } from "../src/ig/publisher.ts";
@@ -27,6 +32,11 @@ import { approveSql, cancelSql, insertPostSql, recheckSql } from "../src/ig/sql.
 import { graphClient } from "../src/ig/graph.ts";
 
 const MIN = 60_000, DAY = 24 * 60 * MIN;
+/** The container is made this many minutes before the time. */
+const L = LEAD_MIN;
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+/** ftyp + moov of the owner's NONNA_v7_Instagram_1080x1920_30.mp4 (ffmpeg), with an empty mdat: no frame, no sample. */
+const FIXTURE = join(ROOT, "test", "fixtures", "ig-reel-moov.mp4");
 
 // ── D1, R2 ───────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -118,7 +128,8 @@ const KEY = "dGVzdC1zZWFsaW5nLWtleS0zMi1ieXRlcy1sb25nIQ==";
 const IG_ID = "17841400000000001";
 const VIDEO = "https://media.kleooai.com/ig/2026-11-03-rx7-reveal-k2m4.mp4";
 const T0 = Date.parse("2026-11-03T00:30:00Z"); // Tue 3 Nov 2026, 13:30 NZDT = 19:30 EST on the 2nd
-const ENTRY = { video: VIDEO, caption: "This RX-7 doesn't exist. Made with Kleo. #rx7 #jdm #aivideo #kleo", at: "2026-11-03 13:30", ai: true };
+// The flows below test the publishing road, so their entry skips Meta's probe; the probe has tests of its own.
+const ENTRY = { video: VIDEO, caption: "This RX-7 doesn't exist. Made with Kleo. #rx7 #jdm #aivideo #kleo", at: "2026-11-03 13:30", ai: true, probe: false };
 const igStamp = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "+0000");
 
 function setup(opts = {}) {
@@ -156,7 +167,7 @@ function setup(opts = {}) {
     if (method === "GET" && p === "me") return json({ user_id: IG_ID, username: g.username, account_type: "MEDIA_CREATOR", id: "999" });
     if (method === "GET" && p === `${IG_ID}/content_publishing_limit`) return json({ data: [{ quota_usage: g.quota.usage, config: { quota_total: g.quota.total, quota_duration: 86400 } }] });
     if (method === "GET" && p === `${IG_ID}/media`) return json({ data: g.recent.map((m) => ({ id: m.id, timestamp: igStamp(m.ms), permalink: m.permalink })) });
-    if (method === "POST" && p === `${IG_ID}/media`) return json({ id: `c${++g.containers}` });
+    if (method === "POST" && p === `${IG_ID}/media`) return g.refuseContainer ? json({ error: g.refuseContainer }, 400) : json({ id: `c${++g.containers}` });
     if (method === "POST" && p === `${IG_ID}/media_publish`) {
       const fail = g.publishFails.shift();
       if (fail === "lost-before") throw new TypeError("network connection lost");
@@ -366,7 +377,7 @@ test("MP4: what Meta refuses is an error, what only misses the owner's quality i
 
 // ── the job ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
-test("an approved reel: the cloud check creates nothing, the container 7 minutes early, published on the minute", async () => {
+test("an approved reel: the cloud check creates nothing, the container LEAD_MIN minutes early, published on the minute", async () => {
   const { env, g, run, logs } = setup();
   const post = addPost(env, ENTRY, T0 - 2 * 60 * MIN);
   await run(T0 - 60 * MIN);
@@ -381,12 +392,12 @@ test("an approved reel: the cloud check creates nothing, the container 7 minutes
   assert.equal(g.calls.filter((c) => c.method !== "GET" && c.method !== "HEAD").length, 0, "the check only asks");
   assert.ok(g.calls.some((c) => c.method === "HEAD" && c.host === "media.kleooai.com"), "the public address Meta will fetch is checked");
 
-  await run(T0 - 7 * MIN);
+  await run(T0 - L * MIN);
   assert.equal(row(env, post.id).state, "checked", "nothing happens without the owner's sì");
   await approve(env, post.id, T0 - 30 * MIN);
-  await run(T0 - 8 * MIN);
+  await run(T0 - (L + 1) * MIN);
   assert.equal(row(env, post.id).state, "checked", "not before the lead time");
-  await run(T0 - 7 * MIN);
+  await run(T0 - L * MIN);
   r = row(env, post.id);
   assert.equal(r.state, "container");
   assert.equal(r.container_id, "c1");
@@ -396,9 +407,9 @@ test("an approved reel: the cloud check creates nothing, the container 7 minutes
   assert.equal(create[0].auth, `Bearer ${TOKEN}`);
   assert.match(create[0].url, /^https:\/\/graph\.instagram\.com\/v26\.0\//);
 
-  await run(T0 - 6 * MIN);
+  await run(T0 - (L - 1) * MIN);
   assert.equal(row(env, post.id).state, "container");
-  await run(T0 - 5 * MIN);
+  await run(T0 - (L - 2) * MIN);
   assert.equal(row(env, post.id).state, "ready");
   await run(T0 - 1 * MIN);
   assert.equal(posts(g, "/media_publish").length, 0, "not before its minute");
@@ -421,7 +432,7 @@ test("an approved reel: the cloud check creates nothing, the container 7 minutes
 test("never approved: no container, missed after the grace minutes, no e-mail", async () => {
   const { env, g, run } = setup();
   const post = addPost(env, ENTRY, T0 - 2 * 60 * MIN);
-  for (const m of [-60, -7, -6, -1, 0, 5, 15]) await run(T0 + m * MIN);
+  for (const m of [-60, -L, -L + 1, -1, 0, 5, 15]) await run(T0 + m * MIN);
   assert.equal(row(env, post.id).state, "checked");
   await run(T0 + 16 * MIN);
   assert.equal(row(env, post.id).state, "missed");
@@ -471,8 +482,8 @@ test("the container fails: ERROR stops it and tells the owner; still processing 
     const post = addPost(env, ENTRY, T0 - 2 * 60 * MIN);
     await run(T0 - 60 * MIN);
     await approve(env, post.id, T0 - 30 * MIN);
-    await run(T0 - 7 * MIN);
-    await run(T0 - 6 * MIN);
+    await run(T0 - L * MIN);
+    await run(T0 - (L - 1) * MIN);
     assert.equal(row(env, post.id).state, "failed");
     assert.match(row(env, post.id).error, /ERROR: Error: the video format is not supported/);
     assert.equal(posts(g, "/media_publish").length, 0);
@@ -483,7 +494,7 @@ test("the container fails: ERROR stops it and tells the owner; still processing 
     const post = addPost(env, ENTRY, T0 - 2 * 60 * MIN);
     await run(T0 - 60 * MIN);
     await approve(env, post.id, T0 - 30 * MIN);
-    for (let m = -7; m <= 0; m++) await run(T0 + m * MIN);
+    for (let m = -L; m <= 0; m++) await run(T0 + m * MIN);
     const r = row(env, post.id);
     assert.equal(r.state, "published");
     assert.equal(r.container_id, "c2");
@@ -495,7 +506,7 @@ test("the container fails: ERROR stops it and tells the owner; still processing 
     const post = addPost(env, ENTRY, T0 - 2 * 60 * MIN);
     await run(T0 - 60 * MIN);
     await approve(env, post.id, T0 - 30 * MIN);
-    for (let m = -7; m <= 6; m++) await run(T0 + m * MIN);
+    for (let m = -L; m <= 6; m++) await run(T0 + m * MIN);
     assert.equal(row(env, post.id).state, "failed");
     assert.equal(posts(g, `${IG_ID}/media`).length, 2);
     assert.equal(posts(g, "/media_publish").length, 0);
@@ -509,7 +520,7 @@ test("a lost answer never publishes twice; a refusal stops; Meta's quota makes i
     const post = addPost(env, ENTRY, T0 - 2 * 60 * MIN);
     await run(T0 - 60 * MIN);
     await approve(env, post.id, T0 - 30 * MIN);
-    for (let m = -7; m <= 0; m++) await run(T0 + m * MIN);
+    for (let m = -L; m <= 0; m++) await run(T0 + m * MIN);
     assert.equal(row(env, post.id).state, "publishing");
     await run(T0 + MIN);
     await run(T0 + 2 * MIN);
@@ -523,7 +534,7 @@ test("a lost answer never publishes twice; a refusal stops; Meta's quota makes i
     const post = addPost(env, ENTRY, T0 - 2 * 60 * MIN);
     await run(T0 - 60 * MIN);
     await approve(env, post.id, T0 - 30 * MIN);
-    for (let m = -7; m <= 1; m++) await run(T0 + m * MIN);
+    for (let m = -L; m <= 1; m++) await run(T0 + m * MIN);
     assert.equal(row(env, post.id).state, "published");
     assert.equal(posts(g, "/media_publish").length, 2);
     assert.equal(g.media, 1, "one reel on the account");
@@ -534,7 +545,7 @@ test("a lost answer never publishes twice; a refusal stops; Meta's quota makes i
     const post = addPost(env, ENTRY, T0 - 2 * 60 * MIN);
     await run(T0 - 60 * MIN);
     await approve(env, post.id, T0 - 30 * MIN);
-    for (let m = -7; m <= 2; m++) await run(T0 + m * MIN);
+    for (let m = -L; m <= 2; m++) await run(T0 + m * MIN);
     assert.equal(row(env, post.id).state, "failed");
     assert.match(row(env, post.id).error, /could not be published \(code 100\/2207051\)/);
     assert.equal(posts(g, "/media_publish").length, 1);
@@ -545,11 +556,11 @@ test("a lost answer never publishes twice; a refusal stops; Meta's quota makes i
     await run(T0 - 60 * MIN);
     await approve(env, post.id, T0 - 30 * MIN);
     g.quota = { usage: 100, total: 100 };
-    await run(T0 - 7 * MIN);
+    await run(T0 - L * MIN);
     assert.equal(row(env, post.id).state, "checked");
     assert.equal(posts(g, `${IG_ID}/media`).length, 0);
     g.quota = { usage: 99, total: 100 };
-    await run(T0 - 6 * MIN);
+    await run(T0 - (L - 1) * MIN);
     assert.equal(row(env, post.id).state, "container");
   }
 });
@@ -561,7 +572,7 @@ test("a change after the owner's sì is never published, and neither is a post w
     await run(T0 - 60 * MIN);
     await approve(env, post.id, T0 - 30 * MIN);
     env.DB.db.prepare("UPDATE ig_posts SET caption = caption || ' #fast' WHERE id = ?").run(post.id);
-    await run(T0 - 7 * MIN);
+    await run(T0 - L * MIN);
     assert.equal(row(env, post.id).state, "invalid");
     assert.match(row(env, post.id).error, /changed after the owner approved it/);
     assert.equal(g.calls.filter((c) => c.method === "POST").length, 0);
@@ -573,7 +584,7 @@ test("a change after the owner's sì is never published, and neither is a post w
     await run(T0 - 60 * MIN);
     await approve(env, post.id, T0 - 30 * MIN);
     env.MEDIA.put("ig/2026-11-03-rx7-reveal-k2m4.mp4", mp4({ seconds: 14 }), "video/mp4");
-    await run(T0 - 7 * MIN);
+    await run(T0 - L * MIN);
     assert.match(row(env, post.id).error, /changed after the owner approved it/);
     assert.equal(g.calls.filter((c) => c.method === "POST").length, 0);
   }
@@ -594,8 +605,8 @@ test("two minutes running at once publish once", async () => {
   const post = addPost(env, ENTRY, T0 - 2 * 60 * MIN);
   await run(T0 - 60 * MIN);
   await approve(env, post.id, T0 - 30 * MIN);
-  await run(T0 - 7 * MIN);
-  await run(T0 - 6 * MIN);
+  await run(T0 - L * MIN);
+  await run(T0 - (L - 1) * MIN);
   assert.equal(row(env, post.id).state, "ready");
   g.now = T0;
   await Promise.all([tick(env, T0, fetcher), tick(env, T0, fetcher), tick(env, T0, fetcher)]);
@@ -638,6 +649,122 @@ test("the token: renewed after 7 days, sealed in D1, used from then on; a pasted
   assert.equal(unkeyed.env.OWNER_MAIL.sent.length, 1, "once a day");
   assert.match(unkeyed.env.OWNER_MAIL.sent[0].raw, /expires on .*IG_TOKEN_KEY is not set/s);
   assert.equal(unkeyed.g.calls.filter((c) => c.path === "/refresh_access_token").length, 0);
+});
+
+test("the probe: Meta judges the very request before the owner's sì, and that container is never published", async () => {
+  const { env, g, run, logs } = setup({ statuses: ["IN_PROGRESS", "FINISHED"] });
+  const post = addPost(env, { ...ENTRY, probe: true }, T0 - 3 * 60 * MIN);
+  await run(T0 - 120 * MIN);
+  let r = row(env, post.id);
+  assert.equal(r.state, "probing", r.error);
+  assert.equal(r.probe_container, "c1");
+  assert.deepEqual(posts(g, `${IG_ID}/media`)[0].body, { media_type: "REELS", video_url: VIDEO, caption: ENTRY.caption, share_to_feed: true, is_ai_generated: true });
+  await run(T0 - 119 * MIN);
+  assert.equal(row(env, post.id).state, "probing");
+  await run(T0 - 118 * MIN);
+  r = row(env, post.id);
+  assert.equal(r.state, "checked");
+  const report = JSON.parse(r.check_json);
+  assert.equal(report.ok, true);
+  assert.match(report.probe, /^Meta fetched the video and accepted the request \(FINISHED after 2 min/);
+  assert.ok(events(env, post.id).some((e) => e.startsWith("checked, Meta fetched the video")));
+  assert.equal(posts(g, "/media_publish").length, 0);
+  await approve(env, post.id, T0 - 60 * MIN);
+  for (let m = -L; m <= 0; m++) await run(T0 + m * MIN);
+  r = row(env, post.id);
+  assert.equal(r.state, "published");
+  assert.equal(r.container_id, "c2");
+  assert.deepEqual(posts(g, "/media_publish").map((c) => c.body), [{ creation_id: "c2" }], "the probe container c1 is never published");
+  assertNoToken(env, g, logs, TOKEN);
+});
+
+test("the probe refused, by Meta's ERROR or at once: invalid with Meta's own words, nothing published, no alarm", async () => {
+  {
+    const { env, g, run } = setup({ statuses: ["ERROR"] });
+    const post = addPost(env, { ...ENTRY, probe: true }, T0 - DAY);
+    await run(T0 - DAY + MIN);
+    await run(T0 - DAY + 2 * MIN);
+    const r = row(env, post.id);
+    assert.equal(r.state, "invalid");
+    assert.match(r.error, /Meta refused the reel at the probe \(ERROR: Error: the video format is not supported/);
+    assert.equal(posts(g, "/media_publish").length, 0);
+    assert.equal(env.OWNER_MAIL.sent.length, 0, "a refused check is the dry-run's answer, not an alarm");
+  }
+  {
+    const { env, g, run } = setup();
+    g.refuseContainer = { message: "Media download has failed. The media URI doesn't meet our requirements.", code: 9004, error_subcode: 2207052 };
+    const post = addPost(env, { ...ENTRY, probe: true }, T0 - DAY);
+    await run(T0 - DAY + MIN);
+    assert.equal(row(env, post.id).state, "invalid");
+    assert.match(row(env, post.id).error, /Meta refused the reel at the probe: Media download has failed.*\(code 9004\/2207052\)/);
+  }
+});
+
+test("a real reel's structure (the moov box of the owner's Nonna v7 Instagram file, by ffmpeg) passes, end to end", async () => {
+  const bytes = new Uint8Array(readFileSync(FIXTURE));
+  const info = await inspect(bytes);
+  assert.deepEqual([info.video.width, info.video.height, info.video.fps, info.video.profile, info.video.chroma, info.video.editList], [1080, 1920, 30, 100, 1, false]);
+  assert.ok(Math.abs(info.video.kbps - 15_100) < 200, String(info.video.kbps));
+  assert.deepEqual([info.audio.codec, info.audio.sampleRate, info.audio.channels], ["mp4a", 48_000, 2]);
+  assert.ok(Math.abs(info.durationS - 22.4) < 0.1, String(info.durationS));
+  assert.deepEqual(specProblems(info).errors, []);
+  const { env, g, run } = setup({ video: bytes, statuses: ["FINISHED"] });
+  const post = addPost(env, { ...ENTRY, probe: true }, T0 - 3 * 60 * MIN);
+  await run(T0 - 120 * MIN);
+  await run(T0 - 119 * MIN);
+  const r = row(env, post.id);
+  assert.equal(r.state, "checked", r.error);
+  assert.match(JSON.parse(r.check_json).video, /^1080x1920 H\.264 30 fps 15\.\d Mb\/s · AAC 48 kHz stereo 3\d\d kb\/s · 22\.\d s/);
+  await approve(env, post.id, T0 - 60 * MIN);
+  for (let m = -L; m <= 0; m++) await run(T0 + m * MIN);
+  assert.equal(row(env, post.id).state, "published");
+  assert.equal(posts(g, "/media_publish").length, 1);
+});
+
+test("a reel posted by hand after the last check stops this one at its minute: no double post (ACCOUNT_RULES 16)", async () => {
+  const { env, g, run } = setup({ statuses: ["FINISHED"] });
+  const post = addPost(env, ENTRY, T0 - 2 * 60 * MIN);
+  await run(T0 - 60 * MIN);
+  await approve(env, post.id, T0 - 30 * MIN);
+  await run(T0 - L * MIN);
+  await run(T0 - (L - 1) * MIN);
+  assert.equal(row(env, post.id).state, "ready");
+  g.recent.unshift({ id: "m0", ms: T0 - 5 * MIN, permalink: "https://www.instagram.com/reel/BYHAND/" });
+  await run(T0);
+  const r = row(env, post.id);
+  assert.equal(r.state, "failed");
+  assert.match(r.error, /went out on the account meanwhile.*BYHAND/);
+  assert.equal(posts(g, "/media_publish").length, 0);
+  assert.match(env.OWNER_MAIL.sent[0].raw, /NOT published/);
+});
+
+test("the owner's command line: upload --check and add --dry-run --offline need neither wrangler nor the network", () => {
+  const cli = (...args) => spawnSync(process.execPath, [join(ROOT, "scripts", "ig-schedule.mjs"), ...args],
+    { encoding: "utf8", env: { ...process.env, KLEO_WRANGLER: join(ROOT, "no-wrangler-here.js") } });
+  const up = cli("upload", FIXTURE, "--check");
+  assert.equal(up.status, 0, up.stdout + up.stderr);
+  assert.match(up.stdout, /1080x1920 H\.264 30 fps/);
+  assert.match(up.stdout, /Check only: nothing uploaded\./);
+  const dir = mkdtempSync(join(tmpdir(), "ig-cli-"));
+  const day = new Intl.DateTimeFormat("en-CA", { timeZone: "Pacific/Auckland", year: "numeric", month: "2-digit", day: "2-digit" }).format(Date.now() + 2 * DAY);
+  const entry = { video: "https://media.kleooai.com/ig/test-reel.mp4", caption: "A test. #kleo #aivideo", at: `${day} 13:30`, ai: true };
+  writeFileSync(join(dir, "good.json"), JSON.stringify(entry));
+  const ok = cli("add", join(dir, "good.json"), "--dry-run", "--offline");
+  assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+  assert.match(ok.stdout, /"is_ai_generated":true/);
+  assert.match(ok.stdout, /"share_to_feed":true/);
+  assert.match(ok.stdout, /Dry run: the entry is valid, nothing was written\./);
+  writeFileSync(join(dir, "bad.json"), JSON.stringify({ ...entry, caption: "#a1 #b2 #c3 #d4 #e5 #f6" }));
+  const bad = cli("add", join(dir, "bad.json"), "--dry-run", "--offline");
+  assert.equal(bad.status, 1);
+  assert.match(bad.stdout, /ERROR: The caption has 6 hashtags/);
+  assert.match(bad.stderr, /Not added\./);
+  const real = cli("add", join(dir, "good.json"), "--offline");
+  assert.equal(real.status, 1);
+  assert.match(real.stderr, /--offline goes with --dry-run only/);
+  const list = cli("list");
+  assert.equal(list.status, 1);
+  assert.match(list.stderr, /wrangler is not at/);
 });
 
 // Last on purpose: the fallback switches this isolate to the access_token parameter for every later call.

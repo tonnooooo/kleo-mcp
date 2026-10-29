@@ -19,8 +19,11 @@ export const MAX_HASHTAGS = 5;
 export const MIN_GAP_H = 3;
 export const MAX_CAPTION = 2200;
 export const MAX_MENTIONS = 20;
-/** Minutes before the publish time when the container is made, so that the reel goes live on the minute. */
-export const LEAD_MIN = 7;
+/**
+ * Minutes before the publish time when the container is made. Meta's processing takes 1-5 minutes; 20 minutes leave
+ * room for a second container and, when both fail, an e-mail early enough for the owner to post by hand on time.
+ */
+export const LEAD_MIN = 20;
 /** An entry must reach the schedule this early: the cloud check runs first, then the owner says "sì". */
 export const MIN_AHEAD_MIN = 10;
 /** A date further away is more likely a typo (a wrong month or year) than a plan. */
@@ -47,6 +50,11 @@ export interface Entry {
   trial?: string;
   /** The owner asked for a time outside the US-evening slot (ACCOUNT_RULES 18 is a default, not a law). */
   outside_window?: boolean;
+  /**
+   * The cloud check also asks Meta to take the reel (a container that is never published): Meta fetches the file and
+   * judges the request before the owner's "sì". On unless false.
+   */
+  probe?: boolean;
   id?: string;
 }
 
@@ -63,6 +71,8 @@ export interface Post {
   thumb_offset_ms: number | null;
   trial: string | null;
   outside_window: number;
+  /** 1: the cloud check makes a probe container (never published). */
+  probe: number;
 }
 
 export interface Verdict { errors: string[]; warnings: string[] }
@@ -191,7 +201,7 @@ export function gapProblems(atMs: number, others: { label: string; ms: number }[
 
 // ── one entry, one post ──────────────────────────────────────────────────────────────────────────────────────────
 
-const KNOWN = new Set(["video", "caption", "at", "ai", "cover", "thumb_offset_ms", "trial", "outside_window", "id"]);
+const KNOWN = new Set(["video", "caption", "at", "ai", "cover", "thumb_offset_ms", "trial", "outside_window", "probe", "id"]);
 
 /** The rules every post must keep whenever it is looked at: when it is added, at its cloud check, before it goes out. */
 export function postProblems(p: Post, host = MEDIA_HOST): Verdict {
@@ -240,6 +250,7 @@ export function validateEntry(input: unknown, nowMs: number, host = MEDIA_HOST):
   if (e.thumb_offset_ms !== undefined && typeof e.thumb_offset_ms !== "number") errors.push("\"thumb_offset_ms\" is a number.");
   if (e.trial !== undefined && typeof e.trial !== "string") errors.push(`"trial" is ${TRIALS.join(" or ")}.`);
   if (e.outside_window !== undefined && typeof e.outside_window !== "boolean") errors.push("\"outside_window\" is true or false.");
+  if (e.probe !== undefined && typeof e.probe !== "boolean") errors.push("\"probe\" is true or false.");
   if (e.id !== undefined && typeof e.id !== "string") errors.push("\"id\" is a short name.");
   if (!video || caption === null || !at) return { errors, warnings, post: null };
   const when = parseAt(at);
@@ -256,6 +267,7 @@ export function validateEntry(input: unknown, nowMs: number, host = MEDIA_HOST):
     thumb_offset_ms: typeof e.thumb_offset_ms === "number" ? e.thumb_offset_ms : null,
     trial: str("trial"),
     outside_window: e.outside_window === true ? 1 : 0,
+    probe: e.probe === false ? 0 : 1,
   };
   const v = postProblems(post, host);
   return { errors: [...errors, ...v.errors], warnings: [...warnings, ...v.warnings], post };

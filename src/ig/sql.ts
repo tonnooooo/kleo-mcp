@@ -18,9 +18,9 @@ export function sqlInt(n: number | null): string {
 export function insertPostSql(p: Post, nowIso: string): string {
   const values = [
     sqlText(p.id), sqlText(p.video_url), sqlText(p.caption), sqlText(p.publish_at), sqlText(p.at_local), sqlText(p.cover_url),
-    sqlInt(p.thumb_offset_ms), sqlText(p.trial), sqlInt(p.outside_window), "'new'", sqlText(nowIso), sqlText(nowIso),
+    sqlInt(p.thumb_offset_ms), sqlText(p.trial), sqlInt(p.outside_window), sqlInt(p.probe), "'new'", sqlText(nowIso), sqlText(nowIso),
   ];
-  return `INSERT INTO ig_posts (id, video_url, caption, publish_at, at_local, cover_url, thumb_offset_ms, trial, outside_window, state, created_at, updated_at) VALUES (${values.join(", ")})`;
+  return `INSERT INTO ig_posts (id, video_url, caption, publish_at, at_local, cover_url, thumb_offset_ms, trial, outside_window, probe, state, created_at, updated_at) VALUES (${values.join(", ")})`;
 }
 
 /** The owner's "sì" for one checked post: his words, and the hash of what he approved (approvalHash, src/ig/rules.ts). */
@@ -29,10 +29,10 @@ export function approveSql(id: string, hash: string, ownerWords: string, nowIso:
 }
 
 export function cancelSql(id: string, nowIso: string): string {
-  return `UPDATE ig_posts SET state = 'cancelled', updated_at = ${sqlText(nowIso)} WHERE id = ${sqlText(id)} AND state IN ('new', 'checked', 'invalid', 'container', 'ready')`;
+  return `UPDATE ig_posts SET state = 'cancelled', updated_at = ${sqlText(nowIso)} WHERE id = ${sqlText(id)} AND state IN ('new', 'probing', 'checked', 'invalid', 'container', 'ready')`;
 }
 
 /** Back to 'new' for the cloud check, e.g. once the token is in: only a post nobody approved yet. */
 export function recheckSql(id: string, nowIso: string): string {
-  return `UPDATE ig_posts SET state = 'new', check_json = NULL, checked_at = NULL, video_etag = NULL, error = NULL, updated_at = ${sqlText(nowIso)} WHERE id = ${sqlText(id)} AND approved_at IS NULL AND state IN ('invalid', 'checked')`;
+  return `UPDATE ig_posts SET state = 'new', check_json = NULL, checked_at = NULL, video_etag = NULL, error = NULL, probe_container = NULL, probe_polls = 0, probe_at = NULL, updated_at = ${sqlText(nowIso)} WHERE id = ${sqlText(id)} AND approved_at IS NULL AND state IN ('invalid', 'checked')`;
 }
