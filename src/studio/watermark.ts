@@ -28,8 +28,15 @@ export const MARK_W = 1428;
 export const MARK_H = 384;
 /** The pill is already 78% opaque; drawn at 0.9 it stays readable on a white picture and quiet on a dark one. */
 export const MARK_OPACITY = 0.9;
-/** A clip longer than this waits too long for its mark (the "saving" rescue takes a job back after 4 minutes). */
-export const VIDEO_MARK_TIMEOUT_MS = 200_000;
+/**
+ * How long Studio waits for kleo-watermark on one clip. Only Studio's own clips come here (480p-1080p, at most 15 s:
+ * a 10 s 720p clip takes 16 s on the Container); animatics and films carry the mark from the GPU render. The clip's
+ * download (90 s) plus this wait stay under the 4 minutes after which refreshGeneration takes a "saving" row back.
+ * watermark/server.py stops its ffmpeg a little before this.
+ */
+export const VIDEO_MARK_TIMEOUT_MS = 120_000;
+/** The Images binding's largest input (developers.cloudflare.com/images/get-started/limits): bigger pictures stay clean. */
+export const IMAGES_MAX_INPUT = 20 * 1024 * 1024;
 
 export interface MarkPlace { width: number; height: number; x: number; y: number }
 
@@ -80,6 +87,7 @@ const PICTURE_FORMATS: Record<string, "image/jpeg" | "image/png" | "image/webp">
 export async function markPicture(env: StudioEnv, bytes: Uint8Array, type: string): Promise<{ bytes: Uint8Array; type: string } | null> {
   const format = PICTURE_FORMATS[type];
   if (!env.IMAGES || !format) return null;
+  if (bytes.byteLength > IMAGES_MAX_INPUT) throw new Error(`the picture is ${Math.round(bytes.byteLength / 1048576)} MB, over the Images binding's 20 MB input`);
   const info = await env.IMAGES.info(streamOf(bytes));
   if (!("width" in info)) return null;
   const at = markPlacement(info.width, info.height);
@@ -92,7 +100,7 @@ export async function markPicture(env: StudioEnv, bytes: Uint8Array, type: strin
 
 /**
  * Sends the clip saved at `key` through the kleo-watermark Worker and saves what comes back at markedKey(key).
- * Null when the Worker is not bound (the clip stays clean). Streams both ways, so a one-minute animatic fits.
+ * Null when the Worker is not bound (the clip stays clean). Streams both ways, so no clip is held in memory.
  */
 export async function markVideo(env: StudioEnv, key: string): Promise<{ key: string; size: number; cpuS: number | null } | null> {
   if (!env.WATERMARK) return null;
@@ -144,9 +152,42 @@ export async function saveMarkedCopy(env: StudioEnv, who: { userId: string; genI
   }
 }
 
-/** The key to serve: the marked copy when the owner shows the mark and the copy exists, else the clean file. */
-export async function servedKey(env: StudioEnv, ownerId: string, key: string, showsMark: (userId: string) => Promise<boolean>): Promise<{ key: string; marked: boolean }> {
+/**
+ * The key to serve: the marked copy when the owner shows the mark and the copy exists, else the clean file.
+ * A picture with no copy yet gets one drawn now (healPicture): one made before the mark existed, while the account
+ * was paying (a refund or a dispute made it "never paid" again), or whose mark failed when it was saved.
+ */
+export async function servedKey(env: StudioEnv, ownerId: string, key: string, showsMark: (userId: string) => Promise<boolean>, kind?: string | null): Promise<{ key: string; marked: boolean }> {
   if (!madeByKleo(key, ownerId) || !(await showsMark(ownerId))) return { key, marked: false };
   const copy = markedKey(key);
-  return (await env.RENDERS.head(copy)) ? { key: copy, marked: true } : { key, marked: false };
+  if (await env.RENDERS.head(copy)) return { key: copy, marked: true };
+  return kind === "image" && (await healPicture(env, ownerId, key)) ? { key: copy, marked: true } : { key, marked: false };
+}
+
+/** Pictures this isolate could not mark lately: a miss is tried again after an hour, not on every view. */
+const missed = new Map<string, number>();
+const MISS_RETRY_MS = 3_600_000;
+
+async function healPicture(env: StudioEnv, ownerId: string, key: string): Promise<boolean> {
+  const at = missed.get(key);
+  if (at !== undefined && Date.now() - at < MISS_RETRY_MS) return false;
+  const miss = (): false => {
+    if (missed.size > 5000) missed.clear();
+    missed.set(key, Date.now());
+    return false;
+  };
+  try {
+    const obj = await env.RENDERS.get(key);
+    if (!obj) return miss();
+    if (obj.size > IMAGES_MAX_INPUT) { await obj.body.cancel().catch(() => {}); return miss(); }
+    const bytes = new Uint8Array(await obj.arrayBuffer());
+    const m = await markPicture(env, bytes, obj.httpMetadata?.contentType ?? "");
+    if (!m) return miss();
+    await env.RENDERS.put(markedKey(key), m.bytes, { httpMetadata: { contentType: m.type } });
+    await audit(env as unknown as Env, ownerId, null, "studio.marked", { kind: "image", key, late: true }).catch(() => {});
+    return true;
+  } catch (e) {
+    await audit(env as unknown as Env, ownerId, null, "studio.mark_failed", { kind: "image", key, late: true, error: String(e instanceof Error ? e.message : e).slice(0, 300) }).catch(() => {});
+    return miss();
+  }
 }

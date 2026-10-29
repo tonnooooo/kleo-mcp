@@ -261,8 +261,9 @@ export const isAdmin = (env: StudioEnv, userId: string): boolean => adminIds(env
  */
 export async function showsMark(env: StudioEnv, userId: string): Promise<boolean> {
   if ((env.STUDIO_WATERMARK ?? "").trim() === "off" || isAdmin(env, userId)) return false;
-  if (await hasPaid(asEnv(env), userId)) return false;
-  return !(await compPlanActive(env, userId));
+  // Both reads at once: every /media request of such an account asks this, Range requests of a clip included.
+  const [paid, comp] = await Promise.all([hasPaid(asEnv(env), userId), compPlanActive(env, userId)]);
+  return !paid && !comp;
 }
 
 /**
@@ -495,8 +496,13 @@ export async function retryDescribed(env: StudioEnv, userId: string, g: Generati
   const claim = (id: string) => settleOffer(env, g.id, userId, "rewrite", id);
 
   if (kind === "image") {
+    // An account that shows the Kleo mark gets the rewrite at 2K at most, like Kleo's own FLUX 3 retries
+    // (image-models.ts imageAlternatives): a 4K FLUX 3 PNG is over the Images binding's 20 MB input
+    // (src/studio/watermark.ts), so it could not carry the mark; and it costs $0.32 against the $0.08 Nano Banana 2 4K
+    // picture whose credits were charged ($0.05 at 2K).
+    const capped = asked.quality === "4K" && (await showsMark(env, userId));
     const made = await createImageGeneration(env, userId, {
-      kind: "image", prompt: described, settings: { ...asked, model: FALLBACK_IMAGE_MODEL }, imageIds: rows.map((r) => r.id), chatId: g.chat_id, messageId: g.message_id,
+      kind: "image", prompt: described, settings: { ...asked, ...(capped ? { quality: "2K" } : {}), model: FALLBACK_IMAGE_MODEL }, imageIds: rows.map((r) => r.id), chatId: g.chat_id, messageId: g.message_id,
     }, origin, { credits: g.credits, extra: { from: g.id, rewritten: true }, claim });
     await audit(asEnv(env), userId, g.id, "studio.rewrite", { to: made.id, kind });
     return made;
