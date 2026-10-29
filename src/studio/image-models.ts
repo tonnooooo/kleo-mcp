@@ -33,6 +33,7 @@
  * Pure module, imported directly by the tests.
  */
 import { CREDIT_USD, DEFAULT_MARGIN } from "./models.ts";
+import { EPHONE_NO_MONEY_RE } from "../ephone.ts";
 
 export type ImageModelKey = "nano-banana-pro" | "nano-banana-2.1" | "nano-banana-2" | "seedream-5" | "flux-2-pro" | "flux-3" | "gpt-image-2.5";
 export type ImageQuality = "1K" | "2K" | "4K";
@@ -146,6 +147,36 @@ export function imageAlternatives(s: ImageSettings, prompt: string, refs: string
 /** The first second-try a refusal earns, or null. */
 export function alternativeFor(alts: ImageAlternative[] | undefined, message: string): ImageAlternative | null {
   return (alts ?? []).find((a) => (a.when === "protected" ? isProtectedContent(message) : isContentRefusal(message))) ?? null;
+}
+
+/**
+ * A picture the provider dropped for its own reasons: a rate limit, an overloaded or failing upstream (29 October 2026:
+ * a new account's first two Nano Banana 2 pictures failed in one and two seconds on ePhone, "Rate limit exceeded,
+ * please retry later" and "Internal server error, Please contact the administrator", and the person left). Never a
+ * refusal of the picture itself nor an empty balance: those keep their own roads (FLUX 3, the money alarm).
+ */
+export const isProviderBusy = (message: string): boolean =>
+  !isContentRefusal(message) && !EPHONE_NO_MONEY_RE.test(message) && !/balance|insufficient|余额|额度|欠费/i.test(message) &&
+  /rate.?limit|too many requests|\b429\b|\b50[234]\b|exhausted|overload|capacity|busy|internal (?:server )?error|server error|unavailable|bad gateway|gateway time-?out|try again later|retry later|please retry|饱和|稍后再试|稍后重试|限流/i.test(message);
+/**
+ * Where a picture goes when its model stays busy (29 October 2026, the owner: "non deve più accadere, così abbiamo perso
+ * un cliente"): the first of these that is not that model and not paused. Both are free models, so every account may
+ * take the offer; Seedream 5.0 made the lost customer's picture 30 seconds after Nano Banana 2 failed it twice.
+ */
+export const BUSY_SWITCH: ImageModelKey[] = ["seedream-5", "flux-2-pro"];
+/** The same picture's settings on the model that takes it instead, or null when none can. */
+export function busySwitchFor(s: ImageSettings, paused: ImageModelKey[] = []): ImageSettings | null {
+  const to = BUSY_SWITCH.map((k) => imageModelByKey(k)!).find((m) => m.key !== s.model && !paused.includes(m.key));
+  if (!to) return null;
+  return { model: to.key, aspect: closestAspect(to.aspects, s.aspect), quality: to.qualities.includes(s.quality) ? s.quality : to.defaultQuality, count: s.count };
+}
+const ratioOf = (aspect: string): number => { const [w, h] = aspect.split(":").map(Number); return w > 0 && h > 0 ? w / h : 1; };
+/** The shape in `aspects` nearest `aspect`, on a log scale (4:5 becomes 3:4, not 1:1). */
+export function closestAspect(aspects: string[], aspect: string): string {
+  if (aspects.includes(aspect)) return aspect;
+  const want = Math.log(ratioOf(aspect));
+  const off = (a: string): number => Math.abs(Math.log(ratioOf(a)) - want);
+  return aspects.reduce((best, a) => (off(a) < off(best) ? a : best), aspects[0]);
 }
 const FLUX3_RESOLUTION: Record<ImageQuality, string> = { "1K": "1k", "2K": "2k", "4K": "4k" };
 /** GPT Image sizes: both edges multiples of 16, about 1.6 MP at 1K and 3.6 MP at 2K (OpenAI's own presets where they exist). */

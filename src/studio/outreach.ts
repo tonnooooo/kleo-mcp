@@ -149,6 +149,62 @@ export function afterBusinessDays(fromMs: number, days: number, zone: string, ji
   return Math.floor(t + jitter * 6 * 3_600_000);
 }
 
+const MONTH_RE = "(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?";
+const MONTH_KEYS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const DATE_RE = new RegExp([
+  `\\b${MONTH_RE}\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?\\b`,
+  `\\b(\\d{1,2})(?:st|nd|rd|th)?(?:\\s+of)?\\s+${MONTH_RE}(?:,?\\s+(\\d{4}))?\\b`,
+  "\\b(\\d{4})-(\\d{2})-(\\d{2})\\b",
+  "\\b(\\d{1,2})/(\\d{1,2})(?:/(\\d{2}|\\d{4}))?\\b",
+  "\\b(sun|mon|tues?|wed(?:nes)?|thu(?:rs)?|fri|sat(?:ur)?)day\\b",
+  "\\b(tomorrow)\\b",
+].join("|"), "gi");
+/** Words that put a date at the end of an absence: "until 6 Nov", "back on Monday", "26 Oct - 6 Nov". */
+const BACK_ANCHOR = /\b(?:until|till?|back|return(?:s|ing)?|reopen(?:s|ing)?|resum(?:e|es|ing)|through|thru|to)\b|[-–—]\s*$/i;
+const BACK_MAX_DAYS = 120;
+/** The day an out-of-office reply says its writer is back, where the business is: the latest date named right after
+ *  "until", "back", "return", "to" or a range's dash, numbers read day/month outside the US and Canada. Null when
+ *  none is named, or when it is not within 120 days of the reply. */
+export function backOn(text: string, receivedMs: number, zone: string, country: string | null): { ms: number; label: string } | null {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: zone, year: "numeric", month: "numeric", day: "numeric" }).formatToParts(new Date(receivedMs));
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value);
+  const today = Date.UTC(get("year"), get("month") - 1, get("day"));
+  const monthFirst = ["US", "CA"].includes((country ?? "").toUpperCase());
+  let best: number | null = null;
+  for (const x of text.matchAll(DATE_RE)) {
+    const before = text.slice(Math.max(0, x.index - 30), x.index).split(/[.!?]\s|\n/).at(-1) ?? "";
+    if (!BACK_ANCHOR.test(before)) continue;
+    let day: number | null = null;
+    const ymd = (y: number | null, m: number, d: number): number | null => {
+      if (m < 0 || m > 11 || d < 1 || d > 31) return null;
+      const full = y === null ? new Date(today).getUTCFullYear() : y < 100 ? 2000 + y : y;
+      let t = Date.UTC(full, m, d);
+      if (new Date(t).getUTCDate() !== d) return null;
+      if (y === null && t < today) t = Date.UTC(full + 1, m, d);
+      return t;
+    };
+    const month = (s: string) => MONTH_KEYS.indexOf(s.slice(0, 3).toLowerCase());
+    if (x[1]) day = ymd(x[3] ? Number(x[3]) : null, month(x[1]), Number(x[2]));
+    else if (x[4]) day = ymd(x[6] ? Number(x[6]) : null, month(x[5]), Number(x[4]));
+    else if (x[7]) day = ymd(Number(x[7]), Number(x[8]) - 1, Number(x[9]));
+    else if (x[10]) {
+      const a = Number(x[10]), b = Number(x[11]), y = x[12] ? Number(x[12]) : null;
+      day = monthFirst ? ymd(y, a - 1, b) ?? ymd(y, b - 1, a) : ymd(y, b - 1, a) ?? ymd(y, a - 1, b);
+    } else if (x[13]) {
+      const want = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"].indexOf(x[13].slice(0, 3).toLowerCase());
+      day = today + (((want - new Date(today).getUTCDay() + 7) % 7) || 7) * 86_400_000;
+    } else if (x[14]) day = today + 86_400_000;
+    if (day !== null && day >= today && day <= today + BACK_MAX_DAYS * 86_400_000 && (best === null || day > best)) best = day;
+  }
+  if (best === null) return null;
+  // An instant on that day where the business is: noon UTC, moved back a day where noon UTC is already tomorrow there.
+  let ms = best + 12 * 3_600_000;
+  const there = new Intl.DateTimeFormat("en-US", { timeZone: zone, day: "numeric" }).format(new Date(ms));
+  if (Number(there) !== new Date(best).getUTCDate()) ms -= 86_400_000;
+  const d = new Date(best);
+  return { ms, label: `${d.getUTCDate()} ${MONTH_KEYS[d.getUTCMonth()].replace(/^./, (c) => c.toUpperCase())} ${d.getUTCFullYear()}` };
+}
+
 // ── the prospects ────────────────────────────────────────────────────────────────────────────────────────────────
 
 export interface Prospect {
@@ -674,12 +730,17 @@ export async function checkReplies(env: StudioEnv, s: SenderRow, set: Settings, 
     const p = await prospectFor(env, m);
     if (!p) continue;
     if (await env.DB.prepare("SELECT 1 AS one FROM outreach_replies WHERE prospect_id = ? AND uid = ?").bind(p.id, m.uid).first()) continue;
-    const { cls, summary } = rule ? { cls: rule, summary: rule === "out_of_office" ? "Automatic out-of-office reply." : m.text.slice(0, 200) } : await aiClass(env, m, p);
+    const { cls, summary: said } = rule ? { cls: rule, summary: rule === "out_of_office" ? "Automatic out-of-office reply." : m.text.slice(0, 200) } : await aiClass(env, m, p);
+    const zone = p.tz ?? zoneFor(p.country, p.region);
+    const back = cls === "out_of_office" ? backOn(`${m.subject}\n${m.text}`, Date.parse(m.date ?? "") || nowMs, zone, p.country) : null;
+    const summary = back ? `${said.replace(/\.$/, "")}; back on ${back.label}.` : said;
     await saveReply(env, p, m, cls, summary, nowMs);
     handled++;
     if (cls === "out_of_office") {
+      // The next e-mail waits for the business day after the one they say they are back, or a week when they name none.
+      const after = back ? afterBusinessDays(back.ms, 1, zone, (deps.random ?? Math.random)()) : nowMs + 7 * 86_400_000;
       await env.DB.prepare(`UPDATE outreach_prospects SET next_at = ?, updated_at = ${NOW} WHERE id = ? AND status = 'active'`)
-        .bind(new Date(Math.max(Date.parse(p.next_at ?? "") || 0, nowMs + 7 * 86_400_000)).toISOString(), p.id).run();
+        .bind(new Date(Math.max(Date.parse(p.next_at ?? "") || 0, after)).toISOString(), p.id).run();
       continue;
     }
     if (cls === "unsubscribe" || cls === "not_interested") { await stopProspect(env, p.id, p.email, cls, true); continue; }

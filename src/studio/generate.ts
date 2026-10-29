@@ -30,7 +30,7 @@ import { trendByKey, trendCharacterSeats, trendQuality } from "./trends.ts";
 import { characterUnmarkedText, noPersonText, photoFactsInput, photoMissingText, readPhotoFacts, PERSON_CHECK_MAX_BYTES, PERSON_CHECK_MODEL, type PhotoFacts } from "./person-check.ts";
 import { mediaInfo } from "./media.ts";
 import { refreshFilm } from "./films.ts";
-import { alternativeFor, FALLBACK_IMAGE_MODEL, freeImageModels, imageAlternatives, imageCostUsd, imageCredits, imageModelByKey, imageModelOfProvider, imageTaskInput, isQualityRefusal, normalizeImageSettings, otherQualitySpelling, pausedImageModels, type ImageSettings } from "./image-models.ts";
+import { alternativeFor, busySwitchFor, FALLBACK_IMAGE_MODEL, freeImageModels, imageAlternatives, imageCostUsd, imageCredits, imageModelByKey, imageModelOfProvider, imageTaskInput, isProviderBusy, isQualityRefusal, normalizeImageSettings, otherQualitySpelling, pausedImageModels, type ImageSettings } from "./image-models.ts";
 import {
   addUpload, autoWanOn, getGeneration, insertGeneration, moveGeneration, markChecked, runningCount, settleOffer, studioSpentTodayUsd, uploadsOf,
   type GenerationRow, type GenStatus, type Slot, type UploadRow,
@@ -111,23 +111,32 @@ export async function placeTask(env: StudioEnv, model: string, input: Record<str
     return { task: String(t.id) };
   } catch (e) {
     await noticeMoney(env, "ephone", e);
-    if ((env.STUDIO_BACKUPS ?? "").trim() === "off" || !switchesToBackup(e)) throw e;
-    let last: unknown = e;
-    for (const r of withinBudget(backupRoutes(model, input), budgetUsd)) {
-      if (!backupKey(env, r.provider)) continue;
-      try {
-        const id = r.provider === "apimart" ? await apimartSubmit(env, r.path, r.body) : await wavespeedSubmit(env, r.path, r.body);
-        await spent(env, r.provider, r.usd ?? budgetUsd);
-        if (who) await audit(asEnv(env), who.userId, who.genId, "studio.backup", { from: model, to: `${r.provider}:${r.model}`, usd: r.usd, why: String(e instanceof Error ? e.message : e).slice(0, 200) });
-        return { task: r.music ? `${MUSIC_PREFIX}${id}` : id, provider: r.provider };
-      } catch (e2) {
-        last = e2;
-        await noticeMoney(env, r.provider, e2);
-        if (!switchesToBackup(e2)) break;
-      }
-    }
-    throw last;
+    if (!switchesToBackup(e)) throw e;
+    return placeOnBackup(env, model, input, who, budgetUsd, e);
   }
+}
+
+/**
+ * The order on the model's backups within Kleo's price, in order (src/studio/backups.ts). `cause` is why ePhone could
+ * not take it. Throws what the last backup tried answered, or `cause` when none could be tried.
+ */
+async function placeOnBackup(env: StudioEnv, model: string, input: Record<string, unknown>, who: { userId: string; genId: string } | undefined, budgetUsd: number | null | undefined, cause: unknown): Promise<Placed> {
+  if ((env.STUDIO_BACKUPS ?? "").trim() === "off") throw cause;
+  let last: unknown = cause;
+  for (const r of withinBudget(backupRoutes(model, input), budgetUsd)) {
+    if (!backupKey(env, r.provider)) continue;
+    try {
+      const id = r.provider === "apimart" ? await apimartSubmit(env, r.path, r.body) : await wavespeedSubmit(env, r.path, r.body);
+      await spent(env, r.provider, r.usd ?? budgetUsd);
+      if (who) await audit(asEnv(env), who.userId, who.genId, "studio.backup", { from: model, to: `${r.provider}:${r.model}`, usd: r.usd, why: String(cause instanceof Error ? cause.message : cause).slice(0, 200) });
+      return { task: r.music ? `${MUSIC_PREFIX}${id}` : id, provider: r.provider };
+    } catch (e2) {
+      last = e2;
+      await noticeMoney(env, r.provider, e2);
+      if (!switchesToBackup(e2)) break;
+    }
+  }
+  throw last;
 }
 
 /** A refusal for money (402, src/ephone.ts and its peers) is written down, so the next orders stop before the charge. */
@@ -200,6 +209,8 @@ export function publicGeneration(g: GenerationRow): Record<string, unknown> {
   const madeBy = kind === "image" ? imageModelOfProvider(slots.find((x) => x.status === "done" && x.model)?.model ?? "") : null;
   const offer = kind === "video" ? wanOfferOf(g, settings as Partial<ClipSettings>) : null;
   const rewrite = offer ? null : rewriteOfferOf(g, kind, settings as Record<string, unknown>);
+  const busy = offer || rewrite ? null : busyOfferOf(g, settings as Record<string, unknown>);
+  const wasBusy = !offer && !rewrite && failedBusy(g);
   return {
     id: g.id, kind, model: g.model,
     modelName: (kind === "image" ? imageModelByKey(madeBy ?? g.model)?.name : kind === "tool" ? toolByKey(g.model)?.name : kind === "film" ? (g.model === "kleo-animatic" ? "Kleo Animatic" : "Kleo Film") : g.model === WAN_KEY ? WAN_NAME : modelByKey(g.model)?.name) ?? g.model,
@@ -208,8 +219,11 @@ export function publicGeneration(g: GenerationRow): Record<string, unknown> {
     // A clip with an offer says which model refused it; the page puts the offer right under it.
     error: offer ? `${offer.from} won't make this one: it recognised characters, people or music protected by copyright. Your credits are back.`
       : remadeOnWan(g, settings) ? `${modelByKey(g.model)?.name ?? "The video model"} won't make this one: it recognised characters, people or music protected by copyright. Your credits are back, and you sent it to ${WAN_NAME}.`
-      : rewrite ? `${kind === "image" ? "The image model" : WAN_NAME} won't make this one either: it recognised characters, people or music protected by copyright. Your credits are back.` : g.error,
-    offer, rewrite, refunded: !!g.refunded, chatId: g.chat_id, messageId: g.message_id,
+      : rewrite ? `${kind === "image" ? "The image model" : WAN_NAME} won't make this one either: it recognised characters, people or music protected by copyright. Your credits are back.`
+      // A picture its model dropped for the provider's own reasons reads as that, not as the provider's words.
+      : wasBusy ? `${imageModelByKey(g.model)?.name ?? "The image model"} was busy and couldn't make this one. Your credits are back.` : g.error,
+    offer, rewrite, busy: busy ? { model: busy.model, name: busy.name, from: busy.from, credits: busy.credits } : null,
+    refunded: !!g.refunded, chatId: g.chat_id, messageId: g.message_id,
     // A clip that went straight to Wan 3.0 because its prompt names well-known characters (the name check).
     preRouted: kind === "video" && g.model === WAN_KEY && !!(settings as { pre?: boolean }).pre,
     // A clip the automatic switch moved to Wan 3.0 names the model that refused it.
@@ -541,6 +555,55 @@ export async function declineRewrite(env: StudioEnv, userId: string, g: Generati
   return (await getGeneration(env, g.id))!;
 }
 
+/** A failed set of pictures none of which was made, dropped by the provider for its own reasons or never answered. */
+function failedBusy(g: GenerationRow): boolean {
+  if (g.kind !== "image" || g.status !== "failed" || !g.refunded) return false;
+  const slots = parseSlots(g);
+  return slots.length > 0 && !slots.some((x) => x.status === "done") && slots.some((x) => x.error === "timeout" || isProviderBusy(x.error ?? ""));
+}
+/**
+ * THE BUSY PICTURE (29 October 2026, the owner: "se non riesce gli chiedi di cambiare provider con il classico pop up di
+ * avviso"). A picture its model could not make for the provider's own reasons, even after the unseen retry
+ * (busyRetry), offers one tap to make it on a model that is working (image-models.ts BUSY_SWITCH), for the credits it
+ * cost (they came back). The page shows it as a pop-up when it happens and under the card after. Never on a remake.
+ */
+export function busyOfferOf(g: GenerationRow, settings: Record<string, unknown>): { model: string; name: string; from: string; credits: number } | null {
+  if (settings.busy || settings.switched || settings.rewritten || !failedBusy(g)) return null;
+  const s = normalizeImageSettings(settings);
+  const to = busySwitchFor(s);
+  if (!to) return null;
+  return { model: to.model, name: imageModelByKey(to.model)!.name, from: imageModelByKey(s.model)?.name ?? "This model", credits: g.credits };
+}
+/**
+ * "Use Seedream 5.0": the busy picture is made again on the model that is working, with its prompt, pictures,
+ * shape and count, as a new creation charged the credits the failed one cost. The offer is settled first, so it is
+ * taken once.
+ */
+export async function retryOnOther(env: StudioEnv, userId: string, g: GenerationRow, origin: string): Promise<GenerationRow> {
+  if (g.user_id !== userId) throw new StudioError("Not found.", 404);
+  let s: Record<string, unknown> = {};
+  try { s = JSON.parse(g.settings); } catch { /* no offer */ }
+  if (!busyOfferOf(g, s)) throw new StudioError("This picture can't be made again on another model.", 409, "no_offer");
+  const to = busySwitchFor(normalizeImageSettings(s), pausedImageModels(env.STUDIO_PAUSED_IMAGE_MODELS));
+  if (!to) throw new StudioError("No other picture model is free right now. Try again in a minute — nothing was charged.", 503, "unavailable");
+  const rows = await clipPictures(env, g);
+  if (!rows) throw new StudioError("A picture this was made from was deleted, so it can't be made again. Add it again and start over.", 409, "gone");
+  const made = await createImageGeneration(env, userId, {
+    kind: "image", prompt: g.prompt, settings: to, imageIds: rows.map((r) => r.id), chatId: g.chat_id, messageId: g.message_id,
+  }, origin, { credits: g.credits, extra: { from: g.id, switched: true }, claim: (id) => settleOffer(env, g.id, userId, "busy", id) });
+  await audit(asEnv(env), userId, g.id, "studio.busy_switch", { to: made.id, model: to.model });
+  return made;
+}
+/** "Not now" in the pop-up keeps the offer under the card; "No thanks" there drops it for good. */
+export async function declineOther(env: StudioEnv, userId: string, g: GenerationRow): Promise<GenerationRow> {
+  if (g.user_id !== userId) throw new StudioError("Not found.", 404);
+  let s: Record<string, unknown> = {};
+  try { s = JSON.parse(g.settings); } catch { /* no offer */ }
+  if (!busyOfferOf(g, s)) return g;
+  if (await settleOffer(env, g.id, userId, "busy", "declined")) await audit(asEnv(env), userId, g.id, "studio.busy_declined", {});
+  return (await getGeneration(env, g.id))!;
+}
+
 const wanReady = (env: StudioEnv): boolean => !!(env.WAVESPEED_API_KEY ?? "").trim();
 /** Studio's own address when no request is at hand (the cron): the provider fetches signed links on it. */
 const studioOrigin = (env: StudioEnv): string => (env.STUDIO_URL ?? "").trim().replace(/\/+$/, "") || `https://${(env.CANONICAL_HOST ?? "").trim() || "app.kleooai.com"}`;
@@ -750,6 +813,7 @@ async function createImageGeneration(env: StudioEnv, userId: string, req: Create
     try {
       let t: Placed;
       let slot: Slot = { task: null, status: "running", ...(alts.length ? { alts } : {}) };
+      let sent = input;
       const who = { userId, genId: id };
       try {
         t = await placeTask(env, model.ephoneModel, input, model.routing, who, usd / s.count);
@@ -760,16 +824,18 @@ async function createImageGeneration(env: StudioEnv, userId: string, req: Create
           // Refused at the door (the prompt or a reference): straight to the second try.
           t = await placeTask(env, alt.model, alt.input, toolRouting(alt.model), who);
           slot = { ...slot, model: alt.model, alts: alts.slice(alts.indexOf(alt) + 1) };
+          sent = alt.input;
           await audit(asEnv(env), userId, id, "studio.fallback", { from: model.ephoneModel, to: alt.model, when: alt.when, why: why.slice(0, 200) });
         } else {
           // Gemini's quality field has two spellings and ePhone has refused each at some point: one retry with the other.
           if (otherTried || !model.key.startsWith("nano-banana") || !isQualityRefusal(why)) throw e;
           otherTried = true;
           input = imageTaskInput(s, english, links, true);
+          sent = input;
           t = await placeTask(env, model.ephoneModel, input, model.routing, who, usd / s.count);
         }
       }
-      slots.push({ ...slot, task: t.task, ...(t.provider ? { provider: t.provider } : {}) });
+      slots.push({ ...slot, task: t.task, input: sent, ...(t.provider ? { provider: t.provider } : {}) });
     } catch (e) {
       firstError ??= e;
       slots.push({ task: null, status: "failed", error: publicText(e instanceof Error ? e.message : String(e)).slice(0, 200) });
@@ -909,13 +975,41 @@ async function secondTry(env: StudioEnv, g: GenerationRow, slot: Slot, why: stri
   slot.alts = (slot.alts ?? []).slice((slot.alts ?? []).indexOf(alt) + 1);
   try {
     const t = await placeTask(env, alt.model, alt.input, toolRouting(alt.model), { userId: g.user_id, genId: g.id });
-    Object.assign(slot, { task: t.task, model: alt.model, status: "running" });
+    Object.assign(slot, { task: t.task, model: alt.model, status: "running", input: alt.input });
     if (t.provider) slot.provider = t.provider; else delete slot.provider;
     await audit(asEnv(env), g.user_id, g.id, "studio.fallback", { from, to: alt.model, when: alt.when, why: why.slice(0, 200) });
     return true;
   } catch {
     return false;
   }
+}
+
+/**
+ * A picture the provider took and then dropped for its own reasons (image-models.ts isProviderBusy; 29 October 2026,
+ * the owner: "non deve più accadere"): the slot is sent once more, unseen, for the same credits. A picture ePhone
+ * dropped goes to the model's backup first (it sells the same model, never dearer), then to ePhone again; one a backup
+ * dropped goes back to ePhone. False when it does not qualify or nobody took it (the slot then fails as before).
+ */
+async function busyRetry(env: StudioEnv, g: GenerationRow, slot: Slot, why: string, budgetUsd: number): Promise<boolean> {
+  if (g.kind !== "image" || slot.retried || !slot.input || !isProviderBusy(why)) return false;
+  const own = imageModelByKey(g.model);
+  const model = slot.model ?? own?.ephoneModel;
+  if (!model) return false;
+  slot.retried = true;
+  const routing = slot.model ? toolRouting(slot.model) : own?.routing;
+  const who = { userId: g.user_id, genId: g.id };
+  const cause = new Error(why);
+  let t: Placed;
+  try {
+    t = slot.provider ? await placeTask(env, model, slot.input, routing, who, budgetUsd) : await placeOnBackup(env, model, slot.input, who, budgetUsd, cause);
+  } catch {
+    try { t = await placeTask(env, model, slot.input, routing, who, budgetUsd); } catch { return false; }
+  }
+  const from = slot.provider ?? "ephone";
+  Object.assign(slot, { task: t.task, status: "running", startedAt: new Date().toISOString() });
+  if (t.provider) slot.provider = t.provider; else delete slot.provider;
+  await audit(asEnv(env), g.user_id, g.id, "studio.busy_retry", { model, from, to: t.provider ?? "ephone", why: why.slice(0, 200) });
+  return true;
 }
 
 /**
@@ -946,7 +1040,9 @@ async function refreshImages(env: StudioEnv, g: GenerationRow, ageMin: number): 
     const status = String(t.status ?? "").toLowerCase();
     if (status === "failed" || status === "failure" || status === "cancelled") {
       const why = ephoneFailure(t);
-      if (!(await secondTry(env, g, slot, why))) { slot.status = "failed"; slot.error = publicText(why).slice(0, 200); }
+      if (!(await secondTry(env, g, slot, why)) && !(await busyRetry(env, g, slot, why, g.est_usd / Math.max(1, slots.length)))) {
+        slot.status = "failed"; slot.error = publicText(why).slice(0, 200);
+      }
       continue;
     }
     if (status !== "completed" && status !== "succeeded" && status !== "success") continue;
