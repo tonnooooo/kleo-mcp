@@ -8,7 +8,7 @@ import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=102";
 const DEMO = new URLSearchParams(location.search).has("demo");
 const DEMO_FREE = new URLSearchParams(location.search).get("demo") === "free"; // ?demo=free: an account that never paid
 const DEMO_GUEST = new URLSearchParams(location.search).get("demo") === "guest"; // ?demo=guest: a visitor, not signed in
-const DEMO_BUSY = new URLSearchParams(location.search).get("demo") === "busy"; // ?demo=busy: Nano Banana 2 is busy
+const DEMO_BUSY = new URLSearchParams(location.search).get("demo") === "busy"; // ?demo=busy: Nano Banana 2 and Seedance are busy
 const IS_TOUCH = matchMedia("(hover: none)").matches;
 // The query this visit started with, before the app tidies the address: its utm tags go along to Safari or Chrome.
 const LANDING_QUERY = location.search;
@@ -1059,23 +1059,26 @@ function rewriteOfferEl(g) {
     h("p", {}, `Kleo rewrites your prompt with how each character looks (hair, clothes, colours, style) and no names, and ${o.name} makes it once more. It will look alike, not identical.`),
     h("div", { class: "wan-btns" }, use, no));
 }
-// A picture its model could not make because the provider was busy, even after Kleo's own retry (29 October 2026, the
-// owner: "se non riesce gli chiedi di cambiare provider con il classico pop up di avviso"). One tap makes it on a model
-// that is working, for the credits it cost (they came back). The pop-up asks when it happens; this stays on the card.
+// A picture or clip its model could not make because the provider was busy, even after Kleo's own retry (29 October
+// 2026, the owner: "se non riesce gli chiedi di cambiare provider con il classico pop up di avviso"). One tap makes it on
+// a model that is working, for at most the credits it cost (they came back). The pop-up asks when it happens; this
+// stays on the card.
+const busyWhat = (g) => (g.kind === "image" ? "picture" : "video");
+const busyFrom = (g) => (g.images?.length ? "prompt and pictures" : "prompt");
 function busyOfferEl(g) {
   const o = g.busy;
   const use = h("button", { class: "btn btn-primary btn-sm", onclick: () => settleOffer(g, "switch", false, use, no) }, icon("sparkle", 16, 2.2), `Use ${o.name}`, h("span", { class: "cost" }, bolt(13), o.credits));
   const no = h("button", { class: "btn btn-quiet btn-sm", onclick: () => settleOffer(g, "switch", true, use, no) }, "No thanks");
   return h("div", { class: "wan-offer", onclick: (e) => e.stopPropagation() },
     h("b", {}, `Make it with ${o.name} instead?`),
-    h("p", {}, `${o.from} is busy right now. ${o.name} makes the same picture from your prompt and pictures. If it can't either, your credits come back.`),
+    h("p", {}, `${o.from} is busy right now. ${o.name} makes the same ${busyWhat(g)} from your ${busyFrom(g)}. If it can't either, your credits come back.`),
     h("div", { class: "wan-btns" }, use, no));
 }
-/** The pop-up, once, when a picture the person is waiting for fails because its model is busy. */
+/** The pop-up, once, when a picture or clip the person is waiting for fails because its model is busy. */
 async function busyAsk(g) {
   const o = g.busy;
   const yes = await ask({ title: `${o.from} is busy right now`, ic: "sparkle", ok: `Use ${o.name}`, cancel: "Not now",
-    text: `Make the same picture with ${o.name}? Same prompt and pictures, ${o.credits} ${o.credits === 1 ? "credit" : "credits"}. If it can't make it either, your credits come back.` });
+    text: `Make the same ${busyWhat(g)} with ${o.name}? Same ${busyFrom(g)}, ${o.credits} ${o.credits === 1 ? "credit" : "credits"}. If it can't make it either, your credits come back.` });
   const fresh = S.gens.get(g.id);
   if (yes && fresh?.busy) settleOffer(fresh, "switch", false, h("button"), h("button"));
 }
@@ -2932,11 +2935,15 @@ async function demoApi(path, opts) {
   const sm = path.match(/^\/api\/generations\/(g_\w+)\/switch$/);
   if (sm) {
     const g = demoDb.gens.get(sm[1]);
-    if (!g?.busy) throw new ApiError("This picture can't be made again on another model.", 409, "no_offer");
+    if (!g?.busy) throw new ApiError(`This ${g?.kind === "video" ? "video" : "picture"} can't be made again on another model.`, 409, "no_offer");
     const o = g.busy;
     g.busy = null;
     if (b.decline) return { original: { ...g } };
-    const n = newGen("image", g.prompt, { ...g.settings, model: o.model, quality: "2K", aspect: g.settings.aspect === "4:5" ? "3:4" : g.settings.aspect }, g.chatId);
+    let n;
+    if (g.kind === "video") {
+      n = { id: "g_demo" + (++demoDb.n), kind: "video", model: o.model, modelName: o.name, settings: { ...g.settings, model: o.model }, prompt: g.prompt, credits: o.credits, status: "running", chatId: g.chatId, createdAt: now(), video: null, outputs: [], output: "video", count: 1, doneAt: Date.now() + 6000 };
+      demoDb.credits -= o.credits; demoDb.gens.set(n.id, n);
+    } else n = newGen("image", g.prompt, { ...g.settings, model: o.model, quality: "2K", aspect: g.settings.aspect === "4:5" ? "3:4" : g.settings.aspect }, g.chatId);
     return { generation: { ...n }, original: { ...g }, message: g.chatId ? { id: "m_b" + (++demoDb.n), role: "assistant", text: "", generation: n } : null, credits: demoDb.credits };
   }
   const wm = path.match(/^\/api\/generations\/(g_\w+)\/wan$/);
@@ -2961,6 +2968,11 @@ async function demoApi(path, opts) {
     if (g.kind === "film" && g.status === "running") { const left = Math.max(0, g.doneAt - Date.now()); g.progress = { percent: Math.round(100 - left / 150), label: left > 10000 ? "Writing the script" : left > 5000 ? "Filming the scenes" : "Finishing the film", eta_min: Math.ceil(left / 1000) }; }
     if (g.status === "running" && Date.now() > g.doneAt && DEMO_BUSY && g.kind === "image" && g.model === "nano-banana-2") {
       Object.assign(g, { status: "failed", refunded: true, error: "Nano Banana 2 was busy and couldn't make this one. Your credits are back.", busy: { model: "seedream-5", name: "Seedream 5.0", from: "Nano Banana 2", credits: g.credits } });
+      demoDb.credits += g.credits;
+    }
+    // A Seedance clip goes to Wan 3.0, which costs less (src/studio/models.ts busySwitchClip).
+    if (g.status === "running" && Date.now() > g.doneAt && DEMO_BUSY && g.kind === "video" && /^seedance/.test(g.model)) {
+      Object.assign(g, { status: "failed", refunded: true, error: `${g.modelName} was busy and couldn't make this one. Your credits are back.`, busy: { model: "wan-3.0", name: "Wan 3.0", from: g.modelName, credits: Math.max(1, Math.ceil(g.credits / 2)) } });
       demoDb.credits += g.credits;
     }
     if (g.status === "running" && Date.now() > g.doneAt) {

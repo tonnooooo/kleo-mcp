@@ -171,7 +171,10 @@ export interface GenerationRow {
   created_at: string; updated_at: string; checked_at: string | null; finished_at: string | null;
   kind: "video" | "image" | "tool" | "film"; slots: string | null;
 }
-/** One picture of an image generation: its provider task and, once saved, its file and its upload id. */
+/**
+ * One picture of an image generation: its provider task and, once saved, its file and its upload id. A clip keeps one
+ * slot too, for its task's order (what it was sent, where) and, after its provider dropped it, why and what it offers.
+ */
 export interface Slot {
   task: string | null; status: "running" | "done" | "failed"; key?: string; upload?: string; error?: string; type?: "image" | "video" | "audio"; model?: string;
   /** The provider holding `task`: ePhone when absent; WaveSpeed for the viral templates; APIMart or WaveSpeed when the
@@ -185,8 +188,10 @@ export interface Slot {
   alts?: { model: string; input: Record<string, unknown>; when: "refusal" | "protected" }[];
   /** What the slot's current task was sent, so a picture the provider dropped for its own reasons can be sent again. */
   input?: Record<string, unknown>;
-  /** The slot was sent again once already after such a drop (generate.ts busyRetry). */
+  /** The slot was sent again once already after such a drop (generate.ts busyRetry, busyClipRetry). */
   retried?: boolean;
+  /** A busy clip's offer, priced when it failed (generate.ts busyClipOffer): the model that is working, and its credits. */
+  offer?: { model: string; credits: number };
 }
 
 export const getLogin = (env: StudioEnv, provider: string, subject: string) =>
@@ -278,8 +283,8 @@ export const insertGeneration = (env: StudioEnv, g: { id: string; userId: string
     .bind(g.id, g.userId, g.chatId, g.messageId, g.model, JSON.stringify(g.settings), g.prompt, JSON.stringify(g.images), g.credits, g.estUsd, g.kind ?? "video").run();
 /**
  * Settles one offer on a refused creation (generate.ts): "wan" = make the clip again on Wan 3.0 (retryOnWan), "rewrite" =
- * make it again with its names turned into descriptions (retryDescribed), "busy" = make a picture its busy model failed
- * on another model (retryOnOther). `settings.<field>` becomes the new creation's
+ * make it again with its names turned into descriptions (retryDescribed), "busy" = make a picture or clip its busy model
+ * failed on another model (retryOnOther). `settings.<field>` becomes the new creation's
  * id, or "declined". One compare-and-set, so two taps can never start two: false when it was settled already. `null`
  * reopens it (the new creation could not even be written down).
  */
