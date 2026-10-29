@@ -30,7 +30,7 @@ import { trendByKey, trendCharacterSeats, trendQuality } from "./trends.ts";
 import { characterUnmarkedText, noPersonText, photoFactsInput, photoMissingText, readPhotoFacts, PERSON_CHECK_MAX_BYTES, PERSON_CHECK_MODEL, type PhotoFacts } from "./person-check.ts";
 import { mediaInfo } from "./media.ts";
 import { refreshFilm } from "./films.ts";
-import { alternativeFor, busySwitchFor, FALLBACK_IMAGE_MODEL, freeImageModels, imageAlternatives, imageCostUsd, imageCredits, imageModelByKey, imageModelOfProvider, imageTaskInput, isProviderBusy, isQualityRefusal, normalizeImageSettings, otherQualitySpelling, pausedImageModels, type ImageSettings } from "./image-models.ts";
+import { alternativeFor, busySwitchFor, FALLBACK_IMAGE_MODEL, freeImageModels, imageAlternatives, imageCostUsd, imageCredits, imageModelByKey, imageModelOfProvider, imageTaskInput, isProviderBusy, isQualityRefusal, isRequestRefusal, normalizeImageSettings, otherQualitySpelling, pausedImageModels, repairedInput, type ImageSettings } from "./image-models.ts";
 import {
   addUpload, autoWanOn, getGeneration, insertGeneration, moveGeneration, markChecked, runningCount, settleOffer, studioSpentTodayUsd, uploadsOf,
   type GenerationRow, type GenStatus, type Slot, type UploadRow,
@@ -558,11 +558,13 @@ export async function declineRewrite(env: StudioEnv, userId: string, g: Generati
 /**
  * A failed set of pictures none of which was made, or a failed clip, dropped by the provider for its own reasons or
  * never answered. A clip's slot says "busy" or "timeout" (failBusyClip); clips from before 29 October 2026 have none.
+ * A picture whose order the provider refused as malformed (isRequestRefusal) counts too: the person did nothing wrong.
  */
 function failedBusy(g: GenerationRow): boolean {
   if (g.kind === "tool" || g.kind === "film" || g.status !== "failed" || !g.refunded) return false;
   const slots = parseSlots(g);
-  return slots.length > 0 && !slots.some((x) => x.status === "done") && slots.some((x) => x.error === "timeout" || isProviderBusy(x.error ?? ""));
+  const dropped = (why: string): boolean => why === "timeout" || isProviderBusy(why) || (g.kind === "image" && isRequestRefusal(why));
+  return slots.length > 0 && !slots.some((x) => x.status === "done") && slots.some((x) => dropped(x.error ?? ""));
 }
 /** A clip's model as the person reads it (Wan 3.0 is not in the picker). */
 const clipModelName = (key: string): string | null => (key === WAN_KEY ? WAN_NAME : modelByKey(key)?.name ?? null);
@@ -1166,26 +1168,28 @@ async function secondTry(env: StudioEnv, g: GenerationRow, slot: Slot, why: stri
  * the owner: "non deve più accadere"): the slot is sent once more, unseen, for the same credits. A picture ePhone
  * dropped goes to the model's backup first (it sells the same model, never dearer), then to ePhone again; one a backup
  * dropped goes back to ePhone. False when it does not qualify or nobody took it (the slot then fails as before).
+ * An order the provider took and then refused as malformed (isRequestRefusal, the same day: a quality spelling, an
+ * output_format) takes the same road, except that ePhone gets it again only changed (repairedInput), never as it was.
  */
 async function busyRetry(env: StudioEnv, g: GenerationRow, slot: Slot, why: string, budgetUsd: number): Promise<boolean> {
-  if (g.kind !== "image" || slot.retried || !slot.input || !isProviderBusy(why)) return false;
+  const busy = isProviderBusy(why);
+  const refused = !busy && isRequestRefusal(why);
+  if (g.kind !== "image" || slot.retried || !slot.input || (!busy && !refused)) return false;
   const own = imageModelByKey(g.model);
   const model = slot.model ?? own?.ephoneModel;
   if (!model) return false;
   slot.retried = true;
   const routing = slot.model ? toolRouting(slot.model) : own?.routing;
   const who = { userId: g.user_id, genId: g.id };
-  const cause = new Error(why);
-  let t: Placed;
-  try {
-    t = slot.provider ? await placeTask(env, model, slot.input, routing, who, budgetUsd) : await placeOnBackup(env, model, slot.input, who, budgetUsd, cause);
-  } catch {
-    try { t = await placeTask(env, model, slot.input, routing, who, budgetUsd); } catch { return false; }
-  }
+  const again = refused ? repairedInput(slot.input, why) : slot.input;
+  let t: Placed | null = null;
+  if (!slot.provider) { try { t = await placeOnBackup(env, model, slot.input, who, budgetUsd, new Error(why)); } catch { /* ePhone again */ } }
+  if (!t && again) { try { t = await placeTask(env, model, again, routing, who, budgetUsd); } catch { /* nobody took it */ } }
+  if (!t) return false;
   const from = slot.provider ?? "ephone";
   Object.assign(slot, { task: t.task, status: "running", startedAt: new Date().toISOString() });
-  if (t.provider) slot.provider = t.provider; else delete slot.provider;
-  await audit(asEnv(env), g.user_id, g.id, "studio.busy_retry", { model, from, to: t.provider ?? "ephone", why: why.slice(0, 200) });
+  if (t.provider) slot.provider = t.provider; else { delete slot.provider; if (again) slot.input = again; }
+  await audit(asEnv(env), g.user_id, g.id, "studio.busy_retry", { model, from, to: t.provider ?? "ephone", cause: busy ? "busy" : "request", why: why.slice(0, 200) });
   return true;
 }
 
