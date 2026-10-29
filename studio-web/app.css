@@ -1696,6 +1696,9 @@ img.fx-in { animation: fx-img-in .7s var(--ease-out) both; }
 .frame > .cr-bar { grid-row: 2; }
 .frame > .views { grid-row: 3; }
 .frame > .tabbar { grid-row: 4; }
+/* The console's frame has no notice row (admin.css gives it two rows): its views keep the second one. Pinned to the
+   third, they landed in an extra row of height 0 and the console showed only its top bar (29 October 2026). */
+.frame.admin-frame > .views { grid-row: 2; }
 @media (max-width: 760px) {
   .frame { grid-template-rows: calc(52px + env(safe-area-inset-top)) auto 1fr calc(var(--tab-h) + env(safe-area-inset-bottom)); }
 }
