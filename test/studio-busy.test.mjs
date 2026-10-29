@@ -192,7 +192,7 @@ const creditsOf = async (env, cookie) => (await call(env, "/api/me", { cookie })
 
 test("busy: ePhone drops the picture, APIMart makes it unseen, for the credits charged once", async () => {
   const env = newEnv();
-  const cookie = await account(env, "ana@kleo.test");
+  const cookie = await account(env, "ana@example.com");
   const p = providers({ ephone: () => failed("Rate limit exceeded, please retry later"), apimart: () => ({ status: "completed", result: { images: [{ url: ["https://cdn.example/am.png"] }] } }) });
   try {
     const before = await creditsOf(env, cookie);
@@ -215,7 +215,7 @@ test("busy: ePhone drops the picture, APIMart makes it unseen, for the credits c
 
 test("busy: with no backup the picture goes to ePhone once more, and only once", async () => {
   const env = newEnv({ APIMART_API_KEY: "" });
-  const cookie = await account(env, "bo@kleo.test");
+  const cookie = await account(env, "bo@example.com");
   const p = providers({ ephone: (n) => (n === 1 ? failed("Internal server error, Please contact the administrator") : done("second")) });
   try {
     const g = await settle(env, cookie, await order(env, cookie));
@@ -229,7 +229,7 @@ test("busy: with no backup the picture goes to ePhone once more, and only once",
 
 test("busy: when the retry fails too, the credits come back and the picture offers a working model, taken once", async () => {
   const env = newEnv({ APIMART_API_KEY: "" });
-  const cookie = await account(env, "cy@kleo.test");
+  const cookie = await account(env, "cy@example.com");
   const p = providers({ ephone: (n) => (n <= 2 ? failed(n === 1 ? "Rate limit exceeded, please retry later" : "Internal server error, Please contact the administrator") : done("seedream")) });
   try {
     const before = await creditsOf(env, cookie);
@@ -260,7 +260,7 @@ test("busy: when the retry fails too, the credits come back and the picture offe
 
 test("busy: 'No thanks' drops the offer for good; a refused picture never gets it", async () => {
   const env = newEnv({ APIMART_API_KEY: "" });
-  const cookie = await account(env, "di@kleo.test");
+  const cookie = await account(env, "di@example.com");
   const p = providers({ ephone: (n) => (n <= 2 ? failed("Rate limit exceeded, please retry later") : failed("no image generated in response")) });
   try {
     const id = await order(env, cookie);
