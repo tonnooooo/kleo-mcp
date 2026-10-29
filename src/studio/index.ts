@@ -200,7 +200,7 @@ async function handleMedia(env: StudioEnv, request: Request, url: URL): Promise<
     // The Kleo mark (src/studio/watermark.ts) is on pictures and clips only; a marked copy is kept a short while by the
     // browser, so the first purchase shows the clean file soon after.
     const file = u.kind === "audio" ? { key: u.key, marked: false } : await servedKey(env, u.user_id, u.key, (id) => showsMark(env, id), u.kind ?? "image");
-    return serveFile(env, request, file.key, `kleo-${name}.${ext}`, url.searchParams.get("dl") === "1", file.marked ? "private, max-age=600" : "private, max-age=86400");
+    return serveFile(env, request, file.key, `kleo-${name}.${ext}`, url.searchParams.get("dl") === "1", file.marked || ("wanted" in file && file.wanted) ? "private, max-age=600" : "private, max-age=86400");
   }
   const clip = url.pathname.match(/^\/media\/(g_[a-z0-9]+)\.mp4$/);
   if (clip) {

@@ -69,14 +69,16 @@ def mark(src, dst):
         raise ValueError(f"a {w}x{h} clip is too small for the mark")
     mw, mh, x, y = at
     # Short clips get the slower, finer encoder; a longer one the faster encoder, so it finishes inside Studio's wait.
+    # The blend runs in YUV (only the small mark is converted), and every frame keeps its own timestamp (passthrough):
+    # the same pass as worker/kleo_mark.py on the GPU box. Alpine's ffmpeg is 6.x, so -fps_mode is there.
     preset, crf = ("veryfast", "18") if seconds <= 20 else ("superfast", "19")
     graph = (
-        f"[1:v]scale={mw}:{mh}:flags=lanczos,format=rgba,colorchannelmixer=aa={MARK_OPACITY}[m];"
-        f"[0:v][m]overlay={x}:{y}:format=auto,format=yuv420p[v]"
+        f"[1:v]scale={mw}:{mh}:flags=lanczos,format=rgba,colorchannelmixer=aa={MARK_OPACITY},format=yuva420p[m];"
+        f"[0:v][m]overlay={x}:{y}:format=yuv420[v]"
     )
     subprocess.run(
         ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", src, "-i", MARK, "-filter_complex", graph,
-         "-map", "[v]", "-map", "0:a?", "-c:v", "libx264", "-preset", preset, "-crf", crf, "-profile:v", "high",
+         "-map", "[v]", "-map", "0:a?", "-fps_mode", "passthrough", "-c:v", "libx264", "-preset", preset, "-crf", crf, "-profile:v", "high",
          "-c:a", "copy", "-map_metadata", "0", "-movflags", "+faststart", dst],
         check=True, capture_output=True, timeout=FFMPEG_TIMEOUT_S,
     )

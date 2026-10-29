@@ -363,6 +363,15 @@ test("a clip the marker fails on, or with no marker bound, is done and served cl
     const paid = await clip(env, cy.cookie);
     assert.equal(marker.got.length, 0);
     assert.deepEqual((await call(env, paid.video, { cookie: cy.cookie })).bytes, CLIP);
+
+    // The first miss had no mail binding to tell the owner: its 6-hour window was given back, so this one reaches him.
+    env.WATERMARK = broken;
+    env.mails = [];
+    env.OWNER_MAIL = { send: async (msg) => { env.mails.push(msg); } };
+    const dee = await account(env, "dee@example.com");
+    await clip(env, dee.cookie);
+    assert.equal(env.mails.length, 1);
+    assert.match(env.mails[0].raw, /kleo-watermark answered 422/);
   } finally { p.restore(); }
 });
 
@@ -454,7 +463,9 @@ test("a free picture with no marked copy gets one when it is next served: made b
     images.fail = "ERROR 9422: transformation limit reached";
     const k = await picture(env, cy.cookie);
     const tries = images.tries;
-    assert.deepEqual((await call(env, k.outputs[0].url, { cookie: cy.cookie })).bytes, PNG);
+    const first = await call(env, k.outputs[0].url, { cookie: cy.cookie });
+    assert.deepEqual(first.bytes, PNG);
+    assert.equal(first.res.headers.get("cache-control"), "private, max-age=600", "clean for now, so the browser keeps it only briefly");
     assert.deepEqual((await call(env, k.outputs[0].url, { cookie: cy.cookie })).bytes, PNG);
     assert.equal(images.tries, tries + 1, "one late try, then the miss is remembered");
     assert.ok(events(env, "studio.mark_failed").some((e) => e.late === true && /9422/.test(e.error)));

@@ -174,7 +174,7 @@ async function alertOwner(env: StudioEnv, kind: string, why: string, nowMs = Dat
     const claim = await env.DB.prepare(`INSERT INTO studio_meta (key, value) VALUES ('mark_alerted_at', ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE CAST(studio_meta.value AS INTEGER) < ?`).bind(String(nowMs), nowMs - ALERT_EVERY_MS).run();
     if (claim.meta?.changes !== 1) return;
-    await mailOwner(env, "Kleo: free creations are going out without the Kleo mark", [
+    const sent = await mailOwner(env, "Kleo: free creations are going out without the Kleo mark", [
       `A ${kind === "video" ? "clip" : "picture"} of an account that never paid could not be marked, so it is served without "Made with Kleo".`,
       "",
       `Error: ${why}`,
@@ -184,6 +184,8 @@ async function alertOwner(env: StudioEnv, kind: string, why: string, nowMs = Dat
       "",
       "Every miss is in the audit as studio.mark_failed. This e-mail goes out at most once every 6 hours.",
     ].join("\n"), nowMs);
+    // Not sent (no binding, a refused send): the window is given back, so the next miss tries again.
+    if (!sent) await env.DB.prepare("UPDATE studio_meta SET value = '0' WHERE key = 'mark_alerted_at' AND value = ?").bind(String(nowMs)).run();
   } catch { /* an alert never breaks a save or a view */ }
 }
 
@@ -191,12 +193,13 @@ async function alertOwner(env: StudioEnv, kind: string, why: string, nowMs = Dat
  * The key to serve: the marked copy when the owner shows the mark and the copy exists, else the clean file.
  * A picture with no copy yet gets one drawn now (healPicture): one made before the mark existed, while the account
  * was paying (a refund or a dispute made it "never paid" again), or whose mark failed when it was saved.
+ * `wanted`: the owner shows the mark, so even a clean answer is kept by the browser only briefly (it may be marked soon).
  */
-export async function servedKey(env: StudioEnv, ownerId: string, key: string, showsMark: (userId: string) => Promise<boolean>, kind?: string | null): Promise<{ key: string; marked: boolean }> {
-  if (!madeByKleo(key, ownerId) || !(await showsMark(ownerId))) return { key, marked: false };
+export async function servedKey(env: StudioEnv, ownerId: string, key: string, showsMark: (userId: string) => Promise<boolean>, kind?: string | null): Promise<{ key: string; marked: boolean; wanted: boolean }> {
+  if (!madeByKleo(key, ownerId) || !(await showsMark(ownerId))) return { key, marked: false, wanted: false };
   const copy = markedKey(key);
-  if (await env.RENDERS.head(copy)) return { key: copy, marked: true };
-  return kind === "image" && (await healPicture(env, ownerId, key)) ? { key: copy, marked: true } : { key, marked: false };
+  if (await env.RENDERS.head(copy)) return { key: copy, marked: true, wanted: true };
+  return kind === "image" && (await healPicture(env, ownerId, key)) ? { key: copy, marked: true, wanted: true } : { key, marked: false, wanted: true };
 }
 
 /** Pictures this isolate could not mark lately: a miss is tried again after an hour, not on every view. */
@@ -219,6 +222,8 @@ async function healPicture(env: StudioEnv, ownerId: string, key: string): Promis
     const m = await markPicture(env, bytes, obj.httpMetadata?.contentType ?? "");
     if (!m) return miss();
     await env.RENDERS.put(markedKey(key), m.bytes, { httpMetadata: { contentType: m.type } });
+    // Deleted while it was being drawn (deleteGeneration removes the file, its copy and its row): no orphan copy stays.
+    if (!(await env.RENDERS.head(key))) { await env.RENDERS.delete(markedKey(key)); return false; }
     await audit(env as unknown as Env, ownerId, null, "studio.marked", { kind: "image", key, late: true }).catch(() => {});
     return true;
   } catch (e) {

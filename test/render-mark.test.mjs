@@ -114,3 +114,34 @@ test("a Kleo Creators Pro partner, a Studio admin and the off switch order clean
   assert.equal(await m.marksAccount(env, free.id), true);
   assert.equal(await m.marksAccount(env, free.id, true), false, "a caller that already knows of a payment skips the read");
 });
+
+test("the box says what it did with /done: marked, failed with its reason, or nothing from an image older than the mark", async () => {
+  const env = newEnv();
+  const free = await account(env, "u_free");
+  const payer = await account(env, "u_payer");
+  await pay(env, payer.id);
+  const rows = (id) => env.DB.db.prepare("SELECT event, detail FROM audit WHERE job_id = ? AND event LIKE 'job.mark%' ORDER BY id").all(id).map((r) => [r.event, JSON.parse(r.detail ?? "{}")]);
+  async function done(job, body) {
+    await m.updateJob(env, job.id, { state: "rendering", backend: "manual", instance_id: `gpu-${job.id}`, started_at: new Date().toISOString() });
+    const res = await m.handleInternal(new Request(`http://kleo.test/internal/jobs/${job.id}/done`, { method: "POST", headers: { authorization: `Bearer ${job.worker_secret}`, "content-type": "application/json" }, body: JSON.stringify(body) }), env);
+    assert.equal(res.status, 200, await res.text());
+  }
+  const ok = await m.createJob(env, free, order({ product: "animatic", prompt: "Venezia, la prima prova" }));
+  await done(ok, { cost_usd: 0.05, mark: { applied: true, why: null, seconds: 41.2 } });
+  assert.deepEqual(rows(ok.id), [["job.marked", { seconds: 41.2 }]]);
+
+  const bad = await m.createJob(env, free, order({ product: "animatic", prompt: "Venezia, la seconda prova" }));
+  await done(bad, { cost_usd: 0.05, mark: { applied: false, why: "x".repeat(400), seconds: 3 } });
+  const [[event, detail]] = rows(bad.id);
+  assert.equal(event, "job.mark_failed");
+  assert.equal(detail.why.length, 300, "the box's words, cut like every other box text");
+
+  const old = await m.createJob(env, free, order({ product: "animatic", prompt: "Venezia, la terza prova" }));
+  await done(old, { cost_usd: 0.05 });
+  assert.deepEqual(rows(old.id), [["job.mark_missing", {}]], "a box that never heard of the mark");
+
+  const clean = await m.createJob(env, await m.getUser(env, payer.id), order({ product: "animatic", prompt: "Venezia, il cliente" }));
+  await done(clean, { cost_usd: 0.05 });
+  assert.deepEqual(rows(clean.id), [], "a job ordered without the mark writes nothing about it");
+  assert.equal(m.markOutcome({ params: "not json" }, { applied: true }), null);
+});

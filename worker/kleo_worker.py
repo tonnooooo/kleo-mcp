@@ -1931,16 +1931,40 @@ def upload_log(out_dir):
         log("log upload failed:", e)
 
 
+# What the Kleo mark pass did on a marked job ({"applied", "why", "seconds"}), sent with /done so the server writes it
+# down (job.marked / job.mark_failed): the box is destroyed right after, and its own log with it.
+MARK_REPORT = None
+
+
 def mark_free_render(job, files, out_dir):
     """THE KLEO MARK (29 October 2026): a job the server marked (params.mark, an account that had never paid) gets
     "Made with Kleo" burned into video.mp4 before anything is uploaded, and its thumbnail cut again (kleo_mark.py).
-    Fails open: an image without kleo_mark, or a pass that fails, ships the video clean and says so in log.txt."""
+    Fails open: an image without kleo_mark, or a pass that fails, ships the video clean; the reason goes into the
+    uploaded log.txt and to the server with /done."""
+    global MARK_REPORT
+
+    def note(*a):
+        log(*a)
+        try:
+            with open(os.path.join(out_dir, "log.txt"), "a", encoding="utf-8") as f:
+                f.write(time.strftime("%H:%M:%S") + " " + " ".join(str(x) for x in a) + "\n")
+        except OSError:
+            pass
     try:
         import kleo_mark
     except Exception as e:
-        log("mark: kleo_mark could not be imported:", e)
+        p = job.get("params") or {}
+        if isinstance(p, str):
+            try:
+                p = json.loads(p)
+            except ValueError:
+                p = {}
+        if isinstance(p, dict) and p.get("mark") is True:
+            note("mark: FAILED, kleo_mark could not be imported:", e)
+            MARK_REPORT = {"applied": False, "why": f"kleo_mark could not be imported: {e}"[:300], "seconds": 0.0}
         return files
-    return kleo_mark.mark_files(job, files, out_dir, log=log, progress=progress, thumbnail=thumbnail_from)
+    files, MARK_REPORT = kleo_mark.mark_files(job, files, out_dir, log=note, progress=progress, thumbnail=thumbnail_from)
+    return files
 
 
 def main():
@@ -1993,7 +2017,7 @@ def main():
         upload_log(out_dir)
         if dph:
             cost = round(float(dph) * (time.time() - started) / 3600, 4)
-        api("POST", f"/internal/jobs/{JOB}/done", {"cost_usd": cost, **({"sr": SR_REPORT} if SR_REPORT else {})})
+        api("POST", f"/internal/jobs/{JOB}/done", {"cost_usd": cost, **({"sr": SR_REPORT} if SR_REPORT else {}), **({"mark": MARK_REPORT} if MARK_REPORT else {})})
         log("done in %.0f s" % (time.time() - started))
         self_destruct("finished")
     except Exception as e:

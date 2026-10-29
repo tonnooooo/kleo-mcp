@@ -63,7 +63,8 @@ Video / Image switch.
 
 Since 28 Oct 2026 every picture, clip and animatic an account that never paid makes carries "Made with Kleo"
 (`studio-web/made-with-kleo.png`), so free creations shared online advertise Kleo. Any payment (a pack or a plan), an
-admin and a Kleo Creators Pro partner see no mark; `STUDIO_WATERMARK=off` turns it off for everyone. Sounds are never
+admin and a Kleo Creators Pro partner see no mark; `STUDIO_WATERMARK=off` in both `wrangler.studio.jsonc` and
+`wrangler.jsonc` turns it off for everyone (the second one decides for animatics). Sounds are never
 marked, nor the person's own uploads.
 
 - The clean file is saved as before; a marked copy goes next to it (`<name>.mark.<ext>`). `/media/...` sends the marked
@@ -76,6 +77,8 @@ marked, nor the person's own uploads.
   ordered (`src/mark.ts`, `params.mark`, the same rule as Studio's) and the GPU box burns the mark into `video.mp4`
   before the upload (`worker/kleo_mark.py`, one libx264 pass, under a cent of box time), so Studio's copy, the MCP
   `/dl` links and the job-done e-mail all carry it. The mark is in the video for good: a purchase does not remove it.
+  The box tells the server what happened with `/done`: `job.marked`, `job.mark_failed` (the reason; the video went out
+  clean) or `job.mark_missing` (a box with an image from before the mark) in the audit, and the line in `log.txt`.
 - Providers read a person's files through `/media/raw/<upload>` (signed links only): always the clean file.
 - Fails open: a file the mark could not be put on is served clean (`studio.mark_failed` in the audit). A picture with
   no marked copy (made before 29 Oct 2026, made while paying then refunded, or a failed mark) gets one the next time

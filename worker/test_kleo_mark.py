@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-The Kleo mark on free renders (kleo_mark.py, 29 October 2026): where it goes, that it is burned in and nothing else
-changes (every frame, the frame rate, the length, the sound), that it obeys an explicit params.mark only, that a pass
-which cannot be done ships the clean video, and that kleo_worker.main() uploads the marked video and a thumbnail cut
-from it. Real ffmpeg on one-second 540x960 and 960x540 clips; no GPU, no network.
+The Kleo mark on free renders (kleo_mark.py, 29 October 2026): where it goes (clear of a HUD readout), that it is
+burned in and nothing else changes (every frame, the frame rate, the length, the sound), that a master joined from
+parts keeps its frame count, that it obeys an explicit params.mark only, that a pass which cannot be done ships the
+clean video and says why, and that kleo_worker.main() uploads the marked video, a thumbnail cut from it, the outcome
+line in log.txt and the outcome in /done. Real ffmpeg on one- and two-second 540x960 and 960x540 clips; no GPU, no
+network.
 
 tests.yml runs its python modules by name, so these classes ride in test_kleo_worker_video (imported at its bottom).
 Run: python3 -m unittest test_kleo_mark       (from worker/)
@@ -23,6 +25,16 @@ def load_module(name, path):
 
 km = load_module("kleo_mark_under_test", os.path.join(HERE, "kleo_mark.py"))
 HAS_FFMPEG = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
+
+
+def read(path, n=-1):
+    with open(path, "rb") as f:
+        return f.read(n)
+
+
+def write(path, data):
+    with open(path, "wb") as f:
+        f.write(data)
 
 
 def clip(path, w, h, seconds=1, audio=True):
@@ -66,6 +78,24 @@ class KleoMarkPlacementTest(unittest.TestCase):
         self.assertEqual(km.placement(300, 200), (96, 26, 192, 44), "never under 96 px")
         self.assertIsNone(km.placement(50, 50))
 
+    def test_a_hud_readout_top_left_moves_the_tall_mark(self):
+        self.assertEqual(km.placement(2160, 3840, frozenset({"top-left"})), (691, 186, 1383, 768), "to the right side")
+        self.assertEqual(km.placement(2160, 3840, frozenset({"top-left", "top-right"})), (691, 186, 86, 1920), "down to 50%")
+        self.assertEqual(km.placement(2160, 3840, frozenset({"top-right", "bottom-left"})), (691, 186, 86, 768))
+        self.assertEqual(km.placement(3840, 2160, frozenset({"top-right"})), (845, 227, 2841, 475), "16:9 readouts end above it")
+
+    def test_hud_corners_reads_only_readouts_from_the_storyboard(self):
+        sb = {"scenes": [], "graphics": {"accent": "#ffffff", "hud": [
+            {"id": "a", "kind": "readout", "corner": "top-left", "rows": ["HR 72"]},
+            {"id": "b", "kind": "stamp", "corner": "top-right"},
+            {"id": "c", "kind": "line", "edge": "top"},
+        ]}}
+        self.assertEqual(km.hud_corners({"storyboard": sb}), frozenset({"top-left"}))
+        self.assertEqual(km.hud_corners({"storyboard": json.dumps(sb)}), frozenset({"top-left"}))
+        for sb in (None, "not json", {"graphics": None}, {"graphics": {"hud": "x"}}, {"graphics": {"hud": [None, 3]}}):
+            self.assertEqual(km.hud_corners({"storyboard": sb}), frozenset(), sb)
+        self.assertEqual(km.hud_corners(None), frozenset())
+
     def test_js_rounding_not_bankers_rounding(self):
         self.assertEqual(km.js_round(2.5), 3)
         self.assertEqual(km.js_round(0.5), 1)
@@ -80,20 +110,21 @@ class KleoMarkPlacementTest(unittest.TestCase):
 
 class KleoMarkShipsTest(unittest.TestCase):
     def test_the_image_carries_the_module_and_the_mark(self):
-        for name in ("Dockerfile.keou",):
-            docker = open(os.path.join(HERE, name), encoding="utf-8").read()
-            self.assertIn("COPY worker/kleo_mark.py /opt/kleo/kleo_mark.py", docker)
-            self.assertIn("COPY worker/made-with-kleo.png /opt/kleo/made-with-kleo.png", docker)
-        slim = open(os.path.join(ROOT, "docker", "Dockerfile.slim"), encoding="utf-8").read()
+        with open(os.path.join(HERE, "Dockerfile.keou"), encoding="utf-8") as f:
+            docker = f.read()
+        self.assertIn("COPY worker/kleo_mark.py /opt/kleo/kleo_mark.py", docker)
+        self.assertIn("COPY worker/made-with-kleo.png /opt/kleo/made-with-kleo.png", docker)
+        with open(os.path.join(ROOT, "docker", "Dockerfile.slim"), encoding="utf-8") as f:
+            slim = f.read()
         self.assertIn("COPY worker/kleo_mark.py /opt/kleo/kleo_mark.py", slim)
         self.assertIn("COPY worker/made-with-kleo.png /opt/kleo/made-with-kleo.png", slim)
 
     def test_one_mark_everywhere(self):
-        digest = lambda p: hashlib.sha256(open(p, "rb").read()).hexdigest()
+        digest = lambda p: hashlib.sha256(read(p)).hexdigest()
         here = digest(km.MARK)
         for other in (os.path.join(ROOT, "studio-web", "made-with-kleo.png"), os.path.join(ROOT, "watermark", "made-with-kleo.png")):
             self.assertEqual(digest(other), here, other)
-        png = open(km.MARK, "rb").read(32)
+        png = read(km.MARK, 32)
         self.assertEqual((int.from_bytes(png[16:20], "big"), int.from_bytes(png[20:24], "big")), (km.MARK_W, km.MARK_H))
 
 
@@ -103,67 +134,92 @@ class KleoMarkBurnTest(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="kleo-mark-")
         self.addCleanup(shutil.rmtree, self.tmp, True)
 
-    def check_burn(self, w, h):
-        src = clip(os.path.join(self.tmp, f"in-{w}x{h}.mp4"), w, h)
-        dst = os.path.join(self.tmp, f"out-{w}x{h}.mp4")
+    def check_burn(self, src, w, h):
+        dst = src[:-4] + ".out.mp4"
         info, at = km.burn(src, dst)
         self.assertEqual(at, km.placement(w, h))
         got = km.probe(dst)
         self.assertEqual((got["w"], got["h"]), (w, h))
-        self.assertEqual(got["frames"], info["frames"], "every frame kept")
-        self.assertGreaterEqual(info["frames"], 58)
+        self.assertEqual(got["frames"], info["frames"], "every frame kept, none added")
         self.assertAlmostEqual(got["fps"], 60.0, places=2)
-        self.assertTrue(got["audio"], "the sound track is copied")
         before, after = frame(src, w, h), frame(dst, w, h)
         self.assertGreater(mean_luma(before, w, pill(at)), 240, "the source is white there")
         self.assertLess(mean_luma(after, w, pill(at)), 140, "the dark pill is burned in")
         for box in ((0, h - h // 5, w // 3, h // 6), (w - w // 3, h - h // 5, w // 3, h // 6)):
             self.assertGreater(mean_luma(after, w, box), 240, f"nothing changes away from the mark: {box}")
+        return info, got
 
     def test_a_tall_render(self):
-        self.check_burn(540, 960)
+        info, got = self.check_burn(clip(os.path.join(self.tmp, "in-540x960.mp4"), 540, 960), 540, 960)
+        self.assertGreaterEqual(info["frames"], 58)
+        self.assertTrue(got["audio"], "the sound track is copied")
 
     def test_a_wide_render(self):
-        self.check_burn(960, 540)
+        self.check_burn(clip(os.path.join(self.tmp, "in-960x540.mp4"), 960, 540), 960, 540)
+
+    def test_a_master_joined_from_parts_keeps_every_frame(self):
+        # The engine renders a master in parts and joins them with the concat demuxer and stream copy
+        # (keou/engine/render.mjs); the joins can sit a hair off the 1/60 grid. Three 56-frame parts, joined the same way.
+        parts = []
+        for i in range(3):
+            p = os.path.join(self.tmp, f"part{i}.mp4")
+            subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=white:s=540x960:r=60",
+                            "-frames:v", "56", "-c:v", "libx264", "-preset", "veryfast", "-crf", "17", "-pix_fmt", "yuv420p", p], check=True)
+            parts.append(p)
+        listing = os.path.join(self.tmp, "parts.txt")
+        with open(listing, "w", encoding="utf-8") as f:
+            f.write("".join(f"file '{p}'\n" for p in parts))
+        master = os.path.join(self.tmp, "master.mp4")
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", listing, "-c:v", "copy", master], check=True)
+        info, got = self.check_burn(master, 540, 960)
+        self.assertEqual(info["frames"], 168)
+        self.assertIn(km.sync_args(), (["-vsync", "passthrough"], ["-fps_mode", "passthrough"]))
 
     def test_mark_files_obeys_the_flag_and_cuts_the_thumbnail_again(self):
         src = clip(os.path.join(self.tmp, "video.mp4"), 540, 960)
         thumb = os.path.join(self.tmp, "thumbnail.jpg")
-        open(thumb, "wb").write(b"old thumbnail")
-        clean = open(src, "rb").read()
+        write(thumb, b"old thumbnail")
+        clean = read(src)
         lines, cuts = [], []
         log = lambda *a: lines.append(" ".join(str(x) for x in a))
 
         files = {"video.mp4": src, "thumbnail.jpg": thumb}
-        self.assertIs(km.mark_files({"params": {"format": "9:16"}}, files, self.tmp, log=log), files)
-        self.assertEqual(open(src, "rb").read(), clean, "no flag, no pass")
+        same, outcome = km.mark_files({"params": {"format": "9:16"}}, files, self.tmp, log=log)
+        self.assertIs(same, files)
+        self.assertIsNone(outcome, "no flag: nothing to report")
+        self.assertEqual(read(src), clean, "no flag, no pass")
 
         def cut(video, out):
             cuts.append(video)
             subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", "0.5", "-i", video, "-frames:v", "1", out], check=True)
-        out = km.mark_files({"params": {"mark": True}}, files, self.tmp, log=log, thumbnail=cut)
+        out, outcome = km.mark_files({"params": {"mark": True}}, files, self.tmp, log=log, thumbnail=cut)
         self.assertEqual(out["video.mp4"], src, "the same name: the server takes only video.mp4")
-        self.assertNotEqual(open(src, "rb").read(), clean)
+        self.assertTrue(outcome["applied"])
+        self.assertIsNone(outcome["why"])
+        self.assertNotEqual(read(src), clean)
         self.assertEqual(cuts, [src], "the thumbnail is cut from the marked video")
-        self.assertNotEqual(open(thumb, "rb").read(), b"old thumbnail")
+        self.assertNotEqual(read(thumb), b"old thumbnail")
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "video.marked.mp4")))
         self.assertTrue(any(l.startswith("mark: 173x47 at 22,192 on 540x960, ") for l in lines), lines)
 
-    def test_a_pass_that_fails_ships_the_clean_video(self):
+    def test_a_pass_that_fails_ships_the_clean_video_and_says_why(self):
         broken = os.path.join(self.tmp, "video.mp4")
-        open(broken, "wb").write(b"\0" * 4096)
+        write(broken, b"\0" * 4096)
         lines = []
         files = {"video.mp4": broken}
-        out = km.mark_files({"params": {"mark": True}}, files, self.tmp, log=lambda *a: lines.append(" ".join(map(str, a))))
+        out, outcome = km.mark_files({"params": {"mark": True}}, files, self.tmp, log=lambda *a: lines.append(" ".join(map(str, a))))
         self.assertEqual(out, files)
-        self.assertEqual(open(broken, "rb").read(), b"\0" * 4096)
+        self.assertFalse(outcome["applied"])
+        self.assertTrue(outcome["why"])
+        self.assertEqual(read(broken), b"\0" * 4096)
         self.assertTrue(any(l.startswith("mark: FAILED") for l in lines), lines)
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "video.marked.mp4")))
 
 
 @unittest.skipUnless(HAS_FFMPEG, "ffmpeg is not installed")
 class KleoMarkWorkerTest(unittest.TestCase):
-    """kleo_worker.main() with the network and the engine faked: what it uploads for a marked and an unmarked job."""
+    """kleo_worker.main() with the network and the engine faked: what it uploads and reports for a marked and an
+    unmarked job."""
 
     def setUp(self):
         self.kw = load_module("kleo_worker_under_mark_test", os.path.join(HERE, "kleo_worker.py"))
@@ -173,15 +229,19 @@ class KleoMarkWorkerTest(unittest.TestCase):
         self.source = clip(os.path.join(self.tmp, "rendered.mp4"), 540, 960, seconds=2)
 
     def run_main(self, params):
-        kw, uploads, calls = self.kw, {}, []
+        kw, uploads, calls, logs = self.kw, {}, [], []
         kw.API, kw.JOB, kw.SECRET = "http://kleo.test", "gt_mark", "wk_1"
         kw.watchdog = lambda: None
         kw.set_footage_backend = lambda job: "none"
         kw.progress = lambda *a, **k: None
         kw.self_report = lambda files, job, out_dir: None
-        kw.upload_log = lambda out_dir: None
         kw.self_destruct = lambda reason: None
         kw.api = lambda method, path, data=None, **k: calls.append((method, path, data)) or {"job_id": "gt_mark", "template": "film", "params": params}
+
+        def upload_log(out_dir):
+            p = os.path.join(out_dir, "log.txt")
+            logs.append(read(p).decode("utf-8") if os.path.isfile(p) else "")
+        kw.upload_log = upload_log
 
         def render(job, out_dir):
             video = os.path.join(out_dir, "video.mp4")
@@ -189,26 +249,31 @@ class KleoMarkWorkerTest(unittest.TestCase):
             thumb = kw.thumbnail_from(video, os.path.join(out_dir, "thumbnail.jpg"))
             return {"video.mp4": video, "thumbnail.jpg": thumb}
         kw.render = render
-        kw.upload = lambda path, name: uploads.__setitem__(name, open(path, "rb").read())
+        kw.upload = lambda path, name: uploads.__setitem__(name, read(path))
         os.environ.pop("KLEO_PHASE", None)
         kw.main()
-        self.assertTrue(any(p.endswith("/done") for m, p, d in calls), calls)
-        return uploads
+        done = [d for m, p, d in calls if p.endswith("/done")]
+        self.assertEqual(len(done), 1, calls)
+        return uploads, done[0], "".join(logs)
 
-    def test_a_marked_job_uploads_the_marked_video_and_its_thumbnail(self):
-        up = self.run_main({"format": "9:16", "product": "animatic", "mark": True})
-        self.assertNotEqual(up["video.mp4"], open(self.source, "rb").read())
+    def test_a_marked_job_uploads_the_marked_video_its_thumbnail_and_the_outcome(self):
+        up, done, log_txt = self.run_main({"format": "9:16", "product": "animatic", "mark": True})
+        self.assertNotEqual(up["video.mp4"], read(self.source))
         got = os.path.join(self.tmp, "uploaded.mp4")
-        open(got, "wb").write(up["video.mp4"])
+        write(got, up["video.mp4"])
         at = km.placement(540, 960)
         self.assertLess(mean_luma(frame(got, 540, 960), 540, pill(at)), 140)
         thumb = os.path.join(self.tmp, "uploaded.jpg")
-        open(thumb, "wb").write(up["thumbnail.jpg"])
+        write(thumb, up["thumbnail.jpg"])
         self.assertLess(mean_luma(frame(thumb, 540, 960, at=0), 540, pill(at)), 140, "the poster carries it too")
+        self.assertTrue(done["mark"]["applied"], done)
+        self.assertIn("mark: 173x47 at 22,192 on 540x960", log_txt, "the line reaches the uploaded log.txt")
 
-    def test_an_unmarked_job_uploads_the_render_untouched(self):
-        up = self.run_main({"format": "9:16", "product": "animatic"})
-        self.assertEqual(up["video.mp4"], open(self.source, "rb").read())
+    def test_an_unmarked_job_uploads_the_render_untouched_and_reports_nothing(self):
+        up, done, log_txt = self.run_main({"format": "9:16", "product": "animatic"})
+        self.assertEqual(up["video.mp4"], read(self.source))
+        self.assertNotIn("mark", done)
+        self.assertNotIn("mark:", log_txt)
 
 
 if __name__ == "__main__":
