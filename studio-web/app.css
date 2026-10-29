@@ -1689,13 +1689,28 @@ img.fx-in { animation: fx-img-in .7s var(--ease-out) both; }
 .hc-tx p { margin: 0; color: var(--ink-2); font-size: 16px; line-height: 1.45; }
 @media (max-width: 640px) { .home-creators { padding: 18px 16px; } .home-creators .btn { width: 100%; } }
 
-/* Kleo Creators at the top of the home (28 October 2026): one line above the banners. */
-.home-news { display: flex; align-items: center; gap: 12px; width: 100%; margin: 0 0 18px; padding: 12px 16px; border-radius: 18px; text-align: left;
-  background: linear-gradient(100deg, var(--amber-soft), transparent 75%), var(--bg-2); border: 1px solid var(--sep); color: var(--ink); cursor: pointer; }
-.home-news:hover { border-color: var(--accent); }
-.hn-ic { flex: none; width: 36px; height: 36px; border-radius: 12px; display: grid; place-items: center; color: var(--amber-ink); background: linear-gradient(180deg, var(--cta-a), var(--cta-b)); }
-.hn-tx { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-.hn-tx b { font-size: 17px; font-weight: 700; }
-.hn-tx span { color: var(--ink-2); font-size: 16px; }
-.hn-go { flex: none; display: inline-flex; align-items: center; gap: 4px; font-size: 16px; font-weight: 650; color: var(--accent); }
-@media (max-width: 640px) { .hn-tx { flex-direction: column; gap: 2px; } }
+/* Kleo Creators, the notice (29 October 2026): one line under the top bar on every page, with a close button. The
+   frame gets a row for it, empty while it is hidden; every child is pinned to its row so a hidden notice moves nothing. */
+.frame { grid-template-rows: calc(var(--nav-h) + env(safe-area-inset-top)) auto 1fr; }
+.frame > .nav { grid-row: 1; }
+.frame > .cr-bar { grid-row: 2; }
+.frame > .views { grid-row: 3; }
+.frame > .tabbar { grid-row: 4; }
+@media (max-width: 760px) {
+  .frame { grid-template-rows: calc(52px + env(safe-area-inset-top)) auto 1fr calc(var(--tab-h) + env(safe-area-inset-bottom)); }
+}
+.cr-bar { display: flex; align-items: center; gap: 4px; min-width: 0; padding: 0 8px 0 12px; z-index: 15;
+  background: linear-gradient(90deg, var(--amber-soft), transparent 70%), var(--bg-2); border-bottom: 1px solid var(--sep); }
+.cr-bar[hidden] { display: none; }
+.crb-go { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; gap: 10px; height: 46px; padding: 0 8px;
+  color: var(--ink); background: none; border: 0; cursor: pointer; font: inherit; }
+.crb-ic { flex: none; width: 26px; height: 26px; border-radius: 9px; display: grid; place-items: center; color: var(--amber-ink);
+  background: linear-gradient(180deg, var(--cta-a), var(--cta-b)); }
+.crb-tx { min-width: 0; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.crb-tx b { font-weight: 700; }
+.crb-long { color: var(--ink-2); }
+.crb-cta { flex: none; display: inline-flex; align-items: center; gap: 3px; font-size: 16px; font-weight: 650; color: var(--accent); }
+.crb-go:hover .crb-cta { text-decoration: underline; }
+.crb-x { flex: none; width: 40px; height: 40px; border-radius: 20px; display: grid; place-items: center; color: var(--ink-2); background: none; border: 0; cursor: pointer; }
+.crb-x:hover { background: var(--fill); color: var(--ink); }
+@media (max-width: 640px) { .crb-long { display: none; } .crb-go { justify-content: flex-start; } }
