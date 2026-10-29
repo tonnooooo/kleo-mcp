@@ -25,8 +25,9 @@ test("only the models whose backup costs the same or less move; the dearer ones 
   for (const r of ["480p", "720p", "1080p"]) {
     assert.equal(moves("seedance-2.5", settings("seedance-2.5", r, 5)), false, `2.5 ${r}`);
     assert.equal(moves("seedance-2.0", settings("seedance-2.0", r, 5)), false, `2.0 ${r}`);
-    // WaveSpeed's Wan 3.0 is about 38% dearer than ePhone's (29 October 2026).
-    assert.equal(moves("wan-3.0", settings("wan-3.0", r, 10)), false, `Wan 3.0 ${r}`);
+    // Wan 3.0 moves to APIMart, a little cheaper than ePhone, never to WaveSpeed (about 38% dearer); APIMart has no 21:9.
+    assert.equal(moves("wan-3.0", settings("wan-3.0", r, 10)), true, `Wan 3.0 ${r}`);
+    assert.equal(moves("wan-3.0", settings("wan-3.0", r, 10, { aspect: "21:9" })), false, `Wan 3.0 ${r} 21:9`);
   }
   assert.equal(moves("veo-3.1", settings("veo-3.1", "720p", 8)), false);
   assert.equal(moves("veo-3.1-fast", settings("veo-3.1-fast", "1080p", 8)), false, "APIMart's 1080p Veo Fast is 21% dearer");
@@ -82,6 +83,24 @@ test("Seedance 2.0 Fast on APIMart: the same clip, first frame, references and c
   const omni = backupRoutes("doubao-seedance-2-0-fast-260128", taskInput(settings("seedance-2.0-fast", "480p", 5, { imageRole: "reference", videoRole: "reference" }), "image 1 dances like video 1", ["https://a/p.jpg"], undefined, { videos: ["https://a/v.mp4"], audios: ["https://a/s.mp3"] }))[0];
   assert.deepEqual([omni.body.image_urls, omni.body.video_urls, omni.body.audio_urls], [["https://a/p.jpg"], ["https://a/v.mp4"], ["https://a/s.mp3"]]);
   assert.equal(omni.body.image_with_roles, undefined);
+});
+
+test("Wan 3.0 on APIMart: the same clip, first frame and reference pictures; 21:9 stays on ePhone", () => {
+  const route = (s, images = []) => backupRoutes("wan3.0-video", taskInput(s, "a fox", images));
+  const text = route(settings("wan-3.0", "720p", 10, { aspect: "9:16" }))[0];
+  assert.deepEqual([text.provider, text.model, text.path], ["apimart", "wan3.0-video", "/v1/videos/generations"]);
+  assert.deepEqual(text.body, { model: "wan3.0-video", prompt: "a fox", resolution: "720P", size: "9:16", duration: 10, audio: true, watermark: false });
+  assert.equal(text.usd, 0.6575);
+  assert.ok(text.usd < clipCostUsd(settings("wan-3.0", "720p", 10)), "a little under ePhone's $0.686");
+  assert.equal(route(settings("wan-3.0", "480p", 5, { audio: false }))[0].body.audio, false);
+  assert.equal(route(settings("wan-3.0", "1080p", 15))[0].usd, 1.9726);
+  const first = route(settings("wan-3.0", "1080p", 5, { aspect: "21:9", imageRole: "first_frame" }), ["https://a/p.jpg"])[0];
+  assert.deepEqual([first.body.size, first.body.image_with_roles, first.body.image_urls], ["adaptive", [{ url: "https://a/p.jpg", role: "first_frame" }], undefined], "a first frame keeps its own shape, so even a 21:9 order moves");
+  const refs = Array.from({ length: 10 }, (_, i) => `https://a/${i}.jpg`);
+  const ref = route(settings("wan-3.0", "480p", 5, { imageRole: "reference" }), refs)[0];
+  assert.deepEqual([ref.body.generation_type, ref.body.image_urls, ref.body.image_with_roles], ["reference", refs, undefined]);
+  assert.deepEqual(route(settings("wan-3.0", "720p", 5, { aspect: "21:9" })), [], "APIMart has no 21:9");
+  assert.deepEqual(route(settings("wan-3.0", "720p", 5, { aspect: "21:9", imageRole: "reference" }), ["https://a/1.jpg"]), []);
 });
 
 test("Veo 3.1 Fast at 720p, Kling copy-motion, Character Swap, Motion Control and Video Face Swap on APIMart", () => {
