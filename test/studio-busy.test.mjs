@@ -4,9 +4,10 @@
  * contact the administrator", and the person left). The pure rules (which failures are "busy", where the picture goes
  * instead), then the kleo-studio Worker bundled with esbuild on a D1 look-alike (node:sqlite, every migration applied):
  * the unseen retry on APIMart, then on ePhone, the busy offer when both fail, taking it once, declining it, and a
- * refusal keeping its FLUX 3 road. Then the same net for video clips (29 October 2026): the retry on APIMart, ePhone
- * or WaveSpeed, never after a timeout the provider has not ended, the "was busy" card with Wan 3.0 or Veo 3.1 Fast for
- * no more than the clip cost, and the copyright and money roads left as they were.
+ * refusal keeping its FLUX 3 road. An order ePhone took and then refused as malformed (a quality spelling, an
+ * output_format) is sent again changed, or to the backup, never as it was. Then the same net for video clips (29 October
+ * 2026): the retry on APIMart, ePhone or WaveSpeed, never after a timeout the provider has not ended, the "was busy"
+ * card with Wan 3.0 or Veo 3.1 Fast for no more than the clip cost, and the copyright and money roads left as they were.
  * Run: node --test test/studio-busy.test.mjs
  */
 import { register } from "node:module";
@@ -21,7 +22,7 @@ import { join, dirname } from "node:path";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
-import { busySwitchFor, closestAspect, isProviderBusy, alternativeFor, imageAlternatives } from "../src/studio/image-models.ts";
+import { busySwitchFor, closestAspect, isProviderBusy, isRequestRefusal, repairedInput, alternativeFor, imageAlternatives } from "../src/studio/image-models.ts";
 import { busySwitchClip, clipCostUsd, wanCredits } from "../src/studio/models.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -293,6 +294,70 @@ test("busy: 'No thanks' drops the offer for good; a refused picture never gets i
     assert.equal(events(env, "studio.busy_retry").filter((e) => e.id === refused).length, 0);
     assert.equal(events(env, "studio.fallback").filter((e) => e.id === refused).length, 1, "FLUX 3's second try");
   } finally { p.restore(); }
+});
+
+// ── Orders ePhone took and then refused as malformed (29 October 2026, two approved probes) ─────────────────────────
+const QUALITY_REFUSAL = '[ { "code": "invalid_value", "values": [ "auto", "low", "medium", "high", "xhigh", "max" ], "path": [ "quality" ], "message": "Invalid option: expected one of \\"auto\\"|\\"low\\"|\\"medium\\"|\\"high\\"|\\"xhigh\\"|\\"max\\"" } ]';
+const MIME_REFUSAL = "Invalid JSON payload received. Unknown name \"mimeType\" at 'generation_config.image_config': Cannot find field.";
+
+test("refused orders: ePhone's two late refusals, and what changes in the order", () => {
+  for (const m of [QUALITY_REFUSAL, MIME_REFUSAL]) {
+    assert.equal(isRequestRefusal(m), true, m);
+    assert.equal(isProviderBusy(m), false, m);
+  }
+  for (const m of ["no image generated in response", "Content Moderated: Protected Content", "Insufficient balance", "预扣费额度失败, 用户剩余额度: $0.000000", "Rate limit exceeded, please retry later"]) {
+    assert.equal(isRequestRefusal(m), false, m);
+  }
+  const nb2 = { prompt: "a cup", aspect_ratio: "1:1", quality: "medium" };
+  assert.deepEqual(repairedInput(nb2, QUALITY_REFUSAL), { ...nb2, quality: "1K" }, "the other spelling");
+  assert.deepEqual(repairedInput({ ...nb2, quality: "1K" }, QUALITY_REFUSAL), nb2, "and back");
+  assert.deepEqual(repairedInput({ ...nb2, output_format: "jpeg" }, MIME_REFUSAL), nb2, "no output_format");
+  assert.equal(repairedInput(nb2, MIME_REFUSAL), null, "nothing to change: never the same order again");
+  assert.equal(repairedInput({ prompt: "x", size: "2K" }, QUALITY_REFUSAL), null);
+});
+
+test("refused orders: a quality ePhone refuses after taking the order goes again in the other spelling, unseen", async () => {
+  const env = newEnv({ APIMART_API_KEY: "" });
+  const cookie = await account(env, "ed@example.com");
+  const p = providers({ ephone: (n) => (n === 1 ? failed(QUALITY_REFUSAL) : done("second")) });
+  try {
+    const before = await creditsOf(env, cookie);
+    const g = await settle(env, cookie, await order(env, cookie));
+    assert.equal(g.status, "done", JSON.stringify(g));
+    const sent = submits(p, (u) => u.endsWith("/v1/task/submit"));
+    assert.equal(sent.length, 2);
+    assert.equal(sent[0].body.input.quality, "high");
+    assert.deepEqual(sent[1].body.input, { ...sent[0].body.input, quality: "2K" }, "only the quality changes");
+    const retry = events(env, "studio.busy_retry");
+    assert.equal(retry.length, 1);
+    assert.equal(retry[0].cause, "request");
+    assert.equal(await creditsOf(env, cookie), before - g.credits, "charged once");
+  } finally { p.restore(); }
+});
+
+test("refused orders: an order ePhone cannot read goes to the backup; with none, never the same order again", async () => {
+  const env = newEnv();
+  const cookie = await account(env, "fa@example.com");
+  const p = providers({ ephone: () => failed(MIME_REFUSAL), apimart: () => ({ status: "completed", result: { images: [{ url: ["https://cdn.example/am.png"] }] } }) });
+  try {
+    const g = await settle(env, cookie, await order(env, cookie));
+    assert.equal(g.status, "done", JSON.stringify(g));
+    assert.equal(submits(p, (u) => u.endsWith("/v1/task/submit")).length, 1);
+    assert.equal(events(env, "studio.busy_retry")[0].to, "apimart");
+  } finally { p.restore(); }
+
+  // No backup and nothing in the order to change: the credits come back, in plain words, with Seedream 5.0 offered.
+  const bare = newEnv({ APIMART_API_KEY: "" });
+  const c2 = await account(bare, "gi@example.com");
+  const q = providers({ ephone: () => failed(MIME_REFUSAL) });
+  try {
+    const g = await settle(bare, c2, await order(bare, c2));
+    assert.equal(g.status, "failed");
+    assert.equal(g.refunded, true);
+    assert.equal(submits(q, (u) => u.endsWith("/v1/task/submit")).length, 1, "the refused order is never sent again as it was");
+    assert.equal(g.error, "Nano Banana 2 was busy and couldn't make this one. Your credits are back.", "never the provider's words");
+    assert.equal(g.busy?.model, "seedream-5");
+  } finally { q.restore(); }
 });
 
 // ── Video clips (29 October 2026) ──────────────────────────────────────────────────────────────────────────────────
