@@ -16,6 +16,7 @@ import { repairGraphics } from "./graphics.ts";
 import { specProblems, repairSpec, coverage, specModeWhy, MODE_RULE, type RequestSpec } from "./spec.ts";
 import { resolveRefs, refsOf, RefError, REF_HANDLE_RE } from "./refs.ts";
 import { trialOf, claimTrial, releaseTrial, TRIAL_FILM_MAX_S } from "./launch.ts";
+import { marksAccount } from "./mark.ts";
 
 /** An error whose message is shown to the user as-is: plain English, always says whether something was charged. */
 export class JobError extends Error {}
@@ -214,6 +215,10 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
       throw new JobError(`The launch code on this account (${trial.code}) opened one free film of up to ${TRIAL_FILM_MAX_S} seconds with the ${plural(trial.price, "credit")} it added, and ${plural(trial.credits_short, "credit")} of those have since been spent, so the film cannot be made from them (you have ${plural(Math.max(0, user.credits), "credit")}). Two ways on: ${animaticWayOut}, or ${buy}. Nothing was charged.`);
     throw new JobError(`A film is made only for accounts that have bought a credit pack: its shots are generated clips that Kleo pays for per second, and the credits on this account were not paid for (a gift, a bonus or a test balance). Three ways on: ${animaticWayOut} — the same storyboard as drawn frames with the camera moving over them, narrated, 4K 60 fps, up to ${ANIMATIC_MAX_S} seconds — or redeem a launch code with kleo_redeem (one free film of up to ${TRIAL_FILM_MAX_S} seconds), or ${buy}. Nothing was charged.`);
   }
+  // THE KLEO MARK (29 October 2026, src/mark.ts): the video of an account that never paid (the animatic, or the
+  // launch-code film) comes off the box with "Made with Kleo" burned in (worker/kleo_mark.py), whichever road it leaves
+  // by. Decided here, in the one funnel both doors (kleo_create_video and Studio) go through, and frozen on the row.
+  const mark = !paid && (await marksAccount(env, user.id, false));
   const prompt = input.prompt.trim();
   if (prompt.length < 8) throw new JobError("The description is too short (at least 8 characters). Say what the video is about: topic, angle, tone, anything that must appear on screen. Nothing was charged.");
   if (prompt.length > 4000) throw new JobError(`The description is too long (${prompt.length} characters, the maximum is 4000). Shorten it and call again. Nothing was charged.`);
@@ -458,7 +463,7 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   const musicParam = musicIn === null ? undefined : musicIn.wanted ? (musicOf((treatment as Treatment | null)?.music) ?? musicIn.brief ?? "a quiet instrumental bed that fits the film's mood, under the narration") : null;
   const params: JobParams = { duration_s: duration, format, language, voice, style, ...(product === "animatic" ? { product } : {}), ...(styleGuessed ? { style_guessed: true } : {}), ...(cappedFrom ? { style_capped_from: cappedFrom } : {}), ...(treatment ? { treatment } : {}), ...(musicParam !== undefined ? { music: musicParam } : {}), ...(subsIn !== null ? { subtitles: subsIn } : {}),
     ...(spec ? { spec } : {}), ...(refHandles.length ? { refs: refHandles } : {}), ...(answers.must_keep || answers.audience || answers.tone || corrections ? { brief } : {}),
-    ...(clipFloor > 0 ? { clip_floor_s: clipFloor } : {}), ...(upscaleCredits ? { ai_upscale: true, ai_upscale_credits: upscaleCredits } : {}), ...(trialFilm ? { trial: true } : {}) };
+    ...(clipFloor > 0 ? { clip_floor_s: clipFloor } : {}), ...(upscaleCredits ? { ai_upscale: true, ai_upscale_credits: upscaleCredits } : {}), ...(trialFilm ? { trial: true } : {}), ...(mark ? { mark: true } : {}) };
   const job: Job = {
     id: jobId, user_id: user.id, template: t.id, prompt, params: JSON.stringify(params),
     state: "queued", track: null, percent: 0, eta_min: product === "animatic" ? animaticEtaFor(duration) : etaFor(duration), credits,
@@ -478,7 +483,7 @@ export async function createJob(env: Env, user: User, input: CreateInput): Promi
   }
   // language_defaulted (25 September 2026): the caller named no narration language and English was assumed; the intake
   // asks it, so these rows count the callers that went round it.
-  await audit(env, user.id, job.id, "job.created", { template: t.id, product, credits, duration, format, style, storyboard: storyboard ? "client" : "auto", treatment: treatment ? (treatmentFrom ? "reused" : "client") : "auto", ...(treatmentFrom ? { treatment_from: treatmentFrom } : {}), spec: spec ? spec.mode : null, refs: refHandles.length, ...(trialFilm ? { trial: trial!.code } : {}), ...(input.language === undefined ? { language_defaulted: true } : {}), ...(upscaleCredits ? { ai_upscale_credits: upscaleCredits } : {}) });
+  await audit(env, user.id, job.id, "job.created", { template: t.id, product, credits, duration, format, style, storyboard: storyboard ? "client" : "auto", treatment: treatment ? (treatmentFrom ? "reused" : "client") : "auto", ...(treatmentFrom ? { treatment_from: treatmentFrom } : {}), spec: spec ? spec.mode : null, refs: refHandles.length, ...(trialFilm ? { trial: trial!.code } : {}), ...(input.language === undefined ? { language_defaulted: true } : {}), ...(upscaleCredits ? { ai_upscale_credits: upscaleCredits } : {}), ...(mark ? { mark: true } : {}) });
   return job;
 }
 

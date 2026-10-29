@@ -3,11 +3,12 @@
 //
 // Pages: Create (chat with Kleo) · Video · Image · Audio · Apps · Library. Desktop: a top bar; phones: a tab bar.
 
-import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=101";
+import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=102";
 
 const DEMO = new URLSearchParams(location.search).has("demo");
 const DEMO_FREE = new URLSearchParams(location.search).get("demo") === "free"; // ?demo=free: an account that never paid
 const DEMO_GUEST = new URLSearchParams(location.search).get("demo") === "guest"; // ?demo=guest: a visitor, not signed in
+const DEMO_BUSY = new URLSearchParams(location.search).get("demo") === "busy"; // ?demo=busy: Nano Banana 2 is busy
 const IS_TOUCH = matchMedia("(hover: none)").matches;
 // The query this visit started with, before the app tidies the address: its utm tags go along to Safari or Chrome.
 const LANDING_QUERY = location.search;
@@ -1015,7 +1016,7 @@ function elapsed(g, t) {
 function failedEl(g, el) {
   el.append(h("div", { class: "clip-fail" }, h("div", { class: "x" }, icon("x", 16, 2.4)),
     h("div", {}, h("p", {}, g.error || "This one couldn't be made."), g.refunded ? h("div", { class: "refund" }, icon("check", 14, 2.6), `${g.credits} credits refunded`) : null,
-      g.offer ? wanOfferEl(g) : g.rewrite ? rewriteOfferEl(g) : h("div", { style: { marginTop: "10px" } }, h("button", { class: "btn btn-quiet btn-sm", onclick: () => remix(g) }, icon("redo", 16), "Try again")))));
+      g.offer ? wanOfferEl(g) : g.rewrite ? rewriteOfferEl(g) : g.busy ? busyOfferEl(g) : h("div", { style: { marginTop: "10px" } }, h("button", { class: "btn btn-quiet btn-sm", onclick: () => remix(g) }, icon("redo", 16), "Try again")))));
   return el;
 }
 // THE NAME CHECK (21 October 2026, the owner: "cerca di diminuire i problemi"). When a Seedance prompt names well-known
@@ -1057,6 +1058,26 @@ function rewriteOfferEl(g) {
     h("b", {}, "Try describing them instead of naming them?"),
     h("p", {}, `Kleo rewrites your prompt with how each character looks (hair, clothes, colours, style) and no names, and ${o.name} makes it once more. It will look alike, not identical.`),
     h("div", { class: "wan-btns" }, use, no));
+}
+// A picture its model could not make because the provider was busy, even after Kleo's own retry (29 October 2026, the
+// owner: "se non riesce gli chiedi di cambiare provider con il classico pop up di avviso"). One tap makes it on a model
+// that is working, for the credits it cost (they came back). The pop-up asks when it happens; this stays on the card.
+function busyOfferEl(g) {
+  const o = g.busy;
+  const use = h("button", { class: "btn btn-primary btn-sm", onclick: () => settleOffer(g, "switch", false, use, no) }, icon("sparkle", 16, 2.2), `Use ${o.name}`, h("span", { class: "cost" }, bolt(13), o.credits));
+  const no = h("button", { class: "btn btn-quiet btn-sm", onclick: () => settleOffer(g, "switch", true, use, no) }, "No thanks");
+  return h("div", { class: "wan-offer", onclick: (e) => e.stopPropagation() },
+    h("b", {}, `Make it with ${o.name} instead?`),
+    h("p", {}, `${o.from} is busy right now. ${o.name} makes the same picture from your prompt and pictures. If it can't either, your credits come back.`),
+    h("div", { class: "wan-btns" }, use, no));
+}
+/** The pop-up, once, when a picture the person is waiting for fails because its model is busy. */
+async function busyAsk(g) {
+  const o = g.busy;
+  const yes = await ask({ title: `${o.from} is busy right now`, ic: "sparkle", ok: `Use ${o.name}`, cancel: "Not now",
+    text: `Make the same picture with ${o.name}? Same prompt and pictures, ${o.credits} ${o.credits === 1 ? "credit" : "credits"}. If it can't make it either, your credits come back.` });
+  const fresh = S.gens.get(g.id);
+  if (yes && fresh?.busy) settleOffer(fresh, "switch", false, h("button"), h("button"));
 }
 async function setAutoWan(on, input) {
   try {
@@ -1230,7 +1251,7 @@ async function poll() {
         if (r.generation.status === "done") {
           toast(`${r.generation.modelName || "Your creation"} is ready ✨`);
           requestAnimationFrame(() => { for (const c of document.querySelectorAll(`[data-result="${id}"], [data-gen="${id}"]`)) c.classList.add("just-done"); });
-        }
+        } else if (r.generation.busy && document.visibilityState === "visible") busyAsk(r.generation);
       } else if (!before) refreshGen(id);
     } catch (e) { if (e.code === "signin") { watching.clear(); return handleError(e); } }
   }
@@ -1560,7 +1581,7 @@ function openPresets(current, pick) {
 const CARDS = new Map();
 function resultCard(g) {
   if (!g) return h("div");
-  const sig = g.status === "running" ? null : JSON.stringify([g.status, g.video, g.outputs, g.error, g.refunded, g.prompt, g.modelName, g.offer, g.rewrite]);
+  const sig = g.status === "running" ? null : JSON.stringify([g.status, g.video, g.outputs, g.error, g.refunded, g.prompt, g.modelName, g.offer, g.rewrite, g.busy]);
   const kept = sig && CARDS.get(g.id);
   if (kept && kept.sig === sig) { kept.el.classList.add("seen"); kept.el.classList.remove("just-done"); return kept.el; }
   const el = buildResultCard(g);
@@ -1611,7 +1632,7 @@ function buildResultCard(g) {
   }
   if (g.status === "done" || g.status === "failed") acts.append(h("button", { class: "icon-btn danger", title: "Delete", "aria-label": "Delete", onclick: () => deleteGen(g) }, icon("trash", 18)));
   el.append(media, h("div", { class: "info" },
-    g.status === "failed" ? (g.offer ? wanOfferEl(g) : g.rewrite ? rewriteOfferEl(g) : null) : null,
+    g.status === "failed" ? (g.offer ? wanOfferEl(g) : g.rewrite ? rewriteOfferEl(g) : g.busy ? busyOfferEl(g) : null) : null,
     out === "audio" && g.status === "done" ? (g.outputs || []).map((o, i, all) => songRow(g, o, i, all.length)) : null,
     g.prompt ? h("p", {}, g.prompt) : null, acts));
   return el;
@@ -2909,6 +2930,16 @@ async function demoApi(path, opts) {
     demoDb.credits -= o.credits; demoDb.gens.set(n.id, n);
     return { generation: { ...n }, original: { ...g }, message: g.chatId ? { id: "m_b" + (++demoDb.n), role: "assistant", text: "", generation: n } : null, credits: demoDb.credits };
   }
+  const sm = path.match(/^\/api\/generations\/(g_\w+)\/switch$/);
+  if (sm) {
+    const g = demoDb.gens.get(sm[1]);
+    if (!g?.busy) throw new ApiError("This picture can't be made again on another model.", 409, "no_offer");
+    const o = g.busy;
+    g.busy = null;
+    if (b.decline) return { original: { ...g } };
+    const n = newGen("image", g.prompt, { ...g.settings, model: o.model, quality: "2K", aspect: g.settings.aspect === "4:5" ? "3:4" : g.settings.aspect }, g.chatId);
+    return { generation: { ...n }, original: { ...g }, message: g.chatId ? { id: "m_b" + (++demoDb.n), role: "assistant", text: "", generation: n } : null, credits: demoDb.credits };
+  }
   const wm = path.match(/^\/api\/generations\/(g_\w+)\/wan$/);
   if (wm) {
     const g = demoDb.gens.get(wm[1]);
@@ -2929,6 +2960,10 @@ async function demoApi(path, opts) {
   if (gm) {
     const g = demoDb.gens.get(gm[1]);
     if (g.kind === "film" && g.status === "running") { const left = Math.max(0, g.doneAt - Date.now()); g.progress = { percent: Math.round(100 - left / 150), label: left > 10000 ? "Writing the script" : left > 5000 ? "Filming the scenes" : "Finishing the film", eta_min: Math.ceil(left / 1000) }; }
+    if (g.status === "running" && Date.now() > g.doneAt && DEMO_BUSY && g.kind === "image" && g.model === "nano-banana-2") {
+      Object.assign(g, { status: "failed", refunded: true, error: "Nano Banana 2 was busy and couldn't make this one. Your credits are back.", busy: { model: "seedream-5", name: "Seedream 5.0", from: "Nano Banana 2", credits: g.credits } });
+      demoDb.credits += g.credits;
+    }
     if (g.status === "running" && Date.now() > g.doneAt) {
       g.status = "done";
       if (g.kind === "film") g.video = SAMPLES[1];

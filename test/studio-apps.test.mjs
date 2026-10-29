@@ -163,6 +163,7 @@ test("apps: every app plans, prices within reason and refuses what it cannot do"
   assert.equal(face.tasks[0].model, "gemini-3-pro-image");
   assert.deepEqual(face.tasks[0].input.images, ["https://k/t", "https://k/f"]);
   assert.equal(face.tasks[0].input.aspect_ratio, "2:3");
+  assert.equal(face.tasks[0].input.output_format, undefined, "no output_format for Gemini on ePhone (29 Oct 2026)");
   assert.equal(toolCredits(face.usd), 1);
   assert.throws(() => planTool("face-swap", {}, { target: img("t") }), ToolRefusal);
   assert.throws(() => planTool("face-swap", {}, { target: vid("t", 5), face: img("f") }), /must be a picture/);
@@ -213,6 +214,7 @@ test("apps: every app plans, prices within reason and refuses what it cannot do"
   assert.deepEqual(still.tasks[0].input.images, ["https://k/p", "https://k/c"]);
   assert.equal(still.tasks[0].input.aspect_ratio, "4:3");
   assert.equal(still.tasks[0].input.quality, "max", "its top quality");
+  assert.equal(still.tasks[0].input.output_format, undefined);
   assert.match(still.tasks[0].input.prompt, /Keep from image 1, exactly: the facial expression/);
   assert.equal(toolCredits(still.usd), 1);
   const motion = planTool("motion-control", { prompt: "on a neon stage", quality: "1080p" }, { image: img("c"), video: vid("m", 10) });

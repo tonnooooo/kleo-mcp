@@ -448,6 +448,48 @@ test("replies: interested stops the sequence and tells the owner; 'remove me' an
   assert.deepEqual(MB.sent.slice(4).map((m) => m.to), [], "no follow-up to anyone who answered, bounced or is away");
 });
 
+test("out-of-office: the day they say they are back is read in their own words, their own date order and their own year", () => {
+  const MEL = "Australia/Melbourne";
+  /** Tuesday 27 October 2026, 12:14 in Melbourne. */
+  const got = Date.parse("2026-10-27T01:14:00.000Z");
+  const back = (text, at = got, zone = MEL, country = "AU") => mod.backOn(text, at, zone, country)?.label ?? null;
+  const away = "Heya!\n\nThanks for getting in touch!\n\nI'm overseas on leave until November 6th.\n\nFor new projects, please directly contact Mar Jones mar@studio.example or call 03 9018 0000.\n\nCheers,\nSam\n--\nheads up - I'll be overseas Oct 26th - Nov 6th";
+  assert.equal(back(away), "6 Nov 2026", "a name like Mar is not March, a phone number is not a date");
+  assert.equal(back("I'm out of the office from 24 December, returning on Monday 5 January.", Date.parse("2026-12-20T00:00:00.000Z")), "5 Jan 2027",
+    "next year; the start of the absence and the weekday beside the date do not count");
+  assert.equal(back("Back 6/11."), "6 Nov 2026");
+  assert.equal(back("Back 11/6.", got, "America/New_York", "US"), "6 Nov 2026");
+  assert.equal(back("Back on 2026-11-09."), "9 Nov 2026");
+  assert.equal(back("I'm away until Monday."), "2 Nov 2026");
+  assert.equal(back("Away today, back tomorrow"), "28 Oct 2026");
+  assert.equal(back("Our new reel went live on 3 November."), null, "a date that does not end the absence");
+  assert.equal(back("Thanks for your e-mail, I'll answer soon."), null);
+  assert.equal(back("On parental leave until 1 June 2027."), null, "too far ahead to wait for");
+  assert.equal(back("Back on 20 October."), null, "a past date (next year's is too far) means nothing");
+  // In Auckland noon UTC is already the next day: the instant still falls on the day named there.
+  const nz = mod.backOn("Back on 9 November.", got, "Pacific/Auckland", "NZ");
+  assert.equal(new Intl.DateTimeFormat("en-GB", { timeZone: "Pacific/Auckland", day: "numeric", month: "short" }).format(new Date(nz.ms)), "9 Nov");
+});
+
+test("out-of-office: the follow-up waits for the business day after they are back, and the console says when", async () => {
+  const env = newEnv();
+  await configure(env);
+  // Wednesday 28 October 2026, 10:00 in Melbourne.
+  const WED = Date.parse("2026-10-27T23:00:00.000Z");
+  await addApproved(env, [P({ email: "info@studio.example", company: "Studio", country: "AU", state: "VIC", city: "Melbourne" })]);
+  for (let t = 0; t < 2 * HOUR; t += 15 * MIN) await mod.outreachTick(env, WED + t, { random: () => 0 });
+  assert.equal(MB.sent.length, 1);
+  MB.inbox = [{ uid: 21, headers: ["From: Sam <sam@studio.example>", "Subject: Thanks For Getting in Touch! Re: Ten hooks for Studio", "Auto-Submitted: auto-replied",
+    `In-Reply-To: ${header(MB.sent[0].raw, "Message-ID")}`], body: "Thanks for getting in touch!\r\n\r\nI'm overseas on leave until November 6th.\r\n" }];
+  await mod.outreachTick(env, WED + 2 * HOUR + 15 * MIN, { random: () => 0 });
+  const p = one(env, "SELECT status, next_at FROM outreach_prospects WHERE email = 'info@studio.example'");
+  assert.equal(p.status, "active");
+  assert.equal(new Intl.DateTimeFormat("en-GB", { timeZone: "Australia/Melbourne", weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(p.next_at)),
+    "Mon 9 Nov, 09:30", "Friday the 6th is the day back; the follow-up comes the next business day, in their morning");
+  assert.equal(one(env, "SELECT summary FROM outreach_replies").summary, "Automatic out-of-office reply; back on 6 Nov 2026.");
+  assert.equal(env.mails.length, 0, "an automatic reply does not wake the owner");
+});
+
 test("refusals: a dead address is bounced and suppressed; a refused password pauses that mailbox, tries again in 30 minutes, and tells the owner on the second", async () => {
   const env = newEnv();
   await configure(env);

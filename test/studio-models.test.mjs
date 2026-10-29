@@ -176,6 +176,9 @@ test("image settings and provider input per model", () => {
   const nb = imageTaskInput(normalizeImageSettings({ model: "nano-banana-pro", aspect: "4:5", quality: "4K" }), "a cat", []);
   assert.deepEqual({ a: nb.aspect_ratio, q: nb.quality, i: nb.images }, { a: "4:5", q: "max", i: undefined }, "Gemini takes auto|low|medium|high|xhigh|max since 15 Oct 2026");
   assert.equal(imageTaskInput(normalizeImageSettings({ model: "nano-banana-pro", quality: "4K" }), "a cat", [], true).quality, "4K", "the retry uses the other spelling");
+  const nb2 = imageTaskInput(normalizeImageSettings({ model: "nano-banana-2", aspect: "1:1", quality: "1K" }), "a cup", []);
+  assert.deepEqual(nb2, { prompt: "a cup", aspect_ratio: "1:1", quality: "medium" }, "no output_format: ePhone hands it to Google as image_config.mimeType, which Google refuses (29 Oct 2026)");
+  assert.equal(nb.output_format, undefined, "Nano Banana Pro takes the same road");
   const nb21 = imageTaskInput(normalizeImageSettings({ model: "nano-banana-2.1", aspect: "4:5", quality: "1K" }), "a cat", []);
   assert.deepEqual(nb21, { prompt: "a cat", aspect_ratio: "4:5", quality: "1K" }, "2.1 follows its schema: 1K/2K/4K, no output_format");
   assert.equal(imageTaskInput(normalizeImageSettings({ model: "nano-banana-2.1", quality: "2K" }), "x", [], true).quality, "high");

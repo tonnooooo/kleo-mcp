@@ -118,6 +118,11 @@ export interface JobParams {
    * account's redemption names this job.
    */
   trial?: boolean;
+  /**
+   * THE KLEO MARK (29 October 2026, src/mark.ts): true when the account had never paid at order time. The box burns
+   * "Made with Kleo" into the delivered video.mp4 (worker/kleo_mark.py). Absent means no mark, as on every older row.
+   */
+  mark?: boolean;
   ai_upscale_credits?: number;
   /** `reason` is the server's sentence (the user's assistant reads it); `said` is the box's own reason, for the owner's audit. */
   ai_upscale_result?: { applied: boolean; parts: number; upscaled: number; model: string | null; gpu: string | null; reason: string | null; said?: string | null; refunded: number; at: string };

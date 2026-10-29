@@ -966,8 +966,10 @@ body::after { inset: -6% -18%; }
 .ask h3 { margin: 0 0 6px; font-size: 20px; font-weight: 700; letter-spacing: -.01em; }
 .ask p { margin: 0 0 16px; font-size: 16px; line-height: 1.45; color: var(--ink-2); }
 .ask .input { margin: 0 0 14px; text-align: center; letter-spacing: .08em; }
-.ask-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.ask-btns .btn { height: 48px; border-radius: 14px; font-size: 16px; font-weight: 650; justify-content: center; }
+/* Side by side in equal halves while both labels fit; stacked, the main button on top, when they don't (29 October
+   2026: "Use Seedream 5.0" pushed the pop-up 30 px past a 320 px screen). */
+.ask-btns { display: flex; flex-wrap: wrap-reverse; gap: 10px; }
+.ask-btns .btn { flex: 1 1 0; min-width: max-content; height: 48px; border-radius: 14px; font-size: 16px; font-weight: 650; justify-content: center; }
 .btn-destroy { background: #ff3b30; color: #fff; }
 .btn-destroy:hover { background: #ff5147; }
 .btn-destroy:disabled { opacity: .45; }
@@ -1696,6 +1698,9 @@ img.fx-in { animation: fx-img-in .7s var(--ease-out) both; }
 .frame > .cr-bar { grid-row: 2; }
 .frame > .views { grid-row: 3; }
 .frame > .tabbar { grid-row: 4; }
+/* The console's frame has no notice row (admin.css gives it two rows): its views keep the second one. Pinned to the
+   third, they landed in an extra row of height 0 and the console showed only its top bar (29 October 2026). */
+.frame.admin-frame > .views { grid-row: 2; }
 @media (max-width: 760px) {
   .frame { grid-template-rows: calc(52px + env(safe-area-inset-top)) auto 1fr calc(var(--tab-h) + env(safe-area-inset-bottom)); }
 }
