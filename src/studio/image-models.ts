@@ -19,6 +19,16 @@
  *                     fidelity: priced at $0.15 and $0.30 a picture, above what it should cost)
  * Gemini, FLUX and GPT are routed to the official_cheap channel only, like Veo, so the figures above hold.
  *
+ * THE OUTPUT FORMAT (29 October 2026). Nano Banana 2, the default and free model, had never made a picture in Studio.
+ * Two approved probes on ePhone, neither charged:
+ *   - quality "1K", the value ePhone's own schema lists, failed in 3 seconds:
+ *     `expected one of "auto"|"low"|"medium"|"high"|"xhigh"|"max"`. The quality words below are right.
+ *   - Kleo's own request (quality "medium", output_format "jpeg") failed in 2 seconds:
+ *     `Unknown name "mimeType" at 'generation_config.image_config'`. ePhone hands the format to Google as a field
+ *     Google refuses.
+ * Nano Banana 2.1, which is sent no output_format, makes its pictures. So no Gemini model is sent an output_format, and
+ * the pictures come back as PNG. Nano Banana Pro has the same schema and the same road; it was not probed.
+ *
  * THE TWO NEWEST (19 October 2026, the owner: "mi servono gli ultimi modelli"). Google (Nano Banana) and ByteDance
  * (Seedream) refuse well-known characters inside the model itself ("no image generated in response", "the output
  * image may contain sensitive information"): no parameter on ePhone changes that. FLUX 3 made the owner's WALL-E edit
@@ -54,7 +64,7 @@ export interface ImageModel {
   routing?: Record<string, string>;
   /** Gemini: which spelling of the quality field goes first ("tier" = 1K/2K/4K, else medium/high/max). */
   qualityFirst?: "tier" | "word";
-  /** The provider's schema has no output_format: send none. */
+  /** Send no output_format: the provider's schema has none, or ePhone breaks on it (see THE OUTPUT FORMAT above). */
   noFormat?: boolean;
 }
 
@@ -67,7 +77,7 @@ export const IMAGE_MODELS: ImageModel[] = [
     key: "nano-banana-pro", name: "Nano Banana Pro", blurb: "Google's best: text, faces, edits", badge: "Best",
     ephoneModel: "gemini-3-pro-image",
     usd: { "1K": r4(1120 * 120e-6 * 0.53), "2K": r4(1120 * 120e-6 * 0.53), "4K": r4(2000 * 120e-6 * 0.53) },
-    qualities: ["1K", "2K", "4K"], defaultQuality: "2K", aspects: COMMON, maxReferences: 14, routing: CHEAP,
+    qualities: ["1K", "2K", "4K"], defaultQuality: "2K", aspects: COMMON, maxReferences: 14, routing: CHEAP, noFormat: true,
   },
   {
     key: "nano-banana-2.1", name: "Nano Banana 2.1", blurb: "Google's newest: sharper, better text and faces", badge: "New",
@@ -79,7 +89,7 @@ export const IMAGE_MODELS: ImageModel[] = [
     key: "nano-banana-2", name: "Nano Banana 2", blurb: "Fast Google model, great value",
     ephoneModel: "gemini-3.1-flash-image",
     usd: { "1K": r4(1120 * 60e-6 * 0.53), "2K": r4(1680 * 60e-6 * 0.53), "4K": r4(2520 * 60e-6 * 0.53) },
-    qualities: ["1K", "2K", "4K"], defaultQuality: "2K", aspects: COMMON, maxReferences: 14, routing: CHEAP,
+    qualities: ["1K", "2K", "4K"], defaultQuality: "2K", aspects: COMMON, maxReferences: 14, routing: CHEAP, noFormat: true,
   },
   {
     key: "seedream-5", name: "Seedream 5.0", blurb: "ByteDance, sharp and detailed", badge: "Cheapest",
