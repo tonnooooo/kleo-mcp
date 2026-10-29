@@ -1357,6 +1357,32 @@ test("ePhone out of credit: a Seedance 2.0 Fast clip is made on APIMart for the 
   } finally { p.restore(); }
 });
 
+test("ePhone out of credit: a Wan 3.0 clip from the picker is made on APIMart's Wan for the same credits, never on WaveSpeed", async () => {
+  const env = newEnv({ APIMART_API_KEY: "ak", WAVESPEED_API_KEY: "wk" });
+  const { cookie, id } = await paidAccount(env, "wanbackup@example.com");
+  const p = fakeProvider((u) => {
+    if (u.startsWith("https://api.ephone.ai/")) return EMPTY();
+    if (u === "https://api.apimart.ai/v1/videos/generations") return ok({ code: 200, data: [{ status: "submitted", task_id: "task_wan1" }] });
+    if (u === "https://api.apimart.ai/v1/tasks/task_wan1") return ok({ code: 200, data: { id: "task_wan1", status: "completed", result: { videos: [{ url: ["https://upload.apimart.ai/f/video/wan.mp4"] }] } } });
+    if (u === "https://upload.apimart.ai/f/video/wan.mp4") return new Response(new Uint8Array(4500).fill(9), { status: 200, headers: { "content-type": "video/mp4" } });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { noChat: true, prompt: "a fox in the snow", settings: { model: "wan-3.0", resolution: "720p", duration: 10, aspect: "16:9" } } });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.generation.status, "running", r.json.generation.error);
+    assert.equal(credits(env, id), 100 - r.json.generation.credits, "the picker's price, as on ePhone");
+    const am = p.sent.find((s) => s.url === "https://api.apimart.ai/v1/videos/generations");
+    assert.deepEqual(am.body, { model: "wan3.0-video", prompt: "a fox in the snow", resolution: "720P", size: "16:9", duration: 10, audio: true, watermark: false });
+    assert.ok(!p.sent.some((s) => s.url.includes("wavespeed")), "WaveSpeed costs more: never used");
+    assert.equal(env.DB.db.prepare("SELECT task_id FROM studio_generations WHERE id = ?").get(r.json.generation.id).task_id, "apimart:task_wan1");
+    old(env);
+    const done = (await call(env, `/api/generations/${r.json.generation.id}`, { cookie })).json.generation;
+    assert.deepEqual({ s: done.status, n: done.modelName }, { s: "done", n: "Wan 3.0" });
+    assert.equal((await call(env, `/media/${r.json.generation.id}.mp4`, { cookie })).text.length, 4500);
+  } finally { p.restore(); }
+});
+
 test("ePhone out of credit: a model that costs more elsewhere stays on ePhone and is refunded; no key, no backup; a refusal never moves", async () => {
   const env = newEnv({ APIMART_API_KEY: "ak" });
   const { cookie, id } = await paidAccount(env);

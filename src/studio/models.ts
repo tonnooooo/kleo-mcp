@@ -117,8 +117,8 @@ export const MODELS: StudioModel[] = [
   {
     // 29 October 2026, the owner: "Aggiungi Wan a Kleo". Alibaba's Wan 3.0 on ePhone, in the picker like the others:
     // text, a first frame or up to 10 reference pictures, with sound. ePhone takes 2-30 s; the picker offers Seedance's
-    // lengths. WaveSpeed sells the same model about 38% dearer, so it is no backup (backups.ts): it stays the road of
-    // the copyright second chance below, which a Wan clip never gets.
+    // lengths. Its backup is APIMart's, a little cheaper (backups.ts). WaveSpeed sells the same model about 38% dearer, so
+    // it is no backup: it stays the road of the copyright second chance below, which a Wan clip never gets.
     key: "wan-3.0", name: "Wan 3.0", blurb: "Lifelike motion with sound, for less", badge: "Cheapest",
     family: "wan", ephoneModel: "wan3.0-video",
     usdPerSecond: { "480p": r4(0.3 * ALIBABA * CNY), "720p": r4(0.6 * ALIBABA * CNY), "1080p": r4(1.2 * ALIBABA * CNY) },

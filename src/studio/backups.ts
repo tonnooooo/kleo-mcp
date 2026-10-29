@@ -5,12 +5,13 @@
  * refuses an order for money (402) or is down (429, 5xx, unreachable), the order goes to the cheapest other provider
  * that sells the SAME model — but only where that provider costs the same as ePhone or less. Where the other providers
  * are dearer (Seedance 2.5 and 2.0, Veo 3.1, FLUX 3, Kling Avatar and lip sync, speech, the chat models…) nothing moves:
- * the owner decides those himself (kleo\PROVIDER_COSTS.md, section 6). Wan 3.0 (29 October 2026) is one of them:
- * WaveSpeed asks $0.0475/$0.095/$0.19 a second at 480p/720p/1080p against ePhone's $0.0343/$0.0686/$0.1371.
+ * the owner decides those himself (kleo\PROVIDER_COSTS.md, section 6). Wan 3.0 (29 October 2026) never goes to
+ * WaveSpeed for this, which asks $0.0475/$0.095/$0.19 a second at 480p/720p/1080p against ePhone's $0.0343/$0.0686/$0.1371;
+ * APIMart sells the same Alibaba model for a little less and is its backup (29 October 2026, the owner's choice).
  *
- * Every price below was read on 20 October 2026 from APIMart's playground estimate and price API (Gold level, what our
- * account pays) and from WaveSpeed's price API with our account's discount. ePhone's figures are the ones in
- * models.ts, image-models.ts and tools.ts.
+ * Every price below was read on 20 October 2026 (Wan 3.0: 29 October) from APIMart's playground estimate and price API
+ * (Gold level, what our account pays) and from WaveSpeed's price API with our account's discount. ePhone's figures are
+ * the ones in models.ts, image-models.ts and tools.ts.
  *
  *   ePhone model                         backup                                    ePhone → backup
  *   doubao-seedance-2-0-fast-260128      APIMart seedance-2.0-fast                 480p $0.048 → $0.040/s · 720p $0.103 → $0.086/s
@@ -20,6 +21,7 @@
  *   kling-o1/omni-video                  APIMart kling-video-o1                    the same
  *   kling-3.0/motion-control             APIMart kling-v3-motion-control           $0.1029 → $0.1029/s · $0.1371 → $0.1371/s
  *   happyhorse-1.0-video-edit            APIMart happyhorse-1.0 (edit)             $0.206 → $0.13 per clip second (720P)
+ *   wan3.0-video                         APIMart wan3.0-video, not 21:9            $0.0343/$0.0686/$0.1371 → $0.0329/$0.0658/$0.1315/s
  *   gemini-3-pro-image                   APIMart gemini-3-pro-image-preview (ext)  $0.071 → $0.03 (1K-2K) · $0.127 → $0.04 (4K)
  *   gemini-3.1-flash-image               APIMart gemini-3.1-flash-image-preview    $0.036/$0.053/$0.080 → $0.015/$0.02/$0.025
  *   gemini-nano-banana-2.1               APIMart gemini-nano-banana-2.1-ext        $0.022/$0.031/$0.064 → $0.02/$0.025/$0.03
@@ -95,6 +97,12 @@ export function gptAspect(size: string): { aspect: string; resolution: "1k" | "2
 /** APIMart's verified per-second prices for Seedance 2.0 Fast (Gold), without and with a reference video. */
 const FAST_PER_S: Record<string, number> = { "480p": 0.03984, "720p": 0.0856 };
 const FAST_REF_PER_S: Record<string, number> = { "480p": 0.02368, "720p": 0.05128 };
+/**
+ * APIMart's Wan 3.0 (GET /api/pricing/model?model=wan3.0-video, Gold, 29 October 2026): per second, with or without
+ * sound. Its shapes (docs.apimart.ai, "Wan3.0 Video Generation") stop short of 21:9, which Kleo sells on ePhone.
+ */
+const WAN_PER_S: Record<string, number> = { "480P": 0.03288, "720P": 0.065752, "1080P": 0.131504 };
+const WAN_SIZES = ["adaptive", "16:9", "4:3", "1:1", "3:4", "9:16"];
 
 /**
  * The backups of one ePhone order, cheapest first, built from the very input ePhone was sent. Empty when the model has
@@ -120,6 +128,18 @@ export function backupRoutes(ephoneModel: string, input: Record<string, unknown>
       // in the input, so the audit shows the output part only.
       const usd = r4((videos.length ? FAST_REF_PER_S[res] : FAST_PER_S[res]) * duration);
       return [{ provider: "apimart", model: "seedance-2.0-fast", path: "/v1/videos/generations", body, usd }];
+    }
+    case "wan3.0-video": {
+      // ePhone's input (models.ts taskInput) as APIMart words it: the shape is `size`, a first frame and reference
+      // pictures carry their roles, and the resolution stays in capitals (left out, APIMart bills 1080P).
+      const res = str(input.resolution).toUpperCase(), size = str(input.ratio) || "16:9";
+      if (!WAN_PER_S[res] || !WAN_SIZES.includes(size)) return [];
+      const duration = num(input.duration, 5);
+      const body: Record<string, unknown> = { model: "wan3.0-video", prompt, resolution: res, size, duration, audio: input.audio !== false, watermark: false };
+      const first = str(input.first_frame), refs = urls(input.reference_images);
+      if (first) body.image_with_roles = [{ url: first, role: "first_frame" }];
+      else if (refs.length) { body.generation_type = "reference"; body.image_urls = refs.slice(0, 10); }
+      return [{ provider: "apimart", model: "wan3.0-video", path: "/v1/videos/generations", body, usd: r4(WAN_PER_S[res] * duration) }];
     }
     case "veo-3.1-fast-generate-preview": {
       // Only 720p costs the same (with sound $0.08 against ePhone's $0.0795 a second); APIMart's 1080p is 21% dearer.
