@@ -110,8 +110,9 @@
     "KLEO_VIDEO_MODEL": "Lightricks/LTX-2.5-Diffusers", // il generatore delle riprese (13 set: LTX-2.5, 22B, pesi gated: dal 27 ott nessun token va alle macchine noleggiate, quindi la strada "local" lo rifiuta; scheda da 80 GB, tetto 2,60 $/h). Wan-AI/Wan2.2-TI2V-5B-Diffusers per tornare al modello piccolo
     "VAST_IMAGE": "ghcr.io/tonnooooo/kleo-worker:keou", // immagine Docker del worker (motore Keou + modelli), costruita da GitHub Actions (worker-image.yml); deve restare pubblica
     // 29 Oct 2026, THE KLEO MARK (src/mark.ts): Studio's films and animatics are ordered here too (createJob writes
-    // params.mark), so this value decides the mark on every video. The owner, 29 Oct 2026: no mark on videos, the
-    // pictures keep theirs ("off" here only; wrangler.studio.jsonc stays on). "" puts it back on free accounts' videos.
+    // params.mark), so this value decides the mark on every animatic and film (Studio's own clips follow
+    // wrangler.studio.jsonc). The owner, 29 Oct 2026: no mark on videos, the pictures keep theirs ("off" here only;
+    // wrangler.studio.jsonc stays on). "" puts it back on free accounts' animatics and films.
     "STUDIO_ADMINS": "u_6avhjrtnzrsa",
     "STUDIO_WATERMARK": "off"
   },

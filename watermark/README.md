@@ -40,6 +40,10 @@ may take somewhat longer; `studio.marked` in the audit records the CPU seconds o
 
 ## Deploy (owner's OK first)
 
+**29 Oct 2026, the owner: no mark on videos. Do not run these steps.** With the `WATERMARK` binding on, free clips
+would be marked: kleo-studio's `STUDIO_WATERMARK` covers pictures and clips together, and turning it off would take the
+mark off the pictures too.
+
 1. Copy `github-workflow.yml` to `.github/workflows/watermark.yml` (GitHub's web editor: Add file, Create new file).
    Pushing workflow files needs the `workflow` scope, which Claude's GitHub token does not have.
 2. Add the repository secret `CLOUDFLARE_API_TOKEN` (a token on the Kleo account with Workers Scripts: Edit and

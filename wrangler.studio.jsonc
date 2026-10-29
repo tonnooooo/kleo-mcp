@@ -46,6 +46,8 @@
     { "binding": "MCP", "service": "kleo-mcp" }
     // 28 Oct 2026, the Kleo mark on clips of accounts that never paid (src/studio/watermark.ts): uncomment AFTER the
     // kleo-watermark Worker exists (watermark/README.md), or every deploy of this Worker fails on the missing service.
+    // 29 Oct 2026, the owner: no mark on videos. Leave it commented out: with it, free clips would be marked, because
+    // STUDIO_WATERMARK below covers pictures and clips together.
     // , { "binding": "WATERMARK", "service": "kleo-watermark" }
   ],
   // 28 Oct 2026: Cloudflare Images draws the Kleo mark on the pictures of accounts that never paid (src/studio/watermark.ts).
