@@ -109,10 +109,11 @@
     "TRIAL_FOOTAGE_BUDGET_USD": "4.00", // 14 Oct 2026 (security review): the launch-code films' own daily ceiling (UTC), clips + track + pictures of the free 15 s films of accounts that never paid; counted apart from DAILY_FOOTAGE_BUDGET_USD, which no longer sees them, so the public codes cannot book the day the paying customers film in. About two free films a day; the worst day is the sum of the two ceilings
     "KLEO_VIDEO_MODEL": "Lightricks/LTX-2.5-Diffusers", // il generatore delle riprese (13 set: LTX-2.5, 22B, pesi gated: dal 27 ott nessun token va alle macchine noleggiate, quindi la strada "local" lo rifiuta; scheda da 80 GB, tetto 2,60 $/h). Wan-AI/Wan2.2-TI2V-5B-Diffusers per tornare al modello piccolo
     "VAST_IMAGE": "ghcr.io/tonnooooo/kleo-worker:keou", // immagine Docker del worker (motore Keou + modelli), costruita da GitHub Actions (worker-image.yml); deve restare pubblica
-    // 29 Oct 2026, THE KLEO MARK (src/mark.ts): the same two values as wrangler.studio.jsonc, because Studio's films and
-    // animatics are ordered here (createJob writes params.mark). "off" on BOTH Workers stops the mark everywhere.
+    // 29 Oct 2026, THE KLEO MARK (src/mark.ts): Studio's films and animatics are ordered here too (createJob writes
+    // params.mark), so this value decides the mark on every video. The owner, 29 Oct 2026: no mark on videos, the
+    // pictures keep theirs ("off" here only; wrangler.studio.jsonc stays on). "" puts it back on free accounts' videos.
     "STUDIO_ADMINS": "u_6avhjrtnzrsa",
-    "STUDIO_WATERMARK": ""
+    "STUDIO_WATERMARK": "off"
   },
   "dev": { "port": 8787 } // porta di `npm run dev` in locale (i test usano le porte 8796–8799)
 }

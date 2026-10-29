@@ -72,6 +72,10 @@ admin and a Kleo Creators Pro partner see no mark; `STUDIO_WATERMARK=off` in bot
 `wrangler.jsonc` turns it off for everyone (the second one decides for animatics). Sounds are never
 marked, nor the person's own uploads.
 
+**29 Oct 2026, the owner: no mark on videos.** `wrangler.jsonc` has `STUDIO_WATERMARK=off`, so animatics and films
+(MCP and Studio alike, both ordered by kleo-mcp) leave the box clean; the pictures keep their mark. The animatic code
+below stays in place, switched off: `""` in `wrangler.jsonc` and a kleo-mcp deploy turn it back on.
+
 - The clean file is saved as before; a marked copy goes next to it (`<name>.mark.<ext>`). `/media/...` sends the marked
   copy while the owner still shows the mark, so the first purchase takes it off every picture and clip made before.
 - Pictures: Cloudflare Images (`IMAGES` binding), 5,000 a month included, then $0.50 per 1,000.

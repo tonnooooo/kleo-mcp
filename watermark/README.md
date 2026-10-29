@@ -52,7 +52,8 @@ Until step 4 free clips are kept and served clean (fail open); free pictures are
 deployed with the `IMAGES` binding.
 
 Studio sends only its own clips here (480p to 1080p, at most 15 s). Animatics are 4K 60 fps and are marked on the GPU
-box instead (`worker/kleo_mark.py`, decided by kleo-mcp in `src/mark.ts`).
+box instead (`worker/kleo_mark.py`, decided by kleo-mcp in `src/mark.ts`); since 29 Oct 2026 that mark is switched off
+(`STUDIO_WATERMARK=off` in `wrangler.jsonc`, the owner: no mark on videos).
 
 ## Changing the mark
 
