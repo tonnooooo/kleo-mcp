@@ -1064,7 +1064,7 @@ function rewriteOfferEl(g) {
 // that is working, for the credits it cost (they came back). The pop-up asks when it happens; this stays on the card.
 function busyOfferEl(g) {
   const o = g.busy;
-  const use = h("button", { class: "btn btn-primary btn-sm", onclick: () => settleOffer(g, "switch", false, use, no) }, icon("sparkle", 16, 2.2), `Make it with ${o.name}`, h("span", { class: "cost" }, bolt(13), o.credits));
+  const use = h("button", { class: "btn btn-primary btn-sm", onclick: () => settleOffer(g, "switch", false, use, no) }, icon("sparkle", 16, 2.2), `Use ${o.name}`, h("span", { class: "cost" }, bolt(13), o.credits));
   const no = h("button", { class: "btn btn-quiet btn-sm", onclick: () => settleOffer(g, "switch", true, use, no) }, "No thanks");
   return h("div", { class: "wan-offer", onclick: (e) => e.stopPropagation() },
     h("b", {}, `Make it with ${o.name} instead?`),
@@ -1074,7 +1074,7 @@ function busyOfferEl(g) {
 /** The pop-up, once, when a picture the person is waiting for fails because its model is busy. */
 async function busyAsk(g) {
   const o = g.busy;
-  const yes = await ask({ title: `${o.from} is busy right now`, ic: "sparkle", ok: `Make it with ${o.name}`, cancel: "Not now",
+  const yes = await ask({ title: `${o.from} is busy right now`, ic: "sparkle", ok: `Use ${o.name}`, cancel: "Not now",
     text: `Make the same picture with ${o.name}? Same prompt and pictures, ${o.credits} ${o.credits === 1 ? "credit" : "credits"}. If it can't make it either, your credits come back.` });
   const fresh = S.gens.get(g.id);
   if (yes && fresh?.busy) settleOffer(fresh, "switch", false, h("button"), h("button"));

@@ -572,7 +572,7 @@ export function busyOfferOf(g: GenerationRow, settings: Record<string, unknown>)
   return { model: to.model, name: imageModelByKey(to.model)!.name, from: imageModelByKey(s.model)?.name ?? "This model", credits: g.credits };
 }
 /**
- * "Make it with Seedream 5.0": the busy picture is made again on the model that is working, with its prompt, pictures,
+ * "Use Seedream 5.0": the busy picture is made again on the model that is working, with its prompt, pictures,
  * shape and count, as a new creation charged the credits the failed one cost. The offer is settled first, so it is
  * taken once.
  */
