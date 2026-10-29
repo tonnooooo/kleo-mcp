@@ -1,0 +1,41 @@
+/**
+ * kleo-ig-publisher — publishes @kleooai's Instagram Reels at the chosen minute through the official Instagram API with
+ * Instagram Login (src/ig/, docs/IG-PUBLISHER.md), because reels scheduled with Instagram's own scheduler are stored at
+ * 720p. Deployed on its own, so a release never touches kleo-mcp or kleo-studio:
+ *   npx wrangler deploy --config wrangler.ig.jsonc        (from main, after the owner's OK)
+ * No HTTP surface: workers.dev and preview URLs are off and there is no route. Posts go in through
+ * scripts/ig-schedule.mjs (D1), and each one is published only after the owner's "sì" for it.
+ *
+ * Secrets (the dashboard: Workers & Pages > kleo-ig-publisher > Settings > Variables and Secrets, or
+ * npx wrangler secret put NAME --config wrangler.ig.jsonc):
+ *   IG_ACCESS_TOKEN  the long-lived Instagram User token (60 days) from the Meta app's "Generate token"; the Worker
+ *                    renews it every 7 days and keeps the renewed one sealed in D1 (ig_token, src/ig/token.ts)
+ *   IG_USER_ID       optional: @kleooai's Instagram account ID; the token's own account must match it
+ *   IG_TOKEN_KEY     32 random bytes, base64: seals the renewed token in D1. Without it the token is never renewed
+ *
+ * It shares kleo-db with the other Workers, in its own tables (ig_posts, ig_events, ig_token), created on first use.
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "kleo-ig-publisher",
+  "account_id": "e4a5a1308df5b44c65497b85210c6845",
+  "main": "src/ig/index.ts",
+  "compatibility_date": "2026-07-02",
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "kleo-db", "database_id": "ffaa0767-9df1-4e5c-84f2-552e37851d63" }
+  ],
+  // Read only: the reel's file is checked here (its moov box, its size and type) before Meta is asked to fetch it.
+  "r2_buckets": [ { "binding": "MEDIA", "bucket_name": "kleo-media" } ],
+  // The owner hears about every approved reel: published, failed or missed (Email Routing on kleooai.com, as for the Studio's alerts).
+  "send_email": [ { "name": "OWNER_MAIL", "destination_address": "kleooai@gmail.com" } ],
+  "triggers": { "crons": ["* * * * *"] }, // every minute: check new posts, make containers LEAD_MIN early, publish on the minute
+  "vars": {
+    "IG_API_VERSION": "v26.0", // graph.instagram.com version (the latest on 29 Oct 2026)
+    "IG_USERNAME": "kleooai", // the only account this Worker publishes to: a token for any other is refused
+    "IG_MEDIA_HOST": "media.kleooai.com" // the public address of the R2 bucket kleo-media, the only place videos may come from
+  }
+}
