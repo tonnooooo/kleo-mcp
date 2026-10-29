@@ -199,14 +199,15 @@ async function handleMedia(env: StudioEnv, request: Request, url: URL): Promise<
     const name = /^[a-z0-9-]{1,40}$/.test(url.searchParams.get("name") ?? "") ? url.searchParams.get("name") : u.id;
     // The Kleo mark (src/studio/watermark.ts) is on pictures and clips only; a marked copy is kept a short while by the
     // browser, so the first purchase shows the clean file soon after.
-    const file = u.kind === "audio" ? { key: u.key, marked: false } : await servedKey(env, u.user_id, u.key, (id) => showsMark(env, id));
-    return serveFile(env, request, file.key, `kleo-${name}.${ext}`, url.searchParams.get("dl") === "1", file.marked ? "private, max-age=600" : "private, max-age=86400");
+    const file = u.kind === "audio" ? { key: u.key, marked: false } : await servedKey(env, u.user_id, u.key, (id) => showsMark(env, id), u.kind ?? "image");
+    return serveFile(env, request, file.key, `kleo-${name}.${ext}`, url.searchParams.get("dl") === "1", file.marked || ("wanted" in file && file.wanted) ? "private, max-age=600" : "private, max-age=86400");
   }
   const clip = url.pathname.match(/^\/media\/(g_[a-z0-9]+)\.mp4$/);
   if (clip) {
     const g = await getGeneration(env, clip[1]);
     if (!g || g.status !== "done" || !g.file_key || (!signed && g.user_id !== viewer)) return new Response("Not found", { status: 404 });
-    const file = await servedKey(env, g.user_id, g.file_key, (id) => showsMark(env, id));
+    // A film or an animatic carries its mark from the box (src/mark.ts): served as it is, with no account reads.
+    const file = g.kind === "film" ? { key: g.file_key, marked: false } : await servedKey(env, g.user_id, g.file_key, (id) => showsMark(env, id), "video");
     return serveFile(env, request, file.key, `kleo-${g.id}.mp4`, url.searchParams.get("dl") === "1", file.marked ? "private, max-age=600" : undefined);
   }
   return new Response("Not found", { status: 404 });

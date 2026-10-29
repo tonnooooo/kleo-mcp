@@ -112,6 +112,11 @@ RUN cd /opt/kleo && python3 -c "import kleo_sr; ok, why = kleo_sr.weights_ok(); 
 # The report Kleo writes about every video it makes (27 September 2026): report.json beside the deliverables, a REPORT
 # line in log.txt. Without this file the worker says "kleo_report could not be imported" and delivers as before.
 COPY worker/kleo_report.py /opt/kleo/kleo_report.py
+# The Kleo mark on the videos of accounts that never paid (29 October 2026, kleo_mark.py, params.mark). Without these
+# two files a marked job ships clean ("mark: FAILED" in log.txt), never broken; the check stops a build that lost one.
+COPY worker/kleo_mark.py /opt/kleo/kleo_mark.py
+COPY worker/made-with-kleo.png /opt/kleo/made-with-kleo.png
+RUN cd /opt/kleo && python3 -c "import os, kleo_mark; assert os.path.isfile(kleo_mark.MARK), kleo_mark.MARK; print('MARK_OK', kleo_mark.placement(2160, 3840))"
 COPY worker/kleo_worker.py /opt/kleo/kleo_worker.py
 RUN node --version > runtime-node.txt && ffmpeg -version | head -1 > runtime-ffmpeg.txt \
     && pip freeze > runtime-python.txt && python3 -c "import contract; print('contract', contract.VERSION, sorted(contract.VOICES))"

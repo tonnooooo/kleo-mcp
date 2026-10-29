@@ -24,7 +24,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 MARK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "made-with-kleo.png")
 MARK_W, MARK_H = 1428, 384
 MARK_OPACITY = 0.9
-MAX_BYTES = 400 * 1024 * 1024  # a one-minute 4K film is ~150 MB
+MAX_BYTES = 200 * 1024 * 1024  # Studio's clips: at most 15 s, up to 1080p (animatics and films are marked on the GPU box)
+# Studio stops waiting after 120 s (src/studio/watermark.ts VIDEO_MARK_TIMEOUT_MS): ffmpeg is stopped just before, so a
+# clip that cannot make it frees the box instead of encoding for nobody.
+FFMPEG_TIMEOUT_S = 110
 PORT = int(os.environ.get("PORT", "8080"))
 
 
@@ -65,17 +68,19 @@ def mark(src, dst):
     if not at:
         raise ValueError(f"a {w}x{h} clip is too small for the mark")
     mw, mh, x, y = at
-    # Short clips get the slower, finer encoder; an animatic of a minute must finish well inside Studio's wait.
+    # Short clips get the slower, finer encoder; a longer one the faster encoder, so it finishes inside Studio's wait.
+    # The blend runs in YUV (only the small mark is converted), and every frame keeps its own timestamp (passthrough):
+    # the same pass as worker/kleo_mark.py on the GPU box. Alpine's ffmpeg is 6.x, so -fps_mode is there.
     preset, crf = ("veryfast", "18") if seconds <= 20 else ("superfast", "19")
     graph = (
-        f"[1:v]scale={mw}:{mh}:flags=lanczos,format=rgba,colorchannelmixer=aa={MARK_OPACITY}[m];"
-        f"[0:v][m]overlay={x}:{y}:format=auto,format=yuv420p[v]"
+        f"[1:v]scale={mw}:{mh}:flags=lanczos,format=rgba,colorchannelmixer=aa={MARK_OPACITY},format=yuva420p[m];"
+        f"[0:v][m]overlay={x}:{y}:format=yuv420[v]"
     )
     subprocess.run(
         ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", src, "-i", MARK, "-filter_complex", graph,
-         "-map", "[v]", "-map", "0:a?", "-c:v", "libx264", "-preset", preset, "-crf", crf, "-profile:v", "high",
+         "-map", "[v]", "-map", "0:a?", "-fps_mode", "passthrough", "-c:v", "libx264", "-preset", preset, "-crf", crf, "-profile:v", "high",
          "-c:a", "copy", "-map_metadata", "0", "-movflags", "+faststart", dst],
-        check=True, capture_output=True, timeout=600,
+        check=True, capture_output=True, timeout=FFMPEG_TIMEOUT_S,
     )
     return w, h
 
@@ -114,7 +119,7 @@ class Handler(BaseHTTPRequestHandler):
             return size
         left = int(self.headers.get("content-length") or 0)
         if left <= 0 or left > MAX_BYTES:
-            raise ValueError("a clip of 1 byte to 400 MB is expected")
+            raise ValueError("a clip of 1 byte to 200 MB is expected")
         while left:
             chunk = self.rfile.read(min(left, 1 << 20))
             if not chunk:

@@ -307,9 +307,14 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
   if (rest === "done" && request.method === "POST") {
     // `sr` (25 September 2026): what the finish box's neural finish did — {parts, applied, model, gpu, reason} — read
     // only for a film sold the AI upscale, whose extra credits go back when it was not applied to every shot.
-    const b = (await request.json().catch(() => ({}))) as { cost_usd?: number; sr?: unknown };
+    // `mark` (29 October 2026): what the Kleo mark pass did on a job ordered with params.mark (markOutcome).
+    const b = (await request.json().catch(() => ({}))) as { cost_usd?: number; sr?: unknown; mark?: unknown };
     const applied = await finishJob(env, job, typeof b.cost_usd === "number" ? b.cost_usd : null, b.sr);
-    if (applied) return json({ ok: true, state: "done" });
+    if (applied) {
+      const said = markOutcome(job, b.mark);
+      if (said) await audit(env, job.user_id, job.id, said.event, said.detail);
+      return json({ ok: true, state: "done" });
+    }
     const now = (await getJob(env, job.id))?.state ?? job.state;
     return now === "done" ? json({ ok: true, state: now, already: true }) : json({ error: `job is ${now}`, state: now }, 409);
   }
@@ -324,6 +329,23 @@ export async function handleInternal(request: Request, env: Env): Promise<Respon
     return now === "failed" ? json({ ok: true, state: now, already: true }) : json({ error: `job is ${now}`, state: now }, 409);
   }
   return json({ error: "not found" }, 404);
+}
+
+/**
+ * THE KLEO MARK (29 October 2026, src/mark.ts): what the box says it did with a job ordered with params.mark, as the
+ * audit row the owner reads. "job.marked"; "job.mark_failed" with the box's reason (the video went out clean, fail
+ * open); "job.mark_missing" when the box said nothing, which is an image from before the mark (worker-image.yml had not
+ * pushed the new :keou yet, or a host kept an old copy). Null for a job ordered without the mark.
+ */
+export function markOutcome(job: Pick<Job, "params">, said: unknown): { event: string; detail: Record<string, unknown> } | null {
+  let wanted = false;
+  try { wanted = (JSON.parse(job.params) as { mark?: unknown }).mark === true; } catch { /* not marked */ }
+  if (!wanted) return null;
+  const m = said && typeof said === "object" ? (said as { applied?: unknown; why?: unknown; seconds?: unknown }) : null;
+  const seconds = typeof m?.seconds === "number" && Number.isFinite(m.seconds) ? m.seconds : null;
+  if (!m) return { event: "job.mark_missing", detail: {} };
+  if (m.applied === true) return { event: "job.marked", detail: { seconds } };
+  return { event: "job.mark_failed", detail: { why: boxText(m.why) || null, seconds } };
 }
 
 export type { Job };

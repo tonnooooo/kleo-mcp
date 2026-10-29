@@ -4,8 +4,9 @@
  * a fake Cloudflare Images binding and a fake kleo-watermark service. Covers who shows the mark (never paid: yes;
  * a payment, an admin, a Kleo Creators Pro partner, STUDIO_WATERMARK=off: no), where it sits (and that the
  * Container's server.py agrees), the picture and the clip saved clean with a marked copy beside them, which copy the
- * owner, a share link and a provider get, the first purchase taking the mark off, a free animatic, a failed or
- * missing marker leaving the creation clean and done, and deleting a creation deleting both files.
+ * owner, a share link and a provider get, the first purchase taking the mark off, a free animatic copied as the GPU
+ * box marked it, a failed or missing marker leaving the creation clean and done, a missing picture copy drawn when it is
+ * next served, the 2K cap of a free rewrite, and deleting a creation deleting both files.
  * Run: node --test test/studio-watermark.test.mjs
  */
 import { register } from "node:module";
@@ -58,7 +59,7 @@ class FakeR2 {
 }
 /** Cloudflare Images as the binding is called: records each output (its draw options, the overlay's resize and first bytes). */
 class FakeImages {
-  constructor(width, height) { this.width = width; this.height = height; this.made = []; }
+  constructor(width, height) { this.width = width; this.height = height; this.made = []; this.tries = 0; this.fail = null; }
   async info(stream) { await new Response(stream).arrayBuffer(); return { format: "image/png", fileSize: 1, width: this.width, height: this.height }; }
   input(stream) {
     const op = { stream, transforms: [], draws: [] };
@@ -67,6 +68,8 @@ class FakeImages {
       transform: (o) => { op.transforms.push(o); return t; },
       draw: (img, o) => { op.draws.push({ img, o }); return t; },
       output: async (o) => {
+        this.tries++;
+        if (this.fail) throw new Error(this.fail);
         const bytes = new Uint8Array(await new Response(op.stream).arrayBuffer());
         const draws = await Promise.all(op.draws.map(async (d) => ({ o: d.o, transforms: d.img.op.transforms, head: [...new Uint8Array(await new Response(d.img.op.stream).arrayBuffer()).slice(0, 4)] })));
         this.made.push({ format: o.format, quality: o.quality, draws });
@@ -104,7 +107,7 @@ globalThis.FixedLengthStream ??= class extends TransformStream { constructor() {
 let worker, mod;
 before(async () => {
   const r = await esbuild.build({
-    stdin: { contents: `export { default } from "./src/studio/index.ts"; export { markPlacement, markedKey, madeByKleo } from "./src/studio/watermark.ts";
+    stdin: { contents: `export { default } from "./src/studio/index.ts"; export { markPlacement, markedKey, madeByKleo, VIDEO_MARK_TIMEOUT_MS, IMAGES_MAX_INPUT } from "./src/studio/watermark.ts";
       export { showsMark } from "./src/studio/generate.ts";`, resolveDir: ROOT, loader: "ts" },
     bundle: true, write: false, format: "esm", platform: "neutral", target: "es2022", logLevel: "silent", external: ["@anthropic-ai/sdk", "cloudflare:email"],
   });
@@ -164,7 +167,7 @@ function fakeProvider(script) {
 const ok = (data) => new Response(JSON.stringify(data), { status: 200, headers: { "content-type": "application/json" } });
 const PNG = (() => { const b = new Uint8Array(4000).fill(5); b.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]); return b; })();
 const CLIP = new Uint8Array(5000).fill(7);
-const studio = (script) => fakeProvider((u, init, sent) => {
+const studio = (script, picture = PNG) => fakeProvider((u, init, sent) => {
   if (u.endsWith("/v1/task/submit")) return ok({ id: `task_${sent.filter((s) => s.url.endsWith("/v1/task/submit")).length}` });
   if (/\/v1\/task\/task_\d+$/.test(u)) {
     const n = Number(u.split("task_").pop());
@@ -172,7 +175,7 @@ const studio = (script) => fakeProvider((u, init, sent) => {
     const picture = /image|banana|seedream|flux/.test(submit.body.model);
     return ok({ status: "completed", outputs: [picture ? `https://cdn.example/${n}.png` : `https://cdn.example/${n}.mp4`] });
   }
-  if (u.startsWith("https://cdn.example/")) return u.endsWith(".png") ? new Response(PNG, { headers: { "content-type": "image/png" } }) : new Response(CLIP, { headers: { "content-type": "video/mp4" } });
+  if (u.startsWith("https://cdn.example/")) return u.endsWith(".png") ? new Response(picture, { headers: { "content-type": "image/png" } }) : new Response(CLIP, { headers: { "content-type": "video/mp4" } });
   return script?.(u, init, sent) ?? new Response("?", { status: 404 });
 });
 async function picture(env, cookie) {
@@ -211,10 +214,12 @@ test("the mark sits top left on tall frames and bottom right on the others, size
 const python = spawnSync("python3", ["--version"]).status === 0;
 test("the Container's server.py puts the mark on the same pixels as the Worker", { skip: !python && "no python3 here" }, () => {
   const sizes = [[1080, 1920], [480, 854], [720, 1280], [1280, 720], [854, 480], [1920, 1080], [1024, 1024], [768, 1024], [3840, 2160], [300, 200], [64, 64], [50, 50], [1023, 1279], [1001, 1251]];
-  const py = spawnSync("python3", ["-c", `import json, sys; sys.path.insert(0, ${JSON.stringify(join(ROOT, "watermark"))}); from server import placement; print(json.dumps([placement(w, h) for w, h in ${JSON.stringify(sizes)}]))`], { encoding: "utf8" });
+  const py = spawnSync("python3", ["-c", `import json, sys; sys.path.insert(0, ${JSON.stringify(join(ROOT, "watermark"))}); from server import placement, FFMPEG_TIMEOUT_S; print(json.dumps({"at": [placement(w, h) for w, h in ${JSON.stringify(sizes)}], "ffmpeg_s": FFMPEG_TIMEOUT_S}))`], { encoding: "utf8" });
   assert.equal(py.status, 0, py.stderr);
   const want = sizes.map(([w, h]) => { const p = mod.markPlacement(w, h); return p && [p.width, p.height, p.x, p.y]; });
-  assert.deepEqual(JSON.parse(py.stdout), want);
+  const got = JSON.parse(py.stdout);
+  assert.deepEqual(got.at, want);
+  assert.ok(got.ffmpeg_s * 1000 < mod.VIDEO_MARK_TIMEOUT_MS, "the Container stops ffmpeg before Studio stops waiting");
 });
 
 test("who shows the mark: an account that never paid; not after a payment, not an admin, not a Creators Pro partner, not when it is off", async () => {
@@ -358,10 +363,19 @@ test("a clip the marker fails on, or with no marker bound, is done and served cl
     const paid = await clip(env, cy.cookie);
     assert.equal(marker.got.length, 0);
     assert.deepEqual((await call(env, paid.video, { cookie: cy.cookie })).bytes, CLIP);
+
+    // The first miss had no mail binding to tell the owner: its 6-hour window was given back, so this one reaches him.
+    env.WATERMARK = broken;
+    env.mails = [];
+    env.OWNER_MAIL = { send: async (msg) => { env.mails.push(msg); } };
+    const dee = await account(env, "dee@example.com");
+    await clip(env, dee.cookie);
+    assert.equal(env.mails.length, 1);
+    assert.match(env.mails[0].raw, /kleo-watermark answered 422/);
   } finally { p.restore(); }
 });
 
-test("an animatic bought with gifted credits gets the mark too", async () => {
+test("an animatic comes marked from the GPU box: Studio copies and serves it as it is, never through kleo-watermark", async () => {
   const marker = fakeMarker();
   const env = newEnv({ WATERMARK: marker });
   const ana = await account(env, "ana@example.com");
@@ -372,6 +386,109 @@ test("an animatic bought with gifted credits gets the mark too", async () => {
     VALUES ('g_anim1', ?, 'kleo-animatic', '{"product":"animatic","duration":20,"format":"9:16","style":"animation"}', 'a fox', 0, 'running', 'j_anim1', 'film')`).run(ana.id);
   const done = await call(env, "/api/generations/g_anim1", { cookie: ana.cookie });
   assert.equal(done.json.generation.status, "done", done.text);
-  assert.equal(marker.got.length, 1);
-  assert.ok(startsMarked((await call(env, done.json.generation.video, { cookie: ana.cookie })).bytes));
+  assert.equal(marker.got.length, 0, "the mark is burned in on the box (params.mark, worker/kleo_mark.py), never twice");
+  assert.ok(![...env.RENDERS.m.keys()].some((k) => k.includes(".mark.")));
+  assert.deepEqual((await call(env, done.json.generation.video, { cookie: ana.cookie })).bytes, CLIP, "served as the box made it");
+});
+
+test("a free account's rewrite on FLUX 3 runs at 2K, under the Images 20 MB input; a paying account keeps its 4K", async () => {
+  for (const paying of [false, true]) {
+    const env = newEnv();
+    const who = await account(env, paying ? "pro@example.com" : "free@example.com");
+    if (paying) { pay(env, who.id); env.DB.db.exec(`UPDATE users SET credits = 100 WHERE id = '${who.id}'`); }
+    let n = 0;
+    const chat = (text) => ok({ choices: [{ message: { content: text } }] });
+    const p = fakeProvider((u, init) => {
+      if (u.endsWith("/v1/chat/completions")) {
+        const body = JSON.parse(init.body);
+        const sys = String(body.messages?.[0]?.content ?? "");
+        if (sys.startsWith("You check prompts")) return chat(JSON.stringify({ names: [] }));
+        if (sys.startsWith("Rewrite the user's prompt")) return chat("A singer with a long purple braid on a neon stage");
+        return chat(String(body.messages?.[1]?.content ?? ""));
+      }
+      if (u.endsWith("/v1/task/submit")) return ok({ id: `task_r${++n}` });
+      if (/task_r[1-3]$/.test(u)) return ok({ status: "failed", error: n === 1 ? "no image generated in response" : 'Content Moderated: {"Moderation Reasons":["Protected Content"]}' });
+      if (/task_r4$/.test(u)) return ok({ status: "completed", outputs: ["https://cdn.example/r.png"] });
+      if (u === "https://cdn.example/r.png") return new Response(PNG, { headers: { "content-type": "image/png" } });
+      return new Response("?", { status: 404 });
+    });
+    try {
+      const r = await call(env, "/api/generate", { method: "POST", cookie: who.cookie, body: { kind: "image", noChat: true, prompt: "Rumi from KPop Demon Hunters on a poster", settings: { model: "nano-banana-2", aspect: "3:4", quality: "4K" } } });
+      assert.equal(r.status, 200, r.text);
+      for (let i = 0; i < 3; i++) { old(env); await call(env, `/api/generations/${r.json.generation.id}`, { cookie: who.cookie }); }
+      const g = (await call(env, `/api/generations/${r.json.generation.id}`, { cookie: who.cookie })).json.generation;
+      assert.equal(g.status, "failed", JSON.stringify(g));
+      assert.equal(g.rewrite?.name, "FLUX 3");
+      const w = await call(env, `/api/generations/${g.id}/describe`, { method: "POST", cookie: who.cookie, body: {} });
+      assert.equal(w.status, 200, w.text);
+      const last = p.sent.filter((s) => s.url.endsWith("/v1/task/submit")).at(-1);
+      assert.equal(last.body.model, "flux-3-image");
+      assert.equal(last.body.input.resolution, paying ? "4k" : "2k", paying ? "a paying account keeps what it asked for" : "a free account's picture stays small enough to carry the mark");
+    } finally { p.restore(); }
+  }
+});
+
+test("a free picture with no marked copy gets one when it is next served: made before the mark, made while paying then refunded, or a failed mark", async () => {
+  const env = newEnv();
+  const p = studio();
+  try {
+    // Saved with no copy, like a picture made before 29 October 2026.
+    const ana = await account(env, "ana@example.com");
+    const images = env.IMAGES;
+    delete env.IMAGES;
+    const g = await picture(env, ana.cookie);
+    const key = [...env.RENDERS.m.keys()].find((k) => k.startsWith(`studio/${ana.id}/${g.id}/`));
+    assert.ok(!env.RENDERS.m.has(mod.markedKey(key)));
+    env.IMAGES = images;
+    const seen = await call(env, g.outputs[0].url, { cookie: ana.cookie });
+    assert.ok(startsMarked(seen.bytes), "drawn when it is next seen");
+    assert.ok(env.RENDERS.m.has(mod.markedKey(key)));
+    await call(env, g.outputs[0].url, { cookie: ana.cookie });
+    assert.equal(images.made.length, 1, "drawn once");
+    assert.deepEqual(events(env, "studio.marked").map((e) => [e.kind, e.late]), [["image", true]]);
+
+    // Made while paying, then the payment was refunded: the account shows the mark again, and so does the picture.
+    const bo = await account(env, "bo@example.com");
+    pay(env, bo.id);
+    const h = await picture(env, bo.cookie);
+    assert.deepEqual((await call(env, h.outputs[0].url, { cookie: bo.cookie })).bytes, PNG);
+    env.DB.db.exec(`UPDATE payments SET status = 'refunded' WHERE user_id = '${bo.id}'`);
+    assert.ok(startsMarked((await call(env, h.outputs[0].url, { cookie: bo.cookie })).bytes));
+
+    // A mark Images refuses (its monthly limit, say) is tried again an hour later, not on every view; clean meanwhile.
+    // The owner gets one e-mail about it, not one per picture.
+    env.mails = [];
+    env.OWNER_MAIL = { send: async (msg) => { env.mails.push(msg); } };
+    const cy = await account(env, "cy@example.com");
+    images.fail = "ERROR 9422: transformation limit reached";
+    const k = await picture(env, cy.cookie);
+    const tries = images.tries;
+    const first = await call(env, k.outputs[0].url, { cookie: cy.cookie });
+    assert.deepEqual(first.bytes, PNG);
+    assert.equal(first.res.headers.get("cache-control"), "private, max-age=600", "clean for now, so the browser keeps it only briefly");
+    assert.deepEqual((await call(env, k.outputs[0].url, { cookie: cy.cookie })).bytes, PNG);
+    assert.equal(images.tries, tries + 1, "one late try, then the miss is remembered");
+    assert.ok(events(env, "studio.mark_failed").some((e) => e.late === true && /9422/.test(e.error)));
+    assert.equal(env.mails.length, 1, "one alert for the save and the view that both failed");
+    assert.match(env.mails[0].raw, /without the Kleo mark/);
+    assert.match(env.mails[0].raw, /9422/);
+  } finally { p.restore(); }
+});
+
+test("a picture over the Images binding's 20 MB input stays clean, says why in the audit, and is never sent to Images", async () => {
+  const env = newEnv({ mails: [] });
+  env.OWNER_MAIL = { send: async (msg) => { env.mails.push(msg); } };
+  const big = new Uint8Array(mod.IMAGES_MAX_INPUT + 1024).fill(5);
+  big.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const p = studio(undefined, big);
+  try {
+    const ana = await account(env, "ana@example.com");
+    const g = await picture(env, ana.cookie);
+    const [miss] = events(env, "studio.mark_failed");
+    assert.match(miss.error, /over the Images binding's 20 MB input/);
+    const seen = await call(env, g.outputs[0].url, { cookie: ana.cookie });
+    assert.equal(seen.bytes.length, big.length, "served clean");
+    assert.equal(env.IMAGES.tries, 0);
+    assert.equal(env.mails.length, 0, "an expected miss is no alert");
+  } finally { p.restore(); }
 });

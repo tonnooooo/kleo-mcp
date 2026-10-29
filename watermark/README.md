@@ -51,8 +51,13 @@ may take somewhat longer; `studio.marked` in the audit records the CPU seconds o
 Until step 4 free clips are kept and served clean (fail open); free pictures are marked as soon as kleo-studio is
 deployed with the `IMAGES` binding.
 
+Studio sends only its own clips here (480p to 1080p, at most 15 s). Animatics are 4K 60 fps and are marked on the GPU
+box instead (`worker/kleo_mark.py`, decided by kleo-mcp in `src/mark.ts`).
+
 ## Changing the mark
 
-Replace `made-with-kleo.png` here and in `studio-web/`, and keep `MARK_W`/`MARK_H` in `server.py` and
-`src/studio/watermark.ts` equal to its size. Where it sits is `placement()` in `server.py` and `markPlacement()` in
-`src/studio/watermark.ts`: change both together.
+Replace `made-with-kleo.png` here, in `studio-web/` and in `worker/` (a test checks the three are identical), and keep
+`MARK_W`/`MARK_H` in `server.py`, `worker/kleo_mark.py` and `src/studio/watermark.ts` equal to its size. Where it sits
+on pictures and clips is `placement()` in `server.py` and `markPlacement()` in `src/studio/watermark.ts`: change both
+together (a test checks they agree). Renders use their own spot, clear of the engine's chapter pill, brand and captions:
+`placement()` in `worker/kleo_mark.py`.

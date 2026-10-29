@@ -41,6 +41,7 @@ import { anyRouteReady, noteNoMoney, pausedText, spent, type Provider, type Rout
 import { describeWithoutNames, namedCharacters, toEnglish } from "./translate.ts";
 import { compPlanActive } from "./creators-schema.ts";
 import { markedKey, saveMarkedCopy } from "./watermark.ts";
+import { marksAccount } from "../mark.ts";
 
 /** A refusal the page shows as it is (no provider names in it). */
 export class StudioError extends Error {
@@ -267,17 +268,14 @@ export const adminIds = (env: StudioEnv): string[] => (env.STUDIO_ADMINS ?? "").
 export const isAdmin = (env: StudioEnv, userId: string): boolean => adminIds(env).includes(userId);
 
 /**
- * THE KLEO MARK (28 October 2026, src/studio/watermark.ts): what an account that never paid makes carries "Made with
- * Kleo", so every free creation shared online advertises Kleo. Any payment (a pack or a plan), an admin and a Pro
- * partner of Kleo Creators (a plan from the program, with no Stripe payment) see no mark. STUDIO_WATERMARK = "off"
- * turns it off. Asked when a creation is saved (whether a marked copy is made) and each time a file is served (which
- * copy is sent), so the first purchase takes the mark off everything the account made before.
+ * THE KLEO MARK (28 October 2026, src/studio/watermark.ts; the rule itself is src/mark.ts, shared with kleo-mcp):
+ * what an account that never paid makes carries "Made with Kleo", so every free creation shared online advertises
+ * Kleo. Any payment (a pack or a plan), an admin and a Pro partner of Kleo Creators (a plan from the program, with no
+ * Stripe payment) see no mark. STUDIO_WATERMARK = "off" turns it off. Asked when a creation is saved (whether a marked
+ * copy is made) and each time a file is served (which copy is sent), so the first purchase takes the mark off every
+ * picture and clip the account made before. Animatics and films are marked on the GPU box for good (params.mark).
  */
-export async function showsMark(env: StudioEnv, userId: string): Promise<boolean> {
-  if ((env.STUDIO_WATERMARK ?? "").trim() === "off" || isAdmin(env, userId)) return false;
-  if (await hasPaid(asEnv(env), userId)) return false;
-  return !(await compPlanActive(env, userId));
-}
+export const showsMark = (env: StudioEnv, userId: string): Promise<boolean> => marksAccount(env, userId);
 
 /**
  * The checks every order passes, in order, before any money moves (and before any paid work, such as speech).
@@ -509,8 +507,13 @@ export async function retryDescribed(env: StudioEnv, userId: string, g: Generati
   const claim = (id: string) => settleOffer(env, g.id, userId, "rewrite", id);
 
   if (kind === "image") {
+    // An account that shows the Kleo mark gets the rewrite at 2K at most, like Kleo's own FLUX 3 retries
+    // (image-models.ts imageAlternatives): a 4K FLUX 3 PNG is over the Images binding's 20 MB input
+    // (src/studio/watermark.ts), so it could not carry the mark; and it costs $0.32 against the $0.08 Nano Banana 2 4K
+    // picture whose credits were charged ($0.05 at 2K).
+    const capped = asked.quality === "4K" && (await showsMark(env, userId));
     const made = await createImageGeneration(env, userId, {
-      kind: "image", prompt: described, settings: { ...asked, model: FALLBACK_IMAGE_MODEL }, imageIds: rows.map((r) => r.id), chatId: g.chat_id, messageId: g.message_id,
+      kind: "image", prompt: described, settings: { ...asked, ...(capped ? { quality: "2K" } : {}), model: FALLBACK_IMAGE_MODEL }, imageIds: rows.map((r) => r.id), chatId: g.chat_id, messageId: g.message_id,
     }, origin, { credits: g.credits, extra: { from: g.id, rewritten: true }, claim });
     await audit(asEnv(env), userId, g.id, "studio.rewrite", { to: made.id, kind });
     return made;

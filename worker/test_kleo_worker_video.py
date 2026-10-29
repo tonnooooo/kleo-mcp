@@ -719,3 +719,6 @@ from test_keou_prepare import CaptionRepairTest  # noqa: E402,F401
 # tests.yml lists its modules by name. The python job has ffmpeg; node is on the runner image; Chromium is a stub.
 from test_film_e2e import FilmEndToEnd, ReportTest  # noqa: E402,F401
 
+
+# The Kleo mark on free renders (29 October 2026, kleo_mark.py): same reason, tests.yml lists its modules by name.
+from test_kleo_mark import KleoMarkPlacementTest, KleoMarkShipsTest, KleoMarkBurnTest, KleoMarkWorkerTest  # noqa: E402,F401

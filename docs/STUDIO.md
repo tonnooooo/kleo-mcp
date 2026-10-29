@@ -63,17 +63,28 @@ Video / Image switch.
 
 Since 28 Oct 2026 every picture, clip and animatic an account that never paid makes carries "Made with Kleo"
 (`studio-web/made-with-kleo.png`), so free creations shared online advertise Kleo. Any payment (a pack or a plan), an
-admin and a Kleo Creators Pro partner see no mark; `STUDIO_WATERMARK=off` turns it off for everyone. Sounds are never
+admin and a Kleo Creators Pro partner see no mark; `STUDIO_WATERMARK=off` in both `wrangler.studio.jsonc` and
+`wrangler.jsonc` turns it off for everyone (the second one decides for animatics). Sounds are never
 marked, nor the person's own uploads.
 
 - The clean file is saved as before; a marked copy goes next to it (`<name>.mark.<ext>`). `/media/...` sends the marked
-  copy while the owner still shows the mark, so the first purchase takes it off everything made before.
+  copy while the owner still shows the mark, so the first purchase takes it off every picture and clip made before.
 - Pictures: Cloudflare Images (`IMAGES` binding), 5,000 a month included, then $0.50 per 1,000.
-- Clips and animatics: the `kleo-watermark` Worker (`watermark/`, ffmpeg in a Cloudflare Container, service binding
-  `WATERMARK`): measured $0.000061 per 10 s 480p clip, $0.000125 at 720p, about 11,000 free clips a month inside the
-  Workers Paid allowance; see `watermark/README.md` for the measurements and how to deploy it.
+- Clips: the `kleo-watermark` Worker (`watermark/`, ffmpeg in a Cloudflare Container, service binding `WATERMARK`):
+  measured $0.000061 per 10 s 480p clip, $0.000125 at 720p, about 11,000 free clips a month inside the Workers Paid
+  allowance; see `watermark/README.md` for the measurements and how to deploy it.
+- Animatics (and the launch-code trial film) are 4K 60 fps, too big for the Container: kleo-mcp marks the job when it is
+  ordered (`src/mark.ts`, `params.mark`, the same rule as Studio's) and the GPU box burns the mark into `video.mp4`
+  before the upload (`worker/kleo_mark.py`, one libx264 pass, under a cent of box time), so Studio's copy, the MCP
+  `/dl` links and the job-done e-mail all carry it. The mark is in the video for good: a purchase does not remove it.
+  The box tells the server what happened with `/done`: `job.marked`, `job.mark_failed` (the reason; the video went out
+  clean) or `job.mark_missing` (a box with an image from before the mark) in the audit, and the line in `log.txt`.
 - Providers read a person's files through `/media/raw/<upload>` (signed links only): always the clean file.
-- Fails open: a file the mark could not be put on is served clean (`studio.mark_failed` in the audit).
+- Fails open: a file the mark could not be put on is served clean (`studio.mark_failed` in the audit). A picture with
+  no marked copy (made before 29 Oct 2026, made while paying then refunded, or a failed mark) gets one the next time
+  it is served; a miss is retried once an hour.
+- Pictures over 20 MB cannot go through the Images binding, so a free account's "Rewrite and make it" on FLUX 3 runs
+  at 2K at most, like Kleo's own FLUX 3 retries.
 
 ## Password reset
 
