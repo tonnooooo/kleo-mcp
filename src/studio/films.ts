@@ -82,8 +82,9 @@ export async function refreshFilm(env: StudioEnv, g: GenerationRow): Promise<Gen
     try {
       const src = await env.RENDERS.get(file.key);
       if (!src) throw new Error("film file missing");
-      // An animatic bought with gifted credits arrives with the Kleo mark already burned in on the box (params.mark,
-      // src/mark.ts, worker/kleo_mark.py): it is copied as it is, never sent to kleo-watermark again.
+      // An animatic arrives exactly as the box made it: with the Kleo mark burned in when kleo-mcp ordered it marked
+      // (params.mark, src/mark.ts, worker/kleo_mark.py; switched off in wrangler.jsonc since 29 Oct 2026). It is copied
+      // as it is, never sent to kleo-watermark.
       await env.RENDERS.put(key, src.body, { httpMetadata: { contentType: "video/mp4" } });
       await moveGeneration(env, g.id, ["saving"], "done", { file_key: key, size: src.size });
     } catch {
