@@ -670,10 +670,12 @@ async function userPage(main, id, opts = {}) {
   // may have gone out: the line says so next to the button.
   const giftStale = (g) => g.mail_status === "sending" && (!g.mailed_at || Date.now() - toDate(g.mailed_at).getTime() > 5 * 60e3);
   // On a deleted account an e-mail still to go (waiting, never sent, or a stale send) never goes: mailGift skips a
-  // closed account, so the line is final and there is no button.
+  // closed account, so the line is final and there is no button. A stale send may already have gone out, so its line
+  // says so instead of claiming no e-mail went.
   const giftUnsent = (g) => g.mail_status === "waiting" || !g.mail_status || giftStale(g);
   const giftMail = (g) => {
     if (!g.mail) return "No e-mail";
+    if (u.deleted && giftStale(g)) return "No more e-mail: the account was deleted (an earlier send may have gone out)";
     if (u.deleted && giftUnsent(g)) return "No e-mail: the account was deleted";
     if (g.mail_status === "sent") return g.mail_to ? `E-mail sent to ${g.mail_to}` : "E-mail sent (address removed with the account)";
     if (g.mail_status === "skipped") return g.mail_error ? `No e-mail: ${g.mail_error}` : "No e-mail (reason removed with the account)";

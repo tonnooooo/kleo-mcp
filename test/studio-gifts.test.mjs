@@ -661,4 +661,8 @@ test("3: on a deleted account a gift e-mail still to go reads 'No e-mail: the ac
   assert.match(admin, /const giftUnsent = \(g\) => g\.mail_status === "waiting" \|\| !g\.mail_status \|\| giftStale\(g\);/);
   assert.match(admin, /if \(u\.deleted && giftUnsent\(g\)\) return "No e-mail: the account was deleted";/);
   assert.match(admin, /const canSend = !u\.deleted && g\.mail && giftUnsent\(g\);/);
+  // A stale send on a deleted account may have gone out: its own line comes first and never claims "No e-mail".
+  const stale = admin.indexOf('if (u.deleted && giftStale(g)) return "No more e-mail: the account was deleted (an earlier send may have gone out)";');
+  assert.ok(stale > 0, "the deleted account's stale-send line");
+  assert.ok(stale < admin.indexOf('if (u.deleted && giftUnsent(g)) return "No e-mail: the account was deleted";'), "checked before the plain deleted line");
 });
