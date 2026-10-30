@@ -713,9 +713,13 @@ async function userPage(main, id, opts = {}) {
   // more than the balance; over 100, or past 100 in all, a new code from the phone, like Take credits away), or only stop
   // the pop-up, for credits already taken away by hand. Credits taken away after the gift (an admin.credits decrease in
   // the audit) are named in the sheet, and "Only stop the pop-up" then comes first.
+  // What a row really removed: before - after, since Take credits away never goes under zero and can remove less than it
+  // asked for; a row without them counts what it asked for. Only decreases count, never more than they asked for (a
+  // row's before is read just before its batch), and never another gift's cancel.
+  const removedBy = (x) => Math.max(0, x.before != null && x.after != null ? Number(x.before) - Number(x.after) : -Number(x.delta)) || 0;
   const takenAfter = (g) => (d.audit || []).filter((a) => a.event === "admin.credits" && toDate(a.at).getTime() >= toDate(g.created_at).getTime())
     .map((a) => { try { return JSON.parse(a.detail || "{}") || {}; } catch { return {}; } })
-    .filter((x) => Number(x.delta) < 0 && !x.cancel).reduce((sum, x) => sum - Number(x.delta), 0);
+    .filter((x) => Number(x.delta) < 0 && !x.cancel).reduce((sum, x) => sum + Math.min(-Number(x.delta), removedBy(x)), 0);
   function cancelGift(g, btn) {
     const n = Math.min(Number(g.credits) || 0, Math.max(0, Number(u.credits) || 0));
     const taken = takenAfter(g);

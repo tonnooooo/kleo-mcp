@@ -852,7 +852,10 @@ test("cancel in the console: a real button on a gift not seen yet, the console's
   assert.match(fn, /await post\(`gifts\/\$\{g\.id\}\/cancel`, \{ reason: reasonIn\.value\.trim\(\), takeBack \}\)/);
   assert.match(fn, /back\?\.addEventListener\("click", \(\) => send\(true\)\);\s*stop\.addEventListener\("click", \(\) => send\(false\)\);/);
   assert.match(admin, /a\.event === "admin\.credits" && toDate\(a\.at\)\.getTime\(\) >= toDate\(g\.created_at\)\.getTime\(\)/);
-  assert.match(admin, /\.filter\(\(x\) => Number\(x\.delta\) < 0 && !x\.cancel\)/, "a decrease by hand, not another gift's cancel");
+  assert.match(admin, /const removedBy = \(x\) => Math\.max\(0, x\.before != null && x\.after != null \? Number\(x\.before\) - Number\(x\.after\) : -Number\(x\.delta\)\) \|\| 0;/,
+    "what each row really removed (before - after), the delta asked for only on a row without them");
+  assert.match(admin, /\.filter\(\(x\) => Number\(x\.delta\) < 0 && !x\.cancel\)\.reduce\(\(sum, x\) => sum \+ Math\.min\(-Number\(x\.delta\), removedBy\(x\)\), 0\)/,
+    "only decreases, never more than each asked for, never another gift's cancel");
   assert.match(admin, /pill\(`Cancelled \$\{day\(g\.cancelled_at\)\}`, "bad"\)/);
   // A cancelled gift's stale send may have gone out: its line comes first and never claims "No e-mail".
   const staleLine = admin.indexOf('if (g.cancelled_at && giftStale(g)) return "Cancelled; an earlier e-mail may have gone out";');
@@ -963,10 +966,13 @@ function fakeKit(body) {
 
 test("cancel in the console, drawn for real: the button in the gift's row, the sheet's two choices (a take-away by hand named, the pop-up first), busy while it is sent", async () => {
   const { env, owner, kal, bo } = await setup();
-  // Kal: a 20-credit gift whose credits were taken away by hand (the incident), and a 3-credit gift, cancelled, whose
-  // e-mail send was cut off with no outcome more than 5 minutes ago.
+  // Kal: a 20-credit gift, 10 of the 25 credits spent on a film, then the gift taken away by hand (the incident): Take
+  // credits away asked for 20 but stops at zero, so 15 went. The film failed and its 10 credits came back. And a
+  // 3-credit gift, cancelled, whose e-mail send was cut off with no outcome more than 5 minutes ago.
   const a = (await gift(env, owner.admin, kal.id, { id: giftIdOf(), credits: 20, reason: "Thank you", email: false })).json.gift;
-  assert.equal((await call(env, `/api/admin/users/${kal.id}/credits`, { method: "POST", cookie: owner.admin, body: { delta: -20, reason: "Sent too early" } })).status, 200);
+  run(env, "UPDATE users SET credits = credits - 10 WHERE id = ?", kal.id);
+  assert.equal((await call(env, `/api/admin/users/${kal.id}/credits`, { method: "POST", cookie: owner.admin, body: { delta: -20, reason: "Sent too early" } })).json.credits, 0);
+  run(env, "UPDATE users SET credits = credits + 10 WHERE id = ?", kal.id);
   const b = (await gift(env, owner.admin, kal.id, { id: giftIdOf(), credits: 3, reason: "Thank you", email: true })).json.gift;
   run(env, "UPDATE studio_gifts SET mail_status = 'sending', mailed_at = ? WHERE id = ?", new Date(Date.now() - 10 * 60_000).toISOString(), b.id);
   assert.equal((await cancelGift(env, owner.admin, kal.id, b.id)).status, 200);
@@ -1025,9 +1031,9 @@ test("cancel in the console, drawn for real: the button in the gift's row, the s
     const sheet = kit.layer;
     assert.ok(sheet, "the button opens the console's sheet");
     assert.equal(sheet.find((e) => e.tagName === "H2").textContent, "Cancel this gift?");
-    assert.match(sheet.find((e) => e.cls.has("adm-gift-taken"))?.textContent ?? "", /After this gift, 20 credits were taken away from this account with Take credits away\./);
+    assert.match(sheet.find((e) => e.cls.has("adm-gift-taken"))?.textContent ?? "", /After this gift, 15 credits were taken away from this account with Take credits away\./);
     const choices = sheet.find((e) => e.cls.has("adm-gift-choice")).childNodes;
-    assert.deepEqual(choices.map((x) => x.textContent), ["Only stop the pop-up", "Cancel and take back up to 5 credits"]);
+    assert.deepEqual(choices.map((x) => x.textContent), ["Only stop the pop-up", "Cancel and take back up to 10 credits"]);
     assert.ok(choices.every((x) => x.disabled), "both wait for a reason");
     sheet.find((e) => e.tagName === "INPUT").typeIn("Credits taken by hand");
     assert.ok(choices.every((x) => !x.disabled));
@@ -1046,7 +1052,7 @@ test("cancel in the console, drawn for real: the button in the gift's row, the s
     await until("its answer", () => kit.toasts.length === 1);
     assert.deepEqual(kit.toasts, ["Gift cancelled: its pop-up won't show, and no credits moved."]);
     assert.equal(kit.layer, null, "the sheet closes");
-    assert.equal(credits(env, kal.id), 5, "their own credits stay");
+    assert.equal(credits(env, kal.id), 10, "their own credits stay");
     assert.equal(get(env, "SELECT cancelled_credits FROM studio_gifts WHERE id = ?", a.id).cancelled_credits, 0);
     const done = await until("the card redrawn", () => (giftRow(20)?.textContent.includes("no credits moved, only the pop-up stopped") ? giftRow(20) : null));
     assert.equal(done.find((e) => e.tagName === "BUTTON"), null);
