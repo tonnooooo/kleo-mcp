@@ -123,6 +123,10 @@ export const STUDIO_COLUMNS: string[] = [
   ...OUTREACH_COLUMNS,
   // migrations/0033_creators.sql: the part of the balance that came from Kleo Creators and is not spent yet (creators.ts).
   ...CREATORS_COLUMNS,
+  // migrations/0036_gift_cancel.sql: a gift the console cancelled (the app never shows it), and the credits that came back
+  // (admin.ts cancelGift, 30 October 2026).
+  "ALTER TABLE studio_gifts ADD COLUMN cancelled_at TEXT",
+  "ALTER TABLE studio_gifts ADD COLUMN cancelled_credits INTEGER",
 ];
 
 /** Whether the account chose to have copyright refusals made on Wan 3.0 by themselves. */

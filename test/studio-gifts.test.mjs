@@ -666,3 +666,120 @@ test("3: on a deleted account a gift e-mail still to go reads 'No e-mail: the ac
   assert.ok(stale > 0, "the deleted account's stale-send line");
   assert.ok(stale < admin.indexOf('if (u.deleted && giftUnsent(g)) return "No e-mail: the account was deleted";'), "checked before the plain deleted line");
 });
+
+// ── Cancel a gift (30 October 2026: a gift went to a creator too early, and Take credits away left its pop-up pending) ──
+
+const cancelGift = (env, cookie, id, giftId, body = { reason: "Sent too early" }) => call(env, `/api/admin/users/${id}/gifts/${giftId}/cancel`, { method: "POST", cookie, body });
+
+test("cancel: the credits come back and the pop-up never shows; audited like Take credits away; twice changes nothing", async () => {
+  const { env, owner, kal } = await setup();
+  const g = (await gift(env, owner.admin, kal.id, { id: giftIdOf(), credits: 20, reason: "Thank you", email: false })).json.gift;
+  assert.equal(credits(env, kal.id), 25);
+  assert.equal((await call(env, "/api/me", { cookie: kal.cookie })).json.gift.items.length, 1);
+  assert.equal((await cancelGift(env, owner.admin, kal.id, g.id, {})).json.code, "reason", "a reason first");
+  const r = await cancelGift(env, owner.admin, kal.id, g.id);
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.json.again, undefined);
+  assert.equal(r.json.credits, 5);
+  assert.equal(r.json.gift.cancelled_credits, 20);
+  assert.ok(r.json.gift.cancelled_at);
+  assert.equal(credits(env, kal.id), 5);
+  assert.deepEqual((await call(env, "/api/me", { cookie: kal.cookie })).json.gift, { items: [], credits: 0 }, "the pop-up never shows");
+  const row = get(env, "SELECT cancelled_at, cancelled_credits, seen_at FROM studio_gifts WHERE id = ?", g.id);
+  assert.ok(row.cancelled_at && row.seen_at, "cancelled, and seen so nothing ever shows it");
+  assert.equal(row.cancelled_credits, 20);
+  // The take-back is an admin.credits row with the gift's id, next to the gift's own cancel row.
+  const back = auditOf(env, kal.id, "admin.credits")[0];
+  assert.deepEqual([back.delta, back.before, back.after, back.gift, back.cancel, back.reason, back.admin], [-20, 25, 5, g.id, true, "Sent too early", owner.id]);
+  const gc = auditOf(env, kal.id, "admin.gift")[0];
+  assert.deepEqual([gc.action, gc.gift, gc.credits, gc.reason, gc.admin], ["cancel", g.id, 20, "Sent too early", owner.id]);
+  // Twice: answered as it is, nothing moves.
+  const again = await cancelGift(env, owner.admin, kal.id, g.id);
+  assert.equal(again.status, 200, again.text);
+  assert.equal(again.json.again, true);
+  assert.equal(again.json.gift.cancelled_credits, 20);
+  assert.equal(credits(env, kal.id), 5);
+  assert.equal(auditOf(env, kal.id, "admin.credits").length, 2, "the gift and its take-back, nothing more");
+  assert.equal(auditOf(env, kal.id, "admin.gift").filter((a) => a.action === "cancel").length, 1);
+  // The console's account page has what its card shows: Cancelled, when, and the credits that came back.
+  const d = await call(env, `/api/admin/users/${kal.id}`, { cookie: owner.admin });
+  assert.deepEqual(d.json.gifts.map((x) => [x.id, !!x.cancelled_at, x.cancelled_credits]), [[g.id, true, 20]]);
+});
+
+test("cancel: only on its own account (404 elsewhere); never more than the balance; a gift seen already is refused; its e-mail never goes", async () => {
+  const { env, owner, kal, bo } = await setup();
+  const g = (await gift(env, owner.admin, kal.id, { id: giftIdOf(), credits: 20, reason: "Thank you", email: false })).json.gift;
+  const wrong = await cancelGift(env, owner.admin, bo.id, g.id);
+  assert.equal(wrong.status, 404);
+  assert.equal(get(env, "SELECT cancelled_at FROM studio_gifts WHERE id = ?", g.id).cancelled_at, null);
+  assert.deepEqual([credits(env, bo.id), credits(env, kal.id)], [5, 25]);
+  // Kal spent most of it: only what is there comes back, and the balance stops at zero.
+  run(env, "UPDATE users SET credits = 7 WHERE id = ?", kal.id);
+  const r = await cancelGift(env, owner.admin, kal.id, g.id);
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.json.gift.cancelled_credits, 7);
+  assert.equal(credits(env, kal.id), 0);
+  assert.deepEqual([auditOf(env, kal.id, "admin.credits")[0].delta, auditOf(env, kal.id, "admin.credits")[0].after], [-7, 0]);
+  // A gift the person saw already: its pop-up said it, so taking it back is Take credits away's job.
+  const seen = (await gift(env, owner.admin, kal.id, { id: giftIdOf(), credits: 5, reason: "Thank you", email: false })).json.gift;
+  await call(env, "/api/me/gift/seen", { method: "POST", cookie: kal.cookie, body: { ids: [seen.id] } });
+  const late = await cancelGift(env, owner.admin, kal.id, seen.id);
+  assert.equal(late.status, 409);
+  assert.equal(late.json.code, "gift_seen");
+  assert.equal(credits(env, kal.id), 5);
+  // A cancelled gift's e-mail, waiting when it was cancelled, never goes.
+  env.refuse = "Rate limit exceeded, try later";
+  const w = (await gift(env, owner.admin, kal.id, { id: giftIdOf(), credits: 3, reason: "Thank you", email: true })).json.gift;
+  env.refuse = null;
+  assert.equal(w.mail.status, "waiting");
+  assert.equal((await cancelGift(env, owner.admin, kal.id, w.id)).status, 200);
+  const m = await mailAgain(env, owner.admin, kal.id, w.id);
+  assert.equal(m.status, 409);
+  assert.match(m.json.error, /cancelled/);
+  assert.equal(env.sent.length, 0);
+});
+
+test("cancel: the take-back counts toward CREDITS_WITHOUT_CODE exactly like Take credits away", async () => {
+  const { env, owner, kal } = await setup();
+  const g = (await gift(env, owner.admin, kal.id, { id: giftIdOf(), credits: 20, reason: "Thank you", email: false })).json.gift;
+  const s = await mod.readAdminCookie("s3cret", owner.adminCookie.split("=")[1]);
+  const stale = `${owner.cookie}; __Host-kleo_admin=${await mod.adminCookieValue("s3cret", { ...s, fresh: s.fresh - 6 * 60 })}`;
+  // 20 given and 61 added are 81 in the window: taking 20 back would make 101.
+  assert.equal((await call(env, `/api/admin/users/${kal.id}/credits`, { method: "POST", cookie: stale, body: { delta: 61, reason: "a grant" } })).status, 200);
+  const refused = await cancelGift(env, stale, kal.id, g.id);
+  assert.equal(refused.status, 403, refused.text);
+  assert.equal(refused.json.code, "fresh_code");
+  assert.equal(get(env, "SELECT cancelled_at FROM studio_gifts WHERE id = ?", g.id).cancelled_at, null, "a refused cancel changes nothing");
+  assert.equal(credits(env, kal.id), 86);
+  assert.equal(auditOf(env, kal.id, "admin.gift").filter((a) => a.action === "cancel").length, 0);
+  const ok = await cancelGift(env, stale, kal.id, g.id, { reason: "Sent too early", code: await codeAt(owner.secret, 0) });
+  assert.equal(ok.status, 200, ok.text);
+  assert.equal(credits(env, kal.id), 66);
+  // Over 100 at once wants the code first, whatever the window holds.
+  const big = (await gift(env, `${owner.cookie}; ${cookieOf(ok)}`, kal.id, { id: giftIdOf(), credits: 150, reason: "A big thank you", email: false })).json.gift;
+  assert.equal((await cancelGift(env, stale, kal.id, big.id)).json.code, "fresh_code");
+  assert.equal(get(env, "SELECT cancelled_at FROM studio_gifts WHERE id = ?", big.id).cancelled_at, null);
+});
+
+test("cancel in the console: a real button on a gift not seen yet, the console's own question with a reason, the card says Cancelled", () => {
+  const admin = readFileSync(join(ROOT, "studio-web", "admin.js"), "utf8");
+  assert.match(admin, /const canCancel = !g\.cancelled_at && !g\.seen_at;/);
+  assert.match(admin, /icon\("x", 15\), "Cancel gift"\)/);
+  assert.match(admin, /K\.ask\(\{ title: "Cancel this gift\?", ok: "Cancel gift", cancel: "Keep it", danger: true/);
+  assert.match(admin, /The pop-up won't show, and up to \$\{count\(n, "credit"\)\} \$\{n === 1 \? "comes" : "come"\} back\./);
+  assert.match(admin, /label: "Reason, kept in the audit log", placeholder: "Why you are cancelling it", required: true/);
+  assert.match(admin, /post\(`gifts\/\$\{g\.id\}\/cancel`, \{ reason: v\.reason \}\)/);
+  assert.match(admin, /pill\(`Cancelled \$\{day\(g\.cancelled_at\)\}`, "bad"\)/);
+  assert.match(admin, /came back`/);
+  assert.match(admin, /if \(g\.cancelled_at && giftUnsent\(g\)\) return "No e-mail: the gift was cancelled";/);
+  assert.match(admin, /const canSend = !u\.deleted && !g\.cancelled_at && g\.mail && giftUnsent\(g\);/);
+  assert.doesNotMatch(admin, /\b(?:window\.)?(?:alert|confirm|prompt)\(/);
+  // The schema: the Worker adds the columns on a live table (skipping one already there); the migration has them for
+  // a new database.
+  const store = readFileSync(join(ROOT, "src", "studio", "store.ts"), "utf8");
+  const sql = readFileSync(join(ROOT, "migrations", "0036_gift_cancel.sql"), "utf8");
+  for (const c of ["cancelled_at TEXT", "cancelled_credits INTEGER"]) {
+    assert.ok(store.includes(`"ALTER TABLE studio_gifts ADD COLUMN ${c}"`), `runtime ${c}`);
+    assert.ok(sql.includes(`ALTER TABLE studio_gifts ADD COLUMN ${c};`), `migration ${c}`);
+  }
+});

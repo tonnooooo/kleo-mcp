@@ -365,3 +365,5 @@ button.adm-urow:hover { background: var(--fill-2); }
 .adm-gift-see .adm-gift-note { color: var(--ink-2); }
 .adm-gift-see .adm-gift-note[hidden] { display: none; }
 .adm-gift-row .lbl > .adm-gift-again { margin-top: 10px; }
+.adm-gift-btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.adm-gift-btns > .adm-gift-again { margin-top: 0; }

@@ -675,6 +675,7 @@ async function userPage(main, id, opts = {}) {
   const giftUnsent = (g) => g.mail_status === "waiting" || !g.mail_status || giftStale(g);
   const giftMail = (g) => {
     if (!g.mail) return "No e-mail";
+    if (g.cancelled_at && giftUnsent(g)) return "No e-mail: the gift was cancelled";
     if (u.deleted && giftStale(g)) return "No more e-mail: the account was deleted (an earlier send may have gone out)";
     if (u.deleted && giftUnsent(g)) return "No e-mail: the account was deleted";
     if (g.mail_status === "sent") return g.mail_to ? `E-mail sent to ${g.mail_to}` : "E-mail sent (address removed with the account)";
@@ -692,13 +693,35 @@ async function userPage(main, id, opts = {}) {
       reload();
     } catch (e) { btn.disabled = false; oops(e); }
   }
+  // A gift not seen yet can be cancelled (src/studio/admin.ts cancelGift): its pop-up never shows, and up to its credits
+  // come back (never more than the balance). Asked in the console's own question, with a reason for the audit log; over
+  // 100 credits, or past 100 in all, a new code from the phone, like Take credits away.
+  async function cancelGift(g, btn) {
+    const n = Number(g.credits) || 0;
+    const v = await K.ask({ title: "Cancel this gift?", ok: "Cancel gift", cancel: "Keep it", danger: true, ic: "x",
+      text: `The pop-up won't show, and up to ${count(n, "credit")} ${n === 1 ? "comes" : "come"} back.`,
+      fields: [{ key: "reason", label: "Reason, kept in the audit log", placeholder: "Why you are cancelling it", required: true }] });
+    if (!v) return;
+    btn.disabled = true;
+    try {
+      const r = await post(`gifts/${g.id}/cancel`, { reason: v.reason });
+      K.toast(r.again ? "This gift was cancelled already." : `Gift cancelled: ${count(r.gift?.cancelled_credits ?? 0, "credit")} came back.`);
+      reload();
+    } catch (e) { btn.disabled = false; oops(e); }
+  }
   const gifts = d.gifts?.length ? card("Gifts", "Credits the Kleo team gave, and whether the pop-up was seen.", h("div", { class: "list" }, d.gifts.map((g) => {
-    const canSend = !u.deleted && g.mail && giftUnsent(g);
+    const canSend = !u.deleted && !g.cancelled_at && g.mail && giftUnsent(g);
     const again = canSend ? h("button", { class: "btn btn-quiet btn-sm adm-gift-again", type: "button" }, icon("mail", 15), "Send the e-mail again") : null;
     again?.addEventListener("click", () => mailAgain(g, again));
+    const canCancel = !g.cancelled_at && !g.seen_at;
+    const cancel = canCancel ? h("button", { class: "btn btn-quiet btn-sm adm-gift-cancel", type: "button" }, icon("x", 15), "Cancel gift") : null;
+    cancel?.addEventListener("click", () => cancelGift(g, cancel));
+    const state = g.cancelled_at ? pill(`Cancelled ${day(g.cancelled_at)}`, "bad") : g.seen_at ? pill(`Seen ${day(g.seen_at)}`, "ok") : pill("Not seen yet", "");
+    const cameBack = g.cancelled_at ? `Cancelled ${stamp(g.cancelled_at)}: ${count(g.cancelled_credits ?? 0, "credit")} came back` : null;
     return h("div", { class: "row adm-gift-row" }, icon("gift", 19),
-      h("div", { class: "lbl" }, h("b", {}, count(g.credits, "credit"), g.seen_at ? pill(`Seen ${day(g.seen_at)}`, "ok") : pill("Not seen yet", "")),
-        h("span", {}, [stamp(g.created_at), g.reason, g.message ? `"${g.message}"` : null, giftMail(g)].filter(Boolean).join(" · ")), again));
+      h("div", { class: "lbl" }, h("b", {}, count(g.credits, "credit"), state),
+        h("span", {}, [stamp(g.created_at), g.reason, g.message ? `"${g.message}"` : null, cameBack, giftMail(g)].filter(Boolean).join(" · ")),
+        again || cancel ? h("div", { class: "adm-gift-btns" }, again, cancel) : null));
   }))) : null;
 
   const gens = d.generations || [];
@@ -1948,6 +1971,17 @@ async function demo(path, opts) {
       attribution: demoAttribution(u),
       gifts: (db.gifts || []).filter((g) => g.user_id === u.id), giftTo: u.anonymous ? null : u.email,
     };
+  }
+  const cgm = p.match(/^\/api\/admin\/users\/(u_\w+)\/gifts\/(gf_\w+)\/cancel$/);
+  if (cgm) {
+    const g = (db.gifts || []).find((x) => x.id === cgm[2] && x.user_id === cgm[1]);
+    const u = db.users.find((x) => x.id === cgm[1]);
+    if (!g || !u) throw fail("No such gift on this account.", "not_found", 404);
+    if (g.cancelled_at) return { ok: true, again: true, credits: u.credits, gift: { id: g.id, credits: g.credits, cancelled_at: g.cancelled_at, cancelled_credits: g.cancelled_credits } };
+    const back = Math.min(g.credits, Math.max(0, u.credits));
+    u.credits -= back;
+    Object.assign(g, { cancelled_at: new Date().toISOString(), seen_at: g.seen_at || new Date().toISOString(), cancelled_credits: back });
+    return { ok: true, credits: u.credits, gift: { id: g.id, credits: g.credits, cancelled_at: g.cancelled_at, cancelled_credits: back } };
   }
   const gm = p.match(/^\/api\/admin\/users\/(u_\w+)\/gifts\/(gf_\w+)\/mail$/);
   if (gm) {

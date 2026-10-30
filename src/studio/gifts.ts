@@ -73,6 +73,8 @@ export function giftInsert(env: StudioEnv, g: GiftDraft, cond = "1", args: unkno
 export interface GiftRow {
   id: string; user_id: string; credits: number; reason: string; message: string | null; by_admin: string; mail: number;
   mail_status: string | null; mail_to: string | null; mail_error: string | null; mailed_at: string | null; created_at: string; seen_at: string | null;
+  /** The console cancelled it (admin.ts cancelGift): never shown, never mailed; cancelled_credits came back. */
+  cancelled_at: string | null; cancelled_credits: number | null;
 }
 export const giftById = (env: StudioEnv, id: string) => env.DB.prepare("SELECT * FROM studio_gifts WHERE id = ?").bind(id).first<GiftRow>();
 
@@ -86,7 +88,7 @@ export interface PendingGift { items: { id: string; credits: number; message: st
  * gifts already seen (studio-web/app.js seedShown).
  */
 export async function pendingGift(env: StudioEnv, userId: string): Promise<PendingGift> {
-  const rows = (await env.DB.prepare("SELECT id, credits, message FROM studio_gifts WHERE user_id = ? AND seen_at IS NULL ORDER BY created_at, rowid LIMIT 20")
+  const rows = (await env.DB.prepare("SELECT id, credits, message FROM studio_gifts WHERE user_id = ? AND seen_at IS NULL AND cancelled_at IS NULL ORDER BY created_at, rowid LIMIT 20")
     .bind(userId).all<{ id: string; credits: number; message: string | null }>()).results ?? [];
   const items = rows.map((r) => ({ id: r.id, credits: Number(r.credits) || 0, message: r.message ?? null }));
   return { items, credits: items.reduce((a, r) => a + r.credits, 0) };
@@ -186,7 +188,8 @@ const CLAIMABLE = `(mail_status IS NULL OR mail_status = 'waiting' OR (mail_stat
  * Sends one gift's e-mail now, at most once. The gift is claimed first: its mail_status moves from not sent yet (NULL),
  * 'waiting' or a stale 'sending' (CLAIMABLE) to 'sending', with the claim's time in mailed_at, in one compare-and-set
  * on the gift's id AND its account, so two sends of one gift can never both go out and another account's id never
- * sends; null when it was not there to claim (sent, being sent, refused, skipped, no e-mail asked, another account's).
+ * sends; null when it was not there to claim (sent, being sent, refused, skipped, no e-mail asked, another account's,
+ * or a gift the console cancelled).
  * The outcome is written as soon as deliver() answers, and nothing after a send can turn it into a failure: the mail log
  * is best effort, and a status that can't be written still answers what happened. Never throws. The console runs it
  * under ctx.waitUntil (admin.ts), so a tab closed meanwhile cannot cut it off.
@@ -198,7 +201,7 @@ export async function mailGift(env: StudioEnv, userId: string, giftId: string): 
     return { status, to, error };
   };
   try {
-    const claim = await env.DB.prepare(`UPDATE studio_gifts SET mail_status = 'sending', mailed_at = ${NOW} WHERE id = ? AND user_id = ? AND mail = 1 AND ${CLAIMABLE}`)
+    const claim = await env.DB.prepare(`UPDATE studio_gifts SET mail_status = 'sending', mailed_at = ${NOW} WHERE id = ? AND user_id = ? AND mail = 1 AND cancelled_at IS NULL AND ${CLAIMABLE}`)
       .bind(giftId, userId).run();
     if (Number(claim.meta?.changes ?? 0) !== 1) return null;
   } catch (e) {
@@ -242,7 +245,7 @@ export async function mailGiftAgain(env: StudioEnv, adminId: string, userId: str
   if (!r) {
     const g = await giftById(env, giftId);
     if (!g || g.user_id !== userId) throw new StudioError("No such gift on this account.", 404, "not_found");
-    throw new StudioError(g.mail_status === "sent" ? "This e-mail went out already."
+    throw new StudioError(g.cancelled_at ? "This gift was cancelled, so its e-mail won't go." : g.mail_status === "sent" ? "This e-mail went out already."
       : g.mail_status === "sending" ? `This e-mail is on its way. If nothing changes, send it again in ${SENDING_STALE_MIN} minutes.`
         : "This e-mail can't be sent again. Reload the page.", 409, "gift_mail_state");
   }
