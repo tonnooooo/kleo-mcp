@@ -28,15 +28,10 @@ import { base32Decode, hotp, stepAt } from "../src/studio/totp.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-/**
- * D1's meta.changes is total_changes() after the statement minus before (miniflare's D1, database.worker.js), so the rows
- * a trigger changes count too (users_program_credits_spent); node:sqlite's own `changes` (sqlite3_changes) leaves them out.
- */
-const d1Changes = (db) => Number(db.prepare("SELECT total_changes() AS n").get().n);
 class Stmt {
-  constructor(db, sql) { this.db = db; this.stmt = db.prepare(sql); this.sql = sql; this.args = []; }
+  constructor(db, sql) { this.stmt = db.prepare(sql); this.sql = sql; this.args = []; }
   bind(...a) { this.args = a.map((v) => (v === undefined ? null : typeof v === "boolean" ? (v ? 1 : 0) : v)); return this; }
-  async run() { const n = d1Changes(this.db); this.stmt.run(...this.args); return { success: true, meta: { changes: d1Changes(this.db) - n } }; }
+  async run() { const r = this.stmt.run(...this.args); return { success: true, meta: { changes: Number(r.changes) } }; }
   async first() { return this.stmt.get(...this.args) ?? null; }
   async all() { return { results: this.stmt.all(...this.args) }; }
 }
