@@ -218,7 +218,7 @@ test("the app gets each gift until it says it was seen: once, for its own accoun
   assert.deepEqual(me.json.gift, { items: [{ id, credits: 20, message: "You made 40 videos this month!" }], credits: 20 });
   assert.equal(me.json.creator, null);
   assert.equal(me.json.paid, false, "never paid: the app leaves the Creators card out");
-  assert.equal((await call(env, "/api/me", { cookie: bo.cookie })).json.gift, null);
+  assert.deepEqual((await call(env, "/api/me", { cookie: bo.cookie })).json.gift, { items: [], credits: 0 }, "no gifts is an answer, not an error");
   // While the gift is still unseen: junk, a body without `ids`, and another account's try leave it unseen.
   const seen = (cookie, b) => call(env, "/api/me/gift/seen", { method: "POST", cookie, body: b });
   assert.equal((await seen(kal.cookie, { ids: ["nope", 3, null, "gf_x' OR 1=1", "gf_notthere1234"] })).json.seen, 0);
@@ -233,7 +233,7 @@ test("the app gets each gift until it says it was seen: once, for its own accoun
   // The app shows the first and says so; then a focus says it again with the second: only what was still unseen changes.
   assert.equal((await seen(kal.cookie, { ids: [id] })).json.seen, 1);
   assert.equal((await seen(kal.cookie, { ids: [id, r2.json.gift.id] })).json.seen, 1);
-  assert.equal((await call(env, "/api/me", { cookie: kal.cookie })).json.gift, null, "never again, here or on another device");
+  assert.deepEqual((await call(env, "/api/me", { cookie: kal.cookie })).json.gift, { items: [], credits: 0 }, "never again, here or on another device");
   assert.equal((await seen(kal.cookie, { ids: [id, r2.json.gift.id] })).json.seen, 0);
   assert.equal((await call(env, "/api/me/gift/seen", { method: "POST", body: { ids: [id] } })).status, 401, "signed in only");
   assert.equal(auditOf(env, kal.id, "gift.seen").length, 2);
@@ -424,7 +424,7 @@ test("the pages keep the owner's rules and the review's: his words, the card wai
   assert.match(part, /for \(let i = 0; i < 2; i\+\+\)/);
   assert.match(part, /keepShown\(ids\);/);
   assert.match(part, /if \(res\.ok\) \{ dropShown\(ids\); return; \}/);
-  assert.match(part, /const items = giftItems\(S\.me\.gift\);\s*seedShown\(items\);/, "a reload first takes the kept ids as shown");
+  assert.match(part, /const items = giftItems\(S\.me\.gift\);\s*seedShown\(items, giftAnswered\(S\.me\)\);/, "a reload first takes the kept ids as shown");
   assert.match(part, /store\.get\(GIFT_KEEP, \{\}\)/, "kept through the app's storage helper (try/catch)");
   assert.match(part, /filter\(\(x\) => GIFTS_SHOWN\.has\(x\.id\)\)[^\n]*\n\s*if \(again\.length\) giftsSeen\(again\);/);
   assert.match(part, /const fresh = items\.filter\(\(x\) => !GIFTS_SHOWN\.has\(x\.id\)\);/, "it announces only what this page has not shown");
@@ -586,4 +586,77 @@ test("G: a D1 error after a successful send keeps the gift sent; the claim sends
   assert.equal(env.sent.length, n);
   assert.equal(get(env, "SELECT mail_status FROM studio_gifts WHERE id = ?", bos).mail_status, "waiting");
   assert.equal((await mailAgain(env, owner.admin, bo.id, bos)).json.mail.status, "sent");
+});
+
+// ── The last follow-up (after PR #158 went live): one waitUntil from the credit batch on, a failed gift lookup, deleted accounts ──
+
+test("1: the whole gift, credit batch included, runs under waitUntil: it is registered before the batch's answer comes back", async () => {
+  const { env, owner, kal } = await setup();
+  const realBatch = env.DB.batch.bind(env.DB);
+  let atBatchEnd = null;
+  env.DB.batch = async (stmts) => {
+    const out = await realBatch(stmts);
+    if (/^INSERT INTO studio_gifts/.test(stmts[0]?.sql ?? "")) atBatchEnd = ctx.waited;
+    return out;
+  };
+  const start = ctx.waited;
+  const r = await gift(env, owner.admin, kal.id, { id: giftIdOf(), credits: 20, reason: "Thank you", email: true });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.json.gift.mail.status, "sent");
+  assert.ok(atBatchEnd !== null && atBatchEnd > start, "a tab closed during the credit batch can't cut off the e-mail or the audit row");
+  assert.equal(auditOf(env, kal.id, "admin.gift").length, 1);
+  // A refusal inside that work (20 + 81 is past the 100 a code is not needed for) still reaches the console as itself.
+  const s = await mod.readAdminCookie("s3cret", owner.adminCookie.split("=")[1]);
+  const stale = `${owner.cookie}; __Host-kleo_admin=${await mod.adminCookieValue("s3cret", { ...s, fresh: s.fresh - 6 * 60 })}`;
+  const refused = await gift(env, stale, kal.id, { id: giftIdOf(), credits: 81, reason: "one more", email: false });
+  assert.equal(refused.status, 403, refused.text);
+  assert.equal(refused.json.code, "fresh_code");
+  assert.equal(count(env, "SELECT COUNT(*) AS n FROM studio_gifts WHERE user_id = ?", kal.id), 1, "and nothing moved");
+});
+
+test("2: /api/me tells no gifts (gift: { items: [] }) apart from a lookup that failed (giftError, no gift); the app forgets kept ids only on a real answer", async () => {
+  const { env, kal } = await setup();
+  let me = await call(env, "/api/me", { cookie: kal.cookie });
+  assert.deepEqual(me.json.gift, { items: [], credits: 0 });
+  assert.equal(me.json.giftError, undefined);
+  // The gift lookup fails for a moment: /api/me still answers, says so, and lists nothing as "no gifts".
+  const real = env.DB.prepare.bind(env.DB);
+  let fail = 1;
+  env.DB.prepare = (sql) => {
+    const st = real(sql);
+    if (fail > 0 && /^SELECT id, credits, message FROM studio_gifts/.test(sql)) { fail--; st.all = async () => { throw new Error("D1_ERROR: Network connection lost."); }; }
+    return st;
+  };
+  me = await call(env, "/api/me", { cookie: kal.cookie });
+  assert.equal(me.status, 200, me.text);
+  assert.equal(me.json.giftError, true);
+  assert.ok(!("gift" in me.json), "no gift field when the lookup failed");
+  assert.equal(me.json.id, kal.id, "the rest of the answer is there");
+  // The app side of it.
+  const app = readFileSync(join(ROOT, "studio-web", "app.js"), "utf8");
+  const part = app.slice(app.indexOf("// ── A gift from the Kleo team"), app.indexOf("// ── Create: the chat with Kleo"));
+  assert.match(part, /function seedShown\(items, answered\)/);
+  assert.match(part, /if \(answered && gone\.length\) dropShown\(gone\);/, "kept ids are forgotten only when the server answered the lookup");
+  assert.match(part, /const giftAnswered = \(me\) => !!me && !me\.giftError && Array\.isArray\(me\.gift\?\.items\);/);
+  assert.match(part, /seedShown\(items, giftAnswered\(me\)\);/, "the re-read after a wait too");
+});
+
+test("3: on a deleted account a gift e-mail still to go reads 'No e-mail: the account was deleted', with no button", async () => {
+  const { env, owner, kal } = await setup();
+  env.refuse = "Rate limit exceeded, try later";
+  const r = await gift(env, owner.admin, kal.id, { id: giftIdOf(), credits: 5, reason: "Thank you", email: true });
+  env.refuse = null;
+  assert.equal(r.json.gift.mail.status, "waiting");
+  assert.equal((await call(env, "/api/me/delete", { method: "POST", cookie: kal.cookie, body: { confirm: "DELETE" } })).status, 200);
+  const d = await call(env, `/api/admin/users/${kal.id}`, { cookie: owner.admin });
+  assert.equal(d.json.user.deleted, 1);
+  assert.deepEqual(d.json.gifts.map((g) => [g.mail_status, g.mail_error]), [["waiting", null]], "what the console's line is drawn from");
+  // A send for it would only be skipped: the account is closed.
+  const again = await mailAgain(env, owner.admin, kal.id, r.json.gift.id);
+  assert.equal(again.json.mail.status, "skipped");
+  assert.equal(env.sent.length, 0);
+  const admin = readFileSync(join(ROOT, "studio-web", "admin.js"), "utf8");
+  assert.match(admin, /const giftUnsent = \(g\) => g\.mail_status === "waiting" \|\| !g\.mail_status \|\| giftStale\(g\);/);
+  assert.match(admin, /if \(u\.deleted && giftUnsent\(g\)\) return "No e-mail: the account was deleted";/);
+  assert.match(admin, /const canSend = !u\.deleted && g\.mail && giftUnsent\(g\);/);
 });

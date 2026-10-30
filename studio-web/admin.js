@@ -669,8 +669,12 @@ async function userPage(main, id, opts = {}) {
   // A send claimed more than 5 minutes ago with no outcome counts as waiting again (gifts.ts SENDING_STALE_MIN), and
   // may have gone out: the line says so next to the button.
   const giftStale = (g) => g.mail_status === "sending" && (!g.mailed_at || Date.now() - toDate(g.mailed_at).getTime() > 5 * 60e3);
+  // On a deleted account an e-mail still to go (waiting, never sent, or a stale send) never goes: mailGift skips a
+  // closed account, so the line is final and there is no button.
+  const giftUnsent = (g) => g.mail_status === "waiting" || !g.mail_status || giftStale(g);
   const giftMail = (g) => {
     if (!g.mail) return "No e-mail";
+    if (u.deleted && giftUnsent(g)) return "No e-mail: the account was deleted";
     if (g.mail_status === "sent") return g.mail_to ? `E-mail sent to ${g.mail_to}` : "E-mail sent (address removed with the account)";
     if (g.mail_status === "skipped") return g.mail_error ? `No e-mail: ${g.mail_error}` : "No e-mail (reason removed with the account)";
     if (g.mail_status === "failed") return g.mail_error ? `E-mail refused: ${g.mail_error}` : "E-mail refused (reason removed with the account)";
@@ -687,7 +691,7 @@ async function userPage(main, id, opts = {}) {
     } catch (e) { btn.disabled = false; oops(e); }
   }
   const gifts = d.gifts?.length ? card("Gifts", "Credits the Kleo team gave, and whether the pop-up was seen.", h("div", { class: "list" }, d.gifts.map((g) => {
-    const canSend = !u.deleted && g.mail && (g.mail_status === "waiting" || !g.mail_status || giftStale(g));
+    const canSend = !u.deleted && g.mail && giftUnsent(g);
     const again = canSend ? h("button", { class: "btn btn-quiet btn-sm adm-gift-again", type: "button" }, icon("mail", 15), "Send the e-mail again") : null;
     again?.addEventListener("click", () => mailAgain(g, again));
     return h("div", { class: "row adm-gift-row" }, icon("gift", 19),

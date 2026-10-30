@@ -333,9 +333,10 @@ async function giftAgain(env: StudioEnv, g: GiftRow): Promise<Response> {
  * in the same batch (the app shows it once, on its next load), then the e-mail when asked for. The console makes the
  * gift's id once per sheet and sends it with every try: an id already given is answered as it is (giftAgain), so a second
  * click, or a request sent again after its answer was lost, gives nothing more. The e-mail never undoes the gift: what
- * came of it is in the answer, on the gift's row and in its admin.gift audit row; both run under ctx.waitUntil, so a
- * console tab closed meanwhile cannot cut them off. A closed, merged or deleted account, and one only an AI assistant
- * uses (no Kleo sign-in: its gift would be lost when it signs in), get nothing.
+ * came of it is in the answer, on the gift's row and in its admin.gift audit row. Everything from the credit batch to
+ * the audit row runs as one piece of work under ctx.waitUntil, so a console tab closed at any point of it cannot cut
+ * off the e-mail or the audit row. A closed, merged or deleted account, and one only an AI assistant uses (no Kleo
+ * sign-in: its gift would be lost when it signs in), get nothing.
  */
 async function giftAction(env: StudioEnv, request: Request, gate: Gate, adminId: string, u: { id: string; credits: number }, b: Record<string, unknown>, reason: string, ctx?: ExecutionContext): Promise<Response> {
   const id = b.id === undefined || b.id === null || b.id === "" ? rid("gf", 12) : String(b.id);
@@ -358,21 +359,23 @@ async function giftAction(env: StudioEnv, request: Request, gate: Gate, adminId:
     throw new StudioError("Only an AI assistant uses this account, with no Kleo sign-in, so nobody would see the gift and it would be lost when they sign in. Use Add credits instead.", 400, "gift_anonymous");
   }
   const email = b.email === true;
-  let after: number;
-  try {
-    after = await moveCredits(env, request, gate, adminId, u, credits, reason, b, { gift: id }, { id, userId: u.id, credits, reason, message, adminId, mail: email });
-  } catch (e) {
-    if (e instanceof StudioError) throw e;
-    const now = await giftById(env, id).catch(() => null);
-    if (!now || now.user_id !== u.id) throw e;
-    // The same gift sent twice at once: the second batch failed on the gift's id and was rolled back.
-    if (GIFT_ID_TAKEN.test(e instanceof Error ? e.message : String(e))) return giftAgain(env, now);
-    // Any other trouble after this request's own batch went in (its answer lost, the balance read failing): the gift is
-    // given, so the e-mail and the audit row still follow; mailGift's claim keeps the e-mail at most once.
-    after = (await env.DB.prepare("SELECT credits FROM users WHERE id = ?").bind(u.id).first<{ credits: number }>().catch(() => null))?.credits ?? u.credits + credits;
-  }
-  // The e-mail and the audit row run under waitUntil: a console tab closed meanwhile cannot cut them off.
-  const finish = (async (): Promise<GiftMail | null> => {
+  // From the credit batch to the e-mail and the audit row, one piece of work registered with waitUntil before its first
+  // D1 call can answer: a tab closed at any point of it, the credit batch included, cannot cut off the e-mail or the
+  // audit row of a gift whose credits went in.
+  const work = (async (): Promise<Response> => {
+    let after: number;
+    try {
+      after = await moveCredits(env, request, gate, adminId, u, credits, reason, b, { gift: id }, { id, userId: u.id, credits, reason, message, adminId, mail: email });
+    } catch (e) {
+      if (e instanceof StudioError) throw e;
+      const now = await giftById(env, id).catch(() => null);
+      if (!now || now.user_id !== u.id) throw e;
+      // The same gift sent twice at once: the second batch failed on the gift's id and was rolled back.
+      if (GIFT_ID_TAKEN.test(e instanceof Error ? e.message : String(e))) return giftAgain(env, now);
+      // Any other trouble after this request's own batch went in (its answer lost, the balance read failing): the gift
+      // is given, so the e-mail and the audit row still follow; mailGift's claim keeps the e-mail at most once.
+      after = (await env.DB.prepare("SELECT credits FROM users WHERE id = ?").bind(u.id).first<{ credits: number }>().catch(() => null))?.credits ?? u.credits + credits;
+    }
     let mail: GiftMail | null = null;
     if (email) {
       // mailGift never throws once it sent; anything before that sent nothing, so the e-mail waits for "Send the e-mail again".
@@ -383,11 +386,11 @@ async function giftAction(env: StudioEnv, request: Request, gate: Gate, adminId:
       }
     }
     await audit(asEnv(env), u.id, null, "admin.gift", { admin: adminId, reason, gift: id, credits, message: !!message, mail: mail?.status ?? "not asked" }).catch(() => {});
-    return mail;
+    return json({ ok: true, credits: after, gift: { id, credits, message, mail } });
   })();
-  ctx?.waitUntil(finish);
-  const mail = await finish;
-  return json({ ok: true, credits: after, gift: { id, credits, message, mail } });
+  // A refusal (a code wanted, a wrong code) still reaches the console through the await below.
+  ctx?.waitUntil(work.catch(() => {}));
+  return await work;
 }
 
 /** The error D1 (SQLite) gives for a gift id that is already there: only that one means "the same gift, sent twice". */

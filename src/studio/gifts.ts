@@ -80,11 +80,14 @@ export const giftById = (env: StudioEnv, id: string) => env.DB.prepare("SELECT *
 
 export interface PendingGift { items: { id: string; credits: number; message: string | null }[]; credits: number }
 
-/** The gifts the app has not shown yet, oldest first, and their credits added up. */
-export async function pendingGift(env: StudioEnv, userId: string): Promise<PendingGift | null> {
+/**
+ * The gifts the app has not shown yet, oldest first, and their credits added up; no items when there are none. A read
+ * that fails throws: /api/me then says so (giftError) instead of "no gifts", so the app never takes a failed lookup for
+ * gifts already seen (studio-web/app.js seedShown).
+ */
+export async function pendingGift(env: StudioEnv, userId: string): Promise<PendingGift> {
   const rows = (await env.DB.prepare("SELECT id, credits, message FROM studio_gifts WHERE user_id = ? AND seen_at IS NULL ORDER BY created_at, rowid LIMIT 20")
     .bind(userId).all<{ id: string; credits: number; message: string | null }>()).results ?? [];
-  if (!rows.length) return null;
   const items = rows.map((r) => ({ id: r.id, credits: Number(r.credits) || 0, message: r.message ?? null }));
   return { items, credits: items.reduce((a, r) => a + r.credits, 0) };
 }

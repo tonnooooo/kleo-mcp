@@ -3,7 +3,7 @@
 //
 // Pages: Create (chat with Kleo) · Video · Image · Audio · Apps · Library. Desktop: a top bar; phones: a tab bar.
 
-import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=108";
+import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=109";
 
 const DEMO = new URLSearchParams(location.search).has("demo");
 const DEMO_FREE = new URLSearchParams(location.search).get("demo") === "free"; // ?demo=free: an account that never paid
@@ -802,19 +802,25 @@ function setKeptShown(ids) {
 }
 const keepShown = (ids) => setKeptShown([...new Set([...keptShown(), ...ids])]);
 const dropShown = (ids) => setKeptShown(keptShown().filter((x) => !ids.includes(x)));
-/** Gifts an earlier load showed but could not report: shown already, so the card skips them and says so again. */
-function seedShown(items) {
+/**
+ * Gifts an earlier load showed but could not report: shown already, so the card skips them and says so again. A kept
+ * id the server no longer lists is forgotten only when the server really answered the gift lookup (`gift.items`
+ * there): /api/me says giftError instead when its lookup failed, and "not listed" then means nothing.
+ */
+function seedShown(items, answered) {
   const kept = keptShown();
   if (!kept.length) return;
   const listed = new Set(items.map((x) => x.id));
   for (const id of kept) if (listed.has(id)) GIFTS_SHOWN.add(id);
   const gone = kept.filter((id) => !listed.has(id));
-  if (gone.length) dropShown(gone);
+  if (answered && gone.length) dropShown(gone);
 }
+/** Whether this /api/me answer's gift lookup worked: { items: [] } is "no gifts", giftError (no gift) is "couldn't tell". */
+const giftAnswered = (me) => !!me && !me.giftError && Array.isArray(me.gift?.items);
 function maybeShowGift() {
   if (!S.me || adminSite() || S.connecting || location.pathname === "/connect") return;
   const items = giftItems(S.me.gift);
-  seedShown(items);
+  seedShown(items, giftAnswered(S.me));
   // Shown already (here or in an earlier load) and still listed: the word didn't reach the server, so say it again.
   const again = items.filter((x) => GIFTS_SHOWN.has(x.id)).map((x) => x.id);
   if (again.length) giftsSeen(again);
@@ -828,8 +834,10 @@ async function giftWhenCalm(waited) {
   let items = giftItems(S.me.gift);
   if (waited && !DEMO) {
     // It had to wait: the gift may have been seen on the phone meanwhile, or another one may have come. Ask again.
-    try { items = giftItems((await api("/api/me")).gift); } catch { giftQueued = false; return; }
-    seedShown(items);
+    let me;
+    try { me = await api("/api/me"); } catch { giftQueued = false; return; }
+    items = giftItems(me.gift);
+    seedShown(items, giftAnswered(me));
     if (giftWaits()) { setTimeout(() => giftWhenCalm(true), 700); return; }
   }
   giftQueued = false;
@@ -2926,7 +2934,7 @@ async function adminView() {
     setView("admin-view", h("div", { class: "connect-view" }, spinner(24)));
     try {
       await loadAdminCss();
-      adminModule = await import("/admin.js?v=98");
+      adminModule = await import("/admin.js?v=99");
     } catch {
       setView("connect-view", connectCard("The console didn't load", "Check the connection and try again.", h("button", { class: "btn btn-primary", onclick: () => location.reload() }, "Try again")));
       return;

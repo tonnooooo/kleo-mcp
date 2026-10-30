@@ -332,8 +332,10 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       autoWan: await autoWanOn(env, userId),
       // A place in Kleo Creators, for the menu (src/studio/creators.ts).
       creator: await env.DB.prepare("SELECT status, level FROM creators WHERE user_id = ?").bind(userId).first<{ status: string; level: string }>().catch(() => null),
-      // A gift from the Kleo team the app has not shown yet (src/studio/gifts.ts): it shows it once, then says so.
-      gift: await pendingGift(env, userId).catch(() => null),
+      // The gifts from the Kleo team the app has not shown yet (src/studio/gifts.ts): it shows them once, then says so.
+      // "No gifts" is gift: { items: [] }; a lookup that failed is giftError: true with no gift at all, so the app keeps
+      // what it showed but could not report yet.
+      ...(await pendingGift(env, userId).then((gift) => ({ gift }), () => ({ giftError: true }))),
     });
   }
   // The gift pop-up was shown: it never shows again, in this browser or on another device (src/studio/gifts.ts).
