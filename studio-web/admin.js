@@ -759,7 +759,7 @@ const channelName = (c) => CHANNEL[c] || cap(c || "—");
  */
 function linkPlace(l) {
   if (l.channel === "dm") return "Paste it in DM replies, for example to people who comment KLEO. A link in a DM opens with a tap.";
-  if (/\bbio\b|\bchannel\b/i.test(l.label)) return {
+  if (/\bbio\b|\bchannel\b/i.test(l.label) || (l.channel === "facebook" && /\bpage\b|\bbutton\b/i.test(l.label))) return {
     instagram: "Instagram: Edit profile, then Links.",
     tiktok: "TikTok: Edit profile, then Website. TikTok shows that field only on a Business account or from 1,000 followers.",
     x: "X: Edit profile, then Website.",

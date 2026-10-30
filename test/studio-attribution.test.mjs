@@ -58,7 +58,7 @@ let worker, mod;
 before(async () => {
   const r = await esbuild.build({
     stdin: { contents: `export { default } from "./src/studio/index.ts";
-      export { touchOf, readTouch, touchCookie, isBot, inAppOf, channelOfSource, channelOfHost, pathTag, SOURCE_COOKIE } from "./src/studio/attribution.ts";
+      export { touchOf, readTouch, touchCookie, isBot, inAppOf, channelOfSource, channelOfHost, pathTag, SOURCE_COOKIE, pageLoad } from "./src/studio/attribution.ts";
       export { slugOf, linkTargetProblem } from "./src/studio/admin.ts";`, resolveDir: ROOT, loader: "ts" },
     bundle: true, write: false, format: "esm", platform: "neutral", target: "es2022", logLevel: "silent", external: ["@anthropic-ai/sdk", "cloudflare:email"],
   });
@@ -231,6 +231,12 @@ test("short links: Facebook is a network of its own, with fb- codes and facebook
   assert.equal(tap.headers.get("location"), "/video?utm_source=facebook&utm_medium=social&utm_campaign=fb-facebook-bio");
   const t = mod.readTouch(new Request("https://app.kleo.test/", { headers: { cookie: sourceCookie(tap) } }));
   assert.deepEqual([t.channel, t.link], ["facebook", "fb-facebook-bio"]);
+  // Facebook's browser fetches a link before the tap (X-Purpose: preview): no click, no first visit.
+  const ahead = await visit(env, "/r/fb-facebook-bio", { headers: { "x-purpose": "preview" } });
+  assert.equal(ahead.status, 302);
+  assert.equal(sourceCookie(ahead), null);
+  assert.deepEqual(rows(env, "SELECT code, clicks FROM short_link_clicks"), [{ code: "fb-facebook-bio", clicks: 1 }]);
+  assert.equal(mod.pageLoad(new Request("https://app.kleo.test/", { headers: { "x-purpose": "preview", "sec-fetch-dest": "document" } })), false);
 });
 
 test("short links: made in the console, counted per day, tagged, and opening their page with utm tags", async () => {
