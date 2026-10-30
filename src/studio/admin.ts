@@ -19,8 +19,8 @@
  *                                            credits at once (the same path as credits), a pop-up in the app, the e-mail if
  *                                            asked; an id already given is answered as it is, nothing moves twice
  *   POST /api/admin/users/:id/gifts/:gift/mail   {}                         a gift's e-mail again, when it is waiting
- *   POST /api/admin/users/:id/gifts/:gift/cancel {reason, code?}            a gift not seen yet, cancelled: its credits
- *                                            back (up to the balance), its pop-up never shown
+ *   POST /api/admin/users/:id/gifts/:gift/cancel {reason, takeBack?, code?} a gift not seen yet, cancelled: its pop-up
+ *                                            never shown, and its credits back (up to the balance) unless takeBack is false
  *   POST /api/admin/users/:id/block          {on, reason}                   close or reopen the account
  *   POST /api/admin/users/:id/address        {on, reason, days?, hash?}     block or free the address it signs in from
  *   POST /api/admin/users/:id/key            {reason}                       a new Kleo key (assistants disconnected)
@@ -406,12 +406,14 @@ const GIFT_ID_TAKEN = /UNIQUE constraint failed: studio_gifts\.id/i;
 
 /**
  * CANCEL A GIFT (30 October 2026, after a gift went to a creator too early: Take credits away left the gift pending, and
- * its pop-up would still have announced the credits). Only a gift the person has not seen yet. In one batch: an
- * admin.gift cancel row, an admin.credits row with the gift's id taking back min(the gift's credits, the balance) (never
- * below 0), the balance itself, and the gift marked cancelled and seen, with the credits that came back. Every statement
- * moves only while the gift is still pending, and the last one ends that, so a second cancel (sent twice, or at once)
- * changes nothing; the take-back counts toward CREDITS_WITHOUT_CODE exactly as Take credits away does (over 100 at
- * once, or past 100 in all, a new code from the phone). A gift cancelled already is answered as it is.
+ * its pop-up would still have announced the credits). Only a gift the person has not seen yet, in one of two ways, as
+ * the console asks: with its credits back, min(the gift's credits, the balance) (never below 0), or with
+ * `takeBack: false` only its pop-up stopped, for credits already taken away by hand: then no credits move, no
+ * admin.credits row is written and no code is wanted. Every statement of the batch (cancelBatch) moves only while the
+ * gift is still pending, and the last one ends that, so a second cancel (sent twice, or at once) changes nothing. The
+ * take-back counts toward CREDITS_WITHOUT_CODE exactly as Take credits away does (over 100 at once, or past 100 in all, a
+ * new code from the phone), and the batch never takes more than the amount checked here, whatever the balance became
+ * meanwhile. A gift cancelled already is answered as it is.
  */
 async function cancelGift(env: StudioEnv, request: Request, gate: Gate, adminId: string, userId: string, giftId: string, b: Record<string, unknown>): Promise<Response> {
   const reason = reasonOf(b);
@@ -420,7 +422,10 @@ async function cancelGift(env: StudioEnv, request: Request, gate: Gate, adminId:
   if (!g || g.user_id !== userId) throw new StudioError("No such gift on this account.", 404, "not_found");
   if (g.cancelled_at) return giftCancelled(env, g, true);
   if (g.seen_at) throw new StudioError("They have seen this gift already. Use Take credits away instead.", 409, "gift_seen");
-  const takeBack = Math.min(Number(g.credits) || 0, Math.max(0, Number(u.credits) || 0));
+  // The console's "Only stop the pop-up" sends takeBack: false; anything else takes the credits back.
+  const takeBack = b.takeBack !== false;
+  // The most this cancel takes back, checked against the code rule below: 0 for the pop-up alone.
+  const cap = takeBack ? Math.min(Number(g.credits) || 0, Math.max(0, Number(u.credits) || 0)) : 0;
   const fresh = () => gate.fresh || isFresh(gate.session);
   const askCode = async () => {
     if (!b.code) throw new StudioError("Type a new code from your phone to do this.", 403, "fresh_code");
@@ -428,7 +433,7 @@ async function cancelGift(env: StudioEnv, request: Request, gate: Gate, adminId:
     gate.fresh = true;
   };
   // Over CREDITS_WITHOUT_CODE at once wants a code first, like Take credits away (dangerous()).
-  if (takeBack > CREDITS_WITHOUT_CODE && !fresh()) await askCode();
+  if (cap > CREDITS_WITHOUT_CODE && !fresh()) await askCode();
   const detail = { admin: adminId, reason, gift: giftId, cancel: true };
   let done = false;
   // After a batch: cancelled (by this call, or by another one meanwhile: then it is answered as given back already),
@@ -439,48 +444,70 @@ async function cancelGift(env: StudioEnv, request: Request, gate: Gate, adminId:
     if (now?.seen_at) throw new StudioError("They have just seen this gift. Use Take credits away instead.", 409, "gift_seen");
     return null;
   };
-  if (!fresh()) {
+  if (cap > 0 && !fresh()) {
     // Without a code typed in the last 5 minutes: only while the small changes add up to CREDITS_WITHOUT_CODE.
     const since = new Date((gate.session.fresh + FRESH_MIN * 60) * 1000).toISOString();
-    done = await cancelBatch(env, userId, giftId, detail, [since, adminId, takeBack]);
+    done = await cancelBatch(env, userId, giftId, detail, takeBack, cap, [since, adminId, cap]);
     if (!done) {
       const r = await outcome();
       if (r) return r;
       await askCode();
     }
   }
-  if (!done) done = await cancelBatch(env, userId, giftId, detail, null);
+  if (!done) done = await cancelBatch(env, userId, giftId, detail, takeBack, cap, null);
   const r = await outcome();
   if (r) return r;
   throw new StudioError("The gift couldn't be cancelled. Reload the page and try again.", 409, "gift_cancel");
 }
 
-/** The batch of cancelGift; `w` is the CREDITS_WITHOUT_CODE condition's parameters, null with a fresh code. */
-async function cancelBatch(env: StudioEnv, userId: string, giftId: string, detail: Record<string, unknown>, w: unknown[] | null): Promise<boolean> {
-  const W = w ? ` AND ${WITHIN_SQL}` : "";
-  const wa = w ?? [];
+/**
+ * The batch of cancelGift, one transaction: the gift's admin.gift cancel row, with the credits that come back; when
+ * `cap` is above 0, the take-back's admin.credits row (with the gift's id and the program credits before it), the
+ * balance, and the Kleo Creators program credits put back to what they were, never above the new balance (the
+ * users_program_credits_spent trigger takes every decrease off them, but a gift's credits went in as ordinary credits,
+ * so only those may go); last, the gift marked cancelled and seen. The take is MIN(the gift's credits, the balance never
+ * below 0, `cap`): never more than the amount cancelGift checked. `w`: the CREDITS_WITHOUT_CODE condition's parameters,
+ * null with a fresh code or when nothing moves.
+ */
+async function cancelBatch(env: StudioEnv, userId: string, giftId: string, detail: Record<string, unknown>, takeBack: boolean, cap: number, w: unknown[] | null): Promise<boolean> {
+  const moves = cap > 0;
+  const W = moves && w ? ` AND ${WITHIN_SQL}` : "";
+  const wa = W ? (w ?? []) : [];
   const pending = "g.cancelled_at IS NULL AND g.seen_at IS NULL";
-  const take = "MIN(g.credits, MAX(0, u.credits))";
-  // This cancel's own admin.credits row, written in this batch before the balance moves: what the later statements go by.
-  const ours = `EXISTS (SELECT 1 FROM audit a WHERE a.user_id = ? AND a.event = 'admin.credits' AND json_extract(a.detail, '$.gift') = ? AND json_extract(a.detail, '$.cancel') = 1)`;
-  const out = await env.DB.batch([
-    env.DB.prepare(`INSERT INTO audit (user_id, job_id, event, detail) SELECT u.id, NULL, 'admin.gift', json_set(?, '$.credits', ${take})
-        FROM users u JOIN studio_gifts g ON g.id = ? AND g.user_id = u.id WHERE u.id = ? AND ${pending}${W}`)
-      .bind(JSON.stringify({ ...detail, action: "cancel" }), giftId, userId, ...wa),
-    env.DB.prepare(`INSERT INTO audit (user_id, job_id, event, detail) SELECT u.id, NULL, 'admin.credits',
-        json_set(?, '$.delta', -${take}, '$.before', u.credits, '$.after', u.credits - ${take})
-        FROM users u JOIN studio_gifts g ON g.id = ? AND g.user_id = u.id WHERE u.id = ? AND ${pending}${W}`)
-      .bind(JSON.stringify(detail), giftId, userId, ...wa),
-    env.DB.prepare(`UPDATE users SET credits = credits - MIN((SELECT g.credits FROM studio_gifts g WHERE g.id = ?), MAX(0, credits))
-        WHERE id = ? AND EXISTS (SELECT 1 FROM studio_gifts g WHERE g.id = ? AND g.user_id = ? AND ${pending}) AND ${ours}`)
-      .bind(giftId, userId, giftId, userId, userId, giftId),
+  const of = `FROM users u JOIN studio_gifts g ON g.id = ? AND g.user_id = u.id WHERE u.id = ? AND ${pending}`;
+  const take = "MIN(g.credits, MAX(0, u.credits), ?)";
+  // The gift still pending: true until the last statement, in this batch only.
+  const still = `EXISTS (SELECT 1 FROM studio_gifts g WHERE g.id = ? AND g.user_id = ? AND ${pending})`;
+  // This cancel's own rows, written first in this batch while the gift is still pending: what the later statements go by.
+  const giftRow = "a.user_id = ? AND a.event = 'admin.gift' AND json_extract(a.detail, '$.gift') = ? AND json_extract(a.detail, '$.action') = 'cancel'";
+  const creditRow = "a.user_id = ? AND a.event = 'admin.credits' AND json_extract(a.detail, '$.gift') = ? AND json_extract(a.detail, '$.cancel') = 1";
+  const stmts = [
+    env.DB.prepare(`INSERT INTO audit (user_id, job_id, event, detail) SELECT u.id, NULL, 'admin.gift', json_set(?, '$.credits', ${moves ? take : "0"}) ${of}${W}`)
+      .bind(JSON.stringify({ ...detail, action: "cancel", takeBack }), ...(moves ? [cap] : []), giftId, userId, ...wa),
+  ];
+  if (moves) {
+    stmts.push(
+      env.DB.prepare(`INSERT INTO audit (user_id, job_id, event, detail) SELECT u.id, NULL, 'admin.credits',
+          json_set(?, '$.delta', -${take}, '$.before', u.credits, '$.after', u.credits - ${take}, '$.program_before', u.program_credits) ${of}${W}`)
+        .bind(JSON.stringify(detail), cap, cap, giftId, userId, ...wa),
+      env.DB.prepare(`UPDATE users SET credits = credits - MIN((SELECT g.credits FROM studio_gifts g WHERE g.id = ?), MAX(0, credits), ?)
+          WHERE id = ? AND ${still} AND EXISTS (SELECT 1 FROM audit a WHERE ${creditRow})`)
+        .bind(giftId, cap, userId, giftId, userId, userId, giftId),
+      // After the trigger: the program credits as they were before the cancel, or the new balance if that is lower.
+      env.DB.prepare(`UPDATE users SET program_credits = MIN(COALESCE((SELECT json_extract(a.detail, '$.program_before') FROM audit a WHERE ${creditRow}
+            ORDER BY a.id DESC LIMIT 1), program_credits), MAX(0, credits))
+          WHERE id = ? AND ${still} AND EXISTS (SELECT 1 FROM audit a WHERE ${creditRow})`)
+        .bind(userId, giftId, userId, giftId, userId, userId, giftId),
+    );
+  }
+  stmts.push(
     env.DB.prepare(`UPDATE studio_gifts SET cancelled_at = ${NOW}, seen_at = COALESCE(seen_at, ${NOW}),
-        cancelled_credits = (SELECT -json_extract(a.detail, '$.delta') FROM audit a WHERE a.user_id = ? AND a.event = 'admin.credits'
-          AND json_extract(a.detail, '$.gift') = ? AND json_extract(a.detail, '$.cancel') = 1 ORDER BY a.id DESC LIMIT 1)
-        WHERE id = ? AND user_id = ? AND cancelled_at IS NULL AND seen_at IS NULL AND ${ours}`)
+        cancelled_credits = COALESCE((SELECT json_extract(a.detail, '$.credits') FROM audit a WHERE ${giftRow} ORDER BY a.id DESC LIMIT 1), 0)
+        WHERE id = ? AND user_id = ? AND cancelled_at IS NULL AND seen_at IS NULL AND EXISTS (SELECT 1 FROM audit a WHERE ${giftRow})`)
       .bind(userId, giftId, giftId, userId, userId, giftId),
-  ]);
-  return (out[3]?.meta.changes ?? 0) === 1;
+  );
+  const out = await env.DB.batch(stmts);
+  return (out[out.length - 1]?.meta.changes ?? 0) === 1;
 }
 
 /** A cancelled gift as the console reads it, with the balance after; `again` when it was cancelled before this call. */
