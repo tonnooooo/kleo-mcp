@@ -1,12 +1,14 @@
 /**
  * The Instagram publisher (src/ig/, wrangler.ig.jsonc, the SQL of scripts/ig-schedule.mjs), inside one process: the
  * Worker's minute (tick) on a D1 look-alike (node:sqlite), an in-memory R2 holding hand-built MP4 files, and a scripted
- * graph.instagram.com. Covers the entry's rules (New Zealand time and its clock changes, the US-evening slot, hashtags,
+ * graph.instagram.com and graph.facebook.com. Covers the entry's rules (New Zealand time and its clock changes, the
+ * US-evening slot, hashtags,
  * bait, the 3-hour gap, the address), the MP4 reader against Meta's Reels specification, and the job: the cloud check
  * creates nothing, an unapproved post never goes out, the container 7 minutes early, polling at most 5 times, a second
  * container, publishing on the minute, a lost answer that never publishes twice, Meta's quota, a change after the "sì",
  * the account the token belongs to, two minutes running at once, the token renewed and sealed, and the token never in a
- * URL, a row, an event, a log line or an e-mail.
+ * URL, a row, an event, a log line or an e-mail; and the Facebook Login road (a system user's EAA token): the same
+ * flow on graph.facebook.com, the account by IG_USER_ID, nothing renewed, a refused token e-mailed once a day.
  * Run: node --test test/ig-publisher.test.mjs
  */
 import { register } from "node:module";
@@ -29,7 +31,7 @@ import {
 import { inspectMp4, mp4Summary, specProblems } from "../src/ig/mp4.ts";
 import { POLLS_MAX, SCHEMA, tick } from "../src/ig/publisher.ts";
 import { approveSql, cancelSql, insertPostSql, recheckSql } from "../src/ig/sql.ts";
-import { graphClient } from "../src/ig/graph.ts";
+import { graphClient, loginOf } from "../src/ig/graph.ts";
 
 const MIN = 60_000, DAY = 24 * 60 * MIN;
 /** The container is made this many minutes before the time. */
@@ -125,6 +127,9 @@ const TOKEN = "IGAAtest-long-lived-token-0123456789abcdef";
 const RENEWED = "IGAArenewed-token-fedcba9876543210zz";
 const PASTED = "IGAAanother-pasted-token-5555555555";
 const KEY = "dGVzdC1zZWFsaW5nLWtleS0zMi1ieXRlcy1sb25nIQ==";
+/** Facebook Login: a system user's token, and the one the owner pastes after Meta revoked the first. */
+const FB_TOKEN = "EAAtest-system-user-token-0123456789abcdef";
+const FB_PASTED = "EAAanother-system-user-token-7777777777";
 const IG_ID = "17841400000000001";
 const VIDEO = "https://media.kleooai.com/ig/2026-11-03-rx7-reveal-k2m4.mp4";
 const T0 = Date.parse("2026-11-03T00:30:00Z"); // Tue 3 Nov 2026, 13:30 NZDT = 19:30 EST on the 2nd
@@ -133,16 +138,18 @@ const ENTRY = { video: VIDEO, caption: "This RX-7 doesn't exist. Made with Kleo.
 const igStamp = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "+0000");
 
 function setup(opts = {}) {
-  const { username = "kleooai", statuses = ["IN_PROGRESS", "FINISHED"], recent = [], video } = opts;
-  // "token" and "key" may be given as undefined on purpose: no token pasted, no sealing key.
-  const token = "token" in opts ? opts.token : TOKEN, key = "key" in opts ? opts.key : KEY;
+  const { username = "kleooai", statuses = ["IN_PROGRESS", "FINISHED"], recent = [], video, login = "instagram" } = opts;
+  const facebook = login === "facebook";
+  // "token", "key" and "igUserId" may be given as undefined on purpose: no token pasted, no sealing key, no IG_USER_ID.
+  const token = "token" in opts ? opts.token : facebook ? FB_TOKEN : TOKEN, key = "key" in opts ? opts.key : KEY;
+  const igUserId = "igUserId" in opts ? opts.igUserId : facebook ? IG_ID : undefined;
   const env = {
     DB: new FakeD1(), MEDIA: new FakeR2(), IG_ACCESS_TOKEN: token, IG_TOKEN_KEY: key, IG_API_VERSION: "v26.0", IG_USERNAME: "kleooai",
-    IG_MEDIA_HOST: "media.kleooai.com", OWNER_MAIL: { sent: [], async send(m) { this.sent.push(m); } },
+    IG_USER_ID: igUserId, IG_MEDIA_HOST: "media.kleooai.com", OWNER_MAIL: { sent: [], async send(m) { this.sent.push(m); } },
   };
   env.MEDIA.put("ig/2026-11-03-rx7-reveal-k2m4.mp4", video ?? mp4(), "video/mp4");
   const g = {
-    calls: [], valid: new Set([TOKEN, PASTED]), statuses: [...statuses], recent: [...recent], quota: { usage: 3, total: 100 },
+    calls: [], valid: new Set([TOKEN, PASTED, FB_TOKEN, FB_PASTED]), statuses: [...statuses], recent: [...recent], quota: { usage: 3, total: 100 },
     username, published: [], containers: 0, media: 0, publishFails: [], now: 0,
   };
   const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json" } });
@@ -154,8 +161,10 @@ function setup(opts = {}) {
       const o = env.MEDIA.objects.get(decodeURIComponent(u.pathname.slice(1)));
       return o ? new Response(null, { status: 200, headers: { "content-length": String(o.bytes.length) } }) : new Response(null, { status: 404 });
     }
-    assert.equal(u.hostname, "graph.instagram.com");
+    // Each road on its own host: a Facebook Login token never reaches graph.instagram.com, nor the other way round.
+    assert.equal(u.hostname, facebook ? "graph.facebook.com" : "graph.instagram.com");
     if (u.pathname === "/refresh_access_token") {
+      if (facebook) return json({ error: { message: "Unsupported get request.", type: "GraphMethodException", code: 100 } }, 400);
       if (!g.valid.has(u.searchParams.get("access_token")) || u.searchParams.get("grant_type") !== "ig_refresh_token") return json({ error: { message: "bad", code: 190 } }, 400);
       g.valid.add(RENEWED);
       return json({ access_token: RENEWED, token_type: "bearer", expires_in: 5_184_000 });
@@ -164,7 +173,9 @@ function setup(opts = {}) {
     if (!g.valid.has(given)) return json({ error: { message: "Invalid OAuth access token - Cannot parse access token", type: "OAuthException", code: 190 } }, 400);
     g.lastToken = given;
     const p = u.pathname.replace(/^\/v26\.0\//, "");
-    if (method === "GET" && p === "me") return json({ user_id: IG_ID, username: g.username, account_type: "MEDIA_CREATOR", id: "999" });
+    // A system user's /me is the system user, with no Instagram account; its Instagram account is asked by its ID.
+    if (method === "GET" && p === "me") return facebook ? json({ id: "61500000000001", name: "Kleo Reels Publisher" }) : json({ user_id: IG_ID, username: g.username, account_type: "MEDIA_CREATOR", id: "999" });
+    if (method === "GET" && p === IG_ID && facebook) return json({ id: IG_ID, username: g.username });
     if (method === "GET" && p === `${IG_ID}/content_publishing_limit`) return json({ data: [{ quota_usage: g.quota.usage, config: { quota_total: g.quota.total, quota_duration: 86400 } }] });
     if (method === "GET" && p === `${IG_ID}/media`) return json({ data: g.recent.map((m) => ({ id: m.id, timestamp: igStamp(m.ms), permalink: m.permalink })) });
     if (method === "POST" && p === `${IG_ID}/media`) return g.refuseContainer ? json({ error: g.refuseContainer }, 400) : json({ id: `c${++g.containers}` });
@@ -765,6 +776,122 @@ test("the owner's command line: upload --check and add --dry-run --offline need 
   const list = cli("list");
   assert.equal(list.status, 1);
   assert.match(list.stderr, /wrangler is not at/);
+});
+
+test("Facebook Login (a system user's EAA token): graph.facebook.com, the account by IG_USER_ID, the same probe and publish, nothing to renew", async () => {
+  assert.equal(loginOf(FB_TOKEN), "facebook");
+  assert.equal(loginOf(TOKEN), "instagram");
+  assert.equal(loginOf(""), "instagram");
+  const { env, g, run, logs } = setup({ login: "facebook", statuses: ["IN_PROGRESS", "FINISHED"] });
+  const post = addPost(env, { ...ENTRY, probe: true }, T0 - 3 * 60 * MIN);
+  await run(T0 - 120 * MIN);
+  let r = row(env, post.id);
+  assert.equal(r.state, "probing", r.error);
+  await run(T0 - 119 * MIN);
+  await run(T0 - 118 * MIN);
+  r = row(env, post.id);
+  assert.equal(r.state, "checked", r.error);
+  const report = JSON.parse(r.check_json);
+  assert.equal(report.account, `@kleooai (Facebook Login, ${IG_ID})`);
+  assert.equal(report.quota, "3 of 100 posts in the last 24 hours");
+  assert.match(report.probe, /^Meta fetched the video and accepted the request/);
+  assert.deepEqual(posts(g, `${IG_ID}/media`)[0].body, { media_type: "REELS", video_url: VIDEO, caption: ENTRY.caption, share_to_feed: true, is_ai_generated: true });
+  await approve(env, post.id, T0 - 60 * MIN);
+  for (let m = -L; m <= 0; m++) await run(T0 + m * MIN);
+  r = row(env, post.id);
+  assert.equal(r.state, "published");
+  assert.equal(r.permalink, "https://www.instagram.com/reel/RX71/");
+  assert.deepEqual(posts(g, "/media_publish").map((c) => c.body), [{ creation_id: "c2" }], "the probe container c1 is never published");
+
+  const graph = g.calls.filter((c) => c.host !== "media.kleooai.com");
+  for (const c of graph) {
+    assert.match(c.url, /^https:\/\/graph\.facebook\.com\/v26\.0\//);
+    assert.equal(c.auth, `Bearer ${FB_TOKEN}`);
+  }
+  assert.ok(!graph.some((c) => c.path === "/v26.0/me"), "a system user's /me is the system user, not @kleooai");
+  assert.ok(graph.some((c) => c.method === "GET" && c.path === `/v26.0/${IG_ID}` && c.query.fields === "id,username"));
+
+  // A system user's token never expires: nothing is renewed and nothing warns, weeks later either.
+  for (const d of [7, 8, 51, 60]) await run(T0 + d * DAY);
+  assert.equal(g.calls.filter((c) => c.path === "/refresh_access_token").length, 0);
+  assert.equal(env.OWNER_MAIL.sent.length, 1, "only the published e-mail");
+  assert.equal(env.DB.db.prepare("SELECT sealed FROM ig_token").get().sealed, null);
+  assertNoToken(env, g, logs, FB_TOKEN);
+});
+
+test("Facebook Login refuses: no IG_USER_ID, another account; a revoked token stops everything and e-mails the owner once a day", async () => {
+  {
+    const { env, g, run } = setup({ login: "facebook", igUserId: undefined });
+    const post = addPost(env, ENTRY, T0 - DAY);
+    await run(T0 - DAY + MIN);
+    assert.equal(row(env, post.id).state, "invalid");
+    assert.match(row(env, post.id).error, /IG_USER_ID, which is not set/);
+    assert.equal(g.calls.filter((c) => c.host === "graph.facebook.com").length, 0);
+  }
+  {
+    const { env, run } = setup({ login: "facebook", username: "someone_else" });
+    const post = addPost(env, ENTRY, T0 - DAY);
+    await run(T0 - DAY + MIN);
+    assert.match(row(env, post.id).error, /The token is for @someone_else, not @kleooai/);
+  }
+  const { env, g, run, logs } = setup({ login: "facebook" });
+  g.valid.delete(FB_TOKEN);
+  addPost(env, { ...ENTRY, id: "first" }, T0 - DAY);
+  await run(T0 - DAY + MIN);
+  assert.equal(row(env, "first").state, "invalid");
+  assert.match(row(env, "first").error, /^Meta refused the Facebook Login token \(Invalid OAuth access token.*\(code 190\)\): nothing is published until the owner pastes a new system-user token/);
+  assert.equal(g.calls.filter((c) => c.method === "POST").length, 0);
+  assert.equal(env.OWNER_MAIL.sent.length, 1);
+  assert.match(env.OWNER_MAIL.sent[0].raw, /Subject: Kleo Instagram: the token was refused/);
+  assert.match(env.OWNER_MAIL.sent[0].raw, /System users.*Generate token.*expiry Never.*IG_ACCESS_TOKEN/s);
+  assert.ok(env.DB.db.prepare("SELECT what FROM ig_events WHERE post_id IS NULL").all().some((e) => e.what.startsWith("Meta refused the Facebook Login token")));
+
+  addPost(env, { ...ENTRY, id: "second", at: "2026-11-03 16:30" }, T0 - DAY + 2 * MIN);
+  await run(T0 - DAY + 3 * MIN);
+  assert.equal(row(env, "second").state, "invalid");
+  assert.equal(env.OWNER_MAIL.sent.length, 1, "once a day");
+  env.DB.db.exec(recheckSql("second", new Date().toISOString()));
+  await run(T0 + MIN);
+  assert.equal(row(env, "second").state, "invalid");
+  assert.equal(env.OWNER_MAIL.sent.length, 2, "the next day, again");
+
+  // The owner pastes a new system-user token: it works at once, and its own refusal would be told at once.
+  env.IG_ACCESS_TOKEN = FB_PASTED;
+  env.DB.db.exec(recheckSql("second", new Date().toISOString()));
+  await run(T0 + 2 * MIN);
+  assert.equal(row(env, "second").state, "checked", row(env, "second").error);
+  assert.equal(env.OWNER_MAIL.sent.length, 2);
+  g.valid.delete(FB_PASTED);
+  env.DB.db.exec(recheckSql("second", new Date().toISOString()));
+  await run(T0 + 3 * MIN);
+  assert.equal(row(env, "second").state, "invalid");
+  assert.equal(env.OWNER_MAIL.sent.length, 3);
+
+  // A refused token is retried once in the access_token parameter form (graph.ts), so only D1, the logs and the
+  // e-mails are searched here.
+  const stored = JSON.stringify([env.DB.db.prepare("SELECT * FROM ig_posts").all(), env.DB.db.prepare("SELECT * FROM ig_events").all(),
+    env.DB.db.prepare("SELECT * FROM ig_token").all()]);
+  const mails = env.OWNER_MAIL.sent.map((m) => m.raw).join("\n");
+  for (const t of [FB_TOKEN, FB_PASTED]) {
+    assert.ok(!stored.includes(t) && !logs.join("\n").includes(t) && !mails.includes(t), "a token kept or sent");
+  }
+});
+
+test("Instagram Login still works as before, now with IG_USER_ID set as a plain var", async () => {
+  {
+    const { env, g, run } = setup({ igUserId: IG_ID });
+    const post = addPost(env, ENTRY, T0 - DAY);
+    await run(T0 - DAY + MIN);
+    assert.equal(row(env, post.id).state, "checked", row(env, post.id).error);
+    assert.equal(JSON.parse(row(env, post.id).check_json).account, `@kleooai (MEDIA_CREATOR, ${IG_ID})`);
+    assert.ok(g.calls.filter((c) => c.host !== "media.kleooai.com").every((c) => c.host === "graph.instagram.com"));
+  }
+  {
+    const { env, run } = setup({ igUserId: "17841499999999999" });
+    const post = addPost(env, ENTRY, T0 - DAY);
+    await run(T0 - DAY + MIN);
+    assert.match(row(env, post.id).error, /IG_USER_ID is 17841499999999999, but the token's account @kleooai is 17841400000000001/);
+  }
 });
 
 // Last on purpose: the fallback switches this isolate to the access_token parameter for every later call.

@@ -2,8 +2,10 @@
  * KLEO INSTAGRAM PUBLISHER — THE MINUTE-BY-MINUTE JOB (29 October 2026).
  *
  * The owner: reels scheduled with Instagram's own scheduler come out at 720p, so he deleted them, posted by hand at the
- * chosen time, and asked for that to happen by itself. This Worker does it through the official Instagram API with
- * Instagram Login (developers.facebook.com/docs/instagram-platform/content-publishing):
+ * chosen time, and asked for that to happen by itself. This Worker does it through the official Instagram API
+ * (developers.facebook.com/docs/instagram-platform/content-publishing), on graph.facebook.com with a Facebook Login
+ * token (a system user's, which never expires) or on graph.instagram.com with an Instagram Login token: the token
+ * decides (loginOf, src/ig/graph.ts), and the calls are the same:
  *   1. POST /<IG_ID>/media           media_type=REELS, video_url, caption, share_to_feed=true, is_ai_generated=true
  *   2. GET  /<container>?fields=status_code   once a minute until FINISHED, at most 5 times
  *   3. POST /<IG_ID>/media_publish   creation_id, at the chosen minute
@@ -33,15 +35,17 @@
  */
 import { approvalHash, containerParams, COVER_EXT, fmtNz, gapProblems, LEAD_MIN, MEDIA_HOST, mediaKey, postProblems, VIDEO_EXT, type Post } from "./rules.ts";
 import { inspectMp4, mp4Summary, specProblems } from "./mp4.ts";
-import { GraphError, graphClient, publishingQuota, recentMedia, redact, whoAmI, type Fetcher, type Graph, type RecentMedia } from "./graph.ts";
-import { expiryWarning, renewIfDue, TOKEN_SCHEMA, tokenNow } from "./token.ts";
+import { FACEBOOK_HOST, GraphError, graphClient, igUser, loginOf, publishingQuota, recentMedia, redact, whoAmI, type Fetcher, type Graph, type RecentMedia } from "./graph.ts";
+import { expiryWarning, refusedAlarm, renewIfDue, TOKEN_SCHEMA, tokenNow } from "./token.ts";
 
 export interface IgEnv {
   DB: D1Database;
   /** The R2 bucket kleo-media, served at media.kleooai.com. */
   MEDIA: R2Bucket;
   OWNER_MAIL?: SendEmail;
+  /** An Instagram Login token ("IG...") or a Facebook Login system-user token ("EAA..."). */
   IG_ACCESS_TOKEN?: string;
+  /** @kleooai's Instagram account ID: required with a Facebook Login token, checked against the token's account otherwise. */
   IG_USER_ID?: string;
   IG_TOKEN_KEY?: string;
   IG_API_VERSION?: string;
@@ -129,26 +133,45 @@ export async function ensureSchema(env: { DB: D1Database }): Promise<void> {
 type Account = { ok: true; graph: Graph; igId: string; username: string; type: string } | { ok: false; error: string; transient: boolean };
 interface Ctx { env: IgEnv; nowMs: number; fetcher: Fetcher; host: string; account: Promise<Account> | null }
 
-/** The token's account, asked once per minute: it must be @kleooai (IG_USERNAME), and IG_USER_ID when that is set. */
+/**
+ * The token's account, asked once per minute: it must be @kleooai (IG_USERNAME). An Instagram Login token names its
+ * own account (/me), which must equal IG_USER_ID when that is set; a Facebook Login token publishes to IG_USER_ID, and
+ * Meta must say that this ID is @kleooai.
+ */
 function accountOf(ctx: Ctx): Promise<Account> {
   ctx.account ??= (async (): Promise<Account> => {
     const t = await tokenNow(ctx.env, ctx.nowMs);
     if (!t) return { ok: false, error: "No Instagram token yet: the owner's one-time steps (docs/IG-PUBLISHER.md) end with the IG_ACCESS_TOKEN secret.", transient: false };
-    const graph = graphClient(t.token, ctx.env.IG_API_VERSION || "v26.0", ctx.fetcher);
+    const facebook = loginOf(t.token) === "facebook";
+    const id = (ctx.env.IG_USER_ID ?? "").trim();
+    if (facebook && !/^\d{5,25}$/.test(id)) {
+      return { ok: false, error: "A Facebook Login token publishes to IG_USER_ID, which is not set: it belongs in wrangler.ig.jsonc (vars).", transient: false };
+    }
+    const graph = graphClient(t.token, ctx.env.IG_API_VERSION || "v26.0", ctx.fetcher, facebook ? { host: FACEBOOK_HOST } : {});
     const want = (ctx.env.IG_USERNAME || "kleooai").toLowerCase();
     try {
-      const me = await whoAmI(graph);
+      const me = facebook ? await igUser(graph, id) : await whoAmI(graph);
       if (me.username.toLowerCase() !== want) return { ok: false, error: `The token is for @${me.username}, not @${want}: nothing is published with it.`, transient: false };
-      const id = (ctx.env.IG_USER_ID ?? "").trim();
       if (id && id !== me.userId) return { ok: false, error: `IG_USER_ID is ${id}, but the token's account @${me.username} is ${me.userId}.`, transient: false };
       if (me.accountType && !/^(business|media_creator|creator)$/i.test(me.accountType)) {
         return { ok: false, error: `@${me.username} is a ${me.accountType} account; publishing needs a professional (Creator or Business) account.`, transient: false };
       }
-      return { ok: true, graph, igId: me.userId, username: me.username, type: me.accountType ?? "type not given" };
+      return { ok: true, graph, igId: me.userId, username: me.username, type: facebook ? "Facebook Login" : me.accountType ?? "type not given" };
     } catch (e) {
       const transient = !(e instanceof GraphError) || e.uncertain;
-      const text = e instanceof GraphError && e.code === 190
-        ? `Instagram refused the token (${e.message}): the owner makes a new one (docs/IG-PUBLISHER.md).`
+      const refused = e instanceof GraphError && e.code === 190;
+      if (refused && facebook) {
+        // A system user's token never expires: Meta refusing it means it was revoked, and nothing goes out until a new one.
+        const text = `Meta refused the Facebook Login token (${why(e)}): nothing is published until the owner pastes a new system-user token into IG_ACCESS_TOKEN (docs/IG-PUBLISHER.md).`;
+        if (await refusedAlarm(ctx.env, ctx.nowMs)) {
+          await event(ctx.env, null, text, ctx.nowMs);
+          await mailOwner(ctx.env, "Kleo Instagram: the token was refused",
+            `${text}\n\nIn Meta's Business Settings (portfolio "Kleo"): Users, System users, the publisher's system user, Generate token, app "Kleo Reels Publisher", expiry Never, the five permissions. Then paste it into the kleo-ig-publisher secret IG_ACCESS_TOKEN in Cloudflare (docs/IG-PUBLISHER.md).\n`, ctx.nowMs);
+        }
+        return { ok: false, error: text, transient: false };
+      }
+      const text = refused
+        ? `Instagram refused the token (${why(e)}): the owner makes a new one (docs/IG-PUBLISHER.md).`
         : `Instagram did not confirm the account: ${why(e)}`;
       return { ok: false, error: text, transient };
     }

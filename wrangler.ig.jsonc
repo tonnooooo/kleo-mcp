@@ -1,17 +1,19 @@
 /**
- * kleo-ig-publisher — publishes @kleooai's Instagram Reels at the chosen minute through the official Instagram API with
- * Instagram Login (src/ig/, docs/IG-PUBLISHER.md), because reels scheduled with Instagram's own scheduler are stored at
- * 720p. Deployed on its own, so a release never touches kleo-mcp or kleo-studio:
+ * kleo-ig-publisher — publishes @kleooai's Instagram Reels at the chosen minute through the official Instagram API
+ * (src/ig/, docs/IG-PUBLISHER.md), because reels scheduled with Instagram's own scheduler are stored at 720p. The token
+ * picks Meta's road: Facebook Login on graph.facebook.com ("EAA...", in use since 30 Oct 2026) or Instagram Login on
+ * graph.instagram.com ("IG..."). Deployed on its own, so a release never touches kleo-mcp or kleo-studio:
  *   npx wrangler deploy --config wrangler.ig.jsonc        (from main, after the owner's OK)
  * No HTTP surface: workers.dev and preview URLs are off and there is no route. Posts go in through
  * scripts/ig-schedule.mjs (D1), and each one is published only after the owner's "sì" for it.
  *
  * Secrets (the dashboard: Workers & Pages > kleo-ig-publisher > Settings > Variables and Secrets, or
  * npx wrangler secret put NAME --config wrangler.ig.jsonc):
- *   IG_ACCESS_TOKEN  the long-lived Instagram User token (60 days) from the Meta app's "Generate token"; the Worker
- *                    renews it every 7 days and keeps the renewed one sealed in D1 (ig_token, src/ig/token.ts)
- *   IG_USER_ID       optional: @kleooai's Instagram account ID; the token's own account must match it
- *   IG_TOKEN_KEY     32 random bytes, base64: seals the renewed token in D1. Without it the token is never renewed
+ *   IG_ACCESS_TOKEN  either a system user's token from the business portfolio "Kleo" (Facebook Login, "EAA...", never
+ *                    expires, nothing to renew), or a long-lived Instagram User token (Instagram Login, 60 days),
+ *                    which the Worker renews every 7 days and keeps sealed in D1 (ig_token, src/ig/token.ts)
+ *   IG_TOKEN_KEY     32 random bytes, base64: seals the renewed Instagram Login token in D1. Without it that token is
+ *                    never renewed
  *
  * It shares kleo-db with the other Workers, in its own tables (ig_posts, ig_events, ig_token), created on first use.
  */
@@ -34,7 +36,10 @@
   "send_email": [ { "name": "OWNER_MAIL", "destination_address": "kleooai@gmail.com" } ],
   "triggers": { "crons": ["* * * * *"] }, // every minute: check new posts, make containers LEAD_MIN early, publish on the minute
   "vars": {
-    "IG_API_VERSION": "v26.0", // graph.instagram.com version (the latest on 29 Oct 2026)
+    "IG_API_VERSION": "v26.0", // graph.facebook.com and graph.instagram.com version (v26.0, 29 Jul 2026, the latest on 30 Oct 2026)
+    // @kleooai's Instagram account ID (portfolio "Kleo", linked to the Page "Kleo AI"). A Facebook Login token publishes
+    // to it; an Instagram Login token must belong to it. Not a secret.
+    "IG_USER_ID": "17841421963271396",
     "IG_USERNAME": "kleooai", // the only account this Worker publishes to: a token for any other is refused
     "IG_MEDIA_HOST": "media.kleooai.com" // the public address of the R2 bucket kleo-media, the only place videos may come from
   }
