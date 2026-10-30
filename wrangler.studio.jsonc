@@ -82,7 +82,8 @@
     "STUDIO_VIDEO_FACTOR": "5/3", // 25 Oct 2026, the owner: "da 6 crediti per 480p fai 10": every video clip and template run costs its credits x 5/3, rounded up (src/studio/models.ts videoFactor)
     "STUDIO_DAILY_BUDGET_USD": "30",
     "TURNSTILE_SITEKEY": "0x4AAAAAAFWD13GJ3SI11_Ww", // public key of the Turnstile widget "Kleo sign-up" (14 Oct 2026); TURNSTILE_SECRET is a secret
-    "STUDIO_EMAIL_CODE": "on", // 30 Oct 2026: a six-digit code by e-mail signs in or opens an account inside the Facebook, Instagram and TikTok browsers, where Google refuses to sign in (src/studio/auth.ts); "" turns it off
+    "STUDIO_EMAIL_CODE": "", // 30 Oct 2026: a six-digit code by e-mail signs in inside the Facebook, Instagram and TikTok browsers, where Google refuses (src/studio/auth.ts). "on" = sign in and open accounts, "signin" = existing accounts only, "" = off. The owner chooses.
+    "STUDIO_EMAIL_CODE_GIFT": "", // "on" = an account opened with an e-mail code gets FREE_CREDITS; "" = it opens with none. The owner chooses.
     "STUDIO_FREE_DAILY_BUDGET_USD": "8", // accounts that never paid share this part of the day (14 Oct 2026)
     "MAX_GIFTS_PER_ADDRESS": "2", // 18 Oct 2026, the owner: "max due volte, se fanno una terza gli blocchi l'IP" (src/abuse.ts); one browser still gets one gift (the __Host-kleo_gift cookie)
     "MAX_ACCOUNTS_PER_ADDRESS": "2", // the third account from one address inside GIFT_WINDOW_DAYS is refused and the address blocked for ADDRESS_BLOCK_DAYS; paying accounts are never touched

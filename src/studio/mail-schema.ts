@@ -73,12 +73,13 @@ export const OUTREACH_COLUMNS: string[] = [
 ];
 
 /**
- * Sign-in codes (src/studio/auth.ts, "Sign in with an e-mail code"): one row per address, holding only the code's HMAC,
- * when it stops working, the wrong tries, and the sends of the current hour. migrations/0034_email_codes.sql holds the
- * same SQL.
+ * Sign-in codes (src/studio/auth.ts, "Sign in with an e-mail code"): one row per INBOX (canonicalEmail), holding the
+ * address the code went to, only the code's HMAC, when it stops working (ms), its wrong tries, the sends of the current
+ * hour, and the wrong tries of the day across codes. migrations/0034_email_codes.sql holds the same SQL.
  */
 export const EMAIL_CODE_SCHEMA: string[] = [
   `CREATE TABLE IF NOT EXISTS studio_email_codes (
-    email TEXT PRIMARY KEY, code_hash TEXT NOT NULL, expires_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-    sent_at INTEGER NOT NULL, window_start INTEGER NOT NULL, window_sends INTEGER NOT NULL DEFAULT 1)`,
+    inbox TEXT PRIMARY KEY, address TEXT NOT NULL, code_hash TEXT NOT NULL, expires_at INTEGER NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0, sent_at INTEGER NOT NULL, window_start INTEGER NOT NULL,
+    window_sends INTEGER NOT NULL DEFAULT 1, fail_day TEXT, fails INTEGER NOT NULL DEFAULT 0)`,
 ];

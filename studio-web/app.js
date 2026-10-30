@@ -539,7 +539,8 @@ function renderAuth(mode = "signup", fromApp = false) {
   const hop = HOP && socialList().includes("google");
   if (hop) hopHere();
   // Sign in with an e-mail code (src/studio/auth.ts): in an app's browser it replaces the step to Safari or Chrome.
-  const codeOn = !!S.config?.emailCode;
+  // "on": sign in and sign up; "signin": only on the sign-in screen (accounts that already exist).
+  const codeOn = S.config?.emailCode === "on" || (S.config?.emailCode === "signin" && mode === "signin");
   const codeFirst = !!HOP && codeOn;
   // Once Google sign-in is on, new accounts are opened with Google only (STUDIO_SIGNUP): the e-mail form is for signing in.
   const googleOnly = mode === "signup" && S.config?.signup === "google" && socialList().includes("google");
