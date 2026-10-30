@@ -7,6 +7,7 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
+import { FakeD1 } from "./fake-d1.mjs";
 import { join, dirname } from "node:path";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -15,18 +16,7 @@ import * as esbuild from "esbuild";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 /* ------------------------------------------------------------------ D1 on node:sqlite */
-class Stmt {
-  constructor(db, sql) { this.stmt = db.prepare(sql); this.args = []; }
-  bind(...a) { this.args = a.map((v) => (v === undefined ? null : typeof v === "boolean" ? (v ? 1 : 0) : v)); return this; }
-  async run() { const r = this.stmt.run(...this.args); return { success: true, meta: { changes: Number(r.changes) } }; }
-  async first() { return this.stmt.get(...this.args) ?? null; }
-  async all() { return { results: this.stmt.all(...this.args) }; }
-}
-class FakeD1 {
-  constructor() { this.db = new DatabaseSync(":memory:"); }
-  prepare(sql) { return new Stmt(this.db, sql); }
-  async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; }
-}
+// The D1 stand-in is test/fake-d1.mjs: meta.changes as D1 counts it, the rows a trigger changes included.
 class FakeKV {
   constructor() { this.m = new Map(); }
   async put(k, v, o) { this.m.set(k, { v, o }); }
@@ -104,6 +94,24 @@ test("create: one atomic debit with a credits.debit audit row; a refused create 
   await assert.rejects(short(env, await m.getUser(env, "u_test")), (e) => e instanceof m.JobError && new RegExp(`Not enough credits: this Short costs ${P} credits and you have 0 credits`).test(e.message));
   assert.equal(await balance(env), 0 * P);
   assert.equal((await env.DB.prepare("SELECT COUNT(*) AS n FROM audit WHERE event = 'credits.debit'").first()).n, 1);
+});
+
+test("create: an account with Kleo Creators program credits is charged once for a film and for an animatic (D1 counts the trigger's row)", async () => {
+  const env = await newEnv();
+  const u = await user(env, 2 * P + 10);
+  // 40 of them from the program: users_program_credits_spent takes each debit off those first, so the debit's UPDATE
+  // changes the row twice and D1 reports 2 rows.
+  await env.DB.prepare("UPDATE users SET program_credits = 40 WHERE id = ?").bind(u.id).run();
+  const film = await short(env, await m.getUser(env, u.id));
+  assert.equal(film.credits, P);
+  assert.equal(await balance(env), P + 10);
+  assert.deepEqual((await events(env, film.id, "credits.debit")).map((d) => d.detail), [{ amount: P, balance: P + 10 }]);
+  assert.equal((await env.DB.prepare("SELECT program_credits AS p FROM users WHERE id = ?").bind(u.id).first()).p, 10, "the spend came off the program part");
+  const anim = await short(env, await m.getUser(env, u.id), { product: "animatic", duration_s: 30 });
+  assert.ok(anim.credits > 0 && anim.credits < P, `an animatic is cheaper (${anim.credits})`);
+  assert.equal(await balance(env), P + 10 - anim.credits);
+  assert.deepEqual((await events(env, anim.id, "credits.debit")).map((d) => d.detail), [{ amount: anim.credits, balance: P + 10 - anim.credits }]);
+  assert.equal((await env.DB.prepare("SELECT COUNT(*) AS n FROM audit WHERE event = 'credits.debit'").first()).n, 2, "one debit each");
 });
 
 test("create: a client storyboard for a filmed style is stored asking to be filmed, at the filmed price", async () => {

@@ -255,12 +255,19 @@ export const touchUser = (env: Env, id: string) =>
  * Credit movements. Every one of them lands in the audit table as `credits.debit` / `credits.refund`
  * (amount, resulting balance, job, reason), so the owner can always reconstruct a user's balance.
  */
-/** Atomic debit: succeeds only if the user has enough credits (single UPDATE, no read-then-write race). */
+/**
+ * Atomic debit: succeeds only if the user has enough credits (single UPDATE, no read-then-write race). The row the
+ * UPDATE returns says it went through, never meta.changes: D1 counts the rows a trigger changes too (total_changes()
+ * after minus before), and on an account with Kleo Creators program credits users_program_credits_spent changes the
+ * same row again, so a debit that went through would read as 2 rows and be answered "not enough credits" with the
+ * credits gone (31 October 2026). The returned balance is the audit row's.
+ */
 export async function debitCredits(env: Env, userId: string, amount: number, jobId: string | null = null): Promise<boolean> {
   if (amount <= 0) return true;
-  const r = await env.DB.prepare("UPDATE users SET credits = credits - ? WHERE id = ? AND credits >= ?").bind(amount, userId, amount).run();
-  if ((r.meta.changes ?? 0) !== 1) return false;
-  await audit(env, userId, jobId, "credits.debit", { amount, balance: await balanceOf(env, userId) });
+  const row = await env.DB.prepare("UPDATE users SET credits = credits - ? WHERE id = ? AND credits >= ? RETURNING credits")
+    .bind(amount, userId, amount).first<{ credits: number }>();
+  if (!row) return false;
+  await audit(env, userId, jobId, "credits.debit", { amount, balance: row.credits });
   return true;
 }
 /** Gives credits back (cancel, failure, rollback). Returns the amount actually refunded (0 for nothing). */

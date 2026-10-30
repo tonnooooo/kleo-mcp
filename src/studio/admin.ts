@@ -283,6 +283,10 @@ export function dangerous(action: string, b: Record<string, unknown>, id: string
  * code. The total is read and the change and its row written in one batch (one transaction), so changes sent at once
  * cannot all read the same total. The row is the one moveCredits writes. True when the change was made; false when it
  * wants a code. A gift's own row goes first in the batch, on the same condition (moveCredits).
+ * The change is judged on its audit row, the INSERT on the same condition, never on the balance's UPDATE: D1 counts
+ * the rows a trigger changes too (total_changes() after minus before), and on an account with Kleo Creators program
+ * credits a decrease fires users_program_credits_spent on the same row, so a take-away that went through read as 2,
+ * asked for a code, and the retry took the credits again (31 October 2026). No trigger is on audit.
  */
 async function creditWithoutCode(env: StudioEnv, s: AdminSession, adminId: string, id: string, delta: number, detail: Record<string, unknown>, gift?: GiftDraft): Promise<boolean> {
   const since = new Date((s.fresh + FRESH_MIN * 60) * 1000).toISOString();
@@ -296,7 +300,7 @@ async function creditWithoutCode(env: StudioEnv, s: AdminSession, adminId: strin
     env.DB.prepare(`INSERT INTO audit (user_id, job_id, event, detail) SELECT u.id, NULL, 'admin.credits', json_set(?, '$.after', u.credits) FROM users u
       WHERE u.id = ? AND ${within}${withGift}`).bind(JSON.stringify(detail), id, ...w, ...g),
   ]);
-  return (out[gift ? 1 : 0]?.meta.changes ?? 0) === 1;
+  return (out[gift ? 2 : 1]?.meta.changes ?? 0) === 1;
 }
 
 /**

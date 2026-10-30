@@ -19,6 +19,7 @@ register("data:text/javascript," + encodeURIComponent(`export async function res
 import { test, before, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
+import { FakeD1 } from "./fake-d1.mjs";
 import { join, dirname } from "node:path";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -28,18 +29,7 @@ import { base32Decode, hotp, stepAt } from "../src/studio/totp.ts";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const te = new TextEncoder(), td = new TextDecoder();
 
-class Stmt {
-  constructor(db, sql) { this.stmt = db.prepare(sql); this.args = []; }
-  bind(...a) { this.args = a.map((v) => (v === undefined ? null : typeof v === "boolean" ? (v ? 1 : 0) : v)); return this; }
-  async run() { const r = this.stmt.run(...this.args); return { success: true, meta: { changes: Number(r.changes) } }; }
-  async first() { const r = this.stmt.get(...this.args); return r ? { ...r } : null; }
-  async all() { return { results: this.stmt.all(...this.args).map((r) => ({ ...r })) }; }
-}
-class FakeD1 {
-  constructor() { this.db = new DatabaseSync(":memory:"); }
-  prepare(sql) { return new Stmt(this.db, sql); }
-  async batch(stmts) { const out = []; for (const s of stmts) out.push(s.stmt.reader ? await s.all() : await s.run()); return out; }
-}
+// The D1 stand-in is test/fake-d1.mjs: meta.changes as D1 counts it, the rows a trigger changes included.
 class FakeR2 { async put() { return {}; } async get() { return null; } async delete() {} async list() { return { objects: [], truncated: false }; } }
 
 let mxOk = true;

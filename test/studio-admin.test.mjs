@@ -19,6 +19,7 @@ register("data:text/javascript," + encodeURIComponent(`export async function res
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
+import { FakeD1 } from "./fake-d1.mjs";
 import { join, dirname } from "node:path";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -27,18 +28,7 @@ import { base32Decode, hotp, stepAt } from "../src/studio/totp.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-class Stmt {
-  constructor(db, sql) { this.stmt = db.prepare(sql); this.args = []; }
-  bind(...a) { this.args = a.map((v) => (v === undefined ? null : typeof v === "boolean" ? (v ? 1 : 0) : v)); return this; }
-  async run() { const r = this.stmt.run(...this.args); return { success: true, meta: { changes: Number(r.changes) } }; }
-  async first() { return this.stmt.get(...this.args) ?? null; }
-  async all() { return { results: this.stmt.all(...this.args) }; }
-}
-class FakeD1 {
-  constructor() { this.db = new DatabaseSync(":memory:"); }
-  prepare(sql) { return new Stmt(this.db, sql); }
-  async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; }
-}
+// The D1 stand-in is test/fake-d1.mjs: meta.changes as D1 counts it, the rows a trigger changes included.
 class FakeR2 {
   constructor() { this.m = new Map(); }
   async put(key, body, opts) {
@@ -565,6 +555,25 @@ test("small credit changes without a fresh code add up: past 100 in all, on any 
   // Changes from before the last code stopped counting are not added up.
   run(env, "UPDATE audit SET at = '2000-01-01T00:00:00.000Z' WHERE event = 'admin.credits'");
   assert.equal((await give(ana.id, 100)).status, 200);
+});
+
+test("no fresh code: Take credits away from an account with Kleo Creators program credits takes 20 once and asks for no code (D1 counts the trigger's row)", async () => {
+  const { env, owner, ana } = await setup();
+  const s = await mod.readAdminCookie("s3cret", owner.phone.admin.split("=")[1]);
+  const stale = `${owner.studio}; __Host-kleo_admin=${await mod.adminCookieValue("s3cret", { ...s, fresh: s.fresh - 6 * 60 })}`;
+  // A creator's balance: 130 credits, 110 of them from the program. users_program_credits_spent changes the row again
+  // on a decrease, so the balance's UPDATE reports 2 rows on D1.
+  run(env, "UPDATE users SET credits = 130, program_credits = 110 WHERE id = ?", ana.id);
+  const r = await call(env, `/api/admin/users/${ana.id}/credits`, { method: "POST", cookie: stale, body: { delta: -20, reason: "Sent too early" } });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.json.code, undefined, "no code asked");
+  assert.equal(r.json.credits, 110, "taken once");
+  assert.equal(env.DB.db.prepare("SELECT credits FROM users WHERE id = ?").get(ana.id).credits, 110);
+  assert.deepEqual(auditOf(env, ana.id, "admin.credits").map((a) => [a.delta, a.before, a.after]), [[-20, 130, 110]], "one row");
+  // An increase on the same account is judged the same way, and the window still adds them up: 20 + 80 = 100 goes.
+  assert.equal((await call(env, `/api/admin/users/${ana.id}/credits`, { method: "POST", cookie: stale, body: { delta: 80, reason: "Back with more" } })).json.credits, 190);
+  assert.equal((await call(env, `/api/admin/users/${ana.id}/credits`, { method: "POST", cookie: stale, body: { delta: -1, reason: "One more" } })).json.code, "fresh_code", "the 101st credit wants a code");
+  assert.equal(env.DB.db.prepare("SELECT credits FROM users WHERE id = ?").get(ana.id).credits, 190, "and moved nothing");
 });
 
 test("the console's page and API are never indexed or cached, load nothing from other sites, and stay hidden from others", async () => {
