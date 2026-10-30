@@ -2,13 +2,13 @@
  * The Instagram publisher (src/ig/, wrangler.ig.jsonc, the SQL of scripts/ig-schedule.mjs), inside one process: the
  * Worker's minute (tick) on a D1 look-alike (node:sqlite), an in-memory R2 holding hand-built MP4 files, and a scripted
  * graph.instagram.com and graph.facebook.com. Covers the entry's rules (New Zealand time and its clock changes, the
- * US-evening slot, hashtags,
- * bait, the 3-hour gap, the address), the MP4 reader against Meta's Reels specification, and the job: the cloud check
- * creates nothing, an unapproved post never goes out, the container 7 minutes early, polling at most 5 times, a second
- * container, publishing on the minute, a lost answer that never publishes twice, Meta's quota, a change after the "sì",
- * the account the token belongs to, two minutes running at once, the token renewed and sealed, and the token never in a
- * URL, a row, an event, a log line or an e-mail; and the Facebook Login road (a system user's EAA token): the same
- * flow on graph.facebook.com, the account by IG_USER_ID, nothing renewed, a refused token e-mailed once a day.
+ * US-evening slot, hashtags, bait, the 3-hour gap, the address), the MP4 reader against Meta's Reels specification,
+ * and the job: the cloud check creates nothing, an unapproved post never goes out, the container 7 minutes early,
+ * polling at most 5 times, a second container, publishing on the minute, a lost answer that never publishes twice,
+ * Meta's quota, a change after the "sì", the account the token belongs to, two minutes running at once, the token
+ * renewed and sealed, and the token never in a URL, a row, an event, a log line or an e-mail. Then the Facebook Login
+ * road (a system user's EAA token): the same flow on graph.facebook.com, the account by IG_USER_ID, nothing renewed,
+ * a refused token e-mailed once a day.
  * Run: node --test test/ig-publisher.test.mjs
  */
 import { register } from "node:module";
