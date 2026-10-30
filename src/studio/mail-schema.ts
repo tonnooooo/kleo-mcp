@@ -71,3 +71,14 @@ export const OUTREACH_COLUMNS: string[] = [
   "ALTER TABLE outreach_prospects ADD COLUMN converted_at TEXT",
   "ALTER TABLE outreach_log ADD COLUMN sender_id TEXT",
 ];
+
+/**
+ * Sign-in codes (src/studio/auth.ts, "Sign in with an e-mail code"): one row per address, holding only the code's HMAC,
+ * when it stops working, the wrong tries, and the sends of the current hour. migrations/0034_email_codes.sql holds the
+ * same SQL.
+ */
+export const EMAIL_CODE_SCHEMA: string[] = [
+  `CREATE TABLE IF NOT EXISTS studio_email_codes (
+    email TEXT PRIMARY KEY, code_hash TEXT NOT NULL, expires_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+    sent_at INTEGER NOT NULL, window_start INTEGER NOT NULL, window_sends INTEGER NOT NULL DEFAULT 1)`,
+];

@@ -1719,3 +1719,8 @@ img.fx-in { animation: fx-img-in .7s var(--ease-out) both; }
 .crb-x { flex: none; width: 40px; height: 40px; border-radius: 20px; display: grid; place-items: center; color: var(--ink-2); background: none; border: 0; cursor: pointer; }
 .crb-x:hover { background: var(--fill); color: var(--ink); }
 @media (max-width: 640px) { .crb-long { display: none; } .crb-go { justify-content: flex-start; } }
+/* Sign in with an e-mail code (30 October 2026, src/studio/auth.ts): the six digits big and spaced, the e-mail button
+   like the other ways in, the box that puts it first inside an app's browser. */
+.auth .btn.social-email { background: var(--card); color: var(--ink); border: 1px solid var(--sep); justify-content: center; gap: 10px; font-weight: 650; }
+.auth .code-first .btn { justify-content: center; gap: 8px; }
+.code-input { font-size: 26px; letter-spacing: .3em; text-align: center; font-variant-numeric: tabular-nums; }

@@ -5,6 +5,9 @@
  *   e-mail + password   studio_logins (provider 'password', subject = the e-mail), PBKDF2 (session.ts)
  *   Google, Microsoft,  studio_logins (provider 'google' | 'microsoft' | 'apple', subject = the provider's `sub`); each
  *   Apple               one is on only when its keys are set (SOCIAL below)
+ *   e-mail code         studio_logins (provider 'email', subject = the e-mail): a six-digit code mailed to the
+ *                       address, for the browsers inside Facebook, Instagram and TikTok where Google refuses to
+ *                       sign in (see "Sign in with an e-mail code" below)
  *   Kleo key            the "<userId>.<sig>" key the MCP sign-in page shows (src/accounts.ts verifyHandle): someone who
  *                       already uses Kleo in Claude or ChatGPT brings that account, credits included, and may then
  *                       add an e-mail and password to it
@@ -22,7 +25,7 @@ import type { Env } from "../env";
 import { createUserIfUnderCaps, getUser, getUserByEmail, audit, countAuditTodayForUser } from "../db.ts";
 import { emailConfigured, sendEmail } from "../email.ts";
 import { verifyHandle, ipFingerprint, verifyTurnstile, makeHandle, rotateKey } from "../accounts.ts";
-import { rid } from "../util.ts";
+import { hmacHex, rid } from "../util.ts";
 import { addLogin, getLogin, loginsOf, touchLogin } from "./store.ts";
 import { EMAIL_RE, checkPassword, hashPassword, makeSession, normalizeEmail, passwordProblem, readCookie, safeEqual, sessionCookie } from "./session.ts";
 import { StudioError, isAdmin } from "./generate.ts";
@@ -30,6 +33,7 @@ import { adminPasswordProblem } from "./admin-auth.ts";
 import { canonicalEmail, giftBlocker, giftCookie, mailDomainOk, type Visitor } from "../abuse.ts";
 import { recordIp } from "./ips.ts";
 import { arrivalOf, clearTouchCookie, recordAttribution, type Arrival } from "./attribution.ts";
+import { deliver, type Mail } from "./onboarding.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const int = (v: string | undefined, d: number): number => { const n = parseInt(v ?? "", 10); return Number.isFinite(n) ? n : d; };
@@ -520,7 +524,7 @@ async function untouched(env: StudioEnv, userId: string): Promise<boolean> {
  * mcpApi). Every sign-in, not only the password (the review's second pass): a claimant who had linked their own Google
  * or Microsoft account to it would otherwise sign straight back in. The verified person's sign-in is added right after.
  */
-async function evictClaimant(env: StudioEnv, userId: string, provider: SocialKey, used = false): Promise<void> {
+async function evictClaimant(env: StudioEnv, userId: string, provider: SocialKey | "email", used = false): Promise<void> {
   await env.DB.prepare("DELETE FROM studio_logins WHERE user_id = ?1 OR user_id IN (SELECT id FROM users WHERE merged_into = ?1)").bind(userId).run();
   await endAllSessions(env, userId);
   await rotateKey(asEnv(env), userId);
@@ -616,6 +620,139 @@ export async function socialCallback(env: StudioEnv, key: SocialKey, request: Re
   // The account exists now: the first-touch cookie has done its job.
   if (from.hadCookie) headers.push(["set-cookie", clearTouchCookie()]);
   return new Response(null, { status: 302, headers });
+}
+
+// ── Sign in with an e-mail code (30 October 2026) ──────────────────────────────────────────────────────────────────
+// Google refuses to sign in inside the browsers Facebook, Instagram, TikTok and Messenger open links in (inapp.js), so a
+// person who taps a Kleo link there had to move to Safari or Chrome first, and many stop on that step. A six-digit code
+// mailed to the address signs them in, or opens their account, without leaving the app.
+//
+// A code proves the inbox: the same thing Google's `email_verified` vouches for. So it follows E-MAIL TRUST above. The
+// address finds its own "email" sign-in, else the account where Google, Microsoft or Apple vouch for it. An account that
+// only CLAIMS it (a password sign-up, the account row, the same Gmail with dots or a "+tag") is handed to whoever holds
+// the inbox, and the claimant is evicted. Otherwise a new account opens, through the same caps and the one-gift rule.
+// An admin account (STUDIO_ADMINS) never opens this way: it signs in with its password, or with Google.
+//
+// Only the code's HMAC is stored, for ten minutes and five wrong tries, and a code works once. One address gets a code
+// at most every 30 seconds and five an hour; a throwaway mailbox gets none; the human check runs when it is configured.
+// STUDIO_EMAIL_CODE "on" turns it on; it needs the EMAIL binding (Cloudflare Email Sending, onboarding.ts deliver).
+
+const CODE_TTL_MS = 10 * 60_000;
+const CODE_TRIES = 5;
+const CODE_GAP_MS = 30_000;
+const CODE_SENDS_PER_HOUR = 5;
+const HOUR_MS = 3_600_000;
+
+export const emailCodeOn = (env: StudioEnv): boolean => (env.STUDIO_EMAIL_CODE ?? "").trim().toLowerCase() === "on" && !!env.EMAIL;
+
+const codeHash = (env: StudioEnv, email: string, code: string): Promise<string> => hmacHex(env.INTERNAL_SECRET, `kleo-email-code:${email}:${code}`);
+
+/** Six digits, each value as likely as the others: draws at or above 4,294,000,000 are thrown away, so the modulo is fair. */
+export function sixDigits(): string {
+  const n = new Uint32Array(1);
+  for (;;) {
+    crypto.getRandomValues(n);
+    if (n[0] < 4_294_000_000) return String(n[0] % 1_000_000).padStart(6, "0");
+  }
+}
+
+/** The e-mail that carries a code: the code is in the subject too, so the phone's notification shows it. */
+export const codeMail = (code: string): Mail => ({
+  key: "signin-code", subject: `${code} is your Kleo code`, preheader: "It works for 10 minutes.",
+  blocks: [
+    { p: "Here is your code to sign in to Kleo:" },
+    { h: code },
+    { p: "It works for 10 minutes. Type it on the page where you asked for it." },
+    { p: "If you didn't ask for it, ignore this e-mail. Nobody can sign in without the code." },
+  ],
+  footer: "You're getting this because someone asked to sign in to Kleo with this address.",
+});
+
+const ADMIN_CODE_SENTENCE = "This account signs in with its password, or with Google.";
+
+/** Mails a new code to the address. The same answer whether or not it has an account: the code opens one if not. */
+export async function startEmailCode(env: StudioEnv, body: { email?: string; turnstile?: string }, v: Visitor): Promise<void> {
+  if (!emailCodeOn(env)) throw new StudioError("Signing in with an e-mail code is not on. Use Google.", 503, "no_email_code");
+  const email = normalizeEmail(String(body.email ?? ""));
+  if (!EMAIL_RE.test(email)) throw new StudioError("That e-mail doesn't look right.");
+  if (!(await verifyTurnstile(asEnv(env), String(body.turnstile ?? ""), v.ip))) throw new StudioError("Please complete the check and try again.", 400, "turnstile");
+  if (!(await mailDomainOk(email.slice(email.lastIndexOf("@") + 1)))) {
+    throw new StudioError("Please use an e-mail address you keep: this one can't receive mail, or it is a throwaway mailbox.", 400, "email_domain");
+  }
+  const now = Date.now();
+  const row = await env.DB.prepare("SELECT sent_at, window_start, window_sends FROM studio_email_codes WHERE email = ?").bind(email)
+    .first<{ sent_at: number; window_start: number; window_sends: number }>();
+  if (row && now - Number(row.sent_at) < CODE_GAP_MS) throw new StudioError("A code is on its way. Wait half a minute before asking for another one.", 429, "code_wait");
+  if (row && now - Number(row.window_start) < HOUR_MS && Number(row.window_sends) >= CODE_SENDS_PER_HOUR) {
+    throw new StudioError("Too many codes for this address. Try again in an hour.", 429, "code_hour");
+  }
+  const code = sixDigits();
+  await env.DB.prepare(`INSERT INTO studio_email_codes (email, code_hash, expires_at, attempts, sent_at, window_start, window_sends)
+      VALUES (?1, ?2, ?3, 0, ?4, ?4, 1)
+      ON CONFLICT(email) DO UPDATE SET code_hash = ?2, expires_at = ?3, attempts = 0, sent_at = ?4,
+        window_sends = CASE WHEN ?4 - window_start >= ${HOUR_MS} THEN 1 ELSE window_sends + 1 END,
+        window_start = CASE WHEN ?4 - window_start >= ${HOUR_MS} THEN ?4 ELSE window_start END`)
+    .bind(email, await codeHash(env, email, code), now + CODE_TTL_MS, now).run();
+  const sent = await deliver(env, email, codeMail(code), null, "signin-code");
+  await audit(asEnv(env), null, null, "studio.email_code_sent", { ok: sent.ok, domain: email.slice(email.lastIndexOf("@") + 1), ...(sent.ok ? {} : { error: sent.code }) });
+  if (!sent.ok) throw new StudioError("The code could not be sent. Try again in a minute, or use Google.", 503, "code_not_sent");
+}
+
+/**
+ * Checks a code and answers the account it opens: found, handed over to the inbox's owner, or new (`gifted` is the new
+ * account's gift, null for an account that already existed). The caller sets the session.
+ */
+export async function verifyEmailCode(env: StudioEnv, body: { email?: string; code?: string }, v: Visitor, from: Arrival | null = null): Promise<{ userId: string; gifted: number | null; handedOver: boolean }> {
+  if (!emailCodeOn(env)) throw new StudioError("Signing in with an e-mail code is not on. Use Google.", 503, "no_email_code");
+  const email = normalizeEmail(String(body.email ?? ""));
+  const code = String(body.code ?? "").replace(/\D/g, "");
+  const wrong = () => new StudioError("That code isn't right. Check the e-mail and try again.", 400, "wrong_code");
+  const expired = () => new StudioError("This code no longer works. Ask for a new one.", 400, "code_expired");
+  if (!EMAIL_RE.test(email) || code.length !== 6) throw wrong();
+  const row = await env.DB.prepare("SELECT code_hash, expires_at, attempts FROM studio_email_codes WHERE email = ?").bind(email)
+    .first<{ code_hash: string; expires_at: number; attempts: number }>();
+  if (!row?.code_hash || Number(row.expires_at) <= Date.now()) throw expired();
+  if (Number(row.attempts) >= CODE_TRIES) throw new StudioError("Too many wrong codes. Ask for a new one.", 429, "code_tries");
+  const hash = await codeHash(env, email, code);
+  if (!safeEqual(hash, row.code_hash)) {
+    await env.DB.prepare("UPDATE studio_email_codes SET attempts = attempts + 1 WHERE email = ?").bind(email).run();
+    throw wrong();
+  }
+  // A code works once: whoever spends it first signs in. The row stays, so the hour's send count stays too.
+  const spent = await env.DB.prepare("UPDATE studio_email_codes SET code_hash = '', expires_at = 0 WHERE email = ? AND code_hash = ?").bind(email, hash).run();
+  if ((spent.meta.changes ?? 0) !== 1) throw expired();
+
+  const refuseAdmin = async (id: string): Promise<StudioError> => {
+    await audit(asEnv(env), id, null, "studio.email_code_refused", { admin: true });
+    return new StudioError(ADMIN_CODE_SENTENCE, 403, "admin_code");
+  };
+  let userId: string | null = (await getLogin(env, "email", email))?.user_id
+    ?? (await env.DB.prepare(`SELECT user_id FROM studio_logins WHERE provider IN (${SOCIAL_SQL}) AND email = ? LIMIT 1`).bind(email).first<{ user_id: string }>())?.user_id
+    ?? null;
+  let handedOver = false;
+  if (!userId) {
+    const claimant = (await getLogin(env, "password", email))?.user_id ?? (await getUserByEmail(asEnv(env), email))?.id
+      ?? (await env.DB.prepare("SELECT id FROM users WHERE email_canon = ? LIMIT 1").bind(canonicalEmail(email)).first<{ id: string }>())?.id ?? null;
+    if (claimant) {
+      if (isAdmin(env, claimant)) throw await refuseAdmin(claimant);
+      if (await accountMerged(env, claimant)) throw new StudioError(MERGED_SENTENCE, 403, "merged");
+      await evictClaimant(env, claimant, "email", !(await untouched(env, claimant)));
+      userId = claimant;
+      handedOver = true;
+    }
+  }
+  if (userId && isAdmin(env, userId)) throw await refuseAdmin(userId);
+  let gifted: number | null = null;
+  if (!userId) {
+    const made = await newAccount(env, email, v, from);
+    userId = made.id;
+    gifted = made.gifted;
+  }
+  if (await accountMerged(env, userId)) throw new StudioError(MERGED_SENTENCE, 403, "merged");
+  await addLogin(env, { provider: "email", subject: email, userId, email, secret: null });
+  await touchLogin(env, "email", email);
+  await audit(asEnv(env), userId, null, "studio.email_code_signin", { ...(gifted !== null ? { created: true } : {}), ...(handedOver ? { handed_over: true } : {}) });
+  return { userId, gifted, handedOver };
 }
 
 function decodeJwt(t: string): Record<string, any> | null {

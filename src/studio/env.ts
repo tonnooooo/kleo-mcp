@@ -105,6 +105,8 @@ export interface StudioEnv {
   STUDIO_FREE_RESOLUTIONS?: string;
   /** How new accounts are opened once Google is set: "google" (default, Google only) or "all" (e-mail too). */
   STUDIO_SIGNUP?: string;
+  /** "on": a six-digit code mailed to the address signs in or opens an account (auth.ts); needs the EMAIL binding. */
+  STUDIO_EMAIL_CODE?: string;
   /** What the never-paid accounts opened from ONE address may spend together in a UTC day, in dollars (default 2). */
   STUDIO_FREE_PER_ADDRESS_DAY_USD?: string;
   /** One gift per person (src/abuse.ts): see src/env.ts. */

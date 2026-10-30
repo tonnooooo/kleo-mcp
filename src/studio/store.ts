@@ -3,7 +3,8 @@
  * are created here on first use (CREATE … IF NOT EXISTS, once per isolate), the same way src/schema.ts creates the
  * server's. migrations/0017_studio.sql holds the same statements for the record.
  *
- *   studio_logins       how a person signs in: provider 'password' (subject = e-mail) or 'google' (subject = sub)
+ *   studio_logins       how a person signs in: provider 'password' or 'email' (subject = e-mail), or 'google' (subject = sub)
+ *   studio_email_codes  a sign-in code mailed to an address: its HMAC, expiry, tries and sends (auth.ts, mail-schema.ts)
  *   studio_chats        one conversation
  *   studio_messages     one line of it (role user|assistant; `data` holds attachments, a proposal or a clip id)
  *   studio_uploads      a picture a person attached
@@ -18,7 +19,7 @@ import type { StudioEnv } from "./env.ts";
 import { PROVIDER_STATUS_SCHEMA } from "./providers.ts";
 import { KEY_OVERRIDES_SCHEMA } from "../key-overrides.ts";
 import { ATTRIBUTION_SCHEMA } from "./attribution.ts";
-import { ONBOARDING_SCHEMA, OUTREACH_COLUMNS, OUTREACH_SCHEMA, RECEIPTS_SCHEMA } from "./mail-schema.ts";
+import { EMAIL_CODE_SCHEMA, ONBOARDING_SCHEMA, OUTREACH_COLUMNS, OUTREACH_SCHEMA, RECEIPTS_SCHEMA } from "./mail-schema.ts";
 import { CREATORS_COLUMNS, CREATORS_SCHEMA, CREATORS_TRIGGER } from "./creators-schema.ts";
 
 const NOW = "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))";
@@ -60,6 +61,8 @@ export const STUDIO_SCHEMA: string[] = [
   ...RECEIPTS_SCHEMA,
   // Kleo Creators (src/studio/creators.ts, 28 October 2026).
   ...CREATORS_SCHEMA,
+  // Sign-in codes mailed to an address (src/studio/auth.ts, 30 October 2026).
+  ...EMAIL_CODE_SCHEMA,
 ];
 
 /**
