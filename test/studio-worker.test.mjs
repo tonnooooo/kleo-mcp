@@ -8,6 +8,7 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
+import { FakeD1 } from "./fake-d1.mjs";
 import { join, dirname } from "node:path";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -15,18 +16,7 @@ import * as esbuild from "esbuild";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-class Stmt {
-  constructor(db, sql) { this.stmt = db.prepare(sql); this.args = []; }
-  bind(...a) { this.args = a.map((v) => (v === undefined ? null : typeof v === "boolean" ? (v ? 1 : 0) : v)); return this; }
-  async run() { const r = this.stmt.run(...this.args); return { success: true, meta: { changes: Number(r.changes) } }; }
-  async first() { return this.stmt.get(...this.args) ?? null; }
-  async all() { return { results: this.stmt.all(...this.args) }; }
-}
-class FakeD1 {
-  constructor() { this.db = new DatabaseSync(":memory:"); }
-  prepare(sql) { return new Stmt(this.db, sql); }
-  async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; }
-}
+// The D1 stand-in is test/fake-d1.mjs: meta.changes as D1 counts it, the rows a trigger changes included.
 class FakeR2 {
   constructor() { this.m = new Map(); }
   async put(key, body, opts) {
@@ -244,6 +234,35 @@ test("free account: a locked model is refused before any money moves; the free o
     assert.equal((await call(env, "/api/generations", { cookie })).json.generations.length, 0);
     assert.equal((await call(env, shared.pathname + shared.search)).status, 404, "the shared link dies with it");
     assert.equal(credits(env, me.id), 3, "deleting never moves credits");
+  } finally { p.restore(); }
+});
+
+test("an account with Kleo Creators program credits is charged once and gets its clip (D1 counts the trigger's row too)", async () => {
+  const env = newEnv();
+  const cookie = await signUp(env);
+  const me = (await call(env, "/api/me", { cookie })).json;
+  // A creator's balance: 25 credits, 20 of them from the program. On every spend users_program_credits_spent takes the
+  // credits off the program part too, so the debit's UPDATE changes the row twice and D1 reports 2 rows.
+  env.DB.db.prepare("UPDATE users SET credits = 25, program_credits = 20 WHERE id = ?").run(me.id);
+  const p = fakeProvider((u) => {
+    if (u.endsWith("/v1/task/submit")) return ok({ id: "task_1", status: "queued" });
+    if (u.endsWith("/v1/task/task_1")) return ok({ id: "task_1", status: "completed", outputs: ["https://cdn.example/out.mp4"], usage: { type: "tokens", total_tokens: 100 } });
+    if (u === "https://cdn.example/out.mp4") return new Response(new Uint8Array(5000).fill(7), { status: 200, headers: { "content-type": "video/mp4" } });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { prompt: "a fox in the snow", settings: { model: "seedance-2.0-fast", resolution: "480p", duration: 5, aspect: "9:16" } } });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.credits, 23, "charged once");
+    assert.deepEqual({ ...env.DB.db.prepare("SELECT credits, program_credits FROM users WHERE id = ?").get(me.id) }, { credits: 23, program_credits: 18 });
+    const debits = env.DB.db.prepare("SELECT detail FROM audit WHERE user_id = ? AND event = 'credits.debit'").all(me.id).map((a) => JSON.parse(a.detail));
+    assert.deepEqual(debits.map((d) => [d.amount, d.balance]), [[2, 23]], "one debit row, with the balance after it");
+    assert.equal(p.sent.filter((s) => s.url.endsWith("/v1/task/submit")).length, 1, "ordered once");
+    old(env);
+    const done = await call(env, `/api/generations/${r.json.generation.id}`, { cookie });
+    assert.equal(done.json.generation.status, "done", done.text);
+    assert.equal(done.json.generation.video, `/media/${r.json.generation.id}.mp4`, "delivered");
+    assert.equal(credits(env, me.id), 23);
   } finally { p.restore(); }
 });
 

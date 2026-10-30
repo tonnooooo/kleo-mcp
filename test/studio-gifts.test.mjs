@@ -20,6 +20,7 @@ register("data:text/javascript," + encodeURIComponent(`export async function res
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
+import { FakeD1 } from "./fake-d1.mjs";
 import { join, dirname } from "node:path";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -28,18 +29,7 @@ import { base32Decode, hotp, stepAt } from "../src/studio/totp.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-class Stmt {
-  constructor(db, sql) { this.stmt = db.prepare(sql); this.sql = sql; this.args = []; }
-  bind(...a) { this.args = a.map((v) => (v === undefined ? null : typeof v === "boolean" ? (v ? 1 : 0) : v)); return this; }
-  async run() { const r = this.stmt.run(...this.args); return { success: true, meta: { changes: Number(r.changes) } }; }
-  async first() { return this.stmt.get(...this.args) ?? null; }
-  async all() { return { results: this.stmt.all(...this.args) }; }
-}
-class FakeD1 {
-  constructor() { this.db = new DatabaseSync(":memory:"); }
-  prepare(sql) { return new Stmt(this.db, sql); }
-  async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; }
-}
+// The D1 stand-in is test/fake-d1.mjs: meta.changes as D1 counts it, the rows a trigger changes included.
 {
   const real = globalThis.fetch;
   globalThis.fetch = async (url, init) => {

@@ -6,6 +6,7 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
+import { FakeD1 } from "./fake-d1.mjs";
 import { join, dirname } from "node:path";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -25,17 +26,11 @@ before(async () => {
 });
 
 /* ------------------------------------------------------------------ D1 look-alike */
-class Stmt {
-  constructor(db, sql) { this.db = db; this.sql = sql; this.args = []; }
-  bind(...a) { this.args = a.map((v) => (v === undefined ? null : typeof v === "boolean" ? (v ? 1 : 0) : v)); return this; }
-  async run() { const r = this.db.prepare(this.sql).run(...this.args); return { success: true, meta: { changes: Number(r.changes) } }; }
-  async first() { return this.db.prepare(this.sql).get(...this.args) ?? null; }
-  async all() { return { results: this.db.prepare(this.sql).all(...this.args) }; }
-}
+// The D1 stand-in is test/fake-d1.mjs: meta.changes as D1 counts it, the rows a trigger changes included.
 function fakeDB() {
-  const db = new DatabaseSync(":memory:");
-  for (const f of readdirSync(join(ROOT, "migrations")).sort()) db.exec(readFileSync(join(ROOT, "migrations", f), "utf8"));
-  return { db, prepare: (sql) => new Stmt(db, sql), batch: async (sts) => { const out = []; for (const s of sts) out.push(await s.run()); return out; } };
+  const d1 = new FakeD1();
+  for (const f of readdirSync(join(ROOT, "migrations")).sort()) d1.db.exec(readFileSync(join(ROOT, "migrations", f), "utf8"));
+  return d1;
 }
 const newEnv = (extra = {}) => ({ DB: fakeDB(), INTERNAL_SECRET: "s", STRIPE_WEBHOOK_SECRET: SECRET,
   STRIPE_LINK_5: "https://buy.stripe.com/aaa", STRIPE_LINK_15: "https://buy.stripe.com/bbb", STRIPE_LINK_40: "https://buy.stripe.com/ccc", ...extra });

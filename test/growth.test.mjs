@@ -8,6 +8,7 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
+import { FakeD1 } from "./fake-d1.mjs";
 import { join, dirname } from "node:path";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -16,27 +17,7 @@ import { createHmac } from "node:crypto";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-class Stmt {
-  constructor(db, sql) { this.stmt = db.prepare(sql); this.args = []; }
-  bind(...a) { this.args = a.map((v) => (v === undefined ? null : typeof v === "boolean" ? (v ? 1 : 0) : v)); return this; }
-  async run() { const r = this.stmt.run(...this.args); return { success: true, meta: { changes: Number(r.changes) } }; }
-  async first() { return this.stmt.get(...this.args) ?? null; }
-  async all() { return { results: this.stmt.all(...this.args) }; }
-}
-class FakeD1 {
-  constructor() { this.db = new DatabaseSync(":memory:"); }
-  prepare(sql) { return new Stmt(this.db, sql); }
-  // A D1 batch is a transaction: all or nothing, and nothing else runs in between (synchronous on purpose, so two
-  // batches started together cannot interleave, exactly as D1 serialises them).
-  async batch(stmts) {
-    this.db.exec("BEGIN");
-    try {
-      const out = stmts.map((s) => ({ success: true, meta: { changes: Number(s.stmt.run(...s.args).changes) } }));
-      this.db.exec("COMMIT");
-      return out;
-    } catch (e) { this.db.exec("ROLLBACK"); throw e; }
-  }
-}
+// The D1 stand-in is test/fake-d1.mjs: meta.changes as D1 counts it, the rows a trigger changes included.
 class FakeKV {
   constructor() { this.m = new Map(); }
   async put(k, v, o) { this.m.set(k, { v, o }); }
@@ -64,7 +45,7 @@ before(async () => {
 
 async function newEnv(extra = {}) {
   const env = {
-    DB: new FakeD1(), OAUTH_KV: new FakeKV(), RENDER_BACKEND: "manual", PUBLIC_URL: "http://kleo.test", INTERNAL_SECRET: "s3cret",
+    DB: new FakeD1({ atomic: true }), OAUTH_KV: new FakeKV(), RENDER_BACKEND: "manual", PUBLIC_URL: "http://kleo.test", INTERNAL_SECRET: "s3cret",
     MAX_CONCURRENT_GPUS: "5", MAX_JOBS_PER_USER: "3", MAX_JOBS_PER_DAY: "500", JOB_TIMEOUT_MIN: "120", FREE_CREDITS: "5", RESULT_TTL_DAYS: "7",
     STORYBOARD_FIXTURE: "example", ...extra,
   };
