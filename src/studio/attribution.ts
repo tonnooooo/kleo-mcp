@@ -28,7 +28,7 @@ export const SOURCE_COOKIE = "__Host-kleo_src";
 export const SOURCE_DAYS = 7;
 export const SHORT_LINK_PATH = /^\/r\/([A-Za-z0-9-]{1,40})\/?$/;
 /** The networks a short link can be made for. */
-export const LINK_CHANNELS = ["instagram", "tiktok", "x", "youtube", "dm", "other"] as const;
+export const LINK_CHANNELS = ["instagram", "tiktok", "x", "youtube", "facebook", "dm", "other"] as const;
 export type LinkChannel = (typeof LINK_CHANNELS)[number];
 export const CODE_RE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 

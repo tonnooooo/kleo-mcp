@@ -764,12 +764,14 @@ function linkPlace(l) {
     tiktok: "TikTok: Edit profile, then Website. TikTok shows that field only on a Business account or from 1,000 followers.",
     x: "X: Edit profile, then Website.",
     youtube: "YouTube: Customise channel, then Links. YouTube allows links only on a verified channel.",
+    facebook: "Facebook: the Page's action button, or Edit details, then Website.",
   }[l.channel] || "Paste it where your profile takes a link.";
   return {
     instagram: "Captions can't be tapped. Use it in a story link sticker, in DMs, or in the bio while this post takes off.",
     tiktok: "Captions can't be tapped. Use it in the bio while this post takes off, or in DMs.",
     youtube: "Shorts descriptions can't be tapped. Use it in the description of a long video.",
     x: "A link opens with a tap in the post and in replies.",
+    facebook: "Put it in the first comment: a link opens with a tap there, and posts with a link in the text reach fewer people.",
   }[l.channel] || "Paste it wherever a link opens with a tap.";
 }
 /** What the page counts and how, in plain words (the owner: "salva questo nella pagina admin"). */
@@ -782,7 +784,7 @@ const HOW_SOURCES = [
   "Accounts opened before tracking began show as Unknown (before tracking). Accounts opened from an assistant, outside the app, show as Opened in an assistant.",
   "Each short link opens its page with utm tags, so the source stays in the address even when someone moves from Instagram's browser to Safari or Chrome.",
 ];
-const LINK_NETS = [["instagram", "Instagram"], ["tiktok", "TikTok"], ["x", "X"], ["youtube", "YouTube"], ["dm", "Direct messages"], ["other", "Other"]];
+const LINK_NETS = [["instagram", "Instagram"], ["tiktok", "TikTok"], ["x", "X"], ["youtube", "YouTube"], ["facebook", "Facebook"], ["dm", "Direct messages"], ["other", "Other"]];
 /** Money in each currency, EUR first: "€40.00 + $12.00". */
 function moneyOf(paid) {
   const e = Object.entries(paid || {}).filter(([, c]) => c > 0).sort(([a], [b]) => (a === "eur" ? -1 : b === "eur" ? 1 : a.localeCompare(b)));
@@ -1681,7 +1683,7 @@ function demoSources(p, q, b) {
   if (p === "/api/admin/sources/links") {
     if (!LINK_NETS.some(([k]) => k === b.channel)) throw new AdminError("Pick the network the link is for.", 400, "channel");
     const slug = String(b.label || "").normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24);
-    const code = String(b.code || "").toLowerCase() || `${{ instagram: "ig", tiktok: "tt", x: "x", youtube: "yt", dm: "dm", other: "go" }[b.channel]}-${slug || "link"}`;
+    const code = String(b.code || "").toLowerCase() || `${{ instagram: "ig", tiktok: "tt", x: "x", youtube: "yt", facebook: "fb", dm: "dm", other: "go" }[b.channel]}-${slug || "link"}`;
     if (links.some((l) => l.code === code)) throw new AdminError("That code is taken. Pick another one.", 409, "code_taken");
     const l = { code, channel: b.channel, label: b.label, target: b.target || "/", created_at: new Date().toISOString(), archived_at: null, clicks: 0 };
     links.unshift(l);

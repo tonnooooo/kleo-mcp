@@ -221,6 +221,18 @@ test("a first page load gets the cookie and is counted once; signed-in, private,
   assert.equal(sourceCookie((await call(env, "/api/config")).res), null);
 });
 
+test("short links: Facebook is a network of its own, with fb- codes and facebook utm tags", async () => {
+  const { env, owner } = await setup();
+  const made = await call(env, "/api/admin/sources/links", { method: "POST", cookie: owner.admin, body: { channel: "facebook", label: "Facebook bio", target: "/video" } });
+  assert.equal(made.status, 200, made.text);
+  assert.equal(made.json.link.code, "fb-facebook-bio");
+  const tap = await visit(env, "/r/fb-facebook-bio", { headers: { referer: "https://m.facebook.com/", "sec-fetch-dest": "document" } });
+  assert.equal(tap.status, 302);
+  assert.equal(tap.headers.get("location"), "/video?utm_source=facebook&utm_medium=social&utm_campaign=fb-facebook-bio");
+  const t = mod.readTouch(new Request("https://app.kleo.test/", { headers: { cookie: sourceCookie(tap) } }));
+  assert.deepEqual([t.channel, t.link], ["facebook", "fb-facebook-bio"]);
+});
+
 test("short links: made in the console, counted per day, tagged, and opening their page with utm tags", async () => {
   const { env, owner } = await setup();
   const make = (b) => call(env, "/api/admin/sources/links", { method: "POST", cookie: owner.admin, body: b });
@@ -232,7 +244,7 @@ test("short links: made in the console, counted per day, tagged, and opening the
   assert.equal((await make({ channel: "instagram", label: "Michael Scott quinceañera" })).json.link.code, "ig-michael-scott-quinceaner");
   assert.equal((await make({ channel: "instagram", label: "Instagram bio", code: "ig-bio" })).json.link.code, "ig-bio");
   assert.equal((await make({ channel: "instagram", label: "Again", code: "ig-bio" })).json.code, "code_taken");
-  assert.equal((await make({ channel: "facebook", label: "Nope" })).json.code, "channel");
+  assert.equal((await make({ channel: "myspace", label: "Nope" })).json.code, "channel");
   assert.equal((await make({ channel: "x", label: "" })).json.code, "label");
   assert.equal((await make({ channel: "x", label: "Bad code", code: "Hello World" })).json.code, "code");
   for (const target of ["https://evil.example/", "//evil.example/x", "/r/ig-bio", "/api/me", "/admin", "javascript:alert(1)", "/a\\b"]) {

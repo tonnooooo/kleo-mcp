@@ -569,7 +569,7 @@ async function sources(env: StudioEnv, url: URL): Promise<Record<string, unknown
   };
 }
 
-const LINK_PREFIX: Record<LinkChannel, string> = { instagram: "ig", tiktok: "tt", x: "x", youtube: "yt", dm: "dm", other: "go" };
+const LINK_PREFIX: Record<LinkChannel, string> = { instagram: "ig", tiktok: "tt", x: "x", youtube: "yt", facebook: "fb", dm: "dm", other: "go" };
 /** A label in plain letters and dashes, for a code: "Lupin Paris Fire Dance" is "lupin-paris-fire-dance". */
 export const slugOf = (label: string): string =>
   label.normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24).replace(/-+$/, "");
