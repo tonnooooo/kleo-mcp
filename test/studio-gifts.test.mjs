@@ -467,7 +467,7 @@ test("the pages keep the owner's rules and the review's: his words, the card wai
   assert.match(admin, /const giftStale = \(g\) => g\.mail_status === "sending" && \(!g\.mailed_at \|\| Date\.now\(\) - toDate\(g\.mailed_at\)\.getTime\(\) > 5 \* 60e3\);/);
   // The button: waiting, never sent, or a stale send (giftUnsent), on an account that still exists.
   assert.match(admin, /const giftUnsent = \(g\) => g\.mail_status === "waiting" \|\| !g\.mail_status \|\| giftStale\(g\);/);
-  assert.match(admin, /const canSend = !u\.deleted && g\.mail && giftUnsent\(g\);/);
+  assert.match(admin, /const canSend = !u\.deleted && !g\.cancelled_at && g\.mail && giftUnsent\(g\);/);
 });
 
 // ── The follow-up (after PR #157 went live): errors after the commit, stale sends, the claim, D1 errors after a send ──
@@ -660,7 +660,7 @@ test("3: on a deleted account a gift e-mail still to go reads 'No e-mail: the ac
   const admin = readFileSync(join(ROOT, "studio-web", "admin.js"), "utf8");
   assert.match(admin, /const giftUnsent = \(g\) => g\.mail_status === "waiting" \|\| !g\.mail_status \|\| giftStale\(g\);/);
   assert.match(admin, /if \(u\.deleted && giftUnsent\(g\)\) return "No e-mail: the account was deleted";/);
-  assert.match(admin, /const canSend = !u\.deleted && g\.mail && giftUnsent\(g\);/);
+  assert.match(admin, /const canSend = !u\.deleted && !g\.cancelled_at && g\.mail && giftUnsent\(g\);/);
   // A stale send on a deleted account may have gone out: its own line comes first and never claims "No e-mail".
   const stale = admin.indexOf('if (u.deleted && giftStale(g)) return "No more e-mail: the account was deleted (an earlier send may have gone out)";');
   assert.ok(stale > 0, "the deleted account's stale-send line");
