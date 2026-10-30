@@ -511,7 +511,7 @@ const EVENTS = {
   "studio.address_blocked": "Stopped: address blocked", "studio.free_address": "Stopped: free allowance of the address", "studio.wan_retry": "Made again on Wan 3.0",
   "admin.credits": "Admin changed credits", "admin.block": "Admin closed the account", "admin.unblock": "Admin reopened the account", "admin.address_block": "Admin blocked the address",
   "admin.address_unblock": "Admin freed the address", "admin.key_reset": "Admin made a new Kleo key", "admin.signout": "Admin signed it out everywhere", "admin.delete": "Admin deleted the account",
-  "admin.ip_lookup": "Admin looked up an address",
+  "admin.ip_lookup": "Admin looked up an address", "admin.gift": "Admin sent a gift", "gift.seen": "Saw the gift pop-up",
 };
 const LOOKUP_EVENTS = new Set(["user.created", "pay.session", "studio.key_signin", "oauth.granted", "studio.reset_done", "studio.login_linked", "credits.purchased"]);
 const TIMELINE_FILTERS = [["all", "All"], ["money", "Money"], ["make", "Creations"], ["account", "Account"], ["admin", "Admin"]];
@@ -551,11 +551,57 @@ async function userPage(main, id, opts = {}) {
     run: (v) => { const n = Math.abs(Math.trunc(Number(v.amount))); if (!n) throw new Error("Type a number of credits."); return post("credits", { delta: sign * n, reason: v.reason }); },
     done: sign > 0 ? "Credits added" : "Credits taken away",
   });
+  // A gift from the Kleo team (src/studio/gifts.ts): the credits go in at once like Add credits (over 100, or past 100
+  // in all, a new code is asked for), the app shows a pop-up once, and the e-mail goes when the switch is on.
+  function giftSheet() {
+    const st = { email: !!u.email };
+    const field = (label, el) => h("label", { class: "adm-field" }, h("span", {}, label), el);
+    const amountIn = h("input", { class: "input", type: "number", inputmode: "numeric", min: "1", step: "1", value: "20", "aria-label": "Credits" });
+    const reasonIn = h("input", { class: "input", placeholder: "Why you are doing this", autocomplete: "off", "aria-label": "Reason" });
+    const messageIn = h("textarea", { class: "input adm-gift-msg", rows: "3", maxlength: "280", placeholder: "A line from you, shown in the pop-up and the e-mail", "aria-label": "Message" });
+    const knob = h("span", { class: "switch" + (st.email ? " on" : "") });
+    const mailRow = h("button", { type: "button", class: "toggle-row adm-gift-mail", role: "switch", "aria-checked": String(st.email), disabled: u.email ? null : true,
+      onclick: () => { st.email = !st.email; knob.classList.toggle("on", st.email); mailRow.setAttribute("aria-checked", String(st.email)); } },
+      h("span", { class: "adm-gift-mail-t" }, h("b", {}, "E-mail them"), h("span", {}, u.email || "No e-mail address on record")), knob);
+    const seeText = h("span", {}), seeNote = h("span", { class: "adm-gift-note" });
+    const send = h("button", { class: "btn btn-primary", type: "button" }, icon("gift", 17), "Send gift");
+    const credits = () => Math.trunc(Number(amountIn.value));
+    const draw = () => {
+      const n = credits() > 0 ? credits() : 0;
+      seeText.textContent = `${n} free credit${n === 1 ? " is" : "s are"} already in your account. Thanks for creating with Kleo, enjoy ${n === 1 ? "it" : "them"}!`;
+      seeNote.textContent = messageIn.value.trim();
+      seeNote.hidden = !messageIn.value.trim();
+      send.disabled = !(credits() >= 1) || reasonIn.value.trim().length < 3;
+    };
+    for (const el of [amountIn, reasonIn, messageIn]) el.addEventListener("input", draw);
+    send.addEventListener("click", async () => {
+      if (send.disabled) return;
+      const n = credits();
+      send.disabled = true;
+      try {
+        const r = await postFresh(`/api/admin/users/${id}/gift`, { credits: n, reason: reasonIn.value.trim(), message: messageIn.value.trim(), email: st.email });
+        K.closeLayer();
+        const m = r.gift?.mail;
+        if (!m) K.toast(`Gift sent: ${count(n, "credit")}. They see it the next time they open Kleo.`);
+        else if (m.status === "sent") K.toast(`Gift sent, and the e-mail went to ${m.to}`);
+        else K.toast(`Gift sent: ${count(n, "credit")} are in. No e-mail: ${m.error || "it couldn't be sent"}`, true);
+        reload();
+      } catch (e) { draw(); oops(e); }
+    });
+    draw();
+    K.sheet("Gift credits", `${who(u)} has ${u.admin ? "unlimited" : num(u.credits)} credits. The gift goes in at once, and Kleo shows them a pop-up the next time they open the app.`,
+      h("div", { class: "adm-sheet-body adm-gift" },
+        field("Credits", amountIn), field("Reason, kept in the audit log", reasonIn), field("Message, optional", messageIn), mailRow,
+        h("div", { class: "adm-gift-see" }, h("span", { class: "adm-gift-see-l" }, "In the app they see"), h("b", {}, "A gift from the Kleo team"), seeText, seeNote),
+        h("div", { class: "adm-actions" }, send)));
+    setTimeout(() => amountIn.focus(), 60);
+  }
   const blocked = !!u.blocked_at;
   const addrBlocked = (d.address.blocks || []).some((b) => b.ip_hash === d.address.hash);
   const actions = h("div", { class: "adm-actions" },
     h("button", { class: "btn btn-quiet", onclick: () => credit(1) }, icon("plus", 17), "Add credits"),
     h("button", { class: "btn btn-quiet", onclick: () => credit(-1) }, icon("star", 17), "Take credits away"),
+    u.deleted || u.merged_into || blocked ? null : h("button", { class: "btn btn-quiet", onclick: giftSheet }, icon("gift", 17), "Gift credits"),
     u.admin ? null : h("button", { class: "btn btn-quiet", onclick: () => act(blocked
       ? { title: "Reopen this account?", text: "It can sign in again. Its Kleo key is the new one made when it was closed.", ok: "Reopen", ic: "check", run: (v) => post("block", { on: false, reason: v.reason }), done: "Account reopened" }
       : { title: "Close this account?", text: "It is signed out everywhere at once and can't sign in again. Its Kleo key is renewed, so assistants connected with it stop too.", ok: "Close account", danger: true, ic: "lock", run: (v) => post("block", { on: true, reason: v.reason }), done: "Account closed" }) },
@@ -607,6 +653,12 @@ async function userPage(main, id, opts = {}) {
   ]));
 
   const payments = card("Payments", d.payments?.length ? null : "No payments.", d.payments?.length ? h("div", { class: "list" }, d.payments.map(payRow)) : null);
+  // The gifts from the Kleo team: what each said, its e-mail, and whether the app showed it (src/studio/gifts.ts).
+  const giftMail = (g) => (!g.mail ? "No e-mail" : g.mail_status === "sent" ? `E-mail sent to ${g.mail_to}` : g.mail_status === "skipped" ? `No e-mail: ${g.mail_error}`
+    : g.mail_status === "failed" ? `E-mail failed: ${g.mail_error}` : "E-mail not sent yet");
+  const gifts = d.gifts?.length ? card("Gifts", "Credits the Kleo team gave, and whether the pop-up was seen.", h("div", { class: "list" }, d.gifts.map((g) => h("div", { class: "row" }, icon("gift", 19),
+    h("div", { class: "lbl" }, h("b", {}, count(g.credits, "credit"), g.seen_at ? pill(`Seen ${day(g.seen_at)}`, "ok") : pill("Not seen yet", "")),
+      h("span", {}, [stamp(g.created_at), g.reason, g.message ? `"${g.message}"` : null, giftMail(g)].filter(Boolean).join(" · "))))))) : null;
 
   const gens = d.generations || [];
   let shown = 12;
@@ -666,7 +718,7 @@ async function userPage(main, id, opts = {}) {
   }
 
   K.fill(body, hero, stats, card("Actions", "Every action asks for a reason and is written to the audit log with your id.", actions),
-    h("div", { class: "adm-two" }, profile, h("div", { class: "adm-stack" }, payments, signins)), creations, films, addresses, timeline);
+    h("div", { class: "adm-two" }, profile, h("div", { class: "adm-stack" }, payments, gifts, signins)), creations, films, addresses, timeline);
 }
 function payRow(p) {
   return h("div", { class: "row adm-pay" }, icon("bag", 19),
@@ -1728,7 +1780,8 @@ function demoSources(p, q, b) {
 const DEMO_MAILS = { on: false };
 function demoEmails(p, q, b) {
   const names = [["w0-welcome", "Day 1 · Welcome", "Welcome to Kleo, Alex"], ["w1-templates", "Day 2 · Templates", "Day 2 of 7: Put yourself in a viral video"],
-    ["w2-prompts", "Day 3 · Prompts", "Day 3 of 7: Prompts that look like film"], ["rescue", "Rescue · first try failed", "Your first video didn't come out"]];
+    ["w2-prompts", "Day 3 · Prompts", "Day 3 of 7: Prompts that look like film"], ["rescue", "Rescue · first try failed", "Your first video didn't come out"],
+    ["gift", "Gift · from the Kleo team", "The Kleo team sent you 20 free credits"]];
   if (p === "/api/admin/emails/mode") { DEMO_MAILS.on = !!b.on; DEMO_MAILS.since ??= new Date().toISOString(); return { ok: true, on: DEMO_MAILS.on }; }
   if (p === "/api/admin/emails/test") return { sent: names.length, failed: [] };
   if (p === "/api/admin/emails/suppress") return { ok: true };
@@ -1852,12 +1905,14 @@ async function demo(path, opts) {
       totals: { paid: u.paid_cent ? [{ currency: "eur", cents: u.paid_cent }] : [], spend_usd: u.spend_usd, credits_spent: gens.filter((g) => g.status !== "failed").reduce((a, g) => a + g.credits, 0), failed: gens.filter((g) => g.status === "failed").length, films_usd: 0 },
       lookup: true, retentionDays: 90,
       attribution: demoAttribution(u),
+      gifts: (db.gifts || []).filter((g) => g.user_id === u.id),
     };
   }
   const am = p.match(/^\/api\/admin\/users\/(u_\w+)\/([a-z-]+)$/);
   if (am) {
     const u = db.users.find((x) => x.id === am[1]);
-    const risky = am[2] === "delete" || am[2] === "key" || (am[2] === "block" && b.on) || (am[2] === "signout" && u.id !== "u_demo00a") || (am[2] === "credits" && Math.abs(Number(b.delta)) > 100);
+    const risky = am[2] === "delete" || am[2] === "key" || (am[2] === "block" && b.on) || (am[2] === "signout" && u.id !== "u_demo00a") || (am[2] === "credits" && Math.abs(Number(b.delta)) > 100)
+      || (am[2] === "gift" && Number(b.credits) > 100);
     if (risky && Date.now() - A.fresh > 5 * 60e3) {
       if (!b.code) throw fail("Type a new code from your phone to do this.", "fresh_code", 403);
       if (b.code !== "123456") throw wrongCode();
@@ -1865,6 +1920,16 @@ async function demo(path, opts) {
     }
     const log = (event, extra = {}) => db.audit.push({ id: db.aid++, at: new Date().toISOString(), user_id: u.id, event, job_id: null, detail: JSON.stringify({ admin: "u_demo00a", reason: b.reason, ...extra }) });
     if (am[2] === "credits") { const before = u.credits; u.credits = Math.max(0, u.credits + Number(b.delta)); log("admin.credits", { delta: b.delta, before, after: u.credits }); return { ok: true, credits: u.credits }; }
+    if (am[2] === "gift") {
+      const n = Number(b.credits), before = u.credits, gid = `gf_demo${db.aid}`;
+      u.credits += n;
+      log("admin.credits", { delta: n, before, after: u.credits, gift: gid });
+      const mail = b.email ? { status: "sent", to: u.email, error: null } : null;
+      (db.gifts ??= []).unshift({ id: gid, user_id: u.id, credits: n, reason: b.reason, message: b.message || null, mail: b.email ? 1 : 0, mail_status: mail?.status ?? null, mail_to: mail?.to ?? null,
+        mail_error: null, created_at: new Date().toISOString(), seen_at: null });
+      log("admin.gift", { gift: gid, credits: n, mail: mail?.status ?? "not asked" });
+      return { ok: true, credits: u.credits, gift: { id: gid, credits: n, message: b.message || null, mail } };
+    }
     if (am[2] === "block") { u.blocked_at = b.on ? new Date().toISOString() : null; u.blocked_reason = b.on ? b.reason : null; log(b.on ? "admin.block" : "admin.unblock"); return { ok: true }; }
     if (am[2] === "address") {
       db.blocks = db.blocks.filter((x) => x.ip_hash !== u.ip_hash);

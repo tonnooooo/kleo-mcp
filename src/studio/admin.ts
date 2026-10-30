@@ -15,6 +15,8 @@
  *   GET  /api/admin/users?q&filter&sort&dir  every account, searchable and sortable
  *   GET  /api/admin/users/:id                one account: profile, payments, creations, audit, sign-ins, addresses
  *   POST /api/admin/users/:id/credits        {delta, reason}                add or take away credits
+ *   POST /api/admin/users/:id/gift           {credits, reason, message?, email}   a gift from the Kleo team: the credits
+ *                                            at once (the same path as credits), a pop-up in the app, the e-mail if asked
  *   POST /api/admin/users/:id/block          {on, reason}                   close or reopen the account
  *   POST /api/admin/users/:id/address        {on, reason, days?, hash?}     block or free the address it signs in from
  *   POST /api/admin/users/:id/key            {reason}                       a new Kleo key (assistants disconnected)
@@ -80,6 +82,8 @@ import { addProspects, listProspects, outreachOverview, parseCsv, previewFor, pr
 import { RECEIPT_KINDS, composeReceipt, receiptsOn, sampleReceipt } from "./receipts.ts";
 import { adminCreator, adminCreatorAction, adminCreators, adminPostAction } from "./creators.ts";
 import { ALL_MAILS, SERIES, comebackMail, compose, factsOf, livePrices, mailMode, renderHtml, renderText, sampleFacts, sendSeriesToOwner, setMailMode, type MailKey } from "./onboarding.ts";
+import { GIFT_MAIL_NAME, composeGift, giftMessage, giftRow, giftsOf, mailGift, sampleGift, type GiftMail } from "./gifts.ts";
+import { rid } from "../util.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const json = (data: unknown, status = 200): Response =>
@@ -232,6 +236,8 @@ async function userDetail(env: StudioEnv, id: string): Promise<Record<string, un
     lookup: !!env.CF_ANALYTICS_TOKEN, retentionDays: IP_RETENTION_DAYS,
     attribution: await env.DB.prepare(`SELECT a.*, l.label AS link_label FROM user_attribution a LEFT JOIN short_links l ON l.code = a.link_code WHERE a.user_id = ?`)
       .bind(id).first().catch(() => null),
+    // The gifts from the Kleo team, and whether the app showed them (src/studio/gifts.ts).
+    gifts: await giftsOf(env, id).catch(() => []),
   };
 }
 
@@ -253,7 +259,8 @@ const CREDITS_WITHOUT_CODE = 100;
 /** The writes that want a code typed in the last 5 minutes (admin-auth.ts FRESH_MIN). */
 export function dangerous(action: string, b: Record<string, unknown>, id: string, adminId: string): boolean {
   return action === "delete" || action === "key" || (action === "block" && b.on === true) || (action === "signout" && id !== adminId)
-    || (action === "credits" && Math.abs(Math.trunc(Number(b.delta))) > CREDITS_WITHOUT_CODE);
+    || (action === "credits" && Math.abs(Math.trunc(Number(b.delta))) > CREDITS_WITHOUT_CODE)
+    || (action === "gift" && Math.abs(Math.trunc(Number(b.credits))) > CREDITS_WITHOUT_CODE);
 }
 
 /**
@@ -261,10 +268,10 @@ export function dangerous(action: string, b: Record<string, unknown>, id: string
  * CREDITS_WITHOUT_CODE: this admin's admin.credits rows on every account (added or taken away alike) since the code last
  * typed in this session stopped counting, plus this one. Otherwise many small changes would make one big one with no
  * code. The total is read and the change and its row written in one batch (one transaction), so changes sent at once
- * cannot all read the same total. The row is the one log() writes. True when the change was made; false when it wants
- * a code.
+ * cannot all read the same total. The row is the one moveCredits writes. True when the change was made; false when it
+ * wants a code. `also` go in the same batch, after the audit row.
  */
-async function creditWithoutCode(env: StudioEnv, s: AdminSession, adminId: string, id: string, delta: number, detail: Record<string, unknown>): Promise<boolean> {
+async function creditWithoutCode(env: StudioEnv, s: AdminSession, adminId: string, id: string, delta: number, detail: Record<string, unknown>, also: D1PreparedStatement[] = []): Promise<boolean> {
   const since = new Date((s.fresh + FRESH_MIN * 60) * 1000).toISOString();
   const within = `(SELECT COALESCE(SUM(ABS(json_extract(a.detail, '$.delta'))), 0) FROM audit a
     WHERE a.event = 'admin.credits' AND a.at > ? AND json_extract(a.detail, '$.admin') = ?) + ? <= ${CREDITS_WITHOUT_CODE}`;
@@ -272,8 +279,63 @@ async function creditWithoutCode(env: StudioEnv, s: AdminSession, adminId: strin
     env.DB.prepare(`UPDATE users SET credits = MAX(0, credits + ?) WHERE id = ? AND ${within}`).bind(delta, id, since, adminId, Math.abs(delta)),
     env.DB.prepare(`INSERT INTO audit (user_id, job_id, event, detail) SELECT u.id, NULL, 'admin.credits', json_set(?, '$.after', u.credits) FROM users u
       WHERE u.id = ? AND ${within}`).bind(JSON.stringify(detail), id, since, adminId, Math.abs(delta)),
+    ...also,
   ]);
   return (moved?.meta.changes ?? 0) === 1;
+}
+
+/**
+ * Moves an account's credits the way every action of the console does (Add credits, Take credits away, Gift credits):
+ * one admin.credits audit row with the admin's id, the reason, the change, the balance before and after, and `extra`.
+ * Without a code typed in the last 5 minutes, only while such changes add up to CREDITS_WITHOUT_CODE (creditWithoutCode);
+ * past that, the code is asked for. `also` are written in the same batch, after the audit row (a gift's own row,
+ * gifts.ts giftRow). Answers the balance after.
+ */
+async function moveCredits(env: StudioEnv, request: Request, gate: Gate, adminId: string, u: { id: string; credits: number }, delta: number, reason: string,
+  b: Record<string, unknown>, extra: Record<string, unknown> = {}, also: D1PreparedStatement[] = []): Promise<number> {
+  const detail = { admin: adminId, reason, delta, before: u.credits, ...extra };
+  const balance = async () => (await env.DB.prepare("SELECT credits FROM users WHERE id = ?").bind(u.id).first<{ credits: number }>())?.credits ?? 0;
+  // Without a code typed in the last 5 minutes the small changes add up: past CREDITS_WITHOUT_CODE, this one wants a code.
+  if (!gate.fresh && !isFresh(gate.session)) {
+    if (await creditWithoutCode(env, gate.session, adminId, u.id, delta, detail, also)) return balance();
+    if (!b.code) throw new StudioError("Type a new code from your phone to do this.", 403, "fresh_code");
+    await checkFreshCode(env, request, adminId, b.code);
+    gate.fresh = true;
+  }
+  await env.DB.batch([
+    env.DB.prepare("UPDATE users SET credits = MAX(0, credits + ?) WHERE id = ?").bind(delta, u.id),
+    env.DB.prepare("INSERT INTO audit (user_id, job_id, event, detail) SELECT u.id, NULL, 'admin.credits', json_set(?, '$.after', u.credits) FROM users u WHERE u.id = ?")
+      .bind(JSON.stringify(detail), u.id),
+    ...also,
+  ]);
+  return balance();
+}
+
+/**
+ * A gift from the Kleo team (src/studio/gifts.ts): the credits in at once through moveCredits, with the gift's row in the
+ * same batch (the app shows it once, on its next load), then the e-mail when asked for. The e-mail never undoes the
+ * gift: what came of it is in the answer, on the gift's row and in its admin.gift audit row. A closed, merged or
+ * deleted account gets nothing: nobody would see it.
+ */
+async function giftAction(env: StudioEnv, request: Request, gate: Gate, adminId: string, u: { id: string; credits: number }, b: Record<string, unknown>, reason: string): Promise<Response> {
+  const credits = Math.trunc(Number(b.credits));
+  if (!Number.isFinite(credits) || credits < 1 || credits > 100_000) throw new StudioError("Type a whole number of credits, 1 or more.", 400, "credits");
+  const message = giftMessage(b.message);
+  const state = await env.DB.prepare("SELECT blocked_at, merged_into, CASE WHEN email LIKE '%@deleted.kleo.invalid' THEN 1 ELSE 0 END AS deleted FROM users WHERE id = ?")
+    .bind(u.id).first<{ blocked_at: string | null; merged_into: string | null; deleted: number }>();
+  if (state?.deleted) throw new StudioError("This account was deleted: there's nobody to give it to.", 400, "gift_closed");
+  if (state?.merged_into) throw new StudioError(`This account is now part of ${state.merged_into}. Give the gift there.`, 400, "gift_merged");
+  if (state?.blocked_at) throw new StudioError("This account is closed. Reopen it first.", 400, "gift_closed");
+  const email = b.email === true;
+  const id = rid("gf", 12);
+  const after = await moveCredits(env, request, gate, adminId, u, credits, reason, b, { gift: id },
+    [giftRow(env, { id, userId: u.id, credits, reason, message, adminId, mail: email })]);
+  let mail: GiftMail | null = null;
+  if (email) {
+    try { mail = await mailGift(env, u.id, id); } catch (e) { mail = { status: "failed", to: null, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
+  }
+  await audit(asEnv(env), u.id, null, "admin.gift", { admin: adminId, reason, gift: id, credits, message: !!message, mail: mail?.status ?? "not asked" }).catch(() => {});
+  return json({ ok: true, credits: after, gift: { id, credits, message, mail } });
 }
 
 async function userAction(env: StudioEnv, request: Request, gate: Gate, adminId: string, id: string, action: string): Promise<Response> {
@@ -291,20 +353,9 @@ async function userAction(env: StudioEnv, request: Request, gate: Gate, adminId:
   if (action === "credits") {
     const delta = Math.trunc(Number(b.delta));
     if (!Number.isFinite(delta) || delta === 0 || Math.abs(delta) > 100_000) throw new StudioError("Type a whole number of credits, not zero.", 400, "delta");
-    // Without a code typed in the last 5 minutes the small changes add up: past CREDITS_WITHOUT_CODE, this one wants a code.
-    if (!gate.fresh && !isFresh(gate.session)) {
-      if (await creditWithoutCode(env, gate.session, adminId, id, delta, { admin: adminId, reason, delta, before: u.credits })) {
-        return json({ ok: true, credits: (await env.DB.prepare("SELECT credits FROM users WHERE id = ?").bind(id).first<{ credits: number }>())?.credits ?? 0 });
-      }
-      if (!b.code) throw new StudioError("Type a new code from your phone to do this.", 403, "fresh_code");
-      await checkFreshCode(env, request, adminId, b.code);
-      gate.fresh = true;
-    }
-    await env.DB.prepare("UPDATE users SET credits = MAX(0, credits + ?) WHERE id = ?").bind(delta, id).run();
-    const after = (await env.DB.prepare("SELECT credits FROM users WHERE id = ?").bind(id).first<{ credits: number }>())?.credits ?? 0;
-    await log("admin.credits", { delta, before: u.credits, after });
-    return json({ ok: true, credits: after });
+    return json({ ok: true, credits: await moveCredits(env, request, gate, adminId, u, delta, reason, b) });
   }
+  if (action === "gift") return giftAction(env, request, gate, adminId, u, b, reason);
   if (action === "block") {
     const on = b.on === true;
     if (on) {
@@ -716,7 +767,7 @@ async function adminRoute(env: StudioEnv, request: Request, url: URL, adminId: s
     if (cm) return json(await adminCreator(env, cm[1]));
   }
   if (method === "POST") {
-    const am = path.match(/^\/api\/admin\/users\/(u_[a-z0-9]+)\/(credits|block|address|key|signout|delete|ip-lookup)$/);
+    const am = path.match(/^\/api\/admin\/users\/(u_[a-z0-9]+)\/(credits|gift|block|address|key|signout|delete|ip-lookup)$/);
     if (am) return userAction(env, request, gate, adminId, am[1], am[2]);
     if (path === "/api/admin/sources/links") return createLink(env, adminId, await body(request));
     const lm = path.match(/^\/api\/admin\/sources\/links\/([a-z0-9-]{1,40})$/);
@@ -803,13 +854,16 @@ async function emails(env: StudioEnv): Promise<unknown> {
     if (r.status === "active" || r.status === "done" || r.status === "stopped") counts[r.status] += r.n;
   }
   const prices = livePrices(env);
+  const nameOf = (mail: string): string => MAIL_NAMES[mail as MailKey] ?? RECEIPT_KINDS.find((k) => k.key === mail)?.name ?? (mail === "gift" ? GIFT_MAIL_NAME : mail);
   return {
     on: mode.on, since: mode.since, from: "Leonardo from Kleo <hello@kleooai.com>", dailyCap: Number(env.STUDIO_MAIL_DAILY_CAP ?? 300),
     counts, sent: { today, week, total }, failures, unsubscribed: unsub, bounced, paidAfter, comeback,
     upcoming: upcoming.map((r) => ({ ...r, mail: nextName(r) })),
-    recent: recent.map((r) => ({ ...r, name: MAIL_NAMES[r.mail] ?? RECEIPT_KINDS.find((k) => k.key === r.mail)?.name ?? r.mail })),
+    recent: recent.map((r) => ({ ...r, name: nameOf(r.mail) })),
     mails: [...ALL_MAILS.map((k) => ({ key: k, name: MAIL_NAMES[k], subject: compose(k, sampleFor(k), prices).subject })),
-      ...RECEIPT_KINDS.map((r) => ({ key: r.key, name: r.name, subject: composeReceipt(r.kind, sampleReceipt(r.kind)).subject }))],
+      ...RECEIPT_KINDS.map((r) => ({ key: r.key, name: r.name, subject: composeReceipt(r.kind, sampleReceipt(r.kind)).subject })),
+      // The gift e-mail (src/studio/gifts.ts), as a sample account gets it.
+      { key: "gift", name: GIFT_MAIL_NAME, subject: composeGift(sampleGift()).subject }],
     receipts: {
       on: await receiptsOn(env),
       sent: Number((await env.DB.prepare("SELECT COUNT(*) AS n FROM studio_receipts WHERE ok = 1").first<{ n: number }>())?.n ?? 0),
@@ -824,10 +878,14 @@ function emailPreview(env: StudioEnv, url: URL): unknown {
     const m = composeReceipt(rk.kind, sampleReceipt(rk.kind));
     return { key: rk.key, name: rk.name, subject: m.subject, preheader: m.preheader, html: renderHtml(m, null), text: renderText(m, null) };
   }
+  const stop = "https://app.kleooai.com/email/stop?u=u_preview&s=preview";
+  if (url.searchParams.get("key") === "gift") {
+    const g = composeGift(sampleGift());
+    return { key: "gift", name: GIFT_MAIL_NAME, subject: g.subject, preheader: g.preheader, html: renderHtml(g, stop), text: renderText(g, stop) };
+  }
   const key = url.searchParams.get("key") as MailKey;
   if (!ALL_MAILS.includes(key)) throw new StudioError("No such e-mail.", 404, "not_found");
   const m = compose(key, sampleFor(key), livePrices(env));
-  const stop = "https://app.kleooai.com/email/stop?u=u_preview&s=preview";
   return { key, name: MAIL_NAMES[key], subject: m.subject, preheader: m.preheader, html: renderHtml(m, stop), text: renderText(m, stop) };
 }
 

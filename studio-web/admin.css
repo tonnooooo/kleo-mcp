@@ -348,3 +348,19 @@ button.adm-urow:hover { background: var(--fill-2); }
 .adm-prow { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
 .adm-views { width: 130px; height: 44px; }
 @media (max-width: 720px) { .adm-prow { grid-template-columns: 1fr; } .adm-views { flex: 1; width: auto; } }
+
+/* Gift credits (30 October 2026, src/studio/gifts.ts): the form, the e-mail switch, and what the person will see. */
+.adm-gift .adm-field { margin-top: 0; }
+.adm-field .adm-gift-msg { height: auto; min-height: 92px; padding: 12px 16px; line-height: 1.45; resize: vertical; }
+.adm-gift-mail { width: 100%; min-height: 60px; padding: 10px 14px; border-radius: 14px; background: var(--bg-2); border: 1px solid var(--sep); text-align: left; }
+.adm-gift-mail:disabled { opacity: .55; cursor: default; }
+.adm-gift-mail-t { display: grid; gap: 2px; min-width: 0; }
+.adm-gift-mail-t b { font-size: 16px; font-weight: 650; }
+.adm-gift-mail-t span { font-size: 15px; font-weight: 400; color: var(--ink-2); overflow-wrap: anywhere; }
+.adm-gift-see { display: grid; gap: 4px; padding: 14px 16px; border-radius: 16px; border: 1px solid var(--sep);
+  background: linear-gradient(120deg, var(--amber-soft), transparent 75%), var(--bg-2); }
+.adm-gift-see-l { font-size: 15px; font-weight: 600; color: var(--ink-2); }
+.adm-gift-see b { font-size: 17px; font-weight: 700; }
+.adm-gift-see > span:not(.adm-gift-see-l) { font-size: 16px; line-height: 1.45; }
+.adm-gift-see .adm-gift-note { color: var(--ink-2); }
+.adm-gift-see .adm-gift-note[hidden] { display: none; }

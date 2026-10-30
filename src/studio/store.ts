@@ -14,6 +14,7 @@
  *                       the addresses never to write to again (onboarding.ts, mail-schema.ts)
  *   outreach_prospects  the businesses Kleo may write to; outreach_log every send, outreach_replies every reply (outreach.ts)
  *   creators            Kleo Creators: applications, places, posts, program credits, commissions, payouts (creators.ts)
+ *   studio_gifts        a gift from the Kleo team: the credits, the message, the e-mail, when the app showed it (gifts.ts)
  */
 import type { StudioEnv } from "./env.ts";
 import { PROVIDER_STATUS_SCHEMA } from "./providers.ts";
@@ -63,6 +64,13 @@ export const STUDIO_SCHEMA: string[] = [
   ...CREATORS_SCHEMA,
   // Sign-in codes mailed to an address (src/studio/auth.ts, 30 October 2026).
   ...EMAIL_CODE_SCHEMA,
+  // A gift from the Kleo team (src/studio/gifts.ts, migrations/0035_gifts.sql, 30 October 2026): the credits the console
+  // gave, the reason and the message, the e-mail and what came of it, and when the app showed it (seen_at).
+  `CREATE TABLE IF NOT EXISTS studio_gifts (
+    id TEXT PRIMARY KEY, user_id TEXT NOT NULL, credits INTEGER NOT NULL, reason TEXT NOT NULL, message TEXT, by_admin TEXT NOT NULL,
+    mail INTEGER NOT NULL DEFAULT 0, mail_status TEXT, mail_to TEXT, mail_error TEXT, mailed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT ${NOW}, seen_at TEXT)`,
+  `CREATE INDEX IF NOT EXISTS studio_gifts_user ON studio_gifts (user_id, seen_at)`,
 ];
 
 /**

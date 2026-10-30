@@ -3,12 +3,13 @@
 //
 // Pages: Create (chat with Kleo) · Video · Image · Audio · Apps · Library. Desktop: a top bar; phones: a tab bar.
 
-import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=106";
+import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=107";
 
 const DEMO = new URLSearchParams(location.search).has("demo");
 const DEMO_FREE = new URLSearchParams(location.search).get("demo") === "free"; // ?demo=free: an account that never paid
 const DEMO_GUEST = new URLSearchParams(location.search).get("demo") === "guest"; // ?demo=guest: a visitor, not signed in
 const DEMO_BUSY = new URLSearchParams(location.search).get("demo") === "busy"; // ?demo=busy: Nano Banana 2 and Seedance are busy
+const DEMO_GIFT = new URLSearchParams(location.search).get("demo") === "gift"; // ?demo=gift: a gift from the Kleo team waits
 const IS_TOUCH = matchMedia("(hover: none)").matches;
 // The query this visit started with, before the app tidies the address: its utm tags go along to Safari or Chrome.
 const LANDING_QUERY = location.search;
@@ -92,6 +93,7 @@ const P = {
   more: '<circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/>',
   mail: '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m4 7.5 8 5.5 8-5.5"/>',
   send: '<path d="M20.5 3.5 10 14"/><path d="M20.5 3.5 14 20.5l-4-6.5-6.5-4Z"/>',
+  gift: '<rect x="3.5" y="8" width="17" height="4.5" rx="1.2"/><path d="M5 12.5v7A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5v-7M12 8v13M12 8C10.6 4 6.5 3.4 6.5 5.8 6.5 7.2 8.3 8 12 8Zm0 0c1.4-4 5.5-4.6 5.5-2.2C17.5 7.2 15.7 8 12 8Z"/>',
 };
 function icon(name, size = 20, sw = 1.9) {
   const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -361,6 +363,8 @@ async function enter() {
   renderShell();
   loadChats();
   await route();
+  // A gift from the Kleo team waiting since the last visit: shown once, over the page that just opened.
+  maybeShowGift();
 }
 const PAGES = [
   { key: "chat", path: "/", label: "Create", ic: "chat" },
@@ -439,7 +443,9 @@ function go(path) {
 addEventListener("popstate", () => S.me && route());
 addEventListener("focus", async () => {
   if (!S.me || DEMO) return;
-  try { const me = await api("/api/me"); const before = S.me.credits; S.me = me; S.me.credits = before; setCredits(me.credits); } catch { /* later */ }
+  try { const me = await api("/api/me"); const before = S.me.credits; S.me = me; S.me.credits = before; setCredits(me.credits); } catch { return; /* later */ }
+  // An app left open (a phone keeps it for days) shows a gift that came meanwhile when it is back in front, once.
+  maybeShowGift();
 });
 
 // ── auth screens ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -761,6 +767,97 @@ function openMore() {
 }
 const viewEl = () => $("#view");
 function setView(cls, ...kids) { const v = viewEl(); v.className = `view ${cls || ""}`; v.scrollTop = 0; fill(v, ...kids); return v; }
+
+// ── A gift from the Kleo team (30 October 2026, src/studio/gifts.ts) ────────────────────────────────────────────────
+// The admin console's "Gift credits" puts the credits in at once and leaves the gift in /api/me. The next load after
+// sign-in shows it once: "A gift from the Kleo team", the X at the top right and Claim at the bottom both only close it,
+// since the credits are in already. The server hears at once, so a reload, another tab or the phone never shows it
+// again. Then, for an account not in Kleo Creators, "Become a Kleo Creator", whose Apply opens /creators.
+// ?demo=gift shows both on fake data.
+const GIFTS_SHOWN = new Set();
+function maybeShowGift() {
+  const g = S.me?.gift;
+  if (!g?.ids?.length || adminSite() || S.connecting || location.pathname === "/connect") return;
+  if (g.ids.every((id) => GIFTS_SHOWN.has(id))) return;
+  for (const id of g.ids) GIFTS_SHOWN.add(id);
+  S.me.gift = null;
+  const open = () => setTimeout(() => giftModal(g), 450);
+  if (document.visibilityState !== "hidden") return open();
+  // A tab opened in the background shows it when the person looks at it, not before.
+  const look = () => { if (document.visibilityState === "hidden") return; document.removeEventListener("visibilitychange", look); open(); };
+  document.addEventListener("visibilitychange", look);
+}
+function giftModal(g) {
+  const n = Math.max(0, Math.trunc(Number(g.credits) || 0));
+  if (!DEMO) api("/api/me/gift/seen", { method: "POST", body: { ids: g.ids } }).catch(() => {});
+  popCard({
+    kind: "gift", title: "A gift from the Kleo team", art: giftArt(n),
+    text: `${n} free credit${n === 1 ? " is" : "s are"} already in your account. Thanks for creating with Kleo, enjoy ${n === 1 ? "it" : "them"}!`,
+    note: g.message || null, ok: "Claim",
+    after: () => setTimeout(creatorInvite, 320),
+  });
+}
+/** After the gift: the invitation to Kleo Creators, for an account that has no place or application there yet. */
+function creatorInvite() {
+  if (!S.me || S.me.creator || adminSite() || location.pathname === "/creators") return;
+  popCard({
+    kind: "creator", title: "Become a Kleo Creator", art: creatorArt(),
+    text: "Get rewarded for posting your Kleo videos.",
+    points: [["star", "25% of every sale from your link, for 12 months"], ["bolt", "Bonus credits for your views"], ["sparkle", "Extra credits in the months you post"]],
+    ok: "Apply", onOk: () => go("/creators"),
+  });
+}
+/** The gift's card and the invitation's: centred over the page, the X at the top right, one button at the bottom. */
+function popCard({ kind, title, art, text, note = null, points = null, ok, onOk = null, after = null }) {
+  let gone = false;
+  const close = (then) => {
+    if (gone) return;
+    gone = true;
+    document.removeEventListener("keydown", keys, true);
+    scrim.classList.add("out");
+    setTimeout(() => { scrim.remove(); then?.(); after?.(); }, reducedMotion() ? 0 : 220);
+  };
+  const x = h("button", { class: "icon-btn gp-x", type: "button", "aria-label": "Close", onclick: () => close() }, icon("x", 20, 2.2));
+  const yes = h("button", { class: "btn btn-cta gp-ok", type: "button", onclick: () => close(onOk) }, ok);
+  const card = h("div", { class: `gp-card gp-${kind}`, role: "dialog", "aria-modal": "true", "aria-labelledby": `gp-${kind}-title` },
+    x, art, h("h2", { id: `gp-${kind}-title` }, title), h("p", { class: "gp-text" }, text),
+    note ? h("p", { class: "gp-note" }, note) : null,
+    points ? h("ul", { class: "gp-points" }, points.map(([ic, t]) => h("li", {}, h("span", { class: "gp-pi", "aria-hidden": "true" }, ic === "bolt" ? bolt(17) : icon(ic, 17, 2.2)), h("span", {}, t)))) : null,
+    h("div", { class: "gp-btns" }, yes));
+  const scrim = h("div", { class: "gp-scrim" }, card);
+  // Escape closes; Tab stays on the card's two buttons.
+  const keys = (e) => {
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); }
+    else if (e.key === "Tab") { e.preventDefault(); (document.activeElement === yes ? x : yes).focus(); }
+  };
+  document.addEventListener("keydown", keys, true);
+  document.body.append(scrim);
+  setTimeout(() => yes.focus({ preventScroll: true }), 80);
+  return card;
+}
+/** A gift box drawn in Kleo's amber, a little burst of confetti, sparkles, and the credits on a tag. */
+const GIFT_BOX = '<svg viewBox="0 0 96 96" width="104" height="104" aria-hidden="true"><defs>'
+  + '<linearGradient id="gpLid" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffdf85"/><stop offset="1" stop-color="#f7b544"/></linearGradient>'
+  + '<linearGradient id="gpBody" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffc95c"/><stop offset="1" stop-color="#f08f3c"/></linearGradient>'
+  + '<linearGradient id="gpRibbon" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#fffaf0"/><stop offset="1" stop-color="#ffe7bd"/></linearGradient></defs>'
+  + '<path d="M48 31C44 22 33 16 28 22C24 27 31 32 48 31Z" fill="url(#gpRibbon)" stroke="#e9a23b" stroke-width="1.6" stroke-linejoin="round"/>'
+  + '<path d="M48 31C52 22 63 16 68 22C72 27 65 32 48 31Z" fill="url(#gpRibbon)" stroke="#e9a23b" stroke-width="1.6" stroke-linejoin="round"/>'
+  + '<rect x="20" y="46" width="56" height="36" rx="7" fill="url(#gpBody)"/>'
+  + '<rect x="20" y="49" width="56" height="5" fill="#d9772c" opacity=".3"/>'
+  + '<rect x="15" y="31" width="66" height="18" rx="6" fill="url(#gpLid)"/>'
+  + '<rect x="19" y="33.5" width="58" height="5" rx="2.5" fill="#fff" opacity=".35"/>'
+  + '<rect x="42" y="31" width="12" height="51" fill="url(#gpRibbon)"/>'
+  + '<circle cx="48" cy="31" r="5.5" fill="#fffaf0" stroke="#e9a23b" stroke-width="1.6"/></svg>';
+const sparkles = () => ["s1", "s2", "s3", "s4"].map((s) => h("i", { class: `gp-sp ${s}` }));
+function giftArt(n) {
+  return h("div", { class: "gp-art", "aria-hidden": "true" },
+    h("span", { class: "gp-burst" }, Array.from({ length: 14 }, (_, i) => h("i", { style: `--i:${i}` }))),
+    h("span", { class: "gp-box", html: GIFT_BOX }), sparkles(),
+    h("span", { class: "gp-amt" }, bolt(16), `+${n}`));
+}
+function creatorArt() {
+  return h("div", { class: "gp-art", "aria-hidden": "true" }, h("span", { class: "gp-orb" }, icon("star", 42, 1.6)), sparkles());
+}
 
 // ── Create: the chat with Kleo ───────────────────────────────────────────────────────────────────────────────────
 function chatShell() {
@@ -2680,7 +2777,7 @@ const adminSite = () => !!S.config?.adminSite;
 function openConsole() { location.href = DEMO ? "/admin?demo=1" : S.me.adminUrl; }
 let adminCss = null;
 function loadAdminCss() {
-  adminCss ??= new Promise((ok) => { const css = h("link", { rel: "stylesheet", href: "/admin.css?v=91", "data-admin": "" }); css.onload = ok; css.onerror = ok; document.head.append(css); });
+  adminCss ??= new Promise((ok) => { const css = h("link", { rel: "stylesheet", href: "/admin.css?v=92", "data-admin": "" }); css.onload = ok; css.onerror = ok; document.head.append(css); });
   return adminCss;
 }
 async function adminEnter() {
@@ -2738,7 +2835,7 @@ async function adminView() {
     setView("admin-view", h("div", { class: "connect-view" }, spinner(24)));
     try {
       await loadAdminCss();
-      adminModule = await import("/admin.js?v=96");
+      adminModule = await import("/admin.js?v=97");
     } catch {
       setView("connect-view", connectCard("The console didn't load", "Check the connection and try again.", h("button", { class: "btn btn-primary", onclick: () => location.reload() }, "Try again")));
       return;
@@ -2913,7 +3010,8 @@ async function demoApi(path, opts) {
   if (path === "/api/config") return { adminSite: location.pathname.startsWith("/admin"), google: true, microsoft: true, social: ["google"], emailReset: true, defaultModel: "seedance-2.5", models: demoCatalog(), defaultImageModel: "nano-banana-2", imageModels: demoImageCatalog(), freeCredits: 5, presets: DEMO_PRESETS, tools: DEMO_TOOLS, plans: DEMO_PLANS };
   if (path === "/api/me" && DEMO_GUEST) throw new ApiError("Sign in first.", 401, "signin");
   if (path === "/api/me" && DEMO_FREE) return { id: "u_demo", email: "you@example.com", name: "Demo", since: "2026-10-01T09:00:00Z", credits: 5, paid: false, allowed: ["seedance-2.0-fast"], freeResolutions: ["480p"], allowedImages: ["nano-banana-2"], allowedTools: [], methods: ["password"], mcpUrl: "https://mcp.kleooai.com/mcp", packs: [{ label: "5 EUR", credits: 10, url: "https://kleooai.com/pricing/" }, { label: "15 EUR", credits: 35, url: "https://kleooai.com/pricing/" }, { label: "40 EUR", credits: 100, url: "https://kleooai.com/pricing/" }] };
-  if (path === "/api/me") return { id: "u_demo", email: "you@example.com", name: "Demo", since: "2026-10-01T09:00:00Z", credits: demoDb.credits, paid: true, allowed: demoCatalog().map((m) => m.key), allowedImages: demoImageCatalog().map((m) => m.key), allowedTools: DEMO_TOOLS.map((t) => t.key), methods: ["password", "google"], mcpUrl: "https://mcp.kleooai.com/mcp", autoWan: !!demoDb.autoWan, packs: [{ label: "5 EUR", credits: 10, url: "https://kleooai.com/pricing/" }, { label: "15 EUR", credits: 35, url: "https://kleooai.com/pricing/" }, { label: "40 EUR", credits: 100, url: "https://kleooai.com/pricing/" }] };
+  if (path === "/api/me") return { id: "u_demo", email: "you@example.com", name: "Demo", since: "2026-10-01T09:00:00Z", credits: demoDb.credits, paid: true, allowed: demoCatalog().map((m) => m.key), allowedImages: demoImageCatalog().map((m) => m.key), allowedTools: DEMO_TOOLS.map((t) => t.key), methods: ["password", "google"], mcpUrl: "https://mcp.kleooai.com/mcp", autoWan: !!demoDb.autoWan, packs: [{ label: "5 EUR", credits: 10, url: "https://kleooai.com/pricing/" }, { label: "15 EUR", credits: 35, url: "https://kleooai.com/pricing/" }, { label: "40 EUR", credits: 100, url: "https://kleooai.com/pricing/" }],
+    ...(DEMO_GIFT ? { gift: { ids: ["gf_demo2026gift"], credits: 20, message: null } } : {}) };
   if (path === "/api/auth/signout" || path === "/api/auth/signout-all") return { ok: true };
   if (path === "/api/me/key") return { key: "u_demo.0123456789abcdef0123456789abcdef" };
   if (path === "/api/chats" && method === "GET") return { chats: demoDb.chats };
