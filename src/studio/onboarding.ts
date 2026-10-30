@@ -429,8 +429,8 @@ export async function deliver(env: StudioEnv, to: string, m: Mail, stopUrl: stri
   }
 }
 
-/** A refusal about the address itself (bounced, suppressed, not valid): that address is done. */
-const ADDRESS_PROBLEM = /suppress|bounce|invalid (recipient|address|email)|recipient.*(not|in)valid|mailbox|E_RECIPIENT|E_INVALID_TO/i;
+/** A refusal about the address itself (bounced, suppressed, not valid): that address is done. The gift e-mail reads it too. */
+export const ADDRESS_PROBLEM =/suppress|bounce|invalid (recipient|address|email)|recipient.*(not|in)valid|mailbox|E_RECIPIENT|E_INVALID_TO/i;
 /** A refusal about Kleo's side (domain not ready, sender not allowed): every send waits and the owner hears. */
 const SENDER_PROBLEM = /E_SENDER|E_DOMAIN|not verified|not onboarded|E_NO_BINDING|E_UNAUTHORIZED|E_FORBIDDEN/i;
 const RATE_PROBLEM = /RATE|QUOTA|LIMIT|429/i;
@@ -584,5 +584,11 @@ export async function sendSeriesToOwner(env: StudioEnv, prices: Prices, to = (en
     await logSend(env, null, to, r0.key, "preview", r);
     if (r.ok) sent++; else failed.push(`${r0.key}: ${r.code} ${r.error}`);
   }
+  // And the gift from the Kleo team (src/studio/gifts.ts), as a sample account gets it.
+  const { composeGift, sampleGift } = await import("./gifts.ts");
+  const gm = composeGift(sampleGift());
+  const rg = await deliver(env, to, { ...gm, subject: `[Preview gift 1/1] ${gm.subject}` }, stopUrl, "preview:gift");
+  await logSend(env, null, to, "gift", "preview", rg);
+  if (rg.ok) sent++; else failed.push(`gift: ${rg.code} ${rg.error}`);
   return { sent, failed };
 }

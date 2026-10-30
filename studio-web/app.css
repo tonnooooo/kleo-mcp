@@ -1724,3 +1724,63 @@ img.fx-in { animation: fx-img-in .7s var(--ease-out) both; }
 .auth .btn.social-email { background: var(--card); color: var(--ink); border: 1px solid var(--sep); justify-content: center; gap: 10px; font-weight: 650; }
 .auth .code-first .btn { justify-content: center; gap: 8px; }
 .code-input { font-size: 26px; letter-spacing: .3em; text-align: center; font-variant-numeric: tabular-nums; }
+
+/* A gift from the Kleo team (30 October 2026, src/studio/gifts.ts): the card the next load after sign-in shows once, then
+   the invitation to Kleo Creators. Centred over the page in Kleo's warm amber, light and dark, phone and desktop; the
+   X at the top right and one button at the bottom. Every word at 16 px or more. Above the page, its sheets and the video
+   viewer (it opens only once they are closed), under the toasts (60) and Kleo's own questions (90). */
+.gp-scrim { position: fixed; inset: 0; z-index: 55; display: grid; place-items: center; overflow-y: auto;
+  padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
+  background: rgba(0, 0, 0, .46); -webkit-backdrop-filter: blur(10px) saturate(1.15); backdrop-filter: blur(10px) saturate(1.15); animation: fade .22s both; }
+.gp-scrim.out { opacity: 0; transition: opacity .2s; }
+.gp-card { position: relative; width: min(400px, 100%); margin: auto; padding: 30px 24px 24px; border-radius: 30px; text-align: center; overflow: hidden;
+  background: var(--elev); border: 1px solid var(--sep); box-shadow: var(--shadow-l); animation: gpIn .55s var(--ease-spring) both; }
+.gp-card::before { content: ""; position: absolute; left: 50%; top: -130px; width: 440px; height: 320px; transform: translateX(-50%); pointer-events: none;
+  background: radial-gradient(closest-side, rgba(255, 196, 77, .34), rgba(255, 196, 77, 0)); }
+.gp-scrim.out .gp-card { transform: scale(.96); transition: transform .2s var(--ease); }
+@keyframes gpIn { from { opacity: 0; transform: translateY(22px) scale(.9); } }
+.gp-card:focus { outline: none; }
+.gp-x { position: absolute; top: 12px; right: 12px; z-index: 3; width: 40px; height: 40px; color: var(--ink-2); background: var(--fill-2); }
+.gp-x:hover { color: var(--ink); background: var(--fill); }
+.gp-art { position: relative; width: 150px; height: 126px; margin: 2px auto 14px; display: grid; place-items: center; }
+.gp-box { display: grid; place-items: center; animation: gpPop .7s var(--ease-spring) .15s both; }
+.gp-box svg { display: block; width: 104px; height: 104px; filter: drop-shadow(0 16px 22px rgba(240, 143, 60, .38)); animation: gpFloat 3.4s ease-in-out 1s infinite; }
+@keyframes gpPop { from { opacity: 0; transform: scale(.4) rotate(-12deg); } }
+@keyframes gpFloat { 50% { transform: translateY(-5px) rotate(-2deg); } }
+.gp-amt { position: absolute; right: 0; bottom: 4px; z-index: 2; display: inline-flex; align-items: center; gap: 3px; height: 34px; padding: 0 13px 0 10px;
+  border-radius: 17px; background: var(--ink); color: var(--bg); font-size: 17px; font-weight: 750; letter-spacing: -.01em; font-variant-numeric: tabular-nums;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, .22); animation: gpPop .6s var(--ease-spring) .45s both; }
+.gp-amt .bolt { color: var(--amber); }
+.gp-sp { position: absolute; width: 16px; height: 16px; background: #ffcf5a; animation: gpTwinkle 2.6s ease-in-out infinite;
+  clip-path: polygon(50% 0, 61% 39%, 100% 50%, 61% 61%, 50% 100%, 39% 61%, 0 50%, 39% 39%); }
+.gp-sp.s1 { left: 6px; top: 20px; }
+.gp-sp.s2 { right: 12px; top: 4px; width: 12px; height: 12px; background: #f3a43f; animation-delay: .7s; }
+.gp-sp.s3 { left: 20px; bottom: 12px; width: 10px; height: 10px; background: #ff9a62; animation-delay: 1.3s; }
+.gp-sp.s4 { right: 30px; top: 46px; width: 9px; height: 9px; background: #ffe39a; animation-delay: 1.9s; }
+@keyframes gpTwinkle { 0%, 100% { opacity: .45; transform: scale(.55) rotate(0deg); } 50% { opacity: 1; transform: scale(1) rotate(45deg); } }
+.gp-burst { position: absolute; inset: 0; pointer-events: none; }
+.gp-burst i { position: absolute; left: 50%; top: 52%; width: 7px; height: 12px; margin: -6px 0 0 -3.5px; border-radius: 3px; background: var(--c, #ffcf5a); opacity: 0;
+  animation: gpBurst 1.2s var(--ease-out) .3s both; }
+.gp-burst i:nth-child(3n) { --c: #f3a43f; width: 8px; height: 8px; border-radius: 50%; }
+.gp-burst i:nth-child(3n + 1) { --c: #ff9a62; }
+.gp-burst i:nth-child(4n) { --c: #fff0c2; }
+@keyframes gpBurst {
+  0% { opacity: 0; transform: rotate(calc(var(--i) * 25.7deg)) translateY(-8px) scale(.4); }
+  20% { opacity: 1; }
+  100% { opacity: 0; transform: rotate(calc(var(--i) * 25.7deg + 30deg)) translateY(-92px) scale(1); }
+}
+.gp-orb { width: 92px; height: 92px; border-radius: 30px; display: grid; place-items: center; color: var(--cta-ink);
+  background: linear-gradient(180deg, var(--cta-a), var(--cta-b)); box-shadow: 0 16px 36px rgba(243, 165, 63, .38), inset 0 1px 0 rgba(255, 255, 255, .5);
+  animation: gpPop .7s var(--ease-spring) .15s both; }
+.gp-orb svg { fill: currentColor; }
+.gp-card h2 { position: relative; margin: 0 0 8px; font-size: 24px; font-weight: 750; letter-spacing: -.025em; line-height: 1.2; }
+.gp-text { position: relative; max-width: 330px; margin: 0 auto 20px; font-size: 17px; line-height: 1.5; color: var(--ink-2); }
+.gp-note { position: relative; max-width: 330px; margin: -6px auto 20px; padding: 12px 16px; border-radius: 16px; background: var(--fill-2); border: 1px solid var(--sep);
+  font-size: 16px; line-height: 1.45; color: var(--ink); overflow-wrap: anywhere; }
+.gp-points { position: relative; list-style: none; margin: -4px 0 22px; padding: 6px; display: grid; gap: 2px; text-align: left; border-radius: 20px; background: var(--fill-2); }
+.gp-points li { display: flex; align-items: center; gap: 12px; padding: 9px 10px; font-size: 16px; line-height: 1.35; font-weight: 550; color: var(--ink); }
+.gp-pi { flex: none; width: 34px; height: 34px; border-radius: 11px; display: grid; place-items: center; color: var(--cta-ink); background: linear-gradient(180deg, var(--cta-a), var(--cta-b)); }
+.gp-pi .bolt { color: var(--cta-ink); }
+.gp-btns { position: relative; display: flex; justify-content: center; }
+.gp-ok { min-width: 210px; height: 52px; border-radius: 26px; padding: 0 34px; font-size: 17px; font-weight: 700; }
+@media (max-width: 640px) { .gp-card { padding: 28px 18px 20px; border-radius: 28px; } }

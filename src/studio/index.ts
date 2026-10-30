@@ -61,6 +61,7 @@ import { scoutTick } from "./scout.ts";
 import { morningDigest } from "./digest.ts";
 import { receiptsTick } from "./receipts.ts";
 import { addPost, applyAsCreator, creatorStatus, creatorsTick, leaveProgram, publicCreators, removePost, setPayout } from "./creators.ts";
+import { markGiftsSeen, pendingGift } from "./gifts.ts";
 
 const asEnv = (env: StudioEnv): Env => env as unknown as Env;
 const json = (data: unknown, status = 200, headers: Record<string, string> = {}): Response =>
@@ -331,8 +332,12 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       autoWan: await autoWanOn(env, userId),
       // A place in Kleo Creators, for the menu (src/studio/creators.ts).
       creator: await env.DB.prepare("SELECT status, level FROM creators WHERE user_id = ?").bind(userId).first<{ status: string; level: string }>().catch(() => null),
+      // A gift from the Kleo team the app has not shown yet (src/studio/gifts.ts): it shows it once, then says so.
+      gift: await pendingGift(env, userId).catch(() => null),
     });
   }
+  // The gift pop-up was shown: it never shows again, in this browser or on another device (src/studio/gifts.ts).
+  if (path === "/api/me/gift/seen" && method === "POST") return json({ ok: true, seen: await markGiftsSeen(env, userId, (await body(request)).ids) });
   // Apple Pay / Google Pay inside the app (src/studio/pay.ts): the Checkout Session a phone's wallet button pays.
   if (path === "/api/pay/session" && method === "POST") {
     const b = await body<{ pack?: unknown; plan?: unknown; tier?: unknown; period?: unknown }>(request);
