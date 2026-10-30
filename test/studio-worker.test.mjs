@@ -1545,6 +1545,43 @@ test("a refusal at the door offers Wan 3.0 too; a picture's clip goes to image-t
   } finally { p.restore(); }
 });
 
+test("Use Wan 3.0 is refused before the charge while WaveSpeed cannot pay for it; the offer stays on the card", async () => {
+  const env = newEnv({ WAVESPEED_API_KEY: "wk" });
+  const { cookie, id } = await paidAccount(env, "wanempty@example.com");
+  const p = fakeProvider((u) => {
+    if (u.endsWith("/v1/task/submit")) return ok({ id: "task_cre" });
+    if (/\/v1\/task\/task_cre$/.test(u)) return ok({ status: "failed", error: COPYRIGHT });
+    if (u === "https://api.wavespeed.ai/api/v3/alibaba/wan-3.0/text-to-video") return ok({ code: 200, data: { id: "ws_e" } });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: { noChat: true, prompt: "A knight guards the castle gate at dawn", settings: { model: "seedance-2.5", resolution: "480p", duration: 5 } } });
+    assert.equal(r.status, 200, r.text);
+    old(env);
+    const g = (await call(env, `/api/generations/${r.json.generation.id}`, { cookie })).json.generation;
+    assert.deepEqual(g.offer, { model: "wan-3.0", name: "Wan 3.0", from: "Seedance 2.5", credits: g.credits });
+    assert.equal(credits(env, id), 100, "the refusal gave the credits back");
+
+    // WaveSpeed's account is empty: the switch is refused before any charge, and the offer is not used up.
+    env.DB.db.exec(`INSERT OR REPLACE INTO provider_status (provider, balance_usd, balance_at, source) VALUES ('wavespeed', 0, '${new Date().toISOString()}', 'api')`);
+    const paused = await call(env, `/api/generations/${g.id}/wan`, { method: "POST", cookie, body: {} });
+    assert.equal(paused.status, 503, paused.text);
+    assert.equal(paused.json.code, "paused");
+    assert.equal(paused.json.error, "Wan 3.0 is unavailable for a little while: its engine is being recharged. Nothing was charged. Try another model, or come back soon.");
+    assert.equal(credits(env, id), 100, "nothing was charged");
+    assert.deepEqual((await call(env, `/api/generations/${g.id}`, { cookie })).json.generation.offer, g.offer, "the offer stays");
+    assert.ok(!p.sent.some((s) => s.url.includes("wavespeed")), "nothing went to WaveSpeed");
+    assert.ok(env.DB.db.prepare("SELECT 1 FROM audit WHERE event = 'studio.provider_paused'").get(), "the pause is in the audit");
+    env.DB.db.exec("DELETE FROM provider_status WHERE provider = 'wavespeed'");
+
+    const w = await call(env, `/api/generations/${g.id}/wan`, { method: "POST", cookie, body: {} });
+    assert.equal(w.status, 200, w.text);
+    assert.deepEqual({ n: w.json.generation.modelName, s: w.json.generation.status }, { n: "Wan 3.0", s: "running" });
+    assert.equal(credits(env, id), 100 - g.credits, "the credits the refused clip cost");
+    assert.equal(p.sent.filter((s) => s.url.endsWith("/wan-3.0/text-to-video")).length, 1);
+  } finally { p.restore(); }
+});
+
 test("with the automatic switch on, a refused clip goes on on Wan 3.0 in the same card, for the credits already paid", async () => {
   const env = newEnv({ WAVESPEED_API_KEY: "wk" });
   const { cookie, id } = await paidAccount(env);
@@ -1885,6 +1922,44 @@ test("a Wan 3.0 clip refused for copyright is never switched to Wan again; it is
     assert.deepEqual({ n: w.json.generation.modelName, s: w.json.generation.status, prompt: w.json.generation.prompt }, { n: "Wan 3.0", s: "running", prompt: DESCRIBED });
     assert.equal(p.sent.find((s) => s.url.endsWith("/wan-3.0/text-to-video")).body.prompt, DESCRIBED);
     assert.equal(credits(env, id), 100 - g.credits, "the credits it cost");
+  } finally { p.restore(); }
+});
+
+test("a Wan 3.0 clip whose picture fails Alibaba's content check reads in plain words, with no provider's words, and is refunded", async () => {
+  const env = newEnv({ WAVESPEED_API_KEY: "wk" });
+  const { cookie, id } = await paidAccount(env, "greennet@example.com");
+  const up = await upload(env, cookie, jpegBytes(), "image/jpeg");
+  // ePhone's own answer for a wan3.0-video task on 27 October 2026 (marketing/reel-deuu2/swap/out/paris.result.json).
+  const GREEN_NET = "task failed, code: DataInspectionFailed , message: Green net check rejected image (input)";
+  let n = 0;
+  const p = fakeProvider((u, init) => {
+    const c = chatScript([], u, init); if (c) return c;
+    if (u.endsWith("/v1/task/submit")) {
+      return ++n === 1 ? ok({ id: "task_gn", status: "queued" }) : new Response(JSON.stringify({ error: { message: GREEN_NET } }), { status: 400, headers: { "content-type": "application/json" } });
+    }
+    if (u.endsWith("/v1/task/task_gn")) return ok({ id: "task_gn", status: "failed", progress: 100, usage: { type: "duration", seconds: 30 }, error: GREEN_NET });
+    return new Response("?", { status: 404 });
+  });
+  try {
+    const order = { noChat: true, prompt: "she dances in the street", imageIds: [up.id], settings: { model: "wan-3.0", resolution: "480p", duration: 10 } };
+    const r = await call(env, "/api/generate", { method: "POST", cookie, body: order });
+    assert.equal(r.status, 200, r.text);
+    old(env);
+    const g = (await call(env, `/api/generations/${r.json.generation.id}`, { cookie })).json.generation;
+    assert.equal(g.status, "failed");
+    assert.equal(g.error, "The video model could not make this one: one of the pictures did not pass its safety check. Your credits are back.");
+    assert.equal(credits(env, id), 100, "refunded");
+    assert.deepEqual({ offer: g.offer, rewrite: g.rewrite, busy: g.busy }, { offer: null, rewrite: null, busy: null }, "neither a copyright refusal nor a busy provider");
+    assert.equal(p.sent.filter((s) => s.url.endsWith("/v1/task/submit")).length, 1, "not sent again unseen: the same picture fails the same check");
+    assert.ok(!p.sent.some((s) => s.url.includes("wavespeed")), "nothing went to WaveSpeed");
+    assert.match(env.DB.db.prepare("SELECT detail FROM audit WHERE event = 'studio.failed' AND job_id = ?").get(g.id).detail, /Green net check rejected image/, "the provider's words stay in the audit");
+
+    // Refused as the order goes out, it reads the same way.
+    const door = await call(env, "/api/generate", { method: "POST", cookie, body: order });
+    assert.equal(door.status, 200, door.text);
+    assert.equal(door.json.generation.status, "failed");
+    assert.equal(door.json.generation.error, "The video model refused this request: one of the pictures did not pass its safety check");
+    assert.equal(credits(env, id), 100, "refunded");
   } finally { p.restore(); }
 });
 

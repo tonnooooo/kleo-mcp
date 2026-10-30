@@ -387,11 +387,26 @@ export function plainReason(why: string): string {
   // Only ByteDance's asset step (CreateAsset) is about a picture; any other InvalidParameter keeps its own words.
   const asset = /CreateAsset:\s*InvalidParameter\.[A-Za-z]+:\s*(.+?)\.?\s*(?:status code:|request id:|$)/i.exec(why);
   if (asset) return `one of the pictures was refused (${asset[1].trim().replace(/[.,;\s]+$/, "")})`;
+  const checked = inspectionReason(why);
+  if (checked) return checked;
   return publicText(why)
     .replace(/https?:\/\/\S+?\?exp=\d+&sig=[0-9a-f]+/gi, "a picture link")
     .replace(/[\u3400-\u9fff\uff00-\uffef]+[:：]?\s*/g, "")
     .replace(/^[\s:,;]+/, "")
     .trim() || "the provider gave no reason";
+}
+
+/**
+ * Alibaba's own content check on Wan 3.0 through ePhone (29 October 2026): a picture it rejects fails the task with
+ * "task failed, code: DataInspectionFailed , message: Green net check rejected image (input)". The card says what did
+ * not pass, without the check's name or its code. Null for every other reason.
+ */
+function inspectionReason(why: string): string | null {
+  if (!/DataInspectionFailed|data_inspection_failed|green.?net/i.test(why)) return null;
+  const part = /rejected\s+(image|text|video|audio)\s*\((input|output)\)/i.exec(why);
+  const output = part ? part[2].toLowerCase() === "output" : /\boutput\b/i.test(why);
+  const inputs: Record<string, string> = { image: "one of the pictures", text: "the prompt", video: "one of the video clips", audio: "one of the sound clips" };
+  return `${output ? "the result" : inputs[part?.[1].toLowerCase() ?? ""] ?? "the request"} did not pass its safety check`;
 }
 
 /**
@@ -451,9 +466,10 @@ export async function retryOnWan(env: StudioEnv, userId: string, g: GenerationRo
 
   const usd = wanCostUsd(s);
   const free = freeModels(env.STUDIO_FREE_MODELS), freeRes = freeResolutions(env.STUDIO_FREE_RESOLUTIONS);
+  // WaveSpeed must be able to pay for it (providers.ts), so an empty account refuses before the charge and the offer stays.
   const id = await charge(env, userId, {
     freeOk: free.includes(s.model) && freeRes.includes(s.resolution), credits: g.credits, usd, noun: "video",
-    lockedMessage: `${s.resolution} unlocks with your first credit pack.`,
+    lockedMessage: `${s.resolution} unlocks with your first credit pack.`, routes: [[{ provider: "wavespeed", usd }]], pausedName: WAN_NAME,
   });
   if (!(await settleOffer(env, g.id, userId, "wan", id))) {
     await refundCredits(asEnv(env), userId, g.credits, id, "studio.wan_twice");
