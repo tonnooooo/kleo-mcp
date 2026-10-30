@@ -3,7 +3,7 @@
 //
 // Pages: Create (chat with Kleo) · Video · Image · Audio · Apps · Library. Desktop: a top bar; phones: a tab bar.
 
-import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=107";
+import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=108";
 
 const DEMO = new URLSearchParams(location.search).has("demo");
 const DEMO_FREE = new URLSearchParams(location.search).get("demo") === "free"; // ?demo=free: an account that never paid
@@ -772,23 +772,50 @@ function setView(cls, ...kids) { const v = viewEl(); v.className = `view ${cls |
 // The admin console's "Gift credits" puts the credits in at once and leaves the gift in /api/me ("gift": its items, each
 // with its id, credits and message, and their total). The next load after sign-in, or the app coming back to the front,
 // shows the gifts this page has not shown yet, once: "A gift from the Kleo team", the X at the top right and Claim at
-// the bottom both only close it, since the credits are in already. The server hears at once, with one retry, and a gift
-// shown here that it still lists is told again on the next focus: a reload, another tab or the phone never shows it
-// again. The card never covers the video viewer, a sheet, a menu or a question (it waits until they close), nor jumps
-// in while the person types; when it had to wait it reads /api/me again first. Then, for an account Kleo Creators would
-// take (it has paid) and that has no place there yet, "Become a Kleo Creator", whose Apply opens /creators. Focus goes
-// back where it was once the cards close. ?demo=gift shows both on fake data.
+// the bottom both only close it, since the credits are in already. The server hears at once (keepalive, one retry), and
+// until it has, the shown ids stay in this browser: a reload says it again without showing the card again, and a later
+// focus says it again while the server still lists them. A reload, another tab or the phone never shows it twice. The
+// card never covers the video viewer, a sheet, a menu, a question or a video playing with sound (it waits until they
+// stop), nor jumps in while the person types; when it had to wait it reads /api/me again first. While it shows it is
+// the top layer: a sheet opened under it gets neither Esc nor Tab. Then, for an account Kleo Creators would take (it
+// has paid) and that has no place there yet, "Become a Kleo Creator", whose Apply opens /creators. Focus goes back
+// where it was once the cards close. ?demo=gift shows both on fake data.
 const GIFTS_SHOWN = new Set();
 let giftQueued = false;
 let typedAt = 0;
 document.addEventListener("input", () => { typedAt = Date.now(); }, true);
-/** What the card waits for: a hidden tab, the viewer, a sheet or menu, a question or another card, typing. */
-const giftWaits = () => document.visibilityState === "hidden" || !!openLayer || !!document.querySelector(".ask-scrim, .gp-scrim") || Date.now() - typedAt < 2500;
+/** A video in the page playing with sound (the viewer's, a clip or a film in a chat): the card waits until it stops. */
+const videoPlaysAloud = () => [...document.querySelectorAll("video")].some((v) => !v.paused && !v.ended && !v.muted && v.volume > 0);
+/** What the card waits for: a hidden tab, the viewer, a sheet or menu, a question or another card, a video with sound, typing. */
+const giftWaits = () => document.visibilityState === "hidden" || !!openLayer || !!document.querySelector(".ask-scrim, .gp-scrim") || videoPlaysAloud() || Date.now() - typedAt < 2500;
 const giftItems = (g) => (Array.isArray(g?.items) ? g.items.filter((x) => x && typeof x.id === "string") : []);
+// The gifts this browser showed whose "seen" has not reached the server yet, per account (store wraps localStorage in
+// try/catch: a private window simply keeps nothing).
+const GIFT_KEEP = "giftsShown";
+const keptShown = () => { const all = store.get(GIFT_KEEP, {}); return S.me?.id && Array.isArray(all?.[S.me.id]) ? all[S.me.id] : []; };
+function setKeptShown(ids) {
+  if (!S.me?.id) return;
+  const all = store.get(GIFT_KEEP, {});
+  const map = all && typeof all === "object" && !Array.isArray(all) ? all : {};
+  if (ids.length) map[S.me.id] = ids.slice(-40); else delete map[S.me.id];
+  store.set(GIFT_KEEP, map);
+}
+const keepShown = (ids) => setKeptShown([...new Set([...keptShown(), ...ids])]);
+const dropShown = (ids) => setKeptShown(keptShown().filter((x) => !ids.includes(x)));
+/** Gifts an earlier load showed but could not report: shown already, so the card skips them and says so again. */
+function seedShown(items) {
+  const kept = keptShown();
+  if (!kept.length) return;
+  const listed = new Set(items.map((x) => x.id));
+  for (const id of kept) if (listed.has(id)) GIFTS_SHOWN.add(id);
+  const gone = kept.filter((id) => !listed.has(id));
+  if (gone.length) dropShown(gone);
+}
 function maybeShowGift() {
   if (!S.me || adminSite() || S.connecting || location.pathname === "/connect") return;
   const items = giftItems(S.me.gift);
-  // Shown here already and still listed: the word didn't reach the server, so say it again.
+  seedShown(items);
+  // Shown already (here or in an earlier load) and still listed: the word didn't reach the server, so say it again.
   const again = items.filter((x) => GIFTS_SHOWN.has(x.id)).map((x) => x.id);
   if (again.length) giftsSeen(again);
   if (giftQueued || !items.some((x) => !GIFTS_SHOWN.has(x.id))) return;
@@ -802,6 +829,7 @@ async function giftWhenCalm(waited) {
   if (waited && !DEMO) {
     // It had to wait: the gift may have been seen on the phone meanwhile, or another one may have come. Ask again.
     try { items = giftItems((await api("/api/me")).gift); } catch { giftQueued = false; return; }
+    seedShown(items);
     if (giftWaits()) { setTimeout(() => giftWhenCalm(true), 700); return; }
   }
   giftQueued = false;
@@ -810,11 +838,21 @@ async function giftWhenCalm(waited) {
   for (const x of fresh) GIFTS_SHOWN.add(x.id);
   giftModal(fresh);
 }
-/** Tells the server these gifts were shown, once more if that fails; a later focus tells it again while it still lists them. */
+/**
+ * Tells the server these gifts were shown, with keepalive so a reload or a closed tab can't cut it off, and once more if
+ * it fails. Until the server has answered, the ids stay in this browser (keepShown): the next load reports them again
+ * without showing the card again.
+ */
 async function giftsSeen(ids) {
   if (DEMO || !ids.length) return;
+  keepShown(ids);
   for (let i = 0; i < 2; i++) {
-    try { await api("/api/me/gift/seen", { method: "POST", body: { ids } }); return; } catch { if (i === 0) await new Promise((ok) => setTimeout(ok, 2000)); }
+    try {
+      const res = await fetch("/api/me/gift/seen", { method: "POST", keepalive: true, credentials: "same-origin",
+        headers: { "x-kleo": "1", "content-type": "application/json" }, body: JSON.stringify({ ids }) });
+      if (res.ok) { dropShown(ids); return; }
+    } catch { /* offline: the ids stay kept for the next load or focus */ }
+    if (i === 0) await new Promise((ok) => setTimeout(ok, 2000));
   }
 }
 /** The gifts this page has not shown yet: their credits added up, and the newest message among them. */
@@ -868,14 +906,19 @@ function popCard({ kind, title, art, text, note = null, points = null, ok, onOk 
     points ? h("ul", { class: "gp-points" }, points.map(([ic, t]) => h("li", {}, h("span", { class: "gp-pi", "aria-hidden": "true" }, ic === "bolt" ? bolt(17) : icon(ic, 17, 2.2)), h("span", {}, t)))) : null,
     h("div", { class: "gp-btns" }, yes));
   const scrim = h("div", { class: "gp-scrim" }, card);
-  const onTop = () => !openLayer && !document.querySelector(".ask-scrim");
+  // While it shows, the card is the top layer (z 55, over sheets, menus and the viewer): a sheet opened under it gets
+  // neither Esc nor Tab, and Enter or Space can't press anything hidden under it. Only Kleo's own questions (90) sit
+  // above it, and they keep the keyboard for themselves.
+  const onTop = () => !document.querySelector(".ask-scrim");
   const keys = (e) => {
     if (!onTop()) return;
     if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); close(); }
     else if (e.key === "Tab") {
-      e.preventDefault();
+      e.preventDefault(); e.stopImmediatePropagation();
       const order = e.shiftKey ? [yes, x] : [x, yes];
       order[(order.indexOf(document.activeElement) + 1) % order.length].focus();
+    } else if ((e.key === "Enter" || e.key === " ") && !card.contains(document.activeElement)) {
+      e.preventDefault(); e.stopImmediatePropagation(); card.focus({ preventScroll: true });
     }
   };
   document.addEventListener("keydown", keys, true);
@@ -2883,7 +2926,7 @@ async function adminView() {
     setView("admin-view", h("div", { class: "connect-view" }, spinner(24)));
     try {
       await loadAdminCss();
-      adminModule = await import("/admin.js?v=97");
+      adminModule = await import("/admin.js?v=98");
     } catch {
       setView("connect-view", connectCard("The console didn't load", "Check the connection and try again.", h("button", { class: "btn btn-primary", onclick: () => location.reload() }, "Try again")));
       return;

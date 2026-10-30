@@ -287,7 +287,7 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
   if (path.startsWith("/api/admin/")) {
     if (!adminHost || !isAdmin(env, userId)) return json({ error: "Not found." }, 404);
     if (request.headers.get("x-kleo") !== "1") return json({ error: "Forbidden" }, 403);
-    return adminApi(env, request, url, userId);
+    return adminApi(env, request, url, userId, ctx);
   }
 
   // ONE ACCOUNT EVERYWHERE (19 October 2026, src/connect.ts): this account finishes an assistant's connection, and takes in

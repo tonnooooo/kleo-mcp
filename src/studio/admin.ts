@@ -333,10 +333,11 @@ async function giftAgain(env: StudioEnv, g: GiftRow): Promise<Response> {
  * in the same batch (the app shows it once, on its next load), then the e-mail when asked for. The console makes the
  * gift's id once per sheet and sends it with every try: an id already given is answered as it is (giftAgain), so a second
  * click, or a request sent again after its answer was lost, gives nothing more. The e-mail never undoes the gift: what
- * came of it is in the answer, on the gift's row and in its admin.gift audit row. A closed, merged or deleted account,
- * and one only an AI assistant uses (no Kleo sign-in: its gift would be lost when it signs in), get nothing.
+ * came of it is in the answer, on the gift's row and in its admin.gift audit row; both run under ctx.waitUntil, so a
+ * console tab closed meanwhile cannot cut them off. A closed, merged or deleted account, and one only an AI assistant
+ * uses (no Kleo sign-in: its gift would be lost when it signs in), get nothing.
  */
-async function giftAction(env: StudioEnv, request: Request, gate: Gate, adminId: string, u: { id: string; credits: number }, b: Record<string, unknown>, reason: string): Promise<Response> {
+async function giftAction(env: StudioEnv, request: Request, gate: Gate, adminId: string, u: { id: string; credits: number }, b: Record<string, unknown>, reason: string, ctx?: ExecutionContext): Promise<Response> {
   const id = b.id === undefined || b.id === null || b.id === "" ? rid("gf", 12) : String(b.id);
   if (!GIFT_ID.test(id)) throw new StudioError("Reload the page and try again.", 400, "gift_id");
   const before = await giftById(env, id);
@@ -361,25 +362,38 @@ async function giftAction(env: StudioEnv, request: Request, gate: Gate, adminId:
   try {
     after = await moveCredits(env, request, gate, adminId, u, credits, reason, b, { gift: id }, { id, userId: u.id, credits, reason, message, adminId, mail: email });
   } catch (e) {
+    if (e instanceof StudioError) throw e;
+    const now = await giftById(env, id).catch(() => null);
+    if (!now || now.user_id !== u.id) throw e;
     // The same gift sent twice at once: the second batch failed on the gift's id and was rolled back.
-    const now = e instanceof StudioError ? null : await giftById(env, id).catch(() => null);
-    if (now && now.user_id === u.id) return giftAgain(env, now);
-    throw e;
+    if (GIFT_ID_TAKEN.test(e instanceof Error ? e.message : String(e))) return giftAgain(env, now);
+    // Any other trouble after this request's own batch went in (its answer lost, the balance read failing): the gift is
+    // given, so the e-mail and the audit row still follow; mailGift's claim keeps the e-mail at most once.
+    after = (await env.DB.prepare("SELECT credits FROM users WHERE id = ?").bind(u.id).first<{ credits: number }>().catch(() => null))?.credits ?? u.credits + credits;
   }
-  let mail: GiftMail | null = null;
-  if (email) {
-    // mailGift never throws once it sent; anything before that sent nothing, so the e-mail waits for "Send the e-mail again".
-    try { mail = await mailGift(env, u.id, id); } catch (e) { mail = { status: "waiting", to: null, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
-    if (!mail) {
-      const g = await giftById(env, id).catch(() => null);
-      mail = { status: (g?.mail_status ?? "waiting") as GiftMail["status"], to: g?.mail_to ?? null, error: g?.mail_error ?? null };
+  // The e-mail and the audit row run under waitUntil: a console tab closed meanwhile cannot cut them off.
+  const finish = (async (): Promise<GiftMail | null> => {
+    let mail: GiftMail | null = null;
+    if (email) {
+      // mailGift never throws once it sent; anything before that sent nothing, so the e-mail waits for "Send the e-mail again".
+      try { mail = await mailGift(env, u.id, id); } catch (e) { mail = { status: "waiting", to: null, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
+      if (!mail) {
+        const g = await giftById(env, id).catch(() => null);
+        mail = { status: (g?.mail_status ?? "waiting") as GiftMail["status"], to: g?.mail_to ?? null, error: g?.mail_error ?? null };
+      }
     }
-  }
-  await audit(asEnv(env), u.id, null, "admin.gift", { admin: adminId, reason, gift: id, credits, message: !!message, mail: mail?.status ?? "not asked" }).catch(() => {});
+    await audit(asEnv(env), u.id, null, "admin.gift", { admin: adminId, reason, gift: id, credits, message: !!message, mail: mail?.status ?? "not asked" }).catch(() => {});
+    return mail;
+  })();
+  ctx?.waitUntil(finish);
+  const mail = await finish;
   return json({ ok: true, credits: after, gift: { id, credits, message, mail } });
 }
 
-async function userAction(env: StudioEnv, request: Request, gate: Gate, adminId: string, id: string, action: string): Promise<Response> {
+/** The error D1 (SQLite) gives for a gift id that is already there: only that one means "the same gift, sent twice". */
+const GIFT_ID_TAKEN = /UNIQUE constraint failed: studio_gifts\.id/i;
+
+async function userAction(env: StudioEnv, request: Request, gate: Gate, adminId: string, id: string, action: string, ctx?: ExecutionContext): Promise<Response> {
   const u = await targetUser(env, id);
   const b = await body(request);
   // A lookup only reads; its audit row says what it was when no reason is typed.
@@ -396,7 +410,7 @@ async function userAction(env: StudioEnv, request: Request, gate: Gate, adminId:
     if (!Number.isFinite(delta) || delta === 0 || Math.abs(delta) > 100_000) throw new StudioError("Type a whole number of credits, not zero.", 400, "delta");
     return json({ ok: true, credits: await moveCredits(env, request, gate, adminId, u, delta, reason, b) });
   }
-  if (action === "gift") return giftAction(env, request, gate, adminId, u, b, reason);
+  if (action === "gift") return giftAction(env, request, gate, adminId, u, b, reason, ctx);
   if (action === "block") {
     const on = b.on === true;
     if (on) {
@@ -762,7 +776,7 @@ const SETTINGS = ["STUDIO_DAILY_BUDGET_USD", "STUDIO_FREE_DAILY_BUDGET_USD", "ST
 
 // ── the router ────────────────────────────────────────────────────────────────────────────────────────────────────
 
-export async function adminApi(env: StudioEnv, request: Request, url: URL, adminId: string): Promise<Response> {
+export async function adminApi(env: StudioEnv, request: Request, url: URL, adminId: string, ctx?: ExecutionContext): Promise<Response> {
   // The console's own sign-in first; every other route wants its admin session.
   const auth = await adminAuthApi(env, request, url, adminId);
   if (auth) return auth;
@@ -772,7 +786,7 @@ export async function adminApi(env: StudioEnv, request: Request, url: URL, admin
     return json({ error: enrolled ? "Type the code from your phone to open the console." : "Set up the console's second factor first.", code: enrolled ? "admin_signin" : "admin_enroll" }, 401);
   }
   const gate: Gate = { session, fresh: false };
-  const res = await adminRoute(env, request, url, adminId, gate);
+  const res = await adminRoute(env, request, url, adminId, gate, ctx);
   // Every call the owner makes keeps the admin session alive for another 30 minutes, up to its 12 hours. The page's own
   // refreshes (admin.js live(), header X-Kleo-Auto on reads) do not: a console left open still closes after 30 idle minutes.
   const auto = request.method === "GET" && request.headers.get("x-kleo-auto") === "1";
@@ -780,7 +794,7 @@ export async function adminApi(env: StudioEnv, request: Request, url: URL, admin
   return res;
 }
 
-async function adminRoute(env: StudioEnv, request: Request, url: URL, adminId: string, gate: Gate): Promise<Response> {
+async function adminRoute(env: StudioEnv, request: Request, url: URL, adminId: string, gate: Gate, ctx?: ExecutionContext): Promise<Response> {
   const path = url.pathname, method = request.method;
   if (method === "GET") {
     if (path === "/api/admin/security") return json(await securityInfo(env, adminId, gate.session));
@@ -809,10 +823,15 @@ async function adminRoute(env: StudioEnv, request: Request, url: URL, adminId: s
   }
   if (method === "POST") {
     const am = path.match(/^\/api\/admin\/users\/(u_[a-z0-9]+)\/(credits|gift|block|address|key|signout|delete|ip-lookup)$/);
-    if (am) return userAction(env, request, gate, adminId, am[1], am[2]);
+    if (am) return userAction(env, request, gate, adminId, am[1], am[2], ctx);
     // A gift's e-mail that is waiting (src/studio/gifts.ts): sent again, at most once.
     const gm = path.match(/^\/api\/admin\/users\/(u_[a-z0-9]+)\/gifts\/(gf_[a-z0-9]{6,20})\/mail$/);
-    if (gm) return json(await mailGiftAgain(env, adminId, gm[1], gm[2]));
+    if (gm) {
+      // Under waitUntil, like the first send: a tab closed meanwhile cannot cut it off.
+      const again = mailGiftAgain(env, adminId, gm[1], gm[2]);
+      ctx?.waitUntil(again.catch(() => {}));
+      return json(await again);
+    }
     if (path === "/api/admin/sources/links") return createLink(env, adminId, await body(request));
     const lm = path.match(/^\/api\/admin\/sources\/links\/([a-z0-9-]{1,40})$/);
     if (lm) return changeLink(env, adminId, lm[1], await body(request));

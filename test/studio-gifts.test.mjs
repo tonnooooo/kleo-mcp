@@ -29,7 +29,7 @@ import { base32Decode, hotp, stepAt } from "../src/studio/totp.ts";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 class Stmt {
-  constructor(db, sql) { this.stmt = db.prepare(sql); this.args = []; }
+  constructor(db, sql) { this.stmt = db.prepare(sql); this.sql = sql; this.args = []; }
   bind(...a) { this.args = a.map((v) => (v === undefined ? null : typeof v === "boolean" ? (v ? 1 : 0) : v)); return this; }
   async run() { const r = this.stmt.run(...this.args); return { success: true, meta: { changes: Number(r.changes) } }; }
   async first() { return this.stmt.get(...this.args) ?? null; }
@@ -79,7 +79,8 @@ function newEnv(over = {}) {
   return env;
 }
 const pending = [];
-const ctx = { waitUntil(p) { pending.push(p); }, passThroughOnException() {} };
+// Work handed to waitUntil is counted: the gift's e-mail must run there, so a closed console tab cannot cut it off.
+const ctx = { waited: 0, waitUntil(p) { ctx.waited++; pending.push(p); }, passThroughOnException() {} };
 const BERLIN = { ip: "95.33.163.20", cf: { country: "DE", city: "Berlin" } };
 const ROME = { ip: "151.20.1.9", cf: { country: "IT", city: "Rome" } };
 const NZ = { ip: "203.0.113.9", cf: { country: "NZ", city: "Auckland" } };
@@ -416,18 +417,28 @@ test("the pages keep the owner's rules and the review's: his words, the card wai
   for (const words of ["\"A gift from the Kleo team\"", "already in your account. Thanks for creating with Kleo, enjoy", "ok: \"Claim\"", "\"aria-label\": \"Close\"",
     "\"Become a Kleo Creator\"", "25% of every sale from your link, for 12 months", "Bonus credits for your views", "Extra credits in the months you post",
     "ok: \"Apply\"", "go(\"/creators\")"]) assert.ok(part.includes(words), words);
-  // Seen: the shown ids, in the body the server reads, with a retry; a gift shown here but still listed is told again.
-  assert.match(part, /api\("\/api\/me\/gift\/seen", \{ method: "POST", body: \{ ids \} \}\)/);
+  // Seen: the shown ids, in the body the server reads, with keepalive and a retry; until the server answers they stay in
+  // this browser, and the next load reports them without showing the card again (F).
+  assert.match(part, /fetch\("\/api\/me\/gift\/seen", \{ method: "POST", keepalive: true,/);
+  assert.match(part, /body: JSON\.stringify\(\{ ids \}\)/);
   assert.match(part, /for \(let i = 0; i < 2; i\+\+\)/);
+  assert.match(part, /keepShown\(ids\);/);
+  assert.match(part, /if \(res\.ok\) \{ dropShown\(ids\); return; \}/);
+  assert.match(part, /const items = giftItems\(S\.me\.gift\);\s*seedShown\(items\);/, "a reload first takes the kept ids as shown");
+  assert.match(part, /store\.get\(GIFT_KEEP, \{\}\)/, "kept through the app's storage helper (try/catch)");
   assert.match(part, /filter\(\(x\) => GIFTS_SHOWN\.has\(x\.id\)\)[^\n]*\n\s*if \(again\.length\) giftsSeen\(again\);/);
   assert.match(part, /const fresh = items\.filter\(\(x\) => !GIFTS_SHOWN\.has\(x\.id\)\);/, "it announces only what this page has not shown");
   // The Creators card: paid accounts outside the program only.
   assert.match(part, /if \(!S\.me \|\| !S\.me\.paid \|\| S\.me\.creator/);
   // It waits for the viewer, sheets, menus, questions and typing, and reads /api/me again when it had to wait.
-  assert.match(part, /const giftWaits = \(\) => document\.visibilityState === "hidden" \|\| !!openLayer \|\| !!document\.querySelector\("\.ask-scrim, \.gp-scrim"\)/);
+  assert.match(part, /const giftWaits = \(\) => document\.visibilityState === "hidden" \|\| !!openLayer \|\| !!document\.querySelector\("\.ask-scrim, \.gp-scrim"\) \|\| videoPlaysAloud\(\)/);
+  assert.match(part, /const videoPlaysAloud = \(\) => \[\.\.\.document\.querySelectorAll\("video"\)\]\.some\(\(v\) => !v\.paused && !v\.ended && !v\.muted/, "any video with sound (D)");
   assert.match(part, /if \(waited && !DEMO\) \{[\s\S]{0,200}await api\("\/api\/me"\)/);
   // The keyboard: only on top, the card itself focused, the focus given back.
-  assert.match(part, /const onTop = \(\) => !openLayer && !document\.querySelector\("\.ask-scrim"\);/);
+  // E: over sheets, menus and the viewer the card keeps Esc, Tab, Enter and Space; only a question above it takes them.
+  assert.match(part, /const onTop = \(\) => !document\.querySelector\("\.ask-scrim"\);/);
+  assert.doesNotMatch(part.slice(part.indexOf("const onTop")).split("\n")[0], /openLayer/, "a sheet under the card doesn't take its keys");
+  assert.match(part, /\(e\.key === "Enter" \|\| e\.key === " "\) && !card\.contains\(document\.activeElement\)/);
   assert.match(part, /e\.stopImmediatePropagation\(\)/);
   assert.match(part, /tabindex: "-1"/);
   assert.match(part, /card\.focus\(\{ preventScroll: true \}\)/);
@@ -450,4 +461,129 @@ test("the pages keep the owner's rules and the review's: his words, the card wai
   assert.match(admin, /u\.anonymous \|\| blocked \? null : h\("button", \{ class: "btn btn-quiet", onclick: giftSheet \}/);
   assert.match(admin, /"Send the e-mail again"/);
   assert.match(admin, /"E-mail them"/);
+  // C: a deleted account's gift never reads "null"; B: a stale send offers the button again.
+  for (const t of ["E-mail sent (address removed with the account)", "No e-mail (reason removed with the account)", "E-mail refused (reason removed with the account)"]) assert.ok(admin.includes(t), t);
+  assert.doesNotMatch(admin, /`E-mail sent to \$\{g\.mail_to\}` : g\.mail_status/, "no address printed without checking it is there");
+  assert.match(admin, /const giftStale = \(g\) => g\.mail_status === "sending" && \(!g\.mailed_at \|\| Date\.now\(\) - toDate\(g\.mailed_at\)\.getTime\(\) > 5 \* 60e3\);/);
+  assert.match(admin, /const canSend = !u\.deleted && g\.mail && \(g\.mail_status === "waiting" \|\| !g\.mail_status \|\| giftStale\(g\)\);/);
+});
+
+// ── The follow-up (after PR #157 went live): errors after the commit, stale sends, the claim, D1 errors after a send ──
+
+/** Makes the next `times` statements whose SQL matches `re` fail when they run, the way D1 does when its connection drops. */
+function failOn(env, re, times = 1) {
+  const real = env.DB.prepare.bind(env.DB);
+  env.DB.prepare = (sql) => {
+    const st = real(sql);
+    if (times > 0 && re.test(sql)) { times--; st.run = async () => { throw new Error("D1_ERROR: Network connection lost."); }; }
+    return st;
+  };
+}
+/** A gift whose e-mail is waiting: Email Sending said "later" (a rate limit) when it was given. */
+async function waitingGift(env, owner, who) {
+  env.refuse = "Rate limit exceeded, try later";
+  const r = await gift(env, owner.admin, who.id, { id: giftIdOf(), credits: 2, reason: "a thank you", email: true });
+  env.refuse = null;
+  assert.equal(r.json.gift.mail.status, "waiting", r.text);
+  return r.json.gift.id;
+}
+
+test("A: an error after this request's own batch went in still sends the e-mail and writes the audit row; only the id conflict is a repeat", async () => {
+  const { env, owner, kal } = await setup();
+  // The batch commits, then its answer is lost.
+  const realBatch = env.DB.batch.bind(env.DB);
+  let lose = 1;
+  env.DB.batch = async (stmts) => {
+    const out = await realBatch(stmts);
+    if (lose > 0 && /^INSERT INTO studio_gifts/.test(stmts[0]?.sql ?? "")) { lose--; throw new Error("D1_ERROR: Network connection lost."); }
+    return out;
+  };
+  const r = await gift(env, owner.admin, kal.id, { id: giftIdOf(), credits: 20, reason: "Thank you", email: true });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.json.again, undefined, "it is this request's own gift, not a repeat");
+  assert.equal(r.json.credits, 25);
+  assert.equal(r.json.gift.mail.status, "sent");
+  assert.equal(env.sent.length, 1, "the e-mail went out");
+  assert.equal(auditOf(env, kal.id, "admin.gift").length, 1, "and the audit row is there");
+  assert.equal(auditOf(env, kal.id, "admin.credits").length, 1);
+  // The same id sent twice at once: the second request's check misses the first's row, its batch fails on the id and
+  // is rolled back. That one, and only that one, is answered as a repeat.
+  const id = r.json.gift.id;
+  const realPrepare = env.DB.prepare.bind(env.DB);
+  let hide = 1;
+  env.DB.prepare = (sql) => {
+    const st = realPrepare(sql);
+    if (hide > 0 && sql === "SELECT * FROM studio_gifts WHERE id = ?") { hide--; st.first = async () => null; }
+    return st;
+  };
+  const twin = await gift(env, owner.admin, kal.id, { id, credits: 20, reason: "Thank you", email: true });
+  assert.equal(twin.status, 200, twin.text);
+  assert.equal(twin.json.again, true);
+  assert.equal(credits(env, kal.id), 25, "no credits moved twice");
+  assert.equal(env.sent.length, 1, "no second e-mail");
+  assert.equal(auditOf(env, kal.id, "admin.credits").length, 1);
+  assert.equal(auditOf(env, kal.id, "admin.gift").length, 1);
+});
+
+test("B: a send cut off after its claim waits 5 minutes, then can go again; the claim's time is stamped; it all runs under waitUntil", async () => {
+  const { env, owner, kal } = await setup();
+  const before = ctx.waited;
+  const r = await gift(env, owner.admin, kal.id, { id: giftIdOf(), credits: 20, reason: "Thank you", email: true });
+  assert.equal(r.json.gift.mail.status, "sent");
+  assert.ok(ctx.waited > before, "the e-mail and the audit row run under ctx.waitUntil");
+  const id = await waitingGift(env, owner, kal);
+  const ago = (min) => new Date(Date.now() - min * 60_000).toISOString();
+  // Claimed a minute ago, no outcome yet: it is on its way, and nothing sends it twice.
+  run(env, "UPDATE studio_gifts SET mail_status = 'sending', mailed_at = ? WHERE id = ?", ago(1), id);
+  const busy = await mailAgain(env, owner.admin, kal.id, id);
+  assert.equal(busy.status, 409);
+  assert.match(busy.json.error, /on its way/);
+  const sent = env.sent.length;
+  // Claimed ten minutes ago, still no outcome (the request was cut off): it counts as waiting again.
+  run(env, "UPDATE studio_gifts SET mailed_at = ? WHERE id = ?", ago(10), id);
+  const w0 = ctx.waited;
+  const again = await mailAgain(env, owner.admin, kal.id, id);
+  assert.equal(again.status, 200, again.text);
+  assert.equal(again.json.mail.status, "sent");
+  assert.equal(env.sent.length, sent + 1);
+  assert.ok(ctx.waited > w0, "sending again runs under waitUntil too");
+  // A claim from before the claim's time was stamped (no mailed_at) counts as stale as well.
+  const old = await waitingGift(env, owner, kal);
+  run(env, "UPDATE studio_gifts SET mail_status = 'sending', mailed_at = NULL WHERE id = ?", old);
+  assert.equal((await mailAgain(env, owner.admin, kal.id, old)).json.mail.status, "sent");
+  // The claim stamps its time: when the outcome can't be written, the row keeps 'sending' with the claim's time.
+  failOn(env, /^UPDATE studio_gifts SET mail_status = \?, mail_to = \?/);
+  const cut = await gift(env, owner.admin, kal.id, { id: giftIdOf(), credits: 1, reason: "Thank you", email: true });
+  const row = get(env, "SELECT mail_status, mailed_at FROM studio_gifts WHERE id = ?", cut.json.gift.id);
+  assert.equal(row.mail_status, "sending");
+  assert.ok(Date.now() - Date.parse(row.mailed_at) < 60_000, "the claim's time");
+});
+
+test("G: a D1 error after a successful send keeps the gift sent; the claim sends once under concurrency, and only for its own account", async () => {
+  const { env, owner, kal, bo } = await setup();
+  // The mail log's write fails after the send: the gift is sent, and says so.
+  failOn(env, /^INSERT INTO studio_mail_log/);
+  let r = await gift(env, owner.admin, kal.id, { id: giftIdOf(), credits: 20, reason: "Thank you", email: true });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.json.gift.mail.status, "sent");
+  assert.equal(get(env, "SELECT mail_status FROM studio_gifts WHERE id = ?", r.json.gift.id).mail_status, "sent");
+  assert.equal(env.sent.length, 1);
+  // The outcome's own write fails after the send: the answer still says sent, never failed.
+  failOn(env, /^UPDATE studio_gifts SET mail_status = \?, mail_to = \?/);
+  r = await gift(env, owner.admin, kal.id, { id: giftIdOf(), credits: 1, reason: "Thank you", email: true });
+  assert.equal(r.json.gift.mail.status, "sent");
+  assert.equal(env.sent.length, 2);
+  // Two "Send the e-mail again" at once for one waiting gift: one sends, the other is told it is on its way.
+  const id = await waitingGift(env, owner, kal);
+  const sent = env.sent.length;
+  const both = await Promise.all([mailAgain(env, owner.admin, kal.id, id), mailAgain(env, owner.admin, kal.id, id)]);
+  assert.deepEqual(both.map((x) => x.status).sort(), [200, 409]);
+  assert.equal(env.sent.length, sent + 1, "exactly one e-mail");
+  // Another account's path never sends it, and leaves it waiting for its own.
+  const bos = await waitingGift(env, owner, bo);
+  const n = env.sent.length;
+  assert.equal((await mailAgain(env, owner.admin, kal.id, bos)).status, 404);
+  assert.equal(env.sent.length, n);
+  assert.equal(get(env, "SELECT mail_status FROM studio_gifts WHERE id = ?", bos).mail_status, "waiting");
+  assert.equal((await mailAgain(env, owner.admin, bo.id, bos)).json.mail.status, "sent");
 });
