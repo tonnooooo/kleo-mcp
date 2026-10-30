@@ -126,6 +126,11 @@ test("the switches: off without STUDIO_EMAIL_CODE or the EMAIL binding; 'signin'
   assert.equal(none.status, 403);
   assert.equal(none.json.code, "no_account");
   assert.equal(one(env, "SELECT COUNT(*) AS n FROM users WHERE email = 'new@example.com'").n, 0, "no account opened");
+  // A refusal does not spend the code: once the owner opens sign-ups, the same code works.
+  const code = codeOf(env.sent.at(-1));
+  env.STUDIO_EMAIL_CODE = "on";
+  const later = await verify(env, "new@example.com", code);
+  assert.equal(later.status, 200, later.text);
 });
 
 test("the e-mail: the code in the subject and body, from hello@kleooai.com, no unsubscribe link; only its HMAC is kept", async () => {

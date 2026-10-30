@@ -764,37 +764,42 @@ export async function verifyEmailCode(env: StudioEnv, body: { email?: string; co
     }
     throw wrong();
   }
-  // A code works once, and not after its fifth wrong try: whoever spends it first signs in.
-  const spent = await env.DB.prepare(`UPDATE studio_email_codes SET code_hash = '', expires_at = 0
-    WHERE inbox = ? AND code_hash = ? AND attempts < ${CODE_TRIES}`).bind(inbox, hash).run();
-  if ((spent.meta.changes ?? 0) !== 1) throw new StudioError("Too many wrong codes. Ask for a new one.", 429, "code_tries");
-
+  // The account the code opens is decided BEFORE the code is spent, so a refusal leaves it usable; and only after the
+  // code proved right, so the answers say nothing about the address to someone who does not hold it.
   const refuseAdmin = async (id: string): Promise<StudioError> => {
     await audit(asEnv(env), id, null, "studio.email_code_refused", { admin: true });
     return new StudioError(ADMIN_CODE_SENTENCE, 403, "admin_code");
   };
   // Exact addresses only (ONE INBOX, ONE BUDGET): the code proved this spelling, nothing more.
   let userId: string | null = (await env.DB.prepare(`SELECT user_id FROM studio_logins WHERE provider IN (${VOUCHED_SQL}) AND email = ? ORDER BY provider = 'email' DESC LIMIT 1`).bind(email).first<{ user_id: string }>())?.user_id ?? null;
-  let handedOver = false;
-  if (!userId) {
-    const claimant = (await getLogin(env, "password", email))?.user_id ?? (await getUserByEmail(asEnv(env), email))?.id ?? null;
-    if (claimant) {
-      if (isAdmin(env, claimant)) throw await refuseAdmin(claimant);
-      if (await accountMerged(env, claimant)) throw new StudioError(MERGED_SENTENCE, 403, "merged");
-      await evictClaimant(env, claimant, "email", !(await untouched(env, claimant)));
-      userId = claimant;
-      handedOver = true;
-    }
-  }
-  if (userId && isAdmin(env, userId)) throw await refuseAdmin(userId);
-  let gifted: number | null = null;
-  let giftOff = false;
-  if (!userId) {
+  const claimant = userId ? null : (await getLogin(env, "password", email))?.user_id ?? (await getUserByEmail(asEnv(env), email))?.id ?? null;
+  const target = userId ?? claimant;
+  if (target) {
+    if (isAdmin(env, target)) throw await refuseAdmin(target);
+    if (await accountMerged(env, target)) throw new StudioError(MERGED_SENTENCE, 403, "merged");
+    if (await accountBlocked(env, target)) throw new StudioError(BLOCKED_SENTENCE, 403, "blocked");
+  } else {
     // Another spelling of an inbox that already has an account opens nothing here (ONE INBOX, ONE BUDGET).
     if (await env.DB.prepare("SELECT 1 AS one FROM users WHERE email_canon = ? LIMIT 1").bind(inbox).first()) {
       throw new StudioError("This inbox already has a Kleo account under another spelling of the address. Sign in with that one.", 409, "other_spelling");
     }
     if (mode !== "on") throw new StudioError("There's no Kleo account with this e-mail yet. Use Google to create one.", 403, "no_account");
+  }
+  // A code works once, and not after its fifth wrong try: whoever spends it first signs in.
+  const spent = await env.DB.prepare(`UPDATE studio_email_codes SET code_hash = '', expires_at = 0
+    WHERE inbox = ? AND code_hash = ? AND attempts < ${CODE_TRIES}`).bind(inbox, hash).run();
+  if ((spent.meta.changes ?? 0) !== 1) throw new StudioError("Too many wrong codes. Ask for a new one.", 429, "code_tries");
+
+  let handedOver = false;
+  if (claimant) {
+    // An account that only CLAIMS the address goes to whoever holds the inbox (E-MAIL TRUST).
+    await evictClaimant(env, claimant, "email", !(await untouched(env, claimant)));
+    userId = claimant;
+    handedOver = true;
+  }
+  let gifted: number | null = null;
+  let giftOff = false;
+  if (!userId) {
     const giftOn = (env.STUDIO_EMAIL_CODE_GIFT ?? "").trim().toLowerCase() === "on";
     giftOff = !giftOn;
     const made = await newAccount(env, email, v, from, giftOn ? null : "email_code");
