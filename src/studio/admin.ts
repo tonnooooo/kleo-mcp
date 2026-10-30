@@ -290,47 +290,18 @@ async function creditWithoutCode(env: StudioEnv, s: AdminSession, adminId: strin
   const w = [since, adminId, Math.abs(delta)];
   const withGift = gift ? " AND EXISTS (SELECT 1 FROM studio_gifts WHERE id = ?)" : "";
   const g = gift ? [gift.id] : [];
-  const change = creditStatements(env, id, delta, detail, ` AND ${within}${withGift}`, [...w, ...g]);
-  const out = await env.DB.batch([...(gift ? [giftInsert(env, gift, within, w)] : []), ...change.stmts]);
-  return (out[(gift ? 1 : 0) + change.moves]?.meta.changes ?? 0) === 1;
-}
-
-/**
- * The statements of one credit change, after the gift's row when there is one: `cond` and `args` are the batch's own
- * condition (CREDITS_WITHOUT_CODE, the gift's row) and its parameters; `moves` is the index of the one that moves the
- * balance. An increase (Add credits, a gift): the balance, then its admin.credits row with the balance after. A decrease
- * (Take credits away; 31 October 2026): its admin.credits row first, with the balance before and after and the Kleo
- * Creators program credits before it, then the balance, then the program credits put back to what they were, never
- * above the new balance. The users_program_credits_spent trigger takes every decrease off the program credits first,
- * but credits taken away by hand were not spent, and program credits have their own expiry and take-back paths
- * (creators.ts). The decrease's later statements go by its row's own `change` id, so `cond` is read once, before that
- * row is written (the row itself counts toward CREDITS_WITHOUT_CODE afterwards).
- */
-function creditStatements(env: StudioEnv, id: string, delta: number, detail: Record<string, unknown>, cond: string, args: unknown[]): { stmts: D1PreparedStatement[]; moves: number } {
-  if (delta >= 0) {
-    return { moves: 0, stmts: [
-      env.DB.prepare(`UPDATE users SET credits = MAX(0, credits + ?) WHERE id = ?${cond}`).bind(delta, id, ...args),
-      env.DB.prepare(`INSERT INTO audit (user_id, job_id, event, detail) SELECT u.id, NULL, 'admin.credits', json_set(?, '$.after', u.credits) FROM users u WHERE u.id = ?${cond}`)
-        .bind(JSON.stringify(detail), id, ...args),
-    ] };
-  }
-  const change = rid("ch", 12);
-  const row = "a.user_id = ? AND a.event = 'admin.credits' AND json_extract(a.detail, '$.change') = ?";
-  return { moves: 1, stmts: [
-    env.DB.prepare(`INSERT INTO audit (user_id, job_id, event, detail) SELECT u.id, NULL, 'admin.credits',
-        json_set(?, '$.before', u.credits, '$.after', MAX(0, u.credits + ?), '$.program_before', u.program_credits, '$.change', ?) FROM users u WHERE u.id = ?${cond}`)
-      .bind(JSON.stringify(detail), delta, change, id, ...args),
-    env.DB.prepare(`UPDATE users SET credits = MAX(0, credits + ?) WHERE id = ? AND EXISTS (SELECT 1 FROM audit a WHERE ${row})`).bind(delta, id, id, change),
-    // After the trigger: the program credits as they were before the change, or the new balance if that is lower.
-    env.DB.prepare(`UPDATE users SET program_credits = MIN(COALESCE((SELECT json_extract(a.detail, '$.program_before') FROM audit a WHERE ${row}), program_credits),
-        MAX(0, credits)) WHERE id = ? AND EXISTS (SELECT 1 FROM audit a WHERE ${row})`).bind(id, change, id, id, change),
-  ] };
+  const out = await env.DB.batch([
+    ...(gift ? [giftInsert(env, gift, within, w)] : []),
+    env.DB.prepare(`UPDATE users SET credits = MAX(0, credits + ?) WHERE id = ? AND ${within}${withGift}`).bind(delta, id, ...w, ...g),
+    env.DB.prepare(`INSERT INTO audit (user_id, job_id, event, detail) SELECT u.id, NULL, 'admin.credits', json_set(?, '$.after', u.credits) FROM users u
+      WHERE u.id = ? AND ${within}${withGift}`).bind(JSON.stringify(detail), id, ...w, ...g),
+  ]);
+  return (out[gift ? 1 : 0]?.meta.changes ?? 0) === 1;
 }
 
 /**
  * Moves an account's credits the way every action of the console does (Add credits, Take credits away, Gift credits):
- * one admin.credits audit row with the admin's id, the reason, the change, the balance before and after, and `extra`;
- * a decrease leaves a creator's program credits as they were, never above the new balance (creditStatements).
+ * one admin.credits audit row with the admin's id, the reason, the change, the balance before and after, and `extra`.
  * Without a code typed in the last 5 minutes, only while such changes add up to CREDITS_WITHOUT_CODE (creditWithoutCode);
  * past that, the code is asked for. A gift's row (gifts.ts giftInsert) is the batch's FIRST statement and the credits and
  * the audit row move only with it: a gift id already used fails that INSERT, and D1 rolls the whole batch back (one
@@ -349,7 +320,12 @@ async function moveCredits(env: StudioEnv, request: Request, gate: Gate, adminId
   }
   const withGift = gift ? " AND EXISTS (SELECT 1 FROM studio_gifts WHERE id = ?)" : "";
   const g = gift ? [gift.id] : [];
-  await env.DB.batch([...(gift ? [giftInsert(env, gift)] : []), ...creditStatements(env, u.id, delta, detail, withGift, g).stmts]);
+  await env.DB.batch([
+    ...(gift ? [giftInsert(env, gift)] : []),
+    env.DB.prepare(`UPDATE users SET credits = MAX(0, credits + ?) WHERE id = ?${withGift}`).bind(delta, u.id, ...g),
+    env.DB.prepare(`INSERT INTO audit (user_id, job_id, event, detail) SELECT u.id, NULL, 'admin.credits', json_set(?, '$.after', u.credits) FROM users u WHERE u.id = ?${withGift}`)
+      .bind(JSON.stringify(detail), u.id, ...g),
+  ]);
   return balance();
 }
 

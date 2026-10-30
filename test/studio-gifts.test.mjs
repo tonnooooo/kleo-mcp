@@ -28,10 +28,15 @@ import { base32Decode, hotp, stepAt } from "../src/studio/totp.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
+/**
+ * D1's meta.changes is total_changes() after the statement minus before (miniflare's D1, database.worker.js), so the rows
+ * a trigger changes count too (users_program_credits_spent); node:sqlite's own `changes` (sqlite3_changes) leaves them out.
+ */
+const d1Changes = (db) => Number(db.prepare("SELECT total_changes() AS n").get().n);
 class Stmt {
-  constructor(db, sql) { this.stmt = db.prepare(sql); this.sql = sql; this.args = []; }
+  constructor(db, sql) { this.db = db; this.stmt = db.prepare(sql); this.sql = sql; this.args = []; }
   bind(...a) { this.args = a.map((v) => (v === undefined ? null : typeof v === "boolean" ? (v ? 1 : 0) : v)); return this; }
-  async run() { const r = this.stmt.run(...this.args); return { success: true, meta: { changes: Number(r.changes) } }; }
+  async run() { const n = d1Changes(this.db); this.stmt.run(...this.args); return { success: true, meta: { changes: d1Changes(this.db) - n } }; }
   async first() { return this.stmt.get(...this.args) ?? null; }
   async all() { return { results: this.stmt.all(...this.args) }; }
 }
@@ -782,39 +787,6 @@ test("cancel: a creator's program credits stay theirs; only the gift's ordinary 
   assert.deepEqual(balance(bo.id), { credits: 20, program: 20 }, "the program's 20 are left, never more than the balance");
 });
 
-test("Take credits away keeps a 110/110 creator's program credits: only credits outside the program go, and never more than the balance", async () => {
-  const { env, owner, kal } = await setup();
-  const balance = () => ({ ...get(env, "SELECT credits, program_credits AS program FROM users WHERE id = ?", kal.id) });
-  const takeAway = (n, cookie = owner.admin) => call(env, `/api/admin/users/${kal.id}/credits`, { method: "POST", cookie, body: { delta: -n, reason: "Sent too early" } });
-  // Kal, a creator: 110 credits, all from the program. A 20-credit gift goes in as ordinary credits.
-  run(env, "UPDATE users SET credits = 110, program_credits = 110 WHERE id = ?", kal.id);
-  const g = (await gift(env, owner.admin, kal.id, { id: giftIdOf(), credits: 20, reason: "Thank you", email: false })).json.gift;
-  assert.deepEqual(balance(), { credits: 130, program: 110 });
-  // The gift's 20 taken away by hand: the trigger takes them off the program credits, and the same batch puts them back.
-  assert.equal((await takeAway(20)).json.credits, 110);
-  assert.deepEqual(balance(), { credits: 110, program: 110 });
-  const row = auditOf(env, kal.id, "admin.credits")[0];
-  assert.deepEqual([row.delta, row.before, row.after, row.program_before], [-20, 130, 110, 110]);
-  // Then the console's "Only stop the pop-up": nothing moves, and the program credits stay whole.
-  assert.equal((await cancelGift(env, owner.admin, kal.id, g.id, { reason: "Credits taken by hand", takeBack: false })).status, 200);
-  assert.deepEqual(balance(), { credits: 110, program: 110 });
-  // Past what is outside the program, program credits go too: they are never more than the balance.
-  assert.equal((await takeAway(30)).json.credits, 80);
-  assert.deepEqual(balance(), { credits: 80, program: 80 });
-  // Without a code typed in the last 5 minutes (CREDITS_WITHOUT_CODE) the batch is the same.
-  run(env, "UPDATE audit SET at = ? WHERE user_id = ?", new Date(Date.now() - 10 * 60_000).toISOString(), kal.id);
-  run(env, "UPDATE users SET credits = 100 WHERE id = ?", kal.id); // 20 bought: 100 credits, 80 of them from the program
-  const s = await mod.readAdminCookie("s3cret", owner.adminCookie.split("=")[1]);
-  const stale = `${owner.cookie}; __Host-kleo_admin=${await mod.adminCookieValue("s3cret", { ...s, fresh: s.fresh - 6 * 60 })}`;
-  const r = await takeAway(10, stale);
-  assert.equal(r.status, 200, r.text);
-  assert.equal(r.json.credits, 90);
-  assert.deepEqual(balance(), { credits: 90, program: 80 });
-  // And a take-away refused for a code moves nothing, the program credits included.
-  assert.equal((await takeAway(150, stale)).json.code, "fresh_code");
-  assert.deepEqual(balance(), { credits: 90, program: 80 });
-});
-
 test("cancel with takeBack: false only stops the pop-up: no credits move, no admin.credits row, no code even for a big gift", async () => {
   const { env, owner, kal } = await setup();
   const g = (await gift(env, owner.admin, kal.id, { id: giftIdOf(), credits: 20, reason: "Thank you", email: false })).json.gift;
@@ -887,7 +859,8 @@ test("cancel in the console: a real button on a gift not seen yet, the console's
   assert.match(admin, /a\.event === "admin\.credits" && toDate\(a\.at\)\.getTime\(\) >= toDate\(g\.created_at\)\.getTime\(\)/);
   assert.match(admin, /const removedBy = \(x\) => Math\.max\(0, x\.before != null && x\.after != null \? Number\(x\.before\) - Number\(x\.after\) : -Number\(x\.delta\)\) \|\| 0;/,
     "what each row really removed (before - after), the delta asked for only on a row without them");
-  assert.match(admin, /\.filter\(\(x\) => !x\.cancel\)\.reduce\(\(sum, x\) => sum \+ removedBy\(x\), 0\)/, "not another gift's cancel");
+  assert.match(admin, /\.filter\(\(x\) => Number\(x\.delta\) < 0 && !x\.cancel\)\.reduce\(\(sum, x\) => sum \+ Math\.min\(-Number\(x\.delta\), removedBy\(x\)\), 0\)/,
+    "only decreases, never more than each asked for, never another gift's cancel");
   assert.match(admin, /pill\(`Cancelled \$\{day\(g\.cancelled_at\)\}`, "bad"\)/);
   // A cancelled gift's stale send may have gone out: its line comes first and never claims "No e-mail".
   const staleLine = admin.indexOf('if (g.cancelled_at && giftStale(g)) return "Cancelled; an earlier e-mail may have gone out";');

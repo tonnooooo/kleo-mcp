@@ -27,10 +27,15 @@ import { base32Decode, hotp, stepAt } from "../src/studio/totp.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
+/**
+ * D1's meta.changes is total_changes() after the statement minus before (miniflare's D1, database.worker.js), so the rows
+ * a trigger changes count too (users_program_credits_spent); node:sqlite's own `changes` (sqlite3_changes) leaves them out.
+ */
+const d1Changes = (db) => Number(db.prepare("SELECT total_changes() AS n").get().n);
 class Stmt {
-  constructor(db, sql) { this.stmt = db.prepare(sql); this.args = []; }
+  constructor(db, sql) { this.db = db; this.stmt = db.prepare(sql); this.args = []; }
   bind(...a) { this.args = a.map((v) => (v === undefined ? null : typeof v === "boolean" ? (v ? 1 : 0) : v)); return this; }
-  async run() { const r = this.stmt.run(...this.args); return { success: true, meta: { changes: Number(r.changes) } }; }
+  async run() { const n = d1Changes(this.db); this.stmt.run(...this.args); return { success: true, meta: { changes: d1Changes(this.db) - n } }; }
   async first() { return this.stmt.get(...this.args) ?? null; }
   async all() { return { results: this.stmt.all(...this.args) }; }
 }
@@ -551,12 +556,8 @@ test("small credit changes without a fresh code add up: past 100 in all, on any 
   const give = (who, delta, extra = {}, cookie = stale) => call(env, `/api/admin/users/${who}/credits`, { method: "POST", cookie, body: { reason: "a grant in pieces", delta, ...extra } });
   assert.equal((await give(ana.id, 60)).json.credits, 65);
   assert.equal((await give(ana.id, -40)).json.credits, 25, "taking away counts as much as adding");
-  const rows = auditOf(env, ana.id, "admin.credits");
-  // A take-away's row also has the program credits before it, and its own id, which the rest of its batch goes by.
-  assert.match(rows[0].change, /^ch_[a-z0-9]{12}$/);
-  delete rows[0].change;
-  assert.deepEqual(rows, [
-    { admin: owner.id, reason: "a grant in pieces", delta: -40, before: 65, after: 25, program_before: 0 },
+  assert.deepEqual(auditOf(env, ana.id, "admin.credits"), [
+    { admin: owner.id, reason: "a grant in pieces", delta: -40, before: 65, after: 25 },
     { admin: owner.id, reason: "a grant in pieces", delta: 60, before: 5, after: 65 },
   ]);
   assert.equal((await give(ana.id, 1)).json.code, "fresh_code", "the 101st credit wants a code");
