@@ -130,7 +130,7 @@ async function add(file, { dryRun, offline, noProbe }) {
     errors.push(...gapProblems(Date.parse(v.post.publish_at), rows.filter((r) => r.id !== v.post.id)
       .map((r) => { const ms = Date.parse(r.published_at ?? r.publish_at); return { label: `${r.id} (${fmtNz(ms)})`, ms }; })));
     console.log(`  ${v.post.id}: ${fmtNz(Date.parse(v.post.publish_at))}`);
-    console.log(`  request: POST https://graph.instagram.com/v26.0/<IG_ID>/media (Authorization: Bearer <token>)\n  ${JSON.stringify(containerParams(v.post))}`);
+    console.log(`  request: POST /v26.0/<IG_ID>/media on graph.facebook.com or graph.instagram.com, by the token (Authorization: Bearer <token>)\n  ${JSON.stringify(containerParams(v.post))}`);
   }
   for (const w of v.warnings) console.log(`  warning: ${w}`);
   for (const e of errors) console.log(`  ERROR: ${e}`);

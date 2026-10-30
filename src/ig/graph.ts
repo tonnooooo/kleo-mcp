@@ -1,5 +1,11 @@
 /**
- * KLEO INSTAGRAM PUBLISHER — THE INSTAGRAM API CALLS (Instagram API with Instagram Login, graph.instagram.com).
+ * KLEO INSTAGRAM PUBLISHER — THE INSTAGRAM API CALLS, through either of Meta's two roads to the same endpoints:
+ *  - Instagram API with Instagram Login (graph.instagram.com): a token that starts with "IG", renewed every 7 days;
+ *  - Instagram API with Facebook Login (graph.facebook.com): a token that starts with "EAA". The Worker uses a system
+ *    user's token from the business portfolio "Kleo", which never expires. Since 30 Oct 2026 this is the road in use:
+ *    Meta's "API setup with Unified login" page fails for us server-side (code 1675030), so no Instagram Login token
+ *    can be made.
+ * The token decides the road (loginOf); the container, its status_code and media_publish are the same on both.
  *
  * The token travels in the Authorization header, as in Meta's own curl examples, never in a URL. If Meta ever answers
  * as if a call carried no token or an unreadable one (codes 104, 2500 and 190), the call is made once more with
@@ -10,6 +16,10 @@
  */
 
 export const GRAPH_HOST = "https://graph.instagram.com";
+export const FACEBOOK_HOST = "https://graph.facebook.com";
+export type Login = "instagram" | "facebook";
+/** Facebook Login tokens (user, Page and system-user tokens) start with "EAA"; Instagram Login tokens with "IG". */
+export const loginOf = (token: string): Login => (token.trim().startsWith("EAA") ? "facebook" : "instagram");
 export type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
 
 export class GraphError extends Error {
@@ -46,12 +56,13 @@ let headerWorks = true;
 interface MetaError { message?: string; code?: number; error_subcode?: number; error_user_title?: string; error_user_msg?: string }
 
 /**
- * A client bound to one token. `path` is versioned ("me", "<IG_ID>/media") unless it starts with "/"
- * ("/refresh_access_token", unversioned in Meta's documentation).
+ * A client bound to one token, on graph.instagram.com unless `host` says otherwise. `path` is versioned ("me",
+ * "<IG_ID>/media") unless it starts with "/" ("/refresh_access_token", unversioned in Meta's documentation).
  */
-export function graphClient(token: string, version: string, fetcher: Fetcher, opts: { tokenInQuery?: boolean; timeoutMs?: number } = {}): Graph {
+export function graphClient(token: string, version: string, fetcher: Fetcher, opts: { tokenInQuery?: boolean; timeoutMs?: number; host?: string } = {}): Graph {
+  const host = opts.host ?? GRAPH_HOST;
   const call = async <T>(method: "GET" | "POST", path: string, params: Record<string, unknown>, asParam: boolean): Promise<T> => {
-    const url = new URL(path.startsWith("/") ? `${GRAPH_HOST}${path}` : `${GRAPH_HOST}/${version}/${path}`);
+    const url = new URL(path.startsWith("/") ? `${host}${path}` : `${host}/${version}/${path}`);
     const headers: Record<string, string> = {};
     let body: string | undefined;
     if (method === "GET") {
@@ -112,6 +123,16 @@ export async function whoAmI(g: Graph): Promise<Me> {
   const userId = String(row.user_id ?? "");
   if (!/^\d{5,25}$/.test(userId) || !row.username) throw new GraphError("Instagram did not say which account the token is for", 200, null, null, false);
   return { userId, username: String(row.username), accountType: row.account_type ? String(row.account_type) : null };
+}
+
+/**
+ * The account behind IG_USER_ID, for a Facebook Login token: such a token has no Instagram "me" (a system user's /me is
+ * the system user), so the ID comes from the Worker's settings and Meta says whose it is.
+ */
+export async function igUser(g: Graph, igId: string): Promise<Me> {
+  const r = await g.get<{ id?: string | number; username?: string }>(igId, { fields: "id,username" });
+  if (String(r.id ?? "") !== igId || !r.username) throw new GraphError(`Instagram did not say which account ${igId} is`, 200, null, null, false);
+  return { userId: igId, username: String(r.username), accountType: null };
 }
 
 export interface Quota { usage: number; total: number }

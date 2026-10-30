@@ -3,11 +3,50 @@
 **Why (29 Oct 2026).** Every reel scheduled with Instagram's own scheduler, from instagram.com or from the phone app,
 was stored at 720x1280: 6 of 6, read through media info (`original_width/height`), SHA-checked 1080x1920 files
 included. The owner's reels published at once from the app are stored at 1080x1920. So this Worker publishes the reels
-itself, at the chosen minute, through the official **Instagram API with Instagram Login** (`graph.instagram.com`,
-v26.0). Neither Instagram's scheduler nor hand posting is needed.
+itself, at the chosen minute, through the official **Instagram API** (v26.0). Neither Instagram's scheduler nor hand
+posting is needed.
 
 Whether a reel published through the API keeps 1080p is **not documented**. The first real post settles it (see
 "First post" below).
+
+## Two roads to the same API: Facebook Login (in use) and Instagram Login
+
+Meta offers the publishing endpoints through two logins. The token in `IG_ACCESS_TOKEN` picks the road
+(`loginOf`, `src/ig/graph.ts`). Nothing else is set:
+
+| | **Facebook Login** (in use since 30 Oct 2026) | **Instagram Login** (the first road) |
+|---|---|---|
+| Token | Starts with `EAA`. A **system user's** token from the business portfolio "Kleo", app "Kleo Reels Publisher" (2622205298184952). It **never expires**. | Starts with `IG`. A long-lived Instagram User token (60 days). |
+| Host | `https://graph.facebook.com/v26.0` | `https://graph.instagram.com/v26.0` |
+| Account | `IG_USER_ID`, a plain var in `wrangler.ig.jsonc` (`17841421963271396`). `GET /<IG_USER_ID>?fields=id,username` must answer `kleooai`. A system user's `/me` is the system user, so it is never asked. | `GET /me?fields=user_id,username,account_type`: `kleooai`, a Creator or Business account, and `IG_USER_ID` when set. |
+| Renewal | None. If Meta refuses the token (`OAuthException`, code 190), nothing is published: every post's check fails with Meta's words, and the owner gets an e-mail, at most once a day (again at once for a newly pasted token that is refused too). | Every 7 days, sealed in D1. An e-mail 10 days before it dies if renewing fails. |
+
+**Why Facebook Login.** On 30 Oct 2026 Meta's new "API setup with Unified login" page failed for us server-side, for
+two different apps: GraphQL `field_exception`, code 1675030, path `xfb_instagram_unified_login_onboarding_progress`,
+`is_transient: false`. So no Instagram Login token can be made for now. The older "Instagram API with Facebook Login"
+works. @kleooai (Instagram ID 17841421963271396) and the Facebook Page "Kleo AI" are linked and both sit in the
+portfolio "Kleo" with the app. To switch back once Meta fixes that page, paste an Instagram Login token into
+`IG_ACCESS_TOKEN`: the code of that road is unchanged and still tested.
+
+Everything else is the same on both roads: the container, `status_code` polling, `media_publish`, the quota, the last
+posts, Meta's probe and the state machine below.
+
+**The Reels fields on graph.facebook.com** (checked on 30 Oct 2026 against the IG User Media reference, whose examples
+use `graph.facebook.com/v26.0`). Every field the Worker sends is listed there for Reels, with no "Instagram Login only"
+mark, so **none was dropped**:
+
+| Field | Sent | In the reference |
+|---|---|---|
+| `media_type=REELS`, `video_url`, `caption` | always | yes (caption: 2,200 characters, 30 hashtags, 20 @tags) |
+| `share_to_feed` | always `true` | yes, "For Reels only" |
+| `is_ai_generated` | always `true` | yes: optional self-disclosure of AI use; "Not available for carousel children" is its only limit |
+| `cover_url` | when the entry has a cover | yes; it wins over `thumb_offset` |
+| `thumb_offset` | when the entry has one | yes, in milliseconds |
+| `trial_params` | for a Trial Reel | yes, `graduation_strategy` `MANUAL` or `SS_PERFORMANCE` |
+
+Only `is_paid_partnership`, `poll_attachment` and `is_comment_prompt_used` are marked "Facebook Login only", and the
+Worker sends none of them. Meta's probe judges the very request before every "sì" on either road, so a field Meta
+stopped taking shows up there, with Meta's words, before anything is published.
 
 ## Where it runs and why
 
@@ -101,8 +140,10 @@ More rules:
 **The token** (`src/ig/token.ts`):
 
 - The owner pastes it once into the secret `IG_ACCESS_TOKEN`.
-- Every 7 days the Worker renews it (`refresh_access_token`) and keeps the new one in D1, sealed with AES-GCM under
-  `IG_TOKEN_KEY`.
+- **Facebook Login** (a system user's `EAA` token): nothing to renew, nothing expires. A refused token (code 190)
+  stops publishing and sends one e-mail a day until a new token is pasted.
+- **Instagram Login**: every 7 days the Worker renews it (`refresh_access_token`) and keeps the new one in D1, sealed
+  with AES-GCM under `IG_TOKEN_KEY`.
 - A token pasted again wins over the renewed one.
 - If renewing keeps failing, the owner gets an e-mail 10 days before the token dies.
 - The token is never in a URL (Authorization header), a row, an event, a log line or an e-mail. The tests check all
@@ -136,32 +177,45 @@ After the first real post the owner approves:
 2. `original_width/height` 1080x1920 means the API keeps full quality. 720x1280 means it does not: say so plainly.
 3. Also open the permalink signed out, to confirm a Development-mode app's post is public.
 
-## Passi del proprietario (una volta sola, circa 15 minuti)
+## Passi del proprietario (una volta sola, circa 10 minuti)
 
-Solo tu puoi farli: entrare in Meta e accettare i termini. Il passo 5 si fa dopo che il Worker è online (lo metto online
-io dopo il tuo "sì").
+Solo tu puoi farli: creare l'utente di sistema e dargli i permessi sono concessioni di accesso, quindi io non posso.
+Il passo 4 si fa **solo dopo** che questa versione del Worker è online (la metto online io dopo il tuo "sì").
 
-1. Vai su **developers.facebook.com** ed entra con il tuo Facebook. Se te lo chiede, registrati come sviluppatore e
-   accetta i termini di Meta.
-2. **Le mie app → Crea app.** Caso d'uso: **"Gestisci messaggi e contenuti su Instagram"** (Instagram API). Tipo:
-   **Business**. Nome: **Kleo Publisher**. Crea.
-3. Nell'app apri **Instagram → Configurazione API con login Instagram** (API setup with Instagram login). Poi
-   **Genera token di accesso → Aggiungi account**. Entra come **@kleooai** e accetta i permessi
-   (`instagram_business_basic`, `instagram_business_content_publish`).
-   - Se dice che l'account non ha un ruolo: **Ruoli dell'app → Ruoli → Aggiungi persone → Tester Instagram →
-     kleooai**. Poi su Instagram: **Impostazioni → App e siti web → Inviti tester → Accetta**. Riprova.
-   - Se ancora rifiuta: in **Impostazioni app → Di base** metti la privacy policy `https://kleooai.com/privacy` e una
-     categoria, poi passa l'app in **Live**.
-   - Altrimenti lasciala in **Sviluppo**: serve solo al tuo account, senza App Review.
-4. Clicca **Genera token** accanto a @kleooai e **copialo subito** (si vede una volta sola). Annota anche il **numero
-   dell'account** (ID) mostrato lì.
-5. Vai su **dash.cloudflare.com**, account **Plural Juice**. Apri **Workers e Pages → kleo-ig-publisher →
-   Impostazioni → Variabili e segreti → Aggiungi**:
-   - Tipo **Segreto**, nome `IG_ACCESS_TOKEN`, valore: il token.
-   - Tipo **Segreto**, nome `IG_USER_ID`, valore: l'ID dell'account.
+È già pronto (controllato il 30 ottobre): il portfolio **"Kleo"** con @kleooai, la Pagina **"Kleo AI"** collegata a
+@kleooai e l'app **"Kleo Reels Publisher"** (ID 2622205298184952) con i permessi per i contenuti. L'app vecchia "Kleo
+Publisher" non serve più.
 
-   Poi **Distribuisci**. **Non incollare mai il token in chat.**
-6. Scrivimi **"fatto"**. Faccio il dry-run sul primo reel e ti chiedo il **"sì"** prima di pubblicarlo.
+1. **Crea l'utente di sistema.** Vai su **business.facebook.com/settings** e scegli il portfolio **Kleo**. Apri
+   **Utenti → Utenti di sistema → Aggiungi**. Nome: **kleo-ig-publisher**. Ruolo: **Dipendente** (se dopo Meta non ti
+   fa generare il token, cambialo in **Amministratore**). Crea.
+2. **Assegnagli le risorse.** Con l'utente di sistema selezionato, premi **Assegna risorse** e aggiungi:
+   - **App → Kleo Reels Publisher**: controllo completo (gestisci l'app);
+   - **Pagine → Kleo AI**: controllo completo (almeno i contenuti);
+   - **Account Instagram → @kleooai**: controllo completo (almeno i contenuti).
 
-Il token dura 60 giorni e il Worker lo rinnova da solo ogni settimana. Se un giorno smette di funzionare, ti arriva una
-mail 10 giorni prima: rifai solo i passi 4 e 5.
+   Salva.
+3. **Genera il token.** Sempre sull'utente di sistema: **Genera nuovo token**.
+   - App: **Kleo Reels Publisher**.
+   - Scadenza del token: **Mai**.
+   - Permessi, tutti e cinque: `instagram_basic`, `instagram_content_publish`, `pages_read_engagement`,
+     `pages_show_list`, `business_management`.
+
+   Premi **Genera** e **copialo subito**: si vede una volta sola. Inizia con `EAA`.
+4. **Solo dopo che ti ho scritto che il Worker nuovo è online:** vai su **dash.cloudflare.com**, account **Plural
+   Juice**. Apri **Workers e Pages → kleo-ig-publisher → Impostazioni → Variabili e segreti → Aggiungi**. Tipo
+   **Segreto**, nome `IG_ACCESS_TOKEN`, valore: il token. Poi **Distribuisci**.
+   - **Non aggiungere `IG_USER_ID`**: è già nel Worker (17841421963271396).
+   - **Non incollare mai il token in chat.**
+5. Scrivimi **"fatto"**. Faccio il controllo e la prova Meta sul primo reel, e ti chiedo il **"sì"** prima di
+   pubblicarlo.
+
+Questo token **non scade** e non va rinnovato. Se un giorno Meta lo rifiuta (per esempio se l'utente di sistema viene
+tolto), il Worker non pubblica niente e ti manda una mail al giorno: rifai i passi 3 e 4.
+
+### Strada B: login Instagram (solo se Meta ripara la pagina "Configurazione API con login unificato")
+
+Il codice di questa strada c'è ancora. Nell'app, **Instagram → Configurazione API con login Instagram → Genera token di
+accesso → Aggiungi account**: entra come **@kleooai**, accetta i permessi e copia il token (inizia con `IG`). Incollalo
+in `IG_ACCESS_TOKEN` come al passo 4, al posto di quello `EAA`. Il Worker cambia strada da solo. Quel token dura 60
+giorni e il Worker lo rinnova ogni settimana; se il rinnovo non riesce, ti arriva una mail 10 giorni prima.
