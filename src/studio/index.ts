@@ -43,8 +43,8 @@ import { handleProviderResume, refreshBalances, type Provider } from "./provider
 import { withKeys } from "../key-overrides.ts";
 import { normalizeFilm, orderFilm, quoteFilm } from "./films.ts";
 import { runAgent, chatTitle, enhancePrompt, type Proposal } from "./agent.ts";
-import { NO_GIFT_SENTENCE, giftCookie, visitorOf } from "../abuse.ts";
-import { signUp, signIn, signInWithKey, addPassword, me, signedIn, endAllSessions, kleoKeyOf, setName, changePassword, activity, deleteAccount, googleEnabled, signupMode, microsoftEnabled, enabledSocial, socialEnabled, socialStart, socialCallback, forgotPassword, resetPassword, resetAvailable, type SocialKey } from "./auth.ts";
+import { NO_GIFT_SENTENCE, canonicalEmail, giftCookie, visitorOf } from "../abuse.ts";
+import { signUp, signIn, signInWithKey, addPassword, me, signedIn, endAllSessions, kleoKeyOf, setName, changePassword, activity, deleteAccount, googleEnabled, signupMode, microsoftEnabled, enabledSocial, socialEnabled, socialStart, socialCallback, forgotPassword, resetPassword, resetAvailable, emailCodeMode, startEmailCode, verifyEmailCode, CODE_NO_GIFT_SENTENCE, type SocialKey } from "./auth.ts";
 import { httpsRedirect, secureResponse } from "./security.ts";
 import { SESSION_COOKIE, clearSessionCookie, readCookie, readSessionFull, normalizeEmail, signPath, checkSignedPath } from "./session.ts";
 import { ipBucket } from "../accounts.ts";
@@ -230,8 +230,8 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       models: publicCatalog(marginOf(env), freeModels(env.STUDIO_FREE_MODELS), videoFactorOf(env)), freeCredits: Number(env.FREE_CREDITS ?? 5),
       defaultImageModel: defaultImageModel(pausedImageModels(env.STUDIO_PAUSED_IMAGE_MODELS)),
       imageModels: publicImageCatalog(marginOf(env), freeImageModels(env.STUDIO_FREE_IMAGE_MODELS), pausedImageModels(env.STUDIO_PAUSED_IMAGE_MODELS)),
-      emailReset: resetAvailable(env), plans: publicPlans(env.STRIPE_PLAN_LINKS, null), presets: publicPresets(), tools: publicTools(marginOf(env), videoFactorOf(env)), freeTools: freeTools(env.STUDIO_FREE_TOOLS),
-      ...(adminHost ? { google: false, microsoft: false, social: [], signup: "none" } : {}),
+      emailReset: resetAvailable(env), emailCode: emailCodeMode(env) ?? false, plans: publicPlans(env.STRIPE_PLAN_LINKS, null), presets: publicPresets(), tools: publicTools(marginOf(env), videoFactorOf(env)), freeTools: freeTools(env.STUDIO_FREE_TOOLS),
+      ...(adminHost ? { google: false, microsoft: false, social: [], signup: "none", emailCode: false } : {}),
     });
   }
   // The creators in Kleo Creators (src/studio/creators.ts): public, so anybody can check that a creator is real; the
@@ -240,8 +240,10 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
   if (path.startsWith("/api/auth/") && method === "POST" && path !== "/api/auth/password" && path !== "/api/auth/password/change" && path !== "/api/auth/signout-all") {
     if (path === "/api/auth/signout") return json({ ok: true }, 200, { "set-cookie": clearSessionCookie() });
     const b = await body(request);
-    // Guessing one person's password from many addresses is throttled per e-mail too, not only per visitor.
-    const email = path === "/api/auth/signin" ? normalizeEmail(String(b.email ?? "")) : undefined;
+    // Guessing one person's password (or code) from many addresses is throttled per e-mail too, not only per visitor;
+    // a code per inbox, whatever the spelling (auth.ts, ONE INBOX, ONE BUDGET).
+    const email = path === "/api/auth/signin" ? normalizeEmail(String(b.email ?? ""))
+      : path.startsWith("/api/auth/email/") ? canonicalEmail(normalizeEmail(String(b.email ?? ""))) : undefined;
     if (await rateLimited(env, request, email)) return json({ error: "Too many tries. Wait a minute.", code: "rate" }, 429);
     if (path === "/api/auth/signup") {
       // The answer says whether the gift came, and a gifted browser keeps a mark of it (src/abuse.ts). Where the browser
@@ -252,6 +254,18 @@ async function api(env: StudioEnv, request: Request, url: URL, ctx: ExecutionCon
       if (made.gifted) res.headers.append("set-cookie", giftCookie());
       if (from.hadCookie) res.headers.append("set-cookie", clearTouchCookie());
       ctx.waitUntil(recordIp(env, made.userId, "signup", request));
+      return res;
+    }
+    // Sign in with an e-mail code (auth.ts): the code goes out, then it signs in, or opens the account the way /signup does.
+    if (path === "/api/auth/email/start") { await startEmailCode(env, b, visitorOf(request)); return json({ ok: true }); }
+    if (path === "/api/auth/email/verify") {
+      const from = arrivalOf(request);
+      const r = await verifyEmailCode(env, b, visitorOf(request), from);
+      const created = r.gifted !== null;
+      const res = await signedIn(env, r.userId, { ok: true, ...(created ? { gift: r.gifted, ...(r.gifted ? {} : { note: r.giftOff ? CODE_NO_GIFT_SENTENCE : NO_GIFT_SENTENCE }) } : {}), ...(r.handedOver ? { linked: "email" } : {}) });
+      if (r.gifted) res.headers.append("set-cookie", giftCookie());
+      if (created && from.hadCookie) res.headers.append("set-cookie", clearTouchCookie());
+      ctx.waitUntil(recordIp(env, r.userId, created ? "signup" : "signin", request));
       return res;
     }
     // Where each sign-in came from is kept 90 days (src/studio/ips.ts), for the admin console.

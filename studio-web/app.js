@@ -3,7 +3,7 @@
 //
 // Pages: Create (chat with Kleo) · Video · Image · Audio · Apps · Library. Desktop: a top bar; phones: a tab bar.
 
-import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=105";
+import { signInHop, hopFor, hopAddress, chromeIntent } from "/inapp.js?v=106";
 
 const DEMO = new URLSearchParams(location.search).has("demo");
 const DEMO_FREE = new URLSearchParams(location.search).get("demo") === "free"; // ?demo=free: an account that never paid
@@ -525,10 +525,23 @@ async function hopAsk() {
   if (yes === true) { if (android) location.href = chromeIntent(hopHere()); else copyHop($(".hop")); }
   else if (yes === false) location.href = "/auth/google";
 }
+/** "Continue with e-mail": a six-digit code by e-mail (src/studio/auth.ts), the way in that works in every app's browser. */
+const emailButton = (mode) => h("button", { class: "btn social social-email", type: "button", onclick: () => renderEmailCode(mode) }, icon("mail", 20), "Continue with e-mail");
+/** In an app's browser the e-mail code comes first (30 October 2026): no need to leave the app. Google there still asks to open Safari or Chrome. */
+function codeBox(mode) {
+  return h("div", { class: "hop code-first" },
+    h("b", { class: "hop-h" }, `${mode === "signup" ? "Sign up" : "Sign in"} with your e-mail`),
+    h("p", {}, `No need to leave ${HOP.name}. We'll e-mail you a 6-digit code.`),
+    h("button", { class: "btn btn-primary", type: "button", onclick: () => renderEmailCode(mode) }, icon("mail", 18), "Continue with e-mail"));
+}
 function renderAuth(mode = "signup", fromApp = false) {
   let showKey = false;
   const hop = HOP && socialList().includes("google");
   if (hop) hopHere();
+  // Sign in with an e-mail code (src/studio/auth.ts): in an app's browser it replaces the step to Safari or Chrome.
+  // "on": sign in and sign up; "signin": only on the sign-in screen (accounts that already exist).
+  const codeOn = S.config?.emailCode === "on" || (S.config?.emailCode === "signin" && mode === "signin");
+  const codeFirst = !!HOP && codeOn;
   // Once Google sign-in is on, new accounts are opened with Google only (STUDIO_SIGNUP): the e-mail form is for signing in.
   const googleOnly = mode === "signup" && S.config?.signup === "google" && socialList().includes("google");
   let checkToken = "", checkId = null, checkWaiters = [];
@@ -577,9 +590,10 @@ function renderAuth(mode = "signup", fromApp = false) {
   authFrame(S.connecting ? "Connect Kleo to your assistant" : mode === "signup" ? "Create with Kleo" : "Welcome back",
     S.connecting ? "Sign in or create your free account. Your credits are the same here and in Grok, Claude or ChatGPT." : "Videos, pictures, voices and films — just by chatting.",
     mode === "signup" ? h("div", { class: "gift" }, bolt(15), `${S.config?.freeCredits ?? 5} free credits to start`) : null,
-    hop ? hopBox(mode) : null,
+    codeFirst ? codeBox(mode) : hop ? hopBox(mode) : null,
     socialList().length ? [h("div", { class: "socials" }, socialList().map((k) => h("a", { class: `btn social social-${k}`, href: `/auth/${k}`,
-      onclick: hop && k === "google" ? (e) => { e.preventDefault(); hopAsk(); } : null }, SOCIAL[k].logo(), `Continue with ${SOCIAL[k].label}`))), googleOnly ? null : h("div", { class: "or" }, "or use e-mail")] : null,
+      onclick: hop && k === "google" ? (e) => { e.preventDefault(); hopAsk(); } : null }, SOCIAL[k].logo(), `Continue with ${SOCIAL[k].label}`)), codeOn && !codeFirst ? emailButton(mode) : null),
+      googleOnly ? null : h("div", { class: "or" }, codeOn ? "or with your password" : "or use e-mail")] : null,
     form,
     h("div", { class: "auth-switch" },
       mode === "signup" ? ["Already have an account? ", h("button", { type: "button", onclick: () => renderAuth("signin") }, "Sign in")]
@@ -589,6 +603,64 @@ function renderAuth(mode = "signup", fromApp = false) {
     h("div", { class: "auth-foot" }, "By continuing you agree to the ", h("a", { href: "https://kleooai.com/terms.html", target: "_blank" }, "Terms"), " and ",
       h("a", { href: "https://kleooai.com/privacy.html", target: "_blank" }, "Privacy Policy"), "."));
   setTimeout(() => (IS_TOUCH ? null : email.focus()), 50);
+}
+/** Sign in with an e-mail code, step 1: the address (and the human check, when it is configured). */
+function renderEmailCode(mode = "signin", prefill = "") {
+  let checkToken = "", checkId = null, checkWaiters = [];
+  const tokenReady = () => checkToken ? Promise.resolve(checkToken) : new Promise((ok) => { checkWaiters.push(ok); setTimeout(() => ok(checkToken), 15000); });
+  const check = S.config?.turnstile ? h("div", { class: "human-check" }) : null;
+  const email = h("input", { class: "input", type: "email", placeholder: "Your e-mail", autocomplete: "email", inputmode: "email", autocapitalize: "off", value: prefill });
+  const err = h("div", { class: "auth-err" });
+  const btn = h("button", { class: "btn btn-primary", type: "submit" }, "Send me a code");
+  authFrame(`${mode === "signup" ? "Sign up" : "Sign in"} with your e-mail`,
+    HOP ? `No need to leave ${HOP.name}. We'll e-mail you a 6-digit code.` : "We'll e-mail you a 6-digit code. No password needed.",
+    h("form", { onsubmit: async (ev) => {
+      ev.preventDefault(); err.textContent = "";
+      const restore = busyButton(btn);
+      try {
+        if (check) await tokenReady();
+        await api("/api/auth/email/start", { method: "POST", body: { email: email.value, turnstile: checkToken } });
+        renderCodeEntry(mode, email.value.trim().toLowerCase());
+      } catch (e) {
+        err.textContent = e.message; restore();
+        if (check && checkId !== null) { checkToken = ""; window.turnstile?.reset(checkId); }
+      }
+    } }, email, check, err, btn),
+    h("div", { class: "auth-switch" }, h("button", { type: "button", onclick: () => renderAuth(mode) }, "Back")));
+  if (check) loadTurnstile().then((t) => {
+    checkId = t.render(check, { sitekey: S.config.turnstile, theme: "auto", size: "flexible", appearance: "interaction-only",
+      callback: (v) => { checkToken = v; checkWaiters.splice(0).forEach((ok) => ok(v)); }, "expired-callback": () => { checkToken = ""; }, "error-callback": () => { checkToken = ""; } });
+  }).catch((e) => { err.textContent = e.message; });
+  setTimeout(() => email.focus(), 50);
+}
+/** Step 2: the six digits from the e-mail. The sixth digit sends them; a new account gets the welcome with its credits. */
+function renderCodeEntry(mode, address) {
+  const code = h("input", { class: "input code-input", type: "text", inputmode: "numeric", autocomplete: "one-time-code", pattern: "[0-9]*", maxlength: "6", placeholder: "6-digit code", "aria-label": "6-digit code" });
+  const err = h("div", { class: "auth-err" });
+  const btn = h("button", { class: "btn btn-primary", type: "submit" }, mode === "signup" ? "Create account" : "Sign in");
+  let busy = false;
+  const form = h("form", { onsubmit: async (ev) => {
+    ev.preventDefault();
+    if (busy) return;
+    busy = true; err.textContent = "";
+    const restore = busyButton(btn);
+    try {
+      const made = await api("/api/auth/email/verify", { method: "POST", body: { email: address, code: code.value } });
+      S.me = await api("/api/me");
+      S.feeds = {};
+      await enter();
+      if (made && "gift" in made) toast(made.note || `Welcome! You have ${S.me.credits} free credits.`, !!made.note);
+    } catch (e) { err.textContent = e.message; restore(); busy = false; code.select(); }
+  } }, code, err, btn);
+  code.addEventListener("input", () => {
+    code.value = code.value.replace(/\D/g, "").slice(0, 6);
+    if (code.value.length === 6) form.requestSubmit ? form.requestSubmit() : btn.click();
+  });
+  authFrame("Check your e-mail", `We sent a 6-digit code to ${address}. It works for 10 minutes.`,
+    form,
+    h("div", { class: "auth-switch" }, "No e-mail? Look in spam, or ", h("button", { type: "button", onclick: () => renderEmailCode(mode, address) }, "send a new code")),
+    h("div", { class: "auth-switch" }, h("button", { type: "button", onclick: () => renderAuth(mode) }, "Back")));
+  setTimeout(() => code.focus(), 50);
 }
 function renderForgot(prefill = "") {
   if (!S.config?.emailReset) {
@@ -2533,6 +2605,7 @@ function accountView() {
       return h(on ? "div" : "a", { class: "row", href: on ? null : `/auth/${k}?link=1` }, SOCIAL[k].logo(), h("div", { class: "lbl" }, h("b", {}, SOCIAL[k].label), h("span", {}, on ? "Connected" : `Sign in with ${SOCIAL[k].label} next time`)),
         on ? h("span", { class: "check" }, icon("check", 18, 2.4)) : h("span", { class: "val" }, "Connect", icon("right", 16)));
     }))] : null,
+    me.methods?.includes("email") ? [h("h3", {}, "E-mail code"), h("p", { class: "acct-sub" }, "You can sign in with a 6-digit code sent to your e-mail.")] : null,
     h("h3", {}, "Kleo key"),
     h("p", { class: "acct-sub" }, "It signs in to your account from anywhere: keep it private."),
     keyBox,

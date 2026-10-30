@@ -120,7 +120,7 @@ export function firstName(full: string | null): string | null {
 
 /** One block of an e-mail: a paragraph, a heading, a list, a button. Inline: **bold** and [label](url). */
 type Block = { p: string } | { h: string } | { list: string[] } | { button: { label: string; url: string } };
-export interface Mail { key: string; subject: string; preheader: string; blocks: Block[] }
+export interface Mail { key: string; subject: string; preheader: string; blocks: Block[]; /** The last line when there is no stop link (else a receipt's). */ footer?: string }
 
 /** What the words need besides the person: prices read from the live catalogue, never typed twice. */
 export interface Prices { freeModel: string; freeVideo: number; bestVideo: number; packFrom: string; lite: string; starter: string; pro: string; agency: string; templates: number }
@@ -307,7 +307,7 @@ export function renderHtml(m: Mail, stopUrl: string | null): string {
 <div style="display:none;max-height:0;overflow:hidden;opacity:0">${escapeHtml(m.preheader)}&#8199;&#65279;&#847;&#8199;&#65279;&#847;&#8199;&#65279;&#847;</div>
 <div style="max-width:560px;margin:0 auto;padding:32px 20px;font-family:${FONT};font-size:16px;line-height:1.6;color:#111111">
 ${body}
-<p style="margin:32px 0 0;padding-top:16px;border-top:1px solid #e5e5e5;font-size:15px;color:#6b6b6b">${stopUrl ? `You're getting this because you opened a Kleo account with this address. <a href="${escapeHtml(stopUrl)}" style="color:#6b6b6b">Stop these e-mails</a>.` : escapeHtml(RECEIPT_FOOTER)} Kleo · <a href="https://kleooai.com" style="color:#6b6b6b">kleooai.com</a></p>
+<p style="margin:32px 0 0;padding-top:16px;border-top:1px solid #e5e5e5;font-size:15px;color:#6b6b6b">${stopUrl ? `You're getting this because you opened a Kleo account with this address. <a href="${escapeHtml(stopUrl)}" style="color:#6b6b6b">Stop these e-mails</a>.` : escapeHtml(m.footer ?? RECEIPT_FOOTER)} Kleo · <a href="https://kleooai.com" style="color:#6b6b6b">kleooai.com</a></p>
 </div></body></html>`;
 }
 
@@ -318,7 +318,7 @@ export function renderText(m: Mail, stopUrl: string | null): string {
     if ("list" in b) return b.list.map((li) => `- ${inlineText(li)}`).join("\n");
     return `${b.button.label}: ${b.button.url}`;
   });
-  const foot = stopUrl ? `You're getting this because you opened a Kleo account with this address.\nStop these e-mails: ${stopUrl}` : RECEIPT_FOOTER;
+  const foot = stopUrl ? `You're getting this because you opened a Kleo account with this address.\nStop these e-mails: ${stopUrl}` : (m.footer ?? RECEIPT_FOOTER);
   return `${lines.join("\n\n")}\n\n--\n${foot}\nKleo, https://kleooai.com\n`;
 }
 
