@@ -183,11 +183,17 @@ export const isBot = (ua: string | null): boolean => !ua || ua.length < 20 || BO
 export const privateBrowser = (request: Request): boolean =>
   request.headers.get("sec-gpc") === "1" || request.headers.get("dnt") === "1";
 
+/**
+ * A prefetch, a prerender, or an app fetching a link ahead of the tap (Facebook's in-app browser sends
+ * `X-Purpose: preview`): nobody has opened the page yet.
+ */
+export const prefetched = (request: Request): boolean =>
+  /prefetch|prerender|preview/i.test(`${request.headers.get("sec-purpose") ?? ""} ${request.headers.get("purpose") ?? ""} ${request.headers.get("x-purpose") ?? ""}`);
+
 /** A page load of the browser itself (not a script, a picture, a prefetch or a fetch from the page). */
 export function pageLoad(request: Request): boolean {
   if (request.method !== "GET") return false;
-  const purpose = `${request.headers.get("sec-purpose") ?? ""} ${request.headers.get("purpose") ?? ""}`;
-  if (/prefetch|prerender/i.test(purpose)) return false;
+  if (prefetched(request)) return false;
   const dest = request.headers.get("sec-fetch-dest");
   if (dest) return dest === "document";
   return /text\/html/i.test(request.headers.get("accept") ?? "");
@@ -319,7 +325,7 @@ export async function shortLink(env: StudioEnv, request: Request, url: URL, code
   if (!link) { headers.set("location", "/"); return new Response(null, { status: 302, headers }); }
   headers.set("location", linkDestination(link, url.origin));
   const ua = request.headers.get("user-agent");
-  if (request.method === "GET" && !isBot(ua) && !/prefetch|prerender/i.test(`${request.headers.get("sec-purpose") ?? ""} ${request.headers.get("purpose") ?? ""}`)) {
+  if (request.method === "GET" && !isBot(ua) && !prefetched(request)) {
     ctx.waitUntil(env.DB.prepare(`INSERT INTO short_link_clicks (code, day, clicks) VALUES (?, ?, 1) ON CONFLICT (code, day) DO UPDATE SET clicks = clicks + 1`)
       .bind(link.code, new Date().toISOString().slice(0, 10)).run().catch((e) => console.error("studio link click", e instanceof Error ? e.message : e)));
     const cookie = firstVisit(env, request, url, ctx, link);
