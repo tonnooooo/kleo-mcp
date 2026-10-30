@@ -465,7 +465,9 @@ test("the pages keep the owner's rules and the review's: his words, the card wai
   for (const t of ["E-mail sent (address removed with the account)", "No e-mail (reason removed with the account)", "E-mail refused (reason removed with the account)"]) assert.ok(admin.includes(t), t);
   assert.doesNotMatch(admin, /`E-mail sent to \$\{g\.mail_to\}` : g\.mail_status/, "no address printed without checking it is there");
   assert.match(admin, /const giftStale = \(g\) => g\.mail_status === "sending" && \(!g\.mailed_at \|\| Date\.now\(\) - toDate\(g\.mailed_at\)\.getTime\(\) > 5 \* 60e3\);/);
-  assert.match(admin, /const canSend = !u\.deleted && g\.mail && \(g\.mail_status === "waiting" \|\| !g\.mail_status \|\| giftStale\(g\)\);/);
+  // The button: waiting, never sent, or a stale send (giftUnsent), on an account that still exists.
+  assert.match(admin, /const giftUnsent = \(g\) => g\.mail_status === "waiting" \|\| !g\.mail_status \|\| giftStale\(g\);/);
+  assert.match(admin, /const canSend = !u\.deleted && g\.mail && giftUnsent\(g\);/);
 });
 
 // ── The follow-up (after PR #157 went live): errors after the commit, stale sends, the claim, D1 errors after a send ──
