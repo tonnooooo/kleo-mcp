@@ -551,8 +551,12 @@ test("small credit changes without a fresh code add up: past 100 in all, on any 
   const give = (who, delta, extra = {}, cookie = stale) => call(env, `/api/admin/users/${who}/credits`, { method: "POST", cookie, body: { reason: "a grant in pieces", delta, ...extra } });
   assert.equal((await give(ana.id, 60)).json.credits, 65);
   assert.equal((await give(ana.id, -40)).json.credits, 25, "taking away counts as much as adding");
-  assert.deepEqual(auditOf(env, ana.id, "admin.credits"), [
-    { admin: owner.id, reason: "a grant in pieces", delta: -40, before: 65, after: 25 },
+  const rows = auditOf(env, ana.id, "admin.credits");
+  // A take-away's row also has the program credits before it, and its own id, which the rest of its batch goes by.
+  assert.match(rows[0].change, /^ch_[a-z0-9]{12}$/);
+  delete rows[0].change;
+  assert.deepEqual(rows, [
+    { admin: owner.id, reason: "a grant in pieces", delta: -40, before: 65, after: 25, program_before: 0 },
     { admin: owner.id, reason: "a grant in pieces", delta: 60, before: 5, after: 65 },
   ]);
   assert.equal((await give(ana.id, 1)).json.code, "fresh_code", "the 101st credit wants a code");

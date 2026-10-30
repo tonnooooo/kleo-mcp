@@ -782,6 +782,39 @@ test("cancel: a creator's program credits stay theirs; only the gift's ordinary 
   assert.deepEqual(balance(bo.id), { credits: 20, program: 20 }, "the program's 20 are left, never more than the balance");
 });
 
+test("Take credits away keeps a 110/110 creator's program credits: only credits outside the program go, and never more than the balance", async () => {
+  const { env, owner, kal } = await setup();
+  const balance = () => ({ ...get(env, "SELECT credits, program_credits AS program FROM users WHERE id = ?", kal.id) });
+  const takeAway = (n, cookie = owner.admin) => call(env, `/api/admin/users/${kal.id}/credits`, { method: "POST", cookie, body: { delta: -n, reason: "Sent too early" } });
+  // Kal, a creator: 110 credits, all from the program. A 20-credit gift goes in as ordinary credits.
+  run(env, "UPDATE users SET credits = 110, program_credits = 110 WHERE id = ?", kal.id);
+  const g = (await gift(env, owner.admin, kal.id, { id: giftIdOf(), credits: 20, reason: "Thank you", email: false })).json.gift;
+  assert.deepEqual(balance(), { credits: 130, program: 110 });
+  // The gift's 20 taken away by hand: the trigger takes them off the program credits, and the same batch puts them back.
+  assert.equal((await takeAway(20)).json.credits, 110);
+  assert.deepEqual(balance(), { credits: 110, program: 110 });
+  const row = auditOf(env, kal.id, "admin.credits")[0];
+  assert.deepEqual([row.delta, row.before, row.after, row.program_before], [-20, 130, 110, 110]);
+  // Then the console's "Only stop the pop-up": nothing moves, and the program credits stay whole.
+  assert.equal((await cancelGift(env, owner.admin, kal.id, g.id, { reason: "Credits taken by hand", takeBack: false })).status, 200);
+  assert.deepEqual(balance(), { credits: 110, program: 110 });
+  // Past what is outside the program, program credits go too: they are never more than the balance.
+  assert.equal((await takeAway(30)).json.credits, 80);
+  assert.deepEqual(balance(), { credits: 80, program: 80 });
+  // Without a code typed in the last 5 minutes (CREDITS_WITHOUT_CODE) the batch is the same.
+  run(env, "UPDATE audit SET at = ? WHERE user_id = ?", new Date(Date.now() - 10 * 60_000).toISOString(), kal.id);
+  run(env, "UPDATE users SET credits = 100 WHERE id = ?", kal.id); // 20 bought: 100 credits, 80 of them from the program
+  const s = await mod.readAdminCookie("s3cret", owner.adminCookie.split("=")[1]);
+  const stale = `${owner.cookie}; __Host-kleo_admin=${await mod.adminCookieValue("s3cret", { ...s, fresh: s.fresh - 6 * 60 })}`;
+  const r = await takeAway(10, stale);
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.json.credits, 90);
+  assert.deepEqual(balance(), { credits: 90, program: 80 });
+  // And a take-away refused for a code moves nothing, the program credits included.
+  assert.equal((await takeAway(150, stale)).json.code, "fresh_code");
+  assert.deepEqual(balance(), { credits: 90, program: 80 });
+});
+
 test("cancel with takeBack: false only stops the pop-up: no credits move, no admin.credits row, no code even for a big gift", async () => {
   const { env, owner, kal } = await setup();
   const g = (await gift(env, owner.admin, kal.id, { id: giftIdOf(), credits: 20, reason: "Thank you", email: false })).json.gift;
@@ -852,7 +885,9 @@ test("cancel in the console: a real button on a gift not seen yet, the console's
   assert.match(fn, /await post\(`gifts\/\$\{g\.id\}\/cancel`, \{ reason: reasonIn\.value\.trim\(\), takeBack \}\)/);
   assert.match(fn, /back\?\.addEventListener\("click", \(\) => send\(true\)\);\s*stop\.addEventListener\("click", \(\) => send\(false\)\);/);
   assert.match(admin, /a\.event === "admin\.credits" && toDate\(a\.at\)\.getTime\(\) >= toDate\(g\.created_at\)\.getTime\(\)/);
-  assert.match(admin, /\.filter\(\(x\) => Number\(x\.delta\) < 0 && !x\.cancel\)/, "a decrease by hand, not another gift's cancel");
+  assert.match(admin, /const removedBy = \(x\) => Math\.max\(0, x\.before != null && x\.after != null \? Number\(x\.before\) - Number\(x\.after\) : -Number\(x\.delta\)\) \|\| 0;/,
+    "what each row really removed (before - after), the delta asked for only on a row without them");
+  assert.match(admin, /\.filter\(\(x\) => !x\.cancel\)\.reduce\(\(sum, x\) => sum \+ removedBy\(x\), 0\)/, "not another gift's cancel");
   assert.match(admin, /pill\(`Cancelled \$\{day\(g\.cancelled_at\)\}`, "bad"\)/);
   // A cancelled gift's stale send may have gone out: its line comes first and never claims "No e-mail".
   const staleLine = admin.indexOf('if (g.cancelled_at && giftStale(g)) return "Cancelled; an earlier e-mail may have gone out";');
@@ -963,10 +998,13 @@ function fakeKit(body) {
 
 test("cancel in the console, drawn for real: the button in the gift's row, the sheet's two choices (a take-away by hand named, the pop-up first), busy while it is sent", async () => {
   const { env, owner, kal, bo } = await setup();
-  // Kal: a 20-credit gift whose credits were taken away by hand (the incident), and a 3-credit gift, cancelled, whose
-  // e-mail send was cut off with no outcome more than 5 minutes ago.
+  // Kal: a 20-credit gift, 10 of the 25 credits spent on a film, then the gift taken away by hand (the incident): Take
+  // credits away asked for 20 but stops at zero, so 15 went. The film failed and its 10 credits came back. And a
+  // 3-credit gift, cancelled, whose e-mail send was cut off with no outcome more than 5 minutes ago.
   const a = (await gift(env, owner.admin, kal.id, { id: giftIdOf(), credits: 20, reason: "Thank you", email: false })).json.gift;
-  assert.equal((await call(env, `/api/admin/users/${kal.id}/credits`, { method: "POST", cookie: owner.admin, body: { delta: -20, reason: "Sent too early" } })).status, 200);
+  run(env, "UPDATE users SET credits = credits - 10 WHERE id = ?", kal.id);
+  assert.equal((await call(env, `/api/admin/users/${kal.id}/credits`, { method: "POST", cookie: owner.admin, body: { delta: -20, reason: "Sent too early" } })).json.credits, 0);
+  run(env, "UPDATE users SET credits = credits + 10 WHERE id = ?", kal.id);
   const b = (await gift(env, owner.admin, kal.id, { id: giftIdOf(), credits: 3, reason: "Thank you", email: true })).json.gift;
   run(env, "UPDATE studio_gifts SET mail_status = 'sending', mailed_at = ? WHERE id = ?", new Date(Date.now() - 10 * 60_000).toISOString(), b.id);
   assert.equal((await cancelGift(env, owner.admin, kal.id, b.id)).status, 200);
@@ -1025,9 +1063,9 @@ test("cancel in the console, drawn for real: the button in the gift's row, the s
     const sheet = kit.layer;
     assert.ok(sheet, "the button opens the console's sheet");
     assert.equal(sheet.find((e) => e.tagName === "H2").textContent, "Cancel this gift?");
-    assert.match(sheet.find((e) => e.cls.has("adm-gift-taken"))?.textContent ?? "", /After this gift, 20 credits were taken away from this account with Take credits away\./);
+    assert.match(sheet.find((e) => e.cls.has("adm-gift-taken"))?.textContent ?? "", /After this gift, 15 credits were taken away from this account with Take credits away\./);
     const choices = sheet.find((e) => e.cls.has("adm-gift-choice")).childNodes;
-    assert.deepEqual(choices.map((x) => x.textContent), ["Only stop the pop-up", "Cancel and take back up to 5 credits"]);
+    assert.deepEqual(choices.map((x) => x.textContent), ["Only stop the pop-up", "Cancel and take back up to 10 credits"]);
     assert.ok(choices.every((x) => x.disabled), "both wait for a reason");
     sheet.find((e) => e.tagName === "INPUT").typeIn("Credits taken by hand");
     assert.ok(choices.every((x) => !x.disabled));
@@ -1046,7 +1084,7 @@ test("cancel in the console, drawn for real: the button in the gift's row, the s
     await until("its answer", () => kit.toasts.length === 1);
     assert.deepEqual(kit.toasts, ["Gift cancelled: its pop-up won't show, and no credits moved."]);
     assert.equal(kit.layer, null, "the sheet closes");
-    assert.equal(credits(env, kal.id), 5, "their own credits stay");
+    assert.equal(credits(env, kal.id), 10, "their own credits stay");
     assert.equal(get(env, "SELECT cancelled_credits FROM studio_gifts WHERE id = ?", a.id).cancelled_credits, 0);
     const done = await until("the card redrawn", () => (giftRow(20)?.textContent.includes("no credits moved, only the pop-up stopped") ? giftRow(20) : null));
     assert.equal(done.find((e) => e.tagName === "BUTTON"), null);
