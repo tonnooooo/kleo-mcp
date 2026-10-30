@@ -429,8 +429,8 @@ export async function deliver(env: StudioEnv, to: string, m: Mail, stopUrl: stri
   }
 }
 
-/** A refusal about the address itself (bounced, suppressed, not valid): that address is done. */
-const ADDRESS_PROBLEM = /suppress|bounce|invalid (recipient|address|email)|recipient.*(not|in)valid|mailbox|E_RECIPIENT|E_INVALID_TO/i;
+/** A refusal about the address itself (bounced, suppressed, not valid): that address is done. The gift e-mail reads it too. */
+export const ADDRESS_PROBLEM =/suppress|bounce|invalid (recipient|address|email)|recipient.*(not|in)valid|mailbox|E_RECIPIENT|E_INVALID_TO/i;
 /** A refusal about Kleo's side (domain not ready, sender not allowed): every send waits and the owner hears. */
 const SENDER_PROBLEM = /E_SENDER|E_DOMAIN|not verified|not onboarded|E_NO_BINDING|E_UNAUTHORIZED|E_FORBIDDEN/i;
 const RATE_PROBLEM = /RATE|QUOTA|LIMIT|429/i;

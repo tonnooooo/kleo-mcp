@@ -364,3 +364,4 @@ button.adm-urow:hover { background: var(--fill-2); }
 .adm-gift-see > span:not(.adm-gift-see-l) { font-size: 16px; line-height: 1.45; }
 .adm-gift-see .adm-gift-note { color: var(--ink-2); }
 .adm-gift-see .adm-gift-note[hidden] { display: none; }
+.adm-gift-row .lbl > .adm-gift-again { margin-top: 10px; }

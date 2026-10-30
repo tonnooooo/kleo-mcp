@@ -114,6 +114,8 @@ const shortUa = (ua) => {
   return [os, br].filter(Boolean).join(" · ") || ua.slice(0, 40);
 };
 const who = (u) => u.name || u.email || u.id;
+/** A new gift's id, made once per opening of the Gift credits sheet, in the server's own shape (src/util.ts rid). */
+const giftId = () => "gf_" + Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => "abcdefghjkmnpqrstuvwxyz23456789"[b % 31]).join("");
 const PROVIDER = { ephone: "ePhone", wavespeed: "WaveSpeed", apimart: "APIMart", "kleo-mcp": "Kleo films" };
 const KIND = { video: "Video", image: "Picture", tool: "App", film: "Film" };
 const modelName = (m) => (K.nameOf ? K.nameOf(m) : m) || m;
@@ -552,17 +554,20 @@ async function userPage(main, id, opts = {}) {
     done: sign > 0 ? "Credits added" : "Credits taken away",
   });
   // A gift from the Kleo team (src/studio/gifts.ts): the credits go in at once like Add credits (over 100, or past 100
-  // in all, a new code is asked for), the app shows a pop-up once, and the e-mail goes when the switch is on.
+  // in all, a new code is asked for), the app shows a pop-up once, and the e-mail goes when the switch is on, to the
+  // address the server says it will use (d.giftTo). The gift's id is made once per opening of the sheet and sent with
+  // every try, so a second click, or a try after a lost answer, never gives twice.
   function giftSheet() {
-    const st = { email: !!u.email };
+    const to = d.giftTo || null;
+    const st = { email: !!to, busy: false, id: giftId() };
     const field = (label, el) => h("label", { class: "adm-field" }, h("span", {}, label), el);
     const amountIn = h("input", { class: "input", type: "number", inputmode: "numeric", min: "1", step: "1", value: "20", "aria-label": "Credits" });
     const reasonIn = h("input", { class: "input", placeholder: "Why you are doing this", autocomplete: "off", "aria-label": "Reason" });
     const messageIn = h("textarea", { class: "input adm-gift-msg", rows: "3", maxlength: "280", placeholder: "A line from you, shown in the pop-up and the e-mail", "aria-label": "Message" });
     const knob = h("span", { class: "switch" + (st.email ? " on" : "") });
-    const mailRow = h("button", { type: "button", class: "toggle-row adm-gift-mail", role: "switch", "aria-checked": String(st.email), disabled: u.email ? null : true,
-      onclick: () => { st.email = !st.email; knob.classList.toggle("on", st.email); mailRow.setAttribute("aria-checked", String(st.email)); } },
-      h("span", { class: "adm-gift-mail-t" }, h("b", {}, "E-mail them"), h("span", {}, u.email || "No e-mail address on record")), knob);
+    const mailRow = h("button", { type: "button", class: "toggle-row adm-gift-mail", role: "switch", "aria-checked": String(st.email), disabled: to ? null : true,
+      onclick: () => { if (!to) return; st.email = !st.email; knob.classList.toggle("on", st.email); mailRow.setAttribute("aria-checked", String(st.email)); } },
+      h("span", { class: "adm-gift-mail-t" }, h("b", {}, "E-mail them"), h("span", {}, to || "No e-mail address on record")), knob);
     const seeText = h("span", {}), seeNote = h("span", { class: "adm-gift-note" });
     const send = h("button", { class: "btn btn-primary", type: "button" }, icon("gift", 17), "Send gift");
     const credits = () => Math.trunc(Number(amountIn.value));
@@ -571,22 +576,25 @@ async function userPage(main, id, opts = {}) {
       seeText.textContent = `${n} free credit${n === 1 ? " is" : "s are"} already in your account. Thanks for creating with Kleo, enjoy ${n === 1 ? "it" : "them"}!`;
       seeNote.textContent = messageIn.value.trim();
       seeNote.hidden = !messageIn.value.trim();
-      send.disabled = !(credits() >= 1) || reasonIn.value.trim().length < 3;
+      // While a try is on its way the button stays off, whatever is typed meanwhile.
+      send.disabled = st.busy || !(credits() >= 1) || reasonIn.value.trim().length < 3;
     };
     for (const el of [amountIn, reasonIn, messageIn]) el.addEventListener("input", draw);
     send.addEventListener("click", async () => {
       if (send.disabled) return;
       const n = credits();
-      send.disabled = true;
+      st.busy = true; draw();
       try {
-        const r = await postFresh(`/api/admin/users/${id}/gift`, { credits: n, reason: reasonIn.value.trim(), message: messageIn.value.trim(), email: st.email });
+        const r = await postFresh(`/api/admin/users/${id}/gift`, { id: st.id, credits: n, reason: reasonIn.value.trim(), message: messageIn.value.trim(), email: st.email && !!to });
         K.closeLayer();
         const m = r.gift?.mail;
-        if (!m) K.toast(`Gift sent: ${count(n, "credit")}. They see it the next time they open Kleo.`);
+        if (r.again) K.toast("This gift was given already: nothing more went out.");
+        else if (!m) K.toast(`Gift sent: ${count(n, "credit")}. They see it the next time they open Kleo.`);
         else if (m.status === "sent") K.toast(`Gift sent, and the e-mail went to ${m.to}`);
+        else if (m.status === "waiting") K.toast(`Gift sent: ${count(n, "credit")} are in. The e-mail is waiting: send it again from the Gifts card.`, true);
         else K.toast(`Gift sent: ${count(n, "credit")} are in. No e-mail: ${m.error || "it couldn't be sent"}`, true);
         reload();
-      } catch (e) { draw(); oops(e); }
+      } catch (e) { st.busy = false; draw(); oops(e); }
     });
     draw();
     K.sheet("Gift credits", `${who(u)} has ${u.admin ? "unlimited" : num(u.credits)} credits. The gift goes in at once, and Kleo shows them a pop-up the next time they open the app.`,
@@ -601,7 +609,8 @@ async function userPage(main, id, opts = {}) {
   const actions = h("div", { class: "adm-actions" },
     h("button", { class: "btn btn-quiet", onclick: () => credit(1) }, icon("plus", 17), "Add credits"),
     h("button", { class: "btn btn-quiet", onclick: () => credit(-1) }, icon("star", 17), "Take credits away"),
-    u.deleted || u.merged_into || blocked ? null : h("button", { class: "btn btn-quiet", onclick: giftSheet }, icon("gift", 17), "Gift credits"),
+    // No gift for an account only an AI assistant uses: it would be lost when it signs in (Add credits still works).
+    u.deleted || u.merged_into || u.anonymous || blocked ? null : h("button", { class: "btn btn-quiet", onclick: giftSheet }, icon("gift", 17), "Gift credits"),
     u.admin ? null : h("button", { class: "btn btn-quiet", onclick: () => act(blocked
       ? { title: "Reopen this account?", text: "It can sign in again. Its Kleo key is the new one made when it was closed.", ok: "Reopen", ic: "check", run: (v) => post("block", { on: false, reason: v.reason }), done: "Account reopened" }
       : { title: "Close this account?", text: "It is signed out everywhere at once and can't sign in again. Its Kleo key is renewed, so assistants connected with it stop too.", ok: "Close account", danger: true, ic: "lock", run: (v) => post("block", { on: true, reason: v.reason }), done: "Account closed" }) },
@@ -653,12 +662,27 @@ async function userPage(main, id, opts = {}) {
   ]));
 
   const payments = card("Payments", d.payments?.length ? null : "No payments.", d.payments?.length ? h("div", { class: "list" }, d.payments.map(payRow)) : null);
-  // The gifts from the Kleo team: what each said, its e-mail, and whether the app showed it (src/studio/gifts.ts).
+  // The gifts from the Kleo team: what each said, its e-mail, and whether the app showed it (src/studio/gifts.ts). An
+  // e-mail that is waiting (Kleo's side said "later": rate, quota, the sending domain) gets a real "Send the e-mail
+  // again"; the server claims the gift first, so it goes out at most once.
   const giftMail = (g) => (!g.mail ? "No e-mail" : g.mail_status === "sent" ? `E-mail sent to ${g.mail_to}` : g.mail_status === "skipped" ? `No e-mail: ${g.mail_error}`
-    : g.mail_status === "failed" ? `E-mail failed: ${g.mail_error}` : "E-mail not sent yet");
-  const gifts = d.gifts?.length ? card("Gifts", "Credits the Kleo team gave, and whether the pop-up was seen.", h("div", { class: "list" }, d.gifts.map((g) => h("div", { class: "row" }, icon("gift", 19),
-    h("div", { class: "lbl" }, h("b", {}, count(g.credits, "credit"), g.seen_at ? pill(`Seen ${day(g.seen_at)}`, "ok") : pill("Not seen yet", "")),
-      h("span", {}, [stamp(g.created_at), g.reason, g.message ? `"${g.message}"` : null, giftMail(g)].filter(Boolean).join(" · "))))))) : null;
+    : g.mail_status === "failed" ? `E-mail refused: ${g.mail_error}` : g.mail_status === "waiting" ? `E-mail waiting: ${g.mail_error || "it can go later"}`
+      : g.mail_status === "sending" ? "E-mail on its way" : "E-mail not sent yet");
+  async function mailAgain(g, btn) {
+    btn.disabled = true;
+    try {
+      const r = await call(`/api/admin/users/${id}/gifts/${g.id}/mail`, { method: "POST", body: {} });
+      if (r.mail.status === "sent") K.toast(`E-mail sent to ${r.mail.to}`); else K.toast(`Not sent: ${r.mail.error || r.mail.status}`, true);
+      reload();
+    } catch (e) { btn.disabled = false; oops(e); }
+  }
+  const gifts = d.gifts?.length ? card("Gifts", "Credits the Kleo team gave, and whether the pop-up was seen.", h("div", { class: "list" }, d.gifts.map((g) => {
+    const again = g.mail && (g.mail_status === "waiting" || !g.mail_status) ? h("button", { class: "btn btn-quiet btn-sm adm-gift-again", type: "button" }, icon("mail", 15), "Send the e-mail again") : null;
+    again?.addEventListener("click", () => mailAgain(g, again));
+    return h("div", { class: "row adm-gift-row" }, icon("gift", 19),
+      h("div", { class: "lbl" }, h("b", {}, count(g.credits, "credit"), g.seen_at ? pill(`Seen ${day(g.seen_at)}`, "ok") : pill("Not seen yet", "")),
+        h("span", {}, [stamp(g.created_at), g.reason, g.message ? `"${g.message}"` : null, giftMail(g)].filter(Boolean).join(" · ")), again));
+  }))) : null;
 
   const gens = d.generations || [];
   let shown = 12;
@@ -1905,8 +1929,15 @@ async function demo(path, opts) {
       totals: { paid: u.paid_cent ? [{ currency: "eur", cents: u.paid_cent }] : [], spend_usd: u.spend_usd, credits_spent: gens.filter((g) => g.status !== "failed").reduce((a, g) => a + g.credits, 0), failed: gens.filter((g) => g.status === "failed").length, films_usd: 0 },
       lookup: true, retentionDays: 90,
       attribution: demoAttribution(u),
-      gifts: (db.gifts || []).filter((g) => g.user_id === u.id),
+      gifts: (db.gifts || []).filter((g) => g.user_id === u.id), giftTo: u.anonymous ? null : u.email,
     };
+  }
+  const gm = p.match(/^\/api\/admin\/users\/(u_\w+)\/gifts\/(gf_\w+)\/mail$/);
+  if (gm) {
+    const g = (db.gifts || []).find((x) => x.id === gm[2]);
+    if (!g || g.mail_status === "sent") throw fail("This e-mail went out already.", "gift_mail_state", 409);
+    Object.assign(g, { mail_status: "sent", mail_to: db.users.find((x) => x.id === gm[1])?.email ?? null, mail_error: null });
+    return { ok: true, mail: { status: "sent", to: g.mail_to, error: null } };
   }
   const am = p.match(/^\/api\/admin\/users\/(u_\w+)\/([a-z-]+)$/);
   if (am) {
@@ -1921,7 +1952,9 @@ async function demo(path, opts) {
     const log = (event, extra = {}) => db.audit.push({ id: db.aid++, at: new Date().toISOString(), user_id: u.id, event, job_id: null, detail: JSON.stringify({ admin: "u_demo00a", reason: b.reason, ...extra }) });
     if (am[2] === "credits") { const before = u.credits; u.credits = Math.max(0, u.credits + Number(b.delta)); log("admin.credits", { delta: b.delta, before, after: u.credits }); return { ok: true, credits: u.credits }; }
     if (am[2] === "gift") {
-      const n = Number(b.credits), before = u.credits, gid = `gf_demo${db.aid}`;
+      const given = (db.gifts || []).find((g) => g.id === b.id);
+      if (given) return { ok: true, again: true, credits: u.credits, gift: { id: given.id, credits: given.credits, message: given.message, mail: given.mail ? { status: given.mail_status, to: given.mail_to, error: null } : null } };
+      const n = Number(b.credits), before = u.credits, gid = b.id || `gf_demo${db.aid}`;
       u.credits += n;
       log("admin.credits", { delta: n, before, after: u.credits, gift: gid });
       const mail = b.email ? { status: "sent", to: u.email, error: null } : null;

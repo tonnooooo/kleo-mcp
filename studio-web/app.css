@@ -1727,8 +1727,9 @@ img.fx-in { animation: fx-img-in .7s var(--ease-out) both; }
 
 /* A gift from the Kleo team (30 October 2026, src/studio/gifts.ts): the card the next load after sign-in shows once, then
    the invitation to Kleo Creators. Centred over the page in Kleo's warm amber, light and dark, phone and desktop; the
-   X at the top right and one button at the bottom. Every word at 16 px or more. */
-.gp-scrim { position: fixed; inset: 0; z-index: 88; display: grid; place-items: center; overflow-y: auto;
+   X at the top right and one button at the bottom. Every word at 16 px or more. Above the page, its sheets and the video
+   viewer (it opens only once they are closed), under the toasts (60) and Kleo's own questions (90). */
+.gp-scrim { position: fixed; inset: 0; z-index: 55; display: grid; place-items: center; overflow-y: auto;
   padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
   background: rgba(0, 0, 0, .46); -webkit-backdrop-filter: blur(10px) saturate(1.15); backdrop-filter: blur(10px) saturate(1.15); animation: fade .22s both; }
 .gp-scrim.out { opacity: 0; transition: opacity .2s; }
@@ -1738,6 +1739,7 @@ img.fx-in { animation: fx-img-in .7s var(--ease-out) both; }
   background: radial-gradient(closest-side, rgba(255, 196, 77, .34), rgba(255, 196, 77, 0)); }
 .gp-scrim.out .gp-card { transform: scale(.96); transition: transform .2s var(--ease); }
 @keyframes gpIn { from { opacity: 0; transform: translateY(22px) scale(.9); } }
+.gp-card:focus { outline: none; }
 .gp-x { position: absolute; top: 12px; right: 12px; z-index: 3; width: 40px; height: 40px; color: var(--ink-2); background: var(--fill-2); }
 .gp-x:hover { color: var(--ink); background: var(--fill); }
 .gp-art { position: relative; width: 150px; height: 126px; margin: 2px auto 14px; display: grid; place-items: center; }

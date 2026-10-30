@@ -274,6 +274,9 @@ export async function deleteAccount(env: StudioEnv, userId: string, confirm: unk
     env.DB.prepare("DELETE FROM studio_logins WHERE user_id = ?1 OR user_id IN (SELECT id FROM users WHERE merged_into = ?1)").bind(userId),
     // Where the account came from (attribution.ts): the privacy page promises it goes with the account.
     env.DB.prepare("DELETE FROM user_attribution WHERE user_id = ?").bind(userId),
+    // A gift from the Kleo team (gifts.ts) keeps its credits, and the audit rows keep the change; the address it went to
+    // and the words it said go with the account.
+    env.DB.prepare("UPDATE studio_gifts SET mail_to = NULL, message = NULL, mail_error = NULL WHERE user_id = ?").bind(userId),
     env.DB.prepare("UPDATE users SET email = ?, display_name = NULL, contact_email = NULL, credits = 0 WHERE id = ?").bind(`${userId}@deleted.kleo.invalid`, userId),
   ]);
   await endAllSessions(env, userId);

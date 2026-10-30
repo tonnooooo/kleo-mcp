@@ -769,45 +769,88 @@ const viewEl = () => $("#view");
 function setView(cls, ...kids) { const v = viewEl(); v.className = `view ${cls || ""}`; v.scrollTop = 0; fill(v, ...kids); return v; }
 
 // ── A gift from the Kleo team (30 October 2026, src/studio/gifts.ts) ────────────────────────────────────────────────
-// The admin console's "Gift credits" puts the credits in at once and leaves the gift in /api/me. The next load after
-// sign-in shows it once: "A gift from the Kleo team", the X at the top right and Claim at the bottom both only close it,
-// since the credits are in already. The server hears at once, so a reload, another tab or the phone never shows it
-// again. Then, for an account not in Kleo Creators, "Become a Kleo Creator", whose Apply opens /creators.
-// ?demo=gift shows both on fake data.
+// The admin console's "Gift credits" puts the credits in at once and leaves the gift in /api/me ("gift": its items, each
+// with its id, credits and message, and their total). The next load after sign-in, or the app coming back to the front,
+// shows the gifts this page has not shown yet, once: "A gift from the Kleo team", the X at the top right and Claim at
+// the bottom both only close it, since the credits are in already. The server hears at once, with one retry, and a gift
+// shown here that it still lists is told again on the next focus: a reload, another tab or the phone never shows it
+// again. The card never covers the video viewer, a sheet, a menu or a question (it waits until they close), nor jumps
+// in while the person types; when it had to wait it reads /api/me again first. Then, for an account Kleo Creators would
+// take (it has paid) and that has no place there yet, "Become a Kleo Creator", whose Apply opens /creators. Focus goes
+// back where it was once the cards close. ?demo=gift shows both on fake data.
 const GIFTS_SHOWN = new Set();
+let giftQueued = false;
+let typedAt = 0;
+document.addEventListener("input", () => { typedAt = Date.now(); }, true);
+/** What the card waits for: a hidden tab, the viewer, a sheet or menu, a question or another card, typing. */
+const giftWaits = () => document.visibilityState === "hidden" || !!openLayer || !!document.querySelector(".ask-scrim, .gp-scrim") || Date.now() - typedAt < 2500;
+const giftItems = (g) => (Array.isArray(g?.items) ? g.items.filter((x) => x && typeof x.id === "string") : []);
 function maybeShowGift() {
-  const g = S.me?.gift;
-  if (!g?.ids?.length || adminSite() || S.connecting || location.pathname === "/connect") return;
-  if (g.ids.every((id) => GIFTS_SHOWN.has(id))) return;
-  for (const id of g.ids) GIFTS_SHOWN.add(id);
-  S.me.gift = null;
-  const open = () => setTimeout(() => giftModal(g), 450);
-  if (document.visibilityState !== "hidden") return open();
-  // A tab opened in the background shows it when the person looks at it, not before.
-  const look = () => { if (document.visibilityState === "hidden") return; document.removeEventListener("visibilitychange", look); open(); };
-  document.addEventListener("visibilitychange", look);
+  if (!S.me || adminSite() || S.connecting || location.pathname === "/connect") return;
+  const items = giftItems(S.me.gift);
+  // Shown here already and still listed: the word didn't reach the server, so say it again.
+  const again = items.filter((x) => GIFTS_SHOWN.has(x.id)).map((x) => x.id);
+  if (again.length) giftsSeen(again);
+  if (giftQueued || !items.some((x) => !GIFTS_SHOWN.has(x.id))) return;
+  giftQueued = true;
+  setTimeout(() => giftWhenCalm(false), 450);
 }
-function giftModal(g) {
-  const n = Math.max(0, Math.trunc(Number(g.credits) || 0));
-  if (!DEMO) api("/api/me/gift/seen", { method: "POST", body: { ids: g.ids } }).catch(() => {});
+async function giftWhenCalm(waited) {
+  if (!S.me) { giftQueued = false; return; }
+  if (giftWaits()) { setTimeout(() => giftWhenCalm(true), 700); return; }
+  let items = giftItems(S.me.gift);
+  if (waited && !DEMO) {
+    // It had to wait: the gift may have been seen on the phone meanwhile, or another one may have come. Ask again.
+    try { items = giftItems((await api("/api/me")).gift); } catch { giftQueued = false; return; }
+    if (giftWaits()) { setTimeout(() => giftWhenCalm(true), 700); return; }
+  }
+  giftQueued = false;
+  const fresh = items.filter((x) => !GIFTS_SHOWN.has(x.id));
+  if (!fresh.length || !S.me) return;
+  for (const x of fresh) GIFTS_SHOWN.add(x.id);
+  giftModal(fresh);
+}
+/** Tells the server these gifts were shown, once more if that fails; a later focus tells it again while it still lists them. */
+async function giftsSeen(ids) {
+  if (DEMO || !ids.length) return;
+  for (let i = 0; i < 2; i++) {
+    try { await api("/api/me/gift/seen", { method: "POST", body: { ids } }); return; } catch { if (i === 0) await new Promise((ok) => setTimeout(ok, 2000)); }
+  }
+}
+/** The gifts this page has not shown yet: their credits added up, and the newest message among them. */
+function giftModal(items) {
+  const n = items.reduce((a, x) => a + Math.max(0, Math.trunc(Number(x.credits) || 0)), 0);
+  const note = items.map((x) => x.message).filter(Boolean).pop() || null;
+  giftsSeen(items.map((x) => x.id));
+  const back = document.activeElement;
   popCard({
     kind: "gift", title: "A gift from the Kleo team", art: giftArt(n),
     text: `${n} free credit${n === 1 ? " is" : "s are"} already in your account. Thanks for creating with Kleo, enjoy ${n === 1 ? "it" : "them"}!`,
-    note: g.message || null, ok: "Claim",
-    after: () => setTimeout(creatorInvite, 320),
+    note, ok: "Claim",
+    after: () => setTimeout(() => creatorInvite(back), 320),
   });
 }
-/** After the gift: the invitation to Kleo Creators, for an account that has no place or application there yet. */
-function creatorInvite() {
-  if (!S.me || S.me.creator || adminSite() || location.pathname === "/creators") return;
+/** Gives the focus back to what had it before the cards, when it is still on the page. */
+const focusBack = (el) => { if (el && el !== document.body && el.isConnected && typeof el.focus === "function") el.focus({ preventScroll: true }); };
+/**
+ * After the gift: the invitation to Kleo Creators, only for an account the program takes (it has paid: S.me.paid, the
+ * server's hasPaid or an admin) that has no place or application there yet; the gift e-mail follows the same rule.
+ */
+function creatorInvite(back) {
+  if (!S.me || !S.me.paid || S.me.creator || adminSite() || location.pathname === "/creators") return focusBack(back);
+  if (giftWaits()) { setTimeout(() => creatorInvite(back), 700); return; }
   popCard({
     kind: "creator", title: "Become a Kleo Creator", art: creatorArt(),
     text: "Get rewarded for posting your Kleo videos.",
     points: [["star", "25% of every sale from your link, for 12 months"], ["bolt", "Bonus credits for your views"], ["sparkle", "Extra credits in the months you post"]],
-    ok: "Apply", onOk: () => go("/creators"),
+    ok: "Apply", onOk: () => go("/creators"), after: () => focusBack(back),
   });
 }
-/** The gift's card and the invitation's: centred over the page, the X at the top right, one button at the bottom. */
+/**
+ * The gift's card and the invitation's: centred over the page, the X at the top right, one button at the bottom. The
+ * card itself takes the focus, not a button a keystroke could press. Only while it is the top-most layer does it answer
+ * Esc and keep Tab on its two buttons: a question opened over it keeps the keyboard for itself.
+ */
 function popCard({ kind, title, art, text, note = null, points = null, ok, onOk = null, after = null }) {
   let gone = false;
   const close = (then) => {
@@ -819,20 +862,25 @@ function popCard({ kind, title, art, text, note = null, points = null, ok, onOk 
   };
   const x = h("button", { class: "icon-btn gp-x", type: "button", "aria-label": "Close", onclick: () => close() }, icon("x", 20, 2.2));
   const yes = h("button", { class: "btn btn-cta gp-ok", type: "button", onclick: () => close(onOk) }, ok);
-  const card = h("div", { class: `gp-card gp-${kind}`, role: "dialog", "aria-modal": "true", "aria-labelledby": `gp-${kind}-title` },
+  const card = h("div", { class: `gp-card gp-${kind}`, role: "dialog", "aria-modal": "true", "aria-labelledby": `gp-${kind}-title`, tabindex: "-1" },
     x, art, h("h2", { id: `gp-${kind}-title` }, title), h("p", { class: "gp-text" }, text),
     note ? h("p", { class: "gp-note" }, note) : null,
     points ? h("ul", { class: "gp-points" }, points.map(([ic, t]) => h("li", {}, h("span", { class: "gp-pi", "aria-hidden": "true" }, ic === "bolt" ? bolt(17) : icon(ic, 17, 2.2)), h("span", {}, t)))) : null,
     h("div", { class: "gp-btns" }, yes));
   const scrim = h("div", { class: "gp-scrim" }, card);
-  // Escape closes; Tab stays on the card's two buttons.
+  const onTop = () => !openLayer && !document.querySelector(".ask-scrim");
   const keys = (e) => {
-    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); }
-    else if (e.key === "Tab") { e.preventDefault(); (document.activeElement === yes ? x : yes).focus(); }
+    if (!onTop()) return;
+    if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); close(); }
+    else if (e.key === "Tab") {
+      e.preventDefault();
+      const order = e.shiftKey ? [yes, x] : [x, yes];
+      order[(order.indexOf(document.activeElement) + 1) % order.length].focus();
+    }
   };
   document.addEventListener("keydown", keys, true);
   document.body.append(scrim);
-  setTimeout(() => yes.focus({ preventScroll: true }), 80);
+  card.focus({ preventScroll: true });
   return card;
 }
 /** A gift box drawn in Kleo's amber, a little burst of confetti, sparkles, and the credits on a tag. */
@@ -3011,7 +3059,7 @@ async function demoApi(path, opts) {
   if (path === "/api/me" && DEMO_GUEST) throw new ApiError("Sign in first.", 401, "signin");
   if (path === "/api/me" && DEMO_FREE) return { id: "u_demo", email: "you@example.com", name: "Demo", since: "2026-10-01T09:00:00Z", credits: 5, paid: false, allowed: ["seedance-2.0-fast"], freeResolutions: ["480p"], allowedImages: ["nano-banana-2"], allowedTools: [], methods: ["password"], mcpUrl: "https://mcp.kleooai.com/mcp", packs: [{ label: "5 EUR", credits: 10, url: "https://kleooai.com/pricing/" }, { label: "15 EUR", credits: 35, url: "https://kleooai.com/pricing/" }, { label: "40 EUR", credits: 100, url: "https://kleooai.com/pricing/" }] };
   if (path === "/api/me") return { id: "u_demo", email: "you@example.com", name: "Demo", since: "2026-10-01T09:00:00Z", credits: demoDb.credits, paid: true, allowed: demoCatalog().map((m) => m.key), allowedImages: demoImageCatalog().map((m) => m.key), allowedTools: DEMO_TOOLS.map((t) => t.key), methods: ["password", "google"], mcpUrl: "https://mcp.kleooai.com/mcp", autoWan: !!demoDb.autoWan, packs: [{ label: "5 EUR", credits: 10, url: "https://kleooai.com/pricing/" }, { label: "15 EUR", credits: 35, url: "https://kleooai.com/pricing/" }, { label: "40 EUR", credits: 100, url: "https://kleooai.com/pricing/" }],
-    ...(DEMO_GIFT ? { gift: { ids: ["gf_demo2026gift"], credits: 20, message: null } } : {}) };
+    ...(DEMO_GIFT ? { gift: { items: [{ id: "gf_demo2026gift", credits: 20, message: null }], credits: 20 } } : {}) };
   if (path === "/api/auth/signout" || path === "/api/auth/signout-all") return { ok: true };
   if (path === "/api/me/key") return { key: "u_demo.0123456789abcdef0123456789abcdef" };
   if (path === "/api/chats" && method === "GET") return { chats: demoDb.chats };
