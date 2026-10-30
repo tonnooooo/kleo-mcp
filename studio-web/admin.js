@@ -525,6 +525,19 @@ function detailText(raw) {
   return Object.entries(d).filter(([, v]) => v !== null && v !== undefined && v !== "").slice(0, 5)
     .map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v).slice(0, 80) : String(v).slice(0, 90)}`).join(" · ");
 }
+// A gift's cancel writes an admin.gift row too (src/studio/admin.ts cancelBatch): the timeline names it a cancel, with
+// the credits that came back first (detailText's five keys would cut them off).
+function giftCancelOf(a) {
+  if (a.event !== "admin.gift") return null;
+  try { const x = JSON.parse(a.detail || "null"); return x && x.action === "cancel" ? x : null; } catch { return null; }
+}
+const eventName = (a) => (giftCancelOf(a) ? "Admin cancelled a gift" : EVENTS[a.event] || a.event);
+function eventText(a) {
+  const x = giftCancelOf(a);
+  if (!x) return detailText(a.detail);
+  return [Number(x.credits) > 0 ? `${count(x.credits, "credit")} came back` : "No credits moved, only the pop-up stopped", x.reason ? `reason: ${x.reason}` : null, x.gift ? `gift: ${x.gift}` : null]
+    .filter(Boolean).join(" · ");
+}
 
 async function userPage(main, id, opts = {}) {
   const body = h("div", { class: "adm-stack" }, loading());
@@ -669,8 +682,17 @@ async function userPage(main, id, opts = {}) {
   // A send claimed more than 5 minutes ago with no outcome counts as waiting again (gifts.ts SENDING_STALE_MIN), and
   // may have gone out: the line says so next to the button.
   const giftStale = (g) => g.mail_status === "sending" && (!g.mailed_at || Date.now() - toDate(g.mailed_at).getTime() > 5 * 60e3);
+  // On a deleted account an e-mail still to go (waiting, never sent, or a stale send) never goes: mailGift skips a
+  // closed account, so the line is final and there is no button. A stale send may already have gone out, so its line
+  // says so instead of claiming no e-mail went.
+  const giftUnsent = (g) => g.mail_status === "waiting" || !g.mail_status || giftStale(g);
   const giftMail = (g) => {
     if (!g.mail) return "No e-mail";
+    // A cancelled gift's e-mail never goes (mailGift's claim skips it), but a stale send may have gone out before.
+    if (g.cancelled_at && giftStale(g)) return "Cancelled; an earlier e-mail may have gone out";
+    if (g.cancelled_at && giftUnsent(g)) return "No e-mail: the gift was cancelled";
+    if (u.deleted && giftStale(g)) return "No more e-mail: the account was deleted (an earlier send may have gone out)";
+    if (u.deleted && giftUnsent(g)) return "No e-mail: the account was deleted";
     if (g.mail_status === "sent") return g.mail_to ? `E-mail sent to ${g.mail_to}` : "E-mail sent (address removed with the account)";
     if (g.mail_status === "skipped") return g.mail_error ? `No e-mail: ${g.mail_error}` : "No e-mail (reason removed with the account)";
     if (g.mail_status === "failed") return g.mail_error ? `E-mail refused: ${g.mail_error}` : "E-mail refused (reason removed with the account)";
@@ -686,13 +708,61 @@ async function userPage(main, id, opts = {}) {
       reload();
     } catch (e) { btn.disabled = false; oops(e); }
   }
+  // A gift not seen yet can be cancelled (src/studio/admin.ts cancelGift): its pop-up never shows. The console's own
+  // sheet asks for a reason for the audit log and offers two real choices: take its credits back (up to the gift, never
+  // more than the balance; over 100, or past 100 in all, a new code from the phone, like Take credits away), or only stop
+  // the pop-up, for credits already taken away by hand. Credits taken away after the gift (an admin.credits decrease in
+  // the audit) are named in the sheet, and "Only stop the pop-up" then comes first.
+  const takenAfter = (g) => (d.audit || []).filter((a) => a.event === "admin.credits" && toDate(a.at).getTime() >= toDate(g.created_at).getTime())
+    .map((a) => { try { return JSON.parse(a.detail || "{}") || {}; } catch { return {}; } })
+    .filter((x) => Number(x.delta) < 0 && !x.cancel).reduce((sum, x) => sum - Number(x.delta), 0);
+  function cancelGift(g, btn) {
+    const n = Math.min(Number(g.credits) || 0, Math.max(0, Number(u.credits) || 0));
+    const taken = takenAfter(g);
+    const reasonIn = h("input", { class: "input", placeholder: "Why you are cancelling it", autocomplete: "off", "aria-label": "Reason" });
+    const back = n > 0 ? h("button", { class: "btn btn-destroy adm-gift-back", type: "button" }, `Cancel and take back up to ${count(n, "credit")}`) : null;
+    const stop = h("button", { class: "btn btn-quiet adm-gift-stop", type: "button" }, "Only stop the pop-up");
+    const st = { busy: false };
+    const draw = () => { for (const b of [back, stop]) if (b) b.disabled = st.busy || reasonIn.value.trim().length < 3; };
+    const send = async (takeBack) => {
+      if (st.busy || reasonIn.value.trim().length < 3) return;
+      // While it is on its way, neither choice nor the card's own button can send it again.
+      st.busy = true; draw();
+      btn.disabled = true;
+      try {
+        const r = await post(`gifts/${g.id}/cancel`, { reason: reasonIn.value.trim(), takeBack });
+        K.closeLayer();
+        const cc = r.gift?.cancelled_credits ?? 0;
+        K.toast(r.again ? "This gift was cancelled already." : cc ? `Gift cancelled: ${count(cc, "credit")} came back.` : "Gift cancelled: its pop-up won't show, and no credits moved.");
+        reload();
+      } catch (e) { st.busy = false; draw(); btn.disabled = false; oops(e); }
+    };
+    reasonIn.addEventListener("input", draw);
+    back?.addEventListener("click", () => send(true));
+    stop.addEventListener("click", () => send(false));
+    draw();
+    const warn = taken ? h("div", { class: "adm-note bad adm-gift-taken" }, icon("star", 17),
+      `After this gift, ${count(taken, "credit")} ${taken === 1 ? "was" : "were"} taken away from this account with Take credits away. If those were the gift's credits, only stop the pop-up.`) : null;
+    K.sheet("Cancel this gift?", n > 0 ? `Its pop-up won't show. Up to ${count(n, "credit")} can come back too, never more than the balance.` : "Its pop-up won't show. The balance is 0, so no credits can come back.",
+      h("div", { class: "adm-sheet-body adm-gift" }, warn,
+        h("label", { class: "adm-field" }, h("span", {}, "Reason, kept in the audit log"), reasonIn),
+        h("div", { class: "adm-gift-choice" }, taken ? [stop, back] : [back, stop])));
+    setTimeout(() => reasonIn.focus(), 60);
+  }
   const gifts = d.gifts?.length ? card("Gifts", "Credits the Kleo team gave, and whether the pop-up was seen.", h("div", { class: "list" }, d.gifts.map((g) => {
-    const canSend = !u.deleted && g.mail && (g.mail_status === "waiting" || !g.mail_status || giftStale(g));
+    const canSend = !u.deleted && !g.cancelled_at && g.mail && giftUnsent(g);
     const again = canSend ? h("button", { class: "btn btn-quiet btn-sm adm-gift-again", type: "button" }, icon("mail", 15), "Send the e-mail again") : null;
     again?.addEventListener("click", () => mailAgain(g, again));
+    const canCancel = !g.cancelled_at && !g.seen_at;
+    const cancel = canCancel ? h("button", { class: "btn btn-quiet btn-sm adm-gift-cancel", type: "button" }, icon("x", 15), "Cancel gift") : null;
+    cancel?.addEventListener("click", () => cancelGift(g, cancel));
+    const state = g.cancelled_at ? pill(`Cancelled ${day(g.cancelled_at)}`, "bad") : g.seen_at ? pill(`Seen ${day(g.seen_at)}`, "ok") : pill("Not seen yet", "");
+    const cameBack = !g.cancelled_at ? null : g.cancelled_credits ? `Cancelled ${stamp(g.cancelled_at)}: ${count(g.cancelled_credits, "credit")} came back`
+      : `Cancelled ${stamp(g.cancelled_at)}: no credits moved, only the pop-up stopped`;
     return h("div", { class: "row adm-gift-row" }, icon("gift", 19),
-      h("div", { class: "lbl" }, h("b", {}, count(g.credits, "credit"), g.seen_at ? pill(`Seen ${day(g.seen_at)}`, "ok") : pill("Not seen yet", "")),
-        h("span", {}, [stamp(g.created_at), g.reason, g.message ? `"${g.message}"` : null, giftMail(g)].filter(Boolean).join(" · ")), again));
+      h("div", { class: "lbl" }, h("b", {}, count(g.credits, "credit"), state),
+        h("span", {}, [stamp(g.created_at), g.reason, g.message ? `"${g.message}"` : null, cameBack, giftMail(g)].filter(Boolean).join(" · ")),
+        again || cancel ? h("div", { class: "adm-gift-btns" }, again, cancel) : null));
   }))) : null;
 
   const gens = d.generations || [];
@@ -728,7 +798,7 @@ async function userPage(main, id, opts = {}) {
     K.fill(tChips, chips(TIMELINE_FILTERS, tf, (k) => { tf = k; tShown = 40; drawTimeline(); }));
     const rows = (d.audit || []).filter((a) => tf === "all" || eventGroup(a.event) === tf);
     K.fill(tList, rows.slice(0, tShown).map((a) => h("div", { class: `adm-ev ${eventGroup(a.event)}` }, h("i", { class: "dot" }),
-      h("div", { class: "adm-ev-t" }, h("b", {}, EVENTS[a.event] || a.event), h("span", {}, stamp(a.at)), detailText(a.detail) ? h("p", {}, detailText(a.detail)) : null,
+      h("div", { class: "adm-ev-t" }, h("b", {}, eventName(a)), h("span", {}, stamp(a.at)), eventText(a) ? h("p", {}, eventText(a)) : null,
         d.lookup && LOOKUP_EVENTS.has(a.event) ? h("button", { class: "btn btn-quiet btn-sm", onclick: (e) => findAddress(a, e.currentTarget) }, icon("globe", 15), "Find address") : null))),
       rows.length ? null : empty("Nothing here."));
     tMore.style.display = rows.length > tShown ? "" : "none";
@@ -1942,6 +2012,19 @@ async function demo(path, opts) {
       attribution: demoAttribution(u),
       gifts: (db.gifts || []).filter((g) => g.user_id === u.id), giftTo: u.anonymous ? null : u.email,
     };
+  }
+  const cgm = p.match(/^\/api\/admin\/users\/(u_\w+)\/gifts\/(gf_\w+)\/cancel$/);
+  if (cgm) {
+    const g = (db.gifts || []).find((x) => x.id === cgm[2] && x.user_id === cgm[1]);
+    const u = db.users.find((x) => x.id === cgm[1]);
+    if (!g || !u) throw fail("No such gift on this account.", "not_found", 404);
+    if (g.cancelled_at) return { ok: true, again: true, credits: u.credits, gift: { id: g.id, credits: g.credits, cancelled_at: g.cancelled_at, cancelled_credits: g.cancelled_credits } };
+    const back = b.takeBack === false ? 0 : Math.min(g.credits, Math.max(0, u.credits));
+    const at = new Date().toISOString(), row = (event, extra) => db.audit.push({ id: db.aid++, at, user_id: u.id, event, job_id: null, detail: JSON.stringify({ admin: "u_demo00a", reason: b.reason, gift: g.id, cancel: true, ...extra }) });
+    row("admin.gift", { action: "cancel", takeBack: b.takeBack !== false, credits: back });
+    if (back) { row("admin.credits", { delta: -back, before: u.credits, after: u.credits - back }); u.credits -= back; }
+    Object.assign(g, { cancelled_at: at, seen_at: g.seen_at || at, cancelled_credits: back });
+    return { ok: true, credits: u.credits, gift: { id: g.id, credits: g.credits, cancelled_at: g.cancelled_at, cancelled_credits: back } };
   }
   const gm = p.match(/^\/api\/admin\/users\/(u_\w+)\/gifts\/(gf_\w+)\/mail$/);
   if (gm) {

@@ -19,6 +19,8 @@
  *                                            credits at once (the same path as credits), a pop-up in the app, the e-mail if
  *                                            asked; an id already given is answered as it is, nothing moves twice
  *   POST /api/admin/users/:id/gifts/:gift/mail   {}                         a gift's e-mail again, when it is waiting
+ *   POST /api/admin/users/:id/gifts/:gift/cancel {reason, takeBack?, code?} a gift not seen yet, cancelled: its pop-up
+ *                                            never shown, and its credits back (up to the balance) unless takeBack is false
  *   POST /api/admin/users/:id/block          {on, reason}                   close or reopen the account
  *   POST /api/admin/users/:id/address        {on, reason, days?, hash?}     block or free the address it signs in from
  *   POST /api/admin/users/:id/key            {reason}                       a new Kleo key (assistants disconnected)
@@ -259,6 +261,13 @@ interface Gate { session: AdminSession; fresh: boolean }
 
 /** The credits a change may move without a code typed in the last 5 minutes: alone, and added up (creditWithoutCode). */
 const CREDITS_WITHOUT_CODE = 100;
+/**
+ * The CREDITS_WITHOUT_CODE condition in SQL: this admin's admin.credits changes (added or taken away alike) since the
+ * code last typed stopped counting, plus this one, stay within the limit. Its three parameters: since, the admin's id,
+ * this change's size.
+ */
+const WITHIN_SQL = `(SELECT COALESCE(SUM(ABS(json_extract(a.detail, '$.delta'))), 0) FROM audit a
+    WHERE a.event = 'admin.credits' AND a.at > ? AND json_extract(a.detail, '$.admin') = ?) + ? <= ${CREDITS_WITHOUT_CODE}`;
 
 /** The writes that want a code typed in the last 5 minutes (admin-auth.ts FRESH_MIN). */
 export function dangerous(action: string, b: Record<string, unknown>, id: string, adminId: string): boolean {
@@ -277,8 +286,7 @@ export function dangerous(action: string, b: Record<string, unknown>, id: string
  */
 async function creditWithoutCode(env: StudioEnv, s: AdminSession, adminId: string, id: string, delta: number, detail: Record<string, unknown>, gift?: GiftDraft): Promise<boolean> {
   const since = new Date((s.fresh + FRESH_MIN * 60) * 1000).toISOString();
-  const within = `(SELECT COALESCE(SUM(ABS(json_extract(a.detail, '$.delta'))), 0) FROM audit a
-    WHERE a.event = 'admin.credits' AND a.at > ? AND json_extract(a.detail, '$.admin') = ?) + ? <= ${CREDITS_WITHOUT_CODE}`;
+  const within = WITHIN_SQL;
   const w = [since, adminId, Math.abs(delta)];
   const withGift = gift ? " AND EXISTS (SELECT 1 FROM studio_gifts WHERE id = ?)" : "";
   const g = gift ? [gift.id] : [];
@@ -333,9 +341,10 @@ async function giftAgain(env: StudioEnv, g: GiftRow): Promise<Response> {
  * in the same batch (the app shows it once, on its next load), then the e-mail when asked for. The console makes the
  * gift's id once per sheet and sends it with every try: an id already given is answered as it is (giftAgain), so a second
  * click, or a request sent again after its answer was lost, gives nothing more. The e-mail never undoes the gift: what
- * came of it is in the answer, on the gift's row and in its admin.gift audit row; both run under ctx.waitUntil, so a
- * console tab closed meanwhile cannot cut them off. A closed, merged or deleted account, and one only an AI assistant
- * uses (no Kleo sign-in: its gift would be lost when it signs in), get nothing.
+ * came of it is in the answer, on the gift's row and in its admin.gift audit row. Everything from the credit batch to
+ * the audit row runs as one piece of work under ctx.waitUntil, so a console tab closed at any point of it cannot cut
+ * off the e-mail or the audit row. A closed, merged or deleted account, and one only an AI assistant uses (no Kleo
+ * sign-in: its gift would be lost when it signs in), get nothing.
  */
 async function giftAction(env: StudioEnv, request: Request, gate: Gate, adminId: string, u: { id: string; credits: number }, b: Record<string, unknown>, reason: string, ctx?: ExecutionContext): Promise<Response> {
   const id = b.id === undefined || b.id === null || b.id === "" ? rid("gf", 12) : String(b.id);
@@ -358,21 +367,23 @@ async function giftAction(env: StudioEnv, request: Request, gate: Gate, adminId:
     throw new StudioError("Only an AI assistant uses this account, with no Kleo sign-in, so nobody would see the gift and it would be lost when they sign in. Use Add credits instead.", 400, "gift_anonymous");
   }
   const email = b.email === true;
-  let after: number;
-  try {
-    after = await moveCredits(env, request, gate, adminId, u, credits, reason, b, { gift: id }, { id, userId: u.id, credits, reason, message, adminId, mail: email });
-  } catch (e) {
-    if (e instanceof StudioError) throw e;
-    const now = await giftById(env, id).catch(() => null);
-    if (!now || now.user_id !== u.id) throw e;
-    // The same gift sent twice at once: the second batch failed on the gift's id and was rolled back.
-    if (GIFT_ID_TAKEN.test(e instanceof Error ? e.message : String(e))) return giftAgain(env, now);
-    // Any other trouble after this request's own batch went in (its answer lost, the balance read failing): the gift is
-    // given, so the e-mail and the audit row still follow; mailGift's claim keeps the e-mail at most once.
-    after = (await env.DB.prepare("SELECT credits FROM users WHERE id = ?").bind(u.id).first<{ credits: number }>().catch(() => null))?.credits ?? u.credits + credits;
-  }
-  // The e-mail and the audit row run under waitUntil: a console tab closed meanwhile cannot cut them off.
-  const finish = (async (): Promise<GiftMail | null> => {
+  // From the credit batch to the e-mail and the audit row, one piece of work registered with waitUntil before its first
+  // D1 call can answer: a tab closed at any point of it, the credit batch included, cannot cut off the e-mail or the
+  // audit row of a gift whose credits went in.
+  const work = (async (): Promise<Response> => {
+    let after: number;
+    try {
+      after = await moveCredits(env, request, gate, adminId, u, credits, reason, b, { gift: id }, { id, userId: u.id, credits, reason, message, adminId, mail: email });
+    } catch (e) {
+      if (e instanceof StudioError) throw e;
+      const now = await giftById(env, id).catch(() => null);
+      if (!now || now.user_id !== u.id) throw e;
+      // The same gift sent twice at once: the second batch failed on the gift's id and was rolled back.
+      if (GIFT_ID_TAKEN.test(e instanceof Error ? e.message : String(e))) return giftAgain(env, now);
+      // Any other trouble after this request's own batch went in (its answer lost, the balance read failing): the gift
+      // is given, so the e-mail and the audit row still follow; mailGift's claim keeps the e-mail at most once.
+      after = (await env.DB.prepare("SELECT credits FROM users WHERE id = ?").bind(u.id).first<{ credits: number }>().catch(() => null))?.credits ?? u.credits + credits;
+    }
     let mail: GiftMail | null = null;
     if (email) {
       // mailGift never throws once it sent; anything before that sent nothing, so the e-mail waits for "Send the e-mail again".
@@ -383,15 +394,127 @@ async function giftAction(env: StudioEnv, request: Request, gate: Gate, adminId:
       }
     }
     await audit(asEnv(env), u.id, null, "admin.gift", { admin: adminId, reason, gift: id, credits, message: !!message, mail: mail?.status ?? "not asked" }).catch(() => {});
-    return mail;
+    return json({ ok: true, credits: after, gift: { id, credits, message, mail } });
   })();
-  ctx?.waitUntil(finish);
-  const mail = await finish;
-  return json({ ok: true, credits: after, gift: { id, credits, message, mail } });
+  // A refusal (a code wanted, a wrong code) still reaches the console through the await below.
+  ctx?.waitUntil(work.catch(() => {}));
+  return await work;
 }
 
 /** The error D1 (SQLite) gives for a gift id that is already there: only that one means "the same gift, sent twice". */
 const GIFT_ID_TAKEN = /UNIQUE constraint failed: studio_gifts\.id/i;
+
+/**
+ * CANCEL A GIFT (30 October 2026, after a gift went to a creator too early: Take credits away left the gift pending, and
+ * its pop-up would still have announced the credits). Only a gift the person has not seen yet, in one of two ways, as
+ * the console asks: with its credits back, min(the gift's credits, the balance) (never below 0), or with
+ * `takeBack: false` only its pop-up stopped, for credits already taken away by hand: then no credits move, no
+ * admin.credits row is written and no code is wanted. Every statement of the batch (cancelBatch) moves only while the
+ * gift is still pending, and the last one ends that, so a second cancel (sent twice, or at once) changes nothing. The
+ * take-back counts toward CREDITS_WITHOUT_CODE exactly as Take credits away does (over 100 at once, or past 100 in all, a
+ * new code from the phone), and the batch never takes more than the amount checked here, whatever the balance became
+ * meanwhile. A gift cancelled already is answered as it is.
+ */
+async function cancelGift(env: StudioEnv, request: Request, gate: Gate, adminId: string, userId: string, giftId: string, b: Record<string, unknown>): Promise<Response> {
+  const reason = reasonOf(b);
+  const u = await targetUser(env, userId);
+  const g = await giftById(env, giftId);
+  if (!g || g.user_id !== userId) throw new StudioError("No such gift on this account.", 404, "not_found");
+  if (g.cancelled_at) return giftCancelled(env, g, true);
+  if (g.seen_at) throw new StudioError("They have seen this gift already. Use Take credits away instead.", 409, "gift_seen");
+  // The console's "Only stop the pop-up" sends takeBack: false; anything else takes the credits back.
+  const takeBack = b.takeBack !== false;
+  // The most this cancel takes back, checked against the code rule below: 0 for the pop-up alone.
+  const cap = takeBack ? Math.min(Number(g.credits) || 0, Math.max(0, Number(u.credits) || 0)) : 0;
+  const fresh = () => gate.fresh || isFresh(gate.session);
+  const askCode = async () => {
+    if (!b.code) throw new StudioError("Type a new code from your phone to do this.", 403, "fresh_code");
+    await checkFreshCode(env, request, adminId, b.code);
+    gate.fresh = true;
+  };
+  // Over CREDITS_WITHOUT_CODE at once wants a code first, like Take credits away (dangerous()).
+  if (cap > CREDITS_WITHOUT_CODE && !fresh()) await askCode();
+  const detail = { admin: adminId, reason, gift: giftId, cancel: true };
+  let done = false;
+  // After a batch: cancelled (by this call, or by another one meanwhile: then it is answered as given back already),
+  // seen meanwhile (the pop-up won, nothing moved), or still pending (a code is wanted).
+  const outcome = async (): Promise<Response | null> => {
+    const now = await giftById(env, giftId);
+    if (now?.cancelled_at) return giftCancelled(env, now, !done);
+    if (now?.seen_at) throw new StudioError("They have just seen this gift. Use Take credits away instead.", 409, "gift_seen");
+    return null;
+  };
+  if (cap > 0 && !fresh()) {
+    // Without a code typed in the last 5 minutes: only while the small changes add up to CREDITS_WITHOUT_CODE.
+    const since = new Date((gate.session.fresh + FRESH_MIN * 60) * 1000).toISOString();
+    done = await cancelBatch(env, userId, giftId, detail, takeBack, cap, [since, adminId, cap]);
+    if (!done) {
+      const r = await outcome();
+      if (r) return r;
+      await askCode();
+    }
+  }
+  if (!done) done = await cancelBatch(env, userId, giftId, detail, takeBack, cap, null);
+  const r = await outcome();
+  if (r) return r;
+  throw new StudioError("The gift couldn't be cancelled. Reload the page and try again.", 409, "gift_cancel");
+}
+
+/**
+ * The batch of cancelGift, one transaction: the gift's admin.gift cancel row, with the credits that come back; when
+ * `cap` is above 0, the take-back's admin.credits row (with the gift's id and the program credits before it), the
+ * balance, and the Kleo Creators program credits put back to what they were, never above the new balance (the
+ * users_program_credits_spent trigger takes every decrease off them, but a gift's credits went in as ordinary credits,
+ * so only those may go); last, the gift marked cancelled and seen. The take is MIN(the gift's credits, the balance never
+ * below 0, `cap`): never more than the amount cancelGift checked. `w`: the CREDITS_WITHOUT_CODE condition's parameters,
+ * null with a fresh code or when nothing moves.
+ */
+async function cancelBatch(env: StudioEnv, userId: string, giftId: string, detail: Record<string, unknown>, takeBack: boolean, cap: number, w: unknown[] | null): Promise<boolean> {
+  const moves = cap > 0;
+  const W = moves && w ? ` AND ${WITHIN_SQL}` : "";
+  const wa = W ? (w ?? []) : [];
+  const pending = "g.cancelled_at IS NULL AND g.seen_at IS NULL";
+  const of = `FROM users u JOIN studio_gifts g ON g.id = ? AND g.user_id = u.id WHERE u.id = ? AND ${pending}`;
+  const take = "MIN(g.credits, MAX(0, u.credits), ?)";
+  // The gift still pending: true until the last statement, in this batch only.
+  const still = `EXISTS (SELECT 1 FROM studio_gifts g WHERE g.id = ? AND g.user_id = ? AND ${pending})`;
+  // This cancel's own rows, written first in this batch while the gift is still pending: what the later statements go by.
+  const giftRow = "a.user_id = ? AND a.event = 'admin.gift' AND json_extract(a.detail, '$.gift') = ? AND json_extract(a.detail, '$.action') = 'cancel'";
+  const creditRow = "a.user_id = ? AND a.event = 'admin.credits' AND json_extract(a.detail, '$.gift') = ? AND json_extract(a.detail, '$.cancel') = 1";
+  const stmts = [
+    env.DB.prepare(`INSERT INTO audit (user_id, job_id, event, detail) SELECT u.id, NULL, 'admin.gift', json_set(?, '$.credits', ${moves ? take : "0"}) ${of}${W}`)
+      .bind(JSON.stringify({ ...detail, action: "cancel", takeBack }), ...(moves ? [cap] : []), giftId, userId, ...wa),
+  ];
+  if (moves) {
+    stmts.push(
+      env.DB.prepare(`INSERT INTO audit (user_id, job_id, event, detail) SELECT u.id, NULL, 'admin.credits',
+          json_set(?, '$.delta', -${take}, '$.before', u.credits, '$.after', u.credits - ${take}, '$.program_before', u.program_credits) ${of}${W}`)
+        .bind(JSON.stringify(detail), cap, cap, giftId, userId, ...wa),
+      env.DB.prepare(`UPDATE users SET credits = credits - MIN((SELECT g.credits FROM studio_gifts g WHERE g.id = ?), MAX(0, credits), ?)
+          WHERE id = ? AND ${still} AND EXISTS (SELECT 1 FROM audit a WHERE ${creditRow})`)
+        .bind(giftId, cap, userId, giftId, userId, userId, giftId),
+      // After the trigger: the program credits as they were before the cancel, or the new balance if that is lower.
+      env.DB.prepare(`UPDATE users SET program_credits = MIN(COALESCE((SELECT json_extract(a.detail, '$.program_before') FROM audit a WHERE ${creditRow}
+            ORDER BY a.id DESC LIMIT 1), program_credits), MAX(0, credits))
+          WHERE id = ? AND ${still} AND EXISTS (SELECT 1 FROM audit a WHERE ${creditRow})`)
+        .bind(userId, giftId, userId, giftId, userId, userId, giftId),
+    );
+  }
+  stmts.push(
+    env.DB.prepare(`UPDATE studio_gifts SET cancelled_at = ${NOW}, seen_at = COALESCE(seen_at, ${NOW}),
+        cancelled_credits = COALESCE((SELECT json_extract(a.detail, '$.credits') FROM audit a WHERE ${giftRow} ORDER BY a.id DESC LIMIT 1), 0)
+        WHERE id = ? AND user_id = ? AND cancelled_at IS NULL AND seen_at IS NULL AND EXISTS (SELECT 1 FROM audit a WHERE ${giftRow})`)
+      .bind(userId, giftId, giftId, userId, userId, giftId),
+  );
+  const out = await env.DB.batch(stmts);
+  return (out[out.length - 1]?.meta.changes ?? 0) === 1;
+}
+
+/** A cancelled gift as the console reads it, with the balance after; `again` when it was cancelled before this call. */
+async function giftCancelled(env: StudioEnv, g: GiftRow, again: boolean): Promise<Response> {
+  const credits = (await env.DB.prepare("SELECT credits FROM users WHERE id = ?").bind(g.user_id).first<{ credits: number }>())?.credits ?? 0;
+  return json({ ok: true, ...(again ? { again: true } : {}), credits, gift: { id: g.id, credits: g.credits, cancelled_at: g.cancelled_at, cancelled_credits: g.cancelled_credits ?? 0 } });
+}
 
 async function userAction(env: StudioEnv, request: Request, gate: Gate, adminId: string, id: string, action: string, ctx?: ExecutionContext): Promise<Response> {
   const u = await targetUser(env, id);
@@ -825,6 +948,9 @@ async function adminRoute(env: StudioEnv, request: Request, url: URL, adminId: s
     const am = path.match(/^\/api\/admin\/users\/(u_[a-z0-9]+)\/(credits|gift|block|address|key|signout|delete|ip-lookup)$/);
     if (am) return userAction(env, request, gate, adminId, am[1], am[2], ctx);
     // A gift's e-mail that is waiting (src/studio/gifts.ts): sent again, at most once.
+    // A gift the person has not seen yet, cancelled (its credits back, its pop-up never shown).
+    const cgm = path.match(/^\/api\/admin\/users\/(u_[a-z0-9]+)\/gifts\/(gf_[a-z0-9]{6,20})\/cancel$/);
+    if (cgm) return cancelGift(env, request, gate, adminId, cgm[1], cgm[2], await body(request));
     const gm = path.match(/^\/api\/admin\/users\/(u_[a-z0-9]+)\/gifts\/(gf_[a-z0-9]{6,20})\/mail$/);
     if (gm) {
       // Under waitUntil, like the first send: a tab closed meanwhile cannot cut it off.
