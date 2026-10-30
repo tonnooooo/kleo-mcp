@@ -665,19 +665,30 @@ async function userPage(main, id, opts = {}) {
   // The gifts from the Kleo team: what each said, its e-mail, and whether the app showed it (src/studio/gifts.ts). An
   // e-mail that is waiting (Kleo's side said "later": rate, quota, the sending domain) gets a real "Send the e-mail
   // again"; the server claims the gift first, so it goes out at most once.
-  const giftMail = (g) => (!g.mail ? "No e-mail" : g.mail_status === "sent" ? `E-mail sent to ${g.mail_to}` : g.mail_status === "skipped" ? `No e-mail: ${g.mail_error}`
-    : g.mail_status === "failed" ? `E-mail refused: ${g.mail_error}` : g.mail_status === "waiting" ? `E-mail waiting: ${g.mail_error || "it can go later"}`
-      : g.mail_status === "sending" ? "E-mail on its way" : "E-mail not sent yet");
+  // A deleted account's gifts keep no address and no reason (src/studio/auth.ts deleteAccount): never "null" on screen.
+  // A send claimed more than 5 minutes ago with no outcome counts as waiting again (gifts.ts SENDING_STALE_MIN), and
+  // may have gone out: the line says so next to the button.
+  const giftStale = (g) => g.mail_status === "sending" && (!g.mailed_at || Date.now() - toDate(g.mailed_at).getTime() > 5 * 60e3);
+  const giftMail = (g) => {
+    if (!g.mail) return "No e-mail";
+    if (g.mail_status === "sent") return g.mail_to ? `E-mail sent to ${g.mail_to}` : "E-mail sent (address removed with the account)";
+    if (g.mail_status === "skipped") return g.mail_error ? `No e-mail: ${g.mail_error}` : "No e-mail (reason removed with the account)";
+    if (g.mail_status === "failed") return g.mail_error ? `E-mail refused: ${g.mail_error}` : "E-mail refused (reason removed with the account)";
+    if (g.mail_status === "waiting") return g.mail_error ? `E-mail waiting: ${g.mail_error}` : "E-mail waiting: it can go later";
+    if (giftStale(g)) return "E-mail not confirmed: it may have gone out";
+    return g.mail_status === "sending" ? "E-mail on its way" : "E-mail not sent yet";
+  };
   async function mailAgain(g, btn) {
     btn.disabled = true;
     try {
       const r = await call(`/api/admin/users/${id}/gifts/${g.id}/mail`, { method: "POST", body: {} });
-      if (r.mail.status === "sent") K.toast(`E-mail sent to ${r.mail.to}`); else K.toast(`Not sent: ${r.mail.error || r.mail.status}`, true);
+      if (r.mail.status === "sent") K.toast(r.mail.to ? `E-mail sent to ${r.mail.to}` : "E-mail sent"); else K.toast(`Not sent: ${r.mail.error || r.mail.status}`, true);
       reload();
     } catch (e) { btn.disabled = false; oops(e); }
   }
   const gifts = d.gifts?.length ? card("Gifts", "Credits the Kleo team gave, and whether the pop-up was seen.", h("div", { class: "list" }, d.gifts.map((g) => {
-    const again = g.mail && (g.mail_status === "waiting" || !g.mail_status) ? h("button", { class: "btn btn-quiet btn-sm adm-gift-again", type: "button" }, icon("mail", 15), "Send the e-mail again") : null;
+    const canSend = !u.deleted && g.mail && (g.mail_status === "waiting" || !g.mail_status || giftStale(g));
+    const again = canSend ? h("button", { class: "btn btn-quiet btn-sm adm-gift-again", type: "button" }, icon("mail", 15), "Send the e-mail again") : null;
     again?.addEventListener("click", () => mailAgain(g, again));
     return h("div", { class: "row adm-gift-row" }, icon("gift", 19),
       h("div", { class: "lbl" }, h("b", {}, count(g.credits, "credit"), g.seen_at ? pill(`Seen ${day(g.seen_at)}`, "ok") : pill("Not seen yet", "")),

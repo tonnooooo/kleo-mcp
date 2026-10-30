@@ -22,10 +22,12 @@
  * THE E-MAIL, when asked for, goes out at once through the welcome e-mails' sending (onboarding.ts deliver, from
  * hello@kleooai.com, with the stop link), to the address the console's sheet shows (giftAddress): the gift, then, for
  * the same accounts as the app's card, one line inviting the person to Kleo Creators. Each send first claims the gift
- * (mail_status 'sending'), so it goes out at most once. An address on the stop list (unsubscribed or bounced) gets
- * nothing; a refusal of the address itself is 'failed'; anything else Kleo's side may get past later (rate, quota, the
- * sending domain) leaves it 'waiting', and the console's "Send the e-mail again" tries once more. Every send is a
- * studio_mail_log row (mail and kind "gift"), written after the outcome, best effort.
+ * (mail_status 'sending', the claim's time in mailed_at), so it goes out at most once, and runs under ctx.waitUntil so a
+ * console tab closed meanwhile cannot cut it off. An address on the stop list (unsubscribed or bounced) gets nothing; a
+ * refusal of the address itself is 'failed'; anything else Kleo's side may get past later (rate, quota, the sending
+ * domain) leaves it 'waiting', and so does a claim with no outcome after SENDING_STALE_MIN minutes: the console's "Send
+ * the e-mail again" tries once more. Every send is a studio_mail_log row (mail and kind "gift"), written after the
+ * outcome, best effort.
  */
 import type { StudioEnv } from "./env.ts";
 import type { Env } from "../env";
@@ -168,11 +170,23 @@ export interface GiftMail { status: "sent" | "failed" | "skipped" | "waiting"; t
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e)).slice(0, 200);
 
 /**
- * Sends one gift's e-mail now, at most once. The gift is claimed first: its mail_status moves from not sent yet (NULL) or
- * 'waiting' to 'sending' in one compare-and-set, so two sends of one gift can never both go out; null when it was not
- * there to claim (sent, being sent, refused, skipped, or no e-mail asked). The outcome is written as soon as deliver()
- * answers, and nothing after a send can turn it into a failure: the mail log is best effort, and a status that can't be
- * written still answers what happened. Never throws.
+ * How long a claimed send ('sending') may go without its outcome before it counts as waiting again: a send cut off after
+ * its claim (the request cancelled, the outcome's write lost) can then be claimed again, by the console's "Send the
+ * e-mail again" too. Such an e-mail may have gone out; the console says so next to the button.
+ */
+export const SENDING_STALE_MIN = 5;
+/** The claim's condition: not sent yet, waiting, or a send claimed more than SENDING_STALE_MIN ago with no outcome. */
+const CLAIMABLE = `(mail_status IS NULL OR mail_status = 'waiting' OR (mail_status = 'sending'
+  AND (mailed_at IS NULL OR mailed_at < strftime('%Y-%m-%dT%H:%M:%fZ','now','-${SENDING_STALE_MIN} minutes'))))`;
+
+/**
+ * Sends one gift's e-mail now, at most once. The gift is claimed first: its mail_status moves from not sent yet (NULL),
+ * 'waiting' or a stale 'sending' (CLAIMABLE) to 'sending', with the claim's time in mailed_at, in one compare-and-set
+ * on the gift's id AND its account, so two sends of one gift can never both go out and another account's id never
+ * sends; null when it was not there to claim (sent, being sent, refused, skipped, no e-mail asked, another account's).
+ * The outcome is written as soon as deliver() answers, and nothing after a send can turn it into a failure: the mail log
+ * is best effort, and a status that can't be written still answers what happened. Never throws. The console runs it
+ * under ctx.waitUntil (admin.ts), so a tab closed meanwhile cannot cut it off.
  */
 export async function mailGift(env: StudioEnv, userId: string, giftId: string): Promise<GiftMail | null> {
   const done = async (status: GiftMail["status"], to: string | null, error: string | null): Promise<GiftMail> => {
@@ -181,7 +195,7 @@ export async function mailGift(env: StudioEnv, userId: string, giftId: string): 
     return { status, to, error };
   };
   try {
-    const claim = await env.DB.prepare("UPDATE studio_gifts SET mail_status = 'sending' WHERE id = ? AND user_id = ? AND mail = 1 AND (mail_status IS NULL OR mail_status = 'waiting')")
+    const claim = await env.DB.prepare(`UPDATE studio_gifts SET mail_status = 'sending', mailed_at = ${NOW} WHERE id = ? AND user_id = ? AND mail = 1 AND ${CLAIMABLE}`)
       .bind(giftId, userId).run();
     if (Number(claim.meta?.changes ?? 0) !== 1) return null;
   } catch (e) {
@@ -216,13 +230,18 @@ export async function mailGift(env: StudioEnv, userId: string, giftId: string): 
   return out;
 }
 
-/** The console's "Send the e-mail again": only for a gift whose e-mail is waiting (or never started); at most once. */
+/**
+ * The console's "Send the e-mail again": only for a gift whose e-mail is waiting, never started, or claimed more than
+ * SENDING_STALE_MIN ago with no outcome; at most once (mailGift's claim).
+ */
 export async function mailGiftAgain(env: StudioEnv, adminId: string, userId: string, giftId: string): Promise<{ ok: true; mail: GiftMail }> {
   const r = await mailGift(env, userId, giftId);
   if (!r) {
     const g = await giftById(env, giftId);
     if (!g || g.user_id !== userId) throw new StudioError("No such gift on this account.", 404, "not_found");
-    throw new StudioError(g.mail_status === "sent" ? "This e-mail went out already." : "This e-mail isn't waiting any more. Reload the page.", 409, "gift_mail_state");
+    throw new StudioError(g.mail_status === "sent" ? "This e-mail went out already."
+      : g.mail_status === "sending" ? `This e-mail is on its way. If nothing changes, send it again in ${SENDING_STALE_MIN} minutes.`
+        : "This e-mail can't be sent again. Reload the page.", 409, "gift_mail_state");
   }
   await audit(asEnv(env), userId, null, "admin.gift_mail", { admin: adminId, gift: giftId, mail: r.status }).catch(() => {});
   return { ok: true, mail: r };
