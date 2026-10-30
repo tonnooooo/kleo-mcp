@@ -8,9 +8,13 @@
  * D1 (ig_token), sealed with AES-GCM under IG_TOKEN_KEY (sealKey, src/key-overrides.ts): a session that dumps the
  * table sees no token. The row keeps a fingerprint of the secret it grew from, so a token the owner pastes again wins
  * over the renewed one. Without IG_TOKEN_KEY nothing is renewed, and the owner hears about it ten days before the end.
+ *
+ * A Facebook Login token (loginOf, src/ig/graph.ts) is a system user's token from the business portfolio "Kleo": it
+ * never expires and has nothing to renew. Its row only remembers the secret's fingerprint, and warned_at then paces the
+ * e-mail sent when Meta refuses the token (refusedAlarm): once a day, and again at once for a newly pasted token.
  */
 import { openKey, sealKey } from "../key-overrides.ts";
-import { redact, refreshToken, type Fetcher } from "./graph.ts";
+import { loginOf, redact, refreshToken, type Fetcher } from "./graph.ts";
 
 export const TOKEN_SCHEMA = `CREATE TABLE IF NOT EXISTS ig_token (
     id INTEGER PRIMARY KEY CHECK (id = 1), sealed TEXT, seed TEXT NOT NULL, refreshed_at TEXT NOT NULL, expires_at TEXT,
@@ -68,8 +72,9 @@ export async function tokenNow(env: TokenEnv, nowMs: number): Promise<TokenNow |
 export async function renewIfDue(env: TokenEnv, nowMs: number, fetcher: Fetcher): Promise<string | null> {
   // Asked every minute even with nothing to renew: it records a newly pasted secret, whose 60 days start counting.
   const now = await tokenNow(env, nowMs);
+  if (!now || loginOf(now.token) === "facebook") return null;
   const r = await readRow(env);
-  if (!now || !r || !env.IG_TOKEN_KEY) return null;
+  if (!r || !env.IG_TOKEN_KEY) return null;
   if (nowMs - Date.parse(r.refreshed_at) < RENEW_AFTER_DAYS * DAY) return null;
   if (r.tried_at && nowMs - Date.parse(r.tried_at) < RETRY_HOURS * HOUR) return null;
   const at = new Date(nowMs).toISOString();
@@ -90,8 +95,9 @@ export async function renewIfDue(env: TokenEnv, nowMs: number, fetcher: Fetcher)
   }
 }
 
-/** Ten days before the token dies, once a day: what to tell the owner, or null. */
+/** Ten days before the token dies, once a day: what to tell the owner, or null. A Facebook Login token never dies. */
 export async function expiryWarning(env: TokenEnv, nowMs: number): Promise<string | null> {
+  if (loginOf(env.IG_ACCESS_TOKEN ?? "") === "facebook") return null;
   const r = await readRow(env);
   if (!r) return null;
   const end = Date.parse(lifeEnd(r));
@@ -101,4 +107,13 @@ export async function expiryWarning(env: TokenEnv, nowMs: number): Promise<strin
   if (claim.meta.changes !== 1) return null;
   const why = !env.IG_TOKEN_KEY ? "IG_TOKEN_KEY is not set, so it is never renewed" : r.note ? `renewing it fails: ${r.note}` : "it has not been renewed";
   return end <= nowMs ? `The Instagram token has expired (${why}).` : `The Instagram token expires on ${new Date(end).toISOString().slice(0, 10)} (${why}).`;
+}
+
+/** Meta refused the Facebook Login token: true when the owner should hear about it now (once a day per pasted token). */
+export async function refusedAlarm(env: TokenEnv, nowMs: number): Promise<boolean> {
+  const r = await readRow(env);
+  if (!r) return false;
+  if (r.warned_at && nowMs - Date.parse(r.warned_at) < RETRY_HOURS * HOUR) return false;
+  const claim = await env.DB.prepare("UPDATE ig_token SET warned_at = ? WHERE id = 1 AND warned_at IS ?").bind(new Date(nowMs).toISOString(), r.warned_at).run();
+  return claim.meta.changes === 1;
 }
